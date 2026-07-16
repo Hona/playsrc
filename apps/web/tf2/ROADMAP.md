@@ -1,0 +1,97 @@
+# TF2 Web Application Roadmap
+
+[`../../../docs/roadmap-contract.md`](../../../docs/roadmap-contract.md) defines the normative roadmap schema and denominator review gate. [`../../../TERMINOLOGY.md`](../../../TERMINOLOGY.md) defines gameplay authority, replay authority, Application, Catalog, delivery status, evidence, and Complete. [`../ROADMAP.md`](../ROADMAP.md) defines the shared browser-application contract.
+
+## Completion Denominator
+
+This leaf roadmap contains exactly 12 behavior rows. The application exposes exactly two Active experiences:
+
+| Experience identity | Canonical route | Composition |
+|---|---|---|
+| `tf2.jump-practice` | `/jump/<map>` | One local Simulation session containing TF2 and `ruleset.jump` for a catalog-selected immutable map/course root. |
+| `tf2.recorded-replay` | `/replay/upload` | One user-selected local DEM handed to Demo, Networking, the TF2 recorded-state decoder, and Replay without Simulation. |
+
+`<map>` is the exact lower-ASCII catalog map identity and cannot contain `/`, `\`, `.`, `..`, percent-decoded separators, controls, query, or fragment bytes. The application root contains one ordered catalog whose entries select either `tf2.jump-practice` with a map/course root or `tf2.recorded-replay` without a map root.
+
+Online multiplayer, hosted sessions, matchmaking, store/account inventory, and additional TF2 rulesets are outside the Active denominator. Adding one changes this experience set and the root target dependencies before implementation.
+
+The denominator is Not accepted. `ruleset.jump`, Replay, the TF2 recorded-state decoder, presentation interfaces, service endpoints, and the shared web denominator are not accepted, and no review record exists.
+
+## Inputs
+
+- The complete shared configuration, limits, browser profile, channel, application root, catalog, lifecycle, input, settings, persistence, accessibility, observability, and deployment inputs from [`../ROADMAP.md`](../ROADMAP.md).
+- One application root whose identity is `application=tf2`, one catalog identity, and only the two experience identities above.
+- For `tf2.jump-practice`: one immutable catalog entry naming TF2 content build, map root, `ruleset.jump`, exact `JumpCourseDefinition` object identity, player-input profile, Rendering profile, and VGUI profile.
+- The current TF2 game, TF2 Jump, Simulation, Movement, Collision, Physics, Entity, Networking where required by package composition, Rendering, Particle, Audio, VGUI, Content-consumer, and Asset Store/Service interfaces.
+- For `tf2.recorded-replay`: one user-selected file supplied through the File API, declared maximum 2,147,483,648 bytes, exact byte length, lowercase SHA-256 computed while streaming, file-selection generation, and explicit `tf2-demo3-net24` profile selection. File name, MIME type, modification time, and path never select profile or game.
+- One successful immutable Demo value, current Networking codec, TF2 recorded-state decoder, and Replay interface. The application never reads DEM records or network messages directly.
+- One application-owned Preact shell root, one Rendering canvas, and one separate VGUI mount root. Preact cannot reconcile the latter two owners' subtrees.
+
+## Outputs
+
+- One TF2 product state extending the shared state with selected experience, catalog entry, map identity where applicable, Simulation or Replay session identity, presentation readiness, VGUI readiness, input mode, and upload identity where applicable.
+- One ordered physical-binding stream for Jump practice, and typed Simulation commands only after the TF2 game adapter maps those bindings through its accepted command schema.
+- One local replay-source result containing file byte length/hash, selected profile, Demo identity, Replay identity, progress, and classified failure; the application retains no file bytes after handoff and shutdown.
+- One product UI containing catalog selection, upload selection, settings, progress, browser permission/recovery state, user-visible failures, and route navigation around the package-owned canvas and VGUI subtree.
+- One complete experience-shutdown result releasing the active Simulation or Replay session and all product-owned browser adapters before another experience becomes Ready.
+
+## Invariants
+
+- Exactly one of `tf2.jump-practice` and `tf2.recorded-replay` is active. One cannot remain loaded behind the other, share mutable workers, or retain authority state after replacement.
+- Jump practice advances only through Simulation with TF2 and the selected Jump ruleset. The application never advances movement, weapons, projectiles, damage, entities, course timers, checkpoints, or results.
+- Recorded replay advances only through Replay operations over decoded recorded state. The application never feeds recorded commands into Simulation or fills missing values from TF2 gameplay.
+- Physical bindings, pointer lock, touch controls, camera selection, and route state are application-owned. TF2 owns command meaning and game-specific presentation mappings; Jump owns course transitions and result validity.
+- The upload route is intentionally not a shareable replay identity. Reload and copied URLs return to file selection. A user must reselect bytes whose hash matches before an in-memory replay cursor can be restored.
+- A rejected, cancelled, changed, over-bound, or mismatched file publishes no Demo or Replay session. File processing is streaming and never requires a second full-file copy in application state.
+- The product shell never reads canonical game/replay state to derive missing HUD truth. TF2 bindings provide immutable VGUI values and typed commands; product UI displays only app-owned selection, lifecycle, progress, settings, and failure state.
+- Experience suspension, GPU recovery, audio interruption, route change, and close obey the shared lifecycle and cannot advance gameplay or replay from elapsed wall time.
+
+## Ownership Exclusions
+
+- [`../../../games/tf2/ROADMAP.md`](../../../games/tf2/ROADMAP.md) owns TF2 players, teams, classes, items, weapons, entities, game rules, prediction, recorded-state meaning, events, and presentation mappings.
+- [`../../../games/tf2/rulesets/jump/ROADMAP.md`](../../../games/tf2/rulesets/jump/ROADMAP.md) owns Jump course definitions, eligibility, timers, checkpoints, validity, reset/restart effects, completion, and run results. This application selects and displays them.
+- Simulation owns gameplay scheduling and authority; Networking owns protocol codecs and reconciliation; Demo owns DEM parsing; Replay owns recorded-state progression, seeking, snapshots, and event ranges.
+- Rendering, Particle, Audio, and VGUI own presentation execution and resources behind their current interfaces. This application owns mount points, permission gestures, product layout, settings policy, and user-visible lifecycle.
+- Asset Store owns application/catalog/root envelopes and immutable objects; Asset Service owns HTTP delivery. This application owns the two catalog experience entries, their labels/order, and application-root contents.
+- Online multiplayer belongs to the Future TF2 online-multiplayer target and its service applications. Tempus records, rankings, course discovery, external APIs, and product data belong to [`../tempus/ROADMAP.md`](../tempus/ROADMAP.md).
+
+## Behavior Families
+
+| Target behavior | playsrc behavior | Evidence | Status |
+|---|---|---|---|
+| `TF2-WEB-001` — The application satisfies all 27 shared cross-child requirements in [`../ROADMAP.md`](../ROADMAP.md) for every TF2 route and both experiences. | No TF2 web implementation exists, and shared asset, presentation, service, and deployment requirements contain blockers. | **Shared-contract application audit:** execute every shared vector through `/`, `/jump/<map>`, and `/replay/upload` on all eight browser profiles and compare child-specific identities and cleanup. | Blocked |
+| `TF2-WEB-002` — The immutable TF2 catalog contains exactly `tf2.jump-practice` and `tf2.recorded-replay`, preserves declared entry order and labels, and rejects every undeclared experience or ruleset selection. | No TF2 application root, catalog, route registry, or product shell exists. | **Two-experience catalog vectors:** load exact, reordered, duplicate, missing, extra, wrong-game, wrong-ruleset, and dangling-root catalogs; compare visible choices, route eligibility, and exact rejection. | Not started |
+| `TF2-WEB-003` — `/` presents the two catalog entries; `/jump/<map>` selects one exact catalog map/course root; `/replay/upload` selects no map root; canonical navigation never infers an experience from content or file names. | No TF2 router or route-state model exists. | **Route/selection decision table:** direct-load, link, reload, history, malformed map, absent entry, and uploaded filename cases compare canonical URL, selected entry/root, and failure exactly. | Not started |
+| `TF2-WEB-004` — Jump practice creates one composition containing TF2 and `ruleset.jump` against the exact catalog map/course identities and publishes Ready only after tick-zero Simulation, Rendering scene, and VGUI bindings agree. | TF2, Jump, Simulation, map/package producers, and their interfaces are not accepted or implemented. | **Composition startup trace:** fixed valid and identity-mismatched compositions compare participant manifest, map/course hashes, initial snapshot, scene/VGUI readiness, product state, and reverse unwind. | Blocked |
+| `TF2-WEB-005` — Jump practice wall-clock pacing requests bounded Simulation advancement, presents immutable snapshots/events, pauses on shared lifecycle suspension, and shuts down without an application tick loop or catch-up mutation. | No Simulation browser worker adapter or TF2/Jump composition exists. | **Gameplay authority call trace:** fixed frame/focus/visibility schedules compare coarse Simulation calls, completed ticks, presentation snapshots, pause state, worker messages, and zero domain advancement outside Simulation. | Blocked |
+| `TF2-WEB-006` — Desktop and mobile physical bindings map through one current binding profile to typed TF2 command inputs; focus loss, pointer-lock loss, touch cancellation, route replacement, and suspension emit one neutral state before the next admitted tick. | No accepted TF2 command schema, application binding profile, or input adapter exists. | **Binding-to-command seam trace:** replay desktop/mobile schedules and every release boundary; compare normalized bindings, TF2 adapter input, command batches, neutralization order, and zero command mutation in the application. | Blocked |
+| `TF2-WEB-007` — Jump practice supplies canonical Simulation snapshots/events and TF2 presentation requests to Rendering, Particle, Audio, and VGUI, selects one app-owned camera/input mode, and never derives game or Jump truth in product UI. | Required game and presentation producers/consumers are not accepted or implemented. | **Gameplay presentation integration:** run fixed Jump ticks and compare owner call transcript, immutable input hashes, camera selection, canvas/VGUI outputs, audio permission state, and zero authority writes. | Blocked |
+| `TF2-WEB-008` — Preact mounts one product shell and one framework-independent VGUI root; TF2-owned immutable HUD bindings update VGUI and typed VGUI commands return through the application without either owner adopting the other's DOM. | The VGUI/KeyValues owner conflict is unresolved and no TF2 HUD binding inventory or application mount exists. | **DOM ownership and HUD seam audit:** instrument shell, VGUI, and canvas subtrees under fixed gameplay/replay states; compare node owners, bindings, typed commands, focus/accessibility state, and deterministic destruction. | Blocked |
+| `TF2-WEB-009` — Replay upload streams one selected file through size/hash progress and cancellation, selects `tf2-demo3-net24` explicitly, hands bytes to Demo once, and publishes either one immutable source identity or one exact failure. | No upload adapter, streaming hash path, Demo implementation, or profile handoff exists. | **Upload boundary matrix:** fixed valid, empty, maximum, maximum-plus-one, changed, cancelled, wrong-profile, truncated, and malformed files compare stream reads, digest, Demo calls, progress, retained bytes, and zero partial session. | Blocked |
+| `TF2-WEB-010` — The replay route exposes open, play, pause, positive rational rate, indexed step, seek, snapshot status, event range, end, and close only through one Replay session; reload requires the same file hash before restoration. | Replay, Networking, Demo, and the TF2 recorded-state decoder are not accepted or implemented. | **Replay control integration:** fixed DEM and control schedules compare application calls, Replay cursor/snapshot/event outputs, URL state, reselect/hash behavior, user-visible controls, and zero Simulation calls. | Blocked |
+| `TF2-WEB-011` — Replay presentation supplies Replay snapshots/events and TF2 recorded-state mappings to Rendering, Particle, Audio, and VGUI with discontinuity-safe camera selection and no product-side state reconstruction. | No Replay presentation interface, TF2 decoder/mapping, or presentation consumer integration exists. | **Recorded-presentation owner trace:** fixed play/pause/seek/step/end schedules compare snapshots, discontinuities, event ranges, camera/HUD selections, package calls, pixels/accessibility captures, and zero inferred events. | Blocked |
+| `TF2-WEB-012` — Replacing either experience cancels its complete load tree, closes its sole authority, releases all workers/browser resources, resets product-only state, and then starts the next generation with no shared mutable state. | No experience coordinator or integrated shutdown path exists. | **Cross-experience replacement ledger:** alternate both experiences through loading, Ready, suspended, recovery, failure, and close; compare generation IDs, authority shutdown, worker/resource counts, settings retention, and no late publication. | Blocked |
+
+## Generated Inventories
+
+No generated TF2 web-application inventory is accepted or required by the current denominator. Generated item count: 0. Accepted item count: 0. The two experiences, three routes, one selected ruleset, and two input-profile classes are enumerated directly above.
+
+## Exit Criteria
+
+The TF2 web application is Complete only when all of these predicates pass:
+
+- All 12 behavior rows are Ready and the denominator review is Accepted.
+- The catalog contains exactly the two declared experiences and every canonical route/history/reload case selects the same identity or exact failure.
+- Jump practice composes one current TF2/Jump/Simulation authority and consumes current map, presentation, content, asset, and browser interfaces without product-side game or ruleset behavior.
+- Recorded replay composes one current Demo/Networking/TF2-decoder/Replay authority and makes zero Simulation advancement calls.
+- Both experiences pass all eight shared browser profiles, including desktop pointer lock, mobile touch, audio permission, GPU loss, accessibility, cancellation, and shutdown evidence.
+- Every application root, catalog entry, map/course root, user file, Demo, Simulation/Replay session, and presentation lease retains exact identity through its full lifecycle.
+- No required item remains Blocked, Unsupported, Unknown, Missing, Malformed, Partial, stale, duplicated, owner-conflicting, or dependent on a fallback, compatibility layer, or legacy path.
+
+## Blockers
+
+- **Jump composition:** the TF2 game, TF2 ruleset universe, and Jump roadmaps are Not accepted; Jump's course-behavior inventory has 0 accepted items and records unresolved timer, checkpoint, reset/restart, death/respawn, save/restore, and multiplayer contracts. A current game/ruleset composition cannot be integrated. Checked all three roadmaps and inventories.
+- **Recorded-state stack:** Demo, Networking, Replay, and TF2 recorded-state decoding/mapping have no accepted current interface or implementation. Replay explicitly requires a recorded-replay application owner; this roadmap accepts that consumer role, but the producer stack remains blocked. Checked all four owner roadmaps and current trees.
+- **VGUI ownership and HUD bindings:** the root registry assigns generic VGUI to `packages/presentation/vgui`, while the KeyValues roadmap assigns VGUI semantics to web applications. No accepted TF2 HUD binding inventory exists. `TF2-WEB-008` cannot pass single ownership or integration review. Checked KeyValues, VGUI, TF2, root, and shared-web roadmaps.
+- **Asset/service delivery:** Asset Store and Asset Service are Draft and unimplemented. Asset Service declares exact route/cache behavior, but its backing store interface, numeric profile, deployed origin, and consumer integration are not accepted. No immutable TF2 application root, catalog, map/course root, or deployment binding exists. Checked both roadmaps, parent service, Infrastructure, and the current app tree.
+- **Presentation interfaces:** Rendering, Particle, Audio, and VGUI have Draft or blocked denominators and no complete current browser implementation. Gameplay/replay presentation and shutdown evidence cannot execute. Checked every named presentation roadmap and tree.
