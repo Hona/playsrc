@@ -240,6 +240,43 @@ pub struct CompanionSummary {
     pub vtx_max_bones_per_vertex: i32,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Vertex {
+    pub source_index: usize,
+    pub weights: [Float32; 3],
+    pub bones: [u8; 3],
+    pub bone_count: u8,
+    pub position: Vector3,
+    pub normal: Vector3,
+    pub uv: [Float32; 2],
+    pub tangent: [Float32; 4],
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Strip {
+    pub index_count: usize,
+    pub first_index: usize,
+    pub vertex_count: usize,
+    pub first_vertex: usize,
+    pub flags: u8,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GeometryPrimitive {
+    pub body_part: usize,
+    pub model: usize,
+    pub lod: usize,
+    pub mesh: usize,
+    pub strip_group: usize,
+    pub switch_point: Float32,
+    pub material_slot: usize,
+    pub source_vertex_ids: Vec<usize>,
+    pub vertices: Vec<Vertex>,
+    pub encoded_indices: Vec<u16>,
+    pub strips: Vec<Strip>,
+    pub triangles: Vec<[u32; 3]>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PhysicsStatus {
     Present,
@@ -267,6 +304,7 @@ pub struct Document {
     pub companions: CompanionSummary,
     pub physics_status: PhysicsStatus,
     pub source_identities: Vec<String>,
+    pub geometry: Vec<GeometryPrimitive>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -325,6 +363,63 @@ impl std::error::Error for Error {}
 struct Mdl {
     document: Document,
     needs_animation: bool,
+}
+
+struct ParsedVvd {
+    counts: Vec<i32>,
+    fixups: Vec<VvdFixup>,
+    vertices: Vec<Vertex>,
+    vertex_offset: i32,
+    tangent_offset: i32,
+}
+
+#[derive(Clone, Copy)]
+struct VvdFixup {
+    lod: usize,
+    source: usize,
+    destination: usize,
+    count: usize,
+}
+
+impl ParsedVvd {
+    fn vertex(&self, lod: usize, destination: usize) -> Option<Vertex> {
+        let source = if self.fixups.is_empty() {
+            destination
+        } else {
+            let fixup = self.fixups.iter().find(|fixup| {
+                fixup.lod >= lod
+                    && destination >= fixup.destination
+                    && destination < fixup.destination + fixup.count
+            })?;
+            fixup.source + destination - fixup.destination
+        };
+        self.vertices.get(source).cloned()
+    }
+}
+
+struct ParsedVtx {
+    lod_count: i32,
+    body_parts: Vec<VtxBodyPart>,
+    max_bones: i32,
+}
+struct VtxBodyPart {
+    models: Vec<VtxModel>,
+}
+struct VtxModel {
+    lods: Vec<VtxLod>,
+}
+struct VtxLod {
+    switch_point: Float32,
+    meshes: Vec<VtxMesh>,
+}
+struct VtxMesh {
+    groups: Vec<VtxGroup>,
+}
+struct VtxGroup {
+    source_vertex_ids: Vec<usize>,
+    indices: Vec<u16>,
+    strips: Vec<Strip>,
+    triangles: Vec<[u32; 3]>,
 }
 
 pub fn load(
@@ -409,6 +504,8 @@ pub fn load(
     let mut document = root.document;
     let mut source_identities = vec![identity.clone()];
     let mut physics_status = PhysicsStatus::Missing;
+    let mut parsed_vvd = None;
+    let mut parsed_vtx = None;
     for request in requests {
         let response = responses
             .iter()
@@ -444,24 +541,25 @@ pub fn load(
         }
         match request.role {
             DependencyRole::VertexData => {
-                let (counts, fixups, vertex_offset, tangent_offset) =
-                    validate_vvd(&response.logical_path, bytes, document.checksum, limits)?;
-                document.companions.vvd_lod_vertex_counts = counts;
-                document.companions.vvd_fixup_count = fixups;
-                document.companions.vvd_vertex_offset = vertex_offset;
-                document.companions.vvd_tangent_offset = tangent_offset;
+                let parsed = parse_vvd(&response.logical_path, bytes, document.checksum, limits)?;
+                document.companions.vvd_lod_vertex_counts = parsed.counts.clone();
+                document.companions.vvd_fixup_count = parsed.fixups.len() as i32;
+                document.companions.vvd_vertex_offset = parsed.vertex_offset;
+                document.companions.vvd_tangent_offset = parsed.tangent_offset;
+                parsed_vvd = Some(parsed);
             }
             DependencyRole::Topology => {
-                let (lods, body_parts, max_bones) = validate_vtx(
+                let parsed = parse_vtx(
                     &response.logical_path,
                     bytes,
                     document.checksum,
                     document.body_parts.len(),
                     limits,
                 )?;
-                document.companions.vtx_lod_count = lods;
-                document.companions.vtx_body_part_count = body_parts;
-                document.companions.vtx_max_bones_per_vertex = max_bones;
+                document.companions.vtx_lod_count = parsed.lod_count;
+                document.companions.vtx_body_part_count = parsed.body_parts.len() as i32;
+                document.companions.vtx_max_bones_per_vertex = parsed.max_bones;
+                parsed_vtx = Some(parsed);
             }
             DependencyRole::AnimationBlocks => {
                 if bytes.len() < 12 || bytes.get(..4) != Some(b"IDAG") {
@@ -504,6 +602,9 @@ pub fn load(
     }
     document.source_identities = source_identities;
     document.physics_status = physics_status;
+    if let (Some(vvd), Some(vtx)) = (&parsed_vvd, &parsed_vtx) {
+        document.geometry = assemble_geometry(&document.body_parts, vvd, vtx, &identity)?;
+    }
     Ok(Load::Complete(Box::new(document)))
 }
 
@@ -957,6 +1058,7 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
         },
         physics_status: PhysicsStatus::Missing,
         source_identities: vec![identity.to_owned()],
+        geometry: Vec::new(),
     };
     if owned_bytes(&document) > limits.max_owned_bytes {
         return Err(failure(
@@ -972,12 +1074,12 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
     })
 }
 
-fn validate_vvd(
+fn parse_vvd(
     identity: &str,
     bytes: &[u8],
     checksum: i32,
     limits: Limits,
-) -> Result<(Vec<i32>, i32, i32, i32), Error> {
+) -> Result<ParsedVvd, Error> {
     range(bytes, 0, 64, identity)?;
     if bytes.get(..4) != Some(b"IDSV") {
         return Err(failure(
@@ -1010,12 +1112,19 @@ fn validate_vvd(
         }
         counts.push(value);
     }
-    let fixups = i32_at(bytes, 48, identity)?;
+    let fixup_count = i32_at(bytes, 48, identity)?;
     let fixup_offset = count(bytes, 52, identity)?;
-    if fixups < 0 {
+    if fixup_count < 0 {
         return Err(invalid_count(identity, 48));
     }
-    table(bytes, fixup_offset, fixups as usize, 12, limits, identity)?;
+    table(
+        bytes,
+        fixup_offset,
+        fixup_count as usize,
+        12,
+        limits,
+        identity,
+    )?;
     let vertex_offset = i32_at(bytes, 56, identity)?;
     let tangent_offset = i32_at(bytes, 60, identity)?;
     let vertices = counts[0] as usize;
@@ -1035,16 +1144,84 @@ fn validate_vvd(
         limits,
         identity,
     )?;
-    Ok((counts, fixups, vertex_offset, tangent_offset))
+    let mut vertices_out = Vec::with_capacity(vertices);
+    for index in 0..vertices {
+        let vertex = vertex_offset as usize + index * 48;
+        let tangent = tangent_offset as usize + index * 16;
+        let bone_count = bytes[vertex + 15];
+        if bone_count > 3 {
+            return Err(invalid_count(identity, vertex + 15));
+        }
+        vertices_out.push(Vertex {
+            source_index: index,
+            weights: [
+                float(bytes, vertex, identity)?,
+                float(bytes, vertex + 4, identity)?,
+                float(bytes, vertex + 8, identity)?,
+            ],
+            bones: bytes[vertex + 12..vertex + 15]
+                .try_into()
+                .expect("VVD bone indexes"),
+            bone_count,
+            position: vector3(bytes, vertex + 16, identity)?,
+            normal: vector3(bytes, vertex + 28, identity)?,
+            uv: [
+                float(bytes, vertex + 40, identity)?,
+                float(bytes, vertex + 44, identity)?,
+            ],
+            tangent: float4(bytes, tangent, identity)?,
+        });
+    }
+    let mut fixups = Vec::with_capacity(fixup_count as usize);
+    let mut destination = 0_usize;
+    for index in 0..fixup_count as usize {
+        let offset = fixup_offset + index * 12;
+        let lod = count(bytes, offset, identity)?;
+        let source = count(bytes, offset + 4, identity)?;
+        let count = count(bytes, offset + 8, identity)?;
+        if lod >= lod_count || source.checked_add(count).is_none_or(|end| end > vertices) {
+            return Err(invalid_reference(identity, offset));
+        }
+        fixups.push(VvdFixup {
+            lod,
+            source,
+            destination,
+            count,
+        });
+        destination = destination
+            .checked_add(count)
+            .ok_or_else(|| invalid_range(identity, offset))?;
+    }
+    for (lod, &expected) in counts.iter().enumerate() {
+        let produced = if fixups.is_empty() {
+            expected as usize
+        } else {
+            fixups
+                .iter()
+                .filter(|fixup| fixup.lod >= lod)
+                .map(|fixup| fixup.count)
+                .sum()
+        };
+        if produced != expected as usize {
+            return Err(invalid_reference(identity, fixup_offset));
+        }
+    }
+    Ok(ParsedVvd {
+        counts,
+        fixups,
+        vertices: vertices_out,
+        vertex_offset,
+        tangent_offset,
+    })
 }
 
-fn validate_vtx(
+fn parse_vtx(
     identity: &str,
     bytes: &[u8],
     checksum: i32,
     expected_body_parts: usize,
     limits: Limits,
-) -> Result<(i32, i32, i32), Error> {
+) -> Result<ParsedVtx, Error> {
     range(bytes, 0, 36, identity)?;
     if i32_at(bytes, 0, identity)? != 7 {
         return Err(failure(
@@ -1073,7 +1250,225 @@ fn validate_vtx(
     }
     let body_offset = count(bytes, 32, identity)?;
     table(bytes, body_offset, body_parts as usize, 8, limits, identity)?;
-    Ok((lod_count, body_parts, max_bones))
+    let mut parsed_body_parts = Vec::with_capacity(body_parts as usize);
+    for body_index in 0..body_parts as usize {
+        let body = body_offset + body_index * 8;
+        let model_count = count(bytes, body, identity)?;
+        let model_offset = relative_offset(body, i32_at(bytes, body + 4, identity)?, identity)?;
+        table(bytes, model_offset, model_count, 8, limits, identity)?;
+        let mut models = Vec::with_capacity(model_count);
+        for model_index in 0..model_count {
+            let model = model_offset + model_index * 8;
+            let model_lods = count(bytes, model, identity)?;
+            if model_lods != lod_count as usize {
+                return Err(invalid_reference(identity, model));
+            }
+            let lod_offset = relative_offset(model, i32_at(bytes, model + 4, identity)?, identity)?;
+            table(bytes, lod_offset, model_lods, 12, limits, identity)?;
+            let mut lods = Vec::with_capacity(model_lods);
+            for lod_index in 0..model_lods {
+                let lod = lod_offset + lod_index * 12;
+                let mesh_count = count(bytes, lod, identity)?;
+                let mesh_offset =
+                    relative_offset(lod, i32_at(bytes, lod + 4, identity)?, identity)?;
+                table(bytes, mesh_offset, mesh_count, 9, limits, identity)?;
+                let mut meshes = Vec::with_capacity(mesh_count);
+                for mesh_index in 0..mesh_count {
+                    let mesh = mesh_offset + mesh_index * 9;
+                    let group_count = count(bytes, mesh, identity)?;
+                    let group_offset =
+                        relative_offset(mesh, i32_at(bytes, mesh + 4, identity)?, identity)?;
+                    table(bytes, group_offset, group_count, 25, limits, identity)?;
+                    let mut groups = Vec::with_capacity(group_count);
+                    for group_index in 0..group_count {
+                        let group = group_offset + group_index * 25;
+                        let vertex_count = count(bytes, group, identity)?;
+                        let vertex_offset =
+                            relative_offset(group, i32_at(bytes, group + 4, identity)?, identity)?;
+                        table(bytes, vertex_offset, vertex_count, 9, limits, identity)?;
+                        let mut source_vertex_ids = Vec::with_capacity(vertex_count);
+                        for vertex in 0..vertex_count {
+                            source_vertex_ids.push(u16_at(
+                                bytes,
+                                vertex_offset + vertex * 9 + 4,
+                                identity,
+                            )? as usize);
+                        }
+                        let index_count = count(bytes, group + 8, identity)?;
+                        let index_offset =
+                            relative_offset(group, i32_at(bytes, group + 12, identity)?, identity)?;
+                        table(bytes, index_offset, index_count, 2, limits, identity)?;
+                        let mut indices = Vec::with_capacity(index_count);
+                        for index in 0..index_count {
+                            let value = u16_at(bytes, index_offset + index * 2, identity)?;
+                            if value as usize >= vertex_count {
+                                return Err(invalid_reference(identity, index_offset + index * 2));
+                            }
+                            indices.push(value);
+                        }
+                        let strip_count = count(bytes, group + 16, identity)?;
+                        let strip_offset =
+                            relative_offset(group, i32_at(bytes, group + 20, identity)?, identity)?;
+                        table(bytes, strip_offset, strip_count, 27, limits, identity)?;
+                        let mut strips = Vec::with_capacity(strip_count);
+                        let mut triangles = Vec::new();
+                        for strip_index in 0..strip_count {
+                            let strip = strip_offset + strip_index * 27;
+                            let strip_index_count = count(bytes, strip, identity)?;
+                            let first = count(bytes, strip + 4, identity)?;
+                            let vertex_count_in_strip = count(bytes, strip + 8, identity)?;
+                            let first_vertex = count(bytes, strip + 12, identity)?;
+                            if first
+                                .checked_add(strip_index_count)
+                                .is_none_or(|end| end > indices.len())
+                                || first_vertex
+                                    .checked_add(vertex_count_in_strip)
+                                    .is_none_or(|end| end > vertex_count)
+                            {
+                                return Err(invalid_reference(identity, strip));
+                            }
+                            let flags = bytes[strip + 18];
+                            let selected = &indices[first..first + strip_index_count];
+                            match flags {
+                                1 if strip_index_count.is_multiple_of(3) => {
+                                    triangles.extend(selected.chunks_exact(3).filter_map(
+                                        |triangle| {
+                                            let value = [
+                                                triangle[0] as u32,
+                                                triangle[1] as u32,
+                                                triangle[2] as u32,
+                                            ];
+                                            (value[0] != value[1]
+                                                && value[1] != value[2]
+                                                && value[0] != value[2])
+                                                .then_some(value)
+                                        },
+                                    ));
+                                }
+                                2 => {
+                                    for at in 0..strip_index_count.saturating_sub(2) {
+                                        let mut value = [
+                                            selected[at] as u32,
+                                            selected[at + 1] as u32,
+                                            selected[at + 2] as u32,
+                                        ];
+                                        if at % 2 == 1 {
+                                            value.swap(0, 1);
+                                        }
+                                        if value[0] != value[1]
+                                            && value[1] != value[2]
+                                            && value[0] != value[2]
+                                        {
+                                            triangles.push(value);
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    return Err(failure(
+                                        Classification::Unsupported,
+                                        ErrorCode::UnsupportedCompanion,
+                                        identity,
+                                        Some(strip + 18..strip + 19),
+                                    ));
+                                }
+                            }
+                            strips.push(Strip {
+                                index_count: strip_index_count,
+                                first_index: first,
+                                vertex_count: vertex_count_in_strip,
+                                first_vertex,
+                                flags,
+                            });
+                        }
+                        groups.push(VtxGroup {
+                            source_vertex_ids,
+                            indices,
+                            strips,
+                            triangles,
+                        });
+                    }
+                    meshes.push(VtxMesh { groups });
+                }
+                lods.push(VtxLod {
+                    switch_point: float(bytes, lod + 8, identity)?,
+                    meshes,
+                });
+            }
+            models.push(VtxModel { lods });
+        }
+        parsed_body_parts.push(VtxBodyPart { models });
+    }
+    Ok(ParsedVtx {
+        lod_count,
+        body_parts: parsed_body_parts,
+        max_bones,
+    })
+}
+
+fn assemble_geometry(
+    mdl: &[BodyPart],
+    vvd: &ParsedVvd,
+    vtx: &ParsedVtx,
+    identity: &str,
+) -> Result<Vec<GeometryPrimitive>, Error> {
+    if mdl.len() != vtx.body_parts.len() {
+        return Err(invalid_reference(identity, 0));
+    }
+    let mut output = Vec::new();
+    for (body_index, (mdl_body, vtx_body)) in mdl.iter().zip(&vtx.body_parts).enumerate() {
+        if mdl_body.models.len() != vtx_body.models.len() {
+            return Err(invalid_reference(identity, body_index));
+        }
+        for (model_index, (mdl_model, vtx_model)) in
+            mdl_body.models.iter().zip(&vtx_body.models).enumerate()
+        {
+            for (lod_index, lod) in vtx_model.lods.iter().enumerate() {
+                if lod.meshes.len() != mdl_model.meshes.len() || lod_index >= vvd.counts.len() {
+                    return Err(invalid_reference(identity, model_index));
+                }
+                for (mesh_index, (mdl_mesh, vtx_mesh)) in
+                    mdl_model.meshes.iter().zip(&lod.meshes).enumerate()
+                {
+                    for (group_index, group) in vtx_mesh.groups.iter().enumerate() {
+                        let mut vertices = Vec::with_capacity(group.source_vertex_ids.len());
+                        for &mesh_vertex in &group.source_vertex_ids {
+                            if mesh_vertex >= mdl_mesh.vertex_count as usize {
+                                return Err(invalid_reference(identity, mesh_vertex));
+                            }
+                            let model_start = usize::try_from(mdl_model.vertex_offset_bytes)
+                                .ok()
+                                .filter(|value| value.is_multiple_of(48))
+                                .map(|value| value / 48)
+                                .ok_or_else(|| invalid_reference(identity, model_index))?;
+                            let destination = model_start
+                                .checked_add(mdl_mesh.vertex_offset as usize)
+                                .and_then(|value| value.checked_add(mesh_vertex))
+                                .ok_or_else(|| invalid_reference(identity, mesh_vertex))?;
+                            vertices.push(
+                                vvd.vertex(lod_index, destination)
+                                    .ok_or_else(|| invalid_reference(identity, destination))?,
+                            );
+                        }
+                        output.push(GeometryPrimitive {
+                            body_part: body_index,
+                            model: model_index,
+                            lod: lod_index,
+                            mesh: mesh_index,
+                            strip_group: group_index,
+                            switch_point: lod.switch_point,
+                            material_slot: mdl_mesh.material_slot as usize,
+                            source_vertex_ids: group.source_vertex_ids.clone(),
+                            vertices,
+                            encoded_indices: group.indices.clone(),
+                            strips: group.strips.clone(),
+                            triangles: group.triangles.clone(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    Ok(output)
 }
 
 fn validate_limits(limits: Limits) -> Result<(), Error> {
