@@ -48,6 +48,7 @@ The project roadmap contains 12 named targets. The TF2-first completion denomina
 ## Ownership Exclusions
 
 - Module behavior inventories belong to the leaf owner paths in the Owner Registry.
+- Generic Source panel, control, resource, scheme, localization-binding, focus, input, animation, and developer-console presentation semantics belong to `packages/presentation/vgui`; applications own mount roots, browser lifecycle and policy, and typed adapters, while games own game-specific values, mappings, command meanings, and effects.
 - Game-specific behavior belongs to `games/<game>/`; mode lifecycle belongs to `games/<game>/rulesets/<ruleset>/`.
 - Browser product integration belongs to `apps/web/<product>/`; service process and transport integration belongs to `apps/services/<service>/`.
 - Reusable operations belong to packages; command orchestration belongs to `tools/`; provisioned resources belong to `infra/`.

@@ -12,12 +12,13 @@ vgui.update(presentationState)
 
 ## Objective
 
-Present generic Source 1 panel trees, controls, resources, schemes, localized text, HUD animations, focus, and input as deterministic browser DOM and CSS.
+Present generic Source 1 panel trees, controls, resources, schemes, localized text, HUD animations, the developer console, focus, and input as deterministic browser DOM and CSS.
 
 ## Responsibilities
 
 - Own panel lifetime, hierarchy, z-order, bounds, clipping, visibility, enabled state, layout invalidation, paint order, popup state, and modal state.
 - Own generic controls, control factories, resource-property semantics, condition application, dialog variables, scheme binding, localization binding, animation variables, animation sequences, and message dispatch.
+- Own the generic developer-console frame, bounded output and command history, catalog-driven completion presentation, text-entry interaction, and typed submission/completion/system requests without executing commands or owning convar state.
 - Own keyboard, pointer, cursor, capture, focus, navigation, IME, clipboard-seam, accessibility, reduced-motion, browser-resize, and device-pixel-ratio behavior.
 - Present VGUI through direct DOM and CSS without importing Preact.
 - Consume immutable gameplay or replay presentation state and emit typed commands without mutating gameplay authority or replay authority.
@@ -32,7 +33,7 @@ Present generic Source 1 panel trees, controls, resources, schemes, localized te
 ## Non-Responsibilities
 
 - TF2 health, ammo, weapons, objectives, death notices, scoreboards, class or team menus, buildings, conditions, game events, and game commands.
-- Product routes, navigation policy, uploads, settings policy, application state, network access, or external-link policy.
+- Product routes, navigation policy, uploads, settings policy, application state, network access, external-origin policy, map acquisition, command execution, or convar effects.
 - World, model, material, particle, or audio rendering; VGUI emits typed requests at those seams.
 - Parsing KeyValues, localization files, font files, VTF images, or HUD-animation text into lossless format records.
 - Advancing gameplay, replay, networking, simulation, or ruleset state.
@@ -43,7 +44,7 @@ KeyValues and format packages produce typed documents; Content resolves exact lo
 
 ## Roadmap
 
-[`ROADMAP.md`](ROADMAP.md) defines 40 behavior rows. The five candidate inventories contain 300 items and 0 generated or accepted items.
+[`ROADMAP.md`](ROADMAP.md) defines 41 behavior rows. The five candidate inventories contain 300 items and 0 generated or accepted items.
 
 ## Completion
 
