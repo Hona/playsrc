@@ -1,20 +1,23 @@
 # Principles
 
-- Target observable Source 1 parity, not visual plausibility.
-- TF2 is the first complete parity target.
-- Source 2 is out of scope.
-- Organize by Source domain, not programming language.
-- Make every package independently useful.
-- Prefer compiled data over reconstruction.
+- Target observable Source 1 parity, not plausibility or approximation.
+- TF2 is the first complete parity target; Source 2 is out of scope.
+- Organize by Source mental model, not programming language or build target.
+- Give every module one clear objective, interface, and owner.
+- Make packages independently useful and deep enough to hide meaningful complexity.
+- Keep game differences in their game and ruleset differences under that game.
+- Let applications configure and assemble modules without reimplementing them.
+- Maintain one gameplay authority, one replay authority, and presentation-only rendering.
+- Share deterministic gameplay behavior between prediction and server authority.
+- Parse Source data before applying semantic, game, or product interpretation.
+- Keep raw Source content separate from compiled immutable assets.
+- Use content addressing so maps and applications reference rather than duplicate shared objects.
 - Maintain one current implementation and contract.
 - Prefer breaking changes while there are no external consumers.
 - Remove replaced code, fallbacks, legacy paths, and duplicate authorities.
-- Preserve handled, inert, unsupported, malformed, missing, and unknown states.
-- Keep gameplay, replay, and rendering authorities separate.
-- Treat performance, memory, backpressure, and repeatability as correctness concerns.
-- Use content addressing to avoid duplicate immutable assets.
-- Keep apps lightweight: configure and assemble packages.
-- Use repeatable scripts instead of command-line argument recipes.
+- Preserve handled, inert, unsupported, malformed, missing, and unknown states explicitly.
+- Treat performance, memory, bounds, backpressure, and repeatability as correctness concerns.
 - Resolve content through exact configured roots and logical paths; never scan a machine.
-- Add tests where they provide fair and useful evidence; do not create test theater.
-- Track parity through explicit `Source/TF2 vs playsrc` comparison tables.
+- Use one stable tool command for repeated operations instead of argument recipes.
+- Add tests only where they provide fair, durable evidence; do not create test theater or mandatory TDD process.
+- Track completion through explicit Source/TF2 versus playsrc checklists with credible evidence.

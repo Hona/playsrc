@@ -1,0 +1,25 @@
+# BSP
+
+## Objective
+
+Parse compiled Source 1 BSP files into bounded typed map data.
+
+## Responsibilities
+
+- Validate the BSP header, lump directory, versions, ranges, and encoded records.
+- Decode supported map lumps without discarding unknown or unsupported values.
+- Expose format data needed by map, collision, visibility, entity, material, and lighting consumers.
+
+## Non-Responsibilities
+
+- Assembling a playsrc map package.
+- Implementing entity behavior, collision queries, visibility policy, or rendering.
+- Applying game-specific interpretation.
+
+## Relationships
+
+Consumes BSP bytes obtained through `content`; supplies parsed data to packages in `world`.
+
+## Completion
+
+Complete when the declared BSP format and lump inventory is bounded, represented, and verified without renderer or game dependencies.

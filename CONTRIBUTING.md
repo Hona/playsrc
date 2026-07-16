@@ -2,15 +2,33 @@
 
 ## Scope
 
-playsrc targets Source 1. TF2 is the first complete parity target. Source 2 changes are out of scope.
+playsrc targets Source 1. TF2 is the first complete parity target. Counter-Strike: Source and legacy Source 1 CS:GO follow through their own game modules. Source 2 formats, behavior, terminology, and compatibility are out of scope.
 
-## Package Boundaries
+## Find The Owner
 
-- Put behavior in the package that owns the Source domain.
-- Keep packages independently useful.
-- Do not introduce product assumptions into format, content, map, model, material, physics, or simulation packages.
-- Keep game-specific behavior in game adapters and mode-specific behavior in rulesets.
-- Update every producer and consumer when changing a contract.
+Place work in the module that owns its mental model:
+
+| Location | Ownership |
+|---|---|
+| `packages/formats` | Source file and recording formats |
+| `packages/world` | Runtime-neutral world semantics and queries |
+| `packages/runtime` | Movement, physics, simulation, networking, and replay |
+| `packages/presentation` | Rendering, particles, and audio |
+| `packages/content` | Raw Source logical-path resolution |
+| `packages/asset-store` | Immutable compiled objects, roots, catalogs, and channels |
+| `games/<game>` | Behavior belonging to one game |
+| `games/<game>/rulesets` | Mode behavior belonging to that game |
+| `apps` | Deployed product and network applications |
+| `tools` | Developer and operator programs |
+| `infra` | Hosting resources and environments |
+
+Every module README defines its objective, responsibilities, non-responsibilities, relationships, and completion criteria. Update that definition when ownership changes.
+
+Do not introduce game or product assumptions into generic packages. Do not extract shared behavior merely because two modes use the same name.
+
+## Colocation
+
+Keep schemas, fixtures, examples, generated inventories, and detailed roadmaps with the module that owns them. Use root `docs` only for knowledge that genuinely crosses several modules.
 
 ## Process
 
@@ -20,35 +38,47 @@ Work follows:
 RESEARCH -> TRACK -> IMPLEMENT
 ```
 
-- Research the complete behavior family and relevant prior art.
-- Track the comprehensive work in the owning roadmap before implementation.
-- Implement the complete subsystem or category rather than the narrowest visible patch.
+- Research the complete behavior family, prior playsrc work, public documentation, and the official Source SDK where applicable.
+- Track the comprehensive behavior family in the owning roadmap before implementation.
+- Implement the complete selected mental model rather than the narrowest visible symptom.
+- Update every producer and consumer when changing an interface.
 - Remove replaced, duplicated, fallback, and legacy paths in the same change.
 
-## Breaking Changes
+The official Source SDK may be cited publicly. Code copied or adapted from it must preserve the applicable Source 1 SDK license, copyright, and required notices.
 
-There are no external consumers yet. Breaking changes are preferred over compatibility code. Maintain one current contract, update all callers together, and regenerate stale development artifacts.
+## Migration
+
+Existing proof-of-concept code is migration material, not an interface to preserve.
+
+- Copy isolated implementation that already fits its new owner.
+- Adapt useful behavior hidden behind poor interfaces.
+- Reimplement tangled application-specific or duplicate-authority paths.
+- Discard compatibility paths, obsolete fallbacks, stale generated artifacts, and excessive test infrastructure.
+
+There are no external consumers yet. Do not add compatibility readers, aliases, migrations, schema-version branches, or deprecated paths.
 
 ## Verification
 
-- Add unit tests when behavior is deterministic and reasonably testable.
-- Use integration evidence for package and subsystem boundaries.
-- Use controlled captures or fair manual inspection for visual behavior.
-- Do not force TDD, brittle tests, or implementation-detail assertions.
-- Do not weaken valid evidence to make new code pass.
+- Add focused tests when parser, transform, serialization, or gameplay behavior is deterministic and reasonably testable.
+- Use integration evidence for module seams.
+- Use controlled captures or fair manual inspection for visual and experiential behavior.
+- Do not require TDD, broad regression harnesses, brittle golden outputs, or implementation-detail assertions.
+- Do not weaken valid evidence to make an implementation pass.
 
 ## Roadmaps
 
-- Update the owning package roadmap with every implementation.
-- Compare Source/TF2 behavior with playsrc behavior explicitly.
+- Compare Source or game behavior with playsrc behavior explicitly.
+- Check work only after implementation and fair evidence are complete.
 - Do not claim percentages without a complete denominator.
-- Large universes should use generated inventories rather than manually duplicated lists.
+- Generate large authoritative inventories rather than duplicating them manually.
+- Add newly discovered required behavior to the owning checklist before calling a target complete.
 
 ## Commits
 
-- Keep commits coherent by domain or complete vertical slice.
+- Keep commits coherent by module or complete vertical behavior family.
 - Do not combine unrelated cleanup with behavior changes.
 - Document unresolved behavior as unsupported or unknown rather than hiding it.
+- Regenerate stale artifacts after current contracts change.
 
 ## Terminology
 

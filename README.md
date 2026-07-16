@@ -2,13 +2,37 @@
 
 `playsrc` is a modular Source 1 tooling, runtime, and application monorepo.
 
-TF2 is the first complete parity target. CS:S and legacy CS:GO are planned through game adapters. Source 2 is explicitly out of scope.
+TF2 is the first complete parity target. Counter-Strike: Source and legacy Source 1 Counter-Strike: Global Offensive follow through their own game modules. Source 2 is explicitly out of scope.
 
-This repository is currently private during its architecture bootstrap and is intended to become public.
+This repository is currently private during architecture and migration work and is intended to become public.
 
 ## Status
 
-The repository currently contains structure, documentation, and parity roadmaps only. Existing PoC implementations will be migrated module by module after package boundaries are agreed.
+The repository currently defines its module ownership and architecture. Existing proof-of-concept behavior has not yet been migrated into the new packages.
+
+## Structure
+
+```text
+packages/     independently useful Source modules
+games/        game behavior and game-owned rulesets
+apps/         deployed web and service applications
+tools/        developer and operator programs
+infra/        hosting resources and environments
+docs/         cross-cutting public documentation
+```
+
+Packages are grouped by mental model:
+
+```text
+formats/       Source files and recorded data
+world/         runtime-neutral world representation
+runtime/       movement, physics, simulation, networking, and replay
+presentation/  rendering, particles, and audio
+content/       raw Source logical-path resolution
+asset-store/   immutable compiled playsrc output
+```
+
+Every module README defines its objective, responsibilities, non-responsibilities, relationships, and completion criteria before implementation begins.
 
 ## Documents
 
@@ -20,10 +44,9 @@ The repository currently contains structure, documentation, and parity roadmaps 
 
 ## Scope
 
-- Reusable Source 1 format and content packages.
-- Map, model, material, entity, physics, visibility, simulation, rendering, audio, particle, and demo modules.
-- TF2, CS:S, and legacy CS:GO game adapters.
-- Jump, surf, bhop, KZ, and competitive rulesets.
-- Web applications, services, repeatable pipelines, and deployment definitions.
+- Reusable Source 1 format, world, runtime, and presentation packages.
+- Complete TF2 game behavior and game-owned rulesets, beginning with TF2 jump.
+- Future CS:S and legacy Source 1 CS:GO games with their own rulesets.
+- Browser products, future online multiplayer services, tools, asset publication, and infrastructure.
 
-Packages must remain independently useful. Applications assemble packages and do not reimplement them.
+Applications assemble modules. They do not reimplement Source, game, or ruleset behavior.

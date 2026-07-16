@@ -10,9 +10,9 @@ This glossary defines language used across playsrc code, documentation, issues, 
 
 **Game**: A Source 1 title with its own content, entities, movement differences, weapons, rules, and networking behavior.
 
-**Game adapter**: A module implementing game-specific behavior over generic Source packages.
+**Game module**: The module implementing one game's behavior over generic Source packages.
 
-**Ruleset**: Game rules layered over a game adapter, such as jump, surf, bhop, KZ, payload, or competitive play.
+**Ruleset**: Mode-specific rules owned by one game, such as TF2 jump or CS:S surf. Identically named rulesets in different games are separate.
 
 **Content build**: A factual installed game-content state used as input.
 
@@ -76,6 +76,8 @@ These are technical states, not legal or publication classifications.
 
 **Source data**: Raw game or map data consumed by playsrc.
 
+**Content**: Mounted raw Source resources resolved by exact logical path and declared precedence.
+
 **Compiled data**: Data emitted by Source compilation tools, including BSP faces, planes, nodes, visibility, lightmaps, and entities.
 
 **Reconstruction**: Data inferred from another representation when exact compiled data is unavailable.
@@ -98,7 +100,7 @@ These are technical states, not legal or publication classifications.
 
 ## Packages And Assets
 
-**Package**: An independently useful playsrc module with a defined API.
+**Package**: An independently useful playsrc module with a defined interface.
 
 **Map package**: Immutable compiled map data and references required to load one map.
 
@@ -132,9 +134,19 @@ These are technical states, not legal or publication classifications.
 
 **Module**: An implementation unit owned by one domain.
 
+**Mental model**: The smallest coherent set of concepts a maintainer must understand to work within one module.
+
+**Interface**: Everything callers must know to use a module correctly, including inputs, outputs, invariants, ordering, errors, limits, and performance characteristics.
+
 **Primitive**: A reusable capability with no product assumptions.
 
-**Product**: An application assembled from playsrc packages.
+**Application**: A deployed web or network program assembled from playsrc packages, a game, and any selected game-owned ruleset.
+
+**Product**: A user-facing experience delivered by one or more applications.
+
+**Tool**: A program run by developers or operators rather than continuously deployed for users.
+
+**Infrastructure**: Checked definitions for hosting resources and environments used by applications.
 
 **Fallback**: A secondary implementation used when the intended implementation fails. Targeted playsrc behavior does not use fallbacks.
 
@@ -149,8 +161,6 @@ These are technical states, not legal or publication classifications.
 **Vector**: An input and expected observable output pair.
 
 **Synthetic vector**: A project-created minimal vector isolating one behavior.
-
-**Corpus**: A bounded representative collection of real content.
 
 **Capture**: Recorded observable output from a controlled run.
 

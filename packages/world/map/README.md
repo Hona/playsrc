@@ -1,0 +1,25 @@
+# Map
+
+## Objective
+
+Assemble parsed Source data and semantic domain outputs into one canonical playsrc map representation.
+
+## Responsibilities
+
+- Coordinate map-wide references between geometry, materials, models, entities, collision, visibility, lighting, and environment data.
+- Validate that a map representation is internally complete and consistent.
+- Produce the immutable root description consumed by asset publication and runtimes.
+
+## Non-Responsibilities
+
+- Reimplementing parsers or the semantics of adjacent world packages.
+- Adding TF2, ruleset, application, or renderer behavior.
+- Storing content-addressed objects.
+
+## Relationships
+
+Composes format and world packages. Tools publish its completed outputs through `asset-store`.
+
+## Completion
+
+Complete when every declared map-domain output is integrated, validated, and consumed without duplicate authorities.
