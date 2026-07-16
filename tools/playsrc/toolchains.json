@@ -1,0 +1,38 @@
+{
+  "bun": {
+    "version": "1.4.0",
+    "revision": "91270aa8ab75eeb7abbd7d21a049f0f1a49321e2"
+  },
+  "rust": {
+    "toolchain": "1.97.1",
+    "releaseDate": "2026-07-16",
+    "rustupVersion": "1.29.0",
+    "components": ["clippy", "rustfmt"],
+    "hosts": {
+      "arm64-darwin": {
+        "target": "aarch64-apple-darwin",
+        "sha256": "aeb4105778ca1bd3c6b0e75768f581c656633cd51368fa61289b6a71696ac7e1"
+      },
+      "x64-darwin": {
+        "target": "x86_64-apple-darwin",
+        "sha256": "33cf85df9142bc6d29cbc62fa5ca1d4c29622cddb55213a4c1a43c457fb9b2d7"
+      },
+      "arm64-linux": {
+        "target": "aarch64-unknown-linux-gnu",
+        "sha256": "9732d6c5e2a098d3521fca8145d826ae0aaa067ef2385ead08e6feac88fa5792"
+      },
+      "x64-linux": {
+        "target": "x86_64-unknown-linux-gnu",
+        "sha256": "4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10"
+      },
+      "arm64-win32": {
+        "target": "aarch64-pc-windows-msvc",
+        "sha256": "3af309e6c3062aa11df0e932954f69d13b734d8a431e593812f3ecd9ff9e6ef6"
+      },
+      "x64-win32": {
+        "target": "x86_64-pc-windows-msvc",
+        "sha256": "86478e53f769379d7f0ebfa7c9aa97cb76ca92233f79aa2cc0dbee2efaac73c7"
+      }
+    }
+  }
+}

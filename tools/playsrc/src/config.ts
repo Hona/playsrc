@@ -1,5 +1,5 @@
 import { constants } from "node:fs"
-import { access, readFile, realpath, stat } from "node:fs/promises"
+import { access, mkdir, readFile, realpath, stat } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -34,7 +34,10 @@ const isNested = (parent: string, child: string): boolean => {
   return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative)
 }
 
-export async function loadLocalConfig(root = repositoryRoot): Promise<LocalConfig> {
+export async function loadLocalConfig(
+  root = repositoryRoot,
+  operation: "ordinary" | "setup" = "ordinary",
+): Promise<LocalConfig> {
   const configPath = path.join(root, "playsrc.local.json")
   let bytes: Buffer
 
@@ -81,9 +84,31 @@ export async function loadLocalConfig(root = repositoryRoot): Promise<LocalConfi
     }
   }
 
+  const declared = Object.fromEntries(
+    CONFIG_KEYS.map((key) => [key, path.resolve(parsed[key] as string)]),
+  ) as Record<(typeof CONFIG_KEYS)[number], string>
+  for (let left = 0; left < CONFIG_KEYS.length; left += 1) {
+    for (let right = left + 1; right < CONFIG_KEYS.length; right += 1) {
+      const leftKey = CONFIG_KEYS[left]!
+      const rightKey = CONFIG_KEYS[right]!
+      const leftPath = declared[leftKey]
+      const rightPath = declared[rightKey]
+      if (leftPath === rightPath || isNested(leftPath, rightPath) || isNested(rightPath, leftPath)) {
+        throw new ConfigurationError(
+          "ConfigurationMalformed",
+          `${leftKey} and ${rightKey} must be distinct, non-nested directories`,
+        )
+      }
+    }
+  }
+
+  if (operation === "setup") {
+    for (const key of ["sourceCacheDir", "assetDir"] as const) await mkdir(declared[key], { recursive: true })
+  }
+
   const resolved = {} as Record<(typeof CONFIG_KEYS)[number], string>
   for (const key of CONFIG_KEYS) {
-    const value = parsed[key] as string
+    const value = declared[key]
     try {
       const rootStat = await stat(value)
       if (!rootStat.isDirectory()) throw new Error("not a directory")

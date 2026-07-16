@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { ConfigurationError, loadLocalConfig, repositoryRoot } from "../src/config"
@@ -91,7 +91,11 @@ describe("local configuration", () => {
     await writeFile(file, "x")
     await writeFile(
       path.join(root, "playsrc.local.json"),
-      JSON.stringify({ tf2Dir: file, sourceCacheDir: path.join(root, "missing"), assetDir: root }),
+      JSON.stringify({
+        tf2Dir: file,
+        sourceCacheDir: path.join(root, "missing"),
+        assetDir: path.join(root, "assets"),
+      }),
     )
     await expectConfigurationError(root, "ConfiguredRootUnavailable")
   })
@@ -115,5 +119,21 @@ describe("local configuration", () => {
       JSON.stringify({ tf2Dir: outer, sourceCacheDir: inner, assetDir: other }),
     )
     await expectConfigurationError(root, "ConfigurationMalformed")
+  })
+
+  test("setup creates only the two configured writable roots", async () => {
+    const root = await fixture()
+    const tf2Dir = path.join(root, "tf2")
+    const sourceCacheDir = path.join(root, "new", "source-cache")
+    const assetDir = path.join(root, "new", "assets")
+    await writeFile(
+      path.join(root, "playsrc.local.json"),
+      JSON.stringify({ tf2Dir, sourceCacheDir, assetDir }),
+    )
+
+    const config = await loadLocalConfig(root, "setup")
+    expect(config.sourceCacheDir).toBe(await realpath(sourceCacheDir))
+    expect(config.assetDir).toBe(await realpath(assetDir))
+    await loadLocalConfig(root, "setup")
   })
 })

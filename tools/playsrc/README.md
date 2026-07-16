@@ -11,6 +11,8 @@ Provide one stable command interface for repeatable playsrc development, compila
 - Resolve logical targets, call package interfaces, own child processes, and report exact results.
 - Expose short commands such as setup, map compilation, development, verification, publication, and release.
 
+`bun run setup` verifies the checked Bun identity and installs the checked Rust toolchain under `sourceCacheDir`. It never changes a user-global Rust installation or shell path.
+
 ## Non-Responsibilities
 
 - Implementing parsers, compilers, gameplay, presentation, or asset-store semantics.
