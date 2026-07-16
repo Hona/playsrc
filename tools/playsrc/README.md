@@ -7,6 +7,7 @@ Provide one stable command interface for repeatable playsrc development, compila
 ## Responsibilities
 
 - Validate local configuration before work begins.
+- Resolve the repository-root `playsrc.local.json` independently of the caller's working directory and require exactly three accessible, absolute, distinct, non-nested roots.
 - Resolve logical targets, call package interfaces, own child processes, and report exact results.
 - Expose short commands such as setup, map compilation, development, verification, publication, and release.
 

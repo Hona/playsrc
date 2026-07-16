@@ -1,0 +1,11 @@
+{
+  "name": "playsrc",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.4.0",
+  "workspaces": ["tools/*"],
+  "scripts": {
+    "dev": "bun tools/playsrc/src/cli.ts dev",
+    "test": "bun test"
+  }
+}

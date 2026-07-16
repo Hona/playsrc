@@ -39,6 +39,16 @@ Every module README defines its objective, responsibilities, non-responsibilitie
 - [Contributing](CONTRIBUTING.md)
 - [Terminology](TERMINOLOGY.md)
 
+## Development
+
+The root Bun workspace validates `playsrc.local.json` before command dispatch. Commands resolve the repository independently of the caller's working directory:
+
+```bash
+bun run dev jump_beef
+```
+
+The Cargo workspace is present for Rust crates owned by format, world, runtime, and game modules. Rust setup remains tool-owned and must complete before a Rust crate is built.
+
 ## Scope
 
 - Reusable Source 1 format, world, runtime, and presentation packages.
