@@ -389,6 +389,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "playsrc-entity"
+version = "0.1.0"
+
+[[package]]
 name = "playsrc-keyvalues"
 version = "0.1.0"
 

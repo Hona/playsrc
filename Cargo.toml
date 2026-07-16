@@ -8,6 +8,7 @@ members = [
   "packages/formats/studio-model/rust",
   "packages/formats/phy/rust",
   "packages/content/rust",
+  "packages/world/entity/rust",
 ]
 resolver = "2"
 

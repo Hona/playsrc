@@ -2,16 +2,8 @@
 
 ## Sample
 
-```ts
-import { createEntityWorld } from "@playsrc/entity"
-
-const entities = createEntityWorld(map.entities)
-entities.input("main_door", "Open")
-```
-
 ```rust
-let mut entities = playsrc_entity::World::new(&map.entities)?;
-entities.input("main_door", "Open")?;
+let graph = playsrc_entity::parse(entity_lump_bytes, limits)?;
 ```
 
 ## Objective
@@ -23,6 +15,7 @@ Represent generic Source entity identity, relationships, I/O, and lifecycle beha
 - Preserve entity keyvalues, identifiers, parent relationships, references, and ordered outputs.
 - Provide generic lifecycle and event primitives shared across games.
 - Classify handled, inert, unsupported, malformed, missing, and unknown entity data explicitly.
+- Parse bounded BSP entity text into ordered duplicate-preserving definitions, first-field structural views, brush-model identities, and parsed or malformed output actions.
 
 ## Non-Responsibilities
 
