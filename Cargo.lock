@@ -393,6 +393,13 @@ name = "playsrc-keyvalues"
 version = "0.1.0"
 
 [[package]]
+name = "playsrc-vmt"
+version = "0.1.0"
+dependencies = [
+ "playsrc-keyvalues",
+]
+
+[[package]]
 name = "playsrc-vpk"
 version = "0.1.0"
 dependencies = [

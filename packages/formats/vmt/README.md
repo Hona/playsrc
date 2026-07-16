@@ -2,14 +2,9 @@
 
 ## Sample
 
-```ts
-import { parseVmt } from "@playsrc/vmt"
-
-const document = parseVmt(text)
-```
-
 ```rust
-let document = playsrc_vmt::parse(text)?;
+let document = playsrc_vmt::parse(bytes, logical_path, limits)?;
+let phase = playsrc_vmt::compose(bytes, logical_path, &responses, &conditions, limits)?;
 ```
 
 ## Objective
@@ -21,6 +16,8 @@ Parse Source 1 VMT material documents without conflating document syntax with ru
 - Represent shader names, parameters, proxy declarations, and document-level composition.
 - Resolve referenced VMT documents through an explicit content interface.
 - Preserve unknown parameters and structures for semantic classification.
+- Emit bounded patch dependency requests and consume caller-resolved response batches without invoking JavaScript or a provider callback inside composition.
+- Retain every effective node's source identity, span, and base, insert, or replace operation.
 
 ## Non-Responsibilities
 
