@@ -393,6 +393,10 @@ name = "playsrc-keyvalues"
 version = "0.1.0"
 
 [[package]]
+name = "playsrc-phy"
+version = "0.1.0"
+
+[[package]]
 name = "playsrc-studio-model"
 version = "0.1.0"
 

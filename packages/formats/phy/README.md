@@ -2,14 +2,15 @@
 
 ## Sample
 
-```ts
-import { parsePhy } from "@playsrc/phy"
-
-const physicsAsset = parsePhy(bytes)
-```
-
 ```rust
-let physics_asset = playsrc_phy::parse(&bytes)?;
+let file = playsrc_phy::parse_standalone(&bytes, profile, limits)?;
+let bsp_payload = playsrc_phy::parse_payload(
+    collision_bytes,
+    keydata_bytes,
+    solid_count,
+    profile,
+    limits,
+)?;
 ```
 
 ## Objective
@@ -21,6 +22,8 @@ Parse Source 1 PHY resources into runtime-neutral collision asset data.
 - Validate serialized physics headers, solids, constraints, and associated metadata.
 - Represent collision geometry and physical properties without runtime-engine assumptions.
 - Preserve unsupported records explicitly.
+- Decode modern and legacy compact polygon partitions into Source-space convex points and triangles while retaining every exact solid body and triangle record.
+- Preserve exact NUL-terminated keydata bytes and expose ordered nested block/scalar views without applying physics defaults.
 
 ## Non-Responsibilities
 
