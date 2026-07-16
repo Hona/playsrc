@@ -53,6 +53,8 @@ The denominator is Not accepted. The Asset Store interface and remote deployment
 
 ## Behavior Families
 
+The active migration checkpoint implements loopback `GET`/`HEAD`/`OPTIONS` object and channel routes, strict identities, verified object bytes, strong ETags, immutable/channel cache policy, conditional object reads, whole/open/suffix ranges, RFC 9530 SHA-256 fields, bounded no-store problems, CORS, and `/readyz` over the local Asset Store.
+
 | Target behavior | playsrc behavior | Evidence | Status |
 |---|---|---|---|
 | Dispatch exactly the four declared resource families and their `GET`/`HEAD` methods without a filesystem, prefix, extension, or alternate-resource fallback. | No asset-service router exists. | **Route-space exhaustive vectors:** vary family, method, segment count, slash, case, encoding, query, traversal, and unknown path; compare selected family, status, `Allow`, and zero unintended store calls. | Not started |

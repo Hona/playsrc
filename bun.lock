@@ -5,6 +5,12 @@
     "": {
       "name": "playsrc",
     },
+    "apps/services/assets": {
+      "name": "@playsrc/assets-service",
+      "dependencies": {
+        "@playsrc/asset-store": "workspace:*",
+      },
+    },
     "packages/asset-store": {
       "name": "@playsrc/asset-store",
     },
@@ -23,6 +29,8 @@
   },
   "packages": {
     "@playsrc/asset-store": ["@playsrc/asset-store@workspace:packages/asset-store"],
+
+    "@playsrc/assets-service": ["@playsrc/assets-service@workspace:apps/services/assets"],
 
     "@playsrc/content": ["@playsrc/content@workspace:packages/content"],
 
