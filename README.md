@@ -47,7 +47,7 @@ The root Bun workspace validates `playsrc.local.json` before command dispatch. C
 bun run dev jump_beef
 ```
 
-The Cargo workspace is present for Rust crates owned by format, world, runtime, and game modules. Rust setup remains tool-owned and must complete before a Rust crate is built.
+The Cargo workspace contains Rust crates inside their owning modules. Run `bun run setup` to install and verify the checked Rust toolchain under `sourceCacheDir` before building them.
 
 ## Scope
 
