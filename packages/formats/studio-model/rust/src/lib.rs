@@ -1,4 +1,4 @@
-use std::{fmt, ops::Range};
+use std::{collections::BTreeSet, fmt, ops::Range};
 
 const MDL_HEADER_BYTES: usize = 408;
 const BONE_BYTES: usize = 216;
@@ -152,6 +152,13 @@ pub struct Animation {
     pub section_offset: i32,
     pub section_frame_count: i32,
     pub zero_frame_count: u16,
+    pub frames: Vec<AnimationFrame>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AnimationFrame {
+    pub translations: Vec<Vector3>,
+    pub rotations: Vec<[Float32; 4]>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -363,6 +370,13 @@ impl std::error::Error for Error {}
 struct Mdl {
     document: Document,
     needs_animation: bool,
+    animation_sources: Vec<AnimationSource>,
+}
+
+struct AnimationSource {
+    descriptor_offset: usize,
+    data_offset: i32,
+    sections: Vec<(i32, i32)>,
 }
 
 struct ParsedVvd {
@@ -501,11 +515,13 @@ pub fn load(
         return Ok(Load::Needs(missing_requests));
     }
 
+    let animation_sources = root.animation_sources;
     let mut document = root.document;
     let mut source_identities = vec![identity.clone()];
     let mut physics_status = PhysicsStatus::Missing;
     let mut parsed_vvd = None;
     let mut parsed_vtx = None;
+    let mut ani_bytes = None;
     for request in requests {
         let response = responses
             .iter()
@@ -580,6 +596,7 @@ pub fn load(
                         Some(4..12),
                     ));
                 }
+                ani_bytes = Some(bytes.as_slice());
             }
             DependencyRole::IncludeModel => {
                 let include_profile = profile_for_version(
@@ -605,6 +622,15 @@ pub fn load(
     if let (Some(vvd), Some(vtx)) = (&parsed_vvd, &parsed_vtx) {
         document.geometry = assemble_geometry(&document.body_parts, vvd, vtx, &identity)?;
     }
+    decode_animation_frames(
+        mdl_bytes,
+        ani_bytes,
+        &document.animation_blocks,
+        &document.bones,
+        &mut document.animations,
+        &animation_sources,
+        &identity,
+    )?;
     Ok(Load::Complete(Box::new(document)))
 }
 
@@ -709,11 +735,28 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
         identity,
     )?;
     let mut animations = Vec::with_capacity(animation_count);
+    let mut animation_sources = Vec::with_capacity(animation_count);
     let mut needs_animation = false;
     for index in 0..animation_count {
         let offset = animation_offset + index * ANIMATION_BYTES;
         let animation_block = i32_at(bytes, offset + 52, identity)?;
         needs_animation |= animation_block > 0;
+        let section_offset = i32_at(bytes, offset + 80, identity)?;
+        let section_frame_count = i32_at(bytes, offset + 84, identity)?;
+        let frame_count = i32_at(bytes, offset + 16, identity)?;
+        let mut sections = Vec::new();
+        if section_frame_count > 0 && frame_count > 0 {
+            let section_count = (frame_count as usize / section_frame_count as usize) + 2;
+            let table_offset = relative_offset(offset, section_offset, identity)?;
+            table(bytes, table_offset, section_count, 8, limits, identity)?;
+            for section in 0..section_count {
+                sections.push((
+                    i32_at(bytes, table_offset + section * 8, identity)?,
+                    i32_at(bytes, table_offset + section * 8 + 4, identity)?,
+                ));
+            }
+        }
+        let data_offset = i32_at(bytes, offset + 56, identity)?;
         animations.push(Animation {
             index,
             name: relative_string(
@@ -725,19 +768,25 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
             )?,
             fps: float(bytes, offset + 8, identity)?,
             flags: i32_at(bytes, offset + 12, identity)?,
-            frame_count: i32_at(bytes, offset + 16, identity)?,
+            frame_count,
             movement_count: i32_at(bytes, offset + 20, identity)?,
             animation_block,
-            animation_offset: i32_at(bytes, offset + 56, identity)?,
+            animation_offset: data_offset,
             ik_rule_count: i32_at(bytes, offset + 60, identity)?,
             local_hierarchy_count: i32_at(bytes, offset + 72, identity)?,
-            section_offset: i32_at(bytes, offset + 80, identity)?,
-            section_frame_count: i32_at(bytes, offset + 84, identity)?,
+            section_offset,
+            section_frame_count,
             zero_frame_count: if profile.version() >= 47 {
                 u16_at(bytes, offset + 90, identity)?
             } else {
                 0
             },
+            frames: Vec::new(),
+        });
+        animation_sources.push(AnimationSource {
+            descriptor_offset: offset,
+            data_offset,
+            sections,
         });
     }
 
@@ -1071,6 +1120,7 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
     Ok(Mdl {
         document,
         needs_animation,
+        animation_sources,
     })
 }
 
@@ -1471,6 +1521,337 @@ fn assemble_geometry(
     Ok(output)
 }
 
+fn decode_animation_frames(
+    mdl: &[u8],
+    ani: Option<&[u8]>,
+    blocks: &[Range<usize>],
+    bones: &[Bone],
+    animations: &mut [Animation],
+    sources: &[AnimationSource],
+    identity: &str,
+) -> Result<(), Error> {
+    for (animation, source) in animations.iter_mut().zip(sources) {
+        if animation.frame_count <= 0 {
+            return Err(invalid_count(identity, source.descriptor_offset + 16));
+        }
+        let mut frames = Vec::with_capacity(animation.frame_count as usize);
+        for frame in 0..animation.frame_count as usize {
+            let (data, offset, local_frame) =
+                animation_data(mdl, ani, blocks, animation, source, frame, identity)?;
+            frames.push(decode_frame(
+                data,
+                offset,
+                local_frame,
+                bones,
+                animation.flags,
+                identity,
+            )?);
+        }
+        animation.frames = frames;
+    }
+    Ok(())
+}
+
+fn animation_data<'a>(
+    mdl: &'a [u8],
+    ani: Option<&'a [u8]>,
+    blocks: &[Range<usize>],
+    animation: &Animation,
+    source: &AnimationSource,
+    frame: usize,
+    identity: &str,
+) -> Result<(&'a [u8], usize, usize), Error> {
+    let section_frames = animation.section_frame_count.max(0) as usize;
+    let (block, relative, local_frame) = if section_frames == 0 {
+        (animation.animation_block, source.data_offset, frame)
+    } else {
+        let section = if animation.frame_count as usize > section_frames
+            && frame == animation.frame_count as usize - 1
+        {
+            frame / section_frames + 1
+        } else {
+            frame / section_frames
+        };
+        let &(block, relative) = source
+            .sections
+            .get(section)
+            .ok_or_else(|| invalid_reference(identity, source.descriptor_offset))?;
+        (block, relative, frame % section_frames)
+    };
+    let relative =
+        usize::try_from(relative).map_err(|_| invalid_range(identity, source.descriptor_offset))?;
+    if block == 0 {
+        let offset = source
+            .descriptor_offset
+            .checked_add(relative)
+            .ok_or_else(|| invalid_range(identity, source.descriptor_offset))?;
+        range(mdl, offset, 4, identity)?;
+        Ok((mdl, offset, local_frame))
+    } else {
+        let ani = ani.ok_or_else(|| {
+            failure(
+                Classification::Missing,
+                ErrorCode::MissingDependency,
+                identity,
+                None,
+            )
+        })?;
+        let block_index = usize::try_from(block)
+            .map_err(|_| invalid_reference(identity, source.descriptor_offset))?;
+        let block_range = blocks
+            .get(block_index)
+            .ok_or_else(|| invalid_reference(identity, source.descriptor_offset))?;
+        if block_range.end > ani.len() {
+            return Err(invalid_range(identity, block_range.start));
+        }
+        let offset = block_range
+            .start
+            .checked_add(relative)
+            .ok_or_else(|| invalid_range(identity, block_range.start))?;
+        range(ani, offset, 4, identity)?;
+        Ok((ani, offset, local_frame))
+    }
+}
+
+fn decode_frame(
+    data: &[u8],
+    offset: usize,
+    frame: usize,
+    bones: &[Bone],
+    flags: i32,
+    identity: &str,
+) -> Result<AnimationFrame, Error> {
+    let delta = flags & 0x0004 != 0;
+    let mut translations: Vec<_> = bones
+        .iter()
+        .map(|bone| {
+            if delta {
+                Vector3([Float32(0); 3])
+            } else {
+                bone.position
+            }
+        })
+        .collect();
+    let mut rotations: Vec<_> = bones
+        .iter()
+        .map(|bone| {
+            if delta {
+                [
+                    Float32(0),
+                    Float32(0),
+                    Float32(0),
+                    Float32(1.0_f32.to_bits()),
+                ]
+            } else {
+                bone.quaternion
+            }
+        })
+        .collect();
+    let mut cursor = offset;
+    let mut visited = BTreeSet::new();
+    for _ in 0..=bones.len() {
+        range(data, cursor, 4, identity)?;
+        let bone_index = data[cursor] as usize;
+        if bone_index == 255 {
+            return Ok(AnimationFrame {
+                translations,
+                rotations,
+            });
+        }
+        let bone = bones
+            .get(bone_index)
+            .ok_or_else(|| invalid_reference(identity, cursor))?;
+        if !visited.insert(bone_index) {
+            return Err(invalid_reference(identity, cursor));
+        }
+        let track_flags = data[cursor + 1];
+        let next = u16_at(data, cursor + 2, identity)? as usize;
+        let mut payload = cursor + 4;
+        let track_delta = track_flags & 0x10 != 0;
+        let rotation = if track_flags & 0x02 != 0 {
+            let (value, size) = compressed_quaternion(data, payload, false, identity)?;
+            payload += size;
+            value
+        } else if track_flags & 0x20 != 0 {
+            let (value, size) = compressed_quaternion(data, payload, true, identity)?;
+            payload += size;
+            value
+        } else if track_flags & 0x08 != 0 {
+            let mut euler = [0.0; 3];
+            for (axis, component) in euler.iter_mut().enumerate() {
+                *component = animation_value(
+                    data,
+                    payload,
+                    i16_at(data, payload + axis * 2, identity)?,
+                    frame,
+                    f32::from_bits(bone.rotation_scale.0[axis].0),
+                    identity,
+                )?;
+                if !track_delta {
+                    *component += f32::from_bits(bone.rotation.0[axis].0);
+                }
+            }
+            payload += 6;
+            euler_quaternion(euler).map(Float32)
+        } else if track_delta {
+            [
+                Float32(0),
+                Float32(0),
+                Float32(0),
+                Float32(1.0_f32.to_bits()),
+            ]
+        } else {
+            bone.quaternion
+        };
+        rotations[bone_index] = rotation;
+        translations[bone_index] = if track_flags & 0x01 != 0 {
+            let value = [
+                half_to_f32(u16_at(data, payload, identity)?),
+                half_to_f32(u16_at(data, payload + 2, identity)?),
+                half_to_f32(u16_at(data, payload + 4, identity)?),
+            ];
+            Vector3(value.map(|value| Float32(value.to_bits())))
+        } else if track_flags & 0x04 != 0 {
+            let mut value = [0.0; 3];
+            for (axis, component) in value.iter_mut().enumerate() {
+                *component = animation_value(
+                    data,
+                    payload,
+                    i16_at(data, payload + axis * 2, identity)?,
+                    frame,
+                    f32::from_bits(bone.position_scale.0[axis].0),
+                    identity,
+                )?;
+                if !track_delta {
+                    *component += f32::from_bits(bone.position.0[axis].0);
+                }
+            }
+            Vector3(value.map(|value| Float32(value.to_bits())))
+        } else if track_delta {
+            Vector3([Float32(0); 3])
+        } else {
+            bone.position
+        };
+        if next == 0 {
+            return Ok(AnimationFrame {
+                translations,
+                rotations,
+            });
+        }
+        cursor = cursor
+            .checked_add(next)
+            .ok_or_else(|| invalid_range(identity, cursor))?;
+    }
+    Err(invalid_reference(identity, cursor))
+}
+
+fn compressed_quaternion(
+    data: &[u8],
+    offset: usize,
+    wide: bool,
+    identity: &str,
+) -> Result<([Float32; 4], usize), Error> {
+    let (x, y, z, negative, size) = if wide {
+        let low = u32_at(data, offset, identity)?;
+        let high = u32_at(data, offset + 4, identity)?;
+        (
+            (low & 0x1f_ffff) as f32 / 1_048_576.5 - 1_048_576.0 / 1_048_576.5,
+            ((((high & 0x03ff) << 11) | (low >> 21)) & 0x1f_ffff) as f32 / 1_048_576.5
+                - 1_048_576.0 / 1_048_576.5,
+            ((high >> 10) & 0x1f_ffff) as f32 / 1_048_576.5 - 1_048_576.0 / 1_048_576.5,
+            high & 0x8000_0000 != 0,
+            8,
+        )
+    } else {
+        let x = u16_at(data, offset, identity)?;
+        let y = u16_at(data, offset + 2, identity)?;
+        let z = u16_at(data, offset + 4, identity)?;
+        (
+            (x as i32 - 32_768) as f32 / 32_768.0,
+            (y as i32 - 32_768) as f32 / 32_768.0,
+            ((z & 0x7fff) as i32 - 16_384) as f32 / 16_384.0,
+            z & 0x8000 != 0,
+            6,
+        )
+    };
+    let squared = x * x + y * y + z * z;
+    if squared > 1.001 {
+        return Err(invalid_reference(identity, offset));
+    }
+    let w = (1.0 - squared).max(0.0).sqrt() * if negative { -1.0 } else { 1.0 };
+    Ok(([x, y, z, w].map(|value| Float32(value.to_bits())), size))
+}
+
+fn animation_value(
+    data: &[u8],
+    table: usize,
+    relative: i16,
+    frame: usize,
+    scale: f32,
+    identity: &str,
+) -> Result<f32, Error> {
+    if relative == 0 {
+        return Ok(0.0);
+    }
+    let mut cursor = if relative > 0 {
+        table.checked_add(relative as usize)
+    } else {
+        table.checked_sub(relative.unsigned_abs() as usize)
+    }
+    .ok_or_else(|| invalid_range(identity, table))?;
+    let mut remaining = frame;
+    for _ in 0..=frame {
+        range(data, cursor, 2, identity)?;
+        let valid = data[cursor] as usize;
+        let total = data[cursor + 1] as usize;
+        if valid == 0 || total == 0 || valid > total {
+            return Err(invalid_reference(identity, cursor));
+        }
+        range(data, cursor + 2, valid * 2, identity)?;
+        if remaining < total {
+            return Ok(
+                i16_at(data, cursor + 2 + remaining.min(valid - 1) * 2, identity)? as f32 * scale,
+            );
+        }
+        remaining -= total;
+        cursor += 2 + valid * 2;
+    }
+    Err(invalid_reference(identity, cursor))
+}
+
+fn euler_quaternion([roll, pitch, yaw]: [f32; 3]) -> [u32; 4] {
+    let (sr, cr) = (roll * 0.5).sin_cos();
+    let (sp, cp) = (pitch * 0.5).sin_cos();
+    let (sy, cy) = (yaw * 0.5).sin_cos();
+    [
+        (sr * cp * cy - cr * sp * sy).to_bits(),
+        (cr * sp * cy + sr * cp * sy).to_bits(),
+        (cr * cp * sy - sr * sp * cy).to_bits(),
+        (cr * cp * cy + sr * sp * sy).to_bits(),
+    ]
+}
+
+fn half_to_f32(bits: u16) -> f32 {
+    let sign = ((bits & 0x8000) as u32) << 16;
+    let exponent = (bits >> 10) & 0x1f;
+    let fraction = bits & 0x03ff;
+    let encoded = match exponent {
+        0 if fraction == 0 => sign,
+        0 => {
+            let mut fraction = fraction as u32;
+            let mut exponent = 113_u32;
+            while fraction & 0x400 == 0 {
+                fraction <<= 1;
+                exponent -= 1;
+            }
+            sign | (exponent << 23) | ((fraction & 0x3ff) << 13)
+        }
+        31 => sign | 0x7f80_0000 | ((fraction as u32) << 13),
+        value => sign | (((value as u32) + 112) << 23) | ((fraction as u32) << 13),
+    };
+    f32::from_bits(encoded)
+}
+
 fn validate_limits(limits: Limits) -> Result<(), Error> {
     if limits.max_file_bytes == 0
         || limits.max_aggregate_input_bytes == 0
@@ -1679,6 +2060,15 @@ fn float12(bytes: &[u8], offset: usize, identity: &str) -> Result<[Float32; 12],
 fn u16_at(bytes: &[u8], offset: usize, identity: &str) -> Result<u16, Error> {
     range(bytes, offset, 2, identity)?;
     Ok(u16::from_le_bytes(
+        bytes[offset..offset + 2]
+            .try_into()
+            .expect("validated field"),
+    ))
+}
+
+fn i16_at(bytes: &[u8], offset: usize, identity: &str) -> Result<i16, Error> {
+    range(bytes, offset, 2, identity)?;
+    Ok(i16::from_le_bytes(
         bytes[offset..offset + 2]
             .try_into()
             .expect("validated field"),

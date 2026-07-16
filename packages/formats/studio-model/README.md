@@ -25,6 +25,7 @@ Parse the Source 1 StudioModel file family into one runtime-neutral model repres
 - Emit one bounded batch of exact VVD, selected VTX, ANI, include-model, and PHY requests instead of invoking a provider callback from parser loops.
 - Retain MDL 44–48 structural metadata and validate VVD 4/VTX 7 checksums, LODs, root tables, and bodypart cardinality before consumers use companion data.
 - Assemble runtime-neutral geometry primitives from VVD fixups and VTX bodypart/model/LOD/mesh/strip-group/strip records while retaining source vertices, encoded indices, strip metadata, material slots, switch points, and derived nondegenerate triangles; GLB remains outside the runtime path.
+- Decode every root animation's integer frames from inline or ANI block/section data into bone-local translations and quaternions while retaining descriptor and source index metadata; sequence selection and presentation blending remain external.
 
 ## Non-Responsibilities
 
