@@ -52,4 +52,10 @@ Applications assemble modules. They do not reimplement Source, game, or ruleset 
 
 Source, Team Fortress 2, Counter-Strike, and the Source SDK were created by Valve Corporation. playsrc is an independent fan project and is not affiliated with, endorsed by, sponsored by, or approved by Valve Corporation.
 
+playsrc is developed and distributed free of charge as a non-commercial passion project.
+
 Valve, Source, Team Fortress, Counter-Strike, Steam, and related names and trademarks belong to their respective owners.
+
+## License
+
+Original playsrc code and documentation are available under the [MIT License](LICENSE). Code copied or adapted from Valve's Source 1 SDK remains under the Source 1 SDK License and its required notices. [`NOTICE.md`](NOTICE.md) defines the exact license boundary.
