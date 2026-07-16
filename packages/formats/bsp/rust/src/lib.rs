@@ -1,5 +1,11 @@
 use std::{fmt, io::Cursor, ops::Range, sync::Arc};
 
+mod pak;
+mod records;
+
+pub use pak::{Pak, PakEntry, PakEntryClassification};
+pub use records::*;
+
 pub const HEADER_BYTES: usize = 1_036;
 pub const LUMP_COUNT: usize = 64;
 
@@ -23,6 +29,10 @@ pub struct Limits {
     pub max_total_decoded_bytes: usize,
     pub max_decoded_bytes_per_lump: usize,
     pub max_compression_ratio: usize,
+    pub max_records_per_lump: usize,
+    pub max_pak_entries: usize,
+    pub max_decoded_pak_bytes: usize,
+    pub max_decoded_bytes_per_pak_entry: usize,
 }
 
 impl Default for Limits {
@@ -33,6 +43,10 @@ impl Default for Limits {
             max_total_decoded_bytes: 1024 * 1024 * 1024,
             max_decoded_bytes_per_lump: 512 * 1024 * 1024,
             max_compression_ratio: 1_024,
+            max_records_per_lump: 16 * 1024 * 1024,
+            max_pak_entries: 65_535,
+            max_decoded_pak_bytes: 512 * 1024 * 1024,
+            max_decoded_bytes_per_pak_entry: 256 * 1024 * 1024,
         }
     }
 }
@@ -53,7 +67,18 @@ pub struct Lump {
     pub alignment_residue: usize,
     pub overlaps: Vec<usize>,
     pub compression: Option<Compression>,
+    pub coverage: LumpCoverage,
+    pub records: LumpData,
+    pub pak: Option<Pak>,
     decoded: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LumpCoverage {
+    Handled,
+    IntentionallyInert,
+    Unsupported,
+    Unknown,
 }
 
 impl Lump {
@@ -101,6 +126,10 @@ pub enum ErrorCode {
     DecodedBudget,
     CompressionRatio,
     DecompressionFailed,
+    UnsupportedLumpVersion,
+    InvalidRecord,
+    RecordBudget,
+    InvalidPak,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -226,6 +255,9 @@ pub fn parse(source: &[u8], profile: Profile, limits: Limits) -> Result<Bsp, Par
             alignment_residue: start % 4,
             overlaps: Vec::new(),
             compression: None,
+            coverage: LumpCoverage::IntentionallyInert,
+            records: LumpData::Opaque,
+            pak: None,
             decoded: None,
         });
     }
@@ -273,6 +305,37 @@ pub fn parse(source: &[u8], profile: Profile, limits: Limits) -> Result<Bsp, Par
         }
         lump.compression = Some(compression);
         lump.decoded = Some(decoded);
+    }
+
+    for lump in &mut lumps {
+        let bytes = lump
+            .decoded
+            .as_deref()
+            .unwrap_or(&source[lump.encoded_range.clone()]);
+        lump.records =
+            records::parse_lump(lump.index, lump.version, bytes, limits.max_records_per_lump)?;
+        lump.coverage = if bytes.is_empty() {
+            LumpCoverage::IntentionallyInert
+        } else if !records::is_implemented(lump.index) {
+            LumpCoverage::Unknown
+        } else if !records::version_supported(lump.index, lump.version) {
+            LumpCoverage::Unsupported
+        } else {
+            LumpCoverage::Handled
+        };
+        if lump.index == records::PAKFILE
+            && !bytes.is_empty()
+            && lump.coverage == LumpCoverage::Handled
+        {
+            lump.pak = Some(pak::parse(
+                bytes,
+                lump.index,
+                limits.max_pak_entries,
+                limits.max_decoded_bytes_per_pak_entry,
+                limits.max_decoded_pak_bytes,
+                limits.max_compression_ratio,
+            )?);
+        }
     }
 
     Ok(Bsp {
@@ -383,7 +446,7 @@ fn u32_at(bytes: &[u8], offset: usize) -> u32 {
     )
 }
 
-fn failure(
+pub(crate) fn failure(
     code: ErrorCode,
     lump: Option<usize>,
     range: Range<usize>,
@@ -446,13 +509,13 @@ mod tests {
     fn retains_partial_and_exact_overlaps() {
         let mut bytes = empty_bsp();
         bytes.extend_from_slice(b"abcdefgh");
-        set_lump(&mut bytes, 0, HEADER_BYTES as i32, 4, 0, 0);
-        set_lump(&mut bytes, 1, (HEADER_BYTES + 2) as i32, 4, 0, 0);
-        set_lump(&mut bytes, 2, HEADER_BYTES as i32, 4, 0, 0);
+        set_lump(&mut bytes, 61, HEADER_BYTES as i32, 4, 0, 0);
+        set_lump(&mut bytes, 62, (HEADER_BYTES + 2) as i32, 4, 0, 0);
+        set_lump(&mut bytes, 63, HEADER_BYTES as i32, 4, 0, 0);
         let bsp = parse(&bytes, Profile::Source2013V20, Limits::default()).unwrap();
-        assert_eq!(bsp.lumps[0].overlaps, vec![1, 2]);
-        assert_eq!(bsp.lumps[1].overlaps, vec![0, 2]);
-        assert_eq!(bsp.lumps[2].overlaps, vec![0, 1]);
+        assert_eq!(bsp.lumps[61].overlaps, vec![62, 63]);
+        assert_eq!(bsp.lumps[62].overlaps, vec![61, 63]);
+        assert_eq!(bsp.lumps[63].overlaps, vec![61, 62]);
     }
 
     #[test]
