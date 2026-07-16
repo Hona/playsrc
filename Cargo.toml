@@ -4,6 +4,7 @@ members = [
   "packages/formats/keyvalues/rust",
   "packages/formats/vpk/rust",
   "packages/formats/vmt/rust",
+  "packages/formats/vtf/rust",
   "packages/content/rust",
 ]
 resolver = "2"
