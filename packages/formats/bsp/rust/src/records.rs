@@ -21,6 +21,9 @@ pub const BRUSHES: usize = 18;
 pub const BRUSHSIDES: usize = 19;
 pub const VERTNORMALS: usize = 30;
 pub const VERTNORMALINDICES: usize = 31;
+pub const PRIMITIVES: usize = 37;
+pub const PRIMVERTS: usize = 38;
+pub const PRIMINDICES: usize = 39;
 pub const PAKFILE: usize = 40;
 pub const CUBEMAPS: usize = 42;
 pub const TEXDATA_STRING_DATA: usize = 43;
@@ -176,6 +179,16 @@ pub struct Cubemap {
     pub padding: [u8; 3],
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Primitive {
+    pub kind: u8,
+    pub padding: u8,
+    pub first_index: u16,
+    pub index_count: u16,
+    pub first_vertex: u16,
+    pub vertex_count: u16,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LumpData {
     Opaque,
@@ -198,6 +211,9 @@ pub enum LumpData {
     BrushSides(Vec<BrushSide>),
     VertexNormals(Vec<Vector3>),
     VertexNormalIndices(Vec<u16>),
+    Primitives(Vec<Primitive>),
+    PrimitiveVertices(Vec<Vector3>),
+    PrimitiveIndices(Vec<u16>),
     Cubemaps(Vec<Cubemap>),
     TextureStringData(Vec<u8>),
     TextureStringOffsets(Vec<i32>),
@@ -360,6 +376,26 @@ pub(crate) fn parse_lump(
         VERTNORMALINDICES => {
             scalar_u16(index, version, bytes, max_records).map(LumpData::VertexNormalIndices)
         }
+        PRIMITIVES => {
+            require_version(index, version, 0, bytes.len())?;
+            fixed(index, bytes, 10, max_records, |record| Primitive {
+                kind: record[0],
+                padding: record[1],
+                first_index: u16_at(record, 2),
+                index_count: u16_at(record, 4),
+                first_vertex: u16_at(record, 6),
+                vertex_count: u16_at(record, 8),
+            })
+            .map(LumpData::Primitives)
+        }
+        PRIMVERTS => {
+            require_version(index, version, 0, bytes.len())?;
+            fixed(index, bytes, 12, max_records, |record| vector3(record, 0))
+                .map(LumpData::PrimitiveVertices)
+        }
+        PRIMINDICES => {
+            scalar_u16(index, version, bytes, max_records).map(LumpData::PrimitiveIndices)
+        }
         CUBEMAPS => {
             require_version(index, version, 0, bytes.len())?;
             fixed(index, bytes, 16, max_records, |record| Cubemap {
@@ -405,6 +441,9 @@ pub(crate) fn is_implemented(index: usize) -> bool {
             | BRUSHSIDES
             | VERTNORMALS
             | VERTNORMALINDICES
+            | PRIMITIVES
+            | PRIMVERTS
+            | PRIMINDICES
             | PAKFILE
             | CUBEMAPS
             | TEXDATA_STRING_DATA
@@ -420,7 +459,8 @@ pub(crate) fn version_supported(index: usize, version: i32) -> bool {
         LEAFS => matches!(version, 0 | 1),
         ENTITIES | PAKFILE | PLANES | TEXDATA | VERTEXES | VISIBILITY | NODES | TEXINFO | EDGES
         | SURFEDGES | MODELS | LEAFFACES | LEAFBRUSHES | BRUSHES | BRUSHSIDES | VERTNORMALS
-        | VERTNORMALINDICES | CUBEMAPS | TEXDATA_STRING_DATA | TEXDATA_STRING_TABLE => version == 0,
+        | VERTNORMALINDICES | PRIMITIVES | PRIMVERTS | PRIMINDICES | CUBEMAPS
+        | TEXDATA_STRING_DATA | TEXDATA_STRING_TABLE => version == 0,
         _ => true,
     }
 }

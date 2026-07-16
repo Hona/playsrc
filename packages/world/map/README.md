@@ -2,14 +2,8 @@
 
 ## Sample
 
-```ts
-import { compileMap } from "@playsrc/map"
-
-const map = await compileMap(content, "maps/pl_upward.bsp")
-```
-
 ```rust
-let map = playsrc_map::compile(&content, "maps/pl_upward.bsp")?;
+let map = playsrc_map::compile(&bsp, lighting_profile)?;
 ```
 
 ## Objective
@@ -22,6 +16,7 @@ Assemble parsed Source data and semantic domain outputs into one canonical plays
 - Validate that a map representation is internally complete and consistent.
 - Produce one canonical runtime descriptor directly from verified BSP and dependency bytes.
 - Produce an optional reproducible publication descriptor for raw and derived cache objects.
+- Preserve Source XYZ face/model/material identities and emit direct renderer position, normal, UV, lightmap, primitive, and lighting buffers without serializing through GLB.
 
 ## Non-Responsibilities
 

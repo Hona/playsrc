@@ -404,6 +404,13 @@ name = "playsrc-keyvalues"
 version = "0.1.0"
 
 [[package]]
+name = "playsrc-map"
+version = "0.1.0"
+dependencies = [
+ "playsrc-bsp",
+]
+
+[[package]]
 name = "playsrc-material"
 version = "0.1.0"
 dependencies = [
