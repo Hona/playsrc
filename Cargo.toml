@@ -2,6 +2,7 @@
 members = [
   "packages/formats/bsp/rust",
   "packages/formats/keyvalues/rust",
+  "packages/formats/vpk/rust",
 ]
 resolver = "2"
 
