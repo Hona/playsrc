@@ -58,7 +58,7 @@ The project roadmap contains 12 named targets. The TF2-first completion denomina
 
 | Target behavior | playsrc behavior | Evidence | Status |
 |---|---|---|---|
-| Reusable package set has one accepted finite denominator for every declared format, world, runtime, presentation, content, and asset-store owner. | The format-universe and Content roadmaps are Draft and Blocked; the other 22 leaf package roadmaps are absent. | Aggregation audit of all registered package roadmap review records, Ready rows, inventories, and exit criteria. | Blocked |
+| Reusable package set has one accepted finite denominator for every declared format, world, runtime, presentation, content, and asset-store owner. | The format-universe roadmap and 10 foundation leaf roadmaps are Draft and contain Blocked requirements; the other 13 leaf package roadmaps are absent. | Aggregation audit of all registered package roadmap review records, Ready rows, inventories, and exit criteria. | Blocked |
 | TF2 game behavior composes completed generic packages through one accepted TF2 denominator. | The TF2 behavior denominator has not been written or accepted. | Aggregation audit of the accepted TF2 roadmap, package dependencies, integration evidence, and TF2 exit criteria. | Not started |
 | TF2 jump owns a finite course and timed-run ruleset over completed TF2 behavior. | The TF2 ruleset universe and jump denominator have not been written or accepted. | Aggregation audit of ruleset-inventory authority, TF2 jump Ready rows, gameplay vectors, and product integration. | Not started |
 | Recorded TF2 demos produce authoritative replay state and a declared browser replay experience without gameplay resimulation. | Replay leaf roadmaps are absent and no web application owns the replay experience. | Fixed-demo timeline, seek, snapshot, event, and presentation comparisons plus application integration evidence. | Blocked |
@@ -144,7 +144,7 @@ The project is Complete only when the TF2-first criteria pass, all 3 Future targ
 
 ## Blockers
 
-- **Package denominators:** the format-universe and Content roadmaps are Draft and Blocked; the other 22 package leaf roadmaps are absent. Checked `packages/**/README.md`, both new roadmaps and inventories, `ARCHITECTURE.md`, and this root roadmap.
+- **Package denominators:** the format-universe roadmap and 10 foundation leaf roadmaps are Draft and contain Blocked requirements; the other 13 package leaf roadmaps are absent. Checked every current foundation roadmap and inventory, `packages/**/README.md`, `ARCHITECTURE.md`, and this root roadmap.
 - **TF2 denominators:** TF2 behavior, TF2 ruleset-universe, and TF2 jump roadmaps do not exist. Checked `games/tf2/**/README.md` and the current root roadmap.
 - **Replay application owner:** `packages/runtime/replay` owns replay authority and names replay applications as consumers, but `apps/web/tf2` and `apps/web/tempus` do not own a recorded-replay experience and no dedicated replay application is declared. Checked those three owner READMEs, `apps/web/README.md`, and `ARCHITECTURE.md`.
 - **Active product denominators:** the TF2, Tempus, API, asset-service, tool-operation, and infrastructure environment universes are not finite. Checked their owner READMEs and the current root roadmap.

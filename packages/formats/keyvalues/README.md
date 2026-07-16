@@ -33,4 +33,4 @@ VMT, material, particle, audio, and game modules may build domain semantics over
 
 ## Completion
 
-Complete when the declared KeyValues behavior family is bounded, represented without silent loss, and supported by fair format evidence.
+Complete when the declared KeyValues behavior family is bounded, represented without silent loss, and verified by fixed inputs, expected observable outputs, and declared comparison methods.

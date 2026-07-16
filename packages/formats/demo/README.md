@@ -34,4 +34,4 @@ Supplies parsed records to `replay`; game and networking modules interpret game-
 
 ## Completion
 
-Complete when the declared demo container and record families are bounded and supported by fair vectors.
+Complete when the declared demo container and record families are bounded and verified by fixed inputs, expected observable outputs, and declared comparison methods.
