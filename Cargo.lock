@@ -404,6 +404,14 @@ name = "playsrc-keyvalues"
 version = "0.1.0"
 
 [[package]]
+name = "playsrc-material"
+version = "0.1.0"
+dependencies = [
+ "playsrc-keyvalues",
+ "playsrc-vmt",
+]
+
+[[package]]
 name = "playsrc-phy"
 version = "0.1.0"
 

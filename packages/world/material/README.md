@@ -2,14 +2,8 @@
 
 ## Sample
 
-```ts
-import { loadMaterial } from "@playsrc/material"
-
-const material = await loadMaterial(content, "materials/concrete/concretefloor001a.vmt")
-```
-
 ```rust
-let material = playsrc_material::load(&content, "materials/concrete/concretefloor001a.vmt")?;
+let material = playsrc_material::resolve(&effective_vmt)?;
 ```
 
 ## Objective
@@ -21,6 +15,7 @@ Resolve Source material documents and textures into runtime-neutral material beh
 - Classify shaders, parameters, flags, proxies, animation, and material state.
 - Resolve texture and material references through explicit inputs.
 - Produce semantic descriptions usable by renderers without transferring material authority to them.
+- Emit exact typed VTF dependency identities and built-in environment/render-target dispositions without invoking Content or decoding textures.
 
 ## Non-Responsibilities
 
