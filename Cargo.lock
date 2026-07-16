@@ -447,6 +447,14 @@ name = "playsrc-studio-model"
 version = "0.1.0"
 
 [[package]]
+name = "playsrc-tf2"
+version = "0.1.0"
+dependencies = [
+ "playsrc-collision",
+ "playsrc-movement",
+]
+
+[[package]]
 name = "playsrc-visibility"
 version = "0.1.0"
 dependencies = [

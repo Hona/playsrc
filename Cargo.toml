@@ -15,6 +15,7 @@ members = [
   "packages/world/map/rust",
   "packages/world/map/wasm",
   "packages/runtime/movement/rust",
+  "games/tf2/rust",
 ]
 resolver = "2"
 
