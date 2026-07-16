@@ -3,17 +3,11 @@
 ## Sample
 
 ```ts
-import { openAssetStore } from "@playsrc/asset-store"
+import { descriptor, putObject, readObject } from "@playsrc/asset-store"
 
-const store = await openAssetStore(assetDir)
-const hash = await store.put(bytes)
-const stored = await store.get(hash)
-```
-
-```rust
-let store = playsrc_asset_store::open(asset_dir)?;
-let hash = store.put(&bytes)?;
-let stored = store.get(hash)?;
+const identity = descriptor("source-object", "application/octet-stream", bytes)
+await putObject(assetDir, identity, bytes)
+const stored = await readObject(assetDir, identity)
 ```
 
 ## Objective
@@ -26,6 +20,7 @@ Store and publish exact immutable Source objects and reproducible playsrc-derive
 - Preserve representation kind and provenance for raw BSP, VPK directory, VPK segment, and additional Source objects.
 - Represent immutable source, map-runtime, game, and application descriptors plus catalogs and mutable channels.
 - Validate reachability and synchronize missing objects to remote storage.
+- Atomically install and reverify local immutable objects, refuse corrupt existing bytes without repair, and atomically expose exact channel records.
 
 ## Non-Responsibilities
 

@@ -61,6 +61,8 @@ The denominator review state is Draft. No acceptance record exists.
 
 ## Behavior Families
 
+The active migration checkpoint implements local SHA-256 descriptors and canonical object paths, atomic create-if-absent immutable writes, verified warm reuse, exact reads, corruption refusal without repair, and atomic exact channel records required by direct-source local development. Root graph envelopes and remote publication remain subsequent checkpoints.
+
 | Target behavior | playsrc behavior | Evidence | Status |
 |---|---|---|---|
 | Derive one object identity as the lowercase 64-hex SHA-256 digest of the exact byte sequence, including empty bytes. | No implementation exists. | SHA-256 vectors covering empty, one-byte, binary, large streamed, and chunk-boundary-equivalent inputs compared with two independent implementations. | Not started |
