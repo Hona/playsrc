@@ -17,7 +17,7 @@ The denominator is Not accepted. The Asset Store interface and remote deployment
 | Resource identity | Methods | Successful selected representation |
 |---|---|---|
 | `/objects/sha256/{hash}` | `GET`, `HEAD` | Exact bytes for the lowercase 64-hex SHA-256 object descriptor. |
-| `/roots/sha256/{hash}` | `GET`, `HEAD` | Exact object bytes only when the descriptor kind is `map-root`, `game-root`, or `application-root`. |
+| `/roots/sha256/{hash}` | `GET`, `HEAD` | Exact object bytes only when the descriptor kind is `source-root`, `map-root`, `game-root`, or `application-root`. |
 | `/catalogs/sha256/{hash}` | `GET`, `HEAD` | Exact object bytes only when the descriptor kind is `catalog`. |
 | `/channels/{channel}` | `GET`, `HEAD` | Exact current canonical channel-record bytes and their SHA-256 revision. |
 
@@ -48,7 +48,7 @@ The denominator is Not accepted. The Asset Store interface and remote deployment
 
 - `packages/asset-store` owns object identity, descriptors, exact bytes, kind validation, roots, catalogs, channels, integrity, retention, storage, publication, and remote synchronization.
 - Applications own catalog entries and selected roots. The API service owns accepted product-data queries; it does not duplicate raw immutable catalog delivery.
-- Content and compiler owners produce artifacts. The asset service cannot compile, resolve Source logical paths, or infer a missing artifact.
+- Content and compiler owners produce source and derived descriptors. The asset service cannot compile, resolve Source logical paths, infer a missing dependency, or extract a VPK entry.
 - Browsers and CDNs may cache responses but never establish origin existence or integrity. Infrastructure owns CDN behavior, origin routing, TLS, storage bindings, and transformation prohibition.
 
 ## Behavior Families
@@ -57,8 +57,8 @@ The denominator is Not accepted. The Asset Store interface and remote deployment
 |---|---|---|---|
 | Dispatch exactly the four declared resource families and their `GET`/`HEAD` methods without a filesystem, prefix, extension, or alternate-resource fallback. | No asset-service router exists. | **Route-space exhaustive vectors:** vary family, method, segment count, slash, case, encoding, query, traversal, and unknown path; compare selected family, status, `Allow`, and zero unintended store calls. | Not started |
 | Validate hash and channel identities before any Asset Store call and pass one canonical typed identity to that interface. | No path validator or accepted channel bound exists. | **Identity and call-spy matrix:** test every grammar boundary, noncanonical hash, encoded separator, Unicode, control byte, and maximum-plus-one name; compare typed call or exact 400 with zero storage access. | Not started |
-| `GET /objects/sha256/{hash}` streams the complete verified object bytes and descriptor metadata exactly once. | The Asset Store read interface is not accepted and no service implementation exists. | **Whole-object integration:** empty, one-byte, binary, large streamed, missing, and corrupt objects compare response bytes, descriptor fields, store-call trace, and independent SHA-256. | Blocked |
-| `GET /roots/sha256/{hash}` returns exact bytes only for map, game, or application roots and rejects every other object kind as not found. | No accepted typed root-read interface exists. | **Root-kind table:** exercise every accepted object kind, wrong kind, missing descriptor, malformed manifest, and corrupt bytes; compare status, metadata, content, and store validation trace. | Blocked |
+| `GET /objects/sha256/{hash}` streams complete verified bytes or one exact HTTP range for immutable source and derived objects, including unchanged BSP and VPK segment objects. | The Asset Store read interface is not accepted and no service implementation exists. | **Whole/ranged object integration:** empty, one-byte, BSP, VPK directory/segment, derived, large streamed, missing, and corrupt objects compare requested ranges, response bytes, descriptor fields, store-call trace, and independent SHA-256. | Blocked |
+| `GET /roots/sha256/{hash}` returns exact bytes only for source, map, game, or application roots and rejects every other object kind as not found. | No accepted typed root-read interface exists. | **Root-kind table:** exercise every accepted object kind, wrong kind, missing descriptor, malformed manifest, and corrupt bytes; compare status, metadata, content, and store validation trace. | Blocked |
 | `GET /catalogs/sha256/{hash}` returns exact bytes only for catalog objects without interpreting application-owned entries. | No accepted typed catalog-read interface exists. | **Catalog opacity vectors:** vary canonical entries and references, wrong kind, missing, and corrupt inputs; compare exact bytes and prove zero entry parsing or transformation in the service. | Blocked |
 | `GET /channels/{channel}` reads one atomic channel snapshot and returns its exact canonical bytes and strong revision without following the target. | No accepted channel-read interface or service implementation exists. | **Channel snapshot schedules:** race repeated reads with atomic changes and compare every response to one complete prior or next record, exact ETag, zero target reads, and no mixed bytes. | Blocked |
 | Every successful `HEAD` matches the corresponding `GET` status and representation fields while producing no message content or storage-byte stream beyond metadata verification required by the store. | No HEAD implementation exists. | **GET/HEAD differential:** run all four families across full, conditional, missing, wrong-kind, and corrupt cases; compare status/headers and require an empty HEAD body and bounded store calls. | Blocked |

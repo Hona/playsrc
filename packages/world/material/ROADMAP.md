@@ -53,7 +53,7 @@ The current denominator is Not accepted. Its target is runtime-neutral Source 1 
 - `packages/formats/vtf` owns VTF metadata, frames, faces, slices, formats, resources, and decoded planes. Material owns reference role, color/normal interpretation, and frame-selection semantics.
 - `packages/content` owns logical-path validation, provider order, exact byte retrieval, active-map PAK precedence, caching, and provenance acquisition. Material owns only reference-token classification and dependency requests.
 - `packages/presentation/rendering` owns GPU shaders, resource lifetime, texture upload and sampling, draw sorting, pass scheduling, reflection and refraction targets, draw policy, and pixels. Material owns the runtime-neutral state those operations consume.
-- `packages/world/map` owns map-wide sky-face assembly, water-surface and volume association, decal geometry association, lightmap association, and immutable map roots.
+- `packages/world/map` owns map-wide sky-face assembly, water-surface and volume association, decal geometry association, lightmap association, and canonical runtime descriptors.
 - `games/tf2`, `games/css`, and `games/csgo` own game-state derivation, game-specific effect selection, and typed values supplied to game-dependent proxy operations. Material owns proxy ordering and application of supplied values to material variables.
 - `packages/presentation/particle` owns particle sequence use and particle frame selection. `packages/world/material` owns only material-level texture animation declared by a material proxy.
 - Applications own product configuration and presentation-time sources. Tools own orchestration and inventory generation.

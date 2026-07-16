@@ -20,7 +20,7 @@ Index and read Source 1 VPK archives by exact logical path.
 
 - Parse archive directories and entry metadata with explicit bounds.
 - Retain version 1/2 section ranges, tree order, stored components, canonical lookup identities, preload ranges, data descriptors, archive-MD5 records, self-MD5 values, and signature material.
-- Read full entries or entry-relative ranges across preload, directory-contained data, and the one exact numeric segment requested through a positioned reader.
+- Read full entries or entry-relative ranges across preload, directory-contained data, and the one exact local or HTTP-ranged numeric segment requested through an immutable positioned reader.
 - Verify full-entry CRC-32, individual archive-range MD5, all three directory-file MD5 values, and RSA PKCS#1 v1.5 SHA-256 signatures, including an optional expected-key check.
 - Report missing, malformed, unsupported, changed, short, corrupt, and over-limit operations without extraction or fallback.
 
@@ -32,7 +32,7 @@ Index and read Source 1 VPK archives by exact logical path.
 
 ## Relationships
 
-Provides a VPK-backed content provider to `content` while remaining independently usable as an archive package.
+Provides a local or remote-range VPK-backed content provider to `content` while remaining independently usable as an archive package. Official VPK files remain unchanged and are never required as extracted trees.
 
 ## Completion
 

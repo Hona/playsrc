@@ -24,16 +24,17 @@ Resolve exact Source logical paths across explicitly configured content provider
 - Apply declared search-path and archive precedence.
 - Return exact source bytes with provenance, or report every exact location checked.
 - Verify declared HTTPS download sources and retain encoded and decoded bytes as SHA-256-addressed raw-source cache objects.
+- Read immutable remote BSP and VPK objects through exact HTTP ranges without extracting archive trees.
 
 ## Non-Responsibilities
 
 - Discovering installations, scanning filesystems, or broadening failed lookups.
 - Parsing, compiling, or publishing resource bytes.
-- Storing compiled playsrc artifacts.
+- Deciding derived-cache identity or storing canonical/renderer output.
 
 ## Relationships
 
-Defines the content-provider interface used by directory, VPK, and BSP PAK adapters; supplies raw bytes to format and semantic packages. `asset-store` owns compiled output at the opposite end of the build.
+Defines the content-provider interface used by directory, HTTP object, VPK, and BSP PAK adapters; supplies exact raw bytes to native and WASM format/semantic compilers. `asset-store` may publish the same immutable source bytes and verified derived-cache objects without changing Content precedence.
 
 ## Completion
 

@@ -4,7 +4,7 @@
 
 ## Completion Denominator
 
-The completion denominator contains exactly the 26 Behavior Families rows below. [`inventories/provider-contracts.md`](inventories/provider-contracts.md) defines 6 draft provider and workflow contracts; those items do not enter the denominator until a checked-in generator exists and the inventory passes the denominator review gate.
+The completion denominator contains exactly the 28 Behavior Families rows below. [`inventories/provider-contracts.md`](inventories/provider-contracts.md) defines 8 draft provider and workflow contracts; those items do not enter the denominator until a checked-in generator exists and the inventory passes the denominator review gate.
 
 Content is Complete only for configured providers. Installation discovery, registry lookup, Steam-library scanning, recursive machine search, and fallback roots are excluded rather than deferred.
 
@@ -12,7 +12,7 @@ Content is Complete only for configured providers. Installation discovery, regis
 
 - One immutable provider plan containing an ordered list of provider identities, provider kinds, provider revisions, path-ID memberships, request-only flags, exact configured source locations, and numeric bounds.
 - One UTF-8 logical path and either one explicit case-insensitive path ID or no path ID.
-- Directory roots, VPK indexes and ranged-entry readers, BSP PAK indexes and entry readers, raw-source cache entries, and HTTPS download declarations with exact encoded/decoded identities supplied through provider adapters.
+- Directory roots, local or remote VPK indexes and ranged-entry readers, BSP PAK indexes and entry readers, raw-source cache entries, immutable HTTP object descriptors, map-supplement indexes, and HTTPS download declarations with exact encoded/decoded identities supplied through provider adapters.
 - Game, content-build identity, cancellation signal, and operation-wide read and concurrency budgets.
 
 ## Outputs
@@ -61,6 +61,8 @@ Content is Complete only for configured providers. Installation discovery, regis
 | Reject a loose-directory component when multiple entries have the same ASCII-folded identity. | No implementation exists. | Directory vectors containing case-only sibling collisions at root, intermediate, and leaf components. | Not started |
 | Consume a validated VPK index and exact ranged-entry reader without parsing, extracting, or scanning the archive. | No implementation exists. | Adapter contract vectors for preload-only, embedded, segmented, missing, malformed-index, integrity-failure, short-read, and changed-entry outcomes supplied by `packages/formats/vpk`. | Not started |
 | Register one validated BSP PAK for the active map under `GAME`, place it before external providers, and remove the prior map PAK atomically. | No implementation exists. | Two-map transition vectors proving PAK-first shadowing, empty PAK behavior, exact replacement, explicit non-`GAME` exclusion, and no stale-map result under concurrent reads. | Not started |
+| Read an immutable remote BSP, VPK directory, VPK segment, or supplemental object by whole-object or exact byte range and verify every returned byte against its declared object identity. | No range-capable remote provider exists. | HTTP vectors covering whole and ranged `200`/`206`, `Content-Range`, ignored range, short/long body, changed ETag, hash mismatch, cancellation, cache hit, and retry prohibition; compare exact requested ranges and verified bytes. | Not started |
+| Mount one optional map-supplement index after the active BSP PAK and before selected game-content providers without making the supplement mandatory or changing game VPK order. | No map-supplement provider exists. | Three-provider shadow vectors compare PAK, supplement, and game VPK results; absent supplement is Intentionally inert, while a declared but missing/corrupt supplement entry fails without lower-provider substitution. | Not started |
 | Reuse raw bytes only through a cache entry keyed by provider identity, provider revision, normalized logical path, and source content hash. | The TypeScript Content package verifies a declared HTTPS response's status, redirect absence, byte length, and SHA-256, performs exact-size bzip2 decoding, verifies the decoded identity, atomically installs both immutable objects by hash, rejects corrupt cached bytes, and returns root-relative provenance. Directory/VPK/PAK provider cache keys and cancellation remain unimplemented. | Cold/warm fixed bzip2 vectors prove one request, encoded/decoded byte identity, warm reuse, HTTP/length/hash failure, corrupt-cache rejection, malformed-source rejection before fetch, and no fallback. Live `jump_beef` cold/warm runs produced the two declared objects and independent `shasum`/length matches. | Partial |
 | Return the first eligible exact entry and stop checking lower-priority providers after a successful read. | No implementation exists. | Instrumented mixed-provider vectors proving candidate call order, one returned identity, and zero calls below the winner. | Not started |
 | Stop on malformed, corrupt, changed, unreadable, or over-budget data at the first provider that declares the requested identity. | No implementation exists. | Fault-injected shadow vectors proving the lower-priority valid duplicate is never returned and the selected provider identifies the failure. | Not started |
@@ -73,18 +75,18 @@ Content is Complete only for configured providers. Installation discovery, regis
 | Execute concurrent reads with an immutable provider snapshot, bounded shared resources, and serial-equivalent results. | No implementation exists. | Deterministic schedules covering same-path coalescing, distinct paths, cancellation of one waiter, provider failure, map transition, and repeated result/provenance equality. | Not started |
 | Enforce numeric maxima for logical-path bytes, providers, path IDs, candidates, queued reads, concurrent reads, bytes per read, total in-flight bytes, cache-entry bytes, cache bytes, and failure-report entries with backpressure. | Exact playsrc limits have not been accepted; the SDK establishes 128 search paths but does not establish the complete browser/native bound set. | Boundary vectors at each accepted maximum and maximum-plus-one, plus queue saturation and memory measurements under fixed configuration. | Blocked |
 | Resolve a normal map request only as `maps/<map>.bsp` through eligible configured external providers; the requested map's PAK is unavailable until that BSP succeeds. | No implementation exists. | Directory/VPK shadow vectors comparing every exact checked location, selected BSP provenance, and proof that no map PAK was queried for its containing BSP. | Not started |
-| Resolve a normal resource request through the active map PAK first, then configured external providers in exact plan order, using cache entries only on behalf of each candidate. | No implementation exists. | Material, model, sound, script, particle, and map-adjacent resource vectors comparing the full candidate sequence and successful provenance. | Not started |
+| Resolve a normal resource request through the active map PAK first, optional map supplement second, then selected game-content providers in exact plan order, using cache entries only on behalf of each candidate. | No implementation exists. | Material, model, sound, script, particle, and map-adjacent resource vectors comparing the full candidate sequence and successful provenance. | Not started |
 | Reproduce the content-build-specific TF2, CS:S, and legacy Source 1 CS:GO provider order from exact configured manifests and archive indexes without hardcoded game mounts. | `playsrc.local.json` is missing; exact configured manifests, content-build identities, and archive indexes were unavailable. Game-specific inventory ownership is unresolved. | Generated provider-plan inventories compared entry-for-entry with each configured `gameinfo.txt`, wildcard expansion, VPK directory index, and loose root at its recorded content build. | Blocked |
 
 ## Generated Inventories
 
-[`inventories/provider-contracts.md`](inventories/provider-contracts.md) contains 6 draft items and 0 accepted items. Its generator command is Blocked because no production code may be implemented during roadmap research.
+[`inventories/provider-contracts.md`](inventories/provider-contracts.md) contains 8 draft items and 0 accepted items. Its generator command is Blocked because no production code may be implemented during roadmap research.
 
 The TF2, CS:S, and legacy Source 1 CS:GO provider-plan inventories are also Blocked. Their authoritative inputs must be the exact configured `gameinfo.txt`, content-build identity, wildcard directory entries, VPK directory indexes, and loose roots. The ownership paths require project review because game-specific lists cannot live in this generic package.
 
 ## Exit Criteria
 
-- All 26 Behavior Families rows are Ready.
+- All 28 Behavior Families rows are Ready.
 - The provider-contract inventory is generated by its checked-in command, records all mandatory metadata, contains exactly the accepted items, and passes denominator review.
 - The TF2, CS:S, and legacy Source 1 CS:GO provider-plan inventories have accepted owners and reproduce their configured content builds exactly.
 - Fixed vectors cover directory, VPK, BSP PAK, and raw-source cache reads through synchronous and asynchronous consumers.

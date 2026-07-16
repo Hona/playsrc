@@ -2,12 +2,12 @@
 
 ## Objective
 
-Serve asset-store objects, roots, catalogs, and channels locally and remotely.
+Serve immutable raw Source objects, reproducible derived objects, descriptors, catalogs, and channels locally and remotely.
 
 ## Responsibilities
 
 - Translate HTTP requests into bounded asset-store reads.
-- Provide immutable caching semantics, range behavior, metadata, and operational observability.
+- Provide byte-range access required by unchanged BSP and VPK objects plus immutable caching semantics, metadata, and operational observability.
 - Serve local development and deployed asset origins through one application contract.
 
 ## Non-Responsibilities

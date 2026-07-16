@@ -4,6 +4,7 @@
 
 - Play Team Fortress 2 directly in your browser (soon CS:S, CS:GO, and maybe more).
 - Use powerful, reusable tools to inspect, parse, compile, simulate, and present Source 1 content.
+- Load declared BSP maps directly in a browser worker against exact BSP PAK and VPK content; prior GLB conversion is not required.
 
 TF2 is the first complete parity target. Counter-Strike: Source and legacy Source 1 Counter-Strike: Global Offensive follow through their own game modules. Source 2 is explicitly out of scope (for now..?!).
 
@@ -27,7 +28,7 @@ Packages are grouped by exact responsibility:
 | `runtime/` | Ground, air, water, ladder, crouch, jump, and stair movement; rigid bodies and constraints; deterministic ticks, commands, events, and snapshots; multiplayer replication and reconciliation; replay timelines and seeking. |
 | `presentation/` | Browser GPU scenes, views, lighting, and frame presentation; Source particle definitions and simulation; sound scripts, channels, spatialization, mixing, and browser audio playback; Source VGUI panels, controls, schemes, localization binding, HUD animations, focus, input, and DOM/CSS presentation. |
 | `content/` | Exact logical-path lookup across configured directories, VPK providers, BSP PAK providers, and reusable raw-source cache entries with declared mount precedence and provenance. |
-| `asset-store/` | SHA-256-addressed immutable objects; map, game, and application roots; catalogs; mutable channels; reachability validation; local storage; and remote synchronization. |
+| `asset-store/` | SHA-256-addressed immutable raw Source and derived objects; source, map-runtime, game, and application descriptors; catalogs; mutable channels; reachability validation; local storage; and remote synchronization. |
 
 Every module README defines its objective, responsibilities, non-responsibilities, relationships, and completion criteria before implementation begins.
 
@@ -38,6 +39,8 @@ Every module README defines its objective, responsibilities, non-responsibilitie
 - [Roadmap](ROADMAP.md)
 - [Contributing](CONTRIBUTING.md)
 - [Terminology](TERMINOLOGY.md)
+- [Direct Source Runtime](docs/direct-source-runtime.md)
+- [Native And WASM Contract](docs/native-wasm-contract.md)
 
 ## Development
 
@@ -55,6 +58,7 @@ The Cargo workspace contains Rust crates inside their owning modules. Run `bun r
 - Complete TF2 game behavior and game-owned rulesets, beginning with TF2 jump.
 - Future CS:S and legacy Source 1 CS:GO games with their own rulesets.
 - Browser products, future online multiplayer services, tools, asset publication, and infrastructure.
+- Direct browser loading of declared BSP files and official VPK files through bounded WASM workers and exact ranged content providers.
 
 Applications assemble modules. They do not reimplement Source, game, or ruleset behavior.
 
@@ -65,6 +69,8 @@ Source, Team Fortress 2, Counter-Strike, and the Source SDK were created by Valv
 playsrc is developed and distributed free of charge as a non-commercial passion project.
 
 Valve, Source, Team Fortress, Counter-Strike, Steam, and related names and trademarks belong to their respective owners.
+
+[`bsp-to-glb`](https://github.com/Hona/bsp-to-glb) remains a great standalone tool for exporting Source BSP maps to GLB. playsrc does not require GLB for gameplay.
 
 ## License
 

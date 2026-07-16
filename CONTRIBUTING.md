@@ -30,6 +30,10 @@ Do not introduce game or product assumptions into generic packages. Do not extra
 
 Keep schemas, fixtures, examples, generated inventories, and detailed roadmaps with the module that owns them. Use root `docs` only for knowledge that genuinely crosses several modules.
 
+Direct runtime loading follows [`docs/direct-source-runtime.md`](docs/direct-source-runtime.md). Do not add a gameplay path that requires GLB, extracted VPK trees, application `public/` assets, or prior manual map conversion. Native and WASM callers use the same owning Rust compiler implementation and derived-cache identity.
+
+Native/browser integration follows [`docs/native-wasm-contract.md`](docs/native-wasm-contract.md). A JavaScript/WASM call must perform one complete domain phase or bounded batch. Do not expose per-face, per-trace, per-entity, per-particle, or per-resource calls across that seam.
+
 ## Process
 
 Work follows:

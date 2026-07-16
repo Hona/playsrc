@@ -8,7 +8,7 @@ Deliver TF2 jump gameplay and Tempus product integration at `tempus.playsrc.onli
 
 - Assemble TF2, the TF2 jump ruleset, simulation, presentation, assets, and Tempus-specific UI.
 - Own Tempus map selection, course metadata, records, rankings, and external integration.
-- Keep product data separate from reusable map packages and TF2 gameplay.
+- Keep product data separate from reusable map sources, derived runtime descriptors, and TF2 gameplay.
 
 ## Non-Responsibilities
 

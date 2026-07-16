@@ -7,7 +7,7 @@ Operate future hosted gameplay server processes without owning game behavior.
 ## Responsibilities
 
 - Own allocation, startup, health, draining, termination, and session attachment for gameplay servers.
-- Select immutable game and asset roots for each server process.
+- Select immutable game source roots, map sources, optional verified derived roots, and executable descriptors for each server process.
 - Expose operational state to matchmaking and administration.
 
 ## Non-Responsibilities

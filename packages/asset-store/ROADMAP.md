@@ -4,7 +4,7 @@
 
 ## Completion Denominator
 
-The completion denominator contains exactly the 39 Behavior Families rows below. [`inventories/object-kinds.md`](inventories/object-kinds.md) defines 5 draft immutable object-kind contracts; those items do not enter the denominator until a checked-in generator exists and the inventory passes the denominator review gate.
+The completion denominator contains exactly the 39 Behavior Families rows below. [`inventories/object-kinds.md`](inventories/object-kinds.md) defines 7 draft immutable object-kind contracts; those items do not enter the denominator until a checked-in generator exists and the inventory passes the denominator review gate.
 
 The denominator review state is Draft. No acceptance record exists.
 
@@ -12,8 +12,8 @@ The denominator review state is Draft. No acceptance record exists.
 
 - One validated `assetDir` identifying the durable local store root.
 - An exact byte stream and an object descriptor with exactly `kind`, `mediaType`, `byteLength`, and `sha256`. `byteLength` is a canonical unsigned decimal string; `sha256` is lowercase 64-hex.
-- RFC 8785 canonical UTF-8 JSON map roots shaped as `{kind:"map-root",identity:{game,contentBuild,map},references}`, game roots shaped as `{kind:"game-root",identity:{game,contentBuild},references}`, catalogs shaped as `{kind:"catalog",identity:{application,catalog},entries,references}`, and application roots shaped as `{kind:"application-root",identity:{application,applicationBuild},references}`. Every `references` value is a strictly sorted, duplicate-free object-descriptor array. Catalog `entries` is application-owned I-JSON preserved without Asset Store semantic interpretation.
-- A typed root descriptor containing `map-root`, `game-root`, or `application-root`, its SHA-256 content hash, and byte length.
+- RFC 8785 canonical UTF-8 JSON source roots, optional generated map roots, game roots, catalogs, and application roots using the exact shapes in the object-kind inventory. Every `references` value is a strictly sorted, duplicate-free object-descriptor array.
+- A typed root descriptor containing `source-root`, `map-root`, `game-root`, or `application-root`, its SHA-256 content hash, and byte length.
 - A channel mutation containing a channel name, expected prior channel-record revision or `Missing`, and one target root descriptor. The record is RFC 8785 canonical UTF-8 JSON shaped as `{channel,target}`; its revision is the SHA-256 hash of those exact bytes.
 - A retained-root-set mutation containing its expected prior revision and the complete next sorted set of typed root descriptors. The set is RFC 8785 canonical UTF-8 JSON shaped as `{roots}`; its revision is the SHA-256 hash of those exact bytes.
 - A remote-mirror adapter exposing exact reads, create-if-absent immutable writes, conditional mutable-record replacement, operation cancellation, and provider revision or capability identity.
@@ -37,7 +37,7 @@ The denominator review state is Draft. No acceptance record exists.
 - Root and catalog bytes occupy the object path only. Typed root and catalog records never create a second copy of those bytes.
 - A successful immutable write is durable and complete. A failed, cancelled, interrupted, or concurrent write exposes either the prior verified object or no object at the final path, never partial or replacement bytes.
 - Existing bytes are reverified before `AlreadyPresent`. A hash or length mismatch is `IntegrityFailure`; the store never overwrites, repairs from another location, or returns those bytes.
-- Map roots reference artifact objects only. Game roots reference artifact objects and map roots. Catalogs reference map roots and game roots. Application roots reference artifact objects, map roots, game roots, and catalogs. Every other edge is Malformed.
+- Source roots reference source objects. Map roots reference source objects, derived objects, and one source root. Game roots reference source roots, derived objects, and map roots. Catalogs reference source objects, source roots, optional map roots, and game roots. Application roots reference derived objects, source roots, map roots, game roots, and catalogs. Every other edge is Malformed.
 - Every accepted root or catalog edge carries object kind, media type, byte length, and SHA-256. Duplicate descriptors, conflicting descriptors for one hash, self-reference, and graph cycles are Malformed.
 - Reachability is computed from exact hash edges, independent of directory listings and producer filenames. Validation fails on every missing, corrupt, malformed, cyclic, over-bound, or disallowed reachable node.
 - A channel target is retained and its complete closure is locally or remotely verified, as applicable, before the channel can point to it. Replacing a channel never removes the prior target from the retained-root set.
@@ -45,11 +45,11 @@ The denominator review state is Draft. No acceptance record exists.
 - Immutable object bytes and root-manifest bytes have no deletion operation in the current contract. Remote publication never issues object deletion. Channel records are the only mutable published resource.
 - Publication uploads and verifies the complete immutable closure before changing a channel. Any failure before that final change leaves the prior channel revision and target unchanged.
 - Plans, closures, and reports sort by object kind and SHA-256, deduplicate by SHA-256 for physical byte totals, and contain no source-root, work-directory, credential, or unconfigured machine path.
-- The durable asset store contains playsrc-compiled output only. The disposable Source cache contains raw Source bytes only; one operation's work directory contains intermediates only; the CDN is a remote mirror only; and the browser HTTP cache is never storage, validation, reachability, or publication authority.
+- The durable asset store contains explicitly published immutable raw Source objects and reproducible derived objects. The disposable Source cache contains local acquisition inputs and intermediates; one operation's work directory contains intermediates only; the CDN is a remote mirror only; and browser HTTP/IndexedDB caches are never validation or publication authority.
 
 ## Ownership Exclusions
 
-- `packages/content` owns Source logical-path resolution and the disposable raw Source cache. Asset-store objects never resolve or contain a fallback to Source providers.
+- `packages/content` owns Source logical-path resolution, provider precedence, remote byte-range access, and the disposable local Source cache. Asset Store may retain exact provider bytes but never resolves a logical path or changes provider order.
 - Format, world, runtime, presentation, and game compilers own compilation semantics, artifact media types, and the bytes they emit. The Asset Store verifies and stores those bytes without interpreting their domain semantics.
 - `packages/world/map` owns a map's semantic identity and complete artifact dependency description. The Asset Store owns the map-root envelope, graph validation, identity, retention, storage, and publication.
 - `games/<game>` owns each game root's game and content-build identity plus selected map and shared-artifact contents. The generic Asset Store owns no game-specific list.
@@ -69,13 +69,13 @@ The denominator review state is Draft. No acceptance record exists.
 | Publish a local object atomically so crash, cancellation, quota exhaustion, short write, flush failure, and rename failure expose only a complete verified object or no final object. | No implementation exists. | Filesystem fault injection at every write and durability boundary followed by process restart and independent hash verification. | Not started |
 | Converge concurrent writers of identical bytes and hash on one verified final object without lock leakage, temporary-file collision, or replacement. | No implementation exists. | Deterministic multi-process schedules covering simultaneous start, staggered completion, one cancelled writer, one failed writer, and repeated verified-read equality. | Not started |
 | Treat an existing verified object as `AlreadyPresent` and an existing hash-path length or digest mismatch as `IntegrityFailure` without overwrite. | No implementation exists. | Preseeded correct, truncated, extended, and bit-flipped objects compared for outcome, unchanged bytes, and absence of fallback or repair. | Not started |
-| Store one physical byte sequence per SHA-256 even when many map, game, application, catalog, or producer references name it. | No implementation exists. | Multi-root fixtures with repeated objects comparing unique path count, inode-independent byte accounting, closure totals, and repeated publication writes. | Not started |
+| Store one physical byte sequence per SHA-256 even when raw Source, derived, map, game, application, catalog, or producer references name it. | No implementation exists. | Multi-root fixtures with repeated source and derived objects comparing unique path count, inode-independent byte accounting, closure totals, and repeated publication writes. | Not started |
 | Read exact bytes by descriptor, returning `MissingObject` for an absent path and `IntegrityFailure` for wrong length or hash. | No implementation exists. | Fixed read vectors for valid, empty, absent, truncated, extended, replaced, and unreadable objects with byte-for-byte result and exact error comparison. | Not started |
 | Ignore and remove only operation-owned stale temporary writes after success, failure, cancellation, or restart; never classify them as objects. | No implementation exists. | Crash-recovery vectors preseeded with current, foreign, expired, colliding, and locked temporary files, proving bounded cleanup and unchanged final objects. | Not started |
 | Accept exactly the immutable object kinds and edge rules in the accepted generated object-kind inventory; retain unknown kinds as `Unknown` inventory entries and reject them at runtime. | No implementation or accepted inventory exists. | Regenerate the inventory twice, compare byte identity and count, then run one descriptor and edge vector per accepted and unknown kind. | Not started |
-| Store an immutable map root whose identity names one game, content build, and map and whose sorted artifact descriptors completely describe that map package. | No implementation exists. | Fixed map-package vectors comparing manifest bytes, root hash, all direct artifact edges, transitive closure, shared-object reuse, and malformed or incomplete manifests. | Not started |
+| Store an optional immutable map root whose identity names one map source plus compiler/configuration identities and whose sorted source/derived descriptors reproduce the compiled runtime representation; first load never requires this root. | No implementation exists. | Fixed direct-load and prepopulated-cache vectors comparing source fetches, derived keys, root bytes, first-load compilation, warm reuse, and malformed or stale manifests. | Not started |
 | Store an immutable game root whose identity names one game and content build and whose closure contains exactly its selected map roots and shared game artifacts. | No implementation exists. | Two-content-build vectors comparing root identity, map and shared-artifact selection, cross-build separation, deduplication, and missing-map failure. | Not started |
-| Store an immutable catalog envelope while preserving application-owned entries and validating every selected map or game root without changing map, game, or artifact truth. | No implementation exists. | Application catalog fixtures comparing exact retained entry bytes, allowed root descriptors, duplicate selection, missing target, and attempted truth override. | Not started |
+| Store an immutable catalog envelope while preserving application-owned entries and validating every selected map source, optional map root, or game root without changing source, map, game, or derived-object truth. | No implementation exists. | Application catalog fixtures comparing exact retained `MapSource` bytes, allowed descriptors, optional cache roots, duplicate selection, missing target, and attempted truth override. | Not started |
 | Store an immutable application root whose identity names one application build and whose closure contains its application artifacts, selected game or map roots, and catalogs. | No implementation exists. | Fixed application-build vectors comparing complete closure, catalog and game selection, shared-object reuse, and omission or cross-kind edge failures. | Not started |
 | Validate every root and catalog descriptor's kind, media type, byte length, hash, strict ordering, uniqueness, and permitted edge before accepting the manifest. | No implementation exists. | Table vectors mutating each field independently plus duplicate-hash, conflicting-size, conflicting-media-type, unsorted, self-edge, and disallowed-edge cases. | Not started |
 | Reject direct and transitive graph cycles without recursion overflow or partial validation state. | No implementation exists. | Synthetic self, two-node, long-cycle, shared-DAG, and maximum-depth-plus-one graphs compared for exact cycle identity and bounded resource use. | Not started |
@@ -105,18 +105,18 @@ The denominator review state is Draft. No acceptance record exists.
 
 ## Generated Inventories
 
-[`inventories/object-kinds.md`](inventories/object-kinds.md) contains 5 draft immutable object kinds and 0 accepted items. The future generator must consume machine-readable current-contract declarations, emit stable kind identities and permitted edge kinds, fail on duplicates or omissions, and reproduce this file byte-for-byte.
+[`inventories/object-kinds.md`](inventories/object-kinds.md) contains 7 draft immutable object kinds and 0 accepted items. The future generator must consume machine-readable current-contract declarations, emit stable kind identities and permitted edge kinds, fail on duplicates or omissions, and reproduce this file byte-for-byte.
 
 The generator command is Blocked because no checked-in generator exists and production implementation is prohibited during roadmap research.
 
 ## Exit Criteria
 
 - All 39 Behavior Families rows are Ready.
-- The object-kind inventory is generated by its checked-in command, records exactly 5 accepted items, and passes the denominator review gate.
+- The object-kind inventory is generated by its checked-in command, records exactly 7 accepted items, and passes the denominator review gate.
 - Fixed integration vectors cover artifact, map-root, game-root, catalog, and application-root objects through local storage, remote synchronization, channel publication, interruption, and rollback.
 - Every compiler, game, application, catalog producer, tool, asset service, and remote adapter uses the same current object descriptor, root envelope, channel record, retained-root set, error, bound, and report contracts.
 - Local and remote fault injection proves atomicity and byte integrity under concurrent writers, cancellation, process termination, storage exhaustion, network interruption, and stale channel revisions.
-- The Source cache, operation work directory, durable asset store, remote CDN mirror, and browser HTTP cache remain disjoint in configuration, contents, references, validation, lifecycle, and authority.
+- The Source cache, operation work directory, durable asset store, remote CDN mirror, browser HTTP cache, and browser IndexedDB derived cache retain distinct lifecycle and authority. Equal immutable bytes may share SHA-256 while each descriptor preserves representation kind and provenance.
 - No immutable object deletion, overwrite, fallback lookup, implicit repair, compatibility path, or mutable-root publication exists.
 - No required value or behavior remains Unsupported, Unknown, Missing, Partial, or Blocked.
 
@@ -125,4 +125,4 @@ The generator command is Blocked because no checked-in generator exists and prod
 - **Local integration configuration:** `playsrc.local.json` does not exist, so no exact configured `assetDir` is available for a local-development integration record. Checked `playsrc.local.example.json`, `ARCHITECTURE.md`, `tools/playsrc/README.md`, and `packages/asset-store/README.md`.
 - **Remote adapter and environment:** no infrastructure definition selects a remote object-store adapter, capability revision, credentials binding, or isolated publication environment. Checked `ARCHITECTURE.md`, `infra/README.md`, `apps/services/assets/README.md`, AWS S3 conditional-write documentation, and Cloudflare R2 consistency and S3-compatibility documentation. A selected adapter must satisfy the roadmap contract rather than rely on provider existence checks or cache responses.
 - **Numeric bounds:** exact accepted maxima for browser, native, local-filesystem, and remote publication operations are unresolved. Checked the playsrc architecture and terminology, RFC 8785 JSON Canonicalization Scheme, OCI Image Specification 1.1.1 descriptors and image layout, Bazel Remote Execution CAS contracts, and the public remote-provider documentation named above; these authorities permit implementation-specific limits and do not establish one playsrc bound set.
-- **Inventory generator:** no checked-in command generates `inventories/object-kinds.md`; its 5 draft items therefore remain unaccepted.
+- **Inventory generator:** no checked-in command generates `inventories/object-kinds.md`; its 7 draft items therefore remain unaccepted.

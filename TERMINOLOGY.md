@@ -98,6 +98,16 @@ Every roadmap item has exactly one delivery status: Not started, In progress, Bl
 
 **playsrc-compiled data**: Deterministic output emitted by a playsrc compiler from declared Source bytes, compiler behavior, and build configuration.
 
+**Raw Source object**: One exact immutable BSP, VPK directory, VPK segment, BSP PAK-bearing BSP, or additional Source content byte sequence published with byte length, SHA-256, representation kind, and provenance.
+
+**Derived object**: Immutable bytes reproducibly computed from exact source-object hashes, transitive dependency hashes, compiler behavior identity, build configuration identity, and output role.
+
+**Derived cache key**: The SHA-256 identity of the complete inputs required to reproduce one derived object. A cache entry with a different source, dependency, compiler, configuration, or role is a different object.
+
+**Map source**: The game, content build, map logical identity, BSP byte identity, BSP acquisition descriptor, and additional declared providers required to begin loading one map.
+
+**Map runtime descriptor**: A reproducible derived object naming one map source, every consumed raw object, compiler/configuration identities, canonical outputs, runtime representations, coverage classifications, and diagnostics.
+
 **Reconstruction**: A value inferred because the authoritative Source representation is absent. Reconstructed data is labeled as reconstructed and never presented as exact compiled data.
 
 **Logical path**: A slash-separated Source resource identity resolved inside configured content providers, for example `materials/example/material.vmt`. A logical path is not an operating-system path and never authorizes filesystem discovery.
@@ -118,7 +128,7 @@ Every roadmap item has exactly one delivery status: Not started, In progress, Bl
 
 **Package**: An independently consumable module under `packages/` with one documented interface, one owning mental model, and no game or application assumptions.
 
-**Map package**: An immutable map root manifest plus references to every object required to load the declared map representation. A map package never embeds duplicate copies of shared objects.
+**Map package**: An optional immutable publication of one map source descriptor plus verified raw and derived object references. It is generated automatically, never required before first load, and never embeds duplicate copies of shared objects.
 
 **Artifact**: Any file, byte sequence, manifest, report, or generated source emitted by a playsrc operation.
 
@@ -134,15 +144,15 @@ Every roadmap item has exactly one delivery status: Not started, In progress, Bl
 
 **Channel**: One mutable name pointing atomically to one immutable root. Development, staging, and production channels are independent names.
 
-**Source cache**: Disposable storage for reusable raw Source inputs. Source-cache contents are never referenced by published manifests and are never deployed.
+**Source cache**: Disposable local storage for reusable raw Source acquisition inputs and intermediates. Published descriptors never reference cache paths; publication imports selected exact bytes as immutable source objects with independent provenance.
 
 **Work directory**: One temporary directory owned by one process tree and one operation. It is deleted after success or failure and is never referenced by a manifest.
 
-**Asset store**: Durable storage containing immutable objects, roots, catalogs, channels, validation metadata, and publication state. Deleting an object reachable from a retained root is prohibited.
+**Asset store**: Durable storage containing immutable raw Source objects, immutable derived objects, descriptors, roots, catalogs, channels, validation metadata, and publication state. Deleting an object reachable from a retained root is prohibited.
 
 **CDN**: A remote HTTP-accessible mirror of published asset-store objects, roots, catalogs, and channels.
 
-**Browser cache**: HTTP cache state owned by a browser. It is not the Source cache, work directory, asset store, or CDN.
+**Browser cache**: HTTP cache state and IndexedDB-derived-cache state owned by a browser. It is not the Source cache, work directory, asset store, or CDN and never establishes source or derived-object authority.
 
 ## Architecture
 

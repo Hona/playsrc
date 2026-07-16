@@ -18,12 +18,13 @@ let stored = store.get(hash)?;
 
 ## Objective
 
-Store and publish immutable compiled playsrc output without duplicating shared objects.
+Store and publish exact immutable Source objects and reproducible playsrc-derived objects without duplicating shared bytes.
 
 ## Responsibilities
 
 - Address exact object bytes by content hash and store each immutable object once.
-- Represent immutable map, game, and application roots plus catalogs and mutable channels.
+- Preserve representation kind and provenance for raw BSP, VPK directory, VPK segment, and additional Source objects.
+- Represent immutable source, map-runtime, game, and application descriptors plus catalogs and mutable channels.
 - Validate reachability and synchronize missing objects to remote storage.
 
 ## Non-Responsibilities
@@ -34,7 +35,7 @@ Store and publish immutable compiled playsrc output without duplicating shared o
 
 ## Relationships
 
-Receives validated compiler output, serves applications through the asset application, and uses infrastructure adapters for remote publication.
+Receives validated raw and derived objects, serves applications through the asset application, and uses infrastructure adapters for remote publication. A derived object is a cache hit only when its complete source/dependency/compiler/configuration/role identity verifies.
 
 ## Completion
 

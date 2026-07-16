@@ -10,8 +10,14 @@
 - Maintain one gameplay authority, one replay authority, and presentation-only rendering.
 - Share deterministic gameplay behavior between prediction and server authority.
 - Parse Source data before applying semantic, game, or product interpretation.
-- Keep raw Source content separate from compiled immutable assets.
-- Use content addressing so maps and applications reference rather than duplicate shared objects.
+- Treat exact Source-compiled BSP and VPK bytes as authoritative runtime inputs.
+- Use one Rust compiler implementation in native and WASM environments.
+- Cross JavaScript/WASM boundaries only with complete domain phases or bounded batches; never call WASM once per face, trace, entity, particle, or asset.
+- Transfer packed buffers and stable handles instead of canonical JSON object graphs.
+- Compile canonical runtime representations on demand; never require manual per-map preprocessing before first load.
+- Treat derived objects as reproducible content-addressed caches keyed by source hashes, transitive dependencies, compiler behavior, configuration, and output role.
+- Store each immutable raw or derived object once and reference it from catalogs and descriptors.
+- Keep GLB as an optional export format rather than a gameplay dependency or semantic authority.
 - Maintain one current implementation and contract.
 - Prefer breaking changes while there are no external consumers.
 - Remove replaced code, fallbacks, legacy paths, and duplicate authorities.

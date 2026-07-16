@@ -56,7 +56,7 @@ The denominator is Not accepted. Reviewer identity, review date, reviewed commit
 ## Ownership Exclusions
 
 - BSP byte ranges, record decoding, lump versions, and lossless format representation belong to `packages/formats/bsp`. Visibility consumes typed records and owns their runtime-neutral semantic validation and queries.
-- Canonical map assembly, face topology, brush-model assembly, static-prop placement, detail-prop placement, and immutable map roots belong to `packages/world/map`.
+- Canonical map assembly, face topology, brush-model assembly, static-prop placement, detail-prop placement, and runtime descriptors belong to `packages/world/map`.
 - Collision contents, ray traces, hull sweeps, overlaps, contacts, and collision acceleration belong to `packages/world/collision`. Visibility traversal cannot answer collision questions.
 - Area-portal entity keyvalues, inputs, outputs, parenting, lifecycle, and game-specific entity state belong to `packages/world/entity` and the selected game. Visibility consumes explicit portal state and owns area connectivity and view-flow results.
 - Gameplay relevance, replicated-field selection, recipient selection, snapshot policy, and transport belong to simulation, the selected game, and `packages/runtime/networking`. Visibility supplies PVS and PAS queries only.

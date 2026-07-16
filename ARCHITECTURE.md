@@ -130,12 +130,17 @@ Web applications own browser and product integration. Service applications own n
 Native and WASM interfaces stay coarse:
 
 ```text
-submit commands
-advance ticks
-read snapshot
+compiler.beginMap(mapSource)
+compiler.supplyObjects(objectBatch)
+compiler.advance(workBudget)
+compiler.readResult()
+
+simulation.submitCommands(commandBatch)
+simulation.advance(tickCount)
+simulation.readSnapshot()
 ```
 
-Fine-grained domain calls remain inside the runtime implementation.
+Call count cannot scale with faces, traces, entities, particles, archive entries, or another unbounded content cardinality. Fine-grained domain calls remain inside Rust. [`docs/native-wasm-contract.md`](docs/native-wasm-contract.md) defines worker topology, data representation, memory ownership, cancellation, and evidence.
 
 ## Canonical Representations
 
@@ -149,19 +154,30 @@ entity data      -> entity graph and game entities
 demo records     -> replay state
 ```
 
-Transport formats such as GLB may be derived outputs but never become semantic authority.
+Transport formats such as GLB are optional exports. The runtime compiles direct renderer, collision, visibility, entity, and simulation inputs without serializing through GLB.
+
+## Direct Source Runtime
+
+Declared Source bytes are runtime inputs:
+
+```text
+MapSource
+    -> BSP bytes
+    -> active BSP PAK
+    -> selected game VPK directory and segment bytes
+    -> additional declared providers
+    -> Rust compiler in a native process or browser WASM worker
+    -> canonical map, collision, visibility, entity, material, and model data
+    -> direct simulation and Three.js inputs
+```
+
+A map catalog records a BSP acquisition descriptor and exact content identities. It never requires a pre-existing GLB or derived map root. The first browser load compiles missing derived objects; later loads reuse only objects whose complete derived cache keys verify.
+
+[`docs/direct-source-runtime.md`](docs/direct-source-runtime.md) defines source providers, compiler identity, derived cache identity, browser storage, server-side cache population, and map availability.
 
 ## Content And Assets
 
-Raw Source content and compiled playsrc assets are separate mental models:
-
-```text
-configured Source roots
-    -> content logical-path resolution
-    -> format parsing and compilation
-    -> immutable asset-store objects and roots
-    -> asset application and CDN
-```
+Content resolves exact logical paths against active BSP PAK, declared map providers, and selected game content-build providers. Local and remote VPK providers parse the official directory file and read exact entry ranges from unchanged VPK segment objects.
 
 Local configuration identifies exactly three roots:
 
@@ -173,12 +189,15 @@ Local configuration identifies exactly three roots:
 }
 ```
 
-- The Source cache contains reusable raw inputs and is never deployed.
+- The Source cache contains reusable local acquisition inputs and download intermediates. It is disposable and never referenced by published descriptors.
 - Per-job work directories are temporary and owned by one process tree.
-- The asset store contains durable content-addressed output consumed locally and mirrored remotely.
-- Map packages are manifests referencing shared immutable objects rather than archives duplicating global assets.
+- The asset store contains immutable raw Source objects intentionally published for runtime access and immutable derived objects produced by the current compiler.
+- Raw BSP, VPK directory, and VPK segment objects retain their original bytes and provenance.
+- Derived objects record source hashes, transitive dependency hashes, compiler behavior, build configuration, and output role.
+- Map packages are optional generated descriptors referencing shared immutable raw and derived objects. They are caches and publication units, not first-load prerequisites.
+- Browser HTTP cache stores verified source responses; IndexedDB stores verified derived objects. Eviction causes exact refetch or deterministic recompilation.
 
-Content resolution uses configured roots, exact logical paths, and known archive indexes. It never discovers installations or scans the machine.
+Content resolution uses configured roots, declared URLs, exact logical paths, and known archive indexes. It never discovers installations or scans the machine.
 
 ## Tools And Infrastructure
 
@@ -190,7 +209,7 @@ tools/
 infra/
 ```
 
-The playsrc tool exposes repeatable setup, compilation, development, verification, publication, and release commands over module interfaces. The inspector provides interactive diagnostics without becoming an alternate authority.
+The playsrc tool exposes repeatable setup, direct-source compilation, export, development, verification, cache population, publication, and release commands over module interfaces. The inspector provides interactive diagnostics without becoming an alternate authority.
 
 Infrastructure defines hosting resources and environments. Application-specific deployment configuration remains with its application. Compilation and deployment remain separate operations.
 
@@ -202,13 +221,15 @@ The intended common workflow remains one configuration-driven command such as:
 bun run dev jump_beef
 ```
 
-The command validates local configuration, resolves exact inputs, builds stale outputs, validates them, publishes immutable local assets, starts owned processes, and prints the exact application URL. One interrupt stops the owned process tree.
+The command validates local configuration, resolves the exact map source and game content build, compiles missing derived objects through the same Rust implementation used by browser WASM, validates them, populates the local cache, starts owned processes, and prints the exact application URL. One interrupt stops the owned process tree.
+
+Browser products can also load a declared BSP source directly. The worker verifies source bytes, resolves PAK/VPK dependencies, compiles missing runtime data, stores verified derived objects in IndexedDB, and starts the experience without a prior native conversion operation.
 
 ## Deployment
 
-Deployment validates the prepared local asset store, uploads missing immutable objects and roots, deploys applications, and atomically changes a channel pointer. Rollback changes the pointer rather than rebuilding or mutating published objects.
+Deployment may publish exact raw BSP/VPK objects and precomputed derived objects to reduce first-load latency. It validates and uploads missing immutable objects and descriptors, deploys applications, and atomically changes a channel pointer. Rollback changes the pointer rather than rebuilding or mutating published objects.
 
-Raw Source inputs and temporary work are never deployed.
+Temporary work and undeclared local Source inputs are never deployed. Every published raw Source object is an explicit descriptor member with exact provenance and SHA-256.
 
 ## Domains
 

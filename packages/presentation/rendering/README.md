@@ -17,7 +17,7 @@ Render canonical Source world, gameplay, and replay state in browser GPU environ
 ## Responsibilities
 
 - Own scenes, views, GPU resources, draw preparation, lighting presentation, and frame pacing.
-- Consume map, model, material, visibility, particle, gameplay, and replay state.
+- Consume direct compiler buffers and runtime descriptors for map, model, material, visibility, particle, gameplay, and replay state without GLB translation.
 - Derive presentation-only interpolation without changing authoritative state.
 
 ## Non-Responsibilities

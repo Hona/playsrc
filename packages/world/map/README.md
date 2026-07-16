@@ -20,7 +20,8 @@ Assemble parsed Source data and semantic domain outputs into one canonical plays
 
 - Coordinate map-wide references between geometry, materials, models, entities, collision, visibility, lighting, and environment data.
 - Validate that a map representation is internally complete and consistent.
-- Produce the immutable root description consumed by asset publication and runtimes.
+- Produce one canonical runtime descriptor directly from verified BSP and dependency bytes.
+- Produce an optional reproducible publication descriptor for raw and derived cache objects.
 
 ## Non-Responsibilities
 
@@ -30,7 +31,7 @@ Assemble parsed Source data and semantic domain outputs into one canonical plays
 
 ## Relationships
 
-Composes format and world packages. Tools publish its completed outputs through `asset-store`.
+Composes format and world packages in native and WASM environments. Browsers may compile the representation on first load and cache it in IndexedDB; tools may publish the same derived objects through `asset-store`.
 
 ## Completion
 
