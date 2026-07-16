@@ -360,7 +360,7 @@ impl Archive {
     pub fn read_entry(
         &self,
         logical_path: &str,
-        segments: &impl SegmentReader,
+        segments: &(impl SegmentReader + ?Sized),
     ) -> Result<ReadResult, Error> {
         let entry = self.entry(logical_path)?;
         let mut result = self.read_entry_range(entry, 0..entry.total_length, segments)?;
@@ -375,7 +375,7 @@ impl Archive {
         &self,
         logical_path: &str,
         range: Range<usize>,
-        segments: &impl SegmentReader,
+        segments: &(impl SegmentReader + ?Sized),
     ) -> Result<ReadResult, Error> {
         let entry = self.entry(logical_path)?;
         self.read_entry_range(entry, range, segments)
@@ -408,7 +408,7 @@ impl Archive {
     pub fn verify_archive_record(
         &self,
         record_index: usize,
-        segments: &impl SegmentReader,
+        segments: &(impl SegmentReader + ?Sized),
     ) -> Result<Integrity, Error> {
         let Some(record) = self.archive_md5.get(record_index) else {
             return Err(error(
@@ -449,7 +449,7 @@ impl Archive {
         &self,
         entry: &Entry,
         range: Range<usize>,
-        segments: &impl SegmentReader,
+        segments: &(impl SegmentReader + ?Sized),
     ) -> Result<ReadResult, Error> {
         if range.start > range.end || range.end > entry.total_length {
             let mut result = entry_error(ErrorCode::InvalidReadRange, &self.identity, entry);
@@ -971,7 +971,7 @@ fn read_segment(
     path: Option<&str>,
     archive_index: u32,
     range: Range<u64>,
-    segments: &impl SegmentReader,
+    segments: &(impl SegmentReader + ?Sized),
 ) -> Result<Vec<u8>, Error> {
     let length = segments
         .len(archive_index)

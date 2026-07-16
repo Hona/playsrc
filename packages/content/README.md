@@ -2,16 +2,11 @@
 
 ## Sample
 
-```ts
-import { createContent, directory } from "@playsrc/content"
-
-const content = createContent([directory(tf2Dir)])
-const bytes = await content.read("materials/concrete/concretefloor001a.vmt")
-```
-
 ```rust
-let content = playsrc_content::Content::new([playsrc_content::directory(tf2_dir)]);
-let bytes = content.read("materials/concrete/concretefloor001a.vmt")?;
+let content = playsrc_content::Content::open(game, content_build, providers, limits)?;
+let map = content.resolve_map("maps/jump_beef.bsp")?;
+let content = content.with_active_pak(pak_id, bsp_sha256, map_path, &pak)?;
+let resource = content.resolve_resource("materials/concrete/concretefloor001a.vmt")?;
 ```
 
 ## Objective
@@ -25,6 +20,8 @@ Resolve exact Source logical paths across explicitly configured content provider
 - Return exact source bytes with provenance, or report every exact location checked.
 - Verify declared HTTPS download sources and retain encoded and decoded bytes as SHA-256-addressed raw-source cache objects.
 - Read immutable remote BSP and VPK objects through exact HTTP ranges without extracting archive trees.
+- Resolve map BSPs only through declared external providers, then resolve resources through the active BSP PAK, optional map-supplement atlas, and game providers in that order.
+- Accept verified VPK directory bytes and a thread-safe immutable segment-range adapter so native files and browser HTTP ranges use one Rust resolver and VPK parser.
 
 ## Non-Responsibilities
 

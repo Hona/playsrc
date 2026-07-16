@@ -1,0 +1,5 @@
+# Native Content Providers
+
+The Rust Content implementation builds one immutable ordered game-provider plan from caller-declared loose-directory and VPK sources. VPK indexes may use native files or supplied immutable directory bytes plus a thread-safe random-access segment adapter. Native callers may connect that adapter to checked files or HTTP ranges. WASM callers transfer a bounded response batch first and use an in-memory adapter; Rust never calls JavaScript once per VPK entry or parser iteration. No archive extraction or native map preprocessing is required.
+
+`resolve_map` checks only declared external game providers. After the BSP parses, callers derive a new plan with its active PAK and may add one map-supplement atlas. `resolve_resource` checks the active BSP PAK first, the optional supplement second, then game providers in declared order. It returns exact bytes plus game, content-build, provider, revision, location, length, and SHA-256 provenance, or every exact location checked. A selected missing, unreadable, corrupt, changed, unsupported, or over-limit entry fails without consulting a lower provider.
