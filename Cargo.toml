@@ -1,5 +1,8 @@
 [workspace]
-members = ["packages/formats/keyvalues/rust"]
+members = [
+  "packages/formats/bsp/rust",
+  "packages/formats/keyvalues/rust",
+]
 resolver = "2"
 
 [workspace.package]

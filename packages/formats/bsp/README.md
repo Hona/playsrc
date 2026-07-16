@@ -21,6 +21,7 @@ Parse compiled Source 1 BSP files into bounded typed map data.
 - Validate the BSP header, lump directory, versions, ranges, and encoded records.
 - Decode supported map lumps without discarding unknown or unsupported values.
 - Expose format data needed by map, collision, visibility, entity, material, and lighting consumers.
+- Preserve all 64 raw descriptors, exact source ranges, overlaps, map revision, and bounded declared Source LZMA data before semantic interpretation.
 
 ## Non-Responsibilities
 
