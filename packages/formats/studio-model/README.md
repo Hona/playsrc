@@ -2,14 +2,15 @@
 
 ## Sample
 
-```ts
-import { loadStudioModel } from "@playsrc/studio-model"
-
-const model = await loadStudioModel(content, "models/player/soldier.mdl")
-```
-
 ```rust
-let model = playsrc_studio_model::load(&content, "models/player/soldier.mdl")?;
+let phase = playsrc_studio_model::load(
+    logical_path,
+    profile,
+    vtx_variant,
+    mdl_bytes,
+    &dependency_responses,
+    limits,
+)?;
 ```
 
 ## Objective
@@ -21,6 +22,8 @@ Parse the Source 1 StudioModel file family into one runtime-neutral model repres
 - Read coordinated MDL, VVD, VTX, and ANI data with explicit version and range validation.
 - Represent geometry, skeletons, sequences, animations, attachments, bodygroups, skins, LODs, and flex metadata.
 - Preserve cross-file relationships and unsupported values explicitly.
+- Emit one bounded batch of exact VVD, selected VTX, ANI, include-model, and PHY requests instead of invoking a provider callback from parser loops.
+- Retain MDL 44–48 structural metadata and validate VVD 4/VTX 7 checksums, LODs, root tables, and bodypart cardinality before consumers use companion data.
 
 ## Non-Responsibilities
 
