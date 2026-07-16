@@ -6,6 +6,10 @@ license.workspace = true
 
 [dependencies]
 playsrc-bsp = { path = "../../../formats/bsp/rust" }
+playsrc-collision = { path = "../../collision/rust" }
+playsrc-entity = { path = "../../entity/rust" }
+playsrc-visibility = { path = "../../visibility/rust" }
+sha2 = "0.10.9"
 
 [lib]
 path = "src/lib.rs"

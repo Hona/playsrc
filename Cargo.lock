@@ -408,6 +408,10 @@ name = "playsrc-map"
 version = "0.1.0"
 dependencies = [
  "playsrc-bsp",
+ "playsrc-collision",
+ "playsrc-entity",
+ "playsrc-visibility",
+ "sha2 0.10.9",
 ]
 
 [[package]]

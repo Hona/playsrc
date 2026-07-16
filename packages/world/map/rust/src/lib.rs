@@ -1,4 +1,5 @@
 use playsrc_bsp::{Bsp, Face, LumpData, Primitive, TextureData, TextureInfo, Vector3};
+use sha2::{Digest, Sha256};
 use std::fmt;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LightingProfile {
@@ -41,6 +42,22 @@ pub struct CanonicalMap {
     pub world_model: usize,
     pub triangle_count: usize,
     pub vertex_count: usize,
+}
+pub struct Runtime {
+    pub map: CanonicalMap,
+    pub collision: playsrc_collision::World,
+    pub visibility: playsrc_visibility::World,
+    pub entities: playsrc_entity::Graph,
+    pub descriptor: RuntimeDescriptor,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeDescriptor {
+    pub schema: u32,
+    pub bsp_sha256: [u8; 32],
+    pub compiler_identity: String,
+    pub configuration_sha256: [u8; 32],
+    pub payload_sha256: [u8; 32],
+    pub payload: Vec<u8>,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ErrorCode {
@@ -249,6 +266,114 @@ pub fn compile(bsp: &Bsp, profile: LightingProfile) -> Result<CanonicalMap, Erro
         triangle_count: triangles,
         vertex_count: output_vertices,
     })
+}
+
+pub fn compile_runtime(
+    bsp: &Bsp,
+    bsp_sha256: [u8; 32],
+    profile: LightingProfile,
+    compiler_identity: &str,
+    configuration: &[u8],
+) -> Result<Runtime, Error> {
+    let map = compile(bsp, profile)?;
+    let collision =
+        playsrc_collision::compile(bsp).map_err(|_| error(ErrorCode::InvalidReference, None))?;
+    let visibility =
+        playsrc_visibility::compile(bsp).map_err(|_| error(ErrorCode::InvalidReference, None))?;
+    let entities =
+        playsrc_entity::parse(bsp.lumps[0].bytes(bsp), playsrc_entity::Limits::default())
+            .map_err(|_| error(ErrorCode::InvalidReference, None))?;
+    let payload = serialize(&map, &entities);
+    let payload_sha256 = Sha256::digest(&payload).into();
+    let configuration_sha256 = Sha256::digest(configuration).into();
+    let descriptor = RuntimeDescriptor {
+        schema: 1,
+        bsp_sha256,
+        compiler_identity: compiler_identity.to_owned(),
+        configuration_sha256,
+        payload_sha256,
+        payload,
+    };
+    Ok(Runtime {
+        map,
+        collision,
+        visibility,
+        entities,
+        descriptor,
+    })
+}
+fn serialize(map: &CanonicalMap, entities: &playsrc_entity::Graph) -> Vec<u8> {
+    let mut out = b"PSMP".to_vec();
+    u32v(&mut out, 1);
+    u32v(&mut out, map.bsp_version as u32);
+    u32v(&mut out, map.map_revision as u32);
+    out.push(match map.lighting_profile {
+        LightingProfile::Ldr => 0,
+        LightingProfile::Hdr => 1,
+    });
+    u32v(&mut out, map.materials.len() as u32);
+    u32v(&mut out, map.surfaces.len() as u32);
+    u32v(&mut out, map.lighting_samples.len() as u32);
+    u32v(&mut out, entities.entities.len() as u32);
+    for m in &map.materials {
+        bytesv(&mut out, m.logical_path.as_bytes());
+        i32v(&mut out, m.width);
+        i32v(&mut out, m.height);
+    }
+    for s in &map.surfaces {
+        u32v(&mut out, s.face as u32);
+        u32v(&mut out, s.model as u32);
+        u32v(&mut out, s.material as u32);
+        i32v(&mut out, s.flags);
+        out.push(u8::from(s.draw));
+        u32v(&mut out, s.positions.len() as u32);
+        u32v(&mut out, s.triangles.len() as u32);
+        for p in &s.positions {
+            for v in p {
+                f32v(&mut out, *v)
+            }
+        }
+        for n in &s.normals {
+            for v in n {
+                f32v(&mut out, *v)
+            }
+        }
+        for uv in &s.uv {
+            f32v(&mut out, uv[0]);
+            f32v(&mut out, uv[1]);
+        }
+        for uv in &s.lightmap_uv {
+            f32v(&mut out, uv[0]);
+            f32v(&mut out, uv[1]);
+        }
+        for t in &s.triangles {
+            for v in t {
+                u32v(&mut out, *v)
+            }
+        }
+        i32v(&mut out, s.light_offset);
+        out.extend_from_slice(&s.light_styles);
+        i32v(&mut out, s.lightmap_size[0]);
+        i32v(&mut out, s.lightmap_size[1]);
+    }
+    for sample in &map.lighting_samples {
+        out.extend_from_slice(sample)
+    }
+    bytesv(&mut out, &entities.source);
+    out
+}
+fn u32v(o: &mut Vec<u8>, v: u32) {
+    o.extend_from_slice(&v.to_le_bytes())
+}
+fn i32v(o: &mut Vec<u8>, v: i32) {
+    o.extend_from_slice(&v.to_le_bytes())
+}
+fn f32v(o: &mut Vec<u8>, v: f32) {
+    u32v(o, v.to_bits())
+}
+fn bytesv(o: &mut Vec<u8>, v: &[u8]) {
+    u32v(o, v.len() as u32);
+    o.extend_from_slice(v)
 }
 fn materials(
     data: &[TextureData],
