@@ -1,5 +1,17 @@
 # Material
 
+## Sample
+
+```ts
+import { loadMaterial } from "@playsrc/material"
+
+const material = await loadMaterial(content, "materials/concrete/concretefloor001a.vmt")
+```
+
+```rust
+let material = playsrc_material::load(&content, "materials/concrete/concretefloor001a.vmt")?;
+```
+
 ## Objective
 
 Resolve Source material documents and textures into runtime-neutral material behavior.

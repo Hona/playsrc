@@ -1,5 +1,17 @@
 # Demo
 
+## Sample
+
+```ts
+import { parseDemo } from "@playsrc/demo"
+
+const demo = parseDemo(bytes)
+```
+
+```rust
+let demo = playsrc_demo::parse(&bytes)?;
+```
+
 ## Objective
 
 Parse Source 1 demo containers and records as bounded data.

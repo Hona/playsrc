@@ -1,5 +1,17 @@
 # BSP
 
+## Sample
+
+```ts
+import { parseBsp } from "@playsrc/bsp"
+
+const bsp = parseBsp(bytes)
+```
+
+```rust
+let bsp = playsrc_bsp::parse(&bytes)?;
+```
+
 ## Objective
 
 Parse compiled Source 1 BSP files into bounded typed map data.

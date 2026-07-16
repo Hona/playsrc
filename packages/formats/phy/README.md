@@ -1,5 +1,17 @@
 # PHY
 
+## Sample
+
+```ts
+import { parsePhy } from "@playsrc/phy"
+
+const physicsAsset = parsePhy(bytes)
+```
+
+```rust
+let physics_asset = playsrc_phy::parse(&bytes)?;
+```
+
 ## Objective
 
 Parse Source 1 PHY resources into runtime-neutral collision asset data.

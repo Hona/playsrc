@@ -1,5 +1,17 @@
 # KeyValues
 
+## Sample
+
+```ts
+import { parseKeyValues } from "@playsrc/keyvalues"
+
+const document = parseKeyValues(text)
+```
+
+```rust
+let document = playsrc_keyvalues::parse(text)?;
+```
+
 ## Objective
 
 Provide a bounded representation and parser for the Source 1 KeyValues format family.

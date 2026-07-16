@@ -1,5 +1,19 @@
 # Replay
 
+## Sample
+
+```ts
+import { openReplay } from "@playsrc/replay"
+
+const replay = await openReplay(demo, game)
+const snapshot = replay.seek(tick)
+```
+
+```rust
+let mut replay = playsrc_replay::Replay::open(demo, game)?;
+let snapshot = replay.seek(tick)?;
+```
+
 ## Objective
 
 Produce authoritative replay state from parsed Source demo records.

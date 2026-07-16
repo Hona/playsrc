@@ -1,5 +1,19 @@
 # Movement
 
+## Sample
+
+```ts
+import { createMovement } from "@playsrc/movement"
+
+const movement = createMovement(collision)
+const nextPlayer = movement.step(player, command, tick)
+```
+
+```rust
+let movement = playsrc_movement::Movement::new(&collision);
+let next_player = movement.step(player, command, tick)?;
+```
+
 ## Objective
 
 Advance generic Source player movement from commands and world queries.

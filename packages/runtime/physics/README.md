@@ -1,5 +1,19 @@
 # Physics
 
+## Sample
+
+```ts
+import { createPhysicsWorld } from "@playsrc/physics"
+
+const physics = createPhysicsWorld(collision)
+physics.step(tickInterval)
+```
+
+```rust
+let mut physics = playsrc_physics::World::new(collision);
+physics.step(tick_interval)?;
+```
+
 ## Objective
 
 Advance Source-style rigid bodies, constraints, and physical interactions deterministically.

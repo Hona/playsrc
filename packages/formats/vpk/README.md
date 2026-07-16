@@ -1,5 +1,19 @@
 # VPK
 
+## Sample
+
+```ts
+import { openVpk } from "@playsrc/vpk"
+
+const archive = await openVpk(file)
+const bytes = await archive.read("materials/example.vmt")
+```
+
+```rust
+let archive = playsrc_vpk::Vpk::open("pak01_dir.vpk")?;
+let bytes = archive.read("materials/example.vmt")?;
+```
+
 ## Objective
 
 Index and read Source 1 VPK archives by exact logical path.

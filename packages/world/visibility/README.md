@@ -1,5 +1,19 @@
 # Visibility
 
+## Sample
+
+```ts
+import { createVisibility } from "@playsrc/visibility"
+
+const visibility = createVisibility(map)
+const visible = visibility.visibleSet(cameraPosition)
+```
+
+```rust
+let visibility = playsrc_visibility::Visibility::from_map(&map)?;
+let visible = visibility.visible_set(camera_position);
+```
+
 ## Objective
 
 Determine potentially visible Source world state independently of a renderer.

@@ -1,5 +1,17 @@
 # Map
 
+## Sample
+
+```ts
+import { compileMap } from "@playsrc/map"
+
+const map = await compileMap(content, "maps/pl_upward.bsp")
+```
+
+```rust
+let map = playsrc_map::compile(&content, "maps/pl_upward.bsp")?;
+```
+
 ## Objective
 
 Assemble parsed Source data and semantic domain outputs into one canonical playsrc map representation.

@@ -1,5 +1,19 @@
 # Collision
 
+## Sample
+
+```ts
+import { createCollisionWorld } from "@playsrc/collision"
+
+const collision = createCollisionWorld(map)
+const hit = collision.traceRay(start, end)
+```
+
+```rust
+let collision = playsrc_collision::World::from_map(&map)?;
+let hit = collision.trace_ray(start, end);
+```
+
 ## Objective
 
 Represent collision geometry and answer deterministic spatial queries.

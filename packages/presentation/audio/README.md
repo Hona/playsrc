@@ -1,5 +1,14 @@
 # Audio
 
+## Sample
+
+```ts
+import { createAudioSystem } from "@playsrc/audio"
+
+const audio = createAudioSystem(audioContext, content)
+await audio.play("Weapon_RocketLauncher.Single", origin)
+```
+
 ## Objective
 
 Resolve and present Source sound definitions and audio state.

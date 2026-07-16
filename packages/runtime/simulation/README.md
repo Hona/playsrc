@@ -1,5 +1,23 @@
 # Simulation
 
+## Sample
+
+```ts
+import { createSimulation } from "@playsrc/simulation"
+
+const simulation = createSimulation({ map, game, ruleset })
+simulation.submitCommands(commands)
+simulation.advance(1)
+const snapshot = simulation.readSnapshot()
+```
+
+```rust
+let mut simulation = playsrc_simulation::Simulation::new(map, game, ruleset)?;
+simulation.submit_commands(commands);
+simulation.advance(1)?;
+let snapshot = simulation.snapshot();
+```
+
 ## Objective
 
 Provide the single deterministic authority that advances composed Source gameplay state.

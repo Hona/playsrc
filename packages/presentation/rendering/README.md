@@ -1,5 +1,15 @@
 # Rendering
 
+## Sample
+
+```ts
+import { createRenderer } from "@playsrc/rendering"
+
+const renderer = createRenderer(canvas)
+await renderer.loadMap(map)
+renderer.render(snapshot)
+```
+
 ## Objective
 
 Render canonical Source world, gameplay, and replay state in browser GPU environments.

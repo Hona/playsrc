@@ -1,5 +1,21 @@
 # Asset Store
 
+## Sample
+
+```ts
+import { openAssetStore } from "@playsrc/asset-store"
+
+const store = await openAssetStore(assetDir)
+const hash = await store.put(bytes)
+const stored = await store.get(hash)
+```
+
+```rust
+let store = playsrc_asset_store::open(asset_dir)?;
+let hash = store.put(&bytes)?;
+let stored = store.get(hash)?;
+```
+
 ## Objective
 
 Store and publish immutable compiled playsrc output without duplicating shared objects.

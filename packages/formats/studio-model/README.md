@@ -1,5 +1,17 @@
 # StudioModel
 
+## Sample
+
+```ts
+import { loadStudioModel } from "@playsrc/studio-model"
+
+const model = await loadStudioModel(content, "models/player/soldier.mdl")
+```
+
+```rust
+let model = playsrc_studio_model::load(&content, "models/player/soldier.mdl")?;
+```
+
 ## Objective
 
 Parse the Source 1 StudioModel file family into a coherent model representation.

@@ -1,5 +1,17 @@
 # VMT
 
+## Sample
+
+```ts
+import { parseVmt } from "@playsrc/vmt"
+
+const document = parseVmt(text)
+```
+
+```rust
+let document = playsrc_vmt::parse(text)?;
+```
+
 ## Objective
 
 Parse Source 1 VMT material documents without conflating document syntax with runtime material behavior.

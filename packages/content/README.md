@@ -1,5 +1,19 @@
 # Content
 
+## Sample
+
+```ts
+import { createContent, directory } from "@playsrc/content"
+
+const content = createContent([directory(tf2Dir)])
+const bytes = await content.read("materials/concrete/concretefloor001a.vmt")
+```
+
+```rust
+let content = playsrc_content::Content::new([playsrc_content::directory(tf2_dir)]);
+let bytes = content.read("materials/concrete/concretefloor001a.vmt")?;
+```
+
 ## Objective
 
 Resolve exact Source logical paths across explicitly configured content providers.

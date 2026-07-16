@@ -16,3 +16,11 @@ Present canonical world, gameplay, and replay state without owning authority.
 - Reconstructing missing authoritative state.
 
 Each child is an independently useful package. This directory is only a navigational group.
+
+## Packages
+
+| Package | Exact responsibility |
+|---|---|
+| [`rendering/`](rendering/) | Browser GPU resources, scenes, views, draw preparation, lighting presentation, interpolation, and frame pacing. |
+| [`particle/`](particle/) | Source particle definitions, operators, initializers, emitters, child systems, events, state advancement, and render data. |
+| [`audio/`](audio/) | Source sound scripts, references, channels, levels, variation, spatialization, mixing, playback lifetime, and browser audio resources. |

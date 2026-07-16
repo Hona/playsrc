@@ -1,5 +1,17 @@
 # VTF
 
+## Sample
+
+```ts
+import { decodeVtf } from "@playsrc/vtf"
+
+const texture = decodeVtf(bytes)
+```
+
+```rust
+let texture = playsrc_vtf::decode(&bytes)?;
+```
+
 ## Objective
 
 Parse and decode Source 1 VTF texture resources.

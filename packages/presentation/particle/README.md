@@ -1,5 +1,21 @@
 # Particle
 
+## Sample
+
+```ts
+import { createParticleSystem } from "@playsrc/particle"
+
+const particles = createParticleSystem(definitions)
+particles.emit("rockettrail_red", transform)
+particles.advance(tickInterval)
+```
+
+```rust
+let mut particles = playsrc_particle::System::new(definitions)?;
+particles.emit("rockettrail_red", transform)?;
+particles.advance(tick_interval);
+```
+
 ## Objective
 
 Represent and advance Source particle definitions independently of game and GPU implementations.

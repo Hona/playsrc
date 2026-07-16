@@ -1,5 +1,19 @@
 # Networking
 
+## Sample
+
+```ts
+import { decodeSnapshot, encodeSnapshot } from "@playsrc/networking"
+
+const message = encodeSnapshot(snapshot)
+const received = decodeSnapshot(message)
+```
+
+```rust
+let message = playsrc_networking::encode_snapshot(&snapshot)?;
+let received = playsrc_networking::decode_snapshot(&message)?;
+```
+
 ## Objective
 
 Transport commands and replicated state for online multiplayer without owning gameplay.

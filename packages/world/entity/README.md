@@ -1,5 +1,19 @@
 # Entity
 
+## Sample
+
+```ts
+import { createEntityWorld } from "@playsrc/entity"
+
+const entities = createEntityWorld(map.entities)
+entities.input("main_door", "Open")
+```
+
+```rust
+let mut entities = playsrc_entity::World::new(&map.entities)?;
+entities.input("main_door", "Open")?;
+```
+
 ## Objective
 
 Represent generic Source entity identity, relationships, I/O, and lifecycle behavior.
