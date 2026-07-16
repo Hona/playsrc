@@ -2,16 +2,8 @@
 
 ## Sample
 
-```ts
-import { createMovement } from "@playsrc/movement"
-
-const movement = createMovement(collision)
-const nextPlayer = movement.step(player, command, tick)
-```
-
 ```rust
-let movement = playsrc_movement::Movement::new(&collision);
-let next_player = movement.step(player, command, tick)?;
+let next_player = playsrc_movement::advance(&collision, player, command, parameters)?;
 ```
 
 ## Objective
@@ -23,6 +15,7 @@ Advance generic Source player movement from commands and world queries.
 - Implement shared ground, air, water, ladder, crouch, jump, stair, and velocity behavior.
 - Consume deterministic collision queries and explicit movement configuration.
 - Produce movement state suitable for both authority and prediction.
+- Advance fixed-tick standing/crouched walk state through friction, ground/air acceleration, jump latch, split gravity, multi-plane clipping, ground probes, and 18-unit step route selection.
 
 ## Non-Responsibilities
 

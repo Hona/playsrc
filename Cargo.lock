@@ -432,6 +432,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "playsrc-movement"
+version = "0.1.0"
+dependencies = [
+ "playsrc-collision",
+]
+
+[[package]]
 name = "playsrc-phy"
 version = "0.1.0"
 
