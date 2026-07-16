@@ -49,7 +49,7 @@ The target is Source 1 KeyValues 1 text, the native binary KeyValues tree, the K
 - PHY textual key data belongs to `packages/formats/phy`.
 - DMX `keyvalues`, `keyvalues2`, and `keyvalues2_flat` encodings belong to the DMX format owner proposed by the Source format-universe roadmap; they are not KV1 dialects.
 - Particle-manifest field meanings belong to `packages/presentation/particle`. Sound-event, soundscape, and sentence document schemas belong to the proposed `packages/formats/audio-script` owner, while playback belongs to `packages/presentation/audio`. Item, weapon, population, and game-configuration fields belong to `games/<game>`. KeyValues owns only their accepted KV1 syntax profile.
-- VGUI control construction, layout, resolution selection, conditional override policy, fonts, colors, borders, commands, and interaction belong to `apps/web/<product>` for product UI.
+- VGUI owns generic control construction, resource semantics, layout, resolution selection, conditional override policy, scheme binding, localization binding, commands, focus, input, and interaction. Applications own product UI outside the VGUI subtree plus browser lifecycle, policy, mount roots, and typed adapters.
 - Condition-symbol values and effects belong to the consuming game, application, or tool. KeyValues owns condition token syntax and evaluation against a supplied environment.
 - Logical-path canonicalization, mounted-provider precedence, exact byte retrieval, caching, and provenance acquisition belong to `packages/content`.
 - Command orchestration and inventory generation belong to `tools/playsrc`.

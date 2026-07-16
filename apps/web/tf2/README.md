@@ -8,6 +8,7 @@ Deliver faithful TF2 gameplay and presentation at `tf2.playsrc.online`.
 
 - Assemble the TF2 game, selected TF2 rulesets, simulation, networking, presentation, assets, and product UI.
 - Own browser lifecycle, input, settings, navigation, and application state.
+- Adapt typed VGUI console submissions to owner-defined command and convar operations. `map <catalog-map-name>` selects one declared map; `map https://<allowed-origin>/<path>/<map-name>.bsp` is an explicit bounded playsrc acquisition operation and is not a TF2 parity capability.
 
 ## Non-Responsibilities
 
