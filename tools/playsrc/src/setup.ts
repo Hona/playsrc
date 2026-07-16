@@ -63,9 +63,15 @@ async function toolchainIsReady(
       ["component", "list", "--toolchain", toolchains.rust.toolchain, "--installed"],
       env,
     )
-    return toolchains.rust.components.every((component) =>
+    if (!toolchains.rust.components.every((component) =>
       installed.split("\n").some((line) => line.startsWith(`${component}-`)),
+    )) return false
+    const targets = await run(
+      rustup,
+      ["target", "list", "--toolchain", toolchains.rust.toolchain, "--installed"],
+      env,
     )
+    return toolchains.rust.targets.every((target) => targets.split("\n").includes(target))
   } catch {
     return false
   }
@@ -134,6 +140,7 @@ export async function setup(): Promise<void> {
       "--default-toolchain",
       toolchains.rust.toolchain,
       ...toolchains.rust.components.flatMap((component) => ["--component", component]),
+      ...toolchains.rust.targets.flatMap((target) => ["--target", target]),
     ],
     env,
   )

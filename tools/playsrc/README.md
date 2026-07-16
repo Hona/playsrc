@@ -11,7 +11,7 @@ Provide one stable command interface for repeatable playsrc development, compila
 - Resolve logical targets, call package interfaces, own child processes, and report exact results.
 - Expose short commands for setup, direct-source compilation, development, verification, cache population, GLB export, publication, and release.
 
-`bun run setup` verifies the checked Bun identity and installs the checked Rust toolchain under `sourceCacheDir`. It never changes a user-global Rust installation or shell path.
+`bun run setup` verifies the checked Bun identity and installs the checked Rust toolchain, rustfmt, Clippy, and `wasm32-unknown-unknown` standard library under `sourceCacheDir`. It never changes a user-global Rust installation or shell path.
 
 Map commands accept one checked logical target. `jump_beef` resolves to its exact TF2 map registry entry and verified raw-source cache objects; aliases and path arguments are rejected.
 

@@ -415,6 +415,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "playsrc-map-wasm"
+version = "0.1.0"
+dependencies = [
+ "playsrc-bsp",
+ "playsrc-map",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "playsrc-material"
 version = "0.1.0"
 dependencies = [
