@@ -2,16 +2,9 @@
 
 ## Sample
 
-```ts
-import { createCollisionWorld } from "@playsrc/collision"
-
-const collision = createCollisionWorld(map)
-const hit = collision.traceRay(start, end)
-```
-
 ```rust
-let collision = playsrc_collision::World::from_map(&map)?;
-let hit = collision.trace_ray(start, end);
+let collision = playsrc_collision::compile(&bsp)?;
+let hit = collision.trace_hull(start, end, hull, contents_mask)?;
 ```
 
 ## Objective
@@ -23,6 +16,7 @@ Represent collision geometry and answer deterministic spatial queries.
 - Build queryable world, brush-model, prop, trigger, and model collision shapes.
 - Perform point contents, ray traces, hull sweeps, overlaps, and contact queries.
 - Preserve Source masks, contents, surfaces, fractions, normals, and solid-state results.
+- Validate immutable BSP brush inputs and sweep points or axis-aligned hulls through Source-space convex half-spaces with the 1/32-inch brush epsilon.
 
 ## Non-Responsibilities
 

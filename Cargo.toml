@@ -9,6 +9,7 @@ members = [
   "packages/formats/phy/rust",
   "packages/content/rust",
   "packages/world/entity/rust",
+  "packages/world/collision/rust",
 ]
 resolver = "2"
 

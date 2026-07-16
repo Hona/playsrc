@@ -378,6 +378,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "playsrc-collision"
+version = "0.1.0"
+dependencies = [
+ "playsrc-bsp",
+]
+
+[[package]]
 name = "playsrc-content"
 version = "0.1.0"
 dependencies = [
