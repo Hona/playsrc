@@ -2,16 +2,10 @@
 
 ## Sample
 
-```ts
-import { createVisibility } from "@playsrc/visibility"
-
-const visibility = createVisibility(map)
-const visible = visibility.visibleSet(cameraPosition)
-```
-
 ```rust
-let visibility = playsrc_visibility::Visibility::from_map(&map)?;
-let visible = visibility.visible_set(camera_position);
+let visibility = playsrc_visibility::compile(&bsp)?;
+let leaf = visibility.locate_leaf(camera_position)?;
+let visible = visibility.visible(from_cluster, to_cluster);
 ```
 
 ## Objective
@@ -23,6 +17,7 @@ Determine potentially visible Source world state independently of a renderer.
 - Represent BSP leaves, clusters, visibility sets, areas, portals, and occluders.
 - Evaluate declared visibility state and map-provided visibility data.
 - Supply bounded visibility results to presentation and networking consumers.
+- Expand Source zero-run PVS/PAS rows and traverse the immutable BSP plane/node tree without selecting renderer draw policy.
 
 ## Non-Responsibilities
 

@@ -10,6 +10,7 @@ members = [
   "packages/content/rust",
   "packages/world/entity/rust",
   "packages/world/collision/rust",
+  "packages/world/visibility/rust",
 ]
 resolver = "2"
 
