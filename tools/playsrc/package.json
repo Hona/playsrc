@@ -1,5 +1,8 @@
 {
   "name": "@playsrc/tool",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "@playsrc/content": "workspace:*"
+  }
 }

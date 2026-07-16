@@ -1,0 +1,9 @@
+{
+  "name": "@playsrc/content",
+  "private": true,
+  "type": "module",
+  "exports": "./src/cache.ts",
+  "dependencies": {
+    "seek-bzip": "2.0.0"
+  }
+}

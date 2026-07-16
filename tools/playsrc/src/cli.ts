@@ -1,14 +1,17 @@
 import { ConfigurationError, loadLocalConfig } from "./config"
 import { setup, SetupError } from "./setup"
+import { ContentCacheError } from "@playsrc/content"
+import { acquireMap, TargetError } from "./targets"
 
 async function main(): Promise<number> {
-  const [command] = process.argv.slice(2)
+  const [command, target] = process.argv.slice(2)
   try {
     if (command === "setup") {
       await setup()
       return 0
     }
-    await loadLocalConfig()
+    const config = await loadLocalConfig()
+    if (command === "compile" || command === "dev") await acquireMap(config, target)
   } catch (error) {
     if (error instanceof ConfigurationError) {
       console.error(`${error.code}: ${error.message}`)
@@ -17,6 +20,14 @@ async function main(): Promise<number> {
     if (error instanceof SetupError) {
       console.error(`OwnerUnavailable: ${error.message}`)
       return 3
+    }
+    if (error instanceof TargetError) {
+      console.error(`${error.code}: ${error.message}`)
+      return 2
+    }
+    if (error instanceof ContentCacheError) {
+      console.error(`${error.code}: ${error.message}`)
+      return 4
     }
     throw error
   }

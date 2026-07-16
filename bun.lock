@@ -5,11 +5,26 @@
     "": {
       "name": "playsrc",
     },
+    "packages/content": {
+      "name": "@playsrc/content",
+      "dependencies": {
+        "seek-bzip": "2.0.0",
+      },
+    },
     "tools/playsrc": {
       "name": "@playsrc/tool",
+      "dependencies": {
+        "@playsrc/content": "workspace:*",
+      },
     },
   },
   "packages": {
+    "@playsrc/content": ["@playsrc/content@workspace:packages/content"],
+
     "@playsrc/tool": ["@playsrc/tool@workspace:tools/playsrc"],
+
+    "commander": ["commander@6.2.1", "", {}, "sha512-U7VdrJFnJgo4xjrHpTzu0yrHPGImdsmD95ZlgYSEajAn2JKzDhDTPG9kBTefmObL2w/ngeZnilk+OV9CG3d7UA=="],
+
+    "seek-bzip": ["seek-bzip@2.0.0", "", { "dependencies": { "commander": "^6.0.0" }, "bin": { "seek-bunzip": "bin/seek-bunzip", "seek-table": "bin/seek-bzip-table" } }, "sha512-SMguiTnYrhpLdk3PwfzHeotrcwi8bNV4iemL9tx9poR/yeaMYwB9VzR1w7b57DuWpuqR8n6oZboi0hj3AxZxQg=="],
   }
 }

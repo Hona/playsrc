@@ -13,6 +13,8 @@ Provide one stable command interface for repeatable playsrc development, compila
 
 `bun run setup` verifies the checked Bun identity and installs the checked Rust toolchain under `sourceCacheDir`. It never changes a user-global Rust installation or shell path.
 
+Map commands accept one checked logical target. `jump_beef` resolves to its exact TF2 map registry entry and verified raw-source cache objects; aliases and path arguments are rejected.
+
 ## Non-Responsibilities
 
 - Implementing parsers, compilers, gameplay, presentation, or asset-store semantics.

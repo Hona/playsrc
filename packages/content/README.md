@@ -23,6 +23,7 @@ Resolve exact Source logical paths across explicitly configured content provider
 - Model mounted providers, search paths, precedence, and reusable raw-source cache entries.
 - Apply declared search-path and archive precedence.
 - Return exact source bytes with provenance, or report every exact location checked.
+- Verify declared HTTPS download sources and retain encoded and decoded bytes as SHA-256-addressed raw-source cache objects.
 
 ## Non-Responsibilities
 

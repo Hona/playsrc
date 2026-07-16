@@ -9,6 +9,7 @@ Implement the complete Team Fortress 2 game over generic Source modules.
 - Own TF2 players, classes, items, attributes, weapons, projectiles, buildings, conditions, teams, and damage behavior.
 - Own TF2 movement differences, prediction state, replication schemas, entities, objectives, game rules, and game-specific presentation mappings.
 - Provide the game behavior used by every TF2 ruleset and product.
+- Declare exact TF2 content-provider targets, including the immutable `jump_beef` download identity consumed by local development.
 
 ## Non-Responsibilities
 
