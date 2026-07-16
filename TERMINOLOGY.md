@@ -8,7 +8,7 @@ This file is normative for playsrc code, documentation, issues, reviews, and roa
 
 **Source 2**: Valve's successor engine generation. Source 2 formats, behavior, interfaces, terminology, compatibility, and future-proofing are excluded from playsrc.
 
-**Clean-room port**: A public implementation containing independently authored code plus code copied or adapted only from sources whose licenses permit inclusion. Restricted implementation text, comments, private symbols, file structure, and control flow never enter the public implementation.
+**Clean-room port**: A public implementation containing independently authored code plus code copied or adapted only from sources whose licenses permit inclusion. Restricted implementation text, comments, implementation-specific symbols, file structure, and control flow never enter the public implementation.
 
 **Game**: One Source 1 title with a distinct content build, player state, movement differences, entities, items, weapons, objectives, rules, prediction state, and networked state.
 
@@ -166,7 +166,7 @@ Every roadmap item has exactly one delivery status: Not started, In progress, Bl
 
 **Legacy path**: A replaced implementation retained beside the current implementation. A completed change contains no legacy path.
 
-**Compatibility layer**: Code preserving an older interface, schema, artifact reader, or behavior after the current contract changes. playsrc does not maintain compatibility layers during private development.
+**Compatibility layer**: Code preserving an older interface, schema, artifact reader, or behavior after the current contract changes. playsrc does not maintain compatibility layers before external consumers exist.
 
 ## Verification
 
