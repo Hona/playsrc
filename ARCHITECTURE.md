@@ -43,7 +43,8 @@ packages/
 |-- presentation/
 |   |-- rendering/
 |   |-- particle/
-|   `-- audio/
+|   |-- audio/
+|   `-- vgui/
 |-- content/
 `-- asset-store/
 ```

@@ -25,7 +25,7 @@ Packages are grouped by exact responsibility:
 | `formats/` | KeyValues; BSP compiled maps; VPK archives; VTF textures; VMT material documents; StudioModel MDL, VVD, VTX, and ANI files; PHY physics assets; and Source DEM recordings. |
 | `world/` | Canonical map assembly; resolved material semantics; entity identity, parenting, and ordered I/O; collision shapes, contents, ray traces, hull sweeps, and overlaps; BSP leaves, clusters, PVS, areas, portals, and occluders. |
 | `runtime/` | Ground, air, water, ladder, crouch, jump, and stair movement; rigid bodies and constraints; deterministic ticks, commands, events, and snapshots; multiplayer replication and reconciliation; replay timelines and seeking. |
-| `presentation/` | Browser GPU scenes, views, lighting, and frame presentation; Source particle definitions and simulation; sound scripts, channels, spatialization, mixing, and browser audio playback. |
+| `presentation/` | Browser GPU scenes, views, lighting, and frame presentation; Source particle definitions and simulation; sound scripts, channels, spatialization, mixing, and browser audio playback; Source VGUI panels, controls, schemes, localization binding, HUD animations, focus, input, and DOM/CSS presentation. |
 | `content/` | Exact logical-path lookup across configured directories, VPK providers, BSP PAK providers, and reusable raw-source cache entries with declared mount precedence and provenance. |
 | `asset-store/` | SHA-256-addressed immutable objects; map, game, and application roots; catalogs; mutable channels; reachability validation; local storage; and remote synchronization. |
 

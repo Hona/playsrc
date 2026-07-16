@@ -8,7 +8,7 @@ The project roadmap contains 12 named targets. The TF2-first completion denomina
 
 | Target | Lifecycle | Required roadmap aggregation |
 |---|---|---|
-| Reusable package set | Active | All 23 package leaf roadmaps plus the format-universe roadmap |
+| Reusable package set | Active | All 24 package leaf roadmaps plus the format-universe roadmap |
 | TF2 game | Active | Reusable package set and `games/tf2/ROADMAP.md` |
 | TF2 jump | Active | TF2 game, `games/tf2/rulesets/ROADMAP.md`, and `games/tf2/rulesets/jump/ROADMAP.md` |
 | Recorded TF2 replay | Active | Demo, networking, replay, TF2 recorded-state interpretation, presentation, and an unresolved web-application owner |
@@ -58,9 +58,9 @@ The project roadmap contains 12 named targets. The TF2-first completion denomina
 
 | Target behavior | playsrc behavior | Evidence | Status |
 |---|---|---|---|
-| Reusable package set has one accepted finite denominator for every declared format, world, runtime, presentation, content, and asset-store owner. | The format-universe roadmap and 20 format, world, runtime, content, and asset-store leaf roadmaps are Draft and contain Blocked requirements; the 3 presentation leaf roadmaps are absent. | Aggregation audit of all registered package roadmap review records, Ready rows, inventories, and exit criteria. | Blocked |
-| TF2 game behavior composes completed generic packages through one accepted TF2 denominator. | The TF2 behavior denominator has not been written or accepted. | Aggregation audit of the accepted TF2 roadmap, package dependencies, integration evidence, and TF2 exit criteria. | Not started |
-| TF2 jump owns a finite course and timed-run ruleset over completed TF2 behavior. | The TF2 ruleset universe and jump denominator have not been written or accepted. | Aggregation audit of ruleset-inventory authority, TF2 jump Ready rows, gameplay vectors, and product integration. | Not started |
+| Reusable package set has one accepted finite denominator for every declared format, world, runtime, presentation, content, and asset-store owner. | The format-universe roadmap and all 24 package leaf roadmaps are Draft and contain Blocked requirements. | Aggregation audit of all registered package roadmap review records, Ready rows, inventories, and exit criteria. | Blocked |
+| TF2 game behavior composes completed generic packages through one accepted TF2 denominator. | The TF2 roadmap and inventories are Draft and contain Blocked requirements. | Aggregation audit of the accepted TF2 roadmap, package dependencies, integration evidence, and TF2 exit criteria. | Blocked |
+| TF2 jump owns a finite course and timed-run ruleset over completed TF2 behavior. | The TF2 ruleset-universe and jump roadmaps are Draft and contain Blocked requirements. | Aggregation audit of ruleset-inventory authority, TF2 jump Ready rows, gameplay vectors, and product integration. | Blocked |
 | Recorded TF2 demos produce authoritative replay state and a declared browser replay experience without gameplay resimulation. | Replay leaf roadmaps are absent and no web application owns the replay experience. | Fixed-demo timeline, seek, snapshot, event, and presentation comparisons plus application integration evidence. | Blocked |
 | The TF2 browser product delivers its finite declared experiences through completed modules without duplicate authority. | The TF2 application experience denominator and required service endpoint set have not been written or accepted. | Browser captures and integration records for every accepted experience, content build, browser target, and module boundary. | Not started |
 | The Tempus browser product delivers its finite declared TF2 jump, map, course, record, ranking, and external-integration experiences. | The Tempus application experience denominator and external interface inventory have not been written or accepted. | Browser captures and fixed API integration records for every accepted Tempus experience and failure state. | Not started |
@@ -99,6 +99,7 @@ An Aggregation roadmap defines a finite child universe or cross-child exit crite
 | Rendering | Behavior | Active | `packages/presentation/rendering/ROADMAP.md` |
 | Particle | Behavior | Active | `packages/presentation/particle/ROADMAP.md` |
 | Audio | Behavior | Active | `packages/presentation/audio/ROADMAP.md` |
+| VGUI | Behavior | Active | `packages/presentation/vgui/ROADMAP.md` |
 | Content | Behavior | Active | `packages/content/ROADMAP.md` |
 | Asset store | Behavior | Active | `packages/asset-store/ROADMAP.md` |
 | TF2 game | Behavior | Active | `games/tf2/ROADMAP.md` |
@@ -144,8 +145,8 @@ The project is Complete only when the TF2-first criteria pass, all 3 Future targ
 
 ## Blockers
 
-- **Package denominators:** the format-universe roadmap and 20 format, world, runtime, content, and asset-store leaf roadmaps are Draft and contain Blocked requirements; the 3 presentation leaf roadmaps are absent. Checked every current package roadmap and inventory, `packages/**/README.md`, `ARCHITECTURE.md`, and this root roadmap.
-- **TF2 denominators:** TF2 behavior, TF2 ruleset-universe, and TF2 jump roadmaps do not exist. Checked `games/tf2/**/README.md` and the current root roadmap.
+- **Package denominators:** the format-universe roadmap and all 24 package leaf roadmaps are Draft and contain Blocked requirements. Checked every current package roadmap and inventory, `packages/**/README.md`, `ARCHITECTURE.md`, and this root roadmap.
+- **TF2 denominators:** TF2 behavior, TF2 ruleset-universe, and TF2 jump roadmaps are Draft and contain Blocked requirements. Checked every TF2 roadmap and inventory plus the current root roadmap.
 - **Replay application owner:** `packages/runtime/replay` owns replay authority and names replay applications as consumers, but `apps/web/tf2` and `apps/web/tempus` do not own a recorded-replay experience and no dedicated replay application is declared. Checked those three owner READMEs, `apps/web/README.md`, and `ARCHITECTURE.md`.
 - **Active product denominators:** the TF2, Tempus, API, asset-service, tool-operation, and infrastructure environment universes are not finite. Checked their owner READMEs and the current root roadmap.
 - **Online multiplayer denominator:** session types, selected TF2 rulesets, browser transports, replicated-state inventory, matchmaking behavior, server lifecycle, and hosted environments are not declared as finite sets. Checked networking, simulation, TF2 web, matchmaking, game-server, and infrastructure READMEs.

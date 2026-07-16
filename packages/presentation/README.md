@@ -24,3 +24,4 @@ Each child is an independently useful package. This directory is only a navigati
 | [`rendering/`](rendering/) | Browser GPU resources, scenes, views, draw preparation, lighting presentation, interpolation, and frame pacing. |
 | [`particle/`](particle/) | Source particle definitions, operators, initializers, emitters, child systems, events, state advancement, and render data. |
 | [`audio/`](audio/) | Source sound scripts, references, channels, levels, variation, spatialization, mixing, playback lifetime, and browser audio resources. |
+| [`vgui/`](vgui/) | Source panel trees, controls, layouts, schemes, localization binding, HUD animations, focus, input, proportional scaling, and direct DOM/CSS presentation. |
