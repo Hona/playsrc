@@ -16,11 +16,10 @@ Represent generic Source entity identity, relationships, I/O, and lifecycle beha
 
 - Preserve entity keyvalues, identifiers, parent relationships, references, and ordered outputs.
 - Provide generic lifecycle and event primitives shared across games.
-- Own bounded live slot/generation handles, ordered target resolution, hierarchy transforms, delayed I/O, generic mover/logic/filter/trigger state, and canonical snapshots behind one Entity phase interface.
-- Emit typed mover, brush-state, trigger-effect, and block-damage requests without executing Movement, Collision, game, Jump, or presentation behavior.
+- Own bounded live slot/generation handles, ordered target resolution, hierarchy transforms, delayed I/O, generic mover/logic/filter/trigger state, selected-game external class bindings, damage-addressed button transitions, and canonical snapshots behind one Entity phase interface.
+- Emit typed mover, brush-state, trigger-effect, block-damage, and game-input requests without executing Movement, Collision, game, Jump, or presentation behavior.
 - Classify handled, inert, unsupported, malformed, missing, and unknown entity data explicitly.
 - Parse bounded BSP entity text into ordered duplicate-preserving definitions, first-field structural views, brush-model identities, and parsed or malformed output actions.
-- Compile enabled client `trigger_teleport` definitions against exact translated Collision brush models, resolve ordered `info_teleport_destination` targets, and return position/yaw changes while leaving velocity with the game/movement owner.
 
 ## Non-Responsibilities
 

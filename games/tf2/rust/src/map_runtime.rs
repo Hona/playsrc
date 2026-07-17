@@ -3,10 +3,29 @@ use std::collections::BTreeMap;
 use playsrc_collision::Hull;
 use playsrc_entity::{
     BehaviorState, ContactKind, ContactRecord, EntityHandle, EntityWorld, EntityWorldConfig,
-    ModelBounds, RuntimeFailure, RuntimeRequest, Transform, Transition, TransitionBatch,
-    TriggerKind, Variant, WorldCommand,
+    EventTarget, InputRecord, ModelBounds, RuntimeFailure, RuntimeRequest, Transform, Transition,
+    TransitionBatch, TriggerKind, Variant, WorldCommand,
 };
 use playsrc_movement::{Error as MoveError, Tracer};
+
+pub const CONTENTS_RED_TEAM: u32 = 0x800;
+pub const CONTENTS_BLUE_TEAM: u32 = 0x1000;
+
+pub fn respawn_barrier_collides(
+    barrier_team: Option<u8>,
+    player_movement: bool,
+    contents_mask: u32,
+    team_win: bool,
+) -> bool {
+    if team_win || !player_movement {
+        return false;
+    }
+    match barrier_team {
+        Some(2) => contents_mask & CONTENTS_RED_TEAM != 0,
+        Some(3) => contents_mask & CONTENTS_BLUE_TEAM != 0,
+        _ => false,
+    }
+}
 
 pub trait GameplayWorld: Tracer {
     fn overlaps_model_hull(
@@ -30,6 +49,7 @@ pub struct MapCounts {
     pub teleport_triggers: u32,
     pub teleport_destinations: u32,
     pub regenerate_zones: u32,
+    pub respawn_rooms: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -70,11 +90,12 @@ pub enum Effect {
         trigger: u32,
         destination: u32,
         position: [f32; 3],
-        yaw_degrees: Option<f32>,
+        angles: Option<[f32; 3]>,
     },
     Hurt {
         trigger: u32,
         damage_per_second: f32,
+        contact: ContactKind,
     },
     Push {
         trigger: u32,
@@ -84,7 +105,52 @@ pub enum Effect {
     Regenerate {
         entity: u32,
         team: Option<u8>,
+        associated_model: Option<u32>,
     },
+    RespawnRoom {
+        entity: u32,
+        team: Option<u8>,
+        contact: ContactKind,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PlayerContactFacts {
+    pub team: u8,
+    pub class: u8,
+    pub observer: bool,
+    pub conditions: [u32; 5],
+    pub winning_team: Option<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum GameFilter {
+    Team { team: u8, negated: bool },
+    Class { class: u8, negated: bool },
+    Condition { condition: u8, negated: bool },
+}
+
+impl GameFilter {
+    fn passes(&self, player: PlayerContactFacts) -> bool {
+        match *self {
+            Self::Team { team, negated } => {
+                if player.winning_team == Some(player.team) {
+                    true
+                } else {
+                    (player.team == team) != negated
+                }
+            }
+            Self::Class { class, negated } => {
+                (!player.observer && player.class == class) != negated
+            }
+            Self::Condition { condition, negated } => {
+                let value = usize::from(condition);
+                let present =
+                    value < 160 && player.conditions[value / 32] & (1_u32 << (value % 32)) != 0;
+                present != negated
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -99,6 +165,36 @@ pub struct MapPhase {
     pub events: Vec<EntityEvent>,
     pub effects: Vec<Effect>,
     pub contacts: Vec<TriggerContact>,
+    pub mover_requests: Vec<MoverRequest>,
+    pub carry: [f32; 3],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MoverRequest {
+    pub request_id: u64,
+    pub entity: u32,
+    pub model: Option<u32>,
+    pub start: [f32; 3],
+    pub destination: [f32; 3],
+    pub speed: f32,
+    pub opening: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MoverResultKind {
+    Progress,
+    Completed,
+    BlockedStart,
+    BlockedStay,
+    BlockedEnd,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MoverResult {
+    pub request_id: u64,
+    pub entity: u32,
+    pub kind: MoverResultKind,
+    pub transform: Transform,
     pub carry: [f32; 3],
 }
 
@@ -117,6 +213,7 @@ impl MapPhase {
         self.events.append(&mut other.events);
         self.effects.append(&mut other.effects);
         self.contacts.append(&mut other.contacts);
+        self.mover_requests.append(&mut other.mover_requests);
         self.carry = add(self.carry, other.carry);
     }
 }
@@ -128,35 +225,40 @@ struct Volume {
     model: usize,
     origin: [f32; 3],
     kind: VolumeKind,
+    touching: bool,
 }
 
 #[derive(Clone, Debug)]
 enum VolumeKind {
     Generic,
-    Regenerate { enabled: bool, team: Option<u8> },
+    Regenerate {
+        enabled: bool,
+        team: Option<u8>,
+        associated_model: Option<u32>,
+    },
+    RespawnRoom {
+        enabled: bool,
+        team: Option<u8>,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
 struct TeleportDestination {
     source: u32,
     position: [f32; 3],
-    yaw_degrees: f32,
+    angles: [f32; 3],
 }
 
 #[derive(Clone, Copy, Debug)]
 struct TeleportLink {
     destination: TeleportDestination,
+    landmark: Option<TeleportDestination>,
     preserve_angles: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct ActiveMover {
     request_id: u64,
-    entity: EntityHandle,
-    model: Option<usize>,
-    position: [f32; 3],
-    destination: [f32; 3],
-    speed: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -167,8 +269,10 @@ pub struct MapRuntime {
     volumes: Vec<Volume>,
     teleports: BTreeMap<EntityHandle, TeleportLink>,
     movers: BTreeMap<EntityHandle, ActiveMover>,
+    game_filters: BTreeMap<Vec<u8>, GameFilter>,
     counts: MapCounts,
     next_producer_sequence: u64,
+    last_player_position: [f32; 3],
 }
 
 impl MapRuntime {
@@ -181,8 +285,44 @@ impl MapRuntime {
         let config = EntityWorldConfig {
             tick_interval,
             source_identity,
-            registry_identity: 0x5446_325f_454e_5432,
+            registry_identity: 0x5446_325f_454e_5433,
             model_bounds,
+            external_classes: vec![
+                playsrc_entity::ExternalClassBinding {
+                    classname: b"func_regenerate".to_vec(),
+                    inputs: [b"Enable".as_slice(), b"Disable", b"Toggle"]
+                        .into_iter()
+                        .map(<[u8]>::to_vec)
+                        .collect(),
+                },
+                playsrc_entity::ExternalClassBinding {
+                    classname: b"func_respawnroom".to_vec(),
+                    inputs: [
+                        b"SetActive".as_slice(),
+                        b"SetInactive",
+                        b"ToggleActive",
+                        b"RoundActivate",
+                    ]
+                    .into_iter()
+                    .map(<[u8]>::to_vec)
+                    .collect(),
+                },
+                playsrc_entity::ExternalClassBinding {
+                    classname: b"filter_activator_tfteam".to_vec(),
+                    inputs: [b"TestActivator".as_slice(), b"RoundSpawn", b"RoundActivate"]
+                        .into_iter()
+                        .map(<[u8]>::to_vec)
+                        .collect(),
+                },
+                playsrc_entity::ExternalClassBinding {
+                    classname: b"filter_tf_class".to_vec(),
+                    inputs: vec![b"TestActivator".to_vec()],
+                },
+                playsrc_entity::ExternalClassBinding {
+                    classname: b"filter_tf_condition".to_vec(),
+                    inputs: vec![b"TestActivator".to_vec()],
+                },
+            ],
             ..EntityWorldConfig::default()
         };
         let (mut world, _) = EntityWorld::compile(graph, config)?;
@@ -215,27 +355,73 @@ impl MapRuntime {
             }
         }
 
-        let mut destinations = BTreeMap::<Vec<u8>, TeleportDestination>::new();
+        let mut game_filters = BTreeMap::new();
         for entity in &graph.entities {
-            if class(entity, b"info_teleport_destination") {
-                let Some(name) = entity.targetname.clone().filter(|value| !value.is_empty()) else {
+            let Some(name) = entity.targetname.as_ref().filter(|name| !name.is_empty()) else {
+                continue;
+            };
+            let negated = integer(entity, b"Negated", 0)? != 0;
+            let filter = if class(entity, b"filter_activator_tfteam") {
+                let team = integer(entity, b"TeamNum", 0)?;
+                if !(0..=u8::MAX as i32).contains(&team) {
                     return Err(invalid(entity.index));
-                };
-                let position = vector(entity, b"origin", None)?;
+                }
+                Some(GameFilter::Team {
+                    team: team as u8,
+                    negated,
+                })
+            } else if class(entity, b"filter_tf_class") {
+                let class = integer(entity, b"tfclass", 0)?;
+                if !(0..=u8::MAX as i32).contains(&class) {
+                    return Err(invalid(entity.index));
+                }
+                Some(GameFilter::Class {
+                    class: class as u8,
+                    negated,
+                })
+            } else if class(entity, b"filter_tf_condition") {
+                let condition = integer(entity, b"condition", 0)?;
+                if !(0..160).contains(&condition) {
+                    return Err(invalid(entity.index));
+                }
+                Some(GameFilter::Condition {
+                    condition: condition as u8,
+                    negated,
+                })
+            } else {
+                None
+            };
+            if let Some(filter) = filter
+                && game_filters.insert(ascii_lower(name), filter).is_some()
+            {
+                return Err(invalid(entity.index));
+            }
+        }
+
+        let mut points = BTreeMap::<Vec<u8>, TeleportDestination>::new();
+        let mut destination_count = 0_u32;
+        for entity in &graph.entities {
+            if let Some(name) = entity.targetname.clone().filter(|value| !value.is_empty()) {
+                let position = vector(entity, b"origin", Some([0.0; 3]))?;
                 let angles = vector(entity, b"angles", Some([0.0; 3]))?;
-                destinations.insert(
-                    ascii_lower(&name),
-                    TeleportDestination {
+                points
+                    .entry(ascii_lower(&name))
+                    .or_insert(TeleportDestination {
                         source: u32::try_from(entity.index).map_err(|_| invalid(entity.index))?,
                         position,
-                        yaw_degrees: angles[1],
-                    },
-                );
+                        angles,
+                    });
+            }
+            if class(entity, b"info_teleport_destination") {
+                if entity.targetname.as_ref().is_none_or(Vec::is_empty) {
+                    return Err(invalid(entity.index));
+                }
+                destination_count = destination_count.saturating_add(1);
             }
         }
 
         let mut counts = MapCounts {
-            teleport_destinations: u32::try_from(destinations.len()).unwrap_or(u32::MAX),
+            teleport_destinations: destination_count,
             ..MapCounts::default()
         };
         let mut volumes = Vec::new();
@@ -277,19 +463,25 @@ impl MapRuntime {
                     model,
                     origin,
                     kind: VolumeKind::Generic,
+                    touching: false,
                 });
                 if kind == TriggerKind::Teleport {
                     let target = field(entity, b"target")
                         .filter(|value| !value.is_empty())
                         .ok_or_else(|| invalid(entity.index))?;
-                    let destination = *destinations
+                    let destination = *points
                         .get(&ascii_lower(target))
                         .ok_or_else(|| invalid(entity.index))?;
+                    let landmark = field(entity, b"landmark")
+                        .filter(|value| !value.is_empty())
+                        .and_then(|name| points.get(&ascii_lower(name)))
+                        .copied();
                     let flags = integer(entity, b"spawnflags", 0)?;
                     teleports.insert(
                         handle,
                         TeleportLink {
                             destination,
+                            landmark,
                             preserve_angles: flags & 0x20 != 0,
                         },
                     );
@@ -297,15 +489,21 @@ impl MapRuntime {
             } else if class(entity, b"func_regenerate") {
                 counts.regenerate_zones += 1;
                 let source = u32::try_from(entity.index).map_err(|_| invalid(entity.index))?;
-                let team = match integer(entity, b"TeamNum", 0)? {
-                    0 => None,
-                    2 => Some(2),
-                    3 => Some(3),
-                    _ => return Err(invalid(entity.index)),
-                };
+                let team = source_team(entity)?;
+                let associated_model = field(entity, b"associatedmodel")
+                    .filter(|name| !name.is_empty())
+                    .and_then(|name| {
+                        graph.entities.iter().find(|candidate| {
+                            candidate
+                                .targetname
+                                .as_deref()
+                                .is_some_and(|target| target.eq_ignore_ascii_case(name))
+                        })
+                    })
+                    .and_then(|candidate| u32::try_from(candidate.index).ok());
                 volumes.push(Volume {
                     source,
-                    handle: None,
+                    handle: source_handles.get(&source).copied(),
                     model: entity
                         .bsp_model_index
                         .ok_or_else(|| invalid(entity.index))?,
@@ -313,7 +511,26 @@ impl MapRuntime {
                     kind: VolumeKind::Regenerate {
                         enabled: integer(entity, b"StartDisabled", 0)? == 0,
                         team,
+                        associated_model,
                     },
+                    touching: false,
+                });
+            } else if class(entity, b"func_respawnroom") {
+                counts.respawn_rooms += 1;
+                let source = u32::try_from(entity.index).map_err(|_| invalid(entity.index))?;
+                let team = source_team(entity)?;
+                volumes.push(Volume {
+                    source,
+                    handle: source_handles.get(&source).copied(),
+                    model: entity
+                        .bsp_model_index
+                        .ok_or_else(|| invalid(entity.index))?,
+                    origin: vector(entity, b"origin", Some([0.0; 3]))?,
+                    kind: VolumeKind::RespawnRoom {
+                        enabled: integer(entity, b"StartDisabled", 0)? == 0,
+                        team,
+                    },
+                    touching: false,
                 });
             }
         }
@@ -325,8 +542,10 @@ impl MapRuntime {
             volumes,
             teleports,
             movers: BTreeMap::new(),
+            game_filters,
             counts,
             next_producer_sequence: 1,
+            last_player_position: [0.0; 3],
         })
     }
 
@@ -344,6 +563,32 @@ impl MapRuntime {
         self.source_handles.get(&source).copied()
     }
 
+    pub fn input(
+        &mut self,
+        tick: u64,
+        source: u32,
+        input: &[u8],
+        value: Variant,
+    ) -> Result<MapPhase, MapError> {
+        let handle = self
+            .source_handle(source)
+            .ok_or(MapError::MissingEntity(source))?;
+        let batch = self.world.phase(
+            tick,
+            &[WorldCommand::Input(InputRecord {
+                target: EventTarget::Direct(handle),
+                input: input.to_vec(),
+                value,
+                activator: Some(self.player),
+                caller: Some(self.player),
+                output_action: None,
+                producer_sequence: self.next_producer_sequence,
+            })],
+        )?;
+        self.next_producer_sequence += 1;
+        self.consume(batch).map_err(MapError::from)
+    }
+
     pub fn accepts_course_trigger(&self, source: u32) -> bool {
         self.volumes
             .iter()
@@ -352,84 +597,86 @@ impl MapRuntime {
 
     pub fn begin_tick<W: GameplayWorld>(
         &mut self,
-        collision: &W,
+        _collision: &W,
         input: BeginTickInput,
     ) -> Result<MapPhase, MapError> {
+        self.last_player_position = input.player_position;
         let mut commands = Vec::new();
         if let Some(source) = input.activate_entity {
             let handle = self
                 .source_handle(source)
                 .ok_or(MapError::MissingEntity(source))?;
-            commands.push(WorldCommand::EmitOutput {
+            commands.push(WorldCommand::Damage {
                 entity: handle,
-                output: b"OnDamaged".to_vec(),
-                value: Variant::Void,
-                activator: Some(self.player),
-                caller: Some(self.player),
-                delay: 0.0,
+                attacker: Some(self.player),
             });
         }
         let batch = self.world.phase(input.tick, &commands)?;
-        let mut output = self.consume(batch)?;
+        self.consume(batch).map_err(MapError::from)
+    }
 
-        let movers: Vec<_> = self.movers.values().copied().collect();
-        let mut mover_commands = Vec::new();
-        let mut completed = Vec::new();
-        for mover in movers {
-            let delta = sub(mover.destination, mover.position);
-            let distance = length(delta);
-            let step = (mover.speed * input.tick_interval).max(0.0);
-            let next = if distance <= step || distance <= f32::EPSILON {
-                completed.push(mover.entity);
-                mover.destination
-            } else {
-                add(mover.position, scale(delta, step / distance))
-            };
-            if let Some(active) = self.movers.get_mut(&mover.entity) {
-                active.position = next;
-            }
-            let movement = sub(next, mover.position);
-            if input.grounded
-                && movement != [0.0; 3]
-                && let Some(model) = mover.model
-                && collision.overlaps_model_hull(
-                    model,
-                    mover.position,
-                    [
-                        input.player_position[0],
-                        input.player_position[1],
-                        input.player_position[2] - 2.0,
-                    ],
-                    input.player_hull,
-                )?
+    pub fn apply_mover_results(
+        &mut self,
+        tick: u64,
+        results: &[MoverResult],
+    ) -> Result<MapPhase, MapError> {
+        let mut commands = Vec::new();
+        let mut carry = [0.0; 3];
+        let mut seen = std::collections::BTreeSet::new();
+        for result in results {
+            if !seen.insert(result.entity)
+                || result
+                    .transform
+                    .origin
+                    .into_iter()
+                    .chain(result.transform.angles)
+                    .chain(result.carry)
+                    .any(|value| !value.is_finite())
             {
-                output.carry = add(output.carry, movement);
+                return Err(MapError::MissingEntity(result.entity));
             }
-            let angles = self
-                .world
-                .entity(mover.entity)
-                .map_or([0.0; 3], |entity| entity.world_transform.angles);
-            mover_commands.push(WorldCommand::SetWorldTransform {
-                entity: mover.entity,
-                transform: Transform {
-                    origin: next,
-                    angles,
-                },
-            });
-            if completed.contains(&mover.entity) {
-                mover_commands.push(WorldCommand::MoverCompleted {
-                    entity: mover.entity,
-                    request_id: mover.request_id,
-                });
+            let handle = self
+                .source_handle(result.entity)
+                .ok_or(MapError::MissingEntity(result.entity))?;
+            let active = self
+                .movers
+                .get(&handle)
+                .copied()
+                .filter(|active| active.request_id == result.request_id)
+                .ok_or(MapError::MissingEntity(result.entity))?;
+            match result.kind {
+                MoverResultKind::Progress | MoverResultKind::Completed => {
+                    commands.push(WorldCommand::SetWorldTransform {
+                        entity: handle,
+                        transform: result.transform,
+                    });
+                    carry = add(carry, result.carry);
+                    if result.kind == MoverResultKind::Completed {
+                        commands.push(WorldCommand::MoverCompleted {
+                            entity: handle,
+                            request_id: result.request_id,
+                        });
+                        self.movers.remove(&handle);
+                    }
+                }
+                MoverResultKind::BlockedStart
+                | MoverResultKind::BlockedStay
+                | MoverResultKind::BlockedEnd => commands.push(WorldCommand::MoverBlocked {
+                    entity: handle,
+                    request_id: active.request_id,
+                    blocker: self.player,
+                    kind: match result.kind {
+                        MoverResultKind::BlockedStart => playsrc_entity::BlockContactKind::Start,
+                        MoverResultKind::BlockedStay => playsrc_entity::BlockContactKind::Stay,
+                        MoverResultKind::BlockedEnd => playsrc_entity::BlockContactKind::End,
+                        _ => unreachable!(),
+                    },
+                }),
             }
         }
-        for handle in completed {
-            self.movers.remove(&handle);
-        }
-        if !mover_commands.is_empty() {
-            let batch = self.world.phase(input.tick, &mover_commands)?;
-            output.append(self.consume(batch)?);
-        }
+        let batch = self.world.phase(tick, &commands)?;
+        let mut output = self.consume(batch)?;
+        output.carry = carry;
         Ok(output)
     }
 
@@ -439,21 +686,45 @@ impl MapRuntime {
         tick: u64,
         position: [f32; 3],
         hull: Hull,
+        player: PlayerContactFacts,
     ) -> Result<MapPhase, MapError> {
+        self.last_player_position = position;
         let mut commands = Vec::new();
         let mut regenerate_effects = Vec::new();
-        for volume in &self.volumes {
+        for volume in &mut self.volumes {
             let origin = volume
                 .handle
                 .and_then(|handle| self.world.entity(handle))
                 .map_or(volume.origin, |entity| entity.world_transform.origin);
             let overlap = collision.overlaps_model_hull(volume.model, origin, position, hull)?;
             match &volume.kind {
-                VolumeKind::Regenerate { enabled, team } => {
+                VolumeKind::Regenerate {
+                    enabled,
+                    team,
+                    associated_model,
+                } => {
                     if overlap && *enabled {
                         regenerate_effects.push(Effect::Regenerate {
                             entity: volume.source,
                             team: *team,
+                            associated_model: *associated_model,
+                        });
+                    }
+                }
+                VolumeKind::RespawnRoom { enabled, team } => {
+                    let current = overlap && *enabled;
+                    let contact = match (current, volume.touching) {
+                        (true, false) => Some(ContactKind::Enter),
+                        (true, true) => Some(ContactKind::Stay),
+                        (false, true) => Some(ContactKind::Exit),
+                        (false, false) => None,
+                    };
+                    volume.touching = current;
+                    if let Some(contact) = contact {
+                        regenerate_effects.push(Effect::RespawnRoom {
+                            entity: volume.source,
+                            team: *team,
+                            contact,
                         });
                     }
                 }
@@ -472,11 +743,17 @@ impl MapRuntime {
                         (false, false) => None,
                     };
                     if let Some(kind) = kind {
+                        let external_filter_result = self.world.entity(handle).and_then(|entity| {
+                            field(&entity.definition, b"filtername")
+                                .filter(|name| !name.is_empty())
+                                .and_then(|name| self.game_filters.get(&ascii_lower(name)))
+                                .map(|filter| filter.passes(player))
+                        });
                         commands.push(WorldCommand::Contact(ContactRecord {
                             trigger: handle,
                             subject: self.player,
                             kind,
-                            external_filter_result: Some(true),
+                            external_filter_result,
                             producer_sequence: self.next_producer_sequence,
                         }));
                         self.next_producer_sequence += 1;
@@ -580,6 +857,7 @@ impl MapRuntime {
                         entity,
                         world_destination,
                         speed,
+                        opening,
                         ..
                     } => {
                         let current = self
@@ -590,17 +868,16 @@ impl MapRuntime {
                             .world
                             .entity(entity)
                             .and_then(|value| value.definition.bsp_model_index);
-                        self.movers.insert(
-                            entity,
-                            ActiveMover {
-                                request_id,
-                                entity,
-                                model,
-                                position: current,
-                                destination: world_destination,
-                                speed,
-                            },
-                        );
+                        self.movers.insert(entity, ActiveMover { request_id });
+                        output.mover_requests.push(MoverRequest {
+                            request_id,
+                            entity: self.source(entity),
+                            model: model.and_then(|value| u32::try_from(value).ok()),
+                            start: current,
+                            destination: world_destination,
+                            speed,
+                            opening,
+                        });
                         output.events.push(EntityEvent {
                             sequence: record.sequence,
                             kind: EntityEventKind::MoverStarted,
@@ -616,20 +893,33 @@ impl MapRuntime {
                         kind,
                         contact,
                         ..
-                    } if contact != ContactKind::Exit => {
+                    } => {
                         let source = self.source(trigger);
                         let Some(entity) = self.world.entity(trigger) else {
                             continue;
                         };
                         match kind {
                             TriggerKind::Teleport => {
-                                if let Some(link) = self.teleports.get(&trigger) {
+                                if contact != ContactKind::Exit
+                                    && let Some(link) = self.teleports.get(&trigger)
+                                {
+                                    let position = match link.landmark {
+                                        Some(landmark) => add(
+                                            link.destination.position,
+                                            [
+                                                self.last_player_position[0] - landmark.position[0],
+                                                self.last_player_position[1] - landmark.position[1],
+                                                self.last_player_position[2] - landmark.position[2],
+                                            ],
+                                        ),
+                                        None => link.destination.position,
+                                    };
                                     output.effects.push(Effect::Teleport {
                                         trigger: source,
                                         destination: link.destination.source,
-                                        position: link.destination.position,
-                                        yaw_degrees: (!link.preserve_angles)
-                                            .then_some(link.destination.yaw_degrees),
+                                        position,
+                                        angles: (link.landmark.is_none() && !link.preserve_angles)
+                                            .then_some(link.destination.angles),
                                     });
                                 }
                             }
@@ -639,8 +929,12 @@ impl MapRuntime {
                                     BehaviorState::Trigger(state) => state.mutable_value_bits,
                                     _ => 0,
                                 }),
+                                contact,
                             }),
                             TriggerKind::Push => {
+                                if contact == ContactKind::Exit {
+                                    continue;
+                                }
                                 let direction = direction_from_angles(vector(
                                     &entity.definition,
                                     b"pushdir",
@@ -654,6 +948,9 @@ impl MapRuntime {
                                 });
                             }
                             TriggerKind::Catapult => {
+                                if contact == ContactKind::Exit {
+                                    continue;
+                                }
                                 let direction = direction_from_angles(vector(
                                     &entity.definition,
                                     b"launchDirection",
@@ -680,7 +977,37 @@ impl MapRuntime {
                             name: Vec::new(),
                         })
                     }
-                    RuntimeRequest::BrushState { .. } | RuntimeRequest::TriggerEffect { .. } => {}
+                    RuntimeRequest::ExternalInput { entity, input, .. } => {
+                        let source = self.source(entity);
+                        if let Some(volume) = self
+                            .volumes
+                            .iter_mut()
+                            .find(|volume| volume.source == source)
+                        {
+                            match &mut volume.kind {
+                                VolumeKind::Regenerate { enabled, .. } => {
+                                    if input.eq_ignore_ascii_case(b"Enable") {
+                                        *enabled = true;
+                                    } else if input.eq_ignore_ascii_case(b"Disable") {
+                                        *enabled = false;
+                                    } else if input.eq_ignore_ascii_case(b"Toggle") {
+                                        *enabled = !*enabled;
+                                    }
+                                }
+                                VolumeKind::RespawnRoom { enabled, .. } => {
+                                    if input.eq_ignore_ascii_case(b"SetActive") {
+                                        *enabled = true;
+                                    } else if input.eq_ignore_ascii_case(b"SetInactive") {
+                                        *enabled = false;
+                                    } else if input.eq_ignore_ascii_case(b"ToggleActive") {
+                                        *enabled = !*enabled;
+                                    }
+                                }
+                                VolumeKind::Generic => {}
+                            }
+                        }
+                    }
+                    RuntimeRequest::BrushState { .. } => {}
                 },
                 Transition::Diagnostic { entity, .. } => output.events.push(EntityEvent {
                     sequence: record.sequence,
@@ -768,6 +1095,15 @@ fn integer(
     }
 }
 
+fn source_team(entity: &playsrc_entity::Entity) -> Result<Option<u8>, RuntimeFailure> {
+    match integer(entity, b"TeamNum", 0)? {
+        0 => Ok(None),
+        2 => Ok(Some(2)),
+        3 => Ok(Some(3)),
+        _ => Err(invalid(entity.index)),
+    }
+}
+
 fn number(
     entity: &playsrc_entity::Entity,
     name: &[u8],
@@ -794,6 +1130,10 @@ fn vector(
     let Some(value) = field(entity, name) else {
         return default.ok_or_else(|| invalid(entity.index));
     };
+    vector_bytes(value).ok_or_else(|| invalid(entity.index))
+}
+
+fn vector_bytes(value: &[u8]) -> Option<[f32; 3]> {
     let values = std::str::from_utf8(value)
         .ok()
         .map(|value| {
@@ -805,9 +1145,8 @@ fn vector(
         .transpose()
         .ok()
         .flatten()
-        .filter(|values| values.len() == 3 && values.iter().all(|value| value.is_finite()))
-        .ok_or_else(|| invalid(entity.index))?;
-    Ok([values[0], values[1], values[2]])
+        .filter(|values| values.len() == 3 && values.iter().all(|value| value.is_finite()))?;
+    Some([values[0], values[1], values[2]])
 }
 
 fn ascii_lower(value: &[u8]) -> Vec<u8> {
@@ -828,14 +1167,179 @@ fn add(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
-fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
 fn scale(value: [f32; 3], factor: f32) -> [f32; 3] {
     [value[0] * factor, value[1] * factor, value[2] * factor]
 }
 
-fn length(value: [f32; 3]) -> f32 {
-    (value[0] * value[0] + value[1] * value[1] + value[2] * value[2]).sqrt()
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use playsrc_movement::{Error as MoveError, Trace, Tracer};
+
+    #[derive(Clone)]
+    struct AlwaysOverlap;
+
+    impl Tracer for AlwaysOverlap {
+        fn trace(
+            &self,
+            _start: [f32; 3],
+            end: [f32; 3],
+            _hull: Hull,
+            _mask: u32,
+        ) -> Result<Trace, MoveError> {
+            Ok(Trace {
+                fraction: 1.0,
+                start_solid: false,
+                all_solid: false,
+                end,
+                normal: None,
+                hit: None,
+                contents: 0,
+            })
+        }
+    }
+
+    impl GameplayWorld for AlwaysOverlap {
+        fn overlaps_model_hull(
+            &self,
+            _model: usize,
+            _origin: [f32; 3],
+            _position: [f32; 3],
+            _hull: Hull,
+        ) -> Result<bool, MoveError> {
+            Ok(true)
+        }
+    }
+
+    #[test]
+    fn tf_filter_matrix_applies_team_win_negation_class_observer_and_conditions() {
+        let red_soldier = PlayerContactFacts {
+            team: 2,
+            class: 3,
+            observer: false,
+            conditions: [1 << 22, 0, 0, 0, 0],
+            winning_team: None,
+        };
+        assert!(
+            GameFilter::Team {
+                team: 2,
+                negated: false
+            }
+            .passes(red_soldier)
+        );
+        assert!(
+            !GameFilter::Team {
+                team: 3,
+                negated: false
+            }
+            .passes(red_soldier)
+        );
+        assert!(
+            GameFilter::Class {
+                class: 3,
+                negated: false
+            }
+            .passes(red_soldier)
+        );
+        assert!(
+            GameFilter::Condition {
+                condition: 22,
+                negated: false
+            }
+            .passes(red_soldier)
+        );
+
+        let observer = PlayerContactFacts {
+            observer: true,
+            ..red_soldier
+        };
+        assert!(
+            !GameFilter::Class {
+                class: 3,
+                negated: false
+            }
+            .passes(observer)
+        );
+
+        let winner = PlayerContactFacts {
+            winning_team: Some(2),
+            ..red_soldier
+        };
+        assert!(
+            GameFilter::Team {
+                team: 3,
+                negated: true
+            }
+            .passes(winner)
+        );
+    }
+
+    #[test]
+    fn landmark_teleport_preserves_angles_and_applies_relative_offset() {
+        let graph = playsrc_entity::parse(
+            b"{\"classname\"\"info_target\"\"targetname\"\"land\"\"origin\"\"10 0 0\"}{\"classname\"\"info_teleport_destination\"\"targetname\"\"dest\"\"origin\"\"100 5 6\"\"angles\"\"1 2 3\"}{\"classname\"\"trigger_teleport\"\"model\"\"*1\"\"target\"\"dest\"\"landmark\"\"land\"\"spawnflags\"\"1\"}",
+            playsrc_entity::Limits::default(),
+        )
+        .unwrap();
+        let mut map = MapRuntime::compile(
+            &graph,
+            0.015,
+            1,
+            vec![ModelBounds {
+                model: 1,
+                mins: [-8.0; 3],
+                maxs: [8.0; 3],
+            }],
+        )
+        .unwrap();
+        let phase = map
+            .contact_phase(
+                &AlwaysOverlap,
+                0,
+                [20.0, 4.0, 2.0],
+                Hull {
+                    mins: [0.0; 3],
+                    maxs: [0.0; 3],
+                },
+                PlayerContactFacts::default(),
+            )
+            .unwrap();
+        assert!(phase.effects.iter().any(|effect| matches!(
+            effect,
+            Effect::Teleport {
+                position: [110.0, 9.0, 8.0],
+                angles: None,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn respawn_barrier_policy_uses_team_contents_and_opens_on_team_win() {
+        assert!(respawn_barrier_collides(
+            Some(2),
+            true,
+            CONTENTS_RED_TEAM,
+            false
+        ));
+        assert!(!respawn_barrier_collides(
+            Some(2),
+            true,
+            CONTENTS_BLUE_TEAM,
+            false
+        ));
+        assert!(!respawn_barrier_collides(
+            Some(2),
+            true,
+            CONTENTS_RED_TEAM,
+            true
+        ));
+        assert!(!respawn_barrier_collides(None, true, u32::MAX, false));
+        assert!(!respawn_barrier_collides(
+            Some(3),
+            false,
+            CONTENTS_BLUE_TEAM,
+            false
+        ));
+    }
 }
