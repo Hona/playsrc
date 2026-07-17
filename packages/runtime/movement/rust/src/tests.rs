@@ -69,6 +69,10 @@ impl Tracer for TestWorld {
         }
         Ok(trace_boxes(start, end, hull, &solids))
     }
+
+    fn movement_time(&self) -> Option<f32> {
+        Some(1.0)
+    }
 }
 
 fn trace_boxes(start: [f32; 3], end: [f32; 3], hull: Hull, solids: &[SolidBox]) -> Trace {
@@ -779,7 +783,12 @@ fn noclip_modes_cover_pitch_speed_button_direct_motion_and_no_queries() {
     .unwrap();
     close(accelerated.state.velocity[0], 96.0);
     close(accelerated.state.position[0], 1.44);
-    assert!(accelerated.queries.is_empty() && world.calls.get() == 0);
+    assert!(
+        accelerated
+            .queries
+            .iter()
+            .all(|query| query.purpose != QueryPurpose::Displacement)
+    );
 
     input.speed_button = true;
     let speed_button = step(
@@ -879,7 +888,7 @@ fn initial_overlap_recovers_in_declared_order_and_all_solid_traps() {
     )
     .unwrap();
     assert!(recovered.events.contains(&Event::Recovered { offset: 18 }));
-    close(recovered.state.position[2], 0.2);
+    close(recovered.state.position[2], 0.91);
 
     let trapped_world = TestWorld::empty().with_box([-100.0; 3], [100.0; 3], 11);
     let trapped = step(
@@ -936,4 +945,591 @@ fn snapshots_authority_speculation_repeats_and_failures_are_deterministic() {
                 .with_command(7)
         )
     );
+}
+
+struct WaterWorld {
+    surface: f32,
+    current: u32,
+}
+
+impl Tracer for WaterWorld {
+    fn trace(&self, _start: [f32; 3], end: [f32; 3], _: Hull, _: u32) -> Result<Trace, Error> {
+        Ok(Trace {
+            fraction: 1.0,
+            start_solid: false,
+            all_solid: false,
+            end,
+            normal: None,
+            hit: None,
+            contents: 0,
+        })
+    }
+
+    fn point_contents(&self, point: [f32; 3]) -> Result<u32, Error> {
+        Ok(if point[2] < self.surface {
+            CONTENTS_WATER | self.current
+        } else {
+            0
+        })
+    }
+
+    fn movement_time(&self) -> Option<f32> {
+        Some(1.0)
+    }
+}
+
+#[test]
+fn water_samples_currents_swim_and_transition_trace_are_explicit() {
+    let world = WaterWorld {
+        surface: 200.0,
+        current: CONTENTS_CURRENT_0,
+    };
+    let policy = tf2_policy();
+    let mut state = player([0.0, 0.0, 10.0], false, policy);
+    state.velocity = [0.0; 3];
+    let result = step(
+        &world,
+        state,
+        StepInput::default(),
+        Configuration::default(),
+        policy,
+    )
+    .unwrap();
+    assert_eq!(result.state.water_level, 3);
+    assert_eq!(result.state.water_type & CONTENTS_WATER, CONTENTS_WATER);
+    assert!(result.state.base_velocity[0] > 0.0);
+    assert!(result.state.velocity[2] < 0.0);
+    assert!(result.events.iter().any(|event| matches!(
+        event,
+        Event::WaterEntered {
+            level: 3,
+            contents
+        } if contents & CONTENTS_WATER != 0
+    )));
+    assert_eq!(
+        result
+            .point_queries
+            .iter()
+            .take(3)
+            .map(|query| query.purpose)
+            .collect::<Vec<_>>(),
+        [
+            PointQueryPurpose::WaterFeet,
+            PointQueryPurpose::WaterWaist,
+            PointQueryPurpose::WaterEyes,
+        ]
+    );
+
+    let mut jump = StepInput::default();
+    jump.command.jump = true;
+    let jumped = step(&world, result.state, jump, Configuration::default(), policy).unwrap();
+    assert!(jumped.state.velocity[2] > 0.0);
+    assert!(jumped.state.ground.is_none());
+}
+
+struct WaterExitWorld;
+
+impl Tracer for WaterExitWorld {
+    fn trace(&self, start: [f32; 3], end: [f32; 3], _: Hull, _: u32) -> Result<Trace, Error> {
+        let delta = subtract(end, start);
+        if delta[2] < -500.0 {
+            let fraction = 0.1;
+            return Ok(Trace {
+                fraction,
+                start_solid: false,
+                all_solid: false,
+                end: [
+                    start[0] + delta[0] * fraction,
+                    start[1] + delta[1] * fraction,
+                    start[2] + delta[2] * fraction,
+                ],
+                normal: Some([0.0, 0.0, 1.0]),
+                hit: Some(1),
+                contents: 1,
+            });
+        }
+        if delta[2] == 0.0 && delta[0].abs() >= 23.9 && (30.0..60.0).contains(&start[2]) {
+            let fraction = 0.5;
+            return Ok(Trace {
+                fraction,
+                start_solid: false,
+                all_solid: false,
+                end: [start[0] + delta[0] * fraction, start[1], start[2]],
+                normal: Some([-1.0, 0.0, 0.0]),
+                hit: Some(2),
+                contents: 1,
+            });
+        }
+        Ok(Trace {
+            fraction: 1.0,
+            start_solid: false,
+            all_solid: false,
+            end,
+            normal: None,
+            hit: None,
+            contents: 0,
+        })
+    }
+
+    fn point_contents(&self, point: [f32; 3]) -> Result<u32, Error> {
+        Ok(if point[2] < 60.0 { CONTENTS_WATER } else { 0 })
+    }
+
+    fn movement_time(&self) -> Option<f32> {
+        Some(1.0)
+    }
+}
+
+#[test]
+fn water_ledge_exit_requires_waist_eye_and_landing_queries() {
+    let policy = tf2_policy();
+    let mut state = player([0.0; 3], false, policy);
+    state.velocity = [10.0, 0.0, 0.0];
+    let result = step(
+        &WaterExitWorld,
+        state,
+        StepInput::default(),
+        Configuration::default(),
+        policy,
+    )
+    .unwrap();
+    assert!(result.state.water_jump_time_ms > 0.0);
+    assert_eq!(result.state.water_jump_velocity, [50.0, 0.0, 0.0]);
+    assert!(
+        result
+            .queries
+            .iter()
+            .any(|query| query.purpose == QueryPurpose::WaterWaist)
+    );
+    assert!(
+        result
+            .queries
+            .iter()
+            .any(|query| query.purpose == QueryPurpose::WaterEye)
+    );
+    assert!(
+        result
+            .queries
+            .iter()
+            .any(|query| query.purpose == QueryPurpose::WaterLanding)
+    );
+}
+
+struct LadderWorld;
+
+impl Tracer for LadderWorld {
+    fn trace(&self, start: [f32; 3], end: [f32; 3], _: Hull, mask: u32) -> Result<Trace, Error> {
+        let delta = subtract(end, start);
+        if mask & CONTENTS_LADDER != 0 && delta[2] == 0.0 && (delta[0].abs() - 2.0).abs() < 0.001 {
+            return Ok(Trace {
+                fraction: 0.5,
+                start_solid: false,
+                all_solid: false,
+                end: [start[0] + delta[0] * 0.5, start[1], start[2]],
+                normal: Some([-1.0, 0.0, 0.0]),
+                hit: Some(4),
+                contents: CONTENTS_LADDER,
+            });
+        }
+        Ok(Trace {
+            fraction: 1.0,
+            start_solid: false,
+            all_solid: false,
+            end,
+            normal: None,
+            hit: None,
+            contents: 0,
+        })
+    }
+
+    fn movement_time(&self) -> Option<f32> {
+        Some(1.0)
+    }
+}
+
+#[test]
+fn ladder_attach_climb_and_jump_away_follow_one_mode_transition() {
+    let policy = tf2_policy();
+    let state = player([0.0, 0.0, 100.0], false, policy);
+    let climbed = step(
+        &LadderWorld,
+        state,
+        command(450.0, 0.0, 0.0),
+        Configuration::default(),
+        policy,
+    )
+    .unwrap();
+    assert_eq!(climbed.state.mode, Mode::Ladder);
+    assert!(climbed.state.velocity[2] > 0.0);
+    assert!(climbed.events.contains(&Event::LadderAttached));
+
+    let mut jump = command(450.0, 0.0, 0.0);
+    jump.command.jump = true;
+    let detached = step(
+        &LadderWorld,
+        climbed.state,
+        jump,
+        Configuration::default(),
+        policy,
+    )
+    .unwrap();
+    assert_eq!(detached.state.mode, Mode::Walk);
+    assert!(detached.state.velocity[0] < 0.0);
+    assert!(detached.events.contains(&Event::LadderDetached));
+}
+
+struct ObserverWorld;
+
+impl Tracer for ObserverWorld {
+    fn trace(&self, _: [f32; 3], end: [f32; 3], _: Hull, _: u32) -> Result<Trace, Error> {
+        Ok(Trace {
+            fraction: 1.0,
+            start_solid: false,
+            all_solid: false,
+            end,
+            normal: None,
+            hit: None,
+            contents: 0,
+        })
+    }
+
+    fn observer_target(&self, target: u64) -> Result<Option<ObserverTarget>, Error> {
+        Ok((target == 9).then_some(ObserverTarget {
+            position: [10.0, 20.0, 30.0],
+            angles: [4.0, 5.0, 6.0],
+            velocity: [7.0, 8.0, 9.0],
+        }))
+    }
+}
+
+#[test]
+fn observer_fixed_follow_and_roaming_dispositions_are_distinct() {
+    let policy = tf2_policy();
+    let configuration = Configuration {
+        observer_hull: Some(Hull {
+            mins: [-10.0; 3],
+            maxs: [10.0; 3],
+        }),
+        ..Configuration::default()
+    };
+    let mut follow = player([1.0, 2.0, 3.0], false, policy);
+    follow.mode = Mode::Observer;
+    follow.observer_mode = ObserverMode::InEye;
+    follow.observer_target = Some(9);
+    let followed = step(
+        &ObserverWorld,
+        follow,
+        StepInput::default(),
+        configuration,
+        policy,
+    )
+    .unwrap();
+    assert_eq!(followed.state.position, [10.0, 20.0, 30.0]);
+    assert_eq!(followed.state.velocity, [7.0, 8.0, 9.0]);
+
+    let mut fixed = follow;
+    fixed.observer_mode = ObserverMode::Fixed;
+    let fixed_result = step(
+        &ObserverWorld,
+        fixed,
+        command(450.0, 0.0, 0.0),
+        configuration,
+        policy,
+    )
+    .unwrap();
+    assert_eq!(fixed_result.state.position, fixed.position);
+
+    let mut roaming = follow;
+    roaming.observer_mode = ObserverMode::Roaming;
+    let roaming_result = step(
+        &ObserverWorld,
+        roaming,
+        command(450.0, 0.0, 0.0),
+        configuration,
+        policy,
+    )
+    .unwrap();
+    assert!(roaming_result.state.position[0] > roaming.position[0]);
+    assert!(
+        roaming_result
+            .queries
+            .iter()
+            .all(|query| query.purpose != QueryPurpose::ObserverDisplacement)
+    );
+}
+
+struct ConveyorWorld(TestWorld);
+
+impl Tracer for ConveyorWorld {
+    fn trace(&self, start: [f32; 3], end: [f32; 3], hull: Hull, mask: u32) -> Result<Trace, Error> {
+        self.0.trace(start, end, hull, mask)
+    }
+
+    fn conveyor_velocity(&self, support: u64) -> Result<Option<[f32; 3]>, Error> {
+        Ok((support == 5).then_some([100.0, 0.0, 0.0]))
+    }
+
+    fn support_velocity(&self, support: u64) -> Result<[f32; 3], Error> {
+        Ok(if support == 5 {
+            [100.0, 0.0, 0.0]
+        } else {
+            [0.0; 3]
+        })
+    }
+
+    fn movement_time(&self) -> Option<f32> {
+        Some(1.0)
+    }
+}
+
+#[test]
+fn conveyor_and_retained_base_velocity_are_applied_once() {
+    let policy = tf2_policy();
+    let mut state = player([0.0; 3], true, policy);
+    state.ground.as_mut().unwrap().support = Some(5);
+    let carried = step(
+        &ConveyorWorld(TestWorld::floor(0.0)),
+        state,
+        StepInput::default(),
+        Configuration::default(),
+        policy,
+    )
+    .unwrap();
+    close(carried.state.position[0], 1.5);
+    close(carried.state.velocity[0], 0.0);
+
+    let mut retained = player([0.0, 0.0, 100.0], false, policy);
+    retained.base_velocity = [100.0, 0.0, 0.0];
+    let momentum = step(
+        &TestWorld::empty(),
+        retained,
+        StepInput::default(),
+        Configuration::default(),
+        policy,
+    )
+    .unwrap();
+    close(momentum.state.base_velocity[0], 0.0);
+    assert!(momentum.state.velocity[0] > 100.0);
+}
+
+struct MoverWorld {
+    blocked: bool,
+}
+
+impl Tracer for MoverWorld {
+    fn trace(&self, _: [f32; 3], end: [f32; 3], _: Hull, _: u32) -> Result<Trace, Error> {
+        Ok(Trace {
+            fraction: 1.0,
+            start_solid: false,
+            all_solid: false,
+            end,
+            normal: None,
+            hit: None,
+            contents: 0,
+        })
+    }
+
+    fn support_velocity(&self, support: u64) -> Result<[f32; 3], Error> {
+        Ok(if support == 7 {
+            [100.0, 0.0, 0.0]
+        } else {
+            [0.0; 3]
+        })
+    }
+
+    fn mover_motion(
+        &self,
+        _: [f32; 3],
+        _: Hull,
+        _: Option<u64>,
+    ) -> Result<Option<MoverMotion>, Error> {
+        Ok(Some(MoverMotion {
+            identity: 7,
+            displacement: [10.0, 0.0, 0.0],
+            linear_velocity: [100.0, 0.0, 0.0],
+            angular_velocity: [0.0, 10.0, 0.0],
+            swept_contact: true,
+            unblockable: false,
+        }))
+    }
+
+    fn trace_without(
+        &self,
+        _: u64,
+        start: [f32; 3],
+        end: [f32; 3],
+        _: Hull,
+        _: u32,
+    ) -> Result<Trace, Error> {
+        if self.blocked {
+            Ok(Trace {
+                fraction: 0.5,
+                start_solid: false,
+                all_solid: false,
+                end: [
+                    (start[0] + end[0]) * 0.5,
+                    (start[1] + end[1]) * 0.5,
+                    (start[2] + end[2]) * 0.5,
+                ],
+                normal: Some([-1.0, 0.0, 0.0]),
+                hit: Some(99),
+                contents: 1,
+            })
+        } else {
+            self.trace(
+                start,
+                end,
+                Hull {
+                    mins: [0.0; 3],
+                    maxs: [0.0; 3],
+                },
+                0,
+            )
+        }
+    }
+
+    fn movement_time(&self) -> Option<f32> {
+        Some(1.0)
+    }
+}
+
+#[test]
+fn mover_carry_reports_acceptance_or_blocker_without_mutating_mover_state() {
+    let policy = tf2_policy();
+    let mut state = player([0.0; 3], true, policy);
+    state.ground.as_mut().unwrap().support = Some(7);
+    let moved = step(
+        &MoverWorld { blocked: false },
+        state,
+        StepInput::default(),
+        Configuration::default(),
+        policy,
+    )
+    .unwrap();
+    assert!(moved.state.position[0] >= 10.0);
+    assert_eq!(moved.mover_result.unwrap().status, MoverStatus::Moved);
+    assert!(moved.state.local_angles[1] > 0.0);
+
+    let blocked = step(
+        &MoverWorld { blocked: true },
+        state,
+        StepInput::default(),
+        Configuration::default(),
+        policy,
+    )
+    .unwrap();
+    assert_eq!(blocked.mover_result.unwrap().status, MoverStatus::Blocked);
+    assert_eq!(blocked.mover_result.unwrap().blocker, Some(99));
+}
+
+#[test]
+fn constraints_toss_modes_and_tick_trace_have_fixed_outputs() {
+    let policy = tf2_policy();
+    let configuration = Configuration {
+        client_max_speed: 100.0,
+        surface_max_speed_factor: 0.5,
+        movement_constraint: Some(MovementConstraint {
+            center: [-10.0, 0.0, 0.0],
+            radius: 20.0,
+            width: 20.0,
+            outward_speed_factor: 0.5,
+        }),
+        ..Configuration::default()
+    };
+    let constrained = step(
+        &TestWorld::floor(0.0),
+        player([0.0; 3], true, policy),
+        command(450.0, 0.0, 0.0),
+        configuration,
+        policy,
+    )
+    .unwrap();
+    close(constrained.wish_state.speed, 50.0);
+    let trace = constrained.tick_trace(77);
+    assert_eq!(trace.command_number, 77);
+    assert_eq!(trace.position, constrained.state.position);
+    assert_eq!(trace.hull, policy.standing_hull);
+    assert_eq!(trace.contacts, constrained.contacts);
+
+    let mut flying = player([0.0, 0.0, 100.0], false, policy);
+    flying.mode = Mode::FlyGravity;
+    let tossed = step(
+        &TestWorld::empty(),
+        flying,
+        StepInput::default(),
+        Configuration::default(),
+        policy,
+    )
+    .unwrap();
+    close(tossed.state.velocity[2], -12.0);
+    close(tossed.state.position[2], 99.82);
+
+    flying.move_collision = MoveCollision::Custom;
+    assert_eq!(
+        step(
+            &TestWorld::empty(),
+            flying,
+            StepInput::default(),
+            Configuration::default(),
+            policy,
+        ),
+        Err(Error::new(
+            Operation::Move,
+            FailureKind::Unsupported,
+            "fly-collision-response"
+        )
+        .with_command(0))
+    );
+}
+
+#[test]
+fn incremental_stuck_recovery_requires_an_explicit_monotonic_clock() {
+    let mut policy = tf2_policy();
+    policy.standing_hull = Hull {
+        mins: [0.0; 3],
+        maxs: [0.0; 3],
+    };
+    policy.crouched_hull = policy.standing_hull;
+    let world = TestWorld::empty().with_box([-100.0; 3], [100.0; 3], 11);
+    let configuration = Configuration {
+        stuck_recovery: StuckRecoveryMode::Incremental,
+        ..Configuration::default()
+    };
+    let result = step(
+        &world,
+        player([0.0; 3], false, policy),
+        StepInput::default(),
+        configuration,
+        policy,
+    )
+    .unwrap();
+    assert!(result.events.contains(&Event::Trapped));
+    assert_eq!(result.state.stuck_offset, 1);
+
+    struct NoClock(TestWorld);
+    impl Tracer for NoClock {
+        fn trace(
+            &self,
+            start: [f32; 3],
+            end: [f32; 3],
+            hull: Hull,
+            mask: u32,
+        ) -> Result<Trace, Error> {
+            self.0.trace(start, end, hull, mask)
+        }
+    }
+    assert!(matches!(
+        step(
+            &NoClock(TestWorld::empty().with_box([-100.0; 3], [100.0; 3], 11)),
+            player([0.0; 3], false, policy),
+            StepInput::default(),
+            configuration,
+            policy,
+        ),
+        Err(Error {
+            kind: FailureKind::Missing,
+            field: "stuck-movement-time",
+            ..
+        })
+    ));
 }

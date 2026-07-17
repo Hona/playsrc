@@ -41,8 +41,8 @@ Candidate count: 19.
 | `mode.observer-roaming` | `OBS_MODE_ROAMING` | Select clipped or noclip roaming from spectator policy, then apply the accepted roaming behavior | Movement; ruleset decides permission | Handled |
 | `response.toss-default` | `MOVECOLLIDE_DEFAULT` | Clip toss velocity with unit overbounce and apply standable-ground stop behavior | Movement | Handled |
 | `response.toss-bounce` | `MOVECOLLIDE_FLY_BOUNCE` | Clip toss velocity using the accepted surface-friction bounce response and continue eligible residual motion | Movement | Handled |
-| `response.toss-custom` | `MOVECOLLIDE_FLY_CUSTOM` | Apply one pure selected-game response without hidden touch mutation | Selected game supplies; Movement consumes | Unknown |
-| `response.toss-slide` | `MOVECOLLIDE_FLY_SLIDE` | Apply the retained generic player outcome established by controlled target capture | Movement | Unknown |
+| `response.toss-custom` | `MOVECOLLIDE_FLY_CUSTOM` | Reject at the generic pure-step boundary; the pinned handler delegates velocity mutation to touch code | Selected game owns any explicit replacement | Unsupported |
+| `response.toss-slide` | `MOVECOLLIDE_FLY_SLIDE` | Reject at the generic boundary; the pinned handler contains no slide case and reaches its invalid-response path | Movement | Unsupported |
 
 `MOVETYPE_STEP`, `MOVETYPE_VPHYSICS`, `MOVETYPE_PUSH`, and `MOVETYPE_CUSTOM` are excluded from the candidate count. NPC step locomotion belongs to its game/entity owner, VPhysics belongs to Physics, mover advancement belongs to Entity/Simulation, and custom game movement belongs to the selected game.
 
