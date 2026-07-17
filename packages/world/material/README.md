@@ -16,6 +16,8 @@ Resolve Source material documents and textures into runtime-neutral material beh
 - Resolve texture and material references through explicit inputs.
 - Produce semantic descriptions usable by renderers without transferring material authority to them.
 - Emit exact typed VTF dependency identities and built-in environment/render-target dispositions without invoking Content or decoding textures.
+- Evaluate conditional material keys against an explicit PC LDR, integer-HDR, or float-HDR environment; retain active/inactive decisions; and apply active conditional values as replacements without activating unknown conditions.
+- Select `Sky` LDR/HDR implementations and exactly one complete `$basetexture`, `$hdrbasetexture`, `$hdrcompressedtexture`, or `$hdrcompressedtexture0/1/2` role set. A missing HDR role is an error, not an LDR substitution.
 
 ## Non-Responsibilities
 

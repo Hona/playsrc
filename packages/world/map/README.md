@@ -19,6 +19,8 @@ Assemble parsed Source data and semantic domain outputs into one canonical plays
 - Preserve Source XYZ face/model/material identities; retain signed surfedge and face-side semantics; normalize nondegenerate draw triangles to their supplied normals; and emit direct renderer position, normal, UV, lightmap, primitive, and lighting buffers without serializing through GLB.
 - Assemble Map, Entity, Collision, and Visibility through one Rust function and emit a compact deterministic runtime payload with exact BSP, compiler, configuration, and payload SHA-256 identities; the same function is compiled natively and for WASM.
 - Accept owner-resolved Material/VTF outputs for the exact map material index and append versioned shader, feature, base-texture identity, dimensions, and RGBA planes to the direct runtime payload without resolving content inside Map.
+- Select one complete `ldr` or `hdr` lighting profile without fallback. HDR compilation validates face, RGBExp32 sample, world-light, leaf-ambient, map-flag, detail-prop-lighting, and static-prop-lighting inputs before emitting output.
+- Emit HDR samples as linear RGB binary32 without exposure or tone mapping, preserving flat, directional-normal, and directional-SSBump face classifications plus every style identity.
 
 ## Non-Responsibilities
 
@@ -29,6 +31,25 @@ Assemble parsed Source data and semantic domain outputs into one canonical plays
 ## Relationships
 
 Composes format and world packages in native and WASM environments. Browsers may compile the representation on first load and cache it in IndexedDB; tools may publish the same derived objects through `asset-store`.
+
+## HDR Runtime Contract
+
+`PSMP` schema `4` is the HDR-only runtime payload. All integers and binary32 values are little-endian. Every sized field is `u32 byteLength` followed by exactly that many bytes. The common header, materials, surfaces, entity source, resolved world materials, models, and model occurrences retain schema `3` order. The selected-lighting region after surfaces contains exactly `lightingSampleCount × 3` finite linear RGB binary32 components; schema `3` LDR continues to contain `lightingSampleCount × 4` unchanged RGBExp32 bytes.
+
+Schema `4` then appends exactly one `PSHD` descriptor:
+
+1. `u32 version = 1`, `u8 encoding = 1` (`linear-rgb-f32`), and three zero bytes.
+2. Sized UTF-8 output role and compiler identity; 32-byte BSP SHA-256, configuration SHA-256, and selected-lighting closure SHA-256.
+3. A `u32` member count followed by role-ordered face, sample, world-light, ambient-index, ambient-sample, map-flag, game-lump-directory, detail-prop, selected detail-lighting, and static-prop records. Each record retains source kind/slot or four-byte game-lump ID/version, encoded and decoded byte lengths, both SHA-256 hashes, and item count. An absent optional game member has source kind zero, zero lengths/hashes, and zero items.
+4. Lightmapped and directional face counts, then one 20-byte record per BSP face: source face index; kind `0` unlit, `1` flat, `2` directional-normal, or `3` directional-SSBump; style count; layer count `0`, `1`, or `4`; one zero byte; sample start; samples per layer; and all four style bytes.
+5. Complete 88-byte world-light records, four-byte ambient-index records, and 76-byte ambient samples containing six linear RGB binary32 directions plus three fractional-position bytes and one zero byte.
+6. Detail-prop count, selected detail-style-sample count, static-prop count, and map flags.
+7. Profile materials in `rt`, `lf`, `bk`, `ft`, `up`, `dn` order. Each record contains material path, selected shader/features/texture role, selected VTF path/dimensions/format, VTF SHA-256, and unchanged bounded VTF bytes.
+8. Role/path/hash-sorted consumed input records. Each contains role, three zero bytes, sized logical path, and SHA-256.
+
+The payload limit is 512 MiB. HDR compilation also limits faces to 1,000,000, RGBExp32 samples to 16,777,216, world lights to 1,000,000, ambient samples to 4,000,000, game-lump entries and dependency hashes to 4,096, profile materials to 64, logical paths to 1,024 bytes, and each retained profile VTF to 64 MiB.
+
+The derived identity is SHA-256 over the ASCII domain `playsrc-derived-map-v1`, profile byte, length-prefixed output role and compiler identity, BSP/configuration/lighting-closure hashes, role/path/hash-sorted consumed inputs, and payload SHA-256. LDR and HDR therefore cannot share a derived identity even when other inputs match.
 
 ## Completion
 

@@ -12,6 +12,7 @@ playsrc-map = { path = "../../../packages/world/map/rust" }
 playsrc-material = { path = "../../../packages/world/material/rust" }
 playsrc-entity = { path = "../../../packages/world/entity/rust" }
 playsrc-studio-model = { path = "../../../packages/formats/studio-model/rust" }
+playsrc-tf2-wasm = { path = "../../../games/tf2/wasm" }
 playsrc-vmt = { path = "../../../packages/formats/vmt/rust" }
 playsrc-vpk = { path = "../../../packages/formats/vpk/rust" }
 serde = { version = "1", features = ["derive"] }

@@ -10,8 +10,13 @@ import { buildSourceBundle } from "./source-bundle"
 
 const EXPECTED_MAP_BYTES = 39_814_462
 const EXPECTED_MAP_SHA256 = "d0576dff06413848d8712ab6218c8c6f34078a1b347795c5a7a694a108c29725"
-const EXPECTED_DEPENDENCY_BYTES = 39_936_317
-const EXPECTED_DEPENDENCY_SHA256 = "d7582f82f4a39c087d24246550192753ea879cb912a842c1b33d84a9d7b27ee0"
+const EXPECTED_BSP_SHA256 = "b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959"
+const EXPECTED_HDR_BYTES = 75_972_411
+const EXPECTED_HDR_SHA256 = "22d668cbeac17167d1826efa7fc45e218640ce739cb48bd37f76fd67d289cb80"
+const EXPECTED_LDR_DERIVED_SHA256 = "9393bcbfe6271f11aea392a8befd3cac7c4c047952109d4aa58b82a9694748ff"
+const EXPECTED_HDR_DERIVED_SHA256 = "ba166bcc5a7909f3336560d9f19a0a50d26a09f8671447fd5bdda3088b7b5c38"
+const EXPECTED_DEPENDENCY_BYTES = 44_133_575
+const EXPECTED_DEPENDENCY_SHA256 = "6b6a038e3dd80d1c8c350f58fc4ffaa43ade0a06a9995c92a8052e068cfdbb0d"
 
 type Exports = Readonly<{
   memory: WebAssembly.Memory
@@ -22,6 +27,7 @@ type Exports = Readonly<{
   playsrc_result_error(handle: number): number
   playsrc_result_copy(handle: number, pointer: number, capacity: number): number
   playsrc_result_hash(handle: number, pointer: number): number
+  playsrc_result_derived_hash(handle: number, pointer: number): number
   playsrc_spawn_copy(handle: number, pointer: number, capacity: number): number
   playsrc_game_advance(handle: number, command: number, length: number, ticks: number): number
   playsrc_snapshot_length(handle: number): number
@@ -44,6 +50,240 @@ function require(condition: unknown, message: string): asserts condition {
 
 function hex(bytes: Uint8Array): string {
   return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("")
+}
+
+class ProfileReader {
+  readonly bytes: Uint8Array
+  readonly view: DataView
+  offset = 0
+  constructor(bytes: Uint8Array) {
+    this.bytes = bytes
+    this.view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  }
+  take(length: number): Uint8Array {
+    require(Number.isSafeInteger(length) && length >= 0 && this.offset + length <= this.bytes.byteLength, "HDR payload range is invalid")
+    const value = this.bytes.subarray(this.offset, this.offset + length)
+    this.offset += length
+    return value
+  }
+  u8(): number { return this.take(1)[0]! }
+  u32(): number {
+    const offset = this.offset
+    this.take(4)
+    return this.view.getUint32(offset, true)
+  }
+  i32(): number {
+    const offset = this.offset
+    this.take(4)
+    return this.view.getInt32(offset, true)
+  }
+  f32(): number {
+    const offset = this.offset
+    this.take(4)
+    const value = this.view.getFloat32(offset, true)
+    require(Number.isFinite(value), "HDR payload contains a non-finite scalar")
+    return value
+  }
+  sized(): Uint8Array { return this.take(this.u32()) }
+  text(): string { return new TextDecoder("utf-8", { fatal: true }).decode(this.sized()) }
+}
+
+function skipRuntimeMaterial(reader: ProfileReader): { shader: number; role: number } {
+  const shader = reader.u8()
+  reader.u8()
+  const hasTexture = reader.u8()
+  const role = reader.u8()
+  require(hasTexture <= 1, "runtime material texture marker is invalid")
+  if (hasTexture === 1) {
+    reader.sized()
+    reader.u32()
+    reader.u32()
+    reader.sized()
+  }
+  return { shader, role }
+}
+
+function inspectHdrPayload(payload: Uint8Array) {
+  const reader = new ProfileReader(payload)
+  require(new TextDecoder().decode(reader.take(4)) === "PSMP", "HDR map magic is invalid")
+  require(reader.u32() === 4, "HDR map schema is invalid")
+  require(reader.u32() === 20 && reader.u32() === 731 && reader.u8() === 1, "HDR map identity is invalid")
+  const materialCount = reader.u32()
+  const surfaceCount = reader.u32()
+  const lightingSamples = reader.u32()
+  const entityCount = reader.u32()
+  require(materialCount === 14 && surfaceCount === 3_793 && lightingSamples === 3_896_843 && entityCount === 361, "HDR map root counts are invalid")
+  for (let index = 0; index < materialCount; index += 1) {
+    reader.sized()
+    reader.i32()
+    reader.i32()
+  }
+  for (let index = 0; index < surfaceCount; index += 1) {
+    reader.take(16)
+    reader.u8()
+    const vertices = reader.u32()
+    const triangles = reader.u32()
+    require(vertices >= 3 && triangles >= 1, "HDR surface dimensions are invalid")
+    reader.take(vertices * 40 + triangles * 12 + 16)
+  }
+  let belowOne = false
+  let equalOne = false
+  let aboveOne = false
+  let maximumLinearChannel = 0
+  for (let sample = 0; sample < lightingSamples; sample += 1) {
+    for (let channel = 0; channel < 3; channel += 1) {
+      const value = reader.f32()
+      if (value > 0 && value < 1) belowOne = true
+      else if (value === 1) equalOne = true
+      else if (value > 1) aboveOne = true
+      maximumLinearChannel = Math.max(maximumLinearChannel, value)
+    }
+  }
+  require(belowOne && equalOne && aboveOne, "HDR linear samples do not cover below, equal, and above one")
+  require(maximumLinearChannel === 50.94902420043945, `HDR maximum linear radiance changed: ${maximumLinearChannel}`)
+  reader.sized()
+  require(reader.u32() === materialCount, "HDR resolved-material count is invalid")
+  for (let index = 0; index < materialCount; index += 1) skipRuntimeMaterial(reader)
+  const modelCount = reader.u32()
+  require(modelCount === 9, "HDR model count is invalid")
+  for (let model = 0; model < modelCount; model += 1) {
+    reader.sized()
+    const modelMaterials = reader.u32()
+    for (let material = 0; material < modelMaterials; material += 1) {
+      reader.sized()
+      skipRuntimeMaterial(reader)
+    }
+    const primitives = reader.u32()
+    for (let primitive = 0; primitive < primitives; primitive += 1) {
+      reader.u32()
+      const vertices = reader.u32()
+      const triangles = reader.u32()
+      reader.take(vertices * 32 + triangles * 12)
+    }
+  }
+  const occurrences = reader.u32()
+  require(occurrences === 33, "HDR model occurrence count is invalid")
+  reader.take(occurrences * 32)
+  require(new TextDecoder().decode(reader.take(4)) === "PSHD", "HDR descriptor magic is invalid")
+  require(reader.u32() === 1 && reader.u8() === 1, "HDR descriptor version or encoding is invalid")
+  require(reader.take(3).every((value) => value === 0), "HDR descriptor reserved bytes are nonzero")
+  const outputRole = reader.text()
+  const compilerIdentity = reader.text()
+  const bspSha256 = hex(reader.take(32))
+  const configurationSha256 = hex(reader.take(32))
+  const profileSha256 = hex(reader.take(32))
+  require(outputRole === "map-runtime-hdr" && compilerIdentity === "playsrc-map-runtime-hdr-1", "HDR compiler identity is invalid")
+  require(bspSha256 === EXPECTED_BSP_SHA256 && configurationSha256 === EXPECTED_DEPENDENCY_SHA256, "HDR source/configuration identity is invalid")
+  const memberCount = reader.u32()
+  require(memberCount === 10, "HDR profile-member count is invalid")
+  const memberSlots = new Map<number, number | string>()
+  for (let index = 0; index < memberCount; index += 1) {
+    const role = reader.u8()
+    const source = reader.u8()
+    const slot = reader.u8()
+    reader.take(2)
+    if (source === 1) {
+      memberSlots.set(role, slot)
+      reader.i32()
+    } else if (source === 2) {
+      const id = new TextDecoder().decode(reader.take(4))
+      memberSlots.set(role, id)
+      reader.u32()
+    } else {
+      require(source === 0, "HDR profile member source is invalid")
+      reader.take(4)
+    }
+    reader.u32()
+    reader.u32()
+    reader.take(64)
+    reader.u32()
+  }
+  require(
+    memberSlots.get(1) === 58
+    && memberSlots.get(2) === 53
+    && memberSlots.get(3) === 54
+    && memberSlots.get(4) === 51
+    && memberSlots.get(5) === 55
+    && memberSlots.get(6) === 59,
+    "HDR profile selected an incorrect standard lump",
+  )
+  const lightmappedFaces = reader.u32()
+  const directionalFaces = reader.u32()
+  const profileSurfaces = reader.u32()
+  const surfaceKinds = [0, 0, 0, 0]
+  for (let index = 0; index < profileSurfaces; index += 1) {
+    reader.u32()
+    const kind = reader.u8()
+    require(kind < surfaceKinds.length, "HDR surface lighting kind is invalid")
+    surfaceKinds[kind]! += 1
+    const styles = reader.u8()
+    const layers = reader.u8()
+    require(reader.u8() === 0 && styles <= 1 && (layers === 0 || layers === 1 || layers === 4), "HDR surface lighting framing is invalid")
+    reader.take(12)
+  }
+  require(
+    lightmappedFaces === 2_984
+    && directionalFaces === 1_511
+    && profileSurfaces === 3_793
+    && surfaceKinds.join(",") === "809,1473,0,1511",
+    `HDR surface classifications are invalid: ${surfaceKinds.join(",")}`,
+  )
+  const worldLights = reader.u32()
+  require(worldLights === 73, "HDR world-light count is invalid")
+  reader.take(worldLights * 88)
+  const ambientIndexes = reader.u32()
+  require(ambientIndexes === 1_899, "HDR ambient-index count is invalid")
+  reader.take(ambientIndexes * 4)
+  const ambientSamples = reader.u32()
+  require(ambientSamples === 9_014, "HDR ambient-sample count is invalid")
+  reader.take(ambientSamples * 76)
+  const detailProps = reader.u32()
+  const detailStyles = reader.u32()
+  const staticProps = reader.u32()
+  const mapFlags = reader.u32()
+  require(detailProps === 0 && detailStyles === 0 && staticProps === 0 && mapFlags === 0, "HDR prop-lighting disposition is invalid")
+  const profileMaterials = reader.u32()
+  require(profileMaterials === 6, "HDR profile-material count is invalid")
+  const skyDimensions: string[] = []
+  for (let index = 0; index < profileMaterials; index += 1) {
+    const material = reader.text()
+    const shader = reader.u8()
+    reader.u8()
+    const role = reader.u8()
+    require(reader.u8() === 0, "HDR profile material reserved byte is nonzero")
+    const texture = reader.text()
+    const width = reader.u32()
+    const height = reader.u32()
+    const format = reader.i32()
+    const sourceSha256 = hex(reader.take(32))
+    const source = reader.sized()
+    require(shader === 8 && role === 2 && format === 12, "HDR sky material selection is invalid")
+    require(material.endsWith(".vmt") && texture.endsWith(".vtf"), "HDR sky dependency identity is invalid")
+    require(new Bun.CryptoHasher("sha256").update(source).digest("hex") === sourceSha256, "HDR sky VTF hash is invalid")
+    skyDimensions.push(`${width}x${height}`)
+  }
+  require(skyDimensions.join(",") === "512x256,512x256,512x256,512x256,512x512,4x4", "HDR sky dimensions are invalid")
+  const inputCount = reader.u32()
+  require(inputCount === 131, "HDR input-hash count is invalid")
+  for (let index = 0; index < inputCount; index += 1) {
+    require(reader.u8() === 1 && reader.take(3).every((value) => value === 0), "HDR input record is invalid")
+    require(reader.text().length > 0, "HDR input path is empty")
+    reader.take(32)
+  }
+  require(reader.offset === payload.byteLength, "HDR payload contains trailing bytes")
+  return {
+    lightingSamples,
+    lightmappedFaces,
+    directionalFaces,
+    worldLights,
+    ambientIndexes,
+    ambientSamples,
+    surfaceKinds: surfaceKinds.join(","),
+    maximumLinearChannel,
+    profileSha256,
+    profileMaterials,
+    inputCount,
+  }
 }
 
 export async function buildTf2Wasm(config: LocalConfig): Promise<string> {
@@ -78,6 +318,49 @@ export async function buildTf2Wasm(config: LocalConfig): Promise<string> {
   )
 }
 
+async function buildNativeHdr(config: LocalConfig, target: string): Promise<{
+  path: string
+  bytes: number
+  sha256: string
+  derivedSha256: string
+}> {
+  const executable = process.platform === "win32" ? "cargo.exe" : "cargo"
+  const cargo = path.join(config.sourceCacheDir, "toolchains", "rust", "cargo", "bin", executable)
+  const child = Bun.spawn([
+    cargo,
+    `+${toolchains.rust.toolchain}`,
+    "run",
+    "-p",
+    "playsrc-source-bundle",
+    "--",
+    target,
+    "--verify-hdr",
+  ], {
+    cwd: repositoryRoot,
+    env: { ...process.env, ...rustEnvironment(config.sourceCacheDir) },
+    stdout: "pipe",
+    stderr: "inherit",
+  })
+  const output = await new Response(child.stdout).text()
+  require(await child.exited === 0, "native HDR generation failed")
+  const report = JSON.parse(output) as Record<string, unknown>
+  require(
+    report.target === target
+    && Number.isSafeInteger(report.nativeHdrBytes)
+    && typeof report.nativeHdrSha256 === "string"
+    && /^[0-9a-f]{64}$/.test(report.nativeHdrSha256)
+    && typeof report.nativeHdrDerivedSha256 === "string"
+    && /^[0-9a-f]{64}$/.test(report.nativeHdrDerivedSha256),
+    "native HDR report is malformed",
+  )
+  return {
+    path: path.join(config.sourceCacheDir, "browser-bundles", `${target}.native-hdr.psmp`),
+    bytes: report.nativeHdrBytes as number,
+    sha256: report.nativeHdrSha256,
+    derivedSha256: report.nativeHdrDerivedSha256,
+  }
+}
+
 export async function verifyTf2Wasm(
   config: LocalConfig,
   identity: string | undefined,
@@ -85,13 +368,15 @@ export async function verifyTf2Wasm(
   const map = await acquireMap(config, identity)
   const wasmPath = await buildTf2Wasm(config)
   const bundlePath = await buildSourceBundle(config, identity ?? "")
+  const nativeHdr = await buildNativeHdr(config, identity ?? "")
   const wasmBytes = await readFile(wasmPath)
   require(wasmBytes.byteLength > 0 && wasmBytes.byteLength <= 64 * 1024 * 1024, "WASM byte length is invalid")
   const loaded = await WebAssembly.instantiate(wasmBytes)
   const exports = loaded.instance.exports as unknown as Exports
-  const [bspBytes, dependencyBytes] = await Promise.all([
+  const [bspBytes, dependencyBytes, nativeHdrPayload] = await Promise.all([
     readFile(path.join(config.sourceCacheDir, map.decoded.cachePath)),
     readFile(bundlePath),
+    readFile(nativeHdr.path),
   ])
   require(bspBytes.byteLength === map.decoded.byteLength, "cached BSP byte length changed")
   require(dependencyBytes.byteLength === EXPECTED_DEPENDENCY_BYTES, "source dependency byte length changed")
@@ -99,6 +384,62 @@ export async function verifyTf2Wasm(
     new Bun.CryptoHasher("sha256").update(dependencyBytes).digest("hex") === EXPECTED_DEPENDENCY_SHA256,
     "source dependency SHA-256 changed",
   )
+
+  const compileProfile = (profile: 0 | 1) => {
+    const source = exports.playsrc_alloc(bspBytes.byteLength)
+    new Uint8Array(exports.memory.buffer, source, bspBytes.byteLength).set(bspBytes)
+    const configuration = exports.playsrc_alloc(dependencyBytes.byteLength)
+    new Uint8Array(exports.memory.buffer, configuration, dependencyBytes.byteLength).set(dependencyBytes)
+    const result = exports.playsrc_compile_map(
+      source,
+      bspBytes.byteLength,
+      profile,
+      configuration,
+      dependencyBytes.byteLength,
+    )
+    exports.playsrc_free(source, bspBytes.byteLength)
+    exports.playsrc_free(configuration, dependencyBytes.byteLength)
+    const error = exports.playsrc_result_error(result)
+    require(error === 0, `TF2 WASM profile ${profile} compilation failed with error ${error}`)
+    const length = exports.playsrc_result_length(result)
+    require(length > 0 && length <= 512 * 1024 * 1024, `profile ${profile} payload length is invalid`)
+    const pointer = exports.playsrc_alloc(length)
+    require(exports.playsrc_result_copy(result, pointer, length) === length, `profile ${profile} payload copy failed`)
+    const payload = new Uint8Array(exports.memory.buffer, pointer, length).slice()
+    exports.playsrc_free(pointer, length)
+    const hashPointer = exports.playsrc_alloc(32)
+    require(exports.playsrc_result_hash(result, hashPointer) === 1, `profile ${profile} payload hash is unavailable`)
+    const sha256 = hex(new Uint8Array(exports.memory.buffer, hashPointer, 32))
+    require(
+      new Bun.CryptoHasher("sha256").update(payload).digest("hex") === sha256,
+      `profile ${profile} declared payload hash differs from its bytes`,
+    )
+    require(
+      exports.playsrc_result_derived_hash(result, hashPointer) === 1,
+      `profile ${profile} derived hash is unavailable`,
+    )
+    const derivedSha256 = hex(new Uint8Array(exports.memory.buffer, hashPointer, 32))
+    exports.playsrc_free(hashPointer, 32)
+    return { handle: result, payload, sha256, derivedSha256 }
+  }
+  const compileFailure = (sourceBytes: Uint8Array, profile: number, configBytes: Uint8Array) => {
+    const source = exports.playsrc_alloc(sourceBytes.byteLength)
+    new Uint8Array(exports.memory.buffer, source, sourceBytes.byteLength).set(sourceBytes)
+    const configuration = exports.playsrc_alloc(configBytes.byteLength)
+    new Uint8Array(exports.memory.buffer, configuration, configBytes.byteLength).set(configBytes)
+    const result = exports.playsrc_compile_map(
+      source,
+      sourceBytes.byteLength,
+      profile,
+      configuration,
+      configBytes.byteLength,
+    )
+    exports.playsrc_free(source, sourceBytes.byteLength)
+    exports.playsrc_free(configuration, configBytes.byteLength)
+    const error = exports.playsrc_result_error(result)
+    require(exports.playsrc_dispose(result) === 1, "failed compilation handle disposal failed")
+    return error
+  }
 
   const bspPointer = exports.playsrc_alloc(bspBytes.byteLength)
   new Uint8Array(exports.memory.buffer, bspPointer, bspBytes.byteLength).set(bspBytes)
@@ -140,6 +481,8 @@ export async function verifyTf2Wasm(
   const hashPointer = exports.playsrc_alloc(32)
   require(exports.playsrc_result_hash(handle, hashPointer) === 1, "map payload hash is unavailable")
   const declaredMapSha256 = hex(new Uint8Array(exports.memory.buffer, hashPointer, 32))
+  require(exports.playsrc_result_derived_hash(handle, hashPointer) === 1, "map derived hash is unavailable")
+  const ldrDerivedSha256 = hex(new Uint8Array(exports.memory.buffer, hashPointer, 32))
   exports.playsrc_free(hashPointer, 32)
   const mapPointer = exports.playsrc_alloc(mapBytes)
   require(exports.playsrc_result_copy(handle, mapPointer, mapBytes) === mapBytes, "map payload copy failed")
@@ -245,10 +588,51 @@ export async function verifyTf2Wasm(
   exports.playsrc_free(unchangedPointer, snapshotLength)
   require(exports.playsrc_dispose(handle) === 1, "handle disposal failed")
   require(exports.playsrc_snapshot_length(handle) === 0, "disposed handle retained a snapshot")
+  const hdrFirst = compileProfile(1)
+  const hdrSecond = compileProfile(1)
+  require(Buffer.from(hdrFirst.payload).equals(hdrSecond.payload), "repeated HDR payload bytes differ")
+  require(hdrFirst.sha256 === hdrSecond.sha256, "repeated HDR payload hashes differ")
+  require(hdrFirst.derivedSha256 === hdrSecond.derivedSha256, "repeated HDR derived hashes differ")
+  require(hdrFirst.derivedSha256 !== ldrDerivedSha256, "LDR and HDR derived identities are equal")
+  require(ldrDerivedSha256 === EXPECTED_LDR_DERIVED_SHA256, "LDR derived identity changed")
+  require(hdrFirst.payload.byteLength === EXPECTED_HDR_BYTES, "HDR payload byte length changed")
+  require(hdrFirst.sha256 === EXPECTED_HDR_SHA256, "HDR payload SHA-256 changed")
+  require(hdrFirst.derivedSha256 === EXPECTED_HDR_DERIVED_SHA256, "HDR derived identity changed")
+  require(
+    nativeHdr.bytes === hdrFirst.payload.byteLength
+    && nativeHdr.sha256 === hdrFirst.sha256
+    && nativeHdr.derivedSha256 === hdrFirst.derivedSha256
+    && Buffer.from(nativeHdrPayload).equals(hdrFirst.payload),
+    "native and WASM HDR generations differ",
+  )
+  const hdr = inspectHdrPayload(hdrFirst.payload)
+  const incompleteHdr = Uint8Array.from(bspBytes)
+  new DataView(incompleteHdr.buffer).setInt32(8 + 54 * 16 + 4, 0, true)
+  require(
+    compileFailure(incompleteHdr, 1, dependencyBytes) === 6,
+    "incomplete HDR profile did not fail before LDR fallback",
+  )
+  require(compileFailure(bspBytes, 2, dependencyBytes) === 2, "unknown lighting profile was accepted")
+  const missingDependency = Uint8Array.from(dependencyBytes)
+  const selectedSky = Buffer.from("materials/skybox/sky_day01_01_hdrrt.vmt")
+  const selectedSkyOffset = Buffer.from(missingDependency).indexOf(selectedSky)
+  require(selectedSkyOffset >= 0, "selected HDR sky dependency is absent from its bundle")
+  missingDependency[selectedSkyOffset + selectedSky.byteLength - 5] = "x".charCodeAt(0)
+  require(
+    compileFailure(bspBytes, 1, missingDependency) === 7,
+    "missing selected HDR material dependency was accepted",
+  )
+  require(exports.playsrc_dispose(hdrFirst.handle) === 1, "first HDR handle disposal failed")
+  require(exports.playsrc_dispose(hdrSecond.handle) === 1, "second HDR handle disposal failed")
   return {
     target: identity!,
     mapBytes,
     mapSha256,
+    ldrDerivedSha256,
+    hdrBytes: hdrFirst.payload.byteLength,
+    hdrSha256: hdrFirst.sha256,
+    hdrDerivedSha256: hdrFirst.derivedSha256,
+    hdr,
     dependencyBytes: dependencyBytes.byteLength,
     materials: renderMap.materials.length,
     drawableSurfaces: renderMap.drawableSurfaces,

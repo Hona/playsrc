@@ -30,6 +30,7 @@ struct Slot {
     generation: u16,
     payload: Option<Vec<u8>>,
     hash: [u8; 32],
+    derived_hash: [u8; 32],
     error: u32,
     spawn: Option<Spawn>,
     session: Option<playsrc_tf2::Session<SharedWorld>>,
@@ -95,26 +96,53 @@ pub unsafe extern "C" fn playsrc_compile_map(
             1 => playsrc_map::LightingProfile::Hdr,
             _ => return Err(2),
         };
-        let canonical = playsrc_map::compile(&bsp, profile).map_err(|_| 3_u32)?;
-        let resolved_materials = resolve_materials(&canonical, configuration).map_err(|_| 7_u32)?;
+        let canonical = playsrc_map::compile(&bsp, profile).map_err(|error| {
+            if error.code == playsrc_map::ErrorCode::IncompleteLightingProfile {
+                6_u32
+            } else {
+                3_u32
+            }
+        })?;
+        let resolved_materials =
+            resolve_materials(&canonical, configuration, profile).map_err(|_| 7_u32)?;
         let entity_graph =
             playsrc_entity::parse(bsp.lumps[0].bytes(&bsp), playsrc_entity::Limits::default())
                 .map_err(|_| 3_u32)?;
         let (runtime_models, model_occurrences) =
-            resolve_models(&entity_graph, configuration).map_err(|_| 8_u32)?;
+            resolve_models(&entity_graph, configuration, profile).map_err(|_| 8_u32)?;
+        let profile_materials =
+            resolve_profile_materials(&entity_graph, configuration, profile).map_err(|_| 7_u32)?;
+        let inputs = runtime_inputs(configuration).map_err(|_| 7_u32)?;
         let runtime = playsrc_map::compile_runtime(
             &bsp,
             bsp_sha,
             profile,
             playsrc_map::RuntimeAssembly {
-                compiler_identity: "playsrc-map-runtime-2",
+                compiler_identity: if profile == playsrc_map::LightingProfile::Hdr {
+                    "playsrc-map-runtime-hdr-1"
+                } else {
+                    "playsrc-map-runtime-2"
+                },
                 configuration,
                 materials: &resolved_materials,
+                profile_materials: &profile_materials,
+                inputs: &inputs,
+                output_role: if profile == playsrc_map::LightingProfile::Hdr {
+                    "map-runtime-hdr"
+                } else {
+                    "map-runtime"
+                },
                 models: &runtime_models,
                 model_occurrences: &model_occurrences,
             },
         )
-        .map_err(|_| 3_u32)?;
+        .map_err(|error| {
+            if error.code == playsrc_map::ErrorCode::IncompleteLightingProfile {
+                6_u32
+            } else {
+                3_u32
+            }
+        })?;
         let spawn = spawn(&runtime.entities).ok_or(4_u32)?;
         let collision = Arc::new(runtime.collision);
         let entities = playsrc_entity::Runtime::compile(&runtime.entities, collision.clone())
@@ -122,6 +150,7 @@ pub unsafe extern "C" fn playsrc_compile_map(
         Ok((
             runtime.descriptor.payload,
             runtime.descriptor.payload_sha256,
+            runtime.descriptor.derived_sha256,
             spawn,
             playsrc_tf2::Session::new(SharedWorld(collision), spawn.position, entities),
         ))
@@ -137,10 +166,11 @@ pub unsafe extern "C" fn playsrc_compile_map(
         slots[index].generation.wrapping_add(1).max(1)
     };
     let slot = match result {
-        Ok((payload, hash, spawn, session)) => Slot {
+        Ok((payload, hash, derived_hash, spawn, session)) => Slot {
             generation,
             payload: Some(payload),
             hash,
+            derived_hash,
             error: 0,
             spawn: Some(spawn),
             session: Some(session),
@@ -150,6 +180,7 @@ pub unsafe extern "C" fn playsrc_compile_map(
             generation,
             payload: Some(Vec::new()),
             hash: [0; 32],
+            derived_hash: [0; 32],
             error,
             spawn: None,
             session: None,
@@ -162,6 +193,52 @@ pub unsafe extern "C" fn playsrc_compile_map(
         slots[index] = slot
     }
     encode(index, generation)
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompiledArtifact {
+    pub payload: Vec<u8>,
+    pub payload_sha256: [u8; 32],
+    pub derived_sha256: [u8; 32],
+}
+pub fn compile_artifact(
+    bsp: &[u8],
+    profile: u32,
+    configuration: &[u8],
+) -> Result<CompiledArtifact, u32> {
+    let handle = unsafe {
+        playsrc_compile_map(
+            bsp.as_ptr(),
+            bsp.len(),
+            profile,
+            configuration.as_ptr(),
+            configuration.len(),
+        )
+    };
+    let failure = playsrc_result_error(handle);
+    if failure != 0 {
+        playsrc_dispose(handle);
+        return Err(failure);
+    }
+    let mut payload = vec![0; playsrc_result_length(handle)];
+    if unsafe { playsrc_result_copy(handle, payload.as_mut_ptr(), payload.len()) } != payload.len()
+    {
+        playsrc_dispose(handle);
+        return Err(u32::MAX);
+    }
+    let mut payload_sha256 = [0; 32];
+    let mut derived_sha256 = [0; 32];
+    if unsafe { playsrc_result_hash(handle, payload_sha256.as_mut_ptr()) } != 1
+        || unsafe { playsrc_result_derived_hash(handle, derived_sha256.as_mut_ptr()) } != 1
+    {
+        playsrc_dispose(handle);
+        return Err(u32::MAX);
+    }
+    playsrc_dispose(handle);
+    Ok(CompiledArtifact {
+        payload,
+        payload_sha256,
+        derived_sha256,
+    })
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn playsrc_result_length(handle: u32) -> usize {
@@ -197,6 +274,16 @@ pub unsafe extern "C" fn playsrc_result_copy(
 pub unsafe extern "C" fn playsrc_result_hash(handle: u32, pointer: *mut u8) -> u32 {
     with(handle, |slot| {
         unsafe { std::ptr::copy_nonoverlapping(slot.hash.as_ptr(), pointer, 32) };
+        1
+    })
+    .unwrap_or(0)
+}
+#[unsafe(no_mangle)]
+/// # Safety
+/// `pointer` must identify at least 32 writable bytes in this module's memory.
+pub unsafe extern "C" fn playsrc_result_derived_hash(handle: u32, pointer: *mut u8) -> u32 {
+    with(handle, |slot| {
+        unsafe { std::ptr::copy_nonoverlapping(slot.derived_hash.as_ptr(), pointer, 32) };
         1
     })
     .unwrap_or(0)
@@ -245,6 +332,7 @@ pub extern "C" fn playsrc_dispose(handle: u32) -> u32 {
     }
     slot.payload = None;
     slot.hash = [0; 32];
+    slot.derived_hash = [0; 32];
     slot.error = 0;
     slot.spawn = None;
     slot.session = None;
@@ -558,6 +646,7 @@ fn dependency_path(token: &[u8]) -> Result<String, ()> {
 fn resolve_materials(
     map: &playsrc_map::CanonicalMap,
     configuration: &[u8],
+    profile: playsrc_map::LightingProfile,
 ) -> Result<Vec<playsrc_map::RuntimeMaterial>, ()> {
     let bundle = bundle(configuration)?;
     if bundle.is_empty() {
@@ -566,7 +655,12 @@ fn resolve_materials(
     map.materials
         .iter()
         .map(|reference| {
-            resolve_material(&reference.logical_path.to_ascii_lowercase(), &bundle, true)
+            resolve_material(
+                &reference.logical_path.to_ascii_lowercase(),
+                &bundle,
+                true,
+                material_environment(profile, false),
+            )
         })
         .collect()
 }
@@ -575,38 +669,13 @@ fn resolve_material(
     identity: &str,
     bundle: &BTreeMap<String, &[u8]>,
     include_texture: bool,
+    environment: playsrc_material::SelectionEnvironment,
 ) -> Result<playsrc_map::RuntimeMaterial, ()> {
-    let root = *bundle.get(identity).ok_or(())?;
-    let mut responses = Vec::new();
-    let material = loop {
-        match playsrc_vmt::compose(
-            root,
-            identity.to_owned(),
-            &responses,
-            &playsrc_keyvalues::ConditionEnvironment::default(),
-            playsrc_vmt::Limits::default(),
-        )
-        .map_err(|_| ())?
-        {
-            playsrc_vmt::Composition::Complete(document) => {
-                break playsrc_material::resolve(&document).map_err(|_| ())?;
-            }
-            playsrc_vmt::Composition::Needs(requests) => {
-                for request in requests {
-                    let path = dependency_path(&request.target_token)?;
-                    responses.push(playsrc_vmt::DependencyResponse {
-                        parent_identity: request.parent_identity,
-                        target_token: request.target_token,
-                        canonical_identity: path.clone(),
-                        bytes: Some(bundle.get(&path).ok_or(())?.to_vec()),
-                    });
-                }
-            }
-        }
-    };
+    let material = resolve_material_semantics(identity, bundle, environment)?;
+    let selected_role = material.selected_textures.first().copied();
     let base = if include_texture
         && let Some(texture) = material.textures.iter().find(|texture| {
-            texture.role == playsrc_material::TextureRole::Base
+            Some(texture.role) == selected_role
                 && texture.disposition == playsrc_material::TextureDisposition::Source
         }) {
         let path = texture
@@ -647,7 +716,54 @@ fn resolve_material(
     } else {
         None
     };
-    let shader = match material.shader {
+    Ok(playsrc_map::RuntimeMaterial {
+        logical_path: identity.to_owned(),
+        shader: shader_code(material.shader),
+        features: feature_bits(material.features),
+        texture_role: selected_role.map_or(0, texture_role),
+        base_texture: base,
+    })
+}
+
+fn resolve_material_semantics(
+    identity: &str,
+    bundle: &BTreeMap<String, &[u8]>,
+    environment: playsrc_material::SelectionEnvironment,
+) -> Result<playsrc_material::Material, ()> {
+    let root = *bundle.get(identity).ok_or(())?;
+    let mut responses = Vec::new();
+    let material = loop {
+        match playsrc_vmt::compose(
+            root,
+            identity.to_owned(),
+            &responses,
+            &playsrc_keyvalues::ConditionEnvironment::default(),
+            playsrc_vmt::Limits::default(),
+        )
+        .map_err(|_| ())?
+        {
+            playsrc_vmt::Composition::Complete(document) => {
+                break playsrc_material::resolve_for_environment(&document, environment)
+                    .map_err(|_| ())?;
+            }
+            playsrc_vmt::Composition::Needs(requests) => {
+                for request in requests {
+                    let path = dependency_path(&request.target_token)?;
+                    responses.push(playsrc_vmt::DependencyResponse {
+                        parent_identity: request.parent_identity,
+                        target_token: request.target_token,
+                        canonical_identity: path.clone(),
+                        bytes: Some(bundle.get(&path).ok_or(())?.to_vec()),
+                    });
+                }
+            }
+        }
+    };
+    Ok(material)
+}
+
+fn shader_code(shader: playsrc_material::Shader) -> u8 {
+    match shader {
         playsrc_material::Shader::LightmappedGeneric => 1,
         playsrc_material::Shader::VertexLitGeneric => 2,
         playsrc_material::Shader::UnlitGeneric => 3,
@@ -655,20 +771,144 @@ fn resolve_material(
         playsrc_material::Shader::Water => 5,
         playsrc_material::Shader::Refract => 6,
         playsrc_material::Shader::Sprite => 7,
+        playsrc_material::Shader::SkyHdr => 8,
+        playsrc_material::Shader::SkyLdr => 9,
         playsrc_material::Shader::Unsupported => 255,
-    };
-    let features = u8::from(material.features.translucent)
-        | (u8::from(material.features.additive) << 1)
-        | (u8::from(material.features.alpha_test) << 2)
-        | (u8::from(material.features.no_cull) << 3)
-        | (u8::from(material.features.self_illum) << 4)
-        | (u8::from(material.features.ss_bump) << 5);
-    Ok(playsrc_map::RuntimeMaterial {
-        logical_path: identity.to_owned(),
-        shader,
-        features,
-        base_texture: base,
-    })
+    }
+}
+
+fn feature_bits(features: playsrc_material::Features) -> u8 {
+    u8::from(features.translucent)
+        | (u8::from(features.additive) << 1)
+        | (u8::from(features.alpha_test) << 2)
+        | (u8::from(features.no_cull) << 3)
+        | (u8::from(features.self_illum) << 4)
+        | (u8::from(features.ss_bump) << 5)
+}
+
+fn material_environment(
+    profile: playsrc_map::LightingProfile,
+    model: bool,
+) -> playsrc_material::SelectionEnvironment {
+    playsrc_material::SelectionEnvironment {
+        hdr_mode: if profile == playsrc_map::LightingProfile::Hdr {
+            playsrc_material::HdrMode::Integer
+        } else {
+            playsrc_material::HdrMode::None
+        },
+        model,
+        ..playsrc_material::SelectionEnvironment::default()
+    }
+}
+
+fn texture_role(role: playsrc_material::TextureRole) -> u8 {
+    match role {
+        playsrc_material::TextureRole::Base => 0,
+        playsrc_material::TextureRole::HdrBase => 1,
+        playsrc_material::TextureRole::HdrCompressed => 2,
+        playsrc_material::TextureRole::HdrCompressed0 => 3,
+        playsrc_material::TextureRole::HdrCompressed1 => 4,
+        playsrc_material::TextureRole::HdrCompressed2 => 5,
+        _ => 255,
+    }
+}
+
+fn resolve_profile_materials(
+    graph: &playsrc_entity::Graph,
+    configuration: &[u8],
+    profile: playsrc_map::LightingProfile,
+) -> Result<Vec<playsrc_map::RuntimeProfileMaterial>, ()> {
+    if profile != playsrc_map::LightingProfile::Hdr {
+        return Ok(Vec::new());
+    }
+    let bundle = bundle(configuration)?;
+    let world = graph
+        .entities
+        .iter()
+        .find(|entity| {
+            entity
+                .classname
+                .as_deref()
+                .is_some_and(|value| value.eq_ignore_ascii_case(b"worldspawn"))
+        })
+        .ok_or(())?;
+    let sky = world
+        .pairs
+        .iter()
+        .find(|pair| pair.key.eq_ignore_ascii_case(b"skyname"))
+        .ok_or(())?;
+    let sky = std::str::from_utf8(&sky.value).map_err(|_| ())?;
+    if sky.is_empty()
+        || !sky
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+    {
+        return Err(());
+    }
+    ["rt", "lf", "bk", "ft", "up", "dn"]
+        .into_iter()
+        .map(|suffix| {
+            let identity = format!("materials/skybox/{sky}_hdr{suffix}.vmt").to_ascii_lowercase();
+            let material = resolve_material_semantics(
+                &identity,
+                &bundle,
+                material_environment(profile, false),
+            )
+            .map_err(|_| ())?;
+            let role = *material.selected_textures.first().ok_or(())?;
+            let texture = material
+                .textures
+                .iter()
+                .find(|texture| texture.role == role)
+                .ok_or(())?;
+            let path = texture
+                .logical_path
+                .as_ref()
+                .ok_or(())?
+                .to_ascii_lowercase();
+            let bytes = *bundle.get(&path).ok_or(())?;
+            let metadata = playsrc_vtf::inspect(
+                bytes,
+                playsrc_vtf::Dialect::Source2013Pc,
+                playsrc_vtf::Limits::default(),
+            )
+            .map_err(|_| ())?;
+            if metadata.frame_count != 1
+                || metadata.depth != 1
+                || metadata.width == 0
+                || metadata.height == 0
+                || metadata.width > 4_096
+                || metadata.height > 4_096
+            {
+                return Err(());
+            }
+            Ok(playsrc_map::RuntimeProfileMaterial {
+                logical_path: identity,
+                shader: shader_code(material.shader),
+                features: feature_bits(material.features),
+                texture_role: texture_role(role),
+                texture: playsrc_map::RuntimeProfileTexture {
+                    logical_path: path,
+                    width: metadata.width,
+                    height: metadata.height,
+                    format: metadata.high_format.code(),
+                    source_sha256: Sha256::digest(bytes).into(),
+                    source_bytes: bytes.to_vec(),
+                },
+            })
+        })
+        .collect()
+}
+
+fn runtime_inputs(configuration: &[u8]) -> Result<Vec<playsrc_map::RuntimeInput>, ()> {
+    Ok(bundle(configuration)?
+        .into_iter()
+        .map(|(logical_path, bytes)| playsrc_map::RuntimeInput {
+            role: 1,
+            logical_path,
+            sha256: Sha256::digest(bytes).into(),
+        })
+        .collect())
 }
 
 fn model_profile(bytes: &[u8]) -> Result<playsrc_studio_model::Profile, ()> {
@@ -745,6 +985,7 @@ fn entity_vector(entity: &playsrc_entity::Entity, key: &[u8]) -> Result<[f32; 3]
 fn resolve_models(
     graph: &playsrc_entity::Graph,
     configuration: &[u8],
+    profile: playsrc_map::LightingProfile,
 ) -> Result<
     (
         Vec<playsrc_map::RuntimeModel>,
@@ -788,7 +1029,8 @@ fn resolve_models(
                 .find(|candidate| bundle.contains_key(&candidate.to_ascii_lowercase()))
                 .ok_or(())?
                 .to_ascii_lowercase();
-            let mut material = resolve_material(&path, &bundle, false)?;
+            let mut material =
+                resolve_material(&path, &bundle, false, material_environment(profile, true))?;
             material.base_texture = None;
             materials.push(material);
         }
@@ -898,6 +1140,7 @@ mod tests {
             generation: 1,
             payload: Some(vec![1, 2]),
             hash: [3; 32],
+            derived_hash: [6; 32],
             error: 0,
             spawn: None,
             session: None,
@@ -912,6 +1155,7 @@ mod tests {
             generation: 2,
             payload: Some(vec![4]),
             hash: [5; 32],
+            derived_hash: [7; 32],
             error: 0,
             spawn: None,
             session: None,
