@@ -4,7 +4,7 @@ Owner: [`../ROADMAP.md`](../ROADMAP.md)
 
 State: Candidate; Not accepted.
 
-Authority identity: Valve Source SDK 2013 commit `88fa198fba3fb85d46d4c95018254693fdc3af0a`, Valve Developer Community `PHY` revision `462589`, and exact archive indexes plus source bytes for one accepted TF2, CS:S, and legacy Source 1 CS:GO content build. The three content-build inputs are Missing.
+Authority identity: Valve Source SDK 2013 commit `88fa198fba3fb85d46d4c95018254693fdc3af0a`, Valve Developer Community `PHY` revision `462589`, and exact archive indexes plus source bytes for one accepted TF2, CS:S, and legacy Source 1 CS:GO content build. TF2 build `10822003` is configured; the CS:S and legacy Source 1 CS:GO content-build inputs are Missing.
 
 Generator command: Missing.
 
