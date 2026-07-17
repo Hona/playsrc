@@ -1,155 +1,276 @@
-const MAX_DEFINITIONS = 4096
-const MAX_EFFECTS = 4096
-const IDENTITY = /^[\x21-\x7e]{1,256}$/
+const OUTPUT_MAGIC = 0x5250_5350 // "PSPR"
+const OUTPUT_VERSION = 1
+const OUTPUT_HEADER_BYTES = 12
+const OUTPUT_RECORD_BYTES = 120
+const DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024 * 1024
+const DEFAULT_MAX_RENDER_ITEMS = 65_536
 
-export type SpriteDefinition = Readonly<{
-  identity: string
-  lifetimeTicks: number
-  startRadius: number
-  endRadius: number
-  color: number
-  startOpacity: number
-  endOpacity: number
+export type PcfResource = Readonly<{
+  logicalPath: string
+  bytes: Uint8Array
 }>
 
-export type EmitRequest = Readonly<{
-  identity: number
-  definition: string
-  tick: bigint
-  position: readonly [number, number, number]
+export type ParticleBatch = Readonly<{
+  /** Compact versioned event/advance bytes consumed as one complete Rust phase. */
+  bytes: Uint8Array
+}>
+
+export type ParticleKernelSession = Readonly<{
+  materials: readonly string[]
+  transact(batch: Uint8Array): Uint8Array
+  reset(bytes: Uint8Array): void
+  dispose(): void
+}>
+
+export type ParticleKernel = Readonly<{
+  /** Loads all supplied PCF bytes in one bounded Rust registry operation. */
+  load(resources: readonly PcfResource[]): ParticleKernelSession
+}>
+
+export type ParticleAdapterLimits = Readonly<{
+  maxOutputBytes: number
+  maxRenderItems: number
 }>
 
 export type ParticleRenderItem = Readonly<{
   identity: number
+  effectIdentity: number
+  particleIdentity: number
+  rendererIndex: number
+  primitive: "sprite" | "trail"
+  systemUuid: string
+  material: string
   position: readonly [number, number, number]
+  previousPosition: readonly [number, number, number]
   radius: number
+  rollRadians: number
   color: number
   opacity: number
+  sequence: number
+  trailLength: number
+  sortKey: number
+  ageSeconds: number
+  lifetimeSeconds: number
+  animationRate: number
+  trailMinLength: number
+  trailMaxLength: number
+  trailFadeInSeconds: number
+  orientationType: number
+  animationFitLifetime: boolean
+  animationRateAsFps: boolean
 }>
 
-type Effect = Readonly<{
-  identity: number
-  definition: SpriteDefinition
-  tick: bigint
-  position: readonly [number, number, number]
-}>
-
-export class ParticleError extends Error {
+export class ParticleAdapterError extends Error {
   constructor(
-    readonly code: "MalformedDefinition" | "MissingDefinition" | "MalformedEvent" | "BoundExceeded" | "TimeReversed",
+    readonly code: "MalformedInput" | "MalformedOutput" | "BoundExceeded" | "InvalidState",
     message: string,
   ) {
     super(message)
-    this.name = "ParticleError"
+    this.name = "ParticleAdapterError"
   }
 }
 
-function canonical(value: string): string {
-  return value.replace(/[A-Z]/g, (letter) => letter.toLowerCase())
-}
-
-function finite(values: readonly number[]): boolean {
-  return values.every(Number.isFinite)
-}
-
-export function createParticleSystem(definitions: readonly SpriteDefinition[]): Readonly<{
-  emit(request: EmitRequest): void
-  advance(tick: bigint): readonly ParticleRenderItem[]
-  reset(tick: bigint): void
+export function createParticleSystem(
+  kernel: ParticleKernel,
+  resources: readonly PcfResource[],
+  limits: ParticleAdapterLimits = Object.freeze({
+    maxOutputBytes: DEFAULT_MAX_OUTPUT_BYTES,
+    maxRenderItems: DEFAULT_MAX_RENDER_ITEMS,
+  }),
+): Readonly<{
+  advance(batch: ParticleBatch): readonly ParticleRenderItem[]
+  reset(bytes: Uint8Array): void
   dispose(): void
 }> {
-  if (definitions.length > MAX_DEFINITIONS) {
-    throw new ParticleError("BoundExceeded", "particle definition count exceeds its limit")
-  }
-  const registry = new Map<string, SpriteDefinition>()
-  for (const definition of definitions) {
-    if (
-      !IDENTITY.test(definition.identity)
-      || !Number.isSafeInteger(definition.lifetimeTicks)
-      || definition.lifetimeTicks < 1
-      || !finite([
-        definition.startRadius,
-        definition.endRadius,
-        definition.startOpacity,
-        definition.endOpacity,
-      ])
-      || definition.startRadius <= 0
-      || definition.endRadius <= 0
-      || definition.startOpacity < 0
-      || definition.startOpacity > 1
-      || definition.endOpacity < 0
-      || definition.endOpacity > 1
-      || !Number.isSafeInteger(definition.color)
-      || definition.color < 0
-      || definition.color > 0xff_ffff
-    ) {
-      throw new ParticleError("MalformedDefinition", "particle sprite definition is invalid")
-    }
-    const identity = canonical(definition.identity)
-    if (registry.has(identity)) {
-      throw new ParticleError("MalformedDefinition", "particle definition identity is duplicated")
-    }
-    registry.set(identity, Object.freeze({ ...definition }))
-  }
-  let tick = 0n
-  let effects: Effect[] = []
+  validateLimits(limits)
+  validateResources(resources)
+  const session = kernel.load(resources)
+  validateMaterials(session.materials)
   let disposed = false
   return Object.freeze({
-    emit(request: EmitRequest): void {
-      if (
-        disposed
-        || !Number.isSafeInteger(request.identity)
-        || request.identity < 1
-        || !IDENTITY.test(request.definition)
-        || typeof request.tick !== "bigint"
-        || !finite(request.position)
-        || effects.some((effect) => effect.identity === request.identity)
-      ) {
-        throw new ParticleError("MalformedEvent", "particle event is invalid")
+    advance(batch: ParticleBatch): readonly ParticleRenderItem[] {
+      if (disposed) throw new ParticleAdapterError("InvalidState", "particle adapter is disposed")
+      if (!(batch.bytes instanceof Uint8Array) || batch.bytes.byteLength === 0) {
+        throw new ParticleAdapterError("MalformedInput", "particle batch must contain bytes")
       }
-      if (request.tick < tick) throw new ParticleError("TimeReversed", "particle event precedes current time")
-      if (effects.length >= MAX_EFFECTS) {
-        throw new ParticleError("BoundExceeded", "particle effect count exceeds its limit")
-      }
-      const definition = registry.get(canonical(request.definition))
-      if (!definition) throw new ParticleError("MissingDefinition", `particle definition ${request.definition} is missing`)
-      effects.push(Object.freeze({
-        identity: request.identity,
-        definition,
-        tick: request.tick,
-        position: Object.freeze([...request.position]) as readonly [number, number, number],
-      }))
+      return decodeParticleRenderOutput(session.transact(batch.bytes), session.materials, limits)
     },
-    advance(nextTick: bigint): readonly ParticleRenderItem[] {
-      if (disposed || typeof nextTick !== "bigint" || nextTick < tick) {
-        throw new ParticleError("TimeReversed", "particle time moved backward")
+    reset(bytes: Uint8Array): void {
+      if (disposed || !(bytes instanceof Uint8Array) || bytes.byteLength === 0) {
+        throw new ParticleAdapterError("InvalidState", "particle reset bytes or state are invalid")
       }
-      tick = nextTick
-      effects = effects.filter((effect) => tick - effect.tick < BigInt(effect.definition.lifetimeTicks))
-      return Object.freeze(effects.map((effect) => {
-        const age = Number(tick - effect.tick)
-        const fraction = age / effect.definition.lifetimeTicks
-        return Object.freeze({
-          identity: effect.identity,
-          position: effect.position,
-          radius: effect.definition.startRadius
-            + (effect.definition.endRadius - effect.definition.startRadius) * fraction,
-          color: effect.definition.color,
-          opacity: effect.definition.startOpacity
-            + (effect.definition.endOpacity - effect.definition.startOpacity) * fraction,
-        })
-      }))
-    },
-    reset(nextTick: bigint): void {
-      if (disposed || typeof nextTick !== "bigint" || nextTick < 0n) {
-        throw new ParticleError("MalformedEvent", "particle reset tick is invalid")
-      }
-      tick = nextTick
-      effects = []
+      session.reset(bytes)
     },
     dispose(): void {
+      if (!disposed) session.dispose()
       disposed = true
-      effects = []
     },
   })
+}
+
+export function decodeParticleRenderOutput(
+  bytes: Uint8Array,
+  materials: readonly string[],
+  limits: ParticleAdapterLimits = Object.freeze({
+    maxOutputBytes: DEFAULT_MAX_OUTPUT_BYTES,
+    maxRenderItems: DEFAULT_MAX_RENDER_ITEMS,
+  }),
+): readonly ParticleRenderItem[] {
+  validateLimits(limits)
+  validateMaterials(materials)
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength < OUTPUT_HEADER_BYTES || bytes.byteLength > limits.maxOutputBytes) {
+    throw new ParticleAdapterError("BoundExceeded", "particle output byte length is invalid")
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  if (view.getUint32(0, true) !== OUTPUT_MAGIC || view.getUint32(4, true) !== OUTPUT_VERSION) {
+    throw new ParticleAdapterError("MalformedOutput", "particle output identity is invalid")
+  }
+  const count = view.getUint32(8, true)
+  if (count > limits.maxRenderItems) {
+    throw new ParticleAdapterError("BoundExceeded", "particle render item count exceeds its limit")
+  }
+  const expected = OUTPUT_HEADER_BYTES + count * OUTPUT_RECORD_BYTES
+  if (!Number.isSafeInteger(expected) || expected !== bytes.byteLength) {
+    throw new ParticleAdapterError("MalformedOutput", "particle output records do not frame its bytes")
+  }
+  const output: ParticleRenderItem[] = []
+  for (let index = 0; index < count; index += 1) {
+    const offset = OUTPUT_HEADER_BYTES + index * OUTPUT_RECORD_BYTES
+    const primitive = bytes[offset + 14]
+    if ((primitive !== 0 && primitive !== 1) || bytes[offset + 15] !== 0) {
+      throw new ParticleAdapterError("MalformedOutput", "particle primitive or reserved byte is invalid")
+    }
+    const materialIndex = view.getUint32(offset + 32, true)
+    const material = materials[materialIndex]
+    if (material === undefined) {
+      throw new ParticleAdapterError("MalformedOutput", "particle material index is invalid")
+    }
+    const position = tuple3(view, offset + 36)
+    const previousPosition = tuple3(view, offset + 48)
+    const radius = view.getFloat32(offset + 60, true)
+    const rollRadians = view.getFloat32(offset + 64, true)
+    const color = view.getUint32(offset + 68, true)
+    const opacity = view.getFloat32(offset + 72, true)
+    const sequence = view.getInt32(offset + 76, true)
+    const trailLength = view.getFloat32(offset + 80, true)
+    const sortKey = view.getFloat32(offset + 84, true)
+    const ageSeconds = view.getFloat32(offset + 88, true)
+    const lifetimeSeconds = view.getFloat32(offset + 92, true)
+    const animationRate = view.getFloat32(offset + 96, true)
+    const trailMinLength = view.getFloat32(offset + 100, true)
+    const trailMaxLength = view.getFloat32(offset + 104, true)
+    const trailFadeInSeconds = view.getFloat32(offset + 108, true)
+    const orientationType = view.getInt32(offset + 112, true)
+    const flags = view.getUint32(offset + 116, true)
+    if (
+      ![
+        ...position,
+        ...previousPosition,
+        radius,
+        rollRadians,
+        opacity,
+        trailLength,
+        sortKey,
+        ageSeconds,
+        lifetimeSeconds,
+        animationRate,
+        trailMinLength,
+        trailMaxLength,
+        trailFadeInSeconds,
+      ].every(Number.isFinite)
+      || radius < 0
+      || opacity < 0
+      || opacity > 1
+      || trailLength < 0
+      || ageSeconds < 0
+      || lifetimeSeconds <= 0
+      || trailMinLength < 0
+      || trailMaxLength < trailMinLength
+      || trailFadeInSeconds < 0
+      || (flags & ~3) !== 0
+    ) {
+      throw new ParticleAdapterError("MalformedOutput", "particle output contains an invalid scalar")
+    }
+    output.push(Object.freeze({
+      identity: view.getUint32(offset, true),
+      effectIdentity: view.getUint32(offset + 4, true),
+      particleIdentity: view.getUint32(offset + 8, true),
+      rendererIndex: view.getUint16(offset + 12, true),
+      primitive: primitive === 0 ? "sprite" : "trail",
+      systemUuid: uuid(bytes.subarray(offset + 16, offset + 32)),
+      material,
+      position,
+      previousPosition,
+      radius,
+      rollRadians,
+      color: color & 0xff_ffff,
+      opacity,
+      sequence,
+      trailLength,
+      sortKey,
+      ageSeconds,
+      lifetimeSeconds,
+      animationRate,
+      trailMinLength,
+      trailMaxLength,
+      trailFadeInSeconds,
+      orientationType,
+      animationFitLifetime: (flags & 1) !== 0,
+      animationRateAsFps: (flags & 2) !== 0,
+    }))
+  }
+  return Object.freeze(output)
+}
+
+function validateResources(resources: readonly PcfResource[]): void {
+  const identities = new Set<string>()
+  for (const resource of resources) {
+    if (
+      !logicalPath(resource.logicalPath)
+      || !(resource.bytes instanceof Uint8Array)
+      || resource.bytes.byteLength === 0
+      || identities.has(resource.logicalPath.toLowerCase())
+    ) {
+      throw new ParticleAdapterError("MalformedInput", "PCF resource is malformed or duplicated")
+    }
+    identities.add(resource.logicalPath.toLowerCase())
+  }
+}
+
+function validateMaterials(materials: readonly string[]): void {
+  if (!Array.isArray(materials) || materials.some((material) => !logicalPath(material))) {
+    throw new ParticleAdapterError("MalformedOutput", "particle material registry is invalid")
+  }
+}
+
+function validateLimits(limits: ParticleAdapterLimits): void {
+  if (!positive(limits.maxOutputBytes) || !positive(limits.maxRenderItems)) {
+    throw new ParticleAdapterError("BoundExceeded", "particle adapter limits must be positive integers")
+  }
+}
+
+function logicalPath(value: string): boolean {
+  return typeof value === "string"
+    && value.length > 0
+    && value.length <= 1_024
+    && !value.startsWith("/")
+    && !value.includes("\\")
+    && value.split("/").every((component) => component.length > 0 && component !== "." && component !== "..")
+    && !/[\u0000-\u001f\u007f]/.test(value)
+}
+
+function positive(value: number): boolean {
+  return Number.isSafeInteger(value) && value > 0
+}
+
+function tuple3(view: DataView, offset: number): readonly [number, number, number] {
+  return Object.freeze([
+    view.getFloat32(offset, true),
+    view.getFloat32(offset + 4, true),
+    view.getFloat32(offset + 8, true),
+  ])
+}
+
+function uuid(bytes: Uint8Array): string {
+  return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("")
 }
