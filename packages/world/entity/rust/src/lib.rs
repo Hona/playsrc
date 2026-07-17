@@ -1,5 +1,8 @@
 use std::{collections::BTreeMap, fmt, ops::Range, sync::Arc};
 
+mod world;
+pub use world::*;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Limits {
     pub max_bytes: usize,
@@ -13,10 +16,10 @@ impl Default for Limits {
     fn default() -> Self {
         Self {
             max_bytes: 16 * 1024 * 1024,
-            max_entities: 16_384,
+            max_entities: 8_192,
             max_pairs: 262_144,
             max_pairs_per_entity: 4_096,
-            max_string_bytes: 16_384,
+            max_string_bytes: 2_047,
             max_connections: 262_144,
         }
     }
@@ -31,6 +34,7 @@ pub struct Pair {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConnectionError {
     FieldCount,
+    FieldLimit,
     EmptyTarget,
     EmptyInput,
     InvalidDelay,
@@ -179,10 +183,7 @@ pub fn parse(bytes: &[u8], limits: Limits) -> Result<Graph, Error> {
         return Err(error(ErrorCode::InputLimit, 0..bytes.len()));
     }
     let terminator = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
-    let mut term_end = terminator;
-    while term_end < bytes.len() && bytes[term_end] == 0 {
-        term_end += 1;
-    }
+    let term_end = terminator + usize::from(terminator < bytes.len());
     if term_end != bytes.len() {
         return Err(error(ErrorCode::InvalidByte, term_end..bytes.len()));
     }
@@ -217,7 +218,7 @@ pub fn parse(bytes: &[u8], limits: Limits) -> Result<Graph, Error> {
             at += 2;
         }
         at += 1;
-        if entities.len() >= limits.max_entities {
+        if entities.len() >= limits.max_entities.min(8_192) {
             return Err(error(ErrorCode::EntityLimit, 0..0));
         }
         entities.push(build_entity(entities.len(), pairs, limits)?);
@@ -285,7 +286,7 @@ fn tokenize(bytes: &[u8], limits: Limits) -> Result<Vec<Token>, Error> {
                 if at == bytes.len() {
                     return Err(error(ErrorCode::UnterminatedString, start..at));
                 }
-                if at - content > limits.max_string_bytes {
+                if at - content > limits.max_string_bytes.min(2_047) {
                     return Err(error(ErrorCode::StringLimit, content..at));
                 }
                 out.push(Token::Text(bytes[content..at].to_vec(), start..at + 1));
@@ -299,7 +300,7 @@ fn tokenize(bytes: &[u8], limits: Limits) -> Result<Vec<Token>, Error> {
                 {
                     at += 1;
                 }
-                if at - start > limits.max_string_bytes {
+                if at - start > limits.max_string_bytes.min(2_047) {
                     return Err(error(ErrorCode::StringLimit, start..at));
                 }
                 out.push(Token::Text(bytes[start..at].to_vec(), start..at));
@@ -368,6 +369,9 @@ fn connection(order: usize, pair: &Pair) -> Option<Connection> {
     };
     if fields.len() != 5 {
         return Some(bad(ConnectionError::FieldCount));
+    }
+    if fields.iter().any(|field| field.len() > 255) {
+        return Some(bad(ConnectionError::FieldLimit));
     }
     if fields[0].is_empty() {
         return Some(bad(ConnectionError::EmptyTarget));
@@ -644,6 +648,12 @@ mod tests {
             .code,
             ErrorCode::EntityLimit
         );
+        assert_eq!(
+            parse(b"{}\0\0", Limits::default()).unwrap_err().code,
+            ErrorCode::InvalidByte
+        );
+        assert_eq!(Limits::default().max_entities, 8_192);
+        assert_eq!(Limits::default().max_string_bytes, 2_047);
     }
 
     #[test]
