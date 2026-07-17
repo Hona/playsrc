@@ -21,7 +21,7 @@ Resolve and present Source sound definitions and audio state.
 - Consume explicit world, gameplay, and replay audio events.
 - Create bounded Web Audio source, gain, split, merge, and direct-resource pan graphs only from caller-supplied exact decoded buffers; missing resources create no node or substitute sound.
 - Present exact stock rocket/sticky launch and explosion WAVE resources selected by game-owned versioned fire/explosion events after one explicit browser resume gesture.
-- Compile caller-parsed sound entries with Source channel, level/attenuation, volume, pitch, decorators, ordered no-repeat waves, base/override, delay, and owner-only semantics; produce neutral voice gain/pan/mixer/DSP dispositions before browser construction.
+- Compile caller-parsed sound entries with Source channel, level/attenuation, volume, pitch, decorators, ordered wave occurrences, base/override, delay, and owner-only semantics; resolve only the producer-selected original wave ordinal and normalized parameter samples; produce neutral voice gain/pan/mixer/DSP dispositions before browser construction.
 - Build channel-exact mono/stereo Web Audio graphs for neutral voices, schedule offsets and loop starts, replace only matching voice identities, and release every node once on end, stop, reset, replacement, or close.
 
 ## Non-Responsibilities

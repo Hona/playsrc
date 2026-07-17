@@ -99,6 +99,7 @@ export type StartSound = Readonly<{
 export type NeutralVoice = Readonly<{
   identity: number
   definition: string
+  wave: number
   resource: string
   decorators: readonly SoundDecorator[]
   sourceIdentity: number
@@ -313,7 +314,6 @@ export class SourceAudioWorld {
   readonly #registry: SoundRegistry
   readonly #limits: SourceAudioLimits
   readonly #voices = new Map<number, NeutralVoice>()
-  readonly #available = new Map<string, Set<number>>()
 
   constructor(registry: SoundRegistry, limits: SourceAudioLimits) {
     if (!positive(limits.maxActiveVoices)) throw error("Capacity", "voice limit must be positive")
@@ -328,25 +328,19 @@ export class SourceAudioWorld {
     if (definition.ownerOnly && event.source.ownerIdentity !== event.listener.identity) {
       throw error("Audience", "owner-only sound does not target the listener")
     }
-    const eligible = definition.waves
-      .map((wave, index) => ({ wave, index }))
-      .filter(({ wave }) => wave.resource !== null && event.resourceAvailable(wave.resource))
-    if (eligible.length === 0) throw error("MissingResource", "sound has no available wave")
-    const cycleKey = canonical(definition.identity)
-    let available = this.#available.get(cycleKey)
-    if (!available || !eligible.some(({ index }) => available!.has(index))) {
-      available = new Set(eligible.map(({ index }) => index))
+    const selected = definition.waves[event.samples.wave]
+    if (!selected) throw error("MalformedEvent", "selected sound wave ordinal is outside its definition")
+    if (selected.resource === null || !event.resourceAvailable(selected.resource)) {
+      throw error("MissingResource", "selected sound wave resource is unavailable")
     }
-    const selectable = eligible.filter(({ index }) => available!.has(index))
-    const selected = selectable[sampleIndex(event.samples.wave, selectable.length)]!
-    const resource = selected.wave.resource!
+    const resource = selected.resource
     const volume = sampleInterval(definition.volume, event.samples.volume)
     const pitch = Math.trunc(sampleInterval(definition.pitch, event.samples.pitch))
     const soundLevel = Math.trunc(sampleInterval(definition.soundLevel, event.samples.soundLevel))
     if (pitch <= 0 || pitch > 255 || soundLevel < 0 || soundLevel > 511) {
       throw error("MalformedEvent", "resolved pitch or sound level is outside its encoded range")
     }
-    const channel = selected.wave.decorators.includes("stream") ? 5 : definition.channel
+    const channel = selected.decorators.includes("stream") ? 5 : definition.channel
     const replaced = this.#replacement(channel, event)
     const looped = event.resourceLoopStartSeconds !== null
     this.#enforceConcurrency(resource, looped, event, replaced)
@@ -367,8 +361,9 @@ export class SourceAudioWorld {
     const voice = Object.freeze({
       identity: event.voiceIdentity,
       definition: definition.identity,
+      wave: event.samples.wave,
       resource,
-      decorators: selected.wave.decorators,
+      decorators: selected.decorators,
       sourceIdentity: event.source.identity,
       channel,
       volume,
@@ -384,13 +379,11 @@ export class SourceAudioWorld {
       sourceDistance: spatial.sourceDistance,
       distanceGain: spatial.distance,
       mixerGain,
-      dsp: selected.wave.decorators.includes("dry") ? "dry" as const : "room" as const,
+      dsp: selected.decorators.includes("dry") ? "dry" as const : "room" as const,
       listenerRevision: event.listener.revision,
     })
     for (const identity of replaced) this.#voices.delete(identity)
     this.#voices.set(voice.identity, voice)
-    available.delete(selected.index)
-    this.#available.set(cycleKey, available)
     return Object.freeze({ voice, replaced: Object.freeze(replaced) })
   }
 
@@ -414,7 +407,6 @@ export class SourceAudioWorld {
   reset(): readonly number[] {
     const stopped = [...this.#voices.keys()]
     this.#voices.clear()
-    this.#available.clear()
     return Object.freeze(stopped)
   }
 
@@ -627,7 +619,8 @@ function spatialGains(source: SoundSource, listener: Listener, soundLevel: numbe
 }
 
 function validateStart(event: StartSound): void {
-  if (!uint(event.voiceIdentity) || !identity(event.definition) || !uint(event.source.identity)
+  if (!event || typeof event.samples !== "object" || event.samples === null
+    || !uint(event.voiceIdentity) || !identity(event.definition) || !uint(event.source.identity)
     || !validListener(event.listener) || !Number.isFinite(event.resourceDurationSeconds)
     || event.resourceDurationSeconds <= 0 || ![1, 2].includes(event.resourceChannels)
     || !Number.isFinite(event.scheduledTimeSeconds) || !Number.isFinite(event.delaySeconds)
@@ -636,7 +629,12 @@ function validateStart(event: StartSound): void {
       || event.resourceLoopStartSeconds >= event.resourceDurationSeconds))) {
     throw error("MalformedEvent", "start event is malformed")
   }
-  for (const sample of Object.values(event.samples)) validateSample(sample)
+  validateSample(event.samples.volume)
+  validateSample(event.samples.pitch)
+  validateSample(event.samples.soundLevel)
+  if (!Number.isSafeInteger(event.samples.wave) || event.samples.wave < 0) {
+    throw error("MalformedEvent", "selected sound wave ordinal is invalid")
+  }
   if (event.source.kind !== "ui" && event.source.kind !== "local-listener" && event.source.origin === null) {
     throw error("MalformedEvent", "positioned source has no origin")
   }
@@ -657,11 +655,6 @@ function validateRegistryLimits(limits: RegistryLimits): void {
 
 function validateSample(value: number): void {
   if (!Number.isFinite(value) || value < 0 || value >= 1) throw error("MalformedEvent", "random sample is outside [0, 1)")
-}
-
-function sampleIndex(sample: number, length: number): number {
-  validateSample(sample)
-  return Math.min(length - 1, Math.floor(sample * length))
 }
 
 function strictNumber(value: string): number {
