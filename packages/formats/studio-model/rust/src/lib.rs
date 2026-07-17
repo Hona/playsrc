@@ -581,6 +581,14 @@ struct VtxGroup {
     triangles: Vec<[u32; 3]>,
 }
 
+struct LoadContext<'a> {
+    vtx_variant: VtxVariant,
+    responses: &'a [DependencyResponse],
+    limits: Limits,
+    included_models: usize,
+    dependency_count: usize,
+}
+
 pub fn load(
     identity: impl Into<String>,
     profile: Profile,
@@ -589,32 +597,31 @@ pub fn load(
     responses: &[DependencyResponse],
     limits: Limits,
 ) -> Result<Load, Error> {
-    let mut included_models = 0_usize;
-    let mut dependency_count = 0_usize;
+    let mut context = LoadContext {
+        vtx_variant,
+        responses,
+        limits,
+        included_models: 0,
+        dependency_count: 0,
+    };
     load_with_chain(
         identity.into(),
         profile,
-        vtx_variant,
         mdl_bytes,
-        responses,
-        limits,
         Vec::new(),
-        &mut included_models,
-        &mut dependency_count,
+        &mut context,
     )
 }
 
-fn load_with_chain(
+fn load_with_chain<'a>(
     identity: String,
     profile: Profile,
-    vtx_variant: VtxVariant,
     mdl_bytes: &[u8],
-    responses: &[DependencyResponse],
-    limits: Limits,
     mut dependency_chain: Vec<String>,
-    included_models: &mut usize,
-    dependency_count: &mut usize,
+    context: &mut LoadContext<'a>,
 ) -> Result<Load, Error> {
+    let limits = context.limits;
+    let responses = context.responses;
     validate_limits(limits)?;
     validate_model_identity(&identity)?;
     if dependency_chain
@@ -639,7 +646,7 @@ fn load_with_chain(
         });
     }
     if !dependency_chain.is_empty() {
-        *included_models = included_models.checked_add(1).ok_or_else(|| {
+        context.included_models = context.included_models.checked_add(1).ok_or_else(|| {
             failure(
                 Classification::Malformed,
                 ErrorCode::DependencyLimit,
@@ -647,7 +654,7 @@ fn load_with_chain(
                 None,
             )
         })?;
-        if *included_models > limits.max_included_models {
+        if context.included_models > limits.max_included_models {
             return Err(failure(
                 Classification::Malformed,
                 ErrorCode::DependencyLimit,
@@ -681,7 +688,7 @@ fn load_with_chain(
         requests.push(DependencyRequest {
             requester: identity.clone(),
             role: DependencyRole::Topology,
-            logical_path: format!("{stem}{}", vtx_variant.suffix()),
+            logical_path: format!("{stem}{}", context.vtx_variant.suffix()),
             expected_checksum: root.document.checksum,
             dependency_chain: dependency_chain.clone(),
         });
@@ -723,7 +730,8 @@ fn load_with_chain(
             None,
         ));
     }
-    *dependency_count = dependency_count
+    context.dependency_count = context
+        .dependency_count
         .checked_add(requests.len())
         .ok_or_else(|| {
             failure(
@@ -733,7 +741,7 @@ fn load_with_chain(
                 None,
             )
         })?;
-    if *dependency_count > limits.max_dependency_count {
+    if context.dependency_count > limits.max_dependency_count {
         return Err(failure(
             Classification::Malformed,
             ErrorCode::DependencyLimit,
@@ -880,13 +888,9 @@ fn load_with_chain(
                 match load_with_chain(
                     response.logical_path.clone(),
                     include_profile,
-                    vtx_variant,
                     bytes,
-                    responses,
-                    limits,
                     dependency_chain.clone(),
-                    included_models,
-                    dependency_count,
+                    context,
                 )? {
                     Load::Needs(requests) => nested_requests.extend(requests),
                     Load::Complete(include) => included_documents.push(*include),
@@ -912,15 +916,18 @@ fn load_with_chain(
     if let (Some(vvd), Some(vtx)) = (&parsed_vvd, &parsed_vtx) {
         document.geometry = assemble_geometry(&document.body_parts, vvd, vtx, &identity)?;
     }
+    let decode_context = AnimationDecodeContext {
+        mdl: mdl_bytes,
+        ani: ani_bytes,
+        blocks: &document.animation_blocks,
+        bones: &document.bones,
+        identity: &identity,
+        limits,
+    };
     decode_animation_frames(
-        mdl_bytes,
-        ani_bytes,
-        &document.animation_blocks,
-        &document.bones,
         &mut document.animations,
         &animation_sources,
-        &identity,
-        limits,
+        &decode_context,
     )?;
     for include in included_documents {
         compose_include(&mut document, include, &identity)?;
@@ -998,11 +1005,7 @@ fn compose_include(root: &mut Document, include: Document, identity: &str) -> Re
         sequence_map.push(destination);
         sequence_destinations.push((destination, existing.is_some()));
     }
-    for (source, (destination, duplicate)) in include
-        .sequences
-        .iter()
-        .zip(sequence_destinations.into_iter())
-    {
+    for (source, (destination, duplicate)) in include.sequences.iter().zip(sequence_destinations) {
         let mut sequence = source.clone();
         sequence.index = destination;
         let mut root_weights = vec![Float32(0.0_f32.to_bits()); root.bones.len()];
@@ -1292,8 +1295,10 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
             let table_offset = relative_offset(offset, section_offset, identity)?;
             table(bytes, table_offset, section_count, 8, limits, identity)?;
             for section in 0..section_count {
+                let block = i32_at(bytes, table_offset + section * 8, identity)?;
+                needs_animation |= block > 0;
                 sections.push((
-                    i32_at(bytes, table_offset + section * 8, identity)?,
+                    block,
                     i32_at(bytes, table_offset + section * 8 + 4, identity)?,
                 ));
             }
@@ -1781,14 +1786,16 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
         }
         animation_blocks.push(start..end);
     }
-    needs_animation |= animation_block_count > 0;
     let animation_block_identity = match i32_at(bytes, 348, identity)? {
         0 => None,
-        offset if offset > 0 => Some(canonical_dependency_path(
-            &c_string(bytes, offset as usize, limits, identity)?,
-            ".ani",
-            identity,
-        )?),
+        offset if offset > 0 => {
+            let stored = c_string(bytes, offset as usize, limits, identity)?;
+            if stored.is_empty() {
+                None
+            } else {
+                Some(canonical_dependency_path(&stored, ".ani", identity)?)
+            }
+        }
         _ => return Err(invalid_range(identity, 348)),
     };
     if needs_animation && animation_block_identity.is_none() {
@@ -2274,47 +2281,63 @@ fn assemble_geometry(
     Ok(output)
 }
 
+struct AnimationDecodeContext<'a> {
+    mdl: &'a [u8],
+    ani: Option<&'a [u8]>,
+    blocks: &'a [Range<usize>],
+    bones: &'a [Bone],
+    identity: &'a str,
+    limits: Limits,
+}
+
 fn decode_animation_frames(
-    mdl: &[u8],
-    ani: Option<&[u8]>,
-    blocks: &[Range<usize>],
-    bones: &[Bone],
     animations: &mut [Animation],
     sources: &[AnimationSource],
-    identity: &str,
-    limits: Limits,
+    context: &AnimationDecodeContext<'_>,
 ) -> Result<(), Error> {
     let mut decoded_samples = 0_usize;
     for (animation, source) in animations.iter_mut().zip(sources) {
         if animation.frame_count <= 0 {
-            return Err(invalid_count(identity, source.descriptor_offset + 16));
+            return Err(invalid_count(
+                context.identity,
+                source.descriptor_offset + 16,
+            ));
         }
         decoded_samples = decoded_samples
             .checked_add(
                 (animation.frame_count as usize)
-                    .checked_mul(bones.len())
-                    .ok_or_else(|| invalid_count(identity, source.descriptor_offset + 16))?,
+                    .checked_mul(context.bones.len())
+                    .ok_or_else(|| {
+                        invalid_count(context.identity, source.descriptor_offset + 16)
+                    })?,
             )
-            .ok_or_else(|| invalid_count(identity, source.descriptor_offset + 16))?;
-        if decoded_samples > limits.max_decoded_animation_samples {
+            .ok_or_else(|| invalid_count(context.identity, source.descriptor_offset + 16))?;
+        if decoded_samples > context.limits.max_decoded_animation_samples {
             return Err(failure(
                 Classification::Malformed,
                 ErrorCode::InputLimit,
-                identity,
+                context.identity,
                 Some(source.descriptor_offset + 16..source.descriptor_offset + 20),
             ));
         }
         let mut frames = Vec::with_capacity(animation.frame_count as usize);
         for frame in 0..animation.frame_count as usize {
-            let (data, offset, local_frame) =
-                animation_data(mdl, ani, blocks, animation, source, frame, identity)?;
+            let (data, offset, local_frame) = animation_data(
+                context.mdl,
+                context.ani,
+                context.blocks,
+                animation,
+                source,
+                frame,
+                context.identity,
+            )?;
             frames.push(decode_frame(
                 data,
                 offset,
                 local_frame,
-                bones,
+                context.bones,
                 animation.flags,
-                identity,
+                context.identity,
             )?);
         }
         let section_count = if animation.section_frame_count > 0 {
@@ -2333,12 +2356,25 @@ fn decode_animation_frames(
                 (animation.animation_block, source.data_offset)
             };
             let (first_frame, frame_count, tracks) = if let Some(&first_frame) = selected.first() {
-                let (data, offset, _) =
-                    animation_data(mdl, ani, blocks, animation, source, first_frame, identity)?;
+                let (data, offset, _) = animation_data(
+                    context.mdl,
+                    context.ani,
+                    context.blocks,
+                    animation,
+                    source,
+                    first_frame,
+                    context.identity,
+                )?;
                 (
                     first_frame,
                     selected.len(),
-                    parse_animation_tracks(data, offset, selected.len(), bones, identity)?,
+                    parse_animation_tracks(
+                        data,
+                        offset,
+                        selected.len(),
+                        context.bones,
+                        context.identity,
+                    )?,
                 )
             } else {
                 (0, 0, Vec::new())
@@ -2838,6 +2874,7 @@ fn validate_model_identity(identity: &str) -> Result<(), Error> {
     if !identity.starts_with("models/")
         || !identity.ends_with(".mdl")
         || identity.contains('\\')
+        || !identity.bytes().all(safe_canonical_path_byte)
         || identity
             .split('/')
             .any(|part| part.is_empty() || part == "." || part == "..")
@@ -2861,6 +2898,14 @@ fn canonical_model_path(bytes: &[u8], identity: &str) -> Result<String, Error> {
             None,
         )
     })?;
+    if !text.bytes().all(safe_stored_path_byte) {
+        return Err(failure(
+            Classification::Malformed,
+            ErrorCode::InvalidIdentity,
+            identity,
+            None,
+        ));
+    }
     let canonical = text.replace('\\', "/").to_ascii_lowercase();
     validate_model_identity(&canonical)?;
     Ok(canonical)
@@ -2875,9 +2920,18 @@ fn canonical_dependency_path(bytes: &[u8], suffix: &str, identity: &str) -> Resu
             None,
         )
     })?;
+    if !text.bytes().all(safe_stored_path_byte) {
+        return Err(failure(
+            Classification::Malformed,
+            ErrorCode::InvalidIdentity,
+            identity,
+            None,
+        ));
+    }
     let canonical = text.replace('\\', "/").to_ascii_lowercase();
     if !canonical.starts_with("models/")
         || !canonical.ends_with(suffix)
+        || !canonical.bytes().all(safe_canonical_path_byte)
         || canonical
             .split('/')
             .any(|part| part.is_empty() || part == "." || part == "..")
@@ -2902,6 +2956,14 @@ fn material_candidate(path: &[u8], name: &[u8], identity: &str) -> Result<String
                 None,
             )
         })?;
+        if !text.bytes().all(safe_stored_path_byte) {
+            return Err(failure(
+                Classification::Malformed,
+                ErrorCode::InvalidIdentity,
+                identity,
+                None,
+            ));
+        }
         let normalized = text.replace('\\', "/");
         Ok(normalized
             .strip_prefix('/')
@@ -2915,6 +2977,8 @@ fn material_candidate(path: &[u8], name: &[u8], identity: &str) -> Result<String
     }
     let relative = if path.is_empty() {
         name
+    } else if path.ends_with('/') {
+        format!("{path}{name}")
     } else {
         format!("{path}/{name}")
     };
@@ -2931,6 +2995,14 @@ fn material_candidate(path: &[u8], name: &[u8], identity: &str) -> Result<String
         ));
     }
     Ok(format!("materials/{relative}.vmt"))
+}
+
+fn safe_stored_path_byte(byte: u8) -> bool {
+    byte.is_ascii() && !byte.is_ascii_control() && !matches!(byte, b':' | b'?' | b'#')
+}
+
+fn safe_canonical_path_byte(byte: u8) -> bool {
+    safe_stored_path_byte(byte) && !byte.is_ascii_uppercase()
 }
 
 fn response_matches(response: &DependencyResponse, request: &DependencyRequest) -> bool {
@@ -3377,6 +3449,36 @@ mod tests {
         bytes
     }
 
+    fn nested_item_mdl() -> Vec<u8> {
+        let mut bytes = mdl_with_material();
+        put_i32(&mut bytes, 4, 48);
+        let texture =
+            i32::from_le_bytes(bytes[208..212].try_into().expect("texture offset")) as usize;
+        let texture_name = bytes.len();
+        bytes.extend_from_slice(b"models/player/items/soldier/soldier_viking\0");
+        put_i32(&mut bytes, texture, (texture_name - texture) as i32);
+        let search_table = bytes.len();
+        bytes.resize(search_table + 8, 0);
+        put_i32(&mut bytes, 212, 2);
+        put_i32(&mut bytes, 216, search_table as i32);
+        let nested_directory = bytes.len();
+        bytes.extend_from_slice(b"\\models\\player\\items\\soldier\\\0");
+        put_i32(&mut bytes, search_table, nested_directory as i32);
+        let root_directory = bytes.len();
+        bytes.push(0);
+        put_i32(&mut bytes, search_table + 4, root_directory as i32);
+        let empty_animation_identity = bytes.len();
+        bytes.push(0);
+        put_i32(&mut bytes, 348, empty_animation_identity as i32);
+        let animation_blocks = bytes.len();
+        bytes.resize(animation_blocks + 8, 0);
+        put_i32(&mut bytes, 352, 1);
+        put_i32(&mut bytes, 356, animation_blocks as i32);
+        let length = bytes.len() as i32;
+        put_i32(&mut bytes, 76, length);
+        bytes
+    }
+
     fn vtx_with_replacement(checksum: i32) -> Vec<u8> {
         let mut bytes = vtx(checksum);
         put_i32(&mut bytes, 44, 1);
@@ -3627,6 +3729,27 @@ mod tests {
         assert!(document.model_dependencies[0].sha256.is_some());
         assert!(document.model_dependencies[1].sha256.is_some());
         assert!(document.model_dependencies[2].sha256.is_none());
+
+        let mut missing_external_identity = animated_mdl(true);
+        let identity_offset = i32::from_le_bytes(
+            missing_external_identity[348..352]
+                .try_into()
+                .expect("animation identity offset"),
+        ) as usize;
+        missing_external_identity[identity_offset] = 0;
+        assert_eq!(
+            load(
+                "models/animated.mdl",
+                Profile::SourcePcMdl48,
+                VtxVariant::Dx90,
+                &missing_external_identity,
+                &[],
+                Limits::default(),
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::InvalidReference
+        );
     }
 
     #[test]
@@ -3747,6 +3870,165 @@ mod tests {
             .unwrap_err()
             .code,
             ErrorCode::IncludeCycle
+        );
+    }
+
+    #[test]
+    fn nested_include_with_terminated_material_directory_and_local_only_block_zero_is_valid() {
+        let include_identity = "models/player/items/soldier/soldier_viking.mdl";
+        let root = mdl_with_include(include_identity);
+        let item = nested_item_mdl();
+        let parsed = parse_mdl(
+            include_identity,
+            Profile::SourcePcMdl48,
+            &item,
+            Limits::default(),
+        )
+        .unwrap();
+        assert!(!parsed.needs_animation);
+        assert_eq!(parsed.document.animation_block_identity, None);
+        assert_eq!(
+            parsed.document.materials[0].candidates,
+            [
+                "materials/models/player/items/soldier/models/player/items/soldier/soldier_viking.vmt",
+                "materials/models/player/items/soldier/soldier_viking.vmt",
+            ]
+        );
+
+        let Load::Needs(root_requests) = load(
+            "models/player/soldier.mdl",
+            Profile::SourcePcMdl48,
+            VtxVariant::Dx90,
+            &root,
+            &[],
+            Limits::default(),
+        )
+        .unwrap() else {
+            panic!("root dependencies were not requested")
+        };
+        let root_responses: Vec<_> = root_requests
+            .iter()
+            .map(|request| {
+                response(
+                    request,
+                    (request.role == DependencyRole::IncludeModel).then(|| item.clone()),
+                )
+            })
+            .collect();
+        let Load::Needs(item_requests) = load(
+            "models/player/soldier.mdl",
+            Profile::SourcePcMdl48,
+            VtxVariant::Dx90,
+            &root,
+            &root_responses,
+            Limits::default(),
+        )
+        .unwrap() else {
+            panic!("nested item dependencies were not requested")
+        };
+        assert_eq!(
+            item_requests
+                .iter()
+                .map(|request| (request.role, request.logical_path.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    DependencyRole::VertexData,
+                    "models/player/items/soldier/soldier_viking.vvd",
+                ),
+                (
+                    DependencyRole::Topology,
+                    "models/player/items/soldier/soldier_viking.dx90.vtx",
+                ),
+                (
+                    DependencyRole::Physics,
+                    "models/player/items/soldier/soldier_viking.phy",
+                ),
+            ]
+        );
+        assert!(item_requests.iter().all(|request| {
+            request.dependency_chain == ["models/player/soldier.mdl", include_identity]
+        }));
+        let mut responses = root_responses;
+        responses.extend(item_requests.iter().map(|request| {
+            response(
+                request,
+                match request.role {
+                    DependencyRole::VertexData => Some(vvd(1234)),
+                    DependencyRole::Topology => Some(vtx(1234)),
+                    DependencyRole::Physics => None,
+                    _ => unreachable!(),
+                },
+            )
+        }));
+        let Load::Complete(document) = load(
+            "models/player/soldier.mdl",
+            Profile::SourcePcMdl48,
+            VtxVariant::Dx90,
+            &root,
+            &responses,
+            Limits::default(),
+        )
+        .unwrap() else {
+            panic!("supplied nested item dependencies did not complete")
+        };
+        let PresentationBuild::Complete(artifact) = build_presentation(
+            &document,
+            PresentationProfile::World,
+            &[],
+            PresentationLimits::default(),
+            &CancellationToken::default(),
+        )
+        .unwrap() else {
+            panic!("composed nested include did not produce an artifact")
+        };
+        assert!(artifact.model.dependencies.iter().any(|dependency| {
+            dependency.role == PresentationDependencyRole::IncludeModel
+                && dependency.logical_path == include_identity
+        }));
+        assert_eq!(
+            decode_presentation(&artifact.bytes, PresentationLimits::default()).unwrap(),
+            *artifact
+        );
+
+        for rejected in [
+            b"\\\\server\\share".as_slice(),
+            b"models//player".as_slice(),
+            b"models/../player".as_slice(),
+        ] {
+            assert_eq!(
+                material_candidate(rejected, b"item", include_identity)
+                    .unwrap_err()
+                    .code,
+                ErrorCode::InvalidIdentity
+            );
+        }
+        for rejected in [
+            b"player/items/item.mdl".as_slice(),
+            b"/models/player/items/item.mdl".as_slice(),
+            b"models/player/../items/item.mdl".as_slice(),
+            b"https://example.invalid/item.mdl".as_slice(),
+        ] {
+            assert_eq!(
+                canonical_model_path(rejected, "models/player/root.mdl")
+                    .unwrap_err()
+                    .code,
+                ErrorCode::InvalidIdentity
+            );
+        }
+        assert_eq!(
+            validate_model_identity("models/player/Item.mdl")
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidIdentity
+        );
+        assert_eq!(
+            canonical_model_path(
+                b"Models\\Player\\Items\\Soldier\\Soldier_Viking.MDL",
+                "models/player/soldier.mdl",
+            )
+            .unwrap(),
+            include_identity
         );
     }
 
