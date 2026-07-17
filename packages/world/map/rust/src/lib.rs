@@ -126,6 +126,19 @@ pub struct RuntimeAssembly<'a> {
     pub models: &'a [RuntimeModel],
     pub model_occurrences: &'a [RuntimeModelOccurrence],
 }
+struct SerializationContext<'a> {
+    map: &'a CanonicalMap,
+    entities: &'a playsrc_entity::Graph,
+    materials: &'a [RuntimeMaterial],
+    profile_materials: &'a [RuntimeProfileMaterial],
+    inputs: &'a [RuntimeInput],
+    compiler_identity: &'a str,
+    bsp_sha256: [u8; 32],
+    configuration_sha256: [u8; 32],
+    output_role: &'a str,
+    models: &'a [RuntimeModel],
+    occurrences: &'a [RuntimeModelOccurrence],
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ErrorCode {
     MissingLump,
@@ -419,34 +432,26 @@ pub fn compile_runtime(
     }) {
         return Err(error(ErrorCode::InvalidReference, None));
     }
-    let payload = serialize(
-        &map,
-        &entities,
-        resolved_materials,
+    let configuration_sha256 = Sha256::digest(configuration).into();
+    let serialization = SerializationContext {
+        map: &map,
+        entities: &entities,
+        materials: resolved_materials,
         profile_materials,
         inputs,
         compiler_identity,
         bsp_sha256,
-        Sha256::digest(configuration).into(),
+        configuration_sha256,
         output_role,
-        runtime_models,
-        model_occurrences,
-    );
+        models: runtime_models,
+        occurrences: model_occurrences,
+    };
+    let payload = serialize(&serialization);
     if payload.len() > 512 * 1024 * 1024 {
         return Err(error(ErrorCode::BoundExceeded, None));
     }
     let payload_sha256 = Sha256::digest(&payload).into();
-    let configuration_sha256 = Sha256::digest(configuration).into();
-    let derived_sha256 = derived_identity(
-        profile,
-        output_role,
-        compiler_identity,
-        bsp_sha256,
-        configuration_sha256,
-        map.lighting.closure_sha256,
-        inputs,
-        payload_sha256,
-    );
+    let derived_sha256 = derived_identity(&serialization, payload_sha256);
     let descriptor = RuntimeDescriptor {
         schema: 1,
         bsp_sha256,
@@ -464,19 +469,12 @@ pub fn compile_runtime(
         descriptor,
     })
 }
-fn serialize(
-    map: &CanonicalMap,
-    entities: &playsrc_entity::Graph,
-    materials: &[RuntimeMaterial],
-    profile_materials: &[RuntimeProfileMaterial],
-    inputs: &[RuntimeInput],
-    compiler_identity: &str,
-    bsp_sha256: [u8; 32],
-    configuration_sha256: [u8; 32],
-    output_role: &str,
-    models: &[RuntimeModel],
-    occurrences: &[RuntimeModelOccurrence],
-) -> Vec<u8> {
+fn serialize(context: &SerializationContext<'_>) -> Vec<u8> {
+    let map = context.map;
+    let entities = context.entities;
+    let materials = context.materials;
+    let models = context.models;
+    let occurrences = context.occurrences;
     let mut out = b"PSMP".to_vec();
     u32v(
         &mut out,
@@ -613,17 +611,7 @@ fn serialize(
         }
     }
     if map.lighting_profile == LightingProfile::Hdr {
-        serialize_hdr(
-            &mut out,
-            map,
-            profile_materials,
-            inputs,
-            compiler_identity,
-            bsp_sha256,
-            configuration_sha256,
-            output_role,
-            materials,
-        );
+        serialize_hdr(&mut out, context);
     }
     out
 }
@@ -645,18 +633,15 @@ fn lighting_sample_count(samples: &LightingSamples) -> usize {
         LightingSamples::LinearRgb32(samples) => samples.len(),
     }
 }
-#[allow(clippy::too_many_arguments)]
-fn serialize_hdr(
-    out: &mut Vec<u8>,
-    map: &CanonicalMap,
-    profile_materials: &[RuntimeProfileMaterial],
-    inputs: &[RuntimeInput],
-    compiler_identity: &str,
-    bsp_sha256: [u8; 32],
-    configuration_sha256: [u8; 32],
-    output_role: &str,
-    materials: &[RuntimeMaterial],
-) {
+fn serialize_hdr(out: &mut Vec<u8>, context: &SerializationContext<'_>) {
+    let map = context.map;
+    let profile_materials = context.profile_materials;
+    let inputs = context.inputs;
+    let compiler_identity = context.compiler_identity;
+    let bsp_sha256 = context.bsp_sha256;
+    let configuration_sha256 = context.configuration_sha256;
+    let output_role = context.output_role;
+    let materials = context.materials;
     out.extend_from_slice(b"PSHD");
     u32v(out, 1);
     out.push(1); // Linear RGB binary32, three components per sample.
@@ -826,31 +811,21 @@ fn validate_profile_material(material: &RuntimeProfileMaterial, item: usize) -> 
     }
     Ok(())
 }
-#[allow(clippy::too_many_arguments)]
-fn derived_identity(
-    profile: LightingProfile,
-    output_role: &str,
-    compiler_identity: &str,
-    bsp_sha256: [u8; 32],
-    configuration_sha256: [u8; 32],
-    lighting_sha256: [u8; 32],
-    inputs: &[RuntimeInput],
-    payload_sha256: [u8; 32],
-) -> [u8; 32] {
+fn derived_identity(context: &SerializationContext<'_>, payload_sha256: [u8; 32]) -> [u8; 32] {
     let mut digest = Sha256::new();
     digest.update(b"playsrc-derived-map-v1");
-    digest.update([match profile {
+    digest.update([match context.map.lighting_profile {
         LightingProfile::Ldr => 0,
         LightingProfile::Hdr => 1,
     }]);
-    digest.update((output_role.len() as u32).to_le_bytes());
-    digest.update(output_role.as_bytes());
-    digest.update((compiler_identity.len() as u32).to_le_bytes());
-    digest.update(compiler_identity.as_bytes());
-    digest.update(bsp_sha256);
-    digest.update(configuration_sha256);
-    digest.update(lighting_sha256);
-    let mut inputs: Vec<_> = inputs.iter().collect();
+    digest.update((context.output_role.len() as u32).to_le_bytes());
+    digest.update(context.output_role.as_bytes());
+    digest.update((context.compiler_identity.len() as u32).to_le_bytes());
+    digest.update(context.compiler_identity.as_bytes());
+    digest.update(context.bsp_sha256);
+    digest.update(context.configuration_sha256);
+    digest.update(context.map.lighting.closure_sha256);
+    let mut inputs: Vec<_> = context.inputs.iter().collect();
     inputs.sort_by(|left, right| {
         (left.role, &left.logical_path, left.sha256).cmp(&(
             right.role,
