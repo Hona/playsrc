@@ -19,7 +19,7 @@ Native compilation and browser WASM compilation call the same owning Rust crates
 
 `bun run dev jump_beef` verifies/acquires the declared BSP, packages exact raw VMT/VTF dependencies from configured TF2/HL2 VPK providers, builds the checked TF2 WASM target, installs all three exact objects in `assetDir`, starts the loopback Asset Service on port 4174 and TF2 Vite application on port 4173, waits for both readiness endpoints, prints `http://127.0.0.1:4173/`, and closes both owned listeners after one `SIGINT` or `SIGTERM`.
 
-`bun run verify:browser jump_beef` owns the same local services plus one fresh headed WebGPU browser session and checks cold compilation, warm reuse, IndexedDB identity, pointer lock, movement, jump, Soldier/Demoman combat, VGUI history/completion/repeated visibility, `map jump_beef` generation replacement, browser shutdown, and listener release. It emits one JSON result.
+`bun run verify:browser jump_beef` owns the same local services plus one fresh headed WebGPU browser session and checks cold compilation, warm reuse, IndexedDB identity, exact Audio decode/resume, pointer lock, movement, jump, Soldier/Demoman combat, VGUI history/completion/repeated visibility, `map jump_beef` generation replacement, browser shutdown, and listener release. It emits one JSON result.
 
 ## Non-Responsibilities
 

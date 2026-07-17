@@ -88,6 +88,9 @@ export async function verifyBrowserAcceptance(
     let body = parseJson<string>(await agent(["--session", session, "eval", "document.body.innerText"]))
     require(body.includes("DERIVED CACHE STORED"), "cold browser run did not store the derived payload")
 
+    await agent(["--session", session, "click", "button.audio-toggle"])
+    await agent(["--session", session, "wait", "--text", "Audio running", "--timeout", "10000"])
+
     await acquirePointerLock(session)
     body = parseJson<string>(await agent(["--session", session, "eval", "document.body.innerText"]))
     require(body.includes("MOUSE CAPTURED"), "desktop pointer lock was not acquired")
@@ -252,7 +255,7 @@ export async function verifyBrowserAcceptance(
     ]))
     require(
       records.length === 1
-      && records[0]?.key === "d18f576123c0400d33985e7d4e76a51c2ea8f0c076f77efbd2dfeb52227da9c6"
+      && records[0]?.key === "f93f917856b09518dd9ef12b21c2ec395c4376dcfc9cd141a37c26a12cc46815"
       && records[0]?.byteLength === 39_381_761
       && records[0]?.sha256 === "5d378f0d08a884f05470f4e907f23f52f0b69ddc3cc69fe59bb73a0b110b0051",
       "warm IndexedDB record identity differs",
@@ -270,6 +273,7 @@ export async function verifyBrowserAcceptance(
       supportStatus: "diagnostic-blockers-retained",
       pointerLock: "acquired-and-released-for-console",
       console: "history-completion-replacement-close-passed",
+      audio: "exact-buffers-decoded-and-context-running",
       shutdown: "pending",
     }
   } finally {

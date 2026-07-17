@@ -10,8 +10,8 @@ import { buildSourceBundle } from "./source-bundle"
 
 const EXPECTED_MAP_BYTES = 39_381_761
 const EXPECTED_MAP_SHA256 = "5d378f0d08a884f05470f4e907f23f52f0b69ddc3cc69fe59bb73a0b110b0051"
-const EXPECTED_DEPENDENCY_BYTES = 43_548_197
-const EXPECTED_DEPENDENCY_SHA256 = "3a1d9e1da6f2729cac69c1ac7e67974fadd3b815190f9da2ba37cc26ecc63571"
+const EXPECTED_DEPENDENCY_BYTES = 50_638_303
+const EXPECTED_DEPENDENCY_SHA256 = "1662c2cc52dbf8c0b117ccb0fb43c250cdeb9a339f0aae9ec8f6d671dbfc3622"
 
 type Exports = Readonly<{
   memory: WebAssembly.Memory

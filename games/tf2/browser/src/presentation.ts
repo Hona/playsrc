@@ -15,6 +15,42 @@ export type Tf2Hud = Readonly<{
   speed: number
   projectileCount: number
 }>
+export type Tf2AudioRequest = Readonly<{
+  voice: number
+  resource: string
+  gain: number
+  pan: number
+  loop: false
+}>
+
+export function tf2Audio(events: Snapshot["events"]): readonly Tf2AudioRequest[] {
+  const requests: Tf2AudioRequest[] = []
+  for (const event of events) {
+    let resource: string | undefined
+    if (event.kind === 3) {
+      resource = event.detail === 1
+        ? "sound/weapons/rocket_shoot.wav"
+        : event.detail === 2
+          ? "sound/weapons/stickybomblauncher_shoot.wav"
+          : undefined
+    } else if (event.kind === 4 && (event.detail === 1 || event.detail === 2)) {
+      const ordinal = event.subject % 3 + 1
+      resource = event.detail === 1
+        ? `sound/weapons/explode${ordinal}.wav`
+        : `sound/weapons/pipe_bomb${ordinal}.wav`
+    }
+    if (resource) {
+      requests.push(Object.freeze({
+        voice: event.subject * 2 + event.kind,
+        resource,
+        gain: 1,
+        pan: 0,
+        loop: false,
+      }))
+    }
+  }
+  return Object.freeze(requests)
+}
 
 export function tf2Hud(snapshot: Snapshot): Tf2Hud {
   return Object.freeze({

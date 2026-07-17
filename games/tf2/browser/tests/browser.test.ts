@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import type { DerivedObjectCache } from "@playsrc/asset-store/browser"
 import { Tf2WorkerClient, type WorkerLike } from "../src/client"
 import { decodeSnapshot, encodeCommand, mapDerivedKey } from "../src/codec"
-import { tf2Presentation } from "../src/presentation"
+import { tf2Audio, tf2Presentation } from "../src/presentation"
 import type { WorkerRequest, WorkerResponse } from "../src/protocol"
 
 function snapshot(): ArrayBuffer {
@@ -199,7 +199,7 @@ describe("TF2 browser adapter", () => {
     const value = tf2Presentation({
       ...base,
       projectiles: [projectile],
-      events: [{ kind: 4, detail: 0, subject: 8, auxiliary: 0, values: [7, 8, 9, 0] }],
+      events: [{ kind: 4, detail: 1, subject: 8, auxiliary: 0, values: [7, 8, 9, 0] }],
     }, [], false)
     expect(value.effects).toEqual([])
     expect(value.models).toHaveLength(1)
@@ -207,6 +207,19 @@ describe("TF2 browser adapter", () => {
       "MissingAudioContext",
       "MissingParticleContext",
     ])
+    expect(tf2Audio(value.diagnostics.length ? [{
+      kind: 4,
+      detail: 1,
+      subject: 8,
+      auxiliary: 0,
+      values: [7, 8, 9, 0],
+    }] : [])).toEqual([{
+      voice: 20,
+      resource: "sound/weapons/explode3.wav",
+      gain: 1,
+      pan: 0,
+      loop: false,
+    }])
     expect(tf2Presentation({ ...base, projectiles: [projectile], events: [] }, [], true).effects)
       .toHaveLength(1)
   })

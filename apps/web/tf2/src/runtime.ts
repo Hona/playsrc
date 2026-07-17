@@ -3,7 +3,7 @@ import { createAudioSystem } from "@playsrc/audio"
 import GameplayWorker from "@playsrc/game-tf2-browser/worker?worker"
 import { Tf2WorkerClient, type LoadedGame } from "@playsrc/game-tf2-browser"
 import { encodeCommand, mapDerivedKey, type Snapshot } from "@playsrc/game-tf2-browser/codec"
-import { tf2Camera, tf2Hud, tf2Presentation, type Tf2Hud } from "@playsrc/game-tf2-browser/presentation"
+import { tf2Audio, tf2Camera, tf2Hud, tf2Presentation, type Tf2Hud } from "@playsrc/game-tf2-browser/presentation"
 import { createParticleSystem } from "@playsrc/particle"
 import { createRenderer } from "@playsrc/rendering"
 import {
@@ -21,6 +21,46 @@ import { loadBrowserConfiguration, type BrowserConfiguration } from "./config"
 const TICK_MILLISECONDS = 15
 const MAX_FRAME_TICKS = 4
 const MAX_EXTERNAL_BYTES = 536_870_912
+const SOUND_PATHS = [
+  "sound/weapons/rocket_shoot.wav",
+  "sound/weapons/stickybomblauncher_shoot.wav",
+  "sound/weapons/explode1.wav",
+  "sound/weapons/explode2.wav",
+  "sound/weapons/explode3.wav",
+  "sound/weapons/pipe_bomb1.wav",
+  "sound/weapons/pipe_bomb2.wav",
+  "sound/weapons/pipe_bomb3.wav",
+] as const
+
+function dependencyEntries(bytes: Uint8Array): Map<string, Uint8Array> {
+  if (bytes.byteLength < 12 || new TextDecoder().decode(bytes.subarray(0, 4)) !== "PSDB") {
+    throw new Error("Source dependency bundle is malformed")
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  if (view.getUint32(4, true) !== 1) throw new Error("Source dependency bundle version is invalid")
+  const count = view.getUint32(8, true)
+  let offset = 12
+  const result = new Map<string, Uint8Array>()
+  const field = (): Uint8Array => {
+    if (offset + 4 > bytes.byteLength) throw new Error("Source dependency field is truncated")
+    const length = view.getUint32(offset, true)
+    offset += 4
+    if (offset + length > bytes.byteLength) throw new Error("Source dependency field is truncated")
+    const value = bytes.subarray(offset, offset + length)
+    offset += length
+    return value
+  }
+  const decoder = new TextDecoder("utf-8", { fatal: true })
+  for (let index = 0; index < count; index += 1) {
+    const path = decoder.decode(field())
+    if (!path || path !== path.toLowerCase() || result.has(path)) {
+      throw new Error("Source dependency identity is malformed")
+    }
+    result.set(path, field())
+  }
+  if (offset !== bytes.byteLength) throw new Error("Source dependency bundle has trailing bytes")
+  return result
+}
 
 export type ApplicationView = Readonly<{
   phase: "Loading" | "Ready" | "Replacing" | "Failed" | "Closed"
@@ -44,10 +84,12 @@ export class Tf2Application {
   readonly #publish: (view: ApplicationView) => void
   #configuration?: BrowserConfiguration
   #dependencies = new Uint8Array()
+  #dependencyEntries = new Map<string, Uint8Array>()
   #cache?: DerivedObjectCache
   #client?: Tf2WorkerClient
   #renderer?: Renderer
   #audio?: Audio
+  #audioRunning = false
   #particles?: Particles
   #console?: DeveloperConsole
   #loaded?: LoadedGame
@@ -82,7 +124,7 @@ export class Tf2Application {
     "Twelve world base textures and one exact first-style LDR lightmap atlas resolve; water shaders, directional bump-lightmaps, animated styles, and target filtering remain diagnostic.",
     "Static prop and exact rocket/sticky StudioModel geometry is available; first-person viewmodels and model animation/skin selection remain unavailable.",
     "TF2 PCF definitions and event context are unresolved; missing particle events emit diagnostics and no substitute effect.",
-    "TF2 sound scripts and decoded resource buffers are unresolved; missing audio events create no Web Audio node or substitute sound.",
+    "Stock rocket/sticky fire and explosion buffers resolve exactly; deterministic target random-wave selection, distance spatialization, occlusion, and mixer/DSP semantics remain unavailable.",
     "Jump course timers/checkpoints, trigger_multiple hint I/O, moving platforms, doors, and trigger_hurt are not implemented; exact brush trigger_teleport contacts are active and preserve velocity.",
   ])
   #view: ApplicationView = Object.freeze({
@@ -120,6 +162,7 @@ export class Tf2Application {
         fetchImmutableObject(this.#configuration.assetOrigin, this.#configuration.dependencies),
       ])
       this.#dependencies = dependencies
+      this.#dependencyEntries = dependencyEntries(dependencies)
       this.#cache = await openDerivedObjectCache()
       this.#client = new Tf2WorkerClient(new GameplayWorker(), this.#cache)
       await this.#client.initialize(wasm, this.#configuration.wasm.sha256)
@@ -140,7 +183,14 @@ export class Tf2Application {
       this.#particles = createParticleSystem([])
       const AudioContextConstructor = window.AudioContext
       if (!AudioContextConstructor) throw new Error("Web Audio is unavailable")
-      this.#audio = createAudioSystem(new AudioContextConstructor(), [])
+      const audioContext = new AudioContextConstructor()
+      const audioResources = await Promise.all(SOUND_PATHS.map(async (identity) => {
+        const bytes = this.#dependencyEntries.get(identity)
+        if (!bytes) throw new Error(`Audio dependency ${identity} is missing`)
+        const buffer = await audioContext.decodeAudioData(bytes.slice().buffer)
+        return Object.freeze({ identity, buffer })
+      }))
+      this.#audio = createAudioSystem(audioContext, audioResources)
       this.#snapshot = await this.#client.advance(this.#generation, this.#command(), 1)
       this.#initializeConsole()
       this.#installListeners()
@@ -452,6 +502,9 @@ export class Tf2Application {
       }
       const particleItems = this.#particles.advance(snapshot.tick)
       const presentation = tf2Presentation(snapshot, particleItems, false)
+      if (this.#audioRunning && this.#audio) {
+        for (const request of tf2Audio(snapshot.events)) this.#audio.play(request)
+      }
       for (const diagnostic of presentation.diagnostics) {
         this.#blockers.add(diagnostic.code === "MissingProjectileModel"
           ? `${diagnostic.code}: ${diagnostic.identity}`
@@ -579,6 +632,18 @@ export class Tf2Application {
       await this.#canvas.requestPointerLock()
     } catch (error) {
       this.#set({ detail: error instanceof Error ? error.message : "Pointer lock failed" })
+    }
+  }
+
+  async resumeAudio(): Promise<void> {
+    if (!this.#audio || this.#closed) return
+    try {
+      await this.#audio.resume()
+      this.#audioRunning = true
+      this.#set({ detail: "Audio running" })
+    } catch (error) {
+      this.#blockers.add(`AudioUnavailable: ${error instanceof Error ? error.message : "resume failed"}`)
+      this.#set({ detail: "Audio permission unavailable" })
     }
   }
 

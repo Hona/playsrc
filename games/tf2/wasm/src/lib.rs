@@ -383,10 +383,11 @@ fn encode_snapshot(snapshot: &playsrc_tf2::Snapshot) -> Vec<u8> {
             }
             playsrc_tf2::Event::Explosion {
                 projectile,
+                kind,
                 position,
             } => (
                 4,
-                0,
+                projectile_code(*kind),
                 *projectile,
                 0,
                 [position[0], position[1], position[2], 0.],
@@ -910,6 +911,7 @@ mod tests {
             events: vec![
                 playsrc_tf2::Event::Explosion {
                     projectile: 12,
+                    kind: playsrc_tf2::ProjectileKind::Rocket,
                     position: [7., 8., 9.],
                 },
                 playsrc_tf2::Event::Teleported {
@@ -925,7 +927,7 @@ mod tests {
         assert_eq!(encoded.len(), 148);
         assert_eq!(u32::from_le_bytes(encoded[48..52].try_into().unwrap()), 1);
         assert_eq!(u32::from_le_bytes(encoded[88..92].try_into().unwrap()), 2);
-        assert_eq!(&encoded[92..104], &[4, 0, 0, 0, 12, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(&encoded[92..104], &[4, 1, 0, 0, 12, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(&encoded[120..132], &[8, 1, 0, 0, 20, 0, 0, 0, 21, 0, 0, 0]);
     }
 }

@@ -20,6 +20,7 @@ Resolve and present Source sound definitions and audio state.
 - Own spatialization, mixing inputs, playback lifetime, and browser audio resources.
 - Consume explicit world, gameplay, and replay audio events.
 - Create bounded Web Audio source/gain/pan graphs only from caller-supplied exact decoded buffers; missing resources create no node or substitute sound.
+- Present exact stock rocket/sticky launch and explosion WAVE resources selected by game-owned versioned fire/explosion events after one explicit browser resume gesture.
 
 ## Non-Responsibilities
 

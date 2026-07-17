@@ -89,6 +89,9 @@ function App() {
         <button type="button" class="console-toggle" onClick={() => runtime.current?.toggleConsole()}>
           <kbd>`</kbd><span>Console</span>
         </button>
+        <button type="button" class="audio-toggle" onClick={() => void runtime.current?.resumeAudio()}>
+          <kbd>♪</kbd><span>Audio</span>
+        </button>
       </nav>
 
       <aside class="support-card">

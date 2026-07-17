@@ -268,8 +268,14 @@ fn main() -> Result<(), String> {
         vec![
             provider(&tf2, "tf2_misc_dir.vpk", "tf2-misc")?,
             provider(&tf2, "tf2_textures_dir.vpk", "tf2-textures")?,
+            provider(&tf2, "tf2_sound_misc_dir.vpk", "tf2-sound-misc")?,
             provider(&install.join("hl2"), "hl2_misc_dir.vpk", "hl2-misc")?,
             provider(&install.join("hl2"), "hl2_textures_dir.vpk", "hl2-textures")?,
+            provider(
+                &install.join("hl2"),
+                "hl2_sound_misc_dir.vpk",
+                "hl2-sound-misc",
+            )?,
         ],
         playsrc_content::Limits::default(),
     )
@@ -327,6 +333,18 @@ fn main() -> Result<(), String> {
                 collect_material(&content, &candidate, &mut bundle)?;
             }
         }
+    }
+    for path in [
+        "sound/weapons/rocket_shoot.wav",
+        "sound/weapons/stickybomblauncher_shoot.wav",
+        "sound/weapons/explode1.wav",
+        "sound/weapons/explode2.wav",
+        "sound/weapons/explode3.wav",
+        "sound/weapons/pipe_bomb1.wav",
+        "sound/weapons/pipe_bomb2.wav",
+        "sound/weapons/pipe_bomb3.wav",
+    ] {
+        bundle.insert(path.to_owned(), resolved(&content, path)?);
     }
     let mut output = b"PSDB".to_vec();
     output.extend_from_slice(&1_u32.to_le_bytes());

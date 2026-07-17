@@ -47,6 +47,7 @@ pub enum Event {
     },
     Explosion {
         projectile: u32,
+        kind: ProjectileKind,
         position: [f32; 3],
     },
     Damaged {
@@ -341,6 +342,7 @@ impl<T: Tracer> Session<T> {
     fn explode(&mut self, p: Projectile, events: &mut Vec<Event>) {
         events.push(Event::Explosion {
             projectile: p.id,
+            kind: p.kind,
             position: p.position,
         });
         let center = [

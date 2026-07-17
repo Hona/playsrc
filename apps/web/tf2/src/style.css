@@ -131,6 +131,7 @@ button:focus-visible { outline: 3px solid #e5a63b; outline-offset: 3px; }
 .class-rail span { padding: 0 10px; font: 900 12px/1 "Arial Narrow", sans-serif; letter-spacing: .04em; }
 .class-rail .console-toggle { margin-top: 15px; }
 .class-rail .console-toggle kbd { background: var(--blue); color: white; }
+.class-rail .audio-toggle kbd { background: var(--red); color: white; }
 
 .support-card {
   position: absolute;
@@ -219,7 +220,7 @@ button:focus-visible { outline: 3px solid #e5a63b; outline-offset: 3px; }
 @media (max-width: 760px) {
   .field-header { inset: 12px; }
   .status-stamp { max-width: 52vw; min-width: 0; }
-  .class-rail { left: 10px; top: auto; bottom: 116px; transform: none; grid-template-columns: repeat(3, auto); }
+  .class-rail { left: 10px; top: auto; bottom: 116px; transform: none; grid-template-columns: repeat(4, auto); }
   .class-rail button { min-width: 0; grid-template-columns: 28px 1fr; }
   .class-rail .console-toggle { margin-top: 0; }
   .hud { bottom: 42px; width: calc(100% - 20px); grid-template-columns: 1fr 1.3fr 1fr; }
