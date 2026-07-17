@@ -3,6 +3,17 @@ const MAX_MATERIALS = 65_536
 const MAX_SURFACES = 1_000_000
 const MAX_VERTICES = 16_777_216
 const MAX_TRIANGLES = 16_777_216
+const MAX_WORLD_LIGHTS = 1_000_000
+const MAX_AMBIENT_SAMPLES = 4_000_000
+const MAX_PROFILE_MATERIALS = 64
+const MAX_INPUTS = 4_096
+const MAX_PATH_BYTES = 1_024
+const MAX_PROFILE_TEXTURE_BYTES = 64 * 1024 * 1024
+const MAX_ATLAS_DIMENSION = 4_096
+const LIGHTING_MEMBER_ROLES = 10
+const WHITE = Object.freeze([1, 1, 1] as const)
+
+export type Rgb = readonly [number, number, number]
 
 export type RuntimeMaterial = Readonly<{
   logicalPath: string
@@ -10,6 +21,7 @@ export type RuntimeMaterial = Readonly<{
   height: number
   shader: number
   features: number
+  textureRole: number
   baseTexture?: Readonly<{
     logicalPath: string
     width: number
@@ -24,9 +36,11 @@ export type RuntimeBatch = Readonly<{
   normals: Float32Array
   uv: Float32Array
   lightmapUv: Float32Array
+  lightmapKind: Float32Array
   indices: Uint32Array
   faces: Uint32Array
 }>
+
 export type RuntimeModelPrimitive = Readonly<{
   material: number
   positions: Float32Array
@@ -34,11 +48,13 @@ export type RuntimeModelPrimitive = Readonly<{
   uv: Float32Array
   indices: Uint32Array
 }>
+
 export type RuntimeModel = Readonly<{
   logicalPath: string
   materials: readonly RuntimeMaterial[]
   primitives: readonly RuntimeModelPrimitive[]
 }>
+
 export type RuntimeModelOccurrence = Readonly<{
   entity: number
   model: number
@@ -46,19 +62,152 @@ export type RuntimeModelOccurrence = Readonly<{
   angles: readonly [number, number, number]
 }>
 
+export type LightingMemberSource =
+  | Readonly<{ kind: "standard"; slot: number; version: number }>
+  | Readonly<{ kind: "game"; id: string; version: number }>
+  | Readonly<{ kind: "absent" }>
+
+export type LightingMember = Readonly<{
+  role: number
+  source: LightingMemberSource
+  encodedBytes: number
+  decodedBytes: number
+  encodedSha256: Uint8Array
+  decodedSha256: Uint8Array
+  itemCount: number
+}>
+
+export type SurfaceLightingKind = "unlit" | "flat" | "directional-normal" | "directional-ssbump"
+
+export type SurfaceLighting = Readonly<{
+  face: number
+  kind: SurfaceLightingKind
+  styleCount: number
+  layerCount: 0 | 1 | 4
+  sampleStart: number
+  samplesPerLayer: number
+  styles: readonly [number, number, number, number]
+}>
+
+export type RuntimeWorldLight = Readonly<{
+  origin: Rgb
+  intensity: Rgb
+  normal: Rgb
+  cluster: number
+  kind: number
+  style: number
+  stopDot: number
+  stopDot2: number
+  exponent: number
+  radius: number
+  constantAttenuation: number
+  linearAttenuation: number
+  quadraticAttenuation: number
+  flags: number
+  textureInfo: number
+  owner: number
+}>
+
+export type RuntimeAmbientIndex = Readonly<{ sampleCount: number; firstSample: number }>
+export type RuntimeAmbientSample = Readonly<{
+  cube: readonly [Rgb, Rgb, Rgb, Rgb, Rgb, Rgb]
+  position: readonly [number, number, number]
+}>
+
+export type RuntimeProfileMaterial = Readonly<{
+  logicalPath: string
+  shader: number
+  features: number
+  textureRole: number
+  texture: Readonly<{
+    logicalPath: string
+    width: number
+    height: number
+    format: number
+    sourceSha256: Uint8Array
+    sourceBytes: Uint8Array
+  }>
+}>
+
+export type RuntimeInput = Readonly<{ role: number; logicalPath: string; sha256: Uint8Array }>
+
+export type ProfileRequirement = Readonly<{
+  family: "sky" | "water" | "environment"
+  disposition: "Missing" | "Unsupported"
+  identity: string
+  reason: string
+}>
+
+export type HdrProfile = Readonly<{
+  version: 1
+  encoding: "linear-rgb-f32"
+  outputRole: string
+  compilerIdentity: string
+  bspSha256: Uint8Array
+  configurationSha256: Uint8Array
+  lightingClosureSha256: Uint8Array
+  members: readonly LightingMember[]
+  lightmappedFaces: number
+  directionalFaces: number
+  surfaces: readonly SurfaceLighting[]
+  worldLights: readonly RuntimeWorldLight[]
+  ambientIndexes: readonly RuntimeAmbientIndex[]
+  ambientSamples: readonly RuntimeAmbientSample[]
+  propLighting: Readonly<{
+    detailProps: number
+    detailStyleSamples: number
+    staticProps: number
+    mapFlags: number
+  }>
+  profileMaterials: readonly RuntimeProfileMaterial[]
+  consumedInputs: readonly RuntimeInput[]
+  requirements: readonly ProfileRequirement[]
+}>
+
+type LightmapPlacement = Readonly<{
+  face: number
+  x: number
+  y: number
+  width: number
+  height: number
+}>
+
+export type RuntimeLightmapLayout = Readonly<{
+  width: number
+  height: number
+  gutter: number
+  placements: ReadonlyMap<number, LightmapPlacement>
+}>
+
+export type RuntimeLightmap = Readonly<{
+  width: number
+  height: number
+  profile: "ldr" | "hdr"
+  flat: Float32Array
+  directional?: readonly [Float32Array, Float32Array, Float32Array]
+  styleScalars: ReadonlyMap<number, number>
+}>
+
+export type RuntimeLighting =
+  | Readonly<{ profile: "ldr"; samples: Uint8Array }>
+  | Readonly<{ profile: "hdr"; samples: Float32Array; descriptor: HdrProfile }>
+
 export type RuntimeMap = Readonly<{
+  schema: 3 | 4
   bspVersion: number
   mapRevision: number
   lightingProfile: 0 | 1
   materials: readonly RuntimeMaterial[]
   batches: readonly RuntimeBatch[]
   lightingSampleCount: number
+  lighting: RuntimeLighting
   entityCount: number
   entityBytes: Uint8Array
   drawableSurfaces: number
   models: readonly RuntimeModel[]
   modelOccurrences: readonly RuntimeModelOccurrence[]
-  lightmap?: Readonly<{ width: number; height: number; rgba: Float32Array }>
+  lightmapLayout: RuntimeLightmapLayout
+  lightmap?: RuntimeLightmap
 }>
 
 export class RuntimeMapError extends Error {
@@ -72,10 +221,12 @@ class Reader {
   readonly bytes: Uint8Array
   readonly view: DataView
   offset = 0
+
   constructor(bytes: Uint8Array) {
     this.bytes = bytes
     this.view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   }
+
   take(length: number): Uint8Array {
     if (!Number.isSafeInteger(length) || length < 0 || this.offset + length > this.bytes.byteLength) {
       throw new RuntimeMapError("runtime map record exceeds its bytes")
@@ -84,19 +235,29 @@ class Reader {
     this.offset += length
     return result
   }
+
   u8(): number {
     return this.take(1)[0]!
   }
+
+  u16(): number {
+    const offset = this.offset
+    this.take(2)
+    return this.view.getUint16(offset, true)
+  }
+
   u32(): number {
     const offset = this.offset
     this.take(4)
     return this.view.getUint32(offset, true)
   }
+
   i32(): number {
     const offset = this.offset
     this.take(4)
     return this.view.getInt32(offset, true)
   }
+
   f32(): number {
     const offset = this.offset
     this.take(4)
@@ -104,6 +265,19 @@ class Reader {
     if (!Number.isFinite(value)) throw new RuntimeMapError("runtime map contains a non-finite scalar")
     return value
   }
+
+  f32Array(length: number): Float32Array {
+    const result = new Float32Array(length)
+    for (let index = 0; index < length; index += 1) result[index] = this.f32()
+    return result
+  }
+
+  u32Array(length: number): Uint32Array {
+    const result = new Uint32Array(length)
+    for (let index = 0; index < length; index += 1) result[index] = this.u32()
+    return result
+  }
+
   sized(): Uint8Array {
     return this.take(this.u32())
   }
@@ -114,13 +288,60 @@ type MutableBatch = {
   normals: number[]
   uv: number[]
   lightmapUv: number[]
+  vertexFaces: number[]
   indices: number[]
   faces: number[]
 }
 
+type CommonSurface = Readonly<{
+  face: number
+  lightOffset: number
+  styles: readonly [number, number, number, number]
+  lightmapWidth: number
+  lightmapHeight: number
+}>
+
+type LightmapRecord = {
+  surface: CommonSurface
+  batch: MutableBatch
+  uvStart: number
+  uv: number[]
+}
+
 function bounded(value: number, maximum: number, field: string): number {
-  if (value > maximum) throw new RuntimeMapError(`${field} exceeds its limit`)
+  if (!Number.isSafeInteger(value) || value < 0 || value > maximum) {
+    throw new RuntimeMapError(`${field} exceeds its limit`)
+  }
   return value
+}
+
+function multiplyBounded(left: number, right: number, maximum: number, field: string): number {
+  const value = left * right
+  return bounded(value, maximum, field)
+}
+
+function utf8(reader: Reader, decoder: TextDecoder, field: string, maximum = MAX_PATH_BYTES): string {
+  const bytes = reader.sized()
+  if (bytes.byteLength < 1 || bytes.byteLength > maximum) {
+    throw new RuntimeMapError(`${field} byte length is invalid`)
+  }
+  try {
+    return decoder.decode(bytes)
+  } catch {
+    throw new RuntimeMapError(`${field} is not UTF-8`)
+  }
+}
+
+function zeros(bytes: Uint8Array, field: string): void {
+  if (bytes.some((value) => value !== 0)) throw new RuntimeMapError(`${field} reserved bytes are nonzero`)
+}
+
+function knownShader(shader: number): boolean {
+  return (shader >= 1 && shader <= 9) || shader === 255
+}
+
+function knownTextureRole(role: number): boolean {
+  return (role >= 0 && role <= 5) || role === 255
 }
 
 function resolvedMaterial(
@@ -131,26 +352,650 @@ function resolvedMaterial(
   const shader = reader.u8()
   const features = reader.u8()
   const hasTexture = reader.u8()
-  if (reader.u8() !== 0 || hasTexture > 1) {
+  const textureRole = reader.u8()
+  if (!knownShader(shader) || (features & ~0x3f) !== 0 || hasTexture > 1 || !knownTextureRole(textureRole)) {
     throw new RuntimeMapError("runtime material payload is invalid")
   }
   let baseTexture: RuntimeMaterial["baseTexture"]
   if (hasTexture === 1) {
-    let logicalPath: string
-    try {
-      logicalPath = decoder.decode(reader.sized())
-    } catch {
-      throw new RuntimeMapError("runtime texture path is not UTF-8")
-    }
+    const logicalPath = utf8(reader, decoder, "runtime texture path")
     const width = reader.u32()
     const height = reader.u32()
+    const pixels = multiplyBounded(width, height, MAX_VERTICES, "runtime texture pixels")
     const rgba = reader.sized().slice()
-    if (!logicalPath || width < 1 || height < 1 || width * height * 4 !== rgba.byteLength) {
+    if (width < 1 || height < 1 || pixels * 4 !== rgba.byteLength) {
       throw new RuntimeMapError("runtime texture payload is invalid")
     }
     baseTexture = Object.freeze({ logicalPath, width, height, rgba })
   }
-  return Object.freeze({ ...base, shader, features, baseTexture })
+  return Object.freeze({ ...base, shader, features, textureRole, baseTexture })
+}
+
+function readRgb(reader: Reader): Rgb {
+  return Object.freeze([reader.f32(), reader.f32(), reader.f32()]) as Rgb
+}
+
+function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
+  return left.byteLength === right.byteLength && left.every((value, index) => value === right[index])
+}
+
+function compareBytes(left: Uint8Array, right: Uint8Array): number {
+  const length = Math.min(left.byteLength, right.byteLength)
+  for (let index = 0; index < length; index += 1) {
+    if (left[index] !== right[index]) return left[index]! - right[index]!
+  }
+  return left.byteLength - right.byteLength
+}
+
+function pushU16(target: number[], value: number): void {
+  target.push(value & 0xff, value >>> 8 & 0xff)
+}
+
+function pushU32(target: number[], value: number): void {
+  target.push(value & 0xff, value >>> 8 & 0xff, value >>> 16 & 0xff, value >>> 24 & 0xff)
+}
+
+function pushI32(target: number[], value: number): void {
+  pushU32(target, value >>> 0)
+}
+
+async function digest(bytes: Uint8Array): Promise<Uint8Array> {
+  return new Uint8Array(await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes).buffer))
+}
+
+async function validateLightingClosure(profile: HdrProfile): Promise<void> {
+  const bytes: number[] = [...new TextEncoder().encode("playsrc-lighting-profile-v1"), 1]
+  for (const member of profile.members) {
+    bytes.push(member.role)
+    if (member.source.kind === "standard") {
+      bytes.push(1, member.source.slot)
+      pushI32(bytes, member.source.version)
+    } else if (member.source.kind === "game") {
+      bytes.push(2, ...new TextEncoder().encode(member.source.id))
+      pushU16(bytes, member.source.version)
+    } else {
+      bytes.push(0)
+    }
+    pushU32(bytes, member.encodedBytes)
+    pushU32(bytes, member.decodedBytes)
+    bytes.push(...member.encodedSha256, ...member.decodedSha256)
+    pushU32(bytes, member.itemCount)
+  }
+  if (!equalBytes(await digest(new Uint8Array(bytes)), profile.lightingClosureSha256)) {
+    throw new RuntimeMapError("HDR lighting member closure differs")
+  }
+}
+
+function parseMember(reader: Reader, expectedRole: number): LightingMember {
+  const role = reader.u8()
+  if (role !== expectedRole) throw new RuntimeMapError("HDR lighting member roles are not ordered")
+  const sourceKind = reader.u8()
+  let source: LightingMemberSource
+  if (sourceKind === 0) {
+    zeros(reader.take(7), "absent lighting member")
+    source = Object.freeze({ kind: "absent" })
+  } else if (sourceKind === 1) {
+    const slot = reader.u8()
+    zeros(reader.take(2), "standard lighting member")
+    const version = reader.i32()
+    source = Object.freeze({ kind: "standard", slot, version })
+  } else if (sourceKind === 2) {
+    zeros(reader.take(3), "game lighting member")
+    const idBytes = reader.take(4)
+    if (idBytes.some((value) => value < 0x20 || value > 0x7e)) {
+      throw new RuntimeMapError("game lighting member identity is invalid")
+    }
+    const id = new TextDecoder().decode(idBytes)
+    const version = reader.u32()
+    if (version > 0xffff) throw new RuntimeMapError("game lighting member version is invalid")
+    source = Object.freeze({ kind: "game", id, version })
+  } else {
+    throw new RuntimeMapError("lighting member source kind is invalid")
+  }
+  const encodedBytes = reader.u32()
+  const decodedBytes = reader.u32()
+  const encodedSha256 = reader.take(32).slice()
+  const decodedSha256 = reader.take(32).slice()
+  const itemCount = reader.u32()
+  if (source.kind === "absent") {
+    if (
+      encodedBytes !== 0 || decodedBytes !== 0 || itemCount !== 0
+      || encodedSha256.some(Boolean) || decodedSha256.some(Boolean)
+    ) {
+      throw new RuntimeMapError("absent lighting member is nonzero")
+    }
+  } else if (encodedBytes === 0 || decodedBytes === 0 || encodedSha256.every((value) => value === 0) || decodedSha256.every((value) => value === 0)) {
+    throw new RuntimeMapError("present lighting member is empty")
+  }
+  return Object.freeze({
+    role,
+    source,
+    encodedBytes,
+    decodedBytes,
+    encodedSha256,
+    decodedSha256,
+    itemCount,
+  })
+}
+
+function validateVtf(material: RuntimeProfileMaterial): void {
+  const { sourceBytes, width, height, format } = material.texture
+  if (sourceBytes.byteLength < 64 || sourceBytes.byteLength > MAX_PROFILE_TEXTURE_BYTES) {
+    throw new RuntimeMapError("profile texture byte length is invalid")
+  }
+  const view = new DataView(sourceBytes.buffer, sourceBytes.byteOffset, sourceBytes.byteLength)
+  if (!equalBytes(sourceBytes.subarray(0, 4), new Uint8Array([0x56, 0x54, 0x46, 0]))) {
+    throw new RuntimeMapError("profile texture VTF identity is invalid")
+  }
+  const headerBytes = view.getUint32(12, true)
+  if (
+    headerBytes < 64 || headerBytes > sourceBytes.byteLength
+    || view.getUint16(16, true) !== width
+    || view.getUint16(18, true) !== height
+    || view.getInt32(52, true) !== format
+  ) {
+    throw new RuntimeMapError("profile texture VTF metadata differs")
+  }
+}
+
+function profileRequirements(materials: readonly RuntimeProfileMaterial[]): readonly ProfileRequirement[] {
+  const result: ProfileRequirement[] = []
+  for (const material of materials) {
+    const family = material.shader === 8 ? "sky" : material.shader === 5 ? "water" : "environment"
+    result.push(Object.freeze({
+      family,
+      disposition: "Unsupported" as const,
+      identity: material.logicalPath,
+      reason: `${family} decode, association, and draw inputs are not present in the runtime descriptor`,
+    }))
+  }
+  for (const family of ["sky", "water", "environment"] as const) {
+    if (!result.some((request) => request.family === family)) {
+      result.push(Object.freeze({
+        family,
+        disposition: "Missing" as const,
+        identity: `map-${family}-presentation`,
+        reason: `the runtime descriptor supplies no ${family} presentation input`,
+      }))
+    }
+  }
+  return Object.freeze(result)
+}
+
+function parseHdrProfile(
+  reader: Reader,
+  decoder: TextDecoder,
+  commonSurfaces: readonly CommonSurface[],
+  lightingSampleCount: number,
+): HdrProfile {
+  if (decoder.decode(reader.take(4)) !== "PSHD") throw new RuntimeMapError("HDR profile identity is invalid")
+  if (reader.u32() !== 1 || reader.u8() !== 1) throw new RuntimeMapError("HDR profile version or encoding is invalid")
+  zeros(reader.take(3), "HDR profile")
+  const outputRole = utf8(reader, decoder, "HDR output role")
+  const compilerIdentity = utf8(reader, decoder, "HDR compiler identity")
+  const bspSha256 = reader.take(32).slice()
+  const configurationSha256 = reader.take(32).slice()
+  const lightingClosureSha256 = reader.take(32).slice()
+  if ([bspSha256, configurationSha256, lightingClosureSha256].some((hash) => hash.every((value) => value === 0))) {
+    throw new RuntimeMapError("HDR profile identity hash is empty")
+  }
+  if (reader.u32() !== LIGHTING_MEMBER_ROLES) throw new RuntimeMapError("HDR lighting member count is invalid")
+  const members = Object.freeze(Array.from(
+    { length: LIGHTING_MEMBER_ROLES },
+    (_, index) => parseMember(reader, index + 1),
+  ))
+  const lightmappedFaces = reader.u32()
+  const directionalFaces = reader.u32()
+  const surfaceCount = bounded(reader.u32(), MAX_SURFACES, "HDR surface count")
+  if (surfaceCount !== commonSurfaces.length) throw new RuntimeMapError("HDR surface count differs")
+  const surfaces: SurfaceLighting[] = []
+  let measuredLightmapped = 0
+  let measuredDirectional = 0
+  for (let index = 0; index < surfaceCount; index += 1) {
+    const face = reader.u32()
+    const kindValue = reader.u8()
+    const styleCount = reader.u8()
+    const layerCount = reader.u8()
+    if (reader.u8() !== 0) throw new RuntimeMapError("HDR surface reserved byte is nonzero")
+    const sampleStart = reader.u32()
+    const samplesPerLayer = reader.u32()
+    const styles = Object.freeze([reader.u8(), reader.u8(), reader.u8(), reader.u8()]) as readonly [number, number, number, number]
+    const common = commonSurfaces[index]!
+    if (face !== common.face || styles.some((style, styleIndex) => style !== common.styles[styleIndex])) {
+      throw new RuntimeMapError("HDR surface identity differs from the common surface")
+    }
+    const expectedStyleCount = styles.findIndex((style) => style === 255)
+    const contiguousStyles = expectedStyleCount < 0 ? 4 : expectedStyleCount
+    if (
+      styleCount !== contiguousStyles
+      || styles.slice(styleCount).some((style) => style !== 255)
+      || styles.slice(0, styleCount).some((style) => style > 63)
+    ) {
+      throw new RuntimeMapError("HDR surface styles are invalid")
+    }
+    const kind = (["unlit", "flat", "directional-normal", "directional-ssbump"] as const)[kindValue]
+    if (!kind) throw new RuntimeMapError("HDR surface lighting kind is invalid")
+    const expectedLayers = kind === "unlit" ? 0 : kind === "flat" ? 1 : 4
+    const expectedSamples = common.lightmapWidth * common.lightmapHeight
+    if (
+      layerCount !== expectedLayers
+      || (kind === "unlit" && (styleCount !== 0 || sampleStart !== 0 || samplesPerLayer !== 0 || common.lightOffset >= 0))
+      || (kind !== "unlit" && (
+        styleCount < 1 || samplesPerLayer !== expectedSamples || common.lightOffset < 0
+        || common.lightOffset % 4 !== 0 || sampleStart !== common.lightOffset / 4
+      ))
+    ) {
+      throw new RuntimeMapError("HDR surface sample metadata is invalid")
+    }
+    const sampleEnd = sampleStart + styleCount * layerCount * samplesPerLayer
+    if (!Number.isSafeInteger(sampleEnd) || sampleEnd > lightingSampleCount) {
+      throw new RuntimeMapError("HDR surface sample range is invalid")
+    }
+    if (kind !== "unlit") measuredLightmapped += 1
+    if (expectedLayers === 4) measuredDirectional += 1
+    surfaces.push(Object.freeze({
+      face,
+      kind,
+      styleCount,
+      layerCount: layerCount as 0 | 1 | 4,
+      sampleStart,
+      samplesPerLayer,
+      styles,
+    }))
+  }
+  if (measuredLightmapped !== lightmappedFaces || measuredDirectional !== directionalFaces) {
+    throw new RuntimeMapError("HDR surface classification counts differ")
+  }
+
+  const worldLightCount = bounded(reader.u32(), MAX_WORLD_LIGHTS, "world light count")
+  const worldLights: RuntimeWorldLight[] = []
+  for (let index = 0; index < worldLightCount; index += 1) {
+    const origin = readRgb(reader)
+    const intensity = readRgb(reader)
+    const normal = readRgb(reader)
+    const cluster = reader.i32()
+    const kind = reader.i32()
+    const style = reader.u8()
+    zeros(reader.take(3), "world light")
+    const stopDot = reader.f32()
+    const stopDot2 = reader.f32()
+    const exponent = reader.f32()
+    const radius = reader.f32()
+    const constantAttenuation = reader.f32()
+    const linearAttenuation = reader.f32()
+    const quadraticAttenuation = reader.f32()
+    const flags = reader.i32()
+    const textureInfo = reader.i32()
+    const owner = reader.i32()
+    if (kind < 0 || kind > 5 || style > 63 || radius < 0 || constantAttenuation < 0 || linearAttenuation < 0 || quadraticAttenuation < 0) {
+      throw new RuntimeMapError("world light record is invalid")
+    }
+    worldLights.push(Object.freeze({
+      origin,
+      intensity,
+      normal,
+      cluster,
+      kind,
+      style,
+      stopDot,
+      stopDot2,
+      exponent,
+      radius,
+      constantAttenuation,
+      linearAttenuation,
+      quadraticAttenuation,
+      flags,
+      textureInfo,
+      owner,
+    }))
+  }
+
+  const ambientIndexCount = bounded(reader.u32(), MAX_SURFACES, "ambient index count")
+  const ambientIndexes = Object.freeze(Array.from({ length: ambientIndexCount }, (): RuntimeAmbientIndex => Object.freeze({
+    sampleCount: reader.u16(),
+    firstSample: reader.u16(),
+  })))
+  const ambientSampleCount = bounded(reader.u32(), MAX_AMBIENT_SAMPLES, "ambient sample count")
+  const ambientSamples: RuntimeAmbientSample[] = []
+  for (let index = 0; index < ambientSampleCount; index += 1) {
+    const cube = Object.freeze(Array.from({ length: 6 }, () => readRgb(reader))) as unknown as readonly [Rgb, Rgb, Rgb, Rgb, Rgb, Rgb]
+    const position = Object.freeze([reader.u8(), reader.u8(), reader.u8()]) as readonly [number, number, number]
+    if (reader.u8() !== 0) throw new RuntimeMapError("ambient sample reserved byte is nonzero")
+    ambientSamples.push(Object.freeze({ cube, position }))
+  }
+  for (const ambient of ambientIndexes) {
+    if (ambient.firstSample + ambient.sampleCount > ambientSamples.length) {
+      throw new RuntimeMapError("ambient sample range is invalid")
+    }
+  }
+
+  const propLighting = Object.freeze({
+    detailProps: reader.u32(),
+    detailStyleSamples: reader.u32(),
+    staticProps: reader.u32(),
+    mapFlags: reader.u32(),
+  })
+  const profileMaterialCount = bounded(reader.u32(), MAX_PROFILE_MATERIALS, "profile material count")
+  const profileMaterials: RuntimeProfileMaterial[] = []
+  const materialIdentities = new Set<string>()
+  for (let index = 0; index < profileMaterialCount; index += 1) {
+    const logicalPath = utf8(reader, decoder, "profile material path")
+    const shader = reader.u8()
+    const features = reader.u8()
+    const textureRole = reader.u8()
+    if (reader.u8() !== 0) throw new RuntimeMapError("profile material reserved byte is nonzero")
+    const texturePath = utf8(reader, decoder, "profile texture path")
+    const width = reader.u32()
+    const height = reader.u32()
+    const format = reader.i32()
+    const sourceSha256 = reader.take(32).slice()
+    const sourceBytes = reader.sized().slice()
+    const identity = logicalPath.toLowerCase()
+    if (
+      !knownShader(shader) || (features & ~0x3f) !== 0 || textureRole < 1 || textureRole > 5
+      || width < 1 || height < 1 || width > MAX_ATLAS_DIMENSION || height > MAX_ATLAS_DIMENSION
+      || !materialIdentities.add(identity)
+    ) {
+      throw new RuntimeMapError("profile material record is invalid")
+    }
+    const material = Object.freeze({
+      logicalPath,
+      shader,
+      features,
+      textureRole,
+      texture: Object.freeze({ logicalPath: texturePath, width, height, format, sourceSha256, sourceBytes }),
+    })
+    validateVtf(material)
+    profileMaterials.push(material)
+  }
+
+  const inputCount = bounded(reader.u32(), MAX_INPUTS, "consumed input count")
+  const consumedInputs: RuntimeInput[] = []
+  const inputIdentities = new Set<string>()
+  let priorInput: { role: number; path: Uint8Array; sha256: Uint8Array } | undefined
+  for (let index = 0; index < inputCount; index += 1) {
+    const role = reader.u8()
+    zeros(reader.take(3), "consumed input")
+    const pathBytes = reader.sized()
+    if (pathBytes.byteLength < 1 || pathBytes.byteLength > MAX_PATH_BYTES) {
+      throw new RuntimeMapError("consumed input path byte length is invalid")
+    }
+    let logicalPath: string
+    try {
+      logicalPath = decoder.decode(pathBytes)
+    } catch {
+      throw new RuntimeMapError("consumed input path is not UTF-8")
+    }
+    const sha256 = reader.take(32).slice()
+    if (sha256.every((value) => value === 0) || !inputIdentities.add(`${role}\0${logicalPath}`)) {
+      throw new RuntimeMapError("consumed input identity is invalid")
+    }
+    if (priorInput) {
+      const order = role - priorInput.role || compareBytes(pathBytes, priorInput.path) || compareBytes(sha256, priorInput.sha256)
+      if (order < 0) throw new RuntimeMapError("consumed inputs are not sorted")
+    }
+    priorInput = { role, path: pathBytes.slice(), sha256 }
+    consumedInputs.push(Object.freeze({ role, logicalPath, sha256 }))
+  }
+
+  const profile: HdrProfile = Object.freeze({
+    version: 1,
+    encoding: "linear-rgb-f32",
+    outputRole,
+    compilerIdentity,
+    bspSha256,
+    configurationSha256,
+    lightingClosureSha256,
+    members,
+    lightmappedFaces,
+    directionalFaces,
+    surfaces: Object.freeze(surfaces),
+    worldLights: Object.freeze(worldLights),
+    ambientIndexes,
+    ambientSamples: Object.freeze(ambientSamples),
+    propLighting,
+    profileMaterials: Object.freeze(profileMaterials),
+    consumedInputs: Object.freeze(consumedInputs),
+    requirements: profileRequirements(profileMaterials),
+  })
+
+  const expectedMemberCounts = [surfaceCount, lightingSampleCount, worldLightCount, ambientIndexCount, ambientSampleCount, 1]
+  for (let index = 0; index < expectedMemberCounts.length; index += 1) {
+    if (members[index]!.itemCount !== expectedMemberCounts[index]) {
+      throw new RuntimeMapError("HDR lighting member item count differs")
+    }
+  }
+  if (
+    members[0]!.decodedBytes !== surfaceCount * 56
+    || members[1]!.decodedBytes !== lightingSampleCount * 4
+    || members[2]!.decodedBytes !== worldLightCount * 88
+    || members[3]!.decodedBytes !== ambientIndexCount * 4
+    || members[4]!.decodedBytes !== ambientSampleCount * 28
+    || members[5]!.decodedBytes !== 4
+    || members[7]!.itemCount !== propLighting.detailProps
+    || members[8]!.itemCount !== propLighting.detailStyleSamples
+    || members[9]!.itemCount !== propLighting.staticProps
+  ) {
+    throw new RuntimeMapError("HDR lighting member byte or prop counts differ")
+  }
+  return profile
+}
+
+function packLightmaps(records: readonly LightmapRecord[], gutter: number): RuntimeLightmapLayout {
+  let x = gutter === 0 ? 1 : gutter
+  let y = gutter
+  let rowHeight = 1
+  const placements = new Map<number, LightmapPlacement>()
+  for (const record of records) {
+    const packedWidth = record.surface.lightmapWidth + gutter * 2
+    const packedHeight = record.surface.lightmapHeight + gutter * 2
+    if (packedWidth > MAX_ATLAS_DIMENSION || packedHeight > MAX_ATLAS_DIMENSION) {
+      throw new RuntimeMapError("lightmap dimensions are invalid")
+    }
+    if (x + packedWidth > MAX_ATLAS_DIMENSION) {
+      x = gutter
+      y += rowHeight
+      rowHeight = 0
+    }
+    const placement = Object.freeze({
+      face: record.surface.face,
+      x: x + gutter,
+      y: y + gutter,
+      width: record.surface.lightmapWidth,
+      height: record.surface.lightmapHeight,
+    })
+    if (placements.has(placement.face)) throw new RuntimeMapError("duplicate lightmap face identity")
+    placements.set(placement.face, placement)
+    x += packedWidth
+    rowHeight = Math.max(rowHeight, packedHeight)
+  }
+  const height = y + rowHeight + gutter
+  if (height < 1 || height > MAX_ATLAS_DIMENSION) throw new RuntimeMapError("lightmap atlas exceeds its limit")
+  for (const record of records) {
+    const placement = placements.get(record.surface.face)!
+    for (let vertex = 0; vertex < record.uv.length / 2; vertex += 1) {
+      record.batch.lightmapUv[record.uvStart + vertex * 2] =
+        (placement.x + record.uv[vertex * 2]! + 0.5) / MAX_ATLAS_DIMENSION
+      record.batch.lightmapUv[record.uvStart + vertex * 2 + 1] =
+        (placement.y + record.uv[vertex * 2 + 1]! + 0.5) / height
+    }
+  }
+  return Object.freeze({ width: MAX_ATLAS_DIMENSION, height, gutter, placements })
+}
+
+function styleScalarMap(surfaces: readonly SurfaceLighting[], values?: readonly Readonly<{ style: number; scalar: number }>[]): ReadonlyMap<number, number> {
+  const required = new Set<number>()
+  for (const surface of surfaces) {
+    for (let index = 0; index < surface.styleCount; index += 1) required.add(surface.styles[index]!)
+  }
+  if (!values) {
+    if ([...required].some((style) => style !== 0)) {
+      throw new RuntimeMapError("explicit light-style scalars are required")
+    }
+    return new Map([[0, 1]])
+  }
+  const result = new Map<number, number>()
+  for (const value of values) {
+    if (
+      !Number.isSafeInteger(value.style) || value.style < 0 || value.style > 63
+      || !Number.isFinite(value.scalar) || value.scalar < 0 || result.has(value.style)
+    ) {
+      throw new RuntimeMapError("light-style scalar input is invalid")
+    }
+    result.set(value.style, value.scalar)
+  }
+  if ([...required].some((style) => !result.has(style))) throw new RuntimeMapError("a required light-style scalar is missing")
+  return result
+}
+
+function quantizeIntegerHdr(value: number): number {
+  return Math.floor(Math.max(0, Math.min(65_535, value * 4_096))) / 4_096
+}
+
+function setPixel(plane: Float32Array, width: number, x: number, y: number, value: Rgb): void {
+  const at = (y * width + x) * 4
+  plane[at] = value[0]
+  plane[at + 1] = value[1]
+  plane[at + 2] = value[2]
+  plane[at + 3] = 1
+}
+
+function copyGutters(plane: Float32Array, atlasWidth: number, placement: LightmapPlacement, gutter: number): void {
+  if (gutter === 0) return
+  const { x, y, width, height } = placement
+  const pixel = (sourceX: number, sourceY: number, targetX: number, targetY: number) => {
+    const source = (sourceY * atlasWidth + sourceX) * 4
+    const target = (targetY * atlasWidth + targetX) * 4
+    plane.copyWithin(target, source, source + 4)
+  }
+  for (let offset = 0; offset < width; offset += 1) {
+    pixel(x + offset, y, x + offset, y - 1)
+    pixel(x + offset, y + height - 1, x + offset, y + height)
+  }
+  for (let offset = -1; offset <= height; offset += 1) {
+    pixel(x, Math.max(y, Math.min(y + height - 1, y + offset)), x - 1, y + offset)
+    pixel(x + width - 1, Math.max(y, Math.min(y + height - 1, y + offset)), x + width, y + offset)
+  }
+}
+
+function readHdrSample(samples: Float32Array, index: number): [number, number, number] {
+  const at = index * 3
+  return [samples[at]!, samples[at + 1]!, samples[at + 2]!]
+}
+
+function addScaled(target: [number, number, number], source: Rgb, scalar: number): void {
+  target[0] += source[0] * scalar
+  target[1] += source[1] * scalar
+  target[2] += source[2] * scalar
+}
+
+function composeHdrTexel(
+  samples: Float32Array,
+  surface: SurfaceLighting,
+  texel: number,
+  scalars: ReadonlyMap<number, number>,
+): readonly [Rgb, Rgb, Rgb, Rgb] {
+  if (surface.kind === "unlit") return [WHITE, WHITE, WHITE, WHITE]
+  const layers: [[number, number, number], [number, number, number], [number, number, number], [number, number, number]] = [
+    [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0],
+  ]
+  for (let styleIndex = 0; styleIndex < surface.styleCount; styleIndex += 1) {
+    const scalar = scalars.get(surface.styles[styleIndex]!)!
+    for (let layer = 0; layer < surface.layerCount; layer += 1) {
+      const sample = surface.sampleStart
+        + styleIndex * surface.layerCount * surface.samplesPerLayer
+        + layer * surface.samplesPerLayer
+        + texel
+      addScaled(layers[layer]!, readHdrSample(samples, sample), scalar)
+    }
+  }
+  if (surface.layerCount === 1) {
+    const flat = layers[0].map(quantizeIntegerHdr) as [number, number, number]
+    return [flat, WHITE, WHITE, WHITE]
+  }
+  for (let channel = 0; channel < 3; channel += 1) {
+    const average = (layers[1][channel] + layers[2][channel] + layers[3][channel]) / 3
+    const correction = average === 0 ? 0 : layers[0][channel] / average
+    for (let layer = 1; layer < 4; layer += 1) layers[layer][channel] *= correction
+  }
+  return layers.map((layer) => layer.map(quantizeIntegerHdr) as [number, number, number]) as unknown as readonly [Rgb, Rgb, Rgb, Rgb]
+}
+
+export function buildRuntimeLightmap(
+  map: Pick<RuntimeMap, "lighting" | "lightmapLayout">,
+  values?: readonly Readonly<{ style: number; scalar: number }>[],
+): RuntimeLightmap {
+  if (map.lighting.profile === "ldr") throw new RuntimeMapError("LDR lightmap replacement is not style-addressable")
+  const { descriptor, samples } = map.lighting
+  const styleScalars = styleScalarMap(descriptor.surfaces, values)
+  const { width, height, placements, gutter } = map.lightmapLayout
+  const flat = new Float32Array(width * height * 4)
+  const directional = [
+    new Float32Array(flat.length),
+    new Float32Array(flat.length),
+    new Float32Array(flat.length),
+  ] as [Float32Array, Float32Array, Float32Array]
+  for (const surface of descriptor.surfaces) {
+    const placement = placements.get(surface.face)
+    if (!placement) continue
+    for (let texel = 0; texel < placement.width * placement.height; texel += 1) {
+      const values = composeHdrTexel(samples, surface, texel, styleScalars)
+      const x = placement.x + texel % placement.width
+      const y = placement.y + Math.floor(texel / placement.width)
+      setPixel(flat, width, x, y, values[0])
+      for (let layer = 0; layer < 3; layer += 1) setPixel(directional[layer]!, width, x, y, values[layer + 1]!)
+    }
+    copyGutters(flat, width, placement, gutter)
+    for (const plane of directional) copyGutters(plane, width, placement, gutter)
+  }
+  return Object.freeze({
+    width,
+    height,
+    profile: "hdr",
+    flat,
+    directional: Object.freeze(directional),
+    styleScalars,
+  })
+}
+
+function buildLdrLightmap(
+  lighting: Uint8Array,
+  lightingSampleCount: number,
+  layout: RuntimeLightmapLayout,
+  records: readonly LightmapRecord[],
+): RuntimeLightmap {
+  const rgba = new Float32Array(layout.width * layout.height * 4)
+  rgba.set([1, 1, 1, 1])
+  for (const record of records) {
+    const placement = layout.placements.get(record.surface.face)!
+    const samples = placement.width * placement.height
+    const source = record.surface.lightOffset >= 0 ? record.surface.lightOffset / 4 : -1
+    if (source >= 0 && (!Number.isInteger(source) || source + samples > lightingSampleCount)) {
+      throw new RuntimeMapError("lightmap sample range is invalid")
+    }
+    for (let sample = 0; sample < samples; sample += 1) {
+      const target = ((placement.y + Math.floor(sample / placement.width)) * layout.width + placement.x + sample % placement.width) * 4
+      if (source < 0) {
+        rgba.set([1, 1, 1, 1], target)
+      } else {
+        const encoded = (source + sample) * 4
+        const exponentByte = lighting[encoded + 3]!
+        const exponent = exponentByte > 127 ? exponentByte - 256 : exponentByte
+        const scale = 2 ** exponent / 255
+        rgba[target] = lighting[encoded]! * scale
+        rgba[target + 1] = lighting[encoded + 1]! * scale
+        rgba[target + 2] = lighting[encoded + 2]! * scale
+        rgba[target + 3] = 1
+      }
+    }
+  }
+  return Object.freeze({
+    width: layout.width,
+    height: layout.height,
+    profile: "ldr",
+    flat: rgba,
+    styleScalars: new Map([[0, 1]]),
+  })
 }
 
 export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
@@ -158,58 +1003,43 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
     throw new RuntimeMapError("runtime map byte length is invalid")
   }
   const reader = new Reader(input)
-  if (new TextDecoder().decode(reader.take(4)) !== "PSMP") {
-    throw new RuntimeMapError("runtime map identity is invalid")
-  }
+  const decoder = new TextDecoder("utf-8", { fatal: true })
+  if (new TextDecoder().decode(reader.take(4)) !== "PSMP") throw new RuntimeMapError("runtime map identity is invalid")
   const schema = reader.u32()
-  if (schema !== 1 && schema !== 2 && schema !== 3) {
-    throw new RuntimeMapError("runtime map schema is invalid")
-  }
+  if (schema !== 3 && schema !== 4) throw new RuntimeMapError("runtime map schema is invalid")
   const bspVersion = reader.u32()
   const mapRevision = reader.u32()
   const lightingProfile = reader.u8()
-  if (lightingProfile !== 0 && lightingProfile !== 1) {
-    throw new RuntimeMapError("runtime map lighting profile is invalid")
+  if ((schema === 3 && lightingProfile !== 0) || (schema === 4 && lightingProfile !== 1)) {
+    throw new RuntimeMapError("runtime map lighting profile differs from its schema")
   }
   const materialCount = bounded(reader.u32(), MAX_MATERIALS, "material count")
   const surfaceCount = bounded(reader.u32(), MAX_SURFACES, "surface count")
   const lightingSampleCount = bounded(reader.u32(), MAX_VERTICES, "lighting sample count")
   const entityCount = bounded(reader.u32(), MAX_SURFACES, "entity count")
-  const decoder = new TextDecoder("utf-8", { fatal: true })
   const materials: RuntimeMaterial[] = []
   for (let index = 0; index < materialCount; index += 1) {
-    let logicalPath: string
-    try {
-      logicalPath = decoder.decode(reader.sized())
-    } catch {
-      throw new RuntimeMapError("runtime map material path is not UTF-8")
-    }
-    const width = reader.i32()
-    const height = reader.i32()
-    if (!logicalPath || width < 1 || height < 1) {
+    materials.push({
+      logicalPath: utf8(reader, decoder, "runtime material path"),
+      width: reader.i32(),
+      height: reader.i32(),
+      shader: 1,
+      features: 0,
+      textureRole: 0,
+    })
+    if (materials[index]!.width < 1 || materials[index]!.height < 1) {
       throw new RuntimeMapError("runtime map material record is invalid")
     }
-    materials.push({ logicalPath, width, height, shader: 0, features: 0 })
   }
+
   const batches = Array.from({ length: materialCount }, (): MutableBatch => ({
-    positions: [],
-    normals: [],
-    uv: [],
-    lightmapUv: [],
-    indices: [],
-    faces: [],
+    positions: [], normals: [], uv: [], lightmapUv: [], vertexFaces: [], indices: [], faces: [],
   }))
+  const commonSurfaces: CommonSurface[] = []
+  const lightmapRecords: LightmapRecord[] = []
   let totalVertices = 0
   let totalTriangles = 0
   let drawableSurfaces = 0
-  const lightmapRecords: Array<{
-    batch: MutableBatch
-    start: number
-    uv: number[]
-    offset: number
-    width: number
-    height: number
-  }> = []
   for (let index = 0; index < surfaceCount; index += 1) {
     const face = reader.u32()
     const model = reader.u32()
@@ -218,191 +1048,146 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
     const draw = reader.u8()
     const vertexCount = bounded(reader.u32(), MAX_VERTICES, "surface vertex count")
     const triangleCount = bounded(reader.u32(), MAX_TRIANGLES, "surface triangle count")
-    if (material >= materialCount || draw > 1 || vertexCount < 3) {
-      throw new RuntimeMapError("runtime map surface record is invalid")
-    }
+    if (material >= materialCount || draw > 1 || vertexCount < 3) throw new RuntimeMapError("runtime map surface record is invalid")
     totalVertices = bounded(totalVertices + vertexCount, MAX_VERTICES, "total vertex count")
     totalTriangles = bounded(totalTriangles + triangleCount, MAX_TRIANGLES, "total triangle count")
-    const positions = Array.from({ length: vertexCount * 3 }, () => reader.f32())
-    const normals = Array.from({ length: vertexCount * 3 }, () => reader.f32())
-    const uv = Array.from({ length: vertexCount * 2 }, () => reader.f32())
-    const lightmapUv = Array.from({ length: vertexCount * 2 }, () => reader.f32())
-    const indices = Array.from({ length: triangleCount * 3 }, () => reader.u32())
-    if (indices.some((value) => value >= vertexCount)) {
-      throw new RuntimeMapError("runtime map triangle index is invalid")
-    }
+    const positions = reader.f32Array(vertexCount * 3)
+    const normals = reader.f32Array(vertexCount * 3)
+    const uv = reader.f32Array(vertexCount * 2)
+    const lightmapUv = reader.f32Array(vertexCount * 2)
+    const indices = reader.u32Array(triangleCount * 3)
+    if (indices.some((value) => value >= vertexCount)) throw new RuntimeMapError("runtime map triangle index is invalid")
     const lightOffset = reader.i32()
-    reader.take(4)
+    const styles = Object.freeze([reader.u8(), reader.u8(), reader.u8(), reader.u8()]) as readonly [number, number, number, number]
     const lightmapWidth = Math.max(1, reader.i32() + 1)
     const lightmapHeight = Math.max(1, reader.i32() + 1)
+    const common = Object.freeze({ face, lightOffset, styles, lightmapWidth, lightmapHeight })
+    commonSurfaces.push(common)
     if (draw === 0 || model !== 0) continue
     const batch = batches[material]!
     const base = batch.positions.length / 3
     for (const value of positions) batch.positions.push(value)
     for (const value of normals) batch.normals.push(value)
     for (const value of uv) batch.uv.push(value)
-    const lightmapStart = batch.lightmapUv.length
+    const uvStart = batch.lightmapUv.length
     for (let value = 0; value < lightmapUv.length; value += 1) batch.lightmapUv.push(0)
-    lightmapRecords.push({
-      batch,
-      start: lightmapStart,
-      uv: lightmapUv,
-      offset: lightOffset,
-      width: lightmapWidth,
-      height: lightmapHeight,
-    })
+    for (let vertex = 0; vertex < vertexCount; vertex += 1) batch.vertexFaces.push(face)
+    lightmapRecords.push({ surface: common, batch, uvStart, uv: [...lightmapUv] })
     for (const value of indices) batch.indices.push(value + base)
     for (let triangle = 0; triangle < triangleCount; triangle += 1) batch.faces.push(face)
     drawableSurfaces += 1
   }
-  const lighting = reader.take(lightingSampleCount * 4)
-  let lightmap: RuntimeMap["lightmap"]
-  if (lightmapRecords.length > 0) {
-    const atlasWidth = 4096
-    let x = 1
-    let y = 0
-    let rowHeight = 1
-    const placements: Array<{ x: number; y: number }> = []
-    for (const record of lightmapRecords) {
-      if (record.width < 1 || record.height < 1 || record.width > atlasWidth) {
-        throw new RuntimeMapError("lightmap dimensions are invalid")
-      }
-      if (x + record.width > atlasWidth) {
-        x = 0
-        y += rowHeight
-        rowHeight = 0
-      }
-      placements.push({ x, y })
-      x += record.width
-      rowHeight = Math.max(rowHeight, record.height)
-    }
-    const atlasHeight = y + rowHeight
-    if (atlasHeight < 1 || atlasHeight > 4096) throw new RuntimeMapError("lightmap atlas exceeds its limit")
-    const rgba = new Float32Array(atlasWidth * atlasHeight * 4)
-    rgba.set([1, 1, 1, 1])
-    for (const [recordIndex, record] of lightmapRecords.entries()) {
-      const placement = placements[recordIndex]!
-      const samples = record.width * record.height
-      const source = record.offset >= 0 ? record.offset / 4 : -1
-      if (source >= 0 && (!Number.isInteger(source) || source + samples > lightingSampleCount)) {
-        throw new RuntimeMapError("lightmap sample range is invalid")
-      }
-      for (let sample = 0; sample < samples; sample += 1) {
-        const targetX = placement.x + sample % record.width
-        const targetY = placement.y + Math.floor(sample / record.width)
-        const target = (targetY * atlasWidth + targetX) * 4
-        if (source < 0) {
-          rgba.set([1, 1, 1, 1], target)
-        } else {
-          const encoded = (source + sample) * 4
-          const exponentByte = lighting[encoded + 3]!
-          const exponent = exponentByte > 127 ? exponentByte - 256 : exponentByte
-          const scale = 2 ** exponent / 255
-          rgba[target] = lighting[encoded]! * scale
-          rgba[target + 1] = lighting[encoded + 1]! * scale
-          rgba[target + 2] = lighting[encoded + 2]! * scale
-          rgba[target + 3] = 1
-        }
-      }
-      for (let vertex = 0; vertex < record.uv.length / 2; vertex += 1) {
-        record.batch.lightmapUv[record.start + vertex * 2] =
-          (placement.x + record.uv[vertex * 2]! + 0.5) / atlasWidth
-        record.batch.lightmapUv[record.start + vertex * 2 + 1] =
-          (placement.y + record.uv[vertex * 2 + 1]! + 0.5) / atlasHeight
-      }
-    }
-    lightmap = Object.freeze({ width: atlasWidth, height: atlasHeight, rgba })
+
+  let lighting: RuntimeLighting
+  let ldrBytes: Uint8Array | undefined
+  if (schema === 3) {
+    ldrBytes = reader.take(lightingSampleCount * 4).slice()
+    lighting = Object.freeze({ profile: "ldr", samples: ldrBytes })
+  } else {
+    lighting = Object.freeze({ profile: "hdr", samples: reader.f32Array(lightingSampleCount * 3), descriptor: undefined as never })
   }
   const entityBytes = reader.sized().slice()
-  if (schema >= 2) {
-    const resolvedCount = reader.u32()
-    if (resolvedCount !== materials.length) {
-      throw new RuntimeMapError("runtime material payload count is invalid")
-    }
-    for (let index = 0; index < resolvedCount; index += 1) {
-      materials[index] = resolvedMaterial(reader, decoder, materials[index]!)
-    }
+  const resolvedCount = reader.u32()
+  if (resolvedCount !== materials.length) throw new RuntimeMapError("runtime material payload count is invalid")
+  for (let index = 0; index < resolvedCount; index += 1) {
+    materials[index] = resolvedMaterial(reader, decoder, materials[index]!)
   }
+
   const models: RuntimeModel[] = []
+  const modelCount = bounded(reader.u32(), 4_096, "runtime model count")
+  for (let modelIndex = 0; modelIndex < modelCount; modelIndex += 1) {
+    const logicalPath = utf8(reader, decoder, "runtime model path")
+    const modelMaterialCount = bounded(reader.u32(), MAX_MATERIALS, "model material count")
+    const modelMaterials: RuntimeMaterial[] = []
+    for (let material = 0; material < modelMaterialCount; material += 1) {
+      const materialPath = utf8(reader, decoder, "runtime model material path")
+      modelMaterials.push(resolvedMaterial(reader, decoder, { logicalPath: materialPath, width: 1, height: 1 }))
+    }
+    const primitiveCount = bounded(reader.u32(), 65_536, "model primitive count")
+    const primitives: RuntimeModelPrimitive[] = []
+    for (let primitive = 0; primitive < primitiveCount; primitive += 1) {
+      const material = reader.u32()
+      const vertices = bounded(reader.u32(), MAX_VERTICES, "model vertex count")
+      const triangles = bounded(reader.u32(), MAX_TRIANGLES, "model triangle count")
+      if (material >= modelMaterialCount) throw new RuntimeMapError("model material index is invalid")
+      const positions = reader.f32Array(vertices * 3)
+      const normals = reader.f32Array(vertices * 3)
+      const uv = reader.f32Array(vertices * 2)
+      const indices = reader.u32Array(triangles * 3)
+      if (indices.some((value) => value >= vertices)) throw new RuntimeMapError("model triangle index is invalid")
+      primitives.push(Object.freeze({ material, positions, normals, uv, indices }))
+    }
+    models.push(Object.freeze({ logicalPath, materials: Object.freeze(modelMaterials), primitives: Object.freeze(primitives) }))
+  }
   const modelOccurrences: RuntimeModelOccurrence[] = []
-  if (schema === 3) {
-    const modelCount = bounded(reader.u32(), 4096, "runtime model count")
-    for (let modelIndex = 0; modelIndex < modelCount; modelIndex += 1) {
-      let logicalPath: string
-      try {
-        logicalPath = decoder.decode(reader.sized())
-      } catch {
-        throw new RuntimeMapError("runtime model path is not UTF-8")
-      }
-      const materialCount = bounded(reader.u32(), MAX_MATERIALS, "model material count")
-      const modelMaterials: RuntimeMaterial[] = []
-      for (let material = 0; material < materialCount; material += 1) {
-        let materialPath: string
-        try {
-          materialPath = decoder.decode(reader.sized())
-        } catch {
-          throw new RuntimeMapError("runtime model material path is not UTF-8")
-        }
-        modelMaterials.push(resolvedMaterial(reader, decoder, {
-          logicalPath: materialPath,
-          width: 1,
-          height: 1,
-        }))
-      }
-      const primitiveCount = bounded(reader.u32(), 65_536, "model primitive count")
-      const primitives: RuntimeModelPrimitive[] = []
-      for (let primitive = 0; primitive < primitiveCount; primitive += 1) {
-        const material = reader.u32()
-        const vertices = bounded(reader.u32(), MAX_VERTICES, "model vertex count")
-        const triangles = bounded(reader.u32(), MAX_TRIANGLES, "model triangle count")
-        if (material >= materialCount) throw new RuntimeMapError("model material index is invalid")
-        const positions = Float32Array.from({ length: vertices * 3 }, () => reader.f32())
-        const normals = Float32Array.from({ length: vertices * 3 }, () => reader.f32())
-        const uv = Float32Array.from({ length: vertices * 2 }, () => reader.f32())
-        const indices = Uint32Array.from({ length: triangles * 3 }, () => reader.u32())
-        if (indices.some((index) => index >= vertices)) {
-          throw new RuntimeMapError("model triangle index is invalid")
-        }
-        primitives.push(Object.freeze({ material, positions, normals, uv, indices }))
-      }
-      models.push(Object.freeze({
-        logicalPath,
-        materials: Object.freeze(modelMaterials),
-        primitives: Object.freeze(primitives),
-      }))
-    }
-    const occurrenceCount = bounded(reader.u32(), MAX_SURFACES, "model occurrence count")
-    for (let index = 0; index < occurrenceCount; index += 1) {
-      const entity = reader.u32()
-      const model = reader.u32()
-      if (model >= models.length) throw new RuntimeMapError("model occurrence index is invalid")
-      const position = Object.freeze([reader.f32(), reader.f32(), reader.f32()]) as readonly [number, number, number]
-      const angles = Object.freeze([reader.f32(), reader.f32(), reader.f32()]) as readonly [number, number, number]
-      modelOccurrences.push(Object.freeze({ entity, model, position, angles }))
-    }
+  const occurrenceCount = bounded(reader.u32(), MAX_SURFACES, "model occurrence count")
+  for (let index = 0; index < occurrenceCount; index += 1) {
+    const entity = reader.u32()
+    const model = reader.u32()
+    if (model >= models.length) throw new RuntimeMapError("model occurrence index is invalid")
+    const position = Object.freeze([reader.f32(), reader.f32(), reader.f32()]) as readonly [number, number, number]
+    const angles = Object.freeze([reader.f32(), reader.f32(), reader.f32()]) as readonly [number, number, number]
+    modelOccurrences.push(Object.freeze({ entity, model, position, angles }))
+  }
+
+  if (schema === 4) {
+    const descriptor = parseHdrProfile(reader, decoder, commonSurfaces, lightingSampleCount)
+    lighting = Object.freeze({ profile: "hdr", samples: lighting.samples as Float32Array, descriptor })
   }
   if (reader.offset !== input.byteLength) throw new RuntimeMapError("runtime map has trailing bytes")
+
+  const lightmapLayout = packLightmaps(lightmapRecords, schema === 4 ? 1 : 0)
+  const lightingKinds = lighting.profile === "hdr"
+    ? new Map(lighting.descriptor.surfaces.map((surface) => [surface.face, surface.kind === "unlit" ? 0 : surface.kind === "flat" ? 1 : surface.kind === "directional-normal" ? 2 : 3]))
+    : new Map(commonSurfaces.map((surface) => [surface.face, surface.lightOffset < 0 ? 0 : 1]))
   const frozenBatches = batches.flatMap((batch, material): RuntimeBatch[] => batch.indices.length === 0 ? [] : [Object.freeze({
     material,
     positions: new Float32Array(batch.positions),
     normals: new Float32Array(batch.normals),
     uv: new Float32Array(batch.uv),
     lightmapUv: new Float32Array(batch.lightmapUv),
+    lightmapKind: Float32Array.from(batch.vertexFaces, (face) => lightingKinds.get(face) ?? 0),
     indices: new Uint32Array(batch.indices),
     faces: new Uint32Array(batch.faces),
   })])
+  const staticHdrStyles = lighting.profile === "hdr"
+    && lighting.descriptor.surfaces.every((surface) => surface.styles.slice(0, surface.styleCount).every((style) => style === 0))
+  const lightmap = lighting.profile === "ldr"
+    ? buildLdrLightmap(ldrBytes!, lightingSampleCount, lightmapLayout, lightmapRecords)
+    : staticHdrStyles ? buildRuntimeLightmap({ lighting, lightmapLayout }) : undefined
   return Object.freeze({
+    schema,
     bspVersion,
     mapRevision,
-    lightingProfile,
+    lightingProfile: lightingProfile as 0 | 1,
     materials: Object.freeze(materials.map((material) => Object.freeze(material))),
     batches: Object.freeze(frozenBatches),
     lightingSampleCount,
+    lighting,
     entityCount,
     entityBytes,
     drawableSurfaces,
     models: Object.freeze(models),
     modelOccurrences: Object.freeze(modelOccurrences),
+    lightmapLayout,
     lightmap,
   })
+}
+
+export async function validateRuntimeMapHashes(map: RuntimeMap): Promise<void> {
+  if (map.lighting.profile !== "hdr") return
+  await Promise.all([
+    validateLightingClosure(map.lighting.descriptor),
+    ...map.lighting.descriptor.profileMaterials.map(async (material) => {
+      if (!equalBytes(await digest(material.texture.sourceBytes), material.texture.sourceSha256)) {
+        throw new RuntimeMapError("profile texture SHA-256 differs")
+      }
+    }),
+  ])
+}
+
+export async function parseRuntimeMapVerified(input: Uint8Array): Promise<RuntimeMap> {
+  const map = parseRuntimeMap(input)
+  await validateRuntimeMapHashes(map)
+  return map
 }
