@@ -8,7 +8,7 @@ This is a manually derived Candidate inventory. Its 66 items contribute 0 items 
 
 | Metadata | Value |
 |---|---|
-| Authority identity | Valve Source SDK 2013 `AnimationController`, `PanelAnimationVar`, and panel property-converter contracts; configured TF2 build `10822003` HUD-animation manifest and script |
+| Authority identity | Valve Source SDK 2013 `AnimationController`, `PanelAnimationVar`, and panel property-converter contracts; configured TF2 public build `24207079`, patch `10822003`, HUD-animation manifest and script |
 | Authority revision | SDK commit `88fa198fba3fb85d46d4c95018254693fdc3af0a`; `scripts/hudanimations_manifest.txt` SHA-256 `927b61008081eafac302db71d32d75c63b4c9ed1b23c4bd5b8725826733c1acc`; `scripts/hudanimations_tf.txt` SHA-256 `cffca69ab872c358d8afb566e78acde022062e87b4fdcfa1779e77dd28ad52ff`; denominator review Missing |
 | Generator command | Missing |
 | Output path | `packages/presentation/vgui/inventories/animation-commands.md` |

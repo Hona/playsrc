@@ -1,7 +1,18 @@
 export { initializeDeveloperConsole } from "./developer-console"
+export { initializeClientDiagnostics } from "./client-diagnostics"
 export { SOURCE_CONSOLE_CEILINGS } from "./contract"
 export type {
   ConsoleBorderResource,
+  ClientDiagnosticFrame,
+  ClientDiagnosticMode,
+  ClientDiagnosticOperation,
+  ClientDiagnosticOperationResult,
+  ClientDiagnosticResources,
+  ClientDiagnosticSnapshot,
+  ClientDiagnosticVector,
+  ClientDiagnostics,
+  ClientDiagnosticsConfiguration,
+  ClientDiagnosticsInitialization,
   ConsoleCatalog,
   ConsoleCatalogDisposition,
   ConsoleCatalogItem,

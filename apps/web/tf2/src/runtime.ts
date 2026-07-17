@@ -7,7 +7,10 @@ import { tf2Audio, tf2Camera, tf2Hud, tf2Presentation, type Tf2Hud } from "@play
 import { createParticleSystem } from "@playsrc/particle"
 import { createRenderer, type Camera } from "@playsrc/rendering"
 import {
+  initializeClientDiagnostics,
   initializeDeveloperConsole,
+  type ClientDiagnosticMode,
+  type ClientDiagnostics,
   type ConsoleCompletionSuggestion,
   type ConsoleCatalog,
   type ConsoleRequest,
@@ -15,7 +18,7 @@ import {
 } from "@playsrc/vgui"
 import { bytesToHex } from "@noble/hashes/utils.js"
 import { sha256 } from "@noble/hashes/sha2.js"
-import { consoleLimits, consoleResourceBlocker, consoleResources } from "./console-resources"
+import { consoleLimits, consoleResourceBlocker, consoleResources, diagnosticResources } from "./console-resources"
 import { loadBrowserConfiguration, type BrowserConfiguration } from "./config"
 import { applyPointerDelta } from "./input"
 
@@ -95,6 +98,7 @@ export class Tf2Application {
   #audioRunning = false
   #particles?: Particles
   #console?: DeveloperConsole
+  #diagnostics?: ClientDiagnostics
   #loaded?: LoadedGame
   #snapshot?: Snapshot
   #generation = 0
@@ -114,6 +118,9 @@ export class Tf2Application {
   #selectClass: 1 | 2 | undefined
   #selectWeapon: 1 | 2 | 3 | undefined
   #developer = 1
+  #showFps: ClientDiagnosticMode = 0
+  #showPos: ClientDiagnosticMode = 0
+  #mapIdentity = ""
   #animationFrame = 0
   #lastFrame = 0
   #accumulator = 0
@@ -158,6 +165,7 @@ export class Tf2Application {
   async start(): Promise<void> {
     try {
       this.#configuration = await loadBrowserConfiguration()
+      this.#mapIdentity = this.#configuration.target
       this.#set({ detail: "Fetching exact BSP and gameplay WASM objects" })
       const [bsp, wasm, dependencies] = await Promise.all([
         fetchImmutableObject(this.#configuration.assetOrigin, this.#configuration.bsp),
@@ -232,17 +240,28 @@ export class Tf2Application {
       kind: "append-output",
       segments: [{ kind: "developer", text: "playsrc TF2 jump practice\nType status for exact support information.\n" }],
     })
+    const diagnostics = initializeClientDiagnostics({
+      runtimeIdentity: "tf2-client-diagnostics",
+      resources: diagnosticResources,
+      viewport: this.#viewport(),
+    })
+    if (!diagnostics.ok) throw new Error(`VGUI diagnostics initialization failed: ${diagnostics.code}`)
+    this.#diagnostics = diagnostics.diagnostics
+    const mountedDiagnostics = this.#diagnostics.apply({ kind: "mount", root: this.#vguiRoot })
+    if (!mountedDiagnostics.ok) throw new Error(`VGUI diagnostics mount failed: ${mountedDiagnostics.code}`)
   }
 
   #catalog(): ConsoleCatalog {
     return Object.freeze({
-      revision: `tf2-jump-catalog-developer-${this.#developer}`,
+      revision: `tf2-jump-catalog-developer-${this.#developer}-fps-${this.#showFps}-pos-${this.#showPos}`,
       items: Object.freeze([
         Object.freeze({ kind: "command" as const, name: "map", disposition: "visible" as const, acceptsSuggestions: true }),
         Object.freeze({ kind: "command" as const, name: "class", disposition: "visible" as const, acceptsSuggestions: true }),
         Object.freeze({ kind: "command" as const, name: "status", disposition: "visible" as const, acceptsSuggestions: false }),
         Object.freeze({ kind: "command" as const, name: "clear", disposition: "visible" as const, acceptsSuggestions: false }),
         Object.freeze({ kind: "convar" as const, name: "developer", disposition: "visible" as const, displayValue: String(this.#developer) }),
+        Object.freeze({ kind: "convar" as const, name: "cl_showfps", disposition: "visible" as const, displayValue: String(this.#showFps) }),
+        Object.freeze({ kind: "convar" as const, name: "cl_showpos", disposition: "visible" as const, displayValue: String(this.#showPos) }),
       ]),
     })
   }
@@ -316,6 +335,22 @@ export class Tf2Application {
         this.#console?.apply({ kind: "replace-catalog", catalog: this.#catalog() })
       }
       this.#output(`developer = ${this.#developer}`, true)
+      return
+    }
+    if (command === "cl_showfps" || command === "cl_showpos") {
+      if (tokens.length > 1 || (tokens.length === 1 && tokens[0] !== "0" && tokens[0] !== "1" && tokens[0] !== "2")) {
+        this.#output(`${command} accepts exactly 0, 1, or 2`)
+        return
+      }
+      if (tokens[0]) {
+        const value = Number(tokens[0]) as ClientDiagnosticMode
+        if (command === "cl_showfps") this.#showFps = value
+        else this.#showPos = value
+        this.#console?.apply({ kind: "replace-catalog", catalog: this.#catalog() })
+        this.#updateDiagnostics(performance.now())
+      }
+      const value = command === "cl_showfps" ? this.#showFps : this.#showPos
+      this.#output(`"${command}" = "${value}"${value === 0 ? "" : " ( def. \"0\" )"} min. 0.000000 max. 2.000000`)
       return
     }
     if (command === "class" && tokens.length === 1) {
@@ -442,6 +477,7 @@ export class Tf2Application {
     }
     this.#generation = generation
     this.#loaded = staged
+    this.#mapIdentity = name
     this.#applyInitialView(staged)
     this.#snapshot = await this.#client.advance(generation, this.#command(), 1)
     this.#particles?.reset(this.#snapshot.tick)
@@ -488,6 +524,7 @@ export class Tf2Application {
 
   readonly #frame = (time: number): void => {
     this.#animationFrame = requestAnimationFrame(this.#frame)
+    if (!this.#paused && this.#snapshot && (this.#showFps !== 0 || this.#showPos !== 0)) this.#updateDiagnostics(time)
     if (this.#paused || this.#frameBusy || !this.#client || !this.#renderer || !this.#snapshot) {
       this.#lastFrame = time
       return
@@ -500,6 +537,29 @@ export class Tf2Application {
     this.#accumulator -= ticks * TICK_MILLISECONDS
     this.#frameBusy = true
     void this.#advance(ticks).finally(() => { this.#frameBusy = false })
+  }
+
+  #updateDiagnostics(realTimeMilliseconds: number): void {
+    if (!this.#diagnostics || !this.#snapshot || !this.#mapIdentity) return
+    const camera = tf2Camera(this.#snapshot, this.#yaw, this.#pitch)
+    this.#diagnostics.apply({
+      kind: "present",
+      frame: Object.freeze({
+        realTimeMilliseconds,
+        fpsMode: this.#showFps,
+        positionMode: this.#showPos,
+        mapIdentity: this.#mapIdentity,
+        view: Object.freeze({
+          position: Object.freeze([...camera.position]) as readonly [number, number, number],
+          angles: Object.freeze([camera.pitchDegrees, camera.yawDegrees, 0]) as readonly [number, number, number],
+        }),
+        player: Object.freeze({
+          position: Object.freeze([...this.#snapshot.position]) as readonly [number, number, number],
+          angles: null,
+          velocity: Object.freeze([...this.#snapshot.velocity]) as readonly [number, number, number],
+        }),
+      }),
+    })
   }
 
   async #advance(ticks: number): Promise<void> {
@@ -580,7 +640,7 @@ export class Tf2Application {
       this.#jump = true
       this.#jumpPressed = true
     }
-    else if (event.code === "ControlLeft" || event.code === "ControlRight") this.#crouch = true
+    else if (event.code === "ShiftLeft" || event.code === "ShiftRight") this.#crouch = true
     else if (event.code === "Digit1") this.selectClass(1)
     else if (event.code === "Digit2") this.selectClass(2)
     else if (event.code === "Digit3") this.#selectWeapon = 2
@@ -592,7 +652,7 @@ export class Tf2Application {
     else if (event.code === "KeyA") this.#left = false
     else if (event.code === "KeyD") this.#right = false
     else if (event.code === "Space") this.#jump = false
-    else if (event.code === "ControlLeft" || event.code === "ControlRight") this.#crouch = false
+    else if (event.code === "ShiftLeft" || event.code === "ShiftRight") this.#crouch = false
   }
 
   readonly #mouseDown = (event: MouseEvent): void => {
@@ -682,6 +742,7 @@ export class Tf2Application {
     const bounds = this.#canvas.getBoundingClientRect()
     this.#renderer.resize(bounds.width, bounds.height, window.devicePixelRatio)
     this.#console?.apply({ kind: "set-viewport", viewport: this.#viewport() })
+    this.#diagnostics?.apply({ kind: "set-viewport", viewport: this.#viewport() })
   }
 
   async close(): Promise<void> {
@@ -703,6 +764,7 @@ export class Tf2Application {
       } catch {}
     }
     this.#console?.apply({ kind: "destroy" })
+    this.#diagnostics?.apply({ kind: "destroy" })
     await this.#client?.shutdown().catch(() => {})
     this.#cache?.close()
     this.#particles?.dispose()

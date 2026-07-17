@@ -68,6 +68,9 @@ button:focus-visible { outline: 3px solid #e5a63b; outline-offset: 3px; }
   box-shadow: 0 2px 12px #0008;
   transform: rotate(0.4deg);
 }
+.field-shell:has(.playsrc-vgui-diagnostics:not([hidden])) .status-stamp {
+  transform: translateY(50px) rotate(0.4deg);
+}
 .status-stamp[data-ready="true"] { border-color: var(--blue); }
 .status-stamp b { font: 900 14px/1 "Arial Narrow", sans-serif; letter-spacing: 0.13em; }
 .status-stamp span { margin-top: 5px; color: #c9b995; font-size: 11px; }

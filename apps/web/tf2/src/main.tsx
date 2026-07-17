@@ -119,7 +119,7 @@ function App() {
 
       <footer class="field-footer">
         <span>{view.pointerLocked ? "mouse captured" : "click field to capture mouse"}</span>
-        <span>WASD move · Space jump · Mouse 1 fire · Mouse 2 detonate</span>
+        <span>WASD move · Space jump · Shift crouch · Mouse 1 fire · Mouse 2 detonate</span>
         <span>derived cache {view.cache ?? "pending"}</span>
       </footer>
 

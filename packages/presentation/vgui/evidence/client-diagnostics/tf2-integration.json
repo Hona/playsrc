@@ -1,0 +1,82 @@
+{
+  "capturedAt": "2026-07-17T05:20:03.793Z",
+  "operatingSystem": "darwin 25.5.0",
+  "architecture": "arm64",
+  "bun": "1.4.0",
+  "browser": "agent-browser 0.32.1",
+  "browserRuntime": {
+    "language": "en-GB",
+    "platform": "MacIntel",
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
+  },
+  "gpu": {
+    "architecture": "metal-3",
+    "description": "",
+    "device": "",
+    "vendor": "apple"
+  },
+  "sourceBuild": "TF2 24207079 / patch 10822003",
+  "crouch": {
+    "initial": [
+      5328,
+      3376,
+      -3067.2099609375
+    ],
+    "control": [
+      5328,
+      3376,
+      -3067.2099609375
+    ],
+    "shiftLeft": [
+      5328,
+      3376,
+      -3090.2099609375
+    ],
+    "neutralAfterBlur": [
+      5328,
+      3376,
+      -3067.2099609375
+    ],
+    "shiftRight": [
+      5328,
+      3376,
+      -3090.2099609375
+    ]
+  },
+  "consoleAndDiagnostics": {
+    "active": "Console command",
+    "completion": "cl_showfps 2cl_showpos 2",
+    "diagnostic": {
+      "height": 48,
+      "width": 300,
+      "x": 980,
+      "y": 0
+    },
+    "fonts": {
+      "entry": {
+        "family": "Tahoma",
+        "lineHeight": "16px",
+        "size": "16px"
+      },
+      "history": {
+        "family": "\"Lucida Console\"",
+        "lineHeight": "10px",
+        "size": "10px"
+      }
+    },
+    "fps": "125 fps ( 81, 400) 12.1 ms on jump_beef",
+    "frame": {
+      "height": 528,
+      "width": 640,
+      "x": 616,
+      "y": 96
+    },
+    "position": [
+      "125 fps ( 81, 400) 12.1 ms on jump_beef",
+      "pos:  5328.00 3376.00 -3135.21",
+      "ang:  unavailable (player absolute angles)",
+      "vel:  0.00"
+    ]
+  },
+  "shutdown": "browser closed; SIGINT child exit zero"
+}
