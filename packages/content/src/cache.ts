@@ -24,6 +24,11 @@ export type DownloadProvenance = Readonly<{
   decoded: ObjectIdentity
 }>
 
+export type AcquireDownloadOptions = Readonly<{
+  signal?: AbortSignal
+  fetchSource?: typeof fetch
+}>
+
 export class ContentCacheError extends Error {
   constructor(
     readonly code:
@@ -31,6 +36,7 @@ export class ContentCacheError extends Error {
       | "DownloadFailed"
       | "IntegrityFailure"
       | "DecompressionFailed"
+      | "Cancelled"
       | "IoFailure",
     message: string,
   ) {
@@ -54,6 +60,10 @@ function objectPath(root: string, sha256: string): string {
 
 function relativeObjectPath(sha256: string): string {
   return `objects/sha256/${sha256.slice(0, 2)}/${sha256}`
+}
+
+function throwIfCancelled(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new ContentCacheError("Cancelled", "content acquisition was cancelled")
 }
 
 async function readObject(pathname: string, expectedLength: number, expectedHash: string) {
@@ -126,13 +136,21 @@ function validate(logicalPath: string, source: DownloadSource): void {
   }
 }
 
-async function readResponse(response: Response, expectedLength: number): Promise<Buffer> {
+async function readResponse(
+  response: Response,
+  expectedLength: number,
+  signal?: AbortSignal,
+): Promise<Buffer> {
   if (!response.body) throw new ContentCacheError("DownloadFailed", "download response has no body")
   const output = Buffer.allocUnsafe(expectedLength)
   const reader = response.body.getReader()
   let offset = 0
   try {
     while (true) {
+      if (signal?.aborted) {
+        await reader.cancel()
+        throw new ContentCacheError("Cancelled", "content acquisition was cancelled")
+      }
       const { done, value } = await reader.read()
       if (done) break
       if (offset + value.byteLength > expectedLength) {
@@ -144,6 +162,7 @@ async function readResponse(response: Response, expectedLength: number): Promise
     }
   } catch (error) {
     if (error instanceof ContentCacheError) throw error
+    if (signal?.aborted) throw new ContentCacheError("Cancelled", "content acquisition was cancelled")
     throw new ContentCacheError("DownloadFailed", "download body could not be read")
   }
   if (offset !== expectedLength) {
@@ -156,16 +175,22 @@ export async function acquireDownload(
   sourceCacheDir: string,
   logicalPath: string,
   source: DownloadSource,
-  fetchSource: typeof fetch = fetch,
+  options: AcquireDownloadOptions = {},
 ): Promise<DownloadProvenance> {
   validate(logicalPath, source)
+  throwIfCancelled(options.signal)
+  const fetchSource = options.fetchSource ?? fetch
   const encodedPath = objectPath(sourceCacheDir, source.encodedSha256)
   let encoded = await readObject(encodedPath, source.encodedByteLength, source.encodedSha256)
+  const encodedWasMissing = !encoded
   if (!encoded) {
     let response: Response
     try {
-      response = await fetchSource(source.url, { redirect: "error" })
+      response = await fetchSource(source.url, { redirect: "error", signal: options.signal })
     } catch {
+      if (options.signal?.aborted) {
+        throw new ContentCacheError("Cancelled", "content acquisition was cancelled")
+      }
       throw new ContentCacheError("DownloadFailed", "download request failed")
     }
     if (!response.ok || response.url !== source.url) {
@@ -175,16 +200,17 @@ export async function acquireDownload(
     if (declaredLength !== source.encodedByteLength) {
       throw new ContentCacheError("IntegrityFailure", "download Content-Length differs")
     }
-    const bytes = await readResponse(response, source.encodedByteLength)
+    const bytes = await readResponse(response, source.encodedByteLength, options.signal)
     if (bytes.byteLength !== source.encodedByteLength || digest(bytes) !== source.encodedSha256) {
       throw new ContentCacheError("IntegrityFailure", "download bytes differ from the declared identity")
     }
     encoded = bytes
-    await installObject(encodedPath, encoded, source.encodedByteLength, source.encodedSha256)
   }
 
+  throwIfCancelled(options.signal)
   const decodedPath = objectPath(sourceCacheDir, source.decodedSha256)
   let decoded = await readObject(decodedPath, source.decodedByteLength, source.decodedSha256)
+  const decodedWasMissing = !decoded
   if (!decoded) {
     try {
       decoded = Bunzip.decode(encoded, source.decodedByteLength)
@@ -194,6 +220,15 @@ export async function acquireDownload(
     if (decoded.byteLength !== source.decodedByteLength || digest(decoded) !== source.decodedSha256) {
       throw new ContentCacheError("IntegrityFailure", "decoded bytes differ from the declared identity")
     }
+  }
+
+  // Cancellation is observed before this atomic commit boundary. A signal
+  // received after the check does not relabel successfully installed objects.
+  throwIfCancelled(options.signal)
+  if (encodedWasMissing) {
+    await installObject(encodedPath, encoded, source.encodedByteLength, source.encodedSha256)
+  }
+  if (decodedWasMissing) {
     await installObject(decodedPath, decoded, source.decodedByteLength, source.decodedSha256)
   }
 

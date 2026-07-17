@@ -19,10 +19,12 @@ Resolve exact Source logical paths across explicitly configured content provider
 - Apply declared search-path and archive precedence.
 - Return exact source bytes with provenance, or report every exact location checked.
 - Verify declared HTTPS download sources and retain encoded and decoded bytes as SHA-256-addressed raw-source cache objects.
+- Cancel acquisition before cache commitment and retain no partial encoded or decoded object.
 - Read immutable remote BSP and VPK objects through exact HTTP ranges without extracting archive trees.
 - Resolve map BSPs only through declared external providers, then resolve resources through the active BSP PAK, optional map-supplement atlas, and game providers in that order.
 - Accept verified VPK directory bytes and a thread-safe immutable segment-range adapter so native files and browser HTTP ranges use one Rust resolver and VPK parser.
 - Package exact map-selected raw VMT/VTF dependencies from the active BSP PAK and the configured `gameinfo.txt` TF2/HL2 VPK order for coarse browser-WASM transfer without decoding or extracting archive trees.
+- Supply the exact per-request descriptors, provider locations, and checked-location sets used by the source-bundle tool to emit its bounded immutable dependency ledger.
 
 ## Non-Responsibilities
 

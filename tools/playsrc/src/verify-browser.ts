@@ -10,6 +10,7 @@ const APPLICATION_URL = "http://127.0.0.1:4173/"
 const VIEWPORT_WIDTH = 1280
 const VIEWPORT_HEIGHT = 720
 const BACKGROUND_RGB = [17, 24, 32] as const
+const EXPECTED_DEPENDENCY_SHA256 = "494c282a45b2c1ae1882e66aabe234cda3f92d950e1d2a37c2616db845164884"
 
 export class BrowserEvidenceError extends Error {
   constructor(message: string) {
@@ -49,6 +50,93 @@ function parseJson<T>(value: string): T {
 
 function require(condition: unknown, message: string): asserts condition {
   if (!condition) throw new BrowserEvidenceError(message)
+}
+
+type BlockerPartition = Readonly<{
+  content: readonly string[]
+  behavior: readonly string[]
+  platform: readonly string[]
+}>
+
+async function classifySupportBlockers(
+  config: LocalConfig,
+  blockers: readonly string[],
+): Promise<BlockerPartition> {
+  const bytes = await readFile(path.join(
+    config.sourceCacheDir,
+    "browser-bundles",
+    "jump_beef.dependencies.json",
+  ))
+  let value: unknown
+  try {
+    value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes))
+  } catch {
+    throw new BrowserEvidenceError("source dependency ledger is malformed")
+  }
+  require(typeof value === "object" && value !== null && !Array.isArray(value),
+    "source dependency ledger root is malformed")
+  const ledger = value as Record<string, unknown>
+  require(ledger.schema === "playsrc-source-dependency-ledger-v1" &&
+    ledger.game === "tf2" &&
+    ledger.appId === "440" &&
+    ledger.contentBuild === "24207079" &&
+    JSON.stringify(ledger.installedDepots) === JSON.stringify([
+      { depot: "440", manifest: "1118032470228587934", byteLength: "825745" },
+      { depot: "441", manifest: "1804278129270892792", byteLength: "32228363932" },
+      { depot: "232251", manifest: "706600525322138695", byteLength: "612146219" },
+    ]) &&
+    ledger.target === "jump_beef" &&
+    typeof ledger.bundle === "object" && ledger.bundle !== null &&
+    (ledger.bundle as Record<string, unknown>).sha256 === EXPECTED_DEPENDENCY_SHA256 &&
+    Array.isArray(ledger.requests) && ledger.requests.length <= 4_096,
+  "source dependency ledger identity is malformed")
+  const outcomes = new Map<string, string>()
+  for (const item of ledger.requests) {
+    require(typeof item === "object" && item !== null && !Array.isArray(item),
+      "source dependency ledger request is malformed")
+    const request = item as Record<string, unknown>
+    require(typeof request.logicalPath === "string" &&
+      request.logicalPath === request.logicalPath.toLowerCase() &&
+      (request.outcome === "resolved" || request.outcome === "authoritative-absence") &&
+      !outcomes.has(request.logicalPath), "source dependency ledger request identity is malformed")
+    outcomes.set(request.logicalPath, request.outcome)
+  }
+
+  const content: string[] = []
+  const behavior: string[] = []
+  const platform: string[] = []
+  for (const blocker of blockers) {
+    const material = /^Missing resolved material: (.+)$/u.exec(blocker)?.[1]
+    if (material) {
+      if (material.startsWith("materials/")) {
+        if (outcomes.get(material) === "resolved") behavior.push(blocker)
+        else content.push(blocker)
+      } else if (material === "map-environment-presentation" || material === "map-water-presentation") {
+        behavior.push(blocker)
+      } else {
+        throw new BrowserEvidenceError(`unclassified material diagnostic: ${blocker}`)
+      }
+    } else if (
+      blocker.startsWith("TF2 SoundSamples unavailable: ")
+      || blocker.startsWith("TF2 viewmodel attachment transform unavailable: ")
+    ) {
+      behavior.push(blocker)
+    } else if (blocker.startsWith("ModelArtifactCacheUnavailable: ")) {
+      content.push(blocker)
+    } else if (
+      blocker.startsWith("The configured console resolves its complete SourceScheme")
+      || blocker.startsWith("AudioUnavailable: ")
+    ) {
+      platform.push(blocker)
+    } else {
+      throw new BrowserEvidenceError(`unclassified support blocker: ${blocker}`)
+    }
+  }
+  return Object.freeze({
+    content: Object.freeze(content.sort()),
+    behavior: Object.freeze(behavior.sort()),
+    platform: Object.freeze(platform.sort()),
+  })
 }
 
 type DecodedPng = Readonly<{
@@ -374,7 +462,7 @@ function excerpt(value: string): string {
 }
 
 async function startDevelopmentProcess(target: string | undefined): Promise<DevelopmentProcessOwner> {
-  const command = [process.execPath, "run", "dev"]
+  const command = [process.execPath, path.join(repositoryRoot, "tools", "playsrc", "src", "cli.ts"), "dev"]
   if (target !== undefined) command.push(target)
   const child = Bun.spawn(command, {
     cwd: repositoryRoot,
@@ -453,7 +541,9 @@ async function startDevelopmentProcess(target: string | undefined): Promise<Deve
       interrupted = true
       if (settled) {
         await Promise.allSettled([stdoutTask, stderrTask])
-        throw new BrowserEvidenceError("development command exited before the acceptance interrupt")
+        throw new BrowserEvidenceError(
+          `development command exited with code ${await exited} before the acceptance interrupt: ${excerpt(stderr || stdout)}`,
+        )
       }
       child.kill("SIGINT")
       let exitTimeout: ReturnType<typeof setTimeout> | undefined
@@ -886,6 +976,30 @@ export async function verifyBrowserAcceptance(
         "Number.parseInt(document.querySelector('.support-card button span').textContent,10)",
       ]),
     )
+    await agent(["--session", session, "press", "Escape"])
+    await agent([
+      "--session", session, "wait", "--fn", "document.pointerLockElement===null", "--timeout", "10000",
+    ])
+    const blockerListExpanded = parseJson<string>(await agent([
+      "--session", session, "eval", "document.querySelector('.support-card button').getAttribute('aria-expanded')",
+    ]))
+    if (blockerListExpanded !== "true") {
+      await agent(["--session", session, "click", ".support-card button"])
+    }
+    await agent([
+      "--session", session, "wait", "--fn",
+      `document.querySelectorAll('.support-card li').length===${blockerCount}`,
+      "--timeout", "60000",
+    ])
+    const supportBlockerItems = parseJson<string[]>(await agent([
+      "--session", session, "eval",
+      "Array.from(document.querySelectorAll('.support-card li'),x=>x.textContent)",
+    ]))
+    require(supportBlockerItems.length === blockerCount && supportBlockerItems.every((value) => typeof value === "string"),
+      "support blocker list differs from its count")
+    const blockerPartition = await classifySupportBlockers(config, supportBlockerItems)
+    require(blockerPartition.content.length === 0,
+      `browser retained missing content dependencies: ${JSON.stringify(blockerPartition.content)}`)
     require(parseJson<number>(
       await agent(["--session", session, "eval", "Number(document.querySelector('main').dataset.explosionEvents)"]),
     ) > initialExplosionEvents, "Demoman sticky detonation event was not observed")
@@ -952,7 +1066,11 @@ export async function verifyBrowserAcceptance(
       movingSpeed,
       jumpSpeed,
       supportBlockers: blockerCount,
-      supportStatus: "diagnostic-blockers-retained",
+      supportBlockerItems,
+      contentBlockers: blockerPartition.content,
+      behaviorBlockers: blockerPartition.behavior,
+      platformBlockers: blockerPartition.platform,
+      supportStatus: "zero-content-blockers-non-content-diagnostics-retained",
       pointerLock: pointerLocked ? "acquired-and-released-for-console" : "headed-window-focus-unavailable",
       console: "history-completion-focus-repeated-visibility-replacement-close-passed",
       audio: "exact-buffers-decoded-and-context-running",
