@@ -69,6 +69,7 @@ function validResources(resources: ClientDiagnosticResources): boolean {
     && resources.scheme.revision.length > 0
     && validIdentity(resources.font.logicalIdentity)
     && resources.font.family.length > 0
+    && (resources.font.browserFamily === null || /^[a-z][a-z0-9-]{0,127}$/u.test(resources.font.browserFamily))
     && Number.isFinite(resources.font.sizePxAt480)
     && resources.font.sizePxAt480 > 0
     && Number.isFinite(resources.font.lineHeightPxAt480)
@@ -124,7 +125,15 @@ class DiagnosticView {
     const fontScale = resources.font.proportional ? scale : 1
     const fontHeight = Math.max(1, Math.trunc(resources.font.lineHeightPxAt480 * fontScale))
     const style = this.runtime.host.style
-    style.setProperty("--vgui-diagnostic-font", resources.font.family)
+    this.runtime.host.dataset.platformFontCapability = resources.font.browserFamily === null ? "unsupported" : "supported"
+    if (resources.font.browserFamily === null) {
+      this.runtime.host.setAttribute("aria-hidden", "true")
+      this.runtime.host.setAttribute("inert", "")
+    } else {
+      this.runtime.host.removeAttribute("aria-hidden")
+      this.runtime.host.removeAttribute("inert")
+    }
+    style.setProperty("--vgui-diagnostic-font", resources.font.browserFamily ?? "playsrc-vgui-platform-font-unavailable")
     style.setProperty("--vgui-diagnostic-size", `${Math.max(1, Math.trunc(resources.font.sizePxAt480 * fontScale))}px`)
     style.setProperty("--vgui-diagnostic-line-height", `${fontHeight}px`)
     style.setProperty("--vgui-diagnostic-weight", resources.font.weight === 0 ? "normal" : String(resources.font.weight))
@@ -133,7 +142,7 @@ class DiagnosticView {
     style.setProperty(
       "--vgui-diagnostic-shadow",
       outline > 0
-        ? `${-outline}px ${-outline}px 0 #000, ${outline}px ${-outline}px 0 #000, ${-outline}px ${outline}px 0 #000, ${outline}px ${outline}px 0 #000`
+        ? `${-outline}px ${-outline}px 0 #000, 0 ${-outline}px 0 #000, ${outline}px ${-outline}px 0 #000, ${-outline}px 0 0 #000, ${outline}px 0 0 #000, ${-outline}px ${outline}px 0 #000, 0 ${outline}px 0 #000, ${outline}px ${outline}px 0 #000`
         : "none",
     )
     style.setProperty("--vgui-diagnostic-padding", `${resources.panelPaddingPx}px`)
