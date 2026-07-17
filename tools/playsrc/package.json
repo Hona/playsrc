@@ -3,7 +3,10 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@playsrc/asset-store": "workspace:*",
+    "@playsrc/assets-service": "workspace:*",
     "@playsrc/content": "workspace:*",
-    "@playsrc/rendering": "workspace:*"
+    "@playsrc/rendering": "workspace:*",
+    "vite": "8.1.5"
   }
 }

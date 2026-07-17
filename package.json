@@ -7,7 +7,8 @@
   "scripts": {
     "dev": "bun tools/playsrc/src/cli.ts dev",
     "setup": "bun tools/playsrc/src/cli.ts setup",
-    "verify:tf2-wasm": "bun tools/playsrc/src/cli.ts verify-tf2-wasm",
+    "verify:tf2-wasm": "bun tools/playsrc/src/cli.ts verify tf2-wasm",
+    "verify:browser": "bun tools/playsrc/src/cli.ts verify browser",
     "test": "bun test"
   }
 }

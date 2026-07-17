@@ -44,9 +44,9 @@ export const consoleResources: ConsoleResourceResolution = Object.freeze({
       developerOutput: color(178, 82, 22),
     }),
     fonts: Object.freeze({
-      title: font("resource/clientscheme.res#Fonts/DefaultLarge", "Verdana", 18, 900),
-      console: font("resource/clientscheme.res#Fonts/Default", "Verdana", 12, 900),
-      completion: font("resource/clientscheme.res#Fonts/DefaultSmall", "Verdana", 12, 400),
+      title: font("resource/clientscheme.res#fonts/defaultlarge", "Verdana", 18, 900),
+      console: font("resource/clientscheme.res#fonts/default", "Verdana", 12, 900),
+      completion: font("resource/clientscheme.res#fonts/defaultsmall", "Verdana", 12, 400),
     }),
     border: Object.freeze({
       logicalName: "ComboBoxBorder",

@@ -17,6 +17,10 @@ Map commands accept one checked logical target. `jump_beef` resolves to its exac
 
 Native compilation and browser WASM compilation call the same owning Rust crates and use the same derived-cache identity. The tool can prepopulate caches but cannot make native preprocessing a browser gameplay prerequisite.
 
+`bun run dev jump_beef` verifies/acquires the declared BSP, builds the checked TF2 WASM target, installs both exact objects in `assetDir`, starts the loopback Asset Service on port 4174 and TF2 Vite application on port 4173, waits for both readiness endpoints, prints `http://127.0.0.1:4173/`, and closes both owned listeners after one `SIGINT` or `SIGTERM`.
+
+`bun run verify:browser jump_beef` owns the same local services plus one fresh headed WebGPU browser session and checks cold compilation, warm reuse, IndexedDB identity, pointer lock, movement, jump, Soldier/Demoman combat, VGUI history/completion/repeated visibility, `map jump_beef` generation replacement, browser shutdown, and listener release. It emits one JSON result.
+
 ## Non-Responsibilities
 
 - Implementing parsers, compilers, gameplay, presentation, or asset-store semantics.

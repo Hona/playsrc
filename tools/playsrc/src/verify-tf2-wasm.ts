@@ -40,7 +40,7 @@ function hex(bytes: Uint8Array): string {
   return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("")
 }
 
-async function build(config: LocalConfig): Promise<string> {
+export async function buildTf2Wasm(config: LocalConfig): Promise<string> {
   const executable = process.platform === "win32" ? "cargo.exe" : "cargo"
   const cargo = path.join(config.sourceCacheDir, "toolchains", "rust", "cargo", "bin", executable)
   const child = Bun.spawn(
@@ -77,7 +77,7 @@ export async function verifyTf2Wasm(
   identity: string | undefined,
 ): Promise<Record<string, number | string>> {
   const map = await acquireMap(config, identity)
-  const wasmPath = await build(config)
+  const wasmPath = await buildTf2Wasm(config)
   const wasmBytes = await readFile(wasmPath)
   require(wasmBytes.byteLength > 0 && wasmBytes.byteLength <= 64 * 1024 * 1024, "WASM byte length is invalid")
   const loaded = await WebAssembly.instantiate(wasmBytes)

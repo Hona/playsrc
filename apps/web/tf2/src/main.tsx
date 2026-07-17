@@ -35,6 +35,7 @@ function App() {
       <canvas
         ref={canvas}
         class="world-canvas"
+        tabIndex={0}
         aria-label="TF2 jump practice world"
         onClick={() => void runtime.current?.requestPointer()}
         onContextMenu={(event) => event.preventDefault()}

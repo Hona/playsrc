@@ -67,7 +67,7 @@ The denominator is Not accepted. The inventory generator, accepted producer inte
 
 ## Behavior Families
 
-The active migration checkpoint implements a browser-target Three.js/WebGPU owner for the direct version-1 `PSMP` payload: bounded structural decoding, material-batched model-0 geometry, Source-space Z-up perspective cameras, bounded resize, hash-checked atomic scene replacement, projectile/effect draw inputs, and deterministic disposal. The only current map scene mode is an explicit diagnostic view that reports every missing resolved material/texture; ordinary material scene activation remains blocked.
+The active migration checkpoint implements a browser-target Three.js/WebGPU owner for the direct version-1 `PSMP` payload: bounded structural decoding, material-batched model-0 geometry, Source-space Z-up perspective cameras, bounded resize, hash-checked atomic scene replacement, projectile/effect draw inputs, and deterministic disposal. A headed Chrome WebGPU workflow renders all 2,761 drawable model-0 surfaces in 10 batches through cold/warm loads and replacement. The only current map scene mode is an explicit diagnostic view that reports every missing resolved material/texture; ordinary material scene activation remains blocked.
 
 | Target behavior | playsrc behavior | Evidence | Status |
 |---|---|---|---|

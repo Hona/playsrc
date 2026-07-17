@@ -57,9 +57,12 @@ export class Tf2Application {
   #left = false
   #right = false
   #jump = false
+  #jumpPressed = false
   #crouch = false
   #fire = false
+  #firePressed = false
   #detonate = false
+  #detonatePressed = false
   #selectClass: 1 | 2 | undefined
   #selectWeapon: 1 | 2 | 3 | undefined
   #developer = 1
@@ -198,9 +201,9 @@ export class Tf2Application {
     }
     if (request.kind === "completion") {
       const candidates = request.commandName.toLowerCase() === "map"
-        ? ["jump_beef"]
+        ? ["map jump_beef"]
         : request.commandName.toLowerCase() === "class"
-          ? ["soldier", "demoman"]
+          ? ["class soldier", "class demoman"]
           : []
       const suggestions: ConsoleCompletionSuggestion[] = candidates
         .filter((value) => value.startsWith(request.partialText.toLowerCase()))
@@ -376,6 +379,7 @@ export class Tf2Application {
     this.#generation = generation
     this.#loaded = staged
     this.#snapshot = await this.#client.advance(generation, this.#command(), 1)
+    this.#particles?.reset(this.#snapshot.tick)
     this.#paused = document.hidden
     this.#lastFrame = performance.now()
     this.#accumulator = 0
@@ -396,15 +400,18 @@ export class Tf2Application {
       side: side * 450,
       yawDegrees: this.#yaw,
       pitchDegrees: this.#pitch,
-      jump: this.#jump,
+      jump: this.#jump || this.#jumpPressed,
       crouch: this.#crouch,
-      fire: this.#fire,
-      detonate: this.#detonate,
+      fire: this.#fire || this.#firePressed,
+      detonate: this.#detonate || this.#detonatePressed,
       selectClass: this.#selectClass,
       selectWeapon: this.#selectWeapon,
     })
     this.#selectClass = undefined
     this.#selectWeapon = undefined
+    this.#jumpPressed = false
+    this.#firePressed = false
+    this.#detonatePressed = false
     return command
   }
 
@@ -473,7 +480,7 @@ export class Tf2Application {
 
   readonly #keyDown = (event: KeyboardEvent): void => {
     if (event.code === "Backquote") {
-      if (this.#console?.snapshot().visible && this.#vguiRoot.contains(event.target as Node)) return
+      if (this.#vguiRoot.contains(event.target as Node)) return
       event.preventDefault()
       this.toggleConsole()
       return
@@ -483,7 +490,10 @@ export class Tf2Application {
     else if (event.code === "KeyS") this.#back = true
     else if (event.code === "KeyA") this.#left = true
     else if (event.code === "KeyD") this.#right = true
-    else if (event.code === "Space") this.#jump = true
+    else if (event.code === "Space") {
+      this.#jump = true
+      this.#jumpPressed = true
+    }
     else if (event.code === "ControlLeft" || event.code === "ControlRight") this.#crouch = true
     else if (event.code === "Digit1") this.selectClass(1)
     else if (event.code === "Digit2") this.selectClass(2)
@@ -501,8 +511,14 @@ export class Tf2Application {
 
   readonly #mouseDown = (event: MouseEvent): void => {
     if (document.pointerLockElement !== this.#canvas) return
-    if (event.button === 0) this.#fire = true
-    if (event.button === 2) this.#detonate = true
+    if (event.button === 0) {
+      this.#fire = true
+      this.#firePressed = true
+    }
+    if (event.button === 2) {
+      this.#detonate = true
+      this.#detonatePressed = true
+    }
   }
 
   readonly #mouseUp = (event: MouseEvent): void => {
@@ -531,6 +547,7 @@ export class Tf2Application {
   #neutral(): void {
     this.#forward = this.#back = this.#left = this.#right = false
     this.#jump = this.#crouch = this.#fire = this.#detonate = false
+    this.#jumpPressed = this.#firePressed = this.#detonatePressed = false
   }
 
   selectClass(value: 1 | 2): void {
@@ -543,7 +560,7 @@ export class Tf2Application {
       this.#blockers.add(`AudioUnavailable: ${error instanceof Error ? error.message : "resume failed"}`)
     })
     try {
-      await this.#canvas.requestPointerLock({ unadjustedMovement: true })
+      await this.#canvas.requestPointerLock()
     } catch (error) {
       this.#set({ detail: error instanceof Error ? error.message : "Pointer lock failed" })
     }

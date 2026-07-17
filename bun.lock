@@ -63,8 +63,11 @@
     "tools/playsrc": {
       "name": "@playsrc/tool",
       "dependencies": {
+        "@playsrc/asset-store": "workspace:*",
+        "@playsrc/assets-service": "workspace:*",
         "@playsrc/content": "workspace:*",
         "@playsrc/rendering": "workspace:*",
+        "vite": "8.1.5",
       },
     },
   },
