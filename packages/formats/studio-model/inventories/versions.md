@@ -4,7 +4,7 @@ Owner: [`../ROADMAP.md`](../ROADMAP.md)
 
 State: Candidate; Not accepted.
 
-Authority identity: Valve Source SDK 2013 commit `88fa198fba3fb85d46d4c95018254693fdc3af0a`, the public MDL/ANI/VVD/VTX/VHV contracts, the candidate parent format inventory, and exact TF2, CS:S, and legacy Source 1 CS:GO content-build archive indexes. The parent inventory is Not accepted and the three content indexes are Missing.
+Authority identity: Valve Source SDK 2013 commit `88fa198fba3fb85d46d4c95018254693fdc3af0a`, the public MDL/ANI/VVD/VTX/VHV contracts, the candidate parent format inventory, and exact TF2, CS:S, and legacy Source 1 CS:GO content-build archive indexes. Configured TF2 public build `24207079` and its VPK indexes are available; the parent inventory is Not accepted and the CS:S/legacy CS:GO indexes remain Missing.
 
 Generator command: Missing.
 

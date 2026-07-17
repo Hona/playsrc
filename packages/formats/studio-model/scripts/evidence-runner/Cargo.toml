@@ -1,0 +1,17 @@
+[package]
+name = "playsrc-studio-model-evidence"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+playsrc-bsp = { path = "../../../bsp/rust" }
+playsrc-entity = { path = "../../../../world/entity/rust" }
+playsrc-keyvalues = { path = "../../../keyvalues/rust" }
+playsrc-material = { path = "../../../../world/material/rust" }
+playsrc-studio-model = { path = "../../rust" }
+playsrc-vmt = { path = "../../../vmt/rust" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

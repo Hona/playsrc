@@ -4,7 +4,7 @@ Owner: [`../ROADMAP.md`](../ROADMAP.md)
 
 State: Candidate; Not accepted.
 
-Authority identity: Valve Source SDK 2013 `src/public/studio.h`, `src/public/optimize.h`, `src/public/materialsystem/hardwareverts.h`, and `src/common/studiobyteswap.cpp` at commit `88fa198fba3fb85d46d4c95018254693fdc3af0a`, plus exact TF2, CS:S, and legacy Source 1 CS:GO content-build archive indexes. The three indexes are Missing.
+Authority identity: Valve Source SDK 2013 `src/public/studio.h`, `src/public/optimize.h`, `src/public/materialsystem/hardwareverts.h`, and `src/common/studiobyteswap.cpp` at commit `88fa198fba3fb85d46d4c95018254693fdc3af0a`, plus exact TF2, CS:S, and legacy Source 1 CS:GO content-build archive indexes. Configured TF2 public build `24207079` and its VPK indexes are available; the CS:S and legacy CS:GO indexes remain Missing.
 
 Generator command: Missing.
 

@@ -13,7 +13,7 @@ use crate::{
 };
 
 const ARTIFACT_MAGIC: &[u8; 4] = b"PSMP";
-const ARTIFACT_VERSION: u16 = 1;
+const ARTIFACT_VERSION: u16 = 2;
 const COMPACT_FRAME_MARKER: u32 = u32::MAX;
 const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 const STUDIO_LOOPING: i32 = 0x0001;
@@ -21,6 +21,16 @@ const STUDIO_DELTA: i32 = 0x0004;
 const STUDIO_CYCLE_POSE: i32 = 0x0080;
 const STUDIO_REALTIME: i32 = 0x0100;
 const STUDIO_OVERRIDE: i32 = 0x0800;
+const STUDIO_WORLD: i32 = 0x4000;
+const STUDIO_POST: i32 = 0x0010;
+const STUDIO_LOCAL: i32 = 0x0200;
+const STUDIO_AUTO_LAYER_SPLINE: i32 = 0x0040;
+const STUDIO_AUTO_LAYER_CROSSFADE: i32 = 0x0080;
+const STUDIO_AUTO_LAYER_NO_BLEND: i32 = 0x0200;
+const STUDIO_AUTO_LAYER_LOCAL: i32 = 0x1000;
+const STUDIO_AUTO_LAYER_POSE: i32 = 0x4000;
+const STUDIO_HEADER_STATIC_PROP: i32 = 0x0010;
+const BONE_FIXED_ALIGNMENT: i32 = 0x0010_0000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PresentationProfile {
@@ -221,6 +231,86 @@ impl ModelBasis {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VertexAttributeTransform {
+    AuthoredSourceValues,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TextureCoordinateConvention {
+    AuthoredUTowardRightVDown,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TangentHandednessConvention {
+    TangentSWComponent,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EntityAngleConvention {
+    DegreesPitchYawRollForwardLeftUpColumns,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RootBoneContract {
+    AnimatedBelowEntity,
+    StaticPropBoneZeroIsEntity,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GeometryOrientation {
+    pub positions: VertexAttributeTransform,
+    pub normals: VertexAttributeTransform,
+    pub tangents: VertexAttributeTransform,
+    pub texture_coordinates: TextureCoordinateConvention,
+    pub tangent_handedness: TangentHandednessConvention,
+}
+
+impl GeometryOrientation {
+    fn source() -> Self {
+        Self {
+            positions: VertexAttributeTransform::AuthoredSourceValues,
+            normals: VertexAttributeTransform::AuthoredSourceValues,
+            tangents: VertexAttributeTransform::AuthoredSourceValues,
+            texture_coordinates: TextureCoordinateConvention::AuthoredUTowardRightVDown,
+            tangent_handedness: TangentHandednessConvention::TangentSWComponent,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FarPlaneContract {
+    SuppliedWorldFarPlane,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ViewmodelHandednessContract {
+    OptionalViewSpaceYReflection,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PresentationDescriptor {
+    World {
+        geometry: GeometryOrientation,
+        entity_angles: EntityAngleConvention,
+        root_bone: RootBoneContract,
+        depth_range: [Float32; 2],
+    },
+    ViewModel {
+        geometry: GeometryOrientation,
+        entity_angles: EntityAngleConvention,
+        default_horizontal_fov_4_by_3: Float32,
+        minimum_fov: Float32,
+        maximum_fov: Float32,
+        near_plane: Float32,
+        far_plane: FarPlaneContract,
+        depth_range: [Float32; 2],
+        draws_after_world: bool,
+        opaque_before_translucent: bool,
+        handedness: ViewmodelHandednessContract,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FeatureFamily {
     ProceduralAxisInterpolation,
     ProceduralQuaternionInterpolation,
@@ -237,6 +327,7 @@ pub enum FeatureFamily {
 pub enum FeatureDisposition {
     NotPresent,
     RetainedNotEvaluated,
+    Evaluated,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -257,8 +348,10 @@ pub struct PresentationBodyPart {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PresentationModel {
     pub profile: PresentationProfile,
+    pub descriptor: PresentationDescriptor,
     pub identity: String,
     pub checksum: i32,
+    pub flags: i32,
     pub basis: ModelBasis,
     pub dependencies: Vec<ArtifactDependency>,
     pub base_material_count: usize,
@@ -268,10 +361,12 @@ pub struct PresentationModel {
     pub sequences: Vec<crate::Sequence>,
     pub pose_parameters: Vec<crate::PoseParameter>,
     pub attachments: Vec<Attachment>,
+    pub hitbox_sets: Vec<crate::HitboxSet>,
     pub skins: Vec<SkinFamily>,
     pub body_parts: Vec<PresentationBodyPart>,
     pub geometry: Vec<GeometryPrimitive>,
-    pub unsupported_features: Vec<FeatureSupport>,
+    pub physics_status: crate::PhysicsStatus,
+    pub features: Vec<FeatureSupport>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -604,8 +699,10 @@ pub fn build_presentation(
     };
     let model = PresentationModel {
         profile,
+        descriptor: presentation_descriptor(profile, document.flags),
         identity: document.identity.clone(),
         checksum: document.checksum,
+        flags: document.flags,
         basis: ModelBasis::source(),
         dependencies,
         base_material_count: document.materials.len(),
@@ -615,10 +712,12 @@ pub fn build_presentation(
         sequences: document.sequences.clone(),
         pose_parameters: document.pose_parameters.clone(),
         attachments: document.attachments.clone(),
+        hitbox_sets: document.hitbox_sets.clone(),
         skins: document.skins.clone(),
         body_parts: presentation_body_parts(&document.body_parts),
         geometry: document.geometry.clone(),
-        unsupported_features: feature_support(document),
+        physics_status: document.physics_status,
+        features: feature_support(document),
     };
     check_cancelled(cancellation, &document.identity)?;
     validate_decoded_model(&model, limits)?;
@@ -810,6 +909,17 @@ fn estimated_owned_bytes(
         for keys in &sequence.pose_keys {
             add(keys.len().checked_mul(std::mem::size_of::<Float32>())?)?;
         }
+        add(sequence
+            .events
+            .len()
+            .checked_mul(std::mem::size_of::<crate::SequenceEvent>())?)?;
+        for event in &sequence.events {
+            add(event.name.len())?;
+        }
+        add(sequence
+            .auto_layers
+            .len()
+            .checked_mul(std::mem::size_of::<crate::SequenceAutoLayer>())?)?;
     }
     add(document
         .pose_parameters
@@ -824,6 +934,20 @@ fn estimated_owned_bytes(
         .checked_mul(std::mem::size_of::<Attachment>())?)?;
     for attachment in &document.attachments {
         add(attachment.name.len())?;
+    }
+    add(document
+        .hitbox_sets
+        .len()
+        .checked_mul(std::mem::size_of::<crate::HitboxSet>())?)?;
+    for set in &document.hitbox_sets {
+        add(set.name.len())?;
+        add(set
+            .hitboxes
+            .len()
+            .checked_mul(std::mem::size_of::<crate::Hitbox>())?)?;
+        for hitbox in &set.hitboxes {
+            add(hitbox.name.len())?;
+        }
     }
     add(document
         .skins
@@ -1254,6 +1378,36 @@ fn presentation_body_parts(parts: &[BodyPart]) -> Vec<PresentationBodyPart> {
         .collect()
 }
 
+fn presentation_descriptor(profile: PresentationProfile, flags: i32) -> PresentationDescriptor {
+    let geometry = GeometryOrientation::source();
+    let entity_angles = EntityAngleConvention::DegreesPitchYawRollForwardLeftUpColumns;
+    match profile {
+        PresentationProfile::World => PresentationDescriptor::World {
+            geometry,
+            entity_angles,
+            root_bone: if flags & STUDIO_HEADER_STATIC_PROP != 0 {
+                RootBoneContract::StaticPropBoneZeroIsEntity
+            } else {
+                RootBoneContract::AnimatedBelowEntity
+            },
+            depth_range: [Float32(0.0_f32.to_bits()), Float32(1.0_f32.to_bits())],
+        },
+        PresentationProfile::ViewModel => PresentationDescriptor::ViewModel {
+            geometry,
+            entity_angles,
+            default_horizontal_fov_4_by_3: Float32(54.0_f32.to_bits()),
+            minimum_fov: Float32(0.1_f32.to_bits()),
+            maximum_fov: Float32(179.9_f32.to_bits()),
+            near_plane: Float32(1.0_f32.to_bits()),
+            far_plane: FarPlaneContract::SuppliedWorldFarPlane,
+            depth_range: [Float32(0.0_f32.to_bits()), Float32(0.1_f32.to_bits())],
+            draws_after_world: true,
+            opaque_before_translucent: true,
+            handedness: ViewmodelHandednessContract::OptionalViewSpaceYReflection,
+        },
+    }
+}
+
 fn feature_support(document: &Document) -> Vec<FeatureSupport> {
     let support = |family, records| FeatureSupport {
         family,
@@ -1302,7 +1456,7 @@ fn feature_support(document: &Document) -> Vec<FeatureSupport> {
         .iter()
         .filter(|bone| !matches!(bone.procedural_type, 0..=5))
         .count();
-    [
+    let mut result = [
         (FeatureFamily::ProceduralAxisInterpolation, procedure(1)),
         (
             FeatureFamily::ProceduralQuaternionInterpolation,
@@ -1317,7 +1471,14 @@ fn feature_support(document: &Document) -> Vec<FeatureSupport> {
         (FeatureFamily::UnknownProcedural, unknown_procedures),
     ]
     .map(|(family, records)| support(family, records))
-    .to_vec()
+    .to_vec();
+    if let Some(value) = result
+        .iter_mut()
+        .find(|value| value.family == FeatureFamily::SequenceAutoLayers && value.records > 0)
+    {
+        value.disposition = FeatureDisposition::Evaluated;
+    }
+    result
 }
 
 fn check_cancelled(token: &CancellationToken, identity: &str) -> Result<(), PresentationError> {
@@ -1341,6 +1502,53 @@ fn presentation_error(code: PresentationErrorCode, identity: &str) -> Presentati
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Matrix3x4(pub [Float32; 12]);
 
+pub fn source_entity_transform(
+    position: Vector3,
+    angles: Vector3,
+) -> Result<Matrix3x4, PresentationError> {
+    let [pitch, yaw, roll] = values3(angles);
+    let [x, y, z] = values3(position);
+    if ![pitch, yaw, roll, x, y, z].into_iter().all(f32::is_finite) {
+        return Err(presentation_error(
+            PresentationErrorCode::InvalidState,
+            "source-entity-transform",
+        ));
+    }
+    let (sp, cp) = pitch.to_radians().sin_cos();
+    let (sy, cy) = yaw.to_radians().sin_cos();
+    let (sr, cr) = roll.to_radians().sin_cos();
+    let crcy = cr * cy;
+    let crsy = cr * sy;
+    let srcy = sr * cy;
+    let srsy = sr * sy;
+    Ok(Matrix3x4(
+        [
+            cp * cy,
+            sp * srcy - crsy,
+            sp * crcy + srsy,
+            x,
+            cp * sy,
+            sp * srsy + crcy,
+            sp * crsy - srcy,
+            y,
+            -sp,
+            sr * cp,
+            cr * cp,
+            z,
+        ]
+        .map(|value| Float32(value.to_bits())),
+    ))
+}
+
+pub fn reflect_viewmodel_handedness(view_to_world: Matrix3x4, transform: Matrix3x4) -> Matrix3x4 {
+    let mut view_space = multiply_matrix(&inverse_rigid_matrix(&view_to_world), &transform);
+    for column in 0..4 {
+        let index = 4 + column;
+        view_space.0[index] = Float32((-f32::from_bits(view_space.0[index].0)).to_bits());
+    }
+    multiply_matrix(&view_to_world, &view_space)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AnimationLayer {
     pub sequence: usize,
@@ -1354,6 +1562,15 @@ pub struct AnimationState {
     pub cycle: Float32,
     pub pose_parameters: Vec<Float32>,
     pub layers: Vec<AnimationLayer>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SequenceTiming {
+    pub frames_per_second: Float32,
+    pub weighted_frame_count: Float32,
+    pub cycles_per_second: Float32,
+    pub duration_seconds: Float32,
+    pub looping: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1371,6 +1588,72 @@ pub struct SampledPose {
     pub model_matrices: Vec<Matrix3x4>,
     pub skinning_matrices: Vec<Matrix3x4>,
     pub attachments: Vec<SampledAttachment>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SampledWorldPose {
+    pub bone_matrices: Vec<Matrix3x4>,
+    pub skinning_matrices: Vec<Matrix3x4>,
+    pub attachments: Vec<SampledAttachment>,
+}
+
+pub fn apply_entity_transform(
+    model: &PresentationModel,
+    pose: &SampledPose,
+    model_to_world: Matrix3x4,
+) -> Result<SampledWorldPose, PresentationError> {
+    if pose.model_matrices.len() != model.bones.len()
+        || pose.skinning_matrices.len() != model.bones.len()
+    {
+        return Err(presentation_error(
+            PresentationErrorCode::InvalidState,
+            &model.identity,
+        ));
+    }
+    let static_prop = matches!(
+        model.descriptor,
+        PresentationDescriptor::World {
+            root_bone: RootBoneContract::StaticPropBoneZeroIsEntity,
+            ..
+        }
+    );
+    let mut bone_matrices = pose
+        .model_matrices
+        .iter()
+        .map(|matrix| multiply_matrix(&model_to_world, matrix))
+        .collect::<Vec<_>>();
+    let mut skinning_matrices = pose
+        .skinning_matrices
+        .iter()
+        .map(|matrix| multiply_matrix(&model_to_world, matrix))
+        .collect::<Vec<_>>();
+    if static_prop && !model.bones.is_empty() {
+        bone_matrices[0] = model_to_world;
+        skinning_matrices[0] = model_to_world;
+    }
+    let attachments = pose
+        .attachments
+        .iter()
+        .map(|attachment| SampledAttachment {
+            index: attachment.index,
+            name: attachment.name.clone(),
+            world_aligned: attachment.world_aligned,
+            model_transform: if attachment.world_aligned {
+                let position = transform_point(
+                    &model_to_world,
+                    values3(matrix_translation(&attachment.model_transform)),
+                );
+                quaternion_matrix(identity_quaternion(), vector(position))
+            } else {
+                multiply_matrix(&model_to_world, &attachment.model_transform)
+            },
+        })
+        .collect();
+    Ok(SampledWorldPose {
+        bone_matrices,
+        skinning_matrices,
+        attachments,
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1395,6 +1678,149 @@ pub fn sequences_for_activity(model: &PresentationModel, activity: i32) -> Vec<u
         .filter(|sequence| sequence.activity == activity)
         .map(|sequence| sequence.index)
         .collect()
+}
+
+pub fn sequence_timing(
+    model: &PresentationModel,
+    sequence_index: usize,
+    pose_parameters: &[Float32],
+) -> Result<SequenceTiming, PresentationError> {
+    let sequence = model
+        .sequences
+        .get(sequence_index)
+        .ok_or_else(|| presentation_error(PresentationErrorCode::InvalidState, &model.identity))?;
+    if pose_parameters.len() != model.pose_parameters.len() {
+        return Err(presentation_error(
+            PresentationErrorCode::InvalidState,
+            &model.identity,
+        ));
+    }
+    let samples = sequence_timing_samples(model, sequence, pose_parameters)?;
+    let mut fps = 0.0_f32;
+    let mut frame_count = 0.0_f32;
+    let mut cycles_per_second = 0.0_f32;
+    for (animation, weight) in samples {
+        if weight <= 0.0 {
+            continue;
+        }
+        let animation = model.animations.get(animation).ok_or_else(|| {
+            presentation_error(PresentationErrorCode::InvalidState, &model.identity)
+        })?;
+        let animation_fps = finite(animation.fps).ok_or_else(|| {
+            presentation_error(PresentationErrorCode::InvalidState, &model.identity)
+        })?;
+        let frames = animation.frame_count as f32;
+        fps += animation_fps * weight;
+        frame_count += frames * weight;
+        if animation.frame_count > 1 {
+            cycles_per_second += animation_fps / (frames - 1.0) * weight;
+        }
+    }
+    if frame_count > 1.0 {
+        frame_count -= 1.0;
+    }
+    let duration = if cycles_per_second == 0.0 {
+        0.0
+    } else {
+        1.0 / cycles_per_second
+    };
+    Ok(SequenceTiming {
+        frames_per_second: Float32(fps.to_bits()),
+        weighted_frame_count: Float32(frame_count.to_bits()),
+        cycles_per_second: Float32(cycles_per_second.to_bits()),
+        duration_seconds: Float32(duration.to_bits()),
+        looping: sequence.flags & STUDIO_LOOPING != 0,
+    })
+}
+
+fn sequence_cycles_per_second(
+    model: &PresentationModel,
+    sequence_index: usize,
+    pose_parameters: &[Float32],
+) -> Result<f32, PresentationError> {
+    finite(sequence_timing(model, sequence_index, pose_parameters)?.cycles_per_second)
+        .ok_or_else(|| presentation_error(PresentationErrorCode::InvalidState, &model.identity))
+}
+
+fn sequence_timing_samples(
+    model: &PresentationModel,
+    sequence: &crate::Sequence,
+    pose_parameters: &[Float32],
+) -> Result<[(usize, f32); 4], PresentationError> {
+    let (x, sx) = local_pose_setting(model, sequence, 0, pose_parameters)?;
+    let (y, sy) = local_pose_setting(model, sequence, 1, pose_parameters)?;
+    let at = |x: usize, y: usize| -> Result<usize, PresentationError> {
+        let width = sequence.blend_size[0] as usize;
+        let height = sequence.blend_size[1] as usize;
+        let x = x.min(width.saturating_sub(1));
+        let y = y.min(height.saturating_sub(1));
+        sequence
+            .animation_indices
+            .get(y * width + x)
+            .and_then(|value| usize::try_from(*value).ok())
+            .ok_or_else(|| presentation_error(PresentationErrorCode::InvalidState, &model.identity))
+    };
+    Ok([
+        (at(x, y)?, (1.0 - sx) * (1.0 - sy)),
+        (at(x + 1, y)?, sx * (1.0 - sy)),
+        (at(x, y + 1)?, (1.0 - sx) * sy),
+        (at(x + 1, y + 1)?, sx * sy),
+    ])
+}
+
+pub fn presentation_events_between<'a>(
+    model: &'a PresentationModel,
+    sequence_index: usize,
+    previous_cycle: Float32,
+    current_cycle: Float32,
+) -> Result<Vec<&'a crate::SequenceEvent>, PresentationError> {
+    const EVENT_CLIENT: i32 = 5_000;
+    const EVENT_TYPE_CLIENT: i32 = 1 << 4;
+    const EVENT_TYPE_NEW: i32 = 1 << 10;
+    let sequence = model
+        .sequences
+        .get(sequence_index)
+        .ok_or_else(|| presentation_error(PresentationErrorCode::InvalidState, &model.identity))?;
+    let previous = finite(previous_cycle)
+        .ok_or_else(|| presentation_error(PresentationErrorCode::InvalidState, &model.identity))?;
+    let current = finite(current_cycle)
+        .ok_or_else(|| presentation_error(PresentationErrorCode::InvalidState, &model.identity))?;
+    if previous == current {
+        return Ok(Vec::new());
+    }
+    let client_event = |event: &&crate::SequenceEvent| {
+        if event.event_type & EVENT_TYPE_NEW != 0 {
+            event.event_type & EVENT_TYPE_CLIENT != 0
+        } else {
+            event.event >= EVENT_CLIENT
+        }
+    };
+    let event_cycle = |event: &&crate::SequenceEvent| finite(event.cycle);
+    if current <= previous {
+        if sequence.flags & STUDIO_LOOPING == 0 || previous - current <= 0.5 {
+            return Ok(Vec::new());
+        }
+        let mut result = sequence
+            .events
+            .iter()
+            .filter(client_event)
+            .filter(|event| event_cycle(event).is_some_and(|cycle| cycle > previous))
+            .collect::<Vec<_>>();
+        let restarted_previous = current - 0.001;
+        result.extend(sequence.events.iter().filter(client_event).filter(|event| {
+            event_cycle(event).is_some_and(|cycle| cycle > restarted_previous && cycle <= current)
+        }));
+        Ok(result)
+    } else {
+        Ok(sequence
+            .events
+            .iter()
+            .filter(client_event)
+            .filter(|event| {
+                event_cycle(event).is_some_and(|cycle| cycle > previous && cycle <= current)
+            })
+            .collect())
+    }
 }
 
 pub fn select_primitives(
@@ -1466,39 +1892,48 @@ pub fn sample_pose(
     model: &PresentationModel,
     state: &AnimationState,
 ) -> Result<SampledPose, PresentationError> {
+    sample_pose_at_time(model, state, Float32(0.0_f32.to_bits()))
+}
+
+pub fn sample_pose_at_time(
+    model: &PresentationModel,
+    state: &AnimationState,
+    time: Float32,
+) -> Result<SampledPose, PresentationError> {
     if state.pose_parameters.len() != model.pose_parameters.len() {
         return Err(presentation_error(
             PresentationErrorCode::InvalidState,
             &model.identity,
         ));
     }
-    let mut local = sample_sequence(
+    let time = finite(time)
+        .ok_or_else(|| presentation_error(PresentationErrorCode::InvalidState, &model.identity))?;
+    let mut local = bind_pose(model);
+    let mut stack = Vec::new();
+    accumulate_sequence(
         model,
+        &mut local,
         state.base_sequence,
         state.cycle,
+        1.0,
+        time,
         &state.pose_parameters,
+        &mut stack,
     )?;
-    let base_sequence = model
-        .sequences
-        .get(state.base_sequence)
-        .ok_or_else(|| presentation_error(PresentationErrorCode::InvalidState, &model.identity))?;
-    if base_sequence.flags & STUDIO_DELTA != 0 {
-        let bind = bind_pose(model);
-        local = apply_delta(&bind, &local, 1.0);
-    }
     for layer in &state.layers {
         let weight = finite_unit(layer.weight).ok_or_else(|| {
             presentation_error(PresentationErrorCode::InvalidState, &model.identity)
         })?;
-        let sampled = sample_sequence(model, layer.sequence, layer.cycle, &state.pose_parameters)?;
-        let sequence = model.sequences.get(layer.sequence).ok_or_else(|| {
-            presentation_error(PresentationErrorCode::InvalidState, &model.identity)
-        })?;
-        local = if sequence.flags & STUDIO_DELTA != 0 {
-            apply_delta(&local, &sampled, weight)
-        } else {
-            blend_pose(&local, &sampled, weight)
-        };
+        accumulate_sequence(
+            model,
+            &mut local,
+            layer.sequence,
+            layer.cycle,
+            weight,
+            time,
+            &state.pose_parameters,
+            &mut stack,
+        )?;
     }
     let mut model_matrices = Vec::with_capacity(model.bones.len());
     let mut skinning_matrices = Vec::with_capacity(model.bones.len());
@@ -1537,7 +1972,13 @@ pub fn sample_pose(
                 index: attachment.index,
                 name: attachment.name.clone(),
                 world_aligned: attachment.flags & 0x0001_0000 != 0,
-                model_transform: multiply_matrix(bone, &Matrix3x4(attachment.local)),
+                model_transform: if attachment.flags & 0x0001_0000 != 0 {
+                    let local = Matrix3x4(attachment.local);
+                    let position = transform_point(bone, values3(matrix_translation(&local)));
+                    quaternion_matrix(identity_quaternion(), vector(position))
+                } else {
+                    multiply_matrix(bone, &Matrix3x4(attachment.local))
+                },
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -1552,25 +1993,40 @@ pub fn sample_pose(
 
 type LocalPose = (Vec<Vector3>, Vec<[Float32; 4]>);
 
-fn sample_sequence(
+fn accumulate_sequence(
     model: &PresentationModel,
+    destination: &mut LocalPose,
     sequence_index: usize,
-    cycle: Float32,
+    supplied_cycle: Float32,
+    weight: f32,
+    time: f32,
     pose_parameters: &[Float32],
-) -> Result<LocalPose, PresentationError> {
+    stack: &mut Vec<usize>,
+) -> Result<(), PresentationError> {
+    if !(0.0..=1.0).contains(&weight) || !weight.is_finite() {
+        return Err(presentation_error(
+            PresentationErrorCode::InvalidState,
+            &model.identity,
+        ));
+    }
+    if weight == 0.0 {
+        return Ok(());
+    }
+    if stack.contains(&sequence_index) || stack.len() >= model.sequences.len() {
+        return Err(presentation_error(
+            PresentationErrorCode::InvalidState,
+            &model.identity,
+        ));
+    }
     let sequence = model
         .sequences
         .get(sequence_index)
         .ok_or_else(|| presentation_error(PresentationErrorCode::InvalidState, &model.identity))?;
-    if sequence.flags & STUDIO_REALTIME != 0 {
-        return Err(presentation_error(
-            PresentationErrorCode::UnsupportedState,
-            &model.identity,
-        ));
-    }
-    let mut cycle = finite(cycle)
+    let mut cycle = finite(supplied_cycle)
         .ok_or_else(|| presentation_error(PresentationErrorCode::InvalidState, &model.identity))?;
-    if sequence.flags & STUDIO_CYCLE_POSE != 0 {
+    if sequence.flags & STUDIO_REALTIME != 0 {
+        cycle = time * sequence_cycles_per_second(model, sequence_index, pose_parameters)?;
+    } else if sequence.flags & STUDIO_CYCLE_POSE != 0 {
         cycle = usize::try_from(sequence.cycle_pose_parameter)
             .ok()
             .and_then(|index| pose_parameters.get(index))
@@ -1580,22 +2036,233 @@ fn sample_sequence(
             })?;
     }
     cycle = normalized_cycle(cycle, sequence.flags & STUDIO_LOOPING != 0);
+    let local_layers = sequence
+        .auto_layers
+        .iter()
+        .filter(|layer| layer.flags & STUDIO_AUTO_LAYER_LOCAL != 0)
+        .cloned()
+        .collect::<Vec<_>>();
+    let ordinary_layers = sequence
+        .auto_layers
+        .iter()
+        .filter(|layer| layer.flags & STUDIO_AUTO_LAYER_LOCAL == 0)
+        .cloned()
+        .collect::<Vec<_>>();
+    let sequence_flags = sequence.flags;
+    stack.push(sequence_index);
+    let result = (|| {
+        let mut sampled = sample_sequence_raw(model, sequence_index, cycle, pose_parameters)?;
+        if sequence_flags & STUDIO_LOCAL != 0 {
+            for layer in &local_layers {
+                accumulate_auto_layer(
+                    model,
+                    &mut sampled,
+                    layer,
+                    cycle,
+                    1.0,
+                    time,
+                    pose_parameters,
+                    true,
+                    stack,
+                )?;
+            }
+        }
+        blend_sequence_into(model, destination, &sampled, sequence_index, weight)?;
+        for layer in &ordinary_layers {
+            accumulate_auto_layer(
+                model,
+                destination,
+                layer,
+                cycle,
+                weight,
+                time,
+                pose_parameters,
+                false,
+                stack,
+            )?;
+        }
+        Ok(())
+    })();
+    stack.pop();
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn accumulate_auto_layer(
+    model: &PresentationModel,
+    destination: &mut LocalPose,
+    layer: &crate::SequenceAutoLayer,
+    parent_cycle: f32,
+    parent_weight: f32,
+    time: f32,
+    pose_parameters: &[Float32],
+    local: bool,
+    stack: &mut Vec<usize>,
+) -> Result<(), PresentationError> {
+    let start = finite(layer.start)
+        .ok_or_else(|| presentation_error(PresentationErrorCode::InvalidState, &model.identity))?;
+    let peak = finite(layer.peak)
+        .ok_or_else(|| presentation_error(PresentationErrorCode::InvalidState, &model.identity))?;
+    let tail = finite(layer.tail)
+        .ok_or_else(|| presentation_error(PresentationErrorCode::InvalidState, &model.identity))?;
+    let end = finite(layer.end)
+        .ok_or_else(|| presentation_error(PresentationErrorCode::InvalidState, &model.identity))?;
+    let mut layer_cycle = parent_cycle;
+    let mut layer_weight = parent_weight;
+    if start != end {
+        let index = if !local && layer.flags & STUDIO_AUTO_LAYER_POSE != 0 {
+            let pose_index = usize::try_from(layer.pose)
+                .ok()
+                .filter(|index| *index < model.pose_parameters.len())
+                .ok_or_else(|| {
+                    presentation_error(PresentationErrorCode::InvalidState, &model.identity)
+                })?;
+            let pose = &model.pose_parameters[pose_index];
+            let value = finite(pose_parameters[pose_index]).ok_or_else(|| {
+                presentation_error(PresentationErrorCode::InvalidState, &model.identity)
+            })?;
+            let pose_start = finite(pose.start).ok_or_else(|| {
+                presentation_error(PresentationErrorCode::InvalidState, &model.identity)
+            })?;
+            let pose_end = finite(pose.end).ok_or_else(|| {
+                presentation_error(PresentationErrorCode::InvalidState, &model.identity)
+            })?;
+            value * (pose_end - pose_start) + pose_start
+        } else {
+            parent_cycle
+        };
+        if index < start || index >= end {
+            return Ok(());
+        }
+        let mut ramp = 1.0_f32;
+        if index < peak && start != peak {
+            ramp = (index - start) / (peak - start);
+        } else if index > tail && end != tail {
+            ramp = (end - index) / (end - tail);
+        }
+        if layer.flags & STUDIO_AUTO_LAYER_SPLINE != 0 {
+            ramp = ramp * ramp * (3.0 - 2.0 * ramp);
+        }
+        layer_weight = if layer.flags & STUDIO_AUTO_LAYER_CROSSFADE != 0 && index > tail {
+            let denominator = 1.0 - parent_weight + ramp * parent_weight;
+            if denominator == 0.0 {
+                return Err(presentation_error(
+                    PresentationErrorCode::InvalidState,
+                    &model.identity,
+                ));
+            }
+            ramp * parent_weight / denominator
+        } else if layer.flags & STUDIO_AUTO_LAYER_NO_BLEND != 0 {
+            ramp
+        } else {
+            parent_weight * ramp
+        };
+        if local || layer.flags & STUDIO_AUTO_LAYER_POSE == 0 {
+            layer_cycle = (parent_cycle - start) / (end - start);
+        }
+    }
+    if !layer_cycle.is_finite() || !(0.0..=1.0).contains(&layer_weight) {
+        return Err(presentation_error(
+            PresentationErrorCode::InvalidState,
+            &model.identity,
+        ));
+    }
+    let sequence = usize::try_from(layer.sequence)
+        .ok()
+        .filter(|index| *index < model.sequences.len())
+        .ok_or_else(|| presentation_error(PresentationErrorCode::InvalidState, &model.identity))?;
+    accumulate_sequence(
+        model,
+        destination,
+        sequence,
+        Float32(layer_cycle.to_bits()),
+        layer_weight,
+        time,
+        pose_parameters,
+        stack,
+    )
+}
+
+fn blend_sequence_into(
+    model: &PresentationModel,
+    destination: &mut LocalPose,
+    sampled: &LocalPose,
+    sequence_index: usize,
+    weight: f32,
+) -> Result<(), PresentationError> {
+    let sequence = model
+        .sequences
+        .get(sequence_index)
+        .ok_or_else(|| presentation_error(PresentationErrorCode::InvalidState, &model.identity))?;
+    if sequence.bone_weights.len() != model.bones.len() {
+        return Err(presentation_error(
+            PresentationErrorCode::InvalidState,
+            &model.identity,
+        ));
+    }
+    if sequence.flags & STUDIO_WORLD != 0 {
+        return blend_sequence_world(model, destination, sampled, sequence, weight);
+    }
+    for (bone, authored_weight) in sequence.bone_weights.iter().enumerate() {
+        let bone_weight = finite(*authored_weight)
+            .filter(|value| (0.0..=1.0).contains(value))
+            .ok_or_else(|| {
+                presentation_error(PresentationErrorCode::InvalidState, &model.identity)
+            })?;
+        let blend = weight * bone_weight;
+        if blend <= 0.0 {
+            continue;
+        }
+        if sequence.flags & STUDIO_DELTA != 0 {
+            let scaled = quaternion_scale(sampled.1[bone], blend)?;
+            destination.1[bone] = if sequence.flags & STUDIO_POST != 0 {
+                quaternion_multiply(destination.1[bone], scaled)
+            } else {
+                quaternion_multiply(scaled, destination.1[bone])
+            };
+            destination.0[bone] =
+                add_vector(destination.0[bone], scale_vector(sampled.0[bone], blend));
+        } else {
+            destination.0[bone] = lerp_vector(destination.0[bone], sampled.0[bone], blend);
+            destination.1[bone] = slerp(
+                destination.1[bone],
+                sampled.1[bone],
+                blend,
+                model.bones[bone].flags & BONE_FIXED_ALIGNMENT == 0,
+            );
+        }
+    }
+    Ok(())
+}
+
+fn sample_sequence_raw(
+    model: &PresentationModel,
+    sequence_index: usize,
+    cycle: f32,
+    pose_parameters: &[Float32],
+) -> Result<LocalPose, PresentationError> {
+    let sequence = model
+        .sequences
+        .get(sequence_index)
+        .ok_or_else(|| presentation_error(PresentationErrorCode::InvalidState, &model.identity))?;
     let (index0, setting0) = local_pose_setting(model, sequence, 0, pose_parameters)?;
     let (index1, setting1) = local_pose_setting(model, sequence, 1, pose_parameters)?;
     let x_next = usize::from(sequence.blend_size[0] > 1);
     let y_next = usize::from(sequence.blend_size[1] > 1);
     let sample = |x, y| sample_grid_animation(model, sequence, x, y, cycle);
-    let mut blended = if setting0 < 0.001 {
+    let blended = if setting0 < 0.001 {
         if setting1 < 0.001 {
             sample(index0, index1)?
         } else if setting1 > 0.999 {
             sample(index0, index1 + y_next)?
         } else {
-            blend_pose(
+            blend_grid_pose(
+                model,
+                sequence,
                 &sample(index0, index1)?,
                 &sample(index0, index1 + y_next)?,
                 setting1,
-            )
+            )?
         }
     } else if setting0 > 0.999 {
         if setting1 < 0.001 {
@@ -1603,50 +2270,54 @@ fn sample_sequence(
         } else if setting1 > 0.999 {
             sample(index0 + x_next, index1 + y_next)?
         } else {
-            blend_pose(
+            blend_grid_pose(
+                model,
+                sequence,
                 &sample(index0 + x_next, index1)?,
                 &sample(index0 + x_next, index1 + y_next)?,
                 setting1,
-            )
+            )?
         }
     } else if setting1 < 0.001 {
-        blend_pose(
+        blend_grid_pose(
+            model,
+            sequence,
             &sample(index0, index1)?,
             &sample(index0 + x_next, index1)?,
             setting0,
-        )
+        )?
     } else if setting1 > 0.999 {
-        blend_pose(
+        blend_grid_pose(
+            model,
+            sequence,
             &sample(index0, index1 + y_next)?,
             &sample(index0 + x_next, index1 + y_next)?,
             setting0,
-        )
+        )?
     } else {
         let (coordinates, weights) = three_way_blend(index0, index1, setting0, setting1);
         let first = sample(coordinates[0].0, coordinates[0].1)?;
         let third = sample(coordinates[2].0, coordinates[2].1)?;
         if weights[1] < 0.001 {
-            blend_pose(&first, &third, weights[2] / (weights[0] + weights[2]))
+            blend_grid_pose(
+                model,
+                sequence,
+                &first,
+                &third,
+                weights[2] / (weights[0] + weights[2]),
+            )?
         } else {
             let second = sample(coordinates[1].0, coordinates[1].1)?;
-            let first_second = blend_pose(&first, &second, weights[1] / (weights[0] + weights[1]));
-            blend_pose(&first_second, &third, weights[2])
+            let first_second = blend_grid_pose(
+                model,
+                sequence,
+                &first,
+                &second,
+                weights[1] / (weights[0] + weights[1]),
+            )?;
+            blend_grid_pose(model, sequence, &first_second, &third, weights[2])?
         }
     };
-    for (bone, authored_weight) in sequence.bone_weights.iter().enumerate() {
-        let weight = finite(*authored_weight)
-            .filter(|value| (0.0..=1.0).contains(value))
-            .ok_or_else(|| {
-                presentation_error(PresentationErrorCode::InvalidState, &model.identity)
-            })?;
-        if sequence.flags & STUDIO_DELTA != 0 {
-            blended.0[bone] = scale_vector(blended.0[bone], weight);
-            blended.1[bone] = nlerp(identity_quaternion(), blended.1[bone], weight);
-        } else {
-            blended.0[bone] = lerp_vector(model.bones[bone].position, blended.0[bone], weight);
-            blended.1[bone] = nlerp(model.bones[bone].quaternion, blended.1[bone], weight);
-        }
-    }
     Ok(blended)
 }
 
@@ -1863,36 +2534,41 @@ fn bind_pose(model: &PresentationModel) -> LocalPose {
     )
 }
 
-fn blend_pose(left: &LocalPose, right: &LocalPose, weight: f32) -> LocalPose {
-    (
-        left.0
-            .iter()
-            .zip(&right.0)
-            .map(|(left, right)| lerp_vector(*left, *right, weight))
-            .collect(),
-        left.1
-            .iter()
-            .zip(&right.1)
-            .map(|(left, right)| nlerp(*left, *right, weight))
-            .collect(),
-    )
-}
-
-fn apply_delta(base: &LocalPose, delta: &LocalPose, weight: f32) -> LocalPose {
-    (
-        base.0
-            .iter()
-            .zip(&delta.0)
-            .map(|(base, delta)| add_vector(*base, scale_vector(*delta, weight)))
-            .collect(),
-        base.1
-            .iter()
-            .zip(&delta.1)
-            .map(|(base, delta)| {
-                quaternion_multiply(*base, nlerp(identity_quaternion(), *delta, weight))
-            })
-            .collect(),
-    )
+fn blend_grid_pose(
+    model: &PresentationModel,
+    sequence: &crate::Sequence,
+    left: &LocalPose,
+    right: &LocalPose,
+    weight: f32,
+) -> Result<LocalPose, PresentationError> {
+    if left.0.len() != model.bones.len()
+        || left.1.len() != model.bones.len()
+        || right.0.len() != model.bones.len()
+        || right.1.len() != model.bones.len()
+        || sequence.bone_weights.len() != model.bones.len()
+    {
+        return Err(presentation_error(
+            PresentationErrorCode::InvalidState,
+            &model.identity,
+        ));
+    }
+    let mut output = left.clone();
+    for bone in 0..model.bones.len() {
+        let authored = finite(sequence.bone_weights[bone])
+            .filter(|value| (0.0..=1.0).contains(value))
+            .ok_or_else(|| {
+                presentation_error(PresentationErrorCode::InvalidState, &model.identity)
+            })?;
+        if authored > 0.0 {
+            output.0[bone] = lerp_vector(left.0[bone], right.0[bone], weight);
+            output.1[bone] = if model.bones[bone].flags & BONE_FIXED_ALIGNMENT != 0 {
+                nlerp_no_align(left.1[bone], right.1[bone], weight)
+            } else {
+                nlerp(left.1[bone], right.1[bone], weight)
+            };
+        }
+    }
+    Ok(output)
 }
 
 fn finite(value: Float32) -> Option<f32> {
@@ -1976,6 +2652,83 @@ fn nlerp(left: [Float32; 4], right: [Float32; 4], weight: f32) -> [Float32; 4] {
     .map(|component| Float32(component.to_bits()))
 }
 
+fn nlerp_no_align(left: [Float32; 4], right: [Float32; 4], weight: f32) -> [Float32; 4] {
+    let left = values4(left);
+    let right = values4(right);
+    normalized_quaternion(std::array::from_fn(|axis| {
+        left[axis] * (1.0 - weight) + right[axis] * weight
+    }))
+    .map(|component| Float32(component.to_bits()))
+}
+
+fn slerp(left: [Float32; 4], right: [Float32; 4], weight: f32, align: bool) -> [Float32; 4] {
+    let left = values4(left);
+    let mut right = values4(right);
+    if align {
+        let difference = (0..4)
+            .map(|axis| (left[axis] - right[axis]).powi(2))
+            .sum::<f32>();
+        let sum = (0..4)
+            .map(|axis| (left[axis] + right[axis]).powi(2))
+            .sum::<f32>();
+        if difference > sum {
+            right = right.map(|value| -value);
+        }
+    }
+    let cosine = dot4(left, right);
+    let output = if 1.0 + cosine > 0.000_001 {
+        let (left_scale, right_scale) = if 1.0 - cosine > 0.000_001 {
+            let omega = cosine.clamp(-1.0, 1.0).acos();
+            let sine = omega.sin();
+            (
+                ((1.0 - weight) * omega).sin() / sine,
+                (weight * omega).sin() / sine,
+            )
+        } else {
+            (1.0 - weight, weight)
+        };
+        std::array::from_fn(|axis| left_scale * left[axis] + right_scale * right[axis])
+    } else {
+        let perpendicular = [-right[1], right[0], -right[3], right[2]];
+        let left_scale = ((1.0 - weight) * std::f32::consts::FRAC_PI_2).sin();
+        let right_scale = (weight * std::f32::consts::FRAC_PI_2).sin();
+        [
+            left_scale * left[0] + right_scale * perpendicular[0],
+            left_scale * left[1] + right_scale * perpendicular[1],
+            left_scale * left[2] + right_scale * perpendicular[2],
+            perpendicular[3],
+        ]
+    };
+    output.map(|value| Float32(value.to_bits()))
+}
+
+fn quaternion_scale(
+    quaternion: [Float32; 4],
+    scale: f32,
+) -> Result<[Float32; 4], PresentationError> {
+    let value = values4(quaternion);
+    let sine = (value[0] * value[0] + value[1] * value[1] + value[2] * value[2])
+        .sqrt()
+        .min(1.0);
+    let scaled_sine = (sine.asin() * scale).sin();
+    let vector_scale = scaled_sine / (sine + f32::EPSILON);
+    let scalar_squared = (1.0 - scaled_sine * scaled_sine).max(0.0);
+    let scalar = scalar_squared.sqrt().copysign(value[3]);
+    let output = [
+        value[0] * vector_scale,
+        value[1] * vector_scale,
+        value[2] * vector_scale,
+        scalar,
+    ];
+    if output.into_iter().any(|value| !value.is_finite()) {
+        return Err(presentation_error(
+            PresentationErrorCode::InvalidState,
+            "quaternion-scale",
+        ));
+    }
+    Ok(output.map(|value| Float32(value.to_bits())))
+}
+
 fn quaternion_multiply(left: [Float32; 4], right: [Float32; 4]) -> [Float32; 4] {
     let [lx, ly, lz, lw] = values4(left);
     let [rx, ry, rz, rw] = values4(right);
@@ -2028,6 +2781,171 @@ fn multiply_matrix(left: &Matrix3x4, right: &Matrix3x4) -> Matrix3x4 {
     Matrix3x4(output.map(|component| Float32(component.to_bits())))
 }
 
+fn transform_point(matrix: &Matrix3x4, point: [f32; 3]) -> [f32; 3] {
+    let matrix = matrix.0.map(|value| f32::from_bits(value.0));
+    std::array::from_fn(|row| {
+        matrix[row * 4] * point[0]
+            + matrix[row * 4 + 1] * point[1]
+            + matrix[row * 4 + 2] * point[2]
+            + matrix[row * 4 + 3]
+    })
+}
+
+fn pose_model_matrices(
+    model: &PresentationModel,
+    pose: &LocalPose,
+) -> Result<Vec<Matrix3x4>, PresentationError> {
+    if pose.0.len() != model.bones.len() || pose.1.len() != model.bones.len() {
+        return Err(presentation_error(
+            PresentationErrorCode::InvalidState,
+            &model.identity,
+        ));
+    }
+    let mut matrices = Vec::with_capacity(model.bones.len());
+    for (bone, definition) in model.bones.iter().enumerate() {
+        let local = quaternion_matrix(pose.1[bone], pose.0[bone]);
+        let matrix = if definition.parent < 0 {
+            local
+        } else {
+            let parent = usize::try_from(definition.parent)
+                .ok()
+                .and_then(|index| matrices.get(index))
+                .ok_or_else(|| {
+                    presentation_error(PresentationErrorCode::InvalidState, &model.identity)
+                })?;
+            multiply_matrix(parent, &local)
+        };
+        matrices.push(matrix);
+    }
+    Ok(matrices)
+}
+
+fn matrix_translation(matrix: &Matrix3x4) -> Vector3 {
+    Vector3([matrix.0[3], matrix.0[7], matrix.0[11]])
+}
+
+fn matrix_quaternion(matrix: &Matrix3x4) -> [Float32; 4] {
+    let m = matrix.0.map(|value| f32::from_bits(value.0));
+    let trace = m[0] + m[5] + m[10];
+    let value = if trace > 0.0 {
+        let scale = (trace + 1.0).sqrt() * 2.0;
+        [
+            (m[9] - m[6]) / scale,
+            (m[2] - m[8]) / scale,
+            (m[4] - m[1]) / scale,
+            0.25 * scale,
+        ]
+    } else if m[0] > m[5] && m[0] > m[10] {
+        let scale = (1.0 + m[0] - m[5] - m[10]).sqrt() * 2.0;
+        [
+            0.25 * scale,
+            (m[1] + m[4]) / scale,
+            (m[2] + m[8]) / scale,
+            (m[9] - m[6]) / scale,
+        ]
+    } else if m[5] > m[10] {
+        let scale = (1.0 + m[5] - m[0] - m[10]).sqrt() * 2.0;
+        [
+            (m[1] + m[4]) / scale,
+            0.25 * scale,
+            (m[6] + m[9]) / scale,
+            (m[2] - m[8]) / scale,
+        ]
+    } else {
+        let scale = (1.0 + m[10] - m[0] - m[5]).sqrt() * 2.0;
+        [
+            (m[2] + m[8]) / scale,
+            (m[6] + m[9]) / scale,
+            0.25 * scale,
+            (m[4] - m[1]) / scale,
+        ]
+    };
+    normalized_quaternion(value).map(|value| Float32(value.to_bits()))
+}
+
+fn inverse_rigid_matrix(matrix: &Matrix3x4) -> Matrix3x4 {
+    let m = matrix.0.map(|value| f32::from_bits(value.0));
+    let mut output = [0.0_f32; 12];
+    for row in 0..3 {
+        for column in 0..3 {
+            output[row * 4 + column] = m[column * 4 + row];
+        }
+        output[row * 4 + 3] = -(0..3)
+            .map(|axis| output[row * 4 + axis] * m[axis * 4 + 3])
+            .sum::<f32>();
+    }
+    Matrix3x4(output.map(|value| Float32(value.to_bits())))
+}
+
+fn blend_sequence_world(
+    model: &PresentationModel,
+    destination: &mut LocalPose,
+    sampled: &LocalPose,
+    sequence: &crate::Sequence,
+    weight: f32,
+) -> Result<(), PresentationError> {
+    let destination_world = pose_model_matrices(model, destination)?;
+    let sampled_world = pose_model_matrices(model, sampled)?;
+    let mut target_world = destination_world.clone();
+    for bone in 0..model.bones.len() {
+        let authored = finite(sequence.bone_weights[bone])
+            .filter(|value| (0.0..=1.0).contains(value))
+            .ok_or_else(|| {
+                presentation_error(PresentationErrorCode::InvalidState, &model.identity)
+            })?;
+        let blend = weight * authored;
+        let parent = usize::try_from(model.bones[bone].parent).ok();
+        let parent_blend = if let Some(parent) = parent {
+            weight
+                * finite(sequence.bone_weights[parent])
+                    .filter(|value| (0.0..=1.0).contains(value))
+                    .ok_or_else(|| {
+                        presentation_error(PresentationErrorCode::InvalidState, &model.identity)
+                    })?
+        } else {
+            0.0
+        };
+        if parent_blend == 1.0 && blend == 1.0 {
+            destination.0[bone] = sampled.0[bone];
+            destination.1[bone] = sampled.1[bone];
+            target_world[bone] = sampled_world[bone];
+            continue;
+        }
+        if blend <= 0.0 {
+            target_world[bone] = if let Some(parent) = parent {
+                multiply_matrix(
+                    &target_world[parent],
+                    &quaternion_matrix(destination.1[bone], destination.0[bone]),
+                )
+            } else {
+                quaternion_matrix(destination.1[bone], destination.0[bone])
+            };
+            continue;
+        }
+        let target_rotation = slerp(
+            matrix_quaternion(&destination_world[bone]),
+            matrix_quaternion(&sampled_world[bone]),
+            blend,
+            true,
+        );
+        target_world[bone] = quaternion_matrix(
+            target_rotation,
+            matrix_translation(&destination_world[bone]),
+        );
+        if let Some(parent) = parent {
+            let local = multiply_matrix(
+                &inverse_rigid_matrix(&target_world[parent]),
+                &target_world[bone],
+            );
+            destination.1[bone] = matrix_quaternion(&local);
+            destination.0[bone] = lerp_vector(destination.0[bone], sampled.0[bone], blend);
+        } else {
+            destination.1[bone] = target_rotation;
+        }
+    }
+    Ok(())
+}
+
 fn encode_model(
     model: &PresentationModel,
     limits: PresentationLimits,
@@ -2048,10 +2966,51 @@ fn encode_model(
     output.u8(0)?;
     output.u64(0)?;
     output.i32(model.checksum)?;
+    output.i32(model.flags)?;
     output.text(&model.identity, limits.max_string_bytes)?;
     output.vector(model.basis.forward)?;
     output.vector(model.basis.left)?;
     output.vector(model.basis.up)?;
+    match model.descriptor {
+        PresentationDescriptor::World {
+            geometry,
+            entity_angles,
+            root_bone,
+            depth_range,
+        } => {
+            output.u8(0)?;
+            output.geometry_orientation(geometry)?;
+            output.u8(entity_angles as u8)?;
+            output.u8(root_bone as u8)?;
+            output.float_slice(&depth_range)?;
+        }
+        PresentationDescriptor::ViewModel {
+            geometry,
+            entity_angles,
+            default_horizontal_fov_4_by_3,
+            minimum_fov,
+            maximum_fov,
+            near_plane,
+            far_plane,
+            depth_range,
+            draws_after_world,
+            opaque_before_translucent,
+            handedness,
+        } => {
+            output.u8(1)?;
+            output.geometry_orientation(geometry)?;
+            output.u8(entity_angles as u8)?;
+            output.float(default_horizontal_fov_4_by_3)?;
+            output.float(minimum_fov)?;
+            output.float(maximum_fov)?;
+            output.float(near_plane)?;
+            output.u8(far_plane as u8)?;
+            output.float_slice(&depth_range)?;
+            output.bool(draws_after_world)?;
+            output.bool(opaque_before_translucent)?;
+            output.u8(handedness as u8)?;
+        }
+    }
     output.count(model.base_material_count)?;
 
     output.count(model.dependencies.len())?;
@@ -2215,6 +3174,26 @@ fn encode_model(
         output.i32(sequence.ik_lock_count)?;
         output.i32(sequence.cycle_pose_parameter)?;
         output.i32(sequence.activity_modifier_count)?;
+        output.count(sequence.events.len())?;
+        for event in &sequence.events {
+            output.index(event.index)?;
+            output.float(event.cycle)?;
+            output.i32(event.event)?;
+            output.i32(event.event_type)?;
+            output.raw(&event.options)?;
+            output.bytes(&event.name, limits.max_string_bytes)?;
+        }
+        output.count(sequence.auto_layers.len())?;
+        for layer in &sequence.auto_layers {
+            output.index(layer.index)?;
+            output.i16(layer.sequence)?;
+            output.i16(layer.pose)?;
+            output.i32(layer.flags)?;
+            output.float(layer.start)?;
+            output.float(layer.peak)?;
+            output.float(layer.tail)?;
+            output.float(layer.end)?;
+        }
         output.text(&sequence.source_identity, limits.max_string_bytes)?;
     }
     output.count(model.pose_parameters.len())?;
@@ -2234,6 +3213,20 @@ fn encode_model(
         output.u32(attachment.flags)?;
         output.i32(attachment.bone)?;
         output.float_slice(&attachment.local)?;
+    }
+    output.count(model.hitbox_sets.len())?;
+    for set in &model.hitbox_sets {
+        output.index(set.index)?;
+        output.bytes(&set.name, limits.max_string_bytes)?;
+        output.count(set.hitboxes.len())?;
+        for hitbox in &set.hitboxes {
+            output.index(hitbox.index)?;
+            output.i32(hitbox.bone)?;
+            output.i32(hitbox.group)?;
+            output.vector(hitbox.bounds_min)?;
+            output.vector(hitbox.bounds_max)?;
+            output.bytes(&hitbox.name, limits.max_string_bytes)?;
+        }
     }
     output.count(model.skins.len())?;
     for skin in &model.skins {
@@ -2293,12 +3286,17 @@ fn encode_model(
             }
         }
     }
-    output.count(model.unsupported_features.len())?;
-    for feature in &model.unsupported_features {
+    output.u8(match model.physics_status {
+        crate::PhysicsStatus::Missing => 0,
+        crate::PhysicsStatus::Present => 1,
+    })?;
+    output.count(model.features.len())?;
+    for feature in &model.features {
         output.u8(feature_family_code(feature.family))?;
         output.u8(match feature.disposition {
             FeatureDisposition::NotPresent => 0,
             FeatureDisposition::RetainedNotEvaluated => 1,
+            FeatureDisposition::Evaluated => 2,
         })?;
         output.index(feature.records)?;
     }
@@ -2440,6 +3438,17 @@ impl<'a> ArtifactWriter<'a> {
         }
     }
 
+    fn geometry_orientation(
+        &mut self,
+        orientation: GeometryOrientation,
+    ) -> Result<(), PresentationError> {
+        self.u8(orientation.positions as u8)?;
+        self.u8(orientation.normals as u8)?;
+        self.u8(orientation.tangents as u8)?;
+        self.u8(orientation.texture_coordinates as u8)?;
+        self.u8(orientation.tangent_handedness as u8)
+    }
+
     fn value_streams(
         &mut self,
         streams: &[Option<crate::AnimationValueStream>; 3],
@@ -2492,7 +3501,7 @@ fn feature_family_code(family: FeatureFamily) -> u8 {
     family as u8
 }
 
-pub(crate) fn content_sha256(bytes: &[u8]) -> [u8; 32] {
+pub fn content_sha256(bytes: &[u8]) -> [u8; 32] {
     const INITIAL: [u32; 8] = [
         0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
         0x5be0cd19,
@@ -2608,11 +3617,76 @@ pub fn decode_presentation(
         return Err(input.error());
     }
     let checksum = input.i32()?;
+    let flags = input.i32()?;
     let identity = input.text(limits.max_string_bytes)?;
     let basis = ModelBasis {
         forward: input.vector()?,
         left: input.vector()?,
         up: input.vector()?,
+    };
+    let geometry =
+        |input: &mut ArtifactReader<'_>| -> Result<GeometryOrientation, PresentationError> {
+            if input.u8()? != 0
+                || input.u8()? != 0
+                || input.u8()? != 0
+                || input.u8()? != 0
+                || input.u8()? != 0
+            {
+                return Err(input.error());
+            }
+            Ok(GeometryOrientation::source())
+        };
+    let descriptor = match input.u8()? {
+        0 if profile == PresentationProfile::World => {
+            let geometry = geometry(&mut input)?;
+            if input.u8()? != 0 {
+                return Err(input.error());
+            }
+            let root_bone = match input.u8()? {
+                0 => RootBoneContract::AnimatedBelowEntity,
+                1 => RootBoneContract::StaticPropBoneZeroIsEntity,
+                _ => return Err(input.error()),
+            };
+            PresentationDescriptor::World {
+                geometry,
+                entity_angles: EntityAngleConvention::DegreesPitchYawRollForwardLeftUpColumns,
+                root_bone,
+                depth_range: input.floats()?,
+            }
+        }
+        1 if profile == PresentationProfile::ViewModel => {
+            let geometry = geometry(&mut input)?;
+            if input.u8()? != 0 {
+                return Err(input.error());
+            }
+            let default_horizontal_fov_4_by_3 = input.float()?;
+            let minimum_fov = input.float()?;
+            let maximum_fov = input.float()?;
+            let near_plane = input.float()?;
+            if input.u8()? != 0 {
+                return Err(input.error());
+            }
+            let depth_range = input.floats()?;
+            let draws_after_world = input.bool()?;
+            let opaque_before_translucent = input.bool()?;
+            if input.u8()? != 0 {
+                return Err(input.error());
+            }
+            PresentationDescriptor::ViewModel {
+                geometry,
+                entity_angles: EntityAngleConvention::DegreesPitchYawRollForwardLeftUpColumns,
+                default_horizontal_fov_4_by_3,
+                minimum_fov,
+                maximum_fov,
+                near_plane,
+                far_plane: FarPlaneContract::SuppliedWorldFarPlane,
+                depth_range,
+                draws_after_world,
+                opaque_before_translucent,
+                handedness: ViewmodelHandednessContract::OptionalViewSpaceYReflection,
+            }
+        }
+        _ => return Err(input.error()),
     };
     let base_material_count = input.count(limits.max_materials)?;
     let mut dependencies = Vec::new();
@@ -2853,6 +3927,34 @@ pub fn decode_presentation(
                 keys.push(input.float()?);
             }
         }
+        let ik_lock_count = input.i32()?;
+        let cycle_pose_parameter = input.i32()?;
+        let activity_modifier_count = input.i32()?;
+        let mut events = Vec::new();
+        for _ in 0..input.count(limits.max_animation_samples)? {
+            events.push(crate::SequenceEvent {
+                index: input.index(limits.max_animation_samples)?,
+                cycle: input.float()?,
+                event: input.i32()?,
+                event_type: input.i32()?,
+                options: input.array()?,
+                name: input.bytes(limits.max_string_bytes)?,
+            });
+        }
+        let mut auto_layers = Vec::new();
+        for _ in 0..input.count(limits.max_sequences)? {
+            auto_layers.push(crate::SequenceAutoLayer {
+                index: input.index(limits.max_sequences)?,
+                sequence: input.i16()?,
+                pose: input.i16()?,
+                flags: input.i32()?,
+                start: input.float()?,
+                peak: input.float()?,
+                tail: input.float()?,
+                end: input.float()?,
+            });
+        }
+        let source_identity = input.text(limits.max_string_bytes)?;
         sequences.push(crate::Sequence {
             index,
             label,
@@ -2882,10 +3984,12 @@ pub fn decode_presentation(
             auto_layer_count,
             bone_weights,
             pose_keys,
-            ik_lock_count: input.i32()?,
-            cycle_pose_parameter: input.i32()?,
-            activity_modifier_count: input.i32()?,
-            source_identity: input.text(limits.max_string_bytes)?,
+            ik_lock_count,
+            cycle_pose_parameter,
+            activity_modifier_count,
+            events,
+            auto_layers,
+            source_identity,
         });
     }
     let mut pose_parameters = Vec::new();
@@ -2908,6 +4012,27 @@ pub fn decode_presentation(
             flags: input.u32()?,
             bone: input.i32()?,
             local: input.floats()?,
+        });
+    }
+    let mut hitbox_sets = Vec::new();
+    for _ in 0..input.count(limits.max_sequences)? {
+        let index = input.index(limits.max_sequences)?;
+        let name = input.bytes(limits.max_string_bytes)?;
+        let mut hitboxes = Vec::new();
+        for _ in 0..input.count(limits.max_animation_samples)? {
+            hitboxes.push(crate::Hitbox {
+                index: input.index(limits.max_animation_samples)?,
+                bone: input.i32()?,
+                group: input.i32()?,
+                bounds_min: input.vector()?,
+                bounds_max: input.vector()?,
+                name: input.bytes(limits.max_string_bytes)?,
+            });
+        }
+        hitbox_sets.push(crate::HitboxSet {
+            index,
+            name,
+            hitboxes,
         });
     }
     let mut skins = Vec::new();
@@ -3008,13 +4133,19 @@ pub fn decode_presentation(
             triangles,
         });
     }
-    let mut unsupported_features = Vec::new();
+    let physics_status = match input.u8()? {
+        0 => crate::PhysicsStatus::Missing,
+        1 => crate::PhysicsStatus::Present,
+        _ => return Err(input.error()),
+    };
+    let mut features = Vec::new();
     for _ in 0..input.count(9)? {
-        unsupported_features.push(FeatureSupport {
+        features.push(FeatureSupport {
             family: decode_feature_family(input.u8()?).ok_or_else(|| input.error())?,
             disposition: match input.u8()? {
                 0 => FeatureDisposition::NotPresent,
                 1 => FeatureDisposition::RetainedNotEvaluated,
+                2 => FeatureDisposition::Evaluated,
                 _ => return Err(input.error()),
             },
             records: input.count(limits.max_animation_samples)?,
@@ -3025,8 +4156,10 @@ pub fn decode_presentation(
     }
     let model = PresentationModel {
         profile,
+        descriptor,
         identity: identity.clone(),
         checksum,
+        flags,
         basis,
         dependencies,
         base_material_count,
@@ -3036,10 +4169,12 @@ pub fn decode_presentation(
         sequences,
         pose_parameters,
         attachments,
+        hitbox_sets,
         skins,
         body_parts,
         geometry,
-        unsupported_features,
+        physics_status,
+        features,
     };
     validate_decoded_model(&model, limits)?;
     let canonical = encode_model(&model, limits)?;
@@ -3309,13 +4444,14 @@ fn validate_decoded_model(
         || !model.identity.ends_with(".mdl")
         || model.identity.contains('\\')
         || model.basis != ModelBasis::source()
+        || model.descriptor != presentation_descriptor(model.profile, model.flags)
         || model.dependencies.len() > limits.max_dependencies
         || model.base_material_count > model.materials.len()
         || model.materials.len() > limits.max_materials
         || model.bones.len() > limits.max_bones
         || model.animations.len() > limits.max_animations
         || model.sequences.len() > limits.max_sequences
-        || model.unsupported_features.len() != 9
+        || model.features.len() != 9
     {
         return Err(invalid());
     }
@@ -3469,6 +4605,8 @@ fn validate_decoded_model(
             sequence.animation_indices.is_empty()
                 && sequence.bone_weights.is_empty()
                 && sequence.pose_keys.iter().all(Vec::is_empty)
+                && sequence.events.is_empty()
+                && sequence.auto_layers.is_empty()
         } else {
             populated
                 && sequence.animation_indices.len() == sequence.blend_count as usize
@@ -3477,6 +4615,27 @@ fn validate_decoded_model(
         if sequence.index != index
             || (!empty_override && !populated)
             || !children_valid
+            || sequence.event_count != sequence.events.len() as i32
+            || sequence.auto_layer_count != sequence.auto_layers.len() as i32
+            || sequence
+                .events
+                .iter()
+                .enumerate()
+                .any(|(event_index, event)| {
+                    event.index != event_index || finite(event.cycle).is_none()
+                })
+            || sequence
+                .auto_layers
+                .iter()
+                .enumerate()
+                .any(|(layer_index, layer)| {
+                    layer.index != layer_index
+                        || layer.sequence < 0
+                        || layer.sequence as usize >= model.sequences.len()
+                        || layer.flags & STUDIO_AUTO_LAYER_POSE != 0
+                            && (layer.pose < 0
+                                || layer.pose as usize >= model.pose_parameters.len())
+                })
             || sequence
                 .animation_indices
                 .iter()
@@ -3505,6 +4664,21 @@ fn validate_decoded_model(
         if attachment.index != index
             || attachment.bone < 0
             || attachment.bone as usize >= model.bones.len()
+        {
+            return Err(invalid());
+        }
+    }
+    for (set_index, set) in model.hitbox_sets.iter().enumerate() {
+        if set.index != set_index
+            || set
+                .hitboxes
+                .iter()
+                .enumerate()
+                .any(|(hitbox_index, hitbox)| {
+                    hitbox.index != hitbox_index
+                        || hitbox.bone < 0
+                        || hitbox.bone as usize >= model.bones.len()
+                })
         {
             return Err(invalid());
         }
@@ -3559,12 +4733,19 @@ fn validate_decoded_model(
         FeatureFamily::UnknownProcedural,
     ];
     if model
-        .unsupported_features
+        .features
         .iter()
         .map(|feature| feature.family)
         .ne(expected)
-        || model.unsupported_features.iter().any(|feature| {
-            (feature.records == 0) != (feature.disposition == FeatureDisposition::NotPresent)
+        || model.features.iter().any(|feature| match feature.family {
+            FeatureFamily::SequenceAutoLayers if feature.records > 0 => {
+                feature.disposition != FeatureDisposition::Evaluated
+            }
+            _ => {
+                (feature.records == 0) != (feature.disposition == FeatureDisposition::NotPresent)
+                    || feature.records > 0
+                        && feature.disposition != FeatureDisposition::RetainedNotEvaluated
+            }
         })
     {
         return Err(invalid());
@@ -3704,6 +4885,8 @@ mod tests {
             ik_lock_count: 0,
             cycle_pose_parameter: 0,
             activity_modifier_count: 0,
+            events: Vec::new(),
+            auto_layers: Vec::new(),
             source_identity: "models/test.mdl".to_owned(),
         }
     }
@@ -3795,6 +4978,7 @@ mod tests {
                     float(1.0),
                 ],
             }],
+            hitbox_sets: Vec::new(),
             pose_parameters: vec![crate::PoseParameter {
                 index: 0,
                 name: b"move_x".to_vec(),
@@ -3960,9 +5144,9 @@ mod tests {
         assert_eq!(first.sha256, second.sha256);
         assert_eq!(
             first.sha256,
-            hex_hash("f8cc817e20bfaba3c069d2cfd1d7cbd74564b18a56027d9c7425f452d0132613")
+            hex_hash("877da8c71bab61f9d4fbacce71967864e3df619d7294ba215e8389da6f3eb799")
         );
-        assert_eq!(first.bytes.len(), 3_492);
+        assert_eq!(first.bytes.len(), 3_589);
         assert!(first.bytes.len() < MAX_MESSAGE_BYTES);
         assert_eq!(first.model.dependencies.len(), 4);
         assert_eq!(
@@ -3989,6 +5173,181 @@ mod tests {
             sha256(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
             hex_hash("248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1")
         );
+    }
+
+    #[test]
+    fn exposes_source_world_and_viewmodel_transform_contracts() {
+        let world = build();
+        assert_eq!(
+            world.model.descriptor,
+            PresentationDescriptor::World {
+                geometry: GeometryOrientation::source(),
+                entity_angles: EntityAngleConvention::DegreesPitchYawRollForwardLeftUpColumns,
+                root_bone: RootBoneContract::AnimatedBelowEntity,
+                depth_range: [float(0.0), float(1.0)],
+            }
+        );
+        let viewmodel = build_profile(PresentationProfile::ViewModel);
+        assert_eq!(
+            viewmodel.model.descriptor,
+            PresentationDescriptor::ViewModel {
+                geometry: GeometryOrientation::source(),
+                entity_angles: EntityAngleConvention::DegreesPitchYawRollForwardLeftUpColumns,
+                default_horizontal_fov_4_by_3: float(54.0),
+                minimum_fov: float(0.1),
+                maximum_fov: float(179.9),
+                near_plane: float(1.0),
+                far_plane: FarPlaneContract::SuppliedWorldFarPlane,
+                depth_range: [float(0.0), float(0.1)],
+                draws_after_world: true,
+                opaque_before_translucent: true,
+                handedness: ViewmodelHandednessContract::OptionalViewSpaceYReflection,
+            }
+        );
+
+        let transform =
+            source_entity_transform(vector([10.0, 20.0, 30.0]), vector([0.0, 90.0, 0.0])).unwrap();
+        let values = transform.0.map(|value| f32::from_bits(value.0));
+        let expected = [
+            0.0, -1.0, 0.0, 10.0, 1.0, 0.0, 0.0, 20.0, 0.0, 0.0, 1.0, 30.0,
+        ];
+        for (actual, expected) in values.into_iter().zip(expected) {
+            assert!((actual - expected).abs() < 1.0e-6);
+        }
+
+        let reflected = reflect_viewmodel_handedness(
+            source_entity_transform(vector([0.0; 3]), vector([0.0; 3])).unwrap(),
+            source_entity_transform(vector([1.0, 2.0, 3.0]), vector([0.0; 3])).unwrap(),
+        );
+        assert_eq!(
+            reflected.0.map(|value| f32::from_bits(value.0)),
+            [
+                1.0, 0.0, 0.0, 1.0, -0.0, -1.0, -0.0, -2.0, 0.0, 0.0, 1.0, 3.0
+            ]
+        );
+    }
+
+    #[test]
+    fn evaluates_sequence_timing_autolayers_events_hitboxes_and_static_roots() {
+        let artifact = build();
+        let timing = sequence_timing(&artifact.model, 0, &[float(0.0)]).unwrap();
+        assert_eq!(timing.frames_per_second, float(30.0));
+        assert_eq!(timing.weighted_frame_count, float(1.0));
+        assert_eq!(timing.cycles_per_second, float(30.0));
+        assert_eq!(timing.duration_seconds, float(1.0 / 30.0));
+
+        let mut model = artifact.model;
+        let animation_index = model.animations.len();
+        model
+            .animations
+            .push(animation(animation_index, b"auto_delta", 1.0, STUDIO_DELTA));
+        let sequence_index = model.sequences.len();
+        let mut delta = sequence(sequence_index, b"auto_delta", b"", animation_index as i16);
+        delta.flags = STUDIO_DELTA;
+        model.sequences.push(delta);
+        model.sequences[0]
+            .auto_layers
+            .push(crate::SequenceAutoLayer {
+                index: 0,
+                sequence: sequence_index as i16,
+                pose: 0,
+                flags: 0,
+                start: float(0.0),
+                peak: float(0.0),
+                tail: float(0.0),
+                end: float(0.0),
+            });
+        model.sequences[0].auto_layer_count = 1;
+        model.sequences[0].events = vec![
+            crate::SequenceEvent {
+                index: 0,
+                cycle: float(0.25),
+                event: 5_004,
+                event_type: 0,
+                options: [0; 64],
+                name: Vec::new(),
+            },
+            crate::SequenceEvent {
+                index: 1,
+                cycle: float(0.95),
+                event: 5_005,
+                event_type: 0,
+                options: [1; 64],
+                name: Vec::new(),
+            },
+            crate::SequenceEvent {
+                index: 2,
+                cycle: float(0.1),
+                event: 5_006,
+                event_type: 0,
+                options: [2; 64],
+                name: b"client".to_vec(),
+            },
+        ];
+        model.sequences[0].event_count = 3;
+        model.hitbox_sets.push(crate::HitboxSet {
+            index: 0,
+            name: b"main".to_vec(),
+            hitboxes: vec![crate::Hitbox {
+                index: 0,
+                bone: 1,
+                group: 3,
+                bounds_min: vector([-1.0; 3]),
+                bounds_max: vector([1.0; 3]),
+                name: Vec::new(),
+            }],
+        });
+        let autolayers = model
+            .features
+            .iter_mut()
+            .find(|feature| feature.family == FeatureFamily::SequenceAutoLayers)
+            .unwrap();
+        autolayers.records = 1;
+        autolayers.disposition = FeatureDisposition::Evaluated;
+
+        let pose = sample_pose(
+            &model,
+            &AnimationState {
+                base_sequence: 0,
+                cycle: float(1.0),
+                pose_parameters: vec![float(0.0)],
+                layers: Vec::new(),
+            },
+        )
+        .unwrap();
+        assert_eq!(pose.local_translations[0].0[0], float(3.0));
+        model.sequences[0].flags |= STUDIO_LOOPING;
+        assert_eq!(
+            presentation_events_between(&model, 0, float(0.0), float(0.5))
+                .unwrap()
+                .iter()
+                .map(|event| event.event)
+                .collect::<Vec<_>>(),
+            [5_004, 5_006]
+        );
+        assert_eq!(
+            presentation_events_between(&model, 0, float(0.9), float(0.1))
+                .unwrap()
+                .iter()
+                .map(|event| event.event)
+                .collect::<Vec<_>>(),
+            [5_005, 5_006]
+        );
+
+        let bytes = encode_model(&model, PresentationLimits::default()).unwrap();
+        assert_eq!(
+            decode_presentation(&bytes, PresentationLimits::default())
+                .unwrap()
+                .model,
+            model
+        );
+
+        model.flags |= STUDIO_HEADER_STATIC_PROP;
+        model.descriptor = presentation_descriptor(model.profile, model.flags);
+        let entity = source_entity_transform(vector([4.0, 5.0, 6.0]), vector([0.0; 3])).unwrap();
+        let world = apply_entity_transform(&model, &pose, entity).unwrap();
+        assert_eq!(world.bone_matrices[0], entity);
+        assert_eq!(world.skinning_matrices[0], entity);
     }
 
     fn hex_hash(value: &str) -> [u8; 32] {
@@ -4219,7 +5578,7 @@ mod tests {
     }
 
     #[test]
-    fn classifies_every_unsupported_presentation_family() {
+    fn classifies_retained_and_evaluated_presentation_families() {
         let mut document = document();
         for procedure in [1, 2, 5, 3, 4, 99] {
             let index = document.bones.len();
@@ -4240,8 +5599,14 @@ mod tests {
         document.unsupported.ik_chains = 1;
         let support = feature_support(&document);
         assert_eq!(support.len(), 9);
-        assert!(support.iter().all(|feature| {
-            feature.disposition == FeatureDisposition::RetainedNotEvaluated && feature.records > 0
+        assert!(support.iter().enumerate().all(|(index, feature)| {
+            feature.records > 0
+                && feature.disposition
+                    == if index == 7 {
+                        FeatureDisposition::Evaluated
+                    } else {
+                        FeatureDisposition::RetainedNotEvaluated
+                    }
         }));
         assert_eq!(support[5].records, 4);
         assert_eq!(support[6].records, 7);
