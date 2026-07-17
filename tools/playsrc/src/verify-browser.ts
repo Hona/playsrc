@@ -255,9 +255,9 @@ export async function verifyBrowserAcceptance(
     ]))
     require(
       records.length === 1
-      && records[0]?.key === "f93f917856b09518dd9ef12b21c2ec395c4376dcfc9cd141a37c26a12cc46815"
-      && records[0]?.byteLength === 39_381_761
-      && records[0]?.sha256 === "5d378f0d08a884f05470f4e907f23f52f0b69ddc3cc69fe59bb73a0b110b0051",
+      && records[0]?.key === "a01cbd3d1a62ee695ff3767e9b5029a78d8fe7cd415e692a5994a1a403867c2c"
+      && records[0]?.byteLength === 39_814_462
+      && records[0]?.sha256 === "4553bd793f7334df823071f98807151020aae8a2246c4a737daa1d63a0d718bc",
       "warm IndexedDB record identity differs",
     )
     return {

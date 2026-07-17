@@ -27,6 +27,7 @@ export type ModelItem = Readonly<{
   position: readonly [number, number, number]
   angles: readonly [number, number, number]
   scale: number
+  viewModel?: boolean
 }>
 
 export type Frame = Readonly<{
@@ -90,8 +91,10 @@ export async function createRenderer(canvas: HTMLCanvasElement): Promise<Readonl
   scene.background = new THREE.Color(0x111820)
   const world = new THREE.Group()
   const effects = new THREE.Group()
-  scene.add(world, effects)
+  const viewModels = new THREE.Group()
   const camera = new THREE.PerspectiveCamera(75, 1, 1, 32_768)
+  scene.add(world, effects, camera)
+  camera.add(viewModels)
   camera.up.set(0, 0, 1)
   const effectGeometry = new THREE.SphereGeometry(1, 10, 6)
   let map: RuntimeMap | undefined
@@ -308,6 +311,7 @@ export async function createRenderer(canvas: HTMLCanvasElement): Promise<Readonl
         }
       }
       const stagedEffects = new THREE.Group()
+      const stagedViewModels = new THREE.Group()
       try {
         for (const effect of frame.effects) {
           const material = new THREE.MeshBasicMaterial({
@@ -336,14 +340,29 @@ export async function createRenderer(canvas: HTMLCanvasElement): Promise<Readonl
           sourceTransform(instance, item.position, item.angles)
           instance.scale.setScalar(item.scale)
           instance.userData.identity = item.identity
-          stagedEffects.add(instance)
+          if (item.viewModel) {
+            const sourceBasis = new THREE.Matrix4().set(
+              0, -1, 0, 0,
+              0, 0, 1, 0,
+              -1, 0, 0, 0,
+              0, 0, 0, 1,
+            )
+            const wrapper = new THREE.Group()
+            wrapper.setRotationFromMatrix(sourceBasis)
+            wrapper.add(instance)
+            stagedViewModels.add(wrapper)
+          } else {
+            stagedEffects.add(instance)
+          }
         }
       } catch {
         clear(stagedEffects, false)
         throw new RenderingError("BoundExceeded", "render effect staging failed")
       }
       clear(effects, false)
+      clear(viewModels, false)
       for (const child of [...stagedEffects.children]) effects.add(child)
+      for (const child of [...stagedViewModels.children]) viewModels.add(child)
       await renderer.renderAsync(scene, camera)
     },
     resize(cssWidth: number, cssHeight: number, devicePixelRatio: number): void {
@@ -368,6 +387,7 @@ export async function createRenderer(canvas: HTMLCanvasElement): Promise<Readonl
       disposed = true
       clear(world)
       clear(effects, false)
+      clear(viewModels, false)
       disposeModels()
       worldLightmap?.dispose()
       worldLightmap = undefined

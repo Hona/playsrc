@@ -522,13 +522,16 @@ fn resolve_materials(
     }
     map.materials
         .iter()
-        .map(|reference| resolve_material(&reference.logical_path.to_ascii_lowercase(), &bundle))
+        .map(|reference| {
+            resolve_material(&reference.logical_path.to_ascii_lowercase(), &bundle, true)
+        })
         .collect()
 }
 
 fn resolve_material(
     identity: &str,
     bundle: &BTreeMap<String, &[u8]>,
+    include_texture: bool,
 ) -> Result<playsrc_map::RuntimeMaterial, ()> {
     let root = *bundle.get(identity).ok_or(())?;
     let mut responses = Vec::new();
@@ -558,10 +561,11 @@ fn resolve_material(
             }
         }
     };
-    let base = if let Some(texture) = material.textures.iter().find(|texture| {
-        texture.role == playsrc_material::TextureRole::Base
-            && texture.disposition == playsrc_material::TextureDisposition::Source
-    }) {
+    let base = if include_texture
+        && let Some(texture) = material.textures.iter().find(|texture| {
+            texture.role == playsrc_material::TextureRole::Base
+                && texture.disposition == playsrc_material::TextureDisposition::Source
+        }) {
         let path = texture
             .logical_path
             .as_ref()
@@ -712,6 +716,8 @@ fn resolve_models(
     let mut roots = std::collections::BTreeSet::from([
         "models/weapons/w_models/w_rocket.mdl".to_owned(),
         "models/weapons/w_models/w_stickybomb.mdl".to_owned(),
+        "models/weapons/v_models/v_rocketlauncher_soldier.mdl".to_owned(),
+        "models/weapons/v_models/v_stickybomb_launcher_demo.mdl".to_owned(),
     ]);
     for entity in &graph.entities {
         if entity
@@ -739,7 +745,7 @@ fn resolve_models(
                 .find(|candidate| bundle.contains_key(&candidate.to_ascii_lowercase()))
                 .ok_or(())?
                 .to_ascii_lowercase();
-            let mut material = resolve_material(&path, &bundle)?;
+            let mut material = resolve_material(&path, &bundle, false)?;
             material.base_texture = None;
             materials.push(material);
         }

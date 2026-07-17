@@ -122,7 +122,7 @@ export class Tf2Application {
   #blockers = new Set<string>([
     consoleResourceBlocker,
     "Twelve world base textures and one exact first-style LDR lightmap atlas resolve; water shaders, directional bump-lightmaps, animated styles, and target filtering remain diagnostic.",
-    "Static prop and exact rocket/sticky StudioModel geometry is available; first-person viewmodels and model animation/skin selection remain unavailable.",
+    "Static prop, rocket/sticky, and Soldier/Demoman viewmodel geometry is available; model textures, skeleton poses, animations, skins/bodygroups, and separate viewmodel FOV/depth remain unavailable.",
     "TF2 PCF definitions and event context are unresolved; missing particle events emit diagnostics and no substitute effect.",
     "Stock rocket/sticky fire and explosion buffers resolve exactly; deterministic target random-wave selection, distance spatialization, occlusion, and mixer/DSP semantics remain unavailable.",
     "Jump course timers/checkpoints, trigger_multiple hint I/O, moving platforms, doors, and trigger_hurt are not implemented; exact brush trigger_teleport contacts are active and preserve velocity.",

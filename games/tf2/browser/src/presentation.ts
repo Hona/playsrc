@@ -94,6 +94,16 @@ export function tf2Presentation(
   const effects: Effect[] = particleItems.map((item) => Object.freeze({ ...item }))
   const models: ModelItem[] = []
   const diagnostics: PresentationDiagnostic[] = []
+  models.push(Object.freeze({
+    identity: 0x7fff_0000 + snapshot.weapon,
+    model: snapshot.class === 1
+      ? "models/weapons/v_models/v_rocketlauncher_soldier.mdl"
+      : "models/weapons/v_models/v_stickybomb_launcher_demo.mdl",
+    position: Object.freeze([0, 0, 0]) as readonly [number, number, number],
+    angles: Object.freeze([0, 0, 0]) as readonly [number, number, number],
+    scale: 1,
+    viewModel: true,
+  }))
   for (const projectile of snapshot.projectiles) {
     const model = projectile.kind === 1
       ? "models/weapons/w_models/w_rocket.mdl"

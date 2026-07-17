@@ -92,6 +92,7 @@ fn collect_material(
     content: &Content,
     root_path: &str,
     bundle: &mut BTreeMap<String, Vec<u8>>,
+    include_textures: bool,
 ) -> Result<(), String> {
     let identity = root_path.to_ascii_lowercase();
     let root_bytes = resolved(content, &identity)?;
@@ -126,6 +127,9 @@ fn collect_material(
         }
     };
     for texture in material.textures {
+        if !include_textures {
+            continue;
+        }
         if texture.disposition != TextureDisposition::Source {
             continue;
         }
@@ -296,7 +300,7 @@ fn main() -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     let mut bundle = BTreeMap::new();
     for material in &map.materials {
-        collect_material(&content, &material.logical_path, &mut bundle)?;
+        collect_material(&content, &material.logical_path, &mut bundle, true)?;
     }
     let graph = playsrc_entity::parse(bsp.lumps[0].bytes(&bsp), playsrc_entity::Limits::default())
         .map_err(|error| error.to_string())?;
@@ -316,6 +320,8 @@ fn main() -> Result<(), String> {
     for path in [
         "models/weapons/w_models/w_rocket.mdl",
         "models/weapons/w_models/w_stickybomb.mdl",
+        "models/weapons/v_models/v_rocketlauncher_soldier.mdl",
+        "models/weapons/v_models/v_stickybomb_launcher_demo.mdl",
     ] {
         model_paths.insert(path.to_owned());
     }
@@ -330,7 +336,7 @@ fn main() -> Result<(), String> {
                 }
             }
             if let Some(candidate) = found {
-                collect_material(&content, &candidate, &mut bundle)?;
+                collect_material(&content, &candidate, &mut bundle, false)?;
             }
         }
     }

@@ -8,10 +8,10 @@ import { acquireMap } from "./targets"
 import { parseRuntimeMap } from "@playsrc/rendering/runtime-map"
 import { buildSourceBundle } from "./source-bundle"
 
-const EXPECTED_MAP_BYTES = 39_381_761
-const EXPECTED_MAP_SHA256 = "5d378f0d08a884f05470f4e907f23f52f0b69ddc3cc69fe59bb73a0b110b0051"
-const EXPECTED_DEPENDENCY_BYTES = 50_638_303
-const EXPECTED_DEPENDENCY_SHA256 = "1662c2cc52dbf8c0b117ccb0fb43c250cdeb9a339f0aae9ec8f6d671dbfc3622"
+const EXPECTED_MAP_BYTES = 39_814_462
+const EXPECTED_MAP_SHA256 = "4553bd793f7334df823071f98807151020aae8a2246c4a737daa1d63a0d718bc"
+const EXPECTED_DEPENDENCY_BYTES = 39_936_317
+const EXPECTED_DEPENDENCY_SHA256 = "d7582f82f4a39c087d24246550192753ea879cb912a842c1b33d84a9d7b27ee0"
 
 type Exports = Readonly<{
   memory: WebAssembly.Memory
@@ -135,7 +135,7 @@ export async function verifyTf2Wasm(
   require(renderMap.batches.length === 10, "runtime map draw-batch count is invalid")
   const resolvedTextures = renderMap.materials.filter((material) => material.baseTexture).length
   require(resolvedTextures === 12, "runtime map resolved-texture count is invalid")
-  require(renderMap.models.length === 7, "runtime model count is invalid")
+  require(renderMap.models.length === 9, `runtime model count ${renderMap.models.length} is invalid`)
   require(renderMap.modelOccurrences.length === 33, "runtime model occurrence count is invalid")
   require(renderMap.lightmap !== undefined, "runtime lightmap atlas is unavailable")
   const teleports = exports.playsrc_teleport_count(handle)
