@@ -59,6 +59,20 @@ pub struct RuntimeDescriptor {
     pub payload_sha256: [u8; 32],
     pub payload: Vec<u8>,
 }
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeTexture {
+    pub logical_path: String,
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeMaterial {
+    pub logical_path: String,
+    pub shader: u8,
+    pub features: u8,
+    pub base_texture: Option<RuntimeTexture>,
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ErrorCode {
     MissingLump,
@@ -274,6 +288,7 @@ pub fn compile_runtime(
     profile: LightingProfile,
     compiler_identity: &str,
     configuration: &[u8],
+    resolved_materials: &[RuntimeMaterial],
 ) -> Result<Runtime, Error> {
     let map = compile(bsp, profile)?;
     let collision =
@@ -283,7 +298,37 @@ pub fn compile_runtime(
     let entities =
         playsrc_entity::parse(bsp.lumps[0].bytes(bsp), playsrc_entity::Limits::default())
             .map_err(|_| error(ErrorCode::InvalidReference, None))?;
-    let payload = serialize(&map, &entities);
+    if !resolved_materials.is_empty() {
+        if resolved_materials.len() != map.materials.len() {
+            return Err(error(ErrorCode::InvalidMaterial, None));
+        }
+        for (index, material) in resolved_materials.iter().enumerate() {
+            if !material
+                .logical_path
+                .eq_ignore_ascii_case(&map.materials[index].logical_path)
+            {
+                return Err(error(ErrorCode::InvalidMaterial, Some(index)));
+            }
+            if let Some(texture) = &material.base_texture {
+                let pixels = usize::try_from(texture.width)
+                    .ok()
+                    .and_then(|width| {
+                        usize::try_from(texture.height)
+                            .ok()
+                            .and_then(|height| width.checked_mul(height))
+                    })
+                    .and_then(|pixels| pixels.checked_mul(4));
+                if texture.logical_path.is_empty()
+                    || texture.width == 0
+                    || texture.height == 0
+                    || pixels != Some(texture.rgba.len())
+                {
+                    return Err(error(ErrorCode::InvalidMaterial, Some(index)));
+                }
+            }
+        }
+    }
+    let payload = serialize(&map, &entities, resolved_materials);
     let payload_sha256 = Sha256::digest(&payload).into();
     let configuration_sha256 = Sha256::digest(configuration).into();
     let descriptor = RuntimeDescriptor {
@@ -302,9 +347,13 @@ pub fn compile_runtime(
         descriptor,
     })
 }
-fn serialize(map: &CanonicalMap, entities: &playsrc_entity::Graph) -> Vec<u8> {
+fn serialize(
+    map: &CanonicalMap,
+    entities: &playsrc_entity::Graph,
+    materials: &[RuntimeMaterial],
+) -> Vec<u8> {
     let mut out = b"PSMP".to_vec();
-    u32v(&mut out, 1);
+    u32v(&mut out, if materials.is_empty() { 1 } else { 2 });
     u32v(&mut out, map.bsp_version as u32);
     u32v(&mut out, map.map_revision as u32);
     out.push(match map.lighting_profile {
@@ -360,6 +409,21 @@ fn serialize(map: &CanonicalMap, entities: &playsrc_entity::Graph) -> Vec<u8> {
         out.extend_from_slice(sample)
     }
     bytesv(&mut out, &entities.source);
+    if !materials.is_empty() {
+        u32v(&mut out, materials.len() as u32);
+        for material in materials {
+            out.push(material.shader);
+            out.push(material.features);
+            out.push(u8::from(material.base_texture.is_some()));
+            out.push(0);
+            if let Some(texture) = &material.base_texture {
+                bytesv(&mut out, texture.logical_path.as_bytes());
+                u32v(&mut out, texture.width);
+                u32v(&mut out, texture.height);
+                bytesv(&mut out, &texture.rgba);
+            }
+        }
+    }
     out
 }
 fn u32v(o: &mut Vec<u8>, v: u32) {

@@ -1,0 +1,21 @@
+[package]
+name = "playsrc-source-bundle"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+playsrc-bsp = { path = "../../../packages/formats/bsp/rust" }
+playsrc-content = { path = "../../../packages/content/rust" }
+playsrc-keyvalues = { path = "../../../packages/formats/keyvalues/rust" }
+playsrc-map = { path = "../../../packages/world/map/rust" }
+playsrc-material = { path = "../../../packages/world/material/rust" }
+playsrc-vmt = { path = "../../../packages/formats/vmt/rust" }
+playsrc-vpk = { path = "../../../packages/formats/vpk/rust" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10.9"
+
+[[bin]]
+name = "playsrc-source-bundle"
+path = "src/main.rs"

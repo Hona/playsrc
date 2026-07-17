@@ -8,6 +8,14 @@ export type RuntimeMaterial = Readonly<{
   logicalPath: string
   width: number
   height: number
+  shader: number
+  features: number
+  baseTexture?: Readonly<{
+    logicalPath: string
+    width: number
+    height: number
+    rgba: Uint8Array
+  }>
 }>
 
 export type RuntimeBatch = Readonly<{
@@ -97,9 +105,11 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
     throw new RuntimeMapError("runtime map byte length is invalid")
   }
   const reader = new Reader(input)
-  if (new TextDecoder().decode(reader.take(4)) !== "PSMP" || reader.u32() !== 1) {
+  if (new TextDecoder().decode(reader.take(4)) !== "PSMP") {
     throw new RuntimeMapError("runtime map identity is invalid")
   }
+  const schema = reader.u32()
+  if (schema !== 1 && schema !== 2) throw new RuntimeMapError("runtime map schema is invalid")
   const bspVersion = reader.u32()
   const mapRevision = reader.u32()
   const lightingProfile = reader.u8()
@@ -124,7 +134,7 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
     if (!logicalPath || width < 1 || height < 1) {
       throw new RuntimeMapError("runtime map material record is invalid")
     }
-    materials.push(Object.freeze({ logicalPath, width, height }))
+    materials.push({ logicalPath, width, height, shader: 0, features: 0 })
   }
   const batches = Array.from({ length: materialCount }, (): MutableBatch => ({
     positions: [],
@@ -173,6 +183,47 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
   }
   reader.take(lightingSampleCount * 4)
   const entityBytes = reader.sized().slice()
+  if (schema === 2) {
+    const resolvedCount = reader.u32()
+    if (resolvedCount !== materials.length) {
+      throw new RuntimeMapError("runtime material payload count is invalid")
+    }
+    for (let index = 0; index < resolvedCount; index += 1) {
+      const shader = reader.u8()
+      const features = reader.u8()
+      const hasTexture = reader.u8()
+      if (reader.u8() !== 0 || hasTexture > 1) {
+        throw new RuntimeMapError("runtime material payload is invalid")
+      }
+      let baseTexture: RuntimeMaterial["baseTexture"]
+      if (hasTexture === 1) {
+        let logicalPath: string
+        try {
+          logicalPath = decoder.decode(reader.sized())
+        } catch {
+          throw new RuntimeMapError("runtime texture path is not UTF-8")
+        }
+        const width = reader.u32()
+        const height = reader.u32()
+        const rgba = reader.sized().slice()
+        if (
+          !logicalPath
+          || width < 1
+          || height < 1
+          || width * height * 4 !== rgba.byteLength
+        ) {
+          throw new RuntimeMapError("runtime texture payload is invalid")
+        }
+        baseTexture = Object.freeze({ logicalPath, width, height, rgba })
+      }
+      materials[index] = {
+        ...materials[index]!,
+        shader,
+        features,
+        baseTexture,
+      }
+    }
+  }
   if (reader.offset !== input.byteLength) throw new RuntimeMapError("runtime map has trailing bytes")
   const frozenBatches = batches.flatMap((batch, material): RuntimeBatch[] => batch.indices.length === 0 ? [] : [Object.freeze({
     material,
@@ -186,7 +237,7 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
     bspVersion,
     mapRevision,
     lightingProfile,
-    materials: Object.freeze(materials),
+    materials: Object.freeze(materials.map((material) => Object.freeze(material))),
     batches: Object.freeze(frozenBatches),
     lightingSampleCount,
     entityCount,

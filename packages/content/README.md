@@ -22,6 +22,7 @@ Resolve exact Source logical paths across explicitly configured content provider
 - Read immutable remote BSP and VPK objects through exact HTTP ranges without extracting archive trees.
 - Resolve map BSPs only through declared external providers, then resolve resources through the active BSP PAK, optional map-supplement atlas, and game providers in that order.
 - Accept verified VPK directory bytes and a thread-safe immutable segment-range adapter so native files and browser HTTP ranges use one Rust resolver and VPK parser.
+- Package exact map-selected raw VMT/VTF dependencies from the active BSP PAK and the configured `gameinfo.txt` TF2/HL2 VPK order for coarse browser-WASM transfer without decoding or extracting archive trees.
 
 ## Non-Responsibilities
 

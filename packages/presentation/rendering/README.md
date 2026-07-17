@@ -20,6 +20,7 @@ Render canonical Source world, gameplay, and replay state in browser GPU environ
 - Consume direct compiler buffers and runtime descriptors for map, model, material, visibility, particle, gameplay, and replay state without GLB translation.
 - Derive presentation-only interpolation without changing authoritative state.
 - Verify and decode the direct `PSMP` runtime payload into material-batched Source-space Three.js/WebGPU world buffers; an explicit debug scene exposes geometry while reporting every unavailable resolved material instead of silently substituting it.
+- Upload exact resolved base-texture RGBA planes as sRGB repeat-wrapped Three.js textures and apply supplied translucency, alpha-test, and culling features; materials without required texture/shader inputs remain explicit diagnostics.
 
 ## Non-Responsibilities
 

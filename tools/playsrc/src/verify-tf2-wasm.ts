@@ -6,9 +6,12 @@ import { repositoryRoot } from "./config"
 import { rustEnvironment } from "./setup"
 import { acquireMap } from "./targets"
 import { parseRuntimeMap } from "@playsrc/rendering/runtime-map"
+import { buildSourceBundle } from "./source-bundle"
 
-const EXPECTED_MAP_BYTES = 16_581_206
-const EXPECTED_MAP_SHA256 = "2019f979e72a98f4a9548a69c92e138991df0964d155576acc958a49c35db2e2"
+const EXPECTED_MAP_BYTES = 38_700_243
+const EXPECTED_MAP_SHA256 = "2c8a6864cb485dc5512649b6543cf2b06623500dce7c7f45bf6302d9fce53d1c"
+const EXPECTED_DEPENDENCY_BYTES = 21_131_855
+const EXPECTED_DEPENDENCY_SHA256 = "d334fa31ef02ff63adaf3755b8b8e8bd764a782be8c68d0055c3f293d024bca4"
 
 type Exports = Readonly<{
   memory: WebAssembly.Memory
@@ -80,17 +83,35 @@ export async function verifyTf2Wasm(
 ): Promise<Record<string, number | string>> {
   const map = await acquireMap(config, identity)
   const wasmPath = await buildTf2Wasm(config)
+  const bundlePath = await buildSourceBundle(config, identity ?? "")
   const wasmBytes = await readFile(wasmPath)
   require(wasmBytes.byteLength > 0 && wasmBytes.byteLength <= 64 * 1024 * 1024, "WASM byte length is invalid")
   const loaded = await WebAssembly.instantiate(wasmBytes)
   const exports = loaded.instance.exports as unknown as Exports
-  const bspBytes = await readFile(path.join(config.sourceCacheDir, map.decoded.cachePath))
+  const [bspBytes, dependencyBytes] = await Promise.all([
+    readFile(path.join(config.sourceCacheDir, map.decoded.cachePath)),
+    readFile(bundlePath),
+  ])
   require(bspBytes.byteLength === map.decoded.byteLength, "cached BSP byte length changed")
+  require(dependencyBytes.byteLength === EXPECTED_DEPENDENCY_BYTES, "source dependency byte length changed")
+  require(
+    new Bun.CryptoHasher("sha256").update(dependencyBytes).digest("hex") === EXPECTED_DEPENDENCY_SHA256,
+    "source dependency SHA-256 changed",
+  )
 
   const bspPointer = exports.playsrc_alloc(bspBytes.byteLength)
   new Uint8Array(exports.memory.buffer, bspPointer, bspBytes.byteLength).set(bspBytes)
-  const handle = exports.playsrc_compile_map(bspPointer, bspBytes.byteLength, 0, 0, 0)
+  const dependencyPointer = exports.playsrc_alloc(dependencyBytes.byteLength)
+  new Uint8Array(exports.memory.buffer, dependencyPointer, dependencyBytes.byteLength).set(dependencyBytes)
+  const handle = exports.playsrc_compile_map(
+    bspPointer,
+    bspBytes.byteLength,
+    0,
+    dependencyPointer,
+    dependencyBytes.byteLength,
+  )
   exports.playsrc_free(bspPointer, bspBytes.byteLength)
+  exports.playsrc_free(dependencyPointer, dependencyBytes.byteLength)
   const error = exports.playsrc_result_error(handle)
   require(error === 0, `TF2 WASM map compilation failed with error ${error}`)
   const mapBytes = exports.playsrc_result_length(handle)
@@ -112,6 +133,8 @@ export async function verifyTf2Wasm(
   require(renderMap.materials.length === 14, "runtime map material count is invalid")
   require(renderMap.drawableSurfaces === 2_761, "runtime map drawable world-surface count is invalid")
   require(renderMap.batches.length === 10, "runtime map draw-batch count is invalid")
+  const resolvedTextures = renderMap.materials.filter((material) => material.baseTexture).length
+  require(resolvedTextures === 12, "runtime map resolved-texture count is invalid")
   const teleports = exports.playsrc_teleport_count(handle)
   const teleportDestinations = exports.playsrc_teleport_destination_count(handle)
   require(teleports === 56, "runtime map teleport count is invalid")
@@ -166,9 +189,11 @@ export async function verifyTf2Wasm(
     target: identity!,
     mapBytes,
     mapSha256,
+    dependencyBytes: dependencyBytes.byteLength,
     materials: renderMap.materials.length,
     drawableSurfaces: renderMap.drawableSurfaces,
     drawBatches: renderMap.batches.length,
+    resolvedTextures,
     teleports,
     teleportDestinations,
     tick: 64,

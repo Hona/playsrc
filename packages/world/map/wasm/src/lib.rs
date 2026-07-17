@@ -73,6 +73,7 @@ pub unsafe extern "C" fn playsrc_compile_map(
             profile,
             "playsrc-map-runtime-1",
             configuration,
+            &[],
         )
         .map(|runtime| {
             (

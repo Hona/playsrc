@@ -7,6 +7,7 @@ import type { LocalConfig } from "./config"
 import { repositoryRoot } from "./config"
 import { acquireMap } from "./targets"
 import { buildTf2Wasm } from "./verify-tf2-wasm"
+import { buildSourceBundle } from "./source-bundle"
 
 const APPLICATION_URL = "http://127.0.0.1:4173/"
 const ASSET_ORIGIN = "http://127.0.0.1:4174"
@@ -59,15 +60,19 @@ export async function startDevelopment(
 ): Promise<DevelopmentOwner> {
   const map = await acquireMap(config, target)
   const wasmPath = await buildTf2Wasm(config)
-  const [bspBytes, wasmBytes, applicationBuild] = await Promise.all([
+  const bundlePath = await buildSourceBundle(config, target ?? "")
+  const [bspBytes, wasmBytes, dependencyBytes, applicationBuild] = await Promise.all([
     readFile(path.join(config.sourceCacheDir, map.decoded.cachePath)),
     readFile(wasmPath),
+    readFile(bundlePath),
     publicCommitIdentity(),
   ])
   const bsp = descriptor("source-object", "application/octet-stream", bspBytes)
   const wasm = descriptor("derived-object", "application/octet-stream", wasmBytes)
+  const dependencies = descriptor("derived-object", "application/octet-stream", dependencyBytes)
   await putObject(config.assetDir, bsp, bspBytes)
   await putObject(config.assetDir, wasm, wasmBytes)
+  await putObject(config.assetDir, dependencies, dependencyBytes)
   const browserConfiguration = JSON.stringify({
     application: "tf2",
     applicationBuild,
@@ -76,6 +81,7 @@ export async function startDevelopment(
     allowedExternalOrigins: ["https://allowed-host"],
     bsp,
     wasm,
+    dependencies,
   })
   const previousAssetOrigin = process.env.PLAYSRC_ASSET_ORIGIN
   const previousBrowserConfiguration = process.env.PLAYSRC_BROWSER_CONFIG

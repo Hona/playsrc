@@ -94,6 +94,7 @@ export async function createRenderer(canvas: HTMLCanvasElement): Promise<Readonl
       group.remove(child)
       if (child instanceof THREE.Mesh) {
         if (disposeGeometry) child.geometry.dispose()
+        if (child.userData.texture instanceof THREE.Texture) child.userData.texture.dispose()
         const materials = Array.isArray(child.material) ? child.material : [child.material]
         for (const material of materials) material.dispose()
       }
@@ -107,7 +108,8 @@ export async function createRenderer(canvas: HTMLCanvasElement): Promise<Readonl
         throw new RenderingError("MalformedInput", "runtime map payload identity differs")
       }
       const parsed = parseRuntimeMap(payload)
-      if (!debugMissingMaterials) {
+      const missing = parsed.materials.filter((material) => !material.baseTexture)
+      if (!debugMissingMaterials && missing.length > 0) {
         throw new RenderingError("MissingInput", "resolved material and texture descriptors are unavailable")
       }
       const staged = new THREE.Group()
@@ -120,12 +122,33 @@ export async function createRenderer(canvas: HTMLCanvasElement): Promise<Readonl
           geometry.setIndex(new THREE.BufferAttribute(batch.indices, 1))
           geometry.computeBoundingSphere()
           const materialIdentity = parsed.materials[batch.material]!.logicalPath
+          const resolved = parsed.materials[batch.material]!
+          const texture = resolved.baseTexture
+            ? new THREE.DataTexture(
+                resolved.baseTexture.rgba,
+                resolved.baseTexture.width,
+                resolved.baseTexture.height,
+                THREE.RGBAFormat,
+                THREE.UnsignedByteType,
+              )
+            : undefined
+          if (texture) {
+            texture.colorSpace = THREE.SRGBColorSpace
+            texture.wrapS = THREE.RepeatWrapping
+            texture.wrapT = THREE.RepeatWrapping
+            texture.flipY = true
+            texture.needsUpdate = true
+          }
           const material = new THREE.MeshBasicMaterial({
-            color: debugColor(materialIdentity),
-            side: THREE.DoubleSide,
+            color: texture ? 0xffffff : debugColor(materialIdentity),
+            map: texture,
+            transparent: (resolved.features & 1) !== 0,
+            alphaTest: (resolved.features & 4) !== 0 ? 0.5 : 0,
+            side: (resolved.features & 8) !== 0 ? THREE.DoubleSide : THREE.FrontSide,
           })
           const mesh = new THREE.Mesh(geometry, material)
           mesh.userData.materialIdentity = materialIdentity
+          mesh.userData.texture = texture
           staged.add(mesh)
         }
       } catch {
@@ -135,7 +158,7 @@ export async function createRenderer(canvas: HTMLCanvasElement): Promise<Readonl
       clear(world)
       for (const child of [...staged.children]) world.add(child)
       map = parsed
-      const diagnostics = Object.freeze(parsed.materials.map((material) => Object.freeze({
+      const diagnostics = Object.freeze(missing.map((material) => Object.freeze({
         code: "MissingMaterial" as const,
         identity: material.logicalPath,
       })))

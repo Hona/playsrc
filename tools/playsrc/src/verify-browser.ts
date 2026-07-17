@@ -46,12 +46,16 @@ function require(condition: unknown, message: string): asserts condition {
 async function acquirePointerLock(session: string): Promise<void> {
   let lastBody = ""
   for (let attempt = 0; attempt < 3; attempt += 1) {
+    const tabs = await agent(["--session", session, "tab"])
+    const tab = /\[(t\d+)\]/.exec(tabs)?.[1]
+    if (tab) await agent(["--session", session, "tab", tab])
     await agent(["--session", session, "focus", ".world-canvas"])
     await agent(["--session", session, "click", ".world-canvas"])
     await agent(["--session", session, "wait", "1000"])
     lastBody = parseJson<string>(await agent(["--session", session, "eval", "document.body.innerText"]))
     if (lastBody.includes("MOUSE CAPTURED")) return
     await agent(["--session", session, "press", "Escape"]).catch(() => {})
+    await agent(["--session", session, "wait", "1000"])
   }
   throw new BrowserEvidenceError(`desktop pointer lock was not acquired after three user activations: ${lastBody.slice(0, 300)}`)
 }
@@ -157,6 +161,13 @@ export async function verifyBrowserAcceptance(
     ]))
     require(jumpSpeed > 0, "jump binding did not advance the player")
 
+    const initialBlockerCount = parseJson<number>(await agent([
+      "--session",
+      session,
+      "eval",
+      "Number.parseInt(document.querySelector('.support-card button span').textContent,10)",
+    ]))
+
     await acquirePointerLock(session)
     await agent(["--session", session, "mouse", "down", "left"])
     await agent(["--session", session, "wait", "100"])
@@ -168,9 +179,11 @@ export async function verifyBrowserAcceptance(
       "eval",
       "Number.parseInt(document.querySelector('.support-card button span').textContent,10)",
     ]))
-    require(blockerCount >= 22, "Soldier fire event was not observed")
+    require(blockerCount >= initialBlockerCount + 2, "Soldier fire event was not observed")
+    const soldierBlockerCount = blockerCount
 
     await agent(["--session", session, "press", "Escape"])
+    await agent(["--session", session, "wait", "1000"])
     await agent(["--session", session, "click", ".class-rail button:nth-child(2)"])
     await agent(["--session", session, "wait", "--text", "STICKYBOMB LAUNCHER", "--timeout", "120000"])
     await acquirePointerLock(session)
@@ -188,7 +201,7 @@ export async function verifyBrowserAcceptance(
       "eval",
       "Number.parseInt(document.querySelector('.support-card button span').textContent,10)",
     ]))
-    require(blockerCount >= 23, "Demoman sticky fire/detonation events were not observed")
+    require(blockerCount >= soldierBlockerCount + 1, "Demoman sticky fire/detonation events were not observed")
 
     await agent(["--session", session, "reload"])
     await agent(["--session", session, "wait", "--text", "Ready", "--timeout", "120000"])
@@ -202,8 +215,9 @@ export async function verifyBrowserAcceptance(
     ]))
     require(
       records.length === 1
-      && records[0]?.byteLength === 16_581_206
-      && records[0]?.sha256 === "2019f979e72a98f4a9548a69c92e138991df0964d155576acc958a49c35db2e2",
+      && records[0]?.key === "eeb42b44f31ef02867844ad71adb4e64917bad493d87997a207e9ccb9e1376e6"
+      && records[0]?.byteLength === 38_700_243
+      && records[0]?.sha256 === "2c8a6864cb485dc5512649b6543cf2b06623500dce7c7f45bf6302d9fce53d1c",
       "warm IndexedDB record identity differs",
     )
     return {

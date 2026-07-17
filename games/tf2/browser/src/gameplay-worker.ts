@@ -4,7 +4,7 @@ import type { WorkerFailureCode, WorkerRequest, WorkerResponse } from "./protoco
 
 const MAX_WASM_BYTES = 64 * 1024 * 1024
 const MAX_BSP_BYTES = 512 * 1024 * 1024
-const MAX_CONFIGURATION_BYTES = 1024 * 1024
+const MAX_CONFIGURATION_BYTES = 64 * 1024 * 1024
 const MAX_MESSAGE_BYTES = 64 * 1024 * 1024
 
 type WasmExports = Readonly<{

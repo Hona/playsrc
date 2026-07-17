@@ -10,6 +10,7 @@ export type BrowserConfiguration = Readonly<{
   allowedExternalOrigins: readonly string[]
   bsp: ObjectDescriptor
   wasm: ObjectDescriptor
+  dependencies: ObjectDescriptor
 }>
 
 export class BrowserConfigurationError extends Error {
@@ -55,7 +56,7 @@ export async function loadBrowserConfiguration(): Promise<BrowserConfiguration> 
   }
   if (
     !record(value)
-    || Object.keys(value).sort().join("\0") !== "allowedExternalOrigins\0application\0applicationBuild\0assetOrigin\0bsp\0target\0wasm"
+    || Object.keys(value).sort().join("\0") !== "allowedExternalOrigins\0application\0applicationBuild\0assetOrigin\0bsp\0dependencies\0target\0wasm"
     || value.application !== "tf2"
     || typeof value.applicationBuild !== "string"
     || !HASH.test(value.applicationBuild)
@@ -78,6 +79,7 @@ export async function loadBrowserConfiguration(): Promise<BrowserConfiguration> 
     || new Set(value.allowedExternalOrigins).size !== value.allowedExternalOrigins.length
     || !descriptor(value.bsp, "source-object")
     || !descriptor(value.wasm, "derived-object")
+    || !descriptor(value.dependencies, "derived-object")
   ) {
     throw new BrowserConfigurationError("Browser configuration fields are invalid")
   }

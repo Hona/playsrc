@@ -41,6 +41,7 @@ export class Tf2Application {
   readonly #vguiRoot: HTMLElement
   readonly #publish: (view: ApplicationView) => void
   #configuration?: BrowserConfiguration
+  #dependencies = new Uint8Array()
   #cache?: DerivedObjectCache
   #client?: Tf2WorkerClient
   #renderer?: Renderer
@@ -74,7 +75,7 @@ export class Tf2Application {
   #closed = false
   #blockers = new Set<string>([
     consoleResourceBlocker,
-    "Resolved VMT/VTF textures and lightmap atlases are absent from the current runtime payload; Rendering is in an explicit diagnostic material mode.",
+    "Twelve world base textures resolve through exact VMT/VTF bytes; water shaders and per-face lightmap atlases remain unavailable and use explicit diagnostic presentation.",
     "Static props, viewmodels, and exact rocket/sticky StudioModel browser resources are not present in the current scene descriptor.",
     "TF2 PCF definitions and event context are unresolved; missing particle events emit diagnostics and no substitute effect.",
     "TF2 sound scripts and decoded resource buffers are unresolved; missing audio events create no Web Audio node or substitute sound.",
@@ -107,17 +108,19 @@ export class Tf2Application {
     try {
       this.#configuration = await loadBrowserConfiguration()
       this.#set({ detail: "Fetching exact BSP and gameplay WASM objects" })
-      const [bsp, wasm] = await Promise.all([
+      const [bsp, wasm, dependencies] = await Promise.all([
         fetchImmutableObject(this.#configuration.assetOrigin, this.#configuration.bsp),
         fetchImmutableObject(this.#configuration.assetOrigin, this.#configuration.wasm),
+        fetchImmutableObject(this.#configuration.assetOrigin, this.#configuration.dependencies),
       ])
+      this.#dependencies = dependencies
       this.#cache = await openDerivedObjectCache()
       this.#client = new Tf2WorkerClient(new GameplayWorker(), this.#cache)
       await this.#client.initialize(wasm, this.#configuration.wasm.sha256)
-      const key = await mapDerivedKey(this.#configuration.bsp.sha256, 0, new Uint8Array())
+      const key = await mapDerivedKey(this.#configuration.bsp.sha256, 0, this.#dependencies)
       this.#set({ detail: "Compiling direct map authority" })
       this.#generation = 1
-      this.#loaded = await this.#client.load(this.#generation, bsp, 0, new Uint8Array(), key)
+      this.#loaded = await this.#client.load(this.#generation, bsp, 0, this.#dependencies, key)
       this.#renderer = await createRenderer(this.#canvas)
       this.resize()
       const scene = await this.#renderer.loadMap(
@@ -365,8 +368,8 @@ export class Tf2Application {
     this.#paused = true
     this.#neutral()
     const generation = this.#generation + 1
-    const key = await mapDerivedKey(bspSha256, 0, new Uint8Array())
-    const staged = await this.#client.stage(generation, bytes, 0, new Uint8Array(), key)
+    const key = await mapDerivedKey(bspSha256, 0, this.#dependencies)
+    const staged = await this.#client.stage(generation, bytes, 0, this.#dependencies, key)
     const prior = this.#loaded
     try {
       await this.#renderer.loadMap(staged.payload, staged.payloadSha256, true)

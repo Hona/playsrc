@@ -5,7 +5,7 @@ import type { WorkerFailureCode, WorkerRequest, WorkerResponse } from "./protoco
 const HASH = /^[0-9a-f]{64}$/
 const MAX_PENDING = 64
 const MAX_BSP_BYTES = 512 * 1024 * 1024
-const MAX_CONFIGURATION_BYTES = 1024 * 1024
+const MAX_CONFIGURATION_BYTES = 64 * 1024 * 1024
 type RequestWithoutId = WorkerRequest extends infer Request
   ? Request extends { id: number }
     ? Omit<Request, "id">
