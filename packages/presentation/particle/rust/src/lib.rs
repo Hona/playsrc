@@ -1,5 +1,7 @@
 mod definition;
 mod dmx;
+mod sheet;
+mod source_random;
 mod world;
 
 pub use definition::{
@@ -7,10 +9,13 @@ pub use definition::{
     Registry, RegistryLimits, TargetClosure,
 };
 pub use dmx::{Attribute, Document, Element, Value};
+pub use sheet::{
+    ParticleSheet, SheetFrame, SheetSample, SheetSampleRequest, SheetSequence, sample_sheet,
+};
 pub use world::{
     AdvanceRequest, Bounds, CollisionBatch, CollisionQuery, CollisionResult, ControlPoint, Event,
     EventCommand, ParticleWorld, Primitive, RenderItem, StopMode, TraceRequest, WorldLimits,
-    encode_render_output,
+    encode_render_output, resolve_render_sheets,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

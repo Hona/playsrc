@@ -8,13 +8,13 @@ import {
 
 function output(overrides: Readonly<{ count?: number; material?: number; radius?: number }> = {}): Uint8Array {
   const count = overrides.count ?? 1
-  const bytes = new Uint8Array(12 + count * 120)
+  const bytes = new Uint8Array(12 + count * 392)
   const view = new DataView(bytes.buffer)
   view.setUint32(0, 0x5250_5350, true)
-  view.setUint32(4, 1, true)
+  view.setUint32(4, 2, true)
   view.setUint32(8, count, true)
   for (let index = 0; index < count; index += 1) {
-    const offset = 12 + index * 120
+    const offset = 12 + index * 392
     view.setUint32(offset, index + 1, true)
     view.setUint32(offset + 4, 7, true)
     view.setUint32(offset + 8, 11, true)
@@ -40,6 +40,13 @@ function output(overrides: Readonly<{ count?: number; material?: number; radius?
     view.setFloat32(offset + 108, 0.2, true)
     view.setInt32(offset + 112, 0, true)
     view.setUint32(offset + 116, 3, true)
+    view.setInt32(offset + 120, 4, true)
+    view.setUint32(offset + 124, 1, true)
+    view.setFloat32(offset + 128, 0.25, true)
+    for (let value = 0; value < 16; value += 1) {
+      view.setFloat32(offset + 132 + value * 4, value / 16, true)
+      view.setFloat32(offset + 196 + value * 4, (value + 1) / 17, true)
+    }
   }
   return bytes
 }
@@ -61,6 +68,7 @@ describe("Rust particle render-data adapter", () => {
       color: 0x12_34_56,
       opacity: 0.75,
       sequence: 3,
+      secondarySequence: 4,
       trailLength: 0.25,
       sortKey: 100,
       ageSeconds: 0.5,
@@ -72,6 +80,22 @@ describe("Rust particle render-data adapter", () => {
       orientationType: 0,
       animationFitLifetime: true,
       animationRateAsFps: true,
+      primarySheet: {
+        current: [
+          [0, 0.0625, 0.125, 0.1875],
+          [0.25, 0.3125, 0.375, 0.4375],
+          [0.5, 0.5625, 0.625, 0.6875],
+          [0.75, 0.8125, 0.875, 0.9375],
+        ],
+        next: [
+          [0.05882352963089943, 0.11764705926179886, 0.1764705926179886, 0.23529411852359772],
+          [0.29411765933036804, 0.3529411852359772, 0.4117647111415863, 0.47058823704719543],
+          [0.529411792755127, 0.5882353186607361, 0.6470588445663452, 0.7058823704719543],
+          [0.7647058963775635, 0.8235294222831726, 0.8823529481887817, 0.9411764740943909],
+        ],
+        blend: 0.25,
+      },
+      secondarySheet: null,
     }])
   })
 
