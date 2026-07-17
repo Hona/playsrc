@@ -30,6 +30,7 @@ export type Rgba = readonly [red: number, green: number, blue: number, alpha: nu
 export type ConsoleFontResource = Readonly<{
   logicalIdentity: string
   family: string
+  browserFamily: string | null
   sizePxAt480: number
   lineHeightPxAt480: number
   weight: number

@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises"
+import { mkdir, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -26,6 +26,15 @@ async function agent(args: string[]): Promise<string> {
 
 async function evaluate<T>(expression: string): Promise<T> {
   return JSON.parse(await agent(["eval", expression])) as T
+}
+
+async function waitFor(label: string, expression: string, timeout: string): Promise<void> {
+  try {
+    await agent(["wait", "--fn", expression, "--timeout", timeout])
+  } catch (error) {
+    const observation = await agent(["eval", `({body:document.body.innerText.slice(0,1000),camera:document.querySelector('main')?.dataset.cameraPosition ?? null,speed:document.querySelector('.speed-readout strong')?.textContent ?? null})`]).catch(() => "unavailable")
+    throw new Error(`${label}: ${error instanceof Error ? error.message : "wait failed"}; observation=${observation}`)
+  }
 }
 
 function require(value: unknown, message: string): asserts value {
@@ -104,7 +113,28 @@ try {
   browserOpen = true
   await agent(["set", "viewport", "1280", "720", "1"])
   await agent(["wait", "--text", "Ready", "--timeout", "120000"])
-  await agent(["wait", "--fn", "document.querySelector('main').dataset.cameraPosition && Number(document.querySelector('.speed-readout strong').textContent) === 0 && Math.abs(Number(document.querySelector('main').dataset.cameraPosition.split(',')[2]) + 3067.2099609375) < 0.01", "--timeout", "30000"])
+  const platformFontCapability = await evaluate<string | null>("document.querySelector('[data-vgui-service=developer-console]')?.dataset.platformFontCapability ?? null")
+  if (platformFontCapability === "unsupported") {
+    const result = {
+      capturedAt: new Date().toISOString(),
+      operatingSystem: `${process.platform} ${os.release()}`,
+      architecture: process.arch,
+      bun: Bun.version,
+      browser: await agent(["--version"]),
+      browserRuntime: await evaluate("({userAgent:navigator.userAgent,platform:navigator.platform,language:navigator.language})"),
+      sourceBuild: "TF2 24207079 / patch 10822003",
+      platformFonts: "unsupported; console and diagnostics paint and input suppressed",
+      shutdown: "pending",
+    }
+    await rm(path.join(evidenceRoot, "tf2-app-720p.png"), { force: true })
+    await agent(["close"])
+    browserOpen = false
+    await processOwner.interrupt()
+    result.shutdown = "browser closed; SIGINT child exit zero"
+    await writeFile(path.join(evidenceRoot, "tf2-integration.json"), `${JSON.stringify(result, null, 2)}\n`)
+    console.log(JSON.stringify(result))
+  } else {
+  await waitFor("initial camera", "document.querySelector('main').dataset.cameraPosition && Number(document.querySelector('.speed-readout strong').textContent) === 0 && Math.abs(Number(document.querySelector('main').dataset.cameraPosition.split(',')[2]) + 3067.2099609375) < 0.01", "30000")
   const initial = await evaluate<number[]>("document.querySelector('main').dataset.cameraPosition.split(',').map(Number)")
 
   await agent(["eval", "window.dispatchEvent(new KeyboardEvent('keydown',{code:'ControlLeft',key:'Control',bubbles:true})); true"])
@@ -114,14 +144,14 @@ try {
   require(Math.abs(control[2] - initial[2]) < 2, "Control changed crouch state")
 
   await agent(["eval", "window.dispatchEvent(new KeyboardEvent('keydown',{code:'ShiftLeft',key:'Shift',bubbles:true})); true"])
-  await agent(["wait", "--fn", `Number(document.querySelector('main').dataset.cameraPosition.split(',')[2]) < ${initial[2] - 15}`, "--timeout", "10000"])
+  await waitFor("left shift crouch", `Number(document.querySelector('main').dataset.cameraPosition.split(',')[2]) < ${initial[2] - 15}`, "10000")
   const shiftLeft = await evaluate<number[]>("document.querySelector('main').dataset.cameraPosition.split(',').map(Number)")
   await agent(["eval", "window.dispatchEvent(new Event('blur')); true"])
-  await agent(["wait", "--fn", `Number(document.querySelector('main').dataset.cameraPosition.split(',')[2]) > ${shiftLeft[2] + 15}`, "--timeout", "10000"])
+  await waitFor("blur neutralization", `Number(document.querySelector('main').dataset.cameraPosition.split(',')[2]) > ${shiftLeft[2] + 15}`, "10000")
   const neutral = await evaluate<number[]>("document.querySelector('main').dataset.cameraPosition.split(',').map(Number)")
 
   await agent(["eval", "window.dispatchEvent(new KeyboardEvent('keydown',{code:'ShiftRight',key:'Shift',bubbles:true})); true"])
-  await agent(["wait", "--fn", `Number(document.querySelector('main').dataset.cameraPosition.split(',')[2]) < ${neutral[2] - 15}`, "--timeout", "10000"])
+  await waitFor("right shift crouch", `Number(document.querySelector('main').dataset.cameraPosition.split(',')[2]) < ${neutral[2] - 15}`, "10000")
   const shiftRight = await evaluate<number[]>("document.querySelector('main').dataset.cameraPosition.split(',').map(Number)")
   await agent(["eval", "window.dispatchEvent(new KeyboardEvent('keyup',{code:'ShiftRight',key:'Shift',bubbles:true})); true"])
 
@@ -173,6 +203,7 @@ try {
   result.shutdown = "browser closed; SIGINT child exit zero"
   await writeFile(path.join(evidenceRoot, "tf2-integration.json"), `${JSON.stringify(result, null, 2)}\n`)
   console.log(JSON.stringify(result))
+  }
 } finally {
   if (browserOpen) await agent(["close"]).catch(() => {})
   await processOwner.interrupt().catch(() => {})

@@ -17,6 +17,11 @@ export const VGUI_CSS = `
   z-index: 0;
 }
 
+.playsrc-vgui-root[data-platform-font-capability="unsupported"] {
+  visibility: hidden;
+  pointer-events: none;
+}
+
 .playsrc-vgui-control {
   box-sizing: border-box;
 }
@@ -76,6 +81,7 @@ export const VGUI_CSS = `
   font-size: var(--vgui-title-size);
   font-style: var(--vgui-title-style);
   font-weight: var(--vgui-title-weight);
+  font-synthesis: none;
   line-height: var(--vgui-title-line-height);
   white-space: nowrap;
   pointer-events: none;
@@ -151,6 +157,7 @@ export const VGUI_CSS = `
   font-size: var(--vgui-console-size);
   font-style: var(--vgui-console-style);
   font-weight: var(--vgui-console-weight);
+  font-synthesis: none;
   line-height: var(--vgui-console-line-height);
   overflow-wrap: anywhere;
   padding: calc(var(--vgui-history-inset-top) + var(--vgui-history-draw-y)) var(--vgui-history-inset-right) var(--vgui-history-inset-bottom) calc(var(--vgui-history-inset-left) + var(--vgui-history-draw-x));
@@ -177,6 +184,7 @@ export const VGUI_CSS = `
   font-size: var(--vgui-entry-size);
   font-style: var(--vgui-entry-style);
   font-weight: var(--vgui-entry-weight);
+  font-synthesis: none;
   line-height: var(--vgui-entry-line-height);
   outline: 0;
   user-select: text;
@@ -205,6 +213,7 @@ export const VGUI_CSS = `
   font-size: var(--vgui-submit-size);
   font-style: var(--vgui-submit-style);
   font-weight: var(--vgui-submit-weight);
+  font-synthesis: none;
   line-height: var(--vgui-submit-line-height);
   outline: 0;
 }
@@ -237,6 +246,7 @@ export const VGUI_CSS = `
   font-size: var(--vgui-completion-size);
   font-style: var(--vgui-completion-style);
   font-weight: var(--vgui-completion-weight);
+  font-synthesis: none;
   line-height: var(--vgui-completion-line-height);
   list-style: none;
 }
@@ -269,6 +279,7 @@ export const VGUI_CSS = `
   font-size: var(--vgui-diagnostic-size);
   font-style: var(--vgui-diagnostic-style);
   font-weight: var(--vgui-diagnostic-weight);
+  font-synthesis: none;
   line-height: var(--vgui-diagnostic-line-height);
   text-align: left;
   text-shadow: var(--vgui-diagnostic-shadow);

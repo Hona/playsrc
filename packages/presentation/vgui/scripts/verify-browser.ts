@@ -85,6 +85,21 @@ try {
   await agent(["--headed", "open", "http://127.0.0.1:4174/"])
   await agent(["wait", "--fn", "Boolean(window.vguiEvidence)"])
   result.browserRuntime = await evaluate("({userAgent:navigator.userAgent,platform:navigator.platform,language:navigator.language})")
+  const platformFonts = await evaluate<{ kind: "supported" | "unsupported"; reason?: string }>("window.vguiEvidence.platformFonts")
+  result.platformFonts = platformFonts
+  if (platformFonts.kind === "unsupported") {
+    result.result = "unsupported-platform-fonts"
+    result.captures = {}
+    await Promise.all([
+      "480p.png",
+      "720p.png",
+      "1080p.png",
+      "720p-dpr2.png",
+      "720p-zoom2.png",
+    ].map((name) => rm(path.join(evidenceRoot, name), { force: true })))
+    await writeFile(path.join(evidenceRoot, "browser-evidence.json"), `${JSON.stringify(result, null, 2)}\n`)
+    console.log(JSON.stringify(result))
+  } else {
   const captures: Record<string, unknown> = {}
   for (const [name, width, height, scale] of [
     ["480p", 854, 480, 1],
@@ -187,8 +202,14 @@ try {
   result.cancellation = { beforeHide, afterHide }
   result.cycles = cycles
   result.accessibility = JSON.parse(await agent(["snapshot", "--json"]))
+  result.platformFontMetrics = await evaluate(`(()=>{
+    const canvas=document.createElement('canvas'); const context=canvas.getContext('2d');
+    const nodes={title:document.querySelector('[data-vgui-name=ConsoleTitle]'),history:document.querySelector('[data-vgui-name=ConsoleHistory]'),entry:document.querySelector('[data-vgui-name=ConsoleEntry]'),completion:document.querySelector('[data-vgui-name=CompletionList]'),diagnostic:document.querySelector('[data-vgui-name=ClientDiagnostics]')};
+    return Object.fromEntries(Object.entries(nodes).map(([name,node])=>{const style=getComputedStyle(node);context.font=style.font;const metrics=context.measureText('TF2 Console Hg 0123456789');return [name,{font:context.font,width:metrics.width,actualBoundingBoxLeft:metrics.actualBoundingBoxLeft,actualBoundingBoxRight:metrics.actualBoundingBoxRight,actualBoundingBoxAscent:metrics.actualBoundingBoxAscent,actualBoundingBoxDescent:metrics.actualBoundingBoxDescent,fontBoundingBoxAscent:metrics.fontBoundingBoxAscent,fontBoundingBoxDescent:metrics.fontBoundingBoxDescent}]}));
+  })()`)
   await writeFile(path.join(evidenceRoot, "browser-evidence.json"), `${JSON.stringify(result, null, 2)}\n`)
   console.log(JSON.stringify(result))
+  }
 } finally {
   await agent(["close"]).catch(() => {})
   server.stop(true)

@@ -143,6 +143,7 @@ function cloneResources(resources: ConsoleResources): ConsoleResources {
     Object.freeze({
       logicalIdentity: font.logicalIdentity,
       family: font.family,
+      browserFamily: font.browserFamily,
       sizePxAt480: font.sizePxAt480,
       lineHeightPxAt480: font.lineHeightPxAt480,
       weight: font.weight,
@@ -247,6 +248,7 @@ function validateResources(resolution: ConsoleResourceResolution): ConsoleDiagno
         !validLogicalIdentity(font.logicalIdentity) ||
         font.family.length === 0 ||
         !hasValidUnicode(font.family) ||
+        (font.browserFamily !== null && !/^[a-z][a-z0-9-]{0,127}$/u.test(font.browserFamily)) ||
         !Number.isFinite(font.sizePxAt480) ||
         font.sizePxAt480 <= 0 ||
         font.sizePxAt480 > 512 ||
@@ -263,6 +265,8 @@ function validateResources(resolution: ConsoleResourceResolution): ConsoleDiagno
         return "MalformedResource"
       }
     }
+    const admittedFonts = Object.values(resources.fonts).filter((font) => font.browserFamily !== null).length
+    if (admittedFonts !== 0 && admittedFonts !== Object.keys(resources.fonts).length) return "MalformedResource"
     for (const border of Object.values(resources.borders)) {
       if (
         border.logicalName.length === 0 ||
@@ -659,9 +663,18 @@ class ConsoleView {
     ]
     for (const [name, color] of colorVariables) style.setProperty(name, rgba(color))
     const scale = viewport.height / 480
+    const platformFontsReady = Object.values(resources.fonts).every((font) => font.browserFamily !== null)
+    this.runtime.host.dataset.platformFontCapability = platformFontsReady ? "supported" : "unsupported"
+    if (platformFontsReady) {
+      this.runtime.host.removeAttribute("aria-hidden")
+      this.runtime.host.removeAttribute("inert")
+    } else {
+      this.runtime.host.setAttribute("aria-hidden", "true")
+      this.runtime.host.setAttribute("inert", "")
+    }
     for (const [role, font] of Object.entries(resources.fonts)) {
       const fontScale = font.proportional ? scale : 1
-      style.setProperty(`--vgui-${role}-font`, font.family)
+      style.setProperty(`--vgui-${role}-font`, font.browserFamily ?? "playsrc-vgui-platform-font-unavailable")
       style.setProperty(`--vgui-${role}-size`, `${Math.max(1, Math.trunc(font.sizePxAt480 * fontScale))}px`)
       style.setProperty(`--vgui-${role}-line-height`, `${Math.max(1, Math.trunc(font.lineHeightPxAt480 * fontScale))}px`)
       style.setProperty(`--vgui-${role}-weight`, font.weight === 0 ? "normal" : String(font.weight))

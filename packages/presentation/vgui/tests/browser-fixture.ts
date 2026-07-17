@@ -1,4 +1,9 @@
-import { diagnosticResources, consoleResources, consoleLimits } from "../../../../apps/web/tf2/src/console-resources"
+import {
+  diagnosticResources,
+  consolePlatformFonts,
+  consoleResources,
+  consoleLimits,
+} from "../../../../apps/web/tf2/src/console-resources"
 import {
   initializeClientDiagnostics,
   initializeDeveloperConsole,
@@ -16,6 +21,7 @@ declare global {
       hide(): void
       show(): void
       cycles(count: number): unknown
+      readonly platformFonts: unknown
     }>
   }
 }
@@ -105,6 +111,7 @@ window.vguiEvidence = Object.freeze({
     for (let index = 0; index < count; index += 1) reset()
     return Object.freeze({ children: mount.childElementCount, snapshots: window.vguiEvidence.snapshots() })
   },
+  platformFonts: consolePlatformFonts,
 })
 
 reset()

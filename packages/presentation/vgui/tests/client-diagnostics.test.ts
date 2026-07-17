@@ -21,8 +21,9 @@ function resources(): ClientDiagnosticResources {
     font: Object.freeze({
       logicalIdentity: "resource/sourceschemebase.res#fonts/defaultfixedoutline",
       family: "Lucida Console",
+      browserFamily: "playsrc-test-lucida-console",
       sizePxAt480: 10,
-      lineHeightPxAt480: 10,
+      lineHeightPxAt480: 12,
       weight: 0,
       style: "normal" as const,
       proportional: false,
@@ -99,6 +100,26 @@ describe("client diagnostic panel", () => {
     expect(diagnostics.snapshot()).toEqual(admitted)
   })
 
+  test("suppresses paint and input when the platform face is unavailable", () => {
+    const document = new FakeDocument()
+    const root = createRoot(document)
+    const unavailable = Object.freeze({
+      ...resources(),
+      font: Object.freeze({ ...resources().font, browserFamily: null }),
+    })
+    const initialized = initializeClientDiagnostics({
+      runtimeIdentity: "diagnostic-unavailable-font",
+      resources: unavailable,
+      viewport: { width: 1280, height: 720, devicePixelRatio: 1 },
+    })
+    if (!initialized.ok) throw new Error(initialized.code)
+    expect(initialized.diagnostics.apply({ kind: "mount", root: root as unknown as HTMLElement }).ok).toBe(true)
+    const host = root.children[1]
+    expect(host.dataset.platformFontCapability).toBe("unsupported")
+    expect(host.getAttribute("aria-hidden")).toBe("true")
+    expect(host.getAttribute("inert")).toBe("")
+  })
+
   test("computes exact instantaneous and 0.1-weight smoothed FPS schedules with low, high, milliseconds, map, and threshold colors", () => {
     const { diagnostics, root } = mounted()
     diagnostics.apply({ kind: "present", frame: frame(1_000, { fpsMode: 2 }) })
@@ -159,14 +180,15 @@ describe("client diagnostic panel", () => {
     diagnostics.apply({ kind: "present", frame: frame(100, { positionMode: 1 }) })
     const host = root.children[1]
     const panel = byName(root, "ClientDiagnostics")
-    expect([panel.style.left, panel.style.top, panel.style.width, panel.style.height]).toEqual(["980px", "0px", "300px", "48px"])
+    expect([panel.style.left, panel.style.top, panel.style.width, panel.style.height]).toEqual(["980px", "0px", "300px", "56px"])
     expect(host.style.getPropertyValue("--vgui-diagnostic-size")).toBe("10px")
+    expect(host.style.getPropertyValue("--vgui-diagnostic-shadow").split(", ")).toHaveLength(8)
 
     diagnostics.apply({ kind: "set-viewport", viewport: { width: 1920, height: 1080, devicePixelRatio: 3 } })
-    expect([panel.style.left, panel.style.width, panel.style.height]).toEqual(["1620px", "300px", "48px"])
+    expect([panel.style.left, panel.style.width, panel.style.height]).toEqual(["1620px", "300px", "56px"])
     expect(host.style.getPropertyValue("--vgui-diagnostic-size")).toBe("10px")
     diagnostics.apply({ kind: "set-viewport", viewport: { width: 854, height: 480, devicePixelRatio: 1 } })
-    expect([panel.style.left, panel.style.width, panel.style.height]).toEqual(["554px", "300px", "48px"])
+    expect([panel.style.left, panel.style.width, panel.style.height]).toEqual(["554px", "300px", "56px"])
   })
 
   test("replaces roots and destroys repeated panels with no nodes, listeners, observers, or timers", () => {

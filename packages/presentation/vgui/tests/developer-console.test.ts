@@ -20,6 +20,7 @@ function resources(identity = "vgui/console/test-resources"): ConsoleResources {
     Object.freeze({
       logicalIdentity,
       family,
+      browserFamily: "playsrc-test-font",
       sizePxAt480: size,
       lineHeightPxAt480: size + 2,
       weight: 500,
@@ -377,6 +378,30 @@ describe("developer console initialization, resources, and direct DOM", () => {
     expect(host.style.getPropertyValue("--vgui-console-size")).toBe("14px")
     expect(host.style.getPropertyValue("--vgui-title-size")).toBe("12px")
     expect(host.style.getPropertyValue("--vgui-completion-size")).toBe("10px")
+  })
+
+  test("suppresses paint and input atomically when no admitted browser family exists", () => {
+    const base = resources()
+    const unavailable = (font: ConsoleResources["fonts"]["title"]) => Object.freeze({ ...font, browserFamily: null })
+    const resolution: ConsoleResourceResolution = Object.freeze({
+      kind: "resolved",
+      resources: Object.freeze({
+        ...base,
+        fonts: Object.freeze({
+          title: unavailable(base.fonts.title),
+          console: unavailable(base.fonts.console),
+          entry: unavailable(base.fonts.entry),
+          completion: unavailable(base.fonts.completion),
+          submit: unavailable(base.fonts.submit),
+        }),
+      }),
+    })
+    const { root } = mounted([], { resources: resolution })
+    const host = root.children[1]
+    expect(host.dataset.platformFontCapability).toBe("unsupported")
+    expect(host.getAttribute("aria-hidden")).toBe("true")
+    expect(host.getAttribute("inert")).toBe("")
+    expect(host.style.getPropertyValue("--vgui-title-font")).toBe("playsrc-vgui-platform-font-unavailable")
   })
 })
 

@@ -1,5 +1,6 @@
 export { initializeDeveloperConsole } from "./developer-console"
 export { initializeClientDiagnostics } from "./client-diagnostics"
+export { admitLocalPlatformFonts, classifyBrowserPlatform } from "./platform-fonts"
 export { SOURCE_CONSOLE_CEILINGS } from "./contract"
 export type {
   ConsoleBorderResource,
@@ -36,3 +37,11 @@ export type {
   DeveloperConsoleInitialization,
   Rgba,
 } from "./contract"
+export type {
+  BrowserPlatform,
+  LocalPlatformFontAdapter,
+  LocalPlatformFontCapability,
+  LocalPlatformFontFace,
+  LocalPlatformFontFaceRequest,
+  LocalPlatformFontTarget,
+} from "./platform-fonts"
