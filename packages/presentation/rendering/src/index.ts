@@ -1,10 +1,87 @@
 import * as THREE from "three/webgpu"
-import { parseRuntimeMap, type RuntimeMap } from "./runtime-map"
+import * as TSL from "three/tsl"
+import {
+  ExposureController,
+  SOURCE_LDR,
+  SOURCE_PC_INTEGER_HDR,
+  validateRenderConfiguration,
+  type CanvasAlphaMode,
+  type CanvasFormat,
+  type ExposureConfiguration,
+  type ExposureSnapshot,
+  type OutputColorSpace,
+  type RenderConfiguration,
+  type ToneOperator,
+} from "./color-output"
 import { configureWorldLightmap, worldMaterialSide } from "./material-state"
+import { OwnedResourceGeneration } from "./resource-generation"
+import {
+  buildRuntimeLightmap,
+  parseRuntimeMap,
+  parseRuntimeMapVerified,
+  type ProfileRequirement,
+  type RuntimeLightmap,
+  type RuntimeMap,
+  type RuntimeMaterial,
+} from "./runtime-map"
 
-const MAX_EFFECTS = 4096
-const MAX_DIMENSION = 8192
+export {
+  ExposureController,
+  SOURCE_EXPOSURE,
+  SOURCE_LDR,
+  SOURCE_PC_INTEGER_HDR,
+  applyColorOutput,
+  buildLuminanceHistogram,
+  exposureTarget,
+  histogramBoundary,
+  linearToSrgb,
+  validateRenderConfiguration,
+  type CanvasAlphaMode,
+  type CanvasFormat,
+  type ExposureConfiguration,
+  type ExposureSnapshot,
+  type OutputColorSpace,
+  type RenderConfiguration,
+  type ToneOperator,
+} from "./color-output"
+export {
+  LightingInputError,
+  SOURCE_BUMP_BASIS,
+  directionalWeights,
+  evaluateDirectionalLightmap,
+  prepareWorldLights,
+  sampleAmbientCube,
+  type AmbientCubeRequest,
+  type DirectionalLightingInput,
+  type PreparedWorldLight,
+  type WorldLightRequest,
+} from "./lighting"
+export {
+  RuntimeMapError,
+  buildRuntimeLightmap,
+  parseRuntimeMap,
+  parseRuntimeMapVerified,
+  validateRuntimeMapHashes,
+  type HdrProfile,
+  type LightingMember,
+  type ProfileRequirement,
+  type Rgb,
+  type RuntimeAmbientIndex,
+  type RuntimeAmbientSample,
+  type RuntimeInput,
+  type RuntimeLightmap,
+  type RuntimeMap,
+  type RuntimeProfileMaterial,
+  type RuntimeWorldLight,
+  type SurfaceLighting,
+  type SurfaceLightingKind,
+} from "./runtime-map"
+
+const MAX_EFFECTS = 4_096
+const MAX_DIMENSION = 8_192
 const HASH = /^[0-9a-f]{64}$/
+
+type Canvas = HTMLCanvasElement | OffscreenCanvas
 
 export type Camera = Readonly<{
   position: readonly [number, number, number]
@@ -22,6 +99,7 @@ export type Effect = Readonly<{
   color: number
   opacity: number
 }>
+
 export type ModelItem = Readonly<{
   identity: number
   model: string
@@ -31,27 +109,145 @@ export type ModelItem = Readonly<{
   viewModel?: boolean
 }>
 
+export type FrameCaptureRequest = Readonly<{ format: "image/png" }>
+
 export type Frame = Readonly<{
   camera: Camera
   effects: readonly Effect[]
   models?: readonly ModelItem[]
+  lightStyles?: readonly Readonly<{ style: number; scalar: number }>[]
+  exposureHistogram?: Uint32Array
+  deltaSeconds?: number
+  capture?: FrameCaptureRequest
+}>
+
+export type DirectionalTextureInput = Readonly<{
+  material: string
+  kind: "normal" | "ssbump"
+  logicalPath: string
+  sha256: string
+  width: number
+  height: number
+  rgba: Uint8Array
+  uvTransform: readonly [number, number, number, number, number, number]
+}>
+
+export type MapLoadRequest = Readonly<{
+  payload: Uint8Array
+  payloadSha256: string
+  lightStyles?: readonly Readonly<{ style: number; scalar: number }>[]
+  directionalTextures?: readonly DirectionalTextureInput[]
+  diagnostic?: boolean
+  signal?: AbortSignal
+}>
+
+export type SceneDiagnostic = Readonly<{
+  code: "MissingMaterial" | "MissingDirectionalInput" | "MissingProfileInput" | "UnsupportedProfileInput"
+  identity: string
+  detail: string
 }>
 
 export type SceneResult = Readonly<{
   payloadSha256: string
+  lightingProfile: "ldr" | "hdr"
+  deviceGeneration: number
+  sceneGeneration: number
   drawableSurfaces: number
   drawBatches: number
-  diagnostics: readonly Readonly<{ code: "MissingMaterial"; identity: string }>[]
+  lightingSampleCount: number
+  directionalFaces: number
+  worldLights: number
+  ambientSamples: number
+  requirements: readonly ProfileRequirement[]
+  diagnostics: readonly SceneDiagnostic[]
+  resources: Readonly<{ geometries: number; materials: number; textures: number }>
 }>
+
+export type FrameCapture = Readonly<{
+  format: "image/png"
+  sha256: string
+  bytes: Uint8Array
+}>
+
+export type FrameResult = Readonly<{
+  deviceGeneration: number
+  sceneGeneration: number
+  submission: number
+  exposure: ExposureSnapshot
+  capture?: FrameCapture
+}>
+
+export type ResizeResult = Readonly<{
+  width: number
+  height: number
+  suspended: boolean
+  deviceGeneration: number
+}>
+
+export type RendererLifecycle = "Initializing" | "Ready" | "Recovering" | "Failed" | "Disposed"
+
+export type RendererCreateRequest = Readonly<{
+  canvas: Canvas
+  configuration: RenderConfiguration
+  powerPreference?: "low-power" | "high-performance"
+}>
+
+export type FramePacingCallback = (timestampMilliseconds: number) => Frame | undefined | Promise<Frame | undefined>
+
+export interface Renderer {
+  readonly configuration: RenderConfiguration
+  readonly lifecycle: RendererLifecycle
+  readonly deviceGeneration: number
+  readonly sceneGeneration: number
+  loadMap(request: MapLoadRequest): Promise<SceneResult>
+  render(frame: Frame): Promise<FrameResult>
+  resize(cssWidth: number, cssHeight: number, devicePixelRatio: number): ResizeResult
+  startFramePacing(callback: FramePacingCallback): void
+  stopFramePacing(): void
+  dispose(): Promise<void>
+}
 
 export class RenderingError extends Error {
   constructor(
-    readonly code: "MalformedInput" | "MissingInput" | "UnsupportedEnvironment" | "BoundExceeded" | "InvalidState",
+    readonly code:
+      | "MalformedInput"
+      | "MissingInput"
+      | "IdentityMismatch"
+      | "UnsupportedEnvironment"
+      | "UnsupportedFeature"
+      | "BoundExceeded"
+      | "InvalidState"
+      | "DeviceLost"
+      | "CaptureFailed",
     message: string,
   ) {
     super(message)
     this.name = "RenderingError"
   }
+}
+
+type SceneResources = {
+  map: RuntimeMap
+  payload: Uint8Array
+  payloadSha256: string
+  loadRequest: Omit<MapLoadRequest, "payload" | "signal">
+  group: THREE.Group
+  modelTemplates: Map<string, THREE.Group>
+  disposables: OwnedResourceGeneration
+  lightmapTextures: readonly [THREE.DataTexture, THREE.DataTexture?, THREE.DataTexture?, THREE.DataTexture?]
+  exposureUniform: ReturnType<typeof TSL.uniform>
+  diagnostics: readonly SceneDiagnostic[]
+  result: SceneResult
+  disposed: boolean
+}
+
+type Backend = THREE.WebGPURenderer & {
+  backend: {
+    isWebGPUBackend?: boolean
+    device?: GPUDevice
+    context?: GPUCanvasContext
+  }
+  onDeviceLost: (info: unknown) => void
 }
 
 function finite(values: readonly number[]): boolean {
@@ -68,328 +264,769 @@ function debugColor(identity: string): number {
 }
 
 async function digest(bytes: Uint8Array): Promise<string> {
-  const value = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))
+  const value = new Uint8Array(await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes).buffer))
   return Array.from(value, (byte) => byte.toString(16).padStart(2, "0")).join("")
 }
 
-export async function createRenderer(canvas: HTMLCanvasElement): Promise<Readonly<{
-  loadMap(payload: Uint8Array, payloadSha256: string, debugMissingMaterials: boolean): Promise<SceneResult>
-  render(frame: Frame): Promise<void>
-  resize(cssWidth: number, cssHeight: number, devicePixelRatio: number): void
-  dispose(): void
-}>> {
-  if (!globalThis.navigator?.gpu || !(canvas instanceof HTMLCanvasElement)) {
-    throw new RenderingError("UnsupportedEnvironment", "WebGPU canvas is unavailable")
-  }
-  const renderer = new THREE.WebGPURenderer({ canvas, antialias: true, alpha: false })
-  await renderer.init()
-  if (!(renderer.backend as { isWebGPUBackend?: boolean }).isWebGPUBackend) {
-    renderer.dispose()
-    throw new RenderingError("UnsupportedEnvironment", "Three.js selected a non-WebGPU backend")
-  }
-  renderer.outputColorSpace = THREE.SRGBColorSpace
-  const scene = new THREE.Scene()
-  scene.background = new THREE.Color(0x111820)
-  const world = new THREE.Group()
-  const effects = new THREE.Group()
-  const viewModels = new THREE.Group()
-  const camera = new THREE.PerspectiveCamera(75, 1, 1, 32_768)
-  scene.add(world, effects, camera)
-  camera.add(viewModels)
-  camera.up.set(0, 0, 1)
-  const effectGeometry = new THREE.SphereGeometry(1, 10, 6)
-  let map: RuntimeMap | undefined
-  let disposed = false
-  let modelTemplates = new Map<string, THREE.Group>()
-  let modelResources: Array<THREE.BufferGeometry | THREE.Material | THREE.Texture> = []
-  let worldLightmap: THREE.DataTexture | undefined
+function sourceTransform(object: THREE.Object3D, position: readonly number[], angles: readonly number[]): void {
+  object.position.set(position[0]!, position[1]!, position[2]!)
+  object.rotation.set(
+    THREE.MathUtils.degToRad(angles[2]!),
+    THREE.MathUtils.degToRad(angles[0]!),
+    THREE.MathUtils.degToRad(angles[1]!),
+    "ZYX",
+  )
+}
 
-  function clear(group: THREE.Group, disposeGeometry = true): void {
-    for (const child of [...group.children]) {
-      group.remove(child)
-      if (child instanceof THREE.Mesh) {
-        if (disposeGeometry) child.geometry.dispose()
-        if (child.userData.texture instanceof THREE.Texture) child.userData.texture.dispose()
-        const materials = Array.isArray(child.material) ? child.material : [child.material]
-        for (const material of materials) material.dispose()
+function disposeScene(scene: SceneResources): void {
+  if (scene.disposed) return
+  scene.disposed = true
+  scene.group.clear()
+  scene.disposables.dispose()
+  scene.modelTemplates.clear()
+}
+
+function textureFromRgba(input: { rgba: Uint8Array; width: number; height: number }, colorSpace: string): THREE.DataTexture {
+  const texture = new THREE.DataTexture(input.rgba, input.width, input.height, THREE.RGBAFormat, THREE.UnsignedByteType)
+  texture.colorSpace = colorSpace
+  texture.wrapS = THREE.RepeatWrapping
+  texture.wrapT = THREE.RepeatWrapping
+  texture.flipY = true
+  texture.needsUpdate = true
+  return texture
+}
+
+function textureFromLightmap(lightmap: RuntimeLightmap, plane: Float32Array): THREE.DataTexture {
+  const texture = new THREE.DataTexture(plane, lightmap.width, lightmap.height, THREE.RGBAFormat, THREE.FloatType)
+  configureWorldLightmap(texture, lightmap.profile)
+  return texture
+}
+
+function materialOptions(resolved: RuntimeMaterial): THREE.MeshBasicMaterialParameters {
+  return {
+    transparent: (resolved.features & 1) !== 0,
+    alphaTest: (resolved.features & 4) !== 0 ? 0.5 : 0,
+    side: worldMaterialSide(resolved.features),
+  }
+}
+
+function worldNodeMaterial(
+  resolved: RuntimeMaterial,
+  identity: string,
+  baseTexture: THREE.DataTexture | undefined,
+  lightmaps: readonly [THREE.DataTexture, THREE.DataTexture?, THREE.DataTexture?, THREE.DataTexture?],
+  directional: THREE.DataTexture | undefined,
+  directionalKind: "normal" | "ssbump" | undefined,
+  directionalUvTransform: DirectionalTextureInput["uvTransform"] | undefined,
+  exposure: ReturnType<typeof TSL.uniform>,
+): THREE.MeshBasicNodeMaterial {
+  const material = new THREE.MeshBasicNodeMaterial(materialOptions(resolved))
+  const base = baseTexture ? TSL.texture(baseTexture, TSL.uv()) : TSL.vec4(TSL.color(debugColor(identity)), 1)
+  const flat = TSL.texture(lightmaps[0], TSL.uv(1)).rgb
+  let irradiance = flat
+  if (directional && lightmaps[1] && lightmaps[2] && lightmaps[3] && directionalKind && directionalUvTransform) {
+    const baseUv = TSL.uv()
+    const directionalUv = TSL.vec2(
+      baseUv.x.mul(directionalUvTransform[0]).add(baseUv.y.mul(directionalUvTransform[2])).add(directionalUvTransform[4]),
+      baseUv.x.mul(directionalUvTransform[1]).add(baseUv.y.mul(directionalUvTransform[3])).add(directionalUvTransform[5]),
+    )
+    const source = TSL.texture(directional, directionalUv).rgb
+    let weights
+    if (directionalKind === "ssbump") {
+      weights = TSL.max(source, TSL.vec3(0))
+    } else {
+      const normal = source.mul(2).sub(1)
+      const projections = [
+        TSL.clamp(TSL.dot(normal, TSL.vec3(0.8164966106414795, 0, 0.5773502588272095)), 0, 1),
+        TSL.clamp(TSL.dot(normal, TSL.vec3(-0.40824833512306213, 0.7071067690849304, 0.5773502588272095)), 0, 1),
+        TSL.clamp(TSL.dot(normal, TSL.vec3(-0.4082482159137726, -0.7071068286895752, 0.5773502588272095)), 0, 1),
+      ]
+      const squared = TSL.vec3(projections[0]!.mul(projections[0]), projections[1]!.mul(projections[1]), projections[2]!.mul(projections[2]))
+      weights = squared.div(TSL.max(squared.x.add(squared.y).add(squared.z), 1e-12))
+    }
+    const directionalLight = TSL.texture(lightmaps[1], TSL.uv(1)).rgb.mul(weights.x)
+      .add(TSL.texture(lightmaps[2], TSL.uv(1)).rgb.mul(weights.y))
+      .add(TSL.texture(lightmaps[3], TSL.uv(1)).rgb.mul(weights.z))
+    irradiance = TSL.attribute("lightmapKind", "float").greaterThan(1.5).select(directionalLight, flat)
+  }
+  material.colorNode = TSL.vec4(base.rgb.mul(irradiance).mul(exposure), base.a)
+  material.toneMapped = false
+  return material
+}
+
+function diagnostic(code: SceneDiagnostic["code"], identity: string, detail: string): SceneDiagnostic {
+  return Object.freeze({ code, identity, detail })
+}
+
+async function validateDirectionalInputs(inputs: readonly DirectionalTextureInput[]): Promise<Map<string, DirectionalTextureInput>> {
+  const result = new Map<string, DirectionalTextureInput>()
+  for (const input of inputs) {
+    const identity = input.material.toLowerCase()
+    if (
+      !input.material || !input.logicalPath || !HASH.test(input.sha256)
+      || (input.kind !== "normal" && input.kind !== "ssbump")
+      || !Number.isSafeInteger(input.width) || input.width < 1 || input.width > MAX_DIMENSION
+      || !Number.isSafeInteger(input.height) || input.height < 1 || input.height > MAX_DIMENSION
+      || input.width * input.height * 4 !== input.rgba.byteLength
+      || input.uvTransform.length !== 6 || !input.uvTransform.every(Number.isFinite)
+      || result.has(identity)
+      || await digest(input.rgba) !== input.sha256
+    ) {
+      throw new RenderingError("MalformedInput", "directional texture input is invalid")
+    }
+    result.set(identity, Object.freeze({
+      ...input,
+      rgba: input.rgba.slice(),
+      uvTransform: Object.freeze([...input.uvTransform]) as DirectionalTextureInput["uvTransform"],
+    }))
+  }
+  return result
+}
+
+class RendererOwner implements Renderer {
+  readonly configuration: RenderConfiguration
+  readonly #canvas: Canvas
+  readonly #powerPreference: "low-power" | "high-performance" | undefined
+  readonly #exposure: ExposureController
+  #lifecycle: RendererLifecycle = "Initializing"
+  #deviceGeneration = 0
+  #sceneGeneration = 0
+  #submission = 0
+  #backend!: Backend
+  #scene = new THREE.Scene()
+  #world = new THREE.Group()
+  #effects = new THREE.Group()
+  #viewModels = new THREE.Group()
+  #camera = new THREE.PerspectiveCamera(75, 1, 1, 32_768)
+  #effectGeometry = new THREE.SphereGeometry(1, 10, 6)
+  #active?: SceneResources
+  #renderBusy = false
+  #loadOrdinal = 0
+  #suspended = false
+  #pacingHandle?: number
+  #pacingCallback?: FramePacingCallback
+  #pacingBusy = false
+
+  constructor(request: RendererCreateRequest) {
+    this.configuration = validateRenderConfiguration(request.configuration)
+    this.#canvas = request.canvas
+    this.#powerPreference = request.powerPreference
+    this.#exposure = new ExposureController(this.configuration.exposure)
+    this.#scene.background = null
+    this.#scene.add(this.#world, this.#effects, this.#camera)
+    this.#camera.add(this.#viewModels)
+    this.#camera.up.set(0, 0, 1)
+  }
+
+  get lifecycle(): RendererLifecycle { return this.#lifecycle }
+  get deviceGeneration(): number { return this.#deviceGeneration }
+  get sceneGeneration(): number { return this.#sceneGeneration }
+
+  async initialize(): Promise<this> {
+    if (!globalThis.navigator?.gpu || !this.#canvas || typeof this.#canvas.getContext !== "function") {
+      throw new RenderingError("UnsupportedEnvironment", "WebGPU canvas is unavailable")
+    }
+    if (navigator.gpu.getPreferredCanvasFormat() !== this.configuration.canvasFormat) {
+      throw new RenderingError("UnsupportedFeature", "preferred WebGPU canvas format differs from the required format")
+    }
+    this.#backend = await this.#createBackend()
+    this.#deviceGeneration = 1
+    this.#lifecycle = "Ready"
+    return this
+  }
+
+  async #createBackend(): Promise<Backend> {
+    const backend = new THREE.WebGPURenderer({
+      canvas: this.#canvas,
+      antialias: true,
+      alpha: this.configuration.alphaMode === "premultiplied",
+      powerPreference: this.#powerPreference,
+    }) as Backend
+    backend.onDeviceLost = () => { void this.#recover() }
+    let context: GPUCanvasContext | undefined
+    try {
+      await backend.init()
+      if (!backend.backend.isWebGPUBackend) throw new Error("fallback backend")
+      backend.outputColorSpace = THREE.SRGBColorSpace
+      backend.toneMapping = THREE.NoToneMapping
+      context = backend.backend.context
+      const actual = (context as GPUCanvasContext & { getConfiguration?(): GPUCanvasConfiguration | null }).getConfiguration?.()
+      if (actual) {
+        if (
+          actual.format !== this.configuration.canvasFormat
+          || actual.alphaMode !== this.configuration.alphaMode
+          || (actual.colorSpace ?? "srgb") !== this.configuration.outputColorSpace
+        ) {
+          throw new Error("canvas configuration mismatch")
+        }
       }
+      return backend
+    } catch (error) {
+      backend.dispose()
+      try { context?.unconfigure() } catch { /* already unconfigured */ }
+      throw new RenderingError("UnsupportedEnvironment", `WebGPU renderer initialization failed: ${String(error)}`)
     }
   }
 
-  function disposeModels(): void {
-    for (const resource of modelResources) resource.dispose()
-    modelResources = []
-    modelTemplates = new Map()
+  async loadMap(request: MapLoadRequest): Promise<SceneResult> {
+    this.#requireReady()
+    if (!HASH.test(request.payloadSha256)) throw new RenderingError("MalformedInput", "runtime map payload SHA-256 is invalid")
+    const ordinal = ++this.#loadOrdinal
+    const payload = request.payload.slice()
+    this.#checkAbort(request.signal, ordinal)
+    if (await digest(payload) !== request.payloadSha256) throw new RenderingError("IdentityMismatch", "runtime map payload identity differs")
+    this.#checkAbort(request.signal, ordinal)
+    let map: RuntimeMap
+    try {
+      map = await parseRuntimeMapVerified(payload)
+    } catch (error) {
+      throw new RenderingError("MalformedInput", `runtime map validation failed: ${String(error)}`)
+    }
+    if (map.lighting.profile !== this.configuration.lightingProfile) {
+      throw new RenderingError("IdentityMismatch", "runtime map lighting profile differs from renderer configuration")
+    }
+    if (map.lighting.profile === "hdr" && request.lightStyles) {
+      map = Object.freeze({ ...map, lightmap: buildRuntimeLightmap(map, request.lightStyles) })
+    }
+    if (!map.lightmap) throw new RenderingError("MissingInput", "explicit light-style scalars are required")
+    const directionalInputs = await validateDirectionalInputs(request.directionalTextures ?? [])
+    const materialIdentities = new Set([
+      ...map.materials.map((material) => material.logicalPath.toLowerCase()),
+      ...map.models.flatMap((model) => model.materials.map((material) => material.logicalPath.toLowerCase())),
+    ])
+    if ([...directionalInputs.keys()].some((identity) => !materialIdentities.has(identity))) {
+      throw new RenderingError("MalformedInput", "directional texture names an unavailable material")
+    }
+    this.#checkAbort(request.signal, ordinal)
+    const staged = this.#buildScene(
+      map,
+      payload,
+      request.payloadSha256,
+      directionalInputs,
+      request,
+      this.#sceneGeneration + 1,
+    )
+    try {
+      this.#checkAbort(request.signal, ordinal)
+      if (staged.diagnostics.length > 0 && !request.diagnostic) {
+        const missing = staged.diagnostics.some((item) => item.code.startsWith("Missing"))
+        throw new RenderingError(
+          missing ? "MissingInput" : "UnsupportedFeature",
+          "required material, lighting, or profile presentation inputs are unavailable",
+        )
+      }
+      const prior = this.#active
+      this.#world.clear()
+      this.#world.add(staged.group)
+      this.#scene.background = request.diagnostic ? new THREE.Color(0x111820) : null
+      this.#active = staged
+      this.#sceneGeneration += 1
+      if (prior) await this.#retire(prior)
+      return staged.result
+    } catch (error) {
+      disposeScene(staged)
+      throw error
+    }
   }
 
-  function materialFor(
-    resolved: RuntimeMap["materials"][number],
-    identity: string,
-    lightMap?: THREE.DataTexture,
-  ) {
-    const texture = resolved.baseTexture
-      ? new THREE.DataTexture(
-          resolved.baseTexture.rgba,
-          resolved.baseTexture.width,
-          resolved.baseTexture.height,
-          THREE.RGBAFormat,
-          THREE.UnsignedByteType,
-        )
-      : undefined
-    if (texture) {
-      texture.colorSpace = THREE.SRGBColorSpace
-      texture.wrapS = THREE.RepeatWrapping
-      texture.wrapT = THREE.RepeatWrapping
-      texture.flipY = true
+  #buildScene(
+    map: RuntimeMap,
+    payload: Uint8Array,
+    payloadSha256: string,
+    directionalInputs: Map<string, DirectionalTextureInput>,
+    request: MapLoadRequest,
+    sceneGeneration: number,
+  ): SceneResources {
+    const group = new THREE.Group()
+    const modelTemplates = new Map<string, THREE.Group>()
+    const disposables = new OwnedResourceGeneration(this.#deviceGeneration, sceneGeneration)
+    const diagnostics: SceneDiagnostic[] = []
+    const lightmap = map.lightmap
+    if (!lightmap) throw new RenderingError("MissingInput", "runtime lightmap is unavailable")
+    const lightmapTextures: [THREE.DataTexture, THREE.DataTexture?, THREE.DataTexture?, THREE.DataTexture?] = [
+      textureFromLightmap(lightmap, lightmap.flat),
+    ]
+    disposables.add(lightmapTextures[0])
+    if (lightmap.directional) {
+      for (let index = 0; index < 3; index += 1) {
+        const texture = textureFromLightmap(lightmap, lightmap.directional[index]!)
+        lightmapTextures[index + 1] = texture
+        disposables.add(texture)
+      }
+    }
+    const exposureUniform = TSL.uniform(this.configuration.lightingProfile === "hdr" ? this.#exposure.snapshot().current : 1, "float")
+    const directionalGpu = new Map<string, { input: DirectionalTextureInput; texture: THREE.DataTexture }>()
+    for (const [identity, input] of directionalInputs) {
+      const texture = textureFromRgba(input, THREE.NoColorSpace)
+      directionalGpu.set(identity, { input, texture })
+      disposables.add(texture)
+    }
+
+    const createBase = (resolved: RuntimeMaterial, identity: string): THREE.DataTexture | undefined => {
+      if (!resolved.baseTexture) {
+        diagnostics.push(diagnostic("MissingMaterial", identity, "resolved base texture is unavailable"))
+        return undefined
+      }
+      const texture = textureFromRgba(resolved.baseTexture, THREE.SRGBColorSpace)
+      disposables.add(texture)
+      return texture
+    }
+    try {
+      for (const batch of map.batches) {
+        const geometry = new THREE.BufferGeometry()
+        geometry.setAttribute("position", new THREE.BufferAttribute(batch.positions, 3))
+        geometry.setAttribute("normal", new THREE.BufferAttribute(batch.normals, 3))
+        geometry.setAttribute("uv", new THREE.BufferAttribute(batch.uv, 2))
+        geometry.setAttribute("uv1", new THREE.BufferAttribute(batch.lightmapUv, 2))
+        geometry.setAttribute("lightmapKind", new THREE.BufferAttribute(batch.lightmapKind, 1))
+        geometry.setIndex(new THREE.BufferAttribute(batch.indices, 1))
+        geometry.computeBoundingSphere()
+        disposables.add(geometry)
+        const resolved = map.materials[batch.material]!
+        const identity = resolved.logicalPath
+        const baseTexture = createBase(resolved, identity)
+        const kinds = new Set(batch.lightmapKind)
+        const requiresNormal = kinds.has(2)
+        const requiresSsbump = kinds.has(3)
+        const supplied = directionalGpu.get(identity.toLowerCase())
+        if ((requiresNormal && supplied?.input.kind !== "normal") || (requiresSsbump && supplied?.input.kind !== "ssbump")) {
+          diagnostics.push(diagnostic(
+            "MissingDirectionalInput",
+            identity,
+            `a ${requiresSsbump ? "ssbump" : "normal"} texture plane is required`,
+          ))
+        }
+        let material: THREE.Material
+        if (map.lighting.profile === "hdr") {
+          material = worldNodeMaterial(
+            resolved,
+            identity,
+            baseTexture,
+            lightmapTextures,
+            supplied?.texture,
+            supplied?.input.kind,
+            supplied?.input.uvTransform,
+            exposureUniform,
+          )
+        } else {
+          material = new THREE.MeshBasicMaterial({
+            ...materialOptions(resolved),
+            color: baseTexture ? 0xffffff : debugColor(identity),
+            map: baseTexture,
+            lightMap: lightmapTextures[0],
+            lightMapIntensity: 1,
+            toneMapped: false,
+          })
+        }
+        disposables.add(material)
+        const mesh = new THREE.Mesh(geometry, material)
+        mesh.userData.materialIdentity = identity
+        group.add(mesh)
+      }
+
+      for (const model of map.models) {
+        const template = new THREE.Group()
+        for (const primitive of model.primitives) {
+          const geometry = new THREE.BufferGeometry()
+          geometry.setAttribute("position", new THREE.BufferAttribute(primitive.positions, 3))
+          geometry.setAttribute("normal", new THREE.BufferAttribute(primitive.normals, 3))
+          geometry.setAttribute("uv", new THREE.BufferAttribute(primitive.uv, 2))
+          geometry.setIndex(new THREE.BufferAttribute(primitive.indices, 1))
+          geometry.computeBoundingSphere()
+          disposables.add(geometry)
+          const resolved = model.materials[primitive.material]!
+          const baseTexture = createBase(resolved, resolved.logicalPath)
+          const material = new THREE.MeshBasicMaterial({
+            ...materialOptions(resolved),
+            color: baseTexture ? 0xffffff : debugColor(resolved.logicalPath),
+            map: baseTexture,
+            toneMapped: false,
+          })
+          disposables.add(material)
+          template.add(new THREE.Mesh(geometry, material))
+        }
+        modelTemplates.set(model.logicalPath, template)
+      }
+      for (const occurrence of map.modelOccurrences) {
+        const model = map.models[occurrence.model]!
+        const instance = modelTemplates.get(model.logicalPath)!.clone(true)
+        instance.userData.entity = occurrence.entity
+        sourceTransform(instance, occurrence.position, occurrence.angles)
+        group.add(instance)
+      }
+    } catch (error) {
+      const failed = {
+        group,
+        modelTemplates,
+        disposables,
+        disposed: false,
+      } as SceneResources
+      disposeScene(failed)
+      throw new RenderingError("BoundExceeded", `runtime map GPU staging failed: ${String(error)}`)
+    }
+
+    const requirements = map.lighting.profile === "hdr" ? map.lighting.descriptor.requirements : Object.freeze([])
+    for (const requirement of requirements) {
+      diagnostics.push(diagnostic(
+        requirement.disposition === "Missing" ? "MissingProfileInput" : "UnsupportedProfileInput",
+        requirement.identity,
+        requirement.reason,
+      ))
+    }
+    diagnostics.sort((left, right) => left.code.localeCompare(right.code) || left.identity.localeCompare(right.identity))
+    const directionalFaces = map.lighting.profile === "hdr" ? map.lighting.descriptor.directionalFaces : 0
+    const worldLights = map.lighting.profile === "hdr" ? map.lighting.descriptor.worldLights.length : 0
+    const ambientSamples = map.lighting.profile === "hdr" ? map.lighting.descriptor.ambientSamples.length : 0
+    const result: SceneResult = Object.freeze({
+      payloadSha256,
+      lightingProfile: map.lighting.profile,
+      deviceGeneration: this.#deviceGeneration,
+      sceneGeneration,
+      drawableSurfaces: map.drawableSurfaces,
+      drawBatches: map.batches.length,
+      lightingSampleCount: map.lightingSampleCount,
+      directionalFaces,
+      worldLights,
+      ambientSamples,
+      requirements,
+      diagnostics: Object.freeze(diagnostics),
+      resources: Object.freeze({
+        geometries: [...disposables].filter((value) => value instanceof THREE.BufferGeometry).length,
+        materials: [...disposables].filter((value) => value instanceof THREE.Material).length,
+        textures: [...disposables].filter((value) => value instanceof THREE.Texture).length,
+      }),
+    })
+    disposables.activate()
+    return {
+      map,
+      payload,
+      payloadSha256,
+      loadRequest: {
+        payloadSha256,
+        lightStyles: request.lightStyles?.map((value) => Object.freeze({ ...value })),
+        directionalTextures: [...directionalInputs.values()],
+        diagnostic: request.diagnostic,
+      },
+      group,
+      modelTemplates,
+      disposables,
+      lightmapTextures,
+      exposureUniform,
+      diagnostics: Object.freeze(diagnostics),
+      result,
+      disposed: false,
+    }
+  }
+
+  async render(frame: Frame): Promise<FrameResult> {
+    this.#requireReady()
+    if (!this.#active) throw new RenderingError("InvalidState", "renderer has no active map")
+    if (this.#renderBusy) throw new RenderingError("InvalidState", "a render is already in progress")
+    this.#validateFrame(frame)
+    this.#renderBusy = true
+    try {
+      if (frame.lightStyles && this.#active.map.lighting.profile === "hdr") {
+        const lightmap = buildRuntimeLightmap(this.#active.map, frame.lightStyles)
+        this.#replaceLightmapData(this.#active, lightmap)
+      }
+      if (frame.exposureHistogram) this.#exposure.submit(frame.exposureHistogram)
+      const exposure = this.configuration.lightingProfile === "hdr"
+        ? this.#exposure.advance(frame.deltaSeconds ?? 0)
+        : this.#exposure.snapshot()
+      this.#active.exposureUniform.value = this.configuration.lightingProfile === "hdr" ? exposure.current : 1
+      this.#setCamera(frame.camera)
+      this.#stageDynamicItems(frame)
+      if (!this.#suspended) {
+        await this.#backend.renderAsync(this.#scene, this.#camera)
+        this.#submission += 1
+      }
+      const capture = frame.capture ? await this.#capture(frame.capture) : undefined
+      return Object.freeze({
+        deviceGeneration: this.#deviceGeneration,
+        sceneGeneration: this.#sceneGeneration,
+        submission: this.#submission,
+        exposure,
+        capture,
+      })
+    } finally {
+      this.#renderBusy = false
+    }
+  }
+
+  #replaceLightmapData(scene: SceneResources, lightmap: RuntimeLightmap): void {
+    const planes = [lightmap.flat, ...(lightmap.directional ?? [])]
+    if (planes.length !== scene.lightmapTextures.filter(Boolean).length) {
+      throw new RenderingError("MalformedInput", "lightmap plane count changed")
+    }
+    for (let index = 0; index < planes.length; index += 1) {
+      const texture = scene.lightmapTextures[index]!
+      const image = texture.image as { data: Float32Array; width: number; height: number }
+      image.data = planes[index]!
+      image.width = lightmap.width
+      image.height = lightmap.height
       texture.needsUpdate = true
     }
-    const material = new THREE.MeshBasicMaterial({
-      color: texture ? 0xffffff : debugColor(identity),
-      map: texture,
-      lightMap,
-      lightMapIntensity: 1,
-      transparent: (resolved.features & 1) !== 0,
-      alphaTest: (resolved.features & 4) !== 0 ? 0.5 : 0,
-      side: worldMaterialSide(resolved.features),
-    })
-    return { material, texture }
   }
 
-  function sourceTransform(object: THREE.Object3D, position: readonly number[], angles: readonly number[]): void {
-    object.position.set(position[0]!, position[1]!, position[2]!)
-    object.rotation.set(
-      THREE.MathUtils.degToRad(angles[2]!),
-      THREE.MathUtils.degToRad(angles[0]!),
-      THREE.MathUtils.degToRad(angles[1]!),
-      "ZYX",
+  #validateFrame(frame: Frame): void {
+    if (
+      frame.effects.length + (frame.models?.length ?? 0) > MAX_EFFECTS
+      || !finite([
+        ...frame.camera.position,
+        frame.camera.yawDegrees,
+        frame.camera.pitchDegrees,
+        frame.camera.verticalFovDegrees,
+        frame.camera.near,
+        frame.camera.far,
+        frame.deltaSeconds ?? 0,
+      ])
+      || frame.camera.verticalFovDegrees <= 0
+      || frame.camera.verticalFovDegrees >= 180
+      || frame.camera.near <= 0
+      || frame.camera.far <= frame.camera.near
+      || (frame.deltaSeconds ?? 0) < 0
+      || (frame.exposureHistogram && frame.exposureHistogram.length !== 16)
+    ) {
+      throw new RenderingError("MalformedInput", "render frame is invalid")
+    }
+    for (const effect of frame.effects) {
+      if (
+        !Number.isSafeInteger(effect.identity) || effect.identity < 1
+        || !Number.isSafeInteger(effect.color) || effect.color < 0 || effect.color > 0xff_ffff
+        || !finite([...effect.position, effect.radius, effect.opacity])
+        || effect.radius <= 0 || effect.opacity < 0 || effect.opacity > 1
+      ) throw new RenderingError("MalformedInput", "render effect is invalid")
+    }
+    for (const item of frame.models ?? []) {
+      if (
+        !Number.isSafeInteger(item.identity) || item.identity < 1
+        || !finite([...item.position, ...item.angles, item.scale]) || item.scale <= 0
+      ) throw new RenderingError("MalformedInput", "render model item is invalid")
+      if (!this.#active!.modelTemplates.has(item.model)) {
+        throw new RenderingError("MissingInput", `runtime model ${item.model} is unavailable`)
+      }
+    }
+  }
+
+  #setCamera(input: Camera): void {
+    this.#camera.position.set(...input.position)
+    this.#camera.fov = input.verticalFovDegrees
+    this.#camera.near = input.near
+    this.#camera.far = input.far
+    this.#camera.updateProjectionMatrix()
+    const yaw = THREE.MathUtils.degToRad(input.yawDegrees)
+    const pitch = THREE.MathUtils.degToRad(input.pitchDegrees)
+    const direction = new THREE.Vector3(
+      Math.cos(pitch) * Math.cos(yaw),
+      Math.cos(pitch) * Math.sin(yaw),
+      -Math.sin(pitch),
     )
+    this.#camera.lookAt(this.#camera.position.clone().add(direction))
   }
 
-  return Object.freeze({
-    async loadMap(payload: Uint8Array, payloadSha256: string, debugMissingMaterials: boolean): Promise<SceneResult> {
-      if (disposed) throw new RenderingError("InvalidState", "renderer is disposed")
-      if (!HASH.test(payloadSha256) || await digest(payload) !== payloadSha256) {
-        throw new RenderingError("MalformedInput", "runtime map payload identity differs")
-      }
-      const parsed = parseRuntimeMap(payload)
-      const missing = [
-        ...parsed.materials,
-        ...parsed.models.flatMap((model) => model.materials),
-      ].filter((material) => !material.baseTexture)
-      if (!debugMissingMaterials && missing.length > 0) {
-        throw new RenderingError("MissingInput", "resolved material and texture descriptors are unavailable")
-      }
-      const staged = new THREE.Group()
-      const stagedTemplates = new Map<string, THREE.Group>()
-      const stagedResources: Array<THREE.BufferGeometry | THREE.Material | THREE.Texture> = []
-      const stagedLightmap = parsed.lightmap
-        ? new THREE.DataTexture(
-            parsed.lightmap.rgba,
-            parsed.lightmap.width,
-            parsed.lightmap.height,
-            THREE.RGBAFormat,
-            THREE.FloatType,
-          )
-        : undefined
-      if (stagedLightmap) {
-        configureWorldLightmap(stagedLightmap)
-      }
-      try {
-        for (const batch of parsed.batches) {
-          const geometry = new THREE.BufferGeometry()
-          geometry.setAttribute("position", new THREE.BufferAttribute(batch.positions, 3))
-          geometry.setAttribute("normal", new THREE.BufferAttribute(batch.normals, 3))
-          geometry.setAttribute("uv", new THREE.BufferAttribute(batch.uv, 2))
-          geometry.setAttribute("uv1", new THREE.BufferAttribute(batch.lightmapUv, 2))
-          geometry.setIndex(new THREE.BufferAttribute(batch.indices, 1))
-          geometry.computeBoundingSphere()
-          const materialIdentity = parsed.materials[batch.material]!.logicalPath
-          const resolved = parsed.materials[batch.material]!
-          const { material, texture } = materialFor(resolved, materialIdentity, stagedLightmap)
-          const mesh = new THREE.Mesh(geometry, material)
-          mesh.userData.materialIdentity = materialIdentity
-          mesh.userData.texture = texture
-          staged.add(mesh)
-        }
-        for (const model of parsed.models) {
-          const template = new THREE.Group()
-          for (const primitive of model.primitives) {
-            const geometry = new THREE.BufferGeometry()
-            geometry.setAttribute("position", new THREE.BufferAttribute(primitive.positions, 3))
-            geometry.setAttribute("normal", new THREE.BufferAttribute(primitive.normals, 3))
-            geometry.setAttribute("uv", new THREE.BufferAttribute(primitive.uv, 2))
-            geometry.setIndex(new THREE.BufferAttribute(primitive.indices, 1))
-            geometry.computeBoundingSphere()
-            const resolved = model.materials[primitive.material]!
-            const created = materialFor(resolved, resolved.logicalPath)
-            template.add(new THREE.Mesh(geometry, created.material))
-            stagedResources.push(geometry, created.material)
-            if (created.texture) stagedResources.push(created.texture)
-          }
-          stagedTemplates.set(model.logicalPath, template)
-        }
-        for (const occurrence of parsed.modelOccurrences) {
-          const model = parsed.models[occurrence.model]!
-          const instance = stagedTemplates.get(model.logicalPath)!.clone(true)
-          instance.userData.entity = occurrence.entity
-          sourceTransform(instance, occurrence.position, occurrence.angles)
-          staged.add(instance)
-        }
-      } catch {
-        clear(staged)
-        for (const resource of stagedResources) resource.dispose()
-        stagedLightmap?.dispose()
-        throw new RenderingError("BoundExceeded", "runtime map GPU staging failed")
-      }
-      clear(world)
-      disposeModels()
-      worldLightmap?.dispose()
-      for (const child of [...staged.children]) world.add(child)
-      modelTemplates = stagedTemplates
-      modelResources = stagedResources
-      worldLightmap = stagedLightmap
-      map = parsed
-      const diagnostics = Object.freeze(missing.map((material) => Object.freeze({
-        code: "MissingMaterial" as const,
-        identity: material.logicalPath,
-      })))
-      return Object.freeze({
-        payloadSha256,
-        drawableSurfaces: parsed.drawableSurfaces,
-        drawBatches: parsed.batches.length,
-        diagnostics,
-      })
-    },
-    async render(frame: Frame): Promise<void> {
-      if (disposed || !map) throw new RenderingError("InvalidState", "renderer has no active map")
-      if (
-        frame.effects.length + (frame.models?.length ?? 0) > MAX_EFFECTS
-        || !finite([
-          ...frame.camera.position,
-          frame.camera.yawDegrees,
-          frame.camera.pitchDegrees,
-          frame.camera.verticalFovDegrees,
-          frame.camera.near,
-          frame.camera.far,
-        ])
-        || frame.camera.verticalFovDegrees <= 0
-        || frame.camera.verticalFovDegrees >= 180
-        || frame.camera.near <= 0
-        || frame.camera.far <= frame.camera.near
-      ) {
-        throw new RenderingError("MalformedInput", "render frame is invalid")
-      }
-      camera.position.set(...frame.camera.position)
-      camera.fov = frame.camera.verticalFovDegrees
-      camera.near = frame.camera.near
-      camera.far = frame.camera.far
-      camera.updateProjectionMatrix()
-      const yaw = THREE.MathUtils.degToRad(frame.camera.yawDegrees)
-      const pitch = THREE.MathUtils.degToRad(frame.camera.pitchDegrees)
-      const direction = new THREE.Vector3(
-        Math.cos(pitch) * Math.cos(yaw),
-        Math.cos(pitch) * Math.sin(yaw),
-        -Math.sin(pitch),
-      )
-      camera.lookAt(camera.position.clone().add(direction))
+  #clearDynamic(group: THREE.Group): void {
+    for (const child of [...group.children]) {
+      group.remove(child)
+      if (child instanceof THREE.Mesh && child.userData.dynamicMaterial === true) child.material.dispose()
+    }
+  }
+
+  #stageDynamicItems(frame: Frame): void {
+    const effects = new THREE.Group()
+    const viewModels = new THREE.Group()
+    try {
       for (const effect of frame.effects) {
-        if (
-          !Number.isSafeInteger(effect.identity)
-          || effect.identity < 1
-          || !Number.isSafeInteger(effect.color)
-          || effect.color < 0
-          || effect.color > 0xff_ffff
-          || !finite([...effect.position, effect.radius, effect.opacity])
-          || effect.radius <= 0
-          || effect.opacity < 0
-          || effect.opacity > 1
-        ) {
-          throw new RenderingError("MalformedInput", "render effect is invalid")
-        }
+        const material = new THREE.MeshBasicMaterial({
+          color: effect.color,
+          transparent: effect.opacity < 1,
+          opacity: effect.opacity,
+          toneMapped: false,
+        })
+        const mesh = new THREE.Mesh(this.#effectGeometry, material)
+        mesh.userData.dynamicMaterial = true
+        mesh.position.set(...effect.position)
+        mesh.scale.setScalar(effect.radius)
+        mesh.userData.identity = effect.identity
+        effects.add(mesh)
       }
-      const stagedEffects = new THREE.Group()
-      const stagedViewModels = new THREE.Group()
-      try {
-        for (const effect of frame.effects) {
-          const material = new THREE.MeshBasicMaterial({
-            color: effect.color,
-            transparent: effect.opacity < 1,
-            opacity: effect.opacity,
-          })
-          const mesh = new THREE.Mesh(effectGeometry, material)
-          mesh.position.set(...effect.position)
-          mesh.scale.setScalar(effect.radius)
-          mesh.userData.identity = effect.identity
-          stagedEffects.add(mesh)
-        }
-        for (const item of frame.models ?? []) {
-          if (
-            !Number.isSafeInteger(item.identity)
-            || item.identity < 1
-            || !finite([...item.position, ...item.angles, item.scale])
-            || item.scale <= 0
-          ) {
-            throw new RenderingError("MalformedInput", "render model item is invalid")
-          }
-          const template = modelTemplates.get(item.model)
-          if (!template) throw new RenderingError("MissingInput", `runtime model ${item.model} is unavailable`)
-          const instance = template.clone(true)
-          sourceTransform(instance, item.position, item.angles)
-          instance.scale.setScalar(item.scale)
-          instance.userData.identity = item.identity
-          if (item.viewModel) {
-            const sourceBasis = new THREE.Matrix4().set(
-              0, -1, 0, 0,
-              0, 0, 1, 0,
-              -1, 0, 0, 0,
-              0, 0, 0, 1,
-            )
-            const wrapper = new THREE.Group()
-            wrapper.setRotationFromMatrix(sourceBasis)
-            wrapper.add(instance)
-            stagedViewModels.add(wrapper)
-          } else {
-            stagedEffects.add(instance)
-          }
-        }
-      } catch {
-        clear(stagedEffects, false)
-        throw new RenderingError("BoundExceeded", "render effect staging failed")
+      for (const item of frame.models ?? []) {
+        const instance = this.#active!.modelTemplates.get(item.model)!.clone(true)
+        sourceTransform(instance, item.position, item.angles)
+        instance.scale.setScalar(item.scale)
+        instance.userData.identity = item.identity
+        if (item.viewModel) {
+          const wrapper = new THREE.Group()
+          wrapper.setRotationFromMatrix(new THREE.Matrix4().set(
+            0, -1, 0, 0,
+            0, 0, 1, 0,
+            -1, 0, 0, 0,
+            0, 0, 0, 1,
+          ))
+          wrapper.add(instance)
+          viewModels.add(wrapper)
+        } else effects.add(instance)
       }
-      clear(effects, false)
-      clear(viewModels, false)
-      for (const child of [...stagedEffects.children]) effects.add(child)
-      for (const child of [...stagedViewModels.children]) viewModels.add(child)
-      await renderer.renderAsync(scene, camera)
-    },
-    resize(cssWidth: number, cssHeight: number, devicePixelRatio: number): void {
-      if (
-        disposed
-        || !finite([cssWidth, cssHeight, devicePixelRatio])
-        || cssWidth < 0
-        || cssHeight < 0
-        || devicePixelRatio <= 0
-        || cssWidth * devicePixelRatio > MAX_DIMENSION
-        || cssHeight * devicePixelRatio > MAX_DIMENSION
-      ) {
-        throw new RenderingError("BoundExceeded", "renderer dimensions are invalid")
+    } catch (error) {
+      this.#clearDynamic(effects)
+      throw new RenderingError("BoundExceeded", `render item staging failed: ${String(error)}`)
+    }
+    this.#clearDynamic(this.#effects)
+    this.#clearDynamic(this.#viewModels)
+    for (const child of [...effects.children]) this.#effects.add(child)
+    for (const child of [...viewModels.children]) this.#viewModels.add(child)
+  }
+
+  async #capture(request: FrameCaptureRequest): Promise<FrameCapture> {
+    try {
+      let blob: Blob
+      if ("convertToBlob" in this.#canvas) {
+        blob = await this.#canvas.convertToBlob({ type: request.format })
+      } else {
+        const canvas = this.#canvas as HTMLCanvasElement
+        blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob(
+          (value: Blob | null) => value ? resolve(value) : reject(new Error("canvas returned no capture")),
+          request.format,
+        ))
       }
-      renderer.setPixelRatio(devicePixelRatio)
-      renderer.setSize(cssWidth, cssHeight, false)
-      camera.aspect = cssHeight === 0 ? 1 : cssWidth / cssHeight
-      camera.updateProjectionMatrix()
-    },
-    dispose(): void {
-      if (disposed) return
-      disposed = true
-      clear(world)
-      clear(effects, false)
-      clear(viewModels, false)
-      disposeModels()
-      worldLightmap?.dispose()
-      worldLightmap = undefined
-      effectGeometry.dispose()
-      renderer.dispose()
-    },
-  })
+      const bytes = new Uint8Array(await blob.arrayBuffer())
+      return Object.freeze({ format: request.format, sha256: await digest(bytes), bytes })
+    } catch (error) {
+      throw new RenderingError("CaptureFailed", `canvas capture failed: ${String(error)}`)
+    }
+  }
+
+  resize(cssWidth: number, cssHeight: number, devicePixelRatio: number): ResizeResult {
+    this.#requireReady()
+    const width = Math.floor(cssWidth * devicePixelRatio)
+    const height = Math.floor(cssHeight * devicePixelRatio)
+    const deviceLimit = this.#backend.backend.device?.limits.maxTextureDimension2D ?? MAX_DIMENSION
+    const limit = Math.min(MAX_DIMENSION, deviceLimit)
+    if (
+      !finite([cssWidth, cssHeight, devicePixelRatio])
+      || cssWidth < 0 || cssHeight < 0 || devicePixelRatio <= 0
+      || !Number.isSafeInteger(width) || !Number.isSafeInteger(height)
+      || width > limit || height > limit
+    ) throw new RenderingError("BoundExceeded", "renderer dimensions are invalid")
+    this.#backend.setPixelRatio(devicePixelRatio)
+    this.#backend.setSize(cssWidth, cssHeight, false)
+    this.#camera.aspect = cssHeight === 0 ? 1 : cssWidth / cssHeight
+    this.#camera.updateProjectionMatrix()
+    this.#suspended = width === 0 || height === 0
+    return Object.freeze({ width, height, suspended: this.#suspended, deviceGeneration: this.#deviceGeneration })
+  }
+
+  startFramePacing(callback: FramePacingCallback): void {
+    this.#requireReady()
+    if (this.#pacingHandle !== undefined || this.#pacingCallback) {
+      throw new RenderingError("InvalidState", "frame pacing is already active")
+    }
+    if (typeof globalThis.requestAnimationFrame !== "function") {
+      throw new RenderingError("UnsupportedEnvironment", "animation-frame scheduling is unavailable")
+    }
+    this.#pacingCallback = callback
+    const tick = (timestamp: number) => {
+      this.#pacingHandle = undefined
+      if (!this.#pacingCallback || this.#lifecycle === "Disposed" || this.#lifecycle === "Failed") return
+      if (!this.#pacingBusy && !this.#suspended && this.#lifecycle === "Ready") {
+        this.#pacingBusy = true
+        Promise.resolve(this.#pacingCallback(timestamp))
+          .then((frame) => frame ? this.render(frame) : undefined)
+          .catch(() => undefined)
+          .finally(() => { this.#pacingBusy = false })
+      }
+      this.#pacingHandle = requestAnimationFrame(tick)
+    }
+    this.#pacingHandle = requestAnimationFrame(tick)
+  }
+
+  stopFramePacing(): void {
+    this.#pacingCallback = undefined
+    if (this.#pacingHandle !== undefined && typeof globalThis.cancelAnimationFrame === "function") {
+      cancelAnimationFrame(this.#pacingHandle)
+    }
+    this.#pacingHandle = undefined
+  }
+
+  async #recover(): Promise<void> {
+    if (this.#lifecycle === "Disposed" || this.#lifecycle === "Recovering") return
+    this.#lifecycle = "Recovering"
+    this.#loadOrdinal += 1
+    this.stopFramePacing()
+    const active = this.#active
+    this.#active = undefined
+    this.#world.clear()
+    const oldBackend = this.#backend
+    try {
+      try { oldBackend.backend.context?.unconfigure() } catch { /* device already lost */ }
+      oldBackend.dispose()
+      this.#backend = await this.#createBackend()
+      this.#deviceGeneration += 1
+      if (active) {
+        const directional = await validateDirectionalInputs(active.loadRequest.directionalTextures ?? [])
+        const map = await parseRuntimeMapVerified(active.payload)
+        const rebuiltMap = map.lighting.profile === "hdr" && active.loadRequest.lightStyles
+          ? Object.freeze({ ...map, lightmap: buildRuntimeLightmap(map, active.loadRequest.lightStyles) })
+          : map
+        const rebuilt = this.#buildScene(
+          rebuiltMap,
+          active.payload,
+          active.payloadSha256,
+          directional,
+          active.loadRequest as MapLoadRequest,
+          this.#sceneGeneration + 1,
+        )
+        this.#active = rebuilt
+        this.#world.add(rebuilt.group)
+        this.#scene.background = active.loadRequest.diagnostic ? new THREE.Color(0x111820) : null
+        this.#sceneGeneration += 1
+        disposeScene(active)
+      }
+      this.#lifecycle = "Ready"
+    } catch {
+      if (active) disposeScene(active)
+      this.#lifecycle = "Failed"
+    }
+  }
+
+  async #retire(scene: SceneResources): Promise<void> {
+    try { await this.#backend.backend.device?.queue.onSubmittedWorkDone() } catch { /* loss invalidated the generation */ }
+    disposeScene(scene)
+  }
+
+  #checkAbort(signal: AbortSignal | undefined, ordinal: number): void {
+    if (signal?.aborted || ordinal !== this.#loadOrdinal) {
+      throw new RenderingError("InvalidState", "scene load was cancelled or replaced")
+    }
+  }
+
+  #requireReady(): void {
+    if (this.#lifecycle !== "Ready") {
+      throw new RenderingError(
+        this.#lifecycle === "Recovering" ? "DeviceLost" : "InvalidState",
+        `renderer is ${this.#lifecycle}`,
+      )
+    }
+  }
+
+  async dispose(): Promise<void> {
+    if (this.#lifecycle === "Disposed") return
+    this.#lifecycle = "Disposed"
+    this.#loadOrdinal += 1
+    this.stopFramePacing()
+    this.#clearDynamic(this.#effects)
+    this.#clearDynamic(this.#viewModels)
+    const active = this.#active
+    this.#active = undefined
+    this.#world.clear()
+    if (active) await this.#retire(active)
+    this.#effectGeometry.dispose()
+    try { await this.#backend.backend.device?.queue.onSubmittedWorkDone() } catch { /* device already unavailable */ }
+    this.#backend.dispose()
+    try { this.#backend.backend.context?.unconfigure() } catch { /* already unconfigured */ }
+  }
+}
+
+export async function createRenderer(request: RendererCreateRequest): Promise<Renderer> {
+  const owner = await new RendererOwner(request).initialize()
+  return owner
 }

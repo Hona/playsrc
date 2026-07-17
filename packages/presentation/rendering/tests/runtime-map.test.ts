@@ -7,7 +7,7 @@ function fixture(): Uint8Array {
   const i32 = (value: number) => bytes.push(...new Uint8Array(new Int32Array([value]).buffer))
   const f32 = (value: number) => bytes.push(...new Uint8Array(new Float32Array([value]).buffer))
   const sized = (value: Uint8Array) => { u32(value.byteLength); bytes.push(...value) }
-  u32(1)
+  u32(3)
   u32(20)
   u32(731)
   bytes.push(0)
@@ -37,6 +37,10 @@ function fixture(): Uint8Array {
   i32(0)
   i32(0)
   sized(new TextEncoder().encode("{}\0"))
+  u32(1)
+  bytes.push(1, 0, 0, 0)
+  u32(0)
+  u32(0)
   return new Uint8Array(bytes)
 }
 

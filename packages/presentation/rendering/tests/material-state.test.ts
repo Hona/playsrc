@@ -18,4 +18,9 @@ test("world lightmaps bind the canonical UV1 atlas without color or wrap reinter
   expect(texture.generateMipmaps).toBe(false)
   expect(texture.wrapS).toBe(THREE.ClampToEdgeWrapping)
   expect(texture.wrapT).toBe(THREE.ClampToEdgeWrapping)
+
+  const hdr = new THREE.Texture()
+  configureWorldLightmap(hdr, "hdr")
+  expect(hdr.minFilter).toBe(THREE.LinearFilter)
+  expect(hdr.magFilter).toBe(THREE.LinearFilter)
 })
