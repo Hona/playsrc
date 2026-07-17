@@ -284,7 +284,7 @@ fn counter_case_and_canonical_snapshot_restore_continue_identically() {
         .unwrap();
 
     let snapshot = world.snapshot().unwrap();
-    assert_eq!(&snapshot.bytes()[..8], b"PSEN\x01\0\0\0");
+    assert_eq!(&snapshot.bytes()[..8], b"PSEN\x02\0\0\0");
     assert_eq!(snapshot.bytes(), world.snapshot().unwrap().bytes());
     let mut restored = compile(bytes, |_| {});
     restored.restore(&snapshot).unwrap();
@@ -387,7 +387,7 @@ fn generic_class_initial_states_follow_declared_keys_and_spawnflags() {
     assert!(matches!(
         world.entity(door).unwrap().behavior,
         BehaviorState::Mover(ref state)
-            if state.locked && state.no_auto_return && state.outputs_reversed
+            if state.locked && state.no_auto_return && !state.outputs_reversed
                 && state.position == MoverPosition::Open
     ));
     assert!(matches!(
@@ -511,4 +511,83 @@ fn cyclic_filter_graph_fails_closed_without_recording_contact() {
         world.entity(trigger).unwrap().behavior,
         BehaviorState::Trigger(ref state) if state.contacts.is_empty()
     ));
+}
+
+#[test]
+fn button_damage_fires_outputs_before_request_and_honors_dont_move() {
+    let bytes = b"\
+{\"classname\"\"player\"\"targetname\"\"attacker\"}\
+{\"classname\"\"func_button\"\"targetname\"\"button\"\"model\"\"*1\"\"spawnflags\"\"513\"\
+\"OnDamaged\"\"missing,Use,,0,-1\"\"OnPressed\"\"missing,Use,,0,-1\"}";
+    let mut world = compile(bytes, |config| {
+        config.model_bounds.push(ModelBounds {
+            model: 1,
+            mins: [0.0; 3],
+            maxs: [32.0, 8.0, 8.0],
+        });
+    });
+    let attacker = world.resolve(b"attacker", None, None, None)[0];
+    let button = world.resolve(b"button", None, None, None)[0];
+    let batch = world
+        .phase(
+            0,
+            &[WorldCommand::Damage {
+                entity: button,
+                attacker: Some(attacker),
+            }],
+        )
+        .unwrap();
+    let ordered: Vec<_> = batch
+        .records
+        .iter()
+        .filter_map(|record| match &record.transition {
+            Transition::Output { output, .. } => Some(output.as_slice()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ordered, [b"OnDamaged".as_slice(), b"OnPressed"]);
+    assert!(batch.records.iter().any(|record| matches!(
+        record.transition,
+        Transition::Request(RuntimeRequest::Mover {
+            entity,
+            local_destination: [0.0, 0.0, 0.0],
+            ..
+        }) if entity == button
+    )));
+    assert!(matches!(
+        world.entity(button).unwrap().behavior,
+        BehaviorState::Mover(ref state)
+            if state.damage_activates && state.dont_move && state.activator == Some(attacker)
+    ));
+}
+
+#[test]
+fn external_class_binding_accepts_only_declared_inputs() {
+    let mut world = compile(
+        b"{\"classname\"\"game_volume\"\"targetname\"\"volume\"}",
+        |config| {
+            config
+                .external_classes
+                .push(playsrc_entity::ExternalClassBinding {
+                    classname: b"game_volume".to_vec(),
+                    inputs: vec![b"Enable".to_vec()],
+                });
+        },
+    );
+    let volume = world.resolve(b"volume", None, None, None)[0];
+    let accepted = world
+        .phase(0, &[input(volume, b"Enable", Variant::Void, 1)])
+        .unwrap();
+    assert!(accepted.records.iter().any(|record| matches!(
+        &record.transition,
+        Transition::Request(RuntimeRequest::ExternalInput { entity, input, .. })
+            if *entity == volume && input.eq_ignore_ascii_case(b"Enable")
+    )));
+    let rejected = world
+        .phase(1, &[input(volume, b"Disable", Variant::Void, 2)])
+        .unwrap();
+    assert!(rejected.records.iter().any(|record| matches!(
+        record.transition,
+        Transition::Input { target, accepted: false, .. } if target == volume
+    )));
 }

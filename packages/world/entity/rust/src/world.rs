@@ -4,7 +4,9 @@ use super::{Connection, ConnectionError, Entity, Graph};
 
 const MAX_LIVE_ENTITIES: usize = 8_192;
 const BUTTON_TOGGLE: i32 = 32;
+const BUTTON_DAMAGE_ACTIVATES: i32 = 512;
 const BUTTON_LOCKED: i32 = 2_048;
+const BUTTON_DONT_MOVE: i32 = 1;
 const DOOR_START_OPEN: i32 = 1;
 const DOOR_NO_AUTO_RETURN: i32 = 32;
 const DOOR_LOCKED: i32 = 2_048;
@@ -71,7 +73,14 @@ pub struct EntityWorldConfig {
     pub load_kind: MapLoadKind,
     pub random_seed: u64,
     pub model_bounds: Vec<ModelBounds>,
+    pub external_classes: Vec<ExternalClassBinding>,
     pub limits: RuntimeLimits,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExternalClassBinding {
+    pub classname: Vec<u8>,
+    pub inputs: Vec<Vec<u8>>,
 }
 
 impl Default for EntityWorldConfig {
@@ -83,6 +92,7 @@ impl Default for EntityWorldConfig {
             load_kind: MapLoadKind::NewGame,
             random_seed: 0x243f_6a88_85a3_08d3,
             model_bounds: Vec::new(),
+            external_classes: Vec::new(),
             limits: RuntimeLimits::default(),
         }
     }
@@ -217,8 +227,12 @@ pub struct MoverState {
     pub toggle: bool,
     pub force_closed: bool,
     pub no_auto_return: bool,
+    pub stay_pushed: bool,
     pub outputs_reversed: bool,
     pub block_damage_bits: u32,
+    pub damage_activates: bool,
+    pub dont_move: bool,
+    pub activator: Option<EntityHandle>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -305,6 +319,7 @@ pub enum BehaviorState {
     Case(CaseState),
     Filter(FilterState),
     Trigger(TriggerState),
+    External,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -386,6 +401,10 @@ pub enum WorldCommand {
     Spawn(Entity),
     Input(InputRecord),
     Contact(ContactRecord),
+    Damage {
+        entity: EntityHandle,
+        attacker: Option<EntityHandle>,
+    },
     Remove(EntityHandle),
     SetParent(ParentRequest),
     SetWorldTransform {
@@ -470,6 +489,13 @@ pub enum RuntimeRequest {
         mover: EntityHandle,
         blocker: EntityHandle,
         damage_bits: u32,
+    },
+    ExternalInput {
+        entity: EntityHandle,
+        input: Vec<u8>,
+        value: Variant,
+        activator: Option<EntityHandle>,
+        caller: Option<EntityHandle>,
     },
 }
 
@@ -1001,7 +1027,10 @@ impl EntityWorld {
                 if lip == 0.0 { 4.0 } else { lip }
             };
             let direction = direction_from_angles(field_vector(definition, b"movedir", [0.0; 3])?);
-            let distance = self.brush_travel(definition, direction, lip).max(0.0);
+            let mut distance = self.brush_travel(definition, direction, lip).max(0.0);
+            if distance < 1.0 || flags & BUTTON_DONT_MOVE != 0 {
+                distance = 0.0;
+            }
             let open = add(transform.origin, scale(direction, distance));
             return Ok((
                 BehaviorState::Mover(MoverState {
@@ -1016,8 +1045,12 @@ impl EntityWorld {
                     toggle: flags & BUTTON_TOGGLE != 0 || wait == -1.0,
                     force_closed: false,
                     no_auto_return: flags & BUTTON_TOGGLE != 0 || wait == -1.0,
+                    stay_pushed: wait == -1.0,
                     outputs_reversed: false,
                     block_damage_bits: 0.0f32.to_bits(),
+                    damage_activates: flags & BUTTON_DAMAGE_ACTIVATES != 0,
+                    dont_move: flags & BUTTON_DONT_MOVE != 0,
+                    activator: None,
                 }),
                 Coverage::Handled,
             ));
@@ -1051,8 +1084,12 @@ impl EntityWorld {
                     toggle: flags & DOOR_NO_AUTO_RETURN != 0,
                     force_closed: field_i32(definition, b"forceclosed", 0)? != 0,
                     no_auto_return: flags & DOOR_NO_AUTO_RETURN != 0,
-                    outputs_reversed: starts_open,
+                    stay_pushed: false,
+                    outputs_reversed: flags & DOOR_START_OPEN != 0,
                     block_damage_bits: field_f32(definition, b"dmg", 0.0)?.to_bits(),
+                    damage_activates: false,
+                    dont_move: false,
+                    activator: None,
                 }),
                 Coverage::Handled,
             ));
@@ -1081,8 +1118,12 @@ impl EntityWorld {
                     toggle: false,
                     force_closed: false,
                     no_auto_return: true,
+                    stay_pushed: false,
                     outputs_reversed: false,
                     block_damage_bits: field_f32(definition, b"BlockDamage", 0.0)?.to_bits(),
+                    damage_activates: false,
+                    dont_move: false,
+                    activator: None,
                 }),
                 Coverage::Handled,
             ));
@@ -1188,12 +1229,22 @@ impl EntityWorld {
             ));
         }
         if classname.starts_with(b"filter_") {
+            let coverage = if self
+                .config
+                .external_classes
+                .iter()
+                .any(|binding| binding.classname.eq_ignore_ascii_case(classname))
+            {
+                Coverage::Handled
+            } else {
+                Coverage::Unsupported
+            };
             return Ok((
                 BehaviorState::Filter(FilterState {
                     negated: field_i32(definition, b"Negated", 0)? != 0,
                     predicate: FilterPredicate::External,
                 }),
-                Coverage::Unsupported,
+                coverage,
             ));
         }
         let trigger_kind = if classname.eq_ignore_ascii_case(b"trigger_multiple") {
@@ -1230,6 +1281,14 @@ impl EntityWorld {
                 }),
                 Coverage::Handled,
             ));
+        }
+        if self
+            .config
+            .external_classes
+            .iter()
+            .any(|binding| binding.classname.eq_ignore_ascii_case(classname))
+        {
+            return Ok((BehaviorState::External, Coverage::Handled));
         }
         let coverage = if classname.eq_ignore_ascii_case(b"worldspawn")
             || classname.eq_ignore_ascii_case(b"info_teleport_destination")
@@ -1794,6 +1853,9 @@ impl EntityWorld {
             }
             WorldCommand::Input(input) => self.dispatch_record(input, batch),
             WorldCommand::Contact(contact) => self.apply_contact(contact, batch),
+            WorldCommand::Damage { entity, attacker } => {
+                self.damage_entity(entity, attacker, batch)
+            }
             WorldCommand::Remove(handle) => self.mark_removal(handle, batch),
             WorldCommand::SetParent(request) => self.set_parent(request, batch),
             WorldCommand::SetWorldTransform { entity, transform } => {
@@ -2011,6 +2073,64 @@ impl EntityWorld {
             self.dispatch_input(target, &record, batch)?;
         }
         Ok(())
+    }
+
+    fn damage_entity(
+        &mut self,
+        target: EntityHandle,
+        attacker: Option<EntityHandle>,
+        batch: &mut TransitionBatch,
+    ) -> Result<(), RuntimeFailure> {
+        if !self.is_resolvable(target) {
+            return self.diagnostic(batch, DiagnosticCode::StaleHandle, Some(target));
+        }
+        let Some(BehaviorState::Mover(mut state)) =
+            self.entity(target).map(|entity| entity.behavior.clone())
+        else {
+            return Ok(());
+        };
+        if state.kind != MoverKind::Button {
+            return Ok(());
+        }
+        self.fire_output(
+            target,
+            b"OnDamaged",
+            Variant::Void,
+            state.activator,
+            Some(target),
+            0.0,
+            batch,
+        )?;
+        if !state.damage_activates || state.locked {
+            return Ok(());
+        }
+        let opening = match state.position {
+            MoverPosition::Closed => Some(true),
+            MoverPosition::Open if state.toggle && !state.stay_pushed => Some(false),
+            MoverPosition::Opening | MoverPosition::Closing | MoverPosition::Positioned(_) => None,
+            MoverPosition::Open => None,
+        };
+        let Some(opening) = opening else {
+            return Ok(());
+        };
+        state.activator = attacker;
+        self.entity_mut(target).expect("validated").behavior = BehaviorState::Mover(state);
+        self.fire_output(
+            target,
+            b"OnPressed",
+            Variant::Void,
+            attacker,
+            Some(target),
+            0.0,
+            batch,
+        )?;
+        self.start_mover(
+            target,
+            if opening { 1.0 } else { 0.0 },
+            opening,
+            attacker,
+            batch,
+        )
     }
 
     fn dispatch_input(
@@ -2373,6 +2493,28 @@ impl EntityWorld {
                     if accepted && write_state {
                         self.entity_mut(target).expect("validated").behavior =
                             BehaviorState::Trigger(state);
+                    }
+                }
+                BehaviorState::External => {
+                    let classname = &self.entity(target).expect("validated").classname;
+                    accepted = self.config.external_classes.iter().any(|binding| {
+                        binding.classname.eq_ignore_ascii_case(classname)
+                            && binding
+                                .inputs
+                                .iter()
+                                .any(|declared| declared.eq_ignore_ascii_case(&record.input))
+                    });
+                    if accepted {
+                        self.push_transition(
+                            batch,
+                            Transition::Request(RuntimeRequest::ExternalInput {
+                                entity: target,
+                                input: record.input.clone(),
+                                value: record.value.clone(),
+                                activator: record.activator,
+                                caller: record.caller,
+                            }),
+                        )?;
                     }
                 }
             }
@@ -3516,6 +3658,26 @@ fn validate_config(config: &EntityWorldConfig) -> Result<(), RuntimeFailure> {
             0,
         ));
     }
+    let mut classes = std::collections::BTreeSet::new();
+    for binding in &config.external_classes {
+        let class = ascii_key(&binding.classname);
+        let mut inputs = std::collections::BTreeSet::new();
+        if class.is_empty()
+            || !classes.insert(class)
+            || binding.inputs.is_empty()
+            || binding
+                .inputs
+                .iter()
+                .any(|input| input.is_empty() || !inputs.insert(ascii_key(input)))
+        {
+            return Err(failure(
+                RuntimeFailureCode::InvalidConfiguration,
+                None,
+                0,
+                0,
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -3862,7 +4024,7 @@ impl SnapshotWriter {
 fn encode_state(state: &WorldState, config: &EntityWorldConfig) -> Result<Vec<u8>, RuntimeFailure> {
     let mut output = SnapshotWriter::new(config.limits.max_snapshot_bytes);
     output.extend(b"PSEN")?;
-    output.u32(1)?;
+    output.u32(2)?;
     output.u64(config.source_identity)?;
     output.u64(config.registry_identity)?;
     output.u32(config.tick_interval.to_bits())?;
@@ -4067,8 +4229,12 @@ fn encode_behavior(
             output.bool(state.toggle)?;
             output.bool(state.force_closed)?;
             output.bool(state.no_auto_return)?;
+            output.bool(state.stay_pushed)?;
             output.bool(state.outputs_reversed)?;
-            output.u32(state.block_damage_bits)
+            output.u32(state.block_damage_bits)?;
+            output.bool(state.damage_activates)?;
+            output.bool(state.dont_move)?;
+            output.optional_handle(state.activator)
         }
         BehaviorState::LogicAuto => output.u8(3),
         BehaviorState::Relay(state) => {
@@ -4149,5 +4315,6 @@ fn encode_behavior(
             output.u64(state.next_fire_tick)?;
             output.u32(state.mutable_value_bits)
         }
+        BehaviorState::External => output.u8(9),
     }
 }
