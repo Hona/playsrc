@@ -12,6 +12,11 @@ export class FakeEvent {
   readonly ctrlKey: boolean
   readonly metaKey: boolean
   readonly shiftKey: boolean
+  readonly button: number
+  readonly buttons: number
+  readonly pointerId: number
+  readonly clientX: number
+  readonly clientY: number
 
   constructor(
     readonly type: string,
@@ -24,6 +29,11 @@ export class FakeEvent {
       ctrlKey?: boolean
       metaKey?: boolean
       shiftKey?: boolean
+      button?: number
+      buttons?: number
+      pointerId?: number
+      clientX?: number
+      clientY?: number
     }> = {},
   ) {
     this.bubbles = init.bubbles ?? false
@@ -34,6 +44,11 @@ export class FakeEvent {
     this.ctrlKey = init.ctrlKey ?? false
     this.metaKey = init.metaKey ?? false
     this.shiftKey = init.shiftKey ?? false
+    this.button = init.button ?? 0
+    this.buttons = init.buttons ?? 0
+    this.pointerId = init.pointerId ?? 1
+    this.clientX = init.clientX ?? 0
+    this.clientY = init.clientY ?? 0
   }
 
   preventDefault(): void {
@@ -91,6 +106,7 @@ export class FakeElement {
   private ownText = ""
   private readonly attributes = new Map<string, string>()
   private readonly listeners = new Map<string, FakeListener[]>()
+  private readonly capturedPointers = new Set<number>()
 
   constructor(
     readonly ownerDocument: FakeDocument,
@@ -144,6 +160,18 @@ export class FakeElement {
     return false
   }
 
+  getBoundingClientRect(): Readonly<{ left: number; top: number; right: number; bottom: number; width: number; height: number }> {
+    let left = Number.parseInt(String(this.style.left ?? "0"), 10) || 0
+    let top = Number.parseInt(String(this.style.top ?? "0"), 10) || 0
+    for (let parent = this.parentElement; parent; parent = parent.parentElement) {
+      left += Number.parseInt(String(parent.style.left ?? "0"), 10) || 0
+      top += Number.parseInt(String(parent.style.top ?? "0"), 10) || 0
+    }
+    const width = Number.parseInt(String(this.style.width ?? "0"), 10) || 0
+    const height = Number.parseInt(String(this.style.height ?? "0"), 10) || 0
+    return { left, top, right: left + width, bottom: top + height, width, height }
+  }
+
   setAttribute(name: string, value: string): void {
     const text = String(value)
     this.attributes.set(name, text)
@@ -184,23 +212,78 @@ export class FakeElement {
   focus(): void {
     const previous = this.ownerDocument.activeElement
     if (previous === this) return
-    if (previous) previous.dispatchEvent(new FakeEvent("focusout", { relatedTarget: this }))
+    if (previous) previous.dispatchEvent(new FakeEvent("focusout", { relatedTarget: this, bubbles: true }))
     this.ownerDocument.activeElement = this
     this.dispatchEvent(new FakeEvent("focus"))
+    this.dispatchEvent(new FakeEvent("focusin", { bubbles: true }))
   }
 
   blur(): void {
     if (this.ownerDocument.activeElement !== this) return
     this.ownerDocument.activeElement = null
-    this.dispatchEvent(new FakeEvent("focusout", { relatedTarget: null }))
+    this.dispatchEvent(new FakeEvent("focusout", { relatedTarget: null, bubbles: true }))
+  }
+
+  setPointerCapture(pointerId: number): void {
+    this.capturedPointers.add(pointerId)
+  }
+
+  hasPointerCapture(pointerId: number): boolean {
+    return this.capturedPointers.has(pointerId)
+  }
+
+  releasePointerCapture(pointerId: number): void {
+    if (!this.capturedPointers.delete(pointerId)) return
+    this.dispatchEvent(new FakeEvent("lostpointercapture", { pointerId }))
+  }
+}
+
+export class FakeWindow {
+  private readonly listeners = new Map<string, FakeListener[]>()
+
+  addEventListener(type: string, listener: FakeListener): void {
+    const listeners = this.listeners.get(type) ?? []
+    listeners.push(listener)
+    this.listeners.set(type, listeners)
+  }
+
+  removeEventListener(type: string, listener: FakeListener): void {
+    const listeners = this.listeners.get(type) ?? []
+    const index = listeners.indexOf(listener)
+    if (index >= 0) listeners.splice(index, 1)
+  }
+
+  dispatchEvent(event: FakeEvent): boolean {
+    for (const listener of [...(this.listeners.get(event.type) ?? [])]) listener(event)
+    return !event.defaultPrevented
   }
 }
 
 export class FakeDocument {
   activeElement: FakeElement | null = null
+  hidden = false
+  readonly defaultView = new FakeWindow()
+  private readonly listeners = new Map<string, FakeListener[]>()
 
   createElement(tag: string): FakeElement {
     return new FakeElement(this, tag.toUpperCase())
+  }
+
+  addEventListener(type: string, listener: FakeListener): void {
+    const listeners = this.listeners.get(type) ?? []
+    listeners.push(listener)
+    this.listeners.set(type, listeners)
+  }
+
+  removeEventListener(type: string, listener: FakeListener): void {
+    const listeners = this.listeners.get(type) ?? []
+    const index = listeners.indexOf(listener)
+    if (index >= 0) listeners.splice(index, 1)
+  }
+
+  dispatchEvent(event: FakeEvent): boolean {
+    for (const listener of [...(this.listeners.get(event.type) ?? [])]) listener(event)
+    return !event.defaultPrevented
   }
 }
 
@@ -237,6 +320,25 @@ export function key(
 
 export function click(element: FakeElement): FakeEvent {
   const event = new FakeEvent("click", { bubbles: true })
+  element.dispatchEvent(event)
+  return event
+}
+
+export function pointer(
+  element: FakeElement,
+  type: "pointerdown" | "pointermove" | "pointerup" | "pointercancel",
+  clientX: number,
+  clientY: number,
+  init: Readonly<{ pointerId?: number; button?: number; buttons?: number }> = {},
+): FakeEvent {
+  const event = new FakeEvent(type, {
+    bubbles: true,
+    clientX,
+    clientY,
+    pointerId: init.pointerId ?? 1,
+    button: init.button ?? 0,
+    buttons: init.buttons ?? (type === "pointerup" || type === "pointercancel" ? 0 : 1),
+  })
   element.dispatchEvent(event)
   return event
 }

@@ -1,5 +1,9 @@
-import type { ConsoleLimits } from "./contract"
-import { VGUI_CONSOLE_CSS } from "./style"
+import { VGUI_CSS } from "./style"
+
+type VguiDomLimits = Readonly<{
+  maxDomNodes: number
+  maxListeners: number
+}>
 
 type ListenerRecord = Readonly<{
   target: EventTarget
@@ -48,7 +52,7 @@ export class VguiControl {
   }
 
   setVisible(visible: boolean): void {
-    this.element.hidden = !visible
+    if (this.element.hidden === visible) this.element.hidden = !visible
     this.element.setAttribute("aria-hidden", visible ? "false" : "true")
   }
 
@@ -71,13 +75,13 @@ export class VguiDomRuntime {
 
   constructor(
     readonly root: HTMLElement,
-    private readonly limits: ConsoleLimits,
+    private readonly limits: VguiDomLimits,
   ) {
     this.document = root.ownerDocument
     this.reserveNodes(2)
     this.style = this.document.createElement("style")
     this.style.dataset.playsrcVgui = "developer-console"
-    this.style.textContent = VGUI_CONSOLE_CSS
+    this.style.textContent = VGUI_CSS
     this.host = this.document.createElement("div")
     this.host.className = "playsrc-vgui-root"
     this.host.dataset.vguiOwner = "playsrc"
