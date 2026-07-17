@@ -343,6 +343,7 @@ name = "playsrc-collision"
 version = "0.1.0"
 dependencies = [
  "playsrc-bsp",
+ "playsrc-phy",
 ]
 
 [[package]]
@@ -362,6 +363,10 @@ version = "0.1.0"
 dependencies = [
  "playsrc-vmt",
 ]
+
+[[package]]
+name = "playsrc-phy"
+version = "0.1.0"
 
 [[package]]
 name = "playsrc-studio-model"
