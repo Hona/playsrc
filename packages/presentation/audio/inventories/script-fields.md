@@ -8,7 +8,7 @@ This is a candidate inventory, not generated output. It contains 59 candidate it
 
 | Metadata | Value |
 |---|---|
-| Authority identity | Valve Source SDK 2013 sound-emitter, soundscape, sound-character, audio-source, sentence, and engine-sound contracts; Valve Developer Community `Soundscripts` and `Soundscape` field contracts; W3C Web Audio API Recommendation; TF2 build `10822003` exact sound-script, soundscape, sentence, and audio archive indexes |
+| Authority identity | Valve Source SDK 2013 sound-emitter, soundscape, sound-character, audio-source, sentence, and engine-sound contracts; Valve Developer Community `Soundscripts` and `Soundscape` field contracts; W3C Web Audio API Recommendation; TF2 build `24207079` exact sound-script, soundscape, sentence, and audio archive indexes |
 | Authority revision | SDK commit `88fa198fba3fb85d46d4c95018254693fdc3af0a`; Valve Developer Community immutable page revisions Unknown, checked 16 July 2026; Web Audio API Recommendation 17 June 2021; `steam.inf` SHA-256 `b8d7c1eb4517a806d514087facf42e3d8f407bf14393ac5fdc5d4c69e40adc7f`; archive-index hashes recorded below |
 | Generator command | Missing |
 | Output path | `packages/presentation/audio/inventories/script-fields.md` |
@@ -122,7 +122,7 @@ The accepted file-codec set contains exactly four items. MIDI is an indexed non-
 | `codec.midi-non-playable` | Standard MIDI resource | Return deterministic `Unsupported` without creating a voice or decoder. | 1 file | Candidate required |
 | `codec.network-voice` | Selected live or recorded voice profile | Decode only the exact profile selected by Networking and the application; no profile identity is accepted yet. | Not an archive-file codec | Candidate Blocked |
 
-## TF2 Build `10822003` Occurrence Audit
+## TF2 Build `24207079` Occurrence Audit
 
 The occurrence audit does not add denominator items. It records exact inputs that the future generator must reproduce.
 
