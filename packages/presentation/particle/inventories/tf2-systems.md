@@ -6,7 +6,7 @@ Owning roadmap: [`../ROADMAP.md`](../ROADMAP.md)
 
 | Field | Value |
 |---|---|
-| Authority identity | TF2 content build `10822003`; `particles/particles_manifest.txt`; exact `tf2_misc_dir.vpk` index; 233 configured TF2 BSP files and their PAK indexes; 85 selected BSP-PAK map manifests; one selected GAME map manifest; every available selected PCF byte sequence |
+| Authority identity | TF2 content build `24207079`; `particles/particles_manifest.txt`; exact `tf2_misc_dir.vpk` index; 233 configured TF2 BSP files and their PAK indexes; 85 selected BSP-PAK map manifests; one selected GAME map manifest; every available selected PCF byte sequence |
 | Authority revision | `steam.inf` SHA-256 `b8d7c1eb4517a806d514087facf42e3d8f407bf14393ac5fdc5d4c69e40adc7f`; global manifest SHA-256 `fde462e2fe756e47688e77df851c79dab27bfe2c977724c649b7170b99b8a85b`; VPK index SHA-256 `63f7db0d1c509e303ca9002fee9e3d805e9220ea5afdd639d8a6b68b8a3710b9`; nine selected PCF revisions Missing |
 | Generator command | Missing |
 | Output path | `packages/presentation/particle/inventories/tf2-systems.md` |

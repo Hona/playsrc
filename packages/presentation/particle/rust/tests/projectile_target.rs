@@ -2,8 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use playsrc_particle::{
     AdvanceRequest, CollisionQuery, CollisionResult, ControlPoint, DefinitionLookup, Error,
-    ErrorCode, Event, EventCommand, PcfSource, Registry, RegistryLimits, StopMode, TraceRequest,
-    WorldLimits, encode_render_output,
+    ErrorCode, Event, EventCommand, ParticleSheet, PcfSource, Registry, RegistryLimits, SheetFrame,
+    SheetSampleRequest, SheetSequence, StopMode, TraceRequest, WorldLimits, encode_render_output,
+    sample_sheet,
 };
 
 #[derive(Clone)]
@@ -40,6 +41,10 @@ fn element(
 }
 
 fn fixture(with_constraint: bool) -> Vec<u8> {
+    fixture_with_limit(with_constraint, 32)
+}
+
+fn fixture_with_limit(with_constraint: bool, maximum_particles: i32) -> Vec<u8> {
     let mut elements = vec![TestElement {
         kind: "DmeElement",
         name: "root",
@@ -61,7 +66,8 @@ fn fixture(with_constraint: bool) -> Vec<u8> {
         ("forces", TestValue::Refs(vec![19])),
         ("children", TestValue::Refs(vec![3])),
         ("sort particles", TestValue::Bool(true)),
-        ("max_particles", TestValue::Int(32)),
+        ("max_particles", TestValue::Int(maximum_particles)),
+        ("initial_particles", TestValue::Int(1)),
     ];
     if with_constraint {
         root_attributes.push(("constraints", TestValue::Refs(vec![20])));
@@ -567,7 +573,72 @@ fn advances_children_controls_and_equivalent_partitions_deterministically() {
     ];
     let encoded = encode_render_output(&whole_output.0, &materials, 1024 * 1024).unwrap();
     assert_eq!(&encoded[0..4], &0x5250_5350_u32.to_le_bytes());
-    assert_eq!(encoded.len(), 12 + whole_output.0.len() * 120);
+    assert_eq!(encoded.len(), 12 + whole_output.0.len() * 392);
+}
+
+#[test]
+fn first_frame_creates_only_authored_initial_particles_before_emitters() {
+    let bytes = fixture(false);
+    let registry = registry(&bytes);
+    let mut world =
+        playsrc_particle::ParticleWorld::new(&registry, WorldLimits::default()).unwrap();
+    let (items, _) = world
+        .advance(
+            &[create_event(vec![control([0.0; 3], [0.0; 3])])],
+            AdvanceRequest {
+                from_seconds: 0.0,
+                to_seconds: 0.0,
+                maximum_step_seconds: 0.1,
+                camera_position: [0.0; 3],
+            },
+            &mut NoHit,
+        )
+        .unwrap();
+    assert_eq!(
+        items.len(),
+        2,
+        "one initial particle is emitted by two root renderers"
+    );
+    assert!(items.iter().all(|item| item.system_uuid == [1; 16]));
+}
+
+#[test]
+fn samples_variable_duration_particle_sheets_at_source_table_resolution() {
+    let rect = |left: f32| [[left, 0.0, left + 0.1, 1.0]; 4];
+    let sheet = ParticleSheet {
+        sequences: BTreeMap::from([(
+            3,
+            SheetSequence {
+                clamp: false,
+                duration_seconds: 1.0,
+                frames: vec![
+                    SheetFrame {
+                        duration_seconds: 0.25,
+                        images: rect(0.0),
+                    },
+                    SheetFrame {
+                        duration_seconds: 0.75,
+                        images: rect(0.5),
+                    },
+                ],
+            },
+        )]),
+    };
+    let sample = sample_sheet(
+        &sheet,
+        SheetSampleRequest {
+            sequence: 3,
+            age_seconds: 0.5,
+            lifetime_seconds: 2.0,
+            animation_rate: 1.0,
+            fit_lifetime: false,
+            animation_rate_as_fps: false,
+        },
+    )
+    .unwrap();
+    assert_eq!(sample.current, rect(0.5));
+    assert_eq!(sample.next, rect(0.0));
+    assert!((sample.blend - 1.0 / 3.0).abs() < 1.0e-6);
 }
 
 #[test]
@@ -663,6 +734,27 @@ fn emission_overrun_fails_without_publishing_an_effect() {
     assert_eq!(error.code, ErrorCode::BoundExceeded);
     assert_eq!(world.effect_count(), 0);
     assert_eq!(world.time(), 0.0);
+}
+
+#[test]
+fn authored_capacity_drops_excess_emission_without_failing_the_world() {
+    let bytes = fixture_with_limit(false, 1);
+    let registry = registry(&bytes);
+    let mut world =
+        playsrc_particle::ParticleWorld::new(&registry, WorldLimits::default()).unwrap();
+    world
+        .advance(
+            &[create_event(vec![control([0.0; 3], [0.0; 3])])],
+            AdvanceRequest {
+                from_seconds: 0.0,
+                to_seconds: 1.0,
+                maximum_step_seconds: 0.1,
+                camera_position: [0.0; 3],
+            },
+            &mut NoHit,
+        )
+        .unwrap();
+    assert_eq!(world.effect_count(), 1);
 }
 
 #[test]

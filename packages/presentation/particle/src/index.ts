@@ -1,7 +1,7 @@
 const OUTPUT_MAGIC = 0x5250_5350 // "PSPR"
-const OUTPUT_VERSION = 1
+const OUTPUT_VERSION = 2
 const OUTPUT_HEADER_BYTES = 12
-const OUTPUT_RECORD_BYTES = 120
+const OUTPUT_RECORD_BYTES = 392
 const DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024 * 1024
 const DEFAULT_MAX_RENDER_ITEMS = 65_536
 
@@ -47,6 +47,7 @@ export type ParticleRenderItem = Readonly<{
   color: number
   opacity: number
   sequence: number
+  secondarySequence: number
   trailLength: number
   sortKey: number
   ageSeconds: number
@@ -58,6 +59,14 @@ export type ParticleRenderItem = Readonly<{
   orientationType: number
   animationFitLifetime: boolean
   animationRateAsFps: boolean
+  primarySheet: ParticleSheetSample | null
+  secondarySheet: ParticleSheetSample | null
+}>
+
+export type ParticleSheetSample = Readonly<{
+  current: readonly (readonly [number, number, number, number])[]
+  next: readonly (readonly [number, number, number, number])[]
+  blend: number
 }>
 
 export class ParticleAdapterError extends Error {
@@ -162,6 +171,10 @@ export function decodeParticleRenderOutput(
     const trailFadeInSeconds = view.getFloat32(offset + 108, true)
     const orientationType = view.getInt32(offset + 112, true)
     const flags = view.getUint32(offset + 116, true)
+    const secondarySequence = view.getInt32(offset + 120, true)
+    const sheetFlags = view.getUint32(offset + 124, true)
+    const primarySheet = (sheetFlags & 1) === 0 ? null : sheetSample(view, offset + 128, offset + 132, offset + 196)
+    const secondarySheet = (sheetFlags & 2) === 0 ? null : sheetSample(view, offset + 260, offset + 264, offset + 328)
     if (
       ![
         ...position,
@@ -188,6 +201,7 @@ export function decodeParticleRenderOutput(
       || trailMaxLength < trailMinLength
       || trailFadeInSeconds < 0
       || (flags & ~3) !== 0
+      || (sheetFlags & ~3) !== 0
     ) {
       throw new ParticleAdapterError("MalformedOutput", "particle output contains an invalid scalar")
     }
@@ -206,6 +220,7 @@ export function decodeParticleRenderOutput(
       color: color & 0xff_ffff,
       opacity,
       sequence,
+      secondarySequence,
       trailLength,
       sortKey,
       ageSeconds,
@@ -217,6 +232,8 @@ export function decodeParticleRenderOutput(
       orientationType,
       animationFitLifetime: (flags & 1) !== 0,
       animationRateAsFps: (flags & 2) !== 0,
+      primarySheet,
+      secondarySheet,
     }))
   }
   return Object.freeze(output)
@@ -269,6 +286,39 @@ function tuple3(view: DataView, offset: number): readonly [number, number, numbe
     view.getFloat32(offset + 4, true),
     view.getFloat32(offset + 8, true),
   ])
+}
+
+function sheetSample(
+  view: DataView,
+  blendOffset: number,
+  currentOffset: number,
+  nextOffset: number,
+): ParticleSheetSample {
+  const blend = view.getFloat32(blendOffset, true)
+  const current = sheetImages(view, currentOffset)
+  const next = sheetImages(view, nextOffset)
+  if (!Number.isFinite(blend) || blend < 0 || blend > 1) {
+    throw new ParticleAdapterError("MalformedOutput", "particle sheet blend is invalid")
+  }
+  return Object.freeze({ current, next, blend })
+}
+
+function sheetImages(view: DataView, offset: number): readonly (readonly [number, number, number, number])[] {
+  const output: (readonly [number, number, number, number])[] = []
+  for (let image = 0; image < 4; image += 1) {
+    const start = offset + image * 16
+    const rectangle = Object.freeze([
+      view.getFloat32(start, true),
+      view.getFloat32(start + 4, true),
+      view.getFloat32(start + 8, true),
+      view.getFloat32(start + 12, true),
+    ]) as readonly [number, number, number, number]
+    if (!rectangle.every(Number.isFinite)) {
+      throw new ParticleAdapterError("MalformedOutput", "particle sheet rectangle is invalid")
+    }
+    output.push(rectangle)
+  }
+  return Object.freeze(output)
 }
 
 function uuid(bytes: Uint8Array): string {

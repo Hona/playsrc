@@ -6,7 +6,7 @@ Owning roadmap: [`../ROADMAP.md`](../ROADMAP.md)
 
 | Field | Value |
 |---|---|
-| Authority identity | Valve Source SDK 2013 commit `88fa198fba3fb85d46d4c95018254693fdc3af0a` public particle interfaces and Linux x86-64 particle library; TF2 content build `10822003` global and map particle manifests and their resolved PCF definitions |
+| Authority identity | Valve Source SDK 2013 commit `88fa198fba3fb85d46d4c95018254693fdc3af0a` public particle interfaces and Linux x86-64 particle library; TF2 content build `24207079` global and map particle manifests and their resolved PCF definitions |
 | Authority revision | SDK particle-library SHA-256 `2700ff6cecb972db32b2b01a790cb28ccab2775db383d2e7ea6a32d9cdbb1f9e`; TF2 `steam.inf` SHA-256 `b8d7c1eb4517a806d514087facf42e3d8f407bf14393ac5fdc5d4c69e40adc7f`; `tf2_misc_dir.vpk` SHA-256 `63f7db0d1c509e303ca9002fee9e3d805e9220ea5afdd639d8a6b68b8a3710b9` |
 | Generator command | Missing |
 | Output path | `packages/presentation/particle/inventories/operators.md` |
