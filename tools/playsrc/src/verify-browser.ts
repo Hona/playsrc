@@ -1,7 +1,9 @@
-import type { LocalConfig } from "./config"
-import { startDevelopment } from "./dev"
+import { repositoryRoot } from "./config"
 
 const MAX_OUTPUT_BYTES = 1024 * 1024
+const PROCESS_READY_TIMEOUT_MS = 180_000
+const PROCESS_EXIT_TIMEOUT_MS = 30_000
+const APPLICATION_URL = "http://127.0.0.1:4173/"
 
 export class BrowserEvidenceError extends Error {
   constructor(message: string) {
@@ -43,6 +45,134 @@ function require(condition: unknown, message: string): asserts condition {
   if (!condition) throw new BrowserEvidenceError(message)
 }
 
+type DevelopmentProcessOwner = Readonly<{
+  url: string
+  interrupt(): Promise<void>
+}>
+
+async function consumeOutput(
+  stream: ReadableStream<Uint8Array>,
+  append: (text: string, bytes: number) => void,
+): Promise<void> {
+  const reader = stream.getReader()
+  const decoder = new TextDecoder()
+  while (true) {
+    const result = await reader.read()
+    if (result.done) break
+    append(decoder.decode(result.value, { stream: true }), result.value.byteLength)
+  }
+  append(decoder.decode(), 0)
+}
+
+function excerpt(value: string): string {
+  return value.trim().replaceAll(/\s+/gu, " ").slice(0, 500)
+}
+
+async function startDevelopmentProcess(target: string | undefined): Promise<DevelopmentProcessOwner> {
+  const command = [process.execPath, "run", "dev"]
+  if (target !== undefined) command.push(target)
+  const child = Bun.spawn(command, {
+    cwd: repositoryRoot,
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  let stdout = ""
+  let stderr = ""
+  let outputBytes = 0
+  let ready = false
+  let settled = false
+  let resolveReady: (() => void) | undefined
+  let rejectReady: ((error: Error) => void) | undefined
+  const readiness = new Promise<void>((resolve, reject) => {
+    resolveReady = resolve
+    rejectReady = reject
+  })
+  const append = (channel: "stdout" | "stderr") => (text: string, bytes: number): void => {
+    outputBytes += bytes
+    if (outputBytes > MAX_OUTPUT_BYTES) {
+      child.kill("SIGKILL")
+      rejectReady?.(new BrowserEvidenceError("development command output exceeded 1048576 bytes"))
+      return
+    }
+    if (channel === "stdout") {
+      stdout += text
+      if (!ready && stdout.split(/\r?\n/u).includes(APPLICATION_URL)) {
+        ready = true
+        resolveReady?.()
+      }
+    } else {
+      stderr += text
+    }
+  }
+  const stdoutTask = consumeOutput(child.stdout, append("stdout"))
+  const stderrTask = consumeOutput(child.stderr, append("stderr"))
+  void stdoutTask.catch((error) => rejectReady?.(error instanceof Error ? error : new Error(String(error))))
+  void stderrTask.catch((error) => rejectReady?.(error instanceof Error ? error : new Error(String(error))))
+  const exited = child.exited.then((code) => {
+    settled = true
+    return code
+  })
+  const prematureExit = exited.then(async (code) => {
+    if (ready) return new Promise<never>(() => {})
+    await Promise.allSettled([stdoutTask, stderrTask])
+    throw new BrowserEvidenceError(
+      `development command exited before readiness with code ${code}: ${excerpt(stderr || stdout)}`,
+    )
+  })
+  let readyTimeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      readiness,
+      prematureExit,
+      new Promise<never>((_, reject) => {
+        readyTimeout = setTimeout(() => {
+          reject(new BrowserEvidenceError("development command did not report readiness within 180000 ms"))
+        }, PROCESS_READY_TIMEOUT_MS)
+      }),
+    ])
+  } catch (error) {
+    if (!settled) child.kill("SIGKILL")
+    await exited.catch(() => {})
+    await Promise.allSettled([stdoutTask, stderrTask])
+    throw error
+  } finally {
+    if (readyTimeout !== undefined) clearTimeout(readyTimeout)
+  }
+  let interrupted = false
+  return Object.freeze({
+    url: APPLICATION_URL,
+    async interrupt(): Promise<void> {
+      if (interrupted) return
+      interrupted = true
+      if (settled) {
+        await Promise.allSettled([stdoutTask, stderrTask])
+        throw new BrowserEvidenceError("development command exited before the acceptance interrupt")
+      }
+      child.kill("SIGINT")
+      let exitTimeout: ReturnType<typeof setTimeout> | undefined
+      let code: number
+      try {
+        code = await Promise.race([
+          exited,
+          new Promise<never>((_, reject) => {
+            exitTimeout = setTimeout(() => {
+              reject(new BrowserEvidenceError("development command did not exit within 30000 ms after SIGINT"))
+            }, PROCESS_EXIT_TIMEOUT_MS)
+          }),
+        ])
+      } catch (error) {
+        if (!settled) child.kill("SIGKILL")
+        await exited.catch(() => {})
+        throw error
+      } finally {
+        if (exitTimeout !== undefined) clearTimeout(exitTimeout)
+        await Promise.allSettled([stdoutTask, stderrTask])
+      }
+      require(code === 0, `development command exited with code ${code} after SIGINT: ${excerpt(stderr || stdout)}`)
+    },
+  })
+}
+
 async function acquirePointerLock(session: string): Promise<void> {
   let lastBody = ""
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -73,13 +203,10 @@ async function unavailable(url: string): Promise<boolean> {
   }
 }
 
-export async function verifyBrowserAcceptance(
-  config: LocalConfig,
-  target: string | undefined,
-): Promise<Record<string, unknown>> {
+export async function verifyBrowserAcceptance(target: string | undefined): Promise<Record<string, unknown>> {
   const version = await agent(["--version"])
   const session = `playsrc-acceptance-${process.pid}`
-  const owner = await startDevelopment(config, target)
+  const owner = await startDevelopmentProcess(target)
   let browserOpen = false
   try {
     await agent(["--session", session, "--headed", "--webgpu", "open", owner.url])
@@ -106,6 +233,10 @@ export async function verifyBrowserAcceptance(
       parseJson<string>(await agent(["--session", session, "eval", "document.pointerLockElement?.className ?? ''"])) === "",
       "console activation did not release pointer lock",
     )
+    require(
+      parseJson<string>(await agent(["--session", session, "eval", "document.activeElement?.getAttribute('aria-label') ?? ''"])) === "Console command",
+      "console activation did not focus its command input",
+    )
     await agent(["--session", session, "fill", "[aria-label='Console command']", "status"])
     await agent(["--session", session, "press", "Enter"])
     await agent(["--session", session, "wait", "--text", "generation 1", "--timeout", "120000"])
@@ -125,6 +256,26 @@ export async function verifyBrowserAcceptance(
     await agent(["--session", session, "fill", "[aria-label='Console command']", "map jump_beef"])
     await agent(["--session", session, "press", "Enter"])
     await agent(["--session", session, "wait", "--text", "Loaded jump_beef; generation 2", "--timeout", "120000"])
+    await agent(["--session", session, "press", "Backquote"])
+    await agent([
+      "--session",
+      session,
+      "wait",
+      "--fn",
+      "getComputedStyle(document.querySelector('[role=dialog]')).display === 'none'",
+    ])
+    await agent(["--session", session, "press", "Backquote"])
+    await agent([
+      "--session",
+      session,
+      "wait",
+      "--fn",
+      "getComputedStyle(document.querySelector('[role=dialog]')).display !== 'none'",
+    ])
+    require(
+      parseJson<string>(await agent(["--session", session, "eval", "document.activeElement?.getAttribute('aria-label') ?? ''"])) === "Console command",
+      "reopened console did not restore command focus",
+    )
     await agent(["--session", session, "press", "Backquote"])
     await agent([
       "--session",
@@ -272,25 +423,22 @@ export async function verifyBrowserAcceptance(
       supportBlockers: blockerCount,
       supportStatus: "diagnostic-blockers-retained",
       pointerLock: "acquired-and-released-for-console",
-      console: "history-completion-replacement-close-passed",
+      console: "history-completion-focus-repeated-visibility-replacement-close-passed",
       audio: "exact-buffers-decoded-and-context-running",
       shutdown: "pending",
     }
   } finally {
     if (browserOpen) await agent(["--session", session, "close"]).catch(() => {})
-    await owner.close()
+    await owner.interrupt()
   }
 }
 
-export async function runBrowserAcceptance(
-  config: LocalConfig,
-  target: string | undefined,
-): Promise<void> {
-  const report = await verifyBrowserAcceptance(config, target)
+export async function runBrowserAcceptance(target: string | undefined): Promise<void> {
+  const report = await verifyBrowserAcceptance(target)
   require(
     await unavailable("http://127.0.0.1:4173/readyz")
     && await unavailable("http://127.0.0.1:4174/readyz"),
     "owned listeners remained available after shutdown",
   )
-  console.log(JSON.stringify({ ...report, shutdown: "listeners-released" }))
+  console.log(JSON.stringify({ ...report, shutdown: "sigint-child-and-listeners-released" }))
 }

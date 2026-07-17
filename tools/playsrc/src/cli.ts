@@ -20,7 +20,7 @@ async function main(): Promise<number> {
         return 0
       }
       if (target === "browser") {
-        await runBrowserAcceptance(config, argument)
+        await runBrowserAcceptance(argument)
         return 0
       }
     }
