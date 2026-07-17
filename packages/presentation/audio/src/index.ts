@@ -2,6 +2,8 @@ const MAX_RESOURCES = 4096
 const MAX_VOICES = 128
 const IDENTITY = /^[\x21-\x7e]{1,512}$/
 
+export * from "./source"
+
 export type AudioResource = Readonly<{
   identity: string
   buffer: AudioBuffer
@@ -17,8 +19,7 @@ export type PlayRequest = Readonly<{
 
 type Voice = Readonly<{
   source: AudioBufferSourceNode
-  gain: GainNode
-  pan: StereoPannerNode
+  nodes: readonly AudioNode[]
 }>
 
 export class AudioError extends Error {
@@ -58,6 +59,7 @@ function validBuffer(value: AudioBuffer): boolean {
 export function createAudioSystem(context: AudioContext, resources: readonly AudioResource[]): Readonly<{
   resume(): Promise<void>
   play(request: PlayRequest): void
+  playNeutral(voice: import("./source").NeutralVoice): void
   stop(voice: number): void
   reset(): void
   close(): Promise<void>
@@ -99,9 +101,36 @@ export function createAudioSystem(context: AudioContext, resources: readonly Aud
     } catch {
       // A naturally ended source is already stopped; its graph still requires disconnection.
     }
-    current.source.disconnect()
-    current.gain.disconnect()
-    current.pan.disconnect()
+    for (const node of current.nodes) node.disconnect()
+  }
+
+  function requireRunning(): void {
+    if (closed || context.state === "closed") throw new AudioError("Closed", "audio context is closed")
+    if (context.state !== "running") throw new AudioError("Suspended", "audio context is suspended")
+  }
+
+  function requireCapacity(voice: number): void {
+    if (!voices.has(voice) && voices.size >= MAX_VOICES) {
+      throw new AudioError("Capacity", "active voice count exceeds its limit")
+    }
+  }
+
+  function commit(voiceIdentity: number, source: AudioBufferSourceNode, nodes: readonly AudioNode[], start: () => void): void {
+    const voice = Object.freeze({ source, nodes: Object.freeze([...nodes]) })
+    source.onended = () => {
+      if (voices.get(voiceIdentity) !== voice) return
+      voices.delete(voiceIdentity)
+      for (const node of nodes) node.disconnect()
+    }
+    try {
+      start()
+    } catch {
+      source.onended = null
+      for (const node of nodes) node.disconnect()
+      throw new AudioError("BrowserFailure", "audio source start failed")
+    }
+    stop(voiceIdentity)
+    voices.set(voiceIdentity, voice)
   }
 
   return Object.freeze({
@@ -115,7 +144,7 @@ export function createAudioSystem(context: AudioContext, resources: readonly Aud
       if (context.state !== "running") throw new AudioError("Suspended", "audio context did not enter running state")
     },
     play(request: PlayRequest): void {
-      if (closed || context.state === "closed") throw new AudioError("Closed", "audio context is closed")
+      requireRunning()
       if (
         !request
         || !Number.isSafeInteger(request.voice)
@@ -129,13 +158,9 @@ export function createAudioSystem(context: AudioContext, resources: readonly Aud
       ) {
         throw new AudioError("MalformedEvent", "audio play request is invalid")
       }
-      if (context.state !== "running") throw new AudioError("Suspended", "audio context is suspended")
       const buffer = registry.get(canonical(request.resource))
       if (!buffer) throw new AudioError("MissingResource", `audio resource ${request.resource} is missing`)
-      if (!voices.has(request.voice) && voices.size >= MAX_VOICES) {
-        throw new AudioError("Capacity", "active voice count exceeds its limit")
-      }
-      stop(request.voice)
+      requireCapacity(request.voice)
       let source: AudioBufferSourceNode | undefined
       let gain: GainNode | undefined
       let pan: StereoPannerNode | undefined
@@ -155,25 +180,71 @@ export function createAudioSystem(context: AudioContext, resources: readonly Aud
         throw new AudioError("BrowserFailure", "audio graph creation failed")
       }
       if (!source || !gain || !pan) throw new AudioError("BrowserFailure", "audio graph creation was incomplete")
-      const voice = Object.freeze({ source, gain, pan })
-      voices.set(request.voice, voice)
-      source.onended = () => {
-        if (voices.get(request.voice) !== voice) return
-        voices.delete(request.voice)
-        source.disconnect()
-        gain.disconnect()
-        pan.disconnect()
+      commit(request.voice, source, [source, gain, pan], () => source!.start())
+    },
+    playNeutral(voice): void {
+      requireRunning()
+      if (
+        !voice
+        || !Number.isSafeInteger(voice.identity)
+        || voice.identity < 1
+        || !IDENTITY.test(voice.resource)
+        || !Number.isFinite(voice.leftGain)
+        || voice.leftGain < 0
+        || !Number.isFinite(voice.rightGain)
+        || voice.rightGain < 0
+        || !Number.isFinite(voice.playbackRate)
+        || voice.playbackRate <= 0
+        || !Number.isFinite(voice.startTimeSeconds)
+        || !Number.isFinite(voice.offsetSeconds)
+        || voice.offsetSeconds < 0
+      ) {
+        throw new AudioError("MalformedEvent", "neutral audio voice is invalid")
       }
+      const buffer = registry.get(canonical(voice.resource))
+      if (!buffer) throw new AudioError("MissingResource", `audio resource ${voice.resource} is missing`)
+      if (
+        typeof context.createChannelSplitter !== "function"
+        || typeof context.createChannelMerger !== "function"
+      ) {
+        throw new AudioError("BrowserFailure", "channel-exact browser graph is unavailable")
+      }
+      requireCapacity(voice.identity)
+      let source: AudioBufferSourceNode | undefined
+      const nodes: AudioNode[] = []
       try {
-        source.start()
+        source = context.createBufferSource()
+        nodes.push(source)
+        const left = context.createGain()
+        const right = context.createGain()
+        const merger = context.createChannelMerger(2)
+        nodes.push(left, right, merger)
+        source.buffer = buffer
+        source.playbackRate.value = voice.playbackRate
+        source.loop = voice.loopStartSeconds !== null
+        if (voice.loopStartSeconds !== null) source.loopStart = voice.loopStartSeconds
+        left.gain.value = voice.leftGain
+        right.gain.value = voice.rightGain
+        if (buffer.numberOfChannels === 1) {
+          source.connect(left)
+          source.connect(right)
+        } else {
+          const splitter = context.createChannelSplitter(2)
+          nodes.push(splitter)
+          source.connect(splitter)
+          splitter.connect(left, 0)
+          splitter.connect(right, 1)
+        }
+        left.connect(merger, 0, 0)
+        right.connect(merger, 0, 1)
+        merger.connect(context.destination)
       } catch {
-        voices.delete(request.voice)
-        source.onended = null
-        source.disconnect()
-        gain.disconnect()
-        pan.disconnect()
-        throw new AudioError("BrowserFailure", "audio source start failed")
+        for (const node of nodes) node.disconnect()
+        throw new AudioError("BrowserFailure", "neutral audio graph creation failed")
       }
+      if (!source) throw new AudioError("BrowserFailure", "neutral audio graph creation was incomplete")
+      const when = Math.max(context.currentTime, voice.startTimeSeconds)
+      commit(voice.identity, source, nodes, () => source!.start(when, voice.offsetSeconds))
     },
     stop,
     reset(): void {

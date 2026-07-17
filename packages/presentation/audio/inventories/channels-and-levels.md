@@ -8,7 +8,7 @@ This is a candidate inventory, not generated output. It contains 47 candidate it
 
 | Metadata | Value |
 |---|---|
-| Authority identity | Valve Source SDK 2013 `src/public/soundflags.h`, `src/public/SoundParametersInternal.cpp`, `src/public/SoundEmitterSystem/isoundemittersystembase.h`, `src/public/engine/IEngineSound.h`, and TF2 build `10822003` indexed sound definitions |
+| Authority identity | Valve Source SDK 2013 `src/public/soundflags.h`, `src/public/SoundParametersInternal.cpp`, `src/public/SoundEmitterSystem/isoundemittersystembase.h`, `src/public/engine/IEngineSound.h`, and TF2 build `24207079` indexed sound definitions |
 | Authority revision | SDK commit `88fa198fba3fb85d46d4c95018254693fdc3af0a`; TF2 `steam.inf` SHA-256 `b8d7c1eb4517a806d514087facf42e3d8f407bf14393ac5fdc5d4c69e40adc7f` |
 | Generator command | Missing |
 | Output path | `packages/presentation/audio/inventories/channels-and-levels.md` |
@@ -35,7 +35,7 @@ The first eight values are network-representable sound-event channels. `CHAN_REP
 | `channel.voice-base` | `CHAN_VOICE_BASE` | 8 | Mark the first channel reserved for decoded network voice instances. | Candidate required |
 | `channel.user-base` | `CHAN_USER_BASE` | 136 | Mark the first game-owned channel value; Audio retains the integer while the selected game owns its semantic label. | Candidate required |
 
-TF2 build `10822003` base sound definitions contain all eight named script channels: `CHAN_AUTO` 70 occurrences, `CHAN_WEAPON` 337, `CHAN_VOICE` 5,812, `CHAN_ITEM` 42, `CHAN_BODY` 113, `CHAN_STREAM` 1, `CHAN_STATIC` 1,991, and `CHAN_VOICE2` 588.
+TF2 build `24207079` base sound definitions contain all eight named script channels: `CHAN_AUTO` 70 occurrences, `CHAN_WEAPON` 337, `CHAN_VOICE` 5,812, `CHAN_ITEM` 42, `CHAN_BODY` 113, `CHAN_STREAM` 1, `CHAN_STATIC` 1,991, and `CHAN_VOICE2` 588.
 
 ## Symbolic Sound Levels
 
@@ -76,7 +76,7 @@ Every symbolic lookup ignores ASCII case. Aliases with the same numeric value re
 
 Regular event sound levels occupy the integer domain `0..255`; `256..511` is the compatibility-attenuation domain. A sound-script token beginning `SNDLVL_` consumes its leading decimal integer when that value is 1 through 180; trailing nonnumeric text does not change that parsed value. A numeric sound-script value accepts one scalar or ordered interval; the parser does not require membership in the symbolic table. Every network-origin level is validated against its nine-bit field before Audio receives the event.
 
-TF2 build `10822003` base sound definitions contain 50 distinct source spellings and 9,195 `soundlevel` occurrences. The occurrence set includes symbolic aliases, custom `SNDLVL_<integer>` values, and one numeric scalar.
+TF2 build `24207079` base sound definitions contain 50 distinct source spellings and 9,195 `soundlevel` occurrences. The occurrence set includes symbolic aliases, custom `SNDLVL_<integer>` values, and one numeric scalar.
 
 ## Attenuation Aliases
 
