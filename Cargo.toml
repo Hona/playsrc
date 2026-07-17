@@ -14,6 +14,7 @@ members = [
   "packages/world/material/rust",
   "packages/world/map/rust",
   "packages/world/map/wasm",
+  "packages/presentation/particle/rust",
   "packages/runtime/movement/rust",
   "games/tf2/rust",
   "games/tf2/wasm",

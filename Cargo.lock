@@ -449,6 +449,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "playsrc-particle"
+version = "0.1.0"
+
+[[package]]
 name = "playsrc-phy"
 version = "0.1.0"
 
