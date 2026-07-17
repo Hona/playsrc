@@ -8,6 +8,7 @@ license.workspace = true
 playsrc-bsp = { path = "../../../formats/bsp/rust" }
 playsrc-collision = { path = "../../collision/rust" }
 playsrc-entity = { path = "../../entity/rust" }
+playsrc-material = { path = "../../material/rust" }
 playsrc-visibility = { path = "../../visibility/rust" }
 sha2 = "0.10.9"
 

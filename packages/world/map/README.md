@@ -21,12 +21,14 @@ Assemble parsed Source data and semantic domain outputs into one canonical plays
 - Accept owner-resolved Material/VTF outputs for the exact map material index and append versioned shader, feature, base-texture identity, dimensions, and RGBA planes to the direct runtime payload without resolving content inside Map.
 - Select one complete `ldr` or `hdr` lighting profile without fallback. HDR compilation validates face, RGBExp32 sample, world-light, leaf-ambient, map-flag, detail-prop-lighting, and static-prop-lighting inputs before emitting output.
 - Emit HDR samples as linear RGB binary32 without exposure or tone mapping, preserving flat, directional-normal, and directional-SSBump face classifications plus every style identity.
+- Finalize one bounded render-neutral environment from selected-profile sky and cubemap requests, water surfaces and leaf volumes, entity decals and compiled overlays, fog/environment controllers, and exact dependency responses. Missing selected resources fail without profile, default-cubemap, or sky substitution.
 
 ## Non-Responsibilities
 
 - Reimplementing parsers or the semantics of adjacent world packages.
 - Adding TF2, ruleset, application, or renderer behavior.
 - Storing content-addressed objects.
+- Creating reflection/refraction render targets, applying fog/exposure/tone mapping, drawing sky/water/marks, or selecting application presentation policy.
 
 ## Relationships
 

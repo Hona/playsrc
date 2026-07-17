@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 playsrc-bsp = { path = "../../../formats/bsp/rust" }
+sha2 = "0.10.9"
 
 [lib]
 path = "src/lib.rs"

@@ -3,6 +3,8 @@ use sha2::{Digest, Sha256};
 use std::{collections::BTreeSet, fmt};
 mod lighting;
 pub use lighting::*;
+mod environment;
+pub use environment::*;
 #[derive(Clone, Debug, PartialEq)]
 pub struct MaterialReference {
     pub index: usize,

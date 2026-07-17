@@ -31,6 +31,8 @@ pub enum TextureRole {
     EnvironmentMask,
     SelfIllumMask,
     Flow,
+    Reflection,
+    Refraction,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TextureDisposition {
@@ -51,6 +53,55 @@ pub struct Proxy {
     pub name: Vec<u8>,
     pub scalar_arguments: Vec<(Vec<u8>, Vec<u8>)>,
 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MaterialRole {
+    Bottom,
+    UnderwaterOverlay,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MaterialRequest {
+    pub role: MaterialRole,
+    pub parameter: Vec<u8>,
+    pub reference: Vec<u8>,
+    pub logical_path: String,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct WaterFog {
+    pub enabled: bool,
+    pub color: [f32; 3],
+    pub start: f32,
+    pub end: f32,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct WaterState {
+    pub above_water: bool,
+    pub normal_map: TextureRequest,
+    pub environment_map: TextureRequest,
+    pub reflection: TextureRequest,
+    pub refraction: TextureRequest,
+    pub bottom_material: Option<MaterialRequest>,
+    pub underwater_overlay: Option<MaterialRequest>,
+    pub reflect_amount: f32,
+    pub refract_amount: f32,
+    pub reflect_tint: [f32; 3],
+    pub refract_tint: [f32; 3],
+    pub fog: WaterFog,
+    pub cheap_start: f32,
+    pub cheap_end: f32,
+    pub force_cheap: bool,
+    pub force_expensive: bool,
+    pub no_fresnel: bool,
+    pub reflect_entities: bool,
+    pub blur_refraction: bool,
+    pub scroll: [[f32; 3]; 2],
+    pub has_proxy_program: bool,
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DecalState {
+    pub scale: f32,
+    pub suppress_decals: bool,
+    pub alpha_tested: bool,
+}
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Features {
     pub translucent: bool,
@@ -60,7 +111,7 @@ pub struct Features {
     pub self_illum: bool,
     pub ss_bump: bool,
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Material {
     pub shader_token: Vec<u8>,
     pub shader: Shader,
@@ -72,6 +123,9 @@ pub struct Material {
     pub proxies: Vec<Proxy>,
     pub surface_property: Option<Vec<u8>>,
     pub features: Features,
+    pub material_requests: Vec<MaterialRequest>,
+    pub water: Option<WaterState>,
+    pub decal: DecalState,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SelectionDecision {
@@ -117,6 +171,7 @@ pub enum ErrorCode {
     InvalidPath,
     UnsupportedCondition,
     MissingProfileTexture,
+    InvalidParameter,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Error {
@@ -188,6 +243,8 @@ pub fn resolve_for_environment(
         (b"$envmapmask", TextureRole::EnvironmentMask),
         (b"$selfillummask", TextureRole::SelfIllumMask),
         (b"$flowmap", TextureRole::Flow),
+        (b"$reflecttexture", TextureRole::Reflection),
+        (b"$refracttexture", TextureRole::Refraction),
     ];
     let mut textures = Vec::new();
     for (name, role) in specs {
@@ -196,6 +253,28 @@ pub fn resolve_for_environment(
         }
     }
     let selected_textures = selected_textures(shader, environment, &textures)?;
+    let material_specs = [
+        (b"$bottommaterial".as_slice(), MaterialRole::Bottom),
+        (
+            b"$underwateroverlay".as_slice(),
+            MaterialRole::UnderwaterOverlay,
+        ),
+    ];
+    let material_requests = material_specs
+        .into_iter()
+        .filter_map(|(name, role)| get(&first, name).map(|reference| (name, role, reference)))
+        .map(|(name, role, reference)| material_request(name, role, reference))
+        .collect::<Result<Vec<_>, _>>()?;
+    let water = (shader == Shader::Water)
+        .then(|| water_state(&first, &material_requests, &proxies))
+        .transpose()?;
+    let decal_scale = float_or(&first, b"$decalscale", 1.0)?;
+    if decal_scale <= 0.0 {
+        return Err(error(
+            ErrorCode::InvalidParameter,
+            Some(b"$decalscale".to_vec()),
+        ));
+    }
     Ok(Material {
         shader_token: document.root.key.bytes.clone(),
         shader,
@@ -214,6 +293,77 @@ pub fn resolve_for_environment(
             self_illum: boolean(&first, b"$selfillum"),
             ss_bump: boolean(&first, b"$ssbump"),
         },
+        material_requests,
+        water,
+        decal: DecalState {
+            scale: decal_scale,
+            suppress_decals: boolean(&first, b"$nodecal"),
+            alpha_tested: boolean(&first, b"$alphatest"),
+        },
+    })
+}
+
+fn water_state(
+    parameters: &BTreeMap<Vec<u8>, Vec<u8>>,
+    material_requests: &[MaterialRequest],
+    proxies: &[Proxy],
+) -> Result<WaterState, Error> {
+    let request = |parameter: &'static [u8], role, default: &'static [u8]| {
+        texture(
+            parameter,
+            role,
+            get(parameters, parameter).map_or(default, Vec::as_slice),
+        )
+    };
+    let force_cheap = boolean_or(parameters, b"$forcecheap", false)?;
+    let mut force_expensive = boolean_or(parameters, b"$forceexpensive", true)?;
+    if force_cheap && force_expensive {
+        force_expensive = false;
+    }
+    Ok(WaterState {
+        above_water: boolean_or(parameters, b"$abovewater", true)?,
+        normal_map: request(b"$normalmap", TextureRole::Normal, b"dev/water_normal")?,
+        environment_map: request(b"$envmap", TextureRole::Environment, b"env_cubemap")?,
+        reflection: request(
+            b"$reflecttexture",
+            TextureRole::Reflection,
+            b"_rt_WaterReflection",
+        )?,
+        refraction: request(
+            b"$refracttexture",
+            TextureRole::Refraction,
+            b"_rt_WaterRefraction",
+        )?,
+        bottom_material: material_requests
+            .iter()
+            .find(|request| request.role == MaterialRole::Bottom)
+            .cloned(),
+        underwater_overlay: material_requests
+            .iter()
+            .find(|request| request.role == MaterialRole::UnderwaterOverlay)
+            .cloned(),
+        reflect_amount: float_or(parameters, b"$reflectamount", 0.8)?,
+        refract_amount: float_or(parameters, b"$refractamount", 0.0)?,
+        reflect_tint: color_or(parameters, b"$reflecttint", [1.0; 3])?,
+        refract_tint: color_or(parameters, b"$refracttint", [1.0; 3])?,
+        fog: WaterFog {
+            enabled: boolean_or(parameters, b"$fogenable", true)?,
+            color: color_or(parameters, b"$fogcolor", [1.0, 0.0, 0.0])?,
+            start: float_or(parameters, b"$fogstart", 0.0)?,
+            end: float_or(parameters, b"$fogend", 0.0)?,
+        },
+        cheap_start: float_or(parameters, b"$cheapwaterstartdistance", 500.0)?,
+        cheap_end: float_or(parameters, b"$cheapwaterenddistance", 1000.0)?,
+        force_cheap,
+        force_expensive,
+        no_fresnel: boolean_or(parameters, b"$nofresnel", false)?,
+        reflect_entities: boolean_or(parameters, b"$reflectentities", false)?,
+        blur_refraction: boolean_or(parameters, b"$blurrefract", false)?,
+        scroll: [
+            color_or(parameters, b"$scroll1", [0.0; 3])?,
+            color_or(parameters, b"$scroll2", [0.0; 3])?,
+        ],
+        has_proxy_program: !proxies.is_empty(),
     })
 }
 fn selected_children(
@@ -438,6 +588,74 @@ fn boolean(m: &BTreeMap<Vec<u8>, Vec<u8>>, k: &[u8]) -> bool {
         .and_then(|x| x.parse::<f32>().ok())
         .is_some_and(|x| x != 0.)
 }
+fn boolean_or(
+    parameters: &BTreeMap<Vec<u8>, Vec<u8>>,
+    parameter: &[u8],
+    default: bool,
+) -> Result<bool, Error> {
+    let Some(value) = get(parameters, parameter) else {
+        return Ok(default);
+    };
+    if value.eq_ignore_ascii_case(b"true") {
+        return Ok(true);
+    }
+    if value.eq_ignore_ascii_case(b"false") {
+        return Ok(false);
+    }
+    let parsed = std::str::from_utf8(value)
+        .ok()
+        .and_then(|value| value.trim().parse::<f32>().ok())
+        .filter(|value| value.is_finite())
+        .ok_or_else(|| error(ErrorCode::InvalidParameter, Some(parameter.to_vec())))?;
+    Ok(parsed != 0.0)
+}
+fn float_or(
+    parameters: &BTreeMap<Vec<u8>, Vec<u8>>,
+    parameter: &[u8],
+    default: f32,
+) -> Result<f32, Error> {
+    let Some(value) = get(parameters, parameter) else {
+        return Ok(default);
+    };
+    std::str::from_utf8(value)
+        .ok()
+        .and_then(|value| value.trim().parse::<f32>().ok())
+        .filter(|value| value.is_finite())
+        .ok_or_else(|| error(ErrorCode::InvalidParameter, Some(parameter.to_vec())))
+}
+fn color_or(
+    parameters: &BTreeMap<Vec<u8>, Vec<u8>>,
+    parameter: &[u8],
+    default: [f32; 3],
+) -> Result<[f32; 3], Error> {
+    let Some(value) = get(parameters, parameter) else {
+        return Ok(default);
+    };
+    let text = std::str::from_utf8(value)
+        .map_err(|_| error(ErrorCode::InvalidParameter, Some(parameter.to_vec())))?
+        .trim();
+    let byte_color = text.starts_with('{') && text.ends_with('}');
+    let content = if (text.starts_with('[') && text.ends_with(']'))
+        || (text.starts_with('{') && text.ends_with('}'))
+    {
+        &text[1..text.len() - 1]
+    } else {
+        text
+    };
+    let values = content
+        .split_ascii_whitespace()
+        .map(str::parse::<f32>)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| error(ErrorCode::InvalidParameter, Some(parameter.to_vec())))?;
+    if !(3..=4).contains(&values.len())
+        || values.iter().any(|value| !value.is_finite())
+        || (byte_color && values.iter().any(|value| !(0.0..=255.0).contains(value)))
+    {
+        return Err(error(ErrorCode::InvalidParameter, Some(parameter.to_vec())));
+    }
+    let scale = if byte_color { 1.0 / 255.0 } else { 1.0 };
+    Ok([values[0] * scale, values[1] * scale, values[2] * scale])
+}
 fn shader(v: &[u8]) -> Shader {
     if v.eq_ignore_ascii_case(b"LightmappedGeneric") {
         Shader::LightmappedGeneric
@@ -475,15 +693,7 @@ fn texture(parameter: &[u8], role: TextureRole, reference: &[u8]) -> Result<Text
         TextureDisposition::Source
     };
     let logical_path = if disposition == TextureDisposition::Source {
-        let suffix = if lower.ends_with(".vtf") { "" } else { ".vtf" };
-        let path = format!("materials/{normalized}{suffix}");
-        if path
-            .split('/')
-            .any(|x| x.is_empty() || x == "." || x == "..")
-        {
-            return Err(error(ErrorCode::InvalidPath, Some(parameter.to_vec())));
-        }
-        Some(path)
+        Some(logical_path(&normalized, ".vtf", parameter)?)
     } else {
         None
     };
@@ -494,6 +704,45 @@ fn texture(parameter: &[u8], role: TextureRole, reference: &[u8]) -> Result<Text
         logical_path,
         disposition,
     })
+}
+fn material_request(
+    parameter: &[u8],
+    role: MaterialRole,
+    reference: &[u8],
+) -> Result<MaterialRequest, Error> {
+    if reference.is_empty() {
+        return Err(error(ErrorCode::InvalidReference, Some(parameter.to_vec())));
+    }
+    let normalized = String::from_utf8(reference.to_vec())
+        .map_err(|_| error(ErrorCode::InvalidPath, Some(parameter.to_vec())))?
+        .replace('\\', "/");
+    Ok(MaterialRequest {
+        role,
+        parameter: parameter.to_vec(),
+        reference: reference.to_vec(),
+        logical_path: logical_path(&normalized, ".vmt", parameter)?,
+    })
+}
+fn logical_path(normalized: &str, extension: &str, parameter: &[u8]) -> Result<String, Error> {
+    let lower = normalized.to_ascii_lowercase();
+    let prefix = if lower.starts_with("materials/") {
+        ""
+    } else {
+        "materials/"
+    };
+    let suffix = if lower.ends_with(extension) {
+        ""
+    } else {
+        extension
+    };
+    let path = format!("{prefix}{normalized}{suffix}");
+    if path
+        .split('/')
+        .any(|component| component.is_empty() || matches!(component, "." | ".."))
+    {
+        return Err(error(ErrorCode::InvalidPath, Some(parameter.to_vec())));
+    }
+    Ok(path)
 }
 fn error(code: ErrorCode, parameter: Option<Vec<u8>>) -> Error {
     Error { code, parameter }
@@ -667,5 +916,90 @@ mod tests {
             selected.first_parameters.get(b"$basetexture".as_slice()),
             Some(&b"exact".to_vec())
         );
+    }
+
+    #[test]
+    fn water_state_retains_render_neutral_requests_and_typed_values() {
+        let selected = material(
+            br#"Water {
+                "$abovewater" "0"
+                "$normalmap" "water/current_normal"
+                "$envmap" "maps/test/c1_2_3"
+                "$reflecttexture" "_rt_WaterReflection"
+                "$refracttexture" "_rt_WaterRefraction"
+                "$bottommaterial" "water/beneath"
+                "$underwateroverlay" "effects/underwater"
+                "$reflectamount" "0.25"
+                "$refractamount" "0.32"
+                "$reflecttint" "[0.5 0.75 1]"
+                "$refracttint" "{ 128 64 255 }"
+                "$fogenable" "1"
+                "$fogcolor" "{ 51 43 13 }"
+                "$fogstart" "1"
+                "$fogend" "400"
+                "$cheapwaterstartdistance" "1000"
+                "$cheapwaterenddistance" "2000"
+                "$forcecheap" "1"
+                "$forceexpensive" "1"
+                "$reflectentities" "1"
+                "$blurrefract" "1"
+                "$scroll1" "[1 2 3]"
+                Proxies { TextureScroll { "rate" "0.1" } }
+            }"#,
+            SelectionEnvironment::default(),
+        )
+        .unwrap();
+        let water = selected.water.as_ref().unwrap();
+        assert!(!water.above_water);
+        assert_eq!(
+            water.normal_map.logical_path.as_deref(),
+            Some("materials/water/current_normal.vtf")
+        );
+        assert_eq!(
+            water.environment_map.logical_path.as_deref(),
+            Some("materials/maps/test/c1_2_3.vtf")
+        );
+        assert_eq!(
+            water.reflection.disposition,
+            TextureDisposition::BuiltInRenderTarget
+        );
+        assert_eq!(
+            water.bottom_material.as_ref().unwrap().logical_path,
+            "materials/water/beneath.vmt"
+        );
+        assert_eq!(water.reflect_amount, 0.25);
+        assert_eq!(water.refract_amount, 0.32);
+        assert_eq!(water.reflect_tint, [0.5, 0.75, 1.0]);
+        assert_eq!(water.refract_tint, [128.0 / 255.0, 64.0 / 255.0, 1.0]);
+        let byte_scale = 1.0_f32 / 255.0;
+        assert_eq!(
+            water.fog.color,
+            [51.0 * byte_scale, 43.0 * byte_scale, 13.0 * byte_scale]
+        );
+        assert!(water.force_cheap);
+        assert!(!water.force_expensive);
+        assert!(water.reflect_entities);
+        assert!(water.blur_refraction);
+        assert_eq!(water.scroll[0], [1.0, 2.0, 3.0]);
+        assert!(water.has_proxy_program);
+    }
+
+    #[test]
+    fn water_and_decal_malformed_values_fail_without_defaults() {
+        let water = material(
+            br#"Water { "$fogcolor" "[1 nope 0]" }"#,
+            SelectionEnvironment::default(),
+        )
+        .unwrap_err();
+        assert_eq!(water.code, ErrorCode::InvalidParameter);
+        assert_eq!(water.parameter.as_deref(), Some(b"$fogcolor".as_slice()));
+
+        let decal = material(
+            br#"UnlitGeneric { "$decalscale" "0" }"#,
+            SelectionEnvironment::default(),
+        )
+        .unwrap_err();
+        assert_eq!(decal.code, ErrorCode::InvalidParameter);
+        assert_eq!(decal.parameter.as_deref(), Some(b"$decalscale".as_slice()));
     }
 }
