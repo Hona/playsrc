@@ -1,0 +1,6 @@
+{
+  "name": "@playsrc/particle",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts"
+}

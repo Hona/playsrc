@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@playsrc/content": "workspace:*"
+    "@playsrc/content": "workspace:*",
+    "@playsrc/rendering": "workspace:*"
   }
 }

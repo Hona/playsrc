@@ -15,6 +15,8 @@
       "name": "@playsrc/game-tf2-browser",
       "dependencies": {
         "@playsrc/asset-store": "workspace:*",
+        "@playsrc/particle": "workspace:*",
+        "@playsrc/rendering": "workspace:*",
       },
     },
     "packages/asset-store": {
@@ -26,10 +28,26 @@
         "seek-bzip": "2.0.0",
       },
     },
+    "packages/presentation/audio": {
+      "name": "@playsrc/audio",
+    },
+    "packages/presentation/particle": {
+      "name": "@playsrc/particle",
+    },
+    "packages/presentation/rendering": {
+      "name": "@playsrc/rendering",
+      "dependencies": {
+        "three": "0.185.1",
+      },
+    },
+    "packages/presentation/vgui": {
+      "name": "@playsrc/vgui",
+    },
     "tools/playsrc": {
       "name": "@playsrc/tool",
       "dependencies": {
         "@playsrc/content": "workspace:*",
+        "@playsrc/rendering": "workspace:*",
       },
     },
   },
@@ -38,14 +56,24 @@
 
     "@playsrc/assets-service": ["@playsrc/assets-service@workspace:apps/services/assets"],
 
+    "@playsrc/audio": ["@playsrc/audio@workspace:packages/presentation/audio"],
+
     "@playsrc/content": ["@playsrc/content@workspace:packages/content"],
 
     "@playsrc/game-tf2-browser": ["@playsrc/game-tf2-browser@workspace:games/tf2/browser"],
 
+    "@playsrc/particle": ["@playsrc/particle@workspace:packages/presentation/particle"],
+
+    "@playsrc/rendering": ["@playsrc/rendering@workspace:packages/presentation/rendering"],
+
     "@playsrc/tool": ["@playsrc/tool@workspace:tools/playsrc"],
+
+    "@playsrc/vgui": ["@playsrc/vgui@workspace:packages/presentation/vgui"],
 
     "commander": ["commander@6.2.1", "", {}, "sha512-U7VdrJFnJgo4xjrHpTzu0yrHPGImdsmD95ZlgYSEajAn2JKzDhDTPG9kBTefmObL2w/ngeZnilk+OV9CG3d7UA=="],
 
     "seek-bzip": ["seek-bzip@2.0.0", "", { "dependencies": { "commander": "^6.0.0" }, "bin": { "seek-bunzip": "bin/seek-bunzip", "seek-table": "bin/seek-bzip-table" } }, "sha512-SMguiTnYrhpLdk3PwfzHeotrcwi8bNV4iemL9tx9poR/yeaMYwB9VzR1w7b57DuWpuqR8n6oZboi0hj3AxZxQg=="],
+
+    "three": ["three@0.185.1", "", {}, "sha512-5aojFCXKwnjBRZvUnt3WFfEcvUJgkN5LlijRFN95hMy8WVkG4I0QNcJE+OuWvuJ0bOdStrbfXn0pkd6/QyiAlg=="],
   }
 }

@@ -5,15 +5,9 @@
 ```ts
 import { createParticleSystem } from "@playsrc/particle"
 
-const particles = createParticleSystem(definitions)
-particles.emit("rockettrail_red", transform)
-particles.advance(tickInterval)
-```
-
-```rust
-let mut particles = playsrc_particle::System::new(definitions)?;
-particles.emit("rockettrail_red", transform)?;
-particles.advance(tick_interval);
+const particles = createParticleSystem(precompiledSpriteDefinitions)
+particles.emit({ identity: 1, definition: "rockettrail_red", tick: 100n, position })
+const renderItems = particles.advance(101n)
 ```
 
 ## Objective
@@ -25,6 +19,7 @@ Represent and advance Source particle definitions independently of game and GPU 
 - Parse and classify particle definitions, operators, initializers, emitters, and child systems.
 - Advance particle state from explicit events and deterministic inputs where required.
 - Produce runtime-neutral particle presentation data.
+- Advance bounded precompiled sprite definitions from explicit effect identities and integer presentation ticks; a missing definition produces no substitute effect.
 
 ## Non-Responsibilities
 

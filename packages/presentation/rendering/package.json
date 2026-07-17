@@ -1,0 +1,12 @@
+{
+  "name": "@playsrc/rendering",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./runtime-map": "./src/runtime-map.ts"
+  },
+  "dependencies": {
+    "three": "0.185.1"
+  }
+}

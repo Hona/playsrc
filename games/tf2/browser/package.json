@@ -5,9 +5,12 @@
   "exports": {
     ".": "./src/client.ts",
     "./codec": "./src/codec.ts",
+    "./presentation": "./src/presentation.ts",
     "./worker": "./src/gameplay-worker.ts"
   },
   "dependencies": {
-    "@playsrc/asset-store": "workspace:*"
+    "@playsrc/asset-store": "workspace:*",
+    "@playsrc/particle": "workspace:*",
+    "@playsrc/rendering": "workspace:*"
   }
 }

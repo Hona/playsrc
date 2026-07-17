@@ -5,6 +5,7 @@ import type { LocalConfig } from "./config"
 import { repositoryRoot } from "./config"
 import { rustEnvironment } from "./setup"
 import { acquireMap } from "./targets"
+import { parseRuntimeMap } from "@playsrc/rendering/runtime-map"
 
 const EXPECTED_MAP_BYTES = 16_581_206
 const EXPECTED_MAP_SHA256 = "2019f979e72a98f4a9548a69c92e138991df0964d155576acc958a49c35db2e2"
@@ -98,12 +99,17 @@ export async function verifyTf2Wasm(
   exports.playsrc_free(hashPointer, 32)
   const mapPointer = exports.playsrc_alloc(mapBytes)
   require(exports.playsrc_result_copy(handle, mapPointer, mapBytes) === mapBytes, "map payload copy failed")
+  const mapPayload = new Uint8Array(exports.memory.buffer, mapPointer, mapBytes).slice()
   const hasher = new Bun.CryptoHasher("sha256")
-  hasher.update(new Uint8Array(exports.memory.buffer, mapPointer, mapBytes))
+  hasher.update(mapPayload)
   const mapSha256 = hasher.digest("hex")
   exports.playsrc_free(mapPointer, mapBytes)
   require(declaredMapSha256 === mapSha256, "declared map payload hash does not match its bytes")
   require(mapSha256 === EXPECTED_MAP_SHA256, `map payload SHA-256 ${mapSha256} != ${EXPECTED_MAP_SHA256}`)
+  const renderMap = parseRuntimeMap(mapPayload)
+  require(renderMap.materials.length === 14, "runtime map material count is invalid")
+  require(renderMap.drawableSurfaces === 2_761, "runtime map drawable world-surface count is invalid")
+  require(renderMap.batches.length === 10, "runtime map draw-batch count is invalid")
 
   const commandPointer = exports.playsrc_alloc(24)
   const command = new DataView(exports.memory.buffer, commandPointer, 24)
@@ -154,6 +160,9 @@ export async function verifyTf2Wasm(
     target: identity!,
     mapBytes,
     mapSha256,
+    materials: renderMap.materials.length,
+    drawableSurfaces: renderMap.drawableSurfaces,
+    drawBatches: renderMap.batches.length,
     tick: 64,
     snapshotBytes: snapshotLength,
     projectiles,

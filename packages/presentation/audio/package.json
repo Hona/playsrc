@@ -1,0 +1,6 @@
+{
+  "name": "@playsrc/audio",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts"
+}

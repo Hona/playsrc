@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import type { DerivedObjectCache } from "@playsrc/asset-store/browser"
 import { Tf2WorkerClient, type WorkerLike } from "../src/client"
 import { decodeSnapshot, encodeCommand, mapDerivedKey } from "../src/codec"
+import { tf2Presentation } from "../src/presentation"
 import type { WorkerRequest, WorkerResponse } from "../src/protocol"
 
 function snapshot(): ArrayBuffer {
@@ -160,5 +161,31 @@ describe("TF2 browser adapter", () => {
     }), 1)).tick).toBe(7n)
     await client.shutdown()
     expect(worker.terminated).toBe(true)
+  })
+
+  test("reports unavailable presentation dependencies before diagnostic substitutes", () => {
+    const base = decodeSnapshot(snapshot())
+    const projectile = {
+      id: 9,
+      kind: 1 as const,
+      armed: false,
+      stuck: false,
+      position: [1, 2, 3] as const,
+      velocity: [4, 5, 6] as const,
+      age: 0.25,
+    }
+    const value = tf2Presentation({
+      ...base,
+      projectiles: [projectile],
+      events: [{ kind: 4, detail: 0, subject: 8, values: [7, 8, 9, 0] }],
+    }, [], false)
+    expect(value.effects).toEqual([])
+    expect(value.diagnostics.map((item) => item.code)).toEqual([
+      "MissingAudioContext",
+      "MissingParticleContext",
+      "MissingProjectileModel",
+    ])
+    expect(tf2Presentation({ ...base, projectiles: [projectile], events: [] }, [], true).effects)
+      .toHaveLength(1)
   })
 })
