@@ -14,6 +14,8 @@ Implement the complete Team Fortress 2 game over generic Source modules.
 - Expose the local TF2 session to browser workers through one bounded fixed-tick WASM phase, one fixed selected-teamspawn startup descriptor, and a compact generation-bound binary snapshot containing player, projectile, and ordered presentation-event state.
 - Stage and atomically activate direct-BSP browser sessions through a game-owned module worker; transfer canonical map bytes only on a verified derived-cache miss.
 - Apply generic translated-brush `trigger_teleport` contacts after movement, preserve physical velocity, and publish trigger/destination/position/yaw facts to Jump and browser presentation consumers.
+- Project Soldier/Demoman class speed, condition/item speed and jump factors, air-control cap, 1.2-times bunnyhop cap, backward clamp, TF2 hull/view values, jump eligibility/impulse, crouch eligibility, surface factors, and ruleset noclip permission through one policy consumed by generic Movement.
+- Retain the complete Movement state/result inside the TF2 session, expose its versioned snapshot and accepted mode-request seam, and keep the compact browser player projection presentation-only.
 
 ## Non-Responsibilities
 
