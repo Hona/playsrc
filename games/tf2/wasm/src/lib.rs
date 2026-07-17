@@ -18,6 +18,26 @@ impl playsrc_movement::Tracer for SharedWorld {
     }
 }
 
+impl playsrc_tf2::GameplayWorld for SharedWorld {
+    fn overlaps_model_hull(
+        &self,
+        model: usize,
+        origin: [f32; 3],
+        position: [f32; 3],
+        hull: playsrc_collision::Hull,
+    ) -> Result<bool, playsrc_movement::Error> {
+        self.0
+            .overlaps_model_hull(model, origin, position, hull)
+            .map_err(|_| {
+                playsrc_movement::Error::new(
+                    playsrc_movement::Operation::Trace,
+                    playsrc_movement::FailureKind::Malformed,
+                    "model overlap",
+                )
+            })
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Spawn {
     entity: u32,
@@ -31,6 +51,7 @@ struct Slot {
     payload: Option<Vec<u8>>,
     hash: [u8; 32],
     derived_hash: [u8; 32],
+    bsp_hash: [u8; 32],
     error: u32,
     spawn: Option<Spawn>,
     session: Option<playsrc_tf2::Session<SharedWorld>>,
@@ -145,14 +166,43 @@ pub unsafe extern "C" fn playsrc_compile_map(
         })?;
         let spawn = spawn(&runtime.entities).ok_or(4_u32)?;
         let collision = Arc::new(runtime.collision);
-        let entities = playsrc_entity::Runtime::compile(&runtime.entities, collision.clone())
-            .map_err(|_| 5_u32)?;
+        let model_bounds = collision
+            .models
+            .iter()
+            .enumerate()
+            .map(|(model, value)| playsrc_entity::ModelBounds {
+                model,
+                mins: [
+                    value.mins.x.value(),
+                    value.mins.y.value(),
+                    value.mins.z.value(),
+                ],
+                maxs: [
+                    value.maxs.x.value(),
+                    value.maxs.y.value(),
+                    value.maxs.z.value(),
+                ],
+            })
+            .collect();
+        let map = playsrc_tf2::MapRuntime::compile(
+            &entity_graph,
+            playsrc_movement::Configuration::default().tick_interval,
+            u64::from_le_bytes(bsp_sha[..8].try_into().expect("BSP identity prefix")),
+            model_bounds,
+        )
+        .map_err(|_| 5_u32)?;
+        let mut session = playsrc_tf2::Session::new(SharedWorld(collision), spawn.position, map);
+        session.set_movement_modifiers(playsrc_tf2::MovementModifiers {
+            noclip_allowed: true,
+            ..playsrc_tf2::MovementModifiers::default()
+        });
         Ok((
             runtime.descriptor.payload,
             runtime.descriptor.payload_sha256,
             runtime.descriptor.derived_sha256,
+            bsp_sha,
             spawn,
-            playsrc_tf2::Session::new(SharedWorld(collision), spawn.position, entities),
+            session,
         ))
     })();
     let mut slots = slots().lock().expect("TF2 slots");
@@ -166,11 +216,12 @@ pub unsafe extern "C" fn playsrc_compile_map(
         slots[index].generation.wrapping_add(1).max(1)
     };
     let slot = match result {
-        Ok((payload, hash, derived_hash, spawn, session)) => Slot {
+        Ok((payload, hash, derived_hash, bsp_hash, spawn, session)) => Slot {
             generation,
             payload: Some(payload),
             hash,
             derived_hash,
+            bsp_hash,
             error: 0,
             spawn: Some(spawn),
             session: Some(session),
@@ -181,6 +232,7 @@ pub unsafe extern "C" fn playsrc_compile_map(
             payload: Some(Vec::new()),
             hash: [0; 32],
             derived_hash: [0; 32],
+            bsp_hash: [0; 32],
             error,
             spawn: None,
             session: None,
@@ -333,6 +385,7 @@ pub extern "C" fn playsrc_dispose(handle: u32) -> u32 {
     slot.payload = None;
     slot.hash = [0; 32];
     slot.derived_hash = [0; 32];
+    slot.bsp_hash = [0; 32];
     slot.error = 0;
     slot.spawn = None;
     slot.session = None;
@@ -349,7 +402,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
     length: usize,
     tick_count: u32,
 ) -> u32 {
-    if length != 24 || tick_count == 0 || tick_count > 64 {
+    if length != 40 || tick_count == 0 || tick_count > 64 {
         return 0;
     }
     let bytes = unsafe { std::slice::from_raw_parts(pointer, length) };
@@ -370,21 +423,80 @@ pub unsafe extern "C" fn playsrc_game_advance(
         return 0;
     };
     let mut candidate = session.clone();
-    let mut snapshot = None;
-    let mut events = Vec::new();
+    let mut snapshot: Option<playsrc_tf2::Snapshot> = None;
     for _ in 0..tick_count {
         match candidate.advance(command) {
             Ok(mut value) => {
-                events.append(&mut value.events);
+                if let Some(previous) = snapshot.as_mut() {
+                    value
+                        .events
+                        .splice(0..0, std::mem::take(&mut previous.events));
+                    value
+                        .projectile_events
+                        .splice(0..0, std::mem::take(&mut previous.projectile_events));
+                    value
+                        .entity_events
+                        .splice(0..0, std::mem::take(&mut previous.entity_events));
+                    if let (Some(prior), Some(current)) =
+                        (previous.jump.as_mut(), value.jump.as_mut())
+                    {
+                        current
+                            .events
+                            .splice(0..0, std::mem::take(&mut prior.events));
+                        if current.result.is_none() {
+                            current.result = prior.result.take();
+                        }
+                    }
+                }
                 snapshot = Some(value);
             }
             Err(_) => return 0,
         }
     }
-    let mut snapshot = snapshot.expect("positive tick count");
-    snapshot.events = events;
+    let snapshot = snapshot.expect("positive tick count");
+    let Some(encoded) = encode_snapshot(&snapshot) else {
+        return 0;
+    };
     *session = candidate;
-    slot.snapshot = encode_snapshot(&snapshot);
+    slot.snapshot = encoded;
+    1
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+/// `pointer` must identify exactly `length` readable course-definition bytes.
+pub unsafe extern "C" fn playsrc_jump_configure(
+    handle: u32,
+    pointer: *const u8,
+    length: usize,
+) -> u32 {
+    if !(52..=64 * 1024).contains(&length) {
+        return 0;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(pointer, length) };
+    let Ok(definition) =
+        playsrc_tf2::jump::decode_course(bytes, playsrc_tf2::jump::Limits::default())
+    else {
+        return 0;
+    };
+    let Some((index, generation)) = decode(handle) else {
+        return 0;
+    };
+    let mut slots = slots().lock().expect("TF2 slots");
+    let Some(slot) = slots.get_mut(index) else {
+        return 0;
+    };
+    if slot.generation != generation || definition.map_identity != slot.bsp_hash {
+        return 0;
+    }
+    let Some(session) = slot.session.as_mut() else {
+        return 0;
+    };
+    let mut candidate = session.clone();
+    if candidate.configure_jump(definition).is_err() {
+        return 0;
+    }
+    *session = candidate;
     1
 }
 
@@ -398,7 +510,7 @@ pub extern "C" fn playsrc_teleport_count(handle: u32) -> usize {
     with(handle, |slot| {
         slot.session
             .as_ref()
-            .map_or(0, playsrc_tf2::Session::teleport_count)
+            .map_or(0, |session| session.map_counts().teleport_triggers as usize)
     })
     .unwrap_or(0)
 }
@@ -406,9 +518,33 @@ pub extern "C" fn playsrc_teleport_count(handle: u32) -> usize {
 #[unsafe(no_mangle)]
 pub extern "C" fn playsrc_teleport_destination_count(handle: u32) -> usize {
     with(handle, |slot| {
-        slot.session
-            .as_ref()
-            .map_or(0, playsrc_tf2::Session::teleport_destination_count)
+        slot.session.as_ref().map_or(0, |session| {
+            session.map_counts().teleport_destinations as usize
+        })
+    })
+    .unwrap_or(0)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_runtime_count(handle: u32, kind: u32) -> usize {
+    with(handle, |slot| {
+        let Some(session) = slot.session.as_ref() else {
+            return 0;
+        };
+        let counts = session.map_counts();
+        match kind {
+            1 => counts.buttons as usize,
+            2 => counts.doors as usize,
+            3 => counts.linear_movers as usize,
+            4 => counts.multiple_triggers as usize,
+            5 => counts.hurt_triggers as usize,
+            6 => counts.push_triggers as usize,
+            7 => counts.catapult_triggers as usize,
+            8 => counts.teleport_triggers as usize,
+            9 => counts.regenerate_zones as usize,
+            10 => counts.teleport_destinations as usize,
+            _ => 0,
+        }
     })
     .unwrap_or(0)
 }
@@ -434,36 +570,76 @@ pub unsafe extern "C" fn playsrc_snapshot_copy(
 }
 
 fn decode_command(bytes: &[u8]) -> Option<playsrc_tf2::Command> {
-    let f =
-        |offset| f32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("command field"));
-    let flags = u32::from_le_bytes(bytes[16..20].try_into().expect("command flags"));
-    let select = u32::from_le_bytes(bytes[20..24].try_into().expect("command selection"));
+    if bytes.len() != 40
+        || &bytes[..4] != b"PCMD"
+        || u32::from_le_bytes(bytes[4..8].try_into().ok()?) != 2
+    {
+        return None;
+    }
+    let f = |offset| {
+        f32::from_le_bytes(
+            bytes[offset..offset + 4]
+                .try_into()
+                .expect("fixed command scalar"),
+        )
+    };
+    let flags = u32::from_le_bytes(bytes[28..32].try_into().ok()?);
+    let select = u32::from_le_bytes(bytes[32..36].try_into().ok()?);
+    if flags & !0xff != 0 {
+        return None;
+    }
+    let optional_class = match select & 0xff {
+        0 => None,
+        1 => Some(playsrc_tf2::Class::Soldier),
+        2 => Some(playsrc_tf2::Class::Demoman),
+        _ => return None,
+    };
+    let optional_weapon = match (select >> 8) & 0xff {
+        0 => None,
+        1 => Some(playsrc_tf2::Weapon::RocketLauncher),
+        2 => Some(playsrc_tf2::Weapon::Original),
+        3 => Some(playsrc_tf2::Weapon::StickybombLauncher),
+        _ => return None,
+    };
+    let optional_team = match (select >> 16) & 0xff {
+        0 => None,
+        1 => Some(playsrc_tf2::Team::Red),
+        2 => Some(playsrc_tf2::Team::Blue),
+        _ => return None,
+    };
+    let mode_request = match (select >> 24) & 0xff {
+        0 => None,
+        1 => Some(playsrc_movement::Mode::Walk),
+        2 => Some(playsrc_movement::Mode::Noclip),
+        _ => return None,
+    };
+    let target = u32::from_le_bytes(bytes[36..40].try_into().ok()?);
     let command = playsrc_tf2::Command {
         movement: playsrc_movement::Command {
-            forward: f(0),
-            side: f(4),
-            yaw_degrees: f(8),
+            forward: f(8),
+            side: f(12),
+            yaw_degrees: f(20),
             jump: flags & 1 != 0,
             crouch: flags & 2 != 0,
         },
-        pitch_degrees: f(12),
-        fire: flags & 4 != 0,
-        detonate: flags & 8 != 0,
-        select_class: match select & 0xff {
-            1 => Some(playsrc_tf2::Class::Soldier),
-            2 => Some(playsrc_tf2::Class::Demoman),
-            _ => None,
-        },
-        select_weapon: match (select >> 8) & 0xff {
-            1 => Some(playsrc_tf2::Weapon::RocketLauncher),
-            2 => Some(playsrc_tf2::Weapon::Original),
-            3 => Some(playsrc_tf2::Weapon::StickybombLauncher),
-            _ => None,
-        },
+        pitch_degrees: f(24),
+        up: f(16),
+        speed_button: flags & 4 != 0,
+        fire: flags & 8 != 0,
+        detonate: flags & 16 != 0,
+        reload: flags & 32 != 0,
+        reset: flags & 64 != 0,
+        respawn: flags & 128 != 0,
+        select_class: optional_class,
+        select_team: optional_team,
+        select_weapon: optional_weapon,
+        mode_request,
+        activate_entity: (target != u32::MAX).then_some(target),
     };
     [
         command.movement.forward,
         command.movement.side,
+        command.up,
         command.movement.yaw_degrees,
         command.pitch_degrees,
     ]
@@ -472,96 +648,168 @@ fn decode_command(bytes: &[u8]) -> Option<playsrc_tf2::Command> {
     .then_some(command)
 }
 
-fn encode_snapshot(snapshot: &playsrc_tf2::Snapshot) -> Vec<u8> {
-    let mut out = b"PSSN".to_vec();
-    out.extend_from_slice(&2_u32.to_le_bytes());
-    out.extend_from_slice(&snapshot.tick.to_le_bytes());
-    out.push(class_code(snapshot.class));
-    out.push(weapon_code(snapshot.weapon));
-    out.push(u8::from(snapshot.player.grounded));
-    out.push(u8::from(snapshot.player.crouched));
-    for value in snapshot
-        .player
-        .position
-        .into_iter()
-        .chain(snapshot.player.velocity)
-    {
-        out.extend_from_slice(&value.to_le_bytes())
+fn encode_snapshot(snapshot: &playsrc_tf2::Snapshot) -> Option<Vec<u8>> {
+    const MAX: usize = 64 * 1024 * 1024;
+    let movement = snapshot.movement.snapshot_bytes();
+    let jump = match snapshot.jump.as_ref() {
+        Some(value) => encode_jump(value)?,
+        None => Vec::new(),
+    };
+    let mut out = Vec::new();
+    extend(&mut out, b"PSSN", MAX)?;
+    u32_field(&mut out, 3, MAX)?;
+    u64_field(&mut out, snapshot.tick, MAX)?;
+    extend(
+        &mut out,
+        &[
+            class_code(snapshot.class),
+            team_code(snapshot.team),
+            weapon_code(snapshot.weapon),
+            snapshot.movement.mode as u8,
+        ],
+        MAX,
+    )?;
+    f32_field(&mut out, snapshot.health, MAX)?;
+    f32_field(&mut out, snapshot.maximum_health, MAX)?;
+    u32_field(&mut out, snapshot.conditions, MAX)?;
+    u32_field(&mut out, u32::try_from(snapshot.loadout.len()).ok()?, MAX)?;
+    u32_field(
+        &mut out,
+        u32::try_from(snapshot.projectiles.len()).ok()?,
+        MAX,
+    )?;
+    u32_field(
+        &mut out,
+        u32::try_from(snapshot.projectile_events.len()).ok()?,
+        MAX,
+    )?;
+    u32_field(
+        &mut out,
+        u32::try_from(snapshot.entity_transforms.len()).ok()?,
+        MAX,
+    )?;
+    u32_field(
+        &mut out,
+        u32::try_from(snapshot.entity_events.len()).ok()?,
+        MAX,
+    )?;
+    u32_field(&mut out, u32::try_from(snapshot.events.len()).ok()?, MAX)?;
+    u32_field(&mut out, u32::try_from(jump.len()).ok()?, MAX)?;
+    u32_field(&mut out, u32::try_from(movement.len()).ok()?, MAX)?;
+    extend(&mut out, &movement, MAX)?;
+    for state in &snapshot.loadout {
+        extend(
+            &mut out,
+            &[weapon_code(state.weapon), state.reload as u8, 0, 0],
+            MAX,
+        )?;
+        u16_field(&mut out, state.clip, MAX)?;
+        u16_field(&mut out, state.reserve, MAX)?;
+        u16_field(&mut out, state.maximum_clip, MAX)?;
+        u16_field(&mut out, state.maximum_reserve, MAX)?;
+        u64_field(&mut out, state.next_primary_tick, MAX)?;
+        u64_field(&mut out, state.next_reload_tick, MAX)?;
+        u32_field(&mut out, 0, MAX)?;
     }
-    out.extend_from_slice(&snapshot.health.to_le_bytes());
-    out.extend_from_slice(&(snapshot.projectiles.len() as u32).to_le_bytes());
     for projectile in &snapshot.projectiles {
-        out.extend_from_slice(&projectile.id.to_le_bytes());
-        out.push(projectile_code(projectile.kind));
-        out.push(u8::from(projectile.armed));
-        out.push(u8::from(projectile.stuck));
-        out.push(0);
-        for value in projectile.position {
-            out.extend_from_slice(&value.to_le_bytes())
-        }
-        for value in projectile.velocity {
-            out.extend_from_slice(&value.to_le_bytes())
-        }
-        out.extend_from_slice(&projectile.age.to_le_bytes());
+        u32_field(&mut out, projectile.identity, MAX)?;
+        extend(
+            &mut out,
+            &[
+                projectile_code(projectile.kind),
+                team_code(projectile.team),
+                projectile.state as u8,
+                u8::from(projectile.contact_normal.is_some()),
+            ],
+            MAX,
+        )?;
+        u32_field(&mut out, projectile.owner_identity, MAX)?;
+        u32_field(&mut out, projectile.launcher_identity, MAX)?;
+        floats(
+            &mut out,
+            projectile
+                .position
+                .into_iter()
+                .chain(projectile.velocity)
+                .chain(projectile.orientation)
+                .chain(projectile.angular_velocity)
+                .chain(projectile.contact_normal.unwrap_or([0.0; 3]))
+                .chain([projectile.age_seconds]),
+            MAX,
+        )?;
     }
-    out.extend_from_slice(&(snapshot.events.len() as u32).to_le_bytes());
-    for event in &snapshot.events {
-        let (kind, detail, subject, auxiliary, data) = match event {
-            playsrc_tf2::Event::ClassChanged(class) => (1, class_code(*class), 0, 0, [0.; 4]),
-            playsrc_tf2::Event::WeaponChanged(weapon) => (2, weapon_code(*weapon), 0, 0, [0.; 4]),
-            playsrc_tf2::Event::Fired { projectile, kind } => {
-                (3, projectile_code(*kind), *projectile, 0, [0.; 4])
-            }
-            playsrc_tf2::Event::Explosion {
-                projectile,
-                kind,
-                position,
-            } => (
-                4,
-                projectile_code(*kind),
-                *projectile,
+    for event in &snapshot.projectile_events {
+        extend(
+            &mut out,
+            &[
+                event.kind as u8,
+                projectile_code(event.projectile_kind),
+                team_code(event.team),
+                u8::from(event.contact_normal.is_some()),
+            ],
+            MAX,
+        )?;
+        u32_field(&mut out, event.projectile, MAX)?;
+        u32_field(&mut out, event.owner_identity, MAX)?;
+        u32_field(&mut out, event.launcher_identity, MAX)?;
+        u64_field(&mut out, event.tick, MAX)?;
+        floats(
+            &mut out,
+            event
+                .position
+                .into_iter()
+                .chain(event.orientation)
+                .chain(event.contact_normal.unwrap_or([0.0; 3])),
+            MAX,
+        )?;
+    }
+    for transform in &snapshot.entity_transforms {
+        u32_field(&mut out, transform.identity, MAX)?;
+        u32_field(&mut out, transform.model, MAX)?;
+        floats(
+            &mut out,
+            transform.position.into_iter().chain(transform.angles),
+            MAX,
+        )?;
+    }
+    for event in &snapshot.entity_events {
+        u64_field(&mut out, event.sequence, MAX)?;
+        extend(
+            &mut out,
+            &[
+                event.kind as u8,
+                u8::from(event.accepted),
+                event.contact.map_or(0, |value| match value {
+                    playsrc_entity::ContactKind::Enter => 1,
+                    playsrc_entity::ContactKind::Stay => 2,
+                    playsrc_entity::ContactKind::Exit => 3,
+                }),
                 0,
-                [position[0], position[1], position[2], 0.],
-            ),
-            playsrc_tf2::Event::Damaged { amount, health } => {
-                (5, 0, 0, 0, [*amount, *health, 0., 0.])
-            }
-            playsrc_tf2::Event::BlastImpulse { velocity } => {
-                (6, 0, 0, 0, [velocity[0], velocity[1], velocity[2], 0.])
-            }
-            playsrc_tf2::Event::Respawned => (7, 0, 0, 0, [0.; 4]),
-            playsrc_tf2::Event::Teleported {
-                trigger,
-                destination,
-                position,
-                yaw_degrees,
-            } => (
-                8,
-                u8::from(yaw_degrees.is_some()),
-                *trigger,
-                *destination,
-                [
-                    position[0],
-                    position[1],
-                    position[2],
-                    yaw_degrees.unwrap_or(0.),
-                ],
-            ),
-        };
-        out.extend_from_slice(&[kind, detail, 0, 0]);
-        out.extend_from_slice(&subject.to_le_bytes());
-        out.extend_from_slice(&auxiliary.to_le_bytes());
-        for value in data {
-            out.extend_from_slice(&value.to_le_bytes());
-        }
+            ],
+            MAX,
+        )?;
+        u32_field(&mut out, event.entity, MAX)?;
+        u32_field(&mut out, event.subject.unwrap_or(u32::MAX), MAX)?;
+        u32_field(&mut out, u32::try_from(event.name.len()).ok()?, MAX)?;
+        extend(&mut out, &event.name, MAX)?;
     }
-    out
+    for event in &snapshot.events {
+        encode_game_event(&mut out, event, MAX)?;
+    }
+    extend(&mut out, &jump, MAX)?;
+    Some(out)
 }
 
 fn class_code(class: playsrc_tf2::Class) -> u8 {
     match class {
         playsrc_tf2::Class::Soldier => 1,
         playsrc_tf2::Class::Demoman => 2,
+    }
+}
+fn team_code(team: playsrc_tf2::Team) -> u8 {
+    match team {
+        playsrc_tf2::Team::Red => 1,
+        playsrc_tf2::Team::Blue => 2,
     }
 }
 fn weapon_code(weapon: playsrc_tf2::Weapon) -> u8 {
@@ -576,6 +824,195 @@ fn projectile_code(kind: playsrc_tf2::ProjectileKind) -> u8 {
         playsrc_tf2::ProjectileKind::Rocket => 1,
         playsrc_tf2::ProjectileKind::Sticky => 2,
     }
+}
+
+fn extend(output: &mut Vec<u8>, bytes: &[u8], limit: usize) -> Option<()> {
+    (output.len().checked_add(bytes.len())? <= limit).then(|| output.extend_from_slice(bytes))
+}
+
+fn u16_field(output: &mut Vec<u8>, value: u16, limit: usize) -> Option<()> {
+    extend(output, &value.to_le_bytes(), limit)
+}
+
+fn u32_field(output: &mut Vec<u8>, value: u32, limit: usize) -> Option<()> {
+    extend(output, &value.to_le_bytes(), limit)
+}
+
+fn u64_field(output: &mut Vec<u8>, value: u64, limit: usize) -> Option<()> {
+    extend(output, &value.to_le_bytes(), limit)
+}
+
+fn f32_field(output: &mut Vec<u8>, value: f32, limit: usize) -> Option<()> {
+    value
+        .is_finite()
+        .then_some(())
+        .and_then(|()| extend(output, &value.to_le_bytes(), limit))
+}
+
+fn floats(output: &mut Vec<u8>, values: impl IntoIterator<Item = f32>, limit: usize) -> Option<()> {
+    for value in values {
+        f32_field(output, value, limit)?;
+    }
+    Some(())
+}
+
+fn encode_game_event(output: &mut Vec<u8>, event: &playsrc_tf2::Event, limit: usize) -> Option<()> {
+    let (kind, detail, subject, auxiliary, values) = match event {
+        playsrc_tf2::Event::ClassChanged(value) => (1, class_code(*value), 0, 0, [0.0; 4]),
+        playsrc_tf2::Event::TeamChanged(value) => (2, team_code(*value), 0, 0, [0.0; 4]),
+        playsrc_tf2::Event::WeaponChanged(value) => (3, weapon_code(*value), 0, 0, [0.0; 4]),
+        playsrc_tf2::Event::Reloaded {
+            weapon,
+            clip,
+            reserve,
+        } => (
+            4,
+            weapon_code(*weapon),
+            0,
+            0,
+            [*clip as f32, *reserve as f32, 0.0, 0.0],
+        ),
+        playsrc_tf2::Event::Resupplied {
+            entity,
+            health,
+            weapon,
+            clip,
+            reserve,
+        } => (
+            5,
+            weapon_code(*weapon),
+            *entity,
+            0,
+            [*health, *clip as f32, *reserve as f32, 0.0],
+        ),
+        playsrc_tf2::Event::Damaged { amount, health } => {
+            (6, 0, 0, 0, [*amount, *health, 0.0, 0.0])
+        }
+        playsrc_tf2::Event::Healed {
+            amount,
+            health,
+            trigger,
+        } => (7, 0, *trigger, 0, [*amount, *health, 0.0, 0.0]),
+        playsrc_tf2::Event::BlastImpulse { velocity } => {
+            (8, 0, 0, 0, [velocity[0], velocity[1], velocity[2], 0.0])
+        }
+        playsrc_tf2::Event::Teleported {
+            trigger,
+            destination,
+            position,
+            yaw_degrees,
+        } => (
+            9,
+            u8::from(yaw_degrees.is_some()),
+            *trigger,
+            *destination,
+            [
+                position[0],
+                position[1],
+                position[2],
+                yaw_degrees.unwrap_or(0.0),
+            ],
+        ),
+        playsrc_tf2::Event::TriggerVelocity { trigger, velocity } => (
+            10,
+            0,
+            *trigger,
+            0,
+            [velocity[0], velocity[1], velocity[2], 0.0],
+        ),
+        playsrc_tf2::Event::Respawned => (11, 0, 0, 0, [0.0; 4]),
+    };
+    extend(output, &[kind, detail, 0, 0], limit)?;
+    u32_field(output, subject, limit)?;
+    u32_field(output, auxiliary, limit)?;
+    floats(output, values, limit)
+}
+
+fn encode_jump(output: &playsrc_tf2::jump::TickOutput) -> Option<Vec<u8>> {
+    const MAX: usize = 4 * 1024 * 1024;
+    let mut bytes = Vec::new();
+    extend(&mut bytes, b"PJOF", MAX)?;
+    u32_field(&mut bytes, 1, MAX)?;
+    match &output.run {
+        None => extend(&mut bytes, &[0; 4], MAX)?,
+        Some(run) => {
+            extend(
+                &mut bytes,
+                &[1, run.disposition as u8, run.class as u8, run.team as u8],
+                MAX,
+            )?;
+            u32_field(&mut bytes, run.instance, MAX)?;
+            u32_field(&mut bytes, run.player_identity, MAX)?;
+            extend(
+                &mut bytes,
+                &[run.invalidation.map_or(0, |value| value as u8), 0, 0, 0],
+                MAX,
+            )?;
+            u64_field(&mut bytes, run.start_tick, MAX)?;
+            u64_field(&mut bytes, run.end_tick.unwrap_or(u64::MAX), MAX)?;
+            u32_field(&mut bytes, u32::try_from(run.checkpoints.len()).ok()?, MAX)?;
+            for visit in &run.checkpoints {
+                u32_field(&mut bytes, visit.zone_identity, MAX)?;
+                u32_field(&mut bytes, visit.index, MAX)?;
+                u64_field(&mut bytes, visit.tick, MAX)?;
+            }
+        }
+    }
+    u32_field(&mut bytes, u32::try_from(output.events.len()).ok()?, MAX)?;
+    for event in &output.events {
+        let (kind, detail) = match event.kind {
+            playsrc_tf2::jump::EventKind::Started => (1, 0),
+            playsrc_tf2::jump::EventKind::CheckpointAccepted => (2, 0),
+            playsrc_tf2::jump::EventKind::Rejected(reason) => (3, reason as u8),
+            playsrc_tf2::jump::EventKind::Completed => (4, 0),
+            playsrc_tf2::jump::EventKind::Invalidated(reason) => (5, reason as u8),
+            playsrc_tf2::jump::EventKind::ResetRequested => (6, 0),
+            playsrc_tf2::jump::EventKind::RespawnObserved => (7, 0),
+            playsrc_tf2::jump::EventKind::TeleportObserved => (8, 0),
+        };
+        u64_field(&mut bytes, event.sequence, MAX)?;
+        u64_field(&mut bytes, event.tick, MAX)?;
+        extend(&mut bytes, &[kind, detail, 0, 0], MAX)?;
+        u32_field(&mut bytes, event.run_instance, MAX)?;
+        u32_field(&mut bytes, event.zone_identity.unwrap_or(u32::MAX), MAX)?;
+        u32_field(&mut bytes, event.zone_index.unwrap_or(u32::MAX), MAX)?;
+    }
+    match &output.result {
+        None => extend(&mut bytes, &[0, 0, 0, 0], MAX)?,
+        Some(result) => {
+            extend(
+                &mut bytes,
+                &[
+                    1,
+                    result.class as u8,
+                    result.team as u8,
+                    result.run_kind as u8,
+                ],
+                MAX,
+            )?;
+            u64_field(&mut bytes, result.course_identity, MAX)?;
+            extend(&mut bytes, &result.map_identity, MAX)?;
+            u32_field(&mut bytes, result.run_instance, MAX)?;
+            u32_field(&mut bytes, result.player_identity, MAX)?;
+            u32_field(&mut bytes, result.zone_index, MAX)?;
+            extend(&mut bytes, &[result.disposition as u8, 0, 0, 0], MAX)?;
+            u64_field(&mut bytes, result.start_tick, MAX)?;
+            u64_field(&mut bytes, result.end_tick, MAX)?;
+            u64_field(&mut bytes, result.elapsed_ticks, MAX)?;
+            u32_field(&mut bytes, result.tick_interval_bits, MAX)?;
+            u32_field(
+                &mut bytes,
+                u32::try_from(result.checkpoints.len()).ok()?,
+                MAX,
+            )?;
+            for visit in &result.checkpoints {
+                u32_field(&mut bytes, visit.zone_identity, MAX)?;
+                u32_field(&mut bytes, visit.index, MAX)?;
+                u64_field(&mut bytes, visit.tick, MAX)?;
+            }
+        }
+    }
+    Some(bytes)
 }
 
 fn bundle(bytes: &[u8]) -> Result<BTreeMap<String, &[u8]>, ()> {
@@ -1141,6 +1578,7 @@ mod tests {
             payload: Some(vec![1, 2]),
             hash: [3; 32],
             derived_hash: [6; 32],
+            bsp_hash: [8; 32],
             error: 0,
             spawn: None,
             session: None,
@@ -1156,6 +1594,7 @@ mod tests {
             payload: Some(vec![4]),
             hash: [5; 32],
             derived_hash: [7; 32],
+            bsp_hash: [9; 32],
             error: 0,
             spawn: None,
             session: None,
@@ -1168,63 +1607,103 @@ mod tests {
 
     #[test]
     fn command_and_snapshot_binary_contract_is_stable() {
-        let mut bytes = [0; 24];
-        bytes[0..4].copy_from_slice(&240_f32.to_le_bytes());
-        bytes[12..16].copy_from_slice(&(-30_f32).to_le_bytes());
-        bytes[16..20].copy_from_slice(&13_u32.to_le_bytes());
-        bytes[20..24].copy_from_slice(&0x0302_u32.to_le_bytes());
+        let mut bytes = [0; 40];
+        bytes[..4].copy_from_slice(b"PCMD");
+        bytes[4..8].copy_from_slice(&2_u32.to_le_bytes());
+        bytes[8..12].copy_from_slice(&240_f32.to_le_bytes());
+        bytes[16..20].copy_from_slice(&100_f32.to_le_bytes());
+        bytes[24..28].copy_from_slice(&(-30_f32).to_le_bytes());
+        bytes[28..32].copy_from_slice(&0xad_u32.to_le_bytes());
+        bytes[32..36].copy_from_slice(&0x0201_0302_u32.to_le_bytes());
+        bytes[36..40].copy_from_slice(&77_u32.to_le_bytes());
         let command = decode_command(&bytes).unwrap();
         assert_eq!(command.movement.forward, 240.);
+        assert_eq!(command.up, 100.);
         assert_eq!(command.pitch_degrees, -30.);
-        assert!(command.movement.jump && command.fire && command.detonate);
+        assert!(command.movement.jump && command.fire && command.reload && command.respawn);
+        assert_eq!(command.mode_request, Some(playsrc_movement::Mode::Noclip));
+        assert_eq!(command.activate_entity, Some(77));
         assert_eq!(command.select_class, Some(playsrc_tf2::Class::Demoman));
+        assert_eq!(command.select_team, Some(playsrc_tf2::Team::Red));
         assert_eq!(
             command.select_weapon,
             Some(playsrc_tf2::Weapon::StickybombLauncher)
         );
-        bytes[0..4].copy_from_slice(&f32::NAN.to_le_bytes());
+        bytes[8..12].copy_from_slice(&f32::NAN.to_le_bytes());
         assert!(decode_command(&bytes).is_none());
-        let snapshot = playsrc_tf2::Snapshot {
-            tick: 9,
-            class: playsrc_tf2::Class::Soldier,
-            weapon: playsrc_tf2::Weapon::Original,
-            player: playsrc_movement::Player {
+        let movement = playsrc_movement::State::from_player(
+            playsrc_movement::Player {
                 position: [1., 2., 3.],
                 velocity: [4., 5., 6.],
                 grounded: true,
                 crouched: false,
                 jump_latched: true,
             },
-            health: 175.,
-            projectiles: vec![playsrc_tf2::Projectile {
-                id: 12,
-                kind: playsrc_tf2::ProjectileKind::Rocket,
-                position: [7., 8., 9.],
-                velocity: [10., 11., 12.],
-                age: 0.5,
-                armed: true,
-                stuck: false,
-            }],
-            events: vec![
-                playsrc_tf2::Event::Explosion {
-                    projectile: 12,
-                    kind: playsrc_tf2::ProjectileKind::Rocket,
-                    position: [7., 8., 9.],
-                },
-                playsrc_tf2::Event::Teleported {
-                    trigger: 20,
-                    destination: 21,
-                    position: [13., 14., 15.],
-                    yaw_degrees: Some(90.),
-                },
-            ],
+            playsrc_movement::Policy::default(),
+        );
+        let projectile = playsrc_tf2::Projectile {
+            identity: 12,
+            kind: playsrc_tf2::ProjectileKind::Rocket,
+            team: playsrc_tf2::Team::Blue,
+            owner_identity: 1,
+            launcher_identity: 2,
+            state: playsrc_tf2::ProjectileState::Flying,
+            position: [7., 8., 9.],
+            velocity: [10., 11., 12.],
+            orientation: [0., 0., 0., 1.],
+            angular_velocity: [0.; 3],
+            contact_normal: None,
+            age_seconds: 0.5,
         };
-        let encoded = encode_snapshot(&snapshot);
-        assert_eq!(&encoded[..8], b"PSSN\x02\0\0\0");
-        assert_eq!(encoded.len(), 148);
-        assert_eq!(u32::from_le_bytes(encoded[48..52].try_into().unwrap()), 1);
-        assert_eq!(u32::from_le_bytes(encoded[88..92].try_into().unwrap()), 2);
-        assert_eq!(&encoded[92..104], &[4, 1, 0, 0, 12, 0, 0, 0, 0, 0, 0, 0]);
-        assert_eq!(&encoded[120..132], &[8, 1, 0, 0, 20, 0, 0, 0, 21, 0, 0, 0]);
+        let snapshot = playsrc_tf2::Snapshot {
+            tick: 9,
+            class: playsrc_tf2::Class::Soldier,
+            team: playsrc_tf2::Team::Blue,
+            weapon: playsrc_tf2::Weapon::Original,
+            movement,
+            health: 175.,
+            maximum_health: 200.,
+            loadout: vec![playsrc_tf2::WeaponState {
+                weapon: playsrc_tf2::Weapon::Original,
+                clip: 3,
+                reserve: 20,
+                maximum_clip: 4,
+                maximum_reserve: 20,
+                reload: playsrc_tf2::ReloadState::Idle,
+                next_primary_tick: 20,
+                next_reload_tick: 0,
+            }],
+            conditions: 0,
+            projectiles: vec![projectile.clone()],
+            projectile_events: vec![playsrc_tf2::ProjectileEvent {
+                kind: playsrc_tf2::ProjectileEventKind::Explode,
+                projectile: 12,
+                projectile_kind: playsrc_tf2::ProjectileKind::Rocket,
+                owner_identity: 1,
+                launcher_identity: 2,
+                team: playsrc_tf2::Team::Blue,
+                tick: 9,
+                position: projectile.position,
+                orientation: projectile.orientation,
+                contact_normal: None,
+            }],
+            entity_transforms: Vec::new(),
+            entity_events: Vec::new(),
+            jump: None,
+            events: vec![playsrc_tf2::Event::Teleported {
+                trigger: 20,
+                destination: 21,
+                position: [13., 14., 15.],
+                yaw_degrees: Some(90.),
+            }],
+        };
+        let encoded = encode_snapshot(&snapshot).unwrap();
+        assert_eq!(&encoded[..8], b"PSSN\x03\0\0\0");
+        assert_eq!(encoded.len(), 368);
+        assert_eq!(u32::from_le_bytes(encoded[32..36].try_into().unwrap()), 1);
+        assert_eq!(u32::from_le_bytes(encoded[36..40].try_into().unwrap()), 1);
+        assert_eq!(u32::from_le_bytes(encoded[40..44].try_into().unwrap()), 1);
+        assert_eq!(&encoded[192..196], &[12, 0, 0, 0]);
+        assert_eq!(&encoded[276..280], &[6, 1, 2, 0]);
     }
 }

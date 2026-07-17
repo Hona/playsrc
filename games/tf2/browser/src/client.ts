@@ -218,6 +218,20 @@ export class Tf2WorkerClient {
     }
   }
 
+  async configureCourse(generation: number, definition: Uint8Array): Promise<void> {
+    if (definition.byteLength < 52 || definition.byteLength > 64 * 1024) {
+      throw new Tf2WorkerError("BoundExceeded")
+    }
+    const transferred = definition.slice().buffer
+    const response = await this.#request(
+      { kind: "configure-course", generation, definition: transferred },
+      [transferred],
+    )
+    if (response.kind !== "course-configured" || response.generation !== generation) {
+      throw new Tf2WorkerError("WorkerFailed")
+    }
+  }
+
   async load(
     generation: number,
     bsp: Uint8Array,
@@ -240,7 +254,7 @@ export class Tf2WorkerClient {
   }
 
   async advance(generation: number, command: ArrayBuffer, ticks: number): Promise<Snapshot> {
-    if (command.byteLength !== 24) throw new Tf2WorkerError("BoundExceeded")
+    if (command.byteLength !== 40) throw new Tf2WorkerError("BoundExceeded")
     const transferred = command.slice(0)
     const response = await this.#request(
       { kind: "advance", generation, ticks, command: transferred },

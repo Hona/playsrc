@@ -10,12 +10,14 @@ Implement the complete Team Fortress 2 game over generic Source modules.
 - Own TF2 movement differences, prediction state, replication schemas, entities, objectives, game rules, and game-specific presentation mappings.
 - Provide the game behavior used by every TF2 ruleset and product.
 - Declare exact TF2 content-provider targets, including the immutable `jump_beef` download identity consumed by local development.
-- Advance a deterministic local Soldier/Demoman jump-combat session with stock rocket/Original and stickybomb state, projectiles, self-damage, blast impulse, class health, respawn, and ordered presentation events over generic Movement and Collision.
-- Expose the local TF2 session to browser workers through one bounded fixed-tick WASM phase, one fixed selected-teamspawn startup descriptor, and a compact generation-bound binary snapshot containing player, projectile, and ordered presentation-event state.
+- Advance one deterministic local RED/BLU Soldier/Demoman jump-combat session with class health, stock clip/reserve ammunition, cooldown/single-round reload, resupply, accepted loadout/condition reset, respawn, projectile damage/impulse, and Jump requests over generic Entity, Movement, and Collision.
+- Expose the session through one atomic 1–64-tick WASM phase, one selected-teamspawn startup descriptor, one explicit map-bound Jump course configuration, and one bounded generation-bound version-3 binary snapshot containing complete Movement, TF2 loadout, Entity transform/event, Jump, projectile, and gameplay sections.
 - Stage and atomically activate direct-BSP browser sessions through a game-owned module worker; transfer canonical map bytes only on a verified derived-cache miss.
 - Apply generic translated-brush `trigger_teleport` contacts after movement, preserve physical velocity, and publish trigger/destination/position/yaw facts to Jump and browser presentation consumers.
 - Project Soldier/Demoman class speed, condition/item speed and jump factors, air-control cap, 1.2-times bunnyhop cap, backward clamp, TF2 hull/view values, jump eligibility/impulse, crouch eligibility, surface factors, and ruleset noclip permission through one policy consumed by generic Movement.
 - Retain the complete Movement state/result inside the TF2 session, expose its versioned snapshot and accepted mode-request seam, and keep the compact browser player projection presentation-only.
+- Execute `jump_beef`'s five buttons, four doors, one movelinear, 22 multiple triggers, two hurt triggers, 56 teleports, and 22 `func_regenerate` volumes through ordered Entity phases; apply mover transforms/carry, teleport discontinuities, trigger effects, and three-second resupply cooldown without duplicating package math.
+- Publish each rocket/sticky with owner, launcher, team, flying/stuck-arm state, normalized quaternion orientation, angular velocity, normalized contact normal, and age plus ordered `fire`, `impact`, `stick`, `arm`, `fizzle`, and `explode` events. Presentation selects no resources in gameplay.
 
 ## Non-Responsibilities
 

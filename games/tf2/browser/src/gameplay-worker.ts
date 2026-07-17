@@ -17,6 +17,7 @@ type WasmExports = Readonly<{
   playsrc_result_copy(handle: number, pointer: number, capacity: number): number
   playsrc_result_hash(handle: number, pointer: number): number
   playsrc_spawn_copy(handle: number, pointer: number, capacity: number): number
+  playsrc_jump_configure(handle: number, definition: number, length: number): number
   playsrc_game_advance(handle: number, command: number, length: number, ticks: number): number
   playsrc_snapshot_length(handle: number): number
   playsrc_snapshot_copy(handle: number, pointer: number, capacity: number): number
@@ -71,6 +72,7 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         candidate.playsrc_result_copy,
         candidate.playsrc_result_hash,
         candidate.playsrc_spawn_copy,
+        candidate.playsrc_jump_configure,
         candidate.playsrc_game_advance,
         candidate.playsrc_snapshot_length,
         candidate.playsrc_snapshot_copy,
@@ -242,12 +244,37 @@ function discard(request: Extract<WorkerRequest, { kind: "discard" }>): void {
   post({ id: request.id, kind: "discarded", generation: request.generation })
 }
 
+function configureCourse(request: Extract<WorkerRequest, { kind: "configure-course" }>): void {
+  const value = requireActive(request.id, request.generation)
+  if (!value) return
+  if (
+    !(request.definition instanceof ArrayBuffer)
+    || request.definition.byteLength < 52
+    || request.definition.byteLength > 64 * 1024
+  ) {
+    fail(request.id, "MalformedRequest")
+    return
+  }
+  const pointer = allocateCopy(value.exports, request.definition)
+  const configured = value.exports.playsrc_jump_configure(
+    value.handle,
+    pointer,
+    request.definition.byteLength,
+  )
+  value.exports.playsrc_free(pointer, request.definition.byteLength)
+  if (configured !== 1) {
+    fail(request.id, "TransitionFailed")
+    return
+  }
+  post({ id: request.id, kind: "course-configured", generation: request.generation })
+}
+
 function advance(request: Extract<WorkerRequest, { kind: "advance" }>): void {
   const value = requireActive(request.id, request.generation)
   if (!value) return
   if (
     !(request.command instanceof ArrayBuffer)
-    || request.command.byteLength !== 24
+    || request.command.byteLength !== 40
     || !Number.isSafeInteger(request.ticks)
     || request.ticks < 1
     || request.ticks > 64
@@ -256,14 +283,14 @@ function advance(request: Extract<WorkerRequest, { kind: "advance" }>): void {
     return
   }
   const pointer = allocateCopy(value.exports, request.command)
-  const result = value.exports.playsrc_game_advance(value.handle, pointer, 24, request.ticks)
-  value.exports.playsrc_free(pointer, 24)
+  const result = value.exports.playsrc_game_advance(value.handle, pointer, 40, request.ticks)
+  value.exports.playsrc_free(pointer, 40)
   if (result !== 1) {
     fail(request.id, "TransitionFailed")
     return
   }
   const length = value.exports.playsrc_snapshot_length(value.handle)
-  if (!Number.isSafeInteger(length) || length < 56 || length > MAX_MESSAGE_BYTES) {
+  if (!Number.isSafeInteger(length) || length < 64 || length > MAX_MESSAGE_BYTES) {
     fail(request.id, "InternalFailure")
     return
   }
@@ -296,6 +323,7 @@ function dispatch(request: WorkerRequest): void | Promise<void> {
     case "read-map": return readMap(request)
     case "activate": return activate(request)
     case "discard": return discard(request)
+    case "configure-course": return configureCourse(request)
     case "advance": return advance(request)
     case "shutdown": return shutdown(request)
     default: return fail((request as { id: number }).id, "MalformedRequest")
