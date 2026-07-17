@@ -7,7 +7,7 @@ import { rustEnvironment } from "./setup"
 import { acquireMap } from "./targets"
 import { parseRuntimeMap } from "@playsrc/rendering/runtime-map"
 import { buildSourceBundle } from "./source-bundle"
-import { decodeSnapshot, encodeCommand, encodeJumpCourse } from "../../../games/tf2/browser/src/codec"
+import { decodeSnapshot, encodeCommand } from "../../../games/tf2/browser/src/codec"
 import { decodeModelPoseOutput, encodeModelPoseBatch } from "../../../games/tf2/browser/src/presentation"
 
 const EXPECTED_MAP_BYTES = 42_452_075
@@ -574,15 +574,6 @@ export async function verifyTf2Wasm(
   require(teleportDestinations === 25, "runtime map teleport-destination count is invalid")
   require(exports.playsrc_runtime_count(handle, 9) === 22, "runtime map regenerate-zone count is invalid")
 
-  const course = encodeJumpCourse(7n, EXPECTED_BSP_SHA256, [
-    { identity: 1, triggerEntity: 316, kind: "start", index: 1 },
-    { identity: 2, triggerEntity: 87, kind: "checkpoint", index: 1 },
-    { identity: 3, triggerEntity: 257, kind: "end", index: 1 },
-  ])
-  const coursePointer = exports.playsrc_alloc(course.byteLength)
-  new Uint8Array(exports.memory.buffer, coursePointer, course.byteLength).set(course)
-  require(exports.playsrc_jump_configure(handle, coursePointer, course.byteLength) ===
-    1, "Jump course configuration failed")
   const commandBytes = new Uint8Array(
     encodeCommand({
       forward: 0,
@@ -595,9 +586,9 @@ export async function verifyTf2Wasm(
       detonate: false,
     }),
   )
-  const commandPointer = exports.playsrc_alloc(40)
-  new Uint8Array(exports.memory.buffer, commandPointer, 40).set(commandBytes)
-  require(exports.playsrc_game_advance(handle, commandPointer, 40, 64) === 1, "64-tick gameplay phase failed")
+  const commandPointer = exports.playsrc_alloc(commandBytes.byteLength)
+  new Uint8Array(exports.memory.buffer, commandPointer, commandBytes.byteLength).set(commandBytes)
+  require(exports.playsrc_game_advance(handle, commandPointer, commandBytes.byteLength, 64) === 1, "64-tick gameplay phase failed")
   const snapshotLength = exports.playsrc_snapshot_length(handle)
   require(snapshotLength >= 56, "snapshot is shorter than its fixed fields")
   const snapshotPointer = exports.playsrc_alloc(snapshotLength)
@@ -607,9 +598,13 @@ export async function verifyTf2Wasm(
   const decoded = decodeSnapshot(snapshot.buffer)
   require(decoded.tick === 64n, "snapshot tick is invalid")
   require(decoded.projectileEvents.some((event) => event.type === "fire"), "fixed phase omitted fire event")
+  require(decoded.authorityBlockers.map((blocker) => blocker.code).join(",") === "1,2",
+    "authority blocker ledger differs")
+  require(decoded.jump === null, "unavailable Tempus course was inferred")
+  require(decoded.rocketTraceRequests.length > 0, "rocket Collision request seam is empty")
 
-  new DataView(exports.memory.buffer, commandPointer, 40).setFloat32(4, Number.NaN, true)
-  require(exports.playsrc_game_advance(handle, commandPointer, 40, 1) === 0, "non-finite command was accepted")
+  new DataView(exports.memory.buffer, commandPointer, commandBytes.byteLength).setFloat32(4, Number.NaN, true)
+  require(exports.playsrc_game_advance(handle, commandPointer, commandBytes.byteLength, 1) === 0, "malformed command was accepted")
   require(exports.playsrc_snapshot_length(handle) === snapshotLength, "rejected command replaced the snapshot")
   const unchangedPointer = exports.playsrc_alloc(snapshotLength)
   require(exports.playsrc_snapshot_copy(handle, unchangedPointer, snapshotLength) ===
@@ -617,6 +612,108 @@ export async function verifyTf2Wasm(
   require(Buffer.from(exports.memory.buffer, unchangedPointer, snapshotLength).equals(
     snapshot,
   ), "rejected command mutated the snapshot")
+  const copySnapshot = () => {
+    const length = exports.playsrc_snapshot_length(handle)
+    const pointer = exports.playsrc_alloc(length)
+    require(exports.playsrc_snapshot_copy(handle, pointer, length) === length, "gameplay trace snapshot copy failed")
+    const bytes = new Uint8Array(exports.memory.buffer, pointer, length).slice()
+    exports.playsrc_free(pointer, length)
+    return decodeSnapshot(bytes.buffer)
+  }
+  const advance = (command: ReturnType<typeof encodeCommand>, ticks: number) => {
+    const bytes = new Uint8Array(command)
+    const pointer = exports.playsrc_alloc(bytes.byteLength)
+    new Uint8Array(exports.memory.buffer, pointer, bytes.byteLength).set(bytes)
+    const accepted = exports.playsrc_game_advance(handle, pointer, bytes.byteLength, ticks)
+    exports.playsrc_free(pointer, bytes.byteLength)
+    require(accepted === 1, "fixed gameplay transaction failed")
+    return copySnapshot()
+  }
+  const button = advance(encodeCommand({
+    forward: 0, side: 0, yawDegrees: 0, pitchDegrees: 0, jump: false, crouch: false,
+    fire: false, detonate: false, activateEntity: 213,
+  }), 1)
+  const moverRequest = button.moverRequests.find((request) => request.entity === 213)
+  const moverTransform = button.entityTransforms.find((transform) => transform.identity === 213)
+  require(moverRequest && moverTransform, "fixed button did not publish its mover request/transform")
+  const moved = advance(encodeCommand({
+    forward: 0, side: 0, yawDegrees: 0, pitchDegrees: 0, jump: false, crouch: false,
+    fire: false, detonate: false,
+    moverResults: [{
+      requestId: moverRequest.requestId,
+      entity: moverRequest.entity,
+      kind: 2,
+      position: moverRequest.destination,
+      angles: moverTransform.angles,
+      carry: [0, 0, 0],
+    }],
+  }), 1)
+  require(moved.entityEvents.some((event) => event.entity === 213 && event.kind === 7) &&
+    moved.entityTransforms.some((transform) => transform.identity === 213 &&
+      transform.position.every((value, index) => value === moverRequest.destination[index])),
+  "fixed mover completion did not publish Entity completion and destination transform")
+  const neutralCommand = (extra: Partial<Parameters<typeof encodeCommand>[0]> = {}) => encodeCommand({
+    forward: 0, side: 0, yawDegrees: 0, pitchDegrees: 89, jump: false, crouch: false,
+    fire: false, detonate: false, ...extra,
+  })
+  const resolveLatestRocket = (fired: ReturnType<typeof copySnapshot>, crouch: boolean) => {
+    const fire = fired.projectileEvents.filter((event) => event.type === "fire" && event.kind === 1).at(-1)
+    const request = fire && fired.rocketTraceRequests.filter((value) => value.projectile === fire.projectile).at(-1)
+    require(fire && request, "fixed rocket fire did not publish a Collision request")
+    const resolved = advance(neutralCommand({
+      crouch,
+      rocketResults: [{
+        projectile: request.projectile,
+        tick: fired.tick,
+        end: request.end,
+        solid: true,
+        sky: false,
+        normal: [0, 0, 1],
+        directTarget: null,
+      }],
+    }), 1)
+    const impulse = resolved.events.find((event) => event.kind === 8)
+    require(impulse && resolved.radiusDamageRequests.some((value) => value.projectile === request.projectile),
+      "fixed rocket result did not publish blast force and radius damage")
+    return { resolved, impulse }
+  }
+  advance(neutralCommand(), 42)
+  const standingReady = copySnapshot()
+  require(standingReady.grounded && !standingReady.crouched, "standing rocket trace did not begin grounded and standing")
+  const standingFire = advance(neutralCommand({ fire: true }), 1)
+  const standingBlast = resolveLatestRocket(standingFire, false)
+  advance(neutralCommand({ respawn: true }), 1)
+  advance(neutralCommand(), 64)
+  const crouchedReady = advance(neutralCommand({ crouch: true }), 16)
+  require(crouchedReady.grounded && crouchedReady.crouched && crouchedReady.movement.crouchFraction === 1,
+    "crouched rocket trace did not begin grounded and fully crouched")
+  const crouchedFire = advance(neutralCommand({ crouch: true, fire: true }), 1)
+  const crouchedBlast = resolveLatestRocket(crouchedFire, true)
+  const standingBlastVelocity = Math.hypot(...standingBlast.impulse.values.slice(0, 3))
+  const crouchedBlastVelocity = Math.hypot(...crouchedBlast.impulse.values.slice(0, 3))
+  require(crouchedBlastVelocity > standingBlastVelocity,
+    `crouched rocket blast velocity ${crouchedBlastVelocity} did not exceed standing ${standingBlastVelocity}`)
+  let travel = advance(neutralCommand({ modeRequest: 1 }), 1)
+  const regenerateCenter = [2324, 3048, -3032] as const
+  let resupplied: typeof travel | undefined
+  for (let batch = 0; batch < 32 && !resupplied; batch++) {
+    const delta = regenerateCenter.map((value, axis) => value - travel.position[axis]!) as [number, number, number]
+    const horizontal = Math.hypot(delta[0], delta[1])
+    const distance = Math.hypot(...delta)
+    if (distance < 1) break
+    const yawDegrees = Math.atan2(delta[1], delta[0]) * 180 / Math.PI
+    const forward = horizontal > 0.001 ? 450 : 0
+    const up = Math.max(-450, Math.min(450, horizontal > 0.001 ? delta[2] / horizontal * 450 : Math.sign(delta[2]) * 450))
+    const estimatedTicks = Math.max(1, Math.min(64, Math.ceil(distance / 3.5)))
+    travel = advance(encodeCommand({
+      forward, side: 0, up, yawDegrees, pitchDegrees: 0, jump: false, crouch: false,
+      fire: false, detonate: false,
+    }), estimatedTicks)
+    if (travel.events.some((event) => event.kind === 5 && event.subject === 151)) resupplied = travel
+  }
+  require(resupplied?.events.some((event) => event.kind === 5 && event.subject === 151) &&
+    resupplied.loadout.find((weapon) => weapon.weapon === 1)?.clip === 4 && resupplied.health === resupplied.maximumHealth,
+  "fixed regenerate-volume trace did not restore health and Rocket Launcher resources")
   const definition = new TextEncoder().encode("rockettrail"),
     particleBatch = new Uint8Array(100 + definition.length),
     particleView = new DataView(particleBatch.buffer)
@@ -684,13 +781,12 @@ export async function verifyTf2Wasm(
   require(exports.playsrc_visibility_query(handle, visibilityPointer) === 1, "fixed-camera PVS query failed")
   require(exports.playsrc_visibility_output_length(handle) === 80 + 91 * 4, "fixed-camera PVS surface count changed")
 
-  exports.playsrc_free(coursePointer, course.byteLength)
   exports.playsrc_free(particlePointer, particleBatch.length)
   exports.playsrc_free(particleOutputPointer, particleOutputLength)
   exports.playsrc_free(modelPointer, modelBatch.byteLength)
   exports.playsrc_free(modelOutputPointer, modelOutputLength)
   exports.playsrc_free(visibilityPointer, 12)
-  exports.playsrc_free(commandPointer, 40)
+  exports.playsrc_free(commandPointer, commandBytes.byteLength)
   exports.playsrc_free(snapshotPointer, snapshotLength)
   exports.playsrc_free(unchangedPointer, snapshotLength)
   require(exports.playsrc_dispose(handle) === 1, "handle disposal failed")
@@ -752,6 +848,11 @@ export async function verifyTf2Wasm(
     snapshotBytes: snapshotLength,
     projectiles: decoded.projectiles.length,
     events: decoded.projectileEvents.length,
+    moverEntity: moverRequest.entity,
+    moverCompletionEvents: moved.entityEvents.filter((event) => event.entity === moverRequest.entity && event.kind === 7).length,
+    standingBlastVelocity,
+    crouchedBlastVelocity,
+    regenerateEntity: resupplied.events.find((event) => event.kind === 5)?.subject ?? 0,
     particleItems: particleOutputView.getUint32(8, true),
     viewmodelPrimitives: modelPose.primitives.length,
     viewmodelEvents: modelPose.events.length,

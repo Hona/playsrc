@@ -9,6 +9,40 @@ export type Tf2Weapon = 1 | 2 | 3
 export type MovementMode = 0 | 1
 export type ProjectileKind = 1 | 2
 export type ProjectileState = 1 | 2 | 3
+export type ContactKind = 1 | 2 | 3
+
+export type StickyLaunchRandom = Readonly<{
+  rightVelocity: number
+  upVelocity: number
+  angularY: number
+}>
+export type ProjectilePhysicsResult = Readonly<{
+  projectile: number
+  tick: bigint
+  position: readonly [number, number, number]
+  velocity: readonly [number, number, number]
+  orientation: readonly [number, number, number, number]
+  angularVelocity: readonly [number, number, number]
+  motionEnabled: boolean
+  contact: null | Readonly<{ kind: ContactKind; normal: readonly [number, number, number] }>
+}>
+export type RocketTraceResult = Readonly<{
+  projectile: number
+  tick: bigint
+  end: readonly [number, number, number]
+  solid: boolean
+  sky: boolean
+  normal: readonly [number, number, number] | null
+  directTarget: number | null
+}>
+export type MoverResult = Readonly<{
+  requestId: bigint
+  entity: number
+  kind: 1 | 2 | 3 | 4 | 5
+  position: readonly [number, number, number]
+  angles: readonly [number, number, number]
+  carry: readonly [number, number, number]
+}>
 
 export type Command = Readonly<{
   forward: number
@@ -29,6 +63,10 @@ export type Command = Readonly<{
   selectWeapon?: Tf2Weapon
   modeRequest?: MovementMode
   activateEntity?: number
+  stickyLaunchRandom?: StickyLaunchRandom
+  physicsResults?: readonly ProjectilePhysicsResult[]
+  rocketResults?: readonly RocketTraceResult[]
+  moverResults?: readonly MoverResult[]
 }>
 
 export type MovementSnapshot = Readonly<{
@@ -79,13 +117,84 @@ export type MovementTick = Readonly<{
 
 export type WeaponState = Readonly<{
   weapon: Tf2Weapon
-  reload: 0 | 1 | 2
+  reload: 0 | 1 | 2 | 3
   clip: number
   reserve: number
   maximumClip: number
   maximumReserve: number
   nextPrimaryTick: bigint
-  nextReloadTick: bigint
+  reloadDueTick: bigint | null
+  chargeBeginTick: bigint | null
+  firstPrimaryTick: bigint
+}>
+
+export type WeaponActivity = 1 | 2 | 3 | 4 | 5 | 6
+export type ActivityEvent = Readonly<{ tick: bigint; weapon: Tf2Weapon; activity: WeaponActivity }>
+export type LifecycleEvent = Readonly<{ tick: bigint; kind: 1 | 2 | 3 | 4; class: Tf2Class; team: Tf2Team }>
+export type ProjectilePhysicsRequest = Readonly<{
+  operation: 1 | 2 | 3 | 4
+  projectile: number
+  tick: bigint
+  position: readonly [number, number, number]
+  velocity: readonly [number, number, number]
+  orientation: readonly [number, number, number, number]
+  angularVelocity: readonly [number, number, number]
+  hullMins: readonly [number, number, number]
+  hullMaxs: readonly [number, number, number]
+  gravityScale: number
+  friction: number
+  elasticity: number
+}>
+export type RocketTraceRequest = Readonly<{
+  projectile: number
+  tick: bigint
+  start: readonly [number, number, number]
+  end: readonly [number, number, number]
+  mask: number
+}>
+export type RadiusDamageRequest = Readonly<{
+  projectile: number
+  kind: ProjectileKind
+  source: readonly [number, number, number]
+  baseDamage: number
+  radius: number
+  selfRadius: number
+  directTarget: number | null
+}>
+export type MoverRequest = Readonly<{
+  requestId: bigint
+  entity: number
+  model: number | null
+  start: readonly [number, number, number]
+  destination: readonly [number, number, number]
+  speed: number
+  opening: boolean
+}>
+export type ContactReconcileRequest = Readonly<{
+  tick: bigint
+  position: readonly [number, number, number]
+  hullMins: readonly [number, number, number]
+  hullMaxs: readonly [number, number, number]
+}>
+export type MapEffect = Readonly<{
+  kind: 1 | 2 | 3 | 4 | 5
+  detail: number
+  team: number | null
+  contact: ContactKind | null
+  subject: number
+  auxiliary: number | null
+  values: readonly [number, number, number, number, number, number]
+}>
+export type RegenerateAnimationEvent = Readonly<{
+  zone: number
+  associatedModel: number
+  openTick: bigint
+  closeTick: bigint
+}>
+export type AuthorityBlocker = Readonly<{
+  code: 1 | 2
+  classification: "Missing"
+  detail: string
 }>
 
 export type Projectile = Readonly<{
@@ -192,7 +301,9 @@ export type Snapshot = Readonly<{
   weapon: Tf2Weapon
   health: number
   maximumHealth: number
-  conditions: number
+  lifecycle: 1 | 2
+  conditions: readonly [number, number, number, number, number]
+  respawnTouchCount: number
   movement: MovementSnapshot
   movementTick: MovementTick | null
   position: readonly [number, number, number]
@@ -206,6 +317,16 @@ export type Snapshot = Readonly<{
   entityEvents: readonly EntityEvent[]
   jump: JumpSnapshot | null
   events: readonly GameplayEvent[]
+  activities: readonly ActivityEvent[]
+  lifecycleEvents: readonly LifecycleEvent[]
+  physicsRequests: readonly ProjectilePhysicsRequest[]
+  rocketTraceRequests: readonly RocketTraceRequest[]
+  radiusDamageRequests: readonly RadiusDamageRequest[]
+  moverRequests: readonly MoverRequest[]
+  contactReconcileRequests: readonly ContactReconcileRequest[]
+  mapEffects: readonly MapEffect[]
+  regenerateAnimationEvents: readonly RegenerateAnimationEvent[]
+  authorityBlockers: readonly AuthorityBlocker[]
 }>
 
 export class Tf2CodecError extends Error {
@@ -299,11 +420,45 @@ export function encodeCommand(command: Command): ArrayBuffer {
   if (command.activateEntity !== undefined && !canonicalIdentity(command.activateEntity)) {
     throw new Tf2CodecError("command entity identity is invalid")
   }
-  const bytes = new ArrayBuffer(40)
+  const physics = command.physicsResults ?? []
+  const rockets = command.rocketResults ?? []
+  const movers = command.moverResults ?? []
+  if (physics.length > 64 || rockets.length > 64 || movers.length > 64) {
+    throw new Tf2CodecError("command external-result count exceeds its bound")
+  }
+  const random = command.stickyLaunchRandom
+  if (random && (!finite([random.rightVelocity, random.upVelocity]) || random.rightVelocity < -10 || random.rightVelocity > 10 ||
+    random.upVelocity < -10 || random.upVelocity > 10 || !Number.isInteger(random.angularY) || random.angularY < -1200 || random.angularY > 1200)) {
+    throw new Tf2CodecError("command sticky random input is invalid")
+  }
+  const uint64 = (value: bigint): boolean => value >= 0n && value <= 0xffff_ffff_ffff_ffffn
+  for (const result of physics) {
+    if (!canonicalIdentity(result.projectile) || !uint64(result.tick) ||
+      !finite([...result.position, ...result.velocity, ...result.angularVelocity]) || !normalized(result.orientation) ||
+      (result.contact !== null && (!([1, 2, 3] as number[]).includes(result.contact.kind) || !normalized(result.contact.normal)))) {
+      throw new Tf2CodecError("command projectile Physics result is invalid")
+    }
+  }
+  for (const result of rockets) {
+    if (!canonicalIdentity(result.projectile) || !uint64(result.tick) || !finite(result.end) ||
+      (result.normal !== null && !normalized(result.normal)) || result.sky && !result.solid ||
+      result.solid && !result.sky && result.normal === null || !result.solid && result.directTarget !== null ||
+      result.directTarget !== null && !canonicalIdentity(result.directTarget)) {
+      throw new Tf2CodecError("command rocket Collision result is invalid")
+    }
+  }
+  for (const result of movers) {
+    if (!uint64(result.requestId) || !canonicalIdentity(result.entity) || !([1, 2, 3, 4, 5] as number[]).includes(result.kind) ||
+      !finite([...result.position, ...result.angles, ...result.carry])) {
+      throw new Tf2CodecError("command mover result is invalid")
+    }
+  }
+  const length = 56 + (random ? 12 : 0) + physics.length * 80 + rockets.length * 44 + movers.length * 52
+  const bytes = new ArrayBuffer(length)
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x43, 0x4d, 0x44])
-  view.setUint32(4, 2, true)
+  view.setUint32(4, 3, true)
   scalars.forEach((value, index) => view.setFloat32(8 + index * 4, value, true))
   const flags =
     Number(command.jump) |
@@ -322,6 +477,57 @@ export function encodeCommand(command: Command): ArrayBuffer {
     true,
   )
   view.setUint32(36, command.activateEntity ?? 0xffff_ffff, true)
+  view.setUint16(40, physics.length, true)
+  view.setUint16(42, rockets.length, true)
+  view.setUint16(44, movers.length, true)
+  view.setUint16(46, random ? 1 : 0, true)
+  view.setUint32(48, length, true)
+  let at = 56
+  const writeVector = (value: readonly number[]): void => {
+    value.forEach((scalar, index) => view.setFloat32(at + index * 4, scalar, true))
+    at += value.length * 4
+  }
+  if (random) {
+    view.setFloat32(at, random.rightVelocity, true)
+    view.setFloat32(at + 4, random.upVelocity, true)
+    view.setInt32(at + 8, random.angularY, true)
+    at += 12
+  }
+  for (const result of physics) {
+    view.setUint32(at, result.projectile, true)
+    view.setBigUint64(at + 4, result.tick, true)
+    data[at + 12] = Number(result.motionEnabled)
+    data[at + 13] = result.contact?.kind ?? 0
+    at += 16
+    writeVector(result.position)
+    writeVector(result.velocity)
+    writeVector(result.orientation)
+    writeVector(result.angularVelocity)
+    writeVector(result.contact?.normal ?? [0, 0, 0])
+  }
+  for (const result of rockets) {
+    view.setUint32(at, result.projectile, true)
+    view.setBigUint64(at + 4, result.tick, true)
+    data[at + 12] = Number(result.solid)
+    data[at + 13] = Number(result.sky)
+    data[at + 14] = Number(result.normal !== null)
+    data[at + 15] = Number(result.directTarget !== null)
+    at += 16
+    writeVector(result.end)
+    writeVector(result.normal ?? [0, 0, 0])
+    view.setUint32(at, result.directTarget ?? 0xffff_ffff, true)
+    at += 4
+  }
+  for (const result of movers) {
+    view.setBigUint64(at, result.requestId, true)
+    view.setUint32(at + 8, result.entity, true)
+    data[at + 12] = result.kind
+    at += 16
+    writeVector(result.position)
+    writeVector(result.angles)
+    writeVector(result.carry)
+  }
+  if (at !== length) throw new Tf2CodecError("command encoding length differs")
   return bytes
 }
 
@@ -609,7 +815,7 @@ function validateProjectileTransitions(events: readonly ProjectileEvent[]): void
     if (event.type === "fire" && current.last !== undefined) {
       throw new Tf2CodecError("projectile fire event is duplicated")
     }
-    if (event.type === "impact" && current.last === "impact") {
+    if (event.type === "impact" && current.last === "impact" && event.kind !== 2) {
       throw new Tf2CodecError("projectile impact event is duplicated")
     }
     if (event.type === "stick" && (event.kind !== 2 || current.last !== "impact")) {
@@ -625,12 +831,12 @@ function validateProjectileTransitions(events: readonly ProjectileEvent[]): void
 }
 
 export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
-  if (bytes.byteLength < 64 || bytes.byteLength > MAX_SNAPSHOT_BYTES) {
+  if (bytes.byteLength < 128 || bytes.byteLength > MAX_SNAPSHOT_BYTES) {
     throw new Tf2CodecError("snapshot byte length is invalid")
   }
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
-  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 4)
+  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 5)
     throw new Tf2CodecError("snapshot identity is invalid")
   const tf2Class = data[16]
   const team = data[17]
@@ -639,7 +845,7 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
     (tf2Class !== 1 && tf2Class !== 2) ||
     (team !== 1 && team !== 2) ||
     (weapon !== 1 && weapon !== 2 && weapon !== 3) ||
-    data[19]! > 1
+    data[19]! > 1 || (data[28] !== 1 && data[28] !== 2) || data[29] !== 0 || data[30] !== 0 || data[31] !== 0
   )
     throw new Tf2CodecError("snapshot selection is invalid")
   const health = view.getFloat32(20, true)
@@ -647,28 +853,40 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
   if (!finite([health, maximumHealth]) || health < 0 || maximumHealth <= 0) {
     throw new Tf2CodecError("snapshot health is invalid")
   }
-  const loadoutCount = count(view.getUint32(32, true), "loadout")
-  const projectileCount = count(view.getUint32(36, true), "projectile")
-  const projectileEventCount = count(view.getUint32(40, true), "projectile event")
-  const entityTransformCount = count(view.getUint32(44, true), "entity transform")
-  const entityEventCount = count(view.getUint32(48, true), "entity event")
-  const gameplayEventCount = count(view.getUint32(52, true), "gameplay event")
-  const jumpLength = view.getUint32(56, true)
-  const movementLength = view.getUint32(60, true)
-  if (64 + movementLength > bytes.byteLength) throw new Tf2CodecError("Movement section exceeds snapshot bytes")
-  const movement = movementSnapshot(bytes, 64, movementLength)
+  const conditions = Object.freeze(Array.from({ length: 5 }, (_, index) => view.getUint32(32 + index * 4, true))) as
+    readonly [number, number, number, number, number]
+  const loadoutCount = count(view.getUint32(56, true), "loadout")
+  const projectileCount = count(view.getUint32(60, true), "projectile")
+  const projectileEventCount = count(view.getUint32(64, true), "projectile event")
+  const entityTransformCount = count(view.getUint32(68, true), "entity transform")
+  const entityEventCount = count(view.getUint32(72, true), "entity event")
+  const gameplayEventCount = count(view.getUint32(76, true), "gameplay event")
+  const jumpLength = view.getUint32(80, true)
+  const movementLength = view.getUint32(84, true)
+  const activityCount = count(view.getUint32(88, true), "activity")
+  const lifecycleEventCount = count(view.getUint32(92, true), "lifecycle event")
+  const physicsRequestCount = count(view.getUint32(96, true), "Physics request")
+  const rocketRequestCount = count(view.getUint32(100, true), "rocket trace request")
+  const radiusRequestCount = count(view.getUint32(104, true), "radius damage request")
+  const moverRequestCount = count(view.getUint32(108, true), "mover request")
+  const contactRequestCount = count(view.getUint32(112, true), "contact reconcile request")
+  const mapEffectCount = count(view.getUint32(116, true), "map effect")
+  const regenerateEventCount = count(view.getUint32(120, true), "regenerate animation event")
+  const blockerCount = count(view.getUint32(124, true), "authority blocker")
+  if (128 + movementLength > bytes.byteLength) throw new Tf2CodecError("Movement section exceeds snapshot bytes")
+  const movement = movementSnapshot(bytes, 128, movementLength)
   if (movement.mode !== data[19]) throw new Tf2CodecError("Movement mode projection differs")
-  let at = 64 + movementLength
+  let at = 128 + movementLength
   const requireBytes = (length: number, label: string): void => {
     if (!Number.isSafeInteger(at + length) || at + length > bytes.byteLength) {
       throw new Tf2CodecError(`${label} records exceed snapshot bytes`)
     }
   }
 
-  requireBytes(loadoutCount * 32, "loadout")
+  requireBytes(loadoutCount * 48, "loadout")
   const loadout: WeaponState[] = []
   for (let index = 0; index < loadoutCount; index += 1) {
-    const item = at + index * 32
+    const item = at + index * 48
     const itemWeapon = data[item]
     const reload = data[item + 1]
     if (
@@ -676,10 +894,10 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
       itemWeapon < 1 ||
       itemWeapon > 3 ||
       reload === undefined ||
-      reload > 2 ||
+      reload > 3 ||
       data[item + 2] !== 0 ||
       data[item + 3] !== 0 ||
-      view.getUint32(item + 28, true) !== 0
+      view.getUint32(item + 44, true) !== 0
     )
       throw new Tf2CodecError("loadout record is invalid")
     loadout.push(
@@ -691,11 +909,13 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
         maximumClip: view.getUint16(item + 8, true),
         maximumReserve: view.getUint16(item + 10, true),
         nextPrimaryTick: view.getBigUint64(item + 12, true),
-        nextReloadTick: view.getBigUint64(item + 20, true),
+        reloadDueTick: view.getBigUint64(item + 20, true) === 0xffff_ffff_ffff_ffffn ? null : view.getBigUint64(item + 20, true),
+        chargeBeginTick: view.getBigUint64(item + 28, true) === 0xffff_ffff_ffff_ffffn ? null : view.getBigUint64(item + 28, true),
+        firstPrimaryTick: view.getBigUint64(item + 36, true),
       }),
     )
   }
-  at += loadoutCount * 32
+  at += loadoutCount * 48
 
   requireBytes(projectileCount * 84, "projectile")
   const projectiles: Projectile[] = []
@@ -724,7 +944,7 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
       ageSeconds < 0 ||
       (hasNormal === 1 && !normalized(rawNormal)) ||
       (hasNormal === 0 && rawNormal.some((value) => value !== 0)) ||
-      (state !== 1 && (kind !== 2 || hasNormal !== 1 || velocity.some((value) => value !== 0)))
+      (state !== 1 && (kind !== 2 || hasNormal !== 1))
     )
       throw new Tf2CodecError("projectile record is invalid")
     projectiles.push(
@@ -875,6 +1095,166 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
     )
   }
   at += gameplayEventCount * 28
+
+  requireBytes(activityCount * 16, "activity")
+  const activities: ActivityEvent[] = []
+  for (let index = 0; index < activityCount; index += 1) {
+    const item = at + index * 16
+    const itemWeapon = data[item + 8]
+    const activity = data[item + 9]
+    if (itemWeapon === undefined || itemWeapon < 1 || itemWeapon > 3 || activity === undefined || activity < 1 || activity > 6 ||
+      !data.subarray(item + 10, item + 16).every((value) => value === 0)) {
+      throw new Tf2CodecError("activity record is invalid")
+    }
+    activities.push(Object.freeze({
+      tick: view.getBigUint64(item, true),
+      weapon: itemWeapon as Tf2Weapon,
+      activity: activity as WeaponActivity,
+    }))
+  }
+  at += activityCount * 16
+
+  requireBytes(lifecycleEventCount * 16, "lifecycle event")
+  const lifecycleEvents: LifecycleEvent[] = []
+  for (let index = 0; index < lifecycleEventCount; index += 1) {
+    const item = at + index * 16
+    const kind = data[item + 8], itemClass = data[item + 9], itemTeam = data[item + 10]
+    if (kind === undefined || kind < 1 || kind > 4 || (itemClass !== 1 && itemClass !== 2) ||
+      (itemTeam !== 1 && itemTeam !== 2) || !data.subarray(item + 11, item + 16).every((value) => value === 0)) {
+      throw new Tf2CodecError("lifecycle event record is invalid")
+    }
+    lifecycleEvents.push(Object.freeze({
+      tick: view.getBigUint64(item, true),
+      kind: kind as LifecycleEvent["kind"],
+      class: itemClass,
+      team: itemTeam,
+    }))
+  }
+  at += lifecycleEventCount * 16
+
+  requireBytes(physicsRequestCount * 104, "Physics request")
+  const physicsRequests: ProjectilePhysicsRequest[] = []
+  for (let index = 0; index < physicsRequestCount; index += 1) {
+    const item = at + index * 104
+    const operation = data[item]
+    const position = vector(view, item + 16), velocity = vector(view, item + 28), orientation = quaternion(view, item + 40),
+      angularVelocity = vector(view, item + 56), hullMins = vector(view, item + 68), hullMaxs = vector(view, item + 80)
+    const gravityScale = view.getFloat32(item + 92, true), friction = view.getFloat32(item + 96, true), elasticity = view.getFloat32(item + 100, true)
+    if (operation === undefined || operation < 1 || operation > 4 || !data.subarray(item + 1, item + 4).every((value) => value === 0) ||
+      !finite([...position, ...velocity, ...angularVelocity, ...hullMins, ...hullMaxs, gravityScale, friction, elasticity]) ||
+      !normalized(orientation) || hullMins.some((value, axis) => value > hullMaxs[axis]!)) {
+      throw new Tf2CodecError("Physics request record is invalid")
+    }
+    physicsRequests.push(Object.freeze({ operation: operation as ProjectilePhysicsRequest["operation"], projectile: view.getUint32(item + 4, true),
+      tick: view.getBigUint64(item + 8, true), position, velocity, orientation, angularVelocity, hullMins, hullMaxs, gravityScale, friction, elasticity }))
+  }
+  at += physicsRequestCount * 104
+
+  requireBytes(rocketRequestCount * 44, "rocket trace request")
+  const rocketTraceRequests: RocketTraceRequest[] = []
+  for (let index = 0; index < rocketRequestCount; index += 1) {
+    const item = at + index * 44, start = vector(view, item + 16), end = vector(view, item + 28)
+    if (view.getUint32(item + 4, true) !== 0 || !finite([...start, ...end])) throw new Tf2CodecError("rocket trace request record is invalid")
+    rocketTraceRequests.push(Object.freeze({ projectile: view.getUint32(item, true), tick: view.getBigUint64(item + 8, true), start, end, mask: view.getUint32(item + 40, true) }))
+  }
+  at += rocketRequestCount * 44
+
+  requireBytes(radiusRequestCount * 36, "radius damage request")
+  const radiusDamageRequests: RadiusDamageRequest[] = []
+  for (let index = 0; index < radiusRequestCount; index += 1) {
+    const item = at + index * 36, kind = data[item + 4], source = vector(view, item + 8)
+    const values = [view.getFloat32(item + 20, true), view.getFloat32(item + 24, true), view.getFloat32(item + 28, true)]
+    if ((kind !== 1 && kind !== 2) || !data.subarray(item + 5, item + 8).every((value) => value === 0) || !finite([...source, ...values])) {
+      throw new Tf2CodecError("radius damage request record is invalid")
+    }
+    const directTarget = view.getUint32(item + 32, true)
+    radiusDamageRequests.push(Object.freeze({ projectile: view.getUint32(item, true), kind, source, baseDamage: values[0]!, radius: values[1]!,
+      selfRadius: values[2]!, directTarget: directTarget === 0xffff_ffff ? null : directTarget }))
+  }
+  at += radiusRequestCount * 36
+
+  requireBytes(moverRequestCount * 48, "mover request")
+  const moverRequests: MoverRequest[] = []
+  for (let index = 0; index < moverRequestCount; index += 1) {
+    const item = at + index * 48, start = vector(view, item + 16), destination = vector(view, item + 28), speed = view.getFloat32(item + 40, true)
+    const opening = data[item + 44]
+    if (opening === undefined || opening > 1 || !data.subarray(item + 45, item + 48).every((value) => value === 0) || !finite([...start, ...destination, speed])) {
+      throw new Tf2CodecError("mover request record is invalid")
+    }
+    const model = view.getUint32(item + 12, true)
+    moverRequests.push(Object.freeze({ requestId: view.getBigUint64(item, true), entity: view.getUint32(item + 8, true),
+      model: model === 0xffff_ffff ? null : model, start, destination, speed, opening: opening === 1 }))
+  }
+  at += moverRequestCount * 48
+
+  requireBytes(contactRequestCount * 44, "contact reconcile request")
+  const contactReconcileRequests: ContactReconcileRequest[] = []
+  for (let index = 0; index < contactRequestCount; index += 1) {
+    const item = at + index * 44, position = vector(view, item + 8), hullMins = vector(view, item + 20), hullMaxs = vector(view, item + 32)
+    if (!finite([...position, ...hullMins, ...hullMaxs]) || hullMins.some((value, axis) => value > hullMaxs[axis]!)) {
+      throw new Tf2CodecError("contact reconcile request record is invalid")
+    }
+    contactReconcileRequests.push(Object.freeze({ tick: view.getBigUint64(item, true), position, hullMins, hullMaxs }))
+  }
+  at += contactRequestCount * 44
+
+  requireBytes(mapEffectCount * 40, "map effect")
+  const mapEffects: MapEffect[] = []
+  for (let index = 0; index < mapEffectCount; index += 1) {
+    const item = at + index * 40, kind = data[item], detail = data[item + 1], rawTeam = data[item + 2], rawContact = data[item + 3]
+    const values = Object.freeze(Array.from({ length: 6 }, (_, value) => view.getFloat32(item + 16 + value * 4, true))) as
+      readonly [number, number, number, number, number, number]
+    if (kind === undefined || kind < 1 || kind > 5 || detail === undefined || detail > 1 || rawTeam === undefined ||
+      (rawTeam !== 0 && rawTeam !== 2 && rawTeam !== 3) || rawContact === undefined || rawContact > 3 ||
+      view.getUint32(item + 12, true) !== 0 || !finite(values)) throw new Tf2CodecError("map effect record is invalid")
+    const auxiliary = view.getUint32(item + 8, true)
+    const semantic = kind === 1
+      ? rawTeam === 0 && rawContact === 0 && auxiliary !== 0xffff_ffff &&
+        (detail === 1 || values.slice(3).every((value) => value === 0))
+      : kind === 2
+        ? detail === 0 && rawTeam === 0 && rawContact >= 1 && auxiliary === 0xffff_ffff &&
+          values.slice(1).every((value) => value === 0)
+        : kind === 3
+          ? rawTeam === 0 && rawContact === 0 && auxiliary === 0xffff_ffff && values.slice(3).every((value) => value === 0)
+          : kind === 4
+            ? detail === 0 && rawContact === 0 && values.every((value) => value === 0)
+            : detail === 0 && rawContact >= 1 && auxiliary === 0xffff_ffff && values.every((value) => value === 0)
+    if (!semantic) throw new Tf2CodecError("map effect semantics are invalid")
+    mapEffects.push(Object.freeze({ kind: kind as MapEffect["kind"], detail, team: rawTeam === 0 ? null : rawTeam,
+      contact: rawContact === 0 ? null : rawContact as ContactKind, subject: view.getUint32(item + 4, true),
+      auxiliary: auxiliary === 0xffff_ffff ? null : auxiliary, values }))
+  }
+  at += mapEffectCount * 40
+
+  requireBytes(regenerateEventCount * 24, "regenerate animation event")
+  const regenerateAnimationEvents: RegenerateAnimationEvent[] = []
+  for (let index = 0; index < regenerateEventCount; index += 1) {
+    const item = at + index * 24
+    regenerateAnimationEvents.push(Object.freeze({ zone: view.getUint32(item, true), associatedModel: view.getUint32(item + 4, true),
+      openTick: view.getBigUint64(item + 8, true), closeTick: view.getBigUint64(item + 16, true) }))
+  }
+  at += regenerateEventCount * 24
+
+  requireBytes(blockerCount * 4, "authority blocker")
+  const authorityBlockers: AuthorityBlocker[] = []
+  const blockerDetails = new Map<number, string>([
+    [1, "TF2 sticky IVP solver unavailable: current body/contact transition"],
+    [2, "Tempus core and jump_beef zone contract unavailable"],
+  ])
+  const blockerCodes = new Set<number>()
+  for (let index = 0; index < blockerCount; index += 1) {
+    const item = at + index * 4, code = data[item], classification = data[item + 1]
+    const detail = code === undefined ? undefined : blockerDetails.get(code)
+    if (!detail || classification !== 1 || data[item + 2] !== 0 || data[item + 3] !== 0 || blockerCodes.has(code)) {
+      throw new Tf2CodecError("authority blocker record is invalid")
+    }
+    blockerCodes.add(code)
+    authorityBlockers.push(Object.freeze({ code: code as 1 | 2, classification: "Missing", detail }))
+  }
+  if (blockerCodes.size !== 2 || !blockerCodes.has(1) || !blockerCodes.has(2)) {
+    throw new Tf2CodecError("authority blocker set is incomplete")
+  }
+  at += blockerCount * 4
   requireBytes(jumpLength, "Jump")
   const jump = decodeJump(bytes, at, jumpLength)
   at += jumpLength
@@ -888,7 +1268,9 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
     weapon,
     health,
     maximumHealth,
-    conditions: view.getUint32(28, true),
+    lifecycle: data[28] as 1 | 2,
+    conditions,
+    respawnTouchCount: view.getUint32(52, true),
     movement,
     movementTick,
     position: movement.position,
@@ -902,6 +1284,16 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
     entityEvents: Object.freeze(entityEvents),
     jump,
     events: Object.freeze(events),
+    activities: Object.freeze(activities),
+    lifecycleEvents: Object.freeze(lifecycleEvents),
+    physicsRequests: Object.freeze(physicsRequests),
+    rocketTraceRequests: Object.freeze(rocketTraceRequests),
+    radiusDamageRequests: Object.freeze(radiusDamageRequests),
+    moverRequests: Object.freeze(moverRequests),
+    contactReconcileRequests: Object.freeze(contactReconcileRequests),
+    mapEffects: Object.freeze(mapEffects),
+    regenerateAnimationEvents: Object.freeze(regenerateAnimationEvents),
+    authorityBlockers: Object.freeze(authorityBlockers),
   })
 }
 

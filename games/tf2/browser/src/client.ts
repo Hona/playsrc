@@ -298,7 +298,7 @@ export class Tf2WorkerClient {
   }
 
   async advance(generation: number, command: ArrayBuffer, ticks: number): Promise<Snapshot> {
-    if (command.byteLength !== 40) throw new Tf2WorkerError("BoundExceeded")
+    if (command.byteLength < 56 || command.byteLength > 64 * 1024) throw new Tf2WorkerError("BoundExceeded")
     const transferred = command.slice(0)
     const response = await this.#request({ kind: "advance", generation, ticks, command: transferred }, [transferred])
     if (response.kind !== "snapshot" || response.generation !== generation) {

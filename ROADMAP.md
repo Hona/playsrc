@@ -57,6 +57,8 @@ The project roadmap contains 12 named targets. The TF2-first completion denomina
 
 ## Behavior Families
 
+The current TF2 browser integration consumes PCMD v3/PSSN v5 gameplay and Entity facts, the 296-object exact content ledger, and reviewed visual contracts. Current-build IVP sticky results and the Tempus core/`jump_beef` zone contract remain explicit typed blockers; no solver or inferred course is substituted.
+
 | Target behavior | playsrc behavior | Evidence | Status |
 |---|---|---|---|
 | Reusable package set has one accepted finite denominator for every declared format, world, runtime, presentation, content, and asset-store owner. | The format-universe roadmap and all 24 package leaf roadmaps are Draft and contain Blocked requirements. | Aggregation audit of all registered package roadmap review records, Ready rows, inventories, and exit criteria. | Blocked |

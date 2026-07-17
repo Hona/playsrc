@@ -10,41 +10,48 @@ import {
 import type { WorkerRequest, WorkerResponse } from "../src/protocol"
 
 function snapshot(): ArrayBuffer {
-  const bytes = new ArrayBuffer(445)
+  const bytes = new ArrayBuffer(549)
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x53, 0x53, 0x4e])
-  view.setUint32(4, 4, true)
+  view.setUint32(4, 5, true)
   view.setBigUint64(8, 7n, true)
   data.set([1, 1, 1, 0], 16)
   view.setFloat32(20, 200, true)
   view.setFloat32(24, 200, true)
-  view.setUint32(32, 1, true)
-  view.setUint32(36, 1, true)
-  view.setUint32(40, 1, true)
-  view.setUint32(44, 1, true)
-  view.setUint32(48, 1, true)
+  data[28] = 1
   view.setUint32(52, 1, true)
-  view.setUint32(60, 96, true)
-
-  data.set([0x50, 0x4d, 0x4f, 0x56], 64)
+  view.setUint32(56, 1, true)
+  view.setUint32(60, 1, true)
+  view.setUint32(64, 1, true)
   view.setUint32(68, 1, true)
-  data[79] = 1
-  view.setBigUint64(80, 0xffff_ffff_ffff_ffffn, true)
-  ;[1, 2, 3, 4, 5, 6, 0, 0, 68].forEach((value, index) => {
-    view.setFloat32(88 + index * 4, value, true)
-  })
-  view.setFloat32(144, 1, true)
-  view.setFloat32(156, 1, true)
+  view.setUint32(72, 1, true)
+  view.setUint32(76, 1, true)
+  view.setUint32(84, 96, true)
+  view.setUint32(88, 1, true)
+  view.setUint32(124, 2, true)
 
-  let at = 160
+  data.set([0x50, 0x4d, 0x4f, 0x56], 128)
+  view.setUint32(132, 1, true)
+  data[143] = 1
+  view.setBigUint64(144, 0xffff_ffff_ffff_ffffn, true)
+  ;[1, 2, 3, 4, 5, 6, 0, 0, 68].forEach((value, index) => {
+    view.setFloat32(152 + index * 4, value, true)
+  })
+  view.setFloat32(208, 1, true)
+  view.setFloat32(220, 1, true)
+
+  let at = 224
   data.set([1, 0, 0, 0], at)
   view.setUint16(at + 4, 3, true)
   view.setUint16(at + 6, 20, true)
   view.setUint16(at + 8, 4, true)
   view.setUint16(at + 10, 20, true)
   view.setBigUint64(at + 12, 20n, true)
-  at += 32
+  view.setBigUint64(at + 20, 0xffff_ffff_ffff_ffffn, true)
+  view.setBigUint64(at + 28, 0xffff_ffff_ffff_ffffn, true)
+  view.setBigUint64(at + 36, 2n, true)
+  at += 48
 
   view.setUint32(at, 9, true)
   data.set([1, 1, 1, 0], at + 4)
@@ -82,6 +89,11 @@ function snapshot(): ArrayBuffer {
   view.setUint32(at + 4, 85, true)
   ;[200, 4, 20, 0].forEach((value, index) => view.setFloat32(at + 12 + index * 4, value, true))
   at += 28
+  view.setBigUint64(at, 7n, true)
+  data.set([1, 2], at + 8)
+  at += 16
+  data.set([1, 1, 0, 0, 2, 1, 0, 0], at)
+  at += 8
   data.set([0x50, 0x4d, 0x54, 0x4b], at)
   view.setUint32(at + 4, 1, true)
   return bytes
@@ -138,13 +150,46 @@ describe("TF2 playable runtime Stage 2 contract", () => {
       selectTeam: 2,
       modeRequest: 1,
       activateEntity: 213,
+      stickyLaunchRandom: { rightVelocity: -10, upVelocity: 10, angularY: 1200 },
+      physicsResults: [{
+        projectile: 8,
+        tick: 7n,
+        position: [1, 2, 3],
+        velocity: [4, 5, 6],
+        orientation: [0, 0, 0, 1],
+        angularVelocity: [7, 8, 9],
+        motionEnabled: false,
+        contact: { kind: 1, normal: [0, 0, 1] },
+      }],
+      rocketResults: [{
+        projectile: 9,
+        tick: 7n,
+        end: [10, 11, 12],
+        solid: true,
+        sky: false,
+        normal: [0, 0, 1],
+        directTarget: null,
+      }],
+      moverResults: [{
+        requestId: 99n,
+        entity: 67,
+        kind: 2,
+        position: [1, 2, 3],
+        angles: [0, 90, 0],
+        carry: [4, 0, 0],
+      }],
     })
     const commandView = new DataView(command)
     expect(new TextDecoder().decode(command.slice(0, 4))).toBe("PCMD")
-    expect(command.byteLength).toBe(40)
+    expect(commandView.getUint32(4, true)).toBe(3)
+    expect(command.byteLength).toBe(244)
     expect(commandView.getUint32(28, true)).toBe(0xff)
     expect(commandView.getUint32(32, true)).toBe(0x0202_0302)
     expect(commandView.getUint32(36, true)).toBe(213)
+    expect(commandView.getUint16(40, true)).toBe(1)
+    expect(commandView.getUint16(42, true)).toBe(1)
+    expect(commandView.getUint16(44, true)).toBe(1)
+    expect(commandView.getUint16(46, true)).toBe(1)
 
     const value = decodeSnapshot(snapshot())
     expect(value.movement).toMatchObject({
@@ -154,6 +199,10 @@ describe("TF2 playable runtime Stage 2 contract", () => {
       viewOffset: [0, 0, 68],
     })
     expect(value.loadout[0]).toMatchObject({ clip: 3, reserve: 20 })
+    expect(value.activities).toEqual([{ tick: 7n, weapon: 1, activity: 2 }])
+    expect(value.lifecycle).toBe(1)
+    expect(value.respawnTouchCount).toBe(1)
+    expect(value.authorityBlockers.map((value) => value.code)).toEqual([1, 2])
     expect(value.projectiles[0]).toEqual({
       identity: 9,
       kind: 1,
@@ -179,11 +228,19 @@ describe("TF2 playable runtime Stage 2 contract", () => {
     expect(value.events[0]).toMatchObject({ kind: 5, subject: 85, values: [200, 4, 20, 0] })
 
     const malformed = snapshot()
-    new DataView(malformed).setFloat32(192 + 52, 0, true)
+    new DataView(malformed).setFloat32(312 + 12, 0, true)
     expect(() => decodeSnapshot(malformed)).toThrow(Tf2CodecError)
+    const priorVersion = snapshot()
+    new DataView(priorVersion).setUint32(4, 4, true)
+    expect(() => decodeSnapshot(priorVersion)).toThrow(Tf2CodecError)
+    const stuck = snapshot()
+    const stuckData = new Uint8Array(stuck), stuckView = new DataView(stuck)
+    stuckData.set([2, 1, 3, 1], 276)
+    stuckView.setFloat32(348, 1, true)
+    expect(decodeSnapshot(stuck).projectiles[0]).toMatchObject({ kind: 2, state: 3, velocity: [100, 0, 0], contactNormal: [0, 0, 1] })
   })
 
-  test("configures one explicit map-bound linear course before advancement", async () => {
+  test("retains one explicit externally supplied course seam without application inference", async () => {
     const definition = encodeJumpCourse(7n, "ab".repeat(32), [
       { identity: 1, triggerEntity: 10, kind: "start", index: 1 },
       { identity: 2, triggerEntity: 11, kind: "checkpoint", index: 1 },

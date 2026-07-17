@@ -340,7 +340,8 @@ function advance(request: Extract<WorkerRequest, { kind: "advance" }>): void {
   if (!value) return
   if (
     !(request.command instanceof ArrayBuffer) ||
-    request.command.byteLength !== 40 ||
+    request.command.byteLength < 56 ||
+    request.command.byteLength > 64 * 1024 ||
     !Number.isSafeInteger(request.ticks) ||
     request.ticks < 1 ||
     request.ticks > 64
@@ -349,14 +350,14 @@ function advance(request: Extract<WorkerRequest, { kind: "advance" }>): void {
     return
   }
   const pointer = allocateCopy(value.exports, request.command)
-  const result = value.exports.playsrc_game_advance(value.handle, pointer, 40, request.ticks)
-  value.exports.playsrc_free(pointer, 40)
+  const result = value.exports.playsrc_game_advance(value.handle, pointer, request.command.byteLength, request.ticks)
+  value.exports.playsrc_free(pointer, request.command.byteLength)
   if (result !== 1) {
     fail(request.id, "TransitionFailed")
     return
   }
   const length = value.exports.playsrc_snapshot_length(value.handle)
-  if (!Number.isSafeInteger(length) || length < 64 || length > MAX_MESSAGE_BYTES) {
+  if (!Number.isSafeInteger(length) || length < 128 || length > MAX_MESSAGE_BYTES) {
     fail(request.id, "InternalFailure")
     return
   }

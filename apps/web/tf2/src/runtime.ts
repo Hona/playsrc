@@ -37,7 +37,6 @@ import { sha256 } from "@noble/hashes/sha2.js"
 import { consoleLimits, consoleResourceBlocker, consoleResources, diagnosticResources } from "./console-resources"
 import { loadBrowserConfiguration, type BrowserConfiguration } from "./config"
 import { applyPointerDelta } from "./input"
-import { jumpBeefCourse } from "./course"
 
 const TICK_MILLISECONDS = 15
 const MAX_FRAME_TICKS = 4
@@ -119,6 +118,9 @@ export type ApplicationView = Readonly<{
   viewmodelTimelineProbes?: readonly string[]
   modelMatrices?: readonly Readonly<{ entity: number; model: string; matrix: readonly number[] }>[]
   decalStateProbe?: Readonly<{ materials: number; exact: number }>
+  weaponTrace?: string
+  authorityTrace?: string
+  entityTrace?: string
 }>
 
 type Renderer = Awaited<ReturnType<typeof createRenderer>>
@@ -189,7 +191,11 @@ export class Tf2Application {
   #explosionEvents = 0
   #paused = true
   #closed = false
-  #blockers = new Set<string>([consoleResourceBlocker])
+  #blockers = new Set<string>([
+    consoleResourceBlocker,
+    "TF2 SoundSamples unavailable: BaseExplosionEffect.Sound",
+    "TF2 SoundSamples unavailable: Weapon_Grenade_Pipebomb.Explode",
+  ])
   #view: ApplicationView = Object.freeze({
     phase: "Loading",
     detail: "Reading local configuration",
@@ -242,7 +248,6 @@ export class Tf2Application {
       this.#set({ detail: "Compiling direct map authority" })
       this.#generation = 1
       this.#loaded = await this.#client.stage(this.#generation, bsp, profile, this.#dependencies, key)
-      await this.#client.configureCourse(this.#generation, jumpBeefCourse(this.#configuration.bsp.sha256))
       this.#artifacts = await parsePresentationArtifacts(this.#loaded.presentation)
       this.#recordVisualOutputBlockers(this.#artifacts)
       await this.#cacheModelArtifacts(this.#artifacts)
@@ -313,6 +318,7 @@ export class Tf2Application {
       this.#audioWorld = new SourceAudioWorld(this.#audioRegistry, { maxActiveVoices: 128 })
       await this.#client.activate(this.#generation)
       this.#snapshot = await this.#client.advance(this.#generation, this.#command(), 1)
+      this.#recordAuthorityBlockers(this.#snapshot)
       this.#recordCrouch(this.#snapshot)
       this.#modelProbes = await this.#probePlayerModels(this.#artifacts)
       this.#viewmodelTimelineProbes = await this.#probeViewmodelTimelines(this.#artifacts)
@@ -341,6 +347,7 @@ export class Tf2Application {
         viewmodelTimelineProbes: Object.freeze([...this.#viewmodelTimelineProbes]),
         modelMatrices: this.#modelMatrices(this.#artifacts),
         decalStateProbe: this.#decalStateProbe(this.#artifacts),
+        ...this.#gameplayTraces(this.#snapshot),
       })
     } catch (error) {
       await this.#release()
@@ -680,7 +687,6 @@ export class Tf2Application {
       this.#dependencies,
     )
     const staged = await this.#client.stage(generation, bytes, profile, this.#dependencies, key)
-    if (name === "jump_beef") await this.#client.configureCourse(generation, jumpBeefCourse(bspSha256))
     const artifacts = await parsePresentationArtifacts(staged.presentation)
     this.#recordVisualOutputBlockers(artifacts)
     await this.#cacheModelArtifacts(artifacts)
@@ -763,6 +769,7 @@ export class Tf2Application {
     this.#mapIdentity = name
     this.#applyInitialView(staged)
     this.#snapshot = await this.#client.advance(generation, this.#command(), 1)
+    this.#recordAuthorityBlockers(this.#snapshot)
     this.#crouchHistory = []
     this.#recordCrouch(this.#snapshot)
     this.#modelProbes = await this.#probePlayerModels(artifacts)
@@ -793,6 +800,7 @@ export class Tf2Application {
       viewmodelTimelineProbes: Object.freeze([...this.#viewmodelTimelineProbes]),
       modelMatrices: this.#modelMatrices(artifacts),
       decalStateProbe: this.#decalStateProbe(artifacts),
+      ...this.#gameplayTraces(this.#snapshot),
     })
   }
 
@@ -875,6 +883,33 @@ export class Tf2Application {
     this.#blockers.add("Missing decoded profile-qualified sky and cubemap subresources")
     this.#blockers.add("Missing complete Water material and reflection/refraction view inputs")
     this.#blockers.add("Missing current fog-controller state and transition inputs")
+  }
+
+  #recordAuthorityBlockers(snapshot: Snapshot): void {
+    for (const blocker of snapshot.authorityBlockers) this.#blockers.add(`${blocker.classification}: ${blocker.detail}`)
+    if (snapshot.moverRequests.length > 0) {
+      this.#blockers.add("Missing: Source mover result transition")
+    }
+    if (snapshot.rocketTraceRequests.length > 0) {
+      this.#blockers.add("Missing: Rocket Collision sky/direct-target result")
+    }
+  }
+
+  #gameplayTraces(snapshot: Snapshot): Pick<ApplicationView, "weaponTrace" | "authorityTrace" | "entityTrace"> {
+    return Object.freeze({
+      weaponTrace: snapshot.loadout.map((weapon) =>
+        `${weapon.weapon}:${weapon.clip}/${weapon.reserve}:${weapon.reload}:${weapon.reloadDueTick ?? "-"}:${weapon.chargeBeginTick ?? "-"}:${weapon.firstPrimaryTick}`,
+      ).join("|"),
+      authorityTrace: snapshot.authorityBlockers.map((blocker) => `${blocker.code}:${blocker.classification}`).join("|"),
+      entityTrace: [
+        snapshot.entityEvents.length,
+        snapshot.entityTransforms.length,
+        snapshot.moverRequests.length,
+        snapshot.mapEffects.length,
+        snapshot.regenerateAnimationEvents.length,
+        snapshot.respawnTouchCount,
+      ].join(":"),
+    })
   }
 
   #viewmodelSequences(artifacts: PresentationArtifacts, tf2Class: 1 | 2): string {
@@ -1111,9 +1146,17 @@ export class Tf2Application {
     )
       return
     try {
+      const active = this.#snapshot.loadout.find((weapon) => weapon.weapon === this.#snapshot?.weapon)
+      if (this.#snapshot.weapon === 3 && active?.chargeBeginTick != null && !this.#fire && !this.#firePressed) {
+        this.#blockers.add("Missing: TF2 sticky launch random stream")
+        this.#paused = true
+        this.#set({ phase: "Ready", detail: "Sticky launch blocked on the unavailable random stream", ...this.#gameplayTraces(this.#snapshot) })
+        return
+      }
       const snapshot = await this.#client.advance(this.#generation, this.#command(), ticks)
       this.#snapshot = snapshot
       this.#recordCrouch(snapshot)
+      this.#recordAuthorityBlockers(snapshot)
       for (const event of snapshot.events) {
         if (event.kind === 9 && event.detail === 1) this.#yaw = event.values[3]
       }
@@ -1188,6 +1231,7 @@ export class Tf2Application {
         viewmodelSequences: this.#viewmodelSequences(this.#artifacts, snapshot.class),
         crouchHistory: Object.freeze([...this.#crouchHistory]),
         viewmodelTimelineProbes: Object.freeze([...this.#viewmodelTimelineProbes]),
+        ...this.#gameplayTraces(snapshot),
       })
     } catch (error) {
       this.#paused = true

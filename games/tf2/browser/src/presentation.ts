@@ -129,8 +129,6 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
   let priorTick = 0n
   let prior: Snapshot["weapon"] | undefined
   let priorClass: Snapshot["class"] | undefined
-  let priorReload: 0 | 1 | 2 = 0
-  let priorClip = 0
   let activity = "ACT_VM_DRAW"
   let bobTime = 0
   let lastBobTime = 0
@@ -144,30 +142,33 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
       const artifact = artifacts.models.get(identity)
       if (!artifact) throw new ProjectilePresentationError("MissingModel", identity)
       if (artifact.descriptor.kind !== "viewmodel") throw new ProjectilePresentationError("MissingModel", `${identity}:descriptor`)
-      const fired = snapshot.projectileEvents.some((e) => e.type === "fire")
       const weapon = snapshot.loadout.find((value) => value.weapon === snapshot.weapon)
       if (!weapon) throw new ProjectilePresentationError("MissingModel", `${identity}:weapon-state`)
       const selectionChanged = prior !== snapshot.weapon || priorClass !== snapshot.class
-      let nextActivity = activity
-      if (selectionChanged) nextActivity = "ACT_VM_DRAW"
-      else if (fired) nextActivity = "ACT_VM_PRIMARYATTACK"
-      else if (priorReload === 0 && weapon.reload === 1) nextActivity = "ACT_RELOAD_START"
-      else if (weapon.reload === 2 && (priorReload !== 2 || weapon.clip !== priorClip)) nextActivity = "ACT_VM_RELOAD"
-      else if (priorReload !== 0 && weapon.reload === 0) nextActivity = "ACT_RELOAD_FINISH"
+      const exact = snapshot.activities.filter((event) => event.weapon === snapshot.weapon).at(-1)
+      const mapped = exact === undefined ? undefined : [
+        "",
+        "ACT_VM_DRAW",
+        "ACT_VM_PRIMARYATTACK",
+        "ACT_RELOAD_START",
+        "ACT_VM_RELOAD",
+        "ACT_RELOAD_FINISH",
+        "ACT_VM_IDLE",
+      ][exact.activity]
+      let nextActivity = mapped ?? (selectionChanged ? "ACT_VM_DRAW" : activity)
       let selected = artifact.sequences.find((value) => value.activity === nextActivity)
       if (!selected) throw new ProjectilePresentationError("MissingModel", `${identity}:${activity}`)
       const elapsed = Number(snapshot.tick - actionTick) * 0.015
-      if (!selectionChanged && !fired && weapon.reload === 0 && nextActivity === activity && nextActivity !== "ACT_VM_IDLE" && elapsed >= selected.durationSeconds) {
+      if (!selectionChanged && exact === undefined && weapon.reload === 0 && nextActivity === activity && nextActivity !== "ACT_VM_IDLE" && elapsed >= selected.durationSeconds) {
         nextActivity = "ACT_VM_IDLE"
         selected = artifact.sequences.find((value) => value.activity === nextActivity)
         if (!selected) throw new ProjectilePresentationError("MissingModel", `${identity}:${nextActivity}`)
       }
-      if (nextActivity !== activity || selectionChanged || fired) actionTick = snapshot.tick
+      if (exact !== undefined) actionTick = exact.tick
+      else if (nextActivity !== activity || selectionChanged) actionTick = snapshot.tick
       activity = nextActivity
       prior = snapshot.weapon
       priorClass = snapshot.class
-      priorReload = weapon.reload
-      priorClip = weapon.clip
       const currentElapsed = Number(snapshot.tick - actionTick) * 0.015
       const previousElapsed = Math.max(0, Number(priorTick - actionTick) * 0.015)
       priorTick = snapshot.tick

@@ -55,6 +55,9 @@ function require(condition: unknown, message: string): asserts condition {
 type BlockerPartition = Readonly<{
   content: readonly string[]
   behavior: readonly string[]
+  contentClosureBehavior: readonly string[]
+  visualBehavior: readonly string[]
+  authorityBehavior: readonly string[]
   platform: readonly string[]
 }>
 
@@ -104,15 +107,24 @@ async function classifySupportBlockers(
 
   const content: string[] = []
   const behavior: string[] = []
+  const contentClosureBehavior: string[] = []
+  const visualBehavior: string[] = []
+  const authorityBehavior: string[] = []
   const platform: string[] = []
+  const recordBehavior = (blocker: string, owner: "content-closure" | "visual" | "authority") => {
+    behavior.push(blocker)
+    if (owner === "content-closure") contentClosureBehavior.push(blocker)
+    else if (owner === "visual") visualBehavior.push(blocker)
+    else authorityBehavior.push(blocker)
+  }
   for (const blocker of blockers) {
     const material = /^Missing resolved material: (.+)$/u.exec(blocker)?.[1]
     if (material) {
       if (material.startsWith("materials/")) {
-        if (outcomes.get(material) === "resolved") behavior.push(blocker)
+        if (outcomes.get(material) === "resolved") recordBehavior(blocker, "content-closure")
         else content.push(blocker)
       } else if (material === "map-environment-presentation" || material === "map-water-presentation") {
-        behavior.push(blocker)
+        recordBehavior(blocker, "content-closure")
       } else {
         throw new BrowserEvidenceError(`unclassified material diagnostic: ${blocker}`)
       }
@@ -120,7 +132,22 @@ async function classifySupportBlockers(
       blocker.startsWith("TF2 SoundSamples unavailable: ")
       || blocker.startsWith("TF2 viewmodel attachment transform unavailable: ")
     ) {
-      behavior.push(blocker)
+      recordBehavior(blocker, "content-closure")
+    } else if (/^(MissingMaterial|MissingDirectionalInput|MissingProfileInput|UnsupportedProfileInput): /u.test(blocker)) {
+      const logicalPath = /^MissingMaterial: ([^ ]+)/u.exec(blocker)?.[1]
+      if (logicalPath?.startsWith("materials/") && outcomes.get(logicalPath) !== "resolved") content.push(blocker)
+      else recordBehavior(blocker, "content-closure")
+    } else if (blocker.startsWith("MissingTextureMips: ") || [
+      "Missing TF2 stock viewmodel composition",
+      "Missing authored texture mip planes",
+      "Missing complete StudioModel shader and model-lighting inputs",
+      "Missing decoded profile-qualified sky and cubemap subresources",
+      "Missing complete Water material and reflection/refraction view inputs",
+      "Missing current fog-controller state and transition inputs",
+    ].some((prefix) => blocker.startsWith(prefix))) {
+      recordBehavior(blocker, "visual")
+    } else if (blocker.startsWith("Missing: ")) {
+      recordBehavior(blocker, "authority")
     } else if (blocker.startsWith("ModelArtifactCacheUnavailable: ")) {
       content.push(blocker)
     } else if (
@@ -135,6 +162,9 @@ async function classifySupportBlockers(
   return Object.freeze({
     content: Object.freeze(content.sort()),
     behavior: Object.freeze(behavior.sort()),
+    contentClosureBehavior: Object.freeze(contentClosureBehavior.sort()),
+    visualBehavior: Object.freeze(visualBehavior.sort()),
+    authorityBehavior: Object.freeze(authorityBehavior.sort()),
     platform: Object.freeze(platform.sort()),
   })
 }
@@ -745,6 +775,14 @@ export async function verifyBrowserAcceptance(
     ]))
     require(visibleDecalFragments === 0,
       `decal PVS receiver membership differs: ${visibleDecalFragments}`)
+    const gameplayContract = parseJson<{ authority: string; weapon: string; entity: string }>(await agent([
+      "--session", session, "eval",
+      "(()=>{const d=document.querySelector('main').dataset;return {authority:d.authorityTrace,weapon:d.weaponTrace,entity:d.entityTrace}})()",
+    ]))
+    require(gameplayContract.authority === "1:Missing|2:Missing" && gameplayContract.weapon.startsWith("1:4/20:0:"),
+      `gameplay authority contract differs: ${JSON.stringify(gameplayContract)}`)
+    require(gameplayContract.entity.split(":").length === 6,
+      `Entity producer trace differs: ${gameplayContract.entity}`)
     const visualBlockers = parseJson<string[]>(await agent([
       "--session", session, "eval", "JSON.parse(document.querySelector('main').dataset.blockers)",
     ]))
@@ -976,7 +1014,15 @@ export async function verifyBrowserAcceptance(
       const state = await agent(["--session", session, "eval", "({text:document.body.innerText,dataset:{...document.querySelector('main').dataset}})"])
       throw new BrowserEvidenceError(`Soldier fire observation failed: ${String(error)}; state ${state}`)
     }
-    await agent(["--session", session, "wait", "1200"])
+    await agent([
+      "--session", session, "wait", "--fn",
+      "document.querySelector('main').dataset.weaponTrace.includes('1:3/20:2:')",
+      "--timeout", "120000",
+    ])
+    const reloadTrace = parseJson<string>(await agent([
+      "--session", session, "eval", "document.querySelector('main').dataset.weaponTrace",
+    ]))
+    require(reloadTrace.includes("1:3/20:2:"), `four-phase Rocket Launcher reload trace differs: ${reloadTrace}`)
     let blockerCount = parseJson<number>(
       await agent([
         "--session",
@@ -1017,37 +1063,18 @@ export async function verifyBrowserAcceptance(
       "--session",
       session,
       "wait",
-      "--fn",
-      `Number(document.querySelector('main').dataset.fireEvents) > ${initialFireEvents + 1}`,
+      "--text",
+      "Sticky launch blocked on the unavailable random stream",
       "--timeout",
       "10000",
     ])
-    try {
-      await agent([
-        "--session",
-        session,
-        "wait",
-        "--fn",
-        "document.querySelector('main').dataset.projectileStates.split(',').some(value=>value.endsWith(':3'))",
-        "--timeout",
-        "180000",
-      ])
-    } catch (error) {
-      const state = await agent(["--session", session, "eval", "({phase:document.querySelector('main').dataset.phase,tick:document.querySelector('main').dataset.snapshotTick,projectiles:document.querySelector('main').dataset.projectileStates,text:document.body.innerText})"])
-      throw new BrowserEvidenceError(`sticky arm observation failed: ${String(error)}; state ${state}`)
-    }
-    await agent(["--session", session, "mouse", "down", "right"])
-    await agent(["--session", session, "wait", "100"])
-    await agent(["--session", session, "mouse", "up", "right"])
-    await agent([
-      "--session",
-      session,
-      "wait",
-      "--fn",
-      `Number(document.querySelector('main').dataset.explosionEvents) > ${initialExplosionEvents}`,
-      "--timeout",
-      "30000",
-    ])
+    const blockedSticky = parseJson<{ fire: number; explosion: number; weapon: string; phase: string }>(await agent([
+      "--session", session, "eval",
+      "(()=>{const d=document.querySelector('main').dataset;return {fire:Number(d.fireEvents),explosion:Number(d.explosionEvents),weapon:d.weaponTrace,phase:d.phase}})()",
+    ]))
+    require(blockedSticky.fire === initialFireEvents + 1 && blockedSticky.explosion === initialExplosionEvents &&
+      blockedSticky.weapon.split("|").some((weapon) => weapon.startsWith("3:8/24:0:") && !weapon.includes(":-:-:")) && blockedSticky.phase === "Ready",
+    `sticky blocker seam differs: ${JSON.stringify(blockedSticky)}`)
     blockerCount = parseJson<number>(
       await agent([
         "--session",
@@ -1080,9 +1107,14 @@ export async function verifyBrowserAcceptance(
     const blockerPartition = await classifySupportBlockers(config, supportBlockerItems)
     require(blockerPartition.content.length === 0,
       `browser retained missing content dependencies: ${JSON.stringify(blockerPartition.content)}`)
-    require(parseJson<number>(
-      await agent(["--session", session, "eval", "Number(document.querySelector('main').dataset.explosionEvents)"]),
-    ) > initialExplosionEvents, "Demoman sticky detonation event was not observed")
+    require(blockerPartition.contentClosureBehavior.length === 15,
+      `content closure behavior classification count changed: ${JSON.stringify(blockerPartition.contentClosureBehavior)}`)
+    require(blockerPartition.platform.length === 1,
+      `content closure platform classification count changed: ${JSON.stringify(blockerPartition.platform)}`)
+    require(blockerPartition.authorityBehavior.some((blocker) => blocker === "Missing: TF2 sticky launch random stream") &&
+      blockerPartition.authorityBehavior.some((blocker) => blocker.includes("sticky IVP solver unavailable")) &&
+      blockerPartition.authorityBehavior.some((blocker) => blocker.includes("Tempus core and jump_beef zone contract unavailable")),
+    `authority blocker ledger differs: ${JSON.stringify(blockerPartition.authorityBehavior)}`)
 
     const reloadTabs = await agent(["--session", session, "tab"])
     const reloadTab = /\[(t\d+)\]/.exec(reloadTabs)?.[1]
@@ -1149,6 +1181,9 @@ export async function verifyBrowserAcceptance(
       supportBlockerItems,
       contentBlockers: blockerPartition.content,
       behaviorBlockers: blockerPartition.behavior,
+      contentClosureBehaviorBlockers: blockerPartition.contentClosureBehavior,
+      visualBehaviorBlockers: blockerPartition.visualBehavior,
+      authorityBehaviorBlockers: blockerPartition.authorityBehavior,
       platformBlockers: blockerPartition.platform,
       supportStatus: "zero-content-blockers-non-content-diagnostics-retained",
       pointerLock: pointerLocked ? "acquired-and-released-for-console" : "headed-window-focus-unavailable",

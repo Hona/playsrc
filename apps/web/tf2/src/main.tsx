@@ -86,6 +86,9 @@ function App() {
       data-viewmodel-viewport-restored={view.viewmodelViewportRestored}
       data-model-matrices={view.modelMatrices ? JSON.stringify(view.modelMatrices) : undefined}
       data-decal-state={view.decalStateProbe ? JSON.stringify(view.decalStateProbe) : undefined}
+      data-weapon-trace={view.weaponTrace}
+      data-authority-trace={view.authorityTrace}
+      data-entity-trace={view.entityTrace}
       data-blockers={JSON.stringify(view.blockers)}
     >
       <canvas
