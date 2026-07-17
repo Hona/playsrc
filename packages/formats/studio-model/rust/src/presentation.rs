@@ -16,6 +16,7 @@ const STUDIO_LOOPING: i32 = 0x0001;
 const STUDIO_DELTA: i32 = 0x0004;
 const STUDIO_CYCLE_POSE: i32 = 0x0080;
 const STUDIO_REALTIME: i32 = 0x0100;
+const STUDIO_OVERRIDE: i32 = 0x0800;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PresentationProfile {
@@ -3173,17 +3174,29 @@ fn validate_decoded_model(
             .ok_or_else(invalid)?;
     }
     for (index, sequence) in model.sequences.iter().enumerate() {
-        let blend_count = sequence.blend_size[0]
+        let populated_blend_count = sequence.blend_size[0]
             .checked_mul(sequence.blend_size[1])
             .filter(|value| *value > 0);
+        let empty_override = sequence.flags & STUDIO_OVERRIDE != 0
+            && sequence.blend_count == 0
+            && sequence.blend_size == [0, 0];
+        let populated = populated_blend_count == Some(sequence.blend_count);
+        let children_valid = if empty_override {
+            sequence.animation_indices.is_empty()
+                && sequence.bone_weights.is_empty()
+                && sequence.pose_keys.iter().all(Vec::is_empty)
+        } else {
+            populated
+                && sequence.animation_indices.len() == sequence.blend_count as usize
+                && sequence.bone_weights.len() == model.bones.len()
+        };
         if sequence.index != index
-            || blend_count != Some(sequence.blend_count)
-            || sequence.animation_indices.len() != sequence.blend_count as usize
+            || (!empty_override && !populated)
+            || !children_valid
             || sequence
                 .animation_indices
                 .iter()
                 .any(|animation| *animation < 0 || *animation as usize >= model.animations.len())
-            || sequence.bone_weights.len() != model.bones.len()
             || (0..2).any(|axis| {
                 sequence.blend_size[axis] > 1
                     && (sequence.pose_parameter_indices[axis] < 0

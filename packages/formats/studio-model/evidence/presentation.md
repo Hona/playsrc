@@ -14,6 +14,7 @@ The fixed synthetic vectors prove:
 - `NotPresent` or `RetainedNotEvaluated` records for axis interpolation, quaternion interpolation, jiggle, aim-at-bone, aim-at-attachment, IK, flex, sequence autolayers, and unknown procedural types; malformed known procedural references fail before output;
 - cancellation plus animation-sample and artifact bounds at the accepted boundary and one below it.
 - nested include closure for `models/player/items/soldier/soldier_viking.mdl`, including an authored leading/trailing material directory, root-relative texture name, empty ANI name, block-zero directory, exact VVD/VTX/PHY `Load::Needs`, include chain, supplied companion composition, and canonical artifact round trip.
+- the configured Soldier sequence-index-2 forward declaration at descriptor `24672..24884`: label `user_ref`, flags `STUDIO_OVERRIDE`, zero blends, `[0, 0]` blend dimensions, non-dereferenced empty-child offsets, and exact failing count range `24728..24732`; ordinary zero-blend and nonempty-child mutations remain Malformed.
 
 Two artifact generations compare complete bytes and SHA-256. The fixed synthetic world artifact is 3,492 bytes with SHA-256 `f8cc817e20bfaba3c069d2cfd1d7cbd74564b18a56027d9c7425f452d0132613`. Decoding reconstructs every artifact field and canonical re-encoding must reproduce the input bytes exactly.
 
@@ -29,4 +30,4 @@ The required public-build matrix is:
 
 Each retained input requires logical path, byte length, SHA-256, provider identity, model dependency trace, selected VMT closure, typed VTF closure, artifact byte length, and artifact SHA-256. Run each artifact generation twice and require complete byte identity. Capture the named state timelines at fixed cycles `0`, `0.25`, `0.5`, `0.75`, and `1`; capture recoil return at every authored sequence boundary.
 
-Configured TF2 closure previously stopped with `Malformed: InvalidIdentity in models/player/items/soldier/soldier_viking.mdl`. The focused regression now passes and the exact source-bundle command advances beyond that identity. It next stops with `Malformed: InvalidCount in models/player/soldier.mdl`; the fixed TF2 matrix therefore remains Blocked and no complete target timelines or parity result are claimed.
+Configured TF2 closure previously stopped first at the nested Soldier item identity and then at the empty `user_ref` forward declaration in `models/player/soldier.mdl`. Both focused regressions now pass. The exact command produces 130 entries, 44,132,628 bytes, and bundle SHA-256 `9777cb4e36ba0cb37e1142a203d3235c9096f5aab6f487b1e1f66dd72d79137b`. Complete target model-space timelines remain Missing, so no presentation parity result is claimed.

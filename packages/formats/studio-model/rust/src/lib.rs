@@ -13,6 +13,7 @@ const MODEL_BYTES: usize = 148;
 const MESH_BYTES: usize = 116;
 const ATTACHMENT_BYTES: usize = 92;
 const POSE_PARAMETER_BYTES: usize = 20;
+const STUDIO_OVERRIDE: i32 = 0x0800;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Profile {
@@ -1054,7 +1055,7 @@ fn compose_include(root: &mut Document, include: Document, identity: &str) -> Re
                 .ok_or_else(|| invalid_reference(identity, source.index))?;
         }
         if duplicate {
-            if root.sequences[destination].flags & 0x0800 != 0 {
+            if root.sequences[destination].flags & STUDIO_OVERRIDE != 0 {
                 root.sequences[destination] = sequence;
             }
         } else {
@@ -1358,54 +1359,68 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
             i32_at(bytes, offset + 68, identity)?,
             i32_at(bytes, offset + 72, identity)?,
         ];
-        if blend_count <= 0
-            || blend_size[0] <= 0
-            || blend_size[1] <= 0
-            || blend_size[0]
+        let flags = i32_at(bytes, offset + 12, identity)?;
+        let empty_override =
+            flags & STUDIO_OVERRIDE != 0 && blend_count == 0 && blend_size == [0, 0];
+        let populated = blend_count > 0
+            && blend_size[0] > 0
+            && blend_size[1] > 0
+            && blend_size[0]
                 .checked_mul(blend_size[1])
-                .is_none_or(|count| count != blend_count)
-        {
+                .is_some_and(|count| count == blend_count);
+        if !empty_override && !populated {
             return Err(invalid_count(identity, offset + 56));
         }
-        let animation_index_offset =
-            relative_offset(offset, i32_at(bytes, offset + 60, identity)?, identity)?;
-        table(
-            bytes,
-            animation_index_offset,
-            blend_count as usize,
-            2,
-            limits,
-            identity,
-        )?;
-        let mut animation_indices = Vec::with_capacity(blend_count as usize);
-        for animation in 0..blend_count as usize {
-            let value = i16_at(bytes, animation_index_offset + animation * 2, identity)?;
-            if value < 0 || value as usize >= animation_count {
-                return Err(invalid_reference(
-                    identity,
-                    animation_index_offset + animation * 2,
-                ));
+        if empty_override {
+            for child_count_offset in [24, 144, 148, 164, 176, 188] {
+                if i32_at(bytes, offset + child_count_offset, identity)? != 0 {
+                    return Err(invalid_count(identity, offset + child_count_offset));
+                }
             }
-            animation_indices.push(value);
         }
-        let weight_offset =
-            relative_offset(offset, i32_at(bytes, offset + 156, identity)?, identity)?;
-        table(bytes, weight_offset, bone_count, 4, limits, identity)?;
-        let mut bone_weights = Vec::with_capacity(bone_count);
-        for bone in 0..bone_count {
-            bone_weights.push(float(bytes, weight_offset + bone * 4, identity)?);
-        }
-        let pose_key_relative = i32_at(bytes, offset + 160, identity)?;
+        let mut animation_indices = Vec::new();
+        let mut bone_weights = Vec::new();
         let mut pose_keys = [Vec::new(), Vec::new()];
-        if pose_key_relative != 0 {
-            let pose_key_offset = relative_offset(offset, pose_key_relative, identity)?;
-            let pose_key_count = blend_size[0] as usize + blend_size[1] as usize;
-            table(bytes, pose_key_offset, pose_key_count, 4, limits, identity)?;
-            let mut cursor = pose_key_offset;
-            for axis in 0..2 {
-                for _ in 0..blend_size[axis] as usize {
-                    pose_keys[axis].push(float(bytes, cursor, identity)?);
-                    cursor += 4;
+        if populated {
+            let animation_index_offset =
+                relative_offset(offset, i32_at(bytes, offset + 60, identity)?, identity)?;
+            table(
+                bytes,
+                animation_index_offset,
+                blend_count as usize,
+                2,
+                limits,
+                identity,
+            )?;
+            animation_indices.reserve(blend_count as usize);
+            for animation in 0..blend_count as usize {
+                let value = i16_at(bytes, animation_index_offset + animation * 2, identity)?;
+                if value < 0 || value as usize >= animation_count {
+                    return Err(invalid_reference(
+                        identity,
+                        animation_index_offset + animation * 2,
+                    ));
+                }
+                animation_indices.push(value);
+            }
+            let weight_offset =
+                relative_offset(offset, i32_at(bytes, offset + 156, identity)?, identity)?;
+            table(bytes, weight_offset, bone_count, 4, limits, identity)?;
+            bone_weights.reserve(bone_count);
+            for bone in 0..bone_count {
+                bone_weights.push(float(bytes, weight_offset + bone * 4, identity)?);
+            }
+            let pose_key_relative = i32_at(bytes, offset + 160, identity)?;
+            if pose_key_relative != 0 {
+                let pose_key_offset = relative_offset(offset, pose_key_relative, identity)?;
+                let pose_key_count = blend_size[0] as usize + blend_size[1] as usize;
+                table(bytes, pose_key_offset, pose_key_count, 4, limits, identity)?;
+                let mut cursor = pose_key_offset;
+                for axis in 0..2 {
+                    for _ in 0..blend_size[axis] as usize {
+                        pose_keys[axis].push(float(bytes, cursor, identity)?);
+                        cursor += 4;
+                    }
                 }
             }
         }
@@ -1425,7 +1440,7 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
                 limits,
                 identity,
             )?,
-            flags: i32_at(bytes, offset + 12, identity)?,
+            flags,
             activity: i32_at(bytes, offset + 16, identity)?,
             activity_weight: i32_at(bytes, offset + 20, identity)?,
             event_count: i32_at(bytes, offset + 24, identity)?,
@@ -3479,6 +3494,22 @@ mod tests {
         bytes
     }
 
+    fn mdl_with_empty_override_sequence() -> (Vec<u8>, usize) {
+        let mut bytes = mdl(48, false);
+        let sequence = bytes.len();
+        bytes.resize(sequence + SEQUENCE_BYTES, 0);
+        put_i32(&mut bytes, 188, 1);
+        put_i32(&mut bytes, 192, sequence as i32);
+        put_i32(&mut bytes, sequence + 12, STUDIO_OVERRIDE);
+        put_i32(&mut bytes, sequence + 60, 76_804);
+        let label = bytes.len();
+        bytes.extend_from_slice(b"user_ref\0");
+        put_i32(&mut bytes, sequence + 4, (label - sequence) as i32);
+        let length = bytes.len() as i32;
+        put_i32(&mut bytes, 76, length);
+        (bytes, sequence)
+    }
+
     fn vtx_with_replacement(checksum: i32) -> Vec<u8> {
         let mut bytes = vtx(checksum);
         put_i32(&mut bytes, 44, 1);
@@ -4029,6 +4060,89 @@ mod tests {
             )
             .unwrap(),
             include_identity
+        );
+    }
+
+    #[test]
+    fn empty_override_sequence_is_a_valid_forward_declaration() {
+        let (bytes, sequence_offset) = mdl_with_empty_override_sequence();
+        let Load::Needs(requests) = load(
+            "models/player/soldier.mdl",
+            Profile::SourcePcMdl48,
+            VtxVariant::Dx90,
+            &bytes,
+            &[],
+            Limits::default(),
+        )
+        .unwrap() else {
+            panic!("forward-declaration model did not request optional physics")
+        };
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].role, DependencyRole::Physics);
+        let Load::Complete(document) = load(
+            "models/player/soldier.mdl",
+            Profile::SourcePcMdl48,
+            VtxVariant::Dx90,
+            &bytes,
+            &[response(&requests[0], None)],
+            Limits::default(),
+        )
+        .unwrap() else {
+            panic!("forward-declaration model requested more dependencies")
+        };
+        assert_eq!(document.sequences.len(), 1);
+        assert_eq!(document.sequences[0].label, b"user_ref");
+        assert_eq!(document.sequences[0].flags, STUDIO_OVERRIDE);
+        assert_eq!(document.sequences[0].blend_count, 0);
+        assert_eq!(document.sequences[0].blend_size, [0, 0]);
+        assert!(document.sequences[0].animation_indices.is_empty());
+        assert!(document.sequences[0].bone_weights.is_empty());
+        assert_eq!(sequence_offset + 56, 464);
+
+        let PresentationBuild::Complete(artifact) = build_presentation(
+            &document,
+            PresentationProfile::World,
+            &[],
+            PresentationLimits::default(),
+            &CancellationToken::default(),
+        )
+        .unwrap() else {
+            panic!("forward declaration did not survive the artifact path")
+        };
+        assert_eq!(
+            decode_presentation(&artifact.bytes, PresentationLimits::default()).unwrap(),
+            *artifact
+        );
+
+        let mut ordinary_empty = bytes.clone();
+        put_i32(&mut ordinary_empty, sequence_offset + 12, 0);
+        let ordinary_error = load(
+            "models/player/soldier.mdl",
+            Profile::SourcePcMdl48,
+            VtxVariant::Dx90,
+            &ordinary_empty,
+            &[],
+            Limits::default(),
+        )
+        .unwrap_err();
+        assert_eq!(ordinary_error.code, ErrorCode::InvalidCount);
+        assert_eq!(ordinary_error.range, Some(464..468));
+
+        let mut nonempty_forward = bytes;
+        put_i32(&mut nonempty_forward, sequence_offset + 24, 1);
+        let child_error = load(
+            "models/player/soldier.mdl",
+            Profile::SourcePcMdl48,
+            VtxVariant::Dx90,
+            &nonempty_forward,
+            &[],
+            Limits::default(),
+        )
+        .unwrap_err();
+        assert_eq!(child_error.code, ErrorCode::InvalidCount);
+        assert_eq!(
+            child_error.range,
+            Some(sequence_offset + 24..sequence_offset + 28)
         );
     }
 
