@@ -1,5 +1,5 @@
 import type { ParticleRenderItem } from "@playsrc/particle"
-import type { Camera, Effect } from "@playsrc/rendering"
+import type { Camera, Effect, ModelItem } from "@playsrc/rendering"
 import type { Snapshot } from "./codec"
 
 export type PresentationDiagnostic = Readonly<{
@@ -13,6 +13,7 @@ export type Tf2Hud = Readonly<{
   className: "Soldier" | "Demoman"
   weaponName: "Rocket Launcher" | "Original" | "Stickybomb Launcher"
   speed: number
+  projectileCount: number
 }>
 
 export function tf2Hud(snapshot: Snapshot): Tf2Hud {
@@ -26,6 +27,7 @@ export function tf2Hud(snapshot: Snapshot): Tf2Hud {
         ? "Original"
         : "Stickybomb Launcher",
     speed: Math.hypot(...snapshot.velocity),
+    projectileCount: snapshot.projectiles.length,
   })
 }
 
@@ -48,15 +50,34 @@ export function tf2Presentation(
   snapshot: Snapshot,
   particleItems: readonly ParticleRenderItem[],
   debugMissingProjectileModels: boolean,
-): Readonly<{ effects: readonly Effect[]; diagnostics: readonly PresentationDiagnostic[] }> {
+): Readonly<{
+  effects: readonly Effect[]
+  models: readonly ModelItem[]
+  diagnostics: readonly PresentationDiagnostic[]
+}> {
   const effects: Effect[] = particleItems.map((item) => Object.freeze({ ...item }))
+  const models: ModelItem[] = []
   const diagnostics: PresentationDiagnostic[] = []
   for (const projectile of snapshot.projectiles) {
     const model = projectile.kind === 1
       ? "models/weapons/w_models/w_rocket.mdl"
       : "models/weapons/w_models/w_stickybomb.mdl"
-    diagnostics.push(Object.freeze({ code: "MissingProjectileModel", identity: model }))
+    const speed = Math.hypot(...projectile.velocity)
+    const yaw = speed > 0.001
+      ? Math.atan2(projectile.velocity[1], projectile.velocity[0]) * 180 / Math.PI
+      : 0
+    const pitch = speed > 0.001
+      ? -Math.asin(projectile.velocity[2] / speed) * 180 / Math.PI
+      : 0
+    models.push(Object.freeze({
+      identity: projectile.id,
+      model,
+      position: projectile.position,
+      angles: Object.freeze([pitch, yaw, 0]) as readonly [number, number, number],
+      scale: 1,
+    }))
     if (debugMissingProjectileModels) {
+      diagnostics.push(Object.freeze({ code: "MissingProjectileModel", identity: model }))
       effects.push(Object.freeze({
         identity: projectile.id,
         position: projectile.position,
@@ -84,5 +105,9 @@ export function tf2Presentation(
     }
   }
   diagnostics.sort((left, right) => left.code.localeCompare(right.code) || left.identity.localeCompare(right.identity))
-  return Object.freeze({ effects: Object.freeze(effects), diagnostics: Object.freeze(diagnostics) })
+  return Object.freeze({
+    effects: Object.freeze(effects),
+    models: Object.freeze(models),
+    diagnostics: Object.freeze(diagnostics),
+  })
 }

@@ -202,10 +202,10 @@ describe("TF2 browser adapter", () => {
       events: [{ kind: 4, detail: 0, subject: 8, auxiliary: 0, values: [7, 8, 9, 0] }],
     }, [], false)
     expect(value.effects).toEqual([])
+    expect(value.models).toHaveLength(1)
     expect(value.diagnostics.map((item) => item.code)).toEqual([
       "MissingAudioContext",
       "MissingParticleContext",
-      "MissingProjectileModel",
     ])
     expect(tf2Presentation({ ...base, projectiles: [projectile], events: [] }, [], true).effects)
       .toHaveLength(1)

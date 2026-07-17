@@ -17,6 +17,7 @@ playsrc-collision = { path = "../../../packages/world/collision/rust" }
 playsrc-entity = { path = "../../../packages/world/entity/rust" }
 playsrc-keyvalues = { path = "../../../packages/formats/keyvalues/rust" }
 playsrc-material = { path = "../../../packages/world/material/rust" }
+playsrc-studio-model = { path = "../../../packages/formats/studio-model/rust" }
 playsrc-vmt = { path = "../../../packages/formats/vmt/rust" }
 playsrc-vtf = { path = "../../../packages/formats/vtf/rust" }
 sha2 = "0.10.9"

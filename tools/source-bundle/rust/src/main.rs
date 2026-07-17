@@ -63,6 +63,16 @@ fn resolved(content: &Content, path: &str) -> Result<Vec<u8>, String> {
     }
 }
 
+fn optional(content: &Content, path: &str) -> Result<Option<Vec<u8>>, String> {
+    match content
+        .resolve_resource(path)
+        .map_err(|error| error.to_string())?
+    {
+        Resolution::Found(value) => Ok(Some(value.bytes)),
+        Resolution::Missing { .. } => Ok(None),
+    }
+}
+
 fn material_path(token: &[u8]) -> Result<String, String> {
     let value = std::str::from_utf8(token)
         .map_err(|_| "VMT dependency is not UTF-8")?
@@ -128,6 +138,70 @@ fn collect_material(
         }
     }
     Ok(())
+}
+
+fn model_profile(bytes: &[u8]) -> Result<playsrc_studio_model::Profile, String> {
+    let version = i32::from_le_bytes(
+        bytes
+            .get(4..8)
+            .ok_or_else(|| "MDL header is truncated".to_owned())?
+            .try_into()
+            .map_err(|_| "MDL version is malformed")?,
+    );
+    match version {
+        44 => Ok(playsrc_studio_model::Profile::SourcePcMdl44),
+        45 => Ok(playsrc_studio_model::Profile::SourcePcMdl45),
+        46 => Ok(playsrc_studio_model::Profile::SourcePcMdl46),
+        47 => Ok(playsrc_studio_model::Profile::SourcePcMdl47),
+        48 => Ok(playsrc_studio_model::Profile::SourcePcMdl48),
+        _ => Err(format!("unsupported MDL version {version}")),
+    }
+}
+
+fn collect_model(
+    content: &Content,
+    root_path: &str,
+    bundle: &mut BTreeMap<String, Vec<u8>>,
+) -> Result<Box<playsrc_studio_model::Document>, String> {
+    let identity = root_path.to_ascii_lowercase();
+    let mdl = resolved(content, &identity)?;
+    bundle.insert(identity.clone(), mdl.clone());
+    let profile = model_profile(&mdl)?;
+    let mut responses = Vec::new();
+    loop {
+        match playsrc_studio_model::load(
+            identity.clone(),
+            profile,
+            playsrc_studio_model::VtxVariant::Dx90,
+            &mdl,
+            &responses,
+            playsrc_studio_model::Limits::default(),
+        )
+        .map_err(|error| error.to_string())?
+        {
+            playsrc_studio_model::Load::Complete(document) => return Ok(document),
+            playsrc_studio_model::Load::Needs(requests) => {
+                for request in requests {
+                    let path = request.logical_path.to_ascii_lowercase();
+                    let bytes = optional(content, &path)?;
+                    if request.role != playsrc_studio_model::DependencyRole::Physics
+                        && bytes.is_none()
+                    {
+                        return Err(format!("missing required model dependency {path}"));
+                    }
+                    if let Some(value) = &bytes {
+                        bundle.insert(path.clone(), value.clone());
+                    }
+                    responses.push(playsrc_studio_model::DependencyResponse {
+                        requester: request.requester,
+                        role: request.role,
+                        logical_path: path,
+                        bytes,
+                    });
+                }
+            }
+        }
+    }
 }
 
 fn bytesv(output: &mut Vec<u8>, bytes: &[u8]) {
@@ -217,6 +291,42 @@ fn main() -> Result<(), String> {
     let mut bundle = BTreeMap::new();
     for material in &map.materials {
         collect_material(&content, &material.logical_path, &mut bundle)?;
+    }
+    let graph = playsrc_entity::parse(bsp.lumps[0].bytes(&bsp), playsrc_entity::Limits::default())
+        .map_err(|error| error.to_string())?;
+    let mut model_paths = graph
+        .entities
+        .iter()
+        .filter(|entity| {
+            entity
+                .classname
+                .as_deref()
+                .is_some_and(|value| value.eq_ignore_ascii_case(b"prop_dynamic"))
+        })
+        .filter_map(|entity| entity.model.as_ref())
+        .map(|value| String::from_utf8(value.clone()).map(|path| path.to_ascii_lowercase()))
+        .collect::<Result<std::collections::BTreeSet<_>, _>>()
+        .map_err(|_| "model identity is not UTF-8")?;
+    for path in [
+        "models/weapons/w_models/w_rocket.mdl",
+        "models/weapons/w_models/w_stickybomb.mdl",
+    ] {
+        model_paths.insert(path.to_owned());
+    }
+    for path in model_paths {
+        let document = collect_model(&content, &path, &mut bundle)?;
+        for material in &document.materials {
+            let mut found = None;
+            for candidate in &material.candidates {
+                if optional(&content, candidate)?.is_some() {
+                    found = Some(candidate.clone());
+                    break;
+                }
+            }
+            if let Some(candidate) = found {
+                collect_material(&content, &candidate, &mut bundle)?;
+            }
+        }
     }
     let mut output = b"PSDB".to_vec();
     output.extend_from_slice(&1_u32.to_le_bytes());

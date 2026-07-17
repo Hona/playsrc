@@ -30,6 +30,8 @@ export type ApplicationView = Readonly<{
   pointerLocked: boolean
   consoleVisible: boolean
   blockers: readonly string[]
+  fireEvents: number
+  explosionEvents: number
 }>
 
 type Renderer = Awaited<ReturnType<typeof createRenderer>>
@@ -71,12 +73,14 @@ export class Tf2Application {
   #lastFrame = 0
   #accumulator = 0
   #frameBusy = false
+  #fireEvents = 0
+  #explosionEvents = 0
   #paused = true
   #closed = false
   #blockers = new Set<string>([
     consoleResourceBlocker,
     "Twelve world base textures resolve through exact VMT/VTF bytes; water shaders and per-face lightmap atlases remain unavailable and use explicit diagnostic presentation.",
-    "Static props, viewmodels, and exact rocket/sticky StudioModel browser resources are not present in the current scene descriptor.",
+    "Static prop and exact rocket/sticky StudioModel geometry is available; first-person viewmodels and model animation/skin selection remain unavailable.",
     "TF2 PCF definitions and event context are unresolved; missing particle events emit diagnostics and no substitute effect.",
     "TF2 sound scripts and decoded resource buffers are unresolved; missing audio events create no Web Audio node or substitute sound.",
     "Jump course timers/checkpoints, trigger_multiple hint I/O, moving platforms, doors, and trigger_hurt are not implemented; exact brush trigger_teleport contacts are active and preserve velocity.",
@@ -87,6 +91,8 @@ export class Tf2Application {
     pointerLocked: false,
     consoleVisible: false,
     blockers: Object.freeze([]),
+    fireEvents: 0,
+    explosionEvents: 0,
   })
 
   constructor(canvas: HTMLCanvasElement, vguiRoot: HTMLElement, publish: (view: ApplicationView) => void) {
@@ -441,9 +447,11 @@ export class Tf2Application {
       this.#snapshot = snapshot
       for (const event of snapshot.events) {
         if (event.kind === 8 && event.detail === 1) this.#yaw = event.values[3]
+        if (event.kind === 3) this.#fireEvents += 1
+        if (event.kind === 4) this.#explosionEvents += 1
       }
       const particleItems = this.#particles.advance(snapshot.tick)
-      const presentation = tf2Presentation(snapshot, particleItems, true)
+      const presentation = tf2Presentation(snapshot, particleItems, false)
       for (const diagnostic of presentation.diagnostics) {
         this.#blockers.add(diagnostic.code === "MissingProjectileModel"
           ? `${diagnostic.code}: ${diagnostic.identity}`
@@ -452,8 +460,13 @@ export class Tf2Application {
       await this.#renderer.render({
         camera: tf2Camera(snapshot, this.#yaw, this.#pitch),
         effects: presentation.effects,
+        models: presentation.models,
       })
-      this.#set({ hud: tf2Hud(snapshot) })
+      this.#set({
+        hud: tf2Hud(snapshot),
+        fireEvents: this.#fireEvents,
+        explosionEvents: this.#explosionEvents,
+      })
     } catch (error) {
       this.#paused = true
       this.#set({ phase: "Failed", detail: error instanceof Error ? error.message : "Gameplay frame failed" })

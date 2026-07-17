@@ -21,10 +21,18 @@ export type Effect = Readonly<{
   color: number
   opacity: number
 }>
+export type ModelItem = Readonly<{
+  identity: number
+  model: string
+  position: readonly [number, number, number]
+  angles: readonly [number, number, number]
+  scale: number
+}>
 
 export type Frame = Readonly<{
   camera: Camera
   effects: readonly Effect[]
+  models?: readonly ModelItem[]
 }>
 
 export type SceneResult = Readonly<{
@@ -88,6 +96,8 @@ export async function createRenderer(canvas: HTMLCanvasElement): Promise<Readonl
   const effectGeometry = new THREE.SphereGeometry(1, 10, 6)
   let map: RuntimeMap | undefined
   let disposed = false
+  let modelTemplates = new Map<string, THREE.Group>()
+  let modelResources: Array<THREE.BufferGeometry | THREE.Material | THREE.Texture> = []
 
   function clear(group: THREE.Group, disposeGeometry = true): void {
     for (const child of [...group.children]) {
@@ -101,6 +111,49 @@ export async function createRenderer(canvas: HTMLCanvasElement): Promise<Readonl
     }
   }
 
+  function disposeModels(): void {
+    for (const resource of modelResources) resource.dispose()
+    modelResources = []
+    modelTemplates = new Map()
+  }
+
+  function materialFor(resolved: RuntimeMap["materials"][number], identity: string) {
+    const texture = resolved.baseTexture
+      ? new THREE.DataTexture(
+          resolved.baseTexture.rgba,
+          resolved.baseTexture.width,
+          resolved.baseTexture.height,
+          THREE.RGBAFormat,
+          THREE.UnsignedByteType,
+        )
+      : undefined
+    if (texture) {
+      texture.colorSpace = THREE.SRGBColorSpace
+      texture.wrapS = THREE.RepeatWrapping
+      texture.wrapT = THREE.RepeatWrapping
+      texture.flipY = true
+      texture.needsUpdate = true
+    }
+    const material = new THREE.MeshBasicMaterial({
+      color: texture ? 0xffffff : debugColor(identity),
+      map: texture,
+      transparent: (resolved.features & 1) !== 0,
+      alphaTest: (resolved.features & 4) !== 0 ? 0.5 : 0,
+      side: (resolved.features & 8) !== 0 ? THREE.DoubleSide : THREE.FrontSide,
+    })
+    return { material, texture }
+  }
+
+  function sourceTransform(object: THREE.Object3D, position: readonly number[], angles: readonly number[]): void {
+    object.position.set(position[0]!, position[1]!, position[2]!)
+    object.rotation.set(
+      THREE.MathUtils.degToRad(angles[2]!),
+      THREE.MathUtils.degToRad(angles[0]!),
+      THREE.MathUtils.degToRad(angles[1]!),
+      "ZYX",
+    )
+  }
+
   return Object.freeze({
     async loadMap(payload: Uint8Array, payloadSha256: string, debugMissingMaterials: boolean): Promise<SceneResult> {
       if (disposed) throw new RenderingError("InvalidState", "renderer is disposed")
@@ -108,11 +161,16 @@ export async function createRenderer(canvas: HTMLCanvasElement): Promise<Readonl
         throw new RenderingError("MalformedInput", "runtime map payload identity differs")
       }
       const parsed = parseRuntimeMap(payload)
-      const missing = parsed.materials.filter((material) => !material.baseTexture)
+      const missing = [
+        ...parsed.materials,
+        ...parsed.models.flatMap((model) => model.materials),
+      ].filter((material) => !material.baseTexture)
       if (!debugMissingMaterials && missing.length > 0) {
         throw new RenderingError("MissingInput", "resolved material and texture descriptors are unavailable")
       }
       const staged = new THREE.Group()
+      const stagedTemplates = new Map<string, THREE.Group>()
+      const stagedResources: Array<THREE.BufferGeometry | THREE.Material | THREE.Texture> = []
       try {
         for (const batch of parsed.batches) {
           const geometry = new THREE.BufferGeometry()
@@ -123,40 +181,46 @@ export async function createRenderer(canvas: HTMLCanvasElement): Promise<Readonl
           geometry.computeBoundingSphere()
           const materialIdentity = parsed.materials[batch.material]!.logicalPath
           const resolved = parsed.materials[batch.material]!
-          const texture = resolved.baseTexture
-            ? new THREE.DataTexture(
-                resolved.baseTexture.rgba,
-                resolved.baseTexture.width,
-                resolved.baseTexture.height,
-                THREE.RGBAFormat,
-                THREE.UnsignedByteType,
-              )
-            : undefined
-          if (texture) {
-            texture.colorSpace = THREE.SRGBColorSpace
-            texture.wrapS = THREE.RepeatWrapping
-            texture.wrapT = THREE.RepeatWrapping
-            texture.flipY = true
-            texture.needsUpdate = true
-          }
-          const material = new THREE.MeshBasicMaterial({
-            color: texture ? 0xffffff : debugColor(materialIdentity),
-            map: texture,
-            transparent: (resolved.features & 1) !== 0,
-            alphaTest: (resolved.features & 4) !== 0 ? 0.5 : 0,
-            side: (resolved.features & 8) !== 0 ? THREE.DoubleSide : THREE.FrontSide,
-          })
+          const { material, texture } = materialFor(resolved, materialIdentity)
           const mesh = new THREE.Mesh(geometry, material)
           mesh.userData.materialIdentity = materialIdentity
           mesh.userData.texture = texture
           staged.add(mesh)
         }
+        for (const model of parsed.models) {
+          const template = new THREE.Group()
+          for (const primitive of model.primitives) {
+            const geometry = new THREE.BufferGeometry()
+            geometry.setAttribute("position", new THREE.BufferAttribute(primitive.positions, 3))
+            geometry.setAttribute("normal", new THREE.BufferAttribute(primitive.normals, 3))
+            geometry.setAttribute("uv", new THREE.BufferAttribute(primitive.uv, 2))
+            geometry.setIndex(new THREE.BufferAttribute(primitive.indices, 1))
+            geometry.computeBoundingSphere()
+            const resolved = model.materials[primitive.material]!
+            const created = materialFor(resolved, resolved.logicalPath)
+            template.add(new THREE.Mesh(geometry, created.material))
+            stagedResources.push(geometry, created.material)
+            if (created.texture) stagedResources.push(created.texture)
+          }
+          stagedTemplates.set(model.logicalPath, template)
+        }
+        for (const occurrence of parsed.modelOccurrences) {
+          const model = parsed.models[occurrence.model]!
+          const instance = stagedTemplates.get(model.logicalPath)!.clone(true)
+          instance.userData.entity = occurrence.entity
+          sourceTransform(instance, occurrence.position, occurrence.angles)
+          staged.add(instance)
+        }
       } catch {
         clear(staged)
+        for (const resource of stagedResources) resource.dispose()
         throw new RenderingError("BoundExceeded", "runtime map GPU staging failed")
       }
       clear(world)
+      disposeModels()
       for (const child of [...staged.children]) world.add(child)
+      modelTemplates = stagedTemplates
+      modelResources = stagedResources
       map = parsed
       const diagnostics = Object.freeze(missing.map((material) => Object.freeze({
         code: "MissingMaterial" as const,
@@ -172,7 +236,7 @@ export async function createRenderer(canvas: HTMLCanvasElement): Promise<Readonl
     async render(frame: Frame): Promise<void> {
       if (disposed || !map) throw new RenderingError("InvalidState", "renderer has no active map")
       if (
-        frame.effects.length > MAX_EFFECTS
+        frame.effects.length + (frame.models?.length ?? 0) > MAX_EFFECTS
         || !finite([
           ...frame.camera.position,
           frame.camera.yawDegrees,
@@ -230,6 +294,23 @@ export async function createRenderer(canvas: HTMLCanvasElement): Promise<Readonl
           mesh.userData.identity = effect.identity
           stagedEffects.add(mesh)
         }
+        for (const item of frame.models ?? []) {
+          if (
+            !Number.isSafeInteger(item.identity)
+            || item.identity < 1
+            || !finite([...item.position, ...item.angles, item.scale])
+            || item.scale <= 0
+          ) {
+            throw new RenderingError("MalformedInput", "render model item is invalid")
+          }
+          const template = modelTemplates.get(item.model)
+          if (!template) throw new RenderingError("MissingInput", `runtime model ${item.model} is unavailable`)
+          const instance = template.clone(true)
+          sourceTransform(instance, item.position, item.angles)
+          instance.scale.setScalar(item.scale)
+          instance.userData.identity = item.identity
+          stagedEffects.add(instance)
+        }
       } catch {
         clear(stagedEffects, false)
         throw new RenderingError("BoundExceeded", "render effect staging failed")
@@ -260,6 +341,7 @@ export async function createRenderer(canvas: HTMLCanvasElement): Promise<Readonl
       disposed = true
       clear(world)
       clear(effects, false)
+      disposeModels()
       effectGeometry.dispose()
       renderer.dispose()
     },

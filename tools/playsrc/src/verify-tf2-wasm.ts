@@ -8,10 +8,10 @@ import { acquireMap } from "./targets"
 import { parseRuntimeMap } from "@playsrc/rendering/runtime-map"
 import { buildSourceBundle } from "./source-bundle"
 
-const EXPECTED_MAP_BYTES = 38_700_243
-const EXPECTED_MAP_SHA256 = "2c8a6864cb485dc5512649b6543cf2b06623500dce7c7f45bf6302d9fce53d1c"
-const EXPECTED_DEPENDENCY_BYTES = 21_131_855
-const EXPECTED_DEPENDENCY_SHA256 = "d334fa31ef02ff63adaf3755b8b8e8bd764a782be8c68d0055c3f293d024bca4"
+const EXPECTED_MAP_BYTES = 39_381_761
+const EXPECTED_MAP_SHA256 = "5d378f0d08a884f05470f4e907f23f52f0b69ddc3cc69fe59bb73a0b110b0051"
+const EXPECTED_DEPENDENCY_BYTES = 43_548_197
+const EXPECTED_DEPENDENCY_SHA256 = "3a1d9e1da6f2729cac69c1ac7e67974fadd3b815190f9da2ba37cc26ecc63571"
 
 type Exports = Readonly<{
   memory: WebAssembly.Memory
@@ -135,6 +135,8 @@ export async function verifyTf2Wasm(
   require(renderMap.batches.length === 10, "runtime map draw-batch count is invalid")
   const resolvedTextures = renderMap.materials.filter((material) => material.baseTexture).length
   require(resolvedTextures === 12, "runtime map resolved-texture count is invalid")
+  require(renderMap.models.length === 7, "runtime model count is invalid")
+  require(renderMap.modelOccurrences.length === 33, "runtime model occurrence count is invalid")
   const teleports = exports.playsrc_teleport_count(handle)
   const teleportDestinations = exports.playsrc_teleport_destination_count(handle)
   require(teleports === 56, "runtime map teleport count is invalid")
@@ -194,6 +196,8 @@ export async function verifyTf2Wasm(
     drawableSurfaces: renderMap.drawableSurfaces,
     drawBatches: renderMap.batches.length,
     resolvedTextures,
+    models: renderMap.models.length,
+    modelOccurrences: renderMap.modelOccurrences.length,
     teleports,
     teleportDestinations,
     tick: 64,

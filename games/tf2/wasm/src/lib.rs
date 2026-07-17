@@ -88,13 +88,22 @@ pub unsafe extern "C" fn playsrc_compile_map(
         };
         let canonical = playsrc_map::compile(&bsp, profile).map_err(|_| 3_u32)?;
         let resolved_materials = resolve_materials(&canonical, configuration).map_err(|_| 7_u32)?;
+        let entity_graph =
+            playsrc_entity::parse(bsp.lumps[0].bytes(&bsp), playsrc_entity::Limits::default())
+                .map_err(|_| 3_u32)?;
+        let (runtime_models, model_occurrences) =
+            resolve_models(&entity_graph, configuration).map_err(|_| 8_u32)?;
         let runtime = playsrc_map::compile_runtime(
             &bsp,
             bsp_sha,
             profile,
-            "playsrc-map-runtime-1",
-            configuration,
-            &resolved_materials,
+            playsrc_map::RuntimeAssembly {
+                compiler_identity: "playsrc-map-runtime-1",
+                configuration,
+                materials: &resolved_materials,
+                models: &runtime_models,
+                model_occurrences: &model_occurrences,
+            },
         )
         .map_err(|_| 3_u32)?;
         let spawn = spawn(&runtime.entities).ok_or(4_u32)?;
@@ -512,102 +521,284 @@ fn resolve_materials(
     }
     map.materials
         .iter()
-        .map(|reference| {
-            let identity = reference.logical_path.to_ascii_lowercase();
-            let root = *bundle.get(&identity).ok_or(())?;
-            let mut responses = Vec::new();
-            let material = loop {
-                match playsrc_vmt::compose(
-                    root,
-                    identity.clone(),
-                    &responses,
-                    &playsrc_keyvalues::ConditionEnvironment::default(),
-                    playsrc_vmt::Limits::default(),
-                )
-                .map_err(|_| ())?
-                {
-                    playsrc_vmt::Composition::Complete(document) => {
-                        break playsrc_material::resolve(&document).map_err(|_| ())?;
-                    }
-                    playsrc_vmt::Composition::Needs(requests) => {
-                        for request in requests {
-                            let path = dependency_path(&request.target_token)?;
-                            responses.push(playsrc_vmt::DependencyResponse {
-                                parent_identity: request.parent_identity,
-                                target_token: request.target_token,
-                                canonical_identity: path.clone(),
-                                bytes: Some(bundle.get(&path).ok_or(())?.to_vec()),
-                            });
-                        }
-                    }
-                }
-            };
-            let base = if let Some(texture) = material.textures.iter().find(|texture| {
-                texture.role == playsrc_material::TextureRole::Base
-                    && texture.disposition == playsrc_material::TextureDisposition::Source
-            }) {
-                let path = texture
-                    .logical_path
-                    .as_ref()
-                    .ok_or(())?
-                    .to_ascii_lowercase();
-                let bytes = *bundle.get(&path).ok_or(())?;
-                let plane = playsrc_vtf::decode(
-                    bytes,
-                    playsrc_vtf::Dialect::Source2013Pc,
-                    playsrc_vtf::SubresourceIdentity::HighResolution {
-                        mip: 0,
-                        frame: 0,
-                        face: playsrc_vtf::Face::Right,
-                        slice: 0,
-                    },
-                    playsrc_vtf::Limits::default(),
-                )
-                .map_err(|_| ())?;
-                let rgba = match plane.channel_layout {
-                    playsrc_vtf::ChannelLayout::Rgba => plane.samples,
-                    playsrc_vtf::ChannelLayout::Rgb => {
-                        let mut output =
-                            Vec::with_capacity(plane.width as usize * plane.height as usize * 4);
-                        for pixel in plane.samples.chunks_exact(3) {
-                            output.extend_from_slice(&[pixel[0], pixel[1], pixel[2], 255]);
-                        }
-                        output
-                    }
-                };
-                Some(playsrc_map::RuntimeTexture {
-                    logical_path: path,
-                    width: plane.width,
-                    height: plane.height,
-                    rgba,
-                })
-            } else {
-                None
-            };
-            let shader = match material.shader {
-                playsrc_material::Shader::LightmappedGeneric => 1,
-                playsrc_material::Shader::VertexLitGeneric => 2,
-                playsrc_material::Shader::UnlitGeneric => 3,
-                playsrc_material::Shader::WorldVertexTransition => 4,
-                playsrc_material::Shader::Water => 5,
-                playsrc_material::Shader::Refract => 6,
-                playsrc_material::Shader::Sprite => 7,
-                playsrc_material::Shader::Unsupported => 255,
-            };
-            let features = u8::from(material.features.translucent)
-                | (u8::from(material.features.additive) << 1)
-                | (u8::from(material.features.alpha_test) << 2)
-                | (u8::from(material.features.no_cull) << 3)
-                | (u8::from(material.features.self_illum) << 4)
-                | (u8::from(material.features.ss_bump) << 5);
-            Ok(playsrc_map::RuntimeMaterial {
-                logical_path: identity,
-                shader,
-                features,
-                base_texture: base,
-            })
-        })
+        .map(|reference| resolve_material(&reference.logical_path.to_ascii_lowercase(), &bundle))
         .collect()
+}
+
+fn resolve_material(
+    identity: &str,
+    bundle: &BTreeMap<String, &[u8]>,
+) -> Result<playsrc_map::RuntimeMaterial, ()> {
+    let root = *bundle.get(identity).ok_or(())?;
+    let mut responses = Vec::new();
+    let material = loop {
+        match playsrc_vmt::compose(
+            root,
+            identity.to_owned(),
+            &responses,
+            &playsrc_keyvalues::ConditionEnvironment::default(),
+            playsrc_vmt::Limits::default(),
+        )
+        .map_err(|_| ())?
+        {
+            playsrc_vmt::Composition::Complete(document) => {
+                break playsrc_material::resolve(&document).map_err(|_| ())?;
+            }
+            playsrc_vmt::Composition::Needs(requests) => {
+                for request in requests {
+                    let path = dependency_path(&request.target_token)?;
+                    responses.push(playsrc_vmt::DependencyResponse {
+                        parent_identity: request.parent_identity,
+                        target_token: request.target_token,
+                        canonical_identity: path.clone(),
+                        bytes: Some(bundle.get(&path).ok_or(())?.to_vec()),
+                    });
+                }
+            }
+        }
+    };
+    let base = if let Some(texture) = material.textures.iter().find(|texture| {
+        texture.role == playsrc_material::TextureRole::Base
+            && texture.disposition == playsrc_material::TextureDisposition::Source
+    }) {
+        let path = texture
+            .logical_path
+            .as_ref()
+            .ok_or(())?
+            .to_ascii_lowercase();
+        let bytes = *bundle.get(&path).ok_or(())?;
+        let plane = playsrc_vtf::decode(
+            bytes,
+            playsrc_vtf::Dialect::Source2013Pc,
+            playsrc_vtf::SubresourceIdentity::HighResolution {
+                mip: 0,
+                frame: 0,
+                face: playsrc_vtf::Face::Right,
+                slice: 0,
+            },
+            playsrc_vtf::Limits::default(),
+        )
+        .map_err(|_| ())?;
+        let rgba = match plane.channel_layout {
+            playsrc_vtf::ChannelLayout::Rgba => plane.samples,
+            playsrc_vtf::ChannelLayout::Rgb => {
+                let mut output =
+                    Vec::with_capacity(plane.width as usize * plane.height as usize * 4);
+                for pixel in plane.samples.chunks_exact(3) {
+                    output.extend_from_slice(&[pixel[0], pixel[1], pixel[2], 255]);
+                }
+                output
+            }
+        };
+        Some(playsrc_map::RuntimeTexture {
+            logical_path: path,
+            width: plane.width,
+            height: plane.height,
+            rgba,
+        })
+    } else {
+        None
+    };
+    let shader = match material.shader {
+        playsrc_material::Shader::LightmappedGeneric => 1,
+        playsrc_material::Shader::VertexLitGeneric => 2,
+        playsrc_material::Shader::UnlitGeneric => 3,
+        playsrc_material::Shader::WorldVertexTransition => 4,
+        playsrc_material::Shader::Water => 5,
+        playsrc_material::Shader::Refract => 6,
+        playsrc_material::Shader::Sprite => 7,
+        playsrc_material::Shader::Unsupported => 255,
+    };
+    let features = u8::from(material.features.translucent)
+        | (u8::from(material.features.additive) << 1)
+        | (u8::from(material.features.alpha_test) << 2)
+        | (u8::from(material.features.no_cull) << 3)
+        | (u8::from(material.features.self_illum) << 4)
+        | (u8::from(material.features.ss_bump) << 5);
+    Ok(playsrc_map::RuntimeMaterial {
+        logical_path: identity.to_owned(),
+        shader,
+        features,
+        base_texture: base,
+    })
+}
+
+fn model_profile(bytes: &[u8]) -> Result<playsrc_studio_model::Profile, ()> {
+    let version = i32::from_le_bytes(bytes.get(4..8).ok_or(())?.try_into().map_err(|_| ())?);
+    match version {
+        44 => Ok(playsrc_studio_model::Profile::SourcePcMdl44),
+        45 => Ok(playsrc_studio_model::Profile::SourcePcMdl45),
+        46 => Ok(playsrc_studio_model::Profile::SourcePcMdl46),
+        47 => Ok(playsrc_studio_model::Profile::SourcePcMdl47),
+        48 => Ok(playsrc_studio_model::Profile::SourcePcMdl48),
+        _ => Err(()),
+    }
+}
+
+fn load_model(
+    identity: &str,
+    bundle: &BTreeMap<String, &[u8]>,
+) -> Result<Box<playsrc_studio_model::Document>, ()> {
+    let mdl = *bundle.get(identity).ok_or(())?;
+    let mut responses = Vec::new();
+    loop {
+        match playsrc_studio_model::load(
+            identity,
+            model_profile(mdl)?,
+            playsrc_studio_model::VtxVariant::Dx90,
+            mdl,
+            &responses,
+            playsrc_studio_model::Limits::default(),
+        )
+        .map_err(|_| ())?
+        {
+            playsrc_studio_model::Load::Complete(document) => return Ok(document),
+            playsrc_studio_model::Load::Needs(requests) => {
+                for request in requests {
+                    let path = request.logical_path.to_ascii_lowercase();
+                    let bytes = bundle.get(&path).map(|bytes| bytes.to_vec());
+                    if request.role != playsrc_studio_model::DependencyRole::Physics
+                        && bytes.is_none()
+                    {
+                        return Err(());
+                    }
+                    responses.push(playsrc_studio_model::DependencyResponse {
+                        requester: request.requester,
+                        role: request.role,
+                        logical_path: path,
+                        bytes,
+                    });
+                }
+            }
+        }
+    }
+}
+
+fn entity_vector(entity: &playsrc_entity::Entity, key: &[u8]) -> Result<[f32; 3], ()> {
+    let Some(pair) = entity
+        .pairs
+        .iter()
+        .find(|pair| pair.key.eq_ignore_ascii_case(key))
+    else {
+        return Ok([0.; 3]);
+    };
+    let values = std::str::from_utf8(&pair.value)
+        .map_err(|_| ())?
+        .split_ascii_whitespace()
+        .map(str::parse::<f32>)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| ())?;
+    if values.len() != 3 || values.iter().any(|value| !value.is_finite()) {
+        return Err(());
+    }
+    Ok([values[0], values[1], values[2]])
+}
+
+fn resolve_models(
+    graph: &playsrc_entity::Graph,
+    configuration: &[u8],
+) -> Result<
+    (
+        Vec<playsrc_map::RuntimeModel>,
+        Vec<playsrc_map::RuntimeModelOccurrence>,
+    ),
+    (),
+> {
+    let bundle = bundle(configuration)?;
+    if bundle.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let mut roots = std::collections::BTreeSet::from([
+        "models/weapons/w_models/w_rocket.mdl".to_owned(),
+        "models/weapons/w_models/w_stickybomb.mdl".to_owned(),
+    ]);
+    for entity in &graph.entities {
+        if entity
+            .classname
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case(b"prop_dynamic"))
+            && let Some(model) = &entity.model
+        {
+            roots.insert(
+                std::str::from_utf8(model)
+                    .map_err(|_| ())?
+                    .to_ascii_lowercase(),
+            );
+        }
+    }
+    let mut models = Vec::new();
+    let mut indexes = BTreeMap::new();
+    for identity in roots {
+        let document = load_model(&identity, &bundle)?;
+        let mut materials = Vec::new();
+        for material in &document.materials {
+            let path = material
+                .candidates
+                .iter()
+                .find(|candidate| bundle.contains_key(&candidate.to_ascii_lowercase()))
+                .ok_or(())?
+                .to_ascii_lowercase();
+            let mut material = resolve_material(&path, &bundle)?;
+            material.base_texture = None;
+            materials.push(material);
+        }
+        let skin = document.skins.first();
+        let mut primitives = Vec::new();
+        for primitive in document
+            .geometry
+            .iter()
+            .filter(|primitive| primitive.lod == 0 && primitive.model == 0)
+        {
+            let material = skin
+                .and_then(|family| family.texture_indices.get(primitive.material_slot))
+                .map_or(primitive.material_slot, |index| *index as usize);
+            primitives.push(playsrc_map::RuntimeModelPrimitive {
+                material,
+                positions: primitive
+                    .vertices
+                    .iter()
+                    .map(|vertex| vertex.position.0.map(|value| f32::from_bits(value.0)))
+                    .collect(),
+                normals: primitive
+                    .vertices
+                    .iter()
+                    .map(|vertex| vertex.normal.0.map(|value| f32::from_bits(value.0)))
+                    .collect(),
+                uv: primitive
+                    .vertices
+                    .iter()
+                    .map(|vertex| vertex.uv.map(|value| f32::from_bits(value.0)))
+                    .collect(),
+                triangles: primitive.triangles.clone(),
+            });
+        }
+        indexes.insert(identity.clone(), models.len());
+        models.push(playsrc_map::RuntimeModel {
+            logical_path: identity,
+            materials,
+            primitives,
+        });
+    }
+    let mut occurrences = Vec::new();
+    for entity in &graph.entities {
+        if !entity
+            .classname
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case(b"prop_dynamic"))
+        {
+            continue;
+        }
+        let identity = std::str::from_utf8(entity.model.as_deref().ok_or(())?)
+            .map_err(|_| ())?
+            .to_ascii_lowercase();
+        occurrences.push(playsrc_map::RuntimeModelOccurrence {
+            entity: entity.index,
+            model: *indexes.get(&identity).ok_or(())?,
+            position: entity_vector(entity, b"origin")?,
+            angles: entity_vector(entity, b"angles")?,
+        });
+    }
+    Ok((models, occurrences))
 }
 
 fn spawn(graph: &playsrc_entity::Graph) -> Option<[f32; 3]> {

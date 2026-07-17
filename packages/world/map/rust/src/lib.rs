@@ -73,6 +73,34 @@ pub struct RuntimeMaterial {
     pub features: u8,
     pub base_texture: Option<RuntimeTexture>,
 }
+#[derive(Clone, Debug, PartialEq)]
+pub struct RuntimeModelPrimitive {
+    pub material: usize,
+    pub positions: Vec<[f32; 3]>,
+    pub normals: Vec<[f32; 3]>,
+    pub uv: Vec<[f32; 2]>,
+    pub triangles: Vec<[u32; 3]>,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct RuntimeModel {
+    pub logical_path: String,
+    pub materials: Vec<RuntimeMaterial>,
+    pub primitives: Vec<RuntimeModelPrimitive>,
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RuntimeModelOccurrence {
+    pub entity: usize,
+    pub model: usize,
+    pub position: [f32; 3],
+    pub angles: [f32; 3],
+}
+pub struct RuntimeAssembly<'a> {
+    pub compiler_identity: &'a str,
+    pub configuration: &'a [u8],
+    pub materials: &'a [RuntimeMaterial],
+    pub models: &'a [RuntimeModel],
+    pub model_occurrences: &'a [RuntimeModelOccurrence],
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ErrorCode {
     MissingLump,
@@ -286,10 +314,15 @@ pub fn compile_runtime(
     bsp: &Bsp,
     bsp_sha256: [u8; 32],
     profile: LightingProfile,
-    compiler_identity: &str,
-    configuration: &[u8],
-    resolved_materials: &[RuntimeMaterial],
+    assembly: RuntimeAssembly<'_>,
 ) -> Result<Runtime, Error> {
+    let RuntimeAssembly {
+        compiler_identity,
+        configuration,
+        materials: resolved_materials,
+        models: runtime_models,
+        model_occurrences,
+    } = assembly;
     let map = compile(bsp, profile)?;
     let collision =
         playsrc_collision::compile(bsp).map_err(|_| error(ErrorCode::InvalidReference, None))?;
@@ -328,7 +361,41 @@ pub fn compile_runtime(
             }
         }
     }
-    let payload = serialize(&map, &entities, resolved_materials);
+    for (model_index, model) in runtime_models.iter().enumerate() {
+        if model.logical_path.is_empty() {
+            return Err(error(ErrorCode::InvalidMaterial, Some(model_index)));
+        }
+        for primitive in &model.primitives {
+            if primitive.material >= model.materials.len()
+                || primitive.positions.len() != primitive.normals.len()
+                || primitive.positions.len() != primitive.uv.len()
+                || primitive
+                    .triangles
+                    .iter()
+                    .flatten()
+                    .any(|index| *index as usize >= primitive.positions.len())
+            {
+                return Err(error(ErrorCode::InvalidReference, Some(model_index)));
+            }
+        }
+    }
+    if model_occurrences.iter().any(|occurrence| {
+        occurrence.model >= runtime_models.len()
+            || occurrence
+                .position
+                .iter()
+                .chain(occurrence.angles.iter())
+                .any(|value| !value.is_finite())
+    }) {
+        return Err(error(ErrorCode::InvalidReference, None));
+    }
+    let payload = serialize(
+        &map,
+        &entities,
+        resolved_materials,
+        runtime_models,
+        model_occurrences,
+    );
     let payload_sha256 = Sha256::digest(&payload).into();
     let configuration_sha256 = Sha256::digest(configuration).into();
     let descriptor = RuntimeDescriptor {
@@ -351,9 +418,20 @@ fn serialize(
     map: &CanonicalMap,
     entities: &playsrc_entity::Graph,
     materials: &[RuntimeMaterial],
+    models: &[RuntimeModel],
+    occurrences: &[RuntimeModelOccurrence],
 ) -> Vec<u8> {
     let mut out = b"PSMP".to_vec();
-    u32v(&mut out, if materials.is_empty() { 1 } else { 2 });
+    u32v(
+        &mut out,
+        if !models.is_empty() {
+            3
+        } else if !materials.is_empty() {
+            2
+        } else {
+            1
+        },
+    );
     u32v(&mut out, map.bsp_version as u32);
     u32v(&mut out, map.map_revision as u32);
     out.push(match map.lighting_profile {
@@ -412,19 +490,69 @@ fn serialize(
     if !materials.is_empty() {
         u32v(&mut out, materials.len() as u32);
         for material in materials {
-            out.push(material.shader);
-            out.push(material.features);
-            out.push(u8::from(material.base_texture.is_some()));
-            out.push(0);
-            if let Some(texture) = &material.base_texture {
-                bytesv(&mut out, texture.logical_path.as_bytes());
-                u32v(&mut out, texture.width);
-                u32v(&mut out, texture.height);
-                bytesv(&mut out, &texture.rgba);
+            materialv(&mut out, material);
+        }
+    }
+    if !models.is_empty() {
+        u32v(&mut out, models.len() as u32);
+        for model in models {
+            bytesv(&mut out, model.logical_path.as_bytes());
+            u32v(&mut out, model.materials.len() as u32);
+            for material in &model.materials {
+                bytesv(&mut out, material.logical_path.as_bytes());
+                materialv(&mut out, material);
+            }
+            u32v(&mut out, model.primitives.len() as u32);
+            for primitive in &model.primitives {
+                u32v(&mut out, primitive.material as u32);
+                u32v(&mut out, primitive.positions.len() as u32);
+                u32v(&mut out, primitive.triangles.len() as u32);
+                for position in &primitive.positions {
+                    for value in position {
+                        f32v(&mut out, *value);
+                    }
+                }
+                for normal in &primitive.normals {
+                    for value in normal {
+                        f32v(&mut out, *value);
+                    }
+                }
+                for uv in &primitive.uv {
+                    f32v(&mut out, uv[0]);
+                    f32v(&mut out, uv[1]);
+                }
+                for triangle in &primitive.triangles {
+                    for index in triangle {
+                        u32v(&mut out, *index);
+                    }
+                }
+            }
+        }
+        u32v(&mut out, occurrences.len() as u32);
+        for occurrence in occurrences {
+            u32v(&mut out, occurrence.entity as u32);
+            u32v(&mut out, occurrence.model as u32);
+            for value in occurrence.position {
+                f32v(&mut out, value);
+            }
+            for value in occurrence.angles {
+                f32v(&mut out, value);
             }
         }
     }
     out
+}
+fn materialv(out: &mut Vec<u8>, material: &RuntimeMaterial) {
+    out.push(material.shader);
+    out.push(material.features);
+    out.push(u8::from(material.base_texture.is_some()));
+    out.push(0);
+    if let Some(texture) = &material.base_texture {
+        bytesv(out, texture.logical_path.as_bytes());
+        u32v(out, texture.width);
+        u32v(out, texture.height);
+        bytesv(out, &texture.rgba);
+    }
 }
 fn u32v(o: &mut Vec<u8>, v: u32) {
     o.extend_from_slice(&v.to_le_bytes())

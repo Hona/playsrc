@@ -26,6 +26,24 @@ export type RuntimeBatch = Readonly<{
   indices: Uint32Array
   faces: Uint32Array
 }>
+export type RuntimeModelPrimitive = Readonly<{
+  material: number
+  positions: Float32Array
+  normals: Float32Array
+  uv: Float32Array
+  indices: Uint32Array
+}>
+export type RuntimeModel = Readonly<{
+  logicalPath: string
+  materials: readonly RuntimeMaterial[]
+  primitives: readonly RuntimeModelPrimitive[]
+}>
+export type RuntimeModelOccurrence = Readonly<{
+  entity: number
+  model: number
+  position: readonly [number, number, number]
+  angles: readonly [number, number, number]
+}>
 
 export type RuntimeMap = Readonly<{
   bspVersion: number
@@ -37,6 +55,8 @@ export type RuntimeMap = Readonly<{
   entityCount: number
   entityBytes: Uint8Array
   drawableSurfaces: number
+  models: readonly RuntimeModel[]
+  modelOccurrences: readonly RuntimeModelOccurrence[]
 }>
 
 export class RuntimeMapError extends Error {
@@ -100,6 +120,36 @@ function bounded(value: number, maximum: number, field: string): number {
   return value
 }
 
+function resolvedMaterial(
+  reader: Reader,
+  decoder: TextDecoder,
+  base: Pick<RuntimeMaterial, "logicalPath" | "width" | "height">,
+): RuntimeMaterial {
+  const shader = reader.u8()
+  const features = reader.u8()
+  const hasTexture = reader.u8()
+  if (reader.u8() !== 0 || hasTexture > 1) {
+    throw new RuntimeMapError("runtime material payload is invalid")
+  }
+  let baseTexture: RuntimeMaterial["baseTexture"]
+  if (hasTexture === 1) {
+    let logicalPath: string
+    try {
+      logicalPath = decoder.decode(reader.sized())
+    } catch {
+      throw new RuntimeMapError("runtime texture path is not UTF-8")
+    }
+    const width = reader.u32()
+    const height = reader.u32()
+    const rgba = reader.sized().slice()
+    if (!logicalPath || width < 1 || height < 1 || width * height * 4 !== rgba.byteLength) {
+      throw new RuntimeMapError("runtime texture payload is invalid")
+    }
+    baseTexture = Object.freeze({ logicalPath, width, height, rgba })
+  }
+  return Object.freeze({ ...base, shader, features, baseTexture })
+}
+
 export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
   if (input.byteLength < 37 || input.byteLength > MAX_PAYLOAD_BYTES) {
     throw new RuntimeMapError("runtime map byte length is invalid")
@@ -109,7 +159,9 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
     throw new RuntimeMapError("runtime map identity is invalid")
   }
   const schema = reader.u32()
-  if (schema !== 1 && schema !== 2) throw new RuntimeMapError("runtime map schema is invalid")
+  if (schema !== 1 && schema !== 2 && schema !== 3) {
+    throw new RuntimeMapError("runtime map schema is invalid")
+  }
   const bspVersion = reader.u32()
   const mapRevision = reader.u32()
   const lightingProfile = reader.u8()
@@ -183,45 +235,71 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
   }
   reader.take(lightingSampleCount * 4)
   const entityBytes = reader.sized().slice()
-  if (schema === 2) {
+  if (schema >= 2) {
     const resolvedCount = reader.u32()
     if (resolvedCount !== materials.length) {
       throw new RuntimeMapError("runtime material payload count is invalid")
     }
     for (let index = 0; index < resolvedCount; index += 1) {
-      const shader = reader.u8()
-      const features = reader.u8()
-      const hasTexture = reader.u8()
-      if (reader.u8() !== 0 || hasTexture > 1) {
-        throw new RuntimeMapError("runtime material payload is invalid")
+      materials[index] = resolvedMaterial(reader, decoder, materials[index]!)
+    }
+  }
+  const models: RuntimeModel[] = []
+  const modelOccurrences: RuntimeModelOccurrence[] = []
+  if (schema === 3) {
+    const modelCount = bounded(reader.u32(), 4096, "runtime model count")
+    for (let modelIndex = 0; modelIndex < modelCount; modelIndex += 1) {
+      let logicalPath: string
+      try {
+        logicalPath = decoder.decode(reader.sized())
+      } catch {
+        throw new RuntimeMapError("runtime model path is not UTF-8")
       }
-      let baseTexture: RuntimeMaterial["baseTexture"]
-      if (hasTexture === 1) {
-        let logicalPath: string
+      const materialCount = bounded(reader.u32(), MAX_MATERIALS, "model material count")
+      const modelMaterials: RuntimeMaterial[] = []
+      for (let material = 0; material < materialCount; material += 1) {
+        let materialPath: string
         try {
-          logicalPath = decoder.decode(reader.sized())
+          materialPath = decoder.decode(reader.sized())
         } catch {
-          throw new RuntimeMapError("runtime texture path is not UTF-8")
+          throw new RuntimeMapError("runtime model material path is not UTF-8")
         }
-        const width = reader.u32()
-        const height = reader.u32()
-        const rgba = reader.sized().slice()
-        if (
-          !logicalPath
-          || width < 1
-          || height < 1
-          || width * height * 4 !== rgba.byteLength
-        ) {
-          throw new RuntimeMapError("runtime texture payload is invalid")
+        modelMaterials.push(resolvedMaterial(reader, decoder, {
+          logicalPath: materialPath,
+          width: 1,
+          height: 1,
+        }))
+      }
+      const primitiveCount = bounded(reader.u32(), 65_536, "model primitive count")
+      const primitives: RuntimeModelPrimitive[] = []
+      for (let primitive = 0; primitive < primitiveCount; primitive += 1) {
+        const material = reader.u32()
+        const vertices = bounded(reader.u32(), MAX_VERTICES, "model vertex count")
+        const triangles = bounded(reader.u32(), MAX_TRIANGLES, "model triangle count")
+        if (material >= materialCount) throw new RuntimeMapError("model material index is invalid")
+        const positions = Float32Array.from({ length: vertices * 3 }, () => reader.f32())
+        const normals = Float32Array.from({ length: vertices * 3 }, () => reader.f32())
+        const uv = Float32Array.from({ length: vertices * 2 }, () => reader.f32())
+        const indices = Uint32Array.from({ length: triangles * 3 }, () => reader.u32())
+        if (indices.some((index) => index >= vertices)) {
+          throw new RuntimeMapError("model triangle index is invalid")
         }
-        baseTexture = Object.freeze({ logicalPath, width, height, rgba })
+        primitives.push(Object.freeze({ material, positions, normals, uv, indices }))
       }
-      materials[index] = {
-        ...materials[index]!,
-        shader,
-        features,
-        baseTexture,
-      }
+      models.push(Object.freeze({
+        logicalPath,
+        materials: Object.freeze(modelMaterials),
+        primitives: Object.freeze(primitives),
+      }))
+    }
+    const occurrenceCount = bounded(reader.u32(), MAX_SURFACES, "model occurrence count")
+    for (let index = 0; index < occurrenceCount; index += 1) {
+      const entity = reader.u32()
+      const model = reader.u32()
+      if (model >= models.length) throw new RuntimeMapError("model occurrence index is invalid")
+      const position = Object.freeze([reader.f32(), reader.f32(), reader.f32()]) as readonly [number, number, number]
+      const angles = Object.freeze([reader.f32(), reader.f32(), reader.f32()]) as readonly [number, number, number]
+      modelOccurrences.push(Object.freeze({ entity, model, position, angles }))
     }
   }
   if (reader.offset !== input.byteLength) throw new RuntimeMapError("runtime map has trailing bytes")
@@ -243,5 +321,7 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
     entityCount,
     entityBytes,
     drawableSurfaces,
+    models: Object.freeze(models),
+    modelOccurrences: Object.freeze(modelOccurrences),
   })
 }

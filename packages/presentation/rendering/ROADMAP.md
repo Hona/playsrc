@@ -67,7 +67,7 @@ The denominator is Not accepted. The inventory generator, accepted producer inte
 
 ## Behavior Families
 
-The active migration checkpoints implement a browser-target Three.js/WebGPU owner for versioned direct `PSMP` payloads: bounded structural decoding, material-batched model-0 geometry, exact resolved base-texture RGBA uploads, supplied translucency/alpha-test/cull features, Source-space Z-up perspective cameras, bounded resize, hash-checked atomic scene replacement, projectile/effect draw inputs, and deterministic disposal. A headed Chrome WebGPU workflow renders all 2,761 drawable model-0 surfaces in 10 batches with 12 exact base textures through cold/warm loads and replacement. Water shaders and lightmaps remain explicit diagnostic presentation rather than silent substitutes.
+The active migration checkpoints implement a browser-target Three.js/WebGPU owner for versioned direct `PSMP` payloads: bounded structural decoding, material-batched model-0 geometry, exact resolved world base-texture RGBA uploads, seven StudioModel geometry assets, 33 prop occurrences, exact rocket/sticky model requests, supplied translucency/alpha-test/cull features, Source-space Z-up perspective cameras, bounded resize, hash-checked atomic scene replacement, projectile/effect draw inputs, and deterministic disposal. A headed Chrome WebGPU workflow renders all 2,761 drawable model-0 surfaces in 10 batches with 12 exact base textures plus prop/projectile geometry through cold/warm loads and replacement. Model textures/poses, viewmodels, water shaders, and lightmaps remain explicit diagnostics rather than silent substitutes.
 
 | Target behavior | playsrc behavior | Evidence | Status |
 |---|---|---|---|

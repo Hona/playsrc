@@ -167,11 +167,32 @@ export async function verifyBrowserAcceptance(
       "eval",
       "Number.parseInt(document.querySelector('.support-card button span').textContent,10)",
     ]))
+    const initialFireEvents = parseJson<number>(await agent([
+      "--session",
+      session,
+      "eval",
+      "Number(document.querySelector('main').dataset.fireEvents)",
+    ]))
+    const initialExplosionEvents = parseJson<number>(await agent([
+      "--session",
+      session,
+      "eval",
+      "Number(document.querySelector('main').dataset.explosionEvents)",
+    ]))
 
     await acquirePointerLock(session)
     await agent(["--session", session, "mouse", "down", "left"])
     await agent(["--session", session, "wait", "100"])
     await agent(["--session", session, "mouse", "up", "left"])
+    await agent([
+      "--session",
+      session,
+      "wait",
+      "--fn",
+      `Number(document.querySelector('main').dataset.fireEvents) > ${initialFireEvents}`,
+      "--timeout",
+      "10000",
+    ])
     await agent(["--session", session, "wait", "1200"])
     let blockerCount = parseJson<number>(await agent([
       "--session",
@@ -179,8 +200,7 @@ export async function verifyBrowserAcceptance(
       "eval",
       "Number.parseInt(document.querySelector('.support-card button span').textContent,10)",
     ]))
-    require(blockerCount >= initialBlockerCount + 2, "Soldier fire event was not observed")
-    const soldierBlockerCount = blockerCount
+    require(blockerCount >= initialBlockerCount + 2, "Soldier explosion presentation events were not observed")
 
     await agent(["--session", session, "press", "Escape"])
     await agent(["--session", session, "wait", "1000"])
@@ -190,6 +210,15 @@ export async function verifyBrowserAcceptance(
     await agent(["--session", session, "mouse", "down", "left"])
     await agent(["--session", session, "wait", "100"])
     await agent(["--session", session, "mouse", "up", "left"])
+    await agent([
+      "--session",
+      session,
+      "wait",
+      "--fn",
+      `Number(document.querySelector('main').dataset.fireEvents) > ${initialFireEvents + 1}`,
+      "--timeout",
+      "10000",
+    ])
     await agent(["--session", session, "wait", "1000"])
     await agent(["--session", session, "mouse", "down", "right"])
     await agent(["--session", session, "wait", "100"])
@@ -201,7 +230,15 @@ export async function verifyBrowserAcceptance(
       "eval",
       "Number.parseInt(document.querySelector('.support-card button span').textContent,10)",
     ]))
-    require(blockerCount >= soldierBlockerCount + 1, "Demoman sticky fire/detonation events were not observed")
+    require(
+      parseJson<number>(await agent([
+        "--session",
+        session,
+        "eval",
+        "Number(document.querySelector('main').dataset.explosionEvents)",
+      ])) > initialExplosionEvents,
+      "Demoman sticky detonation event was not observed",
+    )
 
     await agent(["--session", session, "reload"])
     await agent(["--session", session, "wait", "--text", "Ready", "--timeout", "120000"])
@@ -215,9 +252,9 @@ export async function verifyBrowserAcceptance(
     ]))
     require(
       records.length === 1
-      && records[0]?.key === "eeb42b44f31ef02867844ad71adb4e64917bad493d87997a207e9ccb9e1376e6"
-      && records[0]?.byteLength === 38_700_243
-      && records[0]?.sha256 === "2c8a6864cb485dc5512649b6543cf2b06623500dce7c7f45bf6302d9fce53d1c",
+      && records[0]?.key === "d18f576123c0400d33985e7d4e76a51c2ea8f0c076f77efbd2dfeb52227da9c6"
+      && records[0]?.byteLength === 39_381_761
+      && records[0]?.sha256 === "5d378f0d08a884f05470f4e907f23f52f0b69ddc3cc69fe59bb73a0b110b0051",
       "warm IndexedDB record identity differs",
     )
     return {

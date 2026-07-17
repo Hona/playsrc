@@ -10,6 +10,8 @@ playsrc-content = { path = "../../../packages/content/rust" }
 playsrc-keyvalues = { path = "../../../packages/formats/keyvalues/rust" }
 playsrc-map = { path = "../../../packages/world/map/rust" }
 playsrc-material = { path = "../../../packages/world/material/rust" }
+playsrc-entity = { path = "../../../packages/world/entity/rust" }
+playsrc-studio-model = { path = "../../../packages/formats/studio-model/rust" }
 playsrc-vmt = { path = "../../../packages/formats/vmt/rust" }
 playsrc-vpk = { path = "../../../packages/formats/vpk/rust" }
 serde = { version = "1", features = ["derive"] }

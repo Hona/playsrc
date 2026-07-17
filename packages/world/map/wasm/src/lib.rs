@@ -71,9 +71,13 @@ pub unsafe extern "C" fn playsrc_compile_map(
             &bsp,
             bsp_sha,
             profile,
-            "playsrc-map-runtime-1",
-            configuration,
-            &[],
+            playsrc_map::RuntimeAssembly {
+                compiler_identity: "playsrc-map-runtime-1",
+                configuration,
+                materials: &[],
+                models: &[],
+                model_occurrences: &[],
+            },
         )
         .map(|runtime| {
             (

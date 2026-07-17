@@ -9,6 +9,8 @@ const initial: ApplicationView = Object.freeze({
   pointerLocked: false,
   consoleVisible: false,
   blockers: Object.freeze([]),
+  fireEvents: 0,
+  explosionEvents: 0,
 })
 
 function App() {
@@ -31,7 +33,13 @@ function App() {
 
   const busy = view.phase === "Loading" || view.phase === "Replacing"
   return (
-    <main class="field-shell" data-phase={view.phase}>
+    <main
+      class="field-shell"
+      data-phase={view.phase}
+      data-projectiles={view.hud?.projectileCount ?? 0}
+      data-fire-events={view.fireEvents}
+      data-explosion-events={view.explosionEvents}
+    >
       <canvas
         ref={canvas}
         class="world-canvas"
