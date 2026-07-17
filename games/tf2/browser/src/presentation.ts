@@ -1,4 +1,5 @@
 import type { ParticleRenderItem } from "@playsrc/particle"
+import { sourceHorizontal4By3FovToVertical } from "@playsrc/rendering"
 import type { Camera, Effect } from "@playsrc/rendering"
 import type { ModelItem } from "@playsrc/rendering"
 import type { PresentationArtifacts } from "./artifacts"
@@ -6,6 +7,10 @@ import type { Snapshot } from "./codec"
 
 const UINT32_MAX = 0xffff_ffff
 const NORMAL_TOLERANCE = 1e-4
+const TF2_DEFAULT_HORIZONTAL_FOV_4_BY_3 = 75
+const SOURCE_WORLD_NEAR = 7
+const SOURCE_MAP_EXTENT = 16_384
+const SOURCE_MAP_EXTENT_DIAGONAL = Math.fround(1.73205080757)
 
 export type PresentationDiagnostic = Readonly<{
   code: "MissingProjectileModel" | "MissingParticleContext" | "MissingAudioContext"
@@ -186,6 +191,7 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
           position: Object.freeze([verticalBob * 0.4, -lateralBob * 0.2, verticalBob * 0.1]),
           angles: Object.freeze([-verticalBob * 0.4, -lateralBob * 0.3, verticalBob * 0.5]),
           scale: 1,
+          skin: snapshot.team === 1 ? 0 : 1,
           viewModel: true,
           viewModelProjection: artifact.descriptor,
         }),
@@ -403,9 +409,9 @@ export function tf2Camera(snapshot: Snapshot, yawDegrees: number, pitchDegrees: 
     ]) as readonly [number, number, number],
     yawDegrees,
     pitchDegrees,
-    verticalFovDegrees: 74,
-    near: 1,
-    far: 32_768,
+    verticalFovDegrees: sourceHorizontal4By3FovToVertical(TF2_DEFAULT_HORIZONTAL_FOV_4_BY_3),
+    near: SOURCE_WORLD_NEAR,
+    far: Math.fround(SOURCE_MAP_EXTENT * SOURCE_MAP_EXTENT_DIAGONAL),
   })
 }
 

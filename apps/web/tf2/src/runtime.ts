@@ -98,6 +98,7 @@ export type ApplicationView = Readonly<{
   environment?: PresentationArtifacts["environment"]
   particleRenderItems?: number
   environmentDrawables?: number
+  visibleDecalFragments?: number
   movement?: Snapshot["movement"]
   movementTick?: Snapshot["movementTick"]
   viewmodelPose?: Readonly<{ activity: string; sequence: number; cycle: number; primitives: number; events: number }>
@@ -110,10 +111,14 @@ export type ApplicationView = Readonly<{
   particleProbe?: string
   audioStarts?: readonly string[]
   viewmodelProjection?: string
+  viewmodelDepthRange?: string
+  viewmodelViewportRestored?: boolean
   viewmodelActivities?: readonly string[]
   viewmodelSequences?: string
   crouchHistory?: readonly string[]
   viewmodelTimelineProbes?: readonly string[]
+  modelMatrices?: readonly Readonly<{ entity: number; model: string; matrix: readonly number[] }>[]
+  decalStateProbe?: Readonly<{ materials: number; exact: number }>
 }>
 
 type Renderer = Awaited<ReturnType<typeof createRenderer>>
@@ -239,6 +244,7 @@ export class Tf2Application {
       this.#loaded = await this.#client.stage(this.#generation, bsp, profile, this.#dependencies, key)
       await this.#client.configureCourse(this.#generation, jumpBeefCourse(this.#configuration.bsp.sha256))
       this.#artifacts = await parsePresentationArtifacts(this.#loaded.presentation)
+      this.#recordVisualOutputBlockers(this.#artifacts)
       await this.#cacheModelArtifacts(this.#artifacts)
       this.#projectiles = createProjectilePresentationMapper(
         Object.freeze({
@@ -280,7 +286,7 @@ export class Tf2Application {
       })
       this.#environmentDrawables = scene.environmentDrawables
       for (const diagnostic of scene.diagnostics) {
-        this.#blockers.add(`Missing resolved material: ${diagnostic.identity}`)
+        this.#blockers.add(`${diagnostic.code}: ${diagnostic.identity} — ${diagnostic.detail}`)
       }
       const AudioContextConstructor = window.AudioContext
       if (!AudioContextConstructor) throw new Error("Web Audio is unavailable")
@@ -333,6 +339,8 @@ export class Tf2Application {
         viewmodelSequences: this.#viewmodelSequences(this.#artifacts, 1),
         crouchHistory: Object.freeze([...this.#crouchHistory]),
         viewmodelTimelineProbes: Object.freeze([...this.#viewmodelTimelineProbes]),
+        modelMatrices: this.#modelMatrices(this.#artifacts),
+        decalStateProbe: this.#decalStateProbe(this.#artifacts),
       })
     } catch (error) {
       await this.#release()
@@ -674,6 +682,7 @@ export class Tf2Application {
     const staged = await this.#client.stage(generation, bytes, profile, this.#dependencies, key)
     if (name === "jump_beef") await this.#client.configureCourse(generation, jumpBeefCourse(bspSha256))
     const artifacts = await parsePresentationArtifacts(staged.presentation)
+    this.#recordVisualOutputBlockers(artifacts)
     await this.#cacheModelArtifacts(artifacts)
     const prior = this.#loaded
     const priorArtifacts = this.#artifacts
@@ -782,6 +791,8 @@ export class Tf2Application {
       viewmodelSequences: this.#viewmodelSequences(artifacts, this.#snapshot.class),
       crouchHistory: Object.freeze([...this.#crouchHistory]),
       viewmodelTimelineProbes: Object.freeze([...this.#viewmodelTimelineProbes]),
+      modelMatrices: this.#modelMatrices(artifacts),
+      decalStateProbe: this.#decalStateProbe(artifacts),
     })
   }
 
@@ -817,6 +828,53 @@ export class Tf2Application {
       0,
     )
     return `${artifacts.environment.textures.length}:${zeros}:${artifacts.environment.markFragments}`
+  }
+
+  #decalStateProbe(artifacts: PresentationArtifacts): NonNullable<ApplicationView["decalStateProbe"]> {
+    const materials = new Set(
+      artifacts.environment.markRecords
+        .filter((mark) => mark.status === 0 && mark.enabled)
+        .map((mark) => mark.material.toLowerCase()),
+    )
+    let exact = 0
+    for (const material of materials) {
+      const state = artifacts.materialStates.get(material)
+      if (
+        state?.blendEnabled &&
+        state.blendSource === 2 &&
+        state.blendDestination === 3 &&
+        !state.alphaTest &&
+        state.cull === 0 &&
+        state.depthTest &&
+        !state.depthWrite &&
+        state.depthFunction === 1 &&
+        state.polygonOffset === 1
+      ) exact += 1
+    }
+    return Object.freeze({ materials: materials.size, exact })
+  }
+
+  #modelMatrices(artifacts: PresentationArtifacts): NonNullable<ApplicationView["modelMatrices"]> {
+    return Object.freeze(artifacts.modelOccurrences.map((occurrence) => Object.freeze({
+      entity: occurrence.entity,
+      model: occurrence.model,
+      matrix: Object.freeze([...occurrence.matrix]),
+    })))
+  }
+
+  #recordVisualOutputBlockers(artifacts: PresentationArtifacts): void {
+    if (
+      artifacts.models.has("models/weapons/v_models/v_rocketlauncher_soldier.mdl") ||
+      artifacts.models.has("models/weapons/v_models/v_stickybomb_launcher_demo.mdl")
+    ) {
+      this.#blockers.add("Missing TF2 stock viewmodel composition: class hand model, item c_model attachment, and animation-library join")
+    }
+    const mipmapped = [...artifacts.materialStates.values()].filter((state) => state.samplingAvailable && state.mipmapped).length
+    if (mipmapped > 0) this.#blockers.add(`Missing authored texture mip planes for ${mipmapped} sampled material states`)
+    this.#blockers.add("Missing complete StudioModel shader and model-lighting inputs")
+    this.#blockers.add("Missing decoded profile-qualified sky and cubemap subresources")
+    this.#blockers.add("Missing complete Water material and reflection/refraction view inputs")
+    this.#blockers.add("Missing current fog-controller state and transition inputs")
   }
 
   #viewmodelSequences(artifacts: PresentationArtifacts, tf2Class: 1 | 2): string {
@@ -1094,7 +1152,7 @@ export class Tf2Application {
       )
       const particleItems = decodeParticleRenderOutput(particleOutput, this.#artifacts.particleMaterials)
       this.#playAudio(snapshot, camera)
-      await this.#renderer.render({
+      const rendered = await this.#renderer.render({
         camera,
         effects: Object.freeze([]),
         particles: particleItems,
@@ -1108,6 +1166,7 @@ export class Tf2Application {
         explosionEvents: this.#explosionEvents,
         camera,
         particleRenderItems: particleItems.length,
+        visibleDecalFragments: rendered.visibleProjectedMarks,
         movement: snapshot.movement,
         movementTick: snapshot.movementTick,
         viewmodelPose: Object.freeze({
@@ -1123,6 +1182,8 @@ export class Tf2Application {
         particleProbe: [...new Set(particleItems.map((item) => `${item.primitive}:${item.material}:${item.primarySheet ? "sheet" : "missing"}`))].sort().join("|"),
         audioStarts: Object.freeze([...this.#audioStarts]),
         viewmodelProjection: viewmodel.item.viewModelProjection ? `${viewmodel.item.viewModelProjection.horizontalFov4By3}:${viewmodel.item.viewModelProjection.near}:${viewmodel.item.viewModelProjection.depthRange.join(",")}` : undefined,
+        viewmodelDepthRange: rendered.viewModelPass?.depthRange.join(","),
+        viewmodelViewportRestored: rendered.viewModelPass?.viewportRestored,
         viewmodelActivities: Object.freeze([...this.#viewmodelActivities]),
         viewmodelSequences: this.#viewmodelSequences(this.#artifacts, snapshot.class),
         crouchHistory: Object.freeze([...this.#crouchHistory]),

@@ -168,6 +168,9 @@ type CameraObservation = Readonly<{
   position: readonly [number, number, number]
   yaw: number
   pitch: number
+  verticalFov: number
+  near: number
+  far: number
 }>
 
 type SpawnObservation = Readonly<{
@@ -360,23 +363,63 @@ async function captureCanvas(session: string, config: LocalConfig): Promise<Canv
 }
 
 async function cameraObservation(session: string): Promise<CameraObservation> {
-  const observation = parseJson<{ position: number[]; yaw: number; pitch: number }>(
+  const observation = parseJson<{ position: number[]; yaw: number; pitch: number; verticalFov: number; near: number; far: number }>(
     await agent([
       "--session",
       session,
       "eval",
-      "(()=>{const d=document.querySelector('main').dataset;return {position:d.cameraPosition.split(',').map(Number),yaw:Number(d.cameraYaw),pitch:Number(d.cameraPitch)}})()",
+      "(()=>{const d=document.querySelector('main').dataset;return {position:d.cameraPosition.split(',').map(Number),yaw:Number(d.cameraYaw),pitch:Number(d.cameraPitch),verticalFov:Number(d.cameraVerticalFov),near:Number(d.cameraNear),far:Number(d.cameraFar)}})()",
     ]),
   )
   require(observation.position.length === 3 &&
     observation.position.every(Number.isFinite) &&
     Number.isFinite(observation.yaw) &&
-    Number.isFinite(observation.pitch), "application camera observation is malformed")
+    Number.isFinite(observation.pitch) &&
+    Number.isFinite(observation.verticalFov) &&
+    Number.isFinite(observation.near) &&
+    Number.isFinite(observation.far), "application camera observation is malformed")
   return Object.freeze({
     position: Object.freeze(observation.position) as readonly [number, number, number],
     yaw: observation.yaw,
     pitch: observation.pitch,
+    verticalFov: observation.verticalFov,
+    near: observation.near,
+    far: observation.far,
   })
+}
+
+type ModelMatrixObservation = Readonly<{ entity: number; model: string; matrix: readonly number[] }>
+
+function sourceEntityMatrix(
+  position: readonly [number, number, number],
+  angles: readonly [number, number, number],
+): readonly number[] {
+  // Independent evidence calculation of the Valve Source SDK 2013 AngleMatrix contract.
+  const [pitch, yaw, roll] = angles.map((value) => value * Math.PI / 180)
+  const sp = Math.sin(pitch!), cp = Math.cos(pitch!), sy = Math.sin(yaw!), cy = Math.cos(yaw!),
+    sr = Math.sin(roll!), cr = Math.cos(roll!)
+  return Object.freeze([
+    cp * cy, sp * sr * cy - cr * sy, sp * cr * cy + sr * sy, position[0],
+    cp * sy, sp * sr * sy + cr * cy, sp * cr * sy - sr * cy, position[1],
+    -sp, sr * cp, cr * cp, position[2],
+  ])
+}
+
+function requireModelMatrix(
+  observations: readonly ModelMatrixObservation[],
+  model: string,
+  position: readonly [number, number, number],
+  angles: readonly [number, number, number],
+): void {
+  const actual = observations.find((observation) =>
+    observation.model === model &&
+    [observation.matrix[3], observation.matrix[7], observation.matrix[11]].every(
+      (value, index) => Math.abs((value ?? Number.NaN) - position[index]!) <= 0.001,
+    ))
+  const expected = sourceEntityMatrix(position, angles)
+  require(actual?.matrix.length === 12 && actual.matrix.every(
+    (value, index) => Number.isFinite(value) && Math.abs(value - expected[index]!) <= ([3, 7, 11].includes(index) ? 0.001 : 0.0001),
+  ), `model occurrence matrix differs for ${model} at ${position.join(",")}: ${JSON.stringify({ actual, expected })}`)
 }
 
 async function spawnObservation(session: string): Promise<SpawnObservation> {
@@ -678,6 +721,41 @@ export async function verifyBrowserAcceptance(
       Math.abs(fixedCamera.position[2] - -3067.96875) <= 0.001 &&
       fixedCamera.yaw === 180 &&
       fixedCamera.pitch === -1, `settled jump_beef acceptance camera differs: ${JSON.stringify(fixedCamera)}`)
+    require(Math.abs(fixedCamera.verticalFov - 59.84044400898543) <= 1e-10 &&
+      fixedCamera.near === 7 &&
+      fixedCamera.far === 28_377.919921875,
+    `TF2 world projection differs: ${JSON.stringify(fixedCamera)}`)
+    const modelMatrices = parseJson<ModelMatrixObservation[]>(await agent([
+      "--session", session, "eval", "JSON.parse(document.querySelector('main').dataset.modelMatrices)",
+    ]))
+    require(modelMatrices.length === 33 && new Set(modelMatrices.map((value) => value.entity)).size === 33,
+      "exact model occurrence matrix set differs")
+    requireModelMatrix(modelMatrices, "models/props_2fort/cow001_reference.mdl", [2336, 2328, -3136], [0, 90.5, 0])
+    requireModelMatrix(modelMatrices, "models/props_2fort/frog.mdl", [12461.7, 135.026, -5559], [0, 89.5, 0])
+    requireModelMatrix(modelMatrices, "models/props_2fort/frog.mdl", [5368, -1792, -6640], [55.9871, 178.212, -1.48216])
+    requireModelMatrix(modelMatrices, "models/props_gameplay/resupply_locker.mdl", [5512, 3440, -2800], [0, 179.5, 0])
+    requireModelMatrix(modelMatrices, "models/player/soldier.mdl", [-5632, 2896, -1136], [0, 180, 0])
+    const decalState = parseJson<{ materials: number; exact: number }>(await agent([
+      "--session", session, "eval", "JSON.parse(document.querySelector('main').dataset.decalState)",
+    ]))
+    require(decalState.materials === 13 && decalState.exact === 13,
+      `decal Material state differs: ${JSON.stringify(decalState)}`)
+    const visibleDecalFragments = parseJson<number>(await agent([
+      "--session", session, "eval", "Number(document.querySelector('main').dataset.visibleDecalFragments)",
+    ]))
+    require(visibleDecalFragments === 0,
+      `decal PVS receiver membership differs: ${visibleDecalFragments}`)
+    const visualBlockers = parseJson<string[]>(await agent([
+      "--session", session, "eval", "JSON.parse(document.querySelector('main').dataset.blockers)",
+    ]))
+    for (const blocker of [
+      "Missing TF2 stock viewmodel composition",
+      "Missing authored texture mip planes",
+      "Missing complete StudioModel shader and model-lighting inputs",
+      "Missing decoded profile-qualified sky and cubemap subresources",
+      "Missing complete Water material and reflection/refraction view inputs",
+      "Missing current fog-controller state and transition inputs",
+    ]) require(visualBlockers.some((value) => value.startsWith(blocker)), `visual blocker is absent: ${blocker}`)
     const coldCanvas = await captureCanvas(session, config)
 
     await agent(["--session", session, "click", "button.audio-toggle"])
@@ -910,9 +988,9 @@ export async function verifyBrowserAcceptance(
     require(parseJson<number>(
       await agent(["--session", session, "eval", "Number(document.querySelector('main').dataset.particleItems)"]),
     ) > 0, "Soldier PCF render data was not observed")
-    const soldierPresentation = parseJson<{ particles: string; audio: string; activity: string; activities: string }>(await agent([
+    const soldierPresentation = parseJson<{ particles: string; audio: string; activity: string; activities: string; depth: string; restored: string }>(await agent([
       "--session", session, "eval",
-      "(()=>{const d=document.querySelector('main').dataset;return {particles:d.particleProbe,audio:d.audioStarts,activity:d.viewmodelActivity,activities:d.viewmodelActivities}})()",
+      "(()=>{const d=document.querySelector('main').dataset;return {particles:d.particleProbe,audio:d.audioStarts,activity:d.viewmodelActivity,activities:d.viewmodelActivities,depth:d.viewmodelDepthRange,restored:d.viewmodelViewportRestored}})()",
     ]))
     require(soldierPresentation.particles.includes("sheet") &&
       (soldierPresentation.particles.includes("sprite:") || soldierPresentation.particles.includes("trail:")),
@@ -921,6 +999,8 @@ export async function verifyBrowserAcceptance(
       `Source launch audio lifecycle probe differs: ${soldierPresentation.audio}`)
     require(soldierPresentation.activities.includes("ACT_VM_DRAW") && soldierPresentation.activities.includes("ACT_VM_PRIMARYATTACK"),
       `viewmodel draw/fire activity progression differs: ${soldierPresentation.activities}`)
+    require(soldierPresentation.depth === "0,0.10000000149011612" && soldierPresentation.restored === "true",
+      `viewmodel WebGPU viewport depth pass differs: ${JSON.stringify(soldierPresentation)}`)
     const particleCanvas = await captureCanvas(session, config)
 
     await agent(["--session", session, "press", "Escape"])
@@ -1083,6 +1163,10 @@ export async function verifyBrowserAcceptance(
       },
       crouch: { down: crouchDown, up: crouchUp },
       producerProbes,
+      modelMatrices: "33-exact-source-entity-matrices",
+      decalState,
+      visibleDecalFragments,
+      visualBlockers,
       soldierPresentation,
       particleCanvas,
       shutdown: "pending",
