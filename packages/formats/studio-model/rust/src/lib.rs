@@ -241,6 +241,7 @@ pub struct Animation {
     pub bone_map: Vec<Option<usize>>,
     pub sections: Vec<AnimationSection>,
     pub frames: Vec<AnimationFrame>,
+    pub compact_frames: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1333,6 +1334,7 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
             bone_map: (0..bone_count).map(Some).collect(),
             sections: Vec::new(),
             frames: Vec::new(),
+            compact_frames: Vec::new(),
         });
         animation_sources.push(AnimationSource {
             descriptor_offset: offset,

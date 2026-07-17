@@ -1,8 +1,11 @@
 //! Runtime-neutral StudioModel presentation artifacts and pose sampling.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    collections::BTreeSet,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use crate::{
@@ -11,6 +14,7 @@ use crate::{
 
 const ARTIFACT_MAGIC: &[u8; 4] = b"PSMP";
 const ARTIFACT_VERSION: u16 = 1;
+const COMPACT_FRAME_MARKER: u32 = u32::MAX;
 const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 const STUDIO_LOOPING: i32 = 0x0001;
 const STUDIO_DELTA: i32 = 0x0004;
@@ -567,9 +571,7 @@ pub fn build_presentation(
             &document.identity,
         ));
     }
-    let aggregate_dependency_bytes = dependencies.iter().try_fold(0_usize, |total, dependency| {
-        total.checked_add(dependency.byte_length)
-    });
+    let aggregate_dependency_bytes = unique_dependency_bytes(&dependencies);
     if aggregate_dependency_bytes.is_none_or(|bytes| bytes > limits.max_aggregate_dependency_bytes)
     {
         return Err(presentation_error(
@@ -577,15 +579,29 @@ pub fn build_presentation(
             &document.identity,
         ));
     }
-    if estimated_owned_bytes(document, &dependencies, &materials)
-        .is_none_or(|bytes| bytes > limits.max_owned_bytes)
-    {
+    let expanded_owned = estimated_owned_bytes(document, &dependencies, &materials, false);
+    let compact = expanded_owned.is_none_or(|bytes| bytes > limits.max_owned_bytes);
+    let retained_owned = if compact {
+        estimated_owned_bytes(document, &dependencies, &materials, true)
+    } else {
+        expanded_owned
+    };
+    if retained_owned.is_none_or(|bytes| bytes > limits.max_owned_bytes) {
         return Err(presentation_error(
             PresentationErrorCode::ModelLimit,
             &document.identity,
         ));
     }
 
+    let animations = if compact {
+        document
+            .animations
+            .iter()
+            .map(|animation| compact_animation(animation, &document.identity))
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        document.animations.clone()
+    };
     let model = PresentationModel {
         profile,
         identity: document.identity.clone(),
@@ -595,7 +611,7 @@ pub fn build_presentation(
         base_material_count: document.materials.len(),
         materials,
         bones: document.bones.clone(),
-        animations: document.animations.clone(),
+        animations,
         sequences: document.sequences.clone(),
         pose_parameters: document.pose_parameters.clone(),
         attachments: document.attachments.clone(),
@@ -700,6 +716,7 @@ fn estimated_owned_bytes(
     document: &Document,
     dependencies: &[ArtifactDependency],
     materials: &[PresentationMaterial],
+    compact: bool,
 ) -> Option<usize> {
     let mut total = std::mem::size_of::<PresentationModel>();
     let mut add = |bytes: usize| {
@@ -753,19 +770,23 @@ fn estimated_owned_bytes(
                 }
             }
         }
-        add(animation
-            .frames
-            .len()
-            .checked_mul(std::mem::size_of::<crate::AnimationFrame>())?)?;
-        for frame in &animation.frames {
-            add(frame
-                .translations
+        if compact {
+            add(compact_frame_bytes_len(animation)?)?;
+        } else {
+            add(animation
+                .frames
                 .len()
-                .checked_mul(std::mem::size_of::<Vector3>())?)?;
-            add(frame
-                .rotations
-                .len()
-                .checked_mul(std::mem::size_of::<[Float32; 4]>())?)?;
+                .checked_mul(std::mem::size_of::<crate::AnimationFrame>())?)?;
+            for frame in &animation.frames {
+                add(frame
+                    .translations
+                    .len()
+                    .checked_mul(std::mem::size_of::<Vector3>())?)?;
+                add(frame
+                    .rotations
+                    .len()
+                    .checked_mul(std::mem::size_of::<[Float32; 4]>())?)?;
+            }
         }
     }
     add(document
@@ -877,6 +898,213 @@ fn estimated_owned_bytes(
         }
     }
     Some(total)
+}
+
+fn unique_dependency_bytes(dependencies: &[ArtifactDependency]) -> Option<usize> {
+    let mut identities = BTreeSet::new();
+    let mut total = 0_usize;
+    for dependency in dependencies {
+        if identities.insert((
+            dependency.logical_path.as_str(),
+            dependency.sha256,
+            dependency.byte_length,
+        )) {
+            total = total.checked_add(dependency.byte_length)?;
+        }
+    }
+    Some(total)
+}
+
+fn compact_frame_bytes_len(animation: &Animation) -> Option<usize> {
+    if animation.frames.len() != animation.frame_count as usize || animation.frames.is_empty() {
+        return None;
+    }
+    let bone_count = animation.bone_map.len();
+    if animation
+        .frames
+        .iter()
+        .any(|frame| frame.translations.len() != bone_count || frame.rotations.len() != bone_count)
+    {
+        return None;
+    }
+    let mut length = 8_usize;
+    for bone in 0..bone_count {
+        let translation = animation.frames[0].translations[bone];
+        let translation_count = if animation
+            .frames
+            .iter()
+            .all(|frame| frame.translations[bone] == translation)
+        {
+            1
+        } else {
+            animation.frames.len()
+        };
+        length = length
+            .checked_add(1)?
+            .checked_add(translation_count.checked_mul(12)?)?;
+        let rotation = animation.frames[0].rotations[bone];
+        let rotation_count = if animation
+            .frames
+            .iter()
+            .all(|frame| frame.rotations[bone] == rotation)
+        {
+            1
+        } else {
+            animation.frames.len()
+        };
+        length = length
+            .checked_add(1)?
+            .checked_add(rotation_count.checked_mul(16)?)?;
+    }
+    Some(length)
+}
+
+fn compact_animation(
+    animation: &Animation,
+    identity: &str,
+) -> Result<Animation, PresentationError> {
+    let length = compact_frame_bytes_len(animation)
+        .ok_or_else(|| presentation_error(PresentationErrorCode::InvalidArtifact, identity))?;
+    let mut compact_frames = Vec::with_capacity(length);
+    compact_frames.extend_from_slice(&(animation.bone_map.len() as u32).to_le_bytes());
+    compact_frames.extend_from_slice(&(animation.frames.len() as u32).to_le_bytes());
+    for bone in 0..animation.bone_map.len() {
+        let translation = animation.frames[0].translations[bone];
+        let constant_translation = animation
+            .frames
+            .iter()
+            .all(|frame| frame.translations[bone] == translation);
+        compact_frames.push(u8::from(!constant_translation));
+        let translation_frames = if constant_translation {
+            &animation.frames[..1]
+        } else {
+            &animation.frames
+        };
+        for frame in translation_frames {
+            for value in frame.translations[bone].0 {
+                compact_frames.extend_from_slice(&value.0.to_le_bytes());
+            }
+        }
+        let rotation = animation.frames[0].rotations[bone];
+        let constant_rotation = animation
+            .frames
+            .iter()
+            .all(|frame| frame.rotations[bone] == rotation);
+        compact_frames.push(u8::from(!constant_rotation));
+        let rotation_frames = if constant_rotation {
+            &animation.frames[..1]
+        } else {
+            &animation.frames
+        };
+        for frame in rotation_frames {
+            for value in frame.rotations[bone] {
+                compact_frames.extend_from_slice(&value.0.to_le_bytes());
+            }
+        }
+    }
+    if compact_frames.len() != length {
+        return Err(presentation_error(
+            PresentationErrorCode::InvalidArtifact,
+            identity,
+        ));
+    }
+    Ok(Animation {
+        index: animation.index,
+        name: animation.name.clone(),
+        fps: animation.fps,
+        flags: animation.flags,
+        frame_count: animation.frame_count,
+        movement_count: animation.movement_count,
+        animation_block: animation.animation_block,
+        animation_offset: animation.animation_offset,
+        ik_rule_count: animation.ik_rule_count,
+        local_hierarchy_count: animation.local_hierarchy_count,
+        section_offset: animation.section_offset,
+        section_frame_count: animation.section_frame_count,
+        zero_frame_count: animation.zero_frame_count,
+        source_identity: animation.source_identity.clone(),
+        bone_map: animation.bone_map.clone(),
+        sections: animation.sections.clone(),
+        frames: Vec::new(),
+        compact_frames,
+    })
+}
+
+fn compact_frame(
+    animation: &Animation,
+    frame: usize,
+    identity: &str,
+) -> Result<crate::AnimationFrame, PresentationError> {
+    let invalid = || presentation_error(PresentationErrorCode::InvalidArtifact, identity);
+    let bytes = &animation.compact_frames;
+    if bytes.len() < 8 {
+        return Err(invalid());
+    }
+    let bone_count = u32::from_le_bytes(bytes[0..4].try_into().map_err(|_| invalid())?) as usize;
+    let frame_count = u32::from_le_bytes(bytes[4..8].try_into().map_err(|_| invalid())?) as usize;
+    if bone_count != animation.bone_map.len()
+        || frame_count != animation.frame_count as usize
+        || frame >= frame_count
+    {
+        return Err(invalid());
+    }
+    let mut cursor = 8_usize;
+    let mut translations = Vec::with_capacity(bone_count);
+    let mut rotations = Vec::with_capacity(bone_count);
+    for _ in 0..bone_count {
+        let translation_mode = *bytes.get(cursor).ok_or_else(invalid)?;
+        cursor += 1;
+        let translation_count = match translation_mode {
+            0 => 1,
+            1 => frame_count,
+            _ => return Err(invalid()),
+        };
+        let translation_bytes = translation_count.checked_mul(12).ok_or_else(invalid)?;
+        let translation_end = cursor
+            .checked_add(translation_bytes)
+            .filter(|end| *end <= bytes.len())
+            .ok_or_else(invalid)?;
+        let translation_at = cursor + if translation_mode == 0 { 0 } else { frame * 12 };
+        translations.push(Vector3(std::array::from_fn(|axis| {
+            let offset = translation_at + axis * 4;
+            Float32(u32::from_le_bytes(
+                bytes[offset..offset + 4]
+                    .try_into()
+                    .expect("validated compact translation"),
+            ))
+        })));
+        cursor = translation_end;
+
+        let rotation_mode = *bytes.get(cursor).ok_or_else(invalid)?;
+        cursor += 1;
+        let rotation_count = match rotation_mode {
+            0 => 1,
+            1 => frame_count,
+            _ => return Err(invalid()),
+        };
+        let rotation_bytes = rotation_count.checked_mul(16).ok_or_else(invalid)?;
+        let rotation_end = cursor
+            .checked_add(rotation_bytes)
+            .filter(|end| *end <= bytes.len())
+            .ok_or_else(invalid)?;
+        let rotation_at = cursor + if rotation_mode == 0 { 0 } else { frame * 16 };
+        rotations.push(std::array::from_fn(|axis| {
+            let offset = rotation_at + axis * 4;
+            Float32(u32::from_le_bytes(
+                bytes[offset..offset + 4]
+                    .try_into()
+                    .expect("validated compact rotation"),
+            ))
+        }));
+        cursor = rotation_end;
+    }
+    if cursor != bytes.len() {
+        return Err(invalid());
+    }
+    Ok(crate::AnimationFrame {
+        translations,
+        rotations,
+    })
 }
 
 fn validate_manifest(
@@ -1571,16 +1799,31 @@ fn sample_animation(
         .animations
         .get(animation_index)
         .ok_or_else(|| presentation_error(PresentationErrorCode::InvalidState, &model.identity))?;
-    if animation.frames.is_empty() {
+    let frame_count = usize::try_from(animation.frame_count)
+        .ok()
+        .filter(|count| *count > 0)
+        .ok_or_else(|| presentation_error(PresentationErrorCode::InvalidState, &model.identity))?;
+    if animation.frames.is_empty() && animation.compact_frames.is_empty() {
         return Err(presentation_error(
             PresentationErrorCode::InvalidState,
             &model.identity,
         ));
     }
-    let frame = cycle * (animation.frames.len() - 1) as f32;
+    let frame = cycle * (frame_count - 1) as f32;
     let first = frame.floor() as usize;
-    let second = (first + 1).min(animation.frames.len() - 1);
+    let second = (first + 1).min(frame_count - 1);
     let fraction = frame - first as f32;
+    let (first_frame, second_frame) = if animation.frames.is_empty() {
+        (
+            compact_frame(animation, first, &model.identity)?,
+            compact_frame(animation, second, &model.identity)?,
+        )
+    } else {
+        (
+            animation.frames[first].clone(),
+            animation.frames[second].clone(),
+        )
+    };
     let mut output = if animation.flags & STUDIO_DELTA != 0 {
         (
             vec![vector([0.0; 3]); model.bones.len()],
@@ -1591,16 +1834,16 @@ fn sample_animation(
     };
     for (local_bone, mapped) in animation.bone_map.iter().enumerate() {
         let Some(root_bone) = mapped else { continue };
-        let first_frame = animation.frames[first]
+        let first_sample = first_frame
             .translations
             .get(local_bone)
-            .zip(animation.frames[first].rotations.get(local_bone));
-        let second_frame = animation.frames[second]
+            .zip(first_frame.rotations.get(local_bone));
+        let second_sample = second_frame
             .translations
             .get(local_bone)
-            .zip(animation.frames[second].rotations.get(local_bone));
+            .zip(second_frame.rotations.get(local_bone));
         let (Some((first_position, first_rotation)), Some((second_position, second_rotation))) =
-            (first_frame, second_frame)
+            (first_sample, second_sample)
         else {
             return Err(presentation_error(
                 PresentationErrorCode::InvalidState,
@@ -1906,16 +2149,27 @@ fn encode_model(
                 output.value_streams(&track.translation_values)?;
             }
         }
-        output.count(animation.frames.len())?;
-        for frame in &animation.frames {
-            output.count(frame.translations.len())?;
-            for translation in &frame.translations {
-                output.vector(*translation)?;
+        if !animation.frames.is_empty() && animation.compact_frames.is_empty() {
+            output.count(animation.frames.len())?;
+            for frame in &animation.frames {
+                output.count(frame.translations.len())?;
+                for translation in &frame.translations {
+                    output.vector(*translation)?;
+                }
+                output.count(frame.rotations.len())?;
+                for rotation in &frame.rotations {
+                    output.float4(*rotation)?;
+                }
             }
-            output.count(frame.rotations.len())?;
-            for rotation in &frame.rotations {
-                output.float4(*rotation)?;
-            }
+        } else if animation.frames.is_empty() && !animation.compact_frames.is_empty() {
+            output.u32(COMPACT_FRAME_MARKER)?;
+            output.count(animation.compact_frames.len())?;
+            output.raw(&animation.compact_frames)?;
+        } else {
+            return Err(presentation_error(
+                PresentationErrorCode::InvalidArtifact,
+                &model.identity,
+            ));
         }
     }
     output.count(model.sequences.len())?;
@@ -2339,7 +2593,10 @@ pub fn decode_presentation(
         ));
     }
     let mut input = ArtifactReader::new(bytes);
-    if input.raw(4)? != ARTIFACT_MAGIC || input.u16()? != ARTIFACT_VERSION {
+    if input.raw(4)? != ARTIFACT_MAGIC {
+        return Err(input.error());
+    }
+    if input.u16()? != ARTIFACT_VERSION {
         return Err(input.error());
     }
     let profile = match input.u8()? {
@@ -2491,27 +2748,46 @@ pub fn decode_presentation(
                 tracks,
             });
         }
-        let encoded_frames = input.count(limits.max_animation_samples)?;
-        let mut frames = Vec::with_capacity(encoded_frames);
-        for _ in 0..encoded_frames {
-            let translation_count = input.count(limits.max_bones)?;
+        let mut frames = Vec::new();
+        let mut compact_frames = Vec::new();
+        let encoded_frame_field = input.u32()?;
+        if encoded_frame_field != COMPACT_FRAME_MARKER {
+            let encoded_frames = encoded_frame_field as usize;
+            if encoded_frames > limits.max_animation_samples {
+                return Err(input.error());
+            }
+            frames.reserve(encoded_frames);
+            for _ in 0..encoded_frames {
+                let translation_count = input.count(limits.max_bones)?;
+                sample_count = sample_count
+                    .checked_add(translation_count)
+                    .filter(|value| *value <= limits.max_animation_samples)
+                    .ok_or_else(|| input.error())?;
+                let mut translations = Vec::with_capacity(translation_count);
+                for _ in 0..translation_count {
+                    translations.push(input.vector()?);
+                }
+                let rotation_count = input.count(limits.max_bones)?;
+                let mut rotations = Vec::with_capacity(rotation_count);
+                for _ in 0..rotation_count {
+                    rotations.push(input.floats()?);
+                }
+                frames.push(crate::AnimationFrame {
+                    translations,
+                    rotations,
+                });
+            }
+        } else {
+            compact_frames = input.bytes(limits.max_artifact_bytes)?;
             sample_count = sample_count
-                .checked_add(translation_count)
+                .checked_add(
+                    usize::try_from(frame_count)
+                        .ok()
+                        .and_then(|frames| frames.checked_mul(bone_map.len()))
+                        .ok_or_else(|| input.error())?,
+                )
                 .filter(|value| *value <= limits.max_animation_samples)
                 .ok_or_else(|| input.error())?;
-            let mut translations = Vec::with_capacity(translation_count);
-            for _ in 0..translation_count {
-                translations.push(input.vector()?);
-            }
-            let rotation_count = input.count(limits.max_bones)?;
-            let mut rotations = Vec::with_capacity(rotation_count);
-            for _ in 0..rotation_count {
-                rotations.push(input.floats()?);
-            }
-            frames.push(crate::AnimationFrame {
-                translations,
-                rotations,
-            });
         }
         animations.push(Animation {
             index,
@@ -2531,6 +2807,7 @@ pub fn decode_presentation(
             bone_map,
             sections,
             frames,
+            compact_frames,
         });
     }
     let mut sequences = Vec::new();
@@ -3043,6 +3320,7 @@ fn validate_decoded_model(
         return Err(invalid());
     }
     let mut aggregate_dependency_bytes = 0_usize;
+    let mut unique_dependencies = BTreeSet::new();
     for (index, dependency) in model.dependencies.iter().enumerate() {
         let _ = index;
         let (prefix, suffix, material_owned) = match dependency.role {
@@ -3077,10 +3355,16 @@ fn validate_decoded_model(
         {
             return Err(invalid());
         }
-        aggregate_dependency_bytes = aggregate_dependency_bytes
-            .checked_add(dependency.byte_length)
-            .filter(|bytes| *bytes <= limits.max_aggregate_dependency_bytes)
-            .ok_or_else(invalid)?;
+        if unique_dependencies.insert((
+            dependency.logical_path.as_str(),
+            dependency.sha256,
+            dependency.byte_length,
+        )) {
+            aggregate_dependency_bytes = aggregate_dependency_bytes
+                .checked_add(dependency.byte_length)
+                .filter(|bytes| *bytes <= limits.max_aggregate_dependency_bytes)
+                .ok_or_else(invalid)?;
+        }
     }
     for (index, material) in model.materials.iter().enumerate() {
         if material.slot != index
@@ -3141,9 +3425,14 @@ fn validate_decoded_model(
     }
     let mut sample_count = 0_usize;
     for (index, animation) in model.animations.iter().enumerate() {
+        let expanded = animation.frames.len() == animation.frame_count as usize
+            && animation.compact_frames.is_empty();
+        let compact = animation.frames.is_empty()
+            && !animation.compact_frames.is_empty()
+            && compact_frame(animation, 0, &model.identity).is_ok();
         if animation.index != index
             || animation.frame_count <= 0
-            || animation.frames.len() != animation.frame_count as usize
+            || (!expanded && !compact)
             || animation.bone_map.is_empty() && !model.bones.is_empty()
             || animation
                 .bone_map
@@ -3164,12 +3453,7 @@ fn validate_decoded_model(
             return Err(invalid());
         }
         sample_count = sample_count
-            .checked_add(
-                animation
-                    .frames
-                    .len()
-                    .saturating_mul(animation.bone_map.len()),
-            )
+            .checked_add((animation.frame_count as usize).saturating_mul(animation.bone_map.len()))
             .filter(|value| *value <= limits.max_animation_samples)
             .ok_or_else(invalid)?;
     }
@@ -3383,6 +3667,7 @@ mod tests {
                     rotations: vec![identity_quaternion(); 2],
                 },
             ],
+            compact_frames: Vec::new(),
         }
     }
 
@@ -3965,6 +4250,73 @@ mod tests {
     }
 
     #[test]
+    fn dense_constant_animation_channels_are_retained_once() {
+        let mut document = document();
+        let frame = document.animations[0].frames[0].clone();
+        document.animations[0].frame_count = 256;
+        document.animations[0].frames = vec![frame; 256];
+        let limits = PresentationLimits {
+            max_owned_bytes: 10_000,
+            ..PresentationLimits::default()
+        };
+        let first = build_presentation_from_complete_responses(
+            &document,
+            PresentationProfile::World,
+            limits,
+        )
+        .unwrap();
+        let second = build_presentation_from_complete_responses(
+            &document,
+            PresentationProfile::World,
+            limits,
+        )
+        .unwrap();
+        assert_eq!(first.bytes, second.bytes);
+        assert_eq!(first.sha256, second.sha256);
+        assert_eq!(
+            u16::from_le_bytes(first.bytes[4..6].try_into().unwrap()),
+            ARTIFACT_VERSION
+        );
+        assert!(first.model.animations[0].frames.is_empty());
+        assert!(!first.model.animations[0].compact_frames.is_empty());
+        assert_eq!(decode_presentation(&first.bytes, limits).unwrap(), first);
+        let sampled = sample_pose(
+            &first.model,
+            &AnimationState {
+                base_sequence: 0,
+                cycle: float(0.5),
+                pose_parameters: vec![float(0.0)],
+                layers: Vec::new(),
+            },
+        )
+        .unwrap();
+        assert_eq!(sampled.local_translations[0], vector([0.0; 3]));
+    }
+
+    #[test]
+    fn shared_dependency_occurrences_charge_unique_source_bytes() {
+        let first = ArtifactDependency {
+            requester: "models/a.mdl".to_owned(),
+            role: PresentationDependencyRole::Texture,
+            logical_path: "materials/shared.vtf".to_owned(),
+            material_slot: Some(0),
+            texture_role: Some(TextureRole::Base),
+            sha256: Some([1; 32]),
+            byte_length: 1_024,
+        };
+        let mut second = first.clone();
+        second.requester = "models/b.mdl".to_owned();
+        second.material_slot = Some(1);
+        let mut changed = second.clone();
+        changed.sha256 = Some([2; 32]);
+        assert_eq!(
+            unique_dependency_bytes(&[first.clone(), second]),
+            Some(1_024)
+        );
+        assert_eq!(unique_dependency_bytes(&[first, changed]), Some(2_048));
+    }
+
+    #[test]
     fn rejects_missing_hashes_cancellation_bounds_and_noncanonical_artifacts() {
         let document = document();
         let PresentationBuild::Needs(requests) = build_presentation(
@@ -4070,9 +4422,13 @@ mod tests {
             .code,
             PresentationErrorCode::ArtifactLimit
         );
-        let owned =
-            estimated_owned_bytes(&document, &exact.model.dependencies, &exact.model.materials)
-                .unwrap();
+        let owned = estimated_owned_bytes(
+            &document,
+            &exact.model.dependencies,
+            &exact.model.materials,
+            false,
+        )
+        .unwrap();
         assert!(
             build_presentation_from_complete_responses(
                 &document,
@@ -4084,12 +4440,43 @@ mod tests {
             )
             .is_ok()
         );
+        let compact = build_presentation_from_complete_responses(
+            &document,
+            PresentationProfile::World,
+            PresentationLimits {
+                max_owned_bytes: owned - 1,
+                ..PresentationLimits::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            u16::from_le_bytes(compact.bytes[4..6].try_into().unwrap()),
+            ARTIFACT_VERSION
+        );
+        let compact_owned = estimated_owned_bytes(
+            &document,
+            &exact.model.dependencies,
+            &exact.model.materials,
+            true,
+        )
+        .unwrap();
+        assert!(
+            build_presentation_from_complete_responses(
+                &document,
+                PresentationProfile::World,
+                PresentationLimits {
+                    max_owned_bytes: compact_owned,
+                    ..PresentationLimits::default()
+                },
+            )
+            .is_ok()
+        );
         assert_eq!(
             build_presentation_from_complete_responses(
                 &document,
                 PresentationProfile::World,
                 PresentationLimits {
-                    max_owned_bytes: owned - 1,
+                    max_owned_bytes: compact_owned - 1,
                     ..PresentationLimits::default()
                 },
             )
