@@ -52,6 +52,30 @@ export type MovementSnapshot = Readonly<{
   groundNormal: readonly [number, number, number]
   surfaceFriction: number
 }>
+export type MovementTick = Readonly<{
+  mode: number
+  crouchPhase: number
+  grounded: boolean
+  wishDirection: readonly [number, number, number]
+  wishSpeed: number
+  uncappedWishSpeed: number
+  wishVelocity: readonly [number, number, number]
+  jumpVelocity: readonly [number, number, number]
+  climbedStep: number
+  hullMins: readonly [number, number, number]
+  hullMaxs: readonly [number, number, number]
+  sweepQueries: number
+  pointQueries: number
+  contacts: number
+  events: number
+  mover: null | Readonly<{
+    identity: bigint
+    status: 0 | 1 | 2
+    displacement: readonly [number, number, number]
+    supportVelocity: readonly [number, number, number]
+    blocker: bigint | null
+  }>
+}>
 
 export type WeaponState = Readonly<{
   weapon: Tf2Weapon
@@ -170,6 +194,7 @@ export type Snapshot = Readonly<{
   maximumHealth: number
   conditions: number
   movement: MovementSnapshot
+  movementTick: MovementTick | null
   position: readonly [number, number, number]
   velocity: readonly [number, number, number]
   grounded: boolean
@@ -538,6 +563,42 @@ function decodeJump(bytes: ArrayBuffer, offset: number, length: number): JumpSna
   return Object.freeze({ run, events: Object.freeze(events), result })
 }
 
+function decodeMovementTick(bytes: ArrayBuffer, offset: number): MovementTick | null {
+  const length = bytes.byteLength - offset
+  if (length < 12 || length > 144) throw new Tf2CodecError("Movement tick section length is invalid")
+  const data = new Uint8Array(bytes, offset, length), view = new DataView(bytes, offset, length)
+  if (data[0] !== 0x50 || data[1] !== 0x4d || data[2] !== 0x54 || data[3] !== 0x4b || view.getUint32(4, true) !== 1)
+    throw new Tf2CodecError("Movement tick identity is invalid")
+  const present = data[8]
+  if (present === 0) {
+    if (length !== 12 || data[9] !== 0 || data[10] !== 0 || data[11] !== 0) throw new Tf2CodecError("Movement tick absent record is invalid")
+    return null
+  }
+  if (present !== 1 || data[9]! > 7 || data[10]! > 4 || data[11]! > 1 || length < 104) throw new Tf2CodecError("Movement tick header is invalid")
+  let at = 12
+  const vec = () => { const result = vector(view, at); at += 12; return result }
+  const scalar = () => { const value = view.getFloat32(at, true); at += 4; if (!Number.isFinite(value)) throw new Tf2CodecError("Movement tick scalar is invalid"); return value }
+  const wishDirection = vec(), wishSpeed = scalar(), uncappedWishSpeed = scalar(), wishVelocity = vec(), jumpVelocity = vec(),
+    climbedStep = scalar(), hullMins = vec(), hullMaxs = vec()
+  const sweepQueries = view.getUint32(at, true), pointQueries = view.getUint32(at + 4, true), contacts = view.getUint32(at + 8, true), events = view.getUint32(at + 12, true)
+  at += 16
+  const hasMover = data[at]
+  if (hasMover === 0) {
+    if (data[at + 1] !== 0 || data[at + 2] !== 0 || data[at + 3] !== 0 || at + 4 !== length) throw new Tf2CodecError("Movement tick mover absence is invalid")
+    return Object.freeze({ mode: data[9]!, crouchPhase: data[10]!, grounded: data[11] === 1, wishDirection, wishSpeed, uncappedWishSpeed, wishVelocity, jumpVelocity, climbedStep, hullMins, hullMaxs, sweepQueries, pointQueries, contacts, events, mover: null })
+  }
+  const status = data[at + 1]
+  if (hasMover !== 1 || status === undefined || status > 2 || data[at + 2] !== 0 || data[at + 3] !== 0 || at + 44 !== length) throw new Tf2CodecError("Movement tick mover record is invalid")
+  at += 4
+  const identity = view.getBigUint64(at, true); at += 8
+  const displacement = vec(), supportVelocity = vec(), blockerValue = view.getBigUint64(at, true)
+  return Object.freeze({
+    mode: data[9]!, crouchPhase: data[10]!, grounded: data[11] === 1, wishDirection, wishSpeed, uncappedWishSpeed,
+    wishVelocity, jumpVelocity, climbedStep, hullMins, hullMaxs, sweepQueries, pointQueries, contacts, events,
+    mover: Object.freeze({ identity, status: status as 0 | 1 | 2, displacement, supportVelocity, blocker: blockerValue === 0xffff_ffff_ffff_ffffn ? null : blockerValue }),
+  })
+}
+
 function validateProjectileTransitions(events: readonly ProjectileEvent[]): void {
   const state = new Map<number, { kind: ProjectileKind; last?: ProjectileEventType; armed: boolean }>()
   for (const event of events) {
@@ -569,7 +630,7 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
   }
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
-  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 3)
+  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 4)
     throw new Tf2CodecError("snapshot identity is invalid")
   const tf2Class = data[16]
   const team = data[17]
@@ -817,7 +878,8 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
   requireBytes(jumpLength, "Jump")
   const jump = decodeJump(bytes, at, jumpLength)
   at += jumpLength
-  if (at !== bytes.byteLength) throw new Tf2CodecError("snapshot sections do not frame its bytes")
+  const movementTick = decodeMovementTick(bytes, at)
+  at = bytes.byteLength
 
   return Object.freeze({
     tick: view.getBigUint64(8, true),
@@ -828,6 +890,7 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
     maximumHealth,
     conditions: view.getUint32(28, true),
     movement,
+    movementTick,
     position: movement.position,
     velocity: movement.velocity,
     grounded: movement.grounded,
@@ -853,7 +916,7 @@ export async function mapDerivedKey(
     throw new Tf2CodecError("BSP, compiler, or render profile identity is invalid")
   const configurationHash = new Uint8Array(await crypto.subtle.digest("SHA-256", configuration))
   const identity = new TextEncoder().encode(
-    `playsrc-map-runtime-8\n${bspSha256}\n${compilerSha256}\n${profile}\n${renderLevel}\n${Array.from(
+    `playsrc-map-runtime-9\n${bspSha256}\n${compilerSha256}\n${profile}\n${renderLevel}\n${Array.from(
       configurationHash,
       (value) => value.toString(16).padStart(2, "0"),
     ).join("")}\n`,

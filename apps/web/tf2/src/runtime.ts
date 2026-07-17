@@ -1,5 +1,5 @@
 import { fetchImmutableObject, openDerivedObjectCache, type DerivedObjectCache } from "@playsrc/asset-store/browser"
-import { createAudioSystem } from "@playsrc/audio"
+import { createAudioSystem, SoundRegistry, SourceAudioWorld } from "@playsrc/audio"
 import GameplayWorker from "@playsrc/game-tf2-browser/worker?worker"
 import { Tf2WorkerClient, type LoadedGame } from "@playsrc/game-tf2-browser"
 import { encodeCommand, mapDerivedKey, type Snapshot } from "@playsrc/game-tf2-browser/codec"
@@ -8,16 +8,20 @@ import {
   createParticleBatchEncoder,
   createProjectilePresentationMapper,
   createViewmodelPresenter,
-  particleEffects,
+  decodeModelPoseOutput,
+  encodeModelPoseBatch,
   projectileFrame,
   projectileModels,
+  sourceViewOrientation,
   tf2Audio,
   tf2Camera,
   tf2Hud,
+  transformAttachment,
+  type PosedModel,
   type Tf2Hud,
 } from "@playsrc/game-tf2-browser/presentation"
 import { decodeParticleRenderOutput } from "@playsrc/particle"
-import { createRenderer, SOURCE_LDR, SOURCE_PC_INTEGER_HDR, type Camera } from "@playsrc/rendering"
+import { createRenderer, SOURCE_LDR, SOURCE_PC_INTEGER_HDR, type Camera, type MaterialStateInput } from "@playsrc/rendering"
 import {
   initializeClientDiagnostics,
   initializeDeveloperConsole,
@@ -94,6 +98,22 @@ export type ApplicationView = Readonly<{
   environment?: PresentationArtifacts["environment"]
   particleRenderItems?: number
   environmentDrawables?: number
+  movement?: Snapshot["movement"]
+  movementTick?: Snapshot["movementTick"]
+  viewmodelPose?: Readonly<{ activity: string; sequence: number; cycle: number; primitives: number; events: number }>
+  modelProbes?: readonly Readonly<{ model: string; sequence: number; primitives: number; vertices: number }>[]
+  audioVoices?: readonly number[]
+  snapshotTick?: string
+  projectileStates?: string
+  decalProbe?: string
+  modelOccurrenceCount?: number
+  particleProbe?: string
+  audioStarts?: readonly string[]
+  viewmodelProjection?: string
+  viewmodelActivities?: readonly string[]
+  viewmodelSequences?: string
+  crouchHistory?: readonly string[]
+  viewmodelTimelineProbes?: readonly string[]
 }>
 
 type Renderer = Awaited<ReturnType<typeof createRenderer>>
@@ -111,11 +131,17 @@ export class Tf2Application {
   #client?: Tf2WorkerClient
   #renderer?: Renderer
   #audio?: Audio
+  #audioContext?: AudioContext
+  #audioRegistry?: SoundRegistry
+  #audioWorld?: SourceAudioWorld
+  #audioBuffers = new Map<string, AudioBuffer>()
+  #audioStarts: string[] = []
   #audioRunning = false
   #artifacts?: PresentationArtifacts
   #projectiles?: ProjectileMapper
   #viewmodels?: ReturnType<typeof createViewmodelPresenter>
   #attachments = new Map<number, ReadonlySet<string>>()
+  #attachmentTransforms = new Map<number, ReadonlyMap<string, ReturnType<typeof transformAttachment>>>()
   #particleBatches = createParticleBatchEncoder()
   #console?: DeveloperConsole
   #diagnostics?: ClientDiagnostics
@@ -135,6 +161,8 @@ export class Tf2Application {
   #firePressed = false
   #detonate = false
   #detonatePressed = false
+  #reload = false
+  #reloadPressed = false
   #selectClass: 1 | 2 | undefined
   #selectWeapon: 1 | 2 | 3 | undefined
   #modeRequest: 0 | 1 | undefined
@@ -144,6 +172,10 @@ export class Tf2Application {
   #renderLevel: 0 | 1 | 2 = 2
   #mapIdentity = ""
   #environmentDrawables = 0
+  #modelProbes: NonNullable<ApplicationView["modelProbes"]> = Object.freeze([])
+  #viewmodelActivities = new Set<string>()
+  #crouchHistory: string[] = []
+  #viewmodelTimelineProbes: string[] = []
   #animationFrame = 0
   #lastFrame = 0
   #accumulator = 0
@@ -223,6 +255,8 @@ export class Tf2Application {
             "ExplosionCore_MidAir",
           ]),
           attachments: this.#attachments,
+          attachmentTransforms: this.#attachmentTransforms,
+          localOwnerIdentity: 1,
         }),
       )
       this.#viewmodels = createViewmodelPresenter(this.#artifacts)
@@ -239,6 +273,9 @@ export class Tf2Application {
         modelTextures: this.#artifacts.textures,
         directionalTextures: this.#artifacts.directionalTextures,
         environment: this.#artifacts.environment,
+        materialStates: this.#materialStates(this.#artifacts),
+        particleTextures: this.#artifacts.particleTextures,
+        modelOccurrences: this.#artifacts.modelOccurrences,
         diagnostic: true,
       })
       this.#environmentDrawables = scene.environmentDrawables
@@ -257,8 +294,22 @@ export class Tf2Application {
         }),
       )
       this.#audio = createAudioSystem(audioContext, audioResources)
+      this.#audioContext = audioContext
+      this.#audioBuffers = new Map(audioResources.map((resource) => [resource.identity, resource.buffer]))
+      this.#audioRegistry = new SoundRegistry([
+        Object.freeze({
+          logicalPath: this.#artifacts.audio.logicalPath,
+          mode: "base" as const,
+          preload: false,
+          entries: this.#artifacts.audio.entries,
+        }),
+      ])
+      this.#audioWorld = new SourceAudioWorld(this.#audioRegistry, { maxActiveVoices: 128 })
       await this.#client.activate(this.#generation)
       this.#snapshot = await this.#client.advance(this.#generation, this.#command(), 1)
+      this.#recordCrouch(this.#snapshot)
+      this.#modelProbes = await this.#probePlayerModels(this.#artifacts)
+      this.#viewmodelTimelineProbes = await this.#probeViewmodelTimelines(this.#artifacts)
       this.#initializeConsole()
       this.#installListeners()
       this.#paused = document.hidden
@@ -272,6 +323,16 @@ export class Tf2Application {
         initialView: this.#loaded.initialView,
         environment: this.#artifacts.environment,
         environmentDrawables: this.#environmentDrawables,
+        movement: this.#snapshot.movement,
+        movementTick: this.#snapshot.movementTick,
+        modelProbes: this.#modelProbes,
+        snapshotTick: this.#snapshot.tick.toString(),
+        projectileStates: this.#snapshot.projectiles.map((projectile) => `${projectile.identity}:${projectile.state}`).join(","),
+        decalProbe: this.#decalProbe(this.#artifacts),
+        modelOccurrenceCount: this.#artifacts.modelOccurrences.length,
+        viewmodelSequences: this.#viewmodelSequences(this.#artifacts, 1),
+        crouchHistory: Object.freeze([...this.#crouchHistory]),
+        viewmodelTimelineProbes: Object.freeze([...this.#viewmodelTimelineProbes]),
       })
     } catch (error) {
       await this.#release()
@@ -633,6 +694,9 @@ export class Tf2Application {
         modelTextures: artifacts.textures,
         directionalTextures: artifacts.directionalTextures,
         environment: artifacts.environment,
+        materialStates: this.#materialStates(artifacts),
+        particleTextures: artifacts.particleTextures,
+        modelOccurrences: artifacts.modelOccurrences,
         diagnostic: true,
       })
       this.#environmentDrawables = scene.environmentDrawables
@@ -654,6 +718,9 @@ export class Tf2Application {
         modelTextures: priorArtifacts?.textures,
         directionalTextures: priorArtifacts?.directionalTextures,
         environment: priorArtifacts?.environment,
+        materialStates: priorArtifacts ? this.#materialStates(priorArtifacts) : undefined,
+        particleTextures: priorArtifacts?.particleTextures,
+        modelOccurrences: priorArtifacts?.modelOccurrences,
         diagnostic: true,
       })
       throw error
@@ -678,6 +745,8 @@ export class Tf2Application {
           "ExplosionCore_MidAir",
         ]),
         attachments: this.#attachments,
+        attachmentTransforms: this.#attachmentTransforms,
+        localOwnerIdentity: 1,
       }),
     )
     this.#viewmodels = createViewmodelPresenter(artifacts)
@@ -685,6 +754,12 @@ export class Tf2Application {
     this.#mapIdentity = name
     this.#applyInitialView(staged)
     this.#snapshot = await this.#client.advance(generation, this.#command(), 1)
+    this.#crouchHistory = []
+    this.#recordCrouch(this.#snapshot)
+    this.#modelProbes = await this.#probePlayerModels(artifacts)
+    this.#viewmodelTimelineProbes = await this.#probeViewmodelTimelines(artifacts)
+    this.#audio?.reset()
+    this.#audioWorld?.reset()
     this.#paused = document.hidden
     this.#lastFrame = performance.now()
     this.#accumulator = 0
@@ -697,6 +772,16 @@ export class Tf2Application {
       initialView: staged.initialView,
       environment: artifacts.environment,
       environmentDrawables: this.#environmentDrawables,
+      movement: this.#snapshot.movement,
+      movementTick: this.#snapshot.movementTick,
+      modelProbes: this.#modelProbes,
+      snapshotTick: this.#snapshot.tick.toString(),
+      projectileStates: this.#snapshot.projectiles.map((projectile) => `${projectile.identity}:${projectile.state}`).join(","),
+      decalProbe: this.#decalProbe(artifacts),
+      modelOccurrenceCount: artifacts.modelOccurrences.length,
+      viewmodelSequences: this.#viewmodelSequences(artifacts, this.#snapshot.class),
+      crouchHistory: Object.freeze([...this.#crouchHistory]),
+      viewmodelTimelineProbes: Object.freeze([...this.#viewmodelTimelineProbes]),
     })
   }
 
@@ -717,6 +802,177 @@ export class Tf2Application {
     }
   }
 
+  #materialStates(artifacts: PresentationArtifacts): ReadonlyMap<string, MaterialStateInput> {
+    const states = new Map<string, MaterialStateInput>(artifacts.materialStates)
+    for (const texture of artifacts.particleTextures) {
+      const state = artifacts.materialStates.get(texture.materialPath.toLowerCase())
+      if (state) states.set(texture.material.toLowerCase(), state)
+    }
+    return states
+  }
+
+  #decalProbe(artifacts: PresentationArtifacts): string {
+    const zeros = artifacts.environment.textures.reduce(
+      (total, texture) => total + texture.rgba.reduce((count, value, index) => count + (index % 4 === 3 && value === 0 ? 1 : 0), 0),
+      0,
+    )
+    return `${artifacts.environment.textures.length}:${zeros}:${artifacts.environment.markFragments}`
+  }
+
+  #viewmodelSequences(artifacts: PresentationArtifacts, tf2Class: 1 | 2): string {
+    const identity = tf2Class === 1
+      ? "models/weapons/v_models/v_rocketlauncher_soldier.mdl"
+      : "models/weapons/v_models/v_stickybomb_launcher_demo.mdl"
+    return artifacts.models.get(identity)?.sequences
+      .filter((sequence) => sequence.timingAvailable)
+      .map((sequence) => `${sequence.activity}:${sequence.durationSeconds}`)
+      .join("|") ?? ""
+  }
+
+  #recordCrouch(snapshot: Snapshot): void {
+    const value = `${snapshot.tick}:${snapshot.movement.crouchFraction}:${snapshot.movement.viewOffset[2]}`
+    if (this.#crouchHistory.at(-1) !== value) this.#crouchHistory.push(value)
+    if (this.#crouchHistory.length > 128) this.#crouchHistory.splice(0, this.#crouchHistory.length - 128)
+  }
+
+  async #probePlayerModels(artifacts: PresentationArtifacts): Promise<NonNullable<ApplicationView["modelProbes"]>> {
+    if (!this.#client) return Object.freeze([])
+    const requests = ["models/player/soldier.mdl", "models/player/demo.mdl"].map((model, index) => {
+      const artifact = artifacts.models.get(model)
+      if (!artifact || !artifact.sequences.some((sequence) => sequence.activity === "ACT_MP_STAND_PRIMARY")) {
+        throw new Error(`Player model probe ${model}:ACT_MP_STAND_PRIMARY is missing`)
+      }
+      return Object.freeze({
+        identity: 0xffff_0000 + index + 1,
+        model,
+        activity: "ACT_MP_STAND_PRIMARY",
+        previousElapsedSeconds: 0,
+        elapsedSeconds: 0,
+        skin: 0,
+        lod: 0,
+        bodygroups: Object.freeze(artifact.bodygroupCounts.map(() => 0)),
+      })
+    })
+    const posed = decodeModelPoseOutput(await this.#client.models(this.#generation, encodeModelPoseBatch(requests)))
+    return Object.freeze(posed.map((model) => Object.freeze({
+      model: model.model,
+      sequence: model.sequence,
+      primitives: model.primitives.length,
+      vertices: model.primitives.reduce((total, primitive) => total + primitive.positions.length / 3, 0),
+    })))
+  }
+
+  async #probeViewmodelTimelines(artifacts: PresentationArtifacts): Promise<string[]> {
+    if (!this.#client) return []
+    const model = "models/weapons/v_models/v_rocketlauncher_soldier.mdl"
+    const artifact = artifacts.models.get(model)
+    if (!artifact) throw new Error(`Viewmodel timeline probe ${model} is missing`)
+    const activities = ["ACT_VM_DRAW", "ACT_VM_IDLE", "ACT_VM_PRIMARYATTACK", "ACT_RELOAD_START", "ACT_VM_RELOAD", "ACT_RELOAD_FINISH"]
+    const requests = activities.map((activity, index) => {
+      const sequence = artifact.sequences.find((value) => value.activity === activity && value.timingAvailable)
+      if (!sequence) throw new Error(`Viewmodel timeline probe ${model}:${activity} is missing`)
+      return Object.freeze({
+        identity: 0xfffe_0000 + index + 1,
+        model,
+        activity,
+        previousElapsedSeconds: 0,
+        elapsedSeconds: sequence.durationSeconds * 0.5,
+        skin: 0,
+        lod: 0,
+        bodygroups: Object.freeze(artifact.bodygroupCounts.map(() => 0)),
+      })
+    })
+    const poses = decodeModelPoseOutput(await this.#client.models(this.#generation, encodeModelPoseBatch(requests)))
+    return poses.map((pose) => `${pose.activity}:${pose.sequence}:${pose.cycle}:${pose.primitives.length}:${pose.events.length}`)
+  }
+
+  #playAudio(snapshot: Snapshot, camera: Camera): void {
+    if (!this.#audioRunning || !this.#audio || !this.#audioWorld || !this.#audioRegistry || !this.#audioContext || !this.#artifacts) return
+    const browserVoices = new Set(this.#audio.activeVoices())
+    for (const voice of this.#audioWorld.voices()) if (!browserVoices.has(voice.identity)) this.#audioWorld.stop(voice.identity)
+    const yaw = (camera.yawDegrees * Math.PI) / 180, pitch = (camera.pitchDegrees * Math.PI) / 180
+    const listener = Object.freeze({
+      identity: 1,
+      revision: Number(snapshot.tick),
+      origin: camera.position,
+      forward: Object.freeze([Math.cos(pitch) * Math.cos(yaw), Math.cos(pitch) * Math.sin(yaw), -Math.sin(pitch)]) as readonly [number, number, number],
+      right: Object.freeze([Math.sin(yaw), -Math.cos(yaw), 0]) as readonly [number, number, number],
+      masterGain: 1,
+      categoryGain: 1,
+      muted: false,
+    })
+    for (const request of tf2Audio(snapshot)) {
+      if (!request.samples) {
+        this.#blockers.add(`TF2 SoundSamples unavailable: ${request.definition}`)
+        continue
+      }
+      const definition = this.#audioRegistry.get(request.definition)
+      const resource = definition?.waves.find((wave) => wave.resource && this.#audioBuffers.has(wave.resource))?.resource
+      const buffer = resource ? this.#audioBuffers.get(resource) : undefined
+      if (!resource || !buffer) throw new Error(`Audio resource for ${request.definition} is missing`)
+      const started = this.#audioWorld.start({
+        voiceIdentity: request.voiceIdentity,
+        definition: request.definition,
+        source: request.source,
+        listener,
+        samples: request.samples,
+        resourceDurationSeconds: buffer.duration,
+        resourceLoopStartSeconds: null,
+        resourceChannels: buffer.numberOfChannels,
+        resourceAvailable: (identity) => this.#audioBuffers.has(identity),
+        scheduledTimeSeconds: this.#audioContext.currentTime,
+        delaySeconds: 0,
+        mixerGain: this.#artifacts.audio.mixerGain,
+        userGain: 1,
+        doNotOverwrite: false,
+      })
+      for (const replaced of started.replaced) this.#audio.stop(replaced)
+      this.#audio.playNeutral(started.voice)
+      this.#audioStarts.push(`${started.voice.definition}:${started.voice.resource}:${started.voice.channel}:${started.voice.soundLevel}`)
+    }
+  }
+
+  #updateAttachmentTransforms(snapshot: Snapshot, viewmodel: PosedModel, camera: Camera): void {
+    if (!this.#artifacts) return
+    this.#attachmentTransforms.clear()
+    for (const projectile of snapshot.projectiles) {
+      const artifact = this.#artifacts.models.get(
+        projectile.kind === 1 ? "models/weapons/w_models/w_rocket.mdl" : "models/weapons/w_models/w_stickybomb.mdl",
+      )
+      if (artifact) {
+        this.#attachments.set(projectile.identity, new Set(artifact.attachments.keys()))
+        this.#attachmentTransforms.set(
+          projectile.identity,
+          new Map([...artifact.attachments].map(([name, matrix]) => [
+            name,
+            transformAttachment(matrix, projectile.position, projectile.orientation),
+          ])),
+        )
+      }
+    }
+    const cameraOrientation = sourceViewOrientation(camera.pitchDegrees, camera.yawDegrees)
+    const viewmodelAttachments = new Map(
+      viewmodel.attachments.map((attachment) => [
+        attachment.name.toLowerCase(),
+        transformAttachment(attachment.matrix, camera.position, cameraOrientation),
+      ]),
+    )
+    const launchers = new Set([
+      ...snapshot.projectiles.map((projectile) => projectile.launcherIdentity),
+      ...snapshot.projectileEvents.map((event) => event.launcherIdentity),
+    ])
+    for (const launcher of launchers) {
+      if (viewmodelAttachments.size > 0) this.#attachmentTransforms.set(launcher, viewmodelAttachments)
+    }
+    for (const event of snapshot.projectileEvents.filter((value) => value.type === "fire")) {
+      if (event.kind === 1 && event.ownerIdentity === 1) continue
+      const attachment = event.kind === 1 ? "backblast" : "muzzle"
+      if (!this.#attachmentTransforms.get(event.launcherIdentity)?.has(attachment)) {
+        this.#blockers.add(`TF2 viewmodel attachment transform unavailable: ${attachment}`)
+      }
+    }
+  }
+
   #command(): ArrayBuffer {
     const forward = Number(this.#forward) - Number(this.#back)
     const side = Number(this.#left) - Number(this.#right)
@@ -729,6 +985,7 @@ export class Tf2Application {
       crouch: this.#crouch,
       fire: this.#fire || this.#firePressed,
       detonate: this.#detonate || this.#detonatePressed,
+      reload: this.#reload || this.#reloadPressed,
       selectClass: this.#selectClass,
       selectWeapon: this.#selectWeapon,
       modeRequest: this.#modeRequest,
@@ -739,6 +996,7 @@ export class Tf2Application {
     this.#jumpPressed = false
     this.#firePressed = false
     this.#detonatePressed = false
+    this.#reloadPressed = false
     return command
   }
 
@@ -797,6 +1055,7 @@ export class Tf2Application {
     try {
       const snapshot = await this.#client.advance(this.#generation, this.#command(), ticks)
       this.#snapshot = snapshot
+      this.#recordCrouch(snapshot)
       for (const event of snapshot.events) {
         if (event.kind === 9 && event.detail === 1) this.#yaw = event.values[3]
       }
@@ -810,31 +1069,38 @@ export class Tf2Application {
         const m = this.#artifacts.models.get(
           p.kind === 1 ? "models/weapons/w_models/w_rocket.mdl" : "models/weapons/w_models/w_stickybomb.mdl",
         )
-        if (m) add(p.identity, m.attachments)
+        if (m) add(p.identity, new Set(m.attachments.keys()))
         const l = this.#artifacts.models.get(
           p.kind === 1
             ? "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl"
             : "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl",
         )
-        if (l) add(p.launcherIdentity, l.attachments)
+        if (l) add(p.launcherIdentity, new Set(l.attachments.keys()))
       }
-      const presentation = this.#projectiles.map(projectileFrame(snapshot))
       const viewmodel = this.#viewmodels.map(snapshot)
       const camera = tf2Camera(snapshot, this.#yaw, this.#pitch)
+      const modelPoses = decodeModelPoseOutput(
+        await this.#client.models(this.#generation, encodeModelPoseBatch([viewmodel.request])),
+      )
+      const viewmodelPose = modelPoses[0]
+      if (!viewmodelPose || viewmodelPose.identity !== viewmodel.item.identity) throw new Error("Viewmodel pose output differs")
+      this.#viewmodelActivities.add(viewmodelPose.activity)
+      this.#updateAttachmentTransforms(snapshot, viewmodelPose, camera)
+      const presentation = this.#projectiles.map(projectileFrame(snapshot))
       const visibility = await this.#client.visibility(this.#generation, camera.position)
       const particleOutput = await this.#client.particles(
         this.#generation,
         this.#particleBatches.encode(snapshot.tick, camera.position, presentation.particles),
       )
       const particleItems = decodeParticleRenderOutput(particleOutput, this.#artifacts.particleMaterials)
-      if (this.#audioRunning && this.#audio) {
-        for (const request of tf2Audio(snapshot)) this.#audio.play(request)
-      }
+      this.#playAudio(snapshot, camera)
       await this.#renderer.render({
         camera,
-        effects: particleEffects(particleItems),
-        models: Object.freeze([...projectileModels(presentation.models), viewmodel]),
+        effects: Object.freeze([]),
+        particles: particleItems,
+        models: Object.freeze([...projectileModels(presentation.models), Object.freeze({ ...viewmodel.item, pose: viewmodelPose })]),
         visibility,
+        deltaSeconds: ticks * 0.015,
       })
       this.#set({
         hud: tf2Hud(snapshot),
@@ -842,6 +1108,25 @@ export class Tf2Application {
         explosionEvents: this.#explosionEvents,
         camera,
         particleRenderItems: particleItems.length,
+        movement: snapshot.movement,
+        movementTick: snapshot.movementTick,
+        viewmodelPose: Object.freeze({
+          activity: viewmodelPose.activity,
+          sequence: viewmodelPose.sequence,
+          cycle: viewmodelPose.cycle,
+          primitives: viewmodelPose.primitives.length,
+          events: viewmodelPose.events.length,
+        }),
+        audioVoices: this.#audio.activeVoices(),
+        snapshotTick: snapshot.tick.toString(),
+        projectileStates: snapshot.projectiles.map((projectile) => `${projectile.identity}:${projectile.state}`).join(","),
+        particleProbe: [...new Set(particleItems.map((item) => `${item.primitive}:${item.material}:${item.primarySheet ? "sheet" : "missing"}`))].sort().join("|"),
+        audioStarts: Object.freeze([...this.#audioStarts]),
+        viewmodelProjection: viewmodel.item.viewModelProjection ? `${viewmodel.item.viewModelProjection.horizontalFov4By3}:${viewmodel.item.viewModelProjection.near}:${viewmodel.item.viewModelProjection.depthRange.join(",")}` : undefined,
+        viewmodelActivities: Object.freeze([...this.#viewmodelActivities]),
+        viewmodelSequences: this.#viewmodelSequences(this.#artifacts, snapshot.class),
+        crouchHistory: Object.freeze([...this.#crouchHistory]),
+        viewmodelTimelineProbes: Object.freeze([...this.#viewmodelTimelineProbes]),
       })
     } catch (error) {
       this.#paused = true
@@ -889,6 +1174,10 @@ export class Tf2Application {
       this.#jump = true
       this.#jumpPressed = true
     } else if (event.code === "ShiftLeft" || event.code === "ShiftRight") this.#crouch = true
+    else if (event.code === "KeyR") {
+      this.#reload = true
+      this.#reloadPressed = true
+    }
     else if (event.code === "Digit1") this.selectClass(1)
     else if (event.code === "Digit2") this.selectClass(2)
     else if (event.code === "Digit3") this.#selectWeapon = 2
@@ -901,6 +1190,7 @@ export class Tf2Application {
     else if (event.code === "KeyD") this.#right = false
     else if (event.code === "Space") this.#jump = false
     else if (event.code === "ShiftLeft" || event.code === "ShiftRight") this.#crouch = false
+    else if (event.code === "KeyR") this.#reload = false
   }
 
   readonly #mouseDown = (event: MouseEvent): void => {
@@ -941,8 +1231,8 @@ export class Tf2Application {
 
   #neutral(): void {
     this.#forward = this.#back = this.#left = this.#right = false
-    this.#jump = this.#crouch = this.#fire = this.#detonate = false
-    this.#jumpPressed = this.#firePressed = this.#detonatePressed = false
+    this.#jump = this.#crouch = this.#fire = this.#detonate = this.#reload = false
+    this.#jumpPressed = this.#firePressed = this.#detonatePressed = this.#reloadPressed = false
     this.#modeRequest = undefined
   }
 

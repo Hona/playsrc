@@ -34,6 +34,11 @@ function catalog(suppliedSystems: ReadonlySet<string> = systems): ProjectileReso
       [20, new Set(["backblast"])],
       [21, new Set(["muzzle"])],
     ]),
+    attachmentTransforms: new Map([
+      [7, new Map([["trail", { position: [2, 3, 4] as Vector3, orientation: [0, 0, 0, 1] as Quaternion }]])],
+      [20, new Map([["backblast", { position: [5, 6, 7] as Vector3, orientation: [0, 0, 0, 1] as Quaternion }]])],
+      [21, new Map([["muzzle", { position: [8, 9, 10] as Vector3, orientation: [0, 0, 0, 1] as Quaternion }]])],
+    ]),
   })
 }
 
@@ -124,6 +129,7 @@ describe("TF2 projectile presentation contract", () => {
     expect(result.particles.map((request) => request.kind === "start" && [request.system, request.attachment])).toEqual([
       ["rockettrail", { entityIdentity: 7, name: "trail" }],
       ["rocketbackblast", { entityIdentity: 20, name: "backblast" }],
+      false,
     ])
     expect(Object.isFrozen(result.models[0]!.orientation)).toBe(true)
     expect(fact.velocity).toEqual([-100, 500, 9])
@@ -139,7 +145,7 @@ describe("TF2 projectile presentation contract", () => {
 
     const stuck = sticky("stuck-unarmed")
     const stuckResult = mapper.map(frame(2n, [stuck], [event(stuck, "stick", 2n)]))
-    expect(stuckResult.particles).toHaveLength(1)
+    expect(stuckResult.particles).toHaveLength(2)
     const settled = stuckResult.models[0]!.orientation
     rotate(settled, [0, 0, 1]).forEach((component, index) => {
       expect(component).toBeCloseTo([0, 1, 0][index]!, 6)
@@ -147,7 +153,7 @@ describe("TF2 projectile presentation contract", () => {
 
     const armed = sticky("stuck-armed")
     const armedResult = mapper.map(frame(3n, [armed], [event(armed, "arm", 3n)]))
-    expect(armedResult.particles).toMatchObject([{ kind: "start", system: "stickybomb_pulse_red" }])
+    expect(armedResult.particles[0]).toMatchObject({ kind: "start", system: "stickybomb_pulse_red" })
 
     const explosion = event(armed, "explode", 4n)
     const exploded = mapper.map(frame(4n, [], [explosion]))
@@ -190,7 +196,7 @@ describe("TF2 projectile presentation contract", () => {
       event(armed, "stick", 2n),
       event(armed, "arm", 2n),
     ]))
-    expect(result.particles.map((request) => request.kind)).toEqual(["set-control-point", "start"])
+    expect(result.particles.map((request) => request.kind)).toEqual(["set-control-point", "start", "set-control-point"])
     expect(result.particles[1]).toMatchObject({ system: "stickybomb_pulse_red" })
   })
 

@@ -8,16 +8,17 @@ import { acquireMap } from "./targets"
 import { parseRuntimeMap } from "@playsrc/rendering/runtime-map"
 import { buildSourceBundle } from "./source-bundle"
 import { decodeSnapshot, encodeCommand, encodeJumpCourse } from "../../../games/tf2/browser/src/codec"
+import { decodeModelPoseOutput, encodeModelPoseBatch } from "../../../games/tf2/browser/src/presentation"
 
-const EXPECTED_MAP_BYTES = 49_414_468
-const EXPECTED_MAP_SHA256 = "f44941ce76aa276d7a278cb84c122709f47e477baaec865091c0b0ab5653ab0e"
+const EXPECTED_MAP_BYTES = 42_452_075
+const EXPECTED_MAP_SHA256 = "b202a853d87a93c10b13226fd48a7eafc250cd5c83a54b44ffdb7dce2a438753"
 const EXPECTED_BSP_SHA256 = "b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959"
-const EXPECTED_HDR_BYTES = 85_586_296
-const EXPECTED_HDR_SHA256 = "d39f32489a7449075e788f78cde8bb0263b161e917d9a1b10cd0f6a96e865c68"
-const EXPECTED_LDR_DERIVED_SHA256 = "76fff83deb09129cef5359bd92f5572da0e9468c72534b15a5521b15a1359bf5"
-const EXPECTED_HDR_DERIVED_SHA256 = "9f4b214cd3edc7509f623c5ca9d42b9ad37d4d6a5de12a56c3d84bb1d215667a"
-const EXPECTED_DEPENDENCY_BYTES = 112_112_616
-const EXPECTED_DEPENDENCY_SHA256 = "34cbd09a63f1ba8407c7a775de20467773f87a41db78e34447734799fa2dba78"
+const EXPECTED_HDR_BYTES = 78_624_037
+const EXPECTED_HDR_SHA256 = "baddd97e9795ab7f6c6fbf7710b18d1047397c4bd10854a6a3f9202bcf059ecd"
+const EXPECTED_LDR_DERIVED_SHA256 = "18b77887ff07b7aafb80709947b9ce9ca4ca91da491ed7f6448ebc660922aaae"
+const EXPECTED_HDR_DERIVED_SHA256 = "49f93fbdfd42bb582986b1b5cdf15481f65de4a1a5f9f26dbb488157a63784e1"
+const EXPECTED_DEPENDENCY_BYTES = 112_303_242
+const EXPECTED_DEPENDENCY_SHA256 = "494c282a45b2c1ae1882e66aabe234cda3f92d950e1d2a37c2616db845164884"
 function bundlePathOffset(bytes: Uint8Array, target: string): number {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   let offset = 12
@@ -48,6 +49,10 @@ type Exports = Readonly<{
   playsrc_jump_configure(handle: number, definition: number, length: number): number
   playsrc_particle_transact(handle: number, pointer: number, length: number): number
   playsrc_particle_output_length(handle: number): number
+  playsrc_particle_output_copy(handle: number, pointer: number, capacity: number): number
+  playsrc_model_transact(handle: number, pointer: number, length: number): number
+  playsrc_model_output_length(handle: number): number
+  playsrc_model_output_copy(handle: number, pointer: number, capacity: number): number
   playsrc_visibility_query(handle: number, pointer: number): number
   playsrc_visibility_output_length(handle: number): number
   playsrc_runtime_count(handle: number, kind: number): number
@@ -177,7 +182,7 @@ function inspectHdrPayload(payload: Uint8Array) {
   require(reader.u32() === materialCount, "HDR resolved-material count is invalid")
   for (let index = 0; index < materialCount; index += 1) skipRuntimeMaterial(reader)
   const modelCount = reader.u32()
-  require(modelCount === 53, "HDR model count is invalid")
+  require(modelCount === 20, "HDR model count is invalid")
   for (let model = 0; model < modelCount; model += 1) {
     reader.sized()
     const modelMaterials = reader.u32()
@@ -297,7 +302,7 @@ function inspectHdrPayload(payload: Uint8Array) {
   }
   require(skyDimensions.join(",") === "512x256,512x256,512x256,512x256,512x512,4x4", "HDR sky dimensions are invalid")
   const inputCount = reader.u32()
-  require(inputCount === 294, "HDR input-hash count is invalid")
+  require(inputCount === 296, "HDR input-hash count is invalid")
   for (let index = 0; index < inputCount; index += 1) {
     require(reader.u8() === 1 && reader.take(3).every((value) => value === 0), "HDR input record is invalid")
     require(reader.text().length > 0, "HDR input path is empty")
@@ -560,7 +565,7 @@ export async function verifyTf2Wasm(
     opposedTriangles === 0 &&
     degenerateTriangles ===
       0, `runtime triangle orientation is ${alignedTriangles} aligned, ${opposedTriangles} opposed, ${degenerateTriangles} degenerate`)
-  require(renderMap.models.length === 53, `runtime model count ${renderMap.models.length} is invalid`)
+  require(renderMap.models.length === 20, `runtime model count ${renderMap.models.length} is invalid`)
   require(renderMap.modelOccurrences.length === 33, "runtime model occurrence count is invalid")
   require(renderMap.lightmap !== undefined, "runtime lightmap atlas is unavailable")
   const teleports = exports.playsrc_teleport_count(handle)
@@ -637,6 +642,43 @@ export async function verifyTf2Wasm(
   require(exports.playsrc_particle_transact(handle, particlePointer, particleBatch.length) ===
     1, "configured rockettrail particle transaction failed")
   require(exports.playsrc_particle_output_length(handle) > 12, "configured rockettrail produced no render data")
+  const particleOutputLength = exports.playsrc_particle_output_length(handle)
+  const particleOutputPointer = exports.playsrc_alloc(particleOutputLength)
+  require(exports.playsrc_particle_output_copy(handle, particleOutputPointer, particleOutputLength) === particleOutputLength,
+    "configured rockettrail render output copy failed")
+  const particleOutput = new Uint8Array(exports.memory.buffer, particleOutputPointer, particleOutputLength).slice()
+  const particleOutputView = new DataView(particleOutput.buffer)
+  require(new TextDecoder().decode(particleOutput.subarray(0, 4)) === "PSPR" &&
+    particleOutputView.getUint32(4, true) === 2 && particleOutputView.getUint32(8, true) > 0,
+  "configured rockettrail render output identity differs")
+  require((particleOutputView.getUint32(12 + 124, true) & 1) !== 0,
+    "configured rockettrail render output omitted its primary sheet sample")
+
+  const modelBatch = encodeModelPoseBatch([{
+    identity: 1,
+    model: "models/weapons/v_models/v_rocketlauncher_soldier.mdl",
+    activity: "ACT_VM_DRAW",
+    previousElapsedSeconds: 0,
+    elapsedSeconds: 0.4,
+    skin: 0,
+    lod: 0,
+    bodygroups: [0],
+  }])
+  const modelPointer = exports.playsrc_alloc(modelBatch.byteLength)
+  new Uint8Array(exports.memory.buffer, modelPointer, modelBatch.byteLength).set(modelBatch)
+  require(exports.playsrc_model_transact(handle, modelPointer, modelBatch.byteLength) === 1,
+    "fixed StudioModel viewmodel pose phase failed")
+  const modelOutputLength = exports.playsrc_model_output_length(handle)
+  const modelOutputPointer = exports.playsrc_alloc(modelOutputLength)
+  require(exports.playsrc_model_output_copy(handle, modelOutputPointer, modelOutputLength) === modelOutputLength,
+    "fixed StudioModel viewmodel pose output copy failed")
+  const modelPose = decodeModelPoseOutput(
+    new Uint8Array(exports.memory.buffer, modelOutputPointer, modelOutputLength).slice(),
+  )[0]
+  require(modelPose?.model === "models/weapons/v_models/v_rocketlauncher_soldier.mdl" &&
+    modelPose.activity === "ACT_VM_DRAW" && Math.abs(modelPose.cycle - 0.5) <= 1e-6 &&
+    modelPose.primitives.length === 4 && modelPose.primitives.every((primitive) => primitive.tangents.length / 4 === primitive.positions.length / 3),
+  "fixed StudioModel viewmodel pose output differs")
   const visibilityPointer = exports.playsrc_alloc(12)
   new Float32Array(exports.memory.buffer, visibilityPointer, 3).set([5328, 3376, -3068])
   require(exports.playsrc_visibility_query(handle, visibilityPointer) === 1, "fixed-camera PVS query failed")
@@ -644,6 +686,9 @@ export async function verifyTf2Wasm(
 
   exports.playsrc_free(coursePointer, course.byteLength)
   exports.playsrc_free(particlePointer, particleBatch.length)
+  exports.playsrc_free(particleOutputPointer, particleOutputLength)
+  exports.playsrc_free(modelPointer, modelBatch.byteLength)
+  exports.playsrc_free(modelOutputPointer, modelOutputLength)
   exports.playsrc_free(visibilityPointer, 12)
   exports.playsrc_free(commandPointer, 40)
   exports.playsrc_free(snapshotPointer, snapshotLength)
@@ -707,6 +752,9 @@ export async function verifyTf2Wasm(
     snapshotBytes: snapshotLength,
     projectiles: decoded.projectiles.length,
     events: decoded.projectileEvents.length,
+    particleItems: particleOutputView.getUint32(8, true),
+    viewmodelPrimitives: modelPose.primitives.length,
+    viewmodelEvents: modelPose.events.length,
     spawn,
   }
 }

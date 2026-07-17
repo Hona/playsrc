@@ -109,6 +109,47 @@ export type ModelItem = Readonly<{
   scale: number
   skin?: number
   viewModel?: boolean
+  pose?: Readonly<{
+    primitives: readonly Readonly<{
+      primitive: number
+      material: number
+      positions: Float32Array
+      normals: Float32Array
+      tangents: Float32Array
+    }>[]
+  }>
+  viewModelProjection?: Readonly<{
+    kind: "viewmodel"
+    horizontalFov4By3: number
+    near: number
+    depthRange: readonly [number, number]
+    drawsAfterWorld: boolean
+    opaqueBeforeTranslucent: boolean
+    optionalViewSpaceYReflection: boolean
+  }>
+}>
+
+export type ParticleItem = Readonly<{
+  identity: number
+  primitive: "sprite" | "trail"
+  material: string
+  position: readonly [number, number, number]
+  previousPosition: readonly [number, number, number]
+  radius: number
+  rollRadians: number
+  color: number
+  opacity: number
+  trailLength: number
+  ageSeconds: number
+  trailMinLength: number
+  trailMaxLength: number
+  trailFadeInSeconds: number
+  orientationType: number
+  primarySheet: Readonly<{
+    current: readonly (readonly [number, number, number, number])[]
+    next: readonly (readonly [number, number, number, number])[]
+    blend: number
+  }> | null
 }>
 
 export type FrameCaptureRequest = Readonly<{ format: "image/png" }>
@@ -116,6 +157,7 @@ export type FrameCaptureRequest = Readonly<{ format: "image/png" }>
 export type Frame = Readonly<{
   camera: Camera
   effects: readonly Effect[]
+  particles?: readonly ParticleItem[]
   models?: readonly ModelItem[]
   lightStyles?: readonly Readonly<{ style: number; scalar: number }>[]
   exposureHistogram?: Uint32Array
@@ -174,6 +216,26 @@ export type EnvironmentInput = Readonly<{
   textures: readonly EnvironmentTextureInput[]
 }>
 
+export type MaterialStateInput = Readonly<{
+  lighting: number
+  blendEnabled: boolean
+  blendSource: number
+  blendDestination: number
+  alphaTest: boolean
+  cull: number
+  depthTest: boolean
+  depthWrite: boolean
+  depthFunction: number
+  polygonOffset: number
+  wireframe: boolean
+  noDraw: boolean
+  wrapS: number
+  wrapT: number
+  minFilter: number
+  magFilter: number
+  alphaTestReference: number
+}>
+
 export type MapLoadRequest = Readonly<{
   payload: Uint8Array
   payloadSha256: string
@@ -188,6 +250,9 @@ export type MapLoadRequest = Readonly<{
     rgba: Uint8Array
   }>[]
   environment?: EnvironmentInput
+  materialStates?: ReadonlyMap<string, MaterialStateInput>
+  particleTextures?: readonly EnvironmentTextureInput[]
+  modelOccurrences?: readonly Readonly<{ entity: number; model: string; matrix: Float32Array }>[]
   diagnostic?: boolean
   signal?: AbortSignal
 }>
@@ -286,6 +351,9 @@ type SceneResources = {
   loadRequest: Omit<MapLoadRequest, "payload" | "signal">
   group: THREE.Group
   modelTemplates: Map<string, THREE.Group>
+  particleTextures: Map<string, THREE.DataTexture>
+  particleMaterials: Map<string, THREE.MeshBasicNodeMaterial>
+  materialStates: ReadonlyMap<string, MaterialStateInput>
   disposables: OwnedResourceGeneration
   lightmapTextures: readonly [THREE.DataTexture, THREE.DataTexture?, THREE.DataTexture?, THREE.DataTexture?]
   exposureUniform: ReturnType<typeof TSL.uniform>
@@ -346,12 +414,17 @@ function disposeScene(scene: SceneResources): void {
 function textureFromRgba(
   input: { rgba: Uint8Array; width: number; height: number },
   colorSpace: string,
+  state?: Pick<MaterialStateInput, "wrapS" | "wrapT" | "minFilter" | "magFilter">,
 ): THREE.DataTexture {
   const texture = new THREE.DataTexture(input.rgba, input.width, input.height, THREE.RGBAFormat, THREE.UnsignedByteType)
   texture.colorSpace = colorSpace
-  texture.wrapS = THREE.RepeatWrapping
-  texture.wrapT = THREE.RepeatWrapping
-  texture.flipY = true
+  const wrap = (value: number) => value === 0 ? THREE.RepeatWrapping : THREE.ClampToEdgeWrapping
+  texture.wrapS = wrap(state?.wrapS ?? 0)
+  texture.wrapT = wrap(state?.wrapT ?? 0)
+  texture.minFilter = (state?.minFilter ?? 2) === 0 ? THREE.NearestFilter : THREE.LinearFilter
+  texture.magFilter = (state?.magFilter ?? 1) === 0 ? THREE.NearestFilter : THREE.LinearFilter
+  texture.generateMipmaps = false
+  texture.flipY = false
   texture.needsUpdate = true
   return texture
 }
@@ -362,11 +435,22 @@ function textureFromLightmap(lightmap: RuntimeLightmap, plane: Float32Array): TH
   return texture
 }
 
-function materialOptions(resolved: RuntimeMaterial): THREE.MeshBasicMaterialParameters {
+function materialOptions(resolved: RuntimeMaterial, state?: MaterialStateInput): THREE.MeshBasicMaterialParameters {
+  const blendFactor = (value: number) => [THREE.ZeroFactor, THREE.OneFactor, THREE.SrcAlphaFactor, THREE.OneMinusSrcAlphaFactor][value] ?? THREE.OneFactor
   return {
-    transparent: (resolved.features & 1) !== 0,
-    alphaTest: (resolved.features & 4) !== 0 ? 0.5 : 0,
-    side: worldMaterialSide(resolved.features),
+    transparent: state?.blendEnabled ?? (resolved.features & 1) !== 0,
+    blending: state?.blendEnabled ? THREE.CustomBlending : THREE.NormalBlending,
+    blendSrc: state ? blendFactor(state.blendSource) : undefined,
+    blendDst: state ? blendFactor(state.blendDestination) : undefined,
+    alphaTest: state?.alphaTest ? state.alphaTestReference : (resolved.features & 4) !== 0 ? 0.7 : 0,
+    side: state?.cull === 1 ? THREE.DoubleSide : worldMaterialSide(resolved.features),
+    depthTest: state?.depthTest ?? true,
+    depthWrite: state?.depthWrite ?? true,
+    depthFunc: state?.depthFunction === 0 ? THREE.LessDepth : THREE.LessEqualDepth,
+    polygonOffset: state?.polygonOffset === 1,
+    polygonOffsetFactor: state?.polygonOffset === 1 ? -0.5 : 0,
+    polygonOffsetUnits: state?.polygonOffset === 1 ? -262_144 : 0,
+    wireframe: state?.wireframe ?? false,
   }
 }
 
@@ -379,8 +463,9 @@ function worldNodeMaterial(
   directionalKind: "normal" | "ssbump" | undefined,
   directionalUvTransform: DirectionalTextureInput["uvTransform"] | undefined,
   exposure: ReturnType<typeof TSL.uniform>,
+  state?: MaterialStateInput,
 ): THREE.MeshBasicNodeMaterial {
-  const material = new THREE.MeshBasicNodeMaterial(materialOptions(resolved))
+  const material = new THREE.MeshBasicNodeMaterial(materialOptions(resolved, state))
   const base = baseTexture ? TSL.texture(baseTexture, TSL.uv()) : TSL.vec4(TSL.color(debugColor(identity)), 1)
   const flat = TSL.texture(lightmaps[0], TSL.uv(1)).rgb
   let irradiance = flat
@@ -481,6 +566,8 @@ class RendererOwner implements Renderer {
   #effects = new THREE.Group()
   #viewModels = new THREE.Group()
   #camera = new THREE.PerspectiveCamera(75, 1, 1, 32_768)
+  #viewCamera = new THREE.PerspectiveCamera(41.114, 1, 1, 32_768)
+  #viewModelInstances = new Map<number, { model: string; root: THREE.Group; instance: THREE.Group; meshes: THREE.Mesh[] }>()
   #effectGeometry = new THREE.SphereGeometry(1, 10, 6)
   #active?: SceneResources
   #renderBusy = false
@@ -496,9 +583,12 @@ class RendererOwner implements Renderer {
     this.#powerPreference = request.powerPreference
     this.#exposure = new ExposureController(this.configuration.exposure)
     this.#scene.background = null
-    this.#scene.add(this.#world, this.#effects, this.#camera)
-    this.#camera.add(this.#viewModels)
+    this.#scene.add(this.#world, this.#effects, this.#camera, this.#viewCamera)
+    this.#viewCamera.add(this.#viewModels)
+    this.#viewCamera.layers.set(1)
+    this.#viewModels.layers.set(1)
     this.#camera.up.set(0, 0, 1)
+    this.#viewCamera.up.set(0, 0, 1)
   }
 
   get lifecycle(): RendererLifecycle {
@@ -605,6 +695,10 @@ class RendererOwner implements Renderer {
       )
         throw new RenderingError("MalformedInput", "environment texture input is invalid")
     }
+    for (const texture of request.particleTextures ?? []) {
+      if (texture.width * texture.height * 4 !== texture.rgba.byteLength || (await digest(texture.rgba)) !== texture.sha256)
+        throw new RenderingError("MalformedInput", "particle texture input is invalid")
+    }
     const modelTextures = new Map<string, NonNullable<MapLoadRequest["modelTextures"]>[number]>()
     for (const texture of request.modelTextures ?? []) {
       if (
@@ -614,6 +708,12 @@ class RendererOwner implements Renderer {
       )
         throw new RenderingError("MalformedInput", "model texture input is invalid")
       modelTextures.set(texture.material.toLowerCase(), texture)
+    }
+    const materialStates = new Map<string, MaterialStateInput>()
+    for (const [identity, state] of request.materialStates ?? []) {
+      const key = identity.toLowerCase()
+      if (!key || materialStates.has(key) || !Number.isFinite(state.alphaTestReference)) throw new RenderingError("MalformedInput", "material state input is invalid")
+      materialStates.set(key, Object.freeze({ ...state }))
     }
     const materialIdentities = new Set([
       ...map.materials.map((material) => material.logicalPath.toLowerCase()),
@@ -664,6 +764,9 @@ class RendererOwner implements Renderer {
   ): SceneResources {
     const group = new THREE.Group()
     const modelTemplates = new Map<string, THREE.Group>()
+    const particleTextures = new Map<string, THREE.DataTexture>()
+    const particleMaterials = new Map<string, THREE.MeshBasicNodeMaterial>()
+    const materialStates = new Map(request.materialStates ?? [])
     const disposables = new OwnedResourceGeneration(this.#deviceGeneration, sceneGeneration)
     const diagnostics: SceneDiagnostic[] = []
     const worldBatches: { mesh: THREE.Mesh; faces: Uint32Array }[] = []
@@ -700,7 +803,7 @@ class RendererOwner implements Renderer {
         diagnostics.push(diagnostic("MissingMaterial", identity, "resolved base texture is unavailable"))
         return undefined
       }
-      const texture = textureFromRgba(source, THREE.SRGBColorSpace)
+      const texture = textureFromRgba(source, THREE.SRGBColorSpace, materialStates.get(identity.toLowerCase()))
       disposables.add(texture)
       return texture
     }
@@ -717,6 +820,8 @@ class RendererOwner implements Renderer {
         disposables.add(geometry)
         const resolved = map.materials[batch.material]!
         const identity = resolved.logicalPath
+        const materialState = materialStates.get(identity.toLowerCase())
+        if (materialState?.noDraw) continue
         const baseTexture = createBase(resolved, identity)
         const kinds = new Set(batch.lightmapKind)
         const requiresNormal = kinds.has(2)
@@ -745,10 +850,11 @@ class RendererOwner implements Renderer {
             supplied?.input.kind,
             supplied?.input.uvTransform,
             exposureUniform,
+            materialState,
           )
         } else {
           material = new THREE.MeshBasicMaterial({
-            ...materialOptions(resolved),
+            ...materialOptions(resolved, materialState),
             color: baseTexture ? 0xffffff : debugColor(identity),
             map: baseTexture,
             lightMap: lightmapTextures[0],
@@ -765,7 +871,7 @@ class RendererOwner implements Renderer {
 
       const environmentTextures = new Map<string, THREE.DataTexture>()
       for (const texture of request.environment?.textures ?? []) {
-        const value = textureFromRgba(texture, THREE.SRGBColorSpace)
+        const value = textureFromRgba(texture, THREE.SRGBColorSpace, materialStates.get(texture.material.toLowerCase()))
         environmentTextures.set(texture.material.toLowerCase(), value)
         disposables.add(value)
       }
@@ -783,12 +889,10 @@ class RendererOwner implements Renderer {
           geometry.setAttribute("uv", new THREE.BufferAttribute(fragment.uv, 2))
           geometry.setIndex(new THREE.BufferAttribute(fragment.indices, 1))
           disposables.add(geometry)
+          const state = materialStates.get(mark.material.toLowerCase())
           const material = new THREE.MeshBasicMaterial({
+            ...materialOptions({ logicalPath: mark.material, width: 1, height: 1, shader: 3, features: 1, textureRole: 0 }, state),
             map: texture,
-            transparent: true,
-            depthWrite: false,
-            polygonOffset: true,
-            polygonOffsetFactor: -1,
             toneMapped: false,
           })
           disposables.add(material)
@@ -807,9 +911,11 @@ class RendererOwner implements Renderer {
           geometry.computeBoundingSphere()
           disposables.add(geometry)
           const resolved = model.materials[primitive.material]!
+          const materialState = materialStates.get(resolved.logicalPath.toLowerCase())
+          if (materialState?.noDraw) continue
           const baseTexture = createBase(resolved, resolved.logicalPath)
           const material = new THREE.MeshBasicMaterial({
-            ...materialOptions(resolved),
+            ...materialOptions(resolved, materialState),
             color: baseTexture ? 0xffffff : debugColor(resolved.logicalPath),
             map: baseTexture,
             toneMapped: false,
@@ -823,13 +929,40 @@ class RendererOwner implements Renderer {
         const model = map.models[occurrence.model]!
         const instance = modelTemplates.get(model.logicalPath)!.clone(true)
         instance.userData.entity = occurrence.entity
-        sourceTransform(instance, occurrence.position, occurrence.angles)
+        const exact = request.modelOccurrences?.find((value) => value.entity === occurrence.entity && value.model === model.logicalPath)
+        if (exact) {
+          const m = exact.matrix
+          if (m.length !== 12 || ![...m].every(Number.isFinite)) throw new RenderingError("MalformedInput", "model occurrence matrix is invalid")
+          instance.matrix.set(m[0]!, m[1]!, m[2]!, m[3]!, m[4]!, m[5]!, m[6]!, m[7]!, m[8]!, m[9]!, m[10]!, m[11]!, 0, 0, 0, 1)
+          instance.matrixAutoUpdate = false
+        } else sourceTransform(instance, occurrence.position, occurrence.angles)
         group.add(instance)
+      }
+      for (const texture of request.particleTextures ?? []) {
+        const state = materialStates.get(texture.material.toLowerCase())
+        const value = textureFromRgba(texture, THREE.SRGBColorSpace, state)
+        particleTextures.set(texture.material.toLowerCase(), value)
+        disposables.add(value)
+        const material = new THREE.MeshBasicNodeMaterial(materialOptions({
+          logicalPath: texture.material, width: texture.width, height: texture.height, shader: 7, features: 1, textureRole: 0,
+        }, state))
+        const current = TSL.texture(value, TSL.uv())
+        const next = TSL.texture(value, TSL.attribute("particleUvNext", "vec2"))
+        const blend = TSL.attribute("particleSheetBlend", "float")
+        const color = TSL.attribute("particleColor", "vec4")
+        const sampled = current.mul(TSL.float(1).sub(blend)).add(next.mul(blend))
+        material.colorNode = TSL.vec4(sampled.rgb.mul(color.rgb), sampled.a.mul(color.a))
+        material.toneMapped = false
+        particleMaterials.set(texture.material.toLowerCase(), material)
+        disposables.add(material)
       }
     } catch (error) {
       const failed = {
         group,
         modelTemplates,
+        particleTextures,
+        particleMaterials,
+        materialStates,
         disposables,
         disposed: false,
       } as SceneResources
@@ -890,10 +1023,16 @@ class RendererOwner implements Renderer {
           Object.freeze({ ...texture, rgba: texture.rgba.slice() }),
         ),
         environment: request.environment,
+        materialStates: new Map(materialStates),
+        particleTextures: request.particleTextures?.map((texture) => Object.freeze({ ...texture, rgba: texture.rgba.slice() })),
+        modelOccurrences: request.modelOccurrences?.map((value) => Object.freeze({ ...value, matrix: value.matrix.slice() })),
         diagnostic: request.diagnostic,
       },
       group,
       modelTemplates,
+      particleTextures,
+      particleMaterials,
+      materialStates,
       disposables,
       lightmapTextures,
       exposureUniform,
@@ -934,7 +1073,19 @@ class RendererOwner implements Renderer {
       this.#setCamera(frame.camera)
       this.#stageDynamicItems(frame)
       if (!this.#suspended) {
+        this.#backend.autoClear = true
         await this.#backend.renderAsync(this.#scene, this.#camera)
+        if (this.#viewModels.children.length > 0) {
+          this.#backend.autoClear = false
+          const background = this.#scene.background
+          this.#scene.background = null
+          try {
+            await this.#backend.renderAsync(this.#scene, this.#viewCamera)
+          } finally {
+            this.#scene.background = background
+            this.#backend.autoClear = true
+          }
+        }
         this.#submission += 1
       }
       const capture = frame.capture ? await this.#capture(frame.capture) : undefined
@@ -967,7 +1118,7 @@ class RendererOwner implements Renderer {
 
   #validateFrame(frame: Frame): void {
     if (
-      frame.effects.length + (frame.models?.length ?? 0) > MAX_EFFECTS ||
+      frame.effects.length + (frame.models?.length ?? 0) + (frame.particles?.length ?? 0) > MAX_EFFECTS ||
       !finite([
         ...frame.camera.position,
         frame.camera.yawDegrees,
@@ -1017,6 +1168,16 @@ class RendererOwner implements Renderer {
       if (!this.#active!.modelTemplates.has(modelKey(item.model, item.skin ?? 0))) {
         throw new RenderingError("MissingInput", `runtime model ${item.model} skin ${item.skin ?? 0} is unavailable`)
       }
+      if (item.viewModel && (!item.viewModelProjection || item.viewModelProjection.kind !== "viewmodel"))
+        throw new RenderingError("MalformedInput", "viewmodel projection is missing")
+    }
+    for (const item of frame.particles ?? []) {
+      if (!Number.isSafeInteger(item.identity) || item.identity < 1 || !finite([
+        ...item.position, ...item.previousPosition, item.radius, item.rollRadians, item.opacity, item.trailLength,
+        item.ageSeconds, item.trailMinLength, item.trailMaxLength, item.trailFadeInSeconds,
+      ]) || item.radius < 0 || item.opacity < 0 || item.opacity > 1 || item.orientationType !== 0 ||
+        !this.#active!.particleTextures.has(item.material.toLowerCase()) || !item.primarySheet)
+        throw new RenderingError("MalformedInput", "particle draw item is invalid")
     }
   }
 
@@ -1034,18 +1195,125 @@ class RendererOwner implements Renderer {
       -Math.sin(pitch),
     )
     this.#camera.lookAt(this.#camera.position.clone().add(direction))
+    this.#viewCamera.position.copy(this.#camera.position)
+    this.#viewCamera.quaternion.copy(this.#camera.quaternion)
   }
 
   #clearDynamic(group: THREE.Group): void {
     for (const child of [...group.children]) {
       group.remove(child)
-      if (child instanceof THREE.Mesh && child.userData.dynamicMaterial === true) child.material.dispose()
+      child.traverse((object) => {
+        if (!(object instanceof THREE.Mesh)) return
+        if (object.userData.dynamicMaterial === true) {
+          for (const material of Array.isArray(object.material) ? object.material : [object.material]) material.dispose()
+        }
+        if (object.userData.dynamicGeometry === true) object.geometry.dispose()
+      })
     }
+  }
+
+  #particleGeometry(item: ParticleItem, camera: Camera): THREE.BufferGeometry {
+    const geometry = new THREE.BufferGeometry()
+    const positions = new Float32Array(12)
+    const uv = new Float32Array([0, 0, 1, 0, 1, 1, 0, 1])
+    if (item.primitive === "trail") {
+      const delta = new THREE.Vector3().fromArray(item.previousPosition).sub(new THREE.Vector3().fromArray(item.position))
+      const magnitude = delta.length()
+      const fade = item.trailFadeInSeconds === 0 ? 1 : Math.min(1, item.ageSeconds / item.trailFadeInSeconds)
+      const seconds = 0.015
+      const length = Math.max(item.trailMinLength, Math.min(item.trailMaxLength, fade * magnitude / seconds * item.trailLength))
+      if (magnitude > 0 && length > 0) delta.multiplyScalar(length / magnitude)
+      const center = new THREE.Vector3().fromArray(item.position)
+      const tangent = center.clone().sub(new THREE.Vector3().fromArray(camera.position)).cross(delta).normalize()
+      const halfWidth = Math.min(item.radius, length) * 0.5
+      const vertices = [center.clone().addScaledVector(tangent, halfWidth), center.clone().addScaledVector(tangent, -halfWidth)]
+      vertices.push(vertices[1]!.clone().add(delta), vertices[0]!.clone().add(delta))
+      vertices.forEach((value, index) => value.toArray(positions, index * 3))
+    } else {
+      const yaw = THREE.MathUtils.degToRad(camera.yawDegrees), pitch = THREE.MathUtils.degToRad(camera.pitchDegrees)
+      const right = new THREE.Vector3(Math.sin(yaw), -Math.cos(yaw), 0)
+      const up = new THREE.Vector3(Math.sin(pitch) * Math.cos(yaw), Math.sin(pitch) * Math.sin(yaw), Math.cos(pitch))
+      const cosine = Math.cos(item.rollRadians), sine = Math.sin(item.rollRadians)
+      const rolledRight = right.clone().multiplyScalar(cosine).addScaledVector(up, sine)
+      const rolledUp = up.clone().multiplyScalar(cosine).addScaledVector(right, -sine)
+      const center = new THREE.Vector3().fromArray(item.position)
+      const corners = [[-1, 1], [1, 1], [1, -1], [-1, -1]] as const
+      corners.forEach(([x, y], index) => center.clone().addScaledVector(rolledRight, x * item.radius).addScaledVector(rolledUp, y * item.radius).toArray(positions, index * 3))
+    }
+    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3))
+    geometry.setAttribute("uv", new THREE.BufferAttribute(uv, 2))
+    geometry.setIndex([0, 1, 2, 0, 2, 3])
+    return geometry
+  }
+
+  #applyPose(instance: THREE.Group, pose: NonNullable<ModelItem["pose"]>, retainGeometry: boolean): THREE.Mesh[] {
+    let primitive = 0
+    const meshes: THREE.Mesh[] = []
+    instance.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return
+      const posed = pose.primitives[primitive++]
+      if (!posed || posed.positions.length !== object.geometry.getAttribute("position").count * 3 || posed.normals.length !== object.geometry.getAttribute("normal").count * 3)
+        throw new RenderingError("IdentityMismatch", "posed model primitive differs from its template")
+      if (retainGeometry && object.userData.dynamicGeometry === true) {
+        const position = object.geometry.getAttribute("position") as THREE.BufferAttribute
+        const normal = object.geometry.getAttribute("normal") as THREE.BufferAttribute
+        const tangent = object.geometry.getAttribute("tangent") as THREE.BufferAttribute | undefined
+        ;(position.array as Float32Array).set(posed.positions); position.needsUpdate = true
+        ;(normal.array as Float32Array).set(posed.normals); normal.needsUpdate = true
+        if (tangent) { (tangent.array as Float32Array).set(posed.tangents); tangent.needsUpdate = true }
+      } else {
+        const geometry = object.geometry.clone()
+        geometry.setAttribute("position", new THREE.BufferAttribute(posed.positions.slice(), 3))
+        geometry.setAttribute("normal", new THREE.BufferAttribute(posed.normals.slice(), 3))
+        geometry.setAttribute("tangent", new THREE.BufferAttribute(posed.tangents.slice(), 4))
+        object.geometry = geometry
+        object.userData.dynamicGeometry = true
+      }
+      meshes.push(object)
+    })
+    if (primitive !== pose.primitives.length) throw new RenderingError("IdentityMismatch", "posed model primitive count differs")
+    return meshes
+  }
+
+  #stageViewModel(item: ModelItem, frame: Frame): void {
+    const key = modelKey(item.model, item.skin ?? 0)
+    let retained = this.#viewModelInstances.get(item.identity)
+    if (!retained || retained.model !== key) {
+      if (retained) {
+        this.#viewModels.remove(retained.root)
+        retained.root.traverse((object) => {
+          if (object instanceof THREE.Mesh && object.userData.dynamicGeometry === true) object.geometry.dispose()
+        })
+      }
+      const instance = this.#active!.modelTemplates.get(key)!.clone(true)
+      if (!item.pose) throw new RenderingError("MalformedInput", "viewmodel pose is missing")
+      const meshes = this.#applyPose(instance, item.pose, false)
+      const root = new THREE.Group()
+      root.setRotationFromMatrix(new THREE.Matrix4().set(0, -1, 0, 0, 0, 0, 1, 0, -1, 0, 0, 0, 0, 0, 0, 1))
+      root.add(instance)
+      root.traverse((object) => object.layers.set(1))
+      this.#viewModels.add(root)
+      retained = { model: key, root, instance, meshes }
+      this.#viewModelInstances.set(item.identity, retained)
+    } else if (item.pose) {
+      this.#applyPose(retained.instance, item.pose, true)
+    }
+    sourceTransform(retained.instance, item.position, item.angles!)
+    retained.instance.scale.setScalar(item.scale)
+    const projection = item.viewModelProjection!
+    this.#viewCamera.fov = THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(projection.horizontalFov4By3) / 2) * 0.75))
+    this.#viewCamera.near = projection.near
+    this.#viewCamera.far = frame.camera.far
+    this.#viewCamera.updateProjectionMatrix()
+    const depth = projection.depthRange[1] - projection.depthRange[0]
+    this.#viewCamera.projectionMatrix.elements[10] *= depth
+    this.#viewCamera.projectionMatrix.elements[14] = this.#viewCamera.projectionMatrix.elements[14]! * depth + projection.depthRange[0]
+    this.#viewCamera.projectionMatrixInverse.copy(this.#viewCamera.projectionMatrix).invert()
   }
 
   #stageDynamicItems(frame: Frame): void {
     const effects = new THREE.Group()
-    const viewModels = new THREE.Group()
+    const activeViewModels = new Set<number>()
     try {
       for (const effect of frame.effects) {
         const material = new THREE.MeshBasicMaterial({
@@ -1061,8 +1329,53 @@ class RendererOwner implements Renderer {
         mesh.userData.identity = effect.identity
         effects.add(mesh)
       }
+      const particleGroups = new Map<string, ParticleItem[]>()
+      for (const item of frame.particles ?? []) {
+        const key = item.material.toLowerCase()
+        const group = particleGroups.get(key) ?? []
+        group.push(item)
+        particleGroups.set(key, group)
+      }
+      for (const [identity, items] of particleGroups) {
+        const positions = new Float32Array(items.length * 12), uv = new Float32Array(items.length * 8),
+          uvNext = new Float32Array(items.length * 8), blends = new Float32Array(items.length * 4),
+          colors = new Float32Array(items.length * 16), indices = new Uint32Array(items.length * 6)
+        items.forEach((item, index) => {
+          const primitive = this.#particleGeometry(item, frame.camera)
+          positions.set(primitive.getAttribute("position").array as Float32Array, index * 12)
+          primitive.dispose()
+          const sample = item.primarySheet!, current = sample.current[0]!, next = sample.next[0]!
+          const corners = [[current[0], current[1]], [current[2], current[1]], [current[2], current[3]], [current[0], current[3]]] as const
+          const nextCorners = [[next[0], next[1]], [next[2], next[1]], [next[2], next[3]], [next[0], next[3]]] as const
+          corners.flat().forEach((value, component) => { uv[index * 8 + component] = value })
+          nextCorners.flat().forEach((value, component) => { uvNext[index * 8 + component] = value })
+          blends.fill(sample.blend, index * 4, index * 4 + 4)
+          const red = ((item.color >> 16) & 0xff) / 255, green = ((item.color >> 8) & 0xff) / 255, blue = (item.color & 0xff) / 255
+          for (let vertex = 0; vertex < 4; vertex++) colors.set([red, green, blue, item.opacity], index * 16 + vertex * 4)
+          const vertex = index * 4
+          indices.set([vertex, vertex + 1, vertex + 2, vertex, vertex + 2, vertex + 3], index * 6)
+        })
+        const geometry = new THREE.BufferGeometry()
+        geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3))
+        geometry.setAttribute("uv", new THREE.BufferAttribute(uv, 2))
+        geometry.setAttribute("particleUvNext", new THREE.BufferAttribute(uvNext, 2))
+        geometry.setAttribute("particleSheetBlend", new THREE.BufferAttribute(blends, 1))
+        geometry.setAttribute("particleColor", new THREE.BufferAttribute(colors, 4))
+        geometry.setIndex(new THREE.BufferAttribute(indices, 1))
+        const mesh = new THREE.Mesh(geometry, this.#active!.particleMaterials.get(identity)!)
+        mesh.userData.dynamicGeometry = true
+        effects.add(mesh)
+      }
       for (const item of frame.models ?? []) {
+        if (item.viewModel) {
+          this.#stageViewModel(item, frame)
+          activeViewModels.add(item.identity)
+          continue
+        }
         const instance = this.#active!.modelTemplates.get(modelKey(item.model, item.skin ?? 0))!.clone(true)
+        if (item.pose) {
+          this.#applyPose(instance, item.pose, false)
+        }
         if (item.angles) sourceTransform(instance, item.position, item.angles)
         else {
           instance.position.set(...item.position)
@@ -1070,35 +1383,22 @@ class RendererOwner implements Renderer {
         }
         instance.scale.setScalar(item.scale)
         instance.userData.identity = item.identity
-        if (item.viewModel) {
-          instance.traverse((object) => {
-            if (object instanceof THREE.Mesh) {
-              object.material = (Array.isArray(object.material) ? object.material : [object.material]).map(
-                (material) => {
-                  const m = material.clone()
-                  m.depthTest = false
-                  m.depthWrite = false
-                  return m
-                },
-              )
-              if ((object.material as THREE.Material[]).length === 1)
-                object.material = (object.material as THREE.Material[])[0]!
-            }
-          })
-          const wrapper = new THREE.Group()
-          wrapper.setRotationFromMatrix(new THREE.Matrix4().set(0, -1, 0, 0, 0, 0, 1, 0, -1, 0, 0, 0, 0, 0, 0, 1))
-          wrapper.add(instance)
-          viewModels.add(wrapper)
-        } else effects.add(instance)
+        effects.add(instance)
       }
     } catch (error) {
       this.#clearDynamic(effects)
       throw new RenderingError("BoundExceeded", `render item staging failed: ${String(error)}`)
     }
     this.#clearDynamic(this.#effects)
-    this.#clearDynamic(this.#viewModels)
     for (const child of [...effects.children]) this.#effects.add(child)
-    for (const child of [...viewModels.children]) this.#viewModels.add(child)
+    for (const [identity, retained] of this.#viewModelInstances) {
+      if (activeViewModels.has(identity)) continue
+      this.#viewModels.remove(retained.root)
+      retained.root.traverse((object) => {
+        if (object instanceof THREE.Mesh && object.userData.dynamicGeometry === true) object.geometry.dispose()
+      })
+      this.#viewModelInstances.delete(identity)
+    }
   }
 
   async #capture(request: FrameCaptureRequest): Promise<FrameCapture> {
@@ -1142,7 +1442,9 @@ class RendererOwner implements Renderer {
     this.#backend.setPixelRatio(devicePixelRatio)
     this.#backend.setSize(cssWidth, cssHeight, false)
     this.#camera.aspect = cssHeight === 0 ? 1 : cssWidth / cssHeight
+    this.#viewCamera.aspect = this.#camera.aspect
     this.#camera.updateProjectionMatrix()
+    this.#viewCamera.updateProjectionMatrix()
     this.#suspended = width === 0 || height === 0
     return Object.freeze({ width, height, suspended: this.#suspended, deviceGeneration: this.#deviceGeneration })
   }
@@ -1258,6 +1560,7 @@ class RendererOwner implements Renderer {
     this.stopFramePacing()
     this.#clearDynamic(this.#effects)
     this.#clearDynamic(this.#viewModels)
+    this.#viewModelInstances.clear()
     const active = this.#active
     this.#active = undefined
     this.#world.clear()

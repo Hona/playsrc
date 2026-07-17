@@ -48,7 +48,7 @@ async function sha256(bytes: Uint8Array): Promise<string> {
   return Array.from(digest, (value) => value.toString(16).padStart(2, "0")).join("")
 }
 async function presentationKey(key: string): Promise<string> {
-  return sha256(new TextEncoder().encode(`playsrc-tf2-presentation-v5\0${key}`))
+  return sha256(new TextEncoder().encode(`playsrc-tf2-presentation-v6\0${key}`))
 }
 
 export class Tf2WorkerClient {
@@ -316,6 +316,15 @@ export class Tf2WorkerClient {
       !(response.output instanceof ArrayBuffer)
     )
       throw new Tf2WorkerError("WorkerFailed")
+    return new Uint8Array(response.output)
+  }
+  async models(generation: number, batch: Uint8Array): Promise<Uint8Array> {
+    if (batch.byteLength < 12 || batch.byteLength > 1024 * 1024) throw new Tf2WorkerError("BoundExceeded")
+    const transferred = batch.slice().buffer
+    const response = await this.#request({ kind: "models", generation, batch: transferred }, [transferred])
+    if (response.kind !== "models" || response.generation !== generation || !(response.output instanceof ArrayBuffer)) {
+      throw new Tf2WorkerError("WorkerFailed")
+    }
     return new Uint8Array(response.output)
   }
   async visibility(

@@ -47,6 +47,29 @@ function App() {
       data-spawn-position={view.initialView?.position.join(",")}
       data-spawn-angles={view.initialView?.angles.join(",")}
       data-particle-items={view.particleRenderItems ?? 0}
+      data-crouch-fraction={view.movement?.crouchFraction}
+      data-view-offset={view.movement?.viewOffset.join(",")}
+      data-movement-mode={view.movementTick?.mode}
+      data-wish-speed={view.movementTick?.wishSpeed}
+      data-climbed-step={view.movementTick?.climbedStep}
+      data-viewmodel-activity={view.viewmodelPose?.activity}
+      data-viewmodel-sequence={view.viewmodelPose?.sequence}
+      data-viewmodel-cycle={view.viewmodelPose?.cycle}
+      data-viewmodel-primitives={view.viewmodelPose?.primitives}
+      data-model-probes={view.modelProbes?.map((probe) => `${probe.model}:${probe.sequence}:${probe.primitives}:${probe.vertices}`).join("|")}
+      data-audio-voices={view.audioVoices?.join(",")}
+      data-snapshot-tick={view.snapshotTick}
+      data-projectile-states={view.projectileStates}
+      data-decal-probe={view.decalProbe}
+      data-model-occurrences={view.modelOccurrenceCount}
+      data-particle-probe={view.particleProbe}
+      data-audio-starts={view.audioStarts?.join("|")}
+      data-viewmodel-projection={view.viewmodelProjection}
+      data-viewmodel-activities={view.viewmodelActivities?.join(",")}
+      data-viewmodel-sequences={view.viewmodelSequences}
+      data-crouch-history={view.crouchHistory?.join("|")}
+      data-grounded={view.movement?.grounded}
+      data-viewmodel-timelines={view.viewmodelTimelineProbes?.join("|")}
       data-environment={
         view.environment
           ? `${view.environment.profile},${view.environment.clusters},${view.environment.skySurfaces},${view.environment.waterVolumes},${view.environment.marks},${view.environment.markFragments}`
@@ -131,7 +154,7 @@ function App() {
 
       <footer class="field-footer">
         <span>{view.pointerLocked ? "mouse captured" : "click field to capture mouse"}</span>
-        <span>WASD move · Space jump · Shift crouch · Mouse 1 fire · Mouse 2 detonate</span>
+          <span>WASD move · Space jump · Shift crouch · R reload · Mouse 1 fire · Mouse 2 detonate</span>
         <span>derived cache {view.cache ?? "pending"}</span>
       </footer>
 

@@ -10,11 +10,11 @@ import {
 import type { WorkerRequest, WorkerResponse } from "../src/protocol"
 
 function snapshot(): ArrayBuffer {
-  const bytes = new ArrayBuffer(433)
+  const bytes = new ArrayBuffer(445)
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x53, 0x53, 0x4e])
-  view.setUint32(4, 3, true)
+  view.setUint32(4, 4, true)
   view.setBigUint64(8, 7n, true)
   data.set([1, 1, 1, 0], 16)
   view.setFloat32(20, 200, true)
@@ -81,6 +81,9 @@ function snapshot(): ArrayBuffer {
   data.set([5, 1, 0, 0], at)
   view.setUint32(at + 4, 85, true)
   ;[200, 4, 20, 0].forEach((value, index) => view.setFloat32(at + 12 + index * 4, value, true))
+  at += 28
+  data.set([0x50, 0x4d, 0x54, 0x4b], at)
+  view.setUint32(at + 4, 1, true)
   return bytes
 }
 

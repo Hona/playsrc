@@ -20,7 +20,7 @@ Render canonical Source world, gameplay, and replay state in browser GPU environ
 - Consume direct compiler buffers and runtime descriptors for map, model, material, visibility, particle, gameplay, and replay state without GLB translation.
 - Derive presentation-only interpolation without changing authoritative state.
 - Verify and decode the direct `PSMP` runtime payload into material-batched Source-space Three.js/WebGPU world buffers; an explicit debug scene exposes geometry while reporting every unavailable resolved material instead of silently substituting it.
-- Upload exact resolved base-texture RGBA planes as sRGB repeat-wrapped Three.js textures and apply supplied translucency, alpha-test, and culling features; materials without required texture/shader inputs remain explicit diagnostics.
+- Upload decoded top-to-bottom RGBA planes without a browser row flip and execute supplied Material blend, alpha-test/reference, cull, depth, polygon-offset, wireframe/no-draw, and sampler state; unavailable texture inputs remain diagnostics.
 - Preserve schema-3 LDR behavior: pack first-style face samples into one deterministic float atlas, decode RGBExp32 to linear light, and bind the atlas to UV channel 1 with clamped nearest sampling.
 - Decode schema-4 linear HDR samples and the complete `PSHD` profile descriptor; verify its member closure, retained-resource hashes, profile-material records, consumed-input order, and cross-record ranges before GPU staging.
 - Preserve radiance above one in binary32; compose supplied face styles; generate flat and three directional float atlas planes; and evaluate official-basis normal or direct-coefficient SSBump lighting. Ordinary loading rejects a missing required directional plane; diagnostic loading reports it before drawing debug output.
@@ -29,6 +29,9 @@ Render canonical Source world, gameplay, and replay state in browser GPU environ
 - Retain sky, water, and environment requirements as typed `Missing` or `Unsupported` inputs until their complete producer contracts are supplied. Ordinary loading rejects every required non-handled input; only caller-selected diagnostic loading may draw a debug background.
 - Own scene/device generations, cancellation, atomic replacement, loss recovery, resize suspension, capture, queue-safe GPU retirement, frame pacing, and deterministic idempotent disposal.
 - Cull counter-clockwise world back faces while honoring only Material's explicit no-cull feature; fixed-camera canvas evidence rejects missing interior floor, ceiling, and walls.
+- Apply exact StudioModel occurrence matrices; update posed model positions, normals, and tangent handedness; and draw viewmodels through a separate horizontal-4:3-FOV projection, world far plane, `[0,0.1]` depth range, and post-world pass.
+- Batch PSPR v2 camera-facing sprites and trails by material while preserving current/next sheet rectangles, blend, color/alpha, roll, radius, previous position, trail fade/length bounds, and stable Particle order.
+- Draw projected marks from supplied fragments and decoded alpha with Material decal blend/depth/cull state; present textures never become diagnostic quads.
 
 ## Non-Responsibilities
 

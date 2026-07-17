@@ -53,7 +53,10 @@ struct Slot {
     presentation_hash: [u8; 32],
     particles: Option<playsrc_particle::ParticleWorld>,
     particle_materials: Vec<String>,
+    particle_sheets: BTreeMap<String, playsrc_particle::ParticleSheet>,
     particle_output: Vec<u8>,
+    studio_models: BTreeMap<String, playsrc_studio_model::PresentationModel>,
+    model_output: Vec<u8>,
     visibility: Option<playsrc_visibility::World>,
     area_state: Option<playsrc_visibility::AreaState>,
     visibility_output: Vec<u8>,
@@ -138,13 +141,14 @@ pub unsafe extern "C" fn playsrc_compile_map(
         let entity_graph =
             playsrc_entity::parse(bsp.lumps[0].bytes(&bsp), playsrc_entity::Limits::default())
                 .map_err(|_| 3_u32)?;
-        let (runtime_models, model_occurrences) =
-            resolve_models(&entity_graph, configuration, profile).map_err(|_| 8_u32)?;
-        let presentation =
+        let (presentation, studio_models) =
             compile_presentation(&canonical, &bsp, &entity_graph, configuration, profile)
                 .map_err(|_| 9_u32)?;
+        let (runtime_models, model_occurrences) =
+            resolve_models(&entity_graph, &studio_models, configuration, profile)
+                .map_err(|_| 8_u32)?;
         let presentation_hash: [u8; 32] = Sha256::digest(&presentation).into();
-        let (particles, particle_materials) =
+        let (particles, particle_materials, particle_sheets) =
             compile_particles(configuration).map_err(|_| 10_u32)?;
         let profile_materials =
             resolve_profile_materials(&entity_graph, configuration, profile).map_err(|_| 7_u32)?;
@@ -222,6 +226,8 @@ pub unsafe extern "C" fn playsrc_compile_map(
             presentation_hash,
             particles,
             particle_materials,
+            particle_sheets,
+            studio_models,
             visibility,
             area_state,
             collision,
@@ -249,6 +255,8 @@ pub unsafe extern "C" fn playsrc_compile_map(
             presentation_hash,
             particles,
             particle_materials,
+            particle_sheets,
+            studio_models,
             visibility,
             area_state,
             collision,
@@ -262,7 +270,10 @@ pub unsafe extern "C" fn playsrc_compile_map(
             presentation_hash,
             particles: Some(particles),
             particle_materials,
+            particle_sheets,
             particle_output: Vec::new(),
+            studio_models,
+            model_output: Vec::new(),
             visibility: Some(visibility),
             area_state: Some(area_state),
             visibility_output: Vec::new(),
@@ -282,7 +293,10 @@ pub unsafe extern "C" fn playsrc_compile_map(
             presentation_hash: [0; 32],
             particles: None,
             particle_materials: Vec::new(),
+            particle_sheets: BTreeMap::new(),
             particle_output: Vec::new(),
+            studio_models: BTreeMap::new(),
+            model_output: Vec::new(),
             visibility: None,
             area_state: None,
             visibility_output: Vec::new(),
@@ -426,9 +440,12 @@ pub unsafe extern "C" fn playsrc_particle_transact(
         return 0;
     };
     let mut collision = ParticleCollision(collision_world);
-    let Ok((items, _)) = world.advance(&events, request, &mut collision) else {
+    let Ok((mut items, _)) = world.advance(&events, request, &mut collision) else {
         return 0;
     };
+    if playsrc_particle::resolve_render_sheets(&mut items, &slot.particle_sheets).is_err() {
+        return 0;
+    }
     let Ok(output) =
         playsrc_particle::encode_render_output(&items, &slot.particle_materials, 64 * 1024 * 1024)
     else {
@@ -463,6 +480,250 @@ pub unsafe extern "C" fn playsrc_particle_output_copy(
         slot.particle_output.len()
     })
     .unwrap_or(0)
+}
+
+#[derive(Debug)]
+struct ModelPoseRequest {
+    identity: u32,
+    model: String,
+    activity: String,
+    previous_elapsed: f32,
+    elapsed: f32,
+    skin: usize,
+    lod: usize,
+    bodygroups: Vec<usize>,
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+/// `pointer` must identify exactly `length` readable model-pose request bytes.
+pub unsafe extern "C" fn playsrc_model_transact(
+    handle: u32,
+    pointer: *const u8,
+    length: usize,
+) -> u32 {
+    if !(12..=1024 * 1024).contains(&length) {
+        return 0;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(pointer, length) };
+    let Ok(requests) = decode_model_requests(bytes) else {
+        return 0;
+    };
+    let Some((index, generation)) = decode(handle) else {
+        return 0;
+    };
+    let mut slots = slots().lock().expect("TF2 slots");
+    let Some(slot) = slots.get_mut(index) else {
+        return 0;
+    };
+    if slot.generation != generation {
+        return 0;
+    }
+    let Ok(output) = encode_model_poses(&slot.studio_models, &requests) else {
+        return 0;
+    };
+    slot.model_output = output;
+    1
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_model_output_length(handle: u32) -> usize {
+    with(handle, |slot| slot.model_output.len()).unwrap_or(0)
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+/// `pointer` must identify writable bytes of at least `capacity`.
+pub unsafe extern "C" fn playsrc_model_output_copy(
+    handle: u32,
+    pointer: *mut u8,
+    capacity: usize,
+) -> usize {
+    with(handle, |slot| {
+        if capacity < slot.model_output.len() {
+            return 0;
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                slot.model_output.as_ptr(),
+                pointer,
+                slot.model_output.len(),
+            )
+        };
+        slot.model_output.len()
+    })
+    .unwrap_or(0)
+}
+
+fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
+    let mut reader = ParticleReader { bytes, at: 0 };
+    if reader.take(4)? != b"PMRQ" || reader.u32()? != 1 {
+        return Err(());
+    }
+    let count = reader.u32()? as usize;
+    if count > 128 {
+        return Err(());
+    }
+    let mut requests = Vec::with_capacity(count);
+    let mut identities = std::collections::BTreeSet::new();
+    for _ in 0..count {
+        let identity = reader.u32()?;
+        let model = reader.text()?.to_ascii_lowercase();
+        let activity = reader.text()?;
+        let previous_elapsed = reader.f32()?;
+        let elapsed = reader.f32()?;
+        let skin = reader.u32()? as usize;
+        let lod = reader.u32()? as usize;
+        let bodygroup_count = reader.u32()? as usize;
+        if identity == 0
+            || !identities.insert(identity)
+            || model.is_empty()
+            || activity.is_empty()
+            || previous_elapsed < 0.0
+            || elapsed < previous_elapsed
+            || bodygroup_count > 64
+        {
+            return Err(());
+        }
+        let bodygroups = (0..bodygroup_count)
+            .map(|_| reader.u32().map(|value| value as usize))
+            .collect::<Result<Vec<_>, _>>()?;
+        requests.push(ModelPoseRequest {
+            identity,
+            model,
+            activity,
+            previous_elapsed,
+            elapsed,
+            skin,
+            lod,
+            bodygroups,
+        });
+    }
+    (reader.at == bytes.len()).then_some(requests).ok_or(())
+}
+
+fn pose_cycle(elapsed: f32, timing: playsrc_studio_model::SequenceTiming) -> f32 {
+    let value = elapsed * f32::from_bits(timing.cycles_per_second.0);
+    if timing.looping {
+        value - value.floor()
+    } else {
+        value.clamp(0.0, 1.0)
+    }
+}
+
+fn encode_model_poses(
+    models: &BTreeMap<String, playsrc_studio_model::PresentationModel>,
+    requests: &[ModelPoseRequest],
+) -> Result<Vec<u8>, ()> {
+    let mut out = b"PMPO".to_vec();
+    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(&u32::try_from(requests.len()).map_err(|_| ())?.to_le_bytes());
+    for request in requests {
+        let model = models.get(&request.model).ok_or(())?;
+        let sequence =
+            *playsrc_studio_model::sequences_for_activity_name(model, request.activity.as_bytes())
+                .first()
+                .ok_or(())?;
+        let pose_parameters = model
+            .pose_parameters
+            .iter()
+            .map(|_| playsrc_studio_model::Float32(0))
+            .collect::<Vec<_>>();
+        let timing = playsrc_studio_model::sequence_timing(model, sequence, &pose_parameters)
+            .map_err(|_| ())?;
+        let previous_cycle = pose_cycle(request.previous_elapsed, timing);
+        let cycle = pose_cycle(request.elapsed, timing);
+        let pose = playsrc_studio_model::sample_pose_at_time(
+            model,
+            &playsrc_studio_model::AnimationState {
+                base_sequence: sequence,
+                cycle: playsrc_studio_model::Float32(cycle.to_bits()),
+                pose_parameters,
+                layers: Vec::new(),
+            },
+            playsrc_studio_model::Float32(request.elapsed.to_bits()),
+        )
+        .map_err(|_| ())?;
+        let selected = playsrc_studio_model::select_primitives(
+            model,
+            &request.bodygroups,
+            request.skin,
+            request.lod,
+        )
+        .map_err(|_| ())?;
+        let events = playsrc_studio_model::presentation_events_between(
+            model,
+            sequence,
+            playsrc_studio_model::Float32(previous_cycle.to_bits()),
+            playsrc_studio_model::Float32(cycle.to_bits()),
+        )
+        .map_err(|_| ())?;
+        out.extend_from_slice(&request.identity.to_le_bytes());
+        pbytes(&mut out, request.model.as_bytes())?;
+        pbytes(&mut out, request.activity.as_bytes())?;
+        out.extend_from_slice(&u32::try_from(sequence).map_err(|_| ())?.to_le_bytes());
+        for value in [
+            timing.frames_per_second,
+            timing.weighted_frame_count,
+            timing.cycles_per_second,
+            timing.duration_seconds,
+        ] {
+            out.extend_from_slice(&value.0.to_le_bytes());
+        }
+        out.extend_from_slice(&[u8::from(timing.looping), 0, 0, 0]);
+        out.extend_from_slice(&previous_cycle.to_le_bytes());
+        out.extend_from_slice(&cycle.to_le_bytes());
+        out.extend_from_slice(&u32::try_from(events.len()).map_err(|_| ())?.to_le_bytes());
+        for event in events {
+            out.extend_from_slice(&u32::try_from(event.index).map_err(|_| ())?.to_le_bytes());
+            out.extend_from_slice(&event.cycle.0.to_le_bytes());
+            out.extend_from_slice(&event.event.to_le_bytes());
+            out.extend_from_slice(&event.event_type.to_le_bytes());
+            out.extend_from_slice(&event.options);
+            pbytes(&mut out, &event.name)?;
+        }
+        out.extend_from_slice(&u32::try_from(selected.len()).map_err(|_| ())?.to_le_bytes());
+        for selected in selected {
+            let primitive = model.geometry.get(selected.primitive).ok_or(())?;
+            let (positions, normals, tangents) = posed_vertices(model, primitive, &pose)?;
+            out.extend_from_slice(
+                &u32::try_from(selected.primitive)
+                    .map_err(|_| ())?
+                    .to_le_bytes(),
+            );
+            out.extend_from_slice(
+                &u32::try_from(selected.material)
+                    .map_err(|_| ())?
+                    .to_le_bytes(),
+            );
+            out.extend_from_slice(
+                &u32::try_from(positions.len())
+                    .map_err(|_| ())?
+                    .to_le_bytes(),
+            );
+            for ((position, normal), tangent) in positions.iter().zip(&normals).zip(&tangents) {
+                for value in position.iter().chain(normal).chain(tangent) {
+                    out.extend_from_slice(&value.to_le_bytes());
+                }
+            }
+        }
+        out.extend_from_slice(
+            &u32::try_from(pose.attachments.len())
+                .map_err(|_| ())?
+                .to_le_bytes(),
+        );
+        for attachment in &pose.attachments {
+            pbytes(&mut out, &attachment.name)?;
+            out.extend_from_slice(&[u8::from(attachment.world_aligned), 0, 0, 0]);
+            for value in attachment.model_transform.0 {
+                out.extend_from_slice(&value.0.to_le_bytes());
+            }
+        }
+        if out.len() > 64 * 1024 * 1024 {
+            return Err(());
+        }
+    }
+    Ok(out)
 }
 #[unsafe(no_mangle)]
 /// # Safety
@@ -627,7 +888,10 @@ pub extern "C" fn playsrc_dispose(handle: u32) -> u32 {
     slot.presentation_hash = [0; 32];
     slot.particles = None;
     slot.particle_materials.clear();
+    slot.particle_sheets.clear();
     slot.particle_output.clear();
+    slot.studio_models.clear();
+    slot.model_output.clear();
     slot.visibility = None;
     slot.area_state = None;
     slot.visibility_output.clear();
@@ -703,7 +967,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
         }
     }
     let snapshot = snapshot.expect("positive tick count");
-    let Some(encoded) = encode_snapshot(&snapshot) else {
+    let Some(encoded) = encode_snapshot(&snapshot, candidate.last_movement_result()) else {
         return 0;
     };
     *session = candidate;
@@ -897,7 +1161,10 @@ fn decode_command(bytes: &[u8]) -> Option<playsrc_tf2::Command> {
     .then_some(command)
 }
 
-fn encode_snapshot(snapshot: &playsrc_tf2::Snapshot) -> Option<Vec<u8>> {
+fn encode_snapshot(
+    snapshot: &playsrc_tf2::Snapshot,
+    movement_tick: Option<&playsrc_movement::StepResult>,
+) -> Option<Vec<u8>> {
     const MAX: usize = 64 * 1024 * 1024;
     let movement = snapshot.movement.snapshot_bytes();
     let jump = match snapshot.jump.as_ref() {
@@ -906,7 +1173,7 @@ fn encode_snapshot(snapshot: &playsrc_tf2::Snapshot) -> Option<Vec<u8>> {
     };
     let mut out = Vec::new();
     extend(&mut out, b"PSSN", MAX)?;
-    u32_field(&mut out, 3, MAX)?;
+    u32_field(&mut out, 4, MAX)?;
     u64_field(&mut out, snapshot.tick, MAX)?;
     extend(
         &mut out,
@@ -1046,7 +1313,66 @@ fn encode_snapshot(snapshot: &playsrc_tf2::Snapshot) -> Option<Vec<u8>> {
         encode_game_event(&mut out, event, MAX)?;
     }
     extend(&mut out, &jump, MAX)?;
+    encode_movement_tick(&mut out, movement_tick, MAX)?;
     Some(out)
+}
+
+fn encode_movement_tick(
+    output: &mut Vec<u8>,
+    result: Option<&playsrc_movement::StepResult>,
+    limit: usize,
+) -> Option<()> {
+    extend(output, b"PMTK", limit)?;
+    u32_field(output, 1, limit)?;
+    let Some(result) = result else {
+        extend(output, &[0, 0, 0, 0], limit)?;
+        return Some(());
+    };
+    extend(
+        output,
+        &[
+            1,
+            result.state.mode as u8,
+            result.state.crouch.phase as u8,
+            u8::from(result.state.ground.is_some()),
+        ],
+        limit,
+    )?;
+    floats(
+        output,
+        result
+            .wish_state
+            .direction
+            .into_iter()
+            .chain([result.wish_state.speed, result.wish_state.uncapped_speed])
+            .chain(result.wish_velocity)
+            .chain(result.jump_velocity)
+            .chain([result.climbed_step])
+            .chain(result.selected_hull.mins)
+            .chain(result.selected_hull.maxs),
+        limit,
+    )?;
+    for value in [
+        result.queries.len(),
+        result.point_queries.len(),
+        result.contacts.len(),
+        result.events.len(),
+    ] {
+        u32_field(output, u32::try_from(value).ok()?, limit)?;
+    }
+    match result.mover_result {
+        None => extend(output, &[0, 0, 0, 0], limit),
+        Some(mover) => {
+            extend(output, &[1, mover.status as u8, 0, 0], limit)?;
+            u64_field(output, mover.identity, limit)?;
+            floats(
+                output,
+                mover.displacement.into_iter().chain(mover.support_velocity),
+                limit,
+            )?;
+            u64_field(output, mover.blocker.unwrap_or(u64::MAX), limit)
+        }
+    }
 }
 
 fn class_code(class: playsrc_tf2::Class) -> u8 {
@@ -1670,6 +1996,7 @@ fn entity_vector(entity: &playsrc_entity::Entity, key: &[u8]) -> Result<[f32; 3]
 
 fn resolve_models(
     graph: &playsrc_entity::Graph,
+    studio_models: &BTreeMap<String, playsrc_studio_model::PresentationModel>,
     configuration: &[u8],
     profile: playsrc_map::LightingProfile,
 ) -> Result<
@@ -1683,80 +2010,54 @@ fn resolve_models(
     if bundle.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
-    let mut roots = std::collections::BTreeSet::from([
-        "models/weapons/w_models/w_rocket.mdl".to_owned(),
-        "models/weapons/w_models/w_stickybomb.mdl".to_owned(),
-        "models/weapons/v_models/v_rocketlauncher_soldier.mdl".to_owned(),
-        "models/weapons/v_models/v_stickybomb_launcher_demo.mdl".to_owned(),
-        "models/player/soldier.mdl".to_owned(),
-        "models/player/demo.mdl".to_owned(),
-        "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl".to_owned(),
-        "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl".to_owned(),
-    ]);
-    for entity in &graph.entities {
-        if entity
-            .classname
-            .as_deref()
-            .is_some_and(|value| value.eq_ignore_ascii_case(b"prop_dynamic"))
-            && let Some(model) = &entity.model
-        {
-            roots.insert(
-                std::str::from_utf8(model)
-                    .map_err(|_| ())?
-                    .to_ascii_lowercase(),
-            );
-        }
-    }
     let mut models = Vec::new();
     let mut indexes = BTreeMap::new();
-    for identity in roots {
-        let document = load_model(&identity, &bundle)?;
+    for (identity, model) in studio_models {
         let mut materials = Vec::new();
-        for material in &document.materials {
-            let path = material
-                .candidates
-                .iter()
-                .find(|candidate| bundle.contains_key(&candidate.to_ascii_lowercase()))
+        for material in &model.materials {
+            let path = model
+                .dependencies
+                .get(material.material_dependency)
                 .ok_or(())?
+                .logical_path
                 .to_ascii_lowercase();
             let mut material =
                 resolve_material(&path, &bundle, false, material_environment(profile, true))?;
             material.base_texture = None;
             materials.push(material);
         }
-        if document.skins.is_empty() {
+        if model.skins.is_empty() || model.sequences.is_empty() {
             return Err(());
         }
         indexes.insert(identity.clone(), models.len());
-        let retained_skins =
-            if identity.ends_with("w_rocket.mdl") || identity.ends_with("w_stickybomb.mdl") {
-                2
-            } else {
-                1
-            };
-        for (skin_index, skin) in document.skins.iter().take(retained_skins).enumerate() {
+        let bodygroups = model.body_parts.iter().map(|_| 0).collect::<Vec<_>>();
+        let pose_parameters = model
+            .pose_parameters
+            .iter()
+            .map(|_| playsrc_studio_model::Float32(0))
+            .collect::<Vec<_>>();
+        let pose = playsrc_studio_model::sample_pose(
+            model,
+            &playsrc_studio_model::AnimationState {
+                base_sequence: 0,
+                cycle: playsrc_studio_model::Float32(0),
+                pose_parameters,
+                layers: Vec::new(),
+            },
+        )
+        .map_err(|_| ())?;
+        for skin_index in 0..model.skins.len().min(2) {
             let mut primitives = Vec::new();
-            for primitive in document
-                .geometry
-                .iter()
-                .filter(|primitive| primitive.lod == 0 && primitive.model == 0)
+            for selected in
+                playsrc_studio_model::select_primitives(model, &bodygroups, skin_index, 0)
+                    .map_err(|_| ())?
             {
-                let material = skin
-                    .texture_indices
-                    .get(primitive.material_slot)
-                    .map_or(primitive.material_slot, |index| *index as usize);
+                let primitive = model.geometry.get(selected.primitive).ok_or(())?;
+                let (positions, normals, _) = posed_vertices(model, primitive, &pose)?;
                 primitives.push(playsrc_map::RuntimeModelPrimitive {
-                    material,
-                    positions: primitive
-                        .vertices
-                        .iter()
-                        .map(|vertex| vertex.position.0.map(|value| f32::from_bits(value.0)))
-                        .collect(),
-                    normals: primitive
-                        .vertices
-                        .iter()
-                        .map(|vertex| vertex.normal.0.map(|value| f32::from_bits(value.0)))
-                        .collect(),
+                    material: selected.material,
+                    positions,
+                    normals,
                     uv: primitive
                         .vertices
                         .iter()
@@ -1774,9 +2075,6 @@ fn resolve_models(
                 materials: materials.clone(),
                 primitives,
             });
-        }
-        if identity.contains("/v_models/") {
-            append_viewmodel_activity_models(&identity, &bundle, profile, &materials, &mut models)?;
         }
     }
     let mut occurrences = Vec::new();
@@ -1799,6 +2097,63 @@ fn resolve_models(
         });
     }
     Ok((models, occurrences))
+}
+
+type PosedVertices = (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 4]>);
+
+fn posed_vertices(
+    model: &playsrc_studio_model::PresentationModel,
+    primitive: &playsrc_studio_model::GeometryPrimitive,
+    pose: &playsrc_studio_model::SampledPose,
+) -> Result<PosedVertices, ()> {
+    let static_root = matches!(
+        model.descriptor,
+        playsrc_studio_model::PresentationDescriptor::World {
+            root_bone: playsrc_studio_model::RootBoneContract::StaticPropBoneZeroIsEntity,
+            ..
+        }
+    );
+    let mut positions = Vec::with_capacity(primitive.vertices.len());
+    let mut normals = Vec::with_capacity(primitive.vertices.len());
+    let mut tangents = Vec::with_capacity(primitive.vertices.len());
+    for vertex in &primitive.vertices {
+        let source_position = vertex.position.0.map(|value| f32::from_bits(value.0));
+        let source_normal = vertex.normal.0.map(|value| f32::from_bits(value.0));
+        let source_tangent = vertex.tangent.map(|value| f32::from_bits(value.0));
+        let mut position = [0.0; 3];
+        let mut normal = [0.0; 3];
+        let mut tangent = [0.0; 3];
+        for influence in 0..usize::from(vertex.bone_count) {
+            let weight = f32::from_bits(vertex.weights[influence].0);
+            let bone = usize::from(vertex.bones[influence]);
+            let identity = playsrc_studio_model::Matrix3x4(
+                [
+                    1.0f32, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+                ]
+                .map(|value| playsrc_studio_model::Float32(value.to_bits())),
+            );
+            let matrix = if static_root && bone == 0 {
+                &identity
+            } else {
+                pose.skinning_matrices.get(bone).ok_or(())?
+            };
+            let transformed_position = transform_point(matrix, source_position);
+            let transformed_normal = transform_normal(matrix, source_normal);
+            let transformed_tangent = transform_normal(
+                matrix,
+                [source_tangent[0], source_tangent[1], source_tangent[2]],
+            );
+            for axis in 0..3 {
+                position[axis] = transformed_position[axis].mul_add(weight, position[axis]);
+                normal[axis] = transformed_normal[axis].mul_add(weight, normal[axis]);
+                tangent[axis] = transformed_tangent[axis].mul_add(weight, tangent[axis]);
+            }
+        }
+        positions.push(position);
+        normals.push(normal);
+        tangents.push([tangent[0], tangent[1], tangent[2], source_tangent[3]]);
+    }
+    Ok((positions, normals, tangents))
 }
 
 fn studio_texture_role(
@@ -1975,113 +2330,314 @@ fn transform_normal(matrix: &playsrc_studio_model::Matrix3x4, normal: [f32; 3]) 
         m[8].mul_add(normal[0], m[9].mul_add(normal[1], m[10] * normal[2])),
     ]
 }
-fn append_viewmodel_activity_models(
-    identity: &str,
-    bundle: &BTreeMap<String, &[u8]>,
-    profile: playsrc_map::LightingProfile,
-    materials: &[playsrc_map::RuntimeMaterial],
-    output: &mut Vec<playsrc_map::RuntimeModel>,
-) -> Result<(), ()> {
-    let artifact = build_model_presentation(identity, bundle, profile)?;
-    let bodygroups = artifact
-        .model
-        .body_parts
-        .iter()
-        .map(|_| 0usize)
-        .collect::<Vec<_>>();
-    for activity in [
-        "ACT_VM_DRAW",
-        "ACT_VM_IDLE",
-        "ACT_VM_PRIMARYATTACK",
-        "ACT_VM_RELOAD",
-    ] {
-        let Some(sequence) =
-            playsrc_studio_model::sequences_for_activity_name(&artifact.model, activity.as_bytes())
-                .first()
-                .copied()
-        else {
-            continue;
-        };
-        for (sample, cycle) in [0.0f32, 0.25, 0.5, 0.75, 1.0].into_iter().enumerate() {
-            let pose = playsrc_studio_model::sample_pose(
-                &artifact.model,
-                &playsrc_studio_model::AnimationState {
-                    base_sequence: sequence,
-                    cycle: playsrc_studio_model::Float32(cycle.to_bits()),
-                    pose_parameters: artifact
-                        .model
-                        .pose_parameters
-                        .iter()
-                        .map(|_| playsrc_studio_model::Float32(0))
-                        .collect(),
-                    layers: Vec::new(),
-                },
-            )
-            .map_err(|_| ())?;
-            let selected =
-                playsrc_studio_model::select_primitives(&artifact.model, &bodygroups, 0, 0)
-                    .map_err(|_| ())?;
-            let mut primitives = Vec::new();
-            for selected in selected {
-                let source = &artifact.model.geometry[selected.primitive];
-                let material = artifact.model.materials[selected.material].source_slot;
-                let mut positions = Vec::with_capacity(source.vertices.len());
-                let mut normals = Vec::with_capacity(source.vertices.len());
-                for vertex in &source.vertices {
-                    let point = vertex.position.0.map(|v| f32::from_bits(v.0));
-                    let normal = vertex.normal.0.map(|v| f32::from_bits(v.0));
-                    let mut p = [0.0; 3];
-                    let mut n = [0.0; 3];
-                    for (index, weight) in vertex.weights.iter().enumerate() {
-                        let weight = f32::from_bits(weight.0);
-                        if weight == 0.0 {
-                            continue;
-                        }
-                        let bone = *vertex.bones.get(index).ok_or(())? as usize;
-                        let tp =
-                            transform_point(pose.skinning_matrices.get(bone).ok_or(())?, point);
-                        let tn =
-                            transform_normal(pose.skinning_matrices.get(bone).ok_or(())?, normal);
-                        for axis in 0..3 {
-                            p[axis] = tp[axis].mul_add(weight, p[axis]);
-                            n[axis] = tn[axis].mul_add(weight, n[axis])
-                        }
-                    }
-                    positions.push(p);
-                    normals.push(n)
-                }
-                primitives.push(playsrc_map::RuntimeModelPrimitive {
-                    material,
-                    positions,
-                    normals,
-                    uv: source
-                        .vertices
-                        .iter()
-                        .map(|v| v.uv.map(|x| f32::from_bits(x.0)))
-                        .collect(),
-                    triangles: source.triangles.clone(),
-                })
-            }
-            output.push(playsrc_map::RuntimeModel {
-                logical_path: format!("{identity}#activity={activity}#sample={sample}"),
-                materials: materials.to_vec(),
-                primitives,
-            })
-        }
-    }
-    Ok(())
-}
 fn pbytes(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), ()> {
     out.extend_from_slice(&u32::try_from(bytes.len()).map_err(|_| ())?.to_le_bytes());
     out.extend_from_slice(bytes);
     (out.len() <= 512 * 1024 * 1024).then_some(()).ok_or(())
+}
+
+fn selected_texture<'a>(
+    material: &'a playsrc_material::Material,
+    bundle: &BTreeMap<String, &'a [u8]>,
+) -> Result<
+    (
+        &'a playsrc_material::TextureRequest,
+        &'a [u8],
+        playsrc_vtf::Metadata,
+    ),
+    (),
+> {
+    let selected = material
+        .selected_textures
+        .first()
+        .and_then(|role| {
+            material
+                .textures
+                .iter()
+                .find(|texture| texture.role == *role)
+        })
+        .filter(|texture| texture.disposition == playsrc_material::TextureDisposition::Source)
+        .ok_or(())?;
+    let logical_path = selected
+        .logical_path
+        .as_ref()
+        .ok_or(())?
+        .to_ascii_lowercase();
+    let bytes = *bundle.get(&logical_path).ok_or(())?;
+    let metadata = playsrc_vtf::inspect(
+        bytes,
+        playsrc_vtf::Dialect::Source2013Pc,
+        playsrc_vtf::Limits::default(),
+    )
+    .map_err(|_| ())?;
+    Ok((selected, bytes, metadata))
+}
+
+fn encode_one_material_state(
+    out: &mut Vec<u8>,
+    identity: &str,
+    material: &playsrc_material::Material,
+    bundle: &BTreeMap<String, &[u8]>,
+) -> Result<(), ()> {
+    let metadata = selected_texture(material, bundle)
+        .ok()
+        .map(|(_, _, metadata)| metadata);
+    let state = playsrc_material::static_state(
+        material,
+        playsrc_material::TextureAlphaFacts {
+            base: metadata.as_ref().is_some_and(|metadata| {
+                metadata.alpha_flags.one_bit || metadata.alpha_flags.eight_bit
+            }),
+        },
+    )
+    .map_err(|_| ())?;
+    let sampling = metadata.as_ref().map(|metadata| {
+        playsrc_vtf::sampling_state(
+            metadata,
+            playsrc_vtf::SamplingEnvironment {
+                shader_model: 90,
+                force_anisotropy: 1,
+                maximum_anisotropy: 16,
+                force_trilinear: false,
+            },
+        )
+    });
+    pbytes(out, identity.as_bytes())?;
+    out.extend_from_slice(&[
+        state.lighting as u8,
+        u8::from(state.blend.enabled),
+        state.blend.source as u8,
+        state.blend.destination as u8,
+        u8::from(state.alpha_test),
+        state.cull as u8,
+        u8::from(state.depth_test),
+        u8::from(state.depth_write),
+        state.depth_function as u8,
+        state.polygon_offset as u8,
+        state.fog as u8,
+        u8::from(state.wireframe),
+        u8::from(state.no_draw),
+        u8::from(state.vertex_color),
+        u8::from(state.vertex_alpha),
+        u8::from(state.translucent_queue),
+        sampling.map_or(u8::MAX, |value| value.wrap_s as u8),
+        sampling.map_or(u8::MAX, |value| value.wrap_t as u8),
+        sampling.map_or(u8::MAX, |value| value.wrap_u as u8),
+        sampling.map_or(u8::MAX, |value| value.min_filter as u8),
+        sampling.map_or(u8::MAX, |value| value.mag_filter as u8),
+        sampling.map_or(u8::MAX, |value| u8::from(value.mipmapped)),
+        sampling.map_or(u8::MAX, |value| u8::from(value.no_lod)),
+        sampling.map_or(u8::MAX, |value| u8::from(value.all_mips)),
+    ]);
+    out.extend_from_slice(&state.alpha_test_reference.to_le_bytes());
+    Ok(())
+}
+
+fn encode_material_states(
+    out: &mut Vec<u8>,
+    canonical: &playsrc_map::CanonicalMap,
+    graph: &playsrc_entity::Graph,
+    bundle: &BTreeMap<String, &[u8]>,
+    profile: playsrc_map::LightingProfile,
+    models: &[(String, Box<playsrc_studio_model::PresentationArtifact>)],
+) -> Result<(), ()> {
+    let mut targets = BTreeMap::<String, bool>::new();
+    for material in &canonical.materials {
+        targets.insert(material.logical_path.to_ascii_lowercase(), false);
+    }
+    for entity in &graph.entities {
+        if entity
+            .classname
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case(b"infodecal"))
+            && let Some(reference) = entity
+                .pairs
+                .iter()
+                .find(|pair| pair.key.eq_ignore_ascii_case(b"texture"))
+        {
+            let path = dependency_path(&reference.value)?;
+            if bundle.contains_key(&path) {
+                targets.insert(path, false);
+            }
+        }
+    }
+    for (_, artifact) in models {
+        for material in &artifact.model.materials {
+            let path = artifact
+                .model
+                .dependencies
+                .get(material.material_dependency)
+                .ok_or(())?
+                .logical_path
+                .to_ascii_lowercase();
+            targets.insert(path, true);
+        }
+    }
+    let start = out.len();
+    out.extend_from_slice(b"PMST");
+    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(&u32::try_from(targets.len()).map_err(|_| ())?.to_le_bytes());
+    for (identity, model) in targets {
+        let material =
+            resolve_material_semantics(&identity, bundle, material_environment(profile, model))?;
+        encode_one_material_state(out, &identity, &material, bundle)?;
+    }
+    (out.len() - start <= 4 * 1024 * 1024)
+        .then_some(())
+        .ok_or(())
+}
+
+fn rgba_texture(
+    path: &str,
+    bundle: &BTreeMap<String, &[u8]>,
+) -> Result<playsrc_map::RuntimeTexture, ()> {
+    decoded_texture(path, bundle)
+}
+
+fn encode_particle_textures(
+    out: &mut Vec<u8>,
+    materials: &[String],
+    bundle: &BTreeMap<String, &[u8]>,
+    profile: playsrc_map::LightingProfile,
+) -> Result<(), ()> {
+    out.extend_from_slice(b"PPTM");
+    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(
+        &u32::try_from(materials.len())
+            .map_err(|_| ())?
+            .to_le_bytes(),
+    );
+    for identity in materials {
+        let material_path = dependency_path(identity.as_bytes())?;
+        let material = resolve_material_semantics(
+            &material_path,
+            bundle,
+            material_environment(profile, false),
+        )?;
+        let (selected, _, _) = selected_texture(&material, bundle)?;
+        let texture_path = selected
+            .logical_path
+            .as_ref()
+            .ok_or(())?
+            .to_ascii_lowercase();
+        let texture = rgba_texture(&texture_path, bundle)?;
+        pbytes(out, identity.as_bytes())?;
+        pbytes(out, material_path.as_bytes())?;
+        pbytes(out, texture.logical_path.as_bytes())?;
+        out.extend_from_slice(&texture.width.to_le_bytes());
+        out.extend_from_slice(&texture.height.to_le_bytes());
+        out.extend_from_slice(&<[u8; 32]>::from(Sha256::digest(&texture.rgba)));
+        pbytes(out, &texture.rgba)?;
+    }
+    Ok(())
+}
+
+fn encode_sound_node(out: &mut Vec<u8>, node: &playsrc_keyvalues::Node) -> Result<(), ()> {
+    pbytes(out, &node.key.bytes)?;
+    match &node.value {
+        playsrc_keyvalues::Value::Scalar(value) => {
+            out.push(0);
+            pbytes(out, &value.token.bytes)?;
+        }
+        playsrc_keyvalues::Value::Object(children) => {
+            out.push(1);
+            out.extend_from_slice(&u32::try_from(children.len()).map_err(|_| ())?.to_le_bytes());
+            for child in children {
+                encode_sound_node(out, child)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>) -> Result<(), ()> {
+    let logical_path = "scripts/game_sounds_weapons.txt";
+    let source = *bundle.get(logical_path).ok_or(())?;
+    let document = playsrc_keyvalues::parse_text(
+        source,
+        playsrc_keyvalues::EscapeMode::LiteralBackslash,
+        playsrc_keyvalues::Limits::default(),
+    )
+    .map_err(|_| ())?;
+    let targets = [
+        "Weapon_RPG.Single",
+        "Weapon_StickyBombLauncher.Single",
+        "BaseExplosionEffect.Sound",
+        "Weapon_Grenade_Pipebomb.Explode",
+    ];
+    let nodes = targets
+        .iter()
+        .map(|target| {
+            document
+                .roots
+                .iter()
+                .find(|node| node.key.bytes.eq_ignore_ascii_case(target.as_bytes()))
+                .ok_or(())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mixer = *bundle.get("scripts/soundmixers.txt").ok_or(())?;
+    out.extend_from_slice(b"PAUD");
+    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(&<[u8; 32]>::from(Sha256::digest(source)));
+    out.extend_from_slice(&<[u8; 32]>::from(Sha256::digest(mixer)));
+    out.extend_from_slice(&0.72f32.to_le_bytes());
+    pbytes(out, logical_path.as_bytes())?;
+    out.extend_from_slice(&u32::try_from(nodes.len()).map_err(|_| ())?.to_le_bytes());
+    for node in nodes {
+        encode_sound_node(out, node)?;
+    }
+    Ok(())
+}
+
+fn encode_model_occurrence_matrices(
+    out: &mut Vec<u8>,
+    graph: &playsrc_entity::Graph,
+) -> Result<(), ()> {
+    let occurrences = graph
+        .entities
+        .iter()
+        .filter(|entity| {
+            entity
+                .classname
+                .as_deref()
+                .is_some_and(|value| value.eq_ignore_ascii_case(b"prop_dynamic"))
+        })
+        .collect::<Vec<_>>();
+    out.extend_from_slice(b"PMTX");
+    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(
+        &u32::try_from(occurrences.len())
+            .map_err(|_| ())?
+            .to_le_bytes(),
+    );
+    for entity in occurrences {
+        let identity = std::str::from_utf8(entity.model.as_deref().ok_or(())?)
+            .map_err(|_| ())?
+            .to_ascii_lowercase();
+        let source_vector = |value: [f32; 3]| {
+            playsrc_studio_model::Vector3(
+                value.map(|component| playsrc_studio_model::Float32(component.to_bits())),
+            )
+        };
+        let matrix = playsrc_studio_model::source_entity_transform(
+            source_vector(entity_vector(entity, b"origin")?),
+            source_vector(entity_vector(entity, b"angles")?),
+        )
+        .map_err(|_| ())?;
+        out.extend_from_slice(&entity.index.to_le_bytes());
+        pbytes(out, identity.as_bytes())?;
+        for value in matrix.0 {
+            out.extend_from_slice(&value.0.to_le_bytes());
+        }
+    }
+    Ok(())
 }
 fn decoded_texture(
     path: &str,
     bundle: &BTreeMap<String, &[u8]>,
 ) -> Result<playsrc_map::RuntimeTexture, ()> {
     let plane = playsrc_vtf::decode(
-        *bundle.get(path).ok_or(())?,
+        bundle.get(path).ok_or(())?,
         playsrc_vtf::Dialect::Source2013Pc,
         playsrc_vtf::SubresourceIdentity::HighResolution {
             mip: 0,
@@ -2115,7 +2671,13 @@ fn compile_presentation(
     graph: &playsrc_entity::Graph,
     configuration: &[u8],
     profile: playsrc_map::LightingProfile,
-) -> Result<Vec<u8>, ()> {
+) -> Result<
+    (
+        Vec<u8>,
+        BTreeMap<String, playsrc_studio_model::PresentationModel>,
+    ),
+    (),
+> {
     let bundle = bundle(configuration)?;
     let mut roots = std::collections::BTreeSet::from([
         "models/weapons/w_models/w_rocket.mdl".to_owned(),
@@ -2220,7 +2782,7 @@ fn compile_presentation(
         .materials;
     let environment = compile_environment_artifact(canonical, bsp, graph, &bundle, profile)?;
     let mut out = b"PTF2".to_vec();
-    out.extend_from_slice(&4u32.to_le_bytes());
+    out.extend_from_slice(&5u32.to_le_bytes());
     out.extend_from_slice(&u32::try_from(models.len()).map_err(|_| ())?.to_le_bytes());
     out.extend_from_slice(&u32::try_from(textures.len()).map_err(|_| ())?.to_le_bytes());
     out.extend_from_slice(
@@ -2233,7 +2795,7 @@ fn compile_presentation(
             .map_err(|_| ())?
             .to_le_bytes(),
     );
-    for (id, a) in models {
+    for (id, a) in &models {
         pbytes(&mut out, id.as_bytes())?;
         out.extend_from_slice(&[
             if a.model.profile == playsrc_studio_model::PresentationProfile::World {
@@ -2268,8 +2830,31 @@ fn compile_presentation(
                 .map_err(|_| ())?
                 .to_le_bytes(),
         );
+        let attachment_pose = playsrc_studio_model::sample_pose(
+            &a.model,
+            &playsrc_studio_model::AnimationState {
+                base_sequence: 0,
+                cycle: playsrc_studio_model::Float32(0),
+                pose_parameters: a
+                    .model
+                    .pose_parameters
+                    .iter()
+                    .map(|_| playsrc_studio_model::Float32(0))
+                    .collect(),
+                layers: Vec::new(),
+            },
+        )
+        .map_err(|_| ())?;
         for v in &a.model.attachments {
             pbytes(&mut out, &v.name)?;
+            let sampled = attachment_pose
+                .attachments
+                .iter()
+                .find(|attachment| attachment.index == v.index)
+                .ok_or(())?;
+            for value in sampled.model_transform.0 {
+                out.extend_from_slice(&value.0.to_le_bytes());
+            }
         }
         out.extend_from_slice(
             &u32::try_from(a.model.sequences.len())
@@ -2279,6 +2864,31 @@ fn compile_presentation(
         for v in &a.model.sequences {
             pbytes(&mut out, &v.label)?;
             pbytes(&mut out, &v.activity_name)?;
+            out.extend_from_slice(&u32::try_from(v.index).map_err(|_| ())?.to_le_bytes());
+            let timing = playsrc_studio_model::sequence_timing(
+                &a.model,
+                v.index,
+                &a.model
+                    .pose_parameters
+                    .iter()
+                    .map(|_| playsrc_studio_model::Float32(0))
+                    .collect::<Vec<_>>(),
+            )
+            .ok();
+            out.extend_from_slice(&[u8::from(timing.is_some()), 0, 0, 0]);
+            if let Some(timing) = timing {
+                for value in [
+                    timing.frames_per_second,
+                    timing.weighted_frame_count,
+                    timing.cycles_per_second,
+                    timing.duration_seconds,
+                ] {
+                    out.extend_from_slice(&value.0.to_le_bytes());
+                }
+                out.extend_from_slice(&[u8::from(timing.looping), 0, 0, 0]);
+            } else {
+                out.extend_from_slice(&[0; 20]);
+            }
         }
         pbytes(&mut out, &a.bytes)?;
     }
@@ -2304,11 +2914,19 @@ fn compile_presentation(
             out.extend_from_slice(&value.to_le_bytes())
         }
     }
-    for material in particle_materials {
+    for material in &particle_materials {
         pbytes(&mut out, material.as_bytes())?;
     }
     pbytes(&mut out, &environment)?;
-    Ok(out)
+    encode_material_states(&mut out, canonical, graph, &bundle, profile, &models)?;
+    encode_particle_textures(&mut out, &particle_materials, &bundle, profile)?;
+    encode_audio_documents(&mut out, &bundle)?;
+    encode_model_occurrence_matrices(&mut out, graph)?;
+    let models = models
+        .into_iter()
+        .map(|(identity, artifact)| (identity, artifact.model))
+        .collect();
+    Ok((out, models))
 }
 
 fn compile_environment_artifact(
@@ -2696,9 +3314,13 @@ fn compile_environment_artifact(
     Ok(out)
 }
 
-fn compile_particles(
-    configuration: &[u8],
-) -> Result<(playsrc_particle::ParticleWorld, Vec<String>), ()> {
+type CompiledParticles = (
+    playsrc_particle::ParticleWorld,
+    Vec<String>,
+    BTreeMap<String, playsrc_particle::ParticleSheet>,
+);
+
+fn compile_particles(configuration: &[u8]) -> Result<CompiledParticles, ()> {
     let b = bundle(configuration)?;
     let paths = [
         "particles/rockettrail.pcf",
@@ -2732,11 +3354,121 @@ fn compile_particles(
     ]
     .map(playsrc_particle::DefinitionLookup::Name);
     let materials = registry.target_closure(&roots).map_err(|_| ())?.materials;
+    let sheets = materials
+        .iter()
+        .map(|identity| {
+            let material_path = dependency_path(identity.as_bytes())?;
+            let material = resolve_material_semantics(
+                &material_path,
+                &b,
+                playsrc_material::SelectionEnvironment::default(),
+            )?;
+            let (_, bytes, _) = selected_texture(&material, &b)?;
+            Ok((identity.clone(), decode_particle_sheet(bytes)?))
+        })
+        .collect::<Result<BTreeMap<_, _>, ()>>()?;
     Ok((
         playsrc_particle::ParticleWorld::new(&registry, playsrc_particle::WorldLimits::default())
             .map_err(|_| ())?,
         materials,
+        sheets,
     ))
+}
+
+fn decode_particle_sheet(bytes: &[u8]) -> Result<playsrc_particle::ParticleSheet, ()> {
+    let metadata = playsrc_vtf::inspect(
+        bytes,
+        playsrc_vtf::Dialect::Source2013Pc,
+        playsrc_vtf::Limits::default(),
+    )
+    .map_err(|_| ())?;
+    let resource = metadata.resources.iter().find_map(|resource| {
+        if resource.tag == [0x10, 0, 0]
+            && let playsrc_vtf::ResourceData::External { bytes, .. } = &resource.data
+        {
+            Some(bytes.as_slice())
+        } else {
+            None
+        }
+    });
+    let Some(resource) = resource else {
+        return Ok(playsrc_particle::ParticleSheet {
+            sequences: BTreeMap::from([(
+                0,
+                playsrc_particle::SheetSequence {
+                    clamp: true,
+                    duration_seconds: 1.0,
+                    frames: vec![playsrc_particle::SheetFrame {
+                        duration_seconds: 1.0,
+                        images: [[0.0, 0.0, 1.0, 1.0]; 4],
+                    }],
+                },
+            )]),
+        });
+    };
+    let mut reader = ParticleReader {
+        bytes: resource,
+        at: 0,
+    };
+    let version = reader.u32()?;
+    if version > 1 {
+        return Err(());
+    }
+    let sequence_count = reader.u32()? as usize;
+    if sequence_count == 0 || sequence_count > 64 {
+        return Err(());
+    }
+    let mut sequences = BTreeMap::new();
+    for _ in 0..sequence_count {
+        let identity = i32::from_le_bytes(reader.take(4)?.try_into().map_err(|_| ())?);
+        if !(0..64).contains(&identity) || sequences.contains_key(&identity) {
+            return Err(());
+        }
+        let clamp = match reader.u32()? {
+            0 => false,
+            1 => true,
+            _ => return Err(()),
+        };
+        let frame_count = reader.u32()? as usize;
+        if frame_count == 0 || frame_count > 1_024 {
+            return Err(());
+        }
+        let duration_seconds = reader.f32()?;
+        if duration_seconds <= 0.0 {
+            return Err(());
+        }
+        let mut frames = Vec::with_capacity(frame_count);
+        for _ in 0..frame_count {
+            let frame_duration = reader.f32()?;
+            if frame_duration <= 0.0 {
+                return Err(());
+            }
+            let image_count = if version == 0 { 1 } else { 4 };
+            let mut images = [[0.0; 4]; 4];
+            for image in images.iter_mut().take(image_count) {
+                *image = [reader.f32()?, reader.f32()?, reader.f32()?, reader.f32()?];
+            }
+            if image_count == 1 {
+                let first = images[0];
+                images.fill(first);
+            }
+            frames.push(playsrc_particle::SheetFrame {
+                duration_seconds: frame_duration,
+                images,
+            });
+        }
+        sequences.insert(
+            identity,
+            playsrc_particle::SheetSequence {
+                clamp,
+                duration_seconds,
+                frames,
+            },
+        );
+    }
+    (reader.at == resource.len())
+        .then_some(playsrc_particle::ParticleSheet { sequences })
+        .ok_or(())
 }
 struct ParticleCollision(Arc<playsrc_collision::World>);
 impl playsrc_particle::CollisionQuery for ParticleCollision {
@@ -2950,7 +3682,10 @@ mod tests {
             presentation_hash: [0; 32],
             particles: None,
             particle_materials: Vec::new(),
+            particle_sheets: BTreeMap::new(),
             particle_output: Vec::new(),
+            studio_models: BTreeMap::new(),
+            model_output: Vec::new(),
             visibility: None,
             area_state: None,
             visibility_output: Vec::new(),
@@ -2975,7 +3710,10 @@ mod tests {
             presentation_hash: [0; 32],
             particles: None,
             particle_materials: Vec::new(),
+            particle_sheets: BTreeMap::new(),
             particle_output: Vec::new(),
+            studio_models: BTreeMap::new(),
+            model_output: Vec::new(),
             visibility: None,
             area_state: None,
             visibility_output: Vec::new(),
@@ -3085,9 +3823,9 @@ mod tests {
                 yaw_degrees: Some(90.),
             }],
         };
-        let encoded = encode_snapshot(&snapshot).unwrap();
-        assert_eq!(&encoded[..8], b"PSSN\x03\0\0\0");
-        assert_eq!(encoded.len(), 368);
+        let encoded = encode_snapshot(&snapshot, None).unwrap();
+        assert_eq!(&encoded[..8], b"PSSN\x04\0\0\0");
+        assert_eq!(encoded.len(), 380);
         assert_eq!(u32::from_le_bytes(encoded[32..36].try_into().unwrap()), 1);
         assert_eq!(u32::from_le_bytes(encoded[36..40].try_into().unwrap()), 1);
         assert_eq!(u32::from_le_bytes(encoded[40..44].try_into().unwrap()), 1);

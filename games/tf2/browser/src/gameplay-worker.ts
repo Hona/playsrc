@@ -23,6 +23,9 @@ type WasmExports = Readonly<{
   playsrc_particle_transact(handle: number, pointer: number, length: number): number
   playsrc_particle_output_length(handle: number): number
   playsrc_particle_output_copy(handle: number, pointer: number, capacity: number): number
+  playsrc_model_transact(handle: number, pointer: number, length: number): number
+  playsrc_model_output_length(handle: number): number
+  playsrc_model_output_copy(handle: number, pointer: number, capacity: number): number
   playsrc_visibility_query(handle: number, pointer: number): number
   playsrc_visibility_output_length(handle: number): number
   playsrc_visibility_output_copy(handle: number, pointer: number, capacity: number): number
@@ -87,6 +90,9 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         candidate.playsrc_particle_transact,
         candidate.playsrc_particle_output_length,
         candidate.playsrc_particle_output_copy,
+        candidate.playsrc_model_transact,
+        candidate.playsrc_model_output_length,
+        candidate.playsrc_model_output_copy,
         candidate.playsrc_visibility_query,
         candidate.playsrc_visibility_output_length,
         candidate.playsrc_visibility_output_copy,
@@ -398,6 +404,35 @@ function particles(request: Extract<WorkerRequest, { kind: "particles" }>): void
   value.exports.playsrc_free(outputPointer, length)
   post({ id: request.id, kind: "particles", generation: request.generation, output }, [output])
 }
+function models(request: Extract<WorkerRequest, { kind: "models" }>): void {
+  const value = requireActive(request.id, request.generation)
+  if (!value) return
+  if (!(request.batch instanceof ArrayBuffer) || request.batch.byteLength < 12 || request.batch.byteLength > 1024 * 1024) {
+    fail(request.id, "MalformedRequest")
+    return
+  }
+  const pointer = allocateCopy(value.exports, request.batch)
+  const ok = value.exports.playsrc_model_transact(value.handle, pointer, request.batch.byteLength)
+  value.exports.playsrc_free(pointer, request.batch.byteLength)
+  if (ok !== 1) {
+    fail(request.id, "TransitionFailed")
+    return
+  }
+  const length = value.exports.playsrc_model_output_length(value.handle)
+  if (length < 12 || length > 64 * 1024 * 1024) {
+    fail(request.id, "InternalFailure")
+    return
+  }
+  const outputPointer = value.exports.playsrc_alloc(length)
+  if (value.exports.playsrc_model_output_copy(value.handle, outputPointer, length) !== length) {
+    value.exports.playsrc_free(outputPointer, length)
+    fail(request.id, "InternalFailure")
+    return
+  }
+  const output = new Uint8Array(value.exports.memory.buffer, outputPointer, length).slice().buffer
+  value.exports.playsrc_free(outputPointer, length)
+  post({ id: request.id, kind: "models", generation: request.generation, output }, [output])
+}
 function visibility(request: Extract<WorkerRequest, { kind: "visibility" }>): void {
   const value = requireActive(request.id, request.generation)
   if (!value) return
@@ -459,6 +494,8 @@ function dispatch(request: WorkerRequest): void | Promise<void> {
       return advance(request)
     case "particles":
       return particles(request)
+    case "models":
+      return models(request)
     case "visibility":
       return visibility(request)
     case "shutdown":

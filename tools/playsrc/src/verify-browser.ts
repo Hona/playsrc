@@ -65,6 +65,7 @@ type RegionMetric = Readonly<{
   height: number
   nonBackgroundRatio: number
   meanLuma: number
+  sha256: string
 }>
 
 type CanvasEvidence = Readonly<{
@@ -87,12 +88,13 @@ type SpawnObservation = Readonly<{
   position: readonly [number, number, number]
   angles: readonly [number, number, number]
 }>
+type CrouchTrajectory = Readonly<{ fractions: readonly number[]; offsets: readonly number[] }>
 
 const VISUAL_REGIONS = Object.freeze([
   Object.freeze({ name: "ceiling", x: 400, y: 120, width: 320, height: 100 }),
   Object.freeze({ name: "forward-wall", x: 400, y: 270, width: 320, height: 180 }),
   Object.freeze({ name: "floor", x: 180, y: 500, width: 160, height: 130 }),
-  Object.freeze({ name: "right-wall", x: 920, y: 300, width: 160, height: 180 }),
+  Object.freeze({ name: "right-wall", x: 1_080, y: 40, width: 120, height: 80 }),
 ])
 
 function readUint32(bytes: Uint8Array, offset: number): number {
@@ -197,12 +199,17 @@ function measureRegion(image: DecodedPng, region: (typeof VISUAL_REGIONS)[number
   let nonBackground = 0
   let luma = 0
   const pixels = region.width * region.height
+  const samples = new Uint8Array(pixels * 3)
+  let sampleOffset = 0
   for (let y = region.y; y < region.y + region.height; y += 1) {
     for (let x = region.x; x < region.x + region.width; x += 1) {
       const offset = (y * image.width + x) * 3
       const red = image.rgb[offset] ?? 0
       const green = image.rgb[offset + 1] ?? 0
       const blue = image.rgb[offset + 2] ?? 0
+      samples[sampleOffset++] = red
+      samples[sampleOffset++] = green
+      samples[sampleOffset++] = blue
       if (
         Math.abs(red - BACKGROUND_RGB[0]) > 2 ||
         Math.abs(green - BACKGROUND_RGB[1]) > 2 ||
@@ -216,6 +223,7 @@ function measureRegion(image: DecodedPng, region: (typeof VISUAL_REGIONS)[number
     ...region,
     nonBackgroundRatio: Number((nonBackground / pixels).toFixed(6)),
     meanLuma: Number((luma / pixels).toFixed(3)),
+    sha256: new Bun.CryptoHasher("sha256").update(samples).digest("hex"),
   })
 }
 
@@ -304,6 +312,35 @@ async function spawnObservation(session: string): Promise<SpawnObservation> {
     position: Object.freeze(observation.position) as readonly [number, number, number],
     angles: Object.freeze(observation.angles) as readonly [number, number, number],
   })
+}
+
+async function crouchTrajectory(session: string, pressed: boolean): Promise<CrouchTrajectory> {
+  const baseline = parseJson<string>(await agent([
+    "--session", session, "eval", "document.querySelector('main').dataset.crouchHistory",
+  ])).split("|").filter(Boolean).length
+  await agent([
+    "--session",
+    session,
+    "eval",
+    `window.dispatchEvent(new KeyboardEvent('${pressed ? "keydown" : "keyup"}',{code:'ShiftLeft',key:'Shift',bubbles:true}));true`,
+  ])
+  await agent([
+    "--session", session, "wait", "--fn",
+    pressed
+      ? "Number(document.querySelector('main').dataset.crouchFraction)>=0.999"
+      : "Number(document.querySelector('main').dataset.crouchFraction)<=0.001",
+    "--timeout", "120000",
+  ])
+  const history = parseJson<string>(await agent([
+    "--session", session, "eval", "document.querySelector('main').dataset.crouchHistory",
+  ])).split("|").filter(Boolean).slice(Math.max(0, baseline - 1))
+  const values = history.map((record) => record.split(":").map(Number))
+  const fractions = values.map((value) => value[1]!), offsets = values.map((value) => value[2]!)
+  require(fractions.length === offsets.length && fractions.length >= 3 &&
+    fractions.every(Number.isFinite) && offsets.every(Number.isFinite) &&
+    (pressed ? fractions.at(-1)! >= 0.999 : fractions.at(-1)! <= 0.001),
+  `crouch trajectory is malformed or timed out: ${JSON.stringify({ pressed, fractions, offsets })}`)
+  return Object.freeze({ fractions: Object.freeze(fractions), offsets: Object.freeze(offsets) })
 }
 
 function cameraForward(camera: CameraObservation): readonly [number, number, number] {
@@ -505,9 +542,10 @@ export async function verifyBrowserAcceptance(
     require(body.includes("DERIVED CACHE STORED"), "cold browser run did not store the derived payload")
     const fixedSpawn = await spawnObservation(session)
     const fixedCamera = await cameraObservation(session)
-    require(parseJson<string>(
+    const fixedEnvironment = parseJson<string>(
       await agent(["--session", session, "eval", "document.querySelector('main').dataset.environment"]),
-    ) === "hdr,284,91,1,39,62", "HDR environment summary differs")
+    )
+    require(fixedEnvironment === "hdr,284,91,1,39,63", `HDR environment summary differs: ${fixedEnvironment}`)
     require(parseJson<number>(
       await agent([
         "--session",
@@ -515,13 +553,30 @@ export async function verifyBrowserAcceptance(
         "eval",
         "Number(document.querySelector('main').dataset.environmentDrawables)",
       ]),
-    ) === 62, "projected environment drawable count differs")
+    ) === 63, "projected environment drawable count differs")
     require(parseJson<string>(
       await agent(["--session", session, "eval", "document.querySelector('main').dataset.environmentSky"]),
     ) === "sky_day01_01", "worldspawn sky identity differs")
     require(parseJson<string>(
       await agent(["--session", session, "eval", "document.querySelector('main').dataset.waterCubemap"]),
     ) === "0", "water cubemap selection differs")
+    const producerProbes = parseJson<{ decal: string; occurrences: number; models: string; viewmodel: string; sequences: string; timelines: string }>(await agent([
+      "--session",
+      session,
+      "eval",
+      "(()=>{const d=document.querySelector('main').dataset;return {decal:d.decalProbe,occurrences:Number(d.modelOccurrences),models:d.modelProbes,viewmodel:d.viewmodelProjection,sequences:d.viewmodelSequences,timelines:d.viewmodelTimelines}})()",
+    ]))
+    const decalParts = producerProbes.decal.split(":").map(Number)
+    require(decalParts.length === 3 && decalParts[0] === 13 && decalParts[1]! > 0 && decalParts[2] === 63,
+      `decal alpha/fragment probe differs: ${producerProbes.decal}`)
+    require(producerProbes.occurrences === 33, "StudioModel occurrence count differs")
+    require(producerProbes.models === "models/player/soldier.mdl:150:7:5899|models/player/demo.mdl:94:6:6428",
+      `player model pose probes differ: ${producerProbes.models}`)
+    require(producerProbes.viewmodel === "54:1:0,0.10000000149011612", `viewmodel projection differs: ${producerProbes.viewmodel}`)
+    for (const activity of ["ACT_VM_DRAW", "ACT_VM_IDLE", "ACT_VM_PRIMARYATTACK", "ACT_RELOAD_START", "ACT_VM_RELOAD", "ACT_RELOAD_FINISH"]) {
+      require(producerProbes.sequences.includes(`${activity}:`), `viewmodel sequence timing is missing ${activity}: ${producerProbes.sequences}`)
+      require(producerProbes.timelines.includes(`${activity}:`), `viewmodel posed timeline is missing ${activity}: ${producerProbes.timelines}`)
+    }
     require(fixedSpawn.entity === 1 &&
       fixedSpawn.hammerId === 29 &&
       fixedSpawn.position.every((value, index) => value === [5328, 3376, -3120][index]) &&
@@ -645,7 +700,7 @@ export async function verifyBrowserAcceptance(
       await agent(["--session", session, "wait", "--text", `mat_hdr_level = ${level}`, "--timeout", "30000"])
       require(parseJson<string>(
         await agent(["--session", session, "eval", "document.querySelector('main').dataset.environment"]),
-      ).startsWith(`${profile},284,91,1,39,62`), `${profile} environment summary differs`)
+      ).startsWith(`${profile},284,91,1,39,63`), `${profile} environment summary differs`)
     }
     await agent(["--session", session, "press", "Backquote"])
     await agent([
@@ -655,6 +710,17 @@ export async function verifyBrowserAcceptance(
       "--fn",
       "getComputedStyle(document.querySelector('[role=dialog]')).display === 'none'",
     ])
+
+    await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.grounded==='true'", "--timeout", "120000"])
+    const crouchDown = await crouchTrajectory(session, true)
+    const crouchUp = await crouchTrajectory(session, false)
+    require(crouchDown.fractions.some((value) => value > 0 && value < 1) &&
+      crouchDown.fractions.every((value, index) => index === 0 || value >= crouchDown.fractions[index - 1]!) &&
+      crouchDown.offsets.every((value, index) => index === 0 || value <= crouchDown.offsets[index - 1]!) &&
+      crouchUp.fractions.some((value) => value > 0 && value < 1) &&
+      crouchUp.fractions.every((value, index) => index === 0 || value <= crouchUp.fractions[index - 1]!) &&
+      crouchUp.offsets.every((value, index) => index === 0 || value >= crouchUp.offsets[index - 1]!),
+    `crouch trajectory is not smooth and monotonic: ${JSON.stringify({ crouchDown, crouchUp })}`)
     await agent(["--session", session, "press", "Backquote"])
     await agent([
       "--session",
@@ -728,15 +794,20 @@ export async function verifyBrowserAcceptance(
     await agent(["--session", session, "mouse", "down", "left"])
     await agent(["--session", session, "wait", "100"])
     await agent(["--session", session, "mouse", "up", "left"])
-    await agent([
-      "--session",
-      session,
-      "wait",
-      "--fn",
-      `Number(document.querySelector('main').dataset.fireEvents) > ${initialFireEvents}`,
-      "--timeout",
-      "10000",
-    ])
+    try {
+      await agent([
+        "--session",
+        session,
+        "wait",
+        "--fn",
+        `Number(document.querySelector('main').dataset.fireEvents) > ${initialFireEvents}`,
+        "--timeout",
+        "10000",
+      ])
+    } catch (error) {
+      const state = await agent(["--session", session, "eval", "({text:document.body.innerText,dataset:{...document.querySelector('main').dataset}})"])
+      throw new BrowserEvidenceError(`Soldier fire observation failed: ${String(error)}; state ${state}`)
+    }
     await agent(["--session", session, "wait", "1200"])
     let blockerCount = parseJson<number>(
       await agent([
@@ -749,11 +820,23 @@ export async function verifyBrowserAcceptance(
     require(parseJson<number>(
       await agent(["--session", session, "eval", "Number(document.querySelector('main').dataset.particleItems)"]),
     ) > 0, "Soldier PCF render data was not observed")
+    const soldierPresentation = parseJson<{ particles: string; audio: string; activity: string; activities: string }>(await agent([
+      "--session", session, "eval",
+      "(()=>{const d=document.querySelector('main').dataset;return {particles:d.particleProbe,audio:d.audioStarts,activity:d.viewmodelActivity,activities:d.viewmodelActivities}})()",
+    ]))
+    require(soldierPresentation.particles.includes("sheet") &&
+      (soldierPresentation.particles.includes("sprite:") || soldierPresentation.particles.includes("trail:")),
+    `textured Particle sprite/trail probe is missing: ${soldierPresentation.particles}`)
+    require(soldierPresentation.audio.includes("Weapon_RPG.Single:sound/weapons/rocket_shoot.wav:1:94"),
+      `Source launch audio lifecycle probe differs: ${soldierPresentation.audio}`)
+    require(soldierPresentation.activities.includes("ACT_VM_DRAW") && soldierPresentation.activities.includes("ACT_VM_PRIMARYATTACK"),
+      `viewmodel draw/fire activity progression differs: ${soldierPresentation.activities}`)
+    const particleCanvas = await captureCanvas(session, config)
 
     await agent(["--session", session, "press", "Escape"])
     await agent(["--session", session, "wait", "1000"])
     await agent(["--session", session, "click", ".class-rail button:nth-child(2)"])
-    await agent(["--session", session, "wait", "3000"])
+    await agent(["--session", session, "wait", "--text", "STICKYBOMB LAUNCHER", "--timeout", "30000"])
     body = parseJson<string>(await agent(["--session", session, "eval", "document.body.innerText"]))
     require(body.includes("STICKYBOMB LAUNCHER"), `Demoman selection failed: ${body.slice(0, 500)}`)
     await acquirePointerLock(session)
@@ -769,11 +852,32 @@ export async function verifyBrowserAcceptance(
       "--timeout",
       "10000",
     ])
-    await agent(["--session", session, "wait", "1000"])
+    try {
+      await agent([
+        "--session",
+        session,
+        "wait",
+        "--fn",
+        "document.querySelector('main').dataset.projectileStates.split(',').some(value=>value.endsWith(':3'))",
+        "--timeout",
+        "180000",
+      ])
+    } catch (error) {
+      const state = await agent(["--session", session, "eval", "({phase:document.querySelector('main').dataset.phase,tick:document.querySelector('main').dataset.snapshotTick,projectiles:document.querySelector('main').dataset.projectileStates,text:document.body.innerText})"])
+      throw new BrowserEvidenceError(`sticky arm observation failed: ${String(error)}; state ${state}`)
+    }
     await agent(["--session", session, "mouse", "down", "right"])
     await agent(["--session", session, "wait", "100"])
     await agent(["--session", session, "mouse", "up", "right"])
-    await agent(["--session", session, "wait", "500"])
+    await agent([
+      "--session",
+      session,
+      "wait",
+      "--fn",
+      `Number(document.querySelector('main').dataset.explosionEvents) > ${initialExplosionEvents}`,
+      "--timeout",
+      "30000",
+    ])
     blockerCount = parseJson<number>(
       await agent([
         "--session",
@@ -786,6 +890,10 @@ export async function verifyBrowserAcceptance(
       await agent(["--session", session, "eval", "Number(document.querySelector('main').dataset.explosionEvents)"]),
     ) > initialExplosionEvents, "Demoman sticky detonation event was not observed")
 
+    const reloadTabs = await agent(["--session", session, "tab"])
+    const reloadTab = /\[(t\d+)\]/.exec(reloadTabs)?.[1]
+    require(reloadTab, `browser tab is unavailable before warm reload: ${reloadTabs}`)
+    await agent(["--session", session, "tab", reloadTab])
     await agent(["--session", session, "reload"])
     await agent(["--session", session, "wait", "--text", "Ready", "--timeout", "300000"])
     await agent([
@@ -802,7 +910,8 @@ export async function verifyBrowserAcceptance(
     require(!body.includes("ModelArtifactCacheUnavailable"), "bounded model presentation artifacts were not cached")
     const warmCamera = await cameraObservation(session)
     const warmCanvas = await captureCanvas(session, config)
-    require(warmCanvas.sha256 === coldCanvas.sha256, "warm fixed-camera canvas differs from the cold capture")
+    require(warmCanvas.regions.every((region, index) => region.sha256 === coldCanvas.regions[index]?.sha256),
+      `warm fixed-camera world regions differ from cold: ${JSON.stringify({ cold: coldCanvas.regions, warm: warmCanvas.regions })}`)
     require(warmCamera.position.every((value, index) => Math.abs(value - fixedCamera.position[index]!) <= 0.001) &&
       Math.abs(warmCamera.yaw - fixedCamera.yaw) <= 0.001 &&
       Math.abs(warmCamera.pitch - fixedCamera.pitch) <= 0.001, "warm fixed camera differs from the cold camera")
@@ -816,22 +925,22 @@ export async function verifyBrowserAcceptance(
     )
     const mapRecords = records.filter(
       (record) =>
-        record.sha256 === "d39f32489a7449075e788f78cde8bb0263b161e917d9a1b10cd0f6a96e865c68" ||
-        record.sha256 === "f44941ce76aa276d7a278cb84c122709f47e477baaec865091c0b0ab5653ab0e",
+        record.sha256 === "baddd97e9795ab7f6c6fbf7710b18d1047397c4bd10854a6a3f9202bcf059ecd" ||
+        record.sha256 === "b202a853d87a93c10b13226fd48a7eafc250cd5c83a54b44ffdb7dce2a438753",
     )
     require(mapRecords.length === 2 &&
       mapRecords.some(
         (record) =>
-          record.byteLength === 85_586_296 &&
-          record.sha256 === "d39f32489a7449075e788f78cde8bb0263b161e917d9a1b10cd0f6a96e865c68",
+          record.byteLength === 78_624_037 &&
+          record.sha256 === "baddd97e9795ab7f6c6fbf7710b18d1047397c4bd10854a6a3f9202bcf059ecd",
       ) &&
       mapRecords.some(
         (record) =>
-          record.byteLength === 49_414_468 &&
-          record.sha256 === "f44941ce76aa276d7a278cb84c122709f47e477baaec865091c0b0ab5653ab0e",
+          record.byteLength === 42_452_075 &&
+          record.sha256 === "b202a853d87a93c10b13226fd48a7eafc250cd5c83a54b44ffdb7dce2a438753",
       ) &&
       records.some(
-        (record) => record.byteLength === 39_322_364 && record.key === record.sha256,
+        (record) => record.byteLength === 41_473_885 && record.key === record.sha256,
       ), `warm IndexedDB record identity differs: ${JSON.stringify(records)}`)
     return {
       target: "jump_beef",
@@ -854,6 +963,10 @@ export async function verifyBrowserAcceptance(
         positiveHorizontalRightDot: Number(rightDirectionDelta.toFixed(6)),
         positiveVerticalDownDot: Number(downDirectionDelta.toFixed(6)),
       },
+      crouch: { down: crouchDown, up: crouchUp },
+      producerProbes,
+      soldierPresentation,
+      particleCanvas,
       shutdown: "pending",
     }
   } finally {

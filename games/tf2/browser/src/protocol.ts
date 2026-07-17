@@ -19,6 +19,7 @@ export type WorkerRequest =
     }>
   | Readonly<{ id: number; kind: "discard"; generation: number }>
   | Readonly<{ id: number; kind: "particles"; generation: number; batch: ArrayBuffer }>
+  | Readonly<{ id: number; kind: "models"; generation: number; batch: ArrayBuffer }>
   | Readonly<{ id: number; kind: "visibility"; generation: number; position: readonly [number, number, number] }>
   | Readonly<{
       id: number
@@ -62,6 +63,7 @@ export type WorkerResponse =
   | Readonly<{ id: number; kind: "course-configured"; generation: number }>
   | Readonly<{ id: number; kind: "discarded"; generation: number }>
   | Readonly<{ id: number; kind: "particles"; generation: number; output: ArrayBuffer }>
+  | Readonly<{ id: number; kind: "models"; generation: number; output: ArrayBuffer }>
   | Readonly<{ id: number; kind: "visibility"; generation: number; output: ArrayBuffer }>
   | Readonly<{ id: number; kind: "snapshot"; generation: number; snapshot: ArrayBuffer }>
   | Readonly<{ id: number; kind: "shutdown" }>

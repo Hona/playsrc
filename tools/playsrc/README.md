@@ -19,7 +19,7 @@ Native compilation and browser WASM compilation call the same owning Rust crates
 
 `bun run dev jump_beef` verifies/acquires the declared BSP, packages exact raw VMT/VTF dependencies from configured TF2/HL2 VPK providers, builds the checked TF2 WASM target, installs all three exact objects in `assetDir`, starts the loopback Asset Service on port 4174 and TF2 Vite application on port 4173, waits for both readiness endpoints, prints `http://127.0.0.1:4173/`, and closes both owned listeners after one `SIGINT` or `SIGTERM`.
 
-`bun run verify:browser jump_beef` starts the exact `bun run dev jump_beef` command plus one fresh headed WebGPU browser session and checks cold compilation, warm reuse, IndexedDB identity, the exact selected teamspawn and settled camera, retained 1,280×720 floor/ceiling/wall canvas regions, signed horizontal/vertical pointer direction, exact Audio decode/resume, pointer lock, movement, jump, Soldier/Demoman combat, VGUI history/completion/focus/repeated visibility, `map jump_beef` generation replacement, browser shutdown, one `SIGINT`, child exit code zero, and listener release. It emits one JSON result.
+`bun run verify:browser jump_beef` additionally retains fixed world and active-PCF captures; byte-compares cold/warm world regions; probes decal alpha, 33 model matrices, Soldier/Demoman/player and six viewmodel timelines, separate viewmodel projection, smooth crouch/view trajectories, complete Movement tick facts, textured Particle sprites/trails, and Source Audio definition/channel/level lifecycle. Blocked game-owned random sound samples remain visible rather than selecting a wave by application rule.
 
 ## Non-Responsibilities
 

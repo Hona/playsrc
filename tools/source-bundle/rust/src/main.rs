@@ -512,6 +512,8 @@ fn main() -> Result<(), String> {
         )?;
     }
     for path in [
+        "scripts/game_sounds_weapons.txt",
+        "scripts/soundmixers.txt",
         "sound/weapons/rocket_shoot.wav",
         "sound/weapons/stickybomblauncher_shoot.wav",
         "sound/weapons/explode1.wav",
