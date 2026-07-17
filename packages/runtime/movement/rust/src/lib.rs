@@ -1,4 +1,11 @@
 mod movement;
+mod mover;
+
+pub use mover::{
+    BlockContact, BlockContactKind, LinearPusherRequest, PUSHER_SNAPSHOT_VERSION, PushSubject,
+    Pushability, PusherFrame, PusherLimits, PusherResult, PusherSnapshot, PusherStatus,
+    SubjectMove, advance_linear_pushers,
+};
 
 use playsrc_collision::{Hull, World as CollisionWorld};
 use std::fmt;

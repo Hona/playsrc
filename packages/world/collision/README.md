@@ -7,6 +7,8 @@ let collision = playsrc_collision::compile(&bsp)?;
 let hit = collision.trace_hull(start, end, hull, contents_mask)?;
 ```
 
+`Snapshot::compile` adds an immutable ordered dynamic revision. `trace_snapshot_ray` and `trace_snapshot_hull` consume typed request records, explicit Source trace scope, ignored identities, and a pure game-supplied predicate.
+
 ## Objective
 
 Represent collision geometry and answer deterministic spatial queries.
@@ -18,6 +20,9 @@ Represent collision geometry and answer deterministic spatial queries.
 - Preserve Source masks, contents, surfaces, fractions, normals, and solid-state results.
 - Validate immutable BSP brush inputs, distinguish model 0 world brushes from non-world brush models through the model head-node leaf set, and sweep points or axis-aligned hulls through Source-space world convex half-spaces with the 1/32-inch brush epsilon.
 - Retain one exact brush set per BSP model and test translated model-space hull overlap for Entity-owned trigger contacts without adding inline models to world-solid traces.
+- Compile bounded immutable snapshots containing transformed inline brush models, world-aligned or oriented boxes, and supplied PHY polygon compounds. Every record retains stable identity, entity/static-prop role, transform, linear/angular velocity, collision group, contents, and surface flags.
+- Trace world brushes in near-leaf and encoded leaf-brush order, clip the entity segment to the world result, preserve strict closer-hit replacement, and retain transformed model/prop/entity feature identity. `Trace::is_sky`, `Trace::entity_identity`, and `Trace::hit_world` expose the generic facts required by projectile consumers without selecting game damage targets.
+- Serialize `CSNP` version 1 comparison records only within the snapshot byte limit. Shape, object, convex, vertex, triangle, axis, candidate, ignored-identity, and output bytes have explicit nonzero limits.
 
 ## Non-Responsibilities
 
@@ -28,6 +33,8 @@ Represent collision geometry and answer deterministic spatial queries.
 ## Relationships
 
 Consumes BSP, PHY, and model geometry; supplies queries to movement, physics, entities, simulation, and inspection tools.
+
+`bun packages/world/collision/scripts/verify-parity.ts` validates local configuration and runs the fixed configured `jump_beef` BSP, transformed mover model, sky-surface, and model-PHY evidence.
 
 ## Completion
 
