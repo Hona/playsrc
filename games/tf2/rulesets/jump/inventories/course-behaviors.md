@@ -2,9 +2,9 @@
 
 Owning roadmap: [`../ROADMAP.md`](../ROADMAP.md)
 
-Authority identity: Valve Source SDK 2013 TF2 class, item, projectile, damage, movement, respawn, trigger, filter, spawn-room, and entity-I/O contracts; Tempus public API v0 OpenAPI contract; Tempus public jump-normalization, zone-teleport cleanup, class-health, and server-policy declarations.
+Authority identity: Valve Source SDK 2013 TF2 class, item, projectile, damage, movement, respawn, trigger, filter, spawn-room, and entity-I/O contracts; Tempus public API v0 OpenAPI contract; fixed public [`jump_beef`](jump-beef.md) zone-identity capture; Tempus public jump-normalization, zone-teleport cleanup, class-health, and server-policy declarations.
 
-Authority revision: SDK `88fa198fba3fb85d46d4c95018254693fdc3af0a`; Tempus OpenAPI bytes retrieved 2026-07-16, SHA-256 `3d7bf3b65d4e74a2ae3b12f5c6b45a1cf003f29b6dc35882cccac12c8eb59d99`; Tempus public plugin commit `d7491f5295fbacee1a63fa6603c52cf585fcac18`; Tempus public server-policy commit `31171fee1073751a1b1feddc93dfbd327f3d0411`.
+Authority revision: SDK `88fa198fba3fb85d46d4c95018254693fdc3af0a`; Tempus OpenAPI bytes retrieved 2026-07-18, SHA-256 `3d7bf3b65d4e74a2ae3b12f5c6b45a1cf003f29b6dc35882cccac12c8eb59d99`; `jump_beef` response SHA-256 `24d6f390d2d7b5eeb7ab46323ce770b88506aa1b7fc739d2c4d9e5c5d4518b83`; Tempus public plugin commit `d7491f5295fbacee1a63fa6603c52cf585fcac18`; Tempus public server-policy commit `31171fee1073751a1b1feddc93dfbd327f3d0411`.
 
 Generator command: Missing
 
