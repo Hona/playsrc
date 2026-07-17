@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test"
-import { createParticleBatchEncoder, type ProjectileParticleRequest } from "../src/presentation"
+import { sourceHorizontal4By3FovToVertical } from "@playsrc/rendering"
+import { createParticleBatchEncoder, createViewmodelPresenter, tf2Camera, type ProjectileParticleRequest } from "../src/presentation"
+import type { PresentationArtifacts } from "../src/artifacts"
+import type { Snapshot } from "../src/codec"
 
 test("encodes one bounded complete PCF phase without per-particle calls", () => {
   const request: ProjectileParticleRequest = Object.freeze({
@@ -29,4 +32,52 @@ test("encodes one bounded complete PCF phase without per-particle calls", () => 
   expect(view.getUint32(28, true)).toBe(1)
   expect(bytes[32]).toBe(1)
   expect(new TextDecoder().decode(bytes.subarray(68, 79))).toBe("rockettrail")
+})
+
+test("uses the default TF2 horizontal-4:3 world projection and Source clip planes", () => {
+  const snapshot = {
+    position: Object.freeze([10, 20, 30]),
+    movement: { viewOffset: Object.freeze([0, 0, 68]) },
+  } as unknown as Snapshot
+  expect(tf2Camera(snapshot, 90, -10)).toEqual({
+    position: [10, 20, 98],
+    yawDegrees: 90,
+    pitchDegrees: -10,
+    verticalFovDegrees: sourceHorizontal4By3FovToVertical(75),
+    near: 7,
+    far: 28_377.919921875,
+  })
+})
+
+test("joins the current team skin to the matching viewmodel template", () => {
+  const identity = "models/weapons/v_models/v_rocketlauncher_soldier.mdl"
+  const artifacts = {
+    models: new Map([[identity, {
+      identity,
+      bodygroupCounts: Object.freeze([]),
+      descriptor: Object.freeze({
+        kind: "viewmodel",
+        horizontalFov4By3: 54,
+        minimumFov: 54,
+        maximumFov: 70,
+        near: 1,
+        depthRange: Object.freeze([0, 0.1]),
+        drawsAfterWorld: true,
+        opaqueBeforeTranslucent: true,
+        optionalViewSpaceYReflection: true,
+      }),
+      sequences: Object.freeze([{ activity: "ACT_VM_DRAW", durationSeconds: 0.8 }]),
+    }]]),
+  } as unknown as PresentationArtifacts
+  const snapshot = (team: 1 | 2) => ({
+    class: 1,
+    team,
+    tick: 1n,
+    projectileEvents: Object.freeze([]),
+    loadout: Object.freeze([{ weapon: 1, reload: 0, clip: 4 }]),
+    weapon: 1,
+    velocity: Object.freeze([0, 0, 0]),
+  }) as unknown as Snapshot
+  expect(createViewmodelPresenter(artifacts).map(snapshot(1)).item.skin).toBe(0)
+  expect(createViewmodelPresenter(artifacts).map(snapshot(2)).item.skin).toBe(1)
 })

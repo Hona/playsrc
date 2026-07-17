@@ -15,6 +15,7 @@ import {
 } from "./color-output"
 import { configureWorldLightmap, worldMaterialSide } from "./material-state"
 import { OwnedResourceGeneration } from "./resource-generation"
+import { sourceHorizontal4By3FovToVertical, sourceViewportDepthRange } from "./source-camera"
 import {
   buildRuntimeLightmap,
   parseRuntimeMap,
@@ -56,6 +57,7 @@ export {
   type PreparedWorldLight,
   type WorldLightRequest,
 } from "./lighting"
+export { sourceHorizontal4By3FovToVertical, sourceViewportDepthRange } from "./source-camera"
 export {
   RuntimeMapError,
   buildRuntimeLightmap,
@@ -231,8 +233,13 @@ export type MaterialStateInput = Readonly<{
   noDraw: boolean
   wrapS: number
   wrapT: number
+  wrapU: number
   minFilter: number
   magFilter: number
+  mipmapped: boolean
+  noLod: boolean
+  allMips: boolean
+  samplingAvailable: boolean
   alphaTestReference: number
 }>
 
@@ -258,7 +265,7 @@ export type MapLoadRequest = Readonly<{
 }>
 
 export type SceneDiagnostic = Readonly<{
-  code: "MissingMaterial" | "MissingDirectionalInput" | "MissingProfileInput" | "UnsupportedProfileInput"
+  code: "MissingMaterial" | "MissingTextureMips" | "MissingDirectionalInput" | "MissingProfileInput" | "UnsupportedProfileInput"
   identity: string
   detail: string
 }>
@@ -292,6 +299,11 @@ export type FrameResult = Readonly<{
   sceneGeneration: number
   submission: number
   exposure: ExposureSnapshot
+  visibleProjectedMarks: number
+  viewModelPass?: Readonly<{
+    depthRange: readonly [number, number]
+    viewportRestored: boolean
+  }>
   capture?: FrameCapture
 }>
 
@@ -359,6 +371,7 @@ type SceneResources = {
   exposureUniform: ReturnType<typeof TSL.uniform>
   diagnostics: readonly SceneDiagnostic[]
   worldBatches: readonly { mesh: THREE.Mesh; faces: Uint32Array }[]
+  projectedMarks: readonly { mesh: THREE.Mesh; face: number }[]
   result: SceneResult
   disposed: boolean
 }
@@ -401,6 +414,32 @@ function sourceTransform(object: THREE.Object3D, position: readonly number[], an
 }
 function modelKey(model: string, skin: number) {
   return skin === 0 ? model : `${model}#skin=${skin}`
+}
+
+function modelOccurrenceMatrices(
+  map: RuntimeMap,
+  input: MapLoadRequest["modelOccurrences"],
+): ReadonlyMap<number, NonNullable<MapLoadRequest["modelOccurrences"]>[number]> {
+  const supplied = input ?? []
+  if (supplied.length !== map.modelOccurrences.length) {
+    throw new RenderingError("MissingInput", "exact model occurrence matrices are incomplete")
+  }
+  const expected = new Map(map.modelOccurrences.map((occurrence) => [occurrence.entity, occurrence]))
+  const matrices = new Map<number, NonNullable<MapLoadRequest["modelOccurrences"]>[number]>()
+  for (const occurrence of supplied) {
+    const target = expected.get(occurrence.entity)
+    if (
+      !target ||
+      matrices.has(occurrence.entity) ||
+      occurrence.model !== map.models[target.model]?.logicalPath ||
+      occurrence.matrix.length !== 12 ||
+      ![...occurrence.matrix].every(Number.isFinite)
+    ) {
+      throw new RenderingError("IdentityMismatch", "model occurrence matrix identity differs")
+    }
+    matrices.set(occurrence.entity, occurrence)
+  }
+  return matrices
 }
 
 function disposeScene(scene: SceneResources): void {
@@ -573,6 +612,8 @@ class RendererOwner implements Renderer {
   #renderBusy = false
   #loadOrdinal = 0
   #suspended = false
+  #viewportWidth = 0
+  #viewportHeight = 0
   #pacingHandle?: number
   #pacingCallback?: FramePacingCallback
   #pacingBusy = false
@@ -628,6 +669,10 @@ class RendererOwner implements Renderer {
     try {
       await backend.init()
       if (!backend.backend.isWebGPUBackend) throw new Error("fallback backend")
+      this.#camera.coordinateSystem = backend.coordinateSystem
+      this.#viewCamera.coordinateSystem = backend.coordinateSystem
+      this.#camera.updateProjectionMatrix()
+      this.#viewCamera.updateProjectionMatrix()
       backend.outputColorSpace = THREE.SRGBColorSpace
       backend.toneMapping = THREE.NoToneMapping
       context = backend.backend.context
@@ -712,7 +757,22 @@ class RendererOwner implements Renderer {
     const materialStates = new Map<string, MaterialStateInput>()
     for (const [identity, state] of request.materialStates ?? []) {
       const key = identity.toLowerCase()
-      if (!key || materialStates.has(key) || !Number.isFinite(state.alphaTestReference)) throw new RenderingError("MalformedInput", "material state input is invalid")
+      if (
+        !key ||
+        materialStates.has(key) ||
+        !Number.isFinite(state.alphaTestReference) ||
+        typeof state.samplingAvailable !== "boolean" ||
+        typeof state.mipmapped !== "boolean" ||
+        typeof state.noLod !== "boolean" ||
+        typeof state.allMips !== "boolean" ||
+        (state.samplingAvailable && (
+          state.wrapS < 0 || state.wrapS > 2 ||
+          state.wrapT < 0 || state.wrapT > 2 ||
+          state.wrapU < 0 || state.wrapU > 2 ||
+          state.minFilter < 0 || state.minFilter > 4 ||
+          state.magFilter < 0 || state.magFilter > 2
+        ))
+      ) throw new RenderingError("MalformedInput", "material state input is invalid")
       materialStates.set(key, Object.freeze({ ...state }))
     }
     const materialIdentities = new Set([
@@ -723,12 +783,13 @@ class RendererOwner implements Renderer {
       throw new RenderingError("MalformedInput", "directional texture names an unavailable material")
     }
     this.#checkAbort(request.signal, ordinal)
+    const normalizedRequest = Object.freeze({ ...request, materialStates })
     const staged = this.#buildScene(
       map,
       payload,
       request.payloadSha256,
       directionalInputs,
-      request,
+      normalizedRequest,
       this.#sceneGeneration + 1,
     )
     try {
@@ -770,6 +831,8 @@ class RendererOwner implements Renderer {
     const disposables = new OwnedResourceGeneration(this.#deviceGeneration, sceneGeneration)
     const diagnostics: SceneDiagnostic[] = []
     const worldBatches: { mesh: THREE.Mesh; faces: Uint32Array }[] = []
+    const projectedMarks: { mesh: THREE.Mesh; face: number }[] = []
+    const occurrenceMatrices = modelOccurrenceMatrices(map, request.modelOccurrences)
     const lightmap = map.lightmap
     if (!lightmap) throw new RenderingError("MissingInput", "runtime lightmap is unavailable")
     const lightmapTextures: [THREE.DataTexture, THREE.DataTexture?, THREE.DataTexture?, THREE.DataTexture?] = [
@@ -788,6 +851,13 @@ class RendererOwner implements Renderer {
       "float",
     )
     const directionalGpu = new Map<string, { input: DirectionalTextureInput; texture: THREE.DataTexture }>()
+    const missingMipInputs = new Set<string>()
+    const requireMipInputs = (identity: string, state: MaterialStateInput | undefined): void => {
+      const key = identity.toLowerCase()
+      if (!state?.samplingAvailable || !state.mipmapped || missingMipInputs.has(key)) return
+      missingMipInputs.add(key)
+      diagnostics.push(diagnostic("MissingTextureMips", identity, "the supplied texture contains mip zero only"))
+    }
     for (const [identity, input] of directionalInputs) {
       const texture = textureFromRgba(input, THREE.NoColorSpace)
       directionalGpu.set(identity, { input, texture })
@@ -798,12 +868,14 @@ class RendererOwner implements Renderer {
       (request.modelTextures ?? []).map((texture) => [texture.material.toLowerCase(), texture] as const),
     )
     const createBase = (resolved: RuntimeMaterial, identity: string): THREE.DataTexture | undefined => {
+      const state = materialStates.get(identity.toLowerCase())
       const source = resolved.baseTexture ?? supplemental.get(identity.toLowerCase())
       if (!source) {
         diagnostics.push(diagnostic("MissingMaterial", identity, "resolved base texture is unavailable"))
         return undefined
       }
-      const texture = textureFromRgba(source, THREE.SRGBColorSpace, materialStates.get(identity.toLowerCase()))
+      requireMipInputs(identity, state)
+      const texture = textureFromRgba(source, THREE.SRGBColorSpace, state)
       disposables.add(texture)
       return texture
     }
@@ -890,13 +962,18 @@ class RendererOwner implements Renderer {
           geometry.setIndex(new THREE.BufferAttribute(fragment.indices, 1))
           disposables.add(geometry)
           const state = materialStates.get(mark.material.toLowerCase())
+          if (!state) throw new RenderingError("MissingInput", `projected mark state ${mark.material} is unavailable`)
+          requireMipInputs(mark.material, state)
           const material = new THREE.MeshBasicMaterial({
             ...materialOptions({ logicalPath: mark.material, width: 1, height: 1, shader: 3, features: 1, textureRole: 0 }, state),
             map: texture,
             toneMapped: false,
           })
           disposables.add(material)
-          group.add(new THREE.Mesh(geometry, material))
+          const mesh = new THREE.Mesh(geometry, material)
+          projectedMarks.push({ mesh, face: fragment.face })
+          worldBatches.push({ mesh, faces: Uint32Array.of(fragment.face) })
+          group.add(mesh)
         }
       }
 
@@ -921,7 +998,9 @@ class RendererOwner implements Renderer {
             toneMapped: false,
           })
           disposables.add(material)
-          template.add(new THREE.Mesh(geometry, material))
+          const mesh = new THREE.Mesh(geometry, material)
+          mesh.userData.primitiveMaterial = primitive.material
+          template.add(mesh)
         }
         modelTemplates.set(model.logicalPath, template)
       }
@@ -929,17 +1008,14 @@ class RendererOwner implements Renderer {
         const model = map.models[occurrence.model]!
         const instance = modelTemplates.get(model.logicalPath)!.clone(true)
         instance.userData.entity = occurrence.entity
-        const exact = request.modelOccurrences?.find((value) => value.entity === occurrence.entity && value.model === model.logicalPath)
-        if (exact) {
-          const m = exact.matrix
-          if (m.length !== 12 || ![...m].every(Number.isFinite)) throw new RenderingError("MalformedInput", "model occurrence matrix is invalid")
-          instance.matrix.set(m[0]!, m[1]!, m[2]!, m[3]!, m[4]!, m[5]!, m[6]!, m[7]!, m[8]!, m[9]!, m[10]!, m[11]!, 0, 0, 0, 1)
-          instance.matrixAutoUpdate = false
-        } else sourceTransform(instance, occurrence.position, occurrence.angles)
+        const m = occurrenceMatrices.get(occurrence.entity)!.matrix
+        instance.matrix.set(m[0]!, m[1]!, m[2]!, m[3]!, m[4]!, m[5]!, m[6]!, m[7]!, m[8]!, m[9]!, m[10]!, m[11]!, 0, 0, 0, 1)
+        instance.matrixAutoUpdate = false
         group.add(instance)
       }
       for (const texture of request.particleTextures ?? []) {
         const state = materialStates.get(texture.material.toLowerCase())
+        requireMipInputs(texture.material, state)
         const value = textureFromRgba(texture, THREE.SRGBColorSpace, state)
         particleTextures.set(texture.material.toLowerCase(), value)
         disposables.add(value)
@@ -964,9 +1040,11 @@ class RendererOwner implements Renderer {
         particleMaterials,
         materialStates,
         disposables,
+        projectedMarks,
         disposed: false,
       } as SceneResources
       disposeScene(failed)
+      if (error instanceof RenderingError) throw error
       throw new RenderingError("BoundExceeded", `runtime map GPU staging failed: ${String(error)}`)
     }
 
@@ -1038,6 +1116,7 @@ class RendererOwner implements Renderer {
       exposureUniform,
       diagnostics: Object.freeze(diagnostics),
       worldBatches: Object.freeze(worldBatches),
+      projectedMarks: Object.freeze(projectedMarks),
       result,
       disposed: false,
     }
@@ -1071,20 +1150,25 @@ class RendererOwner implements Renderer {
           : this.#exposure.snapshot()
       this.#active.exposureUniform.value = this.configuration.lightingProfile === "hdr" ? exposure.current : 1
       this.#setCamera(frame.camera)
-      this.#stageDynamicItems(frame)
+      const viewModelDepthRange = this.#stageDynamicItems(frame)
+      let viewModelPass: FrameResult["viewModelPass"]
       if (!this.#suspended) {
         this.#backend.autoClear = true
         await this.#backend.renderAsync(this.#scene, this.#camera)
         if (this.#viewModels.children.length > 0) {
+          if (!viewModelDepthRange) throw new RenderingError("InvalidState", "viewmodel depth range is unavailable")
           this.#backend.autoClear = false
           const background = this.#scene.background
           this.#scene.background = null
+          this.#backend.setViewport(0, 0, this.#viewportWidth, this.#viewportHeight, viewModelDepthRange[0], viewModelDepthRange[1])
           try {
             await this.#backend.renderAsync(this.#scene, this.#viewCamera)
           } finally {
+            this.#backend.setViewport(0, 0, this.#viewportWidth, this.#viewportHeight, 0, 1)
             this.#scene.background = background
             this.#backend.autoClear = true
           }
+          viewModelPass = Object.freeze({ depthRange: viewModelDepthRange, viewportRestored: true })
         }
         this.#submission += 1
       }
@@ -1094,6 +1178,8 @@ class RendererOwner implements Renderer {
         sceneGeneration: this.#sceneGeneration,
         submission: this.#submission,
         exposure,
+        visibleProjectedMarks: this.#active.projectedMarks.reduce((total, mark) => total + Number(mark.mesh.visible), 0),
+        viewModelPass,
         capture,
       })
     } finally {
@@ -1170,6 +1256,24 @@ class RendererOwner implements Renderer {
       }
       if (item.viewModel && (!item.viewModelProjection || item.viewModelProjection.kind !== "viewmodel"))
         throw new RenderingError("MalformedInput", "viewmodel projection is missing")
+      if (item.viewModelProjection) {
+        const projection = item.viewModelProjection
+        try {
+          sourceHorizontal4By3FovToVertical(projection.horizontalFov4By3)
+          sourceViewportDepthRange(projection.depthRange)
+        } catch {
+          throw new RenderingError("MalformedInput", "viewmodel projection is invalid")
+        }
+        if (
+          !Number.isFinite(projection.near) ||
+          projection.near <= 0 ||
+          !projection.drawsAfterWorld ||
+          !projection.opaqueBeforeTranslucent ||
+          typeof projection.optionalViewSpaceYReflection !== "boolean"
+        ) {
+          throw new RenderingError("MalformedInput", "viewmodel projection is invalid")
+        }
+      }
     }
     for (const item of frame.particles ?? []) {
       if (!Number.isSafeInteger(item.identity) || item.identity < 1 || !finite([
@@ -1252,7 +1356,7 @@ class RendererOwner implements Renderer {
     instance.traverse((object) => {
       if (!(object instanceof THREE.Mesh)) return
       const posed = pose.primitives[primitive++]
-      if (!posed || posed.positions.length !== object.geometry.getAttribute("position").count * 3 || posed.normals.length !== object.geometry.getAttribute("normal").count * 3)
+      if (!posed || posed.material !== object.userData.primitiveMaterial || posed.positions.length !== object.geometry.getAttribute("position").count * 3 || posed.normals.length !== object.geometry.getAttribute("normal").count * 3)
         throw new RenderingError("IdentityMismatch", "posed model primitive differs from its template")
       if (retainGeometry && object.userData.dynamicGeometry === true) {
         const position = object.geometry.getAttribute("position") as THREE.BufferAttribute
@@ -1275,7 +1379,7 @@ class RendererOwner implements Renderer {
     return meshes
   }
 
-  #stageViewModel(item: ModelItem, frame: Frame): void {
+  #stageViewModel(item: ModelItem, frame: Frame): readonly [number, number] {
     const key = modelKey(item.model, item.skin ?? 0)
     let retained = this.#viewModelInstances.get(item.identity)
     if (!retained || retained.model !== key) {
@@ -1301,19 +1405,18 @@ class RendererOwner implements Renderer {
     sourceTransform(retained.instance, item.position, item.angles!)
     retained.instance.scale.setScalar(item.scale)
     const projection = item.viewModelProjection!
-    this.#viewCamera.fov = THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(projection.horizontalFov4By3) / 2) * 0.75))
+    this.#viewCamera.fov = sourceHorizontal4By3FovToVertical(projection.horizontalFov4By3)
     this.#viewCamera.near = projection.near
     this.#viewCamera.far = frame.camera.far
     this.#viewCamera.updateProjectionMatrix()
-    const depth = projection.depthRange[1] - projection.depthRange[0]
-    this.#viewCamera.projectionMatrix.elements[10] *= depth
-    this.#viewCamera.projectionMatrix.elements[14] = this.#viewCamera.projectionMatrix.elements[14]! * depth + projection.depthRange[0]
     this.#viewCamera.projectionMatrixInverse.copy(this.#viewCamera.projectionMatrix).invert()
+    return sourceViewportDepthRange(projection.depthRange)
   }
 
-  #stageDynamicItems(frame: Frame): void {
+  #stageDynamicItems(frame: Frame): readonly [number, number] | undefined {
     const effects = new THREE.Group()
     const activeViewModels = new Set<number>()
+    let viewModelDepthRange: readonly [number, number] | undefined
     try {
       for (const effect of frame.effects) {
         const material = new THREE.MeshBasicMaterial({
@@ -1368,7 +1471,11 @@ class RendererOwner implements Renderer {
       }
       for (const item of frame.models ?? []) {
         if (item.viewModel) {
-          this.#stageViewModel(item, frame)
+          const nextDepthRange = this.#stageViewModel(item, frame)
+          if (viewModelDepthRange && (viewModelDepthRange[0] !== nextDepthRange[0] || viewModelDepthRange[1] !== nextDepthRange[1])) {
+            throw new RenderingError("IdentityMismatch", "viewmodel depth ranges differ in one pass")
+          }
+          viewModelDepthRange = nextDepthRange
           activeViewModels.add(item.identity)
           continue
         }
@@ -1387,6 +1494,7 @@ class RendererOwner implements Renderer {
       }
     } catch (error) {
       this.#clearDynamic(effects)
+      if (error instanceof RenderingError) throw error
       throw new RenderingError("BoundExceeded", `render item staging failed: ${String(error)}`)
     }
     this.#clearDynamic(this.#effects)
@@ -1399,6 +1507,7 @@ class RendererOwner implements Renderer {
       })
       this.#viewModelInstances.delete(identity)
     }
+    return viewModelDepthRange
   }
 
   async #capture(request: FrameCaptureRequest): Promise<FrameCapture> {
@@ -1441,6 +1550,8 @@ class RendererOwner implements Renderer {
       throw new RenderingError("BoundExceeded", "renderer dimensions are invalid")
     this.#backend.setPixelRatio(devicePixelRatio)
     this.#backend.setSize(cssWidth, cssHeight, false)
+    this.#viewportWidth = cssWidth
+    this.#viewportHeight = cssHeight
     this.#camera.aspect = cssHeight === 0 ? 1 : cssWidth / cssHeight
     this.#viewCamera.aspect = this.#camera.aspect
     this.#camera.updateProjectionMatrix()

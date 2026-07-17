@@ -42,6 +42,9 @@ function App() {
       data-camera-position={view.camera?.position.join(",")}
       data-camera-yaw={view.camera?.yawDegrees}
       data-camera-pitch={view.camera?.pitchDegrees}
+      data-camera-vertical-fov={view.camera?.verticalFovDegrees}
+      data-camera-near={view.camera?.near}
+      data-camera-far={view.camera?.far}
       data-spawn-entity={view.initialView?.entity}
       data-spawn-hammer-id={view.initialView?.hammerId}
       data-spawn-position={view.initialView?.position.join(",")}
@@ -76,8 +79,14 @@ function App() {
           : undefined
       }
       data-environment-drawables={view.environmentDrawables ?? 0}
+      data-visible-decal-fragments={view.visibleDecalFragments}
       data-environment-sky={view.environment?.sky?.name}
       data-water-cubemap={view.environment?.waterVolumeFacts[0]?.cubemapSample ?? undefined}
+      data-viewmodel-depth-range={view.viewmodelDepthRange}
+      data-viewmodel-viewport-restored={view.viewmodelViewportRestored}
+      data-model-matrices={view.modelMatrices ? JSON.stringify(view.modelMatrices) : undefined}
+      data-decal-state={view.decalStateProbe ? JSON.stringify(view.decalStateProbe) : undefined}
+      data-blockers={JSON.stringify(view.blockers)}
     >
       <canvas
         ref={canvas}
