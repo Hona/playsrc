@@ -35,11 +35,15 @@ Parse the Source 1 StudioModel file family into one runtime-neutral model repres
 - Preserve authored Source positions, normals, tangent-S/handedness, and UVs without axis swaps or texture-coordinate flips; apply supplied entity origin plus pitch/yaw/roll through the Source forward/left/up column matrix.
 - Sample a caller-selected base sequence, pose-parameter vector, time, and ordered animation layers into model-space skinning matrices and attachment transforms, including sequence-authored local/non-local/pose/spline/crossfade/no-blend autolayers, exact sequence FPS/CPS/duration, static-prop bone-zero behavior, world-aligned attachments, and ordered presentation event crossings.
 - Emit categorical world and viewmodel descriptors. The viewmodel descriptor carries TF2's configurable horizontal-4:3 FOV default `54`, near plane `1`, supplied world far plane, post-world opaque/translucent ordering, `[0, 0.1]` depth range, and optional view-space-Y handedness reflection; gameplay/rendering supply current state and execute GPU policy.
+- Retain complete Studio eyeball records and secondary-header illumination/eye fields; derive per-eye origin and iris/glint projection rows only from supplied bone-to-world matrices, world eye target, view basis, and explicit eye configuration.
+- Validate renderer-neutral model lighting as one lighting origin, six `+X,-X,+Y,-Y,+Z,-Z` ambient colors, at most four point/directional/spot lights, camera position, optional local environment identity, and static-light facts.
+- Compose an explicitly selected hand-viewmodel activity with a parented item model by copying every ASCII-insensitive matching hand-bone matrix, reconstructing unmatched item bones under their authored hierarchy, and selecting one shared numeric skin plus explicit bodygroups/LOD for both draw parts.
 
 ## Non-Responsibilities
 
 - GPU resource ownership, scene rendering, or reinterpretation of authored model-space vertex attributes.
 - Entity animation/activity decisions, current FOV/far plane/handedness choice, or other TF2-specific model state.
+- TF2 item-schema, class-hand, activity-remap, team-skin, and bodygroup selection. Callers supply those resolved facts to the generic composition operation.
 - Material-script parsing or shader/texture-role interpretation; the VMT and material owners supply an exact resolved dependency manifest at the StudioModel artifact boundary.
 - Physics simulation.
 

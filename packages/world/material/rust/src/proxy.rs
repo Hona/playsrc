@@ -32,6 +32,23 @@ pub enum ProxyOperation {
         source: VariableRef,
         result: VariableRef,
     },
+    Multiply {
+        first: VariableRef,
+        second: VariableRef,
+        result: VariableRef,
+    },
+    LessOrEqual {
+        first: VariableRef,
+        second: VariableRef,
+        less_equal: VariableRef,
+        greater: VariableRef,
+        result: VariableRef,
+    },
+    SelectFirstIfNonZero {
+        first: VariableRef,
+        second: VariableRef,
+        result: VariableRef,
+    },
     TextureTransform {
         result: VariableRef,
         center: Option<VariableRef>,
@@ -46,6 +63,37 @@ pub enum ProxyOperation {
         scale: FloatInput,
     },
     WaterLod,
+    Invisibility {
+        player_tint: bool,
+    },
+    ModelGlowColor {
+        result: VariableRef,
+    },
+    YellowLevel {
+        result: VariableRef,
+    },
+    AnimatedWeaponSheen,
+    WeaponSkin,
+    ScalarModelInput {
+        input: ScalarModelInput,
+        result: VariableRef,
+    },
+    VectorModelInput {
+        input: VectorModelInput,
+        result: VariableRef,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScalarModelInput {
+    Invulnerability,
+    Burn,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VectorModelInput {
+    ItemTint,
+    StickybombGlow,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -81,6 +129,37 @@ pub struct ProxyEvaluationContext {
     pub frame_time: f32,
     pub water_lod: Option<[f32; 2]>,
     pub texture_frames: BTreeMap<Vec<u8>, u32>,
+    pub model_inputs: ModelProxyInputs,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InvisibilityInput {
+    pub factor: f32,
+    pub player_tint: Option<[f32; 3]>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WeaponSheenInput {
+    pub frame: i32,
+    pub tint: [f32; 4],
+    pub mask_scale: [f32; 2],
+    pub mask_offset: [f32; 2],
+    pub mask_direction: i32,
+    pub shader_index: i32,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ModelProxyInputs {
+    pub invisibility: Option<InvisibilityInput>,
+    pub model_glow_color: Option<[f32; 3]>,
+    pub yellow_level: Option<[f32; 3]>,
+    pub weapon_sheen: Option<WeaponSheenInput>,
+    pub weapon_skin_base_texture: Option<Option<String>>,
+    pub invulnerability_level: Option<f32>,
+    pub burn_level: Option<f32>,
+    pub item_tint: Option<[f32; 3]>,
+    pub stickybomb_glow: Option<[f32; 3]>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -90,6 +169,7 @@ pub enum ProxyEvaluationErrorCode {
     InvalidVariable,
     InvalidTextureFrames,
     MissingWaterLod,
+    MissingModelInput,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -110,6 +190,12 @@ pub struct ProxyTraceStep {
 pub struct EvaluatedProxyState {
     pub variables: BTreeMap<Vec<u8>, ProxyValue>,
     pub trace: Vec<ProxyTraceStep>,
+    pub effects: Vec<ModelProxyEffect>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ModelProxyEffect {
+    WeaponSkinBaseTexture(Option<String>),
 }
 
 pub(crate) fn compile_proxy_program(proxies: &[Proxy]) -> ProxyProgram {
@@ -151,6 +237,26 @@ fn compile_operation(proxy: &Proxy) -> Result<Option<ProxyOperation>, ()> {
             source: required_variable(proxy, b"srcvar1")?,
             result: required_variable(proxy, b"resultvar")?,
         }))
+    } else if proxy.name.eq_ignore_ascii_case(b"Multiply") {
+        Ok(Some(ProxyOperation::Multiply {
+            first: required_variable(proxy, b"srcvar1")?,
+            second: required_variable(proxy, b"srcvar2")?,
+            result: required_variable(proxy, b"resultvar")?,
+        }))
+    } else if proxy.name.eq_ignore_ascii_case(b"LessOrEqual") {
+        Ok(Some(ProxyOperation::LessOrEqual {
+            first: required_variable(proxy, b"srcvar1")?,
+            second: required_variable(proxy, b"srcvar2")?,
+            less_equal: required_variable(proxy, b"lessequalvar")?,
+            greater: required_variable(proxy, b"greatervar")?,
+            result: required_variable(proxy, b"resultvar")?,
+        }))
+    } else if proxy.name.eq_ignore_ascii_case(b"SelectFirstIfNonZero") {
+        Ok(Some(ProxyOperation::SelectFirstIfNonZero {
+            first: required_variable(proxy, b"srcvar1")?,
+            second: required_variable(proxy, b"srcvar2")?,
+            result: required_variable(proxy, b"resultvar")?,
+        }))
     } else if proxy.name.eq_ignore_ascii_case(b"TextureTransform") {
         Ok(Some(ProxyOperation::TextureTransform {
             result: required_variable(proxy, b"resultvar")?,
@@ -168,6 +274,46 @@ fn compile_operation(proxy: &Proxy) -> Result<Option<ProxyOperation>, ()> {
         }))
     } else if proxy.name.eq_ignore_ascii_case(b"WaterLOD") {
         Ok(Some(ProxyOperation::WaterLod))
+    } else if proxy.name.eq_ignore_ascii_case(b"invis") {
+        Ok(Some(ProxyOperation::Invisibility { player_tint: false }))
+    } else if proxy.name.eq_ignore_ascii_case(b"weapon_invis") {
+        Ok(Some(ProxyOperation::Invisibility { player_tint: false }))
+    } else if proxy.name.eq_ignore_ascii_case(b"spy_invis") {
+        Ok(Some(ProxyOperation::Invisibility { player_tint: true }))
+    } else if proxy.name.eq_ignore_ascii_case(b"ModelGlowColor") {
+        Ok(Some(ProxyOperation::ModelGlowColor {
+            result: required_variable(proxy, b"resultvar")?,
+        }))
+    } else if proxy.name.eq_ignore_ascii_case(b"YellowLevel") {
+        Ok(Some(ProxyOperation::YellowLevel {
+            result: required_variable(proxy, b"resultvar")?,
+        }))
+    } else if proxy.name.eq_ignore_ascii_case(b"AnimatedWeaponSheen") {
+        required_variable(proxy, b"animatedtexturevar")?;
+        required_variable(proxy, b"animatedtextureframenumvar")?;
+        Ok(Some(ProxyOperation::AnimatedWeaponSheen))
+    } else if proxy.name.eq_ignore_ascii_case(b"WeaponSkin") {
+        Ok(Some(ProxyOperation::WeaponSkin))
+    } else if proxy.name.eq_ignore_ascii_case(b"InvulnLevel") {
+        Ok(Some(ProxyOperation::ScalarModelInput {
+            input: ScalarModelInput::Invulnerability,
+            result: required_variable(proxy, b"resultvar")?,
+        }))
+    } else if proxy.name.eq_ignore_ascii_case(b"BurnLevel") {
+        Ok(Some(ProxyOperation::ScalarModelInput {
+            input: ScalarModelInput::Burn,
+            result: required_variable(proxy, b"resultvar")?,
+        }))
+    } else if proxy.name.eq_ignore_ascii_case(b"ItemTintColor") {
+        Ok(Some(ProxyOperation::VectorModelInput {
+            input: VectorModelInput::ItemTint,
+            result: required_variable(proxy, b"resultvar")?,
+        }))
+    } else if proxy.name.eq_ignore_ascii_case(b"StickybombGlowColor") {
+        Ok(Some(ProxyOperation::VectorModelInput {
+            input: VectorModelInput::StickybombGlow,
+            result: required_variable(proxy, b"resultvar")?,
+        }))
     } else {
         Ok(None)
     }
@@ -184,6 +330,7 @@ pub fn evaluate_proxy_program(
         || context
             .water_lod
             .is_some_and(|values| values.iter().any(|value| !value.is_finite()))
+        || !model_inputs_are_finite(&context.model_inputs)
     {
         return Err(evaluation_error(
             ProxyEvaluationErrorCode::NonFinite,
@@ -203,6 +350,7 @@ pub fn evaluate_proxy_program(
     }
     let mut variables = initial_variables.clone();
     let mut trace = Vec::with_capacity(program.entries.len());
+    let mut effects = Vec::new();
     for (index, entry) in program.entries.iter().enumerate() {
         let Some(operation) = &entry.operation else {
             trace.push(ProxyTraceStep {
@@ -314,6 +462,84 @@ pub fn evaluate_proxy_program(
                 }
                 vec![result.clone()]
             }
+            ProxyOperation::Multiply {
+                first,
+                second,
+                result,
+            } => {
+                let first_value = read_value(first, &variables, index)?;
+                let second_value = read_value(second, &variables, index)?;
+                let result_value = multiply_values(
+                    first_value,
+                    second_value,
+                    variables.get(&result.name),
+                    index,
+                    &result.name,
+                )?;
+                set_value(&mut variables, result, result_value, index)?;
+                vec![result.clone()]
+            }
+            ProxyOperation::LessOrEqual {
+                first,
+                second,
+                less_equal,
+                greater,
+                result,
+            } => {
+                let first_value = read_value(first, &variables, index)?;
+                let second_value = read_value(second, &variables, index)?;
+                let selected = if scalar_component(first_value).ok_or_else(|| {
+                    evaluation_error(
+                        ProxyEvaluationErrorCode::InvalidVariable,
+                        index,
+                        Some(first.name.clone()),
+                    )
+                })? <= scalar_component(second_value).ok_or_else(|| {
+                    evaluation_error(
+                        ProxyEvaluationErrorCode::InvalidVariable,
+                        index,
+                        Some(second.name.clone()),
+                    )
+                })? {
+                    read_value(less_equal, &variables, index)?
+                } else {
+                    read_value(greater, &variables, index)?
+                };
+                let selected =
+                    coerce_result(selected, variables.get(&result.name), index, &result.name)?;
+                set_value(&mut variables, result, selected, index)?;
+                vec![result.clone()]
+            }
+            ProxyOperation::SelectFirstIfNonZero {
+                first,
+                second,
+                result,
+            } => {
+                let first_value = read_value(first, &variables, index)?;
+                let nonzero = match &first_value {
+                    ProxyValue::Int(value) => *value != 0,
+                    ProxyValue::Float(value) => *value != 0.0,
+                    ProxyValue::Vector { values, size } => values[..usize::from(*size)]
+                        .iter()
+                        .any(|value| *value != 0.0),
+                    ProxyValue::Matrix(_) => {
+                        return Err(evaluation_error(
+                            ProxyEvaluationErrorCode::InvalidVariable,
+                            index,
+                            Some(first.name.clone()),
+                        ));
+                    }
+                };
+                let selected = if nonzero {
+                    first_value
+                } else {
+                    read_value(second, &variables, index)?
+                };
+                let selected =
+                    coerce_result(selected, variables.get(&result.name), index, &result.name)?;
+                set_value(&mut variables, result, selected, index)?;
+                vec![result.clone()]
+            }
             ProxyOperation::TextureTransform {
                 result,
                 center,
@@ -386,6 +612,132 @@ pub fn evaluate_proxy_program(
                 set_float(&mut variables, &end_ref, end, index)?;
                 vec![start_ref, end_ref]
             }
+            ProxyOperation::Invisibility { player_tint } => {
+                let input = context.model_inputs.invisibility.ok_or_else(|| {
+                    evaluation_error(ProxyEvaluationErrorCode::MissingModelInput, index, None)
+                })?;
+                let cloak = variable(b"$cloakfactor").expect("fixed cloak variable");
+                set_float(&mut variables, &cloak, input.factor, index)?;
+                let mut writes = vec![cloak];
+                if *player_tint {
+                    let tint = input.player_tint.ok_or_else(|| {
+                        evaluation_error(ProxyEvaluationErrorCode::MissingModelInput, index, None)
+                    })?;
+                    let target = variable(b"$cloakcolortint").expect("fixed cloak tint variable");
+                    set_value(&mut variables, &target, vector_value(tint), index)?;
+                    writes.push(target);
+                }
+                writes
+            }
+            ProxyOperation::ModelGlowColor { result } => {
+                let value = context.model_inputs.model_glow_color.ok_or_else(|| {
+                    evaluation_error(ProxyEvaluationErrorCode::MissingModelInput, index, None)
+                })?;
+                set_value(&mut variables, result, vector_value(value), index)?;
+                vec![result.clone()]
+            }
+            ProxyOperation::YellowLevel { result } => {
+                let value = context.model_inputs.yellow_level.ok_or_else(|| {
+                    evaluation_error(ProxyEvaluationErrorCode::MissingModelInput, index, None)
+                })?;
+                set_value(&mut variables, result, vector_value(value), index)?;
+                vec![result.clone()]
+            }
+            ProxyOperation::AnimatedWeaponSheen => {
+                let input = context.model_inputs.weapon_sheen.ok_or_else(|| {
+                    evaluation_error(ProxyEvaluationErrorCode::MissingModelInput, index, None)
+                })?;
+                let frame = variable(b"$sheenmapmaskframe").expect("fixed sheen frame variable");
+                let tint = variable(b"$sheenmaptint").expect("fixed sheen tint variable");
+                let shader = variable(b"$sheenindex").expect("fixed sheen index variable");
+                if !input.enabled {
+                    set_value(&mut variables, &frame, ProxyValue::Int(0), index)?;
+                    set_value(
+                        &mut variables,
+                        &tint,
+                        ProxyValue::Vector {
+                            values: [0.0; 4],
+                            size: 3,
+                        },
+                        index,
+                    )?;
+                    set_value(&mut variables, &shader, ProxyValue::Int(0), index)?;
+                    vec![tint, frame, shader]
+                } else {
+                    let scale_x =
+                        variable(b"$sheenmapmaskscalex").expect("fixed sheen scale variable");
+                    let scale_y =
+                        variable(b"$sheenmapmaskscaley").expect("fixed sheen scale variable");
+                    let offset_x =
+                        variable(b"$sheenmapmaskoffsetx").expect("fixed sheen offset variable");
+                    let offset_y =
+                        variable(b"$sheenmapmaskoffsety").expect("fixed sheen offset variable");
+                    let direction = variable(b"$sheenmapmaskdirection")
+                        .expect("fixed sheen direction variable");
+                    set_value(&mut variables, &frame, ProxyValue::Int(input.frame), index)?;
+                    set_value(
+                        &mut variables,
+                        &tint,
+                        ProxyValue::Vector {
+                            values: input.tint,
+                            size: 4,
+                        },
+                        index,
+                    )?;
+                    set_float(&mut variables, &scale_x, input.mask_scale[0], index)?;
+                    set_float(&mut variables, &scale_y, input.mask_scale[1], index)?;
+                    set_float(&mut variables, &offset_x, input.mask_offset[0], index)?;
+                    set_float(&mut variables, &offset_y, input.mask_offset[1], index)?;
+                    set_value(
+                        &mut variables,
+                        &direction,
+                        ProxyValue::Int(input.mask_direction),
+                        index,
+                    )?;
+                    set_value(
+                        &mut variables,
+                        &shader,
+                        ProxyValue::Int(input.shader_index),
+                        index,
+                    )?;
+                    vec![
+                        tint, frame, scale_x, scale_y, offset_x, offset_y, direction, shader,
+                    ]
+                }
+            }
+            ProxyOperation::WeaponSkin => {
+                let texture = context
+                    .model_inputs
+                    .weapon_skin_base_texture
+                    .clone()
+                    .ok_or_else(|| {
+                        evaluation_error(ProxyEvaluationErrorCode::MissingModelInput, index, None)
+                    })?;
+                effects.push(ModelProxyEffect::WeaponSkinBaseTexture(texture));
+                Vec::new()
+            }
+            ProxyOperation::ScalarModelInput { input, result } => {
+                let value = match input {
+                    ScalarModelInput::Invulnerability => context.model_inputs.invulnerability_level,
+                    ScalarModelInput::Burn => context.model_inputs.burn_level,
+                }
+                .ok_or_else(|| {
+                    evaluation_error(ProxyEvaluationErrorCode::MissingModelInput, index, None)
+                })?;
+                set_float(&mut variables, result, value, index)?;
+                vec![result.clone()]
+            }
+            ProxyOperation::VectorModelInput { input, result } => {
+                let value = match input {
+                    VectorModelInput::ItemTint => context.model_inputs.item_tint,
+                    VectorModelInput::StickybombGlow => context.model_inputs.stickybomb_glow,
+                }
+                .ok_or_else(|| {
+                    evaluation_error(ProxyEvaluationErrorCode::MissingModelInput, index, None)
+                })?;
+                set_value(&mut variables, result, vector_value(value), index)?;
+                vec![result.clone()]
+            }
         };
         trace.push(ProxyTraceStep {
             operation: index,
@@ -393,7 +745,154 @@ pub fn evaluate_proxy_program(
             writes,
         });
     }
-    Ok(EvaluatedProxyState { variables, trace })
+    Ok(EvaluatedProxyState {
+        variables,
+        trace,
+        effects,
+    })
+}
+
+fn vector_value(values: [f32; 3]) -> ProxyValue {
+    ProxyValue::Vector {
+        values: [values[0], values[1], values[2], 0.0],
+        size: 3,
+    }
+}
+
+fn multiply_values(
+    first: ProxyValue,
+    second: ProxyValue,
+    current_result: Option<&ProxyValue>,
+    operation: usize,
+    result: &[u8],
+) -> Result<ProxyValue, ProxyEvaluationError> {
+    let selected = current_result.unwrap_or(&first);
+    match selected {
+        ProxyValue::Vector { size, .. } => {
+            let size = *size;
+            let first = vector_components(first, size).ok_or_else(|| {
+                evaluation_error(
+                    ProxyEvaluationErrorCode::InvalidVariable,
+                    operation,
+                    Some(result.to_vec()),
+                )
+            })?;
+            let second = vector_components(second, size).ok_or_else(|| {
+                evaluation_error(
+                    ProxyEvaluationErrorCode::InvalidVariable,
+                    operation,
+                    Some(result.to_vec()),
+                )
+            })?;
+            let mut values = [0.0; 4];
+            for component in 0..usize::from(size) {
+                values[component] = first[component] * second[component];
+            }
+            Ok(ProxyValue::Vector { values, size })
+        }
+        ProxyValue::Float(_) => Ok(ProxyValue::Float(
+            scalar_component(first).ok_or_else(|| {
+                evaluation_error(
+                    ProxyEvaluationErrorCode::InvalidVariable,
+                    operation,
+                    Some(result.to_vec()),
+                )
+            })? * scalar_component(second).ok_or_else(|| {
+                evaluation_error(
+                    ProxyEvaluationErrorCode::InvalidVariable,
+                    operation,
+                    Some(result.to_vec()),
+                )
+            })?,
+        )),
+        ProxyValue::Int(_) => Ok(ProxyValue::Float(
+            scalar_component(first).ok_or_else(|| {
+                evaluation_error(
+                    ProxyEvaluationErrorCode::InvalidVariable,
+                    operation,
+                    Some(result.to_vec()),
+                )
+            })? * scalar_component(second).ok_or_else(|| {
+                evaluation_error(
+                    ProxyEvaluationErrorCode::InvalidVariable,
+                    operation,
+                    Some(result.to_vec()),
+                )
+            })?,
+        )),
+        ProxyValue::Matrix(_) => Err(evaluation_error(
+            ProxyEvaluationErrorCode::InvalidVariable,
+            operation,
+            Some(result.to_vec()),
+        )),
+    }
+}
+
+fn coerce_result(
+    selected: ProxyValue,
+    current_result: Option<&ProxyValue>,
+    operation: usize,
+    result: &[u8],
+) -> Result<ProxyValue, ProxyEvaluationError> {
+    match current_result {
+        Some(ProxyValue::Vector { size, .. }) => vector_components(selected, *size)
+            .map(|values| ProxyValue::Vector {
+                values,
+                size: *size,
+            })
+            .ok_or_else(|| {
+                evaluation_error(
+                    ProxyEvaluationErrorCode::InvalidVariable,
+                    operation,
+                    Some(result.to_vec()),
+                )
+            }),
+        Some(ProxyValue::Float(_)) => scalar_component(selected)
+            .map(ProxyValue::Float)
+            .ok_or_else(|| {
+                evaluation_error(
+                    ProxyEvaluationErrorCode::InvalidVariable,
+                    operation,
+                    Some(result.to_vec()),
+                )
+            }),
+        Some(ProxyValue::Int(_)) => scalar_component(selected)
+            .map(ProxyValue::Float)
+            .ok_or_else(|| {
+                evaluation_error(
+                    ProxyEvaluationErrorCode::InvalidVariable,
+                    operation,
+                    Some(result.to_vec()),
+                )
+            }),
+        Some(ProxyValue::Matrix(_)) => Err(evaluation_error(
+            ProxyEvaluationErrorCode::InvalidVariable,
+            operation,
+            Some(result.to_vec()),
+        )),
+        None => Ok(selected),
+    }
+}
+
+fn vector_components(value: ProxyValue, size: u8) -> Option<[f32; 4]> {
+    match value {
+        ProxyValue::Vector {
+            values,
+            size: source_size,
+        } if source_size >= size => Some(values),
+        ProxyValue::Int(value) => Some([value as f32; 4]),
+        ProxyValue::Float(value) => Some([value; 4]),
+        _ => None,
+    }
+}
+
+fn scalar_component(value: ProxyValue) -> Option<f32> {
+    match value {
+        ProxyValue::Int(value) => Some(value as f32),
+        ProxyValue::Float(value) => Some(value),
+        ProxyValue::Vector { values, .. } => Some(values[0]),
+        ProxyValue::Matrix(_) => None,
+    }
 }
 
 fn argument<'a>(proxy: &'a Proxy, name: &[u8]) -> Option<&'a [u8]> {
@@ -667,6 +1166,33 @@ fn value_is_finite(value: &ProxyValue) -> bool {
         }
         ProxyValue::Matrix(values) => values.iter().all(|value| value.is_finite()),
     }
+}
+
+fn model_inputs_are_finite(inputs: &ModelProxyInputs) -> bool {
+    inputs.invisibility.is_none_or(|input| {
+        input.factor.is_finite()
+            && input
+                .player_tint
+                .is_none_or(|values| values.iter().all(|value| value.is_finite()))
+    }) && inputs
+        .model_glow_color
+        .is_none_or(|values| values.iter().all(|value| value.is_finite()))
+        && inputs
+            .yellow_level
+            .is_none_or(|values| values.iter().all(|value| value.is_finite()))
+        && inputs.weapon_sheen.is_none_or(|input| {
+            input.tint.iter().all(|value| value.is_finite())
+                && input.mask_scale.iter().all(|value| value.is_finite())
+                && input.mask_offset.iter().all(|value| value.is_finite())
+        })
+        && inputs.invulnerability_level.is_none_or(f32::is_finite)
+        && inputs.burn_level.is_none_or(f32::is_finite)
+        && inputs
+            .item_tint
+            .is_none_or(|values| values.iter().all(|value| value.is_finite()))
+        && inputs
+            .stickybomb_glow
+            .is_none_or(|values| values.iter().all(|value| value.is_finite()))
 }
 
 fn lower(value: &[u8]) -> Vec<u8> {
