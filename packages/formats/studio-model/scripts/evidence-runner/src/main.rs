@@ -3,14 +3,19 @@ use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
 };
 
 const BUILD: &str = "24207079";
-const BUNDLE_SHA256: &str = "34cbd09a63f1ba8407c7a775de20467773f87a41db78e34447734799fa2dba78";
+const BUNDLE_SHA256: &str = "494c282a45b2c1ae1882e66aabe234cda3f92d950e1d2a37c2616db845164884";
 const BSP_SHA256: &str = "b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959";
 const OCCURRENCE_TRANSFORM_SHA256: &str =
     "7a4eff4a2d9ca0892b6f576d21df4d44d03e03f957499c20245740b21b4edee6";
+const MODEL_MATERIAL_COUNT: usize = 55;
+const MODEL_TEXTURE_COUNT: usize = 71;
+const MODEL_MIP_SHA256: &str = "05c7869e3f78b03b2c9f05ebdb9a8ec8f9895a8a8d3ff37530f3e0d26f617033";
+const EYE_STATE_SHA256: &str = "cd6606f8d35ed20c87ffc33b40190586be2dc94f48eafadb3b7038f99d9d103a";
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -40,6 +45,121 @@ struct Target {
     activities: &'static [&'static str],
 }
 
+trait ExactFiles {
+    fn exact(&self, logical_path: &str) -> Result<Option<Vec<u8>>, String>;
+}
+
+impl ExactFiles for BTreeMap<String, Vec<u8>> {
+    fn exact(&self, logical_path: &str) -> Result<Option<Vec<u8>>, String> {
+        Ok(self.get(logical_path).cloned())
+    }
+}
+
+struct VpkFiles {
+    archives: Vec<ConfiguredArchive>,
+}
+
+struct ConfiguredArchive {
+    archive: playsrc_vpk::Archive,
+    segments: FileSegments,
+}
+
+struct FileSegments {
+    directory: PathBuf,
+    prefix: String,
+}
+
+impl playsrc_vpk::SegmentReader for FileSegments {
+    fn len(&self, archive_index: u32) -> Result<u64, playsrc_vpk::SourceError> {
+        let path = self
+            .directory
+            .join(format!("{}_{archive_index:03}.vpk", self.prefix));
+        fs::metadata(path)
+            .map(|metadata| metadata.len())
+            .map_err(|error| source_error(error, 0..0))
+    }
+
+    fn read(
+        &self,
+        archive_index: u32,
+        range: std::ops::Range<u64>,
+    ) -> Result<Vec<u8>, playsrc_vpk::SourceError> {
+        let path = self
+            .directory
+            .join(format!("{}_{archive_index:03}.vpk", self.prefix));
+        let mut file = fs::File::open(path).map_err(|error| source_error(error, range.clone()))?;
+        file.seek(SeekFrom::Start(range.start))
+            .map_err(|error| source_error(error, range.clone()))?;
+        let length = usize::try_from(range.end.saturating_sub(range.start)).map_err(|_| {
+            playsrc_vpk::SourceError {
+                code: playsrc_vpk::SourceErrorCode::Io,
+                range: range.clone(),
+            }
+        })?;
+        let mut bytes = vec![0; length];
+        file.read_exact(&mut bytes)
+            .map_err(|error| source_error(error, range))?;
+        Ok(bytes)
+    }
+}
+
+impl VpkFiles {
+    fn new(tf2_dir: &Path) -> Result<Self, String> {
+        let mut archives = Vec::new();
+        for prefix in ["tf2_misc", "tf2_textures"] {
+            let identity = format!("{prefix}_dir.vpk");
+            let bytes = fs::read(tf2_dir.join(&identity)).map_err(|error| error.to_string())?;
+            let archive = playsrc_vpk::parse(
+                &bytes,
+                identity,
+                playsrc_vpk::Layout::Split,
+                playsrc_vpk::Limits::default(),
+            )
+            .map_err(|error| error.to_string())?;
+            archives.push(ConfiguredArchive {
+                archive,
+                segments: FileSegments {
+                    directory: tf2_dir.to_owned(),
+                    prefix: prefix.to_owned(),
+                },
+            });
+        }
+        Ok(Self { archives })
+    }
+}
+
+impl ExactFiles for VpkFiles {
+    fn exact(&self, logical_path: &str) -> Result<Option<Vec<u8>>, String> {
+        for configured in &self.archives {
+            match configured.archive.entry(logical_path) {
+                Ok(_) => {
+                    return configured
+                        .archive
+                        .read_entry(logical_path, &configured.segments)
+                        .map(|result| Some(result.bytes))
+                        .map_err(|error| error.to_string());
+                }
+                Err(error) if error.code == playsrc_vpk::ErrorCode::MissingEntry => {}
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        Ok(None)
+    }
+}
+
+fn source_error(error: std::io::Error, range: std::ops::Range<u64>) -> playsrc_vpk::SourceError {
+    playsrc_vpk::SourceError {
+        code: if error.kind() == std::io::ErrorKind::NotFound {
+            playsrc_vpk::SourceErrorCode::Missing
+        } else if error.kind() == std::io::ErrorKind::UnexpectedEof {
+            playsrc_vpk::SourceErrorCode::ShortRead
+        } else {
+            playsrc_vpk::SourceErrorCode::Io
+        },
+        range,
+    }
+}
+
 const WORLD_ACTIVITIES: &[&str] = &[
     "ACT_MP_STAND_PRIMARY",
     "ACT_MP_RUN_PRIMARY",
@@ -57,6 +177,55 @@ const VIEWMODEL_ACTIVITIES: &[&str] = &[
     "ACT_RELOAD_START",
     "ACT_VM_RELOAD",
     "ACT_RELOAD_FINISH",
+];
+
+struct StockViewModelTarget {
+    hand: &'static str,
+    hand_sha256: &'static str,
+    item: &'static str,
+    item_sha256: &'static str,
+    activities: &'static [&'static str],
+    merged_bones: usize,
+    composition_sha256: &'static str,
+}
+
+const SOLDIER_STOCK_ACTIVITIES: &[&str] = &[
+    "ACT_PRIMARY_VM_DRAW",
+    "ACT_PRIMARY_VM_IDLE",
+    "ACT_PRIMARY_VM_PRIMARYATTACK",
+    "ACT_PRIMARY_RELOAD_START",
+    "ACT_PRIMARY_VM_RELOAD",
+    "ACT_PRIMARY_RELOAD_FINISH",
+];
+
+const DEMOMAN_STOCK_ACTIVITIES: &[&str] = &[
+    "ACT_SECONDARY_VM_DRAW",
+    "ACT_SECONDARY_VM_IDLE",
+    "ACT_SECONDARY_VM_PRIMARYATTACK",
+    "ACT_SECONDARY_RELOAD_START",
+    "ACT_SECONDARY_VM_RELOAD",
+    "ACT_SECONDARY_RELOAD_FINISH",
+];
+
+const STOCK_VIEWMODELS: &[StockViewModelTarget] = &[
+    StockViewModelTarget {
+        hand: "models/weapons/c_models/c_soldier_arms.mdl",
+        hand_sha256: "4aeba0ceccb87f045349e4604204308c7bf91507defef7ee9301cbbfe1678fd5",
+        item: "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl",
+        item_sha256: "e962a3ab43ad731c6b65780c760c61a7d06676f5ca05fd112bcfc74944a605e0",
+        activities: SOLDIER_STOCK_ACTIVITIES,
+        merged_bones: 3,
+        composition_sha256: "160db54bf1706daed8d788ad692ef649ecfe49853cf44c3551332c497dbfcea2",
+    },
+    StockViewModelTarget {
+        hand: "models/weapons/c_models/c_demo_arms.mdl",
+        hand_sha256: "a49561921958a0d47f34be7b61705973f27813880759783cf573c5b62c4ae073",
+        item: "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl",
+        item_sha256: "bbdb99e9a836603b795c8851a16838aab37a5bcf178d2dd4a25fbc9c0fa72108",
+        activities: DEMOMAN_STOCK_ACTIVITIES,
+        merged_bones: 4,
+        composition_sha256: "8faeff88db0154818b5d0882a7c0fc07b37d2ed6381b37e3c7fd518928e980ef",
+    },
 ];
 
 const TARGETS: &[Target] = &[
@@ -271,15 +440,632 @@ fn main() -> Result<(), String> {
         return Err("configured source bundle identity changed".to_owned());
     }
     let files = parse_bundle(&bundle_bytes)?;
+    let vpk_files = VpkFiles::new(Path::new(&config.tf2_dir))?;
     for target in TARGETS {
         verify_target(target, &files)?;
     }
+    verify_stock_viewmodels(&vpk_files)?;
+    verify_model_materials(&vpk_files)?;
     verify_occurrences(&cache)?;
     println!(
         "{{\"build\":\"{BUILD}\",\"bundleSha256\":\"{BUNDLE_SHA256}\",\"models\":{},\"status\":\"Ready\"}}",
         TARGETS.len()
     );
     Ok(())
+}
+
+fn verify_stock_viewmodels(files: &VpkFiles) -> Result<(), String> {
+    for target in STOCK_VIEWMODELS {
+        let hand_bytes = files
+            .exact(target.hand)?
+            .ok_or_else(|| format!("missing {}", target.hand))?;
+        let item_bytes = files
+            .exact(target.item)?
+            .ok_or_else(|| format!("missing {}", target.item))?;
+        if hex(&studio::content_sha256(&hand_bytes)) != target.hand_sha256
+            || hex(&studio::content_sha256(&item_bytes)) != target.item_sha256
+        {
+            return Err(format!(
+                "stock viewmodel source identity changed: {}",
+                target.hand
+            ));
+        }
+        let hand_document = load(target.hand, files)?;
+        let item_document = load(target.item, files)?;
+        let hand = build_artifact_for_profile(
+            &hand_document,
+            files,
+            studio::PresentationProfile::ViewModel,
+        )?;
+        let item = build_artifact_for_profile(
+            &item_document,
+            files,
+            studio::PresentationProfile::ViewModel,
+        )?;
+        let mut digest = Vec::new();
+        digest.extend_from_slice(target.hand.as_bytes());
+        digest.extend_from_slice(target.item.as_bytes());
+        digest.extend_from_slice(&hand.sha256);
+        digest.extend_from_slice(&item.sha256);
+        for activity in target.activities {
+            let sequences = studio::sequences_for_activity_name(&hand.model, activity.as_bytes());
+            if sequences.len() != 1 {
+                return Err(format!(
+                    "{} does not have one {activity} sequence",
+                    target.hand
+                ));
+            }
+            for skin in [0_usize, 1] {
+                for cycle in [0.0_f32, 0.5, 1.0] {
+                    let composition = studio::compose_viewmodel(
+                        &hand.model,
+                        &item.model,
+                        &studio::ViewModelCompositionRequest {
+                            translated_activity: activity.as_bytes().to_vec(),
+                            hand_sequence: sequences[0],
+                            cycle: studio::Float32(cycle.to_bits()),
+                            time: studio::Float32(0.0_f32.to_bits()),
+                            hand_pose_parameters: hand
+                                .model
+                                .pose_parameters
+                                .iter()
+                                .map(|_| studio::Float32(0.0_f32.to_bits()))
+                                .collect(),
+                            hand_layers: Vec::new(),
+                            skin,
+                            hand_bodygroups: hand.model.body_parts.iter().map(|_| 0).collect(),
+                            item_bodygroups: item.model.body_parts.iter().map(|_| 0).collect(),
+                            lod: 0,
+                        },
+                    )
+                    .map_err(|error| error.to_string())?;
+                    if composition
+                        .item_to_hand_bones
+                        .iter()
+                        .filter(|bone| bone.is_some())
+                        .count()
+                        != target.merged_bones
+                        || composition.hand.primitives.is_empty()
+                        || composition.item.primitives.is_empty()
+                    {
+                        return Err(format!("{} stock composition changed", target.item));
+                    }
+                    digest.extend_from_slice(activity.as_bytes());
+                    digest.extend_from_slice(&(skin as u32).to_le_bytes());
+                    digest.extend_from_slice(&cycle.to_bits().to_le_bytes());
+                    for bone in &composition.item_to_hand_bones {
+                        digest.extend_from_slice(
+                            &bone.map_or(u32::MAX, |bone| bone as u32).to_le_bytes(),
+                        );
+                    }
+                    append_composed_part(&mut digest, &composition.hand);
+                    append_composed_part(&mut digest, &composition.item);
+                }
+            }
+        }
+        let composition_sha256 = hex(&studio::content_sha256(&digest));
+        println!(
+            "stock hand={} item={} composition={composition_sha256}",
+            target.hand, target.item
+        );
+        if composition_sha256 != target.composition_sha256 {
+            return Err(format!("{} composition hash changed", target.item));
+        }
+    }
+    Ok(())
+}
+
+fn append_composed_part(output: &mut Vec<u8>, part: &studio::ComposedViewModelPart) {
+    output.extend_from_slice(part.identity.as_bytes());
+    for matrix in &part.pose.model_matrices {
+        for value in matrix.0 {
+            output.extend_from_slice(&value.0.to_le_bytes());
+        }
+    }
+    for primitive in &part.primitives {
+        output.extend_from_slice(&(primitive.primitive as u32).to_le_bytes());
+        output.extend_from_slice(&(primitive.material as u32).to_le_bytes());
+    }
+}
+
+fn verify_model_materials(files: &VpkFiles) -> Result<(), String> {
+    let model_roots = [
+        "models/props_2fort/cow001_reference.mdl",
+        "models/props_2fort/frog.mdl",
+        "models/props_gameplay/resupply_locker.mdl",
+        "models/player/items/soldier/soldier_viking.mdl",
+        "models/player/soldier.mdl",
+        "models/player/demo.mdl",
+        "models/weapons/w_models/w_rocket.mdl",
+        "models/weapons/w_models/w_stickybomb.mdl",
+        "models/weapons/c_models/c_soldier_arms.mdl",
+        "models/weapons/c_models/c_demo_arms.mdl",
+        "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl",
+        "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl",
+    ];
+    let mut material_paths = BTreeSet::new();
+    for root in model_roots {
+        let document = load(root, files)?;
+        for material in &document.materials {
+            let mut selected = None;
+            for candidate in &material.candidates {
+                if files.exact(candidate)?.is_some() {
+                    selected = Some(candidate.to_ascii_lowercase());
+                    break;
+                }
+            }
+            material_paths.insert(
+                selected.ok_or_else(|| format!("{root} has no present material candidate"))?,
+            );
+        }
+    }
+
+    let mut texture_evidence = BTreeMap::<String, TextureEvidence>::new();
+    let mut material_count = 0_usize;
+    let mut eye_count = 0_usize;
+    let mut mip_digest = Vec::new();
+    let mut handled_proxies = BTreeSet::new();
+    let mut unsupported_proxies = BTreeSet::new();
+    for identity in &material_paths {
+        let material_bytes = files
+            .exact(identity)?
+            .ok_or_else(|| format!("missing model material {identity}"))?;
+        let (material, _) = resolved_material(identity, files)?;
+        let model = material
+            .model
+            .as_ref()
+            .ok_or_else(|| format!("{identity} lacks model shader state"))?;
+        material_count += 1;
+        if model.shader == playsrc_material::ModelShader::EyeRefract {
+            eye_count += 1;
+        }
+        mip_digest.extend_from_slice(identity.as_bytes());
+        mip_digest.extend_from_slice(&studio::content_sha256(&material_bytes));
+        mip_digest.push(match model.shader {
+            playsrc_material::ModelShader::VertexLitGeneric => 0,
+            playsrc_material::ModelShader::EyeRefract => 1,
+            playsrc_material::ModelShader::Eyes => 2,
+        });
+        for entry in &material.proxy_program.entries {
+            let name = String::from_utf8_lossy(&entry.name).into_owned();
+            match entry.disposition {
+                playsrc_material::ProxyDisposition::Handled => {
+                    handled_proxies.insert(name);
+                }
+                playsrc_material::ProxyDisposition::Unsupported => {
+                    unsupported_proxies.insert(name);
+                }
+                playsrc_material::ProxyDisposition::Malformed => {
+                    return Err(format!("{identity} has malformed model proxy {name}"));
+                }
+            }
+        }
+        for texture in &material.textures {
+            if texture.disposition != playsrc_material::TextureDisposition::Source {
+                continue;
+            }
+            let path = texture
+                .logical_path
+                .as_ref()
+                .ok_or_else(|| format!("{identity} source texture has no path"))?
+                .to_ascii_lowercase();
+            if !texture_evidence.contains_key(&path) {
+                let bytes = files
+                    .exact(&path)?
+                    .ok_or_else(|| format!("missing model texture {path}"))?;
+                let metadata = playsrc_vtf::inspect(
+                    &bytes,
+                    playsrc_vtf::Dialect::Source2013Pc,
+                    playsrc_vtf::Limits::default(),
+                )
+                .map_err(|error| error.to_string())?;
+                let sha256 = studio::content_sha256(&bytes);
+                let manifest = texture_manifest(&metadata)?;
+                let mut planes = Vec::with_capacity(manifest.subresources.len());
+                for identity in &manifest.subresources {
+                    let selector = vtf_identity(*identity);
+                    let plane = playsrc_vtf::decode(
+                        &bytes,
+                        playsrc_vtf::Dialect::Source2013Pc,
+                        selector,
+                        playsrc_vtf::Limits::default(),
+                    )
+                    .map_err(|error| format!("{path}: {error}"))?;
+                    planes.push(playsrc_material::AuthoredTexturePlane {
+                        identity: *identity,
+                        width: plane.width,
+                        height: plane.height,
+                        row_stride: plane.row_stride,
+                        sample_bytes: plane.samples.len(),
+                    });
+                }
+                texture_evidence.insert(
+                    path.clone(),
+                    TextureEvidence {
+                        sha256,
+                        manifest,
+                        planes,
+                    },
+                );
+            }
+            let evidence = texture_evidence
+                .get(&path)
+                .ok_or_else(|| format!("missing cached texture evidence {path}"))?;
+            let binding = playsrc_material::bind_authored_texture(texture, &evidence.manifest)
+                .map_err(|error| error.to_string())?;
+            playsrc_material::validate_authored_planes(&binding, &evidence.planes)
+                .map_err(|error| error.to_string())?;
+            mip_digest.extend_from_slice(&texture_role_code(texture.role).to_le_bytes());
+            mip_digest.extend_from_slice(path.as_bytes());
+            mip_digest.extend_from_slice(&evidence.sha256);
+            mip_digest.push(binding.mip_count);
+            mip_digest.extend_from_slice(&binding.frame_count.to_le_bytes());
+            mip_digest.extend_from_slice(&(binding.subresources.len() as u32).to_le_bytes());
+            for identity in binding.subresources {
+                append_texture_identity(&mut mip_digest, identity);
+            }
+        }
+        for texture in &material.model_textures {
+            let path = texture.logical_path.to_ascii_lowercase();
+            if !texture_evidence.contains_key(&path) {
+                let bytes = files
+                    .exact(&path)?
+                    .ok_or_else(|| format!("missing model texture {path}"))?;
+                let metadata = playsrc_vtf::inspect(
+                    &bytes,
+                    playsrc_vtf::Dialect::Source2013Pc,
+                    playsrc_vtf::Limits::default(),
+                )
+                .map_err(|error| error.to_string())?;
+                let sha256 = studio::content_sha256(&bytes);
+                let manifest = texture_manifest(&metadata)?;
+                let mut planes = Vec::with_capacity(manifest.subresources.len());
+                for identity in &manifest.subresources {
+                    let plane = playsrc_vtf::decode(
+                        &bytes,
+                        playsrc_vtf::Dialect::Source2013Pc,
+                        vtf_identity(*identity),
+                        playsrc_vtf::Limits::default(),
+                    )
+                    .map_err(|error| format!("{path}: {error}"))?;
+                    planes.push(playsrc_material::AuthoredTexturePlane {
+                        identity: *identity,
+                        width: plane.width,
+                        height: plane.height,
+                        row_stride: plane.row_stride,
+                        sample_bytes: plane.samples.len(),
+                    });
+                }
+                texture_evidence.insert(
+                    path.clone(),
+                    TextureEvidence {
+                        sha256,
+                        manifest,
+                        planes,
+                    },
+                );
+            }
+            let evidence = texture_evidence
+                .get(&path)
+                .ok_or_else(|| format!("missing cached texture evidence {path}"))?;
+            let binding =
+                playsrc_material::bind_authored_model_texture(texture, &evidence.manifest)
+                    .map_err(|error| error.to_string())?;
+            playsrc_material::validate_authored_planes(&binding, &evidence.planes)
+                .map_err(|error| error.to_string())?;
+            mip_digest
+                .extend_from_slice(&(0x8000 | model_texture_role_code(texture.role)).to_le_bytes());
+            mip_digest.extend_from_slice(path.as_bytes());
+            mip_digest.extend_from_slice(&evidence.sha256);
+            mip_digest.push(binding.mip_count);
+            mip_digest.extend_from_slice(&binding.frame_count.to_le_bytes());
+            mip_digest.extend_from_slice(&(binding.subresources.len() as u32).to_le_bytes());
+            for identity in binding.subresources {
+                append_texture_identity(&mut mip_digest, identity);
+            }
+        }
+    }
+    if eye_count != 3 {
+        return Err(format!("target eye material count changed: {eye_count}"));
+    }
+    let texture_count = texture_evidence.len();
+    let mip_sha256 = hex(&studio::content_sha256(&mip_digest));
+    let eye_sha256 = verify_eye_states(files)?;
+    let expected_proxies = [
+        "AnimatedTexture",
+        "AnimatedWeaponSheen",
+        "BurnLevel",
+        "Equals",
+        "InvulnLevel",
+        "ItemTintColor",
+        "LessOrEqual",
+        "ModelGlowColor",
+        "Multiply",
+        "SelectFirstIfNonZero",
+        "Sine",
+        "StickybombGlowColor",
+        "WeaponSkin",
+        "YellowLevel",
+        "invis",
+        "spy_invis",
+        "weapon_invis",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<BTreeSet<_>>();
+    if !unsupported_proxies.is_empty() || handled_proxies != expected_proxies {
+        return Err(format!(
+            "model proxy inventory changed: handled={handled_proxies:?} unsupported={unsupported_proxies:?}"
+        ));
+    }
+    println!(
+        "modelMaterials={material_count} modelTextures={texture_count} mipSha256={mip_sha256} eyeSha256={eye_sha256}"
+    );
+    println!("handledModelProxies={handled_proxies:?}");
+    if material_count != MODEL_MATERIAL_COUNT
+        || texture_count != MODEL_TEXTURE_COUNT
+        || mip_sha256 != MODEL_MIP_SHA256
+        || eye_sha256 != EYE_STATE_SHA256
+    {
+        return Err("model material, mip, or eye evidence changed".to_owned());
+    }
+    Ok(())
+}
+
+struct TextureEvidence {
+    sha256: [u8; 32],
+    manifest: playsrc_material::TextureMetadataManifest,
+    planes: Vec<playsrc_material::AuthoredTexturePlane>,
+}
+
+fn texture_manifest(
+    metadata: &playsrc_vtf::Metadata,
+) -> Result<playsrc_material::TextureMetadataManifest, String> {
+    let environment = playsrc_vtf::SamplingEnvironment {
+        shader_model: 90,
+        force_anisotropy: 1,
+        maximum_anisotropy: 16,
+        force_trilinear: false,
+    };
+    let sampling = playsrc_vtf::sampling_state(metadata, environment);
+    Ok(playsrc_material::TextureMetadataManifest {
+        width: metadata.width,
+        height: metadata.height,
+        depth: metadata.depth,
+        mip_count: metadata.mip_count,
+        frame_count: metadata.frame_count,
+        faces: metadata.faces.iter().copied().map(material_face).collect(),
+        sampling: playsrc_material::TextureSamplingState {
+            wrap_s: material_wrap(sampling.wrap_s),
+            wrap_t: material_wrap(sampling.wrap_t),
+            wrap_u: material_wrap(sampling.wrap_u),
+            min_filter: match sampling.min_filter {
+                playsrc_vtf::MinFilter::Nearest => playsrc_material::TextureMinFilter::Nearest,
+                playsrc_vtf::MinFilter::Linear => playsrc_material::TextureMinFilter::Linear,
+                playsrc_vtf::MinFilter::LinearMipmapNearest => {
+                    playsrc_material::TextureMinFilter::LinearMipmapNearest
+                }
+                playsrc_vtf::MinFilter::LinearMipmapLinear => {
+                    playsrc_material::TextureMinFilter::LinearMipmapLinear
+                }
+                playsrc_vtf::MinFilter::Anisotropic => {
+                    playsrc_material::TextureMinFilter::Anisotropic
+                }
+            },
+            mag_filter: match sampling.mag_filter {
+                playsrc_vtf::MagFilter::Nearest => playsrc_material::TextureMagFilter::Nearest,
+                playsrc_vtf::MagFilter::Linear => playsrc_material::TextureMagFilter::Linear,
+                playsrc_vtf::MagFilter::Anisotropic => {
+                    playsrc_material::TextureMagFilter::Anisotropic
+                }
+            },
+            anisotropy_level: if sampling.min_filter == playsrc_vtf::MinFilter::Anisotropic
+                || sampling.mag_filter == playsrc_vtf::MagFilter::Anisotropic
+            {
+                selected_anisotropy_level(
+                    environment.force_anisotropy,
+                    environment.maximum_anisotropy,
+                )
+            } else {
+                1
+            },
+            mipmapped: sampling.mipmapped,
+            no_lod: sampling.no_lod,
+            all_mips: sampling.all_mips,
+        },
+        subresources: metadata
+            .subresources
+            .iter()
+            .filter_map(|subresource| match subresource.identity {
+                playsrc_vtf::SubresourceIdentity::LowResolution => None,
+                playsrc_vtf::SubresourceIdentity::HighResolution {
+                    mip,
+                    frame,
+                    face,
+                    slice,
+                } => Some(playsrc_material::TextureSubresourceIdentity {
+                    mip,
+                    frame,
+                    face: material_face(face),
+                    slice,
+                }),
+            })
+            .collect(),
+    })
+}
+
+fn selected_anisotropy_level(configured: u8, maximum: u8) -> u8 {
+    if configured <= 1 || configured > maximum {
+        (maximum / 4).clamp(2, 8)
+    } else {
+        configured
+    }
+}
+
+fn material_face(face: playsrc_vtf::Face) -> playsrc_material::TextureFace {
+    match face {
+        playsrc_vtf::Face::Right => playsrc_material::TextureFace::Right,
+        playsrc_vtf::Face::Left => playsrc_material::TextureFace::Left,
+        playsrc_vtf::Face::Back => playsrc_material::TextureFace::Back,
+        playsrc_vtf::Face::Front => playsrc_material::TextureFace::Front,
+        playsrc_vtf::Face::Up => playsrc_material::TextureFace::Up,
+        playsrc_vtf::Face::Down => playsrc_material::TextureFace::Down,
+        playsrc_vtf::Face::Sphere => playsrc_material::TextureFace::Sphere,
+    }
+}
+
+fn material_wrap(wrap: playsrc_vtf::WrapMode) -> playsrc_material::TextureWrapMode {
+    match wrap {
+        playsrc_vtf::WrapMode::Repeat => playsrc_material::TextureWrapMode::Repeat,
+        playsrc_vtf::WrapMode::Clamp => playsrc_material::TextureWrapMode::Clamp,
+        playsrc_vtf::WrapMode::Border => playsrc_material::TextureWrapMode::Border,
+    }
+}
+
+fn vtf_identity(
+    identity: playsrc_material::TextureSubresourceIdentity,
+) -> playsrc_vtf::SubresourceIdentity {
+    playsrc_vtf::SubresourceIdentity::HighResolution {
+        mip: identity.mip,
+        frame: identity.frame,
+        face: match identity.face {
+            playsrc_material::TextureFace::Right => playsrc_vtf::Face::Right,
+            playsrc_material::TextureFace::Left => playsrc_vtf::Face::Left,
+            playsrc_material::TextureFace::Back => playsrc_vtf::Face::Back,
+            playsrc_material::TextureFace::Front => playsrc_vtf::Face::Front,
+            playsrc_material::TextureFace::Up => playsrc_vtf::Face::Up,
+            playsrc_material::TextureFace::Down => playsrc_vtf::Face::Down,
+            playsrc_material::TextureFace::Sphere => playsrc_vtf::Face::Sphere,
+        },
+        slice: identity.slice,
+    }
+}
+
+fn append_texture_identity(
+    output: &mut Vec<u8>,
+    identity: playsrc_material::TextureSubresourceIdentity,
+) {
+    output.push(identity.mip);
+    output.extend_from_slice(&identity.frame.to_le_bytes());
+    output.push(match identity.face {
+        playsrc_material::TextureFace::Right => 0,
+        playsrc_material::TextureFace::Left => 1,
+        playsrc_material::TextureFace::Back => 2,
+        playsrc_material::TextureFace::Front => 3,
+        playsrc_material::TextureFace::Up => 4,
+        playsrc_material::TextureFace::Down => 5,
+        playsrc_material::TextureFace::Sphere => 6,
+    });
+    output.extend_from_slice(&identity.slice.to_le_bytes());
+}
+
+fn texture_role_code(role: playsrc_material::TextureRole) -> u16 {
+    use playsrc_material::TextureRole as Role;
+    match role {
+        Role::Base => 0,
+        Role::HdrBase => 1,
+        Role::HdrCompressed => 2,
+        Role::HdrCompressed0 => 3,
+        Role::HdrCompressed1 => 4,
+        Role::HdrCompressed2 => 5,
+        Role::Base2 => 6,
+        Role::Bump => 7,
+        Role::Normal => 8,
+        Role::Bump2 => 9,
+        Role::Detail => 10,
+        Role::BlendModulate => 11,
+        Role::Environment => 12,
+        Role::EnvironmentMask => 13,
+        Role::SelfIllumMask => 14,
+        Role::Flow => 15,
+        Role::Reflection => 16,
+        Role::Refraction => 17,
+    }
+}
+
+fn model_texture_role_code(role: playsrc_material::ModelTextureRole) -> u16 {
+    use playsrc_material::ModelTextureRole as Role;
+    match role {
+        Role::Albedo => 0,
+        Role::WrinkleCompress => 1,
+        Role::WrinkleStretch => 2,
+        Role::BumpCompress => 3,
+        Role::BumpStretch => 4,
+        Role::PhongExponent => 5,
+        Role::LightWarp => 6,
+        Role::PhongWarp => 7,
+        Role::EyeIris => 8,
+        Role::EyeCornea => 9,
+        Role::EyeAmbientOcclusion => 10,
+        Role::EyeGlint => 11,
+        Role::SheenEnvironment => 12,
+        Role::SheenMask => 13,
+    }
+}
+
+fn verify_eye_states(files: &VpkFiles) -> Result<String, String> {
+    let mut digest = Vec::new();
+    for (identity, expected) in [
+        ("models/player/soldier.mdl", 2_usize),
+        ("models/player/demo.mdl", 1_usize),
+    ] {
+        let document = load(identity, files)?;
+        let artifact =
+            build_artifact_for_profile(&document, files, studio::PresentationProfile::World)?;
+        let pose = studio::sample_pose(
+            &artifact.model,
+            &studio::AnimationState {
+                base_sequence: 0,
+                cycle: studio::Float32(0.0_f32.to_bits()),
+                pose_parameters: artifact
+                    .model
+                    .pose_parameters
+                    .iter()
+                    .map(|_| studio::Float32(0.0_f32.to_bits()))
+                    .collect(),
+                layers: Vec::new(),
+            },
+        )
+        .map_err(|error| error.to_string())?;
+        let states = studio::eye_draw_states(
+            &document,
+            &studio::EyeDrawRequest {
+                body_part: 0,
+                submodel: 0,
+                bone_to_world: &pose.model_matrices,
+                world_target: vector([100.0, 0.0, 0.0]),
+                view_right: vector([0.0, -1.0, 0.0]),
+                view_up: vector([0.0, 0.0, 1.0]),
+                configuration: studio::EyeConfiguration {
+                    move_eyes: true,
+                    shift: vector([0.0; 3]),
+                    size: studio::Float32(0.0_f32.to_bits()),
+                },
+            },
+        )
+        .map_err(|error| error.to_string())?;
+        if states.len() != expected {
+            return Err(format!("{identity} eye count changed"));
+        }
+        digest.extend_from_slice(identity.as_bytes());
+        for state in states {
+            digest.extend_from_slice(&(state.mesh as u32).to_le_bytes());
+            digest.extend_from_slice(&(state.eyeball as u32).to_le_bytes());
+            digest.extend_from_slice(&(state.texture as u32).to_le_bytes());
+            for value in state
+                .world_origin
+                .0
+                .into_iter()
+                .chain(state.iris_u)
+                .chain(state.iris_v)
+                .chain(state.glint_u)
+                .chain(state.glint_v)
+            {
+                digest.extend_from_slice(&value.0.to_le_bytes());
+            }
+        }
+    }
+    Ok(hex(&studio::content_sha256(&digest)))
 }
 
 fn verify_target(target: &Target, files: &BTreeMap<String, Vec<u8>>) -> Result<(), String> {
@@ -415,13 +1201,21 @@ fn append_sample(
 
 fn build_artifact(
     document: &studio::Document,
-    files: &BTreeMap<String, Vec<u8>>,
+    files: &impl ExactFiles,
 ) -> Result<studio::PresentationArtifact, String> {
     let profile = if document.identity.contains("/v_models/") {
         studio::PresentationProfile::ViewModel
     } else {
         studio::PresentationProfile::World
     };
+    build_artifact_for_profile(document, files, profile)
+}
+
+fn build_artifact_for_profile(
+    document: &studio::Document,
+    files: &impl ExactFiles,
+    profile: studio::PresentationProfile,
+) -> Result<studio::PresentationArtifact, String> {
     let mut responses = Vec::new();
     loop {
         match studio::build_presentation(
@@ -436,7 +1230,7 @@ fn build_artifact(
             studio::PresentationBuild::Complete(artifact) => return Ok(*artifact),
             studio::PresentationBuild::Needs(requests) => {
                 for request in requests {
-                    let bytes = files.get(&request.logical_path).cloned();
+                    let bytes = files.exact(&request.logical_path)?;
                     let material = if request.role
                         == studio::PresentationDependencyRole::MaterialCandidate
                         && bytes.is_some()
@@ -464,56 +1258,10 @@ fn build_artifact(
 
 fn material_manifest(
     identity: &str,
-    files: &BTreeMap<String, Vec<u8>>,
+    files: &impl ExactFiles,
 ) -> Result<studio::MaterialResolutionManifest, String> {
     let identity = identity.to_ascii_lowercase();
-    let root = files
-        .get(&identity)
-        .ok_or_else(|| format!("missing {identity}"))?;
-    let mut responses = Vec::new();
-    let mut include_sources = Vec::new();
-    let material = loop {
-        match playsrc_vmt::compose(
-            root,
-            identity.clone(),
-            &responses,
-            &playsrc_keyvalues::ConditionEnvironment::default(),
-            playsrc_vmt::Limits::default(),
-        )
-        .map_err(|error| error.to_string())?
-        {
-            playsrc_vmt::Composition::Complete(document) => {
-                break playsrc_material::resolve_for_environment(
-                    &document,
-                    playsrc_material::SelectionEnvironment {
-                        model: true,
-                        ..Default::default()
-                    },
-                )
-                .map_err(|error| error.to_string())?;
-            }
-            playsrc_vmt::Composition::Needs(requests) => {
-                for request in requests {
-                    let path = dependency_path(&request.target_token)?;
-                    include_sources.push(studio::MaterialSourceManifest {
-                        requester: request.parent_identity.clone(),
-                        logical_path: path.clone(),
-                    });
-                    responses.push(playsrc_vmt::DependencyResponse {
-                        parent_identity: request.parent_identity,
-                        target_token: request.target_token,
-                        canonical_identity: path.clone(),
-                        bytes: Some(
-                            files
-                                .get(&path)
-                                .ok_or_else(|| format!("missing {path}"))?
-                                .clone(),
-                        ),
-                    });
-                }
-            }
-        }
-    };
+    let (material, include_sources) = resolved_material(&identity, files)?;
     let textures = material
         .textures
         .iter()
@@ -545,6 +1293,65 @@ fn material_manifest(
         include_sources,
         textures,
     })
+}
+
+fn resolved_material(
+    identity: &str,
+    files: &impl ExactFiles,
+) -> Result<
+    (
+        playsrc_material::Material,
+        Vec<studio::MaterialSourceManifest>,
+    ),
+    String,
+> {
+    let root = files
+        .exact(identity)?
+        .ok_or_else(|| format!("missing {identity}"))?;
+    let mut responses = Vec::new();
+    let mut include_sources = Vec::new();
+    let material = loop {
+        match playsrc_vmt::compose(
+            &root,
+            identity.to_owned(),
+            &responses,
+            &playsrc_keyvalues::ConditionEnvironment::default(),
+            playsrc_vmt::Limits::default(),
+        )
+        .map_err(|error| error.to_string())?
+        {
+            playsrc_vmt::Composition::Complete(document) => {
+                break playsrc_material::resolve_for_environment(
+                    &document,
+                    playsrc_material::SelectionEnvironment {
+                        model: true,
+                        ..Default::default()
+                    },
+                )
+                .map_err(|error| error.to_string())?;
+            }
+            playsrc_vmt::Composition::Needs(requests) => {
+                for request in requests {
+                    let path = dependency_path(&request.target_token)?;
+                    include_sources.push(studio::MaterialSourceManifest {
+                        requester: request.parent_identity.clone(),
+                        logical_path: path.clone(),
+                    });
+                    responses.push(playsrc_vmt::DependencyResponse {
+                        parent_identity: request.parent_identity,
+                        target_token: request.target_token,
+                        canonical_identity: path.clone(),
+                        bytes: Some(
+                            files
+                                .exact(&path)?
+                                .ok_or_else(|| format!("missing {path}"))?,
+                        ),
+                    });
+                }
+            }
+        }
+    };
+    Ok((material, include_sources))
 }
 
 fn studio_texture_role(role: playsrc_material::TextureRole) -> Option<studio::TextureRole> {
@@ -586,9 +1393,9 @@ fn dependency_path(token: &[u8]) -> Result<String, String> {
     Ok(path.to_ascii_lowercase())
 }
 
-fn load(path: &str, files: &BTreeMap<String, Vec<u8>>) -> Result<studio::Document, String> {
+fn load(path: &str, files: &impl ExactFiles) -> Result<studio::Document, String> {
     let mdl = files
-        .get(path)
+        .exact(path)?
         .ok_or_else(|| format!("missing root {path}"))?;
     let profile = match i32::from_le_bytes(
         mdl.get(4..8)
@@ -609,7 +1416,7 @@ fn load(path: &str, files: &BTreeMap<String, Vec<u8>>) -> Result<studio::Documen
             path,
             profile,
             studio::VtxVariant::Dx90,
-            mdl,
+            &mdl,
             &responses,
             studio::Limits::default(),
         )
@@ -618,7 +1425,7 @@ fn load(path: &str, files: &BTreeMap<String, Vec<u8>>) -> Result<studio::Documen
             studio::Load::Complete(document) => return Ok(*document),
             studio::Load::Needs(requests) => {
                 for request in requests {
-                    let bytes = files.get(&request.logical_path).cloned();
+                    let bytes = files.exact(&request.logical_path)?;
                     if bytes.is_none() && request.role != studio::DependencyRole::Physics {
                         return Err(format!("missing {}", request.logical_path));
                     }

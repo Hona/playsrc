@@ -3,9 +3,9 @@
 ## Commands
 
 - `cargo test -p playsrc-studio-model --lib` runs bounded synthetic parser, composition, artifact, transform, timing, event, autolayer, and pose vectors.
-- `bun packages/formats/studio-model/scripts/verify-parity.ts` validates `playsrc.local.json`, regenerates the exact `jump_beef` source bundle through configured TF2 public build `24207079`, then runs the package-owned locked evidence runner. The runner resolves the ten target roots and every MDL/VVD/DX90.VTX/ANI/PHY/include/VMT/VTF dependency from the bundle, generates each `PSMP` v2 artifact twice, requires byte identity, decodes and canonically re-encodes it, samples every declared timeline cycle, and compares all fixed hashes below.
+- `bun packages/formats/studio-model/scripts/verify-parity.ts` validates `playsrc.local.json`, regenerates the exact `jump_beef` source bundle through configured TF2 public build `24207079`, then runs the package-owned locked evidence runner. The runner resolves the ten prior roots from the bundle; resolves the stock Soldier/Demoman hands, animation libraries, item models, model VMTs, and model VTFs through exact configured VPK indexes; generates each `PSMP` v2 artifact twice; requires byte identity; decodes and canonically re-encodes it; samples every declared timeline and stock-composition cycle; decodes every authored model-texture plane; and compares all fixed hashes below.
 
-The configured bundle contains 294 entries and 112,112,616 bytes with SHA-256 `34cbd09a63f1ba8407c7a775de20467773f87a41db78e34447734799fa2dba78`. The declared BSP is 33,379,388 bytes with SHA-256 `b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959`.
+The configured bundle contains 296 entries and 112,303,242 bytes with SHA-256 `494c282a45b2c1ae1882e66aabe234cda3f92d950e1d2a37c2616db845164884`. The declared BSP is 33,379,388 bytes with SHA-256 `b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959`.
 
 ## Exact target matrix
 
@@ -42,5 +42,21 @@ Cow/frog have LOD 0 and missing optional PHY; the locker has LODs 0–4 and pres
 - Soldier viewmodel sequences are draw 25 frames, idle 41, fire 31, reload-start 16, looping reload 26, and reload-finish 24 at 30 FPS. Demoman viewmodel sequences are draw 31, idle 51, fire 19, reload-start 11, reload 21, and reload-end 17 at 30 FPS.
 - Soldier draw event 5004 occurs at cycle `1/24`; Soldier reload events occur at `0.08` and `0.4`. Demoman draw event 5004 occurs at `1/30`; Demoman reload events occur at `0.1` and `0.6`. Event records retain fixed options/name bytes. Presentation queries preserve authored order and end-before-start loop ordering without executing effects.
 - The viewmodel descriptor fixes default horizontal-4:3 FOV `54`, minimum `0.1`, maximum `179.9`, near plane `1`, caller-supplied world far plane, depth range `[0, 0.1]`, post-world opaque-then-translucent ordering, and optional view-space-Y handedness reflection.
+
+## Stock hand/item composition
+
+| Hand | Item attachment | Hand MDL SHA-256 | Item MDL SHA-256 | Composition SHA-256 |
+|---|---|---|---|---|
+| `models/weapons/c_models/c_soldier_arms.mdl` | `models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl` | `4aeba0ceccb87f045349e4604204308c7bf91507defef7ee9301cbbfe1678fd5` | `e962a3ab43ad731c6b65780c760c61a7d06676f5ca05fd112bcfc74944a605e0` | `160db54bf1706daed8d788ad692ef649ecfe49853cf44c3551332c497dbfcea2` |
+| `models/weapons/c_models/c_demo_arms.mdl` | `models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl` | `a49561921958a0d47f34be7b61705973f27813880759783cf573c5b62c4ae073` | `bbdb99e9a836603b795c8851a16838aab37a5bcf178d2dd4a25fbc9c0fa72108` | `8faeff88db0154818b5d0882a7c0fc07b37d2ed6381b37e3c7fd518928e980ef` |
+
+Each composition hash includes the complete hand/item artifact hashes; translated draw, idle, primary-fire, reload-start, reload-loop, and reload-finish activity identities; red and blue numeric skins; cycles `0`, `0.5`, and `1`; every item-to-hand bone mapping; every hand/item model matrix; and every selected primitive/material pair. Soldier merges three of four item bones; Demoman merges four of five. Each unmatched `c_weapon_stattrack` bone remains under its authored item hierarchy.
+
+## Model shaders, lighting inputs, eyes, and authored mips
+
+- The exact target closure contains 55 selected model materials and 71 unique source model VTFs. Every material resolves to typed `VertexLitGeneric` or `EyeRefract` state. Every VTF is inspected under the fixed PC shader-model-90 sampling environment with configured anisotropy `1` and hardware maximum `16` (per-texture anisotropy therefore selects level `4`), every declared high-resolution `(mip, frame, face, slice)` is decoded, and every binding validates the complete ordered plane set. VMT path/content hash, shader family, semantic texture role, VTF path/content hash, mip/frame/subresource counts, and all subresource identities produce SHA-256 `05c7869e3f78b03b2c9f05ebdb9a8ec8f9895a8a8d3ff37530f3e0d26f617033`.
+- The exact model-material occurrence set contains handled `AnimatedTexture`, `AnimatedWeaponSheen`, `BurnLevel`, `Equals`, `InvulnLevel`, `ItemTintColor`, `LessOrEqual`, `ModelGlowColor`, `Multiply`, `SelectFirstIfNonZero`, `Sine`, `StickybombGlowColor`, `WeaponSkin`, `YellowLevel`, `invis`, `spy_invis`, and `weapon_invis` declarations and no unsupported or malformed proxy declaration.
+- Soldier's two eye meshes and Demoman's one eye mesh retain complete 172-byte eyeball records. Sequence-zero model matrices, fixed world target `[100,0,0]`, view right `[0,-1,0]`, view up `[0,0,1]`, enabled eye movement, and zero shift/size produce eye-state SHA-256 `cd6606f8d35ed20c87ffc33b40190586be2dc94f48eafadb3b7038f99d9d103a` over mesh/eyeball/texture indexes, world origins, and iris/glint projection rows.
+- `ModelLightingInput` is renderer-neutral: one explicit origin, six ordered `+X,-X,+Y,-Y,+Z,-Z` ambient colors, zero to four typed local lights, camera position, optional canonical local-environment identity, and ambient/static-vertex/static-texel facts. It neither queries BSP lighting nor supplies fallback light values.
 
 IK rules/locks, flexes, and procedural bones remain explicit `RetainedNotEvaluated` families. Timeline hashes are the deterministic StudioModel sequence/grid/autolayer model-space seam before those separately classified effects; they do not claim post-IK or flex parity.

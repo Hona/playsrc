@@ -1,6 +1,8 @@
 use playsrc_vmt::{EffectiveDocument, EffectiveNode, EffectiveValue};
 use std::{collections::BTreeMap, fmt};
+mod model;
 mod proxy;
+pub use model::*;
 pub use proxy::*;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Shader {
@@ -178,6 +180,8 @@ pub struct Material {
     pub detail: Option<DetailState>,
     pub bump: Option<BumpState>,
     pub environment_map: Option<EnvironmentMapState>,
+    pub model: Option<ModelMaterialState>,
+    pub model_textures: Vec<ModelTextureRequest>,
     pub proxy_program: ProxyProgram,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -297,6 +301,7 @@ pub enum ErrorCode {
     UnsupportedCondition,
     MissingProfileTexture,
     InvalidParameter,
+    InvalidTextureMetadata,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Error {
@@ -463,6 +468,8 @@ pub fn resolve_for_environment(
         no_alpha_modulation: boolean(&first, b"$noalphamod"),
     };
     let proxy_program = proxy::compile_proxy_program(&proxies);
+    let (model, model_textures) =
+        model::resolve_model_state(&document.root.key.bytes, &first, &textures, environment)?;
     let effective_alpha_test =
         features.alpha_test && !features.self_illum && !features.base_alpha_environment_mask;
     let decal = DecalState {
@@ -495,6 +502,8 @@ pub fn resolve_for_environment(
         detail,
         bump,
         environment_map,
+        model,
+        model_textures,
         proxy_program,
     })
 }
@@ -558,6 +567,7 @@ pub fn static_state(
         Shader::UnlitGeneric | Shader::Sprite | Shader::Refract => LightingModel::Unlit,
         Shader::Water => LightingModel::Water,
         Shader::SkyLdr | Shader::SkyHdr => LightingModel::Sky,
+        Shader::Unsupported if material.model.is_some() => LightingModel::VertexLit,
         Shader::Unsupported => LightingModel::Unsupported,
     };
     let depth_test = !features.ignore_z;
@@ -917,10 +927,10 @@ fn scalar_pair(node: &EffectiveNode) -> Option<(Vec<u8>, Vec<u8>)> {
 fn lower(v: &[u8]) -> Vec<u8> {
     v.iter().map(u8::to_ascii_lowercase).collect()
 }
-fn get<'a>(m: &'a BTreeMap<Vec<u8>, Vec<u8>>, k: &[u8]) -> Option<&'a Vec<u8>> {
+pub(crate) fn get<'a>(m: &'a BTreeMap<Vec<u8>, Vec<u8>>, k: &[u8]) -> Option<&'a Vec<u8>> {
     m.get(&lower(k))
 }
-fn boolean(m: &BTreeMap<Vec<u8>, Vec<u8>>, k: &[u8]) -> bool {
+pub(crate) fn boolean(m: &BTreeMap<Vec<u8>, Vec<u8>>, k: &[u8]) -> bool {
     let Some(v) = get(m, k) else { return false };
     source_integer(v) != 0
 }
@@ -935,7 +945,7 @@ fn boolean_or(
     let _ = parameter;
     Ok(source_integer(value) != 0)
 }
-fn integer_or(
+pub(crate) fn integer_or(
     parameters: &BTreeMap<Vec<u8>, Vec<u8>>,
     parameter: &[u8],
     default: i32,
@@ -975,7 +985,7 @@ fn source_integer_text(value: &str) -> i32 {
         parsed
     }
 }
-fn float_or(
+pub(crate) fn float_or(
     parameters: &BTreeMap<Vec<u8>, Vec<u8>>,
     parameter: &[u8],
     default: f32,
@@ -989,7 +999,7 @@ fn float_or(
         .filter(|value| value.is_finite())
         .ok_or_else(|| error(ErrorCode::InvalidParameter, Some(parameter.to_vec())))
 }
-fn color_or(
+pub(crate) fn color_or(
     parameters: &BTreeMap<Vec<u8>, Vec<u8>>,
     parameter: &[u8],
     default: [f32; 3],
@@ -1090,7 +1100,11 @@ fn material_request(
         logical_path: logical_path(&normalized, ".vmt", parameter)?,
     })
 }
-fn logical_path(normalized: &str, extension: &str, parameter: &[u8]) -> Result<String, Error> {
+pub(crate) fn logical_path(
+    normalized: &str,
+    extension: &str,
+    parameter: &[u8],
+) -> Result<String, Error> {
     let lower = normalized.to_ascii_lowercase();
     let prefix = if lower.starts_with("materials/") {
         ""
@@ -1481,6 +1495,296 @@ mod tests {
     }
 
     #[test]
+    fn target_vertex_lit_and_eye_materials_emit_complete_model_state() {
+        let launcher = material(
+            br#"VertexLitGeneric {
+                "$basetexture" "models/weapons/c_models/c_launcher/c_launcher"
+                "$phongexponenttexture" "models/weapons/c_models/c_launcher/c_launcher_exp"
+                "$phong" "1" "$phongboost" "2.75" "$phongexponentfactor" "100"
+                "$phongalbedotint" "1" "$lightwarptexture" "models/lightwarps/softened_weapon_lightwarp"
+                "$phongfresnelranges" "[.3 .5 3]" "$halflambert" "1"
+                "$envmap" "env_cubemap" "$basemapalphaphongmask" "1"
+                "$rimlight" "1" "$rimlightexponent" "2" "$rimlightboost" "2.5" "$rimmask" "1"
+                "$cloakPassEnabled" "1" "$sheenPassEnabled" "1"
+                "$sheenmap" "cubemaps/cubemap_sheen001" "$sheenmapmask" "Effects/AnimatedSheen/animatedsheen0"
+            }"#,
+            SelectionEnvironment {
+                model: true,
+                ..SelectionEnvironment::default()
+            },
+        )
+        .unwrap();
+        let ModelShaderState::VertexLitGeneric(state) = &launcher.model.as_ref().unwrap().state
+        else {
+            panic!("launcher did not resolve VertexLitGeneric model state")
+        };
+        let phong = state.phong.as_ref().unwrap();
+        assert_eq!(phong.exponent_factor, 100.0);
+        assert_eq!(phong.mask_source, PhongMaskSource::BaseAlpha);
+        assert_eq!(phong.fresnel_ranges, [0.3, 0.5, 3.0]);
+        assert_eq!(phong.packed_fresnel_ranges, [0.39999998, 0.5, 5.0]);
+        assert_eq!(
+            phong.rim,
+            Some(RimLightState {
+                exponent: 2.0,
+                boost: 2.5,
+                exponent_texture_alpha_mask: true,
+            })
+        );
+        assert!(state.half_lambert);
+        assert!(state.cloak.enabled);
+        assert!(state.sheen.enabled);
+        assert!(
+            launcher
+                .model_textures
+                .iter()
+                .any(|texture| texture.role == ModelTextureRole::PhongExponent)
+        );
+        assert!(
+            launcher
+                .model_textures
+                .iter()
+                .any(|texture| texture.role == ModelTextureRole::LightWarp)
+        );
+        let hdr_sheen = material(
+            br#"VertexLitGeneric { "$sheenmap" "cubemaps/cubemap_sheen001" }"#,
+            SelectionEnvironment {
+                hdr_mode: HdrMode::Integer,
+                model: true,
+                ..SelectionEnvironment::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            hdr_sheen.model_textures[0].color_read,
+            TextureColorRead::Linear
+        );
+
+        let eye = material(
+            br#"EyeRefract {
+                "$iris" "models/player/shared/eye-iris-blue"
+                "$ambientoccltexture" "models/player/shared/eye-extra"
+                "$envmap" "models/player/shared/eye-reflection-cubemap-"
+                "$corneatexture" "models/player/shared/eye-cornea"
+                "$lightwarptexture" "models/player/shared/eye_lightwarp"
+                "$eyeballradius" "0.7" "$ambientocclcolor" "[1 1 1]"
+                "$dilation" "0.5" "$parallaxstrength" "0.25" "$corneabumpstrength" "1"
+                "$halflambert" "1" "$raytracesphere" "0" "$spheretexkillcombo" "0"
+            }"#,
+            SelectionEnvironment {
+                model: true,
+                ..SelectionEnvironment::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(eye.shader, Shader::Unsupported);
+        let ModelShaderState::EyeRefract(state) = &eye.model.as_ref().unwrap().state else {
+            panic!("eye did not resolve EyeRefract model state")
+        };
+        assert_eq!(state.eyeball_radius, 0.7);
+        assert_eq!(state.glossiness, 1.0);
+        assert_eq!(state.ambient_occlusion_color, [1.0; 3]);
+        assert!(!state.raytrace_sphere);
+        assert!(!state.sphere_texture_kill);
+        assert_eq!(
+            static_state(&eye, TextureAlphaFacts { base: false })
+                .unwrap()
+                .lighting,
+            LightingModel::VertexLit
+        );
+    }
+
+    #[test]
+    fn stock_model_proxy_program_uses_ordered_typed_inputs() {
+        let selected = material(
+            br#"VertexLitGeneric {
+                "$color2" "[1 1 1]" "$yellow" "0"
+                Proxies {
+                    AnimatedWeaponSheen { "animatedtexturevar" "$sheenmapmask" "animatedtextureframenumvar" "$sheenmapmaskframe" }
+                    invis {}
+                    ModelGlowColor { "resultVar" "$glowcolor" }
+                    Equals { "srcVar1" "$glowcolor" "resultVar" "$selfillumtint" }
+                    Equals { "srcVar1" "$glowcolor" "resultVar" "$color2" }
+                    YellowLevel { "resultVar" "$yellow" }
+                    Multiply { "srcVar1" "$color2" "srcVar2" "$yellow" "resultVar" "$color2" }
+                    WeaponSkin {}
+                }
+            }"#,
+            SelectionEnvironment {
+                model: true,
+                ..SelectionEnvironment::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            selected
+                .proxy_program
+                .entries
+                .iter()
+                .all(|entry| entry.disposition == ProxyDisposition::Handled)
+        );
+        let initial = BTreeMap::from([(
+            b"$color2".to_vec(),
+            ProxyValue::Vector {
+                values: [1.0, 1.0, 1.0, 0.0],
+                size: 3,
+            },
+        )]);
+        let context = ProxyEvaluationContext {
+            time: 0.0,
+            frame_time: 0.0,
+            water_lod: None,
+            texture_frames: BTreeMap::new(),
+            model_inputs: ModelProxyInputs {
+                invisibility: Some(InvisibilityInput {
+                    factor: 0.0,
+                    player_tint: None,
+                }),
+                model_glow_color: Some([1.0; 3]),
+                yellow_level: Some([1.0; 3]),
+                weapon_sheen: Some(WeaponSheenInput {
+                    frame: 0,
+                    tint: [0.0; 4],
+                    mask_scale: [1.0; 2],
+                    mask_offset: [0.0; 2],
+                    mask_direction: 0,
+                    shader_index: 0,
+                    enabled: false,
+                }),
+                weapon_skin_base_texture: Some(None),
+                ..ModelProxyInputs::default()
+            },
+        };
+        let evaluated =
+            evaluate_proxy_program(&selected.proxy_program, &initial, &context).unwrap();
+        assert_eq!(evaluated.trace.len(), 8);
+        assert_eq!(
+            evaluated.variables[b"$color2".as_slice()],
+            ProxyValue::Vector {
+                values: [1.0, 1.0, 1.0, 0.0],
+                size: 3,
+            }
+        );
+        assert_eq!(
+            evaluated.variables[b"$cloakfactor".as_slice()],
+            ProxyValue::Float(0.0)
+        );
+        assert_eq!(
+            evaluated.effects,
+            [ModelProxyEffect::WeaponSkinBaseTexture(None)]
+        );
+        let mut enabled_context = context.clone();
+        enabled_context.model_inputs.weapon_sheen = Some(WeaponSheenInput {
+            frame: 7,
+            tint: [0.25, 0.5, 0.75, 0.6],
+            mask_scale: [32.0, 8.0],
+            mask_offset: [-4.0, 2.0],
+            mask_direction: 2,
+            shader_index: 1,
+            enabled: true,
+        });
+        let enabled =
+            evaluate_proxy_program(&selected.proxy_program, &initial, &enabled_context).unwrap();
+        assert_eq!(
+            enabled.variables[b"$sheenmapmaskframe".as_slice()],
+            ProxyValue::Int(7)
+        );
+        assert_eq!(
+            enabled.variables[b"$sheenmapmaskscalex".as_slice()],
+            ProxyValue::Float(32.0)
+        );
+        assert_eq!(
+            enabled.variables[b"$sheenmapmaskdirection".as_slice()],
+            ProxyValue::Int(2)
+        );
+
+        let missing = evaluate_proxy_program(
+            &selected.proxy_program,
+            &initial,
+            &ProxyEvaluationContext::default(),
+        )
+        .unwrap_err();
+        assert_eq!(missing.code, ProxyEvaluationErrorCode::MissingModelInput);
+        assert_eq!(missing.operation, 0);
+    }
+
+    #[test]
+    fn target_player_item_and_sticky_proxies_use_only_supplied_values() {
+        let selected = material(
+            br#"VertexLitGeneric {
+                Proxies {
+                    InvulnLevel { "resultVar" "$invuln" }
+                    BurnLevel { "resultVar" "$burn" }
+                    ItemTintColor { "resultVar" "$tint" }
+                    StickybombGlowColor { "resultVar" "$glow" }
+                    weapon_invis {}
+                    LessOrEqual {
+                        "srcVar1" "$burn" "srcVar2" "$threshold"
+                        "lessEqualVar" "$low" "greaterVar" "$high" "resultVar" "$selected"
+                    }
+                    SelectFirstIfNonZero { "srcVar1" "$tint" "srcVar2" "$fallback" "resultVar" "$color" }
+                }
+            }"#,
+            SelectionEnvironment {
+                model: true,
+                ..SelectionEnvironment::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            selected
+                .proxy_program
+                .entries
+                .iter()
+                .all(|entry| entry.disposition == ProxyDisposition::Handled)
+        );
+        let vector = |values: [f32; 3]| ProxyValue::Vector {
+            values: [values[0], values[1], values[2], 0.0],
+            size: 3,
+        };
+        let initial = BTreeMap::from([
+            (b"$threshold".to_vec(), ProxyValue::Float(0.25)),
+            (b"$low".to_vec(), ProxyValue::Float(2.0)),
+            (b"$high".to_vec(), ProxyValue::Float(4.0)),
+            (b"$selected".to_vec(), ProxyValue::Float(0.0)),
+            (b"$fallback".to_vec(), vector([0.5; 3])),
+            (b"$color".to_vec(), vector([0.0; 3])),
+        ]);
+        let evaluated = evaluate_proxy_program(
+            &selected.proxy_program,
+            &initial,
+            &ProxyEvaluationContext {
+                model_inputs: ModelProxyInputs {
+                    invisibility: Some(InvisibilityInput {
+                        factor: 0.75,
+                        player_tint: None,
+                    }),
+                    invulnerability_level: Some(1.0),
+                    burn_level: Some(0.5),
+                    item_tint: Some([0.0; 3]),
+                    stickybomb_glow: Some([100.0, 0.0, 0.0]),
+                    ..ModelProxyInputs::default()
+                },
+                ..ProxyEvaluationContext::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            evaluated.variables[b"$selected".as_slice()],
+            ProxyValue::Float(4.0)
+        );
+        assert_eq!(evaluated.variables[b"$color".as_slice()], vector([0.5; 3]));
+        assert_eq!(
+            evaluated.variables[b"$cloakfactor".as_slice()],
+            ProxyValue::Float(0.75)
+        );
+        assert_eq!(
+            evaluated.variables[b"$glow".as_slice()],
+            vector([100.0, 0.0, 0.0])
+        );
+    }
+
+    #[test]
     fn target_water_proxy_family_evaluates_in_source_order_from_supplied_inputs() {
         let selected = material(
             br#"Water {
@@ -1533,6 +1837,7 @@ mod tests {
                 frame_time: 0.5,
                 water_lod: Some([1_000.0, 2_000.0]),
                 texture_frames: BTreeMap::from([(b"$normalmap".to_vec(), 60)]),
+                model_inputs: ModelProxyInputs::default(),
             },
         )
         .unwrap();
@@ -1585,6 +1890,7 @@ mod tests {
                 frame_time: 0.0,
                 water_lod: None,
                 texture_frames: BTreeMap::new(),
+                model_inputs: ModelProxyInputs::default(),
             },
         )
         .unwrap();
@@ -1622,6 +1928,7 @@ mod tests {
                 frame_time: 0.5,
                 water_lod: None,
                 texture_frames: BTreeMap::from([(b"$normalmap".to_vec(), 4)]),
+                model_inputs: ModelProxyInputs::default(),
             },
         )
         .unwrap();

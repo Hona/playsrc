@@ -2580,11 +2580,11 @@ fn finite_unit(value: Float32) -> Option<f32> {
     finite(value).filter(|value| (0.0..=1.0).contains(value))
 }
 
-fn vector(values: [f32; 3]) -> Vector3 {
+pub(crate) fn vector(values: [f32; 3]) -> Vector3 {
     Vector3(values.map(|value| Float32(value.to_bits())))
 }
 
-fn values3(value: Vector3) -> [f32; 3] {
+pub(crate) fn values3(value: Vector3) -> [f32; 3] {
     value.0.map(|component| f32::from_bits(component.0))
 }
 
@@ -2592,7 +2592,7 @@ fn values4(value: [Float32; 4]) -> [f32; 4] {
     value.map(|component| f32::from_bits(component.0))
 }
 
-fn identity_quaternion() -> [Float32; 4] {
+pub(crate) fn identity_quaternion() -> [Float32; 4] {
     [
         Float32(0.0_f32.to_bits()),
         Float32(0.0_f32.to_bits()),
@@ -2741,7 +2741,7 @@ fn quaternion_multiply(left: [Float32; 4], right: [Float32; 4]) -> [Float32; 4] 
     .map(|component| Float32(component.to_bits()))
 }
 
-fn quaternion_matrix(rotation: [Float32; 4], translation: Vector3) -> Matrix3x4 {
+pub(crate) fn quaternion_matrix(rotation: [Float32; 4], translation: Vector3) -> Matrix3x4 {
     let [x, y, z, w] = normalized_quaternion(values4(rotation));
     let [tx, ty, tz] = values3(translation);
     Matrix3x4(
@@ -2763,7 +2763,7 @@ fn quaternion_matrix(rotation: [Float32; 4], translation: Vector3) -> Matrix3x4 
     )
 }
 
-fn multiply_matrix(left: &Matrix3x4, right: &Matrix3x4) -> Matrix3x4 {
+pub(crate) fn multiply_matrix(left: &Matrix3x4, right: &Matrix3x4) -> Matrix3x4 {
     let left = left.0.map(|value| f32::from_bits(value.0));
     let right = right.0.map(|value| f32::from_bits(value.0));
     let mut output = [0.0_f32; 12];
@@ -2781,7 +2781,7 @@ fn multiply_matrix(left: &Matrix3x4, right: &Matrix3x4) -> Matrix3x4 {
     Matrix3x4(output.map(|component| Float32(component.to_bits())))
 }
 
-fn transform_point(matrix: &Matrix3x4, point: [f32; 3]) -> [f32; 3] {
+pub(crate) fn transform_point(matrix: &Matrix3x4, point: [f32; 3]) -> [f32; 3] {
     let matrix = matrix.0.map(|value| f32::from_bits(value.0));
     std::array::from_fn(|row| {
         matrix[row * 4] * point[0]
@@ -2820,7 +2820,7 @@ fn pose_model_matrices(
     Ok(matrices)
 }
 
-fn matrix_translation(matrix: &Matrix3x4) -> Vector3 {
+pub(crate) fn matrix_translation(matrix: &Matrix3x4) -> Vector3 {
     Vector3([matrix.0[3], matrix.0[7], matrix.0[11]])
 }
 
@@ -4918,6 +4918,9 @@ mod tests {
                 view_min: vector([-1.0; 3]),
                 view_max: vector([1.0; 3]),
             },
+            illumination_attachment: 0,
+            raw_max_eye_deflection: float(0.0),
+            max_eye_deflection: float(0.866),
             bones: vec![
                 bone(0, b"root", -1, [0.0; 3]),
                 bone(1, b"child", 0, [0.0, 1.0, 0.0]),
@@ -4956,6 +4959,7 @@ mod tests {
                     attachment_count: 0,
                     eyeball_count: 0,
                     meshes: Vec::new(),
+                    eyeballs: Vec::new(),
                 }],
             }],
             attachments: vec![Attachment {

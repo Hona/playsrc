@@ -1,7 +1,13 @@
 use std::{collections::BTreeSet, fmt, ops::Range};
 
+mod eye;
+mod lighting;
 mod presentation;
+mod viewmodel;
+pub use eye::*;
+pub use lighting::*;
 pub use presentation::*;
+pub use viewmodel::*;
 
 const MDL_HEADER_BYTES: usize = 408;
 const BONE_BYTES: usize = 216;
@@ -17,6 +23,7 @@ const HITBOX_SET_BYTES: usize = 12;
 const HITBOX_BYTES: usize = 68;
 const SEQUENCE_EVENT_BYTES: usize = 80;
 const SEQUENCE_AUTO_LAYER_BYTES: usize = 24;
+const EYEBALL_BYTES: usize = 172;
 const STUDIO_OVERRIDE: i32 = 0x0800;
 const STUDIO_CYCLE_POSE: i32 = 0x0080;
 const STUDIO_AUTO_LAYER_POSE: i32 = 0x4000;
@@ -383,6 +390,33 @@ pub struct SubModel {
     pub attachment_count: i32,
     pub eyeball_count: i32,
     pub meshes: Vec<Mesh>,
+    pub eyeballs: Vec<Eyeball>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Eyeball {
+    pub index: usize,
+    pub name: Vec<u8>,
+    pub bone: i32,
+    pub origin: Vector3,
+    pub z_offset: Float32,
+    pub radius: Float32,
+    pub up: Vector3,
+    pub forward: Vector3,
+    pub texture: i32,
+    pub unused_1: i32,
+    pub iris_scale: Float32,
+    pub unused_2: i32,
+    pub upper_flex_descriptors: [i32; 3],
+    pub lower_flex_descriptors: [i32; 3],
+    pub upper_targets: Vector3,
+    pub lower_targets: Vector3,
+    pub upper_lid_flex_descriptor: i32,
+    pub lower_lid_flex_descriptor: i32,
+    pub unused: [i32; 4],
+    pub non_facs: bool,
+    pub unused_3: [u8; 3],
+    pub unused_4: [i32; 7],
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -482,6 +516,9 @@ pub struct Document {
     pub declared_length: usize,
     pub flags: i32,
     pub bounds: Bounds,
+    pub illumination_attachment: i32,
+    pub raw_max_eye_deflection: Float32,
+    pub max_eye_deflection: Float32,
     pub bones: Vec<Bone>,
     pub animations: Vec<Animation>,
     pub sequences: Vec<Sequence>,
@@ -1267,6 +1304,33 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
         view_min: vector3(bytes, 128, identity)?,
         view_max: vector3(bytes, 140, identity)?,
     };
+    let secondary_header_offset = i32_at(bytes, 400, identity)?;
+    let (illumination_attachment, raw_max_eye_deflection, max_eye_deflection) =
+        if secondary_header_offset == 0 {
+            (0, Float32(0.0_f32.to_bits()), Float32(0.866_f32.to_bits()))
+        } else if secondary_header_offset > 0 {
+            let secondary_header_offset = secondary_header_offset as usize;
+            range(bytes, secondary_header_offset, 16, identity)?;
+            let raw = float(bytes, secondary_header_offset + 12, identity)?;
+            let raw_value = f32::from_bits(raw.0);
+            if !raw_value.is_finite() {
+                return Err(invalid_range(identity, secondary_header_offset + 12));
+            }
+            (
+                i32_at(bytes, secondary_header_offset + 8, identity)?,
+                raw,
+                if raw_value == 0.0 {
+                    Float32(0.866_f32.to_bits())
+                } else {
+                    raw
+                },
+            )
+        } else {
+            return Err(invalid_range(identity, 400));
+        };
+    if illumination_attachment < 0 {
+        return Err(invalid_reference(identity, 400));
+    }
 
     let bone_count = count(bytes, 156, identity)?;
     let bone_offset = count(bytes, 160, identity)?;
@@ -1882,6 +1946,120 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
         let mut models = Vec::with_capacity(model_count);
         for model_index in 0..model_count {
             let model_offset = model_offset + model_index * MODEL_BYTES;
+            let eyeball_count = count(bytes, model_offset + 100, identity)?;
+            if eyeball_count > 16 {
+                return Err(invalid_count(identity, model_offset + 100));
+            }
+            let eyeball_offset = if eyeball_count == 0 {
+                0
+            } else {
+                relative_offset(
+                    model_offset,
+                    i32_at(bytes, model_offset + 104, identity)?,
+                    identity,
+                )?
+            };
+            table(
+                bytes,
+                eyeball_offset,
+                eyeball_count,
+                EYEBALL_BYTES,
+                limits,
+                identity,
+            )?;
+            let mut eyeballs = Vec::with_capacity(eyeball_count);
+            for eyeball_index in 0..eyeball_count {
+                let eyeball_offset = eyeball_offset + eyeball_index * EYEBALL_BYTES;
+                let bone = i32_at(bytes, eyeball_offset + 4, identity)?;
+                let texture = i32_at(bytes, eyeball_offset + 52, identity)?;
+                if bone < 0 || bone as usize >= bone_count {
+                    return Err(invalid_reference(identity, eyeball_offset + 4));
+                }
+                if texture < 0 || texture as usize >= texture_count {
+                    return Err(invalid_reference(identity, eyeball_offset + 52));
+                }
+                let upper_flex_descriptors = std::array::from_fn(|index| {
+                    i32_at(bytes, eyeball_offset + 68 + index * 4, identity)
+                        .expect("validated eyeball flex descriptor")
+                });
+                let lower_flex_descriptors = std::array::from_fn(|index| {
+                    i32_at(bytes, eyeball_offset + 80 + index * 4, identity)
+                        .expect("validated eyeball flex descriptor")
+                });
+                let upper_lid_flex_descriptor = i32_at(bytes, eyeball_offset + 116, identity)?;
+                let lower_lid_flex_descriptor = i32_at(bytes, eyeball_offset + 120, identity)?;
+                for (field, value) in [
+                    (68, upper_flex_descriptors[0]),
+                    (72, upper_flex_descriptors[1]),
+                    (76, upper_flex_descriptors[2]),
+                    (80, lower_flex_descriptors[0]),
+                    (84, lower_flex_descriptors[1]),
+                    (88, lower_flex_descriptors[2]),
+                    (116, upper_lid_flex_descriptor),
+                    (120, lower_lid_flex_descriptor),
+                ] {
+                    if value < -1 || (value >= 0 && value as usize >= flex_descriptors) {
+                        return Err(invalid_reference(identity, eyeball_offset + field));
+                    }
+                }
+                let origin = vector3(bytes, eyeball_offset + 8, identity)?;
+                let z_offset = float(bytes, eyeball_offset + 20, identity)?;
+                let radius = float(bytes, eyeball_offset + 24, identity)?;
+                let up = vector3(bytes, eyeball_offset + 28, identity)?;
+                let forward = vector3(bytes, eyeball_offset + 40, identity)?;
+                let iris_scale = float(bytes, eyeball_offset + 60, identity)?;
+                let upper_targets = vector3(bytes, eyeball_offset + 92, identity)?;
+                let lower_targets = vector3(bytes, eyeball_offset + 104, identity)?;
+                if !vector_is_finite(origin)
+                    || !float_is_finite(z_offset)
+                    || !float_is_positive_finite(radius)
+                    || !vector_is_finite(up)
+                    || !vector_is_finite(forward)
+                    || !float_is_positive_finite(iris_scale)
+                    || !vector_is_finite(upper_targets)
+                    || !vector_is_finite(lower_targets)
+                {
+                    return Err(invalid_range(identity, eyeball_offset));
+                }
+                eyeballs.push(Eyeball {
+                    index: eyeball_index,
+                    name: relative_string(
+                        bytes,
+                        eyeball_offset,
+                        i32_at(bytes, eyeball_offset, identity)?,
+                        limits,
+                        identity,
+                    )?,
+                    bone,
+                    origin,
+                    z_offset,
+                    radius,
+                    up,
+                    forward,
+                    texture,
+                    unused_1: i32_at(bytes, eyeball_offset + 56, identity)?,
+                    iris_scale,
+                    unused_2: i32_at(bytes, eyeball_offset + 64, identity)?,
+                    upper_flex_descriptors,
+                    lower_flex_descriptors,
+                    upper_targets,
+                    lower_targets,
+                    upper_lid_flex_descriptor,
+                    lower_lid_flex_descriptor,
+                    unused: std::array::from_fn(|index| {
+                        i32_at(bytes, eyeball_offset + 124 + index * 4, identity)
+                            .expect("validated eyeball reserved field")
+                    }),
+                    non_facs: bytes[eyeball_offset + 140] != 0,
+                    unused_3: bytes[eyeball_offset + 141..eyeball_offset + 144]
+                        .try_into()
+                        .expect("validated eyeball reserved bytes"),
+                    unused_4: std::array::from_fn(|index| {
+                        i32_at(bytes, eyeball_offset + 144 + index * 4, identity)
+                            .expect("validated eyeball reserved field")
+                    }),
+                });
+            }
             let mesh_count = count(bytes, model_offset + 72, identity)?;
             let mesh_offset = relative_offset(
                 model_offset,
@@ -1896,6 +2074,13 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
                 if material_slot < 0 || material_slot as usize >= skin_reference_count {
                     return Err(invalid_reference(identity, mesh_offset));
                 }
+                let material_type = i32_at(bytes, mesh_offset + 24, identity)?;
+                let material_parameter = i32_at(bytes, mesh_offset + 28, identity)?;
+                if material_type == 1
+                    && (material_parameter < 0 || material_parameter as usize >= eyeballs.len())
+                {
+                    return Err(invalid_reference(identity, mesh_offset + 28));
+                }
                 let mut lod_vertex_counts = [0; 8];
                 for (lod, output) in lod_vertex_counts.iter_mut().enumerate() {
                     *output = i32_at(bytes, mesh_offset + 52 + lod * 4, identity)?;
@@ -1907,8 +2092,8 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
                     vertex_count: i32_at(bytes, mesh_offset + 8, identity)?,
                     vertex_offset: i32_at(bytes, mesh_offset + 12, identity)?,
                     flex_count: i32_at(bytes, mesh_offset + 16, identity)?,
-                    material_type: i32_at(bytes, mesh_offset + 24, identity)?,
-                    material_parameter: i32_at(bytes, mesh_offset + 28, identity)?,
+                    material_type,
+                    material_parameter,
                     mesh_id: i32_at(bytes, mesh_offset + 32, identity)?,
                     center: vector3(bytes, mesh_offset + 36, identity)?,
                     lod_vertex_counts,
@@ -1922,8 +2107,9 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
                 vertex_offset_bytes: i32_at(bytes, model_offset + 84, identity)?,
                 tangent_offset_bytes: i32_at(bytes, model_offset + 88, identity)?,
                 attachment_count: i32_at(bytes, model_offset + 92, identity)?,
-                eyeball_count: i32_at(bytes, model_offset + 100, identity)?,
+                eyeball_count: eyeball_count as i32,
                 meshes,
+                eyeballs,
             });
         }
         body_parts.push(BodyPart {
@@ -1970,6 +2156,9 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
             bone,
             local: float12(bytes, offset + 12, identity)?,
         });
+    }
+    if illumination_attachment > 0 && illumination_attachment as usize > attachment_count {
+        return Err(invalid_reference(identity, 400));
     }
 
     let include_count = count(bytes, 336, identity)?;
@@ -2035,6 +2224,9 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
         declared_length,
         flags,
         bounds,
+        illumination_attachment,
+        raw_max_eye_deflection,
+        max_eye_deflection,
         bones,
         animations,
         sequences,
@@ -3372,6 +3564,26 @@ fn owned_bytes(document: &Document) -> usize {
                     + value.candidates.iter().map(String::len).sum::<usize>()
             })
             .sum::<usize>()
+        + document
+            .body_parts
+            .iter()
+            .map(|part| {
+                part.name.len()
+                    + part
+                        .models
+                        .iter()
+                        .map(|model| {
+                            model.name.len()
+                                + model.eyeballs.len() * std::mem::size_of::<Eyeball>()
+                                + model
+                                    .eyeballs
+                                    .iter()
+                                    .map(|eyeball| eyeball.name.len())
+                                    .sum::<usize>()
+                        })
+                        .sum::<usize>()
+            })
+            .sum::<usize>()
 }
 
 fn count(bytes: &[u8], offset: usize, identity: &str) -> Result<usize, Error> {
@@ -3388,6 +3600,19 @@ fn vector3(bytes: &[u8], offset: usize, identity: &str) -> Result<Vector3, Error
         float(bytes, offset + 4, identity)?,
         float(bytes, offset + 8, identity)?,
     ]))
+}
+
+fn float_is_finite(value: Float32) -> bool {
+    f32::from_bits(value.0).is_finite()
+}
+
+fn float_is_positive_finite(value: Float32) -> bool {
+    let value = f32::from_bits(value.0);
+    value.is_finite() && value > 0.0
+}
+
+fn vector_is_finite(value: Vector3) -> bool {
+    value.0.into_iter().all(float_is_finite)
 }
 
 fn float4(bytes: &[u8], offset: usize, identity: &str) -> Result<[Float32; 4], Error> {

@@ -24,6 +24,10 @@ Resolve Source material documents and textures into runtime-neutral material beh
 - Project decal scale, alpha-test, and suppress-decal inputs needed by Map's bounded mark association without owning decal geometry.
 - Assign exact sRGB, linear, compressed-HDR, normal-data, or format-dependent read intent to target texture roles and emit typed detail, SSBump, environment-map, alpha-test, blend, cull, depth, decal-offset, fog, wireframe, and vertex-input state.
 - Compile and evaluate the target AnimatedTexture, Sine, Equals, TextureTransform, TextureScroll, and WaterLOD proxies in VMT order from supplied time, frame interval, texture frame counts, variables, and water-LOD values; malformed and unsupported declarations remain explicit no-operations.
+- Emit complete target `VertexLitGeneric` model state for half-Lambert, self illumination, Phong exponent/mask/texture/factor/tint/boost/Fresnel/warp, rim light/mask, cloak, sheen, tangent, ambient/local-light, and camera requirements.
+- Emit complete target `EyeRefract` texture, scalar/vector, Studio eye-parameter, ambient/local-light, and camera requirements while retaining effective shader defaults.
+- Evaluate all 17 configured model proxy identities in VMT order. Generic texture/time/copy/multiply/compare/select operations use material variables; TF2 burn, invulnerability, tint, glow, yellow-level, invisibility, sheen, and weapon-skin operations consume only typed game-owned inputs.
+- Bind each model texture role to caller-supplied VTF metadata, Source wrap/min/mag/mip filtering plus selected anisotropy level, and the complete authored `(mip, frame, face, slice)` plane sequence. Missing authored planes fail; generated mips are not an output.
 
 ## Non-Responsibilities
 
