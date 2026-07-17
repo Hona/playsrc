@@ -21,6 +21,7 @@ Determine potentially visible Source world state independently of a renderer.
 - Supply bounded visibility results to presentation and networking consumers.
 - Expand Source zero-run PVS/PAS rows and traverse the immutable BSP plane/node tree without selecting renderer draw policy.
 - Enumerate complete AABB leaf memberships, maintain explicit area-portal connectivity revisions, join model/prop/dynamic/detail/entity candidates, and emit front-to-back view results with deterministic cache identities.
+- Preserve first-visible-leaf/leaf-face world-surface candidate order independently from material, alpha, cull, LOD, or draw policy; fixed `jump_beef` view identities live in `inventories/jump-beef-view.md`.
 
 ## Non-Responsibilities
 

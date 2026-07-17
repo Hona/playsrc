@@ -859,6 +859,40 @@ mod tests {
     }
 
     #[test]
+    fn empty_replace_object_retains_inherited_proxy_children() {
+        let patch = br#"Patch {
+            "include" "materials/base.vmt"
+            "replace" { "Proxies" {} }
+        }"#;
+        let base = br#"Water {
+            "Proxies" {
+                "AnimatedTexture" { "animatedtextureframerate" "30" }
+                "WaterLOD" {}
+            }
+        }"#;
+        let response = DependencyResponse {
+            parent_identity: "materials/patch.vmt".to_owned(),
+            target_token: b"materials/base.vmt".to_vec(),
+            canonical_identity: "materials/base.vmt".to_owned(),
+            bytes: Some(base.to_vec()),
+        };
+        let Composition::Complete(effective) = compose(
+            patch,
+            "materials/patch.vmt",
+            &[response],
+            &environment(),
+            Limits::default(),
+        )
+        .unwrap() else {
+            panic!("unexpected dependency request")
+        };
+        let proxies = children(first(children(&effective.root), b"Proxies"));
+        assert_eq!(proxies.len(), 2);
+        assert_eq!(proxies[0].key.bytes, b"AnimatedTexture");
+        assert_eq!(proxies[1].key.bytes, b"WaterLOD");
+    }
+
+    #[test]
     fn reports_missing_cycles_directives_and_limits_without_partial_output() {
         let patch = br#"Patch { "include" "materials/a.vmt" }"#;
         let missing = DependencyResponse {

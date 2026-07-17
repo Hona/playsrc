@@ -1,7 +1,22 @@
 use std::{fmt, ops::Range};
 
-const ENVMAP_FLAG: u32 = 0x0000_4000;
+const POINT_SAMPLE_FLAG: u32 = 0x0000_0001;
+const TRILINEAR_FLAG: u32 = 0x0000_0002;
+const CLAMP_S_FLAG: u32 = 0x0000_0004;
+const CLAMP_T_FLAG: u32 = 0x0000_0008;
+const ANISOTROPIC_FLAG: u32 = 0x0000_0010;
 const SRGB_FLAG: u32 = 0x0000_0040;
+const NORMAL_FLAG: u32 = 0x0000_0080;
+const NO_MIP_FLAG: u32 = 0x0000_0100;
+const NO_LOD_FLAG: u32 = 0x0000_0200;
+const ALL_MIPS_FLAG: u32 = 0x0000_0400;
+const ONE_BIT_ALPHA_FLAG: u32 = 0x0000_1000;
+const EIGHT_BIT_ALPHA_FLAG: u32 = 0x0000_2000;
+const ENVMAP_FLAG: u32 = 0x0000_4000;
+const CLAMP_U_FLAG: u32 = 0x0200_0000;
+const SS_BUMP_FLAG: u32 = 0x0800_0000;
+const BORDER_FLAG: u32 = 0x2000_0000;
+const VERSION_7_3_FLAG_MASK: u32 = !0xd178_0400;
 const INLINE_RESOURCE_FLAG: u8 = 0x02;
 const LOW_IMAGE_TAG: [u8; 3] = [0x01, 0, 0];
 const HIGH_IMAGE_TAG: [u8; 3] = [0x30, 0, 0];
@@ -173,7 +188,12 @@ impl ImageFormat {
     fn decodable(self) -> bool {
         matches!(
             self,
-            Self::Bgr888 | Self::Dxt1 | Self::Dxt1OneBitAlpha | Self::Dxt5
+            Self::Bgr888
+                | Self::Bgra8888
+                | Self::Dxt1
+                | Self::Dxt1OneBitAlpha
+                | Self::Dxt5
+                | Self::Rgba16F
         )
     }
 }
@@ -242,6 +262,8 @@ pub struct Metadata {
     pub faces: Vec<Face>,
     pub mip_count: u8,
     pub raw_flags: u32,
+    pub effective_flags: u32,
+    pub alpha_flags: AlphaFlags,
     pub reflectivity_bits: [u32; 3],
     pub bump_scale_bits: u32,
     pub high_format: ImageFormat,
@@ -261,12 +283,14 @@ pub enum ChannelLayout {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ScalarEncoding {
     U8,
+    F16,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ColorEncoding {
     Linear,
     Srgb,
+    NotColor,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -275,11 +299,61 @@ pub enum AlphaEncoding {
     Opaque,
     A1,
     A8,
+    A16F,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RowOrder {
-    Stored,
+    TopToBottom,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AlphaFlags {
+    pub one_bit: bool,
+    pub eight_bit: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WrapMode {
+    Repeat,
+    Clamp,
+    Border,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MinFilter {
+    Nearest,
+    Linear,
+    LinearMipmapNearest,
+    LinearMipmapLinear,
+    Anisotropic,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MagFilter {
+    Nearest,
+    Linear,
+    Anisotropic,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SamplingEnvironment {
+    pub shader_model: u16,
+    pub force_anisotropy: u8,
+    pub maximum_anisotropy: u8,
+    pub force_trilinear: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SamplingState {
+    pub wrap_s: WrapMode,
+    pub wrap_t: WrapMode,
+    pub wrap_u: WrapMode,
+    pub min_filter: MinFilter,
+    pub mag_filter: MagFilter,
+    pub mipmapped: bool,
+    pub no_lod: bool,
+    pub all_mips: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -392,6 +466,11 @@ pub fn inspect(bytes: &[u8], dialect: Dialect, limits: Limits) -> Result<Metadat
     let width = u16_at(bytes, 16) as u32;
     let height = u16_at(bytes, 18) as u32;
     let raw_flags = u32_at(bytes, 20);
+    let effective_flags = if minor <= 3 {
+        raw_flags & VERSION_7_3_FLAG_MASK
+    } else {
+        raw_flags
+    };
     let frame_count = u16_at(bytes, 24);
     let start_frame = u16_at(bytes, 26);
     let depth = if minor >= 2 {
@@ -410,7 +489,7 @@ pub fn inspect(bytes: &[u8], dialect: Dialect, limits: Limits) -> Result<Metadat
     if mip_count == 0 || u32::from(mip_count) > maximum_mips {
         return Err(malformed(ErrorCode::InvalidMipCount, Some(56)));
     }
-    let faces = if raw_flags & ENVMAP_FLAG == 0 {
+    let faces = if effective_flags & ENVMAP_FLAG == 0 {
         vec![Face::Right]
     } else {
         if width != height || depth != 1 {
@@ -424,7 +503,7 @@ pub fn inspect(bytes: &[u8], dialect: Dialect, limits: Limits) -> Result<Metadat
             Face::Up,
             Face::Down,
         ];
-        if minor < 5 && start_frame != u16::MAX {
+        if minor >= 1 {
             faces.push(Face::Sphere);
         }
         faces
@@ -607,6 +686,11 @@ pub fn inspect(bytes: &[u8], dialect: Dialect, limits: Limits) -> Result<Metadat
         faces,
         mip_count,
         raw_flags,
+        effective_flags,
+        alpha_flags: AlphaFlags {
+            one_bit: effective_flags & ONE_BIT_ALPHA_FLAG != 0,
+            eight_bit: effective_flags & EIGHT_BIT_ALPHA_FLAG != 0,
+        },
         reflectivity_bits: [u32_at(bytes, 32), u32_at(bytes, 36), u32_at(bytes, 40)],
         bump_scale_bits: u32_at(bytes, 48),
         high_format,
@@ -659,7 +743,7 @@ pub fn decode(
                 .and_then(|height| width.checked_mul(height))
         })
         .ok_or_else(|| malformed(ErrorCode::ArithmeticOverflow, None))?;
-    let (channel_layout, row_stride, alpha_encoding, samples) = match format {
+    let (channel_layout, scalar_encoding, row_stride, alpha_encoding, samples) = match format {
         ImageFormat::Bgr888 => {
             let length = pixels
                 .checked_mul(3)
@@ -673,8 +757,28 @@ pub fn decode(
             }
             (
                 ChannelLayout::Rgb,
+                ScalarEncoding::U8,
                 subresource.width as usize * 3,
                 AlphaEncoding::None,
+                samples,
+            )
+        }
+        ImageFormat::Bgra8888 => {
+            let length = pixels
+                .checked_mul(4)
+                .ok_or_else(|| malformed(ErrorCode::ArithmeticOverflow, None))?;
+            if length > limits.max_decoded_bytes {
+                return Err(malformed(ErrorCode::AllocationLimit, None));
+            }
+            let mut samples = vec![0; length];
+            for (source, output) in encoded.chunks_exact(4).zip(samples.chunks_exact_mut(4)) {
+                output.copy_from_slice(&[source[2], source[1], source[0], source[3]]);
+            }
+            (
+                ChannelLayout::Rgba,
+                ScalarEncoding::U8,
+                subresource.width as usize * 4,
+                AlphaEncoding::A8,
                 samples,
             )
         }
@@ -695,6 +799,7 @@ pub fn decode(
             );
             (
                 ChannelLayout::Rgba,
+                ScalarEncoding::U8,
                 subresource.width as usize * 4,
                 match format {
                     ImageFormat::Dxt1 => AlphaEncoding::Opaque,
@@ -705,6 +810,18 @@ pub fn decode(
                 samples,
             )
         }
+        ImageFormat::Rgba16F => {
+            if encoded.len() > limits.max_decoded_bytes {
+                return Err(malformed(ErrorCode::AllocationLimit, None));
+            }
+            (
+                ChannelLayout::Rgba,
+                ScalarEncoding::F16,
+                subresource.width as usize * 8,
+                AlphaEncoding::A16F,
+                encoded.to_vec(),
+            )
+        }
         _ => unreachable!("decodable format set"),
     };
     Ok(Plane {
@@ -712,10 +829,12 @@ pub fn decode(
         width: subresource.width,
         height: subresource.height,
         row_stride,
-        row_order: RowOrder::Stored,
+        row_order: RowOrder::TopToBottom,
         channel_layout,
-        scalar_encoding: ScalarEncoding::U8,
-        color_encoding: if metadata.raw_flags & SRGB_FLAG != 0 {
+        scalar_encoding,
+        color_encoding: if metadata.effective_flags & (NORMAL_FLAG | SS_BUMP_FLAG) != 0 {
+            ColorEncoding::NotColor
+        } else if metadata.effective_flags & SRGB_FLAG != 0 {
             ColorEncoding::Srgb
         } else {
             ColorEncoding::Linear
@@ -723,6 +842,48 @@ pub fn decode(
         alpha_encoding,
         samples,
     })
+}
+
+pub fn sampling_state(metadata: &Metadata, environment: SamplingEnvironment) -> SamplingState {
+    let flags = metadata.effective_flags;
+    let wrap = |flag| {
+        if flags & BORDER_FLAG != 0 {
+            WrapMode::Border
+        } else if flags & flag != 0 {
+            WrapMode::Clamp
+        } else {
+            WrapMode::Repeat
+        }
+    };
+    let point = flags & POINT_SAMPLE_FLAG != 0;
+    let mipmapped = !point && flags & NO_MIP_FLAG == 0;
+    let (min_filter, mag_filter) = if point {
+        (MinFilter::Nearest, MagFilter::Nearest)
+    } else if !mipmapped {
+        (MinFilter::Linear, MagFilter::Linear)
+    } else {
+        let supports_anisotropy =
+            environment.shader_model >= 80 && environment.maximum_anisotropy > 1;
+        let forced_anisotropy = supports_anisotropy && environment.force_anisotropy > 1;
+        let texture_anisotropy = supports_anisotropy && flags & ANISOTROPIC_FLAG != 0;
+        if forced_anisotropy || texture_anisotropy {
+            (MinFilter::Anisotropic, MagFilter::Anisotropic)
+        } else if environment.force_trilinear || flags & TRILINEAR_FLAG != 0 {
+            (MinFilter::LinearMipmapLinear, MagFilter::Linear)
+        } else {
+            (MinFilter::LinearMipmapNearest, MagFilter::Linear)
+        }
+    };
+    SamplingState {
+        wrap_s: wrap(CLAMP_S_FLAG),
+        wrap_t: wrap(CLAMP_T_FLAG),
+        wrap_u: wrap(CLAMP_U_FLAG),
+        min_filter,
+        mag_filter,
+        mipmapped,
+        no_lod: flags & NO_LOD_FLAG != 0,
+        all_mips: flags & ALL_MIPS_FLAG != 0,
+    }
 }
 
 fn read_external_length(bytes: &[u8], offset: usize, limits: Limits) -> Result<usize, Error> {
@@ -1062,6 +1223,7 @@ mod tests {
         assert_eq!(plane.samples, [10, 20, 30, 40, 50, 60]);
         assert_eq!(plane.row_stride, 6);
         assert_eq!(plane.channel_layout, ChannelLayout::Rgb);
+        assert_eq!(plane.row_order, RowOrder::TopToBottom);
     }
 
     #[test]
@@ -1141,6 +1303,159 @@ mod tests {
     }
 
     #[test]
+    fn decodes_bgra_rows_from_top_to_bottom_without_changing_alpha() {
+        let mut input = ordinary(1, 12, 2, 2);
+        input.flags = SRGB_FLAG | EIGHT_BIT_ALPHA_FLAG | CLAMP_S_FLAG | CLAMP_T_FLAG;
+        let mut bytes = header(input, 0);
+        bytes.extend_from_slice(&[
+            3, 2, 1, 4, 7, 6, 5, 8, // stored top row
+            11, 10, 9, 12, 15, 14, 13, 16, // stored bottom row
+        ]);
+        let metadata = inspect(&bytes, Dialect::Source2013Pc, Limits::default()).unwrap();
+        assert_eq!(
+            metadata.alpha_flags,
+            AlphaFlags {
+                one_bit: false,
+                eight_bit: true
+            }
+        );
+        let plane = decode(
+            &bytes,
+            Dialect::Source2013Pc,
+            SubresourceIdentity::HighResolution {
+                mip: 0,
+                frame: 0,
+                face: Face::Right,
+                slice: 0,
+            },
+            Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(plane.row_order, RowOrder::TopToBottom);
+        assert_eq!(plane.scalar_encoding, ScalarEncoding::U8);
+        assert_eq!(plane.alpha_encoding, AlphaEncoding::A8);
+        assert_eq!(plane.color_encoding, ColorEncoding::Srgb);
+        assert_eq!(
+            plane.samples,
+            [
+                1, 2, 3, 4, 5, 6, 7, 8, // top row remains first
+                9, 10, 11, 12, 13, 14, 15, 16
+            ]
+        );
+    }
+
+    #[test]
+    fn retains_native_little_endian_rgba16f_samples() {
+        let mut input = ordinary(1, 24, 1, 1);
+        input.flags = EIGHT_BIT_ALPHA_FLAG;
+        let mut bytes = header(input, 0);
+        let samples = [0x00, 0x3c, 0x00, 0x38, 0x00, 0x00, 0x00, 0x3c];
+        bytes.extend_from_slice(&samples);
+        let plane = decode(
+            &bytes,
+            Dialect::Source2013Pc,
+            SubresourceIdentity::HighResolution {
+                mip: 0,
+                frame: 0,
+                face: Face::Right,
+                slice: 0,
+            },
+            Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(plane.channel_layout, ChannelLayout::Rgba);
+        assert_eq!(plane.scalar_encoding, ScalarEncoding::F16);
+        assert_eq!(plane.alpha_encoding, AlphaEncoding::A16F);
+        assert_eq!(plane.color_encoding, ColorEncoding::Linear);
+        assert_eq!(plane.row_stride, 8);
+        assert_eq!(plane.samples, samples);
+    }
+
+    #[test]
+    fn resolves_source_sampling_precedence_from_explicit_environment() {
+        let mut input = ordinary(3, 15, 4, 4);
+        input.flags = EIGHT_BIT_ALPHA_FLAG | CLAMP_S_FLAG | CLAMP_T_FLAG | NO_LOD_FLAG;
+        let mut bytes = header(input, 1);
+        let image_offset = bytes.len();
+        bytes.extend_from_slice(&[0; 16]);
+        resource(&mut bytes, 0, HIGH_IMAGE_TAG, 0, image_offset as u32);
+        let metadata = inspect(&bytes, Dialect::Source2013Pc, Limits::default()).unwrap();
+        let default_sampling = sampling_state(
+            &metadata,
+            SamplingEnvironment {
+                shader_model: 90,
+                force_anisotropy: 1,
+                maximum_anisotropy: 16,
+                force_trilinear: false,
+            },
+        );
+        assert_eq!(default_sampling.wrap_s, WrapMode::Clamp);
+        assert_eq!(default_sampling.wrap_t, WrapMode::Clamp);
+        assert_eq!(default_sampling.wrap_u, WrapMode::Repeat);
+        assert_eq!(default_sampling.min_filter, MinFilter::LinearMipmapNearest);
+        assert_eq!(default_sampling.mag_filter, MagFilter::Linear);
+        assert!(default_sampling.mipmapped);
+        assert!(default_sampling.no_lod);
+
+        let forced = sampling_state(
+            &metadata,
+            SamplingEnvironment {
+                shader_model: 90,
+                force_anisotropy: 8,
+                maximum_anisotropy: 16,
+                force_trilinear: true,
+            },
+        );
+        assert_eq!(forced.min_filter, MinFilter::Anisotropic);
+        assert_eq!(forced.mag_filter, MagFilter::Anisotropic);
+
+        let mut point_input = ordinary(1, 12, 1, 1);
+        point_input.flags = POINT_SAMPLE_FLAG | BORDER_FLAG | NO_MIP_FLAG | TRILINEAR_FLAG;
+        let mut point_bytes = header(point_input, 0);
+        point_bytes.extend_from_slice(&[0; 4]);
+        let point_metadata =
+            inspect(&point_bytes, Dialect::Source2013Pc, Limits::default()).unwrap();
+        let point = sampling_state(
+            &point_metadata,
+            SamplingEnvironment {
+                shader_model: 90,
+                force_anisotropy: 16,
+                maximum_anisotropy: 16,
+                force_trilinear: true,
+            },
+        );
+        assert_eq!(point.wrap_s, WrapMode::Border);
+        assert_eq!(point.wrap_t, WrapMode::Border);
+        assert_eq!(point.wrap_u, WrapMode::Border);
+        assert_eq!(point.min_filter, MinFilter::Nearest);
+        assert_eq!(point.mag_filter, MagFilter::Nearest);
+        assert!(!point.mipmapped);
+    }
+
+    #[test]
+    fn labels_normal_and_ssbump_payloads_as_non_color() {
+        for flag in [NORMAL_FLAG, SS_BUMP_FLAG] {
+            let mut input = ordinary(1, 3, 1, 1);
+            input.flags = flag | SRGB_FLAG;
+            let mut bytes = header(input, 0);
+            bytes.extend_from_slice(&[3, 2, 1]);
+            let plane = decode(
+                &bytes,
+                Dialect::Source2013Pc,
+                SubresourceIdentity::HighResolution {
+                    mip: 0,
+                    frame: 0,
+                    face: Face::Right,
+                    slice: 0,
+                },
+                Limits::default(),
+            )
+            .unwrap();
+            assert_eq!(plane.color_encoding, ColorEncoding::NotColor);
+        }
+    }
+
+    #[test]
     fn enumerates_source2013_sphere_faces_frames_and_smallest_mip_first() {
         let mut input = ordinary(4, 3, 2, 2);
         input.flags = ENVMAP_FLAG;
@@ -1165,6 +1480,26 @@ mod tests {
             }
         );
         assert_eq!(metadata.subresources[0].width, 1);
+    }
+
+    #[test]
+    fn source2013_cubemap_topology_uses_version_not_start_frame() {
+        let mut v70 = ordinary(0, 3, 1, 1);
+        v70.flags = ENVMAP_FLAG;
+        v70.start_frame = 0;
+        let mut v70_bytes = header(v70, 0);
+        v70_bytes.extend_from_slice(&[0; 6 * 3]);
+        let v70_metadata = inspect(&v70_bytes, Dialect::Source2013Pc, Limits::default()).unwrap();
+        assert_eq!(v70_metadata.faces.len(), 6);
+
+        let mut v71 = ordinary(1, 3, 1, 1);
+        v71.flags = ENVMAP_FLAG;
+        v71.start_frame = u16::MAX;
+        let mut v71_bytes = header(v71, 0);
+        v71_bytes.extend_from_slice(&[0; 7 * 3]);
+        let v71_metadata = inspect(&v71_bytes, Dialect::Source2013Pc, Limits::default()).unwrap();
+        assert_eq!(v71_metadata.faces.len(), 7);
+        assert_eq!(v71_metadata.faces[6], Face::Sphere);
     }
 
     #[test]

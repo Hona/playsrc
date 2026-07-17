@@ -59,6 +59,13 @@ The current denominator is Not accepted. It covers Source 1 VMT shader-root docu
 
 ## Behavior Families
 
+### `jump_beef` world-surface parity checkpoint
+
+| Source/TF2 behavior | playsrc behavior | Evidence | Status |
+|---|---|---|---|
+| Every world, decal, water, glass, and sky VMT encountered by the declared `jump_beef` build composes through the sole VMT parser; `Patch` includes retain exact identity and nested empty `replace` objects apply target no-effect semantics rather than deleting inherited proxy children. | The exact target closure retains every ordinary/patch source identity. An empty nested replacement descends without deleting inherited children. | [`../../world/map/inventories/jump-beef-surfaces.md`](../../world/map/inventories/jump-beef-surfaces.md) plus the fixed two-proxy empty-replacement vector. | Ready |
+| Proxy declarations remain ordered/repeated structured VMT data, including empty proxy objects and scalar arguments, for Material's typed source-order program. | The complete first active `Proxies` object retains declaration/argument spelling and source order; Material classifies the six target water identities without VMT re-parsing. | Exact water source hashes plus ordered, repeated, empty, malformed, and unsupported proxy vectors. | Ready |
+
 The active migration checkpoint implements the literal-backslash KeyValues VMT structure, ordinary and case-insensitive `Patch` roots, ordered/repeated syntax, first proxy and reserved-member views, batched patch dependency requests/responses, bounded cycle detection, insert/replace composition, immutable source documents, and effective-node origin traces required by the configured `jump_beef` dependency graph. Shader and parameter meaning remains with Material.
 
 | Target behavior | playsrc behavior | Evidence | Status |

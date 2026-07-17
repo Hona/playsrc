@@ -4,6 +4,8 @@
 
 ```rust
 let material = playsrc_material::resolve(&effective_vmt)?;
+let state = playsrc_material::static_state(&material, texture_alpha_facts)?;
+let evaluated = playsrc_material::evaluate_proxy_program(&material.proxy_program, &variables, &context)?;
 ```
 
 ## Objective
@@ -20,6 +22,8 @@ Resolve Source material documents and textures into runtime-neutral material beh
 - Select `Sky` LDR/HDR implementations and exactly one complete `$basetexture`, `$hdrbasetexture`, `$hdrcompressedtexture`, or `$hdrcompressedtexture0/1/2` role set. A missing HDR role is an error, not an LDR substitution.
 - Project `Water` inputs into typed above-water, fog, reflection, refraction, environment-cubemap, normal-map, bottom-material, cheap-water, and animation/proxy facts without creating renderer resources.
 - Project decal scale, alpha-test, and suppress-decal inputs needed by Map's bounded mark association without owning decal geometry.
+- Assign exact sRGB, linear, compressed-HDR, normal-data, or format-dependent read intent to target texture roles and emit typed detail, SSBump, environment-map, alpha-test, blend, cull, depth, decal-offset, fog, wireframe, and vertex-input state.
+- Compile and evaluate the target AnimatedTexture, Sine, Equals, TextureTransform, TextureScroll, and WaterLOD proxies in VMT order from supplied time, frame interval, texture frame counts, variables, and water-LOD values; malformed and unsupported declarations remain explicit no-operations.
 
 ## Non-Responsibilities
 
