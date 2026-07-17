@@ -20,6 +20,8 @@ Advance generic Source player movement from commands and world queries.
 - Consume game-supplied hulls, views, speed/air/bunnyhop/backward/jump values, eligibility, step strategy, and accepted mode-transition dispositions. Immutable tracer extensions supply point contents, surface climbability, support/conveyor velocity, mover displacement/filtering, observer targets, and the monotonic clock required only by incremental stuck recovery.
 - Emit `StepResult::tick_trace` as the browser-neutral per-command comparison record: position, velocity, wish state, support, selected hull, crouch fraction/view, contacts, events, and mover disposition.
 - Reject malformed selected state, command, configuration, hull, velocity, coordinate, and trace values before publication with command number, operation, classification, field, exact offending bits, and configured-limit bits.
+- Advance ordered linear-pusher requests through `PusherSnapshot` without mutating Entity state. The producer derives travel time and velocity from start, destination, and speed; clamps the final tick to the exact destination; tests supported or intersecting subjects in reverse supplied collision-enumeration order; rolls back the complete pusher/subject move on the first blocker; and emits progress, completion, blocking, subject carry, support/base velocity, and ordered blocker end/start/stay facts.
+- Serialize bounded `PUSH` state and `PRES` result records at version 1. Pusher, subject, contact, subject-move, and byte limits reject the complete transition before publication.
 
 ## Non-Responsibilities
 
@@ -29,7 +31,7 @@ Advance generic Source player movement from commands and world queries.
 
 ## Relationships
 
-Consumes one immutable `Tracer`; Simulation schedules movement; each game module projects its movement policy and consumes the returned state/events. `State::snapshot_bytes` retains the version-1 TF2 integration record; complete selected-mode comparison uses `StepResult` and `TickTrace` until Simulation owns a replacement snapshot schema. Generic fly custom/slide responses return `Unsupported`: the pinned generic handler does not define a pure slide response and delegates custom response to mutable touch code.
+Consumes one immutable `Tracer`; Simulation schedules movement; each game module projects its movement policy and consumes the returned state/events. `advance_linear_pushers` separately consumes one immutable Collision snapshot and pure caller predicates, while Entity owns request lifecycle, transform publication, outputs, reversal, damage, and rollback acceptance. `State::snapshot_bytes` retains the version-1 TF2 integration record; complete selected-mode comparison uses `StepResult` and `TickTrace` until Simulation owns a replacement snapshot schema. Generic fly custom/slide responses return `Unsupported`: the pinned generic handler does not define a pure slide response and delegates custom response to mutable touch code.
 
 ## Completion
 

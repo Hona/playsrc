@@ -388,6 +388,10 @@ name = "playsrc-collision"
 version = "0.1.0"
 dependencies = [
  "playsrc-bsp",
+ "playsrc-phy",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
 ]
 
 [[package]]
