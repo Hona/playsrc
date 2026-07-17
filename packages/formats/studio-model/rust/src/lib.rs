@@ -1,5 +1,8 @@
 use std::{collections::BTreeSet, fmt, ops::Range};
 
+mod presentation;
+pub use presentation::*;
+
 const MDL_HEADER_BYTES: usize = 408;
 const BONE_BYTES: usize = 216;
 const ANIMATION_BYTES: usize = 100;
@@ -9,6 +12,7 @@ const BODY_PART_BYTES: usize = 16;
 const MODEL_BYTES: usize = 148;
 const MESH_BYTES: usize = 116;
 const ATTACHMENT_BYTES: usize = 92;
+const POSE_PARAMETER_BYTES: usize = 20;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Profile {
@@ -56,10 +60,13 @@ pub struct Limits {
     pub max_aggregate_input_bytes: usize,
     pub max_dependency_count: usize,
     pub max_include_depth: usize,
+    pub max_included_models: usize,
     pub max_records: usize,
     pub max_strings: usize,
     pub max_string_bytes: usize,
     pub max_owned_bytes: usize,
+    pub max_animation_frames: usize,
+    pub max_decoded_animation_samples: usize,
 }
 
 impl Default for Limits {
@@ -69,10 +76,13 @@ impl Default for Limits {
             max_aggregate_input_bytes: 1024 * 1024 * 1024,
             max_dependency_count: 4_096,
             max_include_depth: 64,
+            max_included_models: 64,
             max_records: 4_000_000,
             max_strings: 262_144,
             max_string_bytes: 4_096,
             max_owned_bytes: 512 * 1024 * 1024,
+            max_animation_frames: 1_000_000,
+            max_decoded_animation_samples: 64_000_000,
         }
     }
 }
@@ -84,6 +94,25 @@ pub enum DependencyRole {
     AnimationBlocks,
     IncludeModel,
     Physics,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ModelDependencyRole {
+    RootModel,
+    VertexData,
+    Topology,
+    AnimationBlocks,
+    IncludeModel,
+    Physics,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ModelDependency {
+    pub requester: String,
+    pub role: ModelDependencyRole,
+    pub logical_path: String,
+    pub sha256: Option<[u8; 32]>,
+    pub byte_length: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -124,6 +153,7 @@ pub struct Bone {
     pub index: usize,
     pub name: Vec<u8>,
     pub parent: i32,
+    pub controllers: [i32; 6],
     pub position: Vector3,
     pub quaternion: [Float32; 4],
     pub rotation: Vector3,
@@ -132,9 +162,63 @@ pub struct Bone {
     pub pose_to_bone: [Float32; 12],
     pub alignment: [Float32; 4],
     pub flags: i32,
+    pub procedural_type: i32,
+    pub procedural_offset: i32,
     pub physics_bone: i32,
     pub surface_property: Vec<u8>,
     pub contents: i32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RotationCodec {
+    Bind,
+    DeltaIdentity,
+    Quaternion48,
+    Quaternion64,
+    RleEuler,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TranslationCodec {
+    Bind,
+    DeltaZero,
+    Vector48,
+    RleVector,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AnimationValueRun {
+    pub valid: u8,
+    pub total: u8,
+    pub values: Vec<i16>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AnimationValueStream {
+    pub relative_offset: i16,
+    pub runs: Vec<AnimationValueRun>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AnimationTrack {
+    pub bone: usize,
+    pub flags: u8,
+    pub source_offset: usize,
+    pub next_offset: u16,
+    pub rotation_codec: RotationCodec,
+    pub translation_codec: TranslationCodec,
+    pub rotation_values: [Option<AnimationValueStream>; 3],
+    pub translation_values: [Option<AnimationValueStream>; 3],
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AnimationSection {
+    pub index: usize,
+    pub first_frame: usize,
+    pub frame_count: usize,
+    pub block: i32,
+    pub data_offset: i32,
+    pub tracks: Vec<AnimationTrack>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -152,6 +236,9 @@ pub struct Animation {
     pub section_offset: i32,
     pub section_frame_count: i32,
     pub zero_frame_count: u16,
+    pub source_identity: String,
+    pub bone_map: Vec<Option<usize>>,
+    pub sections: Vec<AnimationSection>,
     pub frames: Vec<AnimationFrame>,
 }
 
@@ -172,9 +259,48 @@ pub struct Sequence {
     pub event_count: i32,
     pub bounds_min: Vector3,
     pub bounds_max: Vector3,
+    pub blend_count: i32,
     pub blend_size: [i32; 2],
+    pub animation_indices: Vec<i16>,
+    pub pose_parameter_indices: [i32; 2],
+    pub pose_parameter_start: [Float32; 2],
+    pub pose_parameter_end: [Float32; 2],
+    pub fade_in: Float32,
+    pub fade_out: Float32,
+    pub entry_node: i32,
+    pub exit_node: i32,
+    pub node_flags: i32,
+    pub entry_phase: Float32,
+    pub exit_phase: Float32,
+    pub last_frame: Float32,
     pub next_sequence: i32,
     pub pose: i32,
+    pub auto_layer_count: i32,
+    pub bone_weights: Vec<Float32>,
+    pub pose_keys: [Vec<Float32>; 2],
+    pub ik_lock_count: i32,
+    pub cycle_pose_parameter: i32,
+    pub activity_modifier_count: i32,
+    pub source_identity: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PoseParameter {
+    pub index: usize,
+    pub name: Vec<u8>,
+    pub flags: i32,
+    pub start: Float32,
+    pub end: Float32,
+    pub looping_range: Float32,
+    pub source_identity: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UnsupportedMetadata {
+    pub flex_descriptors: usize,
+    pub flex_controllers: usize,
+    pub flex_rules: usize,
+    pub ik_chains: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -182,6 +308,14 @@ pub struct Material {
     pub index: usize,
     pub name: Vec<u8>,
     pub search_paths: Vec<Vec<u8>>,
+    pub candidates: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MaterialReplacement {
+    pub lod: usize,
+    pub material_slot: usize,
+    pub name: Vec<u8>,
     pub candidates: Vec<String>,
 }
 
@@ -303,14 +437,19 @@ pub struct Document {
     pub animations: Vec<Animation>,
     pub sequences: Vec<Sequence>,
     pub materials: Vec<Material>,
+    pub material_replacements: Vec<MaterialReplacement>,
     pub skins: Vec<SkinFamily>,
     pub body_parts: Vec<BodyPart>,
     pub attachments: Vec<Attachment>,
+    pub pose_parameters: Vec<PoseParameter>,
+    pub unsupported: UnsupportedMetadata,
     pub include_models: Vec<String>,
     pub animation_blocks: Vec<Range<usize>>,
+    pub animation_block_identity: Option<String>,
     pub companions: CompanionSummary,
     pub physics_status: PhysicsStatus,
     pub source_identities: Vec<String>,
+    pub model_dependencies: Vec<ModelDependency>,
     pub geometry: Vec<GeometryPrimitive>,
 }
 
@@ -415,6 +554,12 @@ struct ParsedVtx {
     lod_count: i32,
     body_parts: Vec<VtxBodyPart>,
     max_bones: i32,
+    material_replacements: Vec<ParsedMaterialReplacement>,
+}
+struct ParsedMaterialReplacement {
+    lod: usize,
+    material_slot: usize,
+    name: Vec<u8>,
 }
 struct VtxBodyPart {
     models: Vec<VtxModel>,
@@ -444,11 +589,83 @@ pub fn load(
     responses: &[DependencyResponse],
     limits: Limits,
 ) -> Result<Load, Error> {
+    let mut included_models = 0_usize;
+    let mut dependency_count = 0_usize;
+    load_with_chain(
+        identity.into(),
+        profile,
+        vtx_variant,
+        mdl_bytes,
+        responses,
+        limits,
+        Vec::new(),
+        &mut included_models,
+        &mut dependency_count,
+    )
+}
+
+fn load_with_chain(
+    identity: String,
+    profile: Profile,
+    vtx_variant: VtxVariant,
+    mdl_bytes: &[u8],
+    responses: &[DependencyResponse],
+    limits: Limits,
+    mut dependency_chain: Vec<String>,
+    included_models: &mut usize,
+    dependency_count: &mut usize,
+) -> Result<Load, Error> {
     validate_limits(limits)?;
-    let identity = identity.into();
     validate_model_identity(&identity)?;
+    if dependency_chain
+        .iter()
+        .any(|value| value.eq_ignore_ascii_case(&identity))
+    {
+        return Err(Error {
+            classification: Classification::Malformed,
+            code: ErrorCode::IncludeCycle,
+            identity,
+            range: None,
+            dependency_chain,
+        });
+    }
+    if dependency_chain.len() >= limits.max_include_depth {
+        return Err(Error {
+            classification: Classification::Malformed,
+            code: ErrorCode::DependencyLimit,
+            identity,
+            range: None,
+            dependency_chain,
+        });
+    }
+    if !dependency_chain.is_empty() {
+        *included_models = included_models.checked_add(1).ok_or_else(|| {
+            failure(
+                Classification::Malformed,
+                ErrorCode::DependencyLimit,
+                &identity,
+                None,
+            )
+        })?;
+        if *included_models > limits.max_included_models {
+            return Err(failure(
+                Classification::Malformed,
+                ErrorCode::DependencyLimit,
+                &identity,
+                None,
+            ));
+        }
+    }
+    dependency_chain.push(identity.clone());
     let mut aggregate = mdl_bytes.len();
-    let root = parse_mdl(&identity, profile, mdl_bytes, limits)?;
+    let mut root = parse_mdl(&identity, profile, mdl_bytes, limits)?;
+    root.document.model_dependencies.push(ModelDependency {
+        requester: identity.clone(),
+        role: ModelDependencyRole::RootModel,
+        logical_path: identity.clone(),
+        sha256: Some(presentation::content_sha256(mdl_bytes)),
+        byte_length: mdl_bytes.len(),
+    });
     let stem = identity
         .strip_suffix(".mdl")
         .expect("validated model suffix");
@@ -459,23 +676,27 @@ pub fn load(
             role: DependencyRole::VertexData,
             logical_path: format!("{stem}.vvd"),
             expected_checksum: root.document.checksum,
-            dependency_chain: vec![identity.clone()],
+            dependency_chain: dependency_chain.clone(),
         });
         requests.push(DependencyRequest {
             requester: identity.clone(),
             role: DependencyRole::Topology,
             logical_path: format!("{stem}{}", vtx_variant.suffix()),
             expected_checksum: root.document.checksum,
-            dependency_chain: vec![identity.clone()],
+            dependency_chain: dependency_chain.clone(),
         });
     }
     if root.needs_animation {
         requests.push(DependencyRequest {
             requester: identity.clone(),
             role: DependencyRole::AnimationBlocks,
-            logical_path: format!("{stem}.ani"),
+            logical_path: root
+                .document
+                .animation_block_identity
+                .clone()
+                .expect("external animation identity validated"),
             expected_checksum: root.document.checksum,
-            dependency_chain: vec![identity.clone()],
+            dependency_chain: dependency_chain.clone(),
         });
     }
     requests.push(DependencyRequest {
@@ -483,18 +704,36 @@ pub fn load(
         role: DependencyRole::Physics,
         logical_path: format!("{stem}.phy"),
         expected_checksum: root.document.checksum,
-        dependency_chain: vec![identity.clone()],
+        dependency_chain: dependency_chain.clone(),
     });
     for include in &root.document.include_models {
         requests.push(DependencyRequest {
             requester: identity.clone(),
             role: DependencyRole::IncludeModel,
             logical_path: include.clone(),
-            expected_checksum: root.document.checksum,
-            dependency_chain: vec![identity.clone()],
+            expected_checksum: 0,
+            dependency_chain: dependency_chain.clone(),
         });
     }
     if requests.len() > limits.max_dependency_count {
+        return Err(failure(
+            Classification::Malformed,
+            ErrorCode::DependencyLimit,
+            &identity,
+            None,
+        ));
+    }
+    *dependency_count = dependency_count
+        .checked_add(requests.len())
+        .ok_or_else(|| {
+            failure(
+                Classification::Malformed,
+                ErrorCode::DependencyLimit,
+                &identity,
+                None,
+            )
+        })?;
+    if *dependency_count > limits.max_dependency_count {
         return Err(failure(
             Classification::Malformed,
             ErrorCode::DependencyLimit,
@@ -522,11 +761,26 @@ pub fn load(
     let mut parsed_vvd = None;
     let mut parsed_vtx = None;
     let mut ani_bytes = None;
+    let mut included_documents = Vec::new();
+    let mut nested_requests = Vec::new();
     for request in requests {
         let response = responses
             .iter()
             .find(|response| response_matches(response, &request))
             .expect("all requests matched");
+        document.model_dependencies.push(ModelDependency {
+            requester: response.requester.clone(),
+            role: match response.role {
+                DependencyRole::VertexData => ModelDependencyRole::VertexData,
+                DependencyRole::Topology => ModelDependencyRole::Topology,
+                DependencyRole::AnimationBlocks => ModelDependencyRole::AnimationBlocks,
+                DependencyRole::IncludeModel => ModelDependencyRole::IncludeModel,
+                DependencyRole::Physics => ModelDependencyRole::Physics,
+            },
+            logical_path: response.logical_path.clone(),
+            sha256: response.bytes.as_deref().map(presentation::content_sha256),
+            byte_length: response.bytes.as_ref().map_or(0, Vec::len),
+        });
         let Some(bytes) = &response.bytes else {
             if request.role == DependencyRole::Physics {
                 continue;
@@ -570,11 +824,31 @@ pub fn load(
                     bytes,
                     document.checksum,
                     document.body_parts.len(),
+                    document.materials.len(),
                     limits,
                 )?;
                 document.companions.vtx_lod_count = parsed.lod_count;
                 document.companions.vtx_body_part_count = parsed.body_parts.len() as i32;
                 document.companions.vtx_max_bones_per_vertex = parsed.max_bones;
+                document.material_replacements = parsed
+                    .material_replacements
+                    .iter()
+                    .map(|replacement| {
+                        let material = &document.materials[replacement.material_slot];
+                        Ok(MaterialReplacement {
+                            lod: replacement.lod,
+                            material_slot: replacement.material_slot,
+                            name: replacement.name.clone(),
+                            candidates: material
+                                .search_paths
+                                .iter()
+                                .map(|path| {
+                                    material_candidate(path, &replacement.name, &document.identity)
+                                })
+                                .collect::<Result<Vec<_>, Error>>()?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, Error>>()?;
                 parsed_vtx = Some(parsed);
             }
             DependencyRole::AnimationBlocks => {
@@ -603,19 +877,35 @@ pub fn load(
                     i32_at(bytes, 4, &response.logical_path)?,
                     &response.logical_path,
                 )?;
-                let include = parse_mdl(&response.logical_path, include_profile, bytes, limits)?;
-                if include.document.identity.eq_ignore_ascii_case(&identity) {
-                    return Err(failure(
-                        Classification::Malformed,
-                        ErrorCode::IncludeCycle,
-                        &response.logical_path,
-                        None,
-                    ));
+                match load_with_chain(
+                    response.logical_path.clone(),
+                    include_profile,
+                    vtx_variant,
+                    bytes,
+                    responses,
+                    limits,
+                    dependency_chain.clone(),
+                    included_models,
+                    dependency_count,
+                )? {
+                    Load::Needs(requests) => nested_requests.extend(requests),
+                    Load::Complete(include) => included_documents.push(*include),
                 }
             }
             DependencyRole::Physics => physics_status = PhysicsStatus::Present,
         }
         source_identities.push(response.logical_path.clone());
+    }
+    if !nested_requests.is_empty() {
+        if nested_requests.len() > limits.max_dependency_count {
+            return Err(failure(
+                Classification::Malformed,
+                ErrorCode::DependencyLimit,
+                &identity,
+                None,
+            ));
+        }
+        return Ok(Load::Needs(nested_requests));
     }
     document.source_identities = source_identities;
     document.physics_status = physics_status;
@@ -630,8 +920,236 @@ pub fn load(
         &mut document.animations,
         &animation_sources,
         &identity,
+        limits,
     )?;
+    for include in included_documents {
+        compose_include(&mut document, include, &identity)?;
+    }
     Ok(Load::Complete(Box::new(document)))
+}
+
+fn compose_include(root: &mut Document, include: Document, identity: &str) -> Result<(), Error> {
+    let bone_map: Vec<_> = include
+        .bones
+        .iter()
+        .map(|bone| {
+            root.bones
+                .iter()
+                .position(|candidate| candidate.name.eq_ignore_ascii_case(&bone.name))
+        })
+        .collect();
+
+    let base_pose_count = root.pose_parameters.len();
+    let mut pose_map = Vec::with_capacity(include.pose_parameters.len());
+    let mut new_poses = Vec::new();
+    for pose in &include.pose_parameters {
+        let mapped = root.pose_parameters[..base_pose_count]
+            .iter()
+            .position(|candidate| candidate.name.eq_ignore_ascii_case(&pose.name))
+            .unwrap_or_else(|| {
+                let index = base_pose_count + new_poses.len();
+                let mut pose = pose.clone();
+                pose.index = index;
+                new_poses.push(pose);
+                index
+            });
+        pose_map.push(mapped);
+    }
+    root.pose_parameters.extend(new_poses);
+
+    let base_animation_count = root.animations.len();
+    let mut animation_map = Vec::with_capacity(include.animations.len());
+    let mut new_animations = Vec::new();
+    for animation in &include.animations {
+        let mapped = root.animations[..base_animation_count]
+            .iter()
+            .position(|candidate| candidate.name.eq_ignore_ascii_case(&animation.name))
+            .unwrap_or_else(|| {
+                let index = base_animation_count + new_animations.len();
+                let mut animation = animation.clone();
+                animation.index = index;
+                animation.bone_map = animation
+                    .bone_map
+                    .iter()
+                    .map(|bone| bone.and_then(|bone| bone_map.get(bone).copied().flatten()))
+                    .collect();
+                new_animations.push(animation);
+                index
+            });
+        animation_map.push(mapped);
+    }
+    root.animations.extend(new_animations);
+
+    let base_sequence_count = root.sequences.len();
+    let mut sequence_map = Vec::with_capacity(include.sequences.len());
+    let mut sequence_destinations = Vec::with_capacity(include.sequences.len());
+    let mut next_new_sequence = base_sequence_count;
+    for sequence in &include.sequences {
+        let existing = root.sequences[..base_sequence_count]
+            .iter()
+            .position(|candidate| candidate.label.eq_ignore_ascii_case(&sequence.label));
+        let destination = if let Some(existing) = existing {
+            existing
+        } else {
+            let destination = next_new_sequence;
+            next_new_sequence += 1;
+            destination
+        };
+        sequence_map.push(destination);
+        sequence_destinations.push((destination, existing.is_some()));
+    }
+    for (source, (destination, duplicate)) in include
+        .sequences
+        .iter()
+        .zip(sequence_destinations.into_iter())
+    {
+        let mut sequence = source.clone();
+        sequence.index = destination;
+        let mut root_weights = vec![Float32(0.0_f32.to_bits()); root.bones.len()];
+        for (local_bone, weight) in source.bone_weights.iter().enumerate() {
+            if let Some(root_bone) = bone_map.get(local_bone).copied().flatten() {
+                root_weights[root_bone] = *weight;
+            }
+        }
+        sequence.bone_weights = root_weights;
+        for animation in &mut sequence.animation_indices {
+            let local = usize::try_from(*animation)
+                .ok()
+                .and_then(|index| animation_map.get(index).copied())
+                .ok_or_else(|| invalid_reference(identity, source.index))?;
+            *animation =
+                i16::try_from(local).map_err(|_| invalid_reference(identity, source.index))?;
+        }
+        for (axis, pose) in sequence.pose_parameter_indices.iter_mut().enumerate() {
+            if sequence.blend_size[axis] > 1 {
+                *pose = usize::try_from(*pose)
+                    .ok()
+                    .and_then(|index| pose_map.get(index).copied())
+                    .and_then(|index| i32::try_from(index).ok())
+                    .ok_or_else(|| invalid_reference(identity, source.index))?;
+            }
+        }
+        if sequence.flags & 0x0080 != 0 {
+            sequence.cycle_pose_parameter = usize::try_from(sequence.cycle_pose_parameter)
+                .ok()
+                .and_then(|index| pose_map.get(index).copied())
+                .and_then(|index| i32::try_from(index).ok())
+                .ok_or_else(|| invalid_reference(identity, source.index))?;
+        }
+        if sequence.next_sequence >= 0 {
+            sequence.next_sequence = usize::try_from(sequence.next_sequence)
+                .ok()
+                .and_then(|index| sequence_map.get(index).copied())
+                .and_then(|index| i32::try_from(index).ok())
+                .ok_or_else(|| invalid_reference(identity, source.index))?;
+        }
+        if sequence.pose >= 0 {
+            sequence.pose = usize::try_from(sequence.pose)
+                .ok()
+                .and_then(|index| sequence_map.get(index).copied())
+                .and_then(|index| i32::try_from(index).ok())
+                .ok_or_else(|| invalid_reference(identity, source.index))?;
+        }
+        if duplicate {
+            if root.sequences[destination].flags & 0x0800 != 0 {
+                root.sequences[destination] = sequence;
+            }
+        } else {
+            root.sequences.push(sequence);
+        }
+    }
+
+    let base_attachment_count = root.attachments.len();
+    for attachment in include.attachments {
+        if root.attachments[..base_attachment_count]
+            .iter()
+            .any(|candidate| candidate.name.eq_ignore_ascii_case(&attachment.name))
+        {
+            continue;
+        }
+        let Some(bone) = usize::try_from(attachment.bone)
+            .ok()
+            .and_then(|index| bone_map.get(index).copied().flatten())
+        else {
+            continue;
+        };
+        let mut attachment = attachment;
+        attachment.index = root.attachments.len();
+        attachment.bone = bone as i32;
+        root.attachments.push(attachment);
+    }
+    root.unsupported.flex_descriptors = root
+        .unsupported
+        .flex_descriptors
+        .checked_add(include.unsupported.flex_descriptors)
+        .ok_or_else(|| invalid_count(identity, 260))?;
+    root.unsupported.flex_controllers = root
+        .unsupported
+        .flex_controllers
+        .checked_add(include.unsupported.flex_controllers)
+        .ok_or_else(|| invalid_count(identity, 268))?;
+    root.unsupported.flex_rules = root
+        .unsupported
+        .flex_rules
+        .checked_add(include.unsupported.flex_rules)
+        .ok_or_else(|| invalid_count(identity, 276))?;
+    root.unsupported.ik_chains = root
+        .unsupported
+        .ik_chains
+        .checked_add(include.unsupported.ik_chains)
+        .ok_or_else(|| invalid_count(identity, 284))?;
+    root.source_identities.extend(include.source_identities);
+    root.model_dependencies.extend(include.model_dependencies);
+    Ok(())
+}
+
+fn validate_procedure(
+    bytes: &[u8],
+    bone_offset: usize,
+    procedure_type: i32,
+    procedure_offset: i32,
+    bone_count: usize,
+    limits: Limits,
+    identity: &str,
+) -> Result<(), Error> {
+    if procedure_type == 0 {
+        return Ok(());
+    }
+    if procedure_offset == 0 {
+        return Err(invalid_reference(identity, bone_offset + 168));
+    }
+    let procedure = relative_offset(bone_offset, procedure_offset, identity)?;
+    match procedure_type {
+        1 => {
+            range(bytes, procedure, 176, identity)?;
+            let control = i32_at(bytes, procedure, identity)?;
+            let axis = i32_at(bytes, procedure + 4, identity)?;
+            if control < 0 || control as usize >= bone_count || !(0..=2).contains(&axis) {
+                return Err(invalid_reference(identity, procedure));
+            }
+        }
+        2 => {
+            range(bytes, procedure, 12, identity)?;
+            let control = i32_at(bytes, procedure, identity)?;
+            let trigger_count = count(bytes, procedure + 4, identity)?;
+            if control < 0 || control as usize >= bone_count {
+                return Err(invalid_reference(identity, procedure));
+            }
+            let triggers =
+                relative_offset(procedure, i32_at(bytes, procedure + 8, identity)?, identity)?;
+            table(bytes, triggers, trigger_count, 48, limits, identity)?;
+        }
+        3 | 4 => {
+            range(bytes, procedure, 44, identity)?;
+            let parent = i32_at(bytes, procedure, identity)?;
+            if parent < -1 || (parent >= 0 && parent as usize >= bone_count) {
+                return Err(invalid_reference(identity, procedure));
+            }
+        }
+        5 => range(bytes, procedure, 140, identity)?,
+        _ => range(bytes, procedure, 1, identity)?,
+    }
+    Ok(())
 }
 
 fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> Result<Mdl, Error> {
@@ -695,7 +1213,25 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
         if parent < -1 || parent >= index as i32 {
             return Err(invalid_reference(identity, offset + 4));
         }
-        let surface_relative = i32_at(bytes, offset + 164, identity)?;
+        let surface_relative = i32_at(bytes, offset + 176, identity)?;
+        let procedural_type = i32_at(bytes, offset + 164, identity)?;
+        let procedural_offset = i32_at(bytes, offset + 168, identity)?;
+        validate_procedure(
+            bytes,
+            offset,
+            procedural_type,
+            procedural_offset,
+            bone_count,
+            limits,
+            identity,
+        )?;
+        let mut controllers = [0; 6];
+        for (controller, output) in controllers.iter_mut().enumerate() {
+            *output = i32_at(bytes, offset + 8 + controller * 4, identity)?;
+            if *output < -1 || *output >= 4 {
+                return Err(invalid_reference(identity, offset + 8 + controller * 4));
+            }
+        }
         bones.push(Bone {
             index,
             name: relative_string(
@@ -706,6 +1242,7 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
                 identity,
             )?,
             parent,
+            controllers,
             position: vector3(bytes, offset + 32, identity)?,
             quaternion: float4(bytes, offset + 44, identity)?,
             rotation: vector3(bytes, offset + 60, identity)?,
@@ -714,7 +1251,9 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
             pose_to_bone: float12(bytes, offset + 96, identity)?,
             alignment: float4(bytes, offset + 144, identity)?,
             flags: i32_at(bytes, offset + 160, identity)?,
-            physics_bone: i32_at(bytes, offset + 168, identity)?,
+            procedural_type,
+            procedural_offset,
+            physics_bone: i32_at(bytes, offset + 172, identity)?,
             surface_property: if surface_relative == 0 {
                 Vec::new()
             } else {
@@ -744,6 +1283,9 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
         let section_offset = i32_at(bytes, offset + 80, identity)?;
         let section_frame_count = i32_at(bytes, offset + 84, identity)?;
         let frame_count = i32_at(bytes, offset + 16, identity)?;
+        if frame_count <= 0 || frame_count as usize > limits.max_animation_frames {
+            return Err(invalid_count(identity, offset + 16));
+        }
         let mut sections = Vec::new();
         if section_frame_count > 0 && frame_count > 0 {
             let section_count = (frame_count as usize / section_frame_count as usize) + 2;
@@ -781,6 +1323,9 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
             } else {
                 0
             },
+            source_identity: identity.to_owned(),
+            bone_map: (0..bone_count).map(Some).collect(),
+            sections: Vec::new(),
             frames: Vec::new(),
         });
         animation_sources.push(AnimationSource {
@@ -803,6 +1348,62 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
     let mut sequences = Vec::with_capacity(sequence_count);
     for index in 0..sequence_count {
         let offset = sequence_offset + index * SEQUENCE_BYTES;
+        let blend_count = i32_at(bytes, offset + 56, identity)?;
+        let blend_size = [
+            i32_at(bytes, offset + 68, identity)?,
+            i32_at(bytes, offset + 72, identity)?,
+        ];
+        if blend_count <= 0
+            || blend_size[0] <= 0
+            || blend_size[1] <= 0
+            || blend_size[0]
+                .checked_mul(blend_size[1])
+                .is_none_or(|count| count != blend_count)
+        {
+            return Err(invalid_count(identity, offset + 56));
+        }
+        let animation_index_offset =
+            relative_offset(offset, i32_at(bytes, offset + 60, identity)?, identity)?;
+        table(
+            bytes,
+            animation_index_offset,
+            blend_count as usize,
+            2,
+            limits,
+            identity,
+        )?;
+        let mut animation_indices = Vec::with_capacity(blend_count as usize);
+        for animation in 0..blend_count as usize {
+            let value = i16_at(bytes, animation_index_offset + animation * 2, identity)?;
+            if value < 0 || value as usize >= animation_count {
+                return Err(invalid_reference(
+                    identity,
+                    animation_index_offset + animation * 2,
+                ));
+            }
+            animation_indices.push(value);
+        }
+        let weight_offset =
+            relative_offset(offset, i32_at(bytes, offset + 156, identity)?, identity)?;
+        table(bytes, weight_offset, bone_count, 4, limits, identity)?;
+        let mut bone_weights = Vec::with_capacity(bone_count);
+        for bone in 0..bone_count {
+            bone_weights.push(float(bytes, weight_offset + bone * 4, identity)?);
+        }
+        let pose_key_relative = i32_at(bytes, offset + 160, identity)?;
+        let mut pose_keys = [Vec::new(), Vec::new()];
+        if pose_key_relative != 0 {
+            let pose_key_offset = relative_offset(offset, pose_key_relative, identity)?;
+            let pose_key_count = blend_size[0] as usize + blend_size[1] as usize;
+            table(bytes, pose_key_offset, pose_key_count, 4, limits, identity)?;
+            let mut cursor = pose_key_offset;
+            for axis in 0..2 {
+                for _ in 0..blend_size[axis] as usize {
+                    pose_keys[axis].push(float(bytes, cursor, identity)?);
+                    cursor += 4;
+                }
+            }
+        }
         sequences.push(Sequence {
             index,
             label: relative_string(
@@ -825,13 +1426,125 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
             event_count: i32_at(bytes, offset + 24, identity)?,
             bounds_min: vector3(bytes, offset + 32, identity)?,
             bounds_max: vector3(bytes, offset + 44, identity)?,
-            blend_size: [
-                i32_at(bytes, offset + 68, identity)?,
-                i32_at(bytes, offset + 72, identity)?,
+            blend_count,
+            blend_size,
+            animation_indices,
+            pose_parameter_indices: [
+                i32_at(bytes, offset + 76, identity)?,
+                i32_at(bytes, offset + 80, identity)?,
             ],
-            next_sequence: i32_at(bytes, offset + 156, identity)?,
-            pose: i32_at(bytes, offset + 160, identity)?,
+            pose_parameter_start: [
+                float(bytes, offset + 84, identity)?,
+                float(bytes, offset + 88, identity)?,
+            ],
+            pose_parameter_end: [
+                float(bytes, offset + 92, identity)?,
+                float(bytes, offset + 96, identity)?,
+            ],
+            fade_in: float(bytes, offset + 104, identity)?,
+            fade_out: float(bytes, offset + 108, identity)?,
+            entry_node: i32_at(bytes, offset + 112, identity)?,
+            exit_node: i32_at(bytes, offset + 116, identity)?,
+            node_flags: i32_at(bytes, offset + 120, identity)?,
+            entry_phase: float(bytes, offset + 124, identity)?,
+            exit_phase: float(bytes, offset + 128, identity)?,
+            last_frame: float(bytes, offset + 132, identity)?,
+            next_sequence: i32_at(bytes, offset + 136, identity)?,
+            pose: i32_at(bytes, offset + 140, identity)?,
+            auto_layer_count: i32_at(bytes, offset + 148, identity)?,
+            bone_weights,
+            pose_keys,
+            ik_lock_count: i32_at(bytes, offset + 164, identity)?,
+            cycle_pose_parameter: i32_at(bytes, offset + 180, identity)?,
+            activity_modifier_count: i32_at(bytes, offset + 188, identity)?,
+            source_identity: identity.to_owned(),
         });
+    }
+
+    let pose_parameter_count = count(bytes, 300, identity)?;
+    let pose_parameter_offset = count(bytes, 304, identity)?;
+    if pose_parameter_count > 24 {
+        return Err(invalid_count(identity, 300));
+    }
+
+    let flex_descriptors = count(bytes, 260, identity)?;
+    let flex_descriptor_offset = count(bytes, 264, identity)?;
+    if flex_descriptors > 1_024 {
+        return Err(invalid_count(identity, 260));
+    }
+    table(
+        bytes,
+        flex_descriptor_offset,
+        flex_descriptors,
+        4,
+        limits,
+        identity,
+    )?;
+    let flex_controllers = count(bytes, 268, identity)?;
+    let flex_controller_offset = count(bytes, 272, identity)?;
+    if flex_controllers > 96 {
+        return Err(invalid_count(identity, 268));
+    }
+    table(
+        bytes,
+        flex_controller_offset,
+        flex_controllers,
+        20,
+        limits,
+        identity,
+    )?;
+    let flex_rules = count(bytes, 276, identity)?;
+    let flex_rule_offset = count(bytes, 280, identity)?;
+    table(bytes, flex_rule_offset, flex_rules, 12, limits, identity)?;
+    let ik_chains = count(bytes, 284, identity)?;
+    let ik_chain_offset = count(bytes, 288, identity)?;
+    table(bytes, ik_chain_offset, ik_chains, 16, limits, identity)?;
+    table(
+        bytes,
+        pose_parameter_offset,
+        pose_parameter_count,
+        POSE_PARAMETER_BYTES,
+        limits,
+        identity,
+    )?;
+    let mut pose_parameters = Vec::with_capacity(pose_parameter_count);
+    for index in 0..pose_parameter_count {
+        let offset = pose_parameter_offset + index * POSE_PARAMETER_BYTES;
+        pose_parameters.push(PoseParameter {
+            index,
+            name: relative_string(
+                bytes,
+                offset,
+                i32_at(bytes, offset, identity)?,
+                limits,
+                identity,
+            )?,
+            flags: i32_at(bytes, offset + 4, identity)?,
+            start: float(bytes, offset + 8, identity)?,
+            end: float(bytes, offset + 12, identity)?,
+            looping_range: float(bytes, offset + 16, identity)?,
+            source_identity: identity.to_owned(),
+        });
+    }
+    for sequence in &sequences {
+        for (axis, &pose) in sequence.pose_parameter_indices.iter().enumerate() {
+            if sequence.blend_size[axis] > 1 && (pose < 0 || pose as usize >= pose_parameter_count)
+            {
+                return Err(invalid_reference(
+                    identity,
+                    sequence_offset + sequence.index * SEQUENCE_BYTES + 76,
+                ));
+            }
+        }
+        if sequence.flags & 0x0080 != 0
+            && (sequence.cycle_pose_parameter < 0
+                || sequence.cycle_pose_parameter as usize >= pose_parameter_count)
+        {
+            return Err(invalid_reference(
+                identity,
+                sequence_offset + sequence.index * SEQUENCE_BYTES + 180,
+            ));
+        }
     }
 
     let search_path_count = count(bytes, 212, identity)?;
@@ -873,22 +1586,10 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
             limits,
             identity,
         )?;
-        let name_text = String::from_utf8_lossy(&name)
-            .trim_end_matches(".vmt")
-            .to_owned();
         let candidates = search_paths
             .iter()
-            .map(|path| {
-                let path = String::from_utf8_lossy(path)
-                    .trim_matches('/')
-                    .to_ascii_lowercase();
-                if path.is_empty() {
-                    format!("materials/{name_text}.vmt").to_ascii_lowercase()
-                } else {
-                    format!("materials/{path}/{name_text}.vmt").to_ascii_lowercase()
-                }
-            })
-            .collect();
+            .map(|path| material_candidate(path, &name, identity))
+            .collect::<Result<Vec<_>, _>>()?;
         materials.push(Material {
             index,
             name,
@@ -1042,6 +1743,9 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
     }
 
     let include_count = count(bytes, 336, identity)?;
+    if include_count > limits.max_included_models || include_count > 64 {
+        return Err(invalid_count(identity, 336));
+    }
     let include_offset = count(bytes, 340, identity)?;
     table(bytes, include_offset, include_count, 8, limits, identity)?;
     let mut include_models = Vec::with_capacity(include_count);
@@ -1078,6 +1782,18 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
         animation_blocks.push(start..end);
     }
     needs_animation |= animation_block_count > 0;
+    let animation_block_identity = match i32_at(bytes, 348, identity)? {
+        0 => None,
+        offset if offset > 0 => Some(canonical_dependency_path(
+            &c_string(bytes, offset as usize, limits, identity)?,
+            ".ani",
+            identity,
+        )?),
+        _ => return Err(invalid_range(identity, 348)),
+    };
+    if needs_animation && animation_block_identity.is_none() {
+        return Err(invalid_reference(identity, 348));
+    }
 
     let document = Document {
         identity: identity.to_owned(),
@@ -1091,11 +1807,20 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
         animations,
         sequences,
         materials,
+        material_replacements: Vec::new(),
         skins,
         body_parts,
         attachments,
+        pose_parameters,
+        unsupported: UnsupportedMetadata {
+            flex_descriptors,
+            flex_controllers,
+            flex_rules,
+            ik_chains,
+        },
         include_models,
         animation_blocks,
+        animation_block_identity,
         companions: CompanionSummary {
             vvd_lod_vertex_counts: Vec::new(),
             vvd_fixup_count: 0,
@@ -1107,6 +1832,7 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
         },
         physics_status: PhysicsStatus::Missing,
         source_identities: vec![identity.to_owned()],
+        model_dependencies: Vec::new(),
         geometry: Vec::new(),
     };
     if owned_bytes(&document) > limits.max_owned_bytes {
@@ -1270,6 +1996,7 @@ fn parse_vtx(
     bytes: &[u8],
     checksum: i32,
     expected_body_parts: usize,
+    expected_materials: usize,
     limits: Limits,
 ) -> Result<ParsedVtx, Error> {
     range(bytes, 0, 36, identity)?;
@@ -1294,6 +2021,31 @@ fn parse_vtx(
     }
     let replacements = count(bytes, 24, identity)?;
     table(bytes, replacements, lod_count as usize, 8, limits, identity)?;
+    let mut material_replacements = Vec::new();
+    for lod in 0..lod_count as usize {
+        let list = replacements + lod * 8;
+        let count = count(bytes, list, identity)?;
+        let offset = relative_offset(list, i32_at(bytes, list + 4, identity)?, identity)?;
+        table(bytes, offset, count, 6, limits, identity)?;
+        for index in 0..count {
+            let record = offset + index * 6;
+            let material_slot = i16_at(bytes, record, identity)?;
+            if material_slot < 0 || material_slot as usize >= expected_materials {
+                return Err(invalid_reference(identity, record));
+            }
+            material_replacements.push(ParsedMaterialReplacement {
+                lod,
+                material_slot: material_slot as usize,
+                name: relative_string(
+                    bytes,
+                    record,
+                    i32_at(bytes, record + 2, identity)?,
+                    limits,
+                    identity,
+                )?,
+            });
+        }
+    }
     let body_parts = i32_at(bytes, 28, identity)?;
     if body_parts < 0 || body_parts as usize != expected_body_parts {
         return Err(invalid_reference(identity, 28));
@@ -1452,6 +2204,7 @@ fn parse_vtx(
         lod_count,
         body_parts: parsed_body_parts,
         max_bones,
+        material_replacements,
     })
 }
 
@@ -1529,10 +2282,27 @@ fn decode_animation_frames(
     animations: &mut [Animation],
     sources: &[AnimationSource],
     identity: &str,
+    limits: Limits,
 ) -> Result<(), Error> {
+    let mut decoded_samples = 0_usize;
     for (animation, source) in animations.iter_mut().zip(sources) {
         if animation.frame_count <= 0 {
             return Err(invalid_count(identity, source.descriptor_offset + 16));
+        }
+        decoded_samples = decoded_samples
+            .checked_add(
+                (animation.frame_count as usize)
+                    .checked_mul(bones.len())
+                    .ok_or_else(|| invalid_count(identity, source.descriptor_offset + 16))?,
+            )
+            .ok_or_else(|| invalid_count(identity, source.descriptor_offset + 16))?;
+        if decoded_samples > limits.max_decoded_animation_samples {
+            return Err(failure(
+                Classification::Malformed,
+                ErrorCode::InputLimit,
+                identity,
+                Some(source.descriptor_offset + 16..source.descriptor_offset + 20),
+            ));
         }
         let mut frames = Vec::with_capacity(animation.frame_count as usize);
         for frame in 0..animation.frame_count as usize {
@@ -1547,9 +2317,58 @@ fn decode_animation_frames(
                 identity,
             )?);
         }
+        let section_count = if animation.section_frame_count > 0 {
+            source.sections.len()
+        } else {
+            1
+        };
+        let mut sections = Vec::with_capacity(section_count);
+        for section_index in 0..section_count {
+            let selected: Vec<_> = (0..animation.frame_count as usize)
+                .filter(|&frame| animation_section_index(animation, frame) == section_index)
+                .collect();
+            let (block, data_offset) = if animation.section_frame_count > 0 {
+                source.sections[section_index]
+            } else {
+                (animation.animation_block, source.data_offset)
+            };
+            let (first_frame, frame_count, tracks) = if let Some(&first_frame) = selected.first() {
+                let (data, offset, _) =
+                    animation_data(mdl, ani, blocks, animation, source, first_frame, identity)?;
+                (
+                    first_frame,
+                    selected.len(),
+                    parse_animation_tracks(data, offset, selected.len(), bones, identity)?,
+                )
+            } else {
+                (0, 0, Vec::new())
+            };
+            sections.push(AnimationSection {
+                index: section_index,
+                first_frame,
+                frame_count,
+                block,
+                data_offset,
+                tracks,
+            });
+        }
         animation.frames = frames;
+        animation.sections = sections;
     }
     Ok(())
+}
+
+fn animation_section_index(animation: &Animation, frame: usize) -> usize {
+    let section_frames = animation.section_frame_count.max(0) as usize;
+    if section_frames == 0 {
+        0
+    } else if animation.frame_count as usize > section_frames
+        && frame == animation.frame_count as usize - 1
+    {
+        frame / section_frames + 1
+    } else {
+        frame / section_frames
+    }
 }
 
 fn animation_data<'a>(
@@ -1565,13 +2384,7 @@ fn animation_data<'a>(
     let (block, relative, local_frame) = if section_frames == 0 {
         (animation.animation_block, source.data_offset, frame)
     } else {
-        let section = if animation.frame_count as usize > section_frames
-            && frame == animation.frame_count as usize - 1
-        {
-            frame / section_frames + 1
-        } else {
-            frame / section_frames
-        };
+        let section = animation_section_index(animation, frame);
         let &(block, relative) = source
             .sections
             .get(section)
@@ -1668,7 +2481,7 @@ fn decode_frame(
         let next = u16_at(data, cursor + 2, identity)? as usize;
         let mut payload = cursor + 4;
         let track_delta = track_flags & 0x10 != 0;
-        let rotation = if track_flags & 0x02 != 0 {
+        let mut rotation = if track_flags & 0x02 != 0 {
             let (value, size) = compressed_quaternion(data, payload, false, identity)?;
             payload += size;
             value
@@ -1703,6 +2516,27 @@ fn decode_frame(
         } else {
             bone.quaternion
         };
+        if !track_delta && bone.flags & 0x0010_0000 != 0 {
+            let alignment_distance: f32 = rotation
+                .iter()
+                .zip(bone.alignment)
+                .map(|(left, right)| {
+                    let value = f32::from_bits(left.0) - f32::from_bits(right.0);
+                    value * value
+                })
+                .sum();
+            let inverse_distance: f32 = rotation
+                .iter()
+                .zip(bone.alignment)
+                .map(|(left, right)| {
+                    let value = f32::from_bits(left.0) + f32::from_bits(right.0);
+                    value * value
+                })
+                .sum();
+            if alignment_distance > inverse_distance {
+                rotation = rotation.map(|value| Float32((-f32::from_bits(value.0)).to_bits()));
+            }
+        }
         rotations[bone_index] = rotation;
         translations[bone_index] = if track_flags & 0x01 != 0 {
             let value = [
@@ -1743,6 +2577,134 @@ fn decode_frame(
             .ok_or_else(|| invalid_range(identity, cursor))?;
     }
     Err(invalid_reference(identity, cursor))
+}
+
+fn parse_animation_tracks(
+    data: &[u8],
+    offset: usize,
+    frame_count: usize,
+    bones: &[Bone],
+    identity: &str,
+) -> Result<Vec<AnimationTrack>, Error> {
+    let mut output = Vec::new();
+    let mut cursor = offset;
+    let mut visited = BTreeSet::new();
+    for _ in 0..=bones.len() {
+        range(data, cursor, 4, identity)?;
+        let bone = data[cursor] as usize;
+        if bone == 255 {
+            return Ok(output);
+        }
+        if bone >= bones.len() || !visited.insert(bone) {
+            return Err(invalid_reference(identity, cursor));
+        }
+        let flags = data[cursor + 1];
+        let next_offset = u16_at(data, cursor + 2, identity)?;
+        let mut payload = cursor + 4;
+        let rotation_codec = if flags & 0x02 != 0 {
+            range(data, payload, 6, identity)?;
+            payload += 6;
+            RotationCodec::Quaternion48
+        } else if flags & 0x20 != 0 {
+            range(data, payload, 8, identity)?;
+            payload += 8;
+            RotationCodec::Quaternion64
+        } else if flags & 0x08 != 0 {
+            range(data, payload, 6, identity)?;
+            RotationCodec::RleEuler
+        } else if flags & 0x10 != 0 {
+            RotationCodec::DeltaIdentity
+        } else {
+            RotationCodec::Bind
+        };
+        let rotation_values = if rotation_codec == RotationCodec::RleEuler {
+            let streams = parse_animation_value_streams(data, payload, frame_count, identity)?;
+            payload += 6;
+            streams
+        } else {
+            std::array::from_fn(|_| None)
+        };
+        let translation_codec = if flags & 0x01 != 0 {
+            range(data, payload, 6, identity)?;
+            TranslationCodec::Vector48
+        } else if flags & 0x04 != 0 {
+            range(data, payload, 6, identity)?;
+            TranslationCodec::RleVector
+        } else if flags & 0x10 != 0 {
+            TranslationCodec::DeltaZero
+        } else {
+            TranslationCodec::Bind
+        };
+        let translation_values = if translation_codec == TranslationCodec::RleVector {
+            parse_animation_value_streams(data, payload, frame_count, identity)?
+        } else {
+            std::array::from_fn(|_| None)
+        };
+        output.push(AnimationTrack {
+            bone,
+            flags,
+            source_offset: cursor,
+            next_offset,
+            rotation_codec,
+            translation_codec,
+            rotation_values,
+            translation_values,
+        });
+        if next_offset == 0 {
+            return Ok(output);
+        }
+        cursor = cursor
+            .checked_add(next_offset as usize)
+            .ok_or_else(|| invalid_range(identity, cursor))?;
+    }
+    Err(invalid_reference(identity, cursor))
+}
+
+fn parse_animation_value_streams(
+    data: &[u8],
+    table_offset: usize,
+    frame_count: usize,
+    identity: &str,
+) -> Result<[Option<AnimationValueStream>; 3], Error> {
+    let mut streams = std::array::from_fn(|_| None);
+    for (axis, output) in streams.iter_mut().enumerate() {
+        let relative_offset = i16_at(data, table_offset + axis * 2, identity)?;
+        if relative_offset <= 0 {
+            continue;
+        }
+        let mut cursor = table_offset
+            .checked_add(relative_offset as usize)
+            .ok_or_else(|| invalid_range(identity, table_offset))?;
+        let mut covered = 0_usize;
+        let mut runs = Vec::new();
+        while covered < frame_count {
+            range(data, cursor, 2, identity)?;
+            let valid = data[cursor];
+            let total = data[cursor + 1];
+            if valid == 0 || total == 0 || valid > total {
+                return Err(invalid_reference(identity, cursor));
+            }
+            range(data, cursor + 2, valid as usize * 2, identity)?;
+            let mut values = Vec::with_capacity(valid as usize);
+            for value in 0..valid as usize {
+                values.push(i16_at(data, cursor + 2 + value * 2, identity)?);
+            }
+            runs.push(AnimationValueRun {
+                valid,
+                total,
+                values,
+            });
+            covered = covered
+                .checked_add(total as usize)
+                .ok_or_else(|| invalid_range(identity, cursor))?;
+            cursor += 2 + valid as usize * 2;
+        }
+        *output = Some(AnimationValueStream {
+            relative_offset,
+            runs,
+        });
+    }
+    Ok(streams)
 }
 
 fn compressed_quaternion(
@@ -1790,15 +2752,12 @@ fn animation_value(
     scale: f32,
     identity: &str,
 ) -> Result<f32, Error> {
-    if relative == 0 {
+    if relative <= 0 {
         return Ok(0.0);
     }
-    let mut cursor = if relative > 0 {
-        table.checked_add(relative as usize)
-    } else {
-        table.checked_sub(relative.unsigned_abs() as usize)
-    }
-    .ok_or_else(|| invalid_range(identity, table))?;
+    let mut cursor = table
+        .checked_add(relative as usize)
+        .ok_or_else(|| invalid_range(identity, table))?;
     let mut remaining = frame;
     for _ in 0..=frame {
         range(data, cursor, 2, identity)?;
@@ -1857,10 +2816,13 @@ fn validate_limits(limits: Limits) -> Result<(), Error> {
         || limits.max_aggregate_input_bytes == 0
         || limits.max_dependency_count == 0
         || limits.max_include_depth == 0
+        || limits.max_included_models == 0
         || limits.max_records == 0
         || limits.max_strings == 0
         || limits.max_string_bytes == 0
         || limits.max_owned_bytes == 0
+        || limits.max_animation_frames == 0
+        || limits.max_decoded_animation_samples == 0
     {
         return Err(failure(
             Classification::Malformed,
@@ -1902,6 +2864,73 @@ fn canonical_model_path(bytes: &[u8], identity: &str) -> Result<String, Error> {
     let canonical = text.replace('\\', "/").to_ascii_lowercase();
     validate_model_identity(&canonical)?;
     Ok(canonical)
+}
+
+fn canonical_dependency_path(bytes: &[u8], suffix: &str, identity: &str) -> Result<String, Error> {
+    let text = std::str::from_utf8(bytes).map_err(|_| {
+        failure(
+            Classification::Malformed,
+            ErrorCode::InvalidString,
+            identity,
+            None,
+        )
+    })?;
+    let canonical = text.replace('\\', "/").to_ascii_lowercase();
+    if !canonical.starts_with("models/")
+        || !canonical.ends_with(suffix)
+        || canonical
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        return Err(failure(
+            Classification::Malformed,
+            ErrorCode::InvalidIdentity,
+            identity,
+            None,
+        ));
+    }
+    Ok(canonical)
+}
+
+fn material_candidate(path: &[u8], name: &[u8], identity: &str) -> Result<String, Error> {
+    let normalize = |bytes: &[u8]| -> Result<String, Error> {
+        let text = std::str::from_utf8(bytes).map_err(|_| {
+            failure(
+                Classification::Malformed,
+                ErrorCode::InvalidString,
+                identity,
+                None,
+            )
+        })?;
+        let normalized = text.replace('\\', "/");
+        Ok(normalized
+            .strip_prefix('/')
+            .unwrap_or(&normalized)
+            .to_ascii_lowercase())
+    };
+    let path = normalize(path)?;
+    let mut name = normalize(name)?;
+    if name.ends_with(".vmt") {
+        name.truncate(name.len() - 4);
+    }
+    let relative = if path.is_empty() {
+        name
+    } else {
+        format!("{path}/{name}")
+    };
+    if relative.is_empty()
+        || relative
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        return Err(failure(
+            Classification::Malformed,
+            ErrorCode::InvalidIdentity,
+            identity,
+            None,
+        ));
+    }
+    Ok(format!("materials/{relative}.vmt"))
 }
 
 fn response_matches(response: &DependencyResponse, request: &DependencyRequest) -> bool {
@@ -2206,6 +3235,158 @@ mod tests {
         }
     }
 
+    fn put_i32(bytes: &mut [u8], offset: usize, value: i32) {
+        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn animated_mdl(external: bool) -> Vec<u8> {
+        let mut bytes = vec![0; MDL_HEADER_BYTES];
+        bytes[..4].copy_from_slice(b"IDST");
+        put_i32(&mut bytes, 4, 48);
+        put_i32(&mut bytes, 8, 1234);
+        bytes[12..17].copy_from_slice(b"anim\0");
+        let bone_offset = bytes.len();
+        bytes.resize(bone_offset + BONE_BYTES, 0);
+        put_i32(&mut bytes, 156, 1);
+        put_i32(&mut bytes, 160, bone_offset as i32);
+        put_i32(&mut bytes, bone_offset + 4, -1);
+        for controller in 0..6 {
+            put_i32(&mut bytes, bone_offset + 8 + controller * 4, -1);
+        }
+        put_i32(&mut bytes, bone_offset + 56, 1.0_f32.to_bits() as i32);
+        let bone_name = bytes.len();
+        bytes.extend_from_slice(b"root\0");
+        put_i32(&mut bytes, bone_offset, (bone_name - bone_offset) as i32);
+
+        let animation_offset = bytes.len();
+        bytes.resize(animation_offset + ANIMATION_BYTES, 0);
+        put_i32(&mut bytes, 180, 1);
+        put_i32(&mut bytes, 184, animation_offset as i32);
+        put_i32(&mut bytes, animation_offset + 8, 30.0_f32.to_bits() as i32);
+        put_i32(&mut bytes, animation_offset + 16, 2);
+        put_i32(&mut bytes, animation_offset + 52, i32::from(external));
+        let animation_name = bytes.len();
+        bytes.extend_from_slice(b"idle_anim\0");
+        put_i32(
+            &mut bytes,
+            animation_offset + 4,
+            (animation_name - animation_offset) as i32,
+        );
+        if !external {
+            let track = bytes.len();
+            bytes.extend_from_slice(&[255, 0, 0, 0]);
+            put_i32(
+                &mut bytes,
+                animation_offset + 56,
+                (track - animation_offset) as i32,
+            );
+        }
+
+        let sequence_offset = bytes.len();
+        bytes.resize(sequence_offset + SEQUENCE_BYTES, 0);
+        put_i32(&mut bytes, 188, 1);
+        put_i32(&mut bytes, 192, sequence_offset as i32);
+        put_i32(&mut bytes, sequence_offset + 16, 99);
+        put_i32(&mut bytes, sequence_offset + 20, 1);
+        put_i32(&mut bytes, sequence_offset + 56, 1);
+        put_i32(&mut bytes, sequence_offset + 68, 1);
+        put_i32(&mut bytes, sequence_offset + 72, 1);
+        let animation_grid = bytes.len();
+        bytes.extend_from_slice(&0_i16.to_le_bytes());
+        put_i32(
+            &mut bytes,
+            sequence_offset + 60,
+            (animation_grid - sequence_offset) as i32,
+        );
+        let weights = bytes.len();
+        bytes.extend_from_slice(&1.0_f32.to_le_bytes());
+        put_i32(
+            &mut bytes,
+            sequence_offset + 156,
+            (weights - sequence_offset) as i32,
+        );
+        let label = bytes.len();
+        bytes.extend_from_slice(b"idle\0");
+        put_i32(
+            &mut bytes,
+            sequence_offset + 4,
+            (label - sequence_offset) as i32,
+        );
+        let activity = bytes.len();
+        bytes.extend_from_slice(b"ACT_VM_IDLE\0");
+        put_i32(
+            &mut bytes,
+            sequence_offset + 8,
+            (activity - sequence_offset) as i32,
+        );
+
+        if external {
+            let ani_name = bytes.len();
+            bytes.extend_from_slice(b"models/custom/shared.ani\0");
+            put_i32(&mut bytes, 348, ani_name as i32);
+            let blocks = bytes.len();
+            bytes.resize(blocks + 16, 0);
+            put_i32(&mut bytes, 352, 2);
+            put_i32(&mut bytes, 356, blocks as i32);
+            put_i32(&mut bytes, blocks + 8, 12);
+            put_i32(&mut bytes, blocks + 12, 16);
+        }
+        let length = bytes.len() as i32;
+        put_i32(&mut bytes, 76, length);
+        bytes
+    }
+
+    fn mdl_with_include(path: &str) -> Vec<u8> {
+        let mut bytes = mdl(48, false);
+        let include = bytes.len();
+        bytes.resize(include + 8, 0);
+        put_i32(&mut bytes, 336, 1);
+        put_i32(&mut bytes, 340, include as i32);
+        let name = bytes.len();
+        bytes.extend_from_slice(path.as_bytes());
+        bytes.push(0);
+        put_i32(&mut bytes, include + 4, (name - include) as i32);
+        let length = bytes.len() as i32;
+        put_i32(&mut bytes, 76, length);
+        bytes
+    }
+
+    fn mdl_with_material() -> Vec<u8> {
+        let mut bytes = mdl(44, true);
+        let texture = bytes.len();
+        bytes.resize(texture + TEXTURE_BYTES, 0);
+        put_i32(&mut bytes, 204, 1);
+        put_i32(&mut bytes, 208, texture as i32);
+        let texture_name = bytes.len();
+        bytes.extend_from_slice(b"base_material\0");
+        put_i32(&mut bytes, texture, (texture_name - texture) as i32);
+        let search_table = bytes.len();
+        bytes.resize(search_table + 4, 0);
+        put_i32(&mut bytes, 212, 1);
+        put_i32(&mut bytes, 216, search_table as i32);
+        let search_path = bytes.len();
+        bytes.extend_from_slice(b"models/test\0");
+        put_i32(&mut bytes, search_table, search_path as i32);
+        let skin = bytes.len();
+        bytes.extend_from_slice(&0_u16.to_le_bytes());
+        put_i32(&mut bytes, 220, 1);
+        put_i32(&mut bytes, 224, 1);
+        put_i32(&mut bytes, 228, skin as i32);
+        let length = bytes.len() as i32;
+        put_i32(&mut bytes, 76, length);
+        bytes
+    }
+
+    fn vtx_with_replacement(checksum: i32) -> Vec<u8> {
+        let mut bytes = vtx(checksum);
+        put_i32(&mut bytes, 44, 1);
+        put_i32(&mut bytes, 48, 8);
+        bytes.resize(58, 0);
+        put_i32(&mut bytes, 54, 6);
+        bytes.extend_from_slice(b"lod_material\0");
+        bytes
+    }
+
     #[test]
     fn metadata_only_model_requests_only_optional_physics() {
         let bytes = mdl(48, false);
@@ -2354,6 +3535,267 @@ mod tests {
             .unwrap_err()
             .code,
             ErrorCode::InputLimit
+        );
+
+        let mut malformed_procedure = animated_mdl(false);
+        let bone_offset = i32::from_le_bytes(
+            malformed_procedure[160..164]
+                .try_into()
+                .expect("bone offset"),
+        ) as usize;
+        put_i32(&mut malformed_procedure, bone_offset + 164, 1);
+        assert_eq!(
+            load(
+                "models/procedure.mdl",
+                Profile::SourcePcMdl48,
+                VtxVariant::Dx90,
+                &malformed_procedure,
+                &[],
+                Limits::default(),
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::InvalidReference
+        );
+    }
+
+    #[test]
+    fn parses_sequence_children_and_uses_the_authored_ani_identity() {
+        let bytes = animated_mdl(true);
+        let Load::Needs(requests) = load(
+            "models/animated.mdl",
+            Profile::SourcePcMdl48,
+            VtxVariant::Dx90,
+            &bytes,
+            &[],
+            Limits::default(),
+        )
+        .unwrap() else {
+            panic!("animated model did not request dependencies")
+        };
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| (request.role, request.logical_path.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                (DependencyRole::AnimationBlocks, "models/custom/shared.ani"),
+                (DependencyRole::Physics, "models/animated.phy"),
+            ]
+        );
+        let mut ani = vec![0; 16];
+        ani[..4].copy_from_slice(b"IDAG");
+        put_i32(&mut ani, 4, 48);
+        put_i32(&mut ani, 8, 1234);
+        ani[12] = 255;
+        let responses = [
+            response(&requests[0], Some(ani)),
+            response(&requests[1], None),
+        ];
+        let Load::Complete(document) = load(
+            "models/animated.mdl",
+            Profile::SourcePcMdl48,
+            VtxVariant::Dx90,
+            &bytes,
+            &responses,
+            Limits::default(),
+        )
+        .unwrap() else {
+            panic!("closed animated model requested more dependencies")
+        };
+        assert_eq!(document.sequences[0].animation_indices, [0]);
+        assert_eq!(document.sequences[0].next_sequence, 0);
+        assert_eq!(document.sequences[0].pose, 0);
+        assert_eq!(
+            document.sequences[0].bone_weights,
+            [Float32(1.0_f32.to_bits())]
+        );
+        assert_eq!(document.animations[0].frames.len(), 2);
+        assert_eq!(document.animations[0].sections[0].block, 1);
+        assert_eq!(
+            document
+                .model_dependencies
+                .iter()
+                .map(|dependency| dependency.role)
+                .collect::<Vec<_>>(),
+            [
+                ModelDependencyRole::RootModel,
+                ModelDependencyRole::AnimationBlocks,
+                ModelDependencyRole::Physics,
+            ]
+        );
+        assert!(document.model_dependencies[0].sha256.is_some());
+        assert!(document.model_dependencies[1].sha256.is_some());
+        assert!(document.model_dependencies[2].sha256.is_none());
+    }
+
+    #[test]
+    fn closes_include_dependencies_depth_first_and_rejects_cycles() {
+        let root = mdl_with_include("models/shared/a.mdl");
+        let include = animated_mdl(false);
+        let Load::Needs(root_requests) = load(
+            "models/root.mdl",
+            Profile::SourcePcMdl48,
+            VtxVariant::Dx90,
+            &root,
+            &[],
+            Limits::default(),
+        )
+        .unwrap() else {
+            panic!("root include dependencies were not requested")
+        };
+        let mut responses = vec![
+            response(&root_requests[0], None),
+            response(&root_requests[1], Some(include.clone())),
+        ];
+        let Load::Needs(include_requests) = load(
+            "models/root.mdl",
+            Profile::SourcePcMdl48,
+            VtxVariant::Dx90,
+            &root,
+            &responses,
+            Limits::default(),
+        )
+        .unwrap() else {
+            panic!("included model dependencies were not requested")
+        };
+        assert_eq!(include_requests.len(), 1);
+        assert_eq!(include_requests[0].requester, "models/shared/a.mdl");
+        assert_eq!(
+            include_requests[0].dependency_chain,
+            ["models/root.mdl", "models/shared/a.mdl"]
+        );
+        responses.push(response(&include_requests[0], None));
+        let Load::Complete(document) = load(
+            "models/root.mdl",
+            Profile::SourcePcMdl48,
+            VtxVariant::Dx90,
+            &root,
+            &responses,
+            Limits::default(),
+        )
+        .unwrap() else {
+            panic!("closed include graph requested more dependencies")
+        };
+        assert_eq!(
+            document
+                .model_dependencies
+                .iter()
+                .map(|dependency| dependency.role)
+                .collect::<Vec<_>>(),
+            [
+                ModelDependencyRole::RootModel,
+                ModelDependencyRole::Physics,
+                ModelDependencyRole::IncludeModel,
+                ModelDependencyRole::RootModel,
+                ModelDependencyRole::Physics,
+            ]
+        );
+        assert_eq!(document.animations.len(), 1);
+        assert_eq!(document.animations[0].name, b"idle_anim");
+        assert_eq!(document.animations[0].bone_map, [None]);
+        assert_eq!(document.sequences.len(), 1);
+        assert_eq!(document.sequences[0].label, b"idle");
+        assert_eq!(
+            load(
+                "models/root.mdl",
+                Profile::SourcePcMdl48,
+                VtxVariant::Dx90,
+                &root,
+                &responses,
+                Limits {
+                    max_dependency_count: 2,
+                    ..Limits::default()
+                },
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::DependencyLimit
+        );
+
+        let cyclic_include = mdl_with_include("models/root.mdl");
+        let mut cycle_responses = vec![
+            response(&root_requests[0], None),
+            response(&root_requests[1], Some(cyclic_include)),
+        ];
+        let Load::Needs(cycle_requests) = load(
+            "models/root.mdl",
+            Profile::SourcePcMdl48,
+            VtxVariant::Dx90,
+            &root,
+            &cycle_responses,
+            Limits::default(),
+        )
+        .unwrap() else {
+            panic!("cyclic include children were not requested")
+        };
+        for request in &cycle_requests {
+            cycle_responses.push(response(
+                request,
+                (request.role == DependencyRole::IncludeModel).then(|| root.clone()),
+            ));
+        }
+        assert_eq!(
+            load(
+                "models/root.mdl",
+                Profile::SourcePcMdl48,
+                VtxVariant::Dx90,
+                &root,
+                &cycle_responses,
+                Limits::default(),
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::IncludeCycle
+        );
+    }
+
+    #[test]
+    fn retains_lod_material_replacements_and_exact_candidates() {
+        let bytes = mdl_with_material();
+        let Load::Needs(requests) = load(
+            "models/material.mdl",
+            Profile::SourcePcMdl44,
+            VtxVariant::Dx90,
+            &bytes,
+            &[],
+            Limits::default(),
+        )
+        .unwrap() else {
+            panic!("material model dependencies were not requested")
+        };
+        let responses: Vec<_> = requests
+            .iter()
+            .map(|request| {
+                response(
+                    request,
+                    match request.role {
+                        DependencyRole::VertexData => Some(vvd(1234)),
+                        DependencyRole::Topology => Some(vtx_with_replacement(1234)),
+                        DependencyRole::Physics => None,
+                        _ => unreachable!(),
+                    },
+                )
+            })
+            .collect();
+        let Load::Complete(document) = load(
+            "models/material.mdl",
+            Profile::SourcePcMdl44,
+            VtxVariant::Dx90,
+            &bytes,
+            &responses,
+            Limits::default(),
+        )
+        .unwrap() else {
+            panic!("closed material model requested more dependencies")
+        };
+        assert_eq!(document.material_replacements.len(), 1);
+        assert_eq!(document.material_replacements[0].lod, 0);
+        assert_eq!(document.material_replacements[0].material_slot, 0);
+        assert_eq!(document.material_replacements[0].name, b"lod_material");
+        assert_eq!(
+            document.material_replacements[0].candidates,
+            ["materials/models/test/lod_material.vmt"]
         );
     }
 }
