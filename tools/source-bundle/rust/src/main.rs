@@ -1,6 +1,6 @@
 use playsrc_content::{Content, ProviderSpec, Resolution};
 use playsrc_keyvalues::ConditionEnvironment;
-use playsrc_material::TextureDisposition;
+use playsrc_material::{HdrMode, SelectionEnvironment, TextureDisposition};
 use playsrc_vmt::{Composition, DependencyResponse};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -93,6 +93,8 @@ fn collect_material(
     root_path: &str,
     bundle: &mut BTreeMap<String, Vec<u8>>,
     include_textures: bool,
+    environment: SelectionEnvironment,
+    selected_only: bool,
 ) -> Result<(), String> {
     let identity = root_path.to_ascii_lowercase();
     let root_bytes = resolved(content, &identity)?;
@@ -109,7 +111,8 @@ fn collect_material(
         .map_err(|error| error.to_string())?
         {
             Composition::Complete(document) => {
-                break playsrc_material::resolve(&document).map_err(|error| error.to_string())?;
+                break playsrc_material::resolve_for_environment(&document, environment)
+                    .map_err(|error| error.to_string())?;
             }
             Composition::Needs(requests) => {
                 for request in requests {
@@ -126,15 +129,19 @@ fn collect_material(
             }
         }
     };
-    for texture in material.textures {
+    for texture in &material.textures {
         if !include_textures {
             continue;
         }
         if texture.disposition != TextureDisposition::Source {
             continue;
         }
+        if selected_only && !material.selected_textures.contains(&texture.role) {
+            continue;
+        }
         let path = texture
             .logical_path
+            .as_ref()
             .ok_or_else(|| "source texture has no logical path".to_owned())?
             .to_ascii_lowercase();
         if !bundle.contains_key(&path) {
@@ -214,9 +221,18 @@ fn bytesv(output: &mut Vec<u8>, bytes: &[u8]) {
 }
 
 fn main() -> Result<(), String> {
-    let target = env::args()
-        .nth(1)
+    let mut arguments = env::args().skip(1);
+    let target = arguments
+        .next()
         .ok_or_else(|| "target is required".to_owned())?;
+    let verify_hdr = match arguments.next().as_deref() {
+        None => false,
+        Some("--verify-hdr") => true,
+        Some(_) => return Err("source bundle mode is malformed".to_owned()),
+    };
+    if arguments.next().is_some() {
+        return Err("source bundle accepts one target and one optional mode".to_owned());
+    }
     if !target
         .bytes()
         .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
@@ -300,10 +316,54 @@ fn main() -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     let mut bundle = BTreeMap::new();
     for material in &map.materials {
-        collect_material(&content, &material.logical_path, &mut bundle, true)?;
+        collect_material(
+            &content,
+            &material.logical_path,
+            &mut bundle,
+            true,
+            SelectionEnvironment::default(),
+            false,
+        )?;
     }
     let graph = playsrc_entity::parse(bsp.lumps[0].bytes(&bsp), playsrc_entity::Limits::default())
         .map_err(|error| error.to_string())?;
+    let world = graph
+        .entities
+        .iter()
+        .find(|entity| {
+            entity
+                .classname
+                .as_deref()
+                .is_some_and(|value| value.eq_ignore_ascii_case(b"worldspawn"))
+        })
+        .ok_or_else(|| "worldspawn is unavailable".to_owned())?;
+    let sky = world
+        .pairs
+        .iter()
+        .find(|pair| pair.key.eq_ignore_ascii_case(b"skyname"))
+        .ok_or_else(|| "worldspawn skyname is unavailable".to_owned())?;
+    let sky = std::str::from_utf8(&sky.value).map_err(|_| "skyname is not UTF-8")?;
+    if sky.is_empty()
+        || !sky
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+    {
+        return Err("skyname is malformed".to_owned());
+    }
+    let hdr_environment = SelectionEnvironment {
+        hdr_mode: HdrMode::Integer,
+        ..SelectionEnvironment::default()
+    };
+    for suffix in ["rt", "lf", "bk", "ft", "up", "dn"] {
+        collect_material(
+            &content,
+            &format!("materials/skybox/{sky}_hdr{suffix}.vmt"),
+            &mut bundle,
+            true,
+            hdr_environment,
+            true,
+        )?;
+    }
     let mut model_paths = graph
         .entities
         .iter()
@@ -336,7 +396,14 @@ fn main() -> Result<(), String> {
                 }
             }
             if let Some(candidate) = found {
-                collect_material(&content, &candidate, &mut bundle, false)?;
+                collect_material(
+                    &content,
+                    &candidate,
+                    &mut bundle,
+                    false,
+                    SelectionEnvironment::default(),
+                    false,
+                )?;
             }
         }
     }
@@ -365,12 +432,35 @@ fn main() -> Result<(), String> {
     let temporary = directory.join(format!("{target}.psdb.tmp"));
     fs::write(&temporary, &output).map_err(|error| error.to_string())?;
     fs::rename(&temporary, &destination).map_err(|error| error.to_string())?;
-    println!(
-        "{{\"target\":\"{}\",\"entries\":{},\"bytes\":{},\"sha256\":\"{}\"}}",
-        target,
-        bundle.len(),
-        output.len(),
-        digest(&output)
-    );
+    if verify_hdr {
+        let artifact = playsrc_tf2_wasm::compile_artifact(&bsp_bytes, 1, &output)
+            .map_err(|error| format!("native HDR compilation failed with error {error}"))?;
+        let native_destination = directory.join(format!("{target}.native-hdr.psmp"));
+        let native_temporary = directory.join(format!("{target}.native-hdr.psmp.tmp"));
+        fs::write(&native_temporary, &artifact.payload).map_err(|error| error.to_string())?;
+        fs::rename(&native_temporary, &native_destination).map_err(|error| error.to_string())?;
+        println!(
+            "{{\"target\":\"{}\",\"entries\":{},\"bytes\":{},\"sha256\":\"{}\",\"nativeHdrBytes\":{},\"nativeHdrSha256\":\"{}\",\"nativeHdrDerivedSha256\":\"{}\"}}",
+            target,
+            bundle.len(),
+            output.len(),
+            digest(&output),
+            artifact.payload.len(),
+            digest(&artifact.payload),
+            hex(&artifact.derived_sha256),
+        );
+    } else {
+        println!(
+            "{{\"target\":\"{}\",\"entries\":{},\"bytes\":{},\"sha256\":\"{}\"}}",
+            target,
+            bundle.len(),
+            output.len(),
+            digest(&output)
+        );
+    }
     Ok(())
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }

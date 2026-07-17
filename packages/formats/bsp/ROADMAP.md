@@ -61,6 +61,8 @@ The denominator is Not accepted. The prerequisite format inventory is Candidate 
 
 ## Behavior Families
 
+The active HDR compiler profile checkpoint consumes the exact retained descriptors and bytes for selected faces, RGBExp32 lighting, world lights, leaf-ambient indexes and samples, map flags, and game-lump detail/static-prop lighting inputs. BSP remains the byte/container authority; Map owns profile completeness, cross-record sample validation, linear radiance projection, and artifact serialization. The checkpoint must prove that selected slot identities reach the output without LDR/HDR fallback.
+
 | Target behavior | playsrc behavior | Evidence | Status |
 |---|---|---|---|
 | A caller-selected accepted profile validates `VBSP`, container version, the fixed 64-entry directory, and the signed map revision without branch guessing. | The Rust parser requires the explicit `source-2013-v20` profile, validates `VBSP` and version 20, retains all 64 descriptors and signed revision, and returns typed failures. V19/V21 profiles and accepted inventories remain absent. | Synthetic exact, bad-identifier, version-mismatch, and truncated-header vectors pass; the exact `jump_beef` BSP parses as version 20, revision 731, with 64 lumps. | Partial |

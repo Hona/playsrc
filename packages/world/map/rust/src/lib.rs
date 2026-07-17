@@ -1,11 +1,8 @@
 use playsrc_bsp::{Bsp, Face, LumpData, Primitive, TextureData, TextureInfo, Vector3};
 use sha2::{Digest, Sha256};
-use std::fmt;
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LightingProfile {
-    Ldr,
-    Hdr,
-}
+use std::{collections::BTreeSet, fmt};
+mod lighting;
+pub use lighting::*;
 #[derive(Clone, Debug, PartialEq)]
 pub struct MaterialReference {
     pub index: usize,
@@ -38,7 +35,7 @@ pub struct CanonicalMap {
     pub lighting_profile: LightingProfile,
     pub materials: Vec<MaterialReference>,
     pub surfaces: Vec<Surface>,
-    pub lighting_samples: Vec<[u8; 4]>,
+    pub lighting: LightingData,
     pub world_model: usize,
     pub triangle_count: usize,
     pub vertex_count: usize,
@@ -57,6 +54,7 @@ pub struct RuntimeDescriptor {
     pub compiler_identity: String,
     pub configuration_sha256: [u8; 32],
     pub payload_sha256: [u8; 32],
+    pub derived_sha256: [u8; 32],
     pub payload: Vec<u8>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -71,7 +69,31 @@ pub struct RuntimeMaterial {
     pub logical_path: String,
     pub shader: u8,
     pub features: u8,
+    pub texture_role: u8,
     pub base_texture: Option<RuntimeTexture>,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeInput {
+    pub role: u8,
+    pub logical_path: String,
+    pub sha256: [u8; 32],
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeProfileTexture {
+    pub logical_path: String,
+    pub width: u32,
+    pub height: u32,
+    pub format: i32,
+    pub source_sha256: [u8; 32],
+    pub source_bytes: Vec<u8>,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeProfileMaterial {
+    pub logical_path: String,
+    pub shader: u8,
+    pub features: u8,
+    pub texture_role: u8,
+    pub texture: RuntimeProfileTexture,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct RuntimeModelPrimitive {
@@ -98,6 +120,9 @@ pub struct RuntimeAssembly<'a> {
     pub compiler_identity: &'a str,
     pub configuration: &'a [u8],
     pub materials: &'a [RuntimeMaterial],
+    pub profile_materials: &'a [RuntimeProfileMaterial],
+    pub inputs: &'a [RuntimeInput],
+    pub output_role: &'a str,
     pub models: &'a [RuntimeModel],
     pub model_occurrences: &'a [RuntimeModelOccurrence],
 }
@@ -110,6 +135,10 @@ pub enum ErrorCode {
     UnsupportedDisplacement,
     InvalidMaterial,
     NonFinite,
+    IncompleteLightingProfile,
+    InvalidLightingProfile,
+    BoundExceeded,
+    UnsupportedPropLighting,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Error {
@@ -134,16 +163,6 @@ pub fn compile(bsp: &Bsp, profile: LightingProfile) -> Result<CanonicalMap, Erro
     .records
     {
         LumpData::Faces(v) => v,
-        _ => return Err(error(ErrorCode::MissingLump, None)),
-    };
-    let lighting = match &bsp.lumps[if profile == LightingProfile::Hdr {
-        53
-    } else {
-        8
-    }]
-    .records
-    {
-        LumpData::Lighting(v) => v,
         _ => return Err(error(ErrorCode::MissingLump, None)),
     };
     let vertices = match &bsp.lumps[3].records {
@@ -199,6 +218,7 @@ pub fn compile(bsp: &Bsp, profile: LightingProfile) -> Result<CanonicalMap, Erro
         _ => &[],
     };
     let materials = materials(texdata, offsets, strings)?;
+    let lighting = compile_lighting(bsp, profile, faces, texinfo, LightingLimits::default())?;
     let mut face_models = vec![usize::MAX; faces.len()];
     for (model_index, model) in models.iter().enumerate() {
         let start = usize::try_from(model.first_face)
@@ -301,10 +321,7 @@ pub fn compile(bsp: &Bsp, profile: LightingProfile) -> Result<CanonicalMap, Erro
         lighting_profile: profile,
         materials,
         surfaces: output,
-        lighting_samples: lighting
-            .iter()
-            .map(|v| [v.red, v.green, v.blue, v.exponent as u8])
-            .collect(),
+        lighting,
         world_model: 0,
         triangle_count: triangles,
         vertex_count: output_vertices,
@@ -321,6 +338,9 @@ pub fn compile_runtime(
         compiler_identity,
         configuration,
         materials: resolved_materials,
+        profile_materials,
+        inputs,
+        output_role,
         models: runtime_models,
         model_occurrences,
     } = assembly;
@@ -337,30 +357,39 @@ pub fn compile_runtime(
             return Err(error(ErrorCode::InvalidMaterial, None));
         }
         for (index, material) in resolved_materials.iter().enumerate() {
+            validate_runtime_material(material, index)?;
             if !material
                 .logical_path
                 .eq_ignore_ascii_case(&map.materials[index].logical_path)
             {
                 return Err(error(ErrorCode::InvalidMaterial, Some(index)));
             }
-            if let Some(texture) = &material.base_texture {
-                let pixels = usize::try_from(texture.width)
-                    .ok()
-                    .and_then(|width| {
-                        usize::try_from(texture.height)
-                            .ok()
-                            .and_then(|height| width.checked_mul(height))
-                    })
-                    .and_then(|pixels| pixels.checked_mul(4));
-                if texture.logical_path.is_empty()
-                    || texture.width == 0
-                    || texture.height == 0
-                    || pixels != Some(texture.rgba.len())
-                {
-                    return Err(error(ErrorCode::InvalidMaterial, Some(index)));
-                }
-            }
         }
+    }
+    if profile == LightingProfile::Hdr && resolved_materials.len() != map.materials.len() {
+        return Err(error(ErrorCode::InvalidMaterial, None));
+    }
+    for (index, material) in profile_materials.iter().enumerate() {
+        validate_profile_material(material, index)?;
+    }
+    if profile_materials.len() > 64
+        || inputs.len() > 4_096
+        || inputs.iter().any(|input| input.logical_path.len() > 1_024)
+    {
+        return Err(error(ErrorCode::BoundExceeded, None));
+    }
+    let mut input_identities = BTreeSet::new();
+    if inputs
+        .iter()
+        .any(|input| !input_identities.insert((input.role, input.logical_path.as_str())))
+    {
+        return Err(error(ErrorCode::InvalidReference, None));
+    }
+    if profile == LightingProfile::Hdr && output_role.is_empty() {
+        return Err(error(ErrorCode::IncompleteLightingProfile, None));
+    }
+    if inputs.iter().any(|input| input.logical_path.is_empty()) {
+        return Err(error(ErrorCode::InvalidReference, None));
     }
     for (model_index, model) in runtime_models.iter().enumerate() {
         if model.logical_path.is_empty() {
@@ -394,17 +423,37 @@ pub fn compile_runtime(
         &map,
         &entities,
         resolved_materials,
+        profile_materials,
+        inputs,
+        compiler_identity,
+        bsp_sha256,
+        Sha256::digest(configuration).into(),
+        output_role,
         runtime_models,
         model_occurrences,
     );
+    if payload.len() > 512 * 1024 * 1024 {
+        return Err(error(ErrorCode::BoundExceeded, None));
+    }
     let payload_sha256 = Sha256::digest(&payload).into();
     let configuration_sha256 = Sha256::digest(configuration).into();
+    let derived_sha256 = derived_identity(
+        profile,
+        output_role,
+        compiler_identity,
+        bsp_sha256,
+        configuration_sha256,
+        map.lighting.closure_sha256,
+        inputs,
+        payload_sha256,
+    );
     let descriptor = RuntimeDescriptor {
         schema: 1,
         bsp_sha256,
         compiler_identity: compiler_identity.to_owned(),
         configuration_sha256,
         payload_sha256,
+        derived_sha256,
         payload,
     };
     Ok(Runtime {
@@ -419,13 +468,21 @@ fn serialize(
     map: &CanonicalMap,
     entities: &playsrc_entity::Graph,
     materials: &[RuntimeMaterial],
+    profile_materials: &[RuntimeProfileMaterial],
+    inputs: &[RuntimeInput],
+    compiler_identity: &str,
+    bsp_sha256: [u8; 32],
+    configuration_sha256: [u8; 32],
+    output_role: &str,
     models: &[RuntimeModel],
     occurrences: &[RuntimeModelOccurrence],
 ) -> Vec<u8> {
     let mut out = b"PSMP".to_vec();
     u32v(
         &mut out,
-        if !models.is_empty() {
+        if map.lighting_profile == LightingProfile::Hdr {
+            4
+        } else if !models.is_empty() {
             3
         } else if !materials.is_empty() {
             2
@@ -441,7 +498,10 @@ fn serialize(
     });
     u32v(&mut out, map.materials.len() as u32);
     u32v(&mut out, map.surfaces.len() as u32);
-    u32v(&mut out, map.lighting_samples.len() as u32);
+    u32v(
+        &mut out,
+        lighting_sample_count(&map.lighting.samples) as u32,
+    );
     u32v(&mut out, entities.entities.len() as u32);
     for m in &map.materials {
         bytesv(&mut out, m.logical_path.as_bytes());
@@ -484,17 +544,28 @@ fn serialize(
         i32v(&mut out, s.lightmap_size[0]);
         i32v(&mut out, s.lightmap_size[1]);
     }
-    for sample in &map.lighting_samples {
-        out.extend_from_slice(sample)
+    match &map.lighting.samples {
+        LightingSamples::RgbExp32(samples) => {
+            for sample in samples {
+                out.extend_from_slice(sample)
+            }
+        }
+        LightingSamples::LinearRgb32(samples) => {
+            for sample in samples {
+                for value in sample {
+                    f32v(&mut out, *value)
+                }
+            }
+        }
     }
     bytesv(&mut out, &entities.source);
-    if !materials.is_empty() {
+    if !materials.is_empty() || map.lighting_profile == LightingProfile::Hdr {
         u32v(&mut out, materials.len() as u32);
         for material in materials {
             materialv(&mut out, material);
         }
     }
-    if !models.is_empty() {
+    if !models.is_empty() || map.lighting_profile == LightingProfile::Hdr {
         u32v(&mut out, models.len() as u32);
         for model in models {
             bytesv(&mut out, model.logical_path.as_bytes());
@@ -541,19 +612,260 @@ fn serialize(
             }
         }
     }
+    if map.lighting_profile == LightingProfile::Hdr {
+        serialize_hdr(
+            &mut out,
+            map,
+            profile_materials,
+            inputs,
+            compiler_identity,
+            bsp_sha256,
+            configuration_sha256,
+            output_role,
+            materials,
+        );
+    }
     out
 }
 fn materialv(out: &mut Vec<u8>, material: &RuntimeMaterial) {
     out.push(material.shader);
     out.push(material.features);
     out.push(u8::from(material.base_texture.is_some()));
-    out.push(0);
+    out.push(material.texture_role);
     if let Some(texture) = &material.base_texture {
         bytesv(out, texture.logical_path.as_bytes());
         u32v(out, texture.width);
         u32v(out, texture.height);
         bytesv(out, &texture.rgba);
     }
+}
+fn lighting_sample_count(samples: &LightingSamples) -> usize {
+    match samples {
+        LightingSamples::RgbExp32(samples) => samples.len(),
+        LightingSamples::LinearRgb32(samples) => samples.len(),
+    }
+}
+#[allow(clippy::too_many_arguments)]
+fn serialize_hdr(
+    out: &mut Vec<u8>,
+    map: &CanonicalMap,
+    profile_materials: &[RuntimeProfileMaterial],
+    inputs: &[RuntimeInput],
+    compiler_identity: &str,
+    bsp_sha256: [u8; 32],
+    configuration_sha256: [u8; 32],
+    output_role: &str,
+    materials: &[RuntimeMaterial],
+) {
+    out.extend_from_slice(b"PSHD");
+    u32v(out, 1);
+    out.push(1); // Linear RGB binary32, three components per sample.
+    out.extend_from_slice(&[0; 3]);
+    bytesv(out, output_role.as_bytes());
+    bytesv(out, compiler_identity.as_bytes());
+    out.extend_from_slice(&bsp_sha256);
+    out.extend_from_slice(&configuration_sha256);
+    out.extend_from_slice(&map.lighting.closure_sha256);
+    u32v(out, map.lighting.members.len() as u32);
+    for member in &map.lighting.members {
+        out.push(member.role as u8);
+        match member.source {
+            Some(LightingSource::StandardLump { slot, version }) => {
+                out.extend_from_slice(&[1, slot, 0, 0]);
+                i32v(out, version);
+            }
+            Some(LightingSource::GameLump { id, version }) => {
+                out.extend_from_slice(&[2, 0, 0, 0]);
+                out.extend_from_slice(&id);
+                u32v(out, u32::from(version));
+            }
+            None => out.extend_from_slice(&[0; 8]),
+        }
+        u32v(out, member.encoded_bytes);
+        u32v(out, member.decoded_bytes);
+        out.extend_from_slice(&member.encoded_sha256);
+        out.extend_from_slice(&member.decoded_sha256);
+        u32v(out, member.item_count);
+    }
+    u32v(out, map.lighting.lightmapped_faces);
+    u32v(out, map.lighting.directional_faces);
+    u32v(out, map.lighting.surfaces.len() as u32);
+    for surface in &map.lighting.surfaces {
+        u32v(out, surface.face);
+        let kind = match surface.kind {
+            SurfaceLightingKind::Unlit => 0,
+            SurfaceLightingKind::Flat => 1,
+            SurfaceLightingKind::Directional => {
+                let ssbump = map
+                    .surfaces
+                    .get(surface.face as usize)
+                    .and_then(|map_surface| materials.get(map_surface.material))
+                    .is_some_and(|material| material.features & (1 << 5) != 0);
+                if ssbump { 3 } else { 2 }
+            }
+        };
+        out.push(kind);
+        out.push(surface.style_count);
+        out.push(surface.layer_count);
+        out.push(0);
+        u32v(out, surface.sample_start);
+        u32v(out, surface.samples_per_layer);
+        out.extend_from_slice(&surface.styles);
+    }
+    u32v(out, map.lighting.world_lights.len() as u32);
+    for light in &map.lighting.world_lights {
+        for value in light
+            .origin
+            .into_iter()
+            .chain(light.intensity)
+            .chain(light.normal)
+        {
+            f32v(out, value);
+        }
+        i32v(out, light.cluster);
+        i32v(out, light.kind);
+        out.push(light.style);
+        out.extend_from_slice(&[0; 3]);
+        for value in [
+            light.stop_dot,
+            light.stop_dot2,
+            light.exponent,
+            light.radius,
+            light.constant_attenuation,
+            light.linear_attenuation,
+            light.quadratic_attenuation,
+        ] {
+            f32v(out, value);
+        }
+        i32v(out, light.flags);
+        i32v(out, light.texture_info);
+        i32v(out, light.owner);
+    }
+    u32v(out, map.lighting.ambient_indexes.len() as u32);
+    for index in &map.lighting.ambient_indexes {
+        out.extend_from_slice(&index.sample_count.to_le_bytes());
+        out.extend_from_slice(&index.first_sample.to_le_bytes());
+    }
+    u32v(out, map.lighting.ambient_samples.len() as u32);
+    for sample in &map.lighting.ambient_samples {
+        for side in sample.cube {
+            for value in side {
+                f32v(out, value);
+            }
+        }
+        out.extend_from_slice(&sample.position);
+        out.push(0);
+    }
+    u32v(out, map.lighting.prop_lighting.detail_props);
+    u32v(out, map.lighting.prop_lighting.detail_style_samples);
+    u32v(out, map.lighting.prop_lighting.static_props);
+    u32v(out, map.lighting.prop_lighting.map_flags);
+    u32v(out, profile_materials.len() as u32);
+    for material in profile_materials {
+        bytesv(out, material.logical_path.as_bytes());
+        out.extend_from_slice(&[material.shader, material.features, material.texture_role, 0]);
+        bytesv(out, material.texture.logical_path.as_bytes());
+        u32v(out, material.texture.width);
+        u32v(out, material.texture.height);
+        i32v(out, material.texture.format);
+        out.extend_from_slice(&material.texture.source_sha256);
+        bytesv(out, &material.texture.source_bytes);
+    }
+    let mut inputs: Vec<_> = inputs.iter().collect();
+    inputs.sort_by(|left, right| {
+        (left.role, &left.logical_path, left.sha256).cmp(&(
+            right.role,
+            &right.logical_path,
+            right.sha256,
+        ))
+    });
+    u32v(out, inputs.len() as u32);
+    for input in inputs {
+        out.push(input.role);
+        out.extend_from_slice(&[0; 3]);
+        bytesv(out, input.logical_path.as_bytes());
+        out.extend_from_slice(&input.sha256);
+    }
+}
+fn validate_runtime_material(material: &RuntimeMaterial, item: usize) -> Result<(), Error> {
+    if material.logical_path.is_empty() {
+        return Err(error(ErrorCode::InvalidMaterial, Some(item)));
+    }
+    if let Some(texture) = &material.base_texture {
+        let pixels = usize::try_from(texture.width)
+            .ok()
+            .and_then(|width| {
+                usize::try_from(texture.height)
+                    .ok()
+                    .and_then(|height| width.checked_mul(height))
+            })
+            .and_then(|pixels| pixels.checked_mul(4));
+        if texture.logical_path.is_empty()
+            || texture.width == 0
+            || texture.height == 0
+            || pixels != Some(texture.rgba.len())
+        {
+            return Err(error(ErrorCode::InvalidMaterial, Some(item)));
+        }
+    }
+    Ok(())
+}
+fn validate_profile_material(material: &RuntimeProfileMaterial, item: usize) -> Result<(), Error> {
+    let texture = &material.texture;
+    if material.logical_path.is_empty()
+        || texture.logical_path.is_empty()
+        || texture.width == 0
+        || texture.height == 0
+        || texture.width > 4_096
+        || texture.height > 4_096
+        || texture.source_bytes.is_empty()
+        || texture.source_bytes.len() > 64 * 1024 * 1024
+        || <[u8; 32]>::from(Sha256::digest(&texture.source_bytes)) != texture.source_sha256
+    {
+        return Err(error(ErrorCode::InvalidMaterial, Some(item)));
+    }
+    Ok(())
+}
+#[allow(clippy::too_many_arguments)]
+fn derived_identity(
+    profile: LightingProfile,
+    output_role: &str,
+    compiler_identity: &str,
+    bsp_sha256: [u8; 32],
+    configuration_sha256: [u8; 32],
+    lighting_sha256: [u8; 32],
+    inputs: &[RuntimeInput],
+    payload_sha256: [u8; 32],
+) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(b"playsrc-derived-map-v1");
+    digest.update([match profile {
+        LightingProfile::Ldr => 0,
+        LightingProfile::Hdr => 1,
+    }]);
+    digest.update((output_role.len() as u32).to_le_bytes());
+    digest.update(output_role.as_bytes());
+    digest.update((compiler_identity.len() as u32).to_le_bytes());
+    digest.update(compiler_identity.as_bytes());
+    digest.update(bsp_sha256);
+    digest.update(configuration_sha256);
+    digest.update(lighting_sha256);
+    let mut inputs: Vec<_> = inputs.iter().collect();
+    inputs.sort_by(|left, right| {
+        (left.role, &left.logical_path, left.sha256).cmp(&(
+            right.role,
+            &right.logical_path,
+            right.sha256,
+        ))
+    });
+    for input in inputs {
+        digest.update([input.role]);
+        digest.update((input.logical_path.len() as u32).to_le_bytes());
+        digest.update(input.logical_path.as_bytes());
+        digest.update(input.sha256);
+    }
+    digest.update(payload_sha256);
+    digest.finalize().into()
 }
 fn u32v(o: &mut Vec<u8>, v: u32) {
     o.extend_from_slice(&v.to_le_bytes())
