@@ -79,7 +79,7 @@ export class Tf2Application {
   #closed = false
   #blockers = new Set<string>([
     consoleResourceBlocker,
-    "Twelve world base textures resolve through exact VMT/VTF bytes; water shaders and per-face lightmap atlases remain unavailable and use explicit diagnostic presentation.",
+    "Twelve world base textures and one exact first-style LDR lightmap atlas resolve; water shaders, directional bump-lightmaps, animated styles, and target filtering remain diagnostic.",
     "Static prop and exact rocket/sticky StudioModel geometry is available; first-person viewmodels and model animation/skin selection remain unavailable.",
     "TF2 PCF definitions and event context are unresolved; missing particle events emit diagnostics and no substitute effect.",
     "TF2 sound scripts and decoded resource buffers are unresolved; missing audio events create no Web Audio node or substitute sound.",

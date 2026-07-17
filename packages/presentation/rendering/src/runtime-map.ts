@@ -23,6 +23,7 @@ export type RuntimeBatch = Readonly<{
   positions: Float32Array
   normals: Float32Array
   uv: Float32Array
+  lightmapUv: Float32Array
   indices: Uint32Array
   faces: Uint32Array
 }>
@@ -57,6 +58,7 @@ export type RuntimeMap = Readonly<{
   drawableSurfaces: number
   models: readonly RuntimeModel[]
   modelOccurrences: readonly RuntimeModelOccurrence[]
+  lightmap?: Readonly<{ width: number; height: number; rgba: Float32Array }>
 }>
 
 export class RuntimeMapError extends Error {
@@ -111,6 +113,7 @@ type MutableBatch = {
   positions: number[]
   normals: number[]
   uv: number[]
+  lightmapUv: number[]
   indices: number[]
   faces: number[]
 }
@@ -192,12 +195,21 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
     positions: [],
     normals: [],
     uv: [],
+    lightmapUv: [],
     indices: [],
     faces: [],
   }))
   let totalVertices = 0
   let totalTriangles = 0
   let drawableSurfaces = 0
+  const lightmapRecords: Array<{
+    batch: MutableBatch
+    start: number
+    uv: number[]
+    offset: number
+    width: number
+    height: number
+  }> = []
   for (let index = 0; index < surfaceCount; index += 1) {
     const face = reader.u32()
     const model = reader.u32()
@@ -214,26 +226,93 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
     const positions = Array.from({ length: vertexCount * 3 }, () => reader.f32())
     const normals = Array.from({ length: vertexCount * 3 }, () => reader.f32())
     const uv = Array.from({ length: vertexCount * 2 }, () => reader.f32())
-    for (let value = 0; value < vertexCount * 2; value += 1) reader.f32()
+    const lightmapUv = Array.from({ length: vertexCount * 2 }, () => reader.f32())
     const indices = Array.from({ length: triangleCount * 3 }, () => reader.u32())
     if (indices.some((value) => value >= vertexCount)) {
       throw new RuntimeMapError("runtime map triangle index is invalid")
     }
-    reader.i32()
+    const lightOffset = reader.i32()
     reader.take(4)
-    reader.i32()
-    reader.i32()
+    const lightmapWidth = Math.max(1, reader.i32() + 1)
+    const lightmapHeight = Math.max(1, reader.i32() + 1)
     if (draw === 0 || model !== 0) continue
     const batch = batches[material]!
     const base = batch.positions.length / 3
     for (const value of positions) batch.positions.push(value)
     for (const value of normals) batch.normals.push(value)
     for (const value of uv) batch.uv.push(value)
+    const lightmapStart = batch.lightmapUv.length
+    for (let value = 0; value < lightmapUv.length; value += 1) batch.lightmapUv.push(0)
+    lightmapRecords.push({
+      batch,
+      start: lightmapStart,
+      uv: lightmapUv,
+      offset: lightOffset,
+      width: lightmapWidth,
+      height: lightmapHeight,
+    })
     for (const value of indices) batch.indices.push(value + base)
     for (let triangle = 0; triangle < triangleCount; triangle += 1) batch.faces.push(face)
     drawableSurfaces += 1
   }
-  reader.take(lightingSampleCount * 4)
+  const lighting = reader.take(lightingSampleCount * 4)
+  let lightmap: RuntimeMap["lightmap"]
+  if (lightmapRecords.length > 0) {
+    const atlasWidth = 4096
+    let x = 1
+    let y = 0
+    let rowHeight = 1
+    const placements: Array<{ x: number; y: number }> = []
+    for (const record of lightmapRecords) {
+      if (record.width < 1 || record.height < 1 || record.width > atlasWidth) {
+        throw new RuntimeMapError("lightmap dimensions are invalid")
+      }
+      if (x + record.width > atlasWidth) {
+        x = 0
+        y += rowHeight
+        rowHeight = 0
+      }
+      placements.push({ x, y })
+      x += record.width
+      rowHeight = Math.max(rowHeight, record.height)
+    }
+    const atlasHeight = y + rowHeight
+    if (atlasHeight < 1 || atlasHeight > 4096) throw new RuntimeMapError("lightmap atlas exceeds its limit")
+    const rgba = new Float32Array(atlasWidth * atlasHeight * 4)
+    rgba.set([1, 1, 1, 1])
+    for (const [recordIndex, record] of lightmapRecords.entries()) {
+      const placement = placements[recordIndex]!
+      const samples = record.width * record.height
+      const source = record.offset >= 0 ? record.offset / 4 : -1
+      if (source >= 0 && (!Number.isInteger(source) || source + samples > lightingSampleCount)) {
+        throw new RuntimeMapError("lightmap sample range is invalid")
+      }
+      for (let sample = 0; sample < samples; sample += 1) {
+        const targetX = placement.x + sample % record.width
+        const targetY = placement.y + Math.floor(sample / record.width)
+        const target = (targetY * atlasWidth + targetX) * 4
+        if (source < 0) {
+          rgba.set([1, 1, 1, 1], target)
+        } else {
+          const encoded = (source + sample) * 4
+          const exponentByte = lighting[encoded + 3]!
+          const exponent = exponentByte > 127 ? exponentByte - 256 : exponentByte
+          const scale = 2 ** exponent / 255
+          rgba[target] = lighting[encoded]! * scale
+          rgba[target + 1] = lighting[encoded + 1]! * scale
+          rgba[target + 2] = lighting[encoded + 2]! * scale
+          rgba[target + 3] = 1
+        }
+      }
+      for (let vertex = 0; vertex < record.uv.length / 2; vertex += 1) {
+        record.batch.lightmapUv[record.start + vertex * 2] =
+          (placement.x + record.uv[vertex * 2]! + 0.5) / atlasWidth
+        record.batch.lightmapUv[record.start + vertex * 2 + 1] =
+          (placement.y + record.uv[vertex * 2 + 1]! + 0.5) / atlasHeight
+      }
+    }
+    lightmap = Object.freeze({ width: atlasWidth, height: atlasHeight, rgba })
+  }
   const entityBytes = reader.sized().slice()
   if (schema >= 2) {
     const resolvedCount = reader.u32()
@@ -308,6 +387,7 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
     positions: new Float32Array(batch.positions),
     normals: new Float32Array(batch.normals),
     uv: new Float32Array(batch.uv),
+    lightmapUv: new Float32Array(batch.lightmapUv),
     indices: new Uint32Array(batch.indices),
     faces: new Uint32Array(batch.faces),
   })])
@@ -323,5 +403,6 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
     drawableSurfaces,
     models: Object.freeze(models),
     modelOccurrences: Object.freeze(modelOccurrences),
+    lightmap,
   })
 }

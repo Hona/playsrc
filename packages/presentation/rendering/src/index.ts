@@ -98,6 +98,7 @@ export async function createRenderer(canvas: HTMLCanvasElement): Promise<Readonl
   let disposed = false
   let modelTemplates = new Map<string, THREE.Group>()
   let modelResources: Array<THREE.BufferGeometry | THREE.Material | THREE.Texture> = []
+  let worldLightmap: THREE.DataTexture | undefined
 
   function clear(group: THREE.Group, disposeGeometry = true): void {
     for (const child of [...group.children]) {
@@ -117,7 +118,11 @@ export async function createRenderer(canvas: HTMLCanvasElement): Promise<Readonl
     modelTemplates = new Map()
   }
 
-  function materialFor(resolved: RuntimeMap["materials"][number], identity: string) {
+  function materialFor(
+    resolved: RuntimeMap["materials"][number],
+    identity: string,
+    lightMap?: THREE.DataTexture,
+  ) {
     const texture = resolved.baseTexture
       ? new THREE.DataTexture(
           resolved.baseTexture.rgba,
@@ -137,6 +142,8 @@ export async function createRenderer(canvas: HTMLCanvasElement): Promise<Readonl
     const material = new THREE.MeshBasicMaterial({
       color: texture ? 0xffffff : debugColor(identity),
       map: texture,
+      lightMap,
+      lightMapIntensity: 1,
       transparent: (resolved.features & 1) !== 0,
       alphaTest: (resolved.features & 4) !== 0 ? 0.5 : 0,
       side: (resolved.features & 8) !== 0 ? THREE.DoubleSide : THREE.FrontSide,
@@ -171,17 +178,34 @@ export async function createRenderer(canvas: HTMLCanvasElement): Promise<Readonl
       const staged = new THREE.Group()
       const stagedTemplates = new Map<string, THREE.Group>()
       const stagedResources: Array<THREE.BufferGeometry | THREE.Material | THREE.Texture> = []
+      const stagedLightmap = parsed.lightmap
+        ? new THREE.DataTexture(
+            parsed.lightmap.rgba,
+            parsed.lightmap.width,
+            parsed.lightmap.height,
+            THREE.RGBAFormat,
+            THREE.FloatType,
+          )
+        : undefined
+      if (stagedLightmap) {
+        stagedLightmap.colorSpace = THREE.LinearSRGBColorSpace
+        stagedLightmap.minFilter = THREE.NearestFilter
+        stagedLightmap.magFilter = THREE.NearestFilter
+        stagedLightmap.generateMipmaps = false
+        stagedLightmap.needsUpdate = true
+      }
       try {
         for (const batch of parsed.batches) {
           const geometry = new THREE.BufferGeometry()
           geometry.setAttribute("position", new THREE.BufferAttribute(batch.positions, 3))
           geometry.setAttribute("normal", new THREE.BufferAttribute(batch.normals, 3))
           geometry.setAttribute("uv", new THREE.BufferAttribute(batch.uv, 2))
+          geometry.setAttribute("uv1", new THREE.BufferAttribute(batch.lightmapUv, 2))
           geometry.setIndex(new THREE.BufferAttribute(batch.indices, 1))
           geometry.computeBoundingSphere()
           const materialIdentity = parsed.materials[batch.material]!.logicalPath
           const resolved = parsed.materials[batch.material]!
-          const { material, texture } = materialFor(resolved, materialIdentity)
+          const { material, texture } = materialFor(resolved, materialIdentity, stagedLightmap)
           const mesh = new THREE.Mesh(geometry, material)
           mesh.userData.materialIdentity = materialIdentity
           mesh.userData.texture = texture
@@ -214,13 +238,16 @@ export async function createRenderer(canvas: HTMLCanvasElement): Promise<Readonl
       } catch {
         clear(staged)
         for (const resource of stagedResources) resource.dispose()
+        stagedLightmap?.dispose()
         throw new RenderingError("BoundExceeded", "runtime map GPU staging failed")
       }
       clear(world)
       disposeModels()
+      worldLightmap?.dispose()
       for (const child of [...staged.children]) world.add(child)
       modelTemplates = stagedTemplates
       modelResources = stagedResources
+      worldLightmap = stagedLightmap
       map = parsed
       const diagnostics = Object.freeze(missing.map((material) => Object.freeze({
         code: "MissingMaterial" as const,
@@ -342,6 +369,8 @@ export async function createRenderer(canvas: HTMLCanvasElement): Promise<Readonl
       clear(world)
       clear(effects, false)
       disposeModels()
+      worldLightmap?.dispose()
+      worldLightmap = undefined
       effectGeometry.dispose()
       renderer.dispose()
     },

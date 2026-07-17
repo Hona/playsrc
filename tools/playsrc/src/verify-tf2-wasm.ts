@@ -137,6 +137,7 @@ export async function verifyTf2Wasm(
   require(resolvedTextures === 12, "runtime map resolved-texture count is invalid")
   require(renderMap.models.length === 7, "runtime model count is invalid")
   require(renderMap.modelOccurrences.length === 33, "runtime model occurrence count is invalid")
+  require(renderMap.lightmap !== undefined, "runtime lightmap atlas is unavailable")
   const teleports = exports.playsrc_teleport_count(handle)
   const teleportDestinations = exports.playsrc_teleport_destination_count(handle)
   require(teleports === 56, "runtime map teleport count is invalid")
@@ -198,6 +199,8 @@ export async function verifyTf2Wasm(
     resolvedTextures,
     models: renderMap.models.length,
     modelOccurrences: renderMap.modelOccurrences.length,
+    lightmapWidth: renderMap.lightmap.width,
+    lightmapHeight: renderMap.lightmap.height,
     teleports,
     teleportDestinations,
     tick: 64,
