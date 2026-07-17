@@ -12,12 +12,13 @@ Advance generic Source player movement from commands and world queries.
 
 ## Responsibilities
 
-- Implement shared ground, air, water, ladder, crouch, jump, stair, and velocity behavior.
+- Implement shared ground, air, water/current/swim/ledge-exit, ladder, crouch, jump, stair, observer, fly, noclip, base-velocity, conveyor, and player-side mover behavior.
 - Consume deterministic collision queries and explicit movement configuration.
 - Produce movement state suitable for both authority and prediction.
-- Advance one admitted fixed-tick command through a single versioned movement state and result containing walk/noclip mode, support identity/plane/friction, fall/jump latch, reversible crouch state/fraction/view, contacts, events, query transcript, wish/jump/step outputs, and deterministic trapped recovery.
-- Execute command-angle basis and normalization, speed selection, surface friction, projected ground/30-unit-capped air acceleration, split gravity, jump/landing transitions, four-bump/five-plane clipping, normalized two-plane creases, slopes, high/low 18-unit steps, blocked unduck retry, and accelerated/direct noclip without displacement collision.
-- Consume game-supplied hulls, views, speed/air/bunnyhop/backward/jump values, eligibility, step strategy, and accepted mode-transition dispositions without embedding a game-specific movement loop.
+- Advance one admitted fixed-tick command through a single versioned movement state and result containing movement/observer/toss modes, command and absolute angle state, support identity/plane/friction, base and support velocity, water/current/ledge-exit state, ladder normal, fall/jump latch, reversible crouch state/fraction/view, contacts, events, sweep and point-content transcripts, mover result, wish/jump/step outputs, and exact stuck-sequence state.
+- Execute client/surface/annular speed constraints, projected ground and capped-air acceleration, stop-speed friction, split/full gravity, support-relative jumping and landing, four-bump/five-plane clipping, normalized two-plane creases, generic and high-first step policies, blocked unduck retry, swim and ladder projection, observer follow/fixed/roaming behavior, default/bounce toss response, and accelerated/direct noclip without displacement collision.
+- Consume game-supplied hulls, views, speed/air/bunnyhop/backward/jump values, eligibility, step strategy, and accepted mode-transition dispositions. Immutable tracer extensions supply point contents, surface climbability, support/conveyor velocity, mover displacement/filtering, observer targets, and the monotonic clock required only by incremental stuck recovery.
+- Emit `StepResult::tick_trace` as the browser-neutral per-command comparison record: position, velocity, wish state, support, selected hull, crouch fraction/view, contacts, events, and mover disposition.
 - Reject malformed selected state, command, configuration, hull, velocity, coordinate, and trace values before publication with command number, operation, classification, field, exact offending bits, and configured-limit bits.
 
 ## Non-Responsibilities
@@ -28,7 +29,7 @@ Advance generic Source player movement from commands and world queries.
 
 ## Relationships
 
-Consumes one `Tracer`; Simulation schedules movement; each game module projects its movement policy and consumes the returned state/events. `State::snapshot_bytes` is the version-1 exact authority/prediction comparison surface.
+Consumes one immutable `Tracer`; Simulation schedules movement; each game module projects its movement policy and consumes the returned state/events. `State::snapshot_bytes` retains the version-1 TF2 integration record; complete selected-mode comparison uses `StepResult` and `TickTrace` until Simulation owns a replacement snapshot schema. Generic fly custom/slide responses return `Unsupported`: the pinned generic handler does not define a pure slide response and delegates custom response to mutable touch code.
 
 ## Completion
 
