@@ -1,0 +1,23 @@
+{
+  "name": "@playsrc/tf2-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite"
+  },
+  "dependencies": {
+    "@playsrc/asset-store": "workspace:*",
+    "@playsrc/audio": "workspace:*",
+    "@playsrc/game-tf2-browser": "workspace:*",
+    "@playsrc/particle": "workspace:*",
+    "@playsrc/rendering": "workspace:*",
+    "@playsrc/vgui": "workspace:*",
+    "@noble/hashes": "2.2.0",
+    "preact": "10.29.7"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "2.10.5",
+    "vite": "8.1.5"
+  }
+}

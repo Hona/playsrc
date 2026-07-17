@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "packageManager": "bun@1.4.0",
-  "workspaces": ["packages/*", "packages/presentation/*", "games/*/browser", "tools/*", "apps/services/*"],
+  "workspaces": ["packages/*", "packages/presentation/*", "games/*/browser", "tools/*", "apps/services/*", "apps/web/*"],
   "scripts": {
     "dev": "bun tools/playsrc/src/cli.ts dev",
     "setup": "bun tools/playsrc/src/cli.ts setup",

@@ -27,6 +27,7 @@ export type LoadedGame = Readonly<{
   payloadSha256: string
   cache: "hit" | "stored"
 }>
+export type StagedGame = LoadedGame
 
 export class Tf2WorkerError extends Error {
   constructor(
@@ -114,13 +115,13 @@ export class Tf2WorkerClient {
     if (response.kind !== "initialized") throw new Tf2WorkerError("WorkerFailed")
   }
 
-  async load(
+  async stage(
     generation: number,
     bsp: Uint8Array,
     profile: 0 | 1,
     configuration: Uint8Array,
     derivedKey: string,
-  ): Promise<LoadedGame> {
+  ): Promise<StagedGame> {
     if (
       !Number.isSafeInteger(generation)
       || generation < 1
@@ -169,10 +170,6 @@ export class Tf2WorkerClient {
         await this.#cache.write(derivedKey, loaded.payloadSha256, payload)
         cache = "stored"
       }
-      const activated = await this.#request({ kind: "activate", generation })
-      if (activated.kind !== "activated" || activated.generation !== generation) {
-        throw new Tf2WorkerError("WorkerFailed")
-      }
       return Object.freeze({
         generation,
         payload,
@@ -184,6 +181,41 @@ export class Tf2WorkerClient {
         await this.#request({ kind: "discard", generation })
       } catch {
         // The worker can already have failed; the original classified failure remains authoritative.
+      }
+      throw error
+    }
+  }
+
+  async activate(generation: number): Promise<void> {
+    const activated = await this.#request({ kind: "activate", generation })
+    if (activated.kind !== "activated" || activated.generation !== generation) {
+      throw new Tf2WorkerError("WorkerFailed")
+    }
+  }
+
+  async discard(generation: number): Promise<void> {
+    const discarded = await this.#request({ kind: "discard", generation })
+    if (discarded.kind !== "discarded" || discarded.generation !== generation) {
+      throw new Tf2WorkerError("WorkerFailed")
+    }
+  }
+
+  async load(
+    generation: number,
+    bsp: Uint8Array,
+    profile: 0 | 1,
+    configuration: Uint8Array,
+    derivedKey: string,
+  ): Promise<LoadedGame> {
+    const staged = await this.stage(generation, bsp, profile, configuration, derivedKey)
+    try {
+      await this.activate(generation)
+      return staged
+    } catch (error) {
+      try {
+        await this.discard(generation)
+      } catch {
+        // Activation failure remains the authoritative result when the worker cannot discard.
       }
       throw error
     }

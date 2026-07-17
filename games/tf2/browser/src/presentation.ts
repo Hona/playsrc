@@ -1,11 +1,48 @@
 import type { ParticleRenderItem } from "@playsrc/particle"
-import type { Effect } from "@playsrc/rendering"
+import type { Camera, Effect } from "@playsrc/rendering"
 import type { Snapshot } from "./codec"
 
 export type PresentationDiagnostic = Readonly<{
   code: "MissingProjectileModel" | "MissingParticleContext" | "MissingAudioContext"
   identity: string
 }>
+
+export type Tf2Hud = Readonly<{
+  health: number
+  maxHealth: number
+  className: "Soldier" | "Demoman"
+  weaponName: "Rocket Launcher" | "Original" | "Stickybomb Launcher"
+  speed: number
+}>
+
+export function tf2Hud(snapshot: Snapshot): Tf2Hud {
+  return Object.freeze({
+    health: snapshot.health,
+    maxHealth: snapshot.class === 1 ? 200 : 175,
+    className: snapshot.class === 1 ? "Soldier" : "Demoman",
+    weaponName: snapshot.weapon === 1
+      ? "Rocket Launcher"
+      : snapshot.weapon === 2
+        ? "Original"
+        : "Stickybomb Launcher",
+    speed: Math.hypot(...snapshot.velocity),
+  })
+}
+
+export function tf2Camera(snapshot: Snapshot, yawDegrees: number, pitchDegrees: number): Camera {
+  return Object.freeze({
+    position: Object.freeze([
+      snapshot.position[0],
+      snapshot.position[1],
+      snapshot.position[2] + (snapshot.crouched ? 45 : 68),
+    ]) as readonly [number, number, number],
+    yawDegrees,
+    pitchDegrees,
+    verticalFovDegrees: 74,
+    near: 1,
+    far: 32_768,
+  })
+}
 
 export function tf2Presentation(
   snapshot: Snapshot,
