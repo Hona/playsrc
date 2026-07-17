@@ -455,6 +455,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "playsrc-tf2-wasm"
+version = "0.1.0"
+dependencies = [
+ "playsrc-bsp",
+ "playsrc-collision",
+ "playsrc-entity",
+ "playsrc-map",
+ "playsrc-movement",
+ "playsrc-tf2",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "playsrc-visibility"
 version = "0.1.0"
 dependencies = [

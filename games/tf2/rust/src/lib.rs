@@ -68,6 +68,7 @@ pub struct Snapshot {
     pub projectiles: Vec<Projectile>,
     pub events: Vec<Event>,
 }
+#[derive(Clone)]
 pub struct Session<T: Tracer> {
     tracer: T,
     tick: u64,

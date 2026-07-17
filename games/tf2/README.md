@@ -11,6 +11,7 @@ Implement the complete Team Fortress 2 game over generic Source modules.
 - Provide the game behavior used by every TF2 ruleset and product.
 - Declare exact TF2 content-provider targets, including the immutable `jump_beef` download identity consumed by local development.
 - Advance a deterministic local Soldier/Demoman jump-combat session with stock rocket/Original and stickybomb state, projectiles, self-damage, blast impulse, class health, respawn, and ordered presentation events over generic Movement and Collision.
+- Expose the local TF2 session to browser workers through one bounded fixed-tick WASM phase and a compact generation-bound binary snapshot containing player, projectile, and ordered presentation-event state.
 
 ## Non-Responsibilities
 

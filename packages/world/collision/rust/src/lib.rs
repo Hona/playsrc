@@ -31,6 +31,7 @@ pub struct World {
     pub leaf_brushes: Vec<u16>,
     pub nodes: Vec<Node>,
     pub models: Vec<Model>,
+    pub world_brushes: Vec<usize>,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Hull {
@@ -126,6 +127,16 @@ pub fn compile(bsp: &Bsp) -> Result<World, Error> {
             return Err(error(ErrorCode::InvalidReference, Some(i)));
         }
     }
+    let world_brushes = model_brushes(
+        models
+            .first()
+            .ok_or_else(|| error(ErrorCode::InvalidReference, None))?
+            .head_node,
+        &nodes,
+        &leaves,
+        &leaf_brushes,
+        output.len(),
+    )?;
     Ok(World {
         planes,
         sides,
@@ -134,6 +145,7 @@ pub fn compile(bsp: &Bsp) -> Result<World, Error> {
         leaf_brushes,
         nodes,
         models,
+        world_brushes,
     })
 }
 fn plane(p: &BspPlane, i: usize) -> Result<Plane, Error> {
@@ -214,7 +226,8 @@ impl World {
             plane: None,
             end,
         };
-        for (index, brush) in self.brushes.iter().enumerate() {
+        for &index in &self.world_brushes {
+            let brush = &self.brushes[index];
             if brush.contents & mask == 0 {
                 continue;
             }
@@ -291,6 +304,49 @@ fn error(code: ErrorCode, item: Option<usize>) -> Error {
         range: None,
     }
 }
+fn model_brushes(
+    head: i32,
+    nodes: &[Node],
+    leaves: &[Leaf],
+    leaf_brushes: &[u16],
+    brush_count: usize,
+) -> Result<Vec<usize>, Error> {
+    let mut pending = vec![head];
+    let mut seen_nodes = std::collections::BTreeSet::new();
+    let mut seen_leaves = std::collections::BTreeSet::new();
+    let mut brushes = std::collections::BTreeSet::new();
+    while let Some(child) = pending.pop() {
+        if child >= 0 {
+            let index = child as usize;
+            let node = nodes
+                .get(index)
+                .ok_or_else(|| error(ErrorCode::InvalidReference, Some(index)))?;
+            if seen_nodes.insert(index) {
+                pending.extend(node.children);
+            }
+        } else {
+            let index = (-1_i64 - child as i64) as usize;
+            if !seen_leaves.insert(index) {
+                continue;
+            }
+            let leaf = leaves
+                .get(index)
+                .ok_or_else(|| error(ErrorCode::InvalidReference, Some(index)))?;
+            let start = leaf.first_leaf_brush as usize;
+            let end = start + leaf.leaf_brush_count as usize;
+            for &brush in leaf_brushes
+                .get(start..end)
+                .ok_or_else(|| error(ErrorCode::InvalidReference, Some(index)))?
+            {
+                if brush as usize >= brush_count {
+                    return Err(error(ErrorCode::InvalidReference, Some(index)));
+                }
+                brushes.insert(brush as usize);
+            }
+        }
+    }
+    Ok(brushes.into_iter().collect())
+}
 
 #[cfg(test)]
 mod tests {
@@ -338,6 +394,9 @@ mod tests {
         let mut brush = 0_i32.to_le_bytes().to_vec();
         brush.extend_from_slice(&6_i32.to_le_bytes());
         brush.extend_from_slice(&1_i32.to_le_bytes());
+        brush.extend_from_slice(&0_i32.to_le_bytes());
+        brush.extend_from_slice(&6_i32.to_le_bytes());
+        brush.extend_from_slice(&1_i32.to_le_bytes());
         add(18, 0, &brush);
         let mut leaf = vec![0; 32];
         leaf[24..26].copy_from_slice(&0_u16.to_le_bytes());
@@ -345,12 +404,16 @@ mod tests {
         add(10, 1, &leaf);
         add(17, 0, &0_u16.to_le_bytes());
         add(5, 0, &[0; 32]);
-        add(14, 0, &[0; 48]);
+        let mut model = [0; 48];
+        model[36..40].copy_from_slice(&(-1_i32).to_le_bytes());
+        add(14, 0, &model);
         parse(&b, Profile::Source2013V20, Limits::default()).unwrap()
     }
     #[test]
     fn traces_point_and_hull_against_brush() {
         let w = compile(&fixture()).unwrap();
+        assert_eq!(w.brushes.len(), 2);
+        assert_eq!(w.world_brushes, [0]);
         let point = Hull {
             mins: [0.; 3],
             maxs: [0.; 3],

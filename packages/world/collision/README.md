@@ -16,7 +16,7 @@ Represent collision geometry and answer deterministic spatial queries.
 - Build queryable world, brush-model, prop, trigger, and model collision shapes.
 - Perform point contents, ray traces, hull sweeps, overlaps, and contact queries.
 - Preserve Source masks, contents, surfaces, fractions, normals, and solid-state results.
-- Validate immutable BSP brush inputs and sweep points or axis-aligned hulls through Source-space convex half-spaces with the 1/32-inch brush epsilon.
+- Validate immutable BSP brush inputs, distinguish model 0 world brushes from non-world brush models through the model head-node leaf set, and sweep points or axis-aligned hulls through Source-space world convex half-spaces with the 1/32-inch brush epsilon.
 
 ## Non-Responsibilities
 
