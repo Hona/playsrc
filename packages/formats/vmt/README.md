@@ -18,6 +18,7 @@ Parse Source 1 VMT material documents without conflating document syntax with ru
 - Preserve unknown parameters and structures for semantic classification.
 - Emit bounded patch dependency requests and consume caller-resolved response batches without invoking JavaScript or a provider callback inside composition.
 - Retain every effective node's source identity, span, and base, insert, or replace operation.
+- Preserve inherited proxy children when an empty nested `replace` object has no target child operation; expose the unchanged ordered declarations to Material.
 
 ## Non-Responsibilities
 

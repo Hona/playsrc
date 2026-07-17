@@ -67,6 +67,13 @@ The denominator is Not accepted. Reviewer identity, review date, reviewed commit
 
 ## Behavior Families
 
+### `jump_beef` world-surface parity checkpoint
+
+| Source/TF2 behavior | playsrc behavior | Evidence | Status |
+|---|---|---|---|
+| Exact camera origins produce deterministic origin leaf/cluster/area, merged PVS, sky classification, front-to-back leaves, and deduplicated world-surface candidates without renderer frustum/material/draw policy. | The immutable view seam reproduces the exact current BSP inventory and remains unchanged by material work. | [`inventories/jump-beef-view.md`](inventories/jump-beef-view.md), fixed camera, outside-world origin, cubemap points, and water AABB hashes. | Ready |
+| Candidate surface identity remains the BSP face index and candidate order remains first visible leaf/leaf-face encounter; no material or alpha state changes PVS membership. | View deduplicates repeated leaf-face memberships on first encounter and accepts no material input. | Synthetic near/far repeated face `11` emits `[10,11,12]`; exact target emits 91 faces at the retained stream hash. | Ready |
+
 ### World environment output checkpoint
 
 | Source behavior | playsrc behavior | Evidence | Status |

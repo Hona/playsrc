@@ -22,6 +22,8 @@ Assemble parsed Source data and semantic domain outputs into one canonical plays
 - Select one complete `ldr` or `hdr` lighting profile without fallback. HDR compilation validates face, RGBExp32 sample, world-light, leaf-ambient, map-flag, detail-prop-lighting, and static-prop-lighting inputs before emitting output.
 - Emit HDR samples as linear RGB binary32 without exposure or tone mapping, preserving flat, directional-normal, and directional-SSBump face classifications plus every style identity.
 - Finalize one bounded render-neutral environment from selected-profile sky and cubemap requests, water surfaces and leaf volumes, entity decals and compiled overlays, fog/environment controllers, and exact dependency responses. Missing selected resources fail without profile, default-cubemap, or sky substitution.
+- Retain each surface's texinfo index, stored BSP plane and face side, raw texture/lightmap vectors, top-left UV origin, mapping dimensions, and oriented render normals as separate canonical facts.
+- Project decals with floating mapping dimensions, stored-plane floor/wall basis, exact receiver exclusions, unit-square UV clipping, and a 0.1-unit normal offset; derive overlay V as `normal × U` and clip each standard/water overlay independently to every retained source face triangle.
 
 ## Non-Responsibilities
 

@@ -18,8 +18,16 @@ pub struct Surface {
     pub face: usize,
     pub model: usize,
     pub material: usize,
+    pub texture_info: usize,
     pub flags: i32,
     pub draw: bool,
+    pub plane: [f32; 4],
+    pub plane_back: bool,
+    pub texture_vectors: [[f32; 4]; 2],
+    pub lightmap_vectors: [[f32; 4]; 2],
+    pub lightmap_mins: [i32; 2],
+    pub texture_size: [i32; 2],
+    pub uv_origin: TextureCoordinateOrigin,
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
     pub uv: Vec<[f32; 2]>,
@@ -29,6 +37,10 @@ pub struct Surface {
     pub light_styles: [u8; 4],
     pub lightmap_size: [i32; 2],
     pub compiled_primitives: bool,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TextureCoordinateOrigin {
+    TopLeft,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct CanonicalMap {
@@ -184,6 +196,10 @@ pub fn compile(bsp: &Bsp, profile: LightingProfile) -> Result<CanonicalMap, Erro
         LumpData::Vertices(v) => v,
         _ => return Err(error(ErrorCode::MissingLump, None)),
     };
+    let planes = match &bsp.lumps[1].records {
+        LumpData::Planes(v) => v,
+        _ => return Err(error(ErrorCode::MissingLump, None)),
+    };
     let edges = match &bsp.lumps[12].records {
         LumpData::Edges(v) => v,
         _ => return Err(error(ErrorCode::MissingLump, None)),
@@ -257,17 +273,39 @@ pub fn compile(bsp: &Bsp, profile: LightingProfile) -> Result<CanonicalMap, Erro
         if positions.len() < 3 {
             return Err(error(ErrorCode::InvalidRange, Some(face_index)));
         }
+        let texture_info = usize::try_from(face.texture_info_index)
+            .map_err(|_| error(ErrorCode::InvalidReference, Some(face_index)))?;
         let info = texinfo
-            .get(
-                usize::try_from(face.texture_info_index)
-                    .map_err(|_| error(ErrorCode::InvalidReference, Some(face_index)))?,
-            )
+            .get(texture_info)
             .ok_or_else(|| error(ErrorCode::InvalidReference, Some(face_index)))?;
         let material = usize::try_from(info.texture_data_index)
             .map_err(|_| error(ErrorCode::InvalidReference, Some(face_index)))?;
         let material_info = materials
             .get(material)
             .ok_or_else(|| error(ErrorCode::InvalidReference, Some(face_index)))?;
+        let plane = planes
+            .get(face.plane_index as usize)
+            .ok_or_else(|| error(ErrorCode::InvalidReference, Some(face_index)))?;
+        let stored_plane = [
+            plane.normal.x.value(),
+            plane.normal.y.value(),
+            plane.normal.z.value(),
+            plane.distance.value(),
+        ];
+        let texture_vectors = std::array::from_fn(|axis| {
+            std::array::from_fn(|component| info.texture_vectors[axis][component].value())
+        });
+        let lightmap_vectors = std::array::from_fn(|axis| {
+            std::array::from_fn(|component| info.lightmap_vectors[axis][component].value())
+        });
+        if stored_plane
+            .iter()
+            .chain(texture_vectors.iter().flatten())
+            .chain(lightmap_vectors.iter().flatten())
+            .any(|value| !value.is_finite())
+        {
+            return Err(error(ErrorCode::NonFinite, Some(face_index)));
+        }
         let face_normals = face_normals(
             face,
             face_index,
@@ -317,8 +355,16 @@ pub fn compile(bsp: &Bsp, profile: LightingProfile) -> Result<CanonicalMap, Erro
             face: face_index,
             model: face_models[face_index],
             material,
+            texture_info,
             flags,
             draw,
+            plane: stored_plane,
+            plane_back: face.side != 0,
+            texture_vectors,
+            lightmap_vectors,
+            lightmap_mins: face.lightmap_mins,
+            texture_size: [material_info.width, material_info.height],
+            uv_origin: TextureCoordinateOrigin::TopLeft,
             positions,
             normals: face_normals,
             uv,
@@ -865,6 +911,9 @@ fn materials(
     data.iter()
         .enumerate()
         .map(|(index, v)| {
+            if v.width <= 0 || v.height <= 0 {
+                return Err(error(ErrorCode::InvalidMaterial, Some(index)));
+            }
             let table_index = usize::try_from(v.name_string_table_index)
                 .map_err(|_| error(ErrorCode::InvalidMaterial, Some(index)))?;
             let offset = usize::try_from(
@@ -1006,7 +1055,7 @@ fn uv(p: &[f32; 3], v: &[[playsrc_bsp::Float32; 4]; 2], w: i32, h: i32) -> [f32;
     let d = |a: usize| {
         p[0] * v[a][0].value() + p[1] * v[a][1].value() + p[2] * v[a][2].value() + v[a][3].value()
     };
-    [d(0) / w.max(1) as f32, d(1) / h.max(1) as f32]
+    [d(0) / w as f32, d(1) / h as f32]
 }
 fn lightmap_uv(p: &[f32; 3], i: &TextureInfo, f: &Face) -> [f32; 2] {
     let d = |a: usize| {

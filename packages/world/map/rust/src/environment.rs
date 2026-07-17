@@ -20,6 +20,7 @@ const NON_DECAL_FLAGS: i32 =
     SURF_SKY_2D | SURF_SKY | SURF_TRIGGER | SURF_NODRAW | SURF_HINT | SURF_SKIP | SURF_NODECALS;
 const INFODECAL_TRACE_EXTENT: f32 = 5.0;
 const INFODECAL_PLANE_DISTANCE: f32 = 4.0;
+const MARK_NORMAL_OFFSET: f32 = 0.1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EnvironmentLimits {
@@ -376,6 +377,7 @@ pub struct MarkFragment {
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
     pub uv: Vec<[f32; 2]>,
+    pub lightmap_uv: Vec<[f32; 2]>,
     pub triangles: Vec<[u32; 3]>,
 }
 
@@ -388,6 +390,7 @@ pub struct MarkRecord {
     pub status: MarkStatus,
     pub material_path: String,
     pub material_sha256: Option<[u8; 32]>,
+    pub material_state: Option<DecalState>,
     pub origin: [f32; 3],
     pub target_model: Option<usize>,
     pub target_faces: Vec<usize>,
@@ -1038,14 +1041,7 @@ fn compile_controllers(
             ControllerState::Fog(fog_state(entity, true)?)
         } else if classname.eq_ignore_ascii_case(b"sky_camera") {
             let origin = vector3_required(entity, b"origin")?;
-            let scale = integer_or(entity, b"scale", 16)?;
-            if scale <= 0 {
-                return Err(entity_failure(
-                    EnvironmentErrorCode::InvalidField,
-                    entity,
-                    b"scale",
-                ));
-            }
+            let scale = integer_or(entity, b"scale", 0)?;
             let leaf = visibility.locate_leaf(origin).map_err(|_| {
                 entity_failure(EnvironmentErrorCode::InvalidReference, entity, b"origin")
             })?;
@@ -1065,13 +1061,6 @@ fn compile_controllers(
         } else if classname.eq_ignore_ascii_case(b"water_lod_control") {
             let start = float_or_entity(entity, b"cheapwaterstartdistance", 1000.0)?;
             let end = float_or_entity(entity, b"cheapwaterenddistance", 2000.0)?;
-            if start < 0.0 || end < start {
-                return Err(entity_failure(
-                    EnvironmentErrorCode::InvalidField,
-                    entity,
-                    b"cheapwaterenddistance",
-                ));
-            }
             ControllerState::WaterLod { start, end }
         } else if classname.eq_ignore_ascii_case(b"light_environment") {
             ControllerState::EnvironmentLight {
@@ -1114,26 +1103,26 @@ fn compile_controllers(
 
 fn fog_state(entity: &Entity, main_view: bool) -> Result<FogState, EnvironmentError> {
     let maximum_density = float_or_entity(entity, b"fogmaxdensity", 1.0)?;
-    if !(0.0..=1.0).contains(&maximum_density) {
-        return Err(entity_failure(
-            EnvironmentErrorCode::InvalidField,
-            entity,
-            b"fogmaxdensity",
-        ));
-    }
+    let direction = if bool_or_entity(entity, b"use_angles", false)? {
+        let [pitch, yaw, _] = vector3_or(entity, b"angles", [0.0; 3])?.map(f32::to_radians);
+        let (sin_pitch, cos_pitch) = pitch.sin_cos();
+        let (sin_yaw, cos_yaw) = yaw.sin_cos();
+        [-cos_pitch * cos_yaw, -cos_pitch * sin_yaw, sin_pitch]
+    } else {
+        vector3_or(entity, b"fogdir", [0.0; 3])?
+    };
     Ok(FogState {
         enabled: bool_or_entity(entity, b"fogenable", false)?,
         blend: bool_or_entity(entity, b"fogblend", false)?,
-        direction: vector3_or(entity, b"fogdir", [0.0; 3])?,
+        direction,
         primary: color_or_entity(entity, b"fogcolor", [0, 0, 0, 255])?,
         secondary: color_or_entity(entity, b"fogcolor2", [0, 0, 0, 255])?,
         start: float_or_entity(entity, b"fogstart", 0.0)?,
         end: float_or_entity(entity, b"fogend", 0.0)?,
         maximum_density,
         far_z: main_view
-            .then(|| optional_float_entity(entity, b"farz"))
-            .transpose()?
-            .flatten(),
+            .then(|| float_or_entity(entity, b"farz", 0.0))
+            .transpose()?,
         radial: bool_or_entity(entity, b"fogradial", false)?,
     })
 }
@@ -1466,6 +1455,7 @@ fn compile_marks(
                 status: MarkStatus::Missing,
                 material_path,
                 material_sha256: None,
+                material_state: None,
                 origin,
                 target_model: None,
                 target_faces: Vec::new(),
@@ -1500,6 +1490,7 @@ fn compile_marks(
             },
             material_path: material.logical_path.clone(),
             material_sha256: Some(material.source_sha256),
+            material_state: Some(material.state),
             origin,
             target_model: projection.target.map(|target| target.0),
             target_faces,
@@ -1528,6 +1519,10 @@ fn compile_marks(
             .materials
             .get(material_index)
             .ok_or_else(|| failure(EnvironmentErrorCode::InvalidReference, Some(overlay.index)))?;
+        let material_state = materials
+            .get(&material_index)
+            .map(|material| material.decal)
+            .ok_or_else(|| failure(EnvironmentErrorCode::InvalidReference, Some(material_index)))?;
         let fragments = project_overlay(map, overlay)?;
         let target_model = fragments.first().map(|fragment| fragment.model);
         let target_faces = unique_fragment_faces(&fragments);
@@ -1557,6 +1552,7 @@ fn compile_marks(
             },
             material_path: material_reference.logical_path.clone(),
             material_sha256: None,
+            material_state: Some(material_state),
             origin: overlay.origin,
             target_model,
             target_faces,
@@ -1623,17 +1619,15 @@ fn parse_overlays(
         }
         let points = encoded.map(|value| [value[0], value[1]]);
         let origin = f32x3(record, vectors + 64);
-        let normal = normalize(f32x3(record, vectors + 76))
-            .ok_or_else(|| failure(EnvironmentErrorCode::InvalidRecord, Some(index)))?;
-        let basis_u = normalize([encoded[0][2], encoded[1][2], encoded[2][2]])
-            .ok_or_else(|| failure(EnvironmentErrorCode::InvalidRecord, Some(index)))?;
-        let basis_v_sign = if encoded[3][2] == 1.0 { -1.0 } else { 1.0 };
-        let basis_v = normalize(scale(cross(normal, basis_u), basis_v_sign))
+        let normal = f32x3(record, vectors + 76);
+        let (basis_u, basis_v) = overlay_basis(&encoded, normal)
             .ok_or_else(|| failure(EnvironmentErrorCode::InvalidRecord, Some(index)))?;
         if uv
             .iter()
             .flatten()
             .chain(origin.iter())
+            .chain(normal.iter())
+            .chain(basis_u.iter())
             .any(|value| !value.is_finite())
         {
             return Err(failure(EnvironmentErrorCode::NonFinite, Some(index)));
@@ -1720,7 +1714,7 @@ fn project_infodecal(
             .iter()
             .map(|position| transform.point_to_world(*position))
             .collect();
-        let normal = normalize(transform.vector_to_world(surface_normal(surface)?))
+        let normal = normalize(transform.vector_to_world(stored_surface_normal(surface)?))
             .ok_or_else(|| failure(EnvironmentErrorCode::InvalidRecord, Some(surface.face)))?;
         if let Some(amount) = segment_polygon_hit(start, end, &world_positions, normal) {
             hits.push((amount, surface.model, surface.face));
@@ -1747,8 +1741,8 @@ fn project_infodecal(
         .iter()
         .filter(|surface| surface.model == target_model)
     {
-        let normal = surface_normal(surface)?;
-        let plane_distance = dot(surface.positions[0], normal);
+        let normal = stored_surface_normal(surface)?;
+        let plane_distance = surface.plane[3];
         if (dot(local_origin, normal) - plane_distance).abs() >= INFODECAL_PLANE_DISTANCE {
             continue;
         }
@@ -1767,35 +1761,22 @@ fn project_infodecal(
         let Some((basis_u, basis_v)) = decal_basis(normal) else {
             continue;
         };
-        let center = sub(
-            local_origin,
-            scale(normal, dot(local_origin, normal) - plane_distance),
-        );
-        let half_u = scale(basis_u, dimensions[0] * 0.5);
-        let half_v = scale(basis_v, dimensions[1] * 0.5);
-        let quad = vec![
-            ClipVertex {
-                position: sub(sub(center, half_u), half_v),
-                uv: [0.0, 0.0],
-            },
-            ClipVertex {
-                position: add(sub(center, half_v), half_u),
-                uv: [1.0, 0.0],
-            },
-            ClipVertex {
-                position: add(add(center, half_u), half_v),
-                uv: [1.0, 1.0],
-            },
-            ClipVertex {
-                position: add(sub(center, half_u), half_v),
-                uv: [0.0, 1.0],
-            },
-        ];
-        if let Some(fragment) = clipped_fragment(
-            surface,
-            clip_to_convex(quad, &surface.positions, normal),
-            normal,
-        ) {
+        let basis_u = scale(basis_u, dimensions[0].recip());
+        let basis_v = scale(basis_v, dimensions[1].recip());
+        let offset_u = 0.5 - dot(local_origin, basis_u);
+        let offset_v = 0.5 - dot(local_origin, basis_v);
+        let face = surface
+            .positions
+            .iter()
+            .map(|position| ClipVertex {
+                position: *position,
+                uv: [
+                    dot(*position, basis_u) + offset_u,
+                    dot(*position, basis_v) + offset_v,
+                ],
+            })
+            .collect();
+        if let Some(fragment) = clipped_fragment(surface, clip_decal_unit(face), normal) {
             fragments.push(fragment);
         }
     }
@@ -1833,13 +1814,13 @@ fn project_overlay(
             .get(*face)
             .filter(|surface| surface.face == *face)
             .ok_or_else(|| failure(EnvironmentErrorCode::InvalidReference, Some(overlay.index)))?;
-        let normal = surface_normal(surface)?;
+        let normal = stored_surface_normal(surface)?;
         let denominator = dot(normal, overlay.normal);
         if denominator.abs() < 1.0e-5 {
             continue;
         }
-        let plane_distance = dot(surface.positions[0], normal);
-        let projected = source
+        let plane_distance = surface.plane[3];
+        let projected: Vec<ClipVertex> = source
             .iter()
             .map(|vertex| ClipVertex {
                 position: add(
@@ -1852,33 +1833,64 @@ fn project_overlay(
                 uv: vertex.uv,
             })
             .collect();
+        fragments.extend(clip_overlay_face(surface, &projected, normal));
+    }
+    Ok(fragments)
+}
+
+fn overlay_basis(encoded: &[[f32; 3]; 4], normal: [f32; 3]) -> Option<([f32; 3], [f32; 3])> {
+    if normal
+        .iter()
+        .chain(encoded.iter().flatten())
+        .any(|value| !value.is_finite())
+        || normalize(normal).is_none()
+    {
+        return None;
+    }
+    let basis_u = [encoded[0][2], encoded[1][2], encoded[2][2]];
+    normalize(basis_u)?;
+    Some((basis_u, normalize(cross(normal, basis_u))?))
+}
+
+fn clip_overlay_face(
+    surface: &Surface,
+    projected: &[ClipVertex],
+    normal: [f32; 3],
+) -> Vec<MarkFragment> {
+    let mut fragments = Vec::new();
+    for triangle in (1..surface.positions.len().saturating_sub(1)).map(|index| {
+        [
+            surface.positions[0],
+            surface.positions[index],
+            surface.positions[index + 1],
+        ]
+    }) {
+        let triangle_normal = cross(sub(triangle[1], triangle[0]), sub(triangle[2], triangle[0]));
+        let area = dot(triangle_normal, triangle_normal).sqrt() * 0.5;
+        if area <= 1.0 {
+            continue;
+        }
         if let Some(fragment) = clipped_fragment(
             surface,
-            clip_to_convex(projected, &surface.positions, normal),
+            clip_to_convex(projected.to_vec(), &triangle, normal),
             normal,
         ) {
             fragments.push(fragment);
         }
     }
-    Ok(fragments)
+    fragments
 }
 
-fn surface_normal(surface: &Surface) -> Result<[f32; 3], EnvironmentError> {
-    let origin = *surface
-        .positions
-        .first()
-        .ok_or_else(|| failure(EnvironmentErrorCode::InvalidRecord, Some(surface.face)))?;
-    let mut normal = surface
-        .positions
-        .windows(2)
-        .skip(1)
-        .find_map(|edge| normalize(cross(sub(edge[0], origin), sub(edge[1], origin))))
-        .ok_or_else(|| failure(EnvironmentErrorCode::InvalidRecord, Some(surface.face)))?;
-    let supplied = surface.normals.iter().copied().fold([0.0; 3], add);
-    if dot(normal, supplied) < 0.0 {
-        normal = scale(normal, -1.0);
+fn stored_surface_normal(surface: &Surface) -> Result<[f32; 3], EnvironmentError> {
+    let normal = [surface.plane[0], surface.plane[1], surface.plane[2]];
+    if normal.iter().any(|value| !value.is_finite()) || dot(normal, normal) <= 1.0e-12 {
+        Err(failure(
+            EnvironmentErrorCode::InvalidRecord,
+            Some(surface.face),
+        ))
+    } else {
+        Ok(normal)
     }
-    Ok(normal)
 }
 
 fn segment_polygon_hit(
@@ -1971,6 +1983,62 @@ fn clip_to_convex(
     subject
 }
 
+fn clip_decal_unit(mut polygon: Vec<ClipVertex>) -> Vec<ClipVertex> {
+    polygon = clip_decal_boundary(
+        polygon,
+        |uv| uv[1] < 1.0,
+        |one, two| (1.0 - one[1]) / (two[1] - one[1]),
+    );
+    polygon = clip_decal_boundary(
+        polygon,
+        |uv| uv[0] > 0.0,
+        |one, two| one[0] / (one[0] - two[0]),
+    );
+    polygon = clip_decal_boundary(
+        polygon,
+        |uv| uv[0] < 1.0,
+        |one, two| (1.0 - one[0]) / (two[0] - one[0]),
+    );
+    clip_decal_boundary(
+        polygon,
+        |uv| uv[1] > 0.0,
+        |one, two| one[1] / (one[1] - two[1]),
+    )
+}
+
+fn clip_decal_boundary(
+    input: Vec<ClipVertex>,
+    inside: impl Fn([f32; 2]) -> bool,
+    amount: impl Fn([f32; 2], [f32; 2]) -> f32,
+) -> Vec<ClipVertex> {
+    let Some(mut previous) = input.last().copied() else {
+        return Vec::new();
+    };
+    let mut output = Vec::new();
+    for current in input {
+        let previous_inside = inside(previous.uv);
+        let current_inside = inside(current.uv);
+        if previous_inside != current_inside {
+            let amount = amount(previous.uv, current.uv);
+            output.push(ClipVertex {
+                position: add(
+                    previous.position,
+                    scale(sub(current.position, previous.position), amount),
+                ),
+                uv: [
+                    previous.uv[0] + (current.uv[0] - previous.uv[0]) * amount,
+                    previous.uv[1] + (current.uv[1] - previous.uv[1]) * amount,
+                ],
+            });
+        }
+        if current_inside {
+            output.push(current);
+        }
+        previous = current;
+    }
+    output
+}
+
 fn clipped_fragment(
     surface: &Surface,
     polygon: Vec<ClipVertex>,
@@ -2000,17 +2068,29 @@ fn clipped_fragment(
     Some(MarkFragment {
         model: surface.model,
         face: surface.face,
-        positions: polygon.iter().map(|vertex| vertex.position).collect(),
+        positions: polygon
+            .iter()
+            .map(|vertex| add(vertex.position, scale(normal, MARK_NORMAL_OFFSET)))
+            .collect(),
         normals: vec![normal; polygon.len()],
         uv: polygon.iter().map(|vertex| vertex.uv).collect(),
+        lightmap_uv: polygon
+            .iter()
+            .map(|vertex| {
+                std::array::from_fn(|axis| {
+                    dot4(surface.lightmap_vectors[axis], vertex.position)
+                        - surface.lightmap_mins[axis] as f32
+                })
+            })
+            .collect(),
         triangles,
     })
 }
 
 fn decal_dimension(pixels: u32, scale: f32) -> Option<f32> {
     let dimension = pixels as f32 * scale;
-    (scale.is_finite() && scale > 0.0 && dimension >= 1.0 && dimension <= i32::MAX as f32)
-        .then(|| dimension.trunc())
+    (scale.is_finite() && scale > 0.0 && dimension > 0.0 && dimension <= i32::MAX as f32)
+        .then_some(dimension)
 }
 
 fn material_path(reference: &[u8]) -> Option<String> {
@@ -2153,6 +2233,10 @@ fn normalize(value: [f32; 3]) -> Option<[f32; 3]> {
 
 fn dot(left: [f32; 3], right: [f32; 3]) -> f32 {
     left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
+}
+
+fn dot4(vector: [f32; 4], point: [f32; 3]) -> f32 {
+    point[0] * vector[0] + point[1] * vector[1] + point[2] * vector[2] + vector[3]
 }
 
 fn cross(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
@@ -2399,6 +2483,7 @@ mod tests {
             reference: b"test".to_vec(),
             logical_path: Some("materials/test.vtf".to_owned()),
             disposition: playsrc_material::TextureDisposition::Source,
+            color_read: playsrc_material::TextureColorRead::Linear,
         };
         WaterState {
             above_water: true,
@@ -2463,5 +2548,179 @@ mod tests {
                 .iter()
                 .all(|vertex| vertex.position[0].abs() <= 1.0 && vertex.position[1].abs() <= 1.0)
         );
+    }
+
+    fn mark_surface(positions: Vec<[f32; 3]>, plane: [f32; 4]) -> Surface {
+        Surface {
+            face: 7,
+            model: 0,
+            material: 0,
+            texture_info: 0,
+            flags: 0,
+            draw: true,
+            plane,
+            plane_back: false,
+            texture_vectors: [[0.0; 4]; 2],
+            lightmap_vectors: [[0.0; 4]; 2],
+            lightmap_mins: [0; 2],
+            texture_size: [64, 64],
+            uv_origin: super::super::TextureCoordinateOrigin::TopLeft,
+            normals: vec![[plane[0], plane[1], plane[2]]; positions.len()],
+            uv: vec![[0.0; 2]; positions.len()],
+            lightmap_uv: vec![[0.0; 2]; positions.len()],
+            triangles: Vec::new(),
+            positions,
+            light_offset: -1,
+            light_styles: [255; 4],
+            lightmap_size: [0; 2],
+            compiled_primitives: false,
+        }
+    }
+
+    #[test]
+    fn decal_basis_fractional_dimensions_and_normal_offset_are_exact() {
+        assert_eq!(
+            decal_basis([0.0, 0.0, 1.0]).unwrap(),
+            ([1.0, 0.0, 0.0], [0.0, -1.0, 0.0])
+        );
+        assert_eq!(
+            decal_basis([1.0, 0.0, 0.0]).unwrap(),
+            ([0.0, 1.0, 0.0], [0.0, 0.0, -1.0])
+        );
+        assert_eq!(decal_dimension(3, 0.5), Some(1.5));
+        assert_eq!(decal_dimension(3, 0.25), Some(0.75));
+
+        let mut surface = mark_surface(
+            vec![
+                [-1.0, -1.0, 0.0],
+                [1.0, -1.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [-1.0, 1.0, 0.0],
+            ],
+            [0.0, 0.0, 1.0, 0.0],
+        );
+        surface.lightmap_vectors = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]];
+        surface.lightmap_mins = [-1, -1];
+        let polygon = vec![
+            ClipVertex {
+                position: [-1.0, -1.0, 0.0],
+                uv: [0.0, 0.0],
+            },
+            ClipVertex {
+                position: [1.0, -1.0, 0.0],
+                uv: [1.0, 0.0],
+            },
+            ClipVertex {
+                position: [1.0, 1.0, 0.0],
+                uv: [1.0, 1.0],
+            },
+            ClipVertex {
+                position: [-1.0, 1.0, 0.0],
+                uv: [0.0, 1.0],
+            },
+        ];
+        let fragment = clipped_fragment(&surface, polygon, [0.0, 0.0, 1.0]).unwrap();
+        assert!(fragment.positions.iter().all(|position| position[2] == 0.1));
+        assert_eq!(
+            fragment.uv,
+            [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
+        );
+        assert_eq!(
+            fragment.lightmap_uv,
+            [[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]]
+        );
+
+        let clipped = clip_decal_unit(vec![
+            ClipVertex {
+                position: [-1.0, -1.0, 0.0],
+                uv: [-1.0, -1.0],
+            },
+            ClipVertex {
+                position: [2.0, -1.0, 0.0],
+                uv: [2.0, -1.0],
+            },
+            ClipVertex {
+                position: [2.0, 2.0, 0.0],
+                uv: [2.0, 2.0],
+            },
+            ClipVertex {
+                position: [-1.0, 2.0, 0.0],
+                uv: [-1.0, 2.0],
+            },
+        ]);
+        assert_eq!(
+            clipped.iter().map(|vertex| vertex.uv).collect::<Vec<_>>(),
+            [[1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.0, 0.0]]
+        );
+    }
+
+    #[test]
+    fn overlay_basis_ignores_fourth_point_z_and_clips_each_source_triangle() {
+        let encoded = [
+            [0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [1.0, 0.0, 1.0],
+        ];
+        let (basis_u, basis_v) = overlay_basis(&encoded, [0.0, 0.0, 1.0]).unwrap();
+        assert_eq!(basis_u, [1.0, 0.0, 0.0]);
+        assert_eq!(basis_v, [0.0, 1.0, 0.0]);
+
+        let surface = mark_surface(
+            vec![
+                [-2.0, -2.0, 0.0],
+                [2.0, -2.0, 0.0],
+                [2.0, 2.0, 0.0],
+                [-2.0, 2.0, 0.0],
+            ],
+            [0.0, 0.0, 1.0, 0.0],
+        );
+        let projected = vec![
+            ClipVertex {
+                position: [-2.0, -2.0, 0.0],
+                uv: [0.0, 0.0],
+            },
+            ClipVertex {
+                position: [-2.0, 2.0, 0.0],
+                uv: [0.0, 1.0],
+            },
+            ClipVertex {
+                position: [2.0, 2.0, 0.0],
+                uv: [1.0, 1.0],
+            },
+            ClipVertex {
+                position: [2.0, -2.0, 0.0],
+                uv: [1.0, 0.0],
+            },
+        ];
+        let fragments = clip_overlay_face(&surface, &projected, [0.0, 0.0, 1.0]);
+        assert_eq!(fragments.len(), 2);
+        assert!(
+            fragments
+                .iter()
+                .flat_map(|fragment| &fragment.positions)
+                .all(|position| position[2] == 0.1)
+        );
+
+        let small = mark_surface(
+            vec![[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            [0.0, 0.0, 1.0, 0.0],
+        );
+        assert!(clip_overlay_face(&small, &projected, [0.0, 0.0, 1.0]).is_empty());
+    }
+
+    #[test]
+    fn fog_angles_far_z_and_density_preserve_entity_state() {
+        let graph = playsrc_entity::parse(
+            br#"{"classname" "env_fog_controller" "use_angles" "1" "angles" "0 90 0" "fogmaxdensity" "2.5"}"#,
+            playsrc_entity::Limits::default(),
+        )
+        .unwrap();
+        let fog = fog_state(&graph.entities[0], true).unwrap();
+        assert!(fog.direction[0].abs() < 1.0e-6);
+        assert_eq!(fog.direction[1], -1.0);
+        assert_eq!(fog.direction[2], 0.0);
+        assert_eq!(fog.maximum_density, 2.5);
+        assert_eq!(fog.far_z, Some(0.0));
     }
 }
