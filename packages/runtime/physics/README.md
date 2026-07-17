@@ -18,6 +18,10 @@ physics.step(tick_interval)?;
 
 Advance Source-style rigid bodies, constraints, and physical interactions deterministically.
 
+## Current Target
+
+The first runtime slice is the exact VPhysics/IVP body, contact, impulse, sleep, sticky-projectile, and physical-prop behavior named by [`ROADMAP.md`](ROADMAP.md). It is Blocked until a matching current solver contract or sufficient controlled target traces, one exact physical-prop trace subject, and the adjacent Collision shape/contact and physical-surface producers exist. No replacement solver or trace-specific trajectory is accepted.
+
 ## Responsibilities
 
 - Own rigid-body state, integration, contacts, constraints, sleeping, and physical material response.

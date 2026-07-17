@@ -18,7 +18,7 @@ The denominator is Not accepted. The prerequisite format inventory is Candidate,
 - A required limits record containing `maxInputBytes`, `maxRetainedBytes`, `maxSolids`, `maxSolidBytes`, `maxKeydataBytes`, `maxTreeNodes`, `maxTreeDepth`, `maxConvexPieces`, `maxTriangles`, `maxPoints`, `maxKeydataTokens`, `maxKeydataTokenBytes`, `maxKeydataDepth`, and `maxDiagnostics`. Every field is a non-negative integer and no operation has an unbounded mode.
 - Valve Source SDK 2013 commit `88fa198fba3fb85d46d4c95018254693fdc3af0a`: `src/public/phyfile.h`, `vcollide.h`, `vcollide_parse.h`, `vphysics_interface.h`, `vphysics/constraints.h`, `filesystem_helpers.*`, and `bspfile.h`; `src/common/studiobyteswap.cpp`; `src/utils/glview/glview.cpp`, `vbsp/ivp.cpp`, and `vrad/vradstaticprops.cpp`; and the PHY keydata consumers in `src/game/shared/physics_shared.cpp`, `ragdoll_shared.cpp`, and `props_shared.cpp`.
 - Valve Developer Community `PHY` revision `462589` as the public collision-section and text-section contract.
-- Exact archive indexes and source bytes for one accepted content build each of TF2, CS:S, and legacy Source 1 CS:GO. These inputs are Missing.
+- Exact archive indexes and source bytes for one accepted content build each of TF2, CS:S, and legacy Source 1 CS:GO. TF2 build `10822003` is configured and supplies exact indexed inputs. The CS:S and legacy Source 1 CS:GO builds are Missing.
 
 ## Outputs
 
@@ -68,6 +68,8 @@ The denominator is Not accepted. The prerequisite format inventory is Candidate,
 
 The active migration checkpoint implements explicit standalone and caller-supplied Source-PC polygon payload profiles; exact headers, length-prefixed solids, modern `VPHY` and legacy compact classifications, compact-surface partition traversal, convex/triangle/point metadata and Source-space conversion, raw unsupported bodies, exact NUL-terminated keydata bytes, and ordered `solid`/unknown block views required by `jump_beef` BSP and StudioModel physics inputs.
 
+Configured TF2 build `10822003` adds fixed model evidence without widening accepted profiles: `models/weapons/w_models/w_stickybomb.phy` is 6,998 bytes at SHA-256 `7e70a4a90eca8bb74aafddf01bdbd755532aa1229397f39f9121be792143ce57`; `models/props_gameplay/resupply_locker.phy` is 717 bytes at SHA-256 `c3ff7d83b9bf5cbab075ae814e3348194a5cb8e08f2092b89419bbad11b48a03`. Both are one-solid little-endian `VPHY` `0x0100` polygon assets with zero axis-map bytes. The sticky solid declares mass `5`, surface `default`, damping `0`, rotational damping `0`, inertia factor `1`, and volume `336.820007`; the locker declares mass `111.568375`, surface `metal`, damping `0`, rotational damping `0`, inertia factor `1`, and volume `225280.015625`. Typed `solid` projection remains Not started and no runtime behavior moves into PHY.
+
 | Target behavior | playsrc behavior | Evidence | Status |
 |---|---|---|---|
 | A caller-selected accepted standalone profile parses the exact 16-byte header, opaque ID, positive solid count, and MDL checksum without profile guessing. | `source-pc-polygon` requires a 16-byte header, positive bounded count, and retains all fields/raw bytes. The accepted inventory remains blocked. | Valid, truncated, size, count, and limit synthetic headers pass; exact model PHY inputs are consumed through StudioModel evidence. | Partial |
@@ -98,7 +100,7 @@ No generated version-and-section inventory is accepted. Accepted item count: 0.
 | Field | Current value |
 |---|---|
 | Authority identity | Source SDK commit `88fa198fba3fb85d46d4c95018254693fdc3af0a`; Valve Developer Community `PHY` revision `462589`; exact TF2, CS:S, and legacy Source 1 CS:GO content-build archive indexes and bytes. |
-| Authority revision | SDK and public page revisions fixed; all three content-build revisions Missing. |
+| Authority revision | SDK and public page revisions fixed; TF2 build `10822003` configured; CS:S and legacy Source 1 CS:GO content-build revisions Missing. |
 | Generator command | Missing. The future command must be implemented under `tools/playsrc` before inventory acceptance. |
 | Output path | `packages/formats/phy/inventories/versions-and-sections.md` |
 | Item count | 33 candidate items; 0 accepted items. |
@@ -120,7 +122,7 @@ The PHY package is Complete only when all of these predicates pass:
 ## Blockers
 
 - **Format-universe prerequisite:** [`../ROADMAP.md`](../ROADMAP.md) and [`../inventories/formats.md`](../inventories/formats.md) remain Candidate and Not accepted. PHY cannot accept its child denominator before the parent review assigns the current identity.
-- **Inventory generator and content builds:** no checked-in command emits [`inventories/versions-and-sections.md`](inventories/versions-and-sections.md), `playsrc.local.json` is Missing, and no exact archive/index input exists for TF2, CS:S, or legacy Source 1 CS:GO. Exact profile, discriminator, section, keydata-block, ID, padding, and model-association occurrence is therefore Missing.
+- **Inventory generator and content builds:** no checked-in command emits [`inventories/versions-and-sections.md`](inventories/versions-and-sections.md), and no exact archive/index input exists for CS:S or legacy Source 1 CS:GO. TF2 build `10822003` is configured, but no checked generator enumerates its complete PHY/model/BSP universe. Cross-game profile, discriminator, section, keydata-block, ID, padding, and model-association occurrence is therefore Missing.
 - **Non-polygon profiles:** public contracts identify modern model types and legacy MOPP/compact discriminators incompletely, and no declared-build bytes establish required MOPP, ball, virtual, zero-tag legacy, or other collision bodies. Checked the named SDK headers, byte-swap utility, public PHY revision, and the absent content indexes.
 - **Axis-map section:** the modern header declares an axis-map byte length, but the checked public contract does not define non-empty entries or accepted target-game occurrence. The parser must preserve exact bytes; typed interpretation remains Blocked.
 - **Custom keydata universe:** public consumers establish `solid`, `staticsolid`, `fluid`, `materialtable`, `virtualterrain`, `ragdollconstraint`, `collisionrules`, `animatedfriction`, `break`, and TF2 `spawn`; public PHY documentation also identifies `editparams`. Exact fields and occurrence for every declared-game custom block remain Missing without the three content-build inventories.
