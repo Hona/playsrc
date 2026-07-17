@@ -6,6 +6,7 @@ export type BrowserConfiguration = Readonly<{
   application: "tf2"
   applicationBuild: string
   target: "jump_beef"
+  renderLevel: 0 | 1 | 2
   assetOrigin: string
   allowedExternalOrigins: readonly string[]
   bsp: ObjectDescriptor
@@ -25,13 +26,15 @@ function record(value: unknown): value is Record<string, unknown> {
 }
 
 function descriptor(value: unknown, kind: "source-object" | "derived-object"): value is ObjectDescriptor {
-  return record(value)
-    && Object.keys(value).sort().join("\0") === "byteLength\0kind\0mediaType\0sha256"
-    && value.kind === kind
-    && value.mediaType === "application/octet-stream"
-    && typeof value.byteLength === "string"
-    && /^(0|[1-9]\d*)$/.test(value.byteLength)
-    && HASH.test(value.sha256 as string)
+  return (
+    record(value) &&
+    Object.keys(value).sort().join("\0") === "byteLength\0kind\0mediaType\0sha256" &&
+    value.kind === kind &&
+    value.mediaType === "application/octet-stream" &&
+    typeof value.byteLength === "string" &&
+    /^(0|[1-9]\d*)$/.test(value.byteLength) &&
+    HASH.test(value.sha256 as string)
+  )
 }
 
 export async function loadBrowserConfiguration(): Promise<BrowserConfiguration> {
@@ -55,31 +58,35 @@ export async function loadBrowserConfiguration(): Promise<BrowserConfiguration> 
     throw new BrowserConfigurationError("Browser configuration is not JSON")
   }
   if (
-    !record(value)
-    || Object.keys(value).sort().join("\0") !== "allowedExternalOrigins\0application\0applicationBuild\0assetOrigin\0bsp\0dependencies\0target\0wasm"
-    || value.application !== "tf2"
-    || typeof value.applicationBuild !== "string"
-    || !HASH.test(value.applicationBuild)
-    || value.target !== "jump_beef"
-    || typeof value.assetOrigin !== "string"
-    || value.assetOrigin !== window.location.origin
-    || !Array.isArray(value.allowedExternalOrigins)
-    || value.allowedExternalOrigins.length > 16
-    || value.allowedExternalOrigins.some((origin) => {
+    !record(value) ||
+    Object.keys(value).sort().join("\0") !==
+      "allowedExternalOrigins\0application\0applicationBuild\0assetOrigin\0bsp\0dependencies\0renderLevel\0target\0wasm" ||
+    value.application !== "tf2" ||
+    typeof value.applicationBuild !== "string" ||
+    !HASH.test(value.applicationBuild) ||
+    value.target !== "jump_beef" ||
+    (value.renderLevel !== 0 && value.renderLevel !== 1 && value.renderLevel !== 2) ||
+    typeof value.assetOrigin !== "string" ||
+    value.assetOrigin !== window.location.origin ||
+    !Array.isArray(value.allowedExternalOrigins) ||
+    value.allowedExternalOrigins.length > 16 ||
+    value.allowedExternalOrigins.some((origin) => {
       if (typeof origin !== "string") return true
       try {
         const url = new URL(origin)
-        return url.protocol !== "https:"
-          || url.origin !== origin
-          || Boolean(url.username || url.password || url.pathname !== "/" || url.search || url.hash)
+        return (
+          url.protocol !== "https:" ||
+          url.origin !== origin ||
+          Boolean(url.username || url.password || url.pathname !== "/" || url.search || url.hash)
+        )
       } catch {
         return true
       }
-    })
-    || new Set(value.allowedExternalOrigins).size !== value.allowedExternalOrigins.length
-    || !descriptor(value.bsp, "source-object")
-    || !descriptor(value.wasm, "derived-object")
-    || !descriptor(value.dependencies, "derived-object")
+    }) ||
+    new Set(value.allowedExternalOrigins).size !== value.allowedExternalOrigins.length ||
+    !descriptor(value.bsp, "source-object") ||
+    !descriptor(value.wasm, "derived-object") ||
+    !descriptor(value.dependencies, "derived-object")
   ) {
     throw new BrowserConfigurationError("Browser configuration fields are invalid")
   }

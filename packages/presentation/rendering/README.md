@@ -43,3 +43,4 @@ Consumes world and presentation packages plus game-owned presentation mappings; 
 ## Completion
 
 Complete when the declared Source presentation families are integrated and supported by aligned visual evidence.
+- Consume immutable profile-qualified environment summaries and Rust-produced PVS surface sets; PVS changes draw eligibility only and never collision or gameplay authority.

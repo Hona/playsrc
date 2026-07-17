@@ -34,3 +34,4 @@ Game modules bind gameplay events to effects; Content supplies exact PCF bytes; 
 ## Completion
 
 Complete when the declared particle definition and behavior inventories are classified, implemented, and fairly verified.
+- Execute bounded browser-worker PCF transactions over exact projectile mapper requests and return one compact render-item batch per frame; supplied Collision batches remain the only world-contact input.

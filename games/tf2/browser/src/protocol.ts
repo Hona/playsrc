@@ -9,6 +9,7 @@ export type WorkerRequest =
       configuration: ArrayBuffer
     }>
   | Readonly<{ id: number; kind: "read-map"; generation: number }>
+  | Readonly<{ id: number; kind: "read-presentation"; generation: number }>
   | Readonly<{ id: number; kind: "activate"; generation: number }>
   | Readonly<{
       id: number
@@ -17,6 +18,8 @@ export type WorkerRequest =
       definition: ArrayBuffer
     }>
   | Readonly<{ id: number; kind: "discard"; generation: number }>
+  | Readonly<{ id: number; kind: "particles"; generation: number; batch: ArrayBuffer }>
+  | Readonly<{ id: number; kind: "visibility"; generation: number; position: readonly [number, number, number] }>
   | Readonly<{
       id: number
       kind: "advance"
@@ -49,12 +52,17 @@ export type WorkerResponse =
       generation: number
       payloadBytes: number
       payloadSha256: string
+      presentationBytes: number
+      presentationSha256: string
       initialView: InitialView
     }>
   | Readonly<{ id: number; kind: "map"; generation: number; payload: ArrayBuffer }>
+  | Readonly<{ id: number; kind: "presentation"; generation: number; payload: ArrayBuffer }>
   | Readonly<{ id: number; kind: "activated"; generation: number }>
   | Readonly<{ id: number; kind: "course-configured"; generation: number }>
   | Readonly<{ id: number; kind: "discarded"; generation: number }>
+  | Readonly<{ id: number; kind: "particles"; generation: number; output: ArrayBuffer }>
+  | Readonly<{ id: number; kind: "visibility"; generation: number; output: ArrayBuffer }>
   | Readonly<{ id: number; kind: "snapshot"; generation: number; snapshot: ArrayBuffer }>
   | Readonly<{ id: number; kind: "shutdown" }>
   | Readonly<{ id: number; kind: "failure"; code: WorkerFailureCode; detail: number }>

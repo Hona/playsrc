@@ -488,8 +488,10 @@ fn parses_registry_and_rejects_malformed_documents_atomically() {
         ErrorCode::Truncated,
     );
 
-    let mut over_limit = RegistryLimits::default();
-    over_limit.max_elements_per_source = 1;
+    let over_limit = RegistryLimits {
+        max_elements_per_source: 1,
+        ..RegistryLimits::default()
+    };
     assert_eq!(
         Registry::from_pcf(
             &[PcfSource {
@@ -515,7 +517,7 @@ fn advances_children_controls_and_equivalent_partitions_deterministically() {
     let mut no_hit = NoHit;
     let whole_output = whole
         .advance(
-            &[event.clone()],
+            std::slice::from_ref(&event),
             AdvanceRequest {
                 from_seconds: 0.0,
                 to_seconds: 1.0,
@@ -641,8 +643,10 @@ fn consumes_supplied_collisions_and_preserves_state_after_atomic_failure() {
 fn emission_overrun_fails_without_publishing_an_effect() {
     let bytes = fixture(false);
     let registry = registry(&bytes);
-    let mut limits = WorldLimits::default();
-    limits.max_particles_total = 1;
+    let limits = WorldLimits {
+        max_particles_total: 1,
+        ..WorldLimits::default()
+    };
     let mut world = playsrc_particle::ParticleWorld::new(&registry, limits).unwrap();
     let error = world
         .advance(

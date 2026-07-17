@@ -197,11 +197,7 @@ export type JumpCourseZone = Readonly<{
   index: number
 }>
 
-export function encodeJumpCourse(
-  identity: bigint,
-  mapSha256: string,
-  zones: readonly JumpCourseZone[],
-): Uint8Array {
+export function encodeJumpCourse(identity: bigint, mapSha256: string, zones: readonly JumpCourseZone[]): Uint8Array {
   if (identity <= 0n || identity > 0xffff_ffff_ffff_ffffn || !HASH.test(mapSha256) || zones.length > 4_096) {
     throw new Tf2CodecError("Jump course identity or bound is invalid")
   }
@@ -212,10 +208,16 @@ export function encodeJumpCourse(
   let ends = 0
   for (const zone of zones) {
     if (
-      !canonicalIdentity(zone.identity) || zone.identity === 0 || identities.has(zone.identity)
-      || !canonicalIdentity(zone.triggerEntity) || triggers.has(zone.triggerEntity)
-      || !Number.isSafeInteger(zone.index) || zone.index < 1 || zone.index > 0xffff_ffff
-    ) throw new Tf2CodecError("Jump zone identity is invalid")
+      !canonicalIdentity(zone.identity) ||
+      zone.identity === 0 ||
+      identities.has(zone.identity) ||
+      !canonicalIdentity(zone.triggerEntity) ||
+      triggers.has(zone.triggerEntity) ||
+      !Number.isSafeInteger(zone.index) ||
+      zone.index < 1 ||
+      zone.index > 0xffff_ffff
+    )
+      throw new Tf2CodecError("Jump zone identity is invalid")
     identities.add(zone.identity)
     triggers.add(zone.triggerEntity)
     if (zone.kind === "start" && zone.index === 1) starts += 1
@@ -251,13 +253,7 @@ function canonicalIdentity(value: number): boolean {
 }
 
 export function encodeCommand(command: Command): ArrayBuffer {
-  const scalars = [
-    command.forward,
-    command.side,
-    command.up ?? 0,
-    command.yawDegrees,
-    command.pitchDegrees,
-  ]
+  const scalars = [command.forward, command.side, command.up ?? 0, command.yawDegrees, command.pitchDegrees]
   if (!scalars.every(Number.isFinite)) throw new Tf2CodecError("command contains a non-finite scalar")
   if (command.selectClass !== undefined && command.selectClass !== 1 && command.selectClass !== 2) {
     throw new Tf2CodecError("command class selector is invalid")
@@ -266,11 +262,12 @@ export function encodeCommand(command: Command): ArrayBuffer {
     throw new Tf2CodecError("command team selector is invalid")
   }
   if (
-    command.selectWeapon !== undefined
-    && command.selectWeapon !== 1
-    && command.selectWeapon !== 2
-    && command.selectWeapon !== 3
-  ) throw new Tf2CodecError("command weapon selector is invalid")
+    command.selectWeapon !== undefined &&
+    command.selectWeapon !== 1 &&
+    command.selectWeapon !== 2 &&
+    command.selectWeapon !== 3
+  )
+    throw new Tf2CodecError("command weapon selector is invalid")
   if (command.modeRequest !== undefined && command.modeRequest !== 0 && command.modeRequest !== 1) {
     throw new Tf2CodecError("command mode request is invalid")
   }
@@ -283,22 +280,20 @@ export function encodeCommand(command: Command): ArrayBuffer {
   data.set([0x50, 0x43, 0x4d, 0x44])
   view.setUint32(4, 2, true)
   scalars.forEach((value, index) => view.setFloat32(8 + index * 4, value, true))
-  const flags = Number(command.jump)
-    | Number(command.crouch) << 1
-    | Number(command.speedButton ?? false) << 2
-    | Number(command.fire) << 3
-    | Number(command.detonate) << 4
-    | Number(command.reload ?? false) << 5
-    | Number(command.reset ?? false) << 6
-    | Number(command.respawn ?? false) << 7
+  const flags =
+    Number(command.jump) |
+    (Number(command.crouch) << 1) |
+    (Number(command.speedButton ?? false) << 2) |
+    (Number(command.fire) << 3) |
+    (Number(command.detonate) << 4) |
+    (Number(command.reload ?? false) << 5) |
+    (Number(command.reset ?? false) << 6) |
+    (Number(command.respawn ?? false) << 7)
   view.setUint32(28, flags, true)
   const mode = command.modeRequest === undefined ? 0 : command.modeRequest + 1
   view.setUint32(
     32,
-    (command.selectClass ?? 0)
-      | ((command.selectWeapon ?? 0) << 8)
-      | ((command.selectTeam ?? 0) << 16)
-      | (mode << 24),
+    (command.selectClass ?? 0) | ((command.selectWeapon ?? 0) << 8) | ((command.selectTeam ?? 0) << 16) | (mode << 24),
     true,
   )
   view.setUint32(36, command.activateEntity ?? 0xffff_ffff, true)
@@ -342,11 +337,19 @@ function movementSnapshot(bytes: ArrayBuffer, offset: number, length: number): M
   const data = new Uint8Array(bytes, offset, length)
   const view = new DataView(bytes, offset, length)
   if (
-    data[0] !== 0x50 || data[1] !== 0x4d || data[2] !== 0x4f || data[3] !== 0x56
-    || view.getUint32(4, true) !== 1
-    || data[8]! > 1 || data[9]! > 4 || data[11]! > 1 || data[12]! > 1
-    || data[13]! > 1 || data[15]! > 1
-  ) throw new Tf2CodecError("Movement snapshot identity or flags are invalid")
+    data[0] !== 0x50 ||
+    data[1] !== 0x4d ||
+    data[2] !== 0x4f ||
+    data[3] !== 0x56 ||
+    view.getUint32(4, true) !== 1 ||
+    data[8]! > 1 ||
+    data[9]! > 4 ||
+    data[11]! > 1 ||
+    data[12]! > 1 ||
+    data[13]! > 1 ||
+    data[15]! > 1
+  )
+    throw new Tf2CodecError("Movement snapshot identity or flags are invalid")
   const position = vector(view, 24)
   const velocity = vector(view, 36)
   const viewOffset = vector(view, 48)
@@ -393,10 +396,8 @@ function decodeJump(bytes: ArrayBuffer, offset: number, length: number): JumpSna
   if (length < 16 || offset + length > bytes.byteLength) throw new Tf2CodecError("Jump section is truncated")
   const data = new Uint8Array(bytes, offset, length)
   const view = new DataView(bytes, offset, length)
-  if (
-    data[0] !== 0x50 || data[1] !== 0x4a || data[2] !== 0x4f || data[3] !== 0x46
-    || view.getUint32(4, true) !== 1
-  ) throw new Tf2CodecError("Jump section identity is invalid")
+  if (data[0] !== 0x50 || data[1] !== 0x4a || data[2] !== 0x4f || data[3] !== 0x46 || view.getUint32(4, true) !== 1)
+    throw new Tf2CodecError("Jump section identity is invalid")
   let at = 8
   const ensure = (size: number): void => {
     if (at + size > length) throw new Tf2CodecError("Jump section record exceeds its bytes")
@@ -413,22 +414,29 @@ function decodeJump(bytes: ArrayBuffer, offset: number, length: number): JumpSna
     const team = data[at + 3]
     const invalidation = data[at + 12]
     if (
-      disposition === undefined || disposition > 3
-      || (tf2Class !== 3 && tf2Class !== 4)
-      || (team !== 2 && team !== 3)
-      || invalidation === undefined || invalidation > 4
-      || data[at + 13] !== 0 || data[at + 14] !== 0 || data[at + 15] !== 0
-    ) throw new Tf2CodecError("Jump run record is invalid")
+      disposition === undefined ||
+      disposition > 3 ||
+      (tf2Class !== 3 && tf2Class !== 4) ||
+      (team !== 2 && team !== 3) ||
+      invalidation === undefined ||
+      invalidation > 4 ||
+      data[at + 13] !== 0 ||
+      data[at + 14] !== 0 ||
+      data[at + 15] !== 0
+    )
+      throw new Tf2CodecError("Jump run record is invalid")
     const checkpointCount = count(view.getUint32(at + 32, true), "Jump checkpoint")
     ensure(36 + checkpointCount * 16)
     const checkpoints: JumpCheckpoint[] = []
     for (let index = 0; index < checkpointCount; index += 1) {
       const item = at + 36 + index * 16
-      checkpoints.push(Object.freeze({
-        zoneIdentity: view.getUint32(item, true),
-        index: view.getUint32(item + 4, true),
-        tick: view.getBigUint64(item + 8, true),
-      }))
+      checkpoints.push(
+        Object.freeze({
+          zoneIdentity: view.getUint32(item, true),
+          index: view.getUint32(item + 4, true),
+          tick: view.getBigUint64(item + 8, true),
+        }),
+      )
     }
     const end = view.getBigUint64(at + 24, true)
     run = Object.freeze({
@@ -437,7 +445,7 @@ function decodeJump(bytes: ArrayBuffer, offset: number, length: number): JumpSna
       playerIdentity: view.getUint32(at + 8, true),
       class: tf2Class,
       team,
-      invalidation: invalidation === 0 ? null : invalidation as 1 | 2 | 3 | 4,
+      invalidation: invalidation === 0 ? null : (invalidation as 1 | 2 | 3 | 4),
       startTick: view.getBigUint64(at + 16, true),
       endTick: end === 0xffff_ffff_ffff_ffffn ? null : end,
       checkpoints: Object.freeze(checkpoints),
@@ -458,15 +466,17 @@ function decodeJump(bytes: ArrayBuffer, offset: number, length: number): JumpSna
     }
     const zoneIdentity = view.getUint32(item + 24, true)
     const zoneIndex = view.getUint32(item + 28, true)
-    events.push(Object.freeze({
-      sequence: view.getBigUint64(item, true),
-      tick: view.getBigUint64(item + 8, true),
-      kind: kind as JumpEvent["kind"],
-      detail: detail!,
-      runInstance: view.getUint32(item + 20, true),
-      zoneIdentity: zoneIdentity === 0xffff_ffff ? null : zoneIdentity,
-      zoneIndex: zoneIndex === 0xffff_ffff ? null : zoneIndex,
-    }))
+    events.push(
+      Object.freeze({
+        sequence: view.getBigUint64(item, true),
+        tick: view.getBigUint64(item + 8, true),
+        kind: kind as JumpEvent["kind"],
+        detail: detail!,
+        runInstance: view.getUint32(item + 20, true),
+        zoneIdentity: zoneIdentity === 0xffff_ffff ? null : zoneIdentity,
+        zoneIndex: zoneIndex === 0xffff_ffff ? null : zoneIndex,
+      }),
+    )
   }
   at += eventCount * 32
   ensure(4)
@@ -479,9 +489,13 @@ function decodeJump(bytes: ArrayBuffer, offset: number, length: number): JumpSna
     const tf2Class = data[at + 1]
     const team = data[at + 2]
     if (
-      (tf2Class !== 3 && tf2Class !== 4) || (team !== 2 && team !== 3)
-      || data[at + 3] !== 1 || data[at + 56] !== 2
-      || data[at + 57] !== 0 || data[at + 58] !== 0 || data[at + 59] !== 0
+      (tf2Class !== 3 && tf2Class !== 4) ||
+      (team !== 2 && team !== 3) ||
+      data[at + 3] !== 1 ||
+      data[at + 56] !== 2 ||
+      data[at + 57] !== 0 ||
+      data[at + 58] !== 0 ||
+      data[at + 59] !== 0
     ) {
       throw new Tf2CodecError("Jump result selection is invalid")
     }
@@ -490,16 +504,18 @@ function decodeJump(bytes: ArrayBuffer, offset: number, length: number): JumpSna
     const checkpoints: JumpCheckpoint[] = []
     for (let index = 0; index < checkpointCount; index += 1) {
       const item = at + 92 + index * 16
-      checkpoints.push(Object.freeze({
-        zoneIdentity: view.getUint32(item, true),
-        index: view.getUint32(item + 4, true),
-        tick: view.getBigUint64(item + 8, true),
-      }))
+      checkpoints.push(
+        Object.freeze({
+          zoneIdentity: view.getUint32(item, true),
+          index: view.getUint32(item + 4, true),
+          tick: view.getBigUint64(item + 8, true),
+        }),
+      )
     }
     const map = data.slice(at + 12, at + 44)
     result = Object.freeze({
       courseIdentity: view.getBigUint64(at + 4, true),
-      mapIdentity: Array.from(map, value => value.toString(16).padStart(2, "0")).join(""),
+      mapIdentity: Array.from(map, (value) => value.toString(16).padStart(2, "0")).join(""),
       runInstance: view.getUint32(at + 44, true),
       playerIdentity: view.getUint32(at + 48, true),
       runKind: "map",
@@ -553,19 +569,18 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
   }
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
-  if (
-    data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e
-    || view.getUint32(4, true) !== 3
-  ) throw new Tf2CodecError("snapshot identity is invalid")
+  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 3)
+    throw new Tf2CodecError("snapshot identity is invalid")
   const tf2Class = data[16]
   const team = data[17]
   const weapon = data[18]
   if (
-    (tf2Class !== 1 && tf2Class !== 2)
-    || (team !== 1 && team !== 2)
-    || (weapon !== 1 && weapon !== 2 && weapon !== 3)
-    || data[19]! > 1
-  ) throw new Tf2CodecError("snapshot selection is invalid")
+    (tf2Class !== 1 && tf2Class !== 2) ||
+    (team !== 1 && team !== 2) ||
+    (weapon !== 1 && weapon !== 2 && weapon !== 3) ||
+    data[19]! > 1
+  )
+    throw new Tf2CodecError("snapshot selection is invalid")
   const health = view.getFloat32(20, true)
   const maximumHealth = view.getFloat32(24, true)
   if (!finite([health, maximumHealth]) || health < 0 || maximumHealth <= 0) {
@@ -596,20 +611,28 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
     const itemWeapon = data[item]
     const reload = data[item + 1]
     if (
-      itemWeapon === undefined || itemWeapon < 1 || itemWeapon > 3
-      || reload === undefined || reload > 2
-      || data[item + 2] !== 0 || data[item + 3] !== 0 || view.getUint32(item + 28, true) !== 0
-    ) throw new Tf2CodecError("loadout record is invalid")
-    loadout.push(Object.freeze({
-      weapon: itemWeapon as Tf2Weapon,
-      reload: reload as WeaponState["reload"],
-      clip: view.getUint16(item + 4, true),
-      reserve: view.getUint16(item + 6, true),
-      maximumClip: view.getUint16(item + 8, true),
-      maximumReserve: view.getUint16(item + 10, true),
-      nextPrimaryTick: view.getBigUint64(item + 12, true),
-      nextReloadTick: view.getBigUint64(item + 20, true),
-    }))
+      itemWeapon === undefined ||
+      itemWeapon < 1 ||
+      itemWeapon > 3 ||
+      reload === undefined ||
+      reload > 2 ||
+      data[item + 2] !== 0 ||
+      data[item + 3] !== 0 ||
+      view.getUint32(item + 28, true) !== 0
+    )
+      throw new Tf2CodecError("loadout record is invalid")
+    loadout.push(
+      Object.freeze({
+        weapon: itemWeapon as Tf2Weapon,
+        reload: reload as WeaponState["reload"],
+        clip: view.getUint16(item + 4, true),
+        reserve: view.getUint16(item + 6, true),
+        maximumClip: view.getUint16(item + 8, true),
+        maximumReserve: view.getUint16(item + 10, true),
+        nextPrimaryTick: view.getBigUint64(item + 12, true),
+        nextReloadTick: view.getBigUint64(item + 20, true),
+      }),
+    )
   }
   at += loadoutCount * 32
 
@@ -628,28 +651,37 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
     const rawNormal = vector(view, item + 68)
     const ageSeconds = view.getFloat32(item + 80, true)
     if (
-      (kind !== 1 && kind !== 2) || (projectileTeam !== 1 && projectileTeam !== 2)
-      || state === undefined || state < 1 || state > 3 || hasNormal === undefined || hasNormal > 1
-      || !finite([...position, ...velocity, ...angularVelocity, ageSeconds])
-      || !normalized(orientation) || ageSeconds < 0
-      || (hasNormal === 1 && !normalized(rawNormal))
-      || (hasNormal === 0 && rawNormal.some(value => value !== 0))
-      || (state !== 1 && (kind !== 2 || hasNormal !== 1 || velocity.some(value => value !== 0)))
-    ) throw new Tf2CodecError("projectile record is invalid")
-    projectiles.push(Object.freeze({
-      identity: view.getUint32(item, true),
-      kind,
-      team: projectileTeam,
-      ownerIdentity: view.getUint32(item + 8, true),
-      launcherIdentity: view.getUint32(item + 12, true),
-      state: state as ProjectileState,
-      position,
-      velocity,
-      orientation,
-      angularVelocity,
-      contactNormal: hasNormal === 1 ? rawNormal : null,
-      ageSeconds,
-    }))
+      (kind !== 1 && kind !== 2) ||
+      (projectileTeam !== 1 && projectileTeam !== 2) ||
+      state === undefined ||
+      state < 1 ||
+      state > 3 ||
+      hasNormal === undefined ||
+      hasNormal > 1 ||
+      !finite([...position, ...velocity, ...angularVelocity, ageSeconds]) ||
+      !normalized(orientation) ||
+      ageSeconds < 0 ||
+      (hasNormal === 1 && !normalized(rawNormal)) ||
+      (hasNormal === 0 && rawNormal.some((value) => value !== 0)) ||
+      (state !== 1 && (kind !== 2 || hasNormal !== 1 || velocity.some((value) => value !== 0)))
+    )
+      throw new Tf2CodecError("projectile record is invalid")
+    projectiles.push(
+      Object.freeze({
+        identity: view.getUint32(item, true),
+        kind,
+        team: projectileTeam,
+        ownerIdentity: view.getUint32(item + 8, true),
+        launcherIdentity: view.getUint32(item + 12, true),
+        state: state as ProjectileState,
+        position,
+        velocity,
+        orientation,
+        angularVelocity,
+        contactNormal: hasNormal === 1 ? rawNormal : null,
+        ageSeconds,
+      }),
+    )
   }
   at += projectileCount * 84
 
@@ -666,25 +698,34 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
     const orientation = quaternion(view, item + 36)
     const rawNormal = vector(view, item + 52)
     if (
-      eventCode === undefined || eventCode < 1 || eventCode > 6
-      || (kind !== 1 && kind !== 2) || (projectileTeam !== 1 && projectileTeam !== 2)
-      || hasNormal === undefined || hasNormal > 1 || !finite(position) || !normalized(orientation)
-      || (hasNormal === 1 && !normalized(rawNormal))
-      || (hasNormal === 0 && rawNormal.some(value => value !== 0))
-      || ((eventCode === 2 || eventCode === 3) && hasNormal !== 1)
-    ) throw new Tf2CodecError("projectile event record is invalid")
-    projectileEvents.push(Object.freeze({
-      type: eventNames[eventCode - 1]!,
-      projectile: view.getUint32(item + 4, true),
-      kind,
-      ownerIdentity: view.getUint32(item + 8, true),
-      launcherIdentity: view.getUint32(item + 12, true),
-      team: projectileTeam,
-      tick: view.getBigUint64(item + 16, true),
-      position,
-      orientation,
-      contactNormal: hasNormal === 1 ? rawNormal : null,
-    }))
+      eventCode === undefined ||
+      eventCode < 1 ||
+      eventCode > 6 ||
+      (kind !== 1 && kind !== 2) ||
+      (projectileTeam !== 1 && projectileTeam !== 2) ||
+      hasNormal === undefined ||
+      hasNormal > 1 ||
+      !finite(position) ||
+      !normalized(orientation) ||
+      (hasNormal === 1 && !normalized(rawNormal)) ||
+      (hasNormal === 0 && rawNormal.some((value) => value !== 0)) ||
+      ((eventCode === 2 || eventCode === 3) && hasNormal !== 1)
+    )
+      throw new Tf2CodecError("projectile event record is invalid")
+    projectileEvents.push(
+      Object.freeze({
+        type: eventNames[eventCode - 1]!,
+        projectile: view.getUint32(item + 4, true),
+        kind,
+        ownerIdentity: view.getUint32(item + 8, true),
+        launcherIdentity: view.getUint32(item + 12, true),
+        team: projectileTeam,
+        tick: view.getBigUint64(item + 16, true),
+        position,
+        orientation,
+        contactNormal: hasNormal === 1 ? rawNormal : null,
+      }),
+    )
   }
   validateProjectileTransitions(projectileEvents)
   at += projectileEventCount * 64
@@ -696,12 +737,14 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
     const position = vector(view, item + 8)
     const angles = vector(view, item + 20)
     if (!finite([...position, ...angles])) throw new Tf2CodecError("entity transform scalar is invalid")
-    entityTransforms.push(Object.freeze({
-      identity: view.getUint32(item, true),
-      model: view.getUint32(item + 4, true),
-      position,
-      angles,
-    }))
+    entityTransforms.push(
+      Object.freeze({
+        identity: view.getUint32(item, true),
+        model: view.getUint32(item + 4, true),
+        position,
+        angles,
+      }),
+    )
   }
   at += entityTransformCount * 32
 
@@ -714,9 +757,17 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
     const contact = data[at + 10]
     const nameLength = view.getUint32(at + 20, true)
     if (
-      kind === undefined || kind < 1 || kind > 8 || accepted === undefined || accepted > 1
-      || contact === undefined || contact > 3 || data[at + 11] !== 0 || nameLength > 2_047
-    ) throw new Tf2CodecError("entity event record is invalid")
+      kind === undefined ||
+      kind < 1 ||
+      kind > 8 ||
+      accepted === undefined ||
+      accepted > 1 ||
+      contact === undefined ||
+      contact > 3 ||
+      data[at + 11] !== 0 ||
+      nameLength > 2_047
+    )
+      throw new Tf2CodecError("entity event record is invalid")
     requireBytes(24 + nameLength, "entity event")
     let name: string
     try {
@@ -725,15 +776,17 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
       throw new Tf2CodecError("entity event name is invalid UTF-8")
     }
     const subject = view.getUint32(at + 16, true)
-    entityEvents.push(Object.freeze({
-      sequence: view.getBigUint64(at, true),
-      kind: kind as EntityEvent["kind"],
-      accepted: accepted === 1,
-      contact: contact === 0 ? null : contact as 1 | 2 | 3,
-      entity: view.getUint32(at + 12, true),
-      subject: subject === 0xffff_ffff ? null : subject,
-      name,
-    }))
+    entityEvents.push(
+      Object.freeze({
+        sequence: view.getBigUint64(at, true),
+        kind: kind as EntityEvent["kind"],
+        accepted: accepted === 1,
+        contact: contact === 0 ? null : (contact as 1 | 2 | 3),
+        entity: view.getUint32(at + 12, true),
+        subject: subject === 0xffff_ffff ? null : subject,
+        name,
+      }),
+    )
     at += 24 + nameLength
   }
 
@@ -748,17 +801,17 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
       view.getFloat32(item + 20, true),
       view.getFloat32(item + 24, true),
     ]) as readonly [number, number, number, number]
-    if (
-      kind === undefined || kind < 1 || kind > 11 || data[item + 2] !== 0 || data[item + 3] !== 0
-      || !finite(values)
-    ) throw new Tf2CodecError("gameplay event record is invalid")
-    events.push(Object.freeze({
-      kind: kind as GameplayEvent["kind"],
-      detail: data[item + 1]!,
-      subject: view.getUint32(item + 4, true),
-      auxiliary: view.getUint32(item + 8, true),
-      values,
-    }))
+    if (kind === undefined || kind < 1 || kind > 11 || data[item + 2] !== 0 || data[item + 3] !== 0 || !finite(values))
+      throw new Tf2CodecError("gameplay event record is invalid")
+    events.push(
+      Object.freeze({
+        kind: kind as GameplayEvent["kind"],
+        detail: data[item + 1]!,
+        subject: view.getUint32(item + 4, true),
+        auxiliary: view.getUint32(item + 8, true),
+        values,
+      }),
+    )
   }
   at += gameplayEventCount * 28
   requireBytes(jumpLength, "Jump")
@@ -792,16 +845,19 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
 export async function mapDerivedKey(
   bspSha256: string,
   profile: 0 | 1,
+  renderLevel: 0 | 1 | 2,
+  compilerSha256: string,
   configuration: Uint8Array,
 ): Promise<string> {
-  if (!HASH.test(bspSha256)) throw new Tf2CodecError("BSP identity is invalid")
+  if (!HASH.test(bspSha256) || !HASH.test(compilerSha256) || (renderLevel === 2) !== (profile === 1))
+    throw new Tf2CodecError("BSP, compiler, or render profile identity is invalid")
   const configurationHash = new Uint8Array(await crypto.subtle.digest("SHA-256", configuration))
   const identity = new TextEncoder().encode(
-    `playsrc-map-runtime-2\n${bspSha256}\n${profile}\n${Array.from(
+    `playsrc-map-runtime-8\n${bspSha256}\n${compilerSha256}\n${profile}\n${renderLevel}\n${Array.from(
       configurationHash,
-      value => value.toString(16).padStart(2, "0"),
+      (value) => value.toString(16).padStart(2, "0"),
     ).join("")}\n`,
   )
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", identity))
-  return Array.from(digest, value => value.toString(16).padStart(2, "0")).join("")
+  return Array.from(digest, (value) => value.toString(16).padStart(2, "0")).join("")
 }

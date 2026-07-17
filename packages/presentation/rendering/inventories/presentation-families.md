@@ -63,7 +63,7 @@ This file is a hand-derived Candidate index of the 54 behavior-row identities. I
 | `REN-041` | Transparent ordering | Interleave all translucent families back-to-front by visibility leaves and stable family tie keys; draw ignore-depth last. | Visibility supplies ordered leaves/candidates. | Unsupported |
 | `REN-042` | Depth and stencil | Implement clear/load/store, comparison, write, bias, clip, viewmodel range, and nested-state restoration. | WebGPU render passes; Material depth state. | Unsupported |
 | `REN-043` | Draw culling | Apply frustum, area, fade, LOD, map/GPU occlusion, material, and alpha decisions in one fixed order. | Visibility supplies candidates and map decisions. | Unsupported |
-| `REN-044` | Visibility input | Validate exact map/view/revision result identity and consume candidates without PVS decode or BSP traversal. | Visibility. | Missing |
+| `REN-044` | Visibility input | Validate exact map/view/revision result identity and consume candidates without PVS decode or BSP traversal. | Visibility. | Handled |
 | `REN-045` | Cameras | Derive Source-consistent perspective, orthographic, off-center, explicit, pixel, and viewmodel matrices. | Applications select cameras; Rendering owns mathematics. | Unsupported |
 | `REN-046` | View state | Isolate and restore per-view camera, viewport, target, clear, visibility, fog, clip, draw, copy, and debug state. | All presentation producers; canvas consumer. | Unsupported |
 | `REN-047` | Presentation interpolation | Sample only supplied snapshot pairs/policies/fractions and snap at every supplied discontinuity. | Simulation/Replay snapshots and selected-game policy. | Unsupported |

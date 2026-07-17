@@ -49,6 +49,15 @@ struct Spawn {
 struct Slot {
     generation: u16,
     payload: Option<Vec<u8>>,
+    presentation: Vec<u8>,
+    presentation_hash: [u8; 32],
+    particles: Option<playsrc_particle::ParticleWorld>,
+    particle_materials: Vec<String>,
+    particle_output: Vec<u8>,
+    visibility: Option<playsrc_visibility::World>,
+    area_state: Option<playsrc_visibility::AreaState>,
+    visibility_output: Vec<u8>,
+    collision: Option<Arc<playsrc_collision::World>>,
     hash: [u8; 32],
     derived_hash: [u8; 32],
     bsp_hash: [u8; 32],
@@ -131,6 +140,12 @@ pub unsafe extern "C" fn playsrc_compile_map(
                 .map_err(|_| 3_u32)?;
         let (runtime_models, model_occurrences) =
             resolve_models(&entity_graph, configuration, profile).map_err(|_| 8_u32)?;
+        let presentation =
+            compile_presentation(&canonical, &bsp, &entity_graph, configuration, profile)
+                .map_err(|_| 9_u32)?;
+        let presentation_hash: [u8; 32] = Sha256::digest(&presentation).into();
+        let (particles, particle_materials) =
+            compile_particles(configuration).map_err(|_| 10_u32)?;
         let profile_materials =
             resolve_profile_materials(&entity_graph, configuration, profile).map_err(|_| 7_u32)?;
         let inputs = runtime_inputs(configuration).map_err(|_| 7_u32)?;
@@ -165,6 +180,8 @@ pub unsafe extern "C" fn playsrc_compile_map(
             }
         })?;
         let spawn = spawn(&runtime.entities).ok_or(4_u32)?;
+        let visibility = runtime.visibility;
+        let area_state = playsrc_visibility::AreaState::new(&visibility);
         let collision = Arc::new(runtime.collision);
         let model_bounds = collision
             .models
@@ -191,7 +208,8 @@ pub unsafe extern "C" fn playsrc_compile_map(
             model_bounds,
         )
         .map_err(|_| 5_u32)?;
-        let mut session = playsrc_tf2::Session::new(SharedWorld(collision), spawn.position, map);
+        let mut session =
+            playsrc_tf2::Session::new(SharedWorld(collision.clone()), spawn.position, map);
         session.set_movement_modifiers(playsrc_tf2::MovementModifiers {
             noclip_allowed: true,
             ..playsrc_tf2::MovementModifiers::default()
@@ -200,6 +218,13 @@ pub unsafe extern "C" fn playsrc_compile_map(
             runtime.descriptor.payload,
             runtime.descriptor.payload_sha256,
             runtime.descriptor.derived_sha256,
+            presentation,
+            presentation_hash,
+            particles,
+            particle_materials,
+            visibility,
+            area_state,
+            collision,
             bsp_sha,
             spawn,
             session,
@@ -216,9 +241,32 @@ pub unsafe extern "C" fn playsrc_compile_map(
         slots[index].generation.wrapping_add(1).max(1)
     };
     let slot = match result {
-        Ok((payload, hash, derived_hash, bsp_hash, spawn, session)) => Slot {
+        Ok((
+            payload,
+            hash,
+            derived_hash,
+            presentation,
+            presentation_hash,
+            particles,
+            particle_materials,
+            visibility,
+            area_state,
+            collision,
+            bsp_hash,
+            spawn,
+            session,
+        )) => Slot {
             generation,
             payload: Some(payload),
+            presentation,
+            presentation_hash,
+            particles: Some(particles),
+            particle_materials,
+            particle_output: Vec::new(),
+            visibility: Some(visibility),
+            area_state: Some(area_state),
+            visibility_output: Vec::new(),
+            collision: Some(collision),
             hash,
             derived_hash,
             bsp_hash,
@@ -230,6 +278,15 @@ pub unsafe extern "C" fn playsrc_compile_map(
         Err(error) => Slot {
             generation,
             payload: Some(Vec::new()),
+            presentation: Vec::new(),
+            presentation_hash: [0; 32],
+            particles: None,
+            particle_materials: Vec::new(),
+            particle_output: Vec::new(),
+            visibility: None,
+            area_state: None,
+            visibility_output: Vec::new(),
+            collision: None,
             hash: [0; 32],
             derived_hash: [0; 32],
             bsp_hash: [0; 32],
@@ -299,6 +356,189 @@ pub extern "C" fn playsrc_result_length(handle: u32) -> usize {
 #[unsafe(no_mangle)]
 pub extern "C" fn playsrc_result_error(handle: u32) -> u32 {
     with(handle, |slot| slot.error).unwrap_or(u32::MAX)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_presentation_length(handle: u32) -> usize {
+    with(handle, |slot| slot.presentation.len()).unwrap_or(0)
+}
+#[unsafe(no_mangle)]
+/// # Safety
+/// `pointer` must identify writable module memory of at least `capacity` bytes.
+pub unsafe extern "C" fn playsrc_presentation_copy(
+    handle: u32,
+    pointer: *mut u8,
+    capacity: usize,
+) -> usize {
+    with(handle, |slot| {
+        if capacity < slot.presentation.len() {
+            return 0;
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                slot.presentation.as_ptr(),
+                pointer,
+                slot.presentation.len(),
+            )
+        };
+        slot.presentation.len()
+    })
+    .unwrap_or(0)
+}
+#[unsafe(no_mangle)]
+/// # Safety
+/// `pointer` must identify at least 32 writable bytes in this module's memory.
+pub unsafe extern "C" fn playsrc_presentation_hash(handle: u32, pointer: *mut u8) -> u32 {
+    with(handle, |slot| {
+        unsafe { std::ptr::copy_nonoverlapping(slot.presentation_hash.as_ptr(), pointer, 32) };
+        1
+    })
+    .unwrap_or(0)
+}
+#[unsafe(no_mangle)]
+/// # Safety
+/// `pointer` must identify `length` readable transaction bytes.
+pub unsafe extern "C" fn playsrc_particle_transact(
+    handle: u32,
+    pointer: *const u8,
+    length: usize,
+) -> u32 {
+    if length == 0 || length > 4 * 1024 * 1024 {
+        return 0;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(pointer, length) };
+    let Ok((events, request)) = decode_particle_transaction(bytes) else {
+        return 0;
+    };
+    let Some((index, generation)) = decode(handle) else {
+        return 0;
+    };
+    let mut slots = slots().lock().expect("TF2 slots");
+    let Some(slot) = slots.get_mut(index) else {
+        return 0;
+    };
+    if slot.generation != generation {
+        return 0;
+    }
+    let Some(collision_world) = slot.collision.clone() else {
+        return 0;
+    };
+    let Some(world) = slot.particles.as_mut() else {
+        return 0;
+    };
+    let mut collision = ParticleCollision(collision_world);
+    let Ok((items, _)) = world.advance(&events, request, &mut collision) else {
+        return 0;
+    };
+    let Ok(output) =
+        playsrc_particle::encode_render_output(&items, &slot.particle_materials, 64 * 1024 * 1024)
+    else {
+        return 0;
+    };
+    slot.particle_output = output;
+    1
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_particle_output_length(handle: u32) -> usize {
+    with(handle, |slot| slot.particle_output.len()).unwrap_or(0)
+}
+#[unsafe(no_mangle)]
+/// # Safety
+/// `pointer` must identify writable bytes of at least `capacity`.
+pub unsafe extern "C" fn playsrc_particle_output_copy(
+    handle: u32,
+    pointer: *mut u8,
+    capacity: usize,
+) -> usize {
+    with(handle, |slot| {
+        if capacity < slot.particle_output.len() {
+            return 0;
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                slot.particle_output.as_ptr(),
+                pointer,
+                slot.particle_output.len(),
+            )
+        };
+        slot.particle_output.len()
+    })
+    .unwrap_or(0)
+}
+#[unsafe(no_mangle)]
+/// # Safety
+/// `pointer` must identify three readable finite f32 values.
+pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f32) -> u32 {
+    if pointer.is_null() {
+        return 0;
+    }
+    let position = unsafe { std::slice::from_raw_parts(pointer, 3) };
+    if position.iter().any(|v| !v.is_finite()) {
+        return 0;
+    }
+    let Some((index, generation)) = decode(handle) else {
+        return 0;
+    };
+    let mut slots = slots().lock().expect("TF2 slots");
+    let Some(slot) = slots.get_mut(index) else {
+        return 0;
+    };
+    if slot.generation != generation {
+        return 0;
+    }
+    let (Some(world), Some(area)) = (slot.visibility.as_ref(), slot.area_state.as_ref()) else {
+        return 0;
+    };
+    let Ok(candidates) = playsrc_visibility::CandidateSet::compile(world, 0, &[]) else {
+        return 0;
+    };
+    let Ok(view) = world.view(
+        area,
+        &candidates,
+        &playsrc_visibility::ViewQuery {
+            origins: vec![[position[0], position[1], position[2]]],
+            bypass_pvs: false,
+        },
+    ) else {
+        return 0;
+    };
+    let mut output = b"PVIS".to_vec();
+    output.extend_from_slice(&1u32.to_le_bytes());
+    output.extend_from_slice(&view.cache_identity);
+    output.extend_from_slice(&world.identity);
+    output.extend_from_slice(&[u8::from(view.outside_world), view.sky as u8, 0, 0]);
+    output.extend_from_slice(&(view.world_surfaces.len() as u32).to_le_bytes());
+    for face in view.world_surfaces {
+        output.extend_from_slice(&u32::from(face).to_le_bytes());
+    }
+    slot.visibility_output = output;
+    1
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_visibility_output_length(handle: u32) -> usize {
+    with(handle, |slot| slot.visibility_output.len()).unwrap_or(0)
+}
+#[unsafe(no_mangle)]
+/// # Safety
+/// `pointer` must identify writable bytes of at least `capacity`.
+pub unsafe extern "C" fn playsrc_visibility_output_copy(
+    handle: u32,
+    pointer: *mut u8,
+    capacity: usize,
+) -> usize {
+    with(handle, |slot| {
+        if capacity < slot.visibility_output.len() {
+            return 0;
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                slot.visibility_output.as_ptr(),
+                pointer,
+                slot.visibility_output.len(),
+            )
+        };
+        slot.visibility_output.len()
+    })
+    .unwrap_or(0)
 }
 #[unsafe(no_mangle)]
 /// # Safety
@@ -383,6 +623,15 @@ pub extern "C" fn playsrc_dispose(handle: u32) -> u32 {
         return 0;
     }
     slot.payload = None;
+    slot.presentation.clear();
+    slot.presentation_hash = [0; 32];
+    slot.particles = None;
+    slot.particle_materials.clear();
+    slot.particle_output.clear();
+    slot.visibility = None;
+    slot.area_state = None;
+    slot.visibility_output.clear();
+    slot.collision = None;
     slot.hash = [0; 32];
     slot.derived_hash = [0; 32];
     slot.bsp_hash = [0; 32];
@@ -1439,6 +1688,10 @@ fn resolve_models(
         "models/weapons/w_models/w_stickybomb.mdl".to_owned(),
         "models/weapons/v_models/v_rocketlauncher_soldier.mdl".to_owned(),
         "models/weapons/v_models/v_stickybomb_launcher_demo.mdl".to_owned(),
+        "models/player/soldier.mdl".to_owned(),
+        "models/player/demo.mdl".to_owned(),
+        "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl".to_owned(),
+        "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl".to_owned(),
     ]);
     for entity in &graph.entities {
         if entity
@@ -1471,42 +1724,60 @@ fn resolve_models(
             material.base_texture = None;
             materials.push(material);
         }
-        let skin = document.skins.first();
-        let mut primitives = Vec::new();
-        for primitive in document
-            .geometry
-            .iter()
-            .filter(|primitive| primitive.lod == 0 && primitive.model == 0)
-        {
-            let material = skin
-                .and_then(|family| family.texture_indices.get(primitive.material_slot))
-                .map_or(primitive.material_slot, |index| *index as usize);
-            primitives.push(playsrc_map::RuntimeModelPrimitive {
-                material,
-                positions: primitive
-                    .vertices
-                    .iter()
-                    .map(|vertex| vertex.position.0.map(|value| f32::from_bits(value.0)))
-                    .collect(),
-                normals: primitive
-                    .vertices
-                    .iter()
-                    .map(|vertex| vertex.normal.0.map(|value| f32::from_bits(value.0)))
-                    .collect(),
-                uv: primitive
-                    .vertices
-                    .iter()
-                    .map(|vertex| vertex.uv.map(|value| f32::from_bits(value.0)))
-                    .collect(),
-                triangles: primitive.triangles.clone(),
-            });
+        if document.skins.is_empty() {
+            return Err(());
         }
         indexes.insert(identity.clone(), models.len());
-        models.push(playsrc_map::RuntimeModel {
-            logical_path: identity,
-            materials,
-            primitives,
-        });
+        let retained_skins =
+            if identity.ends_with("w_rocket.mdl") || identity.ends_with("w_stickybomb.mdl") {
+                2
+            } else {
+                1
+            };
+        for (skin_index, skin) in document.skins.iter().take(retained_skins).enumerate() {
+            let mut primitives = Vec::new();
+            for primitive in document
+                .geometry
+                .iter()
+                .filter(|primitive| primitive.lod == 0 && primitive.model == 0)
+            {
+                let material = skin
+                    .texture_indices
+                    .get(primitive.material_slot)
+                    .map_or(primitive.material_slot, |index| *index as usize);
+                primitives.push(playsrc_map::RuntimeModelPrimitive {
+                    material,
+                    positions: primitive
+                        .vertices
+                        .iter()
+                        .map(|vertex| vertex.position.0.map(|value| f32::from_bits(value.0)))
+                        .collect(),
+                    normals: primitive
+                        .vertices
+                        .iter()
+                        .map(|vertex| vertex.normal.0.map(|value| f32::from_bits(value.0)))
+                        .collect(),
+                    uv: primitive
+                        .vertices
+                        .iter()
+                        .map(|vertex| vertex.uv.map(|value| f32::from_bits(value.0)))
+                        .collect(),
+                    triangles: primitive.triangles.clone(),
+                });
+            }
+            models.push(playsrc_map::RuntimeModel {
+                logical_path: if skin_index == 0 {
+                    identity.clone()
+                } else {
+                    format!("{identity}#skin={skin_index}")
+                },
+                materials: materials.clone(),
+                primitives,
+            });
+        }
+        if identity.contains("/v_models/") {
+            append_viewmodel_activity_models(&identity, &bundle, profile, &materials, &mut models)?;
+        }
     }
     let mut occurrences = Vec::new();
     for entity in &graph.entities {
@@ -1528,6 +1799,1105 @@ fn resolve_models(
         });
     }
     Ok((models, occurrences))
+}
+
+fn studio_texture_role(
+    role: playsrc_material::TextureRole,
+) -> Option<playsrc_studio_model::TextureRole> {
+    use playsrc_material::TextureRole as S;
+    use playsrc_studio_model::TextureRole as T;
+    Some(match role {
+        S::Base => T::Base,
+        S::HdrBase => T::HdrBase,
+        S::HdrCompressed => T::HdrCompressed,
+        S::HdrCompressed0 => T::HdrCompressed0,
+        S::HdrCompressed1 => T::HdrCompressed1,
+        S::HdrCompressed2 => T::HdrCompressed2,
+        S::Base2 => T::Base2,
+        S::Bump => T::Bump,
+        S::Normal => T::Normal,
+        S::Bump2 => T::Bump2,
+        S::Detail => T::Detail,
+        S::BlendModulate => T::BlendModulate,
+        S::Environment => T::Environment,
+        S::EnvironmentMask => T::EnvironmentMask,
+        S::SelfIllumMask => T::SelfIllumMask,
+        S::Flow => T::Flow,
+        S::Reflection | S::Refraction => return None,
+    })
+}
+fn studio_manifest(
+    identity: &str,
+    bundle: &BTreeMap<String, &[u8]>,
+    profile: playsrc_map::LightingProfile,
+) -> Result<playsrc_studio_model::MaterialResolutionManifest, ()> {
+    let identity = identity.to_ascii_lowercase();
+    let root = *bundle.get(&identity).ok_or(())?;
+    let mut responses = Vec::new();
+    let mut include_sources = Vec::new();
+    let material = loop {
+        match playsrc_vmt::compose(
+            root,
+            identity.clone(),
+            &responses,
+            &playsrc_keyvalues::ConditionEnvironment::default(),
+            playsrc_vmt::Limits::default(),
+        )
+        .map_err(|_| ())?
+        {
+            playsrc_vmt::Composition::Complete(doc) => {
+                break playsrc_material::resolve_for_environment(
+                    &doc,
+                    material_environment(profile, true),
+                )
+                .map_err(|_| ())?;
+            }
+            playsrc_vmt::Composition::Needs(requests) => {
+                for request in requests {
+                    let path = dependency_path(&request.target_token)?;
+                    include_sources.push(playsrc_studio_model::MaterialSourceManifest {
+                        requester: request.parent_identity.clone(),
+                        logical_path: path.clone(),
+                    });
+                    responses.push(playsrc_vmt::DependencyResponse {
+                        parent_identity: request.parent_identity,
+                        target_token: request.target_token,
+                        canonical_identity: path.clone(),
+                        bytes: Some(bundle.get(&path).ok_or(())?.to_vec()),
+                    });
+                }
+            }
+        }
+    };
+    let textures = material
+        .textures
+        .iter()
+        .filter_map(|t| {
+            Some(playsrc_studio_model::MaterialTextureManifest {
+                role: studio_texture_role(t.role)?,
+                parameter: t.parameter.clone(),
+                logical_path: t.logical_path.as_ref().map(|v| v.to_ascii_lowercase()),
+                disposition: match t.disposition {
+                    playsrc_material::TextureDisposition::Source => {
+                        playsrc_studio_model::TextureDisposition::Source
+                    }
+                    playsrc_material::TextureDisposition::BuiltInEnvironment => {
+                        playsrc_studio_model::TextureDisposition::BuiltInEnvironment
+                    }
+                    playsrc_material::TextureDisposition::BuiltInRenderTarget => {
+                        playsrc_studio_model::TextureDisposition::BuiltInRenderTarget
+                    }
+                },
+                selected: material.selected_textures.contains(&t.role),
+            })
+        })
+        .collect();
+    Ok(playsrc_studio_model::MaterialResolutionManifest {
+        root_identity: identity,
+        include_sources,
+        textures,
+    })
+}
+fn build_model_presentation(
+    identity: &str,
+    bundle: &BTreeMap<String, &[u8]>,
+    profile: playsrc_map::LightingProfile,
+) -> Result<Box<playsrc_studio_model::PresentationArtifact>, ()> {
+    let document = load_model(identity, bundle)?;
+    let mut responses = Vec::new();
+    loop {
+        match playsrc_studio_model::build_presentation(
+            &document,
+            if identity.contains("/v_models/") {
+                playsrc_studio_model::PresentationProfile::ViewModel
+            } else {
+                playsrc_studio_model::PresentationProfile::World
+            },
+            &responses,
+            playsrc_studio_model::PresentationLimits::default(),
+            &playsrc_studio_model::CancellationToken::default(),
+        )
+        .map_err(|_| ())?
+        {
+            playsrc_studio_model::PresentationBuild::Complete(a) => return Ok(a),
+            playsrc_studio_model::PresentationBuild::Needs(requests) => {
+                for r in requests {
+                    let bytes = bundle
+                        .get(&r.logical_path.to_ascii_lowercase())
+                        .map(|b| b.to_vec());
+                    let material = if r.role
+                        == playsrc_studio_model::PresentationDependencyRole::MaterialCandidate
+                        && bytes.is_some()
+                    {
+                        Some(studio_manifest(&r.logical_path, bundle, profile)?)
+                    } else {
+                        None
+                    };
+                    let sha256 = bytes.as_deref().map(|b| Sha256::digest(b).into());
+                    responses.push(playsrc_studio_model::PresentationDependencyResponse {
+                        requester: r.requester,
+                        role: r.role,
+                        logical_path: r.logical_path,
+                        material_slot: r.material_slot,
+                        texture_role: r.texture_role,
+                        bytes,
+                        sha256,
+                        material,
+                    });
+                }
+            }
+        }
+    }
+}
+
+fn transform_point(matrix: &playsrc_studio_model::Matrix3x4, point: [f32; 3]) -> [f32; 3] {
+    let m = matrix.0.map(|value| f32::from_bits(value.0));
+    [
+        m[0].mul_add(
+            point[0],
+            m[1].mul_add(point[1], m[2].mul_add(point[2], m[3])),
+        ),
+        m[4].mul_add(
+            point[0],
+            m[5].mul_add(point[1], m[6].mul_add(point[2], m[7])),
+        ),
+        m[8].mul_add(
+            point[0],
+            m[9].mul_add(point[1], m[10].mul_add(point[2], m[11])),
+        ),
+    ]
+}
+fn transform_normal(matrix: &playsrc_studio_model::Matrix3x4, normal: [f32; 3]) -> [f32; 3] {
+    let m = matrix.0.map(|value| f32::from_bits(value.0));
+    [
+        m[0].mul_add(normal[0], m[1].mul_add(normal[1], m[2] * normal[2])),
+        m[4].mul_add(normal[0], m[5].mul_add(normal[1], m[6] * normal[2])),
+        m[8].mul_add(normal[0], m[9].mul_add(normal[1], m[10] * normal[2])),
+    ]
+}
+fn append_viewmodel_activity_models(
+    identity: &str,
+    bundle: &BTreeMap<String, &[u8]>,
+    profile: playsrc_map::LightingProfile,
+    materials: &[playsrc_map::RuntimeMaterial],
+    output: &mut Vec<playsrc_map::RuntimeModel>,
+) -> Result<(), ()> {
+    let artifact = build_model_presentation(identity, bundle, profile)?;
+    let bodygroups = artifact
+        .model
+        .body_parts
+        .iter()
+        .map(|_| 0usize)
+        .collect::<Vec<_>>();
+    for activity in [
+        "ACT_VM_DRAW",
+        "ACT_VM_IDLE",
+        "ACT_VM_PRIMARYATTACK",
+        "ACT_VM_RELOAD",
+    ] {
+        let Some(sequence) =
+            playsrc_studio_model::sequences_for_activity_name(&artifact.model, activity.as_bytes())
+                .first()
+                .copied()
+        else {
+            continue;
+        };
+        for (sample, cycle) in [0.0f32, 0.25, 0.5, 0.75, 1.0].into_iter().enumerate() {
+            let pose = playsrc_studio_model::sample_pose(
+                &artifact.model,
+                &playsrc_studio_model::AnimationState {
+                    base_sequence: sequence,
+                    cycle: playsrc_studio_model::Float32(cycle.to_bits()),
+                    pose_parameters: artifact
+                        .model
+                        .pose_parameters
+                        .iter()
+                        .map(|_| playsrc_studio_model::Float32(0))
+                        .collect(),
+                    layers: Vec::new(),
+                },
+            )
+            .map_err(|_| ())?;
+            let selected =
+                playsrc_studio_model::select_primitives(&artifact.model, &bodygroups, 0, 0)
+                    .map_err(|_| ())?;
+            let mut primitives = Vec::new();
+            for selected in selected {
+                let source = &artifact.model.geometry[selected.primitive];
+                let material = artifact.model.materials[selected.material].source_slot;
+                let mut positions = Vec::with_capacity(source.vertices.len());
+                let mut normals = Vec::with_capacity(source.vertices.len());
+                for vertex in &source.vertices {
+                    let point = vertex.position.0.map(|v| f32::from_bits(v.0));
+                    let normal = vertex.normal.0.map(|v| f32::from_bits(v.0));
+                    let mut p = [0.0; 3];
+                    let mut n = [0.0; 3];
+                    for (index, weight) in vertex.weights.iter().enumerate() {
+                        let weight = f32::from_bits(weight.0);
+                        if weight == 0.0 {
+                            continue;
+                        }
+                        let bone = *vertex.bones.get(index).ok_or(())? as usize;
+                        let tp =
+                            transform_point(pose.skinning_matrices.get(bone).ok_or(())?, point);
+                        let tn =
+                            transform_normal(pose.skinning_matrices.get(bone).ok_or(())?, normal);
+                        for axis in 0..3 {
+                            p[axis] = tp[axis].mul_add(weight, p[axis]);
+                            n[axis] = tn[axis].mul_add(weight, n[axis])
+                        }
+                    }
+                    positions.push(p);
+                    normals.push(n)
+                }
+                primitives.push(playsrc_map::RuntimeModelPrimitive {
+                    material,
+                    positions,
+                    normals,
+                    uv: source
+                        .vertices
+                        .iter()
+                        .map(|v| v.uv.map(|x| f32::from_bits(x.0)))
+                        .collect(),
+                    triangles: source.triangles.clone(),
+                })
+            }
+            output.push(playsrc_map::RuntimeModel {
+                logical_path: format!("{identity}#activity={activity}#sample={sample}"),
+                materials: materials.to_vec(),
+                primitives,
+            })
+        }
+    }
+    Ok(())
+}
+fn pbytes(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), ()> {
+    out.extend_from_slice(&u32::try_from(bytes.len()).map_err(|_| ())?.to_le_bytes());
+    out.extend_from_slice(bytes);
+    (out.len() <= 512 * 1024 * 1024).then_some(()).ok_or(())
+}
+fn decoded_texture(
+    path: &str,
+    bundle: &BTreeMap<String, &[u8]>,
+) -> Result<playsrc_map::RuntimeTexture, ()> {
+    let plane = playsrc_vtf::decode(
+        *bundle.get(path).ok_or(())?,
+        playsrc_vtf::Dialect::Source2013Pc,
+        playsrc_vtf::SubresourceIdentity::HighResolution {
+            mip: 0,
+            frame: 0,
+            face: playsrc_vtf::Face::Right,
+            slice: 0,
+        },
+        playsrc_vtf::Limits::default(),
+    )
+    .map_err(|_| ())?;
+    let rgba = match plane.channel_layout {
+        playsrc_vtf::ChannelLayout::Rgba => plane.samples,
+        playsrc_vtf::ChannelLayout::Rgb => {
+            let mut output = Vec::with_capacity(plane.width as usize * plane.height as usize * 4);
+            for pixel in plane.samples.chunks_exact(3) {
+                output.extend_from_slice(&[pixel[0], pixel[1], pixel[2], 255])
+            }
+            output
+        }
+    };
+    Ok(playsrc_map::RuntimeTexture {
+        logical_path: path.to_owned(),
+        width: plane.width,
+        height: plane.height,
+        rgba,
+    })
+}
+fn compile_presentation(
+    canonical: &playsrc_map::CanonicalMap,
+    bsp: &playsrc_bsp::Bsp,
+    graph: &playsrc_entity::Graph,
+    configuration: &[u8],
+    profile: playsrc_map::LightingProfile,
+) -> Result<Vec<u8>, ()> {
+    let bundle = bundle(configuration)?;
+    let mut roots = std::collections::BTreeSet::from([
+        "models/weapons/w_models/w_rocket.mdl".to_owned(),
+        "models/weapons/w_models/w_stickybomb.mdl".to_owned(),
+        "models/weapons/v_models/v_rocketlauncher_soldier.mdl".to_owned(),
+        "models/weapons/v_models/v_stickybomb_launcher_demo.mdl".to_owned(),
+        "models/player/soldier.mdl".to_owned(),
+        "models/player/demo.mdl".to_owned(),
+        "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl".to_owned(),
+        "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl".to_owned(),
+    ]);
+    for e in &graph.entities {
+        if e.classname
+            .as_deref()
+            .is_some_and(|v| v.eq_ignore_ascii_case(b"prop_dynamic"))
+            && let Some(m) = &e.model
+        {
+            roots.insert(std::str::from_utf8(m).map_err(|_| ())?.to_ascii_lowercase());
+        }
+    }
+    let mut models = Vec::new();
+    for id in roots {
+        models.push((id.clone(), build_model_presentation(&id, &bundle, profile)?));
+    }
+    let mut textures = BTreeMap::new();
+    for (_, a) in &models {
+        for m in &a.model.materials {
+            let path = a
+                .model
+                .dependencies
+                .get(m.material_dependency)
+                .ok_or(())?
+                .logical_path
+                .to_ascii_lowercase();
+            let resolved =
+                resolve_material(&path, &bundle, true, material_environment(profile, true))?;
+            if let Some(texture) = resolved.base_texture {
+                textures.insert(path, texture);
+            }
+        }
+    }
+    let mut directional = Vec::new();
+    for reference in &canonical.materials {
+        let identity = reference.logical_path.to_ascii_lowercase();
+        let material =
+            resolve_material_semantics(&identity, &bundle, material_environment(profile, false))?;
+        let Some(texture) = material.textures.iter().find(|texture| {
+            matches!(
+                texture.role,
+                playsrc_material::TextureRole::Bump | playsrc_material::TextureRole::Normal
+            ) && texture.disposition == playsrc_material::TextureDisposition::Source
+        }) else {
+            continue;
+        };
+        let path = texture
+            .logical_path
+            .as_ref()
+            .ok_or(())?
+            .to_ascii_lowercase();
+        directional.push((
+            identity,
+            u8::from(material.features.ss_bump),
+            decoded_texture(&path, &bundle)?,
+        ));
+    }
+    let particle_paths = [
+        "particles/rockettrail.pcf",
+        "particles/rocketbackblast.pcf",
+        "particles/stickybomb.pcf",
+        "particles/muzzle_flash.pcf",
+        "particles/explosion.pcf",
+    ];
+    let particle_sources = particle_paths
+        .iter()
+        .map(|path| {
+            Ok(playsrc_particle::PcfSource {
+                logical_path: path,
+                bytes: bundle.get(*path).ok_or(())?,
+            })
+        })
+        .collect::<Result<Vec<_>, ()>>()?;
+    let particle_registry = playsrc_particle::Registry::from_pcf(
+        &particle_sources,
+        playsrc_particle::RegistryLimits::default(),
+    )
+    .map_err(|_| ())?;
+    let particle_roots = [
+        "rockettrail",
+        "rocketbackblast",
+        "stickybombtrail_red",
+        "stickybombtrail_blue",
+        "stickybomb_pulse_red",
+        "stickybomb_pulse_blue",
+        "muzzle_pipelauncher",
+        "ExplosionCore_Wall",
+        "ExplosionCore_MidAir",
+    ]
+    .map(playsrc_particle::DefinitionLookup::Name);
+    let particle_materials = particle_registry
+        .target_closure(&particle_roots)
+        .map_err(|_| ())?
+        .materials;
+    let environment = compile_environment_artifact(canonical, bsp, graph, &bundle, profile)?;
+    let mut out = b"PTF2".to_vec();
+    out.extend_from_slice(&4u32.to_le_bytes());
+    out.extend_from_slice(&u32::try_from(models.len()).map_err(|_| ())?.to_le_bytes());
+    out.extend_from_slice(&u32::try_from(textures.len()).map_err(|_| ())?.to_le_bytes());
+    out.extend_from_slice(
+        &u32::try_from(directional.len())
+            .map_err(|_| ())?
+            .to_le_bytes(),
+    );
+    out.extend_from_slice(
+        &u32::try_from(particle_materials.len())
+            .map_err(|_| ())?
+            .to_le_bytes(),
+    );
+    for (id, a) in models {
+        pbytes(&mut out, id.as_bytes())?;
+        out.extend_from_slice(&[
+            if a.model.profile == playsrc_studio_model::PresentationProfile::World {
+                0
+            } else {
+                1
+            },
+            0,
+            0,
+            0,
+        ]);
+        out.extend_from_slice(&a.sha256);
+        out.extend_from_slice(
+            &u32::try_from(a.model.skins.len())
+                .map_err(|_| ())?
+                .to_le_bytes(),
+        );
+        out.extend_from_slice(
+            &u32::try_from(a.model.body_parts.len())
+                .map_err(|_| ())?
+                .to_le_bytes(),
+        );
+        for p in &a.model.body_parts {
+            out.extend_from_slice(
+                &u32::try_from(p.model_names.len())
+                    .map_err(|_| ())?
+                    .to_le_bytes(),
+            );
+        }
+        out.extend_from_slice(
+            &u32::try_from(a.model.attachments.len())
+                .map_err(|_| ())?
+                .to_le_bytes(),
+        );
+        for v in &a.model.attachments {
+            pbytes(&mut out, &v.name)?;
+        }
+        out.extend_from_slice(
+            &u32::try_from(a.model.sequences.len())
+                .map_err(|_| ())?
+                .to_le_bytes(),
+        );
+        for v in &a.model.sequences {
+            pbytes(&mut out, &v.label)?;
+            pbytes(&mut out, &v.activity_name)?;
+        }
+        pbytes(&mut out, &a.bytes)?;
+    }
+    for (material, texture) in textures {
+        pbytes(&mut out, material.as_bytes())?;
+        pbytes(&mut out, texture.logical_path.as_bytes())?;
+        out.extend_from_slice(&texture.width.to_le_bytes());
+        out.extend_from_slice(&texture.height.to_le_bytes());
+        let hash: [u8; 32] = Sha256::digest(&texture.rgba).into();
+        out.extend_from_slice(&hash);
+        pbytes(&mut out, &texture.rgba)?;
+    }
+    for (material, kind, texture) in directional {
+        pbytes(&mut out, material.as_bytes())?;
+        out.extend_from_slice(&[kind, 0, 0, 0]);
+        pbytes(&mut out, texture.logical_path.as_bytes())?;
+        out.extend_from_slice(&texture.width.to_le_bytes());
+        out.extend_from_slice(&texture.height.to_le_bytes());
+        let hash: [u8; 32] = Sha256::digest(&texture.rgba).into();
+        out.extend_from_slice(&hash);
+        pbytes(&mut out, &texture.rgba)?;
+        for value in [1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0] {
+            out.extend_from_slice(&value.to_le_bytes())
+        }
+    }
+    for material in particle_materials {
+        pbytes(&mut out, material.as_bytes())?;
+    }
+    pbytes(&mut out, &environment)?;
+    Ok(out)
+}
+
+fn compile_environment_artifact(
+    canonical: &playsrc_map::CanonicalMap,
+    bsp: &playsrc_bsp::Bsp,
+    graph: &playsrc_entity::Graph,
+    bundle: &BTreeMap<String, &[u8]>,
+    profile: playsrc_map::LightingProfile,
+) -> Result<Vec<u8>, ()> {
+    let materials = canonical
+        .materials
+        .iter()
+        .map(|r| {
+            resolve_material_semantics(
+                &r.logical_path.to_ascii_lowercase(),
+                bundle,
+                material_environment(profile, false),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let bindings = canonical
+        .materials
+        .iter()
+        .zip(&materials)
+        .map(|(reference, material)| playsrc_map::MaterialBinding {
+            material_index: reference.index,
+            material,
+        })
+        .collect::<Vec<_>>();
+    let world = graph
+        .entities
+        .iter()
+        .find(|e| {
+            e.classname
+                .as_deref()
+                .is_some_and(|v| v.eq_ignore_ascii_case(b"worldspawn"))
+        })
+        .ok_or(())?;
+    let sky = std::str::from_utf8(
+        &world
+            .pairs
+            .iter()
+            .find(|p| p.key.eq_ignore_ascii_case(b"skyname"))
+            .ok_or(())?
+            .value,
+    )
+    .map_err(|_| ())?;
+    let mut dependencies = Vec::new();
+    for (face, face_suffix) in [
+        (playsrc_map::CubeFace::Right, "rt"),
+        (playsrc_map::CubeFace::Left, "lf"),
+        (playsrc_map::CubeFace::Back, "bk"),
+        (playsrc_map::CubeFace::Front, "ft"),
+        (playsrc_map::CubeFace::Up, "up"),
+        (playsrc_map::CubeFace::Down, "dn"),
+    ] {
+        let suffix = if profile == playsrc_map::LightingProfile::Hdr {
+            "_hdr"
+        } else {
+            ""
+        };
+        let path = format!("materials/skybox/{sky}{suffix}{face_suffix}.vmt");
+        let source = *bundle.get(&path).ok_or(())?;
+        let m = resolve_material_semantics(&path, bundle, material_environment(profile, false))?;
+        let selected_textures = m
+            .textures
+            .iter()
+            .filter(|t| {
+                m.selected_textures.contains(&t.role)
+                    && t.disposition == playsrc_material::TextureDisposition::Source
+            })
+            .map(|t| {
+                let logical_path = t.logical_path.as_ref().ok_or(())?.to_ascii_lowercase();
+                Ok(playsrc_map::ResolvedTexture {
+                    sha256: Sha256::digest(*bundle.get(&logical_path).ok_or(())?).into(),
+                    logical_path,
+                })
+            })
+            .collect::<Result<Vec<_>, ()>>()?;
+        dependencies.push(playsrc_map::DependencyResponse {
+            request: playsrc_map::DependencyRequest {
+                role: playsrc_map::DependencyRole::SkyMaterial(face),
+                profile,
+                logical_path: path,
+            },
+            metadata: playsrc_map::DependencyMetadata::SkyMaterial {
+                source_sha256: Sha256::digest(source).into(),
+                selected_textures,
+            },
+        })
+    }
+    let records = match &bsp.lumps[42].records {
+        playsrc_bsp::LumpData::Cubemaps(v) => v.as_slice(),
+        _ => return Err(()),
+    };
+    let first = records.first().ok_or(())?;
+    let profile_suffix = if profile == playsrc_map::LightingProfile::Hdr {
+        ".hdr"
+    } else {
+        ""
+    };
+    let leaf = format!(
+        "/c{}_{}_{}{profile_suffix}.vtf",
+        first.origin[0], first.origin[1], first.origin[2]
+    );
+    let mut map_names = bundle
+        .keys()
+        .filter_map(|path| path.strip_prefix("materials/maps/")?.strip_suffix(&leaf))
+        .collect::<std::collections::BTreeSet<_>>();
+    if map_names.len() != 1 {
+        return Err(());
+    }
+    let map_name = map_names.pop_first().ok_or(())?.to_owned();
+    let logical_map_path = format!("maps/{map_name}.bsp");
+    for (index, r) in records.iter().enumerate() {
+        let suffix = if profile == playsrc_map::LightingProfile::Hdr {
+            ".hdr"
+        } else {
+            ""
+        };
+        let path = format!(
+            "materials/maps/{map_name}/c{}_{}_{}{suffix}.vtf",
+            r.origin[0], r.origin[1], r.origin[2]
+        );
+        let bytes = *bundle.get(&path).ok_or(())?;
+        let m = playsrc_vtf::inspect(
+            bytes,
+            playsrc_vtf::Dialect::Source2013Pc,
+            playsrc_vtf::Limits::default(),
+        )
+        .map_err(|_| ())?;
+        dependencies.push(playsrc_map::DependencyResponse {
+            request: playsrc_map::DependencyRequest {
+                role: playsrc_map::DependencyRole::CubemapTexture { sample: index },
+                profile,
+                logical_path: path,
+            },
+            metadata: playsrc_map::DependencyMetadata::CubemapTexture {
+                source_sha256: Sha256::digest(bytes).into(),
+                width: m.width,
+                height: m.height,
+                mip_count: m.mip_count,
+                source_face_count: m.faces.len() as u8,
+            },
+        })
+    }
+    let mut marks = BTreeMap::new();
+    for e in &graph.entities {
+        if !e
+            .classname
+            .as_deref()
+            .is_some_and(|v| v.eq_ignore_ascii_case(b"infodecal"))
+        {
+            continue;
+        }
+        let Some(reference) = e
+            .pairs
+            .iter()
+            .find(|p| p.key.eq_ignore_ascii_case(b"texture"))
+            .map(|p| p.value.clone())
+        else {
+            continue;
+        };
+        let path = dependency_path(&reference)?;
+        let Some(source) = bundle.get(&path).copied() else {
+            continue;
+        };
+        let m = resolve_material_semantics(&path, bundle, material_environment(profile, false))?;
+        let texture = m
+            .textures
+            .iter()
+            .find(|t| {
+                m.selected_textures.contains(&t.role)
+                    && t.disposition == playsrc_material::TextureDisposition::Source
+            })
+            .ok_or(())?;
+        let tm = playsrc_vtf::inspect(
+            bundle
+                .get(
+                    &texture
+                        .logical_path
+                        .as_ref()
+                        .ok_or(())?
+                        .to_ascii_lowercase(),
+                )
+                .ok_or(())?,
+            playsrc_vtf::Dialect::Source2013Pc,
+            playsrc_vtf::Limits::default(),
+        )
+        .map_err(|_| ())?;
+        marks
+            .entry(reference.to_ascii_lowercase())
+            .or_insert(playsrc_map::MarkMaterial {
+                reference,
+                logical_path: path,
+                source_sha256: Sha256::digest(source).into(),
+                width: tm.width,
+                height: tm.height,
+                state: m.decal,
+            });
+    }
+    let marks = marks.into_values().collect::<Vec<_>>();
+    let visibility = playsrc_visibility::compile(bsp).map_err(|_| ())?;
+    let env = playsrc_map::compile_environment(
+        canonical,
+        bsp,
+        playsrc_map::EnvironmentInputs {
+            logical_map_path: &logical_map_path,
+            entities: graph,
+            visibility: &visibility,
+            materials: &bindings,
+            mark_materials: &marks,
+            dependencies: &dependencies,
+            limits: playsrc_map::EnvironmentLimits::default(),
+        },
+    )
+    .map_err(|_| ())?;
+    let mut out = b"PENV".to_vec();
+    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(&[
+        if profile == playsrc_map::LightingProfile::Hdr {
+            1
+        } else {
+            0
+        },
+        0,
+        0,
+        0,
+    ]);
+    out.extend_from_slice(&visibility.identity);
+    for value in [
+        visibility.cluster_count,
+        visibility.nodes.len(),
+        visibility.leaves.len(),
+        env.sky.as_ref().map_or(0, |s| s.surface_faces.len()),
+        env.cubemaps.len(),
+        env.water.surfaces.len(),
+        env.water.volumes.len(),
+        env.marks.records.len(),
+        env.marks.fragment_count,
+        env.controllers.len(),
+    ] {
+        out.extend_from_slice(&(value as u32).to_le_bytes())
+    }
+    for mark in &env.marks.records {
+        out.extend_from_slice(&[
+            mark.status as u8,
+            mark.kind as u8,
+            u8::from(mark.initially_enabled),
+            u8::from(mark.dynamic),
+        ]);
+        pbytes(&mut out, mark.material_path.as_bytes())?;
+        out.extend_from_slice(&(mark.fragments.len() as u32).to_le_bytes());
+        for fragment in &mark.fragments {
+            out.extend_from_slice(&(fragment.model as u32).to_le_bytes());
+            out.extend_from_slice(&(fragment.face as u32).to_le_bytes());
+            out.extend_from_slice(&(fragment.positions.len() as u32).to_le_bytes());
+            for position in &fragment.positions {
+                for value in position {
+                    out.extend_from_slice(&value.to_le_bytes())
+                }
+            }
+            for normal in &fragment.normals {
+                for value in normal {
+                    out.extend_from_slice(&value.to_le_bytes())
+                }
+            }
+            for uv in &fragment.uv {
+                for value in uv {
+                    out.extend_from_slice(&value.to_le_bytes())
+                }
+            }
+            out.extend_from_slice(&(fragment.triangles.len() as u32).to_le_bytes());
+            for triangle in &fragment.triangles {
+                for value in triangle {
+                    out.extend_from_slice(&value.to_le_bytes())
+                }
+            }
+        }
+    }
+    let mut decal_textures = BTreeMap::new();
+    for mark in &marks {
+        if let Some(texture) = resolve_material(
+            &mark.logical_path,
+            bundle,
+            true,
+            material_environment(profile, false),
+        )?
+        .base_texture
+        {
+            decal_textures.insert(mark.logical_path.clone(), texture);
+        }
+    }
+    out.extend_from_slice(&(decal_textures.len() as u32).to_le_bytes());
+    for (material, texture) in decal_textures {
+        pbytes(&mut out, material.as_bytes())?;
+        pbytes(&mut out, texture.logical_path.as_bytes())?;
+        out.extend_from_slice(&texture.width.to_le_bytes());
+        out.extend_from_slice(&texture.height.to_le_bytes());
+        let hash: [u8; 32] = Sha256::digest(&texture.rgba).into();
+        out.extend_from_slice(&hash);
+        pbytes(&mut out, &texture.rgba)?
+    }
+    if let Some(sky) = &env.sky {
+        out.push(1);
+        pbytes(&mut out, &sky.name)?;
+        out.extend_from_slice(&(sky.faces.len() as u32).to_le_bytes());
+        for face in &sky.faces {
+            out.push(face.face as u8);
+            pbytes(&mut out, face.material_path.as_bytes())?;
+            out.extend_from_slice(&face.material_sha256)
+        }
+    } else {
+        out.push(0)
+    }
+    for sample in &env.cubemaps {
+        out.extend_from_slice(&(sample.index as u32).to_le_bytes());
+        for value in sample.origin {
+            out.extend_from_slice(&value.to_le_bytes())
+        }
+        pbytes(&mut out, sample.logical_path.as_bytes())?;
+        out.extend_from_slice(&sample.source_sha256);
+        out.extend_from_slice(&sample.width.to_le_bytes());
+        out.extend_from_slice(&sample.height.to_le_bytes())
+    }
+    let cubemap_code = |selection: &playsrc_map::CubemapSelection| -> (u8, u32) {
+        match selection {
+            playsrc_map::CubemapSelection::Nearest { sample } => (0, *sample as u32),
+            playsrc_map::CubemapSelection::Declared { sample } => (1, *sample as u32),
+            playsrc_map::CubemapSelection::External { .. } => (2, u32::MAX),
+        }
+    };
+    for surface in &env.water.surfaces {
+        out.extend_from_slice(&[
+            if surface.profile == playsrc_map::LightingProfile::Hdr {
+                1
+            } else {
+                0
+            },
+            u8::from(surface.selected),
+            0,
+            0,
+        ]);
+        for value in [surface.face, surface.model, surface.material] {
+            out.extend_from_slice(&(value as u32).to_le_bytes())
+        }
+        for bound in surface.bounds {
+            for value in bound {
+                out.extend_from_slice(&value.to_le_bytes())
+            }
+        }
+        let (kind, sample) = cubemap_code(&surface.cubemap);
+        out.extend_from_slice(&[kind, 0, 0, 0]);
+        out.extend_from_slice(&sample.to_le_bytes())
+    }
+    for volume in &env.water.volumes {
+        out.extend_from_slice(&(volume.index as u32).to_le_bytes());
+        out.extend_from_slice(&volume.surface_z.to_le_bytes());
+        out.extend_from_slice(&volume.minimum_z.to_le_bytes());
+        for bound in volume.bounds {
+            for value in bound {
+                out.extend_from_slice(&value.to_le_bytes())
+            }
+        }
+        out.extend_from_slice(&(volume.leaves.len() as u32).to_le_bytes());
+        for leaf in &volume.leaves {
+            out.extend_from_slice(&(*leaf as u32).to_le_bytes())
+        }
+        let (kind, sample) = cubemap_code(&volume.cubemap);
+        out.extend_from_slice(&[kind, 0, 0, 0]);
+        out.extend_from_slice(&sample.to_le_bytes())
+    }
+    for controller in &env.controllers {
+        out.extend_from_slice(&(controller.entity as u32).to_le_bytes());
+        pbytes(&mut out, &controller.classname)?;
+        out.push(match &controller.state {
+            playsrc_map::ControllerState::Fog(_) => 0,
+            playsrc_map::ControllerState::SkyCamera { .. } => 1,
+            playsrc_map::ControllerState::WaterLod { .. } => 2,
+            playsrc_map::ControllerState::EnvironmentLight { .. } => 3,
+            playsrc_map::ControllerState::Shadow { .. } => 4,
+            playsrc_map::ControllerState::ToneMap => 5,
+        });
+    }
+    Ok(out)
+}
+
+fn compile_particles(
+    configuration: &[u8],
+) -> Result<(playsrc_particle::ParticleWorld, Vec<String>), ()> {
+    let b = bundle(configuration)?;
+    let paths = [
+        "particles/rockettrail.pcf",
+        "particles/rocketbackblast.pcf",
+        "particles/stickybomb.pcf",
+        "particles/muzzle_flash.pcf",
+        "particles/explosion.pcf",
+    ];
+    let sources = paths
+        .iter()
+        .map(|path| {
+            Ok(playsrc_particle::PcfSource {
+                logical_path: path,
+                bytes: b.get(*path).ok_or(())?,
+            })
+        })
+        .collect::<Result<Vec<_>, ()>>()?;
+    let registry =
+        playsrc_particle::Registry::from_pcf(&sources, playsrc_particle::RegistryLimits::default())
+            .map_err(|_| ())?;
+    let roots = [
+        "rockettrail",
+        "rocketbackblast",
+        "stickybombtrail_red",
+        "stickybombtrail_blue",
+        "stickybomb_pulse_red",
+        "stickybomb_pulse_blue",
+        "muzzle_pipelauncher",
+        "ExplosionCore_Wall",
+        "ExplosionCore_MidAir",
+    ]
+    .map(playsrc_particle::DefinitionLookup::Name);
+    let materials = registry.target_closure(&roots).map_err(|_| ())?.materials;
+    Ok((
+        playsrc_particle::ParticleWorld::new(&registry, playsrc_particle::WorldLimits::default())
+            .map_err(|_| ())?,
+        materials,
+    ))
+}
+struct ParticleCollision(Arc<playsrc_collision::World>);
+impl playsrc_particle::CollisionQuery for ParticleCollision {
+    fn trace_batch(
+        &mut self,
+        requests: &[playsrc_particle::TraceRequest],
+    ) -> Result<Vec<playsrc_particle::CollisionResult>, playsrc_particle::Error> {
+        Ok(requests
+            .iter()
+            .map(|r| {
+                let radius = r.radius.max(0.0);
+                let trace = self
+                    .0
+                    .trace_hull(
+                        r.start,
+                        r.end,
+                        playsrc_collision::Hull {
+                            mins: [-radius; 3],
+                            maxs: [radius; 3],
+                        },
+                        u32::MAX,
+                    )
+                    .expect("validated particle collision query");
+                playsrc_particle::CollisionResult {
+                    identity: r.identity,
+                    fraction: trace.fraction,
+                    start_solid: trace.start_solid,
+                    normal: trace.plane.map_or([0.0, 0.0, 1.0], |plane| plane.normal),
+                }
+            })
+            .collect())
+    }
+}
+struct ParticleReader<'a> {
+    bytes: &'a [u8],
+    at: usize,
+}
+impl<'a> ParticleReader<'a> {
+    fn take(&mut self, n: usize) -> Result<&'a [u8], ()> {
+        let end = self.at.checked_add(n).ok_or(())?;
+        let v = self.bytes.get(self.at..end).ok_or(())?;
+        self.at = end;
+        Ok(v)
+    }
+    fn u8(&mut self) -> Result<u8, ()> {
+        Ok(self.take(1)?[0])
+    }
+    fn u32(&mut self) -> Result<u32, ()> {
+        Ok(u32::from_le_bytes(
+            self.take(4)?.try_into().map_err(|_| ())?,
+        ))
+    }
+    fn u64(&mut self) -> Result<u64, ()> {
+        Ok(u64::from_le_bytes(
+            self.take(8)?.try_into().map_err(|_| ())?,
+        ))
+    }
+    fn f32(&mut self) -> Result<f32, ()> {
+        let v = f32::from_le_bytes(self.take(4)?.try_into().map_err(|_| ())?);
+        v.is_finite().then_some(v).ok_or(())
+    }
+    fn text(&mut self) -> Result<String, ()> {
+        let n = self.u32()? as usize;
+        if n > 1024 {
+            return Err(());
+        }
+        String::from_utf8(self.take(n)?.to_vec()).map_err(|_| ())
+    }
+    fn cp(&mut self) -> Result<playsrc_particle::ControlPoint, ()> {
+        let position = [self.f32()?, self.f32()?, self.f32()?];
+        let orientation = [self.f32()?, self.f32()?, self.f32()?, self.f32()?];
+        Ok(playsrc_particle::ControlPoint {
+            index: 0,
+            position,
+            previous_position: position,
+            orientation,
+            velocity: [0.0; 3],
+            parent: None,
+            object_identity: match self.u32()? {
+                u32::MAX => None,
+                v => Some(v),
+            },
+        })
+    }
+}
+fn decode_particle_transaction(
+    bytes: &[u8],
+) -> Result<
+    (
+        Vec<playsrc_particle::Event>,
+        playsrc_particle::AdvanceRequest,
+    ),
+    (),
+> {
+    let mut r = ParticleReader { bytes, at: 0 };
+    if r.take(4)? != b"PPTX" || r.u32()? != 1 {
+        return Err(());
+    }
+    let from = r.f32()?;
+    let to = r.f32()?;
+    let camera_position = [r.f32()?, r.f32()?, r.f32()?];
+    let count = r.u32()? as usize;
+    if count > 4096 || to < from {
+        return Err(());
+    }
+    let mut events = Vec::with_capacity(count);
+    for order in 0..count {
+        let kind = r.u8()?;
+        if r.take(3)? != [0, 0, 0] {
+            return Err(());
+        }
+        let identity = r.u64()?;
+        let timestamp_seconds = r.f32()?;
+        let effect_identity = r.u32()?;
+        let command = match kind {
+            1 => {
+                let seed = r.u64()?;
+                let owner = match r.u32()? {
+                    u32::MAX => None,
+                    v => Some(v),
+                };
+                let definition = r.text()?;
+                let cp = r.cp()?;
+                playsrc_particle::EventCommand::Create {
+                    effect_identity,
+                    definition,
+                    seed,
+                    owner_identity: owner,
+                    control_points: vec![cp],
+                }
+            }
+            2 => playsrc_particle::EventCommand::SetControlPoint {
+                effect_identity,
+                control_point: r.cp()?,
+            },
+            3 => playsrc_particle::EventCommand::StopEmission {
+                effect_identity,
+                mode: playsrc_particle::StopMode::Immediate,
+            },
+            4 => playsrc_particle::EventCommand::Destroy { effect_identity },
+            _ => return Err(()),
+        };
+        events.push(playsrc_particle::Event {
+            identity,
+            timestamp_seconds,
+            source_order: order as u32,
+            command,
+        });
+    }
+    if r.at != bytes.len() {
+        return Err(());
+    }
+    Ok((
+        events,
+        playsrc_particle::AdvanceRequest {
+            from_seconds: from,
+            to_seconds: to,
+            maximum_step_seconds: 1.0 / 60.0,
+            camera_position,
+        },
+    ))
 }
 
 fn spawn(graph: &playsrc_entity::Graph) -> Option<Spawn> {
@@ -1576,6 +2946,15 @@ mod tests {
         guard.push(Slot {
             generation: 1,
             payload: Some(vec![1, 2]),
+            presentation: Vec::new(),
+            presentation_hash: [0; 32],
+            particles: None,
+            particle_materials: Vec::new(),
+            particle_output: Vec::new(),
+            visibility: None,
+            area_state: None,
+            visibility_output: Vec::new(),
+            collision: None,
             hash: [3; 32],
             derived_hash: [6; 32],
             bsp_hash: [8; 32],
@@ -1592,6 +2971,15 @@ mod tests {
         guard[0] = Slot {
             generation: 2,
             payload: Some(vec![4]),
+            presentation: Vec::new(),
+            presentation_hash: [0; 32],
+            particles: None,
+            particle_materials: Vec::new(),
+            particle_output: Vec::new(),
+            visibility: None,
+            area_state: None,
+            visibility_output: Vec::new(),
+            collision: None,
             hash: [5; 32],
             derived_hash: [7; 32],
             bsp_hash: [9; 32],

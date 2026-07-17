@@ -30,7 +30,7 @@ async function publicCommitIdentity(): Promise<string> {
     stderr: "ignore",
   })
   const value = (await new Response(child.stdout).text()).trim()
-  if (await child.exited !== 0 || !/^[0-9a-f]{40}$/.test(value)) {
+  if ((await child.exited) !== 0 || !/^[0-9a-f]{40}$/.test(value)) {
     throw new DevelopmentError("BuildFailed", "public application commit identity is unavailable")
   }
   return new Bun.CryptoHasher("sha256").update(value).digest("hex")
@@ -54,10 +54,7 @@ export type DevelopmentOwner = Readonly<{
   waitForInterrupt(): Promise<"SIGINT" | "SIGTERM">
 }>
 
-export async function startDevelopment(
-  config: LocalConfig,
-  target: string | undefined,
-): Promise<DevelopmentOwner> {
+export async function startDevelopment(config: LocalConfig, target: string | undefined): Promise<DevelopmentOwner> {
   const map = await acquireMap(config, target)
   const wasmPath = await buildTf2Wasm(config)
   const bundlePath = await buildSourceBundle(config, target ?? "")
@@ -77,6 +74,7 @@ export async function startDevelopment(
     application: "tf2",
     applicationBuild,
     target: "jump_beef",
+    renderLevel: 2,
     assetOrigin: APPLICATION_URL.slice(0, -1),
     allowedExternalOrigins: ["https://allowed-host"],
     bsp,
@@ -123,10 +121,7 @@ export async function startDevelopment(
       logLevel: "error",
     })
     await application.listen()
-    await Promise.all([
-      waitReady(`${ASSET_ORIGIN}/readyz`),
-      waitReady(APPLICATION_URL),
-    ])
+    await Promise.all([waitReady(`${ASSET_ORIGIN}/readyz`), waitReady(APPLICATION_URL)])
   } catch (error) {
     await close().catch(() => {})
     if (error instanceof DevelopmentError) throw error

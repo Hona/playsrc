@@ -11,6 +11,7 @@ Deliver faithful TF2 gameplay and presentation at `tf2.playsrc.online`.
 - Adapt typed VGUI console submissions to owner-defined command and convar operations. `map <catalog-map-name>` selects one declared map; `map https://<allowed-origin>/<path>/<map-name>.bsp` is an explicit bounded playsrc acquisition operation and is not a TF2 parity capability.
 - Own typed `cl_showfps 0|1|2` and `cl_showpos 0|1|2` values, immutable diagnostic inputs, exact catalog revisions/current-value output, and explicit unavailable distinctions; VGUI owns the bounded diagnostic panel.
 - Run one direct-BSP TF2 worker, Three.js/WebGPU canvas, selected-teamspawn camera initialization, Source-signed pointer look, physical left/right Shift crouch with no Control crouch binding, application-owned fixed-tick pacing/input neutralization, separate VGUI mount, exact support-blocker ledger, and generation-safe catalog or ephemeral HTTPS map replacement.
+- Select `mat_hdr_level 0|1|2` through profile-distinct map generations; configure the declared `jump_beef` course before activation; cache bounded StudioModel artifacts; execute projectile PCF phases in the worker; and apply Rust-produced PVS face candidates plus typed environment counts without gameplay feedback.
 
 Run the checked end-to-end browser procedure with `bun run verify:browser jump_beef`. It starts `bun run dev jump_beef`, drives cold and warm headed-browser runs, retains a fixed 1,280×720 canvas capture, rejects missing spawn-room surfaces or reversed pointer direction, and verifies one-interrupt process shutdown.
 

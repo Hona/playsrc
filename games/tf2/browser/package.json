@@ -4,6 +4,7 @@
   "type": "module",
   "exports": {
     ".": "./src/client.ts",
+    "./artifacts": "./src/artifacts.ts",
     "./codec": "./src/codec.ts",
     "./presentation": "./src/presentation.ts",
     "./worker": "./src/gameplay-worker.ts"

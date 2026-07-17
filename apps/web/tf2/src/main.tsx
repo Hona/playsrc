@@ -46,19 +46,29 @@ function App() {
       data-spawn-hammer-id={view.initialView?.hammerId}
       data-spawn-position={view.initialView?.position.join(",")}
       data-spawn-angles={view.initialView?.angles.join(",")}
+      data-particle-items={view.particleRenderItems ?? 0}
+      data-environment={
+        view.environment
+          ? `${view.environment.profile},${view.environment.clusters},${view.environment.skySurfaces},${view.environment.waterVolumes},${view.environment.marks},${view.environment.markFragments}`
+          : undefined
+      }
+      data-environment-drawables={view.environmentDrawables ?? 0}
+      data-environment-sky={view.environment?.sky?.name}
+      data-water-cubemap={view.environment?.waterVolumeFacts[0]?.cubemapSample ?? undefined}
     >
       <canvas
         ref={canvas}
         class="world-canvas"
         tabIndex={0}
         aria-label="TF2 jump practice world"
-        onClick={() => void runtime.current?.requestPointer()}
+        onClick={(event) => void runtime.current?.requestPointer(event.currentTarget)}
         onContextMenu={(event) => event.preventDefault()}
       />
 
       <header class="field-header">
         <div class="wordmark" aria-label="playsrc TF2">
-          <span class="wordmark-source">play</span><span class="wordmark-class">src</span>
+          <span class="wordmark-source">play</span>
+          <span class="wordmark-class">src</span>
           <small>jump practice / jump_beef</small>
         </div>
         <div class="status-stamp" data-ready={view.phase === "Ready"}>
@@ -88,31 +98,33 @@ function App() {
 
       <nav class="class-rail" aria-label="Class selection">
         <button type="button" onClick={() => runtime.current?.selectClass(1)}>
-          <kbd>1</kbd><span>Soldier</span>
+          <kbd>1</kbd>
+          <span>Soldier</span>
         </button>
         <button type="button" onClick={() => runtime.current?.selectClass(2)}>
-          <kbd>2</kbd><span>Demoman</span>
+          <kbd>2</kbd>
+          <span>Demoman</span>
         </button>
         <button type="button" class="console-toggle" onClick={() => runtime.current?.toggleConsole()}>
-          <kbd>`</kbd><span>Console</span>
+          <kbd>`</kbd>
+          <span>Console</span>
         </button>
         <button type="button" class="audio-toggle" onClick={() => void runtime.current?.resumeAudio()}>
-          <kbd>♪</kbd><span>Audio</span>
+          <kbd>♪</kbd>
+          <span>Audio</span>
         </button>
       </nav>
 
       <aside class="support-card">
-        <button
-          type="button"
-          aria-expanded={showBlockers}
-          onClick={() => setShowBlockers((value) => !value)}
-        >
+        <button type="button" aria-expanded={showBlockers} onClick={() => setShowBlockers((value) => !value)}>
           <span>{view.blockers.length} exact support blockers</span>
           <b>{showBlockers ? "close" : "inspect"}</b>
         </button>
         {showBlockers && (
           <ol>
-            {view.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}
+            {view.blockers.map((blocker) => (
+              <li key={blocker}>{blocker}</li>
+            ))}
           </ol>
         )}
       </aside>

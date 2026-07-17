@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use crate::{
     Definition, DefinitionLookup, Error, ErrorCode, Function, FunctionCategory, Registry, Value,
@@ -337,8 +340,8 @@ impl CollisionQuery for CollisionBatch {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct ParticleWorld<'a> {
-    registry: &'a Registry,
+pub struct ParticleWorld {
+    registry: Arc<Registry>,
     limits: WorldLimits,
     time: f32,
     effects: Vec<Effect>,
@@ -392,11 +395,11 @@ struct Particle {
     trail_length: f32,
 }
 
-impl<'a> ParticleWorld<'a> {
-    pub fn new(registry: &'a Registry, limits: WorldLimits) -> Result<Self, Error> {
+impl ParticleWorld {
+    pub fn new(registry: &Registry, limits: WorldLimits) -> Result<Self, Error> {
         validate_limits(limits)?;
         Ok(Self {
-            registry,
+            registry: Arc::new(registry.clone()),
             limits,
             time: 0.0,
             effects: Vec::new(),
@@ -446,7 +449,7 @@ impl<'a> ParticleWorld<'a> {
         candidate.time = request.to_seconds;
         candidate
             .effects
-            .retain(|effect| !finished(&effect.root, candidate.registry, request.to_seconds));
+            .retain(|effect| !finished(&effect.root, &candidate.registry, request.to_seconds));
         let (render, bounds) = candidate.render(request.camera_position)?;
         *self = candidate;
         Ok((render, bounds))
@@ -477,7 +480,7 @@ impl<'a> ParticleWorld<'a> {
             for effect in &mut self.effects {
                 advance_system(
                     &mut effect.root,
-                    self.registry,
+                    &self.registry,
                     effect.identity,
                     effect.seed,
                     from,
@@ -557,7 +560,7 @@ impl<'a> ParticleWorld<'a> {
                     .saturating_sub(retained_particles);
                 initialize_first_frame(
                     &mut replacement.root,
-                    self.registry,
+                    &self.registry,
                     replacement.seed,
                     self.limits,
                     &mut remaining,
@@ -656,7 +659,7 @@ impl<'a> ParticleWorld<'a> {
             .saturating_sub(particle_count(&self.effects));
         initialize_first_frame(
             &mut effect.root,
-            self.registry,
+            &self.registry,
             effect.seed,
             self.limits,
             &mut remaining,
@@ -701,15 +704,18 @@ impl<'a> ParticleWorld<'a> {
         for control in control_points {
             controls[control.index as usize] = Some(control.clone());
         }
+        let mut instantiate_state = InstantiateState {
+            controls: &controls,
+            system_count: &mut system_count,
+            limits: self.limits,
+        };
         let root = instantiate(
-            self.registry,
+            &self.registry,
             root_definition,
             timestamp,
             0.0,
             hash(seed, identity as u64),
-            &controls,
-            &mut system_count,
-            self.limits,
+            &mut instantiate_state,
         )?;
         Ok(Effect {
             identity,
@@ -733,7 +739,7 @@ impl<'a> ParticleWorld<'a> {
         for effect in &self.effects {
             render_system(
                 &effect.root,
-                self.registry,
+                &self.registry,
                 effect.identity,
                 camera,
                 &mut items,
@@ -774,18 +780,21 @@ fn initialize_first_frame(
     Ok(())
 }
 
+struct InstantiateState<'a> {
+    controls: &'a [Option<ControlPoint>],
+    system_count: &'a mut usize,
+    limits: WorldLimits,
+}
 fn instantiate(
     registry: &Registry,
     definition: &Definition,
     start: f32,
     delay: f32,
     path_identity: u64,
-    controls: &[Option<ControlPoint>],
-    system_count: &mut usize,
-    limits: WorldLimits,
+    state: &mut InstantiateState<'_>,
 ) -> Result<System, Error> {
-    *system_count += 1;
-    if *system_count > limits.max_systems {
+    *state.system_count += 1;
+    if *state.system_count > state.limits.max_systems {
         return Err(Error::new(
             ErrorCode::BoundExceeded,
             "particle-world",
@@ -812,9 +821,7 @@ fn instantiate(
             start,
             delay + child.delay_seconds,
             hash(path_identity, index as u64 + 1),
-            controls,
-            system_count,
-            limits,
+            state,
         )?);
     }
     Ok(System {
@@ -830,7 +837,7 @@ fn instantiate(
         next_particle_identity: 1,
         emitter_counts: vec![0; emitter_count],
         emitter_fired: vec![false; emitter_count],
-        controls: controls.to_vec(),
+        controls: state.controls.to_vec(),
         particles: Vec::new(),
         children,
     })
@@ -1310,12 +1317,13 @@ fn operate(system: &mut System, definition: &Definition, seed: u64, time: f32, d
                 if bool_parameter(operator, "ease_in_and_out", true) {
                     fraction = spline(fraction);
                 }
-                for component in 0..3 {
-                    particle.color[component] = mix(
-                        particle.initial_color[component],
-                        target[component] as f32 / 255.0,
-                        fraction,
-                    );
+                for ((color, initial), target) in particle
+                    .color
+                    .iter_mut()
+                    .zip(particle.initial_color)
+                    .zip(target)
+                {
+                    *color = mix(initial, target as f32 / 255.0, fraction);
                 }
             } else if operator.identity.eq_ignore_ascii_case("Rotation Basic") {
                 particle.roll += particle.roll_speed * dt.min(age);

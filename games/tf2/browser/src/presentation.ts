@@ -1,5 +1,7 @@
 import type { ParticleRenderItem } from "@playsrc/particle"
 import type { Camera, Effect } from "@playsrc/rendering"
+import type { ModelItem } from "@playsrc/rendering"
+import type { PresentationArtifacts } from "./artifacts"
 import type { Snapshot } from "./codec"
 
 const UINT32_MAX = 0xffff_ffff
@@ -27,33 +29,190 @@ export type Tf2AudioRequest = Readonly<{
   loop: false
 }>
 
-export function tf2Audio(events: Snapshot["events"]): readonly Tf2AudioRequest[] {
+export function tf2Audio(snapshot: Snapshot): readonly Tf2AudioRequest[] {
   const requests: Tf2AudioRequest[] = []
-  for (const event of events) {
+  for (const event of snapshot.projectileEvents) {
     let resource: string | undefined
-    if (event.kind === 3) {
-      resource = event.detail === 1
-        ? "sound/weapons/rocket_shoot.wav"
-        : event.detail === 2
-          ? "sound/weapons/stickybomblauncher_shoot.wav"
-          : undefined
-    } else if (event.kind === 4 && (event.detail === 1 || event.detail === 2)) {
-      const ordinal = event.subject % 3 + 1
-      resource = event.detail === 1
-        ? `sound/weapons/explode${ordinal}.wav`
-        : `sound/weapons/pipe_bomb${ordinal}.wav`
+    if (event.type === "fire") {
+      resource = event.kind === 1 ? "sound/weapons/rocket_shoot.wav" : "sound/weapons/stickybomblauncher_shoot.wav"
+    } else if (event.type === "explode") {
+      const ordinal = (event.projectile % 3) + 1
+      resource = event.kind === 1 ? `sound/weapons/explode${ordinal}.wav` : `sound/weapons/pipe_bomb${ordinal}.wav`
     }
     if (resource) {
-      requests.push(Object.freeze({
-        voice: event.subject * 2 + event.kind,
-        resource,
-        gain: 1,
-        pan: 0,
-        loop: false,
-      }))
+      requests.push(
+        Object.freeze({
+          voice: event.projectile * 8 + (event.type === "fire" ? 1 : 2),
+          resource,
+          gain: 1,
+          pan: 0,
+          loop: false,
+        }),
+      )
     }
   }
   return Object.freeze(requests)
+}
+
+export function projectileFrame(snapshot: Snapshot): ProjectileFrame {
+  return Object.freeze({
+    tick: snapshot.tick,
+    projectiles: Object.freeze(
+      snapshot.projectiles.map((p) =>
+        Object.freeze({
+          identity: p.identity,
+          kind: p.kind === 1 ? "rocket" : "sticky",
+          team: p.team === 1 ? "red" : "blue",
+          ownerIdentity: p.ownerIdentity,
+          launcherIdentity: p.launcherIdentity,
+          state: p.state === 1 ? "flying" : p.state === 2 ? "stuck-unarmed" : "stuck-armed",
+          position: vector(p.position),
+          velocity: vector(p.velocity),
+          orientation: quat(p.orientation),
+          angularVelocity: vector(p.angularVelocity),
+          contactNormal: p.contactNormal === null ? null : vector(p.contactNormal),
+          ageSeconds: p.ageSeconds,
+        }),
+      ),
+    ),
+    events: Object.freeze(
+      snapshot.projectileEvents.map((e) =>
+        Object.freeze({
+          kind: e.type,
+          projectileIdentity: e.projectile,
+          ownerIdentity: e.ownerIdentity,
+          launcherIdentity: e.launcherIdentity,
+          team: e.team === 1 ? "red" : "blue",
+          tick: e.tick,
+          position: vector(e.position),
+          orientation: quat(e.orientation),
+          contactNormal: e.contactNormal === null ? null : vector(e.contactNormal),
+        }),
+      ),
+    ),
+  }) as ProjectileFrame
+}
+export function projectileModels(models: readonly ProjectileModelRequest[]): readonly ModelItem[] {
+  return Object.freeze(
+    models.map((m) =>
+      Object.freeze({
+        identity: m.identity,
+        model: m.model,
+        position: m.position,
+        orientation: m.orientation,
+        scale: 1,
+        skin: m.skin,
+      }),
+    ),
+  )
+}
+export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
+  let actionTick = 0n
+  let prior: Snapshot["weapon"] | undefined
+  return Object.freeze({
+    map(snapshot: Snapshot): ModelItem {
+      const identity =
+        snapshot.class === 1
+          ? "models/weapons/v_models/v_rocketlauncher_soldier.mdl"
+          : "models/weapons/v_models/v_stickybomb_launcher_demo.mdl"
+      const artifact = artifacts.models.get(identity)
+      if (!artifact) throw new ProjectilePresentationError("MissingModel", identity)
+      const fired = snapshot.projectileEvents.some((e) => e.type === "fire")
+      const reload = snapshot.loadout.find((v) => v.weapon === snapshot.weapon)?.reload !== 0
+      const activity =
+        prior !== snapshot.weapon
+          ? "ACT_VM_DRAW"
+          : fired
+            ? "ACT_VM_PRIMARYATTACK"
+            : reload
+              ? "ACT_VM_RELOAD"
+              : "ACT_VM_IDLE"
+      if (fired || prior !== snapshot.weapon) actionTick = snapshot.tick
+      prior = snapshot.weapon
+      if (!artifact.sequences.some((v) => v.activity === activity))
+        throw new ProjectilePresentationError("MissingModel", `${identity}:${activity}`)
+      const cycle = Math.min(1, (Number(snapshot.tick - actionTick) * 0.015) / 0.3),
+        sample = Math.min(4, Math.round(cycle * 4))
+      const recoil = activity === "ACT_VM_PRIMARYATTACK" ? Math.sin(Math.PI * cycle) : 0
+      return Object.freeze({
+        identity: 0xffff_ff00 + snapshot.class,
+        model: `${identity}#activity=${activity}#sample=${sample}`,
+        position: Object.freeze([18 - recoil * 3, -8, -8]),
+        angles: Object.freeze([recoil * 5, 0, 0]),
+        scale: 1,
+        viewModel: true,
+      })
+    },
+  })
+}
+function stable32(value: string) {
+  let hash = 0x811c9dc5
+  for (const byte of new TextEncoder().encode(value)) {
+    hash ^= byte
+    hash = Math.imul(hash, 0x01000193)
+  }
+  return hash >>> 0 || 1
+}
+function stable64(value: string) {
+  let hash = 0xcbf29ce484222325n
+  for (const byte of new TextEncoder().encode(value)) {
+    hash ^= BigInt(byte)
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n)
+  }
+  return hash || 1n
+}
+export function createParticleBatchEncoder() {
+  let from = 0
+  return Object.freeze({
+    encode(tick: bigint, camera: Vector3, requests: readonly ProjectileParticleRequest[]) {
+      const to = Number(tick) * 0.015
+      if (to < from) throw new ProjectilePresentationError("TimeReversed", "particle time reversed")
+      let length = 32
+      for (const r of requests) {
+        length += 20
+        if (r.kind === "start") length += 8 + 4 + 4 + new TextEncoder().encode(r.system).length + 32
+        else if (r.kind === "set-control-point") length += 32
+      }
+      const bytes = new Uint8Array(length),
+        view = new DataView(bytes.buffer),
+        encoder = new TextEncoder()
+      bytes.set([0x50, 0x50, 0x54, 0x58])
+      view.setUint32(4, 1, true)
+      view.setFloat32(8, from, true)
+      view.setFloat32(12, to, true)
+      camera.forEach((v, i) => view.setFloat32(16 + i * 4, v, true))
+      view.setUint32(28, requests.length, true)
+      let at = 32
+      for (const r of requests) {
+        bytes[at] = r.kind === "start" ? 1 : r.kind === "set-control-point" ? 2 : 3
+        view.setBigUint64(at + 4, stable64(r.identity), true)
+        view.setFloat32(at + 12, to, true)
+        view.setUint32(at + 16, stable32(r.effectIdentity), true)
+        at += 20
+        if (r.kind === "start") {
+          view.setBigUint64(at, stable64(r.eventIdentity), true)
+          view.setUint32(at + 8, r.ownerIdentity, true)
+          const text = encoder.encode(r.system)
+          view.setUint32(at + 12, text.length, true)
+          bytes.set(text, at + 16)
+          at += 16 + text.length
+          const cp = r.controlPoints[0]!
+          cp.position.forEach((v, i) => view.setFloat32(at + i * 4, v, true))
+          cp.orientation.forEach((v, i) => view.setFloat32(at + 12 + i * 4, v, true))
+          view.setUint32(at + 28, cp.ownerIdentity, true)
+          at += 32
+        } else if (r.kind === "set-control-point") {
+          const cp = r.controlPoint
+          cp.position.forEach((v, i) => view.setFloat32(at + i * 4, v, true))
+          cp.orientation.forEach((v, i) => view.setFloat32(at + 12 + i * 4, v, true))
+          view.setUint32(at + 28, cp.ownerIdentity, true)
+          at += 32
+        }
+      }
+      from = to
+      return bytes
+    },
+  })
 }
 
 export function tf2Hud(snapshot: Snapshot): Tf2Hud {
@@ -61,11 +220,7 @@ export function tf2Hud(snapshot: Snapshot): Tf2Hud {
     health: snapshot.health,
     maxHealth: snapshot.class === 1 ? 200 : 175,
     className: snapshot.class === 1 ? "Soldier" : "Demoman",
-    weaponName: snapshot.weapon === 1
-      ? "Rocket Launcher"
-      : snapshot.weapon === 2
-        ? "Original"
-        : "Stickybomb Launcher",
+    weaponName: snapshot.weapon === 1 ? "Rocket Launcher" : snapshot.weapon === 2 ? "Original" : "Stickybomb Launcher",
     speed: Math.hypot(...snapshot.velocity),
     projectileCount: snapshot.projectiles.length,
   })
@@ -87,13 +242,17 @@ export function tf2Camera(snapshot: Snapshot, yawDegrees: number, pitchDegrees: 
 }
 
 export function particleEffects(items: readonly ParticleRenderItem[]): readonly Effect[] {
-  return Object.freeze(items.map((item) => Object.freeze({
-    identity: item.identity,
-    position: item.position,
-    radius: item.radius,
-    color: item.color,
-    opacity: item.opacity,
-  })))
+  return Object.freeze(
+    items.map((item) =>
+      Object.freeze({
+        identity: item.identity,
+        position: item.position,
+        radius: item.radius,
+        color: item.color,
+        opacity: item.opacity,
+      }),
+    ),
+  )
 }
 
 export type ProjectileKind = "rocket" | "sticky"
@@ -287,18 +446,20 @@ export function createProjectilePresentationMapper(
           matchEvent(event, fact)
           const trail = trailSystem(fact)
           requireSystem(catalog, trail)
-          const trailAttachment = fact.kind === "rocket"
-            ? requireAttachment(catalog, fact.identity, "trail")
-            : null
-          push(particles, limits, startRequest(
-            eventIdentity,
-            trailEffect(fact.identity),
-            fact,
-            trail,
-            trailAttachment,
-            event.position,
-            event.orientation,
-          ))
+          const trailAttachment = fact.kind === "rocket" ? requireAttachment(catalog, fact.identity, "trail") : null
+          push(
+            particles,
+            limits,
+            startRequest(
+              eventIdentity,
+              trailEffect(fact.identity),
+              fact,
+              trail,
+              trailAttachment,
+              event.position,
+              event.orientation,
+            ),
+          )
           const muzzle = fact.kind === "rocket" ? "rocketbackblast" : "muzzle_pipelauncher"
           const attachment = requireAttachment(
             catalog,
@@ -306,24 +467,31 @@ export function createProjectilePresentationMapper(
             fact.kind === "rocket" ? "backblast" : "muzzle",
           )
           requireSystem(catalog, muzzle)
-          push(particles, limits, startRequest(
-            eventIdentity,
-            oneShotEffect(eventIdentity),
-            fact,
-            muzzle,
-            attachment,
-            event.position,
-            event.orientation,
-          ))
-          next.set(fact.identity, Object.freeze({
-            kind: fact.kind,
-            team: fact.team,
-            ownerIdentity: fact.ownerIdentity,
-            launcherIdentity: fact.launcherIdentity,
-            state: "flying",
-            trailActive: true,
-            pulseActive: false,
-          }))
+          push(
+            particles,
+            limits,
+            startRequest(
+              eventIdentity,
+              oneShotEffect(eventIdentity),
+              fact,
+              muzzle,
+              attachment,
+              event.position,
+              event.orientation,
+            ),
+          )
+          next.set(
+            fact.identity,
+            Object.freeze({
+              kind: fact.kind,
+              team: fact.team,
+              ownerIdentity: fact.ownerIdentity,
+              launcherIdentity: fact.launcherIdentity,
+              state: "flying",
+              trailActive: true,
+              pulseActive: false,
+            }),
+          )
           continue
         }
         if (!prior) throw transition(`${event.kind} targets an unknown projectile`)
@@ -335,14 +503,22 @@ export function createProjectilePresentationMapper(
           if (prior.kind !== "sticky" || prior.state !== "flying" || !fact) {
             throw transition("stick requires a flying sticky fact")
           }
-          push(particles, limits, Object.freeze({
-            kind: "set-control-point",
-            identity: `${eventIdentity}:trail-contact`,
-            effectIdentity: trailEffect(event.projectileIdentity),
-            eventIdentity,
-            projectileIdentity: event.projectileIdentity,
-            controlPoint: controlPoint(event.position, settledOrientation(event.orientation, event.contactNormal), event.ownerIdentity),
-          }))
+          push(
+            particles,
+            limits,
+            Object.freeze({
+              kind: "set-control-point",
+              identity: `${eventIdentity}:trail-contact`,
+              effectIdentity: trailEffect(event.projectileIdentity),
+              eventIdentity,
+              projectileIdentity: event.projectileIdentity,
+              controlPoint: controlPoint(
+                event.position,
+                settledOrientation(event.orientation, event.contactNormal),
+                event.ownerIdentity,
+              ),
+            }),
+          )
           next.set(event.projectileIdentity, Object.freeze({ ...prior, state: "stuck-unarmed" }))
         } else if (event.kind === "arm") {
           if (prior.kind !== "sticky" || prior.state !== "stuck-unarmed" || !fact) {
@@ -350,47 +526,67 @@ export function createProjectilePresentationMapper(
           }
           const system = fact.team === "red" ? "stickybomb_pulse_red" : "stickybomb_pulse_blue"
           requireSystem(catalog, system)
-          push(particles, limits, startRequest(
-            eventIdentity,
-            pulseEffect(fact.identity),
-            fact,
-            system,
-            null,
-            event.position,
-            settledOrientation(event.orientation, event.contactNormal),
-          ))
-          next.set(event.projectileIdentity, Object.freeze({ ...prior, state: "stuck-armed", pulseActive: true }))
-        } else if (event.kind === "fizzle" || event.kind === "explode") {
-          if (prior.trailActive) push(particles, limits, stopRequest(eventIdentity, trailEffect(event.projectileIdentity), event.projectileIdentity))
-          if (prior.pulseActive) push(particles, limits, stopRequest(eventIdentity, pulseEffect(event.projectileIdentity), event.projectileIdentity))
-          if (event.kind === "explode") {
-            const system = event.contactNormal === null ? "ExplosionCore_MidAir" : "ExplosionCore_Wall"
-            requireSystem(catalog, system)
-            const eventFact: ProjectileFact = fact ?? Object.freeze({
-              identity: event.projectileIdentity,
-              kind: prior.kind,
-              team: prior.team,
-              ownerIdentity: prior.ownerIdentity,
-              launcherIdentity: prior.launcherIdentity,
-              state: prior.state,
-              position: event.position,
-              velocity: Object.freeze([0, 0, 0]) as Vector3,
-              orientation: event.orientation,
-              angularVelocity: Object.freeze([0, 0, 0]) as Vector3,
-              contactNormal: event.contactNormal,
-              ageSeconds: 0,
-            })
-            push(particles, limits, startRequest(
+          push(
+            particles,
+            limits,
+            startRequest(
               eventIdentity,
-              oneShotEffect(eventIdentity),
-              eventFact,
+              pulseEffect(fact.identity),
+              fact,
               system,
               null,
               event.position,
-              event.contactNormal === null
-                ? event.orientation
-                : settledOrientation(event.orientation, event.contactNormal),
-            ))
+              settledOrientation(event.orientation, event.contactNormal),
+            ),
+          )
+          next.set(event.projectileIdentity, Object.freeze({ ...prior, state: "stuck-armed", pulseActive: true }))
+        } else if (event.kind === "fizzle" || event.kind === "explode") {
+          if (prior.trailActive)
+            push(
+              particles,
+              limits,
+              stopRequest(eventIdentity, trailEffect(event.projectileIdentity), event.projectileIdentity),
+            )
+          if (prior.pulseActive)
+            push(
+              particles,
+              limits,
+              stopRequest(eventIdentity, pulseEffect(event.projectileIdentity), event.projectileIdentity),
+            )
+          if (event.kind === "explode") {
+            const system = event.contactNormal === null ? "ExplosionCore_MidAir" : "ExplosionCore_Wall"
+            requireSystem(catalog, system)
+            const eventFact: ProjectileFact =
+              fact ??
+              Object.freeze({
+                identity: event.projectileIdentity,
+                kind: prior.kind,
+                team: prior.team,
+                ownerIdentity: prior.ownerIdentity,
+                launcherIdentity: prior.launcherIdentity,
+                state: prior.state,
+                position: event.position,
+                velocity: Object.freeze([0, 0, 0]) as Vector3,
+                orientation: event.orientation,
+                angularVelocity: Object.freeze([0, 0, 0]) as Vector3,
+                contactNormal: event.contactNormal,
+                ageSeconds: 0,
+              })
+            push(
+              particles,
+              limits,
+              startRequest(
+                eventIdentity,
+                oneShotEffect(eventIdentity),
+                eventFact,
+                system,
+                null,
+                event.position,
+                event.contactNormal === null
+                  ? event.orientation
+                  : settledOrientation(event.orientation, event.contactNormal),
+              ),
+            )
           }
           next.delete(event.projectileIdentity)
         }
@@ -402,10 +598,10 @@ export function createProjectilePresentationMapper(
           throw transition("projectile disappearance or state change has no ordered event")
         }
         if (
-          fact.kind !== state.kind
-          || fact.team !== state.team
-          || fact.ownerIdentity !== state.ownerIdentity
-          || fact.launcherIdentity !== state.launcherIdentity
+          fact.kind !== state.kind ||
+          fact.team !== state.team ||
+          fact.ownerIdentity !== state.ownerIdentity ||
+          fact.launcherIdentity !== state.launcherIdentity
         ) {
           throw transition("projectile immutable identity fields changed")
         }
@@ -415,20 +611,22 @@ export function createProjectilePresentationMapper(
       }
 
       const models = frame.projectiles.map((fact) => {
-        const model = fact.kind === "rocket"
-          ? "models/weapons/w_models/w_rocket.mdl" as const
-          : "models/weapons/w_models/w_stickybomb.mdl" as const
+        const model =
+          fact.kind === "rocket"
+            ? ("models/weapons/w_models/w_rocket.mdl" as const)
+            : ("models/weapons/w_models/w_stickybomb.mdl" as const)
         if (!catalog.models.has(model)) {
           throw new ProjectilePresentationError("MissingModel", `projectile model ${model} is missing`)
         }
-        const orientation = fact.kind === "sticky" && fact.state !== "flying"
-          ? settledOrientation(fact.orientation, fact.contactNormal)
-          : authoredRocketOrientation(fact.orientation)
+        const orientation =
+          fact.kind === "sticky" && fact.state !== "flying"
+            ? settledOrientation(fact.orientation, fact.contactNormal)
+            : authoredRocketOrientation(fact.orientation)
         return Object.freeze({
           identity: fact.identity,
           projectileIdentity: fact.identity,
           model,
-          skin: fact.team === "red" ? 0 as const : 1 as const,
+          skin: fact.team === "red" ? (0 as const) : (1 as const),
           materialVariant: fact.team,
           position: vector(fact.position),
           orientation,
@@ -441,12 +639,16 @@ export function createProjectilePresentationMapper(
       return Object.freeze({
         models: Object.freeze(models),
         particles: Object.freeze(particles),
-        events: Object.freeze(frame.events.map((event) => Object.freeze({
-          ...event,
-          position: vector(event.position),
-          orientation: quat(event.orientation),
-          contactNormal: event.contactNormal === null ? null : vector(event.contactNormal),
-        }))),
+        events: Object.freeze(
+          frame.events.map((event) =>
+            Object.freeze({
+              ...event,
+              position: vector(event.position),
+              orientation: quat(event.orientation),
+              contactNormal: event.contactNormal === null ? null : vector(event.contactNormal),
+            }),
+          ),
+        ),
       })
     },
     reset(nextTick: bigint): void {
@@ -465,22 +667,22 @@ export function createProjectilePresentationMapper(
 
 function validateFact(fact: ProjectileFact): void {
   if (
-    !uint32(fact.identity)
-    || !uint32(fact.ownerIdentity)
-    || !uint32(fact.launcherIdentity)
-    || (fact.kind !== "rocket" && fact.kind !== "sticky")
-    || (fact.team !== "red" && fact.team !== "blue")
-    || (fact.state !== "flying" && fact.state !== "stuck-unarmed" && fact.state !== "stuck-armed")
-    || !finite(fact.position)
-    || !finite(fact.velocity)
-    || !quaternion(fact.orientation)
-    || !finite(fact.angularVelocity)
-    || !Number.isFinite(fact.ageSeconds)
-    || fact.ageSeconds < 0
-    || (fact.contactNormal !== null && !normal(fact.contactNormal))
-    || (fact.state === "flying" && fact.contactNormal !== null)
-    || (fact.state !== "flying" && fact.contactNormal === null)
-    || (fact.kind === "rocket" && fact.state !== "flying")
+    !uint32(fact.identity) ||
+    !uint32(fact.ownerIdentity) ||
+    !uint32(fact.launcherIdentity) ||
+    (fact.kind !== "rocket" && fact.kind !== "sticky") ||
+    (fact.team !== "red" && fact.team !== "blue") ||
+    (fact.state !== "flying" && fact.state !== "stuck-unarmed" && fact.state !== "stuck-armed") ||
+    !finite(fact.position) ||
+    !finite(fact.velocity) ||
+    !quaternion(fact.orientation) ||
+    !finite(fact.angularVelocity) ||
+    !Number.isFinite(fact.ageSeconds) ||
+    fact.ageSeconds < 0 ||
+    (fact.contactNormal !== null && !normal(fact.contactNormal)) ||
+    (fact.state === "flying" && fact.contactNormal !== null) ||
+    (fact.state !== "flying" && fact.contactNormal === null) ||
+    (fact.kind === "rocket" && fact.state !== "flying")
   ) {
     throw new ProjectilePresentationError("MalformedFact", "projectile fact violates the frozen contract")
   }
@@ -488,19 +690,19 @@ function validateFact(fact: ProjectileFact): void {
 
 function validateEvent(event: ProjectileEvent, frameTick: bigint): void {
   if (
-    !["fire", "impact", "stick", "arm", "fizzle", "explode"].includes(event.kind)
-    || !uint32(event.projectileIdentity)
-    || !uint32(event.ownerIdentity)
-    || !uint32(event.launcherIdentity)
-    || (event.team !== "red" && event.team !== "blue")
-    || typeof event.tick !== "bigint"
-    || event.tick < 0n
-    || event.tick > frameTick
-    || !finite(event.position)
-    || !quaternion(event.orientation)
-    || (event.contactNormal !== null && !normal(event.contactNormal))
-    || (event.kind === "fire" && event.contactNormal !== null)
-    || ((event.kind === "stick" || event.kind === "arm") && event.contactNormal === null)
+    !["fire", "impact", "stick", "arm", "fizzle", "explode"].includes(event.kind) ||
+    !uint32(event.projectileIdentity) ||
+    !uint32(event.ownerIdentity) ||
+    !uint32(event.launcherIdentity) ||
+    (event.team !== "red" && event.team !== "blue") ||
+    typeof event.tick !== "bigint" ||
+    event.tick < 0n ||
+    event.tick > frameTick ||
+    !finite(event.position) ||
+    !quaternion(event.orientation) ||
+    (event.contactNormal !== null && !normal(event.contactNormal)) ||
+    (event.kind === "fire" && event.contactNormal !== null) ||
+    ((event.kind === "stick" || event.kind === "arm") && event.contactNormal === null)
   ) {
     throw new ProjectilePresentationError("MalformedEvent", "projectile event violates the frozen contract")
   }
@@ -508,18 +710,20 @@ function validateEvent(event: ProjectileEvent, frameTick: bigint): void {
 
 function matchEvent(event: ProjectileEvent, fact: ProjectileFact): void {
   if (
-    event.ownerIdentity !== fact.ownerIdentity
-    || event.launcherIdentity !== fact.launcherIdentity
-    || event.team !== fact.team
-  ) throw transition("event identity fields do not match the projectile fact")
+    event.ownerIdentity !== fact.ownerIdentity ||
+    event.launcherIdentity !== fact.launcherIdentity ||
+    event.team !== fact.team
+  )
+    throw transition("event identity fields do not match the projectile fact")
 }
 
 function matchTracked(event: ProjectileEvent, tracked: TrackedProjectile): void {
   if (
-    event.ownerIdentity !== tracked.ownerIdentity
-    || event.launcherIdentity !== tracked.launcherIdentity
-    || event.team !== tracked.team
-  ) throw transition("event identity fields do not match retained projectile state")
+    event.ownerIdentity !== tracked.ownerIdentity ||
+    event.launcherIdentity !== tracked.launcherIdentity ||
+    event.team !== tracked.team
+  )
+    throw transition("event identity fields do not match retained projectile state")
 }
 
 function startRequest(
@@ -546,7 +750,11 @@ function startRequest(
   })
 }
 
-function stopRequest(eventIdentity: string, effectIdentity: string, projectileIdentity: number): ProjectileParticleRequest {
+function stopRequest(
+  eventIdentity: string,
+  effectIdentity: string,
+  projectileIdentity: number,
+): ProjectileParticleRequest {
   return Object.freeze({
     kind: "stop",
     identity: `${eventIdentity}:stop:${effectIdentity}`,
@@ -621,9 +829,15 @@ function settledOrientation(orientation: Quaternion, contactNormal: Vector3 | nu
 }
 
 function quaternionFromBasis(x: Vector3, y: Vector3, z: Vector3): Quaternion {
-  const m00 = x[0], m01 = y[0], m02 = z[0]
-  const m10 = x[1], m11 = y[1], m12 = z[1]
-  const m20 = x[2], m21 = y[2], m22 = z[2]
+  const m00 = x[0],
+    m01 = y[0],
+    m02 = z[0]
+  const m10 = x[1],
+    m11 = y[1],
+    m12 = z[1]
+  const m20 = x[2],
+    m21 = y[2],
+    m22 = z[2]
   const trace = m00 + m11 + m22
   let qx: number, qy: number, qz: number, qw: number
   if (trace > 0) {
@@ -671,7 +885,11 @@ function transition(message: string): ProjectilePresentationError {
 }
 
 function validateLimits(limits: ProjectilePresentationLimits): void {
-  if (!positiveInteger(limits.maxProjectiles) || !positiveInteger(limits.maxEvents) || !positiveInteger(limits.maxRequests)) {
+  if (
+    !positiveInteger(limits.maxProjectiles) ||
+    !positiveInteger(limits.maxEvents) ||
+    !positiveInteger(limits.maxRequests)
+  ) {
     throw new ProjectilePresentationError("BoundExceeded", "projectile presentation limits must be positive integers")
   }
 }

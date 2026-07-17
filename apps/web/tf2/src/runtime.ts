@@ -3,9 +3,21 @@ import { createAudioSystem } from "@playsrc/audio"
 import GameplayWorker from "@playsrc/game-tf2-browser/worker?worker"
 import { Tf2WorkerClient, type LoadedGame } from "@playsrc/game-tf2-browser"
 import { encodeCommand, mapDerivedKey, type Snapshot } from "@playsrc/game-tf2-browser/codec"
-import { tf2Audio, tf2Camera, tf2Hud, tf2Presentation, type Tf2Hud } from "@playsrc/game-tf2-browser/presentation"
-import { createParticleSystem } from "@playsrc/particle"
-import { createRenderer, type Camera } from "@playsrc/rendering"
+import { parsePresentationArtifacts, type PresentationArtifacts } from "@playsrc/game-tf2-browser/artifacts"
+import {
+  createParticleBatchEncoder,
+  createProjectilePresentationMapper,
+  createViewmodelPresenter,
+  particleEffects,
+  projectileFrame,
+  projectileModels,
+  tf2Audio,
+  tf2Camera,
+  tf2Hud,
+  type Tf2Hud,
+} from "@playsrc/game-tf2-browser/presentation"
+import { decodeParticleRenderOutput } from "@playsrc/particle"
+import { createRenderer, SOURCE_LDR, SOURCE_PC_INTEGER_HDR, type Camera } from "@playsrc/rendering"
 import {
   initializeClientDiagnostics,
   initializeDeveloperConsole,
@@ -21,6 +33,7 @@ import { sha256 } from "@noble/hashes/sha2.js"
 import { consoleLimits, consoleResourceBlocker, consoleResources, diagnosticResources } from "./console-resources"
 import { loadBrowserConfiguration, type BrowserConfiguration } from "./config"
 import { applyPointerDelta } from "./input"
+import { jumpBeefCourse } from "./course"
 
 const TICK_MILLISECONDS = 15
 const MAX_FRAME_TICKS = 4
@@ -78,14 +91,17 @@ export type ApplicationView = Readonly<{
   explosionEvents: number
   camera?: Camera
   initialView?: LoadedGame["initialView"]
+  environment?: PresentationArtifacts["environment"]
+  particleRenderItems?: number
+  environmentDrawables?: number
 }>
 
 type Renderer = Awaited<ReturnType<typeof createRenderer>>
 type Audio = ReturnType<typeof createAudioSystem>
-type Particles = ReturnType<typeof createParticleSystem>
+type ProjectileMapper = ReturnType<typeof createProjectilePresentationMapper>
 
 export class Tf2Application {
-  readonly #canvas: HTMLCanvasElement
+  #canvas: HTMLCanvasElement
   readonly #vguiRoot: HTMLElement
   readonly #publish: (view: ApplicationView) => void
   #configuration?: BrowserConfiguration
@@ -96,7 +112,11 @@ export class Tf2Application {
   #renderer?: Renderer
   #audio?: Audio
   #audioRunning = false
-  #particles?: Particles
+  #artifacts?: PresentationArtifacts
+  #projectiles?: ProjectileMapper
+  #viewmodels?: ReturnType<typeof createViewmodelPresenter>
+  #attachments = new Map<number, ReadonlySet<string>>()
+  #particleBatches = createParticleBatchEncoder()
   #console?: DeveloperConsole
   #diagnostics?: ClientDiagnostics
   #loaded?: LoadedGame
@@ -117,10 +137,13 @@ export class Tf2Application {
   #detonatePressed = false
   #selectClass: 1 | 2 | undefined
   #selectWeapon: 1 | 2 | 3 | undefined
+  #modeRequest: 0 | 1 | undefined
   #developer = 1
   #showFps: ClientDiagnosticMode = 0
   #showPos: ClientDiagnosticMode = 0
+  #renderLevel: 0 | 1 | 2 = 2
   #mapIdentity = ""
+  #environmentDrawables = 0
   #animationFrame = 0
   #lastFrame = 0
   #accumulator = 0
@@ -129,14 +152,7 @@ export class Tf2Application {
   #explosionEvents = 0
   #paused = true
   #closed = false
-  #blockers = new Set<string>([
-    consoleResourceBlocker,
-    "Twelve world base textures and one exact first-style LDR lightmap atlas resolve; water shaders, directional bump-lightmaps, animated styles, and target filtering remain diagnostic.",
-    "Static prop, rocket/sticky, and Soldier/Demoman viewmodel geometry is available; model textures, skeleton poses, animations, skins/bodygroups, and separate viewmodel FOV/depth remain unavailable.",
-    "TF2 PCF definitions and event context are unresolved; missing particle events emit diagnostics and no substitute effect.",
-    "Stock rocket/sticky fire and explosion buffers resolve exactly; deterministic target random-wave selection, distance spatialization, occlusion, and mixer/DSP semantics remain unavailable.",
-    "Jump course timers/checkpoints, trigger_multiple hint I/O, moving platforms, doors, and trigger_hurt are not implemented; exact brush trigger_teleport contacts are active and preserve velocity.",
-  ])
+  #blockers = new Set<string>([consoleResourceBlocker])
   #view: ApplicationView = Object.freeze({
     phase: "Loading",
     detail: "Reading local configuration",
@@ -165,6 +181,7 @@ export class Tf2Application {
   async start(): Promise<void> {
     try {
       this.#configuration = await loadBrowserConfiguration()
+      this.#renderLevel = this.#configuration.renderLevel
       this.#mapIdentity = this.#configuration.target
       this.#set({ detail: "Fetching exact BSP and gameplay WASM objects" })
       const [bsp, wasm, dependencies] = await Promise.all([
@@ -177,32 +194,70 @@ export class Tf2Application {
       this.#cache = await openDerivedObjectCache()
       this.#client = new Tf2WorkerClient(new GameplayWorker(), this.#cache)
       await this.#client.initialize(wasm, this.#configuration.wasm.sha256)
-      const key = await mapDerivedKey(this.#configuration.bsp.sha256, 0, this.#dependencies)
+      const profile = this.#renderLevel === 2 ? 1 : 0
+      const key = await mapDerivedKey(
+        this.#configuration.bsp.sha256,
+        profile,
+        this.#renderLevel,
+        this.#configuration.wasm.sha256,
+        this.#dependencies,
+      )
       this.#set({ detail: "Compiling direct map authority" })
       this.#generation = 1
-      this.#loaded = await this.#client.load(this.#generation, bsp, 0, this.#dependencies, key)
-      this.#applyInitialView(this.#loaded)
-      this.#renderer = await createRenderer(this.#canvas)
-      this.resize()
-      const scene = await this.#renderer.loadMap(
-        this.#loaded.payload,
-        this.#loaded.payloadSha256,
-        true,
+      this.#loaded = await this.#client.stage(this.#generation, bsp, profile, this.#dependencies, key)
+      await this.#client.configureCourse(this.#generation, jumpBeefCourse(this.#configuration.bsp.sha256))
+      this.#artifacts = await parsePresentationArtifacts(this.#loaded.presentation)
+      await this.#cacheModelArtifacts(this.#artifacts)
+      this.#projectiles = createProjectilePresentationMapper(
+        Object.freeze({
+          models: new Set(this.#artifacts.models.keys()),
+          systems: new Set([
+            "rockettrail",
+            "rocketbackblast",
+            "stickybombtrail_red",
+            "stickybombtrail_blue",
+            "stickybomb_pulse_red",
+            "stickybomb_pulse_blue",
+            "muzzle_pipelauncher",
+            "ExplosionCore_Wall",
+            "ExplosionCore_MidAir",
+          ]),
+          attachments: this.#attachments,
+        }),
       )
+      this.#viewmodels = createViewmodelPresenter(this.#artifacts)
+      this.#applyInitialView(this.#loaded)
+      this.#renderer = await createRenderer({
+        canvas: this.#canvas,
+        configuration: this.#renderLevel === 2 ? SOURCE_PC_INTEGER_HDR : SOURCE_LDR,
+        powerPreference: "high-performance",
+      })
+      this.resize()
+      const scene = await this.#renderer.loadMap({
+        payload: this.#loaded.payload,
+        payloadSha256: this.#loaded.payloadSha256,
+        modelTextures: this.#artifacts.textures,
+        directionalTextures: this.#artifacts.directionalTextures,
+        environment: this.#artifacts.environment,
+        diagnostic: true,
+      })
+      this.#environmentDrawables = scene.environmentDrawables
       for (const diagnostic of scene.diagnostics) {
         this.#blockers.add(`Missing resolved material: ${diagnostic.identity}`)
       }
-      this.#particles = createParticleSystem([])
       const AudioContextConstructor = window.AudioContext
       if (!AudioContextConstructor) throw new Error("Web Audio is unavailable")
       const audioContext = new AudioContextConstructor()
-      const audioResources = await Promise.all(SOUND_PATHS.map(async (identity) => {
-        const bytes = this.#dependencyEntries.get(identity)
-        if (!bytes) throw new Error(`Audio dependency ${identity} is missing`)
-        const buffer = await audioContext.decodeAudioData(bytes.slice().buffer)
-        return Object.freeze({ identity, buffer })
-      }))
+      const audioResources = await Promise.all(
+        SOUND_PATHS.map(async (identity) => {
+          const bytes = this.#dependencyEntries.get(identity)
+          if (!bytes) throw new Error(`Audio dependency ${identity} is missing`)
+          const buffer = await audioContext.decodeAudioData(bytes.slice().buffer)
+          return Object.freeze({ identity, buffer })
+        }),
+      )
       this.#audio = createAudioSystem(audioContext, audioResources)
+      await this.#client.activate(this.#generation)
       this.#snapshot = await this.#client.advance(this.#generation, this.#command(), 1)
       this.#initializeConsole()
       this.#installListeners()
@@ -215,6 +270,8 @@ export class Tf2Application {
         hud: tf2Hud(this.#snapshot),
         cache: this.#loaded.cache,
         initialView: this.#loaded.initialView,
+        environment: this.#artifacts.environment,
+        environmentDrawables: this.#environmentDrawables,
       })
     } catch (error) {
       await this.#release()
@@ -238,7 +295,9 @@ export class Tf2Application {
     if (!mounted.ok) throw new Error(`VGUI console mount failed: ${mounted.diagnostic.code}`)
     this.#console.apply({
       kind: "append-output",
-      segments: [{ kind: "developer", text: "playsrc TF2 jump practice\nType status for exact support information.\n" }],
+      segments: [
+        { kind: "developer", text: "playsrc TF2 jump practice\nType status for exact support information.\n" },
+      ],
     })
     const diagnostics = initializeClientDiagnostics({
       runtimeIdentity: "tf2-client-diagnostics",
@@ -253,15 +312,62 @@ export class Tf2Application {
 
   #catalog(): ConsoleCatalog {
     return Object.freeze({
-      revision: `tf2-jump-catalog-developer-${this.#developer}-fps-${this.#showFps}-pos-${this.#showPos}`,
+      revision: `tf2-jump-catalog-developer-${this.#developer}-fps-${this.#showFps}-pos-${this.#showPos}-hdr-${this.#renderLevel}`,
       items: Object.freeze([
-        Object.freeze({ kind: "command" as const, name: "map", disposition: "visible" as const, acceptsSuggestions: true }),
-        Object.freeze({ kind: "command" as const, name: "class", disposition: "visible" as const, acceptsSuggestions: true }),
-        Object.freeze({ kind: "command" as const, name: "status", disposition: "visible" as const, acceptsSuggestions: false }),
-        Object.freeze({ kind: "command" as const, name: "clear", disposition: "visible" as const, acceptsSuggestions: false }),
-        Object.freeze({ kind: "convar" as const, name: "developer", disposition: "visible" as const, displayValue: String(this.#developer) }),
-        Object.freeze({ kind: "convar" as const, name: "cl_showfps", disposition: "visible" as const, displayValue: String(this.#showFps) }),
-        Object.freeze({ kind: "convar" as const, name: "cl_showpos", disposition: "visible" as const, displayValue: String(this.#showPos) }),
+        Object.freeze({
+          kind: "command" as const,
+          name: "map",
+          disposition: "visible" as const,
+          acceptsSuggestions: true,
+        }),
+        Object.freeze({
+          kind: "command" as const,
+          name: "class",
+          disposition: "visible" as const,
+          acceptsSuggestions: true,
+        }),
+        Object.freeze({
+          kind: "command" as const,
+          name: "noclip",
+          disposition: "visible" as const,
+          acceptsSuggestions: false,
+        }),
+        Object.freeze({
+          kind: "command" as const,
+          name: "status",
+          disposition: "visible" as const,
+          acceptsSuggestions: false,
+        }),
+        Object.freeze({
+          kind: "command" as const,
+          name: "clear",
+          disposition: "visible" as const,
+          acceptsSuggestions: false,
+        }),
+        Object.freeze({
+          kind: "convar" as const,
+          name: "developer",
+          disposition: "visible" as const,
+          displayValue: String(this.#developer),
+        }),
+        Object.freeze({
+          kind: "convar" as const,
+          name: "cl_showfps",
+          disposition: "visible" as const,
+          displayValue: String(this.#showFps),
+        }),
+        Object.freeze({
+          kind: "convar" as const,
+          name: "cl_showpos",
+          disposition: "visible" as const,
+          displayValue: String(this.#showPos),
+        }),
+        Object.freeze({
+          kind: "convar" as const,
+          name: "mat_hdr_level",
+          disposition: "visible" as const,
+          displayValue: String(this.#renderLevel),
+        }),
       ]),
     })
   }
@@ -283,11 +389,12 @@ export class Tf2Application {
       return
     }
     if (request.kind === "completion") {
-      const candidates = request.commandName.toLowerCase() === "map"
-        ? ["map jump_beef"]
-        : request.commandName.toLowerCase() === "class"
-          ? ["class soldier", "class demoman"]
-          : []
+      const candidates =
+        request.commandName.toLowerCase() === "map"
+          ? ["map jump_beef"]
+          : request.commandName.toLowerCase() === "class"
+            ? ["class soldier", "class demoman"]
+            : []
       const suggestions: ConsoleCompletionSuggestion[] = candidates
         .filter((value) => value.startsWith(request.partialText.toLowerCase()))
         .slice(0, request.maxItems)
@@ -321,7 +428,10 @@ export class Tf2Application {
       return
     }
     if (command === "status" && tokens.length === 0) {
-      this.#output(`generation ${this.#generation}; map ${this.#configuration?.target}; cache ${this.#loaded?.cache}`, true)
+      this.#output(
+        `generation ${this.#generation}; map ${this.#configuration?.target}; cache ${this.#loaded?.cache}`,
+        true,
+      )
       for (const blocker of [...this.#blockers].sort()) this.#output(`BLOCKED: ${blocker}`)
       return
     }
@@ -350,7 +460,7 @@ export class Tf2Application {
         this.#updateDiagnostics(performance.now())
       }
       const value = command === "cl_showfps" ? this.#showFps : this.#showPos
-      this.#output(`"${command}" = "${value}"${value === 0 ? "" : " ( def. \"0\" )"} min. 0.000000 max. 2.000000`)
+      this.#output(`"${command}" = "${value}"${value === 0 ? "" : ' ( def. "0" )'} min. 0.000000 max. 2.000000`)
       return
     }
     if (command === "class" && tokens.length === 1) {
@@ -361,6 +471,34 @@ export class Tf2Application {
         return
       }
       this.#output(`Class selection queued: ${tokens[0]}`)
+      return
+    }
+    if (command === "noclip" && tokens.length === 0) {
+      if (!this.#snapshot) {
+        this.#output("noclip rejected: no authoritative snapshot")
+        return
+      }
+      this.#modeRequest = this.#snapshot.movement.mode === 1 ? 0 : 1
+      this.#output(`noclip ${this.#modeRequest === 1 ? "ON" : "OFF"} queued`)
+      return
+    }
+    if (command === "mat_hdr_level") {
+      if (tokens.length > 1 || (tokens.length === 1 && !(["0", "1", "2"] as string[]).includes(tokens[0]!))) {
+        this.#output("mat_hdr_level accepts exactly 0, 1, or 2")
+        return
+      }
+      if (tokens[0] && Number(tokens[0]) !== this.#renderLevel) {
+        const prior = this.#renderLevel,
+          generation = this.#generation
+        this.#renderLevel = Number(tokens[0]) as 0 | 1 | 2
+        this.#console?.apply({ kind: "replace-catalog", catalog: this.#catalog() })
+        await this.#replaceCatalogMap()
+        if (this.#generation === generation) {
+          this.#renderLevel = prior
+          this.#console?.apply({ kind: "replace-catalog", catalog: this.#catalog() })
+        }
+      }
+      this.#output(`mat_hdr_level = ${this.#renderLevel}`)
       return
     }
     if (command === "map" && tokens.length === 1) {
@@ -406,13 +544,13 @@ export class Tf2Application {
     const url = new URL(value)
     const match = /\/(?<name>[a-z0-9_-]+)\.bsp$/.exec(url.pathname)
     if (
-      url.protocol !== "https:"
-      || url.username
-      || url.password
-      || url.search
-      || url.hash
-      || !this.#configuration.allowedExternalOrigins.includes(url.origin)
-      || !match?.groups?.name
+      url.protocol !== "https:" ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      !this.#configuration.allowedExternalOrigins.includes(url.origin) ||
+      !match?.groups?.name
     ) {
       throw new Error("External map URL is outside the configured HTTPS policy")
     }
@@ -427,13 +565,13 @@ export class Tf2Application {
       })
       const total = Number(response.headers.get("content-length"))
       if (
-        response.status !== 200
-        || response.redirected
-        || response.url !== url.href
-        || !Number.isSafeInteger(total)
-        || total < 1
-        || total > MAX_EXTERNAL_BYTES
-        || !response.body
+        response.status !== 200 ||
+        response.redirected ||
+        response.url !== url.href ||
+        !Number.isSafeInteger(total) ||
+        total < 1 ||
+        total > MAX_EXTERNAL_BYTES ||
+        !response.body
       ) {
         throw new Error("External map response metadata is invalid")
       }
@@ -464,23 +602,89 @@ export class Tf2Application {
     this.#paused = true
     this.#neutral()
     const generation = this.#generation + 1
-    const key = await mapDerivedKey(bspSha256, 0, this.#dependencies)
-    const staged = await this.#client.stage(generation, bytes, 0, this.#dependencies, key)
+    const profile = this.#renderLevel === 2 ? 1 : 0
+    const key = await mapDerivedKey(
+      bspSha256,
+      profile,
+      this.#renderLevel,
+      this.#configuration?.wasm.sha256 ?? "",
+      this.#dependencies,
+    )
+    const staged = await this.#client.stage(generation, bytes, profile, this.#dependencies, key)
+    if (name === "jump_beef") await this.#client.configureCourse(generation, jumpBeefCourse(bspSha256))
+    const artifacts = await parsePresentationArtifacts(staged.presentation)
+    await this.#cacheModelArtifacts(artifacts)
     const prior = this.#loaded
+    const priorArtifacts = this.#artifacts
+    const priorConfiguration = this.#renderer.configuration
     try {
-      await this.#renderer.loadMap(staged.payload, staged.payloadSha256, true)
+      if (this.#renderer.configuration.lightingProfile !== (this.#renderLevel === 2 ? "hdr" : "ldr")) {
+        await this.#renderer.dispose()
+        this.#renderer = await createRenderer({
+          canvas: this.#canvas,
+          configuration: this.#renderLevel === 2 ? SOURCE_PC_INTEGER_HDR : SOURCE_LDR,
+          powerPreference: "high-performance",
+        })
+        this.resize()
+      }
+      const scene = await this.#renderer.loadMap({
+        payload: staged.payload,
+        payloadSha256: staged.payloadSha256,
+        modelTextures: artifacts.textures,
+        directionalTextures: artifacts.directionalTextures,
+        environment: artifacts.environment,
+        diagnostic: true,
+      })
+      this.#environmentDrawables = scene.environmentDrawables
       await this.#client.activate(generation)
     } catch (error) {
       await this.#client.discard(generation).catch(() => {})
-      await this.#renderer.loadMap(prior.payload, prior.payloadSha256, true)
+      if (this.#renderer.configuration.lightingProfile !== priorConfiguration.lightingProfile) {
+        await this.#renderer.dispose().catch(() => {})
+        this.#renderer = await createRenderer({
+          canvas: this.#canvas,
+          configuration: priorConfiguration,
+          powerPreference: "high-performance",
+        })
+        this.resize()
+      }
+      await this.#renderer.loadMap({
+        payload: prior.payload,
+        payloadSha256: prior.payloadSha256,
+        modelTextures: priorArtifacts?.textures,
+        directionalTextures: priorArtifacts?.directionalTextures,
+        environment: priorArtifacts?.environment,
+        diagnostic: true,
+      })
       throw error
     }
     this.#generation = generation
     this.#loaded = staged
+    this.#artifacts = artifacts
+    this.#attachments.clear()
+    this.#projectiles?.dispose()
+    this.#projectiles = createProjectilePresentationMapper(
+      Object.freeze({
+        models: new Set(artifacts.models.keys()),
+        systems: new Set([
+          "rockettrail",
+          "rocketbackblast",
+          "stickybombtrail_red",
+          "stickybombtrail_blue",
+          "stickybomb_pulse_red",
+          "stickybomb_pulse_blue",
+          "muzzle_pipelauncher",
+          "ExplosionCore_Wall",
+          "ExplosionCore_MidAir",
+        ]),
+        attachments: this.#attachments,
+      }),
+    )
+    this.#viewmodels = createViewmodelPresenter(artifacts)
+    this.#particleBatches = createParticleBatchEncoder()
     this.#mapIdentity = name
     this.#applyInitialView(staged)
     this.#snapshot = await this.#client.advance(generation, this.#command(), 1)
-    this.#particles?.reset(this.#snapshot.tick)
     this.#paused = document.hidden
     this.#lastFrame = performance.now()
     this.#accumulator = 0
@@ -491,12 +695,26 @@ export class Tf2Application {
       hud: tf2Hud(this.#snapshot),
       cache: staged.cache,
       initialView: staged.initialView,
+      environment: artifacts.environment,
+      environmentDrawables: this.#environmentDrawables,
     })
   }
 
   #applyInitialView(loaded: LoadedGame): void {
     this.#pitch = Math.max(-89, Math.min(89, loaded.initialView.angles[0]))
     this.#yaw = loaded.initialView.angles[1] % 360
+  }
+
+  async #cacheModelArtifacts(artifacts: PresentationArtifacts): Promise<void> {
+    if (!this.#cache) return
+    for (const artifact of artifacts.models.values()) {
+      try {
+        const retained = await this.#cache.read(artifact.sha256)
+        if (!retained) await this.#cache.write(artifact.sha256, artifact.sha256, artifact.bytes)
+      } catch {
+        this.#blockers.add(`ModelArtifactCacheUnavailable: ${artifact.identity}`)
+      }
+    }
   }
 
   #command(): ArrayBuffer {
@@ -513,9 +731,11 @@ export class Tf2Application {
       detonate: this.#detonate || this.#detonatePressed,
       selectClass: this.#selectClass,
       selectWeapon: this.#selectWeapon,
+      modeRequest: this.#modeRequest,
     })
     this.#selectClass = undefined
     this.#selectWeapon = undefined
+    this.#modeRequest = undefined
     this.#jumpPressed = false
     this.#firePressed = false
     this.#detonatePressed = false
@@ -536,7 +756,9 @@ export class Tf2Application {
     if (ticks < 1) return
     this.#accumulator -= ticks * TICK_MILLISECONDS
     this.#frameBusy = true
-    void this.#advance(ticks).finally(() => { this.#frameBusy = false })
+    void this.#advance(ticks).finally(() => {
+      this.#frameBusy = false
+    })
   }
 
   #updateDiagnostics(realTimeMilliseconds: number): void {
@@ -563,36 +785,63 @@ export class Tf2Application {
   }
 
   async #advance(ticks: number): Promise<void> {
-    if (!this.#client || !this.#renderer || !this.#snapshot || !this.#particles) return
+    if (
+      !this.#client ||
+      !this.#renderer ||
+      !this.#snapshot ||
+      !this.#projectiles ||
+      !this.#viewmodels ||
+      !this.#artifacts
+    )
+      return
     try {
       const snapshot = await this.#client.advance(this.#generation, this.#command(), ticks)
       this.#snapshot = snapshot
       for (const event of snapshot.events) {
-        if (event.kind === 8 && event.detail === 1) this.#yaw = event.values[3]
-        if (event.kind === 3) this.#fireEvents += 1
-        if (event.kind === 4) this.#explosionEvents += 1
+        if (event.kind === 9 && event.detail === 1) this.#yaw = event.values[3]
       }
-      const particleItems = this.#particles.advance(snapshot.tick)
-      const presentation = tf2Presentation(snapshot, particleItems, false)
+      for (const event of snapshot.projectileEvents) {
+        if (event.type === "fire") this.#fireEvents += 1
+        if (event.type === "explode") this.#explosionEvents += 1
+      }
+      for (const p of snapshot.projectiles) {
+        const add = (identity: number, next: ReadonlySet<string>) =>
+          this.#attachments.set(identity, new Set([...(this.#attachments.get(identity) ?? []), ...next]))
+        const m = this.#artifacts.models.get(
+          p.kind === 1 ? "models/weapons/w_models/w_rocket.mdl" : "models/weapons/w_models/w_stickybomb.mdl",
+        )
+        if (m) add(p.identity, m.attachments)
+        const l = this.#artifacts.models.get(
+          p.kind === 1
+            ? "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl"
+            : "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl",
+        )
+        if (l) add(p.launcherIdentity, l.attachments)
+      }
+      const presentation = this.#projectiles.map(projectileFrame(snapshot))
+      const viewmodel = this.#viewmodels.map(snapshot)
       const camera = tf2Camera(snapshot, this.#yaw, this.#pitch)
+      const visibility = await this.#client.visibility(this.#generation, camera.position)
+      const particleOutput = await this.#client.particles(
+        this.#generation,
+        this.#particleBatches.encode(snapshot.tick, camera.position, presentation.particles),
+      )
+      const particleItems = decodeParticleRenderOutput(particleOutput, this.#artifacts.particleMaterials)
       if (this.#audioRunning && this.#audio) {
-        for (const request of tf2Audio(snapshot.events)) this.#audio.play(request)
-      }
-      for (const diagnostic of presentation.diagnostics) {
-        this.#blockers.add(diagnostic.code === "MissingProjectileModel"
-          ? `${diagnostic.code}: ${diagnostic.identity}`
-          : `${diagnostic.code}: exact event mapping inputs are unavailable`)
+        for (const request of tf2Audio(snapshot)) this.#audio.play(request)
       }
       await this.#renderer.render({
         camera,
-        effects: presentation.effects,
-        models: presentation.models,
+        effects: particleEffects(particleItems),
+        models: Object.freeze([...projectileModels(presentation.models), viewmodel]),
+        visibility,
       })
       this.#set({
         hud: tf2Hud(snapshot),
         fireEvents: this.#fireEvents,
         explosionEvents: this.#explosionEvents,
         camera,
+        particleRenderItems: particleItems.length,
       })
     } catch (error) {
       this.#paused = true
@@ -639,8 +888,7 @@ export class Tf2Application {
     else if (event.code === "Space") {
       this.#jump = true
       this.#jumpPressed = true
-    }
-    else if (event.code === "ShiftLeft" || event.code === "ShiftRight") this.#crouch = true
+    } else if (event.code === "ShiftLeft" || event.code === "ShiftRight") this.#crouch = true
     else if (event.code === "Digit1") this.selectClass(1)
     else if (event.code === "Digit2") this.selectClass(2)
     else if (event.code === "Digit3") this.#selectWeapon = 2
@@ -695,13 +943,15 @@ export class Tf2Application {
     this.#forward = this.#back = this.#left = this.#right = false
     this.#jump = this.#crouch = this.#fire = this.#detonate = false
     this.#jumpPressed = this.#firePressed = this.#detonatePressed = false
+    this.#modeRequest = undefined
   }
 
   selectClass(value: 1 | 2): void {
     this.#selectClass = value
   }
 
-  async requestPointer(): Promise<void> {
+  async requestPointer(canvas = this.#canvas): Promise<void> {
+    this.#canvas = canvas
     if (this.#closed || this.#console?.snapshot().visible) return
     try {
       await this.#canvas.requestPointerLock()
@@ -767,8 +1017,8 @@ export class Tf2Application {
     this.#diagnostics?.apply({ kind: "destroy" })
     await this.#client?.shutdown().catch(() => {})
     this.#cache?.close()
-    this.#particles?.dispose()
-    this.#renderer?.dispose()
+    this.#projectiles?.dispose()
+    await this.#renderer?.dispose().catch(() => {})
     await this.#audio?.close().catch(() => {})
   }
 }

@@ -10,6 +10,7 @@ playsrc-content = { path = "../../../packages/content/rust" }
 playsrc-keyvalues = { path = "../../../packages/formats/keyvalues/rust" }
 playsrc-map = { path = "../../../packages/world/map/rust" }
 playsrc-material = { path = "../../../packages/world/material/rust" }
+playsrc-particle = { path = "../../../packages/presentation/particle/rust" }
 playsrc-entity = { path = "../../../packages/world/entity/rust" }
 playsrc-studio-model = { path = "../../../packages/formats/studio-model/rust" }
 playsrc-tf2-wasm = { path = "../../../games/tf2/wasm" }

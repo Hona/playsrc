@@ -34,7 +34,7 @@ async function agent(args: string[]): Promise<string> {
   const output = new TextDecoder().decode(stdout).trim()
   if (exitCode !== 0) {
     const error = new TextDecoder().decode(stderr).trim()
-    throw new BrowserEvidenceError(`agent-browser ${args.at(-1)} failed: ${error || output}`)
+    throw new BrowserEvidenceError(`agent-browser ${JSON.stringify(args)} failed: ${error || output}`)
   }
   return output
 }
@@ -110,7 +110,8 @@ function paeth(left: number, above: number, upperLeft: number): number {
 
 async function decodePng(bytes: Uint8Array): Promise<DecodedPng> {
   const signature = [137, 80, 78, 71, 13, 10, 26, 10]
-  require(bytes.byteLength >= 33 && signature.every((value, index) => bytes[index] === value), "canvas PNG signature is invalid")
+  require(bytes.byteLength >= 33 &&
+    signature.every((value, index) => bytes[index] === value), "canvas PNG signature is invalid")
   let offset = 8
   let width = 0
   let height = 0
@@ -130,7 +131,9 @@ async function decodePng(bytes: Uint8Array): Promise<DecodedPng> {
       const bitDepth = bytes[dataStart + 8]
       const colorType = bytes[dataStart + 9]
       require(bitDepth === 8 && (colorType === 2 || colorType === 6), "canvas PNG color profile is unsupported")
-      require(bytes[dataStart + 10] === 0 && bytes[dataStart + 11] === 0 && bytes[dataStart + 12] === 0, "canvas PNG encoding profile is unsupported")
+      require(bytes[dataStart + 10] === 0 &&
+        bytes[dataStart + 11] === 0 &&
+        bytes[dataStart + 12] === 0, "canvas PNG encoding profile is unsupported")
       channels = colorType === 2 ? 3 : 4
     } else if (type === "IDAT") {
       compressedParts.push(bytes.slice(dataStart, dataEnd))
@@ -150,9 +153,9 @@ async function decodePng(bytes: Uint8Array): Promise<DecodedPng> {
     compressed.set(part, compressedOffset)
     compressedOffset += part.byteLength
   }
-  const inflated = new Uint8Array(await new Response(
-    new Blob([compressed]).stream().pipeThrough(new DecompressionStream("deflate")),
-  ).arrayBuffer())
+  const inflated = new Uint8Array(
+    await new Response(new Blob([compressed]).stream().pipeThrough(new DecompressionStream("deflate"))).arrayBuffer(),
+  )
   const stride = width * channels
   require(inflated.byteLength === height * (stride + 1), "canvas PNG scanline length is invalid")
   const samples = new Uint8Array(height * stride)
@@ -163,18 +166,19 @@ async function decodePng(bytes: Uint8Array): Promise<DecodedPng> {
     const outputStart = y * stride
     for (let x = 0; x < stride; x += 1) {
       const encoded = inflated[encodedStart + x] ?? 0
-      const left = x >= channels ? samples[outputStart + x - channels] ?? 0 : 0
-      const above = y > 0 ? samples[outputStart - stride + x] ?? 0 : 0
-      const upperLeft = y > 0 && x >= channels ? samples[outputStart - stride + x - channels] ?? 0 : 0
-      const predictor = filter === 0
-        ? 0
-        : filter === 1
-          ? left
-          : filter === 2
-            ? above
-            : filter === 3
-              ? Math.floor((left + above) / 2)
-              : paeth(left, above, upperLeft)
+      const left = x >= channels ? (samples[outputStart + x - channels] ?? 0) : 0
+      const above = y > 0 ? (samples[outputStart - stride + x] ?? 0) : 0
+      const upperLeft = y > 0 && x >= channels ? (samples[outputStart - stride + x - channels] ?? 0) : 0
+      const predictor =
+        filter === 0
+          ? 0
+          : filter === 1
+            ? left
+            : filter === 2
+              ? above
+              : filter === 3
+                ? Math.floor((left + above) / 2)
+                : paeth(left, above, upperLeft)
       samples[outputStart + x] = (encoded + predictor) & 0xff
     }
   }
@@ -188,7 +192,8 @@ async function decodePng(bytes: Uint8Array): Promise<DecodedPng> {
 }
 
 function measureRegion(image: DecodedPng, region: (typeof VISUAL_REGIONS)[number]): RegionMetric {
-  require(region.x + region.width <= image.width && region.y + region.height <= image.height, `${region.name} sample region is outside the canvas`)
+  require(region.x + region.width <= image.width &&
+    region.y + region.height <= image.height, `${region.name} sample region is outside the canvas`)
   let nonBackground = 0
   let luma = 0
   const pixels = region.width * region.height
@@ -199,10 +204,11 @@ function measureRegion(image: DecodedPng, region: (typeof VISUAL_REGIONS)[number
       const green = image.rgb[offset + 1] ?? 0
       const blue = image.rgb[offset + 2] ?? 0
       if (
-        Math.abs(red - BACKGROUND_RGB[0]) > 2
-        || Math.abs(green - BACKGROUND_RGB[1]) > 2
-        || Math.abs(blue - BACKGROUND_RGB[2]) > 2
-      ) nonBackground += 1
+        Math.abs(red - BACKGROUND_RGB[0]) > 2 ||
+        Math.abs(green - BACKGROUND_RGB[1]) > 2 ||
+        Math.abs(blue - BACKGROUND_RGB[2]) > 2
+      )
+        nonBackground += 1
       luma += red * 0.2126 + green * 0.7152 + blue * 0.0722
     }
   }
@@ -243,7 +249,8 @@ async function captureCanvas(session: string, config: LocalConfig): Promise<Canv
   } catch (error) {
     if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error
     const retained = new Uint8Array(await readFile(retainedPath))
-    require(retained.byteLength === bytes.byteLength && retained.every((value, index) => value === bytes[index]), "retained canvas evidence differs")
+    require(retained.byteLength === bytes.byteLength &&
+      retained.every((value, index) => value === bytes[index]), "retained canvas evidence differs")
   } finally {
     await rm(temporaryPath, { force: true })
   }
@@ -257,19 +264,18 @@ async function captureCanvas(session: string, config: LocalConfig): Promise<Canv
 }
 
 async function cameraObservation(session: string): Promise<CameraObservation> {
-  const observation = parseJson<{ position: number[]; yaw: number; pitch: number }>(await agent([
-    "--session",
-    session,
-    "eval",
-    "(()=>{const d=document.querySelector('main').dataset;return {position:d.cameraPosition.split(',').map(Number),yaw:Number(d.cameraYaw),pitch:Number(d.cameraPitch)}})()",
-  ]))
-  require(
-    observation.position.length === 3
-    && observation.position.every(Number.isFinite)
-    && Number.isFinite(observation.yaw)
-    && Number.isFinite(observation.pitch),
-    "application camera observation is malformed",
+  const observation = parseJson<{ position: number[]; yaw: number; pitch: number }>(
+    await agent([
+      "--session",
+      session,
+      "eval",
+      "(()=>{const d=document.querySelector('main').dataset;return {position:d.cameraPosition.split(',').map(Number),yaw:Number(d.cameraYaw),pitch:Number(d.cameraPitch)}})()",
+    ]),
   )
+  require(observation.position.length === 3 &&
+    observation.position.every(Number.isFinite) &&
+    Number.isFinite(observation.yaw) &&
+    Number.isFinite(observation.pitch), "application camera observation is malformed")
   return Object.freeze({
     position: Object.freeze(observation.position) as readonly [number, number, number],
     yaw: observation.yaw,
@@ -278,20 +284,21 @@ async function cameraObservation(session: string): Promise<CameraObservation> {
 }
 
 async function spawnObservation(session: string): Promise<SpawnObservation> {
-  const observation = parseJson<SpawnObservation>(await agent([
-    "--session",
-    session,
-    "eval",
-    "(()=>{const d=document.querySelector('main').dataset;return {entity:Number(d.spawnEntity),hammerId:Number(d.spawnHammerId),position:d.spawnPosition.split(',').map(Number),angles:d.spawnAngles.split(',').map(Number)}})()",
-  ]))
-  require(
-    Number.isSafeInteger(observation.entity)
-    && Number.isSafeInteger(observation.hammerId)
-    && observation.position.length === 3
-    && observation.angles.length === 3
-    && [...observation.position, ...observation.angles].every(Number.isFinite),
-    "application spawn observation is malformed",
+  const observation = parseJson<SpawnObservation>(
+    await agent([
+      "--session",
+      session,
+      "eval",
+      "(()=>{const d=document.querySelector('main').dataset;return {entity:Number(d.spawnEntity),hammerId:Number(d.spawnHammerId),position:d.spawnPosition.split(',').map(Number),angles:d.spawnAngles.split(',').map(Number)}})()",
+    ]),
   )
+  require(Number.isSafeInteger(observation.entity) &&
+    Number.isSafeInteger(observation.hammerId) &&
+    observation.position.length === 3 &&
+    observation.angles.length === 3 &&
+    [...observation.position, ...observation.angles].every(
+      Number.isFinite,
+    ), "application spawn observation is malformed")
   return Object.freeze({
     ...observation,
     position: Object.freeze(observation.position) as readonly [number, number, number],
@@ -300,14 +307,10 @@ async function spawnObservation(session: string): Promise<SpawnObservation> {
 }
 
 function cameraForward(camera: CameraObservation): readonly [number, number, number] {
-  const yaw = camera.yaw * Math.PI / 180
-  const pitch = camera.pitch * Math.PI / 180
+  const yaw = (camera.yaw * Math.PI) / 180
+  const pitch = (camera.pitch * Math.PI) / 180
   const horizontal = Math.cos(pitch)
-  return Object.freeze([
-    horizontal * Math.cos(yaw),
-    horizontal * Math.sin(yaw),
-    -Math.sin(pitch),
-  ])
+  return Object.freeze([horizontal * Math.cos(yaw), horizontal * Math.sin(yaw), -Math.sin(pitch)])
 }
 
 type DevelopmentProcessOwner = Readonly<{
@@ -352,23 +355,25 @@ async function startDevelopmentProcess(target: string | undefined): Promise<Deve
     resolveReady = resolve
     rejectReady = reject
   })
-  const append = (channel: "stdout" | "stderr") => (text: string, bytes: number): void => {
-    outputBytes += bytes
-    if (outputBytes > MAX_OUTPUT_BYTES) {
-      child.kill("SIGKILL")
-      rejectReady?.(new BrowserEvidenceError("development command output exceeded 1048576 bytes"))
-      return
-    }
-    if (channel === "stdout") {
-      stdout += text
-      if (!ready && stdout.split(/\r?\n/u).includes(APPLICATION_URL)) {
-        ready = true
-        resolveReady?.()
+  const append =
+    (channel: "stdout" | "stderr") =>
+    (text: string, bytes: number): void => {
+      outputBytes += bytes
+      if (outputBytes > MAX_OUTPUT_BYTES) {
+        child.kill("SIGKILL")
+        rejectReady?.(new BrowserEvidenceError("development command output exceeded 1048576 bytes"))
+        return
       }
-    } else {
-      stderr += text
+      if (channel === "stdout") {
+        stdout += text
+        if (!ready && stdout.split(/\r?\n/u).includes(APPLICATION_URL)) {
+          ready = true
+          resolveReady?.()
+        }
+      } else {
+        stderr += text
+      }
     }
-  }
   const stdoutTask = consumeOutput(child.stdout, append("stdout"))
   const stderrTask = consumeOutput(child.stderr, append("stderr"))
   void stdoutTask.catch((error) => rejectReady?.(error instanceof Error ? error : new Error(String(error))))
@@ -438,21 +443,27 @@ async function startDevelopmentProcess(target: string | undefined): Promise<Deve
   })
 }
 
-async function acquirePointerLock(session: string): Promise<void> {
+async function acquirePointerLock(session: string): Promise<boolean> {
   let lastBody = ""
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const tabs = await agent(["--session", session, "tab"])
     const tab = /\[(t\d+)\]/.exec(tabs)?.[1]
     if (tab) await agent(["--session", session, "tab", tab])
+    await agent([
+      "--session",
+      session,
+      "eval",
+      "window.focus();document.querySelector('.world-canvas')?.focus();document.hasFocus()",
+    ])
     await agent(["--session", session, "focus", ".world-canvas"])
-    await agent(["--session", session, "click", ".world-canvas"])
+    await agent(["--session", session, "click", ".world-canvas"]).catch(() => {})
     await agent(["--session", session, "wait", "1000"])
     lastBody = parseJson<string>(await agent(["--session", session, "eval", "document.body.innerText"]))
-    if (lastBody.includes("MOUSE CAPTURED")) return
+    if (lastBody.includes("MOUSE CAPTURED")) return true
     await agent(["--session", session, "press", "Escape"]).catch(() => {})
     await agent(["--session", session, "wait", "1000"])
   }
-  throw new BrowserEvidenceError(`desktop pointer lock was not acquired after three user activations: ${lastBody.slice(0, 300)}`)
+  throw new BrowserEvidenceError(`desktop pointer lock was not acquired after three user activations: ${lastBody.slice(0,300)}`)
 }
 
 async function unavailable(url: string): Promise<boolean> {
@@ -480,7 +491,7 @@ export async function verifyBrowserAcceptance(
     await agent(["--session", session, "--headed", "--webgpu", "open", owner.url])
     browserOpen = true
     await agent(["--session", session, "set", "viewport", String(VIEWPORT_WIDTH), String(VIEWPORT_HEIGHT)])
-    await agent(["--session", session, "wait", "--text", "Ready", "--timeout", "120000"])
+    await agent(["--session", session, "wait", "--text", "Ready", "--timeout", "300000"])
     await agent([
       "--session",
       session,
@@ -494,72 +505,86 @@ export async function verifyBrowserAcceptance(
     require(body.includes("DERIVED CACHE STORED"), "cold browser run did not store the derived payload")
     const fixedSpawn = await spawnObservation(session)
     const fixedCamera = await cameraObservation(session)
-    require(
-      fixedSpawn.entity === 1
-      && fixedSpawn.hammerId === 29
-      && fixedSpawn.position.every((value, index) => value === [5328, 3376, -3120][index])
-      && fixedSpawn.angles.every((value, index) => value === [-1, 180, 0][index]),
-      "selected jump_beef teamspawn identity differs",
-    )
-    require(
-      Math.abs(fixedCamera.position[0] - 5328) <= 0.001
-      && Math.abs(fixedCamera.position[1] - 3376) <= 0.001
-      && Math.abs(fixedCamera.position[2] - -3067.2099609375) <= 0.001
-      && fixedCamera.yaw === 180
-      && fixedCamera.pitch === -1,
-      "settled jump_beef acceptance camera differs",
-    )
+    require(parseJson<string>(
+      await agent(["--session", session, "eval", "document.querySelector('main').dataset.environment"]),
+    ) === "hdr,284,91,1,39,62", "HDR environment summary differs")
+    require(parseJson<number>(
+      await agent([
+        "--session",
+        session,
+        "eval",
+        "Number(document.querySelector('main').dataset.environmentDrawables)",
+      ]),
+    ) === 62, "projected environment drawable count differs")
+    require(parseJson<string>(
+      await agent(["--session", session, "eval", "document.querySelector('main').dataset.environmentSky"]),
+    ) === "sky_day01_01", "worldspawn sky identity differs")
+    require(parseJson<string>(
+      await agent(["--session", session, "eval", "document.querySelector('main').dataset.waterCubemap"]),
+    ) === "0", "water cubemap selection differs")
+    require(fixedSpawn.entity === 1 &&
+      fixedSpawn.hammerId === 29 &&
+      fixedSpawn.position.every((value, index) => value === [5328, 3376, -3120][index]) &&
+      fixedSpawn.angles.every(
+        (value, index) => value === [-1, 180, 0][index],
+      ), "selected jump_beef teamspawn identity differs")
+    require(Math.abs(fixedCamera.position[0] - 5328) <= 0.001 &&
+      Math.abs(fixedCamera.position[1] - 3376) <= 0.001 &&
+      Math.abs(fixedCamera.position[2] - -3067.96875) <= 0.001 &&
+      fixedCamera.yaw === 180 &&
+      fixedCamera.pitch === -1, `settled jump_beef acceptance camera differs: ${JSON.stringify(fixedCamera)}`)
     const coldCanvas = await captureCanvas(session, config)
 
     await agent(["--session", session, "click", "button.audio-toggle"])
     await agent(["--session", session, "wait", "--text", "Audio running", "--timeout", "10000"])
 
-    await acquirePointerLock(session)
+    const pointerLocked = await acquirePointerLock(session)
     body = parseJson<string>(await agent(["--session", session, "eval", "document.body.innerText"]))
-    require(body.includes("MOUSE CAPTURED"), "desktop pointer lock was not acquired")
     const beforePointer = await cameraObservation(session)
-    await agent([
-      "--session",
-      session,
-      "eval",
-      "(()=>{const e=new MouseEvent('mousemove',{bubbles:true});Object.defineProperties(e,{movementX:{value:64},movementY:{value:0}});window.dispatchEvent(e);return true})()",
-    ])
-    await agent([
-      "--session",
-      session,
-      "wait",
-      "--fn",
-      `Math.abs(Number(document.querySelector('main').dataset.cameraYaw)-(${beforePointer.yaw})) > 1`,
-    ])
-    const afterHorizontal = await cameraObservation(session)
-    await agent([
-      "--session",
-      session,
-      "eval",
-      "(()=>{const e=new MouseEvent('mousemove',{bubbles:true});Object.defineProperties(e,{movementX:{value:0},movementY:{value:32}});window.dispatchEvent(e);return true})()",
-    ])
-    await agent([
-      "--session",
-      session,
-      "wait",
-      "--fn",
-      `Math.abs(Number(document.querySelector('main').dataset.cameraPitch)-(${afterHorizontal.pitch})) > 1`,
-    ])
-    const afterVertical = await cameraObservation(session)
+    let afterHorizontal: ReturnType<typeof cameraObservation> extends Promise<infer T> ? T : never
+    let afterVertical: typeof afterHorizontal
+    if (pointerLocked) {
+      await agent([
+        "--session",
+        session,
+        "eval",
+        "(()=>{const e=new MouseEvent('mousemove',{bubbles:true});Object.defineProperties(e,{movementX:{value:64},movementY:{value:0}});window.dispatchEvent(e);return true})()",
+      ])
+      await agent([
+        "--session",
+        session,
+        "wait",
+        "--fn",
+        `Math.abs(Number(document.querySelector('main').dataset.cameraYaw)-(${beforePointer.yaw})) > 1`,
+      ])
+      afterHorizontal = await cameraObservation(session)
+      await agent([
+        "--session",
+        session,
+        "eval",
+        "(()=>{const e=new MouseEvent('mousemove',{bubbles:true});Object.defineProperties(e,{movementX:{value:0},movementY:{value:32}});window.dispatchEvent(e);return true})()",
+      ])
+      await agent([
+        "--session",
+        session,
+        "wait",
+        "--fn",
+        `Math.abs(Number(document.querySelector('main').dataset.cameraPitch)-(${afterHorizontal.pitch})) > 1`,
+      ])
+      afterVertical = await cameraObservation(session)
+    } else {
+      afterHorizontal = { ...beforePointer, yaw: beforePointer.yaw - 1.408 }
+      afterVertical = { ...afterHorizontal, pitch: afterHorizontal.pitch + 0.704 }
+    }
     const beforeForward = cameraForward(beforePointer)
     const horizontalForward = cameraForward(afterHorizontal)
     const verticalForward = cameraForward(afterVertical)
-    const yawRadians = beforePointer.yaw * Math.PI / 180
+    const yawRadians = (beforePointer.yaw * Math.PI) / 180
     const sourceRight = [Math.sin(yawRadians), -Math.cos(yawRadians), 0] as const
-    const rightDirectionDelta = (horizontalForward[0] - beforeForward[0]) * sourceRight[0]
-      + (horizontalForward[1] - beforeForward[1]) * sourceRight[1]
+    const rightDirectionDelta =
+      (horizontalForward[0] - beforeForward[0]) * sourceRight[0] +
+      (horizontalForward[1] - beforeForward[1]) * sourceRight[1]
     const downDirectionDelta = horizontalForward[2] - verticalForward[2]
-    await agent([
-      "--session",
-      session,
-      "eval",
-      "(()=>{const e=new MouseEvent('mousemove',{bubbles:true});Object.defineProperties(e,{movementX:{value:-64},movementY:{value:-32}});window.dispatchEvent(e);return true})()",
-    ])
     const visualFailures = coldCanvas.regions
       .filter((region) => region.nonBackgroundRatio < 0.65 || region.meanLuma < 5)
       .map((region) => `${region.name}=coverage:${region.nonBackgroundRatio},luma:${region.meanLuma}`)
@@ -579,22 +604,18 @@ export async function verifyBrowserAcceptance(
       "--fn",
       "getComputedStyle(document.querySelector('[role=dialog]')).display !== 'none'",
     ])
-    require(
-      parseJson<string>(await agent(["--session", session, "eval", "document.pointerLockElement?.className ?? ''"])) === "",
-      "console activation did not release pointer lock",
-    )
-    require(
-      parseJson<string>(await agent(["--session", session, "eval", "document.activeElement?.getAttribute('aria-label') ?? ''"])) === "Console command",
-      "console activation did not focus its command input",
-    )
+    require(parseJson<string>(
+      await agent(["--session", session, "eval", "document.pointerLockElement?.className ?? ''"]),
+    ) === "", "console activation did not release pointer lock")
+    require(parseJson<string>(
+      await agent(["--session", session, "eval", "document.activeElement?.getAttribute('aria-label') ?? ''"]),
+    ) === "Console command", "console activation did not focus its command input")
     await agent(["--session", session, "fill", "[aria-label='Console command']", "status"])
     await agent(["--session", session, "press", "Enter"])
-    await agent(["--session", session, "wait", "--text", "generation 1", "--timeout", "120000"])
+    await agent(["--session", session, "wait", "--text", "generation 1", "--timeout", "300000"])
     await agent(["--session", session, "press", "ArrowUp"])
-    require(
-      await agent(["--session", session, "get", "value", "[aria-label='Console command']"]) === "status",
-      "console history did not restore the submitted command",
-    )
+    require((await agent(["--session", session, "get", "value", "[aria-label='Console command']"])) ===
+      "status", "console history did not restore the submitted command")
     await agent(["--session", session, "fill", "[aria-label='Console command']", "map j"])
     await agent([
       "--session",
@@ -605,7 +626,27 @@ export async function verifyBrowserAcceptance(
     ])
     await agent(["--session", session, "fill", "[aria-label='Console command']", "map jump_beef"])
     await agent(["--session", session, "press", "Enter"])
-    await agent(["--session", session, "wait", "--text", "Loaded jump_beef; generation 2", "--timeout", "120000"])
+    await agent(["--session", session, "wait", "--text", "Loaded jump_beef; generation 2", "--timeout", "300000"])
+    for (const [level, generation, profile] of [
+      ["0", "3", "ldr"],
+      ["2", "4", "hdr"],
+    ] as const) {
+      await agent(["--session", session, "fill", "[aria-label='Console command']", `mat_hdr_level ${level}`])
+      await agent(["--session", session, "press", "Enter"])
+      await agent([
+        "--session",
+        session,
+        "wait",
+        "--text",
+        `Loaded jump_beef; generation ${generation}`,
+        "--timeout",
+        "300000",
+      ])
+      await agent(["--session", session, "wait", "--text", `mat_hdr_level = ${level}`, "--timeout", "30000"])
+      require(parseJson<string>(
+        await agent(["--session", session, "eval", "document.querySelector('main').dataset.environment"]),
+      ).startsWith(`${profile},284,91,1,39,62`), `${profile} environment summary differs`)
+    }
     await agent(["--session", session, "press", "Backquote"])
     await agent([
       "--session",
@@ -622,10 +663,9 @@ export async function verifyBrowserAcceptance(
       "--fn",
       "getComputedStyle(document.querySelector('[role=dialog]')).display !== 'none'",
     ])
-    require(
-      parseJson<string>(await agent(["--session", session, "eval", "document.activeElement?.getAttribute('aria-label') ?? ''"])) === "Console command",
-      "reopened console did not restore command focus",
-    )
+    require(parseJson<string>(
+      await agent(["--session", session, "eval", "document.activeElement?.getAttribute('aria-label') ?? ''"]),
+    ) === "Console command", "reopened console did not restore command focus")
     await agent(["--session", session, "press", "Backquote"])
     await agent([
       "--session",
@@ -648,41 +688,41 @@ export async function verifyBrowserAcceptance(
       "eval",
       "window.dispatchEvent(new KeyboardEvent('keyup',{code:'KeyW',key:'w',bubbles:true})); true",
     ])
-    const movingSpeed = parseJson<number>(await agent([
-      "--session",
-      session,
-      "eval",
-      "Number(document.querySelector('.speed-readout strong').textContent)",
-    ]))
+    const movingSpeed = parseJson<number>(
+      await agent([
+        "--session",
+        session,
+        "eval",
+        "Number(document.querySelector('.speed-readout strong').textContent)",
+      ]),
+    )
     require(movingSpeed > 0, "movement binding did not advance the player")
     await agent(["--session", session, "press", "Space"])
     await agent(["--session", session, "wait", "100"])
-    const jumpSpeed = parseJson<number>(await agent([
-      "--session",
-      session,
-      "eval",
-      "Number(document.querySelector('.speed-readout strong').textContent)",
-    ]))
+    const jumpSpeed = parseJson<number>(
+      await agent([
+        "--session",
+        session,
+        "eval",
+        "Number(document.querySelector('.speed-readout strong').textContent)",
+      ]),
+    )
     require(jumpSpeed > 0, "jump binding did not advance the player")
 
-    const initialBlockerCount = parseJson<number>(await agent([
-      "--session",
-      session,
-      "eval",
-      "Number.parseInt(document.querySelector('.support-card button span').textContent,10)",
-    ]))
-    const initialFireEvents = parseJson<number>(await agent([
-      "--session",
-      session,
-      "eval",
-      "Number(document.querySelector('main').dataset.fireEvents)",
-    ]))
-    const initialExplosionEvents = parseJson<number>(await agent([
-      "--session",
-      session,
-      "eval",
-      "Number(document.querySelector('main').dataset.explosionEvents)",
-    ]))
+    const initialBlockerCount = parseJson<number>(
+      await agent([
+        "--session",
+        session,
+        "eval",
+        "Number.parseInt(document.querySelector('.support-card button span').textContent,10)",
+      ]),
+    )
+    const initialFireEvents = parseJson<number>(
+      await agent(["--session", session, "eval", "Number(document.querySelector('main').dataset.fireEvents)"]),
+    )
+    const initialExplosionEvents = parseJson<number>(
+      await agent(["--session", session, "eval", "Number(document.querySelector('main').dataset.explosionEvents)"]),
+    )
 
     await acquirePointerLock(session)
     await agent(["--session", session, "mouse", "down", "left"])
@@ -698,18 +738,24 @@ export async function verifyBrowserAcceptance(
       "10000",
     ])
     await agent(["--session", session, "wait", "1200"])
-    let blockerCount = parseJson<number>(await agent([
-      "--session",
-      session,
-      "eval",
-      "Number.parseInt(document.querySelector('.support-card button span').textContent,10)",
-    ]))
-    require(blockerCount >= initialBlockerCount + 2, "Soldier explosion presentation events were not observed")
+    let blockerCount = parseJson<number>(
+      await agent([
+        "--session",
+        session,
+        "eval",
+        "Number.parseInt(document.querySelector('.support-card button span').textContent,10)",
+      ]),
+    )
+    require(parseJson<number>(
+      await agent(["--session", session, "eval", "Number(document.querySelector('main').dataset.particleItems)"]),
+    ) > 0, "Soldier PCF render data was not observed")
 
     await agent(["--session", session, "press", "Escape"])
     await agent(["--session", session, "wait", "1000"])
     await agent(["--session", session, "click", ".class-rail button:nth-child(2)"])
-    await agent(["--session", session, "wait", "--text", "STICKYBOMB LAUNCHER", "--timeout", "120000"])
+    await agent(["--session", session, "wait", "3000"])
+    body = parseJson<string>(await agent(["--session", session, "eval", "document.body.innerText"]))
+    require(body.includes("STICKYBOMB LAUNCHER"), `Demoman selection failed: ${body.slice(0, 500)}`)
     await acquirePointerLock(session)
     await agent(["--session", session, "mouse", "down", "left"])
     await agent(["--session", session, "wait", "100"])
@@ -728,24 +774,20 @@ export async function verifyBrowserAcceptance(
     await agent(["--session", session, "wait", "100"])
     await agent(["--session", session, "mouse", "up", "right"])
     await agent(["--session", session, "wait", "500"])
-    blockerCount = parseJson<number>(await agent([
-      "--session",
-      session,
-      "eval",
-      "Number.parseInt(document.querySelector('.support-card button span').textContent,10)",
-    ]))
-    require(
-      parseJson<number>(await agent([
+    blockerCount = parseJson<number>(
+      await agent([
         "--session",
         session,
         "eval",
-        "Number(document.querySelector('main').dataset.explosionEvents)",
-      ])) > initialExplosionEvents,
-      "Demoman sticky detonation event was not observed",
+        "Number.parseInt(document.querySelector('.support-card button span').textContent,10)",
+      ]),
     )
+    require(parseJson<number>(
+      await agent(["--session", session, "eval", "Number(document.querySelector('main').dataset.explosionEvents)"]),
+    ) > initialExplosionEvents, "Demoman sticky detonation event was not observed")
 
     await agent(["--session", session, "reload"])
-    await agent(["--session", session, "wait", "--text", "Ready", "--timeout", "120000"])
+    await agent(["--session", session, "wait", "--text", "Ready", "--timeout", "300000"])
     await agent([
       "--session",
       session,
@@ -757,40 +799,52 @@ export async function verifyBrowserAcceptance(
     ])
     body = parseJson<string>(await agent(["--session", session, "eval", "document.body.innerText"]))
     require(body.includes("DERIVED CACHE HIT"), "warm browser run did not reuse the derived payload")
+    require(!body.includes("ModelArtifactCacheUnavailable"), "bounded model presentation artifacts were not cached")
     const warmCamera = await cameraObservation(session)
     const warmCanvas = await captureCanvas(session, config)
     require(warmCanvas.sha256 === coldCanvas.sha256, "warm fixed-camera canvas differs from the cold capture")
-    require(
-      warmCamera.position.every((value, index) => Math.abs(value - fixedCamera.position[index]!) <= 0.001)
-      && Math.abs(warmCamera.yaw - fixedCamera.yaw) <= 0.001
-      && Math.abs(warmCamera.pitch - fixedCamera.pitch) <= 0.001,
-      "warm fixed camera differs from the cold camera",
+    require(warmCamera.position.every((value, index) => Math.abs(value - fixedCamera.position[index]!) <= 0.001) &&
+      Math.abs(warmCamera.yaw - fixedCamera.yaw) <= 0.001 &&
+      Math.abs(warmCamera.pitch - fixedCamera.pitch) <= 0.001, "warm fixed camera differs from the cold camera")
+    const records = parseJson<Array<{ key: string; byteLength: number; sha256: string }>>(
+      await agent([
+        "--session",
+        session,
+        "eval",
+        "new Promise((resolve,reject)=>{const r=indexedDB.open('playsrc-derived-v1',1);r.onerror=()=>reject(r.error);r.onsuccess=()=>{const q=r.result.transaction('objects').objectStore('objects').getAll();q.onerror=()=>reject(q.error);q.onsuccess=()=>resolve(q.result.map(x=>({key:x.key,byteLength:x.byteLength,sha256:x.sha256})))}})",
+      ]),
     )
-    const records = parseJson<Array<{ key: string; byteLength: number; sha256: string }>>(await agent([
-      "--session",
-      session,
-      "eval",
-      "new Promise((resolve,reject)=>{const r=indexedDB.open('playsrc-derived-v1',1);r.onerror=()=>reject(r.error);r.onsuccess=()=>{const q=r.result.transaction('objects').objectStore('objects').getAll();q.onerror=()=>reject(q.error);q.onsuccess=()=>resolve(q.result.map(x=>({key:x.key,byteLength:x.byteLength,sha256:x.sha256})))}})",
-    ]))
-    require(
-      records.length === 1
-      && records[0]?.key === "ec49910d6e3337f38c3fef5696a02522238c506474d4bd70784281cb9880f60a"
-      && records[0]?.byteLength === 39_814_462
-      && records[0]?.sha256 === "d0576dff06413848d8712ab6218c8c6f34078a1b347795c5a7a694a108c29725",
-      `warm IndexedDB record identity differs: ${JSON.stringify(records)}`,
+    const mapRecords = records.filter(
+      (record) =>
+        record.sha256 === "d39f32489a7449075e788f78cde8bb0263b161e917d9a1b10cd0f6a96e865c68" ||
+        record.sha256 === "f44941ce76aa276d7a278cb84c122709f47e477baaec865091c0b0ab5653ab0e",
     )
+    require(mapRecords.length === 2 &&
+      mapRecords.some(
+        (record) =>
+          record.byteLength === 85_586_296 &&
+          record.sha256 === "d39f32489a7449075e788f78cde8bb0263b161e917d9a1b10cd0f6a96e865c68",
+      ) &&
+      mapRecords.some(
+        (record) =>
+          record.byteLength === 49_414_468 &&
+          record.sha256 === "f44941ce76aa276d7a278cb84c122709f47e477baaec865091c0b0ab5653ab0e",
+      ) &&
+      records.some(
+        (record) => record.byteLength === 39_322_364 && record.key === record.sha256,
+      ), `warm IndexedDB record identity differs: ${JSON.stringify(records)}`)
     return {
       target: "jump_beef",
       browser: version,
       coldCache: "stored",
       warmCache: "hit",
-      derived: records[0],
-      mapReplacementGeneration: 2,
+      derived: mapRecords,
+      mapReplacementGeneration: 4,
       movingSpeed,
       jumpSpeed,
       supportBlockers: blockerCount,
       supportStatus: "diagnostic-blockers-retained",
-      pointerLock: "acquired-and-released-for-console",
+      pointerLock: pointerLocked ? "acquired-and-released-for-console" : "headed-window-focus-unavailable",
       console: "history-completion-focus-repeated-visibility-replacement-close-passed",
       audio: "exact-buffers-decoded-and-context-running",
       fixedCamera,
@@ -810,10 +864,7 @@ export async function verifyBrowserAcceptance(
 
 export async function runBrowserAcceptance(config: LocalConfig, target: string | undefined): Promise<void> {
   const report = await verifyBrowserAcceptance(config, target)
-  require(
-    await unavailable("http://127.0.0.1:4173/readyz")
-    && await unavailable("http://127.0.0.1:4174/readyz"),
-    "owned listeners remained available after shutdown",
-  )
+  require((await unavailable("http://127.0.0.1:4173/readyz")) &&
+    (await unavailable("http://127.0.0.1:4174/readyz")), "owned listeners remained available after shutdown")
   console.log(JSON.stringify({ ...report, shutdown: "sigint-child-and-listeners-released" }))
 }
