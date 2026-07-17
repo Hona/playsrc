@@ -7,10 +7,14 @@ export type StoredObject = Readonly<{ descriptor: ObjectDescriptor; outcome: "St
 export type ChannelRecord = Readonly<{ channel: string; target: ObjectDescriptor }>
 
 export class AssetStoreError extends Error {
-  constructor(readonly code: "MalformedIdentity" | "MissingObject" | "IntegrityFailure" | "IoFailure", message: string) {
+  constructor(readonly code: "MalformedIdentity" | "MissingObject" | "IntegrityFailure" | "Cancelled" | "IoFailure", message: string) {
     super(message)
     this.name = "AssetStoreError"
   }
+}
+
+function throwIfCancelled(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new AssetStoreError("Cancelled", "object publication was cancelled")
 }
 
 const HASH = /^[0-9a-f]{64}$/
@@ -46,7 +50,13 @@ async function verify(pathname: string, expected: ObjectDescriptor): Promise<Uin
   }
 }
 
-export async function putObject(root: string, expected: ObjectDescriptor, bytes: Uint8Array): Promise<StoredObject> {
+export async function putObject(
+  root: string,
+  expected: ObjectDescriptor,
+  bytes: Uint8Array,
+  signal?: AbortSignal,
+): Promise<StoredObject> {
+  throwIfCancelled(signal)
   if (String(bytes.byteLength) !== expected.byteLength || digest(bytes) !== expected.sha256) throw new AssetStoreError("IntegrityFailure", "input differs from descriptor")
   const pathname = objectPath(root, expected.sha256)
   try {
@@ -55,17 +65,20 @@ export async function putObject(root: string, expected: ObjectDescriptor, bytes:
   } catch (error) {
     if (!(error instanceof AssetStoreError) || error.code !== "MissingObject") throw error
   }
+  throwIfCancelled(signal)
   await mkdir(path.dirname(pathname), { recursive: true })
   const temporary = `${pathname}.${process.pid}.tmp`
   try {
     await rm(temporary, { force: true })
-    await writeFile(temporary, bytes, { flag: "wx" })
+    await writeFile(temporary, bytes, { flag: "wx", signal })
+    throwIfCancelled(signal)
     await link(temporary, pathname)
     await rm(temporary)
     await verify(pathname, expected)
     return Object.freeze({ descriptor: expected, outcome: "Stored" })
   } catch (error) {
     await rm(temporary, { force: true })
+    if (signal?.aborted) throw new AssetStoreError("Cancelled", "object publication was cancelled")
     if ((error as NodeJS.ErrnoException).code === "EEXIST") {
       await verify(pathname, expected)
       return Object.freeze({ descriptor: expected, outcome: "AlreadyPresent" })

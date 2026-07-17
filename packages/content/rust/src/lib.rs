@@ -1034,7 +1034,7 @@ mod tests {
         fs::write(second.path().join("materials/a.vmt"), b"second").unwrap();
         let content = Content::open(
             "tf2",
-            "10822003",
+            "24207079",
             vec![
                 directory_spec("first", first.path()),
                 directory_spec("second", second.path()),
@@ -1071,7 +1071,7 @@ mod tests {
         fs::write(root.path().join("materials/a.vmt"), b"external").unwrap();
         let content = Content::open(
             "tf2",
-            "10822003",
+            "24207079",
             vec![directory_spec("loose", root.path())],
             Limits::default(),
         )
@@ -1163,7 +1163,7 @@ mod tests {
         fs::write(root.path().join("maps/jump_beef.bsp"), b"bsp").unwrap();
         let content = Content::open(
             "tf2",
-            "10822003",
+            "24207079",
             vec![directory_spec("loose", root.path())],
             Limits::default(),
         )
@@ -1221,7 +1221,7 @@ mod tests {
         fs::write(root.path().join("materials/a.vmt"), b"fallback").unwrap();
         let content = Content::open(
             "tf2",
-            "10822003",
+            "24207079",
             vec![
                 ProviderSpec::Vpk {
                     id: "vpk".to_owned(),
@@ -1253,7 +1253,7 @@ mod tests {
         let directory_bytes = vpk_directory(&vpk_tree(data));
         let content = Content::open(
             "tf2",
-            "10822003",
+            "24207079",
             vec![ProviderSpec::IndexedVpk {
                 id: "remote-vpk".to_owned(),
                 revision: "object-sha".to_owned(),

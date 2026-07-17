@@ -46,8 +46,8 @@ describe("download source cache", () => {
       return result
     }) as typeof fetch
 
-    const first = await acquireDownload(directory, "maps/example.bsp", source, fetchSource)
-    const second = await acquireDownload(directory, "maps/example.bsp", source, fetchSource)
+    const first = await acquireDownload(directory, "maps/example.bsp", source, { fetchSource })
+    const second = await acquireDownload(directory, "maps/example.bsp", source, { fetchSource })
     expect(first).toEqual(second)
     expect(requests).toBe(1)
     expect(await readFile(path.join(directory, first.decoded.cachePath), "utf8")).toBe("playsrc\n")
@@ -63,7 +63,9 @@ describe("download source cache", () => {
       const directory = await root()
       Object.defineProperty(result, "url", { value: source.url })
       try {
-        await acquireDownload(directory, "maps/example.bsp", source, (async () => result) as typeof fetch)
+        await acquireDownload(directory, "maps/example.bsp", source, {
+          fetchSource: (async () => result) as typeof fetch,
+        })
         throw new Error("acquisition unexpectedly succeeded")
       } catch (error) {
         expect(error).toBeInstanceOf(ContentCacheError)
@@ -72,16 +74,20 @@ describe("download source cache", () => {
     }
 
     const directory = await root()
-    const provenance = await acquireDownload(directory, "maps/example.bsp", source, (async () => {
-      const result = response()
-      Object.defineProperty(result, "url", { value: source.url })
-      return result
-    }) as typeof fetch)
+    const provenance = await acquireDownload(directory, "maps/example.bsp", source, {
+      fetchSource: (async () => {
+        const result = response()
+        Object.defineProperty(result, "url", { value: source.url })
+        return result
+      }) as typeof fetch,
+    })
     await writeFile(path.join(directory, provenance.decoded.cachePath), "corrupt!")
     await expect(
-      acquireDownload(directory, "maps/example.bsp", source, (async () => {
-        throw new Error("must not fetch")
-      }) as typeof fetch),
+      acquireDownload(directory, "maps/example.bsp", source, {
+        fetchSource: (async () => {
+          throw new Error("must not fetch")
+        }) as typeof fetch,
+      }),
     ).rejects.toMatchObject({ code: "IntegrityFailure" })
   })
 
@@ -92,15 +98,59 @@ describe("download source cache", () => {
         await root(),
         "../example.bsp",
         source,
-        (async () => {
-          requested = true
-          return response()
-        }) as typeof fetch,
+        {
+          fetchSource: (async () => {
+            requested = true
+            return response()
+          }) as typeof fetch,
+        },
       )
       throw new Error("acquisition unexpectedly succeeded")
     } catch (error) {
       expect(error).toMatchObject({ code: "MalformedSource" })
       expect(requested).toBe(false)
     }
+  })
+
+  test("cancels before fetch and during a cold body without committing bytes", async () => {
+    const before = await root()
+    const alreadyCancelled = new AbortController()
+    alreadyCancelled.abort()
+    let requested = false
+    await expect(acquireDownload(before, "maps/example.bsp", source, {
+      signal: alreadyCancelled.signal,
+      fetchSource: (async () => {
+        requested = true
+        return response()
+      }) as typeof fetch,
+    })).rejects.toMatchObject({ code: "Cancelled" })
+    expect(requested).toBe(false)
+
+    const during = await root()
+    const controller = new AbortController()
+    let chunk = 0
+    const body = new ReadableStream<Uint8Array>({
+      pull(stream) {
+        if (chunk++ === 0) {
+          stream.enqueue(encoded.subarray(0, 8))
+          return
+        }
+        controller.abort()
+        stream.enqueue(encoded.subarray(8))
+        stream.close()
+      },
+    })
+    const result = new Response(body, {
+      headers: { "content-length": String(encoded.byteLength) },
+    })
+    Object.defineProperty(result, "url", { value: source.url })
+    await expect(acquireDownload(during, "maps/example.bsp", source, {
+      signal: controller.signal,
+      fetchSource: (async () => result) as typeof fetch,
+    })).rejects.toMatchObject({ code: "Cancelled" })
+    await expect(readFile(path.join(during, `objects/sha256/${source.encodedSha256.slice(0, 2)}/${source.encodedSha256}`)))
+      .rejects.toMatchObject({ code: "ENOENT" })
+    await expect(readFile(path.join(during, `objects/sha256/${source.decodedSha256.slice(0, 2)}/${source.decodedSha256}`)))
+      .rejects.toMatchObject({ code: "ENOENT" })
   })
 })

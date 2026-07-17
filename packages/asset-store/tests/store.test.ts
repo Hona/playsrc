@@ -30,4 +30,17 @@ describe("local immutable asset store", () => {
       await expect(readChannel(root, "../bad")).rejects.toBeInstanceOf(AssetStoreError)
     } finally { await rm(root, { recursive: true, force: true }) }
   })
+
+  test("cancels before immutable publication without creating an object", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "playsrc-assets-"))
+    try {
+      const bytes = new TextEncoder().encode("cancelled")
+      const expected = descriptor("source-object", "application/octet-stream", bytes)
+      const controller = new AbortController()
+      controller.abort()
+      await expect(putObject(root, expected, bytes, controller.signal))
+        .rejects.toMatchObject({ code: "Cancelled" })
+      await expect(readObject(root, expected)).rejects.toMatchObject({ code: "MissingObject" })
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
 })

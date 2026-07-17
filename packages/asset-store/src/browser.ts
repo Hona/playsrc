@@ -117,6 +117,7 @@ export async function fetchImmutableObject(
   ) {
     throw new BrowserAssetError("ResponseFailure", "immutable object response metadata differs")
   }
+  if (signal?.aborted) throw new BrowserAssetError("Cancelled", "immutable object request was cancelled")
   let bytes: Uint8Array
   try {
     bytes = new Uint8Array(await response.arrayBuffer())
@@ -124,6 +125,7 @@ export async function fetchImmutableObject(
     if (signal?.aborted) throw new BrowserAssetError("Cancelled", "immutable object request was cancelled")
     throw new BrowserAssetError("ResponseFailure", "immutable object response body failed")
   }
+  if (signal?.aborted) throw new BrowserAssetError("Cancelled", "immutable object request was cancelled")
   if (bytes.byteLength !== expectedLength || await sha256(bytes) !== descriptor.sha256) {
     throw new BrowserAssetError("IntegrityFailure", "immutable object bytes differ")
   }

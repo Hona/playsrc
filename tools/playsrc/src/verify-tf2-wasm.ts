@@ -403,7 +403,7 @@ export async function verifyTf2Wasm(
 ): Promise<Record<string, number | string>> {
   const map = await acquireMap(config, identity)
   const wasmPath = await buildTf2Wasm(config)
-  const bundlePath = await buildSourceBundle(config, identity ?? "")
+  const sourceBundle = await buildSourceBundle(config, identity ?? "")
   const nativeHdr = await buildNativeHdr(config, identity ?? "")
   const wasmBytes = await readFile(wasmPath)
   require(wasmBytes.byteLength > 0 && wasmBytes.byteLength <= 64 * 1024 * 1024, "WASM byte length is invalid")
@@ -411,7 +411,7 @@ export async function verifyTf2Wasm(
   const exports = loaded.instance.exports as unknown as Exports
   const [bspBytes, dependencyBytes, nativeHdrPayload] = await Promise.all([
     readFile(path.join(config.sourceCacheDir, map.decoded.cachePath)),
-    readFile(bundlePath),
+    readFile(sourceBundle.bundlePath),
     readFile(nativeHdr.path),
   ])
   require(bspBytes.byteLength === map.decoded.byteLength, "cached BSP byte length changed")
