@@ -13,7 +13,13 @@ const MODEL_BYTES: usize = 148;
 const MESH_BYTES: usize = 116;
 const ATTACHMENT_BYTES: usize = 92;
 const POSE_PARAMETER_BYTES: usize = 20;
+const HITBOX_SET_BYTES: usize = 12;
+const HITBOX_BYTES: usize = 68;
+const SEQUENCE_EVENT_BYTES: usize = 80;
+const SEQUENCE_AUTO_LAYER_BYTES: usize = 24;
 const STUDIO_OVERRIDE: i32 = 0x0800;
+const STUDIO_CYCLE_POSE: i32 = 0x0080;
+const STUDIO_AUTO_LAYER_POSE: i32 = 0x4000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Profile {
@@ -283,7 +289,31 @@ pub struct Sequence {
     pub ik_lock_count: i32,
     pub cycle_pose_parameter: i32,
     pub activity_modifier_count: i32,
+    pub events: Vec<SequenceEvent>,
+    pub auto_layers: Vec<SequenceAutoLayer>,
     pub source_identity: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SequenceEvent {
+    pub index: usize,
+    pub cycle: Float32,
+    pub event: i32,
+    pub event_type: i32,
+    pub options: [u8; 64],
+    pub name: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SequenceAutoLayer {
+    pub index: usize,
+    pub sequence: i16,
+    pub pose: i16,
+    pub flags: i32,
+    pub start: Float32,
+    pub peak: Float32,
+    pub tail: Float32,
+    pub end: Float32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -373,6 +403,23 @@ pub struct Attachment {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Hitbox {
+    pub index: usize,
+    pub bone: i32,
+    pub group: i32,
+    pub bounds_min: Vector3,
+    pub bounds_max: Vector3,
+    pub name: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HitboxSet {
+    pub index: usize,
+    pub name: Vec<u8>,
+    pub hitboxes: Vec<Hitbox>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompanionSummary {
     pub vvd_lod_vertex_counts: Vec<i32>,
     pub vvd_fixup_count: i32,
@@ -443,6 +490,7 @@ pub struct Document {
     pub skins: Vec<SkinFamily>,
     pub body_parts: Vec<BodyPart>,
     pub attachments: Vec<Attachment>,
+    pub hitbox_sets: Vec<HitboxSet>,
     pub pose_parameters: Vec<PoseParameter>,
     pub unsupported: UnsupportedMetadata,
     pub include_models: Vec<String>,
@@ -1025,6 +1073,21 @@ fn compose_include(root: &mut Document, include: Document, identity: &str) -> Re
             *animation =
                 i16::try_from(local).map_err(|_| invalid_reference(identity, source.index))?;
         }
+        for layer in &mut sequence.auto_layers {
+            let mapped = usize::try_from(layer.sequence)
+                .ok()
+                .and_then(|index| sequence_map.get(index).copied())
+                .and_then(|index| i16::try_from(index).ok())
+                .ok_or_else(|| invalid_reference(identity, source.index))?;
+            layer.sequence = mapped;
+            if layer.flags & STUDIO_AUTO_LAYER_POSE != 0 {
+                layer.pose = usize::try_from(layer.pose)
+                    .ok()
+                    .and_then(|index| pose_map.get(index).copied())
+                    .and_then(|index| i16::try_from(index).ok())
+                    .ok_or_else(|| invalid_reference(identity, source.index))?;
+            }
+        }
         for (axis, pose) in sequence.pose_parameter_indices.iter_mut().enumerate() {
             if sequence.blend_size[axis] > 1 {
                 *pose = usize::try_from(*pose)
@@ -1034,7 +1097,7 @@ fn compose_include(root: &mut Document, include: Document, identity: &str) -> Re
                     .ok_or_else(|| invalid_reference(identity, source.index))?;
             }
         }
-        if sequence.flags & 0x0080 != 0 {
+        if sequence.flags & STUDIO_CYCLE_POSE != 0 {
             sequence.cycle_pose_parameter = usize::try_from(sequence.cycle_pose_parameter)
                 .ok()
                 .and_then(|index| pose_map.get(index).copied())
@@ -1268,6 +1331,71 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
         });
     }
 
+    let hitbox_set_count = count(bytes, 172, identity)?;
+    let hitbox_set_offset = count(bytes, 176, identity)?;
+    table(
+        bytes,
+        hitbox_set_offset,
+        hitbox_set_count,
+        HITBOX_SET_BYTES,
+        limits,
+        identity,
+    )?;
+    let mut hitbox_sets = Vec::with_capacity(hitbox_set_count);
+    for set_index in 0..hitbox_set_count {
+        let set_offset = hitbox_set_offset + set_index * HITBOX_SET_BYTES;
+        let hitbox_count = count(bytes, set_offset + 4, identity)?;
+        let hitbox_offset = if hitbox_count == 0 {
+            0
+        } else {
+            relative_offset(
+                set_offset,
+                i32_at(bytes, set_offset + 8, identity)?,
+                identity,
+            )?
+        };
+        table(
+            bytes,
+            hitbox_offset,
+            hitbox_count,
+            HITBOX_BYTES,
+            limits,
+            identity,
+        )?;
+        let mut hitboxes = Vec::with_capacity(hitbox_count);
+        for hitbox_index in 0..hitbox_count {
+            let hitbox_offset = hitbox_offset + hitbox_index * HITBOX_BYTES;
+            let bone = i32_at(bytes, hitbox_offset, identity)?;
+            if bone < 0 || bone as usize >= bone_count {
+                return Err(invalid_reference(identity, hitbox_offset));
+            }
+            let name_offset = i32_at(bytes, hitbox_offset + 32, identity)?;
+            hitboxes.push(Hitbox {
+                index: hitbox_index,
+                bone,
+                group: i32_at(bytes, hitbox_offset + 4, identity)?,
+                bounds_min: vector3(bytes, hitbox_offset + 8, identity)?,
+                bounds_max: vector3(bytes, hitbox_offset + 20, identity)?,
+                name: if name_offset == 0 {
+                    Vec::new()
+                } else {
+                    relative_string(bytes, hitbox_offset, name_offset, limits, identity)?
+                },
+            });
+        }
+        hitbox_sets.push(HitboxSet {
+            index: set_index,
+            name: relative_string(
+                bytes,
+                set_offset,
+                i32_at(bytes, set_offset, identity)?,
+                limits,
+                identity,
+            )?,
+            hitboxes,
+        });
+    }
+
     let animation_count = count(bytes, 180, identity)?;
     let animation_offset = count(bytes, 184, identity)?;
     table(
@@ -1356,6 +1484,70 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
     let mut sequences = Vec::with_capacity(sequence_count);
     for index in 0..sequence_count {
         let offset = sequence_offset + index * SEQUENCE_BYTES;
+        let event_count = count(bytes, offset + 24, identity)?;
+        let mut events = Vec::with_capacity(event_count);
+        if event_count > 0 {
+            let event_offset =
+                relative_offset(offset, i32_at(bytes, offset + 28, identity)?, identity)?;
+            table(
+                bytes,
+                event_offset,
+                event_count,
+                SEQUENCE_EVENT_BYTES,
+                limits,
+                identity,
+            )?;
+            for event_index in 0..event_count {
+                let event_offset = event_offset + event_index * SEQUENCE_EVENT_BYTES;
+                let name_offset = i32_at(bytes, event_offset + 76, identity)?;
+                events.push(SequenceEvent {
+                    index: event_index,
+                    cycle: float(bytes, event_offset, identity)?,
+                    event: i32_at(bytes, event_offset + 4, identity)?,
+                    event_type: i32_at(bytes, event_offset + 8, identity)?,
+                    options: bytes[event_offset + 12..event_offset + 76]
+                        .try_into()
+                        .expect("validated sequence event options"),
+                    name: if name_offset == 0 {
+                        Vec::new()
+                    } else {
+                        relative_string(bytes, event_offset, name_offset, limits, identity)?
+                    },
+                });
+            }
+        }
+        let auto_layer_count = count(bytes, offset + 148, identity)?;
+        let mut auto_layers = Vec::with_capacity(auto_layer_count);
+        if auto_layer_count > 0 {
+            let auto_layer_offset =
+                relative_offset(offset, i32_at(bytes, offset + 152, identity)?, identity)?;
+            table(
+                bytes,
+                auto_layer_offset,
+                auto_layer_count,
+                SEQUENCE_AUTO_LAYER_BYTES,
+                limits,
+                identity,
+            )?;
+            for auto_layer_index in 0..auto_layer_count {
+                let auto_layer_offset =
+                    auto_layer_offset + auto_layer_index * SEQUENCE_AUTO_LAYER_BYTES;
+                let sequence = i16_at(bytes, auto_layer_offset, identity)?;
+                if sequence < 0 || sequence as usize >= sequence_count {
+                    return Err(invalid_reference(identity, auto_layer_offset));
+                }
+                auto_layers.push(SequenceAutoLayer {
+                    index: auto_layer_index,
+                    sequence,
+                    pose: i16_at(bytes, auto_layer_offset + 2, identity)?,
+                    flags: i32_at(bytes, auto_layer_offset + 4, identity)?,
+                    start: float(bytes, auto_layer_offset + 8, identity)?,
+                    peak: float(bytes, auto_layer_offset + 12, identity)?,
+                    tail: float(bytes, auto_layer_offset + 16, identity)?,
+                    end: float(bytes, auto_layer_offset + 20, identity)?,
+                });
+            }
+        }
         let blend_count = i32_at(bytes, offset + 56, identity)?;
         let blend_size = [
             i32_at(bytes, offset + 68, identity)?,
@@ -1445,7 +1637,7 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
             flags,
             activity: i32_at(bytes, offset + 16, identity)?,
             activity_weight: i32_at(bytes, offset + 20, identity)?,
-            event_count: i32_at(bytes, offset + 24, identity)?,
+            event_count: event_count as i32,
             bounds_min: vector3(bytes, offset + 32, identity)?,
             bounds_max: vector3(bytes, offset + 44, identity)?,
             blend_count,
@@ -1473,12 +1665,14 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
             last_frame: float(bytes, offset + 132, identity)?,
             next_sequence: i32_at(bytes, offset + 136, identity)?,
             pose: i32_at(bytes, offset + 140, identity)?,
-            auto_layer_count: i32_at(bytes, offset + 148, identity)?,
+            auto_layer_count: auto_layer_count as i32,
             bone_weights,
             pose_keys,
             ik_lock_count: i32_at(bytes, offset + 164, identity)?,
             cycle_pose_parameter: i32_at(bytes, offset + 180, identity)?,
             activity_modifier_count: i32_at(bytes, offset + 188, identity)?,
+            events,
+            auto_layers,
             source_identity: identity.to_owned(),
         });
     }
@@ -1558,7 +1752,7 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
                 ));
             }
         }
-        if sequence.flags & 0x0080 != 0
+        if sequence.flags & STUDIO_CYCLE_POSE != 0
             && (sequence.cycle_pose_parameter < 0
                 || sequence.cycle_pose_parameter as usize >= pose_parameter_count)
         {
@@ -1566,6 +1760,20 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
                 identity,
                 sequence_offset + sequence.index * SEQUENCE_BYTES + 180,
             ));
+        }
+        for layer in &sequence.auto_layers {
+            if layer.flags & STUDIO_AUTO_LAYER_POSE != 0
+                && (layer.pose < 0 || layer.pose as usize >= pose_parameter_count)
+            {
+                return Err(invalid_reference(
+                    identity,
+                    sequence_offset
+                        + sequence.index * SEQUENCE_BYTES
+                        + 152
+                        + layer.index * SEQUENCE_AUTO_LAYER_BYTES
+                        + 2,
+                ));
+            }
         }
     }
 
@@ -1835,6 +2043,7 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
         skins,
         body_parts,
         attachments,
+        hitbox_sets,
         pose_parameters,
         unsupported: UnsupportedMetadata {
             flex_descriptors,
@@ -3129,7 +3338,30 @@ fn owned_bytes(document: &Document) -> usize {
         + document
             .sequences
             .iter()
-            .map(|value| value.label.len() + value.activity_name.len())
+            .map(|value| {
+                value.label.len()
+                    + value.activity_name.len()
+                    + value
+                        .events
+                        .iter()
+                        .map(|event| event.name.len())
+                        .sum::<usize>()
+                    + value.events.len() * std::mem::size_of::<SequenceEvent>()
+                    + value.auto_layers.len() * std::mem::size_of::<SequenceAutoLayer>()
+            })
+            .sum::<usize>()
+        + document
+            .hitbox_sets
+            .iter()
+            .map(|set| {
+                set.name.len()
+                    + set
+                        .hitboxes
+                        .iter()
+                        .map(|hitbox| hitbox.name.len())
+                        .sum::<usize>()
+                    + set.hitboxes.len() * std::mem::size_of::<Hitbox>()
+            })
             .sum::<usize>()
         + document
             .materials
