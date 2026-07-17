@@ -10,6 +10,12 @@ export type WorkerRequest =
     }>
   | Readonly<{ id: number; kind: "read-map"; generation: number }>
   | Readonly<{ id: number; kind: "activate"; generation: number }>
+  | Readonly<{
+      id: number
+      kind: "configure-course"
+      generation: number
+      definition: ArrayBuffer
+    }>
   | Readonly<{ id: number; kind: "discard"; generation: number }>
   | Readonly<{
       id: number
@@ -47,6 +53,7 @@ export type WorkerResponse =
     }>
   | Readonly<{ id: number; kind: "map"; generation: number; payload: ArrayBuffer }>
   | Readonly<{ id: number; kind: "activated"; generation: number }>
+  | Readonly<{ id: number; kind: "course-configured"; generation: number }>
   | Readonly<{ id: number; kind: "discarded"; generation: number }>
   | Readonly<{ id: number; kind: "snapshot"; generation: number; snapshot: ArrayBuffer }>
   | Readonly<{ id: number; kind: "shutdown" }>
