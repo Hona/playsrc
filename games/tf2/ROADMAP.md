@@ -66,7 +66,7 @@ The denominator is Not accepted. No inventory has a generator or review record; 
 
 ## Behavior Families
 
-The active migration checkpoint implements one deterministic local TF2 jump-combat session over Movement/Collision: Soldier/Demoman class state, stock rocket/Original and stickybomb firing, fixed fire intervals, projectile advancement, eight-sticky retention, arming/detonation, radius damage, self-damage, blast impulse, health, respawn, and ordered presentation events required by `jump_beef`. The game-owned WASM binding compiles the direct BSP into that session, advances one 24-byte command for a bounded 1 through 64 ticks, and emits a generation-bound versioned binary snapshot without moving game behavior into Map.
+The active migration checkpoints implement one deterministic local TF2 jump-combat session over Movement/Collision: Soldier/Demoman class state, stock rocket/Original and stickybomb firing, fixed fire intervals, projectile advancement, eight-sticky retention, arming/detonation, radius damage, self-damage, blast impulse, health, respawn, and ordered presentation events required by `jump_beef`. The game-owned WASM binding compiles the direct BSP into that session, advances one 24-byte command for a bounded 1 through 64 ticks, and emits a generation-bound versioned binary snapshot without moving game behavior into Map. Its browser adapter stages candidate sessions, verifies cold or warm canonical payload bytes, atomically activates one generation, and exchanges only coarse transferable map/snapshot buffers.
 
 | Target behavior | playsrc behavior | Evidence | Status |
 |---|---|---|---|

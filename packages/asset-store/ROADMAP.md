@@ -61,7 +61,7 @@ The denominator review state is Draft. No acceptance record exists.
 
 ## Behavior Families
 
-The active migration checkpoint implements local SHA-256 descriptors and canonical object paths, atomic create-if-absent immutable writes, verified warm reuse, exact reads, corruption refusal without repair, and atomic exact channel records required by direct-source local development. Root graph envelopes and remote publication remain subsequent checkpoints.
+The active migration checkpoints implement local SHA-256 descriptors and canonical object paths, atomic create-if-absent immutable writes, verified warm reuse, exact reads, corruption refusal without repair, atomic exact channel records, browser immutable-object fetch verification, and a versioned IndexedDB derived-object cache under caller-owned SHA-256 keys. Root graph envelopes and remote publication remain subsequent checkpoints.
 
 | Target behavior | playsrc behavior | Evidence | Status |
 |---|---|---|---|

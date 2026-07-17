@@ -21,6 +21,7 @@ Store and publish exact immutable Source objects and reproducible playsrc-derive
 - Represent immutable source, map-runtime, game, and application descriptors plus catalogs and mutable channels.
 - Validate reachability and synchronize missing objects to remote storage.
 - Atomically install and reverify local immutable objects, refuse corrupt existing bytes without repair, and atomically expose exact channel records.
+- Fetch browser immutable objects through exact hash URLs with HTTP-cache reuse and independent byte verification; retain verified derived objects in a versioned IndexedDB cache under caller-owned exact derived keys.
 
 ## Non-Responsibilities
 

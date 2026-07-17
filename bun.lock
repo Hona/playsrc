@@ -11,6 +11,12 @@
         "@playsrc/asset-store": "workspace:*",
       },
     },
+    "games/tf2/browser": {
+      "name": "@playsrc/game-tf2-browser",
+      "dependencies": {
+        "@playsrc/asset-store": "workspace:*",
+      },
+    },
     "packages/asset-store": {
       "name": "@playsrc/asset-store",
     },
@@ -33,6 +39,8 @@
     "@playsrc/assets-service": ["@playsrc/assets-service@workspace:apps/services/assets"],
 
     "@playsrc/content": ["@playsrc/content@workspace:packages/content"],
+
+    "@playsrc/game-tf2-browser": ["@playsrc/game-tf2-browser@workspace:games/tf2/browser"],
 
     "@playsrc/tool": ["@playsrc/tool@workspace:tools/playsrc"],
 

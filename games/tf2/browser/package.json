@@ -1,0 +1,13 @@
+{
+  "name": "@playsrc/game-tf2-browser",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/client.ts",
+    "./codec": "./src/codec.ts",
+    "./worker": "./src/gameplay-worker.ts"
+  },
+  "dependencies": {
+    "@playsrc/asset-store": "workspace:*"
+  }
+}
