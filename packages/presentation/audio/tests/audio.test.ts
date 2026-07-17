@@ -183,7 +183,7 @@ function start(overrides: Partial<StartSound> = {}): StartSound {
 }
 
 describe("Source sound registry and neutral voice state", () => {
-  test("resolves exact target fields, decorators, resource paths, and no-repeat cycles", () => {
+  test("resolves exact target fields and producer-selected original wave ordinals", () => {
     const registry = new SoundRegistry([targetDocument])
     const rocket = registry.get("weapon_rpg.single")!
     expect(rocket.channel).toBe(1)
@@ -197,11 +197,11 @@ describe("Source sound registry and neutral voice state", () => {
 
     const world = new SourceAudioWorld(registry, { maxActiveVoices: 16 })
     const resources: string[] = []
-    for (let ordinal = 0; ordinal < 4; ordinal += 1) {
+    for (const [ordinal, wave] of [0, 1, 2, 0].entries()) {
       resources.push(world.start(start({
         voiceIdentity: ordinal + 1,
         source: Object.freeze({ ...start().source, identity: ordinal + 10 }),
-        samples: Object.freeze({ volume: 0, pitch: 0, wave: 0, soundLevel: 0 }),
+        samples: Object.freeze({ volume: 0, pitch: 0, wave, soundLevel: 0 }),
       })).voice.resource)
     }
     expect(resources).toEqual([
@@ -225,15 +225,26 @@ describe("Source sound registry and neutral voice state", () => {
     expect(first.resource).toBe("sound/weapons/explode2.wav")
   })
 
-  test("rejects unknown levels, missing resources, and failed starts without consuming variation", () => {
+  test("rejects unknown levels, unavailable selected resources, and out-of-range ordinals", () => {
     expect(() => new SoundRegistry([Object.freeze({
       ...targetDocument,
       entries: [entry("bad", [scalar("soundlevel", "LOUDISH"), scalar("wave", "bad.wav")])],
     })])).toThrow(SourceAudioError)
     const world = new SourceAudioWorld(new SoundRegistry([targetDocument]), { maxActiveVoices: 16 })
     expect(() => world.start(start({ resourceAvailable: () => false }))).toThrow(SourceAudioError)
+    expect(() => world.start(start({
+      resourceAvailable: (resource) => resource.endsWith("explode3.wav"),
+      samples: Object.freeze({ volume: 0, pitch: 0, wave: 0, soundLevel: 0 }),
+    }))).toThrow(SourceAudioError)
+    expect(() => world.start(start({
+      samples: Object.freeze({ volume: 0, pitch: 0, wave: 3, soundLevel: 0 }),
+    }))).toThrow(SourceAudioError)
     expect(world.voices()).toEqual([])
-    expect(world.start(start()).voice.resource).toBe("sound/weapons/explode2.wav")
+    const selected = world.start(start({
+      samples: Object.freeze({ volume: 0, pitch: 0, wave: 2, soundLevel: 0 }),
+    })).voice
+    expect(selected.wave).toBe(2)
+    expect(selected.resource).toBe("sound/weapons/explode1.wav")
   })
 
   test("selects the first configured mixer gain from ordered matching groups", () => {

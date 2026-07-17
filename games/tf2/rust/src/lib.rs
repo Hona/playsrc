@@ -1,6 +1,17 @@
+pub mod audio;
 pub mod combat;
 mod map_runtime;
+pub mod random;
 pub mod weapon;
+
+pub use audio::{
+    AudioEvent, AudioEventIdentity, AudioSourceKind, SoundDefinition, SoundQueryPhase,
+    SoundSamples, SoundSelectionState,
+};
+pub use random::{
+    RandomContext, RandomDecision, RandomDraw, RandomError, RandomResult, RandomSeeds,
+    Tf2RandomState, UniformRandomState, UniformRandomStream,
+};
 
 #[path = "../../rulesets/jump/rust/src/lib.rs"]
 pub mod jump;
@@ -20,6 +31,7 @@ use playsrc_movement::{
     StepResult as MovementStepResult, StepStrategy, TransitionDisposition, step,
 };
 
+use audio::SoundSelection;
 use map_runtime::{BeginTickInput, MapError};
 use weapon::{ActivityEvent, PrimaryResult, ReloadPhase, WeaponRuntime};
 
@@ -568,6 +580,11 @@ pub struct Session<W: GameplayWorld + Clone> {
     projectiles: Vec<LiveProjectile>,
     next_projectile: u32,
     fire_was_held: bool,
+    authority_random: UniformRandomStream,
+    predicted_presentation_random: UniformRandomStream,
+    sound_selection: SoundSelection,
+    random_draws: Vec<RandomDraw>,
+    audio_events: Vec<AudioEvent>,
     physics_requests: Vec<ProjectilePhysicsRequest>,
     activity_events: Vec<ActivityEvent>,
     mover_requests: Vec<MoverRequest>,
@@ -595,9 +612,9 @@ pub enum Error {
     MissingEntity(u32),
     InvalidCourseTrigger(u32),
     ProjectileLimit,
-    MissingStickyLaunchRandom,
     InvalidStickyLaunchRandom,
     InvalidProjectilePhysics,
+    Random(RandomError),
 }
 
 impl From<MoveError> for Error {
@@ -609,6 +626,12 @@ impl From<MoveError> for Error {
 impl From<playsrc_entity::RuntimeFailure> for Error {
     fn from(error: playsrc_entity::RuntimeFailure) -> Self {
         Self::Entity(error)
+    }
+}
+
+impl From<RandomError> for Error {
+    fn from(error: RandomError) -> Self {
+        Self::Random(error)
     }
 }
 
@@ -643,6 +666,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
             ),
             (Weapon::Original, WeaponRuntime::full(Weapon::Original)),
         ]);
+        let authority_random = UniformRandomStream::from_seed(RandomSeeds::INVARIANT.authority)
+            .expect("invariant authority seed is valid");
+        let predicted_presentation_random =
+            UniformRandomStream::from_seed(RandomSeeds::INVARIANT.predicted_presentation)
+                .expect("invariant presentation seed is valid");
         Self {
             collision,
             tick: 0,
@@ -671,6 +699,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
             projectiles: Vec::new(),
             next_projectile: 1,
             fire_was_held: false,
+            authority_random,
+            predicted_presentation_random,
+            sound_selection: SoundSelection::new(),
+            random_draws: Vec::new(),
+            audio_events: Vec::new(),
             physics_requests: Vec::new(),
             activity_events: Vec::new(),
             mover_requests: Vec::new(),
@@ -689,6 +722,51 @@ impl<W: GameplayWorld + Clone> Session<W> {
             respawn_touch_count: 0,
             jump: None,
         }
+    }
+
+    pub fn new_with_random_seeds(
+        collision: W,
+        spawn: [f32; 3],
+        map: MapRuntime,
+        seeds: RandomSeeds,
+    ) -> Result<Self, Error> {
+        let mut session = Self::new(collision, spawn, map);
+        session.set_random_seeds(seeds)?;
+        Ok(session)
+    }
+
+    pub fn set_random_seeds(&mut self, seeds: RandomSeeds) -> Result<(), Error> {
+        let authority = UniformRandomStream::from_seed(seeds.authority)?;
+        let predicted_presentation = UniformRandomStream::from_seed(seeds.predicted_presentation)?;
+        self.authority_random = authority;
+        self.predicted_presentation_random = predicted_presentation;
+        self.sound_selection = SoundSelection::new();
+        self.random_draws.clear();
+        self.audio_events.clear();
+        Ok(())
+    }
+
+    pub fn random_state(&self) -> Tf2RandomState {
+        Tf2RandomState {
+            authority: self.authority_random.state(),
+            predicted_presentation: self.predicted_presentation_random.state(),
+            sound_selection: self.sound_selection.state(),
+        }
+    }
+
+    pub fn restore_random_state(&mut self, state: Tf2RandomState) -> Result<(), Error> {
+        let mut sound_selection = self.sound_selection;
+        if !sound_selection.restore(state.sound_selection) {
+            return Err(Error::Random(RandomError::InvalidState));
+        }
+        let authority = UniformRandomStream::from_state(state.authority)?;
+        let predicted_presentation = UniformRandomStream::from_state(state.predicted_presentation)?;
+        self.authority_random = authority;
+        self.predicted_presentation_random = predicted_presentation;
+        self.sound_selection = sound_selection;
+        self.random_draws.clear();
+        self.audio_events.clear();
+        Ok(())
     }
 
     pub fn set_movement_modifiers(&mut self, modifiers: MovementModifiers) {
@@ -719,27 +797,20 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.loadout.get(&weapon).copied()
     }
 
-    pub fn requires_sticky_launch_random(&self, command: Command) -> bool {
-        let Some(weapon) = self.loadout.get(&self.weapon) else {
-            return false;
-        };
-        if self.weapon != Weapon::StickybombLauncher || weapon.clip == 0 {
-            return false;
-        }
-        let Some(begin) = weapon.charge_begin_tick else {
-            return false;
-        };
-        let charge =
-            self.tick.saturating_sub(begin) as f32 * self.movement_configuration.tick_interval;
-        (!command.fire && self.fire_was_held) || charge >= 4.0
-    }
-
     pub fn physics_requests(&self) -> &[ProjectilePhysicsRequest] {
         &self.physics_requests
     }
 
     pub fn activity_events(&self) -> &[ActivityEvent] {
         &self.activity_events
+    }
+
+    pub fn random_draws(&self) -> &[RandomDraw] {
+        &self.random_draws
+    }
+
+    pub fn audio_events(&self) -> &[AudioEvent] {
+        &self.audio_events
     }
 
     pub fn mover_requests(&self) -> &[MoverRequest] {
@@ -855,11 +926,15 @@ impl<W: GameplayWorld + Clone> Session<W> {
         command: Command,
         physics_results: &[ProjectilePhysicsResult],
         rocket_results: &[RocketTraceResult],
-        sticky_random: Option<StickyLaunchRandom>,
+        expected_sticky_random: Option<StickyLaunchRandom>,
     ) -> Result<Snapshot, Error> {
         let mut candidate = self.clone();
-        let snapshot =
-            candidate.advance_inner(command, physics_results, rocket_results, sticky_random)?;
+        let snapshot = candidate.advance_inner(
+            command,
+            physics_results,
+            rocket_results,
+            expected_sticky_random,
+        )?;
         *self = candidate;
         Ok(snapshot)
     }
@@ -869,8 +944,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
         command: Command,
         physics_results: &[ProjectilePhysicsResult],
         rocket_results: &[RocketTraceResult],
-        sticky_random: Option<StickyLaunchRandom>,
+        expected_sticky_random: Option<StickyLaunchRandom>,
     ) -> Result<Snapshot, Error> {
+        self.random_draws.clear();
+        self.audio_events.clear();
         self.physics_requests.clear();
         self.activity_events.clear();
         self.mover_requests.clear();
@@ -976,7 +1053,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 command.pitch_degrees,
                 command.movement.yaw_degrees,
                 charge_seconds,
-                sticky_random,
+                expected_sticky_random,
                 &mut projectile_events,
             )?;
         }
@@ -1374,14 +1451,170 @@ impl<W: GameplayWorld + Clone> Session<W> {
         });
     }
 
+    fn draw_random_float(
+        &mut self,
+        context: RandomContext,
+        decision: RandomDecision,
+        minimum: f32,
+        maximum: f32,
+    ) -> f32 {
+        let (stream, draws) = match context {
+            RandomContext::Authority => (&mut self.authority_random, &mut self.random_draws),
+            RandomContext::PredictedPresentation => (
+                &mut self.predicted_presentation_random,
+                &mut self.random_draws,
+            ),
+        };
+        let (raw, value) = stream.random_float_observed(minimum, maximum);
+        draws.push(RandomDraw {
+            context,
+            decision,
+            raw,
+            result: RandomResult::FloatBits(value.to_bits()),
+        });
+        value
+    }
+
+    fn draw_random_int(
+        &mut self,
+        context: RandomContext,
+        decision: RandomDecision,
+        minimum: i32,
+        maximum: i32,
+    ) -> i32 {
+        let (stream, draws) = match context {
+            RandomContext::Authority => (&mut self.authority_random, &mut self.random_draws),
+            RandomContext::PredictedPresentation => (
+                &mut self.predicted_presentation_random,
+                &mut self.random_draws,
+            ),
+        };
+        stream
+            .random_int_observed(minimum, maximum, |raw, accepted, result| {
+                draws.push(RandomDraw {
+                    context,
+                    decision,
+                    raw,
+                    result: if accepted {
+                        RandomResult::Integer(result)
+                    } else {
+                        RandomResult::RejectedIntegerCandidate
+                    },
+                });
+            })
+            .expect("fixed TF2 random integer range is valid")
+    }
+
+    fn sample_sound(
+        &mut self,
+        context: RandomContext,
+        definition: SoundDefinition,
+        phase: SoundQueryPhase,
+    ) -> SoundSamples {
+        let volume = self.draw_random_float(
+            context,
+            RandomDecision::SoundVolume { definition, phase },
+            0.0,
+            1.0,
+        );
+        let pitch = self.draw_random_float(
+            context,
+            RandomDecision::SoundPitch { definition, phase },
+            0.0,
+            1.0,
+        );
+        let wave = if definition.wave_count() == 1 {
+            0
+        } else {
+            let available = self.sound_selection.available_count(definition);
+            let rank = self.draw_random_int(
+                context,
+                RandomDecision::SoundWave { definition, phase },
+                0,
+                i32::from(available) - 1,
+            ) as u8;
+            self.sound_selection
+                .original_ordinal(definition, rank, phase == SoundQueryPhase::Emit)
+        };
+        let sound_level = self.draw_random_float(
+            context,
+            RandomDecision::SoundLevel { definition, phase },
+            0.0,
+            1.0,
+        );
+        SoundSamples {
+            volume,
+            pitch,
+            wave,
+            sound_level,
+        }
+    }
+
+    fn sample_weapon_sound(&mut self, definition: SoundDefinition) -> SoundSamples {
+        self.sample_sound(
+            RandomContext::Authority,
+            definition,
+            SoundQueryPhase::Inspect,
+        );
+        self.sample_sound(RandomContext::Authority, definition, SoundQueryPhase::Emit);
+        self.sample_sound(
+            RandomContext::PredictedPresentation,
+            definition,
+            SoundQueryPhase::Inspect,
+        );
+        self.sample_sound(
+            RandomContext::PredictedPresentation,
+            definition,
+            SoundQueryPhase::Emit,
+        )
+    }
+
+    fn push_audio_event(
+        &mut self,
+        identity: AudioEventIdentity,
+        definition: SoundDefinition,
+        source_kind: AudioSourceKind,
+        source_identity: u32,
+        owner_identity: Option<u32>,
+        position: [f32; 3],
+        samples: SoundSamples,
+    ) {
+        self.audio_events.push(AudioEvent {
+            tick: self.tick,
+            ordinal: u16::try_from(self.audio_events.len()).expect("bounded TF2 audio event count"),
+            identity,
+            definition,
+            source_kind,
+            source_identity,
+            owner_identity,
+            position,
+            samples,
+        });
+    }
+
     fn fire_projectile(
         &mut self,
         pitch: f32,
         yaw: f32,
         charge_seconds: f32,
-        sticky_random: Option<StickyLaunchRandom>,
+        expected_sticky_random: Option<StickyLaunchRandom>,
         projectile_events: &mut Vec<ProjectileEvent>,
     ) -> Result<(), Error> {
+        let definition = match self.weapon {
+            Weapon::RocketLauncher => SoundDefinition::RocketSingle,
+            Weapon::Original => SoundDefinition::OriginalSingle,
+            Weapon::StickybombLauncher => SoundDefinition::StickySingle,
+        };
+        let sound_samples = self.sample_weapon_sound(definition);
+        self.push_audio_event(
+            AudioEventIdentity::WeaponSingle,
+            definition,
+            AudioSourceKind::Entity,
+            PLAYER_IDENTITY,
+            Some(PLAYER_IDENTITY),
+            self.movement.position,
+            sound_samples,
+        );
         if self.projectiles.len() >= MAX_PROJECTILES {
             return Err(Error::ProjectileLimit);
         }
@@ -1452,8 +1685,27 @@ impl<W: GameplayWorld + Clone> Session<W> {
             (clipped.end, quaternion_from_direction(direction))
         };
         let (velocity, angular_velocity) = if kind == ProjectileKind::Sticky {
-            let random = sticky_random.ok_or(Error::MissingStickyLaunchRandom)?;
-            if !random.validate() {
+            let random = StickyLaunchRandom {
+                right_velocity: self.draw_random_float(
+                    RandomContext::Authority,
+                    RandomDecision::StickyRightVelocity,
+                    -10.0,
+                    10.0,
+                ),
+                up_velocity: self.draw_random_float(
+                    RandomContext::Authority,
+                    RandomDecision::StickyUpVelocity,
+                    -10.0,
+                    10.0,
+                ),
+                angular_y: self.draw_random_int(
+                    RandomContext::Authority,
+                    RandomDecision::StickyAngularY,
+                    -1200,
+                    1200,
+                ),
+            };
+            if !random.validate() || expected_sticky_random.is_some_and(|value| value != random) {
                 return Err(Error::InvalidStickyLaunchRandom);
             }
             let speed = remap_clamped(charge_seconds, 0.0, 4.0, 900.0, 2400.0);
@@ -1468,6 +1720,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 [600.0, random.angular_y as f32, 0.0],
             )
         } else {
+            if expected_sticky_random.is_some() {
+                return Err(Error::InvalidStickyLaunchRandom);
+            }
             (scale(direction, 1_100.0), [0.0; 3])
         };
         let identity = self.next_projectile;
@@ -1751,6 +2006,30 @@ impl<W: GameplayWorld + Clone> Session<W> {
         projectile_events: &mut Vec<ProjectileEvent>,
         events: &mut Vec<Event>,
     ) {
+        let definition = match (
+            projectile.presentation.kind,
+            projectile.presentation.launcher_identity,
+        ) {
+            (ProjectileKind::Rocket, launcher) if launcher == Weapon::Original as u32 => {
+                SoundDefinition::OriginalExplosion
+            }
+            (ProjectileKind::Rocket, _) => SoundDefinition::RocketExplosion,
+            (ProjectileKind::Sticky, _) => SoundDefinition::StickyExplosion,
+        };
+        let sound_samples = self.sample_sound(
+            RandomContext::PredictedPresentation,
+            definition,
+            SoundQueryPhase::Emit,
+        );
+        self.push_audio_event(
+            AudioEventIdentity::ExplosionSpecial1,
+            definition,
+            AudioSourceKind::World,
+            projectile.presentation.identity,
+            Some(projectile.presentation.owner_identity),
+            projectile.presentation.position,
+            sound_samples,
+        );
         let (base_damage, radius, self_radius) = match projectile.presentation.kind {
             ProjectileKind::Rocket => (90.0, 146.0, 121.0),
             ProjectileKind::Sticky => (120.0, 146.0, 146.0),
@@ -2274,6 +2553,20 @@ mod tests {
         );
         assert_eq!(session.radius_damage_requests().len(), 1);
         assert_eq!(session.radius_damage_requests()[0].direct_target, Some(42));
+        assert_eq!(session.audio_events().len(), 1);
+        assert_eq!(
+            session.audio_events()[0].identity,
+            AudioEventIdentity::ExplosionSpecial1
+        );
+        assert_eq!(
+            session.audio_events()[0].definition,
+            SoundDefinition::RocketExplosion
+        );
+        assert_eq!(
+            session.audio_events()[0].source_kind,
+            AudioSourceKind::World
+        );
+        assert_eq!(session.audio_events()[0].source_identity, trace.projectile);
 
         let mut sky = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.015));
         sky.advance(Command {
@@ -2392,7 +2685,7 @@ mod tests {
     }
 
     #[test]
-    fn sticky_launch_and_contact_use_only_typed_external_results() {
+    fn sticky_launch_uses_exact_stream_order_and_typed_physics_results() {
         let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.01));
         session
             .advance(Command {
@@ -2403,25 +2696,15 @@ mod tests {
             .unwrap();
         let before = session.weapon_runtime(Weapon::StickybombLauncher).unwrap();
         let producer_before = session.producer_snapshot();
-        assert!(session.requires_sticky_launch_random(Command::default()));
+        let random_before = session.random_state();
         assert!(before.charge_begin_tick.is_some());
-        assert!(matches!(
-            session.advance(Command::default()),
-            Err(Error::MissingStickyLaunchRandom)
-        ));
-        assert_eq!(
-            session.weapon_runtime(Weapon::StickybombLauncher).unwrap(),
-            before
-        );
-        assert_eq!(session.producer_snapshot(), producer_before);
-
         assert!(matches!(
             session.advance_with_external(
                 Command::default(),
                 &[],
                 &[],
                 Some(StickyLaunchRandom {
-                    right_velocity: 10.01,
+                    right_velocity: 0.0,
                     up_velocity: 0.0,
                     angular_y: 0,
                 }),
@@ -2429,22 +2712,61 @@ mod tests {
             Err(Error::InvalidStickyLaunchRandom)
         ));
         assert_eq!(session.producer_snapshot(), producer_before);
+        assert_eq!(session.random_state(), random_before);
 
-        let fired = session
-            .advance_with_external(
-                Command::default(),
-                &[],
-                &[],
-                Some(StickyLaunchRandom {
-                    right_velocity: -10.0,
-                    up_velocity: 10.0,
-                    angular_y: 1200,
-                }),
-            )
-            .unwrap();
+        let fired = session.advance(Command::default()).unwrap();
         assert_eq!(fired.projectiles.len(), 1);
         let projectile = fired.projectiles[0].clone();
-        assert_eq!(projectile.velocity, [905.625, -10.0, 210.0]);
+        assert_eq!(projectile.velocity[0], 905.625);
+        assert_eq!(projectile.velocity[1].to_bits(), 0x4045_042c);
+        assert_eq!(projectile.velocity[2], 200.0 + f32::from_bits(0xc10a_9c49));
+        assert_eq!(projectile.angular_velocity, [600.0, -563.0, 0.0]);
+        assert_eq!(session.audio_events().len(), 1);
+        let sound = session.audio_events()[0];
+        assert_eq!(sound.identity, AudioEventIdentity::WeaponSingle);
+        assert_eq!(sound.definition, SoundDefinition::StickySingle);
+        assert_eq!(sound.source_identity, PLAYER_IDENTITY);
+        assert_eq!(sound.samples.volume.to_bits(), 0x3f07_9a6f);
+        assert_eq!(sound.samples.pitch.to_bits(), 0x3f6e_3116);
+        assert_eq!(sound.samples.wave, 0);
+        assert_eq!(sound.samples.sound_level.to_bits(), 0x3ec4_5a62);
+        assert_eq!(
+            session
+                .random_draws()
+                .iter()
+                .filter(|draw| draw.context == RandomContext::Authority)
+                .map(|draw| draw.decision)
+                .collect::<Vec<_>>(),
+            [
+                RandomDecision::SoundVolume {
+                    definition: SoundDefinition::StickySingle,
+                    phase: SoundQueryPhase::Inspect,
+                },
+                RandomDecision::SoundPitch {
+                    definition: SoundDefinition::StickySingle,
+                    phase: SoundQueryPhase::Inspect,
+                },
+                RandomDecision::SoundLevel {
+                    definition: SoundDefinition::StickySingle,
+                    phase: SoundQueryPhase::Inspect,
+                },
+                RandomDecision::SoundVolume {
+                    definition: SoundDefinition::StickySingle,
+                    phase: SoundQueryPhase::Emit,
+                },
+                RandomDecision::SoundPitch {
+                    definition: SoundDefinition::StickySingle,
+                    phase: SoundQueryPhase::Emit,
+                },
+                RandomDecision::SoundLevel {
+                    definition: SoundDefinition::StickySingle,
+                    phase: SoundQueryPhase::Emit,
+                },
+                RandomDecision::StickyRightVelocity,
+                RandomDecision::StickyUpVelocity,
+                RandomDecision::StickyAngularY,
+            ]
+        );
         assert!(session.physics_requests().iter().any(|request| {
             request.operation == ProjectilePhysicsOperation::Create
                 && request.projectile == projectile.identity
@@ -2507,6 +2829,67 @@ mod tests {
             Err(Error::InvalidProjectilePhysics)
         ));
         assert_eq!(session.producer_snapshot(), stuck);
+    }
+
+    #[test]
+    fn explosion_samples_preserve_source_order_no_repeat_and_restore_state() {
+        let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.015));
+        let initial = session.random_state();
+        let expected = [
+            (0x3ed4_fdde, 0x3dbc_5817, 1, 0x3f07_9a6f),
+            (0x3f6e_3116, 0x3ec4_5a62, 0, 0x3d88_e495),
+            (0x3f39_0046, 0x3f2b_d072, 2, 0x3ec4_4f0e),
+            (0x3f21_b2d0, 0x3f62_7c2b, 2, 0x3f26_c9ec),
+            (0x3e73_7b24, 0x3e86_603d, 0, 0x3f40_dbee),
+            (0x3f68_c1dd, 0x3d94_dc56, 1, 0x3e8b_a0a4),
+        ];
+        for (volume, pitch, wave, level) in expected {
+            let samples = session.sample_sound(
+                RandomContext::PredictedPresentation,
+                SoundDefinition::RocketExplosion,
+                SoundQueryPhase::Emit,
+            );
+            assert_eq!(samples.volume.to_bits(), volume);
+            assert_eq!(samples.pitch.to_bits(), pitch);
+            assert_eq!(samples.wave, wave);
+            assert_eq!(samples.sound_level.to_bits(), level);
+        }
+        assert_eq!(
+            session.random_state().sound_selection,
+            SoundSelectionState {
+                rocket_explosion_available: 0,
+                sticky_explosion_available: 0b111,
+            }
+        );
+
+        session.restore_random_state(initial).unwrap();
+        let replay = session.sample_sound(
+            RandomContext::PredictedPresentation,
+            SoundDefinition::RocketExplosion,
+            SoundQueryPhase::Emit,
+        );
+        assert_eq!(
+            replay,
+            SoundSamples {
+                volume: f32::from_bits(0x3ed4_fdde),
+                pitch: f32::from_bits(0x3dbc_5817),
+                wave: 1,
+                sound_level: f32::from_bits(0x3f07_9a6f),
+            }
+        );
+        let sticky = session.sample_sound(
+            RandomContext::PredictedPresentation,
+            SoundDefinition::StickyExplosion,
+            SoundQueryPhase::Emit,
+        );
+        assert_eq!(sticky.wave, 0);
+        assert_eq!(
+            session.random_state().sound_selection,
+            SoundSelectionState {
+                rocket_explosion_available: 0b101,
+                sticky_explosion_available: 0b110,
+            }
+        );
     }
 
     #[test]
