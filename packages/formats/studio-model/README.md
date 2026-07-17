@@ -30,6 +30,8 @@ Parse the Source 1 StudioModel file family into one runtime-neutral model repres
 - Retain an empty `STUDIO_OVERRIDE` sequence as a forward declaration only when its blend grid and every child count are zero; include composition may replace it by label, while direct sampling remains invalid until replacement.
 - Supply LOD-0 bodypart-model-0 primitives and material candidate identities to the direct TF2 browser payload for exact dynamic-prop, rocket/sticky, and Soldier/Demoman viewmodel geometry.
 - Compile one deterministic, content-addressable presentation artifact below 64 MiB from an explicitly selected world or viewmodel profile, exact model/material/texture dependencies, composed include-model animation data, geometry, skins/bodygroups, skeletons, poses, sequences/activities, attachments, and explicit unsupported-feature classifications.
+- Retain dense integer animation frames unchanged when they fit; otherwise encode the same frames as bounded per-bone constant-or-sampled translation/quaternion channels inside the current artifact format. Sampling and decoding accept both canonical frame-block tags without expanding the compact block persistently.
+- Retain every dependency occurrence descriptor while charging immutable source bytes once per exact logical-path/SHA-256/byte-length identity.
 - Sample a caller-selected base sequence, pose-parameter vector, and ordered animation layers into model-space skinning matrices and attachment transforms; gameplay owns state selection and rendering owns cameras, depth policy, GPU resources, and GPU skinning.
 
 ## Non-Responsibilities
