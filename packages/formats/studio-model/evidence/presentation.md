@@ -13,6 +13,7 @@ The fixed synthetic vectors prove:
 - bind/frame/pose-grid interpolation, shortest-path quaternion blending, ordered delta layers, parent matrix concatenation, skinning matrices, attachment transforms, skin/bodygroup/LOD material selection, Source +X/+Y/+Z model basis, and world/viewmodel activity indexes;
 - `NotPresent` or `RetainedNotEvaluated` records for axis interpolation, quaternion interpolation, jiggle, aim-at-bone, aim-at-attachment, IK, flex, sequence autolayers, and unknown procedural types; malformed known procedural references fail before output;
 - cancellation plus animation-sample and artifact bounds at the accepted boundary and one below it.
+- nested include closure for `models/player/items/soldier/soldier_viking.mdl`, including an authored leading/trailing material directory, root-relative texture name, empty ANI name, block-zero directory, exact VVD/VTX/PHY `Load::Needs`, include chain, supplied companion composition, and canonical artifact round trip.
 
 Two artifact generations compare complete bytes and SHA-256. The fixed synthetic world artifact is 3,492 bytes with SHA-256 `f8cc817e20bfaba3c069d2cfd1d7cbd74564b18a56027d9c7425f452d0132613`. Decoding reconstructs every artifact field and canonical re-encoding must reproduce the input bytes exactly.
 
@@ -28,4 +29,4 @@ The required public-build matrix is:
 
 Each retained input requires logical path, byte length, SHA-256, provider identity, model dependency trace, selected VMT closure, typed VTF closure, artifact byte length, and artifact SHA-256. Run each artifact generation twice and require complete byte identity. Capture the named state timelines at fixed cycles `0`, `0.25`, `0.5`, `0.75`, and `1`; capture recoil return at every authored sequence boundary.
 
-This worktree has no `playsrc.local.json`. Exact TF2 bytes and the source-cache bundle are therefore unavailable under the mandatory local-configuration contract. The fixed TF2 matrix remains Blocked; no target hashes, timelines, or parity result are claimed. No filesystem discovery was attempted.
+Configured TF2 closure previously stopped with `Malformed: InvalidIdentity in models/player/items/soldier/soldier_viking.mdl`. The focused regression now passes and the exact source-bundle command advances beyond that identity. It next stops with `Malformed: InvalidCount in models/player/soldier.mdl`; the fixed TF2 matrix therefore remains Blocked and no complete target timelines or parity result are claimed.
