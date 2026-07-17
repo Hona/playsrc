@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 playsrc-collision = { path = "../../../packages/world/collision/rust" }
 playsrc-movement = { path = "../../../packages/runtime/movement/rust" }
+playsrc-entity = { path = "../../../packages/world/entity/rust" }
 
 [lib]
 path = "src/lib.rs"

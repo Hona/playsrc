@@ -10,12 +10,27 @@ function snapshot(): ArrayBuffer {
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x53, 0x53, 0x4e])
-  view.setUint32(4, 1, true)
+  view.setUint32(4, 2, true)
   view.setBigUint64(8, 7n, true)
   data[16] = 1
   data[17] = 1
   data[18] = 1
   view.setFloat32(44, 200, true)
+  return bytes
+}
+
+function teleportSnapshot(): ArrayBuffer {
+  const bytes = new ArrayBuffer(84)
+  new Uint8Array(bytes).set(new Uint8Array(snapshot()))
+  const data = new Uint8Array(bytes)
+  const view = new DataView(bytes)
+  view.setUint32(52, 1, true)
+  data.set([8, 1, 0, 0], 56)
+  view.setUint32(60, 20, true)
+  view.setUint32(64, 21, true)
+  for (const [index, value] of [10, 11, 12, 90].entries()) {
+    view.setFloat32(68 + index * 4, value, true)
+  }
   return bytes
 }
 
@@ -121,6 +136,13 @@ describe("TF2 browser adapter", () => {
     expect(view.getUint32(16, true)).toBe(5)
     expect(view.getUint32(20, true)).toBe(0x0201)
     expect(decodeSnapshot(snapshot()).tick).toBe(7n)
+    expect(decodeSnapshot(teleportSnapshot()).events[0]).toEqual({
+      kind: 8,
+      detail: 1,
+      subject: 20,
+      auxiliary: 21,
+      values: [10, 11, 12, 90],
+    })
     expect(() => decodeSnapshot(snapshot().slice(0, 55))).toThrow()
     expect(await mapDerivedKey("0".repeat(64), 0, new Uint8Array())).toMatch(/^[0-9a-f]{64}$/)
   })
@@ -177,7 +199,7 @@ describe("TF2 browser adapter", () => {
     const value = tf2Presentation({
       ...base,
       projectiles: [projectile],
-      events: [{ kind: 4, detail: 0, subject: 8, values: [7, 8, 9, 0] }],
+      events: [{ kind: 4, detail: 0, subject: 8, auxiliary: 0, values: [7, 8, 9, 0] }],
     }, [], false)
     expect(value.effects).toEqual([])
     expect(value.diagnostics.map((item) => item.code)).toEqual([

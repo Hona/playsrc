@@ -32,6 +32,7 @@ pub struct World {
     pub nodes: Vec<Node>,
     pub models: Vec<Model>,
     pub world_brushes: Vec<usize>,
+    pub model_brushes: Vec<Vec<usize>>,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Hull {
@@ -127,16 +128,22 @@ pub fn compile(bsp: &Bsp) -> Result<World, Error> {
             return Err(error(ErrorCode::InvalidReference, Some(i)));
         }
     }
-    let world_brushes = model_brushes(
-        models
-            .first()
-            .ok_or_else(|| error(ErrorCode::InvalidReference, None))?
-            .head_node,
-        &nodes,
-        &leaves,
-        &leaf_brushes,
-        output.len(),
-    )?;
+    if models.is_empty() {
+        return Err(error(ErrorCode::InvalidReference, None));
+    }
+    let model_brushes = models
+        .iter()
+        .map(|model| {
+            brushes_for_model(
+                model.head_node,
+                &nodes,
+                &leaves,
+                &leaf_brushes,
+                output.len(),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let world_brushes = model_brushes[0].clone();
     Ok(World {
         planes,
         sides,
@@ -146,6 +153,7 @@ pub fn compile(bsp: &Bsp) -> Result<World, Error> {
         nodes,
         models,
         world_brushes,
+        model_brushes,
     })
 }
 fn plane(p: &BspPlane, i: usize) -> Result<Plane, Error> {
@@ -191,6 +199,40 @@ impl World {
         hull: Hull,
         mask: u32,
     ) -> Result<Trace, Error> {
+        self.trace_brushes(start, end, hull, mask, &self.world_brushes)
+    }
+
+    pub fn overlaps_model_hull(
+        &self,
+        model: usize,
+        origin: [f32; 3],
+        position: [f32; 3],
+        hull: Hull,
+    ) -> Result<bool, Error> {
+        let brushes = self
+            .model_brushes
+            .get(model)
+            .ok_or_else(|| error(ErrorCode::InvalidReference, Some(model)))?;
+        if origin.iter().any(|value| !value.is_finite()) {
+            return Err(error(ErrorCode::InvalidHull, Some(model)));
+        }
+        let local = [
+            position[0] - origin[0],
+            position[1] - origin[1],
+            position[2] - origin[2],
+        ];
+        self.trace_brushes(local, local, hull, u32::MAX, brushes)
+            .map(|trace| trace.start_solid)
+    }
+
+    fn trace_brushes(
+        &self,
+        start: [f32; 3],
+        end: [f32; 3],
+        hull: Hull,
+        mask: u32,
+        brushes: &[usize],
+    ) -> Result<Trace, Error> {
         if start
             .iter()
             .chain(end.iter())
@@ -226,7 +268,7 @@ impl World {
             plane: None,
             end,
         };
-        for &index in &self.world_brushes {
+        for &index in brushes {
             let brush = &self.brushes[index];
             if brush.contents & mask == 0 {
                 continue;
@@ -304,7 +346,7 @@ fn error(code: ErrorCode, item: Option<usize>) -> Error {
         range: None,
     }
 }
-fn model_brushes(
+fn brushes_for_model(
     head: i32,
     nodes: &[Node],
     leaves: &[Leaf],
@@ -414,6 +456,7 @@ mod tests {
         let w = compile(&fixture()).unwrap();
         assert_eq!(w.brushes.len(), 2);
         assert_eq!(w.world_brushes, [0]);
+        assert_eq!(w.model_brushes, [vec![0]]);
         let point = Hull {
             mins: [0.; 3],
             maxs: [0.; 3],
@@ -434,5 +477,13 @@ mod tests {
         assert!(h.fraction < t.fraction);
         let inside = w.trace_hull([0.; 3], [1., 0., 0.], point, 1).unwrap();
         assert!(inside.start_solid && inside.all_solid);
+        assert!(
+            w.overlaps_model_hull(0, [100., 0., 0.], [100., 0., 0.], point)
+                .unwrap()
+        );
+        assert!(
+            !w.overlaps_model_hull(0, [100., 0., 0.], [0., 0., 0.], point)
+                .unwrap()
+        );
     }
 }

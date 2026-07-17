@@ -22,6 +22,8 @@ type Exports = Readonly<{
   playsrc_game_advance(handle: number, command: number, length: number, ticks: number): number
   playsrc_snapshot_length(handle: number): number
   playsrc_snapshot_copy(handle: number, pointer: number, capacity: number): number
+  playsrc_teleport_count(handle: number): number
+  playsrc_teleport_destination_count(handle: number): number
   playsrc_dispose(handle: number): number
 }>
 
@@ -110,6 +112,10 @@ export async function verifyTf2Wasm(
   require(renderMap.materials.length === 14, "runtime map material count is invalid")
   require(renderMap.drawableSurfaces === 2_761, "runtime map drawable world-surface count is invalid")
   require(renderMap.batches.length === 10, "runtime map draw-batch count is invalid")
+  const teleports = exports.playsrc_teleport_count(handle)
+  const teleportDestinations = exports.playsrc_teleport_destination_count(handle)
+  require(teleports === 56, "runtime map teleport count is invalid")
+  require(teleportDestinations === 25, "runtime map teleport-destination count is invalid")
 
   const commandPointer = exports.playsrc_alloc(24)
   const command = new DataView(exports.memory.buffer, commandPointer, 24)
@@ -125,16 +131,16 @@ export async function verifyTf2Wasm(
   const snapshot = new Uint8Array(exports.memory.buffer, snapshotPointer, snapshotLength).slice()
   const view = new DataView(snapshot.buffer)
   require(new TextDecoder().decode(snapshot.subarray(0, 4)) === "PSSN", "snapshot magic is invalid")
-  require(view.getUint32(4, true) === 1, "snapshot version is invalid")
+  require(view.getUint32(4, true) === 2, "snapshot version is invalid")
   require(view.getBigUint64(8, true) === 64n, "snapshot tick is invalid")
   const projectiles = view.getUint32(48, true)
   const eventCountOffset = 52 + 36 * projectiles
   require(eventCountOffset + 4 <= snapshotLength, "projectile records exceed snapshot length")
   const events = view.getUint32(eventCountOffset, true)
-  require(snapshotLength === eventCountOffset + 4 + events * 24, "event records do not frame the snapshot")
+  require(snapshotLength === eventCountOffset + 4 + events * 28, "event records do not frame the snapshot")
   const eventKinds = Array.from(
     { length: events },
-    (_, index) => snapshot[eventCountOffset + 4 + index * 24],
+    (_, index) => snapshot[eventCountOffset + 4 + index * 28],
   )
   require(eventKinds.includes(3) && eventKinds.includes(4), "fixed phase omitted fire or explosion events")
 
@@ -163,6 +169,8 @@ export async function verifyTf2Wasm(
     materials: renderMap.materials.length,
     drawableSurfaces: renderMap.drawableSurfaces,
     drawBatches: renderMap.batches.length,
+    teleports,
+    teleportDestinations,
     tick: 64,
     snapshotBytes: snapshotLength,
     projectiles,

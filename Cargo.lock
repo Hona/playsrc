@@ -398,6 +398,10 @@ dependencies = [
 [[package]]
 name = "playsrc-entity"
 version = "0.1.0"
+dependencies = [
+ "playsrc-bsp",
+ "playsrc-collision",
+]
 
 [[package]]
 name = "playsrc-keyvalues"
@@ -451,6 +455,7 @@ name = "playsrc-tf2"
 version = "0.1.0"
 dependencies = [
  "playsrc-collision",
+ "playsrc-entity",
  "playsrc-movement",
 ]
 

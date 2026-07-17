@@ -56,6 +56,12 @@ pub enum Event {
     BlastImpulse {
         velocity: [f32; 3],
     },
+    Teleported {
+        trigger: u32,
+        destination: u32,
+        position: [f32; 3],
+        yaw_degrees: Option<f32>,
+    },
     Respawned,
 }
 #[derive(Clone, Debug, PartialEq)]
@@ -81,10 +87,12 @@ pub struct Session<T: Tracer> {
     next_projectile: u32,
     next_fire_tick: u64,
     parameters: Parameters,
+    entities: playsrc_entity::Runtime,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     Movement,
+    Entity,
     InvalidCommand,
 }
 impl From<MoveError> for Error {
@@ -92,8 +100,13 @@ impl From<MoveError> for Error {
         Self::Movement
     }
 }
+impl From<playsrc_entity::RuntimeError> for Error {
+    fn from(_: playsrc_entity::RuntimeError) -> Self {
+        Self::Entity
+    }
+}
 impl<T: Tracer> Session<T> {
-    pub fn new(tracer: T, spawn: [f32; 3]) -> Self {
+    pub fn new(tracer: T, spawn: [f32; 3], entities: playsrc_entity::Runtime) -> Self {
         Self {
             tracer,
             tick: 0,
@@ -112,7 +125,14 @@ impl<T: Tracer> Session<T> {
             next_projectile: 1,
             next_fire_tick: 0,
             parameters: Parameters::default(),
+            entities,
         }
+    }
+    pub fn teleport_count(&self) -> usize {
+        self.entities.teleports.len()
+    }
+    pub fn teleport_destination_count(&self) -> usize {
+        self.entities.destinations.len()
     }
     pub fn advance(&mut self, command: Command) -> Result<Snapshot, Error> {
         if !command.pitch_degrees.is_finite() {
@@ -143,6 +163,21 @@ impl<T: Tracer> Session<T> {
             Class::Demoman => 280.,
         };
         self.player = advance(&self.tracer, self.player, command.movement, parameters)?;
+        let hull = if self.player.crouched {
+            parameters.crouched
+        } else {
+            parameters.standing
+        };
+        if let Some(teleport) = self.entities.teleport(self.player.position, hull)? {
+            self.player.position = teleport.position;
+            self.player.grounded = false;
+            events.push(Event::Teleported {
+                trigger: teleport.trigger_entity as u32,
+                destination: teleport.destination_entity as u32,
+                position: teleport.position,
+                yaw_degrees: teleport.yaw_degrees,
+            });
+        }
         if command.fire && self.tick >= self.next_fire_tick {
             match self.weapon {
                 Weapon::RocketLauncher | Weapon::Original => {
@@ -416,7 +451,7 @@ mod tests {
     }
     #[test]
     fn soldier_rocket_explodes_and_impulses_player() {
-        let mut s = Session::new(Floor, [0., 0., 0.]);
+        let mut s = Session::new(Floor, [0., 0., 0.], playsrc_entity::Runtime::empty());
         let mut command = Command {
             pitch_degrees: 89.,
             fire: true,
@@ -447,7 +482,7 @@ mod tests {
     }
     #[test]
     fn demoman_retains_arms_and_detonates_stickies() {
-        let mut s = Session::new(Floor, [0., 0., 0.]);
+        let mut s = Session::new(Floor, [0., 0., 0.], playsrc_entity::Runtime::empty());
         let mut c = Command {
             select_class: Some(Class::Demoman),
             fire: true,

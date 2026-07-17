@@ -78,7 +78,7 @@ export class Tf2Application {
     "Static props, viewmodels, and exact rocket/sticky StudioModel browser resources are not present in the current scene descriptor.",
     "TF2 PCF definitions and event context are unresolved; missing particle events emit diagnostics and no substitute effect.",
     "TF2 sound scripts and decoded resource buffers are unresolved; missing audio events create no Web Audio node or substitute sound.",
-    "Jump course triggers, teleports, timers, checkpoints, and Entity I/O are not implemented by the current local gameplay authority.",
+    "Jump course timers/checkpoints, trigger_multiple hint I/O, moving platforms, doors, and trigger_hurt are not implemented; exact brush trigger_teleport contacts are active and preserve velocity.",
   ])
   #view: ApplicationView = Object.freeze({
     phase: "Loading",
@@ -436,6 +436,9 @@ export class Tf2Application {
     try {
       const snapshot = await this.#client.advance(this.#generation, this.#command(), ticks)
       this.#snapshot = snapshot
+      for (const event of snapshot.events) {
+        if (event.kind === 8 && event.detail === 1) this.#yaw = event.values[3]
+      }
       const particleItems = this.#particles.advance(snapshot.tick)
       const presentation = tf2Presentation(snapshot, particleItems, true)
       for (const diagnostic of presentation.diagnostics) {
@@ -556,9 +559,6 @@ export class Tf2Application {
 
   async requestPointer(): Promise<void> {
     if (this.#closed || this.#console?.snapshot().visible) return
-    await this.#audio?.resume().catch((error) => {
-      this.#blockers.add(`AudioUnavailable: ${error instanceof Error ? error.message : "resume failed"}`)
-    })
     try {
       await this.#canvas.requestPointerLock()
     } catch (error) {

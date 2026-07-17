@@ -17,6 +17,7 @@ Represent collision geometry and answer deterministic spatial queries.
 - Perform point contents, ray traces, hull sweeps, overlaps, and contact queries.
 - Preserve Source masks, contents, surfaces, fractions, normals, and solid-state results.
 - Validate immutable BSP brush inputs, distinguish model 0 world brushes from non-world brush models through the model head-node leaf set, and sweep points or axis-aligned hulls through Source-space world convex half-spaces with the 1/32-inch brush epsilon.
+- Retain one exact brush set per BSP model and test translated model-space hull overlap for Entity-owned trigger contacts without adding inline models to world-solid traces.
 
 ## Non-Responsibilities
 

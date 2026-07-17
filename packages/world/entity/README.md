@@ -16,6 +16,7 @@ Represent generic Source entity identity, relationships, I/O, and lifecycle beha
 - Provide generic lifecycle and event primitives shared across games.
 - Classify handled, inert, unsupported, malformed, missing, and unknown entity data explicitly.
 - Parse bounded BSP entity text into ordered duplicate-preserving definitions, first-field structural views, brush-model identities, and parsed or malformed output actions.
+- Compile enabled client `trigger_teleport` definitions against exact translated Collision brush models, resolve ordered `info_teleport_destination` targets, and return position/yaw changes while leaving velocity with the game/movement owner.
 
 ## Non-Responsibilities
 

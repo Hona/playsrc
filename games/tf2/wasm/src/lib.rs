@@ -92,10 +92,13 @@ pub unsafe extern "C" fn playsrc_compile_map(
         )
         .map_err(|_| 3_u32)?;
         let spawn = spawn(&runtime.entities).ok_or(4_u32)?;
+        let collision = Arc::new(runtime.collision);
+        let entities = playsrc_entity::Runtime::compile(&runtime.entities, collision.clone())
+            .map_err(|_| 5_u32)?;
         Ok((
             runtime.descriptor.payload,
             runtime.descriptor.payload_sha256,
-            playsrc_tf2::Session::new(SharedWorld(Arc::new(runtime.collision)), spawn),
+            playsrc_tf2::Session::new(SharedWorld(collision), spawn, entities),
         ))
     })();
     let mut slots = slots().lock().expect("TF2 slots");
@@ -245,6 +248,26 @@ pub extern "C" fn playsrc_snapshot_length(handle: u32) -> usize {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn playsrc_teleport_count(handle: u32) -> usize {
+    with(handle, |slot| {
+        slot.session
+            .as_ref()
+            .map_or(0, playsrc_tf2::Session::teleport_count)
+    })
+    .unwrap_or(0)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_teleport_destination_count(handle: u32) -> usize {
+    with(handle, |slot| {
+        slot.session
+            .as_ref()
+            .map_or(0, playsrc_tf2::Session::teleport_destination_count)
+    })
+    .unwrap_or(0)
+}
+
+#[unsafe(no_mangle)]
 /// # Safety
 /// `pointer` must identify writable module memory of at least `capacity` bytes.
 pub unsafe extern "C" fn playsrc_snapshot_copy(
@@ -305,7 +328,7 @@ fn decode_command(bytes: &[u8]) -> Option<playsrc_tf2::Command> {
 
 fn encode_snapshot(snapshot: &playsrc_tf2::Snapshot) -> Vec<u8> {
     let mut out = b"PSSN".to_vec();
-    out.extend_from_slice(&1_u32.to_le_bytes());
+    out.extend_from_slice(&2_u32.to_le_bytes());
     out.extend_from_slice(&snapshot.tick.to_le_bytes());
     out.push(class_code(snapshot.class));
     out.push(weapon_code(snapshot.weapon));
@@ -337,11 +360,11 @@ fn encode_snapshot(snapshot: &playsrc_tf2::Snapshot) -> Vec<u8> {
     }
     out.extend_from_slice(&(snapshot.events.len() as u32).to_le_bytes());
     for event in &snapshot.events {
-        let (kind, detail, subject, data) = match event {
-            playsrc_tf2::Event::ClassChanged(class) => (1, class_code(*class), 0, [0.; 4]),
-            playsrc_tf2::Event::WeaponChanged(weapon) => (2, weapon_code(*weapon), 0, [0.; 4]),
+        let (kind, detail, subject, auxiliary, data) = match event {
+            playsrc_tf2::Event::ClassChanged(class) => (1, class_code(*class), 0, 0, [0.; 4]),
+            playsrc_tf2::Event::WeaponChanged(weapon) => (2, weapon_code(*weapon), 0, 0, [0.; 4]),
             playsrc_tf2::Event::Fired { projectile, kind } => {
-                (3, projectile_code(*kind), *projectile, [0.; 4])
+                (3, projectile_code(*kind), *projectile, 0, [0.; 4])
             }
             playsrc_tf2::Event::Explosion {
                 projectile,
@@ -350,16 +373,37 @@ fn encode_snapshot(snapshot: &playsrc_tf2::Snapshot) -> Vec<u8> {
                 4,
                 0,
                 *projectile,
+                0,
                 [position[0], position[1], position[2], 0.],
             ),
-            playsrc_tf2::Event::Damaged { amount, health } => (5, 0, 0, [*amount, *health, 0., 0.]),
-            playsrc_tf2::Event::BlastImpulse { velocity } => {
-                (6, 0, 0, [velocity[0], velocity[1], velocity[2], 0.])
+            playsrc_tf2::Event::Damaged { amount, health } => {
+                (5, 0, 0, 0, [*amount, *health, 0., 0.])
             }
-            playsrc_tf2::Event::Respawned => (7, 0, 0, [0.; 4]),
+            playsrc_tf2::Event::BlastImpulse { velocity } => {
+                (6, 0, 0, 0, [velocity[0], velocity[1], velocity[2], 0.])
+            }
+            playsrc_tf2::Event::Respawned => (7, 0, 0, 0, [0.; 4]),
+            playsrc_tf2::Event::Teleported {
+                trigger,
+                destination,
+                position,
+                yaw_degrees,
+            } => (
+                8,
+                u8::from(yaw_degrees.is_some()),
+                *trigger,
+                *destination,
+                [
+                    position[0],
+                    position[1],
+                    position[2],
+                    yaw_degrees.unwrap_or(0.),
+                ],
+            ),
         };
         out.extend_from_slice(&[kind, detail, 0, 0]);
         out.extend_from_slice(&subject.to_le_bytes());
+        out.extend_from_slice(&auxiliary.to_le_bytes());
         for value in data {
             out.extend_from_slice(&value.to_le_bytes());
         }
@@ -493,16 +537,25 @@ mod tests {
                 armed: true,
                 stuck: false,
             }],
-            events: vec![playsrc_tf2::Event::Explosion {
-                projectile: 12,
-                position: [7., 8., 9.],
-            }],
+            events: vec![
+                playsrc_tf2::Event::Explosion {
+                    projectile: 12,
+                    position: [7., 8., 9.],
+                },
+                playsrc_tf2::Event::Teleported {
+                    trigger: 20,
+                    destination: 21,
+                    position: [13., 14., 15.],
+                    yaw_degrees: Some(90.),
+                },
+            ],
         };
         let encoded = encode_snapshot(&snapshot);
-        assert_eq!(&encoded[..8], b"PSSN\x01\0\0\0");
-        assert_eq!(encoded.len(), 116);
+        assert_eq!(&encoded[..8], b"PSSN\x02\0\0\0");
+        assert_eq!(encoded.len(), 148);
         assert_eq!(u32::from_le_bytes(encoded[48..52].try_into().unwrap()), 1);
-        assert_eq!(u32::from_le_bytes(encoded[88..92].try_into().unwrap()), 1);
-        assert_eq!(&encoded[92..100], &[4, 0, 0, 0, 12, 0, 0, 0]);
+        assert_eq!(u32::from_le_bytes(encoded[88..92].try_into().unwrap()), 2);
+        assert_eq!(&encoded[92..104], &[4, 0, 0, 0, 12, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(&encoded[120..132], &[8, 1, 0, 0, 20, 0, 0, 0, 21, 0, 0, 0]);
     }
 }

@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, fmt, ops::Range};
+use std::{collections::BTreeMap, fmt, ops::Range, sync::Arc};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Limits {
@@ -82,6 +82,64 @@ pub struct Graph {
     pub entities: Vec<Entity>,
     pub inventory: Inventory,
 }
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TeleportDestination {
+    pub entity: usize,
+    pub targetname: Vec<u8>,
+    pub position: [f32; 3],
+    pub yaw_degrees: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TeleportTrigger {
+    pub entity: usize,
+    pub model: usize,
+    pub origin: [f32; 3],
+    pub destination: usize,
+    pub preserve_angles: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct Runtime {
+    collision: Option<Arc<playsrc_collision::World>>,
+    pub destinations: Vec<TeleportDestination>,
+    pub teleports: Vec<TeleportTrigger>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TeleportResult {
+    pub trigger_entity: usize,
+    pub destination_entity: usize,
+    pub position: [f32; 3],
+    pub yaw_degrees: Option<f32>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimeErrorCode {
+    InvalidField,
+    MissingModel,
+    MissingTarget,
+    UnsupportedLandmark,
+    UnsupportedFilter,
+    UnsupportedState,
+    UnsupportedTransform,
+    Collision,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeError {
+    pub code: RuntimeErrorCode,
+    pub entity: usize,
+}
+
+impl fmt::Display for RuntimeError {
+    fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(output, "{:?} for entity {}", self.code, self.entity)
+    }
+}
+
+impl std::error::Error for RuntimeError {}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ErrorCode {
     InputLimit,
@@ -359,6 +417,177 @@ fn number_f32(bytes: &[u8]) -> Option<f32> {
 fn integer(bytes: &[u8]) -> Option<i32> {
     std::str::from_utf8(bytes).ok()?.trim().parse().ok()
 }
+fn runtime_error(code: RuntimeErrorCode, entity: usize) -> RuntimeError {
+    RuntimeError { code, entity }
+}
+fn pair<'a>(entity: &'a Entity, key: &[u8]) -> Option<&'a [u8]> {
+    entity
+        .pairs
+        .iter()
+        .find(|pair| pair.key.eq_ignore_ascii_case(key))
+        .map(|pair| pair.value.as_slice())
+}
+fn vector(bytes: &[u8]) -> Option<[f32; 3]> {
+    let values = std::str::from_utf8(bytes)
+        .ok()?
+        .split_ascii_whitespace()
+        .map(str::parse::<f32>)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    (values.len() == 3 && values.iter().all(|value| value.is_finite()))
+        .then(|| [values[0], values[1], values[2]])
+}
+
+impl Runtime {
+    pub fn empty() -> Self {
+        Self {
+            collision: None,
+            destinations: Vec::new(),
+            teleports: Vec::new(),
+        }
+    }
+
+    pub fn compile(
+        graph: &Graph,
+        collision: Arc<playsrc_collision::World>,
+    ) -> Result<Self, RuntimeError> {
+        let mut destinations = Vec::new();
+        for entity in &graph.entities {
+            if !entity
+                .classname
+                .as_deref()
+                .is_some_and(|value| value.eq_ignore_ascii_case(b"info_teleport_destination"))
+            {
+                continue;
+            }
+            let targetname = entity
+                .targetname
+                .clone()
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| runtime_error(RuntimeErrorCode::InvalidField, entity.index))?;
+            let position = pair(entity, b"origin")
+                .and_then(vector)
+                .ok_or_else(|| runtime_error(RuntimeErrorCode::InvalidField, entity.index))?;
+            let angles = match pair(entity, b"angles") {
+                Some(value) => vector(value)
+                    .ok_or_else(|| runtime_error(RuntimeErrorCode::InvalidField, entity.index))?,
+                None => [0.; 3],
+            };
+            destinations.push(TeleportDestination {
+                entity: entity.index,
+                targetname,
+                position,
+                yaw_degrees: angles[1],
+            });
+        }
+        let mut teleports = Vec::new();
+        for entity in &graph.entities {
+            if !entity
+                .classname
+                .as_deref()
+                .is_some_and(|value| value.eq_ignore_ascii_case(b"trigger_teleport"))
+            {
+                continue;
+            }
+            match pair(entity, b"StartDisabled") {
+                None | Some(b"0") => {}
+                Some(b"1") => {
+                    return Err(runtime_error(
+                        RuntimeErrorCode::UnsupportedState,
+                        entity.index,
+                    ));
+                }
+                Some(_) => {
+                    return Err(runtime_error(RuntimeErrorCode::InvalidField, entity.index));
+                }
+            }
+            let flags = match entity.spawnflags.as_deref() {
+                Some(value) => integer(value)
+                    .ok_or_else(|| runtime_error(RuntimeErrorCode::InvalidField, entity.index))?,
+                None => 0,
+            };
+            if flags & 1 == 0 {
+                continue;
+            }
+            if pair(entity, b"landmark").is_some_and(|value| !value.is_empty()) {
+                return Err(runtime_error(
+                    RuntimeErrorCode::UnsupportedLandmark,
+                    entity.index,
+                ));
+            }
+            if pair(entity, b"filtername").is_some_and(|value| !value.is_empty()) {
+                return Err(runtime_error(
+                    RuntimeErrorCode::UnsupportedFilter,
+                    entity.index,
+                ));
+            }
+            if let Some(value) = pair(entity, b"angles") {
+                let angles = vector(value)
+                    .ok_or_else(|| runtime_error(RuntimeErrorCode::InvalidField, entity.index))?;
+                if angles != [0.; 3] {
+                    return Err(runtime_error(
+                        RuntimeErrorCode::UnsupportedTransform,
+                        entity.index,
+                    ));
+                }
+            }
+            let model = entity
+                .bsp_model_index
+                .filter(|index| *index < collision.models.len())
+                .ok_or_else(|| runtime_error(RuntimeErrorCode::MissingModel, entity.index))?;
+            let target = pair(entity, b"target")
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| runtime_error(RuntimeErrorCode::MissingTarget, entity.index))?;
+            let destination = destinations
+                .iter()
+                .position(|value| value.targetname.eq_ignore_ascii_case(target))
+                .ok_or_else(|| runtime_error(RuntimeErrorCode::MissingTarget, entity.index))?;
+            let origin = match pair(entity, b"origin") {
+                Some(value) => vector(value)
+                    .ok_or_else(|| runtime_error(RuntimeErrorCode::InvalidField, entity.index))?,
+                None => [0.; 3],
+            };
+            teleports.push(TeleportTrigger {
+                entity: entity.index,
+                model,
+                origin,
+                destination,
+                preserve_angles: flags & 0x20 != 0,
+            });
+        }
+        Ok(Self {
+            collision: Some(collision),
+            destinations,
+            teleports,
+        })
+    }
+
+    pub fn teleport(
+        &self,
+        position: [f32; 3],
+        hull: playsrc_collision::Hull,
+    ) -> Result<Option<TeleportResult>, RuntimeError> {
+        let Some(collision) = &self.collision else {
+            return Ok(None);
+        };
+        for trigger in &self.teleports {
+            let overlaps = collision
+                .overlaps_model_hull(trigger.model, trigger.origin, position, hull)
+                .map_err(|_| runtime_error(RuntimeErrorCode::Collision, trigger.entity))?;
+            if !overlaps {
+                continue;
+            }
+            let destination = &self.destinations[trigger.destination];
+            return Ok(Some(TeleportResult {
+                trigger_entity: trigger.entity,
+                destination_entity: destination.entity,
+                position: destination.position,
+                yaw_degrees: (!trigger.preserve_angles).then_some(destination.yaw_degrees),
+            }));
+        }
+        Ok(None)
+    }
+}
 fn error(code: ErrorCode, range: Range<usize>) -> Error {
     Error { code, range }
 }
@@ -414,6 +643,93 @@ mod tests {
             .unwrap_err()
             .code,
             ErrorCode::EntityLimit
+        );
+    }
+
+    #[test]
+    fn compiles_and_applies_brush_teleports() {
+        use playsrc_bsp::{Float32, Model, Vector3};
+        let graph = parse(
+            b"{\"classname\"\"info_teleport_destination\"\"targetname\"\"exit\"\"origin\"\"100 200 300\"\"angles\"\"0 90 0\"}{\"classname\"\"trigger_teleport\"\"model\"\"*1\"\"target\"\"exit\"\"origin\"\"0 0 0\"\"spawnflags\"\"1\"}\0",
+            Limits::default(),
+        )
+        .unwrap();
+        let planes = [
+            ([1., 0., 0.], 10.),
+            ([-1., 0., 0.], 10.),
+            ([0., 1., 0.], 10.),
+            ([0., -1., 0.], 10.),
+            ([0., 0., 1.], 10.),
+            ([0., 0., -1.], 10.),
+        ]
+        .map(|(normal, distance)| playsrc_collision::Plane {
+            normal,
+            distance,
+            kind: 0,
+        });
+        let sides = (0..6)
+            .map(|plane| playsrc_collision::Side {
+                plane,
+                texture_info: -1,
+                displacement: -1,
+                bevel: 0,
+            })
+            .collect();
+        let model = Model {
+            mins: Vector3 {
+                x: Float32(0),
+                y: Float32(0),
+                z: Float32(0),
+            },
+            maxs: Vector3 {
+                x: Float32(0),
+                y: Float32(0),
+                z: Float32(0),
+            },
+            origin: Vector3 {
+                x: Float32(0),
+                y: Float32(0),
+                z: Float32(0),
+            },
+            head_node: -1,
+            first_face: 0,
+            face_count: 0,
+        };
+        let collision = Arc::new(playsrc_collision::World {
+            planes: planes.to_vec(),
+            sides,
+            brushes: vec![playsrc_collision::Brush {
+                first_side: 0,
+                side_count: 6,
+                contents: u32::MAX,
+            }],
+            leaves: Vec::new(),
+            leaf_brushes: Vec::new(),
+            nodes: Vec::new(),
+            models: vec![model, model],
+            world_brushes: Vec::new(),
+            model_brushes: vec![Vec::new(), vec![0]],
+        });
+        let runtime = Runtime::compile(&graph, collision).unwrap();
+        assert_eq!(runtime.destinations.len(), 1);
+        assert_eq!(runtime.teleports.len(), 1);
+        assert_eq!(
+            runtime
+                .teleport(
+                    [0.; 3],
+                    playsrc_collision::Hull {
+                        mins: [0.; 3],
+                        maxs: [0.; 3],
+                    },
+                )
+                .unwrap()
+                .unwrap(),
+            TeleportResult {
+                trigger_entity: 1,
+                destination_entity: 0,
+                position: [100., 200., 300.],
+                yaw_degrees: Some(90.),
+            }
         );
     }
 }

@@ -29,9 +29,10 @@ export type Projectile = Readonly<{
 }>
 
 export type PresentationEvent = Readonly<{
-  kind: 1 | 2 | 3 | 4 | 5 | 6 | 7
+  kind: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8
   detail: number
   subject: number
+  auxiliary: number
   values: readonly [number, number, number, number]
 }>
 
@@ -104,7 +105,7 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
     || data[1] !== 0x53
     || data[2] !== 0x53
     || data[3] !== 0x4e
-    || view.getUint32(4, true) !== 1
+    || view.getUint32(4, true) !== 2
   ) {
     throw new Tf2CodecError("snapshot identity is invalid")
   }
@@ -147,28 +148,29 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
     }))
   }
   const eventCount = view.getUint32(eventCountOffset, true)
-  const expectedLength = eventCountOffset + 4 + eventCount * 24
+  const expectedLength = eventCountOffset + 4 + eventCount * 28
   if (!Number.isSafeInteger(expectedLength) || expectedLength !== bytes.byteLength) {
     throw new Tf2CodecError("snapshot event records do not frame its bytes")
   }
   const events: PresentationEvent[] = []
   for (let index = 0; index < eventCount; index += 1) {
-    const offset = eventCountOffset + 4 + index * 24
+    const offset = eventCountOffset + 4 + index * 28
     const kind = data[offset]
-    if (kind === undefined || kind < 1 || kind > 7 || data[offset + 2] !== 0 || data[offset + 3] !== 0) {
+    if (kind === undefined || kind < 1 || kind > 8 || data[offset + 2] !== 0 || data[offset + 3] !== 0) {
       throw new Tf2CodecError("snapshot event record is invalid")
     }
     const values = Object.freeze([
-      view.getFloat32(offset + 8, true),
       view.getFloat32(offset + 12, true),
       view.getFloat32(offset + 16, true),
       view.getFloat32(offset + 20, true),
+      view.getFloat32(offset + 24, true),
     ]) as readonly [number, number, number, number]
     if (!finite(values)) throw new Tf2CodecError("snapshot event scalar is invalid")
     events.push(Object.freeze({
       kind: kind as PresentationEvent["kind"],
       detail: data[offset + 1]!,
       subject: view.getUint32(offset + 4, true),
+      auxiliary: view.getUint32(offset + 8, true),
       values,
     }))
   }
