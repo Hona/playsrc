@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
 
-import type { WorkerFailureCode, WorkerRequest, WorkerResponse } from "./protocol"
+import type { InitialView, WorkerFailureCode, WorkerRequest, WorkerResponse } from "./protocol"
 
 const MAX_WASM_BYTES = 64 * 1024 * 1024
 const MAX_BSP_BYTES = 512 * 1024 * 1024
@@ -16,6 +16,7 @@ type WasmExports = Readonly<{
   playsrc_result_error(handle: number): number
   playsrc_result_copy(handle: number, pointer: number, capacity: number): number
   playsrc_result_hash(handle: number, pointer: number): number
+  playsrc_spawn_copy(handle: number, pointer: number, capacity: number): number
   playsrc_game_advance(handle: number, command: number, length: number, ticks: number): number
   playsrc_snapshot_length(handle: number): number
   playsrc_snapshot_copy(handle: number, pointer: number, capacity: number): number
@@ -69,6 +70,7 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         candidate.playsrc_result_error,
         candidate.playsrc_result_copy,
         candidate.playsrc_result_hash,
+        candidate.playsrc_spawn_copy,
         candidate.playsrc_game_advance,
         candidate.playsrc_snapshot_length,
         candidate.playsrc_snapshot_copy,
@@ -102,6 +104,31 @@ function readHash(exports: WasmExports, handle: number): string | undefined {
     : undefined
   exports.playsrc_free(pointer, 32)
   return hash
+}
+
+function readInitialView(exports: WasmExports, handle: number): InitialView | undefined {
+  const length = 40
+  const pointer = exports.playsrc_alloc(length)
+  const copied = exports.playsrc_spawn_copy(handle, pointer, length)
+  if (copied !== length) {
+    exports.playsrc_free(pointer, length)
+    return undefined
+  }
+  const bytes = new Uint8Array(exports.memory.buffer, pointer, length).slice()
+  exports.playsrc_free(pointer, length)
+  const view = new DataView(bytes.buffer)
+  if (
+    new TextDecoder().decode(bytes.subarray(0, 4)) !== "PSIV"
+    || view.getUint32(4, true) !== 1
+  ) return undefined
+  const scalars = Array.from({ length: 6 }, (_, index) => view.getFloat32(16 + index * 4, true))
+  if (!scalars.every(Number.isFinite)) return undefined
+  return Object.freeze({
+    entity: view.getUint32(8, true),
+    hammerId: view.getUint32(12, true) === 0xffff_ffff ? null : view.getUint32(12, true),
+    position: Object.freeze(scalars.slice(0, 3)) as readonly [number, number, number],
+    angles: Object.freeze(scalars.slice(3, 6)) as readonly [number, number, number],
+  })
 }
 
 function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
@@ -139,11 +166,13 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
   }
   const payloadBytes = exports.playsrc_result_length(candidate)
   const payloadSha256 = readHash(exports, candidate)
+  const initialView = readInitialView(exports, candidate)
   if (
     !Number.isSafeInteger(payloadBytes)
     || payloadBytes < 1
     || payloadBytes > MAX_MESSAGE_BYTES
     || payloadSha256 === undefined
+    || initialView === undefined
   ) {
     exports.playsrc_dispose(candidate)
     fail(request.id, "CompileFailed", 5)
@@ -157,6 +186,7 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
     generation: request.generation,
     payloadBytes,
     payloadSha256,
+    initialView,
   })
 }
 

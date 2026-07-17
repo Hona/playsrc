@@ -28,6 +28,13 @@ export type WorkerFailureCode =
   | "StaleGeneration"
   | "InternalFailure"
 
+export type InitialView = Readonly<{
+  entity: number
+  hammerId: number | null
+  position: readonly [number, number, number]
+  angles: readonly [number, number, number]
+}>
+
 export type WorkerResponse =
   | Readonly<{ id: number; kind: "initialized" }>
   | Readonly<{
@@ -36,6 +43,7 @@ export type WorkerResponse =
       generation: number
       payloadBytes: number
       payloadSha256: string
+      initialView: InitialView
     }>
   | Readonly<{ id: number; kind: "map"; generation: number; payload: ArrayBuffer }>
   | Readonly<{ id: number; kind: "activated"; generation: number }>

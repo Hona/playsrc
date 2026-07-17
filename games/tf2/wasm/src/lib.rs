@@ -18,11 +18,20 @@ impl playsrc_movement::Tracer for SharedWorld {
     }
 }
 
+#[derive(Clone, Copy)]
+struct Spawn {
+    entity: u32,
+    hammer_id: u32,
+    position: [f32; 3],
+    angles: [f32; 3],
+}
+
 struct Slot {
     generation: u16,
     payload: Option<Vec<u8>>,
     hash: [u8; 32],
     error: u32,
+    spawn: Option<Spawn>,
     session: Option<playsrc_tf2::Session<SharedWorld>>,
     snapshot: Vec<u8>,
 }
@@ -98,7 +107,7 @@ pub unsafe extern "C" fn playsrc_compile_map(
             bsp_sha,
             profile,
             playsrc_map::RuntimeAssembly {
-                compiler_identity: "playsrc-map-runtime-1",
+                compiler_identity: "playsrc-map-runtime-2",
                 configuration,
                 materials: &resolved_materials,
                 models: &runtime_models,
@@ -113,7 +122,8 @@ pub unsafe extern "C" fn playsrc_compile_map(
         Ok((
             runtime.descriptor.payload,
             runtime.descriptor.payload_sha256,
-            playsrc_tf2::Session::new(SharedWorld(collision), spawn, entities),
+            spawn,
+            playsrc_tf2::Session::new(SharedWorld(collision), spawn.position, entities),
         ))
     })();
     let mut slots = slots().lock().expect("TF2 slots");
@@ -127,11 +137,12 @@ pub unsafe extern "C" fn playsrc_compile_map(
         slots[index].generation.wrapping_add(1).max(1)
     };
     let slot = match result {
-        Ok((payload, hash, session)) => Slot {
+        Ok((payload, hash, spawn, session)) => Slot {
             generation,
             payload: Some(payload),
             hash,
             error: 0,
+            spawn: Some(spawn),
             session: Some(session),
             snapshot: Vec::new(),
         },
@@ -140,6 +151,7 @@ pub unsafe extern "C" fn playsrc_compile_map(
             payload: Some(Vec::new()),
             hash: [0; 32],
             error,
+            spawn: None,
             session: None,
             snapshot: Vec::new(),
         },
@@ -190,6 +202,36 @@ pub unsafe extern "C" fn playsrc_result_hash(handle: u32, pointer: *mut u8) -> u
     .unwrap_or(0)
 }
 #[unsafe(no_mangle)]
+/// # Safety
+/// `pointer` must identify writable module memory of at least `capacity` bytes.
+pub unsafe extern "C" fn playsrc_spawn_copy(
+    handle: u32,
+    pointer: *mut u8,
+    capacity: usize,
+) -> usize {
+    const LENGTH: usize = 40;
+    with(handle, |slot| {
+        let Some(spawn) = slot.spawn else {
+            return 0;
+        };
+        if capacity < LENGTH {
+            return 0;
+        }
+        let mut bytes = [0_u8; LENGTH];
+        bytes[0..4].copy_from_slice(b"PSIV");
+        bytes[4..8].copy_from_slice(&1_u32.to_le_bytes());
+        bytes[8..12].copy_from_slice(&spawn.entity.to_le_bytes());
+        bytes[12..16].copy_from_slice(&spawn.hammer_id.to_le_bytes());
+        for (index, value) in spawn.position.into_iter().chain(spawn.angles).enumerate() {
+            let start = 16 + index * 4;
+            bytes[start..start + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer, LENGTH) };
+        LENGTH
+    })
+    .unwrap_or(0)
+}
+#[unsafe(no_mangle)]
 pub extern "C" fn playsrc_dispose(handle: u32) -> u32 {
     let Some((index, generation)) = decode(handle) else {
         return 0;
@@ -204,6 +246,7 @@ pub extern "C" fn playsrc_dispose(handle: u32) -> u32 {
     slot.payload = None;
     slot.hash = [0; 32];
     slot.error = 0;
+    slot.spawn = None;
     slot.session = None;
     slot.snapshot.clear();
     1
@@ -808,32 +851,34 @@ fn resolve_models(
     Ok((models, occurrences))
 }
 
-fn spawn(graph: &playsrc_entity::Graph) -> Option<[f32; 3]> {
-    graph
-        .entities
+fn spawn(graph: &playsrc_entity::Graph) -> Option<Spawn> {
+    let entity = graph.entities.iter().find(|entity| {
+        entity
+            .classname
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case(b"info_player_teamspawn"))
+    })?;
+    let hammer_id = match entity
+        .pairs
         .iter()
-        .find(|entity| {
-            entity
-                .classname
-                .as_deref()
-                .is_some_and(|value| value.eq_ignore_ascii_case(b"info_player_teamspawn"))
-        })
-        .and_then(|entity| {
-            entity
-                .pairs
-                .iter()
-                .find(|pair| pair.key.eq_ignore_ascii_case(b"origin"))
-        })
-        .and_then(|pair| {
-            let text = std::str::from_utf8(&pair.value).ok()?;
-            let values: Vec<_> = text
-                .split_ascii_whitespace()
-                .map(str::parse::<f32>)
-                .collect::<Result<_, _>>()
-                .ok()?;
-            (values.len() == 3 && values.iter().all(|value| value.is_finite()))
-                .then(|| [values[0], values[1], values[2]])
-        })
+        .find(|pair| pair.key.eq_ignore_ascii_case(b"hammerid"))
+    {
+        Some(pair) => std::str::from_utf8(&pair.value).ok()?.parse().ok()?,
+        None => u32::MAX,
+    };
+    if !entity
+        .pairs
+        .iter()
+        .any(|pair| pair.key.eq_ignore_ascii_case(b"origin"))
+    {
+        return None;
+    }
+    Some(Spawn {
+        entity: entity.index.try_into().ok()?,
+        hammer_id,
+        position: entity_vector(entity, b"origin").ok()?,
+        angles: entity_vector(entity, b"angles").ok()?,
+    })
 }
 fn with<T>(handle: u32, read: impl FnOnce(&Slot) -> T) -> Option<T> {
     let (index, generation) = decode(handle)?;
@@ -854,6 +899,7 @@ mod tests {
             payload: Some(vec![1, 2]),
             hash: [3; 32],
             error: 0,
+            spawn: None,
             session: None,
             snapshot: Vec::new(),
         });
@@ -867,6 +913,7 @@ mod tests {
             payload: Some(vec![4]),
             hash: [5; 32],
             error: 0,
+            spawn: None,
             session: None,
             snapshot: Vec::new(),
         };

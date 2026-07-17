@@ -9,9 +9,9 @@ Deliver faithful TF2 gameplay and presentation at `tf2.playsrc.online`.
 - Assemble the TF2 game, selected TF2 rulesets, simulation, networking, presentation, assets, and product UI.
 - Own browser lifecycle, input, settings, navigation, and application state.
 - Adapt typed VGUI console submissions to owner-defined command and convar operations. `map <catalog-map-name>` selects one declared map; `map https://<allowed-origin>/<path>/<map-name>.bsp` is an explicit bounded playsrc acquisition operation and is not a TF2 parity capability.
-- Run one direct-BSP TF2 worker, Three.js/WebGPU canvas, application-owned fixed-tick pacing/input lifecycle, separate VGUI mount, exact support-blocker ledger, and generation-safe catalog or ephemeral HTTPS map replacement.
+- Run one direct-BSP TF2 worker, Three.js/WebGPU canvas, selected-teamspawn camera initialization, Source-signed pointer look, application-owned fixed-tick pacing/input lifecycle, separate VGUI mount, exact support-blocker ledger, and generation-safe catalog or ephemeral HTTPS map replacement.
 
-Run the checked end-to-end browser procedure with `bun run verify:browser jump_beef`. It starts `bun run dev jump_beef`, drives cold and warm headed-browser runs, and verifies one-interrupt process shutdown.
+Run the checked end-to-end browser procedure with `bun run verify:browser jump_beef`. It starts `bun run dev jump_beef`, drives cold and warm headed-browser runs, retains a fixed 1,280×720 canvas capture, rejects missing spawn-room surfaces or reversed pointer direction, and verifies one-interrupt process shutdown.
 
 ## Non-Responsibilities
 

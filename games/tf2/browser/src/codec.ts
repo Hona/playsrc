@@ -196,7 +196,7 @@ export async function mapDerivedKey(
   if (!HASH.test(bspSha256)) throw new Tf2CodecError("BSP identity is invalid")
   const configurationHash = new Uint8Array(await crypto.subtle.digest("SHA-256", configuration))
   const identity = new TextEncoder().encode(
-    `playsrc-map-runtime-1\n${bspSha256}\n${profile}\n${Array.from(
+    `playsrc-map-runtime-2\n${bspSha256}\n${profile}\n${Array.from(
       configurationHash,
       (value) => value.toString(16).padStart(2, "0"),
     ).join("")}\n`,

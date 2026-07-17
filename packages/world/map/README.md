@@ -16,7 +16,7 @@ Assemble parsed Source data and semantic domain outputs into one canonical plays
 - Validate that a map representation is internally complete and consistent.
 - Produce one canonical runtime descriptor directly from verified BSP and dependency bytes.
 - Produce an optional reproducible publication descriptor for raw and derived cache objects.
-- Preserve Source XYZ face/model/material identities and emit direct renderer position, normal, UV, lightmap, primitive, and lighting buffers without serializing through GLB.
+- Preserve Source XYZ face/model/material identities; retain signed surfedge and face-side semantics; normalize nondegenerate draw triangles to their supplied normals; and emit direct renderer position, normal, UV, lightmap, primitive, and lighting buffers without serializing through GLB.
 - Assemble Map, Entity, Collision, and Visibility through one Rust function and emit a compact deterministic runtime payload with exact BSP, compiler, configuration, and payload SHA-256 identities; the same function is compiled natively and for WASM.
 - Accept owner-resolved Material/VTF outputs for the exact map material index and append versioned shader, feature, base-texture identity, dimensions, and RGBA planes to the direct runtime payload without resolving content inside Map.
 

@@ -1,5 +1,6 @@
 import * as THREE from "three/webgpu"
 import { parseRuntimeMap, type RuntimeMap } from "./runtime-map"
+import { configureWorldLightmap, worldMaterialSide } from "./material-state"
 
 const MAX_EFFECTS = 4096
 const MAX_DIMENSION = 8192
@@ -149,7 +150,7 @@ export async function createRenderer(canvas: HTMLCanvasElement): Promise<Readonl
       lightMapIntensity: 1,
       transparent: (resolved.features & 1) !== 0,
       alphaTest: (resolved.features & 4) !== 0 ? 0.5 : 0,
-      side: (resolved.features & 8) !== 0 ? THREE.DoubleSide : THREE.FrontSide,
+      side: worldMaterialSide(resolved.features),
     })
     return { material, texture }
   }
@@ -191,11 +192,7 @@ export async function createRenderer(canvas: HTMLCanvasElement): Promise<Readonl
           )
         : undefined
       if (stagedLightmap) {
-        stagedLightmap.colorSpace = THREE.LinearSRGBColorSpace
-        stagedLightmap.minFilter = THREE.NearestFilter
-        stagedLightmap.magFilter = THREE.NearestFilter
-        stagedLightmap.generateMipmaps = false
-        stagedLightmap.needsUpdate = true
+        configureWorldLightmap(stagedLightmap)
       }
       try {
         for (const batch of parsed.batches) {

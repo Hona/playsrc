@@ -5,7 +5,7 @@ import { Tf2WorkerClient, type LoadedGame } from "@playsrc/game-tf2-browser"
 import { encodeCommand, mapDerivedKey, type Snapshot } from "@playsrc/game-tf2-browser/codec"
 import { tf2Audio, tf2Camera, tf2Hud, tf2Presentation, type Tf2Hud } from "@playsrc/game-tf2-browser/presentation"
 import { createParticleSystem } from "@playsrc/particle"
-import { createRenderer } from "@playsrc/rendering"
+import { createRenderer, type Camera } from "@playsrc/rendering"
 import {
   initializeDeveloperConsole,
   type ConsoleCompletionSuggestion,
@@ -17,6 +17,7 @@ import { bytesToHex } from "@noble/hashes/utils.js"
 import { sha256 } from "@noble/hashes/sha2.js"
 import { consoleLimits, consoleResourceBlocker, consoleResources } from "./console-resources"
 import { loadBrowserConfiguration, type BrowserConfiguration } from "./config"
+import { applyPointerDelta } from "./input"
 
 const TICK_MILLISECONDS = 15
 const MAX_FRAME_TICKS = 4
@@ -72,6 +73,8 @@ export type ApplicationView = Readonly<{
   blockers: readonly string[]
   fireEvents: number
   explosionEvents: number
+  camera?: Camera
+  initialView?: LoadedGame["initialView"]
 }>
 
 type Renderer = Awaited<ReturnType<typeof createRenderer>>
@@ -170,6 +173,7 @@ export class Tf2Application {
       this.#set({ detail: "Compiling direct map authority" })
       this.#generation = 1
       this.#loaded = await this.#client.load(this.#generation, bsp, 0, this.#dependencies, key)
+      this.#applyInitialView(this.#loaded)
       this.#renderer = await createRenderer(this.#canvas)
       this.resize()
       const scene = await this.#renderer.loadMap(
@@ -202,6 +206,7 @@ export class Tf2Application {
         detail: "Click the field to capture the mouse",
         hud: tf2Hud(this.#snapshot),
         cache: this.#loaded.cache,
+        initialView: this.#loaded.initialView,
       })
     } catch (error) {
       await this.#release()
@@ -437,6 +442,7 @@ export class Tf2Application {
     }
     this.#generation = generation
     this.#loaded = staged
+    this.#applyInitialView(staged)
     this.#snapshot = await this.#client.advance(generation, this.#command(), 1)
     this.#particles?.reset(this.#snapshot.tick)
     this.#paused = document.hidden
@@ -448,7 +454,13 @@ export class Tf2Application {
       detail: `Playing ${name}`,
       hud: tf2Hud(this.#snapshot),
       cache: staged.cache,
+      initialView: staged.initialView,
     })
+  }
+
+  #applyInitialView(loaded: LoadedGame): void {
+    this.#pitch = Math.max(-89, Math.min(89, loaded.initialView.angles[0]))
+    this.#yaw = loaded.initialView.angles[1] % 360
   }
 
   #command(): ArrayBuffer {
@@ -502,6 +514,7 @@ export class Tf2Application {
       }
       const particleItems = this.#particles.advance(snapshot.tick)
       const presentation = tf2Presentation(snapshot, particleItems, false)
+      const camera = tf2Camera(snapshot, this.#yaw, this.#pitch)
       if (this.#audioRunning && this.#audio) {
         for (const request of tf2Audio(snapshot.events)) this.#audio.play(request)
       }
@@ -511,7 +524,7 @@ export class Tf2Application {
           : `${diagnostic.code}: exact event mapping inputs are unavailable`)
       }
       await this.#renderer.render({
-        camera: tf2Camera(snapshot, this.#yaw, this.#pitch),
+        camera,
         effects: presentation.effects,
         models: presentation.models,
       })
@@ -519,6 +532,7 @@ export class Tf2Application {
         hud: tf2Hud(snapshot),
         fireEvents: this.#fireEvents,
         explosionEvents: this.#explosionEvents,
+        camera,
       })
     } catch (error) {
       this.#paused = true
@@ -600,8 +614,9 @@ export class Tf2Application {
 
   readonly #mouseMove = (event: MouseEvent): void => {
     if (document.pointerLockElement !== this.#canvas) return
-    this.#yaw = (this.#yaw + event.movementX * 0.08) % 360
-    this.#pitch = Math.max(-89, Math.min(89, this.#pitch + event.movementY * 0.08))
+    const angles = applyPointerDelta(this.#yaw, this.#pitch, event.movementX, event.movementY)
+    this.#yaw = angles.yaw
+    this.#pitch = angles.pitch
   }
 
   readonly #resize = (): void => this.resize()

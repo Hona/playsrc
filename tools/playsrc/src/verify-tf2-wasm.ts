@@ -9,7 +9,7 @@ import { parseRuntimeMap } from "@playsrc/rendering/runtime-map"
 import { buildSourceBundle } from "./source-bundle"
 
 const EXPECTED_MAP_BYTES = 39_814_462
-const EXPECTED_MAP_SHA256 = "4553bd793f7334df823071f98807151020aae8a2246c4a737daa1d63a0d718bc"
+const EXPECTED_MAP_SHA256 = "d0576dff06413848d8712ab6218c8c6f34078a1b347795c5a7a694a108c29725"
 const EXPECTED_DEPENDENCY_BYTES = 39_936_317
 const EXPECTED_DEPENDENCY_SHA256 = "d7582f82f4a39c087d24246550192753ea879cb912a842c1b33d84a9d7b27ee0"
 
@@ -22,6 +22,7 @@ type Exports = Readonly<{
   playsrc_result_error(handle: number): number
   playsrc_result_copy(handle: number, pointer: number, capacity: number): number
   playsrc_result_hash(handle: number, pointer: number): number
+  playsrc_spawn_copy(handle: number, pointer: number, capacity: number): number
   playsrc_game_advance(handle: number, command: number, length: number, ticks: number): number
   playsrc_snapshot_length(handle: number): number
   playsrc_snapshot_copy(handle: number, pointer: number, capacity: number): number
@@ -114,6 +115,26 @@ export async function verifyTf2Wasm(
   exports.playsrc_free(dependencyPointer, dependencyBytes.byteLength)
   const error = exports.playsrc_result_error(handle)
   require(error === 0, `TF2 WASM map compilation failed with error ${error}`)
+  const spawnPointer = exports.playsrc_alloc(40)
+  require(exports.playsrc_spawn_copy(handle, spawnPointer, 40) === 40, "TF2 spawn descriptor is unavailable")
+  const spawnBytes = new Uint8Array(exports.memory.buffer, spawnPointer, 40).slice()
+  exports.playsrc_free(spawnPointer, 40)
+  const spawnView = new DataView(spawnBytes.buffer)
+  require(new TextDecoder().decode(spawnBytes.subarray(0, 4)) === "PSIV", "TF2 spawn descriptor magic is invalid")
+  require(spawnView.getUint32(4, true) === 1, "TF2 spawn descriptor version is invalid")
+  const spawn = {
+    entity: spawnView.getUint32(8, true),
+    hammerId: spawnView.getUint32(12, true),
+    position: Array.from({ length: 3 }, (_, index) => spawnView.getFloat32(16 + index * 4, true)),
+    angles: Array.from({ length: 3 }, (_, index) => spawnView.getFloat32(28 + index * 4, true)),
+  }
+  require(
+    spawn.entity === 1
+    && spawn.hammerId === 29
+    && spawn.position.every((value, index) => value === [5328, 3376, -3120][index])
+    && spawn.angles.every((value, index) => value === [-1, 180, 0][index]),
+    "TF2 spawn descriptor differs from the selected teamspawn",
+  )
   const mapBytes = exports.playsrc_result_length(handle)
   require(mapBytes === EXPECTED_MAP_BYTES, `map payload length ${mapBytes} != ${EXPECTED_MAP_BYTES}`)
   const hashPointer = exports.playsrc_alloc(32)
@@ -135,6 +156,42 @@ export async function verifyTf2Wasm(
   require(renderMap.batches.length === 10, "runtime map draw-batch count is invalid")
   const resolvedTextures = renderMap.materials.filter((material) => material.baseTexture).length
   require(resolvedTextures === 12, "runtime map resolved-texture count is invalid")
+  let alignedTriangles = 0
+  let opposedTriangles = 0
+  let degenerateTriangles = 0
+  for (const batch of renderMap.batches) {
+    for (let offset = 0; offset < batch.indices.length; offset += 3) {
+      const indexes = [batch.indices[offset]!, batch.indices[offset + 1]!, batch.indices[offset + 2]!]
+      const position = (index: number) => [
+        batch.positions[index * 3]!,
+        batch.positions[index * 3 + 1]!,
+        batch.positions[index * 3 + 2]!,
+      ] as const
+      const a = position(indexes[0])
+      const b = position(indexes[1])
+      const c = position(indexes[2])
+      const ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]] as const
+      const ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]] as const
+      const cross = [
+        ab[1] * ac[2] - ab[2] * ac[1],
+        ab[2] * ac[0] - ab[0] * ac[2],
+        ab[0] * ac[1] - ab[1] * ac[0],
+      ] as const
+      const normal = indexes.reduce((sum, index) => [
+        sum[0] + batch.normals[index * 3]!,
+        sum[1] + batch.normals[index * 3 + 1]!,
+        sum[2] + batch.normals[index * 3 + 2]!,
+      ] as const, [0, 0, 0] as readonly [number, number, number])
+      const facing = cross[0] * normal[0] + cross[1] * normal[1] + cross[2] * normal[2]
+      if (Math.abs(facing) <= 1e-6) degenerateTriangles += 1
+      else if (facing > 0) alignedTriangles += 1
+      else opposedTriangles += 1
+    }
+  }
+  require(
+    alignedTriangles === 6_497 && opposedTriangles === 0 && degenerateTriangles === 0,
+    `runtime triangle orientation is ${alignedTriangles} aligned, ${opposedTriangles} opposed, ${degenerateTriangles} degenerate`,
+  )
   require(renderMap.models.length === 9, `runtime model count ${renderMap.models.length} is invalid`)
   require(renderMap.modelOccurrences.length === 33, "runtime model occurrence count is invalid")
   require(renderMap.lightmap !== undefined, "runtime lightmap atlas is unavailable")
@@ -197,6 +254,9 @@ export async function verifyTf2Wasm(
     drawableSurfaces: renderMap.drawableSurfaces,
     drawBatches: renderMap.batches.length,
     resolvedTextures,
+    alignedTriangles,
+    opposedTriangles,
+    degenerateTriangles,
     models: renderMap.models.length,
     modelOccurrences: renderMap.modelOccurrences.length,
     lightmapWidth: renderMap.lightmap.width,
@@ -207,5 +267,6 @@ export async function verifyTf2Wasm(
     snapshotBytes: snapshotLength,
     projectiles,
     events,
+    spawn,
   }
 }

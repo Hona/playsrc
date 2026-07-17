@@ -39,6 +39,13 @@ function App() {
       data-projectiles={view.hud?.projectileCount ?? 0}
       data-fire-events={view.fireEvents}
       data-explosion-events={view.explosionEvents}
+      data-camera-position={view.camera?.position.join(",")}
+      data-camera-yaw={view.camera?.yawDegrees}
+      data-camera-pitch={view.camera?.pitchDegrees}
+      data-spawn-entity={view.initialView?.entity}
+      data-spawn-hammer-id={view.initialView?.hammerId}
+      data-spawn-position={view.initialView?.position.join(",")}
+      data-spawn-angles={view.initialView?.angles.join(",")}
     >
       <canvas
         ref={canvas}

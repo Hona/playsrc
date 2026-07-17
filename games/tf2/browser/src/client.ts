@@ -1,6 +1,6 @@
 import type { DerivedObjectCache } from "@playsrc/asset-store/browser"
 import { decodeSnapshot, type Snapshot } from "./codec"
-import type { WorkerFailureCode, WorkerRequest, WorkerResponse } from "./protocol"
+import type { InitialView, WorkerFailureCode, WorkerRequest, WorkerResponse } from "./protocol"
 
 const HASH = /^[0-9a-f]{64}$/
 const MAX_PENDING = 64
@@ -26,6 +26,7 @@ export type LoadedGame = Readonly<{
   payload: Uint8Array
   payloadSha256: string
   cache: "hit" | "stored"
+  initialView: InitialView
 }>
 export type StagedGame = LoadedGame
 
@@ -147,6 +148,17 @@ export class Tf2WorkerClient {
         || !Number.isSafeInteger(loaded.payloadBytes)
         || loaded.payloadBytes < 1
         || !HASH.test(loaded.payloadSha256)
+        || !Number.isSafeInteger(loaded.initialView?.entity)
+        || loaded.initialView.entity < 0
+        || loaded.initialView.entity > 0xffff_ffff
+        || (loaded.initialView.hammerId !== null && (
+          !Number.isSafeInteger(loaded.initialView.hammerId)
+          || loaded.initialView.hammerId < 0
+          || loaded.initialView.hammerId >= 0xffff_ffff
+        ))
+        || loaded.initialView.position.length !== 3
+        || loaded.initialView.angles.length !== 3
+        || ![...loaded.initialView.position, ...loaded.initialView.angles].every(Number.isFinite)
       ) {
         throw new Tf2WorkerError("WorkerFailed")
       }
@@ -175,6 +187,12 @@ export class Tf2WorkerClient {
         payload,
         payloadSha256: loaded.payloadSha256,
         cache,
+        initialView: Object.freeze({
+          entity: loaded.initialView.entity,
+          hammerId: loaded.initialView.hammerId,
+          position: Object.freeze([...loaded.initialView.position]) as readonly [number, number, number],
+          angles: Object.freeze([...loaded.initialView.angles]) as readonly [number, number, number],
+        }),
       })
     } catch (error) {
       try {

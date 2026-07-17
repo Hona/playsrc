@@ -260,7 +260,7 @@ pub fn compile(bsp: &Bsp, profile: LightingProfile) -> Result<CanonicalMap, Erro
             .iter()
             .map(|p| lightmap_uv(p, info, face))
             .collect();
-        let (indices, compiled) = triangles_for(
+        let (mut indices, compiled) = triangles_for(
             face,
             face_index,
             positions.len(),
@@ -268,6 +268,7 @@ pub fn compile(bsp: &Bsp, profile: LightingProfile) -> Result<CanonicalMap, Erro
             primitive_vertices,
             primitive_indices,
         )?;
+        normalize_triangle_winding(&positions, &face_normals, &mut indices);
         triangles += indices.len();
         output_vertices += positions.len();
         let flags = info.flags;
@@ -673,15 +674,44 @@ fn face_normals(
     let p = planes
         .get(face.plane_index as usize)
         .ok_or_else(|| error(ErrorCode::InvalidReference, Some(index)))?;
-    let sign = if face.side == 0 { 1. } else { -1. };
-    Ok(vec![
-        [
-            p.normal.x.value() * sign,
-            p.normal.y.value() * sign,
-            p.normal.z.value() * sign
+    let normal = oriented_plane_normal(
+        [p.normal.x.value(), p.normal.y.value(), p.normal.z.value()],
+        face.side,
+    );
+    Ok(vec![normal; positions.len()])
+}
+fn oriented_plane_normal(normal: [f32; 3], side: u8) -> [f32; 3] {
+    let sign = if side == 0 { 1. } else { -1. };
+    normal.map(|component| component * sign)
+}
+fn normalize_triangle_winding(
+    positions: &[[f32; 3]],
+    normals: &[[f32; 3]],
+    triangles: &mut [[u32; 3]],
+) {
+    for triangle in triangles {
+        let [a, b, c] = triangle.map(|index| positions[index as usize]);
+        let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        let geometric = [
+            ab[1] * ac[2] - ab[2] * ac[1],
+            ab[2] * ac[0] - ab[0] * ac[2],
+            ab[0] * ac[1] - ab[1] * ac[0],
         ];
-        positions.len()
-    ])
+        let supplied = triangle.iter().fold([0.; 3], |mut sum, index| {
+            let normal = normals[*index as usize];
+            for axis in 0..3 {
+                sum[axis] += normal[axis];
+            }
+            sum
+        });
+        let facing = (0..3)
+            .map(|axis| geometric[axis] * supplied[axis])
+            .sum::<f32>();
+        if facing < 0. {
+            triangle.swap(1, 2);
+        }
+    }
 }
 fn uv(p: &[f32; 3], v: &[[playsrc_bsp::Float32; 4]; 2], w: i32, h: i32) -> [f32; 2] {
     let d = |a: usize| {
@@ -763,4 +793,95 @@ fn triangles_for(
 }
 fn error(code: ErrorCode, item: Option<usize>) -> Error {
     Error { code, item }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use playsrc_bsp::{Edge, Face, Float32, Vector3, Vertex};
+
+    fn scalar(value: f32) -> Float32 {
+        Float32(value.to_bits())
+    }
+    fn vertex(x: f32, y: f32) -> Vertex {
+        Vertex {
+            position: Vector3 {
+                x: scalar(x),
+                y: scalar(y),
+                z: scalar(0.),
+            },
+        }
+    }
+    fn face(first_surface_edge: i32, surface_edge_count: i16) -> Face {
+        Face {
+            plane_index: 0,
+            side: 0,
+            on_node: 1,
+            first_surface_edge,
+            surface_edge_count,
+            texture_info_index: 0,
+            displacement_info_index: -1,
+            surface_fog_volume_id: -1,
+            styles: [255; 4],
+            light_offset: -1,
+            area: scalar(1.),
+            lightmap_mins: [0; 2],
+            lightmap_size: [0; 2],
+            original_face: -1,
+            primitive_and_shadow_bits: 0,
+            first_primitive: 0,
+            smoothing_groups: 0,
+        }
+    }
+
+    #[test]
+    fn signed_surfedges_and_face_side_retain_source_orientation() {
+        let vertices = [
+            vertex(0., 0.),
+            vertex(1., 0.),
+            vertex(1., 1.),
+            vertex(0., 1.),
+        ];
+        let edges = [
+            Edge {
+                vertex_indices: [0, 0],
+            },
+            Edge {
+                vertex_indices: [0, 1],
+            },
+            Edge {
+                vertex_indices: [1, 2],
+            },
+            Edge {
+                vertex_indices: [2, 3],
+            },
+            Edge {
+                vertex_indices: [3, 0],
+            },
+        ];
+        let surfedges = [1, 2, 3, 4, -4, -3, -2, -1];
+        let forward = face_positions(&face(0, 4), 0, &vertices, &edges, &surfedges).unwrap();
+        let reverse = face_positions(&face(4, 4), 0, &vertices, &edges, &surfedges).unwrap();
+        assert_eq!(
+            forward,
+            vec![[0., 0., 0.], [1., 0., 0.], [1., 1., 0.], [0., 1., 0.]]
+        );
+        assert_eq!(
+            reverse,
+            vec![[0., 0., 0.], [0., 1., 0.], [1., 1., 0.], [1., 0., 0.]]
+        );
+        assert_eq!(oriented_plane_normal([0., 0., 1.], 0), [0., 0., 1.]);
+        assert_eq!(oriented_plane_normal([0., 0., 1.], 1), [0., 0., -1.]);
+    }
+
+    #[test]
+    fn triangles_face_their_supplied_normals_without_changing_vertices() {
+        let positions = [[0., 0., 0.], [1., 0., 0.], [1., 1., 0.], [0., 1., 0.]];
+        let normals = [[0., 0., -1.]; 4];
+        let mut triangles = [[0, 1, 2], [0, 2, 3]];
+        normalize_triangle_winding(&positions, &normals, &mut triangles);
+        assert_eq!(triangles, [[0, 2, 1], [0, 3, 2]]);
+        normalize_triangle_winding(&positions, &normals, &mut triangles);
+        assert_eq!(triangles, [[0, 2, 1], [0, 3, 2]]);
+    }
 }

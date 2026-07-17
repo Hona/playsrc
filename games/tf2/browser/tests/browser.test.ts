@@ -3,7 +3,7 @@ import type { DerivedObjectCache } from "@playsrc/asset-store/browser"
 import { Tf2WorkerClient, type WorkerLike } from "../src/client"
 import { decodeSnapshot, encodeCommand, mapDerivedKey } from "../src/codec"
 import { tf2Audio, tf2Presentation } from "../src/presentation"
-import type { WorkerRequest, WorkerResponse } from "../src/protocol"
+import type { InitialView, WorkerRequest, WorkerResponse } from "../src/protocol"
 
 function snapshot(): ArrayBuffer {
   const bytes = new ArrayBuffer(56)
@@ -51,6 +51,12 @@ class MemoryCache implements DerivedObjectCache {
 class FakeWorker implements WorkerLike {
   readonly payload = new TextEncoder().encode("map payload")
   readonly payloadSha256: string
+  initialView: InitialView = Object.freeze({
+    entity: 1,
+    hammerId: 29,
+    position: Object.freeze([5328, 3376, -3120]),
+    angles: Object.freeze([-1, 180, 0]),
+  })
   mapReads = 0
   activations = 0
   discards = 0
@@ -85,6 +91,7 @@ class FakeWorker implements WorkerLike {
         generation: request.generation,
         payloadBytes: this.payload.byteLength,
         payloadSha256: this.payloadSha256,
+        initialView: this.initialView,
       }; break
       case "read-map":
         this.mapReads += 1
@@ -162,7 +169,14 @@ describe("TF2 browser adapter", () => {
     ).join("")
     await client.initialize(wasm, wasmHash)
     const key = "1".repeat(64)
-    expect((await client.load(1, new Uint8Array([1]), 0, new Uint8Array(), key)).cache).toBe("stored")
+    const cold = await client.load(1, new Uint8Array([1]), 0, new Uint8Array(), key)
+    expect(cold.cache).toBe("stored")
+    expect(cold.initialView).toEqual({
+      entity: 1,
+      hammerId: 29,
+      position: [5328, 3376, -3120],
+      angles: [-1, 180, 0],
+    })
     expect((await client.load(2, new Uint8Array([1]), 0, new Uint8Array(), key)).cache).toBe("hit")
     expect(worker.mapReads).toBe(1)
     cache.records.set(key, new TextEncoder().encode("corrupt"))
@@ -183,6 +197,26 @@ describe("TF2 browser adapter", () => {
     }), 1)).tick).toBe(7n)
     await client.shutdown()
     expect(worker.terminated).toBe(true)
+  })
+
+  test("rejects a malformed staged spawn view before activation", async () => {
+    const payload = new TextEncoder().encode("map payload")
+    const digest = await crypto.subtle.digest("SHA-256", payload)
+    const hash = Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("")
+    const worker = new FakeWorker(hash)
+    worker.initialView = { entity: 1, hammerId: 29, position: [0, 0, 0], angles: [0, Number.NaN, 0] }
+    const client = new Tf2WorkerClient(worker, new MemoryCache())
+    const wasm = new Uint8Array([0, 97, 115, 109])
+    const wasmHash = Array.from(
+      new Uint8Array(await crypto.subtle.digest("SHA-256", wasm)),
+      (value) => value.toString(16).padStart(2, "0"),
+    ).join("")
+    await client.initialize(wasm, wasmHash)
+    await expect(client.load(1, new Uint8Array([1]), 0, new Uint8Array(), "1".repeat(64)))
+      .rejects.toMatchObject({ code: "WorkerFailed" })
+    expect(worker.activations).toBe(0)
+    expect(worker.discards).toBe(1)
+    await client.shutdown()
   })
 
   test("reports unavailable presentation dependencies before diagnostic substitutes", () => {
