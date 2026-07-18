@@ -2,8 +2,9 @@ use std::collections::BTreeMap;
 
 use playsrc_collision::Hull;
 use playsrc_entity::{
-    BehaviorState, ContactKind, ContactRecord, EntityHandle, EntityWorld, EntityWorldConfig,
-    EventTarget, InputRecord, ModelBounds, RuntimeFailure, RuntimeRequest, Transform, Transition,
+    BehaviorState, BrushModelPresentation, ContactKind, ContactRecord, EntityHandle, EntityWorld,
+    EntityWorldConfig, EventTarget, ExternalBrushModelBinding, ExternalBrushModelVisibility,
+    InputRecord, ModelBounds, RuntimeFailure, RuntimeRequest, Transform, Transition,
     TransitionBatch, TriggerKind, Variant, WorldCommand,
 };
 use playsrc_movement::{Error as MoveError, Tracer};
@@ -28,6 +29,10 @@ pub fn respawn_barrier_collides(
 }
 
 pub trait GameplayWorld: Tracer {
+    fn collision_snapshot_revision(&self) -> Option<u64> {
+        None
+    }
+
     fn overlaps_model_hull(
         &self,
         model: usize,
@@ -323,6 +328,13 @@ impl MapRuntime {
                     inputs: vec![b"TestActivator".to_vec()],
                 },
             ],
+            external_brush_models: [b"func_regenerate".as_slice(), b"func_respawnroom"]
+                .into_iter()
+                .map(|classname| ExternalBrushModelBinding {
+                    classname: classname.to_vec(),
+                    initial_visibility: ExternalBrushModelVisibility::Hidden,
+                })
+                .collect(),
             ..EntityWorldConfig::default()
         };
         let (mut world, _) = EntityWorld::compile(graph, config)?;
@@ -557,6 +569,17 @@ impl MapRuntime {
 
     pub fn counts(&self) -> MapCounts {
         self.counts
+    }
+
+    pub(crate) fn entity_revision(&self) -> u64 {
+        self.world.revision()
+    }
+
+    pub(crate) fn brush_model_presentation(
+        &self,
+        expected_revision: u64,
+    ) -> Result<BrushModelPresentation, RuntimeFailure> {
+        self.world.brush_model_presentation(expected_revision)
     }
 
     pub fn source_handle(&self, source: u32) -> Option<EntityHandle> {
@@ -1341,5 +1364,218 @@ mod tests {
             CONTENTS_BLUE_TEAM,
             false
         ));
+    }
+
+    #[test]
+    fn presentation_delegates_complete_entity_state_and_survives_restore_and_rollback() {
+        let graph = playsrc_entity::parse(
+            br#"
+{"classname" "func_brush" "targetname" "carrier" "model" "*1" "origin" "10 0 0"}
+{"classname" "func_movelinear" "targetname" "child" "model" "*2" "parentname" "carrier"
+ "origin" "15 0 0" "angles" "0 90 0" "MoveDistance" "10" "StartPosition" "0"
+ "rendermode" "2" "rendercolor" "10 20 30 99" "renderamt" "128" "renderfx" "3" "effects" "64"}
+{"classname" "func_brush" "targetname" "hidden" "model" "*3" "StartDisabled" "1"}
+{"classname" "func_regenerate" "targetname" "resupply" "model" "*4"}
+"#,
+            playsrc_entity::Limits::default(),
+        )
+        .unwrap();
+        let mut map = MapRuntime::compile(
+            &graph,
+            0.015,
+            0x1234,
+            (1..=4)
+                .map(|model| ModelBounds {
+                    model,
+                    mins: [0.0; 3],
+                    maxs: [12.0, 4.0, 4.0],
+                })
+                .collect(),
+        )
+        .unwrap();
+
+        let revision = map.entity_revision();
+        let initial = map.brush_model_presentation(revision).unwrap();
+        assert_eq!(initial.source_identity, 0x1234);
+        assert_eq!(initial.registry_identity, 0x5446_325f_454e_5433);
+        assert_eq!(initial.tick, 0);
+        assert_eq!(initial.revision, revision);
+        assert_eq!(
+            initial
+                .models
+                .iter()
+                .map(|model| model.source_index)
+                .collect::<Vec<_>>(),
+            [0, 1, 2, 3]
+        );
+        let carrier = &initial.models[0];
+        let child = &initial.models[1];
+        assert!(carrier.draw);
+        assert_eq!(child.model, 2);
+        assert_eq!(child.local_transform.origin, [5.0, 0.0, 0.0]);
+        assert_eq!(child.world_transform.origin, [15.0, 0.0, 0.0]);
+        assert_eq!(child.parent, Some(carrier.handle));
+        assert_eq!(child.render_mode, 2);
+        assert_eq!(child.color, [10, 20, 30, 128]);
+        assert_eq!(child.render_fx, 3);
+        assert_eq!(child.effects, 64);
+        assert!(child.draw);
+        assert!(child.mover.is_some());
+        assert!(!initial.models[2].draw);
+        assert!(!initial.models[3].draw);
+
+        let snapshot = map.world.snapshot().unwrap();
+        let child_handle = map.source_handle(1).unwrap();
+        map.world
+            .phase(
+                1,
+                &[WorldCommand::SetBrushModel {
+                    entity: child_handle,
+                    model: Some(3),
+                }],
+            )
+            .unwrap();
+        assert_eq!(
+            map.brush_model_presentation(map.entity_revision())
+                .unwrap()
+                .models[1]
+                .model,
+            3
+        );
+        map.world.restore(&snapshot).unwrap();
+        assert_eq!(map.brush_model_presentation(revision).unwrap(), initial);
+
+        let failed = map.world.phase(
+            1,
+            &[
+                WorldCommand::SetWorldTransform {
+                    entity: child_handle,
+                    transform: Transform {
+                        origin: [7.0, 0.0, 0.0],
+                        angles: [0.0; 3],
+                    },
+                },
+                WorldCommand::SetBrushModel {
+                    entity: child_handle,
+                    model: Some(999),
+                },
+            ],
+        );
+        assert_eq!(
+            failed.unwrap_err().code,
+            playsrc_entity::RuntimeFailureCode::InvalidField
+        );
+        assert_eq!(map.entity_revision(), revision);
+        assert_eq!(map.brush_model_presentation(revision).unwrap(), initial);
+    }
+
+    #[test]
+    fn presentation_tracks_mover_progress_block_reversal_and_completion() {
+        let graph = playsrc_entity::parse(
+            br#"{"classname" "func_door" "targetname" "door" "model" "*1" "movedir" "0 0 0" "wait" "1"}"#,
+            playsrc_entity::Limits::default(),
+        )
+        .unwrap();
+        let mut map = MapRuntime::compile(
+            &graph,
+            0.015,
+            1,
+            vec![ModelBounds {
+                model: 1,
+                mins: [0.0; 3],
+                maxs: [12.0, 2.0, 2.0],
+            }],
+        )
+        .unwrap();
+        let opened = map.input(0, 0, b"Open", Variant::Void).unwrap();
+        let request = opened.mover_requests[0];
+        let moving = map.brush_model_presentation(map.entity_revision()).unwrap();
+        assert_eq!(
+            moving.models[0].mover.as_ref().unwrap().request_id,
+            Some(request.request_id)
+        );
+        assert_eq!(moving.models[0].mover.as_ref().unwrap().opening, Some(true));
+
+        map.apply_mover_results(
+            1,
+            &[MoverResult {
+                request_id: request.request_id,
+                entity: 0,
+                kind: MoverResultKind::Progress,
+                transform: Transform {
+                    origin: [5.0, 0.0, 0.0],
+                    angles: [0.0; 3],
+                },
+                carry: [0.0; 3],
+            }],
+        )
+        .unwrap();
+        let progress = map.brush_model_presentation(map.entity_revision()).unwrap();
+        let mover = progress.models[0].mover.as_ref().unwrap();
+        assert_eq!(f32::from_bits(mover.progress_bits), 0.5);
+        assert_eq!(progress.models[0].world_transform.origin, [5.0, 0.0, 0.0]);
+
+        let blocked = map
+            .apply_mover_results(
+                2,
+                &[MoverResult {
+                    request_id: request.request_id,
+                    entity: 0,
+                    kind: MoverResultKind::BlockedStay,
+                    transform: Transform {
+                        origin: [5.0, 0.0, 0.0],
+                        angles: [0.0; 3],
+                    },
+                    carry: [0.0; 3],
+                }],
+            )
+            .unwrap();
+        let reversal = blocked.mover_requests[0];
+        let reversing = map.brush_model_presentation(map.entity_revision()).unwrap();
+        let mover = reversing.models[0].mover.as_ref().unwrap();
+        assert_eq!(mover.request_id, Some(reversal.request_id));
+        assert_eq!(mover.opening, Some(false));
+        assert_eq!(f32::from_bits(mover.progress_bits), 0.5);
+
+        map.apply_mover_results(
+            3,
+            &[MoverResult {
+                request_id: reversal.request_id,
+                entity: 0,
+                kind: MoverResultKind::Completed,
+                transform: Transform::IDENTITY,
+                carry: [0.0; 3],
+            }],
+        )
+        .unwrap();
+        let completed = map.brush_model_presentation(map.entity_revision()).unwrap();
+        let mover = completed.models[0].mover.as_ref().unwrap();
+        assert_eq!(mover.request_id, None);
+        assert_eq!(mover.position, playsrc_entity::MoverPosition::Closed);
+        assert_eq!(f32::from_bits(mover.progress_bits), 0.0);
+    }
+
+    #[test]
+    fn selected_game_entity_limit_rejects_before_a_partial_presentation_exists() {
+        let mut bytes = Vec::new();
+        for _ in 0..playsrc_entity::Limits::default().max_entities {
+            bytes.extend_from_slice(br#"{"classname" "func_brush" "model" "*1"}"#);
+        }
+        let graph = playsrc_entity::parse(&bytes, playsrc_entity::Limits::default()).unwrap();
+        let failure = MapRuntime::compile(
+            &graph,
+            0.015,
+            1,
+            vec![ModelBounds {
+                model: 1,
+                mins: [0.0; 3],
+                maxs: [1.0; 3],
+            }],
+        )
+        .unwrap_err();
+        assert_eq!(
+            failure.code,
+            playsrc_entity::RuntimeFailureCode::EntityLimit
+        );
     }
 }

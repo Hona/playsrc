@@ -39,6 +39,25 @@ pub const PLAYER_IDENTITY: u32 = 1;
 pub const MAX_PROJECTILES: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PresentationRevision {
+    pub entity: u64,
+    pub collision: u64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct EntityPresentationSnapshot {
+    pub collision_revision: u64,
+    pub entities: playsrc_entity::BrushModelPresentation,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PresentationError {
+    Entity(playsrc_entity::RuntimeFailure),
+    CollisionRevisionUnavailable,
+    CollisionRevisionMismatch { expected: u64, actual: u64 },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum Class {
     Soldier = 1,
@@ -827,6 +846,44 @@ impl<W: GameplayWorld + Clone> Session<W> {
 
     pub fn map_effects(&self) -> &[MapEffect] {
         &self.map_effects
+    }
+
+    pub fn entity_revision(&self) -> u64 {
+        self.map.entity_revision()
+    }
+
+    pub fn entity_presentation(
+        &self,
+        expected: PresentationRevision,
+    ) -> Result<EntityPresentationSnapshot, PresentationError> {
+        let collision_revision = self
+            .collision
+            .collision_snapshot_revision()
+            .ok_or(PresentationError::CollisionRevisionUnavailable)?;
+        if collision_revision != expected.collision {
+            return Err(PresentationError::CollisionRevisionMismatch {
+                expected: expected.collision,
+                actual: collision_revision,
+            });
+        }
+        let entities = self
+            .map
+            .brush_model_presentation(expected.entity)
+            .map_err(PresentationError::Entity)?;
+        let final_collision_revision = self
+            .collision
+            .collision_snapshot_revision()
+            .ok_or(PresentationError::CollisionRevisionUnavailable)?;
+        if final_collision_revision != expected.collision {
+            return Err(PresentationError::CollisionRevisionMismatch {
+                expected: expected.collision,
+                actual: final_collision_revision,
+            });
+        }
+        Ok(EntityPresentationSnapshot {
+            collision_revision,
+            entities,
+        })
     }
 
     pub fn producer_snapshot(&self) -> ProducerSnapshot {
