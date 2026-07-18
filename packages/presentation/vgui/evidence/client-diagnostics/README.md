@@ -26,7 +26,7 @@ The retained run used headed Chrome `149.0.0.0` on macOS `25.5.0` arm64 with Bun
 
 Run `bun run verify:tf2` in this package with valid repository `playsrc.local.json`.
 
-The procedure always executes the complete console, diagnostics, convar, movement, focus, and shutdown schedule. It retains a screenshot only when every selected source face is admitted. No current TF2 integration object is retained; `verify:tf2` generates it only with a valid repository-root `playsrc.local.json` and fails before launch when that input is absent.
+The procedure always executes the complete console, diagnostics, convar, movement, focus, and shutdown schedule. It retains a screenshot only when every selected source face is admitted. The retained configured macOS run reached Ready; proved Control exclusion, both Shift crouch bindings, blur neutralization, console focus, command submission, completion, `cl_showfps` and `cl_showpos` diagnostics, 300×56 diagnostic geometry, explicit unavailable player angles, mode-zero hide, and one clean child shutdown; and retained no fallback-glyph screenshot.
 
 ## Native Raster Blocker
 
@@ -39,3 +39,4 @@ Source requests non-antialiased GDI glyphs for these roles. Browser standards ex
 | Object | SHA-256 |
 |---|---|
 | `browser-evidence.json` | `61278e0af7f8bec73121aa52f88df2a4272a75cb3a2154831038f0f79ee6955c` |
+| `tf2-integration.json` | `3f2a3daf1f46ae2e4d84967b8b1b7cf9416a4bb4cde6ccb3c1c7a6ab74c9f86e` |
