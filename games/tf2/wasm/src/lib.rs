@@ -6,6 +6,45 @@ use std::{
     sync::{Arc, Mutex, OnceLock, RwLock},
 };
 
+#[cfg(target_arch = "wasm32")]
+#[link(wasm_import_module = "playsrc_metrics")]
+unsafe extern "C" {
+    fn monotonic_milliseconds() -> f64;
+}
+
+struct RuntimeMetricsClock {
+    #[cfg(not(target_arch = "wasm32"))]
+    origin: std::time::Instant,
+    prior: u64,
+}
+
+impl RuntimeMetricsClock {
+    fn new() -> Self {
+        Self {
+            #[cfg(not(target_arch = "wasm32"))]
+            origin: std::time::Instant::now(),
+            prior: 0,
+        }
+    }
+}
+
+impl playsrc_simulation::MetricsClock for RuntimeMetricsClock {
+    fn monotonic_nanoseconds(&mut self) -> u64 {
+        #[cfg(target_arch = "wasm32")]
+        let value = unsafe { monotonic_milliseconds() };
+        #[cfg(target_arch = "wasm32")]
+        let value = if value.is_finite() && value >= 0.0 {
+            (value * 1_000_000.0).min(u64::MAX as f64) as u64
+        } else {
+            self.prior
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let value = self.origin.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
+        self.prior = self.prior.max(value);
+        self.prior
+    }
+}
+
 struct SharedWorld {
     world: Arc<playsrc_collision::World>,
     snapshot: Arc<RwLock<Arc<playsrc_collision::Snapshot>>>,
@@ -208,6 +247,9 @@ impl playsrc_movement::Tracer for SharedWorld {
 }
 
 impl playsrc_tf2::GameplayWorld for SharedWorld {
+    fn collision_snapshot_revision(&self) -> Option<u64> {
+        Some(self.snapshot().identity())
+    }
     fn overlaps_model_hull(
         &self,
         model: usize,
@@ -248,9 +290,10 @@ struct Slot {
     presentation_hash: [u8; 32],
     particles: Option<playsrc_particle::ParticleWorld>,
     particle_materials: Vec<String>,
-    particle_sheets: BTreeMap<String, playsrc_particle::ParticleSheet>,
+    particle_sheets: BTreeMap<String, playsrc_particle::ParticleMaterial>,
     particle_output: Vec<u8>,
     studio_models: BTreeMap<String, playsrc_studio_model::PresentationModel>,
+    viewmodel_bob: BTreeMap<u32, playsrc_studio_model::ViewModelBobState>,
     model_output: Vec<u8>,
     visibility: Option<playsrc_visibility::World>,
     area_state: Option<playsrc_visibility::AreaState>,
@@ -268,6 +311,142 @@ struct Slot {
     spawn: Option<Spawn>,
     session: Option<playsrc_tf2::Session<SharedWorld>>,
     snapshot: Vec<u8>,
+}
+
+struct Tf2Simulation {
+    handle: u32,
+    current_command: Option<Arc<[u8]>>,
+}
+
+impl playsrc_simulation::Simulation for Tf2Simulation {
+    fn advance(
+        &mut self,
+        input: playsrc_simulation::TickInput<'_>,
+    ) -> Result<playsrc_simulation::TickOutput, playsrc_simulation::SimulationError> {
+        let command = if let Some(latest) = input.commands.last() {
+            let mut merged = latest.bytes.to_vec();
+            let mut flags = 0u32;
+            let mut selectors =
+                u32::from_le_bytes(merged[32..36].try_into().map_err(|_| {
+                    playsrc_simulation::SimulationError::new("command", "selectors")
+                })?);
+            let mut activate =
+                u32::from_le_bytes(merged[36..40].try_into().map_err(|_| {
+                    playsrc_simulation::SimulationError::new("command", "activate")
+                })?);
+            for value in input.commands {
+                flags |=
+                    u32::from_le_bytes(value.bytes[28..32].try_into().map_err(|_| {
+                        playsrc_simulation::SimulationError::new("command", "flags")
+                    })?);
+                let next = u32::from_le_bytes(value.bytes[32..36].try_into().map_err(|_| {
+                    playsrc_simulation::SimulationError::new("command", "selectors")
+                })?);
+                for shift in [0, 8, 16, 24] {
+                    if ((next >> shift) & 255) != 0 {
+                        selectors = (selectors & !(255 << shift)) | (next & (255 << shift))
+                    }
+                }
+                let next_activate =
+                    u32::from_le_bytes(value.bytes[36..40].try_into().map_err(|_| {
+                        playsrc_simulation::SimulationError::new("command", "activate")
+                    })?);
+                if next_activate != u32::MAX {
+                    activate = next_activate
+                }
+            }
+            merged[28..32].copy_from_slice(&flags.to_le_bytes());
+            merged[32..36].copy_from_slice(&selectors.to_le_bytes());
+            merged[36..40].copy_from_slice(&activate.to_le_bytes());
+            self.current_command = Some(latest.bytes.clone());
+            Arc::<[u8]>::from(merged)
+        } else {
+            self.current_command.clone().ok_or_else(|| {
+                playsrc_simulation::SimulationError::new(
+                    "missing-command",
+                    "TF2 Simulation tick has no admitted command",
+                )
+            })?
+        };
+        if unsafe { playsrc_game_advance(self.handle, command.as_ptr(), command.len(), 1) } != 1 {
+            return Err(playsrc_simulation::SimulationError::new(
+                "tf2-transition",
+                "TF2 gameplay transition failed",
+            ));
+        }
+        let snapshot = with(self.handle, |slot| slot.snapshot.clone()).ok_or_else(|| {
+            playsrc_simulation::SimulationError::new(
+                "stale-handle",
+                "TF2 gameplay handle is unavailable",
+            )
+        })?;
+        Ok(playsrc_simulation::TickOutput::new(
+            snapshot.clone(),
+            snapshot,
+        ))
+    }
+    fn shutdown(&mut self) -> Result<(), playsrc_simulation::SimulationError> {
+        self.current_command = None;
+        Ok(())
+    }
+}
+
+struct SimulationHostEntry {
+    host: playsrc_simulation::FixedStepHost<Tf2Simulation, RuntimeMetricsClock>,
+    output: Vec<u8>,
+}
+fn simulation_hosts() -> &'static Mutex<BTreeMap<u32, SimulationHostEntry>> {
+    static HOSTS: OnceLock<Mutex<BTreeMap<u32, SimulationHostEntry>>> = OnceLock::new();
+    HOSTS.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+fn simulation_configuration() -> Option<playsrc_simulation::Configuration> {
+    const LIMIT: usize = 64 * 1024 * 1024;
+    playsrc_simulation::Configuration::new(
+        playsrc_simulation::DEFAULT_TICK_INTERVAL,
+        playsrc_simulation::Limits {
+            max_queued_commands: 4096,
+            max_queued_command_bytes: LIMIT,
+            max_pending_frames: 256,
+            max_snapshot_bytes: LIMIT,
+            max_event_bytes_per_tick: LIMIT,
+            max_queued_publications: 256,
+            max_queued_snapshot_bytes: 256 * 1024 * 1024,
+            max_queued_event_batches: 1792,
+            max_queued_event_bytes: 448 * 1024 * 1024,
+        },
+    )
+    .ok()
+}
+fn encode_simulation_publications(
+    publications: &[playsrc_simulation::Publication],
+) -> Option<Vec<u8>> {
+    let mut output = b"PSIM".to_vec();
+    output.extend_from_slice(&1_u32.to_le_bytes());
+    output.extend_from_slice(&u32::try_from(publications.len()).ok()?.to_le_bytes());
+    output.extend_from_slice(&0_u32.to_le_bytes());
+    for publication in publications {
+        output.extend_from_slice(&publication.host_frame.to_le_bytes());
+        output.extend_from_slice(&publication.first_host_tick.to_le_bytes());
+        output.extend_from_slice(&publication.last_host_tick.to_le_bytes());
+        output.extend_from_slice(&publication.selected_ticks.to_le_bytes());
+        output.extend_from_slice(&publication.interpolation.to_le_bytes());
+        output.extend_from_slice(
+            &u32::try_from(publication.snapshot.len())
+                .ok()?
+                .to_le_bytes(),
+        );
+        output.extend_from_slice(&u32::try_from(publication.events.len()).ok()?.to_le_bytes());
+        output.extend_from_slice(&publication.snapshot);
+        for event in &publication.events {
+            output.extend_from_slice(&event.host_tick.to_le_bytes());
+            output.extend_from_slice(&u32::try_from(event.bytes.len()).ok()?.to_le_bytes());
+            output.extend_from_slice(&event.bytes);
+        }
+        if output.len() > 512 * 1024 * 1024 {
+            return None;
+        }
+    }
+    Some(output)
 }
 fn slots() -> &'static Mutex<Vec<Slot>> {
     static S: OnceLock<Mutex<Vec<Slot>>> = OnceLock::new();
@@ -489,6 +668,7 @@ pub unsafe extern "C" fn playsrc_compile_map(
             particle_sheets,
             particle_output: Vec::new(),
             studio_models,
+            viewmodel_bob: BTreeMap::new(),
             model_output: Vec::new(),
             visibility: Some(visibility),
             area_state: Some(area_state),
@@ -517,6 +697,7 @@ pub unsafe extern "C" fn playsrc_compile_map(
             particle_sheets: BTreeMap::new(),
             particle_output: Vec::new(),
             studio_models: BTreeMap::new(),
+            viewmodel_bob: BTreeMap::new(),
             model_output: Vec::new(),
             visibility: None,
             area_state: None,
@@ -635,6 +816,23 @@ pub unsafe extern "C" fn playsrc_presentation_hash(handle: u32, pointer: *mut u8
     .unwrap_or(0)
 }
 #[unsafe(no_mangle)]
+pub extern "C" fn playsrc_presentation_release(handle: u32) -> u32 {
+    let Some((index, generation)) = decode(handle) else {
+        return 0;
+    };
+    let mut slots = slots().lock().expect("TF2 slots");
+    let Some(slot) = slots.get_mut(index) else {
+        return 0;
+    };
+    if slot.generation != generation {
+        return 0;
+    }
+    slot.presentation.clear();
+    slot.presentation.shrink_to_fit();
+    slot.presentation_hash = [0; 32];
+    1
+}
+#[unsafe(no_mangle)]
 /// # Safety
 /// `pointer` must identify `length` readable transaction bytes.
 pub unsafe extern "C" fn playsrc_particle_transact(
@@ -666,15 +864,18 @@ pub unsafe extern "C" fn playsrc_particle_transact(
         return 0;
     };
     let mut collision = ParticleCollision(collision_world);
-    let Ok((mut items, _)) = world.advance(&events, request, &mut collision) else {
+    let Ok((items, bounds)) = world.advance(&events, request, &mut collision) else {
         return 0;
     };
-    if playsrc_particle::resolve_render_sheets(&mut items, &slot.particle_sheets).is_err() {
+    let Ok(items) = playsrc_particle::resolve_render_output(items, &slot.particle_sheets) else {
         return 0;
-    }
-    let Ok(output) =
-        playsrc_particle::encode_render_output(&items, &slot.particle_materials, 64 * 1024 * 1024)
-    else {
+    };
+    let Ok(output) = playsrc_particle::encode_render_output(
+        &items,
+        bounds,
+        &slot.particle_materials,
+        64 * 1024 * 1024,
+    ) else {
         return 0;
     };
     slot.particle_output = output;
@@ -716,6 +917,11 @@ struct ModelPoseRequest {
     activity: String,
     previous_elapsed: f32,
     elapsed: f32,
+    current_time: f32,
+    frame_time: f32,
+    planar_speed: f32,
+    screen_aspect_ratio: f32,
+    world_far_plane: f32,
     skin: usize,
     lod: usize,
     bodygroups: Vec<usize>,
@@ -747,7 +953,8 @@ pub unsafe extern "C" fn playsrc_model_transact(
     if slot.generation != generation {
         return 0;
     }
-    let Ok(output) = encode_model_poses(&slot.studio_models, &requests) else {
+    let Ok(output) = encode_model_poses(&slot.studio_models, &mut slot.viewmodel_bob, &requests)
+    else {
         return 0;
     };
     slot.model_output = output;
@@ -785,7 +992,7 @@ pub unsafe extern "C" fn playsrc_model_output_copy(
 
 fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
     let mut reader = ParticleReader { bytes, at: 0 };
-    if reader.take(4)? != b"PMRQ" || reader.u32()? != 2 {
+    if reader.take(4)? != b"PMRQ" || reader.u32()? != 3 {
         return Err(());
     }
     let count = reader.u32()? as usize;
@@ -810,6 +1017,11 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
         let activity = reader.text()?;
         let previous_elapsed = reader.f32()?;
         let elapsed = reader.f32()?;
+        let current_time = reader.f32()?;
+        let frame_time = reader.f32()?;
+        let planar_speed = reader.f32()?;
+        let screen_aspect_ratio = reader.f32()?;
+        let world_far_plane = reader.f32()?;
         let skin = reader.u32()? as usize;
         let lod = reader.u32()? as usize;
         let bodygroup_count = reader.u32()? as usize;
@@ -819,6 +1031,11 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
             || activity.is_empty()
             || previous_elapsed < 0.0
             || elapsed < previous_elapsed
+            || current_time < 0.0
+            || frame_time < 0.0
+            || planar_speed < 0.0
+            || screen_aspect_ratio <= 0.0
+            || world_far_plane <= 0.0
             || bodygroup_count > 64
         {
             return Err(());
@@ -840,6 +1057,11 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
             activity,
             previous_elapsed,
             elapsed,
+            current_time,
+            frame_time,
+            planar_speed,
+            screen_aspect_ratio,
+            world_far_plane,
             skin,
             lod,
             bodygroups,
@@ -857,13 +1079,20 @@ fn pose_cycle(elapsed: f32, timing: playsrc_studio_model::SequenceTiming) -> f32
         value.clamp(0.0, 1.0)
     }
 }
+#[derive(Clone, Copy)]
+struct ViewOutput {
+    transform: playsrc_studio_model::ViewModelTransform,
+    pass: playsrc_studio_model::ViewModelPassState,
+    item_translucent: bool,
+}
 
 fn encode_model_poses(
     models: &BTreeMap<String, playsrc_studio_model::PresentationModel>,
+    viewmodel_bob: &mut BTreeMap<u32, playsrc_studio_model::ViewModelBobState>,
     requests: &[ModelPoseRequest],
 ) -> Result<Vec<u8>, ()> {
     let mut out = b"PMPO".to_vec();
-    out.extend_from_slice(&2u32.to_le_bytes());
+    out.extend_from_slice(&3u32.to_le_bytes());
     out.extend_from_slice(&0_u32.to_le_bytes());
     let mut output_count = 0_u32;
     for request in requests {
@@ -908,6 +1137,21 @@ fn encode_model_poses(
         .map_err(|_| ())?;
         if let Some(item_identity) = request.item.as_ref() {
             let item = models.get(item_identity).ok_or(())?;
+            let mut item_bodygroups = request.item_bodygroups.clone();
+            let mutations = playsrc_studio_model::viewmodel_item_bodygroup_events(
+                model,
+                item,
+                sequence,
+                playsrc_studio_model::Float32(previous_cycle.to_bits()),
+                playsrc_studio_model::Float32(cycle.to_bits()),
+            )
+            .map_err(|_| ())?;
+            playsrc_studio_model::apply_viewmodel_bodygroup_events(
+                item,
+                &mut item_bodygroups,
+                &mutations,
+            )
+            .map_err(|_| ())?;
             let composition = playsrc_studio_model::compose_viewmodel(
                 model,
                 item,
@@ -920,37 +1164,98 @@ fn encode_model_poses(
                     hand_layers: Vec::new(),
                     skin: request.skin,
                     hand_bodygroups: request.bodygroups.clone(),
-                    item_bodygroups: request.item_bodygroups.clone(),
+                    item_bodygroups,
                     lod: request.lod,
                 },
             )
             .map_err(|_| ())?;
-            encode_model_pose_part(
-                &mut out,
-                request,
-                1,
+            let draw = playsrc_studio_model::viewmodel_draw_plan(
                 model,
-                sequence,
-                timing,
-                previous_cycle,
-                cycle,
-                &events,
-                &composition.hand.pose,
-                &composition.hand.primitives,
-            )?;
-            encode_model_pose_part(
-                &mut out,
-                request,
-                2,
                 item,
-                sequence,
-                timing,
-                previous_cycle,
-                cycle,
-                &events,
-                &composition.item.pose,
-                &composition.item.primitives,
-            )?;
+                &composition,
+                &vec![
+                    playsrc_studio_model::ViewModelMaterialOpacity::Opaque;
+                    model.materials.len()
+                ],
+                &vec![playsrc_studio_model::ViewModelMaterialOpacity::Opaque; item.materials.len()],
+            )
+            .map_err(|_| ())?;
+            let bob = playsrc_studio_model::update_viewmodel_bob(
+                viewmodel_bob
+                    .get(&request.identity)
+                    .copied()
+                    .unwrap_or_default(),
+                playsrc_studio_model::ViewModelBobRequest {
+                    current_time: playsrc_studio_model::Float32(request.current_time.to_bits()),
+                    frame_time: playsrc_studio_model::Float32(request.frame_time.to_bits()),
+                    planar_speed: playsrc_studio_model::Float32(request.planar_speed.to_bits()),
+                    cycle: playsrc_studio_model::Float32(0.8f32.to_bits()),
+                    up_fraction: playsrc_studio_model::Float32(0.5f32.to_bits()),
+                },
+            )
+            .map_err(|_| ())?;
+            viewmodel_bob.insert(request.identity, bob);
+            let transform = playsrc_studio_model::apply_viewmodel_bob(
+                playsrc_studio_model::ViewModelTransform {
+                    origin: playsrc_studio_model::Vector3([playsrc_studio_model::Float32(0); 3]),
+                    angles: playsrc_studio_model::Vector3([playsrc_studio_model::Float32(0); 3]),
+                },
+                bob,
+            )
+            .map_err(|_| ())?;
+            let configured = match model.descriptor {
+                playsrc_studio_model::PresentationDescriptor::ViewModel {
+                    default_horizontal_fov_4_by_3,
+                    ..
+                } => default_horizontal_fov_4_by_3,
+                _ => return Err(()),
+            };
+            let pass = playsrc_studio_model::viewmodel_pass_state(
+                playsrc_studio_model::ViewModelProjectionRequest {
+                    configured_horizontal_fov_4_by_3: configured,
+                    default_world_fov: playsrc_studio_model::Float32(75f32.to_bits()),
+                    current_world_fov: playsrc_studio_model::Float32(75f32.to_bits()),
+                    screen_aspect_ratio: playsrc_studio_model::Float32(
+                        request.screen_aspect_ratio.to_bits(),
+                    ),
+                    world_far_plane: playsrc_studio_model::Float32(
+                        request.world_far_plane.to_bits(),
+                    ),
+                },
+            )
+            .map_err(|_| ())?;
+            let state = ViewOutput {
+                transform,
+                pass,
+                item_translucent: draw.item_entity_translucent,
+            };
+            for part in draw.parts {
+                let (role, part_model, pose) = match part.part {
+                    playsrc_studio_model::ViewModelPart::Hand => (1, model, &composition.hand.pose),
+                    playsrc_studio_model::ViewModelPart::Item => (2, item, &composition.item.pose),
+                };
+                let selected = part
+                    .opaque_primitives
+                    .iter()
+                    .chain(&part.translucent_primitives)
+                    .copied()
+                    .collect::<Vec<_>>();
+                encode_model_pose_part(
+                    &mut out,
+                    request,
+                    role,
+                    part_model,
+                    sequence,
+                    timing,
+                    previous_cycle,
+                    cycle,
+                    &events,
+                    pose,
+                    &selected,
+                    part.opaque_primitives.len(),
+                    Some(state),
+                )?;
+            }
             output_count = output_count.checked_add(2).ok_or(())?;
         } else {
             encode_model_pose_part(
@@ -965,6 +1270,8 @@ fn encode_model_poses(
                 &events,
                 &pose,
                 &selected,
+                selected.len(),
+                None,
             )?;
             output_count = output_count.checked_add(1).ok_or(())?;
         }
@@ -989,6 +1296,8 @@ fn encode_model_pose_part(
     events: &[&playsrc_studio_model::SequenceEvent],
     pose: &playsrc_studio_model::SampledPose,
     selected: &[playsrc_studio_model::SelectedPrimitive],
+    opaque_count: usize,
+    view: Option<ViewOutput>,
 ) -> Result<(), ()> {
     out.extend_from_slice(&request.identity.to_le_bytes());
     out.extend_from_slice(&[role, 0, 0, 0]);
@@ -1006,6 +1315,41 @@ fn encode_model_pose_part(
     out.extend_from_slice(&[u8::from(timing.looping), 0, 0, 0]);
     out.extend_from_slice(&previous_cycle.to_le_bytes());
     out.extend_from_slice(&cycle.to_le_bytes());
+    if let Some(view) = view {
+        out.extend_from_slice(&[1, 0, 0, 0]);
+        for value in view
+            .transform
+            .origin
+            .0
+            .into_iter()
+            .chain(view.transform.angles.0)
+            .chain([
+                view.pass.projection.unscaled_horizontal_fov_4_by_3,
+                view.pass.projection.horizontal_fov,
+                view.pass.projection.aspect_ratio,
+                view.pass.projection.near_plane,
+                view.pass.projection.far_plane,
+            ])
+            .chain(view.pass.view_depth_range)
+            .chain(view.pass.restored_depth_range)
+        {
+            out.extend_from_slice(&value.0.to_le_bytes())
+        }
+        out.extend_from_slice(&[
+            u8::from(view.pass.projection_restored && view.pass.view_restored),
+            u8::from(
+                view.pass.restored_depth_range
+                    == [
+                        playsrc_studio_model::Float32(0),
+                        playsrc_studio_model::Float32(1f32.to_bits()),
+                    ],
+            ),
+            u8::from(view.item_translucent),
+            0,
+        ])
+    } else {
+        out.extend_from_slice(&[0; 68])
+    }
     out.extend_from_slice(&u32::try_from(events.len()).map_err(|_| ())?.to_le_bytes());
     for event in events {
         out.extend_from_slice(&u32::try_from(event.index).map_err(|_| ())?.to_le_bytes());
@@ -1016,7 +1360,7 @@ fn encode_model_pose_part(
         pbytes(out, &event.name)?;
     }
     out.extend_from_slice(&u32::try_from(selected.len()).map_err(|_| ())?.to_le_bytes());
-    for selected in selected {
+    for (selected_index, selected) in selected.iter().enumerate() {
         let primitive = model.geometry.get(selected.primitive).ok_or(())?;
         let (positions, normals, tangents) = posed_vertices(model, primitive, pose)?;
         out.extend_from_slice(
@@ -1034,6 +1378,7 @@ fn encode_model_pose_part(
                 .map_err(|_| ())?
                 .to_le_bytes(),
         );
+        out.extend_from_slice(&[u8::from(selected_index >= opaque_count), 0, 0, 0]);
         for ((position, normal), tangent) in positions.iter().zip(&normals).zip(&tangents) {
             for value in position.iter().chain(normal).chain(tangent) {
                 out.extend_from_slice(&value.to_le_bytes());
@@ -1201,7 +1546,103 @@ pub unsafe extern "C" fn playsrc_spawn_copy(
     .unwrap_or(0)
 }
 #[unsafe(no_mangle)]
+/// # Safety
+/// `pointer` must identify one complete version-4 gameplay command in this module's memory.
+pub unsafe extern "C" fn playsrc_simulation_observe(
+    handle: u32,
+    now_seconds: f64,
+    pointer: *const u8,
+    length: usize,
+    suspended: u32,
+) -> u32 {
+    if !now_seconds.is_finite()
+        || pointer.is_null()
+        || length == 0
+        || length > 64 * 1024
+        || suspended > 1
+        || with(handle, |_| ()).is_none()
+    {
+        return 0;
+    }
+    let command = unsafe { std::slice::from_raw_parts(pointer, length) };
+    if gameplay_protocol::decode(command).is_none() {
+        return 0;
+    }
+    let mut hosts = simulation_hosts().lock().expect("TF2 Simulation hosts");
+    if let std::collections::btree_map::Entry::Vacant(entry) = hosts.entry(handle) {
+        let Some(configuration) = simulation_configuration() else {
+            return 0;
+        };
+        entry.insert(SimulationHostEntry {
+            host: playsrc_simulation::FixedStepHost::with_metrics_clock(
+                configuration,
+                Tf2Simulation {
+                    handle,
+                    current_command: None,
+                },
+                RuntimeMetricsClock::new(),
+            ),
+            output: Vec::new(),
+        });
+    }
+    let entry = hosts.get_mut(&handle).expect("inserted Simulation host");
+    if entry.host.submit(command).is_err() {
+        return 0;
+    }
+    let should_suspend = suspended == 1;
+    if entry.host.status().suspended != should_suspend
+        && entry
+            .host
+            .set_suspended(should_suspend, now_seconds)
+            .is_err()
+    {
+        return 0;
+    }
+    if entry.host.observe(now_seconds).is_err() {
+        return 0;
+    }
+    let Some(output) = encode_simulation_publications(&entry.host.drain_publications()) else {
+        return 0;
+    };
+    entry.output = output;
+    1
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_simulation_output_length(handle: u32) -> usize {
+    simulation_hosts()
+        .lock()
+        .expect("TF2 Simulation hosts")
+        .get(&handle)
+        .map_or(0, |entry| entry.output.len())
+}
+#[unsafe(no_mangle)]
+/// # Safety
+/// `pointer` must identify writable module memory of at least `capacity` bytes.
+pub unsafe extern "C" fn playsrc_simulation_output_copy(
+    handle: u32,
+    pointer: *mut u8,
+    capacity: usize,
+) -> usize {
+    let hosts = simulation_hosts().lock().expect("TF2 Simulation hosts");
+    let Some(entry) = hosts.get(&handle) else {
+        return 0;
+    };
+    if pointer.is_null() || capacity < entry.output.len() {
+        return 0;
+    }
+    unsafe { std::ptr::copy_nonoverlapping(entry.output.as_ptr(), pointer, entry.output.len()) };
+    entry.output.len()
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn playsrc_dispose(handle: u32) -> u32 {
+    if let Some(mut entry) = simulation_hosts()
+        .lock()
+        .expect("TF2 Simulation hosts")
+        .remove(&handle)
+    {
+        let _ = entry.host.shutdown();
+    }
     let Some((index, generation)) = decode(handle) else {
         return 0;
     };
@@ -1220,6 +1661,7 @@ pub extern "C" fn playsrc_dispose(handle: u32) -> u32 {
     slot.particle_sheets.clear();
     slot.particle_output.clear();
     slot.studio_models.clear();
+    slot.viewmodel_bob.clear();
     slot.model_output.clear();
     slot.visibility = None;
     slot.area_state = None;
@@ -1497,6 +1939,14 @@ pub unsafe extern "C" fn playsrc_game_advance(
     }
     let snapshot = snapshot.expect("positive tick count");
     let producer = producer.expect("positive tick count");
+    let entity_presentation =
+        match candidate.entity_presentation(playsrc_tf2::PresentationRevision {
+            entity: candidate.entity_revision(),
+            collision: collision_revision,
+        }) {
+            Ok(value) => value,
+            Err(_) => return 0,
+        };
     let Some(encoded) = encode_snapshot(
         &snapshot,
         &producer,
@@ -1509,6 +1959,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
             rocket_results: &consumed_rocket_results,
             mover_results: &consumed_mover_results,
             collision_snapshot: &collision_snapshot_bytes,
+            entity_presentation: &entity_presentation,
         },
     ) else {
         return 0;
@@ -1762,6 +2213,7 @@ struct SnapshotExtensions<'a> {
     rocket_results: &'a [playsrc_tf2::RocketTraceResult],
     mover_results: &'a [playsrc_tf2::MoverResult],
     collision_snapshot: &'a [u8],
+    entity_presentation: &'a playsrc_tf2::EntityPresentationSnapshot,
 }
 
 fn encode_snapshot(
@@ -1778,9 +2230,12 @@ fn encode_snapshot(
         None => Vec::new(),
     };
     let random_state = encode_random_state(extensions.random_state)?;
+    let entity_presentation = encode_entity_presentation(extensions.entity_presentation)?;
+    let mut movement_tick_bytes = Vec::new();
+    encode_movement_tick(&mut movement_tick_bytes, movement_tick, MAX)?;
     let mut out = Vec::new();
     extend(&mut out, b"PSSN", MAX)?;
-    u32_field(&mut out, 6, MAX)?;
+    u32_field(&mut out, 7, MAX)?;
     u64_field(&mut out, snapshot.tick, MAX)?;
     extend(
         &mut out,
@@ -1856,8 +2311,8 @@ fn encode_snapshot(
         extensions.mover_results.len(),
         extensions.collision_snapshot.len(),
         random_state.len(),
-        0,
-        0,
+        entity_presentation.len(),
+        movement_tick_bytes.len(),
     ] {
         u32_field(&mut out, u32::try_from(count).ok()?, MAX)?;
     }
@@ -2115,7 +2570,123 @@ fn encode_snapshot(
     }
     extend(&mut out, extensions.collision_snapshot, MAX)?;
     extend(&mut out, &jump, MAX)?;
-    encode_movement_tick(&mut out, movement_tick, MAX)?;
+    extend(&mut out, &movement_tick_bytes, MAX)?;
+    extend(&mut out, &entity_presentation, MAX)?;
+    Some(out)
+}
+
+fn encode_entity_presentation(
+    snapshot: &playsrc_tf2::EntityPresentationSnapshot,
+) -> Option<Vec<u8>> {
+    const MAX: usize = 8 * 1024 * 1024;
+    let e = &snapshot.entities;
+    let mut out = b"PEBP".to_vec();
+    u32_field(&mut out, 1, MAX)?;
+    for value in [
+        e.source_identity,
+        e.registry_identity,
+        e.tick,
+        e.revision,
+        snapshot.collision_revision,
+    ] {
+        u64_field(&mut out, value, MAX)?;
+    }
+    u32_field(&mut out, u32::try_from(e.models.len()).ok()?, MAX)?;
+    for model in &e.models {
+        u16_field(&mut out, model.handle.slot, MAX)?;
+        u16_field(&mut out, 0, MAX)?;
+        u32_field(&mut out, model.handle.generation, MAX)?;
+        u32_field(&mut out, u32::try_from(model.source_index).ok()?, MAX)?;
+        u32_field(&mut out, u32::try_from(model.model).ok()?, MAX)?;
+        floats(
+            &mut out,
+            model
+                .local_transform
+                .origin
+                .into_iter()
+                .chain(model.local_transform.angles)
+                .chain(model.world_transform.origin)
+                .chain(model.world_transform.angles),
+            MAX,
+        )?;
+        extend(
+            &mut out,
+            &[
+                u8::from(model.parent.is_some()),
+                model.render_mode,
+                model.render_fx,
+                u8::from(model.draw),
+            ],
+            MAX,
+        )?;
+        u16_field(&mut out, model.parent.map_or(0, |p| p.slot), MAX)?;
+        u16_field(&mut out, 0, MAX)?;
+        u32_field(&mut out, model.parent.map_or(0, |p| p.generation), MAX)?;
+        extend(&mut out, &model.color, MAX)?;
+        u16_field(&mut out, model.effects, MAX)?;
+        let (kind, position, positioned) = model.mover.as_ref().map_or((0, 0, 0), |m| {
+            let kind = match m.kind {
+                playsrc_entity::MoverKind::Button => 1,
+                playsrc_entity::MoverKind::Door => 2,
+                playsrc_entity::MoverKind::Linear => 3,
+            };
+            let (p, b) = match m.position {
+                playsrc_entity::MoverPosition::Closed => (1, 0),
+                playsrc_entity::MoverPosition::Opening => (2, 0),
+                playsrc_entity::MoverPosition::Open => (3, 0),
+                playsrc_entity::MoverPosition::Closing => (4, 0),
+                playsrc_entity::MoverPosition::Positioned(b) => (5, b),
+            };
+            (kind, p, b)
+        });
+        extend(&mut out, &[kind, position], MAX)?;
+        u32_field(
+            &mut out,
+            model.mover.as_ref().map_or(0, |m| m.progress_bits),
+            MAX,
+        )?;
+        u64_field(
+            &mut out,
+            model
+                .mover
+                .as_ref()
+                .and_then(|m| m.request_id)
+                .unwrap_or(u64::MAX),
+            MAX,
+        )?;
+        floats(
+            &mut out,
+            model
+                .mover
+                .as_ref()
+                .and_then(|m| m.local_destination)
+                .unwrap_or([0.0; 3])
+                .into_iter()
+                .chain(
+                    model
+                        .mover
+                        .as_ref()
+                        .and_then(|m| m.world_destination)
+                        .unwrap_or([0.0; 3]),
+                ),
+            MAX,
+        )?;
+        extend(
+            &mut out,
+            &[
+                model
+                    .mover
+                    .as_ref()
+                    .and_then(|m| m.opening)
+                    .map_or(0, |v| if v { 1 } else { 2 }),
+                0,
+                0,
+                0,
+            ],
+            MAX,
+        )?;
+        u32_field(&mut out, positioned, MAX)?;
+    }
     Some(out)
 }
 
@@ -4045,7 +4616,7 @@ fn encode_model_materials(
             .to_le_bytes(),
     );
     for (identity, material) in &materials {
-        encode_model_material(out, identity, material)?;
+        encode_model_material(out, identity, material, bundle)?;
     }
     out.extend_from_slice(b"PMIP");
     out.extend_from_slice(&1_u32.to_le_bytes());
@@ -4071,6 +4642,7 @@ fn encode_model_material(
     out: &mut Vec<u8>,
     identity: &str,
     material: &playsrc_material::Material,
+    bundle: &BTreeMap<String, &[u8]>,
 ) -> Result<(), ()> {
     use playsrc_material::ModelShaderState as State;
     let model = material.model.as_ref().ok_or(())?;
@@ -4231,6 +4803,43 @@ fn encode_model_material(
             out.extend_from_slice(&[u8::from(state.half_lambert), 0, 0, 0]);
             out.extend_from_slice(&state.dilation.to_le_bytes());
         }
+    }
+    let alpha = selected_texture(material, bundle)
+        .ok()
+        .is_some_and(|(_, _, m)| m.alpha_flags.one_bit || m.alpha_flags.eight_bit);
+    let draw = playsrc_material::model_draw_state(
+        material,
+        playsrc_material::TextureAlphaFacts { base: alpha },
+        playsrc_material::ModelRuntimeInputs {
+            alpha_modulation: 1.0,
+            cloak_factor: Some(0.0),
+        },
+    )
+    .map_err(|_| ())?;
+    out.extend_from_slice(&[
+        match draw.opacity {
+            playsrc_material::ModelOpacity::Opaque => 0,
+            playsrc_material::ModelOpacity::Translucent => 1,
+        },
+        match draw.framebuffer {
+            playsrc_material::ModelFramebufferRequirement::None => 0,
+            playsrc_material::ModelFramebufferRequirement::Potential => 1,
+            playsrc_material::ModelFramebufferRequirement::Current => 2,
+        },
+        u8::try_from(draw.required_inputs.len()).map_err(|_| ())?,
+        0,
+    ]);
+    for input in draw.required_inputs {
+        out.push(match input {
+            playsrc_material::ModelDrawInput::AmbientCube => 1,
+            playsrc_material::ModelDrawInput::LocalLights => 2,
+            playsrc_material::ModelDrawInput::CameraPosition => 3,
+            playsrc_material::ModelDrawInput::StudioEyeParameters => 4,
+            playsrc_material::ModelDrawInput::LocalEnvironment => 5,
+            playsrc_material::ModelDrawInput::CurrentFramebuffer => 6,
+            playsrc_material::ModelDrawInput::AuthoredTexturePlanes => 7,
+            playsrc_material::ModelDrawInput::GameProxyValues => 8,
+        })
     }
     Ok(())
 }
@@ -4625,7 +5234,7 @@ fn compile_presentation(
         .materials;
     let environment = compile_environment_artifact(canonical, bsp, graph, &bundle, profile)?;
     let mut out = b"PTF2".to_vec();
-    out.extend_from_slice(&6u32.to_le_bytes());
+    out.extend_from_slice(&7u32.to_le_bytes());
     out.extend_from_slice(&u32::try_from(models.len()).map_err(|_| ())?.to_le_bytes());
     out.extend_from_slice(&u32::try_from(textures.len()).map_err(|_| ())?.to_le_bytes());
     out.extend_from_slice(
@@ -4635,6 +5244,11 @@ fn compile_presentation(
     );
     out.extend_from_slice(
         &u32::try_from(particle_materials.len())
+            .map_err(|_| ())?
+            .to_le_bytes(),
+    );
+    out.extend_from_slice(
+        &u32::try_from(canonical.brush_models.len())
             .map_err(|_| ())?
             .to_le_bytes(),
     );
@@ -4817,6 +5431,33 @@ fn compile_presentation(
     encode_audio_documents(&mut out, &bundle)?;
     encode_model_occurrence_matrices(&mut out, graph)?;
     encode_model_materials(&mut out, &models, &bundle, profile)?;
+    for model in &canonical.brush_models {
+        out.extend_from_slice(&u32::try_from(model.index).map_err(|_| ())?.to_le_bytes());
+        for value in model.bounds[0]
+            .into_iter()
+            .chain(model.bounds[1])
+            .chain(model.origin)
+        {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        out.extend_from_slice(&model.head_node.to_le_bytes());
+        for value in [
+            model.surface_range.start,
+            model.surface_range.end,
+            model.vertex_count,
+            model.triangle_count,
+            model.materials.len(),
+            model.entities.len(),
+        ] {
+            out.extend_from_slice(&u32::try_from(value).map_err(|_| ())?.to_le_bytes());
+        }
+        for value in &model.materials {
+            out.extend_from_slice(&u32::try_from(*value).map_err(|_| ())?.to_le_bytes());
+        }
+        for value in &model.entities {
+            out.extend_from_slice(&u32::try_from(*value).map_err(|_| ())?.to_le_bytes());
+        }
+    }
     let models = models
         .into_iter()
         .map(|(identity, artifact)| (identity, artifact.model))
@@ -5212,7 +5853,7 @@ fn compile_environment_artifact(
 type CompiledParticles = (
     playsrc_particle::ParticleWorld,
     Vec<String>,
-    BTreeMap<String, playsrc_particle::ParticleSheet>,
+    BTreeMap<String, playsrc_particle::ParticleMaterial>,
 );
 
 fn compile_particles(configuration: &[u8]) -> Result<CompiledParticles, ()> {
@@ -5258,8 +5899,41 @@ fn compile_particles(configuration: &[u8]) -> Result<CompiledParticles, ()> {
                 &b,
                 playsrc_material::SelectionEnvironment::default(),
             )?;
-            let (_, bytes, _) = selected_texture(&material, &b)?;
-            Ok((identity.clone(), decode_particle_sheet(bytes)?))
+            let (_, bytes, metadata) = selected_texture(&material, &b)?;
+            let state = playsrc_material::static_state(
+                &material,
+                playsrc_material::TextureAlphaFacts {
+                    base: metadata.alpha_flags.one_bit || metadata.alpha_flags.eight_bit,
+                },
+            )
+            .map_err(|_| ())?;
+            let factor = |value| match value {
+                playsrc_material::BlendFactor::Zero => playsrc_particle::ParticleBlendFactor::Zero,
+                playsrc_material::BlendFactor::One => playsrc_particle::ParticleBlendFactor::One,
+                playsrc_material::BlendFactor::SourceAlpha => {
+                    playsrc_particle::ParticleBlendFactor::SourceAlpha
+                }
+                playsrc_material::BlendFactor::OneMinusSourceAlpha => {
+                    playsrc_particle::ParticleBlendFactor::OneMinusSourceAlpha
+                }
+            };
+            Ok((
+                identity.clone(),
+                playsrc_particle::ParticleMaterial {
+                    shader: if material.shader == playsrc_material::Shader::Sprite {
+                        playsrc_particle::ParticleMaterialShader::SpriteCard
+                    } else {
+                        playsrc_particle::ParticleMaterialShader::MeshSprite
+                    },
+                    blend: playsrc_particle::ParticleBlendState {
+                        source: factor(state.blend.source),
+                        destination: factor(state.blend.destination),
+                    },
+                    color_space: playsrc_particle::ParticleColorSpace::SrgbTextureLinearTint,
+                    dual_sequence: false,
+                    sheet: decode_particle_sheet(bytes)?,
+                },
+            ))
         })
         .collect::<Result<BTreeMap<_, _>, ()>>()?;
     Ok((
@@ -5580,6 +6254,7 @@ mod tests {
             particle_sheets: BTreeMap::new(),
             particle_output: Vec::new(),
             studio_models: BTreeMap::new(),
+            viewmodel_bob: BTreeMap::new(),
             model_output: Vec::new(),
             visibility: None,
             area_state: None,
@@ -5613,6 +6288,7 @@ mod tests {
             particle_sheets: BTreeMap::new(),
             particle_output: Vec::new(),
             studio_models: BTreeMap::new(),
+            viewmodel_bob: BTreeMap::new(),
             model_output: Vec::new(),
             visibility: None,
             area_state: None,
@@ -5780,6 +6456,16 @@ mod tests {
         collision_snapshot.extend_from_slice(&1_u32.to_le_bytes());
         collision_snapshot.extend_from_slice(&9_u64.to_le_bytes());
         collision_snapshot.extend_from_slice(&0_u32.to_le_bytes());
+        let entity_presentation = playsrc_tf2::EntityPresentationSnapshot {
+            collision_revision: 9,
+            entities: playsrc_entity::BrushModelPresentation {
+                source_identity: 1,
+                registry_identity: 2,
+                tick: 9,
+                revision: 1,
+                models: Vec::new(),
+            },
+        };
         let encoded = encode_snapshot(
             &snapshot,
             &producer,
@@ -5792,11 +6478,12 @@ mod tests {
                 rocket_results: &[],
                 mover_results: &[],
                 collision_snapshot: &collision_snapshot,
+                entity_presentation: &entity_presentation,
             },
         )
         .unwrap();
-        assert_eq!(&encoded[..8], b"PSSN\x06\0\0\0");
-        assert_eq!(encoded.len(), 820);
+        assert_eq!(&encoded[..8], b"PSSN\x07\0\0\0");
+        assert_eq!(encoded.len(), 872);
         assert_eq!(u32::from_le_bytes(encoded[56..60].try_into().unwrap()), 1);
         assert_eq!(u32::from_le_bytes(encoded[60..64].try_into().unwrap()), 1);
         assert_eq!(u32::from_le_bytes(encoded[64..68].try_into().unwrap()), 1);

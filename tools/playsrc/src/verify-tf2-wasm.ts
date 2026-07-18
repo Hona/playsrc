@@ -13,12 +13,12 @@ import { decodeModelPoseOutput, encodeModelPoseBatch } from "../../../games/tf2/
 const EXPECTED_MAP_BYTES = 42_082_929
 const EXPECTED_MAP_SHA256 = "56153098a867c553651f9c773bd72c4659782bae8520277c80daaaa414bdf156"
 const EXPECTED_BSP_SHA256 = "b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959"
-const EXPECTED_HDR_BYTES = 78_255_264
-const EXPECTED_HDR_SHA256 = "a2326c011921f1da90480b1c5f4d3923c038e2dcf07cf6c1d69d43cb2a145a5f"
-const EXPECTED_LDR_DERIVED_SHA256 = "69bdc9b50fe8c26b0a66fd848a1e606dd2ce0578efffd80226ae61de1edf38b3"
-const EXPECTED_HDR_DERIVED_SHA256 = "babf3490b145841e278d3c23aeb7c0f1d8ebc89d29e13215f53c5adb6ecdfcb4"
-const EXPECTED_DEPENDENCY_BYTES = 115_885_689
-const EXPECTED_DEPENDENCY_SHA256 = "896132d9b618d0ae521092c1e33d91d3cc05f1692ac434603a31994b8dd51741"
+const EXPECTED_HDR_BYTES=78_256_304
+const EXPECTED_HDR_SHA256="0f33e8611dd7d9e77bec6a2e6e00380013fb22c09b5867353b5df1dead4c84a5"
+const EXPECTED_LDR_DERIVED_SHA256="0f807c5519736b929e6da07a97785fec8e9a848305b7e997d5ee593b6c59830e"
+const EXPECTED_HDR_DERIVED_SHA256="d972c97f91518b7e0680fc381bc3271eddc60bd0b7f9b447d1c32647051c6866"
+const EXPECTED_DEPENDENCY_BYTES=120_412_213
+const EXPECTED_DEPENDENCY_SHA256="c8ccea4035c5e75e26ffc0855a425ff4139f079f35ab9abd09e22990726f03d5"
 function bundlePathOffset(bytes: Uint8Array, target: string): number {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   let offset = 12
@@ -47,6 +47,8 @@ type Exports = Readonly<{
   playsrc_presentation_length(handle: number): number
   playsrc_spawn_copy(handle: number, pointer: number, capacity: number): number
   playsrc_game_advance(handle: number, command: number, length: number, ticks: number): number
+  playsrc_simulation_observe(handle:number,now:number,command:number,length:number,suspended:number):number
+  playsrc_simulation_output_length(handle:number):number
   playsrc_jump_configure(handle: number, definition: number, length: number): number
   playsrc_particle_transact(handle: number, pointer: number, length: number): number
   playsrc_particle_output_length(handle: number): number
@@ -303,7 +305,7 @@ function inspectHdrPayload(payload: Uint8Array) {
   }
   require(skyDimensions.join(",") === "512x256,512x256,512x256,512x256,512x512,4x4", "HDR sky dimensions are invalid")
   const inputCount = reader.u32()
-  require(inputCount === 303, "HDR input-hash count is invalid")
+  require(inputCount===317,"HDR input-hash count is invalid")
   for (let index = 0; index < inputCount; index += 1) {
     require(reader.u8() === 1 && reader.take(3).every((value) => value === 0), "HDR input record is invalid")
     require(reader.text().length > 0, "HDR input path is empty")
@@ -408,7 +410,7 @@ export async function verifyTf2Wasm(
   const nativeHdr = await buildNativeHdr(config, identity ?? "")
   const wasmBytes = await readFile(wasmPath)
   require(wasmBytes.byteLength > 0 && wasmBytes.byteLength <= 64 * 1024 * 1024, "WASM byte length is invalid")
-  const loaded = await WebAssembly.instantiate(wasmBytes)
+  const loaded=await WebAssembly.instantiate(wasmBytes,{playsrc_metrics:{monotonic_milliseconds:()=>performance.now()}})
   const exports = loaded.instance.exports as unknown as Exports
   const [bspBytes, dependencyBytes, nativeHdrPayload] = await Promise.all([
     readFile(path.join(config.sourceCacheDir, map.decoded.cachePath)),
@@ -605,6 +607,7 @@ export async function verifyTf2Wasm(
     "authority blocker ledger differs")
   require(decoded.jump === null, "unavailable Tempus course was inferred")
   require(decoded.rocketTraceRequests.length > 0, "rocket Collision request seam is empty")
+  require(decoded.entityPresentation.collisionRevision===decoded.collisionSnapshot.identity&&decoded.entityPresentation.models.length===122&&decoded.entityPresentation.models.filter(model=>model.draw).length===17,"Entity brush presentation revision join differs")
 
   new DataView(exports.memory.buffer, commandPointer, commandBytes.byteLength).setFloat32(4, Number.NaN, true)
   require(exports.playsrc_game_advance(handle, commandPointer, commandBytes.byteLength, 1) === 0, "malformed command was accepted")
@@ -747,9 +750,9 @@ export async function verifyTf2Wasm(
   const particleOutput = new Uint8Array(exports.memory.buffer, particleOutputPointer, particleOutputLength).slice()
   const particleOutputView = new DataView(particleOutput.buffer)
   require(new TextDecoder().decode(particleOutput.subarray(0, 4)) === "PSPR" &&
-    particleOutputView.getUint32(4, true) === 2 && particleOutputView.getUint32(8, true) > 0,
+    particleOutputView.getUint32(4,true)===3&&particleOutputView.getUint32(8,true)>0,
   "configured rockettrail render output identity differs")
-  require((particleOutputView.getUint32(12 + 124, true) & 1) !== 0,
+  require((particleOutputView.getUint32(40+124,true)&1)!==0,
     "configured rockettrail render output omitted its primary sheet sample")
 
   const modelBatch = encodeModelPoseBatch([{
@@ -759,6 +762,7 @@ export async function verifyTf2Wasm(
     activity: "ACT_PRIMARY_VM_DRAW",
     previousElapsedSeconds: 0,
     elapsedSeconds: 0.4,
+    currentTimeSeconds:0.4,frameTimeSeconds:0.015,planarSpeed:0,screenAspectRatio:16/9,worldFarPlane:32768,
     skin: 0,
     lod: 0,
     bodygroups: [0],
@@ -775,9 +779,9 @@ export async function verifyTf2Wasm(
   const modelPoses = decodeModelPoseOutput(
     new Uint8Array(exports.memory.buffer, modelOutputPointer, modelOutputLength).slice(),
   )
-  require(modelPoses.length === 2 && modelPoses[0]?.role === "hand" && modelPoses[1]?.role === "item" &&
-    modelPoses[0].model === "models/weapons/c_models/c_soldier_arms.mdl" &&
-    modelPoses[1].model === "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl" &&
+  require(modelPoses.length===2&&modelPoses[0]?.role==="item"&&modelPoses[1]?.role==="hand"&&
+    modelPoses[1].model === "models/weapons/c_models/c_soldier_arms.mdl" &&
+    modelPoses[0].model === "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl" &&
     modelPoses.every((pose) => pose.activity === "ACT_PRIMARY_VM_DRAW" && pose.primitives.length > 0 &&
       pose.primitives.every((primitive) => primitive.tangents.length / 4 === primitive.positions.length / 3)),
   "fixed StudioModel viewmodel pose output differs")
@@ -824,6 +828,7 @@ export async function verifyTf2Wasm(
   require(selectedSkyOffset >= 0, "selected HDR sky dependency is absent from its bundle")
   missingDependency[selectedSkyOffset + new TextEncoder().encode(selectedSky).byteLength - 5] = "x".charCodeAt(0)
   require(compileFailure(bspBytes, 1, missingDependency) !== 0, "missing selected HDR material dependency was accepted")
+  const simulationCommand=new Uint8Array(encodeCommand({forward:0,side:0,yawDegrees:0,pitchDegrees:0,jump:false,crouch:false,fire:false,detonate:false})),simulationPointer=exports.playsrc_alloc(simulationCommand.length);new Uint8Array(exports.memory.buffer,simulationPointer,simulationCommand.length).set(simulationCommand);require(exports.playsrc_simulation_observe(hdrFirst.handle,0,simulationPointer,simulationCommand.length,0)===1,"Simulation baseline failed");require(exports.playsrc_simulation_observe(hdrFirst.handle,0.016,simulationPointer,simulationCommand.length,0)===1&&exports.playsrc_simulation_output_length(hdrFirst.handle)>16,"Simulation selected tick failed");exports.playsrc_free(simulationPointer,simulationCommand.length)
   require(exports.playsrc_dispose(hdrFirst.handle) === 1, "first HDR handle disposal failed")
   require(exports.playsrc_dispose(hdrSecond.handle) === 1, "second HDR handle disposal failed")
   return {

@@ -258,6 +258,8 @@ export type EntityTransform = Readonly<{
   position: readonly [number, number, number]
   angles: readonly [number, number, number]
 }>
+export type BrushModelDrawState = Readonly<{ sourceIndex:number; model:number; worldPosition:readonly[number,number,number]; worldAngles:readonly[number,number,number]; renderMode:number;color:readonly[number,number,number,number];renderFx:number;effects:number;draw:boolean;mover:null|Readonly<{kind:1|2|3;position:1|2|3|4|5;progress:number;requestId:bigint|null;opening:boolean|null}> }>
+export type EntityPresentation=Readonly<{sourceIdentity:bigint;registryIdentity:bigint;tick:bigint;entityRevision:bigint;collisionRevision:bigint;models:readonly BrushModelDrawState[]}>
 
 export type EntityEvent = Readonly<{
   sequence: bigint
@@ -358,6 +360,7 @@ export type Snapshot = Readonly<{
   rocketTraceResults: readonly RocketTraceResult[]
   moverResults: readonly MoverResult[]
   collisionSnapshot: CollisionSnapshot
+  entityPresentation: EntityPresentation
   authorityBlockers: readonly AuthorityBlocker[]
 }>
 
@@ -750,8 +753,7 @@ function decodeJump(bytes: ArrayBuffer, offset: number, length: number): JumpSna
   return Object.freeze({ run, events: Object.freeze(events), result })
 }
 
-function decodeMovementTick(bytes: ArrayBuffer, offset: number): MovementTick | null {
-  const length = bytes.byteLength - offset
+function decodeMovementTick(bytes: ArrayBuffer, offset: number, length: number): MovementTick | null {
   if (length < 12 || length > 144) throw new Tf2CodecError("Movement tick section length is invalid")
   const data = new Uint8Array(bytes, offset, length), view = new DataView(bytes, offset, length)
   if (data[0] !== 0x50 || data[1] !== 0x4d || data[2] !== 0x54 || data[3] !== 0x4b || view.getUint32(4, true) !== 1)
@@ -785,6 +787,8 @@ function decodeMovementTick(bytes: ArrayBuffer, offset: number): MovementTick | 
     mover: Object.freeze({ identity, status: status as 0 | 1 | 2, displacement, supportVelocity, blocker: blockerValue === 0xffff_ffff_ffff_ffffn ? null : blockerValue }),
   })
 }
+function decodeEntityPresentation(bytes:ArrayBuffer,offset:number,length:number):EntityPresentation{
+  const data=new Uint8Array(bytes,offset,length),view=new DataView(bytes,offset,length);if(length<52||(length-52)%128!==0||new TextDecoder().decode(data.subarray(0,4))!=="PEBP"||view.getUint32(4,true)!==1)throw new Tf2CodecError("Entity presentation identity is invalid");const count=view.getUint32(48,true);if(52+count*128!==length)throw new Tf2CodecError("Entity presentation records do not frame bytes");const models:BrushModelDrawState[]=[];let prior=-1;for(let i=0;i<count;i++){const at=52+i*128,source=view.getUint32(at+8,true),model=view.getUint32(at+12,true),worldPosition=vector(view,at+40),worldAngles=vector(view,at+52),renderMode=data[at+65]!,renderFx=data[at+66]!,draw=data[at+67]!,kind=data[at+82]!,position=data[at+83]!,progress=view.getFloat32(at+84,true),request=view.getBigUint64(at+88,true),opening=data[at+120]!;if(source<=prior||model===0||draw>1||kind>3||position>5||opening>2||!finite([...worldPosition,...worldAngles,progress]))throw new Tf2CodecError("Entity presentation record is invalid");prior=source;models.push(Object.freeze({sourceIndex:source,model,worldPosition,worldAngles,renderMode,color:Object.freeze([data[at+76]!,data[at+77]!,data[at+78]!,data[at+79]!]),renderFx,effects:view.getUint16(at+80,true),draw:draw===1,mover:kind===0?null:Object.freeze({kind:kind as 1|2|3,position:position as 1|2|3|4|5,progress,requestId:request===0xffff_ffff_ffff_ffffn?null:request,opening:opening===0?null:opening===1})}))}return Object.freeze({sourceIdentity:view.getBigUint64(8,true),registryIdentity:view.getBigUint64(16,true),tick:view.getBigUint64(24,true),entityRevision:view.getBigUint64(32,true),collisionRevision:view.getBigUint64(40,true),models:Object.freeze(models)})}
 
 function validateProjectileTransitions(events: readonly ProjectileEvent[]): void {
   const state = new Map<number, { kind: ProjectileKind; last?: ProjectileEventType; armed: boolean }>()
@@ -854,7 +858,7 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
   }
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
-  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 6)
+  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 7)
     throw new Tf2CodecError("snapshot identity is invalid")
   const tf2Class = data[16]
   const team = data[17]
@@ -897,7 +901,8 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
   const moverResultCount = count(view.getUint32(140, true), "mover result")
   const collisionSnapshotLength = view.getUint32(144, true)
   const randomStateLength = view.getUint32(148, true)
-  if (view.getUint32(152, true) !== 0 || view.getUint32(156, true) !== 0 || 160 + movementLength > bytes.byteLength) {
+  const entityPresentationLength=view.getUint32(152,true),movementTickLength=view.getUint32(156,true)
+  if (entityPresentationLength<52||movementTickLength<12||160 + movementLength > bytes.byteLength) {
     throw new Tf2CodecError("snapshot extension header is invalid")
   }
   const movement = movementSnapshot(bytes, 160, movementLength)
@@ -1374,8 +1379,9 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
   requireBytes(jumpLength, "Jump")
   const jump = decodeJump(bytes, at, jumpLength)
   at += jumpLength
-  const movementTick = decodeMovementTick(bytes, at)
-  at = bytes.byteLength
+  requireBytes(movementTickLength,"Movement tick");const movementTick=decodeMovementTick(bytes,at,movementTickLength);at+=movementTickLength
+  requireBytes(entityPresentationLength,"Entity presentation");const entityPresentation=decodeEntityPresentation(bytes,at,entityPresentationLength);at+=entityPresentationLength
+  if(at!==bytes.byteLength||entityPresentation.collisionRevision!==collisionSnapshot.identity)throw new Tf2CodecError("Entity presentation revision join is invalid")
 
   return Object.freeze({
     tick: view.getBigUint64(8, true),
@@ -1415,6 +1421,7 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
     rocketTraceResults: Object.freeze(rocketTraceResults),
     moverResults: Object.freeze(moverResults),
     collisionSnapshot,
+    entityPresentation,
     authorityBlockers: Object.freeze(authorityBlockers),
   })
 }

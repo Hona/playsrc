@@ -70,6 +70,7 @@ export type AudioArtifact = Readonly<{
   entries: readonly SoundScriptNode[]
 }>
 export type ModelOccurrenceMatrix = Readonly<{ entity: number; model: string; matrix: Float32Array }>
+export type BrushModelArtifact=Readonly<{index:number;bounds:readonly[readonly[number,number,number],readonly[number,number,number]];origin:readonly[number,number,number];headNode:number;surfaceRange:readonly[number,number];vertexCount:number;triangleCount:number;materials:readonly number[];entities:readonly number[]}>
 export type ModelTextureBinding = Readonly<{
   kind: "material" | "model"
   role: number
@@ -83,6 +84,7 @@ export type ModelMaterialArtifact = Readonly<{
   vertexRequirements: number
   bindings: readonly ModelTextureBinding[]
   environmentMap: null | Readonly<{ tint: readonly [number, number, number]; contrast: number; saturation: number }>
+  opacity:"opaque"|"translucent";framebuffer:"none"|"potential"|"current";requiredInputs:readonly string[]
   state:
     | Readonly<{
         kind: "vertex-lit-generic"
@@ -254,6 +256,7 @@ export type PresentationArtifacts = Readonly<{
   modelMaterials: ReadonlyMap<string, ModelMaterialArtifact>
   authoredTextures: ReadonlyMap<string, AuthoredTextureArtifact>
   environment: EnvironmentArtifact
+  brushModels:readonly BrushModelArtifact[]
 }>
 export class ArtifactError extends Error {
   constructor(message: string) {
@@ -643,12 +646,14 @@ function parseModelMaterials(r: Reader): ReadonlyMap<string, ModelMaterialArtifa
       if (halfLambert > 1 || r.u8() || r.u8() || r.u8()) throw new ArtifactError("eyes flags")
       state = Object.freeze({ kind: "eyes", halfLambert: halfLambert === 1, dilation: r.f32() })
     }
+    const opacity=r.u8(),framebuffer=r.u8(),requirementCount=r.u8();if(opacity>1||framebuffer>2||requirementCount>8||r.u8())throw new ArtifactError("model draw state");const names=["ambient-cube","local-lights","camera-position","studio-eye-parameters","local-environment","current-framebuffer","authored-texture-planes","game-proxy-values"] as const,requiredInputs=Object.freeze(Array.from({length:requirementCount},()=>{const code=r.u8();if(code<1||code>8)throw new ArtifactError("model draw requirement");return names[code-1]!}))
     output.set(identity, Object.freeze({
       identity,
       shader: (["vertex-lit-generic", "eye-refract", "eyes"] as const)[shaderCode]!,
       vertexRequirements,
       bindings: Object.freeze(bindings),
       environmentMap,
+      opacity:opacity===0?"opaque":"translucent",framebuffer:(["none","potential","current"] as const)[framebuffer]!,requiredInputs,
       state,
     }))
   }
@@ -698,12 +703,12 @@ function parseAuthoredTextures(r: Reader): ReadonlyMap<string, AuthoredTextureAr
 }
 export async function parsePresentationArtifacts(bytes: Uint8Array): Promise<PresentationArtifacts> {
   const r = new Reader(bytes)
-  if (r.decoder.decode(r.take(4)) !== "PTF2" || r.u32() !== 6) throw new ArtifactError("artifact identity")
+  if (r.decoder.decode(r.take(4)) !== "PTF2" || r.u32() !== 7) throw new ArtifactError("artifact identity")
   const modelCount = r.u32(),
     textureCount = r.u32(),
     directionalCount = r.u32(),
-    particleMaterialCount = r.u32()
-  if (modelCount > 256 || textureCount > 4096 || directionalCount > 4096 || particleMaterialCount > 65536)
+    particleMaterialCount = r.u32(),brushModelCount=r.u32()
+  if (modelCount > 256 || textureCount > 4096 || directionalCount > 4096 || particleMaterialCount > 65536||brushModelCount<1||brushModelCount>4096)
     throw new ArtifactError("artifact count")
   const models = new Map<string, ModelArtifact>()
   for (let i = 0; i < modelCount; i++) {
@@ -818,6 +823,7 @@ export async function parsePresentationArtifacts(bytes: Uint8Array): Promise<Pre
   const modelOccurrences = parseOccurrenceMatrices(r)
   const modelMaterials = parseModelMaterials(r)
   const authoredTextures = parseAuthoredTextures(r)
+  const brushModels:BrushModelArtifact[]=[];let previousEnd=0;for(let expected=0;expected<brushModelCount;expected++){const index=r.u32(),minimum=tuple3(r),maximum=tuple3(r),origin=tuple3(r),headNode=r.i32(),start=r.u32(),end=r.u32(),vertexCount=r.u32(),triangleCount=r.u32(),mc=r.u32(),ec=r.u32();if(mc>65536||ec>65536)throw new ArtifactError("brush counts");const materials=Object.freeze(Array.from({length:mc},()=>r.u32())),entities=Object.freeze(Array.from({length:ec},()=>r.u32()));if(index!==expected||start!==previousEnd||end<start)throw new ArtifactError("brush descriptor");previousEnd=end;brushModels.push(Object.freeze({index,bounds:Object.freeze([minimum,maximum]) as BrushModelArtifact["bounds"],origin,headNode,surfaceRange:Object.freeze([start,end]) as readonly[number,number],vertexCount,triangleCount,materials,entities}))}
   if (r.offset !== bytes.length) throw new ArtifactError("trailing bytes")
   if (new Set(modelOccurrences.map((occurrence) => occurrence.entity)).size !== modelOccurrences.length)
     throw new ArtifactError("model occurrence identity")
@@ -841,5 +847,6 @@ export async function parsePresentationArtifacts(bytes: Uint8Array): Promise<Pre
     modelMaterials,
     authoredTextures,
     environment,
+    brushModels:Object.freeze(brushModels),
   })
 }

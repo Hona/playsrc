@@ -10,6 +10,7 @@ export type WorkerRequest =
     }>
   | Readonly<{ id: number; kind: "read-map"; generation: number }>
   | Readonly<{ id: number; kind: "read-presentation"; generation: number }>
+  | Readonly<{id:number;kind:"release-presentation";generation:number}>
   | Readonly<{ id: number; kind: "activate"; generation: number }>
   | Readonly<{
       id: number
@@ -23,9 +24,10 @@ export type WorkerRequest =
   | Readonly<{ id: number; kind: "visibility"; generation: number; position: readonly [number, number, number] }>
   | Readonly<{
       id: number
-      kind: "advance"
+      kind: "observe"
       generation: number
-      ticks: number
+      nowSeconds: number
+      suspended: boolean
       command: ArrayBuffer
     }>
   | Readonly<{ id: number; kind: "shutdown" }>
@@ -59,12 +61,13 @@ export type WorkerResponse =
     }>
   | Readonly<{ id: number; kind: "map"; generation: number; payload: ArrayBuffer }>
   | Readonly<{ id: number; kind: "presentation"; generation: number; payload: ArrayBuffer }>
+  | Readonly<{id:number;kind:"presentation-released";generation:number}>
   | Readonly<{ id: number; kind: "activated"; generation: number }>
   | Readonly<{ id: number; kind: "course-configured"; generation: number }>
   | Readonly<{ id: number; kind: "discarded"; generation: number }>
   | Readonly<{ id: number; kind: "particles"; generation: number; output: ArrayBuffer }>
   | Readonly<{ id: number; kind: "models"; generation: number; output: ArrayBuffer }>
   | Readonly<{ id: number; kind: "visibility"; generation: number; output: ArrayBuffer }>
-  | Readonly<{ id: number; kind: "snapshot"; generation: number; snapshot: ArrayBuffer }>
+  | Readonly<{ id: number; kind: "simulation"; generation: number; output: ArrayBuffer }>
   | Readonly<{ id: number; kind: "shutdown" }>
   | Readonly<{ id: number; kind: "failure"; code: WorkerFailureCode; detail: number }>

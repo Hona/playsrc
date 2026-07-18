@@ -20,6 +20,7 @@ type WasmExports = Readonly<{
   playsrc_presentation_length(handle: number): number
   playsrc_presentation_copy(handle: number, pointer: number, capacity: number): number
   playsrc_presentation_hash(handle: number, pointer: number): number
+  playsrc_presentation_release(handle:number):number
   playsrc_particle_transact(handle: number, pointer: number, length: number): number
   playsrc_particle_output_length(handle: number): number
   playsrc_particle_output_copy(handle: number, pointer: number, capacity: number): number
@@ -31,9 +32,9 @@ type WasmExports = Readonly<{
   playsrc_visibility_output_copy(handle: number, pointer: number, capacity: number): number
   playsrc_spawn_copy(handle: number, pointer: number, capacity: number): number
   playsrc_jump_configure(handle: number, definition: number, length: number): number
-  playsrc_game_advance(handle: number, command: number, length: number, ticks: number): number
-  playsrc_snapshot_length(handle: number): number
-  playsrc_snapshot_copy(handle: number, pointer: number, capacity: number): number
+  playsrc_simulation_observe(handle: number, nowSeconds: number, command: number, length: number, suspended: number): number
+  playsrc_simulation_output_length(handle: number): number
+  playsrc_simulation_output_copy(handle: number, pointer: number, capacity: number): number
   playsrc_dispose(handle: number): number
 }>
 
@@ -72,7 +73,7 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
       fail(request.id, "WasmUnavailable")
       return
     }
-    const loaded = await WebAssembly.instantiate(request.wasm)
+    const loaded = await WebAssembly.instantiate(request.wasm, { playsrc_metrics: { monotonic_milliseconds: () => performance.now() } })
     const candidate = loaded.instance.exports as unknown as WasmExports
     if (
       !(candidate.memory instanceof WebAssembly.Memory) ||
@@ -87,6 +88,7 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         candidate.playsrc_presentation_length,
         candidate.playsrc_presentation_copy,
         candidate.playsrc_presentation_hash,
+        candidate.playsrc_presentation_release,
         candidate.playsrc_particle_transact,
         candidate.playsrc_particle_output_length,
         candidate.playsrc_particle_output_copy,
@@ -98,9 +100,9 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         candidate.playsrc_visibility_output_copy,
         candidate.playsrc_spawn_copy,
         candidate.playsrc_jump_configure,
-        candidate.playsrc_game_advance,
-        candidate.playsrc_snapshot_length,
-        candidate.playsrc_snapshot_copy,
+        candidate.playsrc_simulation_observe,
+        candidate.playsrc_simulation_output_length,
+        candidate.playsrc_simulation_output_copy,
         candidate.playsrc_dispose,
       ].every((value) => typeof value === "function")
     ) {
@@ -283,6 +285,7 @@ function readPresentation(request: Extract<WorkerRequest, { kind: "read-presenta
   wasm.playsrc_free(pointer, length)
   post({ id: request.id, kind: "presentation", generation: request.generation, payload }, [payload])
 }
+function releasePresentation(request:Extract<WorkerRequest,{kind:"release-presentation"}>):void{if(!wasm||!pending||pending.generation!==request.generation||wasm.playsrc_presentation_release(pending.handle)!==1){fail(request.id,"StaleGeneration");return}post({id:request.id,kind:"presentation-released",generation:request.generation})}
 
 function activate(request: Extract<WorkerRequest, { kind: "activate" }>): void {
   if (!wasm || !pending || pending.generation !== request.generation) {
@@ -335,34 +338,32 @@ function configureCourse(request: Extract<WorkerRequest, { kind: "configure-cour
   post({ id: request.id, kind: "course-configured", generation: request.generation })
 }
 
-function advance(request: Extract<WorkerRequest, { kind: "advance" }>): void {
+function observe(request: Extract<WorkerRequest, { kind: "observe" }>): void {
   const value = requireActive(request.id, request.generation)
   if (!value) return
   if (
     !(request.command instanceof ArrayBuffer) ||
     request.command.byteLength < 48 ||
     request.command.byteLength > 64 * 1024 ||
-    !Number.isSafeInteger(request.ticks) ||
-    request.ticks < 1 ||
-    request.ticks > 64
+    !Number.isFinite(request.nowSeconds) || request.nowSeconds < 0 || typeof request.suspended !== "boolean"
   ) {
     fail(request.id, "MalformedRequest")
     return
   }
   const pointer = allocateCopy(value.exports, request.command)
-  const result = value.exports.playsrc_game_advance(value.handle, pointer, request.command.byteLength, request.ticks)
+  const result = value.exports.playsrc_simulation_observe(value.handle, request.nowSeconds, pointer, request.command.byteLength, Number(request.suspended))
   value.exports.playsrc_free(pointer, request.command.byteLength)
   if (result !== 1) {
     fail(request.id, "TransitionFailed")
     return
   }
-  const length = value.exports.playsrc_snapshot_length(value.handle)
-  if (!Number.isSafeInteger(length) || length < 160 || length > MAX_MESSAGE_BYTES) {
+  const length = value.exports.playsrc_simulation_output_length(value.handle)
+  if (!Number.isSafeInteger(length) || length < 16 || length > MAX_MESSAGE_BYTES) {
     fail(request.id, "InternalFailure")
     return
   }
   const snapshotPointer = value.exports.playsrc_alloc(length)
-  const copied = value.exports.playsrc_snapshot_copy(value.handle, snapshotPointer, length)
+  const copied = value.exports.playsrc_simulation_output_copy(value.handle, snapshotPointer, length)
   if (copied !== length) {
     value.exports.playsrc_free(snapshotPointer, length)
     fail(request.id, "InternalFailure")
@@ -370,7 +371,7 @@ function advance(request: Extract<WorkerRequest, { kind: "advance" }>): void {
   }
   const snapshot = new Uint8Array(value.exports.memory.buffer, snapshotPointer, length).slice().buffer
   value.exports.playsrc_free(snapshotPointer, length)
-  post({ id: request.id, kind: "snapshot", generation: request.generation, snapshot }, [snapshot])
+  post({ id: request.id, kind: "simulation", generation: request.generation, output: snapshot }, [snapshot])
 }
 function particles(request: Extract<WorkerRequest, { kind: "particles" }>): void {
   const value = requireActive(request.id, request.generation)
@@ -485,14 +486,15 @@ function dispatch(request: WorkerRequest): void | Promise<void> {
       return readMap(request)
     case "read-presentation":
       return readPresentation(request)
+    case "release-presentation":return releasePresentation(request)
     case "activate":
       return activate(request)
     case "discard":
       return discard(request)
     case "configure-course":
       return configureCourse(request)
-    case "advance":
-      return advance(request)
+    case "observe":
+      return observe(request)
     case "particles":
       return particles(request)
     case "models":
@@ -511,6 +513,6 @@ scope.onmessage = (event: MessageEvent<WorkerRequest>) => {
   queue = queue
     .then(() => dispatch(event.data))
     .catch(() => {
-      if (canonicalId(event.data?.id)) fail(event.data.id, "InternalFailure")
+      if(canonicalId(event.data?.id))fail(event.data.id,"InternalFailure",({observe:901,particles:902,models:903,visibility:904} as Record<string,number>)[event.data.kind]??999)
     })
 }

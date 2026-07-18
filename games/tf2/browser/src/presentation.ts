@@ -122,11 +122,8 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
   let prior: Snapshot["weapon"] | undefined
   let priorClass: Snapshot["class"] | undefined
   let activity = "ACT_VM_DRAW"
-  let bobTime = 0
-  let lastBobTime = 0
-  let lastSpeed = 0
   return Object.freeze({
-    map(snapshot: Snapshot): Readonly<{ item: ModelItem; request: ModelPoseRequest }> {
+    map(snapshot: Snapshot,view:Readonly<{aspectRatio:number;farPlane:number}>=Object.freeze({aspectRatio:4/3,farPlane:32768})): Readonly<{ item: ModelItem; request: ModelPoseRequest }> {
       const identity =
         snapshot.class === 1
           ? "models/weapons/c_models/c_soldier_arms.mdl"
@@ -170,26 +167,14 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
       priorClass = snapshot.class
       const currentElapsed = Number(snapshot.tick - actionTick) * 0.015
       const previousElapsed = Math.max(0, Number(priorTick - actionTick) * 0.015)
+      const frameTime=Math.max(0,Number(snapshot.tick-priorTick)*0.015)
       priorTick = snapshot.tick
-      const now = Number(snapshot.tick) * 0.015
-      const maximumDelta = Math.max(0, (now - lastBobTime) * 320)
-      const speed = Math.max(-320, Math.min(320, Math.max(lastSpeed - maximumDelta, Math.min(lastSpeed + maximumDelta, Math.hypot(snapshot.velocity[0], snapshot.velocity[1])))))
-      bobTime += (now - lastBobTime) * (speed / 320)
-      lastBobTime = now
-      lastSpeed = speed
-      const wave = (period: number) => {
-        let cycle = (bobTime - Math.trunc(bobTime / period) * period) / period
-        cycle = cycle < 0.5 ? Math.PI * cycle / 0.5 : Math.PI + Math.PI * (cycle - 0.5) / 0.5
-        return Math.sin(cycle)
-      }
-      const verticalBob = Math.max(-7, Math.min(4, speed * 0.005 * (0.3 + 0.7 * wave(0.8))))
-      const lateralBob = Math.max(-7, Math.min(4, speed * 0.005 * (0.3 + 0.7 * wave(1.6))))
+      const now=Number(snapshot.tick)*0.015
       return Object.freeze({
         item: Object.freeze({
           identity: 0x7fff_ff00 + snapshot.class * 4,
           model: identity,
-          position: Object.freeze([verticalBob * 0.4, -lateralBob * 0.2, verticalBob * 0.1]),
-          angles: Object.freeze([-verticalBob * 0.4, -lateralBob * 0.3, verticalBob * 0.5]),
+          position:Object.freeze([0,0,0]) as Vector3,angles:Object.freeze([0,0,0]) as Vector3,
           scale: 1,
           skin: snapshot.team === 1 ? 0 : 1,
           viewModel: true,
@@ -202,6 +187,7 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
           activity,
           previousElapsedSeconds: Math.min(previousElapsed, currentElapsed),
           elapsedSeconds: currentElapsed,
+          currentTimeSeconds:now,frameTimeSeconds:frameTime,planarSpeed:Math.hypot(snapshot.velocity[0],snapshot.velocity[1]),screenAspectRatio:view.aspectRatio,worldFarPlane:view.farPlane,
           skin: snapshot.team === 1 ? 0 : 1,
           lod: 0,
           bodygroups: Object.freeze(artifact.bodygroupCounts.map(() => 0)),
@@ -235,6 +221,7 @@ export type ModelPoseRequest = Readonly<{
   activity: string
   previousElapsedSeconds: number
   elapsedSeconds: number
+  currentTimeSeconds:number;frameTimeSeconds:number;planarSpeed:number;screenAspectRatio:number;worldFarPlane:number
   skin: number
   lod: number
   bodygroups: readonly number[]
@@ -246,6 +233,7 @@ export type PosedPrimitive = Readonly<{
   positions: Float32Array
   normals: Float32Array
   tangents: Float32Array
+  translucent:boolean
 }>
 export type PosedAttachment = Readonly<{ name: string; worldAligned: boolean; matrix: Float32Array }>
 export type PosedModel = Readonly<{
@@ -264,18 +252,19 @@ export type PosedModel = Readonly<{
   events: readonly Readonly<{ index: number; cycle: number; event: number; eventType: number; options: Uint8Array; name: string }>[]
   primitives: readonly PosedPrimitive[]
   attachments: readonly PosedAttachment[]
+  viewmodel:null|Readonly<{transform:Readonly<{origin:Vector3;angles:Vector3}>;projection:Readonly<{unscaledHorizontalFov4By3:number;horizontalFov:number;aspectRatio:number;near:number;far:number}>;depthRange:readonly[number,number];restoredDepthRange:readonly[number,number];passRestored:boolean;depthRestored:boolean;itemTranslucent:boolean}>
 }>
 
 export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uint8Array {
   if (requests.length > 128) throw new ProjectilePresentationError("BoundExceeded", "model pose request count")
   const encoder = new TextEncoder()
   let length = 12
-  for (const request of requests) length += 44 + encoder.encode(request.model).length + encoder.encode(request.itemModel ?? "").length +
+  for (const request of requests) length += 64 + encoder.encode(request.model).length + encoder.encode(request.itemModel ?? "").length +
     encoder.encode(request.activity).length + (request.bodygroups.length + (request.itemBodygroups?.length ?? 0)) * 4
   if (length > 1024 * 1024) throw new ProjectilePresentationError("BoundExceeded", "model pose request bytes")
   const bytes = new Uint8Array(length), view = new DataView(bytes.buffer)
   bytes.set([0x50, 0x4d, 0x52, 0x51])
-  view.setUint32(4, 2, true)
+  view.setUint32(4, 3, true)
   view.setUint32(8, requests.length, true)
   let at = 12
   const text = (value: string) => {
@@ -294,6 +283,7 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
     text(request.model); text(request.itemModel ?? ""); text(request.activity)
     view.setFloat32(at, request.previousElapsedSeconds, true); at += 4
     view.setFloat32(at, request.elapsedSeconds, true); at += 4
+    for(const value of [request.currentTimeSeconds,request.frameTimeSeconds,request.planarSpeed,request.screenAspectRatio,request.worldFarPlane]){view.setFloat32(at,value,true);at+=4}
     view.setUint32(at, request.skin, true); at += 4
     view.setUint32(at, request.lod, true); at += 4
     view.setUint32(at, request.bodygroups.length, true); at += 4
@@ -307,7 +297,7 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
 export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] {
   if (bytes.byteLength < 12 || bytes.byteLength > 64 * 1024 * 1024) throw new ProjectilePresentationError("BoundExceeded", "model pose output bytes")
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), decoder = new TextDecoder("utf-8", { fatal: true })
-  if (decoder.decode(bytes.subarray(0, 4)) !== "PMPO" || view.getUint32(4, true) !== 2) throw new ProjectilePresentationError("MalformedFact", "model pose output identity")
+  if (decoder.decode(bytes.subarray(0, 4)) !== "PMPO" || view.getUint32(4, true) !== 3) throw new ProjectilePresentationError("MalformedFact", "model pose output identity")
   let at = 12
   const ensure = (length: number) => { if (at + length > bytes.length) throw new ProjectilePresentationError("MalformedFact", "model pose output truncation") }
   const u8 = () => { ensure(1); return bytes[at++]! }, u32 = () => { ensure(4); const value = view.getUint32(at, true); at += 4; return value },
@@ -322,27 +312,28 @@ export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] 
       cyclesPerSecond = f32(), durationSeconds = f32(), looping = u8()
     if (looping > 1 || u8() || u8() || u8()) throw new ProjectilePresentationError("MalformedFact", "model pose timing")
     const previousCycle = f32(), cycle = f32()
+    const present=u8();if(present>1||u8()||u8()||u8())throw new ProjectilePresentationError("MalformedFact","viewmodel state");const values=Array.from({length:15},f32),passRestored=u8(),depthRestored=u8(),itemTranslucent=u8();if(u8())throw new ProjectilePresentationError("MalformedFact","viewmodel flags");const viewmodel=present===0?null:Object.freeze({transform:Object.freeze({origin:vector(values.slice(0,3)),angles:vector(values.slice(3,6))}),projection:Object.freeze({unscaledHorizontalFov4By3:values[6]!,horizontalFov:values[7]!,aspectRatio:values[8]!,near:values[9]!,far:values[10]!}),depthRange:Object.freeze(values.slice(11,13)) as readonly[number,number],restoredDepthRange:Object.freeze(values.slice(13,15)) as readonly[number,number],passRestored:passRestored===1,depthRestored:depthRestored===1,itemTranslucent:itemTranslucent===1})
     const events = Object.freeze(Array.from({ length: u32() }, () => {
       const index = u32(), eventCycle = f32(), event = i32(), eventType = i32(); ensure(64)
       const options = bytes.slice(at, at + 64); at += 64
       return Object.freeze({ index, cycle: eventCycle, event, eventType, options, name: text() })
     }))
     const primitives = Object.freeze(Array.from({ length: u32() }, () => {
-      const primitive = u32(), material = u32(), vertices = u32(), positions = new Float32Array(vertices * 3),
+      const primitive=u32(),material=u32(),vertices=u32(),translucent=u8();if(translucent>1||u8()||u8()||u8())throw new ProjectilePresentationError("MalformedFact","primitive opacity");const positions = new Float32Array(vertices * 3),
         normals = new Float32Array(vertices * 3), tangents = new Float32Array(vertices * 4)
       for (let vertex = 0; vertex < vertices; vertex++) {
         for (let axis = 0; axis < 3; axis++) positions[vertex * 3 + axis] = f32()
         for (let axis = 0; axis < 3; axis++) normals[vertex * 3 + axis] = f32()
         for (let axis = 0; axis < 4; axis++) tangents[vertex * 4 + axis] = f32()
       }
-      return Object.freeze({ primitive, material, positions, normals, tangents })
+      return Object.freeze({ primitive, material, positions, normals, tangents,translucent:translucent===1 })
     }))
     const attachments = Object.freeze(Array.from({ length: u32() }, () => {
       const name = text(), worldAligned = u8(); if (worldAligned > 1 || u8() || u8() || u8()) throw new ProjectilePresentationError("MalformedFact", "model attachment")
       const matrix = new Float32Array(12); for (let index = 0; index < 12; index++) matrix[index] = f32()
       return Object.freeze({ name, worldAligned: worldAligned === 1, matrix })
     }))
-    output.push(Object.freeze({ identity, role: (["single", "hand", "item"] as const)[roleCode]!, model, activity, sequence, framesPerSecond, weightedFrameCount, cyclesPerSecond, durationSeconds, looping: looping === 1, previousCycle, cycle, events, primitives, attachments }))
+    output.push(Object.freeze({ identity, role: (["single", "hand", "item"] as const)[roleCode]!, model, activity, sequence, framesPerSecond, weightedFrameCount, cyclesPerSecond, durationSeconds, looping: looping === 1, previousCycle, cycle, events, primitives, attachments,viewmodel }))
   }
   if (at !== bytes.length) throw new ProjectilePresentationError("MalformedFact", "model pose output trailing bytes")
   return Object.freeze(output)
@@ -714,9 +705,9 @@ export function createProjectilePresentationMapper(
               ),
             }),
           )
-          next.set(event.projectileIdentity, Object.freeze({ ...prior, state: "stuck-unarmed" }))
+          next.set(event.projectileIdentity, Object.freeze({ ...prior, state: fact.state }))
         } else if (event.kind === "arm") {
-          if (prior.kind !== "sticky" || prior.state !== "stuck-unarmed" || !fact) {
+          if (prior.kind !== "sticky" || !["flying","stuck-unarmed","stuck-armed"].includes(prior.state) || !fact) {
             throw transition("arm requires a stuck-unarmed sticky fact")
           }
           const system = fact.team === "red" ? "stickybomb_pulse_red" : "stickybomb_pulse_blue"
@@ -731,10 +722,10 @@ export function createProjectilePresentationMapper(
               system,
               null,
               event.position,
-              settledOrientation(event.orientation, event.contactNormal),
+              event.contactNormal===null?event.orientation:settledOrientation(event.orientation,event.contactNormal),
             ),
           )
-          next.set(event.projectileIdentity, Object.freeze({ ...prior, state: "stuck-armed", pulseActive: true }))
+          next.set(event.projectileIdentity, Object.freeze({ ...prior, state: fact.state, pulseActive: true }))
         } else if (event.kind === "fizzle" || event.kind === "explode") {
           if (prior.trailActive)
             push(
@@ -913,7 +904,7 @@ function validateEvent(event: ProjectileEvent, frameTick: bigint): void {
     !quaternion(event.orientation) ||
     (event.contactNormal !== null && !normal(event.contactNormal)) ||
     (event.kind === "fire" && event.contactNormal !== null) ||
-    ((event.kind === "stick" || event.kind === "arm") && event.contactNormal === null)
+    (event.kind === "stick" && event.contactNormal === null)
   ) {
     throw new ProjectilePresentationError("MalformedEvent", "projectile event violates the frozen contract")
   }

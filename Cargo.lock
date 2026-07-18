@@ -462,6 +462,10 @@ name = "playsrc-phy"
 version = "0.1.0"
 
 [[package]]
+name = "playsrc-simulation"
+version = "0.1.0"
+
+[[package]]
 name = "playsrc-source-bundle"
 version = "0.1.0"
 dependencies = [
@@ -507,6 +511,7 @@ dependencies = [
  "playsrc-movement",
  "playsrc-particle",
  "playsrc-phy",
+ "playsrc-simulation",
  "playsrc-studio-model",
  "playsrc-tf2",
  "playsrc-visibility",

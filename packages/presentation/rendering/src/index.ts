@@ -21,6 +21,7 @@ import {
   parseRuntimeMap,
   parseRuntimeMapVerified,
   type ProfileRequirement,
+  type RuntimeBatch,
   type RuntimeLightmap,
   type RuntimeMap,
   type RuntimeMaterial,
@@ -118,6 +119,7 @@ export type ModelItem = Readonly<{
       positions: Float32Array
       normals: Float32Array
       tangents: Float32Array
+      translucent:boolean
     }>[]
   }>
   viewModelProjection?: Readonly<{
@@ -137,21 +139,31 @@ export type ParticleItem = Readonly<{
   material: string
   position: readonly [number, number, number]
   previousPosition: readonly [number, number, number]
+  trailEndPosition:readonly[number,number,number]
   radius: number
   rollRadians: number
+  yawRadians:number
   color: number
   opacity: number
   trailLength: number
+  trailWidth:number
+  trailLengthScale:number
   ageSeconds: number
   trailMinLength: number
   trailMaxLength: number
   trailFadeInSeconds: number
   orientationType: number
+  materialShader:"sprite-card"|"mesh-sprite"
+  textureColorSpace:"srgb-texture-linear-tint"
+  blendSource:"zero"|"one"|"source-alpha"|"one-minus-source-alpha"
+  blendDestination:"zero"|"one"|"source-alpha"|"one-minus-source-alpha"
+  stableTieIdentity:bigint
   primarySheet: Readonly<{
     current: readonly (readonly [number, number, number, number])[]
     next: readonly (readonly [number, number, number, number])[]
     blend: number
   }> | null
+  secondarySheet:Readonly<{current:readonly(readonly[number,number,number,number])[];next:readonly(readonly[number,number,number,number])[];blend:number}>|null
 }>
 
 export type FrameCaptureRequest = Readonly<{ format: "image/png" }>
@@ -166,6 +178,7 @@ export type Frame = Readonly<{
   deltaSeconds?: number
   capture?: FrameCaptureRequest
   visibility?: Readonly<{ worldIdentity: string; cacheIdentity: string; surfaces: Uint32Array }>
+  brushModels?:Readonly<{sourceIdentity:bigint;registryIdentity:bigint;tick:bigint;entityRevision:bigint;collisionRevision:bigint;models:readonly Readonly<{sourceIndex:number;model:number;worldPosition:readonly[number,number,number];worldAngles:readonly[number,number,number];renderMode:number;color:readonly[number,number,number,number];renderFx:number;effects:number;draw:boolean;mover:unknown}>[]}>
 }>
 
 export type DirectionalTextureInput = Readonly<{
@@ -306,6 +319,7 @@ export type MapLoadRequest = Readonly<{
   modelOccurrences?: readonly Readonly<{ entity: number; model: string; matrix: Float32Array }>[]
   modelMaterials?: ReadonlyMap<string, ModelMaterialInput>
   authoredTextures?: ReadonlyMap<string, AuthoredTextureInput>
+  brushModels?:readonly Readonly<{index:number;surfaceRange:readonly[number,number];vertexCount:number;triangleCount:number;materials:readonly number[]}>[]
   diagnostic?: boolean
   signal?: AbortSignal
 }>
@@ -409,6 +423,7 @@ type SceneResources = {
   loadRequest: Omit<MapLoadRequest, "payload" | "signal">
   group: THREE.Group
   modelTemplates: Map<string, THREE.Group>
+  brushModelTemplates:Map<number,THREE.Group>
   particleTextures: Map<string, THREE.DataTexture>
   particleMaterials: Map<string, THREE.MeshBasicNodeMaterial>
   materialStates: ReadonlyMap<string, MaterialStateInput>
@@ -811,6 +826,8 @@ class RendererOwner implements Renderer {
       map = Object.freeze({ ...map, lightmap: buildRuntimeLightmap(map, request.lightStyles) })
     }
     if (!map.lightmap) throw new RenderingError("MissingInput", "explicit light-style scalars are required")
+    if(!request.brushModels||request.brushModels.length<1)throw new RenderingError("MissingInput","complete brush-model descriptors are required")
+    for(let index=0;index<request.brushModels.length;index++){const descriptor=request.brushModels[index]!,geometry=map.brushModels.find(model=>model.index===index);if(descriptor.index!==index||descriptor.surfaceRange[1]<descriptor.surfaceRange[0]||(geometry&&geometry.batches.some(batch=>!descriptor.materials.includes(batch.material))))throw new RenderingError("IdentityMismatch","brush-model geometry differs from its descriptor")}
     const directionalInputs = await validateDirectionalInputs(request.directionalTextures ?? [])
     if (
       request.environment &&
@@ -937,6 +954,7 @@ class RendererOwner implements Renderer {
   ): SceneResources {
     const group = new THREE.Group()
     const modelTemplates = new Map<string, THREE.Group>()
+    const brushModelTemplates=new Map<number,THREE.Group>()
     const particleTextures = new Map<string, THREE.DataTexture>()
     const particleMaterials = new Map<string, THREE.MeshBasicNodeMaterial>()
     const materialStates = new Map(request.materialStates ?? [])
@@ -1023,8 +1041,7 @@ class RendererOwner implements Renderer {
       disposables.add(texture)
       return texture
     }
-    try {
-      for (const batch of map.batches) {
+    const createWorldMesh=(batch:RuntimeBatch):THREE.Mesh|null=>{
         const geometry = new THREE.BufferGeometry()
         geometry.setAttribute("position", new THREE.BufferAttribute(batch.positions, 3))
         geometry.setAttribute("normal", new THREE.BufferAttribute(batch.normals, 3))
@@ -1037,7 +1054,7 @@ class RendererOwner implements Renderer {
         const resolved = map.materials[batch.material]!
         const identity = resolved.logicalPath
         const materialState = materialStates.get(identity.toLowerCase())
-        if (materialState?.noDraw) continue
+        if (materialState?.noDraw) return null
         const baseTexture = createBase(resolved, identity)
         const kinds = new Set(batch.lightmapKind)
         const requiresNormal = kinds.has(2)
@@ -1080,10 +1097,12 @@ class RendererOwner implements Renderer {
         }
         disposables.add(material)
         const mesh = new THREE.Mesh(geometry, material)
-        worldBatches.push({ mesh, faces: batch.faces.slice() })
         mesh.userData.materialIdentity = identity
-        group.add(mesh)
-      }
+        return mesh
+    }
+    try {
+      for(const batch of map.batches){const mesh=createWorldMesh(batch);if(!mesh)continue;worldBatches.push({mesh,faces:batch.faces.slice()});group.add(mesh)}
+      for(const model of map.brushModels){const template=new THREE.Group();for(const batch of model.batches){const mesh=createWorldMesh(batch);if(mesh)template.add(mesh)}brushModelTemplates.set(model.index,template)}
 
       const environmentTextures = new Map<string, THREE.DataTexture>()
       for (const texture of request.environment?.textures ?? []) {
@@ -1180,6 +1199,7 @@ class RendererOwner implements Renderer {
       const failed = {
         group,
         modelTemplates,
+        brushModelTemplates,
         particleTextures,
         particleMaterials,
         materialStates,
@@ -1254,10 +1274,12 @@ class RendererOwner implements Renderer {
           faces: Object.freeze([...texture.faces]),
           planes: Object.freeze(texture.planes.map((plane) => Object.freeze({ ...plane, rgba: plane.rgba.slice() }))),
         })])),
+        brushModels:request.brushModels?.map(model=>Object.freeze({...model,surfaceRange:Object.freeze([...model.surfaceRange]) as readonly[number,number],materials:Object.freeze([...model.materials])})),
         diagnostic: request.diagnostic,
       },
       group,
       modelTemplates,
+      brushModelTemplates,
       particleTextures,
       particleMaterials,
       materialStates,
@@ -1354,7 +1376,7 @@ class RendererOwner implements Renderer {
 
   #validateFrame(frame: Frame): void {
     if (
-      frame.effects.length + (frame.models?.length ?? 0) + (frame.particles?.length ?? 0) > MAX_EFFECTS ||
+      frame.effects.length + (frame.models?.length ?? 0) + (frame.particles?.length ?? 0)+(frame.brushModels?.models.length??0) > MAX_EFFECTS ||
       !finite([
         ...frame.camera.position,
         frame.camera.yawDegrees,
@@ -1433,6 +1455,7 @@ class RendererOwner implements Renderer {
         !this.#active!.particleTextures.has(item.material.toLowerCase()) || !item.primarySheet)
         throw new RenderingError("MalformedInput", "particle draw item is invalid")
     }
+    if(frame.brushModels){let prior=-1;for(const model of frame.brushModels.models){if(model.sourceIndex<=prior||model.model<1||model.model>=(this.#active!.loadRequest.brushModels?.length??0)||!finite([...model.worldPosition,...model.worldAngles])||model.renderMode<0||model.renderMode>10)throw new RenderingError("MalformedInput","brush-model publication record is invalid");prior=model.sourceIndex}}
   }
 
   #setCamera(input: Camera): void {
@@ -1471,15 +1494,10 @@ class RendererOwner implements Renderer {
     const positions = new Float32Array(12)
     const uv = new Float32Array([0, 0, 1, 0, 1, 1, 0, 1])
     if (item.primitive === "trail") {
-      const delta = new THREE.Vector3().fromArray(item.previousPosition).sub(new THREE.Vector3().fromArray(item.position))
-      const magnitude = delta.length()
-      const fade = item.trailFadeInSeconds === 0 ? 1 : Math.min(1, item.ageSeconds / item.trailFadeInSeconds)
-      const seconds = 0.015
-      const length = Math.max(item.trailMinLength, Math.min(item.trailMaxLength, fade * magnitude / seconds * item.trailLength))
-      if (magnitude > 0 && length > 0) delta.multiplyScalar(length / magnitude)
+      const delta = new THREE.Vector3().fromArray(item.trailEndPosition).sub(new THREE.Vector3().fromArray(item.position))
       const center = new THREE.Vector3().fromArray(item.position)
       const tangent = center.clone().sub(new THREE.Vector3().fromArray(camera.position)).cross(delta).normalize()
-      const halfWidth = Math.min(item.radius, length) * 0.5
+      const halfWidth = item.trailWidth * 0.5
       const vertices = [center.clone().addScaledVector(tangent, halfWidth), center.clone().addScaledVector(tangent, -halfWidth)]
       vertices.push(vertices[1]!.clone().add(delta), vertices[0]!.clone().add(delta))
       vertices.forEach((value, index) => value.toArray(positions, index * 3))
@@ -1508,6 +1526,7 @@ class RendererOwner implements Renderer {
       const posed = pose.primitives[primitive++]
       if (!posed || posed.material !== object.userData.primitiveMaterial || posed.positions.length !== object.geometry.getAttribute("position").count * 3 || posed.normals.length !== object.geometry.getAttribute("normal").count * 3)
         throw new RenderingError("IdentityMismatch", "posed model primitive differs from its template")
+      if(object.userData.dynamicMaterial!==true){object.material=Array.isArray(object.material)?object.material.map(material=>material.clone()):object.material.clone();object.userData.dynamicMaterial=true}for(const material of Array.isArray(object.material)?object.material:[object.material]){material.transparent=posed.translucent;material.depthWrite=!posed.translucent}
       if (retainGeometry && object.userData.dynamicGeometry === true) {
         const position = object.geometry.getAttribute("position") as THREE.BufferAttribute
         const normal = object.geometry.getAttribute("normal") as THREE.BufferAttribute
@@ -1582,43 +1601,9 @@ class RendererOwner implements Renderer {
         mesh.userData.identity = effect.identity
         effects.add(mesh)
       }
-      const particleGroups = new Map<string, ParticleItem[]>()
-      for (const item of frame.particles ?? []) {
-        const key = item.material.toLowerCase()
-        const group = particleGroups.get(key) ?? []
-        group.push(item)
-        particleGroups.set(key, group)
-      }
-      for (const [identity, items] of particleGroups) {
-        const positions = new Float32Array(items.length * 12), uv = new Float32Array(items.length * 8),
-          uvNext = new Float32Array(items.length * 8), blends = new Float32Array(items.length * 4),
-          colors = new Float32Array(items.length * 16), indices = new Uint32Array(items.length * 6)
-        items.forEach((item, index) => {
-          const primitive = this.#particleGeometry(item, frame.camera)
-          positions.set(primitive.getAttribute("position").array as Float32Array, index * 12)
-          primitive.dispose()
-          const sample = item.primarySheet!, current = sample.current[0]!, next = sample.next[0]!
-          const corners = [[current[0], current[1]], [current[2], current[1]], [current[2], current[3]], [current[0], current[3]]] as const
-          const nextCorners = [[next[0], next[1]], [next[2], next[1]], [next[2], next[3]], [next[0], next[3]]] as const
-          corners.flat().forEach((value, component) => { uv[index * 8 + component] = value })
-          nextCorners.flat().forEach((value, component) => { uvNext[index * 8 + component] = value })
-          blends.fill(sample.blend, index * 4, index * 4 + 4)
-          const red = ((item.color >> 16) & 0xff) / 255, green = ((item.color >> 8) & 0xff) / 255, blue = (item.color & 0xff) / 255
-          for (let vertex = 0; vertex < 4; vertex++) colors.set([red, green, blue, item.opacity], index * 16 + vertex * 4)
-          const vertex = index * 4
-          indices.set([vertex, vertex + 1, vertex + 2, vertex, vertex + 2, vertex + 3], index * 6)
-        })
-        const geometry = new THREE.BufferGeometry()
-        geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3))
-        geometry.setAttribute("uv", new THREE.BufferAttribute(uv, 2))
-        geometry.setAttribute("particleUvNext", new THREE.BufferAttribute(uvNext, 2))
-        geometry.setAttribute("particleSheetBlend", new THREE.BufferAttribute(blends, 1))
-        geometry.setAttribute("particleColor", new THREE.BufferAttribute(colors, 4))
-        geometry.setIndex(new THREE.BufferAttribute(indices, 1))
-        const mesh = new THREE.Mesh(geometry, this.#active!.particleMaterials.get(identity)!)
-        mesh.userData.dynamicGeometry = true
-        effects.add(mesh)
-      }
+      const factor=(value:ParticleItem["blendSource"])=>value==="zero"?THREE.ZeroFactor:value==="one"?THREE.OneFactor:value==="source-alpha"?THREE.SrcAlphaFactor:THREE.OneMinusSrcAlphaFactor
+      for(const [order,item] of (frame.particles??[]).entries()){if(item.secondarySheet)throw new RenderingError("UnsupportedFeature","dual-sequence Particle rendering requires exact selected material support");const geometry=this.#particleGeometry(item,frame.camera),sample=item.primarySheet!,current=sample.current[0]!,next=sample.next[0]!,corners=[[current[0],current[1]],[current[2],current[1]],[current[2],current[3]],[current[0],current[3]]],nextCorners=[[next[0],next[1]],[next[2],next[1]],[next[2],next[3]],[next[0],next[3]]];geometry.setAttribute("uv",new THREE.BufferAttribute(Float32Array.from(corners.flat()),2));geometry.setAttribute("particleUvNext",new THREE.BufferAttribute(Float32Array.from(nextCorners.flat()),2));geometry.setAttribute("particleSheetBlend",new THREE.BufferAttribute(Float32Array.from({length:4},()=>sample.blend),1));const red=((item.color>>16)&255)/255,green=((item.color>>8)&255)/255,blue=(item.color&255)/255;geometry.setAttribute("particleColor",new THREE.BufferAttribute(Float32Array.from({length:16},(_,i)=>[red,green,blue,item.opacity][i%4]!),4));const material=this.#active!.particleMaterials.get(item.material.toLowerCase())!.clone();material.blending=THREE.CustomBlending;material.blendSrc=factor(item.blendSource);material.blendDst=factor(item.blendDestination);material.transparent=true;const mesh=new THREE.Mesh(geometry,material);mesh.renderOrder=order;mesh.userData.dynamicGeometry=true;mesh.userData.dynamicMaterial=true;mesh.userData.stableTieIdentity=item.stableTieIdentity;effects.add(mesh)}
+      for(const item of frame.brushModels?.models??[]){if(!item.draw)continue;const template=this.#active!.brushModelTemplates.get(item.model);if(!template)continue;const instance=template.clone(true);sourceTransform(instance,item.worldPosition,item.worldAngles);instance.userData.identity=item.sourceIndex;instance.userData.renderMode=item.renderMode;instance.userData.renderFx=item.renderFx;instance.userData.effects=item.effects;instance.userData.mover=item.mover;const modulation=new THREE.Color(item.color[0]/255,item.color[1]/255,item.color[2]/255);instance.traverse(object=>{if(!(object instanceof THREE.Mesh))return;const original=object.material,materials=(Array.isArray(original)?original:[original]).map(value=>{const material=value.clone();if("color" in material&&material.color instanceof THREE.Color)material.color.multiply(modulation);material.opacity*=item.color[3]/255;material.transparent=material.transparent||item.renderMode!==0||item.color[3]<255;return material});object.material=Array.isArray(original)?materials:materials[0]!;object.userData.dynamicMaterial=true});effects.add(instance)}
       for (const item of frame.models ?? []) {
         if (item.viewModel) {
           const nextDepthRange = this.#stageViewModel(item, frame)

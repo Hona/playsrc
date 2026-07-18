@@ -18,6 +18,7 @@ playsrc-entity = { path = "../../../packages/world/entity/rust" }
 playsrc-keyvalues = { path = "../../../packages/formats/keyvalues/rust" }
 playsrc-material = { path = "../../../packages/world/material/rust" }
 playsrc-particle = { path = "../../../packages/presentation/particle/rust" }
+playsrc-simulation = { path = "../../../packages/runtime/simulation/rust" }
 playsrc-phy = { path = "../../../packages/formats/phy/rust" }
 playsrc-studio-model = { path = "../../../packages/formats/studio-model/rust" }
 playsrc-vmt = { path = "../../../packages/formats/vmt/rust" }

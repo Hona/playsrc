@@ -19,7 +19,7 @@ Native compilation and browser WASM compilation call the same owning Rust crates
 
 `bun run dev jump_beef` verifies/acquires the declared BSP, packages exact raw dependencies through the configured build-`24207079` GAME provider plan, emits the complete provenance/absence ledger, builds the checked TF2 WASM target, installs the BSP, WASM, PSDB, and ledger objects in `assetDir`, starts the loopback Asset Service on port 4174 and TF2 Vite application on port 4173, waits for both readiness endpoints, prints `http://127.0.0.1:4173/`, and closes both owned listeners after one `SIGINT` or `SIGTERM`.
 
-`bun run verify:browser jump_beef` retains fixed world and active-PCF captures; byte-compares cold/warm world regions; probes 303 exact dependencies, 55 model shaders, 71 authored model texture chains, stock hand/item timelines, random/audio journals, Collision snapshots/rocket results, mover results, decal/PVS, matrices, depth, crouch, Particle, and Audio. Content blockers remain zero; IVP and Tempus remain the only authority blockers. On unsupported hosts, the same run proves platform-font paint/input suppression and performs no fallback glyph capture.
+`bun run verify:browser jump_beef` retains fixed world and active-PCF captures; byte-compares cold/warm regions; probes 317 dependencies, Simulation publications, 122 brush records, model/viewmodel contracts, random/audio, Collision/movers, Particle, configured fonts, unsupported sticky atomicity, replacement, and shutdown. Content blockers remain zero; IVP and Tempus remain authority blockers.
 
 ## Non-Responsibilities
 

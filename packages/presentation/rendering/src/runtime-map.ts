@@ -40,6 +40,7 @@ export type RuntimeBatch = Readonly<{
   indices: Uint32Array
   faces: Uint32Array
 }>
+export type RuntimeBrushModel=Readonly<{index:number;batches:readonly RuntimeBatch[];drawableSurfaces:number}>
 
 export type RuntimeModelPrimitive = Readonly<{
   material: number
@@ -199,6 +200,7 @@ export type RuntimeMap = Readonly<{
   lightingProfile: 0 | 1
   materials: readonly RuntimeMaterial[]
   batches: readonly RuntimeBatch[]
+  brushModels:readonly RuntimeBrushModel[]
   lightingSampleCount: number
   lighting: RuntimeLighting
   entityCount: number
@@ -1035,6 +1037,7 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
   const batches = Array.from({ length: materialCount }, (): MutableBatch => ({
     positions: [], normals: [], uv: [], lightmapUv: [], vertexFaces: [], indices: [], faces: [],
   }))
+  const brushTables=new Map<number,MutableBatch[]>(),brushCounts=new Map<number,number>()
   const commonSurfaces: CommonSurface[] = []
   const lightmapRecords: LightmapRecord[] = []
   let totalVertices = 0
@@ -1048,7 +1051,7 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
     const draw = reader.u8()
     const vertexCount = bounded(reader.u32(), MAX_VERTICES, "surface vertex count")
     const triangleCount = bounded(reader.u32(), MAX_TRIANGLES, "surface triangle count")
-    if (material >= materialCount || draw > 1 || vertexCount < 3) throw new RuntimeMapError("runtime map surface record is invalid")
+    if (model>4095||material >= materialCount || draw > 1 || vertexCount < 3) throw new RuntimeMapError("runtime map surface record is invalid")
     totalVertices = bounded(totalVertices + vertexCount, MAX_VERTICES, "total vertex count")
     totalTriangles = bounded(totalTriangles + triangleCount, MAX_TRIANGLES, "total triangle count")
     const positions = reader.f32Array(vertexCount * 3)
@@ -1063,8 +1066,9 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
     const lightmapHeight = Math.max(1, reader.i32() + 1)
     const common = Object.freeze({ face, lightOffset, styles, lightmapWidth, lightmapHeight })
     commonSurfaces.push(common)
-    if (draw === 0 || model !== 0) continue
-    const batch = batches[material]!
+    if(draw===0)continue
+    let table=batches;if(model!==0){table=brushTables.get(model)??Array.from({length:materialCount},():MutableBatch=>({positions:[],normals:[],uv:[],lightmapUv:[],vertexFaces:[],indices:[],faces:[]}));brushTables.set(model,table)}
+    const batch=table[material]!
     const base = batch.positions.length / 3
     for (const value of positions) batch.positions.push(value)
     for (const value of normals) batch.normals.push(value)
@@ -1075,7 +1079,7 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
     lightmapRecords.push({ surface: common, batch, uvStart, uv: [...lightmapUv] })
     for (const value of indices) batch.indices.push(value + base)
     for (let triangle = 0; triangle < triangleCount; triangle += 1) batch.faces.push(face)
-    drawableSurfaces += 1
+    if(model===0)drawableSurfaces+=1;else brushCounts.set(model,(brushCounts.get(model)??0)+1)
   }
 
   let lighting: RuntimeLighting
@@ -1140,7 +1144,7 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
   const lightingKinds = lighting.profile === "hdr"
     ? new Map(lighting.descriptor.surfaces.map((surface) => [surface.face, surface.kind === "unlit" ? 0 : surface.kind === "flat" ? 1 : surface.kind === "directional-normal" ? 2 : 3]))
     : new Map(commonSurfaces.map((surface) => [surface.face, surface.lightOffset < 0 ? 0 : 1]))
-  const frozenBatches = batches.flatMap((batch, material): RuntimeBatch[] => batch.indices.length === 0 ? [] : [Object.freeze({
+  const freeze=(table:readonly MutableBatch[])=>table.flatMap((batch, material): RuntimeBatch[] => batch.indices.length === 0 ? [] : [Object.freeze({
     material,
     positions: new Float32Array(batch.positions),
     normals: new Float32Array(batch.normals),
@@ -1149,7 +1153,7 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
     lightmapKind: Float32Array.from(batch.vertexFaces, (face) => lightingKinds.get(face) ?? 0),
     indices: new Uint32Array(batch.indices),
     faces: new Uint32Array(batch.faces),
-  })])
+  })]);const frozenBatches=freeze(batches);const brushModels=Object.freeze([...brushTables].sort(([a],[b])=>a-b).map(([index,table])=>Object.freeze({index,batches:Object.freeze(freeze(table)),drawableSurfaces:brushCounts.get(index)??0})))
   const staticHdrStyles = lighting.profile === "hdr"
     && lighting.descriptor.surfaces.every((surface) => surface.styles.slice(0, surface.styleCount).every((style) => style === 0))
   const lightmap = lighting.profile === "ldr"
@@ -1162,6 +1166,7 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
     lightingProfile: lightingProfile as 0 | 1,
     materials: Object.freeze(materials.map((material) => Object.freeze(material))),
     batches: Object.freeze(frozenBatches),
+    brushModels,
     lightingSampleCount,
     lighting,
     entityCount,

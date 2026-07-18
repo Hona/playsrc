@@ -57,7 +57,7 @@ The project roadmap contains 12 named targets. The TF2-first completion denomina
 
 ## Behavior Families
 
-The current TF2 browser integration consumes PCMD v3/PSSN v5 gameplay and Entity facts, the 296-object exact content ledger, and reviewed visual contracts. Current-build IVP sticky results and the Tempus core/`jump_beef` zone contract remain explicit typed blockers; no solver or inferred course is substituted.
+The current TF2 browser integration consumes PCMD v4, PSIM/PSSN v7 gameplay and Entity brush facts, the 317-object exact content ledger, Particle v3, PMRQ/PMPO v3, and configured SourceScheme fonts. Current-build IVP sticky results, native glyph-raster comparison, aligned visual captures, and the Tempus core/`jump_beef` zone contract remain explicit blockers; no solver, fallback font, or inferred course is substituted.
 
 | Target behavior | playsrc behavior | Evidence | Status |
 |---|---|---|---|

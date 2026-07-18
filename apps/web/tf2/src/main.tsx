@@ -92,6 +92,9 @@ function App() {
       data-model-material-probe={view.modelMaterialProbe}
       data-random-audio-probe={view.randomAudioProbe}
       data-collision-mover-probe={view.collisionMoverProbe}
+      data-simulation-probe={view.simulationProbe}
+      data-brush-model-probe={view.brushModelProbe}
+      data-unsupported-state={view.unsupportedState}
       data-blockers={JSON.stringify(view.blockers)}
     >
       <canvas

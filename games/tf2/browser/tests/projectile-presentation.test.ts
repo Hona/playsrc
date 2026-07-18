@@ -199,6 +199,7 @@ describe("TF2 projectile presentation contract", () => {
     expect(result.particles.map((request) => request.kind)).toEqual(["set-control-point", "start", "set-control-point"])
     expect(result.particles[1]).toMatchObject({ system: "stickybomb_pulse_red" })
   })
+  test("accepts an airborne arm without a contact normal",()=>{const mapper=createProjectilePresentationMapper(catalog()),flying=sticky("flying");mapper.map(frame(1n,[flying],[event(flying,"fire",1n)]));const armed=mapper.map(frame(54n,[flying],[event(flying,"arm",54n)]));expect(armed.particles.some(request=>request.kind==="start"&&request.system==="stickybomb_pulse_red")).toBeTrue();expect(armed.models[0]?.state).toBe("flying")})
 
   test("fails missing resources and illegal transitions without retaining partial state", () => {
     const mutableSystems = new Set(systems)

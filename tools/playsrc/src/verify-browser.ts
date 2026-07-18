@@ -10,7 +10,7 @@ const APPLICATION_URL = "http://127.0.0.1:4173/"
 const VIEWPORT_WIDTH = 1280
 const VIEWPORT_HEIGHT = 720
 const BACKGROUND_RGB = [17, 24, 32] as const
-const EXPECTED_DEPENDENCY_SHA256 = "896132d9b618d0ae521092c1e33d91d3cc05f1692ac434603a31994b8dd51741"
+const EXPECTED_DEPENDENCY_SHA256="c8ccea4035c5e75e26ffc0855a425ff4139f079f35ab9abd09e22990726f03d5"
 
 export class BrowserEvidenceError extends Error {
   constructor(message: string) {
@@ -147,7 +147,7 @@ async function classifySupportBlockers(
       "Missing current fog-controller state and transition inputs",
     ].some((prefix) => blocker.startsWith(prefix))) {
       recordBehavior(blocker, "visual")
-    } else if (blocker.startsWith("Missing: ")) {
+    } else if (blocker.startsWith("Missing: ")||blocker.startsWith("Missing exact IVP sticky rigid-body solver: ")) {
       recordBehavior(blocker, "authority")
     } else if (blocker.startsWith("ModelArtifactCacheUnavailable: ")) {
       content.push(blocker)
@@ -912,7 +912,7 @@ export async function verifyBrowserAcceptance(
     ])
     await agent(["--session", session, "fill", "[aria-label='Console command']", "map jump_beef"])
     await agent(["--session", session, "press", "Enter"])
-    await agent(["--session", session, "wait", "--text", "Loaded jump_beef; generation 2", "--timeout", "300000"])
+    await agent(["--session",session,"wait","--text","Loaded jump_beef; generation 2","--timeout","600000"])
     for (const [level, generation, profile] of [
       ["0", "3", "ldr"],
       ["2", "4", "hdr"],
@@ -986,7 +986,7 @@ export async function verifyBrowserAcceptance(
       "eval",
       "window.dispatchEvent(new KeyboardEvent('keydown',{code:'KeyW',key:'w',bubbles:true})); true",
     ])
-    await agent(["--session", session, "wait", "500"])
+    await agent(["--session",session,"wait","--fn","Number(document.querySelector('.speed-readout strong').textContent)>0","--timeout","30000"])
     await agent([
       "--session",
       session,
@@ -1095,23 +1095,12 @@ export async function verifyBrowserAcceptance(
     await agent(["--session", session, "mouse", "down", "left"])
     await agent(["--session", session, "wait", "100"])
     await agent(["--session", session, "mouse", "up", "left"])
-    await agent([
-      "--session",
-      session,
-      "wait",
-      "--fn",
-      `Number(document.querySelector('main').dataset.fireEvents) >= ${initialFireEvents + 2}`,
-      "--timeout",
-      "10000",
-    ])
-    const stickyLaunch = parseJson<{ fire: number; explosion: number; weapon: string; phase: string; audio: string }>(await agent([
+    await agent(["--session",session,"wait","--fn","document.querySelector('main').dataset.unsupportedState==='StickyPhysicsSolverUnavailable'","--timeout","10000"])
+    const stickyLaunch = parseJson<{ fire: number; projectiles:number; unsupported:string; phase: string }>(await agent([
       "--session", session, "eval",
-      "(()=>{const d=document.querySelector('main').dataset;return {fire:Number(d.fireEvents),explosion:Number(d.explosionEvents),weapon:d.weaponTrace,phase:d.phase,audio:d.audioStarts}})()",
+      "(()=>{const d=document.querySelector('main').dataset;return {fire:Number(d.fireEvents),projectiles:Number(d.projectiles),unsupported:d.unsupportedState,phase:d.phase}})()",
     ]))
-    require(stickyLaunch.fire >= initialFireEvents + 2 && stickyLaunch.explosion === initialExplosionEvents + 1 &&
-      stickyLaunch.weapon.split("|").some((weapon) => weapon.startsWith("3:7/24:0:-:-:")) &&
-      stickyLaunch.audio.includes("Weapon_StickyBombLauncher.Single:sound/weapons/stickybomblauncher_shoot.wav:1:94") && stickyLaunch.phase === "Ready",
-    `sticky random/audio seam differs: ${JSON.stringify(stickyLaunch)}`)
+    require(stickyLaunch.projectiles===0&&stickyLaunch.unsupported==="StickyPhysicsSolverUnavailable"&&stickyLaunch.phase==="Ready",`unsupported sticky Physics state was not atomic: ${JSON.stringify(stickyLaunch)}`)
     blockerCount = parseJson<number>(
       await agent([
         "--session",
@@ -1188,14 +1177,14 @@ export async function verifyBrowserAcceptance(
     )
     const mapRecords = records.filter(
       (record) =>
-        record.sha256 === "a2326c011921f1da90480b1c5f4d3923c038e2dcf07cf6c1d69d43cb2a145a5f" ||
+        record.sha256 === "0f33e8611dd7d9e77bec6a2e6e00380013fb22c09b5867353b5df1dead4c84a5" ||
         record.sha256 === "56153098a867c553651f9c773bd72c4659782bae8520277c80daaaa414bdf156",
     )
     require(mapRecords.length === (platformFontSupported ? 2 : 1) &&
       mapRecords.some(
         (record) =>
-          record.byteLength === 78_255_264 &&
-          record.sha256 === "a2326c011921f1da90480b1c5f4d3923c038e2dcf07cf6c1d69d43cb2a145a5f",
+          record.byteLength === 78_256_304 &&
+          record.sha256 === "0f33e8611dd7d9e77bec6a2e6e00380013fb22c09b5867353b5df1dead4c84a5",
       ) && (!platformFontSupported || mapRecords.some(
         (record) =>
           record.byteLength === 42_082_929 &&

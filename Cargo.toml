@@ -21,6 +21,7 @@ members = [
   "tools/source-bundle/rust",
 ]
 resolver = "2"
+exclude = ["packages/runtime/simulation/rust"]
 
 [workspace.package]
 edition = "2024"

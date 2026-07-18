@@ -10,11 +10,11 @@ import {
 import type { WorkerRequest, WorkerResponse } from "../src/protocol"
 
 function snapshot(): ArrayBuffer {
-  const bytes = new ArrayBuffer(885)
+  const bytes = new ArrayBuffer(937)
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x53, 0x53, 0x4e])
-  view.setUint32(4, 6, true)
+  view.setUint32(4, 7, true)
   view.setBigUint64(8, 7n, true)
   data.set([1, 1, 1, 0], 16)
   view.setFloat32(20, 200, true)
@@ -32,6 +32,7 @@ function snapshot(): ArrayBuffer {
   view.setUint32(124, 2, true)
   view.setUint32(144, 20, true)
   view.setUint32(148, 284, true)
+  view.setUint32(152,52,true);view.setUint32(156,12,true)
 
   data.set([0x50, 0x4d, 0x4f, 0x56], 160)
   view.setUint32(164, 1, true)
@@ -107,8 +108,10 @@ function snapshot(): ArrayBuffer {
   at += 20
   data.set([0x50, 0x4d, 0x54, 0x4b], at)
   view.setUint32(at + 4, 1, true)
+  at+=12;data.set([0x50,0x45,0x42,0x50],at);view.setUint32(at+4,1,true);view.setBigUint64(at+8,1n,true);view.setBigUint64(at+16,2n,true);view.setBigUint64(at+24,7n,true);view.setBigUint64(at+32,1n,true);view.setBigUint64(at+40,7n,true)
   return bytes
 }
+function simulationOutput(){const state=new Uint8Array(snapshot()),output=new ArrayBuffer(68+state.length*2),data=new Uint8Array(output),view=new DataView(output);data.set(new TextEncoder().encode("PSIM"));view.setUint32(4,1,true);view.setUint32(8,1,true);view.setBigUint64(16,1n,true);view.setBigUint64(24,1n,true);view.setBigUint64(32,1n,true);view.setUint32(40,1,true);view.setUint32(48,state.length,true);view.setUint32(52,1,true);data.set(state,56);const at=56+state.length;view.setBigUint64(at,1n,true);view.setUint32(at+8,state.length,true);data.set(state,at+12);return output}
 
 class MemoryCache implements DerivedObjectCache {
   async read(): Promise<Uint8Array | undefined> { return undefined }
@@ -132,8 +135,8 @@ class CourseWorker implements WorkerLike {
     if (request.kind === "configure-course") {
       this.configuredBytes = request.definition.byteLength
       response = { id: request.id, kind: "course-configured", generation: request.generation }
-    } else if (request.kind === "advance") {
-      response = { id: request.id, kind: "snapshot", generation: request.generation, snapshot: snapshot() }
+    } else if(request.kind==="observe"){
+      response={id:request.id,kind:"simulation",generation:request.generation,output:simulationOutput()}
     } else if (request.kind === "shutdown") response = { id: request.id, kind: "shutdown" }
     else response = { id: request.id, kind: "failure", code: "MalformedRequest", detail: 0 }
     queueMicrotask(() => this.#message?.({ data: response } as MessageEvent<WorkerResponse>))
@@ -243,7 +246,7 @@ describe("TF2 playable runtime Stage 2 contract", () => {
     const client = new Tf2WorkerClient(worker, new MemoryCache())
     await client.configureCourse(4, definition)
     expect(worker.configuredBytes).toBe(100)
-    const value = await client.advance(4, encodeCommand({
+    const value = (await client.observe(4,1,encodeCommand({
       forward: 0,
       side: 0,
       yawDegrees: 0,
@@ -252,7 +255,7 @@ describe("TF2 playable runtime Stage 2 contract", () => {
       crouch: false,
       fire: false,
       detonate: false,
-    }), 1)
+    })))[0]!.snapshot
     expect(value.tick).toBe(7n)
     await client.shutdown()
   })

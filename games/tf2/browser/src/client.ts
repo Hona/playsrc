@@ -32,6 +32,8 @@ export type LoadedGame = Readonly<{
   initialView: InitialView
 }>
 export type StagedGame = LoadedGame
+export type SimulationEventBatch = Readonly<{ hostTick: bigint; bytes: Uint8Array; snapshot: Snapshot }>
+export type SimulationPublication = Readonly<{ hostFrame: bigint; firstHostTick: bigint; lastHostTick: bigint; selectedTicks: number; interpolation: number; snapshotBytes: Uint8Array; eventBatches: readonly SimulationEventBatch[]; snapshot: Snapshot }>
 
 export class Tf2WorkerError extends Error {
   constructor(
@@ -224,6 +226,8 @@ export class Tf2WorkerClient {
           presentationCache = "unavailable"
         }
       }
+      const released=await this.#request({kind:"release-presentation",generation})
+      if(released.kind!=="presentation-released"||released.generation!==generation)throw new Tf2WorkerError("WorkerFailed")
       return Object.freeze({
         generation,
         payload,
@@ -297,14 +301,15 @@ export class Tf2WorkerClient {
     }
   }
 
-  async advance(generation: number, command: ArrayBuffer, ticks: number): Promise<Snapshot> {
+  async observe(generation: number, nowSeconds: number, command: ArrayBuffer, suspended = false): Promise<readonly SimulationPublication[]> {
     if (command.byteLength < 48 || command.byteLength > 64 * 1024) throw new Tf2WorkerError("BoundExceeded")
+    if (!Number.isFinite(nowSeconds) || nowSeconds < 0) throw new Tf2WorkerError("BoundExceeded")
     const transferred = command.slice(0)
-    const response = await this.#request({ kind: "advance", generation, ticks, command: transferred }, [transferred])
-    if (response.kind !== "snapshot" || response.generation !== generation) {
+    const response = await this.#request({ kind: "observe", generation, nowSeconds, suspended, command: transferred }, [transferred])
+    if (response.kind !== "simulation" || response.generation !== generation || !(response.output instanceof ArrayBuffer)) {
       throw new Tf2WorkerError("WorkerFailed")
     }
-    return decodeSnapshot(response.snapshot)
+    return decodeSimulationPublications(response.output)
   }
   async particles(generation: number, batch: Uint8Array): Promise<Uint8Array> {
     if (batch.byteLength < 32 || batch.byteLength > 4 * 1024 * 1024) throw new Tf2WorkerError("BoundExceeded")
@@ -365,4 +370,18 @@ export class Tf2WorkerClient {
       this.#failAll(new Tf2WorkerError("Closed"))
     }
   }
+}
+
+function equalBytes(a: Uint8Array,b:Uint8Array){return a.length===b.length&&a.every((v,i)=>v===b[i])}
+function mergePublicationSnapshots(snapshots: readonly Snapshot[]): Snapshot {
+  const final=snapshots.at(-1); if(!final) throw new Tf2WorkerError("WorkerFailed")
+  const all=(key:keyof Snapshot)=>Object.freeze(snapshots.flatMap(s=>s[key] as readonly unknown[]))
+  return Object.freeze({...final, projectileEvents:all("projectileEvents"),entityEvents:all("entityEvents"),events:all("events"),activities:all("activities"),lifecycleEvents:all("lifecycleEvents"),physicsRequests:all("physicsRequests"),rocketTraceRequests:all("rocketTraceRequests"),radiusDamageRequests:all("radiusDamageRequests"),moverRequests:all("moverRequests"),contactReconcileRequests:all("contactReconcileRequests"),mapEffects:all("mapEffects"),regenerateAnimationEvents:all("regenerateAnimationEvents"),randomDraws:all("randomDraws"),audioEvents:all("audioEvents"),rocketTraceResults:all("rocketTraceResults"),moverResults:all("moverResults")}) as Snapshot
+}
+function decodeSimulationPublications(bytes:ArrayBuffer):readonly SimulationPublication[]{
+  const data=new Uint8Array(bytes),view=new DataView(bytes); if(bytes.byteLength<16||new TextDecoder().decode(data.subarray(0,4))!=="PSIM"||view.getUint32(4,true)!==1||view.getUint32(12,true)!==0)throw new Tf2WorkerError("WorkerFailed")
+  const count=view.getUint32(8,true);if(count>256)throw new Tf2WorkerError("BoundExceeded");let at=16;const output:SimulationPublication[]=[]
+  const require=(n:number)=>{if(at+n>bytes.byteLength)throw new Tf2WorkerError("WorkerFailed")}
+  for(let i=0;i<count;i++){require(40);const hostFrame=view.getBigUint64(at,true),first=view.getBigUint64(at+8,true),last=view.getBigUint64(at+16,true),selected=view.getUint32(at+24,true),interpolation=view.getFloat32(at+28,true),sl=view.getUint32(at+32,true),ec=view.getUint32(at+36,true);at+=40;if(selected<1||ec!==selected||last-first+1n!==BigInt(selected))throw new Tf2WorkerError("WorkerFailed");require(sl);const snapshotBytes=data.slice(at,at+sl);at+=sl;const eventBatches:SimulationEventBatch[]=[];for(let e=0;e<ec;e++){require(12);const hostTick=view.getBigUint64(at,true),l=view.getUint32(at+8,true);at+=12;require(l);const value=data.slice(at,at+l);at+=l;eventBatches.push(Object.freeze({hostTick,bytes:value,snapshot:decodeSnapshot(value.slice().buffer)}))}if(!equalBytes(eventBatches.at(-1)!.bytes,snapshotBytes))throw new Tf2WorkerError("WorkerFailed");output.push(Object.freeze({hostFrame,firstHostTick:first,lastHostTick:last,selectedTicks:selected,interpolation,snapshotBytes,eventBatches:Object.freeze(eventBatches),snapshot:mergePublicationSnapshots(eventBatches.map(e=>e.snapshot))}))}
+  if(at!==bytes.byteLength)throw new Tf2WorkerError("WorkerFailed");return Object.freeze(output)
 }

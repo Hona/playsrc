@@ -1,7 +1,7 @@
 import { fetchImmutableObject, openDerivedObjectCache, type DerivedObjectCache } from "@playsrc/asset-store/browser"
 import { createAudioSystem, SoundRegistry, SourceAudioWorld } from "@playsrc/audio"
 import GameplayWorker from "@playsrc/game-tf2-browser/worker?worker"
-import { Tf2WorkerClient, type LoadedGame } from "@playsrc/game-tf2-browser"
+import { Tf2WorkerClient, type LoadedGame, type SimulationPublication } from "@playsrc/game-tf2-browser"
 import { encodeCommand, mapDerivedKey, type Snapshot } from "@playsrc/game-tf2-browser/codec"
 import { parsePresentationArtifacts, type PresentationArtifacts } from "@playsrc/game-tf2-browser/artifacts"
 import {
@@ -34,12 +34,11 @@ import {
 } from "@playsrc/vgui"
 import { bytesToHex } from "@noble/hashes/utils.js"
 import { sha256 } from "@noble/hashes/sha2.js"
-import { consoleLimits, consoleResourceBlocker, consoleResources, diagnosticResources } from "./console-resources"
+import {consoleLimits,resolveConfiguredConsoleResources,type ResolvedConsoleResources} from "./console-resources"
 import { loadBrowserConfiguration, type BrowserConfiguration } from "./config"
 import { applyPointerDelta } from "./input"
 
-const TICK_MILLISECONDS = 15
-const MAX_FRAME_TICKS = 4
+const MAX_SCHEDULED_SAMPLES = 512
 const MAX_EXTERNAL_BYTES = 536_870_912
 const SOUND_PATHS = [
   "sound/weapons/rocket_shoot.wav",
@@ -126,6 +125,9 @@ export type ApplicationView = Readonly<{
   modelMaterialProbe?: string
   randomAudioProbe?: string
   collisionMoverProbe?: string
+  simulationProbe?: string
+  brushModelProbe?: string
+  unsupportedState?: "StickyPhysicsSolverUnavailable"
 }>
 
 type Renderer = Awaited<ReturnType<typeof createRenderer>>
@@ -157,6 +159,7 @@ export class Tf2Application {
   #particleBatches = createParticleBatchEncoder()
   #console?: DeveloperConsole
   #diagnostics?: ClientDiagnostics
+  #consoleResources?:ResolvedConsoleResources
   #loaded?: LoadedGame
   #snapshot?: Snapshot
   #generation = 0
@@ -191,14 +194,15 @@ export class Tf2Application {
   #lastRandomAudioProbe = ""
   #lastCollisionMoverProbe = ""
   #animationFrame = 0
-  #lastFrame = 0
-  #accumulator = 0
-  #frameBusy = false
+  #simulationTail: Promise<void> = Promise.resolve()
+  #scheduledSamples = 0
+  #pendingPresentation?:SimulationPublication
+  #presentationBusy=false
   #fireEvents = 0
   #explosionEvents = 0
   #paused = true
   #closed = false
-  #blockers = new Set<string>([consoleResourceBlocker])
+  #blockers=new Set<string>()
   #view: ApplicationView = Object.freeze({
     phase: "Loading",
     detail: "Reading local configuration",
@@ -252,6 +256,7 @@ export class Tf2Application {
       this.#generation = 1
       this.#loaded = await this.#client.stage(this.#generation, bsp, profile, this.#dependencies, key)
       this.#artifacts = await parsePresentationArtifacts(this.#loaded.presentation)
+      this.#consoleResources=await resolveConfiguredConsoleResources(this.#dependencyEntries,Math.max(1,this.#vguiRoot.getBoundingClientRect().height));this.#blockers.add(this.#consoleResources.blocker)
       this.#recordVisualOutputBlockers(this.#artifacts)
       await this.#cacheModelArtifacts(this.#artifacts)
       this.#projectiles = createProjectilePresentationMapper(
@@ -292,6 +297,7 @@ export class Tf2Application {
         modelOccurrences: this.#artifacts.modelOccurrences,
         modelMaterials: this.#artifacts.modelMaterials,
         authoredTextures: this.#artifacts.authoredTextures,
+        brushModels:this.#artifacts.brushModels,
         diagnostic: true,
       })
       this.#environmentDrawables = scene.environmentDrawables
@@ -322,7 +328,7 @@ export class Tf2Application {
       ])
       this.#audioWorld = new SourceAudioWorld(this.#audioRegistry, { maxActiveVoices: 128 })
       await this.#client.activate(this.#generation)
-      this.#snapshot = await this.#client.advance(this.#generation, this.#command(), 1)
+      this.#snapshot = (await this.#initialPublication(this.#generation)).snapshot
       this.#recordAuthorityBlockers(this.#snapshot)
       this.#recordCrouch(this.#snapshot)
       this.#modelProbes = await this.#probePlayerModels(this.#artifacts)
@@ -330,7 +336,6 @@ export class Tf2Application {
       this.#initializeConsole()
       this.#installListeners()
       this.#paused = document.hidden
-      this.#lastFrame = performance.now()
       this.#animationFrame = requestAnimationFrame(this.#frame)
       this.#set({
         phase: "Ready",
@@ -363,10 +368,11 @@ export class Tf2Application {
   }
 
   #initializeConsole(): void {
+    if(!this.#consoleResources)throw new Error("Configured VGUI resources unavailable")
     const initialized = initializeDeveloperConsole({
       runtimeIdentity: "tf2-jump-console",
       limits: consoleLimits,
-      resources: consoleResources,
+      resources:this.#consoleResources.console,
       catalog: this.#catalog(),
       viewport: this.#viewport(),
       reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
@@ -384,7 +390,7 @@ export class Tf2Application {
     })
     const diagnostics = initializeClientDiagnostics({
       runtimeIdentity: "tf2-client-diagnostics",
-      resources: diagnosticResources,
+      resources:this.#consoleResources.diagnostics,
       viewport: this.#viewport(),
     })
     if (!diagnostics.ok) throw new Error(`VGUI diagnostics initialization failed: ${diagnostics.code}`)
@@ -602,7 +608,6 @@ export class Tf2Application {
     } catch (error) {
       this.#output(`Map replacement failed: ${error instanceof Error ? error.message : "unknown failure"}`)
       this.#paused = document.hidden
-      this.#lastFrame = performance.now()
       this.#set({ phase: "Ready", detail: "Prior map retained" })
     }
   }
@@ -615,7 +620,6 @@ export class Tf2Application {
     } catch (error) {
       this.#output(`External map failed: ${error instanceof Error ? error.message : "unknown failure"}`)
       this.#paused = document.hidden
-      this.#lastFrame = performance.now()
       this.#set({ phase: "Ready", detail: "Prior map retained" })
     }
   }
@@ -721,6 +725,7 @@ export class Tf2Application {
       modelOccurrences: artifacts.modelOccurrences,
       modelMaterials: artifacts.modelMaterials,
       authoredTextures: artifacts.authoredTextures,
+      brushModels:artifacts.brushModels,
         diagnostic: true,
       })
       this.#environmentDrawables = scene.environmentDrawables
@@ -745,6 +750,7 @@ export class Tf2Application {
         materialStates: priorArtifacts ? this.#materialStates(priorArtifacts) : undefined,
         particleTextures: priorArtifacts?.particleTextures,
         modelOccurrences: priorArtifacts?.modelOccurrences,
+        brushModels:priorArtifacts?.brushModels,
         diagnostic: true,
       })
       throw error
@@ -777,7 +783,7 @@ export class Tf2Application {
     this.#particleBatches = createParticleBatchEncoder()
     this.#mapIdentity = name
     this.#applyInitialView(staged)
-    this.#snapshot = await this.#client.advance(generation, this.#command(), 1)
+    this.#snapshot = (await this.#initialPublication(generation)).snapshot
     this.#recordAuthorityBlockers(this.#snapshot)
     this.#crouchHistory = []
     this.#recordCrouch(this.#snapshot)
@@ -788,8 +794,6 @@ export class Tf2Application {
     this.#lastRandomAudioProbe = ""
     this.#lastCollisionMoverProbe = ""
     this.#paused = document.hidden
-    this.#lastFrame = performance.now()
-    this.#accumulator = 0
     this.#output(`Loaded ${name}; generation ${generation}; derived cache ${staged.cache}.`, true)
     this.#set({
       phase: "Ready",
@@ -973,6 +977,7 @@ export class Tf2Application {
         activity: "ACT_MP_STAND_PRIMARY",
         previousElapsedSeconds: 0,
         elapsedSeconds: 0,
+        currentTimeSeconds:0,frameTimeSeconds:0,planarSpeed:0,screenAspectRatio:4/3,worldFarPlane:32768,
         skin: 0,
         lod: 0,
         bodygroups: Object.freeze(artifact.bodygroupCounts.map(() => 0)),
@@ -1005,6 +1010,7 @@ export class Tf2Application {
         activity,
         previousElapsedSeconds: 0,
         elapsedSeconds: sequence.durationSeconds * 0.5,
+        currentTimeSeconds:sequence.durationSeconds*0.5,frameTimeSeconds:0.015,planarSpeed:0,screenAspectRatio:16/9,worldFarPlane:32768,
         skin: 0,
         lod: 0,
         bodygroups: Object.freeze(artifact.bodygroupCounts.map(() => 0)),
@@ -1014,8 +1020,7 @@ export class Tf2Application {
     const poses = decodeModelPoseOutput(await this.#client.models(this.#generation, encodeModelPoseBatch(requests)))
     return activities.map((activity) => {
       const parts = poses.filter((pose) => pose.activity === activity)
-      if (parts.length !== 2 || parts[0]?.role !== "hand" || parts[1]?.role !== "item") throw new Error(`Viewmodel timeline composition ${activity} differs`)
-      return `${activity}:${parts[0].sequence}:${parts[0].cycle}:${parts.map((part) => part.primitives.length).join("+")}:${parts[0].events.length}`
+      if(parts.length!==2||parts[0]?.role!=="item"||parts[1]?.role!=="hand")throw new Error(`Viewmodel timeline composition ${activity} differs`);const hand=parts[1]!;return `${activity}:${hand.sequence}:${hand.cycle}:${parts.map(part=>part.primitives.length).join("+")}:${hand.events.length}:item>hand`
     })
   }
 
@@ -1125,6 +1130,8 @@ export class Tf2Application {
   #command(): ArrayBuffer {
     const forward = Number(this.#forward) - Number(this.#back)
     const side = Number(this.#left) - Number(this.#right)
+    const unsupportedSticky = this.#snapshot?.class === 2 && (this.#fire || this.#firePressed)
+    if (unsupportedSticky) { this.#blockers.add("Missing exact IVP sticky rigid-body solver: launch is rejected before projectile creation"); this.#set({unsupportedState:"StickyPhysicsSolverUnavailable"}) }
     const command = encodeCommand({
       forward: forward * 450,
       side: side * 450,
@@ -1132,7 +1139,7 @@ export class Tf2Application {
       pitchDegrees: this.#pitch,
       jump: this.#jump || this.#jumpPressed,
       crouch: this.#crouch,
-      fire: this.#fire || this.#firePressed,
+      fire: !unsupportedSticky && (this.#fire || this.#firePressed),
       detonate: this.#detonate || this.#detonatePressed,
       reload: this.#reload || this.#reloadPressed,
       selectClass: this.#selectClass,
@@ -1152,20 +1159,8 @@ export class Tf2Application {
   readonly #frame = (time: number): void => {
     this.#animationFrame = requestAnimationFrame(this.#frame)
     if (!this.#paused && this.#snapshot && (this.#showFps !== 0 || this.#showPos !== 0)) this.#updateDiagnostics(time)
-    if (this.#paused || this.#frameBusy || !this.#client || !this.#renderer || !this.#snapshot) {
-      this.#lastFrame = time
-      return
-    }
-    const elapsed = Math.min(100, Math.max(0, time - this.#lastFrame))
-    this.#lastFrame = time
-    this.#accumulator += elapsed
-    const ticks = Math.min(MAX_FRAME_TICKS, Math.floor(this.#accumulator / TICK_MILLISECONDS))
-    if (ticks < 1) return
-    this.#accumulator -= ticks * TICK_MILLISECONDS
-    this.#frameBusy = true
-    void this.#advance(ticks).finally(() => {
-      this.#frameBusy = false
-    })
+    if (this.#paused || !this.#client || !this.#renderer || !this.#snapshot) return
+    this.#scheduleSimulation(time / 1_000, false)
   }
 
   #updateDiagnostics(realTimeMilliseconds: number): void {
@@ -1191,7 +1186,19 @@ export class Tf2Application {
     })
   }
 
-  async #advance(ticks: number): Promise<void> {
+  async #initialPublication(generation:number):Promise<SimulationPublication>{
+    if(!this.#client)throw new Error("Simulation client is unavailable");const frame=()=>new Promise<number>(resolve=>requestAnimationFrame(resolve));let now=await frame();let publications=await this.#client.observe(generation,now/1000,this.#command(),false);if(publications.length)throw new Error("Simulation baseline published gameplay");for(let i=0;i<32;i++){now=await frame();publications=await this.#client.observe(generation,now/1000,this.#command(),false);if(publications[0])return publications[0]}throw new Error("Simulation did not publish an initial fixed tick")
+  }
+  #scheduleSimulation(nowSeconds:number,suspended:boolean):void{
+    if(!this.#client||this.#closed)return;if(this.#scheduledSamples>=MAX_SCHEDULED_SAMPLES){this.#paused=true;this.#set({phase:"Failed",detail:"Simulation browser-clock queue reached its explicit limit"});return}const generation=this.#generation,command=this.#command();this.#scheduledSamples++;this.#simulationTail=this.#simulationTail.then(async()=>{if(!this.#client||generation!==this.#generation||this.#closed)return;for(const publication of await this.#client.observe(generation,nowSeconds,command,suspended))this.#enqueuePresentation(generation,publication)}).catch(error=>{this.#paused=true;this.#set({phase:"Failed",detail:error instanceof Error?error.message:"Simulation scheduling failed"})}).finally(()=>{this.#scheduledSamples--})
+  }
+  #enqueuePresentation(generation:number,publication:SimulationPublication):void{
+    if(generation!==this.#generation||this.#closed)return;this.#pendingPresentation=this.#pendingPresentation?this.#mergePublications(this.#pendingPresentation,publication):publication;if(!this.#presentationBusy)void this.#drainPresentations()
+  }
+  #mergePublications(left:SimulationPublication,right:SimulationPublication):SimulationPublication{const a=left.snapshot,b=right.snapshot,join=(key:keyof Snapshot)=>Object.freeze([...(a[key] as readonly unknown[]),...(b[key] as readonly unknown[])]);const snapshot=Object.freeze({...b,projectileEvents:join("projectileEvents"),entityEvents:join("entityEvents"),events:join("events"),activities:join("activities"),lifecycleEvents:join("lifecycleEvents"),physicsRequests:join("physicsRequests"),rocketTraceRequests:join("rocketTraceRequests"),radiusDamageRequests:join("radiusDamageRequests"),moverRequests:join("moverRequests"),contactReconcileRequests:join("contactReconcileRequests"),mapEffects:join("mapEffects"),regenerateAnimationEvents:join("regenerateAnimationEvents"),randomDraws:join("randomDraws"),audioEvents:join("audioEvents"),rocketTraceResults:join("rocketTraceResults"),moverResults:join("moverResults")}) as Snapshot;return Object.freeze({...right,firstHostTick:left.firstHostTick,selectedTicks:left.selectedTicks+right.selectedTicks,eventBatches:Object.freeze([...left.eventBatches,...right.eventBatches]),snapshot})}
+  async #drainPresentations():Promise<void>{this.#presentationBusy=true;try{while(this.#pendingPresentation&&!this.#closed){const value=this.#pendingPresentation;this.#pendingPresentation=undefined;await this.#present(value)}}finally{this.#presentationBusy=false}}
+
+  async #present(publication: SimulationPublication): Promise<void> {
     if (
       !this.#client ||
       !this.#renderer ||
@@ -1202,7 +1209,7 @@ export class Tf2Application {
     )
       return
     try {
-      const snapshot = await this.#client.advance(this.#generation, this.#command(), ticks)
+      const snapshot = publication.snapshot
       this.#snapshot = snapshot
       this.#recordCrouch(snapshot)
       this.#recordAuthorityBlockers(snapshot)
@@ -1227,14 +1234,13 @@ export class Tf2Application {
         )
         if (l) add(p.launcherIdentity, new Set(l.attachments.keys()))
       }
-      const viewmodel = this.#viewmodels.map(snapshot)
       const camera = tf2Camera(snapshot, this.#yaw, this.#pitch)
+      const viewport=this.#canvas.getBoundingClientRect(),viewmodel=this.#viewmodels.map(snapshot,{aspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),farPlane:camera.far})
       const modelPoses = decodeModelPoseOutput(
         await this.#client.models(this.#generation, encodeModelPoseBatch([viewmodel.request])),
       )
       const viewmodelPoses = modelPoses.filter((pose) => pose.identity === viewmodel.item.identity)
-      if (viewmodelPoses.length !== 2 || viewmodelPoses[0]?.role !== "hand" || viewmodelPoses[1]?.role !== "item") throw new Error("Viewmodel composition output differs")
-      const viewmodelPose = viewmodelPoses[0]!
+      if(viewmodelPoses.length!==2||viewmodelPoses[0]?.role!=="item"||viewmodelPoses[1]?.role!=="hand")throw new Error("Viewmodel composition output differs");const viewmodelPose=viewmodelPoses[1]!
       this.#viewmodelActivities.add(viewmodelPose.activity)
       this.#updateAttachmentTransforms(snapshot, viewmodelPoses, camera)
       const presentation = this.#projectiles.map(projectileFrame(snapshot))
@@ -1243,7 +1249,7 @@ export class Tf2Application {
         this.#generation,
         this.#particleBatches.encode(snapshot.tick, camera.position, presentation.particles),
       )
-      const particleItems = decodeParticleRenderOutput(particleOutput, this.#artifacts.particleMaterials)
+      const particleItems=decodeParticleRenderOutput(particleOutput,this.#artifacts.particleMaterials).items
       this.#playAudio(snapshot, camera)
       const rendered = await this.#renderer.render({
         camera,
@@ -1255,11 +1261,14 @@ export class Tf2Application {
             ...viewmodel.item,
             identity: viewmodel.item.identity + index,
             model: pose.model,
+            position:pose.viewmodel!.transform.origin,angles:pose.viewmodel!.transform.angles,
+            viewModelProjection:Object.freeze({kind:"viewmodel" as const,horizontalFov4By3:pose.viewmodel!.projection.unscaledHorizontalFov4By3,near:pose.viewmodel!.projection.near,depthRange:pose.viewmodel!.depthRange,drawsAfterWorld:true,opaqueBeforeTranslucent:true,optionalViewSpaceYReflection:false}),
             pose,
           })),
         ]),
         visibility,
-        deltaSeconds: ticks * 0.015,
+        brushModels: snapshot.entityPresentation,
+        deltaSeconds: publication.selectedTicks * 0.015,
       })
       this.#set({
         hud: tf2Hud(snapshot),
@@ -1291,6 +1300,8 @@ export class Tf2Application {
         viewmodelTimelineProbes: Object.freeze([...this.#viewmodelTimelineProbes]),
         ...this.#gameplayTraces(snapshot),
         ...this.#snapshotProbes(snapshot),
+        simulationProbe: `${publication.hostFrame}:${publication.firstHostTick}-${publication.lastHostTick}:${publication.selectedTicks}:${publication.snapshotBytes.byteLength}:${publication.eventBatches.reduce((n,e)=>n+e.bytes.byteLength,0)}`,
+        brushModelProbe: `${snapshot.entityPresentation.entityRevision}:${snapshot.entityPresentation.collisionRevision}:${snapshot.entityPresentation.models.length}:${snapshot.entityPresentation.models.filter(model=>model.draw).length}`,
       })
     } catch (error) {
       this.#paused = true
@@ -1386,7 +1397,7 @@ export class Tf2Application {
   readonly #visibility = (): void => {
     this.#paused = document.hidden
     this.#neutral()
-    this.#lastFrame = performance.now()
+    if(this.#client&&this.#snapshot)this.#scheduleSimulation(performance.now()/1_000,this.#paused)
   }
   readonly #pointerLock = (): void => {
     if (document.pointerLockElement !== this.#canvas) this.#neutral()
@@ -1405,7 +1416,14 @@ export class Tf2Application {
   }
 
   async requestPointer(canvas = this.#canvas): Promise<void> {
-    this.#canvas = canvas
+    const connected = canvas.isConnected && canvas.getRootNode() === document
+      ? canvas
+      : document.querySelector<HTMLCanvasElement>("canvas.world-canvas")
+    if (!connected) {
+      this.#set({ detail: "Pointer lock target is not attached to the active document" })
+      return
+    }
+    this.#canvas = connected
     if (this.#closed || this.#console?.snapshot().visible) return
     try {
       await this.#canvas.requestPointerLock()
@@ -1469,6 +1487,7 @@ export class Tf2Application {
     }
     this.#console?.apply({ kind: "destroy" })
     this.#diagnostics?.apply({ kind: "destroy" })
+    this.#consoleResources?.fontSet?.destroy()
     await this.#client?.shutdown().catch(() => {})
     this.#cache?.close()
     this.#projectiles?.dispose()

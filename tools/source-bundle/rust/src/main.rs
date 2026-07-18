@@ -189,6 +189,32 @@ impl<'a> Resolver<'a> {
             .ok_or_else(|| format!("required dependency {path} has authoritative absence"))
     }
 
+    fn inject_platform(
+        &mut self,
+        path: &str,
+        consumer: &str,
+        bytes: Vec<u8>,
+        provenance: ProvenanceRecord,
+    ) -> Result<(), String> {
+        let canonical = path.to_ascii_lowercase();
+        if self.bundle.contains_key(&canonical) || self.requests.contains_key(&canonical) {
+            return Err(format!("duplicate injected dependency {canonical}"));
+        }
+        let descriptor = ObjectDescriptor::source(&bytes);
+        self.bundle.insert(canonical.clone(), bytes);
+        self.requests.insert(
+            canonical,
+            MutableRequestRecord {
+                requirement: "required",
+                consumers: BTreeSet::from([consumer.to_owned()]),
+                descriptor: Some(descriptor),
+                provenance: Some(provenance),
+                checked: None,
+            },
+        );
+        Ok(())
+    }
+
     fn optional(
         &mut self,
         path: &str,
@@ -762,7 +788,7 @@ fn collect_model(
 ) -> Result<Box<playsrc_studio_model::Document>, String> {
     let identity = root_path.to_ascii_lowercase();
     let mdl = resolver.required(&identity, format!("studio-model:{identity}:root"))?;
-    let profile = model_profile(&mdl)?;
+    let profile = model_profile(&mdl).map_err(|error| format!("{identity}: {error}"))?;
     let mut responses = Vec::new();
     loop {
         match playsrc_studio_model::load(
@@ -932,6 +958,46 @@ fn main() -> Result<(), String> {
     verify_install_manifest(install)?;
     verify_patch(&tf2)?;
     let (providers, mut provider_records) = provider_plan(install, &tf2, &gameinfo)?;
+    let platform_root = install.join("platform");
+    let platform_vpk = vpk_index_path(&install.join("platform/platform_misc.vpk"));
+    let platform_vpk_revision =
+        digest(&fs::read(&platform_vpk).map_err(|error| error.to_string())?);
+    let platform_content = Content::open(
+        "platform",
+        CONTENT_BUILD,
+        vec![
+            ProviderSpec::Directory {
+                id: "platform-loose".to_owned(),
+                revision: CONTENT_BUILD.to_owned(),
+                root: platform_root.clone(),
+            },
+            ProviderSpec::Vpk {
+                id: "platform-misc".to_owned(),
+                revision: platform_vpk_revision.clone(),
+                directory_file: platform_vpk.clone(),
+                layout: playsrc_vpk::Layout::Split,
+            },
+        ],
+        playsrc_content::Limits::default(),
+    )
+    .map_err(|error| error.to_string())?;
+    let platform_order = provider_records.len();
+    provider_records.push(ProviderRecord {
+        order: platform_order,
+        identity: "platform-loose".to_owned(),
+        kind: "directory",
+        revision: CONTENT_BUILD.to_owned(),
+        configured_location: configured_location(install, &platform_root)?,
+        path_ids: vec!["platform".to_owned()],
+    });
+    provider_records.push(ProviderRecord {
+        order: platform_order + 1,
+        identity: "platform-misc".to_owned(),
+        kind: "vpk",
+        revision: platform_vpk_revision,
+        configured_location: configured_location(install, &platform_vpk)?,
+        path_ids: vec!["platform".to_owned()],
+    });
     let content = Content::open(
         "tf2",
         CONTENT_BUILD,
@@ -1183,6 +1249,20 @@ fn main() -> Result<(), String> {
         )?;
     }
     for path in [
+        "resource/sourcescheme.res",
+        "resource/sourceschemebase.res",
+        "resource/tf2build.ttf",
+        "resource/halflife2.ttf",
+        "resource/hl2ep2.ttf",
+        "resource/marlett.ttf",
+        "resource/linux_fonts/dejavusans.ttf",
+        "resource/linux_fonts/dejavusans-bold.ttf",
+        "resource/linux_fonts/dejavusans-boldoblique.ttf",
+        "resource/linux_fonts/dejavusans-oblique.ttf",
+        "resource/linux_fonts/liberationsans-regular.ttf",
+        "resource/linux_fonts/liberationsans-bold.ttf",
+        "resource/linux_fonts/liberationmono-regular.ttf",
+        "resource/linux_fonts/firasans-regular.ttf",
         "scripts/game_sounds_weapons.txt",
         "scripts/soundmixers.txt",
         "sound/weapons/rocket_shoot.wav",
@@ -1198,10 +1278,85 @@ fn main() -> Result<(), String> {
     ] {
         let consumer = if path.starts_with("sound/") {
             "audio-wave"
+        } else if path.ends_with(".ttf") || path.ends_with(".vbf") {
+            "vgui-font"
+        } else if path.starts_with("resource/") {
+            "vgui-scheme"
         } else {
             "audio-script"
         };
-        resolver.required(path, consumer)?;
+        if path != "resource/sourcescheme.res"
+            && path != "resource/tf2build.ttf"
+            && (path.starts_with("resource/") || path.ends_with(".vbf"))
+        {
+            let authored = match path {
+                "resource/halflife2.ttf" => Some("resource/HALFLIFE2.ttf"),
+                "resource/hl2ep2.ttf" => Some("resource/HL2EP2.ttf"),
+                "resource/marlett.ttf" => Some("resource/marlett.ttf"),
+                "resource/linux_fonts/dejavusans.ttf" => {
+                    Some("resource/linux_fonts/DejaVuSans.ttf")
+                }
+                "resource/linux_fonts/dejavusans-bold.ttf" => {
+                    Some("resource/linux_fonts/DejaVuSans-Bold.ttf")
+                }
+                "resource/linux_fonts/dejavusans-boldoblique.ttf" => {
+                    Some("resource/linux_fonts/DejaVuSans-BoldOblique.ttf")
+                }
+                "resource/linux_fonts/dejavusans-oblique.ttf" => {
+                    Some("resource/linux_fonts/DejaVuSans-Oblique.ttf")
+                }
+                "resource/linux_fonts/liberationsans-regular.ttf" => {
+                    Some("resource/linux_fonts/LiberationSans-Regular.ttf")
+                }
+                "resource/linux_fonts/liberationsans-bold.ttf" => {
+                    Some("resource/linux_fonts/LiberationSans-Bold.ttf")
+                }
+                "resource/linux_fonts/liberationmono-regular.ttf" => {
+                    Some("resource/linux_fonts/LiberationMono-Regular.ttf")
+                }
+                "resource/linux_fonts/firasans-regular.ttf" => {
+                    Some("resource/linux_fonts/FiraSans-Regular.ttf")
+                }
+                _ => None,
+            };
+            if let Some(authored) = authored {
+                let root = if matches!(
+                    path,
+                    "resource/halflife2.ttf" | "resource/hl2ep2.ttf" | "resource/marlett.ttf"
+                ) {
+                    install.join("hl2")
+                } else {
+                    platform_root.clone()
+                };
+                let bytes = fs::read(root.join(authored))
+                    .map_err(|error| format!("platform dependency {authored}: {error}"))?;
+                resolver.inject_platform(
+                    path,
+                    consumer,
+                    bytes,
+                    ProvenanceRecord {
+                        provider_identity: "platform-loose".to_owned(),
+                        provider_kind: "directory",
+                        provider_revision: CONTENT_BUILD.to_owned(),
+                        location: format!("platform/{authored}"),
+                    },
+                )?;
+            } else {
+                let value = match platform_content
+                    .resolve_resource(path)
+                    .map_err(|error| error.to_string())?
+                {
+                    Resolution::Found(value) => value,
+                    Resolution::Missing { .. } => {
+                        return Err(format!("platform dependency {path} is missing"));
+                    }
+                };
+                let provenance = provenance_record(&value.provenance);
+                resolver.inject_platform(path, consumer, value.bytes, provenance)?;
+            }
+        } else {
+            resolver.required(path, consumer)?;
+        }
     }
     let bundle = &resolver.bundle;
     if bundle.len() > MAX_DEPENDENCY_REQUESTS || resolver.requests.len() > MAX_DEPENDENCY_REQUESTS {
