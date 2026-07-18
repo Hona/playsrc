@@ -373,10 +373,38 @@ export class Tf2WorkerClient {
 }
 
 function equalBytes(a: Uint8Array,b:Uint8Array){return a.length===b.length&&a.every((v,i)=>v===b[i])}
-function mergePublicationSnapshots(snapshots: readonly Snapshot[]): Snapshot {
-  const final=snapshots.at(-1); if(!final) throw new Tf2WorkerError("WorkerFailed")
-  const all=(key:keyof Snapshot)=>Object.freeze(snapshots.flatMap(s=>s[key] as readonly unknown[]))
-  return Object.freeze({...final, projectileEvents:all("projectileEvents"),entityEvents:all("entityEvents"),events:all("events"),activities:all("activities"),lifecycleEvents:all("lifecycleEvents"),physicsRequests:all("physicsRequests"),rocketTraceRequests:all("rocketTraceRequests"),radiusDamageRequests:all("radiusDamageRequests"),moverRequests:all("moverRequests"),contactReconcileRequests:all("contactReconcileRequests"),mapEffects:all("mapEffects"),regenerateAnimationEvents:all("regenerateAnimationEvents"),randomDraws:all("randomDraws"),audioEvents:all("audioEvents"),rocketTraceResults:all("rocketTraceResults"),moverResults:all("moverResults")}) as Snapshot
+export function mergePublicationSnapshots(snapshots: readonly Snapshot[]): Snapshot {
+  const final = snapshots.at(-1)
+  if (!final) throw new Tf2WorkerError("WorkerFailed")
+  const all = (key: keyof Snapshot) => Object.freeze(snapshots.flatMap((snapshot) => snapshot[key] as readonly unknown[]))
+  const projectileTimeline = Object.freeze(snapshots.flatMap((snapshot) => snapshot.projectileTimeline))
+  if (
+    projectileTimeline.length === 0
+    || projectileTimeline.at(-1)?.tick !== final.tick
+    || projectileTimeline.some((entry, index) => index > 0 && entry.tick <= projectileTimeline[index - 1]!.tick)
+  ) {
+    throw new Tf2WorkerError("WorkerFailed")
+  }
+  return Object.freeze({
+    ...final,
+    projectileEvents: all("projectileEvents"),
+    projectileTimeline,
+    entityEvents: all("entityEvents"),
+    events: all("events"),
+    activities: all("activities"),
+    lifecycleEvents: all("lifecycleEvents"),
+    physicsRequests: all("physicsRequests"),
+    rocketTraceRequests: all("rocketTraceRequests"),
+    radiusDamageRequests: all("radiusDamageRequests"),
+    moverRequests: all("moverRequests"),
+    contactReconcileRequests: all("contactReconcileRequests"),
+    mapEffects: all("mapEffects"),
+    regenerateAnimationEvents: all("regenerateAnimationEvents"),
+    randomDraws: all("randomDraws"),
+    audioEvents: all("audioEvents"),
+    rocketTraceResults: all("rocketTraceResults"),
+    moverResults: all("moverResults"),
+  }) as Snapshot
 }
 function decodeSimulationPublications(bytes:ArrayBuffer):readonly SimulationPublication[]{
   const data=new Uint8Array(bytes),view=new DataView(bytes); if(bytes.byteLength<16||new TextDecoder().decode(data.subarray(0,4))!=="PSIM"||view.getUint32(4,true)!==1||view.getUint32(12,true)!==0)throw new Tf2WorkerError("WorkerFailed")

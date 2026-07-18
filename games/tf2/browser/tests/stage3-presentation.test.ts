@@ -1,6 +1,12 @@
 import { expect, test } from "bun:test"
 import { sourceHorizontal4By3FovToVertical } from "@playsrc/rendering"
-import { createParticleBatchEncoder, createViewmodelPresenter, tf2Camera, type ProjectileParticleRequest } from "../src/presentation"
+import {
+  createParticleBatchEncoder,
+  createViewmodelPresenter,
+  ProjectilePresentationError,
+  tf2Camera,
+  type ProjectileParticleRequest,
+} from "../src/presentation"
 import type { PresentationArtifacts } from "../src/artifacts"
 import type { Snapshot } from "../src/codec"
 
@@ -10,6 +16,7 @@ test("encodes one bounded complete PCF phase without per-particle calls", () => 
     identity: "7:0:fire:9:start:projectile:9:trail",
     effectIdentity: "projectile:9:trail",
     eventIdentity: "7:0:fire:9",
+    tick: 7n,
     projectileIdentity: 9,
     ownerIdentity: 1,
     launcherIdentity: 2,
@@ -28,10 +35,52 @@ test("encodes one bounded complete PCF phase without per-particle calls", () => 
   const bytes = createParticleBatchEncoder().encode(7n, [4, 5, 6], [request])
   const view = new DataView(bytes.buffer)
   expect(new TextDecoder().decode(bytes.subarray(0, 4))).toBe("PPTX")
-  expect(view.getUint32(4, true)).toBe(1)
+  expect(view.getUint32(4, true)).toBe(2)
   expect(view.getUint32(28, true)).toBe(1)
   expect(bytes[32]).toBe(1)
   expect(new TextDecoder().decode(bytes.subarray(68, 79))).toBe("rockettrail")
+})
+
+test("preserves source ticks and graceful stop in one multi-tick Particle phase", () => {
+  const requests: readonly ProjectileParticleRequest[] = [
+    Object.freeze({
+      kind: "start",
+      identity: "2:0:fire:9:start:projectile:9:trail",
+      effectIdentity: "projectile:9:trail",
+      eventIdentity: "2:0:fire:9",
+      tick: 2n,
+      projectileIdentity: 9,
+      ownerIdentity: 1,
+      launcherIdentity: 2,
+      team: "red",
+      system: "rockettrail",
+      attachment: Object.freeze({ entityIdentity: 9, name: "trail" }),
+      controlPoints: Object.freeze([Object.freeze({
+        index: 0,
+        position: Object.freeze([1, 2, 3]),
+        orientation: Object.freeze([0, 0, 0, 1]),
+        ownerIdentity: 1,
+      })]),
+    }),
+    Object.freeze({
+      kind: "stop",
+      identity: "4:0:explode:9:stop:projectile:9:trail",
+      effectIdentity: "projectile:9:trail",
+      eventIdentity: "4:0:explode:9",
+      tick: 4n,
+      projectileIdentity: 9,
+      immediate: false,
+    }),
+  ]
+  const bytes = createParticleBatchEncoder().encode(4n, [0, 0, 0], requests)
+  const view = new DataView(bytes.buffer)
+  expect(view.getFloat32(44, true)).toBeCloseTo(0.03)
+  expect(bytes[111]).toBe(3)
+  expect(view.getFloat32(123, true)).toBeCloseTo(0.06)
+
+  const reversed = createParticleBatchEncoder()
+  reversed.encode(3n, [0, 0, 0], [])
+  expect(() => reversed.encode(4n, [0, 0, 0], [requests[0]!])).toThrow(ProjectilePresentationError)
 })
 
 test("uses the default TF2 horizontal-4:3 world projection and Source clip planes", () => {

@@ -1,14 +1,18 @@
 import { describe, expect, test } from "bun:test"
 import {
   createProjectilePresentationMapper,
+  projectileFrame,
   ProjectilePresentationError,
+  sourceViewOrientation,
   type ProjectileEvent,
   type ProjectileFact,
   type ProjectileFrame,
   type ProjectileResourceCatalog,
+  type ProjectileTick,
   type Quaternion,
   type Vector3,
 } from "../src/presentation"
+import type { Snapshot } from "../src/codec"
 
 const systems = new Set([
   "rockettrail",
@@ -80,11 +84,14 @@ function sticky(state: "flying" | "stuck-unarmed" | "stuck-armed", team: "red" |
 function event(fact: ProjectileFact, kind: ProjectileEvent["kind"], tick: bigint): ProjectileEvent {
   return Object.freeze({
     kind,
+    projectileKind: fact.kind,
     projectileIdentity: fact.identity,
     ownerIdentity: fact.ownerIdentity,
     launcherIdentity: fact.launcherIdentity,
     team: fact.team,
     tick,
+    sourceOrdinal: 0,
+    sourceEventOrdinal: 0,
     position: fact.position,
     orientation: fact.orientation,
     contactNormal: fact.contactNormal,
@@ -92,7 +99,37 @@ function event(fact: ProjectileFact, kind: ProjectileEvent["kind"], tick: bigint
 }
 
 function frame(tick: bigint, projectiles: readonly ProjectileFact[], events: readonly ProjectileEvent[]): ProjectileFrame {
-  return Object.freeze({ tick, projectiles: Object.freeze(projectiles), events: Object.freeze(events) })
+  return timeline(projectileTick(tick, projectiles, events))
+}
+
+function projectileTick(
+  tick: bigint,
+  projectiles: readonly ProjectileFact[],
+  events: readonly ProjectileEvent[],
+): ProjectileTick {
+  const expanded: ProjectileEvent[] = []
+  const append = (value: ProjectileEvent, kind: ProjectileEvent["kind"], sourceEventOrdinal: number) => {
+    expanded.push(Object.freeze({ ...value, kind, sourceOrdinal: expanded.length, sourceEventOrdinal }))
+  }
+  events.forEach((value, sourceEventOrdinal) => {
+    append(value, value.kind, sourceEventOrdinal)
+    if (value.kind === "impact") {
+      const outcome = events.slice(sourceEventOrdinal + 1)
+        .find((candidate) => candidate.projectileIdentity === value.projectileIdentity)
+      if (outcome?.kind !== "stick" && outcome?.kind !== "explode") append(value, "bounce", sourceEventOrdinal)
+    } else if (value.kind === "fizzle" || value.kind === "explode") {
+      append(value, "destroy", sourceEventOrdinal)
+    }
+  })
+  return Object.freeze({
+    tick,
+    projectiles: Object.freeze(projectiles),
+    events: Object.freeze(expanded),
+  })
+}
+
+function timeline(...ticks: readonly ProjectileTick[]): ProjectileFrame {
+  return Object.freeze({ ticks: Object.freeze(ticks) })
 }
 
 describe("TF2 projectile presentation contract", () => {
@@ -129,13 +166,12 @@ describe("TF2 projectile presentation contract", () => {
     expect(result.particles.map((request) => request.kind === "start" && [request.system, request.attachment])).toEqual([
       ["rockettrail", { entityIdentity: 7, name: "trail" }],
       ["rocketbackblast", { entityIdentity: 20, name: "backblast" }],
-      false,
     ])
     expect(Object.isFrozen(result.models[0]!.orientation)).toBe(true)
     expect(fact.velocity).toEqual([-100, 500, 9])
   })
 
-  test("preserves sticky spin, settles to contact, arms by team, then cleans up on explosion", () => {
+  test("preserves sticky spin and VPhysics orientation through stick, arm, and explosion", () => {
     const mapper = createProjectilePresentationMapper(catalog())
     const flying = sticky("flying")
     const fired = mapper.map(frame(1n, [flying], [event(flying, "fire", 1n)]))
@@ -144,12 +180,10 @@ describe("TF2 projectile presentation contract", () => {
       .toEqual(["stickybombtrail_red", "muzzle_pipelauncher"])
 
     const stuck = sticky("stuck-unarmed")
-    const stuckResult = mapper.map(frame(2n, [stuck], [event(stuck, "stick", 2n)]))
-    expect(stuckResult.particles).toHaveLength(2)
+    const stuckResult = mapper.map(frame(2n, [stuck], [event(stuck, "impact", 2n), event(stuck, "stick", 2n)]))
+    expect(stuckResult.particles).toHaveLength(1)
     const settled = stuckResult.models[0]!.orientation
-    rotate(settled, [0, 0, 1]).forEach((component, index) => {
-      expect(component).toBeCloseTo([0, 1, 0][index]!, 6)
-    })
+    expect(settled).toEqual(stuck.orientation)
 
     const armed = sticky("stuck-armed")
     const armedResult = mapper.map(frame(3n, [armed], [event(armed, "arm", 3n)]))
@@ -158,8 +192,48 @@ describe("TF2 projectile presentation contract", () => {
     const explosion = event(armed, "explode", 4n)
     const exploded = mapper.map(frame(4n, [], [explosion]))
     expect(exploded.particles.map((request) => request.kind === "start" ? request.system : request.kind))
-      .toEqual(["stop", "stop", "ExplosionCore_Wall"])
+      .toEqual(["stop", "ExplosionCore_Wall"])
+    expect(exploded.particles[0]).toMatchObject({ kind: "stop", immediate: false, tick: 4n })
     expect(exploded.models).toEqual([])
+  })
+
+  test("records a non-sticking sticky impact as an ordered bounce outcome", () => {
+    const mapper = createProjectilePresentationMapper(catalog())
+    const flying = sticky("flying")
+    mapper.map(frame(1n, [flying], [event(flying, "fire", 1n)]))
+    const rawFact = Object.freeze({
+      identity: flying.identity,
+      kind: 2 as const,
+      team: 1 as const,
+      ownerIdentity: flying.ownerIdentity,
+      launcherIdentity: flying.launcherIdentity,
+      state: 1 as const,
+      position: flying.position,
+      velocity: flying.velocity,
+      orientation: flying.orientation,
+      angularVelocity: flying.angularVelocity,
+      contactNormal: null,
+      ageSeconds: flying.ageSeconds,
+    })
+    const impact = Object.freeze({
+      type: "impact" as const,
+      projectile: flying.identity,
+      kind: 2 as const,
+      ownerIdentity: flying.ownerIdentity,
+      launcherIdentity: flying.launcherIdentity,
+      team: 1 as const,
+      tick: 2n,
+      position: flying.position,
+      orientation: flying.orientation,
+      contactNormal: Object.freeze([0, 0, 1]) as Vector3,
+    })
+    const snapshot = {
+      projectileTimeline: Object.freeze([
+        Object.freeze({ tick: 2n, projectiles: Object.freeze([rawFact]), events: Object.freeze([impact]) }),
+      ]),
+    } as unknown as Snapshot
+    expect(mapper.map(projectileFrame(snapshot)).events.map((value) => value.kind))
+      .toEqual(["impact", "bounce"])
   })
 
   test("selects BLU sticky resources and mid-air explosion without a contact patch", () => {
@@ -169,7 +243,122 @@ describe("TF2 projectile presentation contract", () => {
       .toMatchObject({ kind: "start", system: "stickybombtrail_blue", team: "blue" })
     const explosion = Object.freeze({ ...event(fact, "explode", 2n), contactNormal: null })
     const result = mapper.map(frame(2n, [], [explosion]))
-    expect(result.particles.at(-1)).toMatchObject({ kind: "start", system: "ExplosionCore_MidAir" })
+    expect(result.particles.at(-1)).toMatchObject({
+      kind: "start",
+      system: "ExplosionCore_MidAir",
+      controlPoints: [{ orientation: [0, 0, 0, 1] }],
+    })
+  })
+
+  test("maps a transient near-wall rocket from every selected tick without a final fact", () => {
+    const mapper = createProjectilePresentationMapper(catalog())
+    const fired = rocket({ orientation: [0, 0, 0, 1] })
+    const normal = Object.freeze([-1, 0, 0]) as Vector3
+    const rawFact = Object.freeze({
+      identity: fired.identity,
+      kind: 1 as const,
+      team: 2 as const,
+      ownerIdentity: fired.ownerIdentity,
+      launcherIdentity: fired.launcherIdentity,
+      state: 1 as const,
+      position: fired.position,
+      velocity: fired.velocity,
+      orientation: fired.orientation,
+      angularVelocity: fired.angularVelocity,
+      contactNormal: null,
+      ageSeconds: fired.ageSeconds,
+    })
+    const rawEvent = (type: "fire" | "impact" | "explode", tick: bigint, contactNormal: Vector3 | null) => Object.freeze({
+      type,
+      projectile: fired.identity,
+      kind: 1 as const,
+      ownerIdentity: fired.ownerIdentity,
+      launcherIdentity: fired.launcherIdentity,
+      team: 2 as const,
+      tick,
+      position: type === "fire" ? fired.position : Object.freeze([12, 2, 3]) as Vector3,
+      orientation: fired.orientation,
+      contactNormal,
+    })
+    const snapshot = {
+      projectileTimeline: Object.freeze([
+        Object.freeze({ tick: 1n, projectiles: Object.freeze([rawFact]), events: Object.freeze([rawEvent("fire", 1n, null)]) }),
+        Object.freeze({ tick: 2n, projectiles: Object.freeze([]), events: Object.freeze([
+          rawEvent("impact", 2n, normal),
+          rawEvent("explode", 2n, normal),
+        ]) }),
+      ]),
+    } as unknown as Snapshot
+    const result = mapper.map(projectileFrame(snapshot))
+    expect(result.models).toEqual([])
+    expect(result.events.map((value) => `${value.tick}:${value.sourceOrdinal}:${value.kind}`)).toEqual([
+      "1:0:fire",
+      "2:0:impact",
+      "2:1:explode",
+      "2:2:destroy",
+    ])
+    expect(result.particles.map((request) => request.kind === "start" ? request.system : request.kind)).toEqual([
+      "rockettrail",
+      "rocketbackblast",
+      "stop",
+      "ExplosionCore_Wall",
+    ])
+    expect(result.particles.map((request) => request.tick)).toEqual([1n, 1n, 2n, 2n])
+    const explosion = result.particles.at(-1)
+    expect(explosion).toMatchObject({ kind: "start", system: "ExplosionCore_Wall" })
+    if (explosion?.kind !== "start") throw new Error("wall explosion request is missing")
+    explosion.controlPoints[0]!.orientation.forEach((component, index) => {
+      expect(component).toBeCloseTo(sourceViewOrientation(0, 180)[index]!, 12)
+    })
+  })
+
+  test("retains every far-flight control with one attachment-local transform", () => {
+    const initial = rocket({ position: [10, 20, 30], orientation: [0, 0, 0, 1] })
+    const middle = rocket({ position: [20, 30, 40], orientation: [0, 0, 0, 1], ageSeconds: 0.5 })
+    const final = rocket({ position: [30, 40, 50], orientation: [0, 0, 0, 1], ageSeconds: 1 })
+    const resources: ProjectileResourceCatalog = Object.freeze({
+      ...catalog(),
+      attachmentTransforms: new Map([
+        [7, new Map([["trail", { position: [32, 43, 54] as Vector3, orientation: [0, 0, 0, 1] as Quaternion }]])],
+        [20, new Map([["backblast", { position: [5, 6, 7] as Vector3, orientation: [0, 0, 0, 1] as Quaternion }]])],
+      ]),
+    })
+    const result = createProjectilePresentationMapper(resources).map(timeline(
+      projectileTick(1n, [initial], [event(initial, "fire", 1n)]),
+      projectileTick(2n, [middle], []),
+      projectileTick(3n, [final], []),
+    ))
+    expect(result.particles.filter((request) => request.effectIdentity === "projectile:7:trail").map((request) =>
+      request.kind === "start" ? request.controlPoints[0]!.position : request.kind === "set-control-point" ? request.controlPoint.position : []
+    )).toEqual([[12, 23, 34], [22, 33, 44], [32, 43, 54]])
+  })
+
+  test("suppresses only local rocket backblast and keeps local sticky muzzle", () => {
+    const localCatalog = Object.freeze({ ...catalog(), localOwnerIdentity: 10 })
+    const rocketResult = createProjectilePresentationMapper(localCatalog).map(
+      frame(1n, [rocket()], [event(rocket(), "fire", 1n)]),
+    )
+    expect(rocketResult.particles.filter((request) => request.kind === "start").map((request) => request.system))
+      .toEqual(["rockettrail"])
+
+    const localSticky = sticky("flying")
+    const stickyCatalog = Object.freeze({ ...catalog(), localOwnerIdentity: localSticky.ownerIdentity })
+    const stickyResult = createProjectilePresentationMapper(stickyCatalog).map(
+      frame(1n, [localSticky], [event(localSticky, "fire", 1n)]),
+    )
+    expect(stickyResult.particles.filter((request) => request.kind === "start").map((request) => request.system))
+      .toEqual(["stickybombtrail_red", "muzzle_pipelauncher"])
+  })
+
+  test("preserves VPhysics sticky orientation and hides its first 0.1 seconds", () => {
+    const orientation = Object.freeze([0.1825741858, 0.3651483717, 0.5477225575, 0.7302967433]) as Quaternion
+    const hidden = sticky("flying")
+    const mapper = createProjectilePresentationMapper(catalog())
+    expect(mapper.map(frame(1n, [{ ...hidden, orientation, ageSeconds: 0.099 }], [
+      event({ ...hidden, orientation }, "fire", 1n),
+    ])).models).toEqual([])
+    const visible = Object.freeze({ ...hidden, orientation, ageSeconds: 0.1 })
+    expect(mapper.map(frame(2n, [visible], [])).models[0]?.orientation).toEqual(orientation)
   })
 
   test("cancels a fizzled projectile without emitting an explosion substitute", () => {
@@ -182,8 +371,9 @@ describe("TF2 projectile presentation contract", () => {
       identity: "2:0:fizzle:9:stop:projectile:9:trail",
       effectIdentity: "projectile:9:trail",
       eventIdentity: "2:0:fizzle:9",
+      tick: 2n,
       projectileIdentity: 9,
-      immediate: true,
+      immediate: false,
     }])
   })
 
@@ -193,11 +383,12 @@ describe("TF2 projectile presentation contract", () => {
     mapper.map(frame(1n, [flying], [event(flying, "fire", 1n)]))
     const armed = sticky("stuck-armed")
     const result = mapper.map(frame(2n, [armed], [
+      event(armed, "impact", 2n),
       event(armed, "stick", 2n),
       event(armed, "arm", 2n),
     ]))
-    expect(result.particles.map((request) => request.kind)).toEqual(["set-control-point", "start", "set-control-point"])
-    expect(result.particles[1]).toMatchObject({ system: "stickybomb_pulse_red" })
+    expect(result.particles.map((request) => request.kind)).toEqual(["start", "set-control-point"])
+    expect(result.particles[0]).toMatchObject({ system: "stickybomb_pulse_red" })
   })
   test("accepts an airborne arm without a contact normal",()=>{const mapper=createProjectilePresentationMapper(catalog()),flying=sticky("flying");mapper.map(frame(1n,[flying],[event(flying,"fire",1n)]));const armed=mapper.map(frame(54n,[flying],[event(flying,"arm",54n)]));expect(armed.particles.some(request=>request.kind==="start"&&request.system==="stickybomb_pulse_red")).toBeTrue();expect(armed.models[0]?.state).toBe("flying")})
 
@@ -236,17 +427,8 @@ describe("TF2 projectile presentation contract", () => {
 
     const normalMapper = createProjectilePresentationMapper(catalog())
     normalMapper.map(frame(1n, [fact], [event(fact, "fire", 1n)]))
-    expect(() => normalMapper.map(frame(2n, [], []))).toThrow(ProjectilePresentationError)
+    expect(() => normalMapper.map(frame(1n, [fact], []))).toThrow(ProjectilePresentationError)
+    expect(normalMapper.map(frame(2n, [fact], [])).models).toHaveLength(1)
+    expect(() => normalMapper.map(frame(3n, [], []))).toThrow(ProjectilePresentationError)
   })
 })
-
-function rotate(quaternion: Quaternion, value: Vector3): Vector3 {
-  const [x, y, z, w] = quaternion
-  const uv: Vector3 = [y * value[2] - z * value[1], z * value[0] - x * value[2], x * value[1] - y * value[0]]
-  const uuv: Vector3 = [y * uv[2] - z * uv[1], z * uv[0] - x * uv[2], x * uv[1] - y * uv[0]]
-  return [
-    value[0] + 2 * (uv[0] * w + uuv[0]),
-    value[1] + 2 * (uv[1] * w + uuv[1]),
-    value[2] + 2 * (uv[2] * w + uuv[2]),
-  ]
-}

@@ -66,41 +66,71 @@ export function tf2Audio(snapshot: Snapshot): readonly Tf2AudioRequest[] {
 
 export function projectileFrame(snapshot: Snapshot): ProjectileFrame {
   return Object.freeze({
-    tick: snapshot.tick,
-    projectiles: Object.freeze(
-      snapshot.projectiles.map((p) =>
-        Object.freeze({
-          identity: p.identity,
-          kind: p.kind === 1 ? "rocket" : "sticky",
-          team: p.team === 1 ? "red" : "blue",
-          ownerIdentity: p.ownerIdentity,
-          launcherIdentity: p.launcherIdentity,
-          state: p.state === 1 ? "flying" : p.state === 2 ? "stuck-unarmed" : "stuck-armed",
-          position: vector(p.position),
-          velocity: vector(p.velocity),
-          orientation: quat(p.orientation),
-          angularVelocity: vector(p.angularVelocity),
-          contactNormal: p.contactNormal === null ? null : vector(p.contactNormal),
-          ageSeconds: p.ageSeconds,
-        }),
-      ),
-    ),
-    events: Object.freeze(
-      snapshot.projectileEvents.map((e) =>
-        Object.freeze({
-          kind: e.type,
-          projectileIdentity: e.projectile,
-          ownerIdentity: e.ownerIdentity,
-          launcherIdentity: e.launcherIdentity,
-          team: e.team === 1 ? "red" : "blue",
-          tick: e.tick,
-          position: vector(e.position),
-          orientation: quat(e.orientation),
-          contactNormal: e.contactNormal === null ? null : vector(e.contactNormal),
-        }),
-      ),
-    ),
-  }) as ProjectileFrame
+    ticks: Object.freeze(snapshot.projectileTimeline.map((entry) => Object.freeze({
+      tick: entry.tick,
+      projectiles: Object.freeze(entry.projectiles.map((projectile) => Object.freeze({
+        identity: projectile.identity,
+        kind: projectile.kind === 1 ? "rocket" : "sticky",
+        team: projectile.team === 1 ? "red" : "blue",
+        ownerIdentity: projectile.ownerIdentity,
+        launcherIdentity: projectile.launcherIdentity,
+        state: projectile.state === 1 ? "flying" : projectile.state === 2 ? "stuck-unarmed" : "stuck-armed",
+        position: vector(projectile.position),
+        velocity: vector(projectile.velocity),
+        orientation: quat(projectile.orientation),
+        angularVelocity: vector(projectile.angularVelocity),
+        contactNormal: projectile.contactNormal === null ? null : vector(projectile.contactNormal),
+        ageSeconds: projectile.ageSeconds,
+      }))),
+      events: projectileTimelineEvents(entry.events),
+    }))),
+  })
+}
+
+function projectileTimelineEvents(
+  events: Snapshot["projectileEvents"],
+): readonly ProjectileEvent[] {
+  const output: ProjectileEvent[] = []
+  const nextKind = new Array<Snapshot["projectileEvents"][number]["type"] | undefined>(events.length)
+  const upcoming = new Map<number, Snapshot["projectileEvents"][number]["type"]>()
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]!
+    nextKind[index] = upcoming.get(event.projectile)
+    upcoming.set(event.projectile, event.type)
+  }
+  const append = (
+    event: Snapshot["projectileEvents"][number],
+    kind: ProjectileEventKind,
+    sourceEventOrdinal: number,
+  ) => {
+    output.push(Object.freeze({
+      kind,
+      projectileKind: event.kind === 1 ? "rocket" : "sticky",
+      projectileIdentity: event.projectile,
+      ownerIdentity: event.ownerIdentity,
+      launcherIdentity: event.launcherIdentity,
+      team: event.team === 1 ? "red" : "blue",
+      tick: event.tick,
+      sourceOrdinal: output.length,
+      sourceEventOrdinal,
+      position: vector(event.position),
+      orientation: quat(event.orientation),
+      contactNormal: event.contactNormal === null ? null : vector(event.contactNormal),
+    }))
+  }
+  for (let sourceEventOrdinal = 0; sourceEventOrdinal < events.length; sourceEventOrdinal += 1) {
+    const event = events[sourceEventOrdinal]!
+    append(event, event.type, sourceEventOrdinal)
+    if (event.type === "impact") {
+      const outcome = nextKind[sourceEventOrdinal]
+      if (outcome !== "stick" && outcome !== "explode") {
+        append(event, "bounce", sourceEventOrdinal)
+      }
+    } else if (event.type === "fizzle" || event.type === "explode") {
+      append(event, "destroy", sourceEventOrdinal)
+    }
+  }
+  return Object.freeze(output)
 }
 export function projectileModels(models: readonly ProjectileModelRequest[]): readonly ModelItem[] {
   return Object.freeze(
@@ -343,27 +373,55 @@ export function createParticleBatchEncoder() {
   return Object.freeze({
     encode(tick: bigint, camera: Vector3, requests: readonly ProjectileParticleRequest[]) {
       const to = Number(tick) * 0.015
-      if (to < from) throw new ProjectilePresentationError("TimeReversed", "particle time reversed")
+      if (
+        typeof tick !== "bigint"
+        || tick < 0n
+        || !Number.isFinite(to)
+        || to < from
+        || requests.length > 4_096
+        || !finite(camera)
+      ) {
+        throw new ProjectilePresentationError("TimeReversed", "particle transaction range or input is invalid")
+      }
       let length = 32
       for (const r of requests) {
         length += 20
         if (r.kind === "start") length += 8 + 4 + 4 + new TextEncoder().encode(r.system).length + 32
         else if (r.kind === "set-control-point") length += 32
       }
+      if (length > 4 * 1024 * 1024) throw new ProjectilePresentationError("BoundExceeded", "particle transaction bytes")
       const bytes = new Uint8Array(length),
         view = new DataView(bytes.buffer),
         encoder = new TextEncoder()
       bytes.set([0x50, 0x50, 0x54, 0x58])
-      view.setUint32(4, 1, true)
+      view.setUint32(4, 2, true)
       view.setFloat32(8, from, true)
       view.setFloat32(12, to, true)
       camera.forEach((v, i) => view.setFloat32(16 + i * 4, v, true))
       view.setUint32(28, requests.length, true)
       let at = 32
+      let priorRequestTime = from
       for (const r of requests) {
-        bytes[at] = r.kind === "start" ? 1 : r.kind === "set-control-point" ? 2 : 3
+        const requestTime = Number(r.tick) * 0.015
+        if (
+          typeof r.tick !== "bigint"
+          || r.tick < 0n
+          || !Number.isFinite(requestTime)
+          || requestTime < priorRequestTime
+          || requestTime > to
+        ) {
+          throw new ProjectilePresentationError("TimeReversed", "particle request time is outside source order")
+        }
+        priorRequestTime = requestTime
+        bytes[at] = r.kind === "start"
+          ? 1
+          : r.kind === "set-control-point"
+            ? 2
+            : r.immediate
+              ? 4
+              : 3
         view.setBigUint64(at + 4, stable64(r.identity), true)
-        view.setFloat32(at + 12, to, true)
+        view.setFloat32(at + 12, requestTime, true)
         view.setUint32(at + 16, stable32(r.effectIdentity), true)
         at += 20
         if (r.kind === "start") {
@@ -435,7 +493,15 @@ export function particleEffects(items: readonly ParticleRenderItem[]): readonly 
 export type ProjectileKind = "rocket" | "sticky"
 export type ProjectileTeam = "red" | "blue"
 export type ProjectileState = "flying" | "stuck-unarmed" | "stuck-armed"
-export type ProjectileEventKind = "fire" | "impact" | "stick" | "arm" | "fizzle" | "explode"
+export type ProjectileEventKind =
+  | "fire"
+  | "impact"
+  | "bounce"
+  | "stick"
+  | "arm"
+  | "fizzle"
+  | "explode"
+  | "destroy"
 export type Vector3 = readonly [number, number, number]
 export type Quaternion = readonly [number, number, number, number]
 
@@ -456,20 +522,27 @@ export type ProjectileFact = Readonly<{
 
 export type ProjectileEvent = Readonly<{
   kind: ProjectileEventKind
+  projectileKind: ProjectileKind
   projectileIdentity: number
   ownerIdentity: number
   launcherIdentity: number
   team: ProjectileTeam
   tick: bigint
+  sourceOrdinal: number
+  sourceEventOrdinal: number
   position: Vector3
   orientation: Quaternion
   contactNormal: Vector3 | null
 }>
 
-export type ProjectileFrame = Readonly<{
+export type ProjectileTick = Readonly<{
   tick: bigint
   projectiles: readonly ProjectileFact[]
   events: readonly ProjectileEvent[]
+}>
+
+export type ProjectileFrame = Readonly<{
+  ticks: readonly ProjectileTick[]
 }>
 
 export type ProjectileModelRequest = Readonly<{
@@ -503,6 +576,7 @@ export type ProjectileParticleRequest =
       identity: string
       effectIdentity: string
       eventIdentity: string
+      tick: bigint
       projectileIdentity: number
       ownerIdentity: number
       launcherIdentity: number
@@ -516,6 +590,7 @@ export type ProjectileParticleRequest =
       identity: string
       effectIdentity: string
       eventIdentity: string
+      tick: bigint
       projectileIdentity: number
       controlPoint: ParticleControlPoint
     }>
@@ -524,6 +599,7 @@ export type ProjectileParticleRequest =
       identity: string
       effectIdentity: string
       eventIdentity: string
+      tick: bigint
       projectileIdentity: number
       immediate: boolean
     }>
@@ -566,8 +642,17 @@ type TrackedProjectile = Readonly<{
   ownerIdentity: number
   launcherIdentity: number
   state: ProjectileState
+  armed: boolean
   trailActive: boolean
-  pulseActive: boolean
+  trailLocalTransform: AttachmentTransform | null
+}>
+
+type ProjectileSource = Readonly<{
+  identity: number
+  kind: ProjectileKind
+  team: ProjectileTeam
+  ownerIdentity: number
+  launcherIdentity: number
 }>
 
 const DEFAULT_LIMITS: ProjectilePresentationLimits = Object.freeze({
@@ -590,66 +675,92 @@ export function createProjectilePresentationMapper(
 }> {
   validateLimits(limits)
   let tick = 0n
+  let hasMapped = false
   let tracked = new Map<number, TrackedProjectile>()
   let disposed = false
 
   return Object.freeze({
     map(frame: ProjectileFrame) {
       if (disposed) throw new ProjectilePresentationError("IllegalTransition", "mapper is disposed")
-      if (typeof frame.tick !== "bigint" || frame.tick < tick) {
-        throw new ProjectilePresentationError("TimeReversed", "projectile frame tick moved backward")
-      }
-      if (frame.projectiles.length > limits.maxProjectiles || frame.events.length > limits.maxEvents) {
-        throw new ProjectilePresentationError("BoundExceeded", "projectile frame exceeds its count limit")
-      }
       const next = new Map(tracked)
-      const facts = new Map<number, ProjectileFact>()
-      for (const fact of frame.projectiles) {
-        validateFact(fact)
-        if (facts.has(fact.identity)) {
-          throw new ProjectilePresentationError("MalformedFact", "projectile identity is duplicated")
-        }
-        facts.set(fact.identity, fact)
+      if (frame.ticks.length === 0) {
+        throw new ProjectilePresentationError("MalformedFact", "projectile timeline is empty")
       }
-
       const particles: ProjectileParticleRequest[] = []
-      for (let eventIndex = 0; eventIndex < frame.events.length; eventIndex += 1) {
-        const event = frame.events[eventIndex]!
-        validateEvent(event, frame.tick)
-        const fact = facts.get(event.projectileIdentity)
-        const prior = next.get(event.projectileIdentity)
-        const eventIdentity = `${event.tick}:${eventIndex}:${event.kind}:${event.projectileIdentity}`
-        if (event.kind === "fire") {
-          if (prior || !fact) {
-            throw transition("fire requires one new projectile fact")
+      const mappedEvents: ProjectileEvent[] = []
+      let finalFacts = new Map<number, ProjectileFact>()
+      let mappedTick = tick
+      let totalEvents = 0
+      for (let timelineIndex = 0; timelineIndex < frame.ticks.length; timelineIndex += 1) {
+        const timeline = frame.ticks[timelineIndex]!
+        if (
+          typeof timeline.tick !== "bigint"
+          || timeline.tick < mappedTick
+          || ((hasMapped || timelineIndex > 0) && timeline.tick === mappedTick)
+        ) {
+          throw new ProjectilePresentationError("TimeReversed", "projectile timeline tick moved backward or repeated")
+        }
+        totalEvents += timeline.events.length
+        if (timeline.projectiles.length > limits.maxProjectiles || totalEvents > limits.maxEvents) {
+          throw new ProjectilePresentationError("BoundExceeded", "projectile timeline exceeds its count limit")
+        }
+        const facts = new Map<number, ProjectileFact>()
+        for (const fact of timeline.projectiles) {
+          validateFact(fact)
+          if (facts.has(fact.identity)) {
+            throw new ProjectilePresentationError("MalformedFact", "projectile identity is duplicated")
           }
-          matchEvent(event, fact)
-          const trail = trailSystem(fact)
-          requireSystem(catalog, trail)
-          const trailAttachment = fact.kind === "rocket" ? requireAttachment(catalog, fact.identity, "trail") : null
-          const trailTransform = trailAttachment ? requireAttachmentTransform(catalog, trailAttachment) : null
-          push(
-            particles,
-            limits,
-            startRequest(
+          facts.set(fact.identity, fact)
+        }
+        const startedControls = new Map<number, ParticleControlPoint>()
+        for (let eventIndex = 0; eventIndex < timeline.events.length; eventIndex += 1) {
+          const event = timeline.events[eventIndex]!
+          const previousEvent = timeline.events[eventIndex - 1]
+          validateEvent(event, timeline.tick, eventIndex)
+          const fact = facts.get(event.projectileIdentity)
+          const prior = next.get(event.projectileIdentity)
+          const eventIdentity = `${event.tick}:${event.sourceEventOrdinal}:${event.kind}:${event.projectileIdentity}`
+          if (event.kind === "fire") {
+            if (prior) throw transition("fire targets an existing projectile")
+            if (fact) matchEvent(event, fact)
+            const source = eventFact(event)
+            const trail = trailSystem(source)
+            requireSystem(catalog, trail)
+            const trailAttachment = source.kind === "rocket"
+              ? requireAttachment(catalog, source.identity, "trail")
+              : null
+            const trailWorldTransform = trailAttachment ? requireAttachmentTransform(catalog, trailAttachment) : null
+            const retainedReference = frame.ticks.at(-1)?.projectiles.find((candidate) => candidate.identity === source.identity)
+            const trailLocalTransform = trailWorldTransform
+              ? localAttachmentTransform(
+                  trailWorldTransform,
+                  retainedReference?.position ?? event.position,
+                  retainedReference?.orientation ?? event.orientation,
+                )
+              : null
+            const initialTransform = trailLocalTransform
+              ? applyAttachmentTransform(trailLocalTransform, event.position, event.orientation)
+              : Object.freeze({ position: event.position, orientation: event.orientation })
+            const trailStart = startRequest(
               eventIdentity,
-              trailEffect(fact.identity),
-              fact,
+              trailEffect(source.identity),
+              source,
               trail,
               trailAttachment,
-              trailTransform?.position ?? event.position,
-              trailTransform?.orientation ?? event.orientation,
-            ),
-          )
-          const muzzle = fact.kind === "rocket" ? "rocketbackblast" : "muzzle_pipelauncher"
-          if (!(fact.kind === "rocket" && fact.ownerIdentity === catalog.localOwnerIdentity)) {
-            const attachment = requireAttachment(
-              catalog,
-              fact.launcherIdentity,
-              fact.kind === "rocket" ? "backblast" : "muzzle",
+              initialTransform.position,
+              initialTransform.orientation,
+              event.tick,
             )
-            const muzzleTransform = catalog.attachmentTransforms?.get(attachment.entityIdentity)?.get(attachment.name)
-            if (muzzleTransform) {
+            push(particles, limits, trailStart)
+            startedControls.set(source.identity, trailStart.controlPoints[0]!)
+            const muzzle = source.kind === "rocket" ? "rocketbackblast" : "muzzle_pipelauncher"
+            if (!(source.kind === "rocket" && source.ownerIdentity === catalog.localOwnerIdentity)) {
+              const attachment = requireAttachment(
+                catalog,
+                source.launcherIdentity,
+                source.kind === "rocket" ? "backblast" : "muzzle",
+              )
+              const muzzleTransform = requireAttachmentTransform(catalog, attachment)
               requireSystem(catalog, muzzle)
               push(
                 particles,
@@ -657,173 +768,177 @@ export function createProjectilePresentationMapper(
                 startRequest(
                   eventIdentity,
                   oneShotEffect(eventIdentity),
-                  fact,
+                  source,
                   muzzle,
                   attachment,
                   muzzleTransform.position,
                   muzzleTransform.orientation,
+                  event.tick,
                 ),
               )
             }
-          }
-          next.set(
-            fact.identity,
-            Object.freeze({
-              kind: fact.kind,
-              team: fact.team,
-              ownerIdentity: fact.ownerIdentity,
-              launcherIdentity: fact.launcherIdentity,
-              state: "flying",
-              trailActive: true,
-              pulseActive: false,
-            }),
-          )
-          continue
-        }
-        if (!prior) throw transition(`${event.kind} targets an unknown projectile`)
-        if (fact) matchEvent(event, fact)
-        matchTracked(event, prior)
-        if (event.kind === "impact") {
-          if (prior.state !== "flying") throw transition("impact requires a flying projectile")
-        } else if (event.kind === "stick") {
-          if (prior.kind !== "sticky" || prior.state !== "flying" || !fact) {
-            throw transition("stick requires a flying sticky fact")
-          }
-          push(
-            particles,
-            limits,
-            Object.freeze({
-              kind: "set-control-point",
-              identity: `${eventIdentity}:trail-contact`,
-              effectIdentity: trailEffect(event.projectileIdentity),
-              eventIdentity,
-              projectileIdentity: event.projectileIdentity,
-              controlPoint: controlPoint(
-                event.position,
-                settledOrientation(event.orientation, event.contactNormal),
-                event.ownerIdentity,
-              ),
-            }),
-          )
-          next.set(event.projectileIdentity, Object.freeze({ ...prior, state: fact.state }))
-        } else if (event.kind === "arm") {
-          if (prior.kind !== "sticky" || !["flying","stuck-unarmed","stuck-armed"].includes(prior.state) || !fact) {
-            throw transition("arm requires a stuck-unarmed sticky fact")
-          }
-          const system = fact.team === "red" ? "stickybomb_pulse_red" : "stickybomb_pulse_blue"
-          requireSystem(catalog, system)
-          push(
-            particles,
-            limits,
-            startRequest(
-              eventIdentity,
-              pulseEffect(fact.identity),
-              fact,
-              system,
-              null,
-              event.position,
-              event.contactNormal===null?event.orientation:settledOrientation(event.orientation,event.contactNormal),
-            ),
-          )
-          next.set(event.projectileIdentity, Object.freeze({ ...prior, state: fact.state, pulseActive: true }))
-        } else if (event.kind === "fizzle" || event.kind === "explode") {
-          if (prior.trailActive)
-            push(
-              particles,
-              limits,
-              stopRequest(eventIdentity, trailEffect(event.projectileIdentity), event.projectileIdentity),
-            )
-          if (prior.pulseActive)
-            push(
-              particles,
-              limits,
-              stopRequest(eventIdentity, pulseEffect(event.projectileIdentity), event.projectileIdentity),
-            )
-          if (event.kind === "explode") {
-            const system = event.contactNormal === null ? "ExplosionCore_MidAir" : "ExplosionCore_Wall"
-            requireSystem(catalog, system)
-            const eventFact: ProjectileFact =
-              fact ??
+            next.set(
+              source.identity,
               Object.freeze({
-                identity: event.projectileIdentity,
-                kind: prior.kind,
-                team: prior.team,
-                ownerIdentity: prior.ownerIdentity,
-                launcherIdentity: prior.launcherIdentity,
-                state: prior.state,
-                position: event.position,
-                velocity: Object.freeze([0, 0, 0]) as Vector3,
-                orientation: event.orientation,
-                angularVelocity: Object.freeze([0, 0, 0]) as Vector3,
-                contactNormal: event.contactNormal,
-                ageSeconds: 0,
-              })
-            push(
-              particles,
-              limits,
-              startRequest(
-                eventIdentity,
-                oneShotEffect(eventIdentity),
-                eventFact,
-                system,
-                null,
-                event.position,
-                event.contactNormal === null
-                  ? event.orientation
-                  : settledOrientation(event.orientation, event.contactNormal),
-              ),
+                kind: source.kind,
+                team: source.team,
+                ownerIdentity: source.ownerIdentity,
+                launcherIdentity: source.launcherIdentity,
+                state: "flying",
+                armed: false,
+                trailActive: true,
+                trailLocalTransform,
+              }),
             )
+          } else {
+            if (!prior) throw transition(`${event.kind} targets an unknown projectile`)
+            if (fact) matchEvent(event, fact)
+            matchTracked(event, prior)
+            if (event.kind === "impact") {
+              if (prior.state !== "flying") throw transition("impact requires a flying projectile")
+            } else if (event.kind === "bounce") {
+              if (
+                prior.state !== "flying"
+                || previousEvent?.kind !== "impact"
+                || previousEvent.projectileIdentity !== event.projectileIdentity
+              ) {
+                throw transition("bounce requires its immediately preceding flying impact")
+              }
+            } else if (event.kind === "stick") {
+              if (
+                prior.kind !== "sticky"
+                || prior.state !== "flying"
+                || previousEvent?.kind !== "impact"
+                || previousEvent.projectileIdentity !== event.projectileIdentity
+                || !fact
+                || fact.state === "flying"
+              ) {
+                throw transition("stick requires a flying sticky and one settled fact")
+              }
+              next.set(event.projectileIdentity, Object.freeze({ ...prior, state: fact.state }))
+            } else if (event.kind === "arm") {
+              if (prior.kind !== "sticky" || prior.armed) throw transition("arm requires one unarmed sticky projectile")
+              const system = prior.team === "red" ? "stickybomb_pulse_red" : "stickybomb_pulse_blue"
+              requireSystem(catalog, system)
+              push(
+                particles,
+                limits,
+                startRequest(
+                  eventIdentity,
+                  pulseEffect(event.projectileIdentity),
+                  eventFact(event),
+                  system,
+                  null,
+                  event.position,
+                  event.orientation,
+                  event.tick,
+                ),
+              )
+              next.set(event.projectileIdentity, Object.freeze({
+                ...prior,
+                state: fact?.state ?? prior.state,
+                armed: true,
+              }))
+            } else if (event.kind === "fizzle" || event.kind === "explode") {
+              if (prior.trailActive) {
+                push(
+                  particles,
+                  limits,
+                  stopRequest(
+                    eventIdentity,
+                    trailEffect(event.projectileIdentity),
+                    event.projectileIdentity,
+                    event.tick,
+                    false,
+                  ),
+                )
+              }
+              if (event.kind === "explode") {
+                const system = event.contactNormal === null ? "ExplosionCore_MidAir" : "ExplosionCore_Wall"
+                requireSystem(catalog, system)
+                push(
+                  particles,
+                  limits,
+                  startRequest(
+                    eventIdentity,
+                    oneShotEffect(eventIdentity),
+                    eventFact(event),
+                    system,
+                    null,
+                    event.position,
+                    explosionOrientation(event.contactNormal),
+                    event.tick,
+                  ),
+                )
+              }
+            } else if (event.kind === "destroy") {
+              if (
+                (previousEvent?.kind !== "fizzle" && previousEvent?.kind !== "explode")
+                || previousEvent.projectileIdentity !== event.projectileIdentity
+              ) {
+                throw transition("destroy requires its immediately preceding terminal event")
+              }
+              next.delete(event.projectileIdentity)
+            }
           }
-          next.delete(event.projectileIdentity)
+          mappedEvents.push(Object.freeze({
+            ...event,
+            position: vector(event.position),
+            orientation: quat(event.orientation),
+            contactNormal: event.contactNormal === null ? null : vector(event.contactNormal),
+          }))
         }
+
+        for (const [identity, state] of next) {
+          const fact = facts.get(identity)
+          if (!fact || fact.state !== state.state) {
+            throw transition("projectile disappearance or state change has no ordered event")
+          }
+          if (
+            fact.kind !== state.kind
+            || fact.team !== state.team
+            || fact.ownerIdentity !== state.ownerIdentity
+            || fact.launcherIdentity !== state.launcherIdentity
+          ) {
+            throw transition("projectile immutable identity fields changed")
+          }
+          if (state.trailActive) {
+            const transform = state.trailLocalTransform
+              ? applyAttachmentTransform(state.trailLocalTransform, fact.position, fact.orientation)
+              : Object.freeze({ position: fact.position, orientation: fact.orientation })
+            const control = controlPoint(transform.position, transform.orientation, fact.ownerIdentity)
+            const started = startedControls.get(identity)
+            if (!started || !sameControlPoint(started, control)) {
+              push(
+                particles,
+                limits,
+                Object.freeze({
+                  kind: "set-control-point",
+                  identity: `${timeline.tick}:follow:${identity}`,
+                  effectIdentity: trailEffect(identity),
+                  eventIdentity: `${timeline.tick}:follow`,
+                  tick: timeline.tick,
+                  projectileIdentity: identity,
+                  controlPoint: control,
+                }),
+              )
+            }
+          }
+        }
+        for (const identity of facts.keys()) {
+          if (!next.has(identity)) throw transition("projectile fact has no fire event")
+        }
+        finalFacts = facts
+        mappedTick = timeline.tick
       }
 
-      for (const [identity, state] of next) {
-        const fact = facts.get(identity)
-        if (!fact || fact.state !== state.state) {
-          throw transition("projectile disappearance or state change has no ordered event")
-        }
-        if (
-          fact.kind !== state.kind ||
-          fact.team !== state.team ||
-          fact.ownerIdentity !== state.ownerIdentity ||
-          fact.launcherIdentity !== state.launcherIdentity
-        ) {
-          throw transition("projectile immutable identity fields changed")
-        }
-        if (state.trailActive) {
-          const attachment = fact.kind === "rocket" ? requireAttachment(catalog, fact.identity, "trail") : null
-          const transform = attachment ? requireAttachmentTransform(catalog, attachment) : Object.freeze({ position: fact.position, orientation: fact.orientation })
-          push(
-            particles,
-            limits,
-            Object.freeze({
-              kind: "set-control-point",
-              identity: `${frame.tick}:follow:${identity}`,
-              effectIdentity: trailEffect(identity),
-              eventIdentity: `${frame.tick}:follow`,
-              projectileIdentity: identity,
-              controlPoint: controlPoint(transform.position, transform.orientation, fact.ownerIdentity),
-            }),
-          )
-        }
-      }
-      for (const identity of facts.keys()) {
-        if (!next.has(identity)) throw transition("projectile fact has no fire event")
-      }
-
-      const models = frame.projectiles.map((fact) => {
-        const model =
-          fact.kind === "rocket"
-            ? ("models/weapons/w_models/w_rocket.mdl" as const)
-            : ("models/weapons/w_models/w_stickybomb.mdl" as const)
+      const models = [...finalFacts.values()].filter((fact) => fact.kind !== "sticky" || fact.ageSeconds >= 0.1).map((fact) => {
+        const model = fact.kind === "rocket"
+          ? ("models/weapons/w_models/w_rocket.mdl" as const)
+          : ("models/weapons/w_models/w_stickybomb.mdl" as const)
         if (!catalog.models.has(model)) {
           throw new ProjectilePresentationError("MissingModel", `projectile model ${model} is missing`)
         }
-        const orientation =
-          fact.kind === "sticky" && fact.state !== "flying"
-            ? settledOrientation(fact.orientation, fact.contactNormal)
-            : authoredRocketOrientation(fact.orientation)
         return Object.freeze({
           identity: fact.identity,
           projectileIdentity: fact.identity,
@@ -831,26 +946,18 @@ export function createProjectilePresentationMapper(
           skin: fact.team === "red" ? (0 as const) : (1 as const),
           materialVariant: fact.team,
           position: vector(fact.position),
-          orientation,
+          orientation: authoredProjectileOrientation(fact.orientation),
           angularVelocity: vector(fact.angularVelocity),
           state: fact.state,
         })
       })
       tracked = next
-      tick = frame.tick
+      tick = mappedTick
+      hasMapped = true
       return Object.freeze({
         models: Object.freeze(models),
         particles: Object.freeze(particles),
-        events: Object.freeze(
-          frame.events.map((event) =>
-            Object.freeze({
-              ...event,
-              position: vector(event.position),
-              orientation: quat(event.orientation),
-              contactNormal: event.contactNormal === null ? null : vector(event.contactNormal),
-            }),
-          ),
-        ),
+        events: Object.freeze(mappedEvents),
       })
     },
     reset(nextTick: bigint): void {
@@ -858,6 +965,7 @@ export function createProjectilePresentationMapper(
         throw new ProjectilePresentationError("TimeReversed", "projectile mapper reset tick is invalid")
       }
       tick = nextTick
+      hasMapped = false
       tracked = new Map()
     },
     dispose(): void {
@@ -890,21 +998,26 @@ function validateFact(fact: ProjectileFact): void {
   }
 }
 
-function validateEvent(event: ProjectileEvent, frameTick: bigint): void {
+function validateEvent(event: ProjectileEvent, frameTick: bigint, sourceOrdinal: number): void {
   if (
-    !["fire", "impact", "stick", "arm", "fizzle", "explode"].includes(event.kind) ||
+    !["fire", "impact", "bounce", "stick", "arm", "fizzle", "explode", "destroy"].includes(event.kind) ||
+    (event.projectileKind !== "rocket" && event.projectileKind !== "sticky") ||
     !uint32(event.projectileIdentity) ||
     !uint32(event.ownerIdentity) ||
     !uint32(event.launcherIdentity) ||
     (event.team !== "red" && event.team !== "blue") ||
     typeof event.tick !== "bigint" ||
-    event.tick < 0n ||
-    event.tick > frameTick ||
+    event.tick !== frameTick ||
+    !Number.isSafeInteger(event.sourceOrdinal) ||
+    event.sourceOrdinal !== sourceOrdinal ||
+    !Number.isSafeInteger(event.sourceEventOrdinal) ||
+    event.sourceEventOrdinal < 0 ||
+    event.sourceEventOrdinal > event.sourceOrdinal ||
     !finite(event.position) ||
     !quaternion(event.orientation) ||
     (event.contactNormal !== null && !normal(event.contactNormal)) ||
     (event.kind === "fire" && event.contactNormal !== null) ||
-    (event.kind === "stick" && event.contactNormal === null)
+    ((event.kind === "impact" || event.kind === "bounce" || event.kind === "stick") && event.contactNormal === null)
   ) {
     throw new ProjectilePresentationError("MalformedEvent", "projectile event violates the frozen contract")
   }
@@ -914,7 +1027,8 @@ function matchEvent(event: ProjectileEvent, fact: ProjectileFact): void {
   if (
     event.ownerIdentity !== fact.ownerIdentity ||
     event.launcherIdentity !== fact.launcherIdentity ||
-    event.team !== fact.team
+    event.team !== fact.team ||
+    event.projectileKind !== fact.kind
   )
     throw transition("event identity fields do not match the projectile fact")
 }
@@ -923,7 +1037,8 @@ function matchTracked(event: ProjectileEvent, tracked: TrackedProjectile): void 
   if (
     event.ownerIdentity !== tracked.ownerIdentity ||
     event.launcherIdentity !== tracked.launcherIdentity ||
-    event.team !== tracked.team
+    event.team !== tracked.team ||
+    event.projectileKind !== tracked.kind
   )
     throw transition("event identity fields do not match retained projectile state")
 }
@@ -931,17 +1046,19 @@ function matchTracked(event: ProjectileEvent, tracked: TrackedProjectile): void 
 function startRequest(
   eventIdentity: string,
   effectIdentity: string,
-  fact: ProjectileFact,
+  fact: ProjectileSource,
   system: string,
   attachment: ParticleAttachment | null,
   position: Vector3,
   orientation: Quaternion,
-): ProjectileParticleRequest {
+  tick: bigint,
+): Extract<ProjectileParticleRequest, { kind: "start" }> {
   return Object.freeze({
     kind: "start",
     identity: `${eventIdentity}:start:${effectIdentity}`,
     effectIdentity,
     eventIdentity,
+    tick,
     projectileIdentity: fact.identity,
     ownerIdentity: fact.ownerIdentity,
     launcherIdentity: fact.launcherIdentity,
@@ -956,14 +1073,17 @@ function stopRequest(
   eventIdentity: string,
   effectIdentity: string,
   projectileIdentity: number,
-): ProjectileParticleRequest {
+  tick: bigint,
+  immediate: boolean,
+): Extract<ProjectileParticleRequest, { kind: "stop" }> {
   return Object.freeze({
     kind: "stop",
     identity: `${eventIdentity}:stop:${effectIdentity}`,
     effectIdentity,
     eventIdentity,
+    tick,
     projectileIdentity,
-    immediate: true,
+    immediate,
   })
 }
 
@@ -976,7 +1096,7 @@ function controlPoint(position: Vector3, orientation: Quaternion, ownerIdentity:
   })
 }
 
-function trailSystem(fact: ProjectileFact): string {
+function trailSystem(fact: ProjectileSource): string {
   if (fact.kind === "rocket") return "rockettrail"
   return fact.team === "red" ? "stickybombtrail_red" : "stickybombtrail_blue"
 }
@@ -1018,25 +1138,69 @@ function push(
   requests.push(request)
 }
 
-function authoredRocketOrientation(orientation: Quaternion): Quaternion {
-  // The stock model's authored longitudinal axis is Source local +X, matching the transported +X basis.
+function authoredProjectileOrientation(orientation: Quaternion): Quaternion {
+  // Source renders both projectile models at their transported entity quaternion.
   return quat(orientation)
 }
 
-function settledOrientation(orientation: Quaternion, contactNormal: Vector3 | null): Quaternion {
-  if (contactNormal === null) {
-    throw new ProjectilePresentationError("MalformedFact", "settled sticky requires a contact normal")
+function eventFact(event: ProjectileEvent): ProjectileSource {
+  return Object.freeze({
+    identity: event.projectileIdentity,
+    kind: event.projectileKind,
+    team: event.team,
+    ownerIdentity: event.ownerIdentity,
+    launcherIdentity: event.launcherIdentity,
+  })
+}
+
+function explosionOrientation(contactNormal: Vector3 | null): Quaternion {
+  if (contactNormal === null) return Object.freeze([0, 0, 0, 1])
+  const [x, y, z] = contactNormal
+  let pitch: number
+  let yaw: number
+  if (x === 0 && y === 0) {
+    yaw = 0
+    pitch = z > 0 ? 270 : 90
+  } else {
+    yaw = Math.atan2(y, x) * 180 / Math.PI
+    if (yaw < 0) yaw += 360
+    pitch = Math.atan2(-z, Math.sqrt(x * x + y * y)) * 180 / Math.PI
+    if (pitch < 0) pitch += 360
   }
-  const up = normalized(contactNormal)
-  const transportedX = rotate(orientation, [1, 0, 0])
-  let forward = subtract(transportedX, scale(up, dot(transportedX, up)))
-  if (lengthSquared(forward) < 1e-8) {
-    const transportedY = rotate(orientation, [0, 1, 0])
-    forward = subtract(transportedY, scale(up, dot(transportedY, up)))
-  }
-  forward = normalized(forward)
-  const right = normalized(cross(up, forward))
-  return quaternionFromBasis(forward, right, up)
+  return sourceViewOrientation(pitch, yaw)
+}
+
+function localAttachmentTransform(
+  world: AttachmentTransform,
+  position: Vector3,
+  orientation: Quaternion,
+): AttachmentTransform {
+  const inverse = inverseQuaternion(orientation)
+  return Object.freeze({
+    position: rotate(inverse, subtract(world.position, position)),
+    orientation: multiplyQuaternion(inverse, world.orientation),
+  })
+}
+
+function applyAttachmentTransform(
+  local: AttachmentTransform,
+  position: Vector3,
+  orientation: Quaternion,
+): AttachmentTransform {
+  return Object.freeze({
+    position: add3(position, rotate(orientation, local.position)),
+    orientation: multiplyQuaternion(orientation, local.orientation),
+  })
+}
+
+function inverseQuaternion(value: Quaternion): Quaternion {
+  return Object.freeze([-value[0], -value[1], -value[2], value[3]])
+}
+
+function sameControlPoint(left: ParticleControlPoint, right: ParticleControlPoint): boolean {
+  return left.ownerIdentity === right.ownerIdentity
+    && left.position.every((value, index) => value === right.position[index])
+    && left.orientation.every((value, index) => value === right.orientation[index])
 }
 
 function quaternionFromBasis(x: Vector3, y: Vector3, z: Vector3): Quaternion {
@@ -1174,17 +1338,8 @@ function quat(value: readonly number[]): Quaternion {
   return Object.freeze([value[0]!, value[1]!, value[2]!, value[3]!])
 }
 
-function normalized(value: Vector3): Vector3 {
-  const length = Math.sqrt(lengthSquared(value))
-  return vector([value[0] / length, value[1] / length, value[2] / length])
-}
-
 function subtract(left: Vector3, right: Vector3): Vector3 {
   return vector([left[0] - right[0], left[1] - right[1], left[2] - right[2]])
-}
-
-function scale(value: Vector3, amount: number): Vector3 {
-  return vector([value[0] * amount, value[1] * amount, value[2] * amount])
 }
 
 function cross(left: Vector3, right: Vector3): Vector3 {

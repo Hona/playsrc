@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import type { DerivedObjectCache } from "@playsrc/asset-store/browser"
-import { Tf2WorkerClient, type WorkerLike } from "../src/client"
+import { mergePublicationSnapshots, Tf2WorkerClient, type WorkerLike } from "../src/client"
 import {
   decodeSnapshot,
   encodeCommand,
@@ -212,6 +212,11 @@ describe("TF2 playable runtime Stage 2 contract", () => {
       ageSeconds: expect.closeTo(0.1),
     })
     expect(value.projectileEvents[0]?.type).toBe("fire")
+    expect(value.projectileTimeline).toEqual([{
+      tick: 7n,
+      projectiles: value.projectiles,
+      events: value.projectileEvents,
+    }])
     expect(value.entityTransforms[0]).toEqual({
       identity: 67,
       model: 26,
@@ -232,6 +237,44 @@ describe("TF2 playable runtime Stage 2 contract", () => {
     stuckData.set([2, 1, 3, 1], 308)
     stuckView.setFloat32(380, 1, true)
     expect(decodeSnapshot(stuck).projectiles[0]).toMatchObject({ kind: 2, state: 3, velocity: [100, 0, 0], contactNormal: [0, 0, 1] })
+  })
+
+  test("retains transient projectile ticks across repeated publication merges", () => {
+    const fired = decodeSnapshot(snapshot())
+    const fire = fired.projectileEvents[0]!
+    const impact = Object.freeze({
+      ...fire,
+      type: "impact" as const,
+      tick: 8n,
+      contactNormal: Object.freeze([0, 0, 1]) as readonly [number, number, number],
+    })
+    const explode = Object.freeze({ ...impact, type: "explode" as const })
+    const terminalEvents = Object.freeze([impact, explode])
+    const terminal = Object.freeze({
+      ...fired,
+      tick: 8n,
+      projectiles: Object.freeze([]),
+      projectileEvents: terminalEvents,
+      projectileTimeline: Object.freeze([
+        Object.freeze({ tick: 8n, projectiles: Object.freeze([]), events: terminalEvents }),
+      ]),
+    })
+    const merged = mergePublicationSnapshots([fired, terminal])
+    expect(merged.projectiles).toEqual([])
+    expect(merged.projectileEvents.map((event) => event.type)).toEqual(["fire", "impact", "explode"])
+    expect(merged.projectileTimeline.map((entry) => entry.tick)).toEqual([7n, 8n])
+
+    const idle = Object.freeze({
+      ...terminal,
+      tick: 9n,
+      projectileEvents: Object.freeze([]),
+      projectileTimeline: Object.freeze([
+        Object.freeze({ tick: 9n, projectiles: Object.freeze([]), events: Object.freeze([]) }),
+      ]),
+    })
+    expect(mergePublicationSnapshots([merged, idle]).projectileTimeline.map((entry) => entry.tick))
+      .toEqual([7n, 8n, 9n])
+    expect(() => mergePublicationSnapshots([fired, fired])).toThrow()
   })
 
   test("retains one explicit externally supplied course seam without application inference", async () => {

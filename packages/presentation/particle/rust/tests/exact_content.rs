@@ -318,6 +318,18 @@ fn update_digest(mut state: u64, bytes: &[u8]) -> u64 {
     state
 }
 
+fn update_visual_region_digest(state: u64, bounds: Option<Bounds>) -> u64 {
+    let mut bytes = [0_u8; 28];
+    bytes[0..4].copy_from_slice(&u32::from(bounds.is_some()).to_le_bytes());
+    if let Some(bounds) = bounds {
+        for (index, value) in bounds.minimum.into_iter().chain(bounds.maximum).enumerate() {
+            let offset = 4 + index * 4;
+            bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+    }
+    update_digest(state, &bytes)
+}
+
 fn expected_effect_count(root: &str, time: f32) -> usize {
     let death = match root {
         "rockettrail" | "ExplosionCore_Wall" | "ExplosionCore_MidAir" => 2.5,
@@ -454,6 +466,7 @@ fn exact_projectile_timelines_cover_every_output_field_through_cleanup() {
         [0, 159, 155, 138, 119, 104, 77, 58, 26, 11, 0, 0, 0, 0],
     ];
     let mut complete_output = 0xcbf2_9ce4_8422_2325_u64;
+    let mut visual_region_digests = Vec::new();
     for (root_index, root) in roots.into_iter().enumerate() {
         let mut world = ParticleWorld::new(&registry, WorldLimits::default()).unwrap();
         let create = Event {
@@ -477,6 +490,7 @@ fn exact_projectile_timelines_cover_every_output_field_through_cleanup() {
             },
         };
         let mut from = 0.0;
+        let mut visual_region_digest = 0xcbf2_9ce4_8422_2325_u64;
         for (time_index, to) in times.into_iter().enumerate() {
             let mut events = Vec::new();
             if time_index == 0 {
@@ -508,12 +522,28 @@ fn exact_projectile_timelines_cover_every_output_field_through_cleanup() {
             let items = resolve_render_output(raw, &materials).unwrap();
             assert_eq!(items.len(), expected_counts[root_index][time_index]);
             assert_eq!(world.effect_count(), expected_effect_count(root, to));
+            visual_region_digest = update_visual_region_digest(visual_region_digest, bounds);
             complete_output = update_digest(
                 complete_output,
                 &encode_render_output(&items, bounds, &material_names, 64 * 1024 * 1024).unwrap(),
             );
             from = to;
         }
+        visual_region_digests.push(visual_region_digest);
     }
+    assert_eq!(
+        visual_region_digests,
+        [
+            0x4bae_a2c4_1099_024b,
+            0x6b46_e896_c9fc_1dc8,
+            0x974a_dd1f_bfe1_6b10,
+            0x974a_dd1f_bfe1_6b10,
+            0x7a3c_e299_52dc_5472,
+            0x7a3c_e299_52dc_5472,
+            0xb603_51ee_634d_5b45,
+            0xce2a_65ec_20e7_efdc,
+            0x3f34_4778_7e39_bb2f,
+        ]
+    );
     assert_eq!(complete_output, 0x6024_0507_3279_b21f);
 }

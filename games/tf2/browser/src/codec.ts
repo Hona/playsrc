@@ -252,6 +252,12 @@ export type ProjectileEvent = Readonly<{
   contactNormal: readonly [number, number, number] | null
 }>
 
+export type ProjectileTimelineTick = Readonly<{
+  tick: bigint
+  projectiles: readonly Projectile[]
+  events: readonly ProjectileEvent[]
+}>
+
 export type EntityTransform = Readonly<{
   identity: number
   model: number
@@ -341,6 +347,7 @@ export type Snapshot = Readonly<{
   loadout: readonly WeaponState[]
   projectiles: readonly Projectile[]
   projectileEvents: readonly ProjectileEvent[]
+  projectileTimeline: readonly ProjectileTimelineTick[]
   entityTransforms: readonly EntityTransform[]
   entityEvents: readonly EntityEvent[]
   jump: JumpSnapshot | null
@@ -1383,8 +1390,11 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
   requireBytes(entityPresentationLength,"Entity presentation");const entityPresentation=decodeEntityPresentation(bytes,at,entityPresentationLength);at+=entityPresentationLength
   if(at!==bytes.byteLength||entityPresentation.collisionRevision!==collisionSnapshot.identity)throw new Tf2CodecError("Entity presentation revision join is invalid")
 
+  const tick = view.getBigUint64(8, true)
+  const frozenProjectiles = Object.freeze(projectiles)
+  const frozenProjectileEvents = Object.freeze(projectileEvents)
   return Object.freeze({
-    tick: view.getBigUint64(8, true),
+    tick,
     class: tf2Class,
     team,
     weapon,
@@ -1400,8 +1410,11 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
     grounded: movement.grounded,
     crouched: movement.crouchPhase >= 2,
     loadout: Object.freeze(loadout),
-    projectiles: Object.freeze(projectiles),
-    projectileEvents: Object.freeze(projectileEvents),
+    projectiles: frozenProjectiles,
+    projectileEvents: frozenProjectileEvents,
+    projectileTimeline: Object.freeze([
+      Object.freeze({ tick, projectiles: frozenProjectiles, events: frozenProjectileEvents }),
+    ]),
     entityTransforms: Object.freeze(entityTransforms),
     entityEvents: Object.freeze(entityEvents),
     jump,
