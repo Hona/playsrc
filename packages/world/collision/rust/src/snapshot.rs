@@ -5,7 +5,7 @@ use crate::{
 use playsrc_phy::{Asset as PhyAsset, Classification as PhyClassification};
 use std::collections::BTreeSet;
 
-pub const SNAPSHOT_VERSION: u32 = 1;
+pub const SNAPSHOT_VERSION: u32 = 2;
 const DIST_EPSILON: f32 = 1.0 / 32.0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -350,23 +350,24 @@ pub struct ObjectInput {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct Object {
-    identity: u64,
-    role: ObjectRole,
-    enabled: bool,
-    transform: Transform,
-    linear_velocity: [f32; 3],
-    angular_velocity: [f32; 3],
-    collision_group: i32,
-    contents: u32,
-    surface_flags: u16,
-    shape: SnapshotShape,
+pub struct SnapshotRecord {
+    pub identity: u64,
+    pub role: ObjectRole,
+    pub enabled: bool,
+    pub transform: Transform,
+    pub linear_velocity: [f32; 3],
+    pub angular_velocity: [f32; 3],
+    pub collision_group: i32,
+    pub contents: u32,
+    pub surface_flags: u16,
+    pub shape: SnapshotShape,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
+    world: [u8; 32],
     identity: u64,
-    objects: Vec<Object>,
+    objects: Vec<SnapshotRecord>,
     limits: SnapshotLimits,
 }
 impl Snapshot {
@@ -439,7 +440,7 @@ impl Snapshot {
                     shape.contents()
                 }
             };
-            objects.push(Object {
+            objects.push(SnapshotRecord {
                 identity: input.identity,
                 role: input.role,
                 enabled: input.enabled,
@@ -453,6 +454,7 @@ impl Snapshot {
             });
         }
         Ok(Self {
+            world: world.identity,
             identity,
             objects,
             limits,
@@ -461,6 +463,14 @@ impl Snapshot {
 
     pub fn identity(&self) -> u64 {
         self.identity
+    }
+
+    pub fn world_identity(&self) -> [u8; 32] {
+        self.world
+    }
+
+    pub fn records(&self) -> &[SnapshotRecord] {
+        &self.objects
     }
 
     pub fn object_transform(&self, identity: u64) -> Option<Transform> {
@@ -476,6 +486,7 @@ impl Snapshot {
         let mut output = BoundedBytes::new(self.limits.max_snapshot_bytes);
         output.bytes(b"CSNP")?;
         output.u32(SNAPSHOT_VERSION)?;
+        output.bytes(&self.world)?;
         output.u64(self.identity)?;
         output
             .u32(u32::try_from(self.objects.len()).map_err(|_| error(ErrorCode::Limit, None))?)?;
@@ -525,7 +536,7 @@ impl Snapshot {
         Ok(output.finish())
     }
 
-    fn object(&self, identity: u64) -> Option<&Object> {
+    fn object(&self, identity: u64) -> Option<&SnapshotRecord> {
         self.objects
             .iter()
             .find(|object| object.identity == identity)
@@ -593,6 +604,9 @@ impl World {
         request: SnapshotTraceRequest<'_>,
         should_hit: impl Fn(Candidate) -> bool,
     ) -> Result<Trace, Error> {
+        if snapshot.world != self.identity {
+            return Err(error(ErrorCode::InvalidSnapshot, None));
+        }
         if request.ignored.len() > snapshot.limits.max_ignored_identities {
             return Err(error(ErrorCode::Limit, None));
         }
@@ -601,6 +615,7 @@ impl World {
         } else {
             self.trace_hull(request.start, request.end, request.hull, request.mask)?
         };
+        world_trace.world = self.identity;
         world_trace.snapshot = Some(snapshot.identity);
         if world_trace.start_solid || request.scope == TraceScope::WorldOnly {
             return Ok(world_trace);
@@ -608,6 +623,7 @@ impl World {
         let world_fraction = world_trace.fraction;
         let dynamic_end = world_trace.end;
         let mut object_trace = miss(request.start, dynamic_end);
+        object_trace.world = self.identity;
         let mut visits = 0_usize;
         for object in &snapshot.objects {
             if !object.enabled
@@ -689,10 +705,14 @@ impl World {
         snapshot: &Snapshot,
         request: ObjectTraceRequest,
     ) -> Result<Trace, Error> {
+        if snapshot.world != self.identity {
+            return Err(error(ErrorCode::InvalidSnapshot, None));
+        }
         let object = snapshot
             .object(request.identity)
             .ok_or_else(|| error(ErrorCode::InvalidReference, None))?;
         let mut trace = self.trace_object(object, request, snapshot.limits)?;
+        trace.world = self.identity;
         trace.snapshot = Some(snapshot.identity);
         Ok(trace)
     }
@@ -718,7 +738,7 @@ impl World {
 
     fn trace_object(
         &self,
-        object: &Object,
+        object: &SnapshotRecord,
         request: ObjectTraceRequest,
         limits: SnapshotLimits,
     ) -> Result<Trace, Error> {
@@ -835,6 +855,7 @@ impl World {
                 feature,
             });
         }
+        trace.world = self.identity;
         Ok(trace)
     }
 }
@@ -1103,6 +1124,7 @@ fn set_box_feature(trace: &mut Trace) {
 
 fn miss(_start: [f32; 3], end: [f32; 3]) -> Trace {
     Trace {
+        world: [0; 32],
         fraction: 1.0,
         fraction_left_solid: 0.0,
         start_solid: false,

@@ -2,7 +2,7 @@
 
 Source identity: configured `maps/jump_beef.bsp`, 33,379,388 bytes, SHA-256 `b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959`, Source-2013 BSP version 20, revision 731.
 
-Dependency closure identity: 294-entry `PSDB` source bundle, 112,112,616 bytes, SHA-256 `34cbd09a63f1ba8407c7a775de20467773f87a41db78e34447734799fa2dba78`. The bundle contains unchanged exact bytes selected from the active BSP PAK and declared TF2/HL2 VPK providers.
+Dependency closure identity: 317-entry `PSDB` source bundle, 120,412,213 bytes, SHA-256 `c8ccea4035c5e75e26ffc0855a425ff4139f079f35ab9abd09e22990726f03d5`. The bundle contains unchanged exact bytes selected from the active BSP PAK and declared TF2/HL2 VPK providers.
 
 ## Surface totals
 
@@ -39,17 +39,17 @@ Patch bases are exact `materials/water/water_2fort_expensive.vmt` at SHA-256 `5f
 
 - Entity records: 39 ordered `infodecal` entities.
 - Material references: `signs/number_00` through `signs/number_09`, `signs/arrow_lt_blue`, `signs/arrow_rt_blue`, `signs/arrow_up_blue`, and missing `decals/custom/interro_ad`.
-- Dispositions: 34 projected, four ineligible receivers, one missing material.
-- Geometry: 63 fragments, 252 vertices.
+- Dispositions: 38 projected and one missing material. Collision receiver selection removes the four false ineligible results produced by cross-model render-polygon search.
+- Geometry: 73 fragments, 292 vertices.
 - Every fragment uses the stored BSP plane normal for basis and is moved exactly 0.1 Source units along that normal after clipping. Number materials use scale 1; arrows use scale 0.25. Mapping dimensions remain floating point after scale.
 - Standard overlay, overlay-fade, and water-overlay inputs are empty. Their empty outputs are intentionally inert.
 
-The canonical mark stream contains, in record order: source entity index; status, kind, initial-enabled and dynamic bytes; material-path length and bytes; fragment count; then each fragment's model index, face index, vertex count, position binary32 bytes, UV binary32 bytes, triangle count, and triangle-index bytes. Its 9,340 bytes have SHA-256 `e413f890e38e010f926fa10ad65a78c1ce9f85f68583931112059240439a8491`.
+Door-number entities 220, 221, and 222 select current entities/models `216/*93`, `217/*94`, and `218/*95` respectively. Every retained fragment belongs to its collision-selected model. The canonical `playsrc-map-mark-stream-v2` identity covers all 39 source-ordered records: disposition/kind/activation/lifetime flags, material path, receiver entity/model/local origin/transform, target faces, and count-framed fragment model/face/position/UV/triangle streams. Its SHA-256 is `dc240ad45952f19150071cf235b433dcd1d035fd3c2f3afad55e9bd1f84d26c7`.
 
 ## Exact execution
 
-- LDR map payload: 49,414,468 bytes, SHA-256 `f44941ce76aa276d7a278cb84c122709f47e477baaec865091c0b0ab5653ab0e`, derived SHA-256 `76fff83deb09129cef5359bd92f5572da0e9468c72534b15a5521b15a1359bf5`.
-- HDR map payload: 85,586,296 bytes, SHA-256 `d39f32489a7449075e788f78cde8bb0263b161e917d9a1b10cd0f6a96e865c68`, derived SHA-256 `9f4b214cd3edc7509f623c5ca9d42b9ad37d4d6a5de12a56c3d84bb1d215667a`.
-- Release presentation artifact: 276,939,115 bytes, SHA-256 `2114bdfa92427b4e0d01b5b10be750f241d7f27b5c9bb16e41543775304ca12b`.
-- Environment payload: 2,112,591 bytes, SHA-256 `0897447cf2b50160ec82c575c0da65a6d6eab32b08df5037c734580b45927172`.
-- Environment counts are 284 clusters, 1,775 nodes, 1,899 leaves, 91 sky faces, three cubemaps, 16 profile-qualified water surfaces, one water volume, 39 marks, 63 mark fragments, and two controllers.
+- `bun packages/world/map/scripts/verify-parity.ts` validates package tests, both configured inventories, formatting, and stable Clippy.
+- Collision world identity is `66d42c750648487669e1b9d7a1b36fc81e213624030f812667fb728ee61aa6ed`.
+- Mark stream identity is `dc240ad45952f19150071cf235b433dcd1d035fd3c2f3afad55e9bd1f84d26c7`.
+- Environment source counts are 284 clusters, 1,775 nodes, 1,899 leaves, 91 sky faces, three cubemaps, 16 profile-qualified water surfaces, one water volume, 39 marks, 73 mark fragments, and two controllers.
+- Application-owned runtime and presentation payload identities are not Map evidence and are not retained here.

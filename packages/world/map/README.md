@@ -22,8 +22,10 @@ Assemble parsed Source data and semantic domain outputs into one canonical plays
 - Select one complete `ldr` or `hdr` lighting profile without fallback. HDR compilation validates face, RGBExp32 sample, world-light, leaf-ambient, map-flag, detail-prop-lighting, and static-prop-lighting inputs before emitting output.
 - Emit HDR samples as linear RGB binary32 without exposure or tone mapping, preserving flat, directional-normal, and directional-SSBump face classifications plus every style identity.
 - Finalize one bounded render-neutral environment from selected-profile sky and cubemap requests, water surfaces and leaf volumes, entity decals and compiled overlays, fog/environment controllers, and exact dependency responses. Missing selected resources fail without profile, default-cubemap, or sky substitution.
+- Trace each `infodecal` from one revisioned Entity-supplied world placement through an identity-matched Collision world/transformed brush snapshot, project only onto that selected model in receiver-local coordinates, and retain all three producer revisions, receiver transform/identity, visibility admission key, activation, lifetime, normal offset, and decal polygon-offset request.
+- Retain leaf-water contents, clusters, areas, exact `u16` minimum distance, exact map-owned or named bottom-material joins, master fog selection, and fog transition inputs; produce ordered cheap-water, reflection, refraction, main, and intersection view plans from explicit PVS/area/frustum-qualified leaves and platform policy.
 - Retain each surface's texinfo index, stored BSP plane and face side, raw texture/lightmap vectors, top-left UV origin, mapping dimensions, and oriented render normals as separate canonical facts.
-- Retain model zero and every inline `*N` as ordered immutable `BrushModelGeometry` records with model-local face ranges, bounds, origin, head node, first-occurrence material indexes, ordered entity references, and vertex/triangle counts; reject overlapping, unowned, and out-of-range model joins.
+- Retain model zero and every inline `*N` as ordered immutable `BrushModelGeometry` records with model-local face ranges, bounds, origin, head node, first-occurrence material indexes, ordered entity references, vertex/triangle counts, exact collision brush IDs, and ORed contents; retain every non-world entity occurrence's source class, raw transform/parent, spawn flags, `StartDisabled`, `Solidity`, and `solidbsp` fields.
 - Project decals with floating mapping dimensions, stored-plane floor/wall basis, exact receiver exclusions, unit-square UV clipping, and a 0.1-unit normal offset; derive overlay V as `normal × U` and clip each standard/water overlay independently to every retained source face triangle.
 
 ## Non-Responsibilities
@@ -60,4 +62,4 @@ The derived identity is SHA-256 over the ASCII domain `playsrc-derived-map-v1`, 
 
 Complete when every declared map-domain output is integrated, validated, and consumed without duplicate authorities.
 
-Configured brush-model evidence runs through `bun packages/world/map/scripts/verify-brush-model-presentation.ts` and requires the repository-root local configuration plus the declared `jump_beef` cache object.
+Complete Map parity evidence runs through `bun packages/world/map/scripts/verify-parity.ts` and requires the repository-root local configuration plus the declared `jump_beef` BSP and source bundle. The narrower brush presentation workflow remains `bun packages/world/map/scripts/verify-brush-model-presentation.ts`.

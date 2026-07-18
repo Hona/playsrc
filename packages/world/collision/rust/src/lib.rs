@@ -1,16 +1,27 @@
 use playsrc_bsp::{
     Brush as BspBrush, BrushSide as BspSide, Bsp, Leaf, LumpData, Model, Node, Plane as BspPlane,
 };
+use sha2::{Digest, Sha256};
 use std::{fmt, ops::Range};
 
 mod snapshot;
 
 pub use snapshot::{
     Candidate, ConvexInput, ObjectInput, ObjectOverlapRequest, ObjectRole, ObjectTraceRequest,
-    PhysicsShape, SNAPSHOT_VERSION, Snapshot, SnapshotLimits, SnapshotRayRequest, SnapshotShape,
-    SnapshotTraceRequest, TraceScope, Transform,
+    PhysicsShape, SNAPSHOT_VERSION, Snapshot, SnapshotLimits, SnapshotRayRequest, SnapshotRecord,
+    SnapshotShape, SnapshotTraceRequest, TraceScope, Transform,
 };
 
+pub const CONTENTS_SOLID: u32 = 0x0000_0001;
+pub const CONTENTS_WINDOW: u32 = 0x0000_0002;
+pub const CONTENTS_GRATE: u32 = 0x0000_0008;
+pub const CONTENTS_MOVEABLE: u32 = 0x0000_4000;
+pub const CONTENTS_PLAYERCLIP: u32 = 0x0001_0000;
+pub const CONTENTS_MONSTER: u32 = 0x0200_0000;
+pub const CONTENTS_TRANSLUCENT: u32 = 0x1000_0000;
+pub const MASK_SOLID: u32 =
+    CONTENTS_SOLID | CONTENTS_MOVEABLE | CONTENTS_WINDOW | CONTENTS_MONSTER | CONTENTS_GRATE;
+pub const MASK_PLAYERSOLID: u32 = MASK_SOLID | CONTENTS_PLAYERCLIP;
 pub const SURF_SKY: u16 = 0x0004;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -34,6 +45,7 @@ pub struct Side {
 }
 #[derive(Clone, Debug)]
 pub struct World {
+    pub identity: [u8; 32],
     pub planes: Vec<Plane>,
     pub sides: Vec<Side>,
     pub brushes: Vec<Brush>,
@@ -43,6 +55,7 @@ pub struct World {
     pub models: Vec<Model>,
     pub world_brushes: Vec<usize>,
     pub model_brushes: Vec<Vec<usize>>,
+    pub model_contents: Vec<u32>,
     pub texture_flags: Vec<u16>,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -52,6 +65,7 @@ pub struct Hull {
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Trace {
+    pub world: [u8; 32],
     pub fraction: f32,
     pub fraction_left_solid: f32,
     pub start_solid: bool,
@@ -236,7 +250,16 @@ pub fn compile(bsp: &Bsp) -> Result<World, Error> {
         })
         .collect::<Result<Vec<_>, _>>()?;
     let world_brushes = model_brushes[0].clone();
-    Ok(World {
+    let model_contents = model_brushes
+        .iter()
+        .map(|model| {
+            model
+                .iter()
+                .fold(0_u32, |contents, brush| contents | output[*brush].contents)
+        })
+        .collect();
+    let mut world = World {
+        identity: [0; 32],
         planes,
         sides,
         brushes: output,
@@ -246,8 +269,11 @@ pub fn compile(bsp: &Bsp) -> Result<World, Error> {
         models,
         world_brushes,
         model_brushes,
+        model_contents,
         texture_flags,
-    })
+    };
+    world.identity = world_identity(&world);
+    Ok(world)
 }
 fn plane(p: &BspPlane, i: usize) -> Result<Plane, Error> {
     let normal = [p.normal.x.value(), p.normal.y.value(), p.normal.z.value()];
@@ -286,7 +312,8 @@ fn brush(v: &BspBrush, i: usize, total: usize) -> Result<Brush, Error> {
 
 impl World {
     pub fn empty() -> Self {
-        Self {
+        let mut world = Self {
+            identity: [0; 32],
             planes: Vec::new(),
             sides: Vec::new(),
             brushes: Vec::new(),
@@ -296,8 +323,11 @@ impl World {
             models: Vec::new(),
             world_brushes: Vec::new(),
             model_brushes: Vec::new(),
+            model_contents: Vec::new(),
             texture_flags: Vec::new(),
-        }
+        };
+        world.identity = world_identity(&world);
+        world
     }
 
     pub fn trace_hull(
@@ -536,6 +566,7 @@ impl World {
         let trace_end = [end[0] + center[0], end[1] + center[1], end[2] + center[2]];
         let point = dot(extents, extents) < 1.0e-6;
         let mut result = Trace {
+            world: self.identity,
             fraction: 1.0,
             fraction_left_solid: 0.0,
             start_solid: false,
@@ -712,6 +743,78 @@ fn brushes_for_model(
         }
     }
     Ok(brushes.into_iter().collect())
+}
+
+fn world_identity(world: &World) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(b"playsrc-collision-world-v2");
+    for plane in &world.planes {
+        for value in plane.normal.into_iter().chain([plane.distance]) {
+            digest.update(value.to_bits().to_le_bytes());
+        }
+        digest.update(plane.kind.to_le_bytes());
+    }
+    for side in &world.sides {
+        digest.update((side.plane as u64).to_le_bytes());
+        digest.update(side.texture_info.to_le_bytes());
+        digest.update(side.displacement.to_le_bytes());
+        digest.update(side.bevel.to_le_bytes());
+    }
+    for brush in &world.brushes {
+        digest.update((brush.first_side as u64).to_le_bytes());
+        digest.update((brush.side_count as u64).to_le_bytes());
+        digest.update(brush.contents.to_le_bytes());
+    }
+    for leaf in &world.leaves {
+        digest.update(leaf.contents.to_le_bytes());
+        digest.update(leaf.cluster.to_le_bytes());
+        digest.update(leaf.area_and_flags.to_le_bytes());
+        for value in leaf.mins.into_iter().chain(leaf.maxs) {
+            digest.update(value.to_le_bytes());
+        }
+        digest.update(leaf.first_leaf_face.to_le_bytes());
+        digest.update(leaf.leaf_face_count.to_le_bytes());
+        digest.update(leaf.first_leaf_brush.to_le_bytes());
+        digest.update(leaf.leaf_brush_count.to_le_bytes());
+        digest.update(leaf.leaf_water_data_id.to_le_bytes());
+    }
+    for brush in &world.leaf_brushes {
+        digest.update(brush.to_le_bytes());
+    }
+    for node in &world.nodes {
+        digest.update(node.plane_index.to_le_bytes());
+        for child in node.children {
+            digest.update(child.to_le_bytes());
+        }
+        for value in node.mins.into_iter().chain(node.maxs) {
+            digest.update(value.to_le_bytes());
+        }
+        digest.update(node.first_face.to_le_bytes());
+        digest.update(node.face_count.to_le_bytes());
+        digest.update(node.area.to_le_bytes());
+    }
+    for model in &world.models {
+        for bits in [model.mins, model.maxs, model.origin]
+            .into_iter()
+            .flat_map(|vector| [vector.x.0, vector.y.0, vector.z.0])
+        {
+            digest.update(bits.to_le_bytes());
+        }
+        digest.update(model.head_node.to_le_bytes());
+        digest.update(model.first_face.to_le_bytes());
+        digest.update(model.face_count.to_le_bytes());
+    }
+    for (brushes, contents) in world.model_brushes.iter().zip(&world.model_contents) {
+        digest.update((brushes.len() as u64).to_le_bytes());
+        for brush in brushes {
+            digest.update((*brush as u64).to_le_bytes());
+        }
+        digest.update(contents.to_le_bytes());
+    }
+    for flags in &world.texture_flags {
+        digest.update(flags.to_le_bytes());
+    }
+    digest.finalize().into()
 }
 
 #[derive(Clone, Copy)]
@@ -943,7 +1046,7 @@ mod tests {
             })
         );
         assert_eq!(direct.plane.unwrap().normal, [-1.0, 0.0, 0.0]);
-        assert_eq!(&ordered.snapshot_bytes().unwrap()[..8], b"CSNP\x01\0\0\0");
+        assert_eq!(&ordered.snapshot_bytes().unwrap()[..8], b"CSNP\x02\0\0\0");
     }
 
     #[test]
@@ -1068,6 +1171,53 @@ mod tests {
             )
             .unwrap();
         assert_eq!(trace.hit, Some(Hit::WorldBrush { brush: 0 }));
+
+        let behind_world = Snapshot::compile(
+            &world,
+            14,
+            vec![ObjectInput {
+                transform: Transform {
+                    origin: [64.0, 0.0, 0.0],
+                    ..Transform::IDENTITY
+                },
+                shape: SnapshotShape::BrushModel { model: 0 },
+                ..box_object(2, [0.0; 3], [1.0; 3])
+            }],
+            SnapshotLimits::default(),
+        )
+        .unwrap();
+        let depth = world
+            .trace_snapshot_ray(
+                &behind_world,
+                SnapshotRayRequest {
+                    start: [-32.0, 0.0, 0.0],
+                    end: [96.0, 0.0, 0.0],
+                    mask: 1,
+                    scope: TraceScope::Everything,
+                    ignored: &[],
+                },
+                |_| true,
+            )
+            .unwrap();
+        assert_eq!(depth.hit, Some(Hit::WorldBrush { brush: 0 }));
+
+        assert_eq!(
+            World::empty()
+                .trace_snapshot_ray(
+                    &behind_world,
+                    SnapshotRayRequest {
+                        start: [0.0; 3],
+                        end: [1.0, 0.0, 0.0],
+                        mask: 1,
+                        scope: TraceScope::Everything,
+                        ignored: &[],
+                    },
+                    |_| true,
+                )
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidSnapshot
+        );
 
         assert_eq!(
             Snapshot::compile(

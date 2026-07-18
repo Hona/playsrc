@@ -55,6 +55,21 @@ pub struct BrushModelGeometry {
     pub entities: Vec<usize>,
     pub vertex_count: usize,
     pub triangle_count: usize,
+    pub collision_brushes: Vec<usize>,
+    pub collision_contents: u32,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct BrushModelOccurrence {
+    pub entity: usize,
+    pub model: usize,
+    pub classname: Vec<u8>,
+    pub origin: [f32; 3],
+    pub angles: [f32; 3],
+    pub parent_name: Option<Vec<u8>>,
+    pub spawn_flags: Option<Vec<u8>>,
+    pub start_disabled: Option<Vec<u8>>,
+    pub solidity: Option<Vec<u8>>,
+    pub solid_bsp: Option<Vec<u8>>,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TextureCoordinateOrigin {
@@ -68,6 +83,8 @@ pub struct CanonicalMap {
     pub materials: Vec<MaterialReference>,
     pub surfaces: Vec<Surface>,
     pub brush_models: Vec<BrushModelGeometry>,
+    pub brush_model_occurrences: Vec<BrushModelOccurrence>,
+    pub collision_world_identity: [u8; 32],
     pub lighting: LightingData,
     pub triangle_count: usize,
     pub vertex_count: usize,
@@ -292,8 +309,12 @@ fn compile_with_entities(
         .iter()
         .filter_map(|entity| entity.bsp_model_index.map(|model| (entity.index, model)))
         .collect::<Vec<_>>();
+    let collision =
+        playsrc_collision::compile(bsp).map_err(|_| error(ErrorCode::InvalidReference, None))?;
     let (mut brush_models, face_models) =
         brush_model_layout(models, node_count, leaf_count, faces.len(), &entity_models)?;
+    fill_brush_model_collision(&mut brush_models, &collision)?;
+    let brush_model_occurrences = brush_model_occurrences(entities, brush_models.len())?;
     let mut output = Vec::with_capacity(faces.len());
     let mut normal_cursor = 0usize;
     let mut triangles = 0usize;
@@ -431,6 +452,8 @@ fn compile_with_entities(
         materials,
         surfaces: output,
         brush_models,
+        brush_model_occurrences,
+        collision_world_identity: collision.identity,
         lighting,
         triangle_count: triangles,
         vertex_count: output_vertices,
@@ -1021,6 +1044,8 @@ fn brush_model_layout(
             entities: Vec::new(),
             vertex_count: 0,
             triangle_count: 0,
+            collision_brushes: Vec::new(),
+            collision_contents: 0,
         });
     }
     if let Some(face) = face_models.iter().position(|model| *model == usize::MAX) {
@@ -1033,6 +1058,88 @@ fn brush_model_layout(
         geometry.entities.push(entity);
     }
     Ok((output, face_models))
+}
+
+fn fill_brush_model_collision(
+    models: &mut [BrushModelGeometry],
+    collision: &playsrc_collision::World,
+) -> Result<(), Error> {
+    if models.len() != collision.model_brushes.len()
+        || models.len() != collision.model_contents.len()
+    {
+        return Err(error(ErrorCode::InvalidReference, None));
+    }
+    for (model, (brushes, contents)) in models.iter_mut().zip(
+        collision
+            .model_brushes
+            .iter()
+            .zip(&collision.model_contents),
+    ) {
+        model.collision_brushes.clone_from(brushes);
+        model.collision_contents = *contents;
+    }
+    Ok(())
+}
+
+fn brush_model_occurrences(
+    graph: &playsrc_entity::Graph,
+    model_count: usize,
+) -> Result<Vec<BrushModelOccurrence>, Error> {
+    graph
+        .entities
+        .iter()
+        .filter_map(|entity| {
+            entity
+                .bsp_model_index
+                .filter(|model| *model != 0)
+                .map(|model| (entity, model))
+        })
+        .map(|(entity, model)| {
+            if model >= model_count {
+                return Err(error(ErrorCode::InvalidReference, Some(entity.index)));
+            }
+            Ok(BrushModelOccurrence {
+                entity: entity.index,
+                model,
+                classname: entity.classname.clone().unwrap_or_default(),
+                origin: source_vector(entity, b"origin")?,
+                angles: source_vector(entity, b"angles")?,
+                parent_name: entity.parentname.clone(),
+                spawn_flags: source_bytes(entity, b"spawnflags"),
+                start_disabled: source_bytes(entity, b"StartDisabled"),
+                solidity: source_bytes(entity, b"Solidity"),
+                solid_bsp: source_bytes(entity, b"solidbsp"),
+            })
+        })
+        .collect()
+}
+
+fn source_bytes(entity: &playsrc_entity::Entity, key: &[u8]) -> Option<Vec<u8>> {
+    entity
+        .pairs
+        .iter()
+        .find(|pair| pair.key.eq_ignore_ascii_case(key))
+        .map(|pair| pair.value.clone())
+}
+
+fn source_vector(entity: &playsrc_entity::Entity, key: &[u8]) -> Result<[f32; 3], Error> {
+    let Some(value) = source_bytes(entity, key) else {
+        return Ok([0.0; 3]);
+    };
+    let values = std::str::from_utf8(&value)
+        .ok()
+        .map(|value| {
+            value
+                .split_ascii_whitespace()
+                .map(str::parse::<f32>)
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()
+        .ok()
+        .flatten()
+        .filter(|values| values.len() == 3 && values.iter().all(|value| value.is_finite()))
+        .ok_or_else(|| error(ErrorCode::InvalidReference, Some(entity.index)))?;
+    Ok([values[0], values[1], values[2]])
 }
 
 fn fill_brush_model_associations(

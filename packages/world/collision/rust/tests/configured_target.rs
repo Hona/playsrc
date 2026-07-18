@@ -1,7 +1,8 @@
 use playsrc_bsp::{Limits as BspLimits, Profile as BspProfile, parse as parse_bsp};
 use playsrc_collision::{
-    Feature, Hit, ObjectInput, ObjectRole, PhysicsShape, Snapshot, SnapshotLimits,
-    SnapshotRayRequest, SnapshotShape, TraceScope, Transform, World, compile,
+    CONTENTS_GRATE, CONTENTS_TRANSLUCENT, Feature, Hit, Hull, MASK_PLAYERSOLID, ObjectInput,
+    ObjectRole, PhysicsShape, SNAPSHOT_VERSION, Snapshot, SnapshotLimits, SnapshotRayRequest,
+    SnapshotShape, SnapshotTraceRequest, TraceScope, Transform, World, compile,
 };
 use playsrc_phy::{Limits as PhyLimits, Profile as PhyProfile, parse_standalone};
 use serde::Deserialize;
@@ -9,6 +10,8 @@ use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
 const BSP_SHA256: &str = "b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959";
+const COLLISION_WORLD_SHA256: &str =
+    "66d42c750648487669e1b9d7a1b36fc81e213624030f812667fb728ee61aa6ed";
 const LOCKER_PHY_SHA256: &str = "c3ff7d83b9bf5cbab075ae814e3348194a5cb8e08f2092b89419bbad11b48a03";
 
 #[derive(Deserialize)]
@@ -40,9 +43,11 @@ fn configured_jump_beef_rocket_and_mover_inputs_are_queryable() {
     assert_eq!(hex(&Sha256::digest(&bsp_bytes)), BSP_SHA256);
     let bsp = parse_bsp(&bsp_bytes, BspProfile::Source2013V20, BspLimits::default()).unwrap();
     let world = compile(&bsp).unwrap();
+    assert_eq!(hex(&world.identity), COLLISION_WORLD_SHA256);
     assert_eq!(world.brushes.len(), 476);
     assert_eq!(world.models.len(), 123);
     assert_eq!(world.model_brushes.len(), 123);
+    assert_eq!(world.model_contents.len(), 123);
     assert_eq!(
         world
             .sides
@@ -58,6 +63,108 @@ fn configured_jump_beef_rocket_and_mover_inputs_are_queryable() {
     );
     assert!(bsp.lumps[26].bytes(&bsp).is_empty());
     assert!(bsp.lumps[33].bytes(&bsp).is_empty());
+
+    assert_eq!(world.model_brushes[109], [454]);
+    assert_eq!(world.model_contents[109], 1);
+    for model in [113, 117, 118] {
+        assert_eq!(
+            world.model_contents[model],
+            CONTENTS_TRANSLUCENT | CONTENTS_GRATE
+        );
+    }
+    let divider_and_non_solid_fences = Snapshot::compile(
+        &world,
+        0x4d41_505f_4252_5553,
+        [
+            (294, 109, true, [5300.0, 1244.0, -2662.3]),
+            (307, 113, false, [13144.0, 628.0, -5160.0]),
+            (322, 117, false, [-5400.0, 2248.0, -1337.98]),
+            (323, 118, false, [-5400.0, 1464.0, -1337.98]),
+        ]
+        .into_iter()
+        .map(|(identity, model, enabled, origin)| ObjectInput {
+            identity,
+            role: ObjectRole::Entity,
+            enabled,
+            transform: Transform {
+                origin,
+                angles: [0.0; 3],
+            },
+            linear_velocity: [0.0; 3],
+            angular_velocity: [0.0; 3],
+            collision_group: 0,
+            contents: 0,
+            surface_flags: 0,
+            shape: SnapshotShape::BrushModel { model },
+        })
+        .collect(),
+        SnapshotLimits::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        divider_and_non_solid_fences.world_identity(),
+        world.identity
+    );
+    assert_eq!(divider_and_non_solid_fences.records().len(), 4);
+    assert_eq!(
+        divider_and_non_solid_fences
+            .records()
+            .iter()
+            .map(|record| (record.identity, record.enabled, record.contents))
+            .collect::<Vec<_>>(),
+        [
+            (294, true, 1),
+            (307, false, CONTENTS_TRANSLUCENT | CONTENTS_GRATE),
+            (322, false, CONTENTS_TRANSLUCENT | CONTENTS_GRATE),
+            (323, false, CONTENTS_TRANSLUCENT | CONTENTS_GRATE),
+        ]
+    );
+    let bytes = divider_and_non_solid_fences.snapshot_bytes().unwrap();
+    assert_eq!(&bytes[..4], b"CSNP");
+    assert_eq!(
+        u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
+        SNAPSHOT_VERSION
+    );
+    assert_eq!(&bytes[8..40], &world.identity);
+    for hull in [
+        Hull {
+            mins: [-24.0, -24.0, 0.0],
+            maxs: [24.0, 24.0, 82.0],
+        },
+        Hull {
+            mins: [-24.0, -24.0, 0.0],
+            maxs: [24.0, 24.0, 62.0],
+        },
+    ] {
+        let trace = world
+            .trace_snapshot_hull(
+                &divider_and_non_solid_fences,
+                SnapshotTraceRequest {
+                    start: [5300.0, 1100.0, -2662.3],
+                    end: [5300.0, 1400.0, -2662.3],
+                    hull,
+                    mask: MASK_PLAYERSOLID,
+                    scope: TraceScope::EntitiesOnly,
+                    ignored: &[],
+                },
+                |_| true,
+            )
+            .unwrap();
+        assert_eq!(trace.world, world.identity);
+        assert_eq!(
+            trace.snapshot,
+            Some(divider_and_non_solid_fences.identity())
+        );
+        assert!(trace.fraction < 1.0);
+        assert!(matches!(
+            trace.hit,
+            Some(Hit::Object {
+                identity: 294,
+                feature: Feature::Brush { model: 109, .. },
+                ..
+            })
+        ));
+    }
 
     let model = &world.models[26];
     let mins = vector(model.mins);

@@ -8,6 +8,8 @@ use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
 const BSP_SHA256: &str = "b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959";
+const COLLISION_WORLD_SHA256: &str =
+    "66d42c750648487669e1b9d7a1b36fc81e213624030f812667fb728ee61aa6ed";
 
 struct Config {
     tf2_dir: String,
@@ -37,6 +39,8 @@ fn configured_jump_beef_enumerates_every_brush_model_and_entity_draw_fact() {
     assert_eq!(map.brush_models.len(), 123);
     assert_eq!(map.surfaces.len(), 3_793);
     assert_eq!(map.materials.len(), 14);
+    assert_eq!(hex(&map.collision_world_identity), COLLISION_WORLD_SHA256);
+    assert_eq!(map.brush_model_occurrences.len(), 122);
     assert_eq!(map.brush_models[0].identity, BrushModelIdentity::World);
 
     for model in &map.brush_models {
@@ -71,6 +75,7 @@ fn configured_jump_beef_enumerates_every_brush_model_and_entity_draw_fact() {
             }
         }
         assert_eq!(model.materials, materials);
+        assert!(!model.collision_brushes.is_empty());
         println!(
             "model={} faces={}..{} materials={:?} entities={:?} origin={:?} bounds={:?}",
             model.index,
@@ -202,6 +207,31 @@ fn configured_jump_beef_enumerates_every_brush_model_and_entity_draw_fact() {
         panic!("missing source models")
     };
     assert_eq!(source_models.len(), map.brush_models.len());
+    assert_eq!(map.brush_models[109].collision_brushes, [454]);
+    assert_eq!(map.brush_models[109].collision_contents, 1);
+    assert_eq!(map.brush_models[122].surface_range, 3793..3793);
+    assert_eq!(map.brush_models[122].collision_brushes, [475]);
+    assert_eq!(map.brush_models[122].collision_contents, 1);
+    for (entity, model, solidity, contents) in [
+        (294, 109, b"0".as_slice(), 1),
+        (295, 110, b"0".as_slice(), 1),
+        (296, 111, b"0".as_slice(), 1),
+        (297, 112, b"0".as_slice(), 1),
+        (307, 113, b"1".as_slice(), 0x1000_0008),
+        (322, 117, b"1".as_slice(), 0x1000_0008),
+        (323, 118, b"1".as_slice(), 0x1000_0008),
+    ] {
+        let occurrence = map
+            .brush_model_occurrences
+            .iter()
+            .find(|occurrence| occurrence.entity == entity)
+            .unwrap();
+        assert_eq!(occurrence.model, model);
+        assert_eq!(occurrence.classname, b"func_brush");
+        assert_eq!(occurrence.start_disabled.as_deref(), Some(b"0".as_slice()));
+        assert_eq!(occurrence.solidity.as_deref(), Some(solidity));
+        assert_eq!(map.brush_models[model].collision_contents, contents);
+    }
 }
 
 fn hex(bytes: &[u8]) -> String {

@@ -11,13 +11,7 @@ use std::{
 const SURF_SKY_2D: i32 = 0x0002;
 const SURF_SKY: i32 = 0x0004;
 const SURF_WARP: i32 = 0x0008;
-const SURF_TRIGGER: i32 = 0x0040;
-const SURF_NODRAW: i32 = 0x0080;
-const SURF_HINT: i32 = 0x0100;
-const SURF_SKIP: i32 = 0x0200;
 const SURF_NODECALS: i32 = 0x2000;
-const NON_DECAL_FLAGS: i32 =
-    SURF_SKY_2D | SURF_SKY | SURF_TRIGGER | SURF_NODRAW | SURF_HINT | SURF_SKIP | SURF_NODECALS;
 const INFODECAL_TRACE_EXTENT: f32 = 5.0;
 const INFODECAL_PLANE_DISTANCE: f32 = 4.0;
 const MARK_NORMAL_OFFSET: f32 = 0.1;
@@ -153,6 +147,12 @@ pub struct MaterialBinding<'a> {
     pub material: &'a Material,
 }
 
+#[derive(Clone, Copy)]
+pub struct NamedMaterialBinding<'a> {
+    pub logical_path: &'a str,
+    pub material: &'a Material,
+}
+
 #[derive(Clone, Debug)]
 pub struct MarkMaterial {
     pub reference: Vec<u8>,
@@ -167,10 +167,27 @@ pub struct EnvironmentInputs<'a> {
     pub logical_map_path: &'a str,
     pub entities: &'a Graph,
     pub visibility: &'a VisibilityWorld,
+    pub collision: &'a playsrc_collision::World,
+    pub receiver_snapshot: &'a playsrc_collision::Snapshot,
+    pub mark_placements: &'a MarkPlacementSnapshot,
     pub materials: &'a [MaterialBinding<'a>],
+    pub dependent_materials: &'a [NamedMaterialBinding<'a>],
     pub mark_materials: &'a [MarkMaterial],
     pub dependencies: &'a [DependencyResponse],
     pub limits: EnvironmentLimits,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MarkPlacement {
+    pub entity: usize,
+    pub world_origin: [f32; 3],
+    pub parent_entity: Option<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MarkPlacementSnapshot {
+    pub revision: u64,
+    pub placements: Vec<MarkPlacement>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -231,6 +248,7 @@ pub struct WaterSurface {
     pub model: usize,
     pub material: usize,
     pub texture_info: usize,
+    pub fog_volume: Option<usize>,
     pub plane: [f32; 4],
     pub bounds: [[f32; 3]; 2],
     pub cubemap: CubemapSelection,
@@ -243,12 +261,25 @@ pub struct WaterVolume {
     pub surface_z: f32,
     pub minimum_z: f32,
     pub texture_info: usize,
-    pub material: usize,
+    pub surface_material: usize,
+    pub bottom_material: Option<WaterMaterialIdentity>,
     pub leaves: Vec<usize>,
+    pub clusters: Vec<i16>,
+    pub areas: Vec<usize>,
+    pub contents: u32,
     pub bounds: [[f32; 3]; 2],
     pub plane: [f32; 4],
     pub cubemap: CubemapSelection,
-    pub state: WaterState,
+    pub surface_state: WaterState,
+    pub bottom_state: Option<WaterState>,
+    pub surface_translucent: bool,
+    pub bottom_translucent: Option<bool>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WaterMaterialIdentity {
+    Map(usize),
+    Dependency(String),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -269,6 +300,7 @@ pub enum WaterPointFact {
 pub struct WaterEnvironment {
     pub surfaces: Vec<WaterSurface>,
     pub volumes: Vec<WaterVolume>,
+    pub leaf_minimum_distance_to_water: Option<Vec<u16>>,
 }
 
 impl WaterEnvironment {
@@ -297,6 +329,473 @@ impl WaterEnvironment {
             }
         })
     }
+
+    pub fn plan_view(
+        &self,
+        visibility: &VisibilityWorld,
+        input: WaterViewInput<'_>,
+    ) -> Result<WaterViewPlan, EnvironmentError> {
+        let visible = self.visible_water(visibility, &input)?;
+        let render = water_render_selection(visible.as_ref(), input.policy);
+        let mut passes = Vec::new();
+        let Some(water) = visible.as_ref() else {
+            passes.push(simple_view_pass(&input, None, render));
+            return Ok(WaterViewPlan {
+                visible_water: None,
+                render,
+                passes,
+            });
+        };
+        if render.cheap {
+            passes.push(simple_view_pass(&input, Some(water), render));
+            return Ok(WaterViewPlan {
+                visible_water: visible,
+                render,
+                passes,
+            });
+        }
+        let (adjusted_height, water_z_adjust, software_clip) =
+            water_eye_adjustment(input.origin[2], water.surface_z, input.policy)?;
+        if !water.eye_in_volume {
+            if render.reflect {
+                let mut reflected_origin = input.origin;
+                reflected_origin[2] -= 2.0 * (reflected_origin[2] - water.surface_z);
+                passes.push(EnvironmentViewPass {
+                    kind: EnvironmentViewKind::Reflection,
+                    origin: reflected_origin,
+                    angles: [-input.angles[0], input.angles[1], -input.angles[2]],
+                    render_above_water: true,
+                    render_under_water: false,
+                    render_water_surface: false,
+                    draw_entities: render.reflect_entities,
+                    draw_sky_2d: true,
+                    clip: input.policy.height_clipping.then_some(WaterClipPlane {
+                        height: water.surface_z - WATER_CLIP_SPREAD,
+                        keep: WaterClipKeep::Above,
+                    }),
+                    forced_visibility_leaf: Some(water.visible_leaf),
+                    fog: ViewFog::World,
+                });
+            }
+            if render.refract {
+                passes.push(EnvironmentViewPass {
+                    kind: EnvironmentViewKind::Refraction,
+                    origin: input.origin,
+                    angles: input.angles,
+                    render_above_water: false,
+                    render_under_water: true,
+                    render_water_surface: false,
+                    draw_entities: true,
+                    draw_sky_2d: false,
+                    clip: input.policy.height_clipping.then_some(WaterClipPlane {
+                        height: adjusted_height + WATER_CLIP_SPREAD,
+                        keep: WaterClipKeep::Below,
+                    }),
+                    forced_visibility_leaf: None,
+                    fog: ViewFog::Water {
+                        volume: water.volume,
+                        height_fog: true,
+                    },
+                });
+            }
+            passes.push(EnvironmentViewPass {
+                kind: EnvironmentViewKind::Main,
+                origin: input.origin,
+                angles: input.angles,
+                render_above_water: true,
+                render_under_water: !render.refract && !render.opaque,
+                render_water_surface: render.draw_surface,
+                draw_entities: true,
+                draw_sky_2d: input.draw_sky_2d,
+                clip: (input.near_plane_intersects_selected_volume
+                    && !input.policy.fast_clipping
+                    && input.policy.height_clipping)
+                    .then_some(WaterClipPlane {
+                        height: adjusted_height - WATER_CLIP_SPREAD,
+                        keep: WaterClipKeep::Above,
+                    }),
+                forced_visibility_leaf: None,
+                fog: ViewFog::World,
+            });
+            if render.refract && (software_clip || input.near_plane_intersects_selected_volume) {
+                passes.push(EnvironmentViewPass {
+                    kind: EnvironmentViewKind::Intersection,
+                    origin: input.origin,
+                    angles: input.angles,
+                    render_above_water: false,
+                    render_under_water: true,
+                    render_water_surface: false,
+                    draw_entities: !software_clip,
+                    draw_sky_2d: false,
+                    clip: (!software_clip && input.policy.height_clipping).then_some(
+                        WaterClipPlane {
+                            height: water.surface_z - WATER_CLIP_SPREAD,
+                            keep: WaterClipKeep::Below,
+                        },
+                    ),
+                    forced_visibility_leaf: None,
+                    fog: ViewFog::Water {
+                        volume: water.volume,
+                        height_fog: true,
+                    },
+                });
+            }
+        } else {
+            if render.refract {
+                passes.push(EnvironmentViewPass {
+                    kind: EnvironmentViewKind::Refraction,
+                    origin: input.origin,
+                    angles: input.angles,
+                    render_above_water: true,
+                    render_under_water: false,
+                    render_water_surface: false,
+                    draw_entities: true,
+                    draw_sky_2d: input.draw_sky_2d,
+                    clip: input.policy.height_clipping.then_some(WaterClipPlane {
+                        height: adjusted_height - WATER_CLIP_SPREAD,
+                        keep: WaterClipKeep::Above,
+                    }),
+                    forced_visibility_leaf: None,
+                    fog: ViewFog::World,
+                });
+            }
+            passes.push(EnvironmentViewPass {
+                kind: EnvironmentViewKind::Main,
+                origin: input.origin,
+                angles: input.angles,
+                render_above_water: !render.refract && !render.opaque,
+                render_under_water: true,
+                render_water_surface: render.draw_surface,
+                draw_entities: true,
+                draw_sky_2d: false,
+                clip: (!input.policy.fast_clipping && input.policy.height_clipping).then_some(
+                    WaterClipPlane {
+                        height: adjusted_height + WATER_CLIP_SPREAD,
+                        keep: WaterClipKeep::Below,
+                    },
+                ),
+                forced_visibility_leaf: None,
+                fog: ViewFog::Water {
+                    volume: water.volume,
+                    height_fog: false,
+                },
+            });
+            if render.refract && software_clip && water_z_adjust != 0.0 {
+                passes.push(EnvironmentViewPass {
+                    kind: EnvironmentViewKind::Intersection,
+                    origin: input.origin,
+                    angles: input.angles,
+                    render_above_water: true,
+                    render_under_water: false,
+                    render_water_surface: false,
+                    draw_entities: false,
+                    draw_sky_2d: false,
+                    clip: None,
+                    forced_visibility_leaf: None,
+                    fog: ViewFog::World,
+                });
+            }
+        }
+        Ok(WaterViewPlan {
+            visible_water: visible,
+            render,
+            passes,
+        })
+    }
+
+    fn visible_water(
+        &self,
+        visibility: &VisibilityWorld,
+        input: &WaterViewInput<'_>,
+    ) -> Result<Option<VisibleWater>, EnvironmentError> {
+        if input
+            .origin
+            .iter()
+            .chain(input.angles.iter())
+            .any(|v| !v.is_finite())
+        {
+            return Err(failure(EnvironmentErrorCode::NonFinite, None));
+        }
+        let eye = visibility
+            .leaves
+            .get(input.eye_leaf)
+            .ok_or_else(|| failure(EnvironmentErrorCode::InvalidReference, Some(input.eye_leaf)))?;
+        let eye_volume = usize::try_from(eye.leaf_water_data_id).ok();
+        let (volume, visible_leaf, eye_in_volume) = if let Some(volume) = eye_volume {
+            (volume, input.eye_leaf, true)
+        } else if eye.contents as u32 & CONTENTS_TEST_FOG_VOLUME != 0 {
+            let mut selected = None;
+            for leaf in input.qualified_visible_leaves {
+                let record = visibility
+                    .leaves
+                    .get(*leaf)
+                    .ok_or_else(|| failure(EnvironmentErrorCode::InvalidReference, Some(*leaf)))?;
+                if record.contents as u32 & CONTENTS_SLIME == 0
+                    && let Ok(volume) = usize::try_from(record.leaf_water_data_id)
+                {
+                    selected = Some((volume, *leaf, false));
+                    break;
+                }
+            }
+            let Some(selected) = selected else {
+                return Ok(None);
+            };
+            selected
+        } else {
+            return Ok(None);
+        };
+        let source = self
+            .volumes
+            .get(volume)
+            .filter(|source| source.index == volume && source.leaves.contains(&visible_leaf))
+            .ok_or_else(|| failure(EnvironmentErrorCode::InvalidReference, Some(volume)))?;
+        let (material, state, translucent) = if eye_in_volume {
+            (
+                source
+                    .bottom_material
+                    .clone()
+                    .unwrap_or(WaterMaterialIdentity::Map(source.surface_material)),
+                source
+                    .bottom_state
+                    .as_ref()
+                    .unwrap_or(&source.surface_state),
+                source
+                    .bottom_translucent
+                    .unwrap_or(source.surface_translucent),
+            )
+        } else {
+            (
+                WaterMaterialIdentity::Map(source.surface_material),
+                &source.surface_state,
+                source.surface_translucent,
+            )
+        };
+        let distance_to_water = self
+            .leaf_minimum_distance_to_water
+            .as_ref()
+            .and_then(|values| values.get(input.eye_leaf))
+            .copied();
+        Ok(Some(VisibleWater {
+            volume,
+            visible_leaf,
+            eye_leaf: input.eye_leaf,
+            eye_in_volume,
+            surface_z: source.surface_z,
+            distance_to_water,
+            material,
+            state: state.clone(),
+            translucent,
+        }))
+    }
+}
+
+const CONTENTS_SLIME: u32 = 0x10;
+const CONTENTS_TEST_FOG_VOLUME: u32 = 0x100;
+const WATER_CLIP_SPREAD: f32 = 2.0;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WaterViewPolicy {
+    pub draw_water: bool,
+    pub expensive_supported: bool,
+    pub draw_reflection: bool,
+    pub draw_refraction: bool,
+    pub force_expensive: bool,
+    pub force_reflect_entities: bool,
+    pub fast_clipping: bool,
+    pub height_clipping: bool,
+    pub eye_water_epsilon: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WaterViewInput<'a> {
+    pub origin: [f32; 3],
+    pub angles: [f32; 3],
+    pub eye_leaf: usize,
+    pub qualified_visible_leaves: &'a [usize],
+    pub near_plane_intersects_selected_volume: bool,
+    pub draw_sky_2d: bool,
+    pub policy: WaterViewPolicy,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct VisibleWater {
+    pub volume: usize,
+    pub visible_leaf: usize,
+    pub eye_leaf: usize,
+    pub eye_in_volume: bool,
+    pub surface_z: f32,
+    pub distance_to_water: Option<u16>,
+    pub material: WaterMaterialIdentity,
+    pub state: WaterState,
+    pub translucent: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WaterRenderSelection {
+    pub cheap: bool,
+    pub reflect: bool,
+    pub refract: bool,
+    pub reflect_entities: bool,
+    pub draw_surface: bool,
+    pub opaque: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EnvironmentViewKind {
+    Reflection,
+    Refraction,
+    Main,
+    Intersection,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WaterClipKeep {
+    Above,
+    Below,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WaterClipPlane {
+    pub height: f32,
+    pub keep: WaterClipKeep,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ViewFog {
+    World,
+    Water { volume: usize, height_fog: bool },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EnvironmentViewPass {
+    pub kind: EnvironmentViewKind,
+    pub origin: [f32; 3],
+    pub angles: [f32; 3],
+    pub render_above_water: bool,
+    pub render_under_water: bool,
+    pub render_water_surface: bool,
+    pub draw_entities: bool,
+    pub draw_sky_2d: bool,
+    pub clip: Option<WaterClipPlane>,
+    pub forced_visibility_leaf: Option<usize>,
+    pub fog: ViewFog,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WaterViewPlan {
+    pub visible_water: Option<VisibleWater>,
+    pub render: WaterRenderSelection,
+    pub passes: Vec<EnvironmentViewPass>,
+}
+
+fn water_render_selection(
+    water: Option<&VisibleWater>,
+    policy: WaterViewPolicy,
+) -> WaterRenderSelection {
+    let Some(water) = water else {
+        return WaterRenderSelection {
+            cheap: true,
+            reflect: false,
+            refract: false,
+            reflect_entities: false,
+            draw_surface: false,
+            opaque: true,
+        };
+    };
+    if !policy.draw_water {
+        return WaterRenderSelection {
+            cheap: true,
+            reflect: false,
+            refract: false,
+            reflect_entities: false,
+            draw_surface: false,
+            opaque: false,
+        };
+    }
+    let force_cheap = water.state.force_cheap;
+    let force_expensive = !force_cheap && (policy.force_expensive || water.state.force_expensive);
+    let local_reflection = policy.expensive_supported
+        && force_expensive
+        && policy.draw_reflection
+        && water.state.reflection.disposition == TextureDisposition::BuiltInRenderTarget;
+    let beyond_lod = water
+        .distance_to_water
+        .is_some_and(|distance| f32::from(distance) >= water.state.cheap_end);
+    if !policy.expensive_supported || force_cheap || beyond_lod && !local_reflection {
+        return WaterRenderSelection {
+            cheap: true,
+            reflect: false,
+            refract: false,
+            reflect_entities: false,
+            draw_surface: true,
+            opaque: !water.translucent,
+        };
+    }
+    let refract = policy.draw_refraction
+        && water.state.refraction.disposition == TextureDisposition::BuiltInRenderTarget;
+    WaterRenderSelection {
+        cheap: !local_reflection && !refract,
+        reflect: local_reflection,
+        refract,
+        reflect_entities: local_reflection
+            && (policy.force_reflect_entities || water.state.reflect_entities),
+        draw_surface: true,
+        opaque: !water.translucent && !refract,
+    }
+}
+
+fn water_eye_adjustment(
+    eye_z: f32,
+    water_z: f32,
+    policy: WaterViewPolicy,
+) -> Result<(f32, f32, bool), EnvironmentError> {
+    if !policy.eye_water_epsilon.is_finite() || policy.eye_water_epsilon < 0.0 {
+        return Err(failure(EnvironmentErrorCode::InvalidField, None));
+    }
+    if !policy.fast_clipping {
+        return Ok((water_z, 0.0, false));
+    }
+    let delta = eye_z - water_z;
+    if delta.abs() >= policy.eye_water_epsilon || delta == 0.0 && policy.eye_water_epsilon == 0.0 {
+        return Ok((water_z, 0.0, false));
+    }
+    let adjusted = if delta > 0.0 {
+        eye_z - policy.eye_water_epsilon
+    } else {
+        eye_z + policy.eye_water_epsilon
+    };
+    Ok((adjusted, adjusted - water_z, true))
+}
+
+fn simple_view_pass(
+    input: &WaterViewInput<'_>,
+    water: Option<&VisibleWater>,
+    render: WaterRenderSelection,
+) -> EnvironmentViewPass {
+    let eye_in_water = water.is_some_and(|water| water.eye_in_volume);
+    let both = !render.opaque || input.near_plane_intersects_selected_volume;
+    EnvironmentViewPass {
+        kind: EnvironmentViewKind::Main,
+        origin: input.origin,
+        angles: input.angles,
+        render_above_water: both || !eye_in_water,
+        render_under_water: both || eye_in_water,
+        render_water_surface: render.draw_surface,
+        draw_entities: true,
+        draw_sky_2d: !eye_in_water && input.draw_sky_2d,
+        clip: None,
+        forced_visibility_leaf: None,
+        fog: water.map_or(ViewFog::World, |water| {
+            if water.eye_in_volume {
+                ViewFog::Water {
+                    volume: water.volume,
+                    height_fog: false,
+                }
+            } else {
+                ViewFog::World
+            }
+        }),
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -311,6 +810,44 @@ pub struct FogState {
     pub maximum_density: f32,
     pub far_z: Option<f32>,
     pub radial: bool,
+    pub transition_duration: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FogPlayerTransition {
+    pub from: FogState,
+    pub to: FogState,
+    pub start_time: f32,
+    pub snap: bool,
+}
+
+impl FogPlayerTransition {
+    pub fn sample(&self, time: f32) -> Result<FogState, EnvironmentError> {
+        if !time.is_finite()
+            || !self.start_time.is_finite()
+            || time < self.start_time
+            || !self.to.transition_duration.is_finite()
+            || self.to.transition_duration < 0.0
+        {
+            return Err(failure(EnvironmentErrorCode::InvalidField, None));
+        }
+        let mut output = self.to.clone();
+        if self.snap || self.to.transition_duration == 0.0 {
+            return Ok(output);
+        }
+        let elapsed = time - self.start_time;
+        if elapsed < self.to.transition_duration {
+            let amount = elapsed / self.to.transition_duration;
+            for channel in 0..3 {
+                output.primary[channel] = (f32::from(self.to.primary[channel]) * amount
+                    + f32::from(self.from.primary[channel]) * (1.0 - amount))
+                    .trunc() as u8;
+            }
+            output.start = self.to.start * amount + self.from.start * (1.0 - amount);
+            output.end = self.to.end * amount + self.from.end * (1.0 - amount);
+        }
+        Ok(output)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -379,6 +916,75 @@ pub struct MarkFragment {
     pub uv: Vec<[f32; 2]>,
     pub lightmap_uv: Vec<[f32; 2]>,
     pub triangles: Vec<[u32; 3]>,
+    pub visibility: MarkVisibility,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TransformedMarkFragment {
+    pub positions: Vec<[f32; 3]>,
+    pub normals: Vec<[f32; 3]>,
+}
+
+impl MarkFragment {
+    pub fn at_transform(
+        &self,
+        transform: playsrc_collision::Transform,
+    ) -> Result<TransformedMarkFragment, EnvironmentError> {
+        let transform = ModelTransform::from_collision(transform)?;
+        Ok(TransformedMarkFragment {
+            positions: self
+                .positions
+                .iter()
+                .map(|position| transform.point_to_world(*position))
+                .collect(),
+            normals: self
+                .normals
+                .iter()
+                .map(|normal| transform.vector_to_world(*normal))
+                .collect(),
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MarkVisibility {
+    World {
+        leaves: Vec<usize>,
+        clusters: Vec<i16>,
+        areas: Vec<usize>,
+    },
+    BrushModel {
+        entity: u64,
+        model: usize,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MarkActivation {
+    MapActivation,
+    Input,
+    Compiled,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MarkLifetime {
+    Permanent,
+    PoolManaged,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MarkRenderRequest {
+    pub normal_offset: f32,
+    pub polygon_offset: playsrc_material::PolygonOffset,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MarkReceiver {
+    pub entity: Option<u64>,
+    pub model: usize,
+    pub local_origin: [f32; 3],
+    pub transform: playsrc_collision::Transform,
+    pub parent_entity: Option<usize>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -392,7 +998,7 @@ pub struct MarkRecord {
     pub material_sha256: Option<[u8; 32]>,
     pub material_state: Option<DecalState>,
     pub origin: [f32; 3],
-    pub target_model: Option<usize>,
+    pub receiver: Option<MarkReceiver>,
     pub target_faces: Vec<usize>,
     pub render_order: u8,
     pub fade_distances_squared: Option<[f32; 2]>,
@@ -400,14 +1006,72 @@ pub struct MarkRecord {
     pub dynamic: bool,
     pub low_priority: bool,
     pub parent_entity: Option<usize>,
+    pub activation: MarkActivation,
+    pub lifetime: MarkLifetime,
+    pub render: MarkRenderRequest,
     pub fragments: Vec<MarkFragment>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct MarkEnvironment {
+    pub collision_world_identity: [u8; 32],
+    pub receiver_snapshot_revision: u64,
+    pub placement_revision: u64,
     pub records: Vec<MarkRecord>,
     pub fragment_count: usize,
     pub vertex_count: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VisibleMarkFragment {
+    pub record: usize,
+    pub fragment: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VisibleBrushMarkReceiver {
+    pub entity: u64,
+    pub model: usize,
+}
+
+impl MarkEnvironment {
+    pub fn visible_fragments(
+        &self,
+        view: &playsrc_visibility::ViewResult,
+        visible_brush_receivers: &[VisibleBrushMarkReceiver],
+        collision_world_identity: [u8; 32],
+        receiver_snapshot_revision: u64,
+        placement_revision: u64,
+    ) -> Result<Vec<VisibleMarkFragment>, EnvironmentError> {
+        if collision_world_identity != self.collision_world_identity
+            || receiver_snapshot_revision != self.receiver_snapshot_revision
+            || placement_revision != self.placement_revision
+        {
+            return Err(failure(EnvironmentErrorCode::DependencyMismatch, None));
+        }
+        let mut output = Vec::new();
+        for (record_index, record) in self.records.iter().enumerate() {
+            for (fragment_index, fragment) in record.fragments.iter().enumerate() {
+                let visible = match &fragment.visibility {
+                    MarkVisibility::World { .. } => u16::try_from(fragment.face)
+                        .ok()
+                        .is_some_and(|face| view.world_surfaces.contains(&face)),
+                    MarkVisibility::BrushModel { entity, model } => visible_brush_receivers
+                        .contains(&VisibleBrushMarkReceiver {
+                            entity: *entity,
+                            model: *model,
+                        }),
+                };
+                if visible {
+                    output.push(VisibleMarkFragment {
+                        record: record_index,
+                        fragment: fragment_index,
+                    });
+                }
+            }
+        }
+        Ok(output)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -418,6 +1082,7 @@ pub struct WorldEnvironment {
     pub water: WaterEnvironment,
     pub marks: MarkEnvironment,
     pub controllers: Vec<EnvironmentController>,
+    pub master_fog_controller: Option<usize>,
     pub dependencies: Vec<DependencyRequest>,
 }
 
@@ -438,6 +1103,18 @@ pub fn compile_environment(
     if input.visibility.identity != visibility_identity {
         return Err(failure(EnvironmentErrorCode::DependencyMismatch, None));
     }
+    if input.collision.identity != map.collision_world_identity
+        || input.receiver_snapshot.world_identity() != input.collision.identity
+        || input.receiver_snapshot.records().iter().any(|record| {
+            record.role != playsrc_collision::ObjectRole::Entity
+                || !matches!(
+                    record.shape,
+                    playsrc_collision::SnapshotShape::BrushModel { .. }
+                )
+        })
+    {
+        return Err(failure(EnvironmentErrorCode::DependencyMismatch, None));
+    }
     let map_name = map_name(input.logical_map_path)?;
     let max_dependencies = input
         .limits
@@ -449,6 +1126,7 @@ pub fn compile_environment(
     }
     let dependency_catalog = DependencyCatalog::new(input.dependencies)?;
     let material_bindings = material_bindings(input.materials, map.materials.len())?;
+    let dependent_materials = named_material_bindings(input.dependent_materials)?;
     let (sky, mut requests) = compile_sky(map, input.entities, &dependency_catalog)?;
     let (cubemaps, cubemap_requests) = compile_cubemaps(
         bsp,
@@ -461,16 +1139,28 @@ pub fn compile_environment(
     if dependency_catalog.len() != requests.len() {
         return Err(failure(EnvironmentErrorCode::DependencyMismatch, None));
     }
-    let water = compile_water(map, bsp, &material_bindings, &cubemaps, input.limits)?;
-    let marks = compile_marks(
+    let water = compile_water(
         map,
         bsp,
-        input.entities,
         &material_bindings,
-        input.mark_materials,
+        &dependent_materials,
+        &cubemaps,
         input.limits,
     )?;
+    let marks = compile_marks(MarkCompileInput {
+        map,
+        bsp,
+        graph: input.entities,
+        visibility: input.visibility,
+        collision: input.collision,
+        receiver_snapshot: input.receiver_snapshot,
+        mark_placements: input.mark_placements,
+        materials: &material_bindings,
+        mark_materials: input.mark_materials,
+        limits: input.limits,
+    })?;
     let controllers = compile_controllers(input.entities, input.visibility)?;
+    let master_fog_controller = master_fog_controller(input.entities, &controllers)?;
     Ok(WorldEnvironment {
         lighting: LightingProvenance {
             profile: map.lighting_profile,
@@ -482,6 +1172,7 @@ pub fn compile_environment(
         water,
         marks,
         controllers,
+        master_fog_controller,
         dependencies: requests,
     })
 }
@@ -543,6 +1234,25 @@ fn material_bindings<'a>(
                 EnvironmentErrorCode::InvalidReference,
                 Some(binding.material_index),
             ));
+        }
+    }
+    Ok(output)
+}
+
+fn named_material_bindings<'a>(
+    bindings: &'a [NamedMaterialBinding<'a>],
+) -> Result<BTreeMap<String, &'a Material>, EnvironmentError> {
+    if bindings.len() > 65_536 {
+        return Err(failure(EnvironmentErrorCode::BoundExceeded, None));
+    }
+    let mut output = BTreeMap::new();
+    for (index, binding) in bindings.iter().enumerate() {
+        if binding.logical_path.is_empty()
+            || output
+                .insert(binding.logical_path.to_ascii_lowercase(), binding.material)
+                .is_some()
+        {
+            return Err(failure(EnvironmentErrorCode::InvalidReference, Some(index)));
         }
     }
     Ok(output)
@@ -777,6 +1487,7 @@ fn compile_water(
     map: &CanonicalMap,
     bsp: &Bsp,
     materials: &BTreeMap<usize, &Material>,
+    dependent_materials: &BTreeMap<String, &Material>,
     cubemaps: &[CubemapSample],
     limits: EnvironmentLimits,
 ) -> Result<WaterEnvironment, EnvironmentError> {
@@ -806,8 +1517,21 @@ fn compile_water(
             &surface_input,
         )?;
     }
-    let volumes = compile_water_volumes(bsp, materials, cubemaps, limits)?;
-    Ok(WaterEnvironment { surfaces, volumes })
+    let leaf_minimum_distance_to_water = leaf_minimum_distances(bsp)?;
+    let volumes =
+        compile_water_volumes(map, bsp, materials, dependent_materials, cubemaps, limits)?;
+    if surfaces
+        .iter()
+        .filter_map(|surface| surface.fog_volume)
+        .any(|volume| volume >= volumes.len())
+    {
+        return Err(failure(EnvironmentErrorCode::InvalidReference, Some(36)));
+    }
+    Ok(WaterEnvironment {
+        surfaces,
+        volumes,
+        leaf_minimum_distance_to_water,
+    })
 }
 
 struct WaterSurfaceInput<'a> {
@@ -889,6 +1613,7 @@ fn append_water_surfaces(
             model: owners[face_index],
             material,
             texture_info: info_index,
+            fog_volume: usize::try_from(face.surface_fog_volume_id).ok(),
             plane: oriented,
             bounds,
             cubemap: water_cubemap(&state, bounds_center(bounds), input.cubemaps)?,
@@ -899,8 +1624,10 @@ fn append_water_surfaces(
 }
 
 fn compile_water_volumes(
+    map: &CanonicalMap,
     bsp: &Bsp,
     materials: &BTreeMap<usize, &Material>,
+    dependent_materials: &BTreeMap<String, &Material>,
     cubemaps: &[CubemapSample],
     limits: EnvironmentLimits,
 ) -> Result<Vec<WaterVolume>, EnvironmentError> {
@@ -948,17 +1675,81 @@ fn compile_water_volumes(
             return Err(failure(EnvironmentErrorCode::InvalidReference, Some(index)));
         }
         let bounds = leaf_union_bounds(leaves, &member_leaves, index)?;
+        let bottom = state
+            .bottom_material
+            .as_ref()
+            .map(|request| {
+                if let Some(candidate) = map.materials.iter().find(|candidate| {
+                    candidate
+                        .logical_path
+                        .eq_ignore_ascii_case(&request.logical_path)
+                }) {
+                    return materials
+                        .get(&candidate.index)
+                        .copied()
+                        .map(|material| (WaterMaterialIdentity::Map(candidate.index), material))
+                        .ok_or_else(|| {
+                            failure(
+                                EnvironmentErrorCode::InvalidReference,
+                                Some(candidate.index),
+                            )
+                        });
+                }
+                dependent_materials
+                    .get(&request.logical_path.to_ascii_lowercase())
+                    .copied()
+                    .map(|material| {
+                        (
+                            WaterMaterialIdentity::Dependency(request.logical_path.clone()),
+                            material,
+                        )
+                    })
+                    .ok_or_else(|| failure(EnvironmentErrorCode::InvalidReference, Some(material)))
+            })
+            .transpose()?;
+        let bottom_state = bottom
+            .as_ref()
+            .map(|(_, bottom_value)| {
+                bottom_value
+                    .water
+                    .clone()
+                    .ok_or_else(|| failure(EnvironmentErrorCode::InvalidReference, Some(index)))
+            })
+            .transpose()?;
+        let bottom_material = bottom.as_ref().map(|(identity, _)| identity.clone());
+        let clusters = member_leaves
+            .iter()
+            .map(|leaf| leaves[*leaf].cluster)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let areas = member_leaves
+            .iter()
+            .map(|leaf| usize::from(leaves[*leaf].area_and_flags & 0x01ff))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let contents = member_leaves.iter().fold(0_u32, |contents, leaf| {
+            contents | leaves[*leaf].contents as u32
+        });
         output.push(WaterVolume {
             index,
             surface_z,
             minimum_z,
             texture_info: info_index,
-            material,
+            surface_material: material,
+            bottom_material,
             leaves: member_leaves,
+            clusters,
+            areas,
+            contents,
             bounds,
             plane: [0.0, 0.0, 1.0, surface_z],
             cubemap: water_cubemap(&state, bounds_center(bounds), cubemaps)?,
-            state,
+            surface_translucent: materials[&material].features.translucent,
+            bottom_translucent: bottom.map(|(_, material)| material.features.translucent),
+            surface_state: state,
+            bottom_state,
         });
     }
     for (leaf_index, leaf) in leaves.iter().enumerate() {
@@ -1124,7 +1915,32 @@ fn fog_state(entity: &Entity, main_view: bool) -> Result<FogState, EnvironmentEr
             .then(|| float_or_entity(entity, b"farz", 0.0))
             .transpose()?,
         radial: bool_or_entity(entity, b"fogradial", false)?,
+        transition_duration: float_or_entity(entity, b"foglerptime", 0.0)?,
     })
+}
+
+fn master_fog_controller(
+    graph: &Graph,
+    controllers: &[EnvironmentController],
+) -> Result<Option<usize>, EnvironmentError> {
+    let fog_entities = controllers
+        .iter()
+        .filter_map(|controller| {
+            matches!(controller.state, ControllerState::Fog(_)).then_some(controller.entity)
+        })
+        .collect::<Vec<_>>();
+    let mut selected = fog_entities.first().copied();
+    for entity in fog_entities {
+        let source = graph
+            .entities
+            .get(entity)
+            .ok_or_else(|| failure(EnvironmentErrorCode::InvalidReference, Some(entity)))?;
+        let flags = integer_or(source, b"spawnflags", 0)?;
+        if flags & 1 != 0 {
+            selected = Some(entity);
+        }
+    }
+    Ok(selected)
 }
 
 fn class_is(entity: &Entity, classname: &[u8]) -> bool {
@@ -1293,18 +2109,13 @@ struct ModelTransform {
 }
 
 impl ModelTransform {
-    const IDENTITY: Self = Self {
-        origin: [0.0; 3],
-        rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
-    };
-
-    fn from_entity(entity: &Entity) -> Result<Self, EnvironmentError> {
-        let [pitch, yaw, roll] = vector3_or(entity, b"angles", [0.0; 3])?.map(f32::to_radians);
+    fn from_collision(transform: playsrc_collision::Transform) -> Result<Self, EnvironmentError> {
+        let [pitch, yaw, roll] = transform.angles.map(f32::to_radians);
         let (sin_pitch, cos_pitch) = pitch.sin_cos();
         let (sin_yaw, cos_yaw) = yaw.sin_cos();
         let (sin_roll, cos_roll) = roll.sin_cos();
         Ok(Self {
-            origin: vector3_or(entity, b"origin", [0.0; 3])?,
+            origin: transform.origin,
             rotation: [
                 [
                     cos_pitch * cos_yaw,
@@ -1321,18 +2132,6 @@ impl ModelTransform {
         })
     }
 
-    fn vector_to_world(self, value: [f32; 3]) -> [f32; 3] {
-        [
-            dot(self.rotation[0], value),
-            dot(self.rotation[1], value),
-            dot(self.rotation[2], value),
-        ]
-    }
-
-    fn point_to_world(self, value: [f32; 3]) -> [f32; 3] {
-        add(self.origin, self.vector_to_world(value))
-    }
-
     fn point_to_local(self, value: [f32; 3]) -> [f32; 3] {
         let value = sub(value, self.origin);
         [
@@ -1347,6 +2146,18 @@ impl ModelTransform {
                 + value[2] * self.rotation[2][2],
         ]
     }
+
+    fn vector_to_world(self, value: [f32; 3]) -> [f32; 3] {
+        [
+            dot(self.rotation[0], value),
+            dot(self.rotation[1], value),
+            dot(self.rotation[2], value),
+        ]
+    }
+
+    fn point_to_world(self, value: [f32; 3]) -> [f32; 3] {
+        add(self.origin, self.vector_to_world(value))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1356,7 +2167,7 @@ struct ClipVertex {
 }
 
 struct MarkProjection {
-    target: Option<(usize, usize)>,
+    receiver: Option<MarkReceiver>,
     fragments: Vec<MarkFragment>,
 }
 
@@ -1376,14 +2187,32 @@ struct OverlaySource {
     normal: [f32; 3],
 }
 
-fn compile_marks(
-    map: &CanonicalMap,
-    bsp: &Bsp,
-    graph: &Graph,
-    materials: &BTreeMap<usize, &Material>,
-    mark_materials: &[MarkMaterial],
+struct MarkCompileInput<'a> {
+    map: &'a CanonicalMap,
+    bsp: &'a Bsp,
+    graph: &'a Graph,
+    visibility: &'a VisibilityWorld,
+    collision: &'a playsrc_collision::World,
+    receiver_snapshot: &'a playsrc_collision::Snapshot,
+    mark_placements: &'a MarkPlacementSnapshot,
+    materials: &'a BTreeMap<usize, &'a Material>,
+    mark_materials: &'a [MarkMaterial],
     limits: EnvironmentLimits,
-) -> Result<MarkEnvironment, EnvironmentError> {
+}
+
+fn compile_marks(input: MarkCompileInput<'_>) -> Result<MarkEnvironment, EnvironmentError> {
+    let MarkCompileInput {
+        map,
+        bsp,
+        graph,
+        visibility,
+        collision,
+        receiver_snapshot,
+        mark_placements,
+        materials,
+        mark_materials,
+        limits,
+    } = input;
     if mark_materials.len() > limits.max_marks {
         return Err(failure(EnvironmentErrorCode::BoundExceeded, None));
     }
@@ -1413,14 +2242,20 @@ fn compile_marks(
     if infodecal_count + standard.len() + water.len() > limits.max_marks {
         return Err(failure(EnvironmentErrorCode::BoundExceeded, None));
     }
-    let model_transforms = model_transforms(graph, map)?;
     let mut records = Vec::with_capacity(infodecal_count + standard.len() + water.len());
+    let placement_lookup = mark_placement_lookup(graph, mark_placements, limits)?;
     for entity in graph
         .entities
         .iter()
         .filter(|entity| class_is(entity, b"infodecal"))
     {
-        let origin = vector3_required(entity, b"origin")?;
+        let placement = placement_lookup
+            .get(&entity.index)
+            .copied()
+            .ok_or_else(|| {
+                entity_failure(EnvironmentErrorCode::InvalidReference, entity, b"origin")
+            })?;
+        let origin = placement.world_origin;
         let reference = pair(entity, b"texture")
             .filter(|value| !value.is_empty())
             .ok_or_else(|| {
@@ -1434,18 +2269,7 @@ fn compile_marks(
             .as_deref()
             .is_some_and(|value| !value.is_empty());
         let low_priority = bool_or_entity(entity, b"LowPriority", false)?;
-        let parent_entity = entity.parentname.as_deref().and_then(|name| {
-            graph
-                .entities
-                .iter()
-                .find(|candidate| {
-                    candidate
-                        .targetname
-                        .as_deref()
-                        .is_some_and(|target| target.eq_ignore_ascii_case(name))
-                })
-                .map(|candidate| candidate.index)
-        });
+        let parent_entity = placement.parent_entity;
         let Some(material) = mark_lookup.get(&lower(reference)).copied() else {
             records.push(MarkRecord {
                 kind: MarkKind::InfoDecal,
@@ -1457,7 +2281,7 @@ fn compile_marks(
                 material_sha256: None,
                 material_state: None,
                 origin,
-                target_model: None,
+                receiver: None,
                 target_faces: Vec::new(),
                 render_order: 0,
                 fade_distances_squared: None,
@@ -1465,6 +2289,9 @@ fn compile_marks(
                 dynamic,
                 low_priority,
                 parent_entity,
+                activation: mark_activation(dynamic),
+                lifetime: mark_lifetime(dynamic, low_priority),
+                render: mark_render_request(),
                 fragments: Vec::new(),
             });
             continue;
@@ -1473,8 +2300,18 @@ fn compile_marks(
             .ok_or_else(|| failure(EnvironmentErrorCode::InvalidRecord, Some(entity.index)))?;
         let height = decal_dimension(material.height, material.state.scale)
             .ok_or_else(|| failure(EnvironmentErrorCode::InvalidRecord, Some(entity.index)))?;
-        let projection =
-            project_infodecal(map, origin, [width, height], materials, &model_transforms)?;
+        let projection = project_infodecal(
+            MarkProjectionInput {
+                map,
+                graph,
+                visibility,
+                collision,
+                receiver_snapshot,
+                materials,
+            },
+            origin,
+            [width, height],
+        )?;
         let target_faces = unique_fragment_faces(&projection.fragments);
         records.push(MarkRecord {
             kind: MarkKind::InfoDecal,
@@ -1483,7 +2320,7 @@ fn compile_marks(
             overlay_id: None,
             status: if !projection.fragments.is_empty() {
                 MarkStatus::Projected
-            } else if projection.target.is_some() {
+            } else if projection.receiver.is_some() {
                 MarkStatus::Ineligible
             } else {
                 MarkStatus::Inert
@@ -1492,7 +2329,7 @@ fn compile_marks(
             material_sha256: Some(material.source_sha256),
             material_state: Some(material.state),
             origin,
-            target_model: projection.target.map(|target| target.0),
+            receiver: projection.receiver,
             target_faces,
             render_order: 0,
             fade_distances_squared: None,
@@ -1500,6 +2337,9 @@ fn compile_marks(
             dynamic,
             low_priority,
             parent_entity,
+            activation: mark_activation(dynamic),
+            lifetime: mark_lifetime(dynamic, low_priority),
+            render: mark_render_request(),
             fragments: projection.fragments,
         });
     }
@@ -1523,8 +2363,7 @@ fn compile_marks(
             .get(&material_index)
             .map(|material| material.decal)
             .ok_or_else(|| failure(EnvironmentErrorCode::InvalidReference, Some(material_index)))?;
-        let fragments = project_overlay(map, overlay)?;
-        let target_model = fragments.first().map(|fragment| fragment.model);
+        let fragments = project_overlay(map, visibility, overlay)?;
         let target_faces = unique_fragment_faces(&fragments);
         let fade = (overlay.kind == MarkKind::Overlay && !fade_bytes.is_empty()).then(|| {
             let offset = overlay.index * 8;
@@ -1554,7 +2393,7 @@ fn compile_marks(
             material_sha256: None,
             material_state: Some(material_state),
             origin: overlay.origin,
-            target_model,
+            receiver: None,
             target_faces,
             render_order: overlay.render_order,
             fade_distances_squared: fade,
@@ -1562,6 +2401,9 @@ fn compile_marks(
             dynamic: false,
             low_priority: false,
             parent_entity: None,
+            activation: MarkActivation::Compiled,
+            lifetime: MarkLifetime::Permanent,
+            render: mark_render_request(),
             fragments,
         });
     }
@@ -1575,10 +2417,79 @@ fn compile_marks(
         return Err(failure(EnvironmentErrorCode::BoundExceeded, None));
     }
     Ok(MarkEnvironment {
+        collision_world_identity: collision.identity,
+        receiver_snapshot_revision: receiver_snapshot.identity(),
+        placement_revision: mark_placements.revision,
         records,
         fragment_count,
         vertex_count,
     })
+}
+
+fn mark_placement_lookup(
+    graph: &Graph,
+    snapshot: &MarkPlacementSnapshot,
+    limits: EnvironmentLimits,
+) -> Result<BTreeMap<usize, MarkPlacement>, EnvironmentError> {
+    let expected = graph
+        .entities
+        .iter()
+        .filter(|entity| class_is(entity, b"infodecal"))
+        .count();
+    if snapshot.placements.len() != expected || snapshot.placements.len() > limits.max_marks {
+        return Err(failure(EnvironmentErrorCode::DependencyMismatch, None));
+    }
+    let mut output = BTreeMap::new();
+    for placement in &snapshot.placements {
+        let entity = graph
+            .entities
+            .get(placement.entity)
+            .filter(|entity| class_is(entity, b"infodecal"))
+            .ok_or_else(|| {
+                failure(
+                    EnvironmentErrorCode::InvalidReference,
+                    Some(placement.entity),
+                )
+            })?;
+        if placement
+            .world_origin
+            .iter()
+            .any(|value| !value.is_finite())
+            || placement
+                .parent_entity
+                .is_some_and(|parent| parent >= graph.entities.len())
+            || output.insert(entity.index, *placement).is_some()
+        {
+            return Err(failure(
+                EnvironmentErrorCode::InvalidReference,
+                Some(placement.entity),
+            ));
+        }
+    }
+    Ok(output)
+}
+
+fn mark_activation(dynamic: bool) -> MarkActivation {
+    if dynamic {
+        MarkActivation::Input
+    } else {
+        MarkActivation::MapActivation
+    }
+}
+
+fn mark_lifetime(dynamic: bool, low_priority: bool) -> MarkLifetime {
+    if dynamic || !low_priority {
+        MarkLifetime::Permanent
+    } else {
+        MarkLifetime::PoolManaged
+    }
+}
+
+fn mark_render_request() -> MarkRenderRequest {
+    MarkRenderRequest {
+        normal_offset: MARK_NORMAL_OFFSET,
+        polygon_offset: playsrc_material::PolygonOffset::Decal,
+    }
 }
 
 fn parse_overlays(
@@ -1651,95 +2562,154 @@ fn parse_overlays(
     Ok(output)
 }
 
-fn model_transforms(
+fn mark_receiver(
+    trace: playsrc_collision::Trace,
+    origin: [f32; 3],
     graph: &Graph,
-    map: &CanonicalMap,
-) -> Result<Vec<ModelTransform>, EnvironmentError> {
-    let model_count = map
-        .surfaces
-        .iter()
-        .map(|surface| surface.model)
-        .chain(
-            graph
-                .entities
-                .iter()
-                .filter_map(|entity| entity.bsp_model_index),
-        )
-        .max()
-        .map_or(1, |model| model + 1);
-    let mut output = vec![ModelTransform::IDENTITY; model_count];
-    let mut assigned = vec![false; model_count];
-    assigned[0] = true;
-    for entity in &graph.entities {
-        let Some(model) = entity.bsp_model_index else {
-            continue;
-        };
-        if model >= model_count {
-            return Err(failure(
-                EnvironmentErrorCode::InvalidReference,
-                Some(entity.index),
-            ));
+    snapshot: &playsrc_collision::Snapshot,
+) -> Result<Option<MarkReceiver>, EnvironmentError> {
+    let (entity, model, transform) = match trace.hit {
+        Some(playsrc_collision::Hit::WorldBrush { .. }) => {
+            (None, 0, playsrc_collision::Transform::IDENTITY)
         }
-        if model != 0 {
-            if assigned[model] {
-                return Err(failure(
-                    EnvironmentErrorCode::InvalidReference,
-                    Some(entity.index),
-                ));
+        Some(playsrc_collision::Hit::Object {
+            identity,
+            feature: playsrc_collision::Feature::Brush { model, .. },
+            ..
+        }) => {
+            let record = snapshot
+                .records()
+                .iter()
+                .find(|record| record.identity == identity)
+                .ok_or_else(|| failure(EnvironmentErrorCode::DependencyMismatch, None))?;
+            if !record.enabled
+                || !matches!(
+                    record.shape,
+                    playsrc_collision::SnapshotShape::BrushModel { model: value } if value == model
+                )
+            {
+                return Err(failure(EnvironmentErrorCode::DependencyMismatch, None));
             }
-            output[model] = ModelTransform::from_entity(entity)?;
-            assigned[model] = true;
+            (Some(identity), model, record.transform)
+        }
+        Some(playsrc_collision::Hit::Object { .. }) => {
+            return Err(failure(EnvironmentErrorCode::DependencyMismatch, None));
+        }
+        None => return Ok(None),
+    };
+    let local_origin = ModelTransform::from_collision(transform)?.point_to_local(origin);
+    let parent_entity = entity
+        .and_then(|identity| usize::try_from(identity).ok())
+        .and_then(|index| graph.entities.get(index))
+        .and_then(|receiver| receiver.parentname.as_deref())
+        .and_then(|name| {
+            graph.entities.iter().find(|candidate| {
+                candidate
+                    .targetname
+                    .as_deref()
+                    .is_some_and(|target| target.eq_ignore_ascii_case(name))
+            })
+        })
+        .map(|entity| entity.index);
+    Ok(Some(MarkReceiver {
+        entity,
+        model,
+        local_origin,
+        transform,
+        parent_entity,
+    }))
+}
+
+fn mark_visibility(
+    visibility: &VisibilityWorld,
+    surface: &Surface,
+    receiver: Option<u64>,
+) -> Result<MarkVisibility, EnvironmentError> {
+    if surface.model != 0 {
+        return Ok(MarkVisibility::BrushModel {
+            entity: receiver.ok_or_else(|| {
+                failure(EnvironmentErrorCode::InvalidReference, Some(surface.face))
+            })?,
+            model: surface.model,
+        });
+    }
+    let face = u16::try_from(surface.face)
+        .map_err(|_| failure(EnvironmentErrorCode::InvalidReference, Some(surface.face)))?;
+    let mut leaves = Vec::new();
+    let mut clusters = BTreeSet::new();
+    let mut areas = BTreeSet::new();
+    for (leaf_index, leaf) in visibility.leaves.iter().enumerate() {
+        let start = usize::from(leaf.first_leaf_face);
+        let end = start
+            .checked_add(usize::from(leaf.leaf_face_count))
+            .ok_or_else(|| failure(EnvironmentErrorCode::InvalidReference, Some(leaf_index)))?;
+        if visibility
+            .leaf_faces
+            .get(start..end)
+            .ok_or_else(|| failure(EnvironmentErrorCode::InvalidReference, Some(leaf_index)))?
+            .contains(&face)
+        {
+            leaves.push(leaf_index);
+            clusters.insert(leaf.cluster);
+            areas.insert(usize::from(leaf.area_and_flags & 0x01ff));
         }
     }
-    Ok(output)
+    Ok(MarkVisibility::World {
+        leaves,
+        clusters: clusters.into_iter().collect(),
+        areas: areas.into_iter().collect(),
+    })
+}
+
+struct MarkProjectionInput<'a> {
+    map: &'a CanonicalMap,
+    graph: &'a Graph,
+    visibility: &'a VisibilityWorld,
+    collision: &'a playsrc_collision::World,
+    receiver_snapshot: &'a playsrc_collision::Snapshot,
+    materials: &'a BTreeMap<usize, &'a Material>,
 }
 
 fn project_infodecal(
-    map: &CanonicalMap,
+    input: MarkProjectionInput<'_>,
     origin: [f32; 3],
     dimensions: [f32; 2],
-    materials: &BTreeMap<usize, &Material>,
-    transforms: &[ModelTransform],
 ) -> Result<MarkProjection, EnvironmentError> {
+    let MarkProjectionInput {
+        map,
+        graph,
+        visibility,
+        collision,
+        receiver_snapshot,
+        materials,
+    } = input;
     let start = sub(origin, [INFODECAL_TRACE_EXTENT; 3]);
     let end = add(origin, [INFODECAL_TRACE_EXTENT; 3]);
-    let mut hits = Vec::new();
-    for surface in &map.surfaces {
-        let transform = transforms
-            .get(surface.model)
-            .copied()
-            .ok_or_else(|| failure(EnvironmentErrorCode::InvalidReference, Some(surface.face)))?;
-        let world_positions: Vec<_> = surface
-            .positions
-            .iter()
-            .map(|position| transform.point_to_world(*position))
-            .collect();
-        let normal = normalize(transform.vector_to_world(stored_surface_normal(surface)?))
-            .ok_or_else(|| failure(EnvironmentErrorCode::InvalidRecord, Some(surface.face)))?;
-        if let Some(amount) = segment_polygon_hit(start, end, &world_positions, normal) {
-            hits.push((amount, surface.model, surface.face));
-        }
-    }
-    hits.sort_by(|left, right| {
-        left.0
-            .total_cmp(&right.0)
-            .then((left.1 != 0).cmp(&(right.1 != 0)))
-            .then(left.1.cmp(&right.1))
-            .then(left.2.cmp(&right.2))
-    });
-    let Some((_, target_model, target_face)) = hits.first().copied() else {
+    let trace = collision
+        .trace_snapshot_ray(
+            receiver_snapshot,
+            playsrc_collision::SnapshotRayRequest {
+                start,
+                end,
+                mask: playsrc_collision::MASK_SOLID,
+                scope: playsrc_collision::TraceScope::Everything,
+                ignored: &[],
+            },
+            |_| true,
+        )
+        .map_err(|_| failure(EnvironmentErrorCode::DependencyMismatch, None))?;
+    let Some(receiver) = mark_receiver(trace, origin, graph, receiver_snapshot)? else {
         return Ok(MarkProjection {
-            target: None,
+            receiver: None,
             fragments: Vec::new(),
         });
     };
-    let transform = transforms[target_model];
-    let local_origin = transform.point_to_local(origin);
+    let local_origin = receiver.local_origin;
     let mut fragments = Vec::new();
     for surface in map
         .surfaces
         .iter()
-        .filter(|surface| surface.model == target_model)
+        .filter(|surface| surface.model == receiver.model)
     {
         let normal = stored_surface_normal(surface)?;
         let plane_distance = surface.plane[3];
@@ -1752,7 +2722,7 @@ fn project_infodecal(
                 Some(surface.material),
             )
         })?;
-        if surface.flags & NON_DECAL_FLAGS != 0
+        if surface.flags & SURF_NODECALS != 0
             || receiving.decal.suppress_decals
             || receiving.decal.alpha_tested
         {
@@ -1776,18 +2746,20 @@ fn project_infodecal(
                 ],
             })
             .collect();
-        if let Some(fragment) = clipped_fragment(surface, clip_decal_unit(face), normal) {
+        if let Some(mut fragment) = clipped_fragment(surface, clip_decal_unit(face), normal) {
+            fragment.visibility = mark_visibility(visibility, surface, receiver.entity)?;
             fragments.push(fragment);
         }
     }
     Ok(MarkProjection {
-        target: Some((target_model, target_face)),
+        receiver: Some(receiver),
         fragments,
     })
 }
 
 fn project_overlay(
     map: &CanonicalMap,
+    visibility: &VisibilityWorld,
     overlay: &OverlaySource,
 ) -> Result<Vec<MarkFragment>, EnvironmentError> {
     let source = overlay
@@ -1833,7 +2805,12 @@ fn project_overlay(
                 uv: vertex.uv,
             })
             .collect();
-        fragments.extend(clip_overlay_face(surface, &projected, normal));
+        let mut clipped = clip_overlay_face(surface, &projected, normal);
+        let membership = mark_visibility(visibility, surface, None)?;
+        for fragment in &mut clipped {
+            fragment.visibility = membership.clone();
+        }
+        fragments.extend(clipped);
     }
     Ok(fragments)
 }
@@ -1893,23 +2870,6 @@ fn stored_surface_normal(surface: &Surface) -> Result<[f32; 3], EnvironmentError
     }
 }
 
-fn segment_polygon_hit(
-    start: [f32; 3],
-    end: [f32; 3],
-    polygon: &[[f32; 3]],
-    normal: [f32; 3],
-) -> Option<f32> {
-    let direction = sub(end, start);
-    let denominator = dot(direction, normal);
-    if denominator.abs() <= 1.0e-6 {
-        return None;
-    }
-    let amount = dot(sub(*polygon.first()?, start), normal) / denominator;
-    ((0.0..=1.0).contains(&amount)
-        && point_in_convex(add(start, scale(direction, amount)), polygon, normal))
-    .then_some(amount)
-}
-
 fn decal_basis(normal: [f32; 3]) -> Option<([f32; 3], [f32; 3])> {
     if normal[2].abs() > std::f32::consts::FRAC_1_SQRT_2 {
         let vertical = normalize(cross([1.0, 0.0, 0.0], normal))?;
@@ -1918,20 +2878,6 @@ fn decal_basis(normal: [f32; 3]) -> Option<([f32; 3], [f32; 3])> {
         let horizontal = normalize(cross(normal, [0.0, 0.0, -1.0]))?;
         Some((horizontal, normalize(cross(horizontal, normal))?))
     }
-}
-
-fn point_in_convex(point: [f32; 3], polygon: &[[f32; 3]], normal: [f32; 3]) -> bool {
-    if polygon.len() < 3 {
-        return false;
-    }
-    let orientation = dot(
-        cross(sub(polygon[1], polygon[0]), sub(polygon[2], polygon[1])),
-        normal,
-    );
-    polygon.iter().enumerate().all(|(index, start)| {
-        let end = polygon[(index + 1) % polygon.len()];
-        dot(cross(sub(end, *start), sub(point, *start)), normal) * orientation >= -0.01
-    })
 }
 
 fn clip_to_convex(
@@ -2084,6 +3030,11 @@ fn clipped_fragment(
             })
             .collect(),
         triangles,
+        visibility: MarkVisibility::World {
+            leaves: Vec::new(),
+            clusters: Vec::new(),
+            areas: Vec::new(),
+        },
     })
 }
 
@@ -2129,6 +3080,23 @@ fn leaves(bsp: &Bsp) -> Result<&[Leaf], EnvironmentError> {
         LumpData::Leaves(value) => Some(value.as_slice()),
         _ => None,
     })
+}
+
+fn leaf_minimum_distances(bsp: &Bsp) -> Result<Option<Vec<u16>>, EnvironmentError> {
+    let bytes = bsp.lumps[46].bytes(bsp);
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    let leaf_count = leaves(bsp)?.len();
+    if bsp.lumps[46].version != 0 || bytes.len() != leaf_count.saturating_mul(2) {
+        return Err(failure(EnvironmentErrorCode::InvalidRecord, Some(46)));
+    }
+    Ok(Some(
+        bytes
+            .chunks_exact(2)
+            .map(|value| u16::from_le_bytes([value[0], value[1]]))
+            .collect(),
+    ))
 }
 
 fn lump_records<T>(
@@ -2429,19 +3397,27 @@ mod tests {
     fn water_facts_distinguish_above_below_and_outside() {
         let environment = WaterEnvironment {
             surfaces: Vec::new(),
+            leaf_minimum_distance_to_water: None,
             volumes: vec![WaterVolume {
                 index: 3,
                 surface_z: 10.0,
                 minimum_z: -10.0,
                 texture_info: 0,
-                material: 0,
+                surface_material: 0,
+                bottom_material: None,
                 leaves: vec![4, 5],
+                clusters: vec![0],
+                areas: vec![0],
+                contents: 0x20,
                 bounds: [[-1.0; 3], [1.0; 3]],
                 plane: [0.0, 0.0, 1.0, 10.0],
                 cubemap: CubemapSelection::External {
                     logical_path: "materials/test.vtf".to_owned(),
                 },
-                state: test_water_state(),
+                surface_state: test_water_state(),
+                bottom_state: None,
+                surface_translucent: true,
+                bottom_translucent: None,
             }],
         };
         assert_eq!(
@@ -2456,6 +3432,248 @@ mod tests {
             environment.classify_leaf_height(6, 0.0).unwrap(),
             WaterPointFact::Outside
         );
+    }
+
+    #[test]
+    fn water_view_plans_select_qualified_volume_and_preserve_pass_order() {
+        let mut state = test_water_state();
+        state.force_expensive = true;
+        state.reflection.disposition = TextureDisposition::BuiltInRenderTarget;
+        state.reflection.logical_path = None;
+        state.refraction.disposition = TextureDisposition::BuiltInRenderTarget;
+        state.refraction.logical_path = None;
+        state.reflect_entities = true;
+        let mut bottom = state.clone();
+        bottom.above_water = false;
+        let environment = WaterEnvironment {
+            surfaces: Vec::new(),
+            volumes: vec![WaterVolume {
+                index: 0,
+                surface_z: 0.0,
+                minimum_z: -16.0,
+                texture_info: 0,
+                surface_material: 4,
+                bottom_material: Some(WaterMaterialIdentity::Map(5)),
+                leaves: vec![1],
+                clusters: vec![1],
+                areas: vec![2],
+                contents: 0x1000_0020,
+                bounds: [[-16.0; 3], [16.0; 3]],
+                plane: [0.0, 0.0, 1.0, 0.0],
+                cubemap: CubemapSelection::Nearest { sample: 0 },
+                surface_state: state,
+                bottom_state: Some(bottom),
+                surface_translucent: true,
+                bottom_translucent: Some(true),
+            }],
+            leaf_minimum_distance_to_water: Some(vec![100, 0]),
+        };
+        let visibility = water_test_visibility();
+        let policy = WaterViewPolicy {
+            draw_water: true,
+            expensive_supported: true,
+            draw_reflection: true,
+            draw_refraction: true,
+            force_expensive: false,
+            force_reflect_entities: false,
+            fast_clipping: false,
+            height_clipping: true,
+            eye_water_epsilon: 1.0,
+        };
+        let above = environment
+            .plan_view(
+                &visibility,
+                WaterViewInput {
+                    origin: [0.0, 0.0, 10.0],
+                    angles: [10.0, 20.0, 30.0],
+                    eye_leaf: 0,
+                    qualified_visible_leaves: &[1],
+                    near_plane_intersects_selected_volume: true,
+                    draw_sky_2d: true,
+                    policy,
+                },
+            )
+            .unwrap();
+        assert_eq!(above.visible_water.as_ref().unwrap().volume, 0);
+        assert_eq!(
+            above.visible_water.as_ref().unwrap().distance_to_water,
+            Some(100)
+        );
+        assert_eq!(
+            above
+                .passes
+                .iter()
+                .map(|pass| pass.kind)
+                .collect::<Vec<_>>(),
+            [
+                EnvironmentViewKind::Reflection,
+                EnvironmentViewKind::Refraction,
+                EnvironmentViewKind::Main,
+                EnvironmentViewKind::Intersection,
+            ]
+        );
+        assert_eq!(above.passes[0].origin, [0.0, 0.0, -10.0]);
+        assert_eq!(above.passes[0].angles, [-10.0, 20.0, -30.0]);
+        assert_eq!(above.passes[0].forced_visibility_leaf, Some(1));
+        assert!(above.passes[0].draw_sky_2d && above.passes[0].draw_entities);
+        assert_eq!(above.passes[0].clip.unwrap().height, -2.0);
+        assert_eq!(above.passes[1].clip.unwrap().height, 2.0);
+        assert_eq!(above.passes[3].clip.unwrap().keep, WaterClipKeep::Below);
+
+        let underwater = environment
+            .plan_view(
+                &visibility,
+                WaterViewInput {
+                    origin: [0.0, 0.0, -4.0],
+                    angles: [0.0; 3],
+                    eye_leaf: 1,
+                    qualified_visible_leaves: &[],
+                    near_plane_intersects_selected_volume: false,
+                    draw_sky_2d: true,
+                    policy,
+                },
+            )
+            .unwrap();
+        assert!(underwater.visible_water.as_ref().unwrap().eye_in_volume);
+        assert_eq!(
+            underwater.visible_water.as_ref().unwrap().material,
+            WaterMaterialIdentity::Map(5)
+        );
+        assert_eq!(
+            underwater
+                .passes
+                .iter()
+                .map(|pass| pass.kind)
+                .collect::<Vec<_>>(),
+            [EnvironmentViewKind::Refraction, EnvironmentViewKind::Main]
+        );
+        assert!(underwater.passes[0].draw_sky_2d);
+        assert!(!underwater.passes[1].draw_sky_2d);
+
+        assert!(
+            environment
+                .plan_view(
+                    &visibility,
+                    WaterViewInput {
+                        origin: [0.0, 0.0, 10.0],
+                        angles: [0.0; 3],
+                        eye_leaf: 0,
+                        qualified_visible_leaves: &[],
+                        near_plane_intersects_selected_volume: false,
+                        draw_sky_2d: true,
+                        policy,
+                    },
+                )
+                .unwrap()
+                .visible_water
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn fog_player_transition_only_blends_primary_color_start_and_end() {
+        let from = fog_test_state([10, 20, 30, 40], [1, 2, 3, 4], 100.0, 200.0, 0.0);
+        let to = fog_test_state([110, 120, 130, 140], [9, 8, 7, 6], 300.0, 500.0, 4.0);
+        let transition = FogPlayerTransition {
+            from: from.clone(),
+            to: to.clone(),
+            start_time: 10.0,
+            snap: false,
+        };
+        let halfway = transition.sample(12.0).unwrap();
+        assert_eq!(halfway.primary, [60, 70, 80, 140]);
+        assert_eq!(halfway.secondary, to.secondary);
+        assert_eq!(halfway.start, 200.0);
+        assert_eq!(halfway.end, 350.0);
+        assert_eq!(halfway.enabled, to.enabled);
+        assert_eq!(transition.sample(14.0).unwrap(), to);
+        assert_eq!(
+            FogPlayerTransition {
+                from,
+                to: to.clone(),
+                start_time: 10.0,
+                snap: true,
+            }
+            .sample(10.0)
+            .unwrap(),
+            to
+        );
+    }
+
+    #[test]
+    fn last_explicit_fog_master_replaces_the_first_controller() {
+        let graph = playsrc_entity::parse(
+            br#"{"classname" "env_fog_controller" "fogcolor" "1 2 3"}
+{"classname" "env_fog_controller" "spawnflags" "1" "fogcolor" "4 5 6"}
+{"classname" "env_fog_controller" "spawnflags" "1" "fogcolor" "7 8 9"}
+"#,
+            playsrc_entity::Limits::default(),
+        )
+        .unwrap();
+        let visibility = water_test_visibility();
+        let controllers = compile_controllers(&graph, &visibility).unwrap();
+        assert_eq!(
+            master_fog_controller(&graph, &controllers).unwrap(),
+            Some(2)
+        );
+    }
+
+    fn fog_test_state(
+        primary: [u8; 4],
+        secondary: [u8; 4],
+        start: f32,
+        end: f32,
+        transition_duration: f32,
+    ) -> FogState {
+        FogState {
+            enabled: true,
+            blend: false,
+            direction: [1.0, 0.0, 0.0],
+            primary,
+            secondary,
+            start,
+            end,
+            maximum_density: 1.0,
+            far_z: Some(0.0),
+            radial: false,
+            transition_duration,
+        }
+    }
+
+    fn water_test_visibility() -> VisibilityWorld {
+        let leaf = |contents: i32, cluster: i16, area: u16, water: i16| Leaf {
+            contents,
+            cluster,
+            area_and_flags: area,
+            mins: [-16; 3],
+            maxs: [16; 3],
+            first_leaf_face: 0,
+            leaf_face_count: 0,
+            first_leaf_brush: 0,
+            leaf_brush_count: 0,
+            leaf_water_data_id: water,
+            padding: 0,
+            ambient_cube: None,
+        };
+        VisibilityWorld {
+            identity: [0; 32],
+            visibility_mode: playsrc_visibility::VisibilityMode::NoVis,
+            cluster_count: 2,
+            words_per_row: 1,
+            pvs: Vec::new(),
+            pas: Vec::new(),
+            planes: Vec::new(),
+            nodes: Vec::new(),
+            leaves: vec![
+                leaf(CONTENTS_TEST_FOG_VOLUME as i32, 0, 1, -1),
+                leaf(0x1000_0020, 1, 2, 0),
+            ],
+            leaf_faces: Vec::new(),
+            models: Vec::new(),
+            areas: Vec::new(),
+            portals: Vec::new(),
+            portal_vertices: Vec::new(),
+        }
     }
 
     #[test]
@@ -2651,6 +3869,179 @@ mod tests {
         assert_eq!(
             clipped.iter().map(|vertex| vertex.uv).collect::<Vec<_>>(),
             [[1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.0, 0.0]]
+        );
+    }
+
+    #[test]
+    fn model_local_mark_geometry_follows_current_receiver_transform() {
+        let fragment = MarkFragment {
+            model: 4,
+            face: 7,
+            positions: vec![[1.0, 0.0, 0.0]],
+            normals: vec![[1.0, 0.0, 0.0]],
+            uv: vec![[0.5, 0.5]],
+            lightmap_uv: vec![[0.0, 0.0]],
+            triangles: Vec::new(),
+            visibility: MarkVisibility::BrushModel {
+                entity: 9,
+                model: 4,
+            },
+        };
+        let moved = fragment
+            .at_transform(playsrc_collision::Transform {
+                origin: [10.0, 20.0, 30.0],
+                angles: [0.0, 90.0, 0.0],
+            })
+            .unwrap();
+        assert!((moved.positions[0][0] - 10.0).abs() < 0.000_001);
+        assert!((moved.positions[0][1] - 21.0).abs() < 0.000_001);
+        assert_eq!(moved.positions[0][2], 30.0);
+        assert!(moved.normals[0][0].abs() < 0.000_001);
+        assert!((moved.normals[0][1] - 1.0).abs() < 0.000_001);
+    }
+
+    #[test]
+    fn mark_visibility_requires_view_admission_and_all_producer_revisions() {
+        let fragment = |model, face, visibility| MarkFragment {
+            model,
+            face,
+            positions: vec![[0.0; 3]],
+            normals: vec![[0.0, 0.0, 1.0]],
+            uv: vec![[0.0; 2]],
+            lightmap_uv: vec![[0.0; 2]],
+            triangles: Vec::new(),
+            visibility,
+        };
+        let environment = MarkEnvironment {
+            collision_world_identity: [3; 32],
+            receiver_snapshot_revision: 4,
+            placement_revision: 5,
+            fragment_count: 2,
+            vertex_count: 2,
+            records: vec![MarkRecord {
+                kind: MarkKind::InfoDecal,
+                source_index: 1,
+                entity: Some(1),
+                overlay_id: None,
+                status: MarkStatus::Projected,
+                material_path: "materials/test.vmt".to_owned(),
+                material_sha256: Some([0; 32]),
+                material_state: None,
+                origin: [0.0; 3],
+                receiver: None,
+                target_faces: vec![7],
+                render_order: 0,
+                fade_distances_squared: None,
+                initially_enabled: true,
+                dynamic: false,
+                low_priority: false,
+                parent_entity: None,
+                activation: MarkActivation::MapActivation,
+                lifetime: MarkLifetime::Permanent,
+                render: mark_render_request(),
+                fragments: vec![
+                    fragment(
+                        0,
+                        7,
+                        MarkVisibility::World {
+                            leaves: vec![2],
+                            clusters: vec![1],
+                            areas: vec![3],
+                        },
+                    ),
+                    fragment(
+                        4,
+                        8,
+                        MarkVisibility::BrushModel {
+                            entity: 9,
+                            model: 4,
+                        },
+                    ),
+                ],
+            }],
+        };
+        let view = playsrc_visibility::ViewResult {
+            cache_identity: [0; 32],
+            origin_leaves: vec![0],
+            origin_clusters: vec![0],
+            outside_world: false,
+            merged_pvs: vec![1],
+            visible_areas: vec![3],
+            sky: playsrc_visibility::SkyVisibility::NotVisible,
+            leaves: vec![2],
+            world_surfaces: vec![7],
+            candidates: Vec::new(),
+        };
+        assert_eq!(
+            environment
+                .visible_fragments(
+                    &view,
+                    &[VisibleBrushMarkReceiver {
+                        entity: 9,
+                        model: 4,
+                    }],
+                    [3; 32],
+                    4,
+                    5,
+                )
+                .unwrap(),
+            [
+                VisibleMarkFragment {
+                    record: 0,
+                    fragment: 0,
+                },
+                VisibleMarkFragment {
+                    record: 0,
+                    fragment: 1,
+                },
+            ]
+        );
+        assert_eq!(
+            environment
+                .visible_fragments(&view, &[], [3; 32], 4, 5)
+                .unwrap(),
+            [VisibleMarkFragment {
+                record: 0,
+                fragment: 0,
+            }]
+        );
+        assert_eq!(
+            environment
+                .visible_fragments(&view, &[], [3; 32], 4, 6)
+                .unwrap_err()
+                .code,
+            EnvironmentErrorCode::DependencyMismatch
+        );
+    }
+
+    #[test]
+    fn explicit_mark_placement_preserves_parent_resolved_world_origin() {
+        let graph = playsrc_entity::parse(
+            br#"{"classname" "func_movelinear" "targetname" "mover" "model" "*1"}
+{"classname" "infodecal" "parentname" "mover" "texture" "test" "origin" "1 2 3"}
+"#,
+            playsrc_entity::Limits::default(),
+        )
+        .unwrap();
+        let snapshot = MarkPlacementSnapshot {
+            revision: 7,
+            placements: vec![MarkPlacement {
+                entity: 1,
+                world_origin: [11.0, 22.0, 33.0],
+                parent_entity: Some(0),
+            }],
+        };
+        assert_eq!(
+            mark_placement_lookup(&graph, &snapshot, EnvironmentLimits::default()).unwrap()[&1],
+            snapshot.placements[0]
+        );
+        let mut stale = snapshot;
+        stale.placements[0].entity = 0;
+        assert_eq!(
+            mark_placement_lookup(&graph, &stale, EnvironmentLimits::default())
+                .unwrap_err()
+                .code,
+            EnvironmentErrorCode::InvalidReference
         );
     }
 
