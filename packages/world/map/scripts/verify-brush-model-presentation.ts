@@ -30,6 +30,18 @@ await run(
 )
 await run(["fmt", "--all", "--", "--check"], "brush-model formatting")
 await run(
-  ["clippy", "-p", "playsrc-map", "-p", "playsrc-entity", "--all-targets", "--", "-D", "warnings"],
+  [
+    "+stable",
+    "clippy",
+    "-p",
+    "playsrc-map",
+    "-p",
+    "playsrc-entity",
+    "--all-targets",
+    "--no-deps",
+    "--",
+    "-D",
+    "warnings",
+  ],
   "brush-model Clippy",
 )
