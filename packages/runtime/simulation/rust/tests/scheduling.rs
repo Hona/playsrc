@@ -6,7 +6,8 @@ use std::sync::{
 use playsrc_simulation::{
     Configuration, ConfigurationError, DEFAULT_TICK_INTERVAL, ElapsedAdjustment, FaultCode,
     FixedStepHost, HostError, HostLifecycle, Limits, MAXIMUM_TICK_INTERVAL, MINIMUM_TICK_INTERVAL,
-    Observation, Publication, PumpDisposition, Simulation, SimulationError, TickInput, TickOutput,
+    MetricsClock, Observation, Publication, PumpDisposition, Simulation, SimulationError,
+    TickInput, TickOutput,
 };
 
 #[derive(Clone, Debug)]
@@ -16,6 +17,19 @@ struct DeterministicSimulation {
     snapshot_bytes: usize,
     event_bytes: usize,
     shutdowns: Arc<AtomicUsize>,
+}
+
+struct StepMetricsClock {
+    nanoseconds: u64,
+    step: u64,
+}
+
+impl MetricsClock for StepMetricsClock {
+    fn monotonic_nanoseconds(&mut self) -> u64 {
+        let value = self.nanoseconds;
+        self.nanoseconds = self.nanoseconds.saturating_add(self.step);
+        value
+    }
 }
 
 impl DeterministicSimulation {
@@ -534,6 +548,35 @@ fn fast_and_delayed_consumers_receive_identical_publications() {
 }
 
 #[test]
+fn injected_metrics_clock_records_every_phase_without_changing_trace() {
+    let mut host = FixedStepHost::with_metrics_clock(
+        configuration(),
+        DeterministicSimulation::new(),
+        StepMetricsClock {
+            nanoseconds: 100,
+            step: 13,
+        },
+    );
+    host.observe(0.0).unwrap();
+    host.submit(&[1, 2, 3]).unwrap();
+    host.observe(0.015).unwrap();
+    let metrics = host.metrics();
+    assert_eq!(metrics.command_staging_nanoseconds, 13);
+    assert_eq!(metrics.simulation_nanoseconds, 13);
+    assert_eq!(metrics.publication_nanoseconds, 13);
+
+    let injected = complete_trace_with_host(FixedStepHost::with_metrics_clock(
+        configuration(),
+        DeterministicSimulation::new(),
+        StepMetricsClock {
+            nanoseconds: 0,
+            step: 1_000,
+        },
+    ));
+    assert_eq!(injected, complete_trace());
+}
+
+#[test]
 fn complete_fixed_trace_is_repeatable_and_fixed() {
     let first = complete_trace();
     let second = complete_trace();
@@ -595,7 +638,15 @@ fn run_consumer_schedule(drain_every: usize) -> Vec<Publication> {
 }
 
 fn complete_trace() -> Vec<u8> {
-    let mut host = FixedStepHost::new(configuration(), DeterministicSimulation::new());
+    complete_trace_with_host(FixedStepHost::new(
+        configuration(),
+        DeterministicSimulation::new(),
+    ))
+}
+
+fn complete_trace_with_host<C: MetricsClock>(
+    mut host: FixedStepHost<DeterministicSimulation, C>,
+) -> Vec<u8> {
     let mut output = Vec::new();
     record_observation(&mut output, host.observe(10.0).unwrap());
     host.submit(&[1, 2, 3]).unwrap();

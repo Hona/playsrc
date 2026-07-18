@@ -6,6 +6,7 @@
 
 mod clock;
 mod host;
+mod metrics;
 
 pub use clock::{ClockFrame, ClockObservation, ElapsedAdjustment};
 pub use host::{
@@ -14,6 +15,7 @@ pub use host::{
     Publication, PumpDisposition, PumpReport, ShutdownDisposition, Simulation, SimulationError,
     TickContext, TickInput, TickOutput,
 };
+pub use metrics::{MetricsClock, NativeMetricsClock};
 
 /// Valve Source SDK 2013 `src/public/const.h` minimum simulation interval.
 pub const MINIMUM_TICK_INTERVAL: f32 = 0.001;

@@ -255,6 +255,13 @@ fn main() -> ExitCode {
     let measured_duration = measured_started.elapsed();
     let allocations = ALLOCATIONS.load(Ordering::SeqCst);
     let allocated_bytes = ALLOCATED_BYTES.load(Ordering::SeqCst);
+    if result.command_staging_nanoseconds == 0
+        || result.simulation_nanoseconds == 0
+        || result.publication_nanoseconds == 0
+    {
+        eprintln!("benchmark metrics clock did not measure every host phase");
+        return ExitCode::FAILURE;
+    }
     black_box(result.checksum);
     print_report(
         profile,

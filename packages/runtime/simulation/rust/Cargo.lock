@@ -5,3 +5,10 @@ version = 4
 [[package]]
 name = "playsrc-simulation"
 version = "0.1.0"
+
+[[package]]
+name = "playsrc-simulation-wasm-smoke"
+version = "0.1.0"
+dependencies = [
+ "playsrc-simulation",
+]

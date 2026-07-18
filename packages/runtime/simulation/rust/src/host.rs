@@ -3,12 +3,13 @@ use std::{
     error::Error,
     fmt::{self, Display, Formatter},
     sync::Arc,
-    time::Instant,
 };
 
 use crate::{
     ClockFrame, ClockObservation, MAXIMUM_HOST_ELAPSED, MAXIMUM_TICK_INTERVAL,
-    MINIMUM_TICK_INTERVAL, clock::WallClock,
+    MINIMUM_TICK_INTERVAL,
+    clock::WallClock,
+    metrics::{MetricsClock, NativeMetricsClock, elapsed_nanoseconds},
 };
 
 type LimitField = (&'static str, fn(&Limits) -> usize);
@@ -439,9 +440,10 @@ struct PendingFrame {
     simulating: bool,
 }
 
-pub struct FixedStepHost<S: Simulation> {
+pub struct FixedStepHost<S: Simulation, C: MetricsClock = NativeMetricsClock> {
     configuration: Configuration,
     simulation: S,
+    metrics_clock: C,
     clock: WallClock,
     lifecycle: HostLifecycle,
     paused: bool,
@@ -463,11 +465,23 @@ pub struct FixedStepHost<S: Simulation> {
     metrics: HostMetrics,
 }
 
-impl<S: Simulation> FixedStepHost<S> {
+#[cfg(not(target_arch = "wasm32"))]
+impl<S: Simulation> FixedStepHost<S, NativeMetricsClock> {
     pub fn new(configuration: Configuration, simulation: S) -> Self {
+        Self::with_metrics_clock(configuration, simulation, NativeMetricsClock::default())
+    }
+}
+
+impl<S: Simulation, C: MetricsClock> FixedStepHost<S, C> {
+    pub fn with_metrics_clock(
+        configuration: Configuration,
+        simulation: S,
+        metrics_clock: C,
+    ) -> Self {
         Self {
             configuration,
             simulation,
+            metrics_clock,
             clock: WallClock::new(),
             lifecycle: HostLifecycle::Running,
             paused: false,
@@ -633,12 +647,16 @@ impl<S: Simulation> FixedStepHost<S> {
             let mut latest_snapshot = None;
             let mut event_batches = Vec::with_capacity(frame.selected_ticks as usize);
             let mut event_bytes = 0_usize;
-            let command_staging_started = Instant::now();
+            let command_staging_started = self.metrics_clock.monotonic_nanoseconds();
             let command_count = self.commands.len();
+            let command_staging_finished = self.metrics_clock.monotonic_nanoseconds();
             self.metrics.command_staging_nanoseconds = self
                 .metrics
                 .command_staging_nanoseconds
-                .saturating_add(duration_nanoseconds(command_staging_started.elapsed()));
+                .saturating_add(elapsed_nanoseconds(
+                    command_staging_started,
+                    command_staging_finished,
+                ));
 
             for tick_index in 0..frame.selected_ticks {
                 let host_tick = self.host_tick.checked_add(1).ok_or_else(|| {
@@ -659,7 +677,7 @@ impl<S: Simulation> FixedStepHost<S> {
                     },
                 };
                 let tick_commands: &[Command] = if tick_index == 0 { &self.commands } else { &[] };
-                let started = Instant::now();
+                let started = self.metrics_clock.monotonic_nanoseconds();
                 let advanced = self.simulation.advance(TickInput {
                     context,
                     commands: tick_commands,
@@ -673,10 +691,11 @@ impl<S: Simulation> FixedStepHost<S> {
                         ));
                     }
                 };
+                let finished = self.metrics_clock.monotonic_nanoseconds();
                 self.metrics.simulation_nanoseconds = self
                     .metrics
                     .simulation_nanoseconds
-                    .saturating_add(duration_nanoseconds(started.elapsed()));
+                    .saturating_add(elapsed_nanoseconds(started, finished));
                 self.validate_output(&output)?;
                 if tick_index == 0 {
                     self.metrics.admitted_commands = self
@@ -710,7 +729,7 @@ impl<S: Simulation> FixedStepHost<S> {
             }
 
             let snapshot = latest_snapshot.expect("positive selected tick count");
-            let publication_started = Instant::now();
+            let publication_started = self.metrics_clock.monotonic_nanoseconds();
             self.queued_snapshot_bytes = self
                 .queued_snapshot_bytes
                 .checked_add(snapshot.len())
@@ -738,10 +757,14 @@ impl<S: Simulation> FixedStepHost<S> {
                 snapshot,
                 events: event_batches,
             });
+            let publication_finished = self.metrics_clock.monotonic_nanoseconds();
             self.metrics.publication_nanoseconds = self
                 .metrics
                 .publication_nanoseconds
-                .saturating_add(duration_nanoseconds(publication_started.elapsed()));
+                .saturating_add(elapsed_nanoseconds(
+                    publication_started,
+                    publication_finished,
+                ));
             self.metrics.published_frames = self.metrics.published_frames.saturating_add(1);
             published_frames += 1;
             disposition = PumpDisposition::Completed;
@@ -1004,8 +1027,4 @@ impl<S: Simulation> FixedStepHost<S> {
         self.queued_event_batches = 0;
         self.queued_event_bytes = 0;
     }
-}
-
-fn duration_nanoseconds(duration: std::time::Duration) -> u64 {
-    duration.as_nanos().min(u128::from(u64::MAX)) as u64
 }

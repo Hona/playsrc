@@ -1,0 +1,13 @@
+[package]
+name = "playsrc-simulation-wasm-smoke"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+playsrc-simulation = { path = ".." }

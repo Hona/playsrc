@@ -8,4 +8,5 @@ license = "MIT"
 path = "src/lib.rs"
 
 [workspace]
+members = ["wasm-smoke"]
 resolver = "2"

@@ -11,6 +11,8 @@ let report = host.observe(next_monotonic_seconds)?;
 let publications = host.drain_publications();
 ```
 
+Native `FixedStepHost::new` measures diagnostic phase durations with `std::time::Instant`. Runtimes without an ambient monotonic clock construct the same host through `FixedStepHost::with_metrics_clock(configuration, simulation_adapter, metrics_clock)`. `MetricsClock` supplies nondecreasing nanoseconds for diagnostics only and cannot enter scheduling or gameplay inputs.
+
 ## Objective
 
 Provide the single deterministic authority that advances composed Source gameplay state.
@@ -19,6 +21,7 @@ Provide the single deterministic authority that advances composed Source gamepla
 
 - Filter ordinary host elapsed time to `[0.001,0.1]`, accumulate binary32 duration in a binary64 remainder, and execute every selected fixed tick without a second catch-up cap.
 - Own ordered command staging, pause/suspension, clock reversal, bounded output backpressure, interpolation state, faults, and shutdown.
+- Measure command-staging, Simulation-callback, and publication phase time through one monotonic metrics clock without changing scheduling state.
 - Publish one immutable final snapshot per completed host frame and every ordered tick event batch; fast and delayed consumers receive byte-identical publication streams while capacity remains available.
 - Coordinate world, entity, movement, physics, game, and ruleset behavior in a defined order.
 - Move one gameplay adapter into a caller-selected browser worker or native process without creating a second authority.
@@ -32,13 +35,13 @@ Provide the single deterministic authority that advances composed Source gamepla
 
 ## Relationships
 
-`Simulation` is the runtime-neutral gameplay seam. `FixedStepHost` owns pacing and invokes one adapter serially. Applications supply finite monotonic samples and explicit suspension; presentation drains immutable publications and never gates gameplay while configured output capacity remains.
+`Simulation` is the runtime-neutral gameplay seam. `FixedStepHost` owns pacing and invokes one adapter serially. Applications supply finite monotonic samples, explicit suspension, and a metrics clock when the runtime has no native default; presentation drains immutable publications and never gates gameplay while configured output capacity remains.
 
 The fixed tick/time contracts correspond to Valve Source SDK 2013 `src/public/{const.h,globalvars_base.h}`. Game adapters retain the per-tick ordering established by `src/game/server/{gameinterface.cpp,player.cpp,player_command.cpp}`.
 
 ## Verification
 
-- `bun packages/runtime/simulation/scripts/verify.ts` runs formatting, debug/release traces and tests, stable Clippy, and the bounded release benchmark smoke profile.
+- `bun packages/runtime/simulation/scripts/verify.ts` runs formatting, debug/release traces and tests, stable Clippy, the bounded release benchmark smoke profile, and an import-free `wasm32-unknown-unknown` instantiation that executes one measured tick.
 - `bun packages/runtime/simulation/scripts/benchmark.ts full` runs the fixed 20-warmup/200-measurement profile and emits one machine-readable report containing work counts, latency distributions, queue depths, bytes, allocations, and stall recovery.
 
 ## Completion
