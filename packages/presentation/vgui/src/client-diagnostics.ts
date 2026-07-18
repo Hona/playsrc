@@ -126,13 +126,9 @@ class DiagnosticView {
     const fontHeight = Math.max(1, Math.trunc(resources.font.lineHeightPxAt480 * fontScale))
     const style = this.runtime.host.style
     this.runtime.host.dataset.platformFontCapability = resources.font.browserFamily === null ? "unsupported" : "supported"
-    if (resources.font.browserFamily === null) {
-      this.runtime.host.setAttribute("aria-hidden", "true")
-      this.runtime.host.setAttribute("inert", "")
-    } else {
-      this.runtime.host.removeAttribute("aria-hidden")
-      this.runtime.host.removeAttribute("inert")
-    }
+    this.runtime.host.dataset.fontRasterCapability = resources.font.browserFamily === null ? "source-required" : "browser-unverified"
+    this.runtime.host.removeAttribute("aria-hidden")
+    this.runtime.host.removeAttribute("inert")
     style.setProperty("--vgui-diagnostic-font", resources.font.browserFamily ?? "playsrc-vgui-platform-font-unavailable")
     style.setProperty("--vgui-diagnostic-size", `${Math.max(1, Math.trunc(resources.font.sizePxAt480 * fontScale))}px`)
     style.setProperty("--vgui-diagnostic-line-height", `${fontHeight}px`)

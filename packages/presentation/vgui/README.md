@@ -41,7 +41,7 @@ Present generic Source 1 panel trees, controls, resources, schemes, localized te
 - Own the generic developer-console frame, pointer-captured title movement and eight-direction resize, bounded output and command history, catalog-driven completion presentation, text-entry interaction, and typed submission/completion/system requests without executing commands or owning convar state.
 - Own one bounded client diagnostic panel for immutable FPS and position inputs without owning `cl_showfps`, `cl_showpos`, map, camera, player, or Simulation state.
 - Own keyboard, pointer, cursor, capture, focus, navigation, IME, clipboard-seam, accessibility, reduced-motion, browser-resize, and device-pixel-ratio behavior.
-- Admit declared platform-local font faces atomically through isolated `local()` sources; publish no face and suppress VGUI paint/input when the target platform, browser font API, required face, or font-set publication is unavailable.
+- Compose lossless scheme documents, select desktop conditions and ordered font candidates, request exact content/external/bitmap/local sources, mount range faces atomically, consume supplied metrics/raster profiles, and suppress only unavailable glyph paint without disabling panel state or input.
 - Present VGUI through direct DOM and CSS without importing Preact.
 - Consume immutable gameplay or replay presentation state and emit typed commands without mutating gameplay authority or replay authority.
 
@@ -86,13 +86,21 @@ The application adapter may interpret an exact submission as `map <catalog-map-n
 
 `initializeClientDiagnostics` accepts one exact resource record and viewport. `present` admits only finite timestamps, mode values `0|1|2`, one bounded lower-ASCII map identity, finite view/player vectors, and nullable player absolute angles. It publishes at most four lines. FPS mode 1 truncates the instantaneous rate; mode 2 applies a 0.1 new-sample weight and retains low/high instantaneous integers. Position mode 1 displays view inputs; mode 2 displays player inputs and prints an explicit unavailable line when absolute angles are absent.
 
-The selected official behavior bounds and presentation semantics are grounded in Valve Source SDK 2013 `src/common/GameUI/IGameConsole.h`, `src/public/vgui/{IScheme,ISurface}.h`, `src/public/vgui_controls/consoledialog.h`, `src/vgui2/vgui_controls/{consoledialog,Frame}.cpp`, `src/game/client/vgui_fpspanel.cpp`, `src/public/tier1/convar.h`, and `src/public/tier1/CommandBuffer.h`. Configured SourceScheme, base-scheme, localization, border, geometry, and control-state inputs resolve for public TF2 build `24207079`. The Windows target requests Tahoma and Lucida Console system faces. VGUI loads each required face through a one-item `local()` source and uses private families only after atomic publication; unsupported hosts are inert and unpainted. Configured content supplies no bytes for these faces, system font bytes are never copied, and no native non-antialiased GDI target capture exists, so browser glyph-raster parity remains blocked.
+The selected official behavior bounds and presentation semantics are grounded in Valve Source SDK 2013 `src/common/GameUI/IGameConsole.h`, `src/public/vgui/{IScheme,ISurface}.h`, `src/public/vgui_controls/consoledialog.h`, `src/vgui2/vgui_controls/{consoledialog,Frame}.cpp`, `src/game/client/vgui_fpspanel.cpp`, `src/public/tier0/platform.h`, `src/tier1/KeyValues.cpp`, `src/public/tier1/convar.h`, and `src/public/tier1/CommandBuffer.h`. Configured SourceScheme, base-scheme, localization, border, geometry, control-state, and eight TF2 font-file identities resolve for public TF2 build `24207079`.
+
+## Scheme And Font Interface
+
+`resolveVguiSchemeFonts` accepts exact document identities, hashes, relative base edges, lossless ordered nodes, file identities, desktop context, and named normal/proportional lookups. It filters `$WIN32`, `$WINDOWS`, `$OSX`, `$LINUX`, `$POSIX`, `$DECK`, `$X360`, and negation; recursively merges bases with derived values winning; applies desktop `_minmode`; selects the first candidate admitted by `yres`; applies 480-height proportional scaling and language minimums; and emits immutable source/range/effect requests. Candidate-local `range` is inert; a selected-language custom-file range owns the primary family interval.
+
+`mountVguiFontSet` verifies every supplied content or external byte length and SHA-256, tries only each face's declared sources, publishes all loaded faces or none, and exposes one idempotent destroy operation. Exact source admission does not imply exact Source metrics or pixels. The mounted capability reports supplied exact metric/raster profiles or typed requirements for browser shaping, metrics, local version, bitmap adaptation, non-antialiased mode, and native raster comparison. `measureVguiText`, `getVguiCharacterMetrics`, and `applyVguiGlyphEffects` consume exact supplied profiles and fixed RGBA glyph inputs.
+
+The existing console and diagnostic resource records expose unavailable legacy browser families as `source-required`. Their text is transparent instead of browser-fallback rendered, while frame/border paint, focus, editing, submission, completion, diagnostics state, accessibility, and cleanup remain active. Configured content supplies no Tahoma or Lucida Console bytes, and no native non-antialiased Windows target capture exists, so those raster requirements remain explicit.
 
 Run `bun test packages/presentation/vgui/tests` from the repository root. From this package directory, run retained browser capability/captures with `bun run verify:browser` and configured TF2 integration with `bun run verify:tf2`.
 
 ## Roadmap
 
-[`ROADMAP.md`](ROADMAP.md) defines 42 behavior rows. The five candidate inventories contain 300 items and 0 generated or accepted items.
+[`ROADMAP.md`](ROADMAP.md) defines 45 behavior rows. The five candidate inventories contain 300 items and 0 generated or accepted items. [`inventories/tf2-font-files.md`](inventories/tf2-font-files.md) retains the eight configured game-font identities separately from the denominator inventories.
 
 ## Completion
 

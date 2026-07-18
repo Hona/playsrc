@@ -17,11 +17,6 @@ export const VGUI_CSS = `
   z-index: 0;
 }
 
-.playsrc-vgui-root[data-platform-font-capability="unsupported"] {
-  visibility: hidden;
-  pointer-events: none;
-}
-
 .playsrc-vgui-control {
   box-sizing: border-box;
 }
@@ -293,6 +288,19 @@ export const VGUI_CSS = `
   overflow: hidden;
   text-overflow: clip;
   white-space: pre;
+}
+
+.playsrc-vgui-root[data-platform-font-capability="unsupported"] .playsrc-vgui-title,
+.playsrc-vgui-root[data-platform-font-capability="unsupported"] .playsrc-vgui-history,
+.playsrc-vgui-root[data-platform-font-capability="unsupported"] .playsrc-vgui-output-segment,
+.playsrc-vgui-root[data-platform-font-capability="unsupported"] .playsrc-vgui-entry,
+.playsrc-vgui-root[data-platform-font-capability="unsupported"] .playsrc-vgui-submit,
+.playsrc-vgui-root[data-platform-font-capability="unsupported"] .playsrc-vgui-completion,
+.playsrc-vgui-root[data-platform-font-capability="unsupported"] .playsrc-vgui-menu-item,
+.playsrc-vgui-root[data-platform-font-capability="unsupported"] .playsrc-vgui-diagnostic-line {
+  color: transparent !important;
+  text-shadow: none !important;
+  -webkit-text-fill-color: transparent !important;
 }
 
 .playsrc-vgui-root[data-reduced-motion="true"] *,

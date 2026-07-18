@@ -1,5 +1,5 @@
 {
-  "capturedAt": "2026-07-17T20:37:01.753Z",
+  "capturedAt": "2026-07-18T02:05:38.438Z",
   "operatingSystem": "darwin 25.5.0",
   "architecture": "arm64",
   "bun": "1.4.0",
@@ -25,6 +25,544 @@
       "lucida-console-medium-extended"
     ]
   },
-  "result": "unsupported-platform-fonts",
-  "captures": {}
+  "result": "unsupported-font-source-functional-controls",
+  "captures": {},
+  "controlStates": {
+    "focused": {
+      "close": "rgba(236, 227, 203, 0.59)",
+      "focused": "true",
+      "frame": "rgb(60, 56, 53)",
+      "title": "rgba(0, 0, 0, 0)"
+    },
+    "unfocused": {
+      "close": "rgba(255, 255, 255, 0.753)",
+      "focused": "false",
+      "frame": "rgba(60, 56, 53, 0.745)",
+      "title": "rgba(0, 0, 0, 0)"
+    },
+    "submit": {
+      "armed": {
+        "background": "rgba(236, 227, 203, 0.59)",
+        "color": "rgba(0, 0, 0, 0)"
+      },
+      "depressed": {
+        "background": "rgba(201, 188, 162, 0.59)",
+        "borderTop": "rgba(96, 90, 78, 0.353)",
+        "color": "rgba(0, 0, 0, 0)"
+      }
+    }
+  },
+  "movement": {
+    "center": {
+      "captured": {
+        "capturedPointerId": 1,
+        "height": 528,
+        "interaction": "move",
+        "width": 640,
+        "x": 616,
+        "y": 96
+      },
+      "final": {
+        "capturedPointerId": null,
+        "height": 528,
+        "interaction": null,
+        "width": 640,
+        "x": 320,
+        "y": 96
+      }
+    },
+    "top": {
+      "captured": {
+        "capturedPointerId": 1,
+        "height": 528,
+        "interaction": "move",
+        "width": 640,
+        "x": 616,
+        "y": 96
+      },
+      "final": {
+        "capturedPointerId": null,
+        "height": 528,
+        "interaction": null,
+        "width": 640,
+        "x": 320,
+        "y": 0
+      }
+    },
+    "top-right": {
+      "captured": {
+        "capturedPointerId": 1,
+        "height": 528,
+        "interaction": "move",
+        "width": 640,
+        "x": 616,
+        "y": 96
+      },
+      "final": {
+        "capturedPointerId": null,
+        "height": 528,
+        "interaction": null,
+        "width": 640,
+        "x": 640,
+        "y": 0
+      }
+    },
+    "right": {
+      "captured": {
+        "capturedPointerId": 1,
+        "height": 528,
+        "interaction": "move",
+        "width": 640,
+        "x": 616,
+        "y": 96
+      },
+      "final": {
+        "capturedPointerId": null,
+        "height": 528,
+        "interaction": null,
+        "width": 640,
+        "x": 640,
+        "y": 96
+      }
+    },
+    "bottom-right": {
+      "captured": {
+        "capturedPointerId": 1,
+        "height": 528,
+        "interaction": "move",
+        "width": 640,
+        "x": 616,
+        "y": 96
+      },
+      "final": {
+        "capturedPointerId": null,
+        "height": 528,
+        "interaction": null,
+        "width": 640,
+        "x": 640,
+        "y": 192
+      }
+    },
+    "bottom": {
+      "captured": {
+        "capturedPointerId": 1,
+        "height": 528,
+        "interaction": "move",
+        "width": 640,
+        "x": 616,
+        "y": 96
+      },
+      "final": {
+        "capturedPointerId": null,
+        "height": 528,
+        "interaction": null,
+        "width": 640,
+        "x": 320,
+        "y": 192
+      }
+    },
+    "bottom-left": {
+      "captured": {
+        "capturedPointerId": 1,
+        "height": 528,
+        "interaction": "move",
+        "width": 640,
+        "x": 616,
+        "y": 96
+      },
+      "final": {
+        "capturedPointerId": null,
+        "height": 528,
+        "interaction": null,
+        "width": 640,
+        "x": 0,
+        "y": 192
+      }
+    },
+    "left": {
+      "captured": {
+        "capturedPointerId": 1,
+        "height": 528,
+        "interaction": "move",
+        "width": 640,
+        "x": 616,
+        "y": 96
+      },
+      "final": {
+        "capturedPointerId": null,
+        "height": 528,
+        "interaction": null,
+        "width": 640,
+        "x": 0,
+        "y": 96
+      }
+    },
+    "top-left": {
+      "captured": {
+        "capturedPointerId": 1,
+        "height": 528,
+        "interaction": "move",
+        "width": 640,
+        "x": 616,
+        "y": 96
+      },
+      "final": {
+        "capturedPointerId": null,
+        "height": 528,
+        "interaction": null,
+        "width": 640,
+        "x": 0,
+        "y": 0
+      }
+    }
+  },
+  "resize": {
+    "n": {
+      "captured": {
+        "capturedPointerId": 1,
+        "height": 528,
+        "interaction": "resize-n",
+        "width": 640,
+        "x": 616,
+        "y": 96
+      },
+      "final": {
+        "capturedPointerId": null,
+        "height": 498,
+        "interaction": null,
+        "width": 640,
+        "x": 616,
+        "y": 126
+      }
+    },
+    "ne": {
+      "captured": {
+        "capturedPointerId": 1,
+        "height": 528,
+        "interaction": "resize-ne",
+        "width": 640,
+        "x": 616,
+        "y": 96
+      },
+      "final": {
+        "capturedPointerId": null,
+        "height": 498,
+        "interaction": null,
+        "width": 664,
+        "x": 616,
+        "y": 126
+      }
+    },
+    "e": {
+      "captured": {
+        "capturedPointerId": 1,
+        "height": 528,
+        "interaction": "resize-e",
+        "width": 640,
+        "x": 616,
+        "y": 96
+      },
+      "final": {
+        "capturedPointerId": null,
+        "height": 528,
+        "interaction": null,
+        "width": 664,
+        "x": 616,
+        "y": 96
+      }
+    },
+    "se": {
+      "captured": {
+        "capturedPointerId": 1,
+        "height": 528,
+        "interaction": "resize-se",
+        "width": 640,
+        "x": 616,
+        "y": 96
+      },
+      "final": {
+        "capturedPointerId": null,
+        "height": 558,
+        "interaction": null,
+        "width": 664,
+        "x": 616,
+        "y": 96
+      }
+    },
+    "s": {
+      "captured": {
+        "capturedPointerId": 1,
+        "height": 528,
+        "interaction": "resize-s",
+        "width": 640,
+        "x": 616,
+        "y": 96
+      },
+      "final": {
+        "capturedPointerId": null,
+        "height": 558,
+        "interaction": null,
+        "width": 640,
+        "x": 616,
+        "y": 96
+      }
+    },
+    "sw": {
+      "captured": {
+        "capturedPointerId": 1,
+        "height": 528,
+        "interaction": "resize-sw",
+        "width": 640,
+        "x": 616,
+        "y": 96
+      },
+      "final": {
+        "capturedPointerId": null,
+        "height": 558,
+        "interaction": null,
+        "width": 600,
+        "x": 656,
+        "y": 96
+      }
+    },
+    "w": {
+      "captured": {
+        "capturedPointerId": 1,
+        "height": 528,
+        "interaction": "resize-w",
+        "width": 640,
+        "x": 616,
+        "y": 96
+      },
+      "final": {
+        "capturedPointerId": null,
+        "height": 528,
+        "interaction": null,
+        "width": 600,
+        "x": 656,
+        "y": 96
+      }
+    },
+    "nw": {
+      "captured": {
+        "capturedPointerId": 1,
+        "height": 528,
+        "interaction": "resize-nw",
+        "width": 640,
+        "x": 616,
+        "y": 96
+      },
+      "final": {
+        "capturedPointerId": null,
+        "height": 498,
+        "interaction": null,
+        "width": 600,
+        "x": 656,
+        "y": 126
+      }
+    }
+  },
+  "cancellation": {
+    "beforeHide": {
+      "capturedPointerId": 1,
+      "height": 528,
+      "interaction": "move",
+      "width": 640,
+      "x": 616,
+      "y": 96
+    },
+    "afterHide": {
+      "capturedPointerId": null,
+      "height": 528,
+      "interaction": null,
+      "width": 640,
+      "x": 616,
+      "y": 96
+    }
+  },
+  "cycles": {
+    "children": 4,
+    "snapshots": {
+      "console": {
+        "catalogRevision": "target-browser-fixture-1",
+        "completion": {
+          "labels": [],
+          "pendingRequestId": null,
+          "selectedIndex": null,
+          "source": "none",
+          "visible": false
+        },
+        "diagnostics": [],
+        "entryText": "",
+        "focused": true,
+        "foregroundRevision": 1,
+        "frame": {
+          "capturedPointerId": null,
+          "height": 528,
+          "interaction": null,
+          "width": 640,
+          "x": 616,
+          "y": 96
+        },
+        "history": [],
+        "historyCursor": null,
+        "lifecycle": "mounted",
+        "output": [
+          {
+            "kind": "normal",
+            "text": "Team Fortress 2\n"
+          },
+          {
+            "kind": "developer",
+            "text": "Developer output\n"
+          },
+          {
+            "color": [
+              120,
+              180,
+              255,
+              255
+            ],
+            "kind": "color",
+            "text": "Explicit color output\n"
+          }
+        ],
+        "outputUtf8Bytes": 55,
+        "ownedResources": {
+          "listeners": 17,
+          "nodes": 23,
+          "observers": 0,
+          "timers": 0
+        },
+        "reducedMotion": false,
+        "resourceIdentity": "tf2-source-scheme-console-e9159a98",
+        "revision": 3,
+        "runtimeIdentity": "target-console-evidence",
+        "viewport": {
+          "devicePixelRatio": 1,
+          "height": 720,
+          "width": 1280
+        },
+        "visible": true
+      },
+      "diagnostics": {
+        "fps": {
+          "average": 55,
+          "high": 100,
+          "low": 50
+        },
+        "lifecycle": "mounted",
+        "lines": [
+          {
+            "color": [
+              255,
+              255,
+              0,
+              255
+            ],
+            "kind": "fps",
+            "text": " 55 fps ( 50, 100) 10.0 ms on jump_beef"
+          },
+          {
+            "color": [
+              255,
+              255,
+              255,
+              255
+            ],
+            "kind": "position",
+            "text": "pos:  5328.00 3376.00 -3052.00"
+          },
+          {
+            "color": [
+              255,
+              255,
+              255,
+              255
+            ],
+            "kind": "position",
+            "text": "ang:  -1.00 180.00 0.00"
+          },
+          {
+            "color": [
+              255,
+              255,
+              255,
+              255
+            ],
+            "kind": "position",
+            "text": "vel:  500.00"
+          }
+        ],
+        "ownedResources": {
+          "listeners": 0,
+          "nodes": 7,
+          "observers": 0,
+          "timers": 0
+        },
+        "revision": 4,
+        "runtimeIdentity": "target-diagnostic-evidence",
+        "viewport": {
+          "devicePixelRatio": 1,
+          "height": 720,
+          "width": 1280
+        },
+        "visible": true
+      }
+    }
+  },
+  "accessibility": {
+    "success": true,
+    "data": {
+      "lifecycle": {
+        "effectiveLaunch": {
+          "browserLaunched": true,
+          "engine": "chrome",
+          "launchHash": 7525229373305341000
+        },
+        "launched": false,
+        "relaunchedBrowser": false,
+        "restartedBackground": false,
+        "restoreStatus": "not_configured",
+        "reused": true,
+        "saveStatus": "not_attempted"
+      },
+      "origin": "http://127.0.0.1:4174/",
+      "refs": {
+        "e1": {
+          "name": "Close console",
+          "role": "button"
+        },
+        "e2": {
+          "name": "Console command",
+          "role": "textbox"
+        },
+        "e3": {
+          "name": "Submit",
+          "role": "button"
+        }
+      },
+      "snapshot": "- main\n  - dialog \"Console\"\n    - button \"Close console\" [ref=e1]\n    - generic\n      - log \"Console output\"\n        - StaticText \"Team Fortress 2\\nDeveloper output\\nExplicit color output\\n\"\n      - textbox \"Console command\" [ref=e2]\n      - button \"Submit\" [ref=e3]\n  - status \"Client diagnostics\"\n    - StaticText \" 55 fps ( 50, 100) 10.0 ms on jump_beef\"\n    - StaticText \"pos:  5328.00 3376.00 -3052.00\"\n    - StaticText \"ang:  -1.00 180.00 0.00\"\n    - StaticText \"vel:  500.00\""
+    },
+    "error": null
+  },
+  "platformFontMetrics": {
+    "accessibilityHidden": null,
+    "active": "Console command",
+    "console": "source-required",
+    "diagnostics": "source-required",
+    "glyphColors": [
+      "rgba(0, 0, 0, 0)",
+      "rgba(0, 0, 0, 0)",
+      "rgba(0, 0, 0, 0)",
+      "rgba(0, 0, 0, 0)",
+      "rgba(0, 0, 0, 0)",
+      "rgba(0, 0, 0, 0)",
+      "rgba(0, 0, 0, 0)",
+      "rgba(0, 0, 0, 0)",
+      "rgba(0, 0, 0, 0)",
+      "rgba(0, 0, 0, 0)"
+    ],
+    "inert": false
+  }
 }

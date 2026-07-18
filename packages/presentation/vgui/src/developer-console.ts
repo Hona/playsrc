@@ -665,13 +665,9 @@ class ConsoleView {
     const scale = viewport.height / 480
     const platformFontsReady = Object.values(resources.fonts).every((font) => font.browserFamily !== null)
     this.runtime.host.dataset.platformFontCapability = platformFontsReady ? "supported" : "unsupported"
-    if (platformFontsReady) {
-      this.runtime.host.removeAttribute("aria-hidden")
-      this.runtime.host.removeAttribute("inert")
-    } else {
-      this.runtime.host.setAttribute("aria-hidden", "true")
-      this.runtime.host.setAttribute("inert", "")
-    }
+    this.runtime.host.dataset.fontRasterCapability = platformFontsReady ? "browser-unverified" : "source-required"
+    this.runtime.host.removeAttribute("aria-hidden")
+    this.runtime.host.removeAttribute("inert")
     for (const [role, font] of Object.entries(resources.fonts)) {
       const fontScale = font.proportional ? scale : 1
       style.setProperty(`--vgui-${role}-font`, font.browserFamily ?? "playsrc-vgui-platform-font-unavailable")

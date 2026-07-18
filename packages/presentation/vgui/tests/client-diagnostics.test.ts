@@ -100,7 +100,7 @@ describe("client diagnostic panel", () => {
     expect(diagnostics.snapshot()).toEqual(admitted)
   })
 
-  test("suppresses paint and input when the platform face is unavailable", () => {
+  test("retains diagnostic state and accessibility while suppressing an unavailable glyph source", () => {
     const document = new FakeDocument()
     const root = createRoot(document)
     const unavailable = Object.freeze({
@@ -116,8 +116,13 @@ describe("client diagnostic panel", () => {
     expect(initialized.diagnostics.apply({ kind: "mount", root: root as unknown as HTMLElement }).ok).toBe(true)
     const host = root.children[1]
     expect(host.dataset.platformFontCapability).toBe("unsupported")
-    expect(host.getAttribute("aria-hidden")).toBe("true")
-    expect(host.getAttribute("inert")).toBe("")
+    expect(host.dataset.fontRasterCapability).toBe("source-required")
+    expect(host.getAttribute("aria-hidden")).toBeNull()
+    expect(host.getAttribute("inert")).toBeNull()
+    initialized.diagnostics.apply({ kind: "present", frame: frame(100, { fpsMode: 1 }) })
+    initialized.diagnostics.apply({ kind: "present", frame: frame(110, { fpsMode: 1 }) })
+    expect(initialized.diagnostics.snapshot().lines).toHaveLength(1)
+    expect(byName(root, "ClientDiagnostics").getAttribute("role")).toBe("status")
   })
 
   test("computes exact instantaneous and 0.1-weight smoothed FPS schedules with low, high, milliseconds, map, and threshold colors", () => {

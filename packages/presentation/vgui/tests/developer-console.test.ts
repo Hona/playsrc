@@ -380,7 +380,7 @@ describe("developer console initialization, resources, and direct DOM", () => {
     expect(host.style.getPropertyValue("--vgui-completion-size")).toBe("10px")
   })
 
-  test("suppresses paint and input atomically when no admitted browser family exists", () => {
+  test("suppresses only unavailable glyph paint while focus and submission remain live", () => {
     const base = resources()
     const unavailable = (font: ConsoleResources["fonts"]["title"]) => Object.freeze({ ...font, browserFamily: null })
     const resolution: ConsoleResourceResolution = Object.freeze({
@@ -396,12 +396,20 @@ describe("developer console initialization, resources, and direct DOM", () => {
         }),
       }),
     })
-    const { root } = mounted([], { resources: resolution })
+    const requests: ConsoleRequest[] = []
+    const { console: developerConsole, root } = mounted(requests, { resources: resolution })
     const host = root.children[1]
     expect(host.dataset.platformFontCapability).toBe("unsupported")
-    expect(host.getAttribute("aria-hidden")).toBe("true")
-    expect(host.getAttribute("inert")).toBe("")
+    expect(host.dataset.fontRasterCapability).toBe("source-required")
+    expect(host.getAttribute("aria-hidden")).toBeNull()
+    expect(host.getAttribute("inert")).toBeNull()
     expect(host.style.getPropertyValue("--vgui-title-font")).toBe("playsrc-vgui-platform-font-unavailable")
+    expect(developerConsole.apply({ kind: "activate" }).ok).toBe(true)
+    const entry = byName(root, "ConsoleEntry")
+    input(entry, "status")
+    key(entry, "Enter")
+    expect(requests.at(-1)).toMatchObject({ kind: "submission", text: "status" })
+    expect(entry.ownerDocument?.activeElement).toBe(entry)
   })
 })
 

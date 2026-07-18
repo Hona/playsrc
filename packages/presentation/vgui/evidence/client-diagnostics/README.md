@@ -7,26 +7,26 @@
 - Official behavioral authorities: Valve Source SDK 2013 commit `88fa198fba3fb85d46d4c95018254693fdc3af0a`, `src/public/vgui/{IScheme,ISurface}.h`, `src/vgui2/vgui_controls/{consoledialog,Frame}.cpp`, and `src/game/client/vgui_fpspanel.cpp`.
 - Browser contracts: CSS Fonts 4 `src`/`local()` and CSS Font Loading 3 `FontFace.load()`/`FontFaceSet`.
 
-## Platform-Font Contract
+## Font Capability Contract
 
-The declared target is Windows. Tahoma default-weight and weight-500 families cover `U+0000-FFFF`. Each Lucida Console family selects Lucida Console for `U+0000-00FF`, then Tahoma for `U+0100-FFFF`, at default weight or weight 500. The resulting six range faces retain Source order; every face has exactly one `local()` source. No URL source, copied system bytes, alternate local name, generic family, or synthesis is admitted.
+VGUI resolves Windows, macOS, and Linux scheme conditions before selecting the first admitted `yres` candidate. It admits only the selected exact content bytes, caller-supplied exact external bytes, bitmap input, platform-local face, and established surface fallback ranges. No arbitrary URL source, copied system bytes, TF2 display-font substitution, browser generic, or synthesis is admitted.
 
-The browser loads all six range faces before adding any to `document.fonts`. One rejection publishes none. Publication failure removes every previously added face. A non-Windows platform is rejected before probing installed fonts. Unsupported VGUI hosts are `inert`, accessibility-hidden, visibility-hidden, and expose `data-platform-font-capability="unsupported"`.
+The browser verifies supplied byte length and SHA-256, loads all range faces before adding any to `document.fonts`, publishes all or none, and releases every face once. Source admission, exact metrics, browser raster, and native target pixels have separate dispositions. An unavailable source suppresses only glyph paint: panel paint, focus, editing, submission, completion, diagnostics state, accessibility, and teardown remain active.
 
 ## Browser Procedure
 
 Run `bun run verify:browser` in this package.
 
 - On a supported Windows host, the command retains loaded-face records; 854×480, 1280×720, 1920×1080, DPR-2, and 200%-zoom lossless captures; computed role styles; Canvas metrics for `TF2 Console Hg 0123456789`; control states; move/resize schedules; accessibility; and cleanup.
-- On an unsupported host, the command records the exact platform and capability result, removes prior browser raster captures, and exits successfully. It never captures browser fallback glyphs.
+- On an unsupported host, the command removes prior browser raster captures, then executes focus, armed/depressed controls, movement, resize, cancellation, accessibility, and 25 mount/destroy cycles without painting browser fallback glyphs.
 
-The retained run used headed Chrome `149.0.0.0` on macOS `25.5.0` arm64 with Bun `1.4.0` and agent-browser `0.32.1`. It returned `unsupported-platform` for the Windows target before local-face probing. `browser-evidence.json` contains no captures.
+The retained run used headed Chrome `149.0.0.0` on macOS `25.5.0` arm64 with Bun `1.4.0` and agent-browser `0.32.1`. The application-owned legacy Windows target returned `unsupported-platform`; `browser-evidence.json` contains no raster captures, records active focus and accessibility, and proves zero inert state.
 
 ## TF2 Integration Procedure
 
 Run `bun run verify:tf2` in this package with valid repository `playsrc.local.json`.
 
-The retained macOS run reached the Ready application state, observed the unsupported developer-console host, required console and diagnostics paint/input suppression, removed the old fallback-font screenshot, closed the browser, interrupted the development process once, and required child exit zero. Supported Windows hosts continue into the complete console, diagnostics, convar, movement, and screenshot schedule.
+The procedure always executes the complete console, diagnostics, convar, movement, focus, and shutdown schedule. It retains a screenshot only when every selected source face is admitted. No current TF2 integration object is retained; `verify:tf2` generates it only with a valid repository-root `playsrc.local.json` and fails before launch when that input is absent.
 
 ## Native Raster Blocker
 
@@ -38,5 +38,4 @@ Source requests non-antialiased GDI glyphs for these roles. Browser standards ex
 
 | Object | SHA-256 |
 |---|---|
-| `browser-evidence.json` | `1d34a764da8bb0fb8173165cb03422940fbb31ba8cac8f03ae53588bd1c668b7` |
-| `tf2-integration.json` | `de4f4b051a0206f66f5075927ca3235c4580e9982d7c45702865f27c0fb3467d` |
+| `browser-evidence.json` | `61278e0af7f8bec73121aa52f88df2a4272a75cb3a2154831038f0f79ee6955c` |

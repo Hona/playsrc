@@ -1,6 +1,13 @@
 export { initializeDeveloperConsole } from "./developer-console"
 export { initializeClientDiagnostics } from "./client-diagnostics"
 export { admitLocalPlatformFonts, classifyBrowserPlatform } from "./platform-fonts"
+export { evaluateVguiSchemeCondition, resolveVguiSchemeFonts } from "./scheme-fonts"
+export {
+  applyVguiGlyphEffects,
+  getVguiCharacterMetrics,
+  measureVguiText,
+  mountVguiFontSet,
+} from "./font-runtime"
 export { SOURCE_CONSOLE_CEILINGS } from "./contract"
 export type {
   ConsoleBorderResource,
@@ -45,3 +52,41 @@ export type {
   LocalPlatformFontFaceRequest,
   LocalPlatformFontTarget,
 } from "./platform-fonts"
+export type {
+  VguiDesktopPlatform,
+  VguiFontEffects,
+  VguiFontFaceRequest,
+  VguiFontFileIdentity,
+  VguiFontSourceRequest,
+  VguiLocalFontIdentity,
+  VguiResolvedFontRequest,
+  VguiSchemeDocument,
+  VguiSchemeFontContext,
+  VguiSchemeFontDiagnostic,
+  VguiSchemeFontDiagnosticCode,
+  VguiSchemeFontLookup,
+  VguiSchemeFontResolution,
+  VguiSchemeFontResolutionRequest,
+  VguiSchemeNode,
+  VguiSchemeSurfaceFeatures,
+} from "./scheme-fonts"
+export type {
+  VguiCharacterMetrics,
+  VguiExactFontMetrics,
+  VguiExactRasterProfile,
+  VguiFontByteSupply,
+  VguiFontFaceLoad,
+  VguiFontMountAdapter,
+  VguiFontRequirement,
+  VguiFontSetCapability,
+  VguiFontSetMount,
+  VguiFontSetMountRequest,
+  VguiFontSetMountResult,
+  VguiFontSetMountSnapshot,
+  VguiGlyphBitmap,
+  VguiGlyphMetric,
+  VguiKerningMetric,
+  VguiMountedFontCapability,
+  VguiSuppliedFontProfile,
+  VguiTextMetrics,
+} from "./font-runtime"

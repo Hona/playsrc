@@ -88,7 +88,7 @@ try {
   const platformFonts = await evaluate<{ kind: "supported" | "unsupported"; reason?: string }>("window.vguiEvidence.platformFonts")
   result.platformFonts = platformFonts
   if (platformFonts.kind === "unsupported") {
-    result.result = "unsupported-platform-fonts"
+    result.result = "unsupported-font-source-functional-controls"
     result.captures = {}
     await Promise.all([
       "480p.png",
@@ -97,57 +97,56 @@ try {
       "720p-dpr2.png",
       "720p-zoom2.png",
     ].map((name) => rm(path.join(evidenceRoot, name), { force: true })))
-    await writeFile(path.join(evidenceRoot, "browser-evidence.json"), `${JSON.stringify(result, null, 2)}\n`)
-    console.log(JSON.stringify(result))
   } else {
-  const captures: Record<string, unknown> = {}
-  for (const [name, width, height, scale] of [
-    ["480p", 854, 480, 1],
-    ["720p", 1280, 720, 1],
-    ["1080p", 1920, 1080, 1],
-    ["720p-dpr2", 1280, 720, 2],
-  ] as const) {
-    await agent(["set", "viewport", String(width), String(height), String(scale)])
+    const captures: Record<string, unknown> = {}
+    for (const [name, width, height, scale] of [
+      ["480p", 854, 480, 1],
+      ["720p", 1280, 720, 1],
+      ["1080p", 1920, 1080, 1],
+      ["720p-dpr2", 1280, 720, 2],
+    ] as const) {
+      await agent(["set", "viewport", String(width), String(height), String(scale)])
+      await reset()
+      await agent(["fill", "[aria-label='Console command']", "cl_"])
+      await agent(["press", "ArrowDown"])
+      await agent(["wait", "350"])
+      const observation = await evaluate(`(()=>{
+        const frame=document.querySelector('[data-vgui-name=GameConsole]');
+        const titleBackground=document.querySelector('[data-vgui-name=ConsoleTitleBackground]');
+        const titlebar=document.querySelector('[data-vgui-name=ConsoleTitleBar]');
+        const title=document.querySelector('[data-vgui-name=ConsoleTitle]');
+        const client=document.querySelector('[data-vgui-name=ConsolePage]');
+        const close=document.querySelector('[data-vgui-name=ConsoleClose]');
+        const history=document.querySelector('[data-vgui-name=ConsoleHistory]');
+        const entry=document.querySelector('[data-vgui-name=ConsoleEntry]');
+        const submit=document.querySelector('[data-vgui-name=ConsoleSubmit]');
+        const popup=document.querySelector('[data-vgui-name=CompletionList]');
+        const diagnostic=document.querySelector('[data-vgui-name=ClientDiagnostics]');
+        const style=getComputedStyle(history); const rect=x=>Object.fromEntries(['x','y','width','height'].map(k=>[k,x.getBoundingClientRect()[k]]));
+        const border=x=>{const s=getComputedStyle(x);return Object.fromEntries(['Top','Right','Bottom','Left'].flatMap(side=>[[side.toLowerCase()+'Color',s['border'+side+'Color']],[side.toLowerCase()+'Width',s['border'+side+'Width']]]))};
+        return {inner:[innerWidth,innerHeight],dpr:devicePixelRatio,active:document.activeElement?.getAttribute('aria-label'),
+          frame:rect(frame),titleBackground:rect(titleBackground),titlebar:rect(titlebar),title:rect(title),client:rect(client),close:rect(close),history:rect(history),entry:rect(entry),submit:rect(submit),popup:rect(popup),diagnostic:rect(diagnostic),
+          fonts:Object.fromEntries(Object.entries({title,history,entry,submit,completion:popup,diagnostic}).map(([name,node])=>{const s=getComputedStyle(node);return [name,{family:s.fontFamily,size:s.fontSize,lineHeight:s.lineHeight,weight:s.fontWeight}]})),
+          colors:{frame:getComputedStyle(frame).backgroundColor,titleBackground:getComputedStyle(titleBackground).backgroundColor,title:getComputedStyle(title).color,history:style.backgroundColor,text:style.color,entry:getComputedStyle(entry).color,submit:getComputedStyle(submit).backgroundColor,popup:getComputedStyle(popup).backgroundColor},
+          borders:{frame:border(frame),history:border(history),entry:border(entry),submit:border(submit),popup:border(popup)},
+          resizeCursors:Object.fromEntries([...document.querySelectorAll('[data-resize-edge]')].map(x=>[x.dataset.resizeEdge,getComputedStyle(x).cursor])),
+          snapshots:window.vguiEvidence.snapshots()};})()`)
+      await agent(["screenshot", path.join(evidenceRoot, `${name}.png`)])
+      captures[name] = observation
+    }
+    await agent(["set", "viewport", "640", "360", "2"])
     await reset()
     await agent(["fill", "[aria-label='Console command']", "cl_"])
     await agent(["press", "ArrowDown"])
     await agent(["wait", "350"])
-    const observation = await evaluate(`(()=>{
-      const frame=document.querySelector('[data-vgui-name=GameConsole]');
-      const titleBackground=document.querySelector('[data-vgui-name=ConsoleTitleBackground]');
-      const titlebar=document.querySelector('[data-vgui-name=ConsoleTitleBar]');
-      const title=document.querySelector('[data-vgui-name=ConsoleTitle]');
-      const client=document.querySelector('[data-vgui-name=ConsolePage]');
-      const close=document.querySelector('[data-vgui-name=ConsoleClose]');
-      const history=document.querySelector('[data-vgui-name=ConsoleHistory]');
-      const entry=document.querySelector('[data-vgui-name=ConsoleEntry]');
-      const submit=document.querySelector('[data-vgui-name=ConsoleSubmit]');
-      const popup=document.querySelector('[data-vgui-name=CompletionList]');
-      const diagnostic=document.querySelector('[data-vgui-name=ClientDiagnostics]');
-      const style=getComputedStyle(history); const rect=x=>Object.fromEntries(['x','y','width','height'].map(k=>[k,x.getBoundingClientRect()[k]]));
-      const border=x=>{const s=getComputedStyle(x);return Object.fromEntries(['Top','Right','Bottom','Left'].flatMap(side=>[[side.toLowerCase()+'Color',s['border'+side+'Color']],[side.toLowerCase()+'Width',s['border'+side+'Width']]]))};
-      return {inner:[innerWidth,innerHeight],dpr:devicePixelRatio,active:document.activeElement?.getAttribute('aria-label'),
-        frame:rect(frame),titleBackground:rect(titleBackground),titlebar:rect(titlebar),title:rect(title),client:rect(client),close:rect(close),history:rect(history),entry:rect(entry),submit:rect(submit),popup:rect(popup),diagnostic:rect(diagnostic),
-        fonts:Object.fromEntries(Object.entries({title,history,entry,submit,completion:popup,diagnostic}).map(([name,node])=>{const s=getComputedStyle(node);return [name,{family:s.fontFamily,size:s.fontSize,lineHeight:s.lineHeight,weight:s.fontWeight}]})),
-        colors:{frame:getComputedStyle(frame).backgroundColor,titleBackground:getComputedStyle(titleBackground).backgroundColor,title:getComputedStyle(title).color,history:style.backgroundColor,text:style.color,entry:getComputedStyle(entry).color,submit:getComputedStyle(submit).backgroundColor,popup:getComputedStyle(popup).backgroundColor},
-        borders:{frame:border(frame),history:border(history),entry:border(entry),submit:border(submit),popup:border(popup)},
-        resizeCursors:Object.fromEntries([...document.querySelectorAll('[data-resize-edge]')].map(x=>[x.dataset.resizeEdge,getComputedStyle(x).cursor])),
-        snapshots:window.vguiEvidence.snapshots()};})()`)
-    await agent(["screenshot", path.join(evidenceRoot, `${name}.png`)])
-    captures[name] = observation
+    captures["720p-zoom2"] = await evaluate(`(()=>({
+      physicalViewport:[1280,720],inner:[innerWidth,innerHeight],dpr:devicePixelRatio,zoom:2,
+      frame:Object.fromEntries(['x','y','width','height'].map(k=>[k,document.querySelector('[data-vgui-name=GameConsole]').getBoundingClientRect()[k]])),
+      snapshots:window.vguiEvidence.snapshots()
+    }))()`)
+    await agent(["screenshot", path.join(evidenceRoot, "720p-zoom2.png")])
+    result.captures = captures
   }
-  await agent(["set", "viewport", "640", "360", "2"])
-  await reset()
-  await agent(["fill", "[aria-label='Console command']", "cl_"])
-  await agent(["press", "ArrowDown"])
-  await agent(["wait", "350"])
-  captures["720p-zoom2"] = await evaluate(`(()=>({
-    physicalViewport:[1280,720],inner:[innerWidth,innerHeight],dpr:devicePixelRatio,zoom:2,
-    frame:Object.fromEntries(['x','y','width','height'].map(k=>[k,document.querySelector('[data-vgui-name=GameConsole]').getBoundingClientRect()[k]])),
-    snapshots:window.vguiEvidence.snapshots()
-  }))()`)
-  await agent(["screenshot", path.join(evidenceRoot, "720p-zoom2.png")])
-  result.captures = captures
 
   await agent(["set", "viewport", "1280", "720", "1"])
   await reset()
@@ -202,14 +201,34 @@ try {
   result.cancellation = { beforeHide, afterHide }
   result.cycles = cycles
   result.accessibility = JSON.parse(await agent(["snapshot", "--json"]))
-  result.platformFontMetrics = await evaluate(`(()=>{
-    const canvas=document.createElement('canvas'); const context=canvas.getContext('2d');
-    const nodes={title:document.querySelector('[data-vgui-name=ConsoleTitle]'),history:document.querySelector('[data-vgui-name=ConsoleHistory]'),entry:document.querySelector('[data-vgui-name=ConsoleEntry]'),completion:document.querySelector('[data-vgui-name=CompletionList]'),diagnostic:document.querySelector('[data-vgui-name=ClientDiagnostics]')};
-    return Object.fromEntries(Object.entries(nodes).map(([name,node])=>{const style=getComputedStyle(node);context.font=style.font;const metrics=context.measureText('TF2 Console Hg 0123456789');return [name,{font:context.font,width:metrics.width,actualBoundingBoxLeft:metrics.actualBoundingBoxLeft,actualBoundingBoxRight:metrics.actualBoundingBoxRight,actualBoundingBoxAscent:metrics.actualBoundingBoxAscent,actualBoundingBoxDescent:metrics.actualBoundingBoxDescent,fontBoundingBoxAscent:metrics.fontBoundingBoxAscent,fontBoundingBoxDescent:metrics.fontBoundingBoxDescent}]}));
-  })()`)
+  if (platformFonts.kind === "supported") {
+    result.platformFontMetrics = await evaluate(`(()=>{
+      const canvas=document.createElement('canvas'); const context=canvas.getContext('2d');
+      const nodes={title:document.querySelector('[data-vgui-name=ConsoleTitle]'),history:document.querySelector('[data-vgui-name=ConsoleHistory]'),entry:document.querySelector('[data-vgui-name=ConsoleEntry]'),completion:document.querySelector('[data-vgui-name=CompletionList]'),diagnostic:document.querySelector('[data-vgui-name=ClientDiagnostics]')};
+      return Object.fromEntries(Object.entries(nodes).map(([name,node])=>{const style=getComputedStyle(node);context.font=style.font;const metrics=context.measureText('TF2 Console Hg 0123456789');return [name,{font:context.font,width:metrics.width,actualBoundingBoxLeft:metrics.actualBoundingBoxLeft,actualBoundingBoxRight:metrics.actualBoundingBoxRight,actualBoundingBoxAscent:metrics.actualBoundingBoxAscent,actualBoundingBoxDescent:metrics.actualBoundingBoxDescent,fontBoundingBoxAscent:metrics.fontBoundingBoxAscent,fontBoundingBoxDescent:metrics.fontBoundingBoxDescent}]}));
+    })()`)
+  } else {
+    const disposition = await evaluate<{
+      console: string
+      diagnostics: string
+      active: string
+      inert: boolean
+      accessibilityHidden: string | null
+      glyphColors: string[]
+    }>(`(()=>({
+      console:document.querySelector('[data-vgui-service=developer-console]').dataset.fontRasterCapability,
+      diagnostics:document.querySelector('[data-vgui-service=client-diagnostics]').dataset.fontRasterCapability,
+      active:document.activeElement?.getAttribute('aria-label'),
+      inert:document.querySelector('[data-vgui-service=developer-console]').hasAttribute('inert'),
+      accessibilityHidden:document.querySelector('[data-vgui-service=developer-console]').getAttribute('aria-hidden'),
+      glyphColors:[...document.querySelectorAll('.playsrc-vgui-title,.playsrc-vgui-output-segment,.playsrc-vgui-entry,.playsrc-vgui-submit,.playsrc-vgui-menu-item,.playsrc-vgui-diagnostic-line')].map(node=>getComputedStyle(node).color)
+    }))()`)
+    require(disposition.active === "Console command" && !disposition.inert && disposition.accessibilityHidden === null, "source-required controls lost focus or accessibility")
+    require(disposition.glyphColors.length > 0 && disposition.glyphColors.every((color) => color === "rgba(0, 0, 0, 0)"), "source-required browser fallback glyph could paint")
+    result.platformFontMetrics = disposition
+  }
   await writeFile(path.join(evidenceRoot, "browser-evidence.json"), `${JSON.stringify(result, null, 2)}\n`)
   console.log(JSON.stringify(result))
-  }
 } finally {
   await agent(["close"]).catch(() => {})
   server.stop(true)

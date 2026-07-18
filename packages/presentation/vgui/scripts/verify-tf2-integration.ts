@@ -114,26 +114,6 @@ try {
   await agent(["set", "viewport", "1280", "720", "1"])
   await agent(["wait", "--text", "Ready", "--timeout", "120000"])
   const platformFontCapability = await evaluate<string | null>("document.querySelector('[data-vgui-service=developer-console]')?.dataset.platformFontCapability ?? null")
-  if (platformFontCapability === "unsupported") {
-    const result = {
-      capturedAt: new Date().toISOString(),
-      operatingSystem: `${process.platform} ${os.release()}`,
-      architecture: process.arch,
-      bun: Bun.version,
-      browser: await agent(["--version"]),
-      browserRuntime: await evaluate("({userAgent:navigator.userAgent,platform:navigator.platform,language:navigator.language})"),
-      sourceBuild: "TF2 24207079 / patch 10822003",
-      platformFonts: "unsupported; console and diagnostics paint and input suppressed",
-      shutdown: "pending",
-    }
-    await rm(path.join(evidenceRoot, "tf2-app-720p.png"), { force: true })
-    await agent(["close"])
-    browserOpen = false
-    await processOwner.interrupt()
-    result.shutdown = "browser closed; SIGINT child exit zero"
-    await writeFile(path.join(evidenceRoot, "tf2-integration.json"), `${JSON.stringify(result, null, 2)}\n`)
-    console.log(JSON.stringify(result))
-  } else {
   await waitFor("initial camera", "document.querySelector('main').dataset.cameraPosition && Number(document.querySelector('.speed-readout strong').textContent) === 0 && Math.abs(Number(document.querySelector('main').dataset.cameraPosition.split(',')[2]) + 3067.2099609375) < 0.01", "30000")
   const initial = await evaluate<number[]>("document.querySelector('main').dataset.cameraPosition.split(',').map(Number)")
 
@@ -179,7 +159,11 @@ try {
   require((observation as { frame: { y: number }; diagnostic: { y: number; height: number } }).diagnostic.y
     + (observation as { diagnostic: { height: number } }).diagnostic.height
     <= (observation as { frame: { y: number } }).frame.y, "diagnostics overlap console")
-  await agent(["screenshot", path.join(evidenceRoot, "tf2-app-720p.png")])
+  if (platformFontCapability === "supported") {
+    await agent(["screenshot", path.join(evidenceRoot, "tf2-app-720p.png")])
+  } else {
+    await rm(path.join(evidenceRoot, "tf2-app-720p.png"), { force: true })
+  }
 
   await command("cl_showfps 0")
   await command("cl_showpos 0")
@@ -193,6 +177,9 @@ try {
     browserRuntime: await evaluate("({userAgent:navigator.userAgent,platform:navigator.platform,language:navigator.language})"),
     gpu: await evaluate("navigator.gpu?.requestAdapter().then(adapter=>adapter ? {vendor:adapter.info.vendor,architecture:adapter.info.architecture,device:adapter.info.device,description:adapter.info.description} : null)"),
     sourceBuild: "TF2 24207079 / patch 10822003",
+    platformFonts: platformFontCapability === "supported"
+      ? "browser source admitted; native target raster comparison remains required"
+      : "source unavailable; glyph paint suppressed while focus, input, submission, diagnostics, and accessibility remain active",
     crouch: { initial, control, shiftLeft, neutralAfterBlur: neutral, shiftRight },
     consoleAndDiagnostics: observation,
     shutdown: "pending",
@@ -203,7 +190,6 @@ try {
   result.shutdown = "browser closed; SIGINT child exit zero"
   await writeFile(path.join(evidenceRoot, "tf2-integration.json"), `${JSON.stringify(result, null, 2)}\n`)
   console.log(JSON.stringify(result))
-  }
 } finally {
   if (browserOpen) await agent(["close"]).catch(() => {})
   await processOwner.interrupt().catch(() => {})

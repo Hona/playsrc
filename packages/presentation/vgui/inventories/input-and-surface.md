@@ -86,9 +86,9 @@ Drag and drop is excluded from the current target. The pinned TF2 and shared eco
 | `IOS-051` | Textured geometry | Present full rectangles, subrectangles, lines, polylines, and polygons with exact normalized texture coordinates. | Unsupported |
 | `IOS-052` | Image object | Maintain position, content size, draw size, tint, frame, texture identity, quarter-turn rotation, paint, and eviction state. | Unsupported |
 | `IOS-053` | Text draw state | Maintain current font, color, position, scale, and draw mode and advance text position after each printed glyph. | Unsupported |
-| `IOS-054` | Character metrics | Return requested height, ascent, A/B/C widths, character width, and additive state from the selected font adapter. | Unsupported |
-| `IOS-055` | Text measurement and kerning | Measure the same Unicode input consumed by controls and return deterministic width and height under the selected browser and font bytes. | Unsupported |
-| `IOS-056` | Font resource lifecycle | Load exact custom and bitmap font bytes, construct named glyph sets with accepted flags and ranges, precache declared characters, and release temporary resources. | Unsupported |
+| `IOS-054` | Character metrics | Exact supplied profiles return requested/actual height, ascent, maximum width, face-keyed A/B/C widths, character width, and additive state; browser-native exact metrics remain a typed requirement. | Partial |
+| `IOS-055` | Text measurement and kerning | Exact supplied profiles measure UTF-16 code units with immediate-context kerning, cross-face suppression, newline height, ampersand skipping, and upward width rounding; browser shaping remains explicitly unverified. | Partial |
+| `IOS-056` | Font resource lifecycle | Verify exact custom/external/bitmap bytes, construct private range families, publish atomically, release partial/publication failures, and destroy successful mounts exactly once; character precaching remains Unsupported. | Partial |
 | `IOS-057` | Popup creation and ordering | Create popup DOM under the VGUI root, preserve parent ownership, maintain front/back/topmost order, and keep taskbar and native-window flags inert in browsers. | Unsupported |
 | `IOS-058` | Embedded root and workspace | Bind one application-supplied root element and explicit workspace rectangle; VGUI never creates or discovers the application shell. | Unsupported |
 | `IOS-059` | Screen and proportional base | Expose the current CSS-pixel viewport and the fixed 640×480 proportional base independently from device-pixel ratio. | Unsupported |
