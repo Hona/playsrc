@@ -114,6 +114,8 @@ export async function startDevelopment(config: LocalConfig, target: string | und
     closed = true
     const failures: string[] = []
     try {
+      await application?.ws.close()
+      application?.httpServer?.closeAllConnections()
       await application?.close()
     } catch {
       failures.push("application")

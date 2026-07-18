@@ -11,11 +11,6 @@ export type ProjectileKind = 1 | 2
 export type ProjectileState = 1 | 2 | 3
 export type ContactKind = 1 | 2 | 3
 
-export type StickyLaunchRandom = Readonly<{
-  rightVelocity: number
-  upVelocity: number
-  angularY: number
-}>
 export type ProjectilePhysicsResult = Readonly<{
   projectile: number
   tick: bigint
@@ -25,6 +20,36 @@ export type ProjectilePhysicsResult = Readonly<{
   angularVelocity: readonly [number, number, number]
   motionEnabled: boolean
   contact: null | Readonly<{ kind: ContactKind; normal: readonly [number, number, number] }>
+}>
+export type RandomStreamState = Readonly<{
+  current: number
+  shuffled: number
+  table: readonly number[]
+}>
+export type Tf2RandomState = Readonly<{
+  authority: RandomStreamState
+  predictedPresentation: RandomStreamState
+  rocketExplosionAvailable: number
+  stickyExplosionAvailable: number
+}>
+export type RandomDraw = Readonly<{
+  context: 1 | 2
+  decision: 1 | 2 | 3 | 4 | 5 | 6 | 7
+  definition: 0 | 1 | 2 | 3 | 4 | 5 | 6
+  phase: 0 | 1 | 2
+  raw: number
+  result: Readonly<{ kind: "float-bits"; bits: number } | { kind: "integer"; value: number } | { kind: "rejected-integer" }>
+}>
+export type AudioEvent = Readonly<{
+  tick: bigint
+  ordinal: number
+  identity: 1 | 2
+  definition: 1 | 2 | 3 | 4 | 5 | 6
+  sourceKind: 1 | 2
+  sourceIdentity: number
+  ownerIdentity: number | null
+  position: readonly [number, number, number]
+  samples: Readonly<{ volume: number; pitch: number; wave: number; soundLevel: number }>
 }>
 export type RocketTraceResult = Readonly<{
   projectile: number
@@ -43,7 +68,11 @@ export type MoverResult = Readonly<{
   angles: readonly [number, number, number]
   carry: readonly [number, number, number]
 }>
-
+export type CollisionSnapshot = Readonly<{
+  identity: bigint
+  objects: number
+  bytes: Uint8Array
+}>
 export type Command = Readonly<{
   forward: number
   side: number
@@ -63,10 +92,7 @@ export type Command = Readonly<{
   selectWeapon?: Tf2Weapon
   modeRequest?: MovementMode
   activateEntity?: number
-  stickyLaunchRandom?: StickyLaunchRandom
   physicsResults?: readonly ProjectilePhysicsResult[]
-  rocketResults?: readonly RocketTraceResult[]
-  moverResults?: readonly MoverResult[]
 }>
 
 export type MovementSnapshot = Readonly<{
@@ -326,6 +352,12 @@ export type Snapshot = Readonly<{
   contactReconcileRequests: readonly ContactReconcileRequest[]
   mapEffects: readonly MapEffect[]
   regenerateAnimationEvents: readonly RegenerateAnimationEvent[]
+  randomState: Tf2RandomState
+  randomDraws: readonly RandomDraw[]
+  audioEvents: readonly AudioEvent[]
+  rocketTraceResults: readonly RocketTraceResult[]
+  moverResults: readonly MoverResult[]
+  collisionSnapshot: CollisionSnapshot
   authorityBlockers: readonly AuthorityBlocker[]
 }>
 
@@ -421,15 +453,8 @@ export function encodeCommand(command: Command): ArrayBuffer {
     throw new Tf2CodecError("command entity identity is invalid")
   }
   const physics = command.physicsResults ?? []
-  const rockets = command.rocketResults ?? []
-  const movers = command.moverResults ?? []
-  if (physics.length > 64 || rockets.length > 64 || movers.length > 64) {
+  if (physics.length > 64) {
     throw new Tf2CodecError("command external-result count exceeds its bound")
-  }
-  const random = command.stickyLaunchRandom
-  if (random && (!finite([random.rightVelocity, random.upVelocity]) || random.rightVelocity < -10 || random.rightVelocity > 10 ||
-    random.upVelocity < -10 || random.upVelocity > 10 || !Number.isInteger(random.angularY) || random.angularY < -1200 || random.angularY > 1200)) {
-    throw new Tf2CodecError("command sticky random input is invalid")
   }
   const uint64 = (value: bigint): boolean => value >= 0n && value <= 0xffff_ffff_ffff_ffffn
   for (const result of physics) {
@@ -439,26 +464,12 @@ export function encodeCommand(command: Command): ArrayBuffer {
       throw new Tf2CodecError("command projectile Physics result is invalid")
     }
   }
-  for (const result of rockets) {
-    if (!canonicalIdentity(result.projectile) || !uint64(result.tick) || !finite(result.end) ||
-      (result.normal !== null && !normalized(result.normal)) || result.sky && !result.solid ||
-      result.solid && !result.sky && result.normal === null || !result.solid && result.directTarget !== null ||
-      result.directTarget !== null && !canonicalIdentity(result.directTarget)) {
-      throw new Tf2CodecError("command rocket Collision result is invalid")
-    }
-  }
-  for (const result of movers) {
-    if (!uint64(result.requestId) || !canonicalIdentity(result.entity) || !([1, 2, 3, 4, 5] as number[]).includes(result.kind) ||
-      !finite([...result.position, ...result.angles, ...result.carry])) {
-      throw new Tf2CodecError("command mover result is invalid")
-    }
-  }
-  const length = 56 + (random ? 12 : 0) + physics.length * 80 + rockets.length * 44 + movers.length * 52
+  const length = 48 + physics.length * 80
   const bytes = new ArrayBuffer(length)
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x43, 0x4d, 0x44])
-  view.setUint32(4, 3, true)
+  view.setUint32(4, 4, true)
   scalars.forEach((value, index) => view.setFloat32(8 + index * 4, value, true))
   const flags =
     Number(command.jump) |
@@ -478,20 +489,12 @@ export function encodeCommand(command: Command): ArrayBuffer {
   )
   view.setUint32(36, command.activateEntity ?? 0xffff_ffff, true)
   view.setUint16(40, physics.length, true)
-  view.setUint16(42, rockets.length, true)
-  view.setUint16(44, movers.length, true)
-  view.setUint16(46, random ? 1 : 0, true)
-  view.setUint32(48, length, true)
-  let at = 56
+  view.setUint16(42, 0, true)
+  view.setUint32(44, length, true)
+  let at = 48
   const writeVector = (value: readonly number[]): void => {
     value.forEach((scalar, index) => view.setFloat32(at + index * 4, scalar, true))
     at += value.length * 4
-  }
-  if (random) {
-    view.setFloat32(at, random.rightVelocity, true)
-    view.setFloat32(at + 4, random.upVelocity, true)
-    view.setInt32(at + 8, random.angularY, true)
-    at += 12
   }
   for (const result of physics) {
     view.setUint32(at, result.projectile, true)
@@ -504,28 +507,6 @@ export function encodeCommand(command: Command): ArrayBuffer {
     writeVector(result.orientation)
     writeVector(result.angularVelocity)
     writeVector(result.contact?.normal ?? [0, 0, 0])
-  }
-  for (const result of rockets) {
-    view.setUint32(at, result.projectile, true)
-    view.setBigUint64(at + 4, result.tick, true)
-    data[at + 12] = Number(result.solid)
-    data[at + 13] = Number(result.sky)
-    data[at + 14] = Number(result.normal !== null)
-    data[at + 15] = Number(result.directTarget !== null)
-    at += 16
-    writeVector(result.end)
-    writeVector(result.normal ?? [0, 0, 0])
-    view.setUint32(at, result.directTarget ?? 0xffff_ffff, true)
-    at += 4
-  }
-  for (const result of movers) {
-    view.setBigUint64(at, result.requestId, true)
-    view.setUint32(at + 8, result.entity, true)
-    data[at + 12] = result.kind
-    at += 16
-    writeVector(result.position)
-    writeVector(result.angles)
-    writeVector(result.carry)
   }
   if (at !== length) throw new Tf2CodecError("command encoding length differs")
   return bytes
@@ -830,13 +811,50 @@ function validateProjectileTransitions(events: readonly ProjectileEvent[]): void
   }
 }
 
+function decodeRandomState(bytes: ArrayBuffer, offset: number, length: number): Tf2RandomState {
+  if (length !== 284) throw new Tf2CodecError("TF2 random state length is invalid")
+  const data = new Uint8Array(bytes, offset, length), view = new DataView(bytes, offset, length)
+  if (new TextDecoder().decode(data.subarray(0, 4)) !== "PRNG" || view.getUint32(4, true) !== 1) {
+    throw new Tf2CodecError("TF2 random state identity is invalid")
+  }
+  let at = 8
+  const stream = (): RandomStreamState => {
+    const current = view.getInt32(at, true), shuffled = view.getInt32(at + 4, true)
+    at += 8
+    const table = Object.freeze(Array.from({ length: 32 }, () => {
+      const value = view.getInt32(at, true)
+      at += 4
+      return value
+    }))
+    const initialized = current > 0 && current < 2_147_483_647 && shuffled > 0 && shuffled < 2_147_483_647 &&
+      table.every((value) => value > 0 && value < 2_147_483_647)
+    const uninitialized = shuffled === 0 && current <= 0 && current !== -2_147_483_648
+    if (!initialized && !uninitialized) throw new Tf2CodecError("TF2 random stream state is invalid")
+    return Object.freeze({ current, shuffled, table })
+  }
+  const authority = stream(), predictedPresentation = stream(), rocketExplosionAvailable = data[at]!, stickyExplosionAvailable = data[at + 1]!
+  if ((rocketExplosionAvailable & ~7) !== 0 || (stickyExplosionAvailable & ~7) !== 0 || data[at + 2] !== 0 || data[at + 3] !== 0) {
+    throw new Tf2CodecError("TF2 sound selection state is invalid")
+  }
+  return Object.freeze({ authority, predictedPresentation, rocketExplosionAvailable, stickyExplosionAvailable })
+}
+
+function decodeCollisionSnapshot(bytes: ArrayBuffer, offset: number, length: number): CollisionSnapshot {
+  if (length < 20 || length > 16 * 1024 * 1024) throw new Tf2CodecError("Collision snapshot length is invalid")
+  const data = new Uint8Array(bytes, offset, length), view = new DataView(bytes, offset, length)
+  if (new TextDecoder().decode(data.subarray(0, 4)) !== "CSNP" || view.getUint32(4, true) !== 1) {
+    throw new Tf2CodecError("Collision snapshot identity is invalid")
+  }
+  return Object.freeze({ identity: view.getBigUint64(8, true), objects: count(view.getUint32(16, true), "Collision object"), bytes: data.slice() })
+}
+
 export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
-  if (bytes.byteLength < 128 || bytes.byteLength > MAX_SNAPSHOT_BYTES) {
+  if (bytes.byteLength < 160 || bytes.byteLength > MAX_SNAPSHOT_BYTES) {
     throw new Tf2CodecError("snapshot byte length is invalid")
   }
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
-  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 5)
+  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 6)
     throw new Tf2CodecError("snapshot identity is invalid")
   const tf2Class = data[16]
   const team = data[17]
@@ -873,10 +891,18 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
   const mapEffectCount = count(view.getUint32(116, true), "map effect")
   const regenerateEventCount = count(view.getUint32(120, true), "regenerate animation event")
   const blockerCount = count(view.getUint32(124, true), "authority blocker")
-  if (128 + movementLength > bytes.byteLength) throw new Tf2CodecError("Movement section exceeds snapshot bytes")
-  const movement = movementSnapshot(bytes, 128, movementLength)
+  const randomDrawCount = count(view.getUint32(128, true), "random draw")
+  const audioEventCount = count(view.getUint32(132, true), "audio event")
+  const rocketResultCount = count(view.getUint32(136, true), "rocket result")
+  const moverResultCount = count(view.getUint32(140, true), "mover result")
+  const collisionSnapshotLength = view.getUint32(144, true)
+  const randomStateLength = view.getUint32(148, true)
+  if (view.getUint32(152, true) !== 0 || view.getUint32(156, true) !== 0 || 160 + movementLength > bytes.byteLength) {
+    throw new Tf2CodecError("snapshot extension header is invalid")
+  }
+  const movement = movementSnapshot(bytes, 160, movementLength)
   if (movement.mode !== data[19]) throw new Tf2CodecError("Movement mode projection differs")
-  let at = 128 + movementLength
+  let at = 160 + movementLength
   const requireBytes = (length: number, label: string): void => {
     if (!Number.isSafeInteger(at + length) || at + length > bytes.byteLength) {
       throw new Tf2CodecError(`${label} records exceed snapshot bytes`)
@@ -1255,6 +1281,96 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
     throw new Tf2CodecError("authority blocker set is incomplete")
   }
   at += blockerCount * 4
+
+  requireBytes(randomStateLength, "TF2 random state")
+  const randomState = decodeRandomState(bytes, at, randomStateLength)
+  at += randomStateLength
+
+  requireBytes(randomDrawCount * 16, "random draw")
+  const randomDraws: RandomDraw[] = []
+  for (let index = 0; index < randomDrawCount; index += 1) {
+    const item = at + index * 16, context = data[item], decision = data[item + 1], definition = data[item + 2], phase = data[item + 3]
+    const raw = view.getInt32(item + 4, true), resultKind = data[item + 8], resultValue = view.getUint32(item + 12, true)
+    const soundDecision = decision !== undefined && decision >= 1 && decision <= 4
+    if (
+      (context !== 1 && context !== 2) || decision === undefined || decision < 1 || decision > 7 ||
+      (soundDecision ? definition === undefined || definition < 1 || definition > 6 || (phase !== 1 && phase !== 2) : definition !== 0 || phase !== 0 || context !== 1) ||
+      raw <= 0 || raw >= 2_147_483_647 || resultKind === undefined || resultKind < 1 || resultKind > 3 ||
+      data[item + 9] !== 0 || data[item + 10] !== 0 || data[item + 11] !== 0 ||
+      ((decision === 3 || decision === 7) ? resultKind === 1 : resultKind !== 1) ||
+      (resultKind === 3 && resultValue !== 0)
+    ) throw new Tf2CodecError("random draw record is invalid")
+    const result: RandomDraw["result"] = resultKind === 1
+      ? Object.freeze({ kind: "float-bits", bits: resultValue })
+      : resultKind === 2
+        ? Object.freeze({ kind: "integer", value: view.getInt32(item + 12, true) })
+        : Object.freeze({ kind: "rejected-integer" })
+    randomDraws.push(Object.freeze({ context, decision, definition: definition as RandomDraw["definition"], phase: phase as RandomDraw["phase"], raw, result }))
+  }
+  at += randomDrawCount * 16
+
+  requireBytes(audioEventCount * 52, "audio event")
+  const audioEvents: AudioEvent[] = []
+  const nextOrdinal = new Map<bigint, number>()
+  for (let index = 0; index < audioEventCount; index += 1) {
+    const item = at + index * 52, tick = view.getBigUint64(item, true), ordinal = view.getUint16(item + 8, true), identity = data[item + 10],
+      definition = data[item + 11], sourceKind = data[item + 12], hasOwner = data[item + 13], wave = data[item + 14]
+    const sourceIdentity = view.getUint32(item + 16, true), rawOwner = view.getUint32(item + 20, true), position = vector(view, item + 24)
+    const volume = view.getFloat32(item + 36, true), pitch = view.getFloat32(item + 40, true), soundLevel = view.getFloat32(item + 44, true)
+    const expectedOrdinal = nextOrdinal.get(tick) ?? 0, waveCount = definition === 4 || definition === 6 ? 3 : 1
+    if (
+      (identity !== 1 && identity !== 2) || definition === undefined || definition < 1 || definition > 6 ||
+      (sourceKind !== 1 && sourceKind !== 2) || (hasOwner !== 0 && hasOwner !== 1) || data[item + 15] !== 0 ||
+      ordinal !== expectedOrdinal || !canonicalIdentity(sourceIdentity) ||
+      (hasOwner === 0 ? rawOwner !== 0xffff_ffff : !canonicalIdentity(rawOwner)) ||
+      !finite([...position, volume, pitch, soundLevel]) || [volume, pitch, soundLevel].some((value) => value < 0 || value >= 1) ||
+      wave === undefined || wave >= waveCount || view.getUint32(item + 48, true) !== 0
+    ) throw new Tf2CodecError("audio event record is invalid")
+    nextOrdinal.set(tick, expectedOrdinal + 1)
+    audioEvents.push(Object.freeze({
+      tick, ordinal, identity, definition, sourceKind, sourceIdentity,
+      ownerIdentity: hasOwner === 1 ? rawOwner : null,
+      position,
+      samples: Object.freeze({ volume, pitch, wave, soundLevel }),
+    }))
+  }
+  at += audioEventCount * 52
+
+  requireBytes(rocketResultCount * 44, "rocket result")
+  const rocketTraceResults: RocketTraceResult[] = []
+  for (let index = 0; index < rocketResultCount; index += 1) {
+    const item = at + index * 44, solid = data[item + 12], sky = data[item + 13], hasNormal = data[item + 14], hasTarget = data[item + 15]
+    const end = vector(view, item + 16), rawNormal = vector(view, item + 28), rawTarget = view.getUint32(item + 40, true)
+    if (
+      solid === undefined || solid > 1 || sky === undefined || sky > 1 || hasNormal === undefined || hasNormal > 1 || hasTarget === undefined || hasTarget > 1 ||
+      !canonicalIdentity(view.getUint32(item, true)) || !finite([...end, ...rawNormal]) ||
+      (sky === 1 && solid !== 1) || (solid === 1 && sky === 0 && hasNormal !== 1) ||
+      (hasNormal === 0 && rawNormal.some((value) => value !== 0)) || (hasNormal === 1 && !normalized(rawNormal)) ||
+      (hasTarget === 0 ? rawTarget !== 0xffff_ffff : !canonicalIdentity(rawTarget)) || (solid === 0 && hasTarget === 1)
+    ) throw new Tf2CodecError("rocket result record is invalid")
+    rocketTraceResults.push(Object.freeze({
+      projectile: view.getUint32(item, true), tick: view.getBigUint64(item + 4, true), end,
+      solid: solid === 1, sky: sky === 1, normal: hasNormal === 1 ? rawNormal : null,
+      directTarget: hasTarget === 1 ? rawTarget : null,
+    }))
+  }
+  at += rocketResultCount * 44
+
+  requireBytes(moverResultCount * 52, "mover result")
+  const moverResults: MoverResult[] = []
+  for (let index = 0; index < moverResultCount; index += 1) {
+    const item = at + index * 52, kind = data[item + 12], position = vector(view, item + 16), angles = vector(view, item + 28), carry = vector(view, item + 40)
+    if (!canonicalIdentity(view.getUint32(item + 8, true)) || kind === undefined || kind < 1 || kind > 5 ||
+      data[item + 13] !== 0 || data[item + 14] !== 0 || data[item + 15] !== 0 || !finite([...position, ...angles, ...carry])) {
+      throw new Tf2CodecError("mover result record is invalid")
+    }
+    moverResults.push(Object.freeze({ requestId: view.getBigUint64(item, true), entity: view.getUint32(item + 8, true), kind, position, angles, carry }))
+  }
+  at += moverResultCount * 52
+
+  requireBytes(collisionSnapshotLength, "Collision snapshot")
+  const collisionSnapshot = decodeCollisionSnapshot(bytes, at, collisionSnapshotLength)
+  at += collisionSnapshotLength
   requireBytes(jumpLength, "Jump")
   const jump = decodeJump(bytes, at, jumpLength)
   at += jumpLength
@@ -1293,6 +1409,12 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
     contactReconcileRequests: Object.freeze(contactReconcileRequests),
     mapEffects: Object.freeze(mapEffects),
     regenerateAnimationEvents: Object.freeze(regenerateAnimationEvents),
+    randomState,
+    randomDraws: Object.freeze(randomDraws),
+    audioEvents: Object.freeze(audioEvents),
+    rocketTraceResults: Object.freeze(rocketTraceResults),
+    moverResults: Object.freeze(moverResults),
+    collisionSnapshot,
     authorityBlockers: Object.freeze(authorityBlockers),
   })
 }

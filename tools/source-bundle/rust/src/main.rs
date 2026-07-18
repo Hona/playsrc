@@ -727,6 +727,14 @@ fn collect_material(
             .to_ascii_lowercase();
         resolver.required(&path, format!("{consumer}:selected-texture"))?;
     }
+    if include_textures {
+        for texture in &material.model_textures {
+            resolver.required(
+                &texture.logical_path.to_ascii_lowercase(),
+                format!("{consumer}:model-texture"),
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -1084,8 +1092,8 @@ fn main() -> Result<(), String> {
     for path in [
         "models/weapons/w_models/w_rocket.mdl",
         "models/weapons/w_models/w_stickybomb.mdl",
-        "models/weapons/v_models/v_rocketlauncher_soldier.mdl",
-        "models/weapons/v_models/v_stickybomb_launcher_demo.mdl",
+        "models/weapons/c_models/c_soldier_arms.mdl",
+        "models/weapons/c_models/c_demo_arms.mdl",
         "models/player/soldier.mdl",
         "models/player/demo.mdl",
         "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl",
@@ -1111,7 +1119,10 @@ fn main() -> Result<(), String> {
                     &mut resolver,
                     &candidate,
                     true,
-                    SelectionEnvironment::default(),
+                    SelectionEnvironment {
+                        model: true,
+                        ..SelectionEnvironment::default()
+                    },
                     false,
                     &format!("studio-model:{path}:material"),
                 )?;
@@ -1176,6 +1187,8 @@ fn main() -> Result<(), String> {
         "scripts/soundmixers.txt",
         "sound/weapons/rocket_shoot.wav",
         "sound/weapons/stickybomblauncher_shoot.wav",
+        "sound/weapons/quake_rpg_fire_remastered.wav",
+        "sound/weapons/quake_explosion_remastered.wav",
         "sound/weapons/explode1.wav",
         "sound/weapons/explode2.wav",
         "sound/weapons/explode3.wav",

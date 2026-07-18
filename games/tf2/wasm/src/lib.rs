@@ -3,11 +3,85 @@ mod gameplay_protocol;
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock, RwLock},
 };
 
-#[derive(Clone)]
-struct SharedWorld(Arc<playsrc_collision::World>);
+struct SharedWorld {
+    world: Arc<playsrc_collision::World>,
+    snapshot: Arc<RwLock<Arc<playsrc_collision::Snapshot>>>,
+}
+impl Clone for SharedWorld {
+    fn clone(&self) -> Self {
+        Self {
+            world: self.world.clone(),
+            snapshot: self.snapshot.clone(),
+        }
+    }
+}
+impl SharedWorld {
+    fn new(world: Arc<playsrc_collision::World>, snapshot: playsrc_collision::Snapshot) -> Self {
+        Self {
+            world,
+            snapshot: Arc::new(RwLock::new(Arc::new(snapshot))),
+        }
+    }
+
+    fn replace_snapshot(&self, snapshot: playsrc_collision::Snapshot) {
+        *self.snapshot.write().expect("TF2 Collision snapshot") = Arc::new(snapshot);
+    }
+
+    fn replace_snapshot_arc(&self, snapshot: Arc<playsrc_collision::Snapshot>) {
+        *self.snapshot.write().expect("TF2 Collision snapshot") = snapshot;
+    }
+
+    fn snapshot(&self) -> Arc<playsrc_collision::Snapshot> {
+        self.snapshot
+            .read()
+            .expect("TF2 Collision snapshot")
+            .clone()
+    }
+
+    fn movement_trace(
+        trace: playsrc_collision::Trace,
+    ) -> Result<playsrc_movement::Trace, playsrc_movement::Error> {
+        let hit = match trace.hit {
+            Some(playsrc_collision::Hit::WorldBrush { .. }) => Some(0),
+            Some(playsrc_collision::Hit::Object { identity, .. }) => Some(identity),
+            None => None,
+        };
+        Ok(playsrc_movement::Trace {
+            fraction: trace.fraction,
+            start_solid: trace.start_solid,
+            all_solid: trace.all_solid,
+            end: trace.end,
+            normal: trace.plane.map(|plane| plane.normal),
+            hit,
+            contents: trace.contents,
+        })
+    }
+}
+
+struct CollisionSnapshotTransaction {
+    world: SharedWorld,
+    original: Arc<playsrc_collision::Snapshot>,
+    committed: bool,
+}
+impl CollisionSnapshotTransaction {
+    fn new(world: SharedWorld) -> Self {
+        Self {
+            original: world.snapshot(),
+            world,
+            committed: false,
+        }
+    }
+}
+impl Drop for CollisionSnapshotTransaction {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.world.replace_snapshot_arc(self.original.clone());
+        }
+    }
+}
 impl playsrc_movement::Tracer for SharedWorld {
     fn trace(
         &self,
@@ -16,7 +90,120 @@ impl playsrc_movement::Tracer for SharedWorld {
         hull: playsrc_collision::Hull,
         mask: u32,
     ) -> Result<playsrc_movement::Trace, playsrc_movement::Error> {
-        playsrc_movement::Tracer::trace(self.0.as_ref(), start, end, hull, mask)
+        let snapshot = self.snapshot();
+        let trace = self
+            .world
+            .trace_snapshot_hull(
+                &snapshot,
+                playsrc_collision::SnapshotTraceRequest {
+                    start,
+                    end,
+                    hull,
+                    mask,
+                    scope: playsrc_collision::TraceScope::Everything,
+                    ignored: &[],
+                },
+                |_| true,
+            )
+            .map_err(|_| {
+                playsrc_movement::Error::new(
+                    playsrc_movement::Operation::Trace,
+                    playsrc_movement::FailureKind::Malformed,
+                    "snapshot collision",
+                )
+            })?;
+        Self::movement_trace(trace)
+    }
+
+    fn point_contents(&self, point: [f32; 3]) -> Result<u32, playsrc_movement::Error> {
+        self.trace(
+            point,
+            point,
+            playsrc_collision::Hull {
+                mins: [0.0; 3],
+                maxs: [0.0; 3],
+            },
+            u32::MAX,
+        )
+        .map(|trace| trace.contents)
+    }
+
+    fn support_velocity(&self, support: u64) -> Result<[f32; 3], playsrc_movement::Error> {
+        Ok(self
+            .snapshot()
+            .object_velocity(support)
+            .map_or([0.0; 3], |value| value.0))
+    }
+
+    fn is_world(&self, hit: u64) -> bool {
+        hit == 0
+    }
+
+    fn trace_without(
+        &self,
+        ignored: u64,
+        start: [f32; 3],
+        end: [f32; 3],
+        hull: playsrc_collision::Hull,
+        mask: u32,
+    ) -> Result<playsrc_movement::Trace, playsrc_movement::Error> {
+        let snapshot = self.snapshot();
+        let trace = self
+            .world
+            .trace_snapshot_hull(
+                &snapshot,
+                playsrc_collision::SnapshotTraceRequest {
+                    start,
+                    end,
+                    hull,
+                    mask,
+                    scope: playsrc_collision::TraceScope::Everything,
+                    ignored: &[ignored],
+                },
+                |_| true,
+            )
+            .map_err(|_| {
+                playsrc_movement::Error::new(
+                    playsrc_movement::Operation::Trace,
+                    playsrc_movement::FailureKind::Malformed,
+                    "snapshot collision",
+                )
+            })?;
+        Self::movement_trace(trace)
+    }
+
+    fn overlaps_mover(
+        &self,
+        mover: u64,
+        position: [f32; 3],
+        hull: playsrc_collision::Hull,
+    ) -> Result<bool, playsrc_movement::Error> {
+        let snapshot = self.snapshot();
+        let transform = snapshot.object_transform(mover).ok_or_else(|| {
+            playsrc_movement::Error::new(
+                playsrc_movement::Operation::Mover,
+                playsrc_movement::FailureKind::Missing,
+                "mover collision object",
+            )
+        })?;
+        self.world
+            .overlaps_object_hull_at(
+                &snapshot,
+                playsrc_collision::ObjectOverlapRequest {
+                    identity: mover,
+                    transform,
+                    position,
+                    hull,
+                    mask: u32::MAX,
+                },
+            )
+            .map_err(|_| {
+                playsrc_movement::Error::new(
+                    playsrc_movement::Operation::Mover,
+                    playsrc_movement::FailureKind::Malformed,
+                    "mover collision overlap",
+                )
+            })
     }
 }
 
@@ -28,7 +215,7 @@ impl playsrc_tf2::GameplayWorld for SharedWorld {
         position: [f32; 3],
         hull: playsrc_collision::Hull,
     ) -> Result<bool, playsrc_movement::Error> {
-        self.0
+        self.world
             .overlaps_model_hull(model, origin, position, hull)
             .map_err(|_| {
                 playsrc_movement::Error::new(
@@ -38,6 +225,12 @@ impl playsrc_tf2::GameplayWorld for SharedWorld {
                 )
             })
     }
+}
+
+#[derive(Clone)]
+struct CollisionObjectTemplate {
+    input: playsrc_collision::ObjectInput,
+    runtime_transform: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -63,6 +256,11 @@ struct Slot {
     area_state: Option<playsrc_visibility::AreaState>,
     visibility_output: Vec<u8>,
     collision: Option<Arc<playsrc_collision::World>>,
+    gameplay_world: Option<SharedWorld>,
+    collision_templates: Vec<CollisionObjectTemplate>,
+    collision_revision: u64,
+    pushers: BTreeMap<u64, playsrc_movement::PusherSnapshot>,
+    latest_game_snapshot: Option<playsrc_tf2::Snapshot>,
     hash: [u8; 32],
     derived_hash: [u8; 32],
     bsp_hash: [u8; 32],
@@ -189,6 +387,19 @@ pub unsafe extern "C" fn playsrc_compile_map(
         let visibility = runtime.visibility;
         let area_state = playsrc_visibility::AreaState::new(&visibility);
         let collision = Arc::new(runtime.collision);
+        let collision_templates =
+            collision_object_templates(&entity_graph, &bundle(configuration).map_err(|_| 7_u32)?)
+                .map_err(|_| 5_u32)?;
+        let initial_collision = compile_collision_snapshot(
+            &collision,
+            &collision_templates,
+            1,
+            None,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .map_err(|_| 5_u32)?;
+        let gameplay_world = SharedWorld::new(collision.clone(), initial_collision);
         let model_bounds = collision
             .models
             .iter()
@@ -214,8 +425,7 @@ pub unsafe extern "C" fn playsrc_compile_map(
             model_bounds,
         )
         .map_err(|_| 5_u32)?;
-        let mut session =
-            playsrc_tf2::Session::new(SharedWorld(collision.clone()), spawn.position, map);
+        let mut session = playsrc_tf2::Session::new(gameplay_world.clone(), spawn.position, map);
         session.set_movement_modifiers(playsrc_tf2::MovementModifiers {
             noclip_allowed: true,
             ..playsrc_tf2::MovementModifiers::default()
@@ -233,6 +443,8 @@ pub unsafe extern "C" fn playsrc_compile_map(
             visibility,
             area_state,
             collision,
+            gameplay_world,
+            collision_templates,
             bsp_sha,
             spawn,
             session,
@@ -262,6 +474,8 @@ pub unsafe extern "C" fn playsrc_compile_map(
             visibility,
             area_state,
             collision,
+            gameplay_world,
+            collision_templates,
             bsp_hash,
             spawn,
             session,
@@ -280,6 +494,11 @@ pub unsafe extern "C" fn playsrc_compile_map(
             area_state: Some(area_state),
             visibility_output: Vec::new(),
             collision: Some(collision),
+            gameplay_world: Some(gameplay_world),
+            collision_templates,
+            collision_revision: 1,
+            pushers: BTreeMap::new(),
+            latest_game_snapshot: None,
             hash,
             derived_hash,
             bsp_hash,
@@ -303,6 +522,11 @@ pub unsafe extern "C" fn playsrc_compile_map(
             area_state: None,
             visibility_output: Vec::new(),
             collision: None,
+            gameplay_world: None,
+            collision_templates: Vec::new(),
+            collision_revision: 0,
+            pushers: BTreeMap::new(),
+            latest_game_snapshot: None,
             hash: [0; 32],
             derived_hash: [0; 32],
             bsp_hash: [0; 32],
@@ -488,12 +712,14 @@ pub unsafe extern "C" fn playsrc_particle_output_copy(
 struct ModelPoseRequest {
     identity: u32,
     model: String,
+    item: Option<String>,
     activity: String,
     previous_elapsed: f32,
     elapsed: f32,
     skin: usize,
     lod: usize,
     bodygroups: Vec<usize>,
+    item_bodygroups: Vec<usize>,
 }
 
 #[unsafe(no_mangle)]
@@ -559,7 +785,7 @@ pub unsafe extern "C" fn playsrc_model_output_copy(
 
 fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
     let mut reader = ParticleReader { bytes, at: 0 };
-    if reader.take(4)? != b"PMRQ" || reader.u32()? != 1 {
+    if reader.take(4)? != b"PMRQ" || reader.u32()? != 2 {
         return Err(());
     }
     let count = reader.u32()? as usize;
@@ -570,7 +796,17 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
     let mut identities = std::collections::BTreeSet::new();
     for _ in 0..count {
         let identity = reader.u32()?;
+        let kind = reader.u8()?;
+        if kind > 1 || reader.take(3)? != [0; 3] {
+            return Err(());
+        }
         let model = reader.text()?.to_ascii_lowercase();
+        let item_text = reader.text()?.to_ascii_lowercase();
+        let item = match kind {
+            0 if item_text.is_empty() => None,
+            1 if !item_text.is_empty() => Some(item_text),
+            _ => return Err(()),
+        };
         let activity = reader.text()?;
         let previous_elapsed = reader.f32()?;
         let elapsed = reader.f32()?;
@@ -590,15 +826,24 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
         let bodygroups = (0..bodygroup_count)
             .map(|_| reader.u32().map(|value| value as usize))
             .collect::<Result<Vec<_>, _>>()?;
+        let item_bodygroup_count = reader.u32()? as usize;
+        if item_bodygroup_count > 64 || (item.is_none() && item_bodygroup_count != 0) {
+            return Err(());
+        }
+        let item_bodygroups = (0..item_bodygroup_count)
+            .map(|_| reader.u32().map(|value| value as usize))
+            .collect::<Result<Vec<_>, _>>()?;
         requests.push(ModelPoseRequest {
             identity,
             model,
+            item,
             activity,
             previous_elapsed,
             elapsed,
             skin,
             lod,
             bodygroups,
+            item_bodygroups,
         });
     }
     (reader.at == bytes.len()).then_some(requests).ok_or(())
@@ -618,8 +863,9 @@ fn encode_model_poses(
     requests: &[ModelPoseRequest],
 ) -> Result<Vec<u8>, ()> {
     let mut out = b"PMPO".to_vec();
-    out.extend_from_slice(&1u32.to_le_bytes());
-    out.extend_from_slice(&u32::try_from(requests.len()).map_err(|_| ())?.to_le_bytes());
+    out.extend_from_slice(&2u32.to_le_bytes());
+    out.extend_from_slice(&0_u32.to_le_bytes());
+    let mut output_count = 0_u32;
     for request in requests {
         let model = models.get(&request.model).ok_or(())?;
         let sequence =
@@ -640,7 +886,7 @@ fn encode_model_poses(
             &playsrc_studio_model::AnimationState {
                 base_sequence: sequence,
                 cycle: playsrc_studio_model::Float32(cycle.to_bits()),
-                pose_parameters,
+                pose_parameters: pose_parameters.clone(),
                 layers: Vec::new(),
             },
             playsrc_studio_model::Float32(request.elapsed.to_bits()),
@@ -660,72 +906,153 @@ fn encode_model_poses(
             playsrc_studio_model::Float32(cycle.to_bits()),
         )
         .map_err(|_| ())?;
-        out.extend_from_slice(&request.identity.to_le_bytes());
-        pbytes(&mut out, request.model.as_bytes())?;
-        pbytes(&mut out, request.activity.as_bytes())?;
-        out.extend_from_slice(&u32::try_from(sequence).map_err(|_| ())?.to_le_bytes());
-        for value in [
-            timing.frames_per_second,
-            timing.weighted_frame_count,
-            timing.cycles_per_second,
-            timing.duration_seconds,
-        ] {
-            out.extend_from_slice(&value.0.to_le_bytes());
-        }
-        out.extend_from_slice(&[u8::from(timing.looping), 0, 0, 0]);
-        out.extend_from_slice(&previous_cycle.to_le_bytes());
-        out.extend_from_slice(&cycle.to_le_bytes());
-        out.extend_from_slice(&u32::try_from(events.len()).map_err(|_| ())?.to_le_bytes());
-        for event in events {
-            out.extend_from_slice(&u32::try_from(event.index).map_err(|_| ())?.to_le_bytes());
-            out.extend_from_slice(&event.cycle.0.to_le_bytes());
-            out.extend_from_slice(&event.event.to_le_bytes());
-            out.extend_from_slice(&event.event_type.to_le_bytes());
-            out.extend_from_slice(&event.options);
-            pbytes(&mut out, &event.name)?;
-        }
-        out.extend_from_slice(&u32::try_from(selected.len()).map_err(|_| ())?.to_le_bytes());
-        for selected in selected {
-            let primitive = model.geometry.get(selected.primitive).ok_or(())?;
-            let (positions, normals, tangents) = posed_vertices(model, primitive, &pose)?;
-            out.extend_from_slice(
-                &u32::try_from(selected.primitive)
-                    .map_err(|_| ())?
-                    .to_le_bytes(),
-            );
-            out.extend_from_slice(
-                &u32::try_from(selected.material)
-                    .map_err(|_| ())?
-                    .to_le_bytes(),
-            );
-            out.extend_from_slice(
-                &u32::try_from(positions.len())
-                    .map_err(|_| ())?
-                    .to_le_bytes(),
-            );
-            for ((position, normal), tangent) in positions.iter().zip(&normals).zip(&tangents) {
-                for value in position.iter().chain(normal).chain(tangent) {
-                    out.extend_from_slice(&value.to_le_bytes());
-                }
-            }
-        }
-        out.extend_from_slice(
-            &u32::try_from(pose.attachments.len())
-                .map_err(|_| ())?
-                .to_le_bytes(),
-        );
-        for attachment in &pose.attachments {
-            pbytes(&mut out, &attachment.name)?;
-            out.extend_from_slice(&[u8::from(attachment.world_aligned), 0, 0, 0]);
-            for value in attachment.model_transform.0 {
-                out.extend_from_slice(&value.0.to_le_bytes());
-            }
+        if let Some(item_identity) = request.item.as_ref() {
+            let item = models.get(item_identity).ok_or(())?;
+            let composition = playsrc_studio_model::compose_viewmodel(
+                model,
+                item,
+                &playsrc_studio_model::ViewModelCompositionRequest {
+                    translated_activity: request.activity.as_bytes().to_vec(),
+                    hand_sequence: sequence,
+                    cycle: playsrc_studio_model::Float32(cycle.to_bits()),
+                    time: playsrc_studio_model::Float32(request.elapsed.to_bits()),
+                    hand_pose_parameters: pose_parameters,
+                    hand_layers: Vec::new(),
+                    skin: request.skin,
+                    hand_bodygroups: request.bodygroups.clone(),
+                    item_bodygroups: request.item_bodygroups.clone(),
+                    lod: request.lod,
+                },
+            )
+            .map_err(|_| ())?;
+            encode_model_pose_part(
+                &mut out,
+                request,
+                1,
+                model,
+                sequence,
+                timing,
+                previous_cycle,
+                cycle,
+                &events,
+                &composition.hand.pose,
+                &composition.hand.primitives,
+            )?;
+            encode_model_pose_part(
+                &mut out,
+                request,
+                2,
+                item,
+                sequence,
+                timing,
+                previous_cycle,
+                cycle,
+                &events,
+                &composition.item.pose,
+                &composition.item.primitives,
+            )?;
+            output_count = output_count.checked_add(2).ok_or(())?;
+        } else {
+            encode_model_pose_part(
+                &mut out,
+                request,
+                0,
+                model,
+                sequence,
+                timing,
+                previous_cycle,
+                cycle,
+                &events,
+                &pose,
+                &selected,
+            )?;
+            output_count = output_count.checked_add(1).ok_or(())?;
         }
         if out.len() > 64 * 1024 * 1024 {
             return Err(());
         }
     }
+    out[8..12].copy_from_slice(&output_count.to_le_bytes());
     Ok(out)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_model_pose_part(
+    out: &mut Vec<u8>,
+    request: &ModelPoseRequest,
+    role: u8,
+    model: &playsrc_studio_model::PresentationModel,
+    sequence: usize,
+    timing: playsrc_studio_model::SequenceTiming,
+    previous_cycle: f32,
+    cycle: f32,
+    events: &[&playsrc_studio_model::SequenceEvent],
+    pose: &playsrc_studio_model::SampledPose,
+    selected: &[playsrc_studio_model::SelectedPrimitive],
+) -> Result<(), ()> {
+    out.extend_from_slice(&request.identity.to_le_bytes());
+    out.extend_from_slice(&[role, 0, 0, 0]);
+    pbytes(out, model.identity.as_bytes())?;
+    pbytes(out, request.activity.as_bytes())?;
+    out.extend_from_slice(&u32::try_from(sequence).map_err(|_| ())?.to_le_bytes());
+    for value in [
+        timing.frames_per_second,
+        timing.weighted_frame_count,
+        timing.cycles_per_second,
+        timing.duration_seconds,
+    ] {
+        out.extend_from_slice(&value.0.to_le_bytes());
+    }
+    out.extend_from_slice(&[u8::from(timing.looping), 0, 0, 0]);
+    out.extend_from_slice(&previous_cycle.to_le_bytes());
+    out.extend_from_slice(&cycle.to_le_bytes());
+    out.extend_from_slice(&u32::try_from(events.len()).map_err(|_| ())?.to_le_bytes());
+    for event in events {
+        out.extend_from_slice(&u32::try_from(event.index).map_err(|_| ())?.to_le_bytes());
+        out.extend_from_slice(&event.cycle.0.to_le_bytes());
+        out.extend_from_slice(&event.event.to_le_bytes());
+        out.extend_from_slice(&event.event_type.to_le_bytes());
+        out.extend_from_slice(&event.options);
+        pbytes(out, &event.name)?;
+    }
+    out.extend_from_slice(&u32::try_from(selected.len()).map_err(|_| ())?.to_le_bytes());
+    for selected in selected {
+        let primitive = model.geometry.get(selected.primitive).ok_or(())?;
+        let (positions, normals, tangents) = posed_vertices(model, primitive, pose)?;
+        out.extend_from_slice(
+            &u32::try_from(selected.primitive)
+                .map_err(|_| ())?
+                .to_le_bytes(),
+        );
+        out.extend_from_slice(
+            &u32::try_from(selected.material)
+                .map_err(|_| ())?
+                .to_le_bytes(),
+        );
+        out.extend_from_slice(
+            &u32::try_from(positions.len())
+                .map_err(|_| ())?
+                .to_le_bytes(),
+        );
+        for ((position, normal), tangent) in positions.iter().zip(&normals).zip(&tangents) {
+            for value in position.iter().chain(normal).chain(tangent) {
+                out.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+    }
+    out.extend_from_slice(
+        &u32::try_from(pose.attachments.len())
+            .map_err(|_| ())?
+            .to_le_bytes(),
+    );
+    for attachment in &pose.attachments {
+        pbytes(out, &attachment.name)?;
+        out.extend_from_slice(&[u8::from(attachment.world_aligned), 0, 0, 0]);
+        for value in attachment.model_transform.0 {
+            out.extend_from_slice(&value.0.to_le_bytes());
+        }
+    }
+    Ok(())
 }
 #[unsafe(no_mangle)]
 /// # Safety
@@ -898,6 +1225,11 @@ pub extern "C" fn playsrc_dispose(handle: u32) -> u32 {
     slot.area_state = None;
     slot.visibility_output.clear();
     slot.collision = None;
+    slot.gameplay_world = None;
+    slot.collision_templates.clear();
+    slot.collision_revision = 0;
+    slot.pushers.clear();
+    slot.latest_game_snapshot = None;
     slot.hash = [0; 32];
     slot.derived_hash = [0; 32];
     slot.bsp_hash = [0; 32];
@@ -910,7 +1242,7 @@ pub extern "C" fn playsrc_dispose(handle: u32) -> u32 {
 
 #[unsafe(no_mangle)]
 /// # Safety
-/// `pointer` must identify one complete version-3 gameplay transaction in this module's memory.
+/// `pointer` must identify one complete version-4 gameplay transaction in this module's memory.
 pub unsafe extern "C" fn playsrc_game_advance(
     handle: u32,
     pointer: *const u8,
@@ -934,46 +1266,201 @@ pub unsafe extern "C" fn playsrc_game_advance(
     if slot.generation != generation {
         return 0;
     }
-    let Some(session) = slot.session.as_mut() else {
+    let Some(session) = slot.session.as_ref() else {
         return 0;
     };
     let mut candidate = session.clone();
+    let Some(collision) = slot.collision.clone() else {
+        return 0;
+    };
+    let Some(gameplay_world) = slot.gameplay_world.clone() else {
+        return 0;
+    };
+    let mut collision_transaction = CollisionSnapshotTransaction::new(gameplay_world.clone());
+    let templates = slot.collision_templates.clone();
+    let mut collision_revision = slot.collision_revision;
+    let mut pushers = slot.pushers.clone();
+    let mut latest_game_snapshot = slot.latest_game_snapshot.clone();
     let mut snapshot: Option<playsrc_tf2::Snapshot> = None;
     let mut producer: Option<playsrc_tf2::ProducerSnapshot> = None;
+    let mut random_draws = Vec::new();
+    let mut audio_events = Vec::new();
+    let mut consumed_rocket_results = Vec::new();
+    let mut consumed_mover_results = Vec::new();
+    let mut collision_snapshot_bytes = Vec::new();
     for index in 0..tick_count {
-        let mover_phase = if index == 0 && !input.mover_results.is_empty() {
-            match candidate.apply_mover_results(&input.mover_results) {
-                Ok(phase) => Some(phase),
+        let pending_movers = candidate
+            .mover_requests()
+            .iter()
+            .filter(|request| !pushers.contains_key(&request.request_id))
+            .copied()
+            .collect::<Vec<_>>();
+        if !pending_movers.is_empty() {
+            for request in pending_movers {
+                let angles = latest_game_snapshot
+                    .as_ref()
+                    .and_then(|snapshot| {
+                        snapshot
+                            .entity_transforms
+                            .iter()
+                            .find(|transform| transform.identity == request.entity)
+                    })
+                    .map_or([0.0; 3], |transform| transform.angles);
+                let input = playsrc_movement::LinearPusherRequest {
+                    request_id: request.request_id,
+                    identity: u64::from(request.entity),
+                    start: request.start,
+                    angles,
+                    destination: request.destination,
+                    speed: request.speed,
+                };
+                let pusher = match playsrc_movement::PusherSnapshot::start(
+                    collision_revision,
+                    std::slice::from_ref(&input),
+                    playsrc_movement::PusherLimits::default(),
+                ) {
+                    Ok(value) => value,
+                    Err(_) => return 0,
+                };
+                pushers.insert(request.request_id, pusher);
+            }
+        }
+        let mut transforms = BTreeMap::new();
+        let mut velocities = BTreeMap::new();
+        let current_revision = collision_revision.saturating_add(1);
+        let current_collision = match compile_collision_snapshot(
+            &collision,
+            &templates,
+            current_revision,
+            latest_game_snapshot.as_ref(),
+            &transforms,
+            &velocities,
+        ) {
+            Ok(value) => value,
+            Err(_) => return 0,
+        };
+        let mut mover_phase = playsrc_tf2::MapPhase::default();
+        if !pushers.is_empty() {
+            let movement = candidate.movement_state();
+            let hull = candidate.last_movement_result().map_or_else(
+                || {
+                    movement.active_hull(
+                        playsrc_tf2::MovementPolicy {
+                            class: candidate.producer_snapshot().class,
+                            modifiers: playsrc_tf2::MovementModifiers {
+                                noclip_allowed: true,
+                                ..playsrc_tf2::MovementModifiers::default()
+                            },
+                        }
+                        .resolve(),
+                    )
+                },
+                |result| result.selected_hull,
+            );
+            let subjects = [playsrc_movement::PushSubject {
+                identity: u64::from(playsrc_tf2::PLAYER_IDENTITY),
+                root_identity: u64::from(playsrc_tf2::PLAYER_IDENTITY),
+                position: movement.position,
+                hull,
+                mask: playsrc_movement::Configuration::default().solid_mask,
+                collision_group: 0,
+                support: movement.ground.and_then(|ground| ground.support),
+                pushability: playsrc_movement::Pushability::Pushable,
+                solid: movement.mode == playsrc_movement::Mode::Walk,
+                point_sized: false,
+                volume_contents: false,
+                unblockable: false,
+            }];
+            let next_revision = current_revision.saturating_add(1);
+            let mut next_pushers = BTreeMap::new();
+            for (request_id, prior) in std::mem::take(&mut pushers) {
+                let frame = match playsrc_movement::advance_linear_pushers(
+                    &collision,
+                    &current_collision,
+                    &prior,
+                    next_revision,
+                    &subjects,
+                    playsrc_movement::Configuration::default().tick_interval,
+                    |_, _| true,
+                    |_, _| true,
+                ) {
+                    Ok(value) => value,
+                    Err(_) => return 0,
+                };
+                let Some(records) = mover_records(&frame) else {
+                    return 0;
+                };
+                for record in &records {
+                    match candidate.apply_mover_results(std::slice::from_ref(record)) {
+                        Ok(phase) => mover_phase.append(phase),
+                        Err(_) => return 0,
+                    }
+                }
+                for result in &frame.results {
+                    transforms.insert(result.identity, result.transform);
+                    velocities.insert(result.identity, result.trajectory_velocity);
+                }
+                consumed_mover_results.extend(records);
+                if frame.next.active_count() != 0 {
+                    next_pushers.insert(request_id, frame.next);
+                }
+            }
+            collision_revision = next_revision;
+            pushers = next_pushers;
+        } else {
+            collision_revision = current_revision;
+        }
+        let collision_snapshot = if transforms.is_empty() && velocities.is_empty() {
+            current_collision
+        } else {
+            match compile_collision_snapshot(
+                &collision,
+                &templates,
+                collision_revision,
+                latest_game_snapshot.as_ref(),
+                &transforms,
+                &velocities,
+            ) {
+                Ok(value) => value,
                 Err(_) => return 0,
             }
-        } else {
-            None
         };
+        collision_snapshot_bytes = match collision_snapshot.snapshot_bytes() {
+            Ok(value) => value,
+            Err(_) => return 0,
+        };
+        let Some(rocket_results) = resolve_rocket_traces(
+            &collision,
+            &collision_snapshot,
+            candidate.rocket_trace_requests(),
+            candidate.producer_snapshot().tick,
+        ) else {
+            return 0;
+        };
+        consumed_rocket_results.extend_from_slice(&rocket_results);
+        gameplay_world.replace_snapshot(collision_snapshot);
         let physics_results = if index == 0 {
             input.physics_results.as_slice()
         } else {
             &[]
         };
-        let rocket_results = if index == 0 {
-            input.rocket_results.as_slice()
-        } else {
-            &[]
-        };
-        let sticky_random = (index == 0).then_some(input.sticky_random).flatten();
-        match candidate.advance_with_external(
-            input.command,
-            physics_results,
-            rocket_results,
-            sticky_random,
-        ) {
+        match candidate.advance_with_external(input.command, physics_results, &rocket_results, None)
+        {
             Ok(mut value) => {
                 let mut current_producer = candidate.producer_snapshot();
-                if let Some(mut phase) = mover_phase {
-                    value.entity_events.splice(0..0, phase.events.drain(..));
-                    current_producer.map_effects.splice(0..0, phase.effects);
+                if !mover_phase.events.is_empty()
+                    || !mover_phase.effects.is_empty()
+                    || !mover_phase.mover_requests.is_empty()
+                {
+                    value
+                        .entity_events
+                        .splice(0..0, mover_phase.events.drain(..));
+                    current_producer
+                        .map_effects
+                        .splice(0..0, mover_phase.effects);
                     current_producer
                         .mover_requests
-                        .splice(0..0, phase.mover_requests);
+                        .splice(0..0, mover_phase.mover_requests);
                 }
                 if let Some(previous) = snapshot.as_mut() {
                     value
@@ -999,6 +1486,9 @@ pub unsafe extern "C" fn playsrc_game_advance(
                 if let Some(previous) = producer.take() {
                     merge_producer(&mut current_producer, previous);
                 }
+                random_draws.extend_from_slice(candidate.random_draws());
+                audio_events.extend_from_slice(candidate.audio_events());
+                latest_game_snapshot = Some(value.clone());
                 producer = Some(current_producer);
                 snapshot = Some(value);
             }
@@ -1012,12 +1502,117 @@ pub unsafe extern "C" fn playsrc_game_advance(
         &producer,
         candidate.respawn_touch_count(),
         candidate.last_movement_result(),
+        SnapshotExtensions {
+            random_state: candidate.random_state(),
+            random_draws: &random_draws,
+            audio_events: &audio_events,
+            rocket_results: &consumed_rocket_results,
+            mover_results: &consumed_mover_results,
+            collision_snapshot: &collision_snapshot_bytes,
+        },
     ) else {
         return 0;
     };
-    *session = candidate;
+    slot.session = Some(candidate);
+    slot.pushers = pushers;
+    slot.latest_game_snapshot = latest_game_snapshot;
+    slot.collision_revision = collision_revision;
     slot.snapshot = encoded;
+    slot.error = 0;
+    collision_transaction.committed = true;
     1
+}
+
+fn mover_records(frame: &playsrc_movement::PusherFrame) -> Option<Vec<playsrc_tf2::MoverResult>> {
+    let mut output = Vec::new();
+    for contact in &frame.contacts {
+        let result = frame
+            .results
+            .iter()
+            .find(|result| result.identity == contact.pusher)?;
+        output.push(playsrc_tf2::MoverResult {
+            request_id: result.request_id,
+            entity: u32::try_from(result.identity).ok()?,
+            kind: match contact.kind {
+                playsrc_movement::BlockContactKind::End => playsrc_tf2::MoverResultKind::BlockedEnd,
+                playsrc_movement::BlockContactKind::Start => {
+                    playsrc_tf2::MoverResultKind::BlockedStart
+                }
+                playsrc_movement::BlockContactKind::Stay => {
+                    playsrc_tf2::MoverResultKind::BlockedStay
+                }
+            },
+            transform: playsrc_entity::Transform {
+                origin: result.transform.origin,
+                angles: result.transform.angles,
+            },
+            carry: [0.0; 3],
+        });
+    }
+    for result in &frame.results {
+        let kind = match result.status {
+            playsrc_movement::PusherStatus::Progress => playsrc_tf2::MoverResultKind::Progress,
+            playsrc_movement::PusherStatus::Completed => playsrc_tf2::MoverResultKind::Completed,
+            playsrc_movement::PusherStatus::Blocked => continue,
+        };
+        let carry = result
+            .subject_moves
+            .iter()
+            .find(|moved| moved.subject == u64::from(playsrc_tf2::PLAYER_IDENTITY))
+            .map_or([0.0; 3], |moved| moved.displacement);
+        output.push(playsrc_tf2::MoverResult {
+            request_id: result.request_id,
+            entity: u32::try_from(result.identity).ok()?,
+            kind,
+            transform: playsrc_entity::Transform {
+                origin: result.transform.origin,
+                angles: result.transform.angles,
+            },
+            carry,
+        });
+    }
+    Some(output)
+}
+
+fn resolve_rocket_traces(
+    world: &playsrc_collision::World,
+    snapshot: &playsrc_collision::Snapshot,
+    requests: &[playsrc_tf2::RocketTraceRequest],
+    result_tick: u64,
+) -> Option<Vec<playsrc_tf2::RocketTraceResult>> {
+    requests
+        .iter()
+        .map(|request| {
+            let trace = world
+                .trace_snapshot_ray(
+                    snapshot,
+                    playsrc_collision::SnapshotRayRequest {
+                        start: request.start,
+                        end: request.end,
+                        mask: request.mask,
+                        scope: playsrc_collision::TraceScope::Everything,
+                        ignored: &[u64::from(playsrc_tf2::PLAYER_IDENTITY)],
+                    },
+                    |_| true,
+                )
+                .ok()?;
+            let solid = trace.did_hit();
+            let sky = solid && trace.is_sky();
+            Some(playsrc_tf2::RocketTraceResult {
+                projectile: request.projectile,
+                tick: result_tick,
+                end: trace.end,
+                solid,
+                sky,
+                normal: if solid && !sky {
+                    Some(trace.plane?.normal)
+                } else {
+                    None
+                },
+                direct_target: None,
+            })
+        })
+        .collect()
 }
 
 fn merge_producer(
@@ -1160,11 +1755,21 @@ pub unsafe extern "C" fn playsrc_snapshot_copy(
     .unwrap_or(0)
 }
 
+struct SnapshotExtensions<'a> {
+    random_state: playsrc_tf2::Tf2RandomState,
+    random_draws: &'a [playsrc_tf2::RandomDraw],
+    audio_events: &'a [playsrc_tf2::AudioEvent],
+    rocket_results: &'a [playsrc_tf2::RocketTraceResult],
+    mover_results: &'a [playsrc_tf2::MoverResult],
+    collision_snapshot: &'a [u8],
+}
+
 fn encode_snapshot(
     snapshot: &playsrc_tf2::Snapshot,
     producer: &playsrc_tf2::ProducerSnapshot,
     respawn_touch_count: u32,
     movement_tick: Option<&playsrc_movement::StepResult>,
+    extensions: SnapshotExtensions<'_>,
 ) -> Option<Vec<u8>> {
     const MAX: usize = 64 * 1024 * 1024;
     let movement = snapshot.movement.snapshot_bytes();
@@ -1172,9 +1777,10 @@ fn encode_snapshot(
         Some(value) => encode_jump(value)?,
         None => Vec::new(),
     };
+    let random_state = encode_random_state(extensions.random_state)?;
     let mut out = Vec::new();
     extend(&mut out, b"PSSN", MAX)?;
-    u32_field(&mut out, 5, MAX)?;
+    u32_field(&mut out, 6, MAX)?;
     u64_field(&mut out, snapshot.tick, MAX)?;
     extend(
         &mut out,
@@ -1240,6 +1846,18 @@ fn encode_snapshot(
         producer.map_effects.len(),
         producer.regenerate_animation_events.len(),
         2,
+    ] {
+        u32_field(&mut out, u32::try_from(count).ok()?, MAX)?;
+    }
+    for count in [
+        extensions.random_draws.len(),
+        extensions.audio_events.len(),
+        extensions.rocket_results.len(),
+        extensions.mover_results.len(),
+        extensions.collision_snapshot.len(),
+        random_state.len(),
+        0,
+        0,
     ] {
         u32_field(&mut out, u32::try_from(count).ok()?, MAX)?;
     }
@@ -1482,9 +2100,213 @@ fn encode_snapshot(
         u64_field(&mut out, event.close_tick, MAX)?;
     }
     extend(&mut out, &[1, 1, 0, 0, 2, 1, 0, 0], MAX)?;
+    extend(&mut out, &random_state, MAX)?;
+    for draw in extensions.random_draws {
+        encode_random_draw(&mut out, *draw, MAX)?;
+    }
+    for event in extensions.audio_events {
+        encode_audio_event(&mut out, *event, MAX)?;
+    }
+    for result in extensions.rocket_results {
+        encode_rocket_result(&mut out, *result, MAX)?;
+    }
+    for result in extensions.mover_results {
+        encode_mover_result(&mut out, *result, MAX)?;
+    }
+    extend(&mut out, extensions.collision_snapshot, MAX)?;
     extend(&mut out, &jump, MAX)?;
     encode_movement_tick(&mut out, movement_tick, MAX)?;
     Some(out)
+}
+
+fn encode_random_state(state: playsrc_tf2::Tf2RandomState) -> Option<Vec<u8>> {
+    let mut output = b"PRNG".to_vec();
+    output.extend_from_slice(&1_u32.to_le_bytes());
+    for stream in [state.authority, state.predicted_presentation] {
+        output.extend_from_slice(&stream.current.to_le_bytes());
+        output.extend_from_slice(&stream.shuffled.to_le_bytes());
+        for value in stream.table {
+            output.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+    output.extend_from_slice(&[
+        state.sound_selection.rocket_explosion_available,
+        state.sound_selection.sticky_explosion_available,
+        0,
+        0,
+    ]);
+    (output.len() == 284).then_some(output)
+}
+
+fn sound_definition_code(value: playsrc_tf2::SoundDefinition) -> u8 {
+    match value {
+        playsrc_tf2::SoundDefinition::RocketSingle => 1,
+        playsrc_tf2::SoundDefinition::OriginalSingle => 2,
+        playsrc_tf2::SoundDefinition::StickySingle => 3,
+        playsrc_tf2::SoundDefinition::RocketExplosion => 4,
+        playsrc_tf2::SoundDefinition::OriginalExplosion => 5,
+        playsrc_tf2::SoundDefinition::StickyExplosion => 6,
+    }
+}
+
+fn encode_random_draw(
+    output: &mut Vec<u8>,
+    draw: playsrc_tf2::RandomDraw,
+    limit: usize,
+) -> Option<()> {
+    let (decision, definition, phase) = match draw.decision {
+        playsrc_tf2::RandomDecision::SoundVolume { definition, phase } => {
+            (1, sound_definition_code(definition), phase)
+        }
+        playsrc_tf2::RandomDecision::SoundPitch { definition, phase } => {
+            (2, sound_definition_code(definition), phase)
+        }
+        playsrc_tf2::RandomDecision::SoundWave { definition, phase } => {
+            (3, sound_definition_code(definition), phase)
+        }
+        playsrc_tf2::RandomDecision::SoundLevel { definition, phase } => {
+            (4, sound_definition_code(definition), phase)
+        }
+        playsrc_tf2::RandomDecision::StickyRightVelocity => {
+            (5, 0, playsrc_tf2::SoundQueryPhase::Inspect)
+        }
+        playsrc_tf2::RandomDecision::StickyUpVelocity => {
+            (6, 0, playsrc_tf2::SoundQueryPhase::Inspect)
+        }
+        playsrc_tf2::RandomDecision::StickyAngularY => {
+            (7, 0, playsrc_tf2::SoundQueryPhase::Inspect)
+        }
+    };
+    extend(
+        output,
+        &[
+            match draw.context {
+                playsrc_tf2::RandomContext::Authority => 1,
+                playsrc_tf2::RandomContext::PredictedPresentation => 2,
+            },
+            decision,
+            definition,
+            if definition == 0 {
+                0
+            } else {
+                match phase {
+                    playsrc_tf2::SoundQueryPhase::Inspect => 1,
+                    playsrc_tf2::SoundQueryPhase::Emit => 2,
+                }
+            },
+        ],
+        limit,
+    )?;
+    i32_field(output, draw.raw, limit)?;
+    let (kind, result) = match draw.result {
+        playsrc_tf2::RandomResult::FloatBits(value) => (1, value),
+        playsrc_tf2::RandomResult::Integer(value) => (2, value as u32),
+        playsrc_tf2::RandomResult::RejectedIntegerCandidate => (3, 0),
+    };
+    extend(output, &[kind, 0, 0, 0], limit)?;
+    u32_field(output, result, limit)
+}
+
+fn encode_audio_event(
+    output: &mut Vec<u8>,
+    event: playsrc_tf2::AudioEvent,
+    limit: usize,
+) -> Option<()> {
+    u64_field(output, event.tick, limit)?;
+    u16_field(output, event.ordinal, limit)?;
+    extend(
+        output,
+        &[
+            match event.identity {
+                playsrc_tf2::AudioEventIdentity::WeaponSingle => 1,
+                playsrc_tf2::AudioEventIdentity::ExplosionSpecial1 => 2,
+            },
+            sound_definition_code(event.definition),
+            match event.source_kind {
+                playsrc_tf2::AudioSourceKind::Entity => 1,
+                playsrc_tf2::AudioSourceKind::World => 2,
+            },
+            u8::from(event.owner_identity.is_some()),
+            event.samples.wave,
+            0,
+        ],
+        limit,
+    )?;
+    u32_field(output, event.source_identity, limit)?;
+    u32_field(output, event.owner_identity.unwrap_or(u32::MAX), limit)?;
+    floats(
+        output,
+        event.position.into_iter().chain([
+            event.samples.volume,
+            event.samples.pitch,
+            event.samples.sound_level,
+        ]),
+        limit,
+    )?;
+    u32_field(output, 0, limit)
+}
+
+fn encode_rocket_result(
+    output: &mut Vec<u8>,
+    result: playsrc_tf2::RocketTraceResult,
+    limit: usize,
+) -> Option<()> {
+    u32_field(output, result.projectile, limit)?;
+    u64_field(output, result.tick, limit)?;
+    extend(
+        output,
+        &[
+            u8::from(result.solid),
+            u8::from(result.sky),
+            u8::from(result.normal.is_some()),
+            u8::from(result.direct_target.is_some()),
+        ],
+        limit,
+    )?;
+    floats(
+        output,
+        result
+            .end
+            .into_iter()
+            .chain(result.normal.unwrap_or([0.0; 3])),
+        limit,
+    )?;
+    u32_field(output, result.direct_target.unwrap_or(u32::MAX), limit)
+}
+
+fn encode_mover_result(
+    output: &mut Vec<u8>,
+    result: playsrc_tf2::MoverResult,
+    limit: usize,
+) -> Option<()> {
+    u64_field(output, result.request_id, limit)?;
+    u32_field(output, result.entity, limit)?;
+    extend(
+        output,
+        &[
+            match result.kind {
+                playsrc_tf2::MoverResultKind::Progress => 1,
+                playsrc_tf2::MoverResultKind::Completed => 2,
+                playsrc_tf2::MoverResultKind::BlockedStart => 3,
+                playsrc_tf2::MoverResultKind::BlockedStay => 4,
+                playsrc_tf2::MoverResultKind::BlockedEnd => 5,
+            },
+            0,
+            0,
+            0,
+        ],
+        limit,
+    )?;
+    floats(
+        output,
+        result
+            .transform
+            .origin
+            .into_iter()
+            .chain(result.transform.angles)
+            .chain(result.carry),
+        limit,
+    )
 }
 
 fn encode_map_effect(
@@ -1675,6 +2497,10 @@ fn u16_field(output: &mut Vec<u8>, value: u16, limit: usize) -> Option<()> {
 }
 
 fn u32_field(output: &mut Vec<u8>, value: u32, limit: usize) -> Option<()> {
+    extend(output, &value.to_le_bytes(), limit)
+}
+
+fn i32_field(output: &mut Vec<u8>, value: i32, limit: usize) -> Option<()> {
     extend(output, &value.to_le_bytes(), limit)
 }
 
@@ -2259,6 +3085,159 @@ fn entity_vector(entity: &playsrc_entity::Entity, key: &[u8]) -> Result<[f32; 3]
     Ok([values[0], values[1], values[2]])
 }
 
+fn entity_scalar<'a>(entity: &'a playsrc_entity::Entity, key: &[u8]) -> Option<&'a [u8]> {
+    entity
+        .pairs
+        .iter()
+        .find(|pair| pair.key.eq_ignore_ascii_case(key))
+        .map(|pair| pair.value.as_slice())
+}
+
+fn collision_object_templates(
+    graph: &playsrc_entity::Graph,
+    bundle: &BTreeMap<String, &[u8]>,
+) -> Result<Vec<CollisionObjectTemplate>, ()> {
+    const CONTENTS_SOLID: u32 = 0x1;
+    let limits = playsrc_collision::SnapshotLimits::default();
+    let mut output = Vec::new();
+    for entity in &graph.entities {
+        let identity = u64::try_from(entity.index).map_err(|_| ())?;
+        if identity == 0 {
+            continue;
+        }
+        let transform = playsrc_collision::Transform {
+            origin: entity_vector(entity, b"origin")?,
+            angles: entity_vector(entity, b"angles")?,
+        };
+        if let Some(model) = entity.model.as_deref()
+            && let Some(index) = model.strip_prefix(b"*")
+        {
+            if !entity.classname.as_deref().is_some_and(|classname| {
+                classname.eq_ignore_ascii_case(b"func_door")
+                    || classname.eq_ignore_ascii_case(b"func_button")
+                    || classname.eq_ignore_ascii_case(b"func_movelinear")
+            }) {
+                continue;
+            }
+            let model = std::str::from_utf8(index)
+                .map_err(|_| ())?
+                .parse::<usize>()
+                .map_err(|_| ())?;
+            output.push(CollisionObjectTemplate {
+                input: playsrc_collision::ObjectInput {
+                    identity,
+                    role: playsrc_collision::ObjectRole::Entity,
+                    enabled: true,
+                    transform,
+                    linear_velocity: [0.0; 3],
+                    angular_velocity: [0.0; 3],
+                    collision_group: 0,
+                    contents: 0,
+                    surface_flags: 0,
+                    shape: playsrc_collision::SnapshotShape::BrushModel { model },
+                },
+                runtime_transform: true,
+            });
+            continue;
+        }
+        if !entity
+            .classname
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case(b"prop_dynamic"))
+            || entity_scalar(entity, b"solid") != Some(b"6".as_slice())
+        {
+            continue;
+        }
+        let model = std::str::from_utf8(entity.model.as_deref().ok_or(())?)
+            .map_err(|_| ())?
+            .to_ascii_lowercase();
+        let phy_path = model.strip_suffix(".mdl").ok_or(())?.to_owned() + ".phy";
+        let Some(bytes) = bundle.get(&phy_path).copied() else {
+            continue;
+        };
+        let document = load_model(&model, bundle)?;
+        let asset = playsrc_phy::parse_standalone(
+            bytes,
+            playsrc_phy::Profile::SourcePcPolygon,
+            playsrc_phy::Limits::default(),
+        )
+        .map_err(|_| ())?;
+        if asset.header.as_ref().map(|header| header.checksum) != Some(document.checksum) {
+            return Err(());
+        }
+        let shape_identity =
+            u64::from_le_bytes(Sha256::digest(bytes)[..8].try_into().map_err(|_| ())?);
+        let shape =
+            playsrc_collision::PhysicsShape::from_phy(shape_identity, &asset, 0, limits, |_| {
+                CONTENTS_SOLID
+            })
+            .map_err(|_| ())?;
+        output.push(CollisionObjectTemplate {
+            input: playsrc_collision::ObjectInput {
+                identity,
+                role: playsrc_collision::ObjectRole::Entity,
+                enabled: true,
+                transform,
+                linear_velocity: [0.0; 3],
+                angular_velocity: [0.0; 3],
+                collision_group: 0,
+                contents: CONTENTS_SOLID,
+                surface_flags: 0,
+                shape: playsrc_collision::SnapshotShape::Physics(shape),
+            },
+            runtime_transform: false,
+        });
+    }
+    Ok(output)
+}
+
+fn compile_collision_snapshot(
+    world: &playsrc_collision::World,
+    templates: &[CollisionObjectTemplate],
+    revision: u64,
+    latest: Option<&playsrc_tf2::Snapshot>,
+    transform_overrides: &BTreeMap<u64, playsrc_collision::Transform>,
+    velocity_overrides: &BTreeMap<u64, [f32; 3]>,
+) -> Result<playsrc_collision::Snapshot, playsrc_collision::Error> {
+    let runtime_transforms = latest
+        .into_iter()
+        .flat_map(|snapshot| &snapshot.entity_transforms)
+        .map(|value| {
+            (
+                u64::from(value.identity),
+                playsrc_collision::Transform {
+                    origin: value.position,
+                    angles: value.angles,
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let inputs = templates
+        .iter()
+        .map(|template| {
+            let mut input = template.input.clone();
+            if template.runtime_transform
+                && let Some(transform) = runtime_transforms.get(&input.identity)
+            {
+                input.transform = *transform;
+            }
+            if let Some(transform) = transform_overrides.get(&input.identity) {
+                input.transform = *transform;
+            }
+            if let Some(velocity) = velocity_overrides.get(&input.identity) {
+                input.linear_velocity = *velocity;
+            }
+            input
+        })
+        .collect();
+    playsrc_collision::Snapshot::compile(
+        world,
+        revision,
+        inputs,
+        playsrc_collision::SnapshotLimits::default(),
+    )
+}
+
 fn resolve_models(
     graph: &playsrc_entity::Graph,
     studio_models: &BTreeMap<String, playsrc_studio_model::PresentationModel>,
@@ -2522,17 +3501,14 @@ fn build_model_presentation(
     identity: &str,
     bundle: &BTreeMap<String, &[u8]>,
     profile: playsrc_map::LightingProfile,
+    presentation_profile: playsrc_studio_model::PresentationProfile,
 ) -> Result<Box<playsrc_studio_model::PresentationArtifact>, ()> {
     let document = load_model(identity, bundle)?;
     let mut responses = Vec::new();
     loop {
         match playsrc_studio_model::build_presentation(
             &document,
-            if identity.contains("/v_models/") {
-                playsrc_studio_model::PresentationProfile::ViewModel
-            } else {
-                playsrc_studio_model::PresentationProfile::World
-            },
+            presentation_profile,
             &responses,
             playsrc_studio_model::PresentationLimits::default(),
             &playsrc_studio_model::CancellationToken::default(),
@@ -2752,6 +3728,592 @@ fn encode_material_states(
         .ok_or(())
 }
 
+#[derive(Clone)]
+struct EncodedTexturePlane {
+    identity: playsrc_material::TextureSubresourceIdentity,
+    width: u32,
+    height: u32,
+    rgba: Vec<u8>,
+}
+
+#[derive(Clone)]
+struct EncodedAuthoredTexture {
+    source_sha256: [u8; 32],
+    manifest: playsrc_material::TextureMetadataManifest,
+    scalar_encoding: playsrc_vtf::ScalarEncoding,
+    planes: Vec<EncodedTexturePlane>,
+}
+
+fn material_texture_manifest(
+    metadata: &playsrc_vtf::Metadata,
+) -> playsrc_material::TextureMetadataManifest {
+    let environment = playsrc_vtf::SamplingEnvironment {
+        shader_model: 90,
+        force_anisotropy: 1,
+        maximum_anisotropy: 16,
+        force_trilinear: false,
+    };
+    let sampling = playsrc_vtf::sampling_state(metadata, environment);
+    let face = |value| match value {
+        playsrc_vtf::Face::Right => playsrc_material::TextureFace::Right,
+        playsrc_vtf::Face::Left => playsrc_material::TextureFace::Left,
+        playsrc_vtf::Face::Back => playsrc_material::TextureFace::Back,
+        playsrc_vtf::Face::Front => playsrc_material::TextureFace::Front,
+        playsrc_vtf::Face::Up => playsrc_material::TextureFace::Up,
+        playsrc_vtf::Face::Down => playsrc_material::TextureFace::Down,
+        playsrc_vtf::Face::Sphere => playsrc_material::TextureFace::Sphere,
+    };
+    playsrc_material::TextureMetadataManifest {
+        width: metadata.width,
+        height: metadata.height,
+        depth: metadata.depth,
+        mip_count: metadata.mip_count,
+        frame_count: metadata.frame_count,
+        faces: metadata.faces.iter().copied().map(face).collect(),
+        sampling: playsrc_material::TextureSamplingState {
+            wrap_s: match sampling.wrap_s {
+                playsrc_vtf::WrapMode::Repeat => playsrc_material::TextureWrapMode::Repeat,
+                playsrc_vtf::WrapMode::Clamp => playsrc_material::TextureWrapMode::Clamp,
+                playsrc_vtf::WrapMode::Border => playsrc_material::TextureWrapMode::Border,
+            },
+            wrap_t: match sampling.wrap_t {
+                playsrc_vtf::WrapMode::Repeat => playsrc_material::TextureWrapMode::Repeat,
+                playsrc_vtf::WrapMode::Clamp => playsrc_material::TextureWrapMode::Clamp,
+                playsrc_vtf::WrapMode::Border => playsrc_material::TextureWrapMode::Border,
+            },
+            wrap_u: match sampling.wrap_u {
+                playsrc_vtf::WrapMode::Repeat => playsrc_material::TextureWrapMode::Repeat,
+                playsrc_vtf::WrapMode::Clamp => playsrc_material::TextureWrapMode::Clamp,
+                playsrc_vtf::WrapMode::Border => playsrc_material::TextureWrapMode::Border,
+            },
+            min_filter: match sampling.min_filter {
+                playsrc_vtf::MinFilter::Nearest => playsrc_material::TextureMinFilter::Nearest,
+                playsrc_vtf::MinFilter::Linear => playsrc_material::TextureMinFilter::Linear,
+                playsrc_vtf::MinFilter::LinearMipmapNearest => {
+                    playsrc_material::TextureMinFilter::LinearMipmapNearest
+                }
+                playsrc_vtf::MinFilter::LinearMipmapLinear => {
+                    playsrc_material::TextureMinFilter::LinearMipmapLinear
+                }
+                playsrc_vtf::MinFilter::Anisotropic => {
+                    playsrc_material::TextureMinFilter::Anisotropic
+                }
+            },
+            mag_filter: match sampling.mag_filter {
+                playsrc_vtf::MagFilter::Nearest => playsrc_material::TextureMagFilter::Nearest,
+                playsrc_vtf::MagFilter::Linear => playsrc_material::TextureMagFilter::Linear,
+                playsrc_vtf::MagFilter::Anisotropic => {
+                    playsrc_material::TextureMagFilter::Anisotropic
+                }
+            },
+            anisotropy_level: if sampling.min_filter == playsrc_vtf::MinFilter::Anisotropic
+                || sampling.mag_filter == playsrc_vtf::MagFilter::Anisotropic
+            {
+                (environment.maximum_anisotropy / 4).clamp(2, 8)
+            } else {
+                1
+            },
+            mipmapped: sampling.mipmapped,
+            no_lod: sampling.no_lod,
+            all_mips: sampling.all_mips,
+        },
+        subresources: metadata
+            .subresources
+            .iter()
+            .filter_map(|subresource| match subresource.identity {
+                playsrc_vtf::SubresourceIdentity::LowResolution => None,
+                playsrc_vtf::SubresourceIdentity::HighResolution {
+                    mip,
+                    frame,
+                    face: value,
+                    slice,
+                } => Some(playsrc_material::TextureSubresourceIdentity {
+                    mip,
+                    frame,
+                    face: face(value),
+                    slice,
+                }),
+            })
+            .collect(),
+    }
+}
+
+fn vtf_subresource(
+    identity: playsrc_material::TextureSubresourceIdentity,
+) -> playsrc_vtf::SubresourceIdentity {
+    playsrc_vtf::SubresourceIdentity::HighResolution {
+        mip: identity.mip,
+        frame: identity.frame,
+        face: match identity.face {
+            playsrc_material::TextureFace::Right => playsrc_vtf::Face::Right,
+            playsrc_material::TextureFace::Left => playsrc_vtf::Face::Left,
+            playsrc_material::TextureFace::Back => playsrc_vtf::Face::Back,
+            playsrc_material::TextureFace::Front => playsrc_vtf::Face::Front,
+            playsrc_material::TextureFace::Up => playsrc_vtf::Face::Up,
+            playsrc_material::TextureFace::Down => playsrc_vtf::Face::Down,
+            playsrc_material::TextureFace::Sphere => playsrc_vtf::Face::Sphere,
+        },
+        slice: identity.slice,
+    }
+}
+
+fn authored_texture(
+    path: &str,
+    bundle: &BTreeMap<String, &[u8]>,
+) -> Result<EncodedAuthoredTexture, ()> {
+    let bytes = *bundle.get(path).ok_or(())?;
+    let metadata = playsrc_vtf::inspect(
+        bytes,
+        playsrc_vtf::Dialect::Source2013Pc,
+        playsrc_vtf::Limits::default(),
+    )
+    .map_err(|_| ())?;
+    let manifest = material_texture_manifest(&metadata);
+    let mut evidence = Vec::with_capacity(manifest.subresources.len());
+    let mut planes = Vec::with_capacity(manifest.subresources.len());
+    let mut scalar_encoding = None;
+    for identity in &manifest.subresources {
+        let plane = playsrc_vtf::decode(
+            bytes,
+            playsrc_vtf::Dialect::Source2013Pc,
+            vtf_subresource(*identity),
+            playsrc_vtf::Limits::default(),
+        )
+        .map_err(|_| ())?;
+        if plane.row_order != playsrc_vtf::RowOrder::TopToBottom
+            || scalar_encoding.is_some_and(|value| value != plane.scalar_encoding)
+        {
+            return Err(());
+        }
+        scalar_encoding = Some(plane.scalar_encoding);
+        evidence.push(playsrc_material::AuthoredTexturePlane {
+            identity: *identity,
+            width: plane.width,
+            height: plane.height,
+            row_stride: plane.row_stride,
+            sample_bytes: plane.samples.len(),
+        });
+        let component_bytes = match plane.scalar_encoding {
+            playsrc_vtf::ScalarEncoding::U8 => 1,
+            playsrc_vtf::ScalarEncoding::F16 => 2,
+        };
+        let rgba = match plane.channel_layout {
+            playsrc_vtf::ChannelLayout::Rgba => plane.samples,
+            playsrc_vtf::ChannelLayout::Rgb => {
+                let mut output = Vec::with_capacity(
+                    plane.width as usize * plane.height as usize * 4 * component_bytes,
+                );
+                for pixel in plane.samples.chunks_exact(3 * component_bytes) {
+                    output.extend_from_slice(pixel);
+                    match plane.scalar_encoding {
+                        playsrc_vtf::ScalarEncoding::U8 => output.push(255),
+                        playsrc_vtf::ScalarEncoding::F16 => {
+                            output.extend_from_slice(&0x3c00_u16.to_le_bytes())
+                        }
+                    }
+                }
+                output
+            }
+        };
+        if rgba.len() != plane.width as usize * plane.height as usize * 4 * component_bytes {
+            return Err(());
+        }
+        planes.push(EncodedTexturePlane {
+            identity: *identity,
+            width: plane.width,
+            height: plane.height,
+            rgba,
+        });
+    }
+    let placeholder = playsrc_material::TextureRequest {
+        role: playsrc_material::TextureRole::Base,
+        parameter: b"$basetexture".to_vec(),
+        reference: path.as_bytes().to_vec(),
+        logical_path: Some(path.to_owned()),
+        disposition: playsrc_material::TextureDisposition::Source,
+        color_read: playsrc_material::TextureColorRead::Srgb,
+    };
+    let binding =
+        playsrc_material::bind_authored_texture(&placeholder, &manifest).map_err(|_| ())?;
+    playsrc_material::validate_authored_planes(&binding, &evidence).map_err(|_| ())?;
+    Ok(EncodedAuthoredTexture {
+        source_sha256: Sha256::digest(bytes).into(),
+        manifest,
+        scalar_encoding: scalar_encoding.ok_or(())?,
+        planes,
+    })
+}
+
+fn texture_role_code(role: playsrc_material::TextureRole) -> u8 {
+    role as u8
+}
+
+fn model_texture_role_code(role: playsrc_material::ModelTextureRole) -> u8 {
+    role as u8
+}
+
+fn color_read_code(value: playsrc_material::TextureColorRead) -> u8 {
+    match value {
+        playsrc_material::TextureColorRead::Srgb => 0,
+        playsrc_material::TextureColorRead::Linear => 1,
+        playsrc_material::TextureColorRead::FormatDependent => 2,
+    }
+}
+
+fn encode_model_materials(
+    out: &mut Vec<u8>,
+    models: &[(String, Box<playsrc_studio_model::PresentationArtifact>)],
+    bundle: &BTreeMap<String, &[u8]>,
+    profile: playsrc_map::LightingProfile,
+) -> Result<(), ()> {
+    let mut identities = std::collections::BTreeSet::new();
+    for (_, artifact) in models {
+        for material in &artifact.model.materials {
+            let Some(dependency) = artifact
+                .model
+                .dependencies
+                .get(material.material_dependency)
+            else {
+                return Err(());
+            };
+            identities.insert(dependency.logical_path.to_ascii_lowercase());
+        }
+    }
+    let mut materials = Vec::with_capacity(identities.len());
+    let mut textures = BTreeMap::new();
+    for identity in identities {
+        let material =
+            resolve_material_semantics(&identity, bundle, material_environment(profile, true))
+                .map_err(|_| ())?;
+        if material.model.is_none() {
+            return Err(());
+        }
+        for texture in &material.textures {
+            if texture.disposition != playsrc_material::TextureDisposition::Source {
+                continue;
+            }
+            let Some(logical_path) = texture.logical_path.as_ref() else {
+                return Err(());
+            };
+            let path = logical_path.to_ascii_lowercase();
+            let resource = if let Some(resource) = textures.get(&path) {
+                resource
+            } else {
+                textures.insert(
+                    path.clone(),
+                    authored_texture(&path, bundle).map_err(|_| ())?,
+                );
+                let Some(resource) = textures.get(&path) else {
+                    return Err(());
+                };
+                resource
+            };
+            let binding = playsrc_material::bind_authored_texture(texture, &resource.manifest)
+                .map_err(|_| ())?;
+            if !binding.logical_path.eq_ignore_ascii_case(&path) {
+                return Err(());
+            }
+        }
+        for texture in &material.model_textures {
+            let path = texture.logical_path.to_ascii_lowercase();
+            let resource = if let Some(resource) = textures.get(&path) {
+                resource
+            } else {
+                textures.insert(
+                    path.clone(),
+                    authored_texture(&path, bundle).map_err(|_| ())?,
+                );
+                let Some(resource) = textures.get(&path) else {
+                    return Err(());
+                };
+                resource
+            };
+            let binding =
+                playsrc_material::bind_authored_model_texture(texture, &resource.manifest)
+                    .map_err(|_| ())?;
+            if !binding.logical_path.eq_ignore_ascii_case(&path) {
+                return Err(());
+            }
+        }
+        materials.push((identity, material));
+    }
+    out.extend_from_slice(b"PMDL");
+    out.extend_from_slice(&1_u32.to_le_bytes());
+    out.extend_from_slice(
+        &u32::try_from(materials.len())
+            .map_err(|_| ())?
+            .to_le_bytes(),
+    );
+    for (identity, material) in &materials {
+        encode_model_material(out, identity, material)?;
+    }
+    out.extend_from_slice(b"PMIP");
+    out.extend_from_slice(&1_u32.to_le_bytes());
+    out.extend_from_slice(&u32::try_from(textures.len()).map_err(|_| ())?.to_le_bytes());
+    for (identity, texture) in textures {
+        encode_authored_texture(out, &identity, &texture)?;
+    }
+    Ok(())
+}
+
+fn encode_texture_binding(
+    out: &mut Vec<u8>,
+    kind: u8,
+    role: u8,
+    color_read: playsrc_material::TextureColorRead,
+    path: &str,
+) -> Result<(), ()> {
+    out.extend_from_slice(&[kind, role, color_read_code(color_read), 0]);
+    pbytes(out, path.as_bytes())
+}
+
+fn encode_model_material(
+    out: &mut Vec<u8>,
+    identity: &str,
+    material: &playsrc_material::Material,
+) -> Result<(), ()> {
+    use playsrc_material::ModelShaderState as State;
+    let model = material.model.as_ref().ok_or(())?;
+    pbytes(out, identity.as_bytes())?;
+    let requirements = model.vertex_requirements;
+    let requirement_bits = u16::from(requirements.position)
+        | u16::from(requirements.normal) << 1
+        | u16::from(requirements.tangent_space) << 2
+        | u16::from(requirements.texture_coordinate_0) << 3
+        | u16::from(requirements.ambient_cube) << 4
+        | u16::from(requirements.local_lights) << 5
+        | u16::from(requirements.camera_position) << 6
+        | u16::from(requirements.studio_eye_parameters) << 7;
+    out.extend_from_slice(&[
+        match model.shader {
+            playsrc_material::ModelShader::VertexLitGeneric => 0,
+            playsrc_material::ModelShader::EyeRefract => 1,
+            playsrc_material::ModelShader::Eyes => 2,
+        },
+        0,
+    ]);
+    out.extend_from_slice(&requirement_bits.to_le_bytes());
+    let source_textures = material
+        .textures
+        .iter()
+        .filter(|texture| texture.disposition == playsrc_material::TextureDisposition::Source)
+        .collect::<Vec<_>>();
+    out.extend_from_slice(
+        &u32::try_from(source_textures.len() + material.model_textures.len())
+            .map_err(|_| ())?
+            .to_le_bytes(),
+    );
+    for texture in source_textures {
+        encode_texture_binding(
+            out,
+            0,
+            texture_role_code(texture.role),
+            texture.color_read,
+            texture.logical_path.as_ref().ok_or(())?,
+        )?;
+    }
+    for texture in &material.model_textures {
+        encode_texture_binding(
+            out,
+            1,
+            model_texture_role_code(texture.role),
+            texture.color_read,
+            &texture.logical_path,
+        )?;
+    }
+    if let Some(environment) = &material.environment_map {
+        out.extend_from_slice(&[1, 0, 0, 0]);
+        for value in environment
+            .tint
+            .into_iter()
+            .chain([environment.contrast, environment.saturation])
+        {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+    } else {
+        out.extend_from_slice(&[0; 24]);
+    }
+    match &model.state {
+        State::VertexLitGeneric(state) => {
+            let self_illumination = state.self_illumination;
+            out.extend_from_slice(&[
+                u8::from(state.half_lambert),
+                u8::from(self_illumination.is_some()),
+                self_illumination.map_or(0, |value| value.source as u8),
+                u8::from(state.phong.is_some()),
+            ]);
+            let self_illumination = self_illumination.map_or([0.0; 6], |value| {
+                [
+                    value.tint[0],
+                    value.tint[1],
+                    value.tint[2],
+                    value.fresnel_min_max_exponent[0],
+                    value.fresnel_min_max_exponent[1],
+                    value.fresnel_min_max_exponent[2],
+                ]
+            });
+            for value in self_illumination {
+                out.extend_from_slice(&value.to_le_bytes());
+            }
+            if let Some(phong) = &state.phong {
+                out.extend_from_slice(&[
+                    phong.mask_source as u8,
+                    u8::from(phong.invert_mask),
+                    u8::from(phong.albedo_tint),
+                    u8::from(phong.rim.is_some()),
+                ]);
+                for value in [phong.exponent, phong.exponent_factor]
+                    .into_iter()
+                    .chain(phong.tint)
+                    .chain([phong.boost])
+                    .chain(phong.fresnel_ranges)
+                    .chain(phong.packed_fresnel_ranges)
+                {
+                    out.extend_from_slice(&value.to_le_bytes());
+                }
+                if let Some(rim) = phong.rim {
+                    for value in [rim.exponent, rim.boost] {
+                        out.extend_from_slice(&value.to_le_bytes());
+                    }
+                    out.extend_from_slice(&[u8::from(rim.exponent_texture_alpha_mask), 0, 0, 0]);
+                } else {
+                    out.extend_from_slice(&[0; 12]);
+                }
+            } else {
+                out.extend_from_slice(&[0; 64]);
+            }
+            encode_cloak(out, state.cloak);
+            out.extend_from_slice(&[
+                u8::from(state.sheen.enabled),
+                u8::from(state.sheen.source_alpha_blend),
+                u8::from(state.sheen.depth_write),
+                0,
+            ]);
+            for value in [
+                state.sheen.mask_frame,
+                state.sheen.mask_direction,
+                state.sheen.shader_index,
+            ] {
+                out.extend_from_slice(&value.to_le_bytes());
+            }
+            for value in state
+                .sheen
+                .tint
+                .into_iter()
+                .chain(state.sheen.mask_scale)
+                .chain(state.sheen.mask_offset)
+            {
+                out.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        State::EyeRefract(state) => {
+            out.extend_from_slice(&[
+                u8::from(state.sphere_texture_kill),
+                u8::from(state.raytrace_sphere),
+                u8::from(state.half_lambert),
+                0,
+            ]);
+            for value in [
+                state.dilation,
+                state.glossiness,
+                state.parallax_strength,
+                state.cornea_bump_strength,
+            ]
+            .into_iter()
+            .chain(state.ambient_occlusion_color)
+            .chain([state.eyeball_radius])
+            {
+                out.extend_from_slice(&value.to_le_bytes());
+            }
+            encode_cloak(out, state.cloak);
+        }
+        State::Eyes(state) => {
+            out.extend_from_slice(&[u8::from(state.half_lambert), 0, 0, 0]);
+            out.extend_from_slice(&state.dilation.to_le_bytes());
+        }
+    }
+    Ok(())
+}
+
+fn encode_cloak(out: &mut Vec<u8>, cloak: playsrc_material::CloakState) {
+    out.extend_from_slice(&[u8::from(cloak.enabled), 0, 0, 0]);
+    for value in [cloak.factor]
+        .into_iter()
+        .chain(cloak.color_tint)
+        .chain([cloak.refract_amount])
+    {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+}
+
+fn texture_face_code(value: playsrc_material::TextureFace) -> u8 {
+    match value {
+        playsrc_material::TextureFace::Right => 0,
+        playsrc_material::TextureFace::Left => 1,
+        playsrc_material::TextureFace::Back => 2,
+        playsrc_material::TextureFace::Front => 3,
+        playsrc_material::TextureFace::Up => 4,
+        playsrc_material::TextureFace::Down => 5,
+        playsrc_material::TextureFace::Sphere => 6,
+    }
+}
+
+fn encode_authored_texture(
+    out: &mut Vec<u8>,
+    identity: &str,
+    texture: &EncodedAuthoredTexture,
+) -> Result<(), ()> {
+    pbytes(out, identity.as_bytes())?;
+    out.extend_from_slice(&texture.source_sha256);
+    out.extend_from_slice(&texture.manifest.width.to_le_bytes());
+    out.extend_from_slice(&texture.manifest.height.to_le_bytes());
+    out.extend_from_slice(&texture.manifest.depth.to_le_bytes());
+    out.push(texture.manifest.mip_count);
+    out.push(match texture.scalar_encoding {
+        playsrc_vtf::ScalarEncoding::U8 => 0,
+        playsrc_vtf::ScalarEncoding::F16 => 1,
+    });
+    out.extend_from_slice(&texture.manifest.frame_count.to_le_bytes());
+    out.extend_from_slice(
+        &u32::try_from(texture.manifest.faces.len())
+            .map_err(|_| ())?
+            .to_le_bytes(),
+    );
+    for face in &texture.manifest.faces {
+        out.push(texture_face_code(*face));
+    }
+    let sampling = texture.manifest.sampling;
+    out.extend_from_slice(&[
+        sampling.wrap_s as u8,
+        sampling.wrap_t as u8,
+        sampling.wrap_u as u8,
+        sampling.min_filter as u8,
+        sampling.mag_filter as u8,
+        sampling.anisotropy_level,
+        u8::from(sampling.mipmapped),
+        u8::from(sampling.no_lod),
+        u8::from(sampling.all_mips),
+        0,
+        0,
+        0,
+    ]);
+    out.extend_from_slice(
+        &u32::try_from(texture.planes.len())
+            .map_err(|_| ())?
+            .to_le_bytes(),
+    );
+    for plane in &texture.planes {
+        out.extend_from_slice(&[plane.identity.mip, texture_face_code(plane.identity.face)]);
+        out.extend_from_slice(&plane.identity.frame.to_le_bytes());
+        out.extend_from_slice(&plane.identity.slice.to_le_bytes());
+        out.extend_from_slice(&0_u16.to_le_bytes());
+        out.extend_from_slice(&plane.width.to_le_bytes());
+        out.extend_from_slice(&plane.height.to_le_bytes());
+        pbytes(out, &plane.rgba)?;
+    }
+    Ok(())
+}
+
 fn rgba_texture(
     path: &str,
     bundle: &BTreeMap<String, &[u8]>,
@@ -2826,8 +4388,10 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>) -
     .map_err(|_| ())?;
     let targets = [
         "Weapon_RPG.Single",
+        "Weapon_QuakeRPG.Single",
         "Weapon_StickyBombLauncher.Single",
         "BaseExplosionEffect.Sound",
+        "Weapon_QuakeRPG.Explode",
         "Weapon_Grenade_Pipebomb.Explode",
     ];
     let nodes = targets
@@ -2947,8 +4511,8 @@ fn compile_presentation(
     let mut roots = std::collections::BTreeSet::from([
         "models/weapons/w_models/w_rocket.mdl".to_owned(),
         "models/weapons/w_models/w_stickybomb.mdl".to_owned(),
-        "models/weapons/v_models/v_rocketlauncher_soldier.mdl".to_owned(),
-        "models/weapons/v_models/v_stickybomb_launcher_demo.mdl".to_owned(),
+        "models/weapons/c_models/c_soldier_arms.mdl".to_owned(),
+        "models/weapons/c_models/c_demo_arms.mdl".to_owned(),
         "models/player/soldier.mdl".to_owned(),
         "models/player/demo.mdl".to_owned(),
         "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl".to_owned(),
@@ -2965,7 +4529,21 @@ fn compile_presentation(
     }
     let mut models = Vec::new();
     for id in roots {
-        models.push((id.clone(), build_model_presentation(&id, &bundle, profile)?));
+        let presentation_profile = if matches!(
+            id.as_str(),
+            "models/weapons/c_models/c_soldier_arms.mdl"
+                | "models/weapons/c_models/c_demo_arms.mdl"
+                | "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl"
+                | "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl"
+        ) {
+            playsrc_studio_model::PresentationProfile::ViewModel
+        } else {
+            playsrc_studio_model::PresentationProfile::World
+        };
+        models.push((
+            id.clone(),
+            build_model_presentation(&id, &bundle, profile, presentation_profile)?,
+        ));
     }
     let mut textures = BTreeMap::new();
     for (_, a) in &models {
@@ -3047,7 +4625,7 @@ fn compile_presentation(
         .materials;
     let environment = compile_environment_artifact(canonical, bsp, graph, &bundle, profile)?;
     let mut out = b"PTF2".to_vec();
-    out.extend_from_slice(&5u32.to_le_bytes());
+    out.extend_from_slice(&6u32.to_le_bytes());
     out.extend_from_slice(&u32::try_from(models.len()).map_err(|_| ())?.to_le_bytes());
     out.extend_from_slice(&u32::try_from(textures.len()).map_err(|_| ())?.to_le_bytes());
     out.extend_from_slice(
@@ -3155,7 +4733,58 @@ fn compile_presentation(
                 out.extend_from_slice(&[0; 20]);
             }
         }
-        pbytes(&mut out, &a.bytes)?;
+        match a.model.descriptor {
+            playsrc_studio_model::PresentationDescriptor::World {
+                root_bone,
+                depth_range,
+                ..
+            } => {
+                out.extend_from_slice(&[
+                    0,
+                    match root_bone {
+                        playsrc_studio_model::RootBoneContract::AnimatedBelowEntity => 0,
+                        playsrc_studio_model::RootBoneContract::StaticPropBoneZeroIsEntity => 1,
+                    },
+                    0,
+                    0,
+                ]);
+                for value in depth_range {
+                    out.extend_from_slice(&value.0.to_le_bytes());
+                }
+                out.extend_from_slice(&[0; 32]);
+            }
+            playsrc_studio_model::PresentationDescriptor::ViewModel {
+                default_horizontal_fov_4_by_3,
+                minimum_fov,
+                maximum_fov,
+                near_plane,
+                depth_range,
+                draws_after_world,
+                opaque_before_translucent,
+                ..
+            } => {
+                out.extend_from_slice(&[1, 0, 0, 0]);
+                for value in [
+                    default_horizontal_fov_4_by_3,
+                    minimum_fov,
+                    maximum_fov,
+                    near_plane,
+                ] {
+                    out.extend_from_slice(&value.0.to_le_bytes());
+                }
+                for value in depth_range {
+                    out.extend_from_slice(&value.0.to_le_bytes());
+                }
+                out.extend_from_slice(&[
+                    u8::from(draws_after_world),
+                    u8::from(opaque_before_translucent),
+                    0,
+                    0,
+                ]);
+                out.extend_from_slice(&[0; 12]);
+            }
+        }
+        pbytes(&mut out, &[])?;
     }
     for (material, texture) in textures {
         pbytes(&mut out, material.as_bytes())?;
@@ -3187,6 +4816,7 @@ fn compile_presentation(
     encode_particle_textures(&mut out, &particle_materials, &bundle, profile)?;
     encode_audio_documents(&mut out, &bundle)?;
     encode_model_occurrence_matrices(&mut out, graph)?;
+    encode_model_materials(&mut out, &models, &bundle, profile)?;
     let models = models
         .into_iter()
         .map(|(identity, artifact)| (identity, artifact.model))
@@ -3955,6 +5585,11 @@ mod tests {
             area_state: None,
             visibility_output: Vec::new(),
             collision: None,
+            gameplay_world: None,
+            collision_templates: Vec::new(),
+            collision_revision: 0,
+            pushers: BTreeMap::new(),
+            latest_game_snapshot: None,
             hash: [3; 32],
             derived_hash: [6; 32],
             bsp_hash: [8; 32],
@@ -3983,6 +5618,11 @@ mod tests {
             area_state: None,
             visibility_output: Vec::new(),
             collision: None,
+            gameplay_world: None,
+            collision_templates: Vec::new(),
+            collision_revision: 0,
+            pushers: BTreeMap::new(),
+            latest_game_snapshot: None,
             hash: [5; 32],
             derived_hash: [7; 32],
             bsp_hash: [9; 32],
@@ -3998,30 +5638,16 @@ mod tests {
 
     #[test]
     fn command_and_snapshot_binary_contract_is_stable() {
-        let mut bytes = vec![0; 164];
+        let mut bytes = vec![0; 48];
         bytes[..4].copy_from_slice(b"PCMD");
-        bytes[4..8].copy_from_slice(&3_u32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&4_u32.to_le_bytes());
         bytes[8..12].copy_from_slice(&240_f32.to_le_bytes());
         bytes[16..20].copy_from_slice(&100_f32.to_le_bytes());
         bytes[24..28].copy_from_slice(&(-30_f32).to_le_bytes());
         bytes[28..32].copy_from_slice(&0xad_u32.to_le_bytes());
         bytes[32..36].copy_from_slice(&0x0201_0302_u32.to_le_bytes());
         bytes[36..40].copy_from_slice(&77_u32.to_le_bytes());
-        bytes[42..44].copy_from_slice(&1_u16.to_le_bytes());
-        bytes[44..46].copy_from_slice(&1_u16.to_le_bytes());
-        bytes[46..48].copy_from_slice(&1_u16.to_le_bytes());
-        bytes[48..52].copy_from_slice(&164_u32.to_le_bytes());
-        bytes[56..60].copy_from_slice(&1_f32.to_le_bytes());
-        bytes[60..64].copy_from_slice(&(-2_f32).to_le_bytes());
-        bytes[64..68].copy_from_slice(&300_i32.to_le_bytes());
-        bytes[68..72].copy_from_slice(&12_u32.to_le_bytes());
-        bytes[72..80].copy_from_slice(&9_u64.to_le_bytes());
-        bytes[80..84].copy_from_slice(&[1, 0, 1, 0]);
-        bytes[96..100].copy_from_slice(&1_f32.to_le_bytes());
-        bytes[108..112].copy_from_slice(&u32::MAX.to_le_bytes());
-        bytes[112..120].copy_from_slice(&7_u64.to_le_bytes());
-        bytes[120..124].copy_from_slice(&9_u32.to_le_bytes());
-        bytes[124] = 1;
+        bytes[44..48].copy_from_slice(&48_u32.to_le_bytes());
         let input = gameplay_protocol::decode(&bytes).unwrap();
         let command = input.command;
         assert_eq!(command.movement.forward, 240.);
@@ -4036,9 +5662,7 @@ mod tests {
             command.select_weapon,
             Some(playsrc_tf2::Weapon::StickybombLauncher)
         );
-        assert_eq!(input.sticky_random.unwrap().angular_y, 300);
-        assert_eq!(input.rocket_results[0].projectile, 12);
-        assert_eq!(input.mover_results[0].request_id, 7);
+        assert!(input.physics_results.is_empty());
         bytes[8..12].copy_from_slice(&f32::NAN.to_le_bytes());
         assert!(gameplay_protocol::decode(&bytes).is_none());
         let movement = playsrc_movement::State::from_player(
@@ -4141,15 +5765,44 @@ mod tests {
             map_effects: Vec::new(),
             regenerate_animation_events: Vec::new(),
         };
-        let encoded = encode_snapshot(&snapshot, &producer, 2, None).unwrap();
-        assert_eq!(&encoded[..8], b"PSSN\x05\0\0\0");
-        assert_eq!(encoded.len(), 484);
+        let authority = playsrc_tf2::UniformRandomStream::from_seed(0)
+            .unwrap()
+            .state();
+        let random_state = playsrc_tf2::Tf2RandomState {
+            authority,
+            predicted_presentation: authority,
+            sound_selection: playsrc_tf2::SoundSelectionState {
+                rocket_explosion_available: 7,
+                sticky_explosion_available: 7,
+            },
+        };
+        let mut collision_snapshot = b"CSNP".to_vec();
+        collision_snapshot.extend_from_slice(&1_u32.to_le_bytes());
+        collision_snapshot.extend_from_slice(&9_u64.to_le_bytes());
+        collision_snapshot.extend_from_slice(&0_u32.to_le_bytes());
+        let encoded = encode_snapshot(
+            &snapshot,
+            &producer,
+            2,
+            None,
+            SnapshotExtensions {
+                random_state,
+                random_draws: &[],
+                audio_events: &[],
+                rocket_results: &[],
+                mover_results: &[],
+                collision_snapshot: &collision_snapshot,
+            },
+        )
+        .unwrap();
+        assert_eq!(&encoded[..8], b"PSSN\x06\0\0\0");
+        assert_eq!(encoded.len(), 820);
         assert_eq!(u32::from_le_bytes(encoded[56..60].try_into().unwrap()), 1);
         assert_eq!(u32::from_le_bytes(encoded[60..64].try_into().unwrap()), 1);
         assert_eq!(u32::from_le_bytes(encoded[64..68].try_into().unwrap()), 1);
-        assert_eq!(&encoded[272..276], &[12, 0, 0, 0]);
-        assert_eq!(&encoded[356..360], &[6, 1, 2, 0]);
-        assert_eq!(&encoded[456..458], &[2, 2]);
-        assert_eq!(&encoded[464..472], &[1, 1, 0, 0, 2, 1, 0, 0]);
+        assert_eq!(&encoded[304..308], &[12, 0, 0, 0]);
+        assert_eq!(&encoded[388..392], &[6, 1, 2, 0]);
+        assert_eq!(&encoded[496..504], &[1, 1, 0, 0, 2, 1, 0, 0]);
+        assert_eq!(&encoded[504..512], b"PRNG\x01\0\0\0");
     }
 }

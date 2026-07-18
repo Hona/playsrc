@@ -1,48 +1,28 @@
-const HEADER_BYTES: usize = 56;
-const STICKY_RANDOM_BYTES: usize = 12;
+const HEADER_BYTES: usize = 48;
 const PHYSICS_RESULT_BYTES: usize = 80;
-const ROCKET_RESULT_BYTES: usize = 44;
-const MOVER_RESULT_BYTES: usize = 52;
 const MAX_RESULTS: usize = 64;
 
 pub struct AdvanceInput {
     pub command: playsrc_tf2::Command,
-    pub sticky_random: Option<playsrc_tf2::StickyLaunchRandom>,
     pub physics_results: Vec<playsrc_tf2::ProjectilePhysicsResult>,
-    pub rocket_results: Vec<playsrc_tf2::RocketTraceResult>,
-    pub mover_results: Vec<playsrc_tf2::MoverResult>,
 }
 
 pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
     if bytes.len() < HEADER_BYTES
         || bytes.len() > 64 * 1024
         || &bytes[..4] != b"PCMD"
-        || u32::from_le_bytes(bytes[4..8].try_into().ok()?) != 3
+        || u32::from_le_bytes(bytes[4..8].try_into().ok()?) != 4
     {
         return None;
     }
     let physics_count = usize::from(u16::from_le_bytes(bytes[40..42].try_into().ok()?));
-    let rocket_count = usize::from(u16::from_le_bytes(bytes[42..44].try_into().ok()?));
-    let mover_count = usize::from(u16::from_le_bytes(bytes[44..46].try_into().ok()?));
-    let external_flags = u16::from_le_bytes(bytes[46..48].try_into().ok()?);
     if physics_count > MAX_RESULTS
-        || rocket_count > MAX_RESULTS
-        || mover_count > MAX_RESULTS
-        || external_flags & !1 != 0
-        || u32::from_le_bytes(bytes[48..52].try_into().ok()?) as usize != bytes.len()
-        || u32::from_le_bytes(bytes[52..56].try_into().ok()?) != 0
+        || u16::from_le_bytes(bytes[42..44].try_into().ok()?) != 0
+        || u32::from_le_bytes(bytes[44..48].try_into().ok()?) as usize != bytes.len()
     {
         return None;
     }
-    let expected = HEADER_BYTES
-        .checked_add(if external_flags & 1 != 0 {
-            STICKY_RANDOM_BYTES
-        } else {
-            0
-        })?
-        .checked_add(physics_count.checked_mul(PHYSICS_RESULT_BYTES)?)?
-        .checked_add(rocket_count.checked_mul(ROCKET_RESULT_BYTES)?)?
-        .checked_add(mover_count.checked_mul(MOVER_RESULT_BYTES)?)?;
+    let expected = HEADER_BYTES.checked_add(physics_count.checked_mul(PHYSICS_RESULT_BYTES)?)?;
     if expected != bytes.len() {
         return None;
     }
@@ -122,19 +102,6 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
         bytes,
         offset: HEADER_BYTES,
     };
-    let sticky_random = if external_flags & 1 != 0 {
-        Some(playsrc_tf2::StickyLaunchRandom {
-            right_velocity: reader.f32()?,
-            up_velocity: reader.f32()?,
-            angular_y: reader.i32()?,
-        })
-    } else {
-        None
-    };
-    if sticky_random.is_some_and(|value| !value.validate()) {
-        return None;
-    }
-
     let mut physics_results = Vec::with_capacity(physics_count);
     for _ in 0..physics_count {
         let projectile = reader.u32()?;
@@ -177,68 +144,9 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
         });
     }
 
-    let mut rocket_results = Vec::with_capacity(rocket_count);
-    for _ in 0..rocket_count {
-        let projectile = reader.u32()?;
-        let tick = reader.u64()?;
-        let solid = reader.u8()?;
-        let sky = reader.u8()?;
-        let has_normal = reader.u8()?;
-        let has_target = reader.u8()?;
-        if solid > 1 || sky > 1 || has_normal > 1 || has_target > 1 {
-            return None;
-        }
-        let end = reader.vector()?;
-        let raw_normal = reader.vector()?;
-        let raw_target = reader.u32()?;
-        if (has_normal == 0 && raw_normal != [0.0; 3])
-            || (has_target == 0 && raw_target != u32::MAX)
-        {
-            return None;
-        }
-        rocket_results.push(playsrc_tf2::RocketTraceResult {
-            projectile,
-            tick,
-            end,
-            solid: solid != 0,
-            sky: sky != 0,
-            normal: (has_normal != 0).then_some(raw_normal),
-            direct_target: (has_target != 0).then_some(raw_target),
-        });
-    }
-
-    let mut mover_results = Vec::with_capacity(mover_count);
-    for _ in 0..mover_count {
-        let request_id = reader.u64()?;
-        let entity = reader.u32()?;
-        let kind = match reader.u8()? {
-            1 => playsrc_tf2::MoverResultKind::Progress,
-            2 => playsrc_tf2::MoverResultKind::Completed,
-            3 => playsrc_tf2::MoverResultKind::BlockedStart,
-            4 => playsrc_tf2::MoverResultKind::BlockedStay,
-            5 => playsrc_tf2::MoverResultKind::BlockedEnd,
-            _ => return None,
-        };
-        if reader.take::<3>()? != [0, 0, 0] {
-            return None;
-        }
-        mover_results.push(playsrc_tf2::MoverResult {
-            request_id,
-            entity,
-            kind,
-            transform: playsrc_entity::Transform {
-                origin: reader.vector()?,
-                angles: reader.vector()?,
-            },
-            carry: reader.vector()?,
-        });
-    }
     (reader.offset == bytes.len()).then_some(AdvanceInput {
         command,
-        sticky_random,
         physics_results,
-        rocket_results,
-        mover_results,
     })
 }
 
@@ -265,10 +173,6 @@ impl Reader<'_> {
 
     fn u32(&mut self) -> Option<u32> {
         Some(u32::from_le_bytes(self.take()?))
-    }
-
-    fn i32(&mut self) -> Option<i32> {
-        Some(i32::from_le_bytes(self.take()?))
     }
 
     fn u64(&mut self) -> Option<u64> {

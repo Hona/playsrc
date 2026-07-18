@@ -340,7 +340,7 @@ function advance(request: Extract<WorkerRequest, { kind: "advance" }>): void {
   if (!value) return
   if (
     !(request.command instanceof ArrayBuffer) ||
-    request.command.byteLength < 56 ||
+    request.command.byteLength < 48 ||
     request.command.byteLength > 64 * 1024 ||
     !Number.isSafeInteger(request.ticks) ||
     request.ticks < 1 ||
@@ -357,7 +357,7 @@ function advance(request: Extract<WorkerRequest, { kind: "advance" }>): void {
     return
   }
   const length = value.exports.playsrc_snapshot_length(value.handle)
-  if (!Number.isSafeInteger(length) || length < 128 || length > MAX_MESSAGE_BYTES) {
+  if (!Number.isSafeInteger(length) || length < 160 || length > MAX_MESSAGE_BYTES) {
     fail(request.id, "InternalFailure")
     return
   }

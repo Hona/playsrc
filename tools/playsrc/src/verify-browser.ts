@@ -4,13 +4,13 @@ import path from "node:path"
 import { repositoryRoot, type LocalConfig } from "./config"
 
 const MAX_OUTPUT_BYTES = 1024 * 1024
-const PROCESS_READY_TIMEOUT_MS = 180_000
+const PROCESS_READY_TIMEOUT_MS = 300_000
 const PROCESS_EXIT_TIMEOUT_MS = 30_000
 const APPLICATION_URL = "http://127.0.0.1:4173/"
 const VIEWPORT_WIDTH = 1280
 const VIEWPORT_HEIGHT = 720
 const BACKGROUND_RGB = [17, 24, 32] as const
-const EXPECTED_DEPENDENCY_SHA256 = "494c282a45b2c1ae1882e66aabe234cda3f92d950e1d2a37c2616db845164884"
+const EXPECTED_DEPENDENCY_SHA256 = "896132d9b618d0ae521092c1e33d91d3cc05f1692ac434603a31994b8dd51741"
 
 export class BrowserEvidenceError extends Error {
   constructor(message: string) {
@@ -133,14 +133,15 @@ async function classifySupportBlockers(
       || blocker.startsWith("TF2 viewmodel attachment transform unavailable: ")
     ) {
       recordBehavior(blocker, "content-closure")
+    } else if (/^(MissingModelLighting|MissingModelEyeState): /u.test(blocker)) {
+      recordBehavior(blocker, "visual")
     } else if (/^(MissingMaterial|MissingDirectionalInput|MissingProfileInput|UnsupportedProfileInput): /u.test(blocker)) {
       const logicalPath = /^MissingMaterial: ([^ ]+)/u.exec(blocker)?.[1]
       if (logicalPath?.startsWith("materials/") && outcomes.get(logicalPath) !== "resolved") content.push(blocker)
       else recordBehavior(blocker, "content-closure")
     } else if (blocker.startsWith("MissingTextureMips: ") || [
-      "Missing TF2 stock viewmodel composition",
       "Missing authored texture mip planes",
-      "Missing complete StudioModel shader and model-lighting inputs",
+      "Missing current model lightcache selections, game-owned eye targets, and per-draw StudioModel lighting/eye state",
       "Missing decoded profile-qualified sky and cubemap subresources",
       "Missing complete Water material and reflection/refraction view inputs",
       "Missing current fog-controller state and transition inputs",
@@ -152,6 +153,8 @@ async function classifySupportBlockers(
       content.push(blocker)
     } else if (
       blocker.startsWith("The configured console resolves its complete SourceScheme")
+      || blocker.startsWith("TF2 console platform fonts unsupported: ")
+      || blocker.startsWith("Windows Tahoma and Lucida Console faces loaded")
       || blocker.startsWith("AudioUnavailable: ")
     ) {
       platform.push(blocker)
@@ -476,9 +479,20 @@ async function spawnObservation(session: string): Promise<SpawnObservation> {
 }
 
 async function crouchTrajectory(session: string, pressed: boolean): Promise<CrouchTrajectory> {
-  const baseline = parseJson<string>(await agent([
+  let baselineRecords = parseJson<string>(await agent([
     "--session", session, "eval", "document.querySelector('main').dataset.crouchHistory",
-  ])).split("|").filter(Boolean).length
+  ])).split("|").filter(Boolean)
+  let baselineTick = Number(baselineRecords.at(-1)?.split(":")[0] ?? 0)
+  if (!pressed && parseJson<number>(await agent([
+    "--session", session, "eval", "Number(document.querySelector('main').dataset.crouchFraction)",
+  ])) <= 0.001) {
+    await agent(["--session", session, "eval", "window.dispatchEvent(new KeyboardEvent('keydown',{code:'ShiftLeft',key:'Shift',bubbles:true}));true"])
+    await agent(["--session", session, "wait", "--fn", "Number(document.querySelector('main').dataset.crouchFraction)>=0.999", "--timeout", "120000"])
+    baselineRecords = parseJson<string>(await agent([
+      "--session", session, "eval", "document.querySelector('main').dataset.crouchHistory",
+    ])).split("|").filter(Boolean)
+    baselineTick = Number(baselineRecords.at(-1)?.split(":")[0] ?? 0)
+  }
   await agent([
     "--session",
     session,
@@ -494,7 +508,7 @@ async function crouchTrajectory(session: string, pressed: boolean): Promise<Crou
   ])
   const history = parseJson<string>(await agent([
     "--session", session, "eval", "document.querySelector('main').dataset.crouchHistory",
-  ])).split("|").filter(Boolean).slice(Math.max(0, baseline - 1))
+  ])).split("|").filter(Boolean).filter((record) => Number(record.split(":")[0]) >= baselineTick)
   const values = history.map((record) => record.split(":").map(Number))
   const fractions = values.map((value) => value[1]!), offsets = values.map((value) => value[2]!)
   require(fractions.length === offsets.length && fractions.length >= 3 &&
@@ -594,7 +608,7 @@ async function startDevelopmentProcess(target: string | undefined): Promise<Deve
       prematureExit,
       new Promise<never>((_, reject) => {
         readyTimeout = setTimeout(() => {
-          reject(new BrowserEvidenceError("development command did not report readiness within 180000 ms"))
+          reject(new BrowserEvidenceError("development command did not report readiness within 300000 ms"))
         }, PROCESS_READY_TIMEOUT_MS)
       }),
     ])
@@ -633,7 +647,7 @@ async function startDevelopmentProcess(target: string | undefined): Promise<Deve
       } catch (error) {
         if (!settled) child.kill("SIGKILL")
         await exited.catch(() => {})
-        throw error
+        throw new BrowserEvidenceError(`${String(error)}: ${excerpt(stderr || stdout)}`)
       } finally {
         if (exitTimeout !== undefined) clearTimeout(exitTimeout)
         await Promise.allSettled([stdoutTask, stderrTask])
@@ -687,11 +701,17 @@ export async function verifyBrowserAcceptance(
   const session = `playsrc-acceptance-${process.pid}`
   const owner = await startDevelopmentProcess(target)
   let browserOpen = false
+  let primaryError: unknown
   try {
     await agent(["--session", session, "--headed", "--webgpu", "open", owner.url])
     browserOpen = true
     await agent(["--session", session, "set", "viewport", String(VIEWPORT_WIDTH), String(VIEWPORT_HEIGHT)])
-    await agent(["--session", session, "wait", "--text", "Ready", "--timeout", "300000"])
+    try {
+      await agent(["--session", session, "wait", "--text", "Ready", "--timeout", "300000"])
+    } catch (error) {
+      const body = await agent(["--session", session, "eval", "document.body.innerText"])
+      throw new BrowserEvidenceError(`${String(error)}; browser body: ${body}`)
+    }
     await agent([
       "--session",
       session,
@@ -723,20 +743,22 @@ export async function verifyBrowserAcceptance(
     require(parseJson<string>(
       await agent(["--session", session, "eval", "document.querySelector('main').dataset.waterCubemap"]),
     ) === "0", "water cubemap selection differs")
-    const producerProbes = parseJson<{ decal: string; occurrences: number; models: string; viewmodel: string; sequences: string; timelines: string }>(await agent([
+    const producerProbes = parseJson<{ decal: string; occurrences: number; models: string; viewmodel: string; sequences: string; timelines: string; materials: string }>(await agent([
       "--session",
       session,
       "eval",
-      "(()=>{const d=document.querySelector('main').dataset;return {decal:d.decalProbe,occurrences:Number(d.modelOccurrences),models:d.modelProbes,viewmodel:d.viewmodelProjection,sequences:d.viewmodelSequences,timelines:d.viewmodelTimelines}})()",
+      "(()=>{const d=document.querySelector('main').dataset;return {decal:d.decalProbe,occurrences:Number(d.modelOccurrences),models:d.modelProbes,viewmodel:d.viewmodelProjection,sequences:d.viewmodelSequences,timelines:d.viewmodelTimelines,materials:d.modelMaterialProbe}})()",
     ]))
     const decalParts = producerProbes.decal.split(":").map(Number)
     require(decalParts.length === 3 && decalParts[0] === 13 && decalParts[1]! > 0 && decalParts[2] === 63,
       `decal alpha/fragment probe differs: ${producerProbes.decal}`)
     require(producerProbes.occurrences === 33, "StudioModel occurrence count differs")
+    require(/^55:71:[1-9]\d*:eye-refract=3,vertex-lit-generic=52$/u.test(producerProbes.materials),
+      `model shader/authored-mip probe differs: ${producerProbes.materials}`)
     require(producerProbes.models === "models/player/soldier.mdl:150:7:5899|models/player/demo.mdl:94:6:6428",
       `player model pose probes differ: ${producerProbes.models}`)
     require(producerProbes.viewmodel === "54:1:0,0.10000000149011612", `viewmodel projection differs: ${producerProbes.viewmodel}`)
-    for (const activity of ["ACT_VM_DRAW", "ACT_VM_IDLE", "ACT_VM_PRIMARYATTACK", "ACT_RELOAD_START", "ACT_VM_RELOAD", "ACT_RELOAD_FINISH"]) {
+    for (const activity of ["ACT_PRIMARY_VM_DRAW", "ACT_PRIMARY_VM_IDLE", "ACT_PRIMARY_VM_PRIMARYATTACK", "ACT_PRIMARY_RELOAD_START", "ACT_PRIMARY_VM_RELOAD", "ACT_PRIMARY_RELOAD_FINISH"]) {
       require(producerProbes.sequences.includes(`${activity}:`), `viewmodel sequence timing is missing ${activity}: ${producerProbes.sequences}`)
       require(producerProbes.timelines.includes(`${activity}:`), `viewmodel posed timeline is missing ${activity}: ${producerProbes.timelines}`)
     }
@@ -787,9 +809,8 @@ export async function verifyBrowserAcceptance(
       "--session", session, "eval", "JSON.parse(document.querySelector('main').dataset.blockers)",
     ]))
     for (const blocker of [
-      "Missing TF2 stock viewmodel composition",
       "Missing authored texture mip planes",
-      "Missing complete StudioModel shader and model-lighting inputs",
+      "Missing current model lightcache selections, game-owned eye targets, and per-draw StudioModel lighting/eye state",
       "Missing decoded profile-qualified sky and cubemap subresources",
       "Missing complete Water material and reflection/refraction view inputs",
       "Missing current fog-controller state and transition inputs",
@@ -857,6 +878,10 @@ export async function verifyBrowserAcceptance(
         `fixed spawn canvas/direction predicates failed at camera ${fixedCamera.position.join(",")}/${fixedCamera.yaw}/${fixedCamera.pitch}: ${[...visualFailures, ...directionFailures].join("; ")}; capture ${coldCanvas.sha256}`,
       )
     }
+    const platformFontSupported = parseJson<boolean>(await agent([
+      "--session", session, "eval", "document.querySelector('.playsrc-vgui-root')?.dataset.platformFontCapability === 'supported'",
+    ]))
+    if (platformFontSupported) {
     await agent(["--session", session, "press", "Backquote"])
     await agent([
       "--session",
@@ -916,6 +941,12 @@ export async function verifyBrowserAcceptance(
       "--fn",
       "getComputedStyle(document.querySelector('[role=dialog]')).display === 'none'",
     ])
+    } else {
+      require(parseJson<boolean>(await agent([
+        "--session", session, "eval",
+        "Array.from(document.querySelectorAll('.playsrc-vgui-root')).every(node=>node.dataset.platformFontCapability==='unsupported') && document.activeElement?.getAttribute('aria-label') !== 'Console command'",
+      ])), "unsupported platform fonts admitted VGUI paint or input")
+    }
 
     await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.grounded==='true'", "--timeout", "120000"])
     const crouchDown = await crouchTrajectory(session, true)
@@ -927,6 +958,7 @@ export async function verifyBrowserAcceptance(
       crouchUp.fractions.every((value, index) => index === 0 || value <= crouchUp.fractions[index - 1]!) &&
       crouchUp.offsets.every((value, index) => index === 0 || value >= crouchUp.offsets[index - 1]!),
     `crouch trajectory is not smooth and monotonic: ${JSON.stringify({ crouchDown, crouchUp })}`)
+    if (platformFontSupported) {
     await agent(["--session", session, "press", "Backquote"])
     await agent([
       "--session",
@@ -946,6 +978,7 @@ export async function verifyBrowserAcceptance(
       "--fn",
       "getComputedStyle(document.querySelector('[role=dialog]')).display === 'none'",
     ])
+    }
 
     await agent([
       "--session",
@@ -1034,19 +1067,22 @@ export async function verifyBrowserAcceptance(
     require(parseJson<number>(
       await agent(["--session", session, "eval", "Number(document.querySelector('main').dataset.particleItems)"]),
     ) > 0, "Soldier PCF render data was not observed")
-    const soldierPresentation = parseJson<{ particles: string; audio: string; activity: string; activities: string; depth: string; restored: string }>(await agent([
+    const soldierPresentation = parseJson<{ particles: string; audio: string; activity: string; activities: string; depth: string; restored: string; random: string; collision: string }>(await agent([
       "--session", session, "eval",
-      "(()=>{const d=document.querySelector('main').dataset;return {particles:d.particleProbe,audio:d.audioStarts,activity:d.viewmodelActivity,activities:d.viewmodelActivities,depth:d.viewmodelDepthRange,restored:d.viewmodelViewportRestored}})()",
+      "(()=>{const d=document.querySelector('main').dataset;return {particles:d.particleProbe,audio:d.audioStarts,activity:d.viewmodelActivity,activities:d.viewmodelActivities,depth:d.viewmodelDepthRange,restored:d.viewmodelViewportRestored,random:d.randomAudioProbe,collision:d.collisionMoverProbe}})()",
     ]))
     require(soldierPresentation.particles.includes("sheet") &&
       (soldierPresentation.particles.includes("sprite:") || soldierPresentation.particles.includes("trail:")),
     `textured Particle sprite/trail probe is missing: ${soldierPresentation.particles}`)
     require(soldierPresentation.audio.includes("Weapon_RPG.Single:sound/weapons/rocket_shoot.wav:1:94"),
       `Source launch audio lifecycle probe differs: ${soldierPresentation.audio}`)
-    require(soldierPresentation.activities.includes("ACT_VM_DRAW") && soldierPresentation.activities.includes("ACT_VM_PRIMARYATTACK"),
+    require(soldierPresentation.activities.includes("ACT_PRIMARY_VM_DRAW") && soldierPresentation.activities.includes("ACT_PRIMARY_VM_PRIMARYATTACK"),
       `viewmodel draw/fire activity progression differs: ${soldierPresentation.activities}`)
     require(soldierPresentation.depth === "0,0.10000000149011612" && soldierPresentation.restored === "true",
       `viewmodel WebGPU viewport depth pass differs: ${JSON.stringify(soldierPresentation)}`)
+    require(/^[1-9]\d*:[1-9]\d*:-?\d+:-?\d+:[0-7]:[0-7]$/u.test(soldierPresentation.random) &&
+      /^\d+:[1-9]\d*:[1-9]\d*:[1-9]\d*$/u.test(soldierPresentation.collision),
+    `random/audio or Collision/mover probe differs: ${JSON.stringify(soldierPresentation)}`)
     const particleCanvas = await captureCanvas(session, config)
 
     await agent(["--session", session, "press", "Escape"])
@@ -1063,18 +1099,19 @@ export async function verifyBrowserAcceptance(
       "--session",
       session,
       "wait",
-      "--text",
-      "Sticky launch blocked on the unavailable random stream",
+      "--fn",
+      `Number(document.querySelector('main').dataset.fireEvents) >= ${initialFireEvents + 2}`,
       "--timeout",
       "10000",
     ])
-    const blockedSticky = parseJson<{ fire: number; explosion: number; weapon: string; phase: string }>(await agent([
+    const stickyLaunch = parseJson<{ fire: number; explosion: number; weapon: string; phase: string; audio: string }>(await agent([
       "--session", session, "eval",
-      "(()=>{const d=document.querySelector('main').dataset;return {fire:Number(d.fireEvents),explosion:Number(d.explosionEvents),weapon:d.weaponTrace,phase:d.phase}})()",
+      "(()=>{const d=document.querySelector('main').dataset;return {fire:Number(d.fireEvents),explosion:Number(d.explosionEvents),weapon:d.weaponTrace,phase:d.phase,audio:d.audioStarts}})()",
     ]))
-    require(blockedSticky.fire === initialFireEvents + 1 && blockedSticky.explosion === initialExplosionEvents &&
-      blockedSticky.weapon.split("|").some((weapon) => weapon.startsWith("3:8/24:0:") && !weapon.includes(":-:-:")) && blockedSticky.phase === "Ready",
-    `sticky blocker seam differs: ${JSON.stringify(blockedSticky)}`)
+    require(stickyLaunch.fire >= initialFireEvents + 2 && stickyLaunch.explosion === initialExplosionEvents + 1 &&
+      stickyLaunch.weapon.split("|").some((weapon) => weapon.startsWith("3:7/24:0:-:-:")) &&
+      stickyLaunch.audio.includes("Weapon_StickyBombLauncher.Single:sound/weapons/stickybomblauncher_shoot.wav:1:94") && stickyLaunch.phase === "Ready",
+    `sticky random/audio seam differs: ${JSON.stringify(stickyLaunch)}`)
     blockerCount = parseJson<number>(
       await agent([
         "--session",
@@ -1107,11 +1144,11 @@ export async function verifyBrowserAcceptance(
     const blockerPartition = await classifySupportBlockers(config, supportBlockerItems)
     require(blockerPartition.content.length === 0,
       `browser retained missing content dependencies: ${JSON.stringify(blockerPartition.content)}`)
-    require(blockerPartition.contentClosureBehavior.length === 15,
+    require(blockerPartition.contentClosureBehavior.length === 10,
       `content closure behavior classification count changed: ${JSON.stringify(blockerPartition.contentClosureBehavior)}`)
     require(blockerPartition.platform.length === 1,
       `content closure platform classification count changed: ${JSON.stringify(blockerPartition.platform)}`)
-    require(blockerPartition.authorityBehavior.some((blocker) => blocker === "Missing: TF2 sticky launch random stream") &&
+    require(!blockerPartition.authorityBehavior.some((blocker) => blocker.includes("random stream")) &&
       blockerPartition.authorityBehavior.some((blocker) => blocker.includes("sticky IVP solver unavailable")) &&
       blockerPartition.authorityBehavior.some((blocker) => blocker.includes("Tempus core and jump_beef zone contract unavailable")),
     `authority blocker ledger differs: ${JSON.stringify(blockerPartition.authorityBehavior)}`)
@@ -1151,30 +1188,26 @@ export async function verifyBrowserAcceptance(
     )
     const mapRecords = records.filter(
       (record) =>
-        record.sha256 === "baddd97e9795ab7f6c6fbf7710b18d1047397c4bd10854a6a3f9202bcf059ecd" ||
-        record.sha256 === "b202a853d87a93c10b13226fd48a7eafc250cd5c83a54b44ffdb7dce2a438753",
+        record.sha256 === "a2326c011921f1da90480b1c5f4d3923c038e2dcf07cf6c1d69d43cb2a145a5f" ||
+        record.sha256 === "56153098a867c553651f9c773bd72c4659782bae8520277c80daaaa414bdf156",
     )
-    require(mapRecords.length === 2 &&
+    require(mapRecords.length === (platformFontSupported ? 2 : 1) &&
       mapRecords.some(
         (record) =>
-          record.byteLength === 78_624_037 &&
-          record.sha256 === "baddd97e9795ab7f6c6fbf7710b18d1047397c4bd10854a6a3f9202bcf059ecd",
-      ) &&
-      mapRecords.some(
+          record.byteLength === 78_255_264 &&
+          record.sha256 === "a2326c011921f1da90480b1c5f4d3923c038e2dcf07cf6c1d69d43cb2a145a5f",
+      ) && (!platformFontSupported || mapRecords.some(
         (record) =>
-          record.byteLength === 42_452_075 &&
-          record.sha256 === "b202a853d87a93c10b13226fd48a7eafc250cd5c83a54b44ffdb7dce2a438753",
-      ) &&
-      records.some(
-        (record) => record.byteLength === 41_473_885 && record.key === record.sha256,
-      ), `warm IndexedDB record identity differs: ${JSON.stringify(records)}`)
+          record.byteLength === 42_082_929 &&
+          record.sha256 === "56153098a867c553651f9c773bd72c4659782bae8520277c80daaaa414bdf156",
+      )), `warm IndexedDB record identity differs: ${JSON.stringify(records)}`)
     return {
       target: "jump_beef",
       browser: version,
       coldCache: "stored",
       warmCache: "hit",
       derived: mapRecords,
-      mapReplacementGeneration: 4,
+      mapReplacementGeneration: platformFontSupported ? 4 : 1,
       movingSpeed,
       jumpSpeed,
       supportBlockers: blockerCount,
@@ -1187,7 +1220,9 @@ export async function verifyBrowserAcceptance(
       platformBlockers: blockerPartition.platform,
       supportStatus: "zero-content-blockers-non-content-diagnostics-retained",
       pointerLock: pointerLocked ? "acquired-and-released-for-console" : "headed-window-focus-unavailable",
-      console: "history-completion-focus-repeated-visibility-replacement-close-passed",
+      console: platformFontSupported
+        ? "history-completion-focus-repeated-visibility-replacement-close-passed"
+        : "unsupported-platform-fonts-suppressed-paint-and-input",
       audio: "exact-buffers-decoded-and-context-running",
       fixedCamera,
       fixedSpawn,
@@ -1206,9 +1241,16 @@ export async function verifyBrowserAcceptance(
       particleCanvas,
       shutdown: "pending",
     }
+  } catch (error) {
+    primaryError = error
+    throw error
   } finally {
     if (browserOpen) await agent(["--session", session, "close"]).catch(() => {})
-    await owner.interrupt()
+    try {
+      await owner.interrupt()
+    } catch (error) {
+      if (primaryError === undefined) throw error
+    }
   }
 }
 

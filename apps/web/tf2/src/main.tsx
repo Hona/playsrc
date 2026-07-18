@@ -89,6 +89,9 @@ function App() {
       data-weapon-trace={view.weaponTrace}
       data-authority-trace={view.authorityTrace}
       data-entity-trace={view.entityTrace}
+      data-model-material-probe={view.modelMaterialProbe}
+      data-random-audio-probe={view.randomAudioProbe}
+      data-collision-mover-probe={view.collisionMoverProbe}
       data-blockers={JSON.stringify(view.blockers)}
     >
       <canvas

@@ -10,15 +10,15 @@ import { buildSourceBundle } from "./source-bundle"
 import { decodeSnapshot, encodeCommand } from "../../../games/tf2/browser/src/codec"
 import { decodeModelPoseOutput, encodeModelPoseBatch } from "../../../games/tf2/browser/src/presentation"
 
-const EXPECTED_MAP_BYTES = 42_452_075
-const EXPECTED_MAP_SHA256 = "b202a853d87a93c10b13226fd48a7eafc250cd5c83a54b44ffdb7dce2a438753"
+const EXPECTED_MAP_BYTES = 42_082_929
+const EXPECTED_MAP_SHA256 = "56153098a867c553651f9c773bd72c4659782bae8520277c80daaaa414bdf156"
 const EXPECTED_BSP_SHA256 = "b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959"
-const EXPECTED_HDR_BYTES = 78_624_037
-const EXPECTED_HDR_SHA256 = "baddd97e9795ab7f6c6fbf7710b18d1047397c4bd10854a6a3f9202bcf059ecd"
-const EXPECTED_LDR_DERIVED_SHA256 = "18b77887ff07b7aafb80709947b9ce9ca4ca91da491ed7f6448ebc660922aaae"
-const EXPECTED_HDR_DERIVED_SHA256 = "49f93fbdfd42bb582986b1b5cdf15481f65de4a1a5f9f26dbb488157a63784e1"
-const EXPECTED_DEPENDENCY_BYTES = 112_303_242
-const EXPECTED_DEPENDENCY_SHA256 = "494c282a45b2c1ae1882e66aabe234cda3f92d950e1d2a37c2616db845164884"
+const EXPECTED_HDR_BYTES = 78_255_264
+const EXPECTED_HDR_SHA256 = "a2326c011921f1da90480b1c5f4d3923c038e2dcf07cf6c1d69d43cb2a145a5f"
+const EXPECTED_LDR_DERIVED_SHA256 = "69bdc9b50fe8c26b0a66fd848a1e606dd2ce0578efffd80226ae61de1edf38b3"
+const EXPECTED_HDR_DERIVED_SHA256 = "babf3490b145841e278d3c23aeb7c0f1d8ebc89d29e13215f53c5adb6ecdfcb4"
+const EXPECTED_DEPENDENCY_BYTES = 115_885_689
+const EXPECTED_DEPENDENCY_SHA256 = "896132d9b618d0ae521092c1e33d91d3cc05f1692ac434603a31994b8dd51741"
 function bundlePathOffset(bytes: Uint8Array, target: string): number {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   let offset = 12
@@ -44,6 +44,7 @@ type Exports = Readonly<{
   playsrc_result_copy(handle: number, pointer: number, capacity: number): number
   playsrc_result_hash(handle: number, pointer: number): number
   playsrc_result_derived_hash(handle: number, pointer: number): number
+  playsrc_presentation_length(handle: number): number
   playsrc_spawn_copy(handle: number, pointer: number, capacity: number): number
   playsrc_game_advance(handle: number, command: number, length: number, ticks: number): number
   playsrc_jump_configure(handle: number, definition: number, length: number): number
@@ -302,7 +303,7 @@ function inspectHdrPayload(payload: Uint8Array) {
   }
   require(skyDimensions.join(",") === "512x256,512x256,512x256,512x256,512x512,4x4", "HDR sky dimensions are invalid")
   const inputCount = reader.u32()
-  require(inputCount === 296, "HDR input-hash count is invalid")
+  require(inputCount === 303, "HDR input-hash count is invalid")
   for (let index = 0; index < inputCount; index += 1) {
     require(reader.u8() === 1 && reader.take(3).every((value) => value === 0), "HDR input record is invalid")
     require(reader.text().length > 0, "HDR input path is empty")
@@ -486,6 +487,8 @@ export async function verifyTf2Wasm(
   exports.playsrc_free(dependencyPointer, dependencyBytes.byteLength)
   const error = exports.playsrc_result_error(handle)
   require(error === 0, `TF2 WASM map compilation failed with error ${error}`)
+  const presentationBytes = exports.playsrc_presentation_length(handle)
+  require(presentationBytes > 0 && presentationBytes <= 512 * 1024 * 1024, "TF2 presentation byte length is invalid")
   const spawnPointer = exports.playsrc_alloc(40)
   require(exports.playsrc_spawn_copy(handle, spawnPointer, 40) === 40, "TF2 spawn descriptor is unavailable")
   const spawnBytes = new Uint8Array(exports.memory.buffer, spawnPointer, 40).slice()
@@ -620,13 +623,15 @@ export async function verifyTf2Wasm(
     exports.playsrc_free(pointer, length)
     return decodeSnapshot(bytes.buffer)
   }
+  let advanceOrdinal = 0
   const advance = (command: ReturnType<typeof encodeCommand>, ticks: number) => {
+    advanceOrdinal += 1
     const bytes = new Uint8Array(command)
     const pointer = exports.playsrc_alloc(bytes.byteLength)
     new Uint8Array(exports.memory.buffer, pointer, bytes.byteLength).set(bytes)
     const accepted = exports.playsrc_game_advance(handle, pointer, bytes.byteLength, ticks)
     exports.playsrc_free(pointer, bytes.byteLength)
-    require(accepted === 1, "fixed gameplay transaction failed")
+    require(accepted === 1, `fixed gameplay transaction ${advanceOrdinal} failed with ${exports.playsrc_result_error(handle)}`)
     return copySnapshot()
   }
   const button = advance(encodeCommand({
@@ -636,19 +641,22 @@ export async function verifyTf2Wasm(
   const moverRequest = button.moverRequests.find((request) => request.entity === 213)
   const moverTransform = button.entityTransforms.find((transform) => transform.identity === 213)
   require(moverRequest && moverTransform, "fixed button did not publish its mover request/transform")
-  const moved = advance(encodeCommand({
-    forward: 0, side: 0, yawDegrees: 0, pitchDegrees: 0, jump: false, crouch: false,
-    fire: false, detonate: false,
-    moverResults: [{
-      requestId: moverRequest.requestId,
-      entity: moverRequest.entity,
-      kind: 2,
-      position: moverRequest.destination,
-      angles: moverTransform.angles,
-      carry: [0, 0, 0],
-    }],
-  }), 1)
-  require(moved.entityEvents.some((event) => event.entity === 213 && event.kind === 7) &&
+  const moverTicks = Math.ceil(Math.hypot(...moverRequest.destination.map((value, axis) => value - moverRequest.start[axis]!)) /
+    moverRequest.speed / 0.015) + 1
+  let moved = button
+  let moverCompleted = false
+  let moverCompletionEvent = false
+  for (let remaining = moverTicks; remaining > 0;) {
+    const batch = Math.min(64, remaining)
+    moved = advance(encodeCommand({
+      forward: 0, side: 0, yawDegrees: 0, pitchDegrees: 0, jump: false, crouch: false,
+      fire: false, detonate: false,
+    }), batch)
+    moverCompleted ||= moved.moverResults.some((result) => result.requestId === moverRequest.requestId && result.kind === 2)
+    moverCompletionEvent ||= moved.entityEvents.some((event) => event.entity === 213 && event.kind === 7)
+    remaining -= batch
+  }
+  require(moverCompletionEvent && moverCompleted &&
     moved.entityTransforms.some((transform) => transform.identity === 213 &&
       transform.position.every((value, index) => value === moverRequest.destination[index])),
   "fixed mover completion did not publish Entity completion and destination transform")
@@ -660,20 +668,13 @@ export async function verifyTf2Wasm(
     const fire = fired.projectileEvents.filter((event) => event.type === "fire" && event.kind === 1).at(-1)
     const request = fire && fired.rocketTraceRequests.filter((value) => value.projectile === fire.projectile).at(-1)
     require(fire && request, "fixed rocket fire did not publish a Collision request")
-    const resolved = advance(neutralCommand({
-      crouch,
-      rocketResults: [{
-        projectile: request.projectile,
-        tick: fired.tick,
-        end: request.end,
-        solid: true,
-        sky: false,
-        normal: [0, 0, 1],
-        directTarget: null,
-      }],
-    }), 1)
+    let resolved = fired
+    for (let tick = 0; tick < 16 && !resolved.projectileEvents.some((event) => event.projectile === request.projectile && event.type === "explode"); tick++) {
+      resolved = advance(neutralCommand({ crouch }), 1)
+    }
     const impulse = resolved.events.find((event) => event.kind === 8)
-    require(impulse && resolved.radiusDamageRequests.some((value) => value.projectile === request.projectile),
+    require(impulse && resolved.radiusDamageRequests.some((value) => value.projectile === request.projectile) &&
+      resolved.rocketTraceResults.some((value) => value.projectile === request.projectile && value.solid),
       "fixed rocket result did not publish blast force and radius damage")
     return { resolved, impulse }
   }
@@ -753,13 +754,15 @@ export async function verifyTf2Wasm(
 
   const modelBatch = encodeModelPoseBatch([{
     identity: 1,
-    model: "models/weapons/v_models/v_rocketlauncher_soldier.mdl",
-    activity: "ACT_VM_DRAW",
+    model: "models/weapons/c_models/c_soldier_arms.mdl",
+    itemModel: "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl",
+    activity: "ACT_PRIMARY_VM_DRAW",
     previousElapsedSeconds: 0,
     elapsedSeconds: 0.4,
     skin: 0,
     lod: 0,
     bodygroups: [0],
+    itemBodygroups: [0],
   }])
   const modelPointer = exports.playsrc_alloc(modelBatch.byteLength)
   new Uint8Array(exports.memory.buffer, modelPointer, modelBatch.byteLength).set(modelBatch)
@@ -769,12 +772,14 @@ export async function verifyTf2Wasm(
   const modelOutputPointer = exports.playsrc_alloc(modelOutputLength)
   require(exports.playsrc_model_output_copy(handle, modelOutputPointer, modelOutputLength) === modelOutputLength,
     "fixed StudioModel viewmodel pose output copy failed")
-  const modelPose = decodeModelPoseOutput(
+  const modelPoses = decodeModelPoseOutput(
     new Uint8Array(exports.memory.buffer, modelOutputPointer, modelOutputLength).slice(),
-  )[0]
-  require(modelPose?.model === "models/weapons/v_models/v_rocketlauncher_soldier.mdl" &&
-    modelPose.activity === "ACT_VM_DRAW" && Math.abs(modelPose.cycle - 0.5) <= 1e-6 &&
-    modelPose.primitives.length === 4 && modelPose.primitives.every((primitive) => primitive.tangents.length / 4 === primitive.positions.length / 3),
+  )
+  require(modelPoses.length === 2 && modelPoses[0]?.role === "hand" && modelPoses[1]?.role === "item" &&
+    modelPoses[0].model === "models/weapons/c_models/c_soldier_arms.mdl" &&
+    modelPoses[1].model === "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl" &&
+    modelPoses.every((pose) => pose.activity === "ACT_PRIMARY_VM_DRAW" && pose.primitives.length > 0 &&
+      pose.primitives.every((primitive) => primitive.tangents.length / 4 === primitive.positions.length / 3)),
   "fixed StudioModel viewmodel pose output differs")
   const visibilityPointer = exports.playsrc_alloc(12)
   new Float32Array(exports.memory.buffer, visibilityPointer, 3).set([5328, 3376, -3068])
@@ -839,6 +844,7 @@ export async function verifyTf2Wasm(
     opposedTriangles,
     degenerateTriangles,
     models: renderMap.models.length,
+    presentationBytes,
     modelOccurrences: renderMap.modelOccurrences.length,
     lightmapWidth: renderMap.lightmap.width,
     lightmapHeight: renderMap.lightmap.height,
@@ -849,13 +855,13 @@ export async function verifyTf2Wasm(
     projectiles: decoded.projectiles.length,
     events: decoded.projectileEvents.length,
     moverEntity: moverRequest.entity,
-    moverCompletionEvents: moved.entityEvents.filter((event) => event.entity === moverRequest.entity && event.kind === 7).length,
+    moverCompletionEvents: Number(moverCompletionEvent),
     standingBlastVelocity,
     crouchedBlastVelocity,
     regenerateEntity: resupplied.events.find((event) => event.kind === 5)?.subject ?? 0,
     particleItems: particleOutputView.getUint32(8, true),
-    viewmodelPrimitives: modelPose.primitives.length,
-    viewmodelEvents: modelPose.events.length,
+    viewmodelPrimitives: modelPoses.reduce((total, pose) => total + pose.primitives.length, 0),
+    viewmodelEvents: modelPoses[0]?.events.length ?? 0,
     spawn,
   }
 }

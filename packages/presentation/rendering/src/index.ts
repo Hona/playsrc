@@ -242,6 +242,50 @@ export type MaterialStateInput = Readonly<{
   samplingAvailable: boolean
   alphaTestReference: number
 }>
+export type ModelMaterialInput = Readonly<{
+  identity: string
+  shader: "vertex-lit-generic" | "eye-refract" | "eyes"
+  vertexRequirements: number
+  bindings: readonly Readonly<{
+    kind: "material" | "model"
+    role: number
+    colorRead: "srgb" | "linear" | "format-dependent"
+    logicalPath: string
+  }>[]
+  environmentMap: unknown
+  state: Readonly<{ kind: "vertex-lit-generic" | "eye-refract" | "eyes" }>
+}>
+export type AuthoredTextureInput = Readonly<{
+  logicalPath: string
+  sourceSha256: string
+  width: number
+  height: number
+  depth: number
+  mipCount: number
+  frameCount: number
+  faces: readonly number[]
+  scalarEncoding: "u8" | "f16"
+  sampling: Readonly<{
+    wrapS: number
+    wrapT: number
+    wrapU: number
+    minFilter: number
+    magFilter: number
+    anisotropyLevel: number
+    mipmapped: boolean
+    noLod: boolean
+    allMips: boolean
+  }>
+  planes: readonly Readonly<{
+    mip: number
+    frame: number
+    face: number
+    slice: number
+    width: number
+    height: number
+    rgba: Uint8Array
+  }>[]
+}>
 
 export type MapLoadRequest = Readonly<{
   payload: Uint8Array
@@ -260,12 +304,14 @@ export type MapLoadRequest = Readonly<{
   materialStates?: ReadonlyMap<string, MaterialStateInput>
   particleTextures?: readonly EnvironmentTextureInput[]
   modelOccurrences?: readonly Readonly<{ entity: number; model: string; matrix: Float32Array }>[]
+  modelMaterials?: ReadonlyMap<string, ModelMaterialInput>
+  authoredTextures?: ReadonlyMap<string, AuthoredTextureInput>
   diagnostic?: boolean
   signal?: AbortSignal
 }>
 
 export type SceneDiagnostic = Readonly<{
-  code: "MissingMaterial" | "MissingTextureMips" | "MissingDirectionalInput" | "MissingProfileInput" | "UnsupportedProfileInput"
+  code: "MissingMaterial" | "MissingTextureMips" | "MissingModelLighting" | "MissingModelEyeState" | "MissingDirectionalInput" | "MissingProfileInput" | "UnsupportedProfileInput"
   identity: string
   detail: string
 }>
@@ -462,6 +508,48 @@ function textureFromRgba(
   texture.wrapT = wrap(state?.wrapT ?? 0)
   texture.minFilter = (state?.minFilter ?? 2) === 0 ? THREE.NearestFilter : THREE.LinearFilter
   texture.magFilter = (state?.magFilter ?? 1) === 0 ? THREE.NearestFilter : THREE.LinearFilter
+  texture.generateMipmaps = false
+  texture.flipY = false
+  texture.needsUpdate = true
+  return texture
+}
+
+function textureFromAuthored(input: AuthoredTextureInput, colorSpace: string): THREE.DataTexture {
+  if (input.depth !== 1 || input.frameCount < 1 || !input.faces.includes(0) ||
+    input.sampling.wrapS === 2 || input.sampling.wrapT === 2 || input.sampling.wrapU === 2) {
+    throw new RenderingError("UnsupportedFeature", `authored 2D texture ${input.logicalPath} requires an unsupported topology or border sampler`)
+  }
+  const planes = input.planes
+    .filter((plane) => plane.frame === 0 && plane.face === 0 && plane.slice === 0)
+    .sort((left, right) => left.mip - right.mip)
+  if (planes.length !== input.mipCount || planes.some((plane, mip) => plane.mip !== mip)) {
+    throw new RenderingError("MissingInput", `authored texture ${input.logicalPath} has an incomplete selected mip chain`)
+  }
+  const data = (plane: AuthoredTextureInput["planes"][number]) => input.scalarEncoding === "u8"
+    ? plane.rgba.slice()
+    : new Uint16Array(plane.rgba.slice().buffer)
+  const base = planes[0]!
+  const texture = new THREE.DataTexture(
+    data(base),
+    base.width,
+    base.height,
+    THREE.RGBAFormat,
+    input.scalarEncoding === "u8" ? THREE.UnsignedByteType : THREE.HalfFloatType,
+  )
+  texture.mipmaps = planes.map((plane) => Object.freeze({ data: data(plane), width: plane.width, height: plane.height }))
+  texture.colorSpace = colorSpace
+  const wrap = (value: number) => value === 0 ? THREE.RepeatWrapping : THREE.ClampToEdgeWrapping
+  texture.wrapS = wrap(input.sampling.wrapS)
+  texture.wrapT = wrap(input.sampling.wrapT)
+  texture.minFilter = [
+    THREE.NearestFilter,
+    THREE.LinearFilter,
+    THREE.LinearMipmapNearestFilter,
+    THREE.LinearMipmapLinearFilter,
+    THREE.LinearMipmapLinearFilter,
+  ][input.sampling.minFilter] ?? THREE.LinearFilter
+  texture.magFilter = input.sampling.magFilter === 0 ? THREE.NearestFilter : THREE.LinearFilter
+  texture.anisotropy = input.sampling.anisotropyLevel
   texture.generateMipmaps = false
   texture.flipY = false
   texture.needsUpdate = true
@@ -775,6 +863,30 @@ class RendererOwner implements Renderer {
       ) throw new RenderingError("MalformedInput", "material state input is invalid")
       materialStates.set(key, Object.freeze({ ...state }))
     }
+    const authoredTextures = new Map<string, AuthoredTextureInput>()
+    for (const [identity, texture] of request.authoredTextures ?? []) {
+      const key = identity.toLowerCase()
+      if (key !== texture.logicalPath.toLowerCase() || authoredTextures.has(key) || !HASH.test(texture.sourceSha256) ||
+        texture.width < 1 || texture.height < 1 || texture.depth < 1 || texture.mipCount < 1 || texture.frameCount < 1 ||
+        texture.faces.length < 1 || new Set(texture.faces).size !== texture.faces.length ||
+        texture.sampling.wrapS < 0 || texture.sampling.wrapS > 2 || texture.sampling.wrapT < 0 || texture.sampling.wrapT > 2 ||
+        texture.sampling.wrapU < 0 || texture.sampling.wrapU > 2 || texture.sampling.minFilter < 0 || texture.sampling.minFilter > 4 ||
+        texture.sampling.magFilter < 0 || texture.sampling.magFilter > 2 || texture.sampling.anisotropyLevel < 1 ||
+        texture.planes.some((plane) => plane.width < 1 || plane.height < 1 ||
+          plane.rgba.length !== plane.width * plane.height * 4 * (texture.scalarEncoding === "u8" ? 1 : 2))) {
+        throw new RenderingError("MalformedInput", "authored model texture input is invalid")
+      }
+      authoredTextures.set(key, texture)
+    }
+    const modelMaterials = new Map<string, ModelMaterialInput>()
+    for (const [identity, material] of request.modelMaterials ?? []) {
+      const key = identity.toLowerCase()
+      if (key !== material.identity.toLowerCase() || modelMaterials.has(key) || material.vertexRequirements < 0 ||
+        material.bindings.some((binding) => !authoredTextures.has(binding.logicalPath.toLowerCase()))) {
+        throw new RenderingError("MalformedInput", "model material input is invalid")
+      }
+      modelMaterials.set(key, material)
+    }
     const materialIdentities = new Set([
       ...map.materials.map((material) => material.logicalPath.toLowerCase()),
       ...map.models.flatMap((model) => model.materials.map((material) => material.logicalPath.toLowerCase())),
@@ -783,7 +895,7 @@ class RendererOwner implements Renderer {
       throw new RenderingError("MalformedInput", "directional texture names an unavailable material")
     }
     this.#checkAbort(request.signal, ordinal)
-    const normalizedRequest = Object.freeze({ ...request, materialStates })
+    const normalizedRequest = Object.freeze({ ...request, materialStates, authoredTextures, modelMaterials })
     const staged = this.#buildScene(
       map,
       payload,
@@ -851,6 +963,9 @@ class RendererOwner implements Renderer {
       "float",
     )
     const directionalGpu = new Map<string, { input: DirectionalTextureInput; texture: THREE.DataTexture }>()
+    const authoredGpu = new Map<string, THREE.DataTexture>()
+    let missingModelLighting = false
+    let missingModelEyeState = false
     const missingMipInputs = new Set<string>()
     const requireMipInputs = (identity: string, state: MaterialStateInput | undefined): void => {
       const key = identity.toLowerCase()
@@ -867,6 +982,35 @@ class RendererOwner implements Renderer {
     const supplemental = new Map(
       (request.modelTextures ?? []).map((texture) => [texture.material.toLowerCase(), texture] as const),
     )
+    const createModelBase = (identity: string): THREE.DataTexture | undefined => {
+      const material = request.modelMaterials?.get(identity.toLowerCase())
+      if (!material) {
+        diagnostics.push(diagnostic("MissingMaterial", identity, "typed model material state is unavailable"))
+        return undefined
+      }
+      if ((material.shader === "eye-refract" || material.shader === "eyes") && !missingModelEyeState) {
+        missingModelEyeState = true
+        diagnostics.push(diagnostic("MissingModelEyeState", "game-eye-target", "current game-owned eye targets and per-draw StudioModel eye states are unavailable"))
+      } else if (material.shader === "vertex-lit-generic" && !missingModelLighting) {
+        missingModelLighting = true
+        diagnostics.push(diagnostic("MissingModelLighting", "model-lightcache", "current model lightcache selections and ModelLightingInput records are unavailable"))
+      }
+      const binding = material.bindings.find((value) => value.kind === "material" && value.role === 0)
+      if (!binding) return undefined
+      if (binding.colorRead === "format-dependent") {
+        throw new RenderingError("MissingInput", `model texture ${binding.logicalPath} lacks a resolved color interpretation`)
+      }
+      const key = `${binding.logicalPath.toLowerCase()}:${binding.colorRead}`
+      let texture = authoredGpu.get(key)
+      if (!texture) {
+        const input = request.authoredTextures?.get(binding.logicalPath.toLowerCase())
+        if (!input) throw new RenderingError("MissingInput", `authored model texture ${binding.logicalPath} is unavailable`)
+        texture = textureFromAuthored(input, binding.colorRead === "srgb" ? THREE.SRGBColorSpace : THREE.NoColorSpace)
+        authoredGpu.set(key, texture)
+        disposables.add(texture)
+      }
+      return texture
+    }
     const createBase = (resolved: RuntimeMaterial, identity: string): THREE.DataTexture | undefined => {
       const state = materialStates.get(identity.toLowerCase())
       const source = resolved.baseTexture ?? supplemental.get(identity.toLowerCase())
@@ -990,7 +1134,7 @@ class RendererOwner implements Renderer {
           const resolved = model.materials[primitive.material]!
           const materialState = materialStates.get(resolved.logicalPath.toLowerCase())
           if (materialState?.noDraw) continue
-          const baseTexture = createBase(resolved, resolved.logicalPath)
+          const baseTexture = createModelBase(resolved.logicalPath)
           const material = new THREE.MeshBasicMaterial({
             ...materialOptions(resolved, materialState),
             color: baseTexture ? 0xffffff : debugColor(resolved.logicalPath),
@@ -1104,6 +1248,12 @@ class RendererOwner implements Renderer {
         materialStates: new Map(materialStates),
         particleTextures: request.particleTextures?.map((texture) => Object.freeze({ ...texture, rgba: texture.rgba.slice() })),
         modelOccurrences: request.modelOccurrences?.map((value) => Object.freeze({ ...value, matrix: value.matrix.slice() })),
+        modelMaterials: new Map(request.modelMaterials ?? []),
+        authoredTextures: new Map([...(request.authoredTextures ?? [])].map(([identity, texture]) => [identity, Object.freeze({
+          ...texture,
+          faces: Object.freeze([...texture.faces]),
+          planes: Object.freeze(texture.planes.map((plane) => Object.freeze({ ...plane, rgba: plane.rgba.slice() }))),
+        })])),
         diagnostic: request.diagnostic,
       },
       group,

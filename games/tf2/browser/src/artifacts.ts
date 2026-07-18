@@ -70,6 +70,96 @@ export type AudioArtifact = Readonly<{
   entries: readonly SoundScriptNode[]
 }>
 export type ModelOccurrenceMatrix = Readonly<{ entity: number; model: string; matrix: Float32Array }>
+export type ModelTextureBinding = Readonly<{
+  kind: "material" | "model"
+  role: number
+  colorRead: "srgb" | "linear" | "format-dependent"
+  logicalPath: string
+}>
+export type CloakState = Readonly<{ enabled: boolean; factor: number; colorTint: readonly [number, number, number]; refractAmount: number }>
+export type ModelMaterialArtifact = Readonly<{
+  identity: string
+  shader: "vertex-lit-generic" | "eye-refract" | "eyes"
+  vertexRequirements: number
+  bindings: readonly ModelTextureBinding[]
+  environmentMap: null | Readonly<{ tint: readonly [number, number, number]; contrast: number; saturation: number }>
+  state:
+    | Readonly<{
+        kind: "vertex-lit-generic"
+        halfLambert: boolean
+        selfIllumination: null | Readonly<{ source: number; tint: readonly [number, number, number]; fresnel: readonly [number, number, number] }>
+        phong: null | Readonly<{
+          maskSource: number
+          invertMask: boolean
+          albedoTint: boolean
+          exponent: number
+          exponentFactor: number
+          tint: readonly [number, number, number]
+          boost: number
+          fresnel: readonly [number, number, number]
+          packedFresnel: readonly [number, number, number]
+          rim: null | Readonly<{ exponent: number; boost: number; exponentTextureAlphaMask: boolean }>
+        }>
+        cloak: CloakState
+        sheen: Readonly<{
+          enabled: boolean
+          sourceAlphaBlend: boolean
+          depthWrite: boolean
+          maskFrame: number
+          maskDirection: number
+          shaderIndex: number
+          tint: readonly [number, number, number]
+          maskScale: readonly [number, number]
+          maskOffset: readonly [number, number]
+        }>
+      }>
+    | Readonly<{
+        kind: "eye-refract"
+        sphereTextureKill: boolean
+        raytraceSphere: boolean
+        halfLambert: boolean
+        dilation: number
+        glossiness: number
+        parallaxStrength: number
+        corneaBumpStrength: number
+        ambientOcclusionColor: readonly [number, number, number]
+        eyeballRadius: number
+        cloak: CloakState
+      }>
+    | Readonly<{ kind: "eyes"; halfLambert: boolean; dilation: number }>
+}>
+export type AuthoredTexturePlane = Readonly<{
+  mip: number
+  frame: number
+  face: number
+  slice: number
+  width: number
+  height: number
+  rgba: Uint8Array
+}>
+export type AuthoredTextureArtifact = Readonly<{
+  logicalPath: string
+  sourceSha256: string
+  width: number
+  height: number
+  depth: number
+  mipCount: number
+  frameCount: number
+  faces: readonly number[]
+  scalarEncoding: "u8" | "f16"
+  sampling: Readonly<{
+    wrapS: number
+    wrapT: number
+    wrapU: number
+    minFilter: number
+    magFilter: number
+    anisotropyLevel: number
+    mipmapped: boolean
+    noLod: boolean
+    allMips: boolean
+  }>
+  planes: readonly AuthoredTexturePlane[]
+}>
 export type SupplementalTexture = Readonly<{
   material: string
   logicalPath: string
@@ -161,6 +251,8 @@ export type PresentationArtifacts = Readonly<{
   particleTextures: readonly ParticleTextureArtifact[]
   audio: AudioArtifact
   modelOccurrences: readonly ModelOccurrenceMatrix[]
+  modelMaterials: ReadonlyMap<string, ModelMaterialArtifact>
+  authoredTextures: ReadonlyMap<string, AuthoredTextureArtifact>
   environment: EnvironmentArtifact
 }>
 export class ArtifactError extends Error {
@@ -454,9 +546,159 @@ function parseOccurrenceMatrices(r: Reader): readonly ModelOccurrenceMatrix[] {
   })
   return Object.freeze(output)
 }
+
+function tuple2(r: Reader): readonly [number, number] {
+  return Object.freeze([r.f32(), r.f32()])
+}
+function tuple3(r: Reader): readonly [number, number, number] {
+  return Object.freeze([r.f32(), r.f32(), r.f32()])
+}
+function cloak(r: Reader): CloakState {
+  const enabled = r.u8()
+  if (enabled > 1 || r.u8() || r.u8() || r.u8()) throw new ArtifactError("model cloak flags")
+  return Object.freeze({ enabled: enabled === 1, factor: r.f32(), colorTint: tuple3(r), refractAmount: r.f32() })
+}
+
+function parseModelMaterials(r: Reader): ReadonlyMap<string, ModelMaterialArtifact> {
+  magic(r, "PMDL")
+  const output = new Map<string, ModelMaterialArtifact>()
+  for (let count = r.u32(); count > 0; count--) {
+    const identity = r.text().toLowerCase(), shaderCode = r.u8()
+    if (!identity || output.has(identity) || shaderCode > 2 || r.u8()) throw new ArtifactError("model material identity")
+    const vertexRequirements = r.u16(), bindings: ModelTextureBinding[] = [], bindingIdentities = new Set<string>()
+    for (let bindingCount = r.u32(); bindingCount > 0; bindingCount--) {
+      const kind = r.u8(), role = r.u8(), colorRead = r.u8()
+      if (kind > 1 || colorRead > 2 || r.u8()) throw new ArtifactError("model texture binding")
+      const logicalPath = r.text().toLowerCase(), key = `${kind}:${role}`
+      if (!logicalPath.startsWith("materials/") || bindingIdentities.has(key)) throw new ArtifactError("model texture binding identity")
+      bindingIdentities.add(key)
+      bindings.push(Object.freeze({
+        kind: kind === 0 ? "material" : "model",
+        role,
+        colorRead: (["srgb", "linear", "format-dependent"] as const)[colorRead]!,
+        logicalPath,
+      }))
+    }
+    const hasEnvironment = r.u8()
+    if (hasEnvironment > 1 || r.u8() || r.u8() || r.u8()) throw new ArtifactError("model environment state")
+    const environmentValues = Object.freeze([r.f32(), r.f32(), r.f32(), r.f32(), r.f32()])
+    if (hasEnvironment === 0 && environmentValues.some((value) => value !== 0)) throw new ArtifactError("absent model environment state")
+    const environmentMap = hasEnvironment === 1
+      ? Object.freeze({ tint: Object.freeze(environmentValues.slice(0, 3)) as readonly [number, number, number], contrast: environmentValues[3]!, saturation: environmentValues[4]! })
+      : null
+    let state: ModelMaterialArtifact["state"]
+    if (shaderCode === 0) {
+      const halfLambert = r.u8(), hasSelfIllumination = r.u8(), selfSource = r.u8(), hasPhong = r.u8()
+      if (halfLambert > 1 || hasSelfIllumination > 1 || selfSource > 3 || hasPhong > 1) throw new ArtifactError("vertex-lit model state")
+      const selfValues = Object.freeze(Array.from({ length: 6 }, () => r.f32()))
+      if (hasSelfIllumination === 0 && (selfSource !== 0 || selfValues.some((value) => value !== 0))) throw new ArtifactError("absent self illumination")
+      const maskSource = r.u8(), invertMask = r.u8(), albedoTint = r.u8(), hasRim = r.u8()
+      if (maskSource > 2 || invertMask > 1 || albedoTint > 1 || hasRim > 1) throw new ArtifactError("model Phong flags")
+      const phongValues = Object.freeze(Array.from({ length: 12 }, () => r.f32()))
+      const rimExponent = r.f32(), rimBoost = r.f32(), rimMask = r.u8()
+      if (rimMask > 1 || r.u8() || r.u8() || r.u8()) throw new ArtifactError("model rim state")
+      if (hasPhong === 0 && (maskSource !== 0 || invertMask !== 0 || albedoTint !== 0 || hasRim !== 0 || phongValues.some((value) => value !== 0) || rimExponent !== 0 || rimBoost !== 0 || rimMask !== 0)) {
+        throw new ArtifactError("absent model Phong state")
+      }
+      if (hasRim === 0 && (rimExponent !== 0 || rimBoost !== 0 || rimMask !== 0)) throw new ArtifactError("absent model rim state")
+      const cloakState = cloak(r), sheenEnabled = r.u8(), sheenSourceAlpha = r.u8(), sheenDepthWrite = r.u8()
+      if (sheenEnabled > 1 || sheenSourceAlpha > 1 || sheenDepthWrite > 1 || r.u8()) throw new ArtifactError("model sheen flags")
+      const maskFrame = r.i32(), maskDirection = r.i32(), shaderIndex = r.i32(), sheenTint = tuple3(r), maskScale = tuple2(r), maskOffset = tuple2(r)
+      state = Object.freeze({
+        kind: "vertex-lit-generic",
+        halfLambert: halfLambert === 1,
+        selfIllumination: hasSelfIllumination === 1 ? Object.freeze({
+          source: selfSource,
+          tint: Object.freeze(selfValues.slice(0, 3)) as readonly [number, number, number],
+          fresnel: Object.freeze(selfValues.slice(3, 6)) as readonly [number, number, number],
+        }) : null,
+        phong: hasPhong === 1 ? Object.freeze({
+          maskSource,
+          invertMask: invertMask === 1,
+          albedoTint: albedoTint === 1,
+          exponent: phongValues[0]!, exponentFactor: phongValues[1]!,
+          tint: Object.freeze(phongValues.slice(2, 5)) as readonly [number, number, number],
+          boost: phongValues[5]!,
+          fresnel: Object.freeze(phongValues.slice(6, 9)) as readonly [number, number, number],
+          packedFresnel: Object.freeze(phongValues.slice(9, 12)) as readonly [number, number, number],
+          rim: hasRim === 1 ? Object.freeze({ exponent: rimExponent, boost: rimBoost, exponentTextureAlphaMask: rimMask === 1 }) : null,
+        }) : null,
+        cloak: cloakState,
+        sheen: Object.freeze({
+          enabled: sheenEnabled === 1, sourceAlphaBlend: sheenSourceAlpha === 1, depthWrite: sheenDepthWrite === 1,
+          maskFrame, maskDirection, shaderIndex, tint: sheenTint, maskScale, maskOffset,
+        }),
+      })
+    } else if (shaderCode === 1) {
+      const sphereTextureKill = r.u8(), raytraceSphere = r.u8(), halfLambert = r.u8()
+      if (sphereTextureKill > 1 || raytraceSphere > 1 || halfLambert > 1 || r.u8()) throw new ArtifactError("eye-refract flags")
+      const dilation = r.f32(), glossiness = r.f32(), parallaxStrength = r.f32(), corneaBumpStrength = r.f32(), ambientOcclusionColor = tuple3(r), eyeballRadius = r.f32()
+      state = Object.freeze({
+        kind: "eye-refract", sphereTextureKill: sphereTextureKill === 1, raytraceSphere: raytraceSphere === 1,
+        halfLambert: halfLambert === 1, dilation, glossiness, parallaxStrength, corneaBumpStrength,
+        ambientOcclusionColor, eyeballRadius, cloak: cloak(r),
+      })
+    } else {
+      const halfLambert = r.u8()
+      if (halfLambert > 1 || r.u8() || r.u8() || r.u8()) throw new ArtifactError("eyes flags")
+      state = Object.freeze({ kind: "eyes", halfLambert: halfLambert === 1, dilation: r.f32() })
+    }
+    output.set(identity, Object.freeze({
+      identity,
+      shader: (["vertex-lit-generic", "eye-refract", "eyes"] as const)[shaderCode]!,
+      vertexRequirements,
+      bindings: Object.freeze(bindings),
+      environmentMap,
+      state,
+    }))
+  }
+  return output
+}
+
+function parseAuthoredTextures(r: Reader): ReadonlyMap<string, AuthoredTextureArtifact> {
+  magic(r, "PMIP")
+  const output = new Map<string, AuthoredTextureArtifact>()
+  for (let count = r.u32(); count > 0; count--) {
+    const logicalPath = r.text().toLowerCase(), sourceSha256 = hex(r.take(32)), width = r.u32(), height = r.u32(), depth = r.u32(),
+      mipCount = r.u8(), scalarCode = r.u8(), frameCount = r.u16(), faces = Object.freeze(Array.from({ length: r.u32() }, () => r.u8()))
+    if (!logicalPath.startsWith("materials/") || output.has(logicalPath) || !width || !height || !depth || !mipCount || !frameCount ||
+      scalarCode > 1 || faces.length < 1 || new Set(faces).size !== faces.length || faces.some((face) => face > 6)) throw new ArtifactError("authored texture header")
+    const wrapS = r.u8(), wrapT = r.u8(), wrapU = r.u8(), minFilter = r.u8(), magFilter = r.u8(), anisotropyLevel = r.u8(),
+      mipmapped = r.u8(), noLod = r.u8(), allMips = r.u8()
+    if (wrapS > 2 || wrapT > 2 || wrapU > 2 || minFilter > 4 || magFilter > 2 || !anisotropyLevel || mipmapped > 1 || noLod > 1 || allMips > 1 || r.u8() || r.u8() || r.u8()) {
+      throw new ArtifactError("authored texture sampling")
+    }
+    const expected: Array<readonly [number, number, number, number]> = []
+    for (let mip = mipCount - 1; mip >= 0; mip--) {
+      const slices = Math.max(1, depth >> mip)
+      for (let frame = 0; frame < frameCount; frame++) for (const face of faces) for (let slice = 0; slice < slices; slice++) expected.push([mip, frame, face, slice])
+    }
+    const planeCount = r.u32()
+    if (planeCount !== expected.length) throw new ArtifactError("authored texture plane count")
+    const planes: AuthoredTexturePlane[] = []
+    for (let index = 0; index < planeCount; index++) {
+      const mip = r.u8(), face = r.u8(), frame = r.u16(), slice = r.u16()
+      if (r.u16()) throw new ArtifactError("authored texture plane reserved field")
+      const planeWidth = r.u32(), planeHeight = r.u32(), rgba = r.blob(256 * 1024 * 1024).slice(), target = expected[index]!
+      const componentBytes = scalarCode === 0 ? 1 : 2
+      if (mip !== target[0] || frame !== target[1] || face !== target[2] || slice !== target[3] ||
+        planeWidth !== Math.max(1, width >> mip) || planeHeight !== Math.max(1, height >> mip) || rgba.length !== planeWidth * planeHeight * 4 * componentBytes) {
+        throw new ArtifactError("authored texture plane")
+      }
+      planes.push(Object.freeze({ mip, frame, face, slice, width: planeWidth, height: planeHeight, rgba }))
+    }
+    output.set(logicalPath, Object.freeze({
+      logicalPath, sourceSha256, width, height, depth, mipCount, frameCount, faces,
+      scalarEncoding: scalarCode === 0 ? "u8" : "f16",
+      sampling: Object.freeze({ wrapS, wrapT, wrapU, minFilter, magFilter, anisotropyLevel, mipmapped: mipmapped === 1, noLod: noLod === 1, allMips: allMips === 1 }),
+      planes: Object.freeze(planes),
+    }))
+  }
+  return output
+}
 export async function parsePresentationArtifacts(bytes: Uint8Array): Promise<PresentationArtifacts> {
   const r = new Reader(bytes)
-  if (r.decoder.decode(r.take(4)) !== "PTF2" || r.u32() !== 5) throw new ArtifactError("artifact identity")
+  if (r.decoder.decode(r.take(4)) !== "PTF2" || r.u32() !== 6) throw new ArtifactError("artifact identity")
   const modelCount = r.u32(),
     textureCount = r.u32(),
     directionalCount = r.u32(),
@@ -488,39 +730,26 @@ export async function parsePresentationArtifacts(bytes: Uint8Array): Promise<Pre
       if (looping > 1 || r.u8() || r.u8() || r.u8()) throw new ArtifactError("model sequence timing")
       sequences.push(Object.freeze({ label, activity, index, timingAvailable: timingAvailable === 1, framesPerSecond, weightedFrameCount, cyclesPerSecond, durationSeconds, looping: looping === 1 }))
     }
-    const artifact = r.blob(64 * 1024 * 1024 - 1).slice(),
-      q = new Reader(artifact)
-    if (
-      q.decoder.decode(q.take(4)) !== "PSMP" ||
-      q.u16() !== 2 ||
-      q.u8() !== profile ||
-      q.u8() ||
-      q.u64() !== BigInt(artifact.length)
-    )
-      throw new ArtifactError("model artifact header")
-    q.take(8)
-    const artifactIdentity = q.text()
-    q.take(36)
-    const descriptorKind = q.u8()
-    for (let field = 0; field < 5; field++) if (q.u8() !== 0) throw new ArtifactError("model geometry descriptor")
-    if (q.u8() !== 0) throw new ArtifactError("model angle descriptor")
+    const descriptorKind = r.u8(), descriptorDetail = r.u8()
+    if (descriptorDetail > 1 || r.u8() || r.u8()) throw new ArtifactError("model descriptor header")
     let descriptor: ModelArtifact["descriptor"]
     if (descriptorKind === 0 && profile === 0) {
-      const root = q.u8(), depthRange = Object.freeze([q.f32(), q.f32()]) as readonly [number, number]
+      const root = descriptorDetail, depthRange = Object.freeze([r.f32(), r.f32()]) as readonly [number, number]
+      if (!r.take(32).every((value) => value === 0)) throw new ArtifactError("world model descriptor reserved bytes")
       if (root > 1) throw new ArtifactError("world model descriptor")
       descriptor = Object.freeze({ kind: "world", staticPropRoot: root === 1, depthRange })
     } else if (descriptorKind === 1 && profile === 1) {
-      const horizontalFov4By3 = q.f32(), minimumFov = q.f32(), maximumFov = q.f32(), near = q.f32()
-      if (q.u8() !== 0) throw new ArtifactError("viewmodel far descriptor")
-      const depthRange = Object.freeze([q.f32(), q.f32()]) as readonly [number, number]
-      const drawsAfterWorld = q.u8(), opaqueBeforeTranslucent = q.u8(), handedness = q.u8()
-      if (drawsAfterWorld !== 1 || opaqueBeforeTranslucent !== 1 || handedness !== 0) throw new ArtifactError("viewmodel descriptor")
+      if (descriptorDetail !== 0) throw new ArtifactError("viewmodel descriptor detail")
+      const horizontalFov4By3 = r.f32(), minimumFov = r.f32(), maximumFov = r.f32(), near = r.f32()
+      const depthRange = Object.freeze([r.f32(), r.f32()]) as readonly [number, number]
+      const drawsAfterWorld = r.u8(), opaqueBeforeTranslucent = r.u8(), handedness = r.u8()
+      if (drawsAfterWorld !== 1 || opaqueBeforeTranslucent !== 1 || handedness !== 0 || r.u8() || !r.take(12).every((value) => value === 0)) throw new ArtifactError("viewmodel descriptor")
       descriptor = Object.freeze({
         kind: "viewmodel", horizontalFov4By3, minimumFov, maximumFov, near, depthRange,
         drawsAfterWorld: true, opaqueBeforeTranslucent: true, optionalViewSpaceYReflection: true,
       })
     } else throw new ArtifactError("model descriptor profile")
-    if (artifactIdentity !== identity || (await digest(artifact)) !== sha256) throw new ArtifactError("model artifact identity")
+    const artifact = r.blob(0).slice()
     models.set(
       identity,
       Object.freeze({
@@ -587,9 +816,16 @@ export async function parsePresentationArtifacts(bytes: Uint8Array): Promise<Pre
   const particleTextures = parseParticleTextures(r)
   const audio = parseAudio(r)
   const modelOccurrences = parseOccurrenceMatrices(r)
+  const modelMaterials = parseModelMaterials(r)
+  const authoredTextures = parseAuthoredTextures(r)
   if (r.offset !== bytes.length) throw new ArtifactError("trailing bytes")
   if (new Set(modelOccurrences.map((occurrence) => occurrence.entity)).size !== modelOccurrences.length)
     throw new ArtifactError("model occurrence identity")
+  for (const material of modelMaterials.values()) {
+    if (material.bindings.some((binding) => !authoredTextures.has(binding.logicalPath))) {
+      throw new ArtifactError("model material authored texture closure")
+    }
+  }
   await Promise.all(particleTextures.map(async (texture) => {
     if ((await digest(texture.rgba)) !== texture.sha256) throw new ArtifactError("particle texture identity")
   }))
@@ -602,6 +838,8 @@ export async function parsePresentationArtifacts(bytes: Uint8Array): Promise<Pre
     particleTextures,
     audio,
     modelOccurrences,
+    modelMaterials,
+    authoredTextures,
     environment,
   })
 }

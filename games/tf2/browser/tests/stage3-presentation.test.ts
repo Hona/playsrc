@@ -50,27 +50,27 @@ test("uses the default TF2 horizontal-4:3 world projection and Source clip plane
 })
 
 test("joins the current team skin to the matching viewmodel template", () => {
-  const identity = "models/weapons/v_models/v_rocketlauncher_soldier.mdl"
+  const identity = "models/weapons/c_models/c_soldier_arms.mdl"
+  const itemIdentity = "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl"
+  const descriptor = Object.freeze({
+    kind: "viewmodel",
+    horizontalFov4By3: 54,
+    minimumFov: 54,
+    maximumFov: 70,
+    near: 1,
+    depthRange: Object.freeze([0, 0.1]),
+    drawsAfterWorld: true,
+    opaqueBeforeTranslucent: true,
+    optionalViewSpaceYReflection: true,
+  })
   const artifacts = {
     models: new Map([[identity, {
-      identity,
-      bodygroupCounts: Object.freeze([]),
-      descriptor: Object.freeze({
-        kind: "viewmodel",
-        horizontalFov4By3: 54,
-        minimumFov: 54,
-        maximumFov: 70,
-        near: 1,
-        depthRange: Object.freeze([0, 0.1]),
-        drawsAfterWorld: true,
-        opaqueBeforeTranslucent: true,
-        optionalViewSpaceYReflection: true,
-      }),
+      identity, bodygroupCounts: Object.freeze([]), descriptor,
       sequences: Object.freeze([
-        { activity: "ACT_VM_DRAW", durationSeconds: 0.8 },
-        { activity: "ACT_RELOAD_START", durationSeconds: 0.5 },
+        { activity: "ACT_PRIMARY_VM_DRAW", durationSeconds: 0.8 },
+        { activity: "ACT_PRIMARY_RELOAD_START", durationSeconds: 0.5 },
       ]),
-    }]]),
+    }], [itemIdentity, { identity: itemIdentity, bodygroupCounts: Object.freeze([]), descriptor, sequences: Object.freeze([]) }]]),
   } as unknown as PresentationArtifacts
   const snapshot = (team: 1 | 2) => ({
     class: 1,
@@ -88,5 +88,5 @@ test("joins the current team skin to the matching viewmodel template", () => {
     ...snapshot(1),
     activities: Object.freeze([{ tick: 1n, weapon: 1, activity: 3 }]),
   } as unknown as Snapshot
-  expect(createViewmodelPresenter(artifacts).map(reloading).request.activity).toBe("ACT_RELOAD_START")
+  expect(createViewmodelPresenter(artifacts).map(reloading).request.activity).toBe("ACT_PRIMARY_RELOAD_START")
 })

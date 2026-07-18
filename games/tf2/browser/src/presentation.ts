@@ -28,7 +28,7 @@ export type Tf2Hud = Readonly<{
 
 export type Tf2AudioRequest = Readonly<{
   voiceIdentity: number
-  definition: "Weapon_RPG.Single" | "Weapon_StickyBombLauncher.Single" | "BaseExplosionEffect.Sound" | "Weapon_Grenade_Pipebomb.Explode"
+  definition: "Weapon_RPG.Single" | "Weapon_QuakeRPG.Single" | "Weapon_StickyBombLauncher.Single" | "BaseExplosionEffect.Sound" | "Weapon_QuakeRPG.Explode" | "Weapon_Grenade_Pipebomb.Explode"
   source: Readonly<{
     kind: "entity" | "world"
     identity: number
@@ -37,39 +37,31 @@ export type Tf2AudioRequest = Readonly<{
     radius: number
     sourceClass: string
   }>
-  samples: Readonly<{ volume: number; pitch: number; wave: number; soundLevel: number }> | null
+  samples: Readonly<{ volume: number; pitch: number; wave: number; soundLevel: number }>
 }>
 
 export function tf2Audio(snapshot: Snapshot): readonly Tf2AudioRequest[] {
-  const requests: Tf2AudioRequest[] = []
-  for (const event of snapshot.projectileEvents) {
-    let definition: Tf2AudioRequest["definition"] | undefined
-    if (event.type === "fire") {
-      definition = event.kind === 1 ? "Weapon_RPG.Single" : "Weapon_StickyBombLauncher.Single"
-    } else if (event.type === "explode") {
-      definition = event.kind === 1 ? "BaseExplosionEffect.Sound" : "Weapon_Grenade_Pipebomb.Explode"
-    }
-    if (definition) {
-      requests.push(
-        Object.freeze({
-          voiceIdentity: event.projectile * 8 + (event.type === "fire" ? 1 : 2),
-          definition,
-          source: Object.freeze({
-            kind: event.type === "fire" ? "entity" : "world",
-            identity: event.type === "fire" ? event.launcherIdentity : event.projectile,
-            ownerIdentity: event.ownerIdentity,
-            origin: Object.freeze([...event.position]) as Vector3,
-            radius: 0,
-            sourceClass: event.type === "fire" ? "tf_weapon" : "tf_projectile",
-          }),
-          // The launch definitions contain one wave, so every legal sample selects the same resource.
-          // Explosion wave samples must come from game authority and are intentionally not synthesized here.
-          samples: event.type === "fire" ? Object.freeze({ volume: 0, pitch: 0, wave: 0, soundLevel: 0 }) : null,
-        }),
-      )
-    }
-  }
-  return Object.freeze(requests)
+  const definitions: readonly Tf2AudioRequest["definition"][] = [
+    "Weapon_RPG.Single",
+    "Weapon_QuakeRPG.Single",
+    "Weapon_StickyBombLauncher.Single",
+    "BaseExplosionEffect.Sound",
+    "Weapon_QuakeRPG.Explode",
+    "Weapon_Grenade_Pipebomb.Explode",
+  ]
+  return Object.freeze(snapshot.audioEvents.map((event) => Object.freeze({
+    voiceIdentity: stable32(`${event.tick}:${event.ordinal}:${event.definition}:${event.sourceIdentity}`),
+    definition: definitions[event.definition - 1]!,
+    source: Object.freeze({
+      kind: event.sourceKind === 1 ? "entity" as const : "world" as const,
+      identity: event.sourceIdentity,
+      ownerIdentity: event.ownerIdentity,
+      origin: Object.freeze([...event.position]) as Vector3,
+      radius: 0,
+      sourceClass: event.sourceKind === 1 ? "tf_weapon" : "tf_projectile",
+    }),
+    samples: event.samples,
+  })))
 }
 
 export function projectileFrame(snapshot: Snapshot): ProjectileFrame {
@@ -137,30 +129,37 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
     map(snapshot: Snapshot): Readonly<{ item: ModelItem; request: ModelPoseRequest }> {
       const identity =
         snapshot.class === 1
-          ? "models/weapons/v_models/v_rocketlauncher_soldier.mdl"
-          : "models/weapons/v_models/v_stickybomb_launcher_demo.mdl"
+          ? "models/weapons/c_models/c_soldier_arms.mdl"
+          : "models/weapons/c_models/c_demo_arms.mdl"
+      const itemIdentity = snapshot.class === 1
+        ? "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl"
+        : "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl"
       const artifact = artifacts.models.get(identity)
+      const itemArtifact = artifacts.models.get(itemIdentity)
       if (!artifact) throw new ProjectilePresentationError("MissingModel", identity)
+      if (!itemArtifact) throw new ProjectilePresentationError("MissingModel", itemIdentity)
       if (artifact.descriptor.kind !== "viewmodel") throw new ProjectilePresentationError("MissingModel", `${identity}:descriptor`)
+      if (itemArtifact.descriptor.kind !== "viewmodel") throw new ProjectilePresentationError("MissingModel", `${itemIdentity}:descriptor`)
       const weapon = snapshot.loadout.find((value) => value.weapon === snapshot.weapon)
       if (!weapon) throw new ProjectilePresentationError("MissingModel", `${identity}:weapon-state`)
       const selectionChanged = prior !== snapshot.weapon || priorClass !== snapshot.class
       const exact = snapshot.activities.filter((event) => event.weapon === snapshot.weapon).at(-1)
+      const role = snapshot.class === 1 ? "PRIMARY" : "SECONDARY"
       const mapped = exact === undefined ? undefined : [
         "",
-        "ACT_VM_DRAW",
-        "ACT_VM_PRIMARYATTACK",
-        "ACT_RELOAD_START",
-        "ACT_VM_RELOAD",
-        "ACT_RELOAD_FINISH",
-        "ACT_VM_IDLE",
+        `ACT_${role}_VM_DRAW`,
+        `ACT_${role}_VM_PRIMARYATTACK`,
+        `ACT_${role}_RELOAD_START`,
+        `ACT_${role}_VM_RELOAD`,
+        `ACT_${role}_RELOAD_FINISH`,
+        `ACT_${role}_VM_IDLE`,
       ][exact.activity]
-      let nextActivity = mapped ?? (selectionChanged ? "ACT_VM_DRAW" : activity)
+      let nextActivity = mapped ?? (selectionChanged ? `ACT_${role}_VM_DRAW` : activity)
       let selected = artifact.sequences.find((value) => value.activity === nextActivity)
       if (!selected) throw new ProjectilePresentationError("MissingModel", `${identity}:${activity}`)
       const elapsed = Number(snapshot.tick - actionTick) * 0.015
-      if (!selectionChanged && exact === undefined && weapon.reload === 0 && nextActivity === activity && nextActivity !== "ACT_VM_IDLE" && elapsed >= selected.durationSeconds) {
-        nextActivity = "ACT_VM_IDLE"
+      if (!selectionChanged && exact === undefined && weapon.reload === 0 && nextActivity === activity && nextActivity !== `ACT_${role}_VM_IDLE` && elapsed >= selected.durationSeconds) {
+        nextActivity = `ACT_${role}_VM_IDLE`
         selected = artifact.sequences.find((value) => value.activity === nextActivity)
         if (!selected) throw new ProjectilePresentationError("MissingModel", `${identity}:${nextActivity}`)
       }
@@ -187,7 +186,7 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
       const lateralBob = Math.max(-7, Math.min(4, speed * 0.005 * (0.3 + 0.7 * wave(1.6))))
       return Object.freeze({
         item: Object.freeze({
-          identity: 0xffff_ff00 + snapshot.class,
+          identity: 0x7fff_ff00 + snapshot.class * 4,
           model: identity,
           position: Object.freeze([verticalBob * 0.4, -lateralBob * 0.2, verticalBob * 0.1]),
           angles: Object.freeze([-verticalBob * 0.4, -lateralBob * 0.3, verticalBob * 0.5]),
@@ -197,14 +196,16 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
           viewModelProjection: artifact.descriptor,
         }),
         request: Object.freeze({
-          identity: 0xffff_ff00 + snapshot.class,
+          identity: 0x7fff_ff00 + snapshot.class * 4,
           model: identity,
+          itemModel: itemIdentity,
           activity,
           previousElapsedSeconds: Math.min(previousElapsed, currentElapsed),
           elapsedSeconds: currentElapsed,
           skin: snapshot.team === 1 ? 0 : 1,
           lod: 0,
           bodygroups: Object.freeze(artifact.bodygroupCounts.map(() => 0)),
+          itemBodygroups: Object.freeze(itemArtifact.bodygroupCounts.map(() => 0)),
         }),
       })
     },
@@ -230,12 +231,14 @@ function stable64(value: string) {
 export type ModelPoseRequest = Readonly<{
   identity: number
   model: string
+  itemModel?: string
   activity: string
   previousElapsedSeconds: number
   elapsedSeconds: number
   skin: number
   lod: number
   bodygroups: readonly number[]
+  itemBodygroups?: readonly number[]
 }>
 export type PosedPrimitive = Readonly<{
   primitive: number
@@ -247,6 +250,7 @@ export type PosedPrimitive = Readonly<{
 export type PosedAttachment = Readonly<{ name: string; worldAligned: boolean; matrix: Float32Array }>
 export type PosedModel = Readonly<{
   identity: number
+  role: "single" | "hand" | "item"
   model: string
   activity: string
   sequence: number
@@ -266,11 +270,12 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
   if (requests.length > 128) throw new ProjectilePresentationError("BoundExceeded", "model pose request count")
   const encoder = new TextEncoder()
   let length = 12
-  for (const request of requests) length += 32 + encoder.encode(request.model).length + encoder.encode(request.activity).length + request.bodygroups.length * 4
+  for (const request of requests) length += 44 + encoder.encode(request.model).length + encoder.encode(request.itemModel ?? "").length +
+    encoder.encode(request.activity).length + (request.bodygroups.length + (request.itemBodygroups?.length ?? 0)) * 4
   if (length > 1024 * 1024) throw new ProjectilePresentationError("BoundExceeded", "model pose request bytes")
   const bytes = new Uint8Array(length), view = new DataView(bytes.buffer)
   bytes.set([0x50, 0x4d, 0x52, 0x51])
-  view.setUint32(4, 1, true)
+  view.setUint32(4, 2, true)
   view.setUint32(8, requests.length, true)
   let at = 12
   const text = (value: string) => {
@@ -280,17 +285,21 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
   for (const request of requests) {
     if (!Number.isSafeInteger(request.identity) || request.identity < 1 || !request.model || !request.activity ||
       ![request.previousElapsedSeconds, request.elapsedSeconds].every(Number.isFinite) || request.previousElapsedSeconds < 0 ||
-      request.elapsedSeconds < request.previousElapsedSeconds || ![request.skin, request.lod, ...request.bodygroups].every((value) => Number.isSafeInteger(value) && value >= 0)) {
+      request.elapsedSeconds < request.previousElapsedSeconds || ![request.skin, request.lod, ...request.bodygroups, ...(request.itemBodygroups ?? [])].every((value) => Number.isSafeInteger(value) && value >= 0) ||
+      ((request.itemModel === undefined) !== (request.itemBodygroups === undefined)) || request.itemModel === "") {
       throw new ProjectilePresentationError("MalformedFact", "model pose request")
     }
     view.setUint32(at, request.identity, true); at += 4
-    text(request.model); text(request.activity)
+    bytes[at] = request.itemModel === undefined ? 0 : 1; at += 4
+    text(request.model); text(request.itemModel ?? ""); text(request.activity)
     view.setFloat32(at, request.previousElapsedSeconds, true); at += 4
     view.setFloat32(at, request.elapsedSeconds, true); at += 4
     view.setUint32(at, request.skin, true); at += 4
     view.setUint32(at, request.lod, true); at += 4
     view.setUint32(at, request.bodygroups.length, true); at += 4
     for (const value of request.bodygroups) { view.setUint32(at, value, true); at += 4 }
+    view.setUint32(at, request.itemBodygroups?.length ?? 0, true); at += 4
+    for (const value of request.itemBodygroups ?? []) { view.setUint32(at, value, true); at += 4 }
   }
   return bytes
 }
@@ -298,7 +307,7 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
 export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] {
   if (bytes.byteLength < 12 || bytes.byteLength > 64 * 1024 * 1024) throw new ProjectilePresentationError("BoundExceeded", "model pose output bytes")
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), decoder = new TextDecoder("utf-8", { fatal: true })
-  if (decoder.decode(bytes.subarray(0, 4)) !== "PMPO" || view.getUint32(4, true) !== 1) throw new ProjectilePresentationError("MalformedFact", "model pose output identity")
+  if (decoder.decode(bytes.subarray(0, 4)) !== "PMPO" || view.getUint32(4, true) !== 2) throw new ProjectilePresentationError("MalformedFact", "model pose output identity")
   let at = 12
   const ensure = (length: number) => { if (at + length > bytes.length) throw new ProjectilePresentationError("MalformedFact", "model pose output truncation") }
   const u8 = () => { ensure(1); return bytes[at++]! }, u32 = () => { ensure(4); const value = view.getUint32(at, true); at += 4; return value },
@@ -307,7 +316,9 @@ export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] 
     text = () => { const length = u32(); ensure(length); const value = decoder.decode(bytes.subarray(at, at + length)); at += length; return value }
   const output: PosedModel[] = []
   for (let count = view.getUint32(8, true); count > 0; count--) {
-    const identity = u32(), model = text(), activity = text(), sequence = u32(), framesPerSecond = f32(), weightedFrameCount = f32(),
+    const identity = u32(), roleCode = u8()
+    if (roleCode > 2 || u8() || u8() || u8()) throw new ProjectilePresentationError("MalformedFact", "model pose role")
+    const model = text(), activity = text(), sequence = u32(), framesPerSecond = f32(), weightedFrameCount = f32(),
       cyclesPerSecond = f32(), durationSeconds = f32(), looping = u8()
     if (looping > 1 || u8() || u8() || u8()) throw new ProjectilePresentationError("MalformedFact", "model pose timing")
     const previousCycle = f32(), cycle = f32()
@@ -331,7 +342,7 @@ export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] 
       const matrix = new Float32Array(12); for (let index = 0; index < 12; index++) matrix[index] = f32()
       return Object.freeze({ name, worldAligned: worldAligned === 1, matrix })
     }))
-    output.push(Object.freeze({ identity, model, activity, sequence, framesPerSecond, weightedFrameCount, cyclesPerSecond, durationSeconds, looping: looping === 1, previousCycle, cycle, events, primitives, attachments }))
+    output.push(Object.freeze({ identity, role: (["single", "hand", "item"] as const)[roleCode]!, model, activity, sequence, framesPerSecond, weightedFrameCount, cyclesPerSecond, durationSeconds, looping: looping === 1, previousCycle, cycle, events, primitives, attachments }))
   }
   if (at !== bytes.length) throw new ProjectilePresentationError("MalformedFact", "model pose output trailing bytes")
   return Object.freeze(output)

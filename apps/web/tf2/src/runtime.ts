@@ -44,6 +44,8 @@ const MAX_EXTERNAL_BYTES = 536_870_912
 const SOUND_PATHS = [
   "sound/weapons/rocket_shoot.wav",
   "sound/weapons/stickybomblauncher_shoot.wav",
+  "sound/weapons/quake_rpg_fire_remastered.wav",
+  "sound/weapons/quake_explosion_remastered.wav",
   "sound/weapons/explode1.wav",
   "sound/weapons/explode2.wav",
   "sound/weapons/explode3.wav",
@@ -121,6 +123,9 @@ export type ApplicationView = Readonly<{
   weaponTrace?: string
   authorityTrace?: string
   entityTrace?: string
+  modelMaterialProbe?: string
+  randomAudioProbe?: string
+  collisionMoverProbe?: string
 }>
 
 type Renderer = Awaited<ReturnType<typeof createRenderer>>
@@ -183,6 +188,8 @@ export class Tf2Application {
   #viewmodelActivities = new Set<string>()
   #crouchHistory: string[] = []
   #viewmodelTimelineProbes: string[] = []
+  #lastRandomAudioProbe = ""
+  #lastCollisionMoverProbe = ""
   #animationFrame = 0
   #lastFrame = 0
   #accumulator = 0
@@ -191,11 +198,7 @@ export class Tf2Application {
   #explosionEvents = 0
   #paused = true
   #closed = false
-  #blockers = new Set<string>([
-    consoleResourceBlocker,
-    "TF2 SoundSamples unavailable: BaseExplosionEffect.Sound",
-    "TF2 SoundSamples unavailable: Weapon_Grenade_Pipebomb.Explode",
-  ])
+  #blockers = new Set<string>([consoleResourceBlocker])
   #view: ApplicationView = Object.freeze({
     phase: "Loading",
     detail: "Reading local configuration",
@@ -287,6 +290,8 @@ export class Tf2Application {
         materialStates: this.#materialStates(this.#artifacts),
         particleTextures: this.#artifacts.particleTextures,
         modelOccurrences: this.#artifacts.modelOccurrences,
+        modelMaterials: this.#artifacts.modelMaterials,
+        authoredTextures: this.#artifacts.authoredTextures,
         diagnostic: true,
       })
       this.#environmentDrawables = scene.environmentDrawables
@@ -347,7 +352,9 @@ export class Tf2Application {
         viewmodelTimelineProbes: Object.freeze([...this.#viewmodelTimelineProbes]),
         modelMatrices: this.#modelMatrices(this.#artifacts),
         decalStateProbe: this.#decalStateProbe(this.#artifacts),
+        modelMaterialProbe: this.#modelMaterialProbe(this.#artifacts),
         ...this.#gameplayTraces(this.#snapshot),
+        ...this.#snapshotProbes(this.#snapshot),
       })
     } catch (error) {
       await this.#release()
@@ -711,7 +718,9 @@ export class Tf2Application {
         environment: artifacts.environment,
         materialStates: this.#materialStates(artifacts),
         particleTextures: artifacts.particleTextures,
-        modelOccurrences: artifacts.modelOccurrences,
+      modelOccurrences: artifacts.modelOccurrences,
+      modelMaterials: artifacts.modelMaterials,
+      authoredTextures: artifacts.authoredTextures,
         diagnostic: true,
       })
       this.#environmentDrawables = scene.environmentDrawables
@@ -776,6 +785,8 @@ export class Tf2Application {
     this.#viewmodelTimelineProbes = await this.#probeViewmodelTimelines(artifacts)
     this.#audio?.reset()
     this.#audioWorld?.reset()
+    this.#lastRandomAudioProbe = ""
+    this.#lastCollisionMoverProbe = ""
     this.#paused = document.hidden
     this.#lastFrame = performance.now()
     this.#accumulator = 0
@@ -800,7 +811,9 @@ export class Tf2Application {
       viewmodelTimelineProbes: Object.freeze([...this.#viewmodelTimelineProbes]),
       modelMatrices: this.#modelMatrices(artifacts),
       decalStateProbe: this.#decalStateProbe(artifacts),
+      modelMaterialProbe: this.#modelMaterialProbe(artifacts),
       ...this.#gameplayTraces(this.#snapshot),
+      ...this.#snapshotProbes(this.#snapshot),
     })
   }
 
@@ -812,6 +825,7 @@ export class Tf2Application {
   async #cacheModelArtifacts(artifacts: PresentationArtifacts): Promise<void> {
     if (!this.#cache) return
     for (const artifact of artifacts.models.values()) {
+      if (artifact.bytes.length === 0) continue
       try {
         const retained = await this.#cache.read(artifact.sha256)
         if (!retained) await this.#cache.write(artifact.sha256, artifact.sha256, artifact.bytes)
@@ -870,6 +884,15 @@ export class Tf2Application {
     })))
   }
 
+  #modelMaterialProbe(artifacts: PresentationArtifacts): string {
+    const shaders = new Map<string, number>()
+    for (const material of artifacts.modelMaterials.values()) {
+      shaders.set(material.shader, (shaders.get(material.shader) ?? 0) + 1)
+    }
+    const planes = [...artifacts.authoredTextures.values()].reduce((total, texture) => total + texture.planes.length, 0)
+    return `${artifacts.modelMaterials.size}:${artifacts.authoredTextures.size}:${planes}:${[...shaders].sort().map(([shader, count]) => `${shader}=${count}`).join(",")}`
+  }
+
   #recordVisualOutputBlockers(artifacts: PresentationArtifacts): void {
     if (
       artifacts.models.has("models/weapons/v_models/v_rocketlauncher_soldier.mdl") ||
@@ -877,9 +900,11 @@ export class Tf2Application {
     ) {
       this.#blockers.add("Missing TF2 stock viewmodel composition: class hand model, item c_model attachment, and animation-library join")
     }
-    const mipmapped = [...artifacts.materialStates.values()].filter((state) => state.samplingAvailable && state.mipmapped).length
-    if (mipmapped > 0) this.#blockers.add(`Missing authored texture mip planes for ${mipmapped} sampled material states`)
-    this.#blockers.add("Missing complete StudioModel shader and model-lighting inputs")
+    const mipmapped = [...artifacts.materialStates].filter(([identity, state]) =>
+      !artifacts.modelMaterials.has(identity) && state.samplingAvailable && state.mipmapped,
+    ).length
+    if (mipmapped > 0) this.#blockers.add(`Missing authored texture mip planes for ${mipmapped} world/environment material states`)
+    this.#blockers.add("Missing current model lightcache selections, game-owned eye targets, and per-draw StudioModel lighting/eye state")
     this.#blockers.add("Missing decoded profile-qualified sky and cubemap subresources")
     this.#blockers.add("Missing complete Water material and reflection/refraction view inputs")
     this.#blockers.add("Missing current fog-controller state and transition inputs")
@@ -887,12 +912,6 @@ export class Tf2Application {
 
   #recordAuthorityBlockers(snapshot: Snapshot): void {
     for (const blocker of snapshot.authorityBlockers) this.#blockers.add(`${blocker.classification}: ${blocker.detail}`)
-    if (snapshot.moverRequests.length > 0) {
-      this.#blockers.add("Missing: Source mover result transition")
-    }
-    if (snapshot.rocketTraceRequests.length > 0) {
-      this.#blockers.add("Missing: Rocket Collision sky/direct-target result")
-    }
   }
 
   #gameplayTraces(snapshot: Snapshot): Pick<ApplicationView, "weaponTrace" | "authorityTrace" | "entityTrace"> {
@@ -912,10 +931,23 @@ export class Tf2Application {
     })
   }
 
+  #snapshotProbes(snapshot: Snapshot): Pick<ApplicationView, "randomAudioProbe" | "collisionMoverProbe"> {
+    const randomAudio = `${snapshot.randomDraws.length}:${snapshot.audioEvents.length}:${snapshot.randomState.authority.current}:${snapshot.randomState.predictedPresentation.current}:${snapshot.randomState.rocketExplosionAvailable}:${snapshot.randomState.stickyExplosionAvailable}`
+    const collisionMover = `${snapshot.collisionSnapshot.identity}:${snapshot.collisionSnapshot.objects}:${snapshot.rocketTraceResults.length}:${snapshot.moverResults.length}`
+    if (snapshot.randomDraws.length > 0 || snapshot.audioEvents.length > 0) this.#lastRandomAudioProbe = randomAudio
+    if (snapshot.rocketTraceResults.length > 0 || (!this.#lastCollisionMoverProbe && snapshot.moverResults.length > 0)) {
+      this.#lastCollisionMoverProbe = collisionMover
+    }
+    return Object.freeze({
+      randomAudioProbe: this.#lastRandomAudioProbe || randomAudio,
+      collisionMoverProbe: this.#lastCollisionMoverProbe || collisionMover,
+    })
+  }
+
   #viewmodelSequences(artifacts: PresentationArtifacts, tf2Class: 1 | 2): string {
     const identity = tf2Class === 1
-      ? "models/weapons/v_models/v_rocketlauncher_soldier.mdl"
-      : "models/weapons/v_models/v_stickybomb_launcher_demo.mdl"
+      ? "models/weapons/c_models/c_soldier_arms.mdl"
+      : "models/weapons/c_models/c_demo_arms.mdl"
     return artifacts.models.get(identity)?.sequences
       .filter((sequence) => sequence.timingAvailable)
       .map((sequence) => `${sequence.activity}:${sequence.durationSeconds}`)
@@ -957,26 +989,34 @@ export class Tf2Application {
 
   async #probeViewmodelTimelines(artifacts: PresentationArtifacts): Promise<string[]> {
     if (!this.#client) return []
-    const model = "models/weapons/v_models/v_rocketlauncher_soldier.mdl"
+    const model = "models/weapons/c_models/c_soldier_arms.mdl"
+    const itemModel = "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl"
     const artifact = artifacts.models.get(model)
-    if (!artifact) throw new Error(`Viewmodel timeline probe ${model} is missing`)
-    const activities = ["ACT_VM_DRAW", "ACT_VM_IDLE", "ACT_VM_PRIMARYATTACK", "ACT_RELOAD_START", "ACT_VM_RELOAD", "ACT_RELOAD_FINISH"]
+    const itemArtifact = artifacts.models.get(itemModel)
+    if (!artifact || !itemArtifact) throw new Error(`Viewmodel timeline probe ${model}+${itemModel} is missing`)
+    const activities = ["ACT_PRIMARY_VM_DRAW", "ACT_PRIMARY_VM_IDLE", "ACT_PRIMARY_VM_PRIMARYATTACK", "ACT_PRIMARY_RELOAD_START", "ACT_PRIMARY_VM_RELOAD", "ACT_PRIMARY_RELOAD_FINISH"]
     const requests = activities.map((activity, index) => {
       const sequence = artifact.sequences.find((value) => value.activity === activity && value.timingAvailable)
       if (!sequence) throw new Error(`Viewmodel timeline probe ${model}:${activity} is missing`)
       return Object.freeze({
         identity: 0xfffe_0000 + index + 1,
         model,
+        itemModel,
         activity,
         previousElapsedSeconds: 0,
         elapsedSeconds: sequence.durationSeconds * 0.5,
         skin: 0,
         lod: 0,
         bodygroups: Object.freeze(artifact.bodygroupCounts.map(() => 0)),
+        itemBodygroups: Object.freeze(itemArtifact.bodygroupCounts.map(() => 0)),
       })
     })
     const poses = decodeModelPoseOutput(await this.#client.models(this.#generation, encodeModelPoseBatch(requests)))
-    return poses.map((pose) => `${pose.activity}:${pose.sequence}:${pose.cycle}:${pose.primitives.length}:${pose.events.length}`)
+    return activities.map((activity) => {
+      const parts = poses.filter((pose) => pose.activity === activity)
+      if (parts.length !== 2 || parts[0]?.role !== "hand" || parts[1]?.role !== "item") throw new Error(`Viewmodel timeline composition ${activity} differs`)
+      return `${activity}:${parts[0].sequence}:${parts[0].cycle}:${parts.map((part) => part.primitives.length).join("+")}:${parts[0].events.length}`
+    })
   }
 
   #playAudio(snapshot: Snapshot, camera: Camera): void {
@@ -995,12 +1035,8 @@ export class Tf2Application {
       muted: false,
     })
     for (const request of tf2Audio(snapshot)) {
-      if (!request.samples) {
-        this.#blockers.add(`TF2 SoundSamples unavailable: ${request.definition}`)
-        continue
-      }
       const definition = this.#audioRegistry.get(request.definition)
-      const resource = definition?.waves.find((wave) => wave.resource && this.#audioBuffers.has(wave.resource))?.resource
+      const resource = definition?.waves[request.samples.wave]?.resource
       const buffer = resource ? this.#audioBuffers.get(resource) : undefined
       if (!resource || !buffer) throw new Error(`Audio resource for ${request.definition} is missing`)
       const started = this.#audioWorld.start({
@@ -1025,7 +1061,7 @@ export class Tf2Application {
     }
   }
 
-  #updateAttachmentTransforms(snapshot: Snapshot, viewmodel: PosedModel, camera: Camera): void {
+  #updateAttachmentTransforms(snapshot: Snapshot, viewmodels: readonly PosedModel[], camera: Camera): void {
     if (!this.#artifacts) return
     this.#attachmentTransforms.clear()
     for (const projectile of snapshot.projectiles) {
@@ -1043,9 +1079,24 @@ export class Tf2Application {
         )
       }
     }
+    for (const event of snapshot.projectileEvents) {
+      if (this.#attachmentTransforms.has(event.projectile)) continue
+      const artifact = this.#artifacts.models.get(
+        event.kind === 1 ? "models/weapons/w_models/w_rocket.mdl" : "models/weapons/w_models/w_stickybomb.mdl",
+      )
+      if (!artifact) continue
+      this.#attachments.set(event.projectile, new Set(artifact.attachments.keys()))
+      this.#attachmentTransforms.set(
+        event.projectile,
+        new Map([...artifact.attachments].map(([name, matrix]) => [
+          name,
+          transformAttachment(matrix, event.position, event.orientation),
+        ])),
+      )
+    }
     const cameraOrientation = sourceViewOrientation(camera.pitchDegrees, camera.yawDegrees)
     const viewmodelAttachments = new Map(
-      viewmodel.attachments.map((attachment) => [
+      viewmodels.flatMap((viewmodel) => viewmodel.attachments).map((attachment) => [
         attachment.name.toLowerCase(),
         transformAttachment(attachment.matrix, camera.position, cameraOrientation),
       ]),
@@ -1055,7 +1106,12 @@ export class Tf2Application {
       ...snapshot.projectileEvents.map((event) => event.launcherIdentity),
     ])
     for (const launcher of launchers) {
-      if (viewmodelAttachments.size > 0) this.#attachmentTransforms.set(launcher, viewmodelAttachments)
+      if (viewmodelAttachments.size > 0) {
+        this.#attachmentTransforms.set(launcher, new Map([
+          ...(this.#attachmentTransforms.get(launcher) ?? []),
+          ...viewmodelAttachments,
+        ]))
+      }
     }
     for (const event of snapshot.projectileEvents.filter((value) => value.type === "fire")) {
       if (event.kind === 1 && event.ownerIdentity === 1) continue
@@ -1146,13 +1202,6 @@ export class Tf2Application {
     )
       return
     try {
-      const active = this.#snapshot.loadout.find((weapon) => weapon.weapon === this.#snapshot?.weapon)
-      if (this.#snapshot.weapon === 3 && active?.chargeBeginTick != null && !this.#fire && !this.#firePressed) {
-        this.#blockers.add("Missing: TF2 sticky launch random stream")
-        this.#paused = true
-        this.#set({ phase: "Ready", detail: "Sticky launch blocked on the unavailable random stream", ...this.#gameplayTraces(this.#snapshot) })
-        return
-      }
       const snapshot = await this.#client.advance(this.#generation, this.#command(), ticks)
       this.#snapshot = snapshot
       this.#recordCrouch(snapshot)
@@ -1183,10 +1232,11 @@ export class Tf2Application {
       const modelPoses = decodeModelPoseOutput(
         await this.#client.models(this.#generation, encodeModelPoseBatch([viewmodel.request])),
       )
-      const viewmodelPose = modelPoses[0]
-      if (!viewmodelPose || viewmodelPose.identity !== viewmodel.item.identity) throw new Error("Viewmodel pose output differs")
+      const viewmodelPoses = modelPoses.filter((pose) => pose.identity === viewmodel.item.identity)
+      if (viewmodelPoses.length !== 2 || viewmodelPoses[0]?.role !== "hand" || viewmodelPoses[1]?.role !== "item") throw new Error("Viewmodel composition output differs")
+      const viewmodelPose = viewmodelPoses[0]!
       this.#viewmodelActivities.add(viewmodelPose.activity)
-      this.#updateAttachmentTransforms(snapshot, viewmodelPose, camera)
+      this.#updateAttachmentTransforms(snapshot, viewmodelPoses, camera)
       const presentation = this.#projectiles.map(projectileFrame(snapshot))
       const visibility = await this.#client.visibility(this.#generation, camera.position)
       const particleOutput = await this.#client.particles(
@@ -1199,7 +1249,15 @@ export class Tf2Application {
         camera,
         effects: Object.freeze([]),
         particles: particleItems,
-        models: Object.freeze([...projectileModels(presentation.models), Object.freeze({ ...viewmodel.item, pose: viewmodelPose })]),
+        models: Object.freeze([
+          ...projectileModels(presentation.models),
+          ...viewmodelPoses.map((pose, index) => Object.freeze({
+            ...viewmodel.item,
+            identity: viewmodel.item.identity + index,
+            model: pose.model,
+            pose,
+          })),
+        ]),
         visibility,
         deltaSeconds: ticks * 0.015,
       })
@@ -1216,7 +1274,7 @@ export class Tf2Application {
           activity: viewmodelPose.activity,
           sequence: viewmodelPose.sequence,
           cycle: viewmodelPose.cycle,
-          primitives: viewmodelPose.primitives.length,
+          primitives: viewmodelPoses.reduce((total, pose) => total + pose.primitives.length, 0),
           events: viewmodelPose.events.length,
         }),
         audioVoices: this.#audio.activeVoices(),
@@ -1232,6 +1290,7 @@ export class Tf2Application {
         crouchHistory: Object.freeze([...this.#crouchHistory]),
         viewmodelTimelineProbes: Object.freeze([...this.#viewmodelTimelineProbes]),
         ...this.#gameplayTraces(snapshot),
+        ...this.#snapshotProbes(snapshot),
       })
     } catch (error) {
       this.#paused = true

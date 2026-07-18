@@ -506,6 +506,7 @@ dependencies = [
  "playsrc-material",
  "playsrc-movement",
  "playsrc-particle",
+ "playsrc-phy",
  "playsrc-studio-model",
  "playsrc-tf2",
  "playsrc-visibility",
