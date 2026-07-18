@@ -119,6 +119,14 @@ pub enum Effect {
     },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RegenerateContact {
+    pub sequence: u64,
+    pub entity: u32,
+    pub kind: ContactKind,
+    pub enabled: bool,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PlayerContactFacts {
     pub team: u8,
@@ -170,6 +178,7 @@ pub struct MapPhase {
     pub events: Vec<EntityEvent>,
     pub effects: Vec<Effect>,
     pub contacts: Vec<TriggerContact>,
+    pub regenerate_contacts: Vec<RegenerateContact>,
     pub mover_requests: Vec<MoverRequest>,
     pub carry: [f32; 3],
 }
@@ -218,6 +227,8 @@ impl MapPhase {
         self.events.append(&mut other.events);
         self.effects.append(&mut other.effects);
         self.contacts.append(&mut other.contacts);
+        self.regenerate_contacts
+            .append(&mut other.regenerate_contacts);
         self.mover_requests.append(&mut other.mover_requests);
         self.carry = add(self.carry, other.carry);
     }
@@ -240,6 +251,7 @@ enum VolumeKind {
         enabled: bool,
         team: Option<u8>,
         associated_model: Option<u32>,
+        associated_body: Option<i32>,
     },
     RespawnRoom {
         enabled: bool,
@@ -502,7 +514,7 @@ impl MapRuntime {
                 counts.regenerate_zones += 1;
                 let source = u32::try_from(entity.index).map_err(|_| invalid(entity.index))?;
                 let team = source_team(entity)?;
-                let associated_model = field(entity, b"associatedmodel")
+                let associated = field(entity, b"associatedmodel")
                     .filter(|name| !name.is_empty())
                     .and_then(|name| {
                         graph.entities.iter().find(|candidate| {
@@ -512,7 +524,12 @@ impl MapRuntime {
                                 .is_some_and(|target| target.eq_ignore_ascii_case(name))
                         })
                     })
-                    .and_then(|candidate| u32::try_from(candidate.index).ok());
+                    .filter(|candidate| class(candidate, b"prop_dynamic"));
+                let associated_model =
+                    associated.and_then(|candidate| u32::try_from(candidate.index).ok());
+                let associated_body = associated
+                    .map(|candidate| integer(candidate, b"SetBodyGroup", 0))
+                    .transpose()?;
                 volumes.push(Volume {
                     source,
                     handle: source_handles.get(&source).copied(),
@@ -524,6 +541,7 @@ impl MapRuntime {
                         enabled: integer(entity, b"StartDisabled", 0)? == 0,
                         team,
                         associated_model,
+                        associated_body,
                     },
                     touching: false,
                 });
@@ -610,6 +628,34 @@ impl MapRuntime {
         )?;
         self.next_producer_sequence += 1;
         self.consume(batch).map_err(MapError::from)
+    }
+
+    pub fn damage(&mut self, tick: u64, source: u32) -> Result<MapPhase, MapError> {
+        let handle = self
+            .source_handle(source)
+            .ok_or(MapError::MissingEntity(source))?;
+        let batch = self.world.phase(
+            tick,
+            &[WorldCommand::Damage {
+                entity: handle,
+                attacker: Some(self.player),
+            }],
+        )?;
+        self.consume(batch).map_err(MapError::from)
+    }
+
+    pub fn regenerate_associated_body(&self, source: u32) -> Option<i32> {
+        self.volumes.iter().find_map(|volume| {
+            if volume.source != source {
+                return None;
+            }
+            match volume.kind {
+                VolumeKind::Regenerate {
+                    associated_body, ..
+                } => associated_body,
+                _ => None,
+            }
+        })
     }
 
     pub fn accepts_course_trigger(&self, source: u32) -> bool {
@@ -713,7 +759,8 @@ impl MapRuntime {
     ) -> Result<MapPhase, MapError> {
         self.last_player_position = position;
         let mut commands = Vec::new();
-        let mut regenerate_effects = Vec::new();
+        let mut effects = Vec::new();
+        let mut regenerate_contacts = Vec::new();
         for volume in &mut self.volumes {
             let origin = volume
                 .handle
@@ -725,9 +772,26 @@ impl MapRuntime {
                     enabled,
                     team,
                     associated_model,
+                    ..
                 } => {
+                    let contact = match (overlap, volume.touching) {
+                        (true, false) => Some(ContactKind::Enter),
+                        (true, true) => Some(ContactKind::Stay),
+                        (false, true) => Some(ContactKind::Exit),
+                        (false, false) => None,
+                    };
+                    volume.touching = overlap;
+                    if let Some(kind) = contact {
+                        regenerate_contacts.push(RegenerateContact {
+                            sequence: self.next_producer_sequence,
+                            entity: volume.source,
+                            kind,
+                            enabled: *enabled,
+                        });
+                        self.next_producer_sequence += 1;
+                    }
                     if overlap && *enabled {
-                        regenerate_effects.push(Effect::Regenerate {
+                        effects.push(Effect::Regenerate {
                             entity: volume.source,
                             team: *team,
                             associated_model: *associated_model,
@@ -744,7 +808,7 @@ impl MapRuntime {
                     };
                     volume.touching = current;
                     if let Some(contact) = contact {
-                        regenerate_effects.push(Effect::RespawnRoom {
+                        effects.push(Effect::RespawnRoom {
                             entity: volume.source,
                             team: *team,
                             contact,
@@ -786,7 +850,8 @@ impl MapRuntime {
         }
         let batch = self.world.phase(tick, &commands)?;
         let mut output = self.consume(batch)?;
-        output.effects.extend(regenerate_effects);
+        output.effects.extend(effects);
+        output.regenerate_contacts.extend(regenerate_contacts);
         Ok(output)
     }
 
@@ -1364,6 +1429,46 @@ mod tests {
             CONTENTS_BLUE_TEAM,
             false
         ));
+    }
+
+    #[test]
+    fn regenerate_association_uses_only_the_first_named_dynamic_prop() {
+        let graph = playsrc_entity::parse(
+            b"{\"classname\"\"info_target\"\"targetname\"\"locker\"}{\"classname\"\"prop_dynamic\"\"targetname\"\"locker\"\"SetBodyGroup\"\"3\"}{\"classname\"\"func_regenerate\"\"model\"\"*1\"\"associatedmodel\"\"locker\"}",
+            playsrc_entity::Limits::default(),
+        )
+        .unwrap();
+        let mut map = MapRuntime::compile(
+            &graph,
+            0.015,
+            5,
+            vec![ModelBounds {
+                model: 1,
+                mins: [-8.0; 3],
+                maxs: [8.0; 3],
+            }],
+        )
+        .unwrap();
+        let phase = map
+            .contact_phase(
+                &AlwaysOverlap,
+                0,
+                [0.0; 3],
+                Hull {
+                    mins: [0.0; 3],
+                    maxs: [0.0; 3],
+                },
+                PlayerContactFacts::default(),
+            )
+            .unwrap();
+        assert!(matches!(
+            phase.effects.as_slice(),
+            [Effect::Regenerate {
+                associated_model: None,
+                ..
+            }]
+        ));
+        assert_eq!(map.regenerate_associated_body(2), None);
     }
 
     #[test]

@@ -19,7 +19,7 @@ pub mod jump;
 pub use map_runtime::{
     CONTENTS_BLUE_TEAM, CONTENTS_RED_TEAM, Effect as MapEffect, EntityEvent, EntityEventKind,
     EntityTransform, GameplayWorld, MapCounts, MapPhase, MapRuntime, MoverRequest, MoverResult,
-    MoverResultKind, PlayerContactFacts, respawn_barrier_collides,
+    MoverResultKind, PlayerContactFacts, RegenerateContact, respawn_barrier_collides,
 };
 
 use std::collections::BTreeMap;
@@ -37,6 +37,8 @@ use weapon::{ActivityEvent, PrimaryResult, ReloadPhase, WeaponRuntime};
 
 pub const PLAYER_IDENTITY: u32 = 1;
 pub const MAX_PROJECTILES: usize = 64;
+const MASK_SOLID: u32 = 0x0200_400b;
+const MASK_SOLID_BRUSH_ONLY: u32 = 0x0000_400b;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PresentationRevision {
@@ -479,6 +481,32 @@ pub struct RegenerateAnimationEvent {
     pub associated_model: u32,
     pub open_tick: u64,
     pub close_tick: u64,
+    pub body: i32,
+    pub open_animation: RegenerateModelAnimation,
+    pub close_animation: RegenerateModelAnimation,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RegenerateModelAnimation {
+    Open,
+    Close,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RegenerateModelEvent {
+    pub zone: u32,
+    pub associated_model: u32,
+    pub tick: u64,
+    pub animation: RegenerateModelAnimation,
+    pub body: i32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PendingRegenerateModelClose {
+    zone: u32,
+    associated_model: u32,
+    tick: u64,
+    body: i32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -595,6 +623,7 @@ pub struct Session<W: GameplayWorld + Clone> {
     lifecycle: PlayerLifecycle,
     restrictions: PlayerRestrictions,
     auto_reload: bool,
+    flip_viewmodels: bool,
     spawn: [f32; 3],
     projectiles: Vec<LiveProjectile>,
     next_projectile: u32,
@@ -609,6 +638,10 @@ pub struct Session<W: GameplayWorld + Clone> {
     mover_requests: Vec<MoverRequest>,
     lifecycle_events: Vec<LifecycleEvent>,
     regenerate_animation_events: Vec<RegenerateAnimationEvent>,
+    regenerate_model_events: Vec<RegenerateModelEvent>,
+    regenerate_model_states: BTreeMap<u32, RegenerateModelAnimation>,
+    pending_regenerate_model_closes: Vec<PendingRegenerateModelClose>,
+    regenerate_contacts: Vec<RegenerateContact>,
     map_effects: Vec<MapEffect>,
     radius_damage_requests: Vec<RadiusDamageRequest>,
     rocket_trace_requests: Vec<RocketTraceRequest>,
@@ -678,13 +711,18 @@ impl<W: GameplayWorld + Clone> Session<W> {
             modifiers: movement_modifiers,
         }
         .resolve();
-        let loadout = BTreeMap::from([
+        let movement_configuration = MovementConfiguration::default();
+        let mut loadout = BTreeMap::from([
             (
                 Weapon::RocketLauncher,
                 WeaponRuntime::full(Weapon::RocketLauncher),
             ),
             (Weapon::Original, WeaponRuntime::full(Weapon::Original)),
         ]);
+        loadout
+            .get_mut(&Weapon::RocketLauncher)
+            .expect("stock Soldier loadout")
+            .deploy(0, movement_configuration.tick_interval);
         let authority_random = UniformRandomStream::from_seed(RandomSeeds::INVARIANT.authority)
             .expect("invariant authority seed is valid");
         let predicted_presentation_random =
@@ -714,6 +752,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             lifecycle: PlayerLifecycle::Active,
             restrictions: PlayerRestrictions::default(),
             auto_reload: true,
+            flip_viewmodels: false,
             spawn,
             projectiles: Vec::new(),
             next_projectile: 1,
@@ -728,11 +767,15 @@ impl<W: GameplayWorld + Clone> Session<W> {
             mover_requests: Vec::new(),
             lifecycle_events: Vec::new(),
             regenerate_animation_events: Vec::new(),
+            regenerate_model_events: Vec::new(),
+            regenerate_model_states: BTreeMap::new(),
+            pending_regenerate_model_closes: Vec::new(),
+            regenerate_contacts: Vec::new(),
             map_effects: Vec::new(),
             radius_damage_requests: Vec::new(),
             rocket_trace_requests: Vec::new(),
             contact_reconcile_requests: Vec::new(),
-            movement_configuration: MovementConfiguration::default(),
+            movement_configuration,
             map,
             next_regenerate_tick: 0,
             hurt_next_tick: BTreeMap::new(),
@@ -800,6 +843,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.auto_reload = enabled;
     }
 
+    pub fn set_flip_viewmodels(&mut self, enabled: bool) {
+        self.flip_viewmodels = enabled;
+    }
+
     pub fn lifecycle(&self) -> PlayerLifecycle {
         self.lifecycle
     }
@@ -842,6 +889,21 @@ impl<W: GameplayWorld + Clone> Session<W> {
 
     pub fn regenerate_animation_events(&self) -> &[RegenerateAnimationEvent] {
         &self.regenerate_animation_events
+    }
+
+    pub fn regenerate_model_events(&self) -> &[RegenerateModelEvent] {
+        &self.regenerate_model_events
+    }
+
+    pub fn regenerate_model_animation(
+        &self,
+        associated_model: u32,
+    ) -> Option<RegenerateModelAnimation> {
+        self.regenerate_model_states.get(&associated_model).copied()
+    }
+
+    pub fn regenerate_contacts(&self) -> &[RegenerateContact] {
+        &self.regenerate_contacts
     }
 
     pub fn map_effects(&self) -> &[MapEffect] {
@@ -930,7 +992,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
         let mut candidate = self.clone();
         let phase = candidate.map.apply_mover_results(candidate.tick, results)?;
         candidate.movement.position = add(candidate.movement.position, phase.carry);
-        candidate.mover_requests = phase.mover_requests.clone();
+        candidate.mover_requests.retain(|request| {
+            !results
+                .iter()
+                .any(|result| result.request_id == request.request_id)
+        });
+        merge_mover_requests(&mut candidate.mover_requests, &phase.mover_requests);
         *self = candidate;
         Ok(phase)
     }
@@ -943,6 +1010,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
     ) -> Result<MapPhase, Error> {
         let mut candidate = self.clone();
         let phase = candidate.map.input(candidate.tick, source, input, value)?;
+        merge_mover_requests(&mut candidate.mover_requests, &phase.mover_requests);
         *self = candidate;
         Ok(phase)
     }
@@ -1014,13 +1082,15 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 )
             })
             .collect();
+        let expected_rocket_results = self.rocket_trace_requests.clone();
         self.random_draws.clear();
         self.audio_events.clear();
         self.physics_requests.clear();
         self.activity_events.clear();
-        self.mover_requests.clear();
         self.lifecycle_events.clear();
         self.regenerate_animation_events.clear();
+        self.regenerate_model_events.clear();
+        self.regenerate_contacts.clear();
         self.map_effects.clear();
         self.radius_damage_requests.clear();
         self.rocket_trace_requests.clear();
@@ -1032,7 +1102,13 @@ impl<W: GameplayWorld + Clone> Session<W> {
             physics_results,
             &mut projectile_events,
         )?;
-        self.apply_rocket_traces(rocket_results, &mut projectile_events, &mut events)?;
+        let mut map_phase = self.apply_rocket_traces(
+            &expected_rocket_results,
+            rocket_results,
+            &mut projectile_events,
+            &mut events,
+        )?;
+        self.emit_due_regenerate_model_closes();
         self.apply_selection(command, &mut events, &mut projectile_events);
         let movement_policy = MovementPolicy {
             class: self.class,
@@ -1040,7 +1116,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         }
         .resolve();
         let hull = self.movement.active_hull(movement_policy);
-        let mut map_phase = self.map.begin_tick(
+        let begin_phase = self.map.begin_tick(
             &self.collision,
             BeginTickInput {
                 tick: self.tick,
@@ -1051,6 +1127,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 grounded: self.movement.ground.is_some(),
             },
         )?;
+        map_phase.append(begin_phase);
         self.movement.position = add(self.movement.position, map_phase.carry);
 
         let movement_result = step(
@@ -1105,48 +1182,53 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 });
         }
 
-        let released_primary = !command.fire && self.fire_was_held;
         let mut ammo_events = Vec::new();
-        let primary = {
-            let state = self
-                .loadout
-                .get_mut(&self.weapon)
-                .expect("active weapon belongs to loadout");
-            state.primary(
-                self.tick,
-                self.movement_configuration.tick_interval,
-                command.fire,
-                released_primary,
-                &mut self.activity_events,
-            )
-        };
-        if let PrimaryResult::Fired { charge_seconds } = primary {
-            self.fire_projectile(
-                command.pitch_degrees,
-                command.movement.yaw_degrees,
-                charge_seconds,
-                expected_sticky_random,
-                &mut projectile_events,
-            )?;
-        }
-        {
-            let state = self
-                .loadout
-                .get_mut(&self.weapon)
-                .expect("active weapon belongs to loadout");
-            if command.reload || (self.auto_reload && !command.fire && !command.detonate) {
-                state.start_reload(
+        if self.lifecycle == PlayerLifecycle::Active && self.health > 0 {
+            let released_primary = !command.fire && self.fire_was_held;
+            let primary = {
+                let state = self
+                    .loadout
+                    .get_mut(&self.weapon)
+                    .expect("active weapon belongs to loadout");
+                state.primary(
+                    self.tick,
+                    self.movement_configuration.tick_interval,
+                    command.fire,
+                    released_primary,
+                    &mut self.activity_events,
+                )
+            };
+            if let PrimaryResult::Fired { charge_seconds } = primary {
+                self.fire_projectile(
+                    command.pitch_degrees,
+                    command.movement.yaw_degrees,
+                    charge_seconds,
+                    expected_sticky_random,
+                    &mut projectile_events,
+                )?;
+            }
+            {
+                let state = self
+                    .loadout
+                    .get_mut(&self.weapon)
+                    .expect("active weapon belongs to loadout");
+                if command.reload || (self.auto_reload && !command.fire && !command.detonate) {
+                    state.start_reload(
+                        self.tick,
+                        self.movement_configuration.tick_interval,
+                        &mut self.activity_events,
+                    );
+                }
+                state.advance_reload(
                     self.tick,
                     self.movement_configuration.tick_interval,
                     &mut self.activity_events,
+                    &mut ammo_events,
                 );
             }
-            state.advance_reload(
-                self.tick,
-                self.movement_configuration.tick_interval,
-                &mut self.activity_events,
-                &mut ammo_events,
-            );
+            self.fire_was_held = command.fire;
+        } else {
+            self.fire_was_held = false;
         }
         for event in ammo_events {
             events.push(Event::Reloaded {
@@ -1155,13 +1237,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 reserve: event.reserve,
             });
         }
-        self.fire_was_held = command.fire;
         self.advance_projectiles(
             self.movement_configuration.tick_interval,
             &mut projectile_events,
             &mut events,
         )?;
-        if command.detonate {
+        if command.detonate && self.lifecycle == PlayerLifecycle::Active && self.health > 0 {
             self.detonate(&mut projectile_events, &mut events);
         }
 
@@ -1237,8 +1318,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
         };
 
         self.tick += 1;
-        self.mover_requests = map_phase.mover_requests.clone();
+        merge_mover_requests(&mut self.mover_requests, &map_phase.mover_requests);
         self.map_effects = map_phase.effects.clone();
+        self.regenerate_contacts = map_phase.regenerate_contacts.clone();
         Ok(Snapshot {
             tick: self.tick,
             class: self.class,
@@ -1292,6 +1374,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             self.class = class;
             self.weapon = default_weapon(class);
             self.loadout = default_loadout(class);
+            self.deploy_active_weapon();
             self.health = self.maximum_health();
             self.conditions.clear();
             self.lifecycle = PlayerLifecycle::Active;
@@ -1346,12 +1429,28 @@ impl<W: GameplayWorld + Clone> Session<W> {
             self.loadout
                 .entry(weapon)
                 .or_insert_with(|| WeaponRuntime::full(weapon));
+            self.deploy_active_weapon();
             self.activity_events.push(ActivityEvent {
                 tick: self.tick,
                 weapon,
                 activity: weapon::WeaponActivity::Draw,
             });
             events.push(Event::WeaponChanged(weapon));
+        }
+    }
+
+    fn deploy_active_weapon(&mut self) {
+        let interval = self.movement_configuration.tick_interval;
+        let first_primary_tick = {
+            let active = self
+                .loadout
+                .get_mut(&self.weapon)
+                .expect("active weapon belongs to loadout");
+            active.deploy(self.tick, interval);
+            active.first_primary_tick
+        };
+        for weapon in self.loadout.values_mut() {
+            weapon.first_primary_tick = first_primary_tick;
         }
     }
 
@@ -1506,12 +1605,36 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.next_regenerate_tick =
             self.tick + ticks(3.0, self.movement_configuration.tick_interval);
         if let Some(associated_model) = associated_model {
+            let body = self
+                .map
+                .regenerate_associated_body(entity)
+                .expect("validated associated dynamic prop body state");
+            let close_tick = self.tick + ticks(2.0, self.movement_configuration.tick_interval);
             self.regenerate_animation_events
                 .push(RegenerateAnimationEvent {
                     zone: entity,
                     associated_model,
                     open_tick: self.tick,
-                    close_tick: self.tick + ticks(2.0, self.movement_configuration.tick_interval),
+                    close_tick,
+                    body,
+                    open_animation: RegenerateModelAnimation::Open,
+                    close_animation: RegenerateModelAnimation::Close,
+                });
+            self.regenerate_model_states
+                .insert(associated_model, RegenerateModelAnimation::Open);
+            self.regenerate_model_events.push(RegenerateModelEvent {
+                zone: entity,
+                associated_model,
+                tick: self.tick,
+                animation: RegenerateModelAnimation::Open,
+                body,
+            });
+            self.pending_regenerate_model_closes
+                .push(PendingRegenerateModelClose {
+                    zone: entity,
+                    associated_model,
+                    tick: close_tick,
+                    body,
                 });
         }
         events.push(Event::Resupplied {
@@ -1521,6 +1644,26 @@ impl<W: GameplayWorld + Clone> Session<W> {
             clip: active.clip,
             reserve: active.reserve,
         });
+    }
+
+    fn emit_due_regenerate_model_closes(&mut self) {
+        let mut pending = Vec::new();
+        for close in std::mem::take(&mut self.pending_regenerate_model_closes) {
+            if close.tick <= self.tick {
+                self.regenerate_model_states
+                    .insert(close.associated_model, RegenerateModelAnimation::Close);
+                self.regenerate_model_events.push(RegenerateModelEvent {
+                    zone: close.zone,
+                    associated_model: close.associated_model,
+                    tick: self.tick,
+                    animation: RegenerateModelAnimation::Close,
+                    body: close.body,
+                });
+            } else {
+                pending.push(close);
+            }
+        }
+        self.pending_regenerate_model_closes = pending;
     }
 
     fn draw_random_float(
@@ -1679,12 +1822,18 @@ impl<W: GameplayWorld + Clone> Session<W> {
             Weapon::RocketLauncher | Weapon::Original => ProjectileKind::Rocket,
             Weapon::StickybombLauncher => ProjectileKind::Sticky,
         };
-        let mut direction = direction(pitch, yaw);
-        let (right, up) = aim_basis(pitch, yaw);
+        let profile = self
+            .loadout
+            .get(&self.weapon)
+            .expect("active weapon belongs to loadout")
+            .profile();
+        let (mut direction, right, up) = angle_vectors(pitch, yaw, 0.0);
+        let viewmodel_flipped = profile.flip_viewmodel != self.flip_viewmodels;
         let eye = add(self.movement.position, self.movement.view_offset);
         let (position, orientation) = if kind == ProjectileKind::Sticky {
+            let right_offset = if viewmodel_flipped { -8.0 } else { 8.0 };
             let position = add(
-                add(add(eye, scale(direction, 16.0)), scale(right, 8.0)),
+                add(add(eye, scale(direction, 16.0)), scale(right, right_offset)),
                 scale(up, -6.0),
             );
             let muzzle = self.collision.trace(
@@ -1694,7 +1843,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     mins: [-8.0; 3],
                     maxs: [8.0; 3],
                 },
-                self.movement_configuration.solid_mask,
+                MASK_SOLID_BRUSH_ONLY,
             )?;
             if muzzle.start_solid {
                 return Ok(());
@@ -1709,10 +1858,13 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     mins: [0.0; 3],
                     maxs: [0.0; 3],
                 },
-                self.movement_configuration.solid_mask,
+                MASK_SOLID,
             )?;
             let mut offset = [23.5, 12.0, -3.0];
-            if self.weapon == Weapon::Original {
+            if viewmodel_flipped {
+                offset[1] *= -1.0;
+            }
+            if profile.center_fire_projectile {
                 offset[1] = 0.0;
             }
             if self.movement.crouch.uses_crouched_hull() {
@@ -1737,7 +1889,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     mins: [0.0; 3],
                     maxs: [0.0; 3],
                 },
-                self.movement_configuration.solid_mask,
+                MASK_SOLID_BRUSH_ONLY,
             )?;
             (clipped.end, quaternion_from_direction(direction))
         };
@@ -1927,19 +2079,25 @@ impl<W: GameplayWorld + Clone> Session<W> {
 
     fn apply_rocket_traces(
         &mut self,
+        expected: &[RocketTraceRequest],
         results: &[RocketTraceResult],
         projectile_events: &mut Vec<ProjectileEvent>,
         events: &mut Vec<Event>,
-    ) -> Result<(), Error> {
-        let mut seen = std::collections::BTreeSet::new();
-        for result in results {
+    ) -> Result<MapPhase, Error> {
+        if results.len() != expected.len() {
+            return Err(Error::InvalidProjectilePhysics);
+        }
+        let mut map_phase = MapPhase::default();
+        for (request, result) in expected.iter().zip(results) {
             if result.tick != self.tick
-                || !seen.insert(result.projectile)
+                || request.tick.checked_add(1) != Some(result.tick)
+                || result.projectile != request.projectile
                 || result.end.into_iter().any(|value| !value.is_finite())
                 || result
                     .normal
                     .is_some_and(|normal| normal.into_iter().any(|value| !value.is_finite()))
                 || result.sky && !result.solid
+                || result.sky && result.direct_target.is_some()
                 || result.solid && !result.sky && result.normal.is_none()
                 || !result.solid && result.direct_target.is_some()
             {
@@ -1967,12 +2125,18 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     &projectile.presentation,
                     self.tick,
                 ));
-                self.explode(projectile, projectile_events, events);
+                if let Some(target) = result.direct_target {
+                    let presentation = self.publish_explosion(projectile, projectile_events);
+                    map_phase.append(self.map.damage(self.tick, target)?);
+                    self.apply_self_blast(&presentation, events);
+                } else {
+                    self.explode(projectile, projectile_events, events);
+                }
             } else {
                 self.projectiles.push(projectile);
             }
         }
-        Ok(())
+        Ok(map_phase)
     }
 
     fn advance_projectiles(
@@ -2040,7 +2204,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 tick: self.tick,
                 start: projectile.presentation.position,
                 end,
-                mask: self.movement_configuration.solid_mask,
+                mask: rocket_flight_mask(projectile.presentation.team),
             });
             retained.push(projectile);
         }
@@ -2069,6 +2233,15 @@ impl<W: GameplayWorld + Clone> Session<W> {
         projectile_events: &mut Vec<ProjectileEvent>,
         events: &mut Vec<Event>,
     ) {
+        let presentation = self.publish_explosion(projectile, projectile_events);
+        self.apply_self_blast(&presentation, events);
+    }
+
+    fn publish_explosion(
+        &mut self,
+        projectile: LiveProjectile,
+        projectile_events: &mut Vec<ProjectileEvent>,
+    ) -> Projectile {
         let definition = match (
             projectile.presentation.kind,
             projectile.presentation.launcher_identity,
@@ -2124,6 +2297,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
             &projectile.presentation,
             self.tick,
         ));
+        projectile.presentation
+    }
+
+    fn apply_self_blast(&mut self, projectile: &Projectile, events: &mut Vec<Event>) {
         let policy = MovementPolicy {
             class: self.class,
             modifiers: self.movement_modifiers,
@@ -2138,7 +2315,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         let visible = self
             .collision
             .trace(
-                projectile.presentation.position,
+                projectile.position,
                 center,
                 Hull {
                     mins: [0.0; 3],
@@ -2147,7 +2324,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 self.movement_configuration.solid_mask,
             )
             .is_ok_and(|trace| trace.fraction == 1.0 || trace.start_solid);
-        let kind = if projectile.presentation.kind == ProjectileKind::Rocket {
+        let kind = if projectile.kind == ProjectileKind::Rocket {
             combat::BlastKind::Rocket
         } else {
             combat::BlastKind::Sticky
@@ -2159,7 +2336,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         };
         if let Some(base_damage) = combat::player_blast_damage(
             kind,
-            projectile.presentation.position,
+            projectile.position,
             combat::PlayerBlastTarget {
                 origin: self.movement.position,
                 world_center: center,
@@ -2186,7 +2363,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 self.movement.crouch.uses_crouched_hull(),
                 size,
                 center,
-                projectile.presentation.position,
+                projectile.position,
                 damage.damage_for_force,
             );
             if class != combat::BlastClass::Soldier
@@ -2204,6 +2381,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
 
     fn fizzle_projectiles(&mut self, events: &mut Vec<ProjectileEvent>) {
         for projectile in std::mem::take(&mut self.projectiles) {
+            self.rocket_trace_requests
+                .retain(|request| request.projectile != projectile.presentation.identity);
             if projectile.presentation.kind == ProjectileKind::Sticky {
                 self.physics_requests.retain(|request| {
                     request.projectile != projectile.presentation.identity
@@ -2256,8 +2435,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
             team: self.team,
         });
         for weapon in self.loadout.values_mut() {
-            weapon.reset_for_spawn(self.tick);
+            weapon.reset_for_spawn();
         }
+        self.deploy_active_weapon();
         self.movement = MovementState::from_player(
             Player {
                 position: self.spawn,
@@ -2372,17 +2552,33 @@ fn ticks(seconds: f32, tick: f32) -> u64 {
     (seconds / tick).ceil() as u64
 }
 
-fn direction(pitch: f32, yaw: f32) -> [f32; 3] {
-    let (pitch, yaw) = (pitch.to_radians(), yaw.to_radians());
-    let cp = pitch.cos();
-    [cp * yaw.cos(), cp * yaw.sin(), -pitch.sin()]
-}
-
-fn aim_basis(pitch: f32, yaw: f32) -> ([f32; 3], [f32; 3]) {
-    let (pitch, yaw) = (pitch.to_radians(), yaw.to_radians());
+fn angle_vectors(pitch: f32, yaw: f32, roll: f32) -> ([f32; 3], [f32; 3], [f32; 3]) {
+    let (pitch, yaw, roll) = (pitch.to_radians(), yaw.to_radians(), roll.to_radians());
     let (sp, cp) = pitch.sin_cos();
     let (sy, cy) = yaw.sin_cos();
-    ([-sy, cy, 0.0], [sp * cy, sp * sy, cp])
+    let (sr, cr) = roll.sin_cos();
+    (
+        [cp * cy, cp * sy, -sp],
+        [-sr * sp * cy + cr * sy, -sr * sp * sy - cr * cy, -sr * cp],
+        [cr * sp * cy + sr * sy, cr * sp * sy - sr * cy, cr * cp],
+    )
+}
+
+fn rocket_flight_mask(team: Team) -> u32 {
+    MASK_SOLID
+        | match team {
+            Team::Red => CONTENTS_BLUE_TEAM,
+            Team::Blue => CONTENTS_RED_TEAM,
+        }
+}
+
+fn merge_mover_requests(current: &mut Vec<MoverRequest>, emitted: &[MoverRequest]) {
+    for request in emitted {
+        current.retain(|existing| {
+            existing.entity != request.entity && existing.request_id != request.request_id
+        });
+        current.push(*request);
+    }
 }
 
 fn remap_clamped(value: f32, a: f32, b: f32, c: f32, d: f32) -> f32 {
@@ -2478,7 +2674,7 @@ mod tests {
     use super::*;
     use playsrc_movement::{FailureKind, Operation, Trace, Tracer};
     use std::sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     };
 
@@ -2561,6 +2757,46 @@ mod tests {
         }
     }
 
+    type RecordedTrace = ([f32; 3], [f32; 3], Hull, u32);
+
+    #[derive(Clone, Default)]
+    struct RecordingWorld {
+        traces: Arc<Mutex<Vec<RecordedTrace>>>,
+    }
+
+    impl Tracer for RecordingWorld {
+        fn trace(
+            &self,
+            start: [f32; 3],
+            end: [f32; 3],
+            hull: Hull,
+            mask: u32,
+        ) -> Result<Trace, MoveError> {
+            self.traces.lock().unwrap().push((start, end, hull, mask));
+            Ok(Trace {
+                fraction: 1.0,
+                start_solid: false,
+                all_solid: false,
+                end,
+                normal: None,
+                hit: None,
+                contents: 0,
+            })
+        }
+    }
+
+    impl GameplayWorld for RecordingWorld {
+        fn overlaps_model_hull(
+            &self,
+            _: usize,
+            _: [f32; 3],
+            _: [f32; 3],
+            _: Hull,
+        ) -> Result<bool, MoveError> {
+            Ok(false)
+        }
+    }
+
     fn explosive(kind: ProjectileKind, position: [f32; 3]) -> LiveProjectile {
         LiveProjectile {
             presentation: Projectile {
@@ -2596,6 +2832,16 @@ mod tests {
         session
             .advance(Command {
                 select_class: Some(Class::Demoman),
+                ..Command::default()
+            })
+            .unwrap();
+        session
+            .loadout
+            .get_mut(&Weapon::StickybombLauncher)
+            .unwrap()
+            .next_primary_tick = session.tick;
+        session
+            .advance(Command {
                 fire: true,
                 ..Command::default()
             })
@@ -2632,8 +2878,80 @@ mod tests {
     }
 
     #[test]
+    fn source_basis_muzzle_flip_center_fire_masks_and_orientation_are_preserved() {
+        let (forward, right, up) = angle_vectors(0.0, 0.0, 0.0);
+        assert_eq!(forward, [1.0, 0.0, 0.0]);
+        assert_eq!(right, [0.0, -1.0, 0.0]);
+        assert_eq!(up, [0.0, 0.0, 1.0]);
+        let (_, right_yaw_90, _) = angle_vectors(0.0, 90.0, 0.0);
+        assert!((right_yaw_90[0] - 1.0).abs() < 0.000_001);
+        assert!(right_yaw_90[1].abs() < 0.000_001);
+
+        let launch = |weapon: Weapon, flipped: bool, crouched: bool| {
+            let collision = RecordingWorld::default();
+            let traces = collision.traces.clone();
+            let mut session = Session::new(collision, [0.0; 3], MapRuntime::empty(0.015));
+            session.weapon = weapon;
+            session.flip_viewmodels = flipped;
+            if crouched {
+                session.movement = MovementState::from_player(
+                    Player {
+                        position: [0.0; 3],
+                        velocity: [0.0; 3],
+                        grounded: true,
+                        crouched: true,
+                        jump_latched: false,
+                    },
+                    MovementPolicy {
+                        class: Class::Soldier,
+                        modifiers: MovementModifiers::default(),
+                    }
+                    .resolve(),
+                );
+            }
+            session
+                .fire_projectile(0.0, 0.0, 0.0, None, &mut Vec::new())
+                .unwrap();
+            let projectile = session.projectiles[0].presentation.clone();
+            (projectile, traces.lock().unwrap().clone())
+        };
+
+        let (stock, traces) = launch(Weapon::RocketLauncher, false, false);
+        assert_eq!(stock.position, [23.5, -12.0, 65.0]);
+        assert_eq!(traces.len(), 2);
+        assert_eq!(traces[0].3, MASK_SOLID);
+        assert_eq!(traces[0].2.mins, [0.0; 3]);
+        assert_eq!(traces[1].3, MASK_SOLID_BRUSH_ONLY);
+        assert_eq!(traces[1].1, stock.position);
+        assert_eq!(
+            stock.orientation,
+            quaternion_from_direction(normalized(stock.velocity))
+        );
+
+        let (flipped, _) = launch(Weapon::RocketLauncher, true, false);
+        assert_eq!(flipped.position, [23.5, 12.0, 65.0]);
+        let (centered, _) = launch(Weapon::Original, true, false);
+        assert_eq!(centered.position, [23.5, 0.0, 65.0]);
+        let (crouched, _) = launch(Weapon::RocketLauncher, false, true);
+        assert_eq!(crouched.position, [23.5, -12.0, 53.0]);
+        assert_eq!(
+            rocket_flight_mask(Team::Red),
+            MASK_SOLID | CONTENTS_BLUE_TEAM
+        );
+        assert_eq!(
+            rocket_flight_mask(Team::Blue),
+            MASK_SOLID | CONTENTS_RED_TEAM
+        );
+    }
+
+    #[test]
     fn projectile_contract_emits_oriented_ordered_transitions() {
         let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.015));
+        session
+            .loadout
+            .get_mut(&Weapon::RocketLauncher)
+            .unwrap()
+            .next_primary_tick = 0;
         let fired = session
             .advance(Command {
                 pitch_degrees: 89.0,
@@ -2661,7 +2979,7 @@ mod tests {
                     solid: true,
                     sky: false,
                     normal: Some([0.0, 0.0, 1.0]),
-                    direct_target: Some(42),
+                    direct_target: None,
                 }],
                 None,
             )
@@ -2675,7 +2993,7 @@ mod tests {
             [ProjectileEventKind::Impact, ProjectileEventKind::Explode]
         );
         assert_eq!(session.radius_damage_requests().len(), 1);
-        assert_eq!(session.radius_damage_requests()[0].direct_target, Some(42));
+        assert_eq!(session.radius_damage_requests()[0].direct_target, None);
         assert_eq!(session.audio_events().len(), 1);
         assert_eq!(
             session.audio_events()[0].identity,
@@ -2692,6 +3010,10 @@ mod tests {
         assert_eq!(session.audio_events()[0].source_identity, trace.projectile);
 
         let mut sky = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.015));
+        sky.loadout
+            .get_mut(&Weapon::RocketLauncher)
+            .unwrap()
+            .next_primary_tick = 0;
         sky.advance(Command {
             fire: true,
             ..Command::default()
@@ -2717,6 +3039,104 @@ mod tests {
         assert!(removed.projectiles.is_empty());
         assert!(removed.projectile_events.is_empty());
         assert!(sky.radius_damage_requests().is_empty());
+    }
+
+    #[test]
+    fn direct_rocket_damage_drives_button_outputs_and_linked_door_io() {
+        let graph = playsrc_entity::parse(
+            b"{\"classname\"\"func_button\"\"model\"\"*1\"\"targetname\"\"button\"\"spawnflags\"\"512\"\"OnDamaged\"\"door,Open,,0,-1\"}{\"classname\"\"func_door\"\"model\"\"*2\"\"targetname\"\"door\"\"movedir\"\"-90 0 0\"\"speed\"\"100\"}",
+            playsrc_entity::Limits::default(),
+        )
+        .unwrap();
+        let map = MapRuntime::compile(
+            &graph,
+            0.015,
+            7,
+            vec![
+                playsrc_entity::ModelBounds {
+                    model: 1,
+                    mins: [-4.0, -16.0, -16.0],
+                    maxs: [4.0, 16.0, 16.0],
+                },
+                playsrc_entity::ModelBounds {
+                    model: 2,
+                    mins: [-8.0, -48.0, -96.0],
+                    maxs: [8.0, 48.0, 96.0],
+                },
+            ],
+        )
+        .unwrap();
+        let mut session = Session::new(Floor, [0.0; 3], map);
+        session
+            .loadout
+            .get_mut(&Weapon::RocketLauncher)
+            .unwrap()
+            .next_primary_tick = 0;
+        let fired = session
+            .advance(Command {
+                fire: true,
+                ..Command::default()
+            })
+            .unwrap();
+        assert_eq!(fired.projectile_events[0].kind, ProjectileEventKind::Fire);
+        let request = session.rocket_trace_requests()[0];
+        let before = session.producer_snapshot();
+        assert!(matches!(
+            session.advance(Command::default()),
+            Err(Error::InvalidProjectilePhysics)
+        ));
+        assert_eq!(session.producer_snapshot(), before);
+
+        let damaged = session
+            .advance_with_external(
+                Command::default(),
+                &[],
+                &[RocketTraceResult {
+                    projectile: request.projectile,
+                    tick: session.tick,
+                    end: request.end,
+                    solid: true,
+                    sky: false,
+                    normal: Some([0.0, 0.0, 1.0]),
+                    direct_target: Some(0),
+                }],
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            damaged
+                .projectile_events
+                .iter()
+                .map(|event| event.kind)
+                .collect::<Vec<_>>(),
+            [ProjectileEventKind::Impact, ProjectileEventKind::Explode]
+        );
+        assert_eq!(session.radius_damage_requests()[0].direct_target, Some(0));
+        let on_damaged = damaged
+            .entity_events
+            .iter()
+            .position(|event| {
+                event.kind == EntityEventKind::Output
+                    && event.entity == 0
+                    && event.name == b"OnDamaged"
+            })
+            .unwrap();
+        let door_open = damaged
+            .entity_events
+            .iter()
+            .position(|event| {
+                event.kind == EntityEventKind::Input
+                    && event.entity == 1
+                    && event.name.eq_ignore_ascii_case(b"Open")
+            })
+            .unwrap();
+        assert!(on_damaged < door_open);
+        assert!(
+            session
+                .mover_requests()
+                .iter()
+                .any(|request| request.entity == 1)
+        );
     }
 
     #[test]
@@ -2813,6 +3233,16 @@ mod tests {
         session
             .advance(Command {
                 select_class: Some(Class::Demoman),
+                ..Command::default()
+            })
+            .unwrap();
+        session
+            .loadout
+            .get_mut(&Weapon::StickybombLauncher)
+            .unwrap()
+            .next_primary_tick = session.tick;
+        session
+            .advance(Command {
                 fire: true,
                 ..Command::default()
             })
@@ -2841,7 +3271,7 @@ mod tests {
         assert_eq!(fired.projectiles.len(), 1);
         let projectile = fired.projectiles[0].clone();
         assert_eq!(projectile.velocity[0], 905.625);
-        assert_eq!(projectile.velocity[1].to_bits(), 0x4045_042c);
+        assert_eq!(projectile.velocity[1].to_bits(), 0xc045_042c);
         assert_eq!(projectile.velocity[2], 200.0 + f32::from_bits(0xc10a_9c49));
         assert_eq!(projectile.angular_velocity, [600.0, -563.0, 0.0]);
         assert_eq!(session.audio_events().len(), 1);
@@ -3267,6 +3697,11 @@ mod tests {
     #[test]
     fn movement_mode_ammo_reload_and_atomic_failure_share_one_state() {
         let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.015));
+        session
+            .loadout
+            .get_mut(&Weapon::RocketLauncher)
+            .unwrap()
+            .next_primary_tick = 0;
         session.set_movement_modifiers(MovementModifiers {
             noclip_allowed: true,
             ..MovementModifiers::default()
@@ -3283,12 +3718,26 @@ mod tests {
         assert_eq!(snapshot.movement.mode, Mode::Noclip);
         assert_eq!(snapshot.loadout[0].clip, 3);
         let before = session.movement_snapshot_bytes();
+        let request = session.rocket_trace_requests()[0];
         let failure = session
-            .advance(Command {
-                pitch_degrees: f32::NAN,
-                select_class: Some(Class::Demoman),
-                ..Command::default()
-            })
+            .advance_with_external(
+                Command {
+                    pitch_degrees: f32::NAN,
+                    select_class: Some(Class::Demoman),
+                    ..Command::default()
+                },
+                &[],
+                &[RocketTraceResult {
+                    projectile: request.projectile,
+                    tick: session.tick,
+                    end: request.end,
+                    solid: false,
+                    sky: false,
+                    normal: None,
+                    direct_target: None,
+                }],
+                None,
+            )
             .unwrap_err();
         assert!(matches!(
             failure,
@@ -3303,8 +3752,43 @@ mod tests {
     }
 
     #[test]
+    fn class_and_weapon_switches_apply_deploy_before_held_primary() {
+        let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.015));
+        for _ in 0..10 {
+            session.advance(Command::default()).unwrap();
+        }
+        let switched = session
+            .advance(Command {
+                select_weapon: Some(Weapon::Original),
+                fire: true,
+                ..Command::default()
+            })
+            .unwrap();
+        assert_eq!(switched.weapon, Weapon::Original);
+        assert!(switched.projectile_events.is_empty());
+        let original = session.weapon_runtime(Weapon::Original).unwrap();
+        assert_eq!(original.next_primary_tick, 44);
+        assert_eq!(original.first_primary_tick, 44);
+
+        let changed = session
+            .advance(Command {
+                select_class: Some(Class::Demoman),
+                fire: true,
+                ..Command::default()
+            })
+            .unwrap();
+        assert_eq!(changed.class, Class::Demoman);
+        assert!(changed.projectile_events.is_empty());
+        let sticky = session.weapon_runtime(Weapon::StickybombLauncher).unwrap();
+        assert_eq!(sticky.next_primary_tick, 45);
+        assert_eq!(sticky.first_primary_tick, 45);
+        assert!(sticky.charge_begin_tick.is_none());
+    }
+
+    #[test]
     fn lethal_state_waits_for_explicit_respawn_and_cleans_owned_projectiles() {
         let mut session = Session::new(Floor, [8.0, 4.0, 2.0], MapRuntime::empty(0.01));
+        session.movement_configuration.tick_interval = 0.01;
         session.health = 0;
         session
             .projectiles
@@ -3312,7 +3796,12 @@ mod tests {
         session
             .projectiles
             .push(explosive(ProjectileKind::Sticky, [0.0; 3]));
-        let dead = session.advance(Command::default()).unwrap();
+        let dead = session
+            .advance(Command {
+                fire: true,
+                ..Command::default()
+            })
+            .unwrap();
         assert_eq!(dead.health, 0.0);
         assert_eq!(session.lifecycle(), PlayerLifecycle::Dying);
         assert!(dead.projectiles.is_empty());
@@ -3333,6 +3822,7 @@ mod tests {
         let respawned = session
             .advance(Command {
                 respawn: true,
+                fire: true,
                 ..Command::default()
             })
             .unwrap();
@@ -3350,6 +3840,13 @@ mod tests {
                 .activity_events()
                 .iter()
                 .any(|event| { event.activity == weapon::WeaponActivity::Draw })
+        );
+        assert_eq!(
+            session
+                .weapon_runtime(Weapon::RocketLauncher)
+                .unwrap()
+                .next_primary_tick,
+            51
         );
     }
 
@@ -3405,12 +3902,42 @@ mod tests {
                 associated_model: 0,
                 open_tick: 1,
                 close_tick: 135,
+                body: 0,
+                open_animation: RegenerateModelAnimation::Open,
+                close_animation: RegenerateModelAnimation::Close,
             }]
+        );
+        assert_eq!(
+            session.regenerate_contacts(),
+            &[RegenerateContact {
+                sequence: 1,
+                entity: 1,
+                kind: playsrc_entity::ContactKind::Enter,
+                enabled: true,
+            }]
+        );
+        assert_eq!(
+            session.regenerate_model_events(),
+            &[RegenerateModelEvent {
+                zone: 1,
+                associated_model: 0,
+                tick: 1,
+                animation: RegenerateModelAnimation::Open,
+                body: 0,
+            }]
+        );
+        assert_eq!(
+            session.regenerate_model_animation(0),
+            Some(RegenerateModelAnimation::Open)
         );
         session.health = 100;
         let cooling_down = session.advance(Command::default()).unwrap();
         assert_eq!(cooling_down.health, 100.0);
         assert!(cooling_down.events.is_empty());
+        assert_eq!(
+            session.regenerate_contacts()[0].kind,
+            playsrc_entity::ContactKind::Stay
+        );
 
         session.next_regenerate_tick = 0;
         session.health = 50;
@@ -3422,6 +3949,34 @@ mod tests {
         assert_eq!(taunting.health, 50.0);
         assert!(taunting.events.is_empty());
 
+        touching.store(false, Ordering::Relaxed);
+        session.advance(Command::default()).unwrap();
+        assert_eq!(
+            session.regenerate_contacts()[0].kind,
+            playsrc_entity::ContactKind::Exit
+        );
+        let mut close = None;
+        while session.tick <= 135 {
+            session.advance(Command::default()).unwrap();
+            if let Some(event) = session.regenerate_model_events().first().copied() {
+                close = Some(event);
+            }
+        }
+        assert_eq!(
+            close,
+            Some(RegenerateModelEvent {
+                zone: 1,
+                associated_model: 0,
+                tick: 135,
+                animation: RegenerateModelAnimation::Close,
+                body: 0,
+            })
+        );
+        assert_eq!(
+            session.regenerate_model_animation(0),
+            Some(RegenerateModelAnimation::Close)
+        );
+
         session.conditions.clear();
         session.conditions.insert(Condition::CannotSwitchFromMelee);
         session.regenerate(1, None, &mut Vec::new());
@@ -3429,6 +3984,87 @@ mod tests {
             session
                 .conditions
                 .contains(Condition::CannotSwitchFromMelee)
+        );
+    }
+
+    #[test]
+    fn held_stock_fire_inside_regenerate_preserves_cadence_across_refills() {
+        let graph = playsrc_entity::parse(
+            b"{\"classname\"\"prop_dynamic\"\"targetname\"\"locker\"\"SetBodyGroup\"\"0\"}{\"classname\"\"func_regenerate\"\"model\"\"*1\"\"associatedmodel\"\"locker\"}",
+            playsrc_entity::Limits::default(),
+        )
+        .unwrap();
+        let map = MapRuntime::compile(
+            &graph,
+            0.015,
+            8,
+            vec![playsrc_entity::ModelBounds {
+                model: 1,
+                mins: [-16.0; 3],
+                maxs: [16.0; 3],
+            }],
+        )
+        .unwrap();
+        let mut session = Session::new(SwitchWorld(Arc::new(AtomicBool::new(true))), [0.0; 3], map);
+        let mut fire_ticks = Vec::new();
+        let mut resupply_ticks = Vec::new();
+        for _ in 0..=250 {
+            let rocket_results = session
+                .rocket_trace_requests()
+                .iter()
+                .map(|request| RocketTraceResult {
+                    projectile: request.projectile,
+                    tick: session.tick,
+                    end: request.end,
+                    solid: true,
+                    sky: true,
+                    normal: None,
+                    direct_target: None,
+                })
+                .collect::<Vec<_>>();
+            let snapshot = session
+                .advance_with_external(
+                    Command {
+                        fire: true,
+                        ..Command::default()
+                    },
+                    &[],
+                    &rocket_results,
+                    None,
+                )
+                .unwrap();
+            fire_ticks.extend(
+                snapshot
+                    .projectile_events
+                    .iter()
+                    .filter(|event| event.kind == ProjectileEventKind::Fire)
+                    .map(|event| event.tick),
+            );
+            if snapshot
+                .events
+                .iter()
+                .any(|event| matches!(event, Event::Resupplied { .. }))
+            {
+                resupply_ticks.push(snapshot.tick - 1);
+            }
+        }
+        assert_eq!(fire_ticks, [34, 88, 142, 196, 250]);
+        assert_eq!(resupply_ticks, [0, 200]);
+        assert_eq!(
+            fire_ticks
+                .windows(2)
+                .map(|ticks| ticks[1] - ticks[0])
+                .collect::<Vec<_>>(),
+            [54, 54, 54, 54]
+        );
+        let weapon = session.weapon_runtime(Weapon::RocketLauncher).unwrap();
+        assert_eq!((weapon.clip, weapon.reserve), (3, 20));
+        assert_eq!(weapon.first_primary_tick, 267);
+        assert!(
+            session
+                .activity_events()
+                .iter()
+                .all(|event| event.activity != weapon::WeaponActivity::ReloadStart)
         );
     }
 
@@ -3588,5 +4224,69 @@ mod tests {
                 .iter()
                 .any(|transform| { transform.identity == 3 && transform.position[1] > 0.0 })
         );
+    }
+
+    #[test]
+    fn cyclic_linear_completion_requests_survive_until_the_movement_owner_consumes_them() {
+        let graph = playsrc_entity::parse(
+            b"{\"classname\"\"logic_auto\"\"OnMapSpawn\"\"platform,Open,,0,-1\"}{\"classname\"\"func_movelinear\"\"model\"\"*1\"\"targetname\"\"platform\"\"speed\"\"75\"\"MoveDistance\"\"650\"\"movedir\"\"0 90 0\"\"OnFullyOpen\"\"platform,Close,,0,-1\"\"OnFullyClosed\"\"platform,Open,,0,-1\"}",
+            playsrc_entity::Limits::default(),
+        )
+        .unwrap();
+        let map = MapRuntime::compile(
+            &graph,
+            0.015,
+            9,
+            vec![playsrc_entity::ModelBounds {
+                model: 1,
+                mins: [-73.3, -56.0, -4.0],
+                maxs: [46.7, 56.0, 4.0],
+            }],
+        )
+        .unwrap();
+        let mut session = Session::new(Floor, [0.0; 3], map);
+        let opening = loop {
+            session.advance(Command::default()).unwrap();
+            if let Some(request) = session.mover_requests().first().copied() {
+                break request;
+            }
+            assert!(session.producer_snapshot().tick <= 15);
+        };
+        assert!(opening.opening);
+        let opened = session
+            .apply_mover_results(&[MoverResult {
+                request_id: opening.request_id,
+                entity: opening.entity,
+                kind: MoverResultKind::Completed,
+                transform: playsrc_entity::Transform {
+                    origin: opening.destination,
+                    angles: [0.0; 3],
+                },
+                carry: [12.0, 0.0, 0.0],
+            }])
+            .unwrap();
+        assert_eq!(opened.carry, [12.0, 0.0, 0.0]);
+        let closing = session.mover_requests()[0];
+        assert!(!closing.opening);
+        assert_ne!(closing.request_id, opening.request_id);
+        assert_eq!(session.movement.position[0], 12.0);
+
+        session.advance(Command::default()).unwrap();
+        assert_eq!(session.mover_requests(), &[closing]);
+        session
+            .apply_mover_results(&[MoverResult {
+                request_id: closing.request_id,
+                entity: closing.entity,
+                kind: MoverResultKind::Completed,
+                transform: playsrc_entity::Transform {
+                    origin: closing.destination,
+                    angles: [0.0; 3],
+                },
+                carry: [0.0; 3],
+            }])
+            .unwrap();
+        let reopened = session.mover_requests()[0];
+        assert!(reopened.opening);
+        assert_eq!(reopened.destination, opening.destination);
     }
 }

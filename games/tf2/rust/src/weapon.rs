@@ -42,6 +42,8 @@ pub struct WeaponProfile {
     pub reload_start: f32,
     pub reload_round: f32,
     pub maximum_charge: Option<f32>,
+    pub center_fire_projectile: bool,
+    pub flip_viewmodel: bool,
 }
 
 impl WeaponProfile {
@@ -54,6 +56,8 @@ impl WeaponProfile {
                 reload_start: 0.5,
                 reload_round: 0.833_333_3,
                 maximum_charge: None,
+                center_fire_projectile: false,
+                flip_viewmodel: false,
             },
             Weapon::Original => Self {
                 maximum_clip: 4,
@@ -62,6 +66,8 @@ impl WeaponProfile {
                 reload_start: 0.1,
                 reload_round: 0.83,
                 maximum_charge: None,
+                center_fire_projectile: true,
+                flip_viewmodel: false,
             },
             Weapon::StickybombLauncher => Self {
                 maximum_clip: 8,
@@ -70,6 +76,8 @@ impl WeaponProfile {
                 reload_start: 0.333_333_34,
                 reload_round: 0.666_666_7,
                 maximum_charge: Some(4.0),
+                center_fire_projectile: false,
+                flip_viewmodel: false,
             },
         }
     }
@@ -120,6 +128,15 @@ impl WeaponRuntime {
             .max(tick.saturating_add(delay_ticks(1.0, tick_interval)));
     }
 
+    pub fn deploy(&mut self, tick: u64, tick_interval: f32) {
+        self.abort_reload();
+        self.charge_begin_tick = None;
+        self.next_primary_tick = self
+            .next_primary_tick
+            .max(tick.saturating_add(delay_ticks(0.5, tick_interval)));
+        self.first_primary_tick = self.next_primary_tick;
+    }
+
     pub fn refill(&mut self) {
         let profile = self.profile();
         self.clip = profile.maximum_clip;
@@ -128,10 +145,8 @@ impl WeaponRuntime {
         self.charge_begin_tick = None;
     }
 
-    pub fn reset_for_spawn(&mut self, tick: u64) {
+    pub fn reset_for_spawn(&mut self) {
         self.refill();
-        self.next_primary_tick = tick;
-        self.first_primary_tick = tick;
     }
 
     pub fn abort_reload(&mut self) {
@@ -243,22 +258,14 @@ impl WeaponRuntime {
                 }
                 return PrimaryResult::None;
             }
-            if held
-                && self.clip > 0
-                && tick >= self.next_primary_tick
-                && tick >= self.first_primary_tick
-            {
+            if held && self.clip > 0 && tick >= self.next_primary_tick {
                 self.charge_begin_tick = Some(tick);
                 self.abort_reload();
                 return PrimaryResult::ChargeStarted;
             }
             return PrimaryResult::None;
         }
-        if held
-            && self.clip > 0
-            && tick >= self.next_primary_tick
-            && tick >= self.first_primary_tick
-        {
+        if held && self.clip > 0 && tick >= self.next_primary_tick {
             return self.commit_shot(tick, tick_interval, 0.0, activities);
         }
         PrimaryResult::None
@@ -308,6 +315,8 @@ mod tests {
                 reload_start: 0.5,
                 reload_round: 0.833_333_3,
                 maximum_charge: None,
+                center_fire_projectile: false,
+                flip_viewmodel: false,
             }
         );
         assert_eq!(
@@ -319,6 +328,8 @@ mod tests {
                 reload_start: 0.333_333_34,
                 reload_round: 0.666_666_7,
                 maximum_charge: Some(4.0),
+                center_fire_projectile: false,
+                flip_viewmodel: false,
             }
         );
     }
@@ -383,21 +394,30 @@ mod tests {
     }
 
     #[test]
-    fn regeneration_refills_and_enforces_first_primary_delay() {
+    fn regeneration_refills_without_turning_the_honorbound_lock_into_a_fire_delay() {
         let mut activities = Vec::new();
         let mut weapon = WeaponRuntime::full(Weapon::RocketLauncher);
         weapon.clip = 0;
         weapon.reserve = 2;
+        weapon.next_primary_tick = 40;
         weapon.regenerate(10, 0.01);
         assert_eq!((weapon.clip, weapon.reserve), (4, 20));
         assert_eq!(weapon.first_primary_tick, 110);
-        assert_eq!(
-            weapon.primary(109, 0.01, true, false, &mut activities),
-            PrimaryResult::None
-        );
         assert!(matches!(
-            weapon.primary(110, 0.01, true, false, &mut activities),
+            weapon.primary(40, 0.01, true, false, &mut activities),
             PrimaryResult::Fired { .. }
         ));
+    }
+
+    #[test]
+    fn deployment_applies_the_stock_switch_delay_without_shortening_a_later_deadline() {
+        let mut weapon = WeaponRuntime::full(Weapon::RocketLauncher);
+        weapon.deploy(10, 0.01);
+        assert_eq!(weapon.next_primary_tick, 60);
+        assert_eq!(weapon.first_primary_tick, 60);
+        weapon.next_primary_tick = 100;
+        weapon.deploy(20, 0.01);
+        assert_eq!(weapon.next_primary_tick, 100);
+        assert_eq!(weapon.first_primary_tick, 100);
     }
 }

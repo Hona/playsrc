@@ -1236,7 +1236,8 @@ impl EntityWorld {
                     stay_pushed: wait == -1.0,
                     outputs_reversed: false,
                     block_damage_bits: 0.0f32.to_bits(),
-                    damage_activates: flags & BUTTON_DAMAGE_ACTIVATES != 0,
+                    damage_activates: flags & BUTTON_DAMAGE_ACTIVATES != 0
+                        || field_i32(definition, b"health", 0)? != 0,
                     dont_move: flags & BUTTON_DONT_MOVE != 0,
                     activator: None,
                 }),
@@ -2371,13 +2372,16 @@ impl EntityWorld {
         let Some(opening) = opening else {
             return Ok(());
         };
-        state.activator = attacker;
+        let Some(attacker) = attacker else {
+            return Ok(());
+        };
+        state.activator = Some(attacker);
         self.entity_mut(target).expect("validated").behavior = BehaviorState::Mover(state);
         self.fire_output(
             target,
             b"OnPressed",
             Variant::Void,
-            attacker,
+            Some(attacker),
             Some(target),
             0.0,
             batch,
@@ -2386,7 +2390,7 @@ impl EntityWorld {
             target,
             if opening { 1.0 } else { 0.0 },
             opening,
-            attacker,
+            Some(attacker),
             batch,
         )
     }
@@ -2409,6 +2413,7 @@ impl EntityWorld {
         let mut accepted = true;
         let mut outputs: Vec<(Vec<u8>, Variant, Option<EntityHandle>)> = Vec::new();
         let mut mover: Option<(f32, bool)> = None;
+        let mut mover_activator = record.activator;
         let mut remove = false;
         let mut parent: Option<ParentRequest> = None;
         let mut cancel_caller = false;
@@ -2516,6 +2521,7 @@ impl EntityWorld {
                     match state.kind {
                         MoverKind::Door => match input.as_slice() {
                             b"open" => {
+                                mover_activator = state.activator;
                                 if !state.locked
                                     && !matches!(
                                         state.position,
@@ -2526,11 +2532,13 @@ impl EntityWorld {
                                 }
                             }
                             b"close" => {
+                                mover_activator = state.activator;
                                 if state.position != MoverPosition::Closed {
                                     mover = Some((0.0, false));
                                 }
                             }
-                            b"toggle" | b"use" => {
+                            b"toggle" => {
+                                mover_activator = state.activator;
                                 if !state.locked {
                                     match state.position {
                                         MoverPosition::Closed | MoverPosition::Closing => {
@@ -2543,6 +2551,19 @@ impl EntityWorld {
                                     }
                                 }
                             }
+                            b"use" => {
+                                state.activator = record.activator;
+                                mover_activator = record.activator;
+                                if !state.locked {
+                                    match state.position {
+                                        MoverPosition::Closed => mover = Some((1.0, true)),
+                                        MoverPosition::Open if state.no_auto_return => {
+                                            mover = Some((0.0, false));
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
                             b"lock" => state.locked = true,
                             b"unlock" => state.locked = false,
                             b"setspeed" => match record.value.as_float() {
@@ -2552,7 +2573,21 @@ impl EntityWorld {
                             _ => accepted = false,
                         },
                         MoverKind::Button => match input.as_slice() {
-                            b"press" | b"use" => {
+                            b"press" => {
+                                mover_activator = state.activator;
+                                if !state.locked {
+                                    match state.position {
+                                        MoverPosition::Closed => mover = Some((1.0, true)),
+                                        MoverPosition::Open if state.toggle => {
+                                            mover = Some((0.0, false));
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            b"use" => {
+                                state.activator = record.activator;
+                                mover_activator = record.activator;
                                 if !state.locked {
                                     match state.position {
                                         MoverPosition::Closed => mover = Some((1.0, true)),
@@ -2564,6 +2599,7 @@ impl EntityWorld {
                                 }
                             }
                             b"pressin" => {
+                                mover_activator = state.activator;
                                 if !state.locked
                                     && matches!(
                                         state.position,
@@ -2574,6 +2610,7 @@ impl EntityWorld {
                                 }
                             }
                             b"pressout" => {
+                                mover_activator = state.activator;
                                 if !state.locked
                                     && matches!(
                                         state.position,
@@ -2865,7 +2902,7 @@ impl EntityWorld {
                     batch,
                 )?;
             }
-            self.start_mover(target, position, opening, record.activator, batch)?;
+            self.start_mover(target, position, opening, mover_activator, batch)?;
         }
         for (output, value, activator) in outputs {
             self.fire_output(target, &output, value, activator, target.into(), 0.0, batch)?;
@@ -3693,11 +3730,17 @@ impl EntityWorld {
             (_, true) => b"OnFullyOpen".as_slice(),
             (_, false) => b"OnFullyClosed".as_slice(),
         };
+        let activator = match mover.kind {
+            MoverKind::Button => pending.activator,
+            MoverKind::Door if pending.opening => Some(entity),
+            MoverKind::Door => pending.activator,
+            MoverKind::Linear => Some(entity),
+        };
         self.fire_output(
             entity,
             output,
             Variant::Void,
-            pending.activator.or(Some(entity)),
+            activator,
             Some(entity),
             0.0,
             batch,

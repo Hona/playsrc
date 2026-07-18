@@ -562,6 +562,191 @@ fn button_damage_fires_outputs_before_request_and_honors_dont_move() {
 }
 
 #[test]
+fn button_damage_accepts_legacy_health_and_rejects_a_missing_attacker_after_on_damaged() {
+    let bytes = br#"
+{"classname""player""targetname""attacker"}
+{"classname""func_button""targetname""button""model""*1""health""1"
+"OnDamaged""missing,Use,,0,-1""OnPressed""missing,Use,,0,-1"}
+"#;
+    let mut world = compile(bytes, |config| {
+        config.model_bounds.push(ModelBounds {
+            model: 1,
+            mins: [0.0; 3],
+            maxs: [32.0, 8.0, 8.0],
+        });
+    });
+    let attacker = world.resolve(b"attacker", None, None, None)[0];
+    let button = world.resolve(b"button", None, None, None)[0];
+    let missing = world
+        .phase(
+            0,
+            &[WorldCommand::Damage {
+                entity: button,
+                attacker: None,
+            }],
+        )
+        .unwrap();
+    assert!(missing.records.iter().any(|record| matches!(
+        &record.transition,
+        Transition::Output { output, .. } if output == b"OnDamaged"
+    )));
+    assert!(!missing.records.iter().any(|record| matches!(
+        record.transition,
+        Transition::Request(RuntimeRequest::Mover { .. })
+    )));
+    assert!(matches!(
+        world.entity(button).unwrap().behavior,
+        BehaviorState::Mover(ref state)
+            if state.damage_activates && state.position == MoverPosition::Closed
+                && state.activator.is_none()
+    ));
+
+    let accepted = world
+        .phase(
+            1,
+            &[WorldCommand::Damage {
+                entity: button,
+                attacker: Some(attacker),
+            }],
+        )
+        .unwrap();
+    let outputs = accepted
+        .records
+        .iter()
+        .filter_map(|record| match &record.transition {
+            Transition::Output { output, .. } => Some(output.as_slice()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(outputs, [b"OnDamaged".as_slice(), b"OnPressed"]);
+    assert!(accepted.records.iter().any(|record| matches!(
+        record.transition,
+        Transition::Request(RuntimeRequest::Mover { entity, .. }) if entity == button
+    )));
+}
+
+#[test]
+fn mover_completion_outputs_retain_class_specific_activator_and_caller_context() {
+    let bytes = br#"
+{"classname""player""targetname""player"}
+{"classname""game_volume""targetname""sink"}
+{"classname""func_button""targetname""button""model""*1""OnIn""sink,Enable,,0,-1"}
+{"classname""func_door""targetname""door""model""*2""spawnflags""32"
+"OnFullyOpen""sink,Enable,,0,-1""OnFullyClosed""sink,Enable,,0,-1"}
+{"classname""func_movelinear""targetname""linear""model""*3""MoveDistance""10"
+"OnFullyOpen""sink,Enable,,0,-1"}
+"#;
+    let mut world = compile(bytes, |config| {
+        config
+            .external_classes
+            .push(playsrc_entity::ExternalClassBinding {
+                classname: b"game_volume".to_vec(),
+                inputs: vec![b"Enable".to_vec()],
+            });
+        for model in 1..=3 {
+            config.model_bounds.push(ModelBounds {
+                model,
+                mins: [0.0; 3],
+                maxs: [12.0, 2.0, 2.0],
+            });
+        }
+    });
+    let player = world.resolve(b"player", None, None, None)[0];
+    let button = world.resolve(b"button", None, None, None)[0];
+    let door = world.resolve(b"door", None, None, None)[0];
+    let linear = world.resolve(b"linear", None, None, None)[0];
+
+    for (tick, mover, expected_activator) in
+        [(0, button, player), (2, door, door), (4, linear, linear)]
+    {
+        let started = world
+            .phase(
+                tick,
+                &[WorldCommand::Input(InputRecord {
+                    target: EventTarget::Direct(mover),
+                    input: if mover == button || mover == door {
+                        b"Use".as_slice()
+                    } else {
+                        b"Open".as_slice()
+                    }
+                    .to_vec(),
+                    value: Variant::Void,
+                    activator: Some(player),
+                    caller: Some(player),
+                    output_action: None,
+                    producer_sequence: tick + 1,
+                })],
+            )
+            .unwrap();
+        let request_id = started
+            .records
+            .iter()
+            .find_map(|record| match record.transition {
+                Transition::Request(RuntimeRequest::Mover { request_id, .. }) => Some(request_id),
+                _ => None,
+            })
+            .unwrap();
+        let completed = world
+            .phase(
+                tick + 1,
+                &[WorldCommand::MoverCompleted {
+                    entity: mover,
+                    request_id,
+                }],
+            )
+            .unwrap();
+        assert!(completed.records.iter().any(|record| matches!(
+            record.transition,
+            Transition::Request(RuntimeRequest::ExternalInput {
+                activator: Some(activator),
+                caller: Some(caller),
+                ..
+            }) if activator == expected_activator && caller == mover
+        )));
+    }
+
+    let closing = world
+        .phase(
+            6,
+            &[WorldCommand::Input(InputRecord {
+                target: EventTarget::Direct(door),
+                input: b"Close".to_vec(),
+                value: Variant::Void,
+                activator: Some(player),
+                caller: Some(player),
+                output_action: None,
+                producer_sequence: 7,
+            })],
+        )
+        .unwrap();
+    let request_id = closing
+        .records
+        .iter()
+        .find_map(|record| match record.transition {
+            Transition::Request(RuntimeRequest::Mover { request_id, .. }) => Some(request_id),
+            _ => None,
+        })
+        .unwrap();
+    let closed = world
+        .phase(
+            7,
+            &[WorldCommand::MoverCompleted {
+                entity: door,
+                request_id,
+            }],
+        )
+        .unwrap();
+    assert!(closed.records.iter().any(|record| matches!(
+        record.transition,
+        Transition::Request(RuntimeRequest::ExternalInput {
+            activator: Some(activator),
+            caller: Some(caller),
+            ..
+        }) if activator == player && caller == door
+    )));
+}
+
+#[test]
 fn external_class_binding_accepts_only_declared_inputs() {
     let mut world = compile(
         b"{\"classname\"\"game_volume\"\"targetname\"\"volume\"}",

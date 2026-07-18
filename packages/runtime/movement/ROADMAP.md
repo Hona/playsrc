@@ -69,6 +69,8 @@ The active movement-parity checkpoint covers every target-reachable generic tran
 
 The checkpoint retains the existing TF2 walk/noclip integration while replacing Movement's selected-mode approximations. Exact generic modes that excluded producers do not yet select remain implemented and tested at the Movement seam; this assignment does not add compatibility readers or duplicate adapters in TF2, Entity, Simulation, Collision, applications, or manifests.
 
+The active TF2 combat/entity-automation integration consumes the existing linear-pusher producer without changing its authority: Entity supplies each current request, Movement returns progress/completion/block contacts plus subject carry/support/base velocity, and TF2 returns those facts to Entity before the next admitted player command. A completion output or blocked reversal may create a replacement request in that same Entity phase; that request remains pending until Movement consumes it and is never converted into game-owned displacement math.
+
 | Target behavior | playsrc behavior | Evidence | Status |
 |---|---|---|---|
 | Every generic movement mode and movement-owned parameter has one stable identity, target disposition, supplied-value owner, and numeric contract in [`inventories/modes-and-parameters.md`](inventories/modes-and-parameters.md). | The 101-item inventory is manually derived, has no generator, and is Not accepted. | **Generated-inventory audit:** expand the pinned SDK declarations and generic/game seams, compare stable identities, values, units, defaults, dispositions, exclusions, and exact count, and require no unclassified declaration. | Blocked |
