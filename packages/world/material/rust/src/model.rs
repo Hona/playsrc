@@ -1,8 +1,8 @@
 use crate::{
-    Error, ErrorCode, HdrMode, Material, ProxyOperation, SelectionEnvironment, StaticState,
-    TextureAlphaFacts, TextureColorRead, TextureDisposition, TextureRequest, TextureRole, boolean,
-    color_or, effective_self_illumination, error, float_or, get, integer_or, logical_path,
-    static_state_with_alpha,
+    Error, ErrorCode, HdrMode, Material, ProxyOperation, ProxyProgram, SelectionEnvironment,
+    StaticState, TextureAlphaFacts, TextureColorRead, TextureDisposition, TextureFrameSelection,
+    TextureRequest, TextureRole, TextureUseState, boolean, color_or, effective_self_illumination,
+    error, float_or, get, integer_or, logical_path, static_state_with_alpha,
 };
 use std::collections::BTreeMap;
 
@@ -38,6 +38,7 @@ pub struct ModelTextureRequest {
     pub reference: Vec<u8>,
     pub logical_path: String,
     pub color_read: TextureColorRead,
+    pub frame: TextureFrameSelection,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -353,6 +354,7 @@ pub struct AuthoredTextureBinding {
     pub frame_count: u16,
     pub faces: Vec<TextureFace>,
     pub subresources: Vec<TextureSubresourceIdentity>,
+    pub initial_frame: Option<u16>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -448,6 +450,29 @@ pub fn bind_authored_texture(
         request.disposition,
         request.color_read,
         metadata,
+        &TextureFrameSelection::Unframed,
+    )
+}
+
+pub fn bind_authored_texture_use(
+    request: &TextureRequest,
+    usage: &TextureUseState,
+    metadata: &TextureMetadataManifest,
+) -> Result<AuthoredTextureBinding, Error> {
+    if request.role != usage.role {
+        return Err(error(
+            ErrorCode::InvalidTextureMetadata,
+            Some(request.parameter.clone()),
+        ));
+    }
+    bind_authored(
+        TextureBindingRole::Material(request.role),
+        &request.parameter,
+        request.logical_path.as_deref(),
+        request.disposition,
+        request.color_read,
+        metadata,
+        &usage.frame,
     )
 }
 
@@ -462,6 +487,7 @@ pub fn bind_authored_model_texture(
         TextureDisposition::Source,
         request.color_read,
         metadata,
+        &request.frame,
     )
 }
 
@@ -472,6 +498,7 @@ fn bind_authored(
     disposition: TextureDisposition,
     color_read: TextureColorRead,
     metadata: &TextureMetadataManifest,
+    frame: &TextureFrameSelection,
 ) -> Result<AuthoredTextureBinding, Error> {
     if disposition != TextureDisposition::Source {
         return Err(error(ErrorCode::InvalidParameter, Some(parameter.to_vec())));
@@ -498,6 +525,17 @@ fn bind_authored(
             Some(parameter.to_vec()),
         ));
     }
+    let initial_frame = match frame {
+        TextureFrameSelection::Unframed => None,
+        TextureFrameSelection::Static { initial, .. } => Some(
+            u16::try_from(*initial)
+                .ok()
+                .filter(|frame| *frame < metadata.frame_count)
+                .ok_or_else(|| {
+                    error(ErrorCode::InvalidTextureMetadata, Some(parameter.to_vec()))
+                })?,
+        ),
+    };
     Ok(AuthoredTextureBinding {
         role,
         logical_path,
@@ -510,6 +548,7 @@ fn bind_authored(
         frame_count: metadata.frame_count,
         faces: metadata.faces.clone(),
         subresources: actual,
+        initial_frame,
     })
 }
 
@@ -595,10 +634,11 @@ pub(crate) fn resolve_model_state(
     shader: &[u8],
     parameters: &BTreeMap<Vec<u8>, Vec<u8>>,
     textures: &[TextureRequest],
+    proxy_program: &ProxyProgram,
     environment: SelectionEnvironment,
 ) -> Result<(Option<ModelMaterialState>, Vec<ModelTextureRequest>), Error> {
     if shader.eq_ignore_ascii_case(b"VertexLitGeneric") {
-        let model_textures = collect_model_textures(parameters, environment)?;
+        let model_textures = collect_model_textures(parameters, proxy_program, environment)?;
         Ok((
             Some(vertex_lit(
                 parameters,
@@ -609,13 +649,13 @@ pub(crate) fn resolve_model_state(
             model_textures,
         ))
     } else if shader.eq_ignore_ascii_case(b"EyeRefract") {
-        let model_textures = collect_model_textures(parameters, environment)?;
+        let model_textures = collect_model_textures(parameters, proxy_program, environment)?;
         Ok((
             Some(eye_refract(parameters, textures, &model_textures)?),
             model_textures,
         ))
     } else if shader.eq_ignore_ascii_case(b"Eyes") || shader.eq_ignore_ascii_case(b"Eyes_dx9") {
-        let model_textures = collect_model_textures(parameters, environment)?;
+        let model_textures = collect_model_textures(parameters, proxy_program, environment)?;
         Ok((
             Some(eyes(parameters, textures, &model_textures)?),
             model_textures,
@@ -844,6 +884,7 @@ fn exponent_texture_is_masked(
 
 fn collect_model_textures(
     parameters: &BTreeMap<Vec<u8>, Vec<u8>>,
+    proxy_program: &ProxyProgram,
     environment: SelectionEnvironment,
 ) -> Result<Vec<ModelTextureRequest>, Error> {
     let specs = [
@@ -895,12 +936,26 @@ fn collect_model_textures(
                 | ModelTextureRole::EyeCornea
                 | ModelTextureRole::EyeGlint => TextureColorRead::Linear,
             };
+            let frame_parameter = match role {
+                ModelTextureRole::EyeIris => Some(b"$irisframe".as_slice()),
+                ModelTextureRole::SheenMask => Some(b"$sheenmapmaskframe".as_slice()),
+                _ => None,
+            };
+            let frame =
+                frame_parameter.map_or(Ok(TextureFrameSelection::Unframed), |parameter| {
+                    Ok(TextureFrameSelection::Static {
+                        parameter: parameter.to_vec(),
+                        initial: integer_or(parameters, parameter, 0)?,
+                        proxy_mutated: crate::proxy_writes(proxy_program, parameter),
+                    })
+                })?;
             Ok(ModelTextureRequest {
                 role,
                 parameter: parameter.to_vec(),
                 reference: reference.clone(),
                 logical_path: logical_path(&normalized, ".vtf", parameter)?,
                 color_read,
+                frame,
             })
         })
         .collect()

@@ -1,9 +1,13 @@
 use playsrc_vmt::{EffectiveDocument, EffectiveNode, EffectiveValue};
 use std::{collections::BTreeMap, fmt};
+mod alpha;
 mod model;
 mod proxy;
+mod water;
+pub use alpha::*;
 pub use model::*;
 pub use proxy::*;
+pub use water::*;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Shader {
     LightmappedGeneric,
@@ -58,6 +62,44 @@ pub struct TextureRequest {
     pub logical_path: Option<String>,
     pub disposition: TextureDisposition,
     pub color_read: TextureColorRead,
+}
+impl TextureRequest {
+    pub fn is_defined(&self) -> bool {
+        !self.reference.is_empty()
+    }
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TextureFrameSelection {
+    Static {
+        parameter: Vec<u8>,
+        initial: i32,
+        proxy_mutated: bool,
+    },
+    Unframed,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ParameterOrigin {
+    Authored,
+    ShaderInitializer,
+    TypeInitializer,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct EffectiveParameter<T> {
+    pub value: T,
+    pub origin: ParameterOrigin,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextureTransformState {
+    pub parameter: Vec<u8>,
+    pub matrix: [f32; 16],
+    pub origin: ParameterOrigin,
+    pub proxy_mutated: bool,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextureUseState {
+    pub role: TextureRole,
+    pub frame: TextureFrameSelection,
+    pub transform: Option<TextureTransformState>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Proxy {
@@ -168,6 +210,7 @@ pub struct Material {
     pub parameters: Vec<(Vec<u8>, Vec<u8>)>,
     pub first_parameters: BTreeMap<Vec<u8>, Vec<u8>>,
     pub textures: Vec<TextureRequest>,
+    pub texture_uses: Vec<TextureUseState>,
     pub selected_textures: Vec<TextureRole>,
     pub active_textures: Vec<TextureRole>,
     pub selection_trace: Vec<SelectionDecision>,
@@ -182,7 +225,9 @@ pub struct Material {
     pub environment_map: Option<EnvironmentMapState>,
     pub model: Option<ModelMaterialState>,
     pub model_textures: Vec<ModelTextureRequest>,
+    pub particle: Option<ParticleMaterialState>,
     pub proxy_program: ProxyProgram,
+    pub selection_environment: SelectionEnvironment,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SelectionDecision {
@@ -207,6 +252,7 @@ pub struct SelectionEnvironment {
     pub low_fill: bool,
     pub editor_materials: bool,
     pub model: bool,
+    pub sprite_card_default_depth_blend: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -217,13 +263,19 @@ pub enum BlendFactor {
     OneMinusSourceAlpha,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BlendEquation {
+    Add,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BlendState {
     pub enabled: bool,
+    pub equation: BlendEquation,
     pub source: BlendFactor,
     pub destination: BlendFactor,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CompareFunction {
+    Greater,
     GreaterOrEqual,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -254,6 +306,7 @@ pub enum LightingModel {
     Lightmapped,
     BumpedLightmapped,
     Water,
+    Particle,
     Sky,
     Unsupported,
 }
@@ -265,6 +318,9 @@ pub struct TextureAlphaFacts {
 pub struct StaticState {
     pub lighting: LightingModel,
     pub blend: BlendState,
+    pub alpha_modulation: f32,
+    pub alpha_ownership: AlphaOwnership,
+    pub fragment_discard: FragmentDiscardRequirement,
     pub alpha_test: bool,
     pub alpha_test_function: CompareFunction,
     pub alpha_test_reference: f32,
@@ -290,6 +346,7 @@ impl Default for SelectionEnvironment {
             low_fill: false,
             editor_materials: false,
             model: false,
+            sprite_card_default_depth_blend: None,
         }
     }
 }
@@ -378,11 +435,22 @@ pub fn resolve_for_environment(
         (b"$refracttexture", TextureRole::Refraction),
     ];
     let detail_blend_mode = integer_or(&first, b"$detailblendmode", 0)?;
+    let sprite_extract_green_alpha = integer_or(&first, b"$extractgreenalpha", 0)? != 0;
+    let gamma_color_read = integer_or(&first, b"$gammacolorread", 0)? != 0;
+    let sprite_card = document.root.key.bytes.eq_ignore_ascii_case(b"SpriteCard");
     let mut textures = Vec::new();
     for (name, role) in specs {
         if let Some(reference) = get(&first, name) {
             let mut request = texture(name, role, reference)?;
-            request.color_read = texture_color_read(shader, role, environment, detail_blend_mode);
+            request.color_read = texture_color_read(
+                shader,
+                role,
+                environment,
+                detail_blend_mode,
+                sprite_extract_green_alpha,
+                gamma_color_read,
+                sprite_card,
+            );
             textures.push(request);
         }
     }
@@ -469,8 +537,16 @@ pub fn resolve_for_environment(
         no_alpha_modulation: boolean(&first, b"$noalphamod"),
     };
     let proxy_program = proxy::compile_proxy_program(&proxies);
-    let (model, model_textures) =
-        model::resolve_model_state(&document.root.key.bytes, &first, &textures, environment)?;
+    let texture_uses = texture_use_states(&textures, &first, &proxy_program)?;
+    let (model, model_textures) = model::resolve_model_state(
+        &document.root.key.bytes,
+        &first,
+        &textures,
+        &proxy_program,
+        environment,
+    )?;
+    let particle =
+        alpha::resolve_particle_state(&document.root.key.bytes, &first, &textures, environment)?;
     let effective_alpha_test =
         features.alpha_test && !features.self_illum && !features.base_alpha_environment_mask;
     let decal = DecalState {
@@ -491,6 +567,7 @@ pub fn resolve_for_environment(
         parameters,
         first_parameters: first.clone(),
         textures,
+        texture_uses,
         selected_textures,
         active_textures,
         selection_trace,
@@ -505,7 +582,9 @@ pub fn resolve_for_environment(
         environment_map,
         model,
         model_textures,
+        particle,
         proxy_program,
+        selection_environment: environment,
     })
 }
 
@@ -532,7 +611,7 @@ fn static_state_with_alpha(
     let alpha = if features.no_alpha_modulation {
         1.0
     } else {
-        current_alpha
+        current_alpha.clamp(0.0, 1.0)
     };
     let base_texture_alpha = texture_alpha.base
         && !features.opaque_texture
@@ -540,9 +619,12 @@ fn static_state_with_alpha(
         && !base_alpha_environment_mask
         && (features.translucent || features.alpha_test);
     let alpha_blend = alpha < 1.0 || features.vertex_alpha || (base_texture_alpha && !alpha_test);
-    let blend = if features.additive {
+    let blend = if material.particle.is_some() {
+        alpha::sprite_card_blend(material)?
+    } else if features.additive {
         BlendState {
             enabled: true,
+            equation: BlendEquation::Add,
             source: if alpha_blend {
                 BlendFactor::SourceAlpha
             } else {
@@ -553,21 +635,40 @@ fn static_state_with_alpha(
     } else if alpha_blend {
         BlendState {
             enabled: true,
+            equation: BlendEquation::Add,
             source: BlendFactor::SourceAlpha,
             destination: BlendFactor::OneMinusSourceAlpha,
         }
     } else {
         BlendState {
             enabled: false,
+            equation: BlendEquation::Add,
             source: BlendFactor::One,
             destination: BlendFactor::Zero,
         }
     };
-    let declared_reference = float_or(&material.first_parameters, b"$alphatestreference", 0.0)?;
-    let alpha_test_reference = if declared_reference > 0.0 {
-        declared_reference
+    let sprite_card_alpha_test = material.particle.is_some()
+        && material
+            .particle
+            .as_ref()
+            .is_some_and(|state| state.alpha_test);
+    let alpha_test = if material.particle.is_some() {
+        sprite_card_alpha_test
     } else {
-        0.7
+        alpha_test
+    };
+    let (alpha_test_function, alpha_test_reference) = if material.particle.is_some() {
+        (CompareFunction::Greater, 0.01)
+    } else {
+        let declared_reference = float_or(&material.first_parameters, b"$alphatestreference", 0.0)?;
+        (
+            CompareFunction::GreaterOrEqual,
+            if declared_reference > 0.0 {
+                declared_reference
+            } else {
+                0.7
+            },
+        )
     };
     let lighting = match material.shader {
         Shader::LightmappedGeneric | Shader::WorldVertexTransition => {
@@ -578,6 +679,7 @@ fn static_state_with_alpha(
             }
         }
         Shader::VertexLitGeneric => LightingModel::VertexLit,
+        Shader::Sprite if material.particle.is_some() => LightingModel::Particle,
         Shader::UnlitGeneric | Shader::Sprite | Shader::Refract => LightingModel::Unlit,
         Shader::Water => LightingModel::Water,
         Shader::SkyLdr | Shader::SkyHdr => LightingModel::Sky,
@@ -585,13 +687,30 @@ fn static_state_with_alpha(
         Shader::Unsupported => LightingModel::Unsupported,
     };
     let depth_test = !features.ignore_z;
+    let alpha_ownership = alpha::alpha_ownership(material, texture_alpha, alpha_test, alpha);
+    let fragment_discard = if alpha_test {
+        FragmentDiscardRequirement::Alpha {
+            source: if material.particle.is_some() {
+                FragmentAlphaSource::ShaderOutput
+            } else {
+                FragmentAlphaSource::BaseTextureOrOne
+            },
+            pass: alpha_test_function,
+            reference: alpha_test_reference,
+        }
+    } else {
+        FragmentDiscardRequirement::None
+    };
     Ok(StaticState {
         lighting,
         blend,
+        alpha_modulation: alpha,
+        alpha_ownership,
+        fragment_discard,
         alpha_test,
-        alpha_test_function: CompareFunction::GreaterOrEqual,
+        alpha_test_function,
         alpha_test_reference,
-        cull: if features.no_cull {
+        cull: if features.no_cull || material.particle.is_some() {
             CullState::None
         } else {
             CullState::Back
@@ -608,7 +727,7 @@ fn static_state_with_alpha(
         } else {
             PolygonOffset::None
         },
-        fog: if features.no_fog {
+        fog: if material.particle.is_some() || features.no_fog {
             FogMode::Disabled
         } else if features.additive {
             FogMode::Black
@@ -617,8 +736,8 @@ fn static_state_with_alpha(
         },
         wireframe: features.wireframe,
         no_draw: features.no_draw,
-        vertex_color: features.vertex_color,
-        vertex_alpha: features.vertex_alpha,
+        vertex_color: features.vertex_color || material.particle.is_some(),
+        vertex_alpha: features.vertex_alpha || material.particle.is_some(),
         translucent_queue: features.translucent || blend.enabled,
     })
 }
@@ -651,12 +770,22 @@ fn water_state(
     material_requests: &[MaterialRequest],
     proxies: &[Proxy],
 ) -> Result<WaterState, Error> {
-    let request = |parameter: &'static [u8], role, default: &'static [u8]| {
-        let mut request = texture(
-            parameter,
-            role,
-            get(parameters, parameter).map_or(default, Vec::as_slice),
-        )?;
+    let request = |parameter: &'static [u8], role| {
+        let Some(reference) = get(parameters, parameter) else {
+            return Ok(TextureRequest {
+                role,
+                parameter: parameter.to_vec(),
+                reference: Vec::new(),
+                logical_path: None,
+                disposition: TextureDisposition::Source,
+                color_read: if role == TextureRole::Normal {
+                    TextureColorRead::Linear
+                } else {
+                    TextureColorRead::Srgb
+                },
+            });
+        };
+        let mut request = texture(parameter, role, reference)?;
         request.color_read = if role == TextureRole::Normal {
             TextureColorRead::Linear
         } else {
@@ -671,18 +800,10 @@ fn water_state(
     }
     Ok(WaterState {
         above_water: boolean_or(parameters, b"$abovewater", true)?,
-        normal_map: request(b"$normalmap", TextureRole::Normal, b"dev/water_normal")?,
-        environment_map: request(b"$envmap", TextureRole::Environment, b"env_cubemap")?,
-        reflection: request(
-            b"$reflecttexture",
-            TextureRole::Reflection,
-            b"_rt_WaterReflection",
-        )?,
-        refraction: request(
-            b"$refracttexture",
-            TextureRole::Refraction,
-            b"_rt_WaterRefraction",
-        )?,
+        normal_map: request(b"$normalmap", TextureRole::Normal)?,
+        environment_map: request(b"$envmap", TextureRole::Environment)?,
+        reflection: request(b"$reflecttexture", TextureRole::Reflection)?,
+        refraction: request(b"$refracttexture", TextureRole::Refraction)?,
         bottom_material: material_requests
             .iter()
             .find(|request| request.role == MaterialRole::Bottom)
@@ -691,12 +812,12 @@ fn water_state(
             .iter()
             .find(|request| request.role == MaterialRole::UnderwaterOverlay)
             .cloned(),
-        reflect_amount: float_or(parameters, b"$reflectamount", 0.8)?,
+        reflect_amount: float_or(parameters, b"$reflectamount", 0.0)?,
         refract_amount: float_or(parameters, b"$refractamount", 0.0)?,
         reflect_tint: color_or(parameters, b"$reflecttint", [1.0; 3])?,
         refract_tint: color_or(parameters, b"$refracttint", [1.0; 3])?,
         fog: WaterFog {
-            enabled: boolean_or(parameters, b"$fogenable", true)?,
+            enabled: boolean_or(parameters, b"$fogenable", false)?,
             color: color_or(parameters, b"$fogcolor", [1.0, 0.0, 0.0])?,
             start: float_or(parameters, b"$fogstart", 0.0)?,
             end: float_or(parameters, b"$fogend", 0.0)?,
@@ -912,11 +1033,218 @@ fn selected_textures(
         .into_iter()
         .collect())
 }
+
+fn texture_use_states(
+    textures: &[TextureRequest],
+    parameters: &BTreeMap<Vec<u8>, Vec<u8>>,
+    proxy_program: &ProxyProgram,
+) -> Result<Vec<TextureUseState>, Error> {
+    textures
+        .iter()
+        .map(|texture| {
+            let frame_parameter = match texture.role {
+                TextureRole::Base
+                | TextureRole::HdrBase
+                | TextureRole::HdrCompressed
+                | TextureRole::HdrCompressed0
+                | TextureRole::HdrCompressed1
+                | TextureRole::HdrCompressed2 => Some(b"$frame".as_slice()),
+                TextureRole::Base2 => Some(b"$frame2".as_slice()),
+                TextureRole::Bump | TextureRole::Normal => Some(b"$bumpframe".as_slice()),
+                TextureRole::Bump2 => Some(b"$bumpframe2".as_slice()),
+                TextureRole::Detail => Some(b"$detailframe".as_slice()),
+                TextureRole::Environment => Some(b"$envmapframe".as_slice()),
+                TextureRole::EnvironmentMask => Some(b"$envmapmaskframe".as_slice()),
+                TextureRole::SelfIllumMask => Some(b"$selfillumtextureframe".as_slice()),
+                TextureRole::Flow => Some(b"$flowmapframe".as_slice()),
+                TextureRole::BlendModulate | TextureRole::Reflection | TextureRole::Refraction => {
+                    None
+                }
+            };
+            let frame =
+                frame_parameter.map_or(Ok(TextureFrameSelection::Unframed), |parameter| {
+                    Ok(TextureFrameSelection::Static {
+                        parameter: parameter.to_vec(),
+                        initial: integer_or(parameters, parameter, 0)?,
+                        proxy_mutated: proxy_writes(proxy_program, parameter),
+                    })
+                })?;
+            let transform_parameter = match texture.role {
+                TextureRole::Base
+                | TextureRole::HdrBase
+                | TextureRole::HdrCompressed
+                | TextureRole::HdrCompressed0
+                | TextureRole::HdrCompressed1
+                | TextureRole::HdrCompressed2
+                | TextureRole::Base2 => Some(b"$basetexturetransform".as_slice()),
+                TextureRole::Bump | TextureRole::Normal => Some(b"$bumptransform".as_slice()),
+                TextureRole::Bump2 => Some(b"$bumptransform2".as_slice()),
+                TextureRole::EnvironmentMask => Some(b"$envmapmasktransform".as_slice()),
+                TextureRole::BlendModulate => Some(b"$blendmasktransform".as_slice()),
+                TextureRole::Detail
+                | TextureRole::Environment
+                | TextureRole::SelfIllumMask
+                | TextureRole::Flow
+                | TextureRole::Reflection
+                | TextureRole::Refraction => None,
+            };
+            let transform = transform_parameter
+                .map(|parameter| {
+                    let value = get(parameters, parameter);
+                    Ok(TextureTransformState {
+                        parameter: parameter.to_vec(),
+                        matrix: value.map_or(Ok(identity_matrix()), |value| {
+                            parse_texture_transform(value, parameter)
+                        })?,
+                        origin: if value.is_some() {
+                            ParameterOrigin::Authored
+                        } else {
+                            ParameterOrigin::TypeInitializer
+                        },
+                        proxy_mutated: proxy_writes(proxy_program, parameter),
+                    })
+                })
+                .transpose()?;
+            Ok(TextureUseState {
+                role: texture.role,
+                frame,
+                transform,
+            })
+        })
+        .collect()
+}
+
+fn proxy_writes(program: &ProxyProgram, variable: &[u8]) -> bool {
+    let variable = lower(variable);
+    program.entries.iter().any(|entry| {
+        let Some(operation) = &entry.operation else {
+            return false;
+        };
+        match operation {
+            ProxyOperation::AnimatedTexture { frame, .. } => frame.name == variable,
+            ProxyOperation::Sine { result, .. }
+            | ProxyOperation::Equals { result, .. }
+            | ProxyOperation::Multiply { result, .. }
+            | ProxyOperation::LessOrEqual { result, .. }
+            | ProxyOperation::SelectFirstIfNonZero { result, .. }
+            | ProxyOperation::TextureTransform { result, .. }
+            | ProxyOperation::TextureScroll { result, .. }
+            | ProxyOperation::ModelGlowColor { result }
+            | ProxyOperation::YellowLevel { result }
+            | ProxyOperation::ScalarModelInput { result, .. }
+            | ProxyOperation::VectorModelInput { result, .. } => result.name == variable,
+            ProxyOperation::WaterLod => {
+                variable == b"$cheapwaterstartdistance" || variable == b"$cheapwaterenddistance"
+            }
+            ProxyOperation::AnimatedWeaponSheen => variable == b"$sheenmapmaskframe",
+            ProxyOperation::Invisibility { .. } | ProxyOperation::WeaponSkin => false,
+        }
+    })
+}
+
+fn parse_texture_transform(value: &[u8], parameter: &[u8]) -> Result<[f32; 16], Error> {
+    let text = std::str::from_utf8(value)
+        .map_err(|_| error(ErrorCode::InvalidParameter, Some(parameter.to_vec())))?
+        .trim();
+    if let Some(content) = text
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+    {
+        let values = finite_values(content, parameter)?;
+        if values.len() == 16 {
+            return values
+                .try_into()
+                .map_err(|_| error(ErrorCode::InvalidParameter, Some(parameter.to_vec())));
+        }
+        return Err(error(ErrorCode::InvalidParameter, Some(parameter.to_vec())));
+    }
+    let tokens = text.split_ascii_whitespace().collect::<Vec<_>>();
+    if tokens.len() != 11
+        || !tokens[0].eq_ignore_ascii_case("center")
+        || !tokens[3].eq_ignore_ascii_case("scale")
+        || !tokens[6].eq_ignore_ascii_case("rotate")
+        || !tokens[8].eq_ignore_ascii_case("translate")
+    {
+        return Err(error(ErrorCode::InvalidParameter, Some(parameter.to_vec())));
+    }
+    let values = [
+        tokens[1], tokens[2], tokens[4], tokens[5], tokens[7], tokens[9], tokens[10],
+    ]
+    .map(|value| value.parse::<f32>().ok().filter(|value| value.is_finite()))
+    .into_iter()
+    .collect::<Option<Vec<_>>>()
+    .ok_or_else(|| error(ErrorCode::InvalidParameter, Some(parameter.to_vec())))?;
+    let center = [values[0], values[1]];
+    let scale = [values[2], values[3]];
+    let angle = values[4].to_radians();
+    let translation = [values[5], values[6]];
+    Ok(matrix_multiply(
+        translation_matrix(center[0] + translation[0], center[1] + translation[1]),
+        matrix_multiply(
+            rotation_matrix(angle),
+            matrix_multiply(
+                scale_matrix(scale[0], scale[1]),
+                translation_matrix(-center[0], -center[1]),
+            ),
+        ),
+    ))
+}
+
+fn finite_values(text: &str, parameter: &[u8]) -> Result<Vec<f32>, Error> {
+    text.split_ascii_whitespace()
+        .map(|value| {
+            value
+                .parse::<f32>()
+                .ok()
+                .filter(|value| value.is_finite())
+                .ok_or_else(|| error(ErrorCode::InvalidParameter, Some(parameter.to_vec())))
+        })
+        .collect()
+}
+
+pub(crate) fn identity_matrix() -> [f32; 16] {
+    [
+        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ]
+}
+
+fn translation_matrix(x: f32, y: f32) -> [f32; 16] {
+    [
+        1.0, 0.0, 0.0, x, 0.0, 1.0, 0.0, y, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ]
+}
+
+fn scale_matrix(x: f32, y: f32) -> [f32; 16] {
+    [
+        x, 0.0, 0.0, 0.0, 0.0, y, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ]
+}
+
+fn rotation_matrix(angle: f32) -> [f32; 16] {
+    let (sine, cosine) = angle.sin_cos();
+    [
+        cosine, -sine, 0.0, 0.0, sine, cosine, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ]
+}
+
+fn matrix_multiply(left: [f32; 16], right: [f32; 16]) -> [f32; 16] {
+    std::array::from_fn(|index| {
+        let row = index / 4;
+        let column = index % 4;
+        (0..4)
+            .map(|inner| left[row * 4 + inner] * right[inner * 4 + column])
+            .sum()
+    })
+}
+
 fn texture_color_read(
     shader: Shader,
     role: TextureRole,
     environment: SelectionEnvironment,
     detail_blend_mode: i32,
+    sprite_extract_green_alpha: bool,
+    gamma_color_read: bool,
+    sprite_card: bool,
 ) -> TextureColorRead {
     match role {
         TextureRole::Bump
@@ -948,6 +1276,8 @@ fn texture_color_read(
         TextureRole::Base | TextureRole::Base2 => {
             if matches!(shader, Shader::SkyLdr | Shader::SkyHdr) {
                 TextureColorRead::FormatDependent
+            } else if (sprite_card && sprite_extract_green_alpha) || gamma_color_read {
+                TextureColorRead::Linear
             } else {
                 TextureColorRead::Srgb
             }
@@ -994,7 +1324,7 @@ pub(crate) fn integer_or(
         .map(source_integer_text)
         .map_err(|_| error(ErrorCode::InvalidParameter, Some(parameter.to_vec())))
 }
-fn source_integer(value: &[u8]) -> i32 {
+pub(crate) fn source_integer(value: &[u8]) -> i32 {
     std::str::from_utf8(value).map_or(0, source_integer_text)
 }
 fn source_integer_text(value: &str) -> i32 {
@@ -1082,7 +1412,7 @@ fn shader(v: &[u8]) -> Shader {
         Shader::Water
     } else if v.eq_ignore_ascii_case(b"Refract") {
         Shader::Refract
-    } else if v.eq_ignore_ascii_case(b"Sprite") {
+    } else if v.eq_ignore_ascii_case(b"Sprite") || v.eq_ignore_ascii_case(b"SpriteCard") {
         Shader::Sprite
     } else if v.eq_ignore_ascii_case(b"Sky") {
         Shader::SkyLdr
@@ -1162,7 +1492,7 @@ pub(crate) fn logical_path(
     }
     Ok(path)
 }
-fn error(code: ErrorCode, parameter: Option<Vec<u8>>) -> Error {
+pub(crate) fn error(code: ErrorCode, parameter: Option<Vec<u8>>) -> Error {
     Error { code, parameter }
 }
 
@@ -1475,6 +1805,7 @@ mod tests {
             state.blend,
             BlendState {
                 enabled: true,
+                equation: BlendEquation::Add,
                 source: BlendFactor::SourceAlpha,
                 destination: BlendFactor::OneMinusSourceAlpha
             }
