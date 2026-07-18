@@ -38,6 +38,7 @@ Parse the Source 1 StudioModel file family into one runtime-neutral model repres
 - Retain complete Studio eyeball records and secondary-header illumination/eye fields; derive per-eye origin and iris/glint projection rows only from supplied bone-to-world matrices, world eye target, view basis, and explicit eye configuration.
 - Validate renderer-neutral model lighting as one lighting origin, six `+X,-X,+Y,-Y,+Z,-Z` ambient colors, at most four point/directional/spot lights, camera position, optional local environment identity, and static-light facts.
 - Compose an explicitly selected hand-viewmodel activity with a parented item model by copying every ASCII-insensitive matching hand-bone matrix, reconstructing unmatched item bones under their authored hierarchy, and selecting one shared numeric skin plus explicit bodygroups/LOD for both draw parts.
+- Produce current Source viewmodel pass state from explicit FOV/aspect/far-plane inputs; TF minimized/inspect offsets and bob state; ordered draw-eligibility reasons; FOV-corrected attachments; C-model bodygroup-event mutations; material-partitioned opaque/translucent primitives; and opaque-item-before-hand or translucent-item-after-hand overlap order. Every operation remains renderer-neutral and restores the declared depth/projection/view/cull state.
 
 ## Non-Responsibilities
 
@@ -54,3 +55,7 @@ Uses `content` to resolve related files and supplies model data to map, game, co
 ## Completion
 
 Complete when the declared StudioModel format and semantic inventory is represented and verified across supported content.
+
+## Licensing
+
+`rust/src/viewmodel.rs` includes behavior adapted from Valve's Source SDK 2013 and is governed by the Source 1 SDK License retained in this repository. All other original package material remains under the repository MIT license unless identified otherwise.

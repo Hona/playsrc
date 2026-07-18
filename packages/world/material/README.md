@@ -28,6 +28,7 @@ Resolve Source material documents and textures into runtime-neutral material beh
 - Emit complete target `EyeRefract` texture, scalar/vector, Studio eye-parameter, ambient/local-light, and camera requirements while retaining effective shader defaults.
 - Evaluate all 17 configured model proxy identities in VMT order. Generic texture/time/copy/multiply/compare/select operations use material variables; TF2 burn, invulnerability, tint, glow, yellow-level, invisibility, sheen, and weapon-skin operations consume only typed game-owned inputs.
 - Bind each model texture role to caller-supplied VTF metadata, Source wrap/min/mag/mip filtering plus selected anisotropy level, and the complete authored `(mip, frame, face, slice)` plane sequence. Missing authored planes fail; generated mips are not an output.
+- Resolve current model opacity, effective self-illumination/base-alpha ownership, alpha-test/blend/depth state, and potential/current framebuffer use from exact VTF alpha facts plus explicit current material alpha and cloak values; enumerate ambient cube, local lights, camera, Studio eye, environment, framebuffer, authored-plane, and game-proxy requirements without supplying fallback inputs.
 
 ## Non-Responsibilities
 
@@ -42,3 +43,7 @@ Consumes `vmt`, `vtf`, and `content`; supplies material descriptions to map and 
 ## Completion
 
 Complete when the declared shader, parameter, proxy, and material-state inventories are classified and verified.
+
+## Licensing
+
+The Source material-state behavior in `rust/src/lib.rs` and `rust/src/model.rs` is adapted from Valve's Source SDK 2013 and is governed by the Source 1 SDK License retained in this repository. All other original package material remains under the repository MIT license unless identified otherwise.

@@ -71,9 +71,8 @@ pub fn eye_draw_states(
             .get(eye.bone as usize)
             .ok_or_else(|| invalid_eye(&document.identity))?;
         let mut local_origin = values3(eye.origin);
-        for axis in 0..3 {
-            local_origin[axis] +=
-                f32::from_bits(request.configuration.shift.0[axis].0) * sign(local_origin[axis]);
+        for (axis, value) in local_origin.iter_mut().enumerate() {
+            *value += f32::from_bits(request.configuration.shift.0[axis].0) * sign(*value);
         }
         let origin = transform_point(bone, local_origin);
         let mut up = rotate_vector(bone, values3(eye.up));

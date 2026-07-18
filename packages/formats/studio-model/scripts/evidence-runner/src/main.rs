@@ -8,13 +8,14 @@ use std::{
 };
 
 const BUILD: &str = "24207079";
-const BUNDLE_SHA256: &str = "494c282a45b2c1ae1882e66aabe234cda3f92d950e1d2a37c2616db845164884";
+const BUNDLE_SHA256: &str = "896132d9b618d0ae521092c1e33d91d3cc05f1692ac434603a31994b8dd51741";
 const BSP_SHA256: &str = "b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959";
 const OCCURRENCE_TRANSFORM_SHA256: &str =
     "7a4eff4a2d9ca0892b6f576d21df4d44d03e03f957499c20245740b21b4edee6";
 const MODEL_MATERIAL_COUNT: usize = 55;
 const MODEL_TEXTURE_COUNT: usize = 71;
 const MODEL_MIP_SHA256: &str = "05c7869e3f78b03b2c9f05ebdb9a8ec8f9895a8a8d3ff37530f3e0d26f617033";
+const MODEL_DRAW_SHA256: &str = "12770b45364a035c81a0fd96fdd84dd762d97540a640bbfbb44db290d7b2014d";
 const EYE_STATE_SHA256: &str = "cd6606f8d35ed20c87ffc33b40190586be2dc94f48eafadb3b7038f99d9d103a";
 
 #[derive(Deserialize)]
@@ -170,15 +171,6 @@ const WORLD_ACTIVITIES: &[&str] = &[
     "ACT_MP_JUMP_LAND_PRIMARY",
     "ACT_MP_ATTACK_STAND_PRIMARY",
 ];
-const VIEWMODEL_ACTIVITIES: &[&str] = &[
-    "ACT_VM_DRAW",
-    "ACT_VM_IDLE",
-    "ACT_VM_PRIMARYATTACK",
-    "ACT_RELOAD_START",
-    "ACT_VM_RELOAD",
-    "ACT_RELOAD_FINISH",
-];
-
 struct StockViewModelTarget {
     hand: &'static str,
     hand_sha256: &'static str,
@@ -187,6 +179,7 @@ struct StockViewModelTarget {
     activities: &'static [&'static str],
     merged_bones: usize,
     composition_sha256: &'static str,
+    producer_sha256: &'static str,
 }
 
 const SOLDIER_STOCK_ACTIVITIES: &[&str] = &[
@@ -216,6 +209,7 @@ const STOCK_VIEWMODELS: &[StockViewModelTarget] = &[
         activities: SOLDIER_STOCK_ACTIVITIES,
         merged_bones: 3,
         composition_sha256: "160db54bf1706daed8d788ad692ef649ecfe49853cf44c3551332c497dbfcea2",
+        producer_sha256: "154c33219634e3f5a8289953fea5ff9224a4913022c1b3ec5b843b4b380ddd4a",
     },
     StockViewModelTarget {
         hand: "models/weapons/c_models/c_demo_arms.mdl",
@@ -225,6 +219,7 @@ const STOCK_VIEWMODELS: &[StockViewModelTarget] = &[
         activities: DEMOMAN_STOCK_ACTIVITIES,
         merged_bones: 4,
         composition_sha256: "8faeff88db0154818b5d0882a7c0fc07b37d2ed6381b37e3c7fd518928e980ef",
+        producer_sha256: "a61764813635c46a18ccb1326b89974f37128f91a7cce870ee0cb4823099976c",
     },
 ];
 
@@ -381,44 +376,6 @@ const TARGETS: &[Target] = &[
         timeline_sha256: "a4fc0efa81ceb888399cdf12b1c07caed644616c180a0f2b6fe053f81766f3d6",
         activities: &[],
     },
-    Target {
-        path: "models/weapons/v_models/v_rocketlauncher_soldier.mdl",
-        mdl_sha256: "0eca831c2733188494763419c0e3ca6971fdc2715519f1a1e248d832e1509738",
-        bones: 29,
-        animations: 7,
-        sequences: 7,
-        materials: 6,
-        skins: 10,
-        body_parts: 1,
-        attachments: 0,
-        primitives: 4,
-        lods: &[0],
-        physics: studio::PhysicsStatus::Missing,
-        first_material: "materials/models/player/soldier/soldier_sleeves_red.vmt",
-        artifact_bytes: 547_213,
-        artifact_sha256: "a29079d338c25eea18a2e947d1c58dc4b193938ccf07e672a5961590a48be6eb",
-        timeline_sha256: "d86487b69a77adbe0d454192b092fb8ea6c36ae2eb4475ba01e4f28ea2e34882",
-        activities: VIEWMODEL_ACTIVITIES,
-    },
-    Target {
-        path: "models/weapons/v_models/v_stickybomb_launcher_demo.mdl",
-        mdl_sha256: "1cbb38e6908762b0255437604ca4f7266ac9958b4a334456b665a6d9a9f15a84",
-        bones: 51,
-        animations: 8,
-        sequences: 8,
-        materials: 5,
-        skins: 10,
-        body_parts: 1,
-        attachments: 2,
-        primitives: 3,
-        lods: &[0],
-        physics: studio::PhysicsStatus::Missing,
-        first_material: "materials/models/player/demo/demoman_hands.vmt",
-        artifact_bytes: 929_616,
-        artifact_sha256: "1d13b532c529270a2b0eabf0b87b284b49d4fc6dcc45dd18b5d061bd9c47f2d0",
-        timeline_sha256: "e09068d6d4657ee260ab1eb5c8fbf735ac6527421ba11216cda592146726cb14",
-        activities: VIEWMODEL_ACTIVITIES,
-    },
 ];
 
 fn main() -> Result<(), String> {
@@ -482,11 +439,22 @@ fn verify_stock_viewmodels(files: &VpkFiles) -> Result<(), String> {
             files,
             studio::PresentationProfile::ViewModel,
         )?;
+        let (hand_opacity, hand_material_states) = model_material_states(&hand.model, files)?;
+        let (item_opacity, item_material_states) = model_material_states(&item.model, files)?;
         let mut digest = Vec::new();
+        let mut producer_digest = Vec::new();
+        let mut shapes = BTreeSet::new();
+        let mut bodygroup_event_names = BTreeSet::new();
         digest.extend_from_slice(target.hand.as_bytes());
         digest.extend_from_slice(target.item.as_bytes());
         digest.extend_from_slice(&hand.sha256);
         digest.extend_from_slice(&item.sha256);
+        producer_digest.extend_from_slice(target.hand.as_bytes());
+        producer_digest.extend_from_slice(target.item.as_bytes());
+        producer_digest.extend_from_slice(&hand.sha256);
+        producer_digest.extend_from_slice(&item.sha256);
+        append_material_states(&mut producer_digest, &hand.model, &hand_material_states);
+        append_material_states(&mut producer_digest, &item.model, &item_material_states);
         for activity in target.activities {
             let sequences = studio::sequences_for_activity_name(&hand.model, activity.as_bytes());
             if sequences.len() != 1 {
@@ -497,6 +465,28 @@ fn verify_stock_viewmodels(files: &VpkFiles) -> Result<(), String> {
             }
             for skin in [0_usize, 1] {
                 for cycle in [0.0_f32, 0.5, 1.0] {
+                    let hand_bodygroups =
+                        hand.model.body_parts.iter().map(|_| 0).collect::<Vec<_>>();
+                    let mut item_bodygroups =
+                        item.model.body_parts.iter().map(|_| 0).collect::<Vec<_>>();
+                    let bodygroup_events = studio::viewmodel_item_bodygroup_events(
+                        &hand.model,
+                        &item.model,
+                        sequences[0],
+                        studio::Float32((-0.01_f32).to_bits()),
+                        studio::Float32(cycle.to_bits()),
+                    )
+                    .map_err(|error| error.to_string())?;
+                    studio::apply_viewmodel_bodygroup_events(
+                        &item.model,
+                        &mut item_bodygroups,
+                        &bodygroup_events,
+                    )
+                    .map_err(|error| error.to_string())?;
+                    for mutation in &bodygroup_events {
+                        bodygroup_event_names
+                            .insert(String::from_utf8_lossy(&mutation.name).into_owned());
+                    }
                     let composition = studio::compose_viewmodel(
                         &hand.model,
                         &item.model,
@@ -513,8 +503,8 @@ fn verify_stock_viewmodels(files: &VpkFiles) -> Result<(), String> {
                                 .collect(),
                             hand_layers: Vec::new(),
                             skin,
-                            hand_bodygroups: hand.model.body_parts.iter().map(|_| 0).collect(),
-                            item_bodygroups: item.model.body_parts.iter().map(|_| 0).collect(),
+                            hand_bodygroups: hand_bodygroups.clone(),
+                            item_bodygroups: item_bodygroups.clone(),
                             lod: 0,
                         },
                     )
@@ -530,6 +520,47 @@ fn verify_stock_viewmodels(files: &VpkFiles) -> Result<(), String> {
                     {
                         return Err(format!("{} stock composition changed", target.item));
                     }
+                    for part in [&composition.hand, &composition.item] {
+                        let model = if part.identity == hand.model.identity {
+                            &hand.model
+                        } else {
+                            &item.model
+                        };
+                        for selected in &part.primitives {
+                            let geometry =
+                                model.geometry.get(selected.primitive).ok_or_else(|| {
+                                    format!("{} selected missing geometry", part.identity)
+                                })?;
+                            if geometry.vertices.is_empty() || geometry.triangles.is_empty() {
+                                return Err(format!("{} selected empty geometry", part.identity));
+                            }
+                        }
+                    }
+                    let plan = studio::viewmodel_draw_plan(
+                        &hand.model,
+                        &item.model,
+                        &composition,
+                        &hand_opacity,
+                        &item_opacity,
+                    )
+                    .map_err(|error| error.to_string())?;
+                    if plan.item_entity_translucent
+                        || plan.parts.len() != 2
+                        || plan.parts[0].part != studio::ViewModelPart::Item
+                        || plan.parts[1].part != studio::ViewModelPart::Hand
+                        || plan.parts.iter().any(|part| {
+                            part.opaque_primitives.is_empty()
+                                || !part.translucent_primitives.is_empty()
+                        })
+                    {
+                        return Err(format!("{} stock draw partition changed", target.item));
+                    }
+                    shapes.insert((
+                        composition.hand.primitives.len(),
+                        composition.item.primitives.len(),
+                        composition.hand.pose.attachments.len(),
+                        composition.item.pose.attachments.len(),
+                    ));
                     digest.extend_from_slice(activity.as_bytes());
                     digest.extend_from_slice(&(skin as u32).to_le_bytes());
                     digest.extend_from_slice(&cycle.to_bits().to_le_bytes());
@@ -540,6 +571,21 @@ fn verify_stock_viewmodels(files: &VpkFiles) -> Result<(), String> {
                     }
                     append_composed_part(&mut digest, &composition.hand);
                     append_composed_part(&mut digest, &composition.item);
+                    producer_digest.extend_from_slice(activity.as_bytes());
+                    producer_digest.extend_from_slice(&(skin as u32).to_le_bytes());
+                    producer_digest.extend_from_slice(&cycle.to_bits().to_le_bytes());
+                    append_bodygroups(&mut producer_digest, &hand.model, &hand_bodygroups);
+                    append_bodygroups(&mut producer_digest, &item.model, &item_bodygroups);
+                    for mutation in bodygroup_events {
+                        producer_digest.extend_from_slice(&(mutation.event as u32).to_le_bytes());
+                        producer_digest
+                            .extend_from_slice(&(mutation.bodygroup as u32).to_le_bytes());
+                        producer_digest.extend_from_slice(&mutation.value.to_le_bytes());
+                        producer_digest.extend_from_slice(&mutation.name);
+                    }
+                    append_producer_part(&mut producer_digest, &hand.model, &composition.hand);
+                    append_producer_part(&mut producer_digest, &item.model, &composition.item);
+                    append_draw_plan(&mut producer_digest, &plan);
                 }
             }
         }
@@ -550,6 +596,30 @@ fn verify_stock_viewmodels(files: &VpkFiles) -> Result<(), String> {
         );
         if composition_sha256 != target.composition_sha256 {
             return Err(format!("{} composition hash changed", target.item));
+        }
+        let producer_sha256 = hex(&studio::content_sha256(&producer_digest));
+        println!(
+            "stock hand={} item={} producer={producer_sha256}",
+            target.hand, target.item
+        );
+        println!(
+            "stock shapes={shapes:?} bodygroupEvents={bodygroup_event_names:?} handBodyparts={:?} itemBodyparts={:?}",
+            hand.model
+                .body_parts
+                .iter()
+                .map(|part| String::from_utf8_lossy(&part.name).into_owned())
+                .collect::<Vec<_>>(),
+            item.model
+                .body_parts
+                .iter()
+                .map(|part| String::from_utf8_lossy(&part.name).into_owned())
+                .collect::<Vec<_>>(),
+        );
+        if producer_sha256 != target.producer_sha256 {
+            return Err(format!(
+                "{} producer hash changed: {producer_sha256}",
+                target.item
+            ));
         }
     }
     Ok(())
@@ -565,6 +635,153 @@ fn append_composed_part(output: &mut Vec<u8>, part: &studio::ComposedViewModelPa
     for primitive in &part.primitives {
         output.extend_from_slice(&(primitive.primitive as u32).to_le_bytes());
         output.extend_from_slice(&(primitive.material as u32).to_le_bytes());
+    }
+}
+
+fn model_material_states(
+    model: &studio::PresentationModel,
+    files: &VpkFiles,
+) -> Result<
+    (
+        Vec<studio::ViewModelMaterialOpacity>,
+        Vec<playsrc_material::ModelDrawState>,
+    ),
+    String,
+> {
+    let mut opacity = Vec::with_capacity(model.materials.len());
+    let mut states = Vec::with_capacity(model.materials.len());
+    for presentation in &model.materials {
+        let identity = &model
+            .dependencies
+            .get(presentation.material_dependency)
+            .ok_or_else(|| format!("{} material dependency missing", model.identity))?
+            .logical_path;
+        let (material, _) = resolved_material(identity, files)?;
+        let base_alpha = if let Some(base) = material
+            .textures
+            .iter()
+            .find(|texture| texture.role == playsrc_material::TextureRole::Base)
+            .and_then(|texture| texture.logical_path.as_ref())
+        {
+            let bytes = files
+                .exact(base)?
+                .ok_or_else(|| format!("missing model base texture {base}"))?;
+            let metadata = playsrc_vtf::inspect(
+                &bytes,
+                playsrc_vtf::Dialect::Source2013Pc,
+                playsrc_vtf::Limits::default(),
+            )
+            .map_err(|error| error.to_string())?;
+            metadata.alpha_flags.one_bit || metadata.alpha_flags.eight_bit
+        } else {
+            false
+        };
+        let state = playsrc_material::model_draw_state(
+            &material,
+            playsrc_material::TextureAlphaFacts { base: base_alpha },
+            playsrc_material::ModelRuntimeInputs {
+                alpha_modulation: 1.0,
+                cloak_factor: Some(0.0),
+            },
+        )
+        .map_err(|error| format!("{identity}: {error}"))?;
+        opacity.push(match state.opacity {
+            playsrc_material::ModelOpacity::Opaque => studio::ViewModelMaterialOpacity::Opaque,
+            playsrc_material::ModelOpacity::Translucent => {
+                studio::ViewModelMaterialOpacity::Translucent
+            }
+        });
+        states.push(state);
+    }
+    Ok((opacity, states))
+}
+
+fn append_material_states(
+    output: &mut Vec<u8>,
+    model: &studio::PresentationModel,
+    states: &[playsrc_material::ModelDrawState],
+) {
+    for (material, state) in model.materials.iter().zip(states) {
+        let dependency = &model.dependencies[material.material_dependency];
+        output.extend_from_slice(dependency.logical_path.as_bytes());
+        output.push(match state.opacity {
+            playsrc_material::ModelOpacity::Opaque => 0,
+            playsrc_material::ModelOpacity::Translucent => 1,
+        });
+        output.push(match state.framebuffer {
+            playsrc_material::ModelFramebufferRequirement::None => 0,
+            playsrc_material::ModelFramebufferRequirement::Potential => 1,
+            playsrc_material::ModelFramebufferRequirement::Current => 2,
+        });
+        output.push(u8::from(state.static_state.blend.enabled));
+        output.push(u8::from(state.static_state.alpha_test));
+        output.push(u8::from(state.static_state.depth_test));
+        output.push(u8::from(state.static_state.depth_write));
+        output.push(u8::from(state.effective_self_illumination));
+        output.push(u8::from(state.effective_base_alpha_environment_mask));
+        for required in &state.required_inputs {
+            output.push(*required as u8);
+        }
+        output.push(0xff);
+    }
+}
+
+fn append_bodygroups(
+    output: &mut Vec<u8>,
+    model: &studio::PresentationModel,
+    bodygroups: &[usize],
+) {
+    for (part, selected) in model.body_parts.iter().zip(bodygroups) {
+        output.extend_from_slice(&part.name);
+        output.extend_from_slice(&(*selected as u32).to_le_bytes());
+        output.extend_from_slice(&part.model_names[*selected]);
+    }
+}
+
+fn append_producer_part(
+    output: &mut Vec<u8>,
+    model: &studio::PresentationModel,
+    part: &studio::ComposedViewModelPart,
+) {
+    append_composed_part(output, part);
+    for attachment in &part.pose.attachments {
+        output.extend_from_slice(&(attachment.index as u32).to_le_bytes());
+        output.extend_from_slice(&attachment.name);
+        for value in attachment.model_transform.0 {
+            output.extend_from_slice(&value.0.to_le_bytes());
+        }
+    }
+    for selected in &part.primitives {
+        let geometry = &model.geometry[selected.primitive];
+        let material = &model.materials[selected.material];
+        output.extend_from_slice(&(geometry.vertices.len() as u32).to_le_bytes());
+        output.extend_from_slice(&(geometry.triangles.len() as u32).to_le_bytes());
+        output.extend_from_slice(
+            model.dependencies[material.material_dependency]
+                .logical_path
+                .as_bytes(),
+        );
+    }
+}
+
+fn append_draw_plan(output: &mut Vec<u8>, plan: &studio::ViewModelDrawPlan) {
+    output.push(u8::from(plan.item_entity_translucent));
+    for part in &plan.parts {
+        output.push(match part.part {
+            studio::ViewModelPart::Hand => 0,
+            studio::ViewModelPart::Item => 1,
+        });
+        output.extend_from_slice(part.identity.as_bytes());
+        for selected in &part.opaque_primitives {
+            output.extend_from_slice(&(selected.primitive as u32).to_le_bytes());
+            output.extend_from_slice(&(selected.material as u32).to_le_bytes());
+        }
+        output.extend_from_slice(&u32::MAX.to_le_bytes());
+        for selected in &part.translucent_primitives {
+            output.extend_from_slice(&(selected.primitive as u32).to_le_bytes());
+            output.extend_from_slice(&(selected.material as u32).to_le_bytes());
+        }
+        output.extend_from_slice(&u32::MAX.to_le_bytes());
     }
 }
 
@@ -606,6 +823,11 @@ fn verify_model_materials(files: &VpkFiles) -> Result<(), String> {
     let mut mip_digest = Vec::new();
     let mut handled_proxies = BTreeSet::new();
     let mut unsupported_proxies = BTreeSet::new();
+    let mut draw_digest = Vec::new();
+    let mut opaque_materials = 0_usize;
+    let mut translucent_materials = 0_usize;
+    let mut alpha_tested_materials = 0_usize;
+    let mut current_framebuffer_materials = 0_usize;
     for identity in &material_paths {
         let material_bytes = files
             .exact(identity)?
@@ -619,6 +841,44 @@ fn verify_model_materials(files: &VpkFiles) -> Result<(), String> {
         if model.shader == playsrc_material::ModelShader::EyeRefract {
             eye_count += 1;
         }
+        let draw_state = playsrc_material::model_draw_state(
+            &material,
+            playsrc_material::TextureAlphaFacts {
+                base: base_texture_alpha(&material, files)?,
+            },
+            playsrc_material::ModelRuntimeInputs {
+                alpha_modulation: 1.0,
+                cloak_factor: Some(0.0),
+            },
+        )
+        .map_err(|error| format!("{identity}: {error}"))?;
+        if playsrc_material::missing_model_draw_inputs(&draw_state, &[])
+            != draw_state.required_inputs
+        {
+            return Err(format!("{identity} model input requirements changed"));
+        }
+        match draw_state.opacity {
+            playsrc_material::ModelOpacity::Opaque => opaque_materials += 1,
+            playsrc_material::ModelOpacity::Translucent => translucent_materials += 1,
+        }
+        alpha_tested_materials += usize::from(draw_state.static_state.alpha_test);
+        current_framebuffer_materials += usize::from(
+            draw_state.framebuffer == playsrc_material::ModelFramebufferRequirement::Current,
+        );
+        draw_digest.extend_from_slice(identity.as_bytes());
+        draw_digest.push(model.shader as u8);
+        draw_digest.push(draw_state.opacity as u8);
+        draw_digest.push(draw_state.framebuffer as u8);
+        draw_digest.push(u8::from(draw_state.static_state.blend.enabled));
+        draw_digest.push(u8::from(draw_state.static_state.alpha_test));
+        draw_digest.push(u8::from(draw_state.static_state.depth_test));
+        draw_digest.push(u8::from(draw_state.static_state.depth_write));
+        draw_digest.push(u8::from(draw_state.effective_self_illumination));
+        draw_digest.push(u8::from(draw_state.effective_base_alpha_environment_mask));
+        for input in &draw_state.required_inputs {
+            draw_digest.push(*input as u8);
+        }
+        draw_digest.push(0xff);
         mip_digest.extend_from_slice(identity.as_bytes());
         mip_digest.extend_from_slice(&studio::content_sha256(&material_bytes));
         mip_digest.push(match model.shader {
@@ -770,6 +1030,7 @@ fn verify_model_materials(files: &VpkFiles) -> Result<(), String> {
     }
     let texture_count = texture_evidence.len();
     let mip_sha256 = hex(&studio::content_sha256(&mip_digest));
+    let draw_sha256 = hex(&studio::content_sha256(&draw_digest));
     let eye_sha256 = verify_eye_states(files)?;
     let expected_proxies = [
         "AnimatedTexture",
@@ -801,15 +1062,43 @@ fn verify_model_materials(files: &VpkFiles) -> Result<(), String> {
     println!(
         "modelMaterials={material_count} modelTextures={texture_count} mipSha256={mip_sha256} eyeSha256={eye_sha256}"
     );
+    println!(
+        "modelDrawSha256={draw_sha256} opaque={opaque_materials} translucent={translucent_materials} alphaTested={alpha_tested_materials} currentFramebuffer={current_framebuffer_materials}"
+    );
     println!("handledModelProxies={handled_proxies:?}");
     if material_count != MODEL_MATERIAL_COUNT
         || texture_count != MODEL_TEXTURE_COUNT
         || mip_sha256 != MODEL_MIP_SHA256
+        || draw_sha256 != MODEL_DRAW_SHA256
         || eye_sha256 != EYE_STATE_SHA256
     {
         return Err("model material, mip, or eye evidence changed".to_owned());
     }
     Ok(())
+}
+
+fn base_texture_alpha(
+    material: &playsrc_material::Material,
+    files: &VpkFiles,
+) -> Result<bool, String> {
+    let Some(path) = material
+        .textures
+        .iter()
+        .find(|texture| texture.role == playsrc_material::TextureRole::Base)
+        .and_then(|texture| texture.logical_path.as_ref())
+    else {
+        return Ok(false);
+    };
+    let bytes = files
+        .exact(path)?
+        .ok_or_else(|| format!("missing model base texture {path}"))?;
+    let metadata = playsrc_vtf::inspect(
+        &bytes,
+        playsrc_vtf::Dialect::Source2013Pc,
+        playsrc_vtf::Limits::default(),
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(metadata.alpha_flags.one_bit || metadata.alpha_flags.eight_bit)
 }
 
 struct TextureEvidence {

@@ -302,6 +302,7 @@ pub enum ErrorCode {
     MissingProfileTexture,
     InvalidParameter,
     InvalidTextureMetadata,
+    MissingModelInput,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Error {
@@ -512,18 +513,31 @@ pub fn static_state(
     material: &Material,
     texture_alpha: TextureAlphaFacts,
 ) -> Result<StaticState, Error> {
+    let alpha = float_or(&material.first_parameters, b"$alpha", 1.0)?;
+    static_state_with_alpha(material, texture_alpha, alpha)
+}
+
+fn static_state_with_alpha(
+    material: &Material,
+    texture_alpha: TextureAlphaFacts,
+    current_alpha: f32,
+) -> Result<StaticState, Error> {
+    if !current_alpha.is_finite() {
+        return Err(error(ErrorCode::InvalidParameter, Some(b"$alpha".to_vec())));
+    }
     let features = &material.features;
-    let alpha_test =
-        features.alpha_test && !features.self_illum && !features.base_alpha_environment_mask;
+    let self_illum = effective_self_illumination(material, texture_alpha);
+    let base_alpha_environment_mask = features.base_alpha_environment_mask && texture_alpha.base;
+    let alpha_test = features.alpha_test && !self_illum && !base_alpha_environment_mask;
     let alpha = if features.no_alpha_modulation {
         1.0
     } else {
-        float_or(&material.first_parameters, b"$alpha", 1.0)?
+        current_alpha
     };
     let base_texture_alpha = texture_alpha.base
         && !features.opaque_texture
-        && !features.self_illum
-        && !features.base_alpha_environment_mask
+        && !self_illum
+        && !base_alpha_environment_mask
         && (features.translucent || features.alpha_test);
     let alpha_blend = alpha < 1.0 || features.vertex_alpha || (base_texture_alpha && !alpha_test);
     let blend = if features.additive {
@@ -606,6 +620,29 @@ pub fn static_state(
         vertex_color: features.vertex_color,
         vertex_alpha: features.vertex_alpha,
         translucent_queue: features.translucent || blend.enabled,
+    })
+}
+
+fn effective_self_illumination(material: &Material, texture_alpha: TextureAlphaFacts) -> bool {
+    if !material.features.self_illum {
+        return false;
+    }
+    if texture_alpha.base
+        || material
+            .textures
+            .iter()
+            .any(|texture| texture.role == TextureRole::SelfIllumMask)
+    {
+        return true;
+    }
+    material.model.as_ref().is_some_and(|model| {
+        let ModelShaderState::VertexLitGeneric(state) = &model.state else {
+            return false;
+        };
+        state
+            .self_illumination
+            .as_ref()
+            .is_some_and(|state| state.source == SelfIllumMaskSource::Fresnel)
     })
 }
 
@@ -1591,6 +1628,219 @@ mod tests {
                 .unwrap()
                 .lighting,
             LightingModel::VertexLit
+        );
+    }
+
+    #[test]
+    fn model_draw_state_keeps_runtime_opacity_framebuffer_and_missing_inputs_explicit() {
+        let cloak = material(
+            br#"VertexLitGeneric {
+                "$basetexture" "models/test/base"
+                "$envmap" "env_cubemap"
+                "$cloakPassEnabled" "1"
+                Proxies { invis {} }
+            }"#,
+            SelectionEnvironment {
+                model: true,
+                ..SelectionEnvironment::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            model_draw_state(
+                &cloak,
+                TextureAlphaFacts { base: false },
+                ModelRuntimeInputs {
+                    alpha_modulation: 1.0,
+                    cloak_factor: None,
+                },
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::MissingModelInput
+        );
+        assert_eq!(
+            model_draw_state(
+                &cloak,
+                TextureAlphaFacts { base: false },
+                ModelRuntimeInputs {
+                    alpha_modulation: 1.0,
+                    cloak_factor: Some(f32::NAN),
+                },
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::InvalidParameter
+        );
+        let endpoint = model_draw_state(
+            &cloak,
+            TextureAlphaFacts { base: false },
+            ModelRuntimeInputs {
+                alpha_modulation: 1.0,
+                cloak_factor: Some(0.0),
+            },
+        )
+        .unwrap();
+        assert_eq!(endpoint.opacity, ModelOpacity::Opaque);
+        assert_eq!(endpoint.framebuffer, ModelFramebufferRequirement::Potential);
+        assert_eq!(
+            endpoint.required_inputs,
+            [
+                ModelDrawInput::AmbientCube,
+                ModelDrawInput::LocalLights,
+                ModelDrawInput::CameraPosition,
+                ModelDrawInput::LocalEnvironment,
+                ModelDrawInput::AuthoredTexturePlanes,
+                ModelDrawInput::GameProxyValues,
+            ]
+        );
+        let interior = model_draw_state(
+            &cloak,
+            TextureAlphaFacts { base: false },
+            ModelRuntimeInputs {
+                alpha_modulation: 1.0,
+                cloak_factor: Some(0.5),
+            },
+        )
+        .unwrap();
+        assert_eq!(interior.opacity, ModelOpacity::Translucent);
+        assert_eq!(interior.framebuffer, ModelFramebufferRequirement::Current);
+        assert!(
+            interior
+                .required_inputs
+                .contains(&ModelDrawInput::CurrentFramebuffer)
+        );
+        assert_eq!(
+            missing_model_draw_inputs(
+                &interior,
+                &[
+                    ModelDrawInput::AmbientCube,
+                    ModelDrawInput::LocalLights,
+                    ModelDrawInput::CameraPosition,
+                ],
+            ),
+            [
+                ModelDrawInput::LocalEnvironment,
+                ModelDrawInput::CurrentFramebuffer,
+                ModelDrawInput::AuthoredTexturePlanes,
+                ModelDrawInput::GameProxyValues,
+            ]
+        );
+
+        let alpha_modulated = model_draw_state(
+            &cloak,
+            TextureAlphaFacts { base: false },
+            ModelRuntimeInputs {
+                alpha_modulation: 0.5,
+                cloak_factor: Some(0.0),
+            },
+        )
+        .unwrap();
+        assert_eq!(alpha_modulated.opacity, ModelOpacity::Translucent);
+
+        let flagged = material(
+            br#"VertexLitGeneric {
+                "$basetexture" "models/test/opaque"
+                "$translucent" "1"
+            }"#,
+            SelectionEnvironment {
+                model: true,
+                ..SelectionEnvironment::default()
+            },
+        )
+        .unwrap();
+        let flagged = model_draw_state(
+            &flagged,
+            TextureAlphaFacts { base: false },
+            ModelRuntimeInputs {
+                alpha_modulation: 1.0,
+                cloak_factor: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(flagged.opacity, ModelOpacity::Translucent);
+        assert!(!flagged.static_state.blend.enabled);
+
+        let animated_alpha = material(
+            br#"VertexLitGeneric {
+                "$basetexture" "models/test/opaque"
+                "$alpha" "0.25"
+            }"#,
+            SelectionEnvironment {
+                model: true,
+                ..SelectionEnvironment::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            static_state(&animated_alpha, TextureAlphaFacts { base: false })
+                .unwrap()
+                .blend
+                .enabled
+        );
+        let current = model_draw_state(
+            &animated_alpha,
+            TextureAlphaFacts { base: false },
+            ModelRuntimeInputs {
+                alpha_modulation: 1.0,
+                cloak_factor: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(current.opacity, ModelOpacity::Opaque);
+        assert!(!current.static_state.blend.enabled);
+    }
+
+    #[test]
+    fn model_alpha_ownership_controls_self_illumination_and_alpha_test() {
+        let selected = material(
+            br#"VertexLitGeneric {
+                "$basetexture" "models/test/base"
+                "$selfillum" "1"
+                "$alphatest" "1"
+            }"#,
+            SelectionEnvironment {
+                model: true,
+                ..SelectionEnvironment::default()
+            },
+        )
+        .unwrap();
+        let opaque_base = static_state(&selected, TextureAlphaFacts { base: false }).unwrap();
+        assert!(opaque_base.alpha_test);
+        let alpha_base = static_state(&selected, TextureAlphaFacts { base: true }).unwrap();
+        assert!(!alpha_base.alpha_test);
+        assert!(!alpha_base.blend.enabled);
+
+        let eye = material(
+            br#"Eyes {
+                "$basetexture" "models/test/eye-white"
+                "$iris" "models/test/iris"
+                "$glint" "models/test/glint"
+                "$cloakPassEnabled" "1"
+            }"#,
+            SelectionEnvironment {
+                model: true,
+                ..SelectionEnvironment::default()
+            },
+        )
+        .unwrap();
+        let draw = model_draw_state(
+            &eye,
+            TextureAlphaFacts { base: false },
+            ModelRuntimeInputs {
+                alpha_modulation: 1.0,
+                cloak_factor: Some(1.0),
+            },
+        )
+        .unwrap();
+        assert_eq!(draw.opacity, ModelOpacity::Opaque);
+        assert!(
+            draw.required_inputs
+                .contains(&ModelDrawInput::StudioEyeParameters)
+        );
+        assert!(
+            draw.required_inputs
+                .contains(&ModelDrawInput::CameraPosition)
         );
     }
 

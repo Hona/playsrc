@@ -274,9 +274,9 @@ fn compile_operation(proxy: &Proxy) -> Result<Option<ProxyOperation>, ()> {
         }))
     } else if proxy.name.eq_ignore_ascii_case(b"WaterLOD") {
         Ok(Some(ProxyOperation::WaterLod))
-    } else if proxy.name.eq_ignore_ascii_case(b"invis") {
-        Ok(Some(ProxyOperation::Invisibility { player_tint: false }))
-    } else if proxy.name.eq_ignore_ascii_case(b"weapon_invis") {
+    } else if proxy.name.eq_ignore_ascii_case(b"invis")
+        || proxy.name.eq_ignore_ascii_case(b"weapon_invis")
+    {
         Ok(Some(ProxyOperation::Invisibility { player_tint: false }))
     } else if proxy.name.eq_ignore_ascii_case(b"spy_invis") {
         Ok(Some(ProxyOperation::Invisibility { player_tint: true }))

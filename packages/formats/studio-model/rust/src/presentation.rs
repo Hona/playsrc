@@ -1768,12 +1768,12 @@ fn sequence_timing_samples(
     ])
 }
 
-pub fn presentation_events_between<'a>(
-    model: &'a PresentationModel,
+pub fn presentation_events_between(
+    model: &PresentationModel,
     sequence_index: usize,
     previous_cycle: Float32,
     current_cycle: Float32,
-) -> Result<Vec<&'a crate::SequenceEvent>, PresentationError> {
+) -> Result<Vec<&crate::SequenceEvent>, PresentationError> {
     const EVENT_CLIENT: i32 = 5_000;
     const EVENT_TYPE_CLIENT: i32 = 1 << 4;
     const EVENT_TYPE_NEW: i32 = 1 << 10;
@@ -1993,6 +1993,7 @@ pub fn sample_pose_at_time(
 
 type LocalPose = (Vec<Vector3>, Vec<[Float32; 4]>);
 
+#[allow(clippy::too_many_arguments)]
 fn accumulate_sequence(
     model: &PresentationModel,
     destination: &mut LocalPose,

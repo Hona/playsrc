@@ -1,6 +1,8 @@
 use crate::{
-    Error, ErrorCode, HdrMode, SelectionEnvironment, TextureColorRead, TextureDisposition,
-    TextureRequest, TextureRole, boolean, color_or, error, float_or, get, integer_or, logical_path,
+    Error, ErrorCode, HdrMode, Material, ProxyOperation, SelectionEnvironment, StaticState,
+    TextureAlphaFacts, TextureColorRead, TextureDisposition, TextureRequest, TextureRole, boolean,
+    color_or, effective_self_illumination, error, float_or, get, integer_or, logical_path,
+    static_state_with_alpha,
 };
 use std::collections::BTreeMap;
 
@@ -156,13 +158,14 @@ pub struct EyesState {
     pub glint: Option<ModelTextureRequest>,
     pub dilation: f32,
     pub half_lambert: bool,
+    pub cloak: CloakState,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ModelShaderState {
-    VertexLitGeneric(VertexLitGenericState),
-    EyeRefract(EyeRefractState),
-    Eyes(EyesState),
+    VertexLitGeneric(Box<VertexLitGenericState>),
+    EyeRefract(Box<EyeRefractState>),
+    Eyes(Box<EyesState>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -170,6 +173,171 @@ pub struct ModelMaterialState {
     pub shader: ModelShader,
     pub state: ModelShaderState,
     pub vertex_requirements: ModelVertexRequirements,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ModelOpacity {
+    Opaque,
+    Translucent,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ModelFramebufferRequirement {
+    None,
+    Potential,
+    Current,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum ModelDrawInput {
+    AmbientCube,
+    LocalLights,
+    CameraPosition,
+    StudioEyeParameters,
+    LocalEnvironment,
+    CurrentFramebuffer,
+    AuthoredTexturePlanes,
+    GameProxyValues,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ModelRuntimeInputs {
+    pub alpha_modulation: f32,
+    pub cloak_factor: Option<f32>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelDrawState {
+    pub static_state: StaticState,
+    pub opacity: ModelOpacity,
+    pub framebuffer: ModelFramebufferRequirement,
+    pub cloak_factor: Option<f32>,
+    pub effective_self_illumination: bool,
+    pub effective_base_alpha_environment_mask: bool,
+    pub required_inputs: Vec<ModelDrawInput>,
+}
+
+pub fn model_draw_state(
+    material: &Material,
+    texture_alpha: TextureAlphaFacts,
+    runtime: ModelRuntimeInputs,
+) -> Result<ModelDrawState, Error> {
+    if !runtime.alpha_modulation.is_finite() {
+        return Err(error(ErrorCode::InvalidParameter, None));
+    }
+    let model = material
+        .model
+        .as_ref()
+        .ok_or_else(|| error(ErrorCode::InvalidParameter, None))?;
+    let (cloak, sheen) = match &model.state {
+        ModelShaderState::VertexLitGeneric(state) => (state.cloak, state.sheen.enabled),
+        ModelShaderState::EyeRefract(state) => (state.cloak, false),
+        ModelShaderState::Eyes(state) => (state.cloak, false),
+    };
+    let cloak_factor = if cloak.enabled {
+        Some(match runtime.cloak_factor {
+            Some(value) if value.is_finite() => value,
+            Some(_) => {
+                return Err(error(
+                    ErrorCode::InvalidParameter,
+                    Some(b"$cloakfactor".to_vec()),
+                ));
+            }
+            None => {
+                return Err(error(
+                    ErrorCode::MissingModelInput,
+                    Some(b"$cloakfactor".to_vec()),
+                ));
+            }
+        })
+    } else {
+        None
+    };
+    let cloak_current =
+        cloak.enabled && cloak_factor.is_some_and(|factor| factor > 0.0 && factor < 1.0);
+    let static_state = static_state_with_alpha(material, texture_alpha, runtime.alpha_modulation)?;
+    let opacity =
+        if static_state.translucent_queue || runtime.alpha_modulation < 1.0 || cloak_current {
+            ModelOpacity::Translucent
+        } else {
+            ModelOpacity::Opaque
+        };
+    let framebuffer = if sheen || cloak_current {
+        ModelFramebufferRequirement::Current
+    } else if cloak.enabled {
+        ModelFramebufferRequirement::Potential
+    } else {
+        ModelFramebufferRequirement::None
+    };
+    let mut required_inputs = Vec::new();
+    let requirements = model.vertex_requirements;
+    if requirements.ambient_cube {
+        required_inputs.push(ModelDrawInput::AmbientCube);
+    }
+    if requirements.local_lights {
+        required_inputs.push(ModelDrawInput::LocalLights);
+    }
+    if requirements.camera_position {
+        required_inputs.push(ModelDrawInput::CameraPosition);
+    }
+    if requirements.studio_eye_parameters {
+        required_inputs.push(ModelDrawInput::StudioEyeParameters);
+    }
+    if material.textures.iter().any(|texture| {
+        texture.role == TextureRole::Environment
+            && texture.disposition == TextureDisposition::BuiltInEnvironment
+    }) {
+        required_inputs.push(ModelDrawInput::LocalEnvironment);
+    }
+    if framebuffer == ModelFramebufferRequirement::Current {
+        required_inputs.push(ModelDrawInput::CurrentFramebuffer);
+    }
+    if material
+        .textures
+        .iter()
+        .any(|texture| texture.disposition == TextureDisposition::Source)
+        || !material.model_textures.is_empty()
+    {
+        required_inputs.push(ModelDrawInput::AuthoredTexturePlanes);
+    }
+    if material.proxy_program.entries.iter().any(|entry| {
+        matches!(
+            entry.operation,
+            Some(
+                ProxyOperation::Invisibility { .. }
+                    | ProxyOperation::ModelGlowColor { .. }
+                    | ProxyOperation::YellowLevel { .. }
+                    | ProxyOperation::AnimatedWeaponSheen
+                    | ProxyOperation::WeaponSkin
+                    | ProxyOperation::ScalarModelInput { .. }
+                    | ProxyOperation::VectorModelInput { .. }
+            )
+        )
+    }) {
+        required_inputs.push(ModelDrawInput::GameProxyValues);
+    }
+    Ok(ModelDrawState {
+        static_state,
+        opacity,
+        framebuffer,
+        cloak_factor,
+        effective_self_illumination: effective_self_illumination(material, texture_alpha),
+        effective_base_alpha_environment_mask: material.features.base_alpha_environment_mask
+            && texture_alpha.base,
+        required_inputs,
+    })
+}
+
+pub fn missing_model_draw_inputs(
+    state: &ModelDrawState,
+    available: &[ModelDrawInput],
+) -> Vec<ModelDrawInput> {
+    state
+        .required_inputs
+        .iter()
+        .copied()
+        .filter(|required| !available.contains(required))
+        .collect()
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -543,7 +711,7 @@ fn vertex_lit(
             .is_some_and(|state| state.source == SelfIllumMaskSource::Fresnel);
     Ok(ModelMaterialState {
         shader: ModelShader::VertexLitGeneric,
-        state: ModelShaderState::VertexLitGeneric(VertexLitGenericState {
+        state: ModelShaderState::VertexLitGeneric(Box::new(VertexLitGenericState {
             base: core_texture(textures, TextureRole::Base).cloned(),
             bump,
             diffuse_warp,
@@ -552,7 +720,7 @@ fn vertex_lit(
             phong,
             cloak,
             sheen,
-        }),
+        })),
         vertex_requirements: ModelVertexRequirements {
             position: true,
             normal: true,
@@ -573,7 +741,7 @@ fn eye_refract(
 ) -> Result<ModelMaterialState, Error> {
     Ok(ModelMaterialState {
         shader: ModelShader::EyeRefract,
-        state: ModelShaderState::EyeRefract(EyeRefractState {
+        state: ModelShaderState::EyeRefract(Box::new(EyeRefractState {
             iris: model_texture(model_textures, ModelTextureRole::EyeIris).cloned(),
             cornea: model_texture(model_textures, ModelTextureRole::EyeCornea).cloned(),
             ambient_occlusion: model_texture(model_textures, ModelTextureRole::EyeAmbientOcclusion)
@@ -590,7 +758,7 @@ fn eye_refract(
             eyeball_radius: float_or(parameters, b"$eyeballradius", 0.5)?,
             half_lambert: boolean(parameters, b"$halflambert"),
             cloak: cloak(parameters)?,
-        }),
+        })),
         vertex_requirements: ModelVertexRequirements {
             position: true,
             normal: true,
@@ -611,13 +779,14 @@ fn eyes(
 ) -> Result<ModelMaterialState, Error> {
     Ok(ModelMaterialState {
         shader: ModelShader::Eyes,
-        state: ModelShaderState::Eyes(EyesState {
+        state: ModelShaderState::Eyes(Box::new(EyesState {
             base: core_texture(textures, TextureRole::Base).cloned(),
             iris: model_texture(model_textures, ModelTextureRole::EyeIris).cloned(),
             glint: model_texture(model_textures, ModelTextureRole::EyeGlint).cloned(),
             dilation: float_or(parameters, b"$dilation", 0.0)?,
             half_lambert: boolean(parameters, b"$halflambert"),
-        }),
+            cloak: cloak(parameters)?,
+        })),
         vertex_requirements: ModelVertexRequirements {
             position: true,
             normal: true,
