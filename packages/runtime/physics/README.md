@@ -20,7 +20,7 @@ Advance Source-style rigid bodies, constraints, and physical interactions determ
 
 ## Current Target
 
-The first runtime slice is the exact VPhysics/IVP body, contact, impulse, sleep, sticky-projectile, and physical-prop behavior named by [`ROADMAP.md`](ROADMAP.md). It is Blocked until a matching current solver contract or sufficient controlled target traces, one exact physical-prop trace subject, and the adjacent Collision shape/contact and physical-surface producers exist. No replacement solver or trace-specific trajectory is accepted.
+The first runtime slice is the exact configured-build VPhysics/IVP body, contact, impulse, sleep, sticky-projectile, and physical-prop behavior named by [`ROADMAP.md`](ROADMAP.md). It is Blocked until a legally usable matching solver contract or complete controlled target differential corpus, a zero-to-ten-collision result seam with enable/force/post-simulation state, one exact physical-prop trace subject, and the adjacent Collision shape/contact and physical-surface producers exist. No replacement solver or trace-specific trajectory is accepted.
 
 ## Responsibilities
 
