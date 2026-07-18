@@ -1,7 +1,7 @@
 const OUTPUT_MAGIC = 0x5250_5350 // "PSPR"
-const OUTPUT_VERSION = 2
-const OUTPUT_HEADER_BYTES = 12
-const OUTPUT_RECORD_BYTES = 392
+const OUTPUT_VERSION = 3
+const OUTPUT_HEADER_BYTES = 40
+const OUTPUT_RECORD_BYTES = 436
 const DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024 * 1024
 const DEFAULT_MAX_RENDER_ITEMS = 65_536
 
@@ -44,23 +44,42 @@ export type ParticleRenderItem = Readonly<{
   previousPosition: readonly [number, number, number]
   radius: number
   rollRadians: number
+  yawRadians: number
   color: number
   opacity: number
   sequence: number
   secondarySequence: number
   trailLength: number
+  trailLengthScale: number
+  trailEndPosition: readonly [number, number, number]
+  trailWidth: number
   sortKey: number
   ageSeconds: number
   lifetimeSeconds: number
   animationRate: number
+  secondaryAnimationRate: number
+  stepSeconds: number
   trailMinLength: number
   trailMaxLength: number
   trailFadeInSeconds: number
   orientationType: number
   animationFitLifetime: boolean
   animationRateAsFps: boolean
+  materialShader: "sprite-card" | "mesh-sprite"
+  textureColorSpace: "srgb-texture-linear-tint"
+  blendSource: "zero" | "one" | "source-alpha" | "one-minus-source-alpha"
+  blendDestination: "zero" | "one" | "source-alpha" | "one-minus-source-alpha"
+  stableTieIdentity: bigint
   primarySheet: ParticleSheetSample | null
   secondarySheet: ParticleSheetSample | null
+}>
+
+export type ParticleRenderOutput = Readonly<{
+  bounds: Readonly<{
+    minimum: readonly [number, number, number]
+    maximum: readonly [number, number, number]
+  }> | null
+  items: readonly ParticleRenderItem[]
 }>
 
 export type ParticleSheetSample = Readonly<{
@@ -87,7 +106,7 @@ export function createParticleSystem(
     maxRenderItems: DEFAULT_MAX_RENDER_ITEMS,
   }),
 ): Readonly<{
-  advance(batch: ParticleBatch): readonly ParticleRenderItem[]
+  advance(batch: ParticleBatch): ParticleRenderOutput
   reset(bytes: Uint8Array): void
   dispose(): void
 }> {
@@ -97,7 +116,7 @@ export function createParticleSystem(
   validateMaterials(session.materials)
   let disposed = false
   return Object.freeze({
-    advance(batch: ParticleBatch): readonly ParticleRenderItem[] {
+    advance(batch: ParticleBatch): ParticleRenderOutput {
       if (disposed) throw new ParticleAdapterError("InvalidState", "particle adapter is disposed")
       if (!(batch.bytes instanceof Uint8Array) || batch.bytes.byteLength === 0) {
         throw new ParticleAdapterError("MalformedInput", "particle batch must contain bytes")
@@ -124,7 +143,7 @@ export function decodeParticleRenderOutput(
     maxOutputBytes: DEFAULT_MAX_OUTPUT_BYTES,
     maxRenderItems: DEFAULT_MAX_RENDER_ITEMS,
   }),
-): readonly ParticleRenderItem[] {
+): ParticleRenderOutput {
   validateLimits(limits)
   validateMaterials(materials)
   if (!(bytes instanceof Uint8Array) || bytes.byteLength < OUTPUT_HEADER_BYTES || bytes.byteLength > limits.maxOutputBytes) {
@@ -142,6 +161,21 @@ export function decodeParticleRenderOutput(
   if (!Number.isSafeInteger(expected) || expected !== bytes.byteLength) {
     throw new ParticleAdapterError("MalformedOutput", "particle output records do not frame its bytes")
   }
+  const boundsState = view.getUint32(12, true)
+  if (boundsState > 1) {
+    throw new ParticleAdapterError("MalformedOutput", "particle bounds state is invalid")
+  }
+  const minimum = tuple3(view, 16)
+  const maximum = tuple3(view, 28)
+  if (
+    ![...minimum, ...maximum].every(Number.isFinite)
+    || (boundsState === 0
+      ? [...minimum, ...maximum].some(value => value !== 0)
+      : minimum.some((value, component) => value > maximum[component]!))
+  ) {
+    throw new ParticleAdapterError("MalformedOutput", "particle bounds are invalid")
+  }
+  const bounds = boundsState === 0 ? null : Object.freeze({ minimum, maximum })
   const output: ParticleRenderItem[] = []
   for (let index = 0; index < count; index += 1) {
     const offset = OUTPUT_HEADER_BYTES + index * OUTPUT_RECORD_BYTES
@@ -175,12 +209,23 @@ export function decodeParticleRenderOutput(
     const sheetFlags = view.getUint32(offset + 124, true)
     const primarySheet = (sheetFlags & 1) === 0 ? null : sheetSample(view, offset + 128, offset + 132, offset + 196)
     const secondarySheet = (sheetFlags & 2) === 0 ? null : sheetSample(view, offset + 260, offset + 264, offset + 328)
+    const materialShader = bytes[offset + 392]
+    const colorSpace = bytes[offset + 393]
+    const blendSource = blendFactor(bytes[offset + 394]!)
+    const blendDestination = blendFactor(bytes[offset + 395]!)
+    const secondaryAnimationRate = view.getFloat32(offset + 396, true)
+    const stepSeconds = view.getFloat32(offset + 400, true)
+    const trailEndPosition = tuple3(view, offset + 404)
+    const trailWidth = view.getFloat32(offset + 416, true)
+    const trailLengthScale = view.getFloat32(offset + 420, true)
+    const yawRadians = view.getFloat32(offset + 432, true)
     if (
       ![
         ...position,
         ...previousPosition,
         radius,
         rollRadians,
+        yawRadians,
         opacity,
         trailLength,
         sortKey,
@@ -190,6 +235,11 @@ export function decodeParticleRenderOutput(
         trailMinLength,
         trailMaxLength,
         trailFadeInSeconds,
+        secondaryAnimationRate,
+        stepSeconds,
+        ...trailEndPosition,
+        trailWidth,
+        trailLengthScale,
       ].every(Number.isFinite)
       || radius < 0
       || opacity < 0
@@ -200,8 +250,15 @@ export function decodeParticleRenderOutput(
       || trailMinLength < 0
       || trailMaxLength < trailMinLength
       || trailFadeInSeconds < 0
+      || secondaryAnimationRate < 0
+      || stepSeconds <= 0
+      || trailWidth < 0
+      || trailLengthScale < 0
       || (flags & ~3) !== 0
       || (sheetFlags & ~3) !== 0
+      || (materialShader !== 0 && materialShader !== 1)
+      || colorSpace !== 0
+      || primarySheet === null
     ) {
       throw new ParticleAdapterError("MalformedOutput", "particle output contains an invalid scalar")
     }
@@ -217,26 +274,47 @@ export function decodeParticleRenderOutput(
       previousPosition,
       radius,
       rollRadians,
+      yawRadians,
       color: color & 0xff_ffff,
       opacity,
       sequence,
       secondarySequence,
       trailLength,
+      trailLengthScale,
+      trailEndPosition,
+      trailWidth,
       sortKey,
       ageSeconds,
       lifetimeSeconds,
       animationRate,
+      secondaryAnimationRate,
+      stepSeconds,
       trailMinLength,
       trailMaxLength,
       trailFadeInSeconds,
       orientationType,
       animationFitLifetime: (flags & 1) !== 0,
       animationRateAsFps: (flags & 2) !== 0,
+      materialShader: materialShader === 0 ? "sprite-card" : "mesh-sprite",
+      textureColorSpace: "srgb-texture-linear-tint",
+      blendSource,
+      blendDestination,
+      stableTieIdentity: view.getBigUint64(offset + 424, true),
       primarySheet,
       secondarySheet,
     }))
   }
-  return Object.freeze(output)
+  return Object.freeze({ bounds, items: Object.freeze(output) })
+}
+
+function blendFactor(value: number): ParticleRenderItem["blendSource"] {
+  switch (value) {
+    case 0: return "zero"
+    case 1: return "one"
+    case 2: return "source-alpha"
+    case 3: return "one-minus-source-alpha"
+    default: throw new ParticleAdapterError("MalformedOutput", "particle blend factor is invalid")
+  }
 }
 
 function validateResources(resources: readonly PcfResource[]): void {

@@ -14,8 +14,9 @@ pub use sheet::{
 };
 pub use world::{
     AdvanceRequest, Bounds, CollisionBatch, CollisionQuery, CollisionResult, ControlPoint, Event,
-    EventCommand, ParticleWorld, Primitive, RenderItem, StopMode, TraceRequest, WorldLimits,
-    encode_render_output, resolve_render_sheets,
+    EventCommand, ParticleBlendFactor, ParticleBlendState, ParticleColorSpace, ParticleMaterial,
+    ParticleMaterialShader, ParticleMaterialState, ParticleWorld, Primitive, RenderItem, StopMode,
+    TraceRequest, WorldLimits, encode_render_output, resolve_render_output,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

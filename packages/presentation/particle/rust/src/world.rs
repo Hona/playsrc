@@ -11,8 +11,8 @@ use crate::{
 
 const CONTROL_POINT_LIMIT: usize = 64;
 const DEFAULT_STEP_SECONDS: f32 = 0.05;
-const OUTPUT_HEADER_BYTES: usize = 12;
-const OUTPUT_RECORD_BYTES: usize = 392;
+const OUTPUT_HEADER_BYTES: usize = 40;
+const OUTPUT_RECORD_BYTES: usize = 436;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WorldLimits {
@@ -89,7 +89,6 @@ pub enum EventCommand {
     },
     Restart {
         effect_identity: u32,
-        seed: u64,
     },
     SetDormant {
         effect_identity: u32,
@@ -123,6 +122,48 @@ pub enum Primitive {
     Trail,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ParticleMaterialShader {
+    SpriteCard,
+    MeshSprite,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum ParticleBlendFactor {
+    Zero = 0,
+    One = 1,
+    SourceAlpha = 2,
+    OneMinusSourceAlpha = 3,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ParticleBlendState {
+    pub source: ParticleBlendFactor,
+    pub destination: ParticleBlendFactor,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ParticleColorSpace {
+    SrgbTextureLinearTint,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParticleMaterial {
+    pub shader: ParticleMaterialShader,
+    pub blend: ParticleBlendState,
+    pub color_space: ParticleColorSpace,
+    pub dual_sequence: bool,
+    pub sheet: ParticleSheet,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ParticleMaterialState {
+    pub shader: ParticleMaterialShader,
+    pub blend: ParticleBlendState,
+    pub color_space: ParticleColorSpace,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct RenderItem {
     pub effect_identity: u32,
@@ -135,15 +176,18 @@ pub struct RenderItem {
     pub previous_position: [f32; 3],
     pub radius: f32,
     pub roll_radians: f32,
+    pub yaw_radians: f32,
     pub color: [u8; 3],
     pub opacity: f32,
     pub sequence: i32,
     pub secondary_sequence: i32,
-    pub trail_length: f32,
+    pub trail_length_scale: f32,
     pub sort_key: f32,
     pub age_seconds: f32,
     pub lifetime_seconds: f32,
     pub animation_rate: f32,
+    pub secondary_animation_rate: f32,
+    pub step_seconds: f32,
     pub trail_min_length: f32,
     pub trail_max_length: f32,
     pub trail_fade_in_seconds: f32,
@@ -152,50 +196,99 @@ pub struct RenderItem {
     pub animation_rate_as_fps: bool,
     pub primary_sheet: Option<SheetSample>,
     pub secondary_sheet: Option<SheetSample>,
+    pub trail_end_position: [f32; 3],
+    pub trail_width: f32,
+    pub trail_length: f32,
+    pub material_state: Option<ParticleMaterialState>,
     pub stable_tie_identity: u64,
 }
 
-pub fn resolve_render_sheets(
-    items: &mut [RenderItem],
-    sheets: &BTreeMap<String, ParticleSheet>,
-) -> Result<(), Error> {
-    for item in items {
-        let sheet = sheets.get(&item.material).ok_or_else(|| {
+pub fn resolve_render_output(
+    items: Vec<RenderItem>,
+    materials: &BTreeMap<String, ParticleMaterial>,
+) -> Result<Vec<RenderItem>, Error> {
+    let mut output = Vec::with_capacity(items.len());
+    for mut item in items {
+        let material = materials.get(&item.material).ok_or_else(|| {
             Error::new(
                 ErrorCode::MissingDependency,
                 "particle-output",
                 0,
-                format!("particle sheet for material {} is missing", item.material),
+                format!("particle material {} is missing", item.material),
             )
         })?;
+        if item.primitive == Primitive::Trail
+            && material.shader == ParticleMaterialShader::SpriteCard
+        {
+            continue;
+        }
+        if material.shader == ParticleMaterialShader::MeshSprite && item.opacity == 0.0 {
+            continue;
+        }
+        let fit_lifetime =
+            item.animation_fit_lifetime && material.shader == ParticleMaterialShader::MeshSprite;
         item.primary_sheet = Some(sample_sheet(
-            sheet,
+            &material.sheet,
             SheetSampleRequest {
                 sequence: item.sequence,
                 age_seconds: item.age_seconds,
                 lifetime_seconds: item.lifetime_seconds,
                 animation_rate: item.animation_rate,
-                fit_lifetime: item.animation_fit_lifetime,
+                fit_lifetime,
                 animation_rate_as_fps: item.animation_rate_as_fps,
             },
         )?);
-        item.secondary_sheet = Some(sample_sheet(
-            sheet,
-            SheetSampleRequest {
-                sequence: item.secondary_sequence,
-                age_seconds: item.age_seconds,
-                lifetime_seconds: item.lifetime_seconds,
-                animation_rate: 0.0,
-                fit_lifetime: item.animation_fit_lifetime,
-                animation_rate_as_fps: item.animation_rate_as_fps,
-            },
-        )?);
+        item.secondary_sheet = material
+            .dual_sequence
+            .then(|| {
+                sample_sheet(
+                    &material.sheet,
+                    SheetSampleRequest {
+                        sequence: item.secondary_sequence,
+                        age_seconds: item.age_seconds,
+                        lifetime_seconds: item.lifetime_seconds,
+                        animation_rate: item.secondary_animation_rate,
+                        fit_lifetime: false,
+                        animation_rate_as_fps: false,
+                    },
+                )
+            })
+            .transpose()?;
+        if item.primitive == Primitive::Trail {
+            let delta = sub(item.previous_position, item.position);
+            let movement = length_squared(delta).sqrt();
+            let fade = if item.age_seconds >= item.trail_fade_in_seconds {
+                1.0
+            } else if item.trail_fade_in_seconds > 0.0 {
+                item.age_seconds / item.trail_fade_in_seconds
+            } else {
+                1.0
+            };
+            let raw_length = fade * movement / item.step_seconds * item.trail_length_scale;
+            if raw_length <= 0.0 {
+                continue;
+            }
+            let length = raw_length.clamp(item.trail_min_length, item.trail_max_length);
+            item.trail_length = length;
+            item.trail_width = item.radius.min(length);
+            item.trail_end_position = add(
+                item.position,
+                mul(normalize(delta).unwrap_or([0.0; 3]), length),
+            );
+        }
+        item.material_state = Some(ParticleMaterialState {
+            shader: material.shader,
+            blend: material.blend,
+            color_space: material.color_space,
+        });
+        output.push(item);
     }
-    Ok(())
+    Ok(output)
 }
 
 pub fn encode_render_output(
     items: &[RenderItem],
+    bounds: Option<Bounds>,
     materials: &[String],
     max_bytes: usize,
 ) -> Result<Vec<u8>, Error> {
@@ -247,34 +340,61 @@ pub fn encode_render_output(
         .collect::<Result<_, _>>()?;
     let mut bytes = vec![0; length];
     bytes[0..4].copy_from_slice(&0x5250_5350_u32.to_le_bytes());
-    bytes[4..8].copy_from_slice(&2_u32.to_le_bytes());
+    bytes[4..8].copy_from_slice(&3_u32.to_le_bytes());
     bytes[8..12].copy_from_slice(&(items.len() as u32).to_le_bytes());
+    if let Some(bounds) = bounds {
+        if !finite(&bounds.minimum)
+            || !finite(&bounds.maximum)
+            || (0..3).any(|component| bounds.minimum[component] > bounds.maximum[component])
+        {
+            return Err(Error::new(
+                ErrorCode::InvalidValue,
+                "particle-output",
+                0,
+                "particle bounds are invalid",
+            ));
+        }
+        bytes[12..16].copy_from_slice(&1_u32.to_le_bytes());
+        put_vector(&mut bytes, 16, bounds.minimum);
+        put_vector(&mut bytes, 28, bounds.maximum);
+    }
     for (index, item) in items.iter().enumerate() {
         if !finite(&item.position)
             || !finite(&item.previous_position)
+            || !finite(&item.trail_end_position)
             || !finite(&[
                 item.radius,
                 item.roll_radians,
+                item.yaw_radians,
                 item.opacity,
+                item.trail_length_scale,
                 item.trail_length,
+                item.trail_width,
                 item.sort_key,
                 item.age_seconds,
                 item.lifetime_seconds,
                 item.animation_rate,
+                item.secondary_animation_rate,
+                item.step_seconds,
                 item.trail_min_length,
                 item.trail_max_length,
                 item.trail_fade_in_seconds,
             ])
             || item.radius < 0.0
             || !(0.0..=1.0).contains(&item.opacity)
+            || item.trail_length_scale < 0.0
             || item.trail_length < 0.0
+            || item.trail_width < 0.0
             || item.age_seconds < 0.0
             || item.lifetime_seconds <= 0.0
+            || item.step_seconds <= 0.0
             || item.trail_min_length < 0.0
             || item.trail_max_length < item.trail_min_length
             || item.trail_fade_in_seconds < 0.0
             || !valid_sheet_sample(item.primary_sheet.as_ref())
             || !valid_sheet_sample(item.secondary_sheet.as_ref())
+            || item.primary_sheet.is_none()
+            || item.material_state.is_none()
         {
             return Err(Error::new(
                 ErrorCode::InvalidValue,
@@ -341,6 +461,24 @@ pub fn encode_render_output(
             put_sheet_images(&mut bytes, offset + 264, sample.current);
             put_sheet_images(&mut bytes, offset + 328, sample.next);
         }
+        let material_state = item.material_state.expect("validated material state");
+        bytes[offset + 392] = match material_state.shader {
+            ParticleMaterialShader::SpriteCard => 0,
+            ParticleMaterialShader::MeshSprite => 1,
+        };
+        bytes[offset + 393] = match material_state.color_space {
+            ParticleColorSpace::SrgbTextureLinearTint => 0,
+        };
+        bytes[offset + 394] = material_state.blend.source as u8;
+        bytes[offset + 395] = material_state.blend.destination as u8;
+        bytes[offset + 396..offset + 400]
+            .copy_from_slice(&item.secondary_animation_rate.to_le_bytes());
+        bytes[offset + 400..offset + 404].copy_from_slice(&item.step_seconds.to_le_bytes());
+        put_vector(&mut bytes, offset + 404, item.trail_end_position);
+        bytes[offset + 416..offset + 420].copy_from_slice(&item.trail_width.to_le_bytes());
+        bytes[offset + 420..offset + 424].copy_from_slice(&item.trail_length_scale.to_le_bytes());
+        bytes[offset + 424..offset + 432].copy_from_slice(&item.stable_tie_identity.to_le_bytes());
+        bytes[offset + 432..offset + 436].copy_from_slice(&item.yaw_radians.to_le_bytes());
     }
     Ok(bytes)
 }
@@ -434,6 +572,7 @@ struct Effect {
     identity: u32,
     owner_identity: Option<u32>,
     root: System,
+    collision_cache: CollisionPlaneCache,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -446,11 +585,14 @@ struct System {
     dormant: bool,
     first_frame: bool,
     local_time: f32,
+    current_step: f32,
     previous_step: f32,
+    simulated_frames: u32,
     random_seed: i32,
     random_query_count: i32,
     unique_particle_identity: i32,
     emitter_contexts: Vec<EmitterContext>,
+    operator_contexts: Vec<OperatorContext>,
     controls: Vec<Option<ControlPoint>>,
     particles: Vec<Particle>,
     children: Vec<System>,
@@ -467,6 +609,7 @@ struct Particle {
     radius: f32,
     initial_roll: f32,
     roll: f32,
+    yaw: f32,
     roll_speed: f32,
     initial_color: [f32; 3],
     color: [f32; 3],
@@ -488,8 +631,40 @@ enum EmitterContext {
     Instantaneous {
         remaining: i32,
         actual: i32,
+        start_time: f32,
         time_offset: f32,
     },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum OperatorContext {
+    None,
+    PositionLock { previous_position: [f32; 3] },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CollisionPlane {
+    point: [f32; 3],
+    normal: [f32; 3],
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct CollisionPlaneCache {
+    initialized: bool,
+    last_update_seconds: f32,
+    last_origin: [f32; 3],
+    planes: Vec<CollisionPlane>,
+}
+
+impl Default for CollisionPlaneCache {
+    fn default() -> Self {
+        Self {
+            initialized: false,
+            last_update_seconds: -1.0,
+            last_origin: [0.0; 3],
+            planes: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -599,8 +774,11 @@ impl ParticleWorld {
         collision: &mut impl CollisionQuery,
     ) -> Result<(), Error> {
         while from < to {
+            if self.effects.is_empty() {
+                break;
+            }
             *substeps += 1;
-            if *substeps > self.limits.max_substeps {
+            if *substeps > self.limits.max_substeps.min(10) {
                 return Err(Error::new(
                     ErrorCode::BoundExceeded,
                     "particle-world",
@@ -608,7 +786,18 @@ impl ParticleWorld {
                     "advance exceeds max_substeps",
                 ));
             }
-            let next = (from + maximum_step).min(to);
+            let definition_step = self
+                .effects
+                .iter()
+                .map(|effect| maximum_system_step(&effect.root, &self.registry))
+                .fold(0.1_f32, f32::min);
+            let step = maximum_step.min(definition_step);
+            let remaining_time = to - from;
+            let next = if remaining_time <= step + step.abs().max(1.0) * 1.0e-6 {
+                to
+            } else {
+                from + step
+            };
             let total_before = particle_count(&self.effects);
             let mut remaining = self.limits.max_particles_total.saturating_sub(total_before);
             for effect in &mut self.effects {
@@ -623,6 +812,7 @@ impl ParticleWorld {
                     queries,
                     collision,
                     &mut self.simulation_random,
+                    &mut effect.collision_cache,
                 )?;
             }
             from = next;
@@ -727,16 +917,9 @@ impl ParticleWorld {
                     set_emission(&mut self.effects[index].root, false, false);
                 }
             }
-            EventCommand::Restart {
-                effect_identity,
-                seed,
-            } => {
+            EventCommand::Restart { effect_identity } => {
                 let effect = effect_mut(&mut self.effects, *effect_identity)?;
-                restart_system(
-                    &mut effect.root,
-                    event.timestamp_seconds,
-                    normalize_seed(*seed),
-                );
+                restart_system(&mut effect.root, &self.registry);
             }
             EventCommand::SetDormant {
                 effect_identity,
@@ -858,6 +1041,7 @@ impl ParticleWorld {
             identity,
             owner_identity,
             root,
+            collision_cache: CollisionPlaneCache::default(),
         })
     }
 
@@ -873,13 +1057,15 @@ impl ParticleWorld {
         let mut items = Vec::new();
         let mut bounds: Option<Bounds> = None;
         for effect in &self.effects {
+            if let Some(effect_bounds) = system_bounds(&effect.root, &self.registry) {
+                merge_bounds(&mut bounds, effect_bounds);
+            }
             render_system(
                 &effect.root,
                 &self.registry,
                 effect.identity,
                 camera,
                 &mut items,
-                &mut bounds,
                 self.limits.max_render_items,
             )?;
         }
@@ -929,6 +1115,7 @@ fn initialize_system_first_frame(
         *remaining_particles -= 1;
     }
     system.first_frame = false;
+    system.simulated_frames = 1;
     Ok(())
 }
 
@@ -973,6 +1160,7 @@ fn instantiate(
                 EmitterContext::Instantaneous {
                     remaining: actual,
                     actual,
+                    start_time: float_parameter(emitter, "emission_start_time", 0.0),
                     time_offset: 0.0,
                 }
             } else {
@@ -985,19 +1173,32 @@ fn instantiate(
             }
         })
         .collect();
+    let operator_contexts = definition
+        .functions(FunctionCategory::Operator)
+        .map(|operator| {
+            if operator
+                .identity
+                .eq_ignore_ascii_case("Movement Lock to Control Point")
+            {
+                OperatorContext::PositionLock {
+                    previous_position: [0.0; 3],
+                }
+            } else {
+                OperatorContext::None
+            }
+        })
+        .collect();
     let mut children = Vec::with_capacity(definition.children.len());
     let mut child_seed = random_seed;
     for (index, child) in definition.children.iter().enumerate() {
-        let child_definition = registry
-            .definition_by_uuid(child.definition_uuid)
-            .ok_or_else(|| {
-                Error::new(
-                    ErrorCode::MissingDefinition,
-                    &definition.source,
-                    0,
-                    "child definition is missing",
-                )
-            })?;
+        let child_definition = registry.child_definition(child).ok_or_else(|| {
+            Error::new(
+                ErrorCode::MissingDefinition,
+                &definition.source,
+                0,
+                "child definition is missing",
+            )
+        })?;
         if child_seed != 0 {
             child_seed = child_seed.wrapping_add(129);
         }
@@ -1020,11 +1221,14 @@ fn instantiate(
         dormant: false,
         first_frame: true,
         local_time: 0.0,
+        current_step: 0.0,
         previous_step: DEFAULT_STEP_SECONDS,
+        simulated_frames: 0,
         random_seed,
         random_query_count: 0,
         unique_particle_identity: 0,
         emitter_contexts,
+        operator_contexts,
         controls: state.controls.to_vec(),
         particles: Vec::new(),
         children,
@@ -1043,19 +1247,22 @@ fn advance_system(
     queries: &mut usize,
     collision: &mut impl CollisionQuery,
     simulation_random: &mut SimdRandom,
+    collision_cache: &mut CollisionPlaneCache,
 ) -> Result<(), Error> {
     let definition = registry
         .definition_by_uuid(system.definition_uuid)
         .expect("instantiated definition");
     let local_from = (from - system.start_seconds - system.delay_seconds).max(0.0);
     let local_to = (to - system.start_seconds - system.delay_seconds).max(0.0);
-    if to < system.start_seconds + system.delay_seconds || system.dormant {
+    if to < system.start_seconds + system.delay_seconds {
         return Ok(());
     }
     if system.first_frame {
         initialize_system_first_frame(system, registry, limits, remaining_particles)?;
     }
     let dt = (local_to - local_from).max(0.0);
+    system.current_step = dt;
+    system.local_time = local_to;
     emit(
         system,
         definition,
@@ -1065,6 +1272,7 @@ fn advance_system(
         remaining_particles,
     )?;
     if dt > 0.0 {
+        system.simulated_frames = system.simulated_frames.saturating_add(1);
         operate(system, definition, local_to, dt, simulation_random);
         constrain(
             system,
@@ -1073,6 +1281,7 @@ fn advance_system(
             limits,
             queries,
             collision,
+            collision_cache,
         )?;
         system
             .particles
@@ -1080,7 +1289,6 @@ fn advance_system(
         system.previous_step = dt;
     }
     system.first_frame = false;
-    system.local_time = local_to;
     update_control_history(system);
     for child in &mut system.children {
         advance_system(
@@ -1094,6 +1302,7 @@ fn advance_system(
             queries,
             collision,
             simulation_random,
+            collision_cache,
         )?;
     }
     Ok(())
@@ -1124,6 +1333,7 @@ fn emit(
                 remaining,
                 actual,
                 time_offset,
+                ..
             } = &mut system.emitter_contexts[emitter_index]
             else {
                 unreachable!("validated emitter context")
@@ -1197,18 +1407,18 @@ fn emit(
 }
 
 fn initialize_particle(system: &mut System, definition: &Definition, creation: f32) -> Particle {
-    let origin = control_at(system, 0);
     let constant_color = color_attribute(definition, "color", [255; 4]);
     let mut particle = Particle {
         identity: 0,
         creation_seconds: creation,
         lifetime_seconds: 1.0,
-        position: origin,
-        previous_position: origin,
+        position: [0.0; 3],
+        previous_position: [0.0; 3],
         initial_radius: float_attribute(definition, "radius", 5.0),
         radius: float_attribute(definition, "radius", 5.0),
         initial_roll: float_attribute(definition, "rotation", 0.0),
         roll: float_attribute(definition, "rotation", 0.0),
+        yaw: 0.0,
         roll_speed: float_attribute(definition, "rotation_speed", 0.0),
         initial_color: [
             constant_color[0] as f32 / 255.0,
@@ -1306,9 +1516,10 @@ fn initialize_particle(system: &mut System, definition: &Definition, creation: f
         {
             let minimum = vector_parameter(initializer, "min", [0.0; 3]);
             let maximum = vector_parameter(initializer, "max", [0.0; 3]);
-            let cp = control_at(
+            let cp = control_at_time(
                 system,
                 integer_parameter(initializer, "control point number", 0),
+                creation,
             );
             let random = next_random_vector(system, minimum, maximum);
             for component in 0..3 {
@@ -1319,7 +1530,7 @@ fn initialize_particle(system: &mut System, definition: &Definition, creation: f
             .eq_ignore_ascii_case("Position Within Sphere Random")
         {
             let cp_index = integer_parameter(initializer, "control_point_number", 0);
-            let cp = control_at(system, cp_index);
+            let cp = control_at_time(system, cp_index, creation);
             let (mut direction, unit_radius) = next_random_in_unit_sphere(system);
             let distance_bias = vector_parameter(initializer, "distance_bias", [1.0; 3]);
             let absolute = vector_parameter(initializer, "distance_bias_absolute_value", [0.0; 3]);
@@ -1338,6 +1549,17 @@ fn initialize_particle(system: &mut System, definition: &Definition, creation: f
             for component in 0..3 {
                 particle.position[component] = cp[component] + direction[component] * distance;
             }
+            velocity = [0.0; 3];
+            let speed_maximum = float_parameter(initializer, "speed_max", 0.0);
+            if speed_maximum > 0.0 {
+                let speed = ranged(
+                    float_parameter(initializer, "speed_min", 0.0),
+                    speed_maximum,
+                    float_parameter(initializer, "speed_random_exponent", 1.0),
+                    next_random(system),
+                );
+                velocity = mul(direction, speed);
+            }
             let speed_min = vector_parameter(
                 initializer,
                 "speed_in_local_coordinate_system_min",
@@ -1353,21 +1575,11 @@ fn initialize_particle(system: &mut System, definition: &Definition, creation: f
                 mix(speed_min[1], speed_max[1], next_random(system)),
                 mix(speed_min[2], speed_max[2], next_random(system)),
             ];
-            velocity = control_orientation(system, cp_index)
+            let local_velocity = control_orientation(system, cp_index)
                 .map_or(local_velocity, |orientation| {
                     rotate(orientation, local_velocity)
                 });
-            let speed_maximum = float_parameter(initializer, "speed_max", 0.0);
-            if speed_maximum > 0.0 {
-                let speed = ranged(
-                    float_parameter(initializer, "speed_min", 0.0),
-                    speed_maximum,
-                    float_parameter(initializer, "speed_random_exponent", 1.0),
-                    next_random(system),
-                );
-                let radial = mul(direction, speed);
-                velocity = add(velocity, radial);
-            }
+            velocity = add(velocity, local_velocity);
         }
     }
     for initializer in definition.functions(FunctionCategory::Initializer) {
@@ -1430,13 +1642,6 @@ fn operate(
     dt: f32,
     simulation_random: &mut SimdRandom,
 ) {
-    let control_delta = system
-        .controls
-        .first()
-        .and_then(Option::as_ref)
-        .map_or([0.0; 3], |control| {
-            sub(control.position, control.previous_position)
-        });
     let random_seed = system.random_seed;
     for (function_index, operator) in definition.functions(FunctionCategory::Operator).enumerate() {
         let strength = operator_strength(operator, time);
@@ -1447,6 +1652,33 @@ fn operate(
             operate_movement(system, definition, operator, time, dt, simulation_random);
             continue;
         }
+        let position_lock = if operator
+            .identity
+            .eq_ignore_ascii_case("Movement Lock to Control Point")
+        {
+            let control_index = integer_parameter(operator, "control_point_number", 0);
+            let current = control_at(system, control_index);
+            let snapshot_previous = system
+                .controls
+                .get(control_index.max(0) as usize)
+                .and_then(Option::as_ref)
+                .map_or(current, |control| control.previous_position);
+            let previous = match &mut system.operator_contexts[function_index] {
+                OperatorContext::PositionLock { previous_position } => {
+                    let value = if *previous_position == [0.0; 3] {
+                        current
+                    } else {
+                        *previous_position
+                    };
+                    *previous_position = current;
+                    value
+                }
+                OperatorContext::None => current,
+            };
+            Some((current, previous, snapshot_previous))
+        } else {
+            None
+        };
         let random_offset = (function_index as i32).wrapping_mul(17);
         for particle in &mut system.particles {
             let age = (time - particle.creation_seconds).max(0.0);
@@ -1542,18 +1774,20 @@ fn operate(
                 .identity
                 .eq_ignore_ascii_case("Movement Lock to Control Point")
             {
-                let control_index = integer_parameter(operator, "control_point_number", 0);
-                let delta = if control_index == 0 {
-                    control_delta
+                let (current_control, previous_control, snapshot_previous) =
+                    position_lock.expect("position lock context");
+                let particle_previous_control = if particle.creation_seconds >= time - dt {
+                    interpolate_control_position(
+                        snapshot_previous,
+                        current_control,
+                        time,
+                        dt,
+                        particle.creation_seconds,
+                    )
                 } else {
-                    system
-                        .controls
-                        .get(control_index.max(0) as usize)
-                        .and_then(Option::as_ref)
-                        .map_or([0.0; 3], |control| {
-                            sub(control.position, control.previous_position)
-                        })
+                    previous_control
                 };
+                let delta = sub(current_control, particle_previous_control);
                 let start = source_random_exp(
                     random_seed,
                     particle.identity as i32 + random_offset + 9,
@@ -1569,7 +1803,8 @@ fn operate(
                     float_parameter(operator, "end_fadeout_exponent", 1.0),
                 );
                 let lock = 1.0 - spline(remap(life, start, end));
-                let movement = mul(delta, strength * lock);
+                let creation_bias = if dt > 0.0 { age.min(dt) / dt } else { 1.0 };
+                let movement = mul(delta, strength * lock * creation_bias);
                 particle.position = add(particle.position, movement);
                 particle.previous_position = add(particle.previous_position, movement);
             } else if operator.identity.eq_ignore_ascii_case("Oscillate Scalar") {
@@ -1608,15 +1843,14 @@ fn operate(
                     float_parameter(operator, "oscillation frequency max", 1.0),
                     random(0),
                 );
-                let oscillator_time = if bool_parameter(operator, "proportional 0/1", true) {
-                    life
+                let proportional = bool_parameter(operator, "proportional 0/1", true);
+                let multiplier = float_parameter(operator, "oscillation multiplier", 2.0);
+                let phase_start = float_parameter(operator, "oscillation start phase", 0.5);
+                let phase = if proportional {
+                    multiplier * life * frequency + phase_start
                 } else {
-                    time
+                    (multiplier * time + phase_start) * frequency
                 };
-                let phase = (float_parameter(operator, "oscillation multiplier", 2.0)
-                    * oscillator_time
-                    + float_parameter(operator, "oscillation start phase", 0.5))
-                    * frequency;
                 let value = sin_estimate_cycles(phase) * rate * dt * strength;
                 match field {
                     3 => particle.radius = (particle.radius + value).max(0.0),
@@ -1626,10 +1860,10 @@ fn operate(
                 }
             }
         }
+        system
+            .particles
+            .retain(|particle| particle.lifetime_seconds > 0.0);
     }
-    system
-        .particles
-        .retain(|particle| particle.lifetime_seconds > 0.0);
 }
 
 fn operate_movement(
@@ -1684,6 +1918,7 @@ fn constrain(
     limits: WorldLimits,
     queries: &mut usize,
     collision: &mut impl CollisionQuery,
+    collision_cache: &mut CollisionPlaneCache,
 ) -> Result<(), Error> {
     for (constraint_index, constraint) in definition
         .functions(FunctionCategory::Constraint)
@@ -1695,100 +1930,180 @@ fn constrain(
         {
             continue;
         }
-        let mut requests = Vec::new();
-        for particle in &system.particles {
-            if length_squared(sub(particle.position, particle.previous_position)) <= f32::EPSILON {
+        if integer_parameter(constraint, "collision mode", 0) != 1 {
+            return Err(Error::new(
+                ErrorCode::UnsupportedFunction,
+                &definition.source,
+                0,
+                "the target Collision via traces declaration requires collision mode 1",
+            ));
+        }
+        update_collision_planes(
+            system,
+            constraint,
+            constraint_index,
+            effect_identity,
+            limits,
+            queries,
+            collision,
+            collision_cache,
+        )?;
+        let radius_scale = float_parameter(constraint, "radius scale", 1.0);
+        let bounce = float_parameter(constraint, "amount of bounce", 0.0);
+        let slide_scale = float_parameter(constraint, "amount of slide", 0.0);
+        let kill = bool_parameter(constraint, "kill particle on collision", false);
+        for particle in &mut system.particles {
+            let movement = sub(particle.position, particle.previous_position);
+            let Some(direction) = normalize(movement) else {
                 continue;
-            }
-            let mut identity = hash(
-                system.path_identity,
-                ((constraint_index as u64) << 32) | particle.identity as u64,
+            };
+            let end = add(
+                particle.position,
+                mul(direction, particle.radius * radius_scale),
             );
-            for component in particle
-                .previous_position
-                .into_iter()
-                .chain(particle.position)
-            {
-                identity = hash(identity, component.to_bits() as u64);
+            let mut intersection = 2.0_f32;
+            let mut normal = [0.0; 3];
+            for plane in &collision_cache.planes {
+                let start_distance =
+                    dot(sub(particle.previous_position, plane.point), plane.normal);
+                let end_distance = dot(sub(end, plane.point), plane.normal);
+                if start_distance >= 0.0 && end_distance < 0.0 {
+                    let fraction = start_distance / (start_distance - end_distance);
+                    if fraction < intersection {
+                        intersection = fraction;
+                        normal = plane.normal;
+                    }
+                }
             }
-            requests.push(TraceRequest {
-                identity,
-                effect_identity,
-                system_uuid: system.definition_uuid,
-                particle_identity: particle.identity,
-                start: particle.previous_position,
-                end: particle.position,
-                radius: particle.radius * float_parameter(constraint, "radius scale", 1.0),
-                brush_only: bool_parameter(constraint, "brush only", false),
-                collision_group: string_parameter(constraint, "collision group", "NONE"),
-            });
-        }
-        *queries = queries.checked_add(requests.len()).ok_or_else(|| {
-            Error::new(
-                ErrorCode::BoundExceeded,
-                "particle-world",
-                0,
-                "query count overflowed",
-            )
-        })?;
-        if *queries > limits.max_queries_per_advance {
-            return Err(Error::new(
-                ErrorCode::BoundExceeded,
-                "particle-world",
-                0,
-                "collision query count exceeds max_queries_per_advance",
-            ));
-        }
-        if requests.is_empty() {
-            continue;
-        }
-        let results = collision.trace_batch(&requests)?;
-        if results.len() != requests.len() {
-            return Err(Error::new(
-                ErrorCode::MissingQuery,
-                "particle-world",
-                0,
-                "collision batch result count does not match its requests",
-            ));
-        }
-        for (request, result) in requests.iter().zip(results) {
-            validate_collision_result(request, &result)?;
-            if result.fraction >= 1.0 {
+            if intersection >= 1.0 {
                 continue;
             }
-            let particle = system
-                .particles
-                .iter_mut()
-                .find(|particle| particle.identity == request.particle_identity)
-                .expect("requested particle");
-            if bool_parameter(constraint, "kill particle on collision", false) {
+            if kill {
                 particle.lifetime_seconds = 0.0;
                 continue;
             }
-            if result.start_solid {
-                particle.position = particle.previous_position;
-                continue;
+            let mut point = add(particle.previous_position, mul(movement, intersection));
+            if bounce != 0.0 || slide_scale != 0.0 {
+                let reflected = sub(direction, mul(normal, 2.0 * dot(direction, normal)));
+                let slide = sub(movement, mul(normal, dot(movement, normal)));
+                let velocity = add(mul(reflected, bounce), mul(slide, slide_scale));
+                point = add(point, mul(velocity, 1.0 - intersection));
+                particle.previous_position = sub(point, velocity);
             }
-            let movement = sub(request.end, request.start);
-            let impact = add(request.start, mul(movement, result.fraction));
-            let leftover = 1.0 - result.fraction;
-            let direction = normalize(movement).unwrap_or([0.0; 3]);
-            let reflected = sub(
-                direction,
-                mul(result.normal, 2.0 * dot(direction, result.normal)),
-            );
-            let slide = sub(movement, mul(result.normal, dot(movement, result.normal)));
-            let new_velocity = add(
-                mul(
-                    reflected,
-                    float_parameter(constraint, "amount of bounce", 0.0),
-                ),
-                mul(slide, float_parameter(constraint, "amount of slide", 0.0)),
-            );
-            particle.position = add(impact, mul(new_velocity, leftover));
-            particle.previous_position = sub(particle.position, new_velocity);
+            particle.position = point;
+        }
+        system
+            .particles
+            .retain(|particle| particle.lifetime_seconds > 0.0);
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn update_collision_planes(
+    system: &System,
+    constraint: &Function,
+    constraint_index: usize,
+    effect_identity: u32,
+    limits: WorldLimits,
+    queries: &mut usize,
+    collision: &mut impl CollisionQuery,
+    cache: &mut CollisionPlaneCache,
+) -> Result<(), Error> {
+    let origin = add(
+        control_at(system, 0),
+        vector_parameter(
+            constraint,
+            "control point offset for fast collisions",
+            [0.0; 3],
+        ),
+    );
+    let tolerance = float_parameter(constraint, "control point movement distance tolerance", 5.0);
+    if cache.initialized
+        && cache.last_update_seconds > 0.0
+        && length_squared(sub(origin, cache.last_origin)) < tolerance * tolerance
+    {
+        cache.last_update_seconds = system.local_time;
+        return Ok(());
+    }
+    let mut requests = Vec::with_capacity(52);
+    let collision_group = string_parameter(constraint, "collision group", "NONE");
+    for pass in 0..2_u64 {
+        for x in -1..=1_i32 {
+            for y in -1..=1_i32 {
+                for z in -1..=1_i32 {
+                    if x == 0 && y == 0 && z == 0 {
+                        continue;
+                    }
+                    let ordinal = requests.len() as u64;
+                    let mut identity = hash(
+                        system.path_identity,
+                        ((constraint_index as u64) << 56) | (pass << 48) | ordinal,
+                    );
+                    for value in origin {
+                        identity = hash(identity, value.to_bits() as u64);
+                    }
+                    requests.push(TraceRequest {
+                        identity,
+                        effect_identity,
+                        system_uuid: system.definition_uuid,
+                        particle_identity: 0,
+                        start: origin,
+                        end: add(
+                            origin,
+                            [x as f32 * 1_000.0, y as f32 * 1_000.0, z as f32 * 1_000.0],
+                        ),
+                        radius: 0.0,
+                        brush_only: false,
+                        collision_group: collision_group.clone(),
+                    });
+                }
+            }
         }
     }
+    *queries = queries.checked_add(requests.len()).ok_or_else(|| {
+        Error::new(
+            ErrorCode::BoundExceeded,
+            "particle-world",
+            0,
+            "query count overflowed",
+        )
+    })?;
+    if *queries > limits.max_queries_per_advance {
+        return Err(Error::new(
+            ErrorCode::BoundExceeded,
+            "particle-world",
+            0,
+            "collision query count exceeds max_queries_per_advance",
+        ));
+    }
+    let results = collision.trace_batch(&requests)?;
+    if results.len() != requests.len() {
+        return Err(Error::new(
+            ErrorCode::MissingQuery,
+            "particle-world",
+            0,
+            "collision batch result count does not match its requests",
+        ));
+    }
+    for (request, result) in requests.iter().zip(&results) {
+        validate_collision_result(request, result)?;
+    }
+    cache.planes.clear();
+    for (request, result) in requests[26..].iter().zip(&results[26..]) {
+        if result.fraction < 1.0 {
+            cache.planes.push(CollisionPlane {
+                point: add(
+                    request.start,
+                    mul(sub(request.end, request.start), result.fraction),
+                ),
+                normal: result.normal,
+            });
+        }
+    }
+    cache.last_origin = origin;
+    cache.last_update_seconds = system.local_time;
+    cache.initialized = true;
     Ok(())
 }
 
@@ -1798,7 +2113,6 @@ fn render_system(
     effect_identity: u32,
     camera: [f32; 3],
     output: &mut Vec<RenderItem>,
-    bounds: &mut Option<Bounds>,
     limit: usize,
 ) -> Result<(), Error> {
     let definition = registry
@@ -1846,17 +2160,28 @@ fn render_system(
                 previous_position: particle.previous_position,
                 radius: particle.radius,
                 roll_radians: particle.roll,
+                yaw_radians: particle.yaw,
                 color: particle
                     .color
                     .map(|value| (value.clamp(0.0, 1.0) * 255.0).round() as u8),
-                opacity: particle.alpha.clamp(0.0, 1.0),
+                opacity: (particle.alpha.clamp(0.0, 1.0) * 255.0).round() / 255.0,
                 sequence: particle.sequence,
                 secondary_sequence: particle.secondary_sequence,
-                trail_length: particle.trail_length,
+                trail_length_scale: particle.trail_length,
                 sort_key: distance,
                 age_seconds: (system.local_time - particle.creation_seconds).max(0.0),
                 lifetime_seconds: particle.lifetime_seconds,
                 animation_rate: float_parameter(renderer, "animation rate", 0.1),
+                secondary_animation_rate: float_parameter(
+                    renderer,
+                    "second sequence animation rate",
+                    0.0,
+                ),
+                step_seconds: if system.current_step > 0.0 {
+                    system.current_step
+                } else {
+                    1.0
+                },
                 trail_min_length: float_parameter(renderer, "min length", 0.0).max(0.0),
                 trail_max_length: float_parameter(renderer, "max length", 2_000.0).max(0.0),
                 trail_fade_in_seconds: float_parameter(renderer, "length fade in time", 0.0)
@@ -1866,22 +2191,17 @@ fn render_system(
                 animation_rate_as_fps: bool_parameter(renderer, "use animation rate as FPS", false),
                 primary_sheet: None,
                 secondary_sheet: None,
+                trail_end_position: particle.position,
+                trail_width: 0.0,
+                trail_length: 0.0,
+                material_state: None,
                 stable_tie_identity: hash(system.path_identity, particle.identity as u64),
             };
-            extend_bounds(bounds, item.position, item.radius);
             output.push(item);
         }
     }
     for child in &system.children {
-        render_system(
-            child,
-            registry,
-            effect_identity,
-            camera,
-            output,
-            bounds,
-            limit,
-        )?;
+        render_system(child, registry, effect_identity, camera, output, limit)?;
     }
     Ok(())
 }
@@ -1912,6 +2232,7 @@ fn finished(system: &System, registry: &Registry, time: f32) -> bool {
             }
         });
     !system.dormant
+        && !system.first_frame
         && emitters_finished
         && system.particles.is_empty()
         && system
@@ -2126,15 +2447,24 @@ fn set_control(system: &mut System, control: ControlPoint) {
 }
 
 fn set_emission(system: &mut System, active: bool, clear: bool) {
+    if !active {
+        system.dormant = false;
+    }
     system.emission_active = active;
     for context in &mut system.emitter_contexts {
         match context {
             EmitterContext::Continuous { stopped, .. } => *stopped = !active,
             EmitterContext::Instantaneous {
-                remaining, actual, ..
+                remaining,
+                actual,
+                start_time,
+                time_offset,
             } => {
                 if active {
                     *remaining = *actual;
+                    if system.local_time > *start_time + *time_offset + 2.0 {
+                        *remaining = 0;
+                    }
                 } else {
                     *remaining = 0;
                 }
@@ -2150,46 +2480,47 @@ fn set_emission(system: &mut System, active: bool, clear: bool) {
 }
 
 fn set_dormant(system: &mut System, dormant: bool) {
-    system.dormant = dormant;
-    for child in &mut system.children {
-        set_dormant(child, dormant);
+    if dormant == system.dormant || (dormant && !system.emission_active) {
+        return;
     }
+    set_emission(system, !dormant, false);
+    system.dormant = dormant;
 }
 
-fn restart_system(system: &mut System, _timestamp: f32, random_seed: i32) {
-    system.emission_active = true;
-    system.dormant = false;
-    system.random_seed = random_seed;
-    system.random_query_count = 0;
-    for context in &mut system.emitter_contexts {
+fn restart_system(system: &mut System, registry: &Registry) {
+    let definition = registry
+        .definition_by_uuid(system.definition_uuid)
+        .expect("instantiated definition");
+    for (emitter, context) in definition
+        .functions(FunctionCategory::Emitter)
+        .zip(&mut system.emitter_contexts)
+    {
         match context {
             EmitterContext::Continuous {
                 total_actual,
                 emitted,
                 time_offset,
-                stopped,
+                ..
             } => {
-                *stopped = false;
-                *total_actual = 0.0;
-                *emitted = 0;
-                *time_offset = system.local_time;
+                if float_parameter(emitter, "emission_duration", 0.0) > 0.0 {
+                    *time_offset = system.local_time;
+                    *total_actual = 0.0;
+                    *emitted = 0;
+                }
             }
             EmitterContext::Instantaneous {
                 remaining,
                 actual,
                 time_offset,
+                ..
             } => {
                 *remaining = *actual;
                 *time_offset = system.local_time;
             }
         }
     }
-    let mut child_seed = random_seed;
     for child in &mut system.children {
-        if child_seed != 0 {
-            child_seed = child_seed.wrapping_add(129);
-        }
-        restart_system(child, _timestamp, child_seed);
+        restart_system(child, registry);
     }
 }
 
@@ -2215,12 +2546,64 @@ fn system_particle_count(system: &System) -> usize {
             .sum::<usize>()
 }
 
-fn control_at(system: &System, index: i32) -> [f32; 3] {
+fn maximum_system_step(system: &System, registry: &Registry) -> f32 {
+    let definition = registry
+        .definition_by_uuid(system.definition_uuid)
+        .expect("instantiated definition");
+    let own = float_attribute(definition, "maximum time step", 0.1);
+    let own = if own > 0.0 { own } else { 0.1 };
     system
-        .controls
+        .children
+        .iter()
+        .map(|child| maximum_system_step(child, registry))
+        .fold(own, f32::min)
+}
+
+fn control_at(system: &System, index: i32) -> [f32; 3] {
+    control_at_slice(&system.controls, index)
+}
+
+fn control_at_slice(controls: &[Option<ControlPoint>], index: i32) -> [f32; 3] {
+    controls
         .get(index.max(0) as usize)
         .and_then(Option::as_ref)
         .map_or([0.0; 3], |control| control.position)
+}
+
+fn control_at_time(system: &System, index: i32, time: f32) -> [f32; 3] {
+    let Some(control) = system
+        .controls
+        .get(index.max(0) as usize)
+        .and_then(Option::as_ref)
+    else {
+        return [0.0; 3];
+    };
+    interpolate_control_position(
+        control.previous_position,
+        control.position,
+        system.local_time,
+        system.current_step,
+        time,
+    )
+}
+
+fn interpolate_control_position(
+    previous: [f32; 3],
+    current: [f32; 3],
+    current_time: f32,
+    step: f32,
+    sample_time: f32,
+) -> [f32; 3] {
+    if step <= 0.0 {
+        return current;
+    }
+    let how_long_ago = current_time - sample_time;
+    let fraction = ((step - how_long_ago) / step).max(0.0);
+    [
+        mix(previous[0], current[0], fraction),
+        mix(previous[1], current[1], fraction),
+        mix(previous[2], current[2], fraction),
+    ]
 }
 
 fn control_orientation(system: &System, index: i32) -> Option<[f32; 4]> {
@@ -2244,6 +2627,13 @@ fn integer_attribute(definition: &Definition, names: &[&str], default: i32) -> i
 fn float_attribute(definition: &Definition, name: &str, default: f32) -> f32 {
     match definition.attribute(name) {
         Some(Value::Float(value)) => *value,
+        _ => default,
+    }
+}
+
+fn vector_attribute(definition: &Definition, name: &str, default: [f32; 3]) -> [f32; 3] {
+    match definition.attribute(name) {
+        Some(Value::Vector3(value)) => *value,
         _ => default,
     }
 }
@@ -2304,17 +2694,88 @@ fn string_parameter(function: &Function, name: &str, default: &str) -> String {
     }
 }
 
-fn extend_bounds(bounds: &mut Option<Bounds>, position: [f32; 3], radius: f32) {
-    let minimum = position.map(|value| value - radius);
-    let maximum = position.map(|value| value + radius);
+fn system_bounds(system: &System, registry: &Registry) -> Option<Bounds> {
+    let definition = registry
+        .definition_by_uuid(system.definition_uuid)
+        .expect("instantiated definition");
+    let mut bounds = if system.particles.is_empty() {
+        None
+    } else {
+        let mut minimum = [f32::INFINITY; 3];
+        let mut maximum = [f32::NEG_INFINITY; 3];
+        for particle in &system.particles {
+            for component in 0..3 {
+                minimum[component] = minimum[component].min(particle.position[component]);
+                maximum[component] = maximum[component].max(particle.position[component]);
+            }
+        }
+        let expansion_min = vector_attribute(definition, "bounding_box_min", [-10.0; 3]);
+        let expansion_max = vector_attribute(definition, "bounding_box_max", [10.0; 3]);
+        for component in 0..3 {
+            minimum[component] += expansion_min[component];
+            maximum[component] += expansion_max[component];
+        }
+        Some(Bounds { minimum, maximum })
+    };
+    if system.simulated_frames > 2 && definition_reads_control_zero(definition) {
+        let control = control_at(system, 0);
+        match &mut bounds {
+            Some(bounds) => {
+                for (component, value) in control.into_iter().enumerate() {
+                    bounds.minimum[component] = bounds.minimum[component].min(value);
+                    bounds.maximum[component] = bounds.maximum[component].max(value);
+                }
+            }
+            None => {
+                bounds = Some(Bounds {
+                    minimum: control,
+                    maximum: control,
+                });
+            }
+        }
+    }
+    for child in &system.children {
+        if let Some(child_bounds) = system_bounds(child, registry) {
+            merge_bounds(&mut bounds, child_bounds);
+        }
+    }
+    bounds
+}
+
+fn definition_reads_control_zero(definition: &Definition) -> bool {
+    definition.functions.iter().any(|function| {
+        function.identity.eq_ignore_ascii_case("Color Random")
+            || function
+                .identity
+                .eq_ignore_ascii_case("Collision via traces")
+            || ((function
+                .identity
+                .eq_ignore_ascii_case("Position Within Sphere Random")
+                || function
+                    .identity
+                    .eq_ignore_ascii_case("Position Modify Offset Random")
+                || function
+                    .identity
+                    .eq_ignore_ascii_case("Movement Lock to Control Point"))
+                && integer_parameter(function, "control_point_number", 0) == 0)
+            || (function
+                .identity
+                .eq_ignore_ascii_case("Position Within Box Random")
+                && integer_parameter(function, "control point number", 0) == 0)
+    })
+}
+
+fn merge_bounds(bounds: &mut Option<Bounds>, incoming: Bounds) {
     match bounds {
         Some(bounds) => {
             for component in 0..3 {
-                bounds.minimum[component] = bounds.minimum[component].min(minimum[component]);
-                bounds.maximum[component] = bounds.maximum[component].max(maximum[component]);
+                bounds.minimum[component] =
+                    bounds.minimum[component].min(incoming.minimum[component]);
+                bounds.maximum[component] =
+                    bounds.maximum[component].max(incoming.maximum[component]);
             }
         }
-        None => *bounds = Some(Bounds { minimum, maximum }),
+        None => *bounds = Some(incoming),
     }
 }
 
@@ -2428,7 +2889,8 @@ fn ranged(minimum: f32, maximum: f32, exponent: f32, sample: f32) -> f32 {
 }
 
 fn authored_remaining(system: &System, definition: &Definition) -> usize {
-    let authored = integer_attribute(definition, &["max_particles"], 1_000).max(0) as usize;
+    let authored =
+        integer_attribute(definition, &["max_particles"], 1_000).clamp(1, 5_000) as usize;
     authored.saturating_sub(system.particles.len())
 }
 

@@ -2,9 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use playsrc_particle::{
     AdvanceRequest, CollisionQuery, CollisionResult, ControlPoint, DefinitionLookup, Error,
-    ErrorCode, Event, EventCommand, ParticleSheet, PcfSource, Registry, RegistryLimits, SheetFrame,
-    SheetSampleRequest, SheetSequence, StopMode, TraceRequest, WorldLimits, encode_render_output,
-    sample_sheet,
+    ErrorCode, Event, EventCommand, ParticleBlendFactor, ParticleBlendState, ParticleColorSpace,
+    ParticleMaterial, ParticleMaterialShader, ParticleSheet, PcfSource, Registry, RegistryLimits,
+    SheetFrame, SheetSampleRequest, SheetSequence, StopMode, TraceRequest, WorldLimits,
+    encode_render_output, resolve_render_output, sample_sheet,
 };
 
 #[derive(Clone)]
@@ -45,6 +46,18 @@ fn fixture(with_constraint: bool) -> Vec<u8> {
 }
 
 fn fixture_with_limit(with_constraint: bool, maximum_particles: i32) -> Vec<u8> {
+    fixture_with_renderer(
+        with_constraint,
+        maximum_particles,
+        "render_animated_sprites",
+    )
+}
+
+fn fixture_with_renderer(
+    with_constraint: bool,
+    maximum_particles: i32,
+    renderer_identity: &'static str,
+) -> Vec<u8> {
     let mut elements = vec![TestElement {
         kind: "DmeElement",
         name: "root",
@@ -102,9 +115,13 @@ fn fixture_with_limit(with_constraint: bool, maximum_particles: i32) -> Vec<u8> 
         ],
     });
     elements.push(element(
-        "render_animated_sprites",
+        renderer_identity,
         4,
-        vec![("functionName", TestValue::Text("render_animated_sprites"))],
+        vec![
+            ("functionName", TestValue::Text(renderer_identity)),
+            ("animation rate", TestValue::Float(0.25)),
+            ("animation_fit_lifetime", TestValue::Bool(true)),
+        ],
     ));
     elements.push(element(
         "Movement Basic",
@@ -256,6 +273,7 @@ fn fixture_with_limit(with_constraint: bool, maximum_particles: i32) -> Vec<u8> 
         vec![
             ("functionName", TestValue::Text("Collision via traces")),
             ("amount of bounce", TestValue::Float(1.0)),
+            ("collision mode", TestValue::Int(1)),
             ("brush only", TestValue::Bool(true)),
             ("collision group", TestValue::Text("NONE")),
         ],
@@ -448,6 +466,58 @@ fn create_event(control_points: Vec<ControlPoint>) -> Event {
     }
 }
 
+fn material(sheet: ParticleSheet) -> ParticleMaterial {
+    ParticleMaterial {
+        shader: ParticleMaterialShader::MeshSprite,
+        blend: ParticleBlendState {
+            source: ParticleBlendFactor::SourceAlpha,
+            destination: ParticleBlendFactor::OneMinusSourceAlpha,
+        },
+        color_space: ParticleColorSpace::SrgbTextureLinearTint,
+        dual_sequence: false,
+        sheet,
+    }
+}
+
+fn full_texture_sheet() -> ParticleSheet {
+    ParticleSheet {
+        sequences: BTreeMap::from([(
+            0,
+            SheetSequence {
+                clamp: true,
+                duration_seconds: 1.0,
+                frames: vec![SheetFrame {
+                    duration_seconds: 1.0,
+                    images: [[0.0, 0.0, 1.0, 1.0]; 4],
+                }],
+            },
+        )]),
+    }
+}
+
+fn animated_sheet() -> ParticleSheet {
+    let images = |left: f32| [[left, 0.0, left + 0.25, 1.0]; 4];
+    ParticleSheet {
+        sequences: BTreeMap::from([(
+            0,
+            SheetSequence {
+                clamp: false,
+                duration_seconds: 1.0,
+                frames: vec![
+                    SheetFrame {
+                        duration_seconds: 0.5,
+                        images: images(0.0),
+                    },
+                    SheetFrame {
+                        duration_seconds: 0.5,
+                        images: images(0.5),
+                    },
+                ],
+            },
+        )]),
+    }
+}
+
 #[derive(Default)]
 struct NoHit;
 
@@ -513,6 +583,26 @@ fn parses_registry_and_rejects_malformed_documents_atomically() {
 }
 
 #[test]
+fn retains_unknown_modules_and_rejects_them_before_target_creation() {
+    let bytes = fixture_with_renderer(false, 32, "unknown projectile renderer");
+    let registry = registry(&bytes);
+    let definition = registry
+        .definition(DefinitionLookup::Name("rockettrail"))
+        .unwrap();
+    assert_eq!(
+        definition.functions[0].identity,
+        "unknown projectile renderer"
+    );
+    assert_eq!(
+        registry
+            .target_closure(&[DefinitionLookup::Name("rockettrail")])
+            .unwrap_err()
+            .code,
+        ErrorCode::UnsupportedFunction
+    );
+}
+
+#[test]
 fn advances_children_controls_and_equivalent_partitions_deterministically() {
     let bytes = fixture(false);
     let registry = registry(&bytes);
@@ -567,13 +657,19 @@ fn advances_children_controls_and_equivalent_partitions_deterministically() {
     );
     assert!(whole_output.1.is_some());
 
-    let materials = vec![
+    let material_names = vec![
         "effects/rocketrailsmoke.vmt".to_owned(),
         "effects/sc_brightglow_y_nomodel.vmt".to_owned(),
     ];
-    let encoded = encode_render_output(&whole_output.0, &materials, 1024 * 1024).unwrap();
+    let materials = BTreeMap::from([
+        (material_names[0].clone(), material(full_texture_sheet())),
+        (material_names[1].clone(), material(full_texture_sheet())),
+    ]);
+    let resolved = resolve_render_output(whole_output.0, &materials).unwrap();
+    let encoded =
+        encode_render_output(&resolved, whole_output.1, &material_names, 1024 * 1024).unwrap();
     assert_eq!(&encoded[0..4], &0x5250_5350_u32.to_le_bytes());
-    assert_eq!(encoded.len(), 12 + whole_output.0.len() * 392);
+    assert_eq!(encoded.len(), 40 + resolved.len() * 436);
 }
 
 #[test]
@@ -582,7 +678,7 @@ fn first_frame_creates_only_authored_initial_particles_before_emitters() {
     let registry = registry(&bytes);
     let mut world =
         playsrc_particle::ParticleWorld::new(&registry, WorldLimits::default()).unwrap();
-    let (items, _) = world
+    let (items, bounds) = world
         .advance(
             &[create_event(vec![control([0.0; 3], [0.0; 3])])],
             AdvanceRequest {
@@ -600,6 +696,11 @@ fn first_frame_creates_only_authored_initial_particles_before_emitters() {
         "one initial particle is emitted by two root renderers"
     );
     assert!(items.iter().all(|item| item.system_uuid == [1; 16]));
+    let bounds = bounds.unwrap();
+    for component in 0..3 {
+        assert!((bounds.minimum[component] - (items[0].position[component] - 10.0)).abs() < 1.0e-6);
+        assert!((bounds.maximum[component] - (items[0].position[component] + 10.0)).abs() < 1.0e-6);
+    }
 }
 
 #[test]
@@ -648,8 +749,10 @@ fn consumes_supplied_collisions_and_preserves_state_after_atomic_failure() {
     let mut world =
         playsrc_particle::ParticleWorld::new(&registry, WorldLimits::default()).unwrap();
     let mut collision_calls = 0;
+    let mut collision_requests = 0;
     let mut collision = |requests: &[TraceRequest]| {
         collision_calls += 1;
+        collision_requests += requests.len();
         Ok(requests
             .iter()
             .map(|request| CollisionResult {
@@ -684,7 +787,8 @@ fn consumes_supplied_collisions_and_preserves_state_after_atomic_failure() {
             &mut Query(&mut collision),
         )
         .unwrap();
-    assert!(collision_calls > 0);
+    assert_eq!(collision_calls, 1);
+    assert_eq!(collision_requests, 52);
     let before = world.clone();
     let error = world
         .advance(
@@ -734,6 +838,32 @@ fn emission_overrun_fails_without_publishing_an_effect() {
     assert_eq!(error.code, ErrorCode::BoundExceeded);
     assert_eq!(world.effect_count(), 0);
     assert_eq!(world.time(), 0.0);
+}
+
+#[test]
+fn substep_limit_fails_without_consuming_partial_time() {
+    let bytes = fixture(false);
+    let registry = registry(&bytes);
+    let limits = WorldLimits {
+        max_substeps: 2,
+        ..WorldLimits::default()
+    };
+    let mut world = playsrc_particle::ParticleWorld::new(&registry, limits).unwrap();
+    let error = world
+        .advance(
+            &[create_event(vec![control([0.0; 3], [0.0; 3])])],
+            AdvanceRequest {
+                from_seconds: 0.0,
+                to_seconds: 0.3,
+                maximum_step_seconds: 0.1,
+                camera_position: [0.0; 3],
+            },
+            &mut NoHit,
+        )
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::BoundExceeded);
+    assert_eq!(world.time(), 0.0);
+    assert_eq!(world.effect_count(), 0);
 }
 
 #[test]
@@ -810,4 +940,314 @@ fn replacement_and_immediate_stop_are_explicit_and_ordered() {
         )
         .unwrap();
     assert_eq!(world.effect_count(), 0);
+}
+
+#[test]
+fn resolves_shader_blend_sheet_and_derived_trail_output() {
+    let bytes = fixture(false);
+    let registry = registry(&bytes);
+    let mut world =
+        playsrc_particle::ParticleWorld::new(&registry, WorldLimits::default()).unwrap();
+    let (raw, _) = world
+        .advance(
+            &[create_event(vec![control([0.0; 3], [0.0; 3])])],
+            AdvanceRequest {
+                from_seconds: 0.0,
+                to_seconds: 1.0,
+                maximum_step_seconds: 0.1,
+                camera_position: [100.0, 0.0, 0.0],
+            },
+            &mut NoHit,
+        )
+        .unwrap();
+    let root_material = "effects/rocketrailsmoke.vmt".to_owned();
+    let child_material = "effects/sc_brightglow_y_nomodel.vmt".to_owned();
+    let mesh_materials = BTreeMap::from([
+        (root_material.clone(), material(animated_sheet())),
+        (child_material.clone(), material(animated_sheet())),
+    ]);
+    assert_eq!(
+        resolve_render_output(raw.clone(), &BTreeMap::new())
+            .unwrap_err()
+            .code,
+        ErrorCode::MissingDependency
+    );
+    let mesh = resolve_render_output(raw.clone(), &mesh_materials).unwrap();
+    let trail = mesh
+        .iter()
+        .find(|item| {
+            item.material == root_material && item.primitive == playsrc_particle::Primitive::Trail
+        })
+        .unwrap();
+    assert!(trail.trail_length > 0.0);
+    assert!(trail.trail_width <= trail.radius && trail.trail_width <= trail.trail_length);
+    assert_ne!(trail.trail_end_position, trail.position);
+    assert_eq!(
+        trail.material_state.unwrap().blend.destination,
+        ParticleBlendFactor::OneMinusSourceAlpha
+    );
+
+    let sprite_card_materials = BTreeMap::from([
+        (
+            root_material.clone(),
+            ParticleMaterial {
+                shader: ParticleMaterialShader::SpriteCard,
+                blend: ParticleBlendState {
+                    source: ParticleBlendFactor::SourceAlpha,
+                    destination: ParticleBlendFactor::One,
+                },
+                color_space: ParticleColorSpace::SrgbTextureLinearTint,
+                dual_sequence: false,
+                sheet: animated_sheet(),
+            },
+        ),
+        (child_material, material(animated_sheet())),
+    ]);
+    let sprite_card = resolve_render_output(raw, &sprite_card_materials).unwrap();
+    assert!(sprite_card.iter().all(|item| {
+        item.material != root_material || item.primitive == playsrc_particle::Primitive::Sprite
+    }));
+    let mesh_sprite = mesh
+        .iter()
+        .find(|item| {
+            item.material == root_material && item.primitive == playsrc_particle::Primitive::Sprite
+        })
+        .unwrap();
+    let card_sprite = sprite_card
+        .iter()
+        .find(|item| item.material == root_material)
+        .unwrap();
+    assert_ne!(mesh_sprite.primary_sheet, card_sprite.primary_sheet);
+    assert!(card_sprite.secondary_sheet.is_none());
+
+    let malformed = BTreeMap::from([
+        (root_material, material(ParticleSheet::default())),
+        (
+            "effects/sc_brightglow_y_nomodel.vmt".to_owned(),
+            material(animated_sheet()),
+        ),
+    ]);
+    assert_eq!(
+        resolve_render_output(mesh, &malformed).unwrap_err().code,
+        ErrorCode::MissingDependency
+    );
+}
+
+#[test]
+fn natural_death_graceful_stop_reset_and_repeated_failure_clean_up_atomically() {
+    let bytes = fixture(false);
+    let registry = registry(&bytes);
+    let mut world =
+        playsrc_particle::ParticleWorld::new(&registry, WorldLimits::default()).unwrap();
+    world
+        .advance(
+            &[create_event(vec![control([0.0; 3], [0.0; 3])])],
+            AdvanceRequest {
+                from_seconds: 0.0,
+                to_seconds: 0.5,
+                maximum_step_seconds: 0.1,
+                camera_position: [0.0; 3],
+            },
+            &mut NoHit,
+        )
+        .unwrap();
+    let (live, _) = world
+        .advance(
+            &[Event {
+                identity: 2,
+                timestamp_seconds: 0.5,
+                source_order: 0,
+                command: EventCommand::StopEmission {
+                    effect_identity: 7,
+                    mode: StopMode::Graceful,
+                },
+            }],
+            AdvanceRequest {
+                from_seconds: 0.5,
+                to_seconds: 1.0,
+                maximum_step_seconds: 0.1,
+                camera_position: [0.0; 3],
+            },
+            &mut NoHit,
+        )
+        .unwrap();
+    assert!(!live.is_empty());
+    for (from, to) in [(1.0, 2.0), (2.0, 3.0), (3.0, 4.0)] {
+        world
+            .advance(
+                &[],
+                AdvanceRequest {
+                    from_seconds: from,
+                    to_seconds: to,
+                    maximum_step_seconds: 0.1,
+                    camera_position: [0.0; 3],
+                },
+                &mut NoHit,
+            )
+            .unwrap();
+    }
+    assert_eq!(world.effect_count(), 0);
+    let before = world.clone();
+    assert_eq!(
+        world
+            .advance(
+                &[Event {
+                    identity: 3,
+                    timestamp_seconds: 4.0,
+                    source_order: 0,
+                    command: EventCommand::StopEmission {
+                        effect_identity: 7,
+                        mode: StopMode::Graceful,
+                    },
+                }],
+                AdvanceRequest {
+                    from_seconds: 4.0,
+                    to_seconds: 4.0,
+                    maximum_step_seconds: 0.1,
+                    camera_position: [0.0; 3],
+                },
+                &mut NoHit,
+            )
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidState
+    );
+    assert_eq!(world, before);
+
+    world
+        .advance(
+            &[
+                Event {
+                    identity: 4,
+                    timestamp_seconds: 4.0,
+                    source_order: 0,
+                    command: EventCommand::Create {
+                        effect_identity: 8,
+                        definition: "rockettrail".to_owned(),
+                        seed: 7,
+                        owner_identity: None,
+                        control_points: vec![control([0.0; 3], [0.0; 3])],
+                    },
+                },
+                Event {
+                    identity: 5,
+                    timestamp_seconds: 4.0,
+                    source_order: 1,
+                    command: EventCommand::Reset,
+                },
+            ],
+            AdvanceRequest {
+                from_seconds: 4.0,
+                to_seconds: 4.0,
+                maximum_step_seconds: 0.1,
+                camera_position: [0.0; 3],
+            },
+            &mut NoHit,
+        )
+        .unwrap();
+    assert_eq!(world.effect_count(), 0);
+}
+
+#[test]
+fn restart_preserves_seed_and_live_particles_while_rescheduling_finite_emitters() {
+    let bytes = fixture(false);
+    let registry = registry(&bytes);
+    let mut world =
+        playsrc_particle::ParticleWorld::new(&registry, WorldLimits::default()).unwrap();
+    world
+        .advance(
+            &[create_event(vec![control([0.0; 3], [0.0; 3])])],
+            AdvanceRequest {
+                from_seconds: 0.0,
+                to_seconds: 1.0,
+                maximum_step_seconds: 0.1,
+                camera_position: [0.0; 3],
+            },
+            &mut NoHit,
+        )
+        .unwrap();
+    let before = world.clone();
+    let (items, _) = world
+        .advance(
+            &[Event {
+                identity: 2,
+                timestamp_seconds: 1.0,
+                source_order: 0,
+                command: EventCommand::Restart { effect_identity: 7 },
+            }],
+            AdvanceRequest {
+                from_seconds: 1.0,
+                to_seconds: 1.5,
+                maximum_step_seconds: 0.1,
+                camera_position: [0.0; 3],
+            },
+            &mut NoHit,
+        )
+        .unwrap();
+    assert!(!items.is_empty());
+    assert_ne!(world, before);
+}
+
+#[test]
+fn dormancy_stops_emission_but_keeps_the_collection_and_live_simulation() {
+    let bytes = fixture(false);
+    let registry = registry(&bytes);
+    let mut world =
+        playsrc_particle::ParticleWorld::new(&registry, WorldLimits::default()).unwrap();
+    world
+        .advance(
+            &[create_event(vec![control([0.0; 3], [0.0; 3])])],
+            AdvanceRequest {
+                from_seconds: 0.0,
+                to_seconds: 0.5,
+                maximum_step_seconds: 0.1,
+                camera_position: [0.0; 3],
+            },
+            &mut NoHit,
+        )
+        .unwrap();
+    let before = world.clone();
+    world
+        .advance(
+            &[Event {
+                identity: 2,
+                timestamp_seconds: 0.5,
+                source_order: 0,
+                command: EventCommand::SetDormant {
+                    effect_identity: 7,
+                    dormant: true,
+                },
+            }],
+            AdvanceRequest {
+                from_seconds: 0.5,
+                to_seconds: 1.0,
+                maximum_step_seconds: 0.1,
+                camera_position: [0.0; 3],
+            },
+            &mut NoHit,
+        )
+        .unwrap();
+    assert_eq!(world.effect_count(), 1);
+    assert_ne!(world, before);
+    world
+        .advance(
+            &[Event {
+                identity: 3,
+                timestamp_seconds: 1.0,
+                source_order: 0,
+                command: EventCommand::SetDormant {
+                    effect_identity: 7,
+                    dormant: false,
+                },
+            }],
+            AdvanceRequest {
+                from_seconds: 1.0,
+                to_seconds: 1.0,
+                maximum_step_seconds: 0.1,
+                camera_position: [0.0; 3],
+            },
+            &mut NoHit,
+        )
+        .unwrap();
+    assert_eq!(world.effect_count(), 1);
 }

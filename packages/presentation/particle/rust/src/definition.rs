@@ -77,6 +77,8 @@ pub struct Function {
 pub struct ChildDeclaration {
     pub element_uuid: [u8; 16],
     pub definition_uuid: [u8; 16],
+    pub definition_name: String,
+    pub name_lookup: bool,
     pub delay_seconds: f32,
 }
 
@@ -84,6 +86,7 @@ pub struct ChildDeclaration {
 pub struct Definition {
     pub name: String,
     pub uuid: [u8; 16],
+    pub name_lookup: bool,
     pub source: String,
     pub material: String,
     pub attributes: Vec<(String, Value)>,
@@ -257,7 +260,15 @@ impl Registry {
         }
         ordered.push(uuid);
         for child in &definition.children {
-            self.visit(child.definition_uuid, depth + 1, visiting, visited, ordered)?;
+            let child_definition = self.child_definition(child).ok_or_else(|| {
+                Error::new(
+                    ErrorCode::MissingDefinition,
+                    &definition.source,
+                    0,
+                    "child particle definition is missing",
+                )
+            })?;
+            self.visit(child_definition.uuid, depth + 1, visiting, visited, ordered)?;
         }
         visiting.remove(&uuid);
         visited.insert(uuid);
@@ -311,19 +322,29 @@ impl Registry {
                     "definition UUID is duplicated",
                 ));
             }
-            let canonical = definition.name.to_ascii_lowercase();
             let next_index = self.definitions.len();
-            if let Some(previous) = self.by_name.insert(canonical.clone(), next_index) {
-                self.shadowed_names.push((
-                    canonical,
-                    self.definitions[previous].uuid,
-                    definition.uuid,
-                ));
+            if definition.name_lookup {
+                let canonical = definition.name.to_ascii_lowercase();
+                if let Some(previous) = self.by_name.insert(canonical.clone(), next_index) {
+                    self.shadowed_names.push((
+                        canonical,
+                        self.definitions[previous].uuid,
+                        definition.uuid,
+                    ));
+                }
             }
             self.by_uuid.insert(definition.uuid, next_index);
             self.definitions.push(definition);
         }
         Ok(())
+    }
+
+    pub(crate) fn child_definition(&self, child: &ChildDeclaration) -> Option<&Definition> {
+        if child.name_lookup {
+            self.definition(DefinitionLookup::Name(&child.definition_name))
+        } else {
+            self.definition_by_uuid(child.definition_uuid)
+        }
     }
 }
 
@@ -366,6 +387,18 @@ fn compile_definition(
             "particle definition name is empty",
         ));
     }
+    let name_lookup = match element.attribute("preventNameBasedLookup") {
+        Some(Value::Bool(value)) => !*value,
+        None => true,
+        _ => {
+            return Err(Error::new(
+                ErrorCode::InvalidType,
+                source,
+                0,
+                "preventNameBasedLookup is not a bool",
+            ));
+        }
+    };
     let material = match element.attribute("material") {
         Some(Value::String(value)) => normalize_material(value, source)?,
         None => String::new(),
@@ -494,12 +527,26 @@ fn compile_definition(
         children.push(ChildDeclaration {
             element_uuid: child.uuid,
             definition_uuid: definition.uuid,
+            definition_name: definition.name.clone(),
+            name_lookup: match definition.attribute("preventNameBasedLookup") {
+                Some(Value::Bool(value)) => !*value,
+                None => true,
+                _ => {
+                    return Err(Error::new(
+                        ErrorCode::InvalidType,
+                        source,
+                        0,
+                        "child preventNameBasedLookup is not a bool",
+                    ));
+                }
+            },
             delay_seconds,
         });
     }
     Ok(Definition {
         name: element.name.clone(),
         uuid: element.uuid,
+        name_lookup,
         source: source.to_owned(),
         material,
         attributes,
@@ -647,6 +694,17 @@ fn supported(category: FunctionCategory, identity: &str) -> bool {
 fn validate_function(function: &Function, definition: &Definition) -> Result<(), Error> {
     for (name, value) in &function.parameters {
         let name = name.to_ascii_lowercase();
+        if !accepted_parameter(function, &name) {
+            return Err(Error::new(
+                ErrorCode::UnsupportedFunction,
+                &definition.source,
+                0,
+                format!(
+                    "function {} parameter {} is not in the target executable schema",
+                    function.identity, name
+                ),
+            ));
+        }
         let valid = if [
             "animation_fit_lifetime",
             "use animation rate as fps",
@@ -738,5 +796,320 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
             ));
         }
     }
+    let unsupported = if function.category == FunctionCategory::Renderer {
+        int_parameter(function, "Visibility Proxy Input Control Point Number", -1) >= 0
+            || (function
+                .identity
+                .eq_ignore_ascii_case("render_animated_sprites")
+                && (int_parameter(function, "orientation_type", 0) != 0
+                    || int_parameter(function, "orientation control point", -1) >= 0))
+    } else if function.identity.eq_ignore_ascii_case("Color Random") {
+        float_parameter(function, "tint_perc", 0.0) != 0.0
+    } else if function
+        .identity
+        .eq_ignore_ascii_case("Position Within Sphere Random")
+    {
+        int_parameter(function, "create in model", 0) != 0
+            || bool_parameter(
+                function,
+                "randomly distribute to highest supplied Control Point",
+                false,
+            )
+            || bool_parameter(function, "bias in local system", false)
+    } else if function
+        .identity
+        .eq_ignore_ascii_case("Movement Lock to Control Point")
+    {
+        bool_parameter(function, "lock rotation", false)
+            || float_parameter(function, "distance fade range", 0.0) != 0.0
+    } else if function.identity.eq_ignore_ascii_case("emit_continuously") {
+        float_parameter(function, "scale emission to used control points", 0.0) != 0.0
+            || bool_parameter(function, "use parent particles for emission scaling", false)
+    } else if function
+        .identity
+        .eq_ignore_ascii_case("emit_instantaneously")
+    {
+        int_parameter(function, "emission count scale control point", -1) >= 0
+    } else if function
+        .identity
+        .eq_ignore_ascii_case("Collision via traces")
+    {
+        int_parameter(function, "collision mode", 0) != 1
+    } else {
+        false
+    };
+    if unsupported {
+        return Err(Error::new(
+            ErrorCode::UnsupportedFunction,
+            &definition.source,
+            0,
+            format!(
+                "function {} uses a parameter combination outside the exact projectile closure",
+                function.identity
+            ),
+        ));
+    }
     Ok(())
+}
+
+fn int_parameter(function: &Function, name: &str, default: i32) -> i32 {
+    match function.parameter(name) {
+        Some(Value::Int(value)) => *value,
+        _ => default,
+    }
+}
+
+fn float_parameter(function: &Function, name: &str, default: f32) -> f32 {
+    match function.parameter(name) {
+        Some(Value::Float(value)) => *value,
+        _ => default,
+    }
+}
+
+fn bool_parameter(function: &Function, name: &str, default: bool) -> bool {
+    match function.parameter(name) {
+        Some(Value::Bool(value)) => *value,
+        _ => default,
+    }
+}
+
+fn accepted_parameter(function: &Function, name: &str) -> bool {
+    if [
+        "operator start fadein",
+        "operator end fadein",
+        "operator start fadeout",
+        "operator end fadeout",
+        "operator fade oscillate",
+    ]
+    .contains(&name)
+    {
+        return true;
+    }
+    if function.category == FunctionCategory::Renderer
+        && [
+            "visibility proxy input control point number",
+            "visibility proxy radius",
+            "visibility input minimum",
+            "visibility input maximum",
+            "visibility alpha scale minimum",
+            "visibility alpha scale maximum",
+            "visibility radius scale minimum",
+            "visibility radius scale maximum",
+            "visibility camera depth bias",
+        ]
+        .contains(&name)
+    {
+        return true;
+    }
+    let names: &[&str] = if function
+        .identity
+        .eq_ignore_ascii_case("render_animated_sprites")
+    {
+        &[
+            "animation rate",
+            "animation_fit_lifetime",
+            "orientation_type",
+            "orientation control point",
+            "second sequence animation rate",
+            "use animation rate as fps",
+        ]
+    } else if function
+        .identity
+        .eq_ignore_ascii_case("render_sprite_trail")
+    {
+        &[
+            "animation rate",
+            "length fade in time",
+            "max length",
+            "min length",
+        ]
+    } else if function.identity.eq_ignore_ascii_case("Movement Basic") {
+        &["gravity", "drag", "max constraint passes"]
+    } else if function
+        .identity
+        .eq_ignore_ascii_case("Alpha Fade and Decay")
+    {
+        &[
+            "start_alpha",
+            "end_alpha",
+            "start_fade_in_time",
+            "end_fade_in_time",
+            "start_fade_out_time",
+            "end_fade_out_time",
+        ]
+    } else if function.identity.eq_ignore_ascii_case("Radius Scale") {
+        &[
+            "start_time",
+            "end_time",
+            "radius_start_scale",
+            "radius_end_scale",
+            "ease_in_and_out",
+            "scale_bias",
+        ]
+    } else if function.identity.eq_ignore_ascii_case("Color Fade") {
+        &[
+            "color_fade",
+            "fade_start_time",
+            "fade_end_time",
+            "ease_in_and_out",
+        ]
+    } else if function.identity.eq_ignore_ascii_case("Rotation Basic") {
+        &[]
+    } else if function.identity.eq_ignore_ascii_case("Rotation Spin Roll") {
+        &["spin_rate_degrees", "spin_stop_time", "spin_rate_min"]
+    } else if function
+        .identity
+        .eq_ignore_ascii_case("Movement Lock to Control Point")
+    {
+        &[
+            "control_point_number",
+            "start_fadeout_min",
+            "start_fadeout_max",
+            "start_fadeout_exponent",
+            "end_fadeout_min",
+            "end_fadeout_max",
+            "end_fadeout_exponent",
+            "distance fade range",
+            "lock rotation",
+        ]
+    } else if function.identity.eq_ignore_ascii_case("Oscillate Scalar") {
+        &[
+            "oscillation field",
+            "oscillation rate min",
+            "oscillation rate max",
+            "oscillation rate exponent",
+            "oscillation frequency min",
+            "oscillation frequency max",
+            "oscillation frequency exponent",
+            "proportional 0/1",
+            "start time min",
+            "start time max",
+            "start time exponent",
+            "end time min",
+            "end time max",
+            "end time exponent",
+            "start/end proportional",
+            "oscillation multiplier",
+            "oscillation start phase",
+            "absolute oscillation",
+        ]
+    } else if function.identity.eq_ignore_ascii_case("Lifetime Random") {
+        &["lifetime_min", "lifetime_max", "lifetime_random_exponent"]
+    } else if function.identity.eq_ignore_ascii_case("Radius Random") {
+        &["radius_min", "radius_max", "radius_random_exponent"]
+    } else if function.identity.eq_ignore_ascii_case("Alpha Random") {
+        &["alpha_min", "alpha_max", "alpha_random_exponent"]
+    } else if function.identity.eq_ignore_ascii_case("Color Random") {
+        &[
+            "color1",
+            "color2",
+            "tint_perc",
+            "tint control point",
+            "tint clamp min",
+            "tint clamp max",
+            "tint update movement threshold",
+        ]
+    } else if function.identity.eq_ignore_ascii_case("Rotation Random") {
+        &[
+            "rotation_initial",
+            "rotation_offset_min",
+            "rotation_offset_max",
+            "rotation_random_exponent",
+        ]
+    } else if function
+        .identity
+        .eq_ignore_ascii_case("Rotation Speed Random")
+    {
+        &[
+            "rotation_speed_constant",
+            "rotation_speed_random_min",
+            "rotation_speed_random_max",
+            "rotation_speed_random_exponent",
+            "randomly_flip_direction",
+        ]
+    } else if function.identity.eq_ignore_ascii_case("Sequence Random") {
+        &["sequence_min", "sequence_max"]
+    } else if function
+        .identity
+        .eq_ignore_ascii_case("Trail Length Random")
+    {
+        &["length_min", "length_max", "length_random_exponent"]
+    } else if function
+        .identity
+        .eq_ignore_ascii_case("Position Within Box Random")
+    {
+        &["min", "max", "control point number"]
+    } else if function
+        .identity
+        .eq_ignore_ascii_case("Position Within Sphere Random")
+    {
+        &[
+            "distance_min",
+            "distance_max",
+            "distance_bias",
+            "distance_bias_absolute_value",
+            "bias in local system",
+            "control_point_number",
+            "speed_min",
+            "speed_max",
+            "speed_random_exponent",
+            "speed_in_local_coordinate_system_min",
+            "speed_in_local_coordinate_system_max",
+            "create in model",
+            "randomly distribute to highest supplied control point",
+            "randomly distribution growth time",
+        ]
+    } else if function
+        .identity
+        .eq_ignore_ascii_case("Position Modify Offset Random")
+    {
+        &[
+            "control_point_number",
+            "offset min",
+            "offset max",
+            "offset in local space 0/1",
+            "offset proportional to radius 0/1",
+        ]
+    } else if function.identity.eq_ignore_ascii_case("emit_continuously") {
+        &[
+            "emission_start_time",
+            "emission_rate",
+            "emission_duration",
+            "scale emission to used control points",
+            "use parent particles for emission scaling",
+        ]
+    } else if function
+        .identity
+        .eq_ignore_ascii_case("emit_instantaneously")
+    {
+        &[
+            "emission_start_time",
+            "num_to_emit_minimum",
+            "num_to_emit",
+            "maximum emission per frame",
+            "emission count scale control point",
+            "emission count scale control point field",
+        ]
+    } else if function.identity.eq_ignore_ascii_case("random force") {
+        &["min force", "max force"]
+    } else if function
+        .identity
+        .eq_ignore_ascii_case("Collision via traces")
+    {
+        &[
+            "collision mode",
+            "amount of bounce",
+            "amount of slide",
+            "radius scale",
+            "brush only",
+            "collision group",
+            "control point offset for fast collisions",
+            "control point movement distance tolerance",
+            "kill particle on collision",
+            "trace accuracy tolerance",
+        ]
+    } else {
+        &[]
+    };
+    names.contains(&name)
 }
