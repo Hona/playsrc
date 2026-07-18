@@ -946,6 +946,17 @@ impl<W: GameplayWorld + Clone> Session<W> {
         rocket_results: &[RocketTraceResult],
         expected_sticky_random: Option<StickyLaunchRandom>,
     ) -> Result<Snapshot, Error> {
+        let expected_physics_results: Vec<_> = self
+            .physics_requests
+            .iter()
+            .copied()
+            .filter(|request| {
+                matches!(
+                    request.operation,
+                    ProjectilePhysicsOperation::Create | ProjectilePhysicsOperation::Step
+                )
+            })
+            .collect();
         self.random_draws.clear();
         self.audio_events.clear();
         self.physics_requests.clear();
@@ -959,7 +970,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.contact_reconcile_requests.clear();
         let mut events = Vec::new();
         let mut projectile_events = Vec::new();
-        self.apply_projectile_physics(physics_results, &mut projectile_events)?;
+        self.apply_projectile_physics(
+            &expected_physics_results,
+            physics_results,
+            &mut projectile_events,
+        )?;
         self.apply_rocket_traces(rocket_results, &mut projectile_events, &mut events)?;
         self.apply_selection(command, &mut events, &mut projectile_events);
         let movement_policy = MovementPolicy {
@@ -1569,27 +1584,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
         )
     }
 
-    fn push_audio_event(
-        &mut self,
-        identity: AudioEventIdentity,
-        definition: SoundDefinition,
-        source_kind: AudioSourceKind,
-        source_identity: u32,
-        owner_identity: Option<u32>,
-        position: [f32; 3],
-        samples: SoundSamples,
-    ) {
-        self.audio_events.push(AudioEvent {
-            tick: self.tick,
-            ordinal: u16::try_from(self.audio_events.len()).expect("bounded TF2 audio event count"),
-            identity,
-            definition,
-            source_kind,
-            source_identity,
-            owner_identity,
-            position,
-            samples,
-        });
+    fn push_audio_event(&mut self, mut event: AudioEvent) {
+        event.ordinal =
+            u16::try_from(self.audio_events.len()).expect("bounded TF2 audio event count");
+        self.audio_events.push(event);
     }
 
     fn fire_projectile(
@@ -1606,15 +1604,17 @@ impl<W: GameplayWorld + Clone> Session<W> {
             Weapon::StickybombLauncher => SoundDefinition::StickySingle,
         };
         let sound_samples = self.sample_weapon_sound(definition);
-        self.push_audio_event(
-            AudioEventIdentity::WeaponSingle,
+        self.push_audio_event(AudioEvent {
+            tick: self.tick,
+            ordinal: 0,
+            identity: AudioEventIdentity::WeaponSingle,
             definition,
-            AudioSourceKind::Entity,
-            PLAYER_IDENTITY,
-            Some(PLAYER_IDENTITY),
-            self.movement.position,
-            sound_samples,
-        );
+            source_kind: AudioSourceKind::Entity,
+            source_identity: PLAYER_IDENTITY,
+            owner_identity: Some(PLAYER_IDENTITY),
+            position: self.movement.position,
+            samples: sound_samples,
+        });
         if self.projectiles.len() >= MAX_PROJECTILES {
             return Err(Error::ProjectileLimit);
         }
@@ -1728,7 +1728,6 @@ impl<W: GameplayWorld + Clone> Session<W> {
         let identity = self.next_projectile;
         self.next_projectile = self.next_projectile.wrapping_add(1).max(1);
         let tick_interval = self.movement_configuration.tick_interval;
-        let prearm_tick = self.tick.saturating_add(ticks(0.001, tick_interval));
         let projectile = LiveProjectile {
             presentation: Projectile {
                 identity,
@@ -1746,7 +1745,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             },
             armed: false,
             creation_tick: self.tick,
-            arm_tick: prearm_tick.saturating_add(ticks(0.8, tick_interval)),
+            arm_tick: self.tick.saturating_add(ticks(0.8, tick_interval)),
             next_think_tick: self.tick.saturating_add(ticks(0.2, tick_interval)),
             forced_detonate_tick: None,
             motion_enabled: true,
@@ -1783,13 +1782,18 @@ impl<W: GameplayWorld + Clone> Session<W> {
 
     fn apply_projectile_physics(
         &mut self,
+        expected: &[ProjectilePhysicsRequest],
         results: &[ProjectilePhysicsResult],
         projectile_events: &mut Vec<ProjectileEvent>,
     ) -> Result<(), Error> {
-        let mut seen = std::collections::BTreeSet::new();
-        for result in results {
+        if results.len() != expected.len() {
+            return Err(Error::InvalidProjectilePhysics);
+        }
+        for (request, result) in expected.iter().zip(results) {
             if result.tick != self.tick
-                || !seen.insert(result.projectile)
+                || request.tick.checked_add(1) != Some(result.tick)
+                || result.projectile != request.projectile
+                || !result.motion_enabled
                 || result
                     .position
                     .into_iter()
@@ -1799,6 +1803,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     .any(|value| !value.is_finite())
                 || result.contact.is_some_and(|contact| {
                     contact.normal.into_iter().any(|value| !value.is_finite())
+                        || length(contact.normal) <= f32::EPSILON
                 })
                 || (quaternion_length(result.orientation) - 1.0).abs() > 0.001
             {
@@ -1826,16 +1831,17 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 projectile.motion_enabled = result.motion_enabled;
                 if let Some(contact) = result.contact {
                     let normal = normalized(contact.normal);
-                    projectile.presentation.contact_normal = Some(normal);
-                    projectile_events.push(projectile_event(
+                    projectile_events.push(projectile_event_with_contact(
                         ProjectileEventKind::Impact,
                         &projectile.presentation,
                         self.tick,
+                        Some(normal),
                     ));
                     if matches!(
                         contact.kind,
                         ProjectileContactKind::World | ProjectileContactKind::DynamicProp
                     ) {
+                        projectile.presentation.contact_normal = Some(normal);
                         projectile.motion_enabled = false;
                         projectile.presentation.state = if projectile.armed || detonatable {
                             ProjectileState::StuckArmed
@@ -2021,15 +2027,17 @@ impl<W: GameplayWorld + Clone> Session<W> {
             definition,
             SoundQueryPhase::Emit,
         );
-        self.push_audio_event(
-            AudioEventIdentity::ExplosionSpecial1,
+        self.push_audio_event(AudioEvent {
+            tick: self.tick,
+            ordinal: 0,
+            identity: AudioEventIdentity::ExplosionSpecial1,
             definition,
-            AudioSourceKind::World,
-            projectile.presentation.identity,
-            Some(projectile.presentation.owner_identity),
-            projectile.presentation.position,
-            sound_samples,
-        );
+            source_kind: AudioSourceKind::World,
+            source_identity: projectile.presentation.identity,
+            owner_identity: Some(projectile.presentation.owner_identity),
+            position: projectile.presentation.position,
+            samples: sound_samples,
+        });
         let (base_damage, radius, self_radius) = match projectile.presentation.kind {
             ProjectileKind::Rocket => (90.0, 146.0, 121.0),
             ProjectileKind::Sticky => (120.0, 146.0, 146.0),
@@ -2044,6 +2052,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
             direct_target: projectile.direct_target,
         });
         if projectile.presentation.kind == ProjectileKind::Sticky {
+            self.physics_requests.retain(|request| {
+                request.projectile != projectile.presentation.identity
+                    || request.operation != ProjectilePhysicsOperation::Step
+            });
             self.physics_requests.push(sticky_physics_request(
                 ProjectilePhysicsOperation::Destroy,
                 &projectile,
@@ -2136,6 +2148,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
     fn fizzle_projectiles(&mut self, events: &mut Vec<ProjectileEvent>) {
         for projectile in std::mem::take(&mut self.projectiles) {
             if projectile.presentation.kind == ProjectileKind::Sticky {
+                self.physics_requests.retain(|request| {
+                    request.projectile != projectile.presentation.identity
+                        || request.operation != ProjectilePhysicsOperation::Step
+                });
                 self.physics_requests.push(sticky_physics_request(
                     ProjectilePhysicsOperation::Destroy,
                     &projectile,
@@ -2272,6 +2288,15 @@ fn projectile_event(
     projectile: &Projectile,
     tick: u64,
 ) -> ProjectileEvent {
+    projectile_event_with_contact(kind, projectile, tick, projectile.contact_normal)
+}
+
+fn projectile_event_with_contact(
+    kind: ProjectileEventKind,
+    projectile: &Projectile,
+    tick: u64,
+    contact_normal: Option<[f32; 3]>,
+) -> ProjectileEvent {
     ProjectileEvent {
         kind,
         projectile: projectile.identity,
@@ -2282,7 +2307,7 @@ fn projectile_event(
         tick,
         position: projectile.position,
         orientation: projectile.orientation,
-        contact_normal: projectile.contact_normal,
+        contact_normal,
     }
 }
 
@@ -2505,6 +2530,47 @@ mod tests {
             forced_detonate_tick: None,
             motion_enabled: true,
             direct_target: None,
+        }
+    }
+
+    fn launch_sticky(tick_interval: f32) -> (Session<Floor>, u32) {
+        let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(tick_interval));
+        session.movement_configuration.tick_interval = tick_interval;
+        session
+            .advance(Command {
+                select_class: Some(Class::Demoman),
+                fire: true,
+                ..Command::default()
+            })
+            .unwrap();
+        let fired = session.advance(Command::default()).unwrap();
+        let projectile = fired.projectiles[0].identity;
+        assert_eq!(
+            session
+                .physics_requests()
+                .iter()
+                .map(|request| request.operation)
+                .collect::<Vec<_>>(),
+            [ProjectilePhysicsOperation::Create]
+        );
+        (session, projectile)
+    }
+
+    fn sticky_result<W: GameplayWorld + Clone>(
+        session: &Session<W>,
+        projectile: u32,
+        position: [f32; 3],
+        contact: Option<ProjectileContact>,
+    ) -> ProjectilePhysicsResult {
+        ProjectilePhysicsResult {
+            projectile,
+            tick: session.tick,
+            position,
+            velocity: [700.0, 50.0, -100.0],
+            orientation: [0.0, 0.0, 0.0, 1.0],
+            angular_velocity: [600.0, 1200.0, 0.0],
+            motion_enabled: true,
+            contact,
         }
     }
 
@@ -2829,6 +2895,255 @@ mod tests {
             Err(Error::InvalidProjectilePhysics)
         ));
         assert_eq!(session.producer_snapshot(), stuck);
+    }
+
+    #[test]
+    fn sticky_requires_ordered_results_before_flying_arm_state_advances() {
+        let (mut session, projectile) = launch_sticky(0.4);
+        let before = session.producer_snapshot();
+        assert!(matches!(
+            session.advance(Command::default()),
+            Err(Error::InvalidProjectilePhysics)
+        ));
+        assert_eq!(session.producer_snapshot(), before);
+
+        let first = sticky_result(&session, projectile, [10.0, 0.0, 20.0], None);
+        let flying = session
+            .advance_with_external(Command::default(), &[first], &[], None)
+            .unwrap();
+        assert_eq!(flying.projectiles[0].age_seconds, 0.4);
+        assert_eq!(flying.projectiles[0].state, ProjectileState::Flying);
+        assert!(flying.projectile_events.is_empty());
+        assert_eq!(
+            session
+                .physics_requests()
+                .iter()
+                .map(|request| request.operation)
+                .collect::<Vec<_>>(),
+            [ProjectilePhysicsOperation::Step]
+        );
+
+        let second = sticky_result(&session, projectile, [20.0, 1.0, 15.0], None);
+        let armed = session
+            .advance_with_external(Command::default(), &[second], &[], None)
+            .unwrap();
+        assert_eq!(armed.projectiles[0].age_seconds, 0.8);
+        assert_eq!(armed.projectiles[0].state, ProjectileState::Flying);
+        assert_eq!(armed.projectiles[0].contact_normal, None);
+        assert_eq!(armed.projectile_events.len(), 1);
+        assert_eq!(armed.projectile_events[0].kind, ProjectileEventKind::Arm);
+        assert_eq!(armed.projectile_events[0].contact_normal, None);
+    }
+
+    #[test]
+    fn sticky_rejects_stale_duplicate_reordered_unsolicited_and_malformed_results() {
+        let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.1));
+        session.tick = 1;
+        let mut first = explosive(ProjectileKind::Sticky, [0.0; 3]);
+        first.presentation.identity = 10;
+        first.armed = false;
+        first.arm_tick = 100;
+        let mut second = first.clone();
+        second.presentation.identity = 20;
+        session.projectiles = vec![first.clone(), second.clone()];
+        session.physics_requests = vec![
+            sticky_physics_request(ProjectilePhysicsOperation::Step, &first, 0),
+            sticky_physics_request(ProjectilePhysicsOperation::Step, &second, 0),
+        ];
+        let first_result = sticky_result(&session, 10, [1.0, 0.0, 0.0], None);
+        let second_result = sticky_result(&session, 20, [2.0, 0.0, 0.0], None);
+        let before = session.producer_snapshot();
+
+        for invalid in [
+            vec![first_result],
+            vec![second_result, first_result],
+            vec![first_result, first_result],
+            vec![
+                ProjectilePhysicsResult {
+                    tick: 0,
+                    ..first_result
+                },
+                second_result,
+            ],
+            vec![
+                ProjectilePhysicsResult {
+                    motion_enabled: false,
+                    ..first_result
+                },
+                second_result,
+            ],
+            vec![
+                ProjectilePhysicsResult {
+                    contact: Some(ProjectileContact {
+                        kind: ProjectileContactKind::Other,
+                        normal: [0.0; 3],
+                    }),
+                    ..first_result
+                },
+                second_result,
+            ],
+        ] {
+            assert!(matches!(
+                session.advance_with_external(Command::default(), &invalid, &[], None),
+                Err(Error::InvalidProjectilePhysics)
+            ));
+            assert_eq!(session.producer_snapshot(), before);
+        }
+
+        let mut unsolicited = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.1));
+        let result = sticky_result(&unsolicited, 10, [1.0, 0.0, 0.0], None);
+        assert!(matches!(
+            unsolicited.advance_with_external(Command::default(), &[result], &[], None),
+            Err(Error::InvalidProjectilePhysics)
+        ));
+    }
+
+    #[test]
+    fn sticky_bounce_dynamic_stick_arm_and_remote_detonation_preserve_order() {
+        let (mut session, projectile) = launch_sticky(0.4);
+        let bounce = sticky_result(
+            &session,
+            projectile,
+            [10.0, 0.0, 20.0],
+            Some(ProjectileContact {
+                kind: ProjectileContactKind::Other,
+                normal: [0.0, 1.0, 0.0],
+            }),
+        );
+        let bounced = session
+            .advance_with_external(Command::default(), &[bounce], &[], None)
+            .unwrap();
+        assert_eq!(bounced.projectiles[0].state, ProjectileState::Flying);
+        assert_eq!(bounced.projectiles[0].contact_normal, None);
+        assert_eq!(bounced.projectile_events.len(), 1);
+        assert_eq!(
+            bounced.projectile_events[0].kind,
+            ProjectileEventKind::Impact
+        );
+        assert_eq!(
+            bounced.projectile_events[0].contact_normal,
+            Some([0.0, 1.0, 0.0])
+        );
+
+        let contact = sticky_result(
+            &session,
+            projectile,
+            [20.0, 1.0, 15.0],
+            Some(ProjectileContact {
+                kind: ProjectileContactKind::DynamicProp,
+                normal: [0.0, 0.0, 1.0],
+            }),
+        );
+        let stuck = session
+            .advance_with_external(Command::default(), &[contact], &[], None)
+            .unwrap();
+        assert_eq!(stuck.projectiles[0].state, ProjectileState::StuckArmed);
+        assert_eq!(stuck.projectiles[0].contact_normal, Some([0.0, 0.0, 1.0]));
+        assert_eq!(
+            stuck
+                .projectile_events
+                .iter()
+                .map(|event| event.kind)
+                .collect::<Vec<_>>(),
+            [
+                ProjectileEventKind::Impact,
+                ProjectileEventKind::Stick,
+                ProjectileEventKind::Arm
+            ]
+        );
+        assert_eq!(
+            session
+                .physics_requests()
+                .iter()
+                .map(|request| request.operation)
+                .collect::<Vec<_>>(),
+            [ProjectilePhysicsOperation::DisableMotion]
+        );
+
+        let exploded = session
+            .advance(Command {
+                detonate: true,
+                ..Command::default()
+            })
+            .unwrap();
+        assert!(exploded.projectiles.is_empty());
+        assert_eq!(
+            exploded.projectile_events[0].kind,
+            ProjectileEventKind::Explode
+        );
+        assert_eq!(
+            session
+                .physics_requests()
+                .iter()
+                .map(|request| request.operation)
+                .collect::<Vec<_>>(),
+            [ProjectilePhysicsOperation::Destroy]
+        );
+    }
+
+    #[test]
+    fn sticky_fizzle_and_oldest_bomb_cleanup_emit_current_physics_requests() {
+        let (mut fizzle, projectile) = launch_sticky(0.4);
+        let result = sticky_result(&fizzle, projectile, [10.0, 0.0, 20.0], None);
+        let fizzled = fizzle
+            .advance_with_external(
+                Command {
+                    select_team: Some(Team::Blue),
+                    ..Command::default()
+                },
+                &[result],
+                &[],
+                None,
+            )
+            .unwrap();
+        assert!(fizzled.projectiles.is_empty());
+        assert_eq!(
+            fizzled.projectile_events[0].kind,
+            ProjectileEventKind::Fizzle
+        );
+        assert_eq!(
+            fizzle
+                .physics_requests()
+                .iter()
+                .map(|request| (request.operation, request.projectile))
+                .collect::<Vec<_>>(),
+            [(ProjectilePhysicsOperation::Destroy, projectile)]
+        );
+
+        let mut oldest = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.2));
+        oldest.class = Class::Demoman;
+        oldest.weapon = Weapon::StickybombLauncher;
+        oldest.loadout = default_loadout(Class::Demoman);
+        for identity in 1..=8 {
+            let mut sticky = explosive(ProjectileKind::Sticky, [identity as f32, 0.0, 0.0]);
+            sticky.presentation.identity = identity;
+            oldest.projectiles.push(sticky);
+        }
+        oldest.next_projectile = 9;
+        let mut events = Vec::new();
+        oldest
+            .fire_projectile(0.0, 0.0, 0.0, None, &mut events)
+            .unwrap();
+        assert_eq!(oldest.projectiles[0].forced_detonate_tick, Some(0));
+        assert_eq!(oldest.projectiles.last().unwrap().presentation.identity, 9);
+        oldest.tick = 1;
+        oldest
+            .advance_projectiles(0.2, &mut events, &mut Vec::new())
+            .unwrap();
+        assert!(
+            oldest
+                .projectiles
+                .iter()
+                .all(|sticky| sticky.presentation.identity != 1)
+        );
+        assert!(
+            events.iter().any(|event| {
+                event.kind == ProjectileEventKind::Explode && event.projectile == 1
+            })
+        );
+        assert!(oldest.physics_requests().iter().any(|request| {
+            request.operation == ProjectilePhysicsOperation::Destroy && request.projectile == 1
+        }));
     }
 
     #[test]
