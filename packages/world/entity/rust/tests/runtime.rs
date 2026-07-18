@@ -284,7 +284,7 @@ fn counter_case_and_canonical_snapshot_restore_continue_identically() {
         .unwrap();
 
     let snapshot = world.snapshot().unwrap();
-    assert_eq!(&snapshot.bytes()[..8], b"PSEN\x02\0\0\0");
+    assert_eq!(&snapshot.bytes()[..8], b"PSEN\x03\0\0\0");
     assert_eq!(snapshot.bytes(), world.snapshot().unwrap().bytes());
     let mut restored = compile(bytes, |_| {});
     restored.restore(&snapshot).unwrap();
@@ -590,4 +590,410 @@ fn external_class_binding_accepts_only_declared_inputs() {
         record.transition,
         Transition::Input { target, accepted: false, .. } if target == volume
     )));
+}
+
+#[test]
+fn external_brush_visibility_requires_an_explicit_selected_game_binding() {
+    let bytes = br#"{"classname" "game_volume" "targetname" "volume" "model" "*1"}"#;
+    let configure = |config: &mut EntityWorldConfig, hidden| {
+        config.model_bounds.push(ModelBounds {
+            model: 1,
+            mins: [0.0; 3],
+            maxs: [8.0; 3],
+        });
+        config
+            .external_classes
+            .push(playsrc_entity::ExternalClassBinding {
+                classname: b"game_volume".to_vec(),
+                inputs: vec![b"Enable".to_vec()],
+            });
+        config
+            .external_brush_models
+            .push(playsrc_entity::ExternalBrushModelBinding {
+                classname: b"game_volume".to_vec(),
+                initial_visibility: if hidden {
+                    playsrc_entity::ExternalBrushModelVisibility::Hidden
+                } else {
+                    playsrc_entity::ExternalBrushModelVisibility::BaseEntity
+                },
+            });
+    };
+    let visible = compile(bytes, |config| configure(config, false));
+    assert!(
+        visible
+            .brush_model_presentation(visible.revision())
+            .unwrap()
+            .models[0]
+            .draw
+    );
+    let hidden = compile(bytes, |config| configure(config, true));
+    assert!(
+        !hidden
+            .brush_model_presentation(hidden.revision())
+            .unwrap()
+            .models[0]
+            .draw
+    );
+}
+
+#[test]
+fn brush_model_presentation_joins_render_parent_solidity_model_and_revision_state() {
+    let bytes = br#"
+{"classname" "func_brush" "targetname" "carrier" "model" "*1" "origin" "10 0 0" "Solidity" "1"}
+{"classname" "func_movelinear" "targetname" "child" "model" "*2" "parentname" "carrier"
+ "origin" "15 0 0" "angles" "0 90 0" "MoveDistance" "10" "StartPosition" "0"
+ "rendermode" "2" "rendercolor" "10 20 30 99" "renderamt" "128" "renderfx" "3" "effects" "64"}
+{"classname" "func_brush" "targetname" "hidden_solid" "model" "*3" "StartDisabled" "1" "Solidity" "2"}
+{"classname" "trigger_multiple" "targetname" "trigger" "model" "*4"}
+{"classname" "func_breakable" "targetname" "breakable" "model" "*5"}
+"#;
+    let mut world = compile(bytes, |config| {
+        for model in 1..=5 {
+            config.model_bounds.push(ModelBounds {
+                model,
+                mins: [0.0; 3],
+                maxs: [12.0, 4.0, 4.0],
+            });
+        }
+    });
+    assert_eq!(world.revision(), 1);
+    let initial = world.brush_model_presentation(1).unwrap();
+    assert_eq!(initial.revision, 1);
+    assert_eq!(initial.models.len(), 5);
+
+    let carrier = world.resolve(b"carrier", None, None, None)[0];
+    let child = world.resolve(b"child", None, None, None)[0];
+    let hidden = world.resolve(b"hidden_solid", None, None, None)[0];
+    let trigger = world.resolve(b"trigger", None, None, None)[0];
+    let breakable = world.resolve(b"breakable", None, None, None)[0];
+    let carrier_draw = initial
+        .models
+        .iter()
+        .find(|state| state.handle == carrier)
+        .unwrap();
+    assert!(carrier_draw.draw);
+    assert!(matches!(
+        world.entity(carrier).unwrap().behavior,
+        BehaviorState::Brush(ref state)
+            if state.enabled && state.solidity == BrushSolidity::Never
+    ));
+    let child_draw = initial
+        .models
+        .iter()
+        .find(|state| state.handle == child)
+        .unwrap();
+    assert_eq!(child_draw.parent, Some(carrier));
+    assert_eq!(child_draw.local_transform.origin, [5.0, 0.0, 0.0]);
+    assert_eq!(child_draw.world_transform.origin, [15.0, 0.0, 0.0]);
+    assert_eq!(child_draw.render_mode, 2);
+    assert_eq!(child_draw.color, [10, 20, 30, 128]);
+    assert_eq!(child_draw.render_fx, 3);
+    assert_eq!(child_draw.effects, 64);
+    assert!(
+        !initial
+            .models
+            .iter()
+            .find(|state| state.handle == hidden)
+            .unwrap()
+            .draw
+    );
+    assert!(matches!(
+        world.entity(hidden).unwrap().behavior,
+        BehaviorState::Brush(ref state) if state.solidity == BrushSolidity::Always
+    ));
+    assert!(
+        !initial
+            .models
+            .iter()
+            .find(|state| state.handle == trigger)
+            .unwrap()
+            .draw
+    );
+    assert!(
+        initial
+            .models
+            .iter()
+            .find(|state| state.handle == breakable)
+            .unwrap()
+            .draw
+    );
+
+    let changed = world
+        .phase(
+            1,
+            &[
+                input(child, b"Alpha", Variant::Integer(300), 1),
+                input(child, b"Color", Variant::Color([1, 2, 3, 4]), 2),
+                input(child, b"DisableShadow", Variant::Void, 3),
+                input(
+                    child,
+                    b"AddOutput",
+                    Variant::String(b"rendermode 10".to_vec()),
+                    4,
+                ),
+                WorldCommand::SetBrushModel {
+                    entity: child,
+                    model: Some(3),
+                },
+            ],
+        )
+        .unwrap();
+    assert!(!changed.records.is_empty());
+    assert_eq!(world.revision(), 2);
+    assert_eq!(
+        world.brush_model_presentation(1).unwrap_err().code,
+        RuntimeFailureCode::RevisionMismatch
+    );
+    let current = world.brush_model_presentation(2).unwrap();
+    let child_draw = current
+        .models
+        .iter()
+        .find(|state| state.handle == child)
+        .unwrap();
+    assert_eq!(child_draw.model, 3);
+    assert_eq!(child_draw.color, [1, 2, 3, 255]);
+    assert_eq!(child_draw.render_mode, 10);
+    assert!(!child_draw.draw);
+    assert_eq!(child_draw.effects, 64 | 16);
+
+    for mode in 0_u8..=10 {
+        world
+            .phase(
+                u64::from(mode) + 2,
+                &[input(
+                    child,
+                    b"AddOutput",
+                    Variant::String(format!("rendermode {mode}").into_bytes()),
+                    u64::from(mode) + 10,
+                )],
+            )
+            .unwrap();
+        let presentation = world.brush_model_presentation(world.revision()).unwrap();
+        let state = presentation
+            .models
+            .iter()
+            .find(|state| state.handle == child)
+            .unwrap();
+        assert_eq!(state.render_mode, mode);
+        assert_eq!(state.draw, mode != 10);
+    }
+    let snapshot = world.snapshot().unwrap();
+    let mut restored = compile(bytes, |config| {
+        for model in 1..=5 {
+            config.model_bounds.push(ModelBounds {
+                model,
+                mins: [0.0; 3],
+                maxs: [12.0, 4.0, 4.0],
+            });
+        }
+    });
+    restored.restore(&snapshot).unwrap();
+    assert_eq!(restored.revision(), world.revision());
+    assert_eq!(
+        restored
+            .brush_model_presentation(restored.revision())
+            .unwrap(),
+        world.brush_model_presentation(world.revision()).unwrap()
+    );
+}
+
+#[test]
+fn mover_presentation_tracks_progress_block_reversal_completion_and_atomic_rollback() {
+    let mut world = compile(
+        br#"{"classname" "func_door" "targetname" "door" "model" "*1" "movedir" "0 0 0" "wait" "1"}"#,
+        |config| {
+            config.model_bounds.push(ModelBounds {
+                model: 1,
+                mins: [0.0; 3],
+                maxs: [12.0, 2.0, 2.0],
+            });
+        },
+    );
+    let door = world.resolve(b"door", None, None, None)[0];
+    let opened = world
+        .phase(0, &[input(door, b"Open", Variant::Void, 1)])
+        .unwrap();
+    let RuntimeRequest::Mover { request_id, .. } = request(&opened) else {
+        panic!("missing mover request")
+    };
+    let progress = world
+        .phase(
+            1,
+            &[WorldCommand::SetWorldTransform {
+                entity: door,
+                transform: Transform {
+                    origin: [5.0, 0.0, 0.0],
+                    angles: [0.0; 3],
+                },
+            }],
+        )
+        .unwrap();
+    assert!(progress.records.iter().any(|record| matches!(
+        record.transition,
+        Transition::TransformChanged { entity, .. } if entity == door
+    )));
+    let at_half = world.brush_model_presentation(world.revision()).unwrap();
+    let mover = at_half.models[0].mover.as_ref().unwrap();
+    assert_eq!(f32::from_bits(mover.progress_bits), 0.5);
+    assert_eq!(mover.request_id, Some(request_id));
+
+    let blocked = world
+        .phase(
+            2,
+            &[WorldCommand::MoverBlocked {
+                entity: door,
+                request_id,
+                blocker: door,
+                kind: playsrc_entity::BlockContactKind::Stay,
+            }],
+        )
+        .unwrap();
+    let reversed = blocked
+        .records
+        .iter()
+        .find_map(|record| match record.transition {
+            Transition::Request(RuntimeRequest::Mover {
+                request_id,
+                opening: false,
+                ..
+            }) => Some(request_id),
+            _ => None,
+        })
+        .unwrap();
+    let reversing = world.brush_model_presentation(world.revision()).unwrap();
+    let mover = reversing.models[0].mover.as_ref().unwrap();
+    assert_eq!(f32::from_bits(mover.progress_bits), 0.5);
+    assert_eq!(mover.request_id, Some(reversed));
+    assert_eq!(mover.opening, Some(false));
+
+    world
+        .phase(
+            3,
+            &[
+                WorldCommand::SetWorldTransform {
+                    entity: door,
+                    transform: Transform::IDENTITY,
+                },
+                WorldCommand::MoverCompleted {
+                    entity: door,
+                    request_id: reversed,
+                },
+            ],
+        )
+        .unwrap();
+    let completed = world.brush_model_presentation(world.revision()).unwrap();
+    let mover = completed.models[0].mover.as_ref().unwrap();
+    assert_eq!(f32::from_bits(mover.progress_bits), 0.0);
+    assert_eq!(mover.request_id, None);
+    assert_eq!(mover.position, MoverPosition::Closed);
+
+    let revision = world.revision();
+    let before = world.brush_model_presentation(revision).unwrap();
+    let failure = world
+        .phase(
+            4,
+            &[
+                WorldCommand::SetWorldTransform {
+                    entity: door,
+                    transform: Transform {
+                        origin: [7.0, 0.0, 0.0],
+                        angles: [0.0; 3],
+                    },
+                },
+                WorldCommand::SetBrushModel {
+                    entity: door,
+                    model: Some(999),
+                },
+            ],
+        )
+        .unwrap_err();
+    assert_eq!(failure.code, RuntimeFailureCode::InvalidField);
+    assert_eq!(world.revision(), revision);
+    assert_eq!(world.brush_model_presentation(revision).unwrap(), before);
+}
+
+#[test]
+fn breakable_remains_drawn_while_nonsolid_then_removes_at_source_delay() {
+    let mut world = compile(
+        br#"{"classname" "func_breakable" "targetname" "glass" "model" "*1"}"#,
+        |config| {
+            config.model_bounds.push(ModelBounds {
+                model: 1,
+                mins: [0.0; 3],
+                maxs: [8.0; 3],
+            });
+        },
+    );
+    let glass = world.resolve(b"glass", None, None, None)[0];
+    let broken = world
+        .phase(0, &[input(glass, b"Break", Variant::Void, 1)])
+        .unwrap();
+    assert!(broken.records.iter().any(|record| matches!(
+        record.transition,
+        Transition::Request(RuntimeRequest::BrushState {
+            entity,
+            enabled: true,
+            solid: false,
+        }) if entity == glass
+    )));
+    let due_tick = broken
+        .records
+        .iter()
+        .find_map(|record| match record.transition {
+            Transition::Scheduled { due_tick, .. } => Some(due_tick),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        world
+            .brush_model_presentation(world.revision())
+            .unwrap()
+            .models[0]
+            .draw
+    );
+    world.phase(due_tick - 1, &[]).unwrap();
+    assert_eq!(
+        world
+            .brush_model_presentation(world.revision())
+            .unwrap()
+            .models
+            .len(),
+        1
+    );
+    world.phase(due_tick, &[]).unwrap();
+    assert!(
+        world
+            .brush_model_presentation(world.revision())
+            .unwrap()
+            .models
+            .is_empty()
+    );
+
+    let mut unbreakable = compile(
+        br#"{"classname" "func_breakable" "targetname" "glass" "model" "*1" "material" "7"}"#,
+        |config| {
+            config.model_bounds.push(ModelBounds {
+                model: 1,
+                mins: [0.0; 3],
+                maxs: [8.0; 3],
+            });
+        },
+    );
+    let glass = unbreakable.resolve(b"glass", None, None, None)[0];
+    let ignored = unbreakable
+        .phase(0, &[input(glass, b"Break", Variant::Void, 1)])
+        .unwrap();
+    assert!(!ignored.records.iter().any(|record| matches!(
+        record.transition,
+        Transition::Scheduled { .. } | Transition::Request(RuntimeRequest::BrushState { .. })
+    )));
+    unbreakable.phase(100, &[]).unwrap();
+    assert_eq!(
+        unbreakable
+            .brush_model_presentation(unbreakable.revision())
+            .unwrap()
+            .models
+            .len(),
+        1
+    );
 }

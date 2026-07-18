@@ -12,6 +12,9 @@ const DOOR_NO_AUTO_RETURN: i32 = 32;
 const DOOR_LOCKED: i32 = 2_048;
 const RELAY_REMOVE_ON_FIRE: i32 = 1;
 const RELAY_FAST_RETRIGGER: i32 = 2;
+const EF_NOSHADOW: u16 = 0x010;
+const EF_NODRAW: u16 = 0x020;
+const RENDER_MODE_NONE: u8 = 10;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct EntityHandle {
@@ -74,6 +77,7 @@ pub struct EntityWorldConfig {
     pub random_seed: u64,
     pub model_bounds: Vec<ModelBounds>,
     pub external_classes: Vec<ExternalClassBinding>,
+    pub external_brush_models: Vec<ExternalBrushModelBinding>,
     pub limits: RuntimeLimits,
 }
 
@@ -81,6 +85,18 @@ pub struct EntityWorldConfig {
 pub struct ExternalClassBinding {
     pub classname: Vec<u8>,
     pub inputs: Vec<Vec<u8>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExternalBrushModelVisibility {
+    BaseEntity,
+    Hidden,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExternalBrushModelBinding {
+    pub classname: Vec<u8>,
+    pub initial_visibility: ExternalBrushModelVisibility,
 }
 
 impl Default for EntityWorldConfig {
@@ -93,6 +109,7 @@ impl Default for EntityWorldConfig {
             random_seed: 0x243f_6a88_85a3_08d3,
             model_bounds: Vec::new(),
             external_classes: Vec::new(),
+            external_brush_models: Vec::new(),
             limits: RuntimeLimits::default(),
         }
     }
@@ -137,6 +154,7 @@ pub enum Variant {
     String(Vec<u8>),
     Vector([u32; 3]),
     Handle(EntityHandle),
+    Color([u8; 4]),
 }
 
 impl Variant {
@@ -173,6 +191,9 @@ impl Variant {
             )
             .into_bytes(),
             Self::Handle(handle) => format!("{}:{}", handle.slot, handle.generation).into_bytes(),
+            Self::Color(color) => {
+                format!("{} {} {} {}", color[0], color[1], color[2], color[3]).into_bytes()
+            }
         }
     }
 }
@@ -249,6 +270,21 @@ pub struct BrushState {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BreakableState {
+    pub broken: bool,
+    pub can_break: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EntityRenderState {
+    pub brush_model: Option<usize>,
+    pub mode: u8,
+    pub color: [u8; 4],
+    pub fx: u8,
+    pub effects: u16,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RelayState {
     pub enabled: bool,
     pub waiting_for_refire: bool,
@@ -320,6 +356,7 @@ pub enum BehaviorState {
     Filter(FilterState),
     Trigger(TriggerState),
     External,
+    Breakable(BreakableState),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -340,6 +377,7 @@ pub struct RuntimeEntity {
     pub malformed_outputs: Vec<(usize, ConnectionError)>,
     pub definition: Entity,
     pub behavior: BehaviorState,
+    pub render: EntityRenderState,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -410,6 +448,10 @@ pub enum WorldCommand {
     SetWorldTransform {
         entity: EntityHandle,
         transform: Transform,
+    },
+    SetBrushModel {
+        entity: EntityHandle,
+        model: Option<usize>,
     },
     SetAttachmentTransform {
         parent: EntityHandle,
@@ -573,6 +615,8 @@ pub enum RuntimeFailureCode {
     TickRegression,
     InvalidField,
     SnapshotIdentity,
+    RevisionMismatch,
+    RevisionOverflow,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -615,6 +659,7 @@ struct Slot {
 #[derive(Clone, Debug)]
 struct WorldState {
     current_tick: u64,
+    revision: u64,
     next_creation_order: u64,
     next_output_id: u64,
     next_event_id: u64,
@@ -644,6 +689,42 @@ pub struct EntitySnapshot {
     state: WorldState,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct BrushMoverPresentation {
+    pub kind: MoverKind,
+    pub position: MoverPosition,
+    pub progress_bits: u32,
+    pub request_id: Option<u64>,
+    pub local_destination: Option<[f32; 3]>,
+    pub world_destination: Option<[f32; 3]>,
+    pub opening: Option<bool>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct BrushModelDrawState {
+    pub handle: EntityHandle,
+    pub source_index: usize,
+    pub model: usize,
+    pub local_transform: Transform,
+    pub world_transform: Transform,
+    pub parent: Option<EntityHandle>,
+    pub render_mode: u8,
+    pub color: [u8; 4],
+    pub render_fx: u8,
+    pub effects: u16,
+    pub draw: bool,
+    pub mover: Option<BrushMoverPresentation>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct BrushModelPresentation {
+    pub source_identity: u64,
+    pub registry_identity: u64,
+    pub tick: u64,
+    pub revision: u64,
+    pub models: Vec<BrushModelDrawState>,
+}
+
 impl EntitySnapshot {
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
@@ -655,6 +736,10 @@ impl EntitySnapshot {
 
     pub fn registry_identity(&self) -> u64 {
         self.registry_identity
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.state.revision
     }
 }
 
@@ -675,6 +760,7 @@ impl EntityWorld {
         let mut world = Self {
             state: WorldState {
                 current_tick: 0,
+                revision: 0,
                 next_creation_order: 0,
                 next_output_id: 1,
                 next_event_id: 1,
@@ -710,11 +796,74 @@ impl EntityWorld {
             )?;
             world.schedule_activation(handle, &mut batch)?;
         }
+        world.state.revision = 1;
         Ok((world, batch))
     }
 
     pub fn current_tick(&self) -> u64 {
         self.state.current_tick
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.state.revision
+    }
+
+    pub fn brush_model_presentation(
+        &self,
+        expected_revision: u64,
+    ) -> Result<BrushModelPresentation, RuntimeFailure> {
+        if expected_revision != self.state.revision {
+            return Err(failure(
+                RuntimeFailureCode::RevisionMismatch,
+                None,
+                usize::try_from(self.state.revision).unwrap_or(usize::MAX),
+                usize::try_from(expected_revision).unwrap_or(usize::MAX),
+            ));
+        }
+        let mut models = Vec::new();
+        for handle in &self.state.creation_order {
+            let Some(entity) = self.entity(*handle) else {
+                continue;
+            };
+            let Some(model) = entity.render.brush_model.filter(|model| *model != 0) else {
+                continue;
+            };
+            if models.len() >= self.config.limits.max_entities {
+                return Err(failure(
+                    RuntimeFailureCode::EntityLimit,
+                    Some(entity.source_index),
+                    self.config.limits.max_entities,
+                    models.len() + 1,
+                ));
+            }
+            let draw =
+                entity.render.mode != RENDER_MODE_NONE && entity.render.effects & EF_NODRAW == 0;
+            models.push(BrushModelDrawState {
+                handle: entity.handle,
+                source_index: entity.source_index,
+                model,
+                local_transform: entity.local_transform,
+                world_transform: entity.world_transform,
+                parent: entity.parent,
+                render_mode: entity.render.mode,
+                color: entity.render.color,
+                render_fx: entity.render.fx,
+                effects: entity.render.effects,
+                draw,
+                mover: match &entity.behavior {
+                    BehaviorState::Mover(mover) => Some(mover_presentation(entity, mover)),
+                    _ => None,
+                },
+            });
+        }
+        models.sort_by_key(|model| (model.source_index, model.handle));
+        Ok(BrushModelPresentation {
+            source_identity: self.config.source_identity,
+            registry_identity: self.config.registry_identity,
+            tick: self.state.current_tick,
+            revision: self.state.revision,
+            models,
+        })
     }
 
     pub fn entity(&self, handle: EntityHandle) -> Option<&RuntimeEntity> {
@@ -764,19 +913,30 @@ impl EntityWorld {
                 tick as usize,
             ));
         }
+        let phase_start = self.state.clone();
         self.state.current_tick = tick;
         let mut batch = TransitionBatch::default();
         for command in commands {
-            let prior = self.state.clone();
-            let batch_len = batch.records.len();
             if let Err(error) = self.apply_command(command.clone(), &mut batch) {
-                self.state = prior;
-                batch.records.truncate(batch_len);
+                self.state = phase_start;
                 return Err(error);
             }
         }
-        self.drain_due_events(&mut batch)?;
+        if let Err(error) = self.drain_due_events(&mut batch) {
+            self.state = phase_start;
+            return Err(error);
+        }
         self.commit_removals();
+        let Some(revision) = self.state.revision.checked_add(1) else {
+            self.state = phase_start;
+            return Err(failure(
+                RuntimeFailureCode::RevisionOverflow,
+                None,
+                usize::MAX,
+                usize::MAX,
+            ));
+        };
+        self.state.revision = revision;
         Ok(batch)
     }
 
@@ -903,6 +1063,33 @@ impl EntityWorld {
             angles: field_vector(&definition, b"angles", [0.0; 3])?,
         };
         let (behavior, coverage) = self.behavior_for(&definition, local_transform)?;
+        let mut render = render_state(&definition)?;
+        if let Some(model) = render.brush_model.filter(|model| *model != 0)
+            && !self
+                .config
+                .model_bounds
+                .iter()
+                .any(|bounds| bounds.model == model)
+        {
+            return Err(failure(
+                RuntimeFailureCode::InvalidField,
+                Some(definition.index),
+                self.config.model_bounds.len(),
+                model,
+            ));
+        }
+        if matches!(&behavior, BehaviorState::Trigger(_))
+            || matches!(
+                &behavior,
+                BehaviorState::Brush(BrushState { enabled: false, .. })
+            )
+            || self.config.external_brush_models.iter().any(|binding| {
+                binding.classname.eq_ignore_ascii_case(&classname)
+                    && binding.initial_visibility == ExternalBrushModelVisibility::Hidden
+            })
+        {
+            render.effects |= EF_NODRAW;
+        }
         let mut outputs = Vec::new();
         let mut malformed_outputs = Vec::new();
         for connection in &definition.connections {
@@ -950,6 +1137,7 @@ impl EntityWorld {
             malformed_outputs,
             definition,
             behavior,
+            render,
         };
         if let BehaviorState::Mover(MoverState {
             position: MoverPosition::Open,
@@ -1124,6 +1312,26 @@ impl EntityWorld {
                     damage_activates: false,
                     dont_move: false,
                     activator: None,
+                }),
+                Coverage::Handled,
+            ));
+        }
+        if classname.eq_ignore_ascii_case(b"func_breakable") {
+            let material = match field(definition, b"material") {
+                Some(value) => source_i32(value).ok_or_else(|| {
+                    failure(
+                        RuntimeFailureCode::InvalidField,
+                        Some(definition.index),
+                        0,
+                        value.len(),
+                    )
+                })?,
+                None => 0,
+            };
+            return Ok((
+                BehaviorState::Breakable(BreakableState {
+                    broken: false,
+                    can_break: material != 7,
                 }),
                 Coverage::Handled,
             ));
@@ -1862,6 +2070,19 @@ impl EntityWorld {
                 if !self.is_resolvable(entity) {
                     return self.diagnostic(batch, DiagnosticCode::StaleHandle, Some(entity));
                 }
+                if transform
+                    .origin
+                    .into_iter()
+                    .chain(transform.angles)
+                    .any(|value| !value.is_finite())
+                {
+                    return Err(failure(
+                        RuntimeFailureCode::InvalidField,
+                        self.entity(entity).map(|entity| entity.source_index),
+                        0,
+                        0,
+                    ));
+                }
                 let local = match self.entity(entity).and_then(|value| value.parent) {
                     Some(parent) => relative_transform(
                         self.parent_basis(
@@ -1885,6 +2106,30 @@ impl EntityWorld {
                     },
                 )
             }
+            WorldCommand::SetBrushModel { entity, model } => {
+                if !self.is_resolvable(entity) {
+                    return self.diagnostic(batch, DiagnosticCode::StaleHandle, Some(entity));
+                }
+                if let Some(model) = model.filter(|model| *model != 0)
+                    && !self
+                        .config
+                        .model_bounds
+                        .iter()
+                        .any(|bounds| bounds.model == model)
+                {
+                    return Err(failure(
+                        RuntimeFailureCode::InvalidField,
+                        self.entity(entity).map(|entity| entity.source_index),
+                        self.config.model_bounds.len(),
+                        model,
+                    ));
+                }
+                self.entity_mut(entity)
+                    .expect("validated")
+                    .render
+                    .brush_model = model;
+                Ok(())
+            }
             WorldCommand::SetAttachmentTransform {
                 parent,
                 attachment,
@@ -1892,6 +2137,19 @@ impl EntityWorld {
             } => {
                 if !self.is_resolvable(parent) {
                     return self.diagnostic(batch, DiagnosticCode::StaleHandle, Some(parent));
+                }
+                if parent_space_transform
+                    .origin
+                    .into_iter()
+                    .chain(parent_space_transform.angles)
+                    .any(|value| !value.is_finite())
+                {
+                    return Err(failure(
+                        RuntimeFailureCode::InvalidField,
+                        self.entity(parent).map(|entity| entity.source_index),
+                        0,
+                        0,
+                    ));
                 }
                 let children = self.entity(parent).expect("validated").children.clone();
                 self.entity_mut(parent)
@@ -2155,9 +2413,34 @@ impl EntityWorld {
         let mut parent: Option<ParentRequest> = None;
         let mut cancel_caller = false;
         let mut relay_refire_delay = None;
+        let mut breakable_remove_delay = None;
+        let mut breakable_became_nonsolid = false;
 
         if input == b"kill" {
             remove = true;
+        } else if input == b"alpha" {
+            match variant_i32(&record.value) {
+                Some(alpha) => {
+                    self.entity_mut(target).expect("validated").render.color[3] =
+                        alpha.clamp(0, 255) as u8;
+                }
+                None => accepted = false,
+            }
+        } else if input == b"color" {
+            match variant_color(&record.value) {
+                Some(color) => self.entity_mut(target).expect("validated").render.color[..3]
+                    .copy_from_slice(&color[..3]),
+                None => accepted = false,
+            }
+        } else if input == b"disableshadow" {
+            self.entity_mut(target).expect("validated").render.effects |= EF_NOSHADOW;
+        } else if input == b"enableshadow" {
+            self.entity_mut(target).expect("validated").render.effects &= !EF_NOSHADOW;
+        } else if input == b"addoutput" {
+            accepted = apply_render_key(
+                &mut self.entity_mut(target).expect("validated").render,
+                &record.value.as_string(),
+            );
         } else if input == b"clearparent" {
             parent = Some(ParentRequest {
                 child: target,
@@ -2213,6 +2496,12 @@ impl EntityWorld {
                         };
                         self.entity_mut(target).expect("validated").behavior =
                             BehaviorState::Brush(state.clone());
+                        if state.enabled {
+                            self.entity_mut(target).expect("validated").render.effects &=
+                                !EF_NODRAW;
+                        } else {
+                            self.entity_mut(target).expect("validated").render.effects |= EF_NODRAW;
+                        }
                         self.push_transition(
                             batch,
                             Transition::Request(RuntimeRequest::BrushState {
@@ -2517,6 +2806,23 @@ impl EntityWorld {
                         )?;
                     }
                 }
+                BehaviorState::Breakable(mut state) => {
+                    match input.as_slice() {
+                        b"break" if state.can_break && !state.broken => {
+                            state.broken = true;
+                            breakable_became_nonsolid = true;
+                            breakable_remove_delay = Some(0.1);
+                            outputs.push((b"OnBreak".to_vec(), Variant::Void, record.activator));
+                        }
+                        b"break" => {}
+                        b"__breakable_remove" => remove = true,
+                        _ => accepted = false,
+                    }
+                    if accepted {
+                        self.entity_mut(target).expect("validated").behavior =
+                            BehaviorState::Breakable(state);
+                    }
+                }
             }
         }
 
@@ -2563,6 +2869,28 @@ impl EntityWorld {
         }
         for (output, value, activator) in outputs {
             self.fire_output(target, &output, value, activator, target.into(), 0.0, batch)?;
+        }
+        if breakable_became_nonsolid {
+            self.push_transition(
+                batch,
+                Transition::Request(RuntimeRequest::BrushState {
+                    entity: target,
+                    enabled: true,
+                    solid: false,
+                }),
+            )?;
+        }
+        if let Some(delay) = breakable_remove_delay {
+            self.schedule_event(
+                EventTarget::Direct(target),
+                b"__breakable_remove".to_vec(),
+                Variant::Void,
+                delay,
+                record.activator,
+                Some(target),
+                None,
+                batch,
+            )?;
         }
         if let Some(delay) = relay_refire_delay {
             self.schedule_event(
@@ -3678,6 +4006,37 @@ fn validate_config(config: &EntityWorldConfig) -> Result<(), RuntimeFailure> {
             ));
         }
     }
+    let mut models = std::collections::BTreeSet::new();
+    for bounds in &config.model_bounds {
+        if !models.insert(bounds.model)
+            || bounds
+                .mins
+                .iter()
+                .chain(bounds.maxs.iter())
+                .any(|value| !value.is_finite())
+            || (0..3).any(|axis| bounds.mins[axis] > bounds.maxs[axis])
+        {
+            return Err(failure(
+                RuntimeFailureCode::InvalidConfiguration,
+                None,
+                config.model_bounds.len(),
+                bounds.model,
+            ));
+        }
+    }
+    let mut external_brush_models = std::collections::BTreeSet::new();
+    for binding in &config.external_brush_models {
+        if binding.classname.is_empty()
+            || !external_brush_models.insert(ascii_key(&binding.classname))
+        {
+            return Err(failure(
+                RuntimeFailureCode::InvalidConfiguration,
+                None,
+                config.external_brush_models.len(),
+                external_brush_models.len(),
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -3752,6 +4111,218 @@ fn field_vector(
         Some(value) => parse_vector(value)
             .ok_or_else(|| failure(RuntimeFailureCode::InvalidField, Some(entity.index), 0, 0)),
         None => Ok(default),
+    }
+}
+
+fn render_state(entity: &Entity) -> Result<EntityRenderState, RuntimeFailure> {
+    let mut color = [255; 4];
+    if let Some(value) = field(entity, b"rendercolor").or_else(|| field(entity, b"rendercolor32")) {
+        let parsed = source_color(value).ok_or_else(|| {
+            failure(
+                RuntimeFailureCode::InvalidField,
+                Some(entity.index),
+                4,
+                value.len(),
+            )
+        })?;
+        color[..3].copy_from_slice(&parsed[..3]);
+    }
+    if let Some(value) = field(entity, b"renderamt") {
+        color[3] = source_i32(value).ok_or_else(|| {
+            failure(
+                RuntimeFailureCode::InvalidField,
+                Some(entity.index),
+                0,
+                value.len(),
+            )
+        })? as u8;
+    }
+    let mut effects = match field(entity, b"effects") {
+        Some(value) => source_i32(value).ok_or_else(|| {
+            failure(
+                RuntimeFailureCode::InvalidField,
+                Some(entity.index),
+                0,
+                value.len(),
+            )
+        })?,
+        None => 0,
+    } as u16
+        & 0x03ff;
+    if let Some(value) = field(entity, b"disableshadows") {
+        let disable = source_i32(value).ok_or_else(|| {
+            failure(
+                RuntimeFailureCode::InvalidField,
+                Some(entity.index),
+                0,
+                value.len(),
+            )
+        })?;
+        if disable != 0 {
+            effects |= EF_NOSHADOW;
+        }
+    }
+    let byte_field = |key: &[u8]| -> Result<u8, RuntimeFailure> {
+        match field(entity, key) {
+            Some(value) => source_i32(value).map(|value| value as u8).ok_or_else(|| {
+                failure(
+                    RuntimeFailureCode::InvalidField,
+                    Some(entity.index),
+                    0,
+                    value.len(),
+                )
+            }),
+            None => Ok(0),
+        }
+    };
+    Ok(EntityRenderState {
+        brush_model: entity.bsp_model_index,
+        mode: byte_field(b"rendermode")?,
+        color,
+        fx: byte_field(b"renderfx")?,
+        effects,
+    })
+}
+
+fn apply_render_key(render: &mut EntityRenderState, value: &[u8]) -> bool {
+    let Some(split) = value.iter().position(u8::is_ascii_whitespace) else {
+        return false;
+    };
+    let key = &value[..split];
+    let raw = value[split..]
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .map(|offset| &value[split + offset..])
+        .unwrap_or_default();
+    if key.eq_ignore_ascii_case(b"rendermode") {
+        let Some(mode) = source_i32(raw) else {
+            return false;
+        };
+        render.mode = mode as u8;
+    } else if key.eq_ignore_ascii_case(b"renderfx") {
+        let Some(fx) = source_i32(raw) else {
+            return false;
+        };
+        render.fx = fx as u8;
+    } else if key.eq_ignore_ascii_case(b"effects") {
+        let Some(effects) = source_i32(raw) else {
+            return false;
+        };
+        render.effects = effects as u16 & 0x03ff;
+    } else if key.eq_ignore_ascii_case(b"renderamt") {
+        let Some(alpha) = source_i32(raw) else {
+            return false;
+        };
+        render.color[3] = alpha as u8;
+    } else if key.eq_ignore_ascii_case(b"rendercolor") || key.eq_ignore_ascii_case(b"rendercolor32")
+    {
+        let Some(color) = source_color(raw) else {
+            return false;
+        };
+        render.color[..3].copy_from_slice(&color[..3]);
+    } else if key.eq_ignore_ascii_case(b"disableshadows") {
+        let Some(disable) = source_i32(raw) else {
+            return false;
+        };
+        if disable != 0 {
+            render.effects |= EF_NOSHADOW;
+        }
+    } else {
+        return false;
+    }
+    true
+}
+
+fn source_i32(value: &[u8]) -> Option<i32> {
+    let value = std::str::from_utf8(value).ok()?.trim_start();
+    let (negative, digits) = if let Some(value) = value.strip_prefix('-') {
+        (true, value)
+    } else if let Some(value) = value.strip_prefix('+') {
+        (false, value)
+    } else {
+        (false, value)
+    };
+    let digits = digits
+        .as_bytes()
+        .iter()
+        .take_while(|byte| byte.is_ascii_digit())
+        .copied()
+        .collect::<Vec<_>>();
+    if digits.is_empty() {
+        return Some(0);
+    }
+    let magnitude = digits.iter().try_fold(0_i64, |value, digit| {
+        value.checked_mul(10)?.checked_add(i64::from(*digit - b'0'))
+    })?;
+    i32::try_from(if negative { -magnitude } else { magnitude }).ok()
+}
+
+fn source_color(value: &[u8]) -> Option<[u8; 4]> {
+    let mut output = [0; 4];
+    for (index, field) in value
+        .split(|byte| byte.is_ascii_whitespace())
+        .filter(|v| !v.is_empty())
+        .take(4)
+        .enumerate()
+    {
+        output[index] = source_i32(field)? as u8;
+    }
+    Some(output)
+}
+
+fn variant_i32(value: &Variant) -> Option<i32> {
+    match value {
+        Variant::Bool(value) => Some(i32::from(*value)),
+        Variant::Integer(value) => Some(*value),
+        Variant::Float(bits) => {
+            let value = f32::from_bits(*bits);
+            let widened = f64::from(value);
+            (value.is_finite() && widened >= f64::from(i32::MIN) && widened <= f64::from(i32::MAX))
+                .then_some(value as i32)
+        }
+        Variant::String(value) => source_i32(value),
+        _ => None,
+    }
+}
+
+fn variant_color(value: &Variant) -> Option<[u8; 4]> {
+    match value {
+        Variant::Color(value) => Some(*value),
+        Variant::String(value) => source_color(value),
+        _ => None,
+    }
+}
+
+fn mover_presentation(entity: &RuntimeEntity, mover: &MoverState) -> BrushMoverPresentation {
+    let travel = sub(mover.open, mover.closed);
+    let length_squared = dot(travel, travel);
+    let progress = if length_squared > 0.0 {
+        dot(sub(entity.local_transform.origin, mover.closed), travel) / length_squared
+    } else {
+        match mover.position {
+            MoverPosition::Closed => 0.0,
+            MoverPosition::Open => 1.0,
+            MoverPosition::Positioned(bits) => f32::from_bits(bits),
+            MoverPosition::Opening | MoverPosition::Closing => mover
+                .pending
+                .as_ref()
+                .map_or(0.0, |pending| if pending.opening { 1.0 } else { 0.0 }),
+        }
+    };
+    BrushMoverPresentation {
+        kind: mover.kind,
+        position: mover.position,
+        progress_bits: progress.to_bits(),
+        request_id: mover.pending.as_ref().map(|pending| pending.request_id),
+        local_destination: mover
+            .pending
+            .as_ref()
+            .map(|pending| pending.local_destination),
+        world_destination: mover
+            .pending
+            .as_ref()
+            .map(|pending| pending.world_destination),
+        opening: mover.pending.as_ref().map(|pending| pending.opening),
     }
 }
 
@@ -3934,6 +4505,10 @@ impl SnapshotWriter {
         self.extend(&[value])
     }
 
+    fn u16(&mut self, value: u16) -> Result<(), RuntimeFailure> {
+        self.extend(&value.to_le_bytes())
+    }
+
     fn bool(&mut self, value: bool) -> Result<(), RuntimeFailure> {
         self.u8(u8::from(value))
     }
@@ -4017,6 +4592,10 @@ impl SnapshotWriter {
                 self.u8(6)?;
                 self.handle(*value)
             }
+            Variant::Color(value) => {
+                self.u8(7)?;
+                self.extend(value)
+            }
         }
     }
 }
@@ -4024,7 +4603,7 @@ impl SnapshotWriter {
 fn encode_state(state: &WorldState, config: &EntityWorldConfig) -> Result<Vec<u8>, RuntimeFailure> {
     let mut output = SnapshotWriter::new(config.limits.max_snapshot_bytes);
     output.extend(b"PSEN")?;
-    output.u32(2)?;
+    output.u32(3)?;
     output.u64(config.source_identity)?;
     output.u64(config.registry_identity)?;
     output.u32(config.tick_interval.to_bits())?;
@@ -4037,6 +4616,7 @@ fn encode_state(state: &WorldState, config: &EntityWorldConfig) -> Result<Vec<u8
         MapLoadKind::MultiplayerNewRound => 5,
     })?;
     output.u64(state.current_tick)?;
+    output.u64(state.revision)?;
     output.u64(state.next_creation_order)?;
     output.u64(state.next_output_id)?;
     output.u64(state.next_event_id)?;
@@ -4169,6 +4749,14 @@ fn encode_entity(
         output.usize(pair.value_range.start)?;
         output.usize(pair.value_range.end)?;
     }
+    output.bool(entity.render.brush_model.is_some())?;
+    if let Some(model) = entity.render.brush_model {
+        output.usize(model)?;
+    }
+    output.u8(entity.render.mode)?;
+    output.extend(&entity.render.color)?;
+    output.u8(entity.render.fx)?;
+    output.u16(entity.render.effects)?;
     encode_behavior(output, &entity.behavior)
 }
 
@@ -4316,5 +4904,10 @@ fn encode_behavior(
             output.u32(state.mutable_value_bits)
         }
         BehaviorState::External => output.u8(9),
+        BehaviorState::Breakable(state) => {
+            output.u8(10)?;
+            output.bool(state.broken)?;
+            output.bool(state.can_break)
+        }
     }
 }

@@ -20,6 +20,8 @@ Represent generic Source entity identity, relationships, I/O, and lifecycle beha
 - Emit typed mover, brush-state, trigger-effect, block-damage, and game-input requests without executing Movement, Collision, game, Jump, or presentation behavior.
 - Classify handled, inert, unsupported, malformed, missing, and unknown entity data explicitly.
 - Parse bounded BSP entity text into ordered duplicate-preserving definitions, first-field structural views, brush-model identities, and parsed or malformed output actions.
+- Publish immutable source-order brush-model presentation snapshots at an expected Entity revision, retaining current model, composed local/world transforms, parent, render mode, RGBA color, render FX, effect flags, draw admission, and mover progress/request state; selected-game registries declare external brush classes' initial visibility without generic classname inference.
+- Keep draw admission independent from solidity: `func_brush` toggles update no-draw state, triggers remain hidden, non-solid movers remain drawable, and broken brushes remain drawable until their scheduled removal.
 
 ## Non-Responsibilities
 

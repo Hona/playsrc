@@ -1,6 +1,6 @@
-use playsrc_bsp::{Bsp, Face, LumpData, Primitive, TextureData, TextureInfo, Vector3};
+use playsrc_bsp::{Bsp, Face, LumpData, Model, Primitive, TextureData, TextureInfo, Vector3};
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeSet, fmt};
+use std::{collections::BTreeSet, fmt, ops::Range};
 mod lighting;
 pub use lighting::*;
 mod environment;
@@ -39,6 +39,24 @@ pub struct Surface {
     pub compiled_primitives: bool,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BrushModelIdentity {
+    World,
+    Inline(usize),
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct BrushModelGeometry {
+    pub index: usize,
+    pub identity: BrushModelIdentity,
+    pub bounds: [[f32; 3]; 2],
+    pub origin: [f32; 3],
+    pub head_node: i32,
+    pub surface_range: Range<usize>,
+    pub materials: Vec<usize>,
+    pub entities: Vec<usize>,
+    pub vertex_count: usize,
+    pub triangle_count: usize,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TextureCoordinateOrigin {
     TopLeft,
 }
@@ -49,8 +67,8 @@ pub struct CanonicalMap {
     pub lighting_profile: LightingProfile,
     pub materials: Vec<MaterialReference>,
     pub surfaces: Vec<Surface>,
+    pub brush_models: Vec<BrushModelGeometry>,
     pub lighting: LightingData,
-    pub world_model: usize,
     pub triangle_count: usize,
     pub vertex_count: usize,
 }
@@ -179,6 +197,17 @@ impl fmt::Display for Error {
 }
 impl std::error::Error for Error {}
 pub fn compile(bsp: &Bsp, profile: LightingProfile) -> Result<CanonicalMap, Error> {
+    let entities =
+        playsrc_entity::parse(bsp.lumps[0].bytes(bsp), playsrc_entity::Limits::default())
+            .map_err(|_| error(ErrorCode::InvalidReference, None))?;
+    compile_with_entities(bsp, profile, &entities)
+}
+
+fn compile_with_entities(
+    bsp: &Bsp,
+    profile: LightingProfile,
+    entities: &playsrc_entity::Graph,
+) -> Result<CanonicalMap, Error> {
     if !bsp.lumps[26].bytes(bsp).is_empty() {
         return Err(error(ErrorCode::UnsupportedDisplacement, None));
     }
@@ -228,6 +257,14 @@ pub fn compile(bsp: &Bsp, profile: LightingProfile) -> Result<CanonicalMap, Erro
         LumpData::Models(v) => v,
         _ => return Err(error(ErrorCode::MissingLump, None)),
     };
+    let node_count = match &bsp.lumps[5].records {
+        LumpData::Nodes(v) => v.len(),
+        _ => return Err(error(ErrorCode::MissingLump, None)),
+    };
+    let leaf_count = match &bsp.lumps[10].records {
+        LumpData::Leaves(v) => v.len(),
+        _ => return Err(error(ErrorCode::MissingLump, None)),
+    };
     let normals = match &bsp.lumps[30].records {
         LumpData::VertexNormals(v) => v.as_slice(),
         _ => &[],
@@ -250,20 +287,13 @@ pub fn compile(bsp: &Bsp, profile: LightingProfile) -> Result<CanonicalMap, Erro
     };
     let materials = materials(texdata, offsets, strings)?;
     let lighting = compile_lighting(bsp, profile, faces, texinfo, LightingLimits::default())?;
-    let mut face_models = vec![usize::MAX; faces.len()];
-    for (model_index, model) in models.iter().enumerate() {
-        let start = usize::try_from(model.first_face)
-            .map_err(|_| error(ErrorCode::InvalidRange, Some(model_index)))?;
-        let count = usize::try_from(model.face_count)
-            .map_err(|_| error(ErrorCode::InvalidRange, Some(model_index)))?;
-        let end = start
-            .checked_add(count)
-            .ok_or_else(|| error(ErrorCode::InvalidRange, Some(model_index)))?;
-        if end > faces.len() || face_models[start..end].iter().any(|v| *v != usize::MAX) {
-            return Err(error(ErrorCode::InvalidRange, Some(model_index)));
-        }
-        face_models[start..end].fill(model_index);
-    }
+    let entity_models = entities
+        .entities
+        .iter()
+        .filter_map(|entity| entity.bsp_model_index.map(|model| (entity.index, model)))
+        .collect::<Vec<_>>();
+    let (mut brush_models, face_models) =
+        brush_model_layout(models, node_count, leaf_count, faces.len(), &entity_models)?;
     let mut output = Vec::with_capacity(faces.len());
     let mut normal_cursor = 0usize;
     let mut triangles = 0usize;
@@ -376,14 +406,32 @@ pub fn compile(bsp: &Bsp, profile: LightingProfile) -> Result<CanonicalMap, Erro
             compiled_primitives: compiled,
         });
     }
+    let face_materials = output
+        .iter()
+        .map(|surface| surface.material)
+        .collect::<Vec<_>>();
+    let face_vertices = output
+        .iter()
+        .map(|surface| surface.positions.len())
+        .collect::<Vec<_>>();
+    let face_triangles = output
+        .iter()
+        .map(|surface| surface.triangles.len())
+        .collect::<Vec<_>>();
+    fill_brush_model_associations(
+        &mut brush_models,
+        &face_materials,
+        &face_vertices,
+        &face_triangles,
+    )?;
     Ok(CanonicalMap {
         bsp_version: bsp.container_version,
         map_revision: bsp.map_revision,
         lighting_profile: profile,
         materials,
         surfaces: output,
+        brush_models,
         lighting,
-        world_model: 0,
         triangle_count: triangles,
         vertex_count: output_vertices,
     })
@@ -405,14 +453,14 @@ pub fn compile_runtime(
         models: runtime_models,
         model_occurrences,
     } = assembly;
-    let map = compile(bsp, profile)?;
+    let entities =
+        playsrc_entity::parse(bsp.lumps[0].bytes(bsp), playsrc_entity::Limits::default())
+            .map_err(|_| error(ErrorCode::InvalidReference, None))?;
+    let map = compile_with_entities(bsp, profile, &entities)?;
     let collision =
         playsrc_collision::compile(bsp).map_err(|_| error(ErrorCode::InvalidReference, None))?;
     let visibility =
         playsrc_visibility::compile(bsp).map_err(|_| error(ErrorCode::InvalidReference, None))?;
-    let entities =
-        playsrc_entity::parse(bsp.lumps[0].bytes(bsp), playsrc_entity::Limits::default())
-            .map_err(|_| error(ErrorCode::InvalidReference, None))?;
     if !resolved_materials.is_empty() {
         if resolved_materials.len() != map.materials.len() {
             return Err(error(ErrorCode::InvalidMaterial, None));
@@ -903,6 +951,131 @@ fn bytesv(o: &mut Vec<u8>, v: &[u8]) {
     u32v(o, v.len() as u32);
     o.extend_from_slice(v)
 }
+fn brush_model_layout(
+    source: &[Model],
+    node_count: usize,
+    leaf_count: usize,
+    face_count: usize,
+    entity_models: &[(usize, usize)],
+) -> Result<(Vec<BrushModelGeometry>, Vec<usize>), Error> {
+    if source.is_empty() {
+        return Err(error(ErrorCode::InvalidReference, None));
+    }
+    let mut face_models = vec![usize::MAX; face_count];
+    let mut output = Vec::with_capacity(source.len());
+    for (index, model) in source.iter().enumerate() {
+        let mins = vector(model.mins);
+        let maxs = vector(model.maxs);
+        let origin = vector(model.origin);
+        if mins
+            .iter()
+            .chain(maxs.iter())
+            .chain(origin.iter())
+            .any(|value| !value.is_finite())
+        {
+            return Err(error(ErrorCode::NonFinite, Some(index)));
+        }
+        if (0..3).any(|axis| mins[axis] > maxs[axis]) {
+            return Err(error(ErrorCode::InvalidRange, Some(index)));
+        }
+        let valid_head_node = if model.head_node >= 0 {
+            (model.head_node as usize) < node_count
+        } else {
+            model
+                .head_node
+                .checked_neg()
+                .and_then(|value| value.checked_sub(1))
+                .and_then(|value| usize::try_from(value).ok())
+                .is_some_and(|leaf| leaf < leaf_count)
+        };
+        if !valid_head_node {
+            return Err(error(ErrorCode::InvalidReference, Some(index)));
+        }
+        let start = usize::try_from(model.first_face)
+            .map_err(|_| error(ErrorCode::InvalidRange, Some(index)))?;
+        let count = usize::try_from(model.face_count)
+            .map_err(|_| error(ErrorCode::InvalidRange, Some(index)))?;
+        let end = start
+            .checked_add(count)
+            .ok_or_else(|| error(ErrorCode::InvalidRange, Some(index)))?;
+        if end > face_count
+            || face_models[start..end]
+                .iter()
+                .any(|model| *model != usize::MAX)
+        {
+            return Err(error(ErrorCode::InvalidRange, Some(index)));
+        }
+        face_models[start..end].fill(index);
+        output.push(BrushModelGeometry {
+            index,
+            identity: if index == 0 {
+                BrushModelIdentity::World
+            } else {
+                BrushModelIdentity::Inline(index)
+            },
+            bounds: [mins, maxs],
+            origin,
+            head_node: model.head_node,
+            surface_range: start..end,
+            materials: Vec::new(),
+            entities: Vec::new(),
+            vertex_count: 0,
+            triangle_count: 0,
+        });
+    }
+    if let Some(face) = face_models.iter().position(|model| *model == usize::MAX) {
+        return Err(error(ErrorCode::InvalidRange, Some(face)));
+    }
+    for &(entity, model) in entity_models {
+        let Some(geometry) = output.get_mut(model) else {
+            return Err(error(ErrorCode::InvalidReference, Some(entity)));
+        };
+        geometry.entities.push(entity);
+    }
+    Ok((output, face_models))
+}
+
+fn fill_brush_model_associations(
+    models: &mut [BrushModelGeometry],
+    face_materials: &[usize],
+    face_vertices: &[usize],
+    face_triangles: &[usize],
+) -> Result<(), Error> {
+    if face_materials.len() != face_vertices.len() || face_materials.len() != face_triangles.len() {
+        return Err(error(ErrorCode::InvalidRange, None));
+    }
+    for model in models {
+        let materials = face_materials
+            .get(model.surface_range.clone())
+            .ok_or_else(|| error(ErrorCode::InvalidRange, Some(model.index)))?;
+        let vertices = face_vertices
+            .get(model.surface_range.clone())
+            .ok_or_else(|| error(ErrorCode::InvalidRange, Some(model.index)))?;
+        let triangles = face_triangles
+            .get(model.surface_range.clone())
+            .ok_or_else(|| error(ErrorCode::InvalidRange, Some(model.index)))?;
+        for &material in materials {
+            if !model.materials.contains(&material) {
+                model.materials.push(material);
+            }
+        }
+        model.vertex_count = vertices.iter().try_fold(0usize, |total, count| {
+            total
+                .checked_add(*count)
+                .ok_or_else(|| error(ErrorCode::BoundExceeded, Some(model.index)))
+        })?;
+        model.triangle_count = triangles.iter().try_fold(0usize, |total, count| {
+            total
+                .checked_add(*count)
+                .ok_or_else(|| error(ErrorCode::BoundExceeded, Some(model.index)))
+        })?;
+    }
+    Ok(())
+}
+
+fn vector(value: Vector3) -> [f32; 3] {
+    [value.x.value(), value.y.value(), value.z.value()]
+}
 fn materials(
     data: &[TextureData],
     table: &[i32],
@@ -1150,6 +1323,28 @@ mod tests {
             },
         }
     }
+    fn model(
+        mins: [f32; 3],
+        maxs: [f32; 3],
+        origin: [f32; 3],
+        head_node: i32,
+        first_face: i32,
+        face_count: i32,
+    ) -> Model {
+        let vector = |value: [f32; 3]| Vector3 {
+            x: scalar(value[0]),
+            y: scalar(value[1]),
+            z: scalar(value[2]),
+        };
+        Model {
+            mins: vector(mins),
+            maxs: vector(maxs),
+            origin: vector(origin),
+            head_node,
+            first_face,
+            face_count,
+        }
+    }
     fn face(first_surface_edge: i32, surface_edge_count: i16) -> Face {
         Face {
             plane_index: 0,
@@ -1221,5 +1416,87 @@ mod tests {
         assert_eq!(triangles, [[0, 2, 1], [0, 3, 2]]);
         normalize_triangle_winding(&positions, &normals, &mut triangles);
         assert_eq!(triangles, [[0, 2, 1], [0, 3, 2]]);
+    }
+
+    #[test]
+    fn brush_models_retain_ranges_bounds_materials_and_duplicate_entity_joins() {
+        let source = [
+            model([-64.0, -64.0, -16.0], [64.0, 64.0, 16.0], [0.0; 3], 0, 0, 2),
+            model(
+                [-8.0, -4.0, 0.0],
+                [8.0, 4.0, 16.0],
+                [128.0, 32.0, 4.0],
+                1,
+                2,
+                2,
+            ),
+        ];
+        let (mut models, owners) =
+            brush_model_layout(&source, 2, 1, 4, &[(0, 0), (7, 1), (9, 1)]).unwrap();
+        fill_brush_model_associations(&mut models, &[3, 3, 3, 4], &[4, 3, 4, 5], &[2, 1, 2, 3])
+            .unwrap();
+
+        assert_eq!(owners, [0, 0, 1, 1]);
+        assert_eq!(models[0].identity, BrushModelIdentity::World);
+        assert_eq!(models[0].surface_range, 0..2);
+        assert_eq!(models[0].materials, [3]);
+        assert_eq!(models[0].entities, [0]);
+        assert_eq!(models[0].vertex_count, 7);
+        assert_eq!(models[0].triangle_count, 3);
+        assert_eq!(models[1].identity, BrushModelIdentity::Inline(1));
+        assert_eq!(models[1].bounds, [[-8.0, -4.0, 0.0], [8.0, 4.0, 16.0]]);
+        assert_eq!(models[1].origin, [128.0, 32.0, 4.0]);
+        assert_eq!(models[1].surface_range, 2..4);
+        assert_eq!(models[1].materials, [3, 4]);
+        assert_eq!(models[1].entities, [7, 9]);
+    }
+
+    #[test]
+    fn brush_model_layout_rejects_missing_overlap_unowned_and_invalid_references() {
+        assert_eq!(
+            brush_model_layout(&[], 1, 1, 0, &[]).unwrap_err().code,
+            ErrorCode::InvalidReference
+        );
+        let world = model([0.0; 3], [1.0; 3], [0.0; 3], 0, 0, 2);
+        let overlap = model([0.0; 3], [1.0; 3], [0.0; 3], 0, 1, 1);
+        assert_eq!(
+            brush_model_layout(&[world, overlap], 1, 1, 2, &[])
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidRange
+        );
+        assert_eq!(
+            brush_model_layout(&[world], 1, 1, 3, &[]).unwrap_err().code,
+            ErrorCode::InvalidRange
+        );
+        assert_eq!(
+            brush_model_layout(&[world], 1, 1, 2, &[(4, 1)])
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidReference
+        );
+        let bad_node = model([0.0; 3], [1.0; 3], [0.0; 3], 1, 0, 2);
+        assert_eq!(
+            brush_model_layout(&[bad_node], 1, 1, 2, &[])
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidReference
+        );
+        let leaf_model = model([0.0; 3], [1.0; 3], [0.0; 3], -1, 0, 2);
+        assert!(brush_model_layout(&[leaf_model], 1, 1, 2, &[]).is_ok());
+        let bad_leaf = model([0.0; 3], [1.0; 3], [0.0; 3], -2, 0, 2);
+        assert_eq!(
+            brush_model_layout(&[bad_leaf], 1, 1, 2, &[])
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidReference
+        );
+        let bad_bounds = model([2.0; 3], [1.0; 3], [0.0; 3], 0, 0, 2);
+        assert_eq!(
+            brush_model_layout(&[bad_bounds], 1, 1, 2, &[])
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidRange
+        );
     }
 }
