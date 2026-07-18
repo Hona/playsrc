@@ -2556,49 +2556,16 @@ fn parse_vtx(
                             }
                             let flags = bytes[strip + 18];
                             let selected = &indices[first..first + strip_index_count];
-                            match flags {
-                                1 if strip_index_count.is_multiple_of(3) => {
-                                    triangles.extend(selected.chunks_exact(3).filter_map(
-                                        |triangle| {
-                                            let value = [
-                                                triangle[0] as u32,
-                                                triangle[1] as u32,
-                                                triangle[2] as u32,
-                                            ];
-                                            (value[0] != value[1]
-                                                && value[1] != value[2]
-                                                && value[0] != value[2])
-                                                .then_some(value)
-                                        },
-                                    ));
-                                }
-                                2 => {
-                                    for at in 0..strip_index_count.saturating_sub(2) {
-                                        let mut value = [
-                                            selected[at] as u32,
-                                            selected[at + 1] as u32,
-                                            selected[at + 2] as u32,
-                                        ];
-                                        if at % 2 == 1 {
-                                            value.swap(0, 1);
-                                        }
-                                        if value[0] != value[1]
-                                            && value[1] != value[2]
-                                            && value[0] != value[2]
-                                        {
-                                            triangles.push(value);
-                                        }
-                                    }
-                                }
-                                _ => {
-                                    return Err(failure(
+                            triangles.extend(derived_strip_triangles(selected, flags).ok_or_else(
+                                || {
+                                    failure(
                                         Classification::Unsupported,
                                         ErrorCode::UnsupportedCompanion,
                                         identity,
                                         Some(strip + 18..strip + 19),
-                                    ));
-                                }
-                            }
+                                    )
+                                },
+                            )?);
                             strips.push(Strip {
                                 index_count: strip_index_count,
                                 first_index: first,
@@ -2631,6 +2598,43 @@ fn parse_vtx(
         max_bones,
         material_replacements,
     })
+}
+
+fn derived_strip_triangles(indices: &[u16], flags: u8) -> Option<Vec<[u32; 3]>> {
+    let triangles = match flags {
+        1 if indices.len().is_multiple_of(3) => indices
+            .chunks_exact(3)
+            .map(|triangle| [triangle[0] as u32, triangle[1] as u32, triangle[2] as u32])
+            .collect::<Vec<_>>(),
+        2 => (0..indices.len().saturating_sub(2))
+            .map(|at| {
+                if at.is_multiple_of(2) {
+                    [
+                        indices[at] as u32,
+                        indices[at + 2] as u32,
+                        indices[at + 1] as u32,
+                    ]
+                } else {
+                    [
+                        indices[at] as u32,
+                        indices[at + 1] as u32,
+                        indices[at + 2] as u32,
+                    ]
+                }
+            })
+            .collect::<Vec<_>>(),
+        _ => return None,
+    };
+    Some(
+        triangles
+            .into_iter()
+            .filter(|triangle| {
+                triangle[0] != triangle[1]
+                    && triangle[1] != triangle[2]
+                    && triangle[0] != triangle[2]
+            })
+            .collect(),
+    )
 }
 
 fn assemble_geometry(
@@ -4652,5 +4656,23 @@ mod tests {
             document.material_replacements[0].candidates,
             ["materials/models/test/lod_material.vmt"]
         );
+    }
+
+    #[test]
+    fn derives_source_list_and_strip_winding_without_rewriting_indices() {
+        assert_eq!(
+            derived_strip_triangles(&[0, 1, 2, 3, 4, 5], 1).unwrap(),
+            [[0, 1, 2], [3, 4, 5]]
+        );
+        assert_eq!(
+            derived_strip_triangles(&[0, 1, 2, 3, 4], 2).unwrap(),
+            [[0, 2, 1], [1, 2, 3], [2, 4, 3]]
+        );
+        assert_eq!(
+            derived_strip_triangles(&[0, 1, 1, 2, 3], 2).unwrap(),
+            [[1, 3, 2]]
+        );
+        assert!(derived_strip_triangles(&[0, 1], 1).is_none());
+        assert!(derived_strip_triangles(&[0, 1, 2], 3).is_none());
     }
 }

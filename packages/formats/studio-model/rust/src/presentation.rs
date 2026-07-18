@@ -13,7 +13,7 @@ use crate::{
 };
 
 const ARTIFACT_MAGIC: &[u8; 4] = b"PSMP";
-const ARTIFACT_VERSION: u16 = 2;
+const ARTIFACT_VERSION: u16 = 3;
 const COMPACT_FRAME_MARKER: u32 = u32::MAX;
 const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 const STUDIO_LOOPING: i32 = 0x0001;
@@ -246,6 +246,43 @@ pub enum TangentHandednessConvention {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VertexDeformationContract {
+    FlexBeforeLinearBoneSkinningWithoutTopologyChanges,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TriangleWinding {
+    Clockwise,
+    CounterClockwise,
+}
+
+impl TriangleWinding {
+    fn reversed(self) -> Self {
+        match self {
+            Self::Clockwise => Self::CounterClockwise,
+            Self::CounterClockwise => Self::Clockwise,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CullFace {
+    Back,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GeometryFacing {
+    pub front_face: TriangleWinding,
+    pub cull_face: CullFace,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransformOrientation {
+    Preserving,
+    Reversing,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EntityAngleConvention {
     DegreesPitchYawRollForwardLeftUpColumns,
 }
@@ -263,6 +300,8 @@ pub struct GeometryOrientation {
     pub tangents: VertexAttributeTransform,
     pub texture_coordinates: TextureCoordinateConvention,
     pub tangent_handedness: TangentHandednessConvention,
+    pub deformation: VertexDeformationContract,
+    pub facing: GeometryFacing,
 }
 
 impl GeometryOrientation {
@@ -273,6 +312,12 @@ impl GeometryOrientation {
             tangents: VertexAttributeTransform::AuthoredSourceValues,
             texture_coordinates: TextureCoordinateConvention::AuthoredUTowardRightVDown,
             tangent_handedness: TangentHandednessConvention::TangentSWComponent,
+            deformation:
+                VertexDeformationContract::FlexBeforeLinearBoneSkinningWithoutTopologyChanges,
+            facing: GeometryFacing {
+                front_face: TriangleWinding::Clockwise,
+                cull_face: CullFace::Back,
+            },
         }
     }
 }
@@ -1502,6 +1547,61 @@ fn presentation_error(code: PresentationErrorCode, identity: &str) -> Presentati
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Matrix3x4(pub [Float32; 12]);
 
+pub fn affine_transform_orientation(
+    transform: Matrix3x4,
+) -> Result<TransformOrientation, PresentationError> {
+    let values = transform.0.map(|value| f32::from_bits(value.0));
+    if values.iter().any(|value| !value.is_finite()) {
+        return Err(presentation_error(
+            PresentationErrorCode::InvalidState,
+            "geometry-facing",
+        ));
+    }
+    let determinant = values[0] * (values[5] * values[10] - values[6] * values[9])
+        - values[1] * (values[4] * values[10] - values[6] * values[8])
+        + values[2] * (values[4] * values[9] - values[5] * values[8]);
+    if !determinant.is_finite() || determinant == 0.0 {
+        return Err(presentation_error(
+            PresentationErrorCode::InvalidState,
+            "geometry-facing",
+        ));
+    }
+    Ok(if determinant.is_sign_negative() {
+        TransformOrientation::Reversing
+    } else {
+        TransformOrientation::Preserving
+    })
+}
+
+pub fn combine_transform_orientations(
+    orientations: impl IntoIterator<Item = TransformOrientation>,
+) -> TransformOrientation {
+    if orientations
+        .into_iter()
+        .filter(|orientation| *orientation == TransformOrientation::Reversing)
+        .count()
+        .is_multiple_of(2)
+    {
+        TransformOrientation::Preserving
+    } else {
+        TransformOrientation::Reversing
+    }
+}
+
+pub fn transformed_geometry_facing(
+    facing: GeometryFacing,
+    orientation: TransformOrientation,
+) -> GeometryFacing {
+    GeometryFacing {
+        front_face: if orientation == TransformOrientation::Reversing {
+            facing.front_face.reversed()
+        } else {
+            facing.front_face
+        },
+        cull_face: facing.cull_face,
+    }
+}
+
 pub fn source_entity_transform(
     position: Vector3,
     angles: Vector3,
@@ -1768,15 +1868,12 @@ fn sequence_timing_samples(
     ])
 }
 
-pub fn presentation_events_between(
+pub fn sequence_events_between(
     model: &PresentationModel,
     sequence_index: usize,
     previous_cycle: Float32,
     current_cycle: Float32,
 ) -> Result<Vec<&crate::SequenceEvent>, PresentationError> {
-    const EVENT_CLIENT: i32 = 5_000;
-    const EVENT_TYPE_CLIENT: i32 = 1 << 4;
-    const EVENT_TYPE_NEW: i32 = 1 << 10;
     let sequence = model
         .sequences
         .get(sequence_index)
@@ -1788,13 +1885,6 @@ pub fn presentation_events_between(
     if previous == current {
         return Ok(Vec::new());
     }
-    let client_event = |event: &&crate::SequenceEvent| {
-        if event.event_type & EVENT_TYPE_NEW != 0 {
-            event.event_type & EVENT_TYPE_CLIENT != 0
-        } else {
-            event.event >= EVENT_CLIENT
-        }
-    };
     let event_cycle = |event: &&crate::SequenceEvent| finite(event.cycle);
     if current <= previous {
         if sequence.flags & STUDIO_LOOPING == 0 || previous - current <= 0.5 {
@@ -1803,11 +1893,10 @@ pub fn presentation_events_between(
         let mut result = sequence
             .events
             .iter()
-            .filter(client_event)
             .filter(|event| event_cycle(event).is_some_and(|cycle| cycle > previous))
             .collect::<Vec<_>>();
         let restarted_previous = current - 0.001;
-        result.extend(sequence.events.iter().filter(client_event).filter(|event| {
+        result.extend(sequence.events.iter().filter(|event| {
             event_cycle(event).is_some_and(|cycle| cycle > restarted_previous && cycle <= current)
         }));
         Ok(result)
@@ -1815,12 +1904,34 @@ pub fn presentation_events_between(
         Ok(sequence
             .events
             .iter()
-            .filter(client_event)
             .filter(|event| {
                 event_cycle(event).is_some_and(|cycle| cycle > previous && cycle <= current)
             })
             .collect())
     }
+}
+
+pub fn presentation_events_between(
+    model: &PresentationModel,
+    sequence_index: usize,
+    previous_cycle: Float32,
+    current_cycle: Float32,
+) -> Result<Vec<&crate::SequenceEvent>, PresentationError> {
+    const EVENT_CLIENT: i32 = 5_000;
+    const EVENT_TYPE_CLIENT: i32 = 1 << 4;
+    const EVENT_TYPE_NEW: i32 = 1 << 10;
+    Ok(
+        sequence_events_between(model, sequence_index, previous_cycle, current_cycle)?
+            .into_iter()
+            .filter(|event| {
+                if event.event_type & EVENT_TYPE_NEW != 0 {
+                    event.event_type & EVENT_TYPE_CLIENT != 0
+                } else {
+                    event.event >= EVENT_CLIENT
+                }
+            })
+            .collect(),
+    )
 }
 
 pub fn select_primitives(
@@ -3447,7 +3558,10 @@ impl<'a> ArtifactWriter<'a> {
         self.u8(orientation.normals as u8)?;
         self.u8(orientation.tangents as u8)?;
         self.u8(orientation.texture_coordinates as u8)?;
-        self.u8(orientation.tangent_handedness as u8)
+        self.u8(orientation.tangent_handedness as u8)?;
+        self.u8(orientation.deformation as u8)?;
+        self.u8(orientation.facing.front_face as u8)?;
+        self.u8(orientation.facing.cull_face as u8)
     }
 
     fn value_streams(
@@ -3628,6 +3742,9 @@ pub fn decode_presentation(
     let geometry =
         |input: &mut ArtifactReader<'_>| -> Result<GeometryOrientation, PresentationError> {
             if input.u8()? != 0
+                || input.u8()? != 0
+                || input.u8()? != 0
+                || input.u8()? != 0
                 || input.u8()? != 0
                 || input.u8()? != 0
                 || input.u8()? != 0
@@ -5149,9 +5266,9 @@ mod tests {
         assert_eq!(first.sha256, second.sha256);
         assert_eq!(
             first.sha256,
-            hex_hash("877da8c71bab61f9d4fbacce71967864e3df619d7294ba215e8389da6f3eb799")
+            hex_hash("08bcffc85424c7e2c89efdc20cdfc7b9e8b6bdf3ef8e26b253f22799dac0f4b9")
         );
-        assert_eq!(first.bytes.len(), 3_589);
+        assert_eq!(first.bytes.len(), 3_592);
         assert!(first.bytes.len() < MAX_MESSAGE_BYTES);
         assert_eq!(first.model.dependencies.len(), 4);
         assert_eq!(
@@ -5229,6 +5346,42 @@ mod tests {
             [
                 1.0, 0.0, 0.0, 1.0, -0.0, -1.0, -0.0, -2.0, 0.0, 0.0, 1.0, 3.0
             ]
+        );
+        let facing = GeometryOrientation::source().facing;
+        assert_eq!(facing.front_face, TriangleWinding::Clockwise);
+        assert_eq!(facing.cull_face, CullFace::Back);
+        assert_eq!(
+            affine_transform_orientation(transform).unwrap(),
+            TransformOrientation::Preserving
+        );
+        assert_eq!(
+            affine_transform_orientation(reflected).unwrap(),
+            TransformOrientation::Reversing
+        );
+        assert_eq!(
+            transformed_geometry_facing(facing, TransformOrientation::Reversing).front_face,
+            TriangleWinding::CounterClockwise
+        );
+        assert_eq!(
+            combine_transform_orientations([
+                TransformOrientation::Reversing,
+                TransformOrientation::Reversing,
+            ]),
+            TransformOrientation::Preserving
+        );
+        let mut singular = transform;
+        singular.0[0] = float(0.0);
+        singular.0[4] = float(0.0);
+        singular.0[8] = float(0.0);
+        assert_eq!(
+            affine_transform_orientation(singular).unwrap_err().code,
+            PresentationErrorCode::InvalidState
+        );
+        let mut non_finite = transform;
+        non_finite.0[0] = Float32(f32::NAN.to_bits());
+        assert_eq!(
+            affine_transform_orientation(non_finite).unwrap_err().code,
+            PresentationErrorCode::InvalidState
         );
     }
 

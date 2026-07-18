@@ -8,7 +8,7 @@ use std::{
 };
 
 const BUILD: &str = "24207079";
-const BUNDLE_SHA256: &str = "896132d9b618d0ae521092c1e33d91d3cc05f1692ac434603a31994b8dd51741";
+const BUNDLE_SHA256: &str = "c8ccea4035c5e75e26ffc0855a425ff4139f079f35ab9abd09e22990726f03d5";
 const BSP_SHA256: &str = "b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959";
 const OCCURRENCE_TRANSFORM_SHA256: &str =
     "7a4eff4a2d9ca0892b6f576d21df4d44d03e03f957499c20245740b21b4edee6";
@@ -17,6 +17,10 @@ const MODEL_TEXTURE_COUNT: usize = 71;
 const MODEL_MIP_SHA256: &str = "05c7869e3f78b03b2c9f05ebdb9a8ec8f9895a8a8d3ff37530f3e0d26f617033";
 const MODEL_DRAW_SHA256: &str = "12770b45364a035c81a0fd96fdd84dd762d97540a640bbfbb44db290d7b2014d";
 const EYE_STATE_SHA256: &str = "cd6606f8d35ed20c87ffc33b40190586be2dc94f48eafadb3b7038f99d9d103a";
+const MODEL_FACING_SHA256: &str =
+    "e3ebbff7c5c7daef2811b0e97e9300f67a35f13324ca86b121f92912bce47b56";
+const LOCKER_STATE_SHA256: &str =
+    "52a60e666520a3e9e40799680a49af006bf485604bf70ec58f9968c68cdbc2dc";
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -44,6 +48,7 @@ struct Target {
     artifact_sha256: &'static str,
     timeline_sha256: &'static str,
     activities: &'static [&'static str],
+    facing_counts: (usize, usize, usize),
 }
 
 trait ExactFiles {
@@ -178,9 +183,24 @@ struct StockViewModelTarget {
     item_sha256: &'static str,
     activities: &'static [&'static str],
     merged_bones: usize,
+    ammunition_part: studio::ViewModelPart,
+    ammunition_bone: &'static str,
+    ammunition_vertices: usize,
+    required_event: &'static str,
+    hand_facing_counts: (usize, usize, usize),
+    item_facing_counts: (usize, usize, usize),
     composition_sha256: &'static str,
     producer_sha256: &'static str,
 }
+
+const STOCK_PHASES: &[studio::ViewModelPhase] = &[
+    studio::ViewModelPhase::Draw,
+    studio::ViewModelPhase::Idle,
+    studio::ViewModelPhase::PrimaryFire,
+    studio::ViewModelPhase::ReloadStart,
+    studio::ViewModelPhase::ReloadInsertOrLoop,
+    studio::ViewModelPhase::ReloadFinish,
+];
 
 const SOLDIER_STOCK_ACTIVITIES: &[&str] = &[
     "ACT_PRIMARY_VM_DRAW",
@@ -208,8 +228,14 @@ const STOCK_VIEWMODELS: &[StockViewModelTarget] = &[
         item_sha256: "e962a3ab43ad731c6b65780c760c61a7d06676f5ca05fd112bcfc74944a605e0",
         activities: SOLDIER_STOCK_ACTIVITIES,
         merged_bones: 3,
-        composition_sha256: "160db54bf1706daed8d788ad692ef649ecfe49853cf44c3551332c497dbfcea2",
-        producer_sha256: "154c33219634e3f5a8289953fea5ff9224a4913022c1b3ec5b843b4b380ddd4a",
+        ammunition_part: studio::ViewModelPart::Hand,
+        ammunition_bone: "rocket",
+        ammunition_vertices: 517,
+        required_event: "AE_WPN_INCREMENTAMMO",
+        hand_facing_counts: (2, 4_356, 0),
+        item_facing_counts: (1, 14_529, 0),
+        composition_sha256: "5f9868eeec8bb55ef678181a9256e394a24d7de9aced98ae8df43490d37c8ed9",
+        producer_sha256: "87fc1220d260330720389eb580a339f5b05fb229220c5de242189048d9e3f4ae",
     },
     StockViewModelTarget {
         hand: "models/weapons/c_models/c_demo_arms.mdl",
@@ -218,8 +244,14 @@ const STOCK_VIEWMODELS: &[StockViewModelTarget] = &[
         item_sha256: "bbdb99e9a836603b795c8851a16838aab37a5bcf178d2dd4a25fbc9c0fa72108",
         activities: DEMOMAN_STOCK_ACTIVITIES,
         merged_bones: 4,
-        composition_sha256: "8faeff88db0154818b5d0882a7c0fc07b37d2ed6381b37e3c7fd518928e980ef",
-        producer_sha256: "a61764813635c46a18ccb1326b89974f37128f91a7cce870ee0cb4823099976c",
+        ammunition_part: studio::ViewModelPart::Item,
+        ammunition_bone: "weapon_bone_1",
+        ammunition_vertices: 271,
+        required_event: "AE_CL_BODYGROUP_SET_VALUE_CMODEL_WPN",
+        hand_facing_counts: (2, 3_360, 0),
+        item_facing_counts: (0, 14_122, 0),
+        composition_sha256: "60b81f7b3dfaf75758e137b550fde3136e84a49626f98f2b3bb93f7d7fc6365b",
+        producer_sha256: "de2594d517d5f8f7741560fc4f1ec7f816efebb45362967245e07207ab5a812d",
     },
 ];
 
@@ -238,10 +270,11 @@ const TARGETS: &[Target] = &[
         lods: &[0],
         physics: studio::PhysicsStatus::Missing,
         first_material: "materials/models/props_2fort/cow001.vmt",
-        artifact_bytes: 52_403,
-        artifact_sha256: "af674c5d95989d65479de833c81418f815b9d4112db308c3c3c4e652686fa9f5",
+        artifact_bytes: 52_406,
+        artifact_sha256: "786b772fe681ab0c20e9ccae9da5dcadcc86a086d10ef1cbe97424c9cb1ff0bb",
         timeline_sha256: "65a9a91c0b9bc6342a4343db11f8bae8b8ae34c8d4e02273e7c90471572fd6dd",
         activities: &[],
+        facing_counts: (0, 426, 0),
     },
     Target {
         path: "models/props_2fort/frog.mdl",
@@ -257,10 +290,11 @@ const TARGETS: &[Target] = &[
         lods: &[0],
         physics: studio::PhysicsStatus::Missing,
         first_material: "materials/models/props_2fort/frog001.vmt",
-        artifact_bytes: 120_661,
-        artifact_sha256: "56db74a275f5db8c066b325bbbd3e8f91a8327965ca21c1210eec38c417bd8e6",
+        artifact_bytes: 120_664,
+        artifact_sha256: "ec9ce2fe1474a100e9b2a618fb5acd3287f2cf677b614350442f0c8f181f845f",
         timeline_sha256: "65a9a91c0b9bc6342a4343db11f8bae8b8ae34c8d4e02273e7c90471572fd6dd",
         activities: &[],
+        facing_counts: (1, 1_321, 0),
     },
     Target {
         path: "models/props_gameplay/resupply_locker.mdl",
@@ -276,10 +310,11 @@ const TARGETS: &[Target] = &[
         lods: &[0, 1, 2, 3, 4],
         physics: studio::PhysicsStatus::Present,
         first_material: "materials/models/props_gameplay/resupply_locker.vmt",
-        artifact_bytes: 998_429,
-        artifact_sha256: "8356e2c21ec854a3ec5a92596518642b73827023877dd59802753bdeab6c3c6c",
+        artifact_bytes: 998_432,
+        artifact_sha256: "2a1103fff0b6fe9bdecd15a747a5bf418b504402927bab4a7a2b7963e3ad9856",
         timeline_sha256: "bcaff50ed60d571f2eba900b1a98f009c43b638bc69c00ae53f331651846fd43",
         activities: &[],
+        facing_counts: (31, 8_941, 0),
     },
     Target {
         path: "models/player/items/soldier/soldier_viking.mdl",
@@ -295,10 +330,11 @@ const TARGETS: &[Target] = &[
         lods: &[0, 1, 2],
         physics: studio::PhysicsStatus::Present,
         first_material: "materials/models/player/items/soldier/soldier_viking.vmt",
-        artifact_bytes: 258_490,
-        artifact_sha256: "73bf0c80b29130a2b93c9c7f162db5d7875b46c04ce6f9c91d053702eefaeaa3",
+        artifact_bytes: 258_493,
+        artifact_sha256: "92d7d2a337d429ae941c988b5e0299288b241003f21a46333949c0900e4b6741",
         timeline_sha256: "9b08336afb4e9eb30508f8bad1b519e3d7679e59a10b31c16adc577124f02226",
         activities: &[],
+        facing_counts: (2, 2_618, 0),
     },
     Target {
         path: "models/player/soldier.mdl",
@@ -314,10 +350,11 @@ const TARGETS: &[Target] = &[
         lods: &[0, 1, 2, 3, 4, 5, 6],
         physics: studio::PhysicsStatus::Present,
         first_material: "materials/models/player/soldier/soldier_red.vmt",
-        artifact_bytes: 41_473_885,
-        artifact_sha256: "32f86ecbd068953f677358d53d5021ee987357d705abd37214ae4aef7387fd87",
+        artifact_bytes: 41_473_888,
+        artifact_sha256: "f868c5c0866e6f8c358db2aafcfcd3f022a3b95e2ef3bf0237ab1231761b2014",
         timeline_sha256: "0b07964a4ffc54a45c80df4daf7dff2eb5cb088da6abc16c306ea9853211be7d",
         activities: WORLD_ACTIVITIES,
+        facing_counts: (73, 24_361, 0),
     },
     Target {
         path: "models/player/demo.mdl",
@@ -333,10 +370,11 @@ const TARGETS: &[Target] = &[
         lods: &[0, 1, 2, 3, 4, 5, 6],
         physics: studio::PhysicsStatus::Present,
         first_material: "materials/models/player/demo/demoman_red.vmt",
-        artifact_bytes: 39_357_818,
-        artifact_sha256: "824da007e9d4ea47e430be3145c0cdcb3f8b982adf467e105998b4fd02ae03b1",
+        artifact_bytes: 39_357_821,
+        artifact_sha256: "c13255ac5e9d4be53aeaa4dd2b2e31607a176d898a597273ae7647695f2ecde6",
         timeline_sha256: "75251b83cdc507c123fdd731d4b94733b6dcd9f752e50d7297862fb62cfec221",
         activities: WORLD_ACTIVITIES,
+        facing_counts: (120, 21_767, 0),
     },
     Target {
         path: "models/weapons/w_models/w_rocket.mdl",
@@ -352,10 +390,11 @@ const TARGETS: &[Target] = &[
         lods: &[0],
         physics: studio::PhysicsStatus::Present,
         first_material: "materials/models/weapons/w_rocketlauncher/w_rocket01.vmt",
-        artifact_bytes: 60_431,
-        artifact_sha256: "93d6da2b1914b56efac46eb7de751a0713ea9c377ef504bbbe9d02e27b61302d",
+        artifact_bytes: 60_434,
+        artifact_sha256: "66fcbad67d06e1c3e6110d689ef6047ef4be5990b00714f46f926cec3c06dc66",
         timeline_sha256: "6770d4c90a26b5d55316a396ea5b6b4fbe7cd093ebf4ec534c990ce64846d4e0",
         activities: &[],
+        facing_counts: (0, 360, 0),
     },
     Target {
         path: "models/weapons/w_models/w_stickybomb.mdl",
@@ -371,10 +410,11 @@ const TARGETS: &[Target] = &[
         lods: &[0, 1, 2],
         physics: studio::PhysicsStatus::Present,
         first_material: "materials/models/weapons/w_stickybomb/w_stickybomb_red.vmt",
-        artifact_bytes: 145_017,
-        artifact_sha256: "0a1d519d3ada6fe49e0ab9ab5d160de626ec39e4b85204c0e0ecbe3d057e2ab4",
+        artifact_bytes: 145_020,
+        artifact_sha256: "21c59aab18fa7d9ebc16a2ad8fd06c243ef6ade609bc750232a7328c9b09b49f",
         timeline_sha256: "a4fc0efa81ceb888399cdf12b1c07caed644616c180a0f2b6fe053f81766f3d6",
         activities: &[],
+        facing_counts: (0, 1_586, 0),
     },
 ];
 
@@ -398,10 +438,16 @@ fn main() -> Result<(), String> {
     }
     let files = parse_bundle(&bundle_bytes)?;
     let vpk_files = VpkFiles::new(Path::new(&config.tf2_dir))?;
+    let mut facing_digest = Vec::new();
     for target in TARGETS {
-        verify_target(target, &files)?;
+        verify_target(target, &files, &mut facing_digest)?;
     }
-    verify_stock_viewmodels(&vpk_files)?;
+    verify_stock_viewmodels(&vpk_files, &mut facing_digest)?;
+    let facing_sha256 = hex(&studio::content_sha256(&facing_digest));
+    println!("modelFacingSha256={facing_sha256}");
+    if facing_sha256 != MODEL_FACING_SHA256 {
+        return Err("model geometry-facing evidence changed".to_owned());
+    }
     verify_model_materials(&vpk_files)?;
     verify_occurrences(&cache)?;
     println!(
@@ -411,7 +457,7 @@ fn main() -> Result<(), String> {
     Ok(())
 }
 
-fn verify_stock_viewmodels(files: &VpkFiles) -> Result<(), String> {
+fn verify_stock_viewmodels(files: &VpkFiles, facing_digest: &mut Vec<u8>) -> Result<(), String> {
     for target in STOCK_VIEWMODELS {
         let hand_bytes = files
             .exact(target.hand)?
@@ -429,6 +475,13 @@ fn verify_stock_viewmodels(files: &VpkFiles) -> Result<(), String> {
         }
         let hand_document = load(target.hand, files)?;
         let item_document = load(target.item, files)?;
+        if facing_counts(&hand_document) != target.hand_facing_counts
+            || facing_counts(&item_document) != target.item_facing_counts
+        {
+            return Err(format!("{} encoded front-face counts changed", target.hand));
+        }
+        append_geometry_facing(facing_digest, &hand_document);
+        append_geometry_facing(facing_digest, &item_document);
         let hand = build_artifact_for_profile(
             &hand_document,
             files,
@@ -444,7 +497,9 @@ fn verify_stock_viewmodels(files: &VpkFiles) -> Result<(), String> {
         let mut digest = Vec::new();
         let mut producer_digest = Vec::new();
         let mut shapes = BTreeSet::new();
-        let mut bodygroup_event_names = BTreeSet::new();
+        let mut crossed_event_names = BTreeSet::new();
+        let mut reload_hand_poses = BTreeSet::new();
+        let mut reload_ammunition_poses = BTreeSet::new();
         digest.extend_from_slice(target.hand.as_bytes());
         digest.extend_from_slice(target.item.as_bytes());
         digest.extend_from_slice(&hand.sha256);
@@ -455,7 +510,7 @@ fn verify_stock_viewmodels(files: &VpkFiles) -> Result<(), String> {
         producer_digest.extend_from_slice(&item.sha256);
         append_material_states(&mut producer_digest, &hand.model, &hand_material_states);
         append_material_states(&mut producer_digest, &item.model, &item_material_states);
-        for activity in target.activities {
+        for (activity, phase) in target.activities.iter().zip(STOCK_PHASES) {
             let sequences = studio::sequences_for_activity_name(&hand.model, activity.as_bytes());
             if sequences.len() != 1 {
                 return Err(format!(
@@ -463,64 +518,66 @@ fn verify_stock_viewmodels(files: &VpkFiles) -> Result<(), String> {
                     target.hand
                 ));
             }
+            let hand_pose_parameters = hand
+                .model
+                .pose_parameters
+                .iter()
+                .map(|_| studio::Float32(0.0_f32.to_bits()))
+                .collect::<Vec<_>>();
+            let timing = studio::sequence_timing(&hand.model, sequences[0], &hand_pose_parameters)
+                .map_err(|error| error.to_string())?;
             for skin in [0_usize, 1] {
-                for cycle in [0.0_f32, 0.5, 1.0] {
+                for cycle in [0.0_f32, 0.25, 0.5, 0.75, 1.0] {
                     let hand_bodygroups =
                         hand.model.body_parts.iter().map(|_| 0).collect::<Vec<_>>();
-                    let mut item_bodygroups =
+                    let item_bodygroups =
                         item.model.body_parts.iter().map(|_| 0).collect::<Vec<_>>();
-                    let bodygroup_events = studio::viewmodel_item_bodygroup_events(
-                        &hand.model,
-                        &item.model,
-                        sequences[0],
-                        studio::Float32((-0.01_f32).to_bits()),
-                        studio::Float32(cycle.to_bits()),
-                    )
-                    .map_err(|error| error.to_string())?;
-                    studio::apply_viewmodel_bodygroup_events(
-                        &item.model,
-                        &mut item_bodygroups,
-                        &bodygroup_events,
-                    )
-                    .map_err(|error| error.to_string())?;
-                    for mutation in &bodygroup_events {
-                        bodygroup_event_names
-                            .insert(String::from_utf8_lossy(&mutation.name).into_owned());
-                    }
-                    let composition = studio::compose_viewmodel(
-                        &hand.model,
-                        &item.model,
-                        &studio::ViewModelCompositionRequest {
+                    let elapsed = cycle * f32::from_bits(timing.duration_seconds.0);
+                    let request = studio::ViewModelFrameRequest {
+                        phase: *phase,
+                        previous_cycle: studio::Float32((-0.01_f32).to_bits()),
+                        composition: studio::ViewModelCompositionRequest {
                             translated_activity: activity.as_bytes().to_vec(),
                             hand_sequence: sequences[0],
                             cycle: studio::Float32(cycle.to_bits()),
-                            time: studio::Float32(0.0_f32.to_bits()),
-                            hand_pose_parameters: hand
-                                .model
-                                .pose_parameters
-                                .iter()
-                                .map(|_| studio::Float32(0.0_f32.to_bits()))
-                                .collect(),
+                            time: studio::Float32(elapsed.to_bits()),
+                            hand_pose_parameters: hand_pose_parameters.clone(),
                             hand_layers: Vec::new(),
                             skin,
                             hand_bodygroups: hand_bodygroups.clone(),
-                            item_bodygroups: item_bodygroups.clone(),
+                            item_bodygroups,
                             lod: 0,
                         },
-                    )
-                    .map_err(|error| error.to_string())?;
-                    if composition
+                        hand_material_opacity: hand_opacity.clone(),
+                        item_material_opacity: item_opacity.clone(),
+                        draw_eligibility: ready_viewmodel(),
+                        occurrence_orientation: studio::TransformOrientation::Preserving,
+                        reflected_viewmodel: false,
+                    };
+                    let frame = studio::produce_viewmodel_frame(&hand.model, &item.model, &request)
+                        .map_err(|error| error.to_string())?;
+                    for event in &frame.crossed_events {
+                        if !event.name.is_empty() {
+                            crossed_event_names
+                                .insert(String::from_utf8_lossy(&event.name).into_owned());
+                        }
+                    }
+                    if frame
+                        .composition
                         .item_to_hand_bones
                         .iter()
                         .filter(|bone| bone.is_some())
                         .count()
                         != target.merged_bones
-                        || composition.hand.primitives.is_empty()
-                        || composition.item.primitives.is_empty()
+                        || frame.composition.hand.primitives.is_empty()
+                        || frame.composition.item.primitives.is_empty()
+                        || frame.draw_disposition != studio::ViewModelDrawDisposition::Draw
+                        || frame.hand_facing.front_face != studio::TriangleWinding::Clockwise
+                        || frame.item_facing.front_face != studio::TriangleWinding::Clockwise
                     {
                         return Err(format!("{} stock composition changed", target.item));
                     }
-                    for part in [&composition.hand, &composition.item] {
+                    for part in [&frame.composition.hand, &frame.composition.item] {
                         let model = if part.identity == hand.model.identity {
                             &hand.model
                         } else {
@@ -536,74 +593,146 @@ fn verify_stock_viewmodels(files: &VpkFiles) -> Result<(), String> {
                             }
                         }
                     }
-                    let plan = studio::viewmodel_draw_plan(
-                        &hand.model,
-                        &item.model,
-                        &composition,
-                        &hand_opacity,
-                        &item_opacity,
-                    )
-                    .map_err(|error| error.to_string())?;
-                    if plan.item_entity_translucent
-                        || plan.parts.len() != 2
-                        || plan.parts[0].part != studio::ViewModelPart::Item
-                        || plan.parts[1].part != studio::ViewModelPart::Hand
-                        || plan.parts.iter().any(|part| {
+                    if frame.draw_plan.item_entity_translucent
+                        || frame.draw_plan.parts.len() != 2
+                        || frame.draw_plan.parts[0].part != studio::ViewModelPart::Item
+                        || frame.draw_plan.parts[1].part != studio::ViewModelPart::Hand
+                        || frame.draw_plan.parts.iter().any(|part| {
                             part.opaque_primitives.is_empty()
                                 || !part.translucent_primitives.is_empty()
                         })
                     {
                         return Err(format!("{} stock draw partition changed", target.item));
                     }
+                    let (ammunition_model, ammunition_part) = match target.ammunition_part {
+                        studio::ViewModelPart::Hand => (&hand.model, &frame.composition.hand),
+                        studio::ViewModelPart::Item => (&item.model, &frame.composition.item),
+                    };
+                    let ammunition_bone = ammunition_model
+                        .bones
+                        .iter()
+                        .position(|bone| {
+                            bone.name
+                                .eq_ignore_ascii_case(target.ammunition_bone.as_bytes())
+                        })
+                        .ok_or_else(|| {
+                            format!("{} missing ammunition bone", ammunition_model.identity)
+                        })?;
+                    let ammunition_vertices = ammunition_part
+                        .primitives
+                        .iter()
+                        .map(|selected| {
+                            ammunition_model.geometry[selected.primitive]
+                                .vertices
+                                .iter()
+                                .filter(|vertex| {
+                                    vertex
+                                        .bones
+                                        .iter()
+                                        .take(vertex.bone_count as usize)
+                                        .any(|bone| *bone as usize == ammunition_bone)
+                                })
+                                .count()
+                        })
+                        .sum::<usize>();
+                    let ammunition_drawn = frame
+                        .draw_plan
+                        .parts
+                        .iter()
+                        .find(|part| part.part == target.ammunition_part)
+                        .is_some_and(|draw| {
+                            ammunition_part.primitives.iter().any(|selected| {
+                                draw.opaque_primitives.contains(selected)
+                                    && ammunition_model.geometry[selected.primitive]
+                                        .vertices
+                                        .iter()
+                                        .any(|vertex| {
+                                            vertex
+                                                .bones
+                                                .iter()
+                                                .take(vertex.bone_count as usize)
+                                                .any(|bone| *bone as usize == ammunition_bone)
+                                        })
+                            })
+                        });
+                    if ammunition_vertices != target.ammunition_vertices || !ammunition_drawn {
+                        return Err(format!("{} ammunition geometry changed", target.hand));
+                    }
+                    if matches!(
+                        phase,
+                        studio::ViewModelPhase::ReloadStart
+                            | studio::ViewModelPhase::ReloadInsertOrLoop
+                            | studio::ViewModelPhase::ReloadFinish
+                    ) {
+                        reload_hand_poses.insert(pose_hash(&frame.composition.hand.pose));
+                    }
+                    if *phase == studio::ViewModelPhase::ReloadInsertOrLoop {
+                        reload_ammunition_poses.insert(matrix_hash(
+                            &ammunition_part.pose.model_matrices[ammunition_bone],
+                        ));
+                    }
                     shapes.insert((
-                        composition.hand.primitives.len(),
-                        composition.item.primitives.len(),
-                        composition.hand.pose.attachments.len(),
-                        composition.item.pose.attachments.len(),
+                        frame.composition.hand.primitives.len(),
+                        frame.composition.item.primitives.len(),
+                        frame.composition.hand.pose.attachments.len(),
+                        frame.composition.item.pose.attachments.len(),
                     ));
                     digest.extend_from_slice(activity.as_bytes());
                     digest.extend_from_slice(&(skin as u32).to_le_bytes());
                     digest.extend_from_slice(&cycle.to_bits().to_le_bytes());
-                    for bone in &composition.item_to_hand_bones {
+                    for bone in &frame.composition.item_to_hand_bones {
                         digest.extend_from_slice(
                             &bone.map_or(u32::MAX, |bone| bone as u32).to_le_bytes(),
                         );
                     }
-                    append_composed_part(&mut digest, &composition.hand);
-                    append_composed_part(&mut digest, &composition.item);
-                    producer_digest.extend_from_slice(activity.as_bytes());
-                    producer_digest.extend_from_slice(&(skin as u32).to_le_bytes());
-                    producer_digest.extend_from_slice(&cycle.to_bits().to_le_bytes());
-                    append_bodygroups(&mut producer_digest, &hand.model, &hand_bodygroups);
-                    append_bodygroups(&mut producer_digest, &item.model, &item_bodygroups);
-                    for mutation in bodygroup_events {
-                        producer_digest.extend_from_slice(&(mutation.event as u32).to_le_bytes());
-                        producer_digest
-                            .extend_from_slice(&(mutation.bodygroup as u32).to_le_bytes());
-                        producer_digest.extend_from_slice(&mutation.value.to_le_bytes());
-                        producer_digest.extend_from_slice(&mutation.name);
+                    append_composed_part(&mut digest, &frame.composition.hand);
+                    append_composed_part(&mut digest, &frame.composition.item);
+                    append_produced_frame(&mut producer_digest, &hand.model, &item.model, &frame);
+                    if skin == 0 && cycle == 0.0 && *phase == studio::ViewModelPhase::Draw {
+                        let mut reflected_request = request.clone();
+                        reflected_request.reflected_viewmodel = true;
+                        let reflected = studio::produce_viewmodel_frame(
+                            &hand.model,
+                            &item.model,
+                            &reflected_request,
+                        )
+                        .map_err(|error| error.to_string())?;
+                        if reflected.hand_facing.front_face
+                            != studio::TriangleWinding::CounterClockwise
+                            || reflected.item_facing.front_face
+                                != studio::TriangleWinding::CounterClockwise
+                        {
+                            return Err(format!("{} reflected facing changed", target.hand));
+                        }
                     }
-                    append_producer_part(&mut producer_digest, &hand.model, &composition.hand);
-                    append_producer_part(&mut producer_digest, &item.model, &composition.item);
-                    append_draw_plan(&mut producer_digest, &plan);
                 }
             }
+        }
+        if !crossed_event_names.contains(target.required_event)
+            || reload_hand_poses.len() < 2
+            || reload_ammunition_poses.len() < 2
+        {
+            return Err(format!(
+                "{} reload producer evidence changed: events={crossed_event_names:?} handPoses={} ammunitionPoses={}",
+                target.hand,
+                reload_hand_poses.len(),
+                reload_ammunition_poses.len(),
+            ));
         }
         let composition_sha256 = hex(&studio::content_sha256(&digest));
         println!(
             "stock hand={} item={} composition={composition_sha256}",
             target.hand, target.item
         );
-        if composition_sha256 != target.composition_sha256 {
-            return Err(format!("{} composition hash changed", target.item));
-        }
         let producer_sha256 = hex(&studio::content_sha256(&producer_digest));
         println!(
             "stock hand={} item={} producer={producer_sha256}",
             target.hand, target.item
         );
         println!(
-            "stock shapes={shapes:?} bodygroupEvents={bodygroup_event_names:?} handBodyparts={:?} itemBodyparts={:?}",
+            "stock shapes={shapes:?} crossedEvents={crossed_event_names:?} ammunition={} vertices={} handBodyparts={:?} itemBodyparts={:?}",
+            target.ammunition_bone,
+            target.ammunition_vertices,
             hand.model
                 .body_parts
                 .iter()
@@ -615,14 +744,48 @@ fn verify_stock_viewmodels(files: &VpkFiles) -> Result<(), String> {
                 .map(|part| String::from_utf8_lossy(&part.name).into_owned())
                 .collect::<Vec<_>>(),
         );
-        if producer_sha256 != target.producer_sha256 {
-            return Err(format!(
-                "{} producer hash changed: {producer_sha256}",
-                target.item
-            ));
+        if composition_sha256 != target.composition_sha256
+            || producer_sha256 != target.producer_sha256
+        {
+            return Err(format!("{} stock producer hash changed", target.hand));
         }
     }
     Ok(())
+}
+
+fn ready_viewmodel() -> studio::ViewModelDrawEligibility {
+    studio::ViewModelDrawEligibility {
+        client_mode: true,
+        render_request: true,
+        render_viewmodels: true,
+        local_player_visible: false,
+        draw_entities: true,
+        player_view_entity: true,
+        base_should_draw: true,
+        fully_lowered: false,
+        observer_owner_matches: true,
+        owner_alive: true,
+        ready: true,
+        fx_blend: 255,
+    }
+}
+
+fn pose_hash(pose: &studio::SampledPose) -> [u8; 32] {
+    let mut bytes = Vec::new();
+    for matrix in &pose.model_matrices {
+        for value in matrix.0 {
+            bytes.extend_from_slice(&value.0.to_le_bytes());
+        }
+    }
+    studio::content_sha256(&bytes)
+}
+
+fn matrix_hash(matrix: &studio::Matrix3x4) -> [u8; 32] {
+    let mut bytes = Vec::new();
+    for value in matrix.0 {
+        bytes.extend_from_slice(&value.0.to_le_bytes());
+    }
+    studio::content_sha256(&bytes)
 }
 
 fn append_composed_part(output: &mut Vec<u8>, part: &studio::ComposedViewModelPart) {
@@ -635,6 +798,126 @@ fn append_composed_part(output: &mut Vec<u8>, part: &studio::ComposedViewModelPa
     for primitive in &part.primitives {
         output.extend_from_slice(&(primitive.primitive as u32).to_le_bytes());
         output.extend_from_slice(&(primitive.material as u32).to_le_bytes());
+    }
+}
+
+fn facing_counts(document: &studio::Document) -> (usize, usize, usize) {
+    let mut positive = 0;
+    let mut negative = 0;
+    let mut indeterminate = 0;
+    for primitive in &document.geometry {
+        for triangle in &primitive.triangles {
+            match triangle_facing(primitive, *triangle) {
+                0 => positive += 1,
+                1 => negative += 1,
+                _ => indeterminate += 1,
+            }
+        }
+    }
+    (positive, negative, indeterminate)
+}
+
+fn triangle_facing(primitive: &studio::GeometryPrimitive, triangle: [u32; 3]) -> u8 {
+    let [a, b, c] = triangle.map(|index| {
+        primitive.vertices[index as usize]
+            .position
+            .0
+            .map(|value| f32::from_bits(value.0))
+    });
+    let edge_1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let edge_2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    let cross = [
+        edge_1[1] * edge_2[2] - edge_1[2] * edge_2[1],
+        edge_1[2] * edge_2[0] - edge_1[0] * edge_2[2],
+        edge_1[0] * edge_2[1] - edge_1[1] * edge_2[0],
+    ];
+    let normal = triangle
+        .iter()
+        .map(|index| {
+            primitive.vertices[*index as usize]
+                .normal
+                .0
+                .map(|value| f32::from_bits(value.0))
+        })
+        .fold([0.0; 3], |mut sum, value| {
+            for axis in 0..3 {
+                sum[axis] += value[axis];
+            }
+            sum
+        });
+    let dot = cross[0] * normal[0] + cross[1] * normal[1] + cross[2] * normal[2];
+    if dot > 1.0e-8 {
+        0
+    } else if dot < -1.0e-8 {
+        1
+    } else {
+        2
+    }
+}
+
+fn append_geometry_facing(output: &mut Vec<u8>, document: &studio::Document) {
+    output.extend_from_slice(document.identity.as_bytes());
+    output.push(0xff);
+    for primitive in &document.geometry {
+        for value in [
+            primitive.body_part,
+            primitive.model,
+            primitive.lod,
+            primitive.mesh,
+            primitive.strip_group,
+            primitive.material_slot,
+        ] {
+            output.extend_from_slice(&(value as u32).to_le_bytes());
+        }
+        output.extend_from_slice(&primitive.switch_point.0.to_le_bytes());
+        output.extend_from_slice(&document.materials[primitive.material_slot].name);
+        output.push(0xff);
+        for source in &primitive.source_vertex_ids {
+            output.extend_from_slice(&(*source as u32).to_le_bytes());
+        }
+        output.extend_from_slice(&u32::MAX.to_le_bytes());
+        for vertex in &primitive.vertices {
+            output.extend_from_slice(&(vertex.source_index as u32).to_le_bytes());
+            for value in vertex
+                .weights
+                .into_iter()
+                .chain(vertex.position.0)
+                .chain(vertex.normal.0)
+                .chain(vertex.uv)
+                .chain(vertex.tangent)
+            {
+                output.extend_from_slice(&value.0.to_le_bytes());
+            }
+            output.extend_from_slice(&vertex.bones);
+            output.push(vertex.bone_count);
+        }
+        for index in &primitive.encoded_indices {
+            output.extend_from_slice(&index.to_le_bytes());
+        }
+        output.extend_from_slice(&u16::MAX.to_le_bytes());
+        for strip in &primitive.strips {
+            for value in [
+                strip.index_count,
+                strip.first_index,
+                strip.vertex_count,
+                strip.first_vertex,
+            ] {
+                output.extend_from_slice(&(value as u32).to_le_bytes());
+            }
+            output.push(strip.flags);
+        }
+        output.extend_from_slice(&u32::MAX.to_le_bytes());
+        for triangle in &primitive.triangles {
+            for index in triangle {
+                output.extend_from_slice(&index.to_le_bytes());
+            }
+            output.push(triangle_facing(primitive, *triangle));
+        }
+        output.extend_from_slice(&u32::MAX.to_le_bytes());
+    }
+    let counts = facing_counts(document);
+    for count in [counts.0, counts.1, counts.2] {
+        output.extend_from_slice(&(count as u32).to_le_bytes());
     }
 }
 
@@ -782,6 +1065,68 @@ fn append_draw_plan(output: &mut Vec<u8>, plan: &studio::ViewModelDrawPlan) {
             output.extend_from_slice(&(selected.material as u32).to_le_bytes());
         }
         output.extend_from_slice(&u32::MAX.to_le_bytes());
+    }
+}
+
+fn append_produced_frame(
+    output: &mut Vec<u8>,
+    hand: &studio::PresentationModel,
+    item: &studio::PresentationModel,
+    frame: &studio::ProducedViewModelFrame,
+) {
+    output.push(match frame.phase {
+        studio::ViewModelPhase::Draw => 0,
+        studio::ViewModelPhase::PrimaryFire => 1,
+        studio::ViewModelPhase::ReloadStart => 2,
+        studio::ViewModelPhase::ReloadInsertOrLoop => 3,
+        studio::ViewModelPhase::ReloadFinish => 4,
+        studio::ViewModelPhase::Idle => 5,
+    });
+    for value in [
+        frame.timing.frames_per_second,
+        frame.timing.weighted_frame_count,
+        frame.timing.cycles_per_second,
+        frame.timing.duration_seconds,
+    ] {
+        output.extend_from_slice(&value.0.to_le_bytes());
+    }
+    output.push(u8::from(frame.timing.looping));
+    for event in &frame.crossed_events {
+        output.extend_from_slice(&(event.index as u32).to_le_bytes());
+        output.extend_from_slice(&event.cycle.0.to_le_bytes());
+        output.extend_from_slice(&event.event.to_le_bytes());
+        output.extend_from_slice(&event.event_type.to_le_bytes());
+        output.extend_from_slice(&event.options);
+        output.extend_from_slice(&event.name);
+        output.push(0xff);
+    }
+    output.extend_from_slice(&u32::MAX.to_le_bytes());
+    for mutation in &frame.item_bodygroup_mutations {
+        output.extend_from_slice(&(mutation.event as u32).to_le_bytes());
+        output.extend_from_slice(&(mutation.bodygroup as u32).to_le_bytes());
+        output.extend_from_slice(&mutation.value.to_le_bytes());
+        output.extend_from_slice(&mutation.name);
+        output.push(0xff);
+    }
+    output.extend_from_slice(&u32::MAX.to_le_bytes());
+    append_bodygroups(output, hand, &frame.hand_bodygroups);
+    append_bodygroups(output, item, &frame.item_bodygroups);
+    append_producer_part(output, hand, &frame.composition.hand);
+    append_producer_part(output, item, &frame.composition.item);
+    append_draw_plan(output, &frame.draw_plan);
+    output.push(match frame.draw_disposition {
+        studio::ViewModelDrawDisposition::Draw => 0,
+        studio::ViewModelDrawDisposition::SuppressedSuccess(_) => 1,
+        studio::ViewModelDrawDisposition::Suppressed(_) => 2,
+    });
+    for facing in [frame.hand_facing, frame.item_facing] {
+        output.push(match facing.front_face {
+            studio::TriangleWinding::Clockwise => 0,
+            studio::TriangleWinding::CounterClockwise => 1,
+        });
+        output.push(match facing.cull_face {
+            studio::CullFace::Back => 0,
+        });
     }
 }
 
@@ -1357,7 +1702,11 @@ fn verify_eye_states(files: &VpkFiles) -> Result<String, String> {
     Ok(hex(&studio::content_sha256(&digest)))
 }
 
-fn verify_target(target: &Target, files: &BTreeMap<String, Vec<u8>>) -> Result<(), String> {
+fn verify_target(
+    target: &Target,
+    files: &BTreeMap<String, Vec<u8>>,
+    facing_digest: &mut Vec<u8>,
+) -> Result<(), String> {
     let mdl = files
         .get(target.path)
         .ok_or_else(|| format!("missing {}", target.path))?;
@@ -1365,6 +1714,10 @@ fn verify_target(target: &Target, files: &BTreeMap<String, Vec<u8>>) -> Result<(
         return Err(format!("{} MDL identity changed", target.path));
     }
     let document = load(target.path, files)?;
+    if facing_counts(&document) != target.facing_counts {
+        return Err(format!("{} encoded front-face counts changed", target.path));
+    }
+    append_geometry_facing(facing_digest, &document);
     let lods = document
         .geometry
         .iter()
@@ -1408,6 +1761,13 @@ fn verify_target(target: &Target, files: &BTreeMap<String, Vec<u8>>) -> Result<(
     let timeline = timeline_digest(&first.model, target.activities)?;
     if timeline != target.timeline_sha256 {
         return Err(format!("{} timeline changed: {timeline}", target.path));
+    }
+    if target.path == "models/props_gameplay/resupply_locker.mdl" {
+        let locker_state = locker_state_digest(&first.model)?;
+        println!("lockerStateSha256={locker_state}");
+        if locker_state != LOCKER_STATE_SHA256 {
+            return Err("resupply locker state evidence changed".to_owned());
+        }
     }
     println!(
         "{} bytes={} artifact={} timeline={}",
@@ -1454,6 +1814,78 @@ fn timeline_digest(
         for cycle in [0.0_f32, 0.25, 0.5, 0.75, 1.0] {
             append_sample(&mut bytes, model, sequence, cycle, &poses)?;
         }
+    }
+    Ok(hex(&studio::content_sha256(&bytes)))
+}
+
+fn locker_state_digest(model: &studio::PresentationModel) -> Result<String, String> {
+    if model.body_parts.len() != 1
+        || model.body_parts[0].name != b"Body"
+        || model.body_parts[0].base != 1
+        || model.body_parts[0].model_names != [b"resupply_locker_reference.smd".to_vec()]
+        || model.sequences.len() != 3
+    {
+        return Err("resupply locker bodygroup or sequence inventory changed".to_owned());
+    }
+    let expected = [(0_usize, b"idle".as_slice()), (1, b"open"), (2, b"close")];
+    let pose_parameters = model
+        .pose_parameters
+        .iter()
+        .map(|_| studio::Float32(0.0_f32.to_bits()))
+        .collect::<Vec<_>>();
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&2.0_f32.to_bits().to_le_bytes());
+    let mut poses = BTreeSet::new();
+    for (sequence, label) in expected {
+        let descriptor = model
+            .sequences
+            .get(sequence)
+            .filter(|descriptor| descriptor.label == label)
+            .ok_or_else(|| "resupply locker sequence inventory changed".to_owned())?;
+        bytes.extend_from_slice(&(sequence as u32).to_le_bytes());
+        bytes.extend_from_slice(&descriptor.label);
+        bytes.push(0xff);
+        let timing = studio::sequence_timing(model, sequence, &pose_parameters)
+            .map_err(|error| error.to_string())?;
+        for value in [
+            timing.frames_per_second,
+            timing.weighted_frame_count,
+            timing.cycles_per_second,
+            timing.duration_seconds,
+        ] {
+            bytes.extend_from_slice(&value.0.to_le_bytes());
+        }
+        let selected =
+            studio::select_primitives(model, &[0], 0, 0).map_err(|error| error.to_string())?;
+        if selected.is_empty() {
+            return Err("resupply locker selected no closed/open geometry".to_owned());
+        }
+        for primitive in selected {
+            bytes.extend_from_slice(&(primitive.primitive as u32).to_le_bytes());
+            bytes.extend_from_slice(&(primitive.material as u32).to_le_bytes());
+        }
+        for cycle in [0.0_f32, 0.5, 1.0] {
+            let pose = studio::sample_pose(
+                model,
+                &studio::AnimationState {
+                    base_sequence: sequence,
+                    cycle: studio::Float32(cycle.to_bits()),
+                    pose_parameters: pose_parameters.clone(),
+                    layers: Vec::new(),
+                },
+            )
+            .map_err(|error| error.to_string())?;
+            poses.insert(pose_hash(&pose));
+            bytes.extend_from_slice(&cycle.to_bits().to_le_bytes());
+            for matrix in &pose.model_matrices {
+                for value in matrix.0 {
+                    bytes.extend_from_slice(&value.0.to_le_bytes());
+                }
+            }
+        }
+    }
+    if poses.len() < 4 {
+        return Err("resupply locker open/close poses no longer differ".to_owned());
     }
     Ok(hex(&studio::content_sha256(&bytes)))
 }
@@ -1773,6 +2205,11 @@ fn verify_occurrences(cache: &Path) -> Result<(), String> {
         let angles = entity_vector(entity, b"angles")?;
         let matrix = studio::source_entity_transform(vector(position), vector(angles))
             .map_err(|error| error.to_string())?;
+        if studio::affine_transform_orientation(matrix).map_err(|error| error.to_string())?
+            != studio::TransformOrientation::Preserving
+        {
+            return Err(format!("entity {} reverses model facing", entity.index));
+        }
         count += 1;
         bytes.extend_from_slice(&(entity.index as u32).to_le_bytes());
         bytes.extend_from_slice(&(model.len() as u32).to_le_bytes());

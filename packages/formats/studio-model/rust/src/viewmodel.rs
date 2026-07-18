@@ -1,9 +1,11 @@
 use crate::{
-    AnimationLayer, AnimationState, Float32, Matrix3x4, PresentationDescriptor, PresentationError,
-    PresentationErrorCode, PresentationModel, SampledAttachment, SampledPose, SelectedPrimitive,
-    SequenceEvent, Vector3,
+    AnimationLayer, AnimationState, Float32, GeometryFacing, GeometryOrientation, Matrix3x4,
+    PresentationDescriptor, PresentationError, PresentationErrorCode, PresentationModel,
+    SampledAttachment, SampledPose, SelectedPrimitive, SequenceEvent, SequenceTiming,
+    TransformOrientation, Vector3, combine_transform_orientations,
     presentation::{identity_quaternion, matrix_translation, multiply_matrix, quaternion_matrix},
-    presentation_events_between, sample_pose, select_primitives,
+    sample_pose, select_primitives, sequence_events_between, sequence_timing,
+    transformed_geometry_facing,
 };
 
 const STUDIO_HEADER_FORCE_OPAQUE: i32 = 0x0000_0004;
@@ -164,6 +166,43 @@ pub struct ViewModelDrawEligibility {
     pub fx_blend: u8,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ViewModelPhase {
+    Draw,
+    PrimaryFire,
+    ReloadStart,
+    ReloadInsertOrLoop,
+    ReloadFinish,
+    Idle,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ViewModelFrameRequest {
+    pub phase: ViewModelPhase,
+    pub previous_cycle: Float32,
+    pub composition: ViewModelCompositionRequest,
+    pub hand_material_opacity: Vec<ViewModelMaterialOpacity>,
+    pub item_material_opacity: Vec<ViewModelMaterialOpacity>,
+    pub draw_eligibility: ViewModelDrawEligibility,
+    pub occurrence_orientation: TransformOrientation,
+    pub reflected_viewmodel: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProducedViewModelFrame {
+    pub phase: ViewModelPhase,
+    pub timing: SequenceTiming,
+    pub crossed_events: Vec<SequenceEvent>,
+    pub item_bodygroup_mutations: Vec<ViewModelBodygroupMutation>,
+    pub hand_bodygroups: Vec<usize>,
+    pub item_bodygroups: Vec<usize>,
+    pub composition: ViewModelComposition,
+    pub draw_disposition: ViewModelDrawDisposition,
+    pub draw_plan: ViewModelDrawPlan,
+    pub hand_facing: GeometryFacing,
+    pub item_facing: GeometryFacing,
+}
+
 pub fn viewmodel_draw_disposition(state: ViewModelDrawEligibility) -> ViewModelDrawDisposition {
     let suppressed = if !state.client_mode {
         Some(ViewModelDrawSuppression::ClientMode)
@@ -202,6 +241,80 @@ pub fn viewmodel_draw_disposition(state: ViewModelDrawEligibility) -> ViewModelD
     suppressed.map_or(ViewModelDrawDisposition::Draw, |reason| {
         ViewModelDrawDisposition::Suppressed(reason)
     })
+}
+
+pub fn produce_viewmodel_frame(
+    hand: &PresentationModel,
+    item: &PresentationModel,
+    request: &ViewModelFrameRequest,
+) -> Result<ProducedViewModelFrame, PresentationError> {
+    let hand_geometry = viewmodel_geometry(hand)?;
+    let item_geometry = viewmodel_geometry(item)?;
+    let crossed_events = sequence_events_between(
+        hand,
+        request.composition.hand_sequence,
+        request.previous_cycle,
+        request.composition.cycle,
+    )?
+    .into_iter()
+    .cloned()
+    .collect::<Vec<_>>();
+    let item_bodygroup_mutations = viewmodel_item_bodygroup_events(
+        hand,
+        item,
+        request.composition.hand_sequence,
+        request.previous_cycle,
+        request.composition.cycle,
+    )?;
+    let mut composition_request = request.composition.clone();
+    apply_viewmodel_bodygroup_events(
+        item,
+        &mut composition_request.item_bodygroups,
+        &item_bodygroup_mutations,
+    )?;
+    let hand_bodygroups = composition_request.hand_bodygroups.clone();
+    let item_bodygroups = composition_request.item_bodygroups.clone();
+    let timing = sequence_timing(
+        hand,
+        composition_request.hand_sequence,
+        &composition_request.hand_pose_parameters,
+    )?;
+    let composition = compose_viewmodel(hand, item, &composition_request)?;
+    let draw_plan = viewmodel_draw_plan(
+        hand,
+        item,
+        &composition,
+        &request.hand_material_opacity,
+        &request.item_material_opacity,
+    )?;
+    let orientation = combine_transform_orientations([
+        request.occurrence_orientation,
+        if request.reflected_viewmodel {
+            TransformOrientation::Reversing
+        } else {
+            TransformOrientation::Preserving
+        },
+    ]);
+    Ok(ProducedViewModelFrame {
+        phase: request.phase,
+        timing,
+        crossed_events,
+        item_bodygroup_mutations,
+        hand_bodygroups,
+        item_bodygroups,
+        composition,
+        draw_disposition: viewmodel_draw_disposition(request.draw_eligibility),
+        draw_plan,
+        hand_facing: transformed_geometry_facing(hand_geometry.facing, orientation),
+        item_facing: transformed_geometry_facing(item_geometry.facing, orientation),
+    })
+}
+
+fn viewmodel_geometry(model: &PresentationModel) -> Result<GeometryOrientation, PresentationError> {
+    match model.descriptor {
+        PresentationDescriptor::ViewModel { geometry, .. } => Ok(geometry),
+        PresentationDescriptor::World { .. } => Err(invalid_composition(&model.identity)),
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -552,7 +665,7 @@ pub fn viewmodel_item_bodygroup_events(
     previous_cycle: Float32,
     current_cycle: Float32,
 ) -> Result<Vec<ViewModelBodygroupMutation>, PresentationError> {
-    presentation_events_between(hand, sequence, previous_cycle, current_cycle)?
+    sequence_events_between(hand, sequence, previous_cycle, current_cycle)?
         .into_iter()
         .filter(|event| {
             event
@@ -943,6 +1056,11 @@ mod tests {
                 tangents: VertexAttributeTransform::AuthoredSourceValues,
                 texture_coordinates: TextureCoordinateConvention::AuthoredUTowardRightVDown,
                 tangent_handedness: TangentHandednessConvention::TangentSWComponent,
+                deformation: crate::VertexDeformationContract::FlexBeforeLinearBoneSkinningWithoutTopologyChanges,
+                facing: GeometryFacing {
+                    front_face: crate::TriangleWinding::Clockwise,
+                    cull_face: crate::CullFace::Back,
+                },
             },
             entity_angles: EntityAngleConvention::DegreesPitchYawRollForwardLeftUpColumns,
             default_horizontal_fov_4_by_3: float(54.0),
@@ -1284,8 +1402,8 @@ mod tests {
                 SequenceEvent {
                     index: 0,
                     cycle: float(0.1),
-                    event: 5000,
-                    event_type: 0,
+                    event: 0,
+                    event_type: 1 << 10,
                     options: options(b"body 1"),
                     name: b"AE_CL_BODYGROUP_SET_VALUE_CMODEL_WPN".to_vec(),
                 },
