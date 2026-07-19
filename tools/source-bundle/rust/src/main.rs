@@ -385,10 +385,13 @@ impl<'a> Resolver<'a> {
         required: bool,
     ) -> Result<Option<Vec<u8>>, String> {
         let canonical = path.to_ascii_lowercase();
-        let result = self
-            .content
-            .resolve_resource(&canonical)
-            .map_err(|error| error.to_string())?;
+        let result = self.content.resolve_resource(&canonical).map_err(|error| {
+            format!(
+                "{error}: {} from {}",
+                error.logical_path.as_deref().unwrap_or(&canonical),
+                error.provider_id.as_deref().unwrap_or("unknown provider"),
+            )
+        })?;
         match result {
             Resolution::Found(value) => {
                 let descriptor = ObjectDescriptor::source(&value.bytes);
@@ -553,8 +556,12 @@ fn object_children<'a>(
 }
 
 fn verify_install_manifest(install: &Path) -> Result<(), String> {
-    let bytes = fs::read(install.join("steamapps/appmanifest_440.acf"))
-        .map_err(|error| error.to_string())?;
+    let steamapps = install
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| "configured TF2 install has no Steam library parent".to_owned())?;
+    let bytes =
+        fs::read(steamapps.join("appmanifest_440.acf")).map_err(|error| error.to_string())?;
     let document = playsrc_keyvalues::parse_text(
         &bytes,
         playsrc_keyvalues::EscapeMode::LiteralBackslash,

@@ -47,7 +47,7 @@ describe("local configuration", () => {
     try {
       const config = await loadLocalConfig()
       expect(repositoryRoot).toBe(path.resolve(import.meta.dir, "../../..") + path.sep)
-      expect(config.tf2Dir).toEndWith(path.join("tf2", "tf"))
+      expect(path.basename(config.tf2Dir).toLowerCase()).toBe("tf")
       expect(Object.isFrozen(config)).toBe(true)
     } finally {
       process.chdir(previous)

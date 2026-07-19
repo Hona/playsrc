@@ -11,5 +11,8 @@
     "verify:tf2-wasm": "bun tools/playsrc/src/cli.ts verify tf2-wasm",
     "verify:browser": "bun tools/playsrc/src/cli.ts verify browser",
     "test": "bun test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1"
   }
 }

@@ -1,4 +1,5 @@
 import preact from "@preact/preset-vite"
+import { fileURLToPath } from "node:url"
 import { defineConfig, type Plugin } from "vite"
 
 function localRuntime(): Plugin {
@@ -33,7 +34,7 @@ export default defineConfig(() => {
       proxy: assetOrigin ? {
         "/objects": { target: assetOrigin, changeOrigin: false },
       } : undefined,
-      fs: { allow: [new URL("../../../..", import.meta.url).pathname] },
+      fs: { allow: [fileURLToPath(new URL("../../../..", import.meta.url))] },
     },
     preview: { host: "127.0.0.1", port: 4173, strictPort: true },
     build: { target: "es2022", sourcemap: true },
