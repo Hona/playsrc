@@ -4168,6 +4168,17 @@ fn entity_scalar<'a>(entity: &'a playsrc_entity::Entity, key: &[u8]) -> Option<&
         .map(|pair| pair.value.as_slice())
 }
 
+fn selected_sky_encoding(
+    selected: &[playsrc_material::TextureRole],
+) -> Option<playsrc_map::SkyEncoding> {
+    match selected {
+        [playsrc_material::TextureRole::Base] => Some(playsrc_map::SkyEncoding::Srgb),
+        [playsrc_material::TextureRole::HdrBase] => Some(playsrc_map::SkyEncoding::Linear),
+        [playsrc_material::TextureRole::HdrCompressed] => Some(playsrc_map::SkyEncoding::HdrRgbs),
+        _ => None,
+    }
+}
+
 fn collision_object_templates(
     graph: &playsrc_entity::Graph,
     bundle: &BTreeMap<String, &[u8]>,
@@ -6403,6 +6414,7 @@ fn compile_environment_artifact(
         let path = format!("materials/skybox/{sky}{suffix}{face_suffix}.vmt");
         let source = *bundle.get(&path).ok_or(())?;
         let m = resolve_material_semantics(&path, bundle, material_environment(profile, false))?;
+        let encoding = selected_sky_encoding(&m.selected_textures).ok_or(())?;
         let selected_textures = m
             .textures
             .iter()
@@ -6426,6 +6438,7 @@ fn compile_environment_artifact(
             },
             metadata: playsrc_map::DependencyMetadata::SkyMaterial {
                 source_sha256: Sha256::digest(source).into(),
+                encoding,
                 selected_textures,
             },
         })
@@ -6627,7 +6640,7 @@ fn compile_environment_artifact(
     )
     .map_err(|_| ())?;
     let mut out = b"PENV".to_vec();
-    out.extend_from_slice(&2u32.to_le_bytes());
+    out.extend_from_slice(&3u32.to_le_bytes());
     out.extend_from_slice(&[
         if profile == playsrc_map::LightingProfile::Hdr {
             1
@@ -6717,7 +6730,7 @@ fn compile_environment_artifact(
         pbytes(&mut out, &sky.name)?;
         out.extend_from_slice(&(sky.faces.len() as u32).to_le_bytes());
         for face in &sky.faces {
-            out.push(face.face as u8);
+            out.extend_from_slice(&[face.face as u8, face.encoding as u8, 0, 0]);
             pbytes(&mut out, face.material_path.as_bytes())?;
             out.extend_from_slice(&face.material_sha256)
         }
@@ -7744,6 +7757,30 @@ fn with<T>(handle: u32, read: impl FnOnce(&Slot) -> T) -> Option<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sky_texture_roles_select_explicit_render_encoding() {
+        assert_eq!(
+            selected_sky_encoding(&[playsrc_material::TextureRole::Base]),
+            Some(playsrc_map::SkyEncoding::Srgb)
+        );
+        assert_eq!(
+            selected_sky_encoding(&[playsrc_material::TextureRole::HdrBase]),
+            Some(playsrc_map::SkyEncoding::Linear)
+        );
+        assert_eq!(
+            selected_sky_encoding(&[playsrc_material::TextureRole::HdrCompressed]),
+            Some(playsrc_map::SkyEncoding::HdrRgbs)
+        );
+        assert_eq!(
+            selected_sky_encoding(&[
+                playsrc_material::TextureRole::HdrCompressed0,
+                playsrc_material::TextureRole::HdrCompressed1,
+                playsrc_material::TextureRole::HdrCompressed2,
+            ]),
+            None
+        );
+    }
+
     #[test]
     fn rocket_trace_preserves_direct_entity_identity() {
         let world = playsrc_collision::World::empty();

@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
 const BSP_SHA256: &str = "b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959";
-const BUNDLE_SHA256: &str = "c8ccea4035c5e75e26ffc0855a425ff4139f079f35ab9abd09e22990726f03d5";
+const BUNDLE_SHA256: &str = "6abb49c8f6ee46f58a80587a5506a41be97da7f8e6e30da52daec53d3102f8f0";
 const MARK_STREAM_SHA256: &str = "dc240ad45952f19150071cf235b433dcd1d035fd3c2f3afad55e9bd1f84d26c7";
 const RECEIVER_REVISION: u64 = 0x4d41_524b_5f52_3031;
 const PLACEMENT_REVISION: u64 = 0x4d41_524b_5f50_3031;
@@ -51,7 +51,7 @@ fn configured_environment_retains_collision_selected_marks_water_and_view_inputs
     let bundle_bytes = fs::read(cache.join("browser-bundles/jump_beef.psdb")).unwrap();
     assert_eq!(hex(&Sha256::digest(&bundle_bytes)), BUNDLE_SHA256);
     let bundle = parse_bundle(&bundle_bytes).unwrap();
-    assert_eq!(bundle.len(), 317);
+    assert_eq!(bundle.len(), 321);
 
     let bsp = parse_bsp(&bsp_bytes, BspProfile::Source2013V20, BspLimits::default()).unwrap();
     let graph = parse_entities(bsp.lumps[0].bytes(&bsp), EntityLimits::default()).unwrap();
@@ -102,6 +102,14 @@ fn configured_environment_retains_collision_selected_marks_water_and_view_inputs
         },
     )
     .unwrap();
+
+    let sky = environment.sky.as_ref().unwrap();
+    assert_eq!(sky.faces.len(), 6);
+    assert!(
+        sky.faces
+            .iter()
+            .all(|face| face.encoding == playsrc_map::SkyEncoding::HdrRgbs)
+    );
 
     assert_eq!(
         environment.marks.collision_world_identity,
@@ -395,6 +403,7 @@ fn environment_dependencies(
             },
             metadata: DependencyMetadata::SkyMaterial {
                 source_sha256: Sha256::digest(source).into(),
+                encoding: playsrc_map::SkyEncoding::HdrRgbs,
                 selected_textures,
             },
         });

@@ -407,7 +407,7 @@ export type EnvironmentInput = Readonly<{
   waterVolumeFacts: readonly Readonly<{index:number;surfaceZ:number;minimumZ:number;surfaceMaterial:number;bottomMaterial:unknown;leaves:readonly number[];clusters:readonly number[];areas:readonly number[];contents:number;plane:readonly[number,number,number,number];surfaceTranslucent:boolean;bottomTranslucent:boolean|null;surfaceBindings:Readonly<{environment:boolean;reflection:boolean;refraction:boolean}>;bottomBindings:Readonly<{environment:boolean;reflection:boolean;refraction:boolean}>|null}>[]
   waterMaterials: ReadonlyMap<string, WaterMaterialInput>
   leafMinimumDistanceToWater: Uint16Array
-  sky:null|Readonly<{name:string;faces:readonly Readonly<{face:number;material:string;encoding?:"srgb"|"linear"|"hdr-rgbs";selectedTextures:readonly Readonly<{logicalPath:string;sha256:string}>[]}>[]}>
+  sky:null|Readonly<{name:string;faces:readonly Readonly<{face:number;material:string;encoding:"srgb"|"linear"|"hdr-rgbs";selectedTextures:readonly Readonly<{logicalPath:string;sha256:string}>[]}>[]}>
   cubemapFacts:readonly Readonly<{index:number;origin:readonly[number,number,number];logicalPath:string;sha256:string;width:number;height:number}>[]
 }>
 

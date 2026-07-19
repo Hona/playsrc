@@ -6,7 +6,7 @@ Source identity: configured `maps/jump_beef.bsp`, decoded SHA-256 `b2e22010b56aa
 
 | Output | Exact source facts |
 |---|---|
-| 2D sky | Worldspawn `skyname=sky_day01_01`; selected HDR materials are `materials/skybox/sky_day01_01_hdr{rt,lf,bk,ft,up,dn}.vmt` in that order. |
+| 2D sky | Worldspawn `skyname=sky_day01_01`; selected HDR materials are `materials/skybox/sky_day01_01_hdr{rt,lf,bk,ft,up,dn}.vmt` in that order. Every material uses Source `Sky` with one `$hdrcompressedTexture`, selecting the `HdrRgbs` decode path. |
 | Controllers | Entity 170 is `light_environment`; entity 360 is `water_lod_control` with start `1000` and end `2000`. No `env_fog_controller`, `sky_camera`, `shadow_control`, or `env_tonemap_controller` occurs. |
 | Lighting provenance | Explicit HDR profile; 3,793 faces, 3,896,843 RGBExp32 samples, 73 world lights, 1,899 ambient indexes, and 9,014 ambient samples. Map retains these inputs without exposure or tone mapping. |
 

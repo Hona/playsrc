@@ -120,10 +120,19 @@ pub struct ResolvedTexture {
     pub sha256: [u8; 32],
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum SkyEncoding {
+    Srgb = 0,
+    Linear = 1,
+    HdrRgbs = 2,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DependencyMetadata {
     SkyMaterial {
         source_sha256: [u8; 32],
+        encoding: SkyEncoding,
         selected_textures: Vec<ResolvedTexture>,
     },
     CubemapTexture {
@@ -208,6 +217,7 @@ pub struct SkyFace {
     pub face: CubeFace,
     pub material_path: String,
     pub material_sha256: [u8; 32],
+    pub encoding: SkyEncoding,
     pub selected_textures: Vec<SkyTextureDependency>,
 }
 
@@ -1330,6 +1340,7 @@ fn compile_sky(
         let response = responses.get(&request)?;
         let DependencyMetadata::SkyMaterial {
             source_sha256,
+            encoding,
             selected_textures,
         } = &response.metadata
         else {
@@ -1338,7 +1349,7 @@ fn compile_sky(
                 &request,
             ));
         };
-        if selected_textures.is_empty()
+        if selected_textures.len() != 1
             || selected_textures
                 .iter()
                 .any(|texture| texture.logical_path.is_empty())
@@ -1352,6 +1363,7 @@ fn compile_sky(
             face,
             material_path: path,
             material_sha256: *source_sha256,
+            encoding: *encoding,
             selected_textures: selected_textures
                 .iter()
                 .map(|texture| SkyTextureDependency {
