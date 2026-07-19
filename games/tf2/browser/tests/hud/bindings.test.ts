@@ -1,0 +1,555 @@
+import { describe, expect, test } from "bun:test"
+import {
+  adaptCompactSessionHud,
+  bindTf2Hud,
+  bindTf2HudAction,
+  TF2_GROUPED_CONDITION_PANELS,
+  TF2_INDEPENDENT_CONDITION_PANELS,
+  tf2HudAvailable,
+  tf2HudUnavailable,
+  type CompactSessionHudContext,
+  type CompactSessionSimulationPublication,
+  type Tf2Class,
+  type Tf2ConditionWords,
+  type Tf2HudAvailability,
+  type Tf2HudCrosshair,
+  type Tf2HudEvent,
+  type Tf2HudHealth,
+  type Tf2HudPanelValue,
+  type Tf2HudPlayer,
+  type Tf2HudScoreboard,
+  type Tf2HudSnapshot,
+  type Tf2HudWeapon,
+  type Tf2ScoreboardCounters,
+} from "../../src/hud"
+
+const unavailable = <T>(reason: "initial" | "not-produced" | "not-applicable" | "missing-source-fact" = "not-produced") =>
+  tf2HudUnavailable<T>(reason)
+
+function crosshair(overrides: Partial<Tf2HudCrosshair> = {}): Tf2HudCrosshair {
+  return Object.freeze({
+    configured: true,
+    weaponAllows: true,
+    loadingImage: false,
+    paused: false,
+    clientModeAllows: true,
+    frozen: false,
+    localViewEntity: true,
+    vguiInput: false,
+    observerMode: "none",
+    observerCrosshair: true,
+    tfSuppressed: false,
+    countdownHidden: false,
+    texture: "crosshair_default",
+    color: Object.freeze([200, 200, 200, 255]),
+    scale: 32,
+    weaponScale: 1,
+    ...overrides,
+  })
+}
+
+function weapon(overrides: Partial<Tf2HudWeapon> = {}): Tf2HudWeapon {
+  return Object.freeze({
+    identity: 1,
+    itemDefinition: unavailable(),
+    displayName: "Rocket Launcher",
+    slot: 0,
+    position: 0,
+    selectable: true,
+    ammoDisplay: "clip-and-reserve",
+    clip: tf2HudAvailable(4),
+    reserve: tf2HudAvailable(20),
+    maximumClip: tf2HudAvailable(4),
+    maximumReserve: tf2HudAvailable(20),
+    reload: "ready",
+    drawsCrosshair: true,
+    ...overrides,
+  })
+}
+
+function health(current = 200, maximum = 200, maximumBuffed = 300): Tf2HudHealth {
+  return Object.freeze({ current, maximum, maximumBuffed })
+}
+
+function words(...conditions: number[]): Tf2ConditionWords {
+  const output = [0, 0, 0, 0, 0]
+  for (const condition of conditions) {
+    const index = Math.floor(condition / 32)
+    output[index] = (output[index]! | (1 << (condition % 32))) >>> 0
+  }
+  return Object.freeze(output) as Tf2ConditionWords
+}
+
+function player(overrides: Partial<Tf2HudPlayer> = {}): Tf2HudPlayer {
+  return Object.freeze({
+    identity: 1,
+    lifecycle: "active",
+    class: tf2HudAvailable(3),
+    team: tf2HudAvailable(2),
+    health: tf2HudAvailable(health()),
+    conditions: words(),
+    weapons: Object.freeze([weapon()]),
+    activeWeapon: tf2HudAvailable(1),
+    weaponSelection: Object.freeze({ open: false, selectedWeapon: unavailable("not-applicable") }),
+    crosshair: tf2HudAvailable(crosshair()),
+    liveHudSuppressed: false,
+    respawnAllowed: false,
+    ...overrides,
+  })
+}
+
+function snapshot(tick: bigint, overrides: Partial<Tf2HudSnapshot> = {}): Tf2HudSnapshot {
+  return Object.freeze({
+    tick,
+    player: tf2HudAvailable(player()),
+    scoreboard: unavailable(),
+    freezePanel: unavailable(),
+    ...overrides,
+  })
+}
+
+function availablePrevious(value: Tf2HudSnapshot): Tf2HudAvailability<Tf2HudSnapshot> {
+  return tf2HudAvailable(value)
+}
+
+function value(
+  values: readonly Tf2HudPanelValue[],
+  kind: Tf2HudPanelValue["kind"],
+  panel: string,
+  name?: string,
+): Tf2HudPanelValue {
+  const match = values.find((item) => item.kind === kind && item.panel === panel && (
+    name === undefined
+    || (item.kind === "dialog-variable" && item.variable === name)
+    || (item.kind === "scalar" && item.property === name)
+  ))
+  if (!match) throw new Error(`missing ${kind}:${panel}:${name ?? ""}`)
+  return match
+}
+
+function healthSnapshot(prior: Tf2HudSnapshot, tick: bigint, next: Tf2HudHealth, lifecycle: Tf2HudPlayer["lifecycle"] = "active") {
+  const priorPlayer = (prior.player as Extract<Tf2HudSnapshot["player"], { kind: "available" }>).value
+  return snapshot(tick, {
+    player: tf2HudAvailable(player({ ...priorPlayer, lifecycle, health: tf2HudAvailable(next) })),
+  })
+}
+
+describe("immutable TF2 HUD binding", () => {
+  test("binds exact health boundaries and ordered animation/damage/lifecycle transcripts", () => {
+    const base = snapshot(1n)
+    const initial = bindTf2Hud({ previous: unavailable("initial"), snapshot: base, events: Object.freeze([]) })
+    expect(initial.animations).toEqual([])
+    expect(value(initial.values, "dialog-variable", "HudPlayerHealth", "Health")).toMatchObject({ value: { kind: "available", value: 200 } })
+    expect(value(initial.values, "dialog-variable", "HudPlayerHealth", "MaxHealth")).toMatchObject({ value: { kind: "available", value: "" } })
+
+    const initialBoost = healthSnapshot(base, 2n, health(250))
+    expect(bindTf2Hud({ previous: unavailable("initial"), snapshot: initialBoost, events: [] }).animations.map((item) => item.sequence))
+      .toEqual(["HudHealthDyingPulseStop", "HudHealthBonusPulse"])
+
+    const boosted = healthSnapshot(base, 2n, health(300))
+    const bonus = bindTf2Hud({
+      previous: availablePrevious(base),
+      snapshot: boosted,
+      events: Object.freeze([{ tick: 2n, ordinal: 0, kind: "health", health: health(300), cause: "heal" }]),
+    })
+    expect(bonus.animations.map((item) => item.sequence)).toEqual(["HudHealthDyingPulseStop", "HudHealthBonusPulse"])
+    expect(value(bonus.values, "scalar", "PlayerStatusHealthBonusImage", "boundsAdjustment")).toMatchObject({ value: { value: 35 } })
+
+    const critical = healthSnapshot(boosted, 3n, health(97))
+    const damaged = bindTf2Hud({
+      previous: availablePrevious(boosted),
+      snapshot: critical,
+      events: Object.freeze([{
+        tick: 3n,
+        ordinal: 0,
+        kind: "damage",
+        amount: 203,
+        health: health(97),
+        direction: tf2HudAvailable(Object.freeze([1, 0, 0]) as readonly [number, number, number]),
+      }]),
+    })
+    expect(damaged.animations.map((item) => item.sequence)).toEqual(["HudHealthBonusPulseStop", "HudHealthDyingPulse"])
+    expect(value(damaged.values, "color", "PlayerStatusHealthImage")).toMatchObject({ value: { value: [255, 0, 0, 255] } })
+    expect(damaged.commands).toEqual([{
+      kind: "damage-indicator",
+      tick: 3n,
+      ordinal: 0,
+      scale: 100,
+      lifetimeSeconds: 2,
+      direction: [1, 0, 0],
+    }])
+
+    const threshold = healthSnapshot(critical, 4n, health(98))
+    const recovered = bindTf2Hud({
+      previous: availablePrevious(critical),
+      snapshot: threshold,
+      events: Object.freeze([{ tick: 4n, ordinal: 0, kind: "health", health: health(98), cause: "heal" }]),
+    })
+    expect(recovered.animations.map((item) => item.sequence)).toEqual(["HudHealthBonusPulseStop", "HudHealthDyingPulseStop"])
+    expect(value(recovered.values, "visible", "PlayerStatusHealthBonusImage")).toMatchObject({ value: false })
+
+    const dead = healthSnapshot(threshold, 5n, health(0), "dying")
+    const death = bindTf2Hud({
+      previous: availablePrevious(threshold),
+      snapshot: dead,
+      events: Object.freeze([
+        { tick: 5n, ordinal: 0, kind: "damage", amount: 98, health: health(0), direction: unavailable("missing-source-fact") },
+        { tick: 5n, ordinal: 1, kind: "lifecycle", lifecycle: "dying" },
+      ]),
+    })
+    expect(death.commands).toEqual([{ kind: "lifecycle", tick: 5n, ordinal: 1, lifecycle: "dying" }])
+    expect(value(death.values, "visible", "HudPlayerStatus")).toMatchObject({ value: false })
+    expect(value(death.values, "visible", "HudCrosshair")).toMatchObject({ value: false })
+    expect(value(death.values, "dialog-variable", "HudPlayerHealth", "Health")).toMatchObject({ value: { value: "" } })
+
+    const respawned = healthSnapshot(dead, 6n, health(), "active")
+    const respawn = bindTf2Hud({
+      previous: availablePrevious(dead),
+      snapshot: respawned,
+      events: Object.freeze([
+        { tick: 6n, ordinal: 0, kind: "health", health: health(), cause: "respawn" },
+        { tick: 6n, ordinal: 1, kind: "ammo", weapon: 1, clip: tf2HudAvailable(4), reserve: tf2HudAvailable(20), reload: "ready", cause: "respawn" },
+        { tick: 6n, ordinal: 2, kind: "lifecycle", lifecycle: "active" },
+      ]),
+    })
+    expect(respawn.commands).toEqual([{ kind: "lifecycle", tick: 6n, ordinal: 2, lifecycle: "active" }])
+    expect(value(respawn.values, "visible", "HudPlayerStatus")).toMatchObject({ value: true })
+  })
+
+  test("preserves strict low-ammo, reload and coalesced publication edges", () => {
+    const base = snapshot(10n, { player: tf2HudAvailable(player({ weapons: Object.freeze([weapon({ clip: tf2HudAvailable(0), reserve: tf2HudAvailable(10) })]) })) })
+    const low = snapshot(11n, { player: tf2HudAvailable(player({ weapons: Object.freeze([weapon({ clip: tf2HudAvailable(0), reserve: tf2HudAvailable(9), reload: "start" })]) })) })
+    const lowBinding = bindTf2Hud({
+      previous: availablePrevious(base),
+      snapshot: low,
+      events: Object.freeze([{ tick: 11n, ordinal: 0, kind: "ammo", weapon: 1, clip: tf2HudAvailable(0), reserve: tf2HudAvailable(9), reload: "start", cause: "reload" }]),
+    })
+    expect(lowBinding.animations.map((item) => item.sequence)).toEqual(["HudLowAmmoPulse"])
+    expect(value(lowBinding.values, "visible", "HudWeaponLowAmmoImage")).toMatchObject({ value: true })
+    expect(value(lowBinding.values, "color", "HudWeaponLowAmmoImage")).toMatchObject({ value: { value: [255, 0, 0, 255] } })
+    expect(value(lowBinding.values, "scalar", "HudWeaponLowAmmoImage", "boundsAdjustment")).toMatchObject({ value: { value: 0 } })
+    expect(value(lowBinding.values, "scalar", "HudWeaponAmmo", "reloadPhase")).toMatchObject({ value: { value: 1 } })
+
+    const recovered = snapshot(12n, { player: tf2HudAvailable(player({ weapons: Object.freeze([weapon({ clip: tf2HudAvailable(1), reserve: tf2HudAvailable(9), reload: "insert" })]) })) })
+    const coalesced = bindTf2Hud({
+      previous: availablePrevious(base),
+      snapshot: recovered,
+      events: Object.freeze([
+        { tick: 11n, ordinal: 0, kind: "ammo", weapon: 1, clip: tf2HudAvailable(0), reserve: tf2HudAvailable(9), reload: "start", cause: "reload" },
+        { tick: 12n, ordinal: 0, kind: "ammo", weapon: 1, clip: tf2HudAvailable(1), reserve: tf2HudAvailable(9), reload: "insert", cause: "reload" },
+      ]),
+    })
+    expect(coalesced.animations.map((item) => `${item.tick}:${item.sequence}`)).toEqual([
+      "11:HudLowAmmoPulse",
+      "12:HudLowAmmoPulseStop",
+    ])
+    expect(value(coalesced.values, "visible", "HudWeaponLowAmmoImage")).toMatchObject({ value: false })
+
+    const alternate = weapon({ identity: 2, displayName: "Original", position: 1 })
+    const lowPrimary = weapon({ clip: tf2HudAvailable(0), reserve: tf2HudAvailable(9) })
+    const beforeSwitch = snapshot(13n, { player: tf2HudAvailable(player({ weapons: Object.freeze([lowPrimary, alternate]) })) })
+    const afterSwitch = snapshot(14n, { player: tf2HudAvailable(player({ weapons: Object.freeze([lowPrimary, alternate]), activeWeapon: tf2HudAvailable(2) })) })
+    const switched = bindTf2Hud({
+      previous: availablePrevious(beforeSwitch),
+      snapshot: afterSwitch,
+      events: [{ tick: 14n, ordinal: 0, kind: "weapon-selected", weapon: 2 }],
+    })
+    expect(switched.animations.map((item) => item.sequence)).toEqual(["HudLowAmmoPulseStop"])
+  })
+
+  test("publishes regenerate after exact health, ammo and condition replacement", () => {
+    const depletedWeapon = weapon({ clip: tf2HudAvailable(1), reserve: tf2HudAvailable(5), reload: "insert" })
+    const prior = snapshot(15n, {
+      player: tf2HudAvailable(player({
+        health: tf2HudAvailable(health(50)),
+        conditions: words(25),
+        weapons: Object.freeze([depletedWeapon]),
+      })),
+    })
+    const fullWeapon = weapon()
+    const restored = snapshot(16n)
+    const binding = bindTf2Hud({
+      previous: availablePrevious(prior),
+      snapshot: restored,
+      events: Object.freeze([{
+        tick: 16n,
+        ordinal: 0,
+        kind: "regenerate",
+        zone: tf2HudAvailable(85),
+        health: health(),
+        weapons: Object.freeze([fullWeapon]),
+        conditions: words(),
+      }]),
+    })
+    expect(binding.animations.map((item) => item.sequence)).toEqual([
+      "HudHealthBonusPulseStop",
+      "HudHealthDyingPulseStop",
+      "HudLowAmmoPulseStop",
+    ])
+    expect(binding.commands).toEqual([{
+      kind: "regenerate-notification",
+      tick: 16n,
+      ordinal: 0,
+      zone: { kind: "available", value: 85 },
+    }])
+    expect(value(binding.values, "dialog-variable", "HudWeaponAmmo", "Ammo")).toMatchObject({ value: { value: 4 } })
+    expect(value(binding.values, "visible", "PlayerStatusBleedImage")).toMatchObject({ value: false })
+  })
+
+  test("maps class/team, grouped conditions and exact crosshair eligibility", () => {
+    const conditioned = snapshot(20n, {
+      player: tf2HudAvailable(player({
+        class: tf2HudAvailable(4),
+        team: tf2HudAvailable(3),
+        conditions: words(58, 61, 25, 48, 119),
+      })),
+    })
+    const binding = bindTf2Hud({ previous: unavailable("initial"), snapshot: conditioned, events: Object.freeze([]) })
+    expect(value(binding.values, "image", "PlayerStatusClassImage")).toMatchObject({ value: { value: "../hud/class_demoblue" } })
+    expect(value(binding.values, "visible", "PlayerStatus_MedicUberBulletResistImage")).toMatchObject({ value: true })
+    expect(value(binding.values, "visible", "PlayerStatus_MedicSmallBulletResistImage")).toMatchObject({ value: false })
+    expect(value(binding.values, "visible", "PlayerStatusBleedImage")).toMatchObject({ value: true })
+    expect(value(binding.values, "visible", "PlayerStatusMarkedForDeathSilentImage")).toMatchObject({ value: true })
+    expect(value(binding.values, "visible", "HudCrosshair")).toMatchObject({ value: true })
+
+    const paused = snapshot(21n, { player: tf2HudAvailable(player({ crosshair: tf2HudAvailable(crosshair({ paused: true })) })) })
+    expect(value(bindTf2Hud({ previous: unavailable("initial"), snapshot: paused, events: [] }).values, "visible", "HudCrosshair"))
+      .toMatchObject({ value: false })
+
+    const expectedImages = {
+      2: ["class_scoutred", "class_sniperred", "class_soldierred", "class_demored", "class_medicred", "class_heavyred", "class_pyrored", "class_spyred", "class_engired"],
+      3: ["class_scoutblue", "class_sniperblue", "class_soldierblue", "class_demoblue", "class_medicblue", "class_heavyblue", "class_pyroblue", "class_spyblue", "class_engiblue"],
+    } as const
+    for (const team of [2, 3] as const) {
+      for (let index = 0; index < expectedImages[team].length; index += 1) {
+        const current = snapshot(22n, { player: tf2HudAvailable(player({ class: tf2HudAvailable((index + 1) as Tf2Class), team: tf2HudAvailable(team) })) })
+        expect(value(bindTf2Hud({ previous: unavailable("initial"), snapshot: current, events: [] }).values, "image", "PlayerStatusClassImage"))
+          .toMatchObject({ value: { value: `../hud/${expectedImages[team][index]}` } })
+      }
+    }
+
+    const everyReviewedCondition = words(
+      ...TF2_GROUPED_CONDITION_PANELS.map((item) => item.condition),
+      ...TF2_INDEPENDENT_CONDITION_PANELS.flatMap((item) => item.conditions),
+    )
+    const everyConditionBinding = bindTf2Hud({
+      previous: unavailable("initial"),
+      snapshot: snapshot(23n, { player: tf2HudAvailable(player({ conditions: everyReviewedCondition })) }),
+      events: [],
+    })
+    const seenGroups = new Set<string>()
+    for (const item of TF2_GROUPED_CONDITION_PANELS) {
+      expect(value(everyConditionBinding.values, "visible", item.panel)).toMatchObject({ value: !seenGroups.has(item.group) })
+      seenGroups.add(item.group)
+    }
+    for (const item of TF2_INDEPENDENT_CONDITION_PANELS) {
+      expect(value(everyConditionBinding.values, "visible", item.panel)).toMatchObject({ value: true })
+    }
+  })
+
+  test("retains scoreboard, killfeed, pickup and regenerate facts without mutating inputs", () => {
+    const counters: Tf2ScoreboardCounters = Object.freeze({
+      kills: 3, deaths: 1, assists: 2, destruction: 0, captures: 1, defenses: 0, dominations: 1,
+      revenge: 0, healing: 0, invulns: 0, teleports: 0, headshots: 0, backstabs: 0, bonus: 2,
+      support: 2, damage: 450,
+    })
+    const scoreboard: Tf2HudScoreboard = Object.freeze({
+      visible: true,
+      red: Object.freeze({ team: 2, localizedName: "RED", score: 2, playerCount: 1 }),
+      blue: Object.freeze({ team: 3, localizedName: "BLU", score: 1, playerCount: 0 }),
+      players: Object.freeze([Object.freeze({
+        identity: 1, name: "Soldier", team: 2, connection: "connected", score: 5, alive: true,
+        class: tf2HudAvailable(3), ping: tf2HudAvailable(24), killstreak: 3, activeDominations: 1,
+        relationship: "none", counters: tf2HudAvailable(counters),
+      })]),
+      spectators: Object.freeze(["Watcher"]),
+      waitingToPlay: Object.freeze([]),
+      selectedPlayer: tf2HudAvailable(1),
+    })
+    const base = snapshot(30n, { scoreboard: tf2HudAvailable(scoreboard) })
+    const next = snapshot(31n, { scoreboard: tf2HudAvailable(scoreboard) })
+    const input = Object.freeze({
+      previous: availablePrevious(base),
+      snapshot: next,
+      events: Object.freeze([
+        Object.freeze({
+          tick: 31n, ordinal: 0, kind: "pickup", notification: Object.freeze({
+            pickupIdentity: 9, pickup: "ammo", itemIdentity: tf2HudAvailable("item_ammopack_small"), amount: tf2HudAvailable(5),
+          }), health: unavailable("not-applicable"), weapon: unavailable("not-applicable"),
+        }),
+        Object.freeze({
+          tick: 31n, ordinal: 1, kind: "killfeed", notice: Object.freeze({
+            killer: Object.freeze({ identity: tf2HudAvailable(1), name: "Soldier", team: 2 }),
+            victim: Object.freeze({ identity: tf2HudAvailable(2), name: "Demoman", team: 3 }),
+            assister: unavailable("not-applicable"), weaponIcon: tf2HudAvailable("d_rocketlauncher"),
+            weaponIdentity: tf2HudAvailable(18), customKill: 0, critical: false, selfInflicted: false,
+            localPlayerInvolved: true, domination: false, revenge: false, silent: false,
+          }),
+        }),
+      ] as readonly Tf2HudEvent[]),
+    })
+    const before = JSON.stringify(input, (_key, item) => typeof item === "bigint" ? `${item}n` : item)
+    const binding = bindTf2Hud(input)
+    expect(JSON.stringify(input, (_key, item) => typeof item === "bigint" ? `${item}n` : item)).toBe(before)
+    expect(binding.commands.map((item) => item.kind)).toEqual(["pickup-notification", "killfeed-notice"])
+    expect(binding.scoreboard).toMatchObject({ kind: "available", value: { players: [{ counters: { value: { damage: 450 } } }] } })
+    expect(value(binding.values, "dialog-variable", "scoreinfo", "redteamscore")).toMatchObject({ value: { value: 2 } })
+    expect(value(binding.values, "dialog-variable", "scoreinfo", "redteamplayercount")).toMatchObject({
+      value: { value: { kind: "localized", token: "#TF_ScoreBoard_Player", parameters: [1] } },
+    })
+    expect(Object.isFrozen(binding)).toBe(true)
+    expect(Object.isFrozen((binding.scoreboard as Extract<typeof binding.scoreboard, { kind: "available" }>).value.players)).toBe(true)
+  })
+
+  test("returns typed actions without calling gameplay transitions", () => {
+    let transitions = 0
+    const dead = snapshot(40n, { player: tf2HudAvailable(player({ lifecycle: "dying", respawnAllowed: true })) })
+    const respawn = bindTf2HudAction(dead, { kind: "respawn", transition: () => { transitions += 1 } } as never)
+    expect(respawn).toEqual({ kind: "available", value: { kind: "respawn", player: 1 } })
+    expect(transitions).toBe(0)
+    expect(bindTf2HudAction(snapshot(41n), { kind: "select-weapon", weapon: 1 }))
+      .toEqual({ kind: "available", value: { kind: "select-weapon", player: 1, weapon: 1 } })
+    expect(bindTf2HudAction(snapshot(41n), { kind: "scoreboard", visible: true }))
+      .toEqual({ kind: "available", value: { kind: "scoreboard", visible: true } })
+  })
+
+  test("rejects event-order and scoreboard bounds instead of dropping facts", () => {
+    expect(() => bindTf2Hud({
+      previous: availablePrevious(snapshot(50n)),
+      snapshot: snapshot(51n),
+      events: [{ tick: 51n, ordinal: 1, kind: "health", health: health(), cause: "state" }],
+    })).toThrow("ordinals are not contiguous")
+
+    const players = Array.from({ length: 65 }, (_, index) => Object.freeze({
+      identity: index + 1, name: `P${index}`, team: 2 as const, connection: "connected" as const, score: 0,
+      alive: true, class: tf2HudAvailable(3 as const), ping: unavailable<number>(), killstreak: 0,
+      activeDominations: 0, relationship: "none" as const, counters: unavailable<Tf2ScoreboardCounters>(),
+    }))
+    const oversized = snapshot(51n, { scoreboard: tf2HudAvailable({
+      visible: true,
+      red: { team: 2, localizedName: "RED", score: 0, playerCount: 64 },
+      blue: { team: 3, localizedName: "BLU", score: 0, playerCount: 0 },
+      players,
+      spectators: [],
+      waitingToPlay: [],
+      selectedPlayer: unavailable("not-applicable"),
+    }) })
+    expect(() => bindTf2Hud({ previous: unavailable("initial"), snapshot: oversized, events: [] }))
+      .toThrow("scoreboard player list exceeds its bound")
+  })
+})
+
+function compactSnapshot(
+  tick: bigint,
+  overrides: Partial<CompactSessionSimulationPublication["snapshot"]> = {},
+): CompactSessionSimulationPublication["snapshot"] {
+  return Object.freeze({
+    tick,
+    class: 1,
+    team: 1,
+    weapon: 1,
+    health: 200,
+    maximumHealth: 200,
+    lifecycle: 1,
+    conditions: Object.freeze([0, 0, 0, 0, 0]),
+    loadout: Object.freeze([Object.freeze({ weapon: 1, reload: 0, clip: 4, reserve: 20, maximumClip: 4, maximumReserve: 20 })]),
+    events: Object.freeze([]),
+    lifecycleEvents: Object.freeze([]),
+    projectileEvents: Object.freeze([]),
+    ...overrides,
+  })
+}
+
+function compactPublication(...snapshots: CompactSessionSimulationPublication["snapshot"][]): CompactSessionSimulationPublication {
+  return Object.freeze({
+    eventBatches: Object.freeze(snapshots.map((item) => Object.freeze({ snapshot: item }))),
+    snapshot: snapshots.at(-1)!,
+  })
+}
+
+describe("current compact Soldier/Demoman HUD adapter", () => {
+  const context: CompactSessionHudContext = Object.freeze({
+    playerIdentity: 1,
+    liveHudSuppressed: false,
+    respawnAllowed: true,
+    weaponSelection: Object.freeze({ open: false, selectedWeapon: unavailable("not-applicable") }),
+    crosshair: crosshair(),
+    scoreboard: unavailable(),
+    freezePanel: unavailable(),
+  })
+
+  test("retains fire/reload ticks across one coalesced host publication", () => {
+    const initial = adaptCompactSessionHud(unavailable("initial"), compactPublication(compactSnapshot(1n)), context)
+    const prior = bindTf2Hud(initial).facts
+    const fired = compactSnapshot(2n, {
+      loadout: Object.freeze([Object.freeze({ weapon: 1, reload: 0, clip: 3, reserve: 20, maximumClip: 4, maximumReserve: 20 })]),
+      projectileEvents: Object.freeze([Object.freeze({ type: "fire", launcherIdentity: 1 })]),
+    })
+    const reloaded = compactSnapshot(3n, {
+      loadout: Object.freeze([Object.freeze({ weapon: 1, reload: 3, clip: 4, reserve: 19, maximumClip: 4, maximumReserve: 20 })]),
+      events: Object.freeze([Object.freeze({ kind: 4, detail: 1, subject: 0, auxiliary: 0, values: Object.freeze([4, 19, 0, 0]) })]),
+    })
+    const publication = adaptCompactSessionHud(availablePrevious(prior), compactPublication(fired, reloaded), context)
+    expect(publication.events.map((event) => [event.tick, event.ordinal, event.kind, "cause" in event ? event.cause : null])).toEqual([
+      [2n, 0, "ammo", "fire"],
+      [3n, 0, "ammo", "reload"],
+    ])
+    const binding = bindTf2Hud(publication)
+    expect(value(binding.values, "dialog-variable", "HudWeaponAmmo", "Ammo")).toMatchObject({ value: { value: 4 } })
+    expect(value(binding.values, "scalar", "HudWeaponAmmo", "reloadPhase")).toMatchObject({ value: { value: 3 } })
+  })
+
+  test("maps the compact Demoman/BLU stock session to SDK class, team and overheal identities", () => {
+    const demo = compactSnapshot(1n, {
+      class: 2,
+      team: 2,
+      weapon: 3,
+      health: 175,
+      maximumHealth: 175,
+      loadout: Object.freeze([Object.freeze({ weapon: 3, reload: 0, clip: 8, reserve: 24, maximumClip: 8, maximumReserve: 24 })]),
+    })
+    const binding = bindTf2Hud(adaptCompactSessionHud(unavailable("initial"), compactPublication(demo), context))
+    const mappedPlayer = (binding.facts.player as Extract<Tf2HudSnapshot["player"], { kind: "available" }>).value
+    expect(mappedPlayer).toMatchObject({
+      class: { kind: "available", value: 4 },
+      team: { kind: "available", value: 3 },
+      health: { kind: "available", value: { current: 175, maximum: 175, maximumBuffed: 260 } },
+      activeWeapon: { kind: "available", value: 3 },
+    })
+    expect(value(binding.values, "image", "PlayerStatusClassImage")).toMatchObject({ value: { value: "../hud/class_demoblue" } })
+  })
+
+  test("retains regenerate-before-fire ammo within one compact tick", () => {
+    const initial = adaptCompactSessionHud(unavailable("initial"), compactPublication(compactSnapshot(1n)), context)
+    const prior = bindTf2Hud(initial).facts
+    const regeneratedAndFired = compactSnapshot(2n, {
+      loadout: Object.freeze([Object.freeze({ weapon: 1, reload: 0, clip: 3, reserve: 20, maximumClip: 4, maximumReserve: 20 })]),
+      events: Object.freeze([Object.freeze({ kind: 5, detail: 1, subject: 85, auxiliary: 0, values: Object.freeze([200, 4, 20, 0]) })]),
+      projectileEvents: Object.freeze([Object.freeze({ type: "fire", launcherIdentity: 1 })]),
+    })
+    const publication = adaptCompactSessionHud(availablePrevious(prior), compactPublication(regeneratedAndFired), context)
+    expect(publication.events.map((event) => event.kind)).toEqual(["regenerate", "ammo"])
+    const regenerate = publication.events[0] as Extract<Tf2HudEvent, { kind: "regenerate" }>
+    const fired = publication.events[1] as Extract<Tf2HudEvent, { kind: "ammo" }>
+    expect(regenerate.weapons[0]).toMatchObject({ clip: { value: 4 }, reserve: { value: 20 }, reload: "ready" })
+    expect(fired).toMatchObject({ clip: { value: 3 }, reserve: { value: 20 }, cause: "fire" })
+    expect(bindTf2Hud(publication).commands.map((command) => command.kind)).toEqual(["regenerate-notification"])
+  })
+
+  test("marks unavailable compact damage direction and preserves death ordering", () => {
+    const initial = adaptCompactSessionHud(unavailable("initial"), compactPublication(compactSnapshot(1n)), context)
+    const prior = bindTf2Hud(initial).facts
+    const dead = compactSnapshot(2n, {
+      health: 0,
+      lifecycle: 2,
+      events: Object.freeze([Object.freeze({ kind: 6, detail: 0, subject: 0, auxiliary: 0, values: Object.freeze([200, 0, 0, 0]) })]),
+      lifecycleEvents: Object.freeze([Object.freeze({ tick: 2n, kind: 1, class: 1, team: 1 })]),
+    })
+    const publication = adaptCompactSessionHud(availablePrevious(prior), compactPublication(dead), context)
+    expect(publication.events.map((event) => [event.ordinal, event.kind])).toEqual([[0, "damage"], [1, "lifecycle"]])
+    expect((publication.events[0] as Extract<Tf2HudEvent, { kind: "damage" }>).direction)
+      .toEqual({ kind: "unavailable", reason: "missing-source-fact" })
+    const binding = bindTf2Hud(publication)
+    expect(binding.commands).toEqual([{ kind: "lifecycle", tick: 2n, ordinal: 1, lifecycle: "dying" }])
+  })
+})
