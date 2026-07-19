@@ -389,7 +389,9 @@ export class Tf2Application {
   async #gameUiRequest(request: Tf2GameUiRequest): Promise<void> {
     if (request.kind === "show-console") { this.toggleConsole(); return }
     if (request.kind === "show-options") {
-      this.#ensureOptions().show(request.page === "advanced-options" ? "advanced" : "keyboard")
+      const options = this.#ensureOptions()
+      options.show(request.page === "advanced-options" ? "advanced" : "keyboard")
+      options.frame(performance.now() / 1_000)
       this.#set({ optionsVisible: true })
       return
     }
