@@ -2545,7 +2545,9 @@ fn resolve_rocket_traces(
                 } else {
                     None
                 },
-                direct_target: None,
+                direct_target: trace
+                    .entity_identity()
+                    .and_then(|identity| identity.try_into().ok()),
             })
         })
         .collect()
@@ -7742,6 +7744,50 @@ fn with<T>(handle: u32, read: impl FnOnce(&Slot) -> T) -> Option<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rocket_trace_preserves_direct_entity_identity() {
+        let world = playsrc_collision::World::empty();
+        let snapshot = playsrc_collision::Snapshot::compile(
+            &world,
+            1,
+            vec![playsrc_collision::ObjectInput {
+                identity: 42,
+                role: playsrc_collision::ObjectRole::Entity,
+                enabled: true,
+                transform: playsrc_collision::Transform::IDENTITY,
+                linear_velocity: [0.0; 3],
+                angular_velocity: [0.0; 3],
+                collision_group: 0,
+                contents: 1,
+                surface_flags: 0,
+                shape: playsrc_collision::SnapshotShape::BoundingBox {
+                    bounds: playsrc_collision::Hull {
+                        mins: [-1.0; 3],
+                        maxs: [1.0; 3],
+                    },
+                },
+            }],
+            playsrc_collision::SnapshotLimits::default(),
+        )
+        .unwrap();
+        let results = resolve_rocket_traces(
+            &world,
+            &snapshot,
+            &[playsrc_tf2::RocketTraceRequest {
+                projectile: 7,
+                tick: 3,
+                start: [-10.0, 0.0, 0.0],
+                end: [10.0, 0.0, 0.0],
+                mask: 1,
+            }],
+            4,
+        )
+        .unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].solid);
+        assert_eq!(results[0].direct_target, Some(42));
+    }
+
     #[test]
     fn stale_handles_do_not_read_reused_slots() {
         let mut guard = slots().lock().unwrap();
