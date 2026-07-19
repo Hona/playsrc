@@ -1,0 +1,7 @@
+# TF2 UI Resources
+
+This leaf supplies one immutable, configured-content-bound descriptor for the TF2 main menu, loading and pause surfaces, gameplay HUD, and Options pages. It retains ordered panel/resource/scheme/localization/image/animation records, exact provider provenance and hashes, conditions, repeated occurrences, typed missing dependencies, and inert command/capability classifications.
+
+Generation reads only `playsrc.local.json`, uses the existing KeyValues, Content, VTF, and font producer contracts, and resolves exact logical paths through the configured provider plan. It performs no extracted-tree search and defines no parser or fallback resource.
+
+The configured build emits 49 ordered source records, 35 panel documents, three scheme documents, 207 borders, 156 selected localization tokens, 249 image records backed by 237 distinct inspected VTF objects, 48 font records, two ordered HUD-animation scripts, 52 control identities, 11,077 property occurrences, and 79 inert command occurrences. Missing dual-progress loading, user override, two image-material, and six localization-token dependencies remain explicit; no replacement is selected.

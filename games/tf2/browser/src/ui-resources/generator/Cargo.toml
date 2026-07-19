@@ -1,0 +1,21 @@
+[package]
+name = "playsrc-tf2-ui-resources-generator"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace]
+
+[dependencies]
+playsrc-content = { path = "../../../../../../packages/content/rust" }
+playsrc-keyvalues = { path = "../../../../../../packages/formats/keyvalues/rust" }
+playsrc-vtf = { path = "../../../../../../packages/formats/vtf/rust" }
+playsrc-vpk = { path = "../../../../../../packages/formats/vpk/rust" }
+playsrc-vmt = { path = "../../../../../../packages/formats/vmt/rust" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10.9"
+
+[[bin]]
+name = "generate-tf2-ui-resources"
+path = "src/main.rs"
