@@ -6,6 +6,8 @@ Source identity: configured `maps/jump_beef.bsp`, decoded SHA-256 `b2e22010b56aa
 
 This fixed inventory is evidence input, not a generated denominator. Every count is over the ordered entity-lump records retained by Entity.
 
+[`source-map-foundations.md`](source-map-foundations.md) is the checked generated/reviewed class and selected generic behavior inventory for this exact BSP.
+
 | Record | Count | Entity runtime disposition |
 |---|---:|---|
 | All entities | 361 | Allocate one ordered live slot/generation handle per accepted definition. |

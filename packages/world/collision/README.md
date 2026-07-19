@@ -22,7 +22,8 @@ Represent collision geometry and answer deterministic spatial queries.
 - Retain one exact brush set per BSP model and test translated model-space hull overlap for Entity-owned trigger contacts without adding inline models to world-solid traces.
 - Compile bounded immutable snapshots containing transformed inline brush models, world-aligned or oriented boxes, and supplied PHY polygon compounds. Every public immutable record retains stable identity, entity/static-prop role, enabled state, transform, linear/angular velocity, collision group, exact shape-derived contents, and surface flags; snapshot bytes and results bind the collision-world identity and monotonic revision.
 - Trace world brushes in near-leaf and encoded leaf-brush order, clip the entity segment to the world result, preserve strict closer-hit replacement, and retain transformed model/prop/entity feature identity. `Trace::is_sky`, `Trace::entity_identity`, and `Trace::hit_world` expose the generic facts required by projectile consumers without selecting game damage targets.
-- Serialize `CSNP` version 1 comparison records only within the snapshot byte limit. Shape, object, convex, vertex, triangle, axis, candidate, ignored-identity, and output bytes have explicit nonzero limits.
+- Serialize `CSNP` version 2 comparison records only within the snapshot byte limit. Shape, object, convex, vertex, triangle, axis, candidate, ignored-identity, and output bytes have explicit nonzero limits.
+- Produce bounded trigger-selected enter/stay/exit edges from exact transformed brush, AABB or OBB objects and subject hulls. `ContactSnapshot` version 1 retains geometric overlap pairs plus prior subject/trigger transforms so moving-trigger and swept-subject crossings remain collision facts; Entity alone evaluates filters and owns accepted touch state/I/O.
 
 ## Non-Responsibilities
 

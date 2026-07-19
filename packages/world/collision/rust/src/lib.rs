@@ -4,7 +4,13 @@ use playsrc_bsp::{
 use sha2::{Digest, Sha256};
 use std::{fmt, ops::Range};
 
+mod contact;
 mod snapshot;
+
+pub use contact::{
+    CONTACT_SNAPSHOT_VERSION, ContactEdge, ContactEdgeKind, ContactFrame, ContactLimits,
+    ContactSnapshot, ContactSubject, TriggerVolume, produce_trigger_contacts,
+};
 
 pub use snapshot::{
     Candidate, ConvexInput, ObjectInput, ObjectOverlapRequest, ObjectRole, ObjectTraceRequest,

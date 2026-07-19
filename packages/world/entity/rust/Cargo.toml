@@ -9,6 +9,4 @@ path = "src/lib.rs"
 
 [dependencies]
 playsrc-collision = { path = "../../collision/rust" }
-
-[dev-dependencies]
 playsrc-bsp = { path = "../../../formats/bsp/rust" }

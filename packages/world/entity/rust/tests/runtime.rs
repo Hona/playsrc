@@ -1,7 +1,8 @@
 use playsrc_entity::{
-    BehaviorState, BrushSolidity, ContactKind, ContactRecord, EntityHandle, EntityWorld,
-    EntityWorldConfig, EventTarget, InputRecord, Lifecycle, ModelBounds, MoverPosition,
-    ParentRequest, RuntimeFailureCode, RuntimeLimits, RuntimeRequest, Transform, Transition,
+    BehaviorState, BrushSolidity, ClassFieldBinding, ContactKind, ContactRecord, EntityHandle,
+    EntityWorld, EntityWorldConfig, EventTarget, FieldBinding, FieldType, InitialAttachmentBinding,
+    InputRecord, Lifecycle, ModelBounds, MoverClass, MoverPosition, ParentRequest, PushMode,
+    RuntimeFailureCode, RuntimeLimits, RuntimeRequest, Transform, Transition, TriggerEffectData,
     TriggerKind, Variant, WorldCommand, parse,
 };
 
@@ -225,6 +226,7 @@ fn trigger_contacts_filter_unique_entries_disable_and_exit_in_order() {
             subject: found_subject,
             kind: TriggerKind::Multiple,
             contact: ContactKind::Enter,
+            ..
         } if found_trigger == trigger && found_subject == subject
     ));
     assert!(matches!(
@@ -284,7 +286,7 @@ fn counter_case_and_canonical_snapshot_restore_continue_identically() {
         .unwrap();
 
     let snapshot = world.snapshot().unwrap();
-    assert_eq!(&snapshot.bytes()[..8], b"PSEN\x03\0\0\0");
+    assert_eq!(&snapshot.bytes()[..8], b"PSEN\x05\0\0\0");
     assert_eq!(snapshot.bytes(), world.snapshot().unwrap().bytes());
     let mut restored = compile(bytes, |_| {});
     restored.restore(&snapshot).unwrap();
@@ -357,6 +359,42 @@ fn parent_cycle_and_missing_attachment_leave_prior_state_unchanged() {
         world.entity(a).unwrap().behavior,
         BehaviorState::Brush(ref state) if state.solidity == BrushSolidity::Toggle
     ));
+}
+
+#[test]
+fn kill_hierarchy_marks_children_before_parent_and_repeated_kill_is_inert() {
+    let mut world = compile(
+        br#"
+{"classname" "func_brush" "targetname" "parent"}
+{"classname" "func_brush" "targetname" "child" "parentname" "parent"}
+"#,
+        |_| {},
+    );
+    let parent = world.resolve(b"parent", None, None, None)[0];
+    let child = world.resolve(b"child", None, None, None)[0];
+    let removed = world
+        .phase(0, &[input(parent, b"KillHierarchy", Variant::Void, 1)])
+        .unwrap();
+    let order = removed
+        .records
+        .iter()
+        .filter_map(|record| match record.transition {
+            Transition::Lifecycle {
+                entity,
+                state: Lifecycle::PendingRemoval,
+            } => Some(entity),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(order, [child, parent]);
+    assert!(world.entity(parent).is_none() && world.entity(child).is_none());
+    assert!(
+        world
+            .phase(1, &[WorldCommand::Remove(parent)])
+            .unwrap()
+            .records
+            .is_empty()
+    );
 }
 
 #[test]
@@ -1180,5 +1218,676 @@ fn breakable_remains_drawn_while_nonsolid_then_removes_at_source_delay() {
             .models
             .len(),
         1
+    );
+}
+
+#[test]
+fn typed_fields_variant_conversion_and_attachment_parenting_are_atomic() {
+    let bytes = br#"
+{"classname" "func_brush" "targetname" "parent" "origin" "10 0 0"}
+{"classname" "typed" "targetname" "child" "parentname" "parent,muzzle" "origin" "15 0 0"
+ "count" "7tail" "ratio" "1.5" "enabled" "1" "vector" "[1 2 3]"
+ "position" "4 5 6" "color" "9 8 7" "reference" "parent"}
+"#;
+    let mut world = compile(bytes, |config| {
+        config.field_bindings.push(ClassFieldBinding {
+            classname: b"typed".to_vec(),
+            fields: vec![
+                FieldBinding {
+                    key: b"count".to_vec(),
+                    field_type: FieldType::Integer,
+                    writable_input: Some(b"SetCount".to_vec()),
+                },
+                FieldBinding {
+                    key: b"ratio".to_vec(),
+                    field_type: FieldType::Float,
+                    writable_input: None,
+                },
+                FieldBinding {
+                    key: b"enabled".to_vec(),
+                    field_type: FieldType::Boolean,
+                    writable_input: None,
+                },
+                FieldBinding {
+                    key: b"vector".to_vec(),
+                    field_type: FieldType::Vector,
+                    writable_input: None,
+                },
+                FieldBinding {
+                    key: b"position".to_vec(),
+                    field_type: FieldType::PositionVector,
+                    writable_input: None,
+                },
+                FieldBinding {
+                    key: b"color".to_vec(),
+                    field_type: FieldType::Color,
+                    writable_input: None,
+                },
+                FieldBinding {
+                    key: b"reference".to_vec(),
+                    field_type: FieldType::Handle,
+                    writable_input: None,
+                },
+                FieldBinding {
+                    key: b"missing".to_vec(),
+                    field_type: FieldType::String,
+                    writable_input: None,
+                },
+            ],
+        });
+        config.initial_attachments.push(InitialAttachmentBinding {
+            parent_source_index: 0,
+            attachment: b"muzzle".to_vec(),
+            parent_space_transform: Transform {
+                origin: [2.0, 0.0, 0.0],
+                angles: [0.0; 3],
+            },
+        });
+    });
+    let parent = world.resolve(b"parent", None, None, None)[0];
+    let child = world.resolve(b"child", None, None, None)[0];
+    let state = world.entity(child).unwrap();
+    assert_eq!(state.parent, Some(parent));
+    assert_eq!(state.local_transform.origin, [3.0, 0.0, 0.0]);
+    assert_eq!(state.fields[0].value, Some(Variant::Integer(7)));
+    assert_eq!(state.fields[5].value, Some(Variant::Color([9, 8, 7, 255])));
+    assert_eq!(state.fields[6].value, Some(Variant::Handle(parent)));
+    assert_eq!(state.fields[7].coverage, playsrc_entity::Coverage::Missing);
+
+    world
+        .phase(
+            1,
+            &[input(
+                child,
+                b"SetCount",
+                Variant::String(b"9tail".to_vec()),
+                1,
+            )],
+        )
+        .unwrap();
+    assert_eq!(
+        world.entity(child).unwrap().fields[0].value,
+        Some(Variant::Integer(9))
+    );
+    world
+        .phase(
+            2,
+            &[
+                input(
+                    child,
+                    b"AddOutput",
+                    Variant::String(b"count 12".to_vec()),
+                    2,
+                ),
+                input(
+                    child,
+                    b"AddOutput",
+                    Variant::String(b"OnUser1 parent:Kill::0:1".to_vec()),
+                    3,
+                ),
+            ],
+        )
+        .unwrap();
+    assert_eq!(
+        world.entity(child).unwrap().fields[0].value,
+        Some(Variant::Integer(12))
+    );
+    assert!(world.entity(child).unwrap().outputs.iter().any(|action| {
+        action.output == b"OnUser1" && action.target == b"parent" && action.input == b"Kill"
+    }));
+    let before = world.snapshot().unwrap().bytes().to_vec();
+    world
+        .phase(3, &[input(child, b"SetCount", Variant::Bool(true), 4)])
+        .unwrap();
+    assert_eq!(
+        world.entity(child).unwrap().fields[0].value,
+        Some(Variant::Integer(12))
+    );
+    assert_ne!(world.snapshot().unwrap().bytes(), before);
+
+    world
+        .phase(
+            4,
+            &[input(
+                child,
+                b"SetParentAttachment",
+                Variant::String(b"muzzle".to_vec()),
+                5,
+            )],
+        )
+        .unwrap();
+    assert_eq!(
+        world.entity(child).unwrap().local_transform,
+        Transform::IDENTITY
+    );
+    assert_eq!(
+        world.entity(child).unwrap().world_transform.origin,
+        [12.0, 0.0, 0.0]
+    );
+}
+
+#[test]
+fn point_template_removes_prototype_fixes_internal_names_and_restores_instance_sequence() {
+    let bytes = br#"
+{"classname" "point_template" "targetname" "maker" "origin" "100 0 0" "Template01" "piece"
+ "OnEntitySpawned" "piece,FireUser1,,0,-1"}
+{"classname" "logic_relay" "targetname" "piece" "origin" "110 0 0"
+ "OnUser1" "piece,Trigger,,0,-1"}
+"#;
+    let mut world = compile(bytes, |_| {});
+    let maker = world.resolve(b"maker", None, None, None)[0];
+    assert!(world.resolve(b"piece", None, None, None).is_empty());
+    world
+        .phase(0, &[input(maker, b"ForceSpawn", Variant::Void, 1)])
+        .unwrap();
+    let first = world.resolve(b"piece&0001", None, None, None)[0];
+    assert_eq!(
+        world.entity(first).unwrap().world_transform.origin,
+        [110.0, 0.0, 0.0]
+    );
+    assert!(
+        world
+            .entity(first)
+            .unwrap()
+            .outputs
+            .iter()
+            .all(|action| action.target == b"piece&0001")
+    );
+
+    let snapshot = world.snapshot().unwrap();
+    world
+        .phase(1, &[input(maker, b"ForceSpawn", Variant::Void, 2)])
+        .unwrap();
+    assert_eq!(world.resolve(b"piece&0002", None, None, None).len(), 1);
+    let mut restored = compile(bytes, |_| {});
+    restored.restore(&snapshot).unwrap();
+    let restored_maker = restored.resolve(b"maker", None, None, None)[0];
+    restored
+        .phase(1, &[input(restored_maker, b"ForceSpawn", Variant::Void, 2)])
+        .unwrap();
+    assert_eq!(restored.resolve(b"piece&0002", None, None, None).len(), 1);
+}
+
+#[test]
+fn template_member_bound_rejects_compile_without_a_partial_world() {
+    let graph = parse(
+        br#"
+{"classname" "point_template" "Template01" "piece"}
+{"classname" "logic_relay" "targetname" "piece"}
+{"classname" "logic_relay" "targetname" "piece"}
+"#,
+        playsrc_entity::Limits::default(),
+    )
+    .unwrap();
+    let error = EntityWorld::compile(
+        &graph,
+        EntityWorldConfig {
+            limits: RuntimeLimits {
+                max_template_members: 1,
+                ..RuntimeLimits::default()
+            },
+            ..EntityWorldConfig::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.code, RuntimeFailureCode::TemplateLimit);
+}
+
+#[test]
+fn logic_timer_fixed_alternating_adjustment_and_snapshot_continuation_match() {
+    let bytes = br#"
+{"classname" "func_brush" "targetname" "sink" "StartDisabled" "1"}
+{"classname" "logic_timer" "targetname" "timer" "RefireTime" "0.02" "spawnflags" "1"
+ "OnTimerLow" "sink,Enable,,0,-1" "OnTimerHigh" "sink,Disable,,0,-1"}
+"#;
+    let mut world = compile(bytes, |_| {});
+    let timer = world.resolve(b"timer", None, None, None)[0];
+    let sink = world.resolve(b"sink", None, None, None)[0];
+    world.phase(1, &[]).unwrap();
+    assert!(
+        matches!(world.entity(sink).unwrap().behavior, BehaviorState::Brush(ref state) if !state.enabled)
+    );
+    world.phase(2, &[]).unwrap();
+    assert!(
+        matches!(world.entity(sink).unwrap().behavior, BehaviorState::Brush(ref state) if state.enabled)
+    );
+    world
+        .phase(
+            3,
+            &[input(timer, b"SubtractFromTimer", Variant::float(1.0), 1)],
+        )
+        .unwrap();
+    assert!(
+        matches!(world.entity(sink).unwrap().behavior, BehaviorState::Brush(ref state) if !state.enabled)
+    );
+    let snapshot = world.snapshot().unwrap();
+    let mut restored = compile(bytes, |_| {});
+    restored.restore(&snapshot).unwrap();
+    assert_eq!(
+        world.phase(5, &[]).unwrap(),
+        restored.phase(5, &[]).unwrap()
+    );
+    assert_eq!(
+        world.snapshot().unwrap().bytes(),
+        restored.snapshot().unwrap().bytes()
+    );
+}
+
+#[test]
+fn rotating_door_platform_and_train_publish_exact_transform_requests() {
+    let bytes = br#"
+{"classname" "func_door_rotating" "targetname" "door" "model" "*1" "distance" "90" "speed" "90"}
+{"classname" "func_platrot" "targetname" "plat" "model" "*2" "height" "16" "rotation" "45" "speed" "80"}
+{"classname" "path_corner" "targetname" "a" "target" "b" "origin" "0 0 0"}
+{"classname" "path_corner" "targetname" "b" "origin" "100 0 0"}
+{"classname" "func_train" "model" "*3" "target" "a" "speed" "50"}
+"#;
+    let mut world = compile(bytes, |config| {
+        for model in 1..=3 {
+            config.model_bounds.push(ModelBounds {
+                model,
+                mins: [-2.0; 3],
+                maxs: [2.0; 3],
+            });
+        }
+    });
+    let door = world.resolve(b"door", None, None, None)[0];
+    let plat = world.resolve(b"plat", None, None, None)[0];
+    let train = world
+        .live_handles()
+        .into_iter()
+        .find(|handle| {
+            world
+                .entity(*handle)
+                .is_some_and(|entity| entity.classname == b"func_train")
+        })
+        .unwrap();
+    let opened = world
+        .phase(0, &[input(door, b"Open", Variant::Void, 1)])
+        .unwrap();
+    assert!(opened.records.iter().any(|record| matches!(
+        record.transition,
+        Transition::Request(RuntimeRequest::Mover {
+            entity,
+            world_angles_destination: [0.0, 90.0, 0.0],
+            angular_velocity: [0.0, 90.0, 0.0],
+            ..
+        }) if entity == door
+    )));
+    let down = world.entity(plat).unwrap().world_transform.origin;
+    assert_eq!(down[2], 0.0, "named platform starts at its authored top");
+    let platform = world
+        .phase(1, &[input(plat, b"GoDown", Variant::Void, 2)])
+        .unwrap();
+    assert!(platform.records.iter().any(|record| matches!(
+        record.transition,
+        Transition::Request(RuntimeRequest::Mover {
+            entity,
+            world_destination: [0.0, 0.0, -16.0],
+            world_angles_destination: [0.0, 0.0, 0.0],
+            ..
+        }) if entity == plat
+    )));
+    let train_phase = world.phase(11, &[]).unwrap();
+    assert!(train_phase.records.iter().any(|record| matches!(
+        record.transition,
+        Transition::Request(RuntimeRequest::Mover {
+            entity,
+            world_destination: [100.0, 0.0, 0.0],
+            speed: 50.0,
+            ..
+        }) if entity == train
+    )));
+    assert!(
+        matches!(world.entity(door).unwrap().behavior, BehaviorState::Mover(ref state) if state.class == MoverClass::RotatingDoor)
+    );
+}
+
+#[test]
+fn rotating_button_continuous_rotator_momentary_button_and_tracktrain_inputs_are_distinct() {
+    let bytes = br#"
+{"classname" "func_rot_button" "targetname" "rot_button" "model" "*1" "distance" "90" "speed" "45"}
+{"classname" "momentary_rot_button" "targetname" "momentary" "model" "*2" "distance" "180" "StartPosition" "0.25" "speed" "90"}
+{"classname" "func_rotating" "targetname" "fan" "model" "*3" "maxspeed" "120" "spawnflags" "4"}
+{"classname" "func_rotating" "targetname" "fan_accel" "model" "*5" "maxspeed" "100" "fanfriction" "100" "spawnflags" "20"}
+{"classname" "path_track" "targetname" "track_a" "target" "track_b" "origin" "0 0 0"}
+{"classname" "path_track" "targetname" "track_b" "origin" "100 0 0"}
+{"classname" "func_tracktrain" "targetname" "tracktrain" "target" "track_a" "model" "*4" "speed" "100" "startspeed" "100"}
+"#;
+    let mut world = compile(bytes, |config| {
+        for model in 1..=5 {
+            config.model_bounds.push(ModelBounds {
+                model,
+                mins: [-1.0; 3],
+                maxs: [1.0; 3],
+            });
+        }
+    });
+    let rot_button = world.resolve(b"rot_button", None, None, None)[0];
+    let momentary = world.resolve(b"momentary", None, None, None)[0];
+    let fan = world.resolve(b"fan", None, None, None)[0];
+    let fan_accel = world.resolve(b"fan_accel", None, None, None)[0];
+    let tracktrain = world.resolve(b"tracktrain", None, None, None)[0];
+
+    let button = world
+        .phase(0, &[input(rot_button, b"Press", Variant::Void, 1)])
+        .unwrap();
+    assert!(button.records.iter().any(|record| matches!(
+        record.transition,
+        Transition::Request(RuntimeRequest::Mover {
+            entity,
+            world_angles_destination: [0.0, 90.0, 0.0],
+            angular_velocity: [0.0, 45.0, 0.0],
+            ..
+        }) if entity == rot_button
+    )));
+    world
+        .phase(
+            1,
+            &[input(
+                momentary,
+                b"SetPositionImmediately",
+                Variant::float(0.75),
+                2,
+            )],
+        )
+        .unwrap();
+    assert_eq!(
+        world.entity(momentary).unwrap().world_transform.angles,
+        [0.0, 90.0, 0.0]
+    );
+    let rotating = world
+        .phase(2, &[input(fan, b"Start", Variant::Void, 3)])
+        .unwrap();
+    assert!(rotating.records.iter().any(|record| matches!(
+        record.transition,
+        Transition::Request(RuntimeRequest::Mover {
+            entity,
+            angular_velocity: [0.0, 0.0, 120.0],
+            continuous: true,
+            ..
+        }) if entity == fan
+    )));
+    let reversed = world
+        .phase(3, &[input(fan, b"Reverse", Variant::Void, 4)])
+        .unwrap();
+    assert!(reversed.records.iter().any(|record| matches!(
+        record.transition,
+        Transition::Request(RuntimeRequest::Mover {
+            entity,
+            angular_velocity: [0.0, 0.0, -120.0],
+            ..
+        }) if entity == fan
+    )));
+    let acceleration_start = world
+        .phase(4, &[input(fan_accel, b"Start", Variant::Void, 5)])
+        .unwrap();
+    assert!(!acceleration_start.records.iter().any(|record| matches!(
+        record.transition,
+        Transition::Request(RuntimeRequest::Mover { entity, .. }) if entity == fan_accel
+    )));
+    let acceleration_step = world.phase(15, &[]).unwrap();
+    assert!(acceleration_step.records.iter().any(|record| matches!(
+        record.transition,
+        Transition::Request(RuntimeRequest::Mover {
+            entity,
+            angular_velocity: [0.0, 0.0, 20.0],
+            ..
+        }) if entity == fan_accel
+    )));
+    assert!(button.records.iter().any(|record| matches!(
+        record.transition,
+        Transition::Request(RuntimeRequest::Mover {
+            entity,
+            world_destination: [10.0, 0.0, 0.0],
+            speed: 100.0,
+            ..
+        }) if entity == tracktrain
+    )));
+    assert!(
+        matches!(world.entity(tracktrain).unwrap().behavior, BehaviorState::Mover(ref state) if state.class == MoverClass::TrackTrain)
+    );
+}
+
+#[test]
+fn timer_random_fields_and_catapult_mutable_inputs_preserve_due_state() {
+    let bytes = br#"
+{"classname" "subject" "targetname" "player"}
+{"classname" "info_target" "targetname" "launch"}
+{"classname" "logic_timer" "targetname" "timer" "UseRandomTime" "1" "LowerRandomBound" "0.02" "UpperRandomBound" "0.02"}
+{"classname" "trigger_catapult" "targetname" "cat" "launchDirection" "-90 0 0" "playerSpeed" "300" "physicsSpeed" "200" "launchTarget" "launch"}
+"#;
+    let mut world = compile(bytes, |_| {});
+    let timer = world.resolve(b"timer", None, None, None)[0];
+    let player = world.resolve(b"player", None, None, None)[0];
+    let catapult = world.resolve(b"cat", None, None, None)[0];
+    world
+        .phase(
+            0,
+            &[
+                input(timer, b"UseRandomTime", Variant::Integer(0), 1),
+                input(timer, b"RefireTime", Variant::float(0.001), 2),
+                input(timer, b"ResetTimer", Variant::Void, 3),
+                input(timer, b"AddToTimer", Variant::float(0.01), 4),
+                input(catapult, b"SetPlayerSpeed", Variant::float(450.0), 5),
+                input(catapult, b"SetPhysicsSpeed", Variant::float(250.0), 6),
+                input(
+                    catapult,
+                    b"SetExactVelocityChoiceType",
+                    Variant::Integer(2),
+                    7,
+                ),
+            ],
+        )
+        .unwrap();
+    assert!(
+        matches!(world.entity(timer).unwrap().behavior, BehaviorState::Timer(ref state)
+        if !state.use_random && f32::from_bits(state.interval_bits) == 0.01 && state.next_fire_tick.is_some())
+    );
+    let entered = world
+        .phase(
+            1,
+            &[WorldCommand::Contact(ContactRecord {
+                trigger: catapult,
+                subject: player,
+                kind: ContactKind::Enter,
+                external_filter_result: None,
+                producer_sequence: 8,
+            })],
+        )
+        .unwrap();
+    assert!(entered.records.iter().any(|record| matches!(
+        record.transition,
+        Transition::Request(RuntimeRequest::TriggerEffect {
+            effect: TriggerEffectData::Catapult {
+                player_speed_bits,
+                physics_speed_bits,
+                exact_choice: 2,
+                target: Some(_),
+                ..
+            },
+            ..
+        }) if f32::from_bits(player_speed_bits) == 450.0 && f32::from_bits(physics_speed_bits) == 250.0
+    )));
+    let cooldown = world
+        .phase(
+            2,
+            &[WorldCommand::Contact(ContactRecord {
+                trigger: catapult,
+                subject: player,
+                kind: ContactKind::Stay,
+                external_filter_result: None,
+                producer_sequence: 9,
+            })],
+        )
+        .unwrap();
+    assert!(!cooldown.records.iter().any(|record| matches!(
+        record.transition,
+        Transition::Request(RuntimeRequest::TriggerEffect {
+            kind: TriggerKind::Catapult,
+            ..
+        })
+    )));
+}
+
+#[test]
+fn trigger_payloads_hurt_cadence_and_push_once_lifecycle_are_entity_owned() {
+    let bytes = br#"
+{"classname" "subject" "targetname" "player"}
+{"classname" "info_teleport_destination" "targetname" "dest"}
+{"classname" "trigger_push" "targetname" "push" "pushdir" "0 0 0" "speed" "200" "spawnflags" "128"}
+{"classname" "trigger_hurt" "targetname" "hurt" "damage" "10" "damagecap" "40" "damagemodel" "1"}
+{"classname" "trigger_teleport" "targetname" "tele" "target" "dest" "spawnflags" "32"}
+"#;
+    let mut world = compile(bytes, |_| {});
+    let subject = world.resolve(b"player", None, None, None)[0];
+    let push = world.resolve(b"push", None, None, None)[0];
+    let hurt = world.resolve(b"hurt", None, None, None)[0];
+    let tele = world.resolve(b"tele", None, None, None)[0];
+    let enter = |trigger, sequence| {
+        WorldCommand::Contact(ContactRecord {
+            trigger,
+            subject,
+            kind: ContactKind::Enter,
+            external_filter_result: None,
+            producer_sequence: sequence,
+        })
+    };
+    let pushed = world.phase(0, &[enter(push, 1)]).unwrap();
+    assert!(pushed.records.iter().any(|record| matches!(
+        &record.transition,
+        Transition::Request(RuntimeRequest::TriggerEffect {
+            effect: TriggerEffectData::Push {
+                velocity: [200.0, 0.0, 0.0],
+                mode: PushMode::ImpulseAndRemove
+            },
+            ..
+        })
+    )));
+    assert!(world.entity(push).is_none());
+    let hurt_phase = world.phase(1, &[enter(hurt, 2)]).unwrap();
+    assert!(hurt_phase.records.iter().any(|record| matches!(
+        record.transition,
+        Transition::Request(RuntimeRequest::TriggerEffect {
+            effect: TriggerEffectData::Hurt { damage_bits, .. },
+            ..
+        }) if f32::from_bits(damage_bits) == 5.0
+    )));
+    let teleported = world.phase(2, &[enter(tele, 3)]).unwrap();
+    assert!(teleported.records.iter().any(|record| matches!(
+        record.transition,
+        Transition::Request(RuntimeRequest::TriggerEffect {
+            effect: TriggerEffectData::Teleport {
+                destination: Some(_),
+                preserve_angles: true,
+                ..
+            },
+            ..
+        })
+    )));
+}
+
+#[test]
+fn breakable_dynamic_prop_and_pickup_lifecycle_continue_through_snapshots() {
+    let bytes = br#"
+{"classname" "subject" "targetname" "player"}
+{"classname" "func_breakable" "targetname" "glass" "model" "*1" "health" "10"
+ "OnHealthChanged" "prop,TurnOff,,0,-1"}
+{"classname" "prop_dynamic" "targetname" "prop" "DefaultAnim" "idle"}
+{"classname" "item_test" "targetname" "item"}
+"#;
+    let mut world = compile(bytes, |config| {
+        config.model_bounds.push(ModelBounds {
+            model: 1,
+            mins: [0.0; 3],
+            maxs: [8.0; 3],
+        });
+        config.pickup_classes.push(b"item_test".to_vec());
+    });
+    let player = world.resolve(b"player", None, None, None)[0];
+    let glass = world.resolve(b"glass", None, None, None)[0];
+    let prop = world.resolve(b"prop", None, None, None)[0];
+    let item = world.resolve(b"item", None, None, None)[0];
+    world
+        .phase(
+            0,
+            &[WorldCommand::DamageValue {
+                entity: glass,
+                attacker: Some(player),
+                damage: 4,
+            }],
+        )
+        .unwrap();
+    assert!(
+        matches!(world.entity(glass).unwrap().behavior, BehaviorState::Breakable(ref state) if state.health == 6)
+    );
+    assert!(
+        matches!(world.entity(prop).unwrap().behavior, BehaviorState::DynamicProp(ref state) if !state.visible)
+    );
+    let animation = world
+        .phase(
+            1,
+            &[input(
+                prop,
+                b"SetAnimation",
+                Variant::String(b"open".to_vec()),
+                2,
+            )],
+        )
+        .unwrap();
+    assert!(animation.records.iter().any(|record| matches!(
+        &record.transition,
+        Transition::Request(RuntimeRequest::ExternalInput { input, .. }) if input == b"SetAnimation"
+    )));
+    world
+        .phase(
+            2,
+            &[WorldCommand::DynamicPropAnimationStarted {
+                entity: prop,
+                accepted: true,
+            }],
+        )
+        .unwrap();
+    world
+        .phase(
+            3,
+            &[WorldCommand::PickupContact {
+                entity: item,
+                subject: player,
+                unobstructed: true,
+            }],
+        )
+        .unwrap();
+    world
+        .phase(
+            4,
+            &[WorldCommand::PickupResult {
+                entity: item,
+                subject: player,
+                accepted: true,
+                respawn_ticks: Some(3),
+                respawn_transform: None,
+            }],
+        )
+        .unwrap();
+    assert!(
+        matches!(world.entity(item).unwrap().behavior, BehaviorState::Pickup(ref state) if !state.visible && !state.touchable)
+    );
+    let snapshot = world.snapshot().unwrap();
+    let mut restored = compile(bytes, |config| {
+        config.model_bounds.push(ModelBounds {
+            model: 1,
+            mins: [0.0; 3],
+            maxs: [8.0; 3],
+        });
+        config.pickup_classes.push(b"item_test".to_vec());
+    });
+    restored.restore(&snapshot).unwrap();
+    assert_eq!(
+        world.phase(7, &[]).unwrap(),
+        restored.phase(7, &[]).unwrap()
+    );
+    assert!(
+        matches!(world.entity(item).unwrap().behavior, BehaviorState::Pickup(ref state) if state.visible && state.touchable)
     );
 }

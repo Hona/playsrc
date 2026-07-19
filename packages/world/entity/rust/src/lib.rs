@@ -1,6 +1,9 @@
 use std::{collections::BTreeMap, fmt, ops::Range};
 
+mod source_random;
+mod value;
 mod world;
+pub use value::{FieldType, ValueConversionError};
 pub use world::*;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -292,7 +295,7 @@ fn build_entity(index: usize, pairs: Vec<Pair>, limits: Limits) -> Result<Entity
         connections,
     })
 }
-fn connection(order: usize, pair: &Pair) -> Option<Connection> {
+pub(crate) fn connection(order: usize, pair: &Pair) -> Option<Connection> {
     let delimiter = if pair.value.contains(&0x1b) {
         0x1b
     } else {

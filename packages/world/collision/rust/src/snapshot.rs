@@ -50,6 +50,40 @@ impl Transform {
             origin: self.origin,
         })
     }
+
+    pub fn transform_point(self, point: [f32; 3]) -> Result<[f32; 3], Error> {
+        self.basis().map(|basis| basis.point(point))
+    }
+
+    pub fn inverse_transform_point(self, point: [f32; 3]) -> Result<[f32; 3], Error> {
+        self.basis().map(|basis| basis.inverse_point(point))
+    }
+
+    pub fn compose(self, local: Self) -> Result<Self, Error> {
+        self.basis()?;
+        local.basis()?;
+        let rotation = quaternion_from_angles(self.angles);
+        Ok(Self {
+            origin: add(self.origin, quaternion_rotate(rotation, local.origin)),
+            angles: angles_from_quaternion(quaternion_multiply(
+                rotation,
+                quaternion_from_angles(local.angles),
+            )),
+        })
+    }
+
+    pub fn relative_to(self, parent: Self) -> Result<Self, Error> {
+        self.basis()?;
+        parent.basis()?;
+        let inverse = quaternion_inverse(quaternion_from_angles(parent.angles));
+        Ok(Self {
+            origin: quaternion_rotate(inverse, sub(self.origin, parent.origin)),
+            angles: angles_from_quaternion(quaternion_multiply(
+                inverse,
+                quaternion_from_angles(self.angles),
+            )),
+        })
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1167,6 +1201,63 @@ fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
         a[1] * b[2] - a[2] * b[1],
         a[2] * b[0] - a[0] * b[2],
         a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn quaternion_from_angles(angles: [f32; 3]) -> [f64; 4] {
+    let (sp, cp) = (f64::from(angles[0]).to_radians() * 0.5).sin_cos();
+    let (sy, cy) = (f64::from(angles[1]).to_radians() * 0.5).sin_cos();
+    let (sr, cr) = (f64::from(angles[2]).to_radians() * 0.5).sin_cos();
+    [
+        sr * cp * cy - cr * sp * sy,
+        cr * sp * cy + sr * cp * sy,
+        cr * cp * sy - sr * sp * cy,
+        cr * cp * cy + sr * sp * sy,
+    ]
+}
+
+fn quaternion_multiply(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
+    [
+        a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+        a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+        a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+        a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+    ]
+}
+
+fn quaternion_inverse(value: [f64; 4]) -> [f64; 4] {
+    [-value[0], -value[1], -value[2], value[3]]
+}
+
+fn quaternion_rotate(rotation: [f64; 4], value: [f32; 3]) -> [f32; 3] {
+    let vector = [
+        f64::from(value[0]),
+        f64::from(value[1]),
+        f64::from(value[2]),
+        0.0,
+    ];
+    let result = quaternion_multiply(
+        quaternion_multiply(rotation, vector),
+        quaternion_inverse(rotation),
+    );
+    [result[0] as f32, result[1] as f32, result[2] as f32]
+}
+
+fn angles_from_quaternion(value: [f64; 4]) -> [f32; 3] {
+    let roll = (2.0 * (value[3] * value[0] + value[1] * value[2]))
+        .atan2(1.0 - 2.0 * (value[0] * value[0] + value[1] * value[1]));
+    let sine_pitch = 2.0 * (value[3] * value[1] - value[2] * value[0]);
+    let pitch = if sine_pitch.abs() >= 1.0 {
+        std::f64::consts::FRAC_PI_2.copysign(sine_pitch)
+    } else {
+        sine_pitch.asin()
+    };
+    let yaw = (2.0 * (value[3] * value[2] + value[0] * value[1]))
+        .atan2(1.0 - 2.0 * (value[1] * value[1] + value[2] * value[2]));
+    [
+        pitch.to_degrees() as f32,
+        yaw.to_degrees() as f32,
+        roll.to_degrees() as f32,
     ]
 }
 

@@ -3,8 +3,9 @@ mod mover;
 
 pub use mover::{
     BlockContact, BlockContactKind, LinearPusherRequest, PUSHER_SNAPSHOT_VERSION, PushSubject,
-    Pushability, PusherFrame, PusherLimits, PusherResult, PusherSnapshot, PusherStatus,
-    SubjectMove, advance_linear_pushers,
+    Pushability, PusherFrame, PusherHierarchyMemberRequest, PusherHierarchyTransform, PusherLimits,
+    PusherResult, PusherSnapshot, PusherStatus, SubjectMove, TransformPusherRequest,
+    advance_linear_pushers, advance_transform_pushers,
 };
 
 use playsrc_collision::{Hull, World as CollisionWorld};
