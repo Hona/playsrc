@@ -16,6 +16,7 @@ import {
 import { configureWorldLightmap, sourceDepthBias, worldMaterialSide } from "./material-state"
 import { OwnedResourceGeneration } from "./resource-generation"
 import { FramePacingController, type FramePacingRecord } from "./frame-pacing"
+import { particleBatchRanges } from "./particle-batches"
 import { sourceHorizontal4By3FovToVertical, sourceViewportDepthRange } from "./source-camera"
 import {
   validateDynamicLights,
@@ -562,6 +563,14 @@ export type FrameResult = Readonly<{
   visibleProjectedMarks: number
   waterPasses: readonly ("reflection"|"refraction"|"main"|"intersection")[]
   waterStateRestored: boolean
+  timings: Readonly<{
+    particleItems: number
+    particleBatches: number
+    dynamicItemsMilliseconds: number
+    worldMilliseconds: number
+    viewModelMilliseconds: number
+    totalMilliseconds: number
+  }>
   viewModelPass?: Readonly<{
     depthRange: readonly [number, number]
     viewportRestored: boolean
@@ -638,6 +647,7 @@ type SceneResources = {
   brushModelTemplates:Map<number,THREE.Group>
   particleTextures: Map<string, THREE.DataTexture>
   particleMaterials: Map<string, THREE.MeshBasicNodeMaterial>
+  particleBatchMaterials: Map<string, THREE.MeshBasicNodeMaterial>
   materialStates: ReadonlyMap<string, MaterialStateInput>
   disposables: OwnedResourceGeneration
   lightmapTextures: readonly [THREE.DataTexture, THREE.DataTexture?, THREE.DataTexture?, THREE.DataTexture?]
@@ -742,6 +752,8 @@ function disposeScene(scene: Pick<SceneResources,"group"|"disposables"|"modelTem
   scene.disposables.dispose()
   scene.modelTemplates.clear()
   scene.modelOccurrenceInstances.clear()
+  for(const material of scene.particleBatchMaterials.values())material.dispose()
+  scene.particleBatchMaterials.clear()
 }
 
 function textureFromRgba(
@@ -974,10 +986,13 @@ class RendererOwner implements Renderer {
   #scene = new THREE.Scene()
   #world = new THREE.Group()
   #effects = new THREE.Group()
+  #particles = new THREE.Group()
   #viewModels = new THREE.Group()
   #camera = new THREE.PerspectiveCamera(75, 1, 1, 32_768)
   #viewCamera = new THREE.PerspectiveCamera(41.114, 1, 1, 32_768)
   #viewModelInstances = new Map<number, { model: string; root: THREE.Group; instance: THREE.Group; meshes: THREE.Mesh[] }>()
+  #particleBatchMeshes: { key: string; capacity: number; mesh: THREE.Mesh }[] = []
+  #particleBatchCount=0
   #active?: SceneResources
   #renderBusy = false
   #loadOrdinal = 0
@@ -998,7 +1013,7 @@ class RendererOwner implements Renderer {
     this.#powerPreference = request.powerPreference
     this.#exposure = new ExposureController(this.configuration.exposure)
     this.#scene.background = null
-    this.#scene.add(this.#world, this.#effects, this.#camera, this.#viewCamera)
+    this.#scene.add(this.#world, this.#effects, this.#particles, this.#camera, this.#viewCamera)
     this.#viewCamera.add(this.#viewModels)
     this.#viewCamera.layers.set(1)
     this.#viewModels.layers.set(1)
@@ -1251,6 +1266,7 @@ class RendererOwner implements Renderer {
         )
       }
       const prior = this.#active
+      this.#clearParticleBatches()
       this.#world.clear()
       this.#world.add(staged.group)
       this.#scene.background = request.diagnostic ? new THREE.Color(0x111820) : null
@@ -1705,6 +1721,7 @@ class RendererOwner implements Renderer {
       brushModelTemplates,
       particleTextures,
       particleMaterials,
+      particleBatchMaterials:new Map(),
       materialStates,
       disposables,
       lightmapTextures,
@@ -1724,6 +1741,7 @@ class RendererOwner implements Renderer {
   }
 
   async render(frame: Frame): Promise<FrameResult> {
+    const frameStarted = performance.now()
     this.#requireReady()
     if (!this.#active) throw new RenderingError("InvalidState", "renderer has no active map")
     if (this.#renderBusy) throw new RenderingError("InvalidState", "a render is already in progress")
@@ -1770,11 +1788,16 @@ class RendererOwner implements Renderer {
           : this.#exposure.snapshot()
       this.#active.exposureUniform.value = this.configuration.lightingProfile === "hdr" ? exposure.current : 1
       this.#setCamera(frame.camera)
+      const dynamicItemsStarted = performance.now()
       const viewModelDepthRange = this.#stageDynamicItems(frame)
+      const dynamicItemsMilliseconds = performance.now() - dynamicItemsStarted
       let viewModelPass: FrameResult["viewModelPass"]
       let waterPasses:FrameResult["waterPasses"]=Object.freeze([]),waterStateRestored=true
+      let worldMilliseconds=0,viewModelMilliseconds=0
       if (!this.#suspended) {
+        const worldStarted=performance.now()
         const waterResult=await this.#renderWaterPasses(frame)
+        worldMilliseconds=performance.now()-worldStarted
         waterPasses=waterResult.passes
         waterStateRestored=waterResult.restored
         if (this.#viewModels.children.length > 0) {
@@ -1783,9 +1806,11 @@ class RendererOwner implements Renderer {
           const background = this.#scene.background
           this.#scene.background = null
           this.#backend.setViewport(0, 0, this.#viewportWidth, this.#viewportHeight, viewModelDepthRange[0], viewModelDepthRange[1])
+          const viewModelStarted=performance.now()
           try {
             await this.#backend.renderAsync(this.#scene, this.#viewCamera)
           } finally {
+            viewModelMilliseconds=performance.now()-viewModelStarted
             this.#backend.setViewport(0, 0, this.#viewportWidth, this.#viewportHeight, 0, 1)
             this.#scene.background = background
             this.#backend.autoClear = true
@@ -1802,6 +1827,7 @@ class RendererOwner implements Renderer {
         visibleProjectedMarks: this.#active.projectedMarks.reduce((total, mark) => total + Number(mark.mesh.visible), 0),
         waterPasses,
         waterStateRestored,
+        timings:Object.freeze({particleItems:frame.particles?.length??0,particleBatches:this.#particleBatchCount,dynamicItemsMilliseconds,worldMilliseconds,viewModelMilliseconds,totalMilliseconds:performance.now()-frameStarted}),
         viewModelPass,
         pacing:this.#pacing.records(),
         capture,
@@ -1995,7 +2021,7 @@ class RendererOwner implements Renderer {
     if(!clip)return()=>{}
     const saved=new Map<THREE.Material,THREE.Plane[]|null>()
     const plane=new THREE.Plane(new THREE.Vector3(0,0,clip.keep==="above"?1:-1),clip.keep==="above"?-clip.height:clip.height)
-    for(const root of [this.#world,this.#effects])root.traverse(object=>{if(!(object instanceof THREE.Mesh))return;for(const material of Array.isArray(object.material)?object.material:[object.material]){if(!saved.has(material))saved.set(material,material.clippingPlanes);material.clippingPlanes=[plane]}})
+    for(const root of [this.#world,this.#effects,this.#particles])root.traverse(object=>{if(!(object instanceof THREE.Mesh))return;for(const material of Array.isArray(object.material)?object.material:[object.material]){if(!saved.has(material))saved.set(material,material.clippingPlanes);material.clippingPlanes=[plane]}})
     return()=>{for(const [material,value] of saved)material.clippingPlanes=value}
   }
 
@@ -2003,14 +2029,14 @@ class RendererOwner implements Renderer {
     if(!this.#active)throw new RenderingError("InvalidState","renderer has no active Water resources")
     const plan=frame.visibility?.water
     if(!plan){this.#backend.autoClear=true;await this.#backend.renderAsync(this.#scene,this.#camera);return Object.freeze({passes:Object.freeze(["main"] as const),restored:true})}
-    const markVisibility=this.#active.projectedMarks.map(mark=>mark.mesh.visible),waterVisibility=this.#active.waterMeshes.map(water=>water.mesh.visible),background=this.#scene.background,effectsVisible=this.#effects.visible,skyVisible=this.#active.skyGroup?.visible??false
+    const markVisibility=this.#active.projectedMarks.map(mark=>mark.mesh.visible),waterVisibility=this.#active.waterMeshes.map(water=>water.mesh.visible),background=this.#scene.background,effectsVisible=this.#effects.visible,particlesVisible=this.#particles.visible,skyVisible=this.#active.skyGroup?.visible??false
     const completed:("reflection"|"refraction"|"main"|"intersection")[]=[]
     if(plan.visibleWater&&plan.passes.some(pass=>pass.kind!=="main"&&pass.drawSky2d)&&!this.#active.skyGroup)throw new RenderingError("MissingInput","Water auxiliary view requests the unresolved 2D sky pass")
     try{
-      for(const pass of plan.passes){const visible=new Set(pass.surfaces);this.#setWorldVisibility(pass.surfaces);this.#active.projectedMarks.forEach(mark=>{if(mark.visibility.kind==="world")mark.mesh.visible=visible.has(mark.face)});this.#active.waterMeshes.forEach((water,index)=>water.mesh.visible=pass.renderWaterSurface&&waterVisibility[index]===true);if(this.#active.skyGroup)this.#active.skyGroup.visible=pass.drawSky2d;this.#effects.visible=pass.drawEntities;this.#scene.background=pass.drawSky2d?background:null;this.#setWaterCamera(pass,frame.camera);const restoreClip=this.#setClip(pass.clip);try{this.#backend.setRenderTarget(pass.kind==="reflection"?this.#active.reflectionTarget:pass.kind==="refraction"?this.#active.refractionTarget:null);this.#backend.autoClear=pass.kind!=="intersection";await this.#backend.renderAsync(this.#scene,this.#camera);completed.push(pass.kind)}finally{restoreClip()}}
-    }finally{this.#backend.setRenderTarget(null);this.#backend.autoClear=true;this.#scene.background=background;this.#effects.visible=effectsVisible;if(this.#active.skyGroup)this.#active.skyGroup.visible=skyVisible;this.#setWorldVisibility(frame.visibility!.surfaces);this.#active.projectedMarks.forEach((mark,index)=>mark.mesh.visible=markVisibility[index]!);this.#active.waterMeshes.forEach((water,index)=>water.mesh.visible=waterVisibility[index]!);this.#setCamera(frame.camera)}
+      for(const pass of plan.passes){const visible=new Set(pass.surfaces);this.#setWorldVisibility(pass.surfaces);this.#active.projectedMarks.forEach(mark=>{if(mark.visibility.kind==="world")mark.mesh.visible=visible.has(mark.face)});this.#active.waterMeshes.forEach((water,index)=>water.mesh.visible=pass.renderWaterSurface&&waterVisibility[index]===true);if(this.#active.skyGroup)this.#active.skyGroup.visible=pass.drawSky2d;this.#effects.visible=pass.drawEntities;this.#particles.visible=pass.drawEntities;this.#scene.background=pass.drawSky2d?background:null;this.#setWaterCamera(pass,frame.camera);const restoreClip=this.#setClip(pass.clip);try{this.#backend.setRenderTarget(pass.kind==="reflection"?this.#active.reflectionTarget:pass.kind==="refraction"?this.#active.refractionTarget:null);this.#backend.autoClear=pass.kind!=="intersection";await this.#backend.renderAsync(this.#scene,this.#camera);completed.push(pass.kind)}finally{restoreClip()}}
+    }finally{this.#backend.setRenderTarget(null);this.#backend.autoClear=true;this.#scene.background=background;this.#effects.visible=effectsVisible;this.#particles.visible=particlesVisible;if(this.#active.skyGroup)this.#active.skyGroup.visible=skyVisible;this.#setWorldVisibility(frame.visibility!.surfaces);this.#active.projectedMarks.forEach((mark,index)=>mark.mesh.visible=markVisibility[index]!);this.#active.waterMeshes.forEach((water,index)=>water.mesh.visible=waterVisibility[index]!);this.#setCamera(frame.camera)}
     if(!completed.includes("main"))throw new RenderingError("MalformedInput","Water view plan omitted the main pass")
-    return Object.freeze({passes:Object.freeze(completed),restored:this.#backend.autoClear&&this.#scene.background===background&&this.#effects.visible===effectsVisible})
+    return Object.freeze({passes:Object.freeze(completed),restored:this.#backend.autoClear&&this.#scene.background===background&&this.#effects.visible===effectsVisible&&this.#particles.visible===particlesVisible})
   }
 
   #clearDynamic(group: THREE.Group): void {
@@ -2026,10 +2052,7 @@ class RendererOwner implements Renderer {
     }
   }
 
-  #particleGeometry(item: ParticleItem, camera: Camera): THREE.BufferGeometry {
-    const geometry = new THREE.BufferGeometry()
-    const positions = new Float32Array(12)
-    const uv = new Float32Array([0, 0, 1, 0, 1, 1, 0, 1])
+  #writeParticlePositions(item: ParticleItem, camera: Camera, positions: Float32Array, offset: number): void {
     if (item.primitive === "trail") {
       const delta = new THREE.Vector3().fromArray(item.trailEndPosition).sub(new THREE.Vector3().fromArray(item.position))
       const center = new THREE.Vector3().fromArray(item.position)
@@ -2037,7 +2060,7 @@ class RendererOwner implements Renderer {
       const halfWidth = item.trailWidth * 0.5
       const vertices = [center.clone().addScaledVector(tangent, halfWidth), center.clone().addScaledVector(tangent, -halfWidth)]
       vertices.push(vertices[1]!.clone().add(delta), vertices[0]!.clone().add(delta))
-      vertices.forEach((value, index) => value.toArray(positions, index * 3))
+      vertices.forEach((value, index) => value.toArray(positions, offset + index * 3))
     } else {
       const yaw = THREE.MathUtils.degToRad(camera.yawDegrees), pitch = THREE.MathUtils.degToRad(camera.pitchDegrees)
       const right = new THREE.Vector3(Math.sin(yaw), -Math.cos(yaw), 0)
@@ -2047,12 +2070,40 @@ class RendererOwner implements Renderer {
       const rolledUp = up.clone().multiplyScalar(cosine).addScaledVector(right, -sine)
       const center = new THREE.Vector3().fromArray(item.position)
       const corners = [[-1, 1], [1, 1], [1, -1], [-1, -1]] as const
-      corners.forEach(([x, y], index) => center.clone().addScaledVector(rolledRight, x * item.radius).addScaledVector(rolledUp, y * item.radius).toArray(positions, index * 3))
+      corners.forEach(([x, y], index) => center.clone().addScaledVector(rolledRight, x * item.radius).addScaledVector(rolledUp, y * item.radius).toArray(positions, offset + index * 3))
     }
-    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3))
-    geometry.setAttribute("uv", new THREE.BufferAttribute(uv, 2))
-    geometry.setIndex([0, 1, 2, 0, 2, 3])
-    return geometry
+  }
+
+  #createParticleBatchGeometry(capacity:number):THREE.BufferGeometry{
+    const geometry=new THREE.BufferGeometry(),dynamic=(array:Float32Array,size:number)=>new THREE.BufferAttribute(array,size).setUsage(THREE.DynamicDrawUsage),indices=capacity*4>0xffff?new Uint32Array(capacity*6):new Uint16Array(capacity*6)
+    for(let index=0;index<capacity;index+=1){const vertex=index*4;indices.set([vertex,vertex+1,vertex+2,vertex,vertex+2,vertex+3],index*6)}
+    geometry.setAttribute("position",dynamic(new Float32Array(capacity*12),3));geometry.setAttribute("uv",dynamic(new Float32Array(capacity*8),2));geometry.setAttribute("particleUvNext",dynamic(new Float32Array(capacity*8),2));geometry.setAttribute("particleSheetBlend",dynamic(new Float32Array(capacity*4),1));geometry.setAttribute("particleColor",dynamic(new Float32Array(capacity*16),4));geometry.setIndex(new THREE.BufferAttribute(indices,1));return geometry
+  }
+
+  #updateParticleBatchGeometry(geometry:THREE.BufferGeometry,items:readonly ParticleItem[],camera:Camera):void{
+    const positions=(geometry.getAttribute("position") as THREE.BufferAttribute).array as Float32Array,uv=(geometry.getAttribute("uv") as THREE.BufferAttribute).array as Float32Array,uvNext=(geometry.getAttribute("particleUvNext") as THREE.BufferAttribute).array as Float32Array,sheetBlend=(geometry.getAttribute("particleSheetBlend") as THREE.BufferAttribute).array as Float32Array,colors=(geometry.getAttribute("particleColor") as THREE.BufferAttribute).array as Float32Array
+    for(const [index,item] of items.entries()){
+      this.#writeParticlePositions(item,camera,positions,index*12)
+      const sample=item.primarySheet!,current=sample.current[0]!,next=sample.next[0]!,currentCorners=[[current[0],current[1]],[current[2],current[1]],[current[2],current[3]],[current[0],current[3]]] as const,nextCorners=[[next[0],next[1]],[next[2],next[1]],[next[2],next[3]],[next[0],next[3]]] as const,red=((item.color>>16)&255)/255,green=((item.color>>8)&255)/255,blue=(item.color&255)/255
+      for(let vertex=0;vertex<4;vertex+=1){const uvOffset=index*8+vertex*2,colorOffset=index*16+vertex*4,currentCorner=currentCorners[vertex]!,nextCorner=nextCorners[vertex]!;uv[uvOffset]=currentCorner[0];uv[uvOffset+1]=currentCorner[1];uvNext[uvOffset]=nextCorner[0];uvNext[uvOffset+1]=nextCorner[1];sheetBlend[index*4+vertex]=sample.blend;colors[colorOffset]=red;colors[colorOffset+1]=green;colors[colorOffset+2]=blue;colors[colorOffset+3]=item.opacity}
+    }
+    for(const name of ["position","uv","particleUvNext","particleSheetBlend","particleColor"])(geometry.getAttribute(name) as THREE.BufferAttribute).needsUpdate=true
+    geometry.setDrawRange(0,items.length*6)
+  }
+
+  #clearParticleBatches():void{
+    for(const retained of this.#particleBatchMeshes){this.#particles.remove(retained.mesh);retained.mesh.geometry.dispose()}
+    this.#particleBatchMeshes=[];this.#particleBatchCount=0
+  }
+
+  #stageParticleBatches(items:readonly ParticleItem[],camera:Camera,factor:(value:ParticleItem["blendSource"])=>THREE.BlendingDstFactor):void{
+    const ranges=particleBatchRanges(items);this.#particleBatchCount=ranges.length
+    for(const [index,batch] of ranges.entries()){
+      const values=items.slice(batch.start,batch.end),first=values[0]!,key=`${first.material.toLowerCase()}\0${first.blendSource}\0${first.blendDestination}`,required=values.length;let retained=this.#particleBatchMeshes[index]
+      if(!retained||retained.key!==key||retained.capacity<required){if(retained){this.#particles.remove(retained.mesh);retained.mesh.geometry.dispose()}let capacity=1;while(capacity<required)capacity*=2;const geometry=this.#createParticleBatchGeometry(capacity),materialKey=key;let material=this.#active!.particleBatchMaterials.get(materialKey);if(!material){material=this.#active!.particleMaterials.get(first.material.toLowerCase())!.clone();material.blending=THREE.CustomBlending;material.blendSrc=factor(first.blendSource);material.blendDst=factor(first.blendDestination);material.transparent=true;this.#active!.particleBatchMaterials.set(materialKey,material)}const mesh=new THREE.Mesh(geometry,material);mesh.frustumCulled=false;this.#particles.add(mesh);retained={key,capacity,mesh};this.#particleBatchMeshes[index]=retained}
+      this.#updateParticleBatchGeometry(retained.mesh.geometry,values,camera);retained.mesh.renderOrder=batch.start;retained.mesh.userData.stableTieIdentities=Object.freeze(values.map(item=>item.stableTieIdentity));retained.mesh.visible=true
+    }
+    while(this.#particleBatchMeshes.length>ranges.length){const retained=this.#particleBatchMeshes.pop()!;this.#particles.remove(retained.mesh);retained.mesh.geometry.dispose()}
   }
 
   #applyPose(instance: THREE.Group, pose: NonNullable<ModelItem["pose"]>, retainGeometry: boolean): THREE.Mesh[] {
@@ -2140,7 +2191,7 @@ class RendererOwner implements Renderer {
     let viewModelDepthRange: readonly [number, number] | undefined
     try {
       const factor=(value:ParticleItem["blendSource"])=>value==="zero"?THREE.ZeroFactor:value==="one"?THREE.OneFactor:value==="source-alpha"?THREE.SrcAlphaFactor:THREE.OneMinusSrcAlphaFactor
-      for(const [order,item] of (frame.particles??[]).entries()){if(item.secondarySheet)throw new RenderingError("UnsupportedFeature","dual-sequence Particle rendering requires exact selected material support");const geometry=this.#particleGeometry(item,frame.camera),sample=item.primarySheet!,current=sample.current[0]!,next=sample.next[0]!,corners=[[current[0],current[1]],[current[2],current[1]],[current[2],current[3]],[current[0],current[3]]],nextCorners=[[next[0],next[1]],[next[2],next[1]],[next[2],next[3]],[next[0],next[3]]];geometry.setAttribute("uv",new THREE.BufferAttribute(Float32Array.from(corners.flat()),2));geometry.setAttribute("particleUvNext",new THREE.BufferAttribute(Float32Array.from(nextCorners.flat()),2));geometry.setAttribute("particleSheetBlend",new THREE.BufferAttribute(Float32Array.from({length:4},()=>sample.blend),1));const red=((item.color>>16)&255)/255,green=((item.color>>8)&255)/255,blue=(item.color&255)/255;geometry.setAttribute("particleColor",new THREE.BufferAttribute(Float32Array.from({length:16},(_,i)=>[red,green,blue,item.opacity][i%4]!),4));const material=this.#active!.particleMaterials.get(item.material.toLowerCase())!.clone();material.blending=THREE.CustomBlending;material.blendSrc=factor(item.blendSource);material.blendDst=factor(item.blendDestination);material.transparent=true;const mesh=new THREE.Mesh(geometry,material);mesh.renderOrder=order;mesh.userData.dynamicGeometry=true;mesh.userData.dynamicMaterial=true;mesh.userData.stableTieIdentity=item.stableTieIdentity;effects.add(mesh)}
+      const particleItems=frame.particles??[];for(const item of particleItems)if(item.secondarySheet)throw new RenderingError("UnsupportedFeature","dual-sequence Particle rendering requires exact selected material support")
       for(const item of frame.brushModels?.models??[]){if(!item.draw)continue;const template=this.#active!.brushModelTemplates.get(item.model);if(!template)continue;const instance=template.clone(true);sourceTransform(instance,item.worldPosition,item.worldAngles);instance.userData.identity=item.sourceIndex;instance.userData.renderMode=item.renderMode;instance.userData.renderFx=item.renderFx;instance.userData.effects=item.effects;instance.userData.mover=item.mover;const modulation=new THREE.Color(item.color[0]/255,item.color[1]/255,item.color[2]/255);instance.traverse(object=>{if(!(object instanceof THREE.Mesh))return;const original=object.material,materials=(Array.isArray(original)?original:[original]).map(value=>{const material=value.clone();if("color" in material&&material.color instanceof THREE.Color)material.color.multiply(modulation);material.opacity*=item.color[3]/255;material.transparent=material.transparent||item.renderMode!==0||item.color[3]<255;return material});object.material=Array.isArray(original)?materials:materials[0]!;object.userData.dynamicMaterial=true});effects.add(instance)}
       for (const item of frame.models ?? []) {
         if (item.viewModel) {
@@ -2166,6 +2217,7 @@ class RendererOwner implements Renderer {
         instance.userData.identity = item.identity
         effects.add(instance)
       }
+      this.#stageParticleBatches(particleItems,frame.camera,factor)
     } catch (error) {
       this.#clearDynamic(effects)
       if (error instanceof RenderingError) throw error
@@ -2300,6 +2352,7 @@ class RendererOwner implements Renderer {
     this.stopFramePacing()
     const active = this.#active
     this.#active = undefined
+    this.#clearParticleBatches()
     this.#world.clear()
     const oldBackend = this.#backend
     try {
@@ -2369,6 +2422,7 @@ class RendererOwner implements Renderer {
     this.#loadOrdinal += 1
     this.stopFramePacing()
     this.#clearDynamic(this.#effects)
+    this.#clearParticleBatches()
     this.#clearDynamic(this.#viewModels)
     this.#viewModelInstances.clear()
     const active = this.#active
