@@ -6,6 +6,7 @@
   "scripts": {
     "test": "bun test tests",
     "verify:browser": "bun scripts/verify-browser.ts",
+    "verify:runtime-browser": "bun scripts/verify-runtime-browser.ts",
     "verify:tf2": "bun scripts/verify-tf2-integration.ts"
   }
 }

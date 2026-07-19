@@ -3,7 +3,7 @@
 ## Sample
 
 ```ts
-import { initializeClientDiagnostics, initializeDeveloperConsole } from "@playsrc/vgui"
+import { initializeClientDiagnostics, initializeDeveloperConsole, initializeVguiRuntime } from "@playsrc/vgui"
 
 const initialized = initializeDeveloperConsole({
   runtimeIdentity: "tf2-console",
@@ -28,6 +28,29 @@ const diagnostics = initializeClientDiagnostics({
 if (!diagnostics.ok) throw new Error(diagnostics.code)
 diagnostics.diagnostics.apply({ kind: "mount", root: vguiMount })
 diagnostics.diagnostics.apply({ kind: "present", frame: immutableClientDiagnosticFrame })
+
+const generic = initializeVguiRuntime({
+  runtimeIdentity: "tf2-vgui",
+  root: vguiMount,
+  rootControl: { control: "EditablePanel", name: "ClientRoot" },
+  viewport,
+  limits: vguiLimits,
+  clock: presentationClock,
+  random: deterministicPresentationRandom,
+  scheme: suppliedScheme,
+  localization: suppliedLocalization,
+  animationScripts: suppliedHudAnimations,
+  customControls: gameOwnedControlRegistrations,
+  reducedMotion,
+  onRequest: applicationVguiAdapter,
+})
+if (!generic.ok) throw new Error(generic.diagnostic.code)
+generic.runtime.apply({
+  kind: "replace-resource",
+  parent: generic.runtime.snapshot().rootPanel,
+  document: parsedResource,
+  selection: { activeConditions, resolutionSuffixes },
+})
 ```
 
 ## Objective
@@ -52,6 +75,22 @@ Present generic Source 1 panel trees, controls, resources, schemes, localized te
 - Source HUD animation sequences remain the sole owner of VGUI animation timing and commands. CSS transitions and application animation libraries cannot replace sequence semantics.
 - World rendering remains a direct Three.js consumer outside VGUI and outside Preact.
 
+## Generic Runtime Interface
+
+`initializeVguiRuntime` validates the complete configuration before mounting one direct-DOM workspace. It requires one explicit limits record, monotonic clock, deterministic random stream, viewport, resolved scheme, localization table, ordered parsed animation script set, immutable game-owned custom-control registrations, reduced-motion selection and typed request sink. VGUI never parses localization, font, image, VTF or HUD-script bytes and never substitutes an unknown control, property, token, font, border, image, animation variable or command effect.
+
+The selected generic control set is `Panel`, `EditablePanel`, `Label`, `ImagePanel`, `Button`, `TextEntry`, `RichText`, `Frame`, `ScrollBar`, `ScrollBar_Vertical`, `ScrollBar_Horizontal`, `Slider`, `ComboBox`, `Menu`, `MenuItem`, `PropertySheet`, `PropertyPage`, `CheckButton`, `RadioButton`, `ProgressBar`, `ListPanel`, `MessageBox`, `QueryBox` and `URLLabel`. Custom game controls expose only their element, role, focusability, accepted resource properties and inherited animation-variable definitions; game behavior remains outside VGUI.
+
+The returned deep module exposes only `apply(operation)` and `snapshot()`. Operations own panel creation, deferred deletion, reparenting, geometry, state, z-order, popup order, resource replacement, registry replacement, dialog variables, control values, focus/default buttons, pointer capture, application and subtree modals, pointer/keyboard/composition input, clipboard results, messages, animation sequences, viewport changes, frames and terminal destruction. Every panel identity is monotonic and never reused. Resource replacement stages and validates the complete selected tree before deleting any resource-owned control. Code-created controls are matched ASCII-insensitively by block name and reused; unknown factories never become `Panel`.
+
+One frame rolls input edges, commits focus loss before focus gain, dispatches due messages, records the focus tick, solves geometry, runs due HUD commands before active interpolation, commits deferred deletion, publishes DOM, then emits typed requests. CSS transitions and animations never own VGUI sequence timing. Reduced motion publishes each interpolation endpoint at its start while preserving delayed command times and completion lifetime.
+
+Normal children retain model and DOM parent ownership. Popups retain model parent ownership but publish under the workspace, escape parent clipping and use the separate popup order. Hit testing uses half-open solved clips front-to-back; paint/DOM order uses signed z then stable tie order back-to-front. Application modal and inclusive/exclusive modal-subtree restrictions apply before focus or input dispatch. Destroy clears focus, capture, modal state, queued work, animation work, clipboard requests, auxiliary item nodes, listeners and panel nodes.
+
+Scheme input contains resolved colors, base settings, fonts, line/image/nine-slice borders and browser-presentable image descriptors. Line borders retain ordered side records and offsets. A non-white image tint requires a supplied exact frame/tint browser variant; an absent variant suppresses the image and remains diagnostic instead of applying a CSS color approximation. Fonts with unavailable exact browser presentation suppress their glyph color without disabling control state, input or accessibility.
+
+The behavior is grounded in Valve Source SDK 2013 commit `88fa198fba3fb85d46d4c95018254693fdc3af0a`: `src/public/vgui/{IVGui,IPanel,IClientPanel,IInput,IInputInternal,ISurface,IScheme,ILocalize,IImage,IBorder,ISystem}.h`, `src/public/vgui_controls/{Panel,EditablePanel,BuildGroup,MessageMap,PanelAnimationVar,AnimationController,FocusNavGroup}.h`, and the selected generic-control implementations under `src/vgui2/vgui_controls`.
+
 ## Non-Responsibilities
 
 - TF2 health, ammo, weapons, objectives, death notices, scoreboards, class or team menus, buildings, conditions, game events, and game commands.
@@ -59,6 +98,10 @@ Present generic Source 1 panel trees, controls, resources, schemes, localized te
 - World, model, material, particle, or audio rendering; VGUI emits typed requests at those seams.
 - Parsing KeyValues, localization files, font files, VTF images, or HUD-animation text into lossless format records.
 - Advancing gameplay, replay, networking, simulation, or ruleset state.
+
+## License
+
+`src/runtime.ts` ports behavior from Valve Source SDK 2013 and is subject to the [Source 1 SDK License](LICENSE.source-sdk-2013). The repository includes Valve's exact `thirdpartylegalnotices.txt` at [`../particle/thirdpartylegalnotices.txt`](../particle/thirdpartylegalnotices.txt), SHA-256 `21319cf7b185d8676801680bc394655a028bc84e257ed844023c8bbed66d3a9e`. Original playsrc material remains subject to the repository MIT license.
 
 ## Relationships
 
@@ -96,11 +139,11 @@ The selected official behavior bounds and presentation semantics are grounded in
 
 The existing console and diagnostic resource records expose unavailable legacy browser families as `source-required`. Their text is transparent instead of browser-fallback rendered, while frame/border paint, focus, editing, submission, completion, diagnostics state, accessibility, and cleanup remain active. Configured content supplies no Tahoma or Lucida Console bytes, and no native non-antialiased Windows target capture exists, so those raster requirements remain explicit.
 
-Run `bun test packages/presentation/vgui/tests` from the repository root. From this package directory, run retained browser capability/captures with `bun run verify:browser` and configured TF2 integration with `bun run verify:tf2`.
+Run `bun test packages/presentation/vgui/tests` from the repository root. From this package directory, run generic control/resource/input/animation DOM and accessibility evidence with `bun run verify:runtime-browser`, retained console/diagnostic capability evidence with `bun run verify:browser`, and configured TF2 integration with `bun run verify:tf2`.
 
 ## Roadmap
 
-[`ROADMAP.md`](ROADMAP.md) defines 45 behavior rows. The five candidate inventories contain 300 items and 0 generated or accepted items. [`inventories/tf2-font-files.md`](inventories/tf2-font-files.md) retains the eight configured game-font identities separately from the denominator inventories.
+[`ROADMAP.md`](ROADMAP.md) defines 45 behavior rows. The five candidate inventories contain 301 items and 0 generated or accepted items. [`inventories/tf2-font-files.md`](inventories/tf2-font-files.md) retains the eight configured game-font identities separately from the denominator inventories.
 
 ## Completion
 

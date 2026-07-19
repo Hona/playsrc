@@ -21,6 +21,46 @@ export const VGUI_CSS = `
   box-sizing: border-box;
 }
 
+.playsrc-vgui-runtime {
+  contain: layout style paint;
+  isolation: isolate;
+  touch-action: none;
+  user-select: none;
+}
+
+.playsrc-vgui-source-control {
+  appearance: none;
+  border: 0;
+  border-radius: 0;
+  outline: 0;
+  text-align: left;
+}
+
+.playsrc-vgui-source-control[aria-disabled="true"] {
+  cursor: default;
+}
+
+.playsrc-vgui-source-control[role="textbox"],
+.playsrc-vgui-source-control[role="document"] {
+  user-select: text;
+}
+
+.playsrc-vgui-source-control[data-font-available="false"],
+.playsrc-vgui-source-control[data-font-available="false"] * {
+  color: transparent !important;
+  text-shadow: none !important;
+  -webkit-text-fill-color: transparent !important;
+}
+
+.playsrc-vgui-item {
+  box-sizing: border-box;
+  overflow: hidden;
+  padding-inline: 6px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+
 .playsrc-vgui-frame {
   position: absolute;
   overflow: visible;

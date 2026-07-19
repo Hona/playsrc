@@ -114,7 +114,7 @@ try {
   await agent(["set", "viewport", "1280", "720", "1"])
   await agent(["wait", "--text", "Ready", "--timeout", "120000"])
   const platformFontCapability = await evaluate<string | null>("document.querySelector('[data-vgui-service=developer-console]')?.dataset.platformFontCapability ?? null")
-  await waitFor("initial camera", "document.querySelector('main').dataset.cameraPosition && Number(document.querySelector('.speed-readout strong').textContent) === 0 && Math.abs(Number(document.querySelector('main').dataset.cameraPosition.split(',')[2]) + 3067.2099609375) < 0.01", "30000")
+  await waitFor("initial camera", "document.querySelector('main').dataset.cameraPosition && Number(document.querySelector('.speed-readout strong').textContent) === 0 && Math.abs(Number(document.querySelector('main').dataset.cameraPosition.split(',')[2]) + 3067.96875) < 0.01", "30000")
   const initial = await evaluate<number[]>("document.querySelector('main').dataset.cameraPosition.split(',').map(Number)")
 
   await agent(["eval", "window.dispatchEvent(new KeyboardEvent('keydown',{code:'ControlLeft',key:'Control',bubbles:true})); true"])

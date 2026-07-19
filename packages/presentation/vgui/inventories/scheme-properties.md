@@ -34,8 +34,8 @@ The configured archive index contains `resource/ClientScheme.res`, `resource/Sou
 | `SCH-009` | `BitmapFontFiles` | Bind one symbolic bitmap-font name to one exact bitmap identity and retain its adapter requirement. | Supported |
 | `SCH-010` | `Borders` | Build one ordered named-border registry containing aliases and concrete border definitions. | Unsupported |
 | `SCH-011` | Color RGBA literal | Parse exactly four bounded integer channels and preserve 8-bit RGBA output. | Unsupported |
-| `SCH-012` | Color alias | Resolve a color value through another `Colors` or `BaseSettings` identity without changing the requested name. | Unsupported |
-| `SCH-013` | Missing or cyclic color alias | Return `Missing` or `Malformed` with the complete alias chain; never substitute an unrelated color. | Unsupported |
+| `SCH-012` | Color and base-setting lookup | Treat a `Colors` value as the terminal channel string; recursively resolve aliases only through `BaseSettings` without changing the requested name. | Supported |
+| `SCH-013` | Missing, malformed, or cyclic base-setting color alias | Return `Missing` or `Malformed` with the complete alias chain; never reinterpret a non-channel `Colors` value or substitute an unrelated color. | Supported |
 | `SCH-014` | Base-setting lookup | Return the exact stored string for a named setting; the consumer owns numeric, color, font, or path interpretation. | Unsupported |
 | `SCH-015` | Font alias identity | Create distinct normal and proportional handles for each font name while preserving inverse name lookup. | Unsupported |
 | `SCH-016` | Ordered font candidates | Select the first condition-retained candidate whose nonzero `yres` minimum admits the viewport, regardless of later source admission. | Supported |

@@ -17,7 +17,7 @@ This is a manually derived Candidate inventory. Its 58 property families contrib
 | Generated item count | 0 |
 | Accepted item count | 0 |
 
-The configured TF2 archive index contains 743 `resource/**/*.res` or `scripts/**/*.res` identities. The generator must enumerate properties from parsed KeyValues records; lexical counts are not accepted inventory input.
+The configured TF2 archive index contains 743 `resource/**/*.res` or `scripts/**/*.res` identities. Their parsed ordered trees contain 152,355 nodes. The most frequent scalar properties are `tall` 8,955, `ypos` 8,783, `wide` 8,745, `xpos` 8,694, `fieldName` 8,436, `ControlName` 8,271, `visible` 8,069, `zpos` 6,697, `enabled` 6,599, `font` 4,364, `AutoResize` 4,359, `labelText` 4,346, `PinCorner` 4,330, `textAlignment` 4,166, and `image` 1,858. The generator must enumerate properties from parsed KeyValues records; lexical counts are not accepted inventory input.
 
 ## Candidate Property Families
 
