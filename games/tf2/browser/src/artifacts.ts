@@ -8,7 +8,7 @@ export type ModelArtifact = Readonly<{
   bodygroupCounts: readonly number[]
   attachments: ReadonlyMap<string, Float32Array>
   descriptor:
-    | Readonly<{ kind: "world"; staticPropRoot: boolean; depthRange: readonly [number, number] }>
+    | Readonly<{ kind: "world"; staticPropRoot: boolean; depthRange: readonly [number, number]; frontFace: "clockwise" | "counter-clockwise"; cullFace: "back" }>
     | Readonly<{
         kind: "viewmodel"
         horizontalFov4By3: number
@@ -19,6 +19,8 @@ export type ModelArtifact = Readonly<{
         drawsAfterWorld: boolean
         opaqueBeforeTranslucent: boolean
         optionalViewSpaceYReflection: boolean
+        frontFace: "clockwise" | "counter-clockwise"
+        cullFace: "back"
       }>
   sequences: readonly Readonly<{
     label: string
@@ -59,6 +61,24 @@ export type StaticMaterialState = Readonly<{
   allMips: boolean
   samplingAvailable: boolean
   alphaTestReference: number
+  alphaModulation: number
+  alphaOwnership: Readonly<{
+    baseTextureAvailable: boolean
+    opacity: boolean
+    alphaTest: boolean
+    selfIlluminationMask: boolean
+    environmentMask: boolean
+    phongMask: boolean
+    tintMask: boolean
+    vertexAlpha: boolean
+    materialAlphaModulation: boolean
+  }>
+  fragmentDiscard: Readonly<{
+    kind: "none" | "alpha"
+    source: "base-texture-or-one" | "shader-output"
+    pass: "greater" | "greater-or-equal"
+    reference: number
+  }>
 }>
 export type ParticleTextureArtifact = SupplementalTexture & Readonly<{ materialPath: string }>
 export type SoundScriptNode = Readonly<{ key: string; value: string | readonly SoundScriptNode[] }>
@@ -69,7 +89,7 @@ export type AudioArtifact = Readonly<{
   logicalPath: string
   entries: readonly SoundScriptNode[]
 }>
-export type ModelOccurrenceMatrix = Readonly<{ entity: number; model: string; matrix: Float32Array }>
+export type ModelOccurrenceMatrix = Readonly<{ entity: number; model: string; skin:number; body:number; origin:readonly[number,number,number]; angles:readonly[number,number,number]; matrix: Float32Array }>
 export type BrushModelArtifact=Readonly<{index:number;bounds:readonly[readonly[number,number,number],readonly[number,number,number]];origin:readonly[number,number,number];headNode:number;surfaceRange:readonly[number,number];vertexCount:number;triangleCount:number;materials:readonly number[];entities:readonly number[]}>
 export type ModelTextureBinding = Readonly<{
   kind: "material" | "model"
@@ -187,6 +207,11 @@ export type EnvironmentFragment = Readonly<{
   normals: Float32Array
   uv: Float32Array
   indices: Uint32Array
+  lightmapUv: Float32Array
+  visibility: Readonly<
+    | { kind: "world"; leaves: readonly number[]; clusters: readonly number[]; areas: readonly number[] }
+    | { kind: "brush-model"; entity: bigint; model: number }
+  >
 }>
 export type EnvironmentMark = Readonly<{
   status: number
@@ -195,6 +220,28 @@ export type EnvironmentMark = Readonly<{
   dynamic: boolean
   material: string
   fragments: readonly EnvironmentFragment[]
+  sourceIndex: number
+  entity: number | null
+  overlayId: number | null
+  origin: readonly [number, number, number]
+  materialSha256: string | null
+  receiver: null | Readonly<{
+    entity: bigint | null
+    model: number
+    parentEntity: number | null
+    localOrigin: readonly [number, number, number]
+    origin: readonly [number, number, number]
+    angles: readonly [number, number, number]
+  }>
+  targetFaces: readonly number[]
+  renderOrder: number
+  fadeDistancesSquared: readonly [number, number] | null
+  lowPriority: boolean
+  parentEntity: number | null
+  activation: "map" | "input" | "compiled"
+  lifetime: "permanent" | "pool-managed"
+  normalOffset: number
+  polygonOffset: "none" | "decal"
 }>
 export type CubemapFact = Readonly<{
   index: number
@@ -213,6 +260,10 @@ export type WaterSurfaceFact = Readonly<{
   bounds: readonly [readonly [number, number, number], readonly [number, number, number]]
   cubemapKind: number
   cubemapSample: number | null
+  textureInfo: number
+  fogVolume: number | null
+  plane: readonly [number, number, number, number]
+  bindings: Readonly<{ environment: boolean; reflection: boolean; refraction: boolean }>
 }>
 export type WaterVolumeFact = Readonly<{
   index: number
@@ -222,7 +273,54 @@ export type WaterVolumeFact = Readonly<{
   leaves: readonly number[]
   cubemapKind: number
   cubemapSample: number | null
+  textureInfo: number
+  surfaceMaterial: number
+  bottomMaterial: null | Readonly<{ kind: "map"; index: number } | { kind: "dependency"; identity: string }>
+  clusters: readonly number[]
+  areas: readonly number[]
+  contents: number
+  plane: readonly [number, number, number, number]
+  surfaceTranslucent: boolean
+  bottomTranslucent: boolean | null
+  surfaceBindings: Readonly<{ environment: boolean; reflection: boolean; refraction: boolean }>
+  bottomBindings: Readonly<{ environment: boolean; reflection: boolean; refraction: boolean }> | null
 }>
+type Effective<T> = Readonly<{ value: T; origin: "authored" | "shader-initializer" | "type-initializer" }>
+export type WaterMaterialArtifact = Readonly<{
+  identity: string
+  mapMaterial: number | null
+  shader: "dx90" | "dx9-hdr"
+  opacity: "opaque" | "translucent"
+  textures: readonly Readonly<{ role: number; disposition: "source" | "environment" | "render-target"; colorRead: "srgb" | "linear" | "format-dependent"; parameter: string; reference: string; logicalPath: string | null }>[]
+  bottomMaterial: string | null
+  underwaterOverlay: string | null
+  baseFrame: Effective<number>
+  normalFrame: Effective<number>
+  environmentFrame: Effective<number>
+  normalTransform: Readonly<{ parameter: string; matrix: Float32Array; origin: Effective<number>["origin"]; proxyMutated: boolean }>
+  scale: Effective<readonly [number, number]>
+  time: Effective<number>
+  waterDepth: Effective<number>
+  aboveWater: Effective<boolean>
+  reflectAmount: Effective<number>
+  refractAmount: Effective<number>
+  reflectTint: Effective<readonly [number, number, number]>
+  refractTint: Effective<readonly [number, number, number]>
+  reflectionBlendFactor: Effective<number>
+  fog: Readonly<{ enabled: Effective<boolean> | null; color: Effective<readonly [number, number, number]>; start: Effective<number>; end: Effective<number> }>
+  cheapStart: Effective<number>
+  cheapEnd: Effective<number>
+  forceCheap: Effective<boolean>
+  forceExpensive: Effective<boolean>
+  reflectEntities: Effective<boolean>
+  blurRefraction: Effective<boolean>
+  noLowEndLightmap: Effective<boolean>
+  scroll: readonly [Effective<readonly [number, number, number]>, Effective<readonly [number, number, number]>]
+  fresnel: Readonly<{ cheapEnabled: boolean; expensiveConstant: readonly [number, number, number, number] }>
+  requiredInputs: readonly number[]
+}>
+export type FogArtifact = Readonly<{ enabled: boolean; blend: boolean; radial: boolean; direction: readonly [number, number, number]; primary: readonly [number, number, number, number]; secondary: readonly [number, number, number, number]; start: number; end: number; maximumDensity: number; farZ: number | null; transitionDuration: number }>
+export type EnvironmentControllerArtifact = Readonly<{ entity: number; classname: string; kind: number; rawFields: readonly Readonly<{ key: string; value: string }>[]; state: unknown }>
 export type EnvironmentArtifact = Readonly<{
   profile: "ldr" | "hdr"
   identity: string
@@ -239,11 +337,19 @@ export type EnvironmentArtifact = Readonly<{
   markRecords: readonly EnvironmentMark[]
   textures: readonly SupplementalTexture[]
   directionalTextures: readonly DirectionalTextureArtifact[]
-  sky: Readonly<{ name: string; faces: readonly Readonly<{ face: number; material: string; sha256: string }>[] }> | null
+  sky: Readonly<{ name: string; faces: readonly Readonly<{ face: number; material: string; sha256: string; selectedTextures: readonly Readonly<{ logicalPath: string; sha256: string }>[] }>[] }> | null
   cubemapFacts: readonly CubemapFact[]
   waterSurfaceFacts: readonly WaterSurfaceFact[]
   waterVolumeFacts: readonly WaterVolumeFact[]
   controllerFacts: readonly Readonly<{ entity: number; classname: string; kind: number }>[]
+  collisionWorldIdentity: string
+  receiverSnapshotRevision: bigint
+  placementRevision: bigint
+  leafMinimumDistanceToWater: Uint16Array
+  waterMaterials: ReadonlyMap<string, WaterMaterialArtifact>
+  authoredTextures: ReadonlyMap<string, AuthoredTextureArtifact>
+  controllersState: readonly EnvironmentControllerArtifact[]
+  masterFogController: number | null
 }>
 export type PresentationArtifacts = Readonly<{
   models: ReadonlyMap<string, ModelArtifact>
@@ -320,12 +426,12 @@ const hex = (bytes: Uint8Array) => Array.from(bytes, (v) => v.toString(16).padSt
 const digest = async (bytes: Uint8Array) => hex(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)))
 function parseEnvironment(bytes: Uint8Array): EnvironmentArtifact {
   const r = new Reader(bytes)
-  if (r.decoder.decode(r.take(4)) !== "PENV" || r.u32() !== 1) throw new ArtifactError("environment identity")
+  if (r.decoder.decode(r.take(4)) !== "PENV" || r.u32() !== 2) throw new ArtifactError("environment identity")
   const profile = r.u8()
   if ((profile !== 0 && profile !== 1) || r.u8() || r.u8() || r.u8()) throw new ArtifactError("environment profile")
   const identity = hex(r.take(32)),
     v = Array.from({ length: 10 }, () => r.u32()),
-    markRecords: EnvironmentMark[] = []
+    markRecords: any[] = []
   for (let mark = 0; mark < v[7]!; mark++) {
     const status = r.u8(),
       kind = r.u8(),
@@ -345,7 +451,7 @@ function parseEnvironment(bytes: Uint8Array): EnvironmentArtifact {
       for (let i = 0; i < uv.length; i++) uv[i] = r.f32()
       const indices = new Uint32Array(r.u32() * 3)
       for (let i = 0; i < indices.length; i++) indices[i] = r.u32()
-      fragments.push(Object.freeze({ model, face, positions, normals, uv, indices }))
+      fragments.push(Object.freeze({ model, face, positions, normals, uv, indices, lightmapUv: new Float32Array(), visibility: null as any }))
     }
     markRecords.push(Object.freeze({ status, kind, enabled, dynamic, material, fragments: Object.freeze(fragments) }))
   }
@@ -366,7 +472,7 @@ function parseEnvironment(bytes: Uint8Array): EnvironmentArtifact {
           name: r.text(),
           faces: Object.freeze(
             Array.from({ length: r.u32() }, () =>
-              Object.freeze({ face: r.u8(), material: r.text(), sha256: hex(r.take(32)) }),
+              Object.freeze({ face: r.u8(), material: r.text(), sha256: hex(r.take(32)), selectedTextures: Object.freeze([]) }),
             ),
           ),
         })
@@ -436,6 +542,146 @@ function parseEnvironment(bytes: Uint8Array): EnvironmentArtifact {
   const controllerFacts = Object.freeze(
     Array.from({ length: v[9]! }, () => Object.freeze({ entity: r.u32(), classname: r.text(), kind: r.u8() })),
   )
+  const collisionWorldIdentity = hex(r.take(32)), receiverSnapshotRevision = r.u64(), placementRevision = r.u64()
+  if (r.u32() !== markRecords.length) throw new ArtifactError("environment mark extension count")
+  for (let index = 0; index < markRecords.length; index++) {
+    const base = markRecords[index]!, sourceIndex = r.u32(), entityValue = r.u32(), overlayValue = r.i32(), origin = tuple3(r)
+    const hasMaterialSha = r.u8(), renderOrder = r.u8(), lowPriority = r.u8(), activation = r.u8(), lifetime = r.u8(), hasFade = r.u8(), polygonOffset = r.u8()
+    if (hasMaterialSha > 1 || lowPriority > 1 || activation > 2 || lifetime > 1 || hasFade > 1 || polygonOffset > 1 || r.u8()) throw new ArtifactError("environment mark extension flags")
+    const materialSha = hex(r.take(32)), fade = tuple2(r), normalOffset = r.f32(), parentValue = r.u32(), hasReceiver = r.u8()
+    if (hasReceiver > 1 || r.u8() || r.u8() || r.u8()) throw new ArtifactError("environment mark receiver flag")
+    let receiver: EnvironmentMark["receiver"] = null
+    if (hasReceiver === 1) {
+      const receiverEntity = r.u64(), model = r.u32(), receiverParent = r.u32()
+      receiver = Object.freeze({
+        entity: receiverEntity === 0xffff_ffff_ffff_ffffn ? null : receiverEntity,
+        model,
+        parentEntity: receiverParent === 0xffff_ffff ? null : receiverParent,
+        localOrigin: tuple3(r), origin: tuple3(r), angles: tuple3(r),
+      })
+    } else r.take(52)
+    const targetFaces = Object.freeze(Array.from({ length: r.u32() }, () => r.u32()))
+    if (r.u32() !== base.fragments.length) throw new ArtifactError("environment mark fragment extension count")
+    const fragments = base.fragments.map((fragment: any) => {
+      const visibilityKind = r.u8()
+      if (visibilityKind > 1 || r.u8() || r.u8() || r.u8()) throw new ArtifactError("environment mark visibility")
+      let visibility: EnvironmentFragment["visibility"]
+      if (visibilityKind === 0) {
+        const leaves = r.u32(), clusters = r.u32(), areas = r.u32()
+        visibility = Object.freeze({
+          kind: "world" as const,
+          leaves: Object.freeze(Array.from({ length: leaves }, () => r.u32())),
+          clusters: Object.freeze(Array.from({ length: clusters }, () => { const value = r.u16(); return value >= 0x8000 ? value - 0x1_0000 : value })),
+          areas: Object.freeze(Array.from({ length: areas }, () => r.u32())),
+        })
+      } else visibility = Object.freeze({ kind: "brush-model" as const, entity: r.u64(), model: r.u32() })
+      const lightmapVertices = r.u32(), lightmapUv = new Float32Array(lightmapVertices * 2)
+      if (lightmapVertices !== fragment.positions.length / 3) throw new ArtifactError("environment mark lightmap UV count")
+      for (let value = 0; value < lightmapUv.length; value++) lightmapUv[value] = r.f32()
+      return Object.freeze({ ...fragment, lightmapUv, visibility })
+    })
+    if ((hasMaterialSha === 0 && materialSha !== "0".repeat(64)) || (hasFade === 0 && (fade[0] !== 0 || fade[1] !== 0))) throw new ArtifactError("environment mark absent field")
+    markRecords[index] = Object.freeze({
+      ...base, sourceIndex, entity: entityValue === 0xffff_ffff ? null : entityValue,
+      overlayId: overlayValue === -0x8000_0000 ? null : overlayValue, origin,
+      materialSha256: hasMaterialSha === 1 ? materialSha : null, receiver, targetFaces, renderOrder,
+      fadeDistancesSquared: hasFade === 1 ? fade : null, lowPriority: lowPriority === 1,
+      parentEntity: parentValue === 0xffff_ffff ? null : parentValue,
+      activation: (["map", "input", "compiled"] as const)[activation]!,
+      lifetime: lifetime === 0 ? "permanent" as const : "pool-managed" as const,
+      normalOffset, polygonOffset: polygonOffset === 0 ? "none" as const : "decal" as const,
+      fragments: Object.freeze(fragments),
+    })
+  }
+  const leafDistanceCount = r.u32(), leafMinimumDistanceToWater = new Uint16Array(leafDistanceCount)
+  for (let index = 0; index < leafDistanceCount; index++) leafMinimumDistanceToWater[index] = r.u16()
+  const originName = (value: number): Effective<number>["origin"] => {
+    if (value > 2) throw new ArtifactError("water parameter origin")
+    return (["authored", "shader-initializer", "type-initializer"] as const)[value]!
+  }
+  const effectiveF32 = (): Effective<number> => { const value = r.f32(), origin = originName(r.u8()); if (r.u8() || r.u8() || r.u8()) throw new ArtifactError("water scalar"); return Object.freeze({ value, origin }) }
+  const effectiveI32 = (): Effective<number> => { const value = r.i32(), origin = originName(r.u8()); if (r.u8() || r.u8() || r.u8()) throw new ArtifactError("water integer"); return Object.freeze({ value, origin }) }
+  const effectiveBool = (): Effective<boolean> => { const value = r.u8(), origin = originName(r.u8()); if (value > 1 || r.u8() || r.u8()) throw new ArtifactError("water boolean"); return Object.freeze({ value: value === 1, origin }) }
+  const effectiveVec2 = (): Effective<readonly [number, number]> => { const value = tuple2(r), origin = originName(r.u8()); if (r.u8() || r.u8() || r.u8()) throw new ArtifactError("water vec2"); return Object.freeze({ value, origin }) }
+  const effectiveVec3 = (): Effective<readonly [number, number, number]> => { const value = tuple3(r), origin = originName(r.u8()); if (r.u8() || r.u8() || r.u8()) throw new ArtifactError("water vec3"); return Object.freeze({ value, origin }) }
+  const waterMaterials = new Map<string, WaterMaterialArtifact>()
+  for (let count = r.u32(); count > 0; count--) {
+    const identity = r.text().toLowerCase(), mapValue = r.u32(), shader = r.u8(), opacity = r.u8(), textureCount = r.u8(), requiredCount = r.u8()
+    if (!identity || waterMaterials.has(identity) || shader > 1 || opacity > 1 || textureCount > 6 || requiredCount > 64) throw new ArtifactError("water material header")
+    const textures = Object.freeze(Array.from({ length: textureCount }, () => {
+      const role = r.u8(), disposition = r.u8(), colorRead = r.u8()
+      if (role > 18 || disposition > 2 || colorRead > 2 || r.u8()) throw new ArtifactError("water texture request")
+      const parameter = r.text(), reference = r.text(), logicalPath = r.text()
+      return Object.freeze({ role, disposition: (["source", "environment", "render-target"] as const)[disposition]!, colorRead: (["srgb", "linear", "format-dependent"] as const)[colorRead]!, parameter, reference, logicalPath: logicalPath || null })
+    }))
+    const bottomMaterialValue = r.text(), underwaterOverlayValue = r.text(), baseFrame = effectiveI32(), normalFrame = effectiveI32(), environmentFrame = effectiveI32(), normalParameter = r.text(), normalMatrix = new Float32Array(16)
+    for (let index = 0; index < 16; index++) normalMatrix[index] = r.f32()
+    const normalOrigin = originName(r.u8()), proxyMutated = r.u8(); if (proxyMutated > 1 || r.u8() || r.u8()) throw new ArtifactError("water normal transform")
+    const scale = effectiveVec2(), time = effectiveF32(), waterDepth = effectiveF32(), aboveWater = effectiveBool(), reflectAmount = effectiveF32(), refractAmount = effectiveF32(), reflectTint = effectiveVec3(), refractTint = effectiveVec3(), reflectionBlendFactor = effectiveF32()
+    const hasFogEnabled = r.u8(); if (hasFogEnabled > 1 || r.u8() || r.u8() || r.u8()) throw new ArtifactError("water fog enabled")
+    const fogEnabledValue = effectiveBool(); if (hasFogEnabled === 0 && (fogEnabledValue.value || fogEnabledValue.origin !== "authored")) throw new ArtifactError("absent water fog enabled")
+    const fogColor = effectiveVec3(), fogStart = effectiveF32(), fogEnd = effectiveF32(), cheapStart = effectiveF32(), cheapEnd = effectiveF32(), forceCheap = effectiveBool(), forceExpensive = effectiveBool(), reflectEntities = effectiveBool(), blurRefraction = effectiveBool(), noLowEndLightmap = effectiveBool(), scroll0 = effectiveVec3(), scroll1 = effectiveVec3()
+    const cheapEnabled = r.u8(); if (cheapEnabled > 1 || r.u8() || r.u8() || r.u8()) throw new ArtifactError("water fresnel")
+    const expensiveConstant = Object.freeze([r.f32(), r.f32(), r.f32(), r.f32()]) as readonly [number, number, number, number]
+    const requiredInputs = Object.freeze(Array.from({ length: requiredCount }, () => r.u8()))
+    waterMaterials.set(identity, Object.freeze({
+      identity, mapMaterial: mapValue === 0xffff_ffff ? null : mapValue, shader: shader === 0 ? "dx90" : "dx9-hdr", opacity: opacity === 0 ? "opaque" : "translucent", textures,
+      bottomMaterial: bottomMaterialValue || null, underwaterOverlay: underwaterOverlayValue || null,
+      baseFrame, normalFrame, environmentFrame, normalTransform: Object.freeze({ parameter: normalParameter, matrix: normalMatrix, origin: normalOrigin, proxyMutated: proxyMutated === 1 }), scale, time, waterDepth, aboveWater,
+      reflectAmount, refractAmount, reflectTint, refractTint, reflectionBlendFactor,
+      fog: Object.freeze({ enabled: hasFogEnabled === 1 ? fogEnabledValue : null, color: fogColor, start: fogStart, end: fogEnd }),
+      cheapStart, cheapEnd, forceCheap, forceExpensive, reflectEntities, blurRefraction, noLowEndLightmap,
+      scroll: Object.freeze([scroll0, scroll1]), fresnel: Object.freeze({ cheapEnabled: cheapEnabled === 1, expensiveConstant }), requiredInputs,
+    }))
+  }
+  const authoredTextures = new Map<string, AuthoredTextureArtifact>()
+  for (let count = r.u32(); count > 0; count--) {
+    const texture = parseAuthoredTextureRecord(r)
+    if (authoredTextures.has(texture.logicalPath)) throw new ArtifactError("environment authored texture identity")
+    authoredTextures.set(texture.logicalPath, texture)
+  }
+  if (r.u32() !== waterSurfaceFacts.length) throw new ArtifactError("water surface extension count")
+  const extendedWaterSurfaces = waterSurfaceFacts.map((surface) => {
+    const face = r.u32(), textureInfo = r.u32(), fogValue = r.u32(), plane = Object.freeze([r.f32(), r.f32(), r.f32(), r.f32()]) as readonly [number, number, number, number]
+    const environment = r.u8(), reflection = r.u8(), refraction = r.u8(); if (environment > 1 || reflection > 1 || refraction > 1 || r.u8()) throw new ArtifactError("water surface bindings")
+    if (face !== surface.face) throw new ArtifactError("water surface extension identity")
+    return Object.freeze({ ...surface, textureInfo, fogVolume: fogValue === 0xffff_ffff ? null : fogValue, plane, bindings: Object.freeze({ environment: environment === 1, reflection: reflection === 1, refraction: refraction === 1 }) })
+  })
+  if (r.u32() !== waterVolumeFacts.length) throw new ArtifactError("water volume extension count")
+  const extendedWaterVolumes = waterVolumeFacts.map((volume) => {
+    const textureInfo = r.u32(), surfaceMaterial = r.u32(), bottomKind = r.u8(); if (bottomKind > 2 || r.u8() || r.u8() || r.u8()) throw new ArtifactError("water bottom material")
+    const bottomMaterial = bottomKind === 0 ? null : bottomKind === 1 ? Object.freeze({ kind: "map" as const, index: r.u32() }) : Object.freeze({ kind: "dependency" as const, identity: r.text() })
+    const contents = r.u32(), plane = Object.freeze([r.f32(), r.f32(), r.f32(), r.f32()]) as readonly [number, number, number, number]
+    const clusters = Object.freeze(Array.from({ length: r.u32() }, () => { const value = r.u16(); return value >= 0x8000 ? value - 0x1_0000 : value })), areas = Object.freeze(Array.from({ length: r.u32() }, () => r.u32())), surfaceTranslucent = r.u8(), bottomTranslucent = r.u8()
+    if (surfaceTranslucent > 1 || bottomTranslucent > 2 || r.u8() || r.u8()) throw new ArtifactError("water volume translucency")
+    const surfaceEnvironment=r.u8(),surfaceReflection=r.u8(),surfaceRefraction=r.u8(),hasBottomBindings=r.u8(),bottomEnvironment=r.u8(),bottomReflection=r.u8(),bottomRefraction=r.u8();if([surfaceEnvironment,surfaceReflection,surfaceRefraction,hasBottomBindings,bottomEnvironment,bottomReflection,bottomRefraction].some(value=>value>1)||r.u8()||(!hasBottomBindings&&(bottomEnvironment||bottomReflection||bottomRefraction)))throw new ArtifactError("water volume bindings")
+    return Object.freeze({ ...volume, textureInfo, surfaceMaterial, bottomMaterial, clusters, areas, contents, plane, surfaceTranslucent: surfaceTranslucent === 1, bottomTranslucent: bottomTranslucent === 0 ? null : bottomTranslucent === 2, surfaceBindings:Object.freeze({environment:surfaceEnvironment===1,reflection:surfaceReflection===1,refraction:surfaceRefraction===1}),bottomBindings:hasBottomBindings===1?Object.freeze({environment:bottomEnvironment===1,reflection:bottomReflection===1,refraction:bottomRefraction===1}):null })
+  })
+  const fogState = (): FogArtifact => {
+    const enabled = r.u8(), blend = r.u8(), radial = r.u8(), hasFar = r.u8()
+    if (enabled > 1 || blend > 1 || radial > 1 || hasFar > 1) throw new ArtifactError("fog flags")
+    const direction = tuple3(r), primary = Object.freeze([r.u8(), r.u8(), r.u8(), r.u8()]) as readonly [number, number, number, number], secondary = Object.freeze([r.u8(), r.u8(), r.u8(), r.u8()]) as readonly [number, number, number, number], start = r.f32(), end = r.f32(), maximumDensity = r.f32(), far = r.f32(), transitionDuration = r.f32()
+    if (hasFar === 0 && far !== 0) throw new ArtifactError("absent fog far Z")
+    return Object.freeze({ enabled: enabled === 1, blend: blend === 1, radial: radial === 1, direction, primary, secondary, start, end, maximumDensity, farZ: hasFar === 1 ? far : null, transitionDuration })
+  }
+  if (r.u32() !== controllerFacts.length) throw new ArtifactError("environment controller extension count")
+  const controllersState = Object.freeze(controllerFacts.map((controller) => {
+    const entity = r.u32(), rawFields = Object.freeze(Array.from({ length: r.u32() }, () => Object.freeze({ key: r.text(), value: r.text() }))), kind = r.u8()
+    if (entity !== controller.entity || kind !== controller.kind) throw new ArtifactError("environment controller extension identity")
+    let state: unknown
+    if (kind === 0) state = fogState()
+    else if (kind === 1) state = Object.freeze({ origin: tuple3(r), scale: r.i32(), area: r.u32(), fog: fogState() })
+    else if (kind === 2) state = Object.freeze({ start: r.f32(), end: r.f32() })
+    else if (kind === 3) state = Object.freeze({ values: Object.freeze(Array.from({ length: 26 }, () => r.f32())) })
+    else if (kind === 4) { const angles = tuple3(r), color = Object.freeze([r.u8(), r.u8(), r.u8(), r.u8()]), maximumDistance = r.f32(), disabled = r.u8(); if (disabled > 1 || r.u8() || r.u8() || r.u8()) throw new ArtifactError("shadow controller"); state = Object.freeze({ angles, color, maximumDistance, disabled: disabled === 1 }) }
+    else if (kind === 5) state = Object.freeze({})
+    else throw new ArtifactError("environment controller kind")
+    return Object.freeze({ ...controller, rawFields, state })
+  }))
+  const masterFogValue = r.u32(), masterFogController = masterFogValue === 0xffff_ffff ? null : masterFogValue, skyFaceCount = r.u32()
+  let extendedSky = sky
+  if (skyFaceCount !== (sky?.faces.length ?? 0)) throw new ArtifactError("sky texture extension count")
+  if (sky) extendedSky = Object.freeze({ ...sky, faces: Object.freeze(sky.faces.map((face) => Object.freeze({ ...face, selectedTextures: Object.freeze(Array.from({ length: r.u32() }, () => Object.freeze({ logicalPath: r.text(), sha256: hex(r.take(32)) }))) }))) })
   if (r.offset !== bytes.length) throw new ArtifactError("environment trailing bytes")
   return Object.freeze({
     profile: profile === 0 ? "ldr" : "hdr",
@@ -450,13 +696,21 @@ function parseEnvironment(bytes: Uint8Array): EnvironmentArtifact {
     marks: v[7]!,
     markFragments: v[8]!,
     controllers: v[9]!,
-    markRecords: Object.freeze(markRecords),
+    markRecords: Object.freeze(markRecords) as readonly EnvironmentMark[],
     textures: Object.freeze(textures),
-    sky,
+    sky: extendedSky,
     cubemapFacts,
-    waterSurfaceFacts,
-    waterVolumeFacts,
+    waterSurfaceFacts: Object.freeze(extendedWaterSurfaces),
+    waterVolumeFacts: Object.freeze(extendedWaterVolumes),
     controllerFacts,
+    collisionWorldIdentity,
+    receiverSnapshotRevision,
+    placementRevision,
+    leafMinimumDistanceToWater,
+    waterMaterials,
+    authoredTextures,
+    controllersState,
+    masterFogController,
   })
 }
 
@@ -465,7 +719,7 @@ function magic(r: Reader, value: string): void {
 }
 
 function parseMaterialStates(r: Reader): ReadonlyMap<string, StaticMaterialState> {
-  magic(r, "PMST")
+  if (r.decoder.decode(r.take(4)) !== "PMST" || r.u32() !== 2) throw new ArtifactError("PMST identity")
   const states = new Map<string, StaticMaterialState>()
   for (let count = r.u32(); count > 0; count--) {
     const identity = r.text().toLowerCase()
@@ -474,6 +728,11 @@ function parseMaterialStates(r: Reader): ReadonlyMap<string, StaticMaterialState
     const samplingAvailable = values[16] !== 0xff
     const booleans = [1, 4, 6, 7, 11, 12, 13, 14, 15, ...(samplingAvailable ? [21, 22, 23] : [])]
     if (booleans.some((index) => values[index]! > 1)) throw new ArtifactError("material state boolean")
+    const alphaTestReference = r.f32(), alphaModulation = r.f32(), ownership = r.u16(), discard = r.u8(), source = r.u8(), pass = r.u8()
+    if (ownership > 0x1ff || discard > 1 || source > 1 || pass > 1 || r.u8()) throw new ArtifactError("material alpha contract")
+    const discardReference = r.f32()
+    if ((discard === 0 && (source !== 0 || pass !== 0 || discardReference !== 0)) ||
+      (discard === 1 && discardReference !== alphaTestReference)) throw new ArtifactError("material fragment discard")
     states.set(identity, Object.freeze({
       lighting: values[0]!,
       blendEnabled: values[1] === 1,
@@ -500,7 +759,25 @@ function parseMaterialStates(r: Reader): ReadonlyMap<string, StaticMaterialState
       noLod: values[22] === 1,
       allMips: values[23] === 1,
       samplingAvailable,
-      alphaTestReference: r.f32(),
+      alphaTestReference,
+      alphaModulation,
+      alphaOwnership: Object.freeze({
+        baseTextureAvailable: (ownership & 1) !== 0,
+        opacity: (ownership & 2) !== 0,
+        alphaTest: (ownership & 4) !== 0,
+        selfIlluminationMask: (ownership & 8) !== 0,
+        environmentMask: (ownership & 16) !== 0,
+        phongMask: (ownership & 32) !== 0,
+        tintMask: (ownership & 64) !== 0,
+        vertexAlpha: (ownership & 128) !== 0,
+        materialAlphaModulation: (ownership & 256) !== 0,
+      }),
+      fragmentDiscard: Object.freeze({
+        kind: discard === 0 ? "none" : "alpha",
+        source: source === 0 ? "base-texture-or-one" : "shader-output",
+        pass: pass === 0 ? "greater" : "greater-or-equal",
+        reference: discardReference,
+      }),
     }))
   }
   return states
@@ -541,11 +818,12 @@ function parseAudio(r: Reader): AudioArtifact {
 }
 
 function parseOccurrenceMatrices(r: Reader): readonly ModelOccurrenceMatrix[] {
-  magic(r, "PMTX")
+  if (r.decoder.decode(r.take(4)) !== "PMTX" || r.u32() !== 2) throw new ArtifactError("PMTX identity")
   const output = Array.from({ length: r.u32() }, () => {
-    const entity = r.u32(), model = r.text(), matrix = new Float32Array(12)
+    const entity = r.u32(), model = r.text(),skin=r.i32(),body=r.i32(),origin=tuple3(r),angles=tuple3(r), matrix = new Float32Array(12)
     for (let index = 0; index < matrix.length; index++) matrix[index] = r.f32()
-    return Object.freeze({ entity, model, matrix })
+    if(skin<0||body<0)throw new ArtifactError("model occurrence selection")
+    return Object.freeze({ entity, model,skin,body,origin,angles, matrix })
   })
   return Object.freeze(output)
 }
@@ -660,13 +938,10 @@ function parseModelMaterials(r: Reader): ReadonlyMap<string, ModelMaterialArtifa
   return output
 }
 
-function parseAuthoredTextures(r: Reader): ReadonlyMap<string, AuthoredTextureArtifact> {
-  magic(r, "PMIP")
-  const output = new Map<string, AuthoredTextureArtifact>()
-  for (let count = r.u32(); count > 0; count--) {
-    const logicalPath = r.text().toLowerCase(), sourceSha256 = hex(r.take(32)), width = r.u32(), height = r.u32(), depth = r.u32(),
+function parseAuthoredTextureRecord(r: Reader): AuthoredTextureArtifact {
+  const logicalPath = r.text().toLowerCase(), sourceSha256 = hex(r.take(32)), width = r.u32(), height = r.u32(), depth = r.u32(),
       mipCount = r.u8(), scalarCode = r.u8(), frameCount = r.u16(), faces = Object.freeze(Array.from({ length: r.u32() }, () => r.u8()))
-    if (!logicalPath.startsWith("materials/") || output.has(logicalPath) || !width || !height || !depth || !mipCount || !frameCount ||
+    if (!logicalPath.startsWith("materials/") || !width || !height || !depth || !mipCount || !frameCount ||
       scalarCode > 1 || faces.length < 1 || new Set(faces).size !== faces.length || faces.some((face) => face > 6)) throw new ArtifactError("authored texture header")
     const wrapS = r.u8(), wrapT = r.u8(), wrapU = r.u8(), minFilter = r.u8(), magFilter = r.u8(), anisotropyLevel = r.u8(),
       mipmapped = r.u8(), noLod = r.u8(), allMips = r.u8()
@@ -692,18 +967,27 @@ function parseAuthoredTextures(r: Reader): ReadonlyMap<string, AuthoredTextureAr
       }
       planes.push(Object.freeze({ mip, frame, face, slice, width: planeWidth, height: planeHeight, rgba }))
     }
-    output.set(logicalPath, Object.freeze({
-      logicalPath, sourceSha256, width, height, depth, mipCount, frameCount, faces,
-      scalarEncoding: scalarCode === 0 ? "u8" : "f16",
-      sampling: Object.freeze({ wrapS, wrapT, wrapU, minFilter, magFilter, anisotropyLevel, mipmapped: mipmapped === 1, noLod: noLod === 1, allMips: allMips === 1 }),
-      planes: Object.freeze(planes),
-    }))
+    return Object.freeze({
+    logicalPath, sourceSha256, width, height, depth, mipCount, frameCount, faces,
+    scalarEncoding: scalarCode === 0 ? "u8" : "f16",
+    sampling: Object.freeze({ wrapS, wrapT, wrapU, minFilter, magFilter, anisotropyLevel, mipmapped: mipmapped === 1, noLod: noLod === 1, allMips: allMips === 1 }),
+    planes: Object.freeze(planes),
+  })
+}
+
+function parseAuthoredTextures(r: Reader): ReadonlyMap<string, AuthoredTextureArtifact> {
+  magic(r, "PMIP")
+  const output = new Map<string, AuthoredTextureArtifact>()
+  for (let count = r.u32(); count > 0; count--) {
+    const texture = parseAuthoredTextureRecord(r)
+    if (output.has(texture.logicalPath)) throw new ArtifactError("authored texture identity")
+    output.set(texture.logicalPath, texture)
   }
   return output
 }
 export async function parsePresentationArtifacts(bytes: Uint8Array): Promise<PresentationArtifacts> {
   const r = new Reader(bytes)
-  if (r.decoder.decode(r.take(4)) !== "PTF2" || r.u32() !== 7) throw new ArtifactError("artifact identity")
+  if (r.decoder.decode(r.take(4)) !== "PTF2" || r.u32() !== 8) throw new ArtifactError("artifact identity")
   const modelCount = r.u32(),
     textureCount = r.u32(),
     directionalCount = r.u32(),
@@ -735,14 +1019,14 @@ export async function parsePresentationArtifacts(bytes: Uint8Array): Promise<Pre
       if (looping > 1 || r.u8() || r.u8() || r.u8()) throw new ArtifactError("model sequence timing")
       sequences.push(Object.freeze({ label, activity, index, timingAvailable: timingAvailable === 1, framesPerSecond, weightedFrameCount, cyclesPerSecond, durationSeconds, looping: looping === 1 }))
     }
-    const descriptorKind = r.u8(), descriptorDetail = r.u8()
-    if (descriptorDetail > 1 || r.u8() || r.u8()) throw new ArtifactError("model descriptor header")
+    const descriptorKind = r.u8(), descriptorDetail = r.u8(), frontFace = r.u8(), cullFace = r.u8()
+    if (descriptorDetail > 1 || frontFace > 1 || cullFace !== 0) throw new ArtifactError("model descriptor header")
     let descriptor: ModelArtifact["descriptor"]
     if (descriptorKind === 0 && profile === 0) {
       const root = descriptorDetail, depthRange = Object.freeze([r.f32(), r.f32()]) as readonly [number, number]
       if (!r.take(32).every((value) => value === 0)) throw new ArtifactError("world model descriptor reserved bytes")
       if (root > 1) throw new ArtifactError("world model descriptor")
-      descriptor = Object.freeze({ kind: "world", staticPropRoot: root === 1, depthRange })
+      descriptor = Object.freeze({ kind: "world", staticPropRoot: root === 1, depthRange, frontFace: frontFace === 0 ? "clockwise" : "counter-clockwise", cullFace: "back" })
     } else if (descriptorKind === 1 && profile === 1) {
       if (descriptorDetail !== 0) throw new ArtifactError("viewmodel descriptor detail")
       const horizontalFov4By3 = r.f32(), minimumFov = r.f32(), maximumFov = r.f32(), near = r.f32()
@@ -752,6 +1036,7 @@ export async function parsePresentationArtifacts(bytes: Uint8Array): Promise<Pre
       descriptor = Object.freeze({
         kind: "viewmodel", horizontalFov4By3, minimumFov, maximumFov, near, depthRange,
         drawsAfterWorld: true, opaqueBeforeTranslucent: true, optionalViewSpaceYReflection: true,
+        frontFace: frontFace === 0 ? "clockwise" : "counter-clockwise", cullFace: "back",
       })
     } else throw new ArtifactError("model descriptor profile")
     const artifact = r.blob(0).slice()
@@ -816,8 +1101,11 @@ export async function parsePresentationArtifacts(bytes: Uint8Array): Promise<Pre
     )
   }
   const particleMaterials = Object.freeze(Array.from({ length: particleMaterialCount }, () => r.text()))
-  const environment = parseEnvironment(r.blob(4 * 1024 * 1024))
+  const environment = parseEnvironment(r.blob(512 * 1024 * 1024))
   const materialStates = parseMaterialStates(r)
+  if (r.decoder.decode(r.bytes.subarray(r.offset, r.offset + 4)) !== "PPTM") {
+    throw new ArtifactError(`material state boundary ${r.offset}:${hex(r.bytes.subarray(r.offset, r.offset + 16))}`)
+  }
   const particleTextures = parseParticleTextures(r)
   const audio = parseAudio(r)
   const modelOccurrences = parseOccurrenceMatrices(r)

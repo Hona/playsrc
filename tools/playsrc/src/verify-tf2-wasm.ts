@@ -6,9 +6,11 @@ import { repositoryRoot } from "./config"
 import { rustEnvironment } from "./setup"
 import { acquireMap } from "./targets"
 import { parseRuntimeMap } from "@playsrc/rendering/runtime-map"
+import { sourceHorizontal4By3FovToVertical } from "@playsrc/rendering"
 import { buildSourceBundle } from "./source-bundle"
 import { decodeSnapshot, encodeCommand } from "../../../games/tf2/browser/src/codec"
 import { decodeModelPoseOutput, encodeModelPoseBatch } from "../../../games/tf2/browser/src/presentation"
+import { parsePresentationArtifacts } from "../../../games/tf2/browser/src/artifacts"
 
 const EXPECTED_MAP_BYTES = 42_082_929
 const EXPECTED_MAP_SHA256 = "56153098a867c553651f9c773bd72c4659782bae8520277c80daaaa414bdf156"
@@ -33,6 +35,14 @@ function bundlePathOffset(bytes: Uint8Array, target: string): number {
   }
   return -1
 }
+function collisionBrushRecords(bytes:Uint8Array):ReadonlyMap<bigint,Readonly<{enabled:boolean;contents:number;model:number|null}>>{
+  const view=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength)
+  require(new TextDecoder().decode(bytes.subarray(0,4))==="CSNP"&&view.getUint32(4,true)===2,"Collision snapshot schema differs")
+  let at=52;const output=new Map<bigint,Readonly<{enabled:boolean;contents:number;model:number|null}>>()
+  for(let count=view.getUint32(48,true);count>0;count--){const identity=view.getBigUint64(at,true),enabled=bytes[at+9]===1,contents=view.getUint32(at+16,true),shape=bytes[at+68]!,model=shape===0?Number(view.getBigUint64(at+69,true)):null;output.set(identity,Object.freeze({enabled,contents,model}));at+=shape===0?77:shape===1||shape===2?93:81}
+  require(at===bytes.length,"Collision snapshot records are truncated")
+  return output
+}
 
 type Exports = Readonly<{
   memory: WebAssembly.Memory
@@ -45,6 +55,7 @@ type Exports = Readonly<{
   playsrc_result_hash(handle: number, pointer: number): number
   playsrc_result_derived_hash(handle: number, pointer: number): number
   playsrc_presentation_length(handle: number): number
+  playsrc_presentation_copy(handle: number, pointer: number, capacity: number): number
   playsrc_spawn_copy(handle: number, pointer: number, capacity: number): number
   playsrc_game_advance(handle: number, command: number, length: number, ticks: number): number
   playsrc_simulation_observe(handle:number,now:number,command:number,length:number,suspended:number):number
@@ -58,6 +69,7 @@ type Exports = Readonly<{
   playsrc_model_output_copy(handle: number, pointer: number, capacity: number): number
   playsrc_visibility_query(handle: number, pointer: number): number
   playsrc_visibility_output_length(handle: number): number
+  playsrc_visibility_output_copy(handle:number,pointer:number,capacity:number):number
   playsrc_runtime_count(handle: number, kind: number): number
   playsrc_snapshot_length(handle: number): number
   playsrc_snapshot_copy(handle: number, pointer: number, capacity: number): number
@@ -491,6 +503,16 @@ export async function verifyTf2Wasm(
   require(error === 0, `TF2 WASM map compilation failed with error ${error}`)
   const presentationBytes = exports.playsrc_presentation_length(handle)
   require(presentationBytes > 0 && presentationBytes <= 512 * 1024 * 1024, "TF2 presentation byte length is invalid")
+  const presentationPointer = exports.playsrc_alloc(presentationBytes)
+  require(exports.playsrc_presentation_copy(handle, presentationPointer, presentationBytes) === presentationBytes,
+    "TF2 presentation output copy failed")
+  const presentation = new Uint8Array(exports.memory.buffer, presentationPointer, presentationBytes).slice()
+  exports.playsrc_free(presentationPointer, presentationBytes)
+  const presentationArtifacts = await parsePresentationArtifacts(presentation)
+  require(presentationArtifacts.environment.markRecords.length === 39 &&
+    presentationArtifacts.environment.waterVolumeFacts.length === 1 &&
+    presentationArtifacts.environment.waterMaterials.size === 2,
+  "TF2 complete environment presentation differs")
   const spawnPointer = exports.playsrc_alloc(40)
   require(exports.playsrc_spawn_copy(handle, spawnPointer, 40) === 40, "TF2 spawn descriptor is unavailable")
   const spawnBytes = new Uint8Array(exports.memory.buffer, spawnPointer, 40).slice()
@@ -603,6 +625,8 @@ export async function verifyTf2Wasm(
   const decoded = decodeSnapshot(snapshot.buffer)
   require(decoded.tick === 64n, "snapshot tick is invalid")
   require(decoded.projectileEvents.some((event) => event.type === "fire"), "fixed phase omitted fire event")
+  const initialStockFire=decoded.projectileEvents.find(event=>event.type==="fire"&&event.kind===1),initialEye=[decoded.position[0]+decoded.movement.viewOffset[0],decoded.position[1]+decoded.movement.viewOffset[1],decoded.position[2]+decoded.movement.viewOffset[2]]
+  require(!!initialStockFire&&Math.abs(initialStockFire.position[1]-initialEye[1]!+12)<0.05,"stock rocket source side differs")
   require(decoded.authorityBlockers.map((blocker) => blocker.code).join(",") === "1,2",
     "authority blocker ledger differs")
   require(decoded.jump === null, "unavailable Tempus course was inferred")
@@ -718,11 +742,24 @@ export async function verifyTf2Wasm(
   require(resupplied?.events.some((event) => event.kind === 5 && event.subject === 151) &&
     resupplied.loadout.find((weapon) => weapon.weapon === 1)?.clip === 4 && resupplied.health === resupplied.maximumHealth,
   "fixed regenerate-volume trace did not restore health and Rocket Launcher resources")
+  require(resupplied?.regenerateAnimationEvents.some(event=>event.associatedModel===315&&event.body===0&&event.openAnimation==="open"&&event.closeAnimation==="close"),"configured regenerate locker animation output differs")
+  const brushCollision=collisionBrushRecords((resupplied??travel).collisionSnapshot.bytes)
+  require(brushCollision.get(294n)?.enabled===true&&brushCollision.get(294n)?.model===109&&brushCollision.get(294n)?.contents===1,
+    "configured model-109 divider collision is absent")
+  for(const [entity,model] of [[307n,113],[322n,117],[323n,118]] as const){const record=brushCollision.get(entity);require(record?.enabled===false&&record.model===model&&record.contents===0x10000008,`configured never-solid fence ${entity} differs`)}
+  const heldCommand=encodeCommand({forward:0,side:0,yawDegrees:0,pitchDegrees:0,jump:false,crouch:false,fire:true,detonate:false}),stockOriginState=resupplied??travel;let heldFire=stockOriginState;const stockFires:typeof heldFire.projectileEvents[number][]=[]
+  for(let batch=0;batch<4;batch++){heldFire=advance(heldCommand,55);stockFires.push(...heldFire.projectileEvents.filter(event=>event.type==="fire"&&event.kind===1))}
+  const stockIntervals=stockFires.slice(1).map((event,index)=>event.tick-stockFires[index]!.tick)
+  require(stockFires.length>=4&&stockIntervals.every(value=>value>=53n&&value<=54n),`held Rocket Launcher cadence differs: ${stockFires.map(event=>event.tick).join(",")}`)
+  advance(encodeCommand({forward:0,side:0,yawDegrees:0,pitchDegrees:0,jump:false,crouch:false,fire:false,detonate:false,selectWeapon:2}),1)
+  const originalReady=advance(neutralCommand(),35),originalEye=[originalReady.position[0]+originalReady.movement.viewOffset[0],originalReady.position[1]+originalReady.movement.viewOffset[1],originalReady.position[2]+originalReady.movement.viewOffset[2]]
+  const originalFire=advance(encodeCommand({forward:0,side:0,yawDegrees:0,pitchDegrees:0,jump:false,crouch:false,fire:true,detonate:false}),1).projectileEvents.find(event=>event.type==="fire"&&event.kind===1)
+  require(!!originalFire&&Math.abs(originalFire.position[1]-originalEye[1]!)<0.05,"Original rocket source is not centered")
   const definition = new TextEncoder().encode("rockettrail"),
     particleBatch = new Uint8Array(100 + definition.length),
     particleView = new DataView(particleBatch.buffer)
   particleBatch.set([0x50, 0x50, 0x54, 0x58])
-  particleView.setUint32(4, 1, true)
+  particleView.setUint32(4, 2, true)
   particleView.setFloat32(12, 0.1, true)
   ;[5328, 3376, -3052].forEach((value, index) => particleView.setFloat32(16 + index * 4, value, true))
   particleView.setUint32(28, 1, true)
@@ -763,6 +800,9 @@ export async function verifyTf2Wasm(
     previousElapsedSeconds: 0,
     elapsedSeconds: 0.4,
     currentTimeSeconds:0.4,frameTimeSeconds:0.015,planarSpeed:0,screenAspectRatio:16/9,worldFarPlane:32768,
+    phase: 0,
+    reflectedViewmodel: false,
+    ownerAlive: true,
     skin: 0,
     lod: 0,
     bodygroups: [0],
@@ -785,16 +825,18 @@ export async function verifyTf2Wasm(
     modelPoses.every((pose) => pose.activity === "ACT_PRIMARY_VM_DRAW" && pose.primitives.length > 0 &&
       pose.primitives.every((primitive) => primitive.tangents.length / 4 === primitive.positions.length / 3)),
   "fixed StudioModel viewmodel pose output differs")
-  const visibilityPointer = exports.playsrc_alloc(12)
-  new Float32Array(exports.memory.buffer, visibilityPointer, 3).set([5328, 3376, -3068])
-  require(exports.playsrc_visibility_query(handle, visibilityPointer) === 1, "fixed-camera PVS query failed")
-  require(exports.playsrc_visibility_output_length(handle) === 80 + 91 * 4, "fixed-camera PVS surface count changed")
+  const visibilityProbe=(values:readonly number[])=>{const pointer=exports.playsrc_alloc(36);new Float32Array(exports.memory.buffer,pointer,9).set(values);require(exports.playsrc_visibility_query(handle,pointer)===1,"fixed-camera PVS query failed");exports.playsrc_free(pointer,36);const length=exports.playsrc_visibility_output_length(handle),outputPointer=exports.playsrc_alloc(length);require(exports.playsrc_visibility_output_copy(handle,outputPointer,length)===length,"fixed-camera PVS output copy failed");const output=new Uint8Array(exports.memory.buffer,outputPointer,length).slice();exports.playsrc_free(outputPointer,length);const view=new DataView(output.buffer);require(new TextDecoder().decode(output.subarray(0,4))==="PVIS"&&view.getUint32(4,true)===2,"PVS output identity differs");let at=76,surfaceCount=view.getUint32(at,true);at+=4+surfaceCount*4;at+=4;const leafCount=view.getUint32(at,true);at+=4+leafCount*4;const areaCount=view.getUint32(at,true);at+=4+areaCount*4;const flags=Array.from(output.subarray(at,at+8));at+=8;let normalFrame:number|null=null;if(flags[0]===1){at+=12+4+4+4;const textLength=view.getUint32(at,true);at+=4+textLength;normalFrame=view.getInt32(at,true);at+=4+64+8}const passCount=view.getUint32(at,true);at+=4;const passes:number[]=[];for(let index=0;index<passCount;index++){passes.push(output[at]!);at+=8+24+4+4+8;const count=view.getUint32(at,true);at+=4+count*4}require(at===output.length,"Water visibility output is truncated");return Object.freeze({surfaceCount,flags,normalFrame,passes})}
+  const spawnVisibility=visibilityProbe([5328,3376,-3068,180,0,sourceHorizontal4By3FovToVertical(75),16/9,7,Number(travel.tick)*0.015])
+  require(spawnVisibility.surfaceCount===91,"fixed-camera PVS surface count changed")
+  const aboveWater=visibilityProbe([-4800,3000,-2100,0,20,sourceHorizontal4By3FovToVertical(75),16/9,7,1]),belowWater=visibilityProbe([-4800,3000,-2300,0,-20,sourceHorizontal4By3FovToVertical(75),16/9,7,1]),crossingWater=visibilityProbe([-4800,3000,-2160,0,0,sourceHorizontal4By3FovToVertical(75),16/9,7,1])
+  require(aboveWater.flags[0]===1&&aboveWater.flags[2]===1&&aboveWater.flags[3]===1&&aboveWater.normalFrame===30&&aboveWater.passes.join(",")==="0,1,2","above-Water reflection/refraction plan differs")
+  require(belowWater.flags[0]===1&&belowWater.flags[3]===1&&belowWater.passes.includes(1)&&belowWater.passes.includes(2),"below-Water plan differs")
+  require(crossingWater.flags[7]===1&&crossingWater.passes.includes(3),"Water near-plane intersection plan differs")
 
   exports.playsrc_free(particlePointer, particleBatch.length)
   exports.playsrc_free(particleOutputPointer, particleOutputLength)
   exports.playsrc_free(modelPointer, modelBatch.byteLength)
   exports.playsrc_free(modelOutputPointer, modelOutputLength)
-  exports.playsrc_free(visibilityPointer, 12)
   exports.playsrc_free(commandPointer, commandBytes.byteLength)
   exports.playsrc_free(snapshotPointer, snapshotLength)
   exports.playsrc_free(unchangedPointer, snapshotLength)

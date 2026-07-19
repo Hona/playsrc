@@ -5,7 +5,7 @@
 - Play Team Fortress 2 directly in your browser (soon CS:S, CS:GO, and maybe more).
 - Use powerful, reusable tools to inspect, parse, compile, simulate, and present Source 1 content.
 - Load declared BSP maps directly in a browser worker against exact BSP PAK and VPK content; prior GLB conversion is not required.
-- Compose profile-selected maps, Rust-owned Source Simulation publications, revision-joined TF2 brush models, PMRQ/PMPO v3 item/hand draw plans, Particle v3 records, Source Audio, platform-selected SourceScheme fonts, decals, environment records, and Rust PVS candidates in the TF2 browser application.
+- Compose profile-selected maps, Rust-owned Source Simulation publications, revision-joined TF2 brush models and marks, PSMP v3 clockwise-facing models, PMRQ v5/PMPO v4 item/hand/ammunition frames, typed alpha discard, Particle v3 records, Source Audio, platform-selected SourceScheme fonts, and complete Water material/view plans in the TF2 browser application.
 
 TF2 is the first complete parity target. Counter-Strike: Source and legacy Source 1 Counter-Strike: Global Offensive follow through their own game modules. Source 2 is explicitly out of scope (for now..?!).
 

@@ -10,11 +10,11 @@ import {
 import type { WorkerRequest, WorkerResponse } from "../src/protocol"
 
 function snapshot(): ArrayBuffer {
-  const bytes = new ArrayBuffer(937)
+  const bytes = new ArrayBuffer(969)
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x53, 0x53, 0x4e])
-  view.setUint32(4, 7, true)
+  view.setUint32(4, 8, true)
   view.setBigUint64(8, 7n, true)
   data.set([1, 1, 1, 0], 16)
   view.setFloat32(20, 200, true)
@@ -30,7 +30,7 @@ function snapshot(): ArrayBuffer {
   view.setUint32(84, 96, true)
   view.setUint32(88, 1, true)
   view.setUint32(124, 2, true)
-  view.setUint32(144, 20, true)
+  view.setUint32(144, 52, true)
   view.setUint32(148, 284, true)
   view.setUint32(152,52,true);view.setUint32(156,12,true)
 
@@ -102,10 +102,11 @@ function snapshot(): ArrayBuffer {
   data.set([7, 7, 0, 0], at + 280)
   at += 284
   data.set([0x43, 0x53, 0x4e, 0x50], at)
-  view.setUint32(at + 4, 1, true)
-  view.setBigUint64(at + 8, 7n, true)
-  view.setUint32(at + 16, 0, true)
-  at += 20
+  view.setUint32(at + 4, 2, true)
+  data.fill(1,at+8,at+40)
+  view.setBigUint64(at + 40, 7n, true)
+  view.setUint32(at + 48, 0, true)
+  at += 52
   data.set([0x50, 0x4d, 0x54, 0x4b], at)
   view.setUint32(at + 4, 1, true)
   at+=12;data.set([0x50,0x45,0x42,0x50],at);view.setUint32(at+4,1,true);view.setBigUint64(at+8,1n,true);view.setBigUint64(at+16,2n,true);view.setBigUint64(at+24,7n,true);view.setBigUint64(at+32,1n,true);view.setBigUint64(at+40,7n,true)

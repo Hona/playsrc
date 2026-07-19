@@ -69,6 +69,7 @@ export type MoverResult = Readonly<{
   carry: readonly [number, number, number]
 }>
 export type CollisionSnapshot = Readonly<{
+  worldIdentity: string
   identity: bigint
   objects: number
   bytes: Uint8Array
@@ -216,6 +217,9 @@ export type RegenerateAnimationEvent = Readonly<{
   associatedModel: number
   openTick: bigint
   closeTick: bigint
+  body: number
+  openAnimation: "open" | "close"
+  closeAnimation: "open" | "close"
 }>
 export type AuthorityBlocker = Readonly<{
   code: 1 | 2
@@ -851,12 +855,14 @@ function decodeRandomState(bytes: ArrayBuffer, offset: number, length: number): 
 }
 
 function decodeCollisionSnapshot(bytes: ArrayBuffer, offset: number, length: number): CollisionSnapshot {
-  if (length < 20 || length > 16 * 1024 * 1024) throw new Tf2CodecError("Collision snapshot length is invalid")
+  if (length < 52 || length > 16 * 1024 * 1024) throw new Tf2CodecError("Collision snapshot length is invalid")
   const data = new Uint8Array(bytes, offset, length), view = new DataView(bytes, offset, length)
-  if (new TextDecoder().decode(data.subarray(0, 4)) !== "CSNP" || view.getUint32(4, true) !== 1) {
+  if (new TextDecoder().decode(data.subarray(0, 4)) !== "CSNP" || view.getUint32(4, true) !== 2) {
     throw new Tf2CodecError("Collision snapshot identity is invalid")
   }
-  return Object.freeze({ identity: view.getBigUint64(8, true), objects: count(view.getUint32(16, true), "Collision object"), bytes: data.slice() })
+  const worldIdentity = Array.from(data.subarray(8, 40), (value) => value.toString(16).padStart(2, "0")).join("")
+  if (!HASH.test(worldIdentity)) throw new Tf2CodecError("Collision world identity is invalid")
+  return Object.freeze({ worldIdentity, identity: view.getBigUint64(40, true), objects: count(view.getUint32(48, true), "Collision object"), bytes: data.slice() })
 }
 
 export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
@@ -865,7 +871,7 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
   }
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
-  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 7)
+  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 8)
     throw new Tf2CodecError("snapshot identity is invalid")
   const tf2Class = data[16]
   const team = data[17]
@@ -1264,14 +1270,15 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
   }
   at += mapEffectCount * 40
 
-  requireBytes(regenerateEventCount * 24, "regenerate animation event")
+  requireBytes(regenerateEventCount * 32, "regenerate animation event")
   const regenerateAnimationEvents: RegenerateAnimationEvent[] = []
   for (let index = 0; index < regenerateEventCount; index += 1) {
-    const item = at + index * 24
+    const item = at + index * 32,openAnimation=data[item+28],closeAnimation=data[item+29]
+    if((openAnimation!==1&&openAnimation!==2)||(closeAnimation!==1&&closeAnimation!==2)||data[item+30]!==0||data[item+31]!==0)throw new Tf2CodecError("regenerate animation event is invalid")
     regenerateAnimationEvents.push(Object.freeze({ zone: view.getUint32(item, true), associatedModel: view.getUint32(item + 4, true),
-      openTick: view.getBigUint64(item + 8, true), closeTick: view.getBigUint64(item + 16, true) }))
+      openTick: view.getBigUint64(item + 8, true), closeTick: view.getBigUint64(item + 16, true),body:view.getInt32(item+24,true),openAnimation:openAnimation===1?"open":"close",closeAnimation:closeAnimation===1?"open":"close" }))
   }
-  at += regenerateEventCount * 24
+  at += regenerateEventCount * 32
 
   requireBytes(blockerCount * 4, "authority blocker")
   const authorityBlockers: AuthorityBlocker[] = []

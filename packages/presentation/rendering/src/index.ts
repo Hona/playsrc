@@ -13,7 +13,7 @@ import {
   type RenderConfiguration,
   type ToneOperator,
 } from "./color-output"
-import { configureWorldLightmap, worldMaterialSide } from "./material-state"
+import { configureWorldLightmap, sourceDepthBias, worldMaterialSide } from "./material-state"
 import { OwnedResourceGeneration } from "./resource-generation"
 import { sourceHorizontal4By3FovToVertical, sourceViewportDepthRange } from "./source-camera"
 import {
@@ -113,6 +113,7 @@ export type ModelItem = Readonly<{
   skin?: number
   viewModel?: boolean
   pose?: Readonly<{
+    viewmodel?: null | Readonly<{ frontFace: "clockwise" | "counter-clockwise"; cullFace: "back"; reflected: boolean; drawDisposition: "draw" | "suppressed-success" | "suppressed" }>
     primitives: readonly Readonly<{
       primitive: number
       material: number
@@ -167,6 +168,36 @@ export type ParticleItem = Readonly<{
 }>
 
 export type FrameCaptureRequest = Readonly<{ format: "image/png" }>
+export type WaterFramePass = Readonly<{
+  kind: "reflection" | "refraction" | "main" | "intersection"
+  origin: readonly [number, number, number]
+  angles: readonly [number, number, number]
+  renderAboveWater: boolean
+  renderUnderWater: boolean
+  renderWaterSurface: boolean
+  drawEntities: boolean
+  drawSky2d: boolean
+  clip: null | Readonly<{ height: number; keep: "above" | "below" }>
+  forcedVisibilityLeaf: number | null
+  fog: Readonly<{ kind: "world" }> | Readonly<{ kind: "water"; volume: number; heightFog: boolean }>
+  surfaces: Uint32Array
+}>
+export type WaterFramePlan = Readonly<{
+  visibleWater: null | Readonly<{
+    volume: number
+    visibleLeaf: number
+    eyeLeaf: number
+    eyeInVolume: boolean
+    surfaceZ: number
+    distanceToWater: number | null
+    material: string
+    translucent: boolean
+    evaluated: Readonly<{ normalFrame: number; normalTransform: Float32Array; cheapStart: number; cheapEnd: number }>
+  }>
+  render: Readonly<{ cheap: boolean; reflect: boolean; refract: boolean; reflectEntities: boolean; drawSurface: boolean; opaque: boolean }>
+  nearPlaneIntersects: boolean
+  passes: readonly WaterFramePass[]
+}>
 
 export type Frame = Readonly<{
   camera: Camera
@@ -177,8 +208,9 @@ export type Frame = Readonly<{
   exposureHistogram?: Uint32Array
   deltaSeconds?: number
   capture?: FrameCaptureRequest
-  visibility?: Readonly<{ worldIdentity: string; cacheIdentity: string; surfaces: Uint32Array }>
+  visibility?: Readonly<{ worldIdentity: string; cacheIdentity: string; surfaces: Uint32Array; water: WaterFramePlan }>
   brushModels?:Readonly<{sourceIdentity:bigint;registryIdentity:bigint;tick:bigint;entityRevision:bigint;collisionRevision:bigint;models:readonly Readonly<{sourceIndex:number;model:number;worldPosition:readonly[number,number,number];worldAngles:readonly[number,number,number];renderMode:number;color:readonly[number,number,number,number];renderFx:number;effects:number;draw:boolean;mover:unknown}>[]}>
+  collisionWorldIdentity?: string
 }>
 
 export type DirectionalTextureInput = Readonly<{
@@ -206,6 +238,32 @@ export type EnvironmentFragmentInput = Readonly<{
   normals: Float32Array
   uv: Float32Array
   indices: Uint32Array
+  lightmapUv: Float32Array
+  visibility: Readonly<
+    | { kind: "world"; leaves: readonly number[]; clusters: readonly number[]; areas: readonly number[] }
+    | { kind: "brush-model"; entity: bigint; model: number }
+  >
+}>
+type EffectiveInput<T> = Readonly<{ value: T; origin: "authored" | "shader-initializer" | "type-initializer" }>
+export type WaterMaterialInput = Readonly<{
+  identity:string
+  mapMaterial:number|null
+  opacity:"opaque"|"translucent"
+  textures:readonly Readonly<{role:number;disposition:"source"|"environment"|"render-target";logicalPath:string|null}>[]
+  normalFrame:EffectiveInput<number>
+  normalTransform:Readonly<{matrix:Float32Array;proxyMutated:boolean}>
+  aboveWater:EffectiveInput<boolean>
+  reflectAmount:EffectiveInput<number>
+  refractAmount:EffectiveInput<number>
+  reflectTint:EffectiveInput<readonly[number,number,number]>
+  refractTint:EffectiveInput<readonly[number,number,number]>
+  reflectionBlendFactor:EffectiveInput<number>
+  fog:Readonly<{enabled:EffectiveInput<boolean>|null;color:EffectiveInput<readonly[number,number,number]>;start:EffectiveInput<number>;end:EffectiveInput<number>}>
+  forceCheap:EffectiveInput<boolean>
+  forceExpensive:EffectiveInput<boolean>
+  reflectEntities:EffectiveInput<boolean>
+  blurRefraction:EffectiveInput<boolean>
+  fresnel:Readonly<{cheapEnabled:boolean;expensiveConstant:readonly[number,number,number,number]}>
 }>
 export type EnvironmentInput = Readonly<{
   profile: "ldr" | "hdr"
@@ -227,8 +285,22 @@ export type EnvironmentInput = Readonly<{
     dynamic: boolean
     material: string
     fragments: readonly EnvironmentFragmentInput[]
+    sourceIndex: number
+    receiver: null | Readonly<{ entity: bigint | null; model: number; parentEntity: number | null; localOrigin: readonly [number, number, number]; origin: readonly [number, number, number]; angles: readonly [number, number, number] }>
+    normalOffset: number
+    polygonOffset: "none" | "decal"
   }>[]
   textures: readonly EnvironmentTextureInput[]
+  collisionWorldIdentity: string
+  receiverSnapshotRevision: bigint
+  placementRevision: bigint
+  authoredTextures: ReadonlyMap<string, AuthoredTextureInput>
+  waterSurfaceFacts: readonly Readonly<{ face:number; model:number; material:number; selected:boolean; plane:readonly[number,number,number,number]; bindings:Readonly<{environment:boolean;reflection:boolean;refraction:boolean}>}>[]
+  waterVolumeFacts: readonly Readonly<{index:number;surfaceZ:number;minimumZ:number;surfaceMaterial:number;bottomMaterial:unknown;leaves:readonly number[];clusters:readonly number[];areas:readonly number[];contents:number;plane:readonly[number,number,number,number];surfaceTranslucent:boolean;bottomTranslucent:boolean|null;surfaceBindings:Readonly<{environment:boolean;reflection:boolean;refraction:boolean}>;bottomBindings:Readonly<{environment:boolean;reflection:boolean;refraction:boolean}>|null}>[]
+  waterMaterials: ReadonlyMap<string, WaterMaterialInput>
+  leafMinimumDistanceToWater: Uint16Array
+  sky:null|Readonly<{name:string;faces:readonly Readonly<{face:number;material:string;selectedTextures:readonly Readonly<{logicalPath:string;sha256:string}>[]}>[]}>
+  cubemapFacts:readonly Readonly<{index:number;logicalPath:string}>[]
 }>
 
 export type MaterialStateInput = Readonly<{
@@ -254,6 +326,24 @@ export type MaterialStateInput = Readonly<{
   allMips: boolean
   samplingAvailable: boolean
   alphaTestReference: number
+  alphaModulation: number
+  alphaOwnership: Readonly<{
+    baseTextureAvailable: boolean
+    opacity: boolean
+    alphaTest: boolean
+    selfIlluminationMask: boolean
+    environmentMask: boolean
+    phongMask: boolean
+    tintMask: boolean
+    vertexAlpha: boolean
+    materialAlphaModulation: boolean
+  }>
+  fragmentDiscard: Readonly<{
+    kind: "none" | "alpha"
+    source: "base-texture-or-one" | "shader-output"
+    pass: "greater" | "greater-or-equal"
+    reference: number
+  }>
 }>
 export type ModelMaterialInput = Readonly<{
   identity: string
@@ -317,6 +407,7 @@ export type MapLoadRequest = Readonly<{
   materialStates?: ReadonlyMap<string, MaterialStateInput>
   particleTextures?: readonly EnvironmentTextureInput[]
   modelOccurrences?: readonly Readonly<{ entity: number; model: string; matrix: Float32Array }>[]
+  modelFacing?: ReadonlyMap<string, Readonly<{ frontFace: "clockwise" | "counter-clockwise"; cullFace: "back" }>>
   modelMaterials?: ReadonlyMap<string, ModelMaterialInput>
   authoredTextures?: ReadonlyMap<string, AuthoredTextureInput>
   brushModels?:readonly Readonly<{index:number;surfaceRange:readonly[number,number];vertexCount:number;triangleCount:number;materials:readonly number[]}>[]
@@ -360,6 +451,8 @@ export type FrameResult = Readonly<{
   submission: number
   exposure: ExposureSnapshot
   visibleProjectedMarks: number
+  waterPasses: readonly ("reflection"|"refraction"|"main"|"intersection")[]
+  waterStateRestored: boolean
   viewModelPass?: Readonly<{
     depthRange: readonly [number, number]
     viewportRestored: boolean
@@ -416,6 +509,12 @@ export class RenderingError extends Error {
   }
 }
 
+type WaterMeshResource = Readonly<{
+  mesh: THREE.Mesh
+  materialIdentity: string
+}>
+type WaterMaterialResource = Readonly<{material:THREE.MeshBasicNodeMaterial;normalFrames:readonly THREE.DataTexture[];normalNode:any}>
+
 type SceneResources = {
   map: RuntimeMap
   payload: Uint8Array
@@ -423,6 +522,7 @@ type SceneResources = {
   loadRequest: Omit<MapLoadRequest, "payload" | "signal">
   group: THREE.Group
   modelTemplates: Map<string, THREE.Group>
+  modelOccurrenceInstances:Map<number,THREE.Group>
   brushModelTemplates:Map<number,THREE.Group>
   particleTextures: Map<string, THREE.DataTexture>
   particleMaterials: Map<string, THREE.MeshBasicNodeMaterial>
@@ -432,7 +532,11 @@ type SceneResources = {
   exposureUniform: ReturnType<typeof TSL.uniform>
   diagnostics: readonly SceneDiagnostic[]
   worldBatches: readonly { mesh: THREE.Mesh; faces: Uint32Array }[]
-  projectedMarks: readonly { mesh: THREE.Mesh; face: number }[]
+  projectedMarks: readonly { mesh: THREE.Mesh; face: number; sourceIndex: number; visibility: EnvironmentFragmentInput["visibility"] }[]
+  waterMeshes: readonly WaterMeshResource[]
+  waterMaterials: ReadonlyMap<string,WaterMaterialResource>
+  reflectionTarget: THREE.RenderTarget
+  refractionTarget: THREE.RenderTarget
   result: SceneResult
   disposed: boolean
 }
@@ -509,6 +613,7 @@ function disposeScene(scene: SceneResources): void {
   scene.group.clear()
   scene.disposables.dispose()
   scene.modelTemplates.clear()
+  scene.modelOccurrenceInstances.clear()
 }
 
 function textureFromRgba(
@@ -529,13 +634,13 @@ function textureFromRgba(
   return texture
 }
 
-function textureFromAuthored(input: AuthoredTextureInput, colorSpace: string): THREE.DataTexture {
+function textureFromAuthored(input: AuthoredTextureInput, colorSpace: string, frame = 0): THREE.DataTexture {
   if (input.depth !== 1 || input.frameCount < 1 || !input.faces.includes(0) ||
-    input.sampling.wrapS === 2 || input.sampling.wrapT === 2 || input.sampling.wrapU === 2) {
+    frame < 0 || frame >= input.frameCount || input.sampling.wrapS === 2 || input.sampling.wrapT === 2 || input.sampling.wrapU === 2) {
     throw new RenderingError("UnsupportedFeature", `authored 2D texture ${input.logicalPath} requires an unsupported topology or border sampler`)
   }
   const planes = input.planes
-    .filter((plane) => plane.frame === 0 && plane.face === 0 && plane.slice === 0)
+    .filter((plane) => plane.frame === frame && plane.face === 0 && plane.slice === 0)
     .sort((left, right) => left.mip - right.mip)
   if (planes.length !== input.mipCount || planes.some((plane, mip) => plane.mip !== mip)) {
     throw new RenderingError("MissingInput", `authored texture ${input.logicalPath} has an incomplete selected mip chain`)
@@ -579,21 +684,40 @@ function textureFromLightmap(lightmap: RuntimeLightmap, plane: Float32Array): TH
 
 function materialOptions(resolved: RuntimeMaterial, state?: MaterialStateInput): THREE.MeshBasicMaterialParameters {
   const blendFactor = (value: number) => [THREE.ZeroFactor, THREE.OneFactor, THREE.SrcAlphaFactor, THREE.OneMinusSrcAlphaFactor][value] ?? THREE.OneFactor
+  const bias = sourceDepthBias(state?.polygonOffset === 1 ? "decal" : "none")
   return {
     transparent: state?.blendEnabled ?? (resolved.features & 1) !== 0,
     blending: state?.blendEnabled ? THREE.CustomBlending : THREE.NormalBlending,
     blendSrc: state ? blendFactor(state.blendSource) : undefined,
     blendDst: state ? blendFactor(state.blendDestination) : undefined,
-    alphaTest: state?.alphaTest ? state.alphaTestReference : (resolved.features & 4) !== 0 ? 0.7 : 0,
+    alphaTest: 0,
     side: state?.cull === 1 ? THREE.DoubleSide : worldMaterialSide(resolved.features),
     depthTest: state?.depthTest ?? true,
     depthWrite: state?.depthWrite ?? true,
     depthFunc: state?.depthFunction === 0 ? THREE.LessDepth : THREE.LessEqualDepth,
-    polygonOffset: state?.polygonOffset === 1,
-    polygonOffsetFactor: state?.polygonOffset === 1 ? -0.5 : 0,
-    polygonOffsetUnits: state?.polygonOffset === 1 ? -262_144 : 0,
+    polygonOffset: bias.enabled,
+    polygonOffsetFactor: bias.slopeScale,
+    polygonOffsetUnits: bias.units,
     wireframe: state?.wireframe ?? false,
   }
+}
+
+function sourceModelSide(facing: Readonly<{ frontFace: "clockwise" | "counter-clockwise"; cullFace: "back" }>): THREE.Side {
+  if (facing.cullFace !== "back") throw new RenderingError("MalformedInput", "StudioModel cull face is invalid")
+  return facing.frontFace === "clockwise" ? THREE.BackSide : THREE.FrontSide
+}
+
+function sourceFragmentColor(sample: any, state?: MaterialStateInput): any {
+  const alpha = sample.a.mul(state?.alphaModulation ?? 1)
+  const color = TSL.vec4(sample.rgb, alpha)
+  if (state?.fragmentDiscard.kind !== "alpha") return color
+  return TSL.Fn(() => {
+    const rejected = state.fragmentDiscard.pass === "greater"
+      ? alpha.lessThanEqual(state.fragmentDiscard.reference)
+      : alpha.lessThan(state.fragmentDiscard.reference)
+    rejected.discard()
+    return color
+  })()
 }
 
 function worldNodeMaterial(
@@ -647,7 +771,7 @@ function worldNodeMaterial(
       .add(TSL.texture(lightmaps[3], TSL.uv(1)).rgb.mul(weights.z))
     irradiance = TSL.attribute("lightmapKind", "float").greaterThan(1.5).select(directionalLight, flat)
   }
-  material.colorNode = TSL.vec4(base.rgb.mul(irradiance).mul(exposure), base.a)
+  material.colorNode = sourceFragmentColor(TSL.vec4(base.rgb.mul(irradiance).mul(exposure), base.a), state)
   material.toneMapped = false
   return material
 }
@@ -833,6 +957,8 @@ class RendererOwner implements Renderer {
       request.environment &&
       (request.environment.profile !== map.lighting.profile ||
         !HASH.test(request.environment.identity) ||
+        !HASH.test(request.environment.collisionWorldIdentity) ||
+        request.environment.receiverSnapshotRevision < 1n || request.environment.placementRevision < 1n ||
         Object.values(request.environment).some(
           (value) => typeof value === "number" && (!Number.isSafeInteger(value) || value < 0),
         ))
@@ -866,6 +992,11 @@ class RendererOwner implements Renderer {
         !key ||
         materialStates.has(key) ||
         !Number.isFinite(state.alphaTestReference) ||
+        !Number.isFinite(state.alphaModulation) || state.alphaModulation < 0 || state.alphaModulation > 1 ||
+        state.fragmentDiscard.reference !== (state.fragmentDiscard.kind === "alpha" ? state.alphaTestReference : 0) ||
+        state.alphaTest !== (state.fragmentDiscard.kind === "alpha") ||
+        (state.fragmentDiscard.kind === "none" && (state.fragmentDiscard.source !== "base-texture-or-one" || state.fragmentDiscard.pass !== "greater")) ||
+        Object.values(state.alphaOwnership).some((value) => typeof value !== "boolean") ||
         typeof state.samplingAvailable !== "boolean" ||
         typeof state.mipmapped !== "boolean" ||
         typeof state.noLod !== "boolean" ||
@@ -879,6 +1010,15 @@ class RendererOwner implements Renderer {
         ))
       ) throw new RenderingError("MalformedInput", "material state input is invalid")
       materialStates.set(key, Object.freeze({ ...state }))
+    }
+    for (const mark of request.environment?.markRecords ?? []) {
+      const state = materialStates.get(mark.material.toLowerCase())
+      if (mark.status === 0 && (!mark.receiver || !state || (mark.polygonOffset === "decal") !== (state.polygonOffset === 1) ||
+        mark.fragments.some((fragment) => fragment.visibility.kind === "brush-model"
+          ? mark.receiver?.entity !== fragment.visibility.entity || mark.receiver.model !== fragment.visibility.model
+          : fragment.model !== 0))) {
+        throw new RenderingError("IdentityMismatch", "projected mark receiver or material contract differs")
+      }
     }
     const authoredTextures = new Map<string, AuthoredTextureInput>()
     for (const [identity, texture] of request.authoredTextures ?? []) {
@@ -904,6 +1044,13 @@ class RendererOwner implements Renderer {
       }
       modelMaterials.set(key, material)
     }
+    const modelFacing = new Map(request.modelFacing ?? [])
+    for (const model of map.models) {
+      const identity = model.logicalPath.split("#skin=")[0]!.toLowerCase()
+      const facing = modelFacing.get(identity)
+      if (!facing) throw new RenderingError("MissingInput", `StudioModel facing ${identity} is unavailable`)
+      sourceModelSide(facing)
+    }
     const materialIdentities = new Set([
       ...map.materials.map((material) => material.logicalPath.toLowerCase()),
       ...map.models.flatMap((model) => model.materials.map((material) => material.logicalPath.toLowerCase())),
@@ -912,7 +1059,7 @@ class RendererOwner implements Renderer {
       throw new RenderingError("MalformedInput", "directional texture names an unavailable material")
     }
     this.#checkAbort(request.signal, ordinal)
-    const normalizedRequest = Object.freeze({ ...request, materialStates, authoredTextures, modelMaterials })
+    const normalizedRequest = Object.freeze({ ...request, materialStates, authoredTextures, modelMaterials, modelFacing })
     const staged = this.#buildScene(
       map,
       payload,
@@ -954,6 +1101,7 @@ class RendererOwner implements Renderer {
   ): SceneResources {
     const group = new THREE.Group()
     const modelTemplates = new Map<string, THREE.Group>()
+    const modelOccurrenceInstances=new Map<number,THREE.Group>()
     const brushModelTemplates=new Map<number,THREE.Group>()
     const particleTextures = new Map<string, THREE.DataTexture>()
     const particleMaterials = new Map<string, THREE.MeshBasicNodeMaterial>()
@@ -961,7 +1109,14 @@ class RendererOwner implements Renderer {
     const disposables = new OwnedResourceGeneration(this.#deviceGeneration, sceneGeneration)
     const diagnostics: SceneDiagnostic[] = []
     const worldBatches: { mesh: THREE.Mesh; faces: Uint32Array }[] = []
-    const projectedMarks: { mesh: THREE.Mesh; face: number }[] = []
+    const projectedMarks: { mesh: THREE.Mesh; face: number; sourceIndex: number; visibility: EnvironmentFragmentInput["visibility"] }[] = []
+    const waterMeshes: WaterMeshResource[]=[]
+    const targetWidth=Math.max(1,Number((this.#canvas as {width?:number}).width??1)),targetHeight=Math.max(1,Number((this.#canvas as {height?:number}).height??1))
+    const reflectionTarget=disposables.add(new THREE.RenderTarget(targetWidth,targetHeight,{depthBuffer:true}))
+    const refractionTarget=disposables.add(new THREE.RenderTarget(targetWidth,targetHeight,{depthBuffer:true}))
+    reflectionTarget.texture.colorSpace=THREE.NoColorSpace
+    refractionTarget.texture.colorSpace=THREE.NoColorSpace
+    const waterMaterials=new Map<string,WaterMaterialResource>()
     const occurrenceMatrices = modelOccurrenceMatrices(map, request.modelOccurrences)
     const lightmap = map.lightmap
     if (!lightmap) throw new RenderingError("MissingInput", "runtime lightmap is unavailable")
@@ -1036,10 +1191,43 @@ class RendererOwner implements Renderer {
         diagnostics.push(diagnostic("MissingMaterial", identity, "resolved base texture is unavailable"))
         return undefined
       }
+      const authored=request.environment?.authoredTextures.get(source.logicalPath.toLowerCase())
+      if(authored){const key=`environment:${source.logicalPath.toLowerCase()}`,retained=authoredGpu.get(key);if(retained)return retained;const texture=textureFromAuthored(authored,THREE.SRGBColorSpace);authoredGpu.set(key,texture);disposables.add(texture);return texture}
       requireMipInputs(identity, state)
       const texture = textureFromRgba(source, THREE.SRGBColorSpace, state)
       disposables.add(texture)
       return texture
+    }
+    const createWaterMaterial=(identity:string):WaterMaterialResource=>{
+      const key=identity.toLowerCase(),existing=waterMaterials.get(key);if(existing)return existing
+      const state=request.environment?.waterMaterials.get(key)
+      if(!state)throw new RenderingError("MissingInput",`Water material ${identity} is unavailable`)
+      const normalRequest=state.textures.find(texture=>texture.role===8&&texture.disposition==="source")
+      if(!normalRequest?.logicalPath)throw new RenderingError("MissingInput",`Water normal texture ${identity} is unavailable`)
+      const authored=request.environment?.authoredTextures.get(normalRequest.logicalPath.toLowerCase())
+      if(!authored)throw new RenderingError("MissingInput",`Water authored normal ${normalRequest.logicalPath} is unavailable`)
+      const normalFrames=Object.freeze(Array.from({length:authored.frameCount},(_,frame)=>{const texture=textureFromAuthored(authored,THREE.NoColorSpace,frame);disposables.add(texture);return texture}))
+      const normalNode=TSL.texture(normalFrames[state.normalFrame.value]??normalFrames[0]!)
+      const normal=normalNode.rgb.mul(2).sub(1)
+      const screen=TSL.screenUV
+      const reflectionUv=screen.add(normal.xy.mul(state.reflectAmount.value))
+      const refractionUv=screen.add(TSL.vec2(normal.x,normal.y).mul(state.refractAmount.value))
+      const reflected=TSL.texture(reflectionTarget.texture,reflectionUv).rgb.mul(TSL.vec3(...state.reflectTint.value))
+      const refracted=TSL.texture(refractionTarget.texture,refractionUv).rgb.mul(TSL.vec3(...state.refractTint.value))
+      const hasReflection=state.textures.some(texture=>texture.role===17&&texture.disposition==="render-target")
+      const hasRefraction=state.textures.some(texture=>texture.role===18&&texture.disposition==="render-target")
+      const eye=TSL.normalize(TSL.cameraPosition.sub(TSL.positionWorld))
+      const worldNormal=TSL.normalize(TSL.vec3(normal.x,normal.y,normal.z))
+      const fresnel=TSL.pow(TSL.float(1).sub(TSL.clamp(TSL.dot(eye,worldNormal),0,1)),5)
+      let color:any
+      if(hasReflection&&hasRefraction)color=TSL.mix(refracted,reflected,fresnel)
+      else if(hasReflection)color=reflected
+      else if(hasRefraction)color=refracted
+      else throw new RenderingError("MissingInput",`Water ${identity} has no executable environment, reflection, or refraction binding`)
+      if(state.fog.enabled?.value){const distance=TSL.length(TSL.cameraPosition.sub(TSL.positionWorld)),range=Math.max(1e-6,state.fog.end.value-state.fog.start.value),fog=TSL.clamp(distance.sub(state.fog.start.value).div(range),0,1);color=TSL.mix(color,TSL.vec3(...state.fog.color.value),fog)}
+      const material=new THREE.MeshBasicNodeMaterial({transparent:state.opacity==="translucent",depthTest:true,depthWrite:state.opacity==="opaque",side:THREE.FrontSide})
+      material.colorNode=TSL.vec4(color,1);material.toneMapped=false;disposables.add(material)
+      const resource=Object.freeze({material,normalFrames,normalNode});waterMaterials.set(key,resource);return resource
     }
     const createWorldMesh=(batch:RuntimeBatch):THREE.Mesh|null=>{
         const geometry = new THREE.BufferGeometry()
@@ -1055,6 +1243,7 @@ class RendererOwner implements Renderer {
         const identity = resolved.logicalPath
         const materialState = materialStates.get(identity.toLowerCase())
         if (materialState?.noDraw) return null
+        if(resolved.shader===5){const resource=createWaterMaterial(identity),mesh=new THREE.Mesh(geometry,resource.material);mesh.userData.materialIdentity=identity;waterMeshes.push(Object.freeze({mesh,materialIdentity:identity.toLowerCase()}));return mesh}
         const baseTexture = createBase(resolved, identity)
         const kinds = new Set(batch.lightmapKind)
         const requiresNormal = kinds.has(2)
@@ -1086,14 +1275,12 @@ class RendererOwner implements Renderer {
             materialState,
           )
         } else {
-          material = new THREE.MeshBasicMaterial({
-            ...materialOptions(resolved, materialState),
-            color: baseTexture ? 0xffffff : debugColor(identity),
-            map: baseTexture,
-            lightMap: lightmapTextures[0],
-            lightMapIntensity: 1,
-            toneMapped: false,
-          })
+          const nodeMaterial = new THREE.MeshBasicNodeMaterial(materialOptions(resolved, materialState))
+          const base = baseTexture ? TSL.texture(baseTexture, TSL.uv()) : TSL.vec4(TSL.color(debugColor(identity)), 1)
+          const irradiance = TSL.texture(lightmapTextures[0], TSL.uv(1)).rgb
+          nodeMaterial.colorNode = sourceFragmentColor(TSL.vec4(base.rgb.mul(irradiance), base.a), materialState)
+          nodeMaterial.toneMapped = false
+          material = nodeMaterial
         }
         disposables.add(material)
         const mesh = new THREE.Mesh(geometry, material)
@@ -1105,8 +1292,10 @@ class RendererOwner implements Renderer {
       for(const model of map.brushModels){const template=new THREE.Group();for(const batch of model.batches){const mesh=createWorldMesh(batch);if(mesh)template.add(mesh)}brushModelTemplates.set(model.index,template)}
 
       const environmentTextures = new Map<string, THREE.DataTexture>()
+      const authoredEnvironmentMaterials=new Set<string>()
       for (const texture of request.environment?.textures ?? []) {
-        const value = textureFromRgba(texture, THREE.SRGBColorSpace, materialStates.get(texture.material.toLowerCase()))
+        const authored=request.environment?.authoredTextures.get(texture.logicalPath.toLowerCase()),value=authored?textureFromAuthored(authored,THREE.SRGBColorSpace):textureFromRgba(texture, THREE.SRGBColorSpace, materialStates.get(texture.material.toLowerCase()))
+        if(authored)authoredEnvironmentMaterials.add(texture.material.toLowerCase())
         environmentTextures.set(texture.material.toLowerCase(), value)
         disposables.add(value)
       }
@@ -1126,16 +1315,13 @@ class RendererOwner implements Renderer {
           disposables.add(geometry)
           const state = materialStates.get(mark.material.toLowerCase())
           if (!state) throw new RenderingError("MissingInput", `projected mark state ${mark.material} is unavailable`)
-          requireMipInputs(mark.material, state)
-          const material = new THREE.MeshBasicMaterial({
-            ...materialOptions({ logicalPath: mark.material, width: 1, height: 1, shader: 3, features: 1, textureRole: 0 }, state),
-            map: texture,
-            toneMapped: false,
-          })
+          if(!authoredEnvironmentMaterials.has(mark.material.toLowerCase()))requireMipInputs(mark.material, state)
+          const material = new THREE.MeshBasicNodeMaterial(materialOptions({ logicalPath: mark.material, width: 1, height: 1, shader: 3, features: 1, textureRole: 0 }, state))
+          material.colorNode = sourceFragmentColor(TSL.texture(texture, TSL.uv()), state)
+          material.toneMapped = false
           disposables.add(material)
           const mesh = new THREE.Mesh(geometry, material)
-          projectedMarks.push({ mesh, face: fragment.face })
-          worldBatches.push({ mesh, faces: Uint32Array.of(fragment.face) })
+          projectedMarks.push({ mesh, face: fragment.face, sourceIndex: mark.sourceIndex, visibility: fragment.visibility })
           group.add(mesh)
         }
       }
@@ -1154,12 +1340,13 @@ class RendererOwner implements Renderer {
           const materialState = materialStates.get(resolved.logicalPath.toLowerCase())
           if (materialState?.noDraw) continue
           const baseTexture = createModelBase(resolved.logicalPath)
-          const material = new THREE.MeshBasicMaterial({
+          const material = new THREE.MeshBasicNodeMaterial({
             ...materialOptions(resolved, materialState),
-            color: baseTexture ? 0xffffff : debugColor(resolved.logicalPath),
-            map: baseTexture,
-            toneMapped: false,
+            side: sourceModelSide(request.modelFacing!.get(model.logicalPath.split("#skin=")[0]!.toLowerCase())!),
           })
+          const base = baseTexture ? TSL.texture(baseTexture, TSL.uv()) : TSL.vec4(TSL.color(debugColor(resolved.logicalPath)), 1)
+          material.colorNode = sourceFragmentColor(base, materialState)
+          material.toneMapped = false
           disposables.add(material)
           const mesh = new THREE.Mesh(geometry, material)
           mesh.userData.primitiveMaterial = primitive.material
@@ -1174,6 +1361,7 @@ class RendererOwner implements Renderer {
         const m = occurrenceMatrices.get(occurrence.entity)!.matrix
         instance.matrix.set(m[0]!, m[1]!, m[2]!, m[3]!, m[4]!, m[5]!, m[6]!, m[7]!, m[8]!, m[9]!, m[10]!, m[11]!, 0, 0, 0, 1)
         instance.matrixAutoUpdate = false
+        modelOccurrenceInstances.set(occurrence.entity,instance)
         group.add(instance)
       }
       for (const texture of request.particleTextures ?? []) {
@@ -1190,7 +1378,7 @@ class RendererOwner implements Renderer {
         const blend = TSL.attribute("particleSheetBlend", "float")
         const color = TSL.attribute("particleColor", "vec4")
         const sampled = current.mul(TSL.float(1).sub(blend)).add(next.mul(blend))
-        material.colorNode = TSL.vec4(sampled.rgb.mul(color.rgb), sampled.a.mul(color.a))
+        material.colorNode = sourceFragmentColor(TSL.vec4(sampled.rgb.mul(color.rgb), sampled.a.mul(color.a)), state)
         material.toneMapped = false
         particleMaterials.set(texture.material.toLowerCase(), material)
         disposables.add(material)
@@ -1199,6 +1387,7 @@ class RendererOwner implements Renderer {
       const failed = {
         group,
         modelTemplates,
+        modelOccurrenceInstances,
         brushModelTemplates,
         particleTextures,
         particleMaterials,
@@ -1213,7 +1402,12 @@ class RendererOwner implements Renderer {
     }
 
     const requirements = map.lighting.profile === "hdr" ? map.lighting.descriptor.requirements : Object.freeze([])
-    for (const requirement of requirements) {
+    const remainingRequirements=requirements.filter(requirement=>{
+      if(requirement.identity==="map-environment-presentation")return !request.environment
+      if(requirement.identity==="map-water-presentation")return !request.environment||request.environment.waterMaterials.size===0||request.environment.waterSurfaceFacts.length===0
+      return true
+    })
+    for (const requirement of remainingRequirements) {
       diagnostics.push(
         diagnostic(
           requirement.disposition === "Missing" ? "MissingProfileInput" : "UnsupportedProfileInput",
@@ -1239,7 +1433,7 @@ class RendererOwner implements Renderer {
       directionalFaces,
       worldLights,
       ambientSamples,
-      requirements,
+      requirements:Object.freeze(remainingRequirements),
       diagnostics: Object.freeze(diagnostics),
       resources: Object.freeze({
         geometries: [...disposables].filter((value) => value instanceof THREE.BufferGeometry).length,
@@ -1268,6 +1462,7 @@ class RendererOwner implements Renderer {
         materialStates: new Map(materialStates),
         particleTextures: request.particleTextures?.map((texture) => Object.freeze({ ...texture, rgba: texture.rgba.slice() })),
         modelOccurrences: request.modelOccurrences?.map((value) => Object.freeze({ ...value, matrix: value.matrix.slice() })),
+        modelFacing: new Map(request.modelFacing ?? []),
         modelMaterials: new Map(request.modelMaterials ?? []),
         authoredTextures: new Map([...(request.authoredTextures ?? [])].map(([identity, texture]) => [identity, Object.freeze({
           ...texture,
@@ -1279,6 +1474,7 @@ class RendererOwner implements Renderer {
       },
       group,
       modelTemplates,
+      modelOccurrenceInstances,
       brushModelTemplates,
       particleTextures,
       particleMaterials,
@@ -1289,6 +1485,10 @@ class RendererOwner implements Renderer {
       diagnostics: Object.freeze(diagnostics),
       worldBatches: Object.freeze(worldBatches),
       projectedMarks: Object.freeze(projectedMarks),
+      waterMeshes:Object.freeze(waterMeshes),
+      waterMaterials,
+      reflectionTarget,
+      refractionTarget,
       result,
       disposed: false,
     }
@@ -1314,6 +1514,24 @@ class RendererOwner implements Renderer {
         const visible = new Set(frame.visibility.surfaces)
         for (const batch of this.#active.worldBatches)
           batch.mesh.visible = batch.faces.some((face) => visible.has(face))
+        if (!frame.collisionWorldIdentity || frame.collisionWorldIdentity !== this.#active.result.environment?.collisionWorldIdentity) {
+          throw new RenderingError("IdentityMismatch", "mark collision-world identity differs")
+        }
+        for (const mark of this.#active.projectedMarks) {
+          if (mark.visibility.kind === "world") {
+            mark.mesh.visible = visible.has(mark.face)
+            mark.mesh.matrixAutoUpdate = true
+            sourceTransform(mark.mesh, [0, 0, 0], [0, 0, 0])
+          } else {
+            const receiver = frame.brushModels?.models.find((model) =>
+              BigInt(model.sourceIndex) === mark.visibility.entity && model.model === mark.visibility.model)
+            mark.mesh.visible = receiver?.draw === true
+            if (receiver) sourceTransform(mark.mesh, receiver.worldPosition, receiver.worldAngles)
+          }
+        }
+        const water=frame.visibility.water,visibleWater=water.visibleWater
+        if(visibleWater){const resource=this.#active.waterMaterials.get(visibleWater.material.toLowerCase());if(!resource)throw new RenderingError("MissingInput",`current Water material ${visibleWater.material} is unavailable`);const frameIndex=((visibleWater.evaluated.normalFrame%resource.normalFrames.length)+resource.normalFrames.length)%resource.normalFrames.length,texture=resource.normalFrames[frameIndex]!,matrix=visibleWater.evaluated.normalTransform;texture.matrixAutoUpdate=false;texture.matrix.set(matrix[0]!,matrix[1]!,matrix[3]!,matrix[4]!,matrix[5]!,matrix[7]!,matrix[12]!,matrix[13]!,matrix[15]!);texture.needsUpdate=true;resource.normalNode.value=texture;for(const waterMesh of this.#active.waterMeshes){waterMesh.mesh.material=resource.material;waterMesh.mesh.visible=water.render.drawSurface&&waterMesh.materialIdentity===visibleWater.material.toLowerCase()}}
+        else for(const waterMesh of this.#active.waterMeshes)waterMesh.mesh.visible=false
       }
       if (frame.exposureHistogram) this.#exposure.submit(frame.exposureHistogram)
       const exposure =
@@ -1324,9 +1542,11 @@ class RendererOwner implements Renderer {
       this.#setCamera(frame.camera)
       const viewModelDepthRange = this.#stageDynamicItems(frame)
       let viewModelPass: FrameResult["viewModelPass"]
+      let waterPasses:FrameResult["waterPasses"]=Object.freeze([]),waterStateRestored=true
       if (!this.#suspended) {
-        this.#backend.autoClear = true
-        await this.#backend.renderAsync(this.#scene, this.#camera)
+        const waterResult=await this.#renderWaterPasses(frame)
+        waterPasses=waterResult.passes
+        waterStateRestored=waterResult.restored
         if (this.#viewModels.children.length > 0) {
           if (!viewModelDepthRange) throw new RenderingError("InvalidState", "viewmodel depth range is unavailable")
           this.#backend.autoClear = false
@@ -1351,6 +1571,8 @@ class RendererOwner implements Renderer {
         submission: this.#submission,
         exposure,
         visibleProjectedMarks: this.#active.projectedMarks.reduce((total, mark) => total + Number(mark.mesh.visible), 0),
+        waterPasses,
+        waterStateRestored,
         viewModelPass,
         capture,
       })
@@ -1455,6 +1677,7 @@ class RendererOwner implements Renderer {
         !this.#active!.particleTextures.has(item.material.toLowerCase()) || !item.primarySheet)
         throw new RenderingError("MalformedInput", "particle draw item is invalid")
     }
+    if(frame.visibility){const water=frame.visibility.water;if(water.passes.length<1||water.passes.length>4||water.passes.filter(pass=>pass.kind==="main").length!==1)throw new RenderingError("MalformedInput","Water view plan is invalid");let prior=-1;for(const pass of water.passes){const order=pass.kind==="reflection"?0:pass.kind==="refraction"?1:pass.kind==="main"?2:3;if(order<prior||!finite([...pass.origin,...pass.angles,pass.clip?.height??0])||pass.surfaces.length>100_000)throw new RenderingError("MalformedInput","Water pass is invalid");prior=order}if(water.visibleWater&&(!finite([water.visibleWater.surfaceZ,water.visibleWater.evaluated.cheapStart,water.visibleWater.evaluated.cheapEnd,...water.visibleWater.evaluated.normalTransform])||water.visibleWater.evaluated.normalTransform.length!==16))throw new RenderingError("MalformedInput","current Water state is invalid")}
     if(frame.brushModels){let prior=-1;for(const model of frame.brushModels.models){if(model.sourceIndex<=prior||model.model<1||model.model>=(this.#active!.loadRequest.brushModels?.length??0)||!finite([...model.worldPosition,...model.worldAngles])||model.renderMode<0||model.renderMode>10)throw new RenderingError("MalformedInput","brush-model publication record is invalid");prior=model.sourceIndex}}
   }
 
@@ -1474,6 +1697,35 @@ class RendererOwner implements Renderer {
     this.#camera.lookAt(this.#camera.position.clone().add(direction))
     this.#viewCamera.position.copy(this.#camera.position)
     this.#viewCamera.quaternion.copy(this.#camera.quaternion)
+  }
+
+  #setWaterCamera(pass:WaterFramePass,frame:Camera):void{
+    this.#camera.position.set(...pass.origin)
+    this.#camera.fov=frame.verticalFovDegrees;this.#camera.near=frame.near;this.#camera.far=frame.far;this.#camera.updateProjectionMatrix()
+    const yaw=THREE.MathUtils.degToRad(pass.angles[1]),pitch=THREE.MathUtils.degToRad(pass.angles[0]),direction=new THREE.Vector3(Math.cos(pitch)*Math.cos(yaw),Math.cos(pitch)*Math.sin(yaw),-Math.sin(pitch))
+    this.#camera.lookAt(this.#camera.position.clone().add(direction))
+  }
+
+  #setClip(clip:WaterFramePass["clip"]):()=>void{
+    if(!clip)return()=>{}
+    const saved=new Map<THREE.Material,THREE.Plane[]|null>()
+    const plane=new THREE.Plane(new THREE.Vector3(0,0,clip.keep==="above"?1:-1),clip.keep==="above"?-clip.height:clip.height)
+    for(const root of [this.#world,this.#effects])root.traverse(object=>{if(!(object instanceof THREE.Mesh))return;for(const material of Array.isArray(object.material)?object.material:[object.material]){if(!saved.has(material))saved.set(material,material.clippingPlanes);material.clippingPlanes=[plane]}})
+    return()=>{for(const [material,value] of saved)material.clippingPlanes=value}
+  }
+
+  async #renderWaterPasses(frame:Frame):Promise<Readonly<{passes:FrameResult["waterPasses"];restored:boolean}>>{
+    if(!this.#active)throw new RenderingError("InvalidState","renderer has no active Water resources")
+    const plan=frame.visibility?.water
+    if(!plan){this.#backend.autoClear=true;await this.#backend.renderAsync(this.#scene,this.#camera);return Object.freeze({passes:Object.freeze(["main"]),restored:true})}
+    const worldVisibility=this.#active.worldBatches.map(batch=>batch.mesh.visible),markVisibility=this.#active.projectedMarks.map(mark=>mark.mesh.visible),waterVisibility=this.#active.waterMeshes.map(water=>water.mesh.visible),background=this.#scene.background,effectsVisible=this.#effects.visible
+    const completed:("reflection"|"refraction"|"main"|"intersection")[]=[]
+    if(plan.visibleWater&&plan.passes.some(pass=>pass.kind!=="main"&&pass.drawSky2d)&&background===null)throw new RenderingError("MissingInput","Water auxiliary view requests the unresolved 2D sky pass")
+    try{
+      for(const pass of plan.passes){const visible=new Set(pass.surfaces);this.#active.worldBatches.forEach(batch=>batch.mesh.visible=batch.faces.some(face=>visible.has(face)));this.#active.projectedMarks.forEach(mark=>{if(mark.visibility.kind==="world")mark.mesh.visible=visible.has(mark.face)});this.#active.waterMeshes.forEach((water,index)=>water.mesh.visible=pass.renderWaterSurface&&waterVisibility[index]===true);this.#effects.visible=pass.drawEntities;this.#scene.background=pass.drawSky2d?background:null;this.#setWaterCamera(pass,frame.camera);const restoreClip=this.#setClip(pass.clip);try{this.#backend.setRenderTarget(pass.kind==="reflection"?this.#active.reflectionTarget:pass.kind==="refraction"?this.#active.refractionTarget:null);this.#backend.autoClear=pass.kind!=="intersection";await this.#backend.renderAsync(this.#scene,this.#camera);completed.push(pass.kind)}finally{restoreClip()}}
+    }finally{this.#backend.setRenderTarget(null);this.#backend.autoClear=true;this.#scene.background=background;this.#effects.visible=effectsVisible;this.#active.worldBatches.forEach((batch,index)=>batch.mesh.visible=worldVisibility[index]!);this.#active.projectedMarks.forEach((mark,index)=>mark.mesh.visible=markVisibility[index]!);this.#active.waterMeshes.forEach((water,index)=>water.mesh.visible=waterVisibility[index]!);this.#setCamera(frame.camera)}
+    if(!completed.includes("main"))throw new RenderingError("MalformedInput","Water view plan omitted the main pass")
+    return Object.freeze({passes:Object.freeze(completed),restored:this.#backend.autoClear&&this.#scene.background===background&&this.#effects.visible===effectsVisible})
   }
 
   #clearDynamic(group: THREE.Group): void {
@@ -1571,9 +1823,23 @@ class RendererOwner implements Renderer {
     } else if (item.pose) {
       this.#applyPose(retained.instance, item.pose, true)
     }
+    const frameState = item.pose?.viewmodel
+    if (!frameState) throw new RenderingError("MalformedInput", "complete viewmodel frame state is missing")
+    const encoded = this.#active!.loadRequest.modelFacing?.get(item.model.toLowerCase())
+    if (!encoded) throw new RenderingError("MissingInput", `StudioModel facing ${item.model} is unavailable`)
+    const expectedFront = frameState.reflected
+      ? encoded.frontFace === "clockwise" ? "counter-clockwise" : "clockwise"
+      : encoded.frontFace
+    if (frameState.cullFace !== encoded.cullFace || frameState.frontFace !== expectedFront) {
+      throw new RenderingError("IdentityMismatch", "viewmodel effective facing differs from encoded facing and reflection")
+    }
     sourceTransform(retained.instance, item.position, item.angles!)
-    retained.instance.scale.setScalar(item.scale)
+    retained.instance.scale.set(item.scale, frameState.reflected ? -item.scale : item.scale, item.scale)
+    retained.instance.visible = frameState.drawDisposition === "draw"
     const projection = item.viewModelProjection!
+    if (projection.optionalViewSpaceYReflection !== frameState.reflected) {
+      throw new RenderingError("IdentityMismatch", "viewmodel reflection state differs")
+    }
     this.#viewCamera.fov = sourceHorizontal4By3FovToVertical(projection.horizontalFov4By3)
     this.#viewCamera.near = projection.near
     this.#viewCamera.far = frame.camera.far
@@ -1584,6 +1850,7 @@ class RendererOwner implements Renderer {
 
   #stageDynamicItems(frame: Frame): readonly [number, number] | undefined {
     const effects = new THREE.Group()
+    for(const instance of this.#active!.modelOccurrenceInstances.values())instance.visible=true
     const activeViewModels = new Set<number>()
     let viewModelDepthRange: readonly [number, number] | undefined
     try {
@@ -1615,6 +1882,7 @@ class RendererOwner implements Renderer {
           continue
         }
         const instance = this.#active!.modelTemplates.get(modelKey(item.model, item.skin ?? 0))!.clone(true)
+        const staticInstance=this.#active!.modelOccurrenceInstances.get(item.identity);if(staticInstance)staticInstance.visible=false
         if (item.pose) {
           this.#applyPose(instance, item.pose, false)
         }
@@ -1685,6 +1953,7 @@ class RendererOwner implements Renderer {
       throw new RenderingError("BoundExceeded", "renderer dimensions are invalid")
     this.#backend.setPixelRatio(devicePixelRatio)
     this.#backend.setSize(cssWidth, cssHeight, false)
+    if(this.#active&&width>0&&height>0){this.#active.reflectionTarget.setSize(width,height);this.#active.refractionTarget.setSize(width,height)}
     this.#viewportWidth = cssWidth
     this.#viewportHeight = cssHeight
     this.#camera.aspect = cssHeight === 0 ? 1 : cssWidth / cssHeight

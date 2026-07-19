@@ -200,6 +200,12 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
       const frameTime=Math.max(0,Number(snapshot.tick-priorTick)*0.015)
       priorTick = snapshot.tick
       const now=Number(snapshot.tick)*0.015
+      const phase = exact ? exact.activity - 1 : nextActivity.endsWith("_VM_DRAW") ? 0
+        : nextActivity.endsWith("_VM_PRIMARYATTACK") ? 1
+          : nextActivity.endsWith("_RELOAD_START") ? 2
+            : nextActivity.endsWith("_VM_RELOAD") ? 3
+              : nextActivity.endsWith("_RELOAD_FINISH") ? 4 : 5
+      if (phase < 0 || phase > 5) throw new ProjectilePresentationError("MalformedFact", "viewmodel phase")
       return Object.freeze({
         item: Object.freeze({
           identity: 0x7fff_ff00 + snapshot.class * 4,
@@ -217,7 +223,10 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
           activity,
           previousElapsedSeconds: Math.min(previousElapsed, currentElapsed),
           elapsedSeconds: currentElapsed,
-          currentTimeSeconds:now,frameTimeSeconds:frameTime,planarSpeed:Math.hypot(snapshot.velocity[0],snapshot.velocity[1]),screenAspectRatio:view.aspectRatio,worldFarPlane:view.farPlane,
+           currentTimeSeconds:now,frameTimeSeconds:frameTime,planarSpeed:Math.hypot(snapshot.velocity[0],snapshot.velocity[1]),screenAspectRatio:view.aspectRatio,worldFarPlane:view.farPlane,
+          phase: phase as 0 | 1 | 2 | 3 | 4 | 5,
+          reflectedViewmodel: false,
+          ownerAlive: snapshot.lifecycle === 1,
           skin: snapshot.team === 1 ? 0 : 1,
           lod: 0,
           bodygroups: Object.freeze(artifact.bodygroupCounts.map(() => 0)),
@@ -252,6 +261,10 @@ export type ModelPoseRequest = Readonly<{
   previousElapsedSeconds: number
   elapsedSeconds: number
   currentTimeSeconds:number;frameTimeSeconds:number;planarSpeed:number;screenAspectRatio:number;worldFarPlane:number
+  phase?: 0 | 1 | 2 | 3 | 4 | 5
+  reflectedViewmodel?: boolean
+  ownerAlive?: boolean
+  packedBody?: number
   skin: number
   lod: number
   bodygroups: readonly number[]
@@ -282,19 +295,19 @@ export type PosedModel = Readonly<{
   events: readonly Readonly<{ index: number; cycle: number; event: number; eventType: number; options: Uint8Array; name: string }>[]
   primitives: readonly PosedPrimitive[]
   attachments: readonly PosedAttachment[]
-  viewmodel:null|Readonly<{transform:Readonly<{origin:Vector3;angles:Vector3}>;projection:Readonly<{unscaledHorizontalFov4By3:number;horizontalFov:number;aspectRatio:number;near:number;far:number}>;depthRange:readonly[number,number];restoredDepthRange:readonly[number,number];passRestored:boolean;depthRestored:boolean;itemTranslucent:boolean}>
+  viewmodel:null|Readonly<{transform:Readonly<{origin:Vector3;angles:Vector3}>;projection:Readonly<{unscaledHorizontalFov4By3:number;horizontalFov:number;aspectRatio:number;near:number;far:number}>;depthRange:readonly[number,number];restoredDepthRange:readonly[number,number];passRestored:boolean;depthRestored:boolean;itemTranslucent:boolean;phase:"draw"|"primary-fire"|"reload-start"|"reload-insert-or-loop"|"reload-finish"|"idle";drawDisposition:"draw"|"suppressed-success"|"suppressed";suppression:number|null;reflected:boolean;frontFace:"clockwise"|"counter-clockwise";cullFace:"back";restoredCullMode:"counter-clockwise"|"clockwise";handBodygroups:readonly number[];itemBodygroups:readonly number[];itemBodygroupMutations:readonly Readonly<{event:number;bodygroup:number;value:number;name:string}>[]}>
 }>
 
 export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uint8Array {
   if (requests.length > 128) throw new ProjectilePresentationError("BoundExceeded", "model pose request count")
   const encoder = new TextEncoder()
   let length = 12
-  for (const request of requests) length += 64 + encoder.encode(request.model).length + encoder.encode(request.itemModel ?? "").length +
+  for (const request of requests) length += 72 + encoder.encode(request.model).length + encoder.encode(request.itemModel ?? "").length +
     encoder.encode(request.activity).length + (request.bodygroups.length + (request.itemBodygroups?.length ?? 0)) * 4
   if (length > 1024 * 1024) throw new ProjectilePresentationError("BoundExceeded", "model pose request bytes")
   const bytes = new Uint8Array(length), view = new DataView(bytes.buffer)
   bytes.set([0x50, 0x4d, 0x52, 0x51])
-  view.setUint32(4, 3, true)
+  view.setUint32(4, 5, true)
   view.setUint32(8, requests.length, true)
   let at = 12
   const text = (value: string) => {
@@ -316,6 +329,16 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
     for(const value of [request.currentTimeSeconds,request.frameTimeSeconds,request.planarSpeed,request.screenAspectRatio,request.worldFarPlane]){view.setFloat32(at,value,true);at+=4}
     view.setUint32(at, request.skin, true); at += 4
     view.setUint32(at, request.lod, true); at += 4
+    bytes[at] = request.itemModel === undefined ? 0xff : (request.phase ?? 0xff)
+    bytes[at + 1] = Number(request.reflectedViewmodel ?? false)
+    bytes[at + 2] = Number(request.ownerAlive ?? true)
+    bytes[at + 3] = 0
+    if ((request.itemModel !== undefined && (request.phase === undefined || request.phase < 0 || request.phase > 5)) ||
+      (request.itemModel === undefined && request.phase !== undefined) || typeof (request.reflectedViewmodel ?? false) !== "boolean" ||
+      typeof (request.ownerAlive ?? true) !== "boolean") throw new ProjectilePresentationError("MalformedFact", "viewmodel frame request")
+    at += 4
+    view.setInt32(at, request.packedBody ?? -0x8000_0000, true);at+=4
+    if(request.packedBody!==undefined&&(!Number.isSafeInteger(request.packedBody)||request.packedBody<0||request.itemModel!==undefined))throw new ProjectilePresentationError("MalformedFact","packed model body")
     view.setUint32(at, request.bodygroups.length, true); at += 4
     for (const value of request.bodygroups) { view.setUint32(at, value, true); at += 4 }
     view.setUint32(at, request.itemBodygroups?.length ?? 0, true); at += 4
@@ -327,7 +350,7 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
 export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] {
   if (bytes.byteLength < 12 || bytes.byteLength > 64 * 1024 * 1024) throw new ProjectilePresentationError("BoundExceeded", "model pose output bytes")
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), decoder = new TextDecoder("utf-8", { fatal: true })
-  if (decoder.decode(bytes.subarray(0, 4)) !== "PMPO" || view.getUint32(4, true) !== 3) throw new ProjectilePresentationError("MalformedFact", "model pose output identity")
+  if (decoder.decode(bytes.subarray(0, 4)) !== "PMPO" || view.getUint32(4, true) !== 4) throw new ProjectilePresentationError("MalformedFact", "model pose output identity")
   let at = 12
   const ensure = (length: number) => { if (at + length > bytes.length) throw new ProjectilePresentationError("MalformedFact", "model pose output truncation") }
   const u8 = () => { ensure(1); return bytes[at++]! }, u32 = () => { ensure(4); const value = view.getUint32(at, true); at += 4; return value },
@@ -342,7 +365,15 @@ export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] 
       cyclesPerSecond = f32(), durationSeconds = f32(), looping = u8()
     if (looping > 1 || u8() || u8() || u8()) throw new ProjectilePresentationError("MalformedFact", "model pose timing")
     const previousCycle = f32(), cycle = f32()
-    const present=u8();if(present>1||u8()||u8()||u8())throw new ProjectilePresentationError("MalformedFact","viewmodel state");const values=Array.from({length:15},f32),passRestored=u8(),depthRestored=u8(),itemTranslucent=u8();if(u8())throw new ProjectilePresentationError("MalformedFact","viewmodel flags");const viewmodel=present===0?null:Object.freeze({transform:Object.freeze({origin:vector(values.slice(0,3)),angles:vector(values.slice(3,6))}),projection:Object.freeze({unscaledHorizontalFov4By3:values[6]!,horizontalFov:values[7]!,aspectRatio:values[8]!,near:values[9]!,far:values[10]!}),depthRange:Object.freeze(values.slice(11,13)) as readonly[number,number],restoredDepthRange:Object.freeze(values.slice(13,15)) as readonly[number,number],passRestored:passRestored===1,depthRestored:depthRestored===1,itemTranslucent:itemTranslucent===1})
+    const present=u8();if(present>1||u8()||u8()||u8())throw new ProjectilePresentationError("MalformedFact","viewmodel state");const values=Array.from({length:15},f32),passRestored=u8(),depthRestored=u8(),itemTranslucent=u8();if(u8())throw new ProjectilePresentationError("MalformedFact","viewmodel flags")
+    const phase=u8(),drawDisposition=u8(),suppression=u8(),reflected=u8(),frontFace=u8(),cullFace=u8(),restoredCull=u8(),reserved=u8()
+    if(phase>5||drawDisposition>2||suppression>12||reflected>1||frontFace>1||cullFace!==0||restoredCull>1||reserved||
+      (drawDisposition===0)!==(suppression===0))throw new ProjectilePresentationError("MalformedFact","viewmodel frame state")
+    const valuesArray=(limit:number)=>{const count=u32();if(count>limit)throw new ProjectilePresentationError("BoundExceeded","viewmodel frame values");return Object.freeze(Array.from({length:count},u32))}
+    const handBodygroups=valuesArray(64),itemBodygroups=valuesArray(64),mutationCount=u32();if(mutationCount>64)throw new ProjectilePresentationError("BoundExceeded","viewmodel bodygroup mutations")
+    const itemBodygroupMutations=Object.freeze(Array.from({length:mutationCount},()=>Object.freeze({event:u32(),bodygroup:u32(),value:i32(),name:text()})))
+    if(present===0&&(phase||drawDisposition||suppression||reflected||frontFace||cullFace||restoredCull||handBodygroups.length||itemBodygroups.length||itemBodygroupMutations.length))throw new ProjectilePresentationError("MalformedFact","absent viewmodel frame state")
+    const viewmodel=present===0?null:Object.freeze({transform:Object.freeze({origin:vector(values.slice(0,3)),angles:vector(values.slice(3,6))}),projection:Object.freeze({unscaledHorizontalFov4By3:values[6]!,horizontalFov:values[7]!,aspectRatio:values[8]!,near:values[9]!,far:values[10]!}),depthRange:Object.freeze(values.slice(11,13)) as readonly[number,number],restoredDepthRange:Object.freeze(values.slice(13,15)) as readonly[number,number],passRestored:passRestored===1,depthRestored:depthRestored===1,itemTranslucent:itemTranslucent===1,phase:(["draw","primary-fire","reload-start","reload-insert-or-loop","reload-finish","idle"] as const)[phase]!,drawDisposition:(["draw","suppressed-success","suppressed"] as const)[drawDisposition]!,suppression:suppression===0?null:suppression,reflected:reflected===1,frontFace:frontFace===0?"clockwise" as const:"counter-clockwise" as const,cullFace:"back" as const,restoredCullMode:restoredCull===0?"counter-clockwise" as const:"clockwise" as const,handBodygroups,itemBodygroups,itemBodygroupMutations})
     const events = Object.freeze(Array.from({ length: u32() }, () => {
       const index = u32(), eventCycle = f32(), event = i32(), eventType = i32(); ensure(64)
       const options = bytes.slice(at, at + 64); at += 64
@@ -716,13 +747,14 @@ export function createProjectilePresentationMapper(
         for (let eventIndex = 0; eventIndex < timeline.events.length; eventIndex += 1) {
           const event = timeline.events[eventIndex]!
           const previousEvent = timeline.events[eventIndex - 1]
-          validateEvent(event, timeline.tick, eventIndex)
+          validateEvent(event, timeline.tick, mappedTick, eventIndex)
           const fact = facts.get(event.projectileIdentity)
           const prior = next.get(event.projectileIdentity)
           const eventIdentity = `${event.tick}:${event.sourceEventOrdinal}:${event.kind}:${event.projectileIdentity}`
           if (event.kind === "fire") {
             if (prior) throw transition("fire targets an existing projectile")
-            if (fact) matchEvent(event, fact)
+            if (fact && event.tick === timeline.tick) matchEvent(event, fact)
+            else if (fact && (event.projectileKind !== fact.kind || event.team !== fact.team || event.ownerIdentity !== fact.ownerIdentity || event.launcherIdentity !== fact.launcherIdentity)) throw transition("delayed fire immutable identity fields changed")
             const source = eventFact(event)
             const trail = trailSystem(source)
             requireSystem(catalog, trail)
@@ -926,7 +958,7 @@ export function createProjectilePresentationMapper(
           }
         }
         for (const identity of facts.keys()) {
-          if (!next.has(identity)) throw transition("projectile fact has no fire event")
+          if (!next.has(identity)) throw transition(`projectile fact ${identity} has no fire event after tick ${mappedTick}; tracked ${[...next.keys()].join(",")}`)
         }
         finalFacts = facts
         mappedTick = timeline.tick
@@ -998,7 +1030,7 @@ function validateFact(fact: ProjectileFact): void {
   }
 }
 
-function validateEvent(event: ProjectileEvent, frameTick: bigint, sourceOrdinal: number): void {
+function validateEvent(event: ProjectileEvent, frameTick: bigint, earliestTick: bigint, sourceOrdinal: number): void {
   if (
     !["fire", "impact", "bounce", "stick", "arm", "fizzle", "explode", "destroy"].includes(event.kind) ||
     (event.projectileKind !== "rocket" && event.projectileKind !== "sticky") ||
@@ -1007,7 +1039,7 @@ function validateEvent(event: ProjectileEvent, frameTick: bigint, sourceOrdinal:
     !uint32(event.launcherIdentity) ||
     (event.team !== "red" && event.team !== "blue") ||
     typeof event.tick !== "bigint" ||
-    event.tick !== frameTick ||
+    event.tick < earliestTick || event.tick > frameTick ||
     !Number.isSafeInteger(event.sourceOrdinal) ||
     event.sourceOrdinal !== sourceOrdinal ||
     !Number.isSafeInteger(event.sourceEventOrdinal) ||

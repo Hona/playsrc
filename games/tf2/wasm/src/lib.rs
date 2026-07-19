@@ -283,6 +283,14 @@ struct Spawn {
     angles: [f32; 3],
 }
 
+struct RuntimeEnvironment {
+    world: playsrc_map::WorldEnvironment,
+    water_materials: BTreeMap<String, playsrc_material::Material>,
+    map_materials: BTreeMap<usize, String>,
+    normal_frame_counts: BTreeMap<String, u32>,
+    water_lod: Option<[f32; 2]>,
+}
+
 struct Slot {
     generation: u16,
     payload: Option<Vec<u8>>,
@@ -293,11 +301,13 @@ struct Slot {
     particle_sheets: BTreeMap<String, playsrc_particle::ParticleMaterial>,
     particle_output: Vec<u8>,
     studio_models: BTreeMap<String, playsrc_studio_model::PresentationModel>,
+    model_material_opacity: BTreeMap<String, Vec<playsrc_studio_model::ViewModelMaterialOpacity>>,
     viewmodel_bob: BTreeMap<u32, playsrc_studio_model::ViewModelBobState>,
     model_output: Vec<u8>,
     visibility: Option<playsrc_visibility::World>,
     area_state: Option<playsrc_visibility::AreaState>,
     visibility_output: Vec<u8>,
+    environment: Option<RuntimeEnvironment>,
     collision: Option<Arc<playsrc_collision::World>>,
     gameplay_world: Option<SharedWorld>,
     collision_templates: Vec<CollisionObjectTemplate>,
@@ -520,7 +530,7 @@ pub unsafe extern "C" fn playsrc_compile_map(
         let entity_graph =
             playsrc_entity::parse(bsp.lumps[0].bytes(&bsp), playsrc_entity::Limits::default())
                 .map_err(|_| 3_u32)?;
-        let (presentation, studio_models) =
+        let (presentation, studio_models, model_material_opacity, environment) =
             compile_presentation(&canonical, &bsp, &entity_graph, configuration, profile)
                 .map_err(|_| 9_u32)?;
         let (runtime_models, model_occurrences) =
@@ -619,6 +629,8 @@ pub unsafe extern "C" fn playsrc_compile_map(
             particle_materials,
             particle_sheets,
             studio_models,
+            model_material_opacity,
+            environment,
             visibility,
             area_state,
             collision,
@@ -650,6 +662,8 @@ pub unsafe extern "C" fn playsrc_compile_map(
             particle_materials,
             particle_sheets,
             studio_models,
+            model_material_opacity,
+            environment,
             visibility,
             area_state,
             collision,
@@ -668,11 +682,13 @@ pub unsafe extern "C" fn playsrc_compile_map(
             particle_sheets,
             particle_output: Vec::new(),
             studio_models,
+            model_material_opacity,
             viewmodel_bob: BTreeMap::new(),
             model_output: Vec::new(),
             visibility: Some(visibility),
             area_state: Some(area_state),
             visibility_output: Vec::new(),
+            environment: Some(environment),
             collision: Some(collision),
             gameplay_world: Some(gameplay_world),
             collision_templates,
@@ -697,11 +713,13 @@ pub unsafe extern "C" fn playsrc_compile_map(
             particle_sheets: BTreeMap::new(),
             particle_output: Vec::new(),
             studio_models: BTreeMap::new(),
+            model_material_opacity: BTreeMap::new(),
             viewmodel_bob: BTreeMap::new(),
             model_output: Vec::new(),
             visibility: None,
             area_state: None,
             visibility_output: Vec::new(),
+            environment: None,
             collision: None,
             gameplay_world: None,
             collision_templates: Vec::new(),
@@ -924,6 +942,10 @@ struct ModelPoseRequest {
     world_far_plane: f32,
     skin: usize,
     lod: usize,
+    phase: Option<playsrc_studio_model::ViewModelPhase>,
+    reflected_viewmodel: bool,
+    owner_alive: bool,
+    packed_body: Option<i32>,
     bodygroups: Vec<usize>,
     item_bodygroups: Vec<usize>,
 }
@@ -953,8 +975,12 @@ pub unsafe extern "C" fn playsrc_model_transact(
     if slot.generation != generation {
         return 0;
     }
-    let Ok(output) = encode_model_poses(&slot.studio_models, &mut slot.viewmodel_bob, &requests)
-    else {
+    let Ok(output) = encode_model_poses(
+        &slot.studio_models,
+        &slot.model_material_opacity,
+        &mut slot.viewmodel_bob,
+        &requests,
+    ) else {
         return 0;
     };
     slot.model_output = output;
@@ -992,7 +1018,7 @@ pub unsafe extern "C" fn playsrc_model_output_copy(
 
 fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
     let mut reader = ParticleReader { bytes, at: 0 };
-    if reader.take(4)? != b"PMRQ" || reader.u32()? != 3 {
+    if reader.take(4)? != b"PMRQ" || reader.u32()? != 5 {
         return Err(());
     }
     let count = reader.u32()? as usize;
@@ -1024,6 +1050,27 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
         let world_far_plane = reader.f32()?;
         let skin = reader.u32()? as usize;
         let lod = reader.u32()? as usize;
+        let phase_code = reader.u8()?;
+        let reflected_viewmodel = reader.u8()?;
+        let owner_alive = reader.u8()?;
+        if reflected_viewmodel > 1 || owner_alive > 1 || reader.u8()? != 0 {
+            return Err(());
+        }
+        let phase = match phase_code {
+            0 => Some(playsrc_studio_model::ViewModelPhase::Draw),
+            1 => Some(playsrc_studio_model::ViewModelPhase::PrimaryFire),
+            2 => Some(playsrc_studio_model::ViewModelPhase::ReloadStart),
+            3 => Some(playsrc_studio_model::ViewModelPhase::ReloadInsertOrLoop),
+            4 => Some(playsrc_studio_model::ViewModelPhase::ReloadFinish),
+            5 => Some(playsrc_studio_model::ViewModelPhase::Idle),
+            u8::MAX if kind == 0 => None,
+            _ => return Err(()),
+        };
+        let packed_body_value = i32::from_le_bytes(reader.take(4)?.try_into().map_err(|_| ())?);
+        let packed_body = (packed_body_value != i32::MIN).then_some(packed_body_value);
+        if (kind == 1 && packed_body.is_some()) || packed_body.is_some_and(|value| value < 0) {
+            return Err(());
+        }
         let bodygroup_count = reader.u32()? as usize;
         if identity == 0
             || !identities.insert(identity)
@@ -1064,6 +1111,10 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
             world_far_plane,
             skin,
             lod,
+            phase,
+            reflected_viewmodel: reflected_viewmodel != 0,
+            owner_alive: owner_alive != 0,
+            packed_body,
             bodygroups,
             item_bodygroups,
         });
@@ -1079,27 +1130,62 @@ fn pose_cycle(elapsed: f32, timing: playsrc_studio_model::SequenceTiming) -> f32
         value.clamp(0.0, 1.0)
     }
 }
-#[derive(Clone, Copy)]
 struct ViewOutput {
     transform: playsrc_studio_model::ViewModelTransform,
     pass: playsrc_studio_model::ViewModelPassState,
     item_translucent: bool,
+    phase: playsrc_studio_model::ViewModelPhase,
+    draw_disposition: playsrc_studio_model::ViewModelDrawDisposition,
+    reflected: bool,
+    hand_facing: playsrc_studio_model::GeometryFacing,
+    item_facing: playsrc_studio_model::GeometryFacing,
+    hand_bodygroups: Vec<usize>,
+    item_bodygroups: Vec<usize>,
+    item_bodygroup_mutations: Vec<playsrc_studio_model::ViewModelBodygroupMutation>,
 }
 
 fn encode_model_poses(
     models: &BTreeMap<String, playsrc_studio_model::PresentationModel>,
+    material_opacity: &BTreeMap<String, Vec<playsrc_studio_model::ViewModelMaterialOpacity>>,
     viewmodel_bob: &mut BTreeMap<u32, playsrc_studio_model::ViewModelBobState>,
     requests: &[ModelPoseRequest],
 ) -> Result<Vec<u8>, ()> {
     let mut out = b"PMPO".to_vec();
-    out.extend_from_slice(&3u32.to_le_bytes());
+    out.extend_from_slice(&4u32.to_le_bytes());
     out.extend_from_slice(&0_u32.to_le_bytes());
     let mut output_count = 0_u32;
     for request in requests {
         let model = models.get(&request.model).ok_or(())?;
+        let bodygroups = if let Some(body) = request.packed_body {
+            model
+                .body_parts
+                .iter()
+                .map(|part| {
+                    let count = i32::try_from(part.model_names.len()).map_err(|_| ())?;
+                    if part.base <= 0 || count <= 0 {
+                        return Err(());
+                    }
+                    usize::try_from((body / part.base) % count).map_err(|_| ())
+                })
+                .collect::<Result<Vec<_>, ()>>()?
+        } else {
+            request.bodygroups.clone()
+        };
         let sequence =
-            *playsrc_studio_model::sequences_for_activity_name(model, request.activity.as_bytes())
+            playsrc_studio_model::sequences_for_activity_name(model, request.activity.as_bytes())
                 .first()
+                .copied()
+                .or_else(|| {
+                    model
+                        .sequences
+                        .iter()
+                        .find(|sequence| {
+                            sequence
+                                .label
+                                .eq_ignore_ascii_case(request.activity.as_bytes())
+                        })
+                        .map(|sequence| sequence.index)
+                })
                 .ok_or(())?;
         let pose_parameters = model
             .pose_parameters
@@ -1121,13 +1207,9 @@ fn encode_model_poses(
             playsrc_studio_model::Float32(request.elapsed.to_bits()),
         )
         .map_err(|_| ())?;
-        let selected = playsrc_studio_model::select_primitives(
-            model,
-            &request.bodygroups,
-            request.skin,
-            request.lod,
-        )
-        .map_err(|_| ())?;
+        let selected =
+            playsrc_studio_model::select_primitives(model, &bodygroups, request.skin, request.lod)
+                .map_err(|_| ())?;
         let events = playsrc_studio_model::presentation_events_between(
             model,
             sequence,
@@ -1137,47 +1219,43 @@ fn encode_model_poses(
         .map_err(|_| ())?;
         if let Some(item_identity) = request.item.as_ref() {
             let item = models.get(item_identity).ok_or(())?;
-            let mut item_bodygroups = request.item_bodygroups.clone();
-            let mutations = playsrc_studio_model::viewmodel_item_bodygroup_events(
+            let frame = playsrc_studio_model::produce_viewmodel_frame(
                 model,
                 item,
-                sequence,
-                playsrc_studio_model::Float32(previous_cycle.to_bits()),
-                playsrc_studio_model::Float32(cycle.to_bits()),
-            )
-            .map_err(|_| ())?;
-            playsrc_studio_model::apply_viewmodel_bodygroup_events(
-                item,
-                &mut item_bodygroups,
-                &mutations,
-            )
-            .map_err(|_| ())?;
-            let composition = playsrc_studio_model::compose_viewmodel(
-                model,
-                item,
-                &playsrc_studio_model::ViewModelCompositionRequest {
-                    translated_activity: request.activity.as_bytes().to_vec(),
-                    hand_sequence: sequence,
-                    cycle: playsrc_studio_model::Float32(cycle.to_bits()),
-                    time: playsrc_studio_model::Float32(request.elapsed.to_bits()),
-                    hand_pose_parameters: pose_parameters,
-                    hand_layers: Vec::new(),
-                    skin: request.skin,
-                    hand_bodygroups: request.bodygroups.clone(),
-                    item_bodygroups,
-                    lod: request.lod,
+                &playsrc_studio_model::ViewModelFrameRequest {
+                    phase: request.phase.ok_or(())?,
+                    previous_cycle: playsrc_studio_model::Float32(previous_cycle.to_bits()),
+                    composition: playsrc_studio_model::ViewModelCompositionRequest {
+                        translated_activity: request.activity.as_bytes().to_vec(),
+                        hand_sequence: sequence,
+                        cycle: playsrc_studio_model::Float32(cycle.to_bits()),
+                        time: playsrc_studio_model::Float32(request.elapsed.to_bits()),
+                        hand_pose_parameters: pose_parameters,
+                        hand_layers: Vec::new(),
+                        skin: request.skin,
+                        hand_bodygroups: bodygroups,
+                        item_bodygroups: request.item_bodygroups.clone(),
+                        lod: request.lod,
+                    },
+                    hand_material_opacity: material_opacity.get(&request.model).ok_or(())?.clone(),
+                    item_material_opacity: material_opacity.get(item_identity).ok_or(())?.clone(),
+                    draw_eligibility: playsrc_studio_model::ViewModelDrawEligibility {
+                        client_mode: true,
+                        render_request: true,
+                        render_viewmodels: true,
+                        local_player_visible: false,
+                        draw_entities: true,
+                        player_view_entity: true,
+                        base_should_draw: true,
+                        fully_lowered: false,
+                        observer_owner_matches: true,
+                        owner_alive: request.owner_alive,
+                        ready: true,
+                        fx_blend: 255,
+                    },
+                    occurrence_orientation: playsrc_studio_model::TransformOrientation::Preserving,
+                    reflected_viewmodel: request.reflected_viewmodel,
                 },
-            )
-            .map_err(|_| ())?;
-            let draw = playsrc_studio_model::viewmodel_draw_plan(
-                model,
-                item,
-                &composition,
-                &vec![
-                    playsrc_studio_model::ViewModelMaterialOpacity::Opaque;
-                    model.materials.len()
-                ],
-                &vec![playsrc_studio_model::ViewModelMaterialOpacity::Opaque; item.materials.len()],
             )
             .map_err(|_| ())?;
             let bob = playsrc_studio_model::update_viewmodel_bob(
@@ -1227,12 +1305,25 @@ fn encode_model_poses(
             let state = ViewOutput {
                 transform,
                 pass,
-                item_translucent: draw.item_entity_translucent,
+                item_translucent: frame.draw_plan.item_entity_translucent,
+                phase: frame.phase,
+                draw_disposition: frame.draw_disposition,
+                reflected: request.reflected_viewmodel,
+                hand_facing: frame.hand_facing,
+                item_facing: frame.item_facing,
+                hand_bodygroups: frame.hand_bodygroups,
+                item_bodygroups: frame.item_bodygroups,
+                item_bodygroup_mutations: frame.item_bodygroup_mutations,
             };
-            for part in draw.parts {
+            let event_refs = frame.crossed_events.iter().collect::<Vec<_>>();
+            for part in frame.draw_plan.parts {
                 let (role, part_model, pose) = match part.part {
-                    playsrc_studio_model::ViewModelPart::Hand => (1, model, &composition.hand.pose),
-                    playsrc_studio_model::ViewModelPart::Item => (2, item, &composition.item.pose),
+                    playsrc_studio_model::ViewModelPart::Hand => {
+                        (1, model, &frame.composition.hand.pose)
+                    }
+                    playsrc_studio_model::ViewModelPart::Item => {
+                        (2, item, &frame.composition.item.pose)
+                    }
                 };
                 let selected = part
                     .opaque_primitives
@@ -1249,11 +1340,11 @@ fn encode_model_poses(
                     timing,
                     previous_cycle,
                     cycle,
-                    &events,
+                    &event_refs,
                     pose,
                     &selected,
                     part.opaque_primitives.len(),
-                    Some(state),
+                    Some(&state),
                 )?;
             }
             output_count = output_count.checked_add(2).ok_or(())?;
@@ -1283,6 +1374,46 @@ fn encode_model_poses(
     Ok(out)
 }
 
+fn viewmodel_phase_code(value: playsrc_studio_model::ViewModelPhase) -> u8 {
+    match value {
+        playsrc_studio_model::ViewModelPhase::Draw => 0,
+        playsrc_studio_model::ViewModelPhase::PrimaryFire => 1,
+        playsrc_studio_model::ViewModelPhase::ReloadStart => 2,
+        playsrc_studio_model::ViewModelPhase::ReloadInsertOrLoop => 3,
+        playsrc_studio_model::ViewModelPhase::ReloadFinish => 4,
+        playsrc_studio_model::ViewModelPhase::Idle => 5,
+    }
+}
+
+fn viewmodel_suppression_code(value: playsrc_studio_model::ViewModelDrawSuppression) -> u8 {
+    match value {
+        playsrc_studio_model::ViewModelDrawSuppression::ClientMode => 1,
+        playsrc_studio_model::ViewModelDrawSuppression::RenderRequest => 2,
+        playsrc_studio_model::ViewModelDrawSuppression::RenderViewModels => 3,
+        playsrc_studio_model::ViewModelDrawSuppression::LocalPlayerVisible => 4,
+        playsrc_studio_model::ViewModelDrawSuppression::EntitiesDisabled => 5,
+        playsrc_studio_model::ViewModelDrawSuppression::NonPlayerViewEntity => 6,
+        playsrc_studio_model::ViewModelDrawSuppression::BaseShouldDraw => 7,
+        playsrc_studio_model::ViewModelDrawSuppression::FullyLowered => 8,
+        playsrc_studio_model::ViewModelDrawSuppression::ObserverOwnerMismatch => 9,
+        playsrc_studio_model::ViewModelDrawSuppression::OwnerDead => 10,
+        playsrc_studio_model::ViewModelDrawSuppression::NotReady => 11,
+        playsrc_studio_model::ViewModelDrawSuppression::ZeroBlend => 12,
+    }
+}
+
+fn viewmodel_draw_codes(value: playsrc_studio_model::ViewModelDrawDisposition) -> [u8; 2] {
+    match value {
+        playsrc_studio_model::ViewModelDrawDisposition::Draw => [0, 0],
+        playsrc_studio_model::ViewModelDrawDisposition::SuppressedSuccess(reason) => {
+            [1, viewmodel_suppression_code(reason)]
+        }
+        playsrc_studio_model::ViewModelDrawDisposition::Suppressed(reason) => {
+            [2, viewmodel_suppression_code(reason)]
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn encode_model_pose_part(
     out: &mut Vec<u8>,
@@ -1297,7 +1428,7 @@ fn encode_model_pose_part(
     pose: &playsrc_studio_model::SampledPose,
     selected: &[playsrc_studio_model::SelectedPrimitive],
     opaque_count: usize,
-    view: Option<ViewOutput>,
+    view: Option<&ViewOutput>,
 ) -> Result<(), ()> {
     out.extend_from_slice(&request.identity.to_le_bytes());
     out.extend_from_slice(&[role, 0, 0, 0]);
@@ -1350,6 +1481,66 @@ fn encode_model_pose_part(
     } else {
         out.extend_from_slice(&[0; 68])
     }
+    if let Some(view) = view {
+        let [draw_disposition, suppression] = viewmodel_draw_codes(view.draw_disposition);
+        let facing = if role == 1 {
+            view.hand_facing
+        } else if role == 2 {
+            view.item_facing
+        } else {
+            return Err(());
+        };
+        out.extend_from_slice(&[
+            viewmodel_phase_code(view.phase),
+            draw_disposition,
+            suppression,
+            u8::from(view.reflected),
+            match facing.front_face {
+                playsrc_studio_model::TriangleWinding::Clockwise => 0,
+                playsrc_studio_model::TriangleWinding::CounterClockwise => 1,
+            },
+            0,
+            match view.pass.restored_cull_mode {
+                playsrc_studio_model::ViewModelCullMode::CounterClockwise => 0,
+                playsrc_studio_model::ViewModelCullMode::Clockwise => 1,
+            },
+            0,
+        ]);
+        out.extend_from_slice(
+            &u32::try_from(view.hand_bodygroups.len())
+                .map_err(|_| ())?
+                .to_le_bytes(),
+        );
+        for value in &view.hand_bodygroups {
+            out.extend_from_slice(&u32::try_from(*value).map_err(|_| ())?.to_le_bytes());
+        }
+        out.extend_from_slice(
+            &u32::try_from(view.item_bodygroups.len())
+                .map_err(|_| ())?
+                .to_le_bytes(),
+        );
+        for value in &view.item_bodygroups {
+            out.extend_from_slice(&u32::try_from(*value).map_err(|_| ())?.to_le_bytes());
+        }
+        out.extend_from_slice(
+            &u32::try_from(view.item_bodygroup_mutations.len())
+                .map_err(|_| ())?
+                .to_le_bytes(),
+        );
+        for mutation in &view.item_bodygroup_mutations {
+            out.extend_from_slice(&u32::try_from(mutation.event).map_err(|_| ())?.to_le_bytes());
+            out.extend_from_slice(
+                &u32::try_from(mutation.bodygroup)
+                    .map_err(|_| ())?
+                    .to_le_bytes(),
+            );
+            out.extend_from_slice(&mutation.value.to_le_bytes());
+            pbytes(out, &mutation.name)?;
+        }
+    } else {
+        out.extend_from_slice(&[0; 8]);
+        out.extend_from_slice(&[0; 12]);
+    }
     out.extend_from_slice(&u32::try_from(events.len()).map_err(|_| ())?.to_le_bytes());
     for event in events {
         out.extend_from_slice(&u32::try_from(event.index).map_err(|_| ())?.to_le_bytes());
@@ -1401,15 +1592,22 @@ fn encode_model_pose_part(
 }
 #[unsafe(no_mangle)]
 /// # Safety
-/// `pointer` must identify three readable finite f32 values.
+/// `pointer` must identify nine readable finite f32 values.
 pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f32) -> u32 {
     if pointer.is_null() {
         return 0;
     }
-    let position = unsafe { std::slice::from_raw_parts(pointer, 3) };
-    if position.iter().any(|v| !v.is_finite()) {
+    let input = unsafe { std::slice::from_raw_parts(pointer, 9) };
+    if input.iter().any(|v| !v.is_finite())
+        || input[5] <= 0.0
+        || input[5] >= 180.0
+        || input[6] <= 0.0
+        || input[7] <= 0.0
+        || input[8] < 0.0
+    {
         return 0;
     }
+    let position = [input[0], input[1], input[2]];
     let Some((index, generation)) = decode(handle) else {
         return 0;
     };
@@ -1420,7 +1618,11 @@ pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f
     if slot.generation != generation {
         return 0;
     }
-    let (Some(world), Some(area)) = (slot.visibility.as_ref(), slot.area_state.as_ref()) else {
+    let (Some(world), Some(area), Some(environment)) = (
+        slot.visibility.as_ref(),
+        slot.area_state.as_ref(),
+        slot.environment.as_ref(),
+    ) else {
         return 0;
     };
     let Ok(candidates) = playsrc_visibility::CandidateSet::compile(world, 0, &[]) else {
@@ -1430,23 +1632,306 @@ pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f
         area,
         &candidates,
         &playsrc_visibility::ViewQuery {
-            origins: vec![[position[0], position[1], position[2]]],
+            origins: vec![position],
             bypass_pvs: false,
         },
     ) else {
         return 0;
     };
+    let policy = playsrc_map::WaterViewPolicy {
+        draw_water: true,
+        expensive_supported: true,
+        draw_reflection: true,
+        draw_refraction: true,
+        force_expensive: false,
+        force_reflect_entities: false,
+        fast_clipping: false,
+        height_clipping: true,
+        eye_water_epsilon: 10.0,
+    };
+    let base_water_input = playsrc_map::WaterViewInput {
+        origin: position,
+        angles: [input[4], input[3], 0.0],
+        eye_leaf: *view.origin_leaves.first().unwrap_or(&usize::MAX),
+        qualified_visible_leaves: &view.leaves,
+        near_plane_intersects_selected_volume: false,
+        draw_sky_2d: view.sky == playsrc_visibility::SkyVisibility::Sky2d,
+        policy,
+    };
+    let Ok(preliminary) = environment.world.water.plan_view(world, base_water_input) else {
+        return 0;
+    };
+    let intersects = preliminary.visible_water.as_ref().is_some_and(|water| {
+        near_plane_intersects_water(
+            world,
+            &environment.world,
+            water.volume,
+            water.surface_z,
+            position,
+            input[3],
+            input[4],
+            input[5],
+            input[6],
+            input[7],
+        )
+    });
+    let Ok(water_plan) = environment.world.water.plan_view(
+        world,
+        playsrc_map::WaterViewInput {
+            near_plane_intersects_selected_volume: intersects,
+            ..base_water_input
+        },
+    ) else {
+        return 0;
+    };
+    let evaluated_water = water_plan.visible_water.as_ref().and_then(|water| {
+        let identity = match &water.material {
+            playsrc_map::WaterMaterialIdentity::Map(index) => {
+                environment.map_materials.get(index)?.clone()
+            }
+            playsrc_map::WaterMaterialIdentity::Dependency(identity) => {
+                identity.to_ascii_lowercase()
+            }
+        };
+        let material = environment.water_materials.get(&identity)?;
+        let frame_count = environment.normal_frame_counts.get(&identity).copied();
+        let context = playsrc_material::ProxyEvaluationContext {
+            time: input[8],
+            frame_time: 0.015,
+            water_lod: environment.water_lod,
+            texture_frames: frame_count
+                .map(|count| BTreeMap::from([(b"$normalmap".to_vec(), count)]))
+                .unwrap_or_default(),
+            model_inputs: playsrc_material::ModelProxyInputs::default(),
+        };
+        playsrc_material::evaluate_water_material(material, &context)
+            .ok()
+            .map(|state| (identity, state))
+    });
+    if water_plan.visible_water.is_some() != evaluated_water.is_some() {
+        return 0;
+    }
     let mut output = b"PVIS".to_vec();
-    output.extend_from_slice(&1u32.to_le_bytes());
+    output.extend_from_slice(&2u32.to_le_bytes());
     output.extend_from_slice(&view.cache_identity);
     output.extend_from_slice(&world.identity);
     output.extend_from_slice(&[u8::from(view.outside_world), view.sky as u8, 0, 0]);
     output.extend_from_slice(&(view.world_surfaces.len() as u32).to_le_bytes());
-    for face in view.world_surfaces {
-        output.extend_from_slice(&u32::from(face).to_le_bytes());
+    for face in &view.world_surfaces {
+        output.extend_from_slice(&u32::from(*face).to_le_bytes());
+    }
+    output.extend_from_slice(
+        &view
+            .origin_leaves
+            .first()
+            .and_then(|value| u32::try_from(*value).ok())
+            .unwrap_or(u32::MAX)
+            .to_le_bytes(),
+    );
+    output.extend_from_slice(
+        &u32::try_from(view.leaves.len())
+            .unwrap_or(u32::MAX)
+            .to_le_bytes(),
+    );
+    for leaf in &view.leaves {
+        output.extend_from_slice(&u32::try_from(*leaf).unwrap_or(u32::MAX).to_le_bytes());
+    }
+    output.extend_from_slice(
+        &u32::try_from(view.visible_areas.len())
+            .unwrap_or(u32::MAX)
+            .to_le_bytes(),
+    );
+    for area in &view.visible_areas {
+        output.extend_from_slice(&u32::try_from(*area).unwrap_or(u32::MAX).to_le_bytes());
+    }
+    output.extend_from_slice(&[
+        u8::from(water_plan.visible_water.is_some()),
+        u8::from(water_plan.render.cheap),
+        u8::from(water_plan.render.reflect),
+        u8::from(water_plan.render.refract),
+        u8::from(water_plan.render.reflect_entities),
+        u8::from(water_plan.render.draw_surface),
+        u8::from(water_plan.render.opaque),
+        u8::from(intersects),
+    ]);
+    if let (Some(water), Some((identity, evaluated))) = (&water_plan.visible_water, evaluated_water)
+    {
+        output.extend_from_slice(
+            &u32::try_from(water.volume)
+                .unwrap_or(u32::MAX)
+                .to_le_bytes(),
+        );
+        output.extend_from_slice(
+            &u32::try_from(water.visible_leaf)
+                .unwrap_or(u32::MAX)
+                .to_le_bytes(),
+        );
+        output.extend_from_slice(
+            &u32::try_from(water.eye_leaf)
+                .unwrap_or(u32::MAX)
+                .to_le_bytes(),
+        );
+        output.extend_from_slice(&[
+            u8::from(water.eye_in_volume),
+            u8::from(water.translucent),
+            0,
+            0,
+        ]);
+        output.extend_from_slice(&water.surface_z.to_le_bytes());
+        output.extend_from_slice(
+            &u32::from(water.distance_to_water.unwrap_or(u16::MAX)).to_le_bytes(),
+        );
+        if pbytes(&mut output, identity.as_bytes()).is_err() {
+            return 0;
+        }
+        output.extend_from_slice(&evaluated.normal_frame.to_le_bytes());
+        for value in evaluated.normal_transform {
+            output.extend_from_slice(&value.to_le_bytes());
+        }
+        output.extend_from_slice(&evaluated.cheap_start.to_le_bytes());
+        output.extend_from_slice(&evaluated.cheap_end.to_le_bytes());
+    }
+    output.extend_from_slice(
+        &u32::try_from(water_plan.passes.len())
+            .unwrap_or(u32::MAX)
+            .to_le_bytes(),
+    );
+    for pass in &water_plan.passes {
+        output.extend_from_slice(&[
+            match pass.kind {
+                playsrc_map::EnvironmentViewKind::Reflection => 0,
+                playsrc_map::EnvironmentViewKind::Refraction => 1,
+                playsrc_map::EnvironmentViewKind::Main => 2,
+                playsrc_map::EnvironmentViewKind::Intersection => 3,
+            },
+            u8::from(pass.render_above_water),
+            u8::from(pass.render_under_water),
+            u8::from(pass.render_water_surface),
+            u8::from(pass.draw_entities),
+            u8::from(pass.draw_sky_2d),
+            u8::from(pass.clip.is_some()),
+            match pass.clip.map(|value| value.keep) {
+                None => 0,
+                Some(playsrc_map::WaterClipKeep::Above) => 1,
+                Some(playsrc_map::WaterClipKeep::Below) => 2,
+            },
+        ]);
+        for value in pass.origin.into_iter().chain(pass.angles) {
+            output.extend_from_slice(&value.to_le_bytes());
+        }
+        output.extend_from_slice(&pass.clip.map_or(0.0, |value| value.height).to_le_bytes());
+        output.extend_from_slice(
+            &pass
+                .forced_visibility_leaf
+                .and_then(|value| u32::try_from(value).ok())
+                .unwrap_or(u32::MAX)
+                .to_le_bytes(),
+        );
+        match pass.fog {
+            playsrc_map::ViewFog::World => output.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]),
+            playsrc_map::ViewFog::Water { volume, height_fog } => {
+                output.extend_from_slice(&[1, u8::from(height_fog), 0, 0]);
+                output.extend_from_slice(&u32::try_from(volume).unwrap_or(u32::MAX).to_le_bytes());
+            }
+        }
+        let pass_origin = pass
+            .forced_visibility_leaf
+            .and_then(|leaf| {
+                world.leaves.get(leaf).map(|record| {
+                    [
+                        (f32::from(record.mins[0]) + f32::from(record.maxs[0])) * 0.5,
+                        (f32::from(record.mins[1]) + f32::from(record.maxs[1])) * 0.5,
+                        (f32::from(record.mins[2]) + f32::from(record.maxs[2])) * 0.5,
+                    ]
+                })
+            })
+            .unwrap_or(pass.origin);
+        let Ok(pass_view) = world.view(
+            area,
+            &candidates,
+            &playsrc_visibility::ViewQuery {
+                origins: vec![pass_origin],
+                bypass_pvs: false,
+            },
+        ) else {
+            return 0;
+        };
+        output.extend_from_slice(
+            &u32::try_from(pass_view.world_surfaces.len())
+                .unwrap_or(u32::MAX)
+                .to_le_bytes(),
+        );
+        for face in pass_view.world_surfaces {
+            output.extend_from_slice(&u32::from(face).to_le_bytes());
+        }
     }
     slot.visibility_output = output;
     1
+}
+
+#[allow(clippy::too_many_arguments)]
+fn near_plane_intersects_water(
+    visibility: &playsrc_visibility::World,
+    environment: &playsrc_map::WorldEnvironment,
+    volume: usize,
+    water_z: f32,
+    origin: [f32; 3],
+    yaw_degrees: f32,
+    pitch_degrees: f32,
+    vertical_fov_degrees: f32,
+    aspect_ratio: f32,
+    near: f32,
+) -> bool {
+    let yaw = yaw_degrees.to_radians();
+    let pitch = pitch_degrees.to_radians();
+    let (sy, cy) = yaw.sin_cos();
+    let (sp, cp) = pitch.sin_cos();
+    let forward = [cp * cy, cp * sy, -sp];
+    let right = [sy, -cy, 0.0];
+    let up = [sp * cy, sp * sy, cp];
+    let half_height = near * (vertical_fov_degrees.to_radians() * 0.5).tan();
+    let half_width = half_height * aspect_ratio;
+    let mut minimum = [f32::INFINITY; 3];
+    let mut maximum = [f32::NEG_INFINITY; 3];
+    let mut above = false;
+    let mut below = false;
+    for right_sign in [-1.0, 1.0] {
+        for up_sign in [-1.0, 1.0] {
+            let mut point = origin;
+            for axis in 0..3 {
+                point[axis] += forward[axis] * near
+                    + right[axis] * half_width * right_sign
+                    + up[axis] * half_height * up_sign;
+                minimum[axis] = minimum[axis].min(point[axis]);
+                maximum[axis] = maximum[axis].max(point[axis]);
+            }
+            above |= point[2] + 7.0 > water_z;
+            below |= point[2] - 7.0 < water_z;
+        }
+    }
+    if !above || !below {
+        return false;
+    }
+    for axis in 0..3 {
+        minimum[axis] -= 7.0;
+        maximum[axis] += 7.0;
+    }
+    let Some(volume) = environment
+        .water
+        .volumes
+        .iter()
+        .find(|value| value.index == volume)
+    else {
+        return false;
+    };
+    volume.leaves.iter().any(|leaf| {
+        visibility.leaves.get(*leaf).is_some_and(|record| {
+            (0..3).all(|axis| {
+                f32::from(record.maxs[axis]) >= minimum[axis]
+                    && f32::from(record.mins[axis]) <= maximum[axis]
+            })
+        })
+    })
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn playsrc_visibility_output_length(handle: u32) -> usize {
@@ -2235,7 +2720,7 @@ fn encode_snapshot(
     encode_movement_tick(&mut movement_tick_bytes, movement_tick, MAX)?;
     let mut out = Vec::new();
     extend(&mut out, b"PSSN", MAX)?;
-    u32_field(&mut out, 7, MAX)?;
+    u32_field(&mut out, 8, MAX)?;
     u64_field(&mut out, snapshot.tick, MAX)?;
     extend(
         &mut out,
@@ -2553,6 +3038,23 @@ fn encode_snapshot(
         u32_field(&mut out, event.associated_model, MAX)?;
         u64_field(&mut out, event.open_tick, MAX)?;
         u64_field(&mut out, event.close_tick, MAX)?;
+        i32_field(&mut out, event.body, MAX)?;
+        extend(
+            &mut out,
+            &[
+                match event.open_animation {
+                    playsrc_tf2::RegenerateModelAnimation::Open => 1,
+                    playsrc_tf2::RegenerateModelAnimation::Close => 2,
+                },
+                match event.close_animation {
+                    playsrc_tf2::RegenerateModelAnimation::Open => 1,
+                    playsrc_tf2::RegenerateModelAnimation::Close => 2,
+                },
+                0,
+                0,
+            ],
+            MAX,
+        )?;
     }
     extend(&mut out, &[1, 1, 0, 0, 2, 1, 0, 0], MAX)?;
     extend(&mut out, &random_state, MAX)?;
@@ -3683,11 +4185,12 @@ fn collision_object_templates(
         if let Some(model) = entity.model.as_deref()
             && let Some(index) = model.strip_prefix(b"*")
         {
-            if !entity.classname.as_deref().is_some_and(|classname| {
-                classname.eq_ignore_ascii_case(b"func_door")
-                    || classname.eq_ignore_ascii_case(b"func_button")
-                    || classname.eq_ignore_ascii_case(b"func_movelinear")
-            }) {
+            let classname = entity.classname.as_deref().ok_or(())?;
+            let ordinary_mover = classname.eq_ignore_ascii_case(b"func_door")
+                || classname.eq_ignore_ascii_case(b"func_button")
+                || classname.eq_ignore_ascii_case(b"func_movelinear");
+            let brush = classname.eq_ignore_ascii_case(b"func_brush");
+            if !ordinary_mover && !brush {
                 continue;
             }
             let model = std::str::from_utf8(index)
@@ -3698,7 +4201,9 @@ fn collision_object_templates(
                 input: playsrc_collision::ObjectInput {
                     identity,
                     role: playsrc_collision::ObjectRole::Entity,
-                    enabled: true,
+                    enabled: ordinary_mover
+                        || entity_scalar(entity, b"Solidity") != Some(b"1".as_slice())
+                            && entity_scalar(entity, b"StartDisabled") != Some(b"1".as_slice()),
                     transform,
                     linear_velocity: [0.0; 3],
                     angular_velocity: [0.0; 3],
@@ -4242,6 +4747,38 @@ fn encode_one_material_state(
         sampling.map_or(u8::MAX, |value| u8::from(value.all_mips)),
     ]);
     out.extend_from_slice(&state.alpha_test_reference.to_le_bytes());
+    out.extend_from_slice(&state.alpha_modulation.to_le_bytes());
+    let ownership = u16::from(state.alpha_ownership.base_texture_available)
+        | (u16::from(state.alpha_ownership.opacity) << 1)
+        | (u16::from(state.alpha_ownership.alpha_test) << 2)
+        | (u16::from(state.alpha_ownership.self_illumination_mask) << 3)
+        | (u16::from(state.alpha_ownership.environment_mask) << 4)
+        | (u16::from(state.alpha_ownership.phong_mask) << 5)
+        | (u16::from(state.alpha_ownership.tint_mask) << 6)
+        | (u16::from(state.alpha_ownership.vertex_alpha) << 7)
+        | (u16::from(state.alpha_ownership.material_alpha_modulation) << 8);
+    out.extend_from_slice(&ownership.to_le_bytes());
+    let (discard, source, pass, reference) = match state.fragment_discard {
+        playsrc_material::FragmentDiscardRequirement::None => (0, 0, 0, 0.0),
+        playsrc_material::FragmentDiscardRequirement::Alpha {
+            source,
+            pass,
+            reference,
+        } => (
+            1,
+            match source {
+                playsrc_material::FragmentAlphaSource::BaseTextureOrOne => 0,
+                playsrc_material::FragmentAlphaSource::ShaderOutput => 1,
+            },
+            match pass {
+                playsrc_material::CompareFunction::Greater => 0,
+                playsrc_material::CompareFunction::GreaterOrEqual => 1,
+            },
+            reference,
+        ),
+    };
+    out.extend_from_slice(&[discard, source, pass, 0]);
+    out.extend_from_slice(&reference.to_le_bytes());
     Ok(())
 }
 
@@ -4287,7 +4824,7 @@ fn encode_material_states(
     }
     let start = out.len();
     out.extend_from_slice(b"PMST");
-    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(&2u32.to_le_bytes());
     out.extend_from_slice(&u32::try_from(targets.len()).map_err(|_| ())?.to_le_bytes());
     for (identity, model) in targets {
         let material =
@@ -5042,7 +5579,7 @@ fn encode_model_occurrence_matrices(
         })
         .collect::<Vec<_>>();
     out.extend_from_slice(b"PMTX");
-    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(&2u32.to_le_bytes());
     out.extend_from_slice(
         &u32::try_from(occurrences.len())
             .map_err(|_| ())?
@@ -5064,6 +5601,25 @@ fn encode_model_occurrence_matrices(
         .map_err(|_| ())?;
         out.extend_from_slice(&entity.index.to_le_bytes());
         pbytes(out, identity.as_bytes())?;
+        let integer = |key: &[u8]| -> Result<i32, ()> {
+            entity_scalar(entity, key)
+                .map(|value| {
+                    std::str::from_utf8(value)
+                        .map_err(|_| ())?
+                        .parse()
+                        .map_err(|_| ())
+                })
+                .transpose()
+                .map(|value| value.unwrap_or(0))
+        };
+        out.extend_from_slice(&integer(b"skin")?.to_le_bytes());
+        out.extend_from_slice(&integer(b"SetBodyGroup")?.to_le_bytes());
+        for value in entity_vector(entity, b"origin")?
+            .into_iter()
+            .chain(entity_vector(entity, b"angles")?)
+        {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
         for value in matrix.0 {
             out.extend_from_slice(&value.0.to_le_bytes());
         }
@@ -5103,19 +5659,20 @@ fn decoded_texture(
         rgba,
     })
 }
+type CompiledPresentation = (
+    Vec<u8>,
+    BTreeMap<String, playsrc_studio_model::PresentationModel>,
+    BTreeMap<String, Vec<playsrc_studio_model::ViewModelMaterialOpacity>>,
+    RuntimeEnvironment,
+);
+
 fn compile_presentation(
     canonical: &playsrc_map::CanonicalMap,
     bsp: &playsrc_bsp::Bsp,
     graph: &playsrc_entity::Graph,
     configuration: &[u8],
     profile: playsrc_map::LightingProfile,
-) -> Result<
-    (
-        Vec<u8>,
-        BTreeMap<String, playsrc_studio_model::PresentationModel>,
-    ),
-    (),
-> {
+) -> Result<CompiledPresentation, ()> {
     let bundle = bundle(configuration)?;
     let mut roots = std::collections::BTreeSet::from([
         "models/weapons/w_models/w_rocket.mdl".to_owned(),
@@ -5232,9 +5789,10 @@ fn compile_presentation(
         .target_closure(&particle_roots)
         .map_err(|_| ())?
         .materials;
-    let environment = compile_environment_artifact(canonical, bsp, graph, &bundle, profile)?;
+    let (environment_bytes, environment) =
+        compile_environment_artifact(canonical, bsp, graph, &bundle, profile)?;
     let mut out = b"PTF2".to_vec();
-    out.extend_from_slice(&7u32.to_le_bytes());
+    out.extend_from_slice(&8u32.to_le_bytes());
     out.extend_from_slice(&u32::try_from(models.len()).map_err(|_| ())?.to_le_bytes());
     out.extend_from_slice(&u32::try_from(textures.len()).map_err(|_| ())?.to_le_bytes());
     out.extend_from_slice(
@@ -5349,6 +5907,7 @@ fn compile_presentation(
         }
         match a.model.descriptor {
             playsrc_studio_model::PresentationDescriptor::World {
+                geometry,
                 root_bone,
                 depth_range,
                 ..
@@ -5359,8 +5918,13 @@ fn compile_presentation(
                         playsrc_studio_model::RootBoneContract::AnimatedBelowEntity => 0,
                         playsrc_studio_model::RootBoneContract::StaticPropBoneZeroIsEntity => 1,
                     },
-                    0,
-                    0,
+                    match geometry.facing.front_face {
+                        playsrc_studio_model::TriangleWinding::Clockwise => 0,
+                        playsrc_studio_model::TriangleWinding::CounterClockwise => 1,
+                    },
+                    match geometry.facing.cull_face {
+                        playsrc_studio_model::CullFace::Back => 0,
+                    },
                 ]);
                 for value in depth_range {
                     out.extend_from_slice(&value.0.to_le_bytes());
@@ -5368,6 +5932,7 @@ fn compile_presentation(
                 out.extend_from_slice(&[0; 32]);
             }
             playsrc_studio_model::PresentationDescriptor::ViewModel {
+                geometry,
                 default_horizontal_fov_4_by_3,
                 minimum_fov,
                 maximum_fov,
@@ -5377,7 +5942,17 @@ fn compile_presentation(
                 opaque_before_translucent,
                 ..
             } => {
-                out.extend_from_slice(&[1, 0, 0, 0]);
+                out.extend_from_slice(&[
+                    1,
+                    0,
+                    match geometry.facing.front_face {
+                        playsrc_studio_model::TriangleWinding::Clockwise => 0,
+                        playsrc_studio_model::TriangleWinding::CounterClockwise => 1,
+                    },
+                    match geometry.facing.cull_face {
+                        playsrc_studio_model::CullFace::Back => 0,
+                    },
+                ]);
                 for value in [
                     default_horizontal_fov_4_by_3,
                     minimum_fov,
@@ -5425,7 +6000,7 @@ fn compile_presentation(
     for material in &particle_materials {
         pbytes(&mut out, material.as_bytes())?;
     }
-    pbytes(&mut out, &environment)?;
+    pbytes(&mut out, &environment_bytes)?;
     encode_material_states(&mut out, canonical, graph, &bundle, profile, &models)?;
     encode_particle_textures(&mut out, &particle_materials, &bundle, profile)?;
     encode_audio_documents(&mut out, &bundle)?;
@@ -5458,11 +6033,280 @@ fn compile_presentation(
             out.extend_from_slice(&u32::try_from(*value).map_err(|_| ())?.to_le_bytes());
         }
     }
+    let model_material_opacity = model_material_opacity(&models, &bundle, profile)?;
     let models = models
         .into_iter()
         .map(|(identity, artifact)| (identity, artifact.model))
         .collect();
-    Ok((out, models))
+    Ok((out, models, model_material_opacity, environment))
+}
+
+fn model_material_opacity(
+    models: &[(String, Box<playsrc_studio_model::PresentationArtifact>)],
+    bundle: &BTreeMap<String, &[u8]>,
+    profile: playsrc_map::LightingProfile,
+) -> Result<BTreeMap<String, Vec<playsrc_studio_model::ViewModelMaterialOpacity>>, ()> {
+    models
+        .iter()
+        .map(|(identity, artifact)| {
+            let values = artifact
+                .model
+                .materials
+                .iter()
+                .map(|selected| {
+                    let dependency = artifact
+                        .model
+                        .dependencies
+                        .get(selected.material_dependency)
+                        .ok_or(())?;
+                    let material = resolve_material_semantics(
+                        &dependency.logical_path.to_ascii_lowercase(),
+                        bundle,
+                        material_environment(profile, true),
+                    )?;
+                    let texture_alpha =
+                        selected_texture(&material, bundle)
+                            .ok()
+                            .is_some_and(|(_, _, metadata)| {
+                                metadata.alpha_flags.one_bit || metadata.alpha_flags.eight_bit
+                            });
+                    let draw = playsrc_material::model_draw_state(
+                        &material,
+                        playsrc_material::TextureAlphaFacts {
+                            base: texture_alpha,
+                        },
+                        playsrc_material::ModelRuntimeInputs {
+                            alpha_modulation: 1.0,
+                            cloak_factor: Some(0.0),
+                        },
+                    )
+                    .map_err(|_| ())?;
+                    Ok(match draw.opacity {
+                        playsrc_material::ModelOpacity::Opaque => {
+                            playsrc_studio_model::ViewModelMaterialOpacity::Opaque
+                        }
+                        playsrc_material::ModelOpacity::Translucent => {
+                            playsrc_studio_model::ViewModelMaterialOpacity::Translucent
+                        }
+                    })
+                })
+                .collect::<Result<Vec<_>, ()>>()?;
+            Ok((identity.clone(), values))
+        })
+        .collect()
+}
+
+fn encode_parameter_origin(out: &mut Vec<u8>, value: playsrc_material::ParameterOrigin) {
+    out.push(match value {
+        playsrc_material::ParameterOrigin::Authored => 0,
+        playsrc_material::ParameterOrigin::ShaderInitializer => 1,
+        playsrc_material::ParameterOrigin::TypeInitializer => 2,
+    });
+}
+
+fn encode_effective_f32(out: &mut Vec<u8>, value: &playsrc_material::EffectiveParameter<f32>) {
+    out.extend_from_slice(&value.value.to_le_bytes());
+    encode_parameter_origin(out, value.origin);
+    out.extend_from_slice(&[0; 3]);
+}
+
+fn encode_effective_i32(out: &mut Vec<u8>, value: &playsrc_material::EffectiveParameter<i32>) {
+    out.extend_from_slice(&value.value.to_le_bytes());
+    encode_parameter_origin(out, value.origin);
+    out.extend_from_slice(&[0; 3]);
+}
+
+fn encode_effective_bool(out: &mut Vec<u8>, value: &playsrc_material::EffectiveParameter<bool>) {
+    out.extend_from_slice(&[
+        u8::from(value.value),
+        match value.origin {
+            playsrc_material::ParameterOrigin::Authored => 0,
+            playsrc_material::ParameterOrigin::ShaderInitializer => 1,
+            playsrc_material::ParameterOrigin::TypeInitializer => 2,
+        },
+        0,
+        0,
+    ]);
+}
+
+fn encode_effective_vec2(
+    out: &mut Vec<u8>,
+    value: &playsrc_material::EffectiveParameter<[f32; 2]>,
+) {
+    for component in value.value {
+        out.extend_from_slice(&component.to_le_bytes());
+    }
+    encode_parameter_origin(out, value.origin);
+    out.extend_from_slice(&[0; 3]);
+}
+
+fn encode_effective_vec3(
+    out: &mut Vec<u8>,
+    value: &playsrc_material::EffectiveParameter<[f32; 3]>,
+) {
+    for component in value.value {
+        out.extend_from_slice(&component.to_le_bytes());
+    }
+    encode_parameter_origin(out, value.origin);
+    out.extend_from_slice(&[0; 3]);
+}
+
+fn encode_texture_request(
+    out: &mut Vec<u8>,
+    value: &playsrc_material::TextureRequest,
+) -> Result<(), ()> {
+    out.extend_from_slice(&[
+        value.role as u8,
+        value.disposition as u8,
+        color_read_code(value.color_read),
+        0,
+    ]);
+    pbytes(out, &value.parameter)?;
+    pbytes(out, &value.reference)?;
+    pbytes(out, value.logical_path.as_deref().unwrap_or("").as_bytes())
+}
+
+fn encode_water_material(
+    out: &mut Vec<u8>,
+    identity: &str,
+    map_material: Option<usize>,
+    material: &playsrc_material::Material,
+) -> Result<(), ()> {
+    let state = playsrc_material::water_material_output(material)
+        .map_err(|_| ())?
+        .ok_or(())?;
+    pbytes(out, identity.as_bytes())?;
+    out.extend_from_slice(
+        &map_material
+            .map(|value| u32::try_from(value).map_err(|_| ()))
+            .transpose()?
+            .unwrap_or(u32::MAX)
+            .to_le_bytes(),
+    );
+    let textures = [
+        state.textures.base.as_ref(),
+        state.textures.normal.as_ref(),
+        state.textures.flow.as_ref(),
+        state.textures.environment.as_ref(),
+        state.textures.reflection.as_ref(),
+        state.textures.refraction.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    out.extend_from_slice(&[
+        match state.shader {
+            playsrc_material::WaterShaderVariant::Dx90 => 0,
+            playsrc_material::WaterShaderVariant::Dx9Hdr => 1,
+        },
+        match state.opacity {
+            playsrc_material::WaterSurfaceOpacity::Opaque => 0,
+            playsrc_material::WaterSurfaceOpacity::Translucent => 1,
+        },
+        u8::try_from(textures.len()).map_err(|_| ())?,
+        u8::try_from(state.required_inputs.len()).map_err(|_| ())?,
+    ]);
+    for texture in textures {
+        encode_texture_request(out, texture)?;
+    }
+    pbytes(
+        out,
+        state
+            .bottom_material
+            .as_ref()
+            .map_or(&[], |value| value.logical_path.as_bytes()),
+    )?;
+    pbytes(
+        out,
+        state
+            .underwater_overlay
+            .as_ref()
+            .map_or(&[], |value| value.logical_path.as_bytes()),
+    )?;
+    encode_effective_i32(out, &state.base_frame);
+    encode_effective_i32(out, &state.normal_frame);
+    encode_effective_i32(out, &state.environment_frame);
+    pbytes(out, &state.normal_transform.parameter)?;
+    for value in state.normal_transform.matrix {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    encode_parameter_origin(out, state.normal_transform.origin);
+    out.extend_from_slice(&[u8::from(state.normal_transform.proxy_mutated), 0, 0]);
+    encode_effective_vec2(out, &state.scale);
+    encode_effective_f32(out, &state.time);
+    encode_effective_f32(out, &state.water_depth);
+    encode_effective_bool(out, &state.above_water);
+    encode_effective_f32(out, &state.reflect_amount);
+    encode_effective_f32(out, &state.refract_amount);
+    encode_effective_vec3(out, &state.reflect_tint);
+    encode_effective_vec3(out, &state.refract_tint);
+    encode_effective_f32(out, &state.reflection_blend_factor);
+    if let Some(value) = &state.fog.enabled {
+        out.extend_from_slice(&[1, 0, 0, 0]);
+        encode_effective_bool(out, value);
+    } else {
+        out.extend_from_slice(&[0; 8]);
+    }
+    encode_effective_vec3(out, &state.fog.color);
+    encode_effective_f32(out, &state.fog.start);
+    encode_effective_f32(out, &state.fog.end);
+    encode_effective_f32(out, &state.cheap_start);
+    encode_effective_f32(out, &state.cheap_end);
+    encode_effective_bool(out, &state.force_cheap);
+    encode_effective_bool(out, &state.force_expensive);
+    encode_effective_bool(out, &state.reflect_entities);
+    encode_effective_bool(out, &state.blur_refraction);
+    encode_effective_bool(out, &state.no_low_end_lightmap);
+    for value in &state.scroll {
+        encode_effective_vec3(out, value);
+    }
+    out.extend_from_slice(&[u8::from(state.fresnel.cheap_enabled), 0, 0, 0]);
+    for value in state.fresnel.expensive_constant {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    for requirement in state.required_inputs {
+        out.push(match requirement {
+            playsrc_material::WaterInputRequirement::AuthoredTexturePlanes(role) => {
+                1_u8.checked_add(role as u8).ok_or(())?
+            }
+            playsrc_material::WaterInputRequirement::Lightmap => 32,
+            playsrc_material::WaterInputRequirement::LocalEnvironment => 33,
+            playsrc_material::WaterInputRequirement::ReflectionFramebuffer => 34,
+            playsrc_material::WaterInputRequirement::RefractionFramebuffer => 35,
+            playsrc_material::WaterInputRequirement::CameraPosition => 36,
+            playsrc_material::WaterInputRequirement::WaterSurfacePlane => 37,
+            playsrc_material::WaterInputRequirement::EyeWaterSide => 38,
+            playsrc_material::WaterInputRequirement::DistanceToWater => 39,
+            playsrc_material::WaterInputRequirement::RuntimeWaterPolicy => 40,
+            playsrc_material::WaterInputRequirement::WaterFogVolume => 41,
+            playsrc_material::WaterInputRequirement::PresentationTime => 42,
+            playsrc_material::WaterInputRequirement::WaterLodController => 43,
+        });
+    }
+    Ok(())
+}
+
+fn encode_fog_state(out: &mut Vec<u8>, value: &playsrc_map::FogState) {
+    out.extend_from_slice(&[
+        u8::from(value.enabled),
+        u8::from(value.blend),
+        u8::from(value.radial),
+        u8::from(value.far_z.is_some()),
+    ]);
+    for component in value.direction {
+        out.extend_from_slice(&component.to_le_bytes());
+    }
+    out.extend_from_slice(&value.primary);
+    out.extend_from_slice(&value.secondary);
+    for component in [
+        value.start,
+        value.end,
+        value.maximum_density,
+        value.far_z.unwrap_or(0.0),
+        value.transition_duration,
+    ] {
+        out.extend_from_slice(&component.to_le_bytes());
+    }
 }
 
 fn compile_environment_artifact(
@@ -5471,7 +6315,7 @@ fn compile_environment_artifact(
     graph: &playsrc_entity::Graph,
     bundle: &BTreeMap<String, &[u8]>,
     profile: playsrc_map::LightingProfile,
-) -> Result<Vec<u8>, ()> {
+) -> Result<(Vec<u8>, RuntimeEnvironment), ()> {
     let materials = canonical
         .materials
         .iter()
@@ -5491,6 +6335,36 @@ fn compile_environment_artifact(
             material_index: reference.index,
             material,
         })
+        .collect::<Vec<_>>();
+    let dependent_paths = materials
+        .iter()
+        .flat_map(|material| &material.material_requests)
+        .filter(|request| request.role == playsrc_material::MaterialRole::Bottom)
+        .map(|request| request.logical_path.to_ascii_lowercase())
+        .filter(|path| {
+            !canonical
+                .materials
+                .iter()
+                .any(|material| material.logical_path.eq_ignore_ascii_case(path))
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    let dependent_materials = dependent_paths
+        .into_iter()
+        .map(|path| {
+            Ok((
+                path.clone(),
+                resolve_material_semantics(&path, bundle, material_environment(profile, false))?,
+            ))
+        })
+        .collect::<Result<Vec<_>, ()>>()?;
+    let dependent_bindings = dependent_materials
+        .iter()
+        .map(
+            |(logical_path, material)| playsrc_map::NamedMaterialBinding {
+                logical_path,
+                material,
+            },
+        )
         .collect::<Vec<_>>();
     let world = graph
         .entities
@@ -5666,6 +6540,72 @@ fn compile_environment_artifact(
     }
     let marks = marks.into_values().collect::<Vec<_>>();
     let visibility = playsrc_visibility::compile(bsp).map_err(|_| ())?;
+    let collision = playsrc_collision::compile(bsp).map_err(|_| ())?;
+    let receiver_inputs = canonical
+        .brush_model_occurrences
+        .iter()
+        .filter(|occurrence| {
+            matches!(
+                occurrence.classname.as_slice(),
+                b"func_door" | b"func_button" | b"func_movelinear" | b"func_brush"
+            )
+        })
+        .map(|occurrence| {
+            let brush = occurrence.classname.eq_ignore_ascii_case(b"func_brush");
+            playsrc_collision::ObjectInput {
+                identity: occurrence.entity as u64,
+                role: playsrc_collision::ObjectRole::Entity,
+                enabled: !brush
+                    || occurrence.solidity.as_deref() != Some(b"1")
+                        && occurrence.start_disabled.as_deref() != Some(b"1"),
+                transform: playsrc_collision::Transform {
+                    origin: occurrence.origin,
+                    angles: occurrence.angles,
+                },
+                linear_velocity: [0.0; 3],
+                angular_velocity: [0.0; 3],
+                collision_group: 0,
+                contents: 0,
+                surface_flags: 0,
+                shape: playsrc_collision::SnapshotShape::BrushModel {
+                    model: occurrence.model,
+                },
+            }
+        })
+        .collect();
+    let receiver_snapshot = playsrc_collision::Snapshot::compile(
+        &collision,
+        1,
+        receiver_inputs,
+        playsrc_collision::SnapshotLimits::default(),
+    )
+    .map_err(|_| ())?;
+    let mark_placements = playsrc_map::MarkPlacementSnapshot {
+        revision: 1,
+        placements: graph
+            .entities
+            .iter()
+            .filter(|entity| {
+                entity
+                    .classname
+                    .as_deref()
+                    .is_some_and(|value| value.eq_ignore_ascii_case(b"infodecal"))
+            })
+            .map(|entity| {
+                Ok(playsrc_map::MarkPlacement {
+                    entity: entity.index,
+                    world_origin: entity_vector(entity, b"origin")?,
+                    parent_entity: entity.parentname.as_deref().and_then(|name| {
+                        graph
+                            .entities
+                            .iter()
+                            .find(|candidate| candidate.targetname.as_deref() == Some(name))
+                            .map(|candidate| candidate.index)
+                    }),
+                })
+            })
+            .collect::<Result<Vec<_>, ()>>()?,
+    };
     let env = playsrc_map::compile_environment(
         canonical,
         bsp,
@@ -5673,7 +6613,11 @@ fn compile_environment_artifact(
             logical_map_path: &logical_map_path,
             entities: graph,
             visibility: &visibility,
+            collision: &collision,
+            receiver_snapshot: &receiver_snapshot,
+            mark_placements: &mark_placements,
             materials: &bindings,
+            dependent_materials: &dependent_bindings,
             mark_materials: &marks,
             dependencies: &dependencies,
             limits: playsrc_map::EnvironmentLimits::default(),
@@ -5681,7 +6625,7 @@ fn compile_environment_artifact(
     )
     .map_err(|_| ())?;
     let mut out = b"PENV".to_vec();
-    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(&2u32.to_le_bytes());
     out.extend_from_slice(&[
         if profile == playsrc_map::LightingProfile::Hdr {
             1
@@ -5788,11 +6732,12 @@ fn compile_environment_artifact(
         out.extend_from_slice(&sample.width.to_le_bytes());
         out.extend_from_slice(&sample.height.to_le_bytes())
     }
-    let cubemap_code = |selection: &playsrc_map::CubemapSelection| -> (u8, u32) {
+    let cubemap_code = |selection: Option<&playsrc_map::CubemapSelection>| -> (u8, u32) {
         match selection {
-            playsrc_map::CubemapSelection::Nearest { sample } => (0, *sample as u32),
-            playsrc_map::CubemapSelection::Declared { sample } => (1, *sample as u32),
-            playsrc_map::CubemapSelection::External { .. } => (2, u32::MAX),
+            Some(playsrc_map::CubemapSelection::Nearest { sample }) => (0, *sample as u32),
+            Some(playsrc_map::CubemapSelection::Declared { sample }) => (1, *sample as u32),
+            Some(playsrc_map::CubemapSelection::External { .. }) => (2, u32::MAX),
+            None => (3, u32::MAX),
         }
     };
     for surface in &env.water.surfaces {
@@ -5814,7 +6759,7 @@ fn compile_environment_artifact(
                 out.extend_from_slice(&value.to_le_bytes())
             }
         }
-        let (kind, sample) = cubemap_code(&surface.cubemap);
+        let (kind, sample) = cubemap_code(surface.bindings.environment.as_ref());
         out.extend_from_slice(&[kind, 0, 0, 0]);
         out.extend_from_slice(&sample.to_le_bytes())
     }
@@ -5831,7 +6776,7 @@ fn compile_environment_artifact(
         for leaf in &volume.leaves {
             out.extend_from_slice(&(*leaf as u32).to_le_bytes())
         }
-        let (kind, sample) = cubemap_code(&volume.cubemap);
+        let (kind, sample) = cubemap_code(volume.surface_bindings.environment.as_ref());
         out.extend_from_slice(&[kind, 0, 0, 0]);
         out.extend_from_slice(&sample.to_le_bytes())
     }
@@ -5847,7 +6792,556 @@ fn compile_environment_artifact(
             playsrc_map::ControllerState::ToneMap => 5,
         });
     }
-    Ok(out)
+    out.extend_from_slice(&env.marks.collision_world_identity);
+    out.extend_from_slice(&env.marks.receiver_snapshot_revision.to_le_bytes());
+    out.extend_from_slice(&env.marks.placement_revision.to_le_bytes());
+    out.extend_from_slice(
+        &u32::try_from(env.marks.records.len())
+            .map_err(|_| ())?
+            .to_le_bytes(),
+    );
+    for mark in &env.marks.records {
+        out.extend_from_slice(
+            &u32::try_from(mark.source_index)
+                .map_err(|_| ())?
+                .to_le_bytes(),
+        );
+        out.extend_from_slice(
+            &mark
+                .entity
+                .map(|value| u32::try_from(value).map_err(|_| ()))
+                .transpose()?
+                .unwrap_or(u32::MAX)
+                .to_le_bytes(),
+        );
+        out.extend_from_slice(&mark.overlay_id.unwrap_or(i32::MIN).to_le_bytes());
+        for value in mark.origin {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        out.extend_from_slice(&[
+            u8::from(mark.material_sha256.is_some()),
+            mark.render_order,
+            u8::from(mark.low_priority),
+            match mark.activation {
+                playsrc_map::MarkActivation::MapActivation => 0,
+                playsrc_map::MarkActivation::Input => 1,
+                playsrc_map::MarkActivation::Compiled => 2,
+            },
+            match mark.lifetime {
+                playsrc_map::MarkLifetime::Permanent => 0,
+                playsrc_map::MarkLifetime::PoolManaged => 1,
+            },
+            u8::from(mark.fade_distances_squared.is_some()),
+            mark.render.polygon_offset as u8,
+            0,
+        ]);
+        out.extend_from_slice(&mark.material_sha256.unwrap_or([0; 32]));
+        for value in mark.fade_distances_squared.unwrap_or([0.0; 2]) {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        out.extend_from_slice(&mark.render.normal_offset.to_le_bytes());
+        out.extend_from_slice(
+            &mark
+                .parent_entity
+                .map(|value| u32::try_from(value).map_err(|_| ()))
+                .transpose()?
+                .unwrap_or(u32::MAX)
+                .to_le_bytes(),
+        );
+        if let Some(receiver) = mark.receiver {
+            out.extend_from_slice(&[1, 0, 0, 0]);
+            out.extend_from_slice(&receiver.entity.unwrap_or(u64::MAX).to_le_bytes());
+            out.extend_from_slice(&u32::try_from(receiver.model).map_err(|_| ())?.to_le_bytes());
+            out.extend_from_slice(
+                &receiver
+                    .parent_entity
+                    .map(|value| u32::try_from(value).map_err(|_| ()))
+                    .transpose()?
+                    .unwrap_or(u32::MAX)
+                    .to_le_bytes(),
+            );
+            for value in receiver
+                .local_origin
+                .into_iter()
+                .chain(receiver.transform.origin)
+                .chain(receiver.transform.angles)
+            {
+                out.extend_from_slice(&value.to_le_bytes());
+            }
+        } else {
+            out.extend_from_slice(&[0; 56]);
+        }
+        out.extend_from_slice(
+            &u32::try_from(mark.target_faces.len())
+                .map_err(|_| ())?
+                .to_le_bytes(),
+        );
+        for value in &mark.target_faces {
+            out.extend_from_slice(&u32::try_from(*value).map_err(|_| ())?.to_le_bytes());
+        }
+        out.extend_from_slice(
+            &u32::try_from(mark.fragments.len())
+                .map_err(|_| ())?
+                .to_le_bytes(),
+        );
+        for fragment in &mark.fragments {
+            match &fragment.visibility {
+                playsrc_map::MarkVisibility::World {
+                    leaves,
+                    clusters,
+                    areas,
+                } => {
+                    out.extend_from_slice(&[0, 0, 0, 0]);
+                    for count in [leaves.len(), clusters.len(), areas.len()] {
+                        out.extend_from_slice(&u32::try_from(count).map_err(|_| ())?.to_le_bytes());
+                    }
+                    for value in leaves {
+                        out.extend_from_slice(
+                            &u32::try_from(*value).map_err(|_| ())?.to_le_bytes(),
+                        );
+                    }
+                    for value in clusters {
+                        out.extend_from_slice(&value.to_le_bytes());
+                    }
+                    for value in areas {
+                        out.extend_from_slice(
+                            &u32::try_from(*value).map_err(|_| ())?.to_le_bytes(),
+                        );
+                    }
+                }
+                playsrc_map::MarkVisibility::BrushModel { entity, model } => {
+                    out.extend_from_slice(&[1, 0, 0, 0]);
+                    out.extend_from_slice(&entity.to_le_bytes());
+                    out.extend_from_slice(&u32::try_from(*model).map_err(|_| ())?.to_le_bytes());
+                }
+            }
+            out.extend_from_slice(
+                &u32::try_from(fragment.lightmap_uv.len())
+                    .map_err(|_| ())?
+                    .to_le_bytes(),
+            );
+            for value in &fragment.lightmap_uv {
+                for component in value {
+                    out.extend_from_slice(&component.to_le_bytes());
+                }
+            }
+        }
+    }
+    let leaf_distances = env
+        .water
+        .leaf_minimum_distance_to_water
+        .as_deref()
+        .unwrap_or(&[]);
+    out.extend_from_slice(
+        &u32::try_from(leaf_distances.len())
+            .map_err(|_| ())?
+            .to_le_bytes(),
+    );
+    for value in leaf_distances {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    let mut water_materials = Vec::new();
+    for (index, material) in materials.iter().enumerate() {
+        if material.water.is_some() {
+            let reference = canonical.materials.get(index).ok_or(())?;
+            water_materials.push((
+                reference.logical_path.to_ascii_lowercase(),
+                Some(reference.index),
+                material,
+            ));
+        }
+    }
+    for (identity, material) in &dependent_materials {
+        if material.water.is_some() {
+            water_materials.push((identity.clone(), None, material));
+        }
+    }
+    out.extend_from_slice(
+        &u32::try_from(water_materials.len())
+            .map_err(|_| ())?
+            .to_le_bytes(),
+    );
+    for (identity, map_material, material) in &water_materials {
+        encode_water_material(&mut out, identity, *map_material, material)?;
+    }
+    let mut environment_texture_paths = std::collections::BTreeSet::new();
+    for (_, _, material) in &water_materials {
+        let water = playsrc_material::water_material_output(material)
+            .map_err(|_| ())?
+            .ok_or(())?;
+        for texture in [
+            water.textures.base.as_ref(),
+            water.textures.normal.as_ref(),
+            water.textures.flow.as_ref(),
+            water.textures.environment.as_ref(),
+            water.textures.reflection.as_ref(),
+            water.textures.refraction.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if texture.disposition == playsrc_material::TextureDisposition::Source
+                && texture.is_defined()
+            {
+                environment_texture_paths.insert(
+                    texture
+                        .logical_path
+                        .as_ref()
+                        .ok_or(())?
+                        .to_ascii_lowercase(),
+                );
+            }
+        }
+    }
+    for material in &materials {
+        if !material.features.alpha_test && !material.features.translucent {
+            continue;
+        }
+        for texture in &material.textures {
+            if texture.disposition == playsrc_material::TextureDisposition::Source
+                && material.selected_textures.contains(&texture.role)
+            {
+                environment_texture_paths.insert(
+                    texture
+                        .logical_path
+                        .as_ref()
+                        .ok_or(())?
+                        .to_ascii_lowercase(),
+                );
+            }
+        }
+    }
+    for mark in &marks {
+        let material = resolve_material_semantics(
+            &mark.logical_path,
+            bundle,
+            material_environment(profile, false),
+        )?;
+        for texture in &material.textures {
+            if texture.disposition == playsrc_material::TextureDisposition::Source
+                && material.selected_textures.contains(&texture.role)
+            {
+                environment_texture_paths.insert(
+                    texture
+                        .logical_path
+                        .as_ref()
+                        .ok_or(())?
+                        .to_ascii_lowercase(),
+                );
+            }
+        }
+    }
+    for sample in &env.cubemaps {
+        environment_texture_paths.insert(sample.logical_path.to_ascii_lowercase());
+    }
+    if let Some(sky) = &env.sky {
+        for face in &sky.faces {
+            for texture in &face.selected_textures {
+                environment_texture_paths.insert(texture.logical_path.to_ascii_lowercase());
+            }
+        }
+    }
+    out.extend_from_slice(
+        &u32::try_from(environment_texture_paths.len())
+            .map_err(|_| ())?
+            .to_le_bytes(),
+    );
+    for identity in environment_texture_paths {
+        let texture = authored_texture(&identity, bundle)?;
+        encode_authored_texture(&mut out, &identity, &texture)?;
+    }
+    out.extend_from_slice(
+        &u32::try_from(env.water.surfaces.len())
+            .map_err(|_| ())?
+            .to_le_bytes(),
+    );
+    for surface in &env.water.surfaces {
+        out.extend_from_slice(&u32::try_from(surface.face).map_err(|_| ())?.to_le_bytes());
+        out.extend_from_slice(
+            &u32::try_from(surface.texture_info)
+                .map_err(|_| ())?
+                .to_le_bytes(),
+        );
+        out.extend_from_slice(
+            &surface
+                .fog_volume
+                .map(|value| u32::try_from(value).map_err(|_| ()))
+                .transpose()?
+                .unwrap_or(u32::MAX)
+                .to_le_bytes(),
+        );
+        for value in surface.plane {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        out.extend_from_slice(&[
+            u8::from(surface.bindings.environment.is_some()),
+            u8::from(surface.bindings.reflection),
+            u8::from(surface.bindings.refraction),
+            0,
+        ]);
+    }
+    out.extend_from_slice(
+        &u32::try_from(env.water.volumes.len())
+            .map_err(|_| ())?
+            .to_le_bytes(),
+    );
+    for volume in &env.water.volumes {
+        out.extend_from_slice(
+            &u32::try_from(volume.texture_info)
+                .map_err(|_| ())?
+                .to_le_bytes(),
+        );
+        out.extend_from_slice(
+            &u32::try_from(volume.surface_material)
+                .map_err(|_| ())?
+                .to_le_bytes(),
+        );
+        match &volume.bottom_material {
+            None => out.extend_from_slice(&[0, 0, 0, 0]),
+            Some(playsrc_map::WaterMaterialIdentity::Map(index)) => {
+                out.extend_from_slice(&[1, 0, 0, 0]);
+                out.extend_from_slice(&u32::try_from(*index).map_err(|_| ())?.to_le_bytes());
+            }
+            Some(playsrc_map::WaterMaterialIdentity::Dependency(identity)) => {
+                out.extend_from_slice(&[2, 0, 0, 0]);
+                pbytes(&mut out, identity.as_bytes())?;
+            }
+        }
+        out.extend_from_slice(&volume.contents.to_le_bytes());
+        for value in volume.plane {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        out.extend_from_slice(
+            &u32::try_from(volume.clusters.len())
+                .map_err(|_| ())?
+                .to_le_bytes(),
+        );
+        for value in &volume.clusters {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        out.extend_from_slice(
+            &u32::try_from(volume.areas.len())
+                .map_err(|_| ())?
+                .to_le_bytes(),
+        );
+        for value in &volume.areas {
+            out.extend_from_slice(&u32::try_from(*value).map_err(|_| ())?.to_le_bytes());
+        }
+        out.extend_from_slice(&[
+            u8::from(volume.surface_translucent),
+            match volume.bottom_translucent {
+                None => 0,
+                Some(false) => 1,
+                Some(true) => 2,
+            },
+            0,
+            0,
+        ]);
+        out.extend_from_slice(&[
+            u8::from(volume.surface_bindings.environment.is_some()),
+            u8::from(volume.surface_bindings.reflection),
+            u8::from(volume.surface_bindings.refraction),
+            u8::from(volume.bottom_bindings.is_some()),
+        ]);
+        let bottom = volume.bottom_bindings.as_ref();
+        out.extend_from_slice(&[
+            u8::from(bottom.is_some_and(|value| value.environment.is_some())),
+            u8::from(bottom.is_some_and(|value| value.reflection)),
+            u8::from(bottom.is_some_and(|value| value.refraction)),
+            0,
+        ]);
+    }
+    out.extend_from_slice(
+        &u32::try_from(env.controllers.len())
+            .map_err(|_| ())?
+            .to_le_bytes(),
+    );
+    for controller in &env.controllers {
+        out.extend_from_slice(
+            &u32::try_from(controller.entity)
+                .map_err(|_| ())?
+                .to_le_bytes(),
+        );
+        out.extend_from_slice(
+            &u32::try_from(controller.raw_fields.len())
+                .map_err(|_| ())?
+                .to_le_bytes(),
+        );
+        for (key, value) in &controller.raw_fields {
+            pbytes(&mut out, key)?;
+            pbytes(&mut out, value)?;
+        }
+        match &controller.state {
+            playsrc_map::ControllerState::Fog(value) => {
+                out.push(0);
+                encode_fog_state(&mut out, value);
+            }
+            playsrc_map::ControllerState::SkyCamera {
+                origin,
+                scale,
+                area,
+                fog,
+            } => {
+                out.push(1);
+                for value in origin {
+                    out.extend_from_slice(&value.to_le_bytes());
+                }
+                out.extend_from_slice(&scale.to_le_bytes());
+                out.extend_from_slice(&u32::try_from(*area).map_err(|_| ())?.to_le_bytes());
+                encode_fog_state(&mut out, fog);
+            }
+            playsrc_map::ControllerState::WaterLod { start, end } => {
+                out.push(2);
+                out.extend_from_slice(&start.to_le_bytes());
+                out.extend_from_slice(&end.to_le_bytes());
+            }
+            playsrc_map::ControllerState::EnvironmentLight {
+                origin,
+                angles,
+                pitch,
+                sunlight,
+                sunlight_hdr,
+                sunlight_hdr_scale,
+                ambient,
+                ambient_hdr,
+                ambient_hdr_scale,
+                sun_spread_angle,
+            } => {
+                out.push(3);
+                for value in origin
+                    .iter()
+                    .chain(angles)
+                    .chain(core::slice::from_ref(pitch))
+                    .chain(sunlight)
+                    .chain(sunlight_hdr)
+                    .chain(core::slice::from_ref(sunlight_hdr_scale))
+                    .chain(ambient)
+                    .chain(ambient_hdr)
+                    .chain(core::slice::from_ref(ambient_hdr_scale))
+                    .chain(core::slice::from_ref(sun_spread_angle))
+                {
+                    out.extend_from_slice(&value.to_le_bytes());
+                }
+            }
+            playsrc_map::ControllerState::Shadow {
+                angles,
+                color,
+                maximum_distance,
+                disabled,
+            } => {
+                out.push(4);
+                for value in angles {
+                    out.extend_from_slice(&value.to_le_bytes());
+                }
+                out.extend_from_slice(color);
+                out.extend_from_slice(&maximum_distance.to_le_bytes());
+                out.extend_from_slice(&[u8::from(*disabled), 0, 0, 0]);
+            }
+            playsrc_map::ControllerState::ToneMap => out.push(5),
+        }
+    }
+    out.extend_from_slice(
+        &env.master_fog_controller
+            .map(|value| u32::try_from(value).map_err(|_| ()))
+            .transpose()?
+            .unwrap_or(u32::MAX)
+            .to_le_bytes(),
+    );
+    if let Some(sky) = &env.sky {
+        out.extend_from_slice(
+            &u32::try_from(sky.faces.len())
+                .map_err(|_| ())?
+                .to_le_bytes(),
+        );
+        for face in &sky.faces {
+            out.extend_from_slice(
+                &u32::try_from(face.selected_textures.len())
+                    .map_err(|_| ())?
+                    .to_le_bytes(),
+            );
+            for texture in &face.selected_textures {
+                pbytes(&mut out, texture.logical_path.as_bytes())?;
+                out.extend_from_slice(&texture.sha256);
+            }
+        }
+    } else {
+        out.extend_from_slice(&0_u32.to_le_bytes());
+    }
+    let mut runtime_materials = BTreeMap::new();
+    let mut map_materials = BTreeMap::new();
+    let mut normal_frame_counts = BTreeMap::new();
+    for (index, material) in materials.iter().enumerate() {
+        if material.water.is_none() {
+            continue;
+        }
+        let reference = canonical.materials.get(index).ok_or(())?;
+        let identity = reference.logical_path.to_ascii_lowercase();
+        let output = playsrc_material::water_material_output(material)
+            .map_err(|_| ())?
+            .ok_or(())?;
+        if let Some(normal) = output
+            .textures
+            .normal
+            .as_ref()
+            .filter(|value| value.is_defined())
+        {
+            let path = normal.logical_path.as_ref().ok_or(())?.to_ascii_lowercase();
+            let metadata = playsrc_vtf::inspect(
+                bundle.get(&path).ok_or(())?,
+                playsrc_vtf::Dialect::Source2013Pc,
+                playsrc_vtf::Limits::default(),
+            )
+            .map_err(|_| ())?;
+            normal_frame_counts.insert(identity.clone(), u32::from(metadata.frame_count));
+        }
+        map_materials.insert(reference.index, identity.clone());
+        runtime_materials.insert(identity, material.clone());
+    }
+    for (identity, material) in dependent_materials {
+        if material.water.is_none() {
+            continue;
+        }
+        let output = playsrc_material::water_material_output(&material)
+            .map_err(|_| ())?
+            .ok_or(())?;
+        if let Some(normal) = output
+            .textures
+            .normal
+            .as_ref()
+            .filter(|value| value.is_defined())
+        {
+            let path = normal.logical_path.as_ref().ok_or(())?.to_ascii_lowercase();
+            let metadata = playsrc_vtf::inspect(
+                bundle.get(&path).ok_or(())?,
+                playsrc_vtf::Dialect::Source2013Pc,
+                playsrc_vtf::Limits::default(),
+            )
+            .map_err(|_| ())?;
+            normal_frame_counts.insert(identity.clone(), u32::from(metadata.frame_count));
+        }
+        runtime_materials.insert(identity, material);
+    }
+    let water_lods = env
+        .controllers
+        .iter()
+        .filter_map(|controller| match controller.state {
+            playsrc_map::ControllerState::WaterLod { start, end } => Some([start, end]),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if water_lods.len() > 1 {
+        return Err(());
+    }
+    Ok((
+        out,
+        RuntimeEnvironment {
+            world: env,
+            water_materials: runtime_materials,
+            map_materials,
+            normal_frame_counts,
+            water_lod: water_lods.first().copied(),
+        },
+    ))
 }
 
 type CompiledParticles = (
@@ -6133,7 +7627,7 @@ fn decode_particle_transaction(
     (),
 > {
     let mut r = ParticleReader { bytes, at: 0 };
-    if r.take(4)? != b"PPTX" || r.u32()? != 1 {
+    if r.take(4)? != b"PPTX" || r.u32()? != 2 {
         return Err(());
     }
     let from = r.f32()?;
@@ -6144,6 +7638,7 @@ fn decode_particle_transaction(
         return Err(());
     }
     let mut events = Vec::with_capacity(count);
+    let mut prior_timestamp = from;
     for order in 0..count {
         let kind = r.u8()?;
         if r.take(3)? != [0, 0, 0] {
@@ -6151,6 +7646,10 @@ fn decode_particle_transaction(
         }
         let identity = r.u64()?;
         let timestamp_seconds = r.f32()?;
+        if timestamp_seconds < prior_timestamp || timestamp_seconds > to {
+            return Err(());
+        }
+        prior_timestamp = timestamp_seconds;
         let effect_identity = r.u32()?;
         let command = match kind {
             1 => {
@@ -6175,9 +7674,12 @@ fn decode_particle_transaction(
             },
             3 => playsrc_particle::EventCommand::StopEmission {
                 effect_identity,
+                mode: playsrc_particle::StopMode::Graceful,
+            },
+            4 => playsrc_particle::EventCommand::StopEmission {
+                effect_identity,
                 mode: playsrc_particle::StopMode::Immediate,
             },
-            4 => playsrc_particle::EventCommand::Destroy { effect_identity },
             _ => return Err(()),
         };
         events.push(playsrc_particle::Event {
@@ -6254,11 +7756,13 @@ mod tests {
             particle_sheets: BTreeMap::new(),
             particle_output: Vec::new(),
             studio_models: BTreeMap::new(),
+            model_material_opacity: BTreeMap::new(),
             viewmodel_bob: BTreeMap::new(),
             model_output: Vec::new(),
             visibility: None,
             area_state: None,
             visibility_output: Vec::new(),
+            environment: None,
             collision: None,
             gameplay_world: None,
             collision_templates: Vec::new(),
@@ -6288,11 +7792,13 @@ mod tests {
             particle_sheets: BTreeMap::new(),
             particle_output: Vec::new(),
             studio_models: BTreeMap::new(),
+            model_material_opacity: BTreeMap::new(),
             viewmodel_bob: BTreeMap::new(),
             model_output: Vec::new(),
             visibility: None,
             area_state: None,
             visibility_output: Vec::new(),
+            environment: None,
             collision: None,
             gameplay_world: None,
             collision_templates: Vec::new(),
@@ -6482,7 +7988,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(&encoded[..8], b"PSSN\x07\0\0\0");
+        assert_eq!(&encoded[..8], b"PSSN\x08\0\0\0");
         assert_eq!(encoded.len(), 872);
         assert_eq!(u32::from_le_bytes(encoded[56..60].try_into().unwrap()), 1);
         assert_eq!(u32::from_le_bytes(encoded[60..64].try_into().unwrap()), 1);

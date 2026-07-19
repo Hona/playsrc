@@ -21,7 +21,7 @@ export type WorkerRequest =
   | Readonly<{ id: number; kind: "discard"; generation: number }>
   | Readonly<{ id: number; kind: "particles"; generation: number; batch: ArrayBuffer }>
   | Readonly<{ id: number; kind: "models"; generation: number; batch: ArrayBuffer }>
-  | Readonly<{ id: number; kind: "visibility"; generation: number; position: readonly [number, number, number] }>
+  | Readonly<{ id: number; kind: "visibility"; generation: number; view: Readonly<{ position: readonly [number, number, number]; yawDegrees: number; pitchDegrees: number; verticalFovDegrees: number; aspectRatio: number; near: number; presentationTimeSeconds: number }> }>
   | Readonly<{
       id: number
       kind: "observe"

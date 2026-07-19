@@ -94,6 +94,14 @@ function App() {
       data-collision-mover-probe={view.collisionMoverProbe}
       data-simulation-probe={view.simulationProbe}
       data-brush-model-probe={view.brushModelProbe}
+      data-water-plan={view.waterPlanProbe}
+      data-water-passes={view.waterPasses?.join(",")}
+      data-water-restored={view.waterStateRestored}
+      data-water-normal-frame={view.waterNormalFrame}
+      data-reload-history={view.reloadHistory?.join("|")}
+      data-fire-ticks={view.fireTickHistory?.join("|")}
+      data-performance={view.performanceProbe}
+      data-locker={view.lockerProbe}
       data-unsupported-state={view.unsupportedState}
       data-blockers={JSON.stringify(view.blockers)}
     >

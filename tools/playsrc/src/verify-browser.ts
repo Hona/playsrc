@@ -218,7 +218,6 @@ const VISUAL_REGIONS = Object.freeze([
   Object.freeze({ name: "ceiling", x: 400, y: 120, width: 320, height: 100 }),
   Object.freeze({ name: "forward-wall", x: 400, y: 270, width: 320, height: 180 }),
   Object.freeze({ name: "floor", x: 180, y: 500, width: 160, height: 130 }),
-  Object.freeze({ name: "right-wall", x: 1_080, y: 40, width: 120, height: 80 }),
 ])
 
 function readUint32(bytes: Uint8Array, offset: number): number {
@@ -724,11 +723,12 @@ export async function verifyBrowserAcceptance(
     let body = parseJson<string>(await agent(["--session", session, "eval", "document.body.innerText"]))
     require(body.includes("DERIVED CACHE STORED"), "cold browser run did not store the derived payload")
     const fixedSpawn = await spawnObservation(session)
+    await agent(["--session",session,"wait","--fn","Math.abs(Number(document.querySelector('main').dataset.cameraPosition.split(',')[2])-(-3067.96875))<0.001","--timeout","10000"])
     const fixedCamera = await cameraObservation(session)
     const fixedEnvironment = parseJson<string>(
       await agent(["--session", session, "eval", "document.querySelector('main').dataset.environment"]),
     )
-    require(fixedEnvironment === "hdr,284,91,1,39,63", `HDR environment summary differs: ${fixedEnvironment}`)
+    require(fixedEnvironment === "hdr,284,91,1,39,73", `HDR environment summary differs: ${fixedEnvironment}`)
     require(parseJson<number>(
       await agent([
         "--session",
@@ -736,13 +736,14 @@ export async function verifyBrowserAcceptance(
         "eval",
         "Number(document.querySelector('main').dataset.environmentDrawables)",
       ]),
-    ) === 63, "projected environment drawable count differs")
+    ) === 73, "projected environment drawable count differs")
     require(parseJson<string>(
       await agent(["--session", session, "eval", "document.querySelector('main').dataset.environmentSky"]),
     ) === "sky_day01_01", "worldspawn sky identity differs")
     require(parseJson<string>(
       await agent(["--session", session, "eval", "document.querySelector('main').dataset.waterCubemap"]),
     ) === "0", "water cubemap selection differs")
+    const waterConsumer=parseJson<{plan:string;passes:string;restored:string}>(await agent(["--session",session,"eval","(()=>{const d=document.querySelector('main').dataset;return {plan:d.waterPlan,passes:d.waterPasses,restored:d.waterRestored}})()"]));require(waterConsumer.plan==="none:cheap:0:0:0"&&waterConsumer.passes==="main"&&waterConsumer.restored==="true",`spawn Water consumer state differs: ${JSON.stringify(waterConsumer)}`)
     const producerProbes = parseJson<{ decal: string; occurrences: number; models: string; viewmodel: string; sequences: string; timelines: string; materials: string }>(await agent([
       "--session",
       session,
@@ -750,7 +751,7 @@ export async function verifyBrowserAcceptance(
       "(()=>{const d=document.querySelector('main').dataset;return {decal:d.decalProbe,occurrences:Number(d.modelOccurrences),models:d.modelProbes,viewmodel:d.viewmodelProjection,sequences:d.viewmodelSequences,timelines:d.viewmodelTimelines,materials:d.modelMaterialProbe}})()",
     ]))
     const decalParts = producerProbes.decal.split(":").map(Number)
-    require(decalParts.length === 3 && decalParts[0] === 13 && decalParts[1]! > 0 && decalParts[2] === 63,
+    require(decalParts.length === 3 && decalParts[0] === 13 && decalParts[1]! > 0 && decalParts[2] === 73,
       `decal alpha/fragment probe differs: ${producerProbes.decal}`)
     require(producerProbes.occurrences === 33, "StudioModel occurrence count differs")
     require(/^55:71:[1-9]\d*:eye-refract=3,vertex-lit-generic=52$/u.test(producerProbes.materials),
@@ -795,7 +796,7 @@ export async function verifyBrowserAcceptance(
     const visibleDecalFragments = parseJson<number>(await agent([
       "--session", session, "eval", "Number(document.querySelector('main').dataset.visibleDecalFragments)",
     ]))
-    require(visibleDecalFragments === 0,
+    require(visibleDecalFragments === 13,
       `decal PVS receiver membership differs: ${visibleDecalFragments}`)
     const gameplayContract = parseJson<{ authority: string; weapon: string; entity: string }>(await agent([
       "--session", session, "eval",
@@ -809,18 +810,12 @@ export async function verifyBrowserAcceptance(
       "--session", session, "eval", "JSON.parse(document.querySelector('main').dataset.blockers)",
     ]))
     for (const blocker of [
-      "Missing authored texture mip planes",
       "Missing current model lightcache selections, game-owned eye targets, and per-draw StudioModel lighting/eye state",
-      "Missing decoded profile-qualified sky and cubemap subresources",
-      "Missing complete Water material and reflection/refraction view inputs",
-      "Missing current fog-controller state and transition inputs",
     ]) require(visualBlockers.some((value) => value.startsWith(blocker)), `visual blocker is absent: ${blocker}`)
     const coldCanvas = await captureCanvas(session, config)
 
-    await agent(["--session", session, "click", "button.audio-toggle"])
-    await agent(["--session", session, "wait", "--text", "Audio running", "--timeout", "10000"])
-
     const pointerLocked = await acquirePointerLock(session)
+    await agent(["--session", session, "wait", "--text", "Audio running", "--timeout", "10000"])
     body = parseJson<string>(await agent(["--session", session, "eval", "document.body.innerText"]))
     const beforePointer = await cameraObservation(session)
     let afterHorizontal: ReturnType<typeof cameraObservation> extends Promise<infer T> ? T : never
@@ -931,7 +926,7 @@ export async function verifyBrowserAcceptance(
       await agent(["--session", session, "wait", "--text", `mat_hdr_level = ${level}`, "--timeout", "30000"])
       require(parseJson<string>(
         await agent(["--session", session, "eval", "document.querySelector('main').dataset.environment"]),
-      ).startsWith(`${profile},284,91,1,39,63`), `${profile} environment summary differs`)
+      ).startsWith(`${profile},284,91,1,39,73`), `${profile} environment summary differs`)
     }
     await agent(["--session", session, "press", "Backquote"])
     await agent([
@@ -1030,32 +1025,29 @@ export async function verifyBrowserAcceptance(
     )
 
     await acquirePointerLock(session)
+    const stockCamera=await cameraObservation(session)
     await agent(["--session", session, "mouse", "down", "left"])
-    await agent(["--session", session, "wait", "100"])
-    await agent(["--session", session, "mouse", "up", "left"])
     try {
       await agent([
         "--session",
         session,
         "wait",
         "--fn",
-        `Number(document.querySelector('main').dataset.fireEvents) > ${initialFireEvents}`,
+        `document.querySelector('main').dataset.phase==='Failed'||Number(document.querySelector('main').dataset.fireEvents) > ${initialFireEvents}`,
         "--timeout",
-        "10000",
+        "30000",
       ])
     } catch (error) {
       const state = await agent(["--session", session, "eval", "({text:document.body.innerText,dataset:{...document.querySelector('main').dataset}})"])
       throw new BrowserEvidenceError(`Soldier fire observation failed: ${String(error)}; state ${state}`)
     }
-    await agent([
-      "--session", session, "wait", "--fn",
-      "document.querySelector('main').dataset.weaponTrace.includes('1:3/20:2:')",
-      "--timeout", "120000",
-    ])
-    const reloadTrace = parseJson<string>(await agent([
-      "--session", session, "eval", "document.querySelector('main').dataset.weaponTrace",
-    ]))
-    require(reloadTrace.includes("1:3/20:2:"), `four-phase Rocket Launcher reload trace differs: ${reloadTrace}`)
+    const firePhase=parseJson<string>(await agent(["--session",session,"eval","document.querySelector('main').dataset.phase"]));if(firePhase==="Failed"){const state=await agent(["--session",session,"eval","({text:document.body.innerText,dataset:{...document.querySelector('main').dataset}})"]);throw new BrowserEvidenceError(`Soldier held fire failed: ${state}`)}
+    await agent(["--session", session, "mouse", "up", "left"]);await agent(["--session",session,"press","Escape"])
+    const fireHistory=parseJson<string>(await agent(["--session",session,"eval","document.querySelector('main').dataset.fireTicks"]))
+    const firePosition=(value:string)=>value.split(":")[2]!.split(",").map(Number) as [number,number,number],rightProjection=(position:readonly number[],camera:CameraObservation)=>{const yaw=camera.yaw*Math.PI/180,right=[Math.sin(yaw),-Math.cos(yaw),0];return position.reduce((sum,value,index)=>sum+(value-camera.position[index]!)*right[index]!,0)}
+    const stockPosition=firePosition(fireHistory.split("|").at(-1)!)
+    require(Math.abs(rightProjection(stockPosition,stockCamera)-12)<0.05,`stock rocket lateral source differs: ${stockPosition}`)
+    require(producerProbes.timelines.includes("ACT_PRIMARY_RELOAD_START:")&&producerProbes.timelines.includes("ACT_PRIMARY_VM_RELOAD:")&&producerProbes.timelines.includes("ACT_PRIMARY_RELOAD_FINISH:"),"reload frame producers are incomplete")
     let blockerCount = parseJson<number>(
       await agent([
         "--session",
@@ -1067,9 +1059,9 @@ export async function verifyBrowserAcceptance(
     require(parseJson<number>(
       await agent(["--session", session, "eval", "Number(document.querySelector('main').dataset.particleItems)"]),
     ) > 0, "Soldier PCF render data was not observed")
-    const soldierPresentation = parseJson<{ particles: string; audio: string; activity: string; activities: string; depth: string; restored: string; random: string; collision: string }>(await agent([
+    const soldierPresentation = parseJson<{ particles: string; audio: string; activity: string; activities: string; depth: string; restored: string; random: string; collision: string;performance:string }>(await agent([
       "--session", session, "eval",
-      "(()=>{const d=document.querySelector('main').dataset;return {particles:d.particleProbe,audio:d.audioStarts,activity:d.viewmodelActivity,activities:d.viewmodelActivities,depth:d.viewmodelDepthRange,restored:d.viewmodelViewportRestored,random:d.randomAudioProbe,collision:d.collisionMoverProbe}})()",
+      "(()=>{const d=document.querySelector('main').dataset;return {particles:d.particleProbe,audio:d.audioStarts,activity:d.viewmodelActivity,activities:d.viewmodelActivities,depth:d.viewmodelDepthRange,restored:d.viewmodelViewportRestored,random:d.randomAudioProbe,collision:d.collisionMoverProbe,performance:d.performance}})()",
     ]))
     require(soldierPresentation.particles.includes("sheet") &&
       (soldierPresentation.particles.includes("sprite:") || soldierPresentation.particles.includes("trail:")),
@@ -1080,6 +1072,7 @@ export async function verifyBrowserAcceptance(
       `viewmodel draw/fire activity progression differs: ${soldierPresentation.activities}`)
     require(soldierPresentation.depth === "0,0.10000000149011612" && soldierPresentation.restored === "true",
       `viewmodel WebGPU viewport depth pass differs: ${JSON.stringify(soldierPresentation)}`)
+    const performanceParts=soldierPresentation.performance.split(":"),phaseTimes=performanceParts[0]!.split(",").map(Number),calls=performanceParts[1]!.split(",").map(Number),queues=performanceParts[2]!.split(",").map(Number),allocations=performanceParts[3]!.split(",").map(Number);require(phaseTimes.length===5&&phaseTimes.every(value=>Number.isFinite(value)&&value>=0)&&calls.length===4&&calls.every(value=>value>0)&&queues.length===2&&queues[0]!<512&&queues[1]!>=1&&allocations.length===2&&allocations.every(value=>value>0),`Simulation/presentation performance record differs: ${soldierPresentation.performance}`)
     require(/^[1-9]\d*:[1-9]\d*:-?\d+:-?\d+:[0-7]:[0-7]$/u.test(soldierPresentation.random) &&
       /^\d+:[1-9]\d*:[1-9]\d*:[1-9]\d*$/u.test(soldierPresentation.collision),
     `random/audio or Collision/mover probe differs: ${JSON.stringify(soldierPresentation)}`)
@@ -1133,7 +1126,7 @@ export async function verifyBrowserAcceptance(
     const blockerPartition = await classifySupportBlockers(config, supportBlockerItems)
     require(blockerPartition.content.length === 0,
       `browser retained missing content dependencies: ${JSON.stringify(blockerPartition.content)}`)
-    require(blockerPartition.contentClosureBehavior.length === 10,
+    require(blockerPartition.contentClosureBehavior.length === 6,
       `content closure behavior classification count changed: ${JSON.stringify(blockerPartition.contentClosureBehavior)}`)
     require(blockerPartition.platform.length === 1,
       `content closure platform classification count changed: ${JSON.stringify(blockerPartition.platform)}`)

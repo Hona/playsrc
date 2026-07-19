@@ -438,14 +438,20 @@ function models(request: Extract<WorkerRequest, { kind: "models" }>): void {
 function visibility(request: Extract<WorkerRequest, { kind: "visibility" }>): void {
   const value = requireActive(request.id, request.generation)
   if (!value) return
-  if (request.position.length !== 3 || !request.position.every(Number.isFinite)) {
+  const view = request.view
+  if (view.position.length !== 3 || !view.position.every(Number.isFinite) ||
+    ![view.yawDegrees, view.pitchDegrees, view.verticalFovDegrees, view.aspectRatio, view.near, view.presentationTimeSeconds].every(Number.isFinite) ||
+    view.verticalFovDegrees <= 0 || view.verticalFovDegrees >= 180 || view.aspectRatio <= 0 || view.near <= 0 || view.presentationTimeSeconds < 0) {
     fail(request.id, "MalformedRequest")
     return
   }
-  const pointer = value.exports.playsrc_alloc(12)
-  new Float32Array(value.exports.memory.buffer, pointer, 3).set(request.position)
+  const pointer = value.exports.playsrc_alloc(36)
+  new Float32Array(value.exports.memory.buffer, pointer, 9).set([
+    ...view.position, view.yawDegrees, view.pitchDegrees, view.verticalFovDegrees,
+    view.aspectRatio, view.near, view.presentationTimeSeconds,
+  ])
   const ok = value.exports.playsrc_visibility_query(value.handle, pointer)
-  value.exports.playsrc_free(pointer, 12)
+  value.exports.playsrc_free(pointer, 36)
   if (ok !== 1) {
     fail(request.id, "TransitionFailed")
     return
