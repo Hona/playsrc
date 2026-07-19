@@ -2192,9 +2192,11 @@ export class Tf2Application {
     this.#paused = true
     this.#neutral()
     this.#generation += 1
+    this.#simulationSamples.clear()
     this.#pendingPresentation = undefined
+    this.#preparedPresentation = undefined
     this.#pendingProjectileTimeline = []
-    await this.#simulationTail.catch(() => {})
+    await this.#displayTask
     await this.#client?.shutdown().catch(() => {})
     this.#client = undefined
     this.#cache?.close()
