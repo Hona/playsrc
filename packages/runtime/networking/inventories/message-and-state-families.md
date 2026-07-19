@@ -17,6 +17,8 @@ This is a candidate inventory, not generated output. It contains 92 candidate it
 | Generated item count | 0 |
 | Accepted item count | 0 |
 
+Active checkpoint selection: protocol-24 packet bit framing; `server.send-table`, `server.class-info`, `server.string-table-create`, `server.string-table-update`, `server.game-event`, `server.user-message`, `server.packet-entities`, and `server.game-event-list`; all replicated property kinds and quantization/layout declarations needed by those messages; `snapshot.full`, `snapshot.delta`, `baseline.class`, and every `entity.*` state family. This recorded decode selection is Ready and does not accept live-session, encode, or delivery items.
+
 ## Connection Stages
 
 The eight stages are ordered. Denial and closure are terminal results, not additional synchronization stages.

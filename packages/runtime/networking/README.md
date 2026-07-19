@@ -1,18 +1,8 @@
 # Networking
 
-## Sample
+## Implementation
 
-```ts
-import { decodeSnapshot, encodeSnapshot } from "@playsrc/networking"
-
-const message = encodeSnapshot(snapshot)
-const received = decodeSnapshot(message)
-```
-
-```rust
-let message = playsrc_networking::encode_snapshot(&snapshot)?;
-let received = playsrc_networking::decode_snapshot(&message)?;
-```
+`rust/` implements the transport-independent TF2 protocol-24 recorded payload seam. `RecordedStateCodec` atomically applies LSB-first message framing, DEM/send tables, class binding, string tables and class baselines, event schemas/events, outer user-message handoff, and full/delta packet entities. Caller-supplied limits bound every retained family. Reserved or unsupported message identities stop without resynchronization.
 
 ## Objective
 
@@ -23,6 +13,7 @@ Transport commands and replicated state for online multiplayer without owning ga
 - Define transport-neutral command, snapshot, acknowledgement, and synchronization behavior.
 - Encode game-owned replicated state and support prediction reconciliation.
 - Bound message sizes, queues, rates, and backpressure.
+- Reuse one recorded-state codec for DEM payloads and future live transport adapters.
 
 ## Non-Responsibilities
 

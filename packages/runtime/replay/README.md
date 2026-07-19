@@ -1,18 +1,8 @@
 # Replay
 
-## Sample
+## Implementation
 
-```ts
-import { openReplay } from "@playsrc/replay"
-
-const replay = await openReplay(demo, game)
-const snapshot = replay.seek(tick)
-```
-
-```rust
-let mut replay = playsrc_replay::Replay::open(demo, game)?;
-let snapshot = replay.seek(tick)?;
-```
+`rust/` exposes `ReplaySession` over caller-decoded recorded operations. It owns lifecycle, exact rational playback, pause/rate/step, canonical tick occurrences, event order, complete checkpoints, seek/rewind, identity-bound snapshot/restore, deterministic continuation, and immutable interpolation inputs. The interface contains no gameplay Simulation dependency; `AuthorityAudit::simulation_calls` remains zero by construction and verification.
 
 ## Objective
 
@@ -21,7 +11,7 @@ Produce authoritative replay state from parsed Source demo records.
 ## Responsibilities
 
 - Own replay timelines, decoded state progression, seeking, and playback state.
-- Apply game-specific demo interpretation without resimulating gameplay.
+- Apply typed operations emitted by the selected game-owned decoder without owning game-specific meaning.
 - Expose replay snapshots and events to presentation modules.
 
 ## Non-Responsibilities

@@ -12,28 +12,30 @@ State: Candidate; Not accepted.
 | Output path | `packages/runtime/replay/inventories/replay-state-families.md` |
 | Item count | 40 candidate items; 0 accepted items. |
 
+Active checkpoint selection: every generic Replay-owned item except selected-game implementations of `progression.console-command`, `progression.game-event`, `progression.audio-event`, and `progression.particle-event`, plus final application integration. The generic event and decoder-operation seams are selected; game-specific producers remain typed external requirements. This generic selection is Ready and does not accept the broader integration denominator.
+
 Every item is Replay-owned. `Required seam` identifies an input producer or output consumer and never transfers Replay timeline, progression, playback, index, checkpoint, snapshot, or event-order authority.
 
 ## Session And Selection
 
 | Stable identity | Replay-owned observable contract | Required seam | Current coverage |
 |---|---|---|---|
-| `session.open` | Open exactly one successful immutable Demo value under required limits and create no session from raw bytes or a failed Demo result. | Demo supplies parsed records and source identity. | Unsupported |
-| `session.accepted-metadata` | Preserve source hash, profile, game selection, header metadata, observed record range, and terminal identity while treating declared duration, frames, and ticks as advisory. | Demo supplies exact metadata and records. | Unsupported |
+| `session.open` | Open exactly one successful immutable Demo value under required limits and create no session from raw bytes or a failed Demo result. | Demo supplies parsed records and source identity. | Implemented at typed decoder-output seam |
+| `session.accepted-metadata` | Preserve source hash, profile, game selection, header metadata, observed record range, and terminal identity while treating declared duration, frames, and ticks as advisory. | Demo supplies exact metadata and records. | Implemented |
 | `session.decoder-selection` | Select exactly one caller-named shared-codec and game-decoder identity whose declared capabilities cover the profile and selected game. | Networking and the selected game supply accepted registries. | Missing |
 | `session.unsupported-protocol` | Reject an unsupported profile or decoder capability before sign-on without selecting another protocol or decoder. | Demo and decoder registries supply immutable profile identities. | Unsupported |
 | `session.missing-decoder` | Return one structured `Missing` result for absent, duplicate, or incomplete decoder registration and allocate no authoritative state. | Applications supply the explicit selected game and decoder set. | Unsupported |
-| `session.lifecycle` | Transition through `Opening`, `Signon`, `Ready`, and exactly one `Ended` or `Failed` state with an orthogonal Playing or Paused state only while Ready. | Presentation and applications observe state without mutating it. | Unsupported |
-| `session.end-of-stream` | Commit all valid prior operations, emit one terminal transition at the terminal DEM record, freeze the clock, and make repeated advance inert. | Demo supplies the terminal record. | Unsupported |
+| `session.lifecycle` | Transition through `Opening`, `Signon`, `Ready`, and exactly one `Ended` or `Failed` state with an orthogonal Playing or Paused state only while Ready. | Presentation and applications observe state without mutating it. | Implemented |
+| `session.end-of-stream` | Commit all valid prior operations, emit one terminal transition at the terminal DEM record, freeze the clock, and make repeated advance inert. | Demo supplies the terminal record. | Implemented |
 
 ## Sign-On And Setup State
 
 | Stable identity | Replay-owned observable contract | Required seam | Current coverage |
 |---|---|---|---|
-| `setup.signon-state` | Apply decoded sign-on transitions in source order and prohibit Ready before the selected decoder's complete setup predicate passes. | Networking decodes sign-on messages. | Unsupported |
-| `setup.data-tables` | Version and retain decoded data-table definitions, class links, field declarations, and replacement identity before dependent baselines or fields. | Networking decodes tables; games bind game fields. | Unsupported |
-| `setup.string-tables` | Version and retain table identity, ordered entries, exact user data, creation tick, and mutations before dependent operations. | Networking decodes table wire data; games interpret named tables. | Unsupported |
-| `setup.entity-baselines` | Version and retain class and entity baselines and reject a delta whose exact base is absent. | Networking decodes baselines; games supply field schemas. | Unsupported |
+| `setup.signon-state` | Apply decoded sign-on transitions in source order and prohibit Ready before the selected decoder's complete setup predicate passes. | Networking decodes sign-on messages. | Implemented |
+| `setup.data-tables` | Version and retain decoded data-table definitions, class links, field declarations, and replacement identity before dependent baselines or fields. | Networking decodes tables; games bind game fields. | Implemented as versioned decoder bytes |
+| `setup.string-tables` | Version and retain table identity, ordered entries, exact user data, creation tick, and mutations before dependent operations. | Networking decodes table wire data; games interpret named tables. | Implemented as versioned decoder bytes |
+| `setup.entity-baselines` | Version and retain class and entity baselines and reject a delta whose exact base is absent. | Networking decodes baselines; games supply field schemas. | Implemented as versioned decoder bytes |
 
 ## Recorded Progression And Events
 
@@ -54,15 +56,15 @@ Every item is Replay-owned. `Required seam` identifies an input producer or outp
 | Stable identity | Replay-owned observable contract | Required seam | Current coverage |
 |---|---|---|---|
 | `timeline.tick-identity` | Preserve command tick, decoded server tick, occurrence, record ordinal, and source range as distinct fields of each canonical cursor. | Demo and Networking supply source and server tick domains. | Unsupported |
-| `timeline.playback-clock` | Scale exact non-negative elapsed nanoseconds by a positive rational rate, commit all crossed authoritative boundaries, and retain exact remainder. | Applications supply elapsed duration; presentation reads position. | Unsupported |
-| `timeline.pause-resume` | Pause without consuming elapsed duration or emitting events and resume from the same cursor and accumulator. | Applications invoke controls. | Unsupported |
-| `timeline.rate` | Validate bounded positive numerator and denominator, preserve accumulated remainder on change, and expose one current rational rate. | Applications select a rate within Replay limits. | Unsupported |
-| `timeline.step` | While paused, cross a bounded signed count of indexed canonical ticks, reconstruct backward movement, and return one discontinuity without transient event delivery. | Applications invoke step controls. | Unsupported |
-| `timeline.seek` | Resolve an exact cursor or the last occurrence of one server tick, reject an absent domain, restore state, and return the target snapshot without clamping. | Applications and tools invoke seek. | Unsupported |
-| `timeline.rewind` | Reconstruct every backward target from a complete checkpoint at or before the target and replay operations forward. | Checkpoints and the record index supply restart positions. | Unsupported |
-| `timeline.record-index` | Retain one bounded entry for every outer record plus its tick and operation/event boundaries; fail rather than omit an unindexable record. | Demo supplies ordered record identities and ranges. | Unsupported |
-| `timeline.checkpoints` | Store complete identity-bound state at the initial Ready cursor and configured tick interval within count and byte limits. | Decoders serialize their complete continuation state. | Unsupported |
-| `timeline.deterministic-reconstruction` | Produce byte-identical canonical state, event cursor, and next transition whenever the same cursor is reached under identical identities. | Evidence compares uninterrupted and seek histories. | Unsupported |
+| `timeline.playback-clock` | Scale exact non-negative elapsed nanoseconds by a positive rational rate, commit all crossed authoritative boundaries, and retain exact remainder. | Applications supply elapsed duration; presentation reads position. | Implemented |
+| `timeline.pause-resume` | Pause without consuming elapsed duration or emitting events and resume from the same cursor and accumulator. | Applications invoke controls. | Implemented |
+| `timeline.rate` | Validate bounded positive numerator and denominator, preserve accumulated remainder on change, and expose one current rational rate. | Applications select a rate within Replay limits. | Implemented |
+| `timeline.step` | While paused, cross a bounded signed count of indexed canonical ticks, reconstruct backward movement, and return one discontinuity without transient event delivery. | Applications invoke step controls. | Implemented |
+| `timeline.seek` | Resolve an exact cursor or the last occurrence of one server tick, reject an absent domain, restore state, and return the target snapshot without clamping. | Applications and tools invoke seek. | Implemented |
+| `timeline.rewind` | Reconstruct every backward target from a complete checkpoint at or before the target and replay operations forward. | Checkpoints and the record index supply restart positions. | Implemented |
+| `timeline.record-index` | Retain one bounded entry for every outer record plus its tick and operation/event boundaries; fail rather than omit an unindexable record. | Demo supplies ordered record identities and ranges. | Implemented |
+| `timeline.checkpoints` | Store complete identity-bound state at the initial Ready cursor and configured tick interval within count and byte limits. | Decoders serialize their complete continuation state. | Implemented |
+| `timeline.deterministic-reconstruction` | Produce byte-identical canonical state, event cursor, and next transition whenever the same cursor is reached under identical identities. | Evidence compares uninterrupted and seek histories. | Implemented |
 
 ## Snapshots And Presentation Inputs
 
@@ -81,7 +83,7 @@ Every item is Replay-owned. `Required seam` identifies an input producer or outp
 | `bounds.resident-memory` | Charge every retained state, table, entity, field, event, index, checkpoint, snapshot, and diagnostic byte before allocation and fail atomically above the limit. | Callers supply the required limits value. | Unsupported |
 | `bounds.index-and-work` | Reject out-of-range cursors, over-bound index/checkpoint counts, seek replay work, steps, and rate components without clamping or partial state. | Applications receive structured bound failures. | Unsupported |
 | `coverage.complete-classification` | Assign every record and decoder operation exactly one coverage classification and stop on required Unsupported, Unknown, Malformed, or Missing state. | Tools and game roadmaps consume the audit. | Unsupported |
-| `authority.no-gameplay-resimulation` | Never submit recorded user commands or inferred inputs to Simulation, Movement, Physics, Entity gameplay transitions, weapons, projectiles, objectives, or rules. | Simulation and game packages remain uncalled by Replay progression. | Unsupported |
+| `authority.no-gameplay-resimulation` | Never submit recorded user commands or inferred inputs to Simulation, Movement, Physics, Entity gameplay transitions, weapons, projectiles, objectives, or rules. | Simulation and game packages remain uncalled by Replay progression. | Implemented; no gameplay dependency and zero-call audit |
 | `integration.sole-replay-authority` | Supply one current timeline, progression, playback, seek, snapshot, and event interface to every producer and consumer with no duplicate authority or fallback. | The recorded-replay application owner is Missing. | Missing |
 
 ## Generation Contract

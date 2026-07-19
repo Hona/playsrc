@@ -1,0 +1,18 @@
+[package]
+name = "playsrc-networking"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+snap = "=1.1.2"
+
+[dev-dependencies]
+playsrc-demo = { path = "../../../formats/demo/rust" }
+
+[lib]
+path = "src/lib.rs"
+
+[workspace]
+members = []
+resolver = "2"

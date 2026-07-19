@@ -12,6 +12,8 @@ Candidate item count: 20. Accepted item count: 0.
 
 Candidate composition: 3 target-game profiles and 17 profile-command assignments. Nineteen items have a candidate assignment; the legacy-CS:GO profile is Blocked by its Unknown network-protocol integer.
 
+Active checkpoint selection: `tf2-demo3-net24` and all eight `demo3:*` assignments. The implementation is Ready and does not accept the broader three-game denominator; originating recording-server build identity remains Missing.
+
 ## Target-Game Profiles
 
 Every profile uses a 1,072-byte little-endian header beginning with the exact eight bytes `HL2DEMO\0`. `Packet info bytes` excludes the following two signed 32-bit sequence fields and signed 32-bit payload length.
@@ -26,7 +28,7 @@ Demo protocol 2 and Source-2013 network protocols 12, 14, and 17 through 23 are 
 
 ## Profile-Command Assignments
 
-The profile command header precedes every type-specific body below, including `dem_stop`. Every `i32` is little-endian and signed. Every accepted length is non-negative and must fit the remaining input and caller limits. `bytes[length]` remains encoded data for the owner named by the Demo roadmap.
+The complete profile command header precedes every type-specific body below except the terminal protocol-3 SourceTV stream-flush form. That form is exactly command byte 7 plus three retained low tick bytes at EOF and exposes no complete `i32` tick. Every `i32` is little-endian and signed. Every accepted length is non-negative and must fit the remaining input and caller limits. `bytes[length]` remains encoded data for the owner named by the Demo roadmap.
 
 | Stable identity | Command set | Encoded ID | Command | Type-specific body after profile command header | Payload owner after Demo framing | Result |
 |---|---|---:|---|---|---|---|
@@ -36,7 +38,7 @@ The profile command header precedes every type-specific body below, including `d
 | `demo3:04-consolecmd` | `demo3` | 4 | `dem_consolecmd` | Length `i32`; exact command bytes | `packages/runtime/replay` and the selected game own effects | Candidate assignment |
 | `demo3:05-usercmd` | `demo3` | 5 | `dem_usercmd` | Command sequence `i32`; length `i32`; encoded user-command bytes | Selected game module | Candidate assignment |
 | `demo3:06-datatables` | `demo3` | 6 | `dem_datatables` | Length `i32`; encoded data-table bytes | `packages/runtime/networking` | Candidate assignment |
-| `demo3:07-stop` | `demo3` | 7 | `dem_stop` | No body; must end the input | `packages/runtime/replay` owns playback termination | Candidate assignment |
+| `demo3:07-stop` | `demo3` | 7 | `dem_stop` | Ordinary complete command header, or exact four-byte SourceTV stream-flush terminal encoding; must end input | `packages/runtime/replay` owns playback termination | Implemented; originating capture-server build identity Missing |
 | `demo3:08-stringtables` | `demo3` | 8 | `dem_stringtables` | Length `i32`; encoded string-table bytes | `packages/runtime/networking` | Candidate assignment |
 | `demo4:01-signon` | `demo4` | 1 | `dem_signon` | 152 command-info bytes; incoming sequence `i32`; outgoing acknowledged sequence `i32`; length `i32`; packet bytes | `packages/runtime/networking` | Candidate assignment |
 | `demo4:02-packet` | `demo4` | 2 | `dem_packet` | 152 command-info bytes; incoming sequence `i32`; outgoing acknowledged sequence `i32`; length `i32`; packet bytes | `packages/runtime/networking` | Candidate assignment |

@@ -1,0 +1,12 @@
+[package]
+name = "playsrc-demo"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[lib]
+path = "src/lib.rs"
+
+[workspace]
+members = []
+resolver = "2"

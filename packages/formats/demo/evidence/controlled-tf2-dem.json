@@ -1,0 +1,48 @@
+{
+  "identity": "demos-tf-1480578",
+  "url": "https://static.demos.tf/7f/6e/7f6e74829d246394a93cde94868f8f74_match-20260719-0610-cp_process_f12.dem",
+  "providerRecord": "https://api.demos.tf/demos/1480578",
+  "providerDemoId": 1480578,
+  "providerServer": "na.serveme.tf #625714",
+  "providerRecordedUnixSeconds": 1784441654,
+  "providerHash": "7f6e74829d246394a93cde94868f8f74",
+  "byteLength": 3591354,
+  "sha256": "beed83610c65008a502b502eb6371d3329b225b1d73c9de622ca42924346ab8d",
+  "configuredTf2": {
+    "appBuildId": "24207079",
+    "patchVersion": "10822003",
+    "clientVersion": "10822003",
+    "serverVersion": "10822003",
+    "depotManifests": {
+      "440": "1118032470228587934",
+      "441": "1804278129270892792",
+      "232251": "706600525322138695"
+    }
+  },
+  "expected": {
+    "profile": "tf2-demo3-net24",
+    "server": "na.serveme.tf #625714",
+    "client": "SourceTV Demo",
+    "map": "cp_process_f12",
+    "gameDirectory": "tf",
+    "playbackTimeBits": 1128758313,
+    "playbackTicks": 13299,
+    "playbackFrames": 13291,
+    "signonLength": 1070430,
+    "commandCounts": [0, 3, 13291, 1, 0, 0, 1, 1, 1],
+    "sourceTvTerminalBytes": 4
+  },
+  "expectedNetworking": {
+    "packets": 13294,
+    "messages": 31089,
+    "snapshots": 13291,
+    "events": 556,
+    "userMessages": 22,
+    "tables": 518,
+    "classes": 363,
+    "stringTables": 20,
+    "entities": 482
+  },
+  "originatingServerBuild": null,
+  "originatingServerBuildStatus": "The DEM and provider record do not encode the originating Steam build ID. The configured build is the exact content used for verification, not an inferred recording-server build."
+}

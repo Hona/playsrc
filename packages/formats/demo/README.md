@@ -1,15 +1,13 @@
 # Demo
 
-## Sample
+## Implementation
 
-```ts
-import { parseDemo } from "@playsrc/demo"
+`rust/` exposes caller-profiled, caller-bounded whole-buffer and chunk-scheduled parsing. Successful values retain the complete source bytes, fixed header fields and float bits, command metadata, payload ranges, and both complete and SourceTV stream-flush terminal encodings.
 
-const demo = parseDemo(bytes)
-```
+Run the checked controlled capture and protocol-24 verification with:
 
-```rust
-let demo = playsrc_demo::parse(&bytes)?;
+```sh
+bun packages/formats/demo/scripts/verify-controlled-tf2-demo.ts
 ```
 
 ## Objective
@@ -21,6 +19,7 @@ Parse Source 1 demo containers and records as bounded data.
 - Validate demo headers, command records, lengths, ticks, and encoded payloads.
 - Preserve ordering and protocol data required by replay consumers.
 - Report malformed, unsupported, and unknown records explicitly.
+- Verify one immutable capture against `playsrc.local.json` content identities and checked expected framing/state counts.
 
 ## Non-Responsibilities
 
