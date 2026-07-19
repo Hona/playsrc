@@ -65,6 +65,10 @@ function App() {
       data-camera-vertical-fov={view.camera?.verticalFovDegrees}
       data-camera-near={view.camera?.near}
       data-camera-far={view.camera?.far}
+      data-pointer-movement={view.pointerMovement}
+      data-display-frame={view.displayFrame}
+      data-display-view-revision={view.displayViewRevision}
+      data-display-prepared-revision={view.displayPreparedRevision}
       data-spawn-entity={view.initialView?.entity}
       data-spawn-hammer-id={view.initialView?.hammerId}
       data-spawn-position={view.initialView?.position.join(",")}

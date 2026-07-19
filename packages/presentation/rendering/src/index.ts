@@ -995,6 +995,13 @@ class RendererOwner implements Renderer {
   #viewModelInstances = new Map<number, { model: string; root: THREE.Group; instance: THREE.Group; meshes: THREE.Mesh[] }>()
   #particleBatchMeshes: { key: string; capacity: number; mesh: THREE.Mesh }[] = []
   #particleBatchCount=0
+  #stagedDynamic?:Readonly<{
+    particles:Frame["particles"]
+    models:Frame["models"]
+    brushModels:Frame["brushModels"]
+    viewModelDepthRange:readonly[number,number]|undefined
+  }>
+  #worldVisibilitySurfaces?:Uint32Array
   #active?: SceneResources
   #renderBusy = false
   #loadOrdinal = 0
@@ -1268,7 +1275,12 @@ class RendererOwner implements Renderer {
         )
       }
       const prior = this.#active
+      this.#clearDynamic(this.#effects)
       this.#clearParticleBatches()
+      this.#clearDynamic(this.#viewModels)
+      this.#viewModelInstances.clear()
+      this.#stagedDynamic=undefined
+      this.#worldVisibilitySurfaces=undefined
       this.#world.clear()
       this.#world.add(staged.group)
       this.#scene.background = request.diagnostic ? new THREE.Color(0x111820) : null
@@ -1856,6 +1868,7 @@ class RendererOwner implements Renderer {
 
   #setWorldVisibility(surfaces: Uint32Array): void {
     if (!this.#active) throw new RenderingError("InvalidState", "renderer has no active world visibility resources")
+    if(surfaces===this.#worldVisibilitySurfaces)return
     const visible = new Set(surfaces)
     const order = new Map<number, number>()
     for (let index = 0; index < surfaces.length; index += 1) {
@@ -1876,6 +1889,7 @@ class RendererOwner implements Renderer {
       batch.mesh.geometry.setDrawRange(0, selected.length)
       batch.mesh.visible = selected.length > 0
     }
+    this.#worldVisibilitySurfaces=surfaces
   }
 
   #validateFrame(frame: Frame): void {
@@ -2031,6 +2045,14 @@ class RendererOwner implements Renderer {
     if(!this.#active)throw new RenderingError("InvalidState","renderer has no active Water resources")
     const plan=frame.visibility?.water
     if(!plan){this.#backend.autoClear=true;await this.#backend.renderAsync(this.#scene,this.#camera);return Object.freeze({passes:Object.freeze(["main"] as const),restored:true})}
+    const soleMain=plan.passes.length===1&&plan.passes[0]?.kind==="main"?plan.passes[0]:undefined
+    if(!plan.visibleWater&&soleMain&&!soleMain.clip&&!soleMain.renderWaterSurface&&soleMain.drawEntities&&soleMain.drawSky2d===(frame.visibility?.sky===2)){
+      const background=this.#scene.background
+      this.#backend.autoClear=true
+      this.#scene.background=soleMain.drawSky2d?background:null
+      try{await this.#backend.renderAsync(this.#scene,this.#camera)}finally{this.#scene.background=background}
+      return Object.freeze({passes:Object.freeze(["main"] as const),restored:true})
+    }
     const markVisibility=this.#active.projectedMarks.map(mark=>mark.mesh.visible),waterVisibility=this.#active.waterMeshes.map(water=>water.mesh.visible),background=this.#scene.background,effectsVisible=this.#effects.visible,particlesVisible=this.#particles.visible,skyVisible=this.#active.skyGroup?.visible??false
     const completed:("reflection"|"refraction"|"main"|"intersection")[]=[]
     if(plan.visibleWater&&plan.passes.some(pass=>pass.kind!=="main"&&pass.drawSky2d)&&!this.#active.skyGroup)throw new RenderingError("MissingInput","Water auxiliary view requests the unresolved 2D sky pass")
@@ -2187,6 +2209,13 @@ class RendererOwner implements Renderer {
   }
 
   #stageDynamicItems(frame: Frame): readonly [number, number] | undefined {
+    const prior=this.#stagedDynamic
+    if(prior&&prior.particles===frame.particles&&prior.models===frame.models&&prior.brushModels===frame.brushModels){
+      const factor=(value:ParticleItem["blendSource"])=>value==="zero"?THREE.ZeroFactor:value==="one"?THREE.OneFactor:value==="source-alpha"?THREE.SrcAlphaFactor:THREE.OneMinusSrcAlphaFactor
+      this.#stageParticleBatches(frame.particles??[],frame.camera,factor)
+      if(this.#viewCamera.far!==frame.camera.far){this.#viewCamera.far=frame.camera.far;this.#viewCamera.updateProjectionMatrix();this.#viewCamera.projectionMatrixInverse.copy(this.#viewCamera.projectionMatrix).invert()}
+      return prior.viewModelDepthRange
+    }
     const effects = new THREE.Group()
     for(const instance of this.#active!.modelOccurrenceInstances.values())instance.visible=true
     const activeViewModels = new Set<number>()
@@ -2235,6 +2264,7 @@ class RendererOwner implements Renderer {
       })
       this.#viewModelInstances.delete(identity)
     }
+    this.#stagedDynamic=Object.freeze({particles:frame.particles,models:frame.models,brushModels:frame.brushModels,viewModelDepthRange})
     return viewModelDepthRange
   }
 
@@ -2355,6 +2385,8 @@ class RendererOwner implements Renderer {
     const active = this.#active
     this.#active = undefined
     this.#clearParticleBatches()
+    this.#stagedDynamic=undefined
+    this.#worldVisibilitySurfaces=undefined
     this.#world.clear()
     const oldBackend = this.#backend
     try {
@@ -2427,6 +2459,8 @@ class RendererOwner implements Renderer {
     this.#clearParticleBatches()
     this.#clearDynamic(this.#viewModels)
     this.#viewModelInstances.clear()
+    this.#stagedDynamic=undefined
+    this.#worldVisibilitySurfaces=undefined
     const active = this.#active
     this.#active = undefined
     this.#world.clear()

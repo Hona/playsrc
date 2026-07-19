@@ -157,6 +157,68 @@ test("profile startup and input latency", async ({ page }) => {
       await page.waitForFunction(() => document.pointerLockElement?.classList.contains("world-canvas"), undefined, {
         timeout: 5_000,
       })
+      const look = await page.evaluate(async () => {
+        const main = document.querySelector("main") as HTMLElement | null
+        if (!main) throw new Error("application root is unavailable")
+        const canvas = document.querySelector(".world-canvas") as HTMLCanvasElement | null
+        if (!canvas) throw new Error("world canvas is unavailable")
+        const records: { frame: number; prepared: number; view: number; yaw: number; mouse: number; snap: number }[] = []
+        const nativeRequestAnimationFrame = window.requestAnimationFrame.bind(window)
+        const nativeCancelAnimationFrame = window.cancelAnimationFrame.bind(window)
+        window.requestAnimationFrame = (callback) => window.setTimeout(() => callback(performance.now()), 1)
+        window.cancelAnimationFrame = (handle) => clearTimeout(handle)
+        const observer = new MutationObserver(() => records.push({
+          frame: Number(canvas.dataset.displayFrame),
+          prepared: Number(canvas.dataset.displayPreparedRevision),
+          view: Number(canvas.dataset.displayViewRevision),
+          yaw: Number(canvas.dataset.displayCameraYaw),
+          mouse: Number(canvas.dataset.displayMouseRevision),
+          snap: Number(canvas.dataset.displaySnapRevision),
+        }))
+        observer.observe(canvas, { attributes: true, attributeFilter: ["data-display-frame"] })
+        const started = {
+          frame: Number(canvas.dataset.displayFrame),
+          prepared: Number(canvas.dataset.displayPreparedRevision),
+          view: Number(canvas.dataset.displayViewRevision),
+          yaw: Number(canvas.dataset.displayCameraYaw),
+          mouse: Number(canvas.dataset.displayMouseRevision),
+          snap: Number(canvas.dataset.displaySnapRevision),
+        }
+        let events = 0
+        const interval = setInterval(() => {
+          const event = new MouseEvent("mousemove", { bubbles: true })
+          Object.defineProperties(event, { movementX: { value: 2 }, movementY: { value: 0 } })
+          dispatchEvent(event)
+          events += 1
+        }, 4)
+        await new Promise((resolve) => setTimeout(resolve, 600))
+        clearInterval(interval)
+        window.requestAnimationFrame = nativeRequestAnimationFrame
+        window.cancelAnimationFrame = nativeCancelAnimationFrame
+        await new Promise((resolve) => setTimeout(resolve, 200))
+        observer.disconnect()
+        const finished = {
+          frame: Number(canvas.dataset.displayFrame),
+          prepared: Number(canvas.dataset.displayPreparedRevision),
+          view: Number(canvas.dataset.displayViewRevision),
+          yaw: Number(canvas.dataset.displayCameraYaw),
+          mouse: Number(canvas.dataset.displayMouseRevision),
+          snap: Number(canvas.dataset.displaySnapRevision),
+        }
+        return {
+          pointerMovement: main.dataset.pointerMovement,
+          events,
+          displayFrames: finished.frame - started.frame,
+          preparedRevisions: new Set(records.map((record) => record.prepared)).size,
+          repeatedPreparedFrames: records.filter((record, index) => index > 0 && record.prepared === records[index - 1]!.prepared).length,
+          viewRevisions: finished.view - started.view,
+          mouseRevisions: finished.mouse - started.mouse,
+          snapRevisions: finished.snap - started.snap,
+          yawDegrees: finished.yaw - started.yaw,
+          samples: records.length,
+        }
+      })
+      Object.assign(input, Object.fromEntries(Object.entries(look).map(([key, value]) => [`look${key[0]!.toUpperCase()}${key.slice(1)}`, value])))
       const fireAt = await page.evaluate(() => performance.now())
       await page.mouse.down({ button: "left" })
       await page.waitForFunction((baseline) => Number(document.querySelector("main")?.getAttribute("data-fire-events")) > baseline, fireEvents, {
@@ -448,4 +510,11 @@ test("profile startup and input latency", async ({ page }) => {
   }
   console.log(`PLAYSRCPROFILE ${JSON.stringify(report)}`)
   expect(raw.dataset.phase).not.toBe("Loading")
+  if (typeof input.lookDisplayFrames === "number") {
+    expect(input.lookDisplayFrames).toBeGreaterThan(1)
+    expect(input.lookViewRevisions).toBeGreaterThan(1)
+    expect(input.lookMouseRevisions).toBeGreaterThanOrEqual(input.lookEvents as number)
+    expect(input.lookViewRevisions).toBe((input.lookMouseRevisions as number)+(input.lookSnapRevisions as number))
+    expect(input.lookRepeatedPreparedFrames).toBeGreaterThan(0)
+  }
 })

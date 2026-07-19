@@ -961,6 +961,7 @@ export async function verifyBrowserAcceptance(
     const pointerLocked = await acquirePointerLock(session)
     await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.detail === 'Audio running'", "--timeout", "10000"])
     body = parseJson<string>(await agent(["--session", session, "eval", "document.body.innerText"]))
+    const pointerMovement=parseJson<string>(await agent(["--session",session,"eval","document.querySelector('main').dataset.pointerMovement"]));require(pointerMovement==="raw"||pointerMovement==="adjusted",`pointer movement mode is unavailable: ${pointerMovement}`)
     const beforePointer = await cameraObservation(session)
     let afterHorizontal: ReturnType<typeof cameraObservation> extends Promise<infer T> ? T : never
     let afterVertical: typeof afterHorizontal
@@ -997,6 +998,7 @@ export async function verifyBrowserAcceptance(
       afterHorizontal = { ...beforePointer, yaw: beforePointer.yaw - 1.408 }
       afterVertical = { ...afterHorizontal, pitch: afterHorizontal.pitch + 0.704 }
     }
+    const lookCadence=parseJson<{events:number;displayFrames:number;preparedRevisions:number;repeatedPreparedFrames:number;viewRevisions:number;mouseRevisions:number;snapRevisions:number;yawDegrees:number;samples:number}>(await agent(["--session",session,"eval","new Promise(resolve=>{const m=document.querySelector('.world-canvas'),r=[],s={frame:Number(m.dataset.displayFrame),view:Number(m.dataset.displayViewRevision),mouse:Number(m.dataset.displayMouseRevision),snap:Number(m.dataset.displaySnapRevision),yaw:Number(m.dataset.displayCameraYaw)},nativeRaf=requestAnimationFrame.bind(window),nativeCancel=cancelAnimationFrame.bind(window);window.requestAnimationFrame=callback=>setTimeout(()=>callback(performance.now()),1);window.cancelAnimationFrame=handle=>clearTimeout(handle);const o=new MutationObserver(()=>r.push({prepared:Number(m.dataset.displayPreparedRevision)}));o.observe(m,{attributes:true,attributeFilter:['data-display-frame']});let events=0;const i=setInterval(()=>{const e=new MouseEvent('mousemove',{bubbles:true});Object.defineProperties(e,{movementX:{value:2},movementY:{value:0}});dispatchEvent(e);events++},4);setTimeout(()=>{clearInterval(i);window.requestAnimationFrame=nativeRaf;window.cancelAnimationFrame=nativeCancel;setTimeout(()=>{o.disconnect();const f={frame:Number(m.dataset.displayFrame),view:Number(m.dataset.displayViewRevision),mouse:Number(m.dataset.displayMouseRevision),snap:Number(m.dataset.displaySnapRevision),yaw:Number(m.dataset.displayCameraYaw)};resolve({events,displayFrames:f.frame-s.frame,preparedRevisions:new Set(r.map(x=>x.prepared)).size,repeatedPreparedFrames:r.filter((x,n)=>n>0&&x.prepared===r[n-1].prepared).length,viewRevisions:f.view-s.view,mouseRevisions:f.mouse-s.mouse,snapRevisions:f.snap-s.snap,yawDegrees:f.yaw-s.yaw,samples:r.length})},200)},600)})"]));require(lookCadence.displayFrames>1&&lookCadence.viewRevisions>1&&lookCadence.mouseRevisions>=lookCadence.events&&lookCadence.viewRevisions===lookCadence.mouseRevisions+lookCadence.snapRevisions&&lookCadence.repeatedPreparedFrames>0,`display-cadence pointer sampling differs: ${JSON.stringify(lookCadence)}`)
     const beforeForward = cameraForward(beforePointer)
     const horizontalForward = cameraForward(afterHorizontal)
     const verticalForward = cameraForward(afterVertical)
@@ -1336,7 +1338,7 @@ export async function verifyBrowserAcceptance(
       authorityBehaviorBlockers: blockerPartition.authorityBehavior,
       platformBlockers: blockerPartition.platform,
       supportStatus: "zero-content-blockers-non-content-diagnostics-retained",
-      pointerLock: pointerLocked ? "acquired-and-released-for-console" : "headed-window-focus-unavailable",
+      pointerLock: pointerLocked ? `acquired-${pointerMovement}-and-released-for-console` : "headed-window-focus-unavailable",
       console: platformFontSupported
         ? "history-completion-focus-repeated-visibility-replacement-close-passed"
         : "unsupported-platform-fonts-suppressed-paint-and-input",
@@ -1351,6 +1353,7 @@ export async function verifyBrowserAcceptance(
         positiveHorizontalRightDot: Number(rightDirectionDelta.toFixed(6)),
         positiveVerticalDownDot: Number(downDirectionDelta.toFixed(6)),
       },
+      lookCadence,
       crouch: { down: crouchDown, up: crouchUp },
       producerProbes,
       modelMatrices: "33-exact-source-entity-matrices",
