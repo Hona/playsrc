@@ -4,10 +4,10 @@ use playsrc_collision::{
 };
 use playsrc_entity::{Graph, Limits as EntityLimits, parse as parse_entities};
 use playsrc_map::{
-    CubeFace, DependencyMetadata, DependencyRequest, DependencyResponse, DependencyRole,
-    EnvironmentInputs, EnvironmentLimits, LightingProfile, MarkKind, MarkMaterial, MarkPlacement,
-    MarkPlacementSnapshot, MarkStatus, MaterialBinding, ResolvedTexture, compile,
-    compile_environment,
+    CubeFace, CubemapSelection, DependencyMetadata, DependencyRequest, DependencyResponse,
+    DependencyRole, EnvironmentInputs, EnvironmentLimits, LightingProfile, MarkKind, MarkMaterial,
+    MarkPlacement, MarkPlacementSnapshot, MarkStatus, MaterialBinding, ResolvedTexture,
+    WaterViewInput, WaterViewPolicy, compile, compile_environment,
 };
 use playsrc_material::{
     HdrMode, Material, SelectionEnvironment, TextureDisposition, resolve_for_environment,
@@ -170,6 +170,30 @@ fn configured_environment_retains_collision_selected_marks_water_and_view_inputs
     );
 
     assert_eq!(environment.water.surfaces.len(), 16);
+    let above_surfaces = environment
+        .water
+        .surfaces
+        .iter()
+        .filter(|surface| surface.state.above_water)
+        .collect::<Vec<_>>();
+    let beneath_surfaces = environment
+        .water
+        .surfaces
+        .iter()
+        .filter(|surface| !surface.state.above_water)
+        .collect::<Vec<_>>();
+    assert_eq!(above_surfaces.len(), 8);
+    assert_eq!(beneath_surfaces.len(), 8);
+    assert!(above_surfaces.iter().all(|surface| {
+        surface.bindings.environment == Some(CubemapSelection::Declared { sample: 0 })
+            && surface.bindings.reflection
+            && surface.bindings.refraction
+    }));
+    assert!(beneath_surfaces.iter().all(|surface| {
+        surface.bindings.environment.is_none()
+            && !surface.bindings.reflection
+            && surface.bindings.refraction
+    }));
     assert_eq!(environment.water.volumes.len(), 1);
     assert_eq!(
         environment
@@ -192,6 +216,69 @@ fn configured_environment_retains_collision_selected_marks_water_and_view_inputs
     );
     assert!(water.surface_state.above_water);
     assert!(!water.bottom_state.as_ref().unwrap().above_water);
+    assert_eq!(
+        water.surface_bindings.environment,
+        Some(CubemapSelection::Declared { sample: 0 })
+    );
+    assert!(water.surface_bindings.reflection && water.surface_bindings.refraction);
+    let bottom_bindings = water.bottom_bindings.as_ref().unwrap();
+    assert_eq!(bottom_bindings.environment, None);
+    assert!(!bottom_bindings.reflection && bottom_bindings.refraction);
+    let policy = WaterViewPolicy {
+        draw_water: true,
+        expensive_supported: true,
+        draw_reflection: true,
+        draw_refraction: true,
+        force_expensive: true,
+        force_reflect_entities: false,
+        fast_clipping: false,
+        height_clipping: true,
+        eye_water_epsilon: 1.0,
+    };
+    let underwater = environment
+        .water
+        .plan_view(
+            &visibility,
+            WaterViewInput {
+                origin: [-4784.0, 3432.0, -2300.0],
+                angles: [0.0; 3],
+                eye_leaf: 663,
+                qualified_visible_leaves: &[],
+                near_plane_intersects_selected_volume: false,
+                draw_sky_2d: true,
+                policy,
+            },
+        )
+        .unwrap();
+    assert_eq!(underwater.render.environment, None);
+    assert!(!underwater.render.reflect && underwater.render.refract);
+    let above_leaf = visibility
+        .leaves
+        .iter()
+        .enumerate()
+        .find(|(_, leaf)| leaf.leaf_water_data_id < 0 && leaf.contents as u32 & 0x100 != 0)
+        .map(|(index, _)| index)
+        .unwrap();
+    let above = environment
+        .water
+        .plan_view(
+            &visibility,
+            WaterViewInput {
+                origin: [-4784.0, 3432.0, -2100.0],
+                angles: [0.0; 3],
+                eye_leaf: above_leaf,
+                qualified_visible_leaves: &[663],
+                near_plane_intersects_selected_volume: false,
+                draw_sky_2d: true,
+                policy,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        above.render.environment,
+        Some(CubemapSelection::Declared { sample: 0 })
+    );
+    assert!(above.render.reflect && above.render.refract);
     assert_eq!(environment.master_fog_controller, None);
     assert_eq!(environment.controllers.len(), 2);
 }

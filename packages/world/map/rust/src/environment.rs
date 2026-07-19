@@ -1,7 +1,7 @@
 use super::{CanonicalMap, LightingMember, LightingProfile, Surface, face_positions};
 use playsrc_bsp::{Bsp, Face, Leaf, LumpData, TextureInfo};
 use playsrc_entity::{Entity, Graph};
-use playsrc_material::{DecalState, Material, TextureDisposition, WaterState};
+use playsrc_material::{DecalState, Material, TextureDisposition, TextureRole, WaterState};
 use playsrc_visibility::World as VisibilityWorld;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -251,7 +251,7 @@ pub struct WaterSurface {
     pub fog_volume: Option<usize>,
     pub plane: [f32; 4],
     pub bounds: [[f32; 3]; 2],
-    pub cubemap: CubemapSelection,
+    pub bindings: WaterBindings,
     pub state: WaterState,
 }
 
@@ -269,7 +269,8 @@ pub struct WaterVolume {
     pub contents: u32,
     pub bounds: [[f32; 3]; 2],
     pub plane: [f32; 4],
-    pub cubemap: CubemapSelection,
+    pub surface_bindings: WaterBindings,
+    pub bottom_bindings: Option<WaterBindings>,
     pub surface_state: WaterState,
     pub bottom_state: Option<WaterState>,
     pub surface_translucent: bool,
@@ -287,6 +288,13 @@ pub enum CubemapSelection {
     Nearest { sample: usize },
     Declared { sample: usize },
     External { logical_path: String },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WaterBindings {
+    pub environment: Option<CubemapSelection>,
+    pub reflection: bool,
+    pub refraction: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -339,7 +347,7 @@ impl WaterEnvironment {
         let render = water_render_selection(visible.as_ref(), input.policy);
         let mut passes = Vec::new();
         let Some(water) = visible.as_ref() else {
-            passes.push(simple_view_pass(&input, None, render));
+            passes.push(simple_view_pass(&input, None, &render));
             return Ok(WaterViewPlan {
                 visible_water: None,
                 render,
@@ -347,7 +355,7 @@ impl WaterEnvironment {
             });
         };
         if render.cheap {
-            passes.push(simple_view_pass(&input, Some(water), render));
+            passes.push(simple_view_pass(&input, Some(water), &render));
             return Ok(WaterViewPlan {
                 visible_water: visible,
                 render,
@@ -549,7 +557,7 @@ impl WaterEnvironment {
             .get(volume)
             .filter(|source| source.index == volume && source.leaves.contains(&visible_leaf))
             .ok_or_else(|| failure(EnvironmentErrorCode::InvalidReference, Some(volume)))?;
-        let (material, state, translucent) = if eye_in_volume {
+        let (material, state, bindings, translucent) = if eye_in_volume {
             (
                 source
                     .bottom_material
@@ -560,6 +568,10 @@ impl WaterEnvironment {
                     .as_ref()
                     .unwrap_or(&source.surface_state),
                 source
+                    .bottom_bindings
+                    .as_ref()
+                    .unwrap_or(&source.surface_bindings),
+                source
                     .bottom_translucent
                     .unwrap_or(source.surface_translucent),
             )
@@ -567,6 +579,7 @@ impl WaterEnvironment {
             (
                 WaterMaterialIdentity::Map(source.surface_material),
                 &source.surface_state,
+                &source.surface_bindings,
                 source.surface_translucent,
             )
         };
@@ -584,6 +597,7 @@ impl WaterEnvironment {
             distance_to_water,
             material,
             state: state.clone(),
+            bindings: bindings.clone(),
             translucent,
         }))
     }
@@ -627,10 +641,11 @@ pub struct VisibleWater {
     pub distance_to_water: Option<u16>,
     pub material: WaterMaterialIdentity,
     pub state: WaterState,
+    pub bindings: WaterBindings,
     pub translucent: bool,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WaterRenderSelection {
     pub cheap: bool,
     pub reflect: bool,
@@ -638,6 +653,7 @@ pub struct WaterRenderSelection {
     pub reflect_entities: bool,
     pub draw_surface: bool,
     pub opaque: bool,
+    pub environment: Option<CubemapSelection>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -700,6 +716,7 @@ fn water_render_selection(
             reflect_entities: false,
             draw_surface: false,
             opaque: true,
+            environment: None,
         };
     };
     if !policy.draw_water {
@@ -710,6 +727,7 @@ fn water_render_selection(
             reflect_entities: false,
             draw_surface: false,
             opaque: false,
+            environment: water.bindings.environment.clone(),
         };
     }
     let force_cheap = water.state.force_cheap;
@@ -717,7 +735,7 @@ fn water_render_selection(
     let local_reflection = policy.expensive_supported
         && force_expensive
         && policy.draw_reflection
-        && water.state.reflection.disposition == TextureDisposition::BuiltInRenderTarget;
+        && water.bindings.reflection;
     let beyond_lod = water
         .distance_to_water
         .is_some_and(|distance| f32::from(distance) >= water.state.cheap_end);
@@ -729,10 +747,10 @@ fn water_render_selection(
             reflect_entities: false,
             draw_surface: true,
             opaque: !water.translucent,
+            environment: water.bindings.environment.clone(),
         };
     }
-    let refract = policy.draw_refraction
-        && water.state.refraction.disposition == TextureDisposition::BuiltInRenderTarget;
+    let refract = policy.draw_refraction && water.bindings.refraction;
     WaterRenderSelection {
         cheap: !local_reflection && !refract,
         reflect: local_reflection,
@@ -741,6 +759,7 @@ fn water_render_selection(
             && (policy.force_reflect_entities || water.state.reflect_entities),
         draw_surface: true,
         opaque: !water.translucent && !refract,
+        environment: water.bindings.environment.clone(),
     }
 }
 
@@ -770,7 +789,7 @@ fn water_eye_adjustment(
 fn simple_view_pass(
     input: &WaterViewInput<'_>,
     water: Option<&VisibleWater>,
-    render: WaterRenderSelection,
+    render: &WaterRenderSelection,
 ) -> EnvironmentViewPass {
     let eye_in_water = water.is_some_and(|water| water.eye_in_volume);
     let both = !render.opaque || input.near_plane_intersects_selected_volume;
@@ -1584,11 +1603,13 @@ fn append_water_surfaces(
         }
         let material = usize::try_from(info.texture_data_index)
             .map_err(|_| failure(EnvironmentErrorCode::InvalidReference, Some(face_index)))?;
-        let state = input
+        let material_output = input
             .materials
             .get(&material)
-            .and_then(|material| material.water.as_ref())
-            .cloned()
+            .ok_or_else(|| failure(EnvironmentErrorCode::InvalidReference, Some(material)))?;
+        let state = material_output
+            .water
+            .clone()
             .ok_or_else(|| failure(EnvironmentErrorCode::InvalidReference, Some(material)))?;
         let positions = face_positions(face, face_index, vertices, edges, surfedges)
             .map_err(|_| failure(EnvironmentErrorCode::InvalidRecord, Some(face_index)))?;
@@ -1616,7 +1637,12 @@ fn append_water_surfaces(
             fog_volume: usize::try_from(face.surface_fog_volume_id).ok(),
             plane: oriented,
             bounds,
-            cubemap: water_cubemap(&state, bounds_center(bounds), input.cubemaps)?,
+            bindings: water_bindings(
+                material_output,
+                &state,
+                bounds_center(bounds),
+                input.cubemaps,
+            )?,
             state,
         });
     }
@@ -1659,10 +1685,12 @@ fn compile_water_volumes(
             .ok_or_else(|| failure(EnvironmentErrorCode::InvalidReference, Some(index)))?;
         let material = usize::try_from(info.texture_data_index)
             .map_err(|_| failure(EnvironmentErrorCode::InvalidReference, Some(index)))?;
-        let state = materials
+        let material_output = materials
             .get(&material)
-            .and_then(|material| material.water.as_ref())
-            .cloned()
+            .ok_or_else(|| failure(EnvironmentErrorCode::InvalidReference, Some(material)))?;
+        let state = material_output
+            .water
+            .clone()
             .ok_or_else(|| failure(EnvironmentErrorCode::InvalidReference, Some(material)))?;
         let member_leaves: Vec<_> = leaves
             .iter()
@@ -1717,6 +1745,13 @@ fn compile_water_volumes(
             })
             .transpose()?;
         let bottom_material = bottom.as_ref().map(|(identity, _)| identity.clone());
+        let center = bounds_center(bounds);
+        let surface_bindings = water_bindings(material_output, &state, center, cubemaps)?;
+        let bottom_bindings = bottom
+            .as_ref()
+            .zip(bottom_state.as_ref())
+            .map(|((_, material), state)| water_bindings(material, state, center, cubemaps))
+            .transpose()?;
         let clusters = member_leaves
             .iter()
             .map(|leaf| leaves[*leaf].cluster)
@@ -1745,8 +1780,9 @@ fn compile_water_volumes(
             contents,
             bounds,
             plane: [0.0, 0.0, 1.0, surface_z],
-            cubemap: water_cubemap(&state, bounds_center(bounds), cubemaps)?,
-            surface_translucent: materials[&material].features.translucent,
+            surface_bindings,
+            bottom_bindings,
+            surface_translucent: material_output.features.translucent,
             bottom_translucent: bottom.map(|(_, material)| material.features.translucent),
             surface_state: state,
             bottom_state,
@@ -1763,21 +1799,36 @@ fn compile_water_volumes(
     Ok(output)
 }
 
+fn water_bindings(
+    material: &Material,
+    state: &WaterState,
+    position: [f32; 3],
+    cubemaps: &[CubemapSample],
+) -> Result<WaterBindings, EnvironmentError> {
+    Ok(WaterBindings {
+        environment: if material.active_textures.contains(&TextureRole::Environment) {
+            water_cubemap(state, position, cubemaps)?
+        } else {
+            None
+        },
+        reflection: material.active_textures.contains(&TextureRole::Reflection),
+        refraction: material.active_textures.contains(&TextureRole::Refraction),
+    })
+}
+
 fn water_cubemap(
     state: &WaterState,
     position: [f32; 3],
     cubemaps: &[CubemapSample],
-) -> Result<CubemapSelection, EnvironmentError> {
+) -> Result<Option<CubemapSelection>, EnvironmentError> {
     match state.environment_map.disposition {
-        TextureDisposition::BuiltInEnvironment => Ok(CubemapSelection::Nearest {
+        TextureDisposition::BuiltInEnvironment => Ok(Some(CubemapSelection::Nearest {
             sample: select_cubemap(cubemaps, position, None)?.index,
-        }),
+        })),
         TextureDisposition::Source => {
-            let path = state
-                .environment_map
-                .logical_path
-                .as_ref()
-                .ok_or_else(|| failure(EnvironmentErrorCode::InvalidReference, None))?;
+            let Some(path) = state.environment_map.logical_path.as_ref() else {
+                return Ok(None);
+            };
             let declared = cubemap_stem(path).and_then(|requested| {
                 cubemaps
                     .iter()
@@ -1787,12 +1838,12 @@ fn water_cubemap(
                     })
                     .map(|sample| sample.index)
             });
-            Ok(declared.map_or_else(
+            Ok(Some(declared.map_or_else(
                 || CubemapSelection::External {
                     logical_path: path.clone(),
                 },
                 |sample| CubemapSelection::Declared { sample },
-            ))
+            )))
         }
         TextureDisposition::BuiltInRenderTarget => {
             Err(failure(EnvironmentErrorCode::InvalidReference, None))
@@ -3411,9 +3462,14 @@ mod tests {
                 contents: 0x20,
                 bounds: [[-1.0; 3], [1.0; 3]],
                 plane: [0.0, 0.0, 1.0, 10.0],
-                cubemap: CubemapSelection::External {
-                    logical_path: "materials/test.vtf".to_owned(),
+                surface_bindings: WaterBindings {
+                    environment: Some(CubemapSelection::External {
+                        logical_path: "materials/test.vtf".to_owned(),
+                    }),
+                    reflection: true,
+                    refraction: true,
                 },
+                bottom_bindings: None,
                 surface_state: test_water_state(),
                 bottom_state: None,
                 surface_translucent: true,
@@ -3460,7 +3516,16 @@ mod tests {
                 contents: 0x1000_0020,
                 bounds: [[-16.0; 3], [16.0; 3]],
                 plane: [0.0, 0.0, 1.0, 0.0],
-                cubemap: CubemapSelection::Nearest { sample: 0 },
+                surface_bindings: WaterBindings {
+                    environment: Some(CubemapSelection::Nearest { sample: 0 }),
+                    reflection: true,
+                    refraction: true,
+                },
+                bottom_bindings: Some(WaterBindings {
+                    environment: None,
+                    reflection: false,
+                    refraction: true,
+                }),
                 surface_state: state,
                 bottom_state: Some(bottom),
                 surface_translucent: true,
@@ -3495,6 +3560,11 @@ mod tests {
             )
             .unwrap();
         assert_eq!(above.visible_water.as_ref().unwrap().volume, 0);
+        assert_eq!(
+            above.render.environment,
+            Some(CubemapSelection::Nearest { sample: 0 })
+        );
+        assert!(above.render.reflect && above.render.refract);
         assert_eq!(
             above.visible_water.as_ref().unwrap().distance_to_water,
             Some(100)
@@ -3539,6 +3609,33 @@ mod tests {
             underwater.visible_water.as_ref().unwrap().material,
             WaterMaterialIdentity::Map(5)
         );
+        assert_eq!(
+            underwater
+                .visible_water
+                .as_ref()
+                .unwrap()
+                .bindings
+                .environment,
+            None
+        );
+        assert!(
+            !underwater
+                .visible_water
+                .as_ref()
+                .unwrap()
+                .bindings
+                .reflection
+        );
+        assert!(
+            underwater
+                .visible_water
+                .as_ref()
+                .unwrap()
+                .bindings
+                .refraction
+        );
+        assert_eq!(underwater.render.environment, None);
+        assert!(!underwater.render.reflect && underwater.render.refract);
         assert_eq!(
             underwater
                 .passes
@@ -3684,13 +3781,18 @@ mod tests {
             Some(samples[0].logical_path.replace(".hdr.vtf", ".vtf"));
         assert_eq!(
             water_cubemap(&state, [9.0, 0.0, 0.0], &samples).unwrap(),
-            CubemapSelection::Declared { sample: 0 }
+            Some(CubemapSelection::Declared { sample: 0 })
+        );
+        state.environment_map.logical_path = None;
+        assert_eq!(
+            water_cubemap(&state, [9.0, 0.0, 0.0], &samples).unwrap(),
+            None
         );
         state.environment_map.disposition = TextureDisposition::BuiltInEnvironment;
         state.environment_map.logical_path = None;
         assert_eq!(
             water_cubemap(&state, [9.0, 0.0, 0.0], &samples).unwrap(),
-            CubemapSelection::Nearest { sample: 1 }
+            Some(CubemapSelection::Nearest { sample: 1 })
         );
     }
 

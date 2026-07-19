@@ -35,6 +35,8 @@ Dependency closure identity: 317-entry `PSDB` source bundle, 120,412,213 bytes, 
 
 Patch bases are exact `materials/water/water_2fort_expensive.vmt` at SHA-256 `5f61b7786628a7e267419a7b709548102c115f2ef1f468bd3e3dc73aa6349806` and `materials/glass/glasswindow002a.vmt` at SHA-256 `4d245323e238a2823ef992dd3a62d424f56d1270ebd1b98d1cc03d318be5d04e`. The empty `Proxies` object in the water patch does not delete inherited proxy children.
 
+Material 9 explicitly binds generated cubemap sample 0, reflection, and refraction. Material 13 explicitly binds refraction but has no effective environment or reflection parameter; its shader-default request records do not create bindings. Map retains this as `environment=None`, `reflection=false`, and `refraction=true` for all beneath surfaces, the volume bottom, and underwater view plans.
+
 ## Marks
 
 - Entity records: 39 ordered `infodecal` entities.
