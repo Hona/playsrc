@@ -3,15 +3,24 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/client.ts",
+    ".": "./src/index.ts",
     "./artifacts": "./src/artifacts.ts",
     "./codec": "./src/codec.ts",
     "./presentation": "./src/presentation.ts",
+    "./ui-integration": "./src/ui-integration/index.ts",
+    "./ui-resources": "./src/ui-resources/index.ts",
+    "./hud": "./src/hud/index.ts",
+    "./hud-integration": "./src/hud-integration/index.ts",
+    "./settings-integration": "./src/settings-integration/index.ts",
+    "./gameui": "./src/gameui/index.ts",
+    "./gameui-integration": "./src/gameui-integration/index.ts",
     "./worker": "./src/gameplay-worker.ts"
   },
   "dependencies": {
     "@playsrc/asset-store": "workspace:*",
     "@playsrc/particle": "workspace:*",
-    "@playsrc/rendering": "workspace:*"
+    "@playsrc/rendering": "workspace:*",
+    "@playsrc/settings": "workspace:*",
+    "@playsrc/vgui": "workspace:*"
   }
 }

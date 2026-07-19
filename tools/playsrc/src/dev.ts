@@ -58,10 +58,11 @@ export async function startDevelopment(config: LocalConfig, target: string | und
   const map = await acquireMap(config, target)
   const wasmPath = await buildTf2Wasm(config)
   const sourceBundle = await buildSourceBundle(config, target ?? "")
-  const [bspBytes, wasmBytes, dependencyBytes, dependencyLedgerBytes, applicationBuild] = await Promise.all([
+  const [bspBytes, wasmBytes, dependencyBytes, uiBytes, dependencyLedgerBytes, applicationBuild] = await Promise.all([
     readFile(path.join(config.sourceCacheDir, map.decoded.cachePath)),
     readFile(wasmPath),
     readFile(sourceBundle.bundlePath),
+    readFile(sourceBundle.uiPath),
     readFile(sourceBundle.ledgerPath),
     publicCommitIdentity(),
   ])
@@ -77,13 +78,16 @@ export async function startDevelopment(config: LocalConfig, target: string | und
     "application/vnd.playsrc.source-dependency-ledger+json",
     dependencyLedgerBytes,
   )
+  const ui = descriptor("derived-object", "application/octet-stream", uiBytes)
   if (
     JSON.stringify(dependencies) !== JSON.stringify(sourceBundle.report.bundleDescriptor)
+    || JSON.stringify(ui) !== JSON.stringify(sourceBundle.report.uiDescriptor)
     || JSON.stringify(dependencyLedger) !== JSON.stringify(sourceBundle.report.ledgerDescriptor)
   ) throw new DevelopmentError("BuildFailed", "source dependency artifact differs from its immutable descriptor")
   await putObject(config.assetDir, bsp, bspBytes)
   await putObject(config.assetDir, wasm, wasmBytes)
   await putObject(config.assetDir, dependencies, dependencyBytes)
+  await putObject(config.assetDir, ui, uiBytes)
   await putObject(config.assetDir, dependencyLedger, dependencyLedgerBytes)
   const browserConfiguration = JSON.stringify({
     application: "tf2",
@@ -95,6 +99,14 @@ export async function startDevelopment(config: LocalConfig, target: string | und
     bsp,
     wasm,
     dependencies,
+    ui,
+    presentation: {
+      randomSeed: 0,
+      activeHoliday: "none",
+      activeWar: null,
+      activeOperation: false,
+      freeTrial: false,
+    },
   })
   const previousAssetOrigin = process.env.PLAYSRC_ASSET_ORIGIN
   const previousBrowserConfiguration = process.env.PLAYSRC_BROWSER_CONFIG

@@ -3,10 +3,11 @@
   "private": true,
   "type": "module",
   "packageManager": "bun@1.4.0",
-  "workspaces": ["packages/*", "packages/presentation/*", "games/*/browser", "tools/*", "apps/services/*", "apps/web/*"],
+  "workspaces": ["packages/*", "packages/presentation/*", "packages/runtime/*", "games/*/browser", "tools/*", "apps/services/*", "apps/web/*"],
   "scripts": {
     "dev": "bun tools/playsrc/src/cli.ts dev",
     "setup": "bun tools/playsrc/src/cli.ts setup",
+    "generate:tf2-ui": "bun games/tf2/browser/src/ui-resources/generator/generate.ts",
     "verify:tf2-wasm": "bun tools/playsrc/src/cli.ts verify tf2-wasm",
     "verify:browser": "bun tools/playsrc/src/cli.ts verify browser",
     "test": "bun test"

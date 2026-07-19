@@ -2,7 +2,9 @@ use playsrc_content::{
     CheckedLocation, Content, Provenance, ProviderKind, ProviderSpec, Resolution,
 };
 use playsrc_keyvalues::ConditionEnvironment;
-use playsrc_material::{HdrMode, SelectionEnvironment, TextureDisposition};
+use playsrc_material::{
+    HdrMode, SelectionEnvironment, TextureColorRead, TextureDisposition, TextureRole,
+};
 use playsrc_vmt::{Composition, DependencyResponse};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -32,6 +34,106 @@ struct LocalConfigFile {
     source_cache_dir: String,
     #[serde(rename = "assetDir")]
     _asset_dir: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Tf2UiBundleManifest {
+    schema: String,
+    identity: String,
+    source_ledger: String,
+    dependencies: Vec<Tf2UiDependency>,
+    images: Vec<Tf2UiImage>,
+    missing_dependencies: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Tf2UiDependency {
+    logical_path: String,
+    sha256: String,
+    byte_length: usize,
+    kinds: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Tf2UiImage {
+    identity: String,
+    configured_value: String,
+    classification: String,
+    material: Option<String>,
+    textures: Vec<Tf2UiTexture>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Tf2UiTexture {
+    logical_path: String,
+    sha256: String,
+    width: u32,
+    height: u32,
+    frames: u16,
+    raw_flags: u32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Tf2UiMaterialSet {
+    schema: &'static str,
+    descriptor: String,
+    images: Vec<Tf2UiMaterialRecord>,
+    textures: Vec<Tf2UiMaterialTextureRecord>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Tf2UiMaterialTextureRecord {
+    logical_path: String,
+    sha256: String,
+    width: u32,
+    height: u32,
+    frames: u16,
+    raw_flags: u32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Tf2UiMaterialRecord {
+    configured_value: String,
+    material: String,
+    shader: String,
+    base_texture: String,
+    base_color_read: &'static str,
+    second_texture: Option<String>,
+    second_color_read: Option<&'static str>,
+    detail_texture: Option<String>,
+    detail_color_read: Option<&'static str>,
+    detail_scale: f32,
+    detail_blend_mode: i32,
+    detail_blend_factor: f32,
+    detail_tint: [f32; 3],
+    distance_alpha: bool,
+    distance_alpha_from_detail: bool,
+    soft_edges: bool,
+    scale_soft_edges: bool,
+    edge_softness_start: f32,
+    edge_softness_end: f32,
+    outline: bool,
+    outline_color: [f32; 3],
+    outline_alpha: f32,
+    outline_start_0: f32,
+    outline_start_1: f32,
+    outline_end_0: f32,
+    outline_end_1: f32,
+    scale_outline: bool,
+    glow: bool,
+    glow_color: [f32; 3],
+    glow_alpha: f32,
+    glow_start: f32,
+    glow_end: f32,
+    glow_x: f32,
+    glow_y: f32,
 }
 
 #[derive(Deserialize)]
@@ -187,6 +289,59 @@ impl<'a> Resolver<'a> {
     fn required(&mut self, path: &str, consumer: impl Into<String>) -> Result<Vec<u8>, String> {
         self.resolve(path, consumer.into(), true)?
             .ok_or_else(|| format!("required dependency {path} has authoritative absence"))
+    }
+
+    fn required_expected(
+        &mut self,
+        path: &str,
+        consumer: impl Into<String>,
+        expected_bytes: usize,
+        expected_sha256: &str,
+        fallback: &Content,
+    ) -> Result<Vec<u8>, String> {
+        let canonical = path.to_ascii_lowercase();
+        let consumer = consumer.into();
+        let bytes = if let Some(bytes) = self.bundle.get(&canonical) {
+            let record = self
+                .requests
+                .get_mut(&canonical)
+                .ok_or_else(|| format!("bundled dependency {canonical} has no request record"))?;
+            record.consumers.insert(consumer);
+            bytes.clone()
+        } else {
+            match self
+                .content
+                .resolve_resource(&canonical)
+                .map_err(|error| error.to_string())?
+            {
+                Resolution::Found(_) => self.required(&canonical, consumer)?,
+                Resolution::Missing { .. } => {
+                    let value = match fallback
+                        .resolve_resource(&canonical)
+                        .map_err(|error| error.to_string())?
+                    {
+                        Resolution::Found(value) => value,
+                        Resolution::Missing { .. } => {
+                            return self.required(&canonical, consumer);
+                        }
+                    };
+                    let bytes = value.bytes.clone();
+                    self.inject_platform(
+                        &canonical,
+                        &consumer,
+                        bytes.clone(),
+                        provenance_record(&value.provenance),
+                    )?;
+                    bytes
+                }
+            }
+        };
+        if bytes.len() != expected_bytes || digest(&bytes) != expected_sha256 {
+            return Err(format!(
+                "dependency {canonical} differs from its UI descriptor"
+            ));
+        }
+        Ok(bytes)
     }
 
     fn inject_platform(
@@ -764,6 +919,210 @@ fn collect_material(
     Ok(())
 }
 
+fn resolve_ui_material(
+    resolver: &mut Resolver<'_>,
+    identity: &str,
+) -> Result<playsrc_material::Material, String> {
+    let root_bytes = resolver.required(identity, format!("tf2-ui-material:{identity}"))?;
+    let mut responses = Vec::new();
+    loop {
+        match playsrc_vmt::compose(
+            &root_bytes,
+            identity.to_owned(),
+            &responses,
+            &ConditionEnvironment::default(),
+            playsrc_vmt::Limits::default(),
+        )
+        .map_err(|error| error.to_string())?
+        {
+            Composition::Complete(document) => {
+                return playsrc_material::resolve_for_environment(
+                    &document,
+                    SelectionEnvironment::default(),
+                )
+                .map_err(|error| error.to_string());
+            }
+            Composition::Needs(requests) => {
+                for request in requests {
+                    let path = material_path(&request.target_token)?;
+                    let bytes = resolver.required(
+                        &path,
+                        format!("tf2-ui-material-compose:{}", request.parent_identity),
+                    )?;
+                    responses.push(DependencyResponse {
+                        parent_identity: request.parent_identity,
+                        target_token: request.target_token,
+                        canonical_identity: path,
+                        bytes: Some(bytes),
+                    });
+                }
+            }
+        }
+    }
+}
+
+fn ui_parameter<'a>(material: &'a playsrc_material::Material, name: &[u8]) -> Option<&'a [u8]> {
+    material
+        .first_parameters
+        .get(&name.to_ascii_lowercase())
+        .map(Vec::as_slice)
+}
+
+fn ui_float(
+    material: &playsrc_material::Material,
+    name: &[u8],
+    default: f32,
+) -> Result<f32, String> {
+    let Some(value) = ui_parameter(material, name) else {
+        return Ok(default);
+    };
+    let value = std::str::from_utf8(value).map_err(|_| "UI material float is not UTF-8")?;
+    value.trim().parse::<f32>().map_err(|_| {
+        format!(
+            "UI material float is malformed: {}",
+            String::from_utf8_lossy(name)
+        )
+    })
+}
+
+fn ui_integer(
+    material: &playsrc_material::Material,
+    name: &[u8],
+    default: i32,
+) -> Result<i32, String> {
+    Ok(ui_float(material, name, default as f32)? as i32)
+}
+
+fn ui_boolean(
+    material: &playsrc_material::Material,
+    name: &[u8],
+    default: bool,
+) -> Result<bool, String> {
+    Ok(ui_integer(material, name, i32::from(default))? != 0)
+}
+
+fn ui_vector(
+    material: &playsrc_material::Material,
+    name: &[u8],
+    default: [f32; 3],
+) -> Result<[f32; 3], String> {
+    let Some(value) = ui_parameter(material, name) else {
+        return Ok(default);
+    };
+    let text = std::str::from_utf8(value).map_err(|_| "UI material vector is not UTF-8")?;
+    let values = text
+        .trim_matches(|character: char| {
+            character.is_whitespace() || character == '[' || character == ']'
+        })
+        .split_whitespace()
+        .map(|value| {
+            value
+                .parse::<f32>()
+                .map_err(|_| "UI material vector is malformed".to_owned())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if values.len() != 3 {
+        return Err("UI material vector component count differs".to_owned());
+    }
+    Ok([values[0], values[1], values[2]])
+}
+
+fn ui_texture_path(token: &[u8]) -> Result<String, String> {
+    let value = std::str::from_utf8(token)
+        .map_err(|_| "UI texture identity is not UTF-8")?
+        .replace('\\', "/");
+    let mut path = if value.to_ascii_lowercase().starts_with("materials/") {
+        value
+    } else {
+        format!("materials/{value}")
+    };
+    if !path.to_ascii_lowercase().ends_with(".vtf") {
+        path.push_str(".vtf");
+    }
+    let path = path.to_ascii_lowercase();
+    if path.contains("..") || path.contains("//") {
+        return Err("UI texture identity is malformed".to_owned());
+    }
+    Ok(path)
+}
+
+fn ui_role_texture(material: &playsrc_material::Material, role: TextureRole) -> Option<String> {
+    material
+        .textures
+        .iter()
+        .find(|texture| texture.role == role && texture.disposition == TextureDisposition::Source)
+        .and_then(|texture| texture.logical_path.clone())
+        .map(|path| path.to_ascii_lowercase())
+}
+
+fn ui_role_color_read(
+    material: &playsrc_material::Material,
+    role: TextureRole,
+) -> Option<&'static str> {
+    material
+        .textures
+        .iter()
+        .find(|texture| texture.role == role && texture.disposition == TextureDisposition::Source)
+        .map(|texture| match texture.color_read {
+            TextureColorRead::Srgb => "srgb",
+            TextureColorRead::Linear => "linear",
+            TextureColorRead::FormatDependent => "format-dependent",
+        })
+}
+
+fn ui_material_record(
+    configured_value: &str,
+    identity: &str,
+    material: &playsrc_material::Material,
+) -> Result<Tf2UiMaterialRecord, String> {
+    let shader = String::from_utf8(material.shader_token.clone())
+        .map_err(|_| "UI material shader is not UTF-8")?;
+    let base_texture = ui_role_texture(material, TextureRole::Base)
+        .ok_or_else(|| format!("UI material {identity} has no base texture"))?;
+    let base_color_read = ui_role_color_read(material, TextureRole::Base)
+        .ok_or_else(|| format!("UI material {identity} has no base color-read state"))?;
+    let second_texture = ui_parameter(material, b"$texture2")
+        .map(ui_texture_path)
+        .transpose()?;
+    let detail = material.detail.as_ref();
+    Ok(Tf2UiMaterialRecord {
+        configured_value: configured_value.to_owned(),
+        material: identity.to_owned(),
+        shader,
+        base_texture,
+        base_color_read,
+        second_texture,
+        second_color_read: ui_parameter(material, b"$texture2").map(|_| "srgb"),
+        detail_texture: detail.and_then(|value| value.texture.logical_path.clone()),
+        detail_color_read: detail.and_then(|_| ui_role_color_read(material, TextureRole::Detail)),
+        detail_scale: detail.map_or(1.0, |value| value.scale),
+        detail_blend_mode: detail.map_or(0, |value| value.blend_mode),
+        detail_blend_factor: detail.map_or(1.0, |value| value.blend_factor),
+        detail_tint: detail.map_or([1.0, 1.0, 1.0], |value| value.tint),
+        distance_alpha: ui_boolean(material, b"$distancealpha", false)?,
+        distance_alpha_from_detail: ui_boolean(material, b"$distancealphafromdetail", false)?,
+        soft_edges: ui_boolean(material, b"$softedges", false)?,
+        scale_soft_edges: ui_boolean(material, b"$scaleedgesoftnessbasedonscreenres", false)?,
+        edge_softness_start: ui_float(material, b"$edgesoftnessstart", 0.6)?,
+        edge_softness_end: ui_float(material, b"$edgesoftnessend", 0.5)?,
+        outline: ui_boolean(material, b"$outline", false)?,
+        outline_color: ui_vector(material, b"$outlinecolor", [1.0, 1.0, 1.0])?,
+        outline_alpha: ui_float(material, b"$outlinealpha", 0.0)?,
+        outline_start_0: ui_float(material, b"$outlinestart0", 0.0)?,
+        outline_start_1: ui_float(material, b"$outlinestart1", 0.0)?,
+        outline_end_0: ui_float(material, b"$outlineend0", 0.0)?,
+        outline_end_1: ui_float(material, b"$outlineend1", 0.0)?,
+        scale_outline: ui_boolean(material, b"$scaleoutlinesoftnessbasedonscreenres", false)?,
+        glow: ui_boolean(material, b"$glow", false)?,
+        glow_color: ui_vector(material, b"$glowcolor", [1.0, 1.0, 1.0])?,
+        glow_alpha: ui_float(material, b"$glowalpha", 1.0)?,
+        glow_start: ui_float(material, b"$glowstart", 0.7)?,
+        glow_end: ui_float(material, b"$glowend", 0.5)?,
+        glow_x: ui_float(material, b"$glowx", 0.0)?,
+        glow_y: ui_float(material, b"$glowy", 0.0)?,
+    })
+}
+
 fn model_profile(bytes: &[u8]) -> Result<playsrc_studio_model::Profile, String> {
     let version = i32::from_le_bytes(
         bytes
@@ -871,6 +1230,133 @@ fn install_artifact(path: &Path, bytes: &[u8]) -> Result<(), String> {
     result
 }
 
+fn load_tf2_ui_manifest(root: &Path) -> Result<Tf2UiBundleManifest, String> {
+    let manifest: Tf2UiBundleManifest = serde_json::from_slice(
+        &fs::read(root.join("tools/source-bundle/tf2-ui.generated.json"))
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    if manifest.schema != "playsrc-tf2-ui-bundle-v1"
+        || manifest.identity != "tf2-ui-24207079-4a097b1e805d9ce1"
+        || manifest.source_ledger.is_empty()
+        || manifest.dependencies.is_empty()
+        || manifest.dependencies.len() > MAX_DEPENDENCY_REQUESTS
+        || manifest.images.len() > 2_048
+        || manifest.missing_dependencies.len() > 128
+    {
+        return Err("TF2 UI bundle manifest identity is malformed".to_owned());
+    }
+    let mut previous = None::<&str>;
+    for dependency in &manifest.dependencies {
+        if dependency.logical_path != dependency.logical_path.to_ascii_lowercase()
+            || dependency.logical_path.is_empty()
+            || dependency.sha256.len() != 64
+            || !dependency
+                .sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+            || dependency.byte_length == 0
+            || dependency.kinds.is_empty()
+            || dependency
+                .kinds
+                .iter()
+                .any(|kind| !matches!(kind.as_str(), "resource" | "font" | "material" | "texture"))
+            || previous.is_some_and(|value| value >= dependency.logical_path.as_str())
+        {
+            return Err(format!(
+                "TF2 UI dependency descriptor is malformed: {}",
+                dependency.logical_path
+            ));
+        }
+        previous = Some(&dependency.logical_path);
+    }
+    let mut image_identities = BTreeSet::new();
+    let mut missing = BTreeSet::new();
+    for value in &manifest.missing_dependencies {
+        if value.is_empty() || !missing.insert(value) {
+            return Err("TF2 UI missing dependency set is malformed".to_owned());
+        }
+    }
+    for image in &manifest.images {
+        if image.identity.is_empty()
+            || !image_identities.insert(&image.identity)
+            || image.configured_value.is_empty()
+            || !matches!(
+                image.classification.as_str(),
+                "content-vtf" | "missing-material"
+            )
+            || (image.classification == "content-vtf"
+                && (image.material.is_none() || image.textures.is_empty()))
+            || (image.classification == "missing-material"
+                && (image.material.is_some() || !image.textures.is_empty()))
+        {
+            return Err(format!(
+                "TF2 UI image descriptor is malformed: {}",
+                image.identity
+            ));
+        }
+        for texture in &image.textures {
+            if texture.logical_path != texture.logical_path.to_ascii_lowercase()
+                || !texture.logical_path.ends_with(".vtf")
+                || texture.sha256.len() != 64
+                || texture.width == 0
+                || texture.height == 0
+                || texture.frames == 0
+            {
+                return Err(format!(
+                    "TF2 UI image texture is malformed: {}",
+                    image.identity
+                ));
+            }
+        }
+    }
+    Ok(manifest)
+}
+
+fn tf2_ui_png(bytes: &[u8], frame: u16) -> Result<(u32, u32, Vec<u8>), String> {
+    let plane = playsrc_vtf::decode(
+        bytes,
+        playsrc_vtf::Dialect::Source2013Pc,
+        playsrc_vtf::SubresourceIdentity::HighResolution {
+            mip: 0,
+            frame,
+            face: playsrc_vtf::Face::Right,
+            slice: 0,
+        },
+        playsrc_vtf::Limits::default(),
+    )
+    .map_err(|error| error.to_string())?;
+    if plane.row_order != playsrc_vtf::RowOrder::TopToBottom
+        || plane.scalar_encoding != playsrc_vtf::ScalarEncoding::U8
+    {
+        return Err("TF2 UI texture plane is not browser-presentable RGBA8".to_owned());
+    }
+    let rgba = match plane.channel_layout {
+        playsrc_vtf::ChannelLayout::Rgba => plane.samples,
+        playsrc_vtf::ChannelLayout::Rgb => {
+            let mut output = Vec::with_capacity(plane.width as usize * plane.height as usize * 4);
+            for sample in plane.samples.chunks_exact(3) {
+                output.extend_from_slice(sample);
+                output.push(255);
+            }
+            output
+        }
+    };
+    let mut png = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut png, plane.width, plane.height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.set_compression(png::Compression::Fast);
+        encoder.set_filter(png::FilterType::Paeth);
+        let mut writer = encoder.write_header().map_err(|error| error.to_string())?;
+        writer
+            .write_image_data(&rgba)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok((plane.width, plane.height, png))
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BuildReport {
@@ -883,6 +1369,10 @@ struct BuildReport {
     bytes: usize,
     sha256: String,
     bundle_descriptor: ObjectDescriptor,
+    ui_entries: usize,
+    ui_bytes: usize,
+    ui_sha256: String,
+    ui_descriptor: ObjectDescriptor,
     ledger_bytes: usize,
     ledger_sha256: String,
     ledger_descriptor: ObjectDescriptor,
@@ -914,6 +1404,7 @@ fn main() -> Result<(), String> {
         return Err("target is malformed".to_owned());
     }
     let root = root();
+    let tf2_ui = load_tf2_ui_manifest(&root)?;
     let config: LocalConfigFile = serde_json::from_slice(
         &fs::read(root.join("playsrc.local.json")).map_err(|error| error.to_string())?,
     )
@@ -1358,6 +1849,184 @@ fn main() -> Result<(), String> {
             resolver.required(path, consumer)?;
         }
     }
+    for dependency in &tf2_ui.dependencies {
+        resolver.required_expected(
+            &dependency.logical_path,
+            format!("tf2-ui:{}:{}", tf2_ui.identity, dependency.kinds.join("+")),
+            dependency.byte_length,
+            &dependency.sha256,
+            &platform_content,
+        )?;
+    }
+    let mut ui_materials = Vec::new();
+    for image in &tf2_ui.images {
+        let Some(identity) = image.material.as_deref() else {
+            continue;
+        };
+        let material = resolve_ui_material(&mut resolver, identity)?;
+        let record = ui_material_record(&image.configured_value, identity, &material)?;
+        if !record.shader.eq_ignore_ascii_case("UnlitGeneric")
+            && !record.shader.eq_ignore_ascii_case("UnlitTwoTexture")
+        {
+            return Err(format!("unsupported selected UI shader: {}", record.shader));
+        }
+        if record.detail_texture.is_some() && record.detail_blend_mode != 8 {
+            return Err(format!(
+                "unsupported selected UI detail blend mode: {}:{}",
+                identity, record.detail_blend_mode
+            ));
+        }
+        ui_materials.push(record);
+    }
+    let mut ui_textures = BTreeMap::<String, (String, u32, u32, u16, u32)>::new();
+    for image in &tf2_ui.images {
+        for texture in &image.textures {
+            let candidate = (
+                texture.sha256.clone(),
+                texture.width,
+                texture.height,
+                texture.frames,
+                texture.raw_flags,
+            );
+            if let Some(prior) = ui_textures.get(&texture.logical_path)
+                && prior != &candidate
+            {
+                return Err(format!(
+                    "TF2 UI texture metadata conflicts: {}",
+                    texture.logical_path
+                ));
+            }
+            ui_textures
+                .entry(texture.logical_path.clone())
+                .or_insert(candidate);
+        }
+    }
+    let mut runtime_ui_materials = (1..=4)
+        .map(|index| {
+            let configured = format!("vgui/hud/8x800corner{index}");
+            let identity = format!("materials/{configured}.vmt");
+            (configured, identity)
+        })
+        .collect::<Vec<_>>();
+    runtime_ui_materials.extend([
+        (
+            "hud/health_color".to_owned(),
+            "materials/hud/health_color.vmt".to_owned(),
+        ),
+        (
+            "hud/health_dead".to_owned(),
+            "materials/hud/health_dead.vmt".to_owned(),
+        ),
+    ]);
+    for (configured_value, identity) in runtime_ui_materials {
+        let material = resolve_ui_material(&mut resolver, &identity)?;
+        let record = ui_material_record(&configured_value, &identity, &material)?;
+        let bytes = resolver.required(
+            &record.base_texture,
+            format!("tf2-ui-rounded-background:{configured_value}"),
+        )?;
+        let metadata = playsrc_vtf::inspect(
+            &bytes,
+            playsrc_vtf::Dialect::Source2013Pc,
+            playsrc_vtf::Limits::default(),
+        )
+        .map_err(|error| error.to_string())?;
+        ui_textures.insert(
+            record.base_texture.clone(),
+            (
+                digest(&bytes),
+                metadata.width,
+                metadata.height,
+                metadata.frame_count,
+                metadata.raw_flags,
+            ),
+        );
+        ui_materials.push(record);
+    }
+    for material in &ui_materials {
+        for logical_path in [
+            Some(material.base_texture.as_str()),
+            material.second_texture.as_deref(),
+            material.detail_texture.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let bytes = resolver.required(
+                logical_path,
+                format!("tf2-ui-material-texture:{}", material.material),
+            )?;
+            if let Some((sha256, _, _, _, _)) = ui_textures.get(logical_path) {
+                if sha256 != &digest(&bytes) {
+                    return Err(format!("TF2 UI material texture changed: {logical_path}"));
+                }
+                continue;
+            }
+            let metadata = playsrc_vtf::inspect(
+                &bytes,
+                playsrc_vtf::Dialect::Source2013Pc,
+                playsrc_vtf::Limits::default(),
+            )
+            .map_err(|error| error.to_string())?;
+            ui_textures.insert(
+                logical_path.to_owned(),
+                (
+                    digest(&bytes),
+                    metadata.width,
+                    metadata.height,
+                    metadata.frame_count,
+                    metadata.raw_flags,
+                ),
+            );
+        }
+    }
+    let texture_records = ui_textures
+        .iter()
+        .map(
+            |(logical_path, (sha256, width, height, frames, raw_flags))| {
+                Tf2UiMaterialTextureRecord {
+                    logical_path: logical_path.clone(),
+                    sha256: sha256.clone(),
+                    width: *width,
+                    height: *height,
+                    frames: *frames,
+                    raw_flags: *raw_flags,
+                }
+            },
+        )
+        .collect::<Vec<_>>();
+    let ui_material_bytes = serde_json::to_vec(&Tf2UiMaterialSet {
+        schema: "playsrc-tf2-ui-materials-v1",
+        descriptor: tf2_ui.identity.clone(),
+        images: ui_materials,
+        textures: texture_records,
+    })
+    .map_err(|error| error.to_string())?;
+    let mut ui_bundle = BTreeMap::<String, Vec<u8>>::new();
+    ui_bundle.insert(
+        "playsrc/tf2-ui/materials.json".to_owned(),
+        ui_material_bytes,
+    );
+    for (logical_path, (sha256, width, height, frames, _raw_flags)) in ui_textures {
+        let bytes = resolver
+            .bundle
+            .get(&logical_path)
+            .ok_or_else(|| format!("TF2 UI texture is absent from bundle: {logical_path}"))?
+            .clone();
+        if digest(&bytes) != sha256 {
+            return Err(format!(
+                "TF2 UI texture changed before presentation: {logical_path}"
+            ));
+        }
+        for frame in 0..frames {
+            let (decoded_width, decoded_height, png) = tf2_ui_png(&bytes, frame)
+                .map_err(|error| format!("TF2 UI texture {logical_path} frame {frame}: {error}"))?;
+            if decoded_width != width || decoded_height != height {
+                return Err(format!("TF2 UI texture dimensions changed: {logical_path}"));
+            }
+            ui_bundle.insert(format!("playsrc/tf2-ui/png/{sha256}/{frame}.png"), png);
+        }
+    }
     let bundle = &resolver.bundle;
     if bundle.len() > MAX_DEPENDENCY_REQUESTS || resolver.requests.len() > MAX_DEPENDENCY_REQUESTS {
         return Err("source dependency request count exceeds bound".to_owned());
@@ -1372,6 +2041,17 @@ fn main() -> Result<(), String> {
     for (path, bytes) in bundle {
         bytesv(&mut output, path.as_bytes())?;
         bytesv(&mut output, bytes)?;
+    }
+    let mut ui_output = b"PUIB".to_vec();
+    ui_output.extend_from_slice(&1_u32.to_le_bytes());
+    ui_output.extend_from_slice(
+        &u32::try_from(ui_bundle.len())
+            .map_err(|_| "TF2 UI presentation entry count exceeds u32".to_owned())?
+            .to_le_bytes(),
+    );
+    for (path, bytes) in &ui_bundle {
+        bytesv(&mut ui_output, path.as_bytes())?;
+        bytesv(&mut ui_output, bytes)?;
     }
     let request_records = resolver.records();
     let authoritative_absences = request_records
@@ -1401,6 +2081,7 @@ fn main() -> Result<(), String> {
         }
     }
     let bundle_descriptor = ObjectDescriptor::new("derived-object", BUNDLE_MEDIA_TYPE, &output);
+    let ui_descriptor = ObjectDescriptor::new("derived-object", BUNDLE_MEDIA_TYPE, &ui_output);
     let ledger = DependencyLedger {
         schema: "playsrc-source-dependency-ledger-v1",
         game: "tf2",
@@ -1461,8 +2142,10 @@ fn main() -> Result<(), String> {
     let directory = cache.join("browser-bundles");
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     let destination = directory.join(format!("{target}.psdb"));
+    let ui_destination = directory.join(format!("{target}.ui.puib"));
     let ledger_destination = directory.join(format!("{target}.dependencies.json"));
     install_artifact(&destination, &output)?;
+    install_artifact(&ui_destination, &ui_output)?;
     install_artifact(&ledger_destination, &ledger_bytes)?;
     let mut report = BuildReport {
         target: target.clone(),
@@ -1474,6 +2157,10 @@ fn main() -> Result<(), String> {
         bytes: output.len(),
         sha256: digest(&output),
         bundle_descriptor,
+        ui_entries: ui_bundle.len(),
+        ui_bytes: ui_output.len(),
+        ui_sha256: digest(&ui_output),
+        ui_descriptor,
         ledger_bytes: ledger_bytes.len(),
         ledger_sha256: digest(&ledger_bytes),
         ledger_descriptor,

@@ -2,6 +2,18 @@ import { fetchImmutableObject, openDerivedObjectCache, type DerivedObjectCache }
 import { createAudioSystem, SoundRegistry, SourceAudioWorld } from "@playsrc/audio"
 import GameplayWorker from "@playsrc/game-tf2-browser/worker?worker"
 import { Tf2WorkerClient, mergePublicationSnapshots, type LoadedGame, type SimulationPublication } from "@playsrc/game-tf2-browser"
+import { initializeTf2GameUiIntegration, type Tf2GameUiIntegration } from "@playsrc/game-tf2-browser/gameui-integration"
+import type { Tf2GameUiRequest, Tf2LoadingPhase } from "@playsrc/game-tf2-browser/gameui"
+import { initializeTf2HudIntegration, type Tf2HudIntegration } from "@playsrc/game-tf2-browser/hud-integration"
+import {
+  TF2_BROWSER_SETTINGS_STORAGE_KEY,
+  initializeTf2BrowserSettings,
+  initializeTf2OptionsPresentation,
+  type Tf2BrowserSettings,
+  type Tf2OptionsPresentation,
+} from "@playsrc/game-tf2-browser/settings-integration"
+import { createTf2PresentationRandom, initializeTf2VguiResources, type Tf2PresentationRandom, type Tf2VguiResources } from "@playsrc/game-tf2-browser/ui-integration"
+import { tf2HudUnavailable, type Tf2HudFreezePanel, type Tf2HudScoreboard } from "@playsrc/game-tf2-browser/hud"
 import { encodeCommand, mapDerivedKey, type Snapshot } from "@playsrc/game-tf2-browser/codec"
 import { parsePresentationArtifacts, type PresentationArtifacts } from "@playsrc/game-tf2-browser/artifacts"
 import {
@@ -15,10 +27,8 @@ import {
   sourceViewOrientation,
   tf2Audio,
   tf2Camera,
-  tf2Hud,
   transformAttachment,
   type PosedModel,
-  type Tf2Hud,
 } from "@playsrc/game-tf2-browser/presentation"
 import { decodeParticleRenderOutput } from "@playsrc/particle"
 import { createRenderer, SOURCE_LDR, SOURCE_PC_INTEGER_HDR, type Camera, type MaterialStateInput } from "@playsrc/rendering"
@@ -37,6 +47,7 @@ import { sha256 } from "@noble/hashes/sha2.js"
 import {consoleLimits,resolveConfiguredConsoleResources,type ResolvedConsoleResources} from "./console-resources"
 import { loadBrowserConfiguration, type BrowserConfiguration } from "./config"
 import { applyPointerDelta } from "./input"
+import { TF2_SELECTED_OPTIONS, type AdapterRequestResult, type SettingsAdapterRequest } from "@playsrc/settings"
 
 const MAX_SCHEDULED_SAMPLES = 512
 const MAX_EXTERNAL_BYTES = 536_870_912
@@ -54,7 +65,8 @@ const SOUND_PATHS = [
 ] as const
 
 function dependencyEntries(bytes: Uint8Array): Map<string, Uint8Array> {
-  if (bytes.byteLength < 12 || new TextDecoder().decode(bytes.subarray(0, 4)) !== "PSDB") {
+  const magic = new TextDecoder().decode(bytes.subarray(0, 4))
+  if (bytes.byteLength < 12 || (magic !== "PSDB" && magic !== "PUIB")) {
     throw new Error("Source dependency bundle is malformed")
   }
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
@@ -84,9 +96,18 @@ function dependencyEntries(bytes: Uint8Array): Map<string, Uint8Array> {
 }
 
 export type ApplicationView = Readonly<{
-  phase: "Loading" | "Ready" | "Replacing" | "Failed" | "Closed"
+  phase: "MainMenu" | "Loading" | "Ready" | "Replacing" | "Failed" | "Closed"
   detail: string
-  hud?: Tf2Hud
+  gameUi: "main-menu" | "loading" | "in-game" | "pause" | "disconnecting" | "failure"
+  hudProbe?: string
+  hudAnimationTrace?: string
+  hudOperationProbe?: string
+  optionsVisible?: boolean
+  settingsPersistence?: "absent" | "loaded" | "rejected" | "stored"
+  settingsApply?: string
+  hostRequest?: "quit"
+  presentationRandomState?: string
+  presentationCharacter?: string
   cache?: "hit" | "stored"
   pointerLocked: boolean
   consoleVisible: boolean
@@ -146,9 +167,12 @@ type LockerAnimationState=Readonly<{openTick:bigint;closeTick:bigint;body:number
 export class Tf2Application {
   #canvas: HTMLCanvasElement
   readonly #vguiRoot: HTMLElement
+  readonly #gameUiRoot: HTMLElement
+  readonly #hudRoot: HTMLElement
+  readonly #optionsRoot: HTMLElement
   readonly #publish: (view: ApplicationView) => void
   #configuration?: BrowserConfiguration
-  #dependencies = new Uint8Array()
+  #dependencies: Uint8Array = new Uint8Array()
   #dependencyEntries = new Map<string, Uint8Array>()
   #cache?: DerivedObjectCache
   #client?: Tf2WorkerClient
@@ -171,12 +195,19 @@ export class Tf2Application {
   #artifacts?: PresentationArtifacts
   #projectiles?: ProjectileMapper
   #viewmodels?: ReturnType<typeof createViewmodelPresenter>
+  #viewmodelClass?: Snapshot["class"]
   #attachments = new Map<number, ReadonlySet<string>>()
   #attachmentTransforms = new Map<number, ReadonlyMap<string, ReturnType<typeof transformAttachment>>>()
   #particleBatches = createParticleBatchEncoder()
   #console?: DeveloperConsole
   #diagnostics?: ClientDiagnostics
   #consoleResources?:ResolvedConsoleResources
+  #uiResources?: Tf2VguiResources
+  #presentationRandom?: Tf2PresentationRandom
+  #gameUi?: Tf2GameUiIntegration
+  #hudIntegration?: Tf2HudIntegration
+  #settings?: Tf2BrowserSettings
+  #options?: Tf2OptionsPresentation
   #loaded?: LoadedGame
   #snapshot?: Snapshot
   #generation = 0
@@ -218,11 +249,19 @@ export class Tf2Application {
   #fireEvents = 0
   #explosionEvents = 0
   #paused = true
+  #listenersInstalled = false
+  #effectVolume = 1
+  #musicVolume = 1
+  #masterMuted = false
+  #mouseSensitivity = 3
+  #reverseMouse = false
+  #consoleEnabled = true
   #closed = false
   #blockers=new Set<string>()
   #view: ApplicationView = Object.freeze({
     phase: "Loading",
     detail: "Reading local configuration",
+    gameUi: "main-menu",
     pointerLocked: false,
     consoleVisible: false,
     blockers: Object.freeze([]),
@@ -230,9 +269,16 @@ export class Tf2Application {
     explosionEvents: 0,
   })
 
-  constructor(canvas: HTMLCanvasElement, vguiRoot: HTMLElement, publish: (view: ApplicationView) => void) {
+  constructor(
+    canvas: HTMLCanvasElement,
+    roots: Readonly<{ vgui: HTMLElement; gameUi: HTMLElement; hud: HTMLElement; options: HTMLElement }>,
+    publish: (view: ApplicationView) => void,
+  ) {
     this.#canvas = canvas
-    this.#vguiRoot = vguiRoot
+    this.#vguiRoot = roots.vgui
+    this.#gameUiRoot = roots.gameUi
+    this.#hudRoot = roots.hud
+    this.#optionsRoot = roots.options
     this.#publish = publish
   }
 
@@ -245,19 +291,224 @@ export class Tf2Application {
     this.#publish(this.#view)
   }
 
+  #returnToMainMenu(): void {
+    this.#view = Object.freeze({
+      phase: "MainMenu",
+      detail: "TF2 Main Menu",
+      gameUi: "main-menu",
+      pointerLocked: false,
+      consoleVisible: false,
+      blockers: Object.freeze([...this.#blockers].sort()),
+      fireEvents: 0,
+      explosionEvents: 0,
+      optionsVisible: false,
+      settingsPersistence: this.#view.settingsPersistence,
+      settingsApply: this.#view.settingsApply,
+      presentationRandomState: this.#presentationRandom ? JSON.stringify(this.#presentationRandom.snapshot()) : this.#view.presentationRandomState,
+      presentationCharacter: this.#gameUi?.snapshot().panels.find((panel) => panel.name === "TFCharacterImage")?.state.image ?? this.#view.presentationCharacter,
+    })
+    this.#publish(this.#view)
+  }
+
+  #advanceLoading(phase: Tf2LoadingPhase): void {
+    const transition = this.#gameUi?.dispatch({ kind: "loading-progress", phase })
+    if (transition?.state.kind === "loading") {
+      this.#set({ phase: "Loading", gameUi: "loading", detail: transition.state.statusText || phase })
+    }
+  }
+
+  async #gameUiRequest(request: Tf2GameUiRequest): Promise<void> {
+    if (request.kind === "show-console") { this.toggleConsole(); return }
+    if (request.kind === "show-options") {
+      this.#options?.show(request.page === "advanced-options" ? "advanced" : "keyboard")
+      this.#set({ optionsVisible: true })
+      return
+    }
+    if (request.kind === "resume-game") {
+      this.#gameUi?.dispatch({ kind: "gameui-hidden" })
+      this.#paused = document.hidden
+      this.#set({ gameUi: "in-game", detail: `Playing ${this.#mapIdentity}` })
+      return
+    }
+    if (request.kind === "disconnect") {
+      await this.#teardownGameplay()
+      this.#gameUi?.dispatch({ kind: "teardown-confirmed" })
+      this.#returnToMainMenu()
+      return
+    }
+    if (request.kind === "quit") {
+      this.#set({ hostRequest: "quit", detail: "Quit requested from browser host" })
+      return
+    }
+    if (request.kind === "open-external-link") {
+      window.open(request.href, "_blank", "noopener,noreferrer")
+      return
+    }
+    if (request.kind === "load-map") {
+      if (request.mapIdentity !== "jump_beef") throw new Error(`Undeclared map request ${request.mapIdentity}`)
+      const started = this.#gameUi?.dispatch({ kind: "loading-started", mapIdentity: request.mapIdentity })
+      if (started?.disposition !== "applied") throw new Error("TF2 GameUI rejected loading start")
+      this.#set({ phase: "Loading", gameUi: "loading", detail: "Starting local game server..." })
+      this.#advanceLoading("changing-map")
+      await this.#startGameplay()
+    }
+  }
+
+  async #applySettings(request: SettingsAdapterRequest): Promise<AdapterRequestResult> {
+    const reject = (reason: string): AdapterRequestResult => Object.freeze({ requestId: request.requestId, status: "rejected", reason })
+    if (request.owner === "audio") {
+      const accepted = new Set(["audio.effect-volume", "audio.music-volume", "audio.master-muted", "audio.mute-while-unfocused"])
+      if (request.changes.some((change) => !accepted.has(change.settingId))) return reject("browser audio owner does not implement every requested effect")
+      for (const change of request.changes) {
+        if (change.settingId === "audio.effect-volume") this.#effectVolume = change.nextValue as number
+        else if (change.settingId === "audio.music-volume") this.#musicVolume = change.nextValue as number
+        else if (change.settingId === "audio.master-muted") this.#masterMuted = change.nextValue as boolean
+      }
+      return Object.freeze({ requestId: request.requestId, status: "applied" })
+    }
+    if (request.owner === "renderer") {
+      if (request.changes.some((change) => change.settingId !== "video.hdr")) return reject("browser renderer owner does not implement every requested effect")
+      const value = request.changes.at(-1)?.nextValue
+      if (value !== 0 && value !== 1 && value !== 2) return reject("renderer HDR value is invalid")
+      this.#renderLevel = value
+      if (this.#client) {
+        try { await this.#replaceCatalogMap() }
+        catch (error) { return reject(error instanceof Error ? error.message : "renderer replacement failed") }
+      }
+      return Object.freeze({ requestId: request.requestId, status: "applied" })
+    }
+    if (request.owner === "input") {
+      const accepted = new Set(["mouse.sensitivity", "mouse.reverse"])
+      if (request.changes.some((change) => change.kind !== "binding" && !accepted.has(change.settingId))) return reject("browser input owner does not implement every requested effect")
+      for (const change of request.changes) {
+        if (change.settingId === "mouse.sensitivity") this.#mouseSensitivity = change.nextValue as number
+        else if (change.settingId === "mouse.reverse") this.#reverseMouse = change.nextValue as boolean
+      }
+      return Object.freeze({ requestId: request.requestId, status: "applied" })
+    }
+    if (request.owner === "application") {
+      if (request.changes.some((change) => change.settingId !== "keyboard.console-enabled")) return reject("browser application owner does not implement every requested effect")
+      this.#consoleEnabled = request.changes.at(-1)?.nextValue as boolean
+      return Object.freeze({ requestId: request.requestId, status: "applied" })
+    }
+    return reject(`browser game owner is unavailable for ${request.changes.map((change) => change.settingId).join(",")}`)
+  }
+
   async start(): Promise<void> {
     try {
       this.#configuration = await loadBrowserConfiguration()
+      this.#presentationRandom = createTf2PresentationRandom(this.#configuration.presentation.randomSeed)
       this.#renderLevel = this.#configuration.renderLevel
       this.#mapIdentity = this.#configuration.target
-      this.#set({ detail: "Fetching exact BSP and gameplay WASM objects" })
-      const [bsp, wasm, dependencies] = await Promise.all([
-        fetchImmutableObject(this.#configuration.assetOrigin, this.#configuration.bsp),
-        fetchImmutableObject(this.#configuration.assetOrigin, this.#configuration.wasm),
+      this.#set({ detail: "Loading configured TF2 interface resources" })
+      const [dependencies, ui] = await Promise.all([
         fetchImmutableObject(this.#configuration.assetOrigin, this.#configuration.dependencies),
+        fetchImmutableObject(this.#configuration.assetOrigin, this.#configuration.ui),
       ])
       this.#dependencies = dependencies
       this.#dependencyEntries = dependencyEntries(dependencies)
+      for (const [identity, bytes] of dependencyEntries(ui)) {
+        if (this.#dependencyEntries.has(identity)) throw new Error(`Duplicate UI dependency ${identity}`)
+        this.#dependencyEntries.set(identity, bytes)
+      }
+      this.#consoleResources = await resolveConfiguredConsoleResources(this.#dependencyEntries, Math.max(1, this.#vguiRoot.getBoundingClientRect().height))
+      this.#blockers.add(this.#consoleResources.blocker)
+      this.#uiResources = await initializeTf2VguiResources({
+        dependencies: this.#dependencyEntries,
+        viewportHeight: Math.max(1, Math.trunc(this.#viewport().height)),
+        platform: navigator.platform.toLowerCase().startsWith("mac") ? "macos" : navigator.platform.toLowerCase().startsWith("win") ? "windows" : "linux",
+      })
+      for (const diagnostic of this.#uiResources.diagnostics) this.#blockers.add(`TF2Ui${diagnostic.code}: ${diagnostic.subject}`)
+      const persisted = localStorage.getItem(TF2_BROWSER_SETTINGS_STORAGE_KEY)
+      const duckBinding = TF2_SELECTED_OPTIONS.settings.find((schema) => schema.kind === "binding" && schema.action === "+duck")
+      this.#settings = initializeTf2BrowserSettings({
+        persistence: persisted === null ? null : new TextEncoder().encode(persisted),
+        current: {
+          "keyboard.console-enabled": true,
+          "audio.effect-volume": this.#effectVolume,
+          "audio.music-volume": this.#musicVolume,
+          "audio.master-muted": this.#masterMuted,
+          "mouse.sensitivity": this.#mouseSensitivity,
+          "mouse.reverse": this.#reverseMouse,
+          "video.hdr": this.#renderLevel,
+          ...(duckBinding ? { [duckBinding.id]: Object.freeze({ code: "SHIFT", modifiers: 0 }) } : {}),
+        },
+        owners: { renderer: "available", audio: "available", input: "available", game: "available", application: "available" },
+        apply: (request) => this.#applySettings(request),
+      })
+      const persistenceState = persisted === null ? "absent" : this.#settings.snapshot().persistenceDiagnostic ? "rejected" : "loaded"
+      this.#gameUi = initializeTf2GameUiIntegration({
+        root: this.#gameUiRoot,
+        resources: this.#uiResources,
+        viewport: this.#viewport(),
+        reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
+        clock: { nowSeconds: () => 0 },
+        random: this.#presentationRandom,
+        presentation: {
+          random: this.#presentationRandom,
+          activeHoliday: this.#configuration.presentation.activeHoliday,
+          activeWar: this.#configuration.presentation.activeWar,
+          activeOperation: this.#configuration.presentation.activeOperation,
+          freeTrial: this.#configuration.presentation.freeTrial,
+        },
+        onRequest: (request) => {
+          void this.#gameUiRequest(request).catch((error) => {
+            this.#set({ phase: "Failed", gameUi: "failure", detail: error instanceof Error ? error.message : "GameUI owner request failed" })
+          })
+        },
+      })
+      for (const diagnostic of this.#gameUi.diagnostics()) this.#blockers.add(`TF2GameUi${diagnostic.code}: ${diagnostic.subject}`)
+      this.#options = initializeTf2OptionsPresentation({
+        root: this.#optionsRoot,
+        resources: this.#uiResources,
+        settings: this.#settings,
+        viewport: this.#viewport(),
+        reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
+        clock: { nowSeconds: () => 0 },
+        random: this.#presentationRandom,
+        onPersistence: (bytes) => {
+          localStorage.setItem(TF2_BROWSER_SETTINGS_STORAGE_KEY, new TextDecoder().decode(bytes))
+          this.#set({ settingsPersistence: "stored" })
+        },
+        onApply: (snapshot) => this.#set({ settingsApply: JSON.stringify(snapshot.lastApply) }),
+        onVisibility: (visible) => this.#set({ optionsVisible: visible }),
+      })
+      this.#initializeConsole()
+      const currentSettings = this.#settings.snapshot().settings.current
+      this.#consoleEnabled = currentSettings["keyboard.console-enabled"] === true
+      this.#effectVolume = currentSettings["audio.effect-volume"] as number
+      this.#musicVolume = currentSettings["audio.music-volume"] as number
+      this.#masterMuted = currentSettings["audio.master-muted"] === true
+      this.#mouseSensitivity = currentSettings["mouse.sensitivity"] as number
+      this.#reverseMouse = currentSettings["mouse.reverse"] === true
+      this.#installListeners()
+      this.#animationFrame = requestAnimationFrame(this.#frame)
+      this.#paused = true
+      this.#set({
+        phase: "MainMenu",
+        gameUi: "main-menu",
+        detail: "TF2 Main Menu",
+        settingsPersistence: persistenceState,
+        optionsVisible: false,
+        presentationRandomState: JSON.stringify(this.#presentationRandom.snapshot()),
+        presentationCharacter: this.#gameUi.snapshot().panels.find((panel) => panel.name === "TFCharacterImage")?.state.image ?? "unavailable",
+      })
+    } catch (error) {
+      await this.#release()
+      this.#set({ phase: "Failed", gameUi: "failure", detail: error instanceof Error ? error.message : "Application startup failed" })
+    }
+  }
+
+  async #startGameplay(): Promise<void> {
+    try {
+      if (!this.#configuration) throw new Error("Browser configuration is unavailable")
+      this.#set({ detail: "Fetching exact BSP and gameplay WASM objects" })
+      this.#advanceLoading("reading-world")
+      const [bsp, wasm] = await Promise.all([
+        fetchImmutableObject(this.#configuration.assetOrigin, this.#configuration.bsp),
+        fetchImmutableObject(this.#configuration.assetOrigin, this.#configuration.wasm),
+      ])
+      this.#advanceLoading("building-resource-index")
       this.#cache = await openDerivedObjectCache()
       this.#client = new Tf2WorkerClient(new GameplayWorker(), this.#cache)
       await this.#client.initialize(wasm, this.#configuration.wasm.sha256)
@@ -270,10 +521,10 @@ export class Tf2Application {
         this.#dependencies,
       )
       this.#set({ detail: "Compiling direct map authority" })
-      this.#generation = 1
+      this.#advanceLoading("preparing-resources")
+      this.#generation += 1
       this.#loaded = await this.#client.stage(this.#generation, bsp, profile, this.#dependencies, key)
       this.#artifacts = await parsePresentationArtifacts(this.#loaded.presentation)
-      this.#consoleResources=await resolveConfiguredConsoleResources(this.#dependencyEntries,Math.max(1,this.#vguiRoot.getBoundingClientRect().height));this.#blockers.add(this.#consoleResources.blocker)
       this.#recordVisualOutputBlockers(this.#artifacts)
       await this.#cacheModelArtifacts(this.#artifacts)
       this.#projectiles = createProjectilePresentationMapper(
@@ -296,6 +547,7 @@ export class Tf2Application {
         }),
       )
       this.#viewmodels = createViewmodelPresenter(this.#artifacts)
+      this.#viewmodelClass = undefined
       this.#applyInitialView(this.#loaded)
       this.#renderer = await createRenderer({
         canvas: this.#canvas,
@@ -303,6 +555,7 @@ export class Tf2Application {
         powerPreference: "high-performance",
       })
       this.resize()
+      this.#advanceLoading("creating-client-world")
       const scene = await this.#renderer.loadMap({
         payload: this.#loaded.payload,
         payloadSha256: this.#loaded.payloadSha256,
@@ -346,20 +599,21 @@ export class Tf2Application {
       ])
       this.#audioWorld = new SourceAudioWorld(this.#audioRegistry, { maxActiveVoices: 128 })
       await this.#client.activate(this.#generation)
+      this.#advanceLoading("synchronizing-game-state")
       this.#snapshot = (await this.#initialPublication(this.#generation)).snapshot
       this.#recordAuthorityBlockers(this.#snapshot)
       this.#recordCrouch(this.#snapshot)
       this.#recordLockerAnimations(this.#snapshot)
       this.#modelProbes = await this.#probePlayerModels(this.#artifacts)
       this.#viewmodelTimelineProbes = await this.#probeViewmodelTimelines(this.#artifacts)
-      this.#initializeConsole()
-      this.#installListeners()
       this.#paused = document.hidden
-      this.#animationFrame = requestAnimationFrame(this.#frame)
+      this.#resetHudIntegration()
+      this.#gameUi?.dispatch({ kind: "loading-progress", phase: "complete" })
+      this.#gameUi?.dispatch({ kind: "loading-succeeded" })
       this.#set({
         phase: "Ready",
+        gameUi: "in-game",
         detail: "Click the field to capture the mouse",
-        hud: tf2Hud(this.#snapshot),
         cache: this.#loaded.cache,
         initialView: this.#loaded.initialView,
         environment: this.#artifacts.environment,
@@ -382,9 +636,27 @@ export class Tf2Application {
         ...this.#snapshotProbes(this.#snapshot),
       })
     } catch (error) {
-      await this.#release()
-      this.#set({ phase: "Failed", detail: error instanceof Error ? error.message : "Application startup failed" })
+      await this.#teardownGameplay()
+      const detail = error instanceof Error ? error.message : "Gameplay startup failed"
+      this.#gameUi?.dispatch({ kind: "loading-failed", reason: "Map load failed", extendedReason: detail.slice(0, 255) })
+      this.#set({ phase: "Failed", gameUi: "failure", detail })
     }
+  }
+
+  #resetHudIntegration(): void {
+    if (!this.#uiResources || !this.#presentationRandom) throw new Error("TF2 HUD resources are unavailable")
+    this.#hudIntegration?.destroy()
+    this.#hudIntegration = initializeTf2HudIntegration({
+      root: this.#hudRoot,
+      resources: this.#uiResources,
+      viewport: this.#viewport(),
+      reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
+      clock: { nowSeconds: () => 0 },
+      random: this.#presentationRandom,
+      onCommand: (command) => {
+        if (command.kind === "select-weapon" && command.weapon >= 1 && command.weapon <= 3) this.#selectWeapon = command.weapon as 1 | 2 | 3
+      },
+    })
   }
 
   #initializeConsole(): void {
@@ -421,7 +693,7 @@ export class Tf2Application {
 
   #catalog(): ConsoleCatalog {
     return Object.freeze({
-      revision: `tf2-jump-catalog-developer-${this.#developer}-fps-${this.#showFps}-pos-${this.#showPos}-hdr-${this.#renderLevel}`,
+      revision: `tf2-jump-catalog-developer-${this.#developer}-console-${Number(this.#consoleEnabled)}-fps-${this.#showFps}-pos-${this.#showPos}-hdr-${this.#renderLevel}`,
       items: Object.freeze([
         Object.freeze({
           kind: "command" as const,
@@ -452,6 +724,12 @@ export class Tf2Application {
           name: "clear",
           disposition: "visible" as const,
           acceptsSuggestions: false,
+        }),
+        Object.freeze({
+          kind: "convar" as const,
+          name: "con_enable",
+          disposition: "visible" as const,
+          displayValue: String(Number(this.#consoleEnabled)),
         }),
         Object.freeze({
           kind: "convar" as const,
@@ -556,6 +834,22 @@ export class Tf2Application {
       this.#output(`developer = ${this.#developer}`, true)
       return
     }
+    if (command === "con_enable" && tokens.length <= 1) {
+      if (tokens.length === 1 && tokens[0] !== "0" && tokens[0] !== "1") {
+        this.#output("con_enable accepts exactly 0 or 1")
+        return
+      }
+      if (tokens[0]) {
+        this.#consoleEnabled = tokens[0] === "1"
+        if (this.#settings?.snapshot().settings.activeTransactionId === null) {
+          this.#settings.synchronize({ "keyboard.console-enabled": this.#consoleEnabled })
+          localStorage.setItem(TF2_BROWSER_SETTINGS_STORAGE_KEY, new TextDecoder().decode(this.#settings.persistence()))
+        }
+        this.#console?.apply({ kind: "replace-catalog", catalog: this.#catalog() })
+      }
+      this.#output(`"con_enable" = "${Number(this.#consoleEnabled)}" ( def. "0" )`)
+      return
+    }
     if (command === "cl_showfps" || command === "cl_showpos") {
       if (tokens.length > 1 || (tokens.length === 1 && tokens[0] !== "0" && tokens[0] !== "1" && tokens[0] !== "2")) {
         this.#output(`${command} accepts exactly 0, 1, or 2`)
@@ -611,7 +905,13 @@ export class Tf2Application {
       return
     }
     if (command === "map" && tokens.length === 1) {
-      if (tokens[0] === "jump_beef") await this.#replaceCatalogMap()
+      if (tokens[0] === "jump_beef") {
+        if (this.#client) await this.#replaceCatalogMap()
+        else {
+          const transition = this.#gameUi?.dispatch({ kind: "map", mapIdentity: "jump_beef" })
+          if (transition?.disposition !== "applied") this.#output(`map rejected: ${transition?.reason ?? "GameUI unavailable"}`)
+        }
+      }
       else if (tokens[0]?.startsWith("https://")) await this.#replaceExternalMap(tokens[0])
       else this.#output("Usage: map jump_beef")
       return
@@ -621,6 +921,11 @@ export class Tf2Application {
 
   async #replaceCatalogMap(): Promise<void> {
     if (!this.#configuration) return
+    if (!this.#client) {
+      const transition = this.#gameUi?.dispatch({ kind: "map", mapIdentity: "jump_beef" })
+      if (transition?.disposition !== "applied") throw new Error(`map rejected: ${transition?.reason ?? "GameUI unavailable"}`)
+      return
+    }
     try {
       this.#set({ phase: "Replacing", detail: "Reloading jump_beef through exact catalog identity" })
       const bytes = await fetchImmutableObject(this.#configuration.assetOrigin, this.#configuration.bsp)
@@ -809,10 +1114,12 @@ export class Tf2Application {
       }),
     )
     this.#viewmodels = createViewmodelPresenter(artifacts)
+    this.#viewmodelClass = undefined
     this.#particleBatches = createParticleBatchEncoder()
     this.#mapIdentity = name
     this.#applyInitialView(staged)
     this.#snapshot = (await this.#initialPublication(generation)).snapshot
+    this.#resetHudIntegration()
     this.#recordAuthorityBlockers(this.#snapshot)
     this.#crouchHistory = []
     this.#recordCrouch(this.#snapshot)
@@ -827,7 +1134,6 @@ export class Tf2Application {
     this.#set({
       phase: "Ready",
       detail: `Playing ${name}`,
-      hud: tf2Hud(this.#snapshot),
       cache: staged.cache,
       initialView: staged.initialView,
       environment: artifacts.environment,
@@ -1070,7 +1376,7 @@ export class Tf2Application {
       right: Object.freeze([Math.sin(yaw), -Math.cos(yaw), 0]) as readonly [number, number, number],
       masterGain: 1,
       categoryGain: 1,
-      muted: false,
+      muted: this.#masterMuted,
     })
     for (const request of tf2Audio(snapshot)) {
       const definition = this.#audioRegistry.get(request.definition)
@@ -1090,7 +1396,7 @@ export class Tf2Application {
         scheduledTimeSeconds: this.#audioContext.currentTime,
         delaySeconds: 0,
         mixerGain: this.#artifacts.audio.mixerGain,
-        userGain: 1,
+        userGain: this.#effectVolume,
         doNotOverwrite: false,
       })
       for (const replaced of started.replaced) this.#audio.stop(replaced)
@@ -1191,6 +1497,16 @@ export class Tf2Application {
 
   readonly #frame = (time: number): void => {
     this.#animationFrame = requestAnimationFrame(this.#frame)
+    const timeSeconds = time / 1_000
+    try {
+      this.#gameUi?.frame(timeSeconds)
+      this.#options?.frame(timeSeconds)
+      this.#hudIntegration?.frame(timeSeconds)
+    } catch (error) {
+      this.#paused = true
+      this.#set({ phase: "Failed", gameUi: "failure", detail: error instanceof Error ? error.message : "VGUI frame failed" })
+      return
+    }
     if (!this.#paused && this.#snapshot && (this.#showFps !== 0 || this.#showPos !== 0)) this.#updateDiagnostics(time)
     if (this.#paused || !this.#client || !this.#renderer || !this.#snapshot) return
     this.#scheduleSimulation(time / 1_000, false)
@@ -1260,6 +1576,10 @@ export class Tf2Application {
         if (event.type === "fire") {this.#fireEvents += 1;this.#fireTickHistory.push(`${event.kind}:${event.tick}:${event.position.join(",")}`);if(this.#fireTickHistory.length>128)this.#fireTickHistory.shift()}
         if (event.type === "explode") this.#explosionEvents += 1
       }
+      if (this.#viewmodelClass !== undefined && this.#viewmodelClass !== snapshot.class) {
+        this.#viewmodels = createViewmodelPresenter(this.#artifacts)
+      }
+      this.#viewmodelClass = snapshot.class
       this.#recordLockerAnimations(snapshot)
       for (const p of snapshot.projectiles) {
         const add = (identity: number, next: ReadonlySet<string>) =>
@@ -1328,8 +1648,47 @@ export class Tf2Application {
         deltaSeconds: publication.selectedTicks * 0.015,
       })
       const renderMilliseconds=performance.now()-renderStart,totalMilliseconds=performance.now()-phaseStart;this.#phaseTimings=[modelMilliseconds,visibilityMilliseconds,particleMilliseconds,renderMilliseconds,totalMilliseconds]
+      const hud = this.#hudIntegration?.publish(publication, Object.freeze({
+        playerIdentity: 1,
+        liveHudSuppressed: false,
+        respawnAllowed: snapshot.lifecycle === 2,
+        weaponSelection: Object.freeze({ open: false, selectedWeapon: tf2HudUnavailable<number>("not-produced") }),
+        crosshair: Object.freeze({
+          configured: false,
+          weaponAllows: true,
+          loadingImage: false,
+          paused: this.#gameUi?.state().kind === "pause",
+          clientModeAllows: true,
+          frozen: false,
+          localViewEntity: true,
+          vguiInput: this.#console?.snapshot().visible === true || this.#options?.snapshot().visible === true,
+          observerMode: "none" as const,
+          observerCrosshair: false,
+          tfSuppressed: false,
+          countdownHidden: false,
+          texture: "",
+          color: Object.freeze([255, 255, 255, 255] as const),
+          scale: 1,
+          weaponScale: 1,
+        }),
+        scoreboard: tf2HudUnavailable<Tf2HudScoreboard>("not-produced"),
+        freezePanel: tf2HudUnavailable<Tf2HudFreezePanel>("not-produced"),
+      }))
+      const hudPlayer = hud?.facts.player.kind === "available" ? hud.facts.player.value : null
+      const hudHealth = hudPlayer?.health.kind === "available" ? hudPlayer.health.value.current : "unavailable"
+      const hudWeaponIdentity = hudPlayer?.activeWeapon.kind === "available" ? hudPlayer.activeWeapon.value : null
+      const hudWeapon = hudPlayer?.weapons.find((weapon) => weapon.identity === hudWeaponIdentity)
+      const hudVgui = this.#hudIntegration?.snapshot().vgui
+      const hudPanel = (name: string) => hudVgui?.panels.find((panel) => panel.name === name)
+      const healthPanel = hudPanel("PlayerStatusHealthImage")
+      const ammoPanel = hudPanel("HudWeaponAmmo")
+      const weaponPanel = hudPanel("modelpanel0")
       this.#set({
-        hud: tf2Hud(snapshot),
+        hudProbe: hudPlayer ? `${hudHealth}:${hudPlayer.class.kind === "available" ? hudPlayer.class.value : "unavailable"}:${hudWeaponIdentity ?? "unavailable"}:${hudWeapon?.clip.kind === "available" ? hudWeapon.clip.value : "unavailable"}:${hudWeapon?.reserve.kind === "available" ? hudWeapon.reserve.value : "unavailable"}` : "unavailable",
+        hudAnimationTrace: this.#hudIntegration?.snapshot().animationTrace.join("|"),
+        hudOperationProbe: healthPanel && ammoPanel && weaponPanel
+          ? `${healthPanel.state.imageFill}:${healthPanel.bounds.x},${healthPanel.bounds.y},${healthPanel.bounds.width},${healthPanel.bounds.height}:${healthPanel.state.drawColor.join(",")}:${healthPanel.state.foregroundColor?.join(",") ?? "none"}:${ammoPanel.state.scalarProperties.reloadPhase ?? "none"}:${weaponPanel.state.scalarProperties.weaponIdentity ?? "none"}`
+          : "unavailable",
         fireEvents: this.#fireEvents,
         explosionEvents: this.#explosionEvents,
         camera,
@@ -1344,7 +1703,7 @@ export class Tf2Application {
           primitives: viewmodelPoses.reduce((total, pose) => total + pose.primitives.length, 0),
           events: viewmodelPose.events.length,
         }),
-        audioVoices: this.#audio.activeVoices(),
+        audioVoices: this.#audio?.activeVoices() ?? Object.freeze([]),
         snapshotTick: snapshot.tick.toString(),
         projectileStates: snapshot.projectiles.map((projectile) => `${projectile.identity}:${projectile.state}`).join(","),
         particleProbe: [...new Set(particleItems.map((item) => `${item.primitive}:${item.material}:${item.primarySheet ? "sheet" : "missing"}`))].sort().join("|"),
@@ -1376,7 +1735,9 @@ export class Tf2Application {
   }
 
   #installListeners(): void {
-    window.addEventListener("keydown", this.#keyDown)
+    if (this.#listenersInstalled) return
+    this.#listenersInstalled = true
+    window.addEventListener("keydown", this.#keyDown, true)
     window.addEventListener("keyup", this.#keyUp)
     window.addEventListener("mousedown", this.#mouseDown)
     window.addEventListener("mouseup", this.#mouseUp)
@@ -1388,7 +1749,9 @@ export class Tf2Application {
   }
 
   #removeListeners(): void {
-    window.removeEventListener("keydown", this.#keyDown)
+    if (!this.#listenersInstalled) return
+    this.#listenersInstalled = false
+    window.removeEventListener("keydown", this.#keyDown, true)
     window.removeEventListener("keyup", this.#keyUp)
     window.removeEventListener("mousedown", this.#mouseDown)
     window.removeEventListener("mouseup", this.#mouseUp)
@@ -1399,63 +1762,128 @@ export class Tf2Application {
     document.removeEventListener("pointerlockchange", this.#pointerLock)
   }
 
+  #sourceKey(code: string): string {
+    if (code.startsWith("Key")) return code.slice(3).toLowerCase()
+    if (code.startsWith("Digit")) return code.slice(5)
+    if (code === "Backquote") return "`"
+    if (code === "Space") return "SPACE"
+    if (code === "Tab") return "TAB"
+    if (code === "ControlLeft") return "CTRL"
+    if (code === "ControlRight") return "RCTRL"
+    if (code === "ShiftLeft") return "SHIFT"
+    if (code === "ShiftRight") return "RSHIFT"
+    if (code === "AltLeft") return "ALT"
+    if (code === "AltRight") return "RALT"
+    if (code.startsWith("Arrow")) return `${code.slice(5).toUpperCase()}ARROW`
+    return code.toUpperCase()
+  }
+
+  #boundAction(code: string, modifiers: number): string | null {
+    const values = this.#settings?.snapshot().settings.current
+    if (!values) return null
+    for (const schema of TF2_SELECTED_OPTIONS.settings) {
+      if (schema.kind !== "binding") continue
+      const value = values[schema.id]
+      if (value && typeof value === "object" && value.code.toLowerCase() === code.toLowerCase() && value.modifiers === modifiers) return schema.action
+    }
+    return null
+  }
+
+  #keyboardAction(event: KeyboardEvent): string | null {
+    const code = this.#sourceKey(event.code)
+    let modifiers = Number(event.shiftKey) | (Number(event.ctrlKey) << 1) | (Number(event.altKey) << 2)
+    if (code === "SHIFT" || code === "RSHIFT") modifiers &= ~1
+    if (code === "CTRL" || code === "RCTRL") modifiers &= ~2
+    if (code === "ALT" || code === "RALT") modifiers &= ~4
+    return this.#boundAction(code, modifiers)
+  }
+
+  #mouseAction(event: MouseEvent): string | null {
+    const code = event.button >= 0 && event.button <= 4 ? `MOUSE${event.button + 1}` : ""
+    const modifiers = Number(event.shiftKey) | (Number(event.ctrlKey) << 1) | (Number(event.altKey) << 2)
+    return code ? this.#boundAction(code, modifiers) : null
+  }
+
   readonly #keyDown = (event: KeyboardEvent): void => {
+    if (this.#options?.handleKey(event)) return
     if (event.code === "Backquote") {
-      if (this.#vguiRoot.contains(event.target as Node)) return
+      if (!this.#consoleEnabled || this.#keyboardAction(event) !== "toggleconsole"
+        || this.#vguiRoot.contains(event.target as Node) || this.#optionsRoot.contains(event.target as Node)) return
       event.preventDefault()
       this.toggleConsole()
       return
     }
-    if (this.#console?.snapshot().visible || event.repeat) return
-    if (["KeyW","KeyS","KeyA","KeyD","Space","ShiftLeft","ShiftRight","KeyR","Digit1","Digit2","Digit3"].includes(event.code)) void this.resumeAudio()
-    if (event.code === "KeyW") this.#forward = true
-    else if (event.code === "KeyS") this.#back = true
-    else if (event.code === "KeyA") this.#left = true
-    else if (event.code === "KeyD") this.#right = true
-    else if (event.code === "Space") {
+    if (event.code === "Escape") {
+      if (this.#options?.snapshot().visible) {
+        this.#options.hide("cancel")
+        this.#set({ optionsVisible: false })
+        return
+      }
+      if (this.#gameUi?.state().kind === "in-game") {
+        this.#neutral()
+        this.#paused = true
+        if (document.pointerLockElement) void document.exitPointerLock()
+        this.#gameUi.dispatch({ kind: "gameui-activated" })
+        this.#set({ gameUi: "pause", detail: "Game paused" })
+        return
+      }
+    }
+    if (this.#console?.snapshot().visible || this.#options?.snapshot().visible || this.#gameUi?.state().kind !== "in-game" || event.repeat) return
+    const action = this.#keyboardAction(event)
+    if (!action) return
+    void this.resumeAudio()
+    if (action === "+forward") this.#forward = true
+    else if (action === "+back") this.#back = true
+    else if (action === "+moveleft") this.#left = true
+    else if (action === "+moveright") this.#right = true
+    else if (action === "+jump") {
       this.#jump = true
       this.#jumpPressed = true
-    } else if (event.code === "ShiftLeft" || event.code === "ShiftRight") this.#crouch = true
-    else if (event.code === "KeyR") {
+    } else if (action === "+duck") this.#crouch = true
+    else if (action === "+reload") {
       this.#reload = true
       this.#reloadPressed = true
     }
-    else if (event.code === "Digit1") this.selectClass(1)
-    else if (event.code === "Digit2") this.selectClass(2)
-    else if (event.code === "Digit3") this.#selectWeapon = 2
+    else if (action === "slot1") this.#selectWeapon = 1
+    else if (action === "slot2") this.#selectWeapon = 2
+    else if (action === "slot3") this.#selectWeapon = 3
   }
 
   readonly #keyUp = (event: KeyboardEvent): void => {
-    if (event.code === "KeyW") this.#forward = false
-    else if (event.code === "KeyS") this.#back = false
-    else if (event.code === "KeyA") this.#left = false
-    else if (event.code === "KeyD") this.#right = false
-    else if (event.code === "Space") this.#jump = false
-    else if (event.code === "ShiftLeft" || event.code === "ShiftRight") this.#crouch = false
-    else if (event.code === "KeyR") this.#reload = false
+    const action = this.#keyboardAction(event)
+    if (action === "+forward") this.#forward = false
+    else if (action === "+back") this.#back = false
+    else if (action === "+moveleft") this.#left = false
+    else if (action === "+moveright") this.#right = false
+    else if (action === "+jump") this.#jump = false
+    else if (action === "+duck") this.#crouch = false
+    else if (action === "+reload") this.#reload = false
   }
 
   readonly #mouseDown = (event: MouseEvent): void => {
     if (document.pointerLockElement !== this.#canvas) return
     void this.resumeAudio()
-    if (event.button === 0) {
+    const action = this.#mouseAction(event)
+    if (action === "+attack") {
       this.#fire = true
       this.#firePressed = true
     }
-    if (event.button === 2) {
+    if (action === "+attack2") {
       this.#detonate = true
       this.#detonatePressed = true
     }
   }
 
   readonly #mouseUp = (event: MouseEvent): void => {
-    if (event.button === 0) this.#fire = false
-    if (event.button === 2) this.#detonate = false
+    const action = this.#mouseAction(event)
+    if (action === "+attack") this.#fire = false
+    if (action === "+attack2") this.#detonate = false
   }
 
   readonly #mouseMove = (event: MouseEvent): void => {
     if (document.pointerLockElement !== this.#canvas) return
-    const angles = applyPointerDelta(this.#yaw, this.#pitch, event.movementX, event.movementY)
+    const scale = this.#mouseSensitivity / 3
+    const angles = applyPointerDelta(this.#yaw, this.#pitch, event.movementX * scale, event.movementY * scale * (this.#reverseMouse ? -1 : 1))
     this.#yaw = angles.yaw
     this.#pitch = angles.pitch
   }
@@ -1530,17 +1958,55 @@ export class Tf2Application {
   }
 
   resize(): void {
-    if (!this.#renderer) return
     const bounds = this.#canvas.getBoundingClientRect()
-    this.#renderer.resize(bounds.width, bounds.height, window.devicePixelRatio)
+    this.#renderer?.resize(bounds.width, bounds.height, window.devicePixelRatio)
     this.#console?.apply({ kind: "set-viewport", viewport: this.#viewport() })
     this.#diagnostics?.apply({ kind: "set-viewport", viewport: this.#viewport() })
+    this.#gameUi?.setViewport(this.#viewport())
+    this.#hudIntegration?.setViewport(this.#viewport())
+    this.#options?.setViewport(this.#viewport())
   }
 
   async close(): Promise<void> {
     if (this.#closed) return
     await this.#release()
     this.#set({ phase: "Closed", detail: "Application closed", pointerLocked: false, consoleVisible: false })
+  }
+
+  async #teardownGameplay(): Promise<void> {
+    this.#paused = true
+    this.#neutral()
+    this.#generation += 1
+    this.#pendingPresentation = undefined
+    this.#pendingProjectileTimeline = []
+    await this.#simulationTail.catch(() => {})
+    await this.#client?.shutdown().catch(() => {})
+    this.#client = undefined
+    this.#cache?.close()
+    this.#cache = undefined
+    this.#projectiles?.dispose()
+    this.#projectiles = undefined
+    await this.#renderer?.dispose().catch(() => {})
+    this.#renderer = undefined
+    await this.#audio?.close().catch(() => {})
+    this.#audio = undefined
+    this.#audioContext = undefined
+    this.#audioRegistry = undefined
+    this.#audioWorld = undefined
+    this.#audioBuffers.clear()
+    this.#audioRunning = false
+    this.#hudIntegration?.destroy()
+    this.#hudIntegration = undefined
+    this.#loaded = undefined
+    this.#snapshot = undefined
+    this.#artifacts = undefined
+    this.#viewmodels = undefined
+    this.#viewmodelClass = undefined
+    this.#attachments.clear()
+    this.#attachmentTransforms.clear()
+    if (document.pointerLockElement === this.#canvas) {
+      try { await document.exitPointerLock() } catch {}
+    }
   }
 
   async #release(): Promise<void> {
@@ -1555,13 +2021,12 @@ export class Tf2Application {
         await document.exitPointerLock()
       } catch {}
     }
+    await this.#teardownGameplay()
+    this.#gameUi?.destroy()
+    this.#options?.destroy()
+    this.#uiResources?.destroy()
     this.#console?.apply({ kind: "destroy" })
     this.#diagnostics?.apply({ kind: "destroy" })
     this.#consoleResources?.fontSet?.destroy()
-    await this.#client?.shutdown().catch(() => {})
-    this.#cache?.close()
-    this.#projectiles?.dispose()
-    await this.#renderer?.dispose().catch(() => {})
-    await this.#audio?.close().catch(() => {})
   }
 }

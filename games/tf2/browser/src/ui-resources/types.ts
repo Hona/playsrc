@@ -172,6 +172,25 @@ export type Tf2UiFontDescriptor = Readonly<{
   owner: "vgui"
 }>
 
+export type Tf2UiAdvancedOptionChoice = Readonly<{ label: string; value: string }>
+export type Tf2UiAdvancedOption = Readonly<{
+  identity: string
+  category: string
+  prompt: string
+  tooltip: string | null
+  kind: "BOOL" | "NUMBER" | "STRING" | "LIST" | "SLIDER"
+  minimum: number | null
+  maximum: number | null
+  choices: readonly Tf2UiAdvancedOptionChoice[]
+  contentDefault: string
+}>
+export type Tf2UiKeyboardAction = Readonly<{
+  section: number
+  sectionName: string
+  binding: string
+  description: string
+}>
+
 export type Tf2UiResourceDescriptor = Readonly<{
   schema: "playsrc-tf2-ui-resources-v1"
   identity: string
@@ -190,6 +209,8 @@ export type Tf2UiResourceDescriptor = Readonly<{
   }>
   images: readonly Tf2UiImageDescriptor[]
   fonts: readonly Tf2UiFontDescriptor[]
+  advancedOptions: readonly Tf2UiAdvancedOption[]
+  keyboardActions: readonly Tf2UiKeyboardAction[]
   animation: Readonly<{
     manifest: Tf2UiResourceSource
     scripts: readonly Tf2UiResourceSource[]

@@ -5,7 +5,8 @@ import "./style.css"
 
 const initial: ApplicationView = Object.freeze({
   phase: "Loading",
-  detail: "Starting TF2 jump practice",
+  gameUi: "main-menu",
+  detail: "Loading configured TF2 interface resources",
   pointerLocked: false,
   consoleVisible: false,
   blockers: Object.freeze([]),
@@ -16,13 +17,20 @@ const initial: ApplicationView = Object.freeze({
 function App() {
   const canvas = useRef<HTMLCanvasElement>(null)
   const vgui = useRef<HTMLDivElement>(null)
+  const gameUi = useRef<HTMLDivElement>(null)
+  const hud = useRef<HTMLDivElement>(null)
+  const options = useRef<HTMLDivElement>(null)
   const runtime = useRef<Tf2Application>()
   const [view, setView] = useState<ApplicationView>(initial)
-  const [showBlockers, setShowBlockers] = useState(false)
 
   useEffect(() => {
-    if (!canvas.current || !vgui.current) return
-    const application = new Tf2Application(canvas.current, vgui.current, setView)
+    if (!canvas.current || !vgui.current || !gameUi.current || !hud.current || !options.current) return
+    const application = new Tf2Application(canvas.current, {
+      vgui: vgui.current,
+      gameUi: gameUi.current,
+      hud: hud.current,
+      options: options.current,
+    }, setView)
     runtime.current = application
     void application.start()
     return () => {
@@ -31,12 +39,24 @@ function App() {
     }
   }, [])
 
-  const busy = view.phase === "Loading" || view.phase === "Replacing"
   return (
     <main
-      class="field-shell"
+      class="tf2-application"
       data-phase={view.phase}
-      data-projectiles={view.hud?.projectileCount ?? 0}
+      data-detail={view.detail}
+      data-gameui={view.gameUi}
+      data-gameplay-initialized={view.snapshotTick === undefined ? "false" : "true"}
+      data-pointer-locked={view.pointerLocked ? "true" : "false"}
+      data-hud-probe={view.hudProbe}
+      data-hud-animation-trace={view.hudAnimationTrace}
+      data-hud-operation-probe={view.hudOperationProbe}
+      data-options-visible={view.optionsVisible ? "true" : "false"}
+      data-settings-persistence={view.settingsPersistence}
+      data-settings-apply={view.settingsApply}
+      data-cache={view.cache}
+      data-host-request={view.hostRequest}
+      data-presentation-random-state={view.presentationRandomState}
+      data-presentation-character={view.presentationCharacter}
       data-fire-events={view.fireEvents}
       data-explosion-events={view.explosionEvents}
       data-camera-position={view.camera?.position.join(",")}
@@ -50,6 +70,7 @@ function App() {
       data-spawn-position={view.initialView?.position.join(",")}
       data-spawn-angles={view.initialView?.angles.join(",")}
       data-particle-items={view.particleRenderItems ?? 0}
+      data-projectiles={view.projectileStates ? view.projectileStates.split(",").length : 0}
       data-crouch-fraction={view.movement?.crouchFraction}
       data-view-offset={view.movement?.viewOffset.join(",")}
       data-movement-mode={view.movementTick?.mode}
@@ -73,11 +94,7 @@ function App() {
       data-crouch-history={view.crouchHistory?.join("|")}
       data-grounded={view.movement?.grounded}
       data-viewmodel-timelines={view.viewmodelTimelineProbes?.join("|")}
-      data-environment={
-        view.environment
-          ? `${view.environment.profile},${view.environment.clusters},${view.environment.skySurfaces},${view.environment.waterVolumes},${view.environment.marks},${view.environment.markFragments}`
-          : undefined
-      }
+      data-environment={view.environment ? `${view.environment.profile},${view.environment.clusters},${view.environment.skySurfaces},${view.environment.waterVolumes},${view.environment.marks},${view.environment.markFragments}` : undefined}
       data-environment-drawables={view.environmentDrawables ?? 0}
       data-visible-decal-fragments={view.visibleDecalFragments}
       data-environment-sky={view.environment?.sky?.name}
@@ -108,98 +125,16 @@ function App() {
       <canvas
         ref={canvas}
         class="world-canvas"
-        tabIndex={0}
-        aria-label="TF2 jump practice world"
+        tabIndex={view.gameUi === "in-game" ? 0 : -1}
+        aria-label="TF2 game view"
+        aria-hidden={view.gameUi === "main-menu" ? "true" : "false"}
         onClick={(event) => void runtime.current?.requestPointer(event.currentTarget)}
         onContextMenu={(event) => event.preventDefault()}
       />
-
-      <header class="field-header">
-        <div class="wordmark" aria-label="playsrc TF2">
-          <span class="wordmark-source">play</span>
-          <span class="wordmark-class">src</span>
-          <small>jump practice / jump_beef</small>
-        </div>
-        <div class="status-stamp" data-ready={view.phase === "Ready"}>
-          <b>{view.phase}</b>
-          <span>{view.detail}</span>
-        </div>
-      </header>
-
-      {view.hud && (
-        <section class="hud" aria-label="Player status">
-          <div class="health-readout">
-            <span>health</span>
-            <strong>{Math.max(0, Math.round(view.hud.health))}</strong>
-            <i>/ {view.hud.maxHealth}</i>
-          </div>
-          <div class="loadout-readout">
-            <b>{view.hud.className}</b>
-            <span>{view.hud.weaponName}</span>
-          </div>
-          <div class="speed-readout">
-            <span>speed</span>
-            <strong>{Math.round(view.hud.speed)}</strong>
-            <i>HU/s</i>
-          </div>
-        </section>
-      )}
-
-      <nav class="class-rail" aria-label="Class selection">
-        <button type="button" onClick={() => runtime.current?.selectClass(1)}>
-          <kbd>1</kbd>
-          <span>Soldier</span>
-        </button>
-        <button type="button" onClick={() => runtime.current?.selectClass(2)}>
-          <kbd>2</kbd>
-          <span>Demoman</span>
-        </button>
-        <button type="button" class="console-toggle" onClick={() => runtime.current?.toggleConsole()}>
-          <kbd>`</kbd>
-          <span>Console</span>
-        </button>
-        <button type="button" class="audio-toggle" onClick={() => void runtime.current?.resumeAudio()}>
-          <kbd>♪</kbd>
-          <span>Audio</span>
-        </button>
-      </nav>
-
-      <aside class="support-card">
-        <button type="button" aria-expanded={showBlockers} onClick={() => setShowBlockers((value) => !value)}>
-          <span>{view.blockers.length} exact support blockers</span>
-          <b>{showBlockers ? "close" : "inspect"}</b>
-        </button>
-        {showBlockers && (
-          <ol>
-            {view.blockers.map((blocker) => (
-              <li key={blocker}>{blocker}</li>
-            ))}
-          </ol>
-        )}
-      </aside>
-
-      <footer class="field-footer">
-        <span>{view.pointerLocked ? "mouse captured" : "click field to capture mouse"}</span>
-          <span>WASD move · Space jump · Shift crouch · R reload · Mouse 1 fire · Mouse 2 detonate</span>
-        <span>derived cache {view.cache ?? "pending"}</span>
-      </footer>
-
-      {busy && (
-        <div class="loading-plate" role="status" aria-live="polite">
-          <div class="loader-mark" />
-          <b>{view.phase}</b>
-          <span>{view.detail}</span>
-        </div>
-      )}
-      {view.phase === "Failed" && (
-        <div class="failure-plate" role="alert">
-          <b>Practice could not start</b>
-          <span>{view.detail}</span>
-          <small>Check the exact support list and restart the local owner.</small>
-        </div>
-      )}
-
-      <div ref={vgui} class="vgui-mount" aria-label="VGUI layer" />
+      <div ref={gameUi} class="vgui-layer gameui-layer" aria-label="TF2 GameUI" />
+      <div ref={hud} class="vgui-layer hud-layer" aria-label="TF2 HUD" />
+      <div ref={options} class="vgui-layer options-layer" aria-label="TF2 Options" />
+      <div ref={vgui} class="vgui-layer developer-layer" aria-label="TF2 developer interface" />
     </main>
   )
 }

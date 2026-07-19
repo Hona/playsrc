@@ -1,5 +1,5 @@
 {
-  "capturedAt": "2026-07-19T10:58:19.673Z",
+  "capturedAt": "2026-07-19T18:50:15.136Z",
   "operatingSystem": "darwin 25.5.0",
   "architecture": "arm64",
   "bun": "1.4.0",
@@ -29,9 +29,8 @@
   "captures": {},
   "controlStates": {
     "focused": {
-      "close": "rgba(236, 227, 203, 0.59)",
-      "focused": "true",
-      "frame": "rgb(60, 56, 53)",
+      "close": "rgba(255, 255, 255, 0.753)",
+      "frame": "rgba(60, 56, 53, 0.745)",
       "title": "rgba(0, 0, 0, 0)"
     },
     "unfocused": {

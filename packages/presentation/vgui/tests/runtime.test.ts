@@ -157,7 +157,7 @@ describe("generic Source VGUI runtime", () => {
       operation(runtime, { kind: "create-panel", parent: 1, control, name: `${control}${index}` })
     }
     const snapshot = runtime.snapshot()
-    expect(snapshot.panels).toHaveLength(VGUI_GENERIC_CONTROL_NAMES.length + 1)
+    expect(snapshot.panels).toHaveLength(VGUI_GENERIC_CONTROL_NAMES.length + 3)
     expect(new Set(snapshot.panels.map((panel) => panel.id)).size).toBe(snapshot.panels.length)
     expect(descendants(root).filter((node) => node.dataset.vguiPanel !== undefined)).toHaveLength(snapshot.panels.length)
     expect(snapshot.panels.find((panel) => panel.control === "CheckButton")?.role).toBe("checkbox")
@@ -293,6 +293,25 @@ describe("generic Source VGUI runtime", () => {
     operation(runtime, { kind: "key-typed", key: "Enter", shift: false, control: false, alt: false, meta: false })
     operation(runtime, { kind: "frame", timeSeconds: 0.08 })
     expect(requests.some((request) => request.kind === "command" && request.command === "apply_options")).toBeTrue()
+  })
+
+  test("routes a code-created button command to its declared action-signal ancestor", () => {
+    const { runtime, requests } = setup()
+    const frame = operation(runtime, {
+      kind: "create-panel", parent: 1, control: "Frame", name: "Options", properties: [
+        { name: "xpos", value: "100" }, { name: "ypos", value: "100" }, { name: "wide", value: "300" }, { name: "tall", value: "200" },
+      ],
+    }).panel!
+    operation(runtime, {
+      kind: "create-panel", parent: frame, control: "Button", name: "Apply", properties: [
+        { name: "xpos", value: "20" }, { name: "ypos", value: "20" }, { name: "wide", value: "80" }, { name: "tall", value: "24" },
+        { name: "command", value: "Apply" }, { name: "actionsignallevel", value: "1" },
+      ],
+    })
+    operation(runtime, { kind: "pointer-press", button: "left", x: 130, y: 130, pointerId: 1, clicks: 1 })
+    operation(runtime, { kind: "pointer-release", button: "left", x: 130, y: 130, pointerId: 1 })
+    operation(runtime, { kind: "frame", timeSeconds: 0.01 })
+    expect(requests).toContainEqual({ kind: "command", panel: 3, command: "Apply" })
   })
 
   test("solves z order, clipping, popups, modal scope and focus loss-before-gain", () => {
@@ -453,6 +472,7 @@ describe("generic Source VGUI runtime", () => {
     operation(runtime, { kind: "mutate-control", panel: sheet, mutation: { activeIndex: 1 } })
     expect(runtime.snapshot().panels.find((panel) => panel.id === pageA)?.visible).toBeFalse()
     expect(runtime.snapshot().panels.find((panel) => panel.id === pageB)?.visible).toBeTrue()
+    expect(runtime.snapshot().panels.find((panel) => panel.id === sheet)?.text).toBe("")
   })
 
   test("executes registered converters and all nonlinear interpolator families", () => {
@@ -499,6 +519,7 @@ describe("generic Source VGUI runtime", () => {
     }
     const { runtime } = setup(animations, [{
       name: "CustomControl",
+      baseControl: "Panel",
       element: "div",
       role: "status",
       focusable: false,
@@ -719,6 +740,7 @@ describe("generic Source VGUI runtime", () => {
   test("reuses a code-created custom panel without consulting its resource ControlName", () => {
     const { runtime } = setup(emptyAnimations, [{
       name: "TfCustomPanel",
+      baseControl: "EditablePanel",
       element: "div",
       role: "region",
       focusable: false,
@@ -739,5 +761,63 @@ describe("generic Source VGUI runtime", () => {
     const panel = runtime.snapshot().panels.find((candidate) => candidate.id === custom)
     expect(panel?.control).toBe("TfCustomPanel")
     expect(panel?.resourceOwner).toBeNull()
+  })
+
+  test("implements every configured extended generic control without aliases", () => {
+    const { root, runtime } = setup()
+    const continuous = operation(runtime, { kind: "create-panel", parent: 1, control: "ContinuousProgressBar", name: "Continuous" }).panel!
+    operation(runtime, { kind: "mutate-control", panel: continuous, mutation: { progress: 0.75, previousProgress: 0.5 } })
+    const divider = operation(runtime, { kind: "create-panel", parent: 1, control: "Divider", name: "Divider" }).panel!
+    const system = operation(runtime, { kind: "create-panel", parent: 1, control: "FrameSystemButton", name: "frame_menu" }).panel!
+    const html = operation(runtime, { kind: "create-panel", parent: 1, control: "HTML", name: "Banner" }).panel!
+    const scalable = operation(runtime, { kind: "create-panel", parent: 1, control: "ScalableImagePanel", name: "Scalable" }).panel!
+    const scrollable = operation(runtime, { kind: "create-panel", parent: 1, control: "ScrollableEditablePanel", name: "Scroller" }).panel!
+    const sectioned = operation(runtime, { kind: "create-panel", parent: 1, control: "SectionedListPanel", name: "Bindings" }).panel!
+    operation(runtime, {
+      kind: "mutate-control",
+      panel: sectioned,
+      mutation: {
+        sections: [{ id: 1, name: "Movement", alwaysVisible: true, minimumHeight: 0, columns: [
+          { name: "action", text: "Action", flags: 0, width: 180 },
+          { name: "binding", text: "Key", flags: 2, width: 80 },
+        ] }],
+        sectionedItems: [{ id: 7, section: 1, cells: { action: "Move forward", binding: "W" }, enabled: true }],
+      },
+    })
+    const snapshot = runtime.snapshot()
+    expect(snapshot.panels.find((panel) => panel.id === continuous)?.state).toMatchObject({ progress: 0.75, previousProgress: 0.5 })
+    expect(snapshot.panels.find((panel) => panel.id === divider)?.bounds).toMatchObject({ width: 128, height: 2 })
+    expect(snapshot.panels.find((panel) => panel.id === system)).toMatchObject({ control: "FrameSystemButton", role: "button", enabled: false })
+    expect(snapshot.panels.find((panel) => panel.id === html)).toMatchObject({ control: "HTML", role: "document" })
+    expect(snapshot.panels.find((panel) => panel.id === scalable)).toMatchObject({ control: "ScalableImagePanel", role: "img" })
+    expect(snapshot.panels.find((panel) => panel.parent === scrollable && panel.name === "VerticalScrollBar")?.control).toBe("ScrollBar_Vertical")
+    expect(snapshot.panels.find((panel) => panel.parent === sectioned && panel.name === "SectionedScrollBar")?.control).toBe("ScrollBar_Vertical")
+    expect(snapshot.panels.find((panel) => panel.id === sectioned)?.state.sectionedItems[0]).toEqual({ id: 7, section: 1, cells: { action: "Move forward", binding: "W" }, enabled: true })
+    operation(runtime, { kind: "frame", timeSeconds: 0.01 })
+    operation(runtime, { kind: "frame", timeSeconds: 0.02 })
+    expect(descendants(root).some((node) => node.dataset.vguiItem === "7")).toBeTrue()
+  })
+
+  test("executes an explicitly registered custom control through its Source base control", () => {
+    const { runtime, requests } = setup(emptyAnimations, [{
+      name: "CExButton",
+      baseControl: "Button",
+      element: "button",
+      role: "button",
+      focusable: true,
+      animationVariables: [],
+      acceptedProperties: [],
+    }])
+    operation(runtime, {
+      kind: "create-panel",
+      parent: 1,
+      control: "CExButton",
+      name: "Options",
+      properties: [{ name: "command", value: "OpenOptionsDialog" }],
+    })
+    operation(runtime, { kind: "pointer-press", button: "left", x: 1, y: 1, pointerId: 1, clicks: 1 })
+    operation(runtime, { kind: "pointer-release", button: "left", x: 1, y: 1, pointerId: 1 })
+    operation(runtime, { kind: "frame", timeSeconds: 0 })
+    expect(requests.some((request) => request.kind === "command" && request.command === "OpenOptionsDialog")).toBeTrue()
   })
 })

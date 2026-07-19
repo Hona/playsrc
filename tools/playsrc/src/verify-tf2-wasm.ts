@@ -15,12 +15,12 @@ import { parsePresentationArtifacts } from "../../../games/tf2/browser/src/artif
 const EXPECTED_MAP_BYTES = 42_082_929
 const EXPECTED_MAP_SHA256 = "56153098a867c553651f9c773bd72c4659782bae8520277c80daaaa414bdf156"
 const EXPECTED_BSP_SHA256 = "b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959"
-const EXPECTED_HDR_BYTES=78_256_304
-const EXPECTED_HDR_SHA256="0f33e8611dd7d9e77bec6a2e6e00380013fb22c09b5867353b5df1dead4c84a5"
-const EXPECTED_LDR_DERIVED_SHA256="0f807c5519736b929e6da07a97785fec8e9a848305b7e997d5ee593b6c59830e"
-const EXPECTED_HDR_DERIVED_SHA256="d972c97f91518b7e0680fc381bc3271eddc60bd0b7f9b447d1c32647051c6866"
-const EXPECTED_DEPENDENCY_BYTES=120_412_213
-const EXPECTED_DEPENDENCY_SHA256="c8ccea4035c5e75e26ffc0855a425ff4139f079f35ab9abd09e22990726f03d5"
+const EXPECTED_HDR_BYTES=78_299_802
+const EXPECTED_HDR_SHA256="fbf9d48bba7ea95cfa977f46f2fd99065fd3e97e45b47318eae5d843514db212"
+const EXPECTED_LDR_DERIVED_SHA256="4439ec93fa63ebdc8acb64b367e6d2dc44dc7eff019ff4450f592c0e1f0e9565"
+const EXPECTED_HDR_DERIVED_SHA256="0d267423987b0c9068e216ca79ce3abc0457bcedf771b282d24052e03b6d913d"
+const EXPECTED_DEPENDENCY_BYTES=254_281_358
+const EXPECTED_DEPENDENCY_SHA256="38f967ad03a7a05689940084d5091a44c530707cff55fc05cb0b13e20c60a983"
 function bundlePathOffset(bytes: Uint8Array, target: string): number {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   let offset = 12
@@ -317,7 +317,7 @@ function inspectHdrPayload(payload: Uint8Array) {
   }
   require(skyDimensions.join(",") === "512x256,512x256,512x256,512x256,512x512,4x4", "HDR sky dimensions are invalid")
   const inputCount = reader.u32()
-  require(inputCount===317,"HDR input-hash count is invalid")
+  require(inputCount===867,"HDR input-hash count is invalid")
   for (let index = 0; index < inputCount; index += 1) {
     require(reader.u8() === 1 && reader.take(3).every((value) => value === 0), "HDR input record is invalid")
     require(reader.text().length > 0, "HDR input path is empty")

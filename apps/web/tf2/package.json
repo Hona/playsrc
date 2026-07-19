@@ -12,6 +12,7 @@
     "@playsrc/game-tf2-browser": "workspace:*",
     "@playsrc/particle": "workspace:*",
     "@playsrc/rendering": "workspace:*",
+    "@playsrc/settings": "workspace:*",
     "@playsrc/vgui": "workspace:*",
     "@noble/hashes": "2.2.0",
     "preact": "10.29.7"

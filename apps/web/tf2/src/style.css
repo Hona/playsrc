@@ -1,238 +1,53 @@
 :root {
-  font-family: "Trebuchet MS", Arial, sans-serif;
-  color: #efe5ca;
-  background: #242321;
+  color: #fff;
+  background: #000;
   font-synthesis: none;
 }
 
 * { box-sizing: border-box; }
 html, body, #app { width: 100%; height: 100%; margin: 0; overflow: hidden; }
-button { font: inherit; }
-button:focus-visible { outline: 3px solid #e5a63b; outline-offset: 3px; }
 
-.field-shell {
-  --ink: #292622;
-  --paper: #d5c7a5;
-  --red: #b65345;
-  --blue: #58778a;
-  --amber: #e5a63b;
+.tf2-application {
   position: relative;
   width: 100%;
   height: 100%;
+  overflow: hidden;
   isolation: isolate;
-  background: #171a1b;
+  background: #000;
 }
 
 .world-canvas {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
   display: block;
   width: 100%;
   height: 100%;
-  cursor: crosshair;
+  background: #000;
 }
 
-.field-header {
+.vgui-layer {
   position: absolute;
-  z-index: 3;
-  inset: 18px 20px auto 20px;
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  pointer-events: none;
-}
-
-.wordmark {
-  color: var(--paper);
-  font: 900 34px/0.85 Impact, "Arial Narrow", sans-serif;
-  letter-spacing: 0.035em;
-  text-transform: uppercase;
-  text-shadow: 0 2px 0 #0008;
-}
-.wordmark-source { color: #f0e4c7; }
-.wordmark-class { color: var(--amber); }
-.wordmark small {
-  display: block;
-  margin-top: 9px;
-  font: 700 10px/1 "Trebuchet MS", sans-serif;
-  letter-spacing: 0.17em;
-  color: #d3c29f;
-}
-
-.status-stamp {
-  display: grid;
-  min-width: 230px;
-  max-width: 34vw;
-  padding: 9px 13px 10px;
-  color: #f5eacb;
-  background: #2a2824d9;
-  border-left: 6px solid var(--red);
-  box-shadow: 0 2px 12px #0008;
-  transform: rotate(0.4deg);
-}
-.field-shell:has(.playsrc-vgui-diagnostics:not([hidden])) .status-stamp {
-  transform: translateY(50px) rotate(0.4deg);
-}
-.status-stamp[data-ready="true"] { border-color: var(--blue); }
-.status-stamp b { font: 900 14px/1 "Arial Narrow", sans-serif; letter-spacing: 0.13em; }
-.status-stamp span { margin-top: 5px; color: #c9b995; font-size: 11px; }
-
-.hud {
-  position: absolute;
-  z-index: 3;
-  left: 50%;
-  bottom: 52px;
-  display: grid;
-  grid-template-columns: 150px minmax(180px, 250px) 135px;
-  transform: translateX(-50%);
-  color: var(--ink);
-  background: var(--paper);
-  border: 4px solid #4b463c;
-  box-shadow: 0 5px 0 #1b1916aa, inset 0 0 0 1px #f4ead0;
-}
-.hud > div { min-height: 70px; padding: 10px 14px; border-right: 2px solid #7d725e; }
-.hud > div:last-child { border-right: 0; }
-.hud span, .hud i { display: block; font: 700 10px/1.1 Consolas, monospace; text-transform: uppercase; font-style: normal; }
-.hud strong { font: 900 36px/0.9 Impact, sans-serif; }
-.health-readout strong { color: #9f342c; }
-.loadout-readout { display: grid; align-content: center; }
-.loadout-readout b { font: 900 22px/1 "Arial Narrow", sans-serif; text-transform: uppercase; }
-.loadout-readout span { margin-top: 7px; }
-.speed-readout { text-align: right; }
-
-.class-rail {
-  position: absolute;
-  z-index: 4;
-  top: 50%;
-  left: 18px;
-  display: grid;
-  gap: 7px;
-  transform: translateY(-50%) rotate(-1deg);
-}
-.class-rail button {
-  display: grid;
-  grid-template-columns: 30px 1fr;
-  align-items: center;
-  min-width: 132px;
-  padding: 0;
-  color: #f4e8ca;
-  background: #35312bde;
-  border: 2px solid #756955;
-  box-shadow: 3px 3px 0 #1118;
-  cursor: pointer;
-  text-align: left;
-  text-transform: uppercase;
-}
-.class-rail button:hover { background: #50483c; transform: translateX(3px); }
-.class-rail kbd {
-  display: grid;
-  place-items: center;
-  align-self: stretch;
-  min-height: 34px;
-  color: var(--ink);
-  background: var(--amber);
-  font: 900 14px/1 Consolas, monospace;
-}
-.class-rail span { padding: 0 10px; font: 900 12px/1 "Arial Narrow", sans-serif; letter-spacing: .04em; }
-.class-rail .console-toggle { margin-top: 15px; }
-.class-rail .console-toggle kbd { background: var(--blue); color: white; }
-.class-rail .audio-toggle kbd { background: var(--red); color: white; }
-
-.support-card {
-  position: absolute;
-  z-index: 4;
-  top: 84px;
-  right: 20px;
-  width: min(430px, calc(100vw - 40px));
-  max-height: calc(100vh - 160px);
-  color: #302d28;
-  background: #d5c7a5ee;
-  border: 2px solid #756955;
-  box-shadow: 4px 4px 0 #1118;
-  overflow: auto;
-}
-.support-card > button {
-  position: sticky;
-  top: 0;
-  display: flex;
-  justify-content: space-between;
-  width: 100%;
-  padding: 9px 12px;
-  color: inherit;
-  background: #c7b78f;
-  border: 0;
-  cursor: pointer;
-  font-size: 11px;
-  text-transform: uppercase;
-}
-.support-card > button b { color: #8f332c; }
-.support-card ol { margin: 0; padding: 12px 16px 15px 34px; }
-.support-card li { padding: 5px 0; border-bottom: 1px solid #8e816b66; font: 11px/1.35 Consolas, monospace; }
-
-.field-footer {
-  position: absolute;
-  z-index: 3;
-  inset: auto 18px 14px 18px;
-  display: flex;
-  justify-content: space-between;
-  gap: 18px;
-  color: #d4c4a0;
-  font: 700 10px/1 Consolas, monospace;
-  text-transform: uppercase;
-  text-shadow: 0 1px 2px #000;
-  pointer-events: none;
-}
-
-.loading-plate, .failure-plate {
-  position: absolute;
-  z-index: 6;
-  left: 50%;
-  top: 50%;
-  display: grid;
-  min-width: min(420px, calc(100vw - 34px));
-  padding: 28px 34px;
-  transform: translate(-50%, -50%) rotate(-0.7deg);
-  color: var(--ink);
-  background: var(--paper);
-  border: 5px solid #514b40;
-  box-shadow: 8px 10px 0 #1119;
-  text-align: center;
-}
-.loading-plate b, .failure-plate b { margin-top: 12px; font: 900 28px/1 Impact, sans-serif; text-transform: uppercase; }
-.loading-plate span, .failure-plate span { margin-top: 10px; font-size: 12px; }
-.failure-plate { border-color: #8f332c; }
-.failure-plate small { margin-top: 14px; color: #685f4f; }
-.loader-mark {
-  justify-self: center;
-  width: 38px;
-  aspect-ratio: 1;
-  border: 7px solid #84765d;
-  border-top-color: var(--amber);
-  border-radius: 50%;
-  animation: loader-spin .8s steps(8) infinite;
-}
-
-.vgui-mount {
-  position: absolute;
-  z-index: 10;
   inset: 0;
   pointer-events: none;
 }
-.vgui-mount > * { pointer-events: auto; }
 
-@keyframes loader-spin { to { transform: rotate(360deg); } }
+.vgui-layer > * { pointer-events: auto; }
+.gameui-layer { z-index: 10; }
+.hud-layer { z-index: 20; }
+.options-layer { z-index: 30; }
+.developer-layer { z-index: 40; }
 
-@media (max-width: 760px) {
-  .field-header { inset: 12px; }
-  .status-stamp { max-width: 52vw; min-width: 0; }
-  .class-rail { left: 10px; top: auto; bottom: 116px; transform: none; grid-template-columns: repeat(4, auto); }
-  .class-rail button { min-width: 0; grid-template-columns: 28px 1fr; }
-  .class-rail .console-toggle { margin-top: 0; }
-  .hud { bottom: 42px; width: calc(100% - 20px); grid-template-columns: 1fr 1.3fr 1fr; }
-  .hud > div { min-height: 62px; padding: 8px; }
-  .hud strong { font-size: 29px; }
-  .support-card { top: 76px; right: 10px; }
-  .field-footer span:nth-child(2) { display: none; }
+.tf2-application[data-options-visible="false"] .options-layer { display: none; }
+
+.tf2-application[data-gameui="main-menu"] .world-canvas,
+.tf2-application[data-gameui="loading"] .world-canvas,
+.tf2-application[data-gameui="failure"] .world-canvas {
+  visibility: hidden;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; }
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+  }
 }

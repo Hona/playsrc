@@ -2,6 +2,9 @@ export { classifyTf2UiCommand, createTf2UiResourceDescriptor, tf2UiResources } f
 export { tf2UiResourceBounds } from "./types"
 export type {
   Tf2UiCommandCategory,
+  Tf2UiAdvancedOption,
+  Tf2UiAdvancedOptionChoice,
+  Tf2UiKeyboardAction,
   Tf2UiCommandDescriptor,
   Tf2UiCondition,
   Tf2UiControlDescriptor,

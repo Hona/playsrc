@@ -16,6 +16,8 @@ playsrc-studio-model = { path = "../../../packages/formats/studio-model/rust" }
 playsrc-tf2-wasm = { path = "../../../games/tf2/wasm" }
 playsrc-vmt = { path = "../../../packages/formats/vmt/rust" }
 playsrc-vpk = { path = "../../../packages/formats/vpk/rust" }
+playsrc-vtf = { path = "../../../packages/formats/vtf/rust" }
+png = "0.17.16"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10.9"

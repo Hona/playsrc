@@ -7,6 +7,6 @@
     "test": "bun test tests",
     "verify:browser": "bun scripts/verify-browser.ts",
     "verify:runtime-browser": "bun scripts/verify-runtime-browser.ts",
-    "verify:tf2": "bun scripts/verify-tf2-integration.ts"
+    "verify:tf2": "bun ../../../tools/playsrc/src/cli.ts verify browser jump_beef"
   }
 }

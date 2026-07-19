@@ -9,8 +9,13 @@ export {
   mountVguiFontSet,
 } from "./font-runtime"
 export { SOURCE_CONSOLE_CEILINGS } from "./contract"
-export { initializeVguiRuntime } from "./runtime"
+export { initializeVguiRuntime, isVguiGenericResourcePropertySupported } from "./runtime"
+export { parseVguiAnimationScript } from "./animation-parser"
 export { VGUI_GENERIC_CONTROL_NAMES } from "./runtime-contract"
+export type {
+  VguiAnimationParseLimits,
+  VguiAnimationParseResult,
+} from "./animation-parser"
 export type {
   ConsoleBorderResource,
   ClientDiagnosticFrame,
@@ -109,6 +114,8 @@ export type {
   VguiFontPresentation,
   VguiGenericControlName,
   VguiImageBorder,
+  VguiImageMaterialPresentation,
+  VguiImageMaterialTexture,
   VguiImagePresentation,
   VguiInsets,
   VguiLineBorder,
@@ -133,6 +140,9 @@ export type {
   VguiRuntimeLimits,
   VguiRuntimeSnapshot,
   VguiScalableImageBorder,
+  VguiSectionedListColumn,
+  VguiSectionedListItem,
+  VguiSectionedListSection,
   VguiScheme,
   VguiViewport,
 } from "./runtime-contract"

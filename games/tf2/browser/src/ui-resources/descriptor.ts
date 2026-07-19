@@ -2,6 +2,8 @@ import { configuredTf2UiResourceInput } from "./configured.generated"
 import {
   tf2UiResourceBounds,
   type Tf2UiCommandCategory,
+  type Tf2UiAdvancedOption,
+  type Tf2UiKeyboardAction,
   type Tf2UiCommandDescriptor,
   type Tf2UiCondition,
   type Tf2UiControlDescriptor,
@@ -294,8 +296,11 @@ export function createTf2UiResourceDescriptor(input: unknown): Tf2UiResourceReso
     || !Array.isArray(input.providers)
     || !Array.isArray(input.resources)
     || !Array.isArray(input.uniqueControls)
+    || !Array.isArray(input.codeLocalizationTokens)
     || !Array.isArray(input.images)
     || !Array.isArray(input.fonts)
+    || !Array.isArray(input.advancedOptions)
+    || !Array.isArray(input.keyboardActions)
   ) return failure("InvalidInput", "root fields")
   if (input.providers.length > tf2UiResourceBounds.maximumProviders || input.resources.length > tf2UiResourceBounds.maximumSources) {
     return failure("BoundExceeded", "providers/resources")
@@ -468,21 +473,6 @@ export function createTf2UiResourceDescriptor(input: unknown): Tf2UiResourceReso
       }
     }
   }
-  const localizationTokens: Tf2UiLocalizationToken[] = [...tokenOccurrences]
-    .sort(([left], [right]) => compareText(left, right))
-    .map(([folded, occurrence], index) => {
-      const tokenDefinitions = definitions.get(folded) ?? []
-      return Object.freeze({
-        identity: `localization-${String(index + 1).padStart(4, "0")}`,
-        name: occurrence.name,
-        status: tokenDefinitions.length > 0 ? "resolved" : "missing",
-        occurrences: occurrence.count,
-        definitions: Object.freeze(tokenDefinitions),
-        owner: "vgui" as const,
-      })
-    })
-  if (localizationTokens.length > tf2UiResourceBounds.maximumLocalizationTokens) return failure("BoundExceeded", "localization")
-
   const images: Tf2UiImageDescriptor[] = []
   for (const value of input.images) {
     if (
@@ -513,6 +503,71 @@ export function createTf2UiResourceDescriptor(input: unknown): Tf2UiResourceReso
     fonts.push(Object.freeze({ ...value, owner: "vgui" }) as unknown as Tf2UiFontDescriptor)
   }
   if (fonts.length > tf2UiResourceBounds.maximumFonts) return failure("BoundExceeded", "fonts")
+
+  const advancedOptions: Tf2UiAdvancedOption[] = []
+  const advancedIdentities = new Set<string>()
+  for (const value of input.advancedOptions) {
+    if (!object(value)
+      || typeof value.identity !== "string" || !textWithinBound(value.identity) || advancedIdentities.has(value.identity.toLowerCase())
+      || typeof value.category !== "string" || !textWithinBound(value.category)
+      || typeof value.prompt !== "string" || !textWithinBound(value.prompt)
+      || (value.tooltip !== null && (typeof value.tooltip !== "string" || !textWithinBound(value.tooltip)))
+      || !["BOOL", "NUMBER", "STRING", "LIST", "SLIDER"].includes(value.kind as string)
+      || !Array.isArray(value.choices)
+      || value.choices.some((choice) => !object(choice) || typeof choice.label !== "string" || !textWithinBound(choice.label) || typeof choice.value !== "string" || !textWithinBound(choice.value))
+      || (value.minimum !== null && !Number.isFinite(value.minimum))
+      || (value.maximum !== null && !Number.isFinite(value.maximum))
+      || typeof value.contentDefault !== "string" || !textWithinBound(value.contentDefault)) return failure("InvalidInput", "advanced option")
+    if ((value.kind === "NUMBER" || value.kind === "SLIDER") !== (value.minimum !== null && value.maximum !== null)
+      || ((value.kind === "LIST") !== (value.choices.length > 0))) return failure("InvalidInput", `${value.identity}:advanced shape`)
+    advancedIdentities.add(value.identity.toLowerCase())
+    advancedOptions.push(Object.freeze({ ...value, choices: Object.freeze(value.choices.map((choice) => Object.freeze({ ...choice }))) }) as Tf2UiAdvancedOption)
+  }
+  if (advancedOptions.length !== 88) return failure("ChangedSource", "advanced option count")
+  const keyboardActions: Tf2UiKeyboardAction[] = []
+  for (const value of input.keyboardActions) {
+    if (!object(value) || !Number.isSafeInteger(value.section) || (value.section as number) < 1
+      || typeof value.sectionName !== "string" || !textWithinBound(value.sectionName)
+      || typeof value.binding !== "string" || !textWithinBound(value.binding)
+      || typeof value.description !== "string" || !textWithinBound(value.description)) return failure("InvalidInput", "keyboard action")
+    keyboardActions.push(Object.freeze({ ...value }) as Tf2UiKeyboardAction)
+  }
+  if (keyboardActions.length !== 70) return failure("ChangedSource", "keyboard action count")
+
+  const addLocalizationOccurrence = (name: string): void => {
+    if (!name.startsWith("#") || name.length < 2) return
+    const folded = name.slice(1).toLowerCase()
+    const prior = tokenOccurrences.get(folded)
+    tokenOccurrences.set(folded, { name: prior?.name ?? name, count: (prior?.count ?? 0) + 1 })
+  }
+  if (!input.codeLocalizationTokens.every((value) => typeof value === "string" && textWithinBound(value) && value.startsWith("#"))) {
+    return failure("InvalidInput", "code localization tokens")
+  }
+  for (const token of input.codeLocalizationTokens) addLocalizationOccurrence(token as string)
+  for (const row of advancedOptions) {
+    addLocalizationOccurrence(row.category)
+    addLocalizationOccurrence(row.prompt)
+    if (row.tooltip) addLocalizationOccurrence(row.tooltip)
+    for (const choice of row.choices) addLocalizationOccurrence(choice.label)
+  }
+  for (const row of keyboardActions) {
+    addLocalizationOccurrence(row.sectionName)
+    addLocalizationOccurrence(row.description)
+  }
+  const localizationTokens: Tf2UiLocalizationToken[] = [...tokenOccurrences]
+    .sort(([left], [right]) => compareText(left, right))
+    .map(([folded, occurrence], index) => {
+      const tokenDefinitions = definitions.get(folded) ?? []
+      return Object.freeze({
+        identity: `localization-${String(index + 1).padStart(4, "0")}`,
+        name: occurrence.name,
+        status: tokenDefinitions.length > 0 ? "resolved" : "missing",
+        occurrences: occurrence.count,
+        definitions: Object.freeze(tokenDefinitions),
+        owner: "vgui" as const,
+      })
+    })
+  if (localizationTokens.length > tf2UiResourceBounds.maximumLocalizationTokens) return failure("BoundExceeded", "localization")
 
   const animationManifest = resources.find((source) => source.logicalPath === "scripts/hudanimations_manifest.txt")
   if (!animationManifest?.document) return failure("MissingRequiredResource", "scripts/hudanimations_manifest.txt")
@@ -608,6 +663,8 @@ export function createTf2UiResourceDescriptor(input: unknown): Tf2UiResourceReso
     },
     images,
     fonts,
+    advancedOptions,
+    keyboardActions,
     animation: {
       manifest: animationManifest,
       scripts: animationScripts as Tf2UiResourceSource[],

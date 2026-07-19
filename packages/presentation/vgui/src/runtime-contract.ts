@@ -21,6 +21,13 @@ export const VGUI_GENERIC_CONTROL_NAMES = Object.freeze([
   "CheckButton",
   "RadioButton",
   "ProgressBar",
+  "ContinuousProgressBar",
+  "Divider",
+  "FrameSystemButton",
+  "HTML",
+  "ScalableImagePanel",
+  "ScrollableEditablePanel",
+  "SectionedListPanel",
   "ListPanel",
   "MessageBox",
   "QueryBox",
@@ -147,7 +154,50 @@ export type VguiImagePresentation = Readonly<{
   height: number
   frames: number
   hardwareFiltered: boolean
+  material?: VguiImageMaterialPresentation
   variants?: readonly Readonly<{ frame: number; tint: Rgba; rotation: 0 | 1 | 2 | 3; browserUrl: string }>[]
+}>
+
+export type VguiImageMaterialTexture = Readonly<{
+  logicalIdentity: string
+  revision: string
+  browserUrl: string
+  width: number
+  height: number
+  hardwareFiltered: boolean
+  colorRead: "srgb" | "linear"
+}>
+
+export type VguiImageMaterialPresentation = Readonly<{
+  shader: "unlit-generic" | "unlit-two-texture"
+  base: VguiImageMaterialTexture
+  second: VguiImageMaterialTexture | null
+  detail: VguiImageMaterialTexture | null
+  detailScale: number
+  detailBlendMode: 0 | 8
+  detailBlendFactor: number
+  detailTint: readonly [number, number, number]
+  distanceAlpha: boolean
+  distanceAlphaFromDetail: boolean
+  softEdges: boolean
+  scaleSoftEdges: boolean
+  edgeSoftnessStart: number
+  edgeSoftnessEnd: number
+  outline: boolean
+  outlineColor: readonly [number, number, number]
+  outlineAlpha: number
+  outlineStart0: number
+  outlineStart1: number
+  outlineEnd0: number
+  outlineEnd1: number
+  scaleOutline: boolean
+  glow: boolean
+  glowColor: readonly [number, number, number]
+  glowAlpha: number
+  glowStart: number
+  glowEnd: number
+  glowX: number
+  glowY: number
 }>
 
 export type VguiScheme = Readonly<{
@@ -187,6 +237,7 @@ export type VguiAnimationVariable = Readonly<{
 
 export type VguiControlRegistration = Readonly<{
   name: string
+  baseControl: VguiGenericControlName
   element: keyof HTMLElementTagNameMap
   role: string | null
   focusable: boolean
@@ -321,6 +372,7 @@ export type VguiKey =
 
 export type VguiControlMutation = Readonly<{
   text?: string
+  command?: string | null
   value?: number
   minimum?: number
   maximum?: number
@@ -330,11 +382,40 @@ export type VguiControlMutation = Readonly<{
   activeIndex?: number | null
   items?: readonly Readonly<{ id: number; text: string; command?: string; enabled?: boolean; checked?: boolean }>[]
   progress?: number
+  previousProgress?: number
+  imageFill?: number
+  drawColor?: Rgba
+  foregroundColor?: Rgba
+  scalarProperties?: Readonly<Record<string, number>>
   image?: string
   imageFrame?: number
   url?: string
   title?: string
   description?: string
+  sections?: readonly VguiSectionedListSection[]
+  sectionedItems?: readonly VguiSectionedListItem[]
+}>
+
+export type VguiSectionedListColumn = Readonly<{
+  name: string
+  text: string
+  flags: number
+  width: number
+}>
+
+export type VguiSectionedListSection = Readonly<{
+  id: number
+  name: string
+  alwaysVisible: boolean
+  minimumHeight: number
+  columns: readonly VguiSectionedListColumn[]
+}>
+
+export type VguiSectionedListItem = Readonly<{
+  id: number
+  section: number
+  cells: Readonly<Record<string, string>>
+  enabled: boolean
 }>
 
 export type VguiOperation =
@@ -417,6 +498,12 @@ export type VguiPanelSnapshot = Readonly<{
     maximum: number
     rangeWindow: number
     progress: number
+    previousProgress: number
+    image: string | null
+    imageFill: number
+    drawColor: Rgba
+    foregroundColor: Rgba | null
+    scalarProperties: Readonly<Record<string, number>>
     activeIndex: number | null
     caret: number
     selection: readonly [start: number, end: number]
@@ -428,6 +515,8 @@ export type VguiPanelSnapshot = Readonly<{
     frameInteraction: "move" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | "nw" | null
     bodyText: string
     items: readonly Readonly<{ id: number; text: string; command: string | null; enabled: boolean; checked: boolean }>[]
+    sections: readonly VguiSectionedListSection[]
+    sectionedItems: readonly VguiSectionedListItem[]
     composition: Readonly<{ active: boolean; text: string; caret: number }>
   }>
   animationVariables: Readonly<Record<string, string | number | boolean | Rgba>>

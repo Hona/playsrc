@@ -18,6 +18,7 @@ import {
   type VguiDiagnostic,
   type VguiDiagnosticCode,
   type VguiFontPresentation,
+  type VguiGenericControlName,
   type VguiImagePresentation,
   type VguiLocalization,
   type VguiMessage,
@@ -38,14 +39,19 @@ import {
   type VguiRuntimeLimits,
   type VguiRuntimeSnapshot,
   type VguiScheme,
+  type VguiSectionedListItem,
+  type VguiSectionedListColumn,
+  type VguiSectionedListSection,
   type VguiViewport,
 } from "./runtime-contract"
 import { VGUI_CSS } from "./style"
+import { VguiImageRasterizer, type VguiImageRasterGeometry } from "./image-renderer"
 
 const IDENTITY = /^[a-z0-9][a-z0-9./_-]{0,511}$/u
 const RUNTIME_IDENTITY = /^[a-z0-9][a-z0-9_-]{0,127}$/u
 const NAME = /^[^\u0000-\u001f\u007f]{1,255}$/u
-const INTEGER = /^[+-]?\d+$/u
+const INTEGER = /^[+-]?\d+/u
+const INTEGER_WHOLE = /^[+-]?\d+$/u
 const FLOAT = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/iu
 const URL = /^https?:\/\//u
 const EMPTY_INSETS = Object.freeze({ left: 0, top: 0, right: 0, bottom: 0 })
@@ -122,6 +128,13 @@ const CONTROL_PROPERTIES: Readonly<Record<string, ReadonlySet<string>>> = Object
   CheckButton: new Set(["labelText", "text", "font", "command", "default", "selected", "smallcheckimage"]),
   RadioButton: new Set(["labelText", "text", "font", "command", "default", "selected", "TabPosition", "SubTabPosition"]),
   ProgressBar: new Set(["progress", "variable", "analogValue", "direction", "segment_gap", "segment_width", "bar_inset", "margin"]),
+  ContinuousProgressBar: new Set(["progress", "variable", "analogValue", "direction"]),
+  Divider: new Set([]),
+  FrameSystemButton: new Set(["labelText", "text", "font", "textAlignment", "command", "default", "selected", "Default"]),
+  HTML: new Set(["url", "allowjavascript", "scrollbars", "contextmenu", "newwindowsonly"]),
+  ScalableImagePanel: new Set(["image", "drawcolor", "src_corner_height", "src_corner_width", "draw_corner_height", "draw_corner_width"]),
+  ScrollableEditablePanel: new Set(["Scrollbar"]),
+  SectionedListPanel: new Set(["linespacing", "linegap", "sectiongap", "verticalscrollbar", "clickable", "drawsectionheaders"]),
   ListPanel: new Set(["sectiongap", "linegap", "linespacing", "show_columns", "autohide_scrollbar", "multiselect"]),
   MessageBox: new Set(["title", "labelText", "text", "okcommand", "cancelcommand", "noautoclose"]),
   QueryBox: new Set(["title", "labelText", "text", "okcommand", "cancelcommand"]),
@@ -141,6 +154,7 @@ type ControlItem = {
 type PanelState = {
   id: VguiPanelId
   control: VguiControlName
+  sourceControl: VguiGenericControlName
   registration: VguiControlRegistration
   name: string
   parent: VguiPanelId | null
@@ -212,8 +226,14 @@ type PanelState = {
   frameStartPointer: readonly [number, number]
   frameClosePressed: boolean
   progress: number
+  previousProgress: number
+  imageFill: number
+  foregroundColor: Rgba | null
+  scalarProperties: Map<string, number>
   progressVariable: string | null
   items: ControlItem[]
+  sections: VguiSectionedListSection[]
+  sectionedItems: VguiSectionedListItem[]
   itemElements: Map<number, HTMLElement>
   chromeElements: Map<string, HTMLElement>
   pressedItem: number | null
@@ -369,8 +389,9 @@ function parseBoolean(value: string, subject: string): boolean {
 }
 
 function parseInteger(value: string, subject: string): number {
-  if (!INTEGER.test(value)) throw new RuntimeFault("MalformedValue", subject)
-  const result = Number(value)
+  const match = INTEGER.exec(value)
+  if (!match) throw new RuntimeFault("MalformedValue", subject)
+  const result = Number(match[0])
   if (!Number.isSafeInteger(result) || result < -2147483648 || result > 2147483647) {
     throw new RuntimeFault("MalformedValue", subject)
   }
@@ -386,7 +407,7 @@ function parseFloatValue(value: string, subject: string): number {
 
 function parseColorLiteral(value: string, fallbackAlpha: number): Rgba | null {
   const parts = value.trim().split(/\s+/u)
-  if (parts.length < 3 || parts.length > 4 || parts.some((part) => !INTEGER.test(part))) return null
+  if (parts.length < 3 || parts.length > 4 || parts.some((part) => !INTEGER_WHOLE.test(part))) return null
   const channels = parts.map(Number)
   if (channels.some((channel) => channel < 0 || channel > 255)) return null
   return Object.freeze([channels[0], channels[1], channels[2], channels[3] ?? fallbackAlpha]) as Rgba
@@ -418,10 +439,10 @@ function defaultAnimationVariables(control: string): readonly VguiAnimationVaria
 }
 
 function elementForControl(control: string): keyof HTMLElementTagNameMap {
-  if (["Button", "CheckButton", "RadioButton"].some((name) => sameName(control, name))) return "button"
+  if (["Button", "CheckButton", "RadioButton", "FrameSystemButton"].some((name) => sameName(control, name))) return "button"
   if (sameName(control, "TextEntry")) return "textarea"
   if (sameName(control, "ComboBox")) return "input"
-  if (sameName(control, "ImagePanel")) return "img"
+  if (sameName(control, "ImagePanel") || sameName(control, "ScalableImagePanel")) return "div"
   if (sameName(control, "URLLabel")) return "a"
   if (sameName(control, "Menu")) return "ul"
   if (sameName(control, "MenuItem")) return "li"
@@ -431,7 +452,7 @@ function elementForControl(control: string): keyof HTMLElementTagNameMap {
 
 function roleForControl(control: string): string | null {
   if (sameName(control, "Label")) return null
-  if (sameName(control, "ImagePanel")) return "img"
+  if (sameName(control, "ImagePanel") || sameName(control, "ScalableImagePanel")) return "img"
   if (sameName(control, "Button")) return "button"
   if (sameName(control, "CheckButton")) return "checkbox"
   if (sameName(control, "RadioButton")) return "radio"
@@ -446,6 +467,13 @@ function roleForControl(control: string): string | null {
   if (sameName(control, "PropertySheet")) return "tablist"
   if (sameName(control, "PropertyPage")) return "tabpanel"
   if (sameName(control, "ProgressBar")) return "progressbar"
+  if (sameName(control, "ContinuousProgressBar")) return "progressbar"
+  if (sameName(control, "Divider")) return "separator"
+  if (sameName(control, "FrameSystemButton")) return "button"
+  if (sameName(control, "HTML")) return "document"
+  if (sameName(control, "ScalableImagePanel")) return "img"
+  if (sameName(control, "ScrollableEditablePanel")) return "region"
+  if (sameName(control, "SectionedListPanel")) return "grid"
   if (sameName(control, "ListPanel")) return "grid"
   if (sameName(control, "URLLabel")) return "link"
   return null
@@ -453,7 +481,7 @@ function roleForControl(control: string): string | null {
 
 function focusableControl(control: string): boolean {
   return [
-    "Button", "CheckButton", "RadioButton", "TextEntry", "RichText", "Frame", "ScrollBar", "Slider", "ComboBox", "Menu",
+    "Button", "CheckButton", "RadioButton", "FrameSystemButton", "TextEntry", "RichText", "Frame", "ScrollBar", "Slider", "ComboBox", "Menu",
     "MenuItem", "PropertySheet", "PropertyPage", "ListPanel", "MessageBox", "QueryBox", "URLLabel",
   ].some((name) => sameName(control, name))
 }
@@ -462,6 +490,7 @@ function genericRegistration(control: string): VguiControlRegistration {
   const sourceControl = asSourceControl(control)
   return Object.freeze({
     name: control,
+    baseControl: sourceControl as VguiGenericControlName,
     element: elementForControl(sourceControl),
     role: roleForControl(sourceControl),
     focusable: focusableControl(sourceControl),
@@ -477,10 +506,10 @@ function asSourceControl(control: VguiControlName): string {
 
 function propertyAllowed(control: string, registration: VguiControlRegistration, property: string): boolean {
   if ([...BASE_PROPERTIES].some((name) => sameName(name, property))) return true
-  const sourceControl = asSourceControl(control)
+  const sourceControl = registration.baseControl
   const inherited: string[] = [sourceControl]
-  if (["Button", "CheckButton", "RadioButton", "MenuItem", "URLLabel"].some((name) => sameName(sourceControl, name))) inherited.push("Label")
-  if (["CheckButton", "RadioButton", "MenuItem"].some((name) => sameName(sourceControl, name))) inherited.push("Button")
+  if (["Button", "CheckButton", "RadioButton", "FrameSystemButton", "MenuItem", "URLLabel"].some((name) => sameName(sourceControl, name))) inherited.push("Label")
+  if (["CheckButton", "RadioButton", "FrameSystemButton", "MenuItem"].some((name) => sameName(sourceControl, name))) inherited.push("Button")
   if (sameName(sourceControl, "ComboBox")) inherited.push("TextEntry")
   if (["MessageBox", "QueryBox"].some((name) => sameName(sourceControl, name))) inherited.push("Frame", "EditablePanel")
   if (["Frame", "PropertyPage"].some((name) => sameName(sourceControl, name))) inherited.push("EditablePanel")
@@ -494,6 +523,7 @@ function propertyAllowed(control: string, registration: VguiControlRegistration,
 function validRegistration(registration: VguiControlRegistration, limits: VguiRuntimeLimits): boolean {
   return !!registration
     && validString(registration.name, 255, false)
+    && VGUI_GENERIC_CONTROL_NAMES.some((name) => sameName(name, registration.baseControl))
     && validString(registration.element, 32, false)
     && (registration.role === null || validString(registration.role, 64, false))
     && typeof registration.focusable === "boolean"
@@ -501,6 +531,12 @@ function validRegistration(registration: VguiControlRegistration, limits: VguiRu
     && registration.animationVariables.length <= limits.maxPropertiesPerPanel
     && Array.isArray(registration.acceptedProperties)
     && registration.acceptedProperties.length <= limits.maxPropertiesPerPanel
+}
+
+export function isVguiGenericResourcePropertySupported(control: VguiGenericControlName, property: string): boolean {
+  if (!VGUI_GENERIC_CONTROL_NAMES.some((name) => sameName(name, control)) || !validString(property, 255, false)) return false
+  const registration = genericRegistration(control)
+  return propertyAllowed(control, registration, property)
 }
 
 function validResourceNode(
@@ -628,6 +664,9 @@ class SourceVguiRuntime implements VguiRuntime {
   private readonly pendingClipboardReads = new Map<number, VguiPanelId>()
   private readonly trace: { sequence: number; phase: string; panel: VguiPanelId | null; detail: string }[] = []
   private readonly diagnostics: VguiDiagnostic[] = []
+  private readonly imageRasterizer: VguiImageRasterizer
+  private readonly rasterGenerations = new Map<string, number>()
+  private readonly rasterSignatures = new Map<string, string>()
   private readonly popups: VguiPanelId[] = []
   private readonly pendingPressedKeys = new Set<string>()
   private readonly pendingReleasedKeys = new Set<string>()
@@ -692,6 +731,7 @@ class SourceVguiRuntime implements VguiRuntime {
     this.runtimeIdentity = configuration.runtimeIdentity
     this.root = configuration.root
     this.document = configuration.root.ownerDocument
+    this.imageRasterizer = new VguiImageRasterizer(this.document)
     this.limits = Object.freeze({ ...configuration.limits })
     this.clock = configuration.clock
     this.random = configuration.random
@@ -713,6 +753,7 @@ class SourceVguiRuntime implements VguiRuntime {
       if (this.registrations.has(folded)) throw new RuntimeFault("InvalidConfiguration", `control:${registration.name}`)
       this.registrations.set(folded, Object.freeze({
         ...registration,
+        baseControl: registration.baseControl,
         animationVariables: Object.freeze([...BASE_ANIMATION_VARIABLES, ...registration.animationVariables]),
         acceptedProperties: Object.freeze([...registration.acceptedProperties]),
       }))
@@ -738,7 +779,6 @@ class SourceVguiRuntime implements VguiRuntime {
     this.host.dataset.vguiRuntime = this.runtimeIdentity
     this.host.style.width = `${this.viewport.width}px`
     this.host.style.height = `${this.viewport.height}px`
-    this.host.style.pointerEvents = "auto"
 
     try {
       this.root.append(this.style, this.host)
@@ -925,6 +965,12 @@ class SourceVguiRuntime implements VguiRuntime {
           maximum: panel.maximum,
           rangeWindow: panel.rangeWindow,
           progress: panel.progress,
+          previousProgress: panel.previousProgress,
+          image: panel.image,
+          imageFill: panel.imageFill,
+          drawColor: panel.drawColor,
+          foregroundColor: panel.foregroundColor,
+          scalarProperties: Object.freeze(Object.fromEntries(panel.scalarProperties)),
           activeIndex: panel.activeIndex,
           caret: panel.caret,
           selection: Object.freeze([panel.selectionStart, panel.selectionEnd]) as readonly [number, number],
@@ -936,6 +982,8 @@ class SourceVguiRuntime implements VguiRuntime {
           frameInteraction: panel.frameInteraction,
           bodyText: panel.bodyText,
           items: cloneItems(panel.items),
+          sections: Object.freeze(panel.sections.map((section) => Object.freeze({ ...section, columns: Object.freeze(section.columns.map((column) => Object.freeze({ ...column }))) }))),
+          sectionedItems: Object.freeze(panel.sectionedItems.map((item) => Object.freeze({ ...item, cells: Object.freeze({ ...item.cells }) }))),
           composition: Object.freeze({ active: panel.compositionActive, text: panel.compositionText, caret: panel.compositionCaret }),
         }),
         animationVariables: Object.freeze(Object.fromEntries(panel.animationValues)),
@@ -1035,7 +1083,7 @@ class SourceVguiRuntime implements VguiRuntime {
       if (!validString(font.cssFamily, this.limits.maxStringCodeUnits, false)
         || !safeInteger(font.sizePx) || font.sizePx < 0 || font.sizePx > 32767
         || !safeInteger(font.lineHeightPx) || font.lineHeightPx < 0 || font.lineHeightPx > 32767
-        || !safeInteger(font.weight) || font.weight < 0 || font.weight > 1000
+        || !safeInteger(font.weight) || font.weight < 0 || font.weight > 2000
         || !["normal", "italic"].includes(font.style)
         || typeof font.available !== "boolean"
         || (font.measure !== undefined && typeof font.measure !== "function")) throw new RuntimeFault("MalformedScheme", `font:${font.name}`)
@@ -1056,7 +1104,7 @@ class SourceVguiRuntime implements VguiRuntime {
       }
       if (border.kind === "scalable-image" && border.color.some((channel: number) => channel !== 255)) {
         const image = scheme.images.find((candidate) => sameName(candidate.name, border.image))
-        if (!image?.variants?.some((variant: NonNullable<VguiImagePresentation["variants"]>[number]) => variant.frame === 0 && variant.rotation === 0 && variant.tint.every((channel: number, index: number) => channel === border.color[index]))) {
+        if (!image?.material && !image?.variants?.some((variant: NonNullable<VguiImagePresentation["variants"]>[number]) => variant.frame === 0 && variant.rotation === 0 && variant.tint.every((channel: number, index: number) => channel === border.color[index]))) {
           throw new RuntimeFault("MissingReference", `border:${border.name}:image-variant`)
         }
       }
@@ -1107,6 +1155,31 @@ class SourceVguiRuntime implements VguiRuntime {
         const key = `${variant.frame}:${variant.tint.join(",")}:${variant.rotation}`
         if (keys.has(key)) throw new RuntimeFault("MalformedScheme", `image:${image.name}:variant:${key}`)
         keys.add(key)
+      }
+    }
+    if (image.material) {
+      const material = image.material
+      const texture = (value: typeof material.base | null): boolean => value === null || (
+        !!value
+        && IDENTITY.test(value.logicalIdentity)
+        && validString(value.revision, 128, false)
+        && validString(value.browserUrl, this.limits.maxStringCodeUnits, false)
+        && safeInteger(value.width) && value.width > 0 && value.width <= 32767
+        && safeInteger(value.height) && value.height > 0 && value.height <= 32767
+        && typeof value.hardwareFiltered === "boolean"
+        && (value.colorRead === "srgb" || value.colorRead === "linear")
+      )
+      if (!["unlit-generic", "unlit-two-texture"].includes(material.shader)
+        || !texture(material.base) || !texture(material.second) || !texture(material.detail)
+        || !finite(material.detailScale) || material.detailScale <= 0
+        || ![0, 8].includes(material.detailBlendMode)
+        || !finite(material.detailBlendFactor)
+        || !Array.isArray(material.detailTint) || material.detailTint.length !== 3 || material.detailTint.some((value) => !finite(value))
+        || [material.distanceAlpha, material.distanceAlphaFromDetail, material.softEdges, material.scaleSoftEdges, material.outline, material.scaleOutline, material.glow].some((value) => typeof value !== "boolean")
+        || [material.edgeSoftnessStart, material.edgeSoftnessEnd, material.outlineAlpha, material.outlineStart0, material.outlineStart1, material.outlineEnd0, material.outlineEnd1, material.glowAlpha, material.glowStart, material.glowEnd, material.glowX, material.glowY].some((value) => !finite(value))
+        || !Array.isArray(material.outlineColor) || material.outlineColor.length !== 3 || material.outlineColor.some((value) => !finite(value))
+        || !Array.isArray(material.glowColor) || material.glowColor.length !== 3 || material.glowColor.some((value) => !finite(value))) {
+        throw new RuntimeFault("MalformedScheme", `image:${image.name}:material`)
       }
     }
     for (let frame = 1; frame < image.frames; frame += 1) {
@@ -1311,7 +1384,7 @@ class SourceVguiRuntime implements VguiRuntime {
   ): PanelState {
     if (this.panels.size >= this.limits.maxPanels) throw new RuntimeFault("PanelLimit", name)
     const registration = this.registration(control)
-    const sourceIdentity = asSourceControl(control)
+    const sourceIdentity = registration.baseControl
     const reservedAuxiliary = ["MessageBox", "QueryBox"].some((value) => sameName(sourceIdentity, value)) ? 6
       : sameName(sourceIdentity, "Frame") ? 3 : 0
     if (this.panels.size + this.auxiliaryNodes.size + reservedAuxiliary + 3 > this.limits.maxDomNodes) throw new RuntimeFault("DomLimit", name)
@@ -1347,12 +1420,13 @@ class SourceVguiRuntime implements VguiRuntime {
     const isFrame = ["Frame", "MessageBox", "QueryBox"].some((value) => sameName(sourceControl, value))
     const isEditableText = ["TextEntry", "ComboBox"].some((value) => sameName(sourceControl, value))
     const isRadio = sameName(sourceControl, "RadioButton")
-    const hasText = ["Label", "Button", "CheckButton", "RadioButton", "TextEntry", "RichText", "Frame", "Menu", "MenuItem", "ComboBox", "PropertySheet", "PropertyPage", "ListPanel", "MessageBox", "QueryBox", "URLLabel"].some((value) => sameName(sourceControl, value))
-    const defaultWidth = isFrame ? 128 : sameName(sourceControl, "ScrollBar") && sameName(control, "ScrollBar_Vertical") ? 19 : 64
-    const defaultHeight = isFrame ? 66 : sameName(sourceControl, "ScrollBar") ? sameName(control, "ScrollBar_Vertical") ? 64 : 19 : 24
+    const hasText = ["Label", "Button", "CheckButton", "RadioButton", "FrameSystemButton", "TextEntry", "RichText", "Frame", "Menu", "MenuItem", "ComboBox", "PropertySheet", "PropertyPage", "ListPanel", "SectionedListPanel", "MessageBox", "QueryBox", "URLLabel"].some((value) => sameName(sourceControl, value))
+    const defaultWidth = isFrame ? 128 : sameName(sourceControl, "Divider") ? 128 : sameName(sourceControl, "ScrollBar") && sameName(control, "ScrollBar_Vertical") ? 19 : 64
+    const defaultHeight = isFrame ? 66 : sameName(sourceControl, "Divider") ? 2 : sameName(sourceControl, "ScrollBar") ? sameName(control, "ScrollBar_Vertical") ? 64 : 19 : 24
     const panel: PanelState = {
       id,
       control,
+      sourceControl: sourceIdentity,
       registration,
       name,
       parent: parentId,
@@ -1377,7 +1451,7 @@ class SourceVguiRuntime implements VguiRuntime {
       topmostPopup: false,
       visible: true,
       effectivelyVisible: true,
-      enabled: true,
+      enabled: !sameName(sourceControl, "FrameSystemButton"),
       mouseInput: true,
       keyboardInput: true,
       proportional: false,
@@ -1424,8 +1498,14 @@ class SourceVguiRuntime implements VguiRuntime {
       frameStartPointer: Object.freeze([0, 0]) as readonly [number, number],
       frameClosePressed: false,
       progress: 0,
+      previousProgress: -1,
+      imageFill: 1,
+      foregroundColor: null,
+      scalarProperties: new Map(),
       progressVariable: null,
       items: [],
+      sections: [],
+      sectionedItems: [],
       itemElements: new Map(),
       chromeElements: new Map(),
       pressedItem: null,
@@ -1455,6 +1535,15 @@ class SourceVguiRuntime implements VguiRuntime {
       this.sortChildren(parent)
     }
     if (panel.popup) this.addPopup(panel)
+    if (sameName(sourceControl, "ScrollableEditablePanel")) {
+      const scroll = this.createPanelInternal(panel.id, "ScrollBar_Vertical", "VerticalScrollBar", null)
+      scroll.bounds.width = 16
+      scroll.actionTargets.push(panel.id)
+    } else if (sameName(sourceControl, "SectionedListPanel")) {
+      const scroll = this.createPanelInternal(panel.id, "ScrollBar_Vertical", "SectionedScrollBar", null)
+      scroll.visible = false
+      scroll.actionTargets.push(panel.id)
+    }
     this.addTrace("panel-create", id, `${control}:${name}`)
     return panel
   }
@@ -1465,8 +1554,12 @@ class SourceVguiRuntime implements VguiRuntime {
     return registration
   }
 
+  private sourceControl(value: VguiControlName | PanelState): VguiGenericControlName {
+    return typeof value === "string" ? this.registration(value).baseControl : value.sourceControl
+  }
+
   private editableParent(panelId: VguiPanelId): boolean {
-    const control = asSourceControl(this.requirePanel(panelId).control)
+    const control = this.sourceControl(this.requirePanel(panelId))
     return ["EditablePanel", "Frame", "PropertySheet", "PropertyPage", "MessageBox", "QueryBox"].some((name) => sameName(control, name))
   }
 
@@ -1653,7 +1746,7 @@ class SourceVguiRuntime implements VguiRuntime {
     const panel = this.requirePanel(operation.panel)
     if (operation.visible !== undefined) {
       panel.visible = operation.visible
-      if (operation.visible && sameName(asSourceControl(panel.control), "Menu") && panel.popup) {
+      if (operation.visible && sameName(panel.sourceControl, "Menu") && panel.popup) {
         this.removePopup(panel.id)
         this.popups.push(panel.id)
         this.sortPopups()
@@ -1843,8 +1936,8 @@ class SourceVguiRuntime implements VguiRuntime {
       this.validatePanelPropertyValues(parent, controlName, block.name, properties)
       if (!existing) {
         newPanels += 1
-        if (["MessageBox", "QueryBox"].some((identity) => sameName(asSourceControl(controlName), identity))) newAuxiliary += 6
-        else if (sameName(asSourceControl(controlName), "Frame")) newAuxiliary += 3
+        if (["MessageBox", "QueryBox"].some((identity) => sameName(this.sourceControl(controlName), identity))) newAuxiliary += 6
+        else if (sameName(this.sourceControl(controlName), "Frame")) newAuxiliary += 3
         known.set(foldedName, { control: controlName, panel: null })
       }
       plans.push(Object.freeze({ blockName: block.name, control: controlName, properties: Object.freeze(properties), existing: existing?.panel ?? null }))
@@ -1884,7 +1977,7 @@ class SourceVguiRuntime implements VguiRuntime {
     const border = value("border") ?? value("border_override")
     if (border && !this.borders.has(asciiFold(border))) throw new RuntimeFault("MissingReference", `${name}:border:${border}`)
     const url = value("URLText")
-    if (sameName(asSourceControl(control), "URLLabel") && url && !url.startsWith("#") && !URL.test(url)) {
+    if (sameName(this.sourceControl(control), "URLLabel") && url && !url.startsWith("#") && !URL.test(url)) {
       throw new RuntimeFault("MalformedValue", `${name}:URLText`)
     }
   }
@@ -1906,13 +1999,13 @@ class SourceVguiRuntime implements VguiRuntime {
       const value = first(position)
       if (value !== null) this.computePosition(value, probe, position === "xpos", true)
     }
-    for (const property of ["zpos", "tabPosition", "TabPosition", "SubTabPosition", "maxchars", "rangeMin", "rangeMax", "rangeWindow", "value", "numTicks", "thumbwidth", "button_activation_type", "AutoResize", "PinCorner", "PinnedCornerOffsetX", "PinnedCornerOffsetY", "UnpinnedCornerOffsetX", "UnpinnedCornerOffsetY", "actionsignallevel", "rotation", "PaintBackgroundType", "RoundedCorners"]) {
+    for (const property of ["zpos", "tabPosition", "TabPosition", "SubTabPosition", "maxchars", "rangeMin", "rangeMax", "rangeWindow", "value", "numTicks", "thumbwidth", "button_activation_type", "AutoResize", "PinCorner", "PinnedCornerOffsetX", "PinnedCornerOffsetY", "UnpinnedCornerOffsetX", "UnpinnedCornerOffsetY", "actionsignallevel", "rotation", "PaintBackgroundType", "RoundedCorners", "src_corner_width", "src_corner_height", "draw_corner_width", "draw_corner_height"]) {
       const value = first(property)
       if (value !== null) parseInteger(value, `${name}:${property}`)
     }
     for (const property of ["visible", "enabled", "mouseinputenabled", "keyboardinputenabled", "selected", "checked", "default", "stayselectedonclick", "stay_armed_on_click", "editable", "NumericInputOnly", "unicode", "textHidden", "selectallonfirstfocus", "multiline", "checkable", "moveable", "sizeable", "deleteSelfOnClose", "settitlebarvisible", "setclosebuttonvisible", "nobuttons"]) {
       const value = first(property)
-      if (property === "visible" && ["Frame", "MessageBox", "QueryBox"].some((identity) => sameName(asSourceControl(control), identity))) continue
+      if (property === "visible" && ["Frame", "MessageBox", "QueryBox"].some((identity) => sameName(this.sourceControl(control), identity))) continue
       if (value !== null) parseBoolean(value, `${name}:${property}`)
     }
     for (const property of ["allcaps", "dulltext", "brighttext", "wrap", "centerwrap", "auto_wide_tocontents", "auto_tall_tocontents", "use_proportional_insets", "scaleImage", "scaleProportional", "tileImage", "tileHorizontally", "tileVertically", "positionImage"]) {
@@ -1927,7 +2020,7 @@ class SourceVguiRuntime implements VguiRuntime {
       const value = first(property)
       if (value !== null && !parseColorLiteral(value, 255)) this.resolveColor(value, property === "fillcolor" ? TRANSPARENT : WHITE)
     }
-    if (sameName(asSourceControl(control), "ImagePanel")) {
+    if (sameName(this.sourceControl(control), "ImagePanel") || sameName(this.sourceControl(control), "ScalableImagePanel")) {
       const imageName = first("image")
       const drawValue = first("drawcolor_override") ?? first("drawcolor")
       if (imageName) {
@@ -1936,7 +2029,7 @@ class SourceVguiRuntime implements VguiRuntime {
         const image = this.images.get(asciiFold(imageName))
         const rotation = parseInteger(first("rotation") ?? "0", `${name}:rotation`)
         if (rotation < 0 || rotation > 3) throw new RuntimeFault("MalformedValue", `${name}:rotation`)
-        if ((!white || rotation !== 0) && !image?.variants?.some((variant) => variant.frame === 0 && variant.rotation === rotation && variant.tint.every((channel, index) => channel === draw[index]))) {
+        if ((!white || rotation !== 0) && !image?.material && !image?.variants?.some((variant) => variant.frame === 0 && variant.rotation === rotation && variant.tint.every((channel, index) => channel === draw[index]))) {
           throw new RuntimeFault("MissingReference", `${name}:image-variant:0:${draw.join(",")}`)
         }
       }
@@ -1964,7 +2057,7 @@ class SourceVguiRuntime implements VguiRuntime {
         if (!this.imageUrl(texture, color, 0, 0)) throw new RuntimeFault("MissingReference", `${name}:background-texture:${texture}`)
       }
     }
-    const sourceControl = asSourceControl(control)
+    const sourceControl = this.sourceControl(control)
     if (sameName(sourceControl, "URLLabel")) {
       const value = first("URLText")
       if (value?.startsWith("#")) {
@@ -2006,9 +2099,9 @@ class SourceVguiRuntime implements VguiRuntime {
       panel.z = parseInteger(z, `${panel.name}:zpos`)
       if (panel.parent !== null) this.sortChildren(this.requirePanel(panel.parent))
     }
-    const isFrameControl = ["Frame", "MessageBox", "QueryBox"].some((identity) => sameName(asSourceControl(panel.control), identity))
+    const isFrameControl = ["Frame", "MessageBox", "QueryBox"].some((identity) => sameName(panel.sourceControl, identity))
     if (!isFrameControl) panel.visible = first("visible") === null ? true : parseInteger(first("visible")!, `${panel.name}:visible`) !== 0
-    panel.enabled = first("enabled") === null ? true : parseBoolean(first("enabled")!, `${panel.name}:enabled`)
+    if (first("enabled") !== null) panel.enabled = parseBoolean(first("enabled")!, `${panel.name}:enabled`)
     const mouseInput = first("mouseinputenabled")
     if (mouseInput !== null && !parseBoolean(mouseInput, `${panel.name}:mouseinputenabled`)) panel.mouseInput = false
     const keyboardInput = first("keyboardinputenabled")
@@ -2042,7 +2135,7 @@ class SourceVguiRuntime implements VguiRuntime {
 
     const text = first("labelText") ?? first("text")
     if (text !== null) {
-      if (["MessageBox", "QueryBox"].some((identity) => sameName(asSourceControl(panel.control), identity))) {
+      if (["MessageBox", "QueryBox"].some((identity) => sameName(panel.sourceControl, identity))) {
         panel.bodyTextSource = text
         panel.bodyText = this.resolveTextValue(text, panel)
       } else {
@@ -2060,8 +2153,12 @@ class SourceVguiRuntime implements VguiRuntime {
 
     const command = first("command")
     if (command) panel.command = command
-    const sourceControl = asSourceControl(panel.control)
-    if (["Button", "CheckButton", "RadioButton", "MenuItem"].some((identity) => sameName(sourceControl, identity))) {
+    const sourceControl = panel.sourceControl
+    if (sameName(sourceControl, "FrameSystemButton")) {
+      const configured = this.settings.get(asciiFold(panel.enabled ? "FrameSystemButton.Icon" : "FrameSystemButton.DisabledIcon"))
+      if (configured && this.images.has(asciiFold(configured))) panel.image = configured
+    }
+    if (["Button", "CheckButton", "RadioButton", "FrameSystemButton", "MenuItem"].some((identity) => sameName(sourceControl, identity))) {
       const selected = first("selected")
       if (selected !== null) this.setSelected(panel, parseBoolean(selected, `${panel.name}:selected`), false)
       panel.staySelected = first("stayselectedonclick") === null ? false : parseBoolean(first("stayselectedonclick")!, `${panel.name}:stayselectedonclick`)
@@ -2092,7 +2189,7 @@ class SourceVguiRuntime implements VguiRuntime {
       panel.selectAllOnFirstFocus = first("selectallonfirstfocus") === null ? panel.selectAllOnFirstFocus : parseBoolean(first("selectallonfirstfocus")!, `${panel.name}:selectallonfirstfocus`)
       panel.multiline = first("multiline") === null ? panel.multiline : parseBoolean(first("multiline")!, `${panel.name}:multiline`)
     }
-    if (sameName(sourceControl, "ImagePanel")) {
+    if (sameName(sourceControl, "ImagePanel") || sameName(sourceControl, "ScalableImagePanel")) {
       const image = first("image")
       if (image) panel.image = image
       const fill = first("fillcolor_override") ?? first("fillcolor")
@@ -2115,11 +2212,18 @@ class SourceVguiRuntime implements VguiRuntime {
       const thumb = first("thumbwidth")
       if (thumb !== null) panel.thumbWidth = this.proportional(parseInteger(thumb, `${panel.name}:thumbwidth`), panel)
     }
-    if (sameName(sourceControl, "ProgressBar")) {
+    if (sameName(sourceControl, "ProgressBar") || sameName(sourceControl, "ContinuousProgressBar")) {
       const progress = first("progress")
       if (progress !== null) panel.progress = Math.max(0, Math.min(1, parseFloatValue(progress, `${panel.name}:progress`)))
       panel.progressVariable = first("variable") ?? first("analogValue") ?? panel.progressVariable
     }
+    if (sameName(sourceControl, "SectionedListPanel")) {
+      for (const [property, fallback] of [["linespacing", 20], ["sectiongap", 8], ["linegap", 0]] as const) {
+        const value = first(property)
+        panel.properties.set(property, String(panel.proportional ? this.proportional(value === null || parseInteger(value, `${panel.name}:${property}`) === 0 ? fallback : parseInteger(value, `${panel.name}:${property}`), panel) : value === null || parseInteger(value, `${panel.name}:${property}`) === 0 ? fallback : parseInteger(value, `${panel.name}:${property}`)))
+      }
+    }
+    if (sameName(sourceControl, "Divider") && !panel.border && this.borders.has("buttondepressedborder")) this.applyBorder(panel, "ButtonDepressedBorder")
     if (sameName(sourceControl, "URLLabel")) {
       const urlText = first("URLText")
       if (urlText !== null) {
@@ -2293,7 +2397,11 @@ class SourceVguiRuntime implements VguiRuntime {
   }
 
   private reapplyPanelPresentation(panel: PanelState): void {
-    const sourceControl = asSourceControl(panel.control)
+    const sourceControl = panel.sourceControl
+    if (sameName(sourceControl, "FrameSystemButton")) {
+      const configured = this.settings.get(asciiFold(panel.enabled ? "FrameSystemButton.Icon" : "FrameSystemButton.DisabledIcon"))
+      if (configured && this.images.has(asciiFold(configured))) panel.image = configured
+    }
     panel.element.style.backgroundImage = "none"
     panel.element.style.backgroundSize = "auto"
     panel.element.style.backgroundPosition = "0% 0%"
@@ -2304,7 +2412,7 @@ class SourceVguiRuntime implements VguiRuntime {
       const labelColor = panel.properties.get("brighttext") === "1" ? "Label.TextBrightColor" : panel.properties.get("dulltext") === "1" ? "Label.TextDullColor" : "Label.TextColor"
       foreground = this.resolveColor(panel.enabled ? labelColor : "Label.DisabledFgColor1", foreground)
       background = this.resolveColor("Label.BgColor", background)
-    } else if (["Button", "CheckButton", "RadioButton", "MenuItem"].some((name) => sameName(sourceControl, name))) {
+    } else if (["Button", "CheckButton", "RadioButton", "FrameSystemButton", "MenuItem"].some((name) => sameName(sourceControl, name))) {
       const prefix = sameName(sourceControl, "MenuItem") ? "Menu" : sameName(sourceControl, "CheckButton") ? "CheckButton" : sameName(sourceControl, "RadioButton") ? "RadioButton" : "Button"
       const state = panel.depressed ? "Depressed" : panel.armed ? "Armed" : panel.selected ? "Selected" : ""
       foreground = this.resolveColor(`${prefix}.${state ? `${state}TextColor` : "TextColor"}`, foreground)
@@ -2340,6 +2448,7 @@ class SourceVguiRuntime implements VguiRuntime {
     const animatedBackground = panel.animationValues.get("BgColor")
     if (Array.isArray(animatedForeground) && animatedForeground.length === 4) foreground = animatedForeground as unknown as Rgba
     if (Array.isArray(animatedBackground) && animatedBackground.length === 4) background = animatedBackground as unknown as Rgba
+    if (panel.foregroundColor) foreground = panel.foregroundColor
     panel.element.style.color = rgba(foreground)
     this.presentPanelBackground(panel, background)
     const alpha = panel.animationValues.get("alpha")
@@ -2431,6 +2540,21 @@ class SourceVguiRuntime implements VguiRuntime {
     }
     const image = this.images.get(asciiFold(border.image))
     if (!image) throw new RuntimeFault("MissingReference", `${panel.name}:border-image:${border.image}`)
+    if (image.material) {
+      const geometry: VguiImageRasterGeometry = border.kind === "image"
+        ? Object.freeze({ kind: border.tiled ? "tile" as const : "stretch" as const, rotation: 0 as const })
+        : Object.freeze({
+            kind: "nine-slice" as const,
+            sourceCornerWidth: border.sourceCornerWidth,
+            sourceCornerHeight: border.sourceCornerHeight,
+            drawCornerWidth: border.drawCornerWidth,
+            drawCornerHeight: border.drawCornerHeight,
+          })
+      this.presentMaterialRaster(panel, image, border.kind === "scalable-image" ? border.color : WHITE, geometry, "border-raster", border.paintFirst ? -1 : 2)
+      panel.element.style.border = "0"
+      panel.element.style.borderImage = "none"
+      return
+    }
     panel.element.style.borderStyle = "solid"
     const variant = border.kind === "scalable-image" && border.color.some((channel) => channel !== 255)
       ? image.variants?.find((candidate) => candidate.frame === 0 && candidate.rotation === 0 && candidate.tint.every((channel, index) => channel === border.color[index]))
@@ -2449,6 +2573,7 @@ class SourceVguiRuntime implements VguiRuntime {
   private imageUrl(name: string, tint: Rgba, frame: number, rotation: 0 | 1 | 2 | 3): string | null {
     const image = this.images.get(asciiFold(name))
     if (!image || frame < 0 || frame >= image.frames) return null
+    if (image.material) return image.browserUrl
     const white = tint.every((channel) => channel === 255)
     if (frame === 0 && rotation === 0 && white) return image.browserUrl
     return image.variants?.find((variant) => variant.frame === frame && variant.rotation === rotation && variant.tint.every((channel, index) => channel === tint[index]))?.browserUrl ?? null
@@ -2464,6 +2589,11 @@ class SourceVguiRuntime implements VguiRuntime {
     panel.element.style.backgroundColor = "transparent"
     if (type === 1) {
       const texture = String(panel.animationValues.get("Texture1") ?? "")
+      const image = this.images.get(asciiFold(texture))
+      if (image?.material) {
+        this.presentMaterialRaster(panel, image, color, Object.freeze({ kind: "stretch", rotation: 0 }), "panel-background", -2)
+        return
+      }
       const url = this.imageUrl(texture, color, 0, 0)
       if (!url) {
         this.recordDiagnostic("MissingReference", "frame", `${panel.name}:background-texture:${texture}`)
@@ -2484,6 +2614,16 @@ class SourceVguiRuntime implements VguiRuntime {
     const sizes: string[] = []
     const positions: string[] = []
     for (let index = 0; index < 4; index += 1) {
+      const image = this.images.get(asciiFold(textures[index]))
+      if (image?.material && (mask & bits[index]) !== 0) {
+        const x = index === 1 || index === 2 ? panel.bounds.width - corner : 0
+        const y = index >= 2 ? panel.bounds.height - corner : 0
+        this.presentMaterialRaster(panel, image, color, Object.freeze({ kind: "stretch", rotation: 0 }), `panel-corner-${index}`, -2, Object.freeze({ x, y, width: corner, height: corner }))
+        images.push("none")
+        sizes.push(`${corner}px ${corner}px`)
+        positions.push(cornerPositions[index])
+        continue
+      }
       const url = (mask & bits[index]) !== 0 ? this.imageUrl(textures[index], color, 0, 0) : null
       if ((mask & bits[index]) !== 0 && !url) {
         this.recordDiagnostic("MissingReference", "frame", `${panel.name}:background-texture:${textures[index]}`)
@@ -2508,6 +2648,28 @@ class SourceVguiRuntime implements VguiRuntime {
     const rotation = Number(panel.properties.get("rotation") ?? 0)
     if (!safeInteger(rotation) || rotation < 0 || rotation > 3) throw new RuntimeFault("MalformedValue", `${panel.name}:rotation`)
     const whiteTint = panel.drawColor[0] === 255 && panel.drawColor[1] === 255 && panel.drawColor[2] === 255 && panel.drawColor[3] === 255
+    if (image.material) {
+      const tiled = panel.properties.get("tileImage") === "1" || panel.properties.get("tileHorizontally") === "1" || panel.properties.get("tileVertically") === "1"
+      const geometry: VguiImageRasterGeometry = sameName(panel.sourceControl, "ScalableImagePanel")
+        ? Object.freeze({
+            kind: "nine-slice" as const,
+            sourceCornerWidth: Number(panel.properties.get("src_corner_width") ?? 0),
+            sourceCornerHeight: Number(panel.properties.get("src_corner_height") ?? 0),
+            drawCornerWidth: panel.proportional ? this.proportional(Number(panel.properties.get("draw_corner_width") ?? 0), panel) : Number(panel.properties.get("draw_corner_width") ?? 0),
+            drawCornerHeight: panel.proportional ? this.proportional(Number(panel.properties.get("draw_corner_height") ?? 0), panel) : Number(panel.properties.get("draw_corner_height") ?? 0),
+          })
+        : panel.imageFill < 1
+          ? Object.freeze({ kind: "crop" as const, u0: 0, v0: 1 - panel.imageFill, u1: 1, v1: 1 })
+          : Object.freeze({ kind: tiled ? "tile" : "stretch", rotation: rotation as 0 | 1 | 2 | 3 })
+      const imageRect = panel.imageFill < 1
+        ? Object.freeze({ x: 0, y: panel.bounds.height * (1 - panel.imageFill), width: panel.bounds.width, height: panel.bounds.height * panel.imageFill })
+        : undefined
+      this.presentMaterialRaster(panel, image, panel.drawColor, geometry, "image-raster", 0, imageRect)
+      panel.element.removeAttribute("src")
+      panel.element.style.backgroundImage = "none"
+      panel.element.style.backgroundColor = rgba(panel.fillColor)
+      return
+    }
     const variant = image.variants?.find((candidate) => candidate.frame === frame && candidate.rotation === rotation && candidate.tint.every((channel, index) => channel === panel.drawColor[index]))
     if ((frame !== 0 || !whiteTint || rotation !== 0) && !variant) {
       panel.element.removeAttribute("src")
@@ -2538,6 +2700,63 @@ class SourceVguiRuntime implements VguiRuntime {
     panel.element.style.imageRendering = image.hardwareFiltered ? "auto" : "pixelated"
     panel.element.style.backgroundColor = rgba(panel.fillColor)
     panel.element.style.transform = "none"
+  }
+
+  private presentMaterialRaster(
+    panel: PanelState,
+    image: VguiImagePresentation,
+    tint: Rgba,
+    geometry: VguiImageRasterGeometry,
+    key: string,
+    z: number,
+    rect: VguiRect = Object.freeze({ x: 0, y: 0, width: panel.bounds.width, height: panel.bounds.height }),
+  ): void {
+    if (!image.material || rect.width <= 0 || rect.height <= 0) return
+    let canvas = panel.chromeElements.get(key) as HTMLCanvasElement | undefined
+    if (!canvas) {
+      if (this.panels.size + this.auxiliaryNodes.size + 3 > this.limits.maxDomNodes) throw new RuntimeFault("DomLimit", `${panel.name}:${key}`)
+      canvas = this.document.createElement("canvas")
+      canvas.dataset.vguiRaster = key
+      canvas.style.position = "absolute"
+      canvas.style.pointerEvents = "none"
+      panel.chromeElements.set(key, canvas)
+      this.auxiliaryNodes.add(canvas)
+      panel.element.append(canvas)
+    }
+    canvas.style.left = `${rect.x}px`
+    canvas.style.top = `${rect.y}px`
+    canvas.style.width = `${rect.width}px`
+    canvas.style.height = `${rect.height}px`
+    canvas.style.zIndex = String(z)
+    const identity = `${panel.id}:${key}`
+    const signature = JSON.stringify([
+      image.logicalIdentity,
+      image.revision,
+      Math.max(1, Math.trunc(rect.width)),
+      Math.max(1, Math.trunc(rect.height)),
+      this.viewport.width,
+      this.viewport.height,
+      tint,
+      geometry,
+    ])
+    if (this.rasterSignatures.get(identity) === signature) return
+    this.rasterSignatures.set(identity, signature)
+    const generation = (this.rasterGenerations.get(identity) ?? 0) + 1
+    this.rasterGenerations.set(identity, generation)
+    void this.imageRasterizer.render(canvas, Object.freeze({
+      width: Math.max(1, Math.trunc(rect.width)),
+      height: Math.max(1, Math.trunc(rect.height)),
+      viewportWidth: this.viewport.width,
+      viewportHeight: this.viewport.height,
+      tint,
+      geometry,
+      material: image.material,
+    })).catch((error) => {
+      if (!this.destroyed && this.rasterGenerations.get(identity) === generation) {
+        this.rasterSignatures.delete(identity)
+        this.recordDiagnostic("DomFailure", "frame", `${panel.name}:${key}:${error instanceof Error ? error.message : "raster"}`)
+      }
+    })
   }
 
   private setDialogVariable(panelId: VguiPanelId, name: string, value: string | number): void {
@@ -2572,6 +2791,7 @@ class SourceVguiRuntime implements VguiRuntime {
     const panel = this.requirePanel(panelId)
     if (!mutation || typeof mutation !== "object") throw new RuntimeFault("InvalidOperation", panel.name)
     if (mutation.text !== undefined && !validString(mutation.text, this.limits.maxTextCodeUnits)) throw new RuntimeFault("TextLimit", panel.name)
+    if (mutation.command !== undefined && mutation.command !== null && !validString(mutation.command, this.limits.maxStringCodeUnits)) throw new RuntimeFault("MalformedValue", `${panel.name}:command`)
     if (mutation.items !== undefined) {
       if (!Array.isArray(mutation.items) || mutation.items.length > this.limits.maxChildrenPerPanel) throw new RuntimeFault("ChildLimit", `${panel.name}:items`)
       const resultingNodes = this.panels.size + this.auxiliaryNodes.size - panel.itemElements.size + mutation.items.length + 2
@@ -2581,14 +2801,51 @@ class SourceVguiRuntime implements VguiRuntime {
         if (!item || !safeInteger(item.id) || ids.has(item.id) || !validString(item.text, this.limits.maxTextCodeUnits)) throw new RuntimeFault("MalformedValue", `${panel.name}:items`)
         ids.add(item.id)
         if (item.command !== undefined && !validString(item.command, this.limits.maxStringCodeUnits)) throw new RuntimeFault("MalformedValue", `${panel.name}:item-command`)
-        if (sameName(asSourceControl(panel.control), "PropertySheet")) {
+        if (sameName(panel.sourceControl, "PropertySheet")) {
           const page = this.panels.get(item.id)
-          if (!page || page.parent !== panel.id || !sameName(asSourceControl(page.control), "PropertyPage")) throw new RuntimeFault("MissingReference", `${panel.name}:page:${item.id}`)
+          if (!page || page.parent !== panel.id || !sameName(page.sourceControl, "PropertyPage")) throw new RuntimeFault("MissingReference", `${panel.name}:page:${item.id}`)
         }
       }
     }
-    for (const number of [mutation.value, mutation.minimum, mutation.maximum, mutation.rangeWindow, mutation.progress, mutation.imageFrame]) {
+    for (const number of [mutation.value, mutation.minimum, mutation.maximum, mutation.rangeWindow, mutation.progress, mutation.previousProgress, mutation.imageFill, mutation.imageFrame]) {
       if (number !== undefined && !finite(number)) throw new RuntimeFault("MalformedValue", panel.name)
+    }
+    if (mutation.previousProgress !== undefined && (mutation.previousProgress < -1 || mutation.previousProgress > 1)) throw new RuntimeFault("MalformedValue", `${panel.name}:previousProgress`)
+    if (mutation.previousProgress !== undefined && !sameName(panel.sourceControl, "ContinuousProgressBar")) throw new RuntimeFault("InvalidOperation", `${panel.name}:previousProgress`)
+    if (mutation.imageFill !== undefined && (mutation.imageFill < 0 || mutation.imageFill > 1)) throw new RuntimeFault("MalformedValue", `${panel.name}:imageFill`)
+    if (mutation.drawColor !== undefined && !this.validColor(mutation.drawColor)) throw new RuntimeFault("MalformedValue", `${panel.name}:drawColor`)
+    if (mutation.foregroundColor !== undefined && !this.validColor(mutation.foregroundColor)) throw new RuntimeFault("MalformedValue", `${panel.name}:foregroundColor`)
+    if (mutation.scalarProperties !== undefined && (!mutation.scalarProperties || typeof mutation.scalarProperties !== "object" || Array.isArray(mutation.scalarProperties)
+      || Object.keys(mutation.scalarProperties).length > this.limits.maxPropertiesPerPanel
+      || Object.entries(mutation.scalarProperties).some(([name, value]) => !validString(name, 255, false) || !finite(value)))) throw new RuntimeFault("MalformedValue", `${panel.name}:scalarProperties`)
+    if (mutation.sections !== undefined) {
+      if (!sameName(panel.sourceControl, "SectionedListPanel")) throw new RuntimeFault("InvalidOperation", `${panel.name}:sections`)
+      if (!Array.isArray(mutation.sections) || mutation.sections.length > this.limits.maxChildrenPerPanel) throw new RuntimeFault("ChildLimit", `${panel.name}:sections`)
+      const ids = new Set<number>()
+      for (const section of mutation.sections) {
+        if (!section || !safeInteger(section.id) || ids.has(section.id) || !validString(section.name, this.limits.maxTextCodeUnits)
+          || typeof section.alwaysVisible !== "boolean" || !safeInteger(section.minimumHeight) || section.minimumHeight < 0
+          || !Array.isArray(section.columns) || section.columns.length > this.limits.maxPropertiesPerPanel) throw new RuntimeFault("MalformedValue", `${panel.name}:sections`)
+        ids.add(section.id)
+        const columns = new Set<string>()
+        for (const column of section.columns) {
+          if (!column || !validString(column.name, 255, false) || columns.has(asciiFold(column.name)) || !validString(column.text, this.limits.maxTextCodeUnits)
+            || !safeInteger(column.flags) || !safeInteger(column.width) || column.width < 0) throw new RuntimeFault("MalformedValue", `${panel.name}:section-column`)
+          columns.add(asciiFold(column.name))
+        }
+      }
+    }
+    if (mutation.sectionedItems !== undefined) {
+      if (!sameName(panel.sourceControl, "SectionedListPanel")) throw new RuntimeFault("InvalidOperation", `${panel.name}:sectioned-items`)
+      if (!Array.isArray(mutation.sectionedItems) || mutation.sectionedItems.length > this.limits.maxChildrenPerPanel) throw new RuntimeFault("ChildLimit", `${panel.name}:sectioned-items`)
+      const sections = new Set((mutation.sections ?? panel.sections).map((section) => section.id))
+      const ids = new Set<number>()
+      for (const item of mutation.sectionedItems) {
+        if (!item || !safeInteger(item.id) || ids.has(item.id) || !sections.has(item.section) || typeof item.enabled !== "boolean"
+          || !item.cells || typeof item.cells !== "object" || Array.isArray(item.cells)
+          || Object.entries(item.cells).some(([name, value]) => !validString(name, 255, false) || !validString(value, this.limits.maxTextCodeUnits))) throw new RuntimeFault("MalformedValue", `${panel.name}:sectioned-items`)
+        ids.add(item.id)
+      }
     }
     if (mutation.image !== undefined && (!validString(mutation.image, this.limits.maxStringCodeUnits, false) || !this.images.has(asciiFold(mutation.image)))) {
       throw new RuntimeFault("MissingReference", `${panel.name}:image:${mutation.image ?? ""}`)
@@ -2599,7 +2856,7 @@ class SourceVguiRuntime implements VguiRuntime {
       if (!image || !safeInteger(mutation.imageFrame) || mutation.imageFrame < 0 || mutation.imageFrame >= image.frames) throw new RuntimeFault("MalformedValue", `${panel.name}:imageFrame`)
       const rotation = Number(panel.properties.get("rotation") ?? 0)
       const white = panel.drawColor[0] === 255 && panel.drawColor[1] === 255 && panel.drawColor[2] === 255 && panel.drawColor[3] === 255
-      if ((mutation.imageFrame !== 0 || !white || rotation !== 0) && !image.variants?.some((variant) => variant.frame === mutation.imageFrame && variant.rotation === rotation && variant.tint.every((channel, index) => channel === panel.drawColor[index]))) {
+      if ((mutation.imageFrame !== 0 || !white || rotation !== 0) && !image.material && !image.variants?.some((variant) => variant.frame === mutation.imageFrame && variant.rotation === rotation && variant.tint.every((channel, index) => channel === panel.drawColor[index]))) {
         throw new RuntimeFault("MissingReference", `${panel.name}:image-variant:${mutation.imageFrame}`)
       }
     }
@@ -2611,7 +2868,7 @@ class SourceVguiRuntime implements VguiRuntime {
     if (mutation.title !== undefined && !validString(mutation.title, this.limits.maxTextCodeUnits)) throw new RuntimeFault("TextLimit", panel.name)
     if (mutation.description !== undefined && !validString(mutation.description, this.limits.maxTextCodeUnits)) throw new RuntimeFault("TextLimit", panel.name)
     if (mutation.text !== undefined) {
-      if (["MessageBox", "QueryBox"].some((identity) => sameName(asSourceControl(panel.control), identity))) {
+      if (["MessageBox", "QueryBox"].some((identity) => sameName(panel.sourceControl, identity))) {
         panel.bodyTextSource = mutation.text
         this.refreshBodyText(panel)
       } else {
@@ -2623,6 +2880,11 @@ class SourceVguiRuntime implements VguiRuntime {
       }
       this.updateAutoSize(panel)
     }
+    if (mutation.command !== undefined) {
+      panel.command = mutation.command
+      if (mutation.command === null) panel.properties.delete("command")
+      else panel.properties.set("command", mutation.command)
+    }
     if (mutation.minimum !== undefined) panel.minimum = Math.trunc(mutation.minimum)
     if (mutation.maximum !== undefined) panel.maximum = Math.trunc(mutation.maximum)
     if (mutation.rangeWindow !== undefined) panel.rangeWindow = Math.max(0, Math.trunc(mutation.rangeWindow))
@@ -2632,18 +2894,25 @@ class SourceVguiRuntime implements VguiRuntime {
     if (mutation.items !== undefined) {
       panel.items = mutation.items.map((item) => ({ id: item.id, text: item.text, command: item.command ?? null, enabled: item.enabled ?? true, checked: item.checked ?? false }))
       if (panel.activeIndex !== null && panel.activeIndex >= panel.items.length) panel.activeIndex = null
-      if (sameName(asSourceControl(panel.control), "PropertySheet") && panel.activeIndex === null && panel.items.length > 0) panel.activeIndex = 0
+      if (sameName(panel.sourceControl, "PropertySheet") && panel.activeIndex === null && panel.items.length > 0) panel.activeIndex = 0
     }
     if (mutation.activeIndex !== undefined) {
       panel.activeIndex = mutation.activeIndex
-      if (panel.activeIndex !== null) {
+      if (panel.activeIndex !== null && sameName(panel.sourceControl, "ComboBox")) {
         panel.textSource = panel.items[panel.activeIndex].text
         this.refreshText(panel)
         this.updateAutoSize(panel)
       }
     }
-    if (sameName(asSourceControl(panel.control), "PropertySheet")) this.activatePropertyPage(panel)
+    if (sameName(panel.sourceControl, "PropertySheet")) this.activatePropertyPage(panel)
     if (mutation.progress !== undefined) panel.progress = Math.max(0, Math.min(1, mutation.progress))
+    if (mutation.previousProgress !== undefined) panel.previousProgress = mutation.previousProgress
+    if (mutation.imageFill !== undefined) panel.imageFill = mutation.imageFill
+    if (mutation.drawColor !== undefined) panel.drawColor = Object.freeze([...mutation.drawColor]) as Rgba
+    if (mutation.foregroundColor !== undefined) panel.foregroundColor = Object.freeze([...mutation.foregroundColor]) as Rgba
+    if (mutation.scalarProperties !== undefined) for (const [name, value] of Object.entries(mutation.scalarProperties)) panel.scalarProperties.set(name, value)
+    if (mutation.sections !== undefined) panel.sections = mutation.sections.map((section: VguiSectionedListSection) => Object.freeze({ ...section, columns: Object.freeze(section.columns.map((column: VguiSectionedListColumn) => Object.freeze({ ...column }))) }))
+    if (mutation.sectionedItems !== undefined) panel.sectionedItems = mutation.sectionedItems.map((item) => Object.freeze({ ...item, cells: Object.freeze({ ...item.cells }) }))
     if (mutation.image !== undefined) panel.image = mutation.image
     if (mutation.imageFrame !== undefined) panel.properties.set("frame", String(mutation.imageFrame))
     if (mutation.url !== undefined) {
@@ -2662,7 +2931,7 @@ class SourceVguiRuntime implements VguiRuntime {
   }
 
   private setControlValue(panel: PanelState, value: number, signal: boolean): void {
-    const sourceControl = asSourceControl(panel.control)
+    const sourceControl = panel.sourceControl
     let clamped: number
     if (sameName(sourceControl, "ScrollBar")) clamped = Math.max(panel.minimum, Math.min(panel.maximum - panel.rangeWindow, value))
     else if (panel.minimum <= panel.maximum) clamped = Math.max(panel.minimum, Math.min(panel.maximum, value))
@@ -2673,7 +2942,7 @@ class SourceVguiRuntime implements VguiRuntime {
   }
 
   private setSelected(panel: PanelState, selected: boolean, signal: boolean): void {
-    const sourceControl = asSourceControl(panel.control)
+    const sourceControl = panel.sourceControl
     if (sameName(sourceControl, "RadioButton")) {
       if (selected && !panel.enabled) return
       if (selected && panel.parent !== null) {
@@ -2682,7 +2951,7 @@ class SourceVguiRuntime implements VguiRuntime {
         for (const siblingId of parent.children) {
           const sibling = this.requirePanel(siblingId)
           const siblingTab = sibling.tabPosition || sibling.subTabPosition
-          if (sibling.id !== panel.id && sameName(asSourceControl(sibling.control), "RadioButton") && siblingTab === originalTab) {
+          if (sibling.id !== panel.id && sameName(sibling.sourceControl, "RadioButton") && siblingTab === originalTab) {
             sibling.selected = false
             sibling.checked = false
             if (sibling.tabPosition !== 0) sibling.subTabPosition = sibling.tabPosition
@@ -2728,7 +2997,7 @@ class SourceVguiRuntime implements VguiRuntime {
     const group = this.requirePanel(groupId)
     if (panelId !== null) {
       const panel = this.requirePanel(panelId)
-      if (!this.hasAncestor(panel.id, group.id) || !["Button", "CheckButton", "RadioButton"].some((name) => sameName(asSourceControl(panel.control), name))) {
+      if (!this.hasAncestor(panel.id, group.id) || !["Button", "CheckButton", "RadioButton", "FrameSystemButton"].some((name) => sameName(panel.sourceControl, name))) {
         throw new RuntimeFault("InvalidOperation", `${group.name}:default-button`)
       }
     }
@@ -2874,8 +3143,8 @@ class SourceVguiRuntime implements VguiRuntime {
 
   private hitPanel(panelId: VguiPanelId, x: number, y: number, ignoreModal: boolean): VguiPanelId | null {
     const panel = this.panels.get(panelId)
-    if (!panel || !panel.effectivelyVisible || !panel.mouseInput || (!ignoreModal && !this.modalEligible(panel.id))) return null
-    const comboExpanded = sameName(asSourceControl(panel.control), "ComboBox") && panel.properties.get("expanded") === "1"
+    if (!panel || !panel.effectivelyVisible || (!ignoreModal && !this.modalEligible(panel.id))) return null
+    const comboExpanded = sameName(panel.sourceControl, "ComboBox") && panel.properties.get("expanded") === "1"
     const hitRect = comboExpanded
       ? { ...panel.clip, height: panel.clip.height + panel.items.length * Math.max(1, Number(panel.properties.get("itemheight") ?? 20)) }
       : panel.clip
@@ -2886,7 +3155,7 @@ class SourceVguiRuntime implements VguiRuntime {
       const hit = this.hitPanel(child.id, x, y, ignoreModal)
       if (hit !== null) return hit
     }
-    return panel.id
+    return panel.mouseInput ? panel.id : null
   }
 
   private pointerMove(x: number, y: number, pointerId: number): void {
@@ -2974,7 +3243,7 @@ class SourceVguiRuntime implements VguiRuntime {
     const target = this.calculateKeyFocus()
     if (target === null) return
     const panel = this.requirePanel(target)
-    if (!["TextEntry", "ComboBox"].some((name) => sameName(asSourceControl(panel.control), name)) || !panel.editable) return
+    if (!["TextEntry", "ComboBox"].some((name) => sameName(panel.sourceControl, name)) || !panel.editable) return
     this.insertText(panel, text)
     this.postAction(panel, "TextChanged", {})
     this.publishDom()
@@ -3011,7 +3280,7 @@ class SourceVguiRuntime implements VguiRuntime {
   private focusedTextPanel(): PanelState | null {
     if (this.keyFocus === null) return null
     const panel = this.panels.get(this.keyFocus)
-    if (!panel || !["TextEntry", "ComboBox"].some((name) => sameName(asSourceControl(panel.control), name))) return null
+    if (!panel || !["TextEntry", "ComboBox"].some((name) => sameName(panel.sourceControl, name))) return null
     return panel
   }
 
@@ -3085,9 +3354,9 @@ class SourceVguiRuntime implements VguiRuntime {
 
   private dispatchMessage(panel: PanelState, message: VguiMessage, source: VguiPanelId | null): void {
     this.addTrace("message", panel.id, message.name)
-    const sourceControl = asSourceControl(panel.control)
+    const sourceControl = panel.sourceControl
     if (sameName(message.name, "CursorEntered")) {
-      if (["Button", "CheckButton", "RadioButton", "MenuItem"].some((name) => sameName(sourceControl, name)) && panel.enabled && !panel.selected) {
+      if (["Button", "CheckButton", "RadioButton", "FrameSystemButton", "MenuItem"].some((name) => sameName(sourceControl, name)) && panel.enabled && !panel.selected) {
         const changed = !panel.armed
         panel.armed = true
         const sound = panel.properties.get("sound_armed")
@@ -3112,11 +3381,20 @@ class SourceVguiRuntime implements VguiRuntime {
     }
     if (sameName(message.name, "MouseWheeled")) {
       const delta = Number(message.fields.delta ?? 0)
-      if (["ScrollBar", "ListPanel", "Menu", "RichText"].some((name) => sameName(sourceControl, name))) {
+      if (sameName(sourceControl, "ScrollableEditablePanel") || sameName(sourceControl, "SectionedListPanel")) {
+        const scrollName = sameName(sourceControl, "ScrollableEditablePanel") ? "VerticalScrollBar" : "SectionedScrollBar"
+        const scroll = panel.children.map((id) => this.requirePanel(id)).find((child) => child.name === scrollName)
+        if (scroll) this.setControlValue(scroll, scroll.value - delta * (sameName(sourceControl, "ScrollableEditablePanel") ? 50 : 60), true)
+      } else if (["ScrollBar", "ListPanel", "Menu", "RichText"].some((name) => sameName(sourceControl, name))) {
         this.setControlValue(panel, panel.value - delta, true)
       } else if (panel.parent !== null) {
         this.postMessage(panel.parent, panel.id, message, 0)
       }
+      return
+    }
+    if (sameName(message.name, "ScrollBarSliderMoved") && (sameName(sourceControl, "ScrollableEditablePanel") || sameName(sourceControl, "SectionedListPanel"))) {
+      this.solveGeometry()
+      this.publishDom()
       return
     }
     if (sameName(message.name, "KeyCodePressed")) {
@@ -3192,8 +3470,8 @@ class SourceVguiRuntime implements VguiRuntime {
   }
 
   private controlMousePressed(panel: PanelState, button: VguiPointerButton, pointerId: number): void {
-    if (!panel.enabled || button !== "left") return
-    const control = asSourceControl(panel.control)
+    if (!panel.enabled || (button !== "left" && !(button === "right" && sameName(panel.sourceControl, "SectionedListPanel")))) return
+    const control = panel.sourceControl
     if (sameName(control, "URLLabel")) {
       if (panel.url) this.pendingRequests.push(Object.freeze({ kind: "external-open", panel: panel.id, url: panel.url }))
       return
@@ -3218,7 +3496,7 @@ class SourceVguiRuntime implements VguiRuntime {
       }
       if (this.beginFrameInteraction(panel, pointerId)) return
     }
-    if (["Button", "CheckButton", "RadioButton", "MenuItem"].some((name) => sameName(control, name))) {
+    if (["Button", "CheckButton", "RadioButton", "FrameSystemButton", "MenuItem"].some((name) => sameName(control, name))) {
       if (panel.activation === 0) {
         this.requestedFocus = panel.keyboardInput ? panel.id : this.requestedFocus
         this.clickControl(panel)
@@ -3241,7 +3519,17 @@ class SourceVguiRuntime implements VguiRuntime {
       this.scrollBarPress(panel, pointerId)
       return
     }
-    if (sameName(control, "ListPanel")) {
+    if (sameName(control, "SectionedListPanel")) {
+      if (button !== "left" && button !== "right") return
+      const selected = this.sectionedItemAt(panel, this.pointerY - panel.absoluteBounds.y)
+      if (selected !== null && panel.sectionedItems[selected]?.enabled) {
+        panel.activeIndex = selected
+        const item = panel.sectionedItems[selected]!
+        this.postAction(panel, button === "left" ? "ItemLeftClick" : "ItemContextMenu", { itemID: item.id })
+        this.postAction(panel, "ItemSelected", { itemID: item.id })
+        this.requestedFocus = panel.id
+      } else if (panel.properties.get("clickable") !== "0") panel.activeIndex = null
+    } else if (sameName(control, "ListPanel")) {
       const rowHeight = Math.max(1, Number(panel.properties.get("linespacing") ?? 20))
       const index = Math.floor((this.pointerY - panel.absoluteBounds.y) / rowHeight)
       if (index >= 0 && index < panel.items.length && panel.items[index].enabled) {
@@ -3271,10 +3559,36 @@ class SourceVguiRuntime implements VguiRuntime {
     }
   }
 
+  private sectionedItemAt(panel: PanelState, localY: number): number | null {
+    const scroll = panel.children.map((id) => this.requirePanel(id)).find((child) => child.name === "SectionedScrollBar")
+    const line = Math.max(1, Number(panel.properties.get("linespacing") ?? 20))
+    const lineGap = Math.max(0, Number(panel.properties.get("linegap") ?? 0))
+    const sectionGap = Math.max(0, Number(panel.properties.get("sectiongap") ?? 8))
+    const header = (this.fonts.get("defaultverysmall")?.lineHeightPx ?? 13) + 7
+    let y = 5 - (scroll?.value ?? 0)
+    let visibleSections = 0
+    let index = 0
+    for (const section of panel.sections) {
+      const items = panel.sectionedItems.filter((item) => item.section === section.id)
+      if (items.length === 0 && !section.alwaysVisible) continue
+      if (visibleSections > 0) y += sectionGap
+      const sectionStart = y
+      if (panel.properties.get("drawsectionheaders") !== "0") y += header
+      for (const _item of items) {
+        if (localY >= y && localY < y + line) return index
+        y += line + lineGap
+        index += 1
+      }
+      y = Math.max(y, sectionStart + section.minimumHeight)
+      visibleSections += 1
+    }
+    return null
+  }
+
   private controlMouseReleased(panel: PanelState, button: VguiPointerButton): void {
     if (button !== "left") return
-    const control = asSourceControl(panel.control)
-    if (["Button", "CheckButton", "RadioButton", "MenuItem"].some((name) => sameName(control, name))) {
+    const control = panel.sourceControl
+    if (["Button", "CheckButton", "RadioButton", "FrameSystemButton", "MenuItem"].some((name) => sameName(control, name))) {
       if (panel.activation !== 0) {
         const admitted = panel.enabled && (this.mouseOver === panel.id || this.hasAncestor(this.mouseOver ?? -1, panel.id))
         if ((panel.activation !== 2 || panel.selected) && admitted) this.clickControl(panel)
@@ -3308,7 +3622,7 @@ class SourceVguiRuntime implements VguiRuntime {
   }
 
   private clickControl(panel: PanelState): void {
-    const control = asSourceControl(panel.control)
+    const control = panel.sourceControl
     if (sameName(control, "RadioButton")) {
       this.setSelected(panel, true, true)
     } else if (sameName(control, "CheckButton")) {
@@ -3333,8 +3647,27 @@ class SourceVguiRuntime implements VguiRuntime {
   }
 
   private controlKeyPressed(panel: PanelState, key: string, shift: boolean, control: boolean): void {
-    const sourceControl = asSourceControl(panel.control)
-    if (["Button", "CheckButton", "RadioButton", "MenuItem"].some((name) => sameName(sourceControl, name)) && (key === "Enter" || key === "Space")) {
+    const sourceControl = panel.sourceControl
+    if (sameName(sourceControl, "SectionedListPanel") && panel.sectionedItems.length > 0) {
+      const prior = panel.activeIndex ?? 0
+      let next = prior
+      if (key === "ArrowDown") next = Math.min(panel.sectionedItems.length - 1, prior + 1)
+      else if (key === "ArrowUp") next = Math.max(0, prior - 1)
+      else if (key === "PageDown") next = Math.min(panel.sectionedItems.length - 1, prior + Math.max(1, Math.trunc(panel.bounds.height / 20)))
+      else if (key === "PageUp") next = Math.max(0, prior - Math.max(1, Math.trunc(panel.bounds.height / 20)))
+      else if (key === "Enter") {
+        const item = panel.sectionedItems[prior]
+        if (item?.enabled) this.postAction(panel, "ItemLeftClick", { itemID: item.id })
+        return
+      } else return
+      if (next !== prior || panel.activeIndex === null) {
+        panel.activeIndex = next
+        const item = panel.sectionedItems[next]!
+        this.postAction(panel, "ItemSelected", { itemID: item.id })
+      }
+      return
+    }
+    if (["Button", "CheckButton", "RadioButton", "FrameSystemButton", "MenuItem"].some((name) => sameName(sourceControl, name)) && (key === "Enter" || key === "Space")) {
       panel.armed = true
       panel.properties.set("keyDown", "1")
       if (panel.activation !== 1) this.clickControl(panel)
@@ -3344,8 +3677,8 @@ class SourceVguiRuntime implements VguiRuntime {
   }
 
   private controlKeyReleased(panel: PanelState, key: string): void {
-    const sourceControl = asSourceControl(panel.control)
-    if (["Button", "CheckButton", "RadioButton", "MenuItem"].some((name) => sameName(sourceControl, name))
+    const sourceControl = panel.sourceControl
+    if (["Button", "CheckButton", "RadioButton", "FrameSystemButton", "MenuItem"].some((name) => sameName(sourceControl, name))
       && panel.properties.get("keyDown") === "1" && (key === "Enter" || key === "Space")) {
       if (panel.activation !== 0) this.clickControl(panel)
       panel.properties.delete("keyDown")
@@ -3354,7 +3687,7 @@ class SourceVguiRuntime implements VguiRuntime {
   }
 
   private controlKeyTyped(panel: PanelState, key: string, shift: boolean, control: boolean, alt: boolean): void {
-    const sourceControl = asSourceControl(panel.control)
+    const sourceControl = panel.sourceControl
     if (key === "Tab") {
       this.navigateTab(panel, shift ? -1 : 1)
       return
@@ -3437,7 +3770,7 @@ class SourceVguiRuntime implements VguiRuntime {
   }
 
   private frameDialogButton(panel: PanelState): "ok" | "cancel" | null {
-    const control = asSourceControl(panel.control)
+    const control = panel.sourceControl
     if (!["MessageBox", "QueryBox"].some((name) => sameName(control, name))) return null
     const scale = panel.proportional ? this.viewport.height / 480 : 1
     const width = Math.trunc(64 * scale)
@@ -3488,7 +3821,7 @@ class SourceVguiRuntime implements VguiRuntime {
       return
     }
     if (panel.dragging) {
-      const control = asSourceControl(panel.control)
+      const control = panel.sourceControl
       if (sameName(control, "Slider")) {
         const usable = Math.max(1, panel.bounds.width - panel.thumbWidth)
         const range = panel.maximum - panel.minimum
@@ -3610,7 +3943,7 @@ class SourceVguiRuntime implements VguiRuntime {
     let current = panel
     while (current.parent !== null) {
       const parent = this.requirePanel(current.parent)
-      if (["EditablePanel", "Frame", "PropertySheet", "MessageBox", "QueryBox"].some((name) => sameName(asSourceControl(parent.control), name))) return parent
+      if (["EditablePanel", "Frame", "PropertySheet", "MessageBox", "QueryBox"].some((name) => sameName(parent.sourceControl, name))) return parent
       current = parent
     }
     return this.requirePanel(this.rootPanel)
@@ -3626,7 +3959,7 @@ class SourceVguiRuntime implements VguiRuntime {
     const current = candidates.findIndex((candidate) => candidate.id === panel.id)
     const next = current < 0 ? direction > 0 ? 0 : candidates.length - 1 : (current + direction + candidates.length) % candidates.length
     this.requestedFocus = candidates[next].id
-    if (["Button", "CheckButton", "RadioButton"].some((name) => sameName(asSourceControl(candidates[next].control), name))) group.currentDefaultButton = candidates[next].id
+    if (["Button", "CheckButton", "RadioButton", "FrameSystemButton"].some((name) => sameName(candidates[next].sourceControl, name))) group.currentDefaultButton = candidates[next].id
     else group.currentDefaultButton = group.defaultButton
   }
 
@@ -3649,7 +3982,7 @@ class SourceVguiRuntime implements VguiRuntime {
   }
 
   private menuKey(panel: PanelState, key: string): void {
-    const combo = sameName(asSourceControl(panel.control), "ComboBox")
+    const combo = sameName(panel.sourceControl, "ComboBox")
     if (key === "Escape") {
       if (combo) panel.properties.set("expanded", "0")
       else panel.visible = false
@@ -3666,11 +3999,11 @@ class SourceVguiRuntime implements VguiRuntime {
   private changeActiveItem(panel: PanelState, direction: -1 | 1): void {
     const start = panel.activeIndex ?? (direction > 0 ? -1 : panel.items.length)
     panel.activeIndex = this.nextEnabledItem(panel, start, direction)
-    if (panel.activeIndex !== null && sameName(asSourceControl(panel.control), "ComboBox")) {
+    if (panel.activeIndex !== null && sameName(panel.sourceControl, "ComboBox")) {
       panel.textSource = panel.items[panel.activeIndex].text
       this.refreshText(panel)
     }
-    if (sameName(asSourceControl(panel.control), "PropertySheet")) this.activatePropertyPage(panel)
+    if (sameName(panel.sourceControl, "PropertySheet")) this.activatePropertyPage(panel)
   }
 
   private activatePropertyPage(sheet: PanelState): void {
@@ -3700,8 +4033,8 @@ class SourceVguiRuntime implements VguiRuntime {
     this.refreshText(panel)
     if (item.command) this.pendingRequests.push(Object.freeze({ kind: "command", panel: panel.id, command: item.command }))
     this.postAction(panel, "MenuItemSelected", { itemID: item.id })
-    if (sameName(asSourceControl(panel.control), "Menu")) panel.visible = false
-    if (sameName(asSourceControl(panel.control), "ComboBox")) panel.properties.set("expanded", "0")
+    if (sameName(panel.sourceControl, "Menu")) panel.visible = false
+    if (sameName(panel.sourceControl, "ComboBox")) panel.properties.set("expanded", "0")
   }
 
   private closeQuery(panel: PanelState, accepted: boolean): void {
@@ -4144,7 +4477,7 @@ class SourceVguiRuntime implements VguiRuntime {
     this.clearFocusRequested = false
     if (next !== null) this.movePanel(next, true)
     for (const panel of this.panels.values()) {
-      if (["Frame", "MessageBox", "QueryBox"].some((name) => sameName(asSourceControl(panel.control), name))) this.reapplyPanelPresentation(panel)
+      if (["Frame", "MessageBox", "QueryBox"].some((name) => sameName(panel.sourceControl, name))) this.reapplyPanelPresentation(panel)
     }
   }
 
@@ -4192,6 +4525,7 @@ class SourceVguiRuntime implements VguiRuntime {
   }
 
   private solveGeometry(): void {
+    this.layoutSpecializedPanels()
     const workspace: VguiRect = { x: 0, y: 0, width: this.viewport.width, height: this.viewport.height }
     const visiting = new Set<VguiPanelId>()
     const solved = new Set<VguiPanelId>()
@@ -4245,6 +4579,49 @@ class SourceVguiRuntime implements VguiRuntime {
     }
     solve(this.rootPanel)
     for (const popupId of this.popups) if (this.panels.has(popupId)) solve(popupId)
+  }
+
+  private layoutSpecializedPanels(): void {
+    for (const panel of this.panels.values()) {
+      if (sameName(panel.sourceControl, "ScrollableEditablePanel")) {
+        const scroll = panel.children.map((id) => this.requirePanel(id)).find((child) => child.name === "VerticalScrollBar")
+        const child = panel.children.map((id) => this.requirePanel(id)).find((candidate) => candidate !== scroll)
+        if (!scroll || !child) continue
+        scroll.bounds = { x: Math.max(0, panel.bounds.width - 16), y: 0, width: 16, height: panel.bounds.height }
+        scroll.minimum = 0
+        scroll.maximum = child.bounds.height
+        scroll.rangeWindow = panel.bounds.height
+        scroll.value = Math.max(0, Math.min(Math.max(0, scroll.maximum - scroll.rangeWindow), scroll.value))
+        child.bounds.width = Math.max(0, panel.bounds.width - scroll.bounds.width)
+        child.bounds.x = 0
+        child.bounds.y = -scroll.value
+      } else if (sameName(panel.sourceControl, "SectionedListPanel")) {
+        const scroll = panel.children.map((id) => this.requirePanel(id)).find((child) => child.name === "SectionedScrollBar")
+        if (!scroll) continue
+        const line = Math.max(1, Number(panel.properties.get("linespacing") ?? 20))
+        const header = (this.fonts.get("defaultverysmall")?.lineHeightPx ?? 13) + 7
+        const lineGap = Math.max(0, Number(panel.properties.get("linegap") ?? 0))
+        const sectionGap = Math.max(0, Number(panel.properties.get("sectiongap") ?? 8))
+        let content = 5
+        let visibleSections = 0
+        for (const section of panel.sections) {
+          const count = panel.sectionedItems.filter((item) => item.section === section.id).length
+          if (count === 0 && !section.alwaysVisible) continue
+          if (visibleSections > 0) content += sectionGap
+          content += panel.properties.get("drawsectionheaders") === "0" ? 0 : header
+          content += count * (line + lineGap)
+          content = Math.max(content, section.minimumHeight)
+          visibleSections += 1
+        }
+        const enabled = panel.properties.get("verticalscrollbar") !== "0"
+        scroll.visible = enabled && content > panel.bounds.height
+        scroll.bounds = { x: Math.max(0, panel.bounds.width - scroll.bounds.width - 2), y: 0, width: scroll.bounds.width, height: Math.max(0, panel.bounds.height - 2) }
+        scroll.minimum = 0
+        scroll.maximum = content
+        scroll.rangeWindow = panel.bounds.height
+        scroll.value = scroll.visible ? Math.max(0, Math.min(Math.max(0, content - panel.bounds.height), scroll.value)) : 0
+      }
+    }
   }
 
   private corner(value: string | undefined): readonly [number, number] {
@@ -4304,7 +4681,7 @@ class SourceVguiRuntime implements VguiRuntime {
         panel.element.setAttribute("aria-hidden", panel.effectivelyVisible ? "false" : "true")
         panel.element.setAttribute("aria-disabled", panel.enabled ? "false" : "true")
         panel.element.setAttribute("aria-label", panel.accessibleName)
-        if (["Frame", "MessageBox", "QueryBox"].some((name) => sameName(asSourceControl(panel.control), name))) {
+        if (["Frame", "MessageBox", "QueryBox"].some((name) => sameName(panel.sourceControl, name))) {
           panel.element.setAttribute("aria-modal", this.applicationModal === panel.id ? "true" : "false")
         }
         if (panel.accessibleDescription) panel.element.setAttribute("aria-description", panel.accessibleDescription)
@@ -4328,7 +4705,7 @@ class SourceVguiRuntime implements VguiRuntime {
   }
 
   private publishControlDom(panel: PanelState): void {
-    const control = asSourceControl(panel.control)
+    const control = panel.sourceControl
     if (sameName(control, "TextEntry") || sameName(control, "ComboBox")) {
       const input = panel.element as HTMLInputElement | HTMLTextAreaElement
       input.value = panel.text
@@ -4343,7 +4720,7 @@ class SourceVguiRuntime implements VguiRuntime {
         const start = panel.selectionStart < 0 ? panel.caret : panel.selectionStart
         input.setSelectionRange(start, panel.selectionEnd)
       } catch {}
-    } else if (!sameName(control, "ImagePanel") && !["Frame", "MessageBox", "QueryBox"].some((name) => sameName(control, name))) {
+    } else if (["Label", "Button", "CheckButton", "RadioButton", "MenuItem", "URLLabel", "FrameSystemButton", "Divider"].some((name) => sameName(control, name))) {
       panel.element.textContent = panel.text
     }
     if (sameName(control, "CheckButton") || sameName(control, "RadioButton")) panel.element.setAttribute("aria-checked", panel.checked ? "true" : "false")
@@ -4441,7 +4818,7 @@ class SourceVguiRuntime implements VguiRuntime {
     close.style.pointerEvents = "auto"
     close.setAttribute("aria-label", "Close")
     close.tabIndex = -1
-    const control = asSourceControl(panel.control)
+    const control = panel.sourceControl
     if (["MessageBox", "QueryBox"].some((name) => sameName(control, name))) {
       const body = get("message", "div")
       const ok = get("ok", "button")
@@ -4489,7 +4866,7 @@ class SourceVguiRuntime implements VguiRuntime {
   }
 
   private presentControlGeometry(panel: PanelState): void {
-    const control = asSourceControl(panel.control)
+    const control = panel.sourceControl
     const images: string[] = []
     const sizes: string[] = []
     const positions: string[] = []
@@ -4534,6 +4911,30 @@ class SourceVguiRuntime implements VguiRuntime {
         const color = this.resolveColor("ScrollBarSlider.FgColor", WHITE)
         append(color, vertical ? `${Math.max(0, cross - 1)}px ${Math.trunc(thumbLength)}px` : `${Math.trunc(thumbLength)}px ${Math.max(0, cross - 1)}px`, vertical ? `0 ${Math.trunc(trackStart + position)}px` : `${Math.trunc(trackStart + position)}px 1px`)
       }
+    } else if (sameName(control, "ContinuousProgressBar")) {
+      const direction = asciiFold(panel.properties.get("direction") ?? "east")
+      const bounded = (value: number) => Math.max(0, Math.min(1, value))
+      const current = bounded(panel.progress)
+      const previous = panel.previousProgress
+      const foreground = this.resolveColor("ProgressBar.FgColor", WHITE)
+      const gain = Object.freeze([100, 255, 100, 255]) as Rgba
+      const loss = Object.freeze([200, 45, 45, 255]) as Rgba
+      const horizontal = direction === "east" || direction === "west"
+      const length = horizontal ? panel.bounds.width : panel.bounds.height
+      const position = (start: number, end: number, color: Rgba) => {
+        const from = Math.trunc(length * bounded(start))
+        const to = Math.trunc(length * bounded(end))
+        const size = Math.max(0, to - from)
+        if (size === 0) return
+        if (direction === "west") append(color, `${size}px ${panel.bounds.height}px`, `${panel.bounds.width - to}px 0`)
+        else if (direction === "north") append(color, `${panel.bounds.width}px ${size}px`, `0 ${panel.bounds.height - to}px`)
+        else if (direction === "south") append(color, `${panel.bounds.width}px ${size}px`, `0 ${from}px`)
+        else append(color, `${size}px ${panel.bounds.height}px`, `${from}px 0`)
+      }
+      if (previous >= 0) {
+        if (current > previous) { position(0, previous, foreground); position(previous, current, gain) }
+        else { position(current, previous, loss); position(0, current, foreground) }
+      } else position(0, current, foreground)
     } else if (sameName(control, "ProgressBar")) {
       const scale = panel.proportional ? this.viewport.height / 480 : 1
       const gap = Math.max(0, Number(panel.properties.get("segment_gap") ?? Math.trunc(4 * scale)))
@@ -4565,7 +4966,8 @@ class SourceVguiRuntime implements VguiRuntime {
   }
 
   private publishItemDom(panel: PanelState): void {
-    const control = asSourceControl(panel.control)
+    const control = panel.sourceControl
+    if (sameName(control, "SectionedListPanel")) { this.publishSectionedListDom(panel); return }
     if (!["Menu", "ComboBox", "ListPanel", "PropertySheet"].some((name) => sameName(control, name))) return
     const live = new Set(panel.items.map((item) => item.id))
     for (const [id, element] of panel.itemElements) {
@@ -4586,8 +4988,8 @@ class SourceVguiRuntime implements VguiRuntime {
         panel.itemElements.set(item.id, element)
         this.auxiliaryNodes.add(element)
       }
-      element.textContent = item.text
-      element.style.position = sameName(control, "ComboBox") ? "absolute" : "relative"
+      element.textContent = this.resolveTextValue(item.text, panel)
+      element.style.position = sameName(control, "ComboBox") || sameName(control, "PropertySheet") ? "absolute" : "relative"
       element.style.height = `${Math.max(1, Number(panel.properties.get("itemheight") ?? panel.properties.get("linespacing") ?? 20))}px`
       if (sameName(control, "ComboBox")) {
         const rowHeight = Math.max(1, Number(panel.properties.get("itemheight") ?? 20))
@@ -4596,6 +4998,12 @@ class SourceVguiRuntime implements VguiRuntime {
         element.style.width = "100%"
         element.style.display = panel.properties.get("expanded") === "1" ? "block" : "none"
         panel.element.style.overflow = "visible"
+      } else if (sameName(control, "PropertySheet")) {
+        const tabWidth = Math.max(1, Number(panel.properties.get("tabwidth") ?? (panel.items.length > 0 ? panel.bounds.width / panel.items.length : panel.bounds.width)))
+        element.style.left = `${index * tabWidth}px`
+        element.style.top = "0"
+        element.style.width = `${tabWidth}px`
+        element.style.zIndex = "1"
       }
       element.style.pointerEvents = item.enabled ? "auto" : "none"
       element.setAttribute("aria-disabled", item.enabled ? "false" : "true")
@@ -4618,6 +5026,108 @@ class SourceVguiRuntime implements VguiRuntime {
         element.setAttribute("aria-controls", this.panels.get(item.id)?.element.id ?? String(item.id))
       }
       panel.element.append(element)
+    }
+  }
+
+  private publishSectionedListDom(panel: PanelState): void {
+    const liveItems = new Set(panel.sectionedItems.map((item) => item.id))
+    for (const [id, element] of panel.itemElements) {
+      if (liveItems.has(id)) continue
+      for (const child of [...element.children]) this.auxiliaryNodes.delete(child as HTMLElement)
+      element.remove()
+      panel.itemElements.delete(id)
+      this.auxiliaryNodes.delete(element)
+    }
+    const liveHeaders = new Set(panel.sections.map((section) => `section-${section.id}`))
+    for (const [key, element] of panel.chromeElements) {
+      if (!key.startsWith("section-") || liveHeaders.has(key)) continue
+      element.remove()
+      panel.chromeElements.delete(key)
+      this.auxiliaryNodes.delete(element)
+    }
+    const scroll = panel.children.map((id) => this.requirePanel(id)).find((child) => child.name === "SectionedScrollBar")
+    const scrollValue = scroll?.value ?? 0
+    const line = Math.max(1, Number(panel.properties.get("linespacing") ?? 20))
+    const lineGap = Math.max(0, Number(panel.properties.get("linegap") ?? 0))
+    const sectionGap = Math.max(0, Number(panel.properties.get("sectiongap") ?? 8))
+    const headerHeight = (this.fonts.get("defaultverysmall")?.lineHeightPx ?? 13) + 7
+    const width = Math.max(0, panel.bounds.width - 10 - (scroll?.visible ? scroll.bounds.width : 0))
+    let y = 5 - scrollValue
+    let visibleSections = 0
+    let itemIndex = 0
+    for (const section of panel.sections) {
+      const items = panel.sectionedItems.filter((item) => item.section === section.id)
+      if (items.length === 0 && !section.alwaysVisible) continue
+      if (visibleSections > 0) y += sectionGap
+      const sectionStart = y
+      if (panel.properties.get("drawsectionheaders") !== "0") {
+        const key = `section-${section.id}`
+        let header = panel.chromeElements.get(key)
+        if (!header) {
+          if (this.panels.size + this.auxiliaryNodes.size + 3 > this.limits.maxDomNodes) throw new RuntimeFault("DomLimit", `${panel.name}:${key}`)
+          header = this.document.createElement("div")
+          header.dataset.vguiSection = String(section.id)
+          header.setAttribute("role", "rowheader")
+          header.style.position = "absolute"
+          header.style.pointerEvents = "none"
+          panel.chromeElements.set(key, header)
+          this.auxiliaryNodes.add(header)
+          panel.element.append(header)
+        }
+        header.textContent = this.resolveTextValue(section.name, panel)
+        header.style.left = "5px"
+        header.style.top = `${y}px`
+        header.style.width = `${width}px`
+        header.style.height = `${headerHeight}px`
+        header.style.color = rgba(this.resolveColor("SectionedListPanel.HeaderTextColor", WHITE))
+        header.style.borderBottom = `1px solid ${rgba(this.resolveColor("SectionedListPanel.DividerColor", TRANSPARENT))}`
+        y += headerHeight
+      }
+      for (const item of items) {
+        let element = panel.itemElements.get(item.id)
+        if (!element) {
+          if (this.panels.size + this.auxiliaryNodes.size + 3 > this.limits.maxDomNodes) throw new RuntimeFault("DomLimit", `${panel.name}:item:${item.id}`)
+          element = this.document.createElement("div")
+          element.dataset.vguiItem = String(item.id)
+          element.setAttribute("role", "row")
+          element.style.position = "absolute"
+          panel.itemElements.set(item.id, element)
+          this.auxiliaryNodes.add(element)
+          panel.element.append(element)
+        }
+        for (const child of [...element.children]) this.auxiliaryNodes.delete(child as HTMLElement)
+        element.replaceChildren()
+        let x = 0
+        for (const [columnIndex, column] of section.columns.entries()) {
+          const cell = this.document.createElement("span")
+          if (this.panels.size + this.auxiliaryNodes.size + 3 > this.limits.maxDomNodes) throw new RuntimeFault("DomLimit", `${panel.name}:item:${item.id}:cell`)
+          this.auxiliaryNodes.add(cell)
+          cell.setAttribute("role", "gridcell")
+          cell.textContent = this.resolveTextValue(item.cells[column.name] ?? "", panel)
+          cell.style.position = "absolute"
+          cell.style.left = `${x + (columnIndex === 0 ? 4 : 0)}px`
+          cell.style.top = "0"
+          cell.style.width = `${Math.max(0, column.width - (columnIndex === 0 ? 8 : 4))}px`
+          cell.style.height = `${line}px`
+          cell.style.textAlign = (column.flags & 2) !== 0 ? "right" : (column.flags & 4) !== 0 ? "center" : "left"
+          element.append(cell)
+          x += column.width
+        }
+        element.style.left = "5px"
+        element.style.top = `${y}px`
+        element.style.width = `${width}px`
+        element.style.height = `${line}px`
+        element.style.pointerEvents = item.enabled ? "auto" : "none"
+        element.setAttribute("aria-disabled", item.enabled ? "false" : "true")
+        element.setAttribute("aria-selected", panel.activeIndex === itemIndex ? "true" : "false")
+        const selected = panel.activeIndex === itemIndex
+        element.style.color = rgba(this.resolveColor(selected ? "SectionedListPanel.SelectedTextColor" : "SectionedListPanel.TextColor", WHITE))
+        element.style.backgroundColor = selected ? rgba(this.resolveColor("SectionedListPanel.SelectedBgColor", TRANSPARENT)) : "transparent"
+        y += line + lineGap
+        itemIndex += 1
+      }
+      y = Math.max(y, sectionStart + section.minimumHeight)
+      visibleSections += 1
     }
   }
 
@@ -4744,6 +5254,9 @@ class SourceVguiRuntime implements VguiRuntime {
   private destroy(): void {
     if (this.destroyed) return
     this.destroyed = true
+    this.imageRasterizer.destroy()
+    this.rasterGenerations.clear()
+    this.rasterSignatures.clear()
     for (const record of this.listeners.splice(0).reverse()) record.target.removeEventListener(record.type, record.listener, record.options)
     if (this.capture !== null) {
       const panel = this.panels.get(this.capture)

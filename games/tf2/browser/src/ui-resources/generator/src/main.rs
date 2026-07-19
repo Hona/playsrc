@@ -79,8 +79,83 @@ struct Report {
     providers: Vec<ProviderRecord>,
     resources: Vec<ResourceSummary>,
     unique_controls: Vec<String>,
+    code_localization_tokens: Vec<String>,
     images: Vec<ImageRecord>,
     fonts: Vec<FontRecord>,
+    advanced_options: Vec<AdvancedOptionRecord>,
+    keyboard_actions: Vec<KeyboardActionRecord>,
+}
+
+const CODE_LOCALIZATION_TOKENS: &[&str] = &[
+    "#GameUI_AdjustGamma_Title",
+    "#GameUI_Audio",
+    "#GameUI_Bilinear",
+    "#GameUI_Keyboard",
+    "#GameUI_KeyboardAdvanced_Title",
+    "#GameUI_Mouse",
+    "#GameUI_Multiplayer",
+    "#GameUI_Options",
+    "#GameUI_ThirdPartyAudio_Title",
+    "#GameUI_ThirdPartyVideo_Title",
+    "#GameUI_Video",
+    "#GameUI_VideoAdvanced_Title",
+    "#GameUI_Anisotropic2X",
+    "#GameUI_Anisotropic4X",
+    "#GameUI_Anisotropic8X",
+    "#GameUI_Anisotropic16X",
+    "#GameUI_Trilinear",
+    "#GameUI_hdr_level0",
+    "#GameUI_hdr_level1",
+    "#GameUI_hdr_level2",
+    "#PropertyDialog_Apply",
+    "#PropertyDialog_Cancel",
+    "#PropertyDialog_OK",
+    "#gameui_disabled",
+    "#gameui_enabled",
+    "#gameui_high",
+    "#gameui_low",
+    "#gameui_medium",
+    "#gameui_noreflections",
+    "#gameui_reflectall",
+    "#gameui_reflectonlyworld",
+    "#gameui_ultra",
+];
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AdvancedOptionRecord {
+    identity: String,
+    category: String,
+    prompt: String,
+    tooltip: Option<String>,
+    kind: String,
+    minimum: Option<f64>,
+    maximum: Option<f64>,
+    choices: Vec<AdvancedOptionChoice>,
+    content_default: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AdvancedOptionChoice {
+    label: String,
+    value: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ScriptToken {
+    Text(String),
+    Open,
+    Close,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct KeyboardActionRecord {
+    section: usize,
+    section_name: String,
+    binding: String,
+    description: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -209,6 +284,248 @@ const ROOTS: &[(&str, &str, bool)] = &[
 
 fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
+}
+
+fn script_tokens(bytes: &[u8]) -> Result<Vec<ScriptToken>, String> {
+    let source = std::str::from_utf8(bytes).map_err(|_| "options script is not UTF-8")?;
+    let mut tokens = Vec::new();
+    let mut at = 0;
+    let characters = source.as_bytes();
+    while at < characters.len() {
+        if characters[at].is_ascii_whitespace() {
+            at += 1;
+            continue;
+        }
+        if characters[at] == b'/' && characters.get(at + 1) == Some(&b'/') {
+            at += 2;
+            while at < characters.len() && characters[at] != b'\n' && characters[at] != b'\r' {
+                at += 1;
+            }
+            continue;
+        }
+        if characters[at] == b'{' {
+            tokens.push(ScriptToken::Open);
+            at += 1;
+            continue;
+        }
+        if characters[at] == b'}' {
+            tokens.push(ScriptToken::Close);
+            at += 1;
+            continue;
+        }
+        if characters[at] == b'"' {
+            at += 1;
+            let mut value = String::new();
+            let mut closed = false;
+            while at < characters.len() {
+                let byte = characters[at];
+                at += 1;
+                if byte == b'"' {
+                    closed = true;
+                    break;
+                }
+                if byte == b'\\' && at < characters.len() {
+                    let escaped = characters[at];
+                    at += 1;
+                    value.push(match escaped {
+                        b'n' => '\n',
+                        b't' => '\t',
+                        _ => char::from(escaped),
+                    });
+                } else {
+                    value.push(char::from(byte));
+                }
+            }
+            if !closed {
+                return Err("options script quoted token is unterminated".to_owned());
+            }
+            tokens.push(ScriptToken::Text(value));
+            continue;
+        }
+        let start = at;
+        while at < characters.len()
+            && !characters[at].is_ascii_whitespace()
+            && characters[at] != b'{'
+            && characters[at] != b'}'
+        {
+            at += 1;
+        }
+        tokens.push(ScriptToken::Text(source[start..at].to_owned()));
+    }
+    Ok(tokens)
+}
+
+fn advanced_options(bytes: &[u8]) -> Result<Vec<AdvancedOptionRecord>, String> {
+    let tokens = script_tokens(bytes)?;
+    let mut at = 0;
+    let text = |at: &mut usize, subject: &str| -> Result<String, String> {
+        let Some(ScriptToken::Text(value)) = tokens.get(*at) else {
+            return Err(format!(
+                "options script expected {subject} at token {}",
+                *at
+            ));
+        };
+        *at += 1;
+        Ok(value.clone())
+    };
+    let exact = |at: &mut usize, expected: ScriptToken, subject: &str| -> Result<(), String> {
+        if tokens.get(*at) != Some(&expected) {
+            return Err(format!(
+                "options script expected {subject} at token {}",
+                *at
+            ));
+        }
+        *at += 1;
+        Ok(())
+    };
+    if !text(&mut at, "VERSION")?.eq_ignore_ascii_case("VERSION") {
+        return Err("options script VERSION is missing".to_owned());
+    }
+    let version = text(&mut at, "version value")?;
+    if version != "1.0" {
+        return Err(format!("options script version changed: {version}"));
+    }
+    if !text(&mut at, "DESCRIPTION")?.eq_ignore_ascii_case("DESCRIPTION") {
+        return Err("options script DESCRIPTION is missing".to_owned());
+    }
+    let _description = text(&mut at, "description identity")?;
+    exact(&mut at, ScriptToken::Open, "description open brace")?;
+    let mut rows = Vec::new();
+    let mut category = String::new();
+    while tokens.get(at) != Some(&ScriptToken::Close) {
+        let identity = text(&mut at, "option identity")?;
+        exact(&mut at, ScriptToken::Open, "option open brace")?;
+        let prompt = text(&mut at, "option prompt")?;
+        let tooltip = if tokens.get(at) == Some(&ScriptToken::Open) {
+            None
+        } else {
+            Some(text(&mut at, "option tooltip")?)
+        };
+        exact(&mut at, ScriptToken::Open, "type open brace")?;
+        let kind = text(&mut at, "option kind")?.to_ascii_uppercase();
+        let mut arguments = Vec::new();
+        while tokens.get(at) != Some(&ScriptToken::Close) {
+            arguments.push(text(&mut at, "type argument")?);
+        }
+        exact(&mut at, ScriptToken::Close, "type close brace")?;
+        let content_default = if tokens.get(at) == Some(&ScriptToken::Open) {
+            exact(&mut at, ScriptToken::Open, "default open brace")?;
+            let value = text(&mut at, "content default")?;
+            exact(&mut at, ScriptToken::Close, "default close brace")?;
+            value
+        } else if kind == "CATEGORY" {
+            String::new()
+        } else {
+            return Err(format!("advanced option {identity} default is missing"));
+        };
+        exact(&mut at, ScriptToken::Close, "option close brace")?;
+        if kind == "CATEGORY" {
+            category = prompt;
+            continue;
+        }
+        if kind == "BUTTON" {
+            continue;
+        }
+        let mut minimum = None;
+        let mut maximum = None;
+        let mut choices = Vec::new();
+        if kind == "NUMBER" || kind == "SLIDER" {
+            if arguments.len() != 2 {
+                return Err(format!("advanced option {identity} numeric bounds differ"));
+            }
+            minimum = Some(
+                arguments[0]
+                    .parse::<f64>()
+                    .map_err(|_| format!("advanced option {identity} minimum is malformed"))?,
+            );
+            maximum = Some(
+                arguments[1]
+                    .parse::<f64>()
+                    .map_err(|_| format!("advanced option {identity} maximum is malformed"))?,
+            );
+        } else if kind == "LIST" {
+            if arguments.len() % 2 != 0 || arguments.is_empty() {
+                return Err(format!("advanced option {identity} choices differ"));
+            }
+            for pair in arguments.chunks_exact(2) {
+                choices.push(AdvancedOptionChoice {
+                    label: pair[0].clone(),
+                    value: pair[1].clone(),
+                });
+            }
+        } else if kind != "BOOL" && kind != "STRING" {
+            return Err(format!(
+                "advanced option {identity} kind {kind} is unsupported"
+            ));
+        }
+        if category.is_empty() {
+            return Err(format!("advanced option {identity} has no category"));
+        }
+        rows.push(AdvancedOptionRecord {
+            identity,
+            category: category.clone(),
+            prompt,
+            tooltip,
+            kind,
+            minimum,
+            maximum,
+            choices,
+            content_default,
+        });
+    }
+    exact(&mut at, ScriptToken::Close, "description close brace")?;
+    if at != tokens.len() || rows.len() != 88 {
+        return Err(format!("advanced option row count differs: {}", rows.len()));
+    }
+    Ok(rows)
+}
+
+fn keyboard_actions(bytes: &[u8]) -> Result<Vec<KeyboardActionRecord>, String> {
+    let tokens = script_tokens(bytes)?;
+    if tokens
+        .iter()
+        .any(|token| matches!(token, ScriptToken::Open | ScriptToken::Close))
+    {
+        return Err("keyboard action list contains structural braces".to_owned());
+    }
+    let values = tokens
+        .into_iter()
+        .map(|token| match token {
+            ScriptToken::Text(value) => value,
+            _ => unreachable!(),
+        })
+        .collect::<Vec<_>>();
+    if values.len() % 2 != 0 {
+        return Err("keyboard action list has an incomplete pair".to_owned());
+    }
+    let mut section = 0;
+    let mut section_name = String::new();
+    let mut rows = Vec::new();
+    for pair in values.chunks_exact(2) {
+        let binding = &pair[0];
+        let description = &pair[1];
+        if description.starts_with('=') {
+            continue;
+        }
+        if binding.eq_ignore_ascii_case("blank") {
+            section += 1;
+            section_name = description.clone();
+            continue;
+        }
+        if section == 0 {
+            return Err(format!("keyboard action {binding} precedes its section"));
+        }
+        rows.push(KeyboardActionRecord {
+            section,
+            section_name: section_name.clone(),
+            binding: binding.clone(),
+            description: description.clone(),
+        });
+    }
+    if rows.len() != 70 {
+        return Err(format!("keyboard action row count differs: {}", rows.len()));
+    }
+    Ok(rows)
 }
 
 fn scalar<'a>(node: &'a Node, key: &[u8]) -> Result<&'a [u8], String> {
@@ -558,11 +875,13 @@ fn collect(nodes: &[Node], result: &mut Occurrences) {
     }
 }
 
+type ParseSummary = (usize, String, Occurrences, Vec<String>, Vec<NodeRecord>);
+
 fn parse_summary(
     domain: &'static str,
     logical_path: &'static str,
     bytes: &[u8],
-) -> Result<(usize, String, Occurrences, Vec<String>, Vec<NodeRecord>), String> {
+) -> Result<ParseSummary, String> {
     if domain == "animation-script"
         || logical_path.ends_with(".scr")
         || logical_path.ends_with(".lst")
@@ -976,15 +1295,46 @@ fn main() -> Result<(), String> {
 
     let mut resources = Vec::new();
     let mut unique_controls = BTreeSet::new();
-    let mut unique_localization_tokens = BTreeSet::new();
+    let mut unique_localization_tokens = CODE_LOCALIZATION_TOKENS
+        .iter()
+        .map(|value| (*value).to_owned())
+        .collect::<BTreeSet<_>>();
     let mut unique_image_values = BTreeSet::new();
     let mut unique_font_values = BTreeSet::new();
+    let mut configured_advanced_options = None;
+    let mut configured_keyboard_actions = None;
     for &(domain, logical_path, parse) in ROOTS {
         let resolution = content
             .resolve_resource(logical_path)
             .map_err(|error| error.to_string())?;
         let summary = match resolution {
             Resolution::Found(value) => {
+                if logical_path == "cfg/user_default.scr" {
+                    let rows = advanced_options(&value.bytes)?;
+                    for token in rows.iter().flat_map(|row| {
+                        std::iter::once(row.category.as_str())
+                            .chain(std::iter::once(row.prompt.as_str()))
+                            .chain(row.tooltip.as_deref())
+                            .chain(row.choices.iter().map(|choice| choice.label.as_str()))
+                    }) {
+                        if token.starts_with('#') && token.len() > 1 {
+                            unique_localization_tokens.insert(token.to_owned());
+                        }
+                    }
+                    configured_advanced_options = Some(rows);
+                }
+                if logical_path == "scripts/kb_act.lst" {
+                    let rows = keyboard_actions(&value.bytes)?;
+                    for token in rows
+                        .iter()
+                        .flat_map(|row| [row.section_name.as_str(), row.description.as_str()])
+                    {
+                        if token.starts_with('#') && token.len() > 1 {
+                            unique_localization_tokens.insert(token.to_owned());
+                        }
+                    }
+                    configured_keyboard_actions = Some(rows);
+                }
                 let (roots, encoding, mut occurrences, directives, mut document) = if parse {
                     parse_summary(domain, logical_path, &value.bytes)
                         .map_err(|error| format!("{logical_path}: {error}"))?
@@ -1093,8 +1443,16 @@ fn main() -> Result<(), String> {
         providers,
         resources,
         unique_controls: unique_controls.into_iter().collect(),
+        code_localization_tokens: CODE_LOCALIZATION_TOKENS
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect(),
         images,
         fonts,
+        advanced_options: configured_advanced_options
+            .ok_or_else(|| "configured Advanced Options source is missing".to_owned())?,
+        keyboard_actions: configured_keyboard_actions
+            .ok_or_else(|| "configured keyboard action source is missing".to_owned())?,
     };
     let json = serde_json::to_string(&report)
         .map_err(|error| error.to_string())?

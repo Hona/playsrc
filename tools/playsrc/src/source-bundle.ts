@@ -7,6 +7,7 @@ import toolchains from "../toolchains.json"
 
 export type SourceBundleArtifact = Readonly<{
   bundlePath: string
+  uiPath: string
   ledgerPath: string
   report: Readonly<{
     target: string
@@ -16,6 +17,8 @@ export type SourceBundleArtifact = Readonly<{
     authoritativeAbsences: number
     entries: number
     bundleDescriptor: ObjectDescriptor
+    uiEntries: number
+    uiDescriptor: ObjectDescriptor
     ledgerDescriptor: ObjectDescriptor
   }>
 }>
@@ -30,6 +33,10 @@ type SourceBundleReport = Readonly<{
   bytes?: unknown
   sha256?: unknown
   bundleDescriptor?: unknown
+  uiEntries?: unknown
+  uiBytes?: unknown
+  uiSha256?: unknown
+  uiDescriptor?: unknown
   ledgerBytes?: unknown
   ledgerSha256?: unknown
   ledgerDescriptor?: unknown
@@ -93,6 +100,14 @@ export function parseSourceBundleReport(output: string, target: string): SourceB
     || !/^[0-9a-f]{64}$/.test(report.sha256)
     || typeof report.ledgerSha256 !== "string"
     || !/^[0-9a-f]{64}$/.test(report.ledgerSha256)
+    || !Number.isSafeInteger(report.uiEntries)
+    || (report.uiEntries as number) < 1
+    || (report.uiEntries as number) > 2_048
+    || !Number.isSafeInteger(report.uiBytes)
+    || (report.uiBytes as number) < 12
+    || (report.uiBytes as number) > 512 * 1024 * 1024
+    || typeof report.uiSha256 !== "string"
+    || !/^[0-9a-f]{64}$/.test(report.uiSha256)
   ) {
     throw new Error("source bundle report is malformed")
   }
@@ -110,6 +125,13 @@ export function parseSourceBundleReport(output: string, target: string): SourceB
     report.ledgerBytes,
     report.ledgerSha256,
   )
+  const uiDescriptor = descriptor(
+    report.uiDescriptor,
+    "derived-object",
+    "application/octet-stream",
+    report.uiBytes,
+    report.uiSha256,
+  )
   return Object.freeze({
     target,
     contentBuild: "24207079",
@@ -118,6 +140,8 @@ export function parseSourceBundleReport(output: string, target: string): SourceB
     authoritativeAbsences: report.authoritativeAbsences as number,
     entries: report.entries as number,
     bundleDescriptor,
+    uiEntries: report.uiEntries as number,
+    uiDescriptor,
     ledgerDescriptor,
   })
 }
@@ -144,6 +168,7 @@ export async function buildSourceBundle(config: LocalConfig, target: string): Pr
   const report = parseSourceBundleReport(output, target)
   return Object.freeze({
     bundlePath: path.join(config.sourceCacheDir, "browser-bundles", `${target}.psdb`),
+    uiPath: path.join(config.sourceCacheDir, "browser-bundles", `${target}.ui.puib`),
     ledgerPath: path.join(config.sourceCacheDir, "browser-bundles", `${target}.dependencies.json`),
     report,
   })

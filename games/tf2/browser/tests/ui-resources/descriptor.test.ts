@@ -57,9 +57,21 @@ describe("configured TF2 UI resource descriptor", () => {
     expect(tf2UiResources.controls).toHaveLength(52)
     expect(tf2UiResources.properties).toHaveLength(11_077)
     expect(tf2UiResources.commands).toHaveLength(79)
-    expect(tf2UiResources.localization.tokens).toHaveLength(156)
+    expect(tf2UiResources.localization.tokens).toHaveLength(454)
+    expect(tf2UiResources.localization.tokens.find((token) => token.name === "#Valve_Move_Forward")?.definitions[0]?.value).toBe("Move forward")
+    expect(tf2UiResources.localization.tokens.find((token) => token.name === "#TF_OptionCategory_Combat")?.definitions[0]?.value).toBe("Combat Options")
     expect(tf2UiResources.images).toHaveLength(249)
     expect(tf2UiResources.fonts).toHaveLength(48)
+    expect(tf2UiResources.advancedOptions).toHaveLength(88)
+    expect(tf2UiResources.keyboardActions).toHaveLength(70)
+    expect(new Set(tf2UiResources.keyboardActions.map((row) => row.binding.toLowerCase())).size).toBe(65)
+    expect(Object.fromEntries([...Map.groupBy(tf2UiResources.advancedOptions, (row) => row.kind)].map(([kind, rows]) => [kind, rows.length]))).toEqual({
+      BOOL: 55,
+      SLIDER: 13,
+      LIST: 12,
+      NUMBER: 5,
+      STRING: 3,
+    })
     expect(tf2UiResources.controls.every((control) => control.owner !== "unsupported")).toBe(true)
     expect(tf2UiResources.properties.every((property) => property.owner !== "unsupported")).toBe(true)
     expect(tf2UiResources.commands.every((command) => command.executable === false)).toBe(true)
@@ -71,6 +83,7 @@ describe("configured TF2 UI resource descriptor", () => {
       "cfg/user.scr",
       "image:logos/UI/spray",
       "image:vgui/hud/icon_commentary",
+      "localization:#Replay_SaveReplay",
       "localization:#Steam_ValidLoginRequired",
       "localization:#VAC_ConnectingToSecureServer",
       "localization:#VAC_ConnectionIssuesSupport_Title",

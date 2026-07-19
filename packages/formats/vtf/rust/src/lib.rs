@@ -188,7 +188,8 @@ impl ImageFormat {
     fn decodable(self) -> bool {
         matches!(
             self,
-            Self::Bgr888
+            Self::Rgba8888
+                | Self::Bgr888
                 | Self::Bgra8888
                 | Self::Dxt1
                 | Self::Dxt1OneBitAlpha
@@ -744,6 +745,21 @@ pub fn decode(
         })
         .ok_or_else(|| malformed(ErrorCode::ArithmeticOverflow, None))?;
     let (channel_layout, scalar_encoding, row_stride, alpha_encoding, samples) = match format {
+        ImageFormat::Rgba8888 => {
+            let length = pixels
+                .checked_mul(4)
+                .ok_or_else(|| malformed(ErrorCode::ArithmeticOverflow, None))?;
+            if length > limits.max_decoded_bytes {
+                return Err(malformed(ErrorCode::AllocationLimit, None));
+            }
+            (
+                ChannelLayout::Rgba,
+                ScalarEncoding::U8,
+                subresource.width as usize * 4,
+                AlphaEncoding::A8,
+                encoded.to_vec(),
+            )
+        }
         ImageFormat::Bgr888 => {
             let length = pixels
                 .checked_mul(3)
@@ -1224,6 +1240,28 @@ mod tests {
         assert_eq!(plane.row_stride, 6);
         assert_eq!(plane.channel_layout, ChannelLayout::Rgb);
         assert_eq!(plane.row_order, RowOrder::TopToBottom);
+    }
+
+    #[test]
+    fn decodes_stored_rgba_rows_without_channel_reordering() {
+        let mut bytes = header(ordinary(1, 0, 2, 1), 0);
+        bytes.extend_from_slice(&[10, 20, 30, 40, 50, 60, 70, 80]);
+        let plane = decode(
+            &bytes,
+            Dialect::Source2013Pc,
+            SubresourceIdentity::HighResolution {
+                mip: 0,
+                frame: 0,
+                face: Face::Right,
+                slice: 0,
+            },
+            Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(plane.samples, [10, 20, 30, 40, 50, 60, 70, 80]);
+        assert_eq!(plane.row_stride, 8);
+        assert_eq!(plane.channel_layout, ChannelLayout::Rgba);
+        assert_eq!(plane.alpha_encoding, AlphaEncoding::A8);
     }
 
     #[test]

@@ -12,6 +12,14 @@ export type BrowserConfiguration = Readonly<{
   bsp: ObjectDescriptor
   wasm: ObjectDescriptor
   dependencies: ObjectDescriptor
+  ui: ObjectDescriptor
+  presentation: Readonly<{
+    randomSeed: number
+    activeHoliday: "none" | "summer" | "halloween" | "fullmoon" | "christmas"
+    activeWar: string | null
+    activeOperation: boolean
+    freeTrial: boolean
+  }>
 }>
 
 export class BrowserConfigurationError extends Error {
@@ -60,7 +68,7 @@ export async function loadBrowserConfiguration(): Promise<BrowserConfiguration> 
   if (
     !record(value) ||
     Object.keys(value).sort().join("\0") !==
-      "allowedExternalOrigins\0application\0applicationBuild\0assetOrigin\0bsp\0dependencies\0renderLevel\0target\0wasm" ||
+      "allowedExternalOrigins\0application\0applicationBuild\0assetOrigin\0bsp\0dependencies\0presentation\0renderLevel\0target\0ui\0wasm" ||
     value.application !== "tf2" ||
     typeof value.applicationBuild !== "string" ||
     !HASH.test(value.applicationBuild) ||
@@ -86,7 +94,17 @@ export async function loadBrowserConfiguration(): Promise<BrowserConfiguration> 
     new Set(value.allowedExternalOrigins).size !== value.allowedExternalOrigins.length ||
     !descriptor(value.bsp, "source-object") ||
     !descriptor(value.wasm, "derived-object") ||
-    !descriptor(value.dependencies, "derived-object")
+    !descriptor(value.dependencies, "derived-object") ||
+    !descriptor(value.ui, "derived-object") ||
+    !record(value.presentation) ||
+    Object.keys(value.presentation).sort().join("\0") !== "activeHoliday\0activeOperation\0activeWar\0freeTrial\0randomSeed" ||
+    !Number.isSafeInteger(value.presentation.randomSeed) ||
+    (value.presentation.randomSeed as number) < -0x7fff_ffff ||
+    (value.presentation.randomSeed as number) > 0x7fff_ffff ||
+    !["none", "summer", "halloween", "fullmoon", "christmas"].includes(value.presentation.activeHoliday as string) ||
+    !(value.presentation.activeWar === null || (typeof value.presentation.activeWar === "string" && /^[a-z0-9_]{1,63}$/u.test(value.presentation.activeWar))) ||
+    typeof value.presentation.activeOperation !== "boolean" ||
+    typeof value.presentation.freeTrial !== "boolean"
   ) {
     throw new BrowserConfigurationError("Browser configuration fields are invalid")
   }
