@@ -1,0 +1,10 @@
+{
+  "name": "@playsrc/settings",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "scripts": {
+    "test": "bun test tests",
+    "verify": "bun test tests && bun scripts/verify.ts && bunx --bun --package typescript@5.9.3 tsc --noEmit --strict --target ES2022 --module ESNext --moduleResolution Bundler --lib ES2022,DOM src/index.ts"
+  }
+}
