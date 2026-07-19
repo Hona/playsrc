@@ -20,7 +20,9 @@ Advance Source-style rigid bodies, constraints, and physical interactions determ
 
 ## Current Target
 
-The first runtime slice is the exact configured-build VPhysics/IVP body, contact, impulse, sleep, sticky-projectile, and physical-prop behavior named by [`ROADMAP.md`](ROADMAP.md). It is Blocked until a legally usable matching solver contract or complete controlled target differential corpus, a zero-to-ten-collision result seam with enable/force/post-simulation state, one exact physical-prop trace subject, and the adjacent Collision shape/contact and physical-surface producers exist. No replacement solver or trace-specific trajectory is accepted.
+The first runtime slice is the exact configured-build VPhysics/IVP convex-body, fixed-step, gravity/drag/damping, continuous-contact, bounce, persistent-friction, sleep/wake, motion-disable/enable, offset-impulse, snapshot/rollback, sticky-projectile, and physical-prop behavior named by [`ROADMAP.md`](ROADMAP.md). It is Blocked until a legally usable matching solver contract or complete controlled target specification, a checked native oracle corpus, a zero-to-ten-collision result seam with enable/force/post-simulation state, one exact physical-prop trace subject, and the adjacent Collision shape/contact and physical-surface producers exist.
+
+Momentum Mod's archived public game code confirms a game-side polygon-body and deferred-disable integration pattern but delegates every solver transition to VPhysics and changes sticky policy. The MIT VPhysics-Jolt and Bullet adapters demonstrate interface architecture over different solvers; they do not establish IVP trajectories, contacts, friction, sleeping, or ordering. No replacement solver, learned transition, or trace-specific trajectory is accepted.
 
 ## Responsibilities
 
