@@ -48,9 +48,10 @@ import {consoleLimits,resolveConfiguredConsoleResources,type ResolvedConsoleReso
 import { loadBrowserConfiguration, type BrowserConfiguration } from "./config"
 import { applyPointerDelta } from "./input"
 import { TF2_SELECTED_OPTIONS, type AdapterRequestResult, type SettingsAdapterRequest } from "@playsrc/settings"
+import { SimulationClockQueue } from "./simulation-clock"
 
-const MAX_SCHEDULED_SAMPLES = 512
 const MAX_EXTERNAL_BYTES = 536_870_912
+const SIMULATION_SAMPLE_INTERVAL_SECONDS = 0.015
 const SOUND_PATHS = [
   "sound/weapons/rocket_shoot.wav",
   "sound/weapons/stickybomblauncher_shoot.wav",
@@ -155,6 +156,7 @@ export type ApplicationView = Readonly<{
   reloadHistory?: readonly string[]
   fireTickHistory?: readonly string[]
   performanceProbe?: string
+  performanceDetailProbe?: string
   lockerProbe?: string
   unsupportedState?: "StickyPhysicsSolverUnavailable"
 }>
@@ -242,8 +244,9 @@ export class Tf2Application {
   #lastRandomAudioProbe = ""
   #lastCollisionMoverProbe = ""
   #animationFrame = 0
-  #simulationTail: Promise<void> = Promise.resolve()
-  #scheduledSamples = 0
+  #nextSimulationSampleSeconds=0
+  readonly #simulationSamples = new SimulationClockQueue()
+  #simulationBusy = false
   #pendingPresentation?:SimulationPublication
   #presentationBusy=false
   #fireEvents = 0
@@ -1013,6 +1016,8 @@ export class Tf2Application {
     if (!this.#client || !this.#renderer || !this.#loaded) throw new Error("Application is not ready")
     this.#paused = true
     this.#neutral()
+    this.#simulationSamples.clear()
+    this.#nextSimulationSampleSeconds=0
     const generation = this.#generation + 1
     const profile = this.#renderLevel === 2 ? 1 : 0
     const key = await mapDerivedKey(
@@ -1509,7 +1514,11 @@ export class Tf2Application {
     }
     if (!this.#paused && this.#snapshot && (this.#showFps !== 0 || this.#showPos !== 0)) this.#updateDiagnostics(time)
     if (this.#paused || !this.#client || !this.#renderer || !this.#snapshot) return
-    this.#scheduleSimulation(time / 1_000, false)
+    const nowSeconds=time/1_000
+    if(nowSeconds+Number.EPSILON<this.#nextSimulationSampleSeconds)return
+    this.#scheduleSimulation(nowSeconds, false)
+    if(this.#nextSimulationSampleSeconds===0)this.#nextSimulationSampleSeconds=nowSeconds+SIMULATION_SAMPLE_INTERVAL_SECONDS
+    else do{this.#nextSimulationSampleSeconds+=SIMULATION_SAMPLE_INTERVAL_SECONDS}while(this.#nextSimulationSampleSeconds<=nowSeconds)
   }
 
   #updateDiagnostics(realTimeMilliseconds: number): void {
@@ -1539,7 +1548,14 @@ export class Tf2Application {
     if(!this.#client)throw new Error("Simulation client is unavailable");const frame=()=>new Promise<number>(resolve=>requestAnimationFrame(resolve));let now=await frame();let publications=await this.#client.observe(generation,now/1000,this.#command(),false);if(publications.length)throw new Error("Simulation baseline published gameplay");for(let i=0;i<32;i++){now=await frame();publications=await this.#client.observe(generation,now/1000,this.#command(),false);if(publications[0])return publications[0]}throw new Error("Simulation did not publish an initial fixed tick")
   }
   #scheduleSimulation(nowSeconds:number,suspended:boolean):void{
-    if(!this.#client||this.#closed)return;if(this.#scheduledSamples>=MAX_SCHEDULED_SAMPLES){this.#paused=true;this.#set({phase:"Failed",detail:"Simulation browser-clock queue reached its explicit limit"});return}const generation=this.#generation,command=this.#command();this.#scheduledSamples++;this.#maximumScheduledSamples=Math.max(this.#maximumScheduledSamples,this.#scheduledSamples);this.#simulationTail=this.#simulationTail.then(async()=>{if(!this.#client||generation!==this.#generation||this.#closed)return;this.#wasmCalls.observe++;for(const publication of await this.#client.observe(generation,nowSeconds,command,suspended))this.#enqueuePresentation(generation,publication)}).catch(error=>{this.#paused=true;this.#set({phase:"Failed",detail:error instanceof Error?error.message:"Simulation scheduling failed"})}).finally(()=>{this.#scheduledSamples--})
+    if(!this.#client||this.#closed)return
+    try{this.#simulationSamples.push({generation:this.#generation,nowSeconds,suspended})}catch(error){this.#simulationSamples.clear();this.#paused=true;this.#set({phase:"Failed",detail:error instanceof Error?error.message:"Simulation scheduling failed"});return}
+    this.#maximumScheduledSamples=Math.max(this.#maximumScheduledSamples,this.#simulationSamples.length+Number(this.#simulationBusy))
+    if(!this.#simulationBusy)void this.#drainSimulation()
+  }
+  async #drainSimulation():Promise<void>{
+    this.#simulationBusy=true
+    try{while(!this.#closed){const sample=this.#simulationSamples.shift();if(!sample)break;if(!this.#client||sample.generation!==this.#generation)continue;const command=this.#command();this.#wasmCalls.observe++;for(const publication of await this.#client.observe(sample.generation,sample.nowSeconds,command,sample.suspended))this.#enqueuePresentation(sample.generation,publication)}}catch(error){this.#simulationSamples.clear();this.#paused=true;this.#set({phase:"Failed",detail:error instanceof Error?error.message:"Simulation scheduling failed"})}finally{this.#simulationBusy=false}
   }
   #enqueuePresentation(generation:number,publication:SimulationPublication):void{
     if(generation!==this.#generation||this.#closed)return;for(const batch of publication.eventBatches){const entry=batch.snapshot.projectileTimeline[0];if(!entry||this.#pendingProjectileTimeline.at(-1)?.tick===entry.tick)continue;if(this.#pendingProjectileTimeline.at(-1)&&this.#pendingProjectileTimeline.at(-1)!.tick>entry.tick){this.#paused=true;this.#set({phase:"Failed",detail:"Projectile presentation timeline reversed before admission"});return}this.#pendingProjectileTimeline.push(entry)}if(this.#pendingProjectileTimeline.length>4096){this.#paused=true;this.#set({phase:"Failed",detail:"Projectile presentation timeline reached its explicit limit"});return}this.#pendingPresentation=this.#pendingPresentation?this.#mergePublications(this.#pendingPresentation,publication):publication;this.#maximumPublicationTicks=Math.max(this.#maximumPublicationTicks,this.#pendingPresentation.selectedTicks);if(!this.#presentationBusy)void this.#drainPresentations()
@@ -1598,19 +1614,7 @@ export class Tf2Application {
       const camera = tf2Camera(snapshot, this.#yaw, this.#pitch)
       const viewport=this.#canvas.getBoundingClientRect(),viewmodel=this.#viewmodels.map(snapshot,{aspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),farPlane:camera.far})
       const lockerRequests=[...this.#lockerAnimations].flatMap(([identity,state])=>{const occurrence=this.#artifacts!.modelOccurrences.find(value=>value.entity===identity),artifact=occurrence&&this.#artifacts!.models.get(occurrence.model);if(!occurrence||!artifact){this.#blockers.add(`TF2 regenerate model presentation unavailable: ${identity}`);return []}const closed=snapshot.tick>=state.closeTick,animation=closed?state.closeAnimation:state.openAnimation,start=closed?state.closeTick:state.openTick,elapsed=Math.max(0,Number(snapshot.tick-start)*0.015),previousTick=snapshot.tick>BigInt(publication.selectedTicks)?snapshot.tick-BigInt(publication.selectedTicks):0n,previousElapsed=Math.max(0,Number(previousTick-start)*0.015);return [Object.freeze({identity,model:occurrence.model,activity:animation,previousElapsedSeconds:Math.min(previousElapsed,elapsed),elapsedSeconds:elapsed,currentTimeSeconds:Number(snapshot.tick)*0.015,frameTimeSeconds:publication.selectedTicks*0.015,planarSpeed:0,screenAspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),worldFarPlane:camera.far,skin:occurrence.skin,lod:0,bodygroups:Object.freeze([]),packedBody:state.body})]})
-      const modelStart=performance.now();this.#wasmCalls.models++;const modelPoses = decodeModelPoseOutput(
-        await this.#client.models(this.#generation, encodeModelPoseBatch([viewmodel.request,...lockerRequests])),
-      )
-      const modelMilliseconds=performance.now()-modelStart
-      const viewmodelPoses = modelPoses.filter((pose) => pose.identity === viewmodel.item.identity)
-      const lockerPoses=modelPoses.filter(pose=>this.#lockerAnimations.has(pose.identity))
-      if(viewmodelPoses.length!==2||viewmodelPoses[0]?.role!=="item"||viewmodelPoses[1]?.role!=="hand")throw new Error("Viewmodel composition output differs");const viewmodelPose=viewmodelPoses[1]!
-      this.#viewmodelActivities.add(viewmodelPose.activity)
-      this.#updateAttachmentTransforms(snapshot, viewmodelPoses, camera)
-      let presentation:ReturnType<ProjectileMapper["map"]>
-      try{presentation=this.#projectiles.map(projectileFrame(snapshot))}catch(error){const timeline=snapshot.projectileTimeline.map(value=>`${value.tick}[${value.projectiles.map(projectile=>projectile.identity).join(",")}]{${value.events.map(event=>`${event.type}:${event.projectile}@${event.tick}`).join(",")}}`).join("|"),top=snapshot.projectileEvents.map(event=>`${event.type}:${event.projectile}@${event.tick}`).join(",");throw new Error(`${error instanceof Error?error.message:"projectile presentation failed"}; top ${top}; timeline ${timeline}`)}
-      this.#pendingProjectileTimeline.splice(0,projectileTimeline.length)
-      const visibilityStart=performance.now();this.#wasmCalls.visibility++;const visibility = await this.#client.visibility(this.#generation, {
+      const modelStart=performance.now();this.#wasmCalls.models++;const modelRequest=this.#client.models(this.#generation, encodeModelPoseBatch([viewmodel.request,...lockerRequests]));this.#wasmCalls.visibility++;const visibilityRequest=this.#client.visibility(this.#generation, {
         position: camera.position,
         yawDegrees: camera.yawDegrees,
         pitchDegrees: camera.pitchDegrees,
@@ -1618,14 +1622,26 @@ export class Tf2Application {
         aspectRatio: Math.max(1, viewport.width) / Math.max(1, viewport.height),
         near: camera.near,
         presentationTimeSeconds: Number(snapshot.tick) * 0.015,
-      })
+      });const modelPoses = decodeModelPoseOutput(await modelRequest)
+      const modelMilliseconds=performance.now()-modelStart
+      const viewmodelPoses = modelPoses.filter((pose) => pose.identity === viewmodel.item.identity)
+      const lockerPoses=modelPoses.filter(pose=>this.#lockerAnimations.has(pose.identity))
+      if(viewmodelPoses.length!==2||viewmodelPoses[0]?.role!=="item"||viewmodelPoses[1]?.role!=="hand")throw new Error("Viewmodel composition output differs");const viewmodelPose=viewmodelPoses[1]!
+      this.#viewmodelActivities.add(viewmodelPose.activity)
+      this.#updateAttachmentTransforms(snapshot, viewmodelPoses, camera)
+      let presentation:ReturnType<ProjectileMapper["map"]>
+      const projectileStart=performance.now()
+      try{presentation=this.#projectiles.map(projectileFrame(snapshot))}catch(error){const timeline=snapshot.projectileTimeline.map(value=>`${value.tick}[${value.projectiles.map(projectile=>projectile.identity).join(",")}]{${value.events.map(event=>`${event.type}:${event.projectile}@${event.tick}`).join(",")}}`).join("|"),top=snapshot.projectileEvents.map(event=>`${event.type}:${event.projectile}@${event.tick}`).join(",");throw new Error(`${error instanceof Error?error.message:"projectile presentation failed"}; top ${top}; timeline ${timeline}`)}
+      const projectileMilliseconds=performance.now()-projectileStart
+      this.#pendingProjectileTimeline.splice(0,projectileTimeline.length)
+      const visibilityStart=performance.now(),visibility=await visibilityRequest
       const visibilityMilliseconds=performance.now()-visibilityStart,particleStart=performance.now();this.#wasmCalls.particles++;const particleOutput = await this.#client.particles(
         this.#generation,
         this.#particleBatches.encode(snapshot.tick, camera.position, presentation.particles),
       )
       const particleMilliseconds=performance.now()-particleStart
-      const particleItems=decodeParticleRenderOutput(particleOutput,this.#artifacts.particleMaterials).items
-      this.#playAudio(snapshot, camera)
+      const particleDecodeStart=performance.now(),particleItems=decodeParticleRenderOutput(particleOutput,this.#artifacts.particleMaterials).items,particleDecodeMilliseconds=performance.now()-particleDecodeStart
+      const audioStart=performance.now();this.#playAudio(snapshot, camera);const audioMilliseconds=performance.now()-audioStart
       const renderStart=performance.now();const rendered = await this.#renderer.render({
         camera,
         effects: Object.freeze([]),
@@ -1726,6 +1742,7 @@ export class Tf2Application {
         reloadHistory:Object.freeze([...this.#reloadHistory]),
         fireTickHistory:Object.freeze([...this.#fireTickHistory]),
         performanceProbe:`${this.#phaseTimings.map(value=>value.toFixed(3)).join(",")}:${this.#wasmCalls.observe},${this.#wasmCalls.models},${this.#wasmCalls.visibility},${this.#wasmCalls.particles}:${this.#maximumScheduledSamples},${this.#maximumPublicationTicks}:${particleOutput.byteLength},${publication.snapshotBytes.byteLength}`,
+        performanceDetailProbe:JSON.stringify({tick:snapshot.tick.toString(),selectedTicks:publication.selectedTicks,models:modelMilliseconds,projectiles:projectileMilliseconds,visibility:visibilityMilliseconds,particleWorker:particleMilliseconds,particleDecode:particleDecodeMilliseconds,audio:audioMilliseconds,particleItems:rendered.timings.particleItems,particleBatches:rendered.timings.particleBatches,dynamicItems:rendered.timings.dynamicItemsMilliseconds,world:rendered.timings.worldMilliseconds,viewmodel:rendered.timings.viewModelMilliseconds,render:renderMilliseconds,total:totalMilliseconds}),
         lockerProbe:this.#lockerProbe(snapshot.tick),
       })
     } catch (error) {
@@ -1893,7 +1910,9 @@ export class Tf2Application {
   readonly #visibility = (): void => {
     this.#paused = document.hidden
     this.#neutral()
-    if(this.#client&&this.#snapshot)this.#scheduleSimulation(performance.now()/1_000,this.#paused)
+    const nowSeconds=performance.now()/1_000
+    this.#nextSimulationSampleSeconds=nowSeconds+SIMULATION_SAMPLE_INTERVAL_SECONDS
+    if(this.#client&&this.#snapshot)this.#scheduleSimulation(nowSeconds,this.#paused)
   }
   readonly #pointerLock = (): void => {
     if (document.pointerLockElement !== this.#canvas) this.#neutral()
@@ -2013,6 +2032,7 @@ export class Tf2Application {
     if (this.#closed) return
     this.#closed = true
     this.#paused = true
+    this.#simulationSamples.clear()
     cancelAnimationFrame(this.#animationFrame)
     this.#removeListeners()
     this.#neutral()
