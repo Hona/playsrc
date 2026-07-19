@@ -17,6 +17,7 @@ import { configureWorldLightmap, sourceDepthBias, worldMaterialSide } from "./ma
 import { OwnedResourceGeneration } from "./resource-generation"
 import { FramePacingController, type FramePacingRecord } from "./frame-pacing"
 import { particleBatchRanges } from "./particle-batches"
+import { selectDiagnosticModelBase } from "./diagnostic-model"
 import { sourceHorizontal4By3FovToVertical, sourceViewportDepthRange } from "./source-camera"
 import {
   validateDynamicLights,
@@ -142,6 +143,7 @@ export {
   type ViewState,
 } from "./frame-foundations"
 export { FramePacingController, FramePacingError, type FramePacingRecord } from "./frame-pacing"
+export { selectDiagnosticModelBase, type DiagnosticModelBaseDisposition } from "./diagnostic-model"
 export { AtomicResourceError, AtomicResourceSlot, type ReplaceableResource } from "./atomic-resources"
 export {
   DebugCaptureError,
@@ -1578,9 +1580,9 @@ class RendererOwner implements Renderer {
             ...materialOptions(resolved, materialState),
             side: sourceModelSide(request.modelFacing!.get(model.logicalPath.split("#skin=")[0]!.toLowerCase())!),
           })
-           const base = request.diagnostic
-             ? TSL.vec4(TSL.color(debugColor(`diagnostic:${resolved.logicalPath}`)), 1)
-             : baseTexture ? TSL.texture(baseTexture, TSL.uv()) : TSL.vec4(TSL.color(debugColor(resolved.logicalPath)), 1)
+           const base = selectDiagnosticModelBase(baseTexture !== undefined) === "authored-texture"
+             ? TSL.texture(baseTexture!, TSL.uv())
+             : TSL.vec4(TSL.color(debugColor(`diagnostic:${resolved.logicalPath}`)), 1)
           material.colorNode = sourceFragmentColor(base, materialState)
           material.toneMapped = false
           disposables.add(material)
