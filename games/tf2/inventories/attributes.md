@@ -8,6 +8,8 @@ Authority revision: SDK `88fa198fba3fb85d46d4c95018254693fdc3af0a`; TF2 content 
 
 Generator command: Missing
 
+Bounded core-state generator: `cargo run --locked --manifest-path games/tf2/rust/inventory-generator/Cargo.toml`; its selected output is [`core-state.md`](core-state.md). It selects only definitions and hook identities consumed by bounded class health, healing, damage, crit, resistance, and pickup behavior. The remaining definitions and hooks remain visible here and unaccepted.
+
 Output path: `games/tf2/inventories/attributes.md`
 
 Candidate item count: 1,346

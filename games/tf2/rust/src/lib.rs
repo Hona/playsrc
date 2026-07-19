@@ -1,7 +1,15 @@
+pub mod attribute;
 pub mod audio;
+pub mod class;
 pub mod combat;
+pub mod condition;
+pub mod damage;
+pub mod health;
 mod map_runtime;
+pub mod pickup;
 pub mod random;
+pub mod schema;
+pub mod state;
 pub mod weapon;
 
 pub use audio::{

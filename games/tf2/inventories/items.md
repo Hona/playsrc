@@ -8,6 +8,8 @@ Authority revision: SDK `88fa198fba3fb85d46d4c95018254693fdc3af0a`; TF2 content 
 
 Generator command: Missing
 
+Bounded core-state generator: `cargo run --locked --manifest-path games/tf2/rust/inventory-generator/Cargo.toml`; its selected output is [`core-state.md`](core-state.md). It selects the stock item definitions, their complete recursive prefab closure, the 19 class positions, and the three account positions. All other candidate records remain visible here and unaccepted.
+
 Output path: `games/tf2/inventories/items.md`
 
 Candidate item count: 13,396

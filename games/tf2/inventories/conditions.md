@@ -8,6 +8,8 @@ Authority revision: SDK `88fa198fba3fb85d46d4c95018254693fdc3af0a`.
 
 Generator command: Missing
 
+Bounded core-state generator: `cargo run --locked --manifest-path games/tf2/rust/inventory-generator/Cargo.toml`; its selected output is [`core-state.md`](core-state.md). It emits all 131 numeric identities and generic duration/provider lifecycle, then classifies the core health/damage semantic subset separately from downstream specialized effects.
+
 Output path: `games/tf2/inventories/conditions.md`
 
 Candidate item count: 131

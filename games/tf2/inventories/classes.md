@@ -8,6 +8,8 @@ Authority revision: SDK `88fa198fba3fb85d46d4c95018254693fdc3af0a`; TF2 content 
 
 Generator command: Missing
 
+Bounded core-state generator: `cargo run --locked --manifest-path games/tf2/rust/inventory-generator/Cargo.toml`; its selected output is [`core-state.md`](core-state.md). It must retain all nine identities and exact configured class-record hashes without claiming that the broader class-record field inventory is accepted.
+
 Output path: `games/tf2/inventories/classes.md`
 
 Candidate item count: 9

@@ -1,0 +1,16 @@
+[package]
+name = "playsrc-tf2-core-inventory"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+icefast = "2.0.1"
+playsrc-keyvalues = { path = "../../../../packages/formats/keyvalues/rust" }
+playsrc-tf2 = { path = ".." }
+playsrc-vpk = { path = "../../../../packages/formats/vpk/rust" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+
+[workspace]
