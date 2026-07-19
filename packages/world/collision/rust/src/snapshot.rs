@@ -395,6 +395,7 @@ pub struct SnapshotRecord {
     pub contents: u32,
     pub surface_flags: u16,
     pub shape: SnapshotShape,
+    pub bounds: Hull,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -424,7 +425,7 @@ impl Snapshot {
             if !identities.insert(input.identity) {
                 return Err(error(ErrorCode::DuplicateIdentity, Some(item)));
             }
-            input.transform.basis()?;
+            let basis = input.transform.basis()?;
             if input
                 .linear_velocity
                 .into_iter()
@@ -433,26 +434,45 @@ impl Snapshot {
             {
                 return Err(error(ErrorCode::InvalidSnapshot, Some(item)));
             }
-            let contents = match &input.shape {
+            let (contents, local_bounds) = match &input.shape {
                 SnapshotShape::BrushModel { model } => {
+                    let model_record = world
+                        .models
+                        .get(*model)
+                        .ok_or_else(|| error(ErrorCode::InvalidReference, Some(item)))?;
                     let brushes = world
                         .model_brushes
                         .get(*model)
                         .ok_or_else(|| error(ErrorCode::InvalidReference, Some(item)))?;
-                    brushes
+                    let contents = brushes
                         .iter()
-                        .fold(0, |value, brush| value | world.brushes[*brush].contents)
+                        .fold(0, |value, brush| value | world.brushes[*brush].contents);
+                    (
+                        contents,
+                        Hull {
+                            mins: [
+                                model_record.mins.x.value(),
+                                model_record.mins.y.value(),
+                                model_record.mins.z.value(),
+                            ],
+                            maxs: [
+                                model_record.maxs.x.value(),
+                                model_record.maxs.y.value(),
+                                model_record.maxs.z.value(),
+                            ],
+                        },
+                    )
                 }
                 SnapshotShape::BoundingBox { bounds } => {
                     validate_hull(*bounds, item)?;
                     if input.transform.angles != [0.0; 3] {
                         return Err(error(ErrorCode::InvalidSnapshot, Some(item)));
                     }
-                    input.contents
+                    (input.contents, *bounds)
                 }
                 SnapshotShape::OrientedBox { bounds } => {
                     validate_hull(*bounds, item)?;
-                    input.contents
+                    (input.contents, *bounds)
                 }
                 SnapshotShape::Physics(shape) => {
                     let counts = shape.counts();
@@ -471,9 +491,10 @@ impl Snapshot {
                     {
                         return Err(error(ErrorCode::Limit, Some(item)));
                     }
-                    shape.contents()
+                    (shape.contents(), shape.local_bounds())
                 }
             };
+            let bounds = transformed_bounds(local_bounds, basis);
             objects.push(SnapshotRecord {
                 identity: input.identity,
                 role: input.role,
@@ -485,6 +506,7 @@ impl Snapshot {
                 contents,
                 surface_flags: input.surface_flags,
                 shape: input.shape,
+                bounds,
             });
         }
         Ok(Self {
@@ -666,6 +688,9 @@ impl World {
                 || request.ignored.contains(&object.identity)
                 || object.contents & request.mask == 0
             {
+                continue;
+            }
+            if !swept_hull_intersects(request.start, dynamic_end, request.hull, object.bounds) {
                 continue;
             }
             let candidate = Candidate {
@@ -1189,6 +1214,29 @@ fn validate_hull(hull: Hull, item: usize) -> Result<(), Error> {
     } else {
         Ok(())
     }
+}
+
+fn transformed_bounds(bounds: Hull, basis: Basis) -> Hull {
+    let mut mins = [f32::INFINITY; 3];
+    let mut maxs = [f32::NEG_INFINITY; 3];
+    for vertex in box_vertices(bounds)
+        .into_iter()
+        .map(|vertex| basis.point(vertex))
+    {
+        for axis in 0..3 {
+            mins[axis] = mins[axis].min(vertex[axis]);
+            maxs[axis] = maxs[axis].max(vertex[axis]);
+        }
+    }
+    Hull { mins, maxs }
+}
+
+fn swept_hull_intersects(start: [f32; 3], end: [f32; 3], hull: Hull, bounds: Hull) -> bool {
+    (0..3).all(|axis| {
+        let minimum = start[axis].min(end[axis]) + hull.mins[axis];
+        let maximum = start[axis].max(end[axis]) + hull.maxs[axis];
+        maximum >= bounds.mins[axis] && minimum <= bounds.maxs[axis]
+    })
 }
 
 fn point_hull(hull: Hull) -> bool {

@@ -1056,6 +1056,41 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_broad_phase_rejects_only_disjoint_records_and_preserves_order() {
+        let world = World::empty();
+        let snapshot = Snapshot::compile(
+            &world,
+            11,
+            vec![
+                box_object(1, [1_000.0, -1.0, -1.0], [1_002.0, 1.0, 1.0]),
+                box_object(2, [0.0, -1.0, -1.0], [2.0, 1.0, 1.0]),
+                box_object(3, [0.0, -1.0, -1.0], [2.0, 1.0, 1.0]),
+            ],
+            SnapshotLimits::default(),
+        )
+        .unwrap();
+        let candidates = std::cell::RefCell::new(Vec::new());
+        let trace = world
+            .trace_snapshot_ray(
+                &snapshot,
+                SnapshotRayRequest {
+                    start: [-10.0, 0.0, 0.0],
+                    end: [10.0, 0.0, 0.0],
+                    mask: 1,
+                    scope: TraceScope::Everything,
+                    ignored: &[],
+                },
+                |candidate| {
+                    candidates.borrow_mut().push(candidate.identity);
+                    true
+                },
+            )
+            .unwrap();
+        assert_eq!(*candidates.borrow(), [2, 3]);
+        assert!(matches!(trace.hit, Some(Hit::Object { identity: 2, .. })));
+    }
+
+    #[test]
     fn physics_convexes_preserve_feature_contents_and_transform() {
         let vertices = vec![
             [-1.0, -1.0, -1.0],
