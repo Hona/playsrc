@@ -2,7 +2,7 @@
 
 ## Deterministic Suite
 
-`bun test packages/presentation/rendering/tests` executes 17 tests with 92 assertions. The fixed inputs cover:
+`bun test packages/presentation/rendering/tests` executes 41 tests with 204 assertions. The fixed inputs cover:
 
 - Schema-3 LDR payload framing, atlas coordinates, RGBExp32 decode, and malformed/trailing bytes.
 - Schema-4 `PSHD` framing, all ten member roles, lighting closure, VTF hash and header metadata, consumed-input order, world lights, ambient indexes/samples, profile requirements, reserved bytes, and cross-record ranges.
@@ -10,6 +10,16 @@
 - Explicit world-light candidate/style input and ambient leaf/sample/weight input with no inferred leaf, visibility, or interpolation state.
 - Immutable LDR/HDR profile combinations, sRGB toe/midtone/saturation values, opaque/premultiplied alpha, 16-bin exposure targets, accelerated adaptation, fixed-step bounds, and dropped-time accounting.
 - Resource generation activation, queue-completion retirement, exact-once destruction, repeated disposal, and rejection of post-retirement resources.
+- Model ambient-cube axes, point/directional/spot attenuation, half-Lambert, four-light bounds, explicit draw requirements, eye projections, ray/sphere intersection, pupil dilation, and ambient luminance.
+- Six 2D-sky face orientations/seams/translation, per-tap RGBS decode, strict cubemap ties, six axes, authored mips, cheap/expensive Water, 25 blur taps, and fog direction/density.
+- Per-face visibility, back-to-front/ignore-depth/framebuffer-copy order, complete nested view restoration, phase rollback, interpolation/discontinuities, dynamic-light/shadow records, frame pacing, and atomic replacement.
+- Color/depth/normal/material-ID/primitive-ID/object-ID hashes, comparisons, and aligned-manifest rejection.
+
+`bun run build` in `apps/web/tf2` passes Vite 8.1.5 production bundling with the rendering contracts and diagnostic adapter. This proves browser bundling only; it is not aligned target or ordinary Source-output evidence.
+
+`bun run verify:tf2-wasm -- jump_beef` passed the configured build-`24207079` native/WASM closure with 317 inputs, LDR payload `56153098…156`, HDR payload `0f33e861…84a5`, 1,511 directional faces, 73 world lights, 9,014 ambient samples, three cubemaps, complete selected environment resources, and 475,511,805 presentation bytes.
+
+`bun run verify:browser -- jump_beef` passed cold/warm derived caches, exact camera/visibility, independent projected-mark admission, Water/viewmodel restoration, pointer/crouch/gameplay/Particle/audio flows, performance bounds, one-interrupt cleanup, and listener release. The diagnostic run retained 18 support blockers and zero content blockers. Its fixed 1280×720 canvas SHA-256 was `0687a5ee…ac6e6`; the projectile-Particle canvas SHA-256 was `897e78c4…202f`. These hashes are browser regression evidence only.
 
 ## Exact `jump_beef` Differential
 

@@ -15,7 +15,24 @@ import {
 } from "./color-output"
 import { configureWorldLightmap, sourceDepthBias, worldMaterialSide } from "./material-state"
 import { OwnedResourceGeneration } from "./resource-generation"
+import { FramePacingController, type FramePacingRecord } from "./frame-pacing"
 import { sourceHorizontal4By3FovToVertical, sourceViewportDepthRange } from "./source-camera"
+import {
+  validateDynamicLights,
+  validateShadows,
+  visibleTriangleIndices,
+  type DynamicLightInput,
+  type ShadowInput,
+} from "./frame-foundations"
+import {
+  prepareModelDrawInputs,
+  validateModelEyeStates,
+  validateModelLightingInput,
+  type ModelDrawRequirement,
+  type ModelEyeState,
+  type ModelLightingInput,
+} from "./model-lighting"
+import { buildSourceSkyGeometry } from "./source-environment"
 import {
   buildRuntimeLightmap,
   parseRuntimeMap,
@@ -60,6 +77,85 @@ export {
 } from "./lighting"
 export { sourceHorizontal4By3FovToVertical, sourceViewportDepthRange } from "./source-camera"
 export {
+  ModelLightingError,
+  ambientCubeLuminance,
+  dilateIrisUv,
+  evaluateAmbientCube,
+  evaluateLocalLight,
+  evaluateModelLighting,
+  intersectEyeSphere,
+  projectEyeCoordinate,
+  prepareModelDrawInputs,
+  validateModelEyeStates,
+  validateModelLightingInput,
+  type ModelEyeState,
+  type ModelDrawRequirement,
+  type ModelLightingInput,
+  type ModelLocalLight,
+  type SourceVector3,
+  type SourceVector4,
+} from "./model-lighting"
+export {
+  SourceEnvironmentError,
+  buildSourceSkyGeometry,
+  decodeRgbsBilinear,
+  evaluateCheapWater,
+  evaluateExpensiveWater,
+  evaluateFogColor,
+  linearFogFactor,
+  sampleAuthoredCubemap,
+  selectNearestCubemap,
+  sourceCubemapCoordinate,
+  sourceSkyFaceVisible,
+  waterBlurOffsets,
+  type AuthoredCubemap,
+  type CheapWaterRequest,
+  type CubemapSample,
+  type ExpensiveWaterRequest,
+  type FogState,
+  type SkyFace,
+  type SkyFaceGeometry,
+} from "./source-environment"
+export {
+  FRAME_PHASES,
+  FrameContractError,
+  SourceViewStack,
+  executeFrameGraph,
+  interpolatePresentation,
+  orderTransparentItems,
+  validateDynamicLights,
+  validateShadows,
+  validateViewState,
+  visibleTriangleIndices,
+  type ClipPlane,
+  type DepthStencilState,
+  type DynamicLightInput,
+  type FrameGraphResult,
+  type FramePhase,
+  type InterpolationField,
+  type InterpolationPolicy,
+  type InterpolationRequest,
+  type ShadowInput,
+  type TransparentItem,
+  type TransparentOperation,
+  type ViewState,
+} from "./frame-foundations"
+export { FramePacingController, FramePacingError, type FramePacingRecord } from "./frame-pacing"
+export { AtomicResourceError, AtomicResourceSlot, type ReplaceableResource } from "./atomic-resources"
+export {
+  DebugCaptureError,
+  compareDebugPlanes,
+  createDebugCapture,
+  validateAlignedCaptureManifest,
+  type AlignedCaptureManifest,
+  type DebugCapture,
+  type DebugPlane,
+  type DebugPlaneInput,
+  type DebugPlaneKind,
+  type PlaneComparison,
+  type PlaneComparisonResult,
+} from "./debug-capture"
+export {
   RuntimeMapError,
   buildRuntimeLightmap,
   parseRuntimeMap,
@@ -95,13 +191,7 @@ export type Camera = Readonly<{
   far: number
 }>
 
-export type Effect = Readonly<{
-  identity: number
-  position: readonly [number, number, number]
-  radius: number
-  color: number
-  opacity: number
-}>
+export type Effect = DynamicLightInput
 
 export type ModelItem = Readonly<{
   identity: number
@@ -132,6 +222,10 @@ export type ModelItem = Readonly<{
     opaqueBeforeTranslucent: boolean
     optionalViewSpaceYReflection: boolean
   }>
+  modelLighting?: ModelLightingInput
+  eyeStates?: readonly ModelEyeState[]
+  currentFramebufferAvailable?: boolean
+  gameProxyValuesAvailable?: boolean
 }>
 
 export type ParticleItem = Readonly<{
@@ -202,13 +296,24 @@ export type WaterFramePlan = Readonly<{
 export type Frame = Readonly<{
   camera: Camera
   effects: readonly Effect[]
+  shadows?: readonly ShadowInput[]
   particles?: readonly ParticleItem[]
   models?: readonly ModelItem[]
   lightStyles?: readonly Readonly<{ style: number; scalar: number }>[]
   exposureHistogram?: Uint32Array
   deltaSeconds?: number
   capture?: FrameCaptureRequest
-  visibility?: Readonly<{ worldIdentity: string; cacheIdentity: string; surfaces: Uint32Array; water: WaterFramePlan }>
+  visibility?: Readonly<{
+    worldIdentity: string
+    cacheIdentity: string
+    outsideWorld: boolean
+    sky: 0 | 1 | 2
+    eyeLeaf: number | null
+    leaves: readonly number[]
+    areas: readonly number[]
+    surfaces: Uint32Array
+    water: WaterFramePlan
+  }>
   brushModels?:Readonly<{sourceIdentity:bigint;registryIdentity:bigint;tick:bigint;entityRevision:bigint;collisionRevision:bigint;models:readonly Readonly<{sourceIndex:number;model:number;worldPosition:readonly[number,number,number];worldAngles:readonly[number,number,number];renderMode:number;color:readonly[number,number,number,number];renderFx:number;effects:number;draw:boolean;mover:unknown}>[]}>
   collisionWorldIdentity?: string
 }>
@@ -299,8 +404,8 @@ export type EnvironmentInput = Readonly<{
   waterVolumeFacts: readonly Readonly<{index:number;surfaceZ:number;minimumZ:number;surfaceMaterial:number;bottomMaterial:unknown;leaves:readonly number[];clusters:readonly number[];areas:readonly number[];contents:number;plane:readonly[number,number,number,number];surfaceTranslucent:boolean;bottomTranslucent:boolean|null;surfaceBindings:Readonly<{environment:boolean;reflection:boolean;refraction:boolean}>;bottomBindings:Readonly<{environment:boolean;reflection:boolean;refraction:boolean}>|null}>[]
   waterMaterials: ReadonlyMap<string, WaterMaterialInput>
   leafMinimumDistanceToWater: Uint16Array
-  sky:null|Readonly<{name:string;faces:readonly Readonly<{face:number;material:string;selectedTextures:readonly Readonly<{logicalPath:string;sha256:string}>[]}>[]}>
-  cubemapFacts:readonly Readonly<{index:number;logicalPath:string}>[]
+  sky:null|Readonly<{name:string;faces:readonly Readonly<{face:number;material:string;encoding?:"srgb"|"linear"|"hdr-rgbs";selectedTextures:readonly Readonly<{logicalPath:string;sha256:string}>[]}>[]}>
+  cubemapFacts:readonly Readonly<{index:number;origin:readonly[number,number,number];logicalPath:string;sha256:string;width:number;height:number}>[]
 }>
 
 export type MaterialStateInput = Readonly<{
@@ -356,6 +461,9 @@ export type ModelMaterialInput = Readonly<{
     logicalPath: string
   }>[]
   environmentMap: unknown
+  opacity: "opaque" | "translucent"
+  framebuffer: "none" | "potential" | "current"
+  requiredInputs: readonly string[]
   state: Readonly<{ kind: "vertex-lit-generic" | "eye-refract" | "eyes" }>
 }>
 export type AuthoredTextureInput = Readonly<{
@@ -411,6 +519,7 @@ export type MapLoadRequest = Readonly<{
   modelMaterials?: ReadonlyMap<string, ModelMaterialInput>
   authoredTextures?: ReadonlyMap<string, AuthoredTextureInput>
   brushModels?:readonly Readonly<{index:number;surfaceRange:readonly[number,number];vertexCount:number;triangleCount:number;materials:readonly number[]}>[]
+  modelDrawInputs?: readonly Readonly<{ entity: number; lighting: ModelLightingInput; eyes: readonly ModelEyeState[] }>[]
   diagnostic?: boolean
   signal?: AbortSignal
 }>
@@ -448,7 +557,7 @@ export type FrameCapture = Readonly<{
 export type FrameResult = Readonly<{
   deviceGeneration: number
   sceneGeneration: number
-  submission: number
+  submission: null
   exposure: ExposureSnapshot
   visibleProjectedMarks: number
   waterPasses: readonly ("reflection"|"refraction"|"main"|"intersection")[]
@@ -457,6 +566,7 @@ export type FrameResult = Readonly<{
     depthRange: readonly [number, number]
     viewportRestored: boolean
   }>
+  pacing: readonly FramePacingRecord[]
   capture?: FrameCapture
 }>
 
@@ -465,6 +575,7 @@ export type ResizeResult = Readonly<{
   height: number
   suspended: boolean
   deviceGeneration: number
+  attachmentGeneration: number
 }>
 
 export type RendererLifecycle = "Initializing" | "Ready" | "Recovering" | "Failed" | "Disposed"
@@ -500,6 +611,7 @@ export class RenderingError extends Error {
       | "UnsupportedFeature"
       | "BoundExceeded"
       | "InvalidState"
+      | "GpuValidationFailed"
       | "DeviceLost"
       | "CaptureFailed",
     message: string,
@@ -531,10 +643,18 @@ type SceneResources = {
   lightmapTextures: readonly [THREE.DataTexture, THREE.DataTexture?, THREE.DataTexture?, THREE.DataTexture?]
   exposureUniform: ReturnType<typeof TSL.uniform>
   diagnostics: readonly SceneDiagnostic[]
-  worldBatches: readonly { mesh: THREE.Mesh; faces: Uint32Array }[]
+  worldBatches: readonly {
+    mesh: THREE.Mesh
+    faces: Uint32Array
+    sourceIndices: Uint32Array
+    index: THREE.BufferAttribute
+    transparent: boolean
+  }[]
   projectedMarks: readonly { mesh: THREE.Mesh; face: number; sourceIndex: number; visibility: EnvironmentFragmentInput["visibility"] }[]
   waterMeshes: readonly WaterMeshResource[]
   waterMaterials: ReadonlyMap<string,WaterMaterialResource>
+  cubemapTextures: ReadonlyMap<number,THREE.CubeTexture>
+  skyGroup: THREE.Group | null
   reflectionTarget: THREE.RenderTarget
   refractionTarget: THREE.RenderTarget
   result: SceneResult
@@ -544,11 +664,19 @@ type SceneResources = {
 type Backend = THREE.WebGPURenderer & {
   backend: {
     isWebGPUBackend?: boolean
-    device?: GPUDevice
-    context?: GPUCanvasContext
+    device?: Readonly<{
+      limits: Readonly<{ maxTextureDimension2D: number }>
+      queue: Readonly<{ onSubmittedWorkDone(): Promise<unknown> }>
+    }>
+    context?: Readonly<{
+      unconfigure(): void
+      getConfiguration?(): null | Readonly<{ format: string; alphaMode?: string; colorSpace?: string }>
+    }>
   }
   onDeviceLost: (info: unknown) => void
 }
+
+type WebGpuNavigator = Navigator & Readonly<{ gpu?: Readonly<{ getPreferredCanvasFormat(): string }> }>
 
 function finite(values: readonly number[]): boolean {
   return values.every(Number.isFinite)
@@ -607,7 +735,7 @@ function modelOccurrenceMatrices(
   return matrices
 }
 
-function disposeScene(scene: SceneResources): void {
+function disposeScene(scene: Pick<SceneResources,"group"|"disposables"|"modelTemplates"|"modelOccurrenceInstances"|"disposed">): void {
   if (scene.disposed) return
   scene.disposed = true
   scene.group.clear()
@@ -673,6 +801,23 @@ function textureFromAuthored(input: AuthoredTextureInput, colorSpace: string, fr
   texture.generateMipmaps = false
   texture.flipY = false
   texture.needsUpdate = true
+  return texture
+}
+
+function textureFromAuthoredCubemap(input: AuthoredTextureInput, colorSpace: string, frame = 0): THREE.CubeTexture {
+  if (input.depth !== 1 || frame < 0 || frame >= input.frameCount || [0,1,2,3,4,5].some(face=>!input.faces.includes(face))) {
+    throw new RenderingError("UnsupportedFeature", `authored cubemap ${input.logicalPath} requires an unsupported topology`)
+  }
+  const componentType=input.scalarEncoding==="u8"?THREE.UnsignedByteType:THREE.HalfFloatType
+  const data=(plane:AuthoredTextureInput["planes"][number])=>input.scalarEncoding==="u8"?plane.rgba.slice():new Uint16Array(plane.rgba.slice().buffer)
+  const level=(mip:number)=>Object.freeze({images:Object.freeze(Array.from({length:6},(_,face)=>{
+    const plane=input.planes.find(value=>value.mip===mip&&value.frame===frame&&value.face===face&&value.slice===0)
+    if(!plane)throw new RenderingError("MissingInput",`authored cubemap ${input.logicalPath} has an incomplete mip ${mip}`)
+    const texture=new THREE.DataTexture(data(plane),plane.width,plane.height,THREE.RGBAFormat,componentType);texture.colorSpace=colorSpace;texture.flipY=false;texture.generateMipmaps=false;texture.needsUpdate=true;return texture
+  }))})
+  const base=level(0),texture=new THREE.CubeTexture([...base.images] as any)
+  texture.mipmaps=Array.from({length:input.mipCount-1},(_,index)=>level(index+1)) as any
+  texture.colorSpace=colorSpace;texture.type=componentType;texture.format=THREE.RGBAFormat;texture.flipY=false;texture.generateMipmaps=false;texture.minFilter=[THREE.NearestFilter,THREE.LinearFilter,THREE.LinearMipmapNearestFilter,THREE.LinearMipmapLinearFilter,THREE.LinearMipmapLinearFilter][input.sampling.minFilter]??THREE.LinearFilter;texture.magFilter=input.sampling.magFilter===0?THREE.NearestFilter:THREE.LinearFilter;texture.anisotropy=input.sampling.anisotropyLevel;texture.needsUpdate=true
   return texture
 }
 
@@ -825,7 +970,6 @@ class RendererOwner implements Renderer {
   #lifecycle: RendererLifecycle = "Initializing"
   #deviceGeneration = 0
   #sceneGeneration = 0
-  #submission = 0
   #backend!: Backend
   #scene = new THREE.Scene()
   #world = new THREE.Group()
@@ -834,16 +978,19 @@ class RendererOwner implements Renderer {
   #camera = new THREE.PerspectiveCamera(75, 1, 1, 32_768)
   #viewCamera = new THREE.PerspectiveCamera(41.114, 1, 1, 32_768)
   #viewModelInstances = new Map<number, { model: string; root: THREE.Group; instance: THREE.Group; meshes: THREE.Mesh[] }>()
-  #effectGeometry = new THREE.SphereGeometry(1, 10, 6)
   #active?: SceneResources
   #renderBusy = false
   #loadOrdinal = 0
   #suspended = false
   #viewportWidth = 0
   #viewportHeight = 0
+  #cssWidth = 0
+  #cssHeight = 0
+  #devicePixelRatio = 1
+  #attachmentGeneration = 0
   #pacingHandle?: number
   #pacingCallback?: FramePacingCallback
-  #pacingBusy = false
+  readonly #pacing = new FramePacingController({ now: () => performance.now() }, 256)
 
   constructor(request: RendererCreateRequest) {
     this.configuration = validateRenderConfiguration(request.configuration)
@@ -870,10 +1017,11 @@ class RendererOwner implements Renderer {
   }
 
   async initialize(): Promise<this> {
-    if (!globalThis.navigator?.gpu || !this.#canvas || typeof this.#canvas.getContext !== "function") {
+    const gpu=(globalThis.navigator as WebGpuNavigator|undefined)?.gpu
+    if (!gpu || !this.#canvas || typeof this.#canvas.getContext !== "function") {
       throw new RenderingError("UnsupportedEnvironment", "WebGPU canvas is unavailable")
     }
-    if (navigator.gpu.getPreferredCanvasFormat() !== this.configuration.canvasFormat) {
+    if (gpu.getPreferredCanvasFormat() !== this.configuration.canvasFormat) {
       throw new RenderingError("UnsupportedFeature", "preferred WebGPU canvas format differs from the required format")
     }
     this.#backend = await this.#createBackend()
@@ -892,7 +1040,7 @@ class RendererOwner implements Renderer {
     backend.onDeviceLost = () => {
       void this.#recover()
     }
-    let context: GPUCanvasContext | undefined
+    let context: Backend["backend"]["context"]
     try {
       await backend.init()
       if (!backend.backend.isWebGPUBackend) throw new Error("fallback backend")
@@ -903,9 +1051,7 @@ class RendererOwner implements Renderer {
       backend.outputColorSpace = THREE.SRGBColorSpace
       backend.toneMapping = THREE.NoToneMapping
       context = backend.backend.context
-      const actual = (
-        context as GPUCanvasContext & { getConfiguration?(): GPUCanvasConfiguration | null }
-      ).getConfiguration?.()
+      const actual = context?.getConfiguration?.()
       if (actual) {
         if (
           actual.format !== this.configuration.canvasFormat ||
@@ -929,6 +1075,7 @@ class RendererOwner implements Renderer {
 
   async loadMap(request: MapLoadRequest): Promise<SceneResult> {
     this.#requireReady()
+    if(!request.diagnostic)throw new RenderingError("UnsupportedFeature","ordinary rendering requires an explicit WebGPU frame encoder; the current Three.js adapter is diagnostic-only")
     if (!HASH.test(request.payloadSha256))
       throw new RenderingError("MalformedInput", "runtime map payload SHA-256 is invalid")
     const ordinal = ++this.#loadOrdinal
@@ -1039,6 +1186,11 @@ class RendererOwner implements Renderer {
     for (const [identity, material] of request.modelMaterials ?? []) {
       const key = identity.toLowerCase()
       if (key !== material.identity.toLowerCase() || modelMaterials.has(key) || material.vertexRequirements < 0 ||
+        new Set(material.requiredInputs).size !== material.requiredInputs.length ||
+        material.requiredInputs.some((input) => ![
+          "ambient-cube", "local-lights", "camera-position", "studio-eye-parameters",
+          "local-environment", "current-framebuffer", "authored-texture-planes", "game-proxy-values",
+        ].includes(input)) ||
         material.bindings.some((binding) => !authoredTextures.has(binding.logicalPath.toLowerCase()))) {
         throw new RenderingError("MalformedInput", "model material input is invalid")
       }
@@ -1051,6 +1203,20 @@ class RendererOwner implements Renderer {
       if (!facing) throw new RenderingError("MissingInput", `StudioModel facing ${identity} is unavailable`)
       sourceModelSide(facing)
     }
+    const modelDrawInputs = new Map<number, NonNullable<MapLoadRequest["modelDrawInputs"]>[number]>()
+    const modelEntities = new Set(map.modelOccurrences.map((occurrence) => occurrence.entity))
+    for (const input of request.modelDrawInputs ?? []) {
+      if (!modelEntities.has(input.entity) || modelDrawInputs.has(input.entity)) {
+        throw new RenderingError("IdentityMismatch", "model draw-input identity differs")
+      }
+      try {
+        validateModelLightingInput(input.lighting)
+        validateModelEyeStates(input.eyes)
+      } catch (error) {
+        throw new RenderingError("MalformedInput", `model draw input is invalid: ${String(error)}`)
+      }
+      modelDrawInputs.set(input.entity, Object.freeze({ ...input, eyes: Object.freeze([...input.eyes]) }))
+    }
     const materialIdentities = new Set([
       ...map.materials.map((material) => material.logicalPath.toLowerCase()),
       ...map.models.flatMap((model) => model.materials.map((material) => material.logicalPath.toLowerCase())),
@@ -1059,7 +1225,14 @@ class RendererOwner implements Renderer {
       throw new RenderingError("MalformedInput", "directional texture names an unavailable material")
     }
     this.#checkAbort(request.signal, ordinal)
-    const normalizedRequest = Object.freeze({ ...request, materialStates, authoredTextures, modelMaterials, modelFacing })
+    const normalizedRequest = Object.freeze({
+      ...request,
+      materialStates,
+      authoredTextures,
+      modelMaterials,
+      modelFacing,
+      modelDrawInputs: Object.freeze([...modelDrawInputs.values()]),
+    })
     const staged = this.#buildScene(
       map,
       payload,
@@ -1108,7 +1281,7 @@ class RendererOwner implements Renderer {
     const materialStates = new Map(request.materialStates ?? [])
     const disposables = new OwnedResourceGeneration(this.#deviceGeneration, sceneGeneration)
     const diagnostics: SceneDiagnostic[] = []
-    const worldBatches: { mesh: THREE.Mesh; faces: Uint32Array }[] = []
+    const worldBatches: SceneResources["worldBatches"][number][] = []
     const projectedMarks: { mesh: THREE.Mesh; face: number; sourceIndex: number; visibility: EnvironmentFragmentInput["visibility"] }[] = []
     const waterMeshes: WaterMeshResource[]=[]
     const targetWidth=Math.max(1,Number((this.#canvas as {width?:number}).width??1)),targetHeight=Math.max(1,Number((this.#canvas as {height?:number}).height??1))
@@ -1117,6 +1290,8 @@ class RendererOwner implements Renderer {
     reflectionTarget.texture.colorSpace=THREE.NoColorSpace
     refractionTarget.texture.colorSpace=THREE.NoColorSpace
     const waterMaterials=new Map<string,WaterMaterialResource>()
+    const cubemapTextures=new Map<number,THREE.CubeTexture>()
+    let skyGroup:THREE.Group|null=null
     const occurrenceMatrices = modelOccurrenceMatrices(map, request.modelOccurrences)
     const lightmap = map.lightmap
     if (!lightmap) throw new RenderingError("MissingInput", "runtime lightmap is unavailable")
@@ -1137,8 +1312,33 @@ class RendererOwner implements Renderer {
     )
     const directionalGpu = new Map<string, { input: DirectionalTextureInput; texture: THREE.DataTexture }>()
     const authoredGpu = new Map<string, THREE.DataTexture>()
-    let missingModelLighting = false
-    let missingModelEyeState = false
+    const modelDrawInputs = new Map((request.modelDrawInputs ?? []).map((input) => [input.entity, input] as const))
+    const missingLightingEntities = map.modelOccurrences
+      .filter((occurrence) => !modelDrawInputs.has(occurrence.entity))
+      .map((occurrence) => occurrence.entity)
+    if (missingLightingEntities.length > 0) {
+      diagnostics.push(diagnostic(
+        "MissingModelLighting",
+        "model-lightcache",
+        `explicit ModelLightingInput is unavailable for entities ${missingLightingEntities.join(",")}`,
+      ))
+    }
+    const modelsWithEyes = new Set(map.models
+      .filter((model) => model.materials.some((material) => {
+        const shader = request.modelMaterials?.get(material.logicalPath.toLowerCase())?.shader
+        return shader === "eye-refract" || shader === "eyes"
+      }))
+      .map((model) => model.logicalPath))
+    const missingEyeEntities = map.modelOccurrences
+      .filter((occurrence) => modelsWithEyes.has(map.models[occurrence.model]!.logicalPath) && !(modelDrawInputs.get(occurrence.entity)?.eyes.length))
+      .map((occurrence) => occurrence.entity)
+    if (missingEyeEntities.length > 0) {
+      diagnostics.push(diagnostic(
+        "MissingModelEyeState",
+        "studio-eye-state",
+        `explicit StudioModel eye state is unavailable for entities ${missingEyeEntities.join(",")}`,
+      ))
+    }
     const missingMipInputs = new Set<string>()
     const requireMipInputs = (identity: string, state: MaterialStateInput | undefined): void => {
       const key = identity.toLowerCase()
@@ -1160,13 +1360,6 @@ class RendererOwner implements Renderer {
       if (!material) {
         diagnostics.push(diagnostic("MissingMaterial", identity, "typed model material state is unavailable"))
         return undefined
-      }
-      if ((material.shader === "eye-refract" || material.shader === "eyes") && !missingModelEyeState) {
-        missingModelEyeState = true
-        diagnostics.push(diagnostic("MissingModelEyeState", "game-eye-target", "current game-owned eye targets and per-draw StudioModel eye states are unavailable"))
-      } else if (material.shader === "vertex-lit-generic" && !missingModelLighting) {
-        missingModelLighting = true
-        diagnostics.push(diagnostic("MissingModelLighting", "model-lightcache", "current model lightcache selections and ModelLightingInput records are unavailable"))
       }
       const binding = material.bindings.find((value) => value.kind === "material" && value.role === 0)
       if (!binding) return undefined
@@ -1208,25 +1401,8 @@ class RendererOwner implements Renderer {
       if(!authored)throw new RenderingError("MissingInput",`Water authored normal ${normalRequest.logicalPath} is unavailable`)
       const normalFrames=Object.freeze(Array.from({length:authored.frameCount},(_,frame)=>{const texture=textureFromAuthored(authored,THREE.NoColorSpace,frame);disposables.add(texture);return texture}))
       const normalNode=TSL.texture(normalFrames[state.normalFrame.value]??normalFrames[0]!)
-      const normal=normalNode.rgb.mul(2).sub(1)
-      const screen=TSL.screenUV
-      const reflectionUv=screen.add(normal.xy.mul(state.reflectAmount.value))
-      const refractionUv=screen.add(TSL.vec2(normal.x,normal.y).mul(state.refractAmount.value))
-      const reflected=TSL.texture(reflectionTarget.texture,reflectionUv).rgb.mul(TSL.vec3(...state.reflectTint.value))
-      const refracted=TSL.texture(refractionTarget.texture,refractionUv).rgb.mul(TSL.vec3(...state.refractTint.value))
-      const hasReflection=state.textures.some(texture=>texture.role===17&&texture.disposition==="render-target")
-      const hasRefraction=state.textures.some(texture=>texture.role===18&&texture.disposition==="render-target")
-      const eye=TSL.normalize(TSL.cameraPosition.sub(TSL.positionWorld))
-      const worldNormal=TSL.normalize(TSL.vec3(normal.x,normal.y,normal.z))
-      const fresnel=TSL.pow(TSL.float(1).sub(TSL.clamp(TSL.dot(eye,worldNormal),0,1)),5)
-      let color:any
-      if(hasReflection&&hasRefraction)color=TSL.mix(refracted,reflected,fresnel)
-      else if(hasReflection)color=reflected
-      else if(hasRefraction)color=refracted
-      else throw new RenderingError("MissingInput",`Water ${identity} has no executable environment, reflection, or refraction binding`)
-      if(state.fog.enabled?.value){const distance=TSL.length(TSL.cameraPosition.sub(TSL.positionWorld)),range=Math.max(1e-6,state.fog.end.value-state.fog.start.value),fog=TSL.clamp(distance.sub(state.fog.start.value).div(range),0,1);color=TSL.mix(color,TSL.vec3(...state.fog.color.value),fog)}
       const material=new THREE.MeshBasicNodeMaterial({transparent:state.opacity==="translucent",depthTest:true,depthWrite:state.opacity==="opaque",side:THREE.FrontSide})
-      material.colorNode=TSL.vec4(color,1);material.toneMapped=false;disposables.add(material)
+      material.colorNode=TSL.vec4(TSL.color(debugColor(`diagnostic-water:${identity}`)),state.opacity==="translucent"?0.5:1);material.toneMapped=false;disposables.add(material)
       const resource=Object.freeze({material,normalFrames,normalNode});waterMaterials.set(key,resource);return resource
     }
     const createWorldMesh=(batch:RuntimeBatch):THREE.Mesh|null=>{
@@ -1236,7 +1412,10 @@ class RendererOwner implements Renderer {
         geometry.setAttribute("uv", new THREE.BufferAttribute(batch.uv, 2))
         geometry.setAttribute("uv1", new THREE.BufferAttribute(batch.lightmapUv, 2))
         geometry.setAttribute("lightmapKind", new THREE.BufferAttribute(batch.lightmapKind, 1))
-        geometry.setIndex(new THREE.BufferAttribute(batch.indices, 1))
+        const sourceIndices = batch.indices.slice()
+        const index = new THREE.BufferAttribute(sourceIndices.slice(), 1)
+        index.setUsage(THREE.DynamicDrawUsage)
+        geometry.setIndex(index)
         geometry.computeBoundingSphere()
         disposables.add(geometry)
         const resolved = map.materials[batch.material]!
@@ -1288,7 +1467,7 @@ class RendererOwner implements Renderer {
         return mesh
     }
     try {
-      for(const batch of map.batches){const mesh=createWorldMesh(batch);if(!mesh)continue;worldBatches.push({mesh,faces:batch.faces.slice()});group.add(mesh)}
+      for(const batch of map.batches){const mesh=createWorldMesh(batch);if(!mesh)continue;const index=mesh.geometry.getIndex();if(!index)throw new RenderingError("MalformedInput","world batch has no index buffer");worldBatches.push({mesh,faces:batch.faces.slice(),sourceIndices:batch.indices.slice(),index,transparent:(Array.isArray(mesh.material)?mesh.material: [mesh.material]).some(material=>material.transparent)});group.add(mesh)}
       for(const model of map.brushModels){const template=new THREE.Group();for(const batch of model.batches){const mesh=createWorldMesh(batch);if(mesh)template.add(mesh)}brushModelTemplates.set(model.index,template)}
 
       const environmentTextures = new Map<string, THREE.DataTexture>()
@@ -1298,6 +1477,45 @@ class RendererOwner implements Renderer {
         if(authored)authoredEnvironmentMaterials.add(texture.material.toLowerCase())
         environmentTextures.set(texture.material.toLowerCase(), value)
         disposables.add(value)
+      }
+      for(const fact of request.environment?.cubemapFacts??[]){
+        if(cubemapTextures.has(fact.index)||!HASH.test(fact.sha256)||!finite(fact.origin))throw new RenderingError("MalformedInput","cubemap occurrence input is invalid")
+        const authored=request.environment!.authoredTextures.get(fact.logicalPath.toLowerCase())
+        if(!authored||authored.sourceSha256!==fact.sha256||authored.width!==fact.width||authored.height!==fact.height)throw new RenderingError("IdentityMismatch","cubemap authored texture identity differs")
+        const texture=textureFromAuthoredCubemap(authored,THREE.NoColorSpace);cubemapTextures.set(fact.index,texture);disposables.add(texture)
+      }
+      if(request.environment?.sky){
+        const semantics=["right","left","back","front","up","down"] as const
+        const faces=new Map<number,(typeof request.environment.sky.faces)[number]>()
+        for(const face of request.environment.sky.faces){
+          if(face.face<0||face.face>5||faces.has(face.face))throw new RenderingError("MalformedInput","2D sky face identity is invalid")
+          faces.set(face.face,face)
+        }
+        if(faces.size!==6)throw new RenderingError("MissingInput","2D sky requires six semantic faces")
+        if([...faces.values()].every(face=>face.encoding)){
+          skyGroup=new THREE.Group()
+          skyGroup.renderOrder=-1
+          const geometryFaces=buildSourceSkyGeometry([0,0,0],1)
+          for(let faceIndex=0;faceIndex<6;faceIndex+=1){
+            const face=faces.get(faceIndex)!,geometryFace=geometryFaces.find(value=>value.face===semantics[faceIndex])!
+            if(face.selectedTextures.length!==1)throw new RenderingError("UnsupportedFeature","the supplied 2D-sky shader encoding requires one selected texture")
+            const selected=face.selectedTextures[0]!,authored=request.environment.authoredTextures.get(selected.logicalPath.toLowerCase())
+            if(!authored||authored.sourceSha256!==selected.sha256)throw new RenderingError("IdentityMismatch","2D sky authored texture identity differs")
+            const texture=textureFromAuthored(authored,face.encoding==="srgb"?THREE.SRGBColorSpace:THREE.NoColorSpace)
+            if(face.encoding==="hdr-rgbs"){texture.minFilter=THREE.NearestMipmapNearestFilter;texture.magFilter=THREE.NearestFilter;texture.needsUpdate=true}
+            disposables.add(texture)
+            const geometry=new THREE.BufferGeometry(),positions=Float32Array.from(geometryFace.vertices.flatMap(vertex=>vertex.position)),uv=Float32Array.from(geometryFace.vertices.flatMap(vertex=>vertex.uv))
+            geometry.setAttribute("position",new THREE.BufferAttribute(positions,3));geometry.setAttribute("uv",new THREE.BufferAttribute(uv,2));geometry.setIndex([...geometryFace.indices]);disposables.add(geometry)
+            const material=new THREE.MeshBasicNodeMaterial({depthTest:false,depthWrite:false,side:THREE.BackSide})
+            if(face.encoding==="hdr-rgbs"){
+              const baseUv=TSL.uv(),fudge=0.01/Math.max(authored.width,authored.height),increment=TSL.vec2(0.5/authored.width-fudge,0.5/authored.height-fudge),uv00=baseUv.sub(increment),uv10=TSL.vec2(baseUv.x.add(increment.x),baseUv.y.sub(increment.y)),uv01=TSL.vec2(baseUv.x.sub(increment.x),baseUv.y.add(increment.y)),uv11=baseUv.add(increment),s00=TSL.texture(texture,uv00),s10=TSL.texture(texture,uv10),s01=TSL.texture(texture,uv01),s11=TSL.texture(texture,uv11),fraction=TSL.fract(uv00.mul(TSL.vec2(authored.width,authored.height))),top=TSL.mix(s00.rgb.mul(s00.a),s10.rgb.mul(s10.a),fraction.x),bottom=TSL.mix(s01.rgb.mul(s01.a),s11.rgb.mul(s11.a),fraction.x)
+              material.colorNode=TSL.vec4(TSL.mix(top,bottom,fraction.y).mul(8),1)
+            }else material.colorNode=TSL.texture(texture,TSL.uv())
+            material.toneMapped=false;disposables.add(material)
+            const mesh=new THREE.Mesh(geometry,material);mesh.userData.skyFace=geometryFace.face;mesh.renderOrder=-1;skyGroup.add(mesh)
+          }
+          group.add(skyGroup)
+        }
       }
       for (const mark of request.environment?.markRecords ?? []) {
         if (mark.status !== 0 || !mark.enabled) continue
@@ -1344,7 +1562,9 @@ class RendererOwner implements Renderer {
             ...materialOptions(resolved, materialState),
             side: sourceModelSide(request.modelFacing!.get(model.logicalPath.split("#skin=")[0]!.toLowerCase())!),
           })
-          const base = baseTexture ? TSL.texture(baseTexture, TSL.uv()) : TSL.vec4(TSL.color(debugColor(resolved.logicalPath)), 1)
+           const base = request.diagnostic
+             ? TSL.vec4(TSL.color(debugColor(`diagnostic:${resolved.logicalPath}`)), 1)
+             : baseTexture ? TSL.texture(baseTexture, TSL.uv()) : TSL.vec4(TSL.color(debugColor(resolved.logicalPath)), 1)
           material.colorNode = sourceFragmentColor(base, materialState)
           material.toneMapped = false
           disposables.add(material)
@@ -1391,11 +1611,13 @@ class RendererOwner implements Renderer {
         brushModelTemplates,
         particleTextures,
         particleMaterials,
+        skyGroup,
+        cubemapTextures,
         materialStates,
         disposables,
         projectedMarks,
         disposed: false,
-      } as SceneResources
+      }
       disposeScene(failed)
       if (error instanceof RenderingError) throw error
       throw new RenderingError("BoundExceeded", `runtime map GPU staging failed: ${String(error)}`)
@@ -1469,6 +1691,11 @@ class RendererOwner implements Renderer {
           faces: Object.freeze([...texture.faces]),
           planes: Object.freeze(texture.planes.map((plane) => Object.freeze({ ...plane, rgba: plane.rgba.slice() }))),
         })])),
+        modelDrawInputs: request.modelDrawInputs?.map((input) => Object.freeze({
+          entity: input.entity,
+          lighting: structuredClone(input.lighting),
+          eyes: Object.freeze(input.eyes.map((eye) => structuredClone(eye))),
+        })),
         brushModels:request.brushModels?.map(model=>Object.freeze({...model,surfaceRange:Object.freeze([...model.surfaceRange]) as readonly[number,number],materials:Object.freeze([...model.materials])})),
         diagnostic: request.diagnostic,
       },
@@ -1487,6 +1714,8 @@ class RendererOwner implements Renderer {
       projectedMarks: Object.freeze(projectedMarks),
       waterMeshes:Object.freeze(waterMeshes),
       waterMaterials,
+      cubemapTextures,
+      skyGroup,
       reflectionTarget,
       refractionTarget,
       result,
@@ -1512,8 +1741,8 @@ class RendererOwner implements Renderer {
         )
           throw new RenderingError("IdentityMismatch", "visibility result identity differs from the active environment")
         const visible = new Set(frame.visibility.surfaces)
-        for (const batch of this.#active.worldBatches)
-          batch.mesh.visible = batch.faces.some((face) => visible.has(face))
+        this.#setWorldVisibility(frame.visibility.surfaces)
+        if(this.#active.skyGroup)this.#active.skyGroup.visible=frame.visibility.sky===2
         if (!frame.collisionWorldIdentity || frame.collisionWorldIdentity !== this.#active.result.environment?.collisionWorldIdentity) {
           throw new RenderingError("IdentityMismatch", "mark collision-world identity differs")
         }
@@ -1523,8 +1752,9 @@ class RendererOwner implements Renderer {
             mark.mesh.matrixAutoUpdate = true
             sourceTransform(mark.mesh, [0, 0, 0], [0, 0, 0])
           } else {
+            const visibility=mark.visibility
             const receiver = frame.brushModels?.models.find((model) =>
-              BigInt(model.sourceIndex) === mark.visibility.entity && model.model === mark.visibility.model)
+              BigInt(model.sourceIndex) === visibility.entity && model.model === visibility.model)
             mark.mesh.visible = receiver?.draw === true
             if (receiver) sourceTransform(mark.mesh, receiver.worldPosition, receiver.worldAngles)
           }
@@ -1562,18 +1792,18 @@ class RendererOwner implements Renderer {
           }
           viewModelPass = Object.freeze({ depthRange: viewModelDepthRange, viewportRestored: true })
         }
-        this.#submission += 1
       }
       const capture = frame.capture ? await this.#capture(frame.capture) : undefined
       return Object.freeze({
         deviceGeneration: this.#deviceGeneration,
         sceneGeneration: this.#sceneGeneration,
-        submission: this.#submission,
+        submission: null,
         exposure,
         visibleProjectedMarks: this.#active.projectedMarks.reduce((total, mark) => total + Number(mark.mesh.visible), 0),
         waterPasses,
         waterStateRestored,
         viewModelPass,
+        pacing:this.#pacing.records(),
         capture,
       })
     } finally {
@@ -1596,9 +1826,33 @@ class RendererOwner implements Renderer {
     }
   }
 
+  #setWorldVisibility(surfaces: Uint32Array): void {
+    if (!this.#active) throw new RenderingError("InvalidState", "renderer has no active world visibility resources")
+    const visible = new Set(surfaces)
+    const order = new Map<number, number>()
+    for (let index = 0; index < surfaces.length; index += 1) {
+      const face = surfaces[index]!
+      if (order.has(face)) throw new RenderingError("MalformedInput", "visibility contains a duplicate world face")
+      order.set(face, index)
+    }
+    for (const batch of this.#active.worldBatches) {
+      const selected = visibleTriangleIndices(
+        batch.sourceIndices,
+        batch.faces,
+        visible,
+        batch.transparent ? order : undefined,
+      )
+      const target = batch.index.array as Uint32Array
+      target.set(selected)
+      batch.index.needsUpdate = true
+      batch.mesh.geometry.setDrawRange(0, selected.length)
+      batch.mesh.visible = selected.length > 0
+    }
+  }
+
   #validateFrame(frame: Frame): void {
     if (
-      frame.effects.length + (frame.models?.length ?? 0) + (frame.particles?.length ?? 0)+(frame.brushModels?.models.length??0) > MAX_EFFECTS ||
+      frame.effects.length + (frame.shadows?.length ?? 0) + (frame.models?.length ?? 0) + (frame.particles?.length ?? 0)+(frame.brushModels?.models.length??0) > MAX_EFFECTS ||
       !finite([
         ...frame.camera.position,
         frame.camera.yawDegrees,
@@ -1617,19 +1871,14 @@ class RendererOwner implements Renderer {
     ) {
       throw new RenderingError("MalformedInput", "render frame is invalid")
     }
-    for (const effect of frame.effects) {
-      if (
-        !Number.isSafeInteger(effect.identity) ||
-        effect.identity < 1 ||
-        !Number.isSafeInteger(effect.color) ||
-        effect.color < 0 ||
-        effect.color > 0xff_ffff ||
-        !finite([...effect.position, effect.radius, effect.opacity]) ||
-        effect.radius < 0 ||
-        effect.opacity < 0 ||
-        effect.opacity > 1
-      )
-        throw new RenderingError("MalformedInput", "render effect is invalid")
+    try {
+      validateDynamicLights(frame.effects, MAX_EFFECTS)
+      validateShadows(frame.shadows ?? [], MAX_EFFECTS)
+    } catch (error) {
+      throw new RenderingError("MalformedInput", `dynamic-light or shadow input is invalid: ${String(error)}`)
+    }
+    if ((frame.effects.length > 0 || (frame.shadows?.length ?? 0) > 0) && !this.#active!.loadRequest.diagnostic) {
+      throw new RenderingError("UnsupportedFeature", "the active renderer backend has no accepted dynamic-light or shadow pass")
     }
     for (const item of frame.models ?? []) {
       const transform = item.angles ?? item.orientation ?? []
@@ -1650,6 +1899,39 @@ class RendererOwner implements Renderer {
       }
       if (item.viewModel && (!item.viewModelProjection || item.viewModelProjection.kind !== "viewmodel"))
         throw new RenderingError("MalformedInput", "viewmodel projection is missing")
+      if (!item.modelLighting && !this.#active!.loadRequest.diagnostic) {
+        throw new RenderingError("MissingInput", `explicit model lighting ${item.identity} is unavailable`)
+      }
+      if (item.modelLighting) {
+        try {
+          validateModelLightingInput(item.modelLighting)
+          validateModelEyeStates(item.eyeStates ?? [])
+        } catch (error) {
+          throw new RenderingError("MalformedInput", `model draw input ${item.identity} is invalid: ${String(error)}`)
+        }
+      }
+      const runtimeModel = this.#active!.map.models.find((model) => model.logicalPath === modelKey(item.model, item.skin ?? 0))
+      if (!runtimeModel) throw new RenderingError("IdentityMismatch", "runtime model draw identity differs")
+      for (const [primitiveIndex, primitive] of runtimeModel.primitives.entries()) {
+        const materialIdentity = runtimeModel.materials[primitive.material]!.logicalPath.toLowerCase()
+        const material = this.#active!.loadRequest.modelMaterials?.get(materialIdentity)
+        if (!material) continue
+        try {
+          prepareModelDrawInputs({
+            primitive: item.pose?.primitives[primitiveIndex]?.primitive ?? primitiveIndex,
+            required: material.requiredInputs as readonly ModelDrawRequirement[],
+            lighting: item.modelLighting,
+            eyes: item.eyeStates,
+            currentFramebuffer: item.currentFramebufferAvailable === true,
+            authoredTexturePlanes: true,
+            gameProxyValues: item.gameProxyValuesAvailable === true,
+          })
+        } catch (error) {
+          if (!this.#active!.loadRequest.diagnostic) {
+            throw new RenderingError("MissingInput", `model draw ${item.identity} inputs are incomplete: ${String(error)}`)
+          }
+        }
+      }
       if (item.viewModelProjection) {
         const projection = item.viewModelProjection
         try {
@@ -1677,7 +1959,8 @@ class RendererOwner implements Renderer {
         !this.#active!.particleTextures.has(item.material.toLowerCase()) || !item.primarySheet)
         throw new RenderingError("MalformedInput", "particle draw item is invalid")
     }
-    if(frame.visibility){const water=frame.visibility.water;if(water.passes.length<1||water.passes.length>4||water.passes.filter(pass=>pass.kind==="main").length!==1)throw new RenderingError("MalformedInput","Water view plan is invalid");let prior=-1;for(const pass of water.passes){const order=pass.kind==="reflection"?0:pass.kind==="refraction"?1:pass.kind==="main"?2:3;if(order<prior||!finite([...pass.origin,...pass.angles,pass.clip?.height??0])||pass.surfaces.length>100_000)throw new RenderingError("MalformedInput","Water pass is invalid");prior=order}if(water.visibleWater&&(!finite([water.visibleWater.surfaceZ,water.visibleWater.evaluated.cheapStart,water.visibleWater.evaluated.cheapEnd,...water.visibleWater.evaluated.normalTransform])||water.visibleWater.evaluated.normalTransform.length!==16))throw new RenderingError("MalformedInput","current Water state is invalid")}
+    if(this.#active!.result.environment&&!frame.visibility)throw new RenderingError("MissingInput","an exact visibility result is required")
+    if(frame.visibility){if(!Array.isArray(frame.visibility.leaves)||!Array.isArray(frame.visibility.areas)||frame.visibility.sky<0||frame.visibility.sky>2||(frame.visibility.eyeLeaf!==null&&(!Number.isSafeInteger(frame.visibility.eyeLeaf)||frame.visibility.eyeLeaf<0)))throw new RenderingError("MalformedInput","visibility view state is invalid");const water=frame.visibility.water;if(water.passes.length<1||water.passes.length>4||water.passes.filter(pass=>pass.kind==="main").length!==1)throw new RenderingError("MalformedInput","Water view plan is invalid");let prior=-1;for(const pass of water.passes){const order=pass.kind==="reflection"?0:pass.kind==="refraction"?1:pass.kind==="main"?2:3;if(order<prior||!finite([...pass.origin,...pass.angles,pass.clip?.height??0])||pass.surfaces.length>100_000)throw new RenderingError("MalformedInput","Water pass is invalid");prior=order}if(water.visibleWater&&(!finite([water.visibleWater.surfaceZ,water.visibleWater.evaluated.cheapStart,water.visibleWater.evaluated.cheapEnd,...water.visibleWater.evaluated.normalTransform])||water.visibleWater.evaluated.normalTransform.length!==16))throw new RenderingError("MalformedInput","current Water state is invalid")}
     if(frame.brushModels){let prior=-1;for(const model of frame.brushModels.models){if(model.sourceIndex<=prior||model.model<1||model.model>=(this.#active!.loadRequest.brushModels?.length??0)||!finite([...model.worldPosition,...model.worldAngles])||model.renderMode<0||model.renderMode>10)throw new RenderingError("MalformedInput","brush-model publication record is invalid");prior=model.sourceIndex}}
   }
 
@@ -1697,6 +1980,7 @@ class RendererOwner implements Renderer {
     this.#camera.lookAt(this.#camera.position.clone().add(direction))
     this.#viewCamera.position.copy(this.#camera.position)
     this.#viewCamera.quaternion.copy(this.#camera.quaternion)
+    if(this.#active?.skyGroup){this.#active.skyGroup.position.copy(this.#camera.position);this.#active.skyGroup.scale.setScalar(input.far)}
   }
 
   #setWaterCamera(pass:WaterFramePass,frame:Camera):void{
@@ -1704,6 +1988,7 @@ class RendererOwner implements Renderer {
     this.#camera.fov=frame.verticalFovDegrees;this.#camera.near=frame.near;this.#camera.far=frame.far;this.#camera.updateProjectionMatrix()
     const yaw=THREE.MathUtils.degToRad(pass.angles[1]),pitch=THREE.MathUtils.degToRad(pass.angles[0]),direction=new THREE.Vector3(Math.cos(pitch)*Math.cos(yaw),Math.cos(pitch)*Math.sin(yaw),-Math.sin(pitch))
     this.#camera.lookAt(this.#camera.position.clone().add(direction))
+    if(this.#active?.skyGroup){this.#active.skyGroup.position.copy(this.#camera.position);this.#active.skyGroup.scale.setScalar(frame.far)}
   }
 
   #setClip(clip:WaterFramePass["clip"]):()=>void{
@@ -1717,13 +2002,13 @@ class RendererOwner implements Renderer {
   async #renderWaterPasses(frame:Frame):Promise<Readonly<{passes:FrameResult["waterPasses"];restored:boolean}>>{
     if(!this.#active)throw new RenderingError("InvalidState","renderer has no active Water resources")
     const plan=frame.visibility?.water
-    if(!plan){this.#backend.autoClear=true;await this.#backend.renderAsync(this.#scene,this.#camera);return Object.freeze({passes:Object.freeze(["main"]),restored:true})}
-    const worldVisibility=this.#active.worldBatches.map(batch=>batch.mesh.visible),markVisibility=this.#active.projectedMarks.map(mark=>mark.mesh.visible),waterVisibility=this.#active.waterMeshes.map(water=>water.mesh.visible),background=this.#scene.background,effectsVisible=this.#effects.visible
+    if(!plan){this.#backend.autoClear=true;await this.#backend.renderAsync(this.#scene,this.#camera);return Object.freeze({passes:Object.freeze(["main"] as const),restored:true})}
+    const markVisibility=this.#active.projectedMarks.map(mark=>mark.mesh.visible),waterVisibility=this.#active.waterMeshes.map(water=>water.mesh.visible),background=this.#scene.background,effectsVisible=this.#effects.visible,skyVisible=this.#active.skyGroup?.visible??false
     const completed:("reflection"|"refraction"|"main"|"intersection")[]=[]
-    if(plan.visibleWater&&plan.passes.some(pass=>pass.kind!=="main"&&pass.drawSky2d)&&background===null)throw new RenderingError("MissingInput","Water auxiliary view requests the unresolved 2D sky pass")
+    if(plan.visibleWater&&plan.passes.some(pass=>pass.kind!=="main"&&pass.drawSky2d)&&!this.#active.skyGroup)throw new RenderingError("MissingInput","Water auxiliary view requests the unresolved 2D sky pass")
     try{
-      for(const pass of plan.passes){const visible=new Set(pass.surfaces);this.#active.worldBatches.forEach(batch=>batch.mesh.visible=batch.faces.some(face=>visible.has(face)));this.#active.projectedMarks.forEach(mark=>{if(mark.visibility.kind==="world")mark.mesh.visible=visible.has(mark.face)});this.#active.waterMeshes.forEach((water,index)=>water.mesh.visible=pass.renderWaterSurface&&waterVisibility[index]===true);this.#effects.visible=pass.drawEntities;this.#scene.background=pass.drawSky2d?background:null;this.#setWaterCamera(pass,frame.camera);const restoreClip=this.#setClip(pass.clip);try{this.#backend.setRenderTarget(pass.kind==="reflection"?this.#active.reflectionTarget:pass.kind==="refraction"?this.#active.refractionTarget:null);this.#backend.autoClear=pass.kind!=="intersection";await this.#backend.renderAsync(this.#scene,this.#camera);completed.push(pass.kind)}finally{restoreClip()}}
-    }finally{this.#backend.setRenderTarget(null);this.#backend.autoClear=true;this.#scene.background=background;this.#effects.visible=effectsVisible;this.#active.worldBatches.forEach((batch,index)=>batch.mesh.visible=worldVisibility[index]!);this.#active.projectedMarks.forEach((mark,index)=>mark.mesh.visible=markVisibility[index]!);this.#active.waterMeshes.forEach((water,index)=>water.mesh.visible=waterVisibility[index]!);this.#setCamera(frame.camera)}
+      for(const pass of plan.passes){const visible=new Set(pass.surfaces);this.#setWorldVisibility(pass.surfaces);this.#active.projectedMarks.forEach(mark=>{if(mark.visibility.kind==="world")mark.mesh.visible=visible.has(mark.face)});this.#active.waterMeshes.forEach((water,index)=>water.mesh.visible=pass.renderWaterSurface&&waterVisibility[index]===true);if(this.#active.skyGroup)this.#active.skyGroup.visible=pass.drawSky2d;this.#effects.visible=pass.drawEntities;this.#scene.background=pass.drawSky2d?background:null;this.#setWaterCamera(pass,frame.camera);const restoreClip=this.#setClip(pass.clip);try{this.#backend.setRenderTarget(pass.kind==="reflection"?this.#active.reflectionTarget:pass.kind==="refraction"?this.#active.refractionTarget:null);this.#backend.autoClear=pass.kind!=="intersection";await this.#backend.renderAsync(this.#scene,this.#camera);completed.push(pass.kind)}finally{restoreClip()}}
+    }finally{this.#backend.setRenderTarget(null);this.#backend.autoClear=true;this.#scene.background=background;this.#effects.visible=effectsVisible;if(this.#active.skyGroup)this.#active.skyGroup.visible=skyVisible;this.#setWorldVisibility(frame.visibility!.surfaces);this.#active.projectedMarks.forEach((mark,index)=>mark.mesh.visible=markVisibility[index]!);this.#active.waterMeshes.forEach((water,index)=>water.mesh.visible=waterVisibility[index]!);this.#setCamera(frame.camera)}
     if(!completed.includes("main"))throw new RenderingError("MalformedInput","Water view plan omitted the main pass")
     return Object.freeze({passes:Object.freeze(completed),restored:this.#backend.autoClear&&this.#scene.background===background&&this.#effects.visible===effectsVisible})
   }
@@ -1854,20 +2139,6 @@ class RendererOwner implements Renderer {
     const activeViewModels = new Set<number>()
     let viewModelDepthRange: readonly [number, number] | undefined
     try {
-      for (const effect of frame.effects) {
-        const material = new THREE.MeshBasicMaterial({
-          color: effect.color,
-          transparent: effect.opacity < 1,
-          opacity: effect.opacity,
-          toneMapped: false,
-        })
-        const mesh = new THREE.Mesh(this.#effectGeometry, material)
-        mesh.userData.dynamicMaterial = true
-        mesh.position.set(...effect.position)
-        mesh.scale.setScalar(effect.radius)
-        mesh.userData.identity = effect.identity
-        effects.add(mesh)
-      }
       const factor=(value:ParticleItem["blendSource"])=>value==="zero"?THREE.ZeroFactor:value==="one"?THREE.OneFactor:value==="source-alpha"?THREE.SrcAlphaFactor:THREE.OneMinusSrcAlphaFactor
       for(const [order,item] of (frame.particles??[]).entries()){if(item.secondarySheet)throw new RenderingError("UnsupportedFeature","dual-sequence Particle rendering requires exact selected material support");const geometry=this.#particleGeometry(item,frame.camera),sample=item.primarySheet!,current=sample.current[0]!,next=sample.next[0]!,corners=[[current[0],current[1]],[current[2],current[1]],[current[2],current[3]],[current[0],current[3]]],nextCorners=[[next[0],next[1]],[next[2],next[1]],[next[2],next[3]],[next[0],next[3]]];geometry.setAttribute("uv",new THREE.BufferAttribute(Float32Array.from(corners.flat()),2));geometry.setAttribute("particleUvNext",new THREE.BufferAttribute(Float32Array.from(nextCorners.flat()),2));geometry.setAttribute("particleSheetBlend",new THREE.BufferAttribute(Float32Array.from({length:4},()=>sample.blend),1));const red=((item.color>>16)&255)/255,green=((item.color>>8)&255)/255,blue=(item.color&255)/255;geometry.setAttribute("particleColor",new THREE.BufferAttribute(Float32Array.from({length:16},(_,i)=>[red,green,blue,item.opacity][i%4]!),4));const material=this.#active!.particleMaterials.get(item.material.toLowerCase())!.clone();material.blending=THREE.CustomBlending;material.blendSrc=factor(item.blendSource);material.blendDst=factor(item.blendDestination);material.transparent=true;const mesh=new THREE.Mesh(geometry,material);mesh.renderOrder=order;mesh.userData.dynamicGeometry=true;mesh.userData.dynamicMaterial=true;mesh.userData.stableTieIdentity=item.stableTieIdentity;effects.add(mesh)}
       for(const item of frame.brushModels?.models??[]){if(!item.draw)continue;const template=this.#active!.brushModelTemplates.get(item.model);if(!template)continue;const instance=template.clone(true);sourceTransform(instance,item.worldPosition,item.worldAngles);instance.userData.identity=item.sourceIndex;instance.userData.renderMode=item.renderMode;instance.userData.renderFx=item.renderFx;instance.userData.effects=item.effects;instance.userData.mover=item.mover;const modulation=new THREE.Color(item.color[0]/255,item.color[1]/255,item.color[2]/255);instance.traverse(object=>{if(!(object instanceof THREE.Mesh))return;const original=object.material,materials=(Array.isArray(original)?original:[original]).map(value=>{const material=value.clone();if("color" in material&&material.color instanceof THREE.Color)material.color.multiply(modulation);material.opacity*=item.color[3]/255;material.transparent=material.transparent||item.renderMode!==0||item.color[3]<255;return material});object.material=Array.isArray(original)?materials:materials[0]!;object.userData.dynamicMaterial=true});effects.add(instance)}
@@ -1951,17 +2222,41 @@ class RendererOwner implements Renderer {
       height > limit
     )
       throw new RenderingError("BoundExceeded", "renderer dimensions are invalid")
-    this.#backend.setPixelRatio(devicePixelRatio)
-    this.#backend.setSize(cssWidth, cssHeight, false)
-    if(this.#active&&width>0&&height>0){this.#active.reflectionTarget.setSize(width,height);this.#active.refractionTarget.setSize(width,height)}
-    this.#viewportWidth = cssWidth
-    this.#viewportHeight = cssHeight
-    this.#camera.aspect = cssHeight === 0 ? 1 : cssWidth / cssHeight
-    this.#viewCamera.aspect = this.#camera.aspect
-    this.#camera.updateProjectionMatrix()
-    this.#viewCamera.updateProjectionMatrix()
-    this.#suspended = width === 0 || height === 0
-    return Object.freeze({ width, height, suspended: this.#suspended, deviceGeneration: this.#deviceGeneration })
+    const prior = Object.freeze({
+      cssWidth: this.#cssWidth,
+      cssHeight: this.#cssHeight,
+      devicePixelRatio: this.#devicePixelRatio,
+      viewportWidth: this.#viewportWidth,
+      viewportHeight: this.#viewportHeight,
+      suspended: this.#suspended,
+      aspect: this.#camera.aspect,
+      physicalWidth: Math.floor(this.#cssWidth * this.#devicePixelRatio),
+      physicalHeight: Math.floor(this.#cssHeight * this.#devicePixelRatio),
+    })
+    try {
+      if(this.#active&&width>0&&height>0){this.#active.reflectionTarget.setSize(width,height);this.#active.refractionTarget.setSize(width,height)}
+      this.#backend.setPixelRatio(devicePixelRatio)
+      this.#backend.setSize(cssWidth, cssHeight, false)
+      this.#viewportWidth = cssWidth
+      this.#viewportHeight = cssHeight
+      this.#cssWidth = cssWidth
+      this.#cssHeight = cssHeight
+      this.#devicePixelRatio = devicePixelRatio
+      this.#camera.aspect = cssHeight === 0 ? 1 : cssWidth / cssHeight
+      this.#viewCamera.aspect = this.#camera.aspect
+      this.#camera.updateProjectionMatrix()
+      this.#viewCamera.updateProjectionMatrix()
+      this.#suspended = width === 0 || height === 0
+      this.#pacing.suspend(this.#suspended)
+      this.#attachmentGeneration += 1
+    } catch (error) {
+      if(this.#active&&prior.physicalWidth>0&&prior.physicalHeight>0){this.#active.reflectionTarget.setSize(prior.physicalWidth,prior.physicalHeight);this.#active.refractionTarget.setSize(prior.physicalWidth,prior.physicalHeight)}
+      this.#backend.setPixelRatio(prior.devicePixelRatio)
+      this.#backend.setSize(prior.cssWidth,prior.cssHeight,false)
+      this.#viewportWidth=prior.viewportWidth;this.#viewportHeight=prior.viewportHeight;this.#cssWidth=prior.cssWidth;this.#cssHeight=prior.cssHeight;this.#devicePixelRatio=prior.devicePixelRatio;this.#suspended=prior.suspended;this.#camera.aspect=prior.aspect;this.#viewCamera.aspect=prior.aspect;this.#camera.updateProjectionMatrix();this.#viewCamera.updateProjectionMatrix()
+      throw new RenderingError("GpuValidationFailed",`renderer attachment replacement failed: ${String(error)}`)
+    }
+    return Object.freeze({ width, height, suspended: this.#suspended, deviceGeneration: this.#deviceGeneration, attachmentGeneration:this.#attachmentGeneration })
   }
 
   startFramePacing(callback: FramePacingCallback): void {
@@ -1973,18 +2268,17 @@ class RendererOwner implements Renderer {
       throw new RenderingError("UnsupportedEnvironment", "animation-frame scheduling is unavailable")
     }
     this.#pacingCallback = callback
+    this.#pacing.start()
     const tick = (timestamp: number) => {
       this.#pacingHandle = undefined
       if (!this.#pacingCallback || this.#lifecycle === "Disposed" || this.#lifecycle === "Failed") return
-      if (!this.#pacingBusy && !this.#suspended && this.#lifecycle === "Ready") {
-        this.#pacingBusy = true
-        Promise.resolve(this.#pacingCallback(timestamp))
-          .then((frame) => (frame ? this.render(frame) : undefined))
-          .catch(() => undefined)
-          .finally(() => {
-            this.#pacingBusy = false
-          })
-      }
+      void this.#pacing.offer(timestamp,async()=>{
+        const frame=await this.#pacingCallback?.(timestamp)
+        if(frame)await this.render(frame)
+        const submitMilliseconds=performance.now()
+        await this.#backend.backend.device?.queue.onSubmittedWorkDone()
+        return Object.freeze({submitMilliseconds,presentMilliseconds:performance.now()})
+      }).catch(()=>{this.#pacingCallback=undefined;this.#pacing.stop()})
       this.#pacingHandle = requestAnimationFrame(tick)
     }
     this.#pacingHandle = requestAnimationFrame(tick)
@@ -1992,6 +2286,7 @@ class RendererOwner implements Renderer {
 
   stopFramePacing(): void {
     this.#pacingCallback = undefined
+    this.#pacing.stop()
     if (this.#pacingHandle !== undefined && typeof globalThis.cancelAnimationFrame === "function") {
       cancelAnimationFrame(this.#pacingHandle)
     }
@@ -2080,7 +2375,6 @@ class RendererOwner implements Renderer {
     this.#active = undefined
     this.#world.clear()
     if (active) await this.#retire(active)
-    this.#effectGeometry.dispose()
     try {
       await this.#backend.backend.device?.queue.onSubmittedWorkDone()
     } catch {
