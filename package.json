@@ -10,6 +10,7 @@
     "generate:tf2-ui": "bun games/tf2/browser/src/ui-resources/generator/generate.ts",
     "verify:tf2-wasm": "bun tools/playsrc/src/cli.ts verify tf2-wasm",
     "verify:browser": "bun tools/playsrc/src/cli.ts verify browser",
+    "profile:gameui": "playwright test --config=playwright.gameui-profile.config.ts",
     "test": "bun test"
   },
   "devDependencies": {

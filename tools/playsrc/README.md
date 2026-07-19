@@ -21,6 +21,8 @@ Native compilation and browser WASM compilation call the same owning Rust crates
 
 `bun run verify:browser jump_beef` starts at the configured Main Menu, loads gameplay through Console, retains world, HUD, Options, mobile-VGUI, and active-PCF captures, byte-compares cold/warm ceiling, forward-wall, and floor regions while allowing authored viewmodel/Particle time to advance, and probes the 867-entry Source closure, Simulation performance, 122 brush records, PSMP v3/PMPO v4 models, alpha/marks, random/audio, Collision/movers, Particle timelines, first-gesture audio, unsupported sticky atomicity, replacement, and shutdown. `verify:tf2-wasm` additionally fixes stock/Original launch, held cadence, configured brush solidity, and above/below/intersection Water plans.
 
+`bun run profile:gameui` starts a fresh checked `jump_beef` development owner and captures Main Menu startup plus 15 seconds of steady state. It replaces `sourceCacheDir/profiles/gameui/jump_beef` with `report.json`, a Playwright trace, a CDP timeline, a V8 CPU profile, and a screenshot. The report includes startup phases, RAF intervals/callback costs, long tasks, event-loop lag, DOM cardinality/mutations, heap samples, resource timing, CDP task/script/style/layout/paint metrics, and self/inclusive JavaScript hot functions.
+
 ## Non-Responsibilities
 
 - Implementing parsers, compilers, gameplay, presentation, or asset-store semantics.
