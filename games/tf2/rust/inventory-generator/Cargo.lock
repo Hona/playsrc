@@ -391,6 +391,7 @@ dependencies = [
 name = "playsrc-entity"
 version = "0.1.0"
 dependencies = [
+ "playsrc-bsp",
  "playsrc-collision",
 ]
 

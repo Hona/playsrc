@@ -8,4 +8,6 @@ PCMD v4 carries forward/side/up movement, yaw/pitch, jump/crouch/speed, fire/det
 
 Projectile presentation consumes an immutable strictly ordered per-tick fact/event timeline, so a projectile created and removed inside one host publication does not need to survive in its final active set. PPTX v2 preserves each source tick, attachment-local trail controls, graceful trail stops, exact wall/mid-air explosion orientation, and local/non-local muzzle selection. Stock stickies preserve their transported VPhysics quaternion and remain hidden for their first `0.1` seconds. Stock first-person requests compose the Soldier/Demoman hand animation model with the configured item `c_model`, shared team skin, copied matching bones, reconstructed unmatched bones, and separate hand/item draw parts; no legacy `v_model` path remains.
 
-`src/presentation.ts` includes viewmodel-bob behavior adapted from Valve Source SDK 2013 and is subject to the Source 1 SDK License in the repository root.
+`src/presentation.ts` includes viewmodel-bob behavior adapted from Valve Source SDK 2013 and is subject to the Source 1 SDK License and notices retained under `packages/presentation/particle`.
+
+The all-class item/schema/attribute/condition/health/damage/pickup core remains in the owning `playsrc-tf2` package. This adapter continues to expose the current compact direct-map Soldier/Demoman session until a complete replacement protocol can consume that core without creating a second gameplay authority. It contains no Demo, Networking, or Replay application adapter.
