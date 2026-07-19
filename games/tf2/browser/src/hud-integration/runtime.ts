@@ -174,6 +174,7 @@ class Integration implements Tf2HudIntegration {
     })
     if (!initialized.ok) throw new Error(`${initialized.diagnostic.code}:${initialized.diagnostic.subject}`)
     this.#runtime = initialized.runtime
+    this.#runtime.deferPresentation(() => {
     const roots = [
       ["HudPlayerStatus", "CTFHudElement"],
       ["HudWeaponAmmo", "CTFHudElement"],
@@ -201,6 +202,7 @@ class Integration implements Tf2HudIntegration {
       apply(this.#runtime, { kind: "set-panel-state", panel: panel.id, mouseInput: false, keyboardInput: false })
     }
     this.#captureBaseBounds()
+    })
   }
 
   #captureBaseBounds(): void {
@@ -259,6 +261,7 @@ class Integration implements Tf2HudIntegration {
 
   publish(publication: CompactSessionSimulationPublication, context: CompactSessionHudContext): Tf2HudBinding {
     if (this.#destroyed) throw new Error("TF2 HUD integration is destroyed")
+    return this.#runtime.deferPresentation(() => {
     const adapted = adaptCompactSessionHud(this.#previous, publication, context)
     const binding = bindTf2Hud(adapted)
     this.#applyValues(binding)
@@ -278,6 +281,7 @@ class Integration implements Tf2HudIntegration {
     this.#previous = tf2HudAvailable(binding.facts)
     this.#binding = binding
     return binding
+    })
   }
 
   action(action: Tf2HudAction): Tf2HudAvailability<Tf2HudCommand> {

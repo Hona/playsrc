@@ -322,8 +322,14 @@ class RuntimeFault extends Error {
   }
 }
 
+const ASCII_FOLDS = new Map<string, string>()
+
 function asciiFold(value: string): string {
-  return value.replace(/[A-Z]/gu, (character) => character.toLowerCase())
+  const prior = ASCII_FOLDS.get(value)
+  if (prior !== undefined) return prior
+  const folded = value.replace(/[A-Z]/gu, (character) => character.toLowerCase())
+  if (ASCII_FOLDS.size < 16_384) ASCII_FOLDS.set(value, folded)
+  return folded
 }
 
 function sameName(left: string, right: string): boolean {
@@ -667,6 +673,7 @@ class SourceVguiRuntime implements VguiRuntime {
   private readonly imageRasterizer: VguiImageRasterizer
   private readonly rasterGenerations = new Map<string, number>()
   private readonly rasterSignatures = new Map<string, string>()
+  private readonly presentationSignatures = new Map<VguiPanelId, string>()
   private readonly popups: VguiPanelId[] = []
   private readonly pendingPressedKeys = new Set<string>()
   private readonly pendingReleasedKeys = new Set<string>()
@@ -692,6 +699,9 @@ class SourceVguiRuntime implements VguiRuntime {
   private reducedMotion: boolean
   private destroyed = false
   private inFrame = false
+  private publicationDepth = 0
+  private publicationPending = false
+  private layoutPending = false
   private revision = 0
   private frame = 0
   private timeSeconds = 0
@@ -923,6 +933,17 @@ class SourceVguiRuntime implements VguiRuntime {
     } catch (error) {
       const fault = error instanceof RuntimeFault ? error : new RuntimeFault("InvalidOperation", operation.kind)
       return this.failure(fault.code, operation.kind, fault.subject)
+    }
+  }
+
+  deferPresentation<T>(callback: () => T): T {
+    if (this.destroyed) throw new RuntimeFault("Destroyed", "defer-presentation")
+    this.publicationDepth += 1
+    try { return callback() }
+    finally {
+      this.publicationDepth -= 1
+      if (this.publicationDepth === 0 && this.layoutPending) this.solveGeometry()
+      if (this.publicationDepth === 0 && this.publicationPending) this.publishDom()
     }
   }
 
@@ -1862,6 +1883,7 @@ class SourceVguiRuntime implements VguiRuntime {
       this.auxiliaryNodes.delete(element)
     }
     panel.chromeElements.clear()
+    this.presentationSignatures.delete(panel.id)
     this.panels.delete(panel.id)
     this.addTrace("panel-delete", panel.id, panel.name)
   }
@@ -4410,6 +4432,20 @@ class SourceVguiRuntime implements VguiRuntime {
     this.updateActiveAnimations(true)
   }
 
+  private frameWorkReasons(): string[] {
+    const reasons: string[] = []
+    if (this.pendingPressedKeys.size > 0 || this.pendingReleasedKeys.size > 0 || this.pendingPressedButtons.size > 0 || this.pendingReleasedButtons.size > 0) reasons.push("pending-input")
+    if (this.pressedKeys.size > 0 || this.releasedKeys.size > 0 || this.pressedButtons.size > 0 || this.releasedButtons.size > 0) reasons.push("input-edges")
+    if (this.queuedMessages.length > 0) reasons.push(`messages:${this.queuedMessages.length}`)
+    if (this.delayedCommands.length > 0) reasons.push(`delayed:${this.delayedCommands.length}`)
+    if (this.activeAnimations.length > 0) reasons.push(`animations:${this.activeAnimations.length}`)
+    if (this.deferredDeletes.size > 0) reasons.push(`deletes:${this.deferredDeletes.size}`)
+    if (this.pendingRequests.length > 0) reasons.push(`requests:${this.pendingRequests.length}`)
+    if (this.requestedFocus !== this.keyFocus) reasons.push("focus")
+    if (this.clearFocusRequested) reasons.push("clear-focus")
+    return reasons
+  }
+
   private runFrame(timeSeconds: number): void {
     if (!finite(timeSeconds) || timeSeconds < this.timeSeconds) throw new RuntimeFault("MalformedValue", "frame-time")
     if (this.inFrame) throw new RuntimeFault("ReentrantFrame", "frame")
@@ -4417,6 +4453,21 @@ class SourceVguiRuntime implements VguiRuntime {
     try {
       this.timeSeconds = timeSeconds
       this.addTrace("frame", null, `begin:${this.frame + 1}`)
+      const reasons = this.frameWorkReasons()
+      const reason = reasons.length === 0 ? "static" : reasons.join(",")
+      if (this.host.dataset.vguiFrameWork !== reason) this.host.dataset.vguiFrameWork = reason
+      if (reasons.length === 0) {
+        this.addTrace("input-rollover", null, "complete")
+        this.addTrace("focus", this.keyFocus, "committed")
+        this.addTrace("messages", null, "dispatched")
+        this.addTrace("ticks", this.keyFocus, "focus-tick")
+        this.addTrace("layout", null, "solved")
+        this.addTrace("animation", null, "advanced")
+        this.addTrace("dom", null, "published")
+        this.frame += 1
+        this.addTrace("frame", null, `end:${this.frame}`)
+        return
+      }
       this.pressedKeys.clear()
       this.releasedKeys.clear()
       this.pressedButtons.clear()
@@ -4456,6 +4507,7 @@ class SourceVguiRuntime implements VguiRuntime {
 
   private commitFocus(next: VguiPanelId | null): void {
     if (next === this.keyFocus) {
+      this.requestedFocus = next
       this.clearFocusRequested = false
       return
     }
@@ -4525,6 +4577,8 @@ class SourceVguiRuntime implements VguiRuntime {
   }
 
   private solveGeometry(): void {
+    if (this.publicationDepth > 0) { this.layoutPending = true; return }
+    this.layoutPending = false
     this.layoutSpecializedPanels()
     const workspace: VguiRect = { x: 0, y: 0, width: this.viewport.width, height: this.viewport.height }
     const visiting = new Set<VguiPanelId>()
@@ -4655,45 +4709,67 @@ class SourceVguiRuntime implements VguiRuntime {
     })
   }
 
+  private presentationSignature(panel: PanelState): string {
+    return JSON.stringify([
+      this.scheme.identity, this.scheme.revision, this.viewport.width, this.viewport.height, this.viewport.devicePixelRatio, this.reducedMotion,
+      panel.control, panel.sourceControl, panel.name, panel.parent, panel.children, panel.resourceOwner, [...panel.properties],
+      panel.bounds, panel.absoluteBounds, panel.clip, panel.inset, panel.minimumWidth, panel.minimumHeight, panel.z, panel.popup, panel.topmostPopup,
+      panel.visible, panel.effectivelyVisible, panel.enabled, panel.mouseInput, panel.keyboardInput, panel.proportional, panel.tabPosition, panel.subTabPosition,
+      panel.text, panel.bodyText, panel.accessibleName, panel.accessibleDescription, panel.tooltip, panel.command, panel.url, panel.border, panel.font, panel.image,
+      panel.drawColor, panel.fillColor, panel.armed, panel.depressed, panel.selected, panel.checked, panel.checkable, panel.frameInteraction,
+      panel.value, panel.minimum, panel.maximum, panel.rangeWindow, panel.numTicks, panel.thumbWidth, panel.progress, panel.imageFill, panel.foregroundColor,
+      [...panel.scalarProperties], panel.items, panel.sections, panel.sectionedItems, panel.pressedItem, panel.activeIndex, panel.caret, panel.selectionStart, panel.selectionEnd,
+      panel.editable, panel.multiline, panel.numericOnly, panel.allowUnicode, panel.textHidden, panel.maximumCharacters, panel.compositionActive, panel.compositionText,
+      panel.compositionCaret, [...panel.animationValues], this.keyFocus === panel.id, this.applicationModal === panel.id,
+    ])
+  }
+
   private publishDom(): void {
     if (this.destroyed) return
+    if (this.publicationDepth > 0) { this.publicationPending = true; return }
+    this.publicationPending = false
     try {
       const place = (panelId: VguiPanelId): void => {
         const panel = this.requirePanel(panelId)
         const parent = panel.popup || panel.parent === null ? this.host : this.requirePanel(panel.parent).element
-        parent.append(panel.element)
-        const relativeX = panel.popup || panel.parent === null ? panel.absoluteBounds.x : panel.bounds.x + this.requirePanel(panel.parent).inset.left
-        const relativeY = panel.popup || panel.parent === null ? panel.absoluteBounds.y : panel.bounds.y + this.requirePanel(panel.parent).inset.top
-        panel.element.style.left = `${relativeX}px`
-        panel.element.style.top = `${relativeY}px`
-        panel.element.style.width = `${panel.bounds.width}px`
-        panel.element.style.height = `${panel.bounds.height}px`
-        panel.element.style.zIndex = String(panel.z)
-        panel.element.style.display = panel.effectivelyVisible ? "block" : "none"
-        panel.element.style.visibility = panel.effectivelyVisible ? "visible" : "hidden"
-        panel.element.style.pointerEvents = panel.effectivelyVisible && panel.mouseInput ? "auto" : "none"
-        const clipTop = Math.max(0, panel.clip.y - panel.absoluteBounds.y)
-        const clipLeft = Math.max(0, panel.clip.x - panel.absoluteBounds.x)
-        const clipRight = Math.max(0, panel.absoluteBounds.x + panel.absoluteBounds.width - panel.clip.x - panel.clip.width)
-        const clipBottom = Math.max(0, panel.absoluteBounds.y + panel.absoluteBounds.height - panel.clip.y - panel.clip.height)
-        panel.element.style.clipPath = `inset(${clipTop}px ${clipRight}px ${clipBottom}px ${clipLeft}px)`
-        panel.element.hidden = !panel.effectivelyVisible
-        panel.element.setAttribute("aria-hidden", panel.effectivelyVisible ? "false" : "true")
-        panel.element.setAttribute("aria-disabled", panel.enabled ? "false" : "true")
-        panel.element.setAttribute("aria-label", panel.accessibleName)
-        if (["Frame", "MessageBox", "QueryBox"].some((name) => sameName(panel.sourceControl, name))) {
-          panel.element.setAttribute("aria-modal", this.applicationModal === panel.id ? "true" : "false")
+        if (panel.element.parentElement !== parent) parent.append(panel.element)
+        const signature = this.presentationSignature(panel)
+        const changed = this.presentationSignatures.get(panel.id) !== signature
+        if (changed) {
+          this.presentationSignatures.set(panel.id, signature)
+          const relativeX = panel.popup || panel.parent === null ? panel.absoluteBounds.x : panel.bounds.x + this.requirePanel(panel.parent).inset.left
+          const relativeY = panel.popup || panel.parent === null ? panel.absoluteBounds.y : panel.bounds.y + this.requirePanel(panel.parent).inset.top
+          panel.element.style.left = `${relativeX}px`
+          panel.element.style.top = `${relativeY}px`
+          panel.element.style.width = `${panel.bounds.width}px`
+          panel.element.style.height = `${panel.bounds.height}px`
+          panel.element.style.zIndex = String(panel.z)
+          panel.element.style.display = panel.effectivelyVisible ? "block" : "none"
+          panel.element.style.visibility = panel.effectivelyVisible ? "visible" : "hidden"
+          panel.element.style.pointerEvents = panel.effectivelyVisible && panel.mouseInput ? "auto" : "none"
+          const clipTop = Math.max(0, panel.clip.y - panel.absoluteBounds.y)
+          const clipLeft = Math.max(0, panel.clip.x - panel.absoluteBounds.x)
+          const clipRight = Math.max(0, panel.absoluteBounds.x + panel.absoluteBounds.width - panel.clip.x - panel.clip.width)
+          const clipBottom = Math.max(0, panel.absoluteBounds.y + panel.absoluteBounds.height - panel.clip.y - panel.clip.height)
+          panel.element.style.clipPath = `inset(${clipTop}px ${clipRight}px ${clipBottom}px ${clipLeft}px)`
+          panel.element.hidden = !panel.effectivelyVisible
+          panel.element.setAttribute("aria-hidden", panel.effectivelyVisible ? "false" : "true")
+          panel.element.setAttribute("aria-disabled", panel.enabled ? "false" : "true")
+          panel.element.setAttribute("aria-label", panel.accessibleName)
+          if (["Frame", "MessageBox", "QueryBox"].some((name) => sameName(panel.sourceControl, name))) {
+            panel.element.setAttribute("aria-modal", this.applicationModal === panel.id ? "true" : "false")
+          }
+          if (panel.accessibleDescription) panel.element.setAttribute("aria-description", panel.accessibleDescription)
+          else panel.element.removeAttribute("aria-description")
+          panel.element.tabIndex = panel.registration.focusable && panel.keyboardInput && panel.enabled ? panel.tabPosition > 0 ? panel.tabPosition : 0 : -1
+          panel.element.dataset.focused = this.keyFocus === panel.id ? "true" : "false"
+          panel.element.dataset.armed = panel.armed ? "true" : "false"
+          panel.element.dataset.depressed = panel.depressed ? "true" : "false"
+          panel.element.dataset.selected = panel.selected ? "true" : "false"
+          if (panel.frameInteraction) panel.element.dataset.interaction = panel.frameInteraction
+          else delete panel.element.dataset.interaction
+          this.publishControlDom(panel)
         }
-        if (panel.accessibleDescription) panel.element.setAttribute("aria-description", panel.accessibleDescription)
-        else panel.element.removeAttribute("aria-description")
-        panel.element.tabIndex = panel.registration.focusable && panel.keyboardInput && panel.enabled ? panel.tabPosition > 0 ? panel.tabPosition : 0 : -1
-        panel.element.dataset.focused = this.keyFocus === panel.id ? "true" : "false"
-        panel.element.dataset.armed = panel.armed ? "true" : "false"
-        panel.element.dataset.depressed = panel.depressed ? "true" : "false"
-        panel.element.dataset.selected = panel.selected ? "true" : "false"
-        if (panel.frameInteraction) panel.element.dataset.interaction = panel.frameInteraction
-        else delete panel.element.dataset.interaction
-        this.publishControlDom(panel)
         for (const childId of panel.children) if (!this.requirePanel(childId).popup) place(childId)
       }
       place(this.rootPanel)

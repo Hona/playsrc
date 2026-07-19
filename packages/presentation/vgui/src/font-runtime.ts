@@ -163,6 +163,7 @@ export type VguiGlyphBitmap = Readonly<{
 
 const IDENTITY = /^[a-z0-9][a-z0-9./_-]{0,511}$/u
 const SHA256 = /^[a-f0-9]{64}$/u
+const DIGESTS = new WeakMap<Uint8Array, Promise<string>>()
 
 function unsupported(
   targetIdentity: string,
@@ -231,9 +232,16 @@ function defaultBrowserAdapter(): VguiFontMountAdapter | null {
 }
 
 async function sha256(bytes: Uint8Array): Promise<string> {
+  const prior = DIGESTS.get(bytes)
+  if (prior) return prior
   const copy = bytes.slice()
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", copy))
-  return [...digest].map((value) => value.toString(16).padStart(2, "0")).join("")
+  const hashing = crypto.subtle.digest("SHA-256", copy).then((value) => {
+    const digest = new Uint8Array(value)
+    return [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("")
+  })
+  DIGESTS.set(bytes, hashing)
+  void hashing.catch(() => DIGESTS.delete(bytes))
+  return hashing
 }
 
 async function browserFamily(targetIdentity: string, fontIdentity: string): Promise<string> {
@@ -474,8 +482,7 @@ export async function mountVguiFontSet(
   if (request.byteSupplies.some((supply) => !supply || !(supply.bytes instanceof Uint8Array))) {
     return Object.freeze({ ok: false as const, capability: unsupported(request.identity, "invalid-target") })
   }
-  const supplies = request.byteSupplies.map((supply) => Object.freeze({ ...supply, bytes: supply.bytes.slice() }))
-  for (const supply of supplies) {
+  for (const supply of request.byteSupplies) {
     if (
       !["content", "external", "bitmap"].includes(supply.kind)
       || !IDENTITY.test(supply.logicalIdentity)
@@ -488,6 +495,7 @@ export async function mountVguiFontSet(
       || await sha256(supply.bytes) !== supply.sha256
     ) return Object.freeze({ ok: false as const, capability: unsupported(request.identity, "invalid-target") })
   }
+  const supplies = request.byteSupplies.map((supply) => Object.freeze({ ...supply, bytes: supply.bytes.slice() }))
   if (new Set(supplies.map((supply) => `${supply.kind}:${supply.logicalIdentity}`)).size !== supplies.length) {
     return Object.freeze({ ok: false as const, capability: unsupported(request.identity, "invalid-target") })
   }

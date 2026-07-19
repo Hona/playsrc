@@ -493,10 +493,11 @@ async function fontPresentations(
       continue
     }
     const request = resolved.fonts[0]!
+    const requiredSupplies = new Set(request.faces.flatMap((face) => face.sources.flatMap((source) => source.kind === "local" ? [] : [source.logicalIdentity])))
     const mounted = await mountVguiFontSet({
       identity: `${descriptor.identity}/${schemeIdentity}/${identity}`,
       fonts: [request],
-      byteSupplies: supplies,
+      byteSupplies: supplies.filter((supply) => requiredSupplies.has(supply.logicalIdentity)),
       profiles: [],
     })
     const capability = mounted.ok ? mounted.fontSet.snapshot().capability : mounted.capability

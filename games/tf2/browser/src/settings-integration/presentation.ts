@@ -133,7 +133,8 @@ const controlInput = (control: string): ControlBinding["input"] => {
 
 class Presentation implements Tf2OptionsPresentation {
   readonly #runtime: VguiRuntime
-  readonly #advancedRuntime: VguiRuntime
+  #advancedRuntime?: VguiRuntime
+  readonly #configuration: Tf2OptionsPresentationRequest
   readonly #settings: Tf2BrowserSettings
   readonly #resources: Tf2VguiResources
   readonly #onPersistence: (bytes: Uint8Array) => void
@@ -150,13 +151,14 @@ class Presentation implements Tf2OptionsPresentation {
   #page: Tf2OptionsPage = "keyboard"
   #frame: VguiPanelId
   #sheet: VguiPanelId
-  #advanced: VguiPanelId
+  #advanced?: VguiPanelId
   #selectedBinding: BindingSettingSchema | null = null
   #bindingCapture = false
   #activeDialog: StandardDialogIdentity | null = null
   #destroyed = false
 
   constructor(request: Tf2OptionsPresentationRequest) {
+    this.#configuration = request
     this.#settings = request.settings
     this.#resources = request.resources
     this.#onPersistence = request.onPersistence
@@ -181,20 +183,13 @@ class Presentation implements Tf2OptionsPresentation {
       onRequest: (value) => this.#request(value, advanced),
     })
     const standard = configured("tf2-options", request.resources.sourceScheme, false)
-    const advanced = configured("tf2-advanced-options", request.resources.clientScheme, true)
     if (!standard.ok) {
       this.#standardMount.remove()
       this.#advancedMount.remove()
       throw new Error(`${standard.diagnostic.code}:${standard.diagnostic.subject}`)
     }
-    if (!advanced.ok) {
-      standard.runtime.apply({ kind: "destroy" })
-      this.#standardMount.remove()
-      this.#advancedMount.remove()
-      throw new Error(`${advanced.diagnostic.code}:${advanced.diagnostic.subject}`)
-    }
     this.#runtime = standard.runtime
-    this.#advancedRuntime = advanced.runtime
+    this.#runtime.deferPresentation(() => {
     const x = Math.max(0, Math.trunc((request.viewport.width - 512) / 2))
     const y = Math.max(0, Math.trunc((request.viewport.height - 406) / 2))
     this.#frame = apply(this.#runtime, { kind: "create-panel", parent: 1, control: "Frame", name: "OptionsDialog", properties: [
@@ -220,15 +215,9 @@ class Presentation implements Tf2OptionsPresentation {
     this.#configureKeyboard()
     this.#configureStandardDialogs()
 
-    this.#advanced = apply(this.#advancedRuntime, { kind: "create-panel", parent: 1, control: "CTFAdvancedOptionsDialog", name: "TFAdvancedOptionsDialog" })!
-    apply(this.#advancedRuntime, { kind: "set-panel-state", panel: this.#advanced, proportional: true })
-    const advancedSource = this.#resources.document("resource/ui/tfadvancedoptionsdialog.res")
-    apply(this.#advancedRuntime, { kind: "create-panel", parent: this.#advanced, control: "CPanelListPanel", name: "PanelListPanel" })
-    applyOwned(this.#advancedRuntime, this.#advanced, advancedSource)
-    this.#configureAdvanced()
-
-    for (const runtime of [this.#runtime, this.#advancedRuntime]) apply(runtime, { kind: "set-panel-state", panel: 1, visible: false })
+    apply(this.#runtime, { kind: "set-panel-state", panel: 1, visible: false })
     this.#publishValues()
+    })
   }
 
   #bindControls(source: VguiResourceDocument): void {
@@ -397,6 +386,30 @@ class Presentation implements Tf2OptionsPresentation {
     if (!applied) this.#publishValues()
   }
 
+  #ensureAdvanced(): VguiRuntime {
+    if (this.#advancedRuntime) return this.#advancedRuntime
+    const request = this.#configuration
+    const initialized = initializeVguiRuntime({
+      runtimeIdentity: "tf2-advanced-options", root: this.#advancedMount, rootControl: { control: "EditablePanel", name: "AdvancedOptionsViewport" },
+      viewport: request.viewport, limits: LIMITS, clock: request.clock, random: request.random, scheme: request.resources.clientScheme,
+      localization: request.resources.localization, animationScripts: request.resources.animations, customControls: request.resources.customControls,
+      reducedMotion: request.reducedMotion, onRequest: (value) => this.#request(value, true),
+    })
+    if (!initialized.ok) throw new Error(`${initialized.diagnostic.code}:${initialized.diagnostic.subject}`)
+    this.#advancedRuntime = initialized.runtime
+    this.#advancedRuntime.deferPresentation(() => {
+      this.#advanced = apply(this.#advancedRuntime!, { kind: "create-panel", parent: 1, control: "CTFAdvancedOptionsDialog", name: "TFAdvancedOptionsDialog" })!
+      apply(this.#advancedRuntime!, { kind: "set-panel-state", panel: this.#advanced!, proportional: true })
+      const source = this.#resources.document("resource/ui/tfadvancedoptionsdialog.res")
+      apply(this.#advancedRuntime!, { kind: "create-panel", parent: this.#advanced!, control: "CPanelListPanel", name: "PanelListPanel" })
+      applyOwned(this.#advancedRuntime!, this.#advanced!, source)
+      this.#configureAdvanced()
+      apply(this.#advancedRuntime!, { kind: "set-panel-state", panel: 1, visible: false })
+      this.#publishControls(this.#advancedRuntime!, this.#advancedControls)
+    })
+    return this.#advancedRuntime
+  }
+
   #configureAdvanced(): void {
     const list = panel(this.#advancedRuntime, "PanelListPanel", this.#advanced)
     if (list === null) throw new Error("Configured Advanced Options panel list is missing")
@@ -506,7 +519,7 @@ class Presentation implements Tf2OptionsPresentation {
 
   #publishValues(): void {
     this.#publishControls(this.#runtime, this.#controls)
-    this.#publishControls(this.#advancedRuntime, this.#advancedControls)
+    if (this.#advancedRuntime) this.#publishControls(this.#advancedRuntime, this.#advancedControls)
     this.#publishKeyboard()
   }
 
@@ -568,12 +581,13 @@ class Presentation implements Tf2OptionsPresentation {
     this.#onVisibility(true)
     this.#page = page
     const advanced = page === "advanced"
+    const advancedRuntime = advanced ? this.#ensureAdvanced() : this.#advancedRuntime
     this.#standardMount.style.display = advanced ? "none" : "block"
     this.#advancedMount.style.display = advanced ? "block" : "none"
     apply(this.#runtime, { kind: "set-panel-state", panel: 1, visible: !advanced })
-    apply(this.#advancedRuntime, { kind: "set-panel-state", panel: 1, visible: advanced })
+    if (advancedRuntime) apply(advancedRuntime, { kind: "set-panel-state", panel: 1, visible: advanced })
     apply(this.#runtime, { kind: "set-panel-state", panel: this.#frame, visible: !advanced })
-    apply(this.#advancedRuntime, { kind: "set-panel-state", panel: this.#advanced, visible: advanced })
+    if (advancedRuntime && this.#advanced !== undefined) apply(advancedRuntime, { kind: "set-panel-state", panel: this.#advanced, visible: advanced })
     if (!advanced) {
       const pageId = this.#pages.get(page)!
       apply(this.#runtime, { kind: "mutate-control", panel: this.#sheet, mutation: { activeIndex: [...this.#pages.keys()].indexOf(page) } })
@@ -590,7 +604,8 @@ class Presentation implements Tf2OptionsPresentation {
     this.#onVisibility(false)
     this.#standardMount.style.display = "none"
     this.#advancedMount.style.display = "none"
-    for (const runtime of [this.#runtime, this.#advancedRuntime]) apply(runtime, { kind: "set-panel-state", panel: 1, visible: false })
+    apply(this.#runtime, { kind: "set-panel-state", panel: 1, visible: false })
+    if (this.#advancedRuntime) apply(this.#advancedRuntime, { kind: "set-panel-state", panel: 1, visible: false })
   }
 
   handleKey(event: KeyboardEvent): boolean {
@@ -622,7 +637,7 @@ class Presentation implements Tf2OptionsPresentation {
     this.#publishValues()
   }
   async #apply(advanced: boolean): Promise<Tf2BrowserSettingsSnapshot> {
-    if (advanced) this.#stageControls(this.#advancedRuntime, this.#advancedControls)
+    if (advanced) this.#stageControls(this.#ensureAdvanced(), this.#advancedControls)
     else this.#stageControls(this.#runtime, this.#controls)
     const result = await this.#settings.apply()
     this.#onApply(result)
@@ -632,8 +647,8 @@ class Presentation implements Tf2OptionsPresentation {
   }
   async apply(): Promise<Tf2BrowserSettingsSnapshot> { return this.#apply(this.#page === "advanced") }
   frame(timeSeconds: number): void {
-    apply(this.#runtime, { kind: "frame", timeSeconds })
-    apply(this.#advancedRuntime, { kind: "frame", timeSeconds })
+    if(!this.#visible)return
+    apply(this.#page==="advanced"?this.#ensureAdvanced():this.#runtime, { kind: "frame", timeSeconds })
     if (this.#activeDialog !== null) {
       const dialog = this.#dialogs.get(this.#activeDialog)!
       if (!this.#runtime.snapshot().panels.find((value) => value.id === dialog.panel)?.visible) {
@@ -642,9 +657,9 @@ class Presentation implements Tf2OptionsPresentation {
       }
     }
   }
-  setViewport(viewport: VguiViewport): void { apply(this.#runtime, { kind: "set-viewport", viewport }); apply(this.#advancedRuntime, { kind: "set-viewport", viewport }) }
-  snapshot() { return Object.freeze({ visible: this.#visible, page: this.#page, bindingCapture: this.#bindingCapture, selectedBinding: this.#selectedBinding?.id ?? null, settings: this.#settings.snapshot(), vgui: this.#page === "advanced" ? this.#advancedRuntime.snapshot() : this.#runtime.snapshot() }) }
-  destroy(): void { if (!this.#destroyed) { this.#destroyed = true; apply(this.#runtime, { kind: "destroy" }); apply(this.#advancedRuntime, { kind: "destroy" }); this.#standardMount.remove(); this.#advancedMount.remove() } }
+  setViewport(viewport: VguiViewport): void { apply(this.#runtime, { kind: "set-viewport", viewport }); if (this.#advancedRuntime) apply(this.#advancedRuntime, { kind: "set-viewport", viewport }) }
+  snapshot() { return Object.freeze({ visible: this.#visible, page: this.#page, bindingCapture: this.#bindingCapture, selectedBinding: this.#selectedBinding?.id ?? null, settings: this.#settings.snapshot(), vgui: this.#page === "advanced" ? this.#ensureAdvanced().snapshot() : this.#runtime.snapshot() }) }
+  destroy(): void { if (!this.#destroyed) { this.#destroyed = true; apply(this.#runtime, { kind: "destroy" }); if (this.#advancedRuntime) apply(this.#advancedRuntime, { kind: "destroy" }); this.#standardMount.remove(); this.#advancedMount.remove() } }
 }
 
 export function initializeTf2OptionsPresentation(request: Tf2OptionsPresentationRequest): Tf2OptionsPresentation {

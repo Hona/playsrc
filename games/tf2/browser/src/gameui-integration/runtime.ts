@@ -275,6 +275,7 @@ class Integration implements Tf2GameUiIntegration {
     })
     if (!initialized.ok) throw new Error(`${initialized.diagnostic.code}:${initialized.diagnostic.subject}`)
     this.#runtime = initialized.runtime
+    this.#runtime.deferPresentation(() => {
     const mainMenu = createCodeControl(this.#runtime, 1, "CHudMainMenuOverride", "MainMenuOverride")
     createCodeControl(this.#runtime, mainMenu, "ImagePanel", "TFCharacterImage")
     const dashboard = createCodeControl(this.#runtime, 1, "CTFMatchmakingDashboard", "MMDashboard")
@@ -305,6 +306,7 @@ class Integration implements Tf2GameUiIntegration {
     for (const identity of [1, mainMenu]) mustApply(this.#runtime, { kind: "set-panel-state", panel: identity, mouseInput: false, keyboardInput: false })
     for (const panel of this.#runtime.snapshot().panels) this.#baseVisibility.set(panel.id, panel.visible)
     this.#presentState()
+    })
   }
 
   #apply(logicalPath: string, parent: VguiPanelId, conditions: readonly string[] = []): void {

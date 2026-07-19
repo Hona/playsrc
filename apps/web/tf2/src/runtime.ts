@@ -227,6 +227,7 @@ export class Tf2Application {
   #uiResources?: Tf2VguiResources
   #presentationRandom?: Tf2PresentationRandom
   #gameUi?: Tf2GameUiIntegration
+  readonly #gameUiRequestTasks = new Set<number>()
   #hudIntegration?: Tf2HudIntegration
   #settings?: Tf2BrowserSettings
   #options?: Tf2OptionsPresentation
@@ -353,10 +354,42 @@ export class Tf2Application {
     }
   }
 
+  #ensureOptions():Tf2OptionsPresentation{
+    if(this.#options)return this.#options
+    if(!this.#uiResources||!this.#settings||!this.#presentationRandom)throw new Error("TF2 Options inputs are unavailable")
+    this.#options=initializeTf2OptionsPresentation({
+      root:this.#optionsRoot,
+      resources:this.#uiResources,
+      settings:this.#settings,
+      viewport:this.#viewport(),
+      reducedMotion:matchMedia("(prefers-reduced-motion: reduce)").matches,
+      clock:{nowSeconds:()=>performance.now()/1_000},
+      random:this.#presentationRandom,
+      onPersistence:(bytes)=>{
+        localStorage.setItem(TF2_BROWSER_SETTINGS_STORAGE_KEY,new TextDecoder().decode(bytes))
+        this.#set({settingsPersistence:"stored"})
+      },
+      onApply:(snapshot)=>this.#set({settingsApply:JSON.stringify(snapshot.lastApply)}),
+      onVisibility:(visible)=>this.#set({optionsVisible:visible}),
+    })
+    return this.#options
+  }
+
+  #deferGameUiRequest(request: Tf2GameUiRequest): void {
+    const handle = window.setTimeout(() => {
+      this.#gameUiRequestTasks.delete(handle)
+      if (this.#closed) return
+      void this.#gameUiRequest(request).catch((error) => {
+        this.#set({ phase: "Failed", gameUi: "failure", detail: error instanceof Error ? error.message : "GameUI owner request failed" })
+      })
+    }, 0)
+    this.#gameUiRequestTasks.add(handle)
+  }
+
   async #gameUiRequest(request: Tf2GameUiRequest): Promise<void> {
     if (request.kind === "show-console") { this.toggleConsole(); return }
     if (request.kind === "show-options") {
-      this.#options?.show(request.page === "advanced-options" ? "advanced" : "keyboard")
+      this.#ensureOptions().show(request.page === "advanced-options" ? "advanced" : "keyboard")
       this.#set({ optionsVisible: true })
       return
     }
@@ -487,28 +520,9 @@ export class Tf2Application {
           activeOperation: this.#configuration.presentation.activeOperation,
           freeTrial: this.#configuration.presentation.freeTrial,
         },
-        onRequest: (request) => {
-          void this.#gameUiRequest(request).catch((error) => {
-            this.#set({ phase: "Failed", gameUi: "failure", detail: error instanceof Error ? error.message : "GameUI owner request failed" })
-          })
-        },
+        onRequest: (request) => this.#deferGameUiRequest(request),
       })
       for (const diagnostic of this.#gameUi.diagnostics()) this.#blockers.add(`TF2GameUi${diagnostic.code}: ${diagnostic.subject}`)
-      this.#options = initializeTf2OptionsPresentation({
-        root: this.#optionsRoot,
-        resources: this.#uiResources,
-        settings: this.#settings,
-        viewport: this.#viewport(),
-        reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
-        clock: { nowSeconds: () => 0 },
-        random: this.#presentationRandom,
-        onPersistence: (bytes) => {
-          localStorage.setItem(TF2_BROWSER_SETTINGS_STORAGE_KEY, new TextDecoder().decode(bytes))
-          this.#set({ settingsPersistence: "stored" })
-        },
-        onApply: (snapshot) => this.#set({ settingsApply: JSON.stringify(snapshot.lastApply) }),
-        onVisibility: (visible) => this.#set({ optionsVisible: visible }),
-      })
       this.#initializeConsole()
       const currentSettings = this.#settings.snapshot().settings.current
       this.#consoleEnabled = currentSettings["keyboard.console-enabled"] === true
@@ -1546,7 +1560,7 @@ export class Tf2Application {
     const timeSeconds = time / 1_000
     try {
       this.#gameUi?.frame(timeSeconds)
-      this.#options?.frame(timeSeconds)
+      if(this.#view.optionsVisible)this.#options?.frame(performance.now()/1_000)
       this.#hudIntegration?.frame(timeSeconds)
     } catch (error) {
       this.#paused = true
@@ -2230,6 +2244,8 @@ export class Tf2Application {
     if (this.#closed) return
     this.#closed = true
     this.#paused = true
+    for (const handle of this.#gameUiRequestTasks) clearTimeout(handle)
+    this.#gameUiRequestTasks.clear()
     this.#simulationSamples.clear()
     cancelAnimationFrame(this.#animationFrame)
     this.#removeListeners()

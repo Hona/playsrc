@@ -151,6 +151,45 @@ function setup(animationScripts = emptyAnimations, customControls: VguiRuntimeCo
 }
 
 describe("generic Source VGUI runtime", () => {
+  test("defers presentation and static frames retain mounted DOM", () => {
+    const { root, runtime, time } = setup()
+    let panelsDuringBatch = 0
+    let mountedDuringBatch = 0
+    runtime.deferPresentation(() => {
+      const first = operation(runtime, { kind: "create-panel", parent: 1, control: "Label", name: "First" }).panel!
+      operation(runtime, { kind: "set-bounds", panel: first, bounds: { x: 10, y: 20, width: 100, height: 30 } })
+      operation(runtime, { kind: "create-panel", parent: 1, control: "Button", name: "Second" })
+      panelsDuringBatch = runtime.snapshot().panels.length
+      mountedDuringBatch = descendants(root).filter((node) => node.dataset.vguiPanel !== undefined).length
+    })
+    expect(panelsDuringBatch).toBe(3)
+    expect(mountedDuringBatch).toBe(1)
+    expect(descendants(root).filter((node) => node.dataset.vguiPanel !== undefined)).toHaveLength(3)
+    const appendCalls = descendants(root).reduce((total, node) => total + node.appendCalls, 0)
+    time(1)
+    operation(runtime, { kind: "frame", timeSeconds: 1 })
+    expect(descendants(root).reduce((total, node) => total + node.appendCalls, 0)).toBe(appendCalls)
+    expect(runtime.snapshot().frame).toBe(1)
+  })
+
+  test("consumes a focus request invalidated before its frame", () => {
+    const { root, runtime, time } = setup()
+    const first = operation(runtime, { kind: "create-panel", parent: 1, control: "Button", name: "FirstFocus" }).panel!
+    const second = operation(runtime, { kind: "create-panel", parent: 1, control: "Button", name: "SecondFocus" }).panel!
+    operation(runtime, { kind: "request-focus", panel: first })
+    time(1)
+    operation(runtime, { kind: "frame", timeSeconds: 1 })
+    operation(runtime, { kind: "request-focus", panel: second })
+    operation(runtime, { kind: "set-panel-state", panel: second, visible: false })
+    time(2)
+    operation(runtime, { kind: "frame", timeSeconds: 2 })
+    time(3)
+    operation(runtime, { kind: "frame", timeSeconds: 3 })
+    const host = descendants(root).find((node) => node.dataset.vguiRuntime === "test-runtime")!
+    expect(host.dataset.vguiFrameWork).toBe("static")
+    expect(runtime.snapshot().input.keyFocus).toBe(first)
+  })
+
   test("instantiates every selected generic factory with one stable DOM owner and cleans up", () => {
     const { root, runtime } = setup()
     for (const [index, control] of VGUI_GENERIC_CONTROL_NAMES.entries()) {

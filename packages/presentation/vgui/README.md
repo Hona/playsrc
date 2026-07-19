@@ -66,6 +66,7 @@ Present generic Source 1 panel trees, controls, resources, schemes, localized te
 - Own keyboard, pointer, cursor, capture, focus, navigation, IME, clipboard-seam, accessibility, reduced-motion, browser-resize, and device-pixel-ratio behavior.
 - Compose lossless scheme documents, select desktop conditions and ordered font candidates, request exact content/external/bitmap/local sources, mount range faces atomically, consume supplied metrics/raster profiles, and suppress only unavailable glyph paint without disabling panel state or input.
 - Present VGUI through direct DOM and CSS without importing Preact.
+- Retain stable DOM parents and exact material rasters, skip geometry/DOM work for static frames, batch integration construction into one layout/publication commit, and publish only panels whose complete presentation signature changed.
 - Consume immutable gameplay or replay presentation state and emit typed commands without mutating gameplay authority or replay authority.
 
 ## Browser Contract

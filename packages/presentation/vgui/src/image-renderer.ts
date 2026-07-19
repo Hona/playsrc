@@ -57,12 +57,12 @@ function texel(texture: VguiImageRasterTexturePixels, x: number, y: number): rea
   const red = texture.rgba[offset]! / 255
   const green = texture.rgba[offset + 1]! / 255
   const blue = texture.rgba[offset + 2]! / 255
-  return Object.freeze([
+  return [
     texture.colorRead === "srgb" ? srgbToLinear(red) : red,
     texture.colorRead === "srgb" ? srgbToLinear(green) : green,
     texture.colorRead === "srgb" ? srgbToLinear(blue) : blue,
     texture.rgba[offset + 3]! / 255,
-  ])
+  ]
 }
 
 function sample(texture: VguiImageRasterTexturePixels, u: number, v: number): readonly [number, number, number, number] {
@@ -79,18 +79,19 @@ function sample(texture: VguiImageRasterTexturePixels, u: number, v: number): re
   const topRight = texel(texture, x0 + 1, y0)
   const bottomLeft = texel(texture, x0, y0 + 1)
   const bottomRight = texel(texture, x0 + 1, y0 + 1)
-  return Object.freeze([0, 1, 2, 3].map((channel) => mix(
-    mix(topLeft[channel]!, topRight[channel]!, fx),
-    mix(bottomLeft[channel]!, bottomRight[channel]!, fx),
-    fy,
-  )) as [number, number, number, number])
+  return [
+    mix(mix(topLeft[0], topRight[0], fx), mix(bottomLeft[0], bottomRight[0], fx), fy),
+    mix(mix(topLeft[1], topRight[1], fx), mix(bottomLeft[1], bottomRight[1], fx), fy),
+    mix(mix(topLeft[2], topRight[2], fx), mix(bottomLeft[2], bottomRight[2], fx), fy),
+    mix(mix(topLeft[3], topRight[3], fx), mix(bottomLeft[3], bottomRight[3], fx), fy),
+  ]
 }
 
 function rotated(u: number, v: number, rotation: 0 | 1 | 2 | 3): readonly [number, number] {
-  if (rotation === 1) return Object.freeze([v, 1 - u])
-  if (rotation === 2) return Object.freeze([1 - u, 1 - v])
-  if (rotation === 3) return Object.freeze([1 - v, u])
-  return Object.freeze([u, v])
+  if (rotation === 1) return [v, 1 - u]
+  if (rotation === 2) return [1 - u, 1 - v]
+  if (rotation === 3) return [1 - v, u]
+  return [u, v]
 }
 
 function slicedCoordinate(position: number, destination: number, source: number, sourceCorner: number, drawCorner: number): number {
@@ -111,15 +112,15 @@ function coordinates(request: VguiImageRasterRequest, x: number, y: number): rea
     return rotated((x + 0.5) / request.material.base.width, (y + 0.5) / request.material.base.height, request.geometry.rotation)
   }
   if (request.geometry.kind === "crop") {
-    return Object.freeze([
+    return [
       mix(request.geometry.u0, request.geometry.u1, (x + 0.5) / request.width),
       mix(request.geometry.v0, request.geometry.v1, (y + 0.5) / request.height),
-    ])
+    ]
   }
-  return Object.freeze([
+  return [
     slicedCoordinate(x + 0.5, request.width, request.material.base.width, request.geometry.sourceCornerWidth, request.geometry.drawCornerWidth),
     slicedCoordinate(y + 0.5, request.height, request.material.base.height, request.geometry.sourceCornerHeight, request.geometry.drawCornerHeight),
-  ])
+  ]
 }
 
 export function shadeVguiImage(
@@ -222,6 +223,7 @@ export function shadeVguiImage(
 export class VguiImageRasterizer {
   readonly #document: Document
   readonly #textures = new Map<string, Promise<VguiImageRasterTexturePixels>>()
+  readonly #renders = new Map<string, Promise<Uint8ClampedArray>>()
   readonly #bitmaps: ImageBitmap[] = []
   #destroyed = false
 
@@ -256,11 +258,20 @@ export class VguiImageRasterizer {
   }
 
   async render(canvas: HTMLCanvasElement, request: VguiImageRasterRequest): Promise<void> {
-    const sources = [request.material.base, request.material.second, request.material.detail].filter((value): value is VguiImageMaterialTexture => value !== null)
-    const loaded = await Promise.all(sources.map((texture) => this.#load(texture)))
+    const signature = JSON.stringify(request)
+    let rendering = this.#renders.get(signature)
+    if (!rendering) {
+      if (this.#renders.size >= 8_192) throw new Error("VGUI raster cache reached its explicit limit")
+      rendering = (async () => {
+        const sources = [request.material.base, request.material.second, request.material.detail].filter((value): value is VguiImageMaterialTexture => value !== null)
+        const loaded = await Promise.all(sources.map((texture) => this.#load(texture)))
+        return shadeVguiImage(request, new Map(sources.map((texture, index) => [texture.logicalIdentity, loaded[index]!])))
+      })()
+      this.#renders.set(signature, rendering)
+      void rendering.catch(() => this.#renders.delete(signature))
+    }
+    const pixels = await rendering
     if (this.#destroyed || !canvas.isConnected) return
-    const textures = new Map(sources.map((texture, index) => [texture.logicalIdentity, loaded[index]!]))
-    const pixels = shadeVguiImage(request, textures)
     canvas.width = request.width
     canvas.height = request.height
     const context = canvas.getContext("2d")
@@ -276,5 +287,6 @@ export class VguiImageRasterizer {
     for (const bitmap of this.#bitmaps) bitmap.close()
     this.#bitmaps.splice(0)
     this.#textures.clear()
+    this.#renders.clear()
   }
 }
