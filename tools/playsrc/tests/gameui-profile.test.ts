@@ -20,14 +20,22 @@ test("attributes CPU samples to self and inclusive frames", () => {
   expect(summary.sampledMilliseconds).toBe(3)
   expect(summary.topSelf[0]?.function).toBe("publishDom")
   expect(summary.topInclusive.some((row) => row.function === "root" && row.milliseconds === 3)).toBe(true)
+  expect(summary.topModules[0]?.module).toBe("packages/presentation/vgui")
+  expect(summary.topEdges.some((edge) => edge.callee.includes("publishDom"))).toBe(true)
+  expect(summary.topStacks[0]?.frames.at(-1)).toContain("publishDom")
 })
 
 test("summarizes complete CDP events and metric deltas", () => {
   const trace = summarizeTrace([
-    { name: "RunTask", cat: "devtools.timeline", ph: "X", dur: 60_000 },
-    { name: "Layout", cat: "devtools.timeline", ph: "X", dur: 5_000 },
+    { name: "thread_name", ph: "M", pid: 1, tid: 2, args: { name: "CrRendererMain" } },
+    { name: "RunTask", cat: "devtools.timeline", ph: "X", pid: 1, tid: 2, dur: 60_000 },
+    { name: "Layout", cat: "devtools.timeline", ph: "X", pid: 1, tid: 2, dur: 5_000 },
+    { name: "Layout", cat: "devtools.timeline", ph: "X", pid: 1, tid: 3, dur: 500_000 },
+    { name: "FunctionCall", cat: "devtools.timeline", ph: "X", pid: 1, tid: 2, dur: 2_000, args: { data: { functionName: "publishDom", url: "/runtime.ts" } } },
   ])
   expect(trace.longTasks.count).toBe(1)
   expect(trace.categories[0]?.name).toBe("RunTask")
+  expect(trace.rendererMainThread).toEqual({ pid: 1, tid: 2 })
+  expect(trace.topFunctions[0]?.function).toBe("publishDom")
   expect(metricDelta([{ name: "TaskDuration", value: 1 }], [{ name: "TaskDuration", value: 3 }])).toEqual({ TaskDuration: 2 })
 })

@@ -7,6 +7,7 @@ import { metricDelta, summarizeCpuProfile, summarizeDistribution, summarizeTrace
 const TARGET = "jump_beef"
 const SAMPLE_MILLISECONDS = 15_000
 const MAX_CDP_TRACE_BYTES = 512 * 1024 * 1024
+const TRACE_CATEGORIES = "devtools.timeline,disabled-by-default-devtools.timeline,v8,blink.user_timing,loading,toplevel"
 
 async function readCdpStream(client: CDPSession, handle: string): Promise<string> {
   let output = ""
@@ -20,28 +21,70 @@ async function readCdpStream(client: CDPSession, handle: string): Promise<string
   return output
 }
 
+async function startCdpCapture(client: CDPSession) {
+  const metrics = (await client.send("Performance.getMetrics") as { metrics: { name: string; value: number }[] }).metrics
+  const traceComplete = new Promise<{ stream: string }>((resolve) => client.once("Tracing.tracingComplete", resolve))
+  await client.send("Tracing.start", { categories: TRACE_CATEGORIES, options: "record-continuously", transferMode: "ReturnAsStream" })
+  await client.send("Profiler.start")
+  return { metrics, traceComplete }
+}
+
+async function stopCdpCapture(client: CDPSession, started: Awaited<ReturnType<typeof startCdpCapture>>) {
+  const cpuProfile = (await client.send("Profiler.stop") as { profile: CpuProfile }).profile
+  const metrics = (await client.send("Performance.getMetrics") as { metrics: { name: string; value: number }[] }).metrics
+  await client.send("Tracing.end")
+  const trace = await started.traceComplete
+  const traceText = await readCdpStream(client, trace.stream)
+  const traceEvents = (JSON.parse(traceText) as { traceEvents?: TraceEvent[] }).traceEvents ?? []
+  return { cpuProfile, metrics, traceText, traceEvents }
+}
+
 test("profile TF2 Main Menu startup and steady state", async ({ page, context, browserName }) => {
   const local = await loadLocalConfig()
   const outputDirectory = path.join(local.sourceCacheDir, "profiles", "gameui", TARGET)
   await mkdir(outputDirectory, { recursive: true })
-  for (const name of ["report.json", "playwright-trace.zip", "cdp-trace.json", "cpu-profile.cpuprofile", "main-menu.png"]) {
+  for (const name of ["report.json", "playwright-trace.zip", "startup-cdp-trace.json", "steady-cdp-trace.json", "startup-cpu-profile.cpuprofile", "steady-cpu-profile.cpuprofile", "main-menu.png"]) {
     await rm(path.join(outputDirectory, name), { force: true })
   }
 
   await page.addInitScript(() => {
     const limit = 20_000
-    const boundedPush = (values: number[], value: number) => {
+    const boundedPush = <T>(values: T[], value: T) => {
       if (values.length < limit) values.push(value)
+    }
+    const cardinalities = new WeakMap<object, number>()
+    const targetIdentities = new WeakMap<Element, string>()
+    const counts = (values: Record<string, number>, key: string) => {
+      if (!(key in values)) {
+        const cardinality = cardinalities.get(values) ?? 0
+        if (cardinality >= 2_048) return
+        cardinalities.set(values, cardinality + 1)
+      }
+      values[key] = (values[key] ?? 0) + 1
+    }
+    const targetIdentity = (target: Node): string => {
+      const element = target instanceof Element ? target : target.parentElement
+      if (!element) return target.nodeName
+      const prior = targetIdentities.get(element)
+      if (prior) return prior
+      const runtime = element.getAttribute("data-vgui-runtime") ?? element.closest("[data-vgui-runtime]")?.getAttribute("data-vgui-runtime") ?? "none"
+      const control = element.getAttribute("data-vgui-control") ?? element.getAttribute("data-vgui-raster") ?? element.className
+      const identity = `${runtime}:${element.tagName.toLowerCase()}:${String(control).slice(0, 120)}`
+      targetIdentities.set(element, identity)
+      return identity
     }
     const state = {
       createdMilliseconds: performance.now(),
-      rafIntervals: [] as number[],
-      rafCallbackDurations: [] as number[],
+      rafIntervals: [] as { at: number; duration: number }[],
+      rafCallbackDurations: [] as { at: number; duration: number }[],
       longTasks: [] as { start: number; duration: number }[],
-      eventLoopLags: [] as number[],
+      eventLoopLags: [] as { at: number; duration: number }[],
       memory: [] as { at: number; used: number; total: number }[],
       dom: [] as { at: number; nodes: number; gameUiNodes: number; visibleGameUiNodes: number }[],
       phases: [] as { at: number; phase: string; detail: string }[],
+      mutations: [] as { at: number; records: number; addedNodes: number; removedNodes: number; attributes: number; characterData: number }[],
+      mutationAttributes: {} as Record<string, number>,
+      mutationTargets: {} as Record<string, number>,
       mutationBatches: 0,
       mutationRecords: 0,
       addedNodes: 0,
@@ -55,7 +98,7 @@ test("profile TF2 Main Menu startup and steady state", async ({ page, context, b
     const nativeRequestAnimationFrame = window.requestAnimationFrame.bind(window)
     let priorFrame = performance.now()
     const monitor = (now: number) => {
-      boundedPush(state.rafIntervals, now - priorFrame)
+      boundedPush(state.rafIntervals, { at: now, duration: now - priorFrame })
       priorFrame = now
       nativeRequestAnimationFrame(monitor)
     }
@@ -65,7 +108,7 @@ test("profile TF2 Main Menu startup and steady state", async ({ page, context, b
       value: (callback: FrameRequestCallback) => nativeRequestAnimationFrame((now) => {
         const started = performance.now()
         try { callback(now) }
-        finally { boundedPush(state.rafCallbackDurations, performance.now() - started) }
+        finally { boundedPush(state.rafCallbackDurations, { at: started, duration: performance.now() - started }) }
       }),
     })
 
@@ -80,16 +123,28 @@ test("profile TF2 Main Menu startup and steady state", async ({ page, context, b
 
     addEventListener("DOMContentLoaded", () => {
       new MutationObserver((records) => {
+        const sample = { at: performance.now(), records: records.length, addedNodes: 0, removedNodes: 0, attributes: 0, characterData: 0 }
         state.mutationBatches += 1
         state.mutationRecords += records.length
         for (const record of records) {
-          if (record.type === "attributes") state.attributeMutations += 1
-          else if (record.type === "characterData") state.characterDataMutations += 1
+          counts(state.mutationTargets, targetIdentity(record.target))
+          if (record.type === "attributes") {
+            state.attributeMutations += 1
+            sample.attributes += 1
+            counts(state.mutationAttributes, record.attributeName ?? "(unknown)")
+          }
+          else if (record.type === "characterData") {
+            state.characterDataMutations += 1
+            sample.characterData += 1
+          }
           else {
             state.addedNodes += record.addedNodes.length
             state.removedNodes += record.removedNodes.length
+            sample.addedNodes += record.addedNodes.length
+            sample.removedNodes += record.removedNodes.length
           }
         }
+        boundedPush(state.mutations, sample)
       }).observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true })
     }, { once: true })
 
@@ -97,7 +152,7 @@ test("profile TF2 Main Menu startup and steady state", async ({ page, context, b
     let priorPhase = ""
     setInterval(() => {
       const now = performance.now()
-      boundedPush(state.eventLoopLags, Math.max(0, now - expected))
+      boundedPush(state.eventLoopLags, { at: now, duration: Math.max(0, now - expected) })
       expected = now + 20
       const memory = (performance as any).memory
       if (memory && state.memory.length < 2_000) state.memory.push({ at: now, used: memory.usedJSHeapSize, total: memory.totalJSHeapSize })
@@ -122,23 +177,26 @@ test("profile TF2 Main Menu startup and steady state", async ({ page, context, b
   await cdp.send("Performance.enable", { timeDomain: "timeTicks" })
   await cdp.send("Profiler.enable")
   await cdp.send("Profiler.setSamplingInterval", { interval: 1_000 })
-  const metricsBefore = (await cdp.send("Performance.getMetrics") as { metrics: { name: string; value: number }[] }).metrics
   await context.tracing.start({ screenshots: true, snapshots: true, sources: true, title: "TF2 Main Menu performance" })
-  const traceComplete = new Promise<{ stream: string }>((resolve) => cdp.once("Tracing.tracingComplete", resolve))
-  await cdp.send("Tracing.start", {
-    categories: "devtools.timeline,disabled-by-default-devtools.timeline,v8,blink.user_timing,loading,toplevel",
-    options: "record-continuously",
-    transferMode: "ReturnAsStream",
-  })
-  await cdp.send("Profiler.start")
 
   const wallStarted = Date.now()
+  const startupCapture = await startCdpCapture(cdp)
   await page.goto("/", { waitUntil: "domcontentloaded", timeout: 30_000 })
   await page.waitForFunction(() => {
     const phase = document.querySelector("main")?.getAttribute("data-phase")
     return phase === "MainMenu" || phase === "Failed"
   }, undefined, { timeout: 180_000, polling: 50 })
+  const mainMenuMilliseconds = await page.evaluate(() => performance.now())
+  const startupWallMilliseconds = Date.now() - wallStarted
+  const startup = await stopCdpCapture(cdp, startupCapture)
+  await writeFile(path.join(outputDirectory, "startup-cdp-trace.json"), startup.traceText)
+  await writeFile(path.join(outputDirectory, "startup-cpu-profile.cpuprofile"), JSON.stringify(startup.cpuProfile))
+
+  const steadyCapture = await startCdpCapture(cdp)
   await page.waitForTimeout(SAMPLE_MILLISECONDS)
+  const steady = await stopCdpCapture(cdp, steadyCapture)
+  await writeFile(path.join(outputDirectory, "steady-cdp-trace.json"), steady.traceText)
+  await writeFile(path.join(outputDirectory, "steady-cpu-profile.cpuprofile"), JSON.stringify(steady.cpuProfile))
   const wallMilliseconds = Date.now() - wallStarted
   await page.screenshot({ path: path.join(outputDirectory, "main-menu.png") })
 
@@ -161,26 +219,69 @@ test("profile TF2 Main Menu startup and steady state", async ({ page, context, b
     }
   })
 
-  const cpuProfile = (await cdp.send("Profiler.stop") as { profile: CpuProfile }).profile
-  const metricsAfter = (await cdp.send("Performance.getMetrics") as { metrics: { name: string; value: number }[] }).metrics
-  await cdp.send("Tracing.end")
-  const trace = await traceComplete
-  const traceText = await readCdpStream(cdp, trace.stream)
   await context.tracing.stop({ path: path.join(outputDirectory, "playwright-trace.zip") })
-  await writeFile(path.join(outputDirectory, "cdp-trace.json"), traceText)
-  await writeFile(path.join(outputDirectory, "cpu-profile.cpuprofile"), JSON.stringify(cpuProfile))
-
-  const traceEvents = (JSON.parse(traceText) as { traceEvents?: TraceEvent[] }).traceEvents ?? []
   const domFinal = raw.dom.at(-1) ?? { nodes: 0, gameUiNodes: 0, visibleGameUiNodes: 0 }
   const memoryUsed = raw.memory.map((sample: { used: number }) => sample.used / (1024 * 1024))
   const resources = raw.resources.toSorted((left: { duration: number }, right: { duration: number }) => right.duration - left.duration)
-  const frameCallbacks = summarizeDistribution(raw.rafCallbackDurations)
+  const topCounts = (values: Record<string, number>) => Object.freeze(Object.entries(values)
+    .map(([identity, count]) => Object.freeze({ identity, count }))
+    .sort((left, right) => right.count - left.count)
+    .slice(0, 100))
+  const windowReport = (
+    start: number,
+    end: number,
+    capture: Awaited<ReturnType<typeof stopCdpCapture>>,
+  ) => {
+    const within = <T extends { at: number }>(values: readonly T[]) => values.filter((value) => value.at >= start && value.at <= end)
+    const intervals = within(raw.rafIntervals)
+    const callbacks = within(raw.rafCallbackDurations)
+    const longTasks = raw.longTasks.filter((value: { start: number }) => value.start >= start && value.start <= end)
+    const lags = within(raw.eventLoopLags)
+    const mutations = within(raw.mutations)
+    const memory = within(raw.memory)
+    const dom = within(raw.dom)
+    const mutationTotals = mutations.reduce((total: { records: number; addedNodes: number; removedNodes: number; attributes: number; characterData: number }, value: { records: number; addedNodes: number; removedNodes: number; attributes: number; characterData: number }) => ({
+      records: total.records + value.records,
+      addedNodes: total.addedNodes + value.addedNodes,
+      removedNodes: total.removedNodes + value.removedNodes,
+      attributes: total.attributes + value.attributes,
+      characterData: total.characterData + value.characterData,
+    }), { records: 0, addedNodes: 0, removedNodes: 0, attributes: 0, characterData: 0 })
+    return Object.freeze({
+      startMilliseconds: Number(start.toFixed(3)),
+      endMilliseconds: Number(end.toFixed(3)),
+      durationMilliseconds: Number((end - start).toFixed(3)),
+      mainThread: Object.freeze({
+        rafIntervalsMilliseconds: summarizeDistribution(intervals.map((value: { duration: number }) => value.duration)),
+        rafCallbackMilliseconds: summarizeDistribution(callbacks.map((value: { duration: number }) => value.duration)),
+        longTaskMilliseconds: summarizeDistribution(longTasks.map((value: { duration: number }) => value.duration)),
+        eventLoopLagMilliseconds: summarizeDistribution(lags.map((value: { duration: number }) => value.duration)),
+        estimatedRafHz: Number((intervals.length * 1_000 / Math.max(1, end - start)).toFixed(3)),
+      }),
+      dom: Object.freeze({
+        final: dom.at(-1) ?? null,
+        mutationBatches: mutations.length,
+        ...mutationTotals,
+      }),
+      memory: Object.freeze({
+        usedHeapMiB: summarizeDistribution(memory.map((value: { used: number }) => value.used / (1024 * 1024))),
+        totalHeapMiB: summarizeDistribution(memory.map((value: { total: number }) => value.total / (1024 * 1024))),
+      }),
+      cdpMetrics: metricDelta(capture === startup ? startupCapture.metrics : steadyCapture.metrics, capture.metrics),
+      cpu: summarizeCpuProfile(capture.cpuProfile),
+      trace: summarizeTrace(capture.traceEvents),
+    })
+  }
+  const startupReport = windowReport(raw.createdMilliseconds, mainMenuMilliseconds, startup)
+  const steadyReport = windowReport(mainMenuMilliseconds, raw.finishedMilliseconds, steady)
+  const frameCallbacks = steadyReport.mainThread.rafCallbackMilliseconds
   const report = Object.freeze({
-    schema: "playsrc-gameui-profile-v1",
+    schema: "playsrc-gameui-profile-v2",
     target: TARGET,
     browserName,
     browserVersion: await page.evaluate(() => navigator.userAgent),
     wallMilliseconds,
+    startupWallMilliseconds,
     terminal: raw.terminal,
     phases: raw.phases,
     budget: Object.freeze({
@@ -189,14 +290,8 @@ test("profile TF2 Main Menu startup and steady state", async ({ page, context, b
       observedMaximumMilliseconds: frameCallbacks.max,
       passed: frameCallbacks.max < 5,
     }),
-    mainThread: Object.freeze({
-      rafIntervalsMilliseconds: summarizeDistribution(raw.rafIntervals),
-      rafCallbackMilliseconds: frameCallbacks,
-      longTaskMilliseconds: summarizeDistribution(raw.longTasks.map((entry: { duration: number }) => entry.duration)),
-      eventLoopLagMilliseconds: summarizeDistribution(raw.eventLoopLags),
-      estimatedRafHz: Number((raw.rafIntervals.length * 1_000 / Math.max(1, raw.finishedMilliseconds - raw.createdMilliseconds)).toFixed(3)),
-      droppedSamples: raw.droppedSamples,
-    }),
+    startup: startupReport,
+    steady: steadyReport,
     dom: Object.freeze({
       finalNodes: domFinal.nodes,
       finalGameUiNodes: domFinal.gameUiNodes,
@@ -208,6 +303,8 @@ test("profile TF2 Main Menu startup and steady state", async ({ page, context, b
       removedNodes: raw.removedNodes,
       attributeMutations: raw.attributeMutations,
       characterDataMutations: raw.characterDataMutations,
+      topAttributes: topCounts(raw.mutationAttributes),
+      topTargets: topCounts(raw.mutationTargets),
     }),
     memory: Object.freeze({ usedHeapMiB: summarizeDistribution(memoryUsed), samples: raw.memory }),
     network: Object.freeze({
@@ -217,23 +314,25 @@ test("profile TF2 Main Menu startup and steady state", async ({ page, context, b
       topDuration: resources.slice(0, 30),
       navigation: raw.navigation,
     }),
-    cdpMetrics: metricDelta(metricsBefore, metricsAfter),
-    cpu: summarizeCpuProfile(cpuProfile),
-    trace: summarizeTrace(traceEvents),
+    instrumentation: Object.freeze({ droppedSamples: raw.droppedSamples, maximumRetainedSamplesPerFamily: 20_000, cpuSamplingIntervalMicroseconds: 1_000 }),
     artifacts: Object.freeze({
       report: "report.json",
       playwrightTrace: "playwright-trace.zip",
-      cdpTrace: "cdp-trace.json",
-      cpuProfile: "cpu-profile.cpuprofile",
+      startupCdpTrace: "startup-cdp-trace.json",
+      steadyCdpTrace: "steady-cdp-trace.json",
+      startupCpuProfile: "startup-cpu-profile.cpuprofile",
+      steadyCpuProfile: "steady-cpu-profile.cpuprofile",
       screenshot: "main-menu.png",
     }),
   })
   await writeFile(path.join(outputDirectory, "report.json"), `${JSON.stringify(report, null, 2)}\n`)
-  console.log(`PLAYSRCGAMEUIPROFILE ${JSON.stringify({ outputDirectory, terminal: report.terminal ? { phase: report.terminal.phase, detail: report.terminal.detail, gameUi: report.terminal.gameUi, blockerCount: report.terminal.blockers.length } : null, budget: report.budget, mainThread: report.mainThread, dom: { finalNodes: report.dom.finalNodes, finalGameUiNodes: report.dom.finalGameUiNodes, mutationRecords: report.dom.mutationRecords }, cdpMetrics: report.cdpMetrics, topCpuSelf: report.cpu.topSelf.slice(0, 15), topTraceCategories: report.trace.categories.slice(0, 15) })}`)
+  console.log(`PLAYSRCGAMEUIPROFILE ${JSON.stringify({ outputDirectory, terminal: report.terminal ? { phase: report.terminal.phase, detail: report.terminal.detail, gameUi: report.terminal.gameUi, blockerCount: report.terminal.blockers.length } : null, budget: report.budget, startup: { durationMilliseconds: report.startup.durationMilliseconds, mainThread: report.startup.mainThread, dom: report.startup.dom, cdpMetrics: report.startup.cdpMetrics, topCpuSelf: report.startup.cpu.topSelf.slice(0, 15), topCpuModules: report.startup.cpu.topModules.slice(0, 15) }, steady: { durationMilliseconds: report.steady.durationMilliseconds, mainThread: report.steady.mainThread, dom: report.steady.dom, cdpMetrics: report.steady.cdpMetrics, topCpuSelf: report.steady.cpu.topSelf.slice(0, 15), topCpuModules: report.steady.cpu.topModules.slice(0, 15) }, dom: { finalNodes: report.dom.finalNodes, finalGameUiNodes: report.dom.finalGameUiNodes, mutationRecords: report.dom.mutationRecords, topAttributes: report.dom.topAttributes.slice(0, 15), topTargets: report.dom.topTargets.slice(0, 15) } })}`)
 
   expect(report.terminal?.phase).toBe("MainMenu")
-  expect(report.cpu.sampleCount).toBeGreaterThan(0)
-  expect(report.trace.eventCount).toBeGreaterThan(0)
+  expect(report.startup.cpu.sampleCount).toBeGreaterThan(0)
+  expect(report.steady.cpu.sampleCount).toBeGreaterThan(0)
+  expect(report.startup.trace.eventCount).toBeGreaterThan(0)
+  expect(report.steady.trace.eventCount).toBeGreaterThan(0)
   expect(report.dom.finalGameUiNodes).toBeGreaterThan(0)
   expect(report.budget.observedMaximumMilliseconds).toBeLessThan(5)
 })
