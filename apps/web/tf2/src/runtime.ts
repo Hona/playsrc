@@ -814,8 +814,8 @@ export class Tf2Application {
   #viewport() {
     const bounds = this.#vguiRoot.getBoundingClientRect()
     return {
-      width: Math.max(1, bounds.width),
-      height: Math.max(1, bounds.height),
+      width: Math.max(1, Math.trunc(bounds.width)),
+      height: Math.max(1, Math.trunc(bounds.height)),
       devicePixelRatio: window.devicePixelRatio,
     }
   }

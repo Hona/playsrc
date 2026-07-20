@@ -6,9 +6,9 @@ const local = await loadLocalConfig()
 
 export default defineConfig({
   testDir: "tools/playsrc/profile",
-  testMatch: "gameui-performance.profile.ts",
-  outputDir: path.join(local.sourceCacheDir, "profiles", "gameui", "jump_beef", "playwright-results"),
-  timeout: 300_000,
+  testMatch: "hud-layout.profile.ts",
+  outputDir: path.join(local.sourceCacheDir, "profiles", "hud", "jump_beef", "playwright-results"),
+  timeout: 600_000,
   expect: { timeout: 30_000 },
   fullyParallel: false,
   workers: 1,
@@ -17,7 +17,7 @@ export default defineConfig({
     baseURL: "http://127.0.0.1:4173",
     headless: false,
     viewport: { width: 1280, height: 720 },
-    launchOptions: { args: ["--enable-unsafe-webgpu", "--enable-precise-memory-info"] },
+    launchOptions: { args: ["--enable-unsafe-webgpu"] },
   },
   webServer: {
     command: "bun tools/playsrc/src/cli.ts dev jump_beef",

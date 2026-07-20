@@ -749,6 +749,52 @@ describe("generic Source VGUI runtime", () => {
     expect(snapshot.panels.find((panel) => panel.id === pinned)?.bounds).toEqual({ x: 250, y: 260, width: 40, height: 30 })
   })
 
+  test("inherits proportional state and reapplies screen-relative resource geometry on resize", () => {
+    const { runtime } = setup()
+    operation(runtime, { kind: "set-panel-state", panel: 1, proportional: true })
+    const hud = operation(runtime, { kind: "create-panel", parent: 1, control: "EditablePanel", name: "HudAmmo" }).panel!
+    operation(runtime, {
+      kind: "replace-resource",
+      parent: 1,
+      document: {
+        logicalIdentity: "resource/hud-layout.res",
+        revision: "hud-layout-1",
+        root: object("HudLayout", [object("HudAmmo", [
+          scalar("fieldName", "HudAmmo"),
+          scalar("xpos", "r131"), scalar("ypos", "r77"), scalar("wide", "94"), scalar("tall", "45"),
+        ])]),
+      },
+      selection: { activeConditions: [], resolutionSuffixes: [] },
+    })
+    const child = operation(runtime, {
+      kind: "create-panel", parent: hud, control: "Panel", name: "Child",
+      properties: [
+        { name: "xpos", value: "75" }, { name: "ypos", value: "35" },
+        { name: "wide", value: "51" }, { name: "tall", value: "51" },
+      ],
+    }).panel!
+    let snapshot = runtime.snapshot()
+    expect(snapshot.panels.find((panel) => panel.id === hud)).toMatchObject({
+      proportional: true,
+      bounds: { x: 509, y: 403, width: 94, height: 45 },
+    })
+    expect(snapshot.panels.find((panel) => panel.id === child)).toMatchObject({
+      proportional: true,
+      bounds: { x: 75, y: 35, width: 51, height: 51 },
+    })
+
+    operation(runtime, { kind: "set-viewport", viewport: { width: 1280, height: 720, devicePixelRatio: 1 } })
+    snapshot = runtime.snapshot()
+    expect(snapshot.panels.find((panel) => panel.id === hud)?.bounds).toEqual({ x: 1084, y: 605, width: 141, height: 67 })
+    expect(snapshot.panels.find((panel) => panel.id === child)?.bounds).toEqual({ x: 112, y: 52, width: 76, height: 76 })
+
+    operation(runtime, { kind: "set-panel-state", panel: hud, proportional: false })
+    snapshot = runtime.snapshot()
+    expect(snapshot.panels.find((panel) => panel.id === hud)?.proportional).toBeFalse()
+    expect(snapshot.panels.find((panel) => panel.id === child)?.proportional).toBeFalse()
+    expect(snapshot.panels.find((panel) => panel.id === 1)?.proportional).toBeTrue()
+  })
+
   test("rejects malformed terminal colors and relevant base-setting cycles atomically", () => {
     const { runtime } = setup()
     const initial = runtime.snapshot().schemeIdentity

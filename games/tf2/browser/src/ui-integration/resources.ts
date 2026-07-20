@@ -51,6 +51,7 @@ export type Tf2VguiResources = Readonly<{
   sourceScheme: VguiScheme
   localization: VguiLocalization
   animations: VguiAnimationScriptSet
+  activeConditions: readonly string[]
   customControls: readonly VguiControlRegistration[]
   diagnostics: readonly Tf2UiIntegrationDiagnostic[]
   document(logicalPath: string): VguiResourceDocument
@@ -750,11 +751,15 @@ export async function initializeTf2VguiResources(request: Tf2VguiResourceRequest
     if (!parsed.ok) diagnostics.push(Object.freeze({ code: "AnimationMalformed", subject: `${source.logicalPath}:${parsed.diagnostic.subject}` }))
     else parsedScripts.push(parsed.script)
   }
+  const activeConditions = Object.freeze([
+    "WIN32",
+    ...(request.platform === "windows" ? ["WINDOWS"] : request.platform === "macos" ? ["OSX", "POSIX"] : ["LINUX", "POSIX"]),
+  ])
   const animations: VguiAnimationScriptSet = Object.freeze({
     identity: `${descriptor.identity}/hudanimations`,
     revision: `${descriptor.identity}-hudanimations`,
     scripts: Object.freeze(parsedScripts),
-    activeConditions: Object.freeze([request.platform === "windows" ? "WIN32" : request.platform === "macos" ? "OSX" : "LINUX"]),
+    activeConditions,
   })
   const panels = new Map(descriptor.panels.map((panel) => [panel.source.logicalPath, panel]))
   const supportedImages = new Set(images.map((image) => lower(image.name)))
@@ -819,6 +824,7 @@ export async function initializeTf2VguiResources(request: Tf2VguiResourceRequest
     sourceScheme: makeScheme(descriptor, "resource/sourcescheme.res", sourceFonts, images, diagnostics),
     localization,
     animations,
+    activeConditions,
     customControls: customControls(descriptor),
     diagnostics: Object.freeze(diagnostics),
     document(logicalPath: string) {

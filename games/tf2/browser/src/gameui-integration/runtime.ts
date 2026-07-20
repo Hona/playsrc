@@ -239,7 +239,7 @@ class Integration implements Tf2GameUiIntegration {
       const block = resourceBlock(source.root, childName)
       if (scroller === null || !block) throw new Error(`Configured scrollable panel ${scrollerName}:${childName} is missing`)
       createCodeControl(this.#runtime, scroller, "EditablePanel", childName)
-      applyResourceTree(this.#runtime, scroller, source, cloneNode(source.root, [block]), this.#diagnostics, [], ["_hidef"])
+      applyResourceTree(this.#runtime, scroller, source, cloneNode(source.root, [block]), this.#diagnostics, this.#resources.activeConditions, ["_hidef"])
     }
     void mainMenu
   }
@@ -250,9 +250,9 @@ class Integration implements Tf2GameUiIntegration {
     const self = document.root.children.find((block) => (scalar(block, "fieldName") ?? block.name).toLowerCase() === snapshot.name.toLowerCase())
     if (self && snapshot.parent !== null) {
       const shallow = cloneNode(self, self.children.filter((property) => property.value !== null || property.name.toLowerCase() === "controlname"))
-      applyResourceTree(this.#runtime, snapshot.parent, document, cloneNode(document.root, [shallow]), this.#diagnostics, conditions, ["_hidef"])
+      applyResourceTree(this.#runtime, snapshot.parent, document, cloneNode(document.root, [shallow]), this.#diagnostics, [...this.#resources.activeConditions, ...conditions], ["_hidef"])
     }
-    applyResourceTree(this.#runtime, owner, document, cloneNode(document.root, document.root.children.filter((block) => block !== self)), this.#diagnostics, conditions, ["_hidef"])
+    applyResourceTree(this.#runtime, owner, document, cloneNode(document.root, document.root.children.filter((block) => block !== self)), this.#diagnostics, [...this.#resources.activeConditions, ...conditions], ["_hidef"])
   }
 
   constructor(request: Tf2GameUiIntegrationRequest) {
@@ -311,7 +311,7 @@ class Integration implements Tf2GameUiIntegration {
 
   #apply(logicalPath: string, parent: VguiPanelId, conditions: readonly string[] = []): void {
     const document = this.#resources.document(logicalPath)
-    applyResourceTree(this.#runtime, parent, document, document.root, this.#diagnostics, conditions, ["_hidef"])
+    applyResourceTree(this.#runtime, parent, document, document.root, this.#diagnostics, [...this.#resources.activeConditions, ...conditions], ["_hidef"])
   }
 
   #configurePlaylist(): void {

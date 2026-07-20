@@ -59,7 +59,7 @@ Present generic Source 1 panel trees, controls, resources, schemes, localized te
 
 ## Responsibilities
 
-- Own panel lifetime, hierarchy, z-order, bounds, clipping, visibility, enabled state, layout invalidation, paint order, popup state, and modal state.
+- Own panel lifetime, hierarchy, z-order, bounds, clipping, visibility, enabled state, inherited proportional mode, integer viewport relayout, layout invalidation, paint order, popup state, and modal state.
 - Own generic controls, control factories, resource-property semantics, condition application, dialog variables, scheme binding, localization binding, animation variables, animation sequences, and message dispatch.
 - Own the generic developer-console frame, pointer-captured title movement and eight-direction resize, bounded output and command history, catalog-driven completion presentation, text-entry interaction, and typed submission/completion/system requests without executing commands or owning convar state.
 - Own one bounded client diagnostic panel for immutable FPS and position inputs without owning `cl_showfps`, `cl_showpos`, map, camera, player, or Simulation state.

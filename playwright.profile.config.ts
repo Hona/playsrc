@@ -15,7 +15,7 @@ export default defineConfig({
     launchOptions: { args: ["--enable-unsafe-webgpu"] },
   },
   webServer: {
-    command: "bun run dev jump_beef",
+    command: "bun tools/playsrc/src/cli.ts dev jump_beef",
     url: "http://127.0.0.1:4173/",
     reuseExistingServer: false,
     timeout: 180_000,

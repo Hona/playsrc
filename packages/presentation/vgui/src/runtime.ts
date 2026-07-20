@@ -1475,7 +1475,7 @@ class SourceVguiRuntime implements VguiRuntime {
       enabled: !sameName(sourceControl, "FrameSystemButton"),
       mouseInput: true,
       keyboardInput: true,
-      proportional: false,
+      proportional: parentId === null ? false : this.requirePanel(parentId).proportional,
       tabPosition: 0,
       subTabPosition: 0,
       nav: new Map(),
@@ -1644,10 +1644,8 @@ class SourceVguiRuntime implements VguiRuntime {
   }
 
   private proportional(value: number, panel: PanelState | null): number {
-    const height = panel?.parent === null || panel?.parent === undefined
-      ? this.viewport.height
-      : this.requirePanel(panel.parent).bounds.height || this.viewport.height
-    return Math.trunc(value * height / 480)
+    void panel
+    return Math.trunc(value * this.viewport.height / 480)
   }
 
   private computeDimension(value: string, panel: PanelState | null, horizontal: boolean, computingOther = false, resourceSemantics = false): number {
@@ -1776,7 +1774,7 @@ class SourceVguiRuntime implements VguiRuntime {
     if (operation.enabled !== undefined) panel.enabled = operation.enabled
     if (operation.mouseInput !== undefined) panel.mouseInput = operation.mouseInput
     if (operation.keyboardInput !== undefined) panel.keyboardInput = operation.keyboardInput
-    if (operation.proportional !== undefined) panel.proportional = operation.proportional
+    if (operation.proportional !== undefined) this.setProportional(panel, operation.proportional)
     if (operation.z !== undefined) {
       if (!safeInteger(operation.z) || operation.z < -32768 || operation.z > 32767) throw new RuntimeFault("MalformedValue", `${panel.name}:z`)
       panel.z = operation.z
@@ -1795,6 +1793,11 @@ class SourceVguiRuntime implements VguiRuntime {
     if (!this.pointerEligible(this.capture)) this.setPointerCapture(null, null, null)
     this.solveGeometry()
     this.publishDom()
+  }
+
+  private setProportional(panel: PanelState, proportional: boolean): void {
+    panel.proportional = proportional
+    for (const childId of panel.children) this.setProportional(this.requirePanel(childId), proportional)
   }
 
   private reparentPanel(panelId: VguiPanelId, parentId: VguiPanelId): void {
@@ -4555,10 +4558,10 @@ class SourceVguiRuntime implements VguiRuntime {
     if (changedSize) {
       this.finishCancelableAnimations()
       this.installAnimationScripts(this.animationScripts)
+      if (sizeChanged) this.resizeChildren(root)
       for (const panel of this.panels.values()) {
         if (panel.id !== this.rootPanel) this.reapplyStoredGeometry(panel)
       }
-      if (sizeChanged) this.resizeChildren(root)
     }
     this.solveGeometry()
     this.publishDom()
@@ -4574,6 +4577,7 @@ class SourceVguiRuntime implements VguiRuntime {
     const ypos = property("ypos")
     if (xpos !== null) panel.bounds.x = this.computePosition(xpos, panel, true, true)
     if (ypos !== null) panel.bounds.y = this.computePosition(ypos, panel, false, true)
+    this.applyAutoResizeSettings(panel, property)
   }
 
   private solveGeometry(): void {
