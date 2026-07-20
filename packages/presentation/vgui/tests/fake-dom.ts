@@ -103,6 +103,7 @@ export class FakeElement {
   tabIndex = 0
   value = ""
   scrollTop = 0
+  appendCalls = 0
   private ownText = ""
   private readonly attributes = new Map<string, string>()
   private readonly listeners = new Map<string, FakeListener[]>()
@@ -133,6 +134,7 @@ export class FakeElement {
 
   append(...nodes: FakeElement[]): void {
     for (const node of nodes) {
+      this.appendCalls += 1
       node.remove()
       node.parentElement = this
       this.children.push(node)

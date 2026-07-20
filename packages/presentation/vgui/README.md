@@ -59,13 +59,14 @@ Present generic Source 1 panel trees, controls, resources, schemes, localized te
 
 ## Responsibilities
 
-- Own panel lifetime, hierarchy, z-order, bounds, clipping, visibility, enabled state, layout invalidation, paint order, popup state, and modal state.
+- Own panel lifetime, hierarchy, z-order, bounds, clipping, visibility, enabled state, inherited proportional mode, integer viewport relayout, layout invalidation, paint order, popup state, and modal state.
 - Own generic controls, control factories, resource-property semantics, condition application, dialog variables, scheme binding, localization binding, animation variables, animation sequences, and message dispatch.
 - Own the generic developer-console frame, pointer-captured title movement and eight-direction resize, bounded output and command history, catalog-driven completion presentation, text-entry interaction, and typed submission/completion/system requests without executing commands or owning convar state.
 - Own one bounded client diagnostic panel for immutable FPS and position inputs without owning `cl_showfps`, `cl_showpos`, map, camera, player, or Simulation state.
 - Own keyboard, pointer, cursor, capture, focus, navigation, IME, clipboard-seam, accessibility, reduced-motion, browser-resize, and device-pixel-ratio behavior.
 - Compose lossless scheme documents, select desktop conditions and ordered font candidates, request exact content/external/bitmap/local sources, mount range faces atomically, consume supplied metrics/raster profiles, and suppress only unavailable glyph paint without disabling panel state or input.
 - Present VGUI through direct DOM and CSS without importing Preact.
+- Retain stable DOM parents and exact material rasters, skip geometry/DOM work for static frames, batch integration construction into one layout/publication commit, and publish only panels whose complete presentation signature changed.
 - Consume immutable gameplay or replay presentation state and emit typed commands without mutating gameplay authority or replay authority.
 
 ## Browser Contract

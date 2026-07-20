@@ -1,6 +1,6 @@
 # TF2 UI Resources
 
-This leaf supplies one immutable, configured-content-bound descriptor for the TF2 main menu, loading and pause surfaces, gameplay HUD, and Options pages. It retains ordered panel/resource/scheme/localization/image/animation records, exact provider provenance and hashes, conditions, repeated occurrences, typed missing dependencies, and inert command/capability classifications.
+This leaf supplies one immutable, configured-content-bound descriptor for the TF2 main menu, loading and pause surfaces, gameplay HUD, and Options pages. It retains ordered panel/resource/scheme/localization/image/animation records, exact provider provenance and hashes, conditions, repeated occurrences, typed missing dependencies, and inert command/capability classifications. Runtime resources expose one immutable desktop condition set shared by GameUI, HUD, Options, and HUD-animation filtering: every desktop selects Source's `WIN32`/`IsPC` condition, Windows additionally selects `WINDOWS`, macOS selects `OSX` and `POSIX`, and Linux selects `LINUX` and `POSIX`.
 
 Generation reads only `playsrc.local.json`, uses the existing KeyValues, Content, VTF, and font producer contracts, and resolves exact logical paths through the configured provider plan. It performs no extracted-tree search and defines no parser or fallback resource.
 

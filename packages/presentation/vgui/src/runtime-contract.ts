@@ -564,6 +564,7 @@ export type VguiRuntimeSnapshot = Readonly<{
 
 export type VguiRuntime = Readonly<{
   apply(operation: VguiOperation): VguiOperationResult
+  deferPresentation<T>(callback: () => T): T
   snapshot(): VguiRuntimeSnapshot
 }>
 

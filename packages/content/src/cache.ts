@@ -1,3 +1,4 @@
+import { createReadStream } from "node:fs"
 import { link, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import path from "node:path"
 import Bunzip from "seek-bzip"
@@ -47,6 +48,7 @@ export class ContentCacheError extends Error {
 
 const SHA256 = /^[0-9a-f]{64}$/
 const MAX_SOURCE_BYTES = 512 * 1024 * 1024
+const VERIFY_CHUNK_BYTES = 1024 * 1024
 
 function digest(bytes: Uint8Array): string {
   const hash = new Bun.CryptoHasher("sha256")
@@ -66,7 +68,26 @@ function throwIfCancelled(signal?: AbortSignal): void {
   if (signal?.aborted) throw new ContentCacheError("Cancelled", "content acquisition was cancelled")
 }
 
-async function readObject(pathname: string, expectedLength: number, expectedHash: string) {
+async function verifyObject(pathname: string, expectedLength: number, expectedHash: string): Promise<boolean> {
+  try {
+    const metadata = await stat(pathname)
+    if (!metadata.isFile() || metadata.size !== expectedLength) {
+      throw new ContentCacheError("IntegrityFailure", "cached object byte length differs")
+    }
+    const hash = new Bun.CryptoHasher("sha256")
+    for await (const chunk of createReadStream(pathname, { highWaterMark: VERIFY_CHUNK_BYTES })) hash.update(chunk as Uint8Array)
+    if (hash.digest("hex") !== expectedHash) {
+      throw new ContentCacheError("IntegrityFailure", "cached object SHA-256 differs")
+    }
+    return true
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false
+    if (error instanceof ContentCacheError) throw error
+    throw new ContentCacheError("IoFailure", "cached object could not be read")
+  }
+}
+
+async function readVerifiedObject(pathname: string, expectedLength: number, expectedHash: string) {
   try {
     const metadata = await stat(pathname)
     if (!metadata.isFile() || metadata.size !== expectedLength) {
@@ -100,7 +121,9 @@ async function installObject(
   } catch (error) {
     await rm(temporary, { force: true })
     if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-      await readObject(pathname, expectedLength, expectedHash)
+      if (!await verifyObject(pathname, expectedLength, expectedHash)) {
+        throw new ContentCacheError("IntegrityFailure", "concurrent cache object is unavailable")
+      }
       return
     }
     throw new ContentCacheError("IoFailure", "cache object could not be installed")
@@ -181,9 +204,9 @@ export async function acquireDownload(
   throwIfCancelled(options.signal)
   const fetchSource = options.fetchSource ?? fetch
   const encodedPath = objectPath(sourceCacheDir, source.encodedSha256)
-  let encoded = await readObject(encodedPath, source.encodedByteLength, source.encodedSha256)
-  const encodedWasMissing = !encoded
-  if (!encoded) {
+  const encodedWasMissing = !await verifyObject(encodedPath, source.encodedByteLength, source.encodedSha256)
+  let encoded: Uint8Array | null = null
+  if (encodedWasMissing) {
     let response: Response
     try {
       response = await fetchSource(source.url, { redirect: "error", signal: options.signal })
@@ -209,9 +232,11 @@ export async function acquireDownload(
 
   throwIfCancelled(options.signal)
   const decodedPath = objectPath(sourceCacheDir, source.decodedSha256)
-  let decoded = await readObject(decodedPath, source.decodedByteLength, source.decodedSha256)
-  const decodedWasMissing = !decoded
-  if (!decoded) {
+  const decodedWasMissing = !await verifyObject(decodedPath, source.decodedByteLength, source.decodedSha256)
+  let decoded: Uint8Array | null = null
+  if (decodedWasMissing) {
+    encoded ??= await readVerifiedObject(encodedPath, source.encodedByteLength, source.encodedSha256)
+    if (!encoded) throw new ContentCacheError("IntegrityFailure", "encoded cache object is unavailable")
     try {
       decoded = Bunzip.decode(encoded, source.decodedByteLength)
     } catch {
@@ -226,9 +251,11 @@ export async function acquireDownload(
   // received after the check does not relabel successfully installed objects.
   throwIfCancelled(options.signal)
   if (encodedWasMissing) {
+    if (!encoded) throw new ContentCacheError("IntegrityFailure", "encoded download object is unavailable")
     await installObject(encodedPath, encoded, source.encodedByteLength, source.encodedSha256)
   }
   if (decodedWasMissing) {
+    if (!decoded) throw new ContentCacheError("IntegrityFailure", "decoded cache object is unavailable")
     await installObject(decodedPath, decoded, source.decodedByteLength, source.decodedSha256)
   }
 

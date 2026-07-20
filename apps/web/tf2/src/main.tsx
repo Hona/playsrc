@@ -65,6 +65,10 @@ function App() {
       data-camera-vertical-fov={view.camera?.verticalFovDegrees}
       data-camera-near={view.camera?.near}
       data-camera-far={view.camera?.far}
+      data-pointer-movement={view.pointerMovement}
+      data-display-frame={view.displayFrame}
+      data-display-view-revision={view.displayViewRevision}
+      data-display-prepared-revision={view.displayPreparedRevision}
       data-spawn-entity={view.initialView?.entity}
       data-spawn-hammer-id={view.initialView?.hammerId}
       data-spawn-position={view.initialView?.position.join(",")}
@@ -76,6 +80,10 @@ function App() {
       data-movement-mode={view.movementTick?.mode}
       data-wish-speed={view.movementTick?.wishSpeed}
       data-climbed-step={view.movementTick?.climbedStep}
+      data-sweep-queries={view.movementTick?.sweepQueries}
+      data-point-queries={view.movementTick?.pointQueries}
+      data-movement-contacts={view.movementTick?.contacts}
+      data-movement-events={view.movementTick?.events}
       data-viewmodel-activity={view.viewmodelPose?.activity}
       data-viewmodel-sequence={view.viewmodelPose?.sequence}
       data-viewmodel-cycle={view.viewmodelPose?.cycle}
@@ -118,6 +126,7 @@ function App() {
       data-reload-history={view.reloadHistory?.join("|")}
       data-fire-ticks={view.fireTickHistory?.join("|")}
       data-performance={view.performanceProbe}
+      data-performance-detail={view.performanceDetailProbe}
       data-locker={view.lockerProbe}
       data-unsupported-state={view.unsupportedState}
       data-blockers={JSON.stringify(view.blockers)}

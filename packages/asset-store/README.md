@@ -3,10 +3,11 @@
 ## Sample
 
 ```ts
-import { descriptor, putObject, readObject } from "@playsrc/asset-store"
+import { descriptor, putObject, readObject, verifyObject } from "@playsrc/asset-store"
 
 const identity = descriptor("source-object", "application/octet-stream", bytes)
 await putObject(assetDir, identity, bytes)
+await verifyObject(assetDir, identity)
 const stored = await readObject(assetDir, identity)
 ```
 
@@ -20,7 +21,7 @@ Store and publish exact immutable Source objects and reproducible playsrc-derive
 - Preserve representation kind and provenance for raw BSP, VPK directory, VPK segment, and additional Source objects.
 - Represent immutable source, map-runtime, game, and application descriptors plus catalogs and mutable channels.
 - Validate reachability and synchronize missing objects to remote storage.
-- Atomically install and reverify local immutable objects, refuse corrupt existing bytes without repair, and atomically expose exact channel records.
+- Atomically install and reverify local immutable objects through bounded streaming SHA-256, refuse corrupt existing bytes without repair, and atomically expose exact channel records.
 - Cancel local object publication before final-path commitment and retain no partial object.
 - Fetch browser immutable objects through exact hash URLs with HTTP-cache reuse and independent byte verification; retain verified derived objects in a versioned IndexedDB cache under caller-owned exact derived keys.
 - Retain generated source dependency bundles and their immutable provider-provenance/authoritative-absence ledgers as separate verified objects.

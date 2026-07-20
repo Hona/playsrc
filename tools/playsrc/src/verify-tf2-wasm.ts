@@ -11,6 +11,7 @@ import { buildSourceBundle } from "./source-bundle"
 import { decodeSnapshot, encodeCommand } from "../../../games/tf2/browser/src/codec"
 import { decodeModelPoseOutput, encodeModelPoseBatch } from "../../../games/tf2/browser/src/presentation"
 import { parsePresentationArtifacts } from "../../../games/tf2/browser/src/artifacts"
+import { buildTf2Wasm } from "./tf2-wasm-build"
 
 const EXPECTED_MAP_BYTES = 42_082_929
 const EXPECTED_MAP_SHA256 = "56153098a867c553651f9c773bd72c4659782bae8520277c80daaaa414bdf156"
@@ -19,8 +20,8 @@ const EXPECTED_HDR_BYTES=78_299_802
 const EXPECTED_HDR_SHA256="fbf9d48bba7ea95cfa977f46f2fd99065fd3e97e45b47318eae5d843514db212"
 const EXPECTED_LDR_DERIVED_SHA256="4439ec93fa63ebdc8acb64b367e6d2dc44dc7eff019ff4450f592c0e1f0e9565"
 const EXPECTED_HDR_DERIVED_SHA256="0d267423987b0c9068e216ca79ce3abc0457bcedf771b282d24052e03b6d913d"
-const EXPECTED_DEPENDENCY_BYTES=254_281_358
-const EXPECTED_DEPENDENCY_SHA256="38f967ad03a7a05689940084d5091a44c530707cff55fc05cb0b13e20c60a983"
+const EXPECTED_DEPENDENCY_BYTES=254_281_294
+const EXPECTED_DEPENDENCY_SHA256="c6b02effb40331cb35b1a33c57e1f3f9ad78907421fabdd1e83bd233f7add1ed"
 function bundlePathOffset(bytes: Uint8Array, target: string): number {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   let offset = 12
@@ -339,32 +340,6 @@ function inspectHdrPayload(payload: Uint8Array) {
   }
 }
 
-export async function buildTf2Wasm(config: LocalConfig): Promise<string> {
-  const executable = process.platform === "win32" ? "cargo.exe" : "cargo"
-  const cargo = path.join(config.sourceCacheDir, "toolchains", "rust", "cargo", "bin", executable)
-  const child = Bun.spawn(
-    [
-      cargo,
-      `+${toolchains.rust.toolchain}`,
-      "build",
-      "-p",
-      "playsrc-tf2-wasm",
-      "--target",
-      "wasm32-unknown-unknown",
-      "--release",
-    ],
-    {
-      cwd: repositoryRoot,
-      env: { ...process.env, ...rustEnvironment(config.sourceCacheDir) },
-      stdout: "inherit",
-      stderr: "inherit",
-    },
-  )
-  const exitCode = await child.exited
-  if (exitCode !== 0) throw new WasmVerificationError(`cargo build exited with code ${exitCode}`)
-  return path.join(repositoryRoot, "target", "wasm32-unknown-unknown", "release", "playsrc_tf2_wasm.wasm")
-}
-
 async function buildNativeHdr(
   config: LocalConfig,
   target: string,
@@ -382,6 +357,8 @@ async function buildNativeHdr(
       `+${toolchains.rust.toolchain}`,
       "run",
       "--release",
+      "--features",
+      "verify-hdr",
       "-p",
       "playsrc-source-bundle",
       "--",

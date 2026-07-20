@@ -374,6 +374,7 @@ function observe(request: Extract<WorkerRequest, { kind: "observe" }>): void {
   post({ id: request.id, kind: "simulation", generation: request.generation, output: snapshot }, [snapshot])
 }
 function particles(request: Extract<WorkerRequest, { kind: "particles" }>): void {
+  const started=performance.now()
   const value = requireActive(request.id, request.generation)
   if (!value) return
   if (
@@ -384,8 +385,10 @@ function particles(request: Extract<WorkerRequest, { kind: "particles" }>): void
     fail(request.id, "MalformedRequest")
     return
   }
-  const pointer = allocateCopy(value.exports, request.batch)
+  const inputCopyStarted=performance.now(),pointer = allocateCopy(value.exports, request.batch),inputCopyMilliseconds=performance.now()-inputCopyStarted
+  const transactStarted=performance.now()
   const ok = value.exports.playsrc_particle_transact(value.handle, pointer, request.batch.byteLength)
+  const transactMilliseconds=performance.now()-transactStarted
   value.exports.playsrc_free(pointer, request.batch.byteLength)
   if (ok !== 1) {
     fail(request.id, "TransitionFailed")
@@ -396,7 +399,7 @@ function particles(request: Extract<WorkerRequest, { kind: "particles" }>): void
     fail(request.id, "InternalFailure")
     return
   }
-  const outputPointer = value.exports.playsrc_alloc(length)
+  const outputCopyStarted=performance.now(),outputPointer = value.exports.playsrc_alloc(length)
   if (value.exports.playsrc_particle_output_copy(value.handle, outputPointer, length) !== length) {
     value.exports.playsrc_free(outputPointer, length)
     fail(request.id, "InternalFailure")
@@ -404,7 +407,8 @@ function particles(request: Extract<WorkerRequest, { kind: "particles" }>): void
   }
   const output = new Uint8Array(value.exports.memory.buffer, outputPointer, length).slice().buffer
   value.exports.playsrc_free(outputPointer, length)
-  post({ id: request.id, kind: "particles", generation: request.generation, output }, [output])
+  const outputCopyMilliseconds=performance.now()-outputCopyStarted
+  post({ id: request.id, kind: "particles", generation: request.generation, output, timings:{inputCopyMilliseconds,transactMilliseconds,outputCopyMilliseconds,totalMilliseconds:performance.now()-started} }, [output])
 }
 function models(request: Extract<WorkerRequest, { kind: "models" }>): void {
   const value = requireActive(request.id, request.generation)

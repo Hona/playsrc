@@ -116,22 +116,22 @@ function shallow(block: VguiResourceNode): VguiResourceNode {
   return Object.freeze({ ...block, children: Object.freeze(block.children.filter((child) => child.value !== null || child.name.toLowerCase() === "controlname")) })
 }
 
-function applyChildren(runtime: VguiRuntime, parent: VguiPanelId, source: VguiResourceDocument, blocks: readonly VguiResourceNode[]): void {
+function applyChildren(runtime: VguiRuntime, parent: VguiPanelId, source: VguiResourceDocument, blocks: readonly VguiResourceNode[], activeConditions: readonly string[]): void {
   const selected = blocks.filter((block) => block.value === null && scalar(block, "ControlName") !== null)
   if (selected.length === 0) return
   apply(runtime, {
     kind: "replace-resource",
     parent,
     document: document(source, `children-${parent}`, node(source.root.name, selected.map(shallow))),
-    selection: { activeConditions: [], resolutionSuffixes: ["_hidef"] },
+    selection: { activeConditions, resolutionSuffixes: ["_hidef"] },
   })
   for (const block of selected) {
     const child = find(runtime, scalar(block, "fieldName") ?? block.name, parent)
-    if (child !== null) applyChildren(runtime, child, source, resourceChildren(block))
+    if (child !== null) applyChildren(runtime, child, source, resourceChildren(block), activeConditions)
   }
 }
 
-function applyPanelResource(runtime: VguiRuntime, panel: VguiPanelId, source: VguiResourceDocument): void {
+function applyPanelResource(runtime: VguiRuntime, panel: VguiPanelId, source: VguiResourceDocument, activeConditions: readonly string[]): void {
   const snapshot = runtime.snapshot().panels.find((candidate) => candidate.id === panel)!
   const self = source.root.children.find((block) => (scalar(block, "fieldName") ?? block.name).toLowerCase() === snapshot.name.toLowerCase())
   if (self && snapshot.parent !== null) {
@@ -139,10 +139,10 @@ function applyPanelResource(runtime: VguiRuntime, panel: VguiPanelId, source: Vg
       kind: "replace-resource",
       parent: snapshot.parent,
       document: document(source, `self-${panel}`, node(source.root.name, [shallow(self)])),
-      selection: { activeConditions: [], resolutionSuffixes: ["_hidef"] },
+      selection: { activeConditions, resolutionSuffixes: ["_hidef"] },
     })
   }
-  applyChildren(runtime, panel, source, source.root.children.filter((block) => block !== self))
+  applyChildren(runtime, panel, source, source.root.children.filter((block) => block !== self), activeConditions)
 }
 
 class Integration implements Tf2HudIntegration {
@@ -174,6 +174,8 @@ class Integration implements Tf2HudIntegration {
     })
     if (!initialized.ok) throw new Error(`${initialized.diagnostic.code}:${initialized.diagnostic.subject}`)
     this.#runtime = initialized.runtime
+    this.#runtime.deferPresentation(() => {
+    apply(this.#runtime, { kind: "set-panel-state", panel: 1, proportional: true, mouseInput: false, keyboardInput: false })
     const roots = [
       ["HudPlayerStatus", "CTFHudElement"],
       ["HudWeaponAmmo", "CTFHudElement"],
@@ -187,20 +189,21 @@ class Integration implements Tf2HudIntegration {
       kind: "replace-resource",
       parent: 1,
       document: document(layout, "selected", node(layout.root.name, selectedLayout.map(shallow))),
-      selection: { activeConditions: [], resolutionSuffixes: ["_hidef"] },
+      selection: { activeConditions: request.resources.activeConditions, resolutionSuffixes: ["_hidef"] },
     })
     const status = find(this.#runtime, "HudPlayerStatus")!
     const playerClass = apply(this.#runtime, { kind: "create-panel", parent: status, control: "CTFHudElement", name: "HudPlayerClass" })!
     const playerHealth = apply(this.#runtime, { kind: "create-panel", parent: status, control: "CTFHudElement", name: "HudPlayerHealth" })!
     apply(this.#runtime, { kind: "create-panel", parent: playerHealth, control: "CTFHealthPanel", name: "PlayerStatusHealthImage" })
-    applyPanelResource(this.#runtime, playerClass, request.resources.document(HUD_CLASS))
-    applyPanelResource(this.#runtime, playerHealth, request.resources.document(HUD_HEALTH))
-    applyPanelResource(this.#runtime, find(this.#runtime, "HudWeaponAmmo")!, request.resources.document(HUD_AMMO))
-    applyPanelResource(this.#runtime, find(this.#runtime, "HudWeaponSelection")!, request.resources.document(HUD_WEAPONS))
+    applyPanelResource(this.#runtime, playerClass, request.resources.document(HUD_CLASS), request.resources.activeConditions)
+    applyPanelResource(this.#runtime, playerHealth, request.resources.document(HUD_HEALTH), request.resources.activeConditions)
+    applyPanelResource(this.#runtime, find(this.#runtime, "HudWeaponAmmo")!, request.resources.document(HUD_AMMO), request.resources.activeConditions)
+    applyPanelResource(this.#runtime, find(this.#runtime, "HudWeaponSelection")!, request.resources.document(HUD_WEAPONS), request.resources.activeConditions)
     for (const panel of this.#runtime.snapshot().panels) {
       apply(this.#runtime, { kind: "set-panel-state", panel: panel.id, mouseInput: false, keyboardInput: false })
     }
     this.#captureBaseBounds()
+    })
   }
 
   #captureBaseBounds(): void {
@@ -259,6 +262,7 @@ class Integration implements Tf2HudIntegration {
 
   publish(publication: CompactSessionSimulationPublication, context: CompactSessionHudContext): Tf2HudBinding {
     if (this.#destroyed) throw new Error("TF2 HUD integration is destroyed")
+    return this.#runtime.deferPresentation(() => {
     const adapted = adaptCompactSessionHud(this.#previous, publication, context)
     const binding = bindTf2Hud(adapted)
     this.#applyValues(binding)
@@ -278,6 +282,7 @@ class Integration implements Tf2HudIntegration {
     this.#previous = tf2HudAvailable(binding.facts)
     this.#binding = binding
     return binding
+    })
   }
 
   action(action: Tf2HudAction): Tf2HudAvailability<Tf2HudCommand> {

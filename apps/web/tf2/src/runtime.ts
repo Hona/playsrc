@@ -1,7 +1,7 @@
 import { fetchImmutableObject, openDerivedObjectCache, type DerivedObjectCache } from "@playsrc/asset-store/browser"
 import { createAudioSystem, SoundRegistry, SourceAudioWorld } from "@playsrc/audio"
 import GameplayWorker from "@playsrc/game-tf2-browser/worker?worker"
-import { Tf2WorkerClient, mergePublicationSnapshots, type LoadedGame, type SimulationPublication } from "@playsrc/game-tf2-browser"
+import { Tf2WorkerClient, mergePublicationSnapshots, type LoadedGame, type SimulationPublication, type VisibilityResult } from "@playsrc/game-tf2-browser"
 import { initializeTf2GameUiIntegration, type Tf2GameUiIntegration } from "@playsrc/game-tf2-browser/gameui-integration"
 import type { Tf2GameUiRequest, Tf2LoadingPhase } from "@playsrc/game-tf2-browser/gameui"
 import { initializeTf2HudIntegration, type Tf2HudIntegration } from "@playsrc/game-tf2-browser/hud-integration"
@@ -31,7 +31,7 @@ import {
   type PosedModel,
 } from "@playsrc/game-tf2-browser/presentation"
 import { decodeParticleRenderOutput } from "@playsrc/particle"
-import { createRenderer, SOURCE_LDR, SOURCE_PC_INTEGER_HDR, type Camera, type MaterialStateInput } from "@playsrc/rendering"
+import { createRenderer, SOURCE_LDR, SOURCE_PC_INTEGER_HDR, type Camera, type Frame, type MaterialStateInput } from "@playsrc/rendering"
 import {
   initializeClientDiagnostics,
   initializeDeveloperConsole,
@@ -46,11 +46,12 @@ import { bytesToHex } from "@noble/hashes/utils.js"
 import { sha256 } from "@noble/hashes/sha2.js"
 import {consoleLimits,resolveConfiguredConsoleResources,type ResolvedConsoleResources} from "./console-resources"
 import { loadBrowserConfiguration, type BrowserConfiguration } from "./config"
-import { applyPointerDelta } from "./input"
+import { applyPointerDelta, rawPointerMovementUnsupported, rebasePointerYaw } from "./input"
 import { TF2_SELECTED_OPTIONS, type AdapterRequestResult, type SettingsAdapterRequest } from "@playsrc/settings"
+import { SimulationClockQueue } from "./simulation-clock"
 
-const MAX_SCHEDULED_SAMPLES = 512
 const MAX_EXTERNAL_BYTES = 536_870_912
+const SIMULATION_SAMPLE_INTERVAL_SECONDS = 0.015
 const SOUND_PATHS = [
   "sound/weapons/rocket_shoot.wav",
   "sound/weapons/stickybomblauncher_shoot.wav",
@@ -110,6 +111,7 @@ export type ApplicationView = Readonly<{
   presentationCharacter?: string
   cache?: "hit" | "stored"
   pointerLocked: boolean
+  pointerMovement?: "raw" | "adjusted"
   consoleVisible: boolean
   blockers: readonly string[]
   fireEvents: number
@@ -155,6 +157,10 @@ export type ApplicationView = Readonly<{
   reloadHistory?: readonly string[]
   fireTickHistory?: readonly string[]
   performanceProbe?: string
+  performanceDetailProbe?: string
+  displayFrame?: number
+  displayViewRevision?: number
+  displayPreparedRevision?: number
   lockerProbe?: string
   unsupportedState?: "StickyPhysicsSolverUnavailable"
 }>
@@ -163,6 +169,22 @@ type Renderer = Awaited<ReturnType<typeof createRenderer>>
 type Audio = ReturnType<typeof createAudioSystem>
 type ProjectileMapper = ReturnType<typeof createProjectilePresentationMapper>
 type LockerAnimationState=Readonly<{openTick:bigint;closeTick:bigint;body:number;openAnimation:"open"|"close";closeAnimation:"open"|"close"}>
+type PreparedPresentation=Readonly<{
+  generation:number
+  revision:number
+  snapshot:Snapshot
+  publication:SimulationPublication
+  visibility:VisibilityResult
+  visibilityYaw:number
+  visibilityPitch:number
+  frame:Omit<Frame,"camera"|"visibility"|"deltaSeconds">
+  modelMilliseconds:number
+  projectileMilliseconds:number
+  particleMilliseconds:number
+  particleDecodeMilliseconds:number
+  audioMilliseconds:number
+  particleOutputBytes:number
+}>
 
 export class Tf2Application {
   #canvas: HTMLCanvasElement
@@ -205,6 +227,7 @@ export class Tf2Application {
   #uiResources?: Tf2VguiResources
   #presentationRandom?: Tf2PresentationRandom
   #gameUi?: Tf2GameUiIntegration
+  readonly #gameUiRequestTasks = new Set<number>()
   #hudIntegration?: Tf2HudIntegration
   #settings?: Tf2BrowserSettings
   #options?: Tf2OptionsPresentation
@@ -213,6 +236,12 @@ export class Tf2Application {
   #generation = 0
   #yaw = 0
   #pitch = 0
+  #pointerMovementX = 0
+  #viewRevision = 0
+  #mouseViewRevision=0
+  #authoritativeViewRevision=0
+  #pointerMovement?: "raw" | "adjusted"
+  #pointerRequestPending=false
   #forward = false
   #back = false
   #left = false
@@ -242,10 +271,18 @@ export class Tf2Application {
   #lastRandomAudioProbe = ""
   #lastCollisionMoverProbe = ""
   #animationFrame = 0
-  #simulationTail: Promise<void> = Promise.resolve()
-  #scheduledSamples = 0
+  #nextSimulationSampleSeconds=0
+  readonly #simulationSamples = new SimulationClockQueue()
+  #simulationBusy = false
   #pendingPresentation?:SimulationPublication
   #presentationBusy=false
+  #preparedPresentation?:PreparedPresentation
+  #preparedRevision=0
+  #lastRenderedPreparedRevision=0
+  #lastRenderedViewRevision=0
+  #lastRenderedTick?:bigint
+  #displayFrame=0
+  #displayTask?:Promise<void>
   #fireEvents = 0
   #explosionEvents = 0
   #paused = true
@@ -317,10 +354,44 @@ export class Tf2Application {
     }
   }
 
+  #ensureOptions():Tf2OptionsPresentation{
+    if(this.#options)return this.#options
+    if(!this.#uiResources||!this.#settings||!this.#presentationRandom)throw new Error("TF2 Options inputs are unavailable")
+    this.#options=initializeTf2OptionsPresentation({
+      root:this.#optionsRoot,
+      resources:this.#uiResources,
+      settings:this.#settings,
+      viewport:this.#viewport(),
+      reducedMotion:matchMedia("(prefers-reduced-motion: reduce)").matches,
+      clock:{nowSeconds:()=>performance.now()/1_000},
+      random:this.#presentationRandom,
+      onPersistence:(bytes)=>{
+        localStorage.setItem(TF2_BROWSER_SETTINGS_STORAGE_KEY,new TextDecoder().decode(bytes))
+        this.#set({settingsPersistence:"stored"})
+      },
+      onApply:(snapshot)=>this.#set({settingsApply:JSON.stringify(snapshot.lastApply)}),
+      onVisibility:(visible)=>this.#set({optionsVisible:visible}),
+    })
+    return this.#options
+  }
+
+  #deferGameUiRequest(request: Tf2GameUiRequest): void {
+    const handle = window.setTimeout(() => {
+      this.#gameUiRequestTasks.delete(handle)
+      if (this.#closed) return
+      void this.#gameUiRequest(request).catch((error) => {
+        this.#set({ phase: "Failed", gameUi: "failure", detail: error instanceof Error ? error.message : "GameUI owner request failed" })
+      })
+    }, 0)
+    this.#gameUiRequestTasks.add(handle)
+  }
+
   async #gameUiRequest(request: Tf2GameUiRequest): Promise<void> {
     if (request.kind === "show-console") { this.toggleConsole(); return }
     if (request.kind === "show-options") {
-      this.#options?.show(request.page === "advanced-options" ? "advanced" : "keyboard")
+      const options = this.#ensureOptions()
+      options.show(request.page === "advanced-options" ? "advanced" : "keyboard")
+      options.frame(performance.now() / 1_000)
       this.#set({ optionsVisible: true })
       return
     }
@@ -451,28 +522,9 @@ export class Tf2Application {
           activeOperation: this.#configuration.presentation.activeOperation,
           freeTrial: this.#configuration.presentation.freeTrial,
         },
-        onRequest: (request) => {
-          void this.#gameUiRequest(request).catch((error) => {
-            this.#set({ phase: "Failed", gameUi: "failure", detail: error instanceof Error ? error.message : "GameUI owner request failed" })
-          })
-        },
+        onRequest: (request) => this.#deferGameUiRequest(request),
       })
       for (const diagnostic of this.#gameUi.diagnostics()) this.#blockers.add(`TF2GameUi${diagnostic.code}: ${diagnostic.subject}`)
-      this.#options = initializeTf2OptionsPresentation({
-        root: this.#optionsRoot,
-        resources: this.#uiResources,
-        settings: this.#settings,
-        viewport: this.#viewport(),
-        reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
-        clock: { nowSeconds: () => 0 },
-        random: this.#presentationRandom,
-        onPersistence: (bytes) => {
-          localStorage.setItem(TF2_BROWSER_SETTINGS_STORAGE_KEY, new TextDecoder().decode(bytes))
-          this.#set({ settingsPersistence: "stored" })
-        },
-        onApply: (snapshot) => this.#set({ settingsApply: JSON.stringify(snapshot.lastApply) }),
-        onVisibility: (visible) => this.#set({ optionsVisible: visible }),
-      })
       this.#initializeConsole()
       const currentSettings = this.#settings.snapshot().settings.current
       this.#consoleEnabled = currentSettings["keyboard.console-enabled"] === true
@@ -762,8 +814,8 @@ export class Tf2Application {
   #viewport() {
     const bounds = this.#vguiRoot.getBoundingClientRect()
     return {
-      width: Math.max(1, bounds.width),
-      height: Math.max(1, bounds.height),
+      width: Math.max(1, Math.trunc(bounds.width)),
+      height: Math.max(1, Math.trunc(bounds.height)),
       devicePixelRatio: window.devicePixelRatio,
     }
   }
@@ -1013,6 +1065,11 @@ export class Tf2Application {
     if (!this.#client || !this.#renderer || !this.#loaded) throw new Error("Application is not ready")
     this.#paused = true
     this.#neutral()
+    this.#simulationSamples.clear()
+    this.#pendingPresentation=undefined
+    this.#preparedPresentation=undefined
+    this.#nextSimulationSampleSeconds=0
+    await this.#displayTask
     const generation = this.#generation + 1
     const profile = this.#renderLevel === 2 ? 1 : 0
     const key = await mapDerivedKey(
@@ -1092,6 +1149,9 @@ export class Tf2Application {
     this.#fireTickHistory=[]
     this.#wasmCalls={observe:0,models:0,visibility:0,particles:0};this.#maximumScheduledSamples=0;this.#maximumPublicationTicks=0;this.#phaseTimings=[0,0,0,0,0]
     this.#pendingProjectileTimeline=[]
+    this.#lastRenderedPreparedRevision=0
+    this.#lastRenderedViewRevision=0
+    this.#lastRenderedTick=undefined
     this.#attachments.clear()
     this.#projectiles?.dispose()
     this.#projectiles = createProjectilePresentationMapper(
@@ -1159,6 +1219,8 @@ export class Tf2Application {
   #applyInitialView(loaded: LoadedGame): void {
     this.#pitch = Math.max(-89, Math.min(89, loaded.initialView.angles[0]))
     this.#yaw = loaded.initialView.angles[1] % 360
+    this.#pointerMovementX = 0
+    this.#viewRevision += 1
   }
 
   async #cacheModelArtifacts(artifacts: PresentationArtifacts): Promise<void> {
@@ -1500,7 +1562,7 @@ export class Tf2Application {
     const timeSeconds = time / 1_000
     try {
       this.#gameUi?.frame(timeSeconds)
-      this.#options?.frame(timeSeconds)
+      if(this.#view.optionsVisible)this.#options?.frame(performance.now()/1_000)
       this.#hudIntegration?.frame(timeSeconds)
     } catch (error) {
       this.#paused = true
@@ -1509,7 +1571,106 @@ export class Tf2Application {
     }
     if (!this.#paused && this.#snapshot && (this.#showFps !== 0 || this.#showPos !== 0)) this.#updateDiagnostics(time)
     if (this.#paused || !this.#client || !this.#renderer || !this.#snapshot) return
-    this.#scheduleSimulation(time / 1_000, false)
+    const nowSeconds=time/1_000
+    if(nowSeconds+Number.EPSILON>=this.#nextSimulationSampleSeconds){
+      this.#scheduleSimulation(nowSeconds, false)
+      if(this.#nextSimulationSampleSeconds===0)this.#nextSimulationSampleSeconds=nowSeconds+SIMULATION_SAMPLE_INTERVAL_SECONDS
+      else do{this.#nextSimulationSampleSeconds+=SIMULATION_SAMPLE_INTERVAL_SECONDS}while(this.#nextSimulationSampleSeconds<=nowSeconds)
+    }
+    this.#offerDisplay()
+  }
+
+  #offerDisplay():void{
+    const prepared=this.#preparedPresentation
+    if(
+      this.#displayTask||!prepared||this.#closed||this.#paused||
+      (prepared.revision===this.#lastRenderedPreparedRevision&&this.#viewRevision===this.#lastRenderedViewRevision)
+    )return
+    const task=this.#renderDisplay().catch((error)=>{
+      if(this.#closed)return
+      this.#paused=true
+      this.#set({phase:"Failed",detail:error instanceof Error?error.message:"Display frame failed"})
+    })
+    this.#displayTask=task
+    void task.finally(()=>{if(this.#displayTask===task)this.#displayTask=undefined})
+  }
+
+  async #renderDisplay():Promise<void>{
+    const prepared=this.#preparedPresentation,client=this.#client,renderer=this.#renderer,generation=this.#generation
+    if(!prepared||!client||!renderer||prepared.generation!==generation)return
+    const viewRevision=this.#viewRevision,yaw=this.#yaw,pitch=this.#pitch
+    const camera=tf2Camera(prepared.snapshot,yaw,pitch)
+    const viewport=this.#canvas.getBoundingClientRect()
+    const phaseStart=performance.now(),visibilityStart=phaseStart
+    let visibility=prepared.visibility
+    if(visibility.water.visibleWater===null&&visibility.water.passes.every(pass=>pass.kind==="main")){
+      visibility=Object.freeze({
+        ...visibility,
+        water:Object.freeze({
+          ...visibility.water,
+          passes:Object.freeze(visibility.water.passes.map(pass=>Object.freeze({
+            ...pass,
+            origin:Object.freeze([...camera.position]) as readonly[number,number,number],
+            angles:Object.freeze([camera.pitchDegrees,camera.yawDegrees,0]) as readonly[number,number,number],
+          }))),
+        }),
+      })
+    }else if(camera.yawDegrees!==prepared.visibilityYaw||camera.pitchDegrees!==prepared.visibilityPitch){
+      this.#wasmCalls.visibility+=1
+      visibility=await client.visibility(generation,{
+        position:camera.position,
+        yawDegrees:camera.yawDegrees,
+        pitchDegrees:camera.pitchDegrees,
+        verticalFovDegrees:camera.verticalFovDegrees,
+        aspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),
+        near:camera.near,
+        presentationTimeSeconds:Number(prepared.snapshot.tick)*0.015,
+      })
+    }
+    const visibilityMilliseconds=performance.now()-visibilityStart
+    if(this.#closed||this.#paused||generation!==this.#generation||renderer!==this.#renderer)return
+    const deltaTicks=this.#lastRenderedTick===undefined
+      ? prepared.publication.selectedTicks
+      : prepared.snapshot.tick>=this.#lastRenderedTick
+        ? Number(prepared.snapshot.tick-this.#lastRenderedTick)
+        : prepared.publication.selectedTicks
+    const renderStart=performance.now()
+    const rendered=await renderer.render({
+      ...prepared.frame,
+      camera,
+      visibility,
+      deltaSeconds:deltaTicks*0.015,
+    })
+    const renderMilliseconds=performance.now()-renderStart,totalMilliseconds=performance.now()-phaseStart
+    if(this.#closed||this.#paused||generation!==this.#generation||renderer!==this.#renderer)return
+    const publishPrepared=prepared.revision!==this.#lastRenderedPreparedRevision
+    this.#lastRenderedPreparedRevision=prepared.revision
+    this.#lastRenderedViewRevision=viewRevision
+    this.#lastRenderedTick=prepared.snapshot.tick
+    this.#displayFrame+=1
+    this.#phaseTimings=[prepared.modelMilliseconds,visibilityMilliseconds,prepared.particleMilliseconds,renderMilliseconds,totalMilliseconds]
+    this.#canvas.dataset.displayFrame=String(this.#displayFrame)
+    this.#canvas.dataset.displayViewRevision=String(viewRevision)
+    this.#canvas.dataset.displayPreparedRevision=String(prepared.revision)
+    this.#canvas.dataset.displayCameraYaw=String(camera.yawDegrees)
+    this.#canvas.dataset.displayCameraPitch=String(camera.pitchDegrees)
+    this.#canvas.dataset.displayMouseRevision=String(this.#mouseViewRevision)
+    this.#canvas.dataset.displaySnapRevision=String(this.#authoritativeViewRevision)
+    if(publishPrepared)this.#set({
+        camera,
+        visibleDecalFragments:rendered.visibleProjectedMarks,
+        viewmodelDepthRange:rendered.viewModelPass?.depthRange.join(","),
+        viewmodelViewportRestored:rendered.viewModelPass?.viewportRestored,
+        waterPlanProbe:`${visibility.water.visibleWater?.eyeInVolume?"below":visibility.water.visibleWater?"above":"none"}:${visibility.water.render.cheap?"cheap":"expensive"}:${visibility.water.render.reflect?1:0}:${visibility.water.render.refract?1:0}:${visibility.water.nearPlaneIntersects?1:0}`,
+        waterPasses:rendered.waterPasses,
+        waterStateRestored:rendered.waterStateRestored,
+        waterNormalFrame:visibility.water.visibleWater?.evaluated.normalFrame,
+        performanceProbe:`${this.#phaseTimings.map(value=>value.toFixed(3)).join(",")}:${this.#wasmCalls.observe},${this.#wasmCalls.models},${this.#wasmCalls.visibility},${this.#wasmCalls.particles}:${this.#maximumScheduledSamples},${this.#maximumPublicationTicks}:${prepared.particleOutputBytes},${prepared.publication.snapshotBytes.byteLength}`,
+        performanceDetailProbe:JSON.stringify({tick:prepared.snapshot.tick.toString(),selectedTicks:prepared.publication.selectedTicks,models:prepared.modelMilliseconds,projectiles:prepared.projectileMilliseconds,visibility:visibilityMilliseconds,particleWorker:prepared.particleMilliseconds,particleDecode:prepared.particleDecodeMilliseconds,audio:prepared.audioMilliseconds,particleItems:rendered.timings.particleItems,particleBatches:rendered.timings.particleBatches,dynamicItems:rendered.timings.dynamicItemsMilliseconds,world:rendered.timings.worldMilliseconds,viewmodel:rendered.timings.viewModelMilliseconds,render:renderMilliseconds,total:totalMilliseconds}),
+        displayFrame:this.#displayFrame,
+        displayViewRevision:viewRevision,
+        displayPreparedRevision:prepared.revision,
+      })
   }
 
   #updateDiagnostics(realTimeMilliseconds: number): void {
@@ -1536,13 +1697,46 @@ export class Tf2Application {
   }
 
   async #initialPublication(generation:number):Promise<SimulationPublication>{
-    if(!this.#client)throw new Error("Simulation client is unavailable");const frame=()=>new Promise<number>(resolve=>requestAnimationFrame(resolve));let now=await frame();let publications=await this.#client.observe(generation,now/1000,this.#command(),false);if(publications.length)throw new Error("Simulation baseline published gameplay");for(let i=0;i<32;i++){now=await frame();publications=await this.#client.observe(generation,now/1000,this.#command(),false);if(publications[0])return publications[0]}throw new Error("Simulation did not publish an initial fixed tick")
+    if(!this.#client)throw new Error("Simulation client is unavailable")
+    const frame=()=>new Promise<number>(resolve=>requestAnimationFrame(resolve))
+    const observe=async(now:number)=>{
+      const sampledMovementX=this.#pointerMovementX
+      const publications=await this.#client!.observe(generation,now/1_000,this.#command(),false)
+      for(const publication of publications)this.#applyAuthoritativeView(publication,sampledMovementX)
+      return publications
+    }
+    let now=await frame(),publications=await observe(now)
+    if(publications.length)throw new Error("Simulation baseline published gameplay")
+    for(let i=0;i<32;i++){
+      now=await frame()
+      publications=await observe(now)
+      if(publications[0])return publications[0]
+    }
+    throw new Error("Simulation did not publish an initial fixed tick")
   }
   #scheduleSimulation(nowSeconds:number,suspended:boolean):void{
-    if(!this.#client||this.#closed)return;if(this.#scheduledSamples>=MAX_SCHEDULED_SAMPLES){this.#paused=true;this.#set({phase:"Failed",detail:"Simulation browser-clock queue reached its explicit limit"});return}const generation=this.#generation,command=this.#command();this.#scheduledSamples++;this.#maximumScheduledSamples=Math.max(this.#maximumScheduledSamples,this.#scheduledSamples);this.#simulationTail=this.#simulationTail.then(async()=>{if(!this.#client||generation!==this.#generation||this.#closed)return;this.#wasmCalls.observe++;for(const publication of await this.#client.observe(generation,nowSeconds,command,suspended))this.#enqueuePresentation(generation,publication)}).catch(error=>{this.#paused=true;this.#set({phase:"Failed",detail:error instanceof Error?error.message:"Simulation scheduling failed"})}).finally(()=>{this.#scheduledSamples--})
+    if(!this.#client||this.#closed)return
+    try{this.#simulationSamples.push({generation:this.#generation,nowSeconds,suspended})}catch(error){this.#simulationSamples.clear();this.#paused=true;this.#set({phase:"Failed",detail:error instanceof Error?error.message:"Simulation scheduling failed"});return}
+    this.#maximumScheduledSamples=Math.max(this.#maximumScheduledSamples,this.#simulationSamples.length+Number(this.#simulationBusy))
+    if(!this.#simulationBusy)void this.#drainSimulation()
   }
-  #enqueuePresentation(generation:number,publication:SimulationPublication):void{
-    if(generation!==this.#generation||this.#closed)return;for(const batch of publication.eventBatches){const entry=batch.snapshot.projectileTimeline[0];if(!entry||this.#pendingProjectileTimeline.at(-1)?.tick===entry.tick)continue;if(this.#pendingProjectileTimeline.at(-1)&&this.#pendingProjectileTimeline.at(-1)!.tick>entry.tick){this.#paused=true;this.#set({phase:"Failed",detail:"Projectile presentation timeline reversed before admission"});return}this.#pendingProjectileTimeline.push(entry)}if(this.#pendingProjectileTimeline.length>4096){this.#paused=true;this.#set({phase:"Failed",detail:"Projectile presentation timeline reached its explicit limit"});return}this.#pendingPresentation=this.#pendingPresentation?this.#mergePublications(this.#pendingPresentation,publication):publication;this.#maximumPublicationTicks=Math.max(this.#maximumPublicationTicks,this.#pendingPresentation.selectedTicks);if(!this.#presentationBusy)void this.#drainPresentations()
+  async #drainSimulation():Promise<void>{
+    this.#simulationBusy=true
+    try{while(!this.#closed){const sample=this.#simulationSamples.shift();if(!sample)break;if(!this.#client||sample.generation!==this.#generation)continue;const sampledMovementX=this.#pointerMovementX,command=this.#command();this.#wasmCalls.observe++;for(const publication of await this.#client.observe(sample.generation,sample.nowSeconds,command,sample.suspended))this.#enqueuePresentation(sample.generation,publication,sampledMovementX)}}catch(error){this.#simulationSamples.clear();this.#paused=true;this.#set({phase:"Failed",detail:error instanceof Error?error.message:"Simulation scheduling failed"})}finally{this.#simulationBusy=false}
+  }
+  #applyAuthoritativeView(publication:SimulationPublication,sampledMovementX:number):void{
+    for(const batch of publication.eventBatches){
+      for(const event of batch.snapshot.events){
+        if(event.kind===9&&event.detail===1){
+          this.#yaw=rebasePointerYaw(event.values[3],sampledMovementX,this.#pointerMovementX)
+          this.#viewRevision+=1
+          this.#authoritativeViewRevision+=1
+        }
+      }
+    }
+  }
+  #enqueuePresentation(generation:number,publication:SimulationPublication,sampledMovementX:number):void{
+    if(generation!==this.#generation||this.#closed)return;this.#applyAuthoritativeView(publication,sampledMovementX);for(const batch of publication.eventBatches){const entry=batch.snapshot.projectileTimeline[0];if(!entry||this.#pendingProjectileTimeline.at(-1)?.tick===entry.tick)continue;if(this.#pendingProjectileTimeline.at(-1)&&this.#pendingProjectileTimeline.at(-1)!.tick>entry.tick){this.#paused=true;this.#set({phase:"Failed",detail:"Projectile presentation timeline reversed before admission"});return}this.#pendingProjectileTimeline.push(entry)}if(this.#pendingProjectileTimeline.length>4096){this.#paused=true;this.#set({phase:"Failed",detail:"Projectile presentation timeline reached its explicit limit"});return}this.#pendingPresentation=this.#pendingPresentation?this.#mergePublications(this.#pendingPresentation,publication):publication;this.#maximumPublicationTicks=Math.max(this.#maximumPublicationTicks,this.#pendingPresentation.selectedTicks);if(!this.#presentationBusy)void this.#drainPresentations()
   }
   #mergePublications(left:SimulationPublication,right:SimulationPublication):SimulationPublication{const snapshot=mergePublicationSnapshots([left.snapshot,right.snapshot]);return Object.freeze({...right,firstHostTick:left.firstHostTick,selectedTicks:left.selectedTicks+right.selectedTicks,eventBatches:Object.freeze([...left.eventBatches,...right.eventBatches]),snapshot})}
   async #drainPresentations():Promise<void>{this.#presentationBusy=true;try{while(this.#pendingPresentation&&!this.#closed){const value=this.#pendingPresentation;this.#pendingPresentation=undefined;await this.#present(value)}}finally{this.#presentationBusy=false}}
@@ -1550,15 +1744,14 @@ export class Tf2Application {
   async #present(publication: SimulationPublication): Promise<void> {
     if (
       !this.#client ||
-      !this.#renderer ||
       !this.#snapshot ||
       !this.#projectiles ||
       !this.#viewmodels ||
       !this.#artifacts
     )
       return
+    const generation=this.#generation,client=this.#client
     try {
-      const phaseStart=performance.now()
       const authoritySnapshot = mergePublicationSnapshots(publication.eventBatches.map(batch=>batch.snapshot))
       if(authoritySnapshot.tick!==publication.snapshot.tick)throw new Error("Simulation publication differs from its ordered event batches")
       const projectileTimeline=this.#pendingProjectileTimeline.filter(entry=>entry.tick<=authoritySnapshot.tick)
@@ -1569,9 +1762,6 @@ export class Tf2Application {
       this.#recordAuthorityBlockers(snapshot)
       const activeWeapon=snapshot.loadout.find(value=>value.weapon===snapshot.weapon),reloadObservation=activeWeapon&&`${snapshot.tick}:${activeWeapon.weapon}:${activeWeapon.clip}/${activeWeapon.reserve}:${activeWeapon.reload}`
       if(reloadObservation&&this.#reloadHistory.at(-1)!==reloadObservation){this.#reloadHistory.push(reloadObservation);if(this.#reloadHistory.length>128)this.#reloadHistory.shift()}
-      for (const event of snapshot.events) {
-        if (event.kind === 9 && event.detail === 1) this.#yaw = event.values[3]
-      }
       for (const event of snapshot.projectileEvents) {
         if (event.type === "fire") {this.#fireEvents += 1;this.#fireTickHistory.push(`${event.kind}:${event.tick}:${event.position.join(",")}`);if(this.#fireTickHistory.length>128)this.#fireTickHistory.shift()}
         if (event.type === "explode") this.#explosionEvents += 1
@@ -1598,9 +1788,15 @@ export class Tf2Application {
       const camera = tf2Camera(snapshot, this.#yaw, this.#pitch)
       const viewport=this.#canvas.getBoundingClientRect(),viewmodel=this.#viewmodels.map(snapshot,{aspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),farPlane:camera.far})
       const lockerRequests=[...this.#lockerAnimations].flatMap(([identity,state])=>{const occurrence=this.#artifacts!.modelOccurrences.find(value=>value.entity===identity),artifact=occurrence&&this.#artifacts!.models.get(occurrence.model);if(!occurrence||!artifact){this.#blockers.add(`TF2 regenerate model presentation unavailable: ${identity}`);return []}const closed=snapshot.tick>=state.closeTick,animation=closed?state.closeAnimation:state.openAnimation,start=closed?state.closeTick:state.openTick,elapsed=Math.max(0,Number(snapshot.tick-start)*0.015),previousTick=snapshot.tick>BigInt(publication.selectedTicks)?snapshot.tick-BigInt(publication.selectedTicks):0n,previousElapsed=Math.max(0,Number(previousTick-start)*0.015);return [Object.freeze({identity,model:occurrence.model,activity:animation,previousElapsedSeconds:Math.min(previousElapsed,elapsed),elapsedSeconds:elapsed,currentTimeSeconds:Number(snapshot.tick)*0.015,frameTimeSeconds:publication.selectedTicks*0.015,planarSpeed:0,screenAspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),worldFarPlane:camera.far,skin:occurrence.skin,lod:0,bodygroups:Object.freeze([]),packedBody:state.body})]})
-      const modelStart=performance.now();this.#wasmCalls.models++;const modelPoses = decodeModelPoseOutput(
-        await this.#client.models(this.#generation, encodeModelPoseBatch([viewmodel.request,...lockerRequests])),
-      )
+      const modelStart=performance.now();this.#wasmCalls.models++;const modelRequest=client.models(generation, encodeModelPoseBatch([viewmodel.request,...lockerRequests]));this.#wasmCalls.visibility++;const visibilityRequest=client.visibility(generation,{
+        position:camera.position,
+        yawDegrees:camera.yawDegrees,
+        pitchDegrees:camera.pitchDegrees,
+        verticalFovDegrees:camera.verticalFovDegrees,
+        aspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),
+        near:camera.near,
+        presentationTimeSeconds:Number(snapshot.tick)*0.015,
+      });void visibilityRequest.catch(()=>{});const modelPoses = decodeModelPoseOutput(await modelRequest)
       const modelMilliseconds=performance.now()-modelStart
       const viewmodelPoses = modelPoses.filter((pose) => pose.identity === viewmodel.item.identity)
       const lockerPoses=modelPoses.filter(pose=>this.#lockerAnimations.has(pose.identity))
@@ -1608,26 +1804,20 @@ export class Tf2Application {
       this.#viewmodelActivities.add(viewmodelPose.activity)
       this.#updateAttachmentTransforms(snapshot, viewmodelPoses, camera)
       let presentation:ReturnType<ProjectileMapper["map"]>
+      const projectileStart=performance.now()
       try{presentation=this.#projectiles.map(projectileFrame(snapshot))}catch(error){const timeline=snapshot.projectileTimeline.map(value=>`${value.tick}[${value.projectiles.map(projectile=>projectile.identity).join(",")}]{${value.events.map(event=>`${event.type}:${event.projectile}@${event.tick}`).join(",")}}`).join("|"),top=snapshot.projectileEvents.map(event=>`${event.type}:${event.projectile}@${event.tick}`).join(",");throw new Error(`${error instanceof Error?error.message:"projectile presentation failed"}; top ${top}; timeline ${timeline}`)}
+      const projectileMilliseconds=performance.now()-projectileStart
       this.#pendingProjectileTimeline.splice(0,projectileTimeline.length)
-      const visibilityStart=performance.now();this.#wasmCalls.visibility++;const visibility = await this.#client.visibility(this.#generation, {
-        position: camera.position,
-        yawDegrees: camera.yawDegrees,
-        pitchDegrees: camera.pitchDegrees,
-        verticalFovDegrees: camera.verticalFovDegrees,
-        aspectRatio: Math.max(1, viewport.width) / Math.max(1, viewport.height),
-        near: camera.near,
-        presentationTimeSeconds: Number(snapshot.tick) * 0.015,
-      })
-      const visibilityMilliseconds=performance.now()-visibilityStart,particleStart=performance.now();this.#wasmCalls.particles++;const particleOutput = await this.#client.particles(
-        this.#generation,
+      const visibility=await visibilityRequest
+      const particleStart=performance.now();this.#wasmCalls.particles++;const particleOutput = await client.particles(
+        generation,
         this.#particleBatches.encode(snapshot.tick, camera.position, presentation.particles),
       )
       const particleMilliseconds=performance.now()-particleStart
-      const particleItems=decodeParticleRenderOutput(particleOutput,this.#artifacts.particleMaterials).items
-      this.#playAudio(snapshot, camera)
-      const renderStart=performance.now();const rendered = await this.#renderer.render({
-        camera,
+      const particleDecodeStart=performance.now(),particleItems=decodeParticleRenderOutput(particleOutput,this.#artifacts.particleMaterials).items,particleDecodeMilliseconds=performance.now()-particleDecodeStart
+      const audioStart=performance.now();this.#playAudio(snapshot, camera);const audioMilliseconds=performance.now()-audioStart
+      if(this.#closed||this.#paused||generation!==this.#generation||client!==this.#client)return
+      const frame=Object.freeze({
         effects: Object.freeze([]),
         particles: particleItems,
         models: Object.freeze([
@@ -1642,12 +1832,26 @@ export class Tf2Application {
             pose,
           })),
         ]),
-        visibility,
         brushModels: snapshot.entityPresentation,
         collisionWorldIdentity: snapshot.collisionSnapshot.worldIdentity,
-        deltaSeconds: publication.selectedTicks * 0.015,
+      }) satisfies Omit<Frame,"camera"|"visibility"|"deltaSeconds">
+      this.#preparedRevision+=1
+      this.#preparedPresentation=Object.freeze({
+        generation,
+        revision:this.#preparedRevision,
+        snapshot,
+        publication,
+        visibility,
+        visibilityYaw:camera.yawDegrees,
+        visibilityPitch:camera.pitchDegrees,
+        frame,
+        modelMilliseconds,
+        projectileMilliseconds,
+        particleMilliseconds,
+        particleDecodeMilliseconds,
+        audioMilliseconds,
+        particleOutputBytes:particleOutput.byteLength,
       })
-      const renderMilliseconds=performance.now()-renderStart,totalMilliseconds=performance.now()-phaseStart;this.#phaseTimings=[modelMilliseconds,visibilityMilliseconds,particleMilliseconds,renderMilliseconds,totalMilliseconds]
       const hud = this.#hudIntegration?.publish(publication, Object.freeze({
         playerIdentity: 1,
         liveHudSuppressed: false,
@@ -1691,9 +1895,7 @@ export class Tf2Application {
           : "unavailable",
         fireEvents: this.#fireEvents,
         explosionEvents: this.#explosionEvents,
-        camera,
         particleRenderItems: particleItems.length,
-        visibleDecalFragments: rendered.visibleProjectedMarks,
         movement: snapshot.movement,
         movementTick: snapshot.movementTick,
         viewmodelPose: Object.freeze({
@@ -1709,8 +1911,6 @@ export class Tf2Application {
         particleProbe: [...new Set(particleItems.map((item) => `${item.primitive}:${item.material}:${item.primarySheet ? "sheet" : "missing"}`))].sort().join("|"),
         audioStarts: Object.freeze([...this.#audioStarts]),
         viewmodelProjection: viewmodel.item.viewModelProjection ? `${viewmodel.item.viewModelProjection.horizontalFov4By3}:${viewmodel.item.viewModelProjection.near}:${viewmodel.item.viewModelProjection.depthRange.join(",")}` : undefined,
-        viewmodelDepthRange: rendered.viewModelPass?.depthRange.join(","),
-        viewmodelViewportRestored: rendered.viewModelPass?.viewportRestored,
         viewmodelActivities: Object.freeze([...this.#viewmodelActivities]),
         viewmodelSequences: this.#viewmodelSequences(this.#artifacts, snapshot.class),
         crouchHistory: Object.freeze([...this.#crouchHistory]),
@@ -1719,16 +1919,12 @@ export class Tf2Application {
         ...this.#snapshotProbes(snapshot),
         simulationProbe: `${publication.hostFrame}:${publication.firstHostTick}-${publication.lastHostTick}:${publication.selectedTicks}:${publication.snapshotBytes.byteLength}:${publication.eventBatches.reduce((n,e)=>n+e.bytes.byteLength,0)}`,
         brushModelProbe: `${snapshot.entityPresentation.entityRevision}:${snapshot.entityPresentation.collisionRevision}:${snapshot.entityPresentation.models.length}:${snapshot.entityPresentation.models.filter(model=>model.draw).length}`,
-        waterPlanProbe: `${visibility.water.visibleWater?.eyeInVolume?"below":visibility.water.visibleWater?"above":"none"}:${visibility.water.render.cheap?"cheap":"expensive"}:${visibility.water.render.reflect?1:0}:${visibility.water.render.refract?1:0}:${visibility.water.nearPlaneIntersects?1:0}`,
-        waterPasses: rendered.waterPasses,
-        waterStateRestored: rendered.waterStateRestored,
-        waterNormalFrame: visibility.water.visibleWater?.evaluated.normalFrame,
         reloadHistory:Object.freeze([...this.#reloadHistory]),
         fireTickHistory:Object.freeze([...this.#fireTickHistory]),
-        performanceProbe:`${this.#phaseTimings.map(value=>value.toFixed(3)).join(",")}:${this.#wasmCalls.observe},${this.#wasmCalls.models},${this.#wasmCalls.visibility},${this.#wasmCalls.particles}:${this.#maximumScheduledSamples},${this.#maximumPublicationTicks}:${particleOutput.byteLength},${publication.snapshotBytes.byteLength}`,
         lockerProbe:this.#lockerProbe(snapshot.tick),
       })
     } catch (error) {
+      if(this.#closed||generation!==this.#generation||this.#view.phase==="Replacing")return
       this.#paused = true
       this.#set({ phase: "Failed", detail: error instanceof Error ? error.message : "Gameplay frame failed" })
     }
@@ -1746,6 +1942,7 @@ export class Tf2Application {
     window.addEventListener("blur", this.#blur)
     document.addEventListener("visibilitychange", this.#visibility)
     document.addEventListener("pointerlockchange", this.#pointerLock)
+    document.addEventListener("pointerlockerror", this.#pointerLockError)
   }
 
   #removeListeners(): void {
@@ -1760,6 +1957,7 @@ export class Tf2Application {
     window.removeEventListener("blur", this.#blur)
     document.removeEventListener("visibilitychange", this.#visibility)
     document.removeEventListener("pointerlockchange", this.#pointerLock)
+    document.removeEventListener("pointerlockerror", this.#pointerLockError)
   }
 
   #sourceKey(code: string): string {
@@ -1882,10 +2080,15 @@ export class Tf2Application {
 
   readonly #mouseMove = (event: MouseEvent): void => {
     if (document.pointerLockElement !== this.#canvas) return
+    if(event.movementX===0&&event.movementY===0)return
     const scale = this.#mouseSensitivity / 3
-    const angles = applyPointerDelta(this.#yaw, this.#pitch, event.movementX * scale, event.movementY * scale * (this.#reverseMouse ? -1 : 1))
+    const movementX=event.movementX*scale
+    const angles = applyPointerDelta(this.#yaw, this.#pitch, movementX, event.movementY * scale * (this.#reverseMouse ? -1 : 1))
     this.#yaw = angles.yaw
     this.#pitch = angles.pitch
+    this.#pointerMovementX+=movementX
+    this.#viewRevision+=1
+    this.#mouseViewRevision+=1
   }
 
   readonly #resize = (): void => this.resize()
@@ -1893,11 +2096,21 @@ export class Tf2Application {
   readonly #visibility = (): void => {
     this.#paused = document.hidden
     this.#neutral()
-    if(this.#client&&this.#snapshot)this.#scheduleSimulation(performance.now()/1_000,this.#paused)
+    const nowSeconds=performance.now()/1_000
+    this.#nextSimulationSampleSeconds=nowSeconds+SIMULATION_SAMPLE_INTERVAL_SECONDS
+    if(this.#client&&this.#snapshot)this.#scheduleSimulation(nowSeconds,this.#paused)
   }
   readonly #pointerLock = (): void => {
-    if (document.pointerLockElement !== this.#canvas) this.#neutral()
-    this.#set({ pointerLocked: document.pointerLockElement === this.#canvas })
+    const locked=document.pointerLockElement===this.#canvas
+    if (!locked){this.#neutral();this.#pointerMovement=undefined}
+    this.#set({ pointerLocked: locked,pointerMovement:locked?this.#pointerMovement:undefined })
+  }
+  readonly #pointerLockError=():void=>{
+    if(this.#pointerRequestPending)return
+    if(document.pointerLockElement===this.#canvas)return
+    this.#pointerMovement=undefined
+    this.#neutral()
+    this.#set({pointerLocked:false,pointerMovement:undefined,detail:"Pointer lock failed"})
   }
 
   #neutral(): void {
@@ -1922,9 +2135,27 @@ export class Tf2Application {
     this.#canvas = connected
     if (this.#closed || this.#console?.snapshot().visible) return
     const audioAdmission=this.resumeAudio()
+    const request=async(raw:boolean):Promise<"raw"|"adjusted">=>{
+      const admission=this.#canvas.requestPointerLock(raw?{unadjustedMovement:true}:undefined)
+      if(admission&&typeof admission.then==="function"){
+        await admission
+        return raw?"raw":"adjusted"
+      }
+      return "adjusted"
+    }
     try {
-      await this.#canvas.requestPointerLock()
+      this.#pointerRequestPending=true
+      try{
+        try{
+          this.#pointerMovement=await request(true)
+        }catch(error){
+          if(!rawPointerMovementUnsupported(error))throw error
+          this.#pointerMovement=await request(false)
+        }
+      }finally{this.#pointerRequestPending=false}
+      if(document.pointerLockElement===this.#canvas)this.#set({pointerLocked:true,pointerMovement:this.#pointerMovement})
     } catch (error) {
+      this.#pointerMovement=undefined
       this.#set({ detail: error instanceof Error ? error.message : "Pointer lock failed" })
     }
     await audioAdmission
@@ -1970,16 +2201,18 @@ export class Tf2Application {
   async close(): Promise<void> {
     if (this.#closed) return
     await this.#release()
-    this.#set({ phase: "Closed", detail: "Application closed", pointerLocked: false, consoleVisible: false })
+    this.#set({ phase: "Closed", detail: "Application closed", pointerLocked: false, pointerMovement:undefined, consoleVisible: false })
   }
 
   async #teardownGameplay(): Promise<void> {
     this.#paused = true
     this.#neutral()
     this.#generation += 1
+    this.#simulationSamples.clear()
     this.#pendingPresentation = undefined
+    this.#preparedPresentation = undefined
     this.#pendingProjectileTimeline = []
-    await this.#simulationTail.catch(() => {})
+    await this.#displayTask
     await this.#client?.shutdown().catch(() => {})
     this.#client = undefined
     this.#cache?.close()
@@ -2013,9 +2246,13 @@ export class Tf2Application {
     if (this.#closed) return
     this.#closed = true
     this.#paused = true
+    for (const handle of this.#gameUiRequestTasks) clearTimeout(handle)
+    this.#gameUiRequestTasks.clear()
+    this.#simulationSamples.clear()
     cancelAnimationFrame(this.#animationFrame)
     this.#removeListeners()
     this.#neutral()
+    await this.#displayTask
     if (document.pointerLockElement === this.#canvas) {
       try {
         await document.exitPointerLock()

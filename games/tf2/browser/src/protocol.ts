@@ -65,7 +65,7 @@ export type WorkerResponse =
   | Readonly<{ id: number; kind: "activated"; generation: number }>
   | Readonly<{ id: number; kind: "course-configured"; generation: number }>
   | Readonly<{ id: number; kind: "discarded"; generation: number }>
-  | Readonly<{ id: number; kind: "particles"; generation: number; output: ArrayBuffer }>
+  | Readonly<{ id: number; kind: "particles"; generation: number; output: ArrayBuffer; timings: Readonly<{ inputCopyMilliseconds:number; transactMilliseconds:number; outputCopyMilliseconds:number; totalMilliseconds:number }> }>
   | Readonly<{ id: number; kind: "models"; generation: number; output: ArrayBuffer }>
   | Readonly<{ id: number; kind: "visibility"; generation: number; output: ArrayBuffer }>
   | Readonly<{ id: number; kind: "simulation"; generation: number; output: ArrayBuffer }>

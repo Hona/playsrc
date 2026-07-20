@@ -1,3 +1,4 @@
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
 import path from "node:path"
 import type { LocalConfig } from "./config"
 import { repositoryRoot } from "./config"
@@ -41,6 +42,14 @@ type SourceBundleReport = Readonly<{
   ledgerSha256?: unknown
   ledgerDescriptor?: unknown
 }>
+
+type SourceBundleCache = Readonly<{
+  schema: "playsrc-source-bundle-cache-v1"
+  generatorSha256: string
+  report: SourceBundleReport
+}>
+
+const SHA256 = /^[0-9a-f]{64}$/
 
 const descriptor = (
   value: unknown,
@@ -146,30 +155,117 @@ export function parseSourceBundleReport(output: string, target: string): SourceB
   })
 }
 
+export function parseSourceBundleCache(
+  output: string,
+  target: string,
+  generatorSha256: string,
+): SourceBundleArtifact["report"] | null {
+  try {
+    const value = JSON.parse(output) as SourceBundleCache
+    if (
+      typeof value !== "object"
+      || value === null
+      || Array.isArray(value)
+      || Object.keys(value).sort().join("\0") !== "generatorSha256\0report\0schema"
+      || value.schema !== "playsrc-source-bundle-cache-v1"
+      || value.generatorSha256 !== generatorSha256
+      || !SHA256.test(value.generatorSha256)
+    ) return null
+    return parseSourceBundleReport(JSON.stringify(value.report), target)
+  } catch {
+    return null
+  }
+}
+
+function sha256(bytes: Uint8Array): string {
+  return new Bun.CryptoHasher("sha256").update(bytes).digest("hex")
+}
+
+async function artifactsHaveDeclaredSizes(
+  paths: Readonly<{ bundlePath: string; uiPath: string; ledgerPath: string }>,
+  report: SourceBundleArtifact["report"],
+): Promise<boolean> {
+  try {
+    const [bundle, ui, ledger] = await Promise.all([
+      stat(paths.bundlePath),
+      stat(paths.uiPath),
+      stat(paths.ledgerPath),
+    ])
+    return bundle.isFile()
+      && ui.isFile()
+      && ledger.isFile()
+      && bundle.size === Number(report.bundleDescriptor.byteLength)
+      && ui.size === Number(report.uiDescriptor.byteLength)
+      && ledger.size === Number(report.ledgerDescriptor.byteLength)
+  } catch {
+    return false
+  }
+}
+
 export async function buildSourceBundle(config: LocalConfig, target: string): Promise<SourceBundleArtifact> {
   const executable = process.platform === "win32" ? "cargo.exe" : "cargo"
   const cargo = path.join(config.sourceCacheDir, "toolchains", "rust", "cargo", "bin", executable)
-  const child = Bun.spawn([
+  const environment = { ...process.env, ...rustEnvironment(config.sourceCacheDir) }
+  const build = Bun.spawn([
     cargo,
     `+${toolchains.rust.toolchain}`,
-    "run",
+    "build",
+    "--profile",
+    "source-bundle",
     "-p",
     "playsrc-source-bundle",
-    "--",
-    target,
   ], {
     cwd: repositoryRoot,
-    env: { ...process.env, ...rustEnvironment(config.sourceCacheDir) },
+    env: environment,
+    stdout: "ignore",
+    stderr: "inherit",
+  })
+  if (await build.exited !== 0) throw new Error("source bundle build failed")
+
+  const generatorPath = path.join(
+    repositoryRoot,
+    "target",
+    "source-bundle",
+    process.platform === "win32" ? "playsrc-source-bundle.exe" : "playsrc-source-bundle",
+  )
+  const generatorSha256 = sha256(await readFile(generatorPath))
+  const directory = path.join(config.sourceCacheDir, "browser-bundles")
+  const paths = Object.freeze({
+    bundlePath: path.join(directory, `${target}.psdb`),
+    uiPath: path.join(directory, `${target}.ui.puib`),
+    ledgerPath: path.join(directory, `${target}.dependencies.json`),
+  })
+  const cachePath = path.join(directory, `${target}.source-bundle-cache.json`)
+  try {
+    const cached = parseSourceBundleCache(await readFile(cachePath, "utf8"), target, generatorSha256)
+    if (cached && await artifactsHaveDeclaredSizes(paths, cached)) {
+      return Object.freeze({ ...paths, report: cached })
+    }
+  } catch {}
+
+  const child = Bun.spawn([generatorPath, target], {
+    cwd: repositoryRoot,
+    env: environment,
     stdout: "pipe",
     stderr: "inherit",
   })
   const output = await new Response(child.stdout).text()
   if (await child.exited !== 0) throw new Error("source bundle build failed")
   const report = parseSourceBundleReport(output, target)
-  return Object.freeze({
-    bundlePath: path.join(config.sourceCacheDir, "browser-bundles", `${target}.psdb`),
-    uiPath: path.join(config.sourceCacheDir, "browser-bundles", `${target}.ui.puib`),
-    ledgerPath: path.join(config.sourceCacheDir, "browser-bundles", `${target}.dependencies.json`),
-    report,
+  if (!await artifactsHaveDeclaredSizes(paths, report)) throw new Error("source bundle artifacts differ from their report")
+  const cache: SourceBundleCache = Object.freeze({
+    schema: "playsrc-source-bundle-cache-v1",
+    generatorSha256,
+    report: JSON.parse(output) as SourceBundleReport,
   })
+  await mkdir(directory, { recursive: true })
+  const temporary = `${cachePath}.${process.pid}.tmp`
+  try {
+    await writeFile(temporary, `${JSON.stringify(cache)}\n`)
+    await rm(cachePath, { force: true })
+    await rename(temporary, cachePath)
+  } finally {
+    await rm(temporary, { force: true })
+  }
+  return Object.freeze({ ...paths, report })
 }

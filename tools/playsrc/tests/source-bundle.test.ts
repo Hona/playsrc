@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { parseSourceBundleReport } from "../src/source-bundle"
+import { parseSourceBundleCache, parseSourceBundleReport } from "../src/source-bundle"
 
 const bundleSha256 = "1".repeat(64)
 const ledgerSha256 = "2".repeat(64)
@@ -61,5 +61,29 @@ describe("source dependency bundle report", () => {
       ...valid,
       bundleDescriptor: { ...valid.bundleDescriptor, byteLength: "1" },
     }), "jump_beef")).toThrow("source bundle object descriptor differs")
+  })
+
+  test("reuses only a report bound to the exact generator", () => {
+    const generator = "4".repeat(64)
+    const cache = JSON.stringify({
+      schema: "playsrc-source-bundle-cache-v1",
+      generatorSha256: generator,
+      report: valid,
+    })
+    expect(parseSourceBundleCache(cache, "jump_beef", generator)).toEqual({
+      target: "jump_beef",
+      contentBuild: "24207079",
+      providers: 13,
+      requests: 345,
+      authoritativeAbsences: 49,
+      entries: 296,
+      bundleDescriptor: valid.bundleDescriptor,
+      uiEntries: 200,
+      uiDescriptor: valid.uiDescriptor,
+      ledgerDescriptor: valid.ledgerDescriptor,
+    })
+    expect(parseSourceBundleCache(cache, "jump_beef", "5".repeat(64))).toBeNull()
+    expect(parseSourceBundleCache(JSON.stringify({ ...JSON.parse(cache), extra: true }), "jump_beef", generator)).toBeNull()
+    expect(parseSourceBundleCache("not-json", "jump_beef", generator)).toBeNull()
   })
 })

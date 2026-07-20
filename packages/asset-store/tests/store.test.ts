@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { AssetStoreError, canonicalJson, descriptor, objectPath, putObject, readChannel, readObject, writeChannel } from "../src/index"
+import { AssetStoreError, canonicalJson, descriptor, objectPath, putObject, readChannel, readObject, verifyObject, writeChannel } from "../src/index"
 
 describe("local immutable asset store", () => {
   test("stores, reuses, verifies and rejects corrupt immutable objects", async () => {
@@ -12,8 +12,10 @@ describe("local immutable asset store", () => {
       const expected = descriptor("source-object", "application/octet-stream", bytes)
       expect((await putObject(root, expected, bytes)).outcome).toBe("Stored")
       expect((await putObject(root, expected, bytes)).outcome).toBe("AlreadyPresent")
+      await expect(verifyObject(root, expected)).resolves.toBeUndefined()
       expect(await readObject(root, expected)).toEqual(bytes)
       await writeFile(objectPath(root, expected.sha256), "corrupt")
+      await expect(verifyObject(root, expected)).rejects.toMatchObject({ code: "IntegrityFailure" })
       await expect(readObject(root, expected)).rejects.toMatchObject({ code: "IntegrityFailure" })
       expect(await readFile(objectPath(root, expected.sha256), "utf8")).toBe("corrupt")
     } finally { await rm(root, { recursive: true, force: true }) }

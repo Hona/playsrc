@@ -151,6 +151,45 @@ function setup(animationScripts = emptyAnimations, customControls: VguiRuntimeCo
 }
 
 describe("generic Source VGUI runtime", () => {
+  test("defers presentation and static frames retain mounted DOM", () => {
+    const { root, runtime, time } = setup()
+    let panelsDuringBatch = 0
+    let mountedDuringBatch = 0
+    runtime.deferPresentation(() => {
+      const first = operation(runtime, { kind: "create-panel", parent: 1, control: "Label", name: "First" }).panel!
+      operation(runtime, { kind: "set-bounds", panel: first, bounds: { x: 10, y: 20, width: 100, height: 30 } })
+      operation(runtime, { kind: "create-panel", parent: 1, control: "Button", name: "Second" })
+      panelsDuringBatch = runtime.snapshot().panels.length
+      mountedDuringBatch = descendants(root).filter((node) => node.dataset.vguiPanel !== undefined).length
+    })
+    expect(panelsDuringBatch).toBe(3)
+    expect(mountedDuringBatch).toBe(1)
+    expect(descendants(root).filter((node) => node.dataset.vguiPanel !== undefined)).toHaveLength(3)
+    const appendCalls = descendants(root).reduce((total, node) => total + node.appendCalls, 0)
+    time(1)
+    operation(runtime, { kind: "frame", timeSeconds: 1 })
+    expect(descendants(root).reduce((total, node) => total + node.appendCalls, 0)).toBe(appendCalls)
+    expect(runtime.snapshot().frame).toBe(1)
+  })
+
+  test("consumes a focus request invalidated before its frame", () => {
+    const { root, runtime, time } = setup()
+    const first = operation(runtime, { kind: "create-panel", parent: 1, control: "Button", name: "FirstFocus" }).panel!
+    const second = operation(runtime, { kind: "create-panel", parent: 1, control: "Button", name: "SecondFocus" }).panel!
+    operation(runtime, { kind: "request-focus", panel: first })
+    time(1)
+    operation(runtime, { kind: "frame", timeSeconds: 1 })
+    operation(runtime, { kind: "request-focus", panel: second })
+    operation(runtime, { kind: "set-panel-state", panel: second, visible: false })
+    time(2)
+    operation(runtime, { kind: "frame", timeSeconds: 2 })
+    time(3)
+    operation(runtime, { kind: "frame", timeSeconds: 3 })
+    const host = descendants(root).find((node) => node.dataset.vguiRuntime === "test-runtime")!
+    expect(host.dataset.vguiFrameWork).toBe("static")
+    expect(runtime.snapshot().input.keyFocus).toBe(first)
+  })
+
   test("instantiates every selected generic factory with one stable DOM owner and cleans up", () => {
     const { root, runtime } = setup()
     for (const [index, control] of VGUI_GENERIC_CONTROL_NAMES.entries()) {
@@ -708,6 +747,52 @@ describe("generic Source VGUI runtime", () => {
     const snapshot = runtime.snapshot()
     expect(snapshot.panels.find((panel) => panel.id === stretch)?.bounds).toEqual({ x: 10, y: 10, width: 150, height: 120 })
     expect(snapshot.panels.find((panel) => panel.id === pinned)?.bounds).toEqual({ x: 250, y: 260, width: 40, height: 30 })
+  })
+
+  test("inherits proportional state and reapplies screen-relative resource geometry on resize", () => {
+    const { runtime } = setup()
+    operation(runtime, { kind: "set-panel-state", panel: 1, proportional: true })
+    const hud = operation(runtime, { kind: "create-panel", parent: 1, control: "EditablePanel", name: "HudAmmo" }).panel!
+    operation(runtime, {
+      kind: "replace-resource",
+      parent: 1,
+      document: {
+        logicalIdentity: "resource/hud-layout.res",
+        revision: "hud-layout-1",
+        root: object("HudLayout", [object("HudAmmo", [
+          scalar("fieldName", "HudAmmo"),
+          scalar("xpos", "r131"), scalar("ypos", "r77"), scalar("wide", "94"), scalar("tall", "45"),
+        ])]),
+      },
+      selection: { activeConditions: [], resolutionSuffixes: [] },
+    })
+    const child = operation(runtime, {
+      kind: "create-panel", parent: hud, control: "Panel", name: "Child",
+      properties: [
+        { name: "xpos", value: "75" }, { name: "ypos", value: "35" },
+        { name: "wide", value: "51" }, { name: "tall", value: "51" },
+      ],
+    }).panel!
+    let snapshot = runtime.snapshot()
+    expect(snapshot.panels.find((panel) => panel.id === hud)).toMatchObject({
+      proportional: true,
+      bounds: { x: 509, y: 403, width: 94, height: 45 },
+    })
+    expect(snapshot.panels.find((panel) => panel.id === child)).toMatchObject({
+      proportional: true,
+      bounds: { x: 75, y: 35, width: 51, height: 51 },
+    })
+
+    operation(runtime, { kind: "set-viewport", viewport: { width: 1280, height: 720, devicePixelRatio: 1 } })
+    snapshot = runtime.snapshot()
+    expect(snapshot.panels.find((panel) => panel.id === hud)?.bounds).toEqual({ x: 1084, y: 605, width: 141, height: 67 })
+    expect(snapshot.panels.find((panel) => panel.id === child)?.bounds).toEqual({ x: 112, y: 52, width: 76, height: 76 })
+
+    operation(runtime, { kind: "set-panel-state", panel: hud, proportional: false })
+    snapshot = runtime.snapshot()
+    expect(snapshot.panels.find((panel) => panel.id === hud)?.proportional).toBeFalse()
+    expect(snapshot.panels.find((panel) => panel.id === child)?.proportional).toBeFalse()
+    expect(snapshot.panels.find((panel) => panel.id === 1)?.proportional).toBeTrue()
   })
 
   test("rejects malformed terminal colors and relevant base-setting cycles atomically", () => {

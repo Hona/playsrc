@@ -1,12 +1,12 @@
 import { readFile } from "node:fs/promises"
 import path from "node:path"
-import { descriptor, putObject } from "@playsrc/asset-store"
+import { AssetStoreError, descriptor, putObject, verifyObject, type ObjectDescriptor } from "@playsrc/asset-store"
 import { startAssetService } from "@playsrc/assets-service"
 import { createServer, type ViteDevServer } from "vite"
 import type { LocalConfig } from "./config"
 import { repositoryRoot } from "./config"
 import { acquireMap } from "./targets"
-import { buildTf2Wasm } from "./verify-tf2-wasm"
+import { buildTf2Wasm } from "./tf2-wasm-build"
 import { buildSourceBundle } from "./source-bundle"
 
 const APPLICATION_URL = "http://127.0.0.1:4173/"
@@ -48,47 +48,52 @@ async function waitReady(url: string): Promise<void> {
   throw new DevelopmentError("ReadinessFailure", `${url} did not become ready within 120000 ms`)
 }
 
+async function publishFile(root: string, expected: ObjectDescriptor, pathname: string): Promise<void> {
+  try {
+    await verifyObject(root, expected)
+    return
+  } catch (error) {
+    if (!(error instanceof AssetStoreError) || error.code !== "MissingObject") throw error
+  }
+  await putObject(root, expected, await readFile(pathname))
+}
+
 export type DevelopmentOwner = Readonly<{
   url: string
+  startup: Readonly<{
+    mapMilliseconds: number
+    buildMilliseconds: number
+    publicationMilliseconds: number
+    viteCreationMilliseconds: number
+    listenerMilliseconds: number
+    totalMilliseconds: number
+  }>
   close(): Promise<void>
   waitForInterrupt(): Promise<"SIGINT" | "SIGTERM">
 }>
 
 export async function startDevelopment(config: LocalConfig, target: string | undefined): Promise<DevelopmentOwner> {
+  const started = performance.now()
   const map = await acquireMap(config, target)
-  const wasmPath = await buildTf2Wasm(config)
-  const sourceBundle = await buildSourceBundle(config, target ?? "")
-  const [bspBytes, wasmBytes, dependencyBytes, uiBytes, dependencyLedgerBytes, applicationBuild] = await Promise.all([
-    readFile(path.join(config.sourceCacheDir, map.decoded.cachePath)),
-    readFile(wasmPath),
-    readFile(sourceBundle.bundlePath),
-    readFile(sourceBundle.uiPath),
-    readFile(sourceBundle.ledgerPath),
+  const mapReady = performance.now()
+  const [wasmPath, sourceBundle, applicationBuild, { tf2ViteConfiguration }] = await Promise.all([
+    buildTf2Wasm(config),
+    buildSourceBundle(config, target ?? ""),
     publicCommitIdentity(),
+    import("../../../apps/web/tf2/vite.config"),
   ])
-  const bsp = descriptor("source-object", "application/octet-stream", bspBytes)
+  const buildReady = performance.now()
+  const bsp: ObjectDescriptor = Object.freeze({
+    kind: "source-object",
+    mediaType: "application/octet-stream",
+    byteLength: String(map.decoded.byteLength),
+    sha256: map.decoded.sha256,
+  })
+  const dependencies = sourceBundle.report.bundleDescriptor
+  const ui = sourceBundle.report.uiDescriptor
+  const dependencyLedger = sourceBundle.report.ledgerDescriptor
+  const wasmBytes = await readFile(wasmPath)
   const wasm = descriptor("derived-object", "application/octet-stream", wasmBytes)
-  const dependencies = descriptor(
-    "derived-object",
-    "application/octet-stream",
-    dependencyBytes,
-  )
-  const dependencyLedger = descriptor(
-    "derived-object",
-    "application/vnd.playsrc.source-dependency-ledger+json",
-    dependencyLedgerBytes,
-  )
-  const ui = descriptor("derived-object", "application/octet-stream", uiBytes)
-  if (
-    JSON.stringify(dependencies) !== JSON.stringify(sourceBundle.report.bundleDescriptor)
-    || JSON.stringify(ui) !== JSON.stringify(sourceBundle.report.uiDescriptor)
-    || JSON.stringify(dependencyLedger) !== JSON.stringify(sourceBundle.report.ledgerDescriptor)
-  ) throw new DevelopmentError("BuildFailed", "source dependency artifact differs from its immutable descriptor")
-  await putObject(config.assetDir, bsp, bspBytes)
-  await putObject(config.assetDir, wasm, wasmBytes)
-  await putObject(config.assetDir, dependencies, dependencyBytes)
-  await putObject(config.assetDir, ui, uiBytes)
-  await putObject(config.assetDir, dependencyLedger, dependencyLedgerBytes)
   const browserConfiguration = JSON.stringify({
     application: "tf2",
     applicationBuild,
@@ -114,6 +119,8 @@ export async function startDevelopment(config: LocalConfig, target: string | und
   process.env.PLAYSRC_BROWSER_CONFIG = browserConfiguration
   let assets: ReturnType<typeof startAssetService> | undefined
   let application: ViteDevServer | undefined
+  let publicationMilliseconds = 0
+  let viteCreationMilliseconds = 0
   let closed = false
   const restoreEnvironment = () => {
     if (previousAssetOrigin === undefined) delete process.env.PLAYSRC_ASSET_ORIGIN
@@ -143,41 +150,65 @@ export async function startDevelopment(config: LocalConfig, target: string | und
     }
   }
   try {
-    assets = startAssetService(config.assetDir, 4174)
+    const publicationStarted = performance.now()
+    await Promise.all([
+      putObject(config.assetDir, wasm, wasmBytes),
+      publishFile(config.assetDir, bsp, path.join(config.sourceCacheDir, map.decoded.cachePath)),
+      publishFile(config.assetDir, dependencies, sourceBundle.bundlePath),
+      publishFile(config.assetDir, ui, sourceBundle.uiPath),
+      publishFile(config.assetDir, dependencyLedger, sourceBundle.ledgerPath),
+    ])
+    publicationMilliseconds = Math.round(performance.now() - publicationStarted)
+    const viteStarted = performance.now()
     application = await createServer({
-      configFile: path.join(repositoryRoot, "apps", "web", "tf2", "vite.config.ts"),
+      ...tf2ViteConfiguration(ASSET_ORIGIN),
+      configFile: false,
       root: path.join(repositoryRoot, "apps", "web", "tf2"),
       logLevel: "error",
     })
+    viteCreationMilliseconds = Math.round(performance.now() - viteStarted)
+    const listenerStarted = performance.now()
+    assets = startAssetService(config.assetDir, 4174)
     await application.listen()
     await Promise.all([waitReady(`${ASSET_ORIGIN}/readyz`), waitReady(APPLICATION_URL)])
+    const ready = performance.now()
+    return Object.freeze({
+      url: APPLICATION_URL,
+      startup: Object.freeze({
+        mapMilliseconds: Math.round(mapReady - started),
+        buildMilliseconds: Math.round(buildReady - mapReady),
+        publicationMilliseconds,
+        viteCreationMilliseconds,
+        listenerMilliseconds: Math.round(ready - listenerStarted),
+        totalMilliseconds: Math.round(ready - started),
+      }),
+      close,
+      waitForInterrupt(): Promise<"SIGINT" | "SIGTERM"> {
+        if (closed) return Promise.reject(new DevelopmentError("ProcessFailure", "development owner is closed"))
+        return new Promise((resolve) => {
+          const finish = (signal: "SIGINT" | "SIGTERM") => {
+            process.off("SIGINT", interrupt)
+            process.off("SIGTERM", terminate)
+            resolve(signal)
+          }
+          const interrupt = () => finish("SIGINT")
+          const terminate = () => finish("SIGTERM")
+          process.once("SIGINT", interrupt)
+          process.once("SIGTERM", terminate)
+        })
+      },
+    })
   } catch (error) {
     await close().catch(() => {})
     if (error instanceof DevelopmentError) throw error
     throw new DevelopmentError("ProcessFailure", error instanceof Error ? error.message : "development startup failed")
   }
-  return Object.freeze({
-    url: APPLICATION_URL,
-    close,
-    waitForInterrupt(): Promise<"SIGINT" | "SIGTERM"> {
-      if (closed) return Promise.reject(new DevelopmentError("ProcessFailure", "development owner is closed"))
-      return new Promise((resolve) => {
-        const finish = (signal: "SIGINT" | "SIGTERM") => {
-          process.off("SIGINT", interrupt)
-          process.off("SIGTERM", terminate)
-          resolve(signal)
-        }
-        const interrupt = () => finish("SIGINT")
-        const terminate = () => finish("SIGTERM")
-        process.once("SIGINT", interrupt)
-        process.once("SIGTERM", terminate)
-      })
-    },
-  })
 }
 
 export async function runDevelopment(config: LocalConfig, target: string | undefined): Promise<void> {
+  const started = performance.now()
   const owner = await startDevelopment(config, target)
+  console.error(`playsrc dev ready target=${target ?? ""} milliseconds=${Math.round(performance.now() - started)} processMilliseconds=${Math.round(process.uptime() * 1_000)} stages=${JSON.stringify(owner.startup)}`)
   console.log(owner.url)
   await owner.waitForInterrupt()
   await owner.close()

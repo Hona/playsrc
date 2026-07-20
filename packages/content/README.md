@@ -18,7 +18,7 @@ Resolve exact Source logical paths across explicitly configured content provider
 - Model mounted providers, search paths, precedence, and reusable raw-source cache entries.
 - Apply declared search-path and archive precedence.
 - Return exact source bytes with provenance, or report every exact location checked.
-- Verify declared HTTPS download sources and retain encoded and decoded bytes as SHA-256-addressed raw-source cache objects.
+- Verify declared HTTPS download sources and retain encoded and decoded bytes as SHA-256-addressed raw-source cache objects; warm verification streams both objects in bounded chunks without retaining their complete bytes.
 - Cancel acquisition before cache commitment and retain no partial encoded or decoded object.
 - Read immutable remote BSP and VPK objects through exact HTTP ranges without extracting archive trees.
 - Resolve map BSPs only through declared external providers, then resolve resources through the active BSP PAK, optional map-supplement atlas, and game providers in that order.

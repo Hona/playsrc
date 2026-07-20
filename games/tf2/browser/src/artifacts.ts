@@ -337,7 +337,7 @@ export type EnvironmentArtifact = Readonly<{
   markRecords: readonly EnvironmentMark[]
   textures: readonly SupplementalTexture[]
   directionalTextures: readonly DirectionalTextureArtifact[]
-  sky: Readonly<{ name: string; faces: readonly Readonly<{ face: number; material: string; sha256: string; selectedTextures: readonly Readonly<{ logicalPath: string; sha256: string }>[] }>[] }> | null
+  sky: Readonly<{ name: string; faces: readonly Readonly<{ face: number; material: string; sha256: string; encoding: "srgb" | "linear" | "hdr-rgbs"; selectedTextures: readonly Readonly<{ logicalPath: string; sha256: string }>[] }>[] }> | null
   cubemapFacts: readonly CubemapFact[]
   waterSurfaceFacts: readonly WaterSurfaceFact[]
   waterVolumeFacts: readonly WaterVolumeFact[]
@@ -426,7 +426,7 @@ const hex = (bytes: Uint8Array) => Array.from(bytes, (v) => v.toString(16).padSt
 const digest = async (bytes: Uint8Array) => hex(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)))
 function parseEnvironment(bytes: Uint8Array): EnvironmentArtifact {
   const r = new Reader(bytes)
-  if (r.decoder.decode(r.take(4)) !== "PENV" || r.u32() !== 2) throw new ArtifactError("environment identity")
+  if (r.decoder.decode(r.take(4)) !== "PENV" || r.u32() !== 3) throw new ArtifactError("environment identity")
   const profile = r.u8()
   if ((profile !== 0 && profile !== 1) || r.u8() || r.u8() || r.u8()) throw new ArtifactError("environment profile")
   const identity = hex(r.take(32)),
@@ -472,7 +472,7 @@ function parseEnvironment(bytes: Uint8Array): EnvironmentArtifact {
           name: r.text(),
           faces: Object.freeze(
             Array.from({ length: r.u32() }, () =>
-              Object.freeze({ face: r.u8(), material: r.text(), sha256: hex(r.take(32)), selectedTextures: Object.freeze([]) }),
+              (() => { const face=r.u8(),encoding=r.u8();if(encoding>2||r.u8()||r.u8())throw new ArtifactError("sky face encoding");return Object.freeze({ face, encoding:(["srgb","linear","hdr-rgbs"] as const)[encoding]!, material: r.text(), sha256: hex(r.take(32)), selectedTextures: Object.freeze([]) }) })(),
             ),
           ),
         })

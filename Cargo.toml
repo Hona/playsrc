@@ -26,3 +26,10 @@ exclude = ["packages/runtime/simulation/rust"]
 [workspace.package]
 edition = "2024"
 license = "MIT"
+
+[profile.source-bundle]
+inherits = "release"
+codegen-units = 256
+incremental = true
+opt-level = 1
+strip = "debuginfo"

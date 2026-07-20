@@ -2545,7 +2545,9 @@ fn resolve_rocket_traces(
                 } else {
                     None
                 },
-                direct_target: None,
+                direct_target: trace
+                    .entity_identity()
+                    .and_then(|identity| identity.try_into().ok()),
             })
         })
         .collect()
@@ -4164,6 +4166,17 @@ fn entity_scalar<'a>(entity: &'a playsrc_entity::Entity, key: &[u8]) -> Option<&
         .iter()
         .find(|pair| pair.key.eq_ignore_ascii_case(key))
         .map(|pair| pair.value.as_slice())
+}
+
+fn selected_sky_encoding(
+    selected: &[playsrc_material::TextureRole],
+) -> Option<playsrc_map::SkyEncoding> {
+    match selected {
+        [playsrc_material::TextureRole::Base] => Some(playsrc_map::SkyEncoding::Srgb),
+        [playsrc_material::TextureRole::HdrBase] => Some(playsrc_map::SkyEncoding::Linear),
+        [playsrc_material::TextureRole::HdrCompressed] => Some(playsrc_map::SkyEncoding::HdrRgbs),
+        _ => None,
+    }
 }
 
 fn collision_object_templates(
@@ -6401,6 +6414,7 @@ fn compile_environment_artifact(
         let path = format!("materials/skybox/{sky}{suffix}{face_suffix}.vmt");
         let source = *bundle.get(&path).ok_or(())?;
         let m = resolve_material_semantics(&path, bundle, material_environment(profile, false))?;
+        let encoding = selected_sky_encoding(&m.selected_textures).ok_or(())?;
         let selected_textures = m
             .textures
             .iter()
@@ -6424,6 +6438,7 @@ fn compile_environment_artifact(
             },
             metadata: playsrc_map::DependencyMetadata::SkyMaterial {
                 source_sha256: Sha256::digest(source).into(),
+                encoding,
                 selected_textures,
             },
         })
@@ -6625,7 +6640,7 @@ fn compile_environment_artifact(
     )
     .map_err(|_| ())?;
     let mut out = b"PENV".to_vec();
-    out.extend_from_slice(&2u32.to_le_bytes());
+    out.extend_from_slice(&3u32.to_le_bytes());
     out.extend_from_slice(&[
         if profile == playsrc_map::LightingProfile::Hdr {
             1
@@ -6715,7 +6730,7 @@ fn compile_environment_artifact(
         pbytes(&mut out, &sky.name)?;
         out.extend_from_slice(&(sky.faces.len() as u32).to_le_bytes());
         for face in &sky.faces {
-            out.push(face.face as u8);
+            out.extend_from_slice(&[face.face as u8, face.encoding as u8, 0, 0]);
             pbytes(&mut out, face.material_path.as_bytes())?;
             out.extend_from_slice(&face.material_sha256)
         }
@@ -7742,6 +7757,74 @@ fn with<T>(handle: u32, read: impl FnOnce(&Slot) -> T) -> Option<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sky_texture_roles_select_explicit_render_encoding() {
+        assert_eq!(
+            selected_sky_encoding(&[playsrc_material::TextureRole::Base]),
+            Some(playsrc_map::SkyEncoding::Srgb)
+        );
+        assert_eq!(
+            selected_sky_encoding(&[playsrc_material::TextureRole::HdrBase]),
+            Some(playsrc_map::SkyEncoding::Linear)
+        );
+        assert_eq!(
+            selected_sky_encoding(&[playsrc_material::TextureRole::HdrCompressed]),
+            Some(playsrc_map::SkyEncoding::HdrRgbs)
+        );
+        assert_eq!(
+            selected_sky_encoding(&[
+                playsrc_material::TextureRole::HdrCompressed0,
+                playsrc_material::TextureRole::HdrCompressed1,
+                playsrc_material::TextureRole::HdrCompressed2,
+            ]),
+            None
+        );
+    }
+
+    #[test]
+    fn rocket_trace_preserves_direct_entity_identity() {
+        let world = playsrc_collision::World::empty();
+        let snapshot = playsrc_collision::Snapshot::compile(
+            &world,
+            1,
+            vec![playsrc_collision::ObjectInput {
+                identity: 42,
+                role: playsrc_collision::ObjectRole::Entity,
+                enabled: true,
+                transform: playsrc_collision::Transform::IDENTITY,
+                linear_velocity: [0.0; 3],
+                angular_velocity: [0.0; 3],
+                collision_group: 0,
+                contents: 1,
+                surface_flags: 0,
+                shape: playsrc_collision::SnapshotShape::BoundingBox {
+                    bounds: playsrc_collision::Hull {
+                        mins: [-1.0; 3],
+                        maxs: [1.0; 3],
+                    },
+                },
+            }],
+            playsrc_collision::SnapshotLimits::default(),
+        )
+        .unwrap();
+        let results = resolve_rocket_traces(
+            &world,
+            &snapshot,
+            &[playsrc_tf2::RocketTraceRequest {
+                projectile: 7,
+                tick: 3,
+                start: [-10.0, 0.0, 0.0],
+                end: [10.0, 0.0, 0.0],
+                mask: 1,
+            }],
+            4,
+        )
+        .unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].solid);
+        assert_eq!(results[0].direct_target, Some(42));
+    }
+
     #[test]
     fn stale_handles_do_not_read_reused_slots() {
         let mut guard = slots().lock().unwrap();
