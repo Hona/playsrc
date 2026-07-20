@@ -52,6 +52,74 @@ async function clickVguiPanel(session: string, name: string): Promise<void> {
   require(result, `VGUI panel ${name} is unavailable`)
 }
 
+async function mouseClickVguiPanel(session: string, name: string): Promise<void> {
+  const rect = parseJson<{ x: number; y: number; width: number; height: number } | null>(await agent([
+    "--session", session, "eval", `(()=>{const value=document.querySelector('[data-vgui-name="${name}"]');return value?value.getBoundingClientRect().toJSON():null})()`,
+  ]))
+  require(rect, `VGUI panel ${name} is unavailable`)
+  const x = String(rect.x + rect.width / 2)
+  const y = String(rect.y + Math.min(8, rect.height / 2))
+  await agent(["--session", session, "mouse", "move", x, y])
+  await agent(["--session", session, "mouse", "down", "left"])
+  await agent(["--session", session, "mouse", "up", "left"])
+}
+
+async function clickVguiSelector(session: string, selector: string): Promise<void> {
+  const result = parseJson<boolean>(await agent([
+    "--session", session, "eval",
+    `(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)return false;const r=e.getBoundingClientRect(),x=r.left+Math.min(8,r.width/2),y=r.top+Math.min(8,r.height/2),base={bubbles:true,clientX:x,clientY:y,button:0,pointerId:49};e.dispatchEvent(new PointerEvent('pointerdown',{...base,buttons:1}));e.dispatchEvent(new PointerEvent('pointerup',{...base,buttons:0}));return true})()`,
+  ]))
+  require(result, `VGUI selector ${selector} is unavailable`)
+}
+
+async function clickOptionsTab(session: string, name: string): Promise<void> {
+  let rect = parseJson<{ x: number; y: number; width: number; height: number } | null>(await agent([
+    "--session", session, "eval",
+    `(()=>{const e=[...document.querySelectorAll('.options-layer [data-vgui-name=Sheet] [role=tab]')].find(value=>value.textContent==='${name}');return e?e.getBoundingClientRect().toJSON():null})()`,
+  ]))
+  if (!rect || rect.width === 0 || rect.height === 0) {
+    await clickVguiPanel(session, "SettingsButton")
+    await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.optionsVisible==='true'&&getComputedStyle(document.querySelector('[data-tf2-options-mount=standard]')).display==='block'", "--timeout", "10000"])
+    rect = parseJson<{ x: number; y: number; width: number; height: number }>(await agent([
+      "--session", session, "eval",
+      `(()=>[...document.querySelectorAll('.options-layer [data-vgui-name=Sheet] [role=tab]')].find(value=>value.textContent==='${name}').getBoundingClientRect().toJSON())()`,
+    ]))
+  }
+  require(rect, `Options tab ${name} is unavailable`)
+  const x = String(rect.x + rect.width / 2)
+  const y = String(rect.y + rect.height / 2)
+  const selected = `[...document.querySelectorAll('.options-layer [data-vgui-name=Sheet] [role=tab]')].find(value=>value.textContent==='${name}')?.getAttribute('aria-selected')==='true'`
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await agent(["--session", session, "eval", "window.focus();true"])
+    await agent(["--session", session, "mouse", "move", x, y])
+    await agent(["--session", session, "mouse", "down", "left"])
+    await agent(["--session", session, "mouse", "up", "left"])
+    if (parseJson<boolean>(await agent(["--session", session, "eval", selected]))) return
+  }
+  const stack = await agent(["--session", session, "eval", `document.elementsFromPoint(${x},${y}).slice(0,8).map(value=>({name:value.dataset.vguiName,control:value.dataset.vguiControl,id:value.id}))`])
+  throw new BrowserEvidenceError(`Options tab ${name} did not activate; rect=${JSON.stringify(rect)}; stack=${stack}`)
+}
+
+async function scrollAdvancedControlIntoView(session: string, selector: string): Promise<void> {
+  const listSelector = "[data-vgui-runtime=tf2-advanced-options] [data-vgui-name=PanelListPanel]"
+  await agent(["--session", session, "hover", listSelector])
+  let last: unknown = null
+  for (let attempt = 0; attempt < 64; attempt += 1) {
+    const state = parseJson<{ admitted: boolean; direction: "up" | "down" | null; target: number[]; cover: string | null }>(await agent([
+      "--session", session, "eval",
+      `(()=>{const target=document.querySelector(${JSON.stringify(selector)}),list=document.querySelector(${JSON.stringify(listSelector)}),r=target.getBoundingClientRect(),l=list.getBoundingClientRect(),top=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return{admitted:top===target||target.contains(top),direction:r.bottom>l.bottom?'down':r.top<l.top?'up':null,target:[r.x,r.y,r.width,r.height],cover:top?.getAttribute('data-vgui-name')??top?.id??null}})()`,
+    ]))
+    last = state
+    if (state.admitted) return
+    await agent([
+      "--session", session, "eval",
+      `(()=>{const list=document.querySelector(${JSON.stringify(listSelector)}),r=list.getBoundingClientRect();list.dispatchEvent(new WheelEvent('wheel',{bubbles:true,cancelable:true,clientX:r.x+r.width/2,clientY:r.y+r.height/2,deltaY:${state.direction === "up" ? -200 : 200}}));return true})()`,
+    ])
+    await agent(["--session", session, "wait", "20"])
+  }
+  throw new BrowserEvidenceError(`Advanced control did not enter the visible input stack: ${selector}; state=${JSON.stringify(last)}`)
+}
+
 function parseJson<T>(value: string): T {
   try {
     return JSON.parse(value) as T
@@ -839,7 +907,28 @@ export async function verifyBrowserAcceptance(
     require(keyboardOptions.rows === 70 && keyboardOptions.localized.startsWith("Move forward\n")
       && JSON.stringify(keyboardOptions.tabs) === JSON.stringify(["Keyboard", "Mouse", "Audio", "Video", "Multiplayer"]),
     `configured keyboard Options differ: ${JSON.stringify(keyboardOptions)}`)
-    await agent(["--session", session, "find", "role", "tab", "click", "--name", "Mouse"])
+    const optionsVisualDefault = parseJson<{
+      button: { justify: string; align: string; color: string; background: string }
+      cells: { align: string; color: string }[]
+      tabs: { justify: string; color: string }[]
+    }>(await agent(["--session", session, "eval", `(()=>{const style=node=>getComputedStyle(node);const button=document.querySelector('.options-layer [data-vgui-name=ChangeKeyButton]');return{button:{justify:style(button).justifyContent,align:style(button).textAlign,color:style(button).color,background:style(button).backgroundColor},cells:[...document.querySelectorAll('[data-vgui-name=listpanel_keybindlist] [data-vgui-item="1"] [role=gridcell]')].map(node=>({align:style(node).textAlign,color:style(node).color})),tabs:[...document.querySelectorAll('[data-vgui-name=Sheet] [role=tab]')].map(node=>({justify:style(node).justifyContent,color:style(node).color}))}})()`]))
+    require(optionsVisualDefault.button.justify === "flex-start" && optionsVisualDefault.button.align === "left"
+      && optionsVisualDefault.button.color === "rgb(60, 56, 53)" && optionsVisualDefault.button.background === "rgba(201, 188, 162, 0.59)",
+    `default Options Button presentation differs: ${JSON.stringify(optionsVisualDefault.button)}`)
+    require(optionsVisualDefault.cells.length === 2 && optionsVisualDefault.cells.every((cell) => cell.align === "left" && cell.color === "rgb(255, 255, 255)"),
+      `keyboard Options column presentation differs: ${JSON.stringify(optionsVisualDefault.cells)}`)
+    require(optionsVisualDefault.tabs.every((tab) => tab.justify === "center"), `Options tab alignment differs: ${JSON.stringify(optionsVisualDefault.tabs)}`)
+    await agent(["--session", session, "hover", ".options-layer [data-vgui-name='ChangeKeyButton']"])
+    const armedButton = parseJson<{ armed: string | undefined; color: string; background: string }>(await agent(["--session", session, "eval", `(()=>{const node=document.querySelector('.options-layer [data-vgui-name=ChangeKeyButton]'),style=getComputedStyle(node);return{armed:node.dataset.armed,color:style.color,background:style.backgroundColor}})()`]))
+    require(armedButton.armed === "true" && armedButton.color === "rgb(60, 56, 53)" && armedButton.background === "rgba(236, 227, 203, 0.59)",
+      `armed Options Button presentation differs: ${JSON.stringify(armedButton)}`)
+    const optionsCaptures: Record<string, unknown> = {}
+    optionsCaptures.keyboard = await captureInterface(session, config, "options-keyboard-1280x720")
+    for (const page of ["Mouse", "Audio", "Video", "Multiplayer"] as const) {
+      await clickOptionsTab(session, page)
+      optionsCaptures[page.toLowerCase()] = await captureInterface(session, config, `options-${page.toLowerCase()}-1280x720`)
+    }
+    await clickOptionsTab(session, "Mouse")
     require(parseJson<string>(await agent(["--session", session, "eval", "document.querySelector('.options-layer [data-vgui-name=ReverseMouse]').getAttribute('aria-checked')"])) === "false", "initial reverse-mouse value differs")
     await clickVguiPanel(session, "ReverseMouse")
     const stagedReverse = parseJson<{ checked: string | null; rect: number[]; stack: (string | null)[] }>(await agent(["--session", session, "eval", "(()=>{const e=document.querySelector('.options-layer [data-vgui-name=ReverseMouse]'),r=e.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2;return{checked:e.getAttribute('aria-checked'),rect:[r.x,r.y,r.width,r.height],stack:document.elementsFromPoint(x,y).map(v=>v.getAttribute('data-vgui-name')||v.id)}})()"] ))
@@ -847,22 +936,23 @@ export async function verifyBrowserAcceptance(
     await agent(["--session", session, "click", ".options-layer [data-vgui-name='CancelButton']"])
     await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.optionsVisible==='false'", "--timeout", "30000"])
     await agent(["--session", session, "click", "[data-vgui-name='SettingsButton']"])
-    await agent(["--session", session, "find", "role", "tab", "click", "--name", "Mouse"])
+    await clickOptionsTab(session, "Mouse")
     require(parseJson<string>(await agent(["--session", session, "eval", "document.querySelector('.options-layer [data-vgui-name=ReverseMouse]').getAttribute('aria-checked')"])) === "false", "Options cancel retained a staged value")
     await clickVguiPanel(session, "ReverseMouse")
-    require(parseJson<string>(await agent(["--session", session, "eval", "document.querySelector('.options-layer [data-vgui-name=ReverseMouse]').getAttribute('aria-checked')"])) === "true", "reverse-mouse apply toggle did not stage true")
+    const reverseApplyState = parseJson<string>(await agent(["--session", session, "eval", "document.querySelector('.options-layer [data-vgui-name=ReverseMouse]').getAttribute('aria-checked')"]))
+    require(reverseApplyState === "true", `reverse-mouse apply toggle did not stage true: ${reverseApplyState}`)
     await agent(["--session", session, "click", ".options-layer [data-vgui-name='ApplyButton']"])
     await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.settingsPersistence==='stored'&&JSON.parse(document.querySelector('main').dataset.settingsApply).complete===true", "--timeout", "30000"])
     await agent(["--session", session, "reload"])
     const settingsReloadStartup = await completeStartup(session, config, "settings-reload-1280x720", "skip")
     await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.phase==='MainMenu'&&document.querySelector('main').dataset.settingsPersistence==='loaded'", "--timeout", "300000"])
     await agent(["--session", session, "click", "[data-vgui-name='SettingsButton']"])
-    await agent(["--session", session, "find", "role", "tab", "click", "--name", "Mouse"])
+    await clickOptionsTab(session, "Mouse")
     const persistedReverse = parseJson<{ checked: string | null; storage: string | null }>(await agent(["--session", session, "eval", `(()=>({checked:document.querySelector('.options-layer [data-vgui-name=ReverseMouse]').getAttribute('aria-checked'),storage:localStorage.getItem(${JSON.stringify(TF2_BROWSER_SETTINGS_STORAGE_KEY)})}))()`] ))
     require(persistedReverse.checked === "true", `persisted Options value did not survive reload: ${JSON.stringify(persistedReverse)}`)
     await clickVguiPanel(session, "ReverseMouse")
     await agent(["--session", session, "click", ".options-layer [data-vgui-name='ApplyButton']"])
-    await agent(["--session", session, "find", "role", "tab", "click", "--name", "Keyboard"])
+    await clickOptionsTab(session, "Keyboard")
     await agent(["--session", session, "click", "[data-vgui-name=listpanel_keybindlist] [data-vgui-item='1']"])
     await agent(["--session", session, "click", ".options-layer [data-vgui-name='ChangeKeyButton']"])
     await agent(["--session", session, "press", "p"])
@@ -888,24 +978,53 @@ export async function verifyBrowserAcceptance(
     await agent(["--session", session, "click", "[data-vgui-name=OptionsSubKeyboardAdvancedDlg] [data-vgui-name=ConsoleCheck]"])
     await agent(["--session", session, "click", "[data-vgui-name=OptionsSubKeyboardAdvancedDlg] [data-vgui-name=Button1]"])
     await agent(["--session", session, "wait", "--fn", "getComputedStyle(document.querySelector('[data-vgui-name=OptionsSubKeyboardAdvancedDlg]')).display==='none'", "--timeout", "30000"])
-    await agent(["--session", session, "find", "role", "tab", "click", "--name", "Video"])
+    await clickOptionsTab(session, "Video")
     await clickVguiPanel(session, "AdvancedButton")
     const videoAdvanced = parseJson<{ title: string; combos: number; unsupported: string[] }>(await agent([
       "--session", session, "eval", "(()=>{const d=[...document.querySelectorAll('[data-vgui-name=OptionsSubVideoAdvancedDlg]')].find(x=>getComputedStyle(x).display!=='none');return{title:d?.getAttribute('aria-label')??d?.innerText.split('\\n')[0]??'',combos:d?.querySelectorAll('[role=combobox]').length??0,unsupported:['dxlabel','AntialiasingMode','Bloom'].map(n=>d?.querySelector(`[data-vgui-name=${n}]`)?.getAttribute('aria-disabled'))}})()",
     ]))
     require(videoAdvanced.title === "VIDEO - ADVANCED" && videoAdvanced.combos === 13 && videoAdvanced.unsupported.every((value) => value === "true"), `Video Advanced dialog differs: ${JSON.stringify(videoAdvanced)}`)
     await agent(["--session", session, "press", "Escape"])
-    await agent(["--session", session, "find", "role", "tab", "click", "--name", "Audio"])
+    await clickOptionsTab(session, "Audio")
+    await clickVguiPanel(session, "SoundQuality")
+    await agent(["--session", session, "wait", "--fn", "document.querySelector('.options-layer [data-vgui-name=SoundQuality]').getAttribute('aria-expanded')==='true'", "--timeout", "10000"])
+    const comboDefault = parseJson<{ count: number; display: string; rect: number[]; combo: number[]; selected: number; armed: number; rows: number; normalColor: string | null; armedColor: string | null; armedBackground: string | null }>(await agent([
+      "--session", session, "eval", `(()=>{const combo=document.querySelector('.options-layer [data-vgui-name=SoundQuality]'),popup=document.querySelector('.options-layer [data-vgui-combo-popup=SoundQuality]'),r=popup.getBoundingClientRect(),c=combo.getBoundingClientRect(),rows=[...popup.querySelectorAll('[data-vgui-item]')],armed=rows.find(row=>row.dataset.armed==='true'),normal=rows.find(row=>row.dataset.armed!=='true');return{count:document.querySelectorAll('.options-layer [data-vgui-combo-popup=SoundQuality]').length,display:getComputedStyle(popup).display,rect:[r.x,r.y,r.width,r.height],combo:[c.x,c.y,c.width,c.height],selected:rows.filter(row=>row.dataset.selected==='true').length,armed:rows.filter(row=>row.dataset.armed==='true').length,rows:rows.length,normalColor:normal?getComputedStyle(normal).color:null,armedColor:armed?getComputedStyle(armed).color:null,armedBackground:armed?getComputedStyle(armed).backgroundColor:null}})()`,
+    ]))
+    require(comboDefault.count === 1 && comboDefault.display === "block" && comboDefault.rows > 1 && comboDefault.rect[0] === comboDefault.combo[0] && comboDefault.rect[1] === comboDefault.combo[1]! + comboDefault.combo[3]! + 1
+      && comboDefault.rect[2] === comboDefault.combo[2] && comboDefault.selected === 1 && comboDefault.armed === 1
+      && comboDefault.normalColor === "rgb(255, 255, 255)" && comboDefault.armedColor === "rgb(0, 0, 0)" && comboDefault.armedBackground === "rgb(156, 82, 33)",
+    `ComboBox default popup presentation differs: ${JSON.stringify(comboDefault)}`)
+    optionsCaptures["audio-dropdown"] = await captureInterface(session, config, "options-audio-dropdown-1280x720")
+    await agent(["--session", session, "hover", ".options-layer [data-vgui-combo-popup='SoundQuality'] [data-vgui-item='0']"])
+    const comboHover = parseJson<{ selected: number; armed: number }>(await agent(["--session", session, "eval", `(()=>{const rows=[...document.querySelectorAll('.options-layer [data-vgui-combo-popup=SoundQuality] [data-vgui-item]')];return{selected:rows.filter(row=>row.dataset.selected==='true').length,armed:rows.filter(row=>row.dataset.armed==='true').length}})()`]))
+    require(comboHover.selected === 1 && comboHover.armed === 1, `ComboBox hover/selection state differs: ${JSON.stringify(comboHover)}`)
+    await agent(["--session", session, "click", ".options-layer [data-vgui-combo-popup='SoundQuality'] [data-vgui-item='0']"])
+    await agent(["--session", session, "wait", "--fn", "getComputedStyle(document.querySelector('.options-layer [data-vgui-combo-popup=SoundQuality]')).display==='none'", "--timeout", "10000"])
     await clickVguiPanel(session, "ThirdPartySoundCredits")
     await agent(["--session", session, "wait", "--fn", "getComputedStyle(document.querySelector('[data-vgui-name=OptionsSubAudioThirdPartyDlg]')).display!=='none'", "--timeout", "30000"])
     await agent(["--session", session, "press", "Escape"])
     await agent(["--session", session, "click", ".options-layer [data-vgui-name='CancelButton']"])
     await agent(["--session", session, "click", "[data-vgui-name='TF2SettingsButton']"])
-    const advancedOptions = parseJson<{ rows: number; categories: number; localized: boolean; scrollMaximum: string | null }>(await agent([
-      "--session", session, "eval", "(()=>({rows:document.querySelectorAll('[data-vgui-runtime=tf2-advanced-options] [data-vgui-name^=AdvancedRow]:not([data-vgui-name=AdvancedRows])').length,categories:document.querySelectorAll('[data-vgui-runtime=tf2-advanced-options] [data-vgui-name^=AdvancedCategory]').length,localized:document.querySelector('[data-vgui-runtime=tf2-advanced-options]').innerText.startsWith('Communication Options'),scrollMaximum:document.querySelector('[data-vgui-runtime=tf2-advanced-options] [data-vgui-name=VerticalScrollBar]')?.getAttribute('aria-valuemax')??null}))()",
+    optionsCaptures.advanced = await captureInterface(session, config, "options-advanced-1280x720")
+    const advancedOptions = parseJson<{ rows: number; categories: number; localized: boolean; scrollMaximum: string | null; bool: { justify: string; color: string }; prompt: { justify: string; color: string; paddingLeft: string }; textEntryBackground: string }>(await agent([
+      "--session", session, "eval", "(()=>{const root=document.querySelector('[data-vgui-runtime=tf2-advanced-options]'),style=node=>getComputedStyle(node),bool=root.querySelector('[data-vgui-name=DescCheckButton]'),prompt=root.querySelector('[data-vgui-name=DescLabel]'),entry=root.querySelector('[data-vgui-name=DescTextEntry]');return{rows:root.querySelectorAll('[data-vgui-name^=AdvancedRow]:not([data-vgui-name=AdvancedRows])').length,categories:root.querySelectorAll('[data-vgui-name^=AdvancedCategory]').length,localized:root.innerText.startsWith('Communication Options'),scrollMaximum:root.querySelector('[data-vgui-name=VerticalScrollBar]')?.getAttribute('aria-valuemax')??null,bool:{justify:style(bool).justifyContent,color:style(bool).color},prompt:{justify:style(prompt).justifyContent,color:style(prompt).color,paddingLeft:style(prompt).paddingLeft},textEntryBackground:style(entry).backgroundColor}})()",
     ]))
-    require(advancedOptions.rows === 88 && advancedOptions.categories === 8 && advancedOptions.localized && Number(advancedOptions.scrollMaximum) > 0, `generated Advanced Options differ: ${JSON.stringify(advancedOptions)}`)
-    await agent(["--session", session, "press", "Escape"])
+    require(advancedOptions.rows === 88 && advancedOptions.categories === 8 && advancedOptions.localized && Number(advancedOptions.scrollMaximum) > 0
+      && advancedOptions.bool.justify === "flex-start" && advancedOptions.bool.color === "rgb(117, 107, 94)"
+      && advancedOptions.prompt.justify === "flex-start" && advancedOptions.prompt.color === "rgb(117, 107, 94)" && advancedOptions.prompt.paddingLeft === "5px"
+      && advancedOptions.textEntryBackground === "rgb(0, 0, 0)",
+    `generated Advanced Options differ: ${JSON.stringify(advancedOptions)}`)
+    const playerModelSetting = "[data-vgui-runtime=tf2-advanced-options] [data-vgui-name=AdvancedRow36] [data-vgui-name=DescCheckButton]"
+    require(parseJson<string>(await agent(["--session", session, "eval", `document.querySelector('${playerModelSetting}').getAttribute('aria-checked')`])) === "true", "default player-class model setting differs")
+    await scrollAdvancedControlIntoView(session, playerModelSetting)
+    await clickVguiSelector(session, playerModelSetting)
+    await agent(["--session", session, "wait", "--fn", `document.querySelector('${playerModelSetting}').getAttribute('aria-checked')==='false'`, "--timeout", "10000"])
+    const priorPlayerModelApply = parseJson<string | null>(await agent(["--session", session, "eval", "document.querySelector('main').dataset.settingsApply??null"]))
+    await agent(["--session", session, "click", "[data-vgui-runtime=tf2-advanced-options] [data-vgui-name=OkButton]"])
+    await agent(["--session", session, "wait", "--fn", `document.querySelector('main').dataset.optionsVisible==='false'||(document.querySelector('main').dataset.settingsApply??null)!==${JSON.stringify(priorPlayerModelApply)}`, "--timeout", "30000"])
+    const playerModelApply = parseJson<{ visible: string; apply: string | null }>(await agent(["--session", session, "eval", "(()=>{const main=document.querySelector('main');return{visible:main.dataset.optionsVisible,apply:main.dataset.settingsApply??null}})()"] ))
+    require(playerModelApply.visible === "false", `player-model Options apply did not close: ${JSON.stringify(playerModelApply)}`)
 
     await agent(["--session", session, "set", "viewport", "390", "844"])
     await agent(["--session", session, "reload"])
@@ -918,6 +1037,21 @@ export async function verifyBrowserAcceptance(
     `mobile Main Menu controls do not intersect the viewport: ${JSON.stringify(mobileState)}`)
     const mobileInterface = await captureInterface(session, config, "main-menu-390x844")
     require(mobileInterface.width === 390 && mobileInterface.height === 844, `mobile interface capture dimensions differ: ${JSON.stringify(mobileInterface)}`)
+    await agent(["--session", session, "click", "[data-vgui-name='SettingsButton']"])
+    await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.optionsVisible==='true'&&getComputedStyle(document.querySelector('[data-tf2-options-mount=standard]')).display==='block'", "--timeout", "30000"])
+    for (const page of ["Keyboard", "Mouse", "Audio", "Video", "Multiplayer"] as const) {
+      await clickOptionsTab(session, page)
+      optionsCaptures[`mobile-${page.toLowerCase()}`] = await captureInterface(session, config, `options-${page.toLowerCase()}-390x844`)
+      if (page === "Audio") {
+        await clickVguiPanel(session, "SoundQuality")
+        optionsCaptures["mobile-audio-dropdown"] = await captureInterface(session, config, "options-audio-dropdown-390x844")
+        await agent(["--session", session, "click", ".options-layer [data-vgui-combo-popup='SoundQuality'] [data-vgui-item='0']"])
+      }
+    }
+    await agent(["--session", session, "click", ".options-layer [data-vgui-name='CancelButton']"])
+    await agent(["--session", session, "click", "[data-vgui-name='TF2SettingsButton']"])
+    optionsCaptures["mobile-advanced"] = await captureInterface(session, config, "options-advanced-390x844")
+    await agent(["--session", session, "press", "Escape"])
     await agent(["--session", session, "press", "Backquote"])
     await agent(["--session", session, "wait", "--fn", "document.activeElement?.getAttribute('aria-label') === 'Console command'", "--timeout", "30000"])
     await agent(["--session", session, "fill", "[aria-label='Console command']", "map jump_beef"])
@@ -961,6 +1095,12 @@ export async function verifyBrowserAcceptance(
     const initialHudOperationParts = initialHudOperations.split(":")
     require(initialHudOperationParts.length === 6 && initialHudOperationParts[0] === "1" && initialHudOperationParts[4] === "0" && initialHudOperationParts[5] === "1",
       `initial HUD operation application differs: ${initialHudOperations}`)
+    const initialHudPresentation = parseJson<{ classImage: { visible: boolean; image: string }; classModel: { visible: boolean; model: string; scalars: Record<string, number> }; classImageBackground: string; ammoBackground: string; roots: { playerStatus: number; ammo: number }; activeConditions: string[] }>(parseJson<string>(await agent(["--session", session, "eval", "document.querySelector('main').dataset.hudPresentationProbe"])))
+    require(initialHudPresentation.classImage.visible && initialHudPresentation.classImage.image === "../hud/class_soldierred"
+      && !initialHudPresentation.classModel.visible && initialHudPresentation.classModel.model === "models/player/soldier.mdl"
+      && initialHudPresentation.classImageBackground === "../hud/character_red_bg" && initialHudPresentation.ammoBackground === "../hud/ammo_red_bg"
+      && initialHudPresentation.roots.playerStatus === 1 && initialHudPresentation.roots.ammo === 1 && initialHudPresentation.activeConditions.length === 0,
+    `initial HUD class/team/condition presentation differs: ${JSON.stringify(initialHudPresentation)}`)
     await agent(["--session", session, "press", "Backquote"])
     await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.consoleVisible==='false'", "--timeout", "30000"])
     let body = parseJson<string>(await agent(["--session", session, "eval", "document.body.innerText"]))
@@ -1148,7 +1288,7 @@ export async function verifyBrowserAcceptance(
       session,
       "wait",
       "--fn",
-      "document.querySelector('[role=listbox]')?.textContent === 'map jump_beef'",
+      "document.querySelector('.developer-layer [role=listbox]')?.textContent === 'map jump_beef'",
     ])
     await agent(["--session", session, "fill", "[aria-label='Console command']", "map jump_beef"])
     await agent(["--session", session, "press", "Enter"])
@@ -1357,12 +1497,40 @@ export async function verifyBrowserAcceptance(
       "--session", session, "eval", "Object.fromEntries(['ResumeButton','DisconnectButton'].map(n=>[n,document.querySelector(`[data-vgui-name=${n}]`)?.getAttribute('aria-disabled')??null]))",
     ]))
     require(Object.values(pauseControls).every((value) => value === "false"), `pause controls differ: ${JSON.stringify(pauseControls)}`)
+    await clickVguiPanel(session, "TF2SettingsButton")
+    await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.optionsVisible==='true'", "--timeout", "30000"])
+    require(parseJson<string>(await agent(["--session", session, "eval", `document.querySelector('${playerModelSetting}').getAttribute('aria-checked')`])) === "false", "persisted player-class model setting differs")
+    await scrollAdvancedControlIntoView(session, playerModelSetting)
+    await clickVguiSelector(session, playerModelSetting)
+    await agent(["--session", session, "wait", "--fn", `document.querySelector('${playerModelSetting}').getAttribute('aria-checked')==='true'`, "--timeout", "10000"])
+    const priorPausedPlayerModelApply = parseJson<string | null>(await agent(["--session", session, "eval", "document.querySelector('main').dataset.settingsApply??null"]))
+    await agent(["--session", session, "click", "[data-vgui-runtime=tf2-advanced-options] [data-vgui-name=OkButton]"])
+    await agent(["--session", session, "wait", "--fn", `document.querySelector('main').dataset.optionsVisible==='false'||(document.querySelector('main').dataset.settingsApply??null)!==${JSON.stringify(priorPausedPlayerModelApply)}`, "--timeout", "30000"])
+    const pausedPlayerModelApply = parseJson<{ visible: string; apply: string | null }>(await agent(["--session", session, "eval", "(()=>{const main=document.querySelector('main');return{visible:main.dataset.optionsVisible,apply:main.dataset.settingsApply??null}})()"] ))
+    require(pausedPlayerModelApply.visible === "false", `paused player-model Options apply did not close: ${JSON.stringify(pausedPlayerModelApply)}`)
+    const pausedHudPresentation = parseJson<{ classImage: { visible: boolean }; classModel: { visible: boolean; model: string; scalars: Record<string, number> }; classModelBackground: string; roots: { playerStatus: number; ammo: number } }>(parseJson<string>(await agent(["--session", session, "eval", "document.querySelector('main').dataset.hudPresentationProbe"])))
+    require(!pausedHudPresentation.classImage.visible && pausedHudPresentation.classModel.visible
+      && pausedHudPresentation.classModel.model === "models/player/demo.mdl"
+      && pausedHudPresentation.classModel.scalars.class === 4 && pausedHudPresentation.classModel.scalars.team === 2 && pausedHudPresentation.classModel.scalars.skin === 0
+      && pausedHudPresentation.classModelBackground === "../hud/character_red_bg_clipped"
+      && pausedHudPresentation.roots.playerStatus === 1 && pausedHudPresentation.roots.ammo === 1,
+    `paused HUD setting swap differs: ${JSON.stringify(pausedHudPresentation)}`)
     await clickVguiPanel(session, "ResumeButton")
     await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.gameui==='in-game'", "--timeout", "30000"])
     await agent(["--session", session, "press", "Escape"])
-    await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.gameui==='pause'&&getComputedStyle(document.querySelector('[data-vgui-name=DisconnectButton]')).display!=='none'", "--timeout", "30000"])
-    await clickVguiPanel(session, "DisconnectButton")
-    await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.phase==='MainMenu'&&document.querySelector('main').dataset.gameplayInitialized==='false'", "--timeout", "300000"])
+    try {
+      await agent(["--session", session, "wait", "--fn", "(()=>{const button=document.querySelector('[data-vgui-name=DisconnectButton]'),rect=button.getBoundingClientRect();return document.querySelector('main').dataset.gameui==='pause'&&button.getAttribute('aria-hidden')==='false'&&rect.width>0&&rect.height>0&&document.elementFromPoint(rect.x+rect.width/2,rect.y+Math.min(8,rect.height/2))===button})()", "--timeout", "30000"])
+    } catch (error) {
+      const state = await agent(["--session", session, "eval", "(()=>{const button=document.querySelector('[data-vgui-name=DisconnectButton]'),rect=button.getBoundingClientRect();return{gameui:document.querySelector('main').dataset.gameui,hidden:button.getAttribute('aria-hidden'),display:getComputedStyle(button).display,visibility:getComputedStyle(button).visibility,pointer:getComputedStyle(button).pointerEvents,rect:rect.toJSON(),stack:document.elementsFromPoint(rect.x+rect.width/2,rect.y+rect.height/2).slice(0,6).map(value=>({name:value.dataset.vguiName,control:value.dataset.vguiControl,id:value.id}))}})()"])
+      throw new BrowserEvidenceError(`${String(error)}; second pause state=${state}`)
+    }
+    await mouseClickVguiPanel(session, "DisconnectButton")
+    try {
+      await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.phase==='MainMenu'&&document.querySelector('main').dataset.gameplayInitialized==='false'", "--timeout", "300000"])
+    } catch (error) {
+      const state = await agent(["--session", session, "eval", "(()=>{const main=document.querySelector('main');return{url:location.href,body:document.body.innerText.slice(0,300),phase:main?.dataset.phase??null,gameui:main?.dataset.gameui??null,gameplay:main?.dataset.gameplayInitialized??null,detail:main?.dataset.detail??null,options:main?.dataset.optionsVisible??null}})()"])
+      throw new BrowserEvidenceError(`${String(error)}; disconnect state=${state}`)
+    }
     const returnStartup = parseJson<{ state: string; display: string }>(await agent(["--session", session, "eval", "(()=>({state:document.querySelector('main').dataset.startupState,display:getComputedStyle(document.querySelector('.startup-layer')).display}))()"] ))
     require(returnStartup.state === "Skipped" && returnStartup.display === "none", `startup replayed after disconnect: ${JSON.stringify(returnStartup)}`)
 
@@ -1399,13 +1567,14 @@ export async function verifyBrowserAcceptance(
     ])
     require(parseJson<string>(await agent(["--session", session, "eval", "document.querySelector('main').dataset.cache"])) === "hit", "warm browser run did not reuse the derived payload")
     require(!parseJson<string[]>(await agent(["--session", session, "eval", "JSON.parse(document.querySelector('main').dataset.blockers)"])).some((value) => value.startsWith("ModelArtifactCacheUnavailable")), "bounded model presentation artifacts were not cached")
+    await agent(["--session",session,"wait","--fn","Math.abs(Number(document.querySelector('main').dataset.cameraPosition.split(',')[2])-(-3067.96875))<0.001","--timeout","10000"])
     const warmCamera = await cameraObservation(session)
     const warmCanvas = await captureCanvas(session, config)
     require(warmCanvas.regions.every((region, index) => region.sha256 === coldCanvas.regions[index]?.sha256),
       `warm fixed-camera world regions differ from cold: ${JSON.stringify({ cold: coldCanvas.regions, warm: warmCanvas.regions })}`)
     require(warmCamera.position.every((value, index) => Math.abs(value - fixedCamera.position[index]!) <= 0.001) &&
       Math.abs(warmCamera.yaw - fixedCamera.yaw) <= 0.001 &&
-      Math.abs(warmCamera.pitch - fixedCamera.pitch) <= 0.001, "warm fixed camera differs from the cold camera")
+      Math.abs(warmCamera.pitch - fixedCamera.pitch) <= 0.001, `warm fixed camera differs from the cold camera: ${JSON.stringify({ cold: fixedCamera, warm: warmCamera })}`)
     await agent(["--session", session, "press", "Backquote"])
     await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.consoleVisible==='false'", "--timeout", "30000"])
     await agent([
@@ -1420,14 +1589,14 @@ export async function verifyBrowserAcceptance(
     )
     const mapRecords = records.filter(
       (record) =>
-        record.sha256 === "97c64972942afacb6688fa83d8850d975d9bd46dd9f16836c05e0d5aefbcb22e" ||
+        record.sha256 === "30d5320ba309c650383dbf8f1e58025431ab40ae740dc939bc467e1a1c7f5fe4" ||
         record.sha256 === "56153098a867c553651f9c773bd72c4659782bae8520277c80daaaa414bdf156",
     )
     require(mapRecords.length === (platformFontSupported ? 2 : 1) &&
       mapRecords.some(
         (record) =>
-          record.byteLength === 78_299_960 &&
-          record.sha256 === "97c64972942afacb6688fa83d8850d975d9bd46dd9f16836c05e0d5aefbcb22e",
+          record.byteLength === 78_302_136 &&
+          record.sha256 === "30d5320ba309c650383dbf8f1e58025431ab40ae740dc939bc467e1a1c7f5fe4",
       ) && (!platformFontSupported || mapRecords.some(
         (record) =>
           record.byteLength === 42_082_929 &&
@@ -1458,8 +1627,8 @@ export async function verifyBrowserAcceptance(
         ? "history-completion-focus-repeated-visibility-replacement-close-passed"
         : "unsupported-platform-fonts-suppressed-paint-and-input",
       gameUi: { menuPresentation, mobileInterface },
-      options: { keyboard: keyboardOptions, conflict: conflictBindings, reset: resetBindings, keyboardAdvanced, videoAdvanced, advanced: advancedOptions },
-      hud: { initialOperations: initialHudOperations, animationTrace: hudAnimationTrace },
+      options: { keyboard: keyboardOptions, visualDefault: optionsVisualDefault, armedButton, comboDefault, comboHover, captures: optionsCaptures, conflict: conflictBindings, reset: resetBindings, keyboardAdvanced, videoAdvanced, advanced: advancedOptions },
+      hud: { initialOperations: initialHudOperations, initialPresentation: initialHudPresentation, pausedPresentation: pausedHudPresentation, pauseControls, animationTrace: hudAnimationTrace },
       audio: "exact-buffers-decoded-and-context-running",
       fixedCamera,
       fixedSpawn,

@@ -379,6 +379,7 @@ export type VguiControlMutation = Readonly<{
   rangeWindow?: number
   selected?: boolean
   checked?: boolean
+  editable?: boolean
   activeIndex?: number | null
   items?: readonly Readonly<{ id: number; text: string; command?: string; enabled?: boolean; checked?: boolean }>[]
   progress?: number
@@ -505,6 +506,7 @@ export type VguiPanelSnapshot = Readonly<{
     foregroundColor: Rgba | null
     scalarProperties: Readonly<Record<string, number>>
     activeIndex: number | null
+    highlightedIndex: number | null
     caret: number
     selection: readonly [start: number, end: number]
     editable: boolean

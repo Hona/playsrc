@@ -120,6 +120,7 @@ export type ApplicationView = Readonly<{
   hudProbe?: string
   hudAnimationTrace?: string
   hudOperationProbe?: string
+  hudPresentationProbe?: string
   optionsVisible?: boolean
   settingsPersistence?: "absent" | "loaded" | "rejected" | "stored"
   settingsApply?: string
@@ -264,6 +265,7 @@ export class Tf2Application {
   #startupGestures = 0
   readonly #gameUiRequestTasks = new Set<number>()
   #hudIntegration?: Tf2HudIntegration
+  #playerClassUsePlayerModel = true
   #settings?: Tf2BrowserSettings
   #options?: Tf2OptionsPresentation
   #loaded?: LoadedGame
@@ -538,6 +540,15 @@ export class Tf2Application {
       this.#consoleEnabled = request.changes.at(-1)?.nextValue as boolean
       return Object.freeze({ requestId: request.requestId, status: "applied" })
     }
+    if (request.owner === "game") {
+      if (request.changes.some((change) => change.settingId !== "cl_hud_playerclass_use_playermodel" || typeof change.nextValue !== "boolean")) {
+        return reject(`browser game owner does not implement every requested effect: ${request.changes.map((change) => `${change.settingId}=${String(change.nextValue)}`).join(",")}`)
+      }
+      this.#playerClassUsePlayerModel = request.changes.at(-1)?.nextValue as boolean
+      this.#hudIntegration?.setPlayerClassUsePlayerModel(this.#playerClassUsePlayerModel)
+      this.#set({ hudPresentationProbe: this.#hudPresentationObservation() })
+      return Object.freeze({ requestId: request.requestId, status: "applied" })
+    }
     return reject(`browser game owner is unavailable for ${request.changes.map((change) => change.settingId).join(",")}`)
   }
 
@@ -655,6 +666,7 @@ export class Tf2Application {
         "mouse.sensitivity": this.#mouseSensitivity,
         "mouse.reverse": this.#reverseMouse,
         "video.hdr": this.#renderLevel,
+        "cl_hud_playerclass_use_playermodel": this.#playerClassUsePlayerModel,
         ...(duckBinding ? { [duckBinding.id]: Object.freeze({ code: "SHIFT", modifiers: 0 }) } : {}),
       },
       owners: { renderer: "available", audio: "available", input: "available", game: "available", application: "available" },
@@ -715,6 +727,7 @@ export class Tf2Application {
     this.#masterMuted = currentSettings["audio.master-muted"] === true
     this.#mouseSensitivity = currentSettings["mouse.sensitivity"] as number
     this.#reverseMouse = currentSettings["mouse.reverse"] === true
+    this.#playerClassUsePlayerModel = currentSettings["cl_hud_playerclass_use_playermodel"] === true
     this.#installListeners()
     this.#animationFrame = requestAnimationFrame(this.#frame)
     this.#paused = true
@@ -749,6 +762,8 @@ export class Tf2Application {
     this.#loadingPresentation = undefined
     this.#gameUi?.destroy()
     this.#gameUi = undefined
+    this.#hudIntegration?.destroy()
+    this.#hudIntegration = undefined
     this.#options?.destroy()
     this.#options = undefined
     this.#uiResources?.destroy()
@@ -1015,7 +1030,10 @@ export class Tf2Application {
 
   #resetHudIntegration(): void {
     if (!this.#uiResources || !this.#presentationRandom) throw new Error("TF2 HUD resources are unavailable")
-    this.#hudIntegration?.destroy()
+    if (this.#hudIntegration) {
+      this.#hudIntegration.reset("map-replaced")
+      return
+    }
     this.#hudIntegration = initializeTf2HudIntegration({
       root: this.#hudRoot,
       resources: this.#uiResources,
@@ -1026,6 +1044,31 @@ export class Tf2Application {
       onCommand: (command) => {
         if (command.kind === "select-weapon" && command.weapon >= 1 && command.weapon <= 3) this.#selectWeapon = command.weapon as 1 | 2 | 3
       },
+    })
+  }
+
+  #hudPresentationObservation(): string {
+    const integration = this.#hudIntegration
+    if (!integration) return "unavailable"
+    const probe = integration.probe()
+    const snapshot = integration.snapshot()
+    const panel = (name: string) => probe.panels.find((value) => value.name === name)
+    const classImage = panel("PlayerStatusClassImage")
+    const classModel = panel("classmodelpanel")
+    const binding = snapshot.binding
+    const modelIdentity = binding?.values.find((value) => value.kind === "dialog-variable" && value.panel === "classmodelpanel" && value.variable === "modelIdentity")
+    const conditionPanels = probe.panels.filter((value) => /(?:Bleed|Milk|Marked|Slowed|Gas|Resist|Buff|Rune|Parachute|WheelOfDoom)/u.test(value.name))
+    return JSON.stringify({
+      classImage: classImage ? { visible: classImage.effectivelyVisible, image: classImage.state.image } : null,
+      classModel: classModel ? { visible: classModel.effectivelyVisible, model: modelIdentity?.kind === "dialog-variable" && modelIdentity.value.kind === "available" ? modelIdentity.value.value : null, scalars: classModel.state.scalarProperties } : null,
+      classImageBackground: panel("PlayerStatusClassImageBG")?.state.image ?? null,
+      classModelBackground: panel("classmodelpanelBG")?.state.image ?? null,
+      ammoBackground: panel("HudWeaponAmmoBG")?.state.image ?? null,
+      roots: {
+        playerStatus: snapshot.vgui.panels.filter((value) => value.name === "HudPlayerStatus").length,
+        ammo: snapshot.vgui.panels.filter((value) => value.name === "HudWeaponAmmo").length,
+      },
+      activeConditions: conditionPanels.filter((value) => value.effectivelyVisible).map((value) => value.name),
     })
   }
 
@@ -2211,6 +2254,7 @@ export class Tf2Application {
         }),
         scoreboard: tf2HudUnavailable<Tf2HudScoreboard>("not-produced"),
         freezePanel: tf2HudUnavailable<Tf2HudFreezePanel>("not-produced"),
+        playerClassUsePlayerModel: this.#playerClassUsePlayerModel,
       }))
       const hudPlayer = hud?.facts.player.kind === "available" ? hud.facts.player.value : null
       const hudHealth = hudPlayer?.health.kind === "available" ? hudPlayer.health.value.current : "unavailable"
@@ -2227,6 +2271,7 @@ export class Tf2Application {
         hudOperationProbe: healthPanel && ammoPanel && weaponPanel
           ? `${healthPanel.state.imageFill}:${healthPanel.bounds.x},${healthPanel.bounds.y},${healthPanel.bounds.width},${healthPanel.bounds.height}:${healthPanel.state.drawColor.join(",")}:${healthPanel.state.foregroundColor?.join(",") ?? "none"}:${ammoPanel.state.scalarProperties.reloadPhase ?? "none"}:${weaponPanel.state.scalarProperties.weaponIdentity ?? "none"}`
           : "unavailable",
+        hudPresentationProbe: this.#hudPresentationObservation(),
         fireEvents: this.#fireEvents,
         explosionEvents: this.#explosionEvents,
         particleRenderItems: particleItems.length,
@@ -2568,8 +2613,7 @@ export class Tf2Application {
     this.#audioWorld = undefined
     this.#audioBuffers.clear()
     this.#audioRunning = false
-    this.#hudIntegration?.destroy()
-    this.#hudIntegration = undefined
+    this.#hudIntegration?.reset("disconnect")
     this.#loaded = undefined
     this.#snapshot = undefined
     this.#artifacts = undefined

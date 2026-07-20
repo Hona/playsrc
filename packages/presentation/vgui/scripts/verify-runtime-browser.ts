@@ -52,6 +52,10 @@ try {
   await agent(["wait", "--fn", "Boolean(window.vguiRuntimeEvidence) && (window.vguiRuntimeEvidence.status().ready || window.vguiRuntimeEvidence.status().error)"])
   const status = await evaluate<{ ready: boolean; error: string | null }>("window.vguiRuntimeEvidence.status()")
   require(status.ready, status.error ?? "runtime fixture failed to initialize")
+  const visualAudit = await evaluate<{ justify: string; color: string; background: string }>(`(()=>{const node=document.querySelector('[data-vgui-name=AuditDisabledButton]');const style=getComputedStyle(node);return {justify:style.justifyContent,color:style.color,background:style.backgroundColor}})()`)
+  require(visualAudit.justify === "flex-start", "west-aligned Button did not inherit Label alignment")
+  require(visualAudit.color === "rgb(35, 38, 40)", "disabled Button text color differs")
+  require(visualAudit.background === "rgb(64, 71, 77)", "disabled Button background differs")
   await agent(["click", "[aria-label='Toggle']"])
   await agent(["fill", "[aria-label='Entry']", "12x.5"])
   await agent(["eval", "(()=>{const entry=document.querySelector('[aria-label=Entry]');entry.value='12x.5';entry.dispatchEvent(new Event('input',{bubbles:true}));return entry.value})()"])
@@ -102,6 +106,7 @@ try {
     bun: Bun.version,
     browserCli: await agent(["--version"]),
     browserRuntime: await evaluate("({userAgent:navigator.userAgent,platform:navigator.platform,language:navigator.language,viewport:[innerWidth,innerHeight],devicePixelRatio})"),
+    visualAudit,
     functional,
     observation,
     modalAccessibility,

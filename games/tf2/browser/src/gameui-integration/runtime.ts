@@ -372,6 +372,7 @@ class Integration implements Tf2GameUiIntegration {
     const resume = before.find((panel) => panel.name === "ResumeButton")
     const disconnect = before.find((panel) => panel.name === "DisconnectButton")
     const findGame = before.find((panel) => panel.name === "FindAGameButton")
+    const quit = before.find((panel) => panel.name === "QuitButton")
     const descendsFrom = (panelId: VguiPanelId, ancestorId: VguiPanelId): boolean => {
       let current = byId.get(panelId)
       while (current?.parent !== null) {
@@ -423,6 +424,12 @@ class Integration implements Tf2GameUiIntegration {
       const panel = panelByName(this.#runtime, name)
       if (panel !== null) mustApply(this.#runtime, { kind: "set-panel-state", panel, visible })
     }
+    const offset = this.#state.kind === "pause" ? disconnect : quit
+    if (offset && findGame) {
+      const findBounds = { ...findGame.bounds, x: offset.bounds.x - findGame.bounds.width - 1 }
+      mustApply(this.#runtime, { kind: "set-bounds", panel: findGame.id, bounds: findBounds })
+      if (resume) mustApply(this.#runtime, { kind: "set-bounds", panel: resume.id, bounds: { ...resume.bounds, x: findBounds.x - resume.bounds.width - 1 } })
+    }
     const root = this.#runtime.snapshot().rootPanel
     mustApply(this.#runtime, { kind: "set-panel-state", panel: root, visible: menu || this.#state.kind === "loading" || this.#state.kind === "failure" })
     if (gameplay) mustApply(this.#runtime, { kind: "request-focus", panel: null })
@@ -436,7 +443,7 @@ class Integration implements Tf2GameUiIntegration {
     if (this.#destroyed) throw new Error("TF2 GameUI integration is destroyed")
     const transition = transitionTf2GameUi(this.#state, event)
     this.#state = transition.state
-    this.#presentState()
+    this.#runtime.deferPresentation(() => this.#presentState())
     if (transition.request) this.#onRequest(transition.request)
     return transition
   }

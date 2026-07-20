@@ -133,7 +133,7 @@ const controlInput = (control: string): ControlBinding["input"] => {
 
 class Presentation implements Tf2OptionsPresentation {
   readonly #runtime: VguiRuntime
-  #advancedRuntime?: VguiRuntime
+  #advancedRuntime!: VguiRuntime
   readonly #configuration: Tf2OptionsPresentationRequest
   readonly #settings: Tf2BrowserSettings
   readonly #resources: Tf2VguiResources
@@ -145,12 +145,13 @@ class Presentation implements Tf2OptionsPresentation {
   readonly #pages = new Map<Tf2OptionsPage, VguiPanelId>()
   readonly #controls = new Map<VguiPanelId, ControlBinding>()
   readonly #advancedControls = new Map<VguiPanelId, ControlBinding>()
+  readonly #publishedControls = new Map<VguiRuntime, Map<VguiPanelId, string>>()
   readonly #keyboardRows = new Map<number, BindingSettingSchema>()
   readonly #dialogs = new Map<StandardDialogIdentity, StandardDialog>()
   #visible = false
   #page: Tf2OptionsPage = "keyboard"
-  #frame: VguiPanelId
-  #sheet: VguiPanelId
+  #frame!: VguiPanelId
+  #sheet!: VguiPanelId
   #advanced?: VguiPanelId
   #selectedBinding: BindingSettingSchema | null = null
   #bindingCapture = false
@@ -244,6 +245,7 @@ class Presentation implements Tf2OptionsPresentation {
         choiceLabels: choices ? schema.kind === "enum" ? Object.freeze(schema.options.map((option) => option.label)) : Object.freeze(["#gameui_disabled", "#gameui_enabled"]) : undefined,
         ...(input === "toggle" && schema.kind === "enum" ? { toggleValues: Object.freeze([schema.options[0]!.value, schema.options[Math.min(1, schema.options.length - 1)]!.value]) as readonly [SettingValue, SettingValue] } : {}),
       }))
+      if (input === "combo") apply(this.#runtime, { kind: "mutate-control", panel: identity, mutation: { editable: false } })
       if (schema.kind === "float" || schema.kind === "integer") {
         const minimum = Number(scalar(block, "minvalue") ?? schema.minimum)
         const maximum = Number(scalar(block, "maxvalue") ?? schema.maximum)
@@ -423,7 +425,11 @@ class Presentation implements Tf2OptionsPresentation {
     for (const [index, row] of this.#resources.descriptor.advancedOptions.entries()) {
       if (row.category !== category) {
         category = row.category
-        const header = apply(this.#advancedRuntime, { kind: "create-panel", parent: content, control: "Label", name: `AdvancedCategory${index}`, properties: [{ name: "labelText", value: category }, { name: "font", value: "HudFontSmallBold" }, { name: "border", value: "OptionsCategoryBorder" }] })!
+        const header = apply(this.#advancedRuntime, { kind: "create-panel", parent: content, control: "Label", name: `AdvancedCategory${index}`, properties: [
+          { name: "labelText", value: category }, { name: "font", value: "HudFontSmallBold" },
+          { name: "border", value: "OptionsCategoryBorder" }, { name: "textAlignment", value: "west" },
+          { name: "textinsetx", value: "5" }, { name: "fgcolor_override", value: "TanLight" },
+        ] })!
         apply(this.#advancedRuntime, { kind: "set-bounds", panel: header, bounds: { x: 0, y, width: controlWidth, height: controlHeight } })
         y += controlHeight
       }
@@ -456,16 +462,25 @@ class Presentation implements Tf2OptionsPresentation {
   #advancedControl(parent: VguiPanelId, row: Tf2UiAdvancedOption, schema: SettingSchema, height: number): VguiPanelId {
     const width = this.#advancedRuntime.snapshot().panels.find((value) => value.id === parent)!.bounds.width
     if (row.kind === "BOOL") {
-      const control = apply(this.#advancedRuntime, { kind: "create-panel", parent, control: "CheckButton", name: "DescCheckButton", properties: [{ name: "labelText", value: row.prompt }, { name: "font", value: "HudFontSmallestBold" }, ...(row.tooltip ? [{ name: "tooltiptext", value: row.tooltip }] : [])] })!
+      const control = apply(this.#advancedRuntime, { kind: "create-panel", parent, control: "CheckButton", name: "DescCheckButton", properties: [
+        { name: "labelText", value: row.prompt }, { name: "font", value: "HudFontSmallestBold" }, { name: "textAlignment", value: "west" },
+        { name: "defaultFgColor_override", value: "TanDark" }, { name: "armedFgColor_override", value: "TanDark" },
+        { name: "depressedFgColor_override", value: "TanDark" }, { name: "selectedFgColor_override", value: "TanDark" },
+        ...(row.tooltip ? [{ name: "tooltiptext", value: row.tooltip }] : []),
+      ] })!
       apply(this.#advancedRuntime, { kind: "set-bounds", panel: control, bounds: { x: 0, y: 4, width, height: height - 8 } })
       return control
     }
-    const prompt = apply(this.#advancedRuntime, { kind: "create-panel", parent, control: "Label", name: "DescLabel", properties: [{ name: "labelText", value: row.prompt }, { name: "font", value: "HudFontSmallestBold" }, ...(row.tooltip ? [{ name: "tooltiptext", value: row.tooltip }] : [])] })!
+    const prompt = apply(this.#advancedRuntime, { kind: "create-panel", parent, control: "Label", name: "DescLabel", properties: [
+      { name: "labelText", value: row.prompt }, { name: "font", value: "HudFontSmallestBold" },
+      { name: "textAlignment", value: "west" }, { name: "textinsetx", value: "5" }, { name: "fgcolor_override", value: "TanDark" },
+      ...(row.tooltip ? [{ name: "tooltiptext", value: row.tooltip }] : []),
+    ] })!
     apply(this.#advancedRuntime, { kind: "set-bounds", panel: prompt, bounds: { x: 0, y: 4, width: width / 2 + 20, height: height - 8 } })
     const x = width / 2 + 20
     const controlWidth = width / 2 - 20
     if (row.kind === "LIST") {
-      const control = apply(this.#advancedRuntime, { kind: "create-panel", parent, control: "ComboBox", name: "DescComboBox" })!
+      const control = apply(this.#advancedRuntime, { kind: "create-panel", parent, control: "ComboBox", name: "DescComboBox", properties: [{ name: "editable", value: "0" }, { name: "numLines", value: "5" }] })!
       apply(this.#advancedRuntime, { kind: "set-bounds", panel: control, bounds: { x, y: 4, width: controlWidth, height: height - 8 } })
       apply(this.#advancedRuntime, { kind: "mutate-control", panel: control, mutation: { items: row.choices.map((choice, index) => ({ id: index, text: choice.label, enabled: true })) } })
       return control
@@ -476,7 +491,7 @@ class Presentation implements Tf2OptionsPresentation {
       apply(this.#advancedRuntime, { kind: "mutate-control", panel: control, mutation: { minimum: row.minimum! * 100, maximum: row.maximum! * 100 } })
       return control
     }
-    const control = apply(this.#advancedRuntime, { kind: "create-panel", parent, control: "TextEntry", name: "DescTextEntry", properties: [{ name: "font", value: "HudFontSmallestBold" }] })!
+    const control = apply(this.#advancedRuntime, { kind: "create-panel", parent, control: "TextEntry", name: "DescTextEntry", properties: [{ name: "font", value: "HudFontSmallestBold" }, { name: "bgcolor_override", value: "0 0 0 255" }] })!
     apply(this.#advancedRuntime, { kind: "set-bounds", panel: control, bounds: { x, y: 4, width: controlWidth, height: height - 8 } })
     return control
   }
@@ -489,24 +504,30 @@ class Presentation implements Tf2OptionsPresentation {
   }
 
   #publishControls(runtime: VguiRuntime, bindings: ReadonlyMap<VguiPanelId, ControlBinding>): void {
-    const values = this.#settings.snapshot().settings.pending ?? this.#settings.snapshot().settings.current
-    for (const [id, binding] of bindings) {
-      const { schema, scale, choices, choiceLabels, input, toggleValues } = binding
-      const value = values[schema.id]
-      if (choices) {
-        const index = choices.findIndex((choice) => choice === value)
-        apply(runtime, { kind: "mutate-control", panel: id, mutation: { items: choices.map((_, item) => ({ id: item, text: choiceLabels?.[item] ?? String(choices[item]), enabled: true })), activeIndex: index < 0 ? null : index } })
+    runtime.deferPresentation(() => {
+      const values = this.#settings.snapshot().settings.pending ?? this.#settings.snapshot().settings.current
+      const published = this.#publishedControls.get(runtime) ?? new Map<VguiPanelId, string>()
+      this.#publishedControls.set(runtime, published)
+      for (const [id, binding] of bindings) {
+        const { schema, scale, choices, choiceLabels, input, toggleValues } = binding
+        const value = values[schema.id]
+        if (choices) {
+          const index = choices.findIndex((choice) => choice === value)
+          apply(runtime, { kind: "mutate-control", panel: id, mutation: { items: choices.map((_, item) => ({ id: item, text: choiceLabels?.[item] ?? String(choices[item]), enabled: true })), activeIndex: index < 0 ? null : index } })
+          published.set(id, `combo:${index < 0 ? "null" : index}`)
+        }
+        else if (schema.kind === "boolean" && typeof value === "boolean") { apply(runtime, { kind: "mutate-control", panel: id, mutation: { checked: value, selected: value } }); published.set(id, `toggle:${value}`) }
+        else if (toggleValues) { const checked = value === toggleValues[1]; apply(runtime, { kind: "mutate-control", panel: id, mutation: { checked, selected: checked } }); published.set(id, `toggle:${checked}`) }
+        else if ((schema.kind === "float" || schema.kind === "integer") && typeof value === "number") { apply(runtime, { kind: "mutate-control", panel: id, mutation: input === "slider" ? { value: value * scale, text: String(value) } : { text: String(value) } }); published.set(id, input === "slider" ? `slider:${Math.max(schema.minimum * scale, Math.min(schema.maximum * scale, value * scale))}` : `text:${String(value)}`) }
+        else if (schema.kind === "string" && typeof value === "string") { apply(runtime, { kind: "mutate-control", panel: id, mutation: { text: value } }); published.set(id, `text:${value}`) }
+        else if (schema.kind === "enum") {
+          const options = schema.options.map((option) => option.value)
+          const index = options.findIndex((option) => String(option) === String(value))
+          apply(runtime, { kind: "mutate-control", panel: id, mutation: { items: schema.options.map((option, item) => ({ id: item, text: option.label, enabled: true })), activeIndex: index < 0 ? null : index } })
+          published.set(id, `combo:${index < 0 ? "null" : index}`)
+        }
       }
-      else if (schema.kind === "boolean" && typeof value === "boolean") apply(runtime, { kind: "mutate-control", panel: id, mutation: { checked: value, selected: value } })
-      else if (toggleValues) apply(runtime, { kind: "mutate-control", panel: id, mutation: { checked: value === toggleValues[1], selected: value === toggleValues[1] } })
-      else if ((schema.kind === "float" || schema.kind === "integer") && typeof value === "number") apply(runtime, { kind: "mutate-control", panel: id, mutation: input === "slider" ? { value: value * scale, text: String(value) } : { text: String(value) } })
-      else if (schema.kind === "string" && typeof value === "string") apply(runtime, { kind: "mutate-control", panel: id, mutation: { text: value } })
-      else if (schema.kind === "enum") {
-        const options = schema.options.map((option) => option.value)
-        const index = options.findIndex((option) => String(option) === String(value))
-        apply(runtime, { kind: "mutate-control", panel: id, mutation: { items: schema.options.map((option, item) => ({ id: item, text: option.label, enabled: true })), activeIndex: index < 0 ? null : index } })
-      }
-    }
+    })
   }
 
   #publishKeyboard(): void {
@@ -514,7 +535,7 @@ class Presentation implements Tf2OptionsPresentation {
     if (list === null) return
     const snapshot = this.#runtime.snapshot().panels.find((value) => value.id === list)!
     const values = this.#settings.snapshot().settings.pending ?? this.#settings.snapshot().settings.current
-    apply(this.#runtime, { kind: "mutate-control", panel: list, mutation: { sectionedItems: snapshot.state.sectionedItems.map((item) => ({ ...item, cells: { ...item.cells, Key: this.#bindingText(this.#keyboardRows.get(item.id)!, values) } })) } })
+    this.#runtime.deferPresentation(() => apply(this.#runtime, { kind: "mutate-control", panel: list, mutation: { sectionedItems: snapshot.state.sectionedItems.map((item) => ({ ...item, cells: { ...item.cells, Key: this.#bindingText(this.#keyboardRows.get(item.id)!, values) } })) } }))
   }
 
   #publishValues(): void {
@@ -526,10 +547,16 @@ class Presentation implements Tf2OptionsPresentation {
   #stageControls(runtime: VguiRuntime, bindings: ReadonlyMap<VguiPanelId, ControlBinding>): void {
     const snapshots = new Map(runtime.snapshot().panels.map((value) => [value.id, value]))
     const pending = this.#settings.snapshot().settings.pending ?? this.#settings.snapshot().settings.current
+    const published = this.#publishedControls.get(runtime)
     for (const [id, binding] of bindings) {
       const { schema, scale, choices, input, toggleValues } = binding
       const control = snapshots.get(id)
       if (!control) continue
+      const fingerprint = choices ? `combo:${control.state.activeIndex === null ? "null" : control.state.activeIndex}`
+        : toggleValues || schema.kind === "boolean" ? `toggle:${control.state.checked}`
+          : (schema.kind === "float" || schema.kind === "integer") && input === "slider" ? `slider:${control.state.value}`
+            : `text:${control.text}`
+      if (published?.get(id) === fingerprint) continue
       let value: SettingValue | undefined
       if (choices && control.state.activeIndex !== null) value = choices[control.state.activeIndex]
       else if (toggleValues) value = toggleValues[control.state.checked ? 1 : 0]

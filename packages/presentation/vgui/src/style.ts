@@ -45,6 +45,12 @@ export const VGUI_CSS = `
   user-select: text;
 }
 
+.playsrc-vgui-source-control[data-vgui-control="TextEntry"]::selection,
+.playsrc-vgui-source-control[data-vgui-control="ComboBox"]::selection {
+  background: var(--vgui-selection-background);
+  color: var(--vgui-selection-text);
+}
+
 .playsrc-vgui-source-control[data-font-available="false"],
 .playsrc-vgui-source-control[data-font-available="false"] * {
   color: transparent !important;

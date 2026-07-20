@@ -237,6 +237,11 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     expect(first.find((panel) => panel.name === "HudWeaponAmmoBG")?.state.image).toBe("../hud/ammo_red_bg")
     expect(first.find((panel) => panel.name === "HudWeaponAmmo")?.resourceOwner).toBeNull()
     expect(first.find((panel) => panel.name === "HudWeaponAmmoBG")?.resourceOwner ?? "").toContain("hudammoweapons.res")
+    hud.setPlayerClassUsePlayerModel(true)
+    expect(visible(hud.snapshot().vgui.panels, ["PlayerStatusClassImage", "classmodelpanel"])).toEqual(["classmodelpanel"])
+    expect(hud.snapshot().binding?.facts.player).toMatchObject({ value: { playerClassUsePlayerModel: true } })
+    hud.setPlayerClassUsePlayerModel(false)
+    expect(visible(hud.snapshot().vgui.panels, ["PlayerStatusClassImage", "classmodelpanel"])).toEqual(["PlayerStatusClassImage"])
 
     const secondBinding = hud.publish(compact(2n, 2, 2, 3, 7, 24, 2), context)
     const second = hud.snapshot().vgui.panels
@@ -310,6 +315,9 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     expect(pause.filter((panel) => panel.name === "MainMenuOverride" && panel.effectivelyVisible)).toHaveLength(1)
     expect(visible(pause, ["TFCharacterImage"])).toEqual([])
     expect(visible(pause, ["CharacterSetupButton", "SettingsButton", "TF2SettingsButton", "NewUserForumsButton"]).sort()).toEqual(["CharacterSetupButton", "NewUserForumsButton", "SettingsButton", "TF2SettingsButton"])
+    const pauseButton = (name: string) => pause.find((panel) => panel.name === name)!.bounds
+    expect(pauseButton("ResumeButton").x + pauseButton("ResumeButton").width).toBeLessThan(pauseButton("FindAGameButton").x)
+    expect(pauseButton("FindAGameButton").x + pauseButton("FindAGameButton").width).toBeLessThan(pauseButton("DisconnectButton").x)
     expect(gameui.dispatch({ kind: "gameui-activated" })).toMatchObject({ disposition: "illegal", state: { kind: "pause" }, request: null })
     expect(gameui.dispatch({ kind: "teardown-confirmed" })).toMatchObject({ disposition: "illegal", state: { kind: "pause" }, request: null })
     gameui.dispatch({ kind: "activate-button", button: "resume" })

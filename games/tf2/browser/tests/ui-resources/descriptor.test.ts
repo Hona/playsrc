@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test"
+import bundleManifest from "../../../../../tools/source-bundle/tf2-ui.generated.json" with { type: "json" }
+import { TF2_HUD_DYNAMIC_IMAGES } from "../../src/hud"
 import { configuredTf2UiResourceInput } from "../../src/ui-resources/configured.generated"
 import {
   classifyTf2UiCommand,
@@ -10,6 +12,19 @@ import {
 const cloneInput = (): any => structuredClone(configuredTf2UiResourceInput)
 
 describe("configured TF2 UI resource descriptor", () => {
+  test("exports every code-selected HUD image through the generated source-bundle closure", () => {
+    const staticImages = new Set(tf2UiResources.images.map((image) => image.configuredValue.toLowerCase()))
+    const dynamic = new Map(bundleManifest.dynamicImages.map((image) => [image.configuredValue.toLowerCase(), image.material]))
+    expect(bundleManifest.dynamicImages).toHaveLength(17)
+    for (const image of TF2_HUD_DYNAMIC_IMAGES) {
+      const folded = image.toLowerCase()
+      expect(staticImages.has(folded) || dynamic.has(folded), image).toBeTrue()
+      if (dynamic.has(folded)) {
+        expect(dynamic.get(folded)).toBe(`materials/${image.replace(/^\.\.\//u, "").toLowerCase()}.vmt`)
+      }
+    }
+  })
+
   test("binds the exact configured provider and selected source closure", () => {
     expect(tf2UiResources.identity).toBe("tf2-ui-24245096-665e7e9c968b7b13")
     expect(tf2UiResources.providers).toHaveLength(14)

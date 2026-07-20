@@ -63,6 +63,7 @@ function App() {
       data-hud-probe={view.hudProbe}
       data-hud-animation-trace={view.hudAnimationTrace}
       data-hud-operation-probe={view.hudOperationProbe}
+      data-hud-presentation-probe={view.hudPresentationProbe}
       data-options-visible={view.optionsVisible ? "true" : "false"}
       data-settings-persistence={view.settingsPersistence}
       data-settings-apply={view.settingsApply}

@@ -2,6 +2,7 @@ import { writeFile } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { tf2UiResources } from "../../../games/tf2/browser/src/ui-resources"
+import { TF2_HUD_DYNAMIC_IMAGES } from "../../../games/tf2/browser/src/hud"
 
 type DependencyKind = "resource" | "font" | "material" | "texture"
 type Dependency = Readonly<{ logicalPath: string; sha256: string; byteLength: number; kinds: readonly DependencyKind[] }>
@@ -9,6 +10,14 @@ type Dependency = Readonly<{ logicalPath: string; sha256: string; byteLength: nu
 const root = fileURLToPath(new URL("../../..", import.meta.url))
 const output = path.join(root, "tools", "source-bundle", "tf2-ui.generated.json")
 const dependencies = new Map<string, { sha256: string; byteLength: number; kinds: Set<DependencyKind> }>()
+
+function dynamicMaterialPath(configuredValue: string): string {
+  const normalized = configuredValue.replaceAll("\\", "/").replace(/^\.\.\//u, "").replace(/^vgui\//u, "")
+  if (!/^[a-z0-9_./-]+$/iu.test(normalized) || normalized.includes("..")) {
+    throw new Error(`TF2 HUD dynamic image identity is invalid: ${configuredValue}`)
+  }
+  return `materials/${normalized.toLowerCase()}.vmt`
+}
 
 function admit(logicalPath: string, sha256: string | null, byteLength: number | null, kind: DependencyKind): void {
   if (!sha256 || byteLength === null) throw new Error(`Found TF2 UI dependency ${logicalPath} has no immutable descriptor`)
@@ -41,6 +50,11 @@ const orderedDependencies: Dependency[] = [...dependencies]
     byteLength: value.byteLength,
     kinds: Object.freeze([...value.kinds].sort()),
   }))
+const staticImages = new Set(tf2UiResources.images.map((image) => image.configuredValue.toLowerCase()))
+const dynamicImages = TF2_HUD_DYNAMIC_IMAGES
+  .filter((configuredValue) => !staticImages.has(configuredValue.toLowerCase()))
+  .map((configuredValue) => Object.freeze({ configuredValue, material: dynamicMaterialPath(configuredValue) }))
+  .sort((left, right) => left.configuredValue.toLowerCase().localeCompare(right.configuredValue.toLowerCase()))
 
 const manifest = Object.freeze({
   schema: "playsrc-tf2-ui-bundle-v1",
@@ -62,6 +76,7 @@ const manifest = Object.freeze({
       rawFlags: texture.rawFlags,
     }))),
   }))),
+  dynamicImages: Object.freeze(dynamicImages),
   missingDependencies: tf2UiResources.missingDependencies,
 })
 
@@ -70,6 +85,7 @@ console.log(JSON.stringify({
   output: "tools/source-bundle/tf2-ui.generated.json",
   descriptor: manifest.identity,
   dependencies: manifest.dependencies.length,
-  images: manifest.images.length,
+    images: manifest.images.length,
+    dynamicImages: manifest.dynamicImages.length,
   missingDependencies: manifest.missingDependencies.length,
 }))

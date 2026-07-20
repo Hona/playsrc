@@ -858,7 +858,7 @@ export async function verifyTf2Wasm(
   require(ldrDerivedSha256 === EXPECTED_LDR_DERIVED_SHA256, `LDR derived identity ${ldrDerivedSha256} changed for payload ${mapSha256}`)
   require(hdrFirst.payload.byteLength === EXPECTED_HDR_BYTES, "HDR payload byte length changed")
   require(hdrFirst.sha256 === EXPECTED_HDR_SHA256, "HDR payload SHA-256 changed")
-  require(hdrFirst.derivedSha256 === EXPECTED_HDR_DERIVED_SHA256, "HDR derived identity changed")
+  require(hdrFirst.derivedSha256 === EXPECTED_HDR_DERIVED_SHA256, `HDR derived identity changed: ${hdrFirst.derivedSha256}`)
   require(nativeHdr.bytes === hdrFirst.payload.byteLength &&
     nativeHdr.sha256 === hdrFirst.sha256 &&
     nativeHdr.derivedSha256 === hdrFirst.derivedSha256 &&

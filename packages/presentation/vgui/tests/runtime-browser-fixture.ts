@@ -36,6 +36,7 @@ const scheme: VguiScheme = Object.freeze({
     { name: "Button.TextColor", value: "245 245 245 255" }, { name: "Button.BgColor", value: "64 71 77 255" },
     { name: "Button.ArmedTextColor", value: "255 255 255 255" }, { name: "Button.ArmedBgColor", value: "85 95 103 255" },
     { name: "Button.DepressedTextColor", value: "20 20 20 255" }, { name: "Button.DepressedBgColor", value: "232 190 93 255" },
+    { name: "Label.DisabledFgColor1", value: "160 150 140 255" }, { name: "Label.DisabledFgColor2", value: "35 38 40 255" },
     { name: "Frame.BgColor", value: "48 56 64 255" }, { name: "Frame.OutOfFocusBgColor", value: "30 35 40 255" },
     { name: "FrameTitleBar.BgColor", value: "55 70 82 255" }, { name: "FrameTitleBar.DisabledBgColor", value: "39 47 54 255" },
     { name: "FrameTitleBar.TextColor", value: "245 245 245 255" }, { name: "FrameTitleBar.DisabledTextColor", value: "190 196 200 255" },
@@ -44,7 +45,10 @@ const scheme: VguiScheme = Object.freeze({
     { name: "ProgressBar.FgColor", value: "111 189 111 255" }, { name: "ProgressBar.BgColor", value: "15 18 20 255" },
   ]),
   settings: Object.freeze([]),
-  fonts: Object.freeze([{ name: "Default", cssFamily: "playsrc-vgui-source-required", sizePx: 14, lineHeightPx: 16, weight: 500, style: "normal", available: false }]),
+  fonts: Object.freeze([
+    { name: "Default", cssFamily: "playsrc-vgui-source-required", sizePx: 14, lineHeightPx: 16, weight: 500, style: "normal", available: false },
+    { name: "Audit", cssFamily: "sans-serif", sizePx: 14, lineHeightPx: 16, weight: 500, style: "normal", available: true },
+  ]),
   borders: Object.freeze([{
     kind: "line", name: "BaseBorder", inset: { left: 1, top: 1, right: 1, bottom: 1 }, backgroundType: 0, paintFirst: false,
     sides: {
@@ -126,6 +130,8 @@ function reset(): void {
   create({ kind: "create-panel", parent: root, control: "URLLabel", name: "URL", properties: [{ name: "xpos", value: "390" }, { name: "ypos", value: "330" }, { name: "wide", value: "180" }, { name: "tall", value: "24" }, { name: "labelText", value: "TF2 help" }, { name: "URLText", value: "https://example.test/tf2" }, { name: "font", value: "Default" }] })
   const message = create({ kind: "create-panel", parent: root, control: "MessageBox", name: "Message", properties: [{ name: "xpos", value: "760" }, { name: "ypos", value: "300" }, { name: "wide", value: "240" }, { name: "tall", value: "120" }, { name: "title", value: "Message box" }] })
   apply({ kind: "set-panel-state", panel: message, visible: true })
+  const auditButton = create({ kind: "create-panel", parent: root, control: "Button", name: "AuditDisabledButton", properties: [{ name: "xpos", value: "760" }, { name: "ypos", value: "440" }, { name: "wide", value: "220" }, { name: "tall", value: "30" }, { name: "labelText", value: "Left aligned disabled" }, { name: "font", value: "Audit" }, { name: "textAlignment", value: "west" }] })
+  apply({ kind: "set-panel-state", panel: auditButton, enabled: false })
   query = create({ kind: "create-panel", parent: root, control: "QueryBox", name: "Query", properties: [{ name: "xpos", value: "430" }, { name: "ypos", value: "380" }, { name: "wide", value: "240" }, { name: "tall", value: "120" }, { name: "title", value: "Apply settings?" }] })
   apply({ kind: "frame", timeSeconds: performance.now() / 1000 })
 }

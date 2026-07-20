@@ -15,6 +15,8 @@ import {
   bindTf2Hud,
   bindTf2HudAction,
   TF2_HUD_DYNAMIC_IMAGES,
+  TF2_GROUPED_CONDITION_PANELS,
+  TF2_INDEPENDENT_CONDITION_PANELS,
   tf2HudAvailable,
   tf2HudUnavailable,
   type CompactSessionHudContext,
@@ -52,6 +54,7 @@ export type Tf2HudIntegration = Readonly<{
   setViewport(viewport: VguiViewport): void
   probe(): Tf2HudIntegrationProbe
   snapshot(): Tf2HudIntegrationSnapshot
+  setPlayerClassUsePlayerModel(value: boolean): void
   reset(reason: "map-replaced" | "disconnect"): void
   destroy(): void
 }>
@@ -335,7 +338,13 @@ class Integration implements Tf2HudIntegration {
     }
   }
   probe(): Tf2HudIntegrationProbe {
-    const panels = ["PlayerStatusHealthImage", "HudWeaponAmmo", "modelpanel0"]
+    const panels = [
+      "PlayerStatusHealthImage", "HudWeaponAmmo", "HudWeaponAmmoBG", "modelpanel0",
+      "PlayerStatusClassImage", "PlayerStatusClassImageBG", "classmodelpanel", "classmodelpanelBG",
+      "PlayerStatusSpyImage", "PlayerStatusSpyOutlineImage", "PlayerStatus_WheelOfDoom",
+      ...TF2_GROUPED_CONDITION_PANELS.map((item) => item.panel),
+      ...TF2_INDEPENDENT_CONDITION_PANELS.map((item) => item.panel),
+    ]
       .map((name) => this.#panels.get(name.toLowerCase()))
       .filter((panel): panel is VguiPanelId => panel !== undefined)
     return Object.freeze({
@@ -349,6 +358,26 @@ class Integration implements Tf2HudIntegration {
       vgui: this.#runtime.snapshot(),
       diagnostics: Object.freeze([...this.#diagnostics]),
       animationTrace: Object.freeze([...this.#animationTrace]),
+    })
+  }
+  setPlayerClassUsePlayerModel(value: boolean): void {
+    if (this.#destroyed) throw new Error("TF2 HUD integration is destroyed")
+    if (typeof value !== "boolean") throw new Error("TF2 HUD player-model setting is invalid")
+    const current = this.#binding
+    if (!current || current.facts.player.kind !== "available") return
+    const currentPlayer = current.facts.player.value
+    this.#runtime.deferPresentation(() => {
+      const player = Object.freeze({ ...currentPlayer, playerClassUsePlayerModel: value })
+      const snapshot: Tf2HudSnapshot = Object.freeze({ ...current.facts, player: tf2HudAvailable(player) })
+      const binding = bindTf2Hud(Object.freeze({
+        previous: tf2HudUnavailable<Tf2HudSnapshot>("replay-discontinuity"),
+        snapshot,
+        events: Object.freeze([]),
+      }))
+      this.#publishedValues.clear()
+      this.#applyValues(binding)
+      this.#previous = tf2HudAvailable(binding.facts)
+      this.#binding = binding
     })
   }
   reset(reason: "map-replaced" | "disconnect"): void {

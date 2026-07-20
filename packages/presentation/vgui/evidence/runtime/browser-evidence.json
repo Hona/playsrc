@@ -1,5 +1,5 @@
 {
-  "capturedAt": "2026-07-19T18:50:14.980Z",
+  "capturedAt": "2026-07-20T13:00:16.760Z",
   "sourceBuild": "TF2 24207079 / patch 10822003",
   "sdkRevision": "88fa198fba3fb85d46d4c95018254693fdc3af0a",
   "operatingSystem": "darwin 25.5.0",
@@ -15,6 +15,11 @@
       1280,
       720
     ]
+  },
+  "visualAudit": {
+    "background": "rgb(64, 71, 77)",
+    "color": "rgb(35, 38, 40)",
+    "justify": "flex-start"
   },
   "functional": {
     "applicationModal": null,
@@ -132,7 +137,7 @@
         "border": "0px",
         "color": "rgba(0, 0, 0, 0)",
         "disabled": "false",
-        "display": "block",
+        "display": "flex",
         "label": "Submit",
         "rect": {
           "bottom": 88,
@@ -147,11 +152,11 @@
         "role": "button"
       },
       "Toggle": {
-        "background": "rgb(38, 42, 46)",
+        "background": "rgba(0, 0, 0, 0)",
         "border": "0px",
         "color": "rgba(0, 0, 0, 0)",
         "disabled": "false",
-        "display": "block",
+        "display": "flex",
         "label": "Toggle",
         "rect": {
           "bottom": 88,
@@ -186,16 +191,18 @@
       }
     },
     "dom": {
-      "controls": 25,
+      "controls": 26,
       "names": [
         "Root",
         "Title",
         "Icon",
         "Submit",
+        "Toggle",
         "RadioA",
         "RadioB",
         "StandaloneMenuItem",
         "Entry",
+        "Volume",
         "Progress",
         "PlainPanel",
         "RichText",
@@ -204,25 +211,26 @@
         "HorizontalScroll",
         "Combo",
         "URL",
-        "Toggle",
-        "Volume",
+        "AuditDisabledButton",
         "Menu",
-        "Message",
-        "Query",
         "Frame",
         "Sheet",
         "PageVideo",
-        "PageAudio"
+        "PageAudio",
+        "Message",
+        "Query"
       ],
       "roles": [
         null,
         null,
         "img",
         "button",
+        "checkbox",
         "radio",
         "radio",
         "menuitem",
         "textbox",
+        "slider",
         "progressbar",
         null,
         "document",
@@ -231,25 +239,26 @@
         "scrollbar",
         "combobox",
         "link",
-        "checkbox",
-        "slider",
+        "button",
         "menu",
-        "dialog",
-        "dialog",
         "dialog",
         "tablist",
         "tabpanel",
-        "tabpanel"
+        "tabpanel",
+        "dialog",
+        "dialog"
       ],
       "types": [
         "EditablePanel",
         "Label",
         "ImagePanel",
         "Button",
+        "CheckButton",
         "RadioButton",
         "RadioButton",
         "MenuItem",
         "TextEntry",
+        "Slider",
         "ProgressBar",
         "Panel",
         "RichText",
@@ -258,30 +267,17 @@
         "ScrollBar",
         "ComboBox",
         "URLLabel",
-        "CheckButton",
-        "Slider",
+        "Button",
         "Menu",
-        "MessageBox",
-        "QueryBox",
         "Frame",
         "PropertySheet",
         "PropertyPage",
-        "PropertyPage"
+        "PropertyPage",
+        "MessageBox",
+        "QueryBox"
       ]
     },
     "requests": [
-      {
-        "kind": "message",
-        "message": {
-          "fields": {
-            "xpos": 484,
-            "ypos": 665
-          },
-          "name": "CursorMoved"
-        },
-        "source": null,
-        "target": 1
-      },
       {
         "kind": "message",
         "message": {
@@ -341,6 +337,22 @@
         },
         "source": null,
         "target": 5
+      },
+      {
+        "kind": "message",
+        "message": {
+          "fields": {
+            "panel": 9
+          },
+          "name": "TextChanged"
+        },
+        "source": 9,
+        "target": 1
+      },
+      {
+        "kind": "sound",
+        "logicalIdentity": "Resource/warning.wav",
+        "panel": 9
       },
       {
         "kind": "message",
@@ -493,11 +505,11 @@
         "kind": "message",
         "message": {
           "fields": {
-            "panel": 25
+            "panel": 26
           },
           "name": "Cancel"
         },
-        "source": 25,
+        "source": 26,
         "target": 1
       }
     ],
@@ -534,7 +546,7 @@
       "localizationIdentity": "resource/browser_english.txt",
       "ownedResources": {
         "listeners": 13,
-        "nodes": 49,
+        "nodes": 53,
         "observers": 0,
         "timers": 0
       },
@@ -580,9 +592,10 @@
             22,
             23,
             24,
+            25,
             5,
             10,
-            25,
+            26,
             16
           ],
           "clip": {
@@ -634,6 +647,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -735,6 +749,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -836,6 +851,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": "test/icon",
             "imageFill": 1,
             "items": [],
@@ -937,6 +953,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -1038,6 +1055,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -1139,6 +1157,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -1240,6 +1259,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -1341,6 +1361,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -1442,6 +1463,7 @@
             "editable": true,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -1543,6 +1565,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -1644,6 +1667,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -1745,6 +1769,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -1846,6 +1871,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [
@@ -1969,6 +1995,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -2070,6 +2097,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [
@@ -2190,6 +2218,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -2300,6 +2329,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [
@@ -2416,6 +2446,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -2517,6 +2548,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -2619,6 +2651,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -2721,6 +2754,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -2822,6 +2856,7 @@
             "editable": true,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -2923,6 +2958,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -3024,6 +3060,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -3048,6 +3085,108 @@
           },
           "tabPosition": 0,
           "text": "Message box",
+          "topmostPopup": false,
+          "visible": true,
+          "z": 0
+        },
+        {
+          "absoluteBounds": {
+            "height": 30,
+            "width": 220,
+            "x": 760,
+            "y": 440
+          },
+          "accessibleDescription": "",
+          "accessibleName": "Left aligned disabled",
+          "animationVariables": {
+            "PaintBackgroundType": 0,
+            "Texture1": "vgui/hud/8x800corner1",
+            "Texture2": "vgui/hud/8x800corner2",
+            "Texture3": "vgui/hud/8x800corner3",
+            "Texture4": "vgui/hud/8x800corner4",
+            "alpha": 255
+          },
+          "bounds": {
+            "height": 30,
+            "width": 220,
+            "x": 760,
+            "y": 440
+          },
+          "children": [],
+          "clip": {
+            "height": 30,
+            "width": 220,
+            "x": 760,
+            "y": 440
+          },
+          "control": "Button",
+          "effectivelyVisible": true,
+          "enabled": false,
+          "id": 25,
+          "inset": {
+            "bottom": 0,
+            "left": 0,
+            "right": 0,
+            "top": 0
+          },
+          "keyboardInput": true,
+          "minimumSize": [
+            0,
+            0
+          ],
+          "mouseInput": true,
+          "name": "AuditDisabledButton",
+          "parent": 1,
+          "popup": false,
+          "proportional": false,
+          "resourceOwner": null,
+          "role": "button",
+          "state": {
+            "activeIndex": null,
+            "armed": false,
+            "bodyText": "",
+            "caret": 0,
+            "checked": false,
+            "composition": {
+              "active": false,
+              "caret": 0,
+              "text": ""
+            },
+            "depressed": false,
+            "drawColor": [
+              255,
+              255,
+              255,
+              255
+            ],
+            "editable": false,
+            "foregroundColor": null,
+            "frameInteraction": null,
+            "highlightedIndex": null,
+            "image": null,
+            "imageFill": 1,
+            "items": [],
+            "maximum": 0,
+            "maximumCharacters": -1,
+            "minimum": 0,
+            "multiline": false,
+            "numericOnly": false,
+            "previousProgress": -1,
+            "progress": 0,
+            "rangeWindow": 0,
+            "scalarProperties": {},
+            "sectionedItems": [],
+            "sections": [],
+            "selected": false,
+            "selection": [
+              -1,
+              0
+            ],
+            "textHidden": false,
+            "value": 0
+          },
+          "tabPosition": 0,
+          "text": "Left aligned disabled",
           "topmostPopup": false,
           "visible": true,
           "z": 0
@@ -3085,7 +3224,7 @@
           "control": "QueryBox",
           "effectivelyVisible": false,
           "enabled": true,
-          "id": 25,
+          "id": 26,
           "inset": {
             "bottom": 0,
             "left": 0,
@@ -3125,6 +3264,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -3157,16 +3297,16 @@
       "popups": [
         13,
         24,
-        25,
+        26,
         16
       ],
       "queuedMessages": 0,
       "reducedMotion": false,
-      "revision": 70,
+      "revision": 71,
       "rootPanel": 1,
       "runtimeIdentity": "browser-evidence",
       "schemeIdentity": "resource/browser-scheme.res",
-      "timeSeconds": 0.25009999990463255,
+      "timeSeconds": 0.20920000004768372,
       "trace": [
         {
           "detail": "EditablePanel:Root",
@@ -3331,332 +3471,332 @@
           "sequence": 27
         },
         {
-          "detail": "QueryBox:Query",
+          "detail": "Button:AuditDisabledButton",
           "panel": 25,
           "phase": "panel-create",
           "sequence": 28
         },
         {
+          "detail": "none",
+          "panel": null,
+          "phase": "pointer-capture",
+          "sequence": 29
+        },
+        {
+          "detail": "QueryBox:Query",
+          "panel": 26,
+          "phase": "panel-create",
+          "sequence": 30
+        },
+        {
           "detail": "begin:1",
           "panel": null,
           "phase": "frame",
-          "sequence": 29
+          "sequence": 31
         },
         {
           "detail": "complete",
           "panel": null,
           "phase": "input-rollover",
-          "sequence": 30
+          "sequence": 32
         },
         {
           "detail": "SetFocus",
-          "panel": 25,
+          "panel": 26,
           "phase": "message",
-          "sequence": 31
+          "sequence": 33
         },
         {
           "detail": "committed",
-          "panel": 25,
+          "panel": 26,
           "phase": "focus",
-          "sequence": 32
+          "sequence": 34
         },
         {
           "detail": "PageHide",
           "panel": 19,
           "phase": "message",
-          "sequence": 33
+          "sequence": 35
         },
         {
           "detail": "dispatched",
           "panel": null,
           "phase": "messages",
-          "sequence": 34
+          "sequence": 36
         },
         {
           "detail": "focus-tick",
-          "panel": 25,
+          "panel": 26,
           "phase": "ticks",
-          "sequence": 35
+          "sequence": 37
         },
         {
           "detail": "solved",
           "panel": null,
           "phase": "layout",
-          "sequence": 36
+          "sequence": 38
         },
         {
           "detail": "advanced",
           "panel": null,
           "phase": "animation",
-          "sequence": 37
+          "sequence": 39
         },
         {
           "detail": "published",
           "panel": null,
           "phase": "dom",
-          "sequence": 38
+          "sequence": 40
         },
         {
           "detail": "end:1",
           "panel": null,
           "phase": "frame",
-          "sequence": 39
+          "sequence": 41
         },
         {
           "detail": "begin:2",
           "panel": null,
           "phase": "frame",
-          "sequence": 40
+          "sequence": 42
         },
         {
           "detail": "complete",
           "panel": null,
           "phase": "input-rollover",
-          "sequence": 41
-        },
-        {
-          "detail": "committed",
-          "panel": 25,
-          "phase": "focus",
-          "sequence": 42
-        },
-        {
-          "detail": "CursorEntered",
-          "panel": 1,
-          "phase": "message",
           "sequence": 43
         },
         {
-          "detail": "CursorMoved",
-          "panel": 1,
-          "phase": "message",
+          "detail": "committed",
+          "panel": 26,
+          "phase": "focus",
           "sequence": 44
+        },
+        {
+          "detail": "CursorEntered",
+          "panel": 5,
+          "phase": "message",
+          "sequence": 45
+        },
+        {
+          "detail": "CursorMoved",
+          "panel": 5,
+          "phase": "message",
+          "sequence": 46
         },
         {
           "detail": "dispatched",
           "panel": null,
           "phase": "messages",
-          "sequence": 45
+          "sequence": 47
         },
         {
           "detail": "focus-tick",
-          "panel": 25,
+          "panel": 26,
           "phase": "ticks",
-          "sequence": 46
+          "sequence": 48
         },
         {
           "detail": "solved",
           "panel": null,
           "phase": "layout",
-          "sequence": 47
+          "sequence": 49
         },
         {
           "detail": "advanced",
           "panel": null,
           "phase": "animation",
-          "sequence": 48
+          "sequence": 50
         },
         {
           "detail": "published",
           "panel": null,
           "phase": "dom",
-          "sequence": 49
+          "sequence": 51
         },
         {
           "detail": "end:2",
           "panel": null,
           "phase": "frame",
-          "sequence": 50
+          "sequence": 52
         },
         {
           "detail": "begin:3",
           "panel": null,
           "phase": "frame",
-          "sequence": 51
-        },
-        {
-          "detail": "complete",
-          "panel": null,
-          "phase": "input-rollover",
-          "sequence": 52
-        },
-        {
-          "detail": "committed",
-          "panel": 25,
-          "phase": "focus",
           "sequence": 53
         },
         {
-          "detail": "CursorExited",
-          "panel": 1,
-          "phase": "message",
-          "sequence": 54
-        },
-        {
-          "detail": "CursorEntered",
-          "panel": 5,
-          "phase": "message",
-          "sequence": 55
-        },
-        {
-          "detail": "CursorMoved",
-          "panel": 5,
-          "phase": "message",
-          "sequence": 56
-        },
-        {
-          "detail": "dispatched",
-          "panel": null,
-          "phase": "messages",
-          "sequence": 57
-        },
-        {
-          "detail": "focus-tick",
-          "panel": 25,
-          "phase": "ticks",
-          "sequence": 58
-        },
-        {
-          "detail": "solved",
-          "panel": null,
-          "phase": "layout",
-          "sequence": 59
-        },
-        {
-          "detail": "advanced",
-          "panel": null,
-          "phase": "animation",
-          "sequence": 60
-        },
-        {
-          "detail": "published",
-          "panel": null,
-          "phase": "dom",
-          "sequence": 61
-        },
-        {
-          "detail": "end:3",
-          "panel": null,
-          "phase": "frame",
-          "sequence": 62
-        },
-        {
-          "detail": "begin:4",
-          "panel": null,
-          "phase": "frame",
-          "sequence": 63
-        },
-        {
           "detail": "complete",
           "panel": null,
           "phase": "input-rollover",
-          "sequence": 64
+          "sequence": 54
         },
         {
           "detail": "KillFocus",
-          "panel": 25,
+          "panel": 26,
           "phase": "message",
-          "sequence": 65
+          "sequence": 55
         },
         {
           "detail": "SetFocus",
           "panel": 5,
           "phase": "message",
-          "sequence": 66
+          "sequence": 56
         },
         {
           "detail": "committed",
           "panel": 5,
           "phase": "focus",
-          "sequence": 67
+          "sequence": 57
         },
         {
           "detail": "CursorMoved",
           "panel": 5,
           "phase": "message",
-          "sequence": 68
+          "sequence": 58
         },
         {
           "detail": "MousePressed",
           "panel": 5,
           "phase": "message",
-          "sequence": 69
+          "sequence": 59
         },
         {
           "detail": "CheckButtonChecked",
           "panel": 1,
           "phase": "message",
-          "sequence": 70
+          "sequence": 60
         },
         {
           "detail": "ButtonToggled",
           "panel": 1,
           "phase": "message",
-          "sequence": 71
+          "sequence": 61
         },
         {
           "detail": "dispatched",
           "panel": null,
           "phase": "messages",
-          "sequence": 72
+          "sequence": 62
         },
         {
           "detail": "focus-tick",
           "panel": 5,
           "phase": "ticks",
-          "sequence": 73
+          "sequence": 63
         },
         {
           "detail": "solved",
           "panel": null,
           "phase": "layout",
-          "sequence": 74
+          "sequence": 64
         },
         {
           "detail": "advanced",
           "panel": null,
           "phase": "animation",
-          "sequence": 75
+          "sequence": 65
         },
         {
           "detail": "published",
           "panel": null,
           "phase": "dom",
-          "sequence": 76
+          "sequence": 66
         },
         {
-          "detail": "end:4",
+          "detail": "end:3",
           "panel": null,
           "phase": "frame",
-          "sequence": 77
+          "sequence": 67
         },
         {
-          "detail": "begin:5",
+          "detail": "begin:4",
           "panel": null,
           "phase": "frame",
-          "sequence": 78
+          "sequence": 68
         },
         {
           "detail": "complete",
           "panel": null,
           "phase": "input-rollover",
-          "sequence": 79
+          "sequence": 69
         },
         {
           "detail": "committed",
           "panel": 5,
           "phase": "focus",
-          "sequence": 80
+          "sequence": 70
         },
         {
           "detail": "CursorMoved",
           "panel": 5,
           "phase": "message",
-          "sequence": 81
+          "sequence": 71
         },
         {
           "detail": "MouseReleased",
           "panel": 5,
+          "phase": "message",
+          "sequence": 72
+        },
+        {
+          "detail": "dispatched",
+          "panel": null,
+          "phase": "messages",
+          "sequence": 73
+        },
+        {
+          "detail": "focus-tick",
+          "panel": 5,
+          "phase": "ticks",
+          "sequence": 74
+        },
+        {
+          "detail": "solved",
+          "panel": null,
+          "phase": "layout",
+          "sequence": 75
+        },
+        {
+          "detail": "advanced",
+          "panel": null,
+          "phase": "animation",
+          "sequence": 76
+        },
+        {
+          "detail": "published",
+          "panel": null,
+          "phase": "dom",
+          "sequence": 77
+        },
+        {
+          "detail": "end:4",
+          "panel": null,
+          "phase": "frame",
+          "sequence": 78
+        },
+        {
+          "detail": "begin:5",
+          "panel": null,
+          "phase": "frame",
+          "sequence": 79
+        },
+        {
+          "detail": "complete",
+          "panel": null,
+          "phase": "input-rollover",
+          "sequence": 80
+        },
+        {
+          "detail": "committed",
+          "panel": 5,
+          "phase": "focus",
+          "sequence": 81
+        },
+        {
+          "detail": "TextChanged",
+          "panel": 1,
           "phase": "message",
           "sequence": 82
         },
@@ -4526,13 +4666,13 @@
         },
         {
           "detail": "SetFocus",
-          "panel": 25,
+          "panel": 26,
           "phase": "message",
           "sequence": 227
         },
         {
           "detail": "committed",
-          "panel": 25,
+          "panel": 26,
           "phase": "focus",
           "sequence": 228
         },
@@ -4544,7 +4684,7 @@
         },
         {
           "detail": "focus-tick",
-          "panel": 25,
+          "panel": 26,
           "phase": "ticks",
           "sequence": 230
         },
@@ -4586,19 +4726,19 @@
         },
         {
           "detail": "committed",
-          "panel": 25,
+          "panel": 26,
           "phase": "focus",
           "sequence": 237
         },
         {
           "detail": "KeyCodePressed",
-          "panel": 25,
+          "panel": 26,
           "phase": "message",
           "sequence": 238
         },
         {
           "detail": "KeyCodeTyped",
-          "panel": 25,
+          "panel": 26,
           "phase": "message",
           "sequence": 239
         },
@@ -4616,7 +4756,7 @@
         },
         {
           "detail": "focus-tick",
-          "panel": 25,
+          "panel": 26,
           "phase": "ticks",
           "sequence": 242
         },
@@ -4658,7 +4798,7 @@
         },
         {
           "detail": "KillFocus",
-          "panel": 25,
+          "panel": 26,
           "phase": "message",
           "sequence": 249
         },
@@ -4747,96 +4887,100 @@
           "role": "menu"
         },
         "e10": {
-          "name": "Selectable rich text",
-          "role": "document"
+          "name": "Entry",
+          "role": "textbox"
         },
         "e11": {
-          "name": "List",
-          "role": "grid"
-        },
-        "e12": {
-          "name": "Scroll",
-          "role": "scrollbar"
-        },
-        "e13": {
-          "name": "HorizontalScroll",
-          "role": "scrollbar"
-        },
-        "e14": {
-          "name": "Combo",
-          "role": "combobox"
-        },
-        "e15": {
-          "name": "TF2 help",
-          "role": "link"
-        },
-        "e16": {
-          "name": "Toggle",
-          "role": "checkbox"
-        },
-        "e17": {
           "name": "Volume",
           "role": "slider"
         },
+        "e12": {
+          "name": "Selectable rich text",
+          "role": "document"
+        },
+        "e13": {
+          "name": "List",
+          "role": "grid"
+        },
+        "e14": {
+          "name": "Scroll",
+          "role": "scrollbar"
+        },
+        "e15": {
+          "name": "HorizontalScroll",
+          "role": "scrollbar"
+        },
+        "e16": {
+          "name": "Combo",
+          "role": "combobox"
+        },
+        "e17": {
+          "name": "TF2 help",
+          "role": "link"
+        },
         "e18": {
+          "name": "Left aligned disabled",
+          "role": "button"
+        },
+        "e19": {
           "name": "Video",
           "role": "menuitem"
         },
-        "e19": {
-          "name": "Audio",
-          "role": "menuitem"
-        },
         "e2": {
-          "name": "Message box",
+          "name": "Moveable frame",
           "role": "dialog"
         },
         "e20": {
-          "name": "Mouse",
+          "name": "Audio",
           "role": "menuitem"
         },
         "e21": {
-          "name": "Close",
-          "role": "button"
+          "name": "Mouse",
+          "role": "menuitem"
         },
         "e22": {
-          "name": "#MessageBox_OK",
-          "role": "button"
+          "name": "Sheet",
+          "role": "tablist"
         },
         "e23": {
           "name": "Close",
           "role": "button"
         },
         "e24": {
-          "name": "Sheet",
-          "role": "tablist"
-        },
-        "e25": {
           "name": "Close",
           "role": "button"
         },
-        "e26": {
+        "e25": {
           "name": "#MessageBox_OK",
           "role": "button"
         },
+        "e26": {
+          "name": "Close",
+          "role": "button"
+        },
         "e27": {
-          "name": "#QueryBox_Cancel",
+          "name": "#MessageBox_OK",
           "role": "button"
         },
         "e28": {
-          "name": "Video",
-          "role": "tab"
+          "name": "#QueryBox_Cancel",
+          "role": "button"
         },
         "e29": {
-          "name": "Audio",
-          "role": "tab"
+          "name": "PageVideo",
+          "role": "tabpanel"
         },
         "e3": {
-          "name": "Moveable frame",
+          "name": "Message box",
           "role": "dialog"
         },
         "e30": {
-          "name": "PageVideo",
-          "role": "tabpanel"
+          "name": "Video",
+          "role": "tab"
+        },
+        "e31": {
+          "name": "Audio",
+          "role": "tab"
         },
         "e4": {
           "name": "Apply settings?",
@@ -4847,23 +4991,23 @@
           "role": "button"
         },
         "e6": {
+          "name": "Toggle",
+          "role": "checkbox"
+        },
+        "e7": {
           "name": "Radio A",
           "role": "radio"
         },
-        "e7": {
+        "e8": {
           "name": "Radio B",
           "role": "radio"
         },
-        "e8": {
+        "e9": {
           "name": "Menu item",
           "role": "menuitem"
-        },
-        "e9": {
-          "name": "Entry",
-          "role": "textbox"
         }
       },
-      "snapshot": "- main\n  - generic\n    - generic \"Root\"\n      - image \"Icon\"\n      - button \"Submit\" [ref=e5]\n      - radio \"Radio A\" [checked=false, ref=e6]\n      - radio \"Radio B\" [checked=false, ref=e7]\n      - menuitem \"Menu item\" [ref=e8]\n      - textbox \"Entry\" [ref=e9]: 12.5\n        - StaticText \"12.5\"\n      - progressbar \"Progress\": 0.6499999761581421\n      - document \"Selectable rich text\" [ref=e10] focusable [tabindex]\n      - grid \"List\" [ref=e11] focusable [tabindex]\n        - row \"Item one\"\n        - row \"Item two\"\n      - scrollbar \"Scroll\" [ref=e12] focusable [tabindex]: 0\n      - scrollbar \"HorizontalScroll\" [ref=e13] focusable [tabindex]: 0\n      - combobox \"Combo\" [expanded=false, ref=e14]\n      - link \"TF2 help\" [ref=e15]\n      - checkbox \"Toggle\" [checked=true, ref=e16]\n      - slider \"Volume\" [ref=e17]: 6\n    - menu \"Menu\" [ref=e1] focusable [tabindex]\n      - menuitem \"Video\" [ref=e18]\n      - menuitem \"Audio\" [ref=e19]\n      - menuitem \"Mouse\" [ref=e20]\n    - dialog \"Message box\" [ref=e2] focusable [tabindex]\n      - StaticText \"Message box\"\n      - button \"Close\" [ref=e21]\n      - button \"#MessageBox_OK\" [ref=e22]\n    - dialog \"Moveable frame\" [ref=e3] focusable [tabindex]\n      - StaticText \"Moveable frame\"\n      - button \"Close\" [ref=e23]\n      - tablist \"Sheet\" [ref=e24] focusable [tabindex]\n        - tab \"Video\" [selected, ref=e28]\n        - tab \"Audio\" [ref=e29]\n        - tabpanel \"PageVideo\" [ref=e30] focusable [tabindex]\n    - dialog \"Apply settings?\" [ref=e4] focusable [tabindex]\n      - StaticText \"Apply settings?\"\n      - button \"Close\" [ref=e25]\n      - button \"#MessageBox_OK\" [ref=e26]\n      - button \"#QueryBox_Cancel\" [ref=e27]"
+      "snapshot": "- main\n  - generic\n    - generic \"Root\"\n      - image \"Icon\"\n      - button \"Submit\" [ref=e5]\n      - checkbox \"Toggle\" [checked=true, ref=e6]\n      - radio \"Radio A\" [checked=false, ref=e7]\n      - radio \"Radio B\" [checked=false, ref=e8]\n      - menuitem \"Menu item\" [ref=e9]\n      - textbox \"Entry\" [ref=e10]: 12x.5\n        - StaticText \"12x.5\"\n      - slider \"Volume\" [ref=e11]: 6\n      - progressbar \"Progress\": 0.6499999761581421\n      - document \"Selectable rich text\" [ref=e12] focusable [tabindex]\n      - grid \"List\" [ref=e13] focusable [tabindex]\n        - row \"Item one\"\n        - row \"Item two\"\n      - scrollbar \"Scroll\" [ref=e14] focusable [tabindex]: 0\n      - scrollbar \"HorizontalScroll\" [ref=e15] focusable [tabindex]: 0\n      - combobox \"Combo\" [expanded=false, ref=e16]\n      - link \"TF2 help\" [ref=e17]\n      - button \"Left aligned disabled\" [disabled, ref=e18]\n    - menu \"Menu\" [ref=e1] focusable [tabindex]\n      - menuitem \"Video\" [ref=e19]\n      - menuitem \"Audio\" [ref=e20]\n      - menuitem \"Mouse\" [ref=e21]\n    - dialog \"Moveable frame\" [ref=e2] focusable [tabindex]\n      - tablist \"Sheet\" [ref=e22] focusable [tabindex]\n        - tabpanel \"PageVideo\" [ref=e29] focusable [tabindex]\n        - tab \"Video\" [selected, ref=e30]\n        - tab \"Audio\" [ref=e31]\n      - StaticText \"Moveable frame\"\n      - button \"Close\" [ref=e23]\n    - dialog \"Message box\" [ref=e3] focusable [tabindex]\n      - StaticText \"Message box\"\n      - button \"Close\" [ref=e24]\n      - button \"#MessageBox_OK\" [ref=e25]\n    - dialog \"Apply settings?\" [ref=e4] focusable [tabindex]\n      - StaticText \"Apply settings?\"\n      - button \"Close\" [ref=e26]\n      - button \"#MessageBox_OK\" [ref=e27]\n      - button \"#QueryBox_Cancel\" [ref=e28]"
     },
     "error": null
   },
@@ -4877,12 +5021,12 @@
       "frame": 1,
       "input": {
         "applicationModal": null,
-        "calculatedKeyFocus": 25,
+        "calculatedKeyFocus": 26,
         "capture": null,
         "captureButton": null,
         "downButtons": [],
         "downKeys": [],
-        "keyFocus": 25,
+        "keyFocus": 26,
         "modalRestriction": null,
         "modalSubtree": null,
         "mouseFocus": null,
@@ -4900,7 +5044,7 @@
       "localizationIdentity": "resource/browser_english.txt",
       "ownedResources": {
         "listeners": 13,
-        "nodes": 49,
+        "nodes": 53,
         "observers": 0,
         "timers": 0
       },
@@ -4949,7 +5093,8 @@
             22,
             23,
             24,
-            25
+            25,
+            26
           ],
           "clip": {
             "height": 720,
@@ -5000,6 +5145,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -5101,6 +5247,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -5202,6 +5349,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": "test/icon",
             "imageFill": 1,
             "items": [],
@@ -5303,6 +5451,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -5404,6 +5553,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -5505,6 +5655,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -5606,6 +5757,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -5707,6 +5859,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -5808,6 +5961,7 @@
             "editable": true,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -5909,6 +6063,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -6010,6 +6165,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -6111,6 +6267,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -6212,6 +6369,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [
@@ -6335,6 +6493,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -6436,6 +6595,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [
@@ -6556,6 +6716,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -6666,6 +6827,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [
@@ -6782,6 +6944,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -6883,6 +7046,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -6985,6 +7149,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -7087,6 +7252,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -7188,6 +7354,7 @@
             "editable": true,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -7289,6 +7456,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -7390,6 +7558,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -7414,6 +7583,108 @@
           },
           "tabPosition": 0,
           "text": "Message box",
+          "topmostPopup": false,
+          "visible": true,
+          "z": 0
+        },
+        {
+          "absoluteBounds": {
+            "height": 30,
+            "width": 220,
+            "x": 760,
+            "y": 440
+          },
+          "accessibleDescription": "",
+          "accessibleName": "Left aligned disabled",
+          "animationVariables": {
+            "PaintBackgroundType": 0,
+            "Texture1": "vgui/hud/8x800corner1",
+            "Texture2": "vgui/hud/8x800corner2",
+            "Texture3": "vgui/hud/8x800corner3",
+            "Texture4": "vgui/hud/8x800corner4",
+            "alpha": 255
+          },
+          "bounds": {
+            "height": 30,
+            "width": 220,
+            "x": 760,
+            "y": 440
+          },
+          "children": [],
+          "clip": {
+            "height": 30,
+            "width": 220,
+            "x": 760,
+            "y": 440
+          },
+          "control": "Button",
+          "effectivelyVisible": true,
+          "enabled": false,
+          "id": 25,
+          "inset": {
+            "bottom": 0,
+            "left": 0,
+            "right": 0,
+            "top": 0
+          },
+          "keyboardInput": true,
+          "minimumSize": [
+            0,
+            0
+          ],
+          "mouseInput": true,
+          "name": "AuditDisabledButton",
+          "parent": 1,
+          "popup": false,
+          "proportional": false,
+          "resourceOwner": null,
+          "role": "button",
+          "state": {
+            "activeIndex": null,
+            "armed": false,
+            "bodyText": "",
+            "caret": 0,
+            "checked": false,
+            "composition": {
+              "active": false,
+              "caret": 0,
+              "text": ""
+            },
+            "depressed": false,
+            "drawColor": [
+              255,
+              255,
+              255,
+              255
+            ],
+            "editable": false,
+            "foregroundColor": null,
+            "frameInteraction": null,
+            "highlightedIndex": null,
+            "image": null,
+            "imageFill": 1,
+            "items": [],
+            "maximum": 0,
+            "maximumCharacters": -1,
+            "minimum": 0,
+            "multiline": false,
+            "numericOnly": false,
+            "previousProgress": -1,
+            "progress": 0,
+            "rangeWindow": 0,
+            "scalarProperties": {},
+            "sectionedItems": [],
+            "sections": [],
+            "selected": false,
+            "selection": [
+              -1,
+              0
+            ],
+            "textHidden": false,
+            "value": 0
+          },
+          "tabPosition": 0,
+          "text": "Left aligned disabled",
           "topmostPopup": false,
           "visible": true,
           "z": 0
@@ -7451,7 +7722,7 @@
           "control": "QueryBox",
           "effectivelyVisible": true,
           "enabled": true,
-          "id": 25,
+          "id": 26,
           "inset": {
             "bottom": 0,
             "left": 0,
@@ -7491,6 +7762,7 @@
             "editable": false,
             "foregroundColor": null,
             "frameInteraction": null,
+            "highlightedIndex": null,
             "image": null,
             "imageFill": 1,
             "items": [],
@@ -7524,15 +7796,15 @@
         13,
         16,
         24,
-        25
+        26
       ],
       "queuedMessages": 0,
       "reducedMotion": false,
-      "revision": 31,
+      "revision": 33,
       "rootPanel": 1,
       "runtimeIdentity": "browser-evidence",
       "schemeIdentity": "resource/browser-scheme.res",
-      "timeSeconds": 0.9103999999761582,
+      "timeSeconds": 0.39120000004768374,
       "trace": [
         {
           "detail": "EditablePanel:Root",
@@ -7697,76 +7969,88 @@
           "sequence": 27
         },
         {
-          "detail": "QueryBox:Query",
+          "detail": "Button:AuditDisabledButton",
           "panel": 25,
           "phase": "panel-create",
           "sequence": 28
         },
         {
+          "detail": "none",
+          "panel": null,
+          "phase": "pointer-capture",
+          "sequence": 29
+        },
+        {
+          "detail": "QueryBox:Query",
+          "panel": 26,
+          "phase": "panel-create",
+          "sequence": 30
+        },
+        {
           "detail": "begin:1",
           "panel": null,
           "phase": "frame",
-          "sequence": 29
+          "sequence": 31
         },
         {
           "detail": "complete",
           "panel": null,
           "phase": "input-rollover",
-          "sequence": 30
+          "sequence": 32
         },
         {
           "detail": "SetFocus",
-          "panel": 25,
+          "panel": 26,
           "phase": "message",
-          "sequence": 31
+          "sequence": 33
         },
         {
           "detail": "committed",
-          "panel": 25,
+          "panel": 26,
           "phase": "focus",
-          "sequence": 32
+          "sequence": 34
         },
         {
           "detail": "PageHide",
           "panel": 19,
           "phase": "message",
-          "sequence": 33
+          "sequence": 35
         },
         {
           "detail": "dispatched",
           "panel": null,
           "phase": "messages",
-          "sequence": 34
+          "sequence": 36
         },
         {
           "detail": "focus-tick",
-          "panel": 25,
+          "panel": 26,
           "phase": "ticks",
-          "sequence": 35
+          "sequence": 37
         },
         {
           "detail": "solved",
           "panel": null,
           "phase": "layout",
-          "sequence": 36
+          "sequence": 38
         },
         {
           "detail": "advanced",
           "panel": null,
           "phase": "animation",
-          "sequence": 37
+          "sequence": 39
         },
         {
           "detail": "published",
           "panel": null,
           "phase": "dom",
-          "sequence": 38
+          "sequence": 40
         },
         {
           "detail": "end:1",
           "panel": null,
           "phase": "frame",
-          "sequence": 39
+          "sequence": 41
         }
       ],
       "viewport": {

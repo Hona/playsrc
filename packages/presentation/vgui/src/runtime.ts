@@ -101,14 +101,15 @@ const GENERIC_SCHEME_COLOR_LOOKUPS = Object.freeze([
   "Panel.FgColor", "Panel.BgColor",
   "Label.TextDullColor", "Label.TextColor", "Label.TextBrightColor", "Label.SelectedTextColor", "Label.BgColor", "Label.DisabledFgColor1", "Label.DisabledFgColor2",
   "Button.TextColor", "Button.BgColor", "Button.ArmedTextColor", "Button.ArmedBgColor", "Button.DepressedTextColor", "Button.DepressedBgColor", "Button.SelectedTextColor", "Button.SelectedBgColor",
-  "CheckButton.TextColor", "CheckButton.SelectedTextColor", "CheckButton.BgColor", "CheckButton.Border1", "CheckButton.Border2", "CheckButton.Check",
+  "CheckButton.TextColor", "CheckButton.SelectedTextColor", "CheckButton.BgColor", "CheckButton.Border1", "CheckButton.Border2", "CheckButton.Check", "CheckButton.HighlightFgColor", "CheckButton.DisabledFgColor", "CheckButton.DisabledBgColor", "CheckButton.ArmedBgColor", "CheckButton.DepressedBgColor",
   "RadioButton.TextColor", "RadioButton.SelectedTextColor", "RadioButton.ArmedTextColor",
   "Menu.TextColor", "Menu.BgColor", "Menu.ArmedTextColor", "Menu.ArmedBgColor",
-  "TextEntry.TextColor", "TextEntry.BgColor", "TextEntry.CursorColor", "TextEntry.DisabledTextColor", "TextEntry.DisabledBgColor", "TextEntry.SelectedTextColor", "TextEntry.SelectedBgColor", "TextEntry.OutOfFocusSelectedBgColor",
+  "TextEntry.TextColor", "TextEntry.BgColor", "TextEntry.CursorColor", "TextEntry.DisabledTextColor", "TextEntry.DisabledBgColor", "TextEntry.SelectedTextColor", "TextEntry.SelectedBgColor", "TextEntry.OutOfFocusSelectedBgColor", "TextEntry.FocusEdgeColor",
   "RichText.TextColor", "RichText.BgColor", "RichText.SelectedTextColor", "RichText.SelectedBgColor",
   "Frame.BgColor", "Frame.OutOfFocusBgColor", "FrameTitleBar.TextColor", "FrameTitleBar.BgColor", "FrameTitleBar.DisabledTextColor", "FrameTitleBar.DisabledBgColor",
   "ProgressBar.FgColor", "ProgressBar.BgColor", "Slider.NobColor", "Slider.TextColor", "Slider.TrackColor", "Slider.DisabledTextColor1", "Slider.DisabledTextColor2",
   "ScrollBarSlider.FgColor", "ScrollBarSlider.BgColor", "ListPanel.TextColor", "ListPanel.BgColor", "ListPanel.SelectedTextColor", "ListPanel.SelectedBgColor", "ListPanel.SelectedOutOfFocusBgColor",
+  "PropertySheet.TextColor", "PropertySheet.SelectedTextColor", "SectionedListPanel.TextColor", "SectionedListPanel.BrightTextColor", "SectionedListPanel.SelectedTextColor", "SectionedListPanel.SelectedBgColor", "SectionedListPanel.HeaderTextColor", "SectionedListPanel.DividerColor",
 ])
 
 const CONTROL_PROPERTIES: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
@@ -238,6 +239,7 @@ type PanelState = {
   chromeElements: Map<string, HTMLElement>
   pressedItem: number | null
   activeIndex: number | null
+  highlightedIndex: number | null
   caret: number
   selectionStart: number
   selectionEnd: number
@@ -991,6 +993,7 @@ class SourceVguiRuntime implements VguiRuntime {
           foregroundColor: panel.foregroundColor,
           scalarProperties: Object.freeze(Object.fromEntries(panel.scalarProperties)),
           activeIndex: panel.activeIndex,
+          highlightedIndex: panel.highlightedIndex,
           caret: panel.caret,
           selection: Object.freeze([panel.selectionStart, panel.selectionEnd]) as readonly [number, number],
           editable: panel.editable,
@@ -1539,6 +1542,7 @@ class SourceVguiRuntime implements VguiRuntime {
       chromeElements: new Map(),
       pressedItem: null,
       activeIndex: null,
+      highlightedIndex: null,
       caret: 0,
       selectionStart: -1,
       selectionEnd: 0,
@@ -1659,8 +1663,9 @@ class SourceVguiRuntime implements VguiRuntime {
   private computeDimension(value: string, panel: PanelState | null, horizontal: boolean, computingOther = false, resourceSemantics = false): number {
     if (!panel) return this.proportional(parseFloatValue(value, "dimension"), null)
     const parent = panel.parent === null ? null : this.requirePanel(panel.parent)
+    const proportionalToParent = [...panel.properties].find(([name]) => sameName(name, "proportionalToParent"))?.[1] === "1"
     const useParent = resourceSemantics
-      ? panel.properties.get("proportionalToParent") === "1"
+      ? proportionalToParent
       : panel.proportional && parent !== null
     const parentWidth = useParent ? parent?.bounds.width ?? this.viewport.width : this.viewport.width
     const parentHeight = useParent ? parent?.bounds.height ?? this.viewport.height : this.viewport.height
@@ -1702,8 +1707,9 @@ class SourceVguiRuntime implements VguiRuntime {
   private computePosition(value: string, panel: PanelState | null, horizontal: boolean, resourceSemantics = false): number {
     if (!panel) return this.proportional(parseFloatValue(value, "position"), null)
     const parent = panel.parent === null ? null : this.requirePanel(panel.parent)
+    const proportionalToParent = [...panel.properties].find(([name]) => sameName(name, "proportionalToParent"))?.[1] === "1"
     const useParent = resourceSemantics
-      ? panel.properties.get("proportionalToParent") === "1"
+      ? proportionalToParent
       : panel.proportional && parent !== null
     const parentSize = horizontal
       ? useParent ? parent?.bounds.width ?? this.viewport.width : this.viewport.width
@@ -1752,6 +1758,8 @@ class SourceVguiRuntime implements VguiRuntime {
       width: Math.max(panel.minimumWidth, bounds.width),
       height: Math.max(panel.minimumHeight, bounds.height),
     }
+    const property = (name: string): string | null => [...panel.properties].find(([key]) => sameName(key, name))?.[1] ?? null
+    this.applyAutoResizeSettings(panel, property)
     if (changedSize) this.resizeChildren(panel)
     this.solveGeometry()
     this.publishDom()
@@ -2431,6 +2439,8 @@ class SourceVguiRuntime implements VguiRuntime {
 
   private reapplyPanelPresentation(panel: PanelState): void {
     const sourceControl = panel.sourceControl
+    const labelDerived = ["Label", "Button", "CheckButton", "RadioButton", "FrameSystemButton", "MenuItem", "URLLabel"]
+      .some((name) => sameName(sourceControl, name))
     if (sameName(sourceControl, "FrameSystemButton")) {
       const configured = this.settings.get(asciiFold(panel.enabled ? "FrameSystemButton.Icon" : "FrameSystemButton.DisabledIcon"))
       if (configured && this.images.has(asciiFold(configured))) panel.image = configured
@@ -2443,14 +2453,23 @@ class SourceVguiRuntime implements VguiRuntime {
     let background = this.resolveColor("Panel.BgColor", TRANSPARENT)
     if (sameName(sourceControl, "Label")) {
       const labelColor = panel.properties.get("brighttext") === "1" ? "Label.TextBrightColor" : panel.properties.get("dulltext") === "1" ? "Label.TextDullColor" : "Label.TextColor"
-      foreground = this.resolveColor(panel.enabled ? labelColor : "Label.DisabledFgColor1", foreground)
+      foreground = this.resolveColor(labelColor, foreground)
       background = this.resolveColor("Label.BgColor", background)
-    } else if (["Button", "CheckButton", "RadioButton", "FrameSystemButton", "MenuItem"].some((name) => sameName(sourceControl, name))) {
-      const prefix = sameName(sourceControl, "MenuItem") ? "Menu" : sameName(sourceControl, "CheckButton") ? "CheckButton" : sameName(sourceControl, "RadioButton") ? "RadioButton" : "Button"
+    } else if (sameName(sourceControl, "CheckButton")) {
+      foreground = this.resolveColor(panel.armed ? "CheckButton.HighlightFgColor" : panel.selected ? "CheckButton.SelectedTextColor" : "CheckButton.TextColor", foreground)
+      background = TRANSPARENT
+    } else if (sameName(sourceControl, "RadioButton")) {
+      foreground = this.resolveColor(panel.armed ? "RadioButton.ArmedTextColor" : panel.selected ? "RadioButton.SelectedTextColor" : "RadioButton.TextColor", foreground)
+      background = TRANSPARENT
+    } else if (["Button", "FrameSystemButton", "MenuItem"].some((name) => sameName(sourceControl, name))) {
+      const prefix = sameName(sourceControl, "MenuItem") ? "Menu" : "Button"
       const state = panel.depressed ? "Depressed" : panel.armed ? "Armed" : panel.selected ? "Selected" : ""
       foreground = this.resolveColor(`${prefix}.${state ? `${state}TextColor` : "TextColor"}`, foreground)
       background = this.resolveColor(`${prefix}.${state ? `${state}BgColor` : "BgColor"}`, background)
     } else if (sameName(sourceControl, "TextEntry")) {
+      foreground = this.resolveColor(panel.enabled ? "TextEntry.TextColor" : "TextEntry.DisabledTextColor", foreground)
+      background = this.resolveColor(panel.enabled ? "TextEntry.BgColor" : "TextEntry.DisabledBgColor", background)
+    } else if (sameName(sourceControl, "ComboBox")) {
       foreground = this.resolveColor(panel.enabled ? "TextEntry.TextColor" : "TextEntry.DisabledTextColor", foreground)
       background = this.resolveColor(panel.enabled ? "TextEntry.BgColor" : "TextEntry.DisabledBgColor", background)
     } else if (sameName(sourceControl, "RichText")) {
@@ -2482,10 +2501,26 @@ class SourceVguiRuntime implements VguiRuntime {
     if (Array.isArray(animatedForeground) && animatedForeground.length === 4) foreground = animatedForeground as unknown as Rgba
     if (Array.isArray(animatedBackground) && animatedBackground.length === 4) background = animatedBackground as unknown as Rgba
     if (panel.foregroundColor) foreground = panel.foregroundColor
+    panel.element.style.textShadow = "none"
+    if (!panel.enabled && labelDerived) {
+      const shadow = this.resolveColor("Label.DisabledFgColor1", foreground)
+      foreground = this.resolveColor("Label.DisabledFgColor2", foreground)
+      panel.element.style.textShadow = `1px 1px 0 ${rgba(shadow)}`
+    }
     panel.element.style.color = rgba(foreground)
+    if (["TextEntry", "ComboBox"].some((name) => sameName(sourceControl, name))) {
+      panel.element.style.setProperty("--vgui-selection-text", rgba(this.resolveColor("TextEntry.SelectedTextColor", foreground)))
+      panel.element.style.setProperty("--vgui-selection-background", rgba(this.resolveColor(this.keyFocus === panel.id ? "TextEntry.SelectedBgColor" : "TextEntry.OutOfFocusSelectedBgColor", background)))
+      panel.element.style.boxShadow = this.keyFocus === panel.id
+        ? `inset 0 0 0 1px ${rgba(this.resolveColor("TextEntry.FocusEdgeColor", TRANSPARENT))}`
+        : "none"
+    }
     this.presentPanelBackground(panel, background)
     const alpha = panel.animationValues.get("alpha")
     panel.element.style.opacity = String(Math.max(0, Math.min(255, typeof alpha === "number" ? alpha : 255)) / 255)
+    if (!panel.font && (labelDerived || ["TextEntry", "ComboBox", "RichText"].some((name) => sameName(sourceControl, name))) && this.fonts.has("default")) {
+      panel.font = "Default"
+    }
     if (panel.font) {
       const font = this.fonts.get(asciiFold(panel.font))
       if (!font) throw new RuntimeFault("MissingReference", `${panel.name}:font:${panel.font}`)
@@ -2497,7 +2532,7 @@ class SourceVguiRuntime implements VguiRuntime {
       panel.element.style.fontSynthesis = "none"
       panel.element.dataset.fontAvailable = font.available ? "true" : "false"
       if (!font.available) panel.element.style.color = "transparent"
-      if (sameName(sourceControl, "Label")) {
+      if (labelDerived) {
         const wrap = panel.properties.get("wrap") === "1" || panel.properties.get("centerwrap") === "1"
         panel.element.style.whiteSpace = wrap ? "normal" : "nowrap"
         panel.element.style.textAlign = panel.properties.get("centerwrap") === "1" ? "center" : this.textAlignment(panel.properties.get("textAlignment"))[0]
@@ -2507,7 +2542,7 @@ class SourceVguiRuntime implements VguiRuntime {
       panel.element.dataset.fontAvailable = "false"
       panel.element.style.color = "transparent"
     }
-    if (sameName(sourceControl, "Label")) {
+    if (labelDerived) {
       const alignment = this.textAlignment(panel.properties.get("textAlignment"))
       panel.element.style.display = "flex"
       panel.element.style.justifyContent = alignment[0] === "left" ? "flex-start" : alignment[0] === "right" ? "flex-end" : "center"
@@ -2518,10 +2553,27 @@ class SourceVguiRuntime implements VguiRuntime {
         insetX = this.proportional(insetX, panel)
         insetY = Math.ceil(insetY * this.proportional(1000, panel) / 1000)
       }
-      panel.element.style.padding = `${insetY}px ${insetX}px`
+      panel.element.style.padding = "0"
+      panel.element.style.paddingTop = `${insetY}px`
+      panel.element.style.paddingLeft = alignment[0] === "left" ? `${insetX}px` : "0px"
+      panel.element.style.paddingRight = alignment[0] === "right" ? `${insetX}px` : "0px"
     }
-    if (panel.border) this.presentBorder(panel, this.borders.get(asciiFold(panel.border))!)
+    const presentationBorder = this.presentationBorder(panel)
+    if (presentationBorder) this.presentBorder(panel, presentationBorder)
     if (panel.image) this.presentImage(panel, this.images.get(asciiFold(panel.image))!)
+  }
+
+  private presentationBorder(panel: PanelState): VguiBorder | null {
+    if (panel.border) return this.borders.get(asciiFold(panel.border)) ?? null
+    const control = panel.sourceControl
+    let name: string | null = null
+    if (sameName(control, "Button") || sameName(control, "FrameSystemButton")) {
+      name = panel.depressed ? "ButtonDepressedBorder" : this.keyFocus === panel.id ? "ButtonKeyFocusBorder" : "ButtonBorder"
+    } else if (sameName(control, "TextEntry")) name = "ButtonDepressedBorder"
+    else if (sameName(control, "ComboBox")) name = "ComboBoxBorder"
+    else if (sameName(control, "Menu")) name = "MenuBorder"
+    else if (sameName(control, "PropertySheet")) name = "PropertySheetBorder"
+    return name ? this.borders.get(asciiFold(name)) ?? null : null
   }
 
   private textAlignment(value: string | undefined): readonly ["left" | "center" | "right", "top" | "center" | "bottom"] {
@@ -2544,31 +2596,7 @@ class SourceVguiRuntime implements VguiRuntime {
 
   private presentBorder(panel: PanelState, border: VguiBorder): void {
     if (border.kind === "line") {
-      const images: string[] = []
-      const sizes: string[] = []
-      const positions: string[] = []
-      const append = (color: Rgba, size: string, position: string): void => {
-        images.push(`linear-gradient(${rgba(color)}, ${rgba(color)})`)
-        sizes.push(size)
-        positions.push(position)
-      }
-      border.sides.left.forEach((line, index) => append(line.color, `1px calc(100% - ${line.startOffset + line.endOffset}px)`, `${index}px ${line.startOffset}px`))
-      border.sides.top.forEach((line, index) => append(line.color, `calc(100% - ${line.startOffset + line.endOffset}px) 1px`, `${line.startOffset}px ${index}px`))
-      border.sides.right.forEach((line, index) => append(line.color, `1px calc(100% - ${line.startOffset + line.endOffset}px)`, `calc(100% - ${index + 1}px) ${line.startOffset}px`))
-      border.sides.bottom.forEach((line, index) => append(line.color, `calc(100% - ${line.startOffset + line.endOffset}px) 1px`, `${line.startOffset}px calc(100% - ${index + 1}px)`))
-      images.reverse()
-      sizes.reverse()
-      positions.reverse()
-      panel.element.style.border = "0"
-      panel.element.style.borderImage = "none"
-      const existingImages = panel.element.style.backgroundImage
-      const existingSizes = panel.element.style.backgroundSize
-      const existingPositions = panel.element.style.backgroundPosition
-      const hasExisting = !!existingImages && existingImages !== "none"
-      panel.element.style.backgroundImage = [...images, ...(hasExisting ? [existingImages] : [])].join(", ")
-      panel.element.style.backgroundSize = [...sizes, ...(hasExisting ? [existingSizes] : [])].join(", ")
-      panel.element.style.backgroundPosition = [...positions, ...(hasExisting ? [existingPositions] : [])].join(", ")
-      panel.element.style.backgroundRepeat = "no-repeat"
+      this.presentLineBorder(panel.element, border)
       return
     }
     const image = this.images.get(asciiFold(border.image))
@@ -2601,6 +2629,34 @@ class SourceVguiRuntime implements VguiRuntime {
       panel.element.style.borderImageWidth = `${border.drawCornerHeight}px ${border.drawCornerWidth}px`
       panel.element.style.borderImageRepeat = "stretch"
     }
+  }
+
+  private presentLineBorder(element: HTMLElement, border: Extract<VguiBorder, { kind: "line" }>): void {
+    const images: string[] = []
+    const sizes: string[] = []
+    const positions: string[] = []
+    const append = (color: Rgba, size: string, position: string): void => {
+      images.push(`linear-gradient(${rgba(color)}, ${rgba(color)})`)
+      sizes.push(size)
+      positions.push(position)
+    }
+    border.sides.left.forEach((line, index) => append(line.color, `1px calc(100% - ${line.startOffset + line.endOffset}px)`, `${index}px ${line.startOffset}px`))
+    border.sides.top.forEach((line, index) => append(line.color, `calc(100% - ${line.startOffset + line.endOffset}px) 1px`, `${line.startOffset}px ${index}px`))
+    border.sides.right.forEach((line, index) => append(line.color, `1px calc(100% - ${line.startOffset + line.endOffset}px)`, `calc(100% - ${index + 1}px) ${line.startOffset}px`))
+    border.sides.bottom.forEach((line, index) => append(line.color, `calc(100% - ${line.startOffset + line.endOffset}px) 1px`, `${line.startOffset}px calc(100% - ${index + 1}px)`))
+    images.reverse()
+    sizes.reverse()
+    positions.reverse()
+    element.style.border = "0"
+    element.style.borderImage = "none"
+    const existingImages = element.style.backgroundImage
+    const existingSizes = element.style.backgroundSize
+    const existingPositions = element.style.backgroundPosition
+    const hasExisting = !!existingImages && existingImages !== "none"
+    element.style.backgroundImage = [...images, ...(hasExisting ? [existingImages] : [])].join(", ")
+    element.style.backgroundSize = [...sizes, ...(hasExisting ? [existingSizes] : [])].join(", ")
+    element.style.backgroundPosition = [...positions, ...(hasExisting ? [existingPositions] : [])].join(", ")
+    element.style.backgroundRepeat = "no-repeat"
   }
 
   private imageUrl(name: string, tint: Rgba, frame: number, rotation: 0 | 1 | 2 | 3): string | null {
@@ -2823,6 +2879,7 @@ class SourceVguiRuntime implements VguiRuntime {
   private mutateControl(panelId: VguiPanelId, mutation: VguiControlMutation): void {
     const panel = this.requirePanel(panelId)
     if (!mutation || typeof mutation !== "object") throw new RuntimeFault("InvalidOperation", panel.name)
+    if (mutation.editable !== undefined && typeof mutation.editable !== "boolean") throw new RuntimeFault("MalformedValue", `${panel.name}:editable`)
     if (mutation.text !== undefined && !validString(mutation.text, this.limits.maxTextCodeUnits)) throw new RuntimeFault("TextLimit", panel.name)
     if (mutation.command !== undefined && mutation.command !== null && !validString(mutation.command, this.limits.maxStringCodeUnits)) throw new RuntimeFault("MalformedValue", `${panel.name}:command`)
     if (mutation.items !== undefined) {
@@ -2924,13 +2981,16 @@ class SourceVguiRuntime implements VguiRuntime {
     if (mutation.value !== undefined) this.setControlValue(panel, Math.trunc(mutation.value), true)
     if (mutation.selected !== undefined) this.setSelected(panel, mutation.selected, true)
     if (mutation.checked !== undefined) panel.checked = mutation.checked
+    if (mutation.editable !== undefined) panel.editable = mutation.editable
     if (mutation.items !== undefined) {
       panel.items = mutation.items.map((item) => ({ id: item.id, text: item.text, command: item.command ?? null, enabled: item.enabled ?? true, checked: item.checked ?? false }))
       if (panel.activeIndex !== null && panel.activeIndex >= panel.items.length) panel.activeIndex = null
+      if (panel.highlightedIndex !== null && panel.highlightedIndex >= panel.items.length) panel.highlightedIndex = null
       if (sameName(panel.sourceControl, "PropertySheet") && panel.activeIndex === null && panel.items.length > 0) panel.activeIndex = 0
     }
     if (mutation.activeIndex !== undefined) {
       panel.activeIndex = mutation.activeIndex
+      panel.highlightedIndex = mutation.activeIndex
       if (panel.activeIndex !== null && sameName(panel.sourceControl, "ComboBox")) {
         panel.textSource = panel.items[panel.activeIndex].text
         this.refreshText(panel)
@@ -3178,10 +3238,9 @@ class SourceVguiRuntime implements VguiRuntime {
     const panel = this.panels.get(panelId)
     if (!panel || !panel.effectivelyVisible || (!ignoreModal && !this.modalEligible(panel.id))) return null
     const comboExpanded = sameName(panel.sourceControl, "ComboBox") && panel.properties.get("expanded") === "1"
-    const hitRect = comboExpanded
-      ? { ...panel.clip, height: panel.clip.height + panel.items.length * Math.max(1, Number(panel.properties.get("itemheight") ?? 20)) }
-      : panel.clip
-    if (!inside(hitRect, x, y)) return null
+    const panelHit = inside(panel.clip, x, y)
+    const popupHit = comboExpanded && inside(this.comboPopupRect(panel), x, y)
+    if (!panelHit && !popupHit) return null
     for (let index = panel.children.length - 1; index >= 0; index -= 1) {
       const child = this.requirePanel(panel.children[index])
       if (child.popup) continue
@@ -3189,6 +3248,26 @@ class SourceVguiRuntime implements VguiRuntime {
       if (hit !== null) return hit
     }
     return panel.mouseInput ? panel.id : null
+  }
+
+  private comboPopupRect(panel: PanelState): VguiRect {
+    const rowHeight = Math.max(1, Number(panel.properties.get("itemheight") ?? 20))
+    const lineLimit = Math.max(1, Number(panel.properties.get("numLines") ?? 5))
+    const height = Math.min(panel.items.length, lineLimit) * rowHeight
+    const workWidth = this.viewport.width
+    const workHeight = Math.max(0, this.viewport.height - 20)
+    let x = panel.absoluteBounds.x
+    let y = panel.absoluteBounds.y + panel.bounds.height + 1
+    if (y + height >= workHeight) {
+      if (height < panel.absoluteBounds.y) y = panel.absoluteBounds.y - height
+      else {
+        y = Math.max(0, workHeight - height)
+        x = panel.absoluteBounds.x + panel.bounds.width
+        if (x + panel.bounds.width > workWidth) x = panel.absoluteBounds.x - panel.bounds.width
+      }
+    }
+    x = Math.max(0, Math.min(x, Math.max(0, workWidth - panel.bounds.width)))
+    return { x, y, width: panel.bounds.width, height }
   }
 
   private pointerMove(x: number, y: number, pointerId: number): void {
@@ -3399,9 +3478,20 @@ class SourceVguiRuntime implements VguiRuntime {
       return
     }
     if (sameName(message.name, "CursorExited")) {
-      if (!panel.selected) panel.armed = false
+      const openCombo = sameName(sourceControl, "ComboBox") && panel.properties.get("expanded") === "1"
+      if (!panel.selected && !openCombo) panel.armed = false
       panel.depressed = false
+      if (sameName(sourceControl, "ComboBox") && !openCombo) panel.highlightedIndex = null
       this.reapplyPanelPresentation(panel)
+      return
+    }
+    if (sameName(message.name, "CursorMoved") && sameName(sourceControl, "ComboBox") && panel.properties.get("expanded") === "1") {
+      const popup = this.comboPopupRect(panel)
+      const rowHeight = Math.max(1, Number(panel.properties.get("itemheight") ?? 20))
+      if (inside(popup, this.pointerX, this.pointerY)) {
+        const index = Math.floor((this.pointerY - popup.y) / rowHeight)
+        panel.highlightedIndex = index >= 0 && index < panel.items.length && panel.items[index].enabled ? index : null
+      }
       return
     }
     if (sameName(message.name, "MousePressed") || sameName(message.name, "MouseDoublePressed") || sameName(message.name, "MouseTriplePressed")) {
@@ -3465,6 +3555,11 @@ class SourceVguiRuntime implements VguiRuntime {
       panel.dragging = false
       panel.frameInteraction = null
       panel.frameClosePressed = false
+      if (sameName(sourceControl, "ComboBox")) {
+        panel.properties.set("expanded", "0")
+        panel.highlightedIndex = null
+        panel.pressedItem = null
+      }
       return
     }
     if (sameName(message.name, "Command")) {
@@ -3572,14 +3667,18 @@ class SourceVguiRuntime implements VguiRuntime {
     } else if (sameName(control, "Menu") || sameName(control, "ComboBox")) {
       const rowHeight = Math.max(1, Number(panel.properties.get("itemheight") ?? 20))
       const localY = this.pointerY - panel.absoluteBounds.y
-      if (sameName(control, "ComboBox") && localY < panel.bounds.height) {
-        panel.properties.set("expanded", panel.properties.get("expanded") === "1" ? "0" : "1")
+      if (sameName(control, "ComboBox") && inside(panel.clip, this.pointerX, this.pointerY)) {
+        const expanded = panel.properties.get("expanded") !== "1"
+        panel.properties.set("expanded", expanded ? "1" : "0")
+        panel.highlightedIndex = expanded ? panel.activeIndex : null
         this.requestedFocus = panel.id
         return
       }
-      const index = Math.floor((localY - (sameName(control, "ComboBox") ? panel.bounds.height : 0)) / rowHeight)
+      const index = sameName(control, "ComboBox")
+        ? Math.floor((this.pointerY - this.comboPopupRect(panel).y) / rowHeight)
+        : Math.floor(localY / rowHeight)
       if (index >= 0 && index < panel.items.length && panel.items[index].enabled) {
-        panel.activeIndex = index
+        panel.highlightedIndex = index
         panel.pressedItem = index
       }
     } else if (sameName(control, "PropertySheet")) {
@@ -3650,7 +3749,7 @@ class SourceVguiRuntime implements VguiRuntime {
     } else if ((sameName(control, "Menu") || sameName(control, "ComboBox")) && panel.pressedItem !== null) {
       const index = panel.pressedItem
       panel.pressedItem = null
-      if (index === panel.activeIndex) this.activateItem(panel, index)
+      if (index === panel.highlightedIndex) this.activateItem(panel, index)
     }
   }
 
@@ -4017,7 +4116,10 @@ class SourceVguiRuntime implements VguiRuntime {
   private menuKey(panel: PanelState, key: string): void {
     const combo = sameName(panel.sourceControl, "ComboBox")
     if (key === "Escape") {
-      if (combo) panel.properties.set("expanded", "0")
+      if (combo) {
+        panel.properties.set("expanded", "0")
+        panel.highlightedIndex = null
+      }
       else panel.visible = false
       return
     }
@@ -4067,7 +4169,10 @@ class SourceVguiRuntime implements VguiRuntime {
     if (item.command) this.pendingRequests.push(Object.freeze({ kind: "command", panel: panel.id, command: item.command }))
     this.postAction(panel, "MenuItemSelected", { itemID: item.id })
     if (sameName(panel.sourceControl, "Menu")) panel.visible = false
-    if (sameName(panel.sourceControl, "ComboBox")) panel.properties.set("expanded", "0")
+    if (sameName(panel.sourceControl, "ComboBox")) {
+      panel.properties.set("expanded", "0")
+      panel.highlightedIndex = null
+    }
   }
 
   private closeQuery(panel: PanelState, accepted: boolean): void {
@@ -4531,6 +4636,11 @@ class SourceVguiRuntime implements VguiRuntime {
     this.requestedFocus = next
     this.clearFocusRequested = false
     if (next !== null) this.movePanel(next, true)
+    for (const identity of [previous, next]) {
+      if (identity === null) continue
+      const panel = this.panels.get(identity)
+      if (panel) this.reapplyPanelPresentation(panel)
+    }
     for (const panel of this.panels.values()) {
       if (["Frame", "MessageBox", "QueryBox"].some((name) => sameName(panel.sourceControl, name))) this.reapplyPanelPresentation(panel)
     }
@@ -4722,7 +4832,7 @@ class SourceVguiRuntime implements VguiRuntime {
       panel.text, panel.bodyText, panel.accessibleName, panel.accessibleDescription, panel.tooltip, panel.command, panel.url, panel.border, panel.font, panel.image,
       panel.drawColor, panel.fillColor, panel.armed, panel.depressed, panel.selected, panel.checked, panel.checkable, panel.frameInteraction,
       panel.value, panel.minimum, panel.maximum, panel.rangeWindow, panel.numTicks, panel.thumbWidth, panel.progress, panel.imageFill, panel.foregroundColor,
-      [...panel.scalarProperties], panel.items, panel.sections, panel.sectionedItems, panel.pressedItem, panel.activeIndex, panel.caret, panel.selectionStart, panel.selectionEnd,
+      [...panel.scalarProperties], panel.items, panel.sections, panel.sectionedItems, panel.pressedItem, panel.activeIndex, panel.highlightedIndex, panel.caret, panel.selectionStart, panel.selectionEnd,
       panel.editable, panel.multiline, panel.numericOnly, panel.allowUnicode, panel.textHidden, panel.maximumCharacters, panel.compositionActive, panel.compositionText,
       panel.compositionCaret, [...panel.animationValues], this.keyFocus === panel.id, this.applicationModal === panel.id,
     ])
@@ -4817,6 +4927,7 @@ class SourceVguiRuntime implements VguiRuntime {
       panel.element.setAttribute("aria-valuenow", String(panel.progress))
       panel.element.style.setProperty("--vgui-progress", String(panel.progress))
     }
+    if (sameName(control, "Slider")) this.publishSliderDom(panel)
     if (sameName(control, "ComboBox")) {
       panel.element.setAttribute("aria-expanded", panel.properties.get("expanded") === "1" ? "true" : "false")
       if (panel.activeIndex !== null) panel.element.setAttribute("aria-activedescendant", `${this.runtimeIdentity}-${panel.id}-item-${panel.items[panel.activeIndex].id}`)
@@ -4833,6 +4944,48 @@ class SourceVguiRuntime implements VguiRuntime {
     this.publishItemDom(panel)
     this.reapplyPanelPresentation(panel)
     this.presentControlGeometry(panel)
+  }
+
+  private publishSliderDom(panel: PanelState): void {
+    const element = (key: "slider-track" | "slider-nob"): HTMLElement => {
+      let value = panel.chromeElements.get(key)
+      if (value) return value
+      if (this.panels.size + this.auxiliaryNodes.size + 3 > this.limits.maxDomNodes) throw new RuntimeFault("DomLimit", `${panel.name}:${key}`)
+      value = this.document.createElement("div")
+      value.dataset.vguiChrome = key
+      value.style.position = "absolute"
+      value.style.pointerEvents = "none"
+      panel.chromeElements.set(key, value)
+      this.auxiliaryNodes.add(value)
+      panel.element.append(value)
+      return value
+    }
+    const track = element("slider-track")
+    const nob = element("slider-nob")
+    const thumb = panel.thumbWidth > 0 ? panel.thumbWidth : Math.max(1, this.proportional(8, panel))
+    const trackY = Math.max(0, this.proportional(8, panel))
+    const trackHeight = Math.max(1, this.proportional(4, panel))
+    const trackWidth = Math.max(0, panel.bounds.width - thumb)
+    const range = panel.maximum - panel.minimum
+    const fraction = range === 0 ? 0 : Math.max(0, Math.min(1, (panel.value - panel.minimum) / range))
+    const nobX = Math.trunc(thumb / 2 + Math.max(0, trackWidth - thumb) * fraction)
+    const nobHeight = Math.max(1, this.proportional(16, panel))
+    track.style.left = "0px"
+    track.style.top = `${trackY}px`
+    track.style.width = `${trackWidth}px`
+    track.style.height = `${trackHeight}px`
+    track.style.backgroundColor = rgba(this.resolveColor("Slider.TrackColor", TRANSPARENT))
+    track.style.backgroundImage = "none"
+    const inset = this.borders.get("buttondepressedborder")
+    if (inset?.kind === "line") this.presentLineBorder(track, inset)
+    nob.style.left = `${nobX}px`
+    nob.style.top = `${Math.max(0, trackY + Math.trunc(trackHeight / 2) - Math.trunc(nobHeight / 2))}px`
+    nob.style.width = `${thumb}px`
+    nob.style.height = `${nobHeight}px`
+    nob.style.backgroundColor = rgba(this.resolveColor("Slider.NobColor", WHITE))
+    nob.style.backgroundImage = "none"
+    const border = this.borders.get("buttonborder")
+    if (border?.kind === "line") this.presentLineBorder(nob, border)
   }
 
   private publishFrameChrome(panel: PanelState): void {
@@ -5049,6 +5202,52 @@ class SourceVguiRuntime implements VguiRuntime {
     const control = panel.sourceControl
     if (sameName(control, "SectionedListPanel")) { this.publishSectionedListDom(panel); return }
     if (!["Menu", "ComboBox", "ListPanel", "PropertySheet"].some((name) => sameName(control, name))) return
+    let itemContainer = panel.element
+    if (sameName(control, "ComboBox")) {
+      let popup = panel.chromeElements.get("combo-popup")
+      if (!popup) {
+        if (this.panels.size + this.auxiliaryNodes.size + 3 > this.limits.maxDomNodes) throw new RuntimeFault("DomLimit", `${panel.name}:combo-popup`)
+        popup = this.document.createElement("div")
+        popup.className = "playsrc-vgui-combo-popup"
+        popup.dataset.vguiComboPopup = panel.name
+        popup.setAttribute("role", "listbox")
+        popup.id = `${this.runtimeIdentity}-${panel.id}-popup`
+        panel.chromeElements.set("combo-popup", popup)
+        this.auxiliaryNodes.add(popup)
+      }
+      if (popup.parentElement !== this.host) this.host.append(popup)
+      const rect = this.comboPopupRect(panel)
+      popup.style.position = "absolute"
+      popup.style.left = `${rect.x}px`
+      popup.style.top = `${rect.y}px`
+      popup.style.width = `${rect.width}px`
+      popup.style.height = `${rect.height}px`
+      popup.style.display = panel.properties.get("expanded") === "1" ? "block" : "none"
+      popup.setAttribute("aria-hidden", panel.properties.get("expanded") === "1" ? "false" : "true")
+      popup.style.overflow = "hidden auto"
+      popup.style.pointerEvents = panel.enabled ? "auto" : "none"
+      popup.style.zIndex = "2147483647"
+      const menuBackground = this.resolveColor("Menu.BgColor", TRANSPARENT)
+      popup.style.backgroundColor = rgba([menuBackground[0], menuBackground[1], menuBackground[2], 255])
+      popup.style.backgroundImage = "none"
+      popup.style.backgroundSize = "auto"
+      popup.style.backgroundPosition = "0% 0%"
+      popup.style.backgroundRepeat = "repeat"
+      const menuBorder = this.borders.get("menuborder")
+      if (menuBorder?.kind === "line") this.presentLineBorder(popup, menuBorder)
+      if (panel.font) {
+        const font = this.fonts.get(asciiFold(panel.font))
+        if (font) {
+          popup.style.fontFamily = font.cssFamily
+          popup.style.fontSize = `${font.sizePx}px`
+          popup.style.lineHeight = `${font.lineHeightPx}px`
+          popup.style.fontWeight = String(font.weight)
+          popup.style.fontStyle = font.style
+        }
+      }
+      panel.element.setAttribute("aria-controls", popup.id)
+      itemContainer = popup
+    }
     const live = new Set(panel.items.map((item) => item.id))
     for (const [id, element] of panel.itemElements) {
       if (live.has(id)) continue
@@ -5074,27 +5273,49 @@ class SourceVguiRuntime implements VguiRuntime {
       if (sameName(control, "ComboBox")) {
         const rowHeight = Math.max(1, Number(panel.properties.get("itemheight") ?? 20))
         element.style.left = "0"
-        element.style.top = `${panel.bounds.height + index * rowHeight}px`
+        element.style.top = `${index * rowHeight}px`
         element.style.width = "100%"
-        element.style.display = panel.properties.get("expanded") === "1" ? "block" : "none"
-        panel.element.style.overflow = "visible"
+        element.style.display = "block"
+        element.style.paddingLeft = `${Math.max(0, Number(this.settings.get("menu.textinset") ?? 6))}px`
       } else if (sameName(control, "PropertySheet")) {
         const tabWidth = Math.max(1, Number(panel.properties.get("tabwidth") ?? (panel.items.length > 0 ? panel.bounds.width / panel.items.length : panel.bounds.width)))
+        const tabHeight = Math.max(1, Number(panel.properties.get("tabheight") ?? 28))
         element.style.left = `${index * tabWidth}px`
         element.style.top = "0"
         element.style.width = `${tabWidth}px`
+        element.style.height = `${tabHeight}px`
         element.style.zIndex = "1"
       }
       element.style.pointerEvents = item.enabled ? "auto" : "none"
       element.setAttribute("aria-disabled", item.enabled ? "false" : "true")
       element.setAttribute("aria-selected", panel.activeIndex === index ? "true" : "false")
       const selected = panel.activeIndex === index
+      const armed = item.enabled && panel.highlightedIndex === index
+      element.dataset.armed = armed ? "true" : "false"
+      element.dataset.selected = selected ? "true" : "false"
+      element.dataset.checked = item.checked ? "true" : "false"
+      element.style.textShadow = "none"
       if (sameName(control, "Menu") || sameName(control, "ComboBox")) {
-        element.style.color = rgba(this.resolveColor(selected ? "Menu.ArmedTextColor" : "Menu.TextColor", WHITE))
-        element.style.backgroundColor = rgba(this.resolveColor(selected ? "Menu.ArmedBgColor" : "Menu.BgColor", TRANSPARENT))
+        if (!item.enabled) {
+          element.style.color = rgba(this.resolveColor("Label.DisabledFgColor2", WHITE))
+          element.style.textShadow = `1px 1px 0 ${rgba(this.resolveColor("Label.DisabledFgColor1", TRANSPARENT))}`
+          element.style.backgroundColor = rgba(this.resolveColor("Menu.BgColor", TRANSPARENT))
+        } else {
+          element.style.color = rgba(this.resolveColor(armed ? "Menu.ArmedTextColor" : "Menu.TextColor", WHITE))
+          element.style.backgroundColor = rgba(this.resolveColor(armed ? "Menu.ArmedBgColor" : "Menu.BgColor", TRANSPARENT))
+        }
       } else if (sameName(control, "ListPanel")) {
         element.style.color = rgba(this.resolveColor(selected ? "ListPanel.SelectedTextColor" : "ListPanel.TextColor", WHITE))
         element.style.backgroundColor = rgba(this.resolveColor(selected ? "ListPanel.SelectedBgColor" : "ListPanel.BgColor", TRANSPARENT))
+      } else if (sameName(control, "PropertySheet")) {
+        element.style.display = "flex"
+        element.style.alignItems = "center"
+        element.style.justifyContent = "center"
+        element.style.color = rgba(this.resolveColor(selected ? "PropertySheet.SelectedTextColor" : "PropertySheet.TextColor", WHITE))
+        element.style.backgroundColor = rgba(this.resolveColor(selected ? "Button.SelectedBgColor" : "Button.BgColor", TRANSPARENT))
+        element.style.backgroundImage = "none"
+        const border = this.borders.get(selected ? "tabactiveborder" : "tabborder")
+        if (border?.kind === "line") this.presentLineBorder(element, border)
       }
       if (sameName(control, "Menu")) {
         element.setAttribute("role", "menuitem")
@@ -5105,7 +5326,7 @@ class SourceVguiRuntime implements VguiRuntime {
         element.setAttribute("role", "tab")
         element.setAttribute("aria-controls", this.panels.get(item.id)?.element.id ?? String(item.id))
       }
-      panel.element.append(element)
+      itemContainer.append(element)
     }
   }
 
@@ -5177,6 +5398,7 @@ class SourceVguiRuntime implements VguiRuntime {
         }
         for (const child of [...element.children]) this.auxiliaryNodes.delete(child as HTMLElement)
         element.replaceChildren()
+        const selected = panel.activeIndex === itemIndex
         let x = 0
         for (const [columnIndex, column] of section.columns.entries()) {
           const cell = this.document.createElement("span")
@@ -5189,7 +5411,11 @@ class SourceVguiRuntime implements VguiRuntime {
           cell.style.top = "0"
           cell.style.width = `${Math.max(0, column.width - (columnIndex === 0 ? 8 : 4))}px`
           cell.style.height = `${line}px`
-          cell.style.textAlign = (column.flags & 2) !== 0 ? "right" : (column.flags & 4) !== 0 ? "center" : "left"
+          cell.style.textAlign = (column.flags & 0x10) !== 0 ? "right" : (column.flags & 0x08) !== 0 ? "center" : "left"
+          cell.style.color = rgba(this.resolveColor(
+            (column.flags & 0x04) !== 0 ? "SectionedListPanel.BrightTextColor" : selected ? "SectionedListPanel.SelectedTextColor" : "SectionedListPanel.TextColor",
+            WHITE,
+          ))
           element.append(cell)
           x += column.width
         }
@@ -5200,7 +5426,6 @@ class SourceVguiRuntime implements VguiRuntime {
         element.style.pointerEvents = item.enabled ? "auto" : "none"
         element.setAttribute("aria-disabled", item.enabled ? "false" : "true")
         element.setAttribute("aria-selected", panel.activeIndex === itemIndex ? "true" : "false")
-        const selected = panel.activeIndex === itemIndex
         element.style.color = rgba(this.resolveColor(selected ? "SectionedListPanel.SelectedTextColor" : "SectionedListPanel.TextColor", WHITE))
         element.style.backgroundColor = selected ? rgba(this.resolveColor("SectionedListPanel.SelectedBgColor", TRANSPARENT)) : "transparent"
         y += line + lineGap

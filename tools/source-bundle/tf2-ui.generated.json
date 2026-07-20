@@ -8534,6 +8534,76 @@
       ]
     }
   ],
+  "dynamicImages": [
+    {
+      "configuredValue": "../hud/class_demoblue",
+      "material": "materials/hud/class_demoblue.vmt"
+    },
+    {
+      "configuredValue": "../hud/class_demored",
+      "material": "materials/hud/class_demored.vmt"
+    },
+    {
+      "configuredValue": "../hud/class_engiblue",
+      "material": "materials/hud/class_engiblue.vmt"
+    },
+    {
+      "configuredValue": "../hud/class_engired",
+      "material": "materials/hud/class_engired.vmt"
+    },
+    {
+      "configuredValue": "../hud/class_heavyblue",
+      "material": "materials/hud/class_heavyblue.vmt"
+    },
+    {
+      "configuredValue": "../hud/class_heavyred",
+      "material": "materials/hud/class_heavyred.vmt"
+    },
+    {
+      "configuredValue": "../hud/class_medicblue",
+      "material": "materials/hud/class_medicblue.vmt"
+    },
+    {
+      "configuredValue": "../hud/class_medicred",
+      "material": "materials/hud/class_medicred.vmt"
+    },
+    {
+      "configuredValue": "../hud/class_pyroblue",
+      "material": "materials/hud/class_pyroblue.vmt"
+    },
+    {
+      "configuredValue": "../hud/class_pyrored",
+      "material": "materials/hud/class_pyrored.vmt"
+    },
+    {
+      "configuredValue": "../hud/class_scoutblue",
+      "material": "materials/hud/class_scoutblue.vmt"
+    },
+    {
+      "configuredValue": "../hud/class_sniperblue",
+      "material": "materials/hud/class_sniperblue.vmt"
+    },
+    {
+      "configuredValue": "../hud/class_sniperred",
+      "material": "materials/hud/class_sniperred.vmt"
+    },
+    {
+      "configuredValue": "../hud/class_soldierblue",
+      "material": "materials/hud/class_soldierblue.vmt"
+    },
+    {
+      "configuredValue": "../hud/class_soldierred",
+      "material": "materials/hud/class_soldierred.vmt"
+    },
+    {
+      "configuredValue": "hud/health_color",
+      "material": "materials/hud/health_color.vmt"
+    },
+    {
+      "configuredValue": "hud/health_dead",
+      "material": "materials/hud/health_dead.vmt"
+    }
+  ],
   "missingDependencies": [
     "resource/loadingdialogdualprogress.res",
     "cfg/user.scr",

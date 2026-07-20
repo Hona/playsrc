@@ -74,6 +74,7 @@ struct Tf2UiBundleManifest {
     source_ledger: String,
     dependencies: Vec<Tf2UiDependency>,
     images: Vec<Tf2UiImage>,
+    dynamic_images: Vec<Tf2UiDynamicImage>,
     missing_dependencies: Vec<String>,
 }
 
@@ -94,6 +95,13 @@ struct Tf2UiImage {
     classification: String,
     material: Option<String>,
     textures: Vec<Tf2UiTexture>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Tf2UiDynamicImage {
+    configured_value: String,
+    material: String,
 }
 
 #[derive(Deserialize)]
@@ -1437,6 +1445,7 @@ fn load_tf2_ui_manifest(root: &Path, content_build: &str) -> Result<Tf2UiBundleM
         || manifest.dependencies.is_empty()
         || manifest.dependencies.len() > MAX_DEPENDENCY_REQUESTS
         || manifest.images.len() > 2_048
+        || manifest.dynamic_images.len() > 128
         || manifest.missing_dependencies.len() > 128
     {
         return Err("TF2 UI bundle manifest identity is malformed".to_owned());
@@ -1504,6 +1513,30 @@ fn load_tf2_ui_manifest(root: &Path, content_build: &str) -> Result<Tf2UiBundleM
                 ));
             }
         }
+    }
+    let static_images = manifest
+        .images
+        .iter()
+        .map(|image| image.configured_value.to_ascii_lowercase())
+        .collect::<BTreeSet<_>>();
+    let mut previous_dynamic = None::<String>;
+    for image in &manifest.dynamic_images {
+        let folded = image.configured_value.to_ascii_lowercase();
+        if image.configured_value.is_empty()
+            || image.material != image.material.to_ascii_lowercase()
+            || !image.material.starts_with("materials/")
+            || !image.material.ends_with(".vmt")
+            || static_images.contains(&folded)
+            || previous_dynamic
+                .as_ref()
+                .is_some_and(|previous| previous >= &folded)
+        {
+            return Err(format!(
+                "TF2 UI dynamic image descriptor is malformed: {}",
+                image.configured_value
+            ));
+        }
+        previous_dynamic = Some(folded);
     }
     Ok(manifest)
 }
@@ -2184,20 +2217,16 @@ fn main() -> Result<(), String> {
             (configured, identity)
         })
         .collect::<Vec<_>>();
-    runtime_ui_materials.extend([
-        (
-            "hud/health_color".to_owned(),
-            "materials/hud/health_color.vmt".to_owned(),
-        ),
-        (
-            "hud/health_dead".to_owned(),
-            "materials/hud/health_dead.vmt".to_owned(),
-        ),
-        (
-            "stamp_background_map".to_owned(),
-            "materials/vgui/stamp_background_map.vmt".to_owned(),
-        ),
-    ]);
+    runtime_ui_materials.extend(
+        tf2_ui
+            .dynamic_images
+            .iter()
+            .map(|image| (image.configured_value.clone(), image.material.clone())),
+    );
+    runtime_ui_materials.push((
+        "stamp_background_map".to_owned(),
+        "materials/vgui/stamp_background_map.vmt".to_owned(),
+    ));
     for (configured_value, identity) in runtime_ui_materials {
         let material = resolve_ui_material(&mut resolver, &identity)?;
         let record = ui_material_record(&configured_value, &identity, &material)?;
