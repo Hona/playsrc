@@ -1408,13 +1408,15 @@ export async function verifyBrowserAcceptance(
       Math.abs(warmCamera.pitch - fixedCamera.pitch) <= 0.001, "warm fixed camera differs from the cold camera")
     await agent(["--session", session, "press", "Backquote"])
     await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.consoleVisible==='false'", "--timeout", "30000"])
+    await agent([
+      "--session",
+      session,
+      "eval",
+      "(()=>{const s={done:false,error:null,result:null};globalThis.__playsrcIdbEvidence=s;s.open=indexedDB.open('playsrc-derived-v2',1);s.open.onerror=()=>{s.error=String(s.open.error);s.done=true};s.open.onsuccess=()=>{try{s.database=s.open.result;s.transaction=s.database.transaction('objects');s.request=s.transaction.objectStore('objects').getAll();s.request.onerror=()=>{s.error=String(s.request.error);s.done=true};s.request.onsuccess=()=>{s.result=s.request.result.map(x=>({key:x.key,byteLength:x.byteLength,sha256:x.sha256}));s.done=true}}catch(error){s.error=String(error);s.done=true}};return true})()",
+    ])
+    await agent(["--session", session, "wait", "--fn", "globalThis.__playsrcIdbEvidence?.done===true", "--timeout", "30000"])
     const records = parseJson<Array<{ key: string; byteLength: number; sha256: string }>>(
-      await agent([
-        "--session",
-        session,
-        "eval",
-        "new Promise((resolve,reject)=>{const r=indexedDB.open('playsrc-derived-v1',1);r.onerror=()=>reject(r.error);r.onsuccess=()=>{const q=r.result.transaction('objects').objectStore('objects').getAll();q.onerror=()=>reject(q.error);q.onsuccess=()=>resolve(q.result.map(x=>({key:x.key,byteLength:x.byteLength,sha256:x.sha256})))}})",
-      ]),
+      await agent(["--session", session, "eval", "(()=>{const s=globalThis.__playsrcIdbEvidence;if(s.error)throw new Error(s.error);return s.result})()"]),
     )
     const mapRecords = records.filter(
       (record) =>
