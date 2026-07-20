@@ -36,7 +36,7 @@ export type SimulationEventBatch = Readonly<{ hostTick: bigint; bytes: Uint8Arra
 export type SimulationPublication = Readonly<{ hostFrame: bigint; firstHostTick: bigint; lastHostTick: bigint; selectedTicks: number; interpolation: number; snapshotBytes: Uint8Array; eventBatches: readonly SimulationEventBatch[]; snapshot: Snapshot }>
 export type WaterViewPass = Readonly<{ kind: "reflection" | "refraction" | "main" | "intersection"; origin: readonly [number,number,number]; angles: readonly [number,number,number]; renderAboveWater:boolean;renderUnderWater:boolean;renderWaterSurface:boolean;drawEntities:boolean;drawSky2d:boolean;clip:null|Readonly<{height:number;keep:"above"|"below"}>;forcedVisibilityLeaf:number|null;fog:Readonly<{kind:"world"}|{kind:"water";volume:number;heightFog:boolean}>;surfaces:Uint32Array }>
 export type WaterViewPlan = Readonly<{ visibleWater:null|Readonly<{volume:number;visibleLeaf:number;eyeLeaf:number;eyeInVolume:boolean;surfaceZ:number;distanceToWater:number|null;material:string;translucent:boolean;evaluated:Readonly<{normalFrame:number;normalTransform:Float32Array;cheapStart:number;cheapEnd:number}>}>;render:Readonly<{cheap:boolean;reflect:boolean;refract:boolean;reflectEntities:boolean;drawSurface:boolean;opaque:boolean}>;nearPlaneIntersects:boolean;passes:readonly WaterViewPass[] }>
-export type VisibilityResult = Readonly<{ worldIdentity:string;cacheIdentity:string;outsideWorld:boolean;sky:0|1|2;eyeLeaf:number|null;leaves:readonly number[];areas:readonly number[];surfaces:Uint32Array;water:WaterViewPlan }>
+export type VisibilityResult = Readonly<{ worldIdentity:string;cacheIdentity:string;outsideWorld:boolean;sky:0|1|2;eyeLeaf:number|null;leaves:readonly number[];areas:readonly number[];surfaces:Uint32Array;drawSurfaces:Uint32Array;water:WaterViewPlan }>
 
 export class Tf2WorkerError extends Error {
   constructor(
@@ -150,9 +150,10 @@ export class Tf2WorkerClient {
     const cachedPresentation = await this.#cache.read(pkey)
     const bspBuffer = bsp.slice().buffer
     const configurationBuffer = configuration.slice().buffer
+    const presentationBuffer = cachedPresentation?.slice().buffer
     const loaded = await this.#request(
-      { kind: "load", generation, profile, bsp: bspBuffer, configuration: configurationBuffer },
-      [bspBuffer, configurationBuffer],
+      { kind: "load", generation, profile, bsp: bspBuffer, configuration: configurationBuffer, ...(presentationBuffer ? { presentation: presentationBuffer } : {}) },
+      [bspBuffer, configurationBuffer, ...(presentationBuffer ? [presentationBuffer] : [])],
     )
     try {
       if (
@@ -337,7 +338,7 @@ export class Tf2WorkerClient {
   }
   async visibility(
     generation: number,
-    input: Readonly<{ position: readonly [number, number, number]; yawDegrees:number; pitchDegrees:number; verticalFovDegrees:number; aspectRatio:number; near:number; presentationTimeSeconds:number }>,
+    input: Readonly<{ position: readonly [number, number, number]; yawDegrees:number; pitchDegrees:number; verticalFovDegrees:number; aspectRatio:number; near:number; far:number; presentationTimeSeconds:number }>,
   ): Promise<VisibilityResult> {
     const response = await this.#request({ kind: "visibility", generation, view: input })
     if (
@@ -347,11 +348,12 @@ export class Tf2WorkerClient {
     )
       throw new Tf2WorkerError("WorkerFailed")
     const bytes = new Uint8Array(response.output), view = new DataView(response.output), decoder=new TextDecoder("utf-8",{fatal:true})
-    if (decoder.decode(bytes.subarray(0, 4)) !== "PVIS" || view.getUint32(4, true) !== 2)
+    if (decoder.decode(bytes.subarray(0, 4)) !== "PVIS" || view.getUint32(4, true) !== 3)
       throw new Tf2WorkerError("WorkerFailed")
     let at=76
     const require=(length:number)=>{if(at+length>bytes.length)throw new Tf2WorkerError("WorkerFailed")},u8=()=>{require(1);return bytes[at++]!},u32=()=>{require(4);const value=view.getUint32(at,true);at+=4;return value},i32=()=>{require(4);const value=view.getInt32(at,true);at+=4;return value},f32=()=>{require(4);const value=view.getFloat32(at,true);at+=4;if(!Number.isFinite(value))throw new Tf2WorkerError("WorkerFailed");return value},text=()=>{const length=u32();require(length);const value=decoder.decode(bytes.subarray(at,at+length));at+=length;return value},vector=()=>Object.freeze([f32(),f32(),f32()]) as readonly[number,number,number]
     const count = u32(), surfaces=new Uint32Array(count);for(let index=0;index<count;index++)surfaces[index]=u32()
+    const drawCount=u32(),drawSurfaces=new Uint32Array(drawCount);for(let index=0;index<drawCount;index++)drawSurfaces[index]=u32()
     const eyeLeafValue=u32(),leaves=Object.freeze(Array.from({length:u32()},u32)),areas=Object.freeze(Array.from({length:u32()},u32))
     const present=u8(),cheap=u8(),reflect=u8(),refract=u8(),reflectEntities=u8(),drawSurface=u8(),opaque=u8(),nearPlaneIntersects=u8()
     if([present,cheap,reflect,refract,reflectEntities,drawSurface,opaque,nearPlaneIntersects].some(value=>value>1))throw new Tf2WorkerError("WorkerFailed")
@@ -367,7 +369,7 @@ export class Tf2WorkerClient {
       outsideWorld:bytes[72]===1,
       sky:bytes[73] as 0|1|2,
       eyeLeaf:eyeLeafValue===0xffff_ffff?null:eyeLeafValue,
-      leaves,areas,surfaces,
+      leaves,areas,surfaces,drawSurfaces,
       water:Object.freeze({visibleWater,render:Object.freeze({cheap:cheap===1,reflect:reflect===1,refract:refract===1,reflectEntities:reflectEntities===1,drawSurface:drawSurface===1,opaque:opaque===1}),nearPlaneIntersects:nearPlaneIntersects===1,passes:Object.freeze(passes)}),
     })
   }

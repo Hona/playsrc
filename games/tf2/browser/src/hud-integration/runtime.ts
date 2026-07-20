@@ -2,6 +2,7 @@ import {
   initializeVguiRuntime,
   type VguiOperation,
   type VguiPanelId,
+  type VguiPanelSnapshot,
   type VguiResourceDocument,
   type VguiResourceNode,
   type VguiRuntime,
@@ -38,11 +39,17 @@ export type Tf2HudIntegrationSnapshot = Readonly<{
   animationTrace: readonly string[]
 }>
 
+export type Tf2HudIntegrationProbe = Readonly<{
+  panels: readonly VguiPanelSnapshot[]
+  animationTrace: readonly string[]
+}>
+
 export type Tf2HudIntegration = Readonly<{
   publish(publication: CompactSessionSimulationPublication, context: CompactSessionHudContext): Tf2HudBinding
   action(action: Tf2HudAction): Tf2HudAvailability<Tf2HudCommand>
   frame(timeSeconds: number): void
   setViewport(viewport: VguiViewport): void
+  probe(): Tf2HudIntegrationProbe
   snapshot(): Tf2HudIntegrationSnapshot
   destroy(): void
 }>
@@ -149,8 +156,11 @@ class Integration implements Tf2HudIntegration {
   readonly #runtime: VguiRuntime
   readonly #onCommand: (command: Tf2HudCommand) => void
   readonly #diagnostics: Tf2HudIntegrationDiagnostic[] = []
+  readonly #diagnosticSubjects = new Set<string>()
   readonly #animationTrace: string[] = []
   readonly #baseBounds = new Map<string, Readonly<{ x: number; y: number; width: number; height: number }>>()
+  readonly #panels = new Map<string, VguiPanelId>()
+  readonly #publishedValues = new Map<string, string>()
   #previous: Tf2HudAvailability<Tf2HudSnapshot> = tf2HudUnavailable("initial")
   #binding: Tf2HudBinding | null = null
   #destroyed = false
@@ -199,29 +209,46 @@ class Integration implements Tf2HudIntegration {
     applyPanelResource(this.#runtime, playerHealth, request.resources.document(HUD_HEALTH), request.resources.activeConditions)
     applyPanelResource(this.#runtime, find(this.#runtime, "HudWeaponAmmo")!, request.resources.document(HUD_AMMO), request.resources.activeConditions)
     applyPanelResource(this.#runtime, find(this.#runtime, "HudWeaponSelection")!, request.resources.document(HUD_WEAPONS), request.resources.activeConditions)
-    for (const panel of this.#runtime.snapshot().panels) {
+    const panels = this.#runtime.snapshot().panels
+    for (const panel of panels) {
+      this.#panels.set(panel.name.toLowerCase(), panel.id)
       apply(this.#runtime, { kind: "set-panel-state", panel: panel.id, mouseInput: false, keyboardInput: false })
     }
-    this.#captureBaseBounds()
+    this.#captureBaseBounds(panels)
     })
   }
 
-  #captureBaseBounds(): void {
-    for (const panel of this.#runtime.snapshot().panels) this.#baseBounds.set(panel.name, panel.bounds)
+  #diagnostic(code: Tf2HudIntegrationDiagnostic["code"], subject: string): void {
+    const identity = `${code}:${subject}`
+    if (this.#diagnosticSubjects.has(identity) || this.#diagnostics.length >= LIMITS.maxDiagnostics) return
+    this.#diagnosticSubjects.add(identity)
+    this.#diagnostics.push(Object.freeze({ code, subject }))
+  }
+
+  #captureBaseBounds(panels = this.#runtime.snapshot().panels): void {
+    for (const panel of panels) this.#baseBounds.set(panel.name, panel.bounds)
   }
 
   #value(value: Tf2HudPanelValue): void {
-    const panel = find(this.#runtime, value.panel)
+    const panel = this.#panels.get(value.panel.toLowerCase()) ?? null
     if (panel === null) {
-      this.#diagnostics.push(Object.freeze({ code: "PanelUnavailable", subject: `${value.kind}:${value.panel}` }))
+      this.#diagnostic("PanelUnavailable", `${value.kind}:${value.panel}`)
       return
     }
+    const identity = value.kind === "dialog-variable"
+      ? `${value.kind}:${value.panel}:${value.variable}`
+      : value.kind === "scalar" || value.kind === "color"
+        ? `${value.kind}:${value.panel}:${value.property}`
+        : `${value.kind}:${value.panel}`
+    const fingerprint = JSON.stringify(value.value)
+    if (this.#publishedValues.get(identity) === fingerprint) return
     if (value.kind === "visible") {
       apply(this.#runtime, { kind: "set-panel-state", panel, visible: value.value })
+      this.#publishedValues.set(identity, fingerprint)
       return
     }
     if (value.value.kind === "unavailable") {
-      this.#diagnostics.push(Object.freeze({ code: "ValueUnavailable", subject: `${value.kind}:${value.panel}:${value.value.reason}` }))
+      this.#diagnostic("ValueUnavailable", `${value.kind}:${value.panel}:${value.value.reason}`)
       return
     }
     if (value.kind === "dialog-variable") {
@@ -232,7 +259,7 @@ class Integration implements Tf2HudIntegration {
       apply(this.#runtime, { kind: "set-dialog-variable", panel, name: value.variable, value: rendered })
     } else if (value.kind === "image") {
       try { apply(this.#runtime, { kind: "mutate-control", panel, mutation: { image: value.value.value } }) }
-      catch { this.#diagnostics.push(Object.freeze({ code: "ValueUnavailable", subject: `image:${value.panel}:${value.value.value}` })) }
+      catch { this.#diagnostic("ValueUnavailable", `image:${value.panel}:${value.value.value}`); return }
     } else if (value.kind === "color") {
       const color = Object.freeze([...value.value.value]) as readonly [number, number, number, number]
       apply(this.#runtime, { kind: "mutate-control", panel, mutation: value.property.toLowerCase() === "drawcolor" ? { drawColor: color } : { foregroundColor: color } })
@@ -254,6 +281,7 @@ class Integration implements Tf2HudIntegration {
         apply(this.#runtime, { kind: "mutate-control", panel, mutation: { scalarProperties: { [value.property]: value.value.value } } })
       }
     }
+    this.#publishedValues.set(identity, fingerprint)
   }
 
   #applyValues(binding: Tf2HudBinding): void {
@@ -269,14 +297,14 @@ class Integration implements Tf2HudIntegration {
     for (const animation of binding.animations) {
       const parent = animation.target === "viewport" ? 1 : find(this.#runtime, animation.target)
       if (parent === null) {
-        this.#diagnostics.push(Object.freeze({ code: "AnimationUnavailable", subject: `${animation.target}:${animation.sequence}` }))
+        this.#diagnostic("AnimationUnavailable", `${animation.target}:${animation.sequence}`)
         continue
       }
       try {
         apply(this.#runtime, { kind: "start-animation-sequence", parent, sequence: animation.sequence, cancelable: true })
         this.#animationTrace.push(`${animation.tick}:${animation.ordinal}:${animation.target}:${animation.sequence}`)
       } catch {
-        this.#diagnostics.push(Object.freeze({ code: "AnimationUnavailable", subject: `${animation.target}:${animation.sequence}` }))
+        this.#diagnostic("AnimationUnavailable", `${animation.target}:${animation.sequence}`)
       }
     }
     this.#previous = tf2HudAvailable(binding.facts)
@@ -296,7 +324,19 @@ class Integration implements Tf2HudIntegration {
   setViewport(viewport: VguiViewport): void {
     apply(this.#runtime, { kind: "set-viewport", viewport })
     this.#captureBaseBounds()
-    if (this.#binding) this.#applyValues(this.#binding)
+    if (this.#binding) {
+      this.#publishedValues.clear()
+      this.#applyValues(this.#binding)
+    }
+  }
+  probe(): Tf2HudIntegrationProbe {
+    const panels = ["PlayerStatusHealthImage", "HudWeaponAmmo", "modelpanel0"]
+      .map((name) => this.#panels.get(name.toLowerCase()))
+      .filter((panel): panel is VguiPanelId => panel !== undefined)
+    return Object.freeze({
+      panels: this.#runtime.snapshotPanels(panels),
+      animationTrace: Object.freeze([...this.#animationTrace]),
+    })
   }
   snapshot(): Tf2HudIntegrationSnapshot {
     return Object.freeze({

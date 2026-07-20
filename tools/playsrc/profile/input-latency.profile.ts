@@ -3,15 +3,39 @@ import { expect, test } from "@playwright/test"
 type RpcRecord = { kind: string; started: number; finished?: number; bytes?: number; workerTimings?: Record<string, number> }
 type PresentationRecord = { at: number; detail: string; performance: string | undefined }
 
+const TARGET = "jump_beef"
+
 const percentile = (values: number[], fraction: number): number =>
   values.length === 0 ? 0 : values[Math.min(values.length - 1, Math.floor(values.length * fraction))]!
 
 test("profile startup and input latency", async ({ page }) => {
   const rafHz = Number(process.env.PROFILE_RAF_HZ ?? 0)
-  const scenarioMode = process.env.PROFILE_SCENARIOS ?? ""
+  const scenarioMode = process.env.PROFILE_SCENARIOS ?? (process.env.npm_lifecycle_event === "profile:gameplay" ? "1" : "")
+  const mapOnly = process.env.PROFILE_MAP_ONLY === "1" || process.env.npm_lifecycle_event === "profile:map-load"
   const runScenarios = scenarioMode !== ""
   const shouldRunScenario = (name: string) => scenarioMode === "1" || scenarioMode === name
   await page.addInitScript(({ rafHz }) => {
+    let pointerLockElement: Element | null = null
+    Object.defineProperty(document, "pointerLockElement", {
+      configurable: true,
+      get: () => pointerLockElement,
+    })
+    Object.defineProperty(Element.prototype, "requestPointerLock", {
+      configurable: true,
+      value(this: Element): Promise<void> {
+        pointerLockElement = this
+        queueMicrotask(() => document.dispatchEvent(new Event("pointerlockchange")))
+        return Promise.resolve()
+      },
+    })
+    Object.defineProperty(document, "exitPointerLock", {
+      configurable: true,
+      value(): Promise<void> {
+        pointerLockElement = null
+        queueMicrotask(() => document.dispatchEvent(new Event("pointerlockchange")))
+        return Promise.resolve()
+      },
+    })
     if (rafHz > 0) {
       const interval = 1_000 / rafHz
       Object.defineProperty(window, "requestAnimationFrame", {
@@ -25,8 +49,9 @@ test("profile startup and input latency", async ({ page }) => {
     }
     const state = {
       created: performance.now(),
+      syntheticPointerLock: true,
       rpcs: [] as RpcRecord[],
-      phases: [] as { at: number; phase: string; frames: number }[],
+      phases: [] as { at: number; phase: string; detail: string; gameUi: string; frames: number }[],
       longTasks: [] as { at: number; duration: number }[],
       rafGaps: [] as { at: number; duration: number }[],
       presentations: [] as PresentationRecord[],
@@ -86,11 +111,20 @@ test("profile startup and input latency", async ({ page }) => {
     addEventListener("DOMContentLoaded", () => {
       const main = document.querySelector("main")
       if (!main) return
-      const capture = () => state.phases.push({
-        at: performance.now(),
-        phase: (main as HTMLElement).dataset.phase ?? "",
-        frames: state.frames,
-      })
+      let previous = ""
+      const capture = () => {
+        const dataset = (main as HTMLElement).dataset
+        const current = `${dataset.phase ?? ""}\0${dataset.detail ?? ""}\0${dataset.gameui ?? ""}`
+        if (current === previous) return
+        previous = current
+        state.phases.push({
+          at: performance.now(),
+          phase: dataset.phase ?? "",
+          detail: dataset.detail ?? "",
+          gameUi: dataset.gameui ?? "",
+          frames: state.frames,
+        })
+      }
       const capturePresentation = () => {
         const detail = (main as HTMLElement).dataset.performanceDetail
         if (detail) state.presentations.push({
@@ -101,9 +135,9 @@ test("profile startup and input latency", async ({ page }) => {
       }
       capture()
       new MutationObserver((records) => {
-        if (records.some((record) => record.attributeName === "data-phase")) capture()
+        if (records.some((record) => record.attributeName === "data-phase" || record.attributeName === "data-detail" || record.attributeName === "data-gameui")) capture()
         if (records.some((record) => record.attributeName === "data-performance-detail")) capturePresentation()
-      }).observe(main, { attributes: true, attributeFilter: ["data-phase", "data-performance-detail"] })
+      }).observe(main, { attributes: true, attributeFilter: ["data-phase", "data-detail", "data-gameui", "data-performance-detail"] })
     })
   }, { rafHz })
 
@@ -111,13 +145,51 @@ test("profile startup and input latency", async ({ page }) => {
   await page.goto("/", { waitUntil: "load", timeout: 30_000 })
   await page.waitForFunction(() => {
     const phase = document.querySelector("main")?.getAttribute("data-phase")
-    return phase === "Ready" || phase === "Failed"
+    return phase === "MainMenu" || phase === "Failed"
   }, undefined, { timeout: 180_000, polling: 50 })
+  const mainMenuMilliseconds = await page.evaluate(() => performance.now())
+  let mapSubmittedMilliseconds: number | undefined
+  let gameplayReadyMilliseconds: number | undefined
+  let repeatedMapSubmittedMilliseconds: number | undefined
+  let repeatedGameplayReadyMilliseconds: number | undefined
+  if (await page.locator("main").getAttribute("data-phase") === "MainMenu") {
+    await page.keyboard.press("Backquote")
+    const consoleEntry = page.locator("[aria-label='Console command']")
+    await expect(consoleEntry).toBeVisible()
+    await consoleEntry.fill(`map ${TARGET}`)
+    mapSubmittedMilliseconds = await page.evaluate(() => performance.now())
+    await page.keyboard.press("Enter")
+    await page.waitForFunction(() => {
+      const main = document.querySelector<HTMLElement>("main")
+      return (main?.dataset.phase === "Ready" && main.dataset.gameui === "in-game") || main?.dataset.phase === "Failed"
+    }, undefined, { timeout: 600_000, polling: 50 })
+    if (await page.locator("main").getAttribute("data-phase") === "Ready") {
+      gameplayReadyMilliseconds = await page.evaluate(() => performance.now())
+      await page.keyboard.press("Backquote")
+    }
+  }
+  if (mapOnly && gameplayReadyMilliseconds !== undefined) {
+    await page.keyboard.press("Backquote")
+    const consoleEntry = page.locator("[aria-label='Console command']")
+    await expect(consoleEntry).toBeVisible()
+    await consoleEntry.fill(`map ${TARGET}`)
+    repeatedMapSubmittedMilliseconds = await page.evaluate(() => performance.now())
+    await page.keyboard.press("Enter")
+    await page.waitForFunction(() => document.querySelector<HTMLElement>("main")?.dataset.phase !== "Ready", undefined, { timeout: 30_000, polling: 10 })
+    await page.waitForFunction(() => {
+      const phase = document.querySelector<HTMLElement>("main")?.dataset.phase
+      return phase === "Ready" || phase === "Failed"
+    }, undefined, { timeout: 600_000, polling: 50 })
+    if (await page.locator("main").getAttribute("data-phase") === "Ready") {
+      repeatedGameplayReadyMilliseconds = await page.evaluate(() => performance.now())
+      await page.keyboard.press("Backquote")
+    }
+  }
   const startupMilliseconds = Date.now() - wallStarted
 
   const initial = await page.locator("main").evaluate((main) => ({ ...((main as HTMLElement).dataset) }))
   const input: Record<string, unknown> = {}
-  if (initial.phase === "Ready") {
+  if (!mapOnly && initial.phase === "Ready") {
     await page.waitForTimeout(5_000)
     const settledPhase = await page.locator("main").getAttribute("data-phase")
     if (settledPhase !== "Ready") {
@@ -163,10 +235,6 @@ test("profile startup and input latency", async ({ page }) => {
         const canvas = document.querySelector(".world-canvas") as HTMLCanvasElement | null
         if (!canvas) throw new Error("world canvas is unavailable")
         const records: { frame: number; prepared: number; view: number; yaw: number; mouse: number; snap: number }[] = []
-        const nativeRequestAnimationFrame = window.requestAnimationFrame.bind(window)
-        const nativeCancelAnimationFrame = window.cancelAnimationFrame.bind(window)
-        window.requestAnimationFrame = (callback) => window.setTimeout(() => callback(performance.now()), 1)
-        window.cancelAnimationFrame = (handle) => clearTimeout(handle)
         const observer = new MutationObserver(() => records.push({
           frame: Number(canvas.dataset.displayFrame),
           prepared: Number(canvas.dataset.displayPreparedRevision),
@@ -193,8 +261,6 @@ test("profile startup and input latency", async ({ page }) => {
         }, 4)
         await new Promise((resolve) => setTimeout(resolve, 600))
         clearInterval(interval)
-        window.requestAnimationFrame = nativeRequestAnimationFrame
-        window.cancelAnimationFrame = nativeCancelAnimationFrame
         await new Promise((resolve) => setTimeout(resolve, 200))
         observer.disconnect()
         const finished = {
@@ -271,7 +337,7 @@ test("profile startup and input latency", async ({ page }) => {
     }
   })
   const steadyStarted = Date.now()
-  for (let second = 0; second < 10; second += 1) {
+  for (let second = 0; second < (mapOnly ? 0 : 10); second += 1) {
     await page.waitForTimeout(1_000)
     const sample = await page.locator("main").evaluate((main) => {
       const profile = (window as any).__playsrcProfile as { frames: number; rpcs: RpcRecord[] }
@@ -334,12 +400,10 @@ test("profile startup and input latency", async ({ page }) => {
     })
     if (shouldRunScenario("fire")) await page.waitForTimeout(1_000)
     if (shouldRunScenario("fire")) await runScenario("held-primary-fire", 10, async () => {
-      await page.evaluate(() => {
+      await page.evaluate(async () => {
         const canvas = document.querySelector(".world-canvas")
         if (!canvas) throw new Error("world canvas is unavailable")
-        if (document.pointerLockElement !== canvas) {
-          Object.defineProperty(document, "pointerLockElement", { configurable: true, value: canvas })
-        }
+        if (document.pointerLockElement !== canvas) await canvas.requestPointerLock()
         dispatchEvent(new MouseEvent("mousedown", { button: 0, bubbles: true }))
       })
     }, async () => {
@@ -444,7 +508,21 @@ test("profile startup and input latency", async ({ page }) => {
   )
   const report = {
     requestedRafHz: rafHz || "native",
+    mapOnly,
     startupMilliseconds,
+    mapLoad: {
+      mainMenuMilliseconds: Number(mainMenuMilliseconds.toFixed(3)),
+      submittedMilliseconds: mapSubmittedMilliseconds === undefined ? null : Number(mapSubmittedMilliseconds.toFixed(3)),
+      readyMilliseconds: gameplayReadyMilliseconds === undefined ? null : Number(gameplayReadyMilliseconds.toFixed(3)),
+      durationMilliseconds: mapSubmittedMilliseconds === undefined || gameplayReadyMilliseconds === undefined
+        ? null
+        : Number((gameplayReadyMilliseconds - mapSubmittedMilliseconds).toFixed(3)),
+      repeatedSubmittedMilliseconds: repeatedMapSubmittedMilliseconds === undefined ? null : Number(repeatedMapSubmittedMilliseconds.toFixed(3)),
+      repeatedReadyMilliseconds: repeatedGameplayReadyMilliseconds === undefined ? null : Number(repeatedGameplayReadyMilliseconds.toFixed(3)),
+      repeatedDurationMilliseconds: repeatedMapSubmittedMilliseconds === undefined || repeatedGameplayReadyMilliseconds === undefined
+        ? null
+        : Number((repeatedGameplayReadyMilliseconds - repeatedMapSubmittedMilliseconds).toFixed(3)),
+    },
     terminalPhase: raw.dataset.phase,
     terminalDetail: raw.dataset.detail,
     input,
@@ -509,7 +587,7 @@ test("profile startup and input latency", async ({ page }) => {
     navigation: raw.navigation,
   }
   console.log(`PLAYSRCPROFILE ${JSON.stringify(report)}`)
-  expect(raw.dataset.phase).not.toBe("Loading")
+  expect(raw.dataset.phase).toBe("Ready")
   if (typeof input.lookDisplayFrames === "number") {
     expect(input.lookDisplayFrames).toBeGreaterThan(1)
     expect(input.lookViewRevisions).toBeGreaterThan(1)

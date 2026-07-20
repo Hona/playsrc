@@ -17,9 +17,9 @@ const EXPECTED_MAP_BYTES = 42_082_929
 const EXPECTED_MAP_SHA256 = "56153098a867c553651f9c773bd72c4659782bae8520277c80daaaa414bdf156"
 const EXPECTED_BSP_SHA256 = "b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959"
 const EXPECTED_HDR_BYTES=78_299_802
-const EXPECTED_HDR_SHA256="fbf9d48bba7ea95cfa977f46f2fd99065fd3e97e45b47318eae5d843514db212"
-const EXPECTED_LDR_DERIVED_SHA256="4439ec93fa63ebdc8acb64b367e6d2dc44dc7eff019ff4450f592c0e1f0e9565"
-const EXPECTED_HDR_DERIVED_SHA256="0d267423987b0c9068e216ca79ce3abc0457bcedf771b282d24052e03b6d913d"
+const EXPECTED_HDR_SHA256="d68ce8b744648715d3224f5bc71beb2bea8b592bdc722098c432a2131abc75ce"
+const EXPECTED_LDR_DERIVED_SHA256="0c46669280c6ad49d32416d5246caca940d450fe57b6ae6f932c98723bb5aff8"
+const EXPECTED_HDR_DERIVED_SHA256="f772a27b1c97b2659712f5fa0873fe9c2f3aed2a8999c814674e2cdb2da02b86"
 const EXPECTED_DEPENDENCY_BYTES=254_281_294
 const EXPECTED_DEPENDENCY_SHA256="c6b02effb40331cb35b1a33c57e1f3f9ad78907421fabdd1e83bd233f7add1ed"
 function bundlePathOffset(bytes: Uint8Array, target: string): number {
@@ -802,10 +802,33 @@ export async function verifyTf2Wasm(
     modelPoses.every((pose) => pose.activity === "ACT_PRIMARY_VM_DRAW" && pose.primitives.length > 0 &&
       pose.primitives.every((primitive) => primitive.tangents.length / 4 === primitive.positions.length / 3)),
   "fixed StudioModel viewmodel pose output differs")
-  const visibilityProbe=(values:readonly number[])=>{const pointer=exports.playsrc_alloc(36);new Float32Array(exports.memory.buffer,pointer,9).set(values);require(exports.playsrc_visibility_query(handle,pointer)===1,"fixed-camera PVS query failed");exports.playsrc_free(pointer,36);const length=exports.playsrc_visibility_output_length(handle),outputPointer=exports.playsrc_alloc(length);require(exports.playsrc_visibility_output_copy(handle,outputPointer,length)===length,"fixed-camera PVS output copy failed");const output=new Uint8Array(exports.memory.buffer,outputPointer,length).slice();exports.playsrc_free(outputPointer,length);const view=new DataView(output.buffer);require(new TextDecoder().decode(output.subarray(0,4))==="PVIS"&&view.getUint32(4,true)===2,"PVS output identity differs");let at=76,surfaceCount=view.getUint32(at,true);at+=4+surfaceCount*4;at+=4;const leafCount=view.getUint32(at,true);at+=4+leafCount*4;const areaCount=view.getUint32(at,true);at+=4+areaCount*4;const flags=Array.from(output.subarray(at,at+8));at+=8;let normalFrame:number|null=null;if(flags[0]===1){at+=12+4+4+4;const textLength=view.getUint32(at,true);at+=4+textLength;normalFrame=view.getInt32(at,true);at+=4+64+8}const passCount=view.getUint32(at,true);at+=4;const passes:number[]=[];for(let index=0;index<passCount;index++){passes.push(output[at]!);at+=8+24+4+4+8;const count=view.getUint32(at,true);at+=4+count*4}require(at===output.length,"Water visibility output is truncated");return Object.freeze({surfaceCount,flags,normalFrame,passes})}
-  const spawnVisibility=visibilityProbe([5328,3376,-3068,180,0,sourceHorizontal4By3FovToVertical(75),16/9,7,Number(travel.tick)*0.015])
+  const visibilityProbe=(values:readonly number[])=>{
+    const pointer=exports.playsrc_alloc(40)
+    new Float32Array(exports.memory.buffer,pointer,10).set(values)
+    require(exports.playsrc_visibility_query(handle,pointer)===1,"fixed-camera PVS query failed")
+    exports.playsrc_free(pointer,40)
+    const length=exports.playsrc_visibility_output_length(handle),outputPointer=exports.playsrc_alloc(length)
+    require(exports.playsrc_visibility_output_copy(handle,outputPointer,length)===length,"fixed-camera PVS output copy failed")
+    const output=new Uint8Array(exports.memory.buffer,outputPointer,length).slice()
+    exports.playsrc_free(outputPointer,length)
+    const view=new DataView(output.buffer)
+    require(new TextDecoder().decode(output.subarray(0,4))==="PVIS"&&view.getUint32(4,true)===3,"PVS output identity differs")
+    let at=76,surfaceCount=view.getUint32(at,true);at+=4+surfaceCount*4
+    const drawSurfaceCount=view.getUint32(at,true);at+=4+drawSurfaceCount*4
+    at+=4;const leafCount=view.getUint32(at,true);at+=4+leafCount*4
+    const areaCount=view.getUint32(at,true);at+=4+areaCount*4
+    const flags=Array.from(output.subarray(at,at+8));at+=8
+    let normalFrame:number|null=null
+    if(flags[0]===1){at+=12+4+4+4;const textLength=view.getUint32(at,true);at+=4+textLength;normalFrame=view.getInt32(at,true);at+=4+64+8}
+    const passCount=view.getUint32(at,true);at+=4;const passes:number[]=[]
+    for(let index=0;index<passCount;index++){passes.push(output[at]!);at+=8+24+4+4+8;const count=view.getUint32(at,true);at+=4+count*4}
+    require(at===output.length,"Water visibility output is truncated")
+    return Object.freeze({surfaceCount,drawSurfaceCount,flags,normalFrame,passes})
+  }
+  const spawnVisibility=visibilityProbe([5328,3376,-3068,180,0,sourceHorizontal4By3FovToVertical(75),16/9,7,32768,Number(travel.tick)*0.015])
   require(spawnVisibility.surfaceCount===91,"fixed-camera PVS surface count changed")
-  const aboveWater=visibilityProbe([-4800,3000,-2100,0,20,sourceHorizontal4By3FovToVertical(75),16/9,7,1]),belowWater=visibilityProbe([-4800,3000,-2300,0,-20,sourceHorizontal4By3FovToVertical(75),16/9,7,1]),crossingWater=visibilityProbe([-4800,3000,-2160,0,0,sourceHorizontal4By3FovToVertical(75),16/9,7,1])
+  require(spawnVisibility.drawSurfaceCount>0&&spawnVisibility.drawSurfaceCount<=spawnVisibility.surfaceCount,"fixed-camera frustum surface count differs")
+  const aboveWater=visibilityProbe([-4800,3000,-2100,0,20,sourceHorizontal4By3FovToVertical(75),16/9,7,32768,1]),belowWater=visibilityProbe([-4800,3000,-2300,0,-20,sourceHorizontal4By3FovToVertical(75),16/9,7,32768,1]),crossingWater=visibilityProbe([-4800,3000,-2160,0,0,sourceHorizontal4By3FovToVertical(75),16/9,7,32768,1])
   require(aboveWater.flags[0]===1&&aboveWater.flags[2]===1&&aboveWater.flags[3]===1&&aboveWater.normalFrame===30&&aboveWater.passes.join(",")==="0,1,2","above-Water reflection/refraction plan differs")
   require(belowWater.flags[0]===1&&belowWater.flags[3]===1&&belowWater.passes.includes(1)&&belowWater.passes.includes(2),"below-Water plan differs")
   require(crossingWater.flags[7]===1&&crossingWater.passes.includes(3),"Water near-plane intersection plan differs")
@@ -825,7 +848,7 @@ export async function verifyTf2Wasm(
   require(hdrFirst.sha256 === hdrSecond.sha256, "repeated HDR payload hashes differ")
   require(hdrFirst.derivedSha256 === hdrSecond.derivedSha256, "repeated HDR derived hashes differ")
   require(hdrFirst.derivedSha256 !== ldrDerivedSha256, "LDR and HDR derived identities are equal")
-  require(ldrDerivedSha256 === EXPECTED_LDR_DERIVED_SHA256, `LDR derived identity ${ldrDerivedSha256} changed`)
+  require(ldrDerivedSha256 === EXPECTED_LDR_DERIVED_SHA256, `LDR derived identity ${ldrDerivedSha256} changed for payload ${mapSha256}`)
   require(hdrFirst.payload.byteLength === EXPECTED_HDR_BYTES, "HDR payload byte length changed")
   require(hdrFirst.sha256 === EXPECTED_HDR_SHA256, "HDR payload SHA-256 changed")
   require(hdrFirst.derivedSha256 === EXPECTED_HDR_DERIVED_SHA256, "HDR derived identity changed")
