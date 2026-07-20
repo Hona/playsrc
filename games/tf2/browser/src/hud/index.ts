@@ -18,6 +18,7 @@ export type {
   Tf2HudAvailability,
   Tf2HudBinding,
   Tf2HudCommand,
+  Tf2HudClassModel,
   Tf2HudCrosshair,
   Tf2HudEvent,
   Tf2HudFreezePanel,
@@ -43,6 +44,7 @@ export {
   TF2_CLASS_IMAGES,
   TF2_GROUPED_CONDITION_PANELS,
   TF2_HUD_RESOURCES,
+  TF2_HUD_DYNAMIC_IMAGES,
   TF2_HUD_RESOURCE_REVISIONS,
   TF2_INDEPENDENT_CONDITION_PANELS,
 } from "./inventory"

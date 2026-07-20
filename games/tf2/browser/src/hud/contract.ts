@@ -25,6 +25,11 @@ export type Tf2PlayableTeam = 2 | 3
 export type Tf2ConditionWords = readonly [number, number, number, number, number]
 export type Tf2ReloadPhase = "ready" | "start" | "insert" | "finish"
 
+export type Tf2HudClassModel = Readonly<{
+  identity: string
+  skin: number
+}>
+
 export type Tf2HudHealth = Readonly<{
   current: number
   maximum: number
@@ -76,6 +81,8 @@ export type Tf2HudPlayer = Readonly<{
   lifecycle: "active" | "dying" | "observer"
   class: Tf2HudAvailability<Tf2Class>
   team: Tf2HudAvailability<Tf2Team>
+  playerClassUsePlayerModel: boolean
+  classModel: Tf2HudAvailability<Tf2HudClassModel>
   health: Tf2HudAvailability<Tf2HudHealth>
   conditions: Tf2ConditionWords
   weapons: readonly Tf2HudWeapon[]

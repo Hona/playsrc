@@ -25,6 +25,7 @@ export type CompactSessionHudContext = Readonly<{
   crosshair: Tf2HudCrosshair
   scoreboard: Tf2HudAvailability<Tf2HudScoreboard>
   freezePanel: Tf2HudAvailability<Tf2HudFreezePanel>
+  playerClassUsePlayerModel: boolean
 }>
 
 type CompactWeaponState = Readonly<{
@@ -124,6 +125,13 @@ function teamIdentity(value: CompactSessionSnapshot["team"]): 2 | 3 {
   return value === 1 ? 2 : 3
 }
 
+function classModel(snapshot: CompactSessionSnapshot) {
+  return Object.freeze({
+    identity: snapshot.class === 1 ? "models/player/soldier.mdl" : "models/player/demo.mdl",
+    skin: snapshot.team === 1 ? 0 : 1,
+  })
+}
+
 function conditions(value: CompactSessionSnapshot["conditions"]): Tf2ConditionWords {
   return Object.freeze([...value]) as Tf2ConditionWords
 }
@@ -139,6 +147,8 @@ function canonicalSnapshot(snapshot: CompactSessionSnapshot, context: CompactSes
       lifecycle: snapshot.lifecycle === 1 ? "active" as const : "dying" as const,
       class: tf2HudAvailable(classIdentity(snapshot.class)),
       team: tf2HudAvailable(teamIdentity(snapshot.team)),
+      playerClassUsePlayerModel: context.playerClassUsePlayerModel,
+      classModel: tf2HudAvailable(classModel(snapshot)),
       health: tf2HudAvailable(health(snapshot)),
       conditions: words,
       weapons: Object.freeze(snapshot.loadout.map(weapon)),

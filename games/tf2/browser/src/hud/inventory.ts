@@ -24,6 +24,15 @@ export const TF2_HUD_RESOURCE_REVISIONS = Object.freeze({
   freezePanel: "aa7eb65149c32af23766daccee2fa6cb45a88ca09e4875008bdf692671f6a15e",
 })
 
+export const TF2_HUD_DYNAMIC_IMAGES = Object.freeze([
+  "../hud/class_scoutred", "../hud/class_sniperred", "../hud/class_soldierred", "../hud/class_demored",
+  "../hud/class_medicred", "../hud/class_heavyred", "../hud/class_pyrored", "../hud/class_spyred", "../hud/class_engired",
+  "../hud/class_scoutblue", "../hud/class_sniperblue", "../hud/class_soldierblue", "../hud/class_demoblue",
+  "../hud/class_medicblue", "../hud/class_heavyblue", "../hud/class_pyroblue", "../hud/class_spyblue", "../hud/class_engiblue",
+  "../hud/character_red_bg", "../hud/character_blue_bg", "../hud/character_red_bg_clipped", "../hud/character_blue_bg_clipped",
+  "../hud/ammo_red_bg", "../hud/ammo_blue_bg", "hud/health_color", "hud/health_dead",
+])
+
 export const TF2_CLASS_IMAGES: Readonly<Record<Tf2PlayableTeam, Readonly<Record<Tf2Class, string>>>> =
   Object.freeze({
     2: Object.freeze({

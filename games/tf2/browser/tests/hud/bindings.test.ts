@@ -86,6 +86,8 @@ function player(overrides: Partial<Tf2HudPlayer> = {}): Tf2HudPlayer {
     lifecycle: "active",
     class: tf2HudAvailable(3),
     team: tf2HudAvailable(2),
+    playerClassUsePlayerModel: false,
+    classModel: tf2HudAvailable(Object.freeze({ identity: "models/player/soldier.mdl", skin: 0 })),
     health: tf2HudAvailable(health()),
     conditions: words(),
     weapons: Object.freeze([weapon()]),
@@ -347,6 +349,37 @@ describe("immutable TF2 HUD binding", () => {
     }
   })
 
+  test("hides the complete zero-condition baseline and removes every prior condition panel", () => {
+    const zero = bindTf2Hud({ previous: unavailable("initial"), snapshot: snapshot(24n), events: [] })
+    for (const item of TF2_GROUPED_CONDITION_PANELS) {
+      expect(value(zero.values, "visible", item.panel), item.panel).toMatchObject({ value: false })
+    }
+    for (const item of TF2_INDEPENDENT_CONDITION_PANELS) {
+      expect(value(zero.values, "visible", item.panel), item.panel).toMatchObject({ value: false })
+    }
+    expect(value(zero.values, "visible", "PlayerStatus_WheelOfDoom")).toMatchObject({ value: false })
+
+    for (const selected of [...TF2_GROUPED_CONDITION_PANELS, ...TF2_INDEPENDENT_CONDITION_PANELS.map((item) => ({ ...item, condition: item.conditions[0]! }))]) {
+      const active = bindTf2Hud({
+        previous: unavailable("initial"),
+        snapshot: snapshot(25n, { player: tf2HudAvailable(player({ conditions: words(selected.condition) })) }),
+        events: [],
+      })
+      expect(value(active.values, "visible", selected.panel), selected.panel).toMatchObject({ value: true })
+    }
+
+    const conditioned = snapshot(26n, { player: tf2HudAvailable(player({ conditions: words(25, 58, 90) })) })
+    const cleared = snapshot(27n)
+    const removed = bindTf2Hud({
+      previous: availablePrevious(conditioned),
+      snapshot: cleared,
+      events: [{ tick: 27n, ordinal: 0, kind: "conditions", conditions: words() }],
+    })
+    for (const panel of ["PlayerStatusBleedImage", "PlayerStatus_MedicUberBulletResistImage", "PlayerStatus_RuneStrength"]) {
+      expect(value(removed.values, "visible", panel), panel).toMatchObject({ value: false })
+    }
+  })
+
   test("retains scoreboard, killfeed, pickup and regenerate facts without mutating inputs", () => {
     const counters: Tf2ScoreboardCounters = Object.freeze({
       kills: 3, deaths: 1, assists: 2, destruction: 0, captures: 1, defenses: 0, dominations: 1,
@@ -476,6 +509,7 @@ describe("current compact Soldier/Demoman HUD adapter", () => {
     crosshair: crosshair(),
     scoreboard: unavailable(),
     freezePanel: unavailable(),
+    playerClassUsePlayerModel: false,
   })
 
   test("retains fire/reload ticks across one coalesced host publication", () => {
@@ -515,8 +549,12 @@ describe("current compact Soldier/Demoman HUD adapter", () => {
       team: { kind: "available", value: 3 },
       health: { kind: "available", value: { current: 175, maximum: 175, maximumBuffed: 260 } },
       activeWeapon: { kind: "available", value: 3 },
+      playerClassUsePlayerModel: false,
+      classModel: { kind: "available", value: { identity: "models/player/demo.mdl", skin: 1 } },
     })
     expect(value(binding.values, "image", "PlayerStatusClassImage")).toMatchObject({ value: { value: "../hud/class_demoblue" } })
+    expect(value(binding.values, "dialog-variable", "classmodelpanel", "weaponName")).toMatchObject({ value: { value: "Stickybomb Launcher" } })
+    expect(value(binding.values, "scalar", "classmodelpanel", "itemDefinition")).toMatchObject({ value: { kind: "unavailable" } })
   })
 
   test("retains regenerate-before-fire ammo within one compact tick", () => {

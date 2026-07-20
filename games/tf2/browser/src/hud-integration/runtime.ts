@@ -14,6 +14,7 @@ import {
   adaptCompactSessionHud,
   bindTf2Hud,
   bindTf2HudAction,
+  TF2_HUD_DYNAMIC_IMAGES,
   tf2HudAvailable,
   tf2HudUnavailable,
   type CompactSessionHudContext,
@@ -51,6 +52,7 @@ export type Tf2HudIntegration = Readonly<{
   setViewport(viewport: VguiViewport): void
   probe(): Tf2HudIntegrationProbe
   snapshot(): Tf2HudIntegrationSnapshot
+  reset(reason: "map-replaced" | "disconnect"): void
   destroy(): void
 }>
 
@@ -167,6 +169,9 @@ class Integration implements Tf2HudIntegration {
 
   constructor(request: Tf2HudIntegrationRequest) {
     this.#onCommand = request.onCommand
+    const availableImages = new Set(request.resources.clientScheme.images.map((image) => image.name.toLowerCase()))
+    const missingImages = TF2_HUD_DYNAMIC_IMAGES.filter((image) => !availableImages.has(image.toLowerCase()))
+    if (missingImages.length > 0) throw new Error(`TF2 HUD dynamic images are unavailable: ${missingImages.join(",")}`)
     const initialized = initializeVguiRuntime({
       runtimeIdentity: "tf2-hud",
       root: request.root,
@@ -344,6 +349,25 @@ class Integration implements Tf2HudIntegration {
       vgui: this.#runtime.snapshot(),
       diagnostics: Object.freeze([...this.#diagnostics]),
       animationTrace: Object.freeze([...this.#animationTrace]),
+    })
+  }
+  reset(reason: "map-replaced" | "disconnect"): void {
+    if (this.#destroyed) throw new Error("TF2 HUD integration is destroyed")
+    void reason
+    this.#runtime.deferPresentation(() => {
+      const unavailable = tf2HudUnavailable<never>("replay-discontinuity")
+      const snapshot: Tf2HudSnapshot = Object.freeze({
+        tick: 0n,
+        player: unavailable,
+        scoreboard: unavailable,
+        freezePanel: unavailable,
+      })
+      const binding = bindTf2Hud(Object.freeze({ previous: unavailable, snapshot, events: Object.freeze([]) }))
+      this.#publishedValues.clear()
+      this.#applyValues(binding)
+      this.#previous = unavailable
+      this.#binding = null
+      this.#animationTrace.length = 0
     })
   }
   destroy(): void {

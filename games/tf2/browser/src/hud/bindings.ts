@@ -11,6 +11,7 @@ import type {
   Tf2HudFreezePanel,
   Tf2HudHealth,
   Tf2HudKillfeedNotice,
+  Tf2HudClassModel,
   Tf2HudLocalizedValue,
   Tf2HudPanelValue,
   Tf2HudPickupNotification,
@@ -230,6 +231,8 @@ function copyPlayer(value: Tf2HudPlayer): Tf2HudPlayer {
     lifecycle: value.lifecycle,
     class: copyAvailability(value.class, copyClass, "player class"),
     team: copyAvailability(value.team, copyTeam, "player team"),
+    playerClassUsePlayerModel: value.playerClassUsePlayerModel === true,
+    classModel: copyAvailability(value.classModel, copyClassModel, "player class model"),
     health: copyAvailability(value.health, copyHealth, "player health"),
     conditions: copyConditions(value.conditions),
     weapons,
@@ -238,6 +241,13 @@ function copyPlayer(value: Tf2HudPlayer): Tf2HudPlayer {
     crosshair: copyAvailability(value.crosshair, copyCrosshair, "player crosshair"),
     liveHudSuppressed: value.liveHudSuppressed === true,
     respawnAllowed: value.respawnAllowed === true,
+  })
+}
+
+function copyClassModel(value: Tf2HudClassModel): Tf2HudClassModel {
+  return Object.freeze({
+    identity: text(value.identity, "player class model"),
+    skin: integer(value.skin, "player class model skin"),
   })
 }
 
@@ -552,9 +562,24 @@ function panelValues(snapshot: Tf2HudSnapshot): readonly Tf2HudPanelValue[] {
   const team = player?.team.kind === "available" ? player.team.value : null
   const tfClass = player?.class.kind === "available" ? player.class.value : null
   const playableTeam = team === 2 || team === 3 ? team : null
+  const usePlayerModel = live && player?.playerClassUsePlayerModel === true
+  const useClassImage = live && !usePlayerModel
+  setVisible("PlayerStatusClassImage", useClassImage)
+  setVisible("PlayerStatusClassImageBG", useClassImage)
+  setVisible("classmodelpanel", usePlayerModel)
+  setVisible("classmodelpanelBG", usePlayerModel)
+  setVisible("PlayerStatusSpyImage", false)
+  setVisible("PlayerStatusSpyOutlineImage", false)
   setImage("PlayerStatusClassImage", playableTeam && tfClass ? tf2HudAvailable(TF2_CLASS_IMAGES[playableTeam][tfClass]) : unavailableString())
+  setImage("PlayerStatusClassImageBG", playableTeam ? tf2HudAvailable(playableTeam === 2 ? "../hud/character_red_bg" : "../hud/character_blue_bg") : unavailableString())
+  setImage("classmodelpanelBG", playableTeam ? tf2HudAvailable(playableTeam === 2 ? "../hud/character_red_bg_clipped" : "../hud/character_blue_bg_clipped") : unavailableString())
   setScalar("HudPlayerClass", "team", team === null ? unavailableNumber() : tf2HudAvailable(team))
   setScalar("HudPlayerClass", "class", tfClass === null ? unavailableNumber() : tf2HudAvailable(tfClass))
+  const classModel = player?.classModel.kind === "available" ? player.classModel.value : null
+  setDialog("classmodelpanel", "modelIdentity", classModel ? tf2HudAvailable(classModel.identity) : unavailableString())
+  setScalar("classmodelpanel", "skin", classModel ? tf2HudAvailable(classModel.skin) : unavailableNumber())
+  setScalar("classmodelpanel", "team", team === null ? unavailableNumber() : tf2HudAvailable(team))
+  setScalar("classmodelpanel", "class", tfClass === null ? unavailableNumber() : tf2HudAvailable(tfClass))
 
   const conditions = player?.conditions ?? Object.freeze([0, 0, 0, 0, 0]) as Tf2ConditionWords
   const groups = new Set<string>()
@@ -567,6 +592,7 @@ function panelValues(snapshot: Tf2HudSnapshot): readonly Tf2HudPanelValue[] {
   for (const item of TF2_INDEPENDENT_CONDITION_PANELS) {
     setVisible(item.panel, live && item.conditions.some((condition) => conditionActive(conditions, condition)))
   }
+  setVisible("PlayerStatus_WheelOfDoom", false)
 
   const activeWeaponIdentity = player?.activeWeapon.kind === "available" ? player.activeWeapon.value : null
   const activeWeapon = activeWeaponIdentity !== null
@@ -574,6 +600,7 @@ function panelValues(snapshot: Tf2HudSnapshot): readonly Tf2HudPanelValue[] {
     : null
   const ammoVisible = live && activeWeapon !== null && activeWeapon.ammoDisplay !== "hidden"
   setVisible("HudWeaponAmmo", ammoVisible)
+  setImage("HudWeaponAmmoBG", playableTeam ? tf2HudAvailable(playableTeam === 2 ? "../hud/ammo_red_bg" : "../hud/ammo_blue_bg") : unavailableString())
   const clipMode = activeWeapon?.ammoDisplay === "clip-and-reserve"
   const totalMode = activeWeapon?.ammoDisplay === "total"
   setVisible("AmmoInClip", ammoVisible && clipMode)
@@ -590,6 +617,9 @@ function panelValues(snapshot: Tf2HudSnapshot): readonly Tf2HudPanelValue[] {
     ? tf2HudAvailable(Object.freeze([255, 0, 0, 255]))
     : tf2HudUnavailable("not-applicable"))
   setScalar("HudWeaponAmmo", "reloadPhase", activeWeapon ? tf2HudAvailable(["ready", "start", "insert", "finish"].indexOf(activeWeapon.reload)) : unavailableNumber())
+  setScalar("classmodelpanel", "weaponIdentity", activeWeapon ? tf2HudAvailable(activeWeapon.identity) : unavailableNumber())
+  setDialog("classmodelpanel", "weaponName", activeWeapon ? tf2HudAvailable(activeWeapon.displayName) : unavailableString())
+  setScalar("classmodelpanel", "itemDefinition", activeWeapon?.itemDefinition.kind === "available" ? tf2HudAvailable(activeWeapon.itemDefinition.value) : unavailableNumber())
 
   setVisible("HudWeaponSelection", live && player?.weaponSelection.open === true)
   for (let slot = 0; slot < 6; slot += 1) {
@@ -602,6 +632,8 @@ function panelValues(snapshot: Tf2HudSnapshot): readonly Tf2HudPanelValue[] {
       : undefined
     const weapon = selected ?? candidates[0]
     setScalar(`modelpanel${slot}`, "weaponIdentity", weapon ? tf2HudAvailable(weapon.identity) : unavailableNumber())
+    setDialog(`modelpanel${slot}`, "weaponName", weapon ? tf2HudAvailable(weapon.displayName) : unavailableString())
+    setScalar(`modelpanel${slot}`, "itemDefinition", weapon?.itemDefinition.kind === "available" ? tf2HudAvailable(weapon.itemDefinition.value) : unavailableNumber())
   }
 
   const crosshair = player?.crosshair.kind === "available" ? player.crosshair.value : null
