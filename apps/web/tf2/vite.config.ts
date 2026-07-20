@@ -1,6 +1,6 @@
 import preact from "@preact/preset-vite"
 import { fileURLToPath } from "node:url"
-import { defineConfig, type Plugin } from "vite"
+import { defineConfig, type Plugin, type UserConfig } from "vite"
 
 function localRuntime(): Plugin {
   return {
@@ -23,8 +23,7 @@ function localRuntime(): Plugin {
   }
 }
 
-export default defineConfig(() => {
-  const assetOrigin = process.env.PLAYSRC_ASSET_ORIGIN
+export function tf2ViteConfiguration(assetOrigin = process.env.PLAYSRC_ASSET_ORIGIN): UserConfig {
   return {
     plugins: [preact(), localRuntime()],
     server: {
@@ -39,4 +38,6 @@ export default defineConfig(() => {
     preview: { host: "127.0.0.1", port: 4173, strictPort: true },
     build: { target: "es2022", sourcemap: true },
   }
-})
+}
+
+export default defineConfig(() => tf2ViteConfiguration())

@@ -11,6 +11,7 @@ import { buildSourceBundle } from "./source-bundle"
 import { decodeSnapshot, encodeCommand } from "../../../games/tf2/browser/src/codec"
 import { decodeModelPoseOutput, encodeModelPoseBatch } from "../../../games/tf2/browser/src/presentation"
 import { parsePresentationArtifacts } from "../../../games/tf2/browser/src/artifacts"
+import { buildTf2Wasm } from "./tf2-wasm-build"
 
 const EXPECTED_MAP_BYTES = 42_082_929
 const EXPECTED_MAP_SHA256 = "56153098a867c553651f9c773bd72c4659782bae8520277c80daaaa414bdf156"
@@ -337,32 +338,6 @@ function inspectHdrPayload(payload: Uint8Array) {
     profileMaterials,
     inputCount,
   }
-}
-
-export async function buildTf2Wasm(config: LocalConfig): Promise<string> {
-  const executable = process.platform === "win32" ? "cargo.exe" : "cargo"
-  const cargo = path.join(config.sourceCacheDir, "toolchains", "rust", "cargo", "bin", executable)
-  const child = Bun.spawn(
-    [
-      cargo,
-      `+${toolchains.rust.toolchain}`,
-      "build",
-      "-p",
-      "playsrc-tf2-wasm",
-      "--target",
-      "wasm32-unknown-unknown",
-      "--release",
-    ],
-    {
-      cwd: repositoryRoot,
-      env: { ...process.env, ...rustEnvironment(config.sourceCacheDir) },
-      stdout: "inherit",
-      stderr: "inherit",
-    },
-  )
-  const exitCode = await child.exited
-  if (exitCode !== 0) throw new WasmVerificationError(`cargo build exited with code ${exitCode}`)
-  return path.join(repositoryRoot, "target", "wasm32-unknown-unknown", "release", "playsrc_tf2_wasm.wasm")
 }
 
 async function buildNativeHdr(

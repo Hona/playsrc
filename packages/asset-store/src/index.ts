@@ -1,3 +1,4 @@
+import { createReadStream } from "node:fs"
 import { link, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
 import path from "node:path"
 
@@ -19,6 +20,7 @@ function throwIfCancelled(signal?: AbortSignal): void {
 
 const HASH = /^[0-9a-f]{64}$/
 const CHANNEL = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/
+const VERIFY_CHUNK_BYTES = 1024 * 1024
 
 function digest(bytes: Uint8Array): string {
   const hash = new Bun.CryptoHasher("sha256")
@@ -36,18 +38,22 @@ export function descriptor(kind: ObjectKind, mediaType: string, bytes: Uint8Arra
   return Object.freeze({ kind, mediaType, byteLength: String(bytes.byteLength), sha256: digest(bytes) })
 }
 
-async function verify(pathname: string, expected: ObjectDescriptor): Promise<Uint8Array> {
+async function verify(pathname: string, expected: ObjectDescriptor): Promise<void> {
   try {
     const metadata = await stat(pathname)
     if (!metadata.isFile() || String(metadata.size) !== expected.byteLength) throw new AssetStoreError("IntegrityFailure", "object length differs")
-    const bytes = await readFile(pathname)
-    if (digest(bytes) !== expected.sha256) throw new AssetStoreError("IntegrityFailure", "object hash differs")
-    return bytes
+    const hash = new Bun.CryptoHasher("sha256")
+    for await (const chunk of createReadStream(pathname, { highWaterMark: VERIFY_CHUNK_BYTES })) hash.update(chunk as Uint8Array)
+    if (hash.digest("hex") !== expected.sha256) throw new AssetStoreError("IntegrityFailure", "object hash differs")
   } catch (error) {
     if (error instanceof AssetStoreError) throw error
     if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new AssetStoreError("MissingObject", "object is absent")
     throw new AssetStoreError("IoFailure", "object read failed")
   }
+}
+
+export async function verifyObject(root: string, expected: ObjectDescriptor): Promise<void> {
+  await verify(objectPath(root, expected.sha256), expected)
 }
 
 export async function putObject(
@@ -89,7 +95,18 @@ export async function putObject(
 }
 
 export async function readObject(root: string, expected: ObjectDescriptor): Promise<Uint8Array> {
-  return verify(objectPath(root, expected.sha256), expected)
+  const pathname = objectPath(root, expected.sha256)
+  try {
+    const metadata = await stat(pathname)
+    if (!metadata.isFile() || String(metadata.size) !== expected.byteLength) throw new AssetStoreError("IntegrityFailure", "object length differs")
+    const bytes = await readFile(pathname)
+    if (digest(bytes) !== expected.sha256) throw new AssetStoreError("IntegrityFailure", "object hash differs")
+    return bytes
+  } catch (error) {
+    if (error instanceof AssetStoreError) throw error
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new AssetStoreError("MissingObject", "object is absent")
+    throw new AssetStoreError("IoFailure", "object read failed")
+  }
 }
 
 export function canonicalJson(value: unknown): Uint8Array {

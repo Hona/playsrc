@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
+    io::{ErrorKind, Read},
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -1237,12 +1238,46 @@ fn bytesv(output: &mut Vec<u8>, bytes: &[u8]) -> Result<(), String> {
         .ok_or_else(|| "source dependency bundle exceeds byte bound".to_owned())
 }
 
+fn bundle_capacity(entries: &BTreeMap<String, Vec<u8>>) -> Result<usize, String> {
+    let mut capacity = 12_usize;
+    for (path, bytes) in entries {
+        capacity = capacity
+            .checked_add(8)
+            .and_then(|value| value.checked_add(path.len()))
+            .and_then(|value| value.checked_add(bytes.len()))
+            .ok_or_else(|| "source dependency bundle exceeds byte bound".to_owned())?;
+    }
+    (capacity <= MAX_BUNDLE_BYTES)
+        .then_some(capacity)
+        .ok_or_else(|| "source dependency bundle exceeds byte bound".to_owned())
+}
+
+fn artifact_equals(path: &Path, bytes: &[u8]) -> Result<bool, String> {
+    let metadata = match path.metadata() {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.to_string()),
+    };
+    if !metadata.is_file() || metadata.len() != bytes.len() as u64 {
+        return Ok(false);
+    }
+    let mut file = fs::File::open(path).map_err(|error| error.to_string())?;
+    let mut buffer = [0_u8; 64 * 1024];
+    let mut offset = 0_usize;
+    loop {
+        let read = file.read(&mut buffer).map_err(|error| error.to_string())?;
+        if read == 0 {
+            return Ok(offset == bytes.len());
+        }
+        if bytes.get(offset..offset + read) != Some(&buffer[..read]) {
+            return Ok(false);
+        }
+        offset += read;
+    }
+}
+
 fn install_artifact(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    if path
-        .metadata()
-        .is_ok_and(|metadata| metadata.is_file() && metadata.len() == bytes.len() as u64)
-        && fs::read(path).map_err(|error| error.to_string())? == bytes
-    {
+    if artifact_equals(path, bytes)? {
         return Ok(());
     }
     let temporary = path.with_extension(format!(
@@ -1254,11 +1289,11 @@ fn install_artifact(path: &Path, bytes: &[u8]) -> Result<(), String> {
     ));
     let result = (|| {
         fs::write(&temporary, bytes).map_err(|error| error.to_string())?;
-        if fs::read(&temporary).map_err(|error| error.to_string())? != bytes {
+        if !artifact_equals(&temporary, bytes)? {
             return Err("temporary artifact verification failed".to_owned());
         }
         fs::rename(&temporary, path).map_err(|error| error.to_string())?;
-        if fs::read(path).map_err(|error| error.to_string())? != bytes {
+        if !artifact_equals(path, bytes)? {
             return Err("installed artifact verification failed".to_owned());
         }
         Ok(())
@@ -2130,7 +2165,8 @@ fn main() -> Result<(), String> {
     if bundle.len() > MAX_DEPENDENCY_REQUESTS || resolver.requests.len() > MAX_DEPENDENCY_REQUESTS {
         return Err("source dependency request count exceeds bound".to_owned());
     }
-    let mut output = b"PSDB".to_vec();
+    let mut output = Vec::with_capacity(bundle_capacity(bundle)?);
+    output.extend_from_slice(b"PSDB");
     output.extend_from_slice(&1_u32.to_le_bytes());
     output.extend_from_slice(
         &u32::try_from(bundle.len())
@@ -2141,7 +2177,8 @@ fn main() -> Result<(), String> {
         bytesv(&mut output, path.as_bytes())?;
         bytesv(&mut output, bytes)?;
     }
-    let mut ui_output = b"PUIB".to_vec();
+    let mut ui_output = Vec::with_capacity(bundle_capacity(&ui_bundle)?);
+    ui_output.extend_from_slice(b"PUIB");
     ui_output.extend_from_slice(&1_u32.to_le_bytes());
     ui_output.extend_from_slice(
         &u32::try_from(ui_bundle.len())
