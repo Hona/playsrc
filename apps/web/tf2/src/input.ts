@@ -2,6 +2,64 @@ const SOURCE_MOUSE_SENSITIVITY = 3
 const SOURCE_MOUSE_YAW = 0.022
 const SOURCE_MOUSE_PITCH = 0.022
 
+export type PhysicalBinding = Readonly<{
+  action: string
+  code: string
+  modifiers: number
+}>
+
+export function resolvePhysicalBinding<Candidate>(
+  code: string,
+  modifiers: number,
+  candidates: readonly Candidate[],
+  read: (candidate: Candidate) => PhysicalBinding | null,
+): Readonly<{ action: string; match: "exact" | "unmodified" }> | null {
+  let unmodified: string | null = null
+  for (const candidate of candidates) {
+    const binding = read(candidate)
+    if (binding === null) continue
+    if (binding.code.toLowerCase() !== code.toLowerCase()) continue
+    if (binding.modifiers === modifiers) return Object.freeze({ action: binding.action, match: "exact" })
+    if (binding.modifiers === 0) unmodified = binding.action
+  }
+  return unmodified === null ? null : Object.freeze({ action: unmodified, match: "unmodified" })
+}
+
+export class PhysicalButtonState {
+  readonly #physical = new Map<string, string>()
+  readonly #actions = new Map<string, number>()
+
+  press(identity: string, action: string): boolean {
+    if (this.#physical.has(identity)) return false
+    this.#physical.set(identity, action)
+    const sources = this.#actions.get(action) ?? 0
+    this.#actions.set(action, sources + 1)
+    return sources === 0
+  }
+
+  release(identity: string): boolean {
+    const action = this.#physical.get(identity)
+    if (action === undefined) return false
+    this.#physical.delete(identity)
+    const sources = this.#actions.get(action)
+    if (sources === undefined || sources <= 1) {
+      this.#actions.delete(action)
+      return true
+    }
+    this.#actions.set(action, sources - 1)
+    return false
+  }
+
+  held(action: string): boolean {
+    return this.#actions.has(action)
+  }
+
+  clear(): void {
+    this.#physical.clear()
+    this.#actions.clear()
+  }
+}
+
 export function applyPointerDelta(
   yaw: number,
   pitch: number,
