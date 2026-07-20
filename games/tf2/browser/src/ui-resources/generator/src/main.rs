@@ -576,6 +576,10 @@ fn object_children<'a>(node: &'a Node, key: &[u8]) -> Result<&'a [Node], String>
     Ok(value)
 }
 
+fn app_manifest_path(install: &Path) -> PathBuf {
+    install.join("steamapps/appmanifest_440.acf")
+}
+
 fn verify_content_build(
     install: &Path,
     tf2: &Path,
@@ -594,12 +598,7 @@ fn verify_content_build(
     {
         return Err("TF2 content-build contract is malformed".to_owned());
     }
-    let steamapps = install
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| "configured TF2 install has no Steam library parent".to_owned())?;
-    let bytes = fs::read(steamapps.join("appmanifest_440.acf"))
-        .map_err(|error| error.to_string())?;
+    let bytes = fs::read(app_manifest_path(install)).map_err(|error| error.to_string())?;
     let document = playsrc_keyvalues::parse_text(
         &bytes,
         EscapeMode::LiteralBackslash,
@@ -648,7 +647,10 @@ fn verify_content_build(
     }
     for (path, expected) in [
         ("tf2_misc_dir.vpk", &contract.archive_indexes.tf2_misc),
-        ("tf2_textures_dir.vpk", &contract.archive_indexes.tf2_textures),
+        (
+            "tf2_textures_dir.vpk",
+            &contract.archive_indexes.tf2_textures,
+        ),
         (
             "tf2_sound_misc_dir.vpk",
             &contract.archive_indexes.tf2_sound_misc,
@@ -659,6 +661,19 @@ fn verify_content_build(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn force_install_manifest_is_inside_the_configured_install() {
+        assert_eq!(
+            app_manifest_path(Path::new("force-install")),
+            PathBuf::from("force-install/steamapps/appmanifest_440.acf")
+        );
+    }
 }
 
 fn provider_id(order: usize, path: &Path) -> String {
@@ -1415,8 +1430,7 @@ fn main() -> Result<(), String> {
     if digest(&gameinfo) != contract.gameinfo_sha256 {
         return Err("configured TF2 gameinfo identity changed".to_owned());
     }
-    let (specs, providers) =
-        provider_plan(install, &tf2, &gameinfo, &contract.content_build)?;
+    let (specs, providers) = provider_plan(install, &tf2, &gameinfo, &contract.content_build)?;
     let content = Content::open(
         "tf2",
         contract.content_build.clone(),

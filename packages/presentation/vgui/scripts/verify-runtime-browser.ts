@@ -99,7 +99,7 @@ try {
   require(cycles.snapshot.ownedResources.listeners === 13 && cycles.snapshot.ownedResources.observers === 0 && cycles.snapshot.ownedResources.timers === 0, "runtime browser resources differ")
   const result = {
     capturedAt: new Date().toISOString(),
-    sourceBuild: "TF2 24207079 / patch 10822003",
+    sourceBuild: "TF2 24245096 / patch 10828683",
     sdkRevision: "88fa198fba3fb85d46d4c95018254693fdc3af0a",
     operatingSystem: `${process.platform} ${os.release()}`,
     architecture: process.arch,

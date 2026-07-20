@@ -8,7 +8,7 @@ This is a manually derived Candidate inventory. Its 56 items contribute 0 items 
 
 | Metadata | Value |
 |---|---|
-| Authority identity | Valve Source SDK 2013 `IScheme`, `ISurface`, `IBorder`, `IImage`, and generic-control scheme consumers; configured TF2 public build `24207079`, patch `10822003`, scheme identities |
+| Authority identity | Valve Source SDK 2013 `IScheme`, `ISurface`, `IBorder`, `IImage`, and generic-control scheme consumers; configured TF2 public build `24245096`, patch `10828683`, scheme identities |
 | Authority revision | SDK commit `88fa198fba3fb85d46d4c95018254693fdc3af0a`; TF2 `tf2_misc_dir.vpk` SHA-256 `63f7db0d1c509e303ca9002fee9e3d805e9220ea5afdd639d8a6b68b8a3710b9`; denominator review Missing |
 | Generator command | Missing |
 | Output path | `packages/presentation/vgui/inventories/scheme-properties.md` |

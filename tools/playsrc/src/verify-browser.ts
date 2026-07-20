@@ -14,7 +14,7 @@ const APPLICATION_URL = "http://127.0.0.1:4173/"
 const VIEWPORT_WIDTH = 1280
 const VIEWPORT_HEIGHT = 720
 const BACKGROUND_RGB = [17, 24, 32] as const
-const EXPECTED_DEPENDENCY_SHA256="2364f2a18031cecdfd4e913ae5daa7924f33b6f2b2ed6b702a3a65ee09dfabf3"
+const EXPECTED_DEPENDENCY_SHA256="616f4b1ebb62e394a2fd1fdd31ca1f01d3de288540ab2c4b8cb596df9265432b"
 
 export class BrowserEvidenceError extends Error {
   constructor(message: string) {
@@ -1589,14 +1589,14 @@ export async function verifyBrowserAcceptance(
     )
     const mapRecords = records.filter(
       (record) =>
-        record.sha256 === "30d5320ba309c650383dbf8f1e58025431ab40ae740dc939bc467e1a1c7f5fe4" ||
+        record.sha256 === "d38eab0759df0d92f91832ca63848d5ed55f84b040c52f814cbc2c97b6a2e39d" ||
         record.sha256 === "56153098a867c553651f9c773bd72c4659782bae8520277c80daaaa414bdf156",
     )
     require(mapRecords.length === (platformFontSupported ? 2 : 1) &&
       mapRecords.some(
         (record) =>
           record.byteLength === 78_302_136 &&
-          record.sha256 === "30d5320ba309c650383dbf8f1e58025431ab40ae740dc939bc467e1a1c7f5fe4",
+          record.sha256 === "d38eab0759df0d92f91832ca63848d5ed55f84b040c52f814cbc2c97b6a2e39d",
       ) && (!platformFontSupported || mapRecords.some(
         (record) =>
           record.byteLength === 42_082_929 &&

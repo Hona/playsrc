@@ -15,7 +15,7 @@
     "device": "",
     "vendor": "apple"
   },
-  "sourceBuild": "TF2 24207079 / patch 10822003",
+  "sourceBuild": "TF2 24245096 / patch 10828683",
   "platformFonts": "browser source admitted; native target raster comparison remains required",
   "crouch": {
     "initial": [

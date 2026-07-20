@@ -8,7 +8,7 @@ This is a manually derived Candidate inventory. Its 51 items contribute 0 items 
 
 | Metadata | Value |
 |---|---|
-| Authority identity | Valve Source SDK 2013 VGUI build-factory declarations and public control contracts; configured TF2 public build `24207079`, patch `10822003`, VGUI resource control identities |
+| Authority identity | Valve Source SDK 2013 VGUI build-factory declarations and public control contracts; configured TF2 public build `24245096`, patch `10828683`, VGUI resource control identities |
 | Authority revision | SDK commit `88fa198fba3fb85d46d4c95018254693fdc3af0a`; TF2 `tf2_misc_dir.vpk` SHA-256 `63f7db0d1c509e303ca9002fee9e3d805e9220ea5afdd639d8a6b68b8a3710b9`; denominator review Missing |
 | Generator command | Missing |
 | Output path | `packages/presentation/vgui/inventories/controls.md` |
@@ -17,7 +17,7 @@ This is a manually derived Candidate inventory. Its 51 items contribute 0 items 
 | Generated item count | 0 |
 | Accepted item count | 0 |
 
-The first 41 identities are the generic build-factory names declared by the SDK control library. The final 10 are generic code-created controls required by the owning roadmap. Parsed resources from TF2 public build `24207079`, patch `10822003`, contain 8,271 `ControlName` occurrences with 195 ASCII-insensitive identities: 28 match these generic factories and 167 non-factory identities require package, game, or application classification.
+The first 41 identities are the generic build-factory names declared by the SDK control library. The final 10 are generic code-created controls required by the owning roadmap. Parsed resources from TF2 public build `24245096`, patch `10828683`, contain 8,271 `ControlName` occurrences with 195 ASCII-insensitive identities: 28 match these generic factories and 167 non-factory identities require package, game, or application classification.
 
 The GUI/HUD selected generic resource identities occur as follows: `Panel` 69, `EditablePanel` 975, `Label` 663, `ImagePanel` 1,276, `Button` 114, `TextEntry` 41, `RichText` 3, `Frame` 69, `ScrollBar` 15, `Slider` 3, `ComboBox` 56, `Menu` 8, `CheckButton` 102, `RadioButton` 55, `ProgressBar` 7, `ListPanel` 4, and `URLLabel` 1. `MenuItem`, `PropertySheet`, `PropertyPage`, `MessageBox`, and `QueryBox` have zero resource-factory occurrences and remain required code-created controls.
 

@@ -96,6 +96,7 @@ describe("configured TF2 UI resource descriptor", () => {
     expect(tf2UiResources.missingDependencies).toEqual([
       "resource/loadingdialogdualprogress.res",
       "cfg/user.scr",
+      "image:logos/UI/spray",
       "image:vgui/hud/icon_commentary",
       "localization:#Replay_SaveReplay",
       "localization:#Steam_ValidLoginRequired",
@@ -106,7 +107,7 @@ describe("configured TF2 UI resource descriptor", () => {
       "localization:#VAC_ConnectionRefusedDetail",
     ])
     expect(tf2UiResources.images.filter((image) => image.classification === "missing-material").map((image) => image.configuredValue))
-      .toEqual(["vgui/hud/icon_commentary"])
+      .toEqual(["logos/UI/spray", "vgui/hud/icon_commentary"])
     expect(tf2UiResources.fonts.some((font) => font.classification === "missing-font")).toBe(false)
   })
 

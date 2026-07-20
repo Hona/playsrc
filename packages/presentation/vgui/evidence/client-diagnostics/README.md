@@ -2,7 +2,7 @@
 
 ## Target
 
-- TF2 public content build `24207079`, patch/client/server version `10822003`.
+- TF2 public content build `24245096`, patch/client/server version `10828683`.
 - Composed SourceScheme revision `e9159a983557dea91b7030b382cce9ee7521c6f4de904107013bdcb47c4a732e`.
 - Official behavioral authorities: Valve Source SDK 2013 commit `88fa198fba3fb85d46d4c95018254693fdc3af0a`, `src/public/vgui/{IScheme,ISurface}.h`, `src/vgui2/vgui_controls/{consoledialog,Frame}.cpp`, and `src/game/client/vgui_fpspanel.cpp`.
 - Browser contracts: CSS Fonts 4 `src`/`local()` and CSS Font Loading 3 `FontFace.load()`/`FontFaceSet`.
@@ -30,7 +30,7 @@ The procedure always executes the complete console, diagnostics, convar, movemen
 
 ## Native Raster Blocker
 
-The missing acceptance input is one native TF2 build-`24207079` Windows capture set with English UI, 100% display scale, and the default composed SourceScheme. It must include the console and `DefaultFixedOutline` diagnostics at 854×480, 1280×720, and 1920×1080 plus 1280×720 at 200% magnification; focused/unfocused, submit armed/depressed, completion armed, and title-drag states; exact OS, GPU/driver, font versions, display scale, hashes, and capture tool.
+The missing acceptance input is one native TF2 build-`24245096` Windows capture set with English UI, 100% display scale, and the default composed SourceScheme. It must include the console and `DefaultFixedOutline` diagnostics at 854×480, 1280×720, and 1920×1080 plus 1280×720 at 200% magnification; focused/unfocused, submit armed/depressed, completion armed, and title-drag states; exact OS, GPU/driver, font versions, display scale, hashes, and capture tool.
 
 Source requests non-antialiased GDI glyphs for these roles. Browser standards expose no GDI non-antialias raster control. A supported Windows browser capture proves local-face capability and records browser raster; it does not establish native pixel parity without the native target capture.
 

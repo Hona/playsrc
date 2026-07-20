@@ -75,7 +75,7 @@ const result: Record<string, unknown> = {
   operatingSystem: `${process.platform} ${os.release()}`,
   architecture: process.arch,
   bun: Bun.version,
-  sourceBuild: "TF2 24207079 / patch 10822003",
+  sourceBuild: "TF2 24245096 / patch 10828683",
   schemeRevision: "e9159a983557dea91b7030b382cce9ee7521c6f4de904107013bdcb47c4a732e",
   browserCli: await agent(["--version"]),
 }

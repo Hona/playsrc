@@ -56,7 +56,7 @@ describe("source dependency bundle report", () => {
   })
 
   test("rejects stale builds and descriptor/report disagreements", () => {
-    expect(() => parseSourceBundleReport(JSON.stringify({ ...valid, contentBuild: "10822003" }), "jump_beef"))
+    expect(() => parseSourceBundleReport(JSON.stringify({ ...valid, contentBuild: "1" }), "jump_beef"))
       .toThrow("source bundle report is malformed")
     expect(() => parseSourceBundleReport(JSON.stringify({
       ...valid,

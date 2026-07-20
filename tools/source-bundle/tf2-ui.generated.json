@@ -3437,22 +3437,6 @@
       ]
     },
     {
-      "logicalPath": "materials/vgui/logos/spray.vtf",
-      "sha256": "a9c2fb57912069f7d5a841778cbe348e8d6f11b37626f3fd502f88863cb73d5f",
-      "byteLength": 43936,
-      "kinds": [
-        "texture"
-      ]
-    },
-    {
-      "logicalPath": "materials/vgui/logos/ui/spray.vmt",
-      "sha256": "4b505d1b44b52a156d74137e2987400daaf40fbe930dc714a383ec6789363c04",
-      "byteLength": 206,
-      "kinds": [
-        "material"
-      ]
-    },
-    {
       "logicalPath": "materials/vgui/marked_for_death.vmt",
       "sha256": "35032399c59715ed63156e3457cdec3eeec9afff35d3a0c25964c120b78bbab4",
       "byteLength": 116,
@@ -8097,18 +8081,9 @@
     {
       "identity": "image-0222",
       "configuredValue": "logos/UI/spray",
-      "classification": "content-vtf",
-      "material": "materials/vgui/logos/ui/spray.vmt",
-      "textures": [
-        {
-          "logicalPath": "materials/vgui/logos/spray.vtf",
-          "sha256": "a9c2fb57912069f7d5a841778cbe348e8d6f11b37626f3fd502f88863cb73d5f",
-          "width": 256,
-          "height": 256,
-          "frames": 1,
-          "rawFlags": 0
-        }
-      ]
+      "classification": "missing-material",
+      "material": null,
+      "textures": []
     },
     {
       "identity": "image-0223",
@@ -8607,6 +8582,7 @@
   "missingDependencies": [
     "resource/loadingdialogdualprogress.res",
     "cfg/user.scr",
+    "image:logos/UI/spray",
     "image:vgui/hud/icon_commentary",
     "localization:#Replay_SaveReplay",
     "localization:#Steam_ValidLoginRequired",

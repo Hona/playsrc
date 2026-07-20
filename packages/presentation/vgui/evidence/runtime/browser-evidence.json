@@ -1,6 +1,6 @@
 {
-  "capturedAt": "2026-07-20T13:00:16.760Z",
-  "sourceBuild": "TF2 24207079 / patch 10822003",
+  "capturedAt": "2026-07-20T13:38:09.010Z",
+  "sourceBuild": "TF2 24245096 / patch 10828683",
   "sdkRevision": "88fa198fba3fb85d46d4c95018254693fdc3af0a",
   "operatingSystem": "darwin 25.5.0",
   "architecture": "arm64",
@@ -282,6 +282,18 @@
         "kind": "message",
         "message": {
           "fields": {
+            "xpos": 302,
+            "ypos": 311
+          },
+          "name": "CursorMoved"
+        },
+        "source": null,
+        "target": 16
+      },
+      {
+        "kind": "message",
+        "message": {
+          "fields": {
             "xpos": 220,
             "ypos": 73
           },
@@ -518,7 +530,7 @@
       "animationScriptIdentity": "scripts/browser-empty",
       "delayedCommands": 0,
       "diagnostics": [],
-      "frame": 19,
+      "frame": 20,
       "input": {
         "applicationModal": null,
         "calculatedKeyFocus": 16,
@@ -3302,11 +3314,11 @@
       ],
       "queuedMessages": 0,
       "reducedMotion": false,
-      "revision": 71,
+      "revision": 74,
       "rootPanel": 1,
       "runtimeIdentity": "browser-evidence",
       "schemeIdentity": "resource/browser-scheme.res",
-      "timeSeconds": 0.20920000004768372,
+      "timeSeconds": 0.22120000004768373,
       "trace": [
         {
           "detail": "EditablePanel:Root",
@@ -3574,13 +3586,13 @@
         },
         {
           "detail": "CursorEntered",
-          "panel": 5,
+          "panel": 16,
           "phase": "message",
           "sequence": 45
         },
         {
           "detail": "CursorMoved",
-          "panel": 5,
+          "panel": 16,
           "phase": "message",
           "sequence": 46
         },
@@ -3633,21 +3645,21 @@
           "sequence": 54
         },
         {
-          "detail": "KillFocus",
+          "detail": "committed",
           "panel": 26,
-          "phase": "message",
+          "phase": "focus",
           "sequence": 55
         },
         {
-          "detail": "SetFocus",
-          "panel": 5,
+          "detail": "CursorExited",
+          "panel": 16,
           "phase": "message",
           "sequence": 56
         },
         {
-          "detail": "committed",
+          "detail": "CursorEntered",
           "panel": 5,
-          "phase": "focus",
+          "phase": "message",
           "sequence": 57
         },
         {
@@ -3657,338 +3669,338 @@
           "sequence": 58
         },
         {
-          "detail": "MousePressed",
-          "panel": 5,
-          "phase": "message",
-          "sequence": 59
-        },
-        {
-          "detail": "CheckButtonChecked",
-          "panel": 1,
-          "phase": "message",
-          "sequence": 60
-        },
-        {
-          "detail": "ButtonToggled",
-          "panel": 1,
-          "phase": "message",
-          "sequence": 61
-        },
-        {
           "detail": "dispatched",
           "panel": null,
           "phase": "messages",
-          "sequence": 62
+          "sequence": 59
         },
         {
           "detail": "focus-tick",
-          "panel": 5,
+          "panel": 26,
           "phase": "ticks",
-          "sequence": 63
+          "sequence": 60
         },
         {
           "detail": "solved",
           "panel": null,
           "phase": "layout",
-          "sequence": 64
+          "sequence": 61
         },
         {
           "detail": "advanced",
           "panel": null,
           "phase": "animation",
-          "sequence": 65
+          "sequence": 62
         },
         {
           "detail": "published",
           "panel": null,
           "phase": "dom",
-          "sequence": 66
+          "sequence": 63
         },
         {
           "detail": "end:3",
           "panel": null,
           "phase": "frame",
-          "sequence": 67
+          "sequence": 64
         },
         {
           "detail": "begin:4",
           "panel": null,
           "phase": "frame",
-          "sequence": 68
+          "sequence": 65
         },
         {
           "detail": "complete",
           "panel": null,
           "phase": "input-rollover",
-          "sequence": 69
+          "sequence": 66
+        },
+        {
+          "detail": "KillFocus",
+          "panel": 26,
+          "phase": "message",
+          "sequence": 67
+        },
+        {
+          "detail": "SetFocus",
+          "panel": 5,
+          "phase": "message",
+          "sequence": 68
         },
         {
           "detail": "committed",
           "panel": 5,
           "phase": "focus",
-          "sequence": 70
+          "sequence": 69
         },
         {
           "detail": "CursorMoved",
+          "panel": 5,
+          "phase": "message",
+          "sequence": 70
+        },
+        {
+          "detail": "MousePressed",
           "panel": 5,
           "phase": "message",
           "sequence": 71
         },
         {
-          "detail": "MouseReleased",
-          "panel": 5,
+          "detail": "CheckButtonChecked",
+          "panel": 1,
           "phase": "message",
           "sequence": 72
+        },
+        {
+          "detail": "ButtonToggled",
+          "panel": 1,
+          "phase": "message",
+          "sequence": 73
         },
         {
           "detail": "dispatched",
           "panel": null,
           "phase": "messages",
-          "sequence": 73
+          "sequence": 74
         },
         {
           "detail": "focus-tick",
           "panel": 5,
           "phase": "ticks",
-          "sequence": 74
+          "sequence": 75
         },
         {
           "detail": "solved",
           "panel": null,
           "phase": "layout",
-          "sequence": 75
+          "sequence": 76
         },
         {
           "detail": "advanced",
           "panel": null,
           "phase": "animation",
-          "sequence": 76
+          "sequence": 77
         },
         {
           "detail": "published",
           "panel": null,
           "phase": "dom",
-          "sequence": 77
+          "sequence": 78
         },
         {
           "detail": "end:4",
           "panel": null,
           "phase": "frame",
-          "sequence": 78
+          "sequence": 79
         },
         {
           "detail": "begin:5",
           "panel": null,
           "phase": "frame",
-          "sequence": 79
+          "sequence": 80
         },
         {
           "detail": "complete",
           "panel": null,
           "phase": "input-rollover",
-          "sequence": 80
+          "sequence": 81
         },
         {
           "detail": "committed",
           "panel": 5,
           "phase": "focus",
-          "sequence": 81
+          "sequence": 82
         },
         {
-          "detail": "TextChanged",
-          "panel": 1,
+          "detail": "CursorMoved",
+          "panel": 5,
           "phase": "message",
-          "sequence": 82
+          "sequence": 83
+        },
+        {
+          "detail": "MouseReleased",
+          "panel": 5,
+          "phase": "message",
+          "sequence": 84
         },
         {
           "detail": "dispatched",
           "panel": null,
           "phase": "messages",
-          "sequence": 83
+          "sequence": 85
         },
         {
           "detail": "focus-tick",
           "panel": 5,
           "phase": "ticks",
-          "sequence": 84
+          "sequence": 86
         },
         {
           "detail": "solved",
           "panel": null,
           "phase": "layout",
-          "sequence": 85
+          "sequence": 87
         },
         {
           "detail": "advanced",
           "panel": null,
           "phase": "animation",
-          "sequence": 86
+          "sequence": 88
         },
         {
           "detail": "published",
           "panel": null,
           "phase": "dom",
-          "sequence": 87
+          "sequence": 89
         },
         {
           "detail": "end:5",
           "panel": null,
           "phase": "frame",
-          "sequence": 88
+          "sequence": 90
         },
         {
           "detail": "begin:6",
           "panel": null,
           "phase": "frame",
-          "sequence": 89
+          "sequence": 91
         },
         {
           "detail": "complete",
           "panel": null,
           "phase": "input-rollover",
-          "sequence": 90
+          "sequence": 92
         },
         {
           "detail": "committed",
           "panel": 5,
           "phase": "focus",
-          "sequence": 91
+          "sequence": 93
         },
         {
           "detail": "TextChanged",
           "panel": 1,
           "phase": "message",
-          "sequence": 92
+          "sequence": 94
         },
         {
           "detail": "dispatched",
           "panel": null,
           "phase": "messages",
-          "sequence": 93
+          "sequence": 95
         },
         {
           "detail": "focus-tick",
           "panel": 5,
           "phase": "ticks",
-          "sequence": 94
+          "sequence": 96
         },
         {
           "detail": "solved",
           "panel": null,
           "phase": "layout",
-          "sequence": 95
+          "sequence": 97
         },
         {
           "detail": "advanced",
           "panel": null,
           "phase": "animation",
-          "sequence": 96
+          "sequence": 98
         },
         {
           "detail": "published",
           "panel": null,
           "phase": "dom",
-          "sequence": 97
+          "sequence": 99
         },
         {
           "detail": "end:6",
           "panel": null,
           "phase": "frame",
-          "sequence": 98
+          "sequence": 100
         },
         {
           "detail": "begin:7",
           "panel": null,
           "phase": "frame",
-          "sequence": 99
+          "sequence": 101
         },
         {
           "detail": "complete",
           "panel": null,
           "phase": "input-rollover",
-          "sequence": 100
+          "sequence": 102
         },
         {
           "detail": "committed",
           "panel": 5,
           "phase": "focus",
-          "sequence": 101
+          "sequence": 103
         },
         {
           "detail": "TextChanged",
           "panel": 1,
           "phase": "message",
-          "sequence": 102
+          "sequence": 104
         },
         {
           "detail": "dispatched",
           "panel": null,
           "phase": "messages",
-          "sequence": 103
+          "sequence": 105
         },
         {
           "detail": "focus-tick",
           "panel": 5,
           "phase": "ticks",
-          "sequence": 104
+          "sequence": 106
         },
         {
           "detail": "solved",
           "panel": null,
           "phase": "layout",
-          "sequence": 105
+          "sequence": 107
         },
         {
           "detail": "advanced",
           "panel": null,
           "phase": "animation",
-          "sequence": 106
+          "sequence": 108
         },
         {
           "detail": "published",
           "panel": null,
           "phase": "dom",
-          "sequence": 107
+          "sequence": 109
         },
         {
           "detail": "end:7",
           "panel": null,
           "phase": "frame",
-          "sequence": 108
+          "sequence": 110
         },
         {
           "detail": "begin:8",
           "panel": null,
           "phase": "frame",
-          "sequence": 109
+          "sequence": 111
         },
         {
           "detail": "complete",
           "panel": null,
           "phase": "input-rollover",
-          "sequence": 110
+          "sequence": 112
         },
         {
           "detail": "committed",
           "panel": 5,
           "phase": "focus",
-          "sequence": 111
-        },
-        {
-          "detail": "CursorExited",
-          "panel": 5,
-          "phase": "message",
-          "sequence": 112
-        },
-        {
-          "detail": "CursorEntered",
-          "panel": 10,
-          "phase": "message",
           "sequence": 113
         },
         {
-          "detail": "CursorMoved",
-          "panel": 10,
+          "detail": "TextChanged",
+          "panel": 1,
           "phase": "message",
           "sequence": 114
         },
@@ -4041,21 +4053,21 @@
           "sequence": 122
         },
         {
-          "detail": "KillFocus",
+          "detail": "committed",
           "panel": 5,
-          "phase": "message",
+          "phase": "focus",
           "sequence": 123
         },
         {
-          "detail": "SetFocus",
-          "panel": 10,
+          "detail": "CursorExited",
+          "panel": 5,
           "phase": "message",
           "sequence": 124
         },
         {
-          "detail": "committed",
+          "detail": "CursorEntered",
           "panel": 10,
-          "phase": "focus",
+          "phase": "message",
           "sequence": 125
         },
         {
@@ -4065,175 +4077,175 @@
           "sequence": 126
         },
         {
-          "detail": "MousePressed",
-          "panel": 10,
-          "phase": "message",
-          "sequence": 127
-        },
-        {
-          "detail": "left",
-          "panel": 10,
-          "phase": "pointer-capture",
-          "sequence": 128
-        },
-        {
-          "detail": "SliderDragStart",
-          "panel": 1,
-          "phase": "message",
-          "sequence": 129
-        },
-        {
           "detail": "dispatched",
           "panel": null,
           "phase": "messages",
-          "sequence": 130
+          "sequence": 127
         },
         {
           "detail": "focus-tick",
-          "panel": 10,
+          "panel": 5,
           "phase": "ticks",
-          "sequence": 131
+          "sequence": 128
         },
         {
           "detail": "solved",
           "panel": null,
           "phase": "layout",
-          "sequence": 132
+          "sequence": 129
         },
         {
           "detail": "advanced",
           "panel": null,
           "phase": "animation",
-          "sequence": 133
+          "sequence": 130
         },
         {
           "detail": "published",
           "panel": null,
           "phase": "dom",
-          "sequence": 134
+          "sequence": 131
         },
         {
           "detail": "end:9",
           "panel": null,
           "phase": "frame",
-          "sequence": 135
-        },
-        {
-          "detail": "none",
-          "panel": null,
-          "phase": "pointer-capture",
-          "sequence": 136
+          "sequence": 132
         },
         {
           "detail": "begin:10",
           "panel": null,
           "phase": "frame",
-          "sequence": 137
+          "sequence": 133
         },
         {
           "detail": "complete",
           "panel": null,
           "phase": "input-rollover",
-          "sequence": 138
+          "sequence": 134
+        },
+        {
+          "detail": "KillFocus",
+          "panel": 5,
+          "phase": "message",
+          "sequence": 135
+        },
+        {
+          "detail": "SetFocus",
+          "panel": 10,
+          "phase": "message",
+          "sequence": 136
         },
         {
           "detail": "committed",
           "panel": 10,
           "phase": "focus",
-          "sequence": 139
+          "sequence": 137
         },
         {
           "detail": "CursorMoved",
           "panel": 10,
           "phase": "message",
+          "sequence": 138
+        },
+        {
+          "detail": "MousePressed",
+          "panel": 10,
+          "phase": "message",
+          "sequence": 139
+        },
+        {
+          "detail": "left",
+          "panel": 10,
+          "phase": "pointer-capture",
           "sequence": 140
         },
         {
-          "detail": "MouseReleased",
-          "panel": 10,
-          "phase": "message",
-          "sequence": 141
-        },
-        {
-          "detail": "MouseCaptureLost",
-          "panel": 10,
-          "phase": "message",
-          "sequence": 142
-        },
-        {
-          "detail": "SliderDragEnd",
+          "detail": "SliderDragStart",
           "panel": 1,
           "phase": "message",
-          "sequence": 143
+          "sequence": 141
         },
         {
           "detail": "dispatched",
           "panel": null,
           "phase": "messages",
-          "sequence": 144
+          "sequence": 142
         },
         {
           "detail": "focus-tick",
           "panel": 10,
           "phase": "ticks",
-          "sequence": 145
+          "sequence": 143
         },
         {
           "detail": "solved",
           "panel": null,
           "phase": "layout",
-          "sequence": 146
+          "sequence": 144
         },
         {
           "detail": "advanced",
           "panel": null,
           "phase": "animation",
-          "sequence": 147
+          "sequence": 145
         },
         {
           "detail": "published",
           "panel": null,
           "phase": "dom",
-          "sequence": 148
+          "sequence": 146
         },
         {
           "detail": "end:10",
           "panel": null,
           "phase": "frame",
-          "sequence": 149
+          "sequence": 147
+        },
+        {
+          "detail": "none",
+          "panel": null,
+          "phase": "pointer-capture",
+          "sequence": 148
         },
         {
           "detail": "begin:11",
           "panel": null,
           "phase": "frame",
-          "sequence": 150
+          "sequence": 149
         },
         {
           "detail": "complete",
           "panel": null,
           "phase": "input-rollover",
-          "sequence": 151
+          "sequence": 150
         },
         {
           "detail": "committed",
           "panel": 10,
           "phase": "focus",
+          "sequence": 151
+        },
+        {
+          "detail": "CursorMoved",
+          "panel": 10,
+          "phase": "message",
           "sequence": 152
         },
         {
-          "detail": "KeyCodePressed",
+          "detail": "MouseReleased",
           "panel": 10,
           "phase": "message",
           "sequence": 153
         },
         {
-          "detail": "KeyCodeTyped",
+          "detail": "MouseCaptureLost",
           "panel": 10,
           "phase": "message",
           "sequence": 154
         },
         {
-          "detail": "SliderMoved",
+          "detail": "SliderDragEnd",
           "panel": 1,
           "phase": "message",
           "sequence": 155
@@ -4293,80 +4305,80 @@
           "sequence": 164
         },
         {
-          "detail": "KeyCodeReleased",
+          "detail": "KeyCodePressed",
           "panel": 10,
           "phase": "message",
           "sequence": 165
         },
         {
+          "detail": "KeyCodeTyped",
+          "panel": 10,
+          "phase": "message",
+          "sequence": 166
+        },
+        {
+          "detail": "SliderMoved",
+          "panel": 1,
+          "phase": "message",
+          "sequence": 167
+        },
+        {
           "detail": "dispatched",
           "panel": null,
           "phase": "messages",
-          "sequence": 166
+          "sequence": 168
         },
         {
           "detail": "focus-tick",
           "panel": 10,
           "phase": "ticks",
-          "sequence": 167
+          "sequence": 169
         },
         {
           "detail": "solved",
           "panel": null,
           "phase": "layout",
-          "sequence": 168
+          "sequence": 170
         },
         {
           "detail": "advanced",
           "panel": null,
           "phase": "animation",
-          "sequence": 169
+          "sequence": 171
         },
         {
           "detail": "published",
           "panel": null,
           "phase": "dom",
-          "sequence": 170
+          "sequence": 172
         },
         {
           "detail": "end:12",
           "panel": null,
           "phase": "frame",
-          "sequence": 171
+          "sequence": 173
         },
         {
           "detail": "begin:13",
           "panel": null,
           "phase": "frame",
-          "sequence": 172
+          "sequence": 174
         },
         {
           "detail": "complete",
           "panel": null,
           "phase": "input-rollover",
-          "sequence": 173
+          "sequence": 175
         },
         {
           "detail": "committed",
           "panel": 10,
           "phase": "focus",
-          "sequence": 174
-        },
-        {
-          "detail": "CursorExited",
-          "panel": 10,
-          "phase": "message",
-          "sequence": 175
-        },
-        {
-          "detail": "CursorEntered",
-          "panel": 16,
-          "phase": "message",
           "sequence": 176
         },
         {
-          "detail": "CursorMoved",
-          "panel": 16,
+          "detail": "KeyCodeReleased",
+          "panel": 10,
           "phase": "message",
           "sequence": 177
         },
@@ -4419,21 +4431,21 @@
           "sequence": 185
         },
         {
-          "detail": "KillFocus",
+          "detail": "committed",
           "panel": 10,
-          "phase": "message",
+          "phase": "focus",
           "sequence": 186
         },
         {
-          "detail": "SetFocus",
-          "panel": 16,
+          "detail": "CursorExited",
+          "panel": 10,
           "phase": "message",
           "sequence": 187
         },
         {
-          "detail": "committed",
+          "detail": "CursorEntered",
           "panel": 16,
-          "phase": "focus",
+          "phase": "message",
           "sequence": 188
         },
         {
@@ -4443,63 +4455,63 @@
           "sequence": 189
         },
         {
-          "detail": "MousePressed",
-          "panel": 16,
-          "phase": "message",
-          "sequence": 190
-        },
-        {
-          "detail": "left",
-          "panel": 16,
-          "phase": "pointer-capture",
-          "sequence": 191
-        },
-        {
           "detail": "dispatched",
           "panel": null,
           "phase": "messages",
-          "sequence": 192
+          "sequence": 190
         },
         {
           "detail": "focus-tick",
-          "panel": 16,
+          "panel": 10,
           "phase": "ticks",
-          "sequence": 193
+          "sequence": 191
         },
         {
           "detail": "solved",
           "panel": null,
           "phase": "layout",
-          "sequence": 194
+          "sequence": 192
         },
         {
           "detail": "advanced",
           "panel": null,
           "phase": "animation",
-          "sequence": 195
+          "sequence": 193
         },
         {
           "detail": "published",
           "panel": null,
           "phase": "dom",
-          "sequence": 196
+          "sequence": 194
         },
         {
           "detail": "end:14",
           "panel": null,
           "phase": "frame",
-          "sequence": 197
+          "sequence": 195
         },
         {
           "detail": "begin:15",
           "panel": null,
           "phase": "frame",
-          "sequence": 198
+          "sequence": 196
         },
         {
           "detail": "complete",
           "panel": null,
           "phase": "input-rollover",
+          "sequence": 197
+        },
+        {
+          "detail": "KillFocus",
+          "panel": 10,
+          "phase": "message",
+          "sequence": 198
+        },
+        {
+          "detail": "SetFocus",
+          "panel": 16,
+          "phase": "message",
           "sequence": 199
         },
         {
@@ -4509,57 +4521,57 @@
           "sequence": 200
         },
         {
-          "detail": "CursorExited",
+          "detail": "CursorMoved",
           "panel": 16,
           "phase": "message",
           "sequence": 201
         },
         {
-          "detail": "CursorMoved",
+          "detail": "MousePressed",
           "panel": 16,
           "phase": "message",
           "sequence": 202
         },
         {
+          "detail": "left",
+          "panel": 16,
+          "phase": "pointer-capture",
+          "sequence": 203
+        },
+        {
           "detail": "dispatched",
           "panel": null,
           "phase": "messages",
-          "sequence": 203
+          "sequence": 204
         },
         {
           "detail": "focus-tick",
           "panel": 16,
           "phase": "ticks",
-          "sequence": 204
+          "sequence": 205
         },
         {
           "detail": "solved",
           "panel": null,
           "phase": "layout",
-          "sequence": 205
+          "sequence": 206
         },
         {
           "detail": "advanced",
           "panel": null,
           "phase": "animation",
-          "sequence": 206
+          "sequence": 207
         },
         {
           "detail": "published",
           "panel": null,
           "phase": "dom",
-          "sequence": 207
+          "sequence": 208
         },
         {
           "detail": "end:15",
           "panel": null,
           "phase": "frame",
-          "sequence": 208
-        },
-        {
-          "detail": "none",
-          "panel": null,
-          "phase": "pointer-capture",
           "sequence": 209
         },
         {
@@ -4581,7 +4593,7 @@
           "sequence": 212
         },
         {
-          "detail": "CursorEntered",
+          "detail": "CursorExited",
           "panel": 16,
           "phase": "message",
           "sequence": 213
@@ -4593,87 +4605,87 @@
           "sequence": 214
         },
         {
-          "detail": "MouseReleased",
-          "panel": 16,
-          "phase": "message",
-          "sequence": 215
-        },
-        {
-          "detail": "MouseCaptureLost",
-          "panel": 16,
-          "phase": "message",
-          "sequence": 216
-        },
-        {
           "detail": "dispatched",
           "panel": null,
           "phase": "messages",
-          "sequence": 217
+          "sequence": 215
         },
         {
           "detail": "focus-tick",
           "panel": 16,
           "phase": "ticks",
-          "sequence": 218
+          "sequence": 216
         },
         {
           "detail": "solved",
           "panel": null,
           "phase": "layout",
-          "sequence": 219
+          "sequence": 217
         },
         {
           "detail": "advanced",
           "panel": null,
           "phase": "animation",
-          "sequence": 220
+          "sequence": 218
         },
         {
           "detail": "published",
           "panel": null,
           "phase": "dom",
-          "sequence": 221
+          "sequence": 219
         },
         {
           "detail": "end:16",
           "panel": null,
           "phase": "frame",
-          "sequence": 222
+          "sequence": 220
         },
         {
           "detail": "none",
           "panel": null,
           "phase": "pointer-capture",
-          "sequence": 223
+          "sequence": 221
         },
         {
           "detail": "begin:17",
           "panel": null,
           "phase": "frame",
-          "sequence": 224
+          "sequence": 222
         },
         {
           "detail": "complete",
           "panel": null,
           "phase": "input-rollover",
+          "sequence": 223
+        },
+        {
+          "detail": "committed",
+          "panel": 16,
+          "phase": "focus",
+          "sequence": 224
+        },
+        {
+          "detail": "CursorEntered",
+          "panel": 16,
+          "phase": "message",
           "sequence": 225
         },
         {
-          "detail": "KillFocus",
+          "detail": "CursorMoved",
           "panel": 16,
           "phase": "message",
           "sequence": 226
         },
         {
-          "detail": "SetFocus",
-          "panel": 26,
+          "detail": "MouseReleased",
+          "panel": 16,
           "phase": "message",
           "sequence": 227
         },
         {
-          "detail": "committed",
-          "panel": 26,
-          "phase": "focus",
+          "detail": "MouseCaptureLost",
+          "panel": 16,
+          "phase": "message",
           "sequence": 228
         },
         {
@@ -4684,7 +4696,7 @@
         },
         {
           "detail": "focus-tick",
-          "panel": 26,
+          "panel": 16,
           "phase": "ticks",
           "sequence": 230
         },
@@ -4713,39 +4725,39 @@
           "sequence": 234
         },
         {
+          "detail": "none",
+          "panel": null,
+          "phase": "pointer-capture",
+          "sequence": 235
+        },
+        {
           "detail": "begin:18",
           "panel": null,
           "phase": "frame",
-          "sequence": 235
+          "sequence": 236
         },
         {
           "detail": "complete",
           "panel": null,
           "phase": "input-rollover",
-          "sequence": 236
-        },
-        {
-          "detail": "committed",
-          "panel": 26,
-          "phase": "focus",
           "sequence": 237
         },
         {
-          "detail": "KeyCodePressed",
-          "panel": 26,
+          "detail": "KillFocus",
+          "panel": 16,
           "phase": "message",
           "sequence": 238
         },
         {
-          "detail": "KeyCodeTyped",
+          "detail": "SetFocus",
           "panel": 26,
           "phase": "message",
           "sequence": 239
         },
         {
-          "detail": "Cancel",
-          "panel": 1,
-          "phase": "message",
+          "detail": "committed",
+          "panel": 26,
+          "phase": "focus",
           "sequence": 240
         },
         {
@@ -4797,26 +4809,26 @@
           "sequence": 248
         },
         {
-          "detail": "KillFocus",
+          "detail": "committed",
           "panel": 26,
-          "phase": "message",
+          "phase": "focus",
           "sequence": 249
         },
         {
-          "detail": "SetFocus",
-          "panel": 16,
+          "detail": "KeyCodePressed",
+          "panel": 26,
           "phase": "message",
           "sequence": 250
         },
         {
-          "detail": "committed",
-          "panel": 16,
-          "phase": "focus",
+          "detail": "KeyCodeTyped",
+          "panel": 26,
+          "phase": "message",
           "sequence": 251
         },
         {
-          "detail": "KeyCodeReleased",
-          "panel": 16,
+          "detail": "Cancel",
+          "panel": 1,
           "phase": "message",
           "sequence": 252
         },
@@ -4828,7 +4840,7 @@
         },
         {
           "detail": "focus-tick",
-          "panel": 16,
+          "panel": 26,
           "phase": "ticks",
           "sequence": 254
         },
@@ -4855,6 +4867,78 @@
           "panel": null,
           "phase": "frame",
           "sequence": 258
+        },
+        {
+          "detail": "begin:20",
+          "panel": null,
+          "phase": "frame",
+          "sequence": 259
+        },
+        {
+          "detail": "complete",
+          "panel": null,
+          "phase": "input-rollover",
+          "sequence": 260
+        },
+        {
+          "detail": "KillFocus",
+          "panel": 26,
+          "phase": "message",
+          "sequence": 261
+        },
+        {
+          "detail": "SetFocus",
+          "panel": 16,
+          "phase": "message",
+          "sequence": 262
+        },
+        {
+          "detail": "committed",
+          "panel": 16,
+          "phase": "focus",
+          "sequence": 263
+        },
+        {
+          "detail": "KeyCodeReleased",
+          "panel": 16,
+          "phase": "message",
+          "sequence": 264
+        },
+        {
+          "detail": "dispatched",
+          "panel": null,
+          "phase": "messages",
+          "sequence": 265
+        },
+        {
+          "detail": "focus-tick",
+          "panel": 16,
+          "phase": "ticks",
+          "sequence": 266
+        },
+        {
+          "detail": "solved",
+          "panel": null,
+          "phase": "layout",
+          "sequence": 267
+        },
+        {
+          "detail": "advanced",
+          "panel": null,
+          "phase": "animation",
+          "sequence": 268
+        },
+        {
+          "detail": "published",
+          "panel": null,
+          "phase": "dom",
+          "sequence": 269
+        },
+        {
+          "detail": "end:20",
+          "panel": null,
+          "phase": "frame",
+          "sequence": 270
         }
       ],
       "viewport": {
@@ -7804,7 +7888,7 @@
       "rootPanel": 1,
       "runtimeIdentity": "browser-evidence",
       "schemeIdentity": "resource/browser-scheme.res",
-      "timeSeconds": 0.39120000004768374,
+      "timeSeconds": 0.42,
       "trace": [
         {
           "detail": "EditablePanel:Root",

@@ -681,6 +681,10 @@ fn object_children<'a>(
     Ok(value)
 }
 
+fn app_manifest_path(install: &Path) -> PathBuf {
+    install.join("steamapps/appmanifest_440.acf")
+}
+
 fn verify_install_manifest(install: &Path, contract: &ContentBuildContract) -> Result<(), String> {
     if contract.schema != "playsrc-tf2-content-build-v1"
         || contract.app_id != "440"
@@ -695,12 +699,7 @@ fn verify_install_manifest(install: &Path, contract: &ContentBuildContract) -> R
     {
         return Err("TF2 content-build contract is malformed".to_owned());
     }
-    let steamapps = install
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| "configured TF2 install has no Steam library parent".to_owned())?;
-    let bytes =
-        fs::read(steamapps.join("appmanifest_440.acf")).map_err(|error| error.to_string())?;
+    let bytes = fs::read(app_manifest_path(install)).map_err(|error| error.to_string())?;
     let document = playsrc_keyvalues::parse_text(
         &bytes,
         playsrc_keyvalues::EscapeMode::LiteralBackslash,
@@ -2541,4 +2540,17 @@ fn main() -> Result<(), String> {
 #[cfg(feature = "verify-hdr")]
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn force_install_manifest_is_inside_the_configured_install() {
+        assert_eq!(
+            app_manifest_path(Path::new("force-install")),
+            PathBuf::from("force-install/steamapps/appmanifest_440.acf")
+        );
+    }
 }

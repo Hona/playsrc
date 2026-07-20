@@ -1,9 +1,9 @@
 {
-  "capturedAt": "2026-07-19T18:50:15.136Z",
+  "capturedAt": "2026-07-20T13:42:23.208Z",
   "operatingSystem": "darwin 25.5.0",
   "architecture": "arm64",
   "bun": "1.4.0",
-  "sourceBuild": "TF2 24207079 / patch 10822003",
+  "sourceBuild": "TF2 24245096 / patch 10828683",
   "schemeRevision": "e9159a983557dea91b7030b382cce9ee7521c6f4de904107013bdcb47c4a732e",
   "browserCli": "agent-browser 0.32.1",
   "browserRuntime": {
@@ -29,8 +29,9 @@
   "captures": {},
   "controlStates": {
     "focused": {
-      "close": "rgba(255, 255, 255, 0.753)",
-      "frame": "rgba(60, 56, 53, 0.745)",
+      "close": "rgba(236, 227, 203, 0.59)",
+      "focused": "true",
+      "frame": "rgb(60, 56, 53)",
       "title": "rgba(0, 0, 0, 0)"
     },
     "unfocused": {

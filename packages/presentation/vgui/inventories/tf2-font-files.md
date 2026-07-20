@@ -4,7 +4,7 @@ Owning roadmap: [`../ROADMAP.md`](../ROADMAP.md).
 
 ## Fixed Content Identity
 
-The configured TF2 public build is `24207079`, patch `10822003`. These eight loose files are game-supplied UI font sources. They are not substitutes for the platform-local Tahoma, Lucida Console, Verdana, Helvetica, Monaco, Courier New, Arial, Trebuchet MS, or Apple Symbols family requests selected by Source schemes and surfaces.
+The configured TF2 public build is `24245096`, patch `10828683`. These eight loose files are game-supplied UI font sources. They are not substitutes for the platform-local Tahoma, Lucida Console, Verdana, Helvetica, Monaco, Courier New, Arial, Trebuchet MS, or Apple Symbols family requests selected by Source schemes and surfaces.
 
 | Logical identity | Bytes | SHA-256 | SFNT family | SFNT 16.16 version |
 |---|---:|---|---|---:|
