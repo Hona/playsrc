@@ -53,11 +53,12 @@ export type SimulationPublication = Readonly<{ hostFrame: bigint; firstHostTick:
 export type WaterViewPass = Readonly<{ kind: "reflection" | "refraction" | "main" | "intersection"; origin: readonly [number,number,number]; angles: readonly [number,number,number]; renderAboveWater:boolean;renderUnderWater:boolean;renderWaterSurface:boolean;drawEntities:boolean;drawSky2d:boolean;clip:null|Readonly<{height:number;keep:"above"|"below"}>;forcedVisibilityLeaf:number|null;fog:Readonly<{kind:"world"}|{kind:"water";volume:number;heightFog:boolean}>;surfaces:Uint32Array }>
 export type WaterViewPlan = Readonly<{ visibleWater:null|Readonly<{volume:number;visibleLeaf:number;eyeLeaf:number;eyeInVolume:boolean;surfaceZ:number;distanceToWater:number|null;material:string;translucent:boolean;evaluated:Readonly<{normalFrame:number;normalTransform:Float32Array;cheapStart:number;cheapEnd:number}>}>;render:Readonly<{cheap:boolean;reflect:boolean;refract:boolean;reflectEntities:boolean;drawSurface:boolean;opaque:boolean}>;nearPlaneIntersects:boolean;passes:readonly WaterViewPass[] }>
 export type VisibilityResult = Readonly<{ worldIdentity:string;cacheIdentity:string;outsideWorld:boolean;sky:0|1|2;eyeLeaf:number|null;leaves:readonly number[];areas:readonly number[];surfaces:Uint32Array;drawSurfaces:Uint32Array;water:WaterViewPlan }>
+export type CoverageSample=Readonly<{leaf:number;cluster:number;area:number;position:readonly[number,number,number]}>
 
 export class Tf2WorkerError extends Error {
   constructor(
     readonly code: WorkerFailureCode | "WorkerFailed" | "Closed" | "BoundExceeded" | "IntegrityFailure",
-    readonly detail = 0,
+    readonly detail: number|string = 0,
   ) {
     super(detail === 0 ? code : `${code}:${detail}`)
     this.name = "Tf2WorkerError"
@@ -97,7 +98,7 @@ export class Tf2WorkerClient {
     const pending = response && this.#pending.get(response.id)
     if (!pending) return
     this.#pending.delete(response.id)
-    if (response.kind === "failure") pending.reject(new Tf2WorkerError(response.code, response.detail))
+    if(response.kind==="failure")pending.reject(new Tf2WorkerError(response.code,response.reason?`${response.detail}:${response.reason}`:response.detail))
     else pending.resolve(response)
   }
 
@@ -333,6 +334,7 @@ export class Tf2WorkerClient {
       throw new Tf2WorkerError("WorkerFailed")
     }
   }
+  async coverage(generation:number):Promise<readonly CoverageSample[]>{const response=await this.#request({kind:"read-coverage",generation});if(response.kind!=="coverage"||response.generation!==generation||!(response.payload instanceof ArrayBuffer))throw new Tf2WorkerError("WorkerFailed");const bytes=new Uint8Array(response.payload),view=new DataView(response.payload);if(bytes.length<12||new TextDecoder().decode(bytes.subarray(0,4))!=="PCOV"||view.getUint32(4,true)!==1||12+view.getUint32(8,true)*24!==bytes.length)throw new Tf2WorkerError("WorkerFailed");return Object.freeze(Array.from({length:view.getUint32(8,true)},(_,index)=>{const at=12+index*24,position=Object.freeze([view.getFloat32(at+8,true),view.getFloat32(at+12,true),view.getFloat32(at+16,true)]) as readonly[number,number,number];if(!position.every(Number.isFinite)||view.getUint32(at+20,true)!==0)throw new Tf2WorkerError("WorkerFailed");return Object.freeze({leaf:view.getUint32(at,true),cluster:view.getInt16(at+4,true),area:view.getUint16(at+6,true),position})}))}
 
   async discard(generation: number): Promise<void> {
     const discarded = await this.#request({ kind: "discard", generation })

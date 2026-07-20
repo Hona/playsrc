@@ -11,6 +11,7 @@ export type WorkerRequest =
     }>
   | Readonly<{ id: number; kind: "read-map"; generation: number }>
   | Readonly<{ id: number; kind: "read-presentation"; generation: number }>
+  | Readonly<{id:number;kind:"read-coverage";generation:number}>
   | Readonly<{id:number;kind:"release-presentation";generation:number}>
   | Readonly<{ id: number; kind: "activate"; generation: number }>
   | Readonly<{
@@ -78,6 +79,7 @@ export type WorkerResponse =
     }>
   | Readonly<{ id: number; kind: "map"; generation: number; payload: ArrayBuffer }>
   | Readonly<{ id: number; kind: "presentation"; generation: number; payload: ArrayBuffer }>
+  | Readonly<{id:number;kind:"coverage";generation:number;payload:ArrayBuffer}>
   | Readonly<{id:number;kind:"presentation-released";generation:number}>
   | Readonly<{ id: number; kind: "activated"; generation: number }>
   | Readonly<{ id: number; kind: "course-configured"; generation: number }>
@@ -87,7 +89,7 @@ export type WorkerResponse =
   | Readonly<{ id: number; kind: "visibility"; generation: number; output: ArrayBuffer; timings: WorkerTransactionTimings }>
   | Readonly<{ id: number; kind: "simulation"; generation: number; output: ArrayBuffer; timings: WorkerTransactionTimings }>
   | Readonly<{ id: number; kind: "shutdown" }>
-  | Readonly<{ id: number; kind: "failure"; code: WorkerFailureCode; detail: number }>
+  | Readonly<{ id: number; kind: "failure"; code: WorkerFailureCode; detail: number; reason?: string }>
 
 type WorkerTransactionTimings = Readonly<{
   inputCopyMilliseconds: number

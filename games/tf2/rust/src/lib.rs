@@ -2122,6 +2122,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
             projectile.presentation.position = result.end;
             projectile.direct_target = result.direct_target;
             if result.sky {
+                projectile_events.push(projectile_event(
+                    ProjectileEventKind::Fizzle,
+                    &projectile.presentation,
+                    self.tick,
+                ));
                 continue;
             }
             if result.solid {
@@ -3045,7 +3050,11 @@ mod tests {
             )
             .unwrap();
         assert!(removed.projectiles.is_empty());
-        assert!(removed.projectile_events.is_empty());
+        assert_eq!(removed.projectile_events.len(), 1);
+        assert_eq!(
+            removed.projectile_events[0].kind,
+            ProjectileEventKind::Fizzle
+        );
         assert!(sky.radius_damage_requests().is_empty());
     }
 

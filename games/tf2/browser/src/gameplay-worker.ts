@@ -23,6 +23,8 @@ type WasmExports = Readonly<{
   playsrc_presentation_copy(handle: number, pointer: number, capacity: number): number
   playsrc_presentation_hash(handle: number, pointer: number): number
   playsrc_presentation_release(handle:number):number
+  playsrc_coverage_length(handle:number):number
+  playsrc_coverage_copy(handle:number,pointer:number,capacity:number):number
   playsrc_particle_transact(handle: number, pointer: number, length: number): number
   playsrc_particle_output_length(handle: number): number
   playsrc_particle_output_copy(handle: number, pointer: number, capacity: number): number
@@ -37,6 +39,9 @@ type WasmExports = Readonly<{
   playsrc_simulation_observe(handle: number, nowSeconds: number, command: number, length: number, suspended: number): number
   playsrc_simulation_output_length(handle: number): number
   playsrc_simulation_output_copy(handle: number, pointer: number, capacity: number): number
+  playsrc_simulation_error():number
+  playsrc_simulation_error_length():number
+  playsrc_simulation_error_copy(pointer:number,capacity:number):number
   playsrc_dispose(handle: number): number
 }>
 
@@ -49,8 +54,8 @@ function post(message: WorkerResponse, transfer: Transferable[] = []): void {
   scope.postMessage(message, transfer)
 }
 
-function fail(id: number, code: WorkerFailureCode, detail = 0): void {
-  post({ id, kind: "failure", code, detail })
+function fail(id: number, code: WorkerFailureCode, detail = 0,reason?:string): void {
+  post({ id, kind: "failure", code, detail,...(reason?{reason}:{}) })
 }
 
 function canonicalId(value: unknown): value is number {
@@ -93,6 +98,8 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         candidate.playsrc_presentation_copy,
         candidate.playsrc_presentation_hash,
         candidate.playsrc_presentation_release,
+        candidate.playsrc_coverage_length,
+        candidate.playsrc_coverage_copy,
         candidate.playsrc_particle_transact,
         candidate.playsrc_particle_output_length,
         candidate.playsrc_particle_output_copy,
@@ -107,6 +114,9 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         candidate.playsrc_simulation_observe,
         candidate.playsrc_simulation_output_length,
         candidate.playsrc_simulation_output_copy,
+        candidate.playsrc_simulation_error,
+        candidate.playsrc_simulation_error_length,
+        candidate.playsrc_simulation_error_copy,
         candidate.playsrc_dispose,
       ].every((value) => typeof value === "function")
     ) {
@@ -332,6 +342,7 @@ function readPresentation(request: Extract<WorkerRequest, { kind: "read-presenta
   post({ id: request.id, kind: "presentation", generation: request.generation, payload }, [payload])
 }
 function releasePresentation(request:Extract<WorkerRequest,{kind:"release-presentation"}>):void{if(!wasm||!pending||pending.generation!==request.generation||wasm.playsrc_presentation_release(pending.handle)!==1){fail(request.id,"StaleGeneration");return}post({id:request.id,kind:"presentation-released",generation:request.generation})}
+function readCoverage(request:Extract<WorkerRequest,{kind:"read-coverage"}>):void{if(!wasm||!pending||pending.generation!==request.generation){fail(request.id,"StaleGeneration");return}const length=wasm.playsrc_coverage_length(pending.handle);if(!Number.isSafeInteger(length)||length<12||length>4*1024*1024){fail(request.id,"InternalFailure");return}const pointer=wasm.playsrc_alloc(length),copied=wasm.playsrc_coverage_copy(pending.handle,pointer,length);if(copied!==length){wasm.playsrc_free(pointer,length);fail(request.id,"InternalFailure");return}const payload=new Uint8Array(wasm.memory.buffer,pointer,length).slice().buffer;wasm.playsrc_free(pointer,length);post({id:request.id,kind:"coverage",generation:request.generation,payload},[payload])}
 
 function activate(request: Extract<WorkerRequest, { kind: "activate" }>): void {
   if (!wasm || !pending || pending.generation !== request.generation) {
@@ -378,7 +389,7 @@ function configureCourse(request: Extract<WorkerRequest, { kind: "configure-cour
   const configured = value.exports.playsrc_jump_configure(value.handle, pointer, request.definition.byteLength)
   value.exports.playsrc_free(pointer, request.definition.byteLength)
   if (configured !== 1) {
-    fail(request.id, "TransitionFailed")
+    fail(request.id, "TransitionFailed",200)
     return
   }
   post({ id: request.id, kind: "course-configured", generation: request.generation })
@@ -405,7 +416,7 @@ function observe(request: Extract<WorkerRequest, { kind: "observe" }>): void {
   const transactMilliseconds = performance.now() - transactStarted
   value.exports.playsrc_free(pointer, request.command.byteLength)
   if (result !== 1) {
-    fail(request.id, "TransitionFailed")
+    const length=value.exports.playsrc_simulation_error_length(),detailPointer=length?value.exports.playsrc_alloc(length):0,copied=length?value.exports.playsrc_simulation_error_copy(detailPointer,length):0,reason=copied===length&&length?new TextDecoder().decode(new Uint8Array(value.exports.memory.buffer,detailPointer,length)):undefined;if(detailPointer)value.exports.playsrc_free(detailPointer,length);fail(request.id,"TransitionFailed",value.exports.playsrc_simulation_error(),reason)
     return
   }
   const length = value.exports.playsrc_simulation_output_length(value.handle)
@@ -444,7 +455,7 @@ function particles(request: Extract<WorkerRequest, { kind: "particles" }>): void
   const transactMilliseconds=performance.now()-transactStarted
   value.exports.playsrc_free(pointer, request.batch.byteLength)
   if (ok !== 1) {
-    fail(request.id, "TransitionFailed")
+    fail(request.id, "TransitionFailed",201)
     return
   }
   const length = value.exports.playsrc_particle_output_length(value.handle)
@@ -479,7 +490,7 @@ function models(request: Extract<WorkerRequest, { kind: "models" }>): void {
   const transactMilliseconds = performance.now() - transactStarted
   value.exports.playsrc_free(pointer, request.batch.byteLength)
   if (ok !== 1) {
-    fail(request.id, "TransitionFailed")
+    fail(request.id, "TransitionFailed",202)
     return
   }
   const length = value.exports.playsrc_model_output_length(value.handle)
@@ -522,7 +533,7 @@ function visibility(request: Extract<WorkerRequest, { kind: "visibility" }>): vo
   const transactMilliseconds = performance.now() - transactStarted
   value.exports.playsrc_free(pointer, 40)
   if (ok !== 1) {
-    fail(request.id, "TransitionFailed")
+    fail(request.id, "TransitionFailed",203)
     return
   }
   const length = value.exports.playsrc_visibility_output_length(value.handle)
@@ -563,6 +574,7 @@ function dispatch(request: WorkerRequest): void | Promise<void> {
       return readMap(request)
     case "read-presentation":
       return readPresentation(request)
+    case "read-coverage":return readCoverage(request)
     case "release-presentation":return releasePresentation(request)
     case "activate":
       return activate(request)

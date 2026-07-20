@@ -14,6 +14,7 @@
     "profile:hud": "playwright test --config=playwright.hud-profile.config.ts",
     "profile:gameplay": "playwright test --config=playwright.profile.config.ts",
     "profile:map-load": "playwright test --config=playwright.profile.config.ts",
+    "profile:map-coverage": "playwright test --config=playwright.coverage-profile.config.ts",
     "profile:startup": "bun tools/playsrc/profile/dev-startup.profile.ts",
     "test": "bun test"
   },

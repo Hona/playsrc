@@ -3,8 +3,13 @@ mod gameplay_protocol;
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex, OnceLock, RwLock},
+    sync::{
+        Arc, Mutex, OnceLock, RwLock,
+        atomic::{AtomicU32, Ordering},
+    },
 };
+static SIMULATION_ERROR: AtomicU32 = AtomicU32::new(0);
+static SIMULATION_ERROR_DETAIL: OnceLock<Mutex<String>> = OnceLock::new();
 
 #[cfg(target_arch = "wasm32")]
 #[link(wasm_import_module = "playsrc_metrics")]
@@ -296,6 +301,7 @@ struct Slot {
     payload: Option<Vec<u8>>,
     presentation: Vec<u8>,
     presentation_hash: [u8; 32],
+    coverage: Vec<u8>,
     particles: Option<playsrc_particle::ParticleWorld>,
     particle_materials: Vec<String>,
     particle_sheets: BTreeMap<String, playsrc_particle::ParticleMaterial>,
@@ -671,6 +677,13 @@ unsafe fn compile_map(
                 3_u32
             }
         })?;
+        let coverage = encode_profile_coverage(
+            &runtime.map.lighting,
+            &runtime.visibility,
+            &runtime.collision,
+            &entity_graph,
+        )
+        .map_err(|_| 5_u32)?;
         let phase_finished =
             playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
         compile_metrics[7] = phase_finished.saturating_sub(phase_started);
@@ -736,6 +749,7 @@ unsafe fn compile_map(
             runtime.descriptor.derived_sha256,
             presentation,
             presentation_hash,
+            coverage,
             particles,
             particle_materials,
             particle_sheets,
@@ -769,6 +783,7 @@ unsafe fn compile_map(
             derived_hash,
             presentation,
             presentation_hash,
+            coverage,
             particles,
             particle_materials,
             particle_sheets,
@@ -788,6 +803,7 @@ unsafe fn compile_map(
             payload: Some(payload),
             presentation,
             presentation_hash,
+            coverage,
             particles: Some(particles),
             particle_materials,
             particle_sheets,
@@ -820,6 +836,7 @@ unsafe fn compile_map(
             payload: Some(Vec::new()),
             presentation: Vec::new(),
             presentation_hash: [0; 32],
+            coverage: Vec::new(),
             particles: None,
             particle_materials: Vec::new(),
             particle_sheets: BTreeMap::new(),
@@ -971,6 +988,31 @@ pub extern "C" fn playsrc_presentation_release(handle: u32) -> u32 {
     slot.presentation.shrink_to_fit();
     slot.presentation_hash = [0; 32];
     1
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_coverage_length(handle: u32) -> usize {
+    with(handle, |slot| slot.coverage.len()).unwrap_or(0)
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+/// `pointer` must identify writable memory for `capacity` bytes.
+pub unsafe extern "C" fn playsrc_coverage_copy(
+    handle: u32,
+    pointer: *mut u8,
+    capacity: usize,
+) -> usize {
+    with(handle, |slot| {
+        if pointer.is_null() || capacity < slot.coverage.len() {
+            return 0;
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(slot.coverage.as_ptr(), pointer, slot.coverage.len())
+        };
+        slot.coverage.len()
+    })
+    .unwrap_or(0)
 }
 #[unsafe(no_mangle)]
 /// # Safety
@@ -2375,6 +2417,12 @@ pub unsafe extern "C" fn playsrc_simulation_observe(
     length: usize,
     suspended: u32,
 ) -> u32 {
+    SIMULATION_ERROR.store(0, Ordering::Relaxed);
+    SIMULATION_ERROR_DETAIL
+        .get_or_init(|| Mutex::new(String::new()))
+        .lock()
+        .expect("Simulation error detail")
+        .clear();
     if !now_seconds.is_finite()
         || pointer.is_null()
         || length == 0
@@ -2407,6 +2455,7 @@ pub unsafe extern "C" fn playsrc_simulation_observe(
     }
     let entry = hosts.get_mut(&handle).expect("inserted Simulation host");
     if entry.host.submit(command).is_err() {
+        SIMULATION_ERROR.store(3, Ordering::Relaxed);
         return 0;
     }
     let should_suspend = suspended == 1;
@@ -2416,9 +2465,31 @@ pub unsafe extern "C" fn playsrc_simulation_observe(
             .set_suspended(should_suspend, now_seconds)
             .is_err()
     {
+        SIMULATION_ERROR.store(4, Ordering::Relaxed);
         return 0;
     }
-    if entry.host.observe(now_seconds).is_err() {
+    if let Err(error) = entry.host.observe(now_seconds) {
+        *SIMULATION_ERROR_DETAIL
+            .get_or_init(|| Mutex::new(String::new()))
+            .lock()
+            .expect("Simulation error detail") = error.to_string();
+        let code = match error {
+            playsrc_simulation::HostError::Faulted(fault) => {
+                100 + match fault.code {
+                    playsrc_simulation::FaultCode::PendingFrameLimit => 1,
+                    playsrc_simulation::FaultCode::HostFrameOverflow => 2,
+                    playsrc_simulation::FaultCode::HostTickOverflow => 3,
+                    playsrc_simulation::FaultCode::Simulation => 4,
+                    playsrc_simulation::FaultCode::EmptySnapshot => 5,
+                    playsrc_simulation::FaultCode::SnapshotLimit => 6,
+                    playsrc_simulation::FaultCode::EventLimit => 7,
+                    playsrc_simulation::FaultCode::QueueArithmeticOverflow => 8,
+                    playsrc_simulation::FaultCode::Shutdown => 9,
+                }
+            }
+            _ => 5,
+        };
+        SIMULATION_ERROR.store(code, Ordering::Relaxed);
         return 0;
     }
     let Some(output) = encode_simulation_publications(&entry.host.drain_publications()) else {
@@ -2426,6 +2497,32 @@ pub unsafe extern "C" fn playsrc_simulation_observe(
     };
     entry.output = output;
     1
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_simulation_error() -> u32 {
+    SIMULATION_ERROR.load(Ordering::Relaxed)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_simulation_error_length() -> usize {
+    SIMULATION_ERROR_DETAIL
+        .get_or_init(|| Mutex::new(String::new()))
+        .lock()
+        .expect("Simulation error detail")
+        .len()
+}
+#[unsafe(no_mangle)]
+/// # Safety
+/// `pointer` must identify writable memory for `capacity` bytes.
+pub unsafe extern "C" fn playsrc_simulation_error_copy(pointer: *mut u8, capacity: usize) -> usize {
+    let detail = SIMULATION_ERROR_DETAIL
+        .get_or_init(|| Mutex::new(String::new()))
+        .lock()
+        .expect("Simulation error detail");
+    if pointer.is_null() || capacity < detail.len() {
+        return 0;
+    }
+    unsafe { std::ptr::copy_nonoverlapping(detail.as_ptr(), pointer, detail.len()) };
+    detail.len()
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn playsrc_simulation_output_length(handle: u32) -> usize {
@@ -4999,6 +5096,117 @@ fn pbytes(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), ()> {
     out.extend_from_slice(&u32::try_from(bytes.len()).map_err(|_| ())?.to_le_bytes());
     out.extend_from_slice(bytes);
     (out.len() <= 512 * 1024 * 1024).then_some(()).ok_or(())
+}
+
+fn encode_profile_coverage(
+    lighting: &playsrc_map::LightingData,
+    visibility: &playsrc_visibility::World,
+    collision: &playsrc_collision::World,
+    entities: &playsrc_entity::Graph,
+) -> Result<Vec<u8>, ()> {
+    if lighting.ambient_indexes.len() != visibility.leaves.len() {
+        return Err(());
+    }
+    let mut records = Vec::new();
+    for (leaf_index, (leaf, index)) in visibility
+        .leaves
+        .iter()
+        .zip(&lighting.ambient_indexes)
+        .enumerate()
+    {
+        if leaf.contents as u32 & playsrc_collision::CONTENTS_SOLID != 0
+            || leaf.cluster < 0
+            || index.sample_count == 0
+        {
+            continue;
+        }
+        let start = usize::from(index.first_sample);
+        let end = start
+            .checked_add(usize::from(index.sample_count))
+            .ok_or(())?;
+        let mut selected = None;
+        for sample in lighting.ambient_samples.get(start..end).ok_or(())? {
+            let position = std::array::from_fn(|axis| {
+                let minimum = f32::from(leaf.mins[axis]);
+                let maximum = f32::from(leaf.maxs[axis]);
+                minimum + (maximum - minimum) * (f32::from(sample.position[axis]) / 255.0)
+            });
+            if visibility.locate_leaf(position).map_err(|_| ())? != leaf_index {
+                continue;
+            }
+            let hull = playsrc_collision::Hull {
+                mins: [0.0; 3],
+                maxs: [0.0; 3],
+            };
+            if collision
+                .trace_hull(
+                    position,
+                    position,
+                    hull,
+                    playsrc_collision::MASK_PLAYERSOLID,
+                )
+                .map_err(|_| ())?
+                .start_solid
+            {
+                continue;
+            }
+            let mut entity_overlap = false;
+            for entity in &entities.entities {
+                if entity.index == 0 {
+                    continue;
+                }
+                if !entity
+                    .classname
+                    .as_deref()
+                    .is_some_and(|value| value.eq_ignore_ascii_case(b"trigger_teleport"))
+                {
+                    continue;
+                }
+                let Some(model) = entity
+                    .model
+                    .as_deref()
+                    .and_then(|value| value.strip_prefix(b"*"))
+                    .and_then(|value| std::str::from_utf8(value).ok())
+                    .and_then(|value| value.parse::<usize>().ok())
+                else {
+                    continue;
+                };
+                if collision
+                    .overlaps_model_hull(model, entity_vector(entity, b"origin")?, position, hull)
+                    .map_err(|_| ())?
+                {
+                    entity_overlap = true;
+                    break;
+                }
+            }
+            if !entity_overlap {
+                selected = Some(position);
+                break;
+            }
+        }
+        if let Some(position) = selected {
+            records.push((
+                leaf_index,
+                leaf.cluster,
+                leaf.area_and_flags & 0x01ff,
+                position,
+            ));
+        }
+    }
+    let mut out = Vec::with_capacity(12 + records.len() * 24);
+    out.extend_from_slice(b"PCOV");
+    out.extend_from_slice(&1_u32.to_le_bytes());
+    out.extend_from_slice(&u32::try_from(records.len()).map_err(|_| ())?.to_le_bytes());
+    for (leaf, cluster, area, position) in records {
+        out.extend_from_slice(&u32::try_from(leaf).map_err(|_| ())?.to_le_bytes());
+        out.extend_from_slice(&cluster.to_le_bytes());
+        out.extend_from_slice(&area.to_le_bytes());
+        for value in position {
+            out.extend_from_slice(&value.to_le_bytes())
+        }
+        out.extend_from_slice(&0_u32.to_le_bytes())
+    }
+    Ok(out)
 }
 
 fn selected_texture<'a>(
@@ -8400,6 +8608,7 @@ mod tests {
             payload: Some(vec![1, 2]),
             presentation: Vec::new(),
             presentation_hash: [0; 32],
+            coverage: Vec::new(),
             particles: None,
             particle_materials: Vec::new(),
             particle_sheets: BTreeMap::new(),
@@ -8437,6 +8646,7 @@ mod tests {
             payload: Some(vec![4]),
             presentation: Vec::new(),
             presentation_hash: [0; 32],
+            coverage: Vec::new(),
             particles: None,
             particle_materials: Vec::new(),
             particle_sheets: BTreeMap::new(),

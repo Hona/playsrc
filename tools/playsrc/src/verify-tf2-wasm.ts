@@ -57,6 +57,8 @@ type Exports = Readonly<{
   playsrc_result_derived_hash(handle: number, pointer: number): number
   playsrc_presentation_length(handle: number): number
   playsrc_presentation_copy(handle: number, pointer: number, capacity: number): number
+  playsrc_coverage_length(handle:number):number
+  playsrc_coverage_copy(handle:number,pointer:number,capacity:number):number
   playsrc_spawn_copy(handle: number, pointer: number, capacity: number): number
   playsrc_game_advance(handle: number, command: number, length: number, ticks: number): number
   playsrc_simulation_observe(handle:number,now:number,command:number,length:number,suspended:number):number
@@ -490,6 +492,11 @@ export async function verifyTf2Wasm(
     presentationArtifacts.environment.waterVolumeFacts.length === 1 &&
     presentationArtifacts.environment.waterMaterials.size === 2,
   "TF2 complete environment presentation differs")
+  const coverageLength=exports.playsrc_coverage_length(handle),coveragePointer=exports.playsrc_alloc(coverageLength)
+  require(coverageLength===12+278*24&&exports.playsrc_coverage_copy(handle,coveragePointer,coverageLength)===coverageLength,"TF2 map coverage framing differs")
+  const coverage=new Uint8Array(exports.memory.buffer,coveragePointer,coverageLength).slice(),coverageView=new DataView(coverage.buffer);exports.playsrc_free(coveragePointer,coverageLength)
+  require(new TextDecoder().decode(coverage.subarray(0,4))==="PCOV"&&coverageView.getUint32(4,true)===1&&coverageView.getUint32(8,true)===278,"TF2 map coverage identity differs")
+  let previousLeaf=-1;for(let index=0;index<278;index++){const at=12+index*24,leaf=coverageView.getUint32(at,true),position=[coverageView.getFloat32(at+8,true),coverageView.getFloat32(at+12,true),coverageView.getFloat32(at+16,true)];require(leaf>previousLeaf&&coverageView.getInt16(at+4,true)>=0&&coverageView.getUint32(at+20,true)===0&&position.every(Number.isFinite),"TF2 map coverage record differs");previousLeaf=leaf}
   const spawnPointer = exports.playsrc_alloc(40)
   require(exports.playsrc_spawn_copy(handle, spawnPointer, 40) === 40, "TF2 spawn descriptor is unavailable")
   const spawnBytes = new Uint8Array(exports.memory.buffer, spawnPointer, 40).slice()

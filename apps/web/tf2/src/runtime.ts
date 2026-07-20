@@ -1,7 +1,7 @@
 import { fetchImmutableObject, openDerivedObjectCache, type DerivedObjectCache } from "@playsrc/asset-store/browser"
 import { createAudioSystem, SoundRegistry, SourceAudioWorld } from "@playsrc/audio"
 import GameplayWorker from "@playsrc/game-tf2-browser/worker?worker"
-import { Tf2WorkerClient, mergePublicationSnapshots, type LoadedGame, type SimulationPublication, type VisibilityResult } from "@playsrc/game-tf2-browser"
+import { Tf2WorkerClient, mergePublicationSnapshots, type CoverageSample, type LoadedGame, type SimulationPublication, type VisibilityResult } from "@playsrc/game-tf2-browser"
 import { initializeTf2GameUiIntegration, type Tf2GameUiIntegration } from "@playsrc/game-tf2-browser/gameui-integration"
 import type { Tf2GameUiRequest, Tf2LoadingPhase } from "@playsrc/game-tf2-browser/gameui"
 import { initializeTf2HudIntegration, type Tf2HudIntegration } from "@playsrc/game-tf2-browser/hud-integration"
@@ -286,6 +286,7 @@ export class Tf2Application {
   #selectClass: 1 | 2 | undefined
   #selectWeapon: 1 | 2 | 3 | undefined
   #modeRequest: 0 | 1 | undefined
+  #coverageSamples:readonly CoverageSample[]=Object.freeze([])
   #developer = 1
   #showFps: ClientDiagnosticMode = 0
   #showPos: ClientDiagnosticMode = 0
@@ -867,6 +868,7 @@ export class Tf2Application {
       this.#advanceLoading("preparing-resources")
       this.#generation += 1
       this.#loaded = await this.#client.stage(this.#generation, bsp, profile, this.#dependencies, key)
+      this.#coverageSamples=await this.#client.coverage(this.#generation)
       finishLoadPhase("stage")
       this.#artifacts = await parsePresentationArtifacts(this.#loaded.presentation)
       finishLoadPhase("presentationParse")
@@ -963,6 +965,7 @@ export class Tf2Application {
       this.#resetHudIntegration()
       this.#gameUi?.dispatch({ kind: "loading-progress", phase: "complete" })
       this.#gameUi?.dispatch({ kind: "loading-succeeded" })
+      this.#publishProfileCoverage()
       const loadPerformanceProbe=JSON.stringify({
         totalMilliseconds:performance.now()-loadStarted,
         application:loadTimings,
@@ -1398,6 +1401,7 @@ export class Tf2Application {
     )
     finishReplacePhase("derivedKey")
     const staged = await this.#client.stage(generation, bytes, profile, this.#dependencies, key)
+    const coverageSamples=await this.#client.coverage(generation)
     finishReplacePhase("stage")
     const artifacts = await parsePresentationArtifacts(staged.presentation)
     finishReplacePhase("presentationParse")
@@ -1466,6 +1470,7 @@ export class Tf2Application {
     }
     this.#generation = generation
     this.#loaded = staged
+    this.#coverageSamples=coverageSamples
     this.#artifacts = artifacts
     this.#lockerAnimations.clear()
     this.#reloadHistory=[]
@@ -1514,6 +1519,7 @@ export class Tf2Application {
     this.#lastRandomAudioProbe = ""
     this.#lastCollisionMoverProbe = ""
     this.#paused = document.hidden
+    this.#publishProfileCoverage()
     this.#output(`Loaded ${name}; generation ${generation}; derived cache ${staged.cache}.`, true)
     this.#set({
       phase: "Ready",
@@ -2432,6 +2438,12 @@ export class Tf2Application {
     this.#buttons.clear()
     this.#jumpPressed = this.#firePressed = this.#detonatePressed = this.#reloadPressed = false
     this.#modeRequest = undefined
+  }
+
+  #publishProfileCoverage():void{
+    const profile=(globalThis as typeof globalThis&{__playsrcProfile?:Record<string,unknown>}).__playsrcProfile
+    if(!profile)return
+    profile.coverageSamples=this.#coverageSamples
   }
 
   selectClass(value: 1 | 2): void {
