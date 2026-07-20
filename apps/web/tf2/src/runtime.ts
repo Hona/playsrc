@@ -46,7 +46,7 @@ import { bytesToHex } from "@noble/hashes/utils.js"
 import { sha256 } from "@noble/hashes/sha2.js"
 import {consoleLimits,resolveConfiguredConsoleResources,type ResolvedConsoleResources} from "./console-resources"
 import { loadBrowserConfiguration, type BrowserConfiguration } from "./config"
-import { applyPointerDelta, rawPointerMovementUnsupported, rebasePointerYaw } from "./input"
+import { PhysicalButtonState, applyPointerDelta, rawPointerMovementUnsupported, rebasePointerYaw, resolvePhysicalBinding } from "./input"
 import { TF2_SELECTED_OPTIONS, type AdapterRequestResult, type SettingsAdapterRequest } from "@playsrc/settings"
 import { SimulationClockQueue } from "./simulation-clock"
 
@@ -242,18 +242,10 @@ export class Tf2Application {
   #authoritativeViewRevision=0
   #pointerMovement?: "raw" | "adjusted"
   #pointerRequestPending=false
-  #forward = false
-  #back = false
-  #left = false
-  #right = false
-  #jump = false
+  readonly #buttons = new PhysicalButtonState()
   #jumpPressed = false
-  #crouch = false
-  #fire = false
   #firePressed = false
-  #detonate = false
   #detonatePressed = false
-  #reload = false
   #reloadPressed = false
   #selectClass: 1 | 2 | undefined
   #selectWeapon: 1 | 2 | 3 | undefined
@@ -1529,20 +1521,20 @@ export class Tf2Application {
   }
 
   #command(): ArrayBuffer {
-    const forward = Number(this.#forward) - Number(this.#back)
-    const side = Number(this.#left) - Number(this.#right)
-    const unsupportedSticky = this.#snapshot?.class === 2 && (this.#fire || this.#firePressed)
+    const forward = Number(this.#buttons.held("+forward")) - Number(this.#buttons.held("+back"))
+    const side = Number(this.#buttons.held("+moveleft")) - Number(this.#buttons.held("+moveright"))
+    const unsupportedSticky = this.#snapshot?.class === 2 && (this.#buttons.held("+attack") || this.#firePressed)
     if (unsupportedSticky) { this.#blockers.add("Missing exact IVP sticky rigid-body solver: launch is rejected before projectile creation"); this.#set({unsupportedState:"StickyPhysicsSolverUnavailable"}) }
     const command = encodeCommand({
       forward: forward * 450,
       side: side * 450,
       yawDegrees: this.#yaw,
       pitchDegrees: this.#pitch,
-      jump: this.#jump || this.#jumpPressed,
-      crouch: this.#crouch,
-      fire: !unsupportedSticky && (this.#fire || this.#firePressed),
-      detonate: this.#detonate || this.#detonatePressed,
-      reload: this.#reload || this.#reloadPressed,
+      jump: this.#buttons.held("+jump") || this.#jumpPressed,
+      crouch: this.#buttons.held("+duck"),
+      fire: !unsupportedSticky && (this.#buttons.held("+attack") || this.#firePressed),
+      detonate: this.#buttons.held("+attack2") || this.#detonatePressed,
+      reload: this.#buttons.held("+reload") || this.#reloadPressed,
       selectClass: this.#selectClass,
       selectWeapon: this.#selectWeapon,
       modeRequest: this.#modeRequest,
@@ -1936,9 +1928,9 @@ export class Tf2Application {
     if (this.#listenersInstalled) return
     this.#listenersInstalled = true
     window.addEventListener("keydown", this.#keyDown, true)
-    window.addEventListener("keyup", this.#keyUp)
+    window.addEventListener("keyup", this.#keyUp, true)
     window.addEventListener("mousedown", this.#mouseDown)
-    window.addEventListener("mouseup", this.#mouseUp)
+    window.addEventListener("mouseup", this.#mouseUp, true)
     window.addEventListener("mousemove", this.#mouseMove)
     window.addEventListener("resize", this.#resize)
     window.addEventListener("blur", this.#blur)
@@ -1951,9 +1943,9 @@ export class Tf2Application {
     if (!this.#listenersInstalled) return
     this.#listenersInstalled = false
     window.removeEventListener("keydown", this.#keyDown, true)
-    window.removeEventListener("keyup", this.#keyUp)
+    window.removeEventListener("keyup", this.#keyUp, true)
     window.removeEventListener("mousedown", this.#mouseDown)
-    window.removeEventListener("mouseup", this.#mouseUp)
+    window.removeEventListener("mouseup", this.#mouseUp, true)
     window.removeEventListener("mousemove", this.#mouseMove)
     window.removeEventListener("resize", this.#resize)
     window.removeEventListener("blur", this.#blur)
@@ -1981,12 +1973,12 @@ export class Tf2Application {
   #boundAction(code: string, modifiers: number): string | null {
     const values = this.#settings?.snapshot().settings.current
     if (!values) return null
-    for (const schema of TF2_SELECTED_OPTIONS.settings) {
-      if (schema.kind !== "binding") continue
+    const resolved = resolvePhysicalBinding(code, modifiers, TF2_SELECTED_OPTIONS.settings, (schema) => {
+      if (schema.kind !== "binding") return null
       const value = values[schema.id]
-      if (value && typeof value === "object" && value.code.toLowerCase() === code.toLowerCase() && value.modifiers === modifiers) return schema.action
-    }
-    return null
+      return value && typeof value === "object" ? { action: schema.action, code: value.code, modifiers: value.modifiers } : null
+    })
+    return resolved?.match === "unmodified" && resolved.action === "toggleconsole" ? null : resolved?.action ?? null
   }
 
   #keyboardAction(event: KeyboardEvent): string | null {
@@ -1995,13 +1987,29 @@ export class Tf2Application {
     if (code === "SHIFT" || code === "RSHIFT") modifiers &= ~1
     if (code === "CTRL" || code === "RCTRL") modifiers &= ~2
     if (code === "ALT" || code === "RALT") modifiers &= ~4
-    return this.#boundAction(code, modifiers)
+    return this.#boundAction(code, modifiers) ?? (code === "RSHIFT" ? this.#boundAction("SHIFT", modifiers) : null)
   }
 
   #mouseAction(event: MouseEvent): string | null {
     const code = event.button >= 0 && event.button <= 4 ? `MOUSE${event.button + 1}` : ""
     const modifiers = Number(event.shiftKey) | (Number(event.ctrlKey) << 1) | (Number(event.altKey) << 2)
     return code ? this.#boundAction(code, modifiers) : null
+  }
+
+  #activateBoundAction(identity: string, action: string): void {
+    if (action === "+forward" || action === "+back" || action === "+moveleft" || action === "+moveright" || action === "+duck") {
+      this.#buttons.press(identity, action)
+    } else if (action === "+jump") {
+      if (this.#buttons.press(identity, action)) this.#jumpPressed = true
+    } else if (action === "+attack") {
+      if (this.#buttons.press(identity, action)) this.#firePressed = true
+    } else if (action === "+attack2") {
+      if (this.#buttons.press(identity, action)) this.#detonatePressed = true
+    } else if (action === "+reload") {
+      if (this.#buttons.press(identity, action)) this.#reloadPressed = true
+    } else if (action === "slot1") this.#selectWeapon = 1
+    else if (action === "slot2") this.#selectWeapon = 2
+    else if (action === "slot3") this.#selectWeapon = 3
   }
 
   readonly #keyDown = (event: KeyboardEvent): void => {
@@ -2032,52 +2040,22 @@ export class Tf2Application {
     const action = this.#keyboardAction(event)
     if (!action) return
     void this.resumeAudio()
-    if (action === "+forward") this.#forward = true
-    else if (action === "+back") this.#back = true
-    else if (action === "+moveleft") this.#left = true
-    else if (action === "+moveright") this.#right = true
-    else if (action === "+jump") {
-      this.#jump = true
-      this.#jumpPressed = true
-    } else if (action === "+duck") this.#crouch = true
-    else if (action === "+reload") {
-      this.#reload = true
-      this.#reloadPressed = true
-    }
-    else if (action === "slot1") this.#selectWeapon = 1
-    else if (action === "slot2") this.#selectWeapon = 2
-    else if (action === "slot3") this.#selectWeapon = 3
+    this.#activateBoundAction(`keyboard:${event.code}`, action)
   }
 
   readonly #keyUp = (event: KeyboardEvent): void => {
-    const action = this.#keyboardAction(event)
-    if (action === "+forward") this.#forward = false
-    else if (action === "+back") this.#back = false
-    else if (action === "+moveleft") this.#left = false
-    else if (action === "+moveright") this.#right = false
-    else if (action === "+jump") this.#jump = false
-    else if (action === "+duck") this.#crouch = false
-    else if (action === "+reload") this.#reload = false
+    this.#buttons.release(`keyboard:${event.code}`)
   }
 
   readonly #mouseDown = (event: MouseEvent): void => {
     if (document.pointerLockElement !== this.#canvas) return
     void this.resumeAudio()
     const action = this.#mouseAction(event)
-    if (action === "+attack") {
-      this.#fire = true
-      this.#firePressed = true
-    }
-    if (action === "+attack2") {
-      this.#detonate = true
-      this.#detonatePressed = true
-    }
+    if (action) this.#activateBoundAction(`mouse:${event.button}`, action)
   }
 
   readonly #mouseUp = (event: MouseEvent): void => {
-    const action = this.#mouseAction(event)
-    if (action === "+attack") this.#fire = false
-    if (action === "+attack2") this.#detonate = false
+    this.#buttons.release(`mouse:${event.button}`)
   }
 
   readonly #mouseMove = (event: MouseEvent): void => {
@@ -2116,8 +2094,7 @@ export class Tf2Application {
   }
 
   #neutral(): void {
-    this.#forward = this.#back = this.#left = this.#right = false
-    this.#jump = this.#crouch = this.#fire = this.#detonate = this.#reload = false
+    this.#buttons.clear()
     this.#jumpPressed = this.#firePressed = this.#detonatePressed = this.#reloadPressed = false
     this.#modeRequest = undefined
   }

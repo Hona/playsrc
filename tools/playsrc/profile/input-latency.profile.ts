@@ -189,6 +189,28 @@ test("profile startup and input latency", async ({ page }) => {
 
   const initial = await page.locator("main").evaluate((main) => ({ ...((main as HTMLElement).dataset) }))
   const input: Record<string, unknown> = {}
+  const verifySimultaneousBindings = async () => {
+    const main = page.locator("main")
+    await page.evaluate(() => {
+      dispatchEvent(new KeyboardEvent("keydown", { code: "ShiftLeft", key: "Shift", shiftKey: true, bubbles: true }))
+      dispatchEvent(new KeyboardEvent("keydown", { code: "KeyW", key: "w", shiftKey: true, bubbles: true }))
+    })
+    await expect.poll(async () => Number(await main.getAttribute("data-wish-speed"))).toBeGreaterThan(0)
+    await expect.poll(async () => Number(await main.getAttribute("data-crouch-fraction"))).toBeGreaterThan(0)
+    await page.evaluate(() => {
+      dispatchEvent(new KeyboardEvent("keydown", { code: "KeyA", key: "a", shiftKey: true, bubbles: true }))
+      dispatchEvent(new KeyboardEvent("keyup", { code: "KeyW", key: "w", shiftKey: true, bubbles: true }))
+    })
+    await expect.poll(async () => Number(await main.getAttribute("data-wish-speed"))).toBeGreaterThan(0)
+    await page.evaluate(() => {
+      dispatchEvent(new KeyboardEvent("keyup", { code: "KeyA", key: "a", shiftKey: true, bubbles: true }))
+    })
+    await expect.poll(async () => Number(await main.getAttribute("data-wish-speed"))).toBe(0)
+    await page.evaluate(() => {
+      dispatchEvent(new KeyboardEvent("keyup", { code: "ShiftLeft", key: "Shift", bubbles: true }))
+    })
+    await expect.poll(async () => Number(await main.getAttribute("data-crouch-fraction"))).toBe(0)
+  }
   if (!mapOnly && initial.phase === "Ready") {
     await page.waitForTimeout(5_000)
     const settledPhase = await page.locator("main").getAttribute("data-phase")
@@ -293,6 +315,7 @@ test("profile startup and input latency", async ({ page }) => {
       })
       input.fireMilliseconds = await page.evaluate((started) => performance.now() - started, fireAt)
       await page.mouse.up({ button: "left" })
+      await verifySimultaneousBindings()
       if (!runScenarios) await page.keyboard.press("Escape")
     } catch {
       input.fireMilliseconds = ">30000"

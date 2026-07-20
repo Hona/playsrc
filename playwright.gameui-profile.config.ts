@@ -17,7 +17,7 @@ export default defineConfig({
     baseURL: "http://127.0.0.1:4173",
     headless: false,
     viewport: { width: 1280, height: 720 },
-    launchOptions: { args: ["--enable-unsafe-webgpu", "--enable-precise-memory-info"] },
+    launchOptions: { args: ["--enable-precise-memory-info"] },
   },
   webServer: {
     command: "bun tools/playsrc/src/cli.ts dev jump_beef",

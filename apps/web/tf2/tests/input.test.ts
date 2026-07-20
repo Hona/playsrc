@@ -1,5 +1,12 @@
 import { expect, test } from "bun:test"
-import { applyPointerDelta, rawPointerMovementUnsupported, rebasePointerYaw } from "../src/input"
+import {
+  PhysicalButtonState,
+  applyPointerDelta,
+  rawPointerMovementUnsupported,
+  rebasePointerYaw,
+  resolvePhysicalBinding,
+  type PhysicalBinding,
+} from "../src/input"
 import {
   MAX_PENDING_SIMULATION_CLOCK_TRANSITIONS,
   SimulationClockQueue,
@@ -27,6 +34,56 @@ test("retries adjusted pointer lock only when raw movement is unsupported", () =
   expect(rawPointerMovementUnsupported({ name: "NotSupportedError" })).toBe(true)
   expect(rawPointerMovementUnsupported({ name: "NotAllowedError" })).toBe(false)
   expect(rawPointerMovementUnsupported(new Error("denied"))).toBe(false)
+})
+
+test("keeps unmodified physical bindings active under unrelated modifiers", () => {
+  const base = Object.freeze([
+    Object.freeze({ action: "+forward", code: "w", modifiers: 0 }),
+  ] satisfies PhysicalBinding[])
+  const chords = Object.freeze([
+    ...base,
+    Object.freeze({ action: "+use", code: "w", modifiers: 1 }),
+  ] satisfies PhysicalBinding[])
+  const read = (binding: PhysicalBinding): PhysicalBinding => binding
+
+  expect(resolvePhysicalBinding("W", 1, base, read)).toEqual({ action: "+forward", match: "unmodified" })
+  expect(resolvePhysicalBinding("w", 2, base, read)).toEqual({ action: "+forward", match: "unmodified" })
+  expect(resolvePhysicalBinding("w", 1, chords, read)).toEqual({ action: "+use", match: "exact" })
+})
+
+test("retains simultaneous physical-key actions until their own releases", () => {
+  const buttons = new PhysicalButtonState()
+  expect(buttons.press("keyboard:KeyW", "+forward")).toBe(true)
+  expect(buttons.press("keyboard:KeyA", "+moveleft")).toBe(true)
+  expect(buttons.press("keyboard:ShiftLeft", "+duck")).toBe(true)
+  expect(buttons.press("keyboard:KeyW", "+forward")).toBe(false)
+  expect(buttons.held("+forward")).toBe(true)
+  expect(buttons.held("+moveleft")).toBe(true)
+  expect(buttons.held("+duck")).toBe(true)
+
+  expect(buttons.release("keyboard:KeyW")).toBe(true)
+  expect(buttons.held("+forward")).toBe(false)
+  expect(buttons.held("+moveleft")).toBe(true)
+  expect(buttons.held("+duck")).toBe(true)
+  expect(buttons.release("keyboard:ShiftLeft")).toBe(true)
+  expect(buttons.release("keyboard:KeyA")).toBe(true)
+  expect(buttons.held("+moveleft")).toBe(false)
+  expect(buttons.held("+duck")).toBe(false)
+})
+
+test("keeps an action held until every physical source releases", () => {
+  const buttons = new PhysicalButtonState()
+  expect(buttons.press("keyboard:ShiftLeft", "+duck")).toBe(true)
+  expect(buttons.press("keyboard:ShiftRight", "+duck")).toBe(false)
+  expect(buttons.release("keyboard:ShiftLeft")).toBe(false)
+  expect(buttons.held("+duck")).toBe(true)
+  expect(buttons.release("keyboard:ShiftRight")).toBe(true)
+  expect(buttons.held("+duck")).toBe(false)
+
+  buttons.press("mouse:0", "+attack")
+  buttons.clear()
+  expect(buttons.release("mouse:0")).toBe(false)
+  expect(buttons.held("+attack")).toBe(false)
 })
 
 test("coalesces a 400-sample continuous browser clock into its latest value", () => {
