@@ -682,7 +682,19 @@ fn object_children<'a>(
 }
 
 fn app_manifest_path(install: &Path) -> PathBuf {
-    install.join("steamapps/appmanifest_440.acf")
+    let standard_steamapps = install
+        .parent()
+        .filter(|parent| {
+            parent
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case("common"))
+        })
+        .and_then(Path::parent);
+    standard_steamapps.map_or_else(
+        || install.join("steamapps/appmanifest_440.acf"),
+        |steamapps| steamapps.join("appmanifest_440.acf"),
+    )
 }
 
 fn verify_install_manifest(install: &Path, contract: &ContentBuildContract) -> Result<(), String> {
@@ -699,7 +711,13 @@ fn verify_install_manifest(install: &Path, contract: &ContentBuildContract) -> R
     {
         return Err("TF2 content-build contract is malformed".to_owned());
     }
-    let bytes = fs::read(app_manifest_path(install)).map_err(|error| error.to_string())?;
+    let manifest = app_manifest_path(install);
+    let bytes = fs::read(&manifest).map_err(|error| {
+        format!(
+            "configured TF2 app manifest {}: {error}",
+            manifest.display()
+        )
+    })?;
     let document = playsrc_keyvalues::parse_text(
         &bytes,
         playsrc_keyvalues::EscapeMode::LiteralBackslash,
@@ -2551,6 +2569,14 @@ mod tests {
         assert_eq!(
             app_manifest_path(Path::new("force-install")),
             PathBuf::from("force-install/steamapps/appmanifest_440.acf")
+        );
+    }
+
+    #[test]
+    fn standard_steam_manifest_is_beside_the_common_directory() {
+        assert_eq!(
+            app_manifest_path(Path::new("steamapps/common/Team Fortress 2")),
+            PathBuf::from("steamapps/appmanifest_440.acf")
         );
     }
 }
