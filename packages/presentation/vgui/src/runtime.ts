@@ -947,10 +947,8 @@ class SourceVguiRuntime implements VguiRuntime {
     }
   }
 
-  snapshot(): VguiRuntimeSnapshot {
-    const panels = [...this.panels.values()]
-      .sort((left, right) => left.id - right.id)
-      .map((panel): VguiPanelSnapshot => Object.freeze({
+  private snapshotPanel(panel: PanelState): VguiPanelSnapshot {
+    return Object.freeze({
         id: panel.id,
         control: panel.control,
         name: panel.name,
@@ -1008,7 +1006,17 @@ class SourceVguiRuntime implements VguiRuntime {
           composition: Object.freeze({ active: panel.compositionActive, text: panel.compositionText, caret: panel.compositionCaret }),
         }),
         animationVariables: Object.freeze(Object.fromEntries(panel.animationValues)),
-      }))
+      })
+  }
+
+  snapshotPanels(panels: readonly VguiPanelId[]): readonly VguiPanelSnapshot[] {
+    return Object.freeze(panels.map((panel) => this.snapshotPanel(this.requirePanel(panel))))
+  }
+
+  snapshot(): VguiRuntimeSnapshot {
+    const panels = [...this.panels.values()]
+      .sort((left, right) => left.id - right.id)
+      .map((panel) => this.snapshotPanel(panel))
 
     return Object.freeze({
       runtimeIdentity: this.runtimeIdentity,
@@ -4460,15 +4468,7 @@ class SourceVguiRuntime implements VguiRuntime {
       const reason = reasons.length === 0 ? "static" : reasons.join(",")
       if (this.host.dataset.vguiFrameWork !== reason) this.host.dataset.vguiFrameWork = reason
       if (reasons.length === 0) {
-        this.addTrace("input-rollover", null, "complete")
-        this.addTrace("focus", this.keyFocus, "committed")
-        this.addTrace("messages", null, "dispatched")
-        this.addTrace("ticks", this.keyFocus, "focus-tick")
-        this.addTrace("layout", null, "solved")
-        this.addTrace("animation", null, "advanced")
-        this.addTrace("dom", null, "published")
         this.frame += 1
-        this.addTrace("frame", null, `end:${this.frame}`)
         return
       }
       this.pressedKeys.clear()

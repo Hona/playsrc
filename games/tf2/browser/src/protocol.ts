@@ -7,6 +7,7 @@ export type WorkerRequest =
       profile: 0 | 1
       bsp: ArrayBuffer
       configuration: ArrayBuffer
+      presentation?: ArrayBuffer
     }>
   | Readonly<{ id: number; kind: "read-map"; generation: number }>
   | Readonly<{ id: number; kind: "read-presentation"; generation: number }>
@@ -21,7 +22,7 @@ export type WorkerRequest =
   | Readonly<{ id: number; kind: "discard"; generation: number }>
   | Readonly<{ id: number; kind: "particles"; generation: number; batch: ArrayBuffer }>
   | Readonly<{ id: number; kind: "models"; generation: number; batch: ArrayBuffer }>
-  | Readonly<{ id: number; kind: "visibility"; generation: number; view: Readonly<{ position: readonly [number, number, number]; yawDegrees: number; pitchDegrees: number; verticalFovDegrees: number; aspectRatio: number; near: number; presentationTimeSeconds: number }> }>
+  | Readonly<{ id: number; kind: "visibility"; generation: number; view: Readonly<{ position: readonly [number, number, number]; yawDegrees: number; pitchDegrees: number; verticalFovDegrees: number; aspectRatio: number; near: number; far: number; presentationTimeSeconds: number }> }>
   | Readonly<{
       id: number
       kind: "observe"
@@ -58,6 +59,22 @@ export type WorkerResponse =
       presentationBytes: number
       presentationSha256: string
       initialView: InitialView
+      timings: Readonly<{
+        inputCopyMilliseconds: number
+        compileMilliseconds: number
+        resultMilliseconds: number
+        bspParseMilliseconds: number
+        canonicalMapMilliseconds: number
+        materialResolutionMilliseconds: number
+        entityParseMilliseconds: number
+        presentationCompileMilliseconds: number
+        modelResolutionMilliseconds: number
+        particleAndInputMilliseconds: number
+        runtimeMapMilliseconds: number
+        collisionSetupMilliseconds: number
+        gameSetupMilliseconds: number
+        totalMilliseconds: number
+      }>
     }>
   | Readonly<{ id: number; kind: "map"; generation: number; payload: ArrayBuffer }>
   | Readonly<{ id: number; kind: "presentation"; generation: number; payload: ArrayBuffer }>
@@ -66,8 +83,15 @@ export type WorkerResponse =
   | Readonly<{ id: number; kind: "course-configured"; generation: number }>
   | Readonly<{ id: number; kind: "discarded"; generation: number }>
   | Readonly<{ id: number; kind: "particles"; generation: number; output: ArrayBuffer; timings: Readonly<{ inputCopyMilliseconds:number; transactMilliseconds:number; outputCopyMilliseconds:number; totalMilliseconds:number }> }>
-  | Readonly<{ id: number; kind: "models"; generation: number; output: ArrayBuffer }>
-  | Readonly<{ id: number; kind: "visibility"; generation: number; output: ArrayBuffer }>
-  | Readonly<{ id: number; kind: "simulation"; generation: number; output: ArrayBuffer }>
+  | Readonly<{ id: number; kind: "models"; generation: number; output: ArrayBuffer; timings: WorkerTransactionTimings }>
+  | Readonly<{ id: number; kind: "visibility"; generation: number; output: ArrayBuffer; timings: WorkerTransactionTimings }>
+  | Readonly<{ id: number; kind: "simulation"; generation: number; output: ArrayBuffer; timings: WorkerTransactionTimings }>
   | Readonly<{ id: number; kind: "shutdown" }>
   | Readonly<{ id: number; kind: "failure"; code: WorkerFailureCode; detail: number }>
+
+type WorkerTransactionTimings = Readonly<{
+  inputCopyMilliseconds: number
+  transactMilliseconds: number
+  outputCopyMilliseconds: number
+  totalMilliseconds: number
+}>

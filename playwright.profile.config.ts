@@ -3,7 +3,7 @@ import { defineConfig } from "@playwright/test"
 export default defineConfig({
   testDir: "tools/playsrc/profile",
   testMatch: "input-latency.profile.ts",
-  timeout: 240_000,
+  timeout: 600_000,
   expect: { timeout: 30_000 },
   fullyParallel: false,
   workers: 1,

@@ -321,6 +321,7 @@ struct Slot {
     spawn: Option<Spawn>,
     session: Option<playsrc_tf2::Session<SharedWorld>>,
     snapshot: Vec<u8>,
+    compile_metrics: [u64; 11],
 }
 
 struct Tf2Simulation {
@@ -495,6 +496,61 @@ pub unsafe extern "C" fn playsrc_compile_map(
     configuration_pointer: *const u8,
     configuration_length: usize,
 ) -> u32 {
+    unsafe {
+        compile_map(
+            bsp_pointer,
+            bsp_length,
+            profile,
+            configuration_pointer,
+            configuration_length,
+            None,
+        )
+    }
+}
+#[unsafe(no_mangle)]
+/// # Safety
+/// Each nonempty pointer/length pair must identify readable bytes in this module's memory.
+pub unsafe extern "C" fn playsrc_compile_map_cached(
+    bsp_pointer: *const u8,
+    bsp_length: usize,
+    profile: u32,
+    configuration_pointer: *const u8,
+    configuration_length: usize,
+    presentation_pointer: *const u8,
+    presentation_length: usize,
+) -> u32 {
+    let presentation = if presentation_length == 0 {
+        None
+    } else if presentation_pointer.is_null() {
+        return 0;
+    } else {
+        Some(unsafe { std::slice::from_raw_parts(presentation_pointer, presentation_length) })
+    };
+    unsafe {
+        compile_map(
+            bsp_pointer,
+            bsp_length,
+            profile,
+            configuration_pointer,
+            configuration_length,
+            presentation,
+        )
+    }
+}
+
+unsafe fn compile_map(
+    bsp_pointer: *const u8,
+    bsp_length: usize,
+    profile: u32,
+    configuration_pointer: *const u8,
+    configuration_length: usize,
+    cached_presentation: Option<&[u8]>,
+) -> u32 {
+    let mut metrics_clock = RuntimeMetricsClock::new();
+    let compile_started =
+        playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
+    let mut phase_started = compile_started;
+    let mut compile_metrics = [0_u64; 11];
     let bsp_bytes = if bsp_length == 0 {
         &[]
     } else {
@@ -513,6 +569,10 @@ pub unsafe extern "C" fn playsrc_compile_map(
         )
         .map_err(|_| 1_u32)?;
         let bsp_sha: [u8; 32] = Sha256::digest(bsp_bytes).into();
+        let phase_finished =
+            playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
+        compile_metrics[0] = phase_finished.saturating_sub(phase_started);
+        phase_started = phase_finished;
         let profile = match profile {
             0 => playsrc_map::LightingProfile::Ldr,
             1 => playsrc_map::LightingProfile::Hdr,
@@ -525,23 +585,59 @@ pub unsafe extern "C" fn playsrc_compile_map(
                 3_u32
             }
         })?;
+        let phase_finished =
+            playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
+        compile_metrics[1] = phase_finished.saturating_sub(phase_started);
+        phase_started = phase_finished;
         let resolved_materials =
             resolve_materials(&canonical, configuration, profile).map_err(|_| 7_u32)?;
+        let phase_finished =
+            playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
+        compile_metrics[2] = phase_finished.saturating_sub(phase_started);
+        phase_started = phase_finished;
         let entity_graph =
             playsrc_entity::parse(bsp.lumps[0].bytes(&bsp), playsrc_entity::Limits::default())
                 .map_err(|_| 3_u32)?;
+        let phase_finished =
+            playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
+        compile_metrics[3] = phase_finished.saturating_sub(phase_started);
+        phase_started = phase_finished;
         let (presentation, studio_models, model_material_opacity, environment) =
-            compile_presentation(&canonical, &bsp, &entity_graph, configuration, profile)
-                .map_err(|_| 9_u32)?;
+            if let Some(cached) = cached_presentation {
+                load_cached_presentation(
+                    &canonical,
+                    &bsp,
+                    &entity_graph,
+                    configuration,
+                    profile,
+                    cached,
+                )
+                .map_err(|_| 9_u32)?
+            } else {
+                compile_presentation(&canonical, &bsp, &entity_graph, configuration, profile)
+                    .map_err(|_| 9_u32)?
+            };
+        let phase_finished =
+            playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
+        compile_metrics[4] = phase_finished.saturating_sub(phase_started);
+        phase_started = phase_finished;
         let (runtime_models, model_occurrences) =
             resolve_models(&entity_graph, &studio_models, configuration, profile)
                 .map_err(|_| 8_u32)?;
+        let phase_finished =
+            playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
+        compile_metrics[5] = phase_finished.saturating_sub(phase_started);
+        phase_started = phase_finished;
         let presentation_hash: [u8; 32] = Sha256::digest(&presentation).into();
         let (particles, particle_materials, particle_sheets) =
             compile_particles(configuration).map_err(|_| 10_u32)?;
         let profile_materials =
             resolve_profile_materials(&entity_graph, configuration, profile).map_err(|_| 7_u32)?;
         let inputs = runtime_inputs(configuration).map_err(|_| 7_u32)?;
+        let phase_finished =
+            playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
+        compile_metrics[6] = phase_finished.saturating_sub(phase_started);
+        phase_started = phase_finished;
         let runtime = playsrc_map::compile_runtime(
             &bsp,
             bsp_sha,
@@ -572,6 +668,10 @@ pub unsafe extern "C" fn playsrc_compile_map(
                 3_u32
             }
         })?;
+        let phase_finished =
+            playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
+        compile_metrics[7] = phase_finished.saturating_sub(phase_started);
+        phase_started = phase_finished;
         let spawn = spawn(&runtime.entities).ok_or(4_u32)?;
         let visibility = runtime.visibility;
         let area_state = playsrc_visibility::AreaState::new(&visibility);
@@ -607,6 +707,10 @@ pub unsafe extern "C" fn playsrc_compile_map(
                 ],
             })
             .collect();
+        let phase_finished =
+            playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
+        compile_metrics[8] = phase_finished.saturating_sub(phase_started);
+        phase_started = phase_finished;
         let map = playsrc_tf2::MapRuntime::compile(
             &entity_graph,
             playsrc_movement::Configuration::default().tick_interval,
@@ -619,6 +723,10 @@ pub unsafe extern "C" fn playsrc_compile_map(
             noclip_allowed: true,
             ..playsrc_tf2::MovementModifiers::default()
         });
+        let phase_finished =
+            playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
+        compile_metrics[9] = phase_finished.saturating_sub(phase_started);
+        compile_metrics[10] = phase_finished.saturating_sub(compile_started);
         Ok((
             runtime.descriptor.payload,
             runtime.descriptor.payload_sha256,
@@ -702,6 +810,7 @@ pub unsafe extern "C" fn playsrc_compile_map(
             spawn: Some(spawn),
             session: Some(session),
             snapshot: Vec::new(),
+            compile_metrics,
         },
         Err(error) => Slot {
             generation,
@@ -733,6 +842,7 @@ pub unsafe extern "C" fn playsrc_compile_map(
             spawn: None,
             session: None,
             snapshot: Vec::new(),
+            compile_metrics,
         },
     };
     if index == slots.len() {
@@ -795,6 +905,15 @@ pub extern "C" fn playsrc_result_length(handle: u32) -> usize {
 #[unsafe(no_mangle)]
 pub extern "C" fn playsrc_result_error(handle: u32) -> u32 {
     with(handle, |slot| slot.error).unwrap_or(u32::MAX)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_compile_metric_milliseconds(handle: u32, index: usize) -> f64 {
+    with(handle, |slot| {
+        slot.compile_metrics
+            .get(index)
+            .map_or(0.0, |value| *value as f64 / 1_000_000.0)
+    })
+    .unwrap_or(0.0)
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn playsrc_presentation_length(handle: u32) -> usize {
@@ -1590,20 +1709,218 @@ fn encode_model_pose_part(
     }
     Ok(())
 }
+#[derive(Clone, Copy)]
+struct WorldFrustumPlane {
+    normal: [f32; 3],
+    distance: f32,
+}
+
+fn world_frustum(
+    origin: [f32; 3],
+    yaw: f32,
+    pitch: f32,
+    vertical_fov: f32,
+    aspect: f32,
+) -> [WorldFrustumPlane; 4] {
+    let (yaw_sine, yaw_cosine) = yaw.to_radians().sin_cos();
+    let (pitch_sine, pitch_cosine) = pitch.to_radians().sin_cos();
+    let forward = [
+        pitch_cosine * yaw_cosine,
+        pitch_cosine * yaw_sine,
+        -pitch_sine,
+    ];
+    let right = [yaw_sine, -yaw_cosine, 0.0];
+    let up = [pitch_sine * yaw_cosine, pitch_sine * yaw_sine, pitch_cosine];
+    let vertical_tangent = (vertical_fov.to_radians() * 0.5).tan();
+    let horizontal_tangent = vertical_tangent * aspect;
+    let plane = |axis: [f32; 3], tangent: f32| {
+        let mut normal = [
+            axis[0] + tangent * forward[0],
+            axis[1] + tangent * forward[1],
+            axis[2] + tangent * forward[2],
+        ];
+        let length = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
+        for value in &mut normal {
+            *value /= length;
+        }
+        WorldFrustumPlane {
+            normal,
+            distance: normal[0] * origin[0] + normal[1] * origin[1] + normal[2] * origin[2],
+        }
+    };
+    [
+        plane([-right[0], -right[1], -right[2]], horizontal_tangent),
+        plane(right, horizontal_tangent),
+        plane([-up[0], -up[1], -up[2]], vertical_tangent),
+        plane(up, vertical_tangent),
+    ]
+}
+
+fn cull_world_bounds(
+    minimum: [i16; 3],
+    maximum: [i16; 3],
+    planes: &[WorldFrustumPlane; 4],
+    mask: &mut u8,
+) -> bool {
+    let center = [
+        (f32::from(minimum[0]) + f32::from(maximum[0])) * 0.5,
+        (f32::from(minimum[1]) + f32::from(maximum[1])) * 0.5,
+        (f32::from(minimum[2]) + f32::from(maximum[2])) * 0.5,
+    ];
+    let half = [
+        f32::from(maximum[0]) - center[0],
+        f32::from(maximum[1]) - center[1],
+        f32::from(maximum[2]) - center[2],
+    ];
+    let mut next = 0;
+    for (index, plane) in planes.iter().enumerate() {
+        let bit = 1 << index;
+        if *mask & bit == 0 {
+            continue;
+        }
+        let center_distance =
+            plane.normal[0] * center[0] + plane.normal[1] * center[1] + plane.normal[2] * center[2]
+                - plane.distance;
+        let radius = plane.normal[0].abs() * half[0]
+            + plane.normal[1].abs() * half[1]
+            + plane.normal[2].abs() * half[2];
+        if center_distance + radius < 0.0 {
+            return true;
+        }
+        if center_distance - radius < 0.0 {
+            next |= bit;
+        }
+    }
+    *mask = next;
+    false
+}
+
+fn world_node_cull_modes(world: &playsrc_visibility::World) -> Vec<i8> {
+    let mut modes = vec![-1_i8; world.nodes.len()];
+    for index in 0..world.nodes.len() {
+        if modes[index] != -1 {
+            continue;
+        }
+        let node = &world.nodes[index];
+        let half = [
+            (f32::from(node.maxs[0]) - f32::from(node.mins[0])) * 0.5,
+            (f32::from(node.maxs[1]) - f32::from(node.mins[1])) * 0.5,
+            (f32::from(node.maxs[2]) - f32::from(node.mins[2])) * 0.5,
+        ];
+        if half.iter().all(|value| *value <= 50.0) {
+            let mut stack = Vec::from(node.children);
+            while let Some(child) = stack.pop() {
+                let Ok(child) = usize::try_from(child) else {
+                    continue;
+                };
+                modes[child] = -2;
+                stack.extend_from_slice(&world.nodes[child].children);
+            }
+        } else {
+            for root in node.children {
+                let mut stack = vec![root];
+                while let Some(child) = stack.pop() {
+                    let Ok(child) = usize::try_from(child) else {
+                        continue;
+                    };
+                    let candidate = &world.nodes[child];
+                    let candidate_half = [
+                        (f32::from(candidate.maxs[0]) - f32::from(candidate.mins[0])) * 0.5,
+                        (f32::from(candidate.maxs[1]) - f32::from(candidate.mins[1])) * 0.5,
+                        (f32::from(candidate.maxs[2]) - f32::from(candidate.mins[2])) * 0.5,
+                    ];
+                    if (0..3).all(|axis| half[axis] - candidate_half[axis] < 5.0) {
+                        modes[child] = -3;
+                        stack.extend_from_slice(&candidate.children);
+                    }
+                }
+            }
+        }
+    }
+    modes
+}
+
+fn frustum_world_surfaces(
+    world: &playsrc_visibility::World,
+    visible: &playsrc_visibility::ViewResult,
+    origin: [f32; 3],
+    yaw: f32,
+    pitch: f32,
+    vertical_fov: f32,
+    aspect: f32,
+) -> Result<Vec<u16>, ()> {
+    const SUPPRESS: u8 = u8::MAX;
+    let planes = world_frustum(origin, yaw, pitch, vertical_fov, aspect);
+    let modes = world_node_cull_modes(world);
+    let allowed = visible
+        .leaves
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut leaves = Vec::new();
+    let mut stack = vec![(world.models.first().ok_or(())?.head_node, 0b1111_u8)];
+    while let Some((child, mut mask)) = stack.pop() {
+        if child < 0 {
+            let leaf = (-1_i64 - i64::from(child)) as usize;
+            let record = world.leaves.get(leaf).ok_or(())?;
+            if record.contents == 1 || !allowed.contains(&leaf) {
+                continue;
+            }
+            if mask != SUPPRESS && cull_world_bounds(record.mins, record.maxs, &planes, &mut mask) {
+                continue;
+            }
+            leaves.push(leaf);
+            continue;
+        }
+        let index = child as usize;
+        let node = world.nodes.get(index).ok_or(())?;
+        if mask != SUPPRESS {
+            if modes[index] == -1 {
+                if cull_world_bounds(node.mins, node.maxs, &planes, &mut mask) {
+                    continue;
+                }
+            } else if modes[index] == -2 {
+                mask = SUPPRESS;
+            }
+        }
+        let plane = world.planes.get(node.plane_index as usize).ok_or(())?;
+        let distance =
+            plane.normal[0] * origin[0] + plane.normal[1] * origin[1] + plane.normal[2] * origin[2]
+                - plane.distance;
+        let near = usize::from(distance < 0.0);
+        stack.push((node.children[1 - near], mask));
+        stack.push((node.children[near], mask));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    let mut surfaces = Vec::new();
+    for leaf in leaves {
+        let record = &world.leaves[leaf];
+        let start = usize::from(record.first_leaf_face);
+        let end = start + usize::from(record.leaf_face_count);
+        for face in &world.leaf_faces[start..end] {
+            if seen.insert(*face) {
+                surfaces.push(*face);
+            }
+        }
+    }
+    Ok(surfaces)
+}
+
 #[unsafe(no_mangle)]
 /// # Safety
-/// `pointer` must identify nine readable finite f32 values.
+/// `pointer` must identify ten readable finite f32 values.
 pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f32) -> u32 {
     if pointer.is_null() {
         return 0;
     }
-    let input = unsafe { std::slice::from_raw_parts(pointer, 9) };
+    let input = unsafe { std::slice::from_raw_parts(pointer, 10) };
     if input.iter().any(|v| !v.is_finite())
         || input[5] <= 0.0
         || input[5] >= 180.0
         || input[6] <= 0.0
         || input[7] <= 0.0
-        || input[8] < 0.0
+        || input[8] <= input[7]
+        || input[9] < 0.0
     {
         return 0;
     }
@@ -1638,6 +1955,17 @@ pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f
     ) else {
         return 0;
     };
+    let Ok(world_surfaces) = frustum_world_surfaces(
+        world, &view, position, input[3], input[4], input[5], input[6],
+    ) else {
+        return 0;
+    };
+    let mut view_identity = Sha256::new();
+    view_identity.update(view.cache_identity);
+    for value in &input[3..9] {
+        view_identity.update(value.to_bits().to_le_bytes());
+    }
+    let view_identity: [u8; 32] = view_identity.finalize().into();
     let policy = playsrc_map::WaterViewPolicy {
         draw_water: true,
         expensive_supported: true,
@@ -1696,7 +2024,7 @@ pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f
         let material = environment.water_materials.get(&identity)?;
         let frame_count = environment.normal_frame_counts.get(&identity).copied();
         let context = playsrc_material::ProxyEvaluationContext {
-            time: input[8],
+            time: input[9],
             frame_time: 0.015,
             water_lod: environment.water_lod,
             texture_frames: frame_count
@@ -1712,12 +2040,16 @@ pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f
         return 0;
     }
     let mut output = b"PVIS".to_vec();
-    output.extend_from_slice(&2u32.to_le_bytes());
-    output.extend_from_slice(&view.cache_identity);
+    output.extend_from_slice(&3u32.to_le_bytes());
+    output.extend_from_slice(&view_identity);
     output.extend_from_slice(&world.identity);
     output.extend_from_slice(&[u8::from(view.outside_world), view.sky as u8, 0, 0]);
     output.extend_from_slice(&(view.world_surfaces.len() as u32).to_le_bytes());
     for face in &view.world_surfaces {
+        output.extend_from_slice(&u32::from(*face).to_le_bytes());
+    }
+    output.extend_from_slice(&(world_surfaces.len() as u32).to_le_bytes());
+    for face in &world_surfaces {
         output.extend_from_slice(&u32::from(*face).to_le_bytes());
     }
     output.extend_from_slice(
@@ -5679,6 +6011,158 @@ type CompiledPresentation = (
     RuntimeEnvironment,
 );
 
+fn presentation_cache_u32(bytes: &[u8], offset: &mut usize) -> Result<u32, ()> {
+    let end = offset.checked_add(4).ok_or(())?;
+    let value = u32::from_le_bytes(
+        bytes
+            .get(*offset..end)
+            .ok_or(())?
+            .try_into()
+            .map_err(|_| ())?,
+    );
+    *offset = end;
+    Ok(value)
+}
+
+fn presentation_cache_skip(bytes: &[u8], offset: &mut usize, length: usize) -> Result<(), ()> {
+    let end = offset.checked_add(length).ok_or(())?;
+    bytes.get(*offset..end).ok_or(())?;
+    *offset = end;
+    Ok(())
+}
+
+fn cached_presentation_models(
+    bytes: &[u8],
+) -> Result<Vec<(String, Box<playsrc_studio_model::PresentationArtifact>)>, ()> {
+    if bytes.len() < 28
+        || &bytes[..4] != b"PTF2"
+        || u32::from_le_bytes(bytes[4..8].try_into().map_err(|_| ())?) != 8
+    {
+        return Err(());
+    }
+    let mut offset = 8;
+    let model_count = presentation_cache_u32(bytes, &mut offset)? as usize;
+    if model_count > 256 {
+        return Err(());
+    }
+    presentation_cache_skip(bytes, &mut offset, 16)?;
+    let mut models = Vec::with_capacity(model_count);
+    for _ in 0..model_count {
+        let identity = std::str::from_utf8(bundle_field(bytes, &mut offset)?)
+            .map_err(|_| ())?
+            .to_owned();
+        let profile = *bytes.get(offset).ok_or(())?;
+        if profile > 1 || bytes.get(offset + 1..offset + 4).ok_or(())? != [0, 0, 0] {
+            return Err(());
+        }
+        offset += 4;
+        let expected_hash: [u8; 32] = bytes
+            .get(offset..offset + 32)
+            .ok_or(())?
+            .try_into()
+            .map_err(|_| ())?;
+        offset += 32;
+        let _skin_count = presentation_cache_u32(bytes, &mut offset)?;
+        let bodygroups = presentation_cache_u32(bytes, &mut offset)? as usize;
+        presentation_cache_skip(bytes, &mut offset, bodygroups.checked_mul(4).ok_or(())?)?;
+        let attachments = presentation_cache_u32(bytes, &mut offset)? as usize;
+        for _ in 0..attachments {
+            let _name = bundle_field(bytes, &mut offset)?;
+            presentation_cache_skip(bytes, &mut offset, 48)?;
+        }
+        let sequences = presentation_cache_u32(bytes, &mut offset)? as usize;
+        for _ in 0..sequences {
+            let _label = bundle_field(bytes, &mut offset)?;
+            let _activity = bundle_field(bytes, &mut offset)?;
+            presentation_cache_skip(bytes, &mut offset, 24)?;
+        }
+        let descriptor = bytes.get(offset..offset + 4).ok_or(())?;
+        if descriptor[0] != profile || descriptor[1] > 1 || descriptor[2] > 1 || descriptor[3] != 0
+        {
+            return Err(());
+        }
+        offset += 4;
+        presentation_cache_skip(bytes, &mut offset, 40)?;
+        let artifact_bytes = bundle_field(bytes, &mut offset)?;
+        let actual_hash: [u8; 32] = Sha256::digest(artifact_bytes).into();
+        if actual_hash != expected_hash {
+            return Err(());
+        }
+        let artifact = playsrc_studio_model::decode_presentation(
+            artifact_bytes,
+            playsrc_studio_model::PresentationLimits::default(),
+        )
+        .map_err(|_| ())?;
+        if artifact.model.identity != identity
+            || (artifact.model.profile == playsrc_studio_model::PresentationProfile::World)
+                != (profile == 0)
+        {
+            return Err(());
+        }
+        models.push((identity, Box::new(artifact)));
+    }
+    Ok(models)
+}
+
+fn load_cached_presentation(
+    canonical: &playsrc_map::CanonicalMap,
+    bsp: &playsrc_bsp::Bsp,
+    graph: &playsrc_entity::Graph,
+    configuration: &[u8],
+    profile: playsrc_map::LightingProfile,
+    presentation: &[u8],
+) -> Result<CompiledPresentation, ()> {
+    let bundle = bundle(configuration)?;
+    let models = cached_presentation_models(presentation)?;
+    let expected = std::collections::BTreeSet::from([
+        "models/weapons/w_models/w_rocket.mdl".to_owned(),
+        "models/weapons/w_models/w_stickybomb.mdl".to_owned(),
+        "models/weapons/c_models/c_soldier_arms.mdl".to_owned(),
+        "models/weapons/c_models/c_demo_arms.mdl".to_owned(),
+        "models/player/soldier.mdl".to_owned(),
+        "models/player/demo.mdl".to_owned(),
+        "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl".to_owned(),
+        "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl".to_owned(),
+    ]);
+    let expected = graph
+        .entities
+        .iter()
+        .filter(|entity| {
+            entity
+                .classname
+                .as_deref()
+                .is_some_and(|value| value.eq_ignore_ascii_case(b"prop_dynamic"))
+        })
+        .filter_map(|entity| entity.model.as_deref())
+        .try_fold(expected, |mut output, model| {
+            output.insert(
+                std::str::from_utf8(model)
+                    .map_err(|_| ())?
+                    .to_ascii_lowercase(),
+            );
+            Ok::<_, ()>(output)
+        })?;
+    let actual = models
+        .iter()
+        .map(|(identity, _)| identity.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    if actual != expected {
+        return Err(());
+    }
+    let (_, environment) = compile_environment_artifact(canonical, bsp, graph, &bundle, profile)?;
+    let model_material_opacity = model_material_opacity(&models, &bundle, profile)?;
+    let models = models
+        .into_iter()
+        .map(|(identity, artifact)| (identity, artifact.model))
+        .collect();
+    Ok((
+        presentation.to_vec(),
+        models,
+        model_material_opacity,
+        environment,
+    ))
+}
+
 fn compile_presentation(
     canonical: &playsrc_map::CanonicalMap,
     bsp: &playsrc_bsp::Bsp,
@@ -7859,6 +8343,7 @@ mod tests {
             spawn: None,
             session: None,
             snapshot: Vec::new(),
+            compile_metrics: [0; 11],
         });
         drop(guard);
         let old = encode(0, 1);
@@ -7895,6 +8380,7 @@ mod tests {
             spawn: None,
             session: None,
             snapshot: Vec::new(),
+            compile_metrics: [0; 11],
         };
         drop(guard);
         assert_eq!(playsrc_result_length(old), 0);

@@ -655,6 +655,7 @@ type SceneResources = {
   lightmapTextures: readonly [THREE.DataTexture, THREE.DataTexture?, THREE.DataTexture?, THREE.DataTexture?]
   exposureUniform: ReturnType<typeof TSL.uniform>
   diagnostics: readonly SceneDiagnostic[]
+  worldBundle: THREE.BundleGroup
   worldBatches: readonly {
     mesh: THREE.Mesh
     faces: Uint32Array
@@ -1002,6 +1003,7 @@ class RendererOwner implements Renderer {
     viewModelDepthRange:readonly[number,number]|undefined
   }>
   #worldVisibilitySurfaces?:Uint32Array
+  #worldVisibilityIdentity?:string
   #active?: SceneResources
   #renderBusy = false
   #loadOrdinal = 0
@@ -1281,6 +1283,7 @@ class RendererOwner implements Renderer {
       this.#viewModelInstances.clear()
       this.#stagedDynamic=undefined
       this.#worldVisibilitySurfaces=undefined
+      this.#worldVisibilityIdentity=undefined
       this.#world.clear()
       this.#world.add(staged.group)
       this.#scene.background = request.diagnostic ? new THREE.Color(0x111820) : null
@@ -1303,6 +1306,8 @@ class RendererOwner implements Renderer {
     sceneGeneration: number,
   ): SceneResources {
     const group = new THREE.Group()
+    const worldBundle = new THREE.BundleGroup()
+    group.add(worldBundle)
     const modelTemplates = new Map<string, THREE.Group>()
     const modelOccurrenceInstances=new Map<number,THREE.Group>()
     const brushModelTemplates=new Map<number,THREE.Group>()
@@ -1493,11 +1498,13 @@ class RendererOwner implements Renderer {
         }
         disposables.add(material)
         const mesh = new THREE.Mesh(geometry, material)
+        mesh.matrixAutoUpdate = false
+        mesh.updateMatrix()
         mesh.userData.materialIdentity = identity
         return mesh
     }
     try {
-      for(const batch of map.batches){const mesh=createWorldMesh(batch);if(!mesh)continue;const index=mesh.geometry.getIndex();if(!index)throw new RenderingError("MalformedInput","world batch has no index buffer");worldBatches.push({mesh,faces:batch.faces.slice(),sourceIndices:batch.indices.slice(),index,transparent:(Array.isArray(mesh.material)?mesh.material: [mesh.material]).some(material=>material.transparent)});group.add(mesh)}
+      for(const batch of map.batches){const mesh=createWorldMesh(batch);if(!mesh)continue;const index=mesh.geometry.getIndex();if(!index)throw new RenderingError("MalformedInput","world batch has no index buffer");worldBatches.push({mesh,faces:batch.faces.slice(),sourceIndices:batch.indices.slice(),index,transparent:(Array.isArray(mesh.material)?mesh.material: [mesh.material]).some(material=>material.transparent)});worldBundle.add(mesh)}
       for(const model of map.brushModels){const template=new THREE.Group();for(const batch of model.batches){const mesh=createWorldMesh(batch);if(mesh)template.add(mesh)}brushModelTemplates.set(model.index,template)}
 
       const environmentTextures = new Map<string, THREE.DataTexture>()
@@ -1569,6 +1576,10 @@ class RendererOwner implements Renderer {
           material.toneMapped = false
           disposables.add(material)
           const mesh = new THREE.Mesh(geometry, material)
+          if (fragment.visibility.kind === "world") {
+            mesh.matrixAutoUpdate = false
+            mesh.updateMatrix()
+          }
           projectedMarks.push({ mesh, face: fragment.face, sourceIndex: mark.sourceIndex, visibility: fragment.visibility })
           group.add(mesh)
         }
@@ -1741,6 +1752,7 @@ class RendererOwner implements Renderer {
       lightmapTextures,
       exposureUniform,
       diagnostics: Object.freeze(diagnostics),
+      worldBundle,
       worldBatches: Object.freeze(worldBatches),
       projectedMarks: Object.freeze(projectedMarks),
       waterMeshes:Object.freeze(waterMeshes),
@@ -1772,17 +1784,16 @@ class RendererOwner implements Renderer {
           !HASH.test(frame.visibility.cacheIdentity)
         )
           throw new RenderingError("IdentityMismatch", "visibility result identity differs from the active environment")
-        const visible = new Set(frame.visibility.surfaces)
-        this.#setWorldVisibility(frame.visibility.surfaces)
+        const visibilityChanged = this.#worldVisibilityIdentity !== frame.visibility.cacheIdentity
+        const visible = visibilityChanged ? new Set(frame.visibility.surfaces) : null
+        this.#setWorldVisibility(frame.visibility.surfaces, frame.visibility.cacheIdentity)
         if(this.#active.skyGroup)this.#active.skyGroup.visible=frame.visibility.sky===2
         if (!frame.collisionWorldIdentity || frame.collisionWorldIdentity !== this.#active.result.environment?.collisionWorldIdentity) {
           throw new RenderingError("IdentityMismatch", "mark collision-world identity differs")
         }
         for (const mark of this.#active.projectedMarks) {
           if (mark.visibility.kind === "world") {
-            mark.mesh.visible = visible.has(mark.face)
-            mark.mesh.matrixAutoUpdate = true
-            sourceTransform(mark.mesh, [0, 0, 0], [0, 0, 0])
+            if (visible) mark.mesh.visible = visible.has(mark.face)
           } else {
             const visibility=mark.visibility
             const receiver = frame.brushModels?.models.find((model) =>
@@ -1810,7 +1821,7 @@ class RendererOwner implements Renderer {
       let worldMilliseconds=0,viewModelMilliseconds=0
       if (!this.#suspended) {
         const worldStarted=performance.now()
-        const waterResult=await this.#renderWaterPasses(frame)
+        const waterResult=this.#renderWaterPasses(frame)
         worldMilliseconds=performance.now()-worldStarted
         waterPasses=waterResult.passes
         waterStateRestored=waterResult.restored
@@ -1818,15 +1829,18 @@ class RendererOwner implements Renderer {
           if (!viewModelDepthRange) throw new RenderingError("InvalidState", "viewmodel depth range is unavailable")
           this.#backend.autoClear = false
           const background = this.#scene.background
+          const matrixWorldAutoUpdate = this.#scene.matrixWorldAutoUpdate
           this.#scene.background = null
+          this.#scene.matrixWorldAutoUpdate = false
           this.#backend.setViewport(0, 0, this.#viewportWidth, this.#viewportHeight, viewModelDepthRange[0], viewModelDepthRange[1])
           const viewModelStarted=performance.now()
           try {
-            await this.#backend.renderAsync(this.#scene, this.#viewCamera)
+            this.#backend.render(this.#scene, this.#viewCamera)
           } finally {
             viewModelMilliseconds=performance.now()-viewModelStarted
             this.#backend.setViewport(0, 0, this.#viewportWidth, this.#viewportHeight, 0, 1)
             this.#scene.background = background
+            this.#scene.matrixWorldAutoUpdate = matrixWorldAutoUpdate
             this.#backend.autoClear = true
           }
           viewModelPass = Object.freeze({ depthRange: viewModelDepthRange, viewportRestored: true })
@@ -1866,9 +1880,11 @@ class RendererOwner implements Renderer {
     }
   }
 
-  #setWorldVisibility(surfaces: Uint32Array): void {
+  #setWorldVisibility(surfaces: Uint32Array, identity?: string): void {
     if (!this.#active) throw new RenderingError("InvalidState", "renderer has no active world visibility resources")
-    if(surfaces===this.#worldVisibilitySurfaces)return
+    if(identity!==undefined&&identity===this.#worldVisibilityIdentity)return
+    const prior=this.#worldVisibilitySurfaces
+    if(surfaces===prior||(prior?.length===surfaces.length&&surfaces.every((value,index)=>value===prior[index]))){if(identity!==undefined)this.#worldVisibilityIdentity=identity;return}
     const visible = new Set(surfaces)
     const order = new Map<number, number>()
     for (let index = 0; index < surfaces.length; index += 1) {
@@ -1889,7 +1905,9 @@ class RendererOwner implements Renderer {
       batch.mesh.geometry.setDrawRange(0, selected.length)
       batch.mesh.visible = selected.length > 0
     }
+    this.#active.worldBundle.needsUpdate=true
     this.#worldVisibilitySurfaces=surfaces
+    this.#worldVisibilityIdentity=identity
   }
 
   #validateFrame(frame: Frame): void {
@@ -2041,23 +2059,23 @@ class RendererOwner implements Renderer {
     return()=>{for(const [material,value] of saved)material.clippingPlanes=value}
   }
 
-  async #renderWaterPasses(frame:Frame):Promise<Readonly<{passes:FrameResult["waterPasses"];restored:boolean}>>{
+  #renderWaterPasses(frame:Frame):Readonly<{passes:FrameResult["waterPasses"];restored:boolean}>{
     if(!this.#active)throw new RenderingError("InvalidState","renderer has no active Water resources")
     const plan=frame.visibility?.water
-    if(!plan){this.#backend.autoClear=true;await this.#backend.renderAsync(this.#scene,this.#camera);return Object.freeze({passes:Object.freeze(["main"] as const),restored:true})}
+    if(!plan){this.#backend.autoClear=true;this.#backend.render(this.#scene,this.#camera);return Object.freeze({passes:Object.freeze(["main"] as const),restored:true})}
     const soleMain=plan.passes.length===1&&plan.passes[0]?.kind==="main"?plan.passes[0]:undefined
     if(!plan.visibleWater&&soleMain&&!soleMain.clip&&!soleMain.renderWaterSurface&&soleMain.drawEntities&&soleMain.drawSky2d===(frame.visibility?.sky===2)){
       const background=this.#scene.background
       this.#backend.autoClear=true
       this.#scene.background=soleMain.drawSky2d?background:null
-      try{await this.#backend.renderAsync(this.#scene,this.#camera)}finally{this.#scene.background=background}
+      try{this.#backend.render(this.#scene,this.#camera)}finally{this.#scene.background=background}
       return Object.freeze({passes:Object.freeze(["main"] as const),restored:true})
     }
     const markVisibility=this.#active.projectedMarks.map(mark=>mark.mesh.visible),waterVisibility=this.#active.waterMeshes.map(water=>water.mesh.visible),background=this.#scene.background,effectsVisible=this.#effects.visible,particlesVisible=this.#particles.visible,skyVisible=this.#active.skyGroup?.visible??false
     const completed:("reflection"|"refraction"|"main"|"intersection")[]=[]
     if(plan.visibleWater&&plan.passes.some(pass=>pass.kind!=="main"&&pass.drawSky2d)&&!this.#active.skyGroup)throw new RenderingError("MissingInput","Water auxiliary view requests the unresolved 2D sky pass")
     try{
-      for(const pass of plan.passes){const visible=new Set(pass.surfaces);this.#setWorldVisibility(pass.surfaces);this.#active.projectedMarks.forEach(mark=>{if(mark.visibility.kind==="world")mark.mesh.visible=visible.has(mark.face)});this.#active.waterMeshes.forEach((water,index)=>water.mesh.visible=pass.renderWaterSurface&&waterVisibility[index]===true);if(this.#active.skyGroup)this.#active.skyGroup.visible=pass.drawSky2d;this.#effects.visible=pass.drawEntities;this.#particles.visible=pass.drawEntities;this.#scene.background=pass.drawSky2d?background:null;this.#setWaterCamera(pass,frame.camera);const restoreClip=this.#setClip(pass.clip);try{this.#backend.setRenderTarget(pass.kind==="reflection"?this.#active.reflectionTarget:pass.kind==="refraction"?this.#active.refractionTarget:null);this.#backend.autoClear=pass.kind!=="intersection";await this.#backend.renderAsync(this.#scene,this.#camera);completed.push(pass.kind)}finally{restoreClip()}}
+      for(const pass of plan.passes){const visible=new Set(pass.surfaces);this.#setWorldVisibility(pass.surfaces);this.#active.projectedMarks.forEach(mark=>{if(mark.visibility.kind==="world")mark.mesh.visible=visible.has(mark.face)});this.#active.waterMeshes.forEach((water,index)=>water.mesh.visible=pass.renderWaterSurface&&waterVisibility[index]===true);if(this.#active.skyGroup)this.#active.skyGroup.visible=pass.drawSky2d;this.#effects.visible=pass.drawEntities;this.#particles.visible=pass.drawEntities;this.#scene.background=pass.drawSky2d?background:null;this.#setWaterCamera(pass,frame.camera);const restoreClip=this.#setClip(pass.clip);try{this.#backend.setRenderTarget(pass.kind==="reflection"?this.#active.reflectionTarget:pass.kind==="refraction"?this.#active.refractionTarget:null);this.#backend.autoClear=pass.kind!=="intersection";this.#backend.render(this.#scene,this.#camera);completed.push(pass.kind)}finally{restoreClip()}}
     }finally{this.#backend.setRenderTarget(null);this.#backend.autoClear=true;this.#scene.background=background;this.#effects.visible=effectsVisible;this.#particles.visible=particlesVisible;if(this.#active.skyGroup)this.#active.skyGroup.visible=skyVisible;this.#setWorldVisibility(frame.visibility!.surfaces);this.#active.projectedMarks.forEach((mark,index)=>mark.mesh.visible=markVisibility[index]!);this.#active.waterMeshes.forEach((water,index)=>water.mesh.visible=waterVisibility[index]!);this.#setCamera(frame.camera)}
     if(!completed.includes("main"))throw new RenderingError("MalformedInput","Water view plan omitted the main pass")
     return Object.freeze({passes:Object.freeze(completed),restored:this.#backend.autoClear&&this.#scene.background===background&&this.#effects.visible===effectsVisible&&this.#particles.visible===particlesVisible})
@@ -2321,6 +2339,7 @@ class RendererOwner implements Renderer {
       if(this.#active&&width>0&&height>0){this.#active.reflectionTarget.setSize(width,height);this.#active.refractionTarget.setSize(width,height)}
       this.#backend.setPixelRatio(devicePixelRatio)
       this.#backend.setSize(cssWidth, cssHeight, false)
+      if(this.#active)this.#active.worldBundle.needsUpdate=true
       this.#viewportWidth = cssWidth
       this.#viewportHeight = cssHeight
       this.#cssWidth = cssWidth
@@ -2387,6 +2406,7 @@ class RendererOwner implements Renderer {
     this.#clearParticleBatches()
     this.#stagedDynamic=undefined
     this.#worldVisibilitySurfaces=undefined
+    this.#worldVisibilityIdentity=undefined
     this.#world.clear()
     const oldBackend = this.#backend
     try {
@@ -2461,6 +2481,7 @@ class RendererOwner implements Renderer {
     this.#viewModelInstances.clear()
     this.#stagedDynamic=undefined
     this.#worldVisibilitySurfaces=undefined
+    this.#worldVisibilityIdentity=undefined
     const active = this.#active
     this.#active = undefined
     this.#world.clear()

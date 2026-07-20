@@ -13,6 +13,8 @@ type WasmExports = Readonly<{
   playsrc_alloc(length: number): number
   playsrc_free(pointer: number, length: number): void
   playsrc_compile_map(bsp: number, length: number, profile: number, config: number, configLength: number): number
+  playsrc_compile_map_cached(bsp: number, length: number, profile: number, config: number, configLength: number, presentation: number, presentationLength: number): number
+  playsrc_compile_metric_milliseconds(handle: number, index: number): number
   playsrc_result_length(handle: number): number
   playsrc_result_error(handle: number): number
   playsrc_result_copy(handle: number, pointer: number, capacity: number): number
@@ -81,6 +83,8 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         candidate.playsrc_alloc,
         candidate.playsrc_free,
         candidate.playsrc_compile_map,
+        candidate.playsrc_compile_map_cached,
+        candidate.playsrc_compile_metric_milliseconds,
         candidate.playsrc_result_length,
         candidate.playsrc_result_error,
         candidate.playsrc_result_copy,
@@ -168,6 +172,7 @@ function readInitialView(exports: WasmExports, handle: number): InitialView | un
 }
 
 function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
+  const started = performance.now()
   const exports = wasm
   if (
     !exports ||
@@ -178,22 +183,40 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
     request.bsp.byteLength < 1 ||
     request.bsp.byteLength > MAX_BSP_BYTES ||
     !(request.configuration instanceof ArrayBuffer) ||
-    request.configuration.byteLength > MAX_CONFIGURATION_BYTES
+    request.configuration.byteLength > MAX_CONFIGURATION_BYTES ||
+    (request.presentation !== undefined && (!(request.presentation instanceof ArrayBuffer) || request.presentation.byteLength < 1 || request.presentation.byteLength > MAX_PRESENTATION_BYTES))
   ) {
     fail(request.id, "MalformedRequest")
     return
   }
+  const inputCopyStarted = performance.now()
   const bspPointer = allocateCopy(exports, request.bsp)
   const configurationPointer = allocateCopy(exports, request.configuration)
-  const candidate = exports.playsrc_compile_map(
-    bspPointer,
-    request.bsp.byteLength,
-    request.profile,
-    configurationPointer,
-    request.configuration.byteLength,
-  )
+  const presentationPointer = request.presentation ? allocateCopy(exports, request.presentation) : 0
+  const inputCopyMilliseconds = performance.now() - inputCopyStarted
+  const compileStarted = performance.now()
+  const candidate = request.presentation
+    ? exports.playsrc_compile_map_cached(
+        bspPointer,
+        request.bsp.byteLength,
+        request.profile,
+        configurationPointer,
+        request.configuration.byteLength,
+        presentationPointer,
+        request.presentation.byteLength,
+      )
+    : exports.playsrc_compile_map(
+        bspPointer,
+        request.bsp.byteLength,
+        request.profile,
+        configurationPointer,
+        request.configuration.byteLength,
+      )
+  const compileMilliseconds = performance.now() - compileStarted
+  const resultStarted = performance.now()
   exports.playsrc_free(bspPointer, request.bsp.byteLength)
   exports.playsrc_free(configurationPointer, request.configuration.byteLength)
+  if (request.presentation) exports.playsrc_free(presentationPointer, request.presentation.byteLength)
   const error = exports.playsrc_result_error(candidate)
   if (error !== 0) {
     exports.playsrc_dispose(candidate)
@@ -205,6 +228,7 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
   const presentationBytes = exports.playsrc_presentation_length(candidate)
   const presentationSha256 = readPresentationHash(exports, candidate)
   const initialView = readInitialView(exports, candidate)
+  const compileMetrics = Array.from({ length: 11 }, (_, index) => exports.playsrc_compile_metric_milliseconds(candidate, index))
   if (
     !Number.isSafeInteger(payloadBytes) ||
     payloadBytes < 1 ||
@@ -231,6 +255,22 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
     presentationBytes,
     presentationSha256,
     initialView,
+    timings: {
+      inputCopyMilliseconds,
+      compileMilliseconds,
+      resultMilliseconds: performance.now() - resultStarted,
+      bspParseMilliseconds: compileMetrics[0]!,
+      canonicalMapMilliseconds: compileMetrics[1]!,
+      materialResolutionMilliseconds: compileMetrics[2]!,
+      entityParseMilliseconds: compileMetrics[3]!,
+      presentationCompileMilliseconds: compileMetrics[4]!,
+      modelResolutionMilliseconds: compileMetrics[5]!,
+      particleAndInputMilliseconds: compileMetrics[6]!,
+      runtimeMapMilliseconds: compileMetrics[7]!,
+      collisionSetupMilliseconds: compileMetrics[8]!,
+      gameSetupMilliseconds: compileMetrics[9]!,
+      totalMilliseconds: performance.now() - started,
+    },
   })
 }
 
@@ -339,6 +379,7 @@ function configureCourse(request: Extract<WorkerRequest, { kind: "configure-cour
 }
 
 function observe(request: Extract<WorkerRequest, { kind: "observe" }>): void {
+  const started = performance.now()
   const value = requireActive(request.id, request.generation)
   if (!value) return
   if (
@@ -350,8 +391,12 @@ function observe(request: Extract<WorkerRequest, { kind: "observe" }>): void {
     fail(request.id, "MalformedRequest")
     return
   }
+  const inputCopyStarted = performance.now()
   const pointer = allocateCopy(value.exports, request.command)
+  const inputCopyMilliseconds = performance.now() - inputCopyStarted
+  const transactStarted = performance.now()
   const result = value.exports.playsrc_simulation_observe(value.handle, request.nowSeconds, pointer, request.command.byteLength, Number(request.suspended))
+  const transactMilliseconds = performance.now() - transactStarted
   value.exports.playsrc_free(pointer, request.command.byteLength)
   if (result !== 1) {
     fail(request.id, "TransitionFailed")
@@ -362,6 +407,7 @@ function observe(request: Extract<WorkerRequest, { kind: "observe" }>): void {
     fail(request.id, "InternalFailure")
     return
   }
+  const outputCopyStarted = performance.now()
   const snapshotPointer = value.exports.playsrc_alloc(length)
   const copied = value.exports.playsrc_simulation_output_copy(value.handle, snapshotPointer, length)
   if (copied !== length) {
@@ -371,7 +417,8 @@ function observe(request: Extract<WorkerRequest, { kind: "observe" }>): void {
   }
   const snapshot = new Uint8Array(value.exports.memory.buffer, snapshotPointer, length).slice().buffer
   value.exports.playsrc_free(snapshotPointer, length)
-  post({ id: request.id, kind: "simulation", generation: request.generation, output: snapshot }, [snapshot])
+  const outputCopyMilliseconds = performance.now() - outputCopyStarted
+  post({ id: request.id, kind: "simulation", generation: request.generation, output: snapshot, timings: { inputCopyMilliseconds, transactMilliseconds, outputCopyMilliseconds, totalMilliseconds: performance.now() - started } }, [snapshot])
 }
 function particles(request: Extract<WorkerRequest, { kind: "particles" }>): void {
   const started=performance.now()
@@ -411,14 +458,19 @@ function particles(request: Extract<WorkerRequest, { kind: "particles" }>): void
   post({ id: request.id, kind: "particles", generation: request.generation, output, timings:{inputCopyMilliseconds,transactMilliseconds,outputCopyMilliseconds,totalMilliseconds:performance.now()-started} }, [output])
 }
 function models(request: Extract<WorkerRequest, { kind: "models" }>): void {
+  const started = performance.now()
   const value = requireActive(request.id, request.generation)
   if (!value) return
   if (!(request.batch instanceof ArrayBuffer) || request.batch.byteLength < 12 || request.batch.byteLength > 1024 * 1024) {
     fail(request.id, "MalformedRequest")
     return
   }
+  const inputCopyStarted = performance.now()
   const pointer = allocateCopy(value.exports, request.batch)
+  const inputCopyMilliseconds = performance.now() - inputCopyStarted
+  const transactStarted = performance.now()
   const ok = value.exports.playsrc_model_transact(value.handle, pointer, request.batch.byteLength)
+  const transactMilliseconds = performance.now() - transactStarted
   value.exports.playsrc_free(pointer, request.batch.byteLength)
   if (ok !== 1) {
     fail(request.id, "TransitionFailed")
@@ -429,6 +481,7 @@ function models(request: Extract<WorkerRequest, { kind: "models" }>): void {
     fail(request.id, "InternalFailure")
     return
   }
+  const outputCopyStarted = performance.now()
   const outputPointer = value.exports.playsrc_alloc(length)
   if (value.exports.playsrc_model_output_copy(value.handle, outputPointer, length) !== length) {
     value.exports.playsrc_free(outputPointer, length)
@@ -437,25 +490,31 @@ function models(request: Extract<WorkerRequest, { kind: "models" }>): void {
   }
   const output = new Uint8Array(value.exports.memory.buffer, outputPointer, length).slice().buffer
   value.exports.playsrc_free(outputPointer, length)
-  post({ id: request.id, kind: "models", generation: request.generation, output }, [output])
+  const outputCopyMilliseconds = performance.now() - outputCopyStarted
+  post({ id: request.id, kind: "models", generation: request.generation, output, timings: { inputCopyMilliseconds, transactMilliseconds, outputCopyMilliseconds, totalMilliseconds: performance.now() - started } }, [output])
 }
 function visibility(request: Extract<WorkerRequest, { kind: "visibility" }>): void {
+  const started = performance.now()
   const value = requireActive(request.id, request.generation)
   if (!value) return
   const view = request.view
   if (view.position.length !== 3 || !view.position.every(Number.isFinite) ||
-    ![view.yawDegrees, view.pitchDegrees, view.verticalFovDegrees, view.aspectRatio, view.near, view.presentationTimeSeconds].every(Number.isFinite) ||
-    view.verticalFovDegrees <= 0 || view.verticalFovDegrees >= 180 || view.aspectRatio <= 0 || view.near <= 0 || view.presentationTimeSeconds < 0) {
+    ![view.yawDegrees, view.pitchDegrees, view.verticalFovDegrees, view.aspectRatio, view.near, view.far, view.presentationTimeSeconds].every(Number.isFinite) ||
+    view.verticalFovDegrees <= 0 || view.verticalFovDegrees >= 180 || view.aspectRatio <= 0 || view.near <= 0 || view.far <= view.near || view.presentationTimeSeconds < 0) {
     fail(request.id, "MalformedRequest")
     return
   }
-  const pointer = value.exports.playsrc_alloc(36)
-  new Float32Array(value.exports.memory.buffer, pointer, 9).set([
+  const inputCopyStarted = performance.now()
+  const pointer = value.exports.playsrc_alloc(40)
+  new Float32Array(value.exports.memory.buffer, pointer, 10).set([
     ...view.position, view.yawDegrees, view.pitchDegrees, view.verticalFovDegrees,
-    view.aspectRatio, view.near, view.presentationTimeSeconds,
+    view.aspectRatio, view.near, view.far, view.presentationTimeSeconds,
   ])
+  const inputCopyMilliseconds = performance.now() - inputCopyStarted
+  const transactStarted = performance.now()
   const ok = value.exports.playsrc_visibility_query(value.handle, pointer)
-  value.exports.playsrc_free(pointer, 36)
+  const transactMilliseconds = performance.now() - transactStarted
+  value.exports.playsrc_free(pointer, 40)
   if (ok !== 1) {
     fail(request.id, "TransitionFailed")
     return
@@ -465,6 +524,7 @@ function visibility(request: Extract<WorkerRequest, { kind: "visibility" }>): vo
     fail(request.id, "InternalFailure")
     return
   }
+  const outputCopyStarted = performance.now()
   const outputPointer = value.exports.playsrc_alloc(length)
   if (value.exports.playsrc_visibility_output_copy(value.handle, outputPointer, length) !== length) {
     value.exports.playsrc_free(outputPointer, length)
@@ -473,7 +533,8 @@ function visibility(request: Extract<WorkerRequest, { kind: "visibility" }>): vo
   }
   const output = new Uint8Array(value.exports.memory.buffer, outputPointer, length).slice().buffer
   value.exports.playsrc_free(outputPointer, length)
-  post({ id: request.id, kind: "visibility", generation: request.generation, output }, [output])
+  const outputCopyMilliseconds = performance.now() - outputCopyStarted
+  post({ id: request.id, kind: "visibility", generation: request.generation, output, timings: { inputCopyMilliseconds, transactMilliseconds, outputCopyMilliseconds, totalMilliseconds: performance.now() - started } }, [output])
 }
 
 function shutdown(request: Extract<WorkerRequest, { kind: "shutdown" }>): void {

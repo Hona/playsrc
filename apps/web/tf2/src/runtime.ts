@@ -1624,6 +1624,7 @@ export class Tf2Application {
         verticalFovDegrees:camera.verticalFovDegrees,
         aspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),
         near:camera.near,
+        far:camera.far,
         presentationTimeSeconds:Number(prepared.snapshot.tick)*0.015,
       })
     }
@@ -1638,7 +1639,7 @@ export class Tf2Application {
     const rendered=await renderer.render({
       ...prepared.frame,
       camera,
-      visibility,
+      visibility:Object.freeze({...visibility,surfaces:visibility.drawSurfaces}),
       deltaSeconds:deltaTicks*0.015,
     })
     const renderMilliseconds=performance.now()-renderStart,totalMilliseconds=performance.now()-phaseStart
@@ -1795,6 +1796,7 @@ export class Tf2Application {
         verticalFovDegrees:camera.verticalFovDegrees,
         aspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),
         near:camera.near,
+        far:camera.far,
         presentationTimeSeconds:Number(snapshot.tick)*0.015,
       });void visibilityRequest.catch(()=>{});const modelPoses = decodeModelPoseOutput(await modelRequest)
       const modelMilliseconds=performance.now()-modelStart
@@ -1865,7 +1867,7 @@ export class Tf2Application {
           clientModeAllows: true,
           frozen: false,
           localViewEntity: true,
-          vguiInput: this.#console?.snapshot().visible === true || this.#options?.snapshot().visible === true,
+          vguiInput: this.#view.consoleVisible === true || this.#view.optionsVisible === true,
           observerMode: "none" as const,
           observerCrosshair: false,
           tfSuppressed: false,
@@ -1882,14 +1884,14 @@ export class Tf2Application {
       const hudHealth = hudPlayer?.health.kind === "available" ? hudPlayer.health.value.current : "unavailable"
       const hudWeaponIdentity = hudPlayer?.activeWeapon.kind === "available" ? hudPlayer.activeWeapon.value : null
       const hudWeapon = hudPlayer?.weapons.find((weapon) => weapon.identity === hudWeaponIdentity)
-      const hudVgui = this.#hudIntegration?.snapshot().vgui
-      const hudPanel = (name: string) => hudVgui?.panels.find((panel) => panel.name === name)
+      const hudProbe = this.#hudIntegration?.probe()
+      const hudPanel = (name: string) => hudProbe?.panels.find((panel) => panel.name === name)
       const healthPanel = hudPanel("PlayerStatusHealthImage")
       const ammoPanel = hudPanel("HudWeaponAmmo")
       const weaponPanel = hudPanel("modelpanel0")
       this.#set({
         hudProbe: hudPlayer ? `${hudHealth}:${hudPlayer.class.kind === "available" ? hudPlayer.class.value : "unavailable"}:${hudWeaponIdentity ?? "unavailable"}:${hudWeapon?.clip.kind === "available" ? hudWeapon.clip.value : "unavailable"}:${hudWeapon?.reserve.kind === "available" ? hudWeapon.reserve.value : "unavailable"}` : "unavailable",
-        hudAnimationTrace: this.#hudIntegration?.snapshot().animationTrace.join("|"),
+        hudAnimationTrace: hudProbe?.animationTrace.join("|"),
         hudOperationProbe: healthPanel && ammoPanel && weaponPanel
           ? `${healthPanel.state.imageFill}:${healthPanel.bounds.x},${healthPanel.bounds.y},${healthPanel.bounds.width},${healthPanel.bounds.height}:${healthPanel.state.drawColor.join(",")}:${healthPanel.state.foregroundColor?.join(",") ?? "none"}:${ammoPanel.state.scalarProperties.reloadPhase ?? "none"}:${weaponPanel.state.scalarProperties.weaponIdentity ?? "none"}`
           : "unavailable",
