@@ -127,6 +127,7 @@ function App() {
       data-fire-ticks={view.fireTickHistory?.join("|")}
       data-performance={view.performanceProbe}
       data-performance-detail={view.performanceDetailProbe}
+      data-load-performance={view.loadPerformanceProbe}
       data-locker={view.lockerProbe}
       data-unsupported-state={view.unsupportedState}
       data-blockers={JSON.stringify(view.blockers)}

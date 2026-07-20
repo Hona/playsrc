@@ -29,6 +29,22 @@ export type LoadedGame = Readonly<{
   presentation: Uint8Array
   presentationSha256: string
   presentationCache: "hit" | "stored" | "unavailable"
+  presentationCacheError: string | null
+  timings: Readonly<{
+    mapCacheReadMilliseconds: number
+    presentationKeyMilliseconds: number
+    presentationCacheReadMilliseconds: number
+    inputCloneMilliseconds: number
+    workerLoadMilliseconds: number
+    mapIntegrityMilliseconds: number
+    mapReadMilliseconds: number
+    mapCacheWriteMilliseconds: number
+    presentationIntegrityMilliseconds: number
+    presentationReadMilliseconds: number
+    presentationCacheWriteMilliseconds: number
+    presentationReleaseMilliseconds: number
+    totalMilliseconds: number
+  }>
   initialView: InitialView
 }>
 export type StagedGame = LoadedGame
@@ -134,6 +150,7 @@ export class Tf2WorkerClient {
     configuration: Uint8Array,
     derivedKey: string,
   ): Promise<StagedGame> {
+    const started = performance.now()
     if (
       !Number.isSafeInteger(generation) ||
       generation < 1 ||
@@ -145,16 +162,26 @@ export class Tf2WorkerClient {
     ) {
       throw new Tf2WorkerError("BoundExceeded")
     }
+    let phase = performance.now()
     const cached = await this.#cache.read(derivedKey)
+    const mapCacheReadMilliseconds = performance.now() - phase
+    phase = performance.now()
     const pkey = await presentationKey(derivedKey)
+    const presentationKeyMilliseconds = performance.now() - phase
+    phase = performance.now()
     const cachedPresentation = await this.#cache.read(pkey)
+    const presentationCacheReadMilliseconds = performance.now() - phase
+    phase = performance.now()
     const bspBuffer = bsp.slice().buffer
     const configurationBuffer = configuration.slice().buffer
     const presentationBuffer = cachedPresentation?.slice().buffer
+    const inputCloneMilliseconds = performance.now() - phase
+    phase = performance.now()
     const loaded = await this.#request(
       { kind: "load", generation, profile, bsp: bspBuffer, configuration: configurationBuffer, ...(presentationBuffer ? { presentation: presentationBuffer } : {}) },
       [bspBuffer, configurationBuffer, ...(presentationBuffer ? [presentationBuffer] : [])],
     )
+    const workerLoadMilliseconds = performance.now() - phase
     try {
       if (
         loaded.kind !== "loaded" ||
@@ -181,35 +208,53 @@ export class Tf2WorkerClient {
       }
       let payload: Uint8Array
       let cache: LoadedGame["cache"]
+      let mapIntegrityMilliseconds = 0
+      let mapReadMilliseconds = 0
+      let mapCacheWriteMilliseconds = 0
       if (cached) {
+        phase = performance.now()
         if (cached.byteLength !== loaded.payloadBytes || (await sha256(cached)) !== loaded.payloadSha256) {
           throw new Tf2WorkerError("IntegrityFailure")
         }
+        mapIntegrityMilliseconds = performance.now() - phase
         payload = cached
         cache = "hit"
       } else {
+        phase = performance.now()
         const map = await this.#request({ kind: "read-map", generation })
         if (map.kind !== "map" || map.generation !== generation || !(map.payload instanceof ArrayBuffer)) {
           throw new Tf2WorkerError("WorkerFailed")
         }
         payload = new Uint8Array(map.payload)
+        mapReadMilliseconds = performance.now() - phase
+        phase = performance.now()
         if (payload.byteLength !== loaded.payloadBytes || (await sha256(payload)) !== loaded.payloadSha256) {
           throw new Tf2WorkerError("IntegrityFailure")
         }
+        mapIntegrityMilliseconds = performance.now() - phase
+        phase = performance.now()
         await this.#cache.write(derivedKey, loaded.payloadSha256, payload)
+        mapCacheWriteMilliseconds = performance.now() - phase
         cache = "stored"
       }
       let presentation: Uint8Array
       let presentationCache: LoadedGame["presentationCache"]
+      let presentationCacheError:string|null=null
+      let presentationIntegrityMilliseconds = 0
+      let presentationReadMilliseconds = 0
+      let presentationCacheWriteMilliseconds = 0
       if (cachedPresentation) {
+        phase = performance.now()
         if (
           cachedPresentation.byteLength !== loaded.presentationBytes ||
           (await sha256(cachedPresentation)) !== loaded.presentationSha256
         )
           throw new Tf2WorkerError("IntegrityFailure")
+        presentationIntegrityMilliseconds = performance.now() - phase
         presentation = cachedPresentation
         presentationCache = "hit"
       } else {
+        phase = performance.now()
         const response = await this.#request({ kind: "read-presentation", generation })
         if (
           response.kind !== "presentation" ||
@@ -218,20 +263,29 @@ export class Tf2WorkerClient {
         )
           throw new Tf2WorkerError("WorkerFailed")
         presentation = new Uint8Array(response.payload)
+        presentationReadMilliseconds = performance.now() - phase
+        phase = performance.now()
         if (
           presentation.byteLength !== loaded.presentationBytes ||
           (await sha256(presentation)) !== loaded.presentationSha256
         )
           throw new Tf2WorkerError("IntegrityFailure")
+        presentationIntegrityMilliseconds = performance.now() - phase
+        phase = performance.now()
         try {
           await this.#cache.write(pkey, loaded.presentationSha256, presentation)
+          presentationCacheWriteMilliseconds = performance.now() - phase
           presentationCache = "stored"
-        } catch {
+        } catch (error) {
+          presentationCacheWriteMilliseconds = performance.now() - phase
           presentationCache = "unavailable"
+          presentationCacheError=error instanceof Error?`${error.name}: ${error.message}`:String(error)
         }
       }
+      phase=performance.now()
       const released=await this.#request({kind:"release-presentation",generation})
       if(released.kind!=="presentation-released"||released.generation!==generation)throw new Tf2WorkerError("WorkerFailed")
+      const presentationReleaseMilliseconds=performance.now()-phase
       return Object.freeze({
         generation,
         payload,
@@ -240,6 +294,22 @@ export class Tf2WorkerClient {
         presentation,
         presentationSha256: loaded.presentationSha256,
         presentationCache,
+        presentationCacheError,
+        timings:Object.freeze({
+          mapCacheReadMilliseconds,
+          presentationKeyMilliseconds,
+          presentationCacheReadMilliseconds,
+          inputCloneMilliseconds,
+          workerLoadMilliseconds,
+          mapIntegrityMilliseconds,
+          mapReadMilliseconds,
+          mapCacheWriteMilliseconds,
+          presentationIntegrityMilliseconds,
+          presentationReadMilliseconds,
+          presentationCacheWriteMilliseconds,
+          presentationReleaseMilliseconds,
+          totalMilliseconds:performance.now()-started,
+        }),
         initialView: Object.freeze({
           entity: loaded.initialView.entity,
           hammerId: loaded.initialView.hammerId,

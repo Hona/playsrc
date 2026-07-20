@@ -158,6 +158,7 @@ export type ApplicationView = Readonly<{
   fireTickHistory?: readonly string[]
   performanceProbe?: string
   performanceDetailProbe?: string
+  loadPerformanceProbe?: string
   displayFrame?: number
   displayViewRevision?: number
   displayPreparedRevision?: number
@@ -544,6 +545,10 @@ export class Tf2Application {
   }
 
   async #startGameplay(): Promise<void> {
+    const loadStarted=performance.now()
+    let loadPhase=loadStarted
+    const loadTimings:Record<string,number>={}
+    const finishLoadPhase=(name:string):void=>{const now=performance.now();loadTimings[name]=now-loadPhase;loadPhase=now}
     try {
       if (!this.#configuration) throw new Error("Browser configuration is unavailable")
       this.#set({ detail: "Fetching exact BSP and gameplay WASM objects" })
@@ -552,10 +557,13 @@ export class Tf2Application {
         fetchImmutableObject(this.#configuration.assetOrigin, this.#configuration.bsp),
         fetchImmutableObject(this.#configuration.assetOrigin, this.#configuration.wasm),
       ])
+      finishLoadPhase("fetch")
       this.#advanceLoading("building-resource-index")
       this.#cache = await openDerivedObjectCache()
+      finishLoadPhase("cacheOpen")
       this.#client = new Tf2WorkerClient(new GameplayWorker(), this.#cache)
       await this.#client.initialize(wasm, this.#configuration.wasm.sha256)
+      finishLoadPhase("workerInitialize")
       const profile = this.#renderLevel === 2 ? 1 : 0
       const key = await mapDerivedKey(
         this.#configuration.bsp.sha256,
@@ -564,13 +572,17 @@ export class Tf2Application {
         this.#configuration.wasm.sha256,
         this.#dependencies,
       )
+      finishLoadPhase("derivedKey")
       this.#set({ detail: "Compiling direct map authority" })
       this.#advanceLoading("preparing-resources")
       this.#generation += 1
       this.#loaded = await this.#client.stage(this.#generation, bsp, profile, this.#dependencies, key)
+      finishLoadPhase("stage")
       this.#artifacts = await parsePresentationArtifacts(this.#loaded.presentation)
+      finishLoadPhase("presentationParse")
       this.#recordVisualOutputBlockers(this.#artifacts)
       await this.#cacheModelArtifacts(this.#artifacts)
+      finishLoadPhase("modelCache")
       this.#projectiles = createProjectilePresentationMapper(
         Object.freeze({
           models: new Set(this.#artifacts.models.keys()),
@@ -593,11 +605,13 @@ export class Tf2Application {
       this.#viewmodels = createViewmodelPresenter(this.#artifacts)
       this.#viewmodelClass = undefined
       this.#applyInitialView(this.#loaded)
+      finishLoadPhase("presentationSetup")
       this.#renderer = await createRenderer({
         canvas: this.#canvas,
         configuration: this.#renderLevel === 2 ? SOURCE_PC_INTEGER_HDR : SOURCE_LDR,
         powerPreference: "high-performance",
       })
+      finishLoadPhase("rendererCreate")
       this.resize()
       this.#advanceLoading("creating-client-world")
       const scene = await this.#renderer.loadMap({
@@ -619,6 +633,7 @@ export class Tf2Application {
       for (const diagnostic of scene.diagnostics) {
         this.#blockers.add(`${diagnostic.code}: ${diagnostic.identity} — ${diagnostic.detail}`)
       }
+      finishLoadPhase("rendererLoadMap")
       const AudioContextConstructor = window.AudioContext
       if (!AudioContextConstructor) throw new Error("Web Audio is unavailable")
       const audioContext = new AudioContextConstructor()
@@ -642,22 +657,37 @@ export class Tf2Application {
         }),
       ])
       this.#audioWorld = new SourceAudioWorld(this.#audioRegistry, { maxActiveVoices: 128 })
+      finishLoadPhase("audioSetup")
       await this.#client.activate(this.#generation)
+      finishLoadPhase("activation")
       this.#advanceLoading("synchronizing-game-state")
       this.#snapshot = (await this.#initialPublication(this.#generation)).snapshot
+      finishLoadPhase("initialPublication")
       this.#recordAuthorityBlockers(this.#snapshot)
       this.#recordCrouch(this.#snapshot)
       this.#recordLockerAnimations(this.#snapshot)
       this.#modelProbes = await this.#probePlayerModels(this.#artifacts)
       this.#viewmodelTimelineProbes = await this.#probeViewmodelTimelines(this.#artifacts)
+      finishLoadPhase("initialProbes")
       this.#paused = document.hidden
       this.#resetHudIntegration()
       this.#gameUi?.dispatch({ kind: "loading-progress", phase: "complete" })
       this.#gameUi?.dispatch({ kind: "loading-succeeded" })
+      const loadPerformanceProbe=JSON.stringify({
+        totalMilliseconds:performance.now()-loadStarted,
+        application:loadTimings,
+        client:this.#loaded.timings,
+        mapBytes:this.#loaded.payload.byteLength,
+        presentationBytes:this.#loaded.presentation.byteLength,
+        mapCache:this.#loaded.cache,
+        presentationCache:this.#loaded.presentationCache,
+        presentationCacheError:this.#loaded.presentationCacheError,
+      })
       this.#set({
         phase: "Ready",
         gameUi: "in-game",
         detail: "Click the field to capture the mouse",
+        loadPerformanceProbe,
         cache: this.#loaded.cache,
         initialView: this.#loaded.initialView,
         environment: this.#artifacts.environment,
@@ -975,9 +1005,10 @@ export class Tf2Application {
       const bytes = await fetchImmutableObject(this.#configuration.assetOrigin, this.#configuration.bsp)
       await this.#replace(bytes, this.#configuration.bsp.sha256, "jump_beef")
     } catch (error) {
-      this.#output(`Map replacement failed: ${error instanceof Error ? error.message : "unknown failure"}`)
+      const reason=error instanceof Error?`${error.name}: ${error.message}`:String(error)
+      this.#output(`Map replacement failed: ${reason}`)
       this.#paused = document.hidden
-      this.#set({ phase: "Ready", detail: "Prior map retained" })
+      this.#set({ phase: "Ready", detail: `Prior map retained: ${reason}` })
     }
   }
 
@@ -1054,6 +1085,7 @@ export class Tf2Application {
   }
 
   async #replace(bytes: Uint8Array, bspSha256: string, name: string): Promise<void> {
+    const replaceStarted=performance.now();let replacePhase=replaceStarted;const replaceTimings:Record<string,number>={};const finishReplacePhase=(phase:string)=>{const now=performance.now();replaceTimings[phase]=now-replacePhase;replacePhase=now}
     if (!this.#client || !this.#renderer || !this.#loaded) throw new Error("Application is not ready")
     this.#paused = true
     this.#neutral()
@@ -1071,10 +1103,14 @@ export class Tf2Application {
       this.#configuration?.wasm.sha256 ?? "",
       this.#dependencies,
     )
+    finishReplacePhase("derivedKey")
     const staged = await this.#client.stage(generation, bytes, profile, this.#dependencies, key)
+    finishReplacePhase("stage")
     const artifacts = await parsePresentationArtifacts(staged.presentation)
+    finishReplacePhase("presentationParse")
     this.#recordVisualOutputBlockers(artifacts)
     await this.#cacheModelArtifacts(artifacts)
+    finishReplacePhase("modelCache")
     const prior = this.#loaded
     const priorArtifacts = this.#artifacts
     const priorConfiguration = this.#renderer.configuration
@@ -1103,8 +1139,10 @@ export class Tf2Application {
       brushModels:artifacts.brushModels,
         diagnostic: true,
       })
+      finishReplacePhase("rendererLoadMap")
       this.#environmentDrawables = scene.environmentDrawables
       await this.#client.activate(generation)
+      finishReplacePhase("activation")
     } catch (error) {
       await this.#client.discard(generation).catch(() => {})
       if (this.#renderer.configuration.lightingProfile !== priorConfiguration.lightingProfile) {
@@ -1177,6 +1215,7 @@ export class Tf2Application {
     this.#recordCrouch(this.#snapshot)
     this.#modelProbes = await this.#probePlayerModels(artifacts)
     this.#viewmodelTimelineProbes = await this.#probeViewmodelTimelines(artifacts)
+    finishReplacePhase("initialization")
     this.#audio?.reset()
     this.#audioWorld?.reset()
     this.#lastRandomAudioProbe = ""
@@ -1186,6 +1225,7 @@ export class Tf2Application {
     this.#set({
       phase: "Ready",
       detail: `Playing ${name}`,
+      loadPerformanceProbe:JSON.stringify({totalMilliseconds:performance.now()-replaceStarted,application:replaceTimings,client:staged.timings,mapBytes:staged.payload.byteLength,presentationBytes:staged.presentation.byteLength,mapCache:staged.cache,presentationCache:staged.presentationCache,presentationCacheError:staged.presentationCacheError}),
       cache: staged.cache,
       initialView: staged.initialView,
       environment: artifacts.environment,

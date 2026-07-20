@@ -1,14 +1,104 @@
+import { spawn } from "node:child_process"
+import os from "node:os"
 import { expect, test } from "@playwright/test"
 
 type RpcRecord = { kind: string; started: number; finished?: number; bytes?: number; workerTimings?: Record<string, number> }
 type PresentationRecord = { at: number; detail: string; performance: string | undefined }
+type BrowserProcessInfo={type:string;id:number;cpuTime:number}
+type BrowserProcessSnapshot={at:number;processes:readonly BrowserProcessInfo[]}
 
 const TARGET = "jump_beef"
 
 const percentile = (values: number[], fraction: number): number =>
   values.length === 0 ? 0 : values[Math.min(values.length - 1, Math.floor(values.length * fraction))]!
 
-test("profile startup and input latency", async ({ page }) => {
+function parseCsvLine(line:string):string[]{
+  const values:string[]=[]
+  for(const match of line.matchAll(/"((?:[^"]|"")*)"(?:,|$)/gu))values.push(match[1]!.replaceAll('""','"'))
+  return values
+}
+
+function summarizeBrowserMetrics(output:string,processSnapshots:readonly BrowserProcessSnapshot[]){
+  const lines=output.split(/\r?\n/u).filter(line=>line.startsWith('"'))
+  if(lines.length<2)return {sampleCount:0,timeline:[],error:"typeperf produced no samples"}
+  const headers=parseCsvLine(lines[0]!)
+  const rows=lines.slice(1).map(parseCsvLine).filter(row=>row.length===headers.length)
+  const roleByPid=new Map<number,string>()
+  for(const snapshot of processSnapshots)for(const process of snapshot.processes)roleByPid.set(process.id,process.type)
+  const processIds=new Set(roleByPid.keys())
+  const logicalProcessors=os.cpus().length
+  const timeline=rows.map(row=>{
+    const instancePids=new Map<string,number>()
+    headers.forEach((header,index)=>{const match=header.match(/\\Process\((msedge(?:#\d+)?)\)\\ID Process$/u);if(match)instancePids.set(match[1]!,Number(row[index]))})
+    const processes=[...instancePids.entries()].flatMap(([instance,processId])=>{
+      if(!processIds.has(processId))return []
+      const read=(counter:string)=>{const index=headers.findIndex(header=>header.endsWith(`\\Process(${instance})\\${counter}`));return index<0?0:Number(row[index])||0}
+      return [{processId,role:roleByPid.get(processId)??"unknown",cpuCorePercent:read("% Processor Time"),workingSetBytes:read("Working Set - Private"),privateBytes:read("Private Bytes")}]
+    })
+    const engines=headers.flatMap((header,index)=>{const match=header.match(/\\GPU Engine\(pid_(\d+)_luid_(.+?)_phys_(\d+)_eng_\d+_engtype_(.+)\)\\Utilization Percentage$/u);if(!match||!processIds.has(Number(match[1])))return [];return [{processId:Number(match[1]),luid:match[2]!,physicalAdapter:Number(match[3]),engine:match[4]!,percent:Number(row[index])||0}]})
+    const gpuMemory=headers.flatMap((header,index)=>{const match=header.match(/\\GPU Process Memory\(pid_(\d+)_luid_(.+?)_phys_(\d+)\)\\(Dedicated|Shared) Usage$/u);if(!match||!processIds.has(Number(match[1])))return [];return [{processId:Number(match[1]),luid:match[2]!,physicalAdapter:Number(match[3]),kind:match[4]!.toLowerCase(),bytes:Number(row[index])||0}]})
+    return {at:row[0],cpuCorePercent:processes.reduce((sum,process)=>sum+process.cpuCorePercent,0),workingSetBytes:processes.reduce((sum,process)=>sum+process.workingSetBytes,0),privateBytes:processes.reduce((sum,process)=>sum+process.privateBytes,0),processes,engines,gpuMemory}
+  })
+  const processRoles=new Map<string,{maximumCpuCorePercent:number;maximumWorkingSetBytes:number;maximumPrivateBytes:number}>()
+  const gpuEngines=new Map<string,number>()
+  const gpuMemory=new Map<string,{maximumDedicatedBytes:number;maximumSharedBytes:number}>()
+  for(const sample of timeline){
+    for(const process of sample.processes){
+      const value=processRoles.get(process.role)??{maximumCpuCorePercent:0,maximumWorkingSetBytes:0,maximumPrivateBytes:0}
+      value.maximumWorkingSetBytes=Math.max(value.maximumWorkingSetBytes,process.workingSetBytes)
+      value.maximumPrivateBytes=Math.max(value.maximumPrivateBytes,process.privateBytes)
+      processRoles.set(process.role,value)
+    }
+    for(const engine of sample.engines){
+      const key=`${engine.luid}:${engine.physicalAdapter}:${engine.engine}`
+      gpuEngines.set(key,Math.max(gpuEngines.get(key)??0,engine.percent))
+    }
+    for(const memory of sample.gpuMemory){
+      const key=`${memory.luid}:${memory.physicalAdapter}`
+      const value=gpuMemory.get(key)??{maximumDedicatedBytes:0,maximumSharedBytes:0}
+      if(memory.kind==="dedicated")value.maximumDedicatedBytes=Math.max(value.maximumDedicatedBytes,memory.bytes)
+      else value.maximumSharedBytes=Math.max(value.maximumSharedBytes,memory.bytes)
+      gpuMemory.set(key,value)
+    }
+  }
+  const cpuTimeline=processSnapshots.slice(1).map((snapshot,index)=>{
+    const previous=processSnapshots[index]!,elapsedSeconds=Math.max(0.001,(snapshot.at-previous.at)/1000),prior=new Map(previous.processes.map(process=>[process.id,process.cpuTime]))
+    const roles:Record<string,number>={}
+    for(const process of snapshot.processes){const delta=Math.max(0,process.cpuTime-(prior.get(process.id)??process.cpuTime))*100/elapsedSeconds;roles[process.type]=(roles[process.type]??0)+delta}
+    for(const [role,value] of Object.entries(roles)){const peak=processRoles.get(role)??{maximumCpuCorePercent:0,maximumWorkingSetBytes:0,maximumPrivateBytes:0};peak.maximumCpuCorePercent=Math.max(peak.maximumCpuCorePercent,value);processRoles.set(role,peak)}
+    return {atUnixMilliseconds:snapshot.at,cpuCorePercent:Object.values(roles).reduce((sum,value)=>sum+value,0),roles}
+  })
+  return {
+    logicalProcessors,
+    sampleCount:timeline.length,
+    maximumCpuCorePercent:Math.max(0,...cpuTimeline.map(sample=>sample.cpuCorePercent)),
+    maximumCpuMachinePercent:Math.max(0,...cpuTimeline.map(sample=>sample.cpuCorePercent/logicalProcessors)),
+    maximumWorkingSetBytes:Math.max(0,...timeline.map(sample=>sample.workingSetBytes)),
+    maximumPrivateBytes:Math.max(0,...timeline.map(sample=>sample.privateBytes)),
+    processRoles:Object.fromEntries([...processRoles.entries()].sort(([left],[right])=>left.localeCompare(right))),
+    gpuEngines:Object.fromEntries([...gpuEngines.entries()].sort(([left],[right])=>left.localeCompare(right))),
+    gpuMemory:Object.fromEntries([...gpuMemory.entries()].sort(([left],[right])=>left.localeCompare(right))),
+    cpuTimeline,
+    timeline,
+  }
+}
+
+test("profile startup and input latency", async ({ page,browser },testInfo) => {
+  const cdp=await browser.newBrowserCDPSession()
+  const processInfo=await cdp.send("SystemInfo.getProcessInfo") as {processInfo:readonly BrowserProcessInfo[]}
+  const systemInfo=await cdp.send("SystemInfo.getInfo") as {gpu?:{devices?:unknown;featureStatus?:unknown;auxAttributes?:Record<string,unknown>}}
+  const gpuInfo={devices:systemInfo.gpu?.devices??[],featureStatus:systemInfo.gpu?.featureStatus??{},adapter:systemInfo.gpu?.auxAttributes?{displayType:systemInfo.gpu.auxAttributes.displayType,glImplementationParts:systemInfo.gpu.auxAttributes.glImplementationParts,glRenderer:systemInfo.gpu.auxAttributes.glRenderer,glVendor:systemInfo.gpu.auxAttributes.glVendor,supportsDx12:systemInfo.gpu.auxAttributes.supportsDx12,supportsVulkan:systemInfo.gpu.auxAttributes.supportsVulkan}:null}
+  const processSnapshots:BrowserProcessSnapshot[]=[{at:Date.now(),processes:processInfo.processInfo}]
+  let processSampleBusy=false
+  const processSampleTimer=setInterval(async()=>{if(processSampleBusy)return;processSampleBusy=true;try{const value=await cdp.send("SystemInfo.getProcessInfo") as {processInfo:readonly BrowserProcessInfo[]};processSnapshots.push({at:Date.now(),processes:value.processInfo})}finally{processSampleBusy=false}},1000)
+  const systemSampler=process.platform==="win32"?spawn("typeperf",[
+    "\\Process(msedge*)\\ID Process","\\Process(msedge*)\\% Processor Time","\\Process(msedge*)\\Working Set - Private","\\Process(msedge*)\\Private Bytes",
+    "\\GPU Engine(*)\\Utilization Percentage","\\GPU Process Memory(*)\\Dedicated Usage","\\GPU Process Memory(*)\\Shared Usage","-si","1",
+  ],{stdio:["ignore","pipe","pipe"]}):null
+  let systemSamplerOutput="",systemSamplerError=""
+  systemSampler?.stdout.setEncoding("utf8").on("data",chunk=>{systemSamplerOutput+=chunk})
+  systemSampler?.stderr.setEncoding("utf8").on("data",chunk=>{systemSamplerError+=chunk})
+  const systemSamplerExit=systemSampler?new Promise<void>(resolve=>systemSampler.once("exit",()=>resolve())):Promise.resolve()
   const rafHz = Number(process.env.PROFILE_RAF_HZ ?? 0)
   const scenarioMode = process.env.PROFILE_SCENARIOS ?? (process.env.npm_lifecycle_event === "profile:gameplay" ? "1" : "")
   const mapOnly = process.env.PROFILE_MAP_ONLY === "1" || process.env.npm_lifecycle_event === "profile:map-load"
@@ -148,10 +238,30 @@ test("profile startup and input latency", async ({ page }) => {
     return phase === "MainMenu" || phase === "Failed"
   }, undefined, { timeout: 180_000, polling: 50 })
   const mainMenuMilliseconds = await page.evaluate(() => performance.now())
+  const storageSnapshot = () => page.evaluate(async () => {
+    const estimate = await navigator.storage.estimate()
+    return {
+      usage: estimate.usage ?? null,
+      quota: estimate.quota ?? null,
+      persisted: await navigator.storage.persisted(),
+      databases: typeof indexedDB.databases === "function"
+        ? (await indexedDB.databases()).map((database) => ({ name: database.name ?? null, version: database.version ?? null }))
+        : [],
+    }
+  })
+  const storageBeforeMap = await storageSnapshot()
   let mapSubmittedMilliseconds: number | undefined
   let gameplayReadyMilliseconds: number | undefined
   let repeatedMapSubmittedMilliseconds: number | undefined
   let repeatedGameplayReadyMilliseconds: number | undefined
+  let pageReloadMapSubmittedMilliseconds: number | undefined
+  let pageReloadGameplayReadyMilliseconds: number | undefined
+  let firstLoadPerformance: unknown = null
+  let repeatedLoadPerformance: unknown = null
+  let storageAfterFirstMap: Awaited<ReturnType<typeof storageSnapshot>> | null = null
+  let storageAfterRepeatedMap: Awaited<ReturnType<typeof storageSnapshot>> | null = null
+  let pageReloadLoadPerformance:unknown=null
+  let storageAfterPageReload:Awaited<ReturnType<typeof storageSnapshot>>|null=null
   if (await page.locator("main").getAttribute("data-phase") === "MainMenu") {
     await page.keyboard.press("Backquote")
     const consoleEntry = page.locator("[aria-label='Console command']")
@@ -165,6 +275,8 @@ test("profile startup and input latency", async ({ page }) => {
     }, undefined, { timeout: 600_000, polling: 50 })
     if (await page.locator("main").getAttribute("data-phase") === "Ready") {
       gameplayReadyMilliseconds = await page.evaluate(() => performance.now())
+      firstLoadPerformance = JSON.parse((await page.locator("main").getAttribute("data-load-performance")) ?? "null")
+      storageAfterFirstMap = await storageSnapshot()
       await page.keyboard.press("Backquote")
     }
   }
@@ -182,7 +294,19 @@ test("profile startup and input latency", async ({ page }) => {
     }, undefined, { timeout: 600_000, polling: 50 })
     if (await page.locator("main").getAttribute("data-phase") === "Ready") {
       repeatedGameplayReadyMilliseconds = await page.evaluate(() => performance.now())
+      expect(await page.locator("main").getAttribute("data-detail")).toBe(`Playing ${TARGET}`)
+      repeatedLoadPerformance = JSON.parse((await page.locator("main").getAttribute("data-load-performance")) ?? "null")
+      storageAfterRepeatedMap = await storageSnapshot()
       await page.keyboard.press("Backquote")
+    }
+  }
+  if(mapOnly&&repeatedGameplayReadyMilliseconds!==undefined){
+    await page.reload({waitUntil:"load",timeout:30_000})
+    await page.waitForFunction(()=>["MainMenu","Failed"].includes(document.querySelector<HTMLElement>("main")?.dataset.phase??""),undefined,{timeout:180_000,polling:50})
+    if(await page.locator("main").getAttribute("data-phase")==="MainMenu"){
+      await page.keyboard.press("Backquote");const consoleEntry=page.locator("[aria-label='Console command']");await expect(consoleEntry).toBeVisible();await consoleEntry.fill(`map ${TARGET}`);pageReloadMapSubmittedMilliseconds=await page.evaluate(()=>performance.now());await page.keyboard.press("Enter")
+      await page.waitForFunction(()=>{const main=document.querySelector<HTMLElement>("main");return(main?.dataset.phase==="Ready"&&main.dataset.gameui==="in-game")||main?.dataset.phase==="Failed"},undefined,{timeout:600_000,polling:50})
+      if(await page.locator("main").getAttribute("data-phase")==="Ready"){expect(await page.locator("main").getAttribute("data-detail")).toBe("Click the field to capture the mouse");pageReloadGameplayReadyMilliseconds=await page.evaluate(()=>performance.now());pageReloadLoadPerformance=JSON.parse((await page.locator("main").getAttribute("data-load-performance"))??"null");storageAfterPageReload=await storageSnapshot();await page.keyboard.press("Backquote")}
     }
   }
   const startupMilliseconds = Date.now() - wallStarted
@@ -448,6 +572,12 @@ test("profile startup and input latency", async ({ page }) => {
       })),
     }
   })
+  clearInterval(processSampleTimer)
+  const finalProcessInfo=await cdp.send("SystemInfo.getProcessInfo") as {processInfo:readonly BrowserProcessInfo[]}
+  processSnapshots.push({at:Date.now(),processes:finalProcessInfo.processInfo})
+  if(systemSampler){systemSampler.kill();await systemSamplerExit}
+  const systemMetrics=summarizeBrowserMetrics(systemSamplerOutput,processSnapshots)
+  await cdp.detach()
 
   const completed = (raw.state.rpcs as RpcRecord[]).filter((record) => record.finished !== undefined)
   const kinds = [...new Set(completed.map((record) => record.kind))].sort()
@@ -545,6 +675,16 @@ test("profile startup and input latency", async ({ page }) => {
       repeatedDurationMilliseconds: repeatedMapSubmittedMilliseconds === undefined || repeatedGameplayReadyMilliseconds === undefined
         ? null
         : Number((repeatedGameplayReadyMilliseconds - repeatedMapSubmittedMilliseconds).toFixed(3)),
+      pageReloadSubmittedMilliseconds:pageReloadMapSubmittedMilliseconds===undefined?null:Number(pageReloadMapSubmittedMilliseconds.toFixed(3)),
+      pageReloadReadyMilliseconds:pageReloadGameplayReadyMilliseconds===undefined?null:Number(pageReloadGameplayReadyMilliseconds.toFixed(3)),
+      pageReloadDurationMilliseconds:pageReloadMapSubmittedMilliseconds===undefined||pageReloadGameplayReadyMilliseconds===undefined?null:Number((pageReloadGameplayReadyMilliseconds-pageReloadMapSubmittedMilliseconds).toFixed(3)),
+      firstLoadPerformance,
+      repeatedLoadPerformance,
+      storageBeforeMap,
+      storageAfterFirstMap,
+      storageAfterRepeatedMap,
+      pageReloadLoadPerformance,
+      storageAfterPageReload,
     },
     terminalPhase: raw.dataset.phase,
     terminalDetail: raw.dataset.detail,
@@ -584,6 +724,12 @@ test("profile startup and input latency", async ({ page }) => {
     elapsedBrowserMilliseconds: raw.now,
     phases: raw.state.phases,
     workerRpc: rpcSummary,
+    browserSystem:{
+      initialProcesses:processInfo.processInfo,
+      gpuInfo,
+      samplerError:systemSamplerError.trim()||null,
+      ...systemMetrics,
+    },
     steadyRates: {
       measurementSeconds: Number(steadySeconds.toFixed(3)),
       rafCallbacksPerSecond: rate(lastSteady?.frames ?? 0, firstSteady?.frames ?? 0),
@@ -609,7 +755,8 @@ test("profile startup and input latency", async ({ page }) => {
     },
     navigation: raw.navigation,
   }
-  console.log(`PLAYSRCPROFILE ${JSON.stringify(report)}`)
+  await testInfo.attach("playsrc-profile",{body:Buffer.from(JSON.stringify(report,null,2)),contentType:"application/json"})
+  console.log(`PLAYSRCPROFILE ${JSON.stringify({...report,browserSystem:{...report.browserSystem,timeline:`${report.browserSystem.timeline.length} samples retained in playsrc-profile attachment`}})}`)
   expect(raw.dataset.phase).toBe("Ready")
   if (typeof input.lookDisplayFrames === "number") {
     expect(input.lookDisplayFrames).toBeGreaterThan(1)

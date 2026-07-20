@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test"
-import { BrowserAssetError, fetchImmutableObject, verifyDerivedRecord } from "../src/browser"
+import { describe, expect, jest, test } from "bun:test"
+import { BrowserAssetError, fetchImmutableObject, openDerivedObjectCache, verifyDerivedRecord } from "../src/browser"
 import type { ObjectDescriptor } from "../src/index"
 
 const bytes = new TextEncoder().encode("immutable")
@@ -78,9 +78,25 @@ describe("browser asset adapters", () => {
   })
 
   test("rejects corrupt derived records without deleting or substituting bytes", async () => {
-    const valid = { key: sha256, byteLength: bytes.byteLength, sha256, bytes: bytes.slice().buffer }
+    const valid = { key: sha256, byteLength: bytes.byteLength, sha256, bytes: new Blob([bytes]) }
     expect(await verifyDerivedRecord(valid, sha256)).toEqual(bytes)
-    const corrupt = { ...valid, bytes: new TextEncoder().encode("immutablE").buffer }
+    const corrupt = { ...valid, bytes: new Blob([new TextEncoder().encode("immutablE")]) }
     await expect(verifyDerivedRecord(corrupt, sha256)).rejects.toBeInstanceOf(BrowserAssetError)
+  })
+
+  test("terminates an IndexedDB open request that never settles", async () => {
+    const descriptor=Object.getOwnPropertyDescriptor(globalThis,"indexedDB")
+    const request={} as IDBOpenDBRequest
+    Object.defineProperty(globalThis,"indexedDB",{configurable:true,value:{open:()=>request}})
+    jest.useFakeTimers()
+    try{
+      const pending=openDerivedObjectCache("never-settles")
+      jest.advanceTimersByTime(30_000)
+      await expect(pending).rejects.toMatchObject({code:"PersistenceUnavailable",message:"IndexedDB open timed out after 30000 ms"})
+    }finally{
+      jest.useRealTimers()
+      if(descriptor)Object.defineProperty(globalThis,"indexedDB",descriptor)
+      else delete (globalThis as {indexedDB?:IDBFactory}).indexedDB
+    }
   })
 })

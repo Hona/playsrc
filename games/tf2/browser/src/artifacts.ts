@@ -462,7 +462,7 @@ function parseEnvironment(bytes: Uint8Array): EnvironmentArtifact {
       width = r.u32(),
       height = r.u32(),
       sha256 = hex(r.take(32)),
-      rgba = r.blob(256 * 1024 * 1024).slice()
+      rgba = r.blob(256 * 1024 * 1024)
     if (width * height * 4 !== rgba.length) throw new ArtifactError("environment texture length")
     textures.push(Object.freeze({ material, logicalPath, width, height, sha256, rgba }))
   }
@@ -789,7 +789,7 @@ function parseParticleTextures(r: Reader): readonly ParticleTextureArtifact[] {
   const identities = new Set<string>()
   for (let count = r.u32(); count > 0; count--) {
     const material = r.text(), materialPath = r.text(), logicalPath = r.text(), width = r.u32(), height = r.u32(),
-      sha256 = hex(r.take(32)), rgba = r.blob(256 * 1024 * 1024).slice()
+      sha256 = hex(r.take(32)), rgba = r.blob(256 * 1024 * 1024)
     if (identities.has(material.toLowerCase()) || width * height * 4 !== rgba.length) throw new ArtifactError("particle texture")
     identities.add(material.toLowerCase())
     output.push(Object.freeze({ material, materialPath, logicalPath, width, height, sha256, rgba }))
@@ -959,7 +959,7 @@ function parseAuthoredTextureRecord(r: Reader): AuthoredTextureArtifact {
     for (let index = 0; index < planeCount; index++) {
       const mip = r.u8(), face = r.u8(), frame = r.u16(), slice = r.u16()
       if (r.u16()) throw new ArtifactError("authored texture plane reserved field")
-      const planeWidth = r.u32(), planeHeight = r.u32(), rgba = r.blob(256 * 1024 * 1024).slice(), target = expected[index]!
+      const planeWidth = r.u32(), planeHeight = r.u32(), rgba = r.blob(256 * 1024 * 1024), target = expected[index]!
       const componentBytes = scalarCode === 0 ? 1 : 2
       if (mip !== target[0] || frame !== target[1] || face !== target[2] || slice !== target[3] ||
         planeWidth !== Math.max(1, width >> mip) || planeHeight !== Math.max(1, height >> mip) || rgba.length !== planeWidth * planeHeight * 4 * componentBytes) {
@@ -1039,7 +1039,7 @@ export async function parsePresentationArtifacts(bytes: Uint8Array): Promise<Pre
         frontFace: frontFace === 0 ? "clockwise" : "counter-clockwise", cullFace: "back",
       })
     } else throw new ArtifactError("model descriptor profile")
-    const artifact = r.blob(0).slice()
+    const artifact = r.blob(0)
     models.set(
       identity,
       Object.freeze({
@@ -1062,7 +1062,7 @@ export async function parsePresentationArtifacts(bytes: Uint8Array): Promise<Pre
       width = r.u32(),
       height = r.u32(),
       sha256 = hex(r.take(32)),
-      rgba = r.blob(256 * 1024 * 1024).slice()
+      rgba = r.blob(256 * 1024 * 1024)
     if (width * height * 4 !== rgba.length || (await digest(rgba)) !== sha256)
       throw new ArtifactError("texture identity")
     textures.push(Object.freeze({ material, logicalPath, width, height, sha256, rgba }))
@@ -1076,7 +1076,7 @@ export async function parsePresentationArtifacts(bytes: Uint8Array): Promise<Pre
       width = r.u32(),
       height = r.u32(),
       sha256 = hex(r.take(32)),
-      rgba = r.blob(256 * 1024 * 1024).slice(),
+      rgba = r.blob(256 * 1024 * 1024),
       uvTransform = Object.freeze([r.f32(), r.f32(), r.f32(), r.f32(), r.f32(), r.f32()]) as readonly [
         number,
         number,

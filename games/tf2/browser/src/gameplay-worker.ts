@@ -228,7 +228,7 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
   const presentationBytes = exports.playsrc_presentation_length(candidate)
   const presentationSha256 = readPresentationHash(exports, candidate)
   const initialView = readInitialView(exports, candidate)
-  const compileMetrics = Array.from({ length: 11 }, (_, index) => exports.playsrc_compile_metric_milliseconds(candidate, index))
+  const compileMetrics = Array.from({ length: 17 }, (_, index) => exports.playsrc_compile_metric_milliseconds(candidate, index))
   if (
     !Number.isSafeInteger(payloadBytes) ||
     payloadBytes < 1 ||
@@ -269,6 +269,12 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
       runtimeMapMilliseconds: compileMetrics[7]!,
       collisionSetupMilliseconds: compileMetrics[8]!,
       gameSetupMilliseconds: compileMetrics[9]!,
+      presentationBundleMilliseconds:compileMetrics[11]!,
+      presentationModelsMilliseconds:compileMetrics[12]!,
+      presentationTexturesMilliseconds:compileMetrics[13]!,
+      presentationParticlesMilliseconds:compileMetrics[14]!,
+      presentationEnvironmentMilliseconds:compileMetrics[15]!,
+      presentationSerializationMilliseconds:compileMetrics[16]!,
       totalMilliseconds: performance.now() - started,
     },
   })

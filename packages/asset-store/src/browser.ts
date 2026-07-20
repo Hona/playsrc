@@ -2,6 +2,7 @@ import type { ObjectDescriptor } from "./index"
 
 const HASH = /^[0-9a-f]{64}$/
 const MAX_OBJECT_BYTES = 536_870_912
+const CACHE_OPERATION_TIMEOUT_MILLISECONDS = 30_000
 const KINDS = new Set([
   "source-object",
   "derived-object",
@@ -32,7 +33,7 @@ export type DerivedRecord = Readonly<{
   key: string
   byteLength: number
   sha256: string
-  bytes: ArrayBuffer
+  bytes: Blob
 }>
 
 export type DerivedObjectCache = Readonly<{
@@ -147,43 +148,57 @@ export async function verifyDerivedRecord(
     || (record.byteLength as number) < 0
     || (record.byteLength as number) > MAX_OBJECT_BYTES
     || !HASH.test(record.sha256 as string)
-    || !(record.bytes instanceof ArrayBuffer)
-    || record.bytes.byteLength !== record.byteLength
+    || !(record.bytes instanceof Blob)
+    || record.bytes.size !== record.byteLength
   ) {
     throw new BrowserAssetError("IntegrityFailure", "derived cache record is malformed")
   }
-  const bytes = new Uint8Array(record.bytes)
+  const bytes = new Uint8Array(await record.bytes.arrayBuffer())
   if (await sha256(bytes) !== record.sha256) {
     throw new BrowserAssetError("IntegrityFailure", "derived cache record hash differs")
   }
-  return bytes.slice()
+  return bytes
 }
 
-function requestResult<T>(request: IDBRequest<T>): Promise<T> {
+function requestResult<T>(request: IDBRequest<T>,operation:string): Promise<T> {
   return new Promise((resolve, reject) => {
-    request.onsuccess = () => resolve(request.result)
-    request.onerror = () => reject(new BrowserAssetError("PersistenceUnavailable", "IndexedDB request failed"))
+    let settled=false
+    const finish=(action:()=>void)=>{if(settled)return;settled=true;clearTimeout(timeout);action()}
+    const timeout=setTimeout(()=>finish(()=>reject(new BrowserAssetError("PersistenceUnavailable",`IndexedDB ${operation} timed out after ${CACHE_OPERATION_TIMEOUT_MILLISECONDS} ms`))),CACHE_OPERATION_TIMEOUT_MILLISECONDS)
+    request.onsuccess = () => {
+      if(settled){const value=request.result;if(value instanceof IDBDatabase)value.close();return}
+      finish(()=>resolve(request.result))
+    }
+    request.onerror = () => finish(()=>reject(new BrowserAssetError("PersistenceUnavailable",`IndexedDB ${operation} failed${request.error?`: ${request.error.name}: ${request.error.message}`:""}`)))
   })
 }
 
-function transactionDone(transaction: IDBTransaction): Promise<void> {
+function transactionDone(transaction: IDBTransaction,operation:string): Promise<void> {
   return new Promise((resolve, reject) => {
-    transaction.oncomplete = () => resolve()
-    transaction.onabort = transaction.onerror = () => reject(
-      new BrowserAssetError("PersistenceUnavailable", "IndexedDB transaction failed"),
-    )
+    let settled=false
+    const finish=(action:()=>void)=>{if(settled)return;settled=true;clearTimeout(timeout);action()}
+    const timeout=setTimeout(()=>finish(()=>{try{transaction.abort()}catch{}reject(new BrowserAssetError("PersistenceUnavailable",`IndexedDB ${operation} timed out after ${CACHE_OPERATION_TIMEOUT_MILLISECONDS} ms`))}),CACHE_OPERATION_TIMEOUT_MILLISECONDS)
+    transaction.oncomplete = () => finish(resolve)
+    transaction.onabort = transaction.onerror = () => {
+      const error=transaction.error
+      finish(()=>reject(new BrowserAssetError("PersistenceUnavailable",`IndexedDB ${operation} failed${error?`: ${error.name}: ${error.message}`:""}`)))
+    }
   })
+}
+
+function bounded<T>(promise:Promise<T>,operation:string):Promise<T>{
+  return new Promise((resolve,reject)=>{let settled=false;const finish=(action:()=>void)=>{if(settled)return;settled=true;clearTimeout(timeout);action()},timeout=setTimeout(()=>finish(()=>reject(new BrowserAssetError("PersistenceUnavailable",`${operation} timed out after ${CACHE_OPERATION_TIMEOUT_MILLISECONDS} ms`))),CACHE_OPERATION_TIMEOUT_MILLISECONDS);promise.then(value=>finish(()=>resolve(value)),error=>finish(()=>reject(error)))})
 }
 
 export async function openDerivedObjectCache(
-  databaseName = "playsrc-derived-v1",
+  databaseName = "playsrc-derived-v2",
 ): Promise<DerivedObjectCache> {
   if (!globalThis.indexedDB) {
     throw new BrowserAssetError("PersistenceUnavailable", "IndexedDB is unavailable")
   }
   const request = globalThis.indexedDB.open(databaseName, 1)
   request.onupgradeneeded = () => request.result.createObjectStore("objects", { keyPath: "key" })
-  const database = await requestResult(request)
+  const database = await requestResult(request,"open")
   database.onversionchange = () => database.close()
   const store = (mode: IDBTransactionMode): [IDBObjectStore, IDBTransaction] => {
     try {
@@ -197,10 +212,10 @@ export async function openDerivedObjectCache(
     async read(key: string): Promise<Uint8Array | undefined> {
       if (!HASH.test(key)) throw new BrowserAssetError("MalformedIdentity", "derived key is not canonical")
       const [objects, transaction] = store("readonly")
-      const done = transactionDone(transaction)
-      const value = await requestResult(objects.get(key))
+      const done = transactionDone(transaction,"read transaction")
+      const value = await requestResult(objects.get(key),"read request")
       await done
-      return value === undefined ? undefined : verifyDerivedRecord(value, key)
+      return value === undefined ? undefined : bounded(verifyDerivedRecord(value, key),"derived record verification")
     },
     async write(key: string, expectedSha256: string, bytes: Uint8Array): Promise<void> {
       if (!HASH.test(key) || !HASH.test(expectedSha256)) {
@@ -209,28 +224,31 @@ export async function openDerivedObjectCache(
       if (bytes.byteLength > MAX_OBJECT_BYTES) {
         throw new BrowserAssetError("BoundExceeded", "derived object exceeds browser byte limit")
       }
-      if (await sha256(bytes) !== expectedSha256) {
+      if (await bounded(sha256(bytes),"derived write hash") !== expectedSha256) {
         throw new BrowserAssetError("IntegrityFailure", "derived bytes differ from their descriptor")
       }
       const [objects, transaction] = store("readwrite")
-      const done = transactionDone(transaction)
-      objects.add({
+      const done = transactionDone(transaction,"write transaction")
+      let requestError:unknown
+      void requestResult(objects.add({
         key,
         byteLength: bytes.byteLength,
         sha256: expectedSha256,
-        bytes: bytes.slice().buffer,
-      } satisfies DerivedRecord)
+        bytes: new Blob([bytes],{type:"application/octet-stream"}),
+      } satisfies DerivedRecord),"write request").catch(error=>{requestError=error})
       try {
         await done
       } catch (error) {
+        const failure=requestError??error
+        if(failure instanceof BrowserAssetError&&failure.message.includes("timed out"))throw failure
         const existing = await cache.read(key)
-        if (!existing || await sha256(existing) !== expectedSha256) throw error
+        if (!existing || await bounded(sha256(existing),"existing derived hash") !== expectedSha256) throw failure
       }
     },
     async remove(key: string): Promise<void> {
       if (!HASH.test(key)) throw new BrowserAssetError("MalformedIdentity", "derived key is not canonical")
       const [objects, transaction] = store("readwrite")
-      const done = transactionDone(transaction)
+      const done = transactionDone(transaction,"remove transaction")
       objects.delete(key)
       await done
     },

@@ -23,7 +23,7 @@ Store and publish exact immutable Source objects and reproducible playsrc-derive
 - Validate reachability and synchronize missing objects to remote storage.
 - Atomically install and reverify local immutable objects through bounded streaming SHA-256, refuse corrupt existing bytes without repair, and atomically expose exact channel records.
 - Cancel local object publication before final-path commitment and retain no partial object.
-- Fetch browser immutable objects through exact hash URLs with HTTP-cache reuse and independent byte verification; retain verified derived objects in a versioned IndexedDB cache under caller-owned exact derived keys.
+- Fetch browser immutable objects through exact hash URLs with HTTP-cache reuse and independent byte verification; retain verified derived objects as Blob-backed records in the version-2 IndexedDB cache under caller-owned exact derived keys, with every request and transaction terminating within 30 seconds.
 - Retain generated source dependency bundles and their immutable provider-provenance/authoritative-absence ledgers as separate verified objects.
 
 ## Non-Responsibilities

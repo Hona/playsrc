@@ -321,7 +321,7 @@ struct Slot {
     spawn: Option<Spawn>,
     session: Option<playsrc_tf2::Session<SharedWorld>>,
     snapshot: Vec<u8>,
-    compile_metrics: [u64; 11],
+    compile_metrics: [u64; 17],
 }
 
 struct Tf2Simulation {
@@ -550,7 +550,7 @@ unsafe fn compile_map(
     let compile_started =
         playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
     let mut phase_started = compile_started;
-    let mut compile_metrics = [0_u64; 11];
+    let mut compile_metrics = [0_u64; 17];
     let bsp_bytes = if bsp_length == 0 {
         &[]
     } else {
@@ -602,21 +602,24 @@ unsafe fn compile_map(
             playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
         compile_metrics[3] = phase_finished.saturating_sub(phase_started);
         phase_started = phase_finished;
-        let (presentation, studio_models, model_material_opacity, environment) =
-            if let Some(cached) = cached_presentation {
-                load_cached_presentation(
-                    &canonical,
-                    &bsp,
-                    &entity_graph,
-                    configuration,
-                    profile,
-                    cached,
-                )
+        let (
+            (presentation, studio_models, model_material_opacity, environment),
+            presentation_metrics,
+        ) = if let Some(cached) = cached_presentation {
+            load_cached_presentation(
+                &canonical,
+                &bsp,
+                &entity_graph,
+                configuration,
+                profile,
+                cached,
+            )
+            .map_err(|_| 9_u32)?
+        } else {
+            compile_presentation(&canonical, &bsp, &entity_graph, configuration, profile)
                 .map_err(|_| 9_u32)?
-            } else {
-                compile_presentation(&canonical, &bsp, &entity_graph, configuration, profile)
-                    .map_err(|_| 9_u32)?
-            };
+        };
+        compile_metrics[11..17].copy_from_slice(&presentation_metrics);
         let phase_finished =
             playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
         compile_metrics[4] = phase_finished.saturating_sub(phase_started);
@@ -6010,6 +6013,7 @@ type CompiledPresentation = (
     BTreeMap<String, Vec<playsrc_studio_model::ViewModelMaterialOpacity>>,
     RuntimeEnvironment,
 );
+type MeasuredPresentation = (CompiledPresentation, [u64; 6]);
 
 fn presentation_cache_u32(bytes: &[u8], offset: &mut usize) -> Result<u32, ()> {
     let end = offset.checked_add(4).ok_or(())?;
@@ -6033,7 +6037,7 @@ fn presentation_cache_skip(bytes: &[u8], offset: &mut usize, length: usize) -> R
 
 fn cached_presentation_models(
     bytes: &[u8],
-) -> Result<Vec<(String, Box<playsrc_studio_model::PresentationArtifact>)>, ()> {
+) -> Result<Vec<(String, playsrc_studio_model::PresentationProfile, [u8; 32])>, ()> {
     if bytes.len() < 28
         || &bytes[..4] != b"PTF2"
         || u32::from_le_bytes(bytes[4..8].try_into().map_err(|_| ())?) != 8
@@ -6074,7 +6078,7 @@ fn cached_presentation_models(
         for _ in 0..sequences {
             let _label = bundle_field(bytes, &mut offset)?;
             let _activity = bundle_field(bytes, &mut offset)?;
-            presentation_cache_skip(bytes, &mut offset, 24)?;
+            presentation_cache_skip(bytes, &mut offset, 28)?;
         }
         let descriptor = bytes.get(offset..offset + 4).ok_or(())?;
         if descriptor[0] != profile || descriptor[1] > 1 || descriptor[2] > 1 || descriptor[3] != 0
@@ -6083,23 +6087,18 @@ fn cached_presentation_models(
         }
         offset += 4;
         presentation_cache_skip(bytes, &mut offset, 40)?;
-        let artifact_bytes = bundle_field(bytes, &mut offset)?;
-        let actual_hash: [u8; 32] = Sha256::digest(artifact_bytes).into();
-        if actual_hash != expected_hash {
+        if !bundle_field(bytes, &mut offset)?.is_empty() {
             return Err(());
         }
-        let artifact = playsrc_studio_model::decode_presentation(
-            artifact_bytes,
-            playsrc_studio_model::PresentationLimits::default(),
-        )
-        .map_err(|_| ())?;
-        if artifact.model.identity != identity
-            || (artifact.model.profile == playsrc_studio_model::PresentationProfile::World)
-                != (profile == 0)
-        {
-            return Err(());
-        }
-        models.push((identity, Box::new(artifact)));
+        models.push((
+            identity,
+            if profile == 0 {
+                playsrc_studio_model::PresentationProfile::World
+            } else {
+                playsrc_studio_model::PresentationProfile::ViewModel
+            },
+            expected_hash,
+        ));
     }
     Ok(models)
 }
@@ -6111,9 +6110,17 @@ fn load_cached_presentation(
     configuration: &[u8],
     profile: playsrc_map::LightingProfile,
     presentation: &[u8],
-) -> Result<CompiledPresentation, ()> {
-    let bundle = bundle(configuration)?;
-    let models = cached_presentation_models(presentation)?;
+) -> Result<MeasuredPresentation, u32> {
+    let mut metrics_clock = RuntimeMetricsClock::new();
+    let mut phase_started =
+        playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
+    let mut metrics = [0_u64; 6];
+    let bundle = bundle(configuration).map_err(|_| 1_u32)?;
+    let mut phase_finished =
+        playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
+    metrics[0] = phase_finished.saturating_sub(phase_started);
+    phase_started = phase_finished;
+    let model_headers = cached_presentation_models(presentation).map_err(|_| 2_u32)?;
     let expected = std::collections::BTreeSet::from([
         "models/weapons/w_models/w_rocket.mdl".to_owned(),
         "models/weapons/w_models/w_stickybomb.mdl".to_owned(),
@@ -6137,30 +6144,50 @@ fn load_cached_presentation(
         .try_fold(expected, |mut output, model| {
             output.insert(
                 std::str::from_utf8(model)
-                    .map_err(|_| ())?
+                    .map_err(|_| 3_u32)?
                     .to_ascii_lowercase(),
             );
-            Ok::<_, ()>(output)
+            Ok::<_, u32>(output)
         })?;
-    let actual = models
+    let actual = model_headers
         .iter()
-        .map(|(identity, _)| identity.clone())
+        .map(|(identity, _, _)| identity.clone())
         .collect::<std::collections::BTreeSet<_>>();
     if actual != expected {
-        return Err(());
+        return Err(3);
     }
-    let (_, environment) = compile_environment_artifact(canonical, bsp, graph, &bundle, profile)?;
-    let model_material_opacity = model_material_opacity(&models, &bundle, profile)?;
+    let mut models = Vec::with_capacity(model_headers.len());
+    for (identity, presentation_profile, expected_hash) in model_headers {
+        let artifact = build_model_presentation(&identity, &bundle, profile, presentation_profile)
+            .map_err(|_| 4_u32)?;
+        if artifact.sha256 != expected_hash {
+            return Err(5);
+        }
+        models.push((identity, artifact));
+    }
+    phase_finished = playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
+    metrics[1] = phase_finished.saturating_sub(phase_started);
+    phase_started = phase_finished;
+    let (_, environment) =
+        compile_environment_artifact(canonical, bsp, graph, &bundle, profile).map_err(|_| 6_u32)?;
+    phase_finished = playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
+    metrics[4] = phase_finished.saturating_sub(phase_started);
+    phase_started = phase_finished;
+    let model_material_opacity =
+        model_material_opacity(&models, &bundle, profile).map_err(|_| 7_u32)?;
     let models = models
         .into_iter()
         .map(|(identity, artifact)| (identity, artifact.model))
         .collect();
-    Ok((
+    let output = (
         presentation.to_vec(),
         models,
         model_material_opacity,
         environment,
-    ))
+    );
+    phase_finished = playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
+    metrics[5] = phase_finished.saturating_sub(phase_started);
+    Ok((output, metrics))
 }
 
 fn compile_presentation(
@@ -6169,8 +6196,16 @@ fn compile_presentation(
     graph: &playsrc_entity::Graph,
     configuration: &[u8],
     profile: playsrc_map::LightingProfile,
-) -> Result<CompiledPresentation, ()> {
+) -> Result<MeasuredPresentation, ()> {
+    let mut metrics_clock = RuntimeMetricsClock::new();
+    let mut phase_started =
+        playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
+    let mut metrics = [0_u64; 6];
     let bundle = bundle(configuration)?;
+    let mut phase_finished =
+        playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
+    metrics[0] = phase_finished.saturating_sub(phase_started);
+    phase_started = phase_finished;
     let mut roots = std::collections::BTreeSet::from([
         "models/weapons/w_models/w_rocket.mdl".to_owned(),
         "models/weapons/w_models/w_stickybomb.mdl".to_owned(),
@@ -6208,6 +6243,9 @@ fn compile_presentation(
             build_model_presentation(&id, &bundle, profile, presentation_profile)?,
         ));
     }
+    phase_finished = playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
+    metrics[1] = phase_finished.saturating_sub(phase_started);
+    phase_started = phase_finished;
     let mut textures = BTreeMap::new();
     for (_, a) in &models {
         for m in &a.model.materials {
@@ -6249,6 +6287,9 @@ fn compile_presentation(
             decoded_texture(&path, &bundle)?,
         ));
     }
+    phase_finished = playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
+    metrics[2] = phase_finished.saturating_sub(phase_started);
+    phase_started = phase_finished;
     let particle_paths = [
         "particles/rockettrail.pcf",
         "particles/rocketbackblast.pcf",
@@ -6286,9 +6327,17 @@ fn compile_presentation(
         .target_closure(&particle_roots)
         .map_err(|_| ())?
         .materials;
+    phase_finished = playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
+    metrics[3] = phase_finished.saturating_sub(phase_started);
+    phase_started = phase_finished;
     let (environment_bytes, environment) =
         compile_environment_artifact(canonical, bsp, graph, &bundle, profile)?;
-    let mut out = b"PTF2".to_vec();
+    phase_finished = playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
+    metrics[4] = phase_finished.saturating_sub(phase_started);
+    phase_started = phase_finished;
+    let mut out = Vec::new();
+    out.try_reserve_exact(512 * 1024 * 1024).map_err(|_| ())?;
+    out.extend_from_slice(b"PTF2");
     out.extend_from_slice(&8u32.to_le_bytes());
     out.extend_from_slice(&u32::try_from(models.len()).map_err(|_| ())?.to_le_bytes());
     out.extend_from_slice(&u32::try_from(textures.len()).map_err(|_| ())?.to_le_bytes());
@@ -6535,7 +6584,9 @@ fn compile_presentation(
         .into_iter()
         .map(|(identity, artifact)| (identity, artifact.model))
         .collect();
-    Ok((out, models, model_material_opacity, environment))
+    phase_finished = playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
+    metrics[5] = phase_finished.saturating_sub(phase_started);
+    Ok(((out, models, model_material_opacity, environment), metrics))
 }
 
 fn model_material_opacity(
@@ -8242,6 +8293,37 @@ fn with<T>(handle: u32, read: impl FnOnce(&Slot) -> T) -> Option<T> {
 mod tests {
     use super::*;
     #[test]
+    fn cached_model_headers_consume_complete_sequence_records() {
+        let mut bytes = b"PTF2".to_vec();
+        bytes.extend_from_slice(&8_u32.to_le_bytes());
+        bytes.extend_from_slice(&1_u32.to_le_bytes());
+        bytes.extend_from_slice(&[0; 16]);
+        pbytes(&mut bytes, b"models/test.mdl").unwrap();
+        bytes.extend_from_slice(&[0; 4]);
+        bytes.extend_from_slice(&[7; 32]);
+        bytes.extend_from_slice(&1_u32.to_le_bytes());
+        bytes.extend_from_slice(&0_u32.to_le_bytes());
+        bytes.extend_from_slice(&0_u32.to_le_bytes());
+        bytes.extend_from_slice(&1_u32.to_le_bytes());
+        pbytes(&mut bytes, b"idle").unwrap();
+        pbytes(&mut bytes, b"ACT_IDLE").unwrap();
+        bytes.extend_from_slice(&0_u32.to_le_bytes());
+        bytes.extend_from_slice(&[1, 0, 0, 0]);
+        bytes.extend_from_slice(&[0; 20]);
+        bytes.extend_from_slice(&[0; 4]);
+        bytes.extend_from_slice(&[0; 40]);
+        pbytes(&mut bytes, &[]).unwrap();
+        let models = cached_presentation_models(&bytes).unwrap();
+        assert_eq!(
+            models,
+            vec![(
+                "models/test.mdl".to_owned(),
+                playsrc_studio_model::PresentationProfile::World,
+                [7; 32]
+            )]
+        );
+    }
+    #[test]
     fn sky_texture_roles_select_explicit_render_encoding() {
         assert_eq!(
             selected_sky_encoding(&[playsrc_material::TextureRole::Base]),
@@ -8343,7 +8425,7 @@ mod tests {
             spawn: None,
             session: None,
             snapshot: Vec::new(),
-            compile_metrics: [0; 11],
+            compile_metrics: [0; 17],
         });
         drop(guard);
         let old = encode(0, 1);
@@ -8380,7 +8462,7 @@ mod tests {
             spawn: None,
             session: None,
             snapshot: Vec::new(),
-            compile_metrics: [0; 11],
+            compile_metrics: [0; 17],
         };
         drop(guard);
         assert_eq!(playsrc_result_length(old), 0);
