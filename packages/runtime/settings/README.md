@@ -88,7 +88,7 @@ Volume level and mute are independent settings. `audio.master-muted` never repla
 
 ## Configured TF2 Selection
 
-`TF2_SELECTED_OPTIONS` identifies SDK `88fa198fba3fb85d46d4c95018254693fdc3af0a`, public build `24207079`, and patch `10822003`. It contains 203 settings:
+`TF2_SELECTED_OPTIONS` identifies SDK `88fa198fba3fb85d46d4c95018254693fdc3af0a`, public build `24245096`, and patch `10828683`. It contains 203 settings:
 
 | Page | Settings | Contract |
 |---|---:|---|

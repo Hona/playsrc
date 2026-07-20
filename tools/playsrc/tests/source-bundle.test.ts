@@ -1,12 +1,13 @@
 import { describe, expect, test } from "bun:test"
 import { parseSourceBundleCache, parseSourceBundleReport } from "../src/source-bundle"
+import { TF2_CONTENT_BUILD } from "@playsrc/game-tf2-browser/content-build"
 
 const bundleSha256 = "1".repeat(64)
 const ledgerSha256 = "2".repeat(64)
 const uiSha256 = "3".repeat(64)
 const valid = {
   target: "jump_beef",
-  contentBuild: "24207079",
+  contentBuild: TF2_CONTENT_BUILD.contentBuild,
   providers: 13,
   requests: 345,
   authoritativeAbsences: 49,
@@ -42,7 +43,7 @@ describe("source dependency bundle report", () => {
   test("accepts exact bounded bundle and ledger descriptors", () => {
     expect(parseSourceBundleReport(JSON.stringify(valid), "jump_beef")).toEqual({
       target: "jump_beef",
-      contentBuild: "24207079",
+      contentBuild: TF2_CONTENT_BUILD.contentBuild,
       providers: 13,
       requests: 345,
       authoritativeAbsences: 49,
@@ -72,7 +73,7 @@ describe("source dependency bundle report", () => {
     })
     expect(parseSourceBundleCache(cache, "jump_beef", generator)).toEqual({
       target: "jump_beef",
-      contentBuild: "24207079",
+      contentBuild: TF2_CONTENT_BUILD.contentBuild,
       providers: 13,
       requests: 345,
       authoritativeAbsences: 49,

@@ -195,7 +195,7 @@ export type Tf2UiResourceDescriptor = Readonly<{
   schema: "playsrc-tf2-ui-resources-v1"
   identity: string
   game: "tf2"
-  contentBuild: "24207079"
+  contentBuild: string
   sourceLedger: string
   providers: readonly Tf2UiProvider[]
   sources: readonly Tf2UiResourceSource[]

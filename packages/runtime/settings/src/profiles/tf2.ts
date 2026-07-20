@@ -13,8 +13,8 @@ import { defineSettingsCatalog } from "../schema"
 
 export const TF2_OPTIONS_AUTHORITY = Object.freeze({
   sdkRevision: "88fa198fba3fb85d46d4c95018254693fdc3af0a",
-  publicBuild: 24_207_079,
-  patch: 10_822_003,
+  publicBuild: 24_245_096,
+  patch: 10_828_683,
   optionsScript: Object.freeze({
     logicalPath: "cfg/user_default.scr",
     bytes: 13_979,
@@ -523,7 +523,7 @@ for (const [index, action] of TF2_KEYBOARD_ACTIONS.entries()) {
 }
 
 export const TF2_SELECTED_OPTIONS = defineSettingsCatalog({
-  identity: "tf2.options.build-24207079.patch-10822003",
+  identity: "tf2.options.build-24245096.patch-10828683",
   convars,
   commands,
   bindingProfile: {

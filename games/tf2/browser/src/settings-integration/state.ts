@@ -14,8 +14,9 @@ import {
   type SettingsState,
   type SettingValue,
 } from "@playsrc/settings"
+import { TF2_CONTENT_BUILD } from "../content-build"
 
-export const TF2_BROWSER_SETTINGS_STORAGE_KEY = "playsrc.tf2.options.build-24207079.patch-10822003"
+export const TF2_BROWSER_SETTINGS_STORAGE_KEY = `playsrc.tf2.options.build-${TF2_CONTENT_BUILD.contentBuild}.patch-${TF2_CONTENT_BUILD.patchVersion}`
 
 export type Tf2BrowserSettingsSnapshot = Readonly<{
   settings: SettingsSnapshot

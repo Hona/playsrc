@@ -9,7 +9,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const CONTENT_BUILD: &str = "24207079";
 const MAX_PROVIDERS: usize = 64;
 
 #[derive(Deserialize)]
@@ -18,6 +17,35 @@ struct LocalConfig {
     tf2_dir: String,
     source_cache_dir: String,
     asset_dir: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ContentBuildContract {
+    schema: String,
+    app_id: String,
+    content_build: String,
+    patch_version: String,
+    gameinfo_sha256: String,
+    custom_mod_providers: String,
+    archive_indexes: ArchiveIndexContract,
+    installed_depots: Vec<DepotContract>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ArchiveIndexContract {
+    tf2_misc: String,
+    tf2_textures: String,
+    tf2_sound_misc: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DepotContract {
+    depot: String,
+    manifest: String,
+    byte_length: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -73,7 +101,7 @@ struct ConditionRecord {
 #[serde(rename_all = "camelCase")]
 struct Report {
     schema: &'static str,
-    content_build: &'static str,
+    content_build: String,
     source_ledger: String,
     source_ledger_sha256: String,
     providers: Vec<ProviderRecord>,
@@ -548,6 +576,91 @@ fn object_children<'a>(node: &'a Node, key: &[u8]) -> Result<&'a [Node], String>
     Ok(value)
 }
 
+fn verify_content_build(
+    install: &Path,
+    tf2: &Path,
+    contract: &ContentBuildContract,
+) -> Result<(), String> {
+    if contract.schema != "playsrc-tf2-content-build-v1"
+        || contract.app_id != "440"
+        || contract.custom_mod_providers != "workshop-only"
+        || contract.content_build.is_empty()
+        || contract.patch_version.is_empty()
+        || contract.gameinfo_sha256.len() != 64
+        || contract.archive_indexes.tf2_misc.len() != 64
+        || contract.archive_indexes.tf2_textures.len() != 64
+        || contract.archive_indexes.tf2_sound_misc.len() != 64
+        || contract.installed_depots.len() != 3
+    {
+        return Err("TF2 content-build contract is malformed".to_owned());
+    }
+    let steamapps = install
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| "configured TF2 install has no Steam library parent".to_owned())?;
+    let bytes = fs::read(steamapps.join("appmanifest_440.acf"))
+        .map_err(|error| error.to_string())?;
+    let document = playsrc_keyvalues::parse_text(
+        &bytes,
+        EscapeMode::LiteralBackslash,
+        playsrc_keyvalues::Limits::default(),
+    )
+    .map_err(|error| error.to_string())?
+    .evaluated(&ConditionEnvironment::default());
+    let app = document
+        .roots
+        .iter()
+        .find(|node| node.key.bytes.eq_ignore_ascii_case(b"AppState"))
+        .ok_or_else(|| "app manifest AppState is missing".to_owned())?;
+    if scalar(app, b"appid")? != contract.app_id.as_bytes()
+        || scalar(app, b"buildid")? != contract.content_build.as_bytes()
+    {
+        return Err("configured TF2 app or content build changed".to_owned());
+    }
+    let depots = object_children(app, b"InstalledDepots")?;
+    let mut identities = BTreeSet::new();
+    for expected in &contract.installed_depots {
+        if !identities.insert(expected.depot.as_str()) {
+            return Err("TF2 content-build contract contains duplicate depots".to_owned());
+        }
+        let node = depots
+            .iter()
+            .find(|node| node.key.bytes == expected.depot.as_bytes())
+            .ok_or_else(|| format!("configured TF2 depot {} is missing", expected.depot))?;
+        if scalar(node, b"manifest")? != expected.manifest.as_bytes()
+            || scalar(node, b"size")? != expected.byte_length.as_bytes()
+        {
+            return Err(format!(
+                "configured TF2 depot {} identity changed",
+                expected.depot
+            ));
+        }
+    }
+    let patch = fs::read(tf2.join("steam.inf")).map_err(|error| error.to_string())?;
+    for key in ["PatchVersion", "ClientVersion", "ServerVersion"] {
+        let expected = format!("{key}={}", contract.patch_version);
+        if !patch
+            .split(|byte| *byte == b'\n' || *byte == b'\r')
+            .any(|line| line == expected.as_bytes())
+        {
+            return Err(format!("configured TF2 {key} changed"));
+        }
+    }
+    for (path, expected) in [
+        ("tf2_misc_dir.vpk", &contract.archive_indexes.tf2_misc),
+        ("tf2_textures_dir.vpk", &contract.archive_indexes.tf2_textures),
+        (
+            "tf2_sound_misc_dir.vpk",
+            &contract.archive_indexes.tf2_sound_misc,
+        ),
+    ] {
+        if digest(&fs::read(tf2.join(path)).map_err(|error| error.to_string())?) != *expected {
+            return Err(format!("configured TF2 archive index {path} changed"));
+        }
+    }
+    Ok(())
+}
+
 fn provider_id(order: usize, path: &Path) -> String {
     let name = path
         .file_name()
@@ -655,6 +768,7 @@ fn provider_plan(
     install: &Path,
     tf2: &Path,
     gameinfo: &[u8],
+    content_build: &str,
 ) -> Result<(Vec<ProviderSpec>, Vec<ProviderRecord>), String> {
     let gameinfo_revision = digest(gameinfo);
     let document = playsrc_keyvalues::parse_text(
@@ -687,6 +801,7 @@ fn provider_plan(
             .split('+')
             .map(|value| value.trim().to_ascii_lowercase())
             .collect::<Vec<_>>();
+        let custom_mod = path_ids.iter().any(|value| value == "custom_mod");
         if path_ids.iter().any(|value| value == "game_lv")
             || !path_ids
                 .iter()
@@ -704,11 +819,18 @@ fn provider_plan(
         } else {
             install.join(&declared)
         };
-        let locations = if declared.contains('*') || declared.contains('?') {
+        let mut locations = if declared.contains('*') || declared.contains('?') {
             wildcard_locations(&resolved)?
         } else {
             vec![resolved]
         };
+        if custom_mod {
+            locations.retain(|path| {
+                path.file_name()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|value| value.eq_ignore_ascii_case("workshop"))
+            });
+        }
         for declared_path in locations {
             if specs.len() >= MAX_PROVIDERS {
                 return Err("configured provider count exceeds bound".to_owned());
@@ -738,7 +860,7 @@ fn provider_plan(
             let revision = if kind == "vpk" {
                 digest(&fs::read(&path).map_err(|error| error.to_string())?)
             } else {
-                format!("{CONTENT_BUILD}-{gameinfo_revision}-{order:02}")
+                format!("{content_build}-{gameinfo_revision}-{order:02}")
             };
             records.push(ProviderRecord {
                 order,
@@ -1242,6 +1364,11 @@ fn main() -> Result<(), String> {
         .ancestors()
         .nth(6)
         .ok_or_else(|| "generator is not under the repository root".to_owned())?;
+    let contract: ContentBuildContract = serde_json::from_slice(
+        &fs::read(repository.join("games/tf2/content-build.json"))
+            .map_err(|error| format!("games/tf2/content-build.json: {error}"))?,
+    )
+    .map_err(|error| format!("games/tf2/content-build.json: {error}"))?;
     let config_bytes = fs::read(repository.join("playsrc.local.json"))
         .map_err(|error| format!("playsrc.local.json: {error}"))?;
     let config: LocalConfig = serde_json::from_slice(&config_bytes)
@@ -1283,11 +1410,16 @@ fn main() -> Result<(), String> {
     let install = tf2
         .parent()
         .ok_or_else(|| "tf2Dir has no install parent".to_owned())?;
+    verify_content_build(install, &tf2, &contract)?;
     let gameinfo = fs::read(tf2.join("gameinfo.txt")).map_err(|error| error.to_string())?;
-    let (specs, providers) = provider_plan(install, &tf2, &gameinfo)?;
+    if digest(&gameinfo) != contract.gameinfo_sha256 {
+        return Err("configured TF2 gameinfo identity changed".to_owned());
+    }
+    let (specs, providers) =
+        provider_plan(install, &tf2, &gameinfo, &contract.content_build)?;
     let content = Content::open(
         "tf2",
-        CONTENT_BUILD,
+        contract.content_build.clone(),
         specs,
         playsrc_content::Limits::default(),
     )
@@ -1437,7 +1569,7 @@ fn main() -> Result<(), String> {
     let source_ledger_sha256 = digest(source_ledger.as_bytes());
     let report = Report {
         schema: "playsrc-tf2-ui-resources-v1",
-        content_build: CONTENT_BUILD,
+        content_build: contract.content_build,
         source_ledger,
         source_ledger_sha256,
         providers,

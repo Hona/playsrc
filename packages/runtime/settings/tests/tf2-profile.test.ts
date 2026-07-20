@@ -13,12 +13,12 @@ describe("configured TF2 Options profile", () => {
   test("retains fixed SDK, content, page, and physical-profile identities", () => {
     expect(TF2_OPTIONS_AUTHORITY).toMatchObject({
       sdkRevision: "88fa198fba3fb85d46d4c95018254693fdc3af0a",
-      publicBuild: 24_207_079,
-      patch: 10_822_003,
+      publicBuild: 24_245_096,
+      patch: 10_828_683,
       optionsScript: { settings: 88, sha256: "d8f4cf14cebc84082b555fe4277f05aa5959cbd2b2e9f920252f43fe70b6b020" },
       actionList: { actions: 65, sha256: "403843357e1e3dd4212fba5f4d253db92096531d224595a47eadc07cb6b1f8da" },
     })
-    expect(TF2_SELECTED_OPTIONS.identity).toBe("tf2.options.build-24207079.patch-10822003")
+    expect(TF2_SELECTED_OPTIONS.identity).toBe("tf2.options.build-24245096.patch-10828683")
     expect(TF2_SELECTED_OPTIONS.settings).toHaveLength(203)
     expect(TF2_SELECTED_OPTIONS.bindingProfile).toMatchObject({
       identity: "tf2.desktop-keyboard-mouse",

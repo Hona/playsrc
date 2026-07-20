@@ -1,7 +1,9 @@
+import { TF2_CONTENT_BUILD } from "../content-build"
+
 export type Tf2StartupMediaFile = Readonly<{
   logicalPath: string
-  providerIdentity: "game-10-hl2"
-  providerRevision: "24207079-a85196fdeebeb4e2bae9d412862794d18a4970d118ea0a0d84817c44b8c982da-10"
+  providerIdentity: string
+  providerRevision: string
   byteLength: number
   sha256: string
   container: "bink" | "webm"
@@ -25,15 +27,15 @@ export type Tf2StartupMediaFile = Readonly<{
 
 export type Tf2StartupDescriptor = Readonly<{
   schema: "playsrc-tf2-startup-presentation-v1"
-  contentBuild: "24207079"
+  contentBuild: string
   manifest: Readonly<{
     logicalPath: "media/startupvids.txt"
     byteLength: 17
     sha256: "b832a9961d1feeb7a723b03a5033a59790cc82c5c742fbffd90f197bead13f7c"
     entries: readonly ["media/valve.bik"]
-    providerIdentity: "game-09-tf"
-    providerRevision: "24207079-a85196fdeebeb4e2bae9d412862794d18a4970d118ea0a0d84817c44b8c982da-09"
-    checkedLocations: readonly ["game-09-tf:media/startupvids.txt"]
+    providerIdentity: string
+    providerRevision: string
+    checkedLocations: readonly string[]
   }>
   source: Tf2StartupMediaFile
   browserRepresentation: Tf2StartupMediaFile
@@ -44,23 +46,24 @@ export type Tf2StartupDescriptorResult =
   | Readonly<{ ok: false; code: "InvalidDescriptor" | "ChangedConfiguredMedia"; subject: string }>
 
 const SHA256 = /^[0-9a-f]{64}$/u
+const providerRevision = (order: number) => `${TF2_CONTENT_BUILD.contentBuild}-${TF2_CONTENT_BUILD.gameinfoSha256}-${String(order).padStart(2, "0")}`
 
 export const TF2_CONFIGURED_STARTUP: Tf2StartupDescriptor = Object.freeze({
   schema: "playsrc-tf2-startup-presentation-v1",
-  contentBuild: "24207079",
+  contentBuild: TF2_CONTENT_BUILD.contentBuild,
   manifest: Object.freeze({
     logicalPath: "media/startupvids.txt",
     byteLength: 17,
     sha256: "b832a9961d1feeb7a723b03a5033a59790cc82c5c742fbffd90f197bead13f7c",
     entries: Object.freeze(["media/valve.bik"] as const),
     providerIdentity: "game-09-tf",
-    providerRevision: "24207079-a85196fdeebeb4e2bae9d412862794d18a4970d118ea0a0d84817c44b8c982da-09",
+    providerRevision: providerRevision(9),
     checkedLocations: Object.freeze(["game-09-tf:media/startupvids.txt"] as const),
   }),
   source: Object.freeze({
     logicalPath: "media/valve.bik",
     providerIdentity: "game-10-hl2",
-    providerRevision: "24207079-a85196fdeebeb4e2bae9d412862794d18a4970d118ea0a0d84817c44b8c982da-10",
+    providerRevision: providerRevision(10),
     byteLength: 14_672_796,
     sha256: "99a57640d7434a7ef948dd00980e752f237e4b412dbcf502529832f679065381",
     container: "bink",
@@ -71,7 +74,7 @@ export const TF2_CONFIGURED_STARTUP: Tf2StartupDescriptor = Object.freeze({
   browserRepresentation: Object.freeze({
     logicalPath: "media/valve.webm",
     providerIdentity: "game-10-hl2",
-    providerRevision: "24207079-a85196fdeebeb4e2bae9d412862794d18a4970d118ea0a0d84817c44b8c982da-10",
+    providerRevision: providerRevision(10),
     byteLength: 1_323_798,
     sha256: "1cd960acdfe89e99aebe1b5199c2699b5bb17d812ff069d26ee1192435bbd403",
     container: "webm",
@@ -85,7 +88,7 @@ function media(value: unknown): value is Tf2StartupMediaFile {
   if (typeof value !== "object" || value === null) return false
   const file = value as Partial<Tf2StartupMediaFile>
   return typeof file.logicalPath === "string"
-    && file.providerIdentity === "game-10-hl2" && file.providerRevision === "24207079-a85196fdeebeb4e2bae9d412862794d18a4970d118ea0a0d84817c44b8c982da-10"
+    && file.providerIdentity === "game-10-hl2" && file.providerRevision === providerRevision(10)
     && Number.isSafeInteger(file.byteLength) && file.byteLength! > 0
     && typeof file.sha256 === "string" && SHA256.test(file.sha256)
     && (file.container === "bink" || file.container === "webm")
@@ -105,11 +108,11 @@ function media(value: unknown): value is Tf2StartupMediaFile {
 export function validateTf2StartupDescriptor(value: unknown): Tf2StartupDescriptorResult {
   if (typeof value !== "object" || value === null) return Object.freeze({ ok: false, code: "InvalidDescriptor", subject: "root" })
   const descriptor = value as Partial<Tf2StartupDescriptor>
-  if (descriptor.schema !== TF2_CONFIGURED_STARTUP.schema || descriptor.contentBuild !== "24207079" || !media(descriptor.source) || !media(descriptor.browserRepresentation)) {
+  if (descriptor.schema !== TF2_CONFIGURED_STARTUP.schema || descriptor.contentBuild !== TF2_CONTENT_BUILD.contentBuild || !media(descriptor.source) || !media(descriptor.browserRepresentation)) {
     return Object.freeze({ ok: false, code: "InvalidDescriptor", subject: "shape" })
   }
   if (JSON.stringify(descriptor) !== JSON.stringify(TF2_CONFIGURED_STARTUP)) {
-    return Object.freeze({ ok: false, code: "ChangedConfiguredMedia", subject: "build-24207079" })
+    return Object.freeze({ ok: false, code: "ChangedConfiguredMedia", subject: `build-${TF2_CONTENT_BUILD.contentBuild}` })
   }
   return Object.freeze({ ok: true, descriptor: TF2_CONFIGURED_STARTUP })
 }

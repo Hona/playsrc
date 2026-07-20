@@ -8,6 +8,7 @@ import type {
   VguiDesktopPlatform,VguiFontFileIdentity,VguiResolvedFontRequest,VguiSchemeDocument,VguiSchemeNode,VguiFontSetMount,
 } from "@playsrc/vgui"
 import { admitLocalPlatformFonts,mountVguiFontSet,resolveVguiSchemeFonts } from "@playsrc/vgui"
+import { TF2_CONTENT_BUILD } from "@playsrc/game-tf2-browser/content-build"
 
 const consolePlatformFontTarget: LocalPlatformFontTarget = Object.freeze({
   identity: "tf2/source-scheme/e9159a98/windows-console-fonts",
@@ -259,7 +260,7 @@ export const consoleLimits: ConsoleLimits = Object.freeze({
 })
 
 export const consoleResourceBlocker = consolePlatformFonts.kind === "supported"
-  ? "Windows Tahoma and Lucida Console faces loaded through isolated browser local() sources. Native TF2 build-24207079 non-antialiased GDI target captures remain absent, so browser glyph-raster parity remains blocked."
+  ? `Windows Tahoma and Lucida Console faces loaded through isolated browser local() sources. Native TF2 build-${TF2_CONTENT_BUILD.contentBuild} non-antialiased GDI target captures remain absent, so browser glyph-raster parity remains blocked.`
   : `TF2 console platform fonts unsupported: ${consolePlatformFonts.reason} on ${consolePlatformFonts.platform}; unadmitted faces are ${consolePlatformFonts.unadmittedFaceIdentities.join(", ") || "none"}. No browser fallback glyphs are presented.`
 
 export type ResolvedConsoleResources=Readonly<{console:ConsoleResourceResolution;diagnostics:ClientDiagnosticResources;fontSet:VguiFontSetMount|null;blocker:string}>

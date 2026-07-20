@@ -1,4 +1,5 @@
 import { configuredTf2UiResourceInput } from "./configured.generated"
+import { TF2_CONTENT_BUILD } from "../content-build"
 import {
   tf2UiResourceBounds,
   type Tf2UiCommandCategory,
@@ -286,7 +287,7 @@ function collectWalks(roots: readonly Tf2UiResourceNode[]): readonly NodeWalk[] 
 }
 
 export function createTf2UiResourceDescriptor(input: unknown): Tf2UiResourceResolution {
-  if (!object(input) || input.schema !== "playsrc-tf2-ui-resources-v1" || input.contentBuild !== "24207079") {
+  if (!object(input) || input.schema !== "playsrc-tf2-ui-resources-v1" || input.contentBuild !== TF2_CONTENT_BUILD.contentBuild) {
     return failure("InvalidInput", "root")
   }
   if (
@@ -647,9 +648,9 @@ export function createTf2UiResourceDescriptor(input: unknown): Tf2UiResourceReso
 
   const descriptor: Tf2UiResourceDescriptor = {
     schema: "playsrc-tf2-ui-resources-v1",
-    identity: `tf2-ui-24207079-${input.sourceLedgerSha256.slice(0, 16)}`,
+    identity: `tf2-ui-${TF2_CONTENT_BUILD.contentBuild}-${input.sourceLedgerSha256.slice(0, 16)}`,
     game: "tf2",
-    contentBuild: "24207079",
+    contentBuild: TF2_CONTENT_BUILD.contentBuild,
     sourceLedger: input.sourceLedger,
     providers,
     sources: resources,

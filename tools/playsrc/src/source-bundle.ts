@@ -5,6 +5,7 @@ import { repositoryRoot } from "./config"
 import { rustEnvironment } from "./setup"
 import type { ObjectDescriptor } from "@playsrc/asset-store"
 import toolchains from "../toolchains.json"
+import { TF2_CONTENT_BUILD } from "@playsrc/game-tf2-browser/content-build"
 
 export type SourceBundleArtifact = Readonly<{
   bundlePath: string
@@ -12,7 +13,7 @@ export type SourceBundleArtifact = Readonly<{
   ledgerPath: string
   report: Readonly<{
     target: string
-    contentBuild: "24207079"
+    contentBuild: string
     providers: number
     requests: number
     authoritativeAbsences: number
@@ -85,7 +86,7 @@ export function parseSourceBundleReport(output: string, target: string): SourceB
   }
   if (
     report.target !== target
-    || report.contentBuild !== "24207079"
+    || report.contentBuild !== TF2_CONTENT_BUILD.contentBuild
     || !Number.isSafeInteger(report.providers)
     || (report.providers as number) < 2
     || (report.providers as number) > 65
@@ -143,7 +144,7 @@ export function parseSourceBundleReport(output: string, target: string): SourceB
   )
   return Object.freeze({
     target,
-    contentBuild: "24207079",
+    contentBuild: TF2_CONTENT_BUILD.contentBuild,
     providers: report.providers as number,
     requests: report.requests as number,
     authoritativeAbsences: report.authoritativeAbsences as number,

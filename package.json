@@ -16,6 +16,7 @@
     "profile:map-load": "playwright test --config=playwright.profile.config.ts",
     "profile:map-coverage": "playwright test --config=playwright.coverage-profile.config.ts",
     "profile:startup": "bun tools/playsrc/profile/dev-startup.profile.ts",
+    "profile:startup-browser": "playwright test --config=playwright.startup-profile.config.ts",
     "test": "bun test"
   },
   "devDependencies": {

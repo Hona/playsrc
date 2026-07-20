@@ -16,12 +16,12 @@ import { buildTf2Wasm } from "./tf2-wasm-build"
 const EXPECTED_MAP_BYTES = 42_082_929
 const EXPECTED_MAP_SHA256 = "56153098a867c553651f9c773bd72c4659782bae8520277c80daaaa414bdf156"
 const EXPECTED_BSP_SHA256 = "b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959"
-const EXPECTED_HDR_BYTES=78_299_960
-const EXPECTED_HDR_SHA256="97c64972942afacb6688fa83d8850d975d9bd46dd9f16836c05e0d5aefbcb22e"
-const EXPECTED_LDR_DERIVED_SHA256="4a735b605c3737661f11cadaa80b960c53af009704290db0e9e4abbd649c178b"
-const EXPECTED_HDR_DERIVED_SHA256="8965d93254ba183fbf4c18672fd853716f6cfe7266c8f34da2b921e8bb0c1728"
-const EXPECTED_DEPENDENCY_BYTES=255_679_917
-const EXPECTED_DEPENDENCY_SHA256="c3b03459f6b14fc88f1532f6f16f110f7447a6364295107070cc7a6f2a33a19a"
+const EXPECTED_HDR_BYTES=78_300_103
+const EXPECTED_HDR_SHA256="85435e0eb1dbe8645efae9a917c3ff25186fd035af67292c99840aad535772ca"
+const EXPECTED_LDR_DERIVED_SHA256="f0cc355181d6b6fadab74e66723a0389644c70197ba460390f4f19d918318b7a"
+const EXPECTED_HDR_DERIVED_SHA256="f23cd74da48d5c1d96e142a4cecf61030fd7dab081c71501839b3f05fb9cc151"
+const EXPECTED_DEPENDENCY_BYTES=255_723_714
+const EXPECTED_DEPENDENCY_SHA256="2364f2a18031cecdfd4e913ae5daa7924f33b6f2b2ed6b702a3a65ee09dfabf3"
 function bundlePathOffset(bytes: Uint8Array, target: string): number {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   let offset = 12
@@ -320,7 +320,7 @@ function inspectHdrPayload(payload: Uint8Array) {
   }
   require(skyDimensions.join(",") === "512x256,512x256,512x256,512x256,512x512,4x4", "HDR sky dimensions are invalid")
   const inputCount = reader.u32()
-  require(inputCount===869,"HDR input-hash count is invalid")
+  require(inputCount===871,"HDR input-hash count is invalid")
   for (let index = 0; index < inputCount; index += 1) {
     require(reader.u8() === 1 && reader.take(3).every((value) => value === 0), "HDR input record is invalid")
     require(reader.text().length > 0, "HDR input path is empty")

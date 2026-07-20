@@ -1,0 +1,30 @@
+{
+  "schema": "playsrc-tf2-content-build-v1",
+  "appId": "440",
+  "contentBuild": "24245096",
+  "patchVersion": "10828683",
+  "gameinfoSha256": "a85196fdeebeb4e2bae9d412862794d18a4970d118ea0a0d84817c44b8c982da",
+  "customModProviders": "workshop-only",
+  "archiveIndexes": {
+    "tf2Misc": "63f7db0d1c509e303ca9002fee9e3d805e9220ea5afdd639d8a6b68b8a3710b9",
+    "tf2Textures": "888bd2e894e59cd92dda248224e322b9828e92bf6b658d714494b7b7c4a8e368",
+    "tf2SoundMisc": "dfbcc92beb6e9dd86994ad37be8bc7d8d7da66d01d2f4d441accdab776894bd9"
+  },
+  "installedDepots": [
+    {
+      "depot": "440",
+      "manifest": "1118032470228587934",
+      "byteLength": "825745"
+    },
+    {
+      "depot": "441",
+      "manifest": "8184804574059007642",
+      "byteLength": "32228472199"
+    },
+    {
+      "depot": "232251",
+      "manifest": "706600525322138695",
+      "byteLength": "612146219"
+    }
+  ]
+}

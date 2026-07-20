@@ -45,6 +45,7 @@ const orderedDependencies: Dependency[] = [...dependencies]
 const manifest = Object.freeze({
   schema: "playsrc-tf2-ui-bundle-v1",
   identity: tf2UiResources.identity,
+  contentBuild: tf2UiResources.contentBuild,
   sourceLedger: tf2UiResources.sourceLedger,
   dependencies: Object.freeze(orderedDependencies),
   images: Object.freeze(tf2UiResources.images.map((image) => Object.freeze({

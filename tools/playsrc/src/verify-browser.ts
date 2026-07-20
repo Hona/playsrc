@@ -4,6 +4,8 @@ import path from "node:path"
 import { repositoryRoot, type LocalConfig } from "./config"
 import { TF2_CONFIGURED_STARTUP } from "@playsrc/game-tf2-browser/startup-presentation"
 import { TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS, TF2_STAMP_BACKGROUND } from "@playsrc/game-tf2-browser/loading-presentation"
+import { TF2_CONTENT_BUILD } from "@playsrc/game-tf2-browser/content-build"
+import { TF2_BROWSER_SETTINGS_STORAGE_KEY } from "@playsrc/game-tf2-browser/settings-integration"
 
 const MAX_OUTPUT_BYTES = 1024 * 1024
 const PROCESS_READY_TIMEOUT_MS = 300_000
@@ -12,7 +14,7 @@ const APPLICATION_URL = "http://127.0.0.1:4173/"
 const VIEWPORT_WIDTH = 1280
 const VIEWPORT_HEIGHT = 720
 const BACKGROUND_RGB = [17, 24, 32] as const
-const EXPECTED_DEPENDENCY_SHA256="c3b03459f6b14fc88f1532f6f16f110f7447a6364295107070cc7a6f2a33a19a"
+const EXPECTED_DEPENDENCY_SHA256="2364f2a18031cecdfd4e913ae5daa7924f33b6f2b2ed6b702a3a65ee09dfabf3"
 
 export class BrowserEvidenceError extends Error {
   constructor(message: string) {
@@ -91,13 +93,11 @@ async function classifySupportBlockers(
   const ledger = value as Record<string, unknown>
   require(ledger.schema === "playsrc-source-dependency-ledger-v1" &&
     ledger.game === "tf2" &&
-    ledger.appId === "440" &&
-    ledger.contentBuild === "24207079" &&
-    JSON.stringify(ledger.installedDepots) === JSON.stringify([
-      { depot: "440", manifest: "1118032470228587934", byteLength: "825745" },
-      { depot: "441", manifest: "1804278129270892792", byteLength: "32228363932" },
-      { depot: "232251", manifest: "706600525322138695", byteLength: "612146219" },
-    ]) &&
+    ledger.appId === TF2_CONTENT_BUILD.appId &&
+    ledger.contentBuild === TF2_CONTENT_BUILD.contentBuild &&
+    ledger.patchVersion === TF2_CONTENT_BUILD.patchVersion &&
+    ledger.gameinfoSha256 === TF2_CONTENT_BUILD.gameinfoSha256 &&
+    JSON.stringify(ledger.installedDepots) === JSON.stringify(TF2_CONTENT_BUILD.installedDepots) &&
     ledger.target === "jump_beef" &&
     typeof ledger.bundle === "object" && ledger.bundle !== null &&
     (ledger.bundle as Record<string, unknown>).sha256 === EXPECTED_DEPENDENCY_SHA256 &&
@@ -858,7 +858,7 @@ export async function verifyBrowserAcceptance(
     await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.phase==='MainMenu'&&document.querySelector('main').dataset.settingsPersistence==='loaded'", "--timeout", "300000"])
     await agent(["--session", session, "click", "[data-vgui-name='SettingsButton']"])
     await agent(["--session", session, "find", "role", "tab", "click", "--name", "Mouse"])
-    const persistedReverse = parseJson<{ checked: string | null; storage: string | null }>(await agent(["--session", session, "eval", "(()=>({checked:document.querySelector('.options-layer [data-vgui-name=ReverseMouse]').getAttribute('aria-checked'),storage:localStorage.getItem('playsrc.tf2.options.build-24207079.patch-10822003')}))()"] ))
+    const persistedReverse = parseJson<{ checked: string | null; storage: string | null }>(await agent(["--session", session, "eval", `(()=>({checked:document.querySelector('.options-layer [data-vgui-name=ReverseMouse]').getAttribute('aria-checked'),storage:localStorage.getItem(${JSON.stringify(TF2_BROWSER_SETTINGS_STORAGE_KEY)})}))()`] ))
     require(persistedReverse.checked === "true", `persisted Options value did not survive reload: ${JSON.stringify(persistedReverse)}`)
     await clickVguiPanel(session, "ReverseMouse")
     await agent(["--session", session, "click", ".options-layer [data-vgui-name='ApplyButton']"])

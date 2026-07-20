@@ -11,7 +11,7 @@ const cloneInput = (): any => structuredClone(configuredTf2UiResourceInput)
 
 describe("configured TF2 UI resource descriptor", () => {
   test("binds the exact configured provider and selected source closure", () => {
-    expect(tf2UiResources.identity).toBe("tf2-ui-24207079-4a097b1e805d9ce1")
+    expect(tf2UiResources.identity).toBe("tf2-ui-24245096-665e7e9c968b7b13")
     expect(tf2UiResources.providers).toHaveLength(14)
     expect(tf2UiResources.sources).toHaveLength(49)
     expect(tf2UiResources.panels).toHaveLength(35)
@@ -81,7 +81,6 @@ describe("configured TF2 UI resource descriptor", () => {
     expect(tf2UiResources.missingDependencies).toEqual([
       "resource/loadingdialogdualprogress.res",
       "cfg/user.scr",
-      "image:logos/UI/spray",
       "image:vgui/hud/icon_commentary",
       "localization:#Replay_SaveReplay",
       "localization:#Steam_ValidLoginRequired",
@@ -92,7 +91,7 @@ describe("configured TF2 UI resource descriptor", () => {
       "localization:#VAC_ConnectionRefusedDetail",
     ])
     expect(tf2UiResources.images.filter((image) => image.classification === "missing-material").map((image) => image.configuredValue))
-      .toEqual(["logos/UI/spray", "vgui/hud/icon_commentary"])
+      .toEqual(["vgui/hud/icon_commentary"])
     expect(tf2UiResources.fonts.some((font) => font.classification === "missing-font")).toBe(false)
   })
 

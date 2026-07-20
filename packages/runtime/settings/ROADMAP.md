@@ -6,7 +6,7 @@ This leaf roadmap contains exactly 12 behavior rows. The target is reusable Sour
 
 All 12 behavior rows are Ready.
 
-Authority inputs are Valve Source SDK 2013 commit `88fa198fba3fb85d46d4c95018254693fdc3af0a`: `src/public/tier1/{convar,iconvar}.h`, `src/tier1/convar.cpp`, `src/public/icvar.h`, `src/public/inputsystem/ButtonCode.h`, `src/public/vgui_controls/KeyBindingMap.h`, `src/vgui2/vgui_controls/{KeyBoardEditorDialog,Panel}.cpp`, `src/common/GameUI/{scriptobject.h,scriptobject.cpp}`, `src/game/client/tf/vgui/tf_controls.cpp`, and the selected TF2 cvar declarations under `src/game`. Configured TF2 public build `24207079`, patch `10822003`, supplies the exact Options script, action list, default binding configuration, and Multiplayer/Advanced resource selections.
+Authority inputs are Valve Source SDK 2013 commit `88fa198fba3fb85d46d4c95018254693fdc3af0a`: `src/public/tier1/{convar,iconvar}.h`, `src/tier1/convar.cpp`, `src/public/icvar.h`, `src/public/inputsystem/ButtonCode.h`, `src/public/vgui_controls/KeyBindingMap.h`, `src/vgui2/vgui_controls/{KeyBoardEditorDialog,Panel}.cpp`, `src/common/GameUI/{scriptobject.h,scriptobject.cpp}`, `src/game/client/tf/vgui/tf_controls.cpp`, and the selected TF2 cvar declarations under `src/game`. Configured TF2 public build `24245096`, patch `10828683`, supplies the exact Options script, action list, default binding configuration, and Multiplayer/Advanced resource selections.
 
 ## Behavior Families
 

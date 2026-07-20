@@ -42,8 +42,8 @@ const asset = (value: Tf2LoadingAsset | undefined): value is Tf2LoadingAsset => 
   && value.logicalPath.length > 0 && value.providerIdentity.length > 0 && value.providerRevision.length > 0)
 
 export const TF2_STAMP_BACKGROUND = Object.freeze({
-  material: Object.freeze({ logicalPath: "materials/vgui/stamp_background_map.vmt", byteLength: 105, sha256: "3850088d15a9147bc593cab2bbda5bc12eff053ccaa8cec6579bf18513c695d1", providerIdentity: "tf2_misc_dir.vpk", providerRevision: "63f7db0d1c509e303ca9002fee9e3d805e9220ea5afdd639d8a6b68b8a3710b9" }),
-  texture: Object.freeze({ logicalPath: "materials/vgui/stamp_background_map.vtf", byteLength: 1_398_360, sha256: "2f00d21971c788a51bd254ec5b69ad79af52caad35f0cde2a1ec9f4dbaf4a955", providerIdentity: "tf2_textures_dir.vpk", providerRevision: "291719bce05f0d82e6fb20961e631c0dd3967a7fe5b11cb374ed56c25312337e" }),
+  material: Object.freeze({ logicalPath: "materials/vgui/stamp_background_map.vmt", byteLength: 105, sha256: "3850088d15a9147bc593cab2bbda5bc12eff053ccaa8cec6579bf18513c695d1", providerIdentity: "tf2_misc_dir.vpk", providerRevision: TF2_CONTENT_BUILD.archiveIndexes.tf2Misc }),
+  texture: Object.freeze({ logicalPath: "materials/vgui/stamp_background_map.vtf", byteLength: 1_398_360, sha256: "2f00d21971c788a51bd254ec5b69ad79af52caad35f0cde2a1ec9f4dbaf4a955", providerIdentity: "tf2_textures_dir.vpk", providerRevision: TF2_CONTENT_BUILD.archiveIndexes.tf2Textures }),
 })
 
 export const TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS = Object.freeze([
@@ -85,3 +85,4 @@ export function resolveTf2LoadingBackground(input: Tf2LoadingBackgroundInput): T
     disposition: found ? "map-photo" : "configured-generic",
   })
 }
+import { TF2_CONTENT_BUILD } from "../content-build"

@@ -4,7 +4,7 @@
 
 This module consumes one immutable TF2 gameplay or replay HUD snapshot and one ordered bounded HUD event stream. It produces generic VGUI panel values, named HUD-animation requests, presentation notifications, and typed game-command requests. It never reads DOM state, wall time or mutable gameplay objects and never invokes a gameplay transition.
 
-Authority is Valve Source SDK 2013 commit `88fa198fba3fb85d46d4c95018254693fdc3af0a` plus TF2 build 24207079, patch 10822003, exact configured `scripts/HudLayout.res`, `scripts/HudAnimations_tf.txt`, `resource/ClientScheme.res`, `resource/UI/HudPlayerHealth.res`, `HudPlayerClass.res`, `HudAmmoWeapons.res`, `HudWeaponSelection.res`, `Scoreboard.res`, and `FreezePanel_Basic.res`.
+Authority is Valve Source SDK 2013 commit `88fa198fba3fb85d46d4c95018254693fdc3af0a` plus TF2 build 24245096, patch 10828683, exact configured `scripts/HudLayout.res`, `scripts/HudAnimations_tf.txt`, `resource/ClientScheme.res`, `resource/UI/HudPlayerHealth.res`, `HudPlayerClass.res`, `HudAmmoWeapons.res`, `HudWeaponSelection.res`, `Scoreboard.res`, and `FreezePanel_Basic.res`.
 
 | Source/TF2 behavior | playsrc behavior | Evidence | Status |
 |---|---|---|---|
