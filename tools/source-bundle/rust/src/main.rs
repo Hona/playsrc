@@ -655,7 +655,10 @@ fn object_children<'a>(
 }
 
 fn verify_install_manifest(install: &Path) -> Result<(), String> {
-    let steamapps = install.join("steamapps");
+    let steamapps = install
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| "configured TF2 install has no Steam library parent".to_owned())?;
     let bytes =
         fs::read(steamapps.join("appmanifest_440.acf")).map_err(|error| error.to_string())?;
     let document = playsrc_keyvalues::parse_text(
