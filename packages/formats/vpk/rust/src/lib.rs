@@ -1,12 +1,14 @@
 use std::{collections::BTreeMap, fmt, ops::Range, sync::Arc};
 
 use md5::{Digest as _, Md5};
+#[cfg(feature = "signature-verification")]
 use rsa::{
     RsaPublicKey,
     pkcs1v15::{Signature, VerifyingKey},
     pkcs8::DecodePublicKey,
     signature::Verifier,
 };
+#[cfg(feature = "signature-verification")]
 use sha2::Sha256;
 
 pub const SIGNATURE: u32 = 0x55aa_1234;
@@ -381,6 +383,7 @@ impl Archive {
         self.read_entry_range(entry, range, segments)
     }
 
+    #[cfg(feature = "signature-verification")]
     pub fn verify_self(&self) -> SelfIntegrity {
         let Some(expected) = self.other_md5 else {
             return SelfIntegrity {
@@ -491,6 +494,7 @@ impl Archive {
         })
     }
 
+    #[cfg(feature = "signature-verification")]
     pub fn verify_signature(&self, expected_public_key: Option<&[u8]>) -> SignatureIntegrity {
         let Some(material) = &self.signature else {
             return SignatureIntegrity::NotPresent;

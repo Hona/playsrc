@@ -4,6 +4,9 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
+[features]
+verify-hdr = ["dep:playsrc-tf2-wasm"]
+
 [dependencies]
 playsrc-bsp = { path = "../../../packages/formats/bsp/rust" }
 playsrc-content = { path = "../../../packages/content/rust" }
@@ -13,9 +16,9 @@ playsrc-material = { path = "../../../packages/world/material/rust" }
 playsrc-particle = { path = "../../../packages/presentation/particle/rust" }
 playsrc-entity = { path = "../../../packages/world/entity/rust" }
 playsrc-studio-model = { path = "../../../packages/formats/studio-model/rust" }
-playsrc-tf2-wasm = { path = "../../../games/tf2/wasm" }
+playsrc-tf2-wasm = { path = "../../../games/tf2/wasm", optional = true }
 playsrc-vmt = { path = "../../../packages/formats/vmt/rust" }
-playsrc-vpk = { path = "../../../packages/formats/vpk/rust" }
+playsrc-vpk = { path = "../../../packages/formats/vpk/rust", default-features = false }
 playsrc-vtf = { path = "../../../packages/formats/vtf/rust" }
 png = "0.17.16"
 serde = { version = "1", features = ["derive"] }

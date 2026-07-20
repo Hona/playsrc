@@ -4,11 +4,15 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = ["signature-verification"]
+signature-verification = ["dep:rsa", "dep:sha2"]
+
 [dependencies]
 crc32fast = "1.5.0"
 md-5 = "0.10.6"
-rsa = { version = "0.9.8", default-features = false, features = ["sha2", "std"] }
-sha2 = { version = "0.10.9", features = ["oid"] }
+rsa = { version = "0.9.8", default-features = false, features = ["sha2", "std"], optional = true }
+sha2 = { version = "0.10.9", features = ["oid"], optional = true }
 
 [lib]
 path = "src/lib.rs"

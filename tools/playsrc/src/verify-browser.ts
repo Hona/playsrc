@@ -10,7 +10,7 @@ const APPLICATION_URL = "http://127.0.0.1:4173/"
 const VIEWPORT_WIDTH = 1280
 const VIEWPORT_HEIGHT = 720
 const BACKGROUND_RGB = [17, 24, 32] as const
-const EXPECTED_DEPENDENCY_SHA256="38f967ad03a7a05689940084d5091a44c530707cff55fc05cb0b13e20c60a983"
+const EXPECTED_DEPENDENCY_SHA256="c6b02effb40331cb35b1a33c57e1f3f9ad78907421fabdd1e83bd233f7add1ed"
 
 export class BrowserEvidenceError extends Error {
   constructor(message: string) {

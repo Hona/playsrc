@@ -6,7 +6,7 @@ license.workspace = true
 
 [dependencies]
 playsrc-bsp = { path = "../../formats/bsp/rust" }
-playsrc-vpk = { path = "../../formats/vpk/rust" }
+playsrc-vpk = { path = "../../formats/vpk/rust", default-features = false }
 sha2 = "0.10.9"
 
 [dev-dependencies]

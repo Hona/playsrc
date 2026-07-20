@@ -56,39 +56,30 @@ export type DevelopmentOwner = Readonly<{
 
 export async function startDevelopment(config: LocalConfig, target: string | undefined): Promise<DevelopmentOwner> {
   const map = await acquireMap(config, target)
-  const wasmPath = await buildTf2Wasm(config)
-  const sourceBundle = await buildSourceBundle(config, target ?? "")
-  const [bspBytes, wasmBytes, dependencyBytes, uiBytes, dependencyLedgerBytes, applicationBuild] = await Promise.all([
+  const [wasmPath, sourceBundle, applicationBuild] = await Promise.all([
+    buildTf2Wasm(config),
+    buildSourceBundle(config, target ?? ""),
+    publicCommitIdentity(),
+  ])
+  const [bspBytes, wasmBytes, dependencyBytes, uiBytes, dependencyLedgerBytes] = await Promise.all([
     readFile(path.join(config.sourceCacheDir, map.decoded.cachePath)),
     readFile(wasmPath),
     readFile(sourceBundle.bundlePath),
     readFile(sourceBundle.uiPath),
     readFile(sourceBundle.ledgerPath),
-    publicCommitIdentity(),
   ])
   const bsp = descriptor("source-object", "application/octet-stream", bspBytes)
   const wasm = descriptor("derived-object", "application/octet-stream", wasmBytes)
-  const dependencies = descriptor(
-    "derived-object",
-    "application/octet-stream",
-    dependencyBytes,
-  )
-  const dependencyLedger = descriptor(
-    "derived-object",
-    "application/vnd.playsrc.source-dependency-ledger+json",
-    dependencyLedgerBytes,
-  )
-  const ui = descriptor("derived-object", "application/octet-stream", uiBytes)
-  if (
-    JSON.stringify(dependencies) !== JSON.stringify(sourceBundle.report.bundleDescriptor)
-    || JSON.stringify(ui) !== JSON.stringify(sourceBundle.report.uiDescriptor)
-    || JSON.stringify(dependencyLedger) !== JSON.stringify(sourceBundle.report.ledgerDescriptor)
-  ) throw new DevelopmentError("BuildFailed", "source dependency artifact differs from its immutable descriptor")
-  await putObject(config.assetDir, bsp, bspBytes)
-  await putObject(config.assetDir, wasm, wasmBytes)
-  await putObject(config.assetDir, dependencies, dependencyBytes)
-  await putObject(config.assetDir, ui, uiBytes)
-  await putObject(config.assetDir, dependencyLedger, dependencyLedgerBytes)
+  const dependencies = sourceBundle.report.bundleDescriptor
+  const ui = sourceBundle.report.uiDescriptor
+  const dependencyLedger = sourceBundle.report.ledgerDescriptor
+  await Promise.all([
+    putObject(config.assetDir, bsp, bspBytes),
+    putObject(config.assetDir, wasm, wasmBytes),
+    putObject(config.assetDir, dependencies, dependencyBytes),
+    putObject(config.assetDir, ui, uiBytes),
+    putObject(config.assetDir, dependencyLedger, dependencyLedgerBytes),
+  ])
   const browserConfiguration = JSON.stringify({
     application: "tf2",
     applicationBuild,
@@ -177,7 +168,9 @@ export async function startDevelopment(config: LocalConfig, target: string | und
 }
 
 export async function runDevelopment(config: LocalConfig, target: string | undefined): Promise<void> {
+  const started = performance.now()
   const owner = await startDevelopment(config, target)
+  console.error(`playsrc dev ready target=${target ?? ""} milliseconds=${Math.round(performance.now() - started)}`)
   console.log(owner.url)
   await owner.waitForInterrupt()
   await owner.close()

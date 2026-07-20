@@ -12,6 +12,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
     path::{Path, PathBuf},
+    time::Instant,
 };
 
 const CONTENT_BUILD: &str = "24207079";
@@ -24,6 +25,7 @@ const MAX_GAME_PROVIDERS: usize = 64;
 const MAX_DEPENDENCY_REQUESTS: usize = 4_096;
 const MAX_BUNDLE_BYTES: usize = 512 * 1024 * 1024;
 const MAX_LEDGER_BYTES: usize = 8 * 1024 * 1024;
+const MAX_UI_PNG_WORKERS: usize = 8;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -385,6 +387,29 @@ impl<'a> Resolver<'a> {
         required: bool,
     ) -> Result<Option<Vec<u8>>, String> {
         let canonical = path.to_ascii_lowercase();
+        if let Some(record) = self.requests.get_mut(&canonical) {
+            if required {
+                record.requirement = "required";
+            }
+            record.consumers.insert(consumer);
+            if let Some(bytes) = self.bundle.get(&canonical) {
+                return Ok(Some(bytes.clone()));
+            }
+            if required {
+                let locations = record
+                    .checked
+                    .as_ref()
+                    .into_iter()
+                    .flatten()
+                    .map(|value| format!("{}:{}", value.provider_identity, value.location))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                return Err(format!(
+                    "missing required dependency {canonical} after [{locations}]"
+                ));
+            }
+            return Ok(None);
+        }
         let result = self.content.resolve_resource(&canonical).map_err(|error| {
             format!(
                 "{error}: {} from {}",
@@ -1213,6 +1238,13 @@ fn bytesv(output: &mut Vec<u8>, bytes: &[u8]) -> Result<(), String> {
 }
 
 fn install_artifact(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    if path
+        .metadata()
+        .is_ok_and(|metadata| metadata.is_file() && metadata.len() == bytes.len() as u64)
+        && fs::read(path).map_err(|error| error.to_string())? == bytes
+    {
+        return Ok(());
+    }
     let temporary = path.with_extension(format!(
         "{}.{}.tmp",
         path.extension()
@@ -1392,6 +1424,16 @@ struct BuildReport {
 }
 
 fn main() -> Result<(), String> {
+    let started = Instant::now();
+    let mut stage_started = started;
+    let stage = |name: &str, stage_started: &mut Instant| {
+        let now = Instant::now();
+        eprintln!(
+            "source-bundle stage={name} milliseconds={}",
+            now.duration_since(*stage_started).as_millis()
+        );
+        *stage_started = now;
+    };
     let mut arguments = env::args().skip(1);
     let target = arguments
         .next()
@@ -1515,6 +1557,7 @@ fn main() -> Result<(), String> {
             pak,
         )
         .map_err(|error| error.to_string())?;
+    stage("inputs-and-providers", &mut stage_started);
     for provider in &mut provider_records {
         provider.order += 1;
     }
@@ -1693,6 +1736,7 @@ fn main() -> Result<(), String> {
             }
         }
     }
+    stage("map-materials-and-models", &mut stage_started);
     let particle_paths = [
         "particles/rockettrail.pcf",
         "particles/rocketbackblast.pcf",
@@ -1746,6 +1790,7 @@ fn main() -> Result<(), String> {
             "particle-material",
         )?;
     }
+    stage("particles", &mut stage_started);
     for path in [
         "resource/sourcescheme.res",
         "resource/sourceschemebase.res",
@@ -1865,6 +1910,7 @@ fn main() -> Result<(), String> {
             &platform_content,
         )?;
     }
+    stage("declared-dependencies", &mut stage_started);
     let mut ui_materials = Vec::new();
     for image in &tf2_ui.images {
         let Some(identity) = image.material.as_deref() else {
@@ -2009,31 +2055,77 @@ fn main() -> Result<(), String> {
         textures: texture_records,
     })
     .map_err(|error| error.to_string())?;
+    stage("ui-materials", &mut stage_started);
     let mut ui_bundle = BTreeMap::<String, Vec<u8>>::new();
     ui_bundle.insert(
         "playsrc/tf2-ui/materials.json".to_owned(),
         ui_material_bytes,
     );
-    for (logical_path, (sha256, width, height, frames, _raw_flags)) in ui_textures {
-        let bytes = resolver
-            .bundle
-            .get(&logical_path)
-            .ok_or_else(|| format!("TF2 UI texture is absent from bundle: {logical_path}"))?
-            .clone();
-        if digest(&bytes) != sha256 {
-            return Err(format!(
-                "TF2 UI texture changed before presentation: {logical_path}"
-            ));
+    let textures = ui_textures.into_iter().collect::<Vec<_>>();
+    if textures.is_empty() {
+        return Err("TF2 UI texture set is empty".to_owned());
+    }
+    let worker_count = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1)
+        .min(MAX_UI_PNG_WORKERS)
+        .min(textures.len());
+    let chunk_size = textures.len().div_ceil(worker_count);
+    let source_bundle = &resolver.bundle;
+    let rendered = std::thread::scope(|scope| {
+        let handles = textures
+            .chunks(chunk_size)
+            .map(|chunk| {
+                scope.spawn(move || {
+                    let mut output = Vec::new();
+                    for (logical_path, (sha256, width, height, frames, _raw_flags)) in chunk {
+                        let bytes = source_bundle.get(logical_path).ok_or_else(|| {
+                            format!("TF2 UI texture is absent from bundle: {logical_path}")
+                        })?;
+                        if digest(bytes) != *sha256 {
+                            return Err(format!(
+                                "TF2 UI texture changed before presentation: {logical_path}"
+                            ));
+                        }
+                        for frame in 0..*frames {
+                            let (decoded_width, decoded_height, png) = tf2_ui_png(bytes, frame)
+                                .map_err(|error| {
+                                    format!("TF2 UI texture {logical_path} frame {frame}: {error}")
+                                })?;
+                            if decoded_width != *width || decoded_height != *height {
+                                return Err(format!(
+                                    "TF2 UI texture dimensions changed: {logical_path}"
+                                ));
+                            }
+                            output.push((format!("playsrc/tf2-ui/png/{sha256}/{frame}.png"), png));
+                        }
+                    }
+                    Ok::<_, String>(output)
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut output = Vec::new();
+        for handle in handles {
+            output.extend(
+                handle
+                    .join()
+                    .map_err(|_| "TF2 UI texture worker panicked".to_owned())??,
+            );
         }
-        for frame in 0..frames {
-            let (decoded_width, decoded_height, png) = tf2_ui_png(&bytes, frame)
-                .map_err(|error| format!("TF2 UI texture {logical_path} frame {frame}: {error}"))?;
-            if decoded_width != width || decoded_height != height {
-                return Err(format!("TF2 UI texture dimensions changed: {logical_path}"));
+        Ok::<_, String>(output)
+    })?;
+    for (logical_path, bytes) in rendered {
+        if let Some(prior) = ui_bundle.get(&logical_path) {
+            if prior != &bytes {
+                return Err(format!(
+                    "conflicting TF2 UI presentation identity: {logical_path}"
+                ));
             }
-            ui_bundle.insert(format!("playsrc/tf2-ui/png/{sha256}/{frame}.png"), png);
+        } else {
+            ui_bundle.insert(logical_path, bytes);
         }
     }
+    stage("ui-png", &mut stage_started);
     let bundle = &resolver.bundle;
     if bundle.len() > MAX_DEPENDENCY_REQUESTS || resolver.requests.len() > MAX_DEPENDENCY_REQUESTS {
         return Err("source dependency request count exceeds bound".to_owned());
@@ -2154,6 +2246,8 @@ fn main() -> Result<(), String> {
     install_artifact(&destination, &output)?;
     install_artifact(&ui_destination, &ui_output)?;
     install_artifact(&ledger_destination, &ledger_bytes)?;
+    stage("serialize-and-install", &mut stage_started);
+    #[allow(unused_mut)]
     let mut report = BuildReport {
         target: target.clone(),
         content_build: CONTENT_BUILD,
@@ -2162,28 +2256,37 @@ fn main() -> Result<(), String> {
         authoritative_absences: ledger.authoritative_absences,
         entries: bundle.len(),
         bytes: output.len(),
-        sha256: digest(&output),
+        sha256: bundle_descriptor.sha256.clone(),
         bundle_descriptor,
         ui_entries: ui_bundle.len(),
         ui_bytes: ui_output.len(),
-        ui_sha256: digest(&ui_output),
+        ui_sha256: ui_descriptor.sha256.clone(),
         ui_descriptor,
         ledger_bytes: ledger_bytes.len(),
-        ledger_sha256: digest(&ledger_bytes),
+        ledger_sha256: ledger_descriptor.sha256.clone(),
         ledger_descriptor,
         native_hdr_bytes: None,
         native_hdr_sha256: None,
         native_hdr_derived_sha256: None,
     };
     if verify_hdr {
-        let artifact = playsrc_tf2_wasm::compile_artifact(&bsp_bytes, 1, &output)
-            .map_err(|error| format!("native HDR compilation failed with error {error}"))?;
-        let native_destination = directory.join(format!("{target}.native-hdr.psmp"));
-        install_artifact(&native_destination, &artifact.payload)?;
-        report.native_hdr_bytes = Some(artifact.payload.len());
-        report.native_hdr_sha256 = Some(digest(&artifact.payload));
-        report.native_hdr_derived_sha256 = Some(hex(&artifact.derived_sha256));
+        #[cfg(not(feature = "verify-hdr"))]
+        return Err("source bundle HDR verification feature is unavailable".to_owned());
+        #[cfg(feature = "verify-hdr")]
+        {
+            let artifact = playsrc_tf2_wasm::compile_artifact(&bsp_bytes, 1, &output)
+                .map_err(|error| format!("native HDR compilation failed with error {error}"))?;
+            let native_destination = directory.join(format!("{target}.native-hdr.psmp"));
+            install_artifact(&native_destination, &artifact.payload)?;
+            report.native_hdr_bytes = Some(artifact.payload.len());
+            report.native_hdr_sha256 = Some(digest(&artifact.payload));
+            report.native_hdr_derived_sha256 = Some(hex(&artifact.derived_sha256));
+        }
     }
+    eprintln!(
+        "source-bundle stage=total milliseconds={}",
+        started.elapsed().as_millis()
+    );
     println!(
         "{}",
         serde_json::to_string(&report).map_err(|error| error.to_string())?
@@ -2191,6 +2294,7 @@ fn main() -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(feature = "verify-hdr")]
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
