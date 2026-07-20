@@ -4,7 +4,7 @@ import { Tf2Application, type ApplicationView } from "./runtime"
 import "./style.css"
 
 const initial: ApplicationView = Object.freeze({
-  phase: "Loading",
+  phase: "Startup",
   gameUi: "main-menu",
   detail: "Loading configured TF2 interface resources",
   pointerLocked: false,
@@ -20,16 +20,22 @@ function App() {
   const gameUi = useRef<HTMLDivElement>(null)
   const hud = useRef<HTMLDivElement>(null)
   const options = useRef<HTMLDivElement>(null)
+  const loading = useRef<HTMLDivElement>(null)
+  const startup = useRef<HTMLDivElement>(null)
+  const startupVideo = useRef<HTMLVideoElement>(null)
   const runtime = useRef<Tf2Application>()
   const [view, setView] = useState<ApplicationView>(initial)
 
   useEffect(() => {
-    if (!canvas.current || !vgui.current || !gameUi.current || !hud.current || !options.current) return
+    if (!canvas.current || !vgui.current || !gameUi.current || !hud.current || !options.current || !loading.current || !startup.current || !startupVideo.current) return
     const application = new Tf2Application(canvas.current, {
       vgui: vgui.current,
       gameUi: gameUi.current,
       hud: hud.current,
       options: options.current,
+      loading: loading.current,
+      startup: startup.current,
+      startupVideo: startupVideo.current,
     }, setView)
     runtime.current = application
     void application.start()
@@ -43,10 +49,17 @@ function App() {
     <main
       class="tf2-application"
       data-phase={view.phase}
+      data-startup-state={view.startupState}
+      data-startup-gestures={view.startupGestures}
+      data-menu-preparation={view.menuPreparation}
+      data-loading-progress={view.loadingProgress}
+      data-loading-status={view.loadingStatus}
+      data-loading-background={view.loadingBackground}
       data-detail={view.detail}
       data-gameui={view.gameUi}
       data-gameplay-initialized={view.snapshotTick === undefined ? "false" : "true"}
       data-pointer-locked={view.pointerLocked ? "true" : "false"}
+      data-console-visible={view.consoleVisible ? "true" : "false"}
       data-hud-probe={view.hudProbe}
       data-hud-animation-trace={view.hudAnimationTrace}
       data-hud-operation-probe={view.hudOperationProbe}
@@ -101,6 +114,7 @@ function App() {
       data-viewmodel-sequences={view.viewmodelSequences}
       data-crouch-history={view.crouchHistory?.join("|")}
       data-grounded={view.movement?.grounded}
+      data-vertical-speed={view.movement?.velocity[2]}
       data-viewmodel-timelines={view.viewmodelTimelineProbes?.join("|")}
       data-environment={view.environment ? `${view.environment.profile},${view.environment.clusters},${view.environment.skySurfaces},${view.environment.waterVolumes},${view.environment.marks},${view.environment.markFragments}` : undefined}
       data-environment-drawables={view.environmentDrawables ?? 0}
@@ -141,6 +155,18 @@ function App() {
         onClick={(event) => void runtime.current?.requestPointer(event.currentTarget)}
         onContextMenu={(event) => event.preventDefault()}
       />
+      <div ref={startup} class="startup-layer" aria-label="Valve startup movie">
+        <video
+          ref={startupVideo}
+          class="startup-movie"
+          playsInline
+          preload="auto"
+          tabIndex={0}
+          onClick={() => runtime.current?.admitStartupGesture()}
+          onKeyDown={(event) => { if (event.code === "Escape") runtime.current?.startupKey(event.code) }}
+        />
+      </div>
+      <div ref={loading} class="vgui-layer loading-layer" aria-label="TF2 map loading" />
       <div ref={gameUi} class="vgui-layer gameui-layer" aria-label="TF2 GameUI" />
       <div ref={hud} class="vgui-layer hud-layer" aria-label="TF2 HUD" />
       <div ref={options} class="vgui-layer options-layer" aria-label="TF2 Options" />

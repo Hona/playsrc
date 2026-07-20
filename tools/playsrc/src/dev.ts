@@ -8,6 +8,8 @@ import { repositoryRoot } from "./config"
 import { acquireMap } from "./targets"
 import { buildTf2Wasm } from "./tf2-wasm-build"
 import { buildSourceBundle } from "./source-bundle"
+import { TF2_CONFIGURED_STARTUP } from "@playsrc/game-tf2-browser/startup-presentation"
+import { TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS, TF2_STAMP_BACKGROUND } from "@playsrc/game-tf2-browser/loading-presentation"
 
 const APPLICATION_URL = "http://127.0.0.1:4173/"
 const ASSET_ORIGIN = "http://127.0.0.1:4174"
@@ -105,6 +107,11 @@ export async function startDevelopment(config: LocalConfig, target: string | und
     wasm,
     dependencies,
     ui,
+    startup: TF2_CONFIGURED_STARTUP,
+    loading: {
+      mapPhotoLocations: TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS,
+      stampBackground: TF2_STAMP_BACKGROUND,
+    },
     presentation: {
       randomSeed: 0,
       activeHoliday: "none",

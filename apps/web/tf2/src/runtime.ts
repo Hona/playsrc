@@ -14,6 +14,23 @@ import {
 } from "@playsrc/game-tf2-browser/settings-integration"
 import { createTf2PresentationRandom, initializeTf2VguiResources, type Tf2PresentationRandom, type Tf2VguiResources } from "@playsrc/game-tf2-browser/ui-integration"
 import { tf2HudUnavailable, type Tf2HudFreezePanel, type Tf2HudScoreboard } from "@playsrc/game-tf2-browser/hud"
+import {
+  createTf2StartupController,
+  validateTf2StartupDescriptor,
+  type Tf2HiddenMenu,
+  type Tf2StartupController,
+  type Tf2StartupDescriptor,
+  type Tf2StartupMediaSession,
+  type Tf2StartupState,
+} from "@playsrc/game-tf2-browser/startup-presentation"
+import {
+  createTf2LoadingPresentation,
+  initializeTf2LoadingVguiRuntime,
+  resolveTf2LoadingBackground,
+  type Tf2LoadingBackgroundResult,
+  type Tf2LoadingPresentation,
+  type Tf2LoadingVguiRuntime,
+} from "@playsrc/game-tf2-browser/loading-presentation"
 import { encodeCommand, mapDerivedKey, type Snapshot } from "@playsrc/game-tf2-browser/codec"
 import { parsePresentationArtifacts, type PresentationArtifacts } from "@playsrc/game-tf2-browser/artifacts"
 import {
@@ -97,7 +114,7 @@ function dependencyEntries(bytes: Uint8Array): Map<string, Uint8Array> {
 }
 
 export type ApplicationView = Readonly<{
-  phase: "MainMenu" | "Loading" | "Ready" | "Replacing" | "Failed" | "Closed"
+  phase: "Startup" | "MainMenu" | "Loading" | "Ready" | "Replacing" | "Failed" | "Closed"
   detail: string
   gameUi: "main-menu" | "loading" | "in-game" | "pause" | "disconnecting" | "failure"
   hudProbe?: string
@@ -164,6 +181,12 @@ export type ApplicationView = Readonly<{
   displayPreparedRevision?: number
   lockerProbe?: string
   unsupportedState?: "StickyPhysicsSolverUnavailable"
+  startupState?: Tf2StartupState["kind"]
+  loadingProgress?: number
+  loadingStatus?: string
+  loadingBackground?: "map-photo" | "configured-generic"
+  startupGestures?: number
+  menuPreparation?: string
 }>
 
 type Renderer = Awaited<ReturnType<typeof createRenderer>>
@@ -193,6 +216,9 @@ export class Tf2Application {
   readonly #gameUiRoot: HTMLElement
   readonly #hudRoot: HTMLElement
   readonly #optionsRoot: HTMLElement
+  readonly #loadingRoot: HTMLElement
+  readonly #startupRoot: HTMLElement
+  readonly #startupVideo: HTMLVideoElement
   readonly #publish: (view: ApplicationView) => void
   #configuration?: BrowserConfiguration
   #dependencies: Uint8Array = new Uint8Array()
@@ -228,6 +254,14 @@ export class Tf2Application {
   #uiResources?: Tf2VguiResources
   #presentationRandom?: Tf2PresentationRandom
   #gameUi?: Tf2GameUiIntegration
+  #startup?: Tf2StartupController
+  #loadingPresentation?: Tf2LoadingPresentation
+  #loadingVgui?: Tf2LoadingVguiRuntime
+  #loadingBackground: Extract<Tf2LoadingBackgroundResult, { ok: true }> | null = null
+  #loadingPresentationGeneration = 0
+  #menuPresentationDestroyed = false
+  #menuRevealed = false
+  #startupGestures = 0
   readonly #gameUiRequestTasks = new Set<number>()
   #hudIntegration?: Tf2HudIntegration
   #settings?: Tf2BrowserSettings
@@ -243,6 +277,7 @@ export class Tf2Application {
   #authoritativeViewRevision=0
   #pointerMovement?: "raw" | "adjusted"
   #pointerRequestPending=false
+  #lastPointerLockFailure="Pointer lock failed"
   readonly #buttons = new PhysicalButtonState()
   #jumpPressed = false
   #firePressed = false
@@ -289,7 +324,7 @@ export class Tf2Application {
   #closed = false
   #blockers=new Set<string>()
   #view: ApplicationView = Object.freeze({
-    phase: "Loading",
+    phase: "Startup",
     detail: "Reading local configuration",
     gameUi: "main-menu",
     pointerLocked: false,
@@ -301,7 +336,7 @@ export class Tf2Application {
 
   constructor(
     canvas: HTMLCanvasElement,
-    roots: Readonly<{ vgui: HTMLElement; gameUi: HTMLElement; hud: HTMLElement; options: HTMLElement }>,
+    roots: Readonly<{ vgui: HTMLElement; gameUi: HTMLElement; hud: HTMLElement; options: HTMLElement; loading: HTMLElement; startup: HTMLElement; startupVideo: HTMLVideoElement }>,
     publish: (view: ApplicationView) => void,
   ) {
     this.#canvas = canvas
@@ -309,7 +344,14 @@ export class Tf2Application {
     this.#gameUiRoot = roots.gameUi
     this.#hudRoot = roots.hud
     this.#optionsRoot = roots.options
+    this.#loadingRoot = roots.loading
+    this.#startupRoot = roots.startup
+    this.#startupVideo = roots.startupVideo
     this.#publish = publish
+    this.#gameUiRoot.hidden = true
+    this.#gameUiRoot.inert = true
+    this.#gameUiRoot.setAttribute("aria-hidden", "true")
+    this.#startupRoot.hidden = false
   }
 
   #set(patch: Partial<ApplicationView>): void {
@@ -336,14 +378,53 @@ export class Tf2Application {
       settingsApply: this.#view.settingsApply,
       presentationRandomState: this.#presentationRandom ? JSON.stringify(this.#presentationRandom.snapshot()) : this.#view.presentationRandomState,
       presentationCharacter: this.#gameUi?.snapshot().panels.find((panel) => panel.name === "TFCharacterImage")?.state.image ?? this.#view.presentationCharacter,
+      startupState: this.#view.startupState,
+      startupGestures: this.#view.startupGestures,
+      menuPreparation: this.#view.menuPreparation,
     })
     this.#publish(this.#view)
+    this.#syncLoadingPresentation()
+  }
+
+  #beginLoadingPresentation(): void {
+    if (!this.#configuration) throw new Error("TF2 loading configuration is unavailable")
+    this.#loadingPresentationGeneration += 1
+    const result = resolveTf2LoadingBackground({
+      generation: this.#loadingPresentationGeneration,
+      mapIdentity: "jump_beef",
+      viewport: this.#viewport(),
+      mapPhotoLookups: this.#configuration.loading.mapPhotoLocations.map((location) => Object.freeze({ location, outcome: "missing" as const })),
+      backingMaterial: this.#configuration.loading.stampBackground.material,
+      backingTexture: this.#configuration.loading.stampBackground.texture,
+    })
+    if (!result.ok) throw new Error(`${result.code}:${result.subject}`)
+    this.#loadingBackground = result
+    this.#syncLoadingPresentation()
+  }
+
+  #syncLoadingPresentation(): void {
+    if (!this.#loadingPresentation || !this.#loadingVgui || !this.#gameUi || this.#loadingPresentationGeneration < 1) return
+    const snapshot = this.#loadingPresentation.update(
+      this.#loadingPresentationGeneration,
+      this.#gameUi.state(),
+      this.#viewport(),
+      this.#loadingBackground,
+    )
+    if (snapshot) this.#loadingVgui.apply(snapshot)
   }
 
   #advanceLoading(phase: Tf2LoadingPhase): void {
     const transition = this.#gameUi?.dispatch({ kind: "loading-progress", phase })
     if (transition?.state.kind === "loading") {
-      this.#set({ phase: "Loading", gameUi: "loading", detail: transition.state.statusText || phase })
+      this.#syncLoadingPresentation()
+      this.#set({
+        phase: "Loading",
+        gameUi: "loading",
+        detail: transition.state.statusText || phase,
+        loadingProgress: transition.state.progress,
+        loadingStatus: transition.state.statusText,
+        loadingBackground: this.#loadingBackground?.disposition,
+      })
     }
   }
 
@@ -412,7 +493,8 @@ export class Tf2Application {
       if (request.mapIdentity !== "jump_beef") throw new Error(`Undeclared map request ${request.mapIdentity}`)
       const started = this.#gameUi?.dispatch({ kind: "loading-started", mapIdentity: request.mapIdentity })
       if (started?.disposition !== "applied") throw new Error("TF2 GameUI rejected loading start")
-      this.#set({ phase: "Loading", gameUi: "loading", detail: "Starting local game server..." })
+      this.#beginLoadingPresentation()
+      this.#set({ phase: "Loading", gameUi: "loading", detail: "Starting local game server...", loadingProgress: 0, loadingStatus: "", loadingBackground: this.#loadingBackground?.disposition })
       this.#advanceLoading("changing-map")
       await this.#startGameplay()
     }
@@ -458,13 +540,274 @@ export class Tf2Application {
     return reject(`browser game owner is unavailable for ${request.changes.map((change) => change.settingId).join(",")}`)
   }
 
+  #verifiedDependency(logicalPath: string, byteLength: number, expectedSha256: string): Uint8Array {
+    const bytes = this.#dependencyEntries.get(logicalPath)
+    if (!bytes || bytes.byteLength !== byteLength || bytesToHex(sha256(bytes)) !== expectedSha256) {
+      throw new Error(`Configured dependency ${logicalPath} differs`)
+    }
+    return bytes
+  }
+
+  async #prepareStartupMedia(
+    descriptor: Tf2StartupDescriptor,
+    events: Readonly<{ completed(): void; failed(reason: string): void }>,
+  ): Promise<Tf2StartupMediaSession> {
+    const validated = validateTf2StartupDescriptor(descriptor)
+    if (!validated.ok) throw new Error(`${validated.code}:${validated.subject}`)
+    this.#verifiedDependency(descriptor.manifest.logicalPath, descriptor.manifest.byteLength, descriptor.manifest.sha256)
+    const bytes = this.#verifiedDependency(descriptor.browserRepresentation.logicalPath, descriptor.browserRepresentation.byteLength, descriptor.browserRepresentation.sha256)
+    const video = this.#startupVideo
+    const url = URL.createObjectURL(new Blob([bytes.slice()], { type: "video/webm" }))
+    let destroyed = false
+    let admitted = false
+    const completed = () => events.completed()
+    const failed = () => events.failed(video.error ? `MediaError:${video.error.code}` : "Startup media failed")
+    video.controls = false
+    video.muted = false
+    video.loop = false
+    video.autoplay = false
+    video.playsInline = true
+    video.disablePictureInPicture = true
+    video.src = url
+    video.addEventListener("ended", completed)
+    video.addEventListener("error", failed)
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const loaded = () => { cleanup(); resolve() }
+        const error = () => { cleanup(); reject(new Error(video.error ? `MediaError:${video.error.code}` : "Startup media decode failed")) }
+        const cleanup = () => { video.removeEventListener("loadedmetadata", loaded); video.removeEventListener("error", error) }
+        if (video.readyState >= HTMLMediaElement.HAVE_METADATA) resolve()
+        else {
+          video.addEventListener("loadedmetadata", loaded)
+          video.addEventListener("error", error)
+          video.load()
+        }
+      })
+      const expected = descriptor.browserRepresentation
+      if (video.videoWidth !== expected.video.width || video.videoHeight !== expected.video.height
+        || Math.abs(video.duration * 1_000_000 - expected.durationMicroseconds) > 1_000) {
+        throw new Error("Configured startup media metadata differs")
+      }
+    } catch (error) {
+      video.removeEventListener("ended", completed)
+      video.removeEventListener("error", failed)
+      video.removeAttribute("src")
+      video.load()
+      URL.revokeObjectURL(url)
+      throw error
+    }
+    const startPlayback = async (): Promise<"started"> => {
+      await video.play()
+      admitted = true
+      return "started"
+    }
+    return Object.freeze({
+      play: async () => {
+        try { return await startPlayback() }
+        catch (error) {
+          if (error instanceof DOMException && error.name === "NotAllowedError") return "gesture-required"
+          throw error
+        }
+      },
+      admitGesture: startPlayback,
+      skip: () => video.pause(),
+      setVisible: (visible) => {
+        if (!visible) video.pause()
+        else if (admitted) void video.play().catch((error) => events.failed(error instanceof Error ? error.message : "Startup media resume failed"))
+      },
+      destroy: () => {
+        if (destroyed) return
+        destroyed = true
+        admitted = false
+        video.pause()
+        video.removeEventListener("ended", completed)
+        video.removeEventListener("error", failed)
+        video.removeAttribute("src")
+        video.load()
+        URL.revokeObjectURL(url)
+      },
+    })
+  }
+
+  async #prepareMainMenu(): Promise<Tf2HiddenMenu> {
+    if (!this.#configuration || !this.#presentationRandom) throw new Error("TF2 Main Menu inputs are unavailable")
+    this.#set({ menuPreparation: "console-resources" })
+    this.#consoleResources = await resolveConfiguredConsoleResources(this.#dependencyEntries, Math.max(1, this.#vguiRoot.getBoundingClientRect().height))
+    this.#blockers.add(this.#consoleResources.blocker)
+    this.#set({ menuPreparation: "vgui-resources" })
+    this.#uiResources = await initializeTf2VguiResources({
+      dependencies: this.#dependencyEntries,
+      viewportHeight: Math.max(1, Math.trunc(this.#viewport().height)),
+      platform: navigator.platform.toLowerCase().startsWith("mac") ? "macos" : navigator.platform.toLowerCase().startsWith("win") ? "windows" : "linux",
+    })
+    this.#set({ menuPreparation: "constructing-main-menu" })
+    for (const diagnostic of this.#uiResources.diagnostics) this.#blockers.add(`TF2Ui${diagnostic.code}: ${diagnostic.subject}`)
+    const persisted = localStorage.getItem(TF2_BROWSER_SETTINGS_STORAGE_KEY)
+    const duckBinding = TF2_SELECTED_OPTIONS.settings.find((schema) => schema.kind === "binding" && schema.action === "+duck")
+    this.#settings = initializeTf2BrowserSettings({
+      persistence: persisted === null ? null : new TextEncoder().encode(persisted),
+      current: {
+        "keyboard.console-enabled": true,
+        "audio.effect-volume": this.#effectVolume,
+        "audio.music-volume": this.#musicVolume,
+        "audio.master-muted": this.#masterMuted,
+        "mouse.sensitivity": this.#mouseSensitivity,
+        "mouse.reverse": this.#reverseMouse,
+        "video.hdr": this.#renderLevel,
+        ...(duckBinding ? { [duckBinding.id]: Object.freeze({ code: "SHIFT", modifiers: 0 }) } : {}),
+      },
+      owners: { renderer: "available", audio: "available", input: "available", game: "available", application: "available" },
+      apply: (request) => this.#applySettings(request),
+    })
+    this.#set({ menuPreparation: "settings-ready" })
+    const persistenceState = persisted === null ? "absent" : this.#settings.snapshot().persistenceDiagnostic ? "rejected" : "loaded"
+    this.#gameUi = initializeTf2GameUiIntegration({
+      root: this.#gameUiRoot,
+      resources: this.#uiResources,
+      viewport: this.#viewport(),
+      reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
+      clock: { nowSeconds: () => 0 },
+      random: this.#presentationRandom,
+      presentation: {
+        random: this.#presentationRandom,
+        activeHoliday: this.#configuration.presentation.activeHoliday,
+        activeWar: this.#configuration.presentation.activeWar,
+        activeOperation: this.#configuration.presentation.activeOperation,
+        freeTrial: this.#configuration.presentation.freeTrial,
+      },
+      onRequest: (request) => this.#deferGameUiRequest(request),
+    })
+    this.#set({ menuPreparation: "gameui-ready" })
+    for (const diagnostic of this.#gameUi.diagnostics()) this.#blockers.add(`TF2GameUi${diagnostic.code}: ${diagnostic.subject}`)
+    const loadingResource = this.#uiResources.descriptor.panels.find((panel) => panel.source.logicalPath === "resource/loadingdialognobanner.res")
+    const failureResource = this.#uiResources.descriptor.panels.find((panel) => panel.source.logicalPath === "resource/loadingdialogerror.res")
+    if (!loadingResource || !failureResource) throw new Error("Configured TF2 loading resources are unavailable")
+    this.#loadingPresentation = createTf2LoadingPresentation({ loadingResource, failureResource })
+    this.#set({ menuPreparation: "loading-model-ready" })
+    try {
+      this.#loadingVgui = initializeTf2LoadingVguiRuntime({
+        root: this.#loadingRoot,
+        resources: this.#uiResources,
+        viewport: this.#viewport(),
+        reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
+        clock: { nowSeconds: () => 0 },
+        random: this.#presentationRandom,
+        onRequest: (request) => {
+          if (request.kind === "disconnect") this.#gameUi?.dispatch({ kind: "activate-button", button: "cancel-loading" })
+          else {
+            const transition = this.#gameUi?.dispatch({ kind: "dismiss-failure" })
+            if (transition?.state.kind === "main-menu") this.#returnToMainMenu()
+          }
+          this.#syncLoadingPresentation()
+        },
+      })
+    } catch (error) {
+      this.#set({ menuPreparation: `loading-error:${error instanceof Error ? error.message : String(error)}` })
+      throw error
+    }
+    this.#set({ menuPreparation: "ready" })
+    this.#initializeConsole()
+    const currentSettings = this.#settings.snapshot().settings.current
+    this.#consoleEnabled = currentSettings["keyboard.console-enabled"] === true
+    this.#effectVolume = currentSettings["audio.effect-volume"] as number
+    this.#musicVolume = currentSettings["audio.music-volume"] as number
+    this.#masterMuted = currentSettings["audio.master-muted"] === true
+    this.#mouseSensitivity = currentSettings["mouse.sensitivity"] as number
+    this.#reverseMouse = currentSettings["mouse.reverse"] === true
+    this.#installListeners()
+    this.#animationFrame = requestAnimationFrame(this.#frame)
+    this.#paused = true
+    this.#set({
+      settingsPersistence: persistenceState,
+      optionsVisible: false,
+      presentationRandomState: JSON.stringify(this.#presentationRandom.snapshot()),
+      presentationCharacter: this.#gameUi.snapshot().panels.find((panel) => panel.name === "TFCharacterImage")?.state.image ?? "unavailable",
+    })
+    return Object.freeze({
+      reveal: () => this.#revealMainMenu(),
+      destroy: () => this.#destroyMenuPresentation(),
+    })
+  }
+
+  #revealMainMenu(): void {
+    if (this.#menuRevealed || this.#closed) return
+    this.#menuRevealed = true
+    this.#gameUiRoot.hidden = false
+    this.#gameUiRoot.inert = false
+    this.#gameUiRoot.removeAttribute("aria-hidden")
+    this.#startupRoot.hidden = true
+    this.#set({ phase: "MainMenu", gameUi: "main-menu", detail: "TF2 Main Menu" })
+  }
+
+  #destroyMenuPresentation(): void {
+    if (this.#menuPresentationDestroyed) return
+    this.#menuPresentationDestroyed = true
+    this.#loadingVgui?.destroy()
+    this.#loadingVgui = undefined
+    this.#loadingPresentation?.destroy()
+    this.#loadingPresentation = undefined
+    this.#gameUi?.destroy()
+    this.#gameUi = undefined
+    this.#options?.destroy()
+    this.#options = undefined
+    this.#uiResources?.destroy()
+    this.#uiResources = undefined
+    this.#console?.apply({ kind: "destroy" })
+    this.#console = undefined
+    this.#diagnostics?.apply({ kind: "destroy" })
+    this.#diagnostics = undefined
+    this.#consoleResources?.fontSet?.destroy()
+    this.#consoleResources = undefined
+  }
+
+  readonly #startupKey = (event: KeyboardEvent): void => {
+    const state = this.#startup?.state().kind
+    if (event.code === "Escape" && (state === "Playing" || state === "AwaitingGesture")) {
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      this.#startup?.key("Escape")
+      return
+    }
+    if (state === "AwaitingGesture") {
+      this.#startupGestures += 1
+      this.#set({ startupGestures: this.#startupGestures })
+      this.#startup?.gesture()
+    }
+  }
+  readonly #startupVisibility = (): void => this.#startup?.visibility(!document.hidden)
+  #installStartupListeners(): void {
+    window.addEventListener("keydown", this.#startupKey, true)
+    document.addEventListener("visibilitychange", this.#startupVisibility)
+  }
+  #removeStartupListeners(): void {
+    window.removeEventListener("keydown", this.#startupKey, true)
+    document.removeEventListener("visibilitychange", this.#startupVisibility)
+  }
+  #startupState(state: Tf2StartupState): void {
+    if (state.kind === "Completed" || state.kind === "Skipped" || state.kind === "Failed" || state.kind === "Destroyed") this.#removeStartupListeners()
+    if (state.kind === "Failed") this.#set({ phase: "Failed", gameUi: "failure", startupState: state.kind, detail: `${state.stage}: ${state.reason}` })
+    else if (state.kind !== "Completed" && state.kind !== "Skipped" && state.kind !== "Destroyed") this.#set({ phase: "Startup", startupState: state.kind, detail: state.kind })
+    else this.#set({ startupState: state.kind })
+  }
+
+  admitStartupGesture(): void {
+    if (this.#startup?.state().kind !== "AwaitingGesture") return
+    this.#startupGestures += 1
+    this.#set({ startupGestures: this.#startupGestures })
+    this.#startup.gesture()
+  }
+
+  startupKey(code: string): void {
+    if (code === "Escape") this.#startup?.key("Escape")
+  }
+
   async start(): Promise<void> {
     try {
       this.#configuration = await loadBrowserConfiguration()
       this.#presentationRandom = createTf2PresentationRandom(this.#configuration.presentation.randomSeed)
       this.#renderLevel = this.#configuration.renderLevel
       this.#mapIdentity = this.#configuration.target
-      this.#set({ detail: "Loading configured TF2 interface resources" })
+      this.#set({ phase: "Startup", startupState: "Preparing", detail: "Preparing configured Valve startup movie" })
       const [dependencies, ui] = await Promise.all([
         fetchImmutableObject(this.#configuration.assetOrigin, this.#configuration.dependencies),
         fetchImmutableObject(this.#configuration.assetOrigin, this.#configuration.ui),
@@ -475,69 +818,16 @@ export class Tf2Application {
         if (this.#dependencyEntries.has(identity)) throw new Error(`Duplicate UI dependency ${identity}`)
         this.#dependencyEntries.set(identity, bytes)
       }
-      this.#consoleResources = await resolveConfiguredConsoleResources(this.#dependencyEntries, Math.max(1, this.#vguiRoot.getBoundingClientRect().height))
-      this.#blockers.add(this.#consoleResources.blocker)
-      this.#uiResources = await initializeTf2VguiResources({
-        dependencies: this.#dependencyEntries,
-        viewportHeight: Math.max(1, Math.trunc(this.#viewport().height)),
-        platform: navigator.platform.toLowerCase().startsWith("mac") ? "macos" : navigator.platform.toLowerCase().startsWith("win") ? "windows" : "linux",
+      this.#startup = createTf2StartupController({
+        descriptor: this.#configuration.startup,
+        policy: { benchmark: false, editMode: false, forceVr: false, developer: false, noVideo: false, allowDebug: false, healthWarningPresent: false },
+        clock: { nowMicroseconds: () => Math.round(performance.now() * 1_000) },
+        media: { prepare: (descriptor, events) => this.#prepareStartupMedia(descriptor, events) },
+        menu: { prepareHidden: () => this.#prepareMainMenu() },
+        onState: (state) => this.#startupState(state),
       })
-      for (const diagnostic of this.#uiResources.diagnostics) this.#blockers.add(`TF2Ui${diagnostic.code}: ${diagnostic.subject}`)
-      const persisted = localStorage.getItem(TF2_BROWSER_SETTINGS_STORAGE_KEY)
-      const duckBinding = TF2_SELECTED_OPTIONS.settings.find((schema) => schema.kind === "binding" && schema.action === "+duck")
-      this.#settings = initializeTf2BrowserSettings({
-        persistence: persisted === null ? null : new TextEncoder().encode(persisted),
-        current: {
-          "keyboard.console-enabled": true,
-          "audio.effect-volume": this.#effectVolume,
-          "audio.music-volume": this.#musicVolume,
-          "audio.master-muted": this.#masterMuted,
-          "mouse.sensitivity": this.#mouseSensitivity,
-          "mouse.reverse": this.#reverseMouse,
-          "video.hdr": this.#renderLevel,
-          ...(duckBinding ? { [duckBinding.id]: Object.freeze({ code: "SHIFT", modifiers: 0 }) } : {}),
-        },
-        owners: { renderer: "available", audio: "available", input: "available", game: "available", application: "available" },
-        apply: (request) => this.#applySettings(request),
-      })
-      const persistenceState = persisted === null ? "absent" : this.#settings.snapshot().persistenceDiagnostic ? "rejected" : "loaded"
-      this.#gameUi = initializeTf2GameUiIntegration({
-        root: this.#gameUiRoot,
-        resources: this.#uiResources,
-        viewport: this.#viewport(),
-        reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
-        clock: { nowSeconds: () => 0 },
-        random: this.#presentationRandom,
-        presentation: {
-          random: this.#presentationRandom,
-          activeHoliday: this.#configuration.presentation.activeHoliday,
-          activeWar: this.#configuration.presentation.activeWar,
-          activeOperation: this.#configuration.presentation.activeOperation,
-          freeTrial: this.#configuration.presentation.freeTrial,
-        },
-        onRequest: (request) => this.#deferGameUiRequest(request),
-      })
-      for (const diagnostic of this.#gameUi.diagnostics()) this.#blockers.add(`TF2GameUi${diagnostic.code}: ${diagnostic.subject}`)
-      this.#initializeConsole()
-      const currentSettings = this.#settings.snapshot().settings.current
-      this.#consoleEnabled = currentSettings["keyboard.console-enabled"] === true
-      this.#effectVolume = currentSettings["audio.effect-volume"] as number
-      this.#musicVolume = currentSettings["audio.music-volume"] as number
-      this.#masterMuted = currentSettings["audio.master-muted"] === true
-      this.#mouseSensitivity = currentSettings["mouse.sensitivity"] as number
-      this.#reverseMouse = currentSettings["mouse.reverse"] === true
-      this.#installListeners()
-      this.#animationFrame = requestAnimationFrame(this.#frame)
-      this.#paused = true
-      this.#set({
-        phase: "MainMenu",
-        gameUi: "main-menu",
-        detail: "TF2 Main Menu",
-        settingsPersistence: persistenceState,
-        optionsVisible: false,
-        presentationRandomState: JSON.stringify(this.#presentationRandom.snapshot()),
-        presentationCharacter: this.#gameUi.snapshot().panels.find((panel) => panel.name === "TFCharacterImage")?.state.image ?? "unavailable",
-      })
+      this.#installStartupListeners()
+      this.#startup.start()
     } catch (error) {
       await this.#release()
       this.#set({ phase: "Failed", gameUi: "failure", detail: error instanceof Error ? error.message : "Application startup failed" })
@@ -683,6 +973,7 @@ export class Tf2Application {
         presentationCache:this.#loaded.presentationCache,
         presentationCacheError:this.#loaded.presentationCacheError,
       })
+      this.#syncLoadingPresentation()
       this.#set({
         phase: "Ready",
         gameUi: "in-game",
@@ -708,11 +999,13 @@ export class Tf2Application {
         lockerProbe:this.#lockerProbe(this.#snapshot.tick),
         ...this.#gameplayTraces(this.#snapshot),
         ...this.#snapshotProbes(this.#snapshot),
+        loadingProgress: 1,
       })
     } catch (error) {
       await this.#teardownGameplay()
       const detail = error instanceof Error ? error.message : "Gameplay startup failed"
       this.#gameUi?.dispatch({ kind: "loading-failed", reason: "Map load failed", extendedReason: detail.slice(0, 255) })
+      this.#syncLoadingPresentation()
       this.#set({ phase: "Failed", gameUi: "failure", detail })
     }
   }
@@ -1594,6 +1887,7 @@ export class Tf2Application {
     const timeSeconds = time / 1_000
     try {
       this.#gameUi?.frame(timeSeconds)
+      this.#loadingVgui?.frame(timeSeconds)
       if(this.#view.optionsVisible)this.#options?.frame(performance.now()/1_000)
       this.#hudIntegration?.frame(timeSeconds)
     } catch (error) {
@@ -2056,7 +2350,8 @@ export class Tf2Application {
     if (this.#options?.handleKey(event)) return
     if (event.code === "Backquote") {
       if (!this.#consoleEnabled || this.#keyboardAction(event) !== "toggleconsole"
-        || this.#vguiRoot.contains(event.target as Node) || this.#optionsRoot.contains(event.target as Node)) return
+        || (this.#vguiRoot.contains(event.target as Node) && !this.#console?.snapshot().visible)
+        || this.#optionsRoot.contains(event.target as Node)) return
       event.preventDefault()
       this.toggleConsole()
       return
@@ -2130,7 +2425,7 @@ export class Tf2Application {
     if(document.pointerLockElement===this.#canvas)return
     this.#pointerMovement=undefined
     this.#neutral()
-    this.#set({pointerLocked:false,pointerMovement:undefined,detail:"Pointer lock failed"})
+    this.#set({pointerLocked:false,pointerMovement:undefined,detail:this.#lastPointerLockFailure})
   }
 
   #neutral(): void {
@@ -2175,7 +2470,8 @@ export class Tf2Application {
       if(document.pointerLockElement===this.#canvas)this.#set({pointerLocked:true,pointerMovement:this.#pointerMovement})
     } catch (error) {
       this.#pointerMovement=undefined
-      this.#set({ detail: error instanceof Error ? error.message : "Pointer lock failed" })
+      this.#lastPointerLockFailure = error instanceof Error ? `Pointer lock failed: ${error.name}:${error.message}:activation=${navigator.userActivation.isActive}` : "Pointer lock failed"
+      this.#set({ detail: this.#lastPointerLockFailure })
     }
     await audioAdmission
   }
@@ -2215,6 +2511,19 @@ export class Tf2Application {
     this.#gameUi?.setViewport(this.#viewport())
     this.#hudIntegration?.setViewport(this.#viewport())
     this.#options?.setViewport(this.#viewport())
+    this.#loadingVgui?.setViewport(this.#viewport())
+    if (this.#loadingPresentationGeneration > 0 && this.#configuration) {
+      const result = resolveTf2LoadingBackground({
+        generation: this.#loadingPresentationGeneration,
+        mapIdentity: "jump_beef",
+        viewport: this.#viewport(),
+        mapPhotoLookups: this.#configuration.loading.mapPhotoLocations.map((location) => Object.freeze({ location, outcome: "missing" as const })),
+        backingMaterial: this.#configuration.loading.stampBackground.material,
+        backingTexture: this.#configuration.loading.stampBackground.texture,
+      })
+      if (result.ok) this.#loadingBackground = result
+      this.#syncLoadingPresentation()
+    }
   }
 
   async close(): Promise<void> {
@@ -2264,6 +2573,9 @@ export class Tf2Application {
   async #release(): Promise<void> {
     if (this.#closed) return
     this.#closed = true
+    this.#removeStartupListeners()
+    this.#startup?.destroy()
+    this.#startup = undefined
     this.#paused = true
     for (const handle of this.#gameUiRequestTasks) clearTimeout(handle)
     this.#gameUiRequestTasks.clear()
@@ -2278,11 +2590,6 @@ export class Tf2Application {
       } catch {}
     }
     await this.#teardownGameplay()
-    this.#gameUi?.destroy()
-    this.#options?.destroy()
-    this.#uiResources?.destroy()
-    this.#console?.apply({ kind: "destroy" })
-    this.#diagnostics?.apply({ kind: "destroy" })
-    this.#consoleResources?.fontSet?.destroy()
+    this.#destroyMenuPresentation()
   }
 }

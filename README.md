@@ -58,6 +58,7 @@ The Cargo workspace contains Rust crates inside their owning modules. Run `bun r
 ## Scope
 
 - Reusable Source 1 format, world, runtime, and presentation packages.
+- Configured TF2 Valve startup playback with hidden parallel Main Menu preparation, plus exact resource-driven map loading presentation.
 - Complete TF2 game behavior and game-owned rulesets, beginning with TF2 jump.
 - Future CS:S and legacy Source 1 CS:GO games with their own rulesets.
 - Browser products, future online multiplayer services, tools, asset publication, and infrastructure.

@@ -75,6 +75,7 @@
         "@playsrc/asset-store": "workspace:*",
         "@playsrc/assets-service": "workspace:*",
         "@playsrc/content": "workspace:*",
+        "@playsrc/game-tf2-browser": "workspace:*",
         "@playsrc/rendering": "workspace:*",
         "vite": "8.1.5",
       },

@@ -15,7 +15,7 @@ describe("TF2 loading background resolution", () => {
       backingMaterial: TF2_STAMP_BACKGROUND.material,
       backingTexture: TF2_STAMP_BACKGROUND.texture,
       checkedLocations: TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS,
-      backgroundWidth: 1_280,
+      backgroundWidth: 960,
       disposition: "configured-generic",
     })
   })
@@ -28,6 +28,6 @@ describe("TF2 loading background resolution", () => {
 
   test("rejects malformed results and derives 4:3 width for tall viewports", () => {
     expect(resolveTf2LoadingBackground({ ...input(), mapPhotoLookups: [{ location: "pak!photo", outcome: "malformed" }] })).toEqual({ ok: false, generation: 1, code: "MalformedMapPhoto", subject: "pak!photo", checkedLocations: ["pak!photo"] })
-    expect(resolveTf2LoadingBackground(input(390, 844))).toMatchObject({ ok: true, backgroundWidth: 1_125.3333333333333 })
+    expect(resolveTf2LoadingBackground(input(390, 844))).toMatchObject({ ok: true, backgroundWidth: 1_125 })
   })
 })

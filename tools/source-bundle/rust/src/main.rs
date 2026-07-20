@@ -267,11 +267,21 @@ struct DependencyLedger {
     target: String,
     gameinfo_sha256: &'static str,
     map: MapSourceRecord,
+    startup_sources: Vec<DeclaredSourceRecord>,
     providers: Vec<ProviderRecord>,
     requests: Vec<RequestRecord>,
     resolved_entries: usize,
     authoritative_absences: usize,
     bundle: ObjectDescriptor,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeclaredSourceRecord {
+    logical_path: String,
+    descriptor: ObjectDescriptor,
+    provenance: ProvenanceRecord,
+    disposition: &'static str,
 }
 
 struct Resolver<'a> {
@@ -292,6 +302,26 @@ impl<'a> Resolver<'a> {
     fn required(&mut self, path: &str, consumer: impl Into<String>) -> Result<Vec<u8>, String> {
         self.resolve(path, consumer.into(), true)?
             .ok_or_else(|| format!("required dependency {path} has authoritative absence"))
+    }
+
+    fn required_pinned(
+        &mut self,
+        path: &str,
+        consumer: impl Into<String>,
+        expected_bytes: usize,
+        expected_sha256: &str,
+    ) -> Result<Vec<u8>, String> {
+        let bytes = self.required(path, consumer)?;
+        let actual_sha256 = digest(&bytes);
+        if bytes.len() != expected_bytes || actual_sha256 != expected_sha256 {
+            return Err(format!(
+                "dependency {} differs from its configured identity: bytes={} sha256={}",
+                path.to_ascii_lowercase(),
+                bytes.len(),
+                actual_sha256
+            ));
+        }
+        Ok(bytes)
     }
 
     fn required_expected(
@@ -558,6 +588,49 @@ fn checked_record(value: &CheckedLocation) -> CheckedRecord {
     }
 }
 
+fn configured_source(
+    content: &Content,
+    path: &str,
+    expected_bytes: usize,
+    expected_sha256: &str,
+    expected_provider: &str,
+    disposition: &'static str,
+) -> Result<(DeclaredSourceRecord, Vec<u8>), String> {
+    let value = match content
+        .resolve_resource(path)
+        .map_err(|error| error.to_string())?
+    {
+        Resolution::Found(value) => value,
+        Resolution::Missing { checked, .. } => {
+            return Err(format!(
+                "configured source {path} is missing after {} locations",
+                checked.len()
+            ));
+        }
+    };
+    let actual_sha256 = digest(&value.bytes);
+    if value.bytes.len() != expected_bytes
+        || actual_sha256 != expected_sha256
+        || value.provenance.provider_id != expected_provider
+    {
+        return Err(format!(
+            "configured source {path} differs: bytes={} sha256={} provider={}",
+            value.bytes.len(),
+            actual_sha256,
+            value.provenance.provider_id
+        ));
+    }
+    Ok((
+        DeclaredSourceRecord {
+            logical_path: path.to_owned(),
+            descriptor: ObjectDescriptor::source(&value.bytes),
+            provenance: provenance_record(&value.provenance),
+            disposition,
+        },
+        value.bytes,
+    ))
+}
+
 fn scalar<'a>(node: &'a playsrc_keyvalues::Node, key: &[u8]) -> Result<&'a [u8], String> {
     let child = node
         .first_child(key)
@@ -582,10 +655,7 @@ fn object_children<'a>(
 }
 
 fn verify_install_manifest(install: &Path) -> Result<(), String> {
-    let steamapps = install
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| "configured TF2 install has no Steam library parent".to_owned())?;
+    let steamapps = install.join("steamapps");
     let bytes =
         fs::read(steamapps.join("appmanifest_440.acf")).map_err(|error| error.to_string())?;
     let document = playsrc_keyvalues::parse_text(
@@ -1592,6 +1662,38 @@ fn main() -> Result<(), String> {
             pak,
         )
         .map_err(|error| error.to_string())?;
+    let mut startup_sources = Vec::new();
+    let mut startup_presentation = BTreeMap::new();
+    for (path, bytes, sha256, provider, disposition) in [
+        (
+            "media/startupvids.txt",
+            17,
+            "b832a9961d1feeb7a723b03a5033a59790cc82c5c742fbffd90f197bead13f7c",
+            "game-09-tf",
+            "presentation-bundle",
+        ),
+        (
+            "media/valve.bik",
+            14_672_796,
+            "99a57640d7434a7ef948dd00980e752f237e4b412dbcf502529832f679065381",
+            "game-10-hl2",
+            "validated-source",
+        ),
+        (
+            "media/valve.webm",
+            1_323_798,
+            "1cd960acdfe89e99aebe1b5199c2699b5bb17d812ff069d26ee1192435bbd403",
+            "game-10-hl2",
+            "presentation-bundle",
+        ),
+    ] {
+        let (record, source) =
+            configured_source(&content, path, bytes, sha256, provider, disposition)?;
+        if disposition == "presentation-bundle" {
+            startup_presentation.insert(path.to_owned(), source);
+        }
+        startup_sources.push(record);
+    }
     stage("inputs-and-providers", &mut stage_started);
     for provider in &mut provider_records {
         provider.order += 1;
@@ -1610,6 +1712,31 @@ fn main() -> Result<(), String> {
     let canonical = playsrc_map::compile(&bsp, playsrc_map::LightingProfile::Ldr)
         .map_err(|error| error.to_string())?;
     let mut resolver = Resolver::new(&content);
+    for (path, bytes, sha256, consumer) in [
+        (
+            "materials/vgui/stamp_background_map.vmt",
+            105,
+            "3850088d15a9147bc593cab2bbda5bc12eff053ccaa8cec6579bf18513c695d1",
+            "tf2-loading-background-material",
+        ),
+        (
+            "materials/vgui/stamp_background_map.vtf",
+            1_398_360,
+            "2f00d21971c788a51bd254ec5b69ad79af52caad35f0cde2a1ec9f4dbaf4a955",
+            "tf2-loading-background-texture",
+        ),
+    ] {
+        resolver.required_pinned(path, consumer, bytes, sha256)?;
+    }
+    if resolver
+        .optional(
+            "materials/vgui/maps/menu_photos_jump_beef.vmt",
+            "tf2-loading-map-photo",
+        )?
+        .is_some()
+    {
+        return Err("jump_beef configured map photo absence changed".to_owned());
+    }
     for material in &canonical.materials {
         collect_material(
             &mut resolver,
@@ -2005,6 +2132,10 @@ fn main() -> Result<(), String> {
             "hud/health_dead".to_owned(),
             "materials/hud/health_dead.vmt".to_owned(),
         ),
+        (
+            "stamp_background_map".to_owned(),
+            "materials/vgui/stamp_background_map.vmt".to_owned(),
+        ),
     ]);
     for (configured_value, identity) in runtime_ui_materials {
         let material = resolve_ui_material(&mut resolver, &identity)?;
@@ -2092,6 +2223,7 @@ fn main() -> Result<(), String> {
     .map_err(|error| error.to_string())?;
     stage("ui-materials", &mut stage_started);
     let mut ui_bundle = BTreeMap::<String, Vec<u8>>::new();
+    ui_bundle.extend(startup_presentation);
     ui_bundle.insert(
         "playsrc/tf2-ui/materials.json".to_owned(),
         ui_material_bytes,
@@ -2263,6 +2395,7 @@ fn main() -> Result<(), String> {
                 map_target.download.decoded_sha256
             ),
         },
+        startup_sources,
         providers: provider_records,
         requests: request_records,
         resolved_entries,

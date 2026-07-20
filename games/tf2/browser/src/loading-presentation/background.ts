@@ -47,19 +47,19 @@ export const TF2_STAMP_BACKGROUND = Object.freeze({
 })
 
 export const TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS = Object.freeze([
-  "jump-beef-pak!materials/vgui/maps/menu_photos_jump_beef.vmt",
-  "game-00-workshop!materials/vgui/maps/menu_photos_jump_beef.vmt",
-  "game-01-tf2_textures_dir.vpk!materials/vgui/maps/menu_photos_jump_beef.vmt",
-  "game-02-tf2_sound_vo_english_dir.vpk!materials/vgui/maps/menu_photos_jump_beef.vmt",
-  "game-03-tf2_sound_misc_dir.vpk!materials/vgui/maps/menu_photos_jump_beef.vmt",
-  "game-04-tf2_misc_dir.vpk!materials/vgui/maps/menu_photos_jump_beef.vmt",
-  "game-05-hl2_textures_dir.vpk!materials/vgui/maps/menu_photos_jump_beef.vmt",
-  "game-06-hl2_sound_vo_english_dir.vpk!materials/vgui/maps/menu_photos_jump_beef.vmt",
-  "game-07-hl2_sound_misc_dir.vpk!materials/vgui/maps/menu_photos_jump_beef.vmt",
-  "game-08-hl2_misc_dir.vpk!materials/vgui/maps/menu_photos_jump_beef.vmt",
-  "game-09-tf!materials/vgui/maps/menu_photos_jump_beef.vmt",
-  "game-10-hl2!materials/vgui/maps/menu_photos_jump_beef.vmt",
-  "game-11-download!materials/vgui/maps/menu_photos_jump_beef.vmt",
+  "jump-beef-pak:maps/jump_beef.bsp!materials/vgui/maps/menu_photos_jump_beef.vmt",
+  "game-00-workshop:materials/vgui/maps/menu_photos_jump_beef.vmt",
+  "game-01-tf2_textures_dir.vpk:tf2_textures_dir.vpk!materials/vgui/maps/menu_photos_jump_beef.vmt",
+  "game-02-tf2_sound_vo_english_dir.vpk:tf2_sound_vo_english_dir.vpk!materials/vgui/maps/menu_photos_jump_beef.vmt",
+  "game-03-tf2_sound_misc_dir.vpk:tf2_sound_misc_dir.vpk!materials/vgui/maps/menu_photos_jump_beef.vmt",
+  "game-04-tf2_misc_dir.vpk:tf2_misc_dir.vpk!materials/vgui/maps/menu_photos_jump_beef.vmt",
+  "game-05-hl2_textures_dir.vpk:hl2_textures_dir.vpk!materials/vgui/maps/menu_photos_jump_beef.vmt",
+  "game-06-hl2_sound_vo_english_dir.vpk:hl2_sound_vo_english_dir.vpk!materials/vgui/maps/menu_photos_jump_beef.vmt",
+  "game-07-hl2_sound_misc_dir.vpk:hl2_sound_misc_dir.vpk!materials/vgui/maps/menu_photos_jump_beef.vmt",
+  "game-08-hl2_misc_dir.vpk:hl2_misc_dir.vpk!materials/vgui/maps/menu_photos_jump_beef.vmt",
+  "game-09-tf:materials/vgui/maps/menu_photos_jump_beef.vmt",
+  "game-10-hl2:materials/vgui/maps/menu_photos_jump_beef.vmt",
+  "game-11-download:materials/vgui/maps/menu_photos_jump_beef.vmt",
 ] as const)
 
 export function resolveTf2LoadingBackground(input: Tf2LoadingBackgroundInput): Tf2LoadingBackgroundResult {
@@ -73,7 +73,6 @@ export function resolveTf2LoadingBackground(input: Tf2LoadingBackgroundInput): T
   const malformed = input.mapPhotoLookups.find((lookup) => lookup.outcome === "malformed" || (lookup.outcome === "found" && !asset(lookup.asset)))
   if (malformed) return Object.freeze({ ok: false, generation: input.generation, code: "MalformedMapPhoto", subject: malformed.location, checkedLocations: checked })
   const found = input.mapPhotoLookups.find((lookup) => lookup.outcome === "found")?.asset ?? null
-  const wide = input.viewport.width / input.viewport.height >= 1.5999
   return Object.freeze({
     ok: true,
     generation: input.generation,
@@ -82,7 +81,7 @@ export function resolveTf2LoadingBackground(input: Tf2LoadingBackgroundInput): T
     backingMaterial: input.backingMaterial,
     backingTexture: input.backingTexture,
     checkedLocations: checked,
-    backgroundWidth: wide ? input.viewport.width : input.viewport.height * (4 / 3),
+    backgroundWidth: Math.trunc(input.viewport.height * (4 / 3)),
     disposition: found ? "map-photo" : "configured-generic",
   })
 }

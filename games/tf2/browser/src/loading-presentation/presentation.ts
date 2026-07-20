@@ -65,8 +65,8 @@ export function createTf2LoadingPresentation(input: Tf2LoadingPresentationInput)
       } else if (state.kind === "failure") {
         operations = [
           { kind: "mount", resource: input.failureResource, modal: true },
-          { kind: "failure-layout", placement: "screen-center", contentBottomPadding: 50, buttonGap: 6 },
           { kind: "status", control: "InfoLabel", text: state.failure.extendedReason ? `${state.failure.reason}\n${state.failure.extendedReason}` : state.failure.reason },
+          { kind: "failure-layout", placement: "screen-center", contentBottomPadding: 50, buttonGap: 6 },
           { kind: "button", control: "CancelButton", text: "#GameUI_Close", command: "Close" },
         ]
       } else operations = [{ kind: "unmount" }]
