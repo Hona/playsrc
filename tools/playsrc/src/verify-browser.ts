@@ -890,12 +890,14 @@ export async function verifyBrowserAcceptance(
     require(Object.values(menuState.active).every((value) => value === "false")
       && Object.values(menuState.inactive).every((value) => value === "true")
       && menuState.eventDisplay === "none", `configured Main Menu dispositions differ: ${JSON.stringify(menuState)}`)
-    const menuPresentation = parseJson<{ random: { seed: number; draws: number }; character: string; consoleControls: number }>(await agent([
+    const menuPresentation = parseJson<{ random: { seed: number; draws: number }; character: string; consoleControls: number; characterVisible: boolean; characterBounds: number[]; characterCanvas: number[] }>(await agent([
       "--session", session, "eval",
-      "(()=>{const m=document.querySelector('main');return {random:JSON.parse(m.dataset.presentationRandomState),character:m.dataset.presentationCharacter,consoleControls:Array.from(document.querySelectorAll('.gameui-layer [data-vgui-name]')).filter(x=>/console/i.test(x.dataset.vguiName||'')).length}})()",
+      "(()=>{const m=document.querySelector('main'),character=document.querySelector('.gameui-layer [data-vgui-name=TFCharacterImage]'),canvas=character?.querySelector('canvas'),r=character?.getBoundingClientRect();return {random:JSON.parse(m.dataset.presentationRandomState),character:m.dataset.presentationCharacter,consoleControls:Array.from(document.querySelectorAll('.gameui-layer [data-vgui-name]')).filter(x=>/console/i.test(x.dataset.vguiName||'')).length,characterVisible:!!character&&getComputedStyle(character).display!=='none'&&getComputedStyle(character).visibility!=='hidden',characterBounds:r?[r.x,r.y,r.width,r.height]:[],characterCanvas:canvas?[canvas.width,canvas.height]:[]}})()",
     ]))
     require(menuPresentation.random.seed === 0 && menuPresentation.random.draws === 1
-      && menuPresentation.character !== "unavailable" && menuPresentation.consoleControls === 0,
+      && menuPresentation.character !== "unavailable" && menuPresentation.consoleControls === 0
+      && menuPresentation.characterVisible && menuPresentation.characterBounds[2]! > 0 && menuPresentation.characterBounds[3]! > 0
+      && menuPresentation.characterCanvas[0]! > 0 && menuPresentation.characterCanvas[1]! > 0,
     `Main Menu presentation selection differs: ${JSON.stringify(menuPresentation)}`)
 
     await agent(["--session", session, "click", "[data-vgui-name='SettingsButton']"])
