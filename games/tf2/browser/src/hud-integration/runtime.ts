@@ -100,7 +100,6 @@ const HUD_CLASS = "resource/ui/hudplayerclass.res"
 const HUD_HEALTH = "resource/ui/hudplayerhealth.res"
 const HUD_AMMO = "resource/ui/hudammoweapons.res"
 const HUD_WEAPONS = "resource/ui/hudweaponselection.res"
-
 const scalar = (node: VguiResourceNode, name: string): string | null =>
   node.children.find((child) => child.name.toLowerCase() === name.toLowerCase() && child.value !== null)?.value ?? null
 const node = (name: string, children: readonly VguiResourceNode[]): VguiResourceNode => Object.freeze({ name, value: null, condition: null, children: Object.freeze(children) })
@@ -168,10 +167,12 @@ class Integration implements Tf2HudIntegration {
   readonly #publishedValues = new Map<string, string>()
   #previous: Tf2HudAvailability<Tf2HudSnapshot> = tf2HudUnavailable("initial")
   #binding: Tf2HudBinding | null = null
+  #viewport: VguiViewport
   #destroyed = false
 
   constructor(request: Tf2HudIntegrationRequest) {
     this.#onCommand = request.onCommand
+    this.#viewport = Object.freeze({ ...request.viewport })
     const availableImages = new Set(request.resources.clientScheme.images.map((image) => image.name.toLowerCase()))
     const missingImages = TF2_HUD_DYNAMIC_IMAGES.filter((image) => !availableImages.has(image.toLowerCase()))
     if (missingImages.length > 0) throw new Error(`TF2 HUD dynamic images are unavailable: ${missingImages.join(",")}`)
@@ -330,12 +331,18 @@ class Integration implements Tf2HudIntegration {
 
   frame(timeSeconds: number): void { apply(this.#runtime, { kind: "frame", timeSeconds }) }
   setViewport(viewport: VguiViewport): void {
-    apply(this.#runtime, { kind: "set-viewport", viewport })
-    this.#captureBaseBounds()
-    if (this.#binding) {
-      this.#publishedValues.clear()
-      this.#applyValues(this.#binding)
-    }
+    if (viewport.width === this.#viewport.width
+      && viewport.height === this.#viewport.height
+      && viewport.devicePixelRatio === this.#viewport.devicePixelRatio) return
+    this.#runtime.deferPresentation(() => {
+      apply(this.#runtime, { kind: "set-viewport", viewport })
+      this.#viewport = Object.freeze({ ...viewport })
+      this.#captureBaseBounds()
+      if (this.#binding) {
+        this.#publishedValues.clear()
+        this.#applyValues(this.#binding)
+      }
+    })
   }
   probe(): Tf2HudIntegrationProbe {
     const panels = [
