@@ -863,6 +863,32 @@ async function unavailable(url: string): Promise<boolean> {
   }
 }
 
+type ViewportOwnershipEvidence = Readonly<{
+  viewport: string
+  revision: number
+  rectangles: readonly Readonly<{ name: string; x: number; y: number; width: number; height: number }>[]
+  ownerRecords: readonly string[]
+}>
+
+async function viewportOwnership(session: string, width: number, height: number): Promise<ViewportOwnershipEvidence> {
+  await agent([
+    "--session", session, "wait", "--fn",
+    `document.querySelector('main')?.dataset.presentationViewport===${JSON.stringify(`${width}x${height}@1`)}`,
+    "--timeout", "30000",
+  ])
+  const evidence = parseJson<ViewportOwnershipEvidence>(await agent([
+    "--session", session, "eval",
+    `(()=>{const main=document.querySelector('main'),rect=(name,node)=>{const r=node.getBoundingClientRect();return{name,x:r.x,y:r.y,width:r.width,height:r.height}},owners=['.world-canvas','.startup-layer','.loading-layer','.gameui-layer','.hud-layer','.options-layer','.developer-layer'].map(selector=>document.querySelector(selector).dataset.presentationViewport);return{viewport:main.dataset.presentationViewport,revision:Number(main.dataset.presentationViewportRevision),rectangles:[rect('html',document.documentElement),rect('body',document.body),rect('app',document.querySelector('#app')),rect('main',main),rect('canvas',document.querySelector('.world-canvas')),rect('hud',document.querySelector('.hud-layer'))],ownerRecords:owners}})()`,
+  ]))
+  require(evidence.viewport === `${width}x${height}@1` && Number.isSafeInteger(evidence.revision) && evidence.revision > 0,
+    `application presentation viewport differs: ${JSON.stringify(evidence)}`)
+  require(evidence.rectangles.every((value) => value.x === 0 && value.y === 0 && value.width === width && value.height === height),
+    `application presentation rectangles differ: ${JSON.stringify(evidence.rectangles)}`)
+  require(new Set(evidence.ownerRecords).size === 1 && evidence.ownerRecords[0] === `${evidence.revision}:${width}x${height}@1`,
+    `application presentation owner records differ: ${JSON.stringify(evidence.ownerRecords)}`)
+  return evidence
+}
+
 export async function verifyBrowserAcceptance(
   config: LocalConfig,
   target: string | undefined,
@@ -883,6 +909,7 @@ export async function verifyBrowserAcceptance(
       const body = await agent(["--session", session, "eval", "document.body.innerText"])
       throw new BrowserEvidenceError(`${String(error)}; browser body: ${body}`)
     }
+    const desktopMenuViewport = await viewportOwnership(session, VIEWPORT_WIDTH, VIEWPORT_HEIGHT)
     const menuState = parseJson<{ active: Record<string, string | null>; inactive: Record<string, string | null>; eventDisplay: string }>(await agent([
       "--session", session, "eval",
       "(()=>{const get=n=>document.querySelector(`[data-vgui-name=\"${n}\"]`),entry=n=>get(n)?.querySelector('[data-vgui-name=ModeButton]');return {active:Object.fromEntries(['SettingsButton','TF2SettingsButton','QuitButton'].map(n=>[n,get(n)?.getAttribute('aria-disabled')??null])),inactive:{CharacterSetupButton:get('CharacterSetupButton')?.getAttribute('aria-disabled')??null,FindAGameButton:get('FindAGameButton')?.getAttribute('aria-disabled')??null,...Object.fromEntries(['CasualEntry','CompetitiveEntry','MvMEntry','ServerBrowserEntry','TrainingEntry','CreateServerEntry'].map(n=>[n,entry(n)?.getAttribute('aria-disabled')??null]))},eventDisplay:getComputedStyle(get('EventEntry')).display}})()",
@@ -1029,6 +1056,7 @@ export async function verifyBrowserAcceptance(
     await agent(["--session", session, "set", "viewport", "390", "844"])
     await agent(["--session", session, "reload"])
     const mobileStartup = await completeStartup(session, config, "mobile-390x844", "skip")
+    const mobileMenuViewport = await viewportOwnership(session, 390, 844)
     const mobileState = parseJson<{ settings: number[]; quit: number[] }>(await agent([
       "--session", session, "eval", "(()=>{const rect=n=>{const r=document.querySelector(`[data-vgui-name=${n}]`).getBoundingClientRect();return [r.left,r.top,r.right,r.bottom]};return{settings:rect('SettingsButton'),quit:rect('QuitButton')}})()",
     ]))
@@ -1091,6 +1119,7 @@ export async function verifyBrowserAcceptance(
       "--timeout",
       "30000",
     ])
+    const gameplayViewport = await viewportOwnership(session, VIEWPORT_WIDTH, VIEWPORT_HEIGHT)
     const initialHudOperations = parseJson<string>(await agent(["--session", session, "eval", "document.querySelector('main').dataset.hudOperationProbe"]))
     const initialHudOperationParts = initialHudOperations.split(":")
     require(initialHudOperationParts.length === 6 && initialHudOperationParts[0] === "1" && initialHudOperationParts[4] === "0" && initialHudOperationParts[5] === "1",
@@ -1629,6 +1658,7 @@ export async function verifyBrowserAcceptance(
       gameUi: { menuPresentation, mobileInterface },
       options: { keyboard: keyboardOptions, visualDefault: optionsVisualDefault, armedButton, comboDefault, comboHover, captures: optionsCaptures, conflict: conflictBindings, reset: resetBindings, keyboardAdvanced, videoAdvanced, advanced: advancedOptions },
       hud: { initialOperations: initialHudOperations, initialPresentation: initialHudPresentation, pausedPresentation: pausedHudPresentation, pauseControls, animationTrace: hudAnimationTrace },
+      presentationViewport: { desktopMenu: desktopMenuViewport, mobileMenu: mobileMenuViewport, gameplay: gameplayViewport },
       audio: "exact-buffers-decoded-and-context-running",
       fixedCamera,
       fixedSpawn,
