@@ -2,7 +2,7 @@
   "name": "playsrc",
   "private": true,
   "type": "module",
-  "packageManager": "bun@1.4.0",
+  "packageManager": "bun@1.3.14",
   "workspaces": ["packages/*", "packages/presentation/*", "packages/runtime/*", "games/*/browser", "tools/*", "apps/services/*", "apps/web/*"],
   "scripts": {
     "dev": "bun tools/playsrc/src/cli.ts dev",
