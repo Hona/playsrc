@@ -1,0 +1,136 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Patch release version, beginning with 0.0.1, without the v prefix
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: playsrc-production-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Deploy latest main
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: production
+
+    steps:
+      - name: Check out latest main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Resolve release identity
+        id: release
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$VERSION" =~ ^0\.0\.[1-9][0-9]*$ ]]; then
+            echo "version must be 0.0.<positive patch number> without a v prefix" >&2
+            exit 2
+          fi
+          tag="v${VERSION}"
+          sha="$(git rev-parse HEAD)"
+          remote_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [[ "$sha" != "$remote_sha" ]]; then
+            echo "checked out commit is not latest main" >&2
+            exit 2
+          fi
+          existing_tag="$(git ls-remote origin "refs/tags/${tag}" | cut -f1)"
+          if [[ -n "$existing_tag" && "$existing_tag" != "$sha" ]]; then
+            echo "${tag} already identifies another commit" >&2
+            exit 2
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "${tag} already has a GitHub Release" >&2
+            exit 2
+          fi
+          if [[ -z "$existing_tag" ]]; then
+            latest_patch=0
+            while IFS= read -r existing; do
+              if [[ "$existing" =~ ^v0\.0\.([1-9][0-9]*)$ ]] && (( BASH_REMATCH[1] > latest_patch )); then
+                latest_patch="${BASH_REMATCH[1]}"
+              fi
+            done < <(git tag --list "v0.0.*")
+            expected="0.0.$((latest_patch + 1))"
+            if [[ "$VERSION" != "$expected" ]]; then
+              echo "next release must be ${expected}" >&2
+              exit 2
+            fi
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v4.0.1
+        with:
+          terraform_version: 1.15.8
+          terraform_wrapper: false
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Test
+        run: bun test
+
+      - name: Bootstrap Terraform state
+        run: bun run infra:bootstrap
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+      - name: Deploy production
+        run: bun run infra:deploy jump_beef
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ZONE_ID: ${{ vars.CLOUDFLARE_ZONE_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+
+      - name: Create tag
+        if: success()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if ! git ls-remote --exit-code origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
+              --method POST \
+              --field "ref=refs/tags/${TAG}" \
+              --field "sha=${SHA}" >/dev/null
+          fi
+
+      - name: Create GitHub Release
+        if: success()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" \
+            "apps/web/tf2/dist/cloudflare/release.json#Cloudflare deployment manifest" \
+            --verify-tag \
+            --generate-notes \
+            --title "playsrc ${TAG}"

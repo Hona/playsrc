@@ -15,3 +15,5 @@ Deliver browser products assembled from playsrc modules.
 - Requiring a prebuilt GLB or server-generated map package before a declared BSP can load.
 
 Each child is one deployable browser product.
+
+Production exposes the product index at `https://playsrc.online/` and game applications at canonical paths under that origin. Shared immutable bytes use `https://assets.playsrc.online/objects/sha256/<hash>`.

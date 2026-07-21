@@ -22,6 +22,14 @@ describe("browser asset adapters", () => {
       return response
     }) as typeof fetch
     expect(await fetchImmutableObject("http://127.0.0.1:4321/", descriptor, undefined, fetcher)).toEqual(bytes)
+    const providerEtagFetcher = (async () => {
+      const response = new Response(bytes, {
+        headers: { "content-length": String(bytes.byteLength), etag: '"provider-validator"' },
+      })
+      Object.defineProperty(response, "url", { value: url })
+      return response
+    }) as typeof fetch
+    expect(await fetchImmutableObject("http://127.0.0.1:4321/", descriptor, undefined, providerEtagFetcher)).toEqual(bytes)
     await expect(
       fetchImmutableObject("http://example.com/", descriptor, undefined, fetcher),
     ).rejects.toMatchObject({ code: "MalformedIdentity" })
@@ -45,6 +53,18 @@ describe("browser asset adapters", () => {
       undefined,
       corruptFetcher,
     )).rejects.toMatchObject({ code: "IntegrityFailure" })
+
+    const missingEtagFetcher = (async () => {
+      const response = new Response(bytes, { headers: { "content-length": String(bytes.byteLength) } })
+      Object.defineProperty(response, "url", { value: url })
+      return response
+    }) as typeof fetch
+    await expect(fetchImmutableObject(
+      "http://127.0.0.1:4321/",
+      descriptor,
+      undefined,
+      missingEtagFetcher,
+    )).rejects.toMatchObject({ code: "ResponseFailure" })
   })
 
   test("cancels an active immutable body without returning partial bytes", async () => {

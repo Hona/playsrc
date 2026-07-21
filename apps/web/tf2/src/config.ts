@@ -3,6 +3,8 @@ import { TF2_CONFIGURED_STARTUP, validateTf2StartupDescriptor, type Tf2StartupDe
 import { TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS, TF2_STAMP_BACKGROUND, type Tf2LoadingAsset } from "@playsrc/game-tf2-browser/loading-presentation"
 
 const HASH = /^[0-9a-f]{64}$/
+const PRODUCTION_APPLICATION_ORIGIN = "https://playsrc.online"
+const PRODUCTION_ASSET_ORIGIN = "https://assets.playsrc.online"
 
 export type BrowserConfiguration = Readonly<{
   application: "tf2"
@@ -47,7 +49,7 @@ export function parseBrowserConfiguration(value: unknown, applicationOrigin: str
     value.target !== "jump_beef" ||
     (value.renderLevel !== 0 && value.renderLevel !== 1 && value.renderLevel !== 2) ||
     typeof value.assetOrigin !== "string" ||
-    value.assetOrigin !== applicationOrigin ||
+    !acceptedAssetOrigin(applicationOrigin, value.assetOrigin) ||
     !Array.isArray(value.allowedExternalOrigins) ||
     value.allowedExternalOrigins.length > 16 ||
     value.allowedExternalOrigins.some((origin) => {
@@ -106,7 +108,7 @@ function descriptor(value: unknown, kind: "source-object" | "derived-object"): v
 export async function loadBrowserConfiguration(): Promise<BrowserConfiguration> {
   let response: Response
   try {
-    response = await fetch("/playsrc-config.json", {
+    response = await fetch(`${import.meta.env.BASE_URL}playsrc-config.json`, {
       cache: "no-store",
       credentials: "same-origin",
       redirect: "error",
@@ -124,4 +126,9 @@ export async function loadBrowserConfiguration(): Promise<BrowserConfiguration> 
     throw new BrowserConfigurationError("Browser configuration is not JSON")
   }
   return parseBrowserConfiguration(value, window.location.origin)
+}
+
+function acceptedAssetOrigin(applicationOrigin: string, assetOrigin: string): boolean {
+  return assetOrigin === applicationOrigin
+    || (applicationOrigin === PRODUCTION_APPLICATION_ORIGIN && assetOrigin === PRODUCTION_ASSET_ORIGIN)
 }

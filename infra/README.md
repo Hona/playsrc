@@ -20,6 +20,8 @@ Define the shared hosting resources and environments on which playsrc applicatio
 
 Applications own application-specific deployment configuration; `tools/playsrc` owns release commands; packages own reusable behavior.
 
+[`cloudflare/README.md`](cloudflare/README.md) defines the bounded production PoC: Terraform owns R2 delivery and cache resources, while Wrangler owns the versioned Workers Static Assets application deployment.
+
 ## Completion
 
 Complete when every declared environment can be provisioned, observed, changed, and retired through checked definitions.

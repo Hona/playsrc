@@ -5,3 +5,9 @@ target/
 dist/
 .playsrc/
 playsrc.local.json
+.terraform/
+*.tfplan
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log

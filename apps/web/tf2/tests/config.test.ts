@@ -23,6 +23,8 @@ const valid = Object.freeze({
 describe("TF2 browser startup and loading configuration", () => {
   test("accepts only the exact configured presentation descriptors", () => {
     expect(parseBrowserConfiguration(valid, valid.assetOrigin)).toEqual(valid)
+    const deployed = { ...valid, assetOrigin: "https://assets.playsrc.online" }
+    expect(parseBrowserConfiguration(deployed, "https://playsrc.online")).toEqual(deployed)
   })
 
   test("rejects changed media, loading sources, origins, and extra fields", () => {
@@ -34,5 +36,9 @@ describe("TF2 browser startup and loading configuration", () => {
       { ...valid, extra: true },
     ]
     for (const value of invalid) expect(() => parseBrowserConfiguration(value, valid.assetOrigin)).toThrow(BrowserConfigurationError)
+    expect(() => parseBrowserConfiguration(
+      { ...valid, assetOrigin: "https://assets.playsrc.online" },
+      "https://other.invalid",
+    )).toThrow(BrowserConfigurationError)
   })
 })

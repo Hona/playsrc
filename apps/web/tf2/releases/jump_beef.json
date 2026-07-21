@@ -1,0 +1,37 @@
+{
+  "schema": "playsrc-tf2-release-v1",
+  "target": "jump_beef",
+  "contentBuild": "24245096",
+  "objects": {
+    "bsp": {
+      "kind": "source-object",
+      "mediaType": "application/octet-stream",
+      "byteLength": "33379388",
+      "sha256": "b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959"
+    },
+    "wasm": {
+      "kind": "derived-object",
+      "mediaType": "application/octet-stream",
+      "byteLength": "3307693",
+      "sha256": "a8b1ea12deaca721fd7895e2ec9b1d951cba2681de6a00c4b2aa4ffe2b2053f7"
+    },
+    "dependencies": {
+      "kind": "derived-object",
+      "mediaType": "application/octet-stream",
+      "byteLength": "256997450",
+      "sha256": "616f4b1ebb62e394a2fd1fdd31ca1f01d3de288540ab2c4b8cb596df9265432b"
+    },
+    "ui": {
+      "kind": "derived-object",
+      "mediaType": "application/octet-stream",
+      "byteLength": "36564904",
+      "sha256": "1971de13a4de017fd471217abbd92a4a369a2ee4b733f8145908d04a2652dd10"
+    },
+    "dependencyLedger": {
+      "kind": "derived-object",
+      "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
+      "byteLength": "661308",
+      "sha256": "d627067bad756dbc9631b58813272edc5fb01b369d1cd72fb8165ff7a5753ddc"
+    }
+  }
+}

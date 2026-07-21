@@ -2,7 +2,7 @@
 
 ## Objective
 
-Deliver faithful TF2 gameplay and presentation at `tf2.playsrc.online`.
+Deliver faithful TF2 gameplay and presentation at `https://playsrc.online/tf2`.
 
 ## Responsibilities
 
@@ -17,6 +17,8 @@ Deliver faithful TF2 gameplay and presentation at `tf2.playsrc.online`.
 - Keep the package-owned all-class TF2 core separate from the compact Soldier/Demoman direct-map session until one complete adapter can replace the current authority. Keep Demo, Networking, and Replay unmounted until TF2 recorded-state decoding/presentation and the declared upload/control experience exist; never route recorded commands through Simulation.
 
 Run the checked end-to-end browser procedure with `bun run verify:browser jump_beef`. It captures the startup movie's first/middle/final frames, hidden Main Menu admission, Escape skip, desktop/mobile loading background/dialog, cold/warm gameplay, disconnect without startup replay, and one-interrupt shutdown at 1,280×720 and 390×844.
+
+Production releases serve the application shell and hashed browser files through Workers Static Assets at `playsrc.online`, load immutable Source and derived objects directly from `assets.playsrc.online`, and retain the current monolithic PSDB/PUIB contract until its separately reviewed indexed-chunk replacement.
 
 Run console capability evidence with `bun --cwd packages/presentation/vgui run verify:browser` and configured TF2 integration with `bun --cwd packages/presentation/vgui run verify:tf2`. Unsupported hosts suppress VGUI paint/input and retain no fallback-font raster.
 

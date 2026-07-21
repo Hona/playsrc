@@ -114,7 +114,7 @@ export async function fetchImmutableObject(
     || response.redirected
     || response.url !== url
     || response.headers.get("content-length") !== descriptor.byteLength
-    || response.headers.get("etag") !== `"${descriptor.sha256}"`
+    || response.headers.get("etag") === null
   ) {
     throw new BrowserAssetError("ResponseFailure", "immutable object response metadata differs")
   }

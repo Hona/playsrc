@@ -10,25 +10,23 @@ Status: Draft. This inventory is not accepted and does not enter the Infrastruct
 | Authority revision | playsrc commit `690cc3a05449383119c0a4272395a8b034f74d45` |
 | Generator command | Blocked: no checked-in generator or Accepted deployment-requirement manifests exist |
 | Output path | `infra/inventories/resources-and-environments.md` |
-| Item count | 27 |
+| Item count | 25 |
 | Accepted item count | 0 |
 | Owner | `infra` |
 | Owning roadmap | `infra/ROADMAP.md` |
 
 ## Active Candidate Items
 
-These 27 candidate items are the finite union of currently declared Active environment, domain, application, service, asset-delivery, observability, deployment-identity, and cost-control requirements. They remain candidates because their provider shape, hosted environment, dependencies, limits, and bindings are not accepted.
+These 25 candidate items are the finite union of currently declared Active environment, domain, application, service, asset-delivery, observability, deployment-identity, and cost-control requirements. They remain candidates because their provider shape, hosted environment, dependencies, limits, and bindings are not accepted.
 
 | Identity | Kind | Declared consumer or target | Required infrastructure result | Missing acceptance input | Coverage |
 |---|---|---|---|---|---|
 | `environment.local` | Environment | Local development workflow and local Asset Service origin | Record local as an execution environment with no provisioned cloud resource, provider credential, remote state, public DNS, or shared mutable binding. | Checked environment admission contract and generator | Intentionally inert |
 | `dns.zone.playsrc.online` | DNS authority | All declared `playsrc.online` hostnames | Manage the accepted authoritative zone boundary, records, DNSSEC policy, access, drift, and protection without assuming registrar ownership. | Zone custody, provider, registrar boundary, DNSSEC, identities, and teardown policy | Unsupported |
-| `dns.record.tf2` | DNS record | `tf2.playsrc.online`; Active TF2 web application | Resolve the hostname only to the accepted TF2 application route with declared type, target, TTL, and replacement order. | Accepted TF2 deployment target, environment, provider, record type, target, and TTL | Unsupported |
-| `dns.record.tempus` | DNS record | `tempus.playsrc.online`; Active Tempus web application | Resolve the hostname only to the accepted Tempus application route with declared type, target, TTL, and replacement order. | Accepted Tempus deployment target, environment, provider, record type, target, and TTL | Unsupported |
+| `dns.record.web` | DNS record | `playsrc.online`; Active web index plus TF2 and Tempus paths | Resolve the apex only to the accepted shared static application route with declared type, target, TTL, and replacement order. | Accepted shared web deployment target, environment, provider, record type, target, and TTL | Partial: TF2 PoC selected |
 | `dns.record.assets` | DNS record | `assets.playsrc.online`; Active Asset Service and CDN | Resolve the hostname only to the accepted asset-delivery route with declared type, target, TTL, and replacement order. | Accepted Asset Service deployment and CDN target, environment, provider, record type, and TTL | Unsupported |
 | `dns.record.api` | DNS record | `api.playsrc.online`; Active API service | Resolve the hostname only to the accepted API route with declared type, target, TTL, and replacement order. | Accepted API deployment target, environment, provider, record type, target, and TTL | Unsupported |
-| `tls.binding.tf2` | TLS binding | `tf2.playsrc.online` | Bind and renew a certificate covering only the accepted TF2 route names under the accepted key-custody and protocol policy. | Certificate authority, challenge, grouping, key custody, protocol floor, renewal, revocation, and owner | Unsupported |
-| `tls.binding.tempus` | TLS binding | `tempus.playsrc.online` | Bind and renew a certificate covering only the accepted Tempus route names under the accepted key-custody and protocol policy. | Certificate authority, challenge, grouping, key custody, protocol floor, renewal, revocation, and owner | Unsupported |
+| `tls.binding.web` | TLS binding | `playsrc.online` | Bind and renew one apex certificate for the index and every accepted browser-product path under the accepted key-custody and protocol policy. | Renewal, revocation, monitoring, and complete route-owner evidence | Partial: Custom Domain selected |
 | `tls.binding.assets` | TLS binding | `assets.playsrc.online` | Bind and renew a certificate covering only the accepted asset route names under the accepted key-custody and protocol policy. | Certificate authority, challenge, grouping, key custody, protocol floor, renewal, revocation, and owner | Unsupported |
 | `tls.binding.api` | TLS binding | `api.playsrc.online` | Bind and renew a certificate covering only the accepted API route names under the accepted key-custody and protocol policy. | Certificate authority, challenge, grouping, key custody, protocol floor, renewal, revocation, and owner | Unsupported |
 | `route.tf2` | Public route | Active TF2 web application | Route the accepted host and paths to one healthy TF2 application deployment without cross-product fallback. | Accepted route, hosting target, listener, health, replacement, and failure contract | Unsupported |
@@ -51,16 +49,12 @@ These 27 candidate items are the finite union of currently declared Active envir
 
 ## Future Activation Candidates
 
-These 13 stable candidates are explicitly excluded from the 27-item count and current denominator. Activation requires the root lifecycle to become Active and the owning application or service deployment denominator to be Accepted before generation.
+These 9 stable candidates are explicitly excluded from the 25-item count and current denominator. Activation requires the root lifecycle to become Active and the owning application or service deployment denominator to be Accepted before generation.
 
 | Identity | Future owner or target | Activation requirement |
 |---|---|---|
-| `dns.record.css` | `css.playsrc.online` | Active CS:S browser product and Accepted CS:S deployment manifest |
-| `tls.binding.css` | `css.playsrc.online` | Accepted hostname, route, certificate, and key-custody requirements |
 | `route.css` | CS:S web application | Accepted route, hosting, listener, health, capacity, and failure requirements |
 | `compute.web.css` | CS:S web application | Accepted application-build and deployment manifest |
-| `dns.record.csgo` | `csgo.playsrc.online` | Active legacy Source 1 CS:GO browser product and Accepted deployment manifest |
-| `tls.binding.csgo` | `csgo.playsrc.online` | Accepted hostname, route, certificate, and key-custody requirements |
 | `route.csgo` | Legacy Source 1 CS:GO web application | Accepted route, hosting, listener, health, capacity, and failure requirements |
 | `compute.web.csgo` | Legacy Source 1 CS:GO web application | Accepted application-build and deployment manifest |
 | `dns.record.servers` | `servers.playsrc.online` | Active online multiplayer service route and Accepted service deployment manifest |

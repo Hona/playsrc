@@ -13,10 +13,10 @@ bun run compile <map>
 bun run dev <map>
 bun run export-glb <map>
 bun run verify <evidence-target>
-bun run publish <root>
-bun run deploy <application-build>
-bun run release <release>
-bun run rollback <release>
+bun run infra:publish <root>
+bun run infra:deploy <application-build>
+bun run infra:release <release>
+bun run infra:rollback <release>
 ```
 
 Each parameter is one stable logical identity from an accepted owner registry. No command accepts a routine machine path, executable path, output root, dependency pin, content-build pin, texture limit, execution limit, retry policy, or concurrency policy. The denominator is Not accepted because required owner interfaces and operation manifests are unavailable and no review record exists.

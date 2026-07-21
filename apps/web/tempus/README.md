@@ -2,7 +2,7 @@
 
 ## Objective
 
-Deliver TF2 jump gameplay and Tempus product integration at `tempus.playsrc.online`.
+Deliver TF2 jump gameplay and Tempus product integration at `https://playsrc.online/tempus`.
 
 ## Responsibilities
 

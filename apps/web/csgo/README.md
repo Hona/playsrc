@@ -2,7 +2,7 @@
 
 ## Objective
 
-Deliver the future legacy Source 1 CS:GO browser product at `csgo.playsrc.online`.
+Deliver the future legacy Source 1 CS:GO browser product at `https://playsrc.online/csgo`.
 
 ## Responsibilities
 

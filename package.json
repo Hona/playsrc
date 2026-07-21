@@ -7,6 +7,12 @@
   "scripts": {
     "dev": "bun tools/playsrc/src/cli.ts dev",
     "setup": "bun tools/playsrc/src/cli.ts setup",
+    "infra:bootstrap": "bun tools/playsrc/src/cli.ts infra bootstrap",
+    "infra:plan": "bun tools/playsrc/src/cli.ts infra plan",
+    "infra:apply": "bun tools/playsrc/src/cli.ts infra apply",
+    "infra:publish": "bun tools/playsrc/src/cli.ts publish",
+    "infra:verify": "bun tools/playsrc/src/cli.ts verify deploy",
+    "infra:deploy": "bun tools/playsrc/src/cli.ts deploy",
     "generate:tf2-ui": "bun games/tf2/browser/src/ui-resources/generator/generate.ts",
     "verify:tf2-wasm": "bun tools/playsrc/src/cli.ts verify tf2-wasm",
     "verify:browser": "bun tools/playsrc/src/cli.ts verify browser",
@@ -20,6 +26,7 @@
     "test": "bun test"
   },
   "devDependencies": {
-    "@playwright/test": "^1.61.1"
+    "@playwright/test": "^1.61.1",
+    "wrangler": "4.112.0"
   }
 }
