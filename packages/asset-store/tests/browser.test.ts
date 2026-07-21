@@ -1,5 +1,5 @@
 import { describe, expect, jest, test } from "bun:test"
-import { BrowserAssetError, fetchImmutableObject, openDerivedObjectCache, verifyDerivedRecord } from "../src/browser"
+import { BrowserAssetError, fetchImmutableObject, openDerivedObjectCache, planDerivedCacheEviction, verifyDerivedRecord } from "../src/browser"
 import type { ObjectDescriptor } from "../src/index"
 
 const bytes = new TextEncoder().encode("immutable")
@@ -21,7 +21,9 @@ describe("browser asset adapters", () => {
       Object.defineProperty(response, "url", { value: url })
       return response
     }) as typeof fetch
-    expect(await fetchImmutableObject("http://127.0.0.1:4321/", descriptor, undefined, fetcher)).toEqual(bytes)
+    const progress: readonly number[][] = []
+    expect(await fetchImmutableObject("http://127.0.0.1:4321/", descriptor, undefined, fetcher, (loaded, total) => (progress as number[][]).push([loaded, total]))).toEqual(bytes)
+    expect(progress).toEqual([[0, bytes.byteLength], [bytes.byteLength, bytes.byteLength]])
     const providerEtagFetcher = (async () => {
       const response = new Response(bytes, {
         headers: { "content-length": String(bytes.byteLength), etag: '"provider-validator"' },
@@ -98,10 +100,21 @@ describe("browser asset adapters", () => {
   })
 
   test("rejects corrupt derived records without deleting or substituting bytes", async () => {
-    const valid = { key: sha256, byteLength: bytes.byteLength, sha256, bytes: new Blob([bytes]) }
+    const valid = { key: sha256, byteLength: bytes.byteLength, sha256, bytes: new Blob([bytes]), storedAt: 1 }
     expect(await verifyDerivedRecord(valid, sha256)).toEqual(bytes)
     const corrupt = { ...valid, bytes: new Blob([new TextEncoder().encode("immutablE")]) }
     await expect(verifyDerivedRecord(corrupt, sha256)).rejects.toBeInstanceOf(BrowserAssetError)
+  })
+
+  test("evicts oldest cache records within byte and count bounds", () => {
+    const records = [
+      { key: "1".repeat(64), byteLength: 40, storedAt: 1 },
+      { key: "2".repeat(64), byteLength: 30, storedAt: 2 },
+      { key: "3".repeat(64), byteLength: 20, storedAt: 3 },
+    ]
+    expect(planDerivedCacheEviction(records, { key: "4".repeat(64), byteLength: 50 }, 100, 4)).toEqual(["1".repeat(64)])
+    expect(planDerivedCacheEviction(records, { key: "4".repeat(64), byteLength: 1 }, 100, 3)).toEqual(["1".repeat(64)])
+    expect(() => planDerivedCacheEviction(records, { key: "4".repeat(64), byteLength: 101 }, 100, 4)).toThrow(BrowserAssetError)
   })
 
   test("terminates an IndexedDB open request that never settles", async () => {

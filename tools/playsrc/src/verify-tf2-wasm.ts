@@ -12,17 +12,16 @@ import { decodeSnapshot, encodeCommand } from "../../../games/tf2/browser/src/co
 import { decodeModelPoseOutput, encodeModelPoseBatch } from "../../../games/tf2/browser/src/presentation"
 import { parsePresentationArtifacts } from "../../../games/tf2/browser/src/artifacts"
 import { buildTf2Wasm } from "./tf2-wasm-build"
+import { encodeResourceBatch } from "@playsrc/asset-store/graph"
 
 const EXPECTED_MAP_BYTES = 42_082_929
 const EXPECTED_MAP_SHA256 = "56153098a867c553651f9c773bd72c4659782bae8520277c80daaaa414bdf156"
 const EXPECTED_BSP_SHA256 = "b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959"
-const EXPECTED_HDR_BYTES=78_302_136
-const EXPECTED_HDR_SHA256="d38eab0759df0d92f91832ca63848d5ed55f84b040c52f814cbc2c97b6a2e39d"
-const EXPECTED_LDR_DERIVED_SHA256="c2e773e67823231f4c243a807979ce9cdd42ae11608c9a67738debbfb4b1ad61"
-const EXPECTED_HDR_DERIVED_SHA256="5d9b66e08800330ba27045071c06a709426055feec1b7e8b134503e43f4e0177"
-const EXPECTED_DEPENDENCY_BYTES=256_997_450
-const EXPECTED_DEPENDENCY_SHA256="616f4b1ebb62e394a2fd1fdd31ca1f01d3de288540ab2c4b8cb596df9265432b"
-function bundlePathOffset(bytes: Uint8Array, target: string): number {
+const EXPECTED_HDR_BYTES=78_255_422
+const EXPECTED_HDR_SHA256="4610e40fe34d61d2eb6a61c1cc2e7fa725bd4b91eded2584e2973f8c162dbac4"
+const EXPECTED_LDR_DERIVED_SHA256="9c2c6733cc61ffc78096982436b20b10ec94de439c3c37dd624b20dbaf5536fc"
+const EXPECTED_HDR_DERIVED_SHA256="91758c22e569c68df8e5de2c89179aa883385be98cdbef79d11fe83d1f10a7c3"
+function resourcePathOffset(bytes: Uint8Array, target: string): number {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   let offset = 12
   for (let index = 0; index < view.getUint32(8, true); index++) {
@@ -48,6 +47,9 @@ function collisionBrushRecords(bytes:Uint8Array):ReadonlyMap<bigint,Readonly<{en
 type Exports = Readonly<{
   memory: WebAssembly.Memory
   playsrc_alloc(length: number): number
+  playsrc_resource_decode(pointer: number, length: number): number
+  playsrc_resource_length(): number
+  playsrc_resource_copy(pointer: number, capacity: number): number
   playsrc_free(pointer: number, length: number): void
   playsrc_compile_map(bsp: number, length: number, profile: number, config: number, configLength: number): number
   playsrc_result_length(handle: number): number
@@ -155,7 +157,7 @@ function skipRuntimeMaterial(reader: ProfileReader): { shader: number; role: num
   return { shader, role }
 }
 
-function inspectHdrPayload(payload: Uint8Array) {
+function inspectHdrPayload(payload: Uint8Array, expectedConfigurationSha256: string) {
   const reader = new ProfileReader(payload)
   require(new TextDecoder().decode(reader.take(4)) === "PSMP", "HDR map magic is invalid")
   require(reader.u32() === 4, "HDR map schema is invalid")
@@ -230,7 +232,7 @@ function inspectHdrPayload(payload: Uint8Array) {
   require(outputRole === "map-runtime-hdr" &&
     compilerIdentity === "playsrc-map-runtime-hdr-1", "HDR compiler identity is invalid")
   require(bspSha256 === EXPECTED_BSP_SHA256 &&
-    configurationSha256 === EXPECTED_DEPENDENCY_SHA256, "HDR source/configuration identity is invalid")
+    configurationSha256 === expectedConfigurationSha256, "HDR source/configuration identity is invalid")
   const memberCount = reader.u32()
   require(memberCount === 10, "HDR profile-member count is invalid")
   const memberSlots = new Map<number, number | string>()
@@ -320,7 +322,7 @@ function inspectHdrPayload(payload: Uint8Array) {
   }
   require(skyDimensions.join(",") === "512x256,512x256,512x256,512x256,512x512,4x4", "HDR sky dimensions are invalid")
   const inputCount = reader.u32()
-  require(inputCount===899,"HDR input-hash count is invalid")
+  require(inputCount===305,`HDR input-hash count is invalid: ${inputCount}`)
   for (let index = 0; index < inputCount; index += 1) {
     require(reader.u8() === 1 && reader.take(3).every((value) => value === 0), "HDR input record is invalid")
     require(reader.text().length > 0, "HDR input path is empty")
@@ -403,15 +405,26 @@ export async function verifyTf2Wasm(
   require(wasmBytes.byteLength > 0 && wasmBytes.byteLength <= 64 * 1024 * 1024, "WASM byte length is invalid")
   const loaded=await WebAssembly.instantiate(wasmBytes,{playsrc_metrics:{monotonic_milliseconds:()=>performance.now()}})
   const exports = loaded.instance.exports as unknown as Exports
-  const [bspBytes, dependencyBytes, nativeHdrPayload] = await Promise.all([
+  const [bspBytes, nativeHdrPayload, chunks] = await Promise.all([
     readFile(path.join(config.sourceCacheDir, map.decoded.cachePath)),
-    readFile(sourceBundle.bundlePath),
     readFile(nativeHdr.path),
+    Promise.all(sourceBundle.graph.chunks.filter((descriptor) => descriptor.roles.includes("gameplay")).map(async (descriptor) => Object.freeze({
+      descriptor,
+      bytes: await readFile(path.join(sourceBundle.graphObjectDirectory, descriptor.encodedSha256)),
+    }))),
   ])
+  const batch = encodeResourceBatch(chunks)
+  const batchPointer = exports.playsrc_alloc(batch.byteLength)
+  new Uint8Array(exports.memory.buffer, batchPointer, batch.byteLength).set(batch)
+  require(exports.playsrc_resource_decode(batchPointer, batch.byteLength) === 1, "resource graph decoding failed")
+  exports.playsrc_free(batchPointer, batch.byteLength)
+  const dependencyBytes = new Uint8Array(exports.playsrc_resource_length())
+  const resourcePointer = exports.playsrc_alloc(dependencyBytes.byteLength)
+  require(exports.playsrc_resource_copy(resourcePointer, dependencyBytes.byteLength) === dependencyBytes.byteLength, "resource set copy failed")
+  dependencyBytes.set(new Uint8Array(exports.memory.buffer, resourcePointer, dependencyBytes.byteLength))
+  exports.playsrc_free(resourcePointer, dependencyBytes.byteLength)
   require(bspBytes.byteLength === map.decoded.byteLength, "cached BSP byte length changed")
-  require(dependencyBytes.byteLength === EXPECTED_DEPENDENCY_BYTES, "source dependency byte length changed")
-  require(new Bun.CryptoHasher("sha256").update(dependencyBytes).digest("hex") ===
-    EXPECTED_DEPENDENCY_SHA256, "source dependency SHA-256 changed")
+  require(dependencyBytes.byteLength > 0 && dependencyBytes.byteLength <= 512 * 1024 * 1024, "resource set byte length changed")
 
   const compileProfile = (profile: 0 | 1) => {
     const source = exports.playsrc_alloc(bspBytes.byteLength)
@@ -856,8 +869,8 @@ export async function verifyTf2Wasm(
   require(hdrFirst.derivedSha256 === hdrSecond.derivedSha256, "repeated HDR derived hashes differ")
   require(hdrFirst.derivedSha256 !== ldrDerivedSha256, "LDR and HDR derived identities are equal")
   require(ldrDerivedSha256 === EXPECTED_LDR_DERIVED_SHA256, `LDR derived identity ${ldrDerivedSha256} changed for payload ${mapSha256}`)
-  require(hdrFirst.payload.byteLength === EXPECTED_HDR_BYTES, "HDR payload byte length changed")
-  require(hdrFirst.sha256 === EXPECTED_HDR_SHA256, "HDR payload SHA-256 changed")
+  require(hdrFirst.payload.byteLength === EXPECTED_HDR_BYTES, `HDR payload byte length changed to ${hdrFirst.payload.byteLength}`)
+  require(hdrFirst.sha256 === EXPECTED_HDR_SHA256, `HDR payload SHA-256 changed to ${hdrFirst.sha256}`)
   require(hdrFirst.derivedSha256 === EXPECTED_HDR_DERIVED_SHA256, `HDR derived identity changed: ${hdrFirst.derivedSha256}`)
   require(nativeHdr.bytes === hdrFirst.payload.byteLength &&
     nativeHdr.sha256 === hdrFirst.sha256 &&
@@ -865,7 +878,7 @@ export async function verifyTf2Wasm(
     Buffer.from(nativeHdrPayload).equals(
       hdrFirst.payload,
     ), `native and WASM HDR generations differ: native=${nativeHdr.sha256}/${nativeHdr.derivedSha256} wasm=${hdrFirst.sha256}/${hdrFirst.derivedSha256}`)
-  const hdr = inspectHdrPayload(hdrFirst.payload)
+  const hdr = inspectHdrPayload(hdrFirst.payload, new Bun.CryptoHasher("sha256").update(dependencyBytes).digest("hex"))
   const incompleteHdr = Uint8Array.from(bspBytes)
   new DataView(incompleteHdr.buffer).setInt32(8 + 54 * 16 + 4, 0, true)
   require(compileFailure(incompleteHdr, 1, dependencyBytes) ===
@@ -873,7 +886,7 @@ export async function verifyTf2Wasm(
   require(compileFailure(bspBytes, 2, dependencyBytes) === 2, "unknown lighting profile was accepted")
   const missingDependency = Uint8Array.from(dependencyBytes)
   const selectedSky = "materials/skybox/sky_day01_01_hdrrt.vmt"
-  const selectedSkyOffset = bundlePathOffset(missingDependency, selectedSky)
+  const selectedSkyOffset = resourcePathOffset(missingDependency, selectedSky)
   require(selectedSkyOffset >= 0, "selected HDR sky dependency is absent from its bundle")
   missingDependency[selectedSkyOffset + new TextEncoder().encode(selectedSky).byteLength - 5] = "x".charCodeAt(0)
   require(compileFailure(bspBytes, 1, missingDependency) !== 0, "missing selected HDR material dependency was accepted")

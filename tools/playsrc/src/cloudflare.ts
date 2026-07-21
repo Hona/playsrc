@@ -1,5 +1,6 @@
-import { mkdir, rm } from "node:fs/promises"
+import { readFile } from "node:fs/promises"
 import path from "node:path"
+import { GetObjectCommand, PutObjectCommand, S3Client, S3ServiceException } from "@aws-sdk/client-s3"
 import type { ObjectDescriptor } from "@playsrc/asset-store"
 import type { LocalConfig } from "./config"
 import { repositoryRoot } from "./config"
@@ -8,7 +9,7 @@ import { prepareTf2Release, releaseObjectPath, verifyFile } from "./tf2-release"
 export const CLOUDFLARE_ASSET_BUCKET = "playsrc-production-assets"
 export const CLOUDFLARE_ASSET_ORIGIN = "https://assets.playsrc.online"
 export const WRANGLER_CONFIG = path.join(repositoryRoot, "apps", "web", "tf2", "wrangler.jsonc")
-const MAX_WRANGLER_OBJECT_BYTES = 300_000_000
+const MAX_PUBLICATION_OBJECT_BYTES = 64 * 1024 * 1024
 const WRANGLER_TIMEOUT_MILLISECONDS = 30 * 60 * 1_000
 
 export class CloudflareError extends Error {
@@ -19,10 +20,6 @@ export class CloudflareError extends Error {
 }
 
 type CommandResult = Readonly<{ code: number; stdout: string; stderr: string }>
-
-export function isMissingR2Object(output: string): boolean {
-  return /(?:10007|NoSuchKey|specified key does not exist|object not found)/iu.test(output)
-}
 
 export async function runWrangler(args: readonly string[]): Promise<CommandResult> {
   const controller = new AbortController()
@@ -49,69 +46,103 @@ export async function runWrangler(args: readonly string[]): Promise<CommandResul
   }
 }
 
-async function requireWrangler(args: readonly string[], operation: string): Promise<CommandResult> {
-  const result = await runWrangler(args)
-  if (result.code !== 0) {
-    const detail = `${result.stderr}\n${result.stdout}`.trim()
-    throw new CloudflareError(`${operation} failed${detail ? `: ${detail}` : ""}`)
+export type RemoteObjectAdapter = Readonly<{
+  read(key: string): Promise<Uint8Array | "Missing">
+  create(key: string, expected: ObjectDescriptor, bytes: Uint8Array): Promise<"Created" | "PreconditionFailed">
+  close(): void
+}>
+
+function digest(bytes: Uint8Array): string {
+  return new Bun.CryptoHasher("sha256").update(bytes).digest("hex")
+}
+
+function verifyBytes(bytes: Uint8Array, expected: ObjectDescriptor, location: string): void {
+  if (String(bytes.byteLength) !== expected.byteLength || digest(bytes) !== expected.sha256) {
+    throw new CloudflareError(`${location} object ${expected.sha256} differs`)
   }
-  return result
 }
 
-async function downloadRemoteObject(key: string, pathname: string): Promise<"Downloaded" | "Missing"> {
-  await rm(pathname, { force: true })
-  const result = await runWrangler([
-    "r2",
-    "object",
-    "get",
-    `${CLOUDFLARE_ASSET_BUCKET}/${key}`,
-    `--file=${pathname}`,
-    "--remote",
-    `--config=${WRANGLER_CONFIG}`,
-  ])
-  if (result.code === 0) return "Downloaded"
-  const output = `${result.stderr}\n${result.stdout}`
-  if (isMissingR2Object(output)) return "Missing"
-  throw new CloudflareError(`remote object read failed: ${output.trim()}`)
+function preconditionFailed(error: unknown): boolean {
+  return error instanceof S3ServiceException && error.$metadata.httpStatusCode === 412
 }
 
-async function publishObject(
-  config: LocalConfig,
+function missingObject(error: unknown): boolean {
+  return error instanceof S3ServiceException && (error.name === "NoSuchKey" || error.$metadata.httpStatusCode === 404)
+}
+
+export function createR2Adapter(environment: NodeJS.ProcessEnv = process.env): RemoteObjectAdapter {
+  const accountId = environment.CLOUDFLARE_ACCOUNT_ID
+  const accessKeyId = environment.AWS_ACCESS_KEY_ID
+  const secretAccessKey = environment.AWS_SECRET_ACCESS_KEY
+  if (!accountId || !/^[0-9a-f]{32}$/.test(accountId) || !accessKeyId || !secretAccessKey) {
+    throw new CloudflareError("R2 conditional publication credentials are unavailable")
+  }
+  const client = new S3Client({
+    region: "auto",
+    endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+    credentials: { accessKeyId, secretAccessKey },
+  })
+  return Object.freeze({
+    async read(key: string): Promise<Uint8Array | "Missing"> {
+      try {
+        const response = await client.send(new GetObjectCommand({ Bucket: CLOUDFLARE_ASSET_BUCKET, Key: key }))
+        if (!response.Body) throw new CloudflareError(`remote object ${key} has no body`)
+        return new Uint8Array(await response.Body.transformToByteArray())
+      } catch (error) {
+        if (missingObject(error)) return "Missing"
+        if (error instanceof CloudflareError) throw error
+        throw new CloudflareError(`remote object ${key} read failed`)
+      }
+    },
+    async create(key: string, expected: ObjectDescriptor, bytes: Uint8Array): Promise<"Created" | "PreconditionFailed"> {
+      const command = new PutObjectCommand({
+        Bucket: CLOUDFLARE_ASSET_BUCKET,
+        Key: key,
+        Body: bytes,
+        ContentLength: bytes.byteLength,
+        ContentType: expected.mediaType,
+        CacheControl: "public, max-age=31536000, immutable, no-transform",
+      })
+      command.middlewareStack.add((next) => async (args) => {
+        const request = args.request as { headers: Record<string, string> }
+        request.headers["if-none-match"] = "*"
+        return next(args)
+      }, { step: "build", name: "playsrcIfNoneMatch" })
+      try {
+        await client.send(command)
+        return "Created"
+      } catch (error) {
+        if (preconditionFailed(error)) return "PreconditionFailed"
+        throw new CloudflareError(`remote object ${key} conditional create failed`)
+      }
+    },
+    close(): void { client.destroy() },
+  })
+}
+
+export async function publishImmutableObject(
   expected: ObjectDescriptor,
-  temporaryDirectory: string,
+  bytes: Uint8Array,
+  adapter: RemoteObjectAdapter,
 ): Promise<"Uploaded" | "AlreadyPresent"> {
-  const source = releaseObjectPath(config, expected)
-  await verifyFile(source, expected)
-  const bytes = Number(expected.byteLength)
-  if (bytes > MAX_WRANGLER_OBJECT_BYTES) {
-    throw new CloudflareError(`object ${expected.sha256} exceeds Wrangler's 300000000 byte publication bound`)
-  }
+  if (bytes.byteLength > MAX_PUBLICATION_OBJECT_BYTES) throw new CloudflareError(`object ${expected.sha256} exceeds the 67108864-byte publication bound`)
+  verifyBytes(bytes, expected, "local")
   const key = `objects/sha256/${expected.sha256}`
-  const downloaded = path.join(temporaryDirectory, `${expected.sha256}.download`)
-  try {
-    if (await downloadRemoteObject(key, downloaded) === "Downloaded") {
-      await verifyFile(downloaded, expected)
-      return "AlreadyPresent"
-    }
-    await requireWrangler([
-      "r2",
-      "object",
-      "put",
-      `${CLOUDFLARE_ASSET_BUCKET}/${key}`,
-      `--file=${source}`,
-      `--content-type=${expected.mediaType}`,
-      "--cache-control=public, max-age=31536000, immutable, no-transform",
-      "--remote",
-      `--config=${WRANGLER_CONFIG}`,
-    ], `remote object ${expected.sha256} upload`)
-    if (await downloadRemoteObject(key, downloaded) !== "Downloaded") {
-      throw new CloudflareError(`uploaded object ${expected.sha256} is absent on readback`)
-    }
-    await verifyFile(downloaded, expected)
-    return "Uploaded"
-  } finally {
-    await rm(downloaded, { force: true })
+  const existing = await adapter.read(key)
+  if (existing !== "Missing") {
+    verifyBytes(existing, expected, "remote")
+    return "AlreadyPresent"
   }
+  const created = await adapter.create(key, expected, bytes)
+  const readback = await adapter.read(key)
+  if (readback === "Missing") throw new CloudflareError(`remote object ${expected.sha256} is absent after ${created}`)
+  verifyBytes(readback, expected, "remote")
+  return created === "Created" ? "Uploaded" : "AlreadyPresent"
+}
+
+export function sortPublicationDescriptors(descriptors: readonly ObjectDescriptor[]): readonly ObjectDescriptor[] {
+  const rank = (kind: ObjectDescriptor["kind"]) => kind === "catalog" ? 2 : kind.endsWith("root") ? 1 : 0
+  return Object.freeze([...descriptors].sort((left, right) => rank(left.kind) - rank(right.kind) || left.sha256.localeCompare(right.sha256)))
 }
 
 export async function publishTf2Release(config: LocalConfig, target: string | undefined): Promise<void> {
@@ -127,11 +158,29 @@ export async function publishTf2Release(config: LocalConfig, target: string | un
     throw new CloudflareError("playsrc production R2 bucket is unavailable; apply infra/cloudflare first")
   }
   const artifact = await prepareTf2Release(config, target)
-  const temporaryDirectory = path.join(config.sourceCacheDir, "cloudflare-publication")
-  await mkdir(temporaryDirectory, { recursive: true })
-  const outcomes: Record<string, "Uploaded" | "AlreadyPresent"> = {}
-  for (const descriptor of Object.values(artifact.release.objects)) {
-    outcomes[descriptor.sha256] = await publishObject(config, descriptor, temporaryDirectory)
+  const descriptors = sortPublicationDescriptors(Array.from(artifact.files.values(), ({ descriptor }) => descriptor))
+  const adapter = createR2Adapter()
+  const objects: { sha256: string; byteLength: string; kind: ObjectDescriptor["kind"]; outcome: "Uploaded" | "AlreadyPresent" }[] = []
+  try {
+    for (const descriptor of descriptors) {
+      const source = releaseObjectPath(config, descriptor)
+      await verifyFile(source, descriptor)
+      const outcome = await publishImmutableObject(descriptor, await readFile(source), adapter)
+      objects.push({ sha256: descriptor.sha256, byteLength: descriptor.byteLength, kind: descriptor.kind, outcome })
+    }
+  } finally {
+    adapter.close()
   }
-  console.log(JSON.stringify({ target: artifact.release.target, assetOrigin: CLOUDFLARE_ASSET_ORIGIN, outcomes }))
+  console.log(JSON.stringify({
+    schema: "playsrc-r2-publication-v1",
+    target: artifact.release.target,
+    assetOrigin: CLOUDFLARE_ASSET_ORIGIN,
+    objects,
+    totals: {
+      objects: objects.length,
+      bytes: objects.reduce((total, object) => total + Number(object.byteLength), 0),
+      uploaded: objects.filter((object) => object.outcome === "Uploaded").length,
+      alreadyPresent: objects.filter((object) => object.outcome === "AlreadyPresent").length,
+    },
+  }))
 }

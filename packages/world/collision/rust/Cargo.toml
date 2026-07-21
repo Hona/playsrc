@@ -10,6 +10,7 @@ playsrc-phy = { path = "../../../formats/phy/rust" }
 sha2 = "0.11"
 
 [dev-dependencies]
+playsrc-asset-graph = { path = "../../../asset-store/rust" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

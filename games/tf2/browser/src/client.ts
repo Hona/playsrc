@@ -144,6 +144,16 @@ export class Tf2WorkerClient {
     if (response.kind !== "initialized") throw new Tf2WorkerError("WorkerFailed")
   }
 
+  async decodeResources(batch: Uint8Array): Promise<Uint8Array> {
+    if (batch.byteLength < 12 || batch.byteLength > 512 * 1024 * 1024) throw new Tf2WorkerError("BoundExceeded")
+    const transferred = batch.buffer.slice(batch.byteOffset, batch.byteOffset + batch.byteLength)
+    const response = await this.#request({ kind: "decode-resources", batch: transferred }, [transferred])
+    if (response.kind !== "resources" || !(response.bytes instanceof ArrayBuffer) || response.bytes.byteLength < 12 || response.bytes.byteLength > 512 * 1024 * 1024) {
+      throw new Tf2WorkerError("WorkerFailed")
+    }
+    return new Uint8Array(response.bytes)
+  }
+
   async stage(
     generation: number,
     bsp: Uint8Array,

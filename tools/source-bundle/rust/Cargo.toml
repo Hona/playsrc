@@ -8,6 +8,7 @@ license.workspace = true
 verify-hdr = ["dep:playsrc-tf2-wasm"]
 
 [dependencies]
+playsrc-asset-graph = { path = "../../../packages/asset-store/rust" }
 playsrc-bsp = { path = "../../../packages/formats/bsp/rust" }
 playsrc-content = { path = "../../../packages/content/rust" }
 playsrc-keyvalues = { path = "../../../packages/formats/keyvalues/rust" }

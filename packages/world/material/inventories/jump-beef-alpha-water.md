@@ -1,6 +1,6 @@
 # `jump_beef` Alpha, Translucency, SpriteCard, And Water Inventory
 
-Source identity: configured build `24207079` `jump_beef.psdb`, 317 exact entries, 120,412,213 bytes, SHA-256 `c8ccea4035c5e75e26ffc0855a425ff4139f079f35ab9abd09e22990726f03d5`. Its typed closure contains 108 VMTs and 126 VTFs. The VMT set contains 55 selected model materials, 12 projectile-particle materials, 13 present mark materials, the world fence and glass families, and both effective Water roots.
+Source identity: configured `jump_beef` resource root. Its typed material closure contains 108 VMTs and 126 VTFs. The VMT set contains 55 selected model materials, 12 projectile-particle materials, 13 present mark materials, the world fence and glass families, and both effective Water roots.
 
 The 42 base VTFs declaring one-bit or eight-bit alpha divide exactly into 19 model, 13 mark, seven particle, one fence, one glass, and one non-rasterized trigger texture. Vertex alpha additionally drives all 12 particle materials, including five whose base VTF does not declare alpha.
 

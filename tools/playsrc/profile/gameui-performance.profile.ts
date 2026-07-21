@@ -1,6 +1,7 @@
 import { mkdir, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
-import { expect, test, type CDPSession } from "@playwright/test"
+import type { CDPSession } from "@playwright/test"
+import { expect, test } from "./application-test"
 import { loadLocalConfig } from "../src/config"
 import { metricDelta, summarizeCpuProfile, summarizeDistribution, summarizeTrace, type CpuProfile, type TraceEvent } from "./gameui-profile"
 

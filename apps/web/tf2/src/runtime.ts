@@ -1,4 +1,5 @@
 import { fetchImmutableObject, openDerivedObjectCache, type DerivedObjectCache } from "@playsrc/asset-store/browser"
+import { chunksForRole, encodeResourceBatch, parseResourceCatalogBytes, parseResourceGraphBytes, parseResourceSet, resourceChunkObject, selectCatalogTarget, type ResourceGraph, type ResourceChunkDescriptor } from "@playsrc/asset-store/graph"
 import { createAudioSystem, SoundRegistry, SourceAudioWorld } from "@playsrc/audio"
 import GameplayWorker from "@playsrc/game-tf2-browser/worker?worker"
 import { Tf2WorkerClient, mergePublicationSnapshots, type CoverageSample, type LoadedGame, type SimulationPublication, type VisibilityResult } from "@playsrc/game-tf2-browser"
@@ -87,37 +88,6 @@ const SOUND_PATHS = [
   "sound/weapons/pipe_bomb3.wav",
 ] as const
 
-function dependencyEntries(bytes: Uint8Array): Map<string, Uint8Array> {
-  const magic = new TextDecoder().decode(bytes.subarray(0, 4))
-  if (bytes.byteLength < 12 || (magic !== "PSDB" && magic !== "PUIB")) {
-    throw new Error("Source dependency bundle is malformed")
-  }
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-  if (view.getUint32(4, true) !== 1) throw new Error("Source dependency bundle version is invalid")
-  const count = view.getUint32(8, true)
-  let offset = 12
-  const result = new Map<string, Uint8Array>()
-  const field = (): Uint8Array => {
-    if (offset + 4 > bytes.byteLength) throw new Error("Source dependency field is truncated")
-    const length = view.getUint32(offset, true)
-    offset += 4
-    if (offset + length > bytes.byteLength) throw new Error("Source dependency field is truncated")
-    const value = bytes.subarray(offset, offset + length)
-    offset += length
-    return value
-  }
-  const decoder = new TextDecoder("utf-8", { fatal: true })
-  for (let index = 0; index < count; index += 1) {
-    const path = decoder.decode(field())
-    if (!path || path !== path.toLowerCase() || result.has(path)) {
-      throw new Error("Source dependency identity is malformed")
-    }
-    result.set(path, field())
-  }
-  if (offset !== bytes.byteLength) throw new Error("Source dependency bundle has trailing bytes")
-  return result
-}
-
 export type ApplicationView = Readonly<{
   phase: "Startup" | "MainMenu" | "Loading" | "Ready" | "Replacing" | "Failed" | "Closed"
   detail: string
@@ -193,6 +163,9 @@ export type ApplicationView = Readonly<{
   loadingBackground?: "map-photo" | "configured-generic"
   startupGestures?: number
   menuPreparation?: string
+  bootstrapLoading?: boolean
+  bootstrapProgress?: number
+  startupMutedFallback?: boolean
 }>
 
 type Renderer = Awaited<ReturnType<typeof createRenderer>>
@@ -230,6 +203,7 @@ export class Tf2Application {
   readonly #viewportOwner: PresentationViewportOwner
   #presentationViewport?: ApplicationPresentationViewport
   #configuration?: BrowserConfiguration
+  #resourceGraph?: ResourceGraph
   #dependencies: Uint8Array = new Uint8Array()
   #dependencyEntries = new Map<string, Uint8Array>()
   #cache?: DerivedObjectCache
@@ -258,6 +232,9 @@ export class Tf2Application {
   #attachmentTransforms = new Map<number, ReadonlyMap<string, ReturnType<typeof transformAttachment>>>()
   #particleBatches = createParticleBatchEncoder()
   #console?: DeveloperConsole
+  #pendingConsoleOutput: Readonly<{ text: string; developer: boolean }>[] = []
+  #operationWatchdog?: ReturnType<typeof setTimeout>
+  #operationAbort = new AbortController()
   #diagnostics?: ClientDiagnostics
   #consoleResources?:ResolvedConsoleResources
   #uiResources?: Tf2VguiResources
@@ -271,6 +248,9 @@ export class Tf2Application {
   #menuPresentationDestroyed = false
   #menuRevealed = false
   #startupGestures = 0
+  #startupMutedFallback = false
+  #bootstrapExpectedObjects = new Set<string>()
+  #bootstrapObjectProgress = new Map<string, Readonly<{ loaded: number; total: number }>>()
   readonly #gameUiRequestTasks = new Set<number>()
   #hudIntegration?: Tf2HudIntegration
   #playerClassUsePlayerModel = true
@@ -343,6 +323,8 @@ export class Tf2Application {
     blockers: Object.freeze([]),
     fireEvents: 0,
     explosionEvents: 0,
+    bootstrapLoading: true,
+    bootstrapProgress: 0,
   })
 
   constructor(
@@ -376,12 +358,34 @@ export class Tf2Application {
   }
 
   #set(patch: Partial<ApplicationView>): void {
+    const priorPhase = this.#view.phase
+    const priorDetail = this.#view.detail
+    const enteredFailure = patch.phase === "Failed" && this.#view.phase !== "Failed"
     this.#view = Object.freeze({
       ...this.#view,
       ...patch,
       blockers: Object.freeze([...this.#blockers].sort()),
     })
     this.#publish(this.#view)
+    const progressChanged = (patch.phase !== undefined && patch.phase !== priorPhase) || (patch.detail !== undefined && patch.detail !== priorDetail)
+    if (progressChanged) {
+      if (this.#operationWatchdog) clearTimeout(this.#operationWatchdog)
+      this.#operationWatchdog = undefined
+      if (["Startup", "Loading", "Replacing"].includes(this.#view.phase)) {
+        const phase = this.#view.phase
+        const detail = this.#view.detail
+        this.#output(`STATUS: ${phase}: ${detail}`)
+        this.#operationWatchdog = setTimeout(() => {
+          if (this.#view.phase === phase && this.#view.detail === detail) {
+            this.#set({ phase: "Failed", gameUi: "failure", detail: `${phase} made no progress for 60 seconds: ${detail}` })
+          }
+        }, 60_000)
+      }
+    }
+    if (enteredFailure) {
+      this.#output(`FATAL: ${this.#view.detail}`)
+      if (this.#console && !this.#console.snapshot().visible) this.toggleConsole()
+    }
   }
 
   #returnToMainMenu(): void {
@@ -538,7 +542,7 @@ export class Tf2Application {
       const value = request.changes.at(-1)?.nextValue
       if (value !== 0 && value !== 1 && value !== 2) return reject("renderer HDR value is invalid")
       this.#renderLevel = value
-      if (this.#client) {
+      if (this.#client && this.#renderer && this.#loaded) {
         try { await this.#replaceCatalogMap() }
         catch (error) { return reject(error instanceof Error ? error.message : "renderer replacement failed") }
       }
@@ -576,6 +580,66 @@ export class Tf2Application {
       throw new Error(`Configured dependency ${logicalPath} differs`)
     }
     return bytes
+  }
+
+  #nextOperationSignal(): AbortSignal {
+    this.#operationAbort.abort()
+    this.#operationAbort = new AbortController()
+    return this.#operationAbort.signal
+  }
+
+  #trackBootstrapObject(sha256: string, loaded: number, total: number): void {
+    if (this.#bootstrapExpectedObjects.size > 0 && !this.#bootstrapExpectedObjects.has(sha256)) return
+    this.#bootstrapObjectProgress.set(sha256, Object.freeze({ loaded, total }))
+    if (this.#bootstrapExpectedObjects.size === 0) return
+    let loadedBytes = 0
+    let expectedBytes = 0
+    for (const identity of this.#bootstrapExpectedObjects) {
+      const progress = this.#bootstrapObjectProgress.get(identity)
+      if (!progress) continue
+      loadedBytes += progress.loaded
+      expectedBytes += progress.total
+    }
+    const percentage = expectedBytes === 0 ? 0 : Math.min(100, Math.floor(loadedBytes * 100 / expectedBytes))
+    this.#set({ bootstrapLoading: true, bootstrapProgress: percentage })
+  }
+
+  async #ensureResourceRuntime(signal = this.#operationAbort.signal): Promise<void> {
+    if (!this.#configuration) throw new Error("Browser configuration is unavailable")
+    if (!this.#cache) this.#cache = await openDerivedObjectCache()
+    if (!this.#client) {
+      const descriptor = this.#configuration.wasm
+      const wasm = await fetchImmutableObject(this.#configuration.assetOrigin, descriptor, signal, fetch, (loaded, total) => this.#trackBootstrapObject(descriptor.sha256, loaded, total))
+      this.#client = new Tf2WorkerClient(new GameplayWorker(), this.#cache)
+      await this.#client.initialize(wasm, this.#configuration.wasm.sha256)
+    }
+  }
+
+  async #resourceSet(roles: readonly string[], signal = this.#operationAbort.signal): Promise<Uint8Array> {
+    if (!this.#configuration || !this.#resourceGraph) throw new Error("Resource graph is unavailable")
+    await this.#ensureResourceRuntime(signal)
+    const chunks = new Map<string, ResourceChunkDescriptor>()
+    for (const role of roles) for (const chunk of chunksForRole(this.#resourceGraph, role)) chunks.set(chunk.encodedSha256, chunk)
+    const records = await Promise.all([...chunks.values()].map(async (chunk) => {
+      let bytes = await this.#cache!.read(chunk.encodedSha256)
+      if (!bytes) {
+        const object = resourceChunkObject(chunk)
+        bytes = await fetchImmutableObject(this.#configuration!.assetOrigin, object, signal, fetch, (loaded, total) => this.#trackBootstrapObject(object.sha256, loaded, total))
+        await this.#cache!.write(chunk.encodedSha256, chunk.encodedSha256, bytes)
+      } else {
+        this.#trackBootstrapObject(chunk.encodedSha256, bytes.byteLength, bytes.byteLength)
+      }
+      return Object.freeze({ descriptor: chunk, bytes })
+    }))
+    const set = await this.#client!.decodeResources(encodeResourceBatch(records))
+    for (const [logicalPath, bytes] of parseResourceSet(set)) {
+      const existing = this.#dependencyEntries.get(logicalPath)
+      if (existing && (existing.byteLength !== bytes.byteLength || bytesToHex(sha256(existing)) !== bytesToHex(sha256(bytes)))) {
+        throw new Error(`Conflicting resource ${logicalPath}`)
+      }
+      this.#dependencyEntries.set(logicalPath, bytes)
+    }
+    return set
   }
 
   async #prepareStartupMedia(
@@ -635,7 +699,13 @@ export class Tf2Application {
       play: async () => {
         try { return await startPlayback() }
         catch (error) {
-          if (error instanceof DOMException && error.name === "NotAllowedError") return "gesture-required"
+          if (error instanceof DOMException && error.name === "NotAllowedError") {
+            video.muted = true
+            this.#startupMutedFallback = true
+            this.#set({ startupMutedFallback: true })
+            this.#output("STATUS: Startup autoplay continued muted until the first interaction.", true)
+            return startPlayback()
+          }
           throw error
         }
       },
@@ -649,6 +719,8 @@ export class Tf2Application {
         if (destroyed) return
         destroyed = true
         admitted = false
+        this.#startupMutedFallback = false
+        this.#set({ startupMutedFallback: false })
         video.pause()
         video.removeEventListener("ended", completed)
         video.removeEventListener("error", failed)
@@ -661,6 +733,7 @@ export class Tf2Application {
 
   async #prepareMainMenu(): Promise<Tf2HiddenMenu> {
     if (!this.#configuration || !this.#presentationRandom) throw new Error("TF2 Main Menu inputs are unavailable")
+    await this.#resourceSet(["menu"])
     this.#set({ menuPreparation: "console-resources" })
     this.#consoleResources = await resolveConfiguredConsoleResources(this.#dependencyEntries, this.#viewport().height)
     this.#blockers.add(this.#consoleResources.blocker)
@@ -796,6 +869,7 @@ export class Tf2Application {
 
   readonly #startupKey = (event: KeyboardEvent): void => {
     const state = this.#startup?.state().kind
+    this.#unmuteStartup()
     if (event.code === "Escape" && (state === "Playing" || state === "AwaitingGesture")) {
       event.preventDefault()
       event.stopImmediatePropagation()
@@ -808,23 +882,35 @@ export class Tf2Application {
       this.#startup?.gesture()
     }
   }
+  readonly #startupPointer = (): void => this.#unmuteStartup()
   readonly #startupVisibility = (): void => this.#startup?.visibility(!document.hidden)
   #installStartupListeners(): void {
     window.addEventListener("keydown", this.#startupKey, true)
+    window.addEventListener("pointerdown", this.#startupPointer, true)
     document.addEventListener("visibilitychange", this.#startupVisibility)
   }
   #removeStartupListeners(): void {
     window.removeEventListener("keydown", this.#startupKey, true)
+    window.removeEventListener("pointerdown", this.#startupPointer, true)
     document.removeEventListener("visibilitychange", this.#startupVisibility)
   }
   #startupState(state: Tf2StartupState): void {
     if (state.kind === "Completed" || state.kind === "Skipped" || state.kind === "Failed" || state.kind === "Destroyed") this.#removeStartupListeners()
-    if (state.kind === "Failed") this.#set({ phase: "Failed", gameUi: "failure", startupState: state.kind, detail: `${state.stage}: ${state.reason}` })
-    else if (state.kind !== "Completed" && state.kind !== "Skipped" && state.kind !== "Destroyed") this.#set({ phase: "Startup", startupState: state.kind, detail: state.kind })
-    else this.#set({ startupState: state.kind })
+    const bootstrapLoading = !["Playing", "AwaitingGesture", "Completed", "Skipped", "Failed", "Destroyed"].includes(state.kind)
+    if (state.kind === "Failed") this.#set({ phase: "Failed", gameUi: "failure", startupState: state.kind, bootstrapLoading, detail: `${state.stage}: ${state.reason}` })
+    else if (state.kind !== "Completed" && state.kind !== "Skipped" && state.kind !== "Destroyed") this.#set({ phase: "Startup", startupState: state.kind, bootstrapLoading, detail: state.kind })
+    else this.#set({ startupState: state.kind, bootstrapLoading })
+  }
+
+  #unmuteStartup(): void {
+    if (!this.#startupMutedFallback || this.#startup?.state().kind !== "Playing") return
+    this.#startupVideo.muted = false
+    this.#startupMutedFallback = false
+    this.#set({ startupMutedFallback: false })
   }
 
   admitStartupGesture(): void {
+    this.#unmuteStartup()
     if (this.#startup?.state().kind !== "AwaitingGesture") return
     this.#startupGestures += 1
     this.#set({ startupGestures: this.#startupGestures })
@@ -832,6 +918,7 @@ export class Tf2Application {
   }
 
   startupKey(code: string): void {
+    this.#unmuteStartup()
     if (code === "Escape") this.#startup?.key("Escape")
   }
 
@@ -843,16 +930,30 @@ export class Tf2Application {
       this.#renderLevel = this.#configuration.renderLevel
       this.#mapIdentity = this.#configuration.target
       this.#set({ phase: "Startup", startupState: "Preparing", detail: "Preparing configured Valve startup movie" })
-      const [dependencies, ui] = await Promise.all([
-        fetchImmutableObject(this.#configuration.assetOrigin, this.#configuration.dependencies),
-        fetchImmutableObject(this.#configuration.assetOrigin, this.#configuration.ui),
+      const catalogDescriptor = this.#configuration.catalog
+      const catalogBytes = await fetchImmutableObject(this.#configuration.assetOrigin, catalogDescriptor, this.#operationAbort.signal, fetch, (loaded, total) => this.#trackBootstrapObject(catalogDescriptor.sha256, loaded, total))
+      const catalog = parseResourceCatalogBytes(catalogBytes)
+      const selected = selectCatalogTarget(catalog, this.#configuration.target)
+      const graphBytes = await fetchImmutableObject(this.#configuration.assetOrigin, selected.resources, this.#operationAbort.signal, fetch, (loaded, total) => this.#trackBootstrapObject(selected.resources.sha256, loaded, total))
+      this.#resourceGraph = parseResourceGraphBytes(graphBytes)
+      if (this.#resourceGraph.target !== this.#configuration.target) throw new Error("Resource graph target differs")
+      this.#bootstrapExpectedObjects = new Set([
+        catalogDescriptor.sha256,
+        selected.resources.sha256,
+        this.#configuration.wasm.sha256,
+        ...chunksForRole(this.#resourceGraph, "startup").map((chunk) => chunk.encodedSha256),
       ])
-      this.#dependencies = dependencies
-      this.#dependencyEntries = dependencyEntries(dependencies)
-      for (const [identity, bytes] of dependencyEntries(ui)) {
-        if (this.#dependencyEntries.has(identity)) throw new Error(`Duplicate UI dependency ${identity}`)
-        this.#dependencyEntries.set(identity, bytes)
+      if (!this.#bootstrapObjectProgress.has(this.#configuration.wasm.sha256)) {
+        this.#bootstrapObjectProgress.set(this.#configuration.wasm.sha256, Object.freeze({ loaded: 0, total: Number(this.#configuration.wasm.byteLength) }))
       }
+      for (const chunk of chunksForRole(this.#resourceGraph, "startup")) {
+        if (!this.#bootstrapObjectProgress.has(chunk.encodedSha256)) {
+          this.#bootstrapObjectProgress.set(chunk.encodedSha256, Object.freeze({ loaded: 0, total: Number(chunk.encodedByteLength) }))
+        }
+      }
+      this.#trackBootstrapObject(catalogDescriptor.sha256, catalogBytes.byteLength, catalogBytes.byteLength)
+      this.#trackBootstrapObject(selected.resources.sha256, graphBytes.byteLength, graphBytes.byteLength)
+      await this.#resourceSet(["startup"])
       this.#startup = createTf2StartupController({
         descriptor: this.#configuration.startup,
         policy: { benchmark: false, editMode: false, forceVr: false, developer: false, noVideo: false, allowDebug: false, healthWarningPresent: false },
@@ -876,18 +977,18 @@ export class Tf2Application {
     const finishLoadPhase=(name:string):void=>{const now=performance.now();loadTimings[name]=now-loadPhase;loadPhase=now}
     try {
       if (!this.#configuration) throw new Error("Browser configuration is unavailable")
+      const signal = this.#nextOperationSignal()
       this.#set({ detail: "Fetching exact BSP and gameplay WASM objects" })
       this.#advanceLoading("reading-world")
-      const [bsp, wasm] = await Promise.all([
-        fetchImmutableObject(this.#configuration.assetOrigin, this.#configuration.bsp),
-        fetchImmutableObject(this.#configuration.assetOrigin, this.#configuration.wasm),
+      const [bsp, resources] = await Promise.all([
+        fetchImmutableObject(this.#configuration.assetOrigin, this.#configuration.bsp, signal),
+        this.#resourceSet(["gameplay"], signal),
       ])
+      this.#dependencies = resources
       finishLoadPhase("fetch")
       this.#advanceLoading("building-resource-index")
-      this.#cache = await openDerivedObjectCache()
+      await this.#ensureResourceRuntime(signal)
       finishLoadPhase("cacheOpen")
-      this.#client = new Tf2WorkerClient(new GameplayWorker(), this.#cache)
-      await this.#client.initialize(wasm, this.#configuration.wasm.sha256)
       finishLoadPhase("workerInitialize")
       const profile = this.#renderLevel === 2 ? 1 : 0
       const key = await mapDerivedKey(
@@ -1112,6 +1213,8 @@ export class Tf2Application {
         { kind: "developer", text: "playsrc TF2 jump practice\nType status for exact support information.\n" },
       ],
     })
+    for (const output of this.#pendingConsoleOutput) this.#output(output.text, output.developer)
+    this.#pendingConsoleOutput = []
     const diagnostics = initializeClientDiagnostics({
       runtimeIdentity: "tf2-client-diagnostics",
       resources:this.#consoleResources.diagnostics,
@@ -1264,7 +1367,11 @@ export class Tf2Application {
   }
 
   #output(text: string, developer = false): void {
-    this.#console?.apply({
+    if (!this.#console) {
+      if (this.#pendingConsoleOutput.length < 256) this.#pendingConsoleOutput.push(Object.freeze({ text, developer }))
+      return
+    }
+    this.#console.apply({
       kind: "append-output",
       segments: [{ kind: developer ? "developer" : "normal", text: `${text}\n` }],
     })
@@ -1374,10 +1481,10 @@ export class Tf2Application {
     }
     if (command === "map" && tokens.length === 1) {
       if (tokens[0] === "jump_beef") {
-        if (this.#client) await this.#replaceCatalogMap()
+        if (this.#client && this.#renderer && this.#loaded) await this.#replaceCatalogMap()
         else {
           const transition = this.#gameUi?.dispatch({ kind: "map", mapIdentity: "jump_beef" })
-          if (transition?.disposition !== "applied") this.#output(`map rejected: ${transition?.reason ?? "GameUI unavailable"}`)
+          if (transition?.disposition !== "applied") this.#output(`ERROR: map rejected: ${transition?.reason ?? "GameUI unavailable"}`)
         }
       }
       else if (tokens[0]?.startsWith("https://")) await this.#replaceExternalMap(tokens[0])
@@ -1389,18 +1496,19 @@ export class Tf2Application {
 
   async #replaceCatalogMap(): Promise<void> {
     if (!this.#configuration) return
-    if (!this.#client) {
+    if (!this.#client || !this.#renderer || !this.#loaded) {
       const transition = this.#gameUi?.dispatch({ kind: "map", mapIdentity: "jump_beef" })
       if (transition?.disposition !== "applied") throw new Error(`map rejected: ${transition?.reason ?? "GameUI unavailable"}`)
       return
     }
     try {
+      const signal = this.#nextOperationSignal()
       this.#set({ phase: "Replacing", detail: "Reloading jump_beef through exact catalog identity" })
-      const bytes = await fetchImmutableObject(this.#configuration.assetOrigin, this.#configuration.bsp)
+      const bytes = await fetchImmutableObject(this.#configuration.assetOrigin, this.#configuration.bsp, signal)
       await this.#replace(bytes, this.#configuration.bsp.sha256, "jump_beef")
     } catch (error) {
       const reason=error instanceof Error?`${error.name}: ${error.message}`:String(error)
-      this.#output(`Map replacement failed: ${reason}`)
+      this.#output(`ERROR: Map replacement failed: ${reason}`)
       this.#paused = document.hidden
       this.#set({ phase: "Ready", detail: `Prior map retained: ${reason}` })
     }
@@ -1412,7 +1520,7 @@ export class Tf2Application {
       this.#set({ phase: "Replacing", detail: `Loading ephemeral ${source.name}` })
       await this.#replace(source.bytes, source.sha256, source.name)
     } catch (error) {
-      this.#output(`External map failed: ${error instanceof Error ? error.message : "unknown failure"}`)
+      this.#output(`ERROR: External map failed: ${error instanceof Error ? error.message : "unknown failure"}`)
       this.#paused = document.hidden
       this.#set({ phase: "Ready", detail: "Prior map retained" })
     }
@@ -2659,6 +2767,9 @@ export class Tf2Application {
     if (this.#closed) return
     this.#closed = true
     this.#viewportOwner.destroy()
+    this.#operationAbort.abort()
+    if (this.#operationWatchdog) clearTimeout(this.#operationWatchdog)
+    this.#operationWatchdog = undefined
     this.#removeStartupListeners()
     this.#startup?.destroy()
     this.#startup = undefined

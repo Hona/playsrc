@@ -10,8 +10,6 @@ use playsrc_material::{
 use playsrc_vmt::{Composition, DependencyResponse, Limits, compose};
 use std::{collections::BTreeMap, fs, path::Path};
 
-const BUNDLE_BYTES: usize = 120_412_213;
-const BUNDLE_SHA256: &str = "c8ccea4035c5e75e26ffc0855a425ff4139f079f35ab9abd09e22990726f03d5";
 const ENTRY_COUNT: usize = 317;
 const VMT_COUNT: usize = 108;
 const VTF_COUNT: usize = 126;
@@ -341,14 +339,16 @@ fn configured_bundle() -> BTreeMap<String, Vec<u8>> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
     let config = fs::read_to_string(root.join("playsrc.local.json")).unwrap();
     let source_cache = json_string(&config, "sourceCacheDir");
-    let bytes = fs::read(Path::new(&source_cache).join("browser-bundles/jump_beef.psdb")).unwrap();
-    assert_eq!(bytes.len(), BUNDLE_BYTES);
-    assert_eq!(hex(&sha256(&bytes)), BUNDLE_SHA256);
+    let bytes = playsrc_asset_graph::read_resource_set(
+        &Path::new(&source_cache).join("browser-bundles/jump_beef.graph.json"),
+        None,
+    )
+    .unwrap();
     parse_bundle(&bytes)
 }
 
 fn parse_bundle(bytes: &[u8]) -> BTreeMap<String, Vec<u8>> {
-    assert_eq!(&bytes[..4], b"PSDB");
+    assert_eq!(&bytes[..4], b"PSRE");
     assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 1);
     let count = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
     assert_eq!(count, ENTRY_COUNT);

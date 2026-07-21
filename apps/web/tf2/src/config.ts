@@ -15,8 +15,7 @@ export type BrowserConfiguration = Readonly<{
   allowedExternalOrigins: readonly string[]
   bsp: ObjectDescriptor
   wasm: ObjectDescriptor
-  dependencies: ObjectDescriptor
-  ui: ObjectDescriptor
+  catalog: ObjectDescriptor
   startup: Tf2StartupDescriptor
   loading: Readonly<{
     mapPhotoLocations: typeof TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS
@@ -42,7 +41,7 @@ export function parseBrowserConfiguration(value: unknown, applicationOrigin: str
   if (
     !record(value) ||
     Object.keys(value).sort().join("\0") !==
-      "allowedExternalOrigins\0application\0applicationBuild\0assetOrigin\0bsp\0dependencies\0loading\0presentation\0renderLevel\0startup\0target\0ui\0wasm" ||
+      "allowedExternalOrigins\0application\0applicationBuild\0assetOrigin\0bsp\0catalog\0loading\0presentation\0renderLevel\0startup\0target\0wasm" ||
     value.application !== "tf2" ||
     typeof value.applicationBuild !== "string" ||
     !HASH.test(value.applicationBuild) ||
@@ -68,8 +67,7 @@ export function parseBrowserConfiguration(value: unknown, applicationOrigin: str
     new Set(value.allowedExternalOrigins).size !== value.allowedExternalOrigins.length ||
     !descriptor(value.bsp, "source-object") ||
     !descriptor(value.wasm, "derived-object") ||
-    !descriptor(value.dependencies, "derived-object") ||
-    !descriptor(value.ui, "derived-object") ||
+    !descriptor(value.catalog, "catalog", "application/vnd.playsrc.asset-catalog+json") ||
     !validateTf2StartupDescriptor(value.startup).ok ||
     JSON.stringify(value.startup) !== JSON.stringify(TF2_CONFIGURED_STARTUP) ||
     !record(value.loading) ||
@@ -93,12 +91,12 @@ function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
-function descriptor(value: unknown, kind: "source-object" | "derived-object"): value is ObjectDescriptor {
+function descriptor(value: unknown, kind: "source-object" | "derived-object" | "source-root" | "catalog", mediaType = "application/octet-stream"): value is ObjectDescriptor {
   return (
     record(value) &&
     Object.keys(value).sort().join("\0") === "byteLength\0kind\0mediaType\0sha256" &&
     value.kind === kind &&
-    value.mediaType === "application/octet-stream" &&
+    value.mediaType === mediaType &&
     typeof value.byteLength === "string" &&
     /^(0|[1-9]\d*)$/.test(value.byteLength) &&
     HASH.test(value.sha256 as string)

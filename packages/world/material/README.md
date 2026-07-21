@@ -36,7 +36,7 @@ Resolve Source material documents and textures into runtime-neutral material beh
 
 ## Configured Evidence
 
-`cargo test --locked -p playsrc-material --test exact_alpha_water -- --ignored` reads only the configured build-`24207079` `jump_beef.psdb` identity and verifies the fence, three glass patches, all 13 present marks, 55 model materials, 12 projectile-particle materials, both Water roots, 60-frame normal-map chain, and fixed semantic identity recorded in [`inventories/jump-beef-alpha-water.md`](inventories/jump-beef-alpha-water.md).
+`cargo test --locked -p playsrc-material --test exact_alpha_water -- --ignored` reads the configured `jump_beef` resource graph and verifies the fence, three glass patches, all 13 present marks, 55 model materials, 12 projectile-particle materials, both Water roots, 60-frame normal-map chain, and fixed semantic identity recorded in [`inventories/jump-beef-alpha-water.md`](inventories/jump-beef-alpha-water.md).
 
 ## Non-Responsibilities
 

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process"
-import { expect, test } from "@playwright/test"
+import { expect, test } from "./application-test"
 
 const TARGET = "jump_beef"
 

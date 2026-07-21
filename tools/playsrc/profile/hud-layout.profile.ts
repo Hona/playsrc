@@ -1,7 +1,8 @@
 import { mkdir, rm, writeFile } from "node:fs/promises"
 import { createHash } from "node:crypto"
 import path from "node:path"
-import { expect, test, type Page } from "@playwright/test"
+import type { Page } from "@playwright/test"
+import { expect, test } from "./application-test"
 import { loadLocalConfig } from "../src/config"
 
 const TARGET = "jump_beef"

@@ -6,3 +6,6 @@ license-file = "../SOURCE-1-SDK-LICENSE.txt"
 
 [lib]
 path = "src/lib.rs"
+
+[dev-dependencies]
+playsrc-asset-graph = { path = "../../../asset-store/rust" }

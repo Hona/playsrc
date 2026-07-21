@@ -8,7 +8,7 @@ use std::{
 };
 
 const BUILD: &str = "24207079";
-const BUNDLE_SHA256: &str = "c8ccea4035c5e75e26ffc0855a425ff4139f079f35ab9abd09e22990726f03d5";
+const RESOURCE_GRAPH_SHA256: &str = "e26089c098ddb15185ae1ea1f188c958c6e07c54cf631ca2c663d8ecb5933eaa";
 const BSP_SHA256: &str = "b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959";
 const OCCURRENCE_TRANSFORM_SHA256: &str =
     "7a4eff4a2d9ca0892b6f576d21df4d44d03e03f957499c20245740b21b4edee6";
@@ -431,11 +431,13 @@ fn main() -> Result<(), String> {
         return Err("local configuration paths must be absolute".to_owned());
     }
     let cache = PathBuf::from(config.source_cache_dir);
-    let bundle_bytes = fs::read(cache.join("browser-bundles/jump_beef.psdb"))
-        .map_err(|error| error.to_string())?;
-    if hex(&studio::content_sha256(&bundle_bytes)) != BUNDLE_SHA256 {
-        return Err("configured source bundle identity changed".to_owned());
+    let graph_path = cache.join("browser-bundles/jump_beef.graph.json");
+    let graph_bytes = fs::read(&graph_path).map_err(|error| error.to_string())?;
+    if hex(&studio::content_sha256(&graph_bytes)) != RESOURCE_GRAPH_SHA256 {
+        return Err("configured resource graph identity changed".to_owned());
     }
+    let bundle_bytes = playsrc_asset_graph::read_resource_set(&graph_path, None)
+        .map_err(|error| format!("configured resource graph failed: {error:?}"))?;
     let files = parse_bundle(&bundle_bytes)?;
     let vpk_files = VpkFiles::new(Path::new(&config.tf2_dir))?;
     let mut facing_digest = Vec::new();
@@ -451,7 +453,7 @@ fn main() -> Result<(), String> {
     verify_model_materials(&vpk_files)?;
     verify_occurrences(&cache)?;
     println!(
-        "{{\"build\":\"{BUILD}\",\"bundleSha256\":\"{BUNDLE_SHA256}\",\"models\":{},\"status\":\"Ready\"}}",
+        "{{\"build\":\"{BUILD}\",\"resourceGraphSha256\":\"{RESOURCE_GRAPH_SHA256}\",\"models\":{},\"status\":\"Ready\"}}",
         TARGETS.len()
     );
     Ok(())
@@ -2247,7 +2249,7 @@ fn entity_vector(entity: &playsrc_entity::Entity, key: &[u8]) -> Result<[f32; 3]
 }
 
 fn parse_bundle(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, String> {
-    if bytes.get(..4) != Some(b"PSDB") {
+    if bytes.get(..4) != Some(b"PSRE") {
         return Err("source bundle signature changed".to_owned());
     }
     let mut offset = 4;

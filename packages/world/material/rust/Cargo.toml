@@ -8,6 +8,7 @@ license.workspace = true
 playsrc-vmt = { path = "../../../formats/vmt/rust" }
 
 [dev-dependencies]
+playsrc-asset-graph = { path = "../../../asset-store/rust" }
 playsrc-keyvalues = { path = "../../../formats/keyvalues/rust" }
 
 [lib]

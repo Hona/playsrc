@@ -13,6 +13,7 @@ playsrc-visibility = { path = "../../visibility/rust" }
 sha2 = "0.10.9"
 
 [dev-dependencies]
+playsrc-asset-graph = { path = "../../../asset-store/rust" }
 playsrc-keyvalues = { path = "../../../formats/keyvalues/rust" }
 playsrc-vmt = { path = "../../../formats/vmt/rust" }
 playsrc-vtf = { path = "../../../formats/vtf/rust" }

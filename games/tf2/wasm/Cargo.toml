@@ -9,6 +9,7 @@ crate-type = ["cdylib", "rlib"]
 path = "src/lib.rs"
 
 [dependencies]
+playsrc-asset-graph = { path = "../../../packages/asset-store/rust" }
 playsrc-bsp = { path = "../../../packages/formats/bsp/rust" }
 playsrc-map = { path = "../../../packages/world/map/rust" }
 playsrc-tf2 = { path = "../rust" }

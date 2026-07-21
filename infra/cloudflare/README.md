@@ -4,7 +4,7 @@
 
 Terraform `1.15.8` and Cloudflare provider `5.22.0` own the production R2 Standard bucket, `assets.playsrc.online` R2 Custom Domain, exact-origin CORS, immutable-object Cache Rule, and Smart Tiered Cache. Wrangler `4.112.0` owns the `playsrc-web` Workers Static Assets deployment and the `playsrc.online` apex Custom Domain.
 
-The R2 bucket contains only `objects/sha256/<lowercase-64-hex>` keys. `r2.dev` remains disabled. Successful immutable responses cache at the edge and browser for 31,536,000 seconds; non-success responses do not enter the configured edge cache. The initial checkpoint publishes the current complete BSP, WASM, PSDB, PUIB, and dependency ledger without changing their formats.
+The R2 bucket contains only `objects/sha256/<lowercase-64-hex>` keys. `r2.dev` remains disabled. Successful immutable responses cache at the edge and browser for 31,536,000 seconds; non-success responses do not enter the configured edge cache. TF2 publication traverses the checked resource root, conditionally creates missing objects through R2 S3 `PutObject` with `If-None-Match: *`, verifies exact readback, and orders chunk leaves before roots and catalogs.
 
 ## State
 

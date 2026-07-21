@@ -14,7 +14,7 @@ const APPLICATION_URL = "http://127.0.0.1:4173/"
 const VIEWPORT_WIDTH = 1280
 const VIEWPORT_HEIGHT = 720
 const BACKGROUND_RGB = [17, 24, 32] as const
-const EXPECTED_DEPENDENCY_SHA256="616f4b1ebb62e394a2fd1fdd31ca1f01d3de288540ab2c4b8cb596df9265432b"
+const EXPECTED_RESOURCE_GRAPH_SHA256="e26089c098ddb15185ae1ea1f188c958c6e07c54cf631ca2c663d8ecb5933eaa"
 
 export class BrowserEvidenceError extends Error {
   constructor(message: string) {
@@ -167,8 +167,8 @@ async function classifySupportBlockers(
     ledger.gameinfoSha256 === TF2_CONTENT_BUILD.gameinfoSha256 &&
     JSON.stringify(ledger.installedDepots) === JSON.stringify(TF2_CONTENT_BUILD.installedDepots) &&
     ledger.target === "jump_beef" &&
-    typeof ledger.bundle === "object" && ledger.bundle !== null &&
-    (ledger.bundle as Record<string, unknown>).sha256 === EXPECTED_DEPENDENCY_SHA256 &&
+    typeof ledger.resourceGraph === "object" && ledger.resourceGraph !== null &&
+    (ledger.resourceGraph as Record<string, unknown>).sha256 === EXPECTED_RESOURCE_GRAPH_SHA256 &&
     Array.isArray(ledger.requests) && ledger.requests.length <= 4_096,
   "source dependency ledger identity is malformed")
   const outcomes = new Map<string, string>()

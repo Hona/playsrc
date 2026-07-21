@@ -3,6 +3,8 @@ import type { ObjectDescriptor } from "./index"
 const HASH = /^[0-9a-f]{64}$/
 const MAX_OBJECT_BYTES = 536_870_912
 const CACHE_OPERATION_TIMEOUT_MILLISECONDS = 30_000
+const MAX_CACHE_BYTES = 1024 * 1024 * 1024
+const MAX_CACHE_RECORDS = 4_096
 const KINDS = new Set([
   "source-object",
   "derived-object",
@@ -34,7 +36,38 @@ export type DerivedRecord = Readonly<{
   byteLength: number
   sha256: string
   bytes: Blob
+  storedAt: number
 }>
+
+export type DerivedCacheMetadata = Readonly<{ key: string; byteLength: number; storedAt: number }>
+
+export function planDerivedCacheEviction(
+  records: readonly DerivedCacheMetadata[],
+  incoming: Readonly<{ key: string; byteLength: number }>,
+  maximumBytes = MAX_CACHE_BYTES,
+  maximumRecords = MAX_CACHE_RECORDS,
+): readonly string[] {
+  if (!HASH.test(incoming.key) || !Number.isSafeInteger(incoming.byteLength) || incoming.byteLength < 0 || incoming.byteLength > maximumBytes
+    || !Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || !Number.isSafeInteger(maximumRecords) || maximumRecords < 1) {
+    throw new BrowserAssetError("BoundExceeded", "derived cache admission exceeds its bound")
+  }
+  const retained = records.filter((record) => record.key !== incoming.key)
+  if (retained.some((record) => !HASH.test(record.key) || !Number.isSafeInteger(record.byteLength) || record.byteLength < 0
+    || !Number.isSafeInteger(record.storedAt) || record.storedAt < 0)) {
+    throw new BrowserAssetError("IntegrityFailure", "derived cache inventory is malformed")
+  }
+  let bytes = retained.reduce((total, record) => total + record.byteLength, incoming.byteLength)
+  let count = retained.length + 1
+  const evicted: string[] = []
+  for (const record of [...retained].sort((left, right) => left.storedAt - right.storedAt || left.key.localeCompare(right.key))) {
+    if (bytes <= maximumBytes && count <= maximumRecords) break
+    bytes -= record.byteLength
+    count -= 1
+    evicted.push(record.key)
+  }
+  if (bytes > maximumBytes || count > maximumRecords) throw new BrowserAssetError("BoundExceeded", "derived cache cannot admit the object")
+  return Object.freeze(evicted)
+}
 
 export type DerivedObjectCache = Readonly<{
   read(key: string): Promise<Uint8Array | undefined>
@@ -92,6 +125,7 @@ export async function fetchImmutableObject(
   descriptor: ObjectDescriptor,
   signal?: AbortSignal,
   fetcher: typeof fetch = fetch,
+  onProgress?: (loadedBytes: number, totalBytes: number) => void,
 ): Promise<Uint8Array> {
   const expectedLength = length(descriptor)
   const url = objectUrl(origin, descriptor.sha256)
@@ -119,11 +153,32 @@ export async function fetchImmutableObject(
     throw new BrowserAssetError("ResponseFailure", "immutable object response metadata differs")
   }
   if (signal?.aborted) throw new BrowserAssetError("Cancelled", "immutable object request was cancelled")
+  const progress = (loadedBytes: number) => {
+    try { onProgress?.(loadedBytes, expectedLength) } catch {}
+  }
+  progress(0)
   let bytes: Uint8Array
   try {
-    bytes = new Uint8Array(await response.arrayBuffer())
-  } catch {
+    if (!response.body) throw new Error("body")
+    bytes = new Uint8Array(expectedLength)
+    const reader = response.body.getReader()
+    let offset = 0
+    while (true) {
+      const result = await reader.read()
+      if (signal?.aborted) {
+        await reader.cancel().catch(() => {})
+        throw new BrowserAssetError("Cancelled", "immutable object request was cancelled")
+      }
+      if (result.done) break
+      if (offset + result.value.byteLength > bytes.byteLength) throw new BrowserAssetError("IntegrityFailure", "immutable object response exceeds its descriptor")
+      bytes.set(result.value, offset)
+      offset += result.value.byteLength
+      progress(offset)
+    }
+    if (offset !== bytes.byteLength) throw new BrowserAssetError("IntegrityFailure", "immutable object response is shorter than its descriptor")
+  } catch (error) {
     if (signal?.aborted) throw new BrowserAssetError("Cancelled", "immutable object request was cancelled")
+    if (error instanceof BrowserAssetError) throw error
     throw new BrowserAssetError("ResponseFailure", "immutable object response body failed")
   }
   if (signal?.aborted) throw new BrowserAssetError("Cancelled", "immutable object request was cancelled")
@@ -142,7 +197,7 @@ export async function verifyDerivedRecord(
   }
   const record = value as Record<string, unknown>
   if (
-    Object.keys(record).sort().join("\0") !== "byteLength\0bytes\0key\0sha256"
+    Object.keys(record).sort().join("\0") !== "byteLength\0bytes\0key\0sha256\0storedAt"
     || record.key !== expectedKey
     || !Number.isSafeInteger(record.byteLength)
     || (record.byteLength as number) < 0
@@ -150,6 +205,8 @@ export async function verifyDerivedRecord(
     || !HASH.test(record.sha256 as string)
     || !(record.bytes instanceof Blob)
     || record.bytes.size !== record.byteLength
+    || !Number.isSafeInteger(record.storedAt)
+    || (record.storedAt as number) < 0
   ) {
     throw new BrowserAssetError("IntegrityFailure", "derived cache record is malformed")
   }
@@ -191,7 +248,7 @@ function bounded<T>(promise:Promise<T>,operation:string):Promise<T>{
 }
 
 export async function openDerivedObjectCache(
-  databaseName = "playsrc-derived-v2",
+  databaseName = "playsrc-derived-v3",
 ): Promise<DerivedObjectCache> {
   if (!globalThis.indexedDB) {
     throw new BrowserAssetError("PersistenceUnavailable", "IndexedDB is unavailable")
@@ -229,12 +286,21 @@ export async function openDerivedObjectCache(
       }
       const [objects, transaction] = store("readwrite")
       const done = transactionDone(transaction,"write transaction")
+      const inventory = await requestResult(objects.getAll(),"inventory request") as unknown as DerivedRecord[]
+      const storedAt = Date.now()
+      const evicted = planDerivedCacheEviction(inventory.map((record) => ({
+        key: record.key,
+        byteLength: record.byteLength,
+        storedAt: record.storedAt,
+      })), { key, byteLength: bytes.byteLength })
+      for (const evictedKey of evicted) objects.delete(evictedKey)
       let requestError:unknown
       void requestResult(objects.add({
         key,
         byteLength: bytes.byteLength,
         sha256: expectedSha256,
         bytes: new Blob([bytes],{type:"application/octet-stream"}),
+        storedAt,
       } satisfies DerivedRecord),"write request").catch(error=>{requestError=error})
       try {
         await done
