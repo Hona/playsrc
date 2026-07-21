@@ -32,7 +32,7 @@ const release = {
 describe("TF2 production release", () => {
   test("keeps the HL2 landing-page teaser disabled", async () => {
     const landing = await readFile(new URL("../../index.html", import.meta.url), "utf8")
-    expect(landing).toContain("<button type=\"button\" disabled>Half-Life 2 · Coming next</button>")
+    expect(landing).toContain("<button type=\"button\" disabled>Half-Life 2</button>")
     expect(landing).not.toContain("href=\"/hl2\"")
   })
 
