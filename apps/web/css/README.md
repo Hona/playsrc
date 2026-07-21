@@ -2,7 +2,7 @@
 
 ## Objective
 
-Deliver the future Counter-Strike: Source browser product at `css.playsrc.online`.
+Deliver the future Counter-Strike: Source browser product at `https://playsrc.online/css`.
 
 ## Responsibilities
 

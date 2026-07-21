@@ -8,6 +8,24 @@ async function main(): Promise<number> {
       await setup()
       return 0
     }
+    if (command === "infra") {
+      const { applyCloudflareInfrastructure, bootstrapCloudflareState, planCloudflareInfrastructure } = await import("./cloudflare-infra")
+      if (target === "bootstrap") await bootstrapCloudflareState()
+      else if (target === "plan") await planCloudflareInfrastructure()
+      else if (target === "apply") await applyCloudflareInfrastructure()
+      else throw new Error("InfrastructureError: action must be bootstrap, plan, or apply")
+      return 0
+    }
+    if (command === "deploy") {
+      const { deployCloudflare } = await import("./deploy")
+      await deployCloudflare(target)
+      return 0
+    }
+    if (command === "verify" && target === "deploy") {
+      const { verifyCloudflareDeployment } = await import("./deploy")
+      await verifyCloudflareDeployment(argument)
+      return 0
+    }
     const config = await loadLocalConfig()
     if (command === "verify") {
       if (target === "tf2-wasm") {
@@ -24,6 +42,17 @@ async function main(): Promise<number> {
     if (command === "dev") {
       const { runDevelopment } = await import("./dev")
       await runDevelopment(config, target)
+      return 0
+    }
+    if (command === "release") {
+      const { prepareTf2Release } = await import("./tf2-release")
+      const artifact = await prepareTf2Release(config, target)
+      console.log(JSON.stringify(artifact.release))
+      return 0
+    }
+    if (command === "publish") {
+      const { publishTf2Release } = await import("./cloudflare")
+      await publishTf2Release(config, target)
       return 0
     }
     if (command === "compile") {
@@ -63,6 +92,10 @@ async function main(): Promise<number> {
     if (error instanceof Error && error.name === "BrowserEvidenceError") {
       console.error(`VerificationFailed: ${error.message}`)
       return 5
+    }
+    if (error instanceof Error && ["CloudflareError", "DeploymentError", "Tf2ReleaseError"].includes(error.name)) {
+      console.error(`${error.name}: ${error.message}`)
+      return 6
     }
     throw error
   }

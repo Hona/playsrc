@@ -23,8 +23,12 @@ function localRuntime(): Plugin {
   }
 }
 
-export function tf2ViteConfiguration(assetOrigin = process.env.PLAYSRC_ASSET_ORIGIN): UserConfig {
+export function tf2ViteConfiguration(
+  assetOrigin = process.env.PLAYSRC_ASSET_ORIGIN,
+  deployment = false,
+): UserConfig {
   return {
+    base: deployment ? "/tf2/" : "/",
     plugins: [preact(), localRuntime()],
     server: {
       host: "127.0.0.1",
@@ -36,8 +40,12 @@ export function tf2ViteConfiguration(assetOrigin = process.env.PLAYSRC_ASSET_ORI
       fs: { allow: [fileURLToPath(new URL("../../../..", import.meta.url))] },
     },
     preview: { host: "127.0.0.1", port: 4173, strictPort: true },
-    build: { target: "es2022", sourcemap: true },
+    build: {
+      target: "es2022",
+      sourcemap: true,
+      ...(deployment ? { outDir: "dist/cloudflare/tf2", emptyOutDir: true } : {}),
+    },
   }
 }
 
-export default defineConfig(() => tf2ViteConfiguration())
+export default defineConfig(({ command }) => tf2ViteConfiguration(undefined, command === "build"))

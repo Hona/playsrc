@@ -233,13 +233,14 @@ Temporary work and undeclared local Source inputs are never deployed. Every publ
 
 ## Domains
 
-Planned applications and shared services use subdomains of `playsrc.online`:
+Browser products use canonical paths on `playsrc.online` so product identity remains under one public origin. Shared services use explicit subdomains:
 
 ```text
-tf2.playsrc.online
-css.playsrc.online
-csgo.playsrc.online
-tempus.playsrc.online
+playsrc.online/
+playsrc.online/tf2
+playsrc.online/css
+playsrc.online/csgo
+playsrc.online/tempus
 assets.playsrc.online
 api.playsrc.online
 servers.playsrc.online
