@@ -44,6 +44,11 @@ describe("TF2 production release", () => {
   test("accepts the checked jump_beef release descriptor", () => {
     const parsed = parseTf2Release(checkedRelease)
     expect(parsed.objects.catalog.byteLength).toBe("286")
+    expect(parsed.objects.catalog.sha256).toBe("165f0604e52e086dc52612dd205b15f6a685132bd01494a6ecaaae670478fb1b")
+    expect(parsed.objects.dependencyLedger).toMatchObject({
+      byteLength: "664374",
+      sha256: "fe01f384c4e31bb8d6480a09abafeffbf29b8449cf1a772532c0e1e80776d2aa",
+    })
   })
 
   test("builds one exact cross-origin browser configuration", () => {

@@ -12,20 +12,20 @@
     "wasm": {
       "kind": "derived-object",
       "mediaType": "application/octet-stream",
-      "byteLength": "3437670",
-      "sha256": "00629499c9a6e20b8dd293415dbb75432a63e0d7b73b5b5d6b36820744d62e6d"
+      "byteLength": "3454020",
+      "sha256": "4e83bab37620f37c6eff3140b660ea58efbf695ec5347bff3c018be04989c568"
     },
     "catalog": {
       "kind": "catalog",
       "mediaType": "application/vnd.playsrc.asset-catalog+json",
       "byteLength": "286",
-      "sha256": "8db387e37a29461230e7540c2a17a16cfabce8d471b9398d6752b536793b89b4"
+      "sha256": "165f0604e52e086dc52612dd205b15f6a685132bd01494a6ecaaae670478fb1b"
     },
     "dependencyLedger": {
       "kind": "derived-object",
       "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
-      "byteLength": "661328",
-      "sha256": "85837eff7cabaa453407ee637eb984b77931d408dee6f7ed99713f8bcd42ae95"
+      "byteLength": "664374",
+      "sha256": "fe01f384c4e31bb8d6480a09abafeffbf29b8449cf1a772532c0e1e80776d2aa"
     }
   }
 }

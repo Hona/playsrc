@@ -6,6 +6,7 @@ import { TF2_CONFIGURED_STARTUP } from "@playsrc/game-tf2-browser/startup-presen
 import { TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS, TF2_STAMP_BACKGROUND } from "@playsrc/game-tf2-browser/loading-presentation"
 import { TF2_CONTENT_BUILD } from "@playsrc/game-tf2-browser/content-build"
 import { TF2_BROWSER_SETTINGS_STORAGE_KEY } from "@playsrc/game-tf2-browser/settings-integration"
+import { chunksForRole, parseResourceGraphBytes } from "@playsrc/asset-store/graph"
 
 const MAX_OUTPUT_BYTES = 1024 * 1024
 const PROCESS_READY_TIMEOUT_MS = 300_000
@@ -14,7 +15,12 @@ const APPLICATION_URL = "http://127.0.0.1:4173/"
 const VIEWPORT_WIDTH = 1280
 const VIEWPORT_HEIGHT = 720
 const BACKGROUND_RGB = [17, 24, 32] as const
-const EXPECTED_RESOURCE_GRAPH_SHA256="e26089c098ddb15185ae1ea1f188c958c6e07c54cf631ca2c663d8ecb5933eaa"
+const EXPECTED_RESOURCE_GRAPH_SHA256 = "0ec0858f928bf4cd501fc87a5486941b043f2bcc9cff1c19f6f05261fe1cc265"
+const EXPECTED_RESOURCE_ROLES = Object.freeze({
+  startup: Object.freeze({ entries: 2, encodedBytes: 1_323_980 }),
+  menu: Object.freeze({ entries: 860, encodedBytes: 62_171_063 }),
+  gameplay: Object.freeze({ entries: 305, encodedBytes: 56_244_327 }),
+})
 
 export class BrowserEvidenceError extends Error {
   constructor(message: string) {
@@ -169,7 +175,8 @@ async function classifySupportBlockers(
     ledger.target === "jump_beef" &&
     typeof ledger.resourceGraph === "object" && ledger.resourceGraph !== null &&
     (ledger.resourceGraph as Record<string, unknown>).sha256 === EXPECTED_RESOURCE_GRAPH_SHA256 &&
-    Array.isArray(ledger.requests) && ledger.requests.length <= 4_096,
+    ledger.resolvedEntries === 904 && ledger.authoritativeAbsences === 40 &&
+    Array.isArray(ledger.requests) && ledger.requests.length === 944,
   "source dependency ledger identity is malformed")
   const outcomes = new Map<string, string>()
   const requests = new Map<string, Record<string, unknown>>()
@@ -204,6 +211,30 @@ async function classifySupportBlockers(
   }
   requireSource(TF2_STAMP_BACKGROUND.material.logicalPath, TF2_STAMP_BACKGROUND.material.byteLength, TF2_STAMP_BACKGROUND.material.sha256, "game-04-tf2_misc_dir.vpk")
   requireSource(TF2_STAMP_BACKGROUND.texture.logicalPath, TF2_STAMP_BACKGROUND.texture.byteLength, TF2_STAMP_BACKGROUND.texture.sha256, "game-01-tf2_textures_dir.vpk")
+  requireSource("scripts/chapterbackgrounds.txt", 230, "9d24d5870425b7a793583e95db933bd66aec51495840c5a97d3278566048cc58", "game-04-tf2_misc_dir.vpk")
+  requireSource("materials/console/background_2fort.vmt", 176, "4fa05e0ddbf5da835ea7e1d70872775d91e56e918ad2f36ae4b24c4cb62afcc3", "game-04-tf2_misc_dir.vpk")
+  requireSource("materials/console/background_2fort.vtf", 2_796_448, "c6311965e57125bec0a98de320c4cd4ef7b297c874f47acb40107f0d31d911d9", "game-01-tf2_textures_dir.vpk")
+  requireSource("materials/console/background_2fort_widescreen.vmt", 187, "62ea66916136838dec8b843437c21bb3c24cbc5811b00af4f253043156d7ba65", "game-04-tf2_misc_dir.vpk")
+  requireSource("materials/console/background_2fort_widescreen.vtf", 2_796_448, "da391abcb6d121dea3786c16014f216cdbbcaf0d5810aa3ef395341f601ddcec", "game-01-tf2_textures_dir.vpk")
+  const graph = parseResourceGraphBytes(await readFile(path.join(config.sourceCacheDir, "browser-bundles", "jump_beef.graph.json")))
+  for (const [role, expected] of Object.entries(EXPECTED_RESOURCE_ROLES)) {
+    const chunks = chunksForRole(graph, role)
+    require(chunks.reduce((total, chunk) => total + chunk.entries.length, 0) === expected.entries
+      && chunks.reduce((total, chunk) => total + Number(chunk.encodedByteLength), 0) === expected.encodedBytes,
+    `${role} resource graph selection differs`)
+  }
+  for (const logicalPath of [
+    "scripts/chapterbackgrounds.txt",
+    "materials/console/background_2fort.vmt",
+    "materials/console/background_2fort.vtf",
+    "materials/console/background_2fort_widescreen.vmt",
+    "materials/console/background_2fort_widescreen.vtf",
+    "playsrc/tf2-gameui-background.json",
+  ]) {
+    const owners = graph.chunks.filter((chunk) => chunk.entries.some((entry) => entry.logicalPath === logicalPath))
+    require(owners.length === 1 && JSON.stringify(owners[0]!.roles) === JSON.stringify(["menu"]),
+      `GameUI base-background graph role differs: ${logicalPath}`)
+  }
   const mapPhoto = requests.get("materials/vgui/maps/menu_photos_jump_beef.vmt")
   require(mapPhoto?.outcome === "authoritative-absence" && JSON.stringify((mapPhoto.checked as Record<string, string>[]).map((location) => `${location.providerIdentity}:${location.location}`)) === JSON.stringify(TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS),
     "jump_beef map-photo checked locations differ")
@@ -566,12 +597,19 @@ async function completeStartup(
   identity: string,
   disposition: "complete" | "skip",
 ): Promise<Readonly<{ first: InterfaceEvidence; middle?: InterfaceEvidence; final?: InterfaceEvidence }>> {
-  await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.startupState==='AwaitingGesture'", "--timeout", "300000"])
-  const hidden = parseJson<{ hidden: boolean; inert: boolean; ariaHidden: string | null; focused: boolean; time: number; muted: boolean; movie: number[]; viewport: number[] }>(await agent([
+  try {
+    await agent(["--session", session, "wait", "--fn", "['AwaitingGesture','Playing'].includes(document.querySelector('main')?.dataset.startupState)", "--timeout", "300000"])
+  } catch (error) {
+    const state = await agent(["--session", session, "eval", "(()=>{const main=document.querySelector('main');return{body:document.body.innerText.slice(0,500),main:!!main,startupState:main?.dataset.startupState??null,phase:main?.dataset.phase??null,detail:main?.dataset.detail??null}})()"]).catch((probe) => `probe failed: ${String(probe)}`)
+    throw new BrowserEvidenceError(`${String(error)}; startup state: ${state}`)
+  }
+  const hidden = parseJson<{ state: string; hidden: boolean; inert: boolean; ariaHidden: string | null; focused: boolean; time: number; muted: boolean; mutedFallback: boolean; movie: number[]; viewport: number[] }>(await agent([
     "--session", session, "eval",
-    "(()=>{const root=document.querySelector('.gameui-layer'),video=document.querySelector('.startup-movie'),r=video.getBoundingClientRect();return{hidden:root.hidden,inert:root.inert,ariaHidden:root.getAttribute('aria-hidden'),focused:root.contains(document.activeElement),time:video.currentTime,muted:video.muted,movie:[r.x,r.y,r.width,r.height],viewport:[innerWidth,innerHeight]}})()",
+    "(()=>{const main=document.querySelector('main'),root=document.querySelector('.gameui-layer'),video=document.querySelector('.startup-movie'),r=video.getBoundingClientRect();return{state:main.dataset.startupState,hidden:root.hidden,inert:root.inert,ariaHidden:root.getAttribute('aria-hidden'),focused:root.contains(document.activeElement),time:video.currentTime,muted:video.muted,mutedFallback:main.dataset.startupMutedFallback==='true',movie:[r.x,r.y,r.width,r.height],viewport:[innerWidth,innerHeight]}})()",
   ]))
-  require(hidden.hidden && hidden.inert && hidden.ariaHidden === "true" && !hidden.focused && hidden.time === 0 && !hidden.muted
+  const startupAdmission = (hidden.state === "AwaitingGesture" && hidden.time === 0 && !hidden.muted && !hidden.mutedFallback)
+    || (hidden.state === "Playing" && hidden.time >= 0 && hidden.time < 1 && hidden.muted && hidden.mutedFallback)
+  require(hidden.hidden && hidden.inert && hidden.ariaHidden === "true" && !hidden.focused && startupAdmission
     && JSON.stringify(hidden.movie) === JSON.stringify([0, 0, ...hidden.viewport]),
     `hidden Main Menu or startup media admission differs: ${JSON.stringify(hidden)}`)
   const first = await captureInterface(session, config, `${identity}-startup-first`)
@@ -877,7 +915,7 @@ async function acquirePointerLock(session: string, identity: string): Promise<bo
     await agent(["--session", session, "focus", ".world-canvas"])
     await agent(["--session", session, "click", ".world-canvas"]).catch(() => {})
     await agent(["--session", session, "wait", "1000"])
-    lastBody = parseJson<string>(await agent(["--session", session, "eval", "JSON.stringify((()=>{const m=document.querySelector('main'),c=document.querySelector('.world-canvas'),r=c.getBoundingClientRect();return{body:document.body.innerText.slice(0,300),phase:m.dataset.phase,gameui:m.dataset.gameui,console:m.dataset.consoleVisible,pointer:m.dataset.pointerLocked,detail:m.dataset.detail,canvas:[r.x,r.y,r.width,r.height],hit:document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)?.className}})())"]))
+    lastBody = parseJson<string>(await agent(["--session", session, "eval", "JSON.stringify((()=>{const m=document.querySelector('main'),c=document.querySelector('.world-canvas'),r=c.getBoundingClientRect();return{body:document.body.innerText.slice(0,300),phase:m.dataset.phase,gameui:m.dataset.gameui,console:m.dataset.consoleVisible,pointer:m.dataset.pointerLocked,detail:m.dataset.detail,focus:document.hasFocus(),visibility:document.visibilityState,canvas:[r.x,r.y,r.width,r.height],hit:document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)?.className}})())"]))
     if (parseJson<string>(await agent(["--session", session, "eval", "document.querySelector('main').dataset.pointerLocked"])) === "true") return true
     const gameUi = parseJson<string>(await agent(["--session", session, "eval", "document.querySelector('main').dataset.gameui"]))
     if (gameUi === "pause") {
@@ -899,6 +937,19 @@ async function unavailable(url: string): Promise<boolean> {
   } finally {
     clearTimeout(timeout)
   }
+}
+
+type CacheInventory = Readonly<{
+  count: number
+  bytes: number
+  largest: readonly Readonly<{ key: string; byteLength: number }>[]
+}>
+
+async function cacheInventory(session: string): Promise<CacheInventory> {
+  return parseJson<CacheInventory>(await agent([
+    "--session", session, "eval",
+    "(async()=>{const database=await new Promise((resolve,reject)=>{const request=indexedDB.open('playsrc-derived-v3',1);request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error)}),records=await new Promise((resolve,reject)=>{const request=database.transaction('objects').objectStore('objects').getAll();request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error)});database.close();return{count:records.length,bytes:records.reduce((total,record)=>total+record.byteLength,0),largest:records.map(record=>({key:record.key,byteLength:record.byteLength})).sort((a,b)=>b.byteLength-a.byteLength||a.key.localeCompare(b.key)).slice(0,12)}})()",
+  ]))
 }
 
 type ViewportOwnershipEvidence = Readonly<{
@@ -1679,6 +1730,7 @@ export async function verifyBrowserAcceptance(
       && returnStartup.background === "../console/background_2fort_widescreen" && returnStartup.backgroundDisplay !== "none",
     `startup or GameUI background return differs after disconnect: ${JSON.stringify(returnStartup)}`)
 
+    const coldCacheInventory = await cacheInventory(session)
     const reloadTabs = await agent(["--session", session, "tab"])
     const reloadTab = /\[(t\d+)\]/.exec(reloadTabs)?.[1]
     require(reloadTab, `browser tab is unavailable before warm reload: ${reloadTabs}`)
@@ -1710,7 +1762,9 @@ export async function verifyBrowserAcceptance(
       "--timeout",
       "30000",
     ])
-    require(parseJson<string>(await agent(["--session", session, "eval", "document.querySelector('main').dataset.cache"])) === "hit", "warm browser run did not reuse the derived payload")
+    const warmCache = parseJson<{ cache: string; performance: string | null }>(await agent(["--session", session, "eval", "(()=>{const main=document.querySelector('main');return{cache:main.dataset.cache,performance:main.dataset.loadPerformance??null}})()"] ))
+    const warmCacheInventory = await cacheInventory(session)
+    require(warmCache.cache === "hit", `warm browser run did not reuse the derived payload: ${JSON.stringify({ ...warmCache, coldCacheInventory, warmCacheInventory })}`)
     require(!parseJson<string[]>(await agent(["--session", session, "eval", "JSON.parse(document.querySelector('main').dataset.blockers)"])).some((value) => value.startsWith("ModelArtifactCacheUnavailable")), "bounded model presentation artifacts were not cached")
     await agent(["--session",session,"wait","--fn","Math.abs(Number(document.querySelector('main').dataset.cameraPosition.split(',')[2])-(-3067.96875))<0.001","--timeout","10000"])
     const warmCamera = await cameraObservation(session)
@@ -1726,7 +1780,7 @@ export async function verifyBrowserAcceptance(
       "--session",
       session,
       "eval",
-      "(()=>{const s={done:false,error:null,result:null};globalThis.__playsrcIdbEvidence=s;s.open=indexedDB.open('playsrc-derived-v2',1);s.open.onerror=()=>{s.error=String(s.open.error);s.done=true};s.open.onsuccess=()=>{try{s.database=s.open.result;s.transaction=s.database.transaction('objects');s.request=s.transaction.objectStore('objects').getAll();s.request.onerror=()=>{s.error=String(s.request.error);s.done=true};s.request.onsuccess=()=>{s.result=s.request.result.map(x=>({key:x.key,byteLength:x.byteLength,sha256:x.sha256}));s.done=true}}catch(error){s.error=String(error);s.done=true}};return true})()",
+      "(()=>{const s={done:false,error:null,result:null};globalThis.__playsrcIdbEvidence=s;s.open=indexedDB.open('playsrc-derived-v3',1);s.open.onerror=()=>{s.error=String(s.open.error);s.done=true};s.open.onsuccess=()=>{try{s.database=s.open.result;s.transaction=s.database.transaction('objects');s.request=s.transaction.objectStore('objects').getAll();s.request.onerror=()=>{s.error=String(s.request.error);s.done=true};s.request.onsuccess=()=>{s.result=s.request.result.map(x=>({key:x.key,byteLength:x.byteLength,sha256:x.sha256}));s.done=true}}catch(error){s.error=String(error);s.done=true}};return true})()",
     ])
     await agent(["--session", session, "wait", "--fn", "globalThis.__playsrcIdbEvidence?.done===true", "--timeout", "30000"])
     const records = parseJson<Array<{ key: string; byteLength: number; sha256: string }>>(
@@ -1734,19 +1788,15 @@ export async function verifyBrowserAcceptance(
     )
     const mapRecords = records.filter(
       (record) =>
-        record.sha256 === "d38eab0759df0d92f91832ca63848d5ed55f84b040c52f814cbc2c97b6a2e39d" ||
+        record.sha256 === "4610e40fe34d61d2eb6a61c1cc2e7fa725bd4b91eded2584e2973f8c162dbac4" ||
         record.sha256 === "56153098a867c553651f9c773bd72c4659782bae8520277c80daaaa414bdf156",
     )
-    require(mapRecords.length === (platformFontSupported ? 2 : 1) &&
+    require(mapRecords.length === 1 &&
       mapRecords.some(
         (record) =>
-          record.byteLength === 78_302_136 &&
-          record.sha256 === "d38eab0759df0d92f91832ca63848d5ed55f84b040c52f814cbc2c97b6a2e39d",
-      ) && (!platformFontSupported || mapRecords.some(
-        (record) =>
-          record.byteLength === 42_082_929 &&
-          record.sha256 === "56153098a867c553651f9c773bd72c4659782bae8520277c80daaaa414bdf156",
-      )), `warm IndexedDB record identity differs: ${JSON.stringify(records)}`)
+          record.byteLength === 78_255_422 &&
+          record.sha256 === "4610e40fe34d61d2eb6a61c1cc2e7fa725bd4b91eded2584e2973f8c162dbac4",
+      ), `warm active IndexedDB record identity differs: ${JSON.stringify(mapRecords)}`)
     return {
       target: "jump_beef",
       browser: version,

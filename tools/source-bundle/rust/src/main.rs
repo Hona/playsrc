@@ -2527,17 +2527,6 @@ fn main() -> Result<(), String> {
         format!("materials/console/{background_name}_widescreen.vmt"),
         format!("materials/console/{background_name}_widescreen.vtf"),
     ]);
-    for logical_path in &gameui_presentation_sources {
-        let bytes = resolver
-            .bundle
-            .remove(logical_path)
-            .ok_or_else(|| format!("TF2 GameUI presentation source is absent: {logical_path}"))?;
-        if ui_bundle.insert(logical_path.clone(), bytes).is_some() {
-            return Err(format!(
-                "duplicate TF2 GameUI presentation source: {logical_path}"
-            ));
-        }
-    }
     let bundle = &resolver.bundle;
     if bundle.len() > MAX_DEPENDENCY_REQUESTS || resolver.requests.len() > MAX_DEPENDENCY_REQUESTS {
         return Err("source dependency request count exceeds bound".to_owned());
@@ -2551,10 +2540,16 @@ fn main() -> Result<(), String> {
             .get(logical_path)
             .ok_or_else(|| format!("resource graph request is absent: {logical_path}"))?;
         let mut roles = BTreeSet::new();
+        if gameui_presentation_sources.contains(logical_path) {
+            roles.insert("menu".to_owned());
+        }
         for consumer in &request.consumers {
-            if consumer.starts_with("tf2-ui") || consumer.starts_with("vgui-") {
+            if consumer.starts_with("tf2-ui")
+                || consumer.starts_with("tf2-gameui")
+                || consumer.starts_with("vgui-")
+            {
                 roles.insert("menu".to_owned());
-            } else {
+            } else if !gameui_presentation_sources.contains(logical_path) {
                 roles.insert("gameplay".to_owned());
             }
         }
@@ -2608,7 +2603,7 @@ fn main() -> Result<(), String> {
         .iter()
         .filter(|record| record.outcome == "resolved")
         .count();
-    if resolved_entries != bundle.len() + gameui_presentation_sources.len() {
+    if resolved_entries != bundle.len() {
         return Err("resolved ledger identities differ from bundle entries".to_owned());
     }
     for request in request_records
@@ -2617,12 +2612,6 @@ fn main() -> Result<(), String> {
     {
         let bytes = bundle
             .get(&request.logical_path)
-            .or_else(|| {
-                gameui_presentation_sources
-                    .contains(&request.logical_path)
-                    .then(|| ui_bundle.get(&request.logical_path))
-                    .flatten()
-            })
             .ok_or_else(|| "resolved ledger entry is absent from bundle".to_owned())?;
         let descriptor = request
             .descriptor
