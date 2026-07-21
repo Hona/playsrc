@@ -66,6 +66,11 @@ import { loadBrowserConfiguration, type BrowserConfiguration } from "./config"
 import { PhysicalButtonState, applyPointerDelta, rawPointerMovementUnsupported, rebasePointerYaw, resolvePhysicalBinding } from "./input"
 import { TF2_SELECTED_OPTIONS, type AdapterRequestResult, type SettingsAdapterRequest } from "@playsrc/settings"
 import { SimulationClockQueue } from "./simulation-clock"
+import {
+  initializeBrowserPresentationViewportOwner,
+  type ApplicationPresentationViewport,
+  type PresentationViewportOwner,
+} from "./presentation-viewport"
 
 const MAX_EXTERNAL_BYTES = 536_870_912
 const SIMULATION_SAMPLE_INTERVAL_SECONDS = 0.015
@@ -213,6 +218,7 @@ type PreparedPresentation=Readonly<{
 
 export class Tf2Application {
   #canvas: HTMLCanvasElement
+  readonly #presentationRoot: HTMLElement
   readonly #vguiRoot: HTMLElement
   readonly #gameUiRoot: HTMLElement
   readonly #hudRoot: HTMLElement
@@ -221,6 +227,8 @@ export class Tf2Application {
   readonly #startupRoot: HTMLElement
   readonly #startupVideo: HTMLVideoElement
   readonly #publish: (view: ApplicationView) => void
+  readonly #viewportOwner: PresentationViewportOwner
+  #presentationViewport?: ApplicationPresentationViewport
   #configuration?: BrowserConfiguration
   #dependencies: Uint8Array = new Uint8Array()
   #dependencyEntries = new Map<string, Uint8Array>()
@@ -343,6 +351,11 @@ export class Tf2Application {
     publish: (view: ApplicationView) => void,
   ) {
     this.#canvas = canvas
+    const presentationRoot = canvas.parentElement
+    if (!presentationRoot || [roots.vgui, roots.gameUi, roots.hud, roots.options, roots.loading, roots.startup].some((root) => root.parentElement !== presentationRoot)) {
+      throw new Error("TF2 presentation owners do not share one application mount")
+    }
+    this.#presentationRoot = presentationRoot
     this.#vguiRoot = roots.vgui
     this.#gameUiRoot = roots.gameUi
     this.#hudRoot = roots.hud
@@ -351,6 +364,11 @@ export class Tf2Application {
     this.#startupRoot = roots.startup
     this.#startupVideo = roots.startupVideo
     this.#publish = publish
+    this.#viewportOwner = initializeBrowserPresentationViewportOwner({
+      root: this.#presentationRoot,
+      onViewport: (viewport) => this.#commitPresentationViewport(viewport),
+      onSuspended: () => this.#suspendPresentationViewport(),
+    })
     this.#gameUiRoot.hidden = true
     this.#gameUiRoot.inert = true
     this.#gameUiRoot.setAttribute("aria-hidden", "true")
@@ -405,12 +423,12 @@ export class Tf2Application {
     this.#syncLoadingPresentation()
   }
 
-  #syncLoadingPresentation(): void {
+  #syncLoadingPresentation(viewport = this.#viewport()): void {
     if (!this.#loadingPresentation || !this.#loadingVgui || !this.#gameUi || this.#loadingPresentationGeneration < 1) return
     const snapshot = this.#loadingPresentation.update(
       this.#loadingPresentationGeneration,
       this.#gameUi.state(),
-      this.#viewport(),
+      viewport,
       this.#loadingBackground,
     )
     if (snapshot) this.#loadingVgui.apply(snapshot)
@@ -644,7 +662,7 @@ export class Tf2Application {
   async #prepareMainMenu(): Promise<Tf2HiddenMenu> {
     if (!this.#configuration || !this.#presentationRandom) throw new Error("TF2 Main Menu inputs are unavailable")
     this.#set({ menuPreparation: "console-resources" })
-    this.#consoleResources = await resolveConfiguredConsoleResources(this.#dependencyEntries, Math.max(1, this.#vguiRoot.getBoundingClientRect().height))
+    this.#consoleResources = await resolveConfiguredConsoleResources(this.#dependencyEntries, this.#viewport().height)
     this.#blockers.add(this.#consoleResources.blocker)
     this.#set({ menuPreparation: "vgui-resources" })
     this.#uiResources = await initializeTf2VguiResources({
@@ -819,6 +837,7 @@ export class Tf2Application {
 
   async start(): Promise<void> {
     try {
+      await this.#viewportOwner.first()
       this.#configuration = await loadBrowserConfiguration()
       this.#presentationRandom = createTf2PresentationRandom(this.#configuration.presentation.randomSeed)
       this.#renderLevel = this.#configuration.renderLevel
@@ -919,7 +938,7 @@ export class Tf2Application {
         powerPreference: "high-performance",
       })
       finishLoadPhase("rendererCreate")
-      this.resize()
+      this.#resizeRenderer()
       this.#advanceLoading("creating-client-world")
       const scene = await this.#renderer.loadMap({
         payload: this.#loaded.payload,
@@ -1172,12 +1191,48 @@ export class Tf2Application {
     })
   }
 
-  #viewport() {
-    const bounds = this.#vguiRoot.getBoundingClientRect()
-    return {
-      width: Math.max(1, Math.trunc(bounds.width)),
-      height: Math.max(1, Math.trunc(bounds.height)),
-      devicePixelRatio: window.devicePixelRatio,
+  #viewport(): ApplicationPresentationViewport {
+    if (!this.#presentationViewport) throw new Error("TF2 presentation viewport is suspended")
+    return this.#presentationViewport
+  }
+
+  #resizeRenderer(viewport = this.#viewport()): void {
+    this.#renderer?.resize(viewport.width, viewport.height, viewport.devicePixelRatio)
+  }
+
+  #commitPresentationViewport(viewport: ApplicationPresentationViewport): void {
+    this.#presentationViewport = viewport
+    const identity = `${viewport.revision}:${viewport.width}x${viewport.height}@${viewport.devicePixelRatio}`
+    for (const owner of [this.#canvas, this.#startupRoot, this.#loadingRoot, this.#gameUiRoot, this.#hudRoot, this.#optionsRoot, this.#vguiRoot]) {
+      owner.dataset.presentationViewport = identity
+      owner.dataset.presentationViewportState = "active"
+    }
+    this.#resizeRenderer(viewport)
+    this.#console?.apply({ kind: "set-viewport", viewport })
+    this.#diagnostics?.apply({ kind: "set-viewport", viewport })
+    this.#gameUi?.setViewport(viewport)
+    this.#hudIntegration?.setViewport(viewport)
+    this.#options?.setViewport(viewport)
+    this.#loadingVgui?.setViewport(viewport)
+    if (this.#loadingPresentationGeneration > 0 && this.#configuration) {
+      const result = resolveTf2LoadingBackground({
+        generation: this.#loadingPresentationGeneration,
+        mapIdentity: "jump_beef",
+        viewport,
+        mapPhotoLookups: this.#configuration.loading.mapPhotoLocations.map((location) => Object.freeze({ location, outcome: "missing" as const })),
+        backingMaterial: this.#configuration.loading.stampBackground.material,
+        backingTexture: this.#configuration.loading.stampBackground.texture,
+      })
+      if (result.ok) this.#loadingBackground = result
+      this.#syncLoadingPresentation(viewport)
+    }
+  }
+
+  #suspendPresentationViewport(): void {
+    this.#presentationViewport = undefined
+    for (const owner of [this.#canvas, this.#startupRoot, this.#loadingRoot, this.#gameUiRoot, this.#hudRoot, this.#optionsRoot, this.#vguiRoot]) {
+      delete owner.dataset.presentationViewport
+      owner.dataset.presentationViewportState = "suspended"
     }
   }
 
@@ -1462,7 +1517,7 @@ export class Tf2Application {
           configuration: this.#renderLevel === 2 ? SOURCE_PC_INTEGER_HDR : SOURCE_LDR,
           powerPreference: "high-performance",
         })
-        this.resize()
+        this.#resizeRenderer()
       }
       const scene = await this.#renderer.loadMap({
         payload: staged.payload,
@@ -1492,7 +1547,7 @@ export class Tf2Application {
           configuration: priorConfiguration,
           powerPreference: "high-performance",
         })
-        this.resize()
+        this.#resizeRenderer()
       }
       await this.#renderer.loadMap({
         payload: prior.payload,
@@ -1975,7 +2030,7 @@ export class Tf2Application {
     if(!prepared||!client||!renderer||prepared.generation!==generation)return
     const viewRevision=this.#viewRevision,yaw=this.#yaw,pitch=this.#pitch
     const camera=tf2Camera(prepared.snapshot,yaw,pitch)
-    const viewport=this.#canvas.getBoundingClientRect()
+    const viewport=this.#viewport()
     const phaseStart=performance.now(),visibilityStart=phaseStart
     let visibility=prepared.visibility
     if(visibility.water.visibleWater===null&&visibility.water.passes.every(pass=>pass.kind==="main")){
@@ -2162,7 +2217,7 @@ export class Tf2Application {
         if (l) add(p.launcherIdentity, new Set(l.attachments.keys()))
       }
       const camera = tf2Camera(snapshot, this.#yaw, this.#pitch)
-      const viewport=this.#canvas.getBoundingClientRect(),viewmodel=this.#viewmodels.map(snapshot,{aspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),farPlane:camera.far})
+      const viewport=this.#viewport(),viewmodel=this.#viewmodels.map(snapshot,{aspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),farPlane:camera.far})
       const lockerRequests=[...this.#lockerAnimations].flatMap(([identity,state])=>{const occurrence=this.#artifacts!.modelOccurrences.find(value=>value.entity===identity),artifact=occurrence&&this.#artifacts!.models.get(occurrence.model);if(!occurrence||!artifact){this.#blockers.add(`TF2 regenerate model presentation unavailable: ${identity}`);return []}const closed=snapshot.tick>=state.closeTick,animation=closed?state.closeAnimation:state.openAnimation,start=closed?state.closeTick:state.openTick,elapsed=Math.max(0,Number(snapshot.tick-start)*0.015),previousTick=snapshot.tick>BigInt(publication.selectedTicks)?snapshot.tick-BigInt(publication.selectedTicks):0n,previousElapsed=Math.max(0,Number(previousTick-start)*0.015);return [Object.freeze({identity,model:occurrence.model,activity:animation,previousElapsedSeconds:Math.min(previousElapsed,elapsed),elapsedSeconds:elapsed,currentTimeSeconds:Number(snapshot.tick)*0.015,frameTimeSeconds:publication.selectedTicks*0.015,planarSpeed:0,screenAspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),worldFarPlane:camera.far,skin:occurrence.skin,lod:0,bodygroups:Object.freeze([]),packedBody:state.body})]})
       const modelStart=performance.now();this.#wasmCalls.models++;const modelRequest=client.models(generation, encodeModelPoseBatch([viewmodel.request,...lockerRequests]));this.#wasmCalls.visibility++;const visibilityRequest=client.visibility(generation,{
         position:camera.position,
@@ -2317,7 +2372,6 @@ export class Tf2Application {
     window.addEventListener("mousedown", this.#mouseDown)
     window.addEventListener("mouseup", this.#mouseUp, true)
     window.addEventListener("mousemove", this.#mouseMove)
-    window.addEventListener("resize", this.#resize)
     window.addEventListener("blur", this.#blur)
     document.addEventListener("visibilitychange", this.#visibility)
     document.addEventListener("pointerlockchange", this.#pointerLock)
@@ -2332,7 +2386,6 @@ export class Tf2Application {
     window.removeEventListener("mousedown", this.#mouseDown)
     window.removeEventListener("mouseup", this.#mouseUp, true)
     window.removeEventListener("mousemove", this.#mouseMove)
-    window.removeEventListener("resize", this.#resize)
     window.removeEventListener("blur", this.#blur)
     document.removeEventListener("visibilitychange", this.#visibility)
     document.removeEventListener("pointerlockchange", this.#pointerLock)
@@ -2457,7 +2510,6 @@ export class Tf2Application {
     this.#mouseViewRevision+=1
   }
 
-  readonly #resize = (): void => this.resize()
   readonly #blur = (): void => this.#neutral()
   readonly #visibility = (): void => {
     this.#paused = document.hidden
@@ -2560,29 +2612,6 @@ export class Tf2Application {
     this.#set({ consoleVisible: true })
   }
 
-  resize(): void {
-    const bounds = this.#canvas.getBoundingClientRect()
-    this.#renderer?.resize(bounds.width, bounds.height, window.devicePixelRatio)
-    this.#console?.apply({ kind: "set-viewport", viewport: this.#viewport() })
-    this.#diagnostics?.apply({ kind: "set-viewport", viewport: this.#viewport() })
-    this.#gameUi?.setViewport(this.#viewport())
-    this.#hudIntegration?.setViewport(this.#viewport())
-    this.#options?.setViewport(this.#viewport())
-    this.#loadingVgui?.setViewport(this.#viewport())
-    if (this.#loadingPresentationGeneration > 0 && this.#configuration) {
-      const result = resolveTf2LoadingBackground({
-        generation: this.#loadingPresentationGeneration,
-        mapIdentity: "jump_beef",
-        viewport: this.#viewport(),
-        mapPhotoLookups: this.#configuration.loading.mapPhotoLocations.map((location) => Object.freeze({ location, outcome: "missing" as const })),
-        backingMaterial: this.#configuration.loading.stampBackground.material,
-        backingTexture: this.#configuration.loading.stampBackground.texture,
-      })
-      if (result.ok) this.#loadingBackground = result
-      this.#syncLoadingPresentation()
-    }
-  }
-
   async close(): Promise<void> {
     if (this.#closed) return
     await this.#release()
@@ -2629,6 +2658,7 @@ export class Tf2Application {
   async #release(): Promise<void> {
     if (this.#closed) return
     this.#closed = true
+    this.#viewportOwner.destroy()
     this.#removeStartupListeners()
     this.#startup?.destroy()
     this.#startup = undefined
