@@ -305,6 +305,7 @@ type CanvasEvidence = Readonly<{
   regions: readonly RegionMetric[]
 }>
 type InterfaceEvidence = Readonly<{ sha256: string; byteLength: number; width: number; height: number }>
+type GameUiBackgroundEvidence = InterfaceEvidence & Readonly<{ nonBlackSamples: number; sampleSha256: string }>
 
 type CameraObservation = Readonly<{
   position: readonly [number, number, number]
@@ -524,6 +525,39 @@ async function captureInterface(session: string, config: LocalConfig, identity: 
     await rm(temporaryPath, { force: true })
   }
   return Object.freeze({ sha256, byteLength: bytes.byteLength, width: image.width, height: image.height })
+}
+
+async function captureGameUiBackground(session: string, config: LocalConfig, identity: string): Promise<GameUiBackgroundEvidence> {
+  const evidenceDirectory = path.join(config.sourceCacheDir, "evidence", "browser", "tf2-interface")
+  await mkdir(evidenceDirectory, { recursive: true })
+  const temporaryPath = path.join(evidenceDirectory, `${identity}-${process.pid}.png`)
+  await agent(["--session", session, "eval", "(()=>{const prior=document.getElementById('playsrc-background-evidence-style');if(prior)prior.remove();const style=document.createElement('style');style.id='playsrc-background-evidence-style';style.textContent='[data-vgui-name=MainMenuOverride],[data-vgui-name=MMDashboard]{opacity:0!important}';document.head.append(style);return true})()"])
+  try {
+    await agent(["--session", session, "screenshot", ".gameui-layer", temporaryPath])
+  } finally {
+    await agent(["--session", session, "eval", "document.getElementById('playsrc-background-evidence-style')?.remove();true"])
+  }
+  const bytes = new Uint8Array(await readFile(temporaryPath))
+  require(bytes.byteLength <= 16 * 1024 * 1024, "GameUI background PNG exceeds the evidence byte bound")
+  const image = await decodePng(bytes)
+  const samples = new Uint8Array(27)
+  let nonBlackSamples = 0
+  let offset = 0
+  for (const yFraction of [0.1, 0.5, 0.9]) for (const xFraction of [0.1, 0.5, 0.9]) {
+    const x = Math.min(image.width - 1, Math.floor(image.width * xFraction))
+    const y = Math.min(image.height - 1, Math.floor(image.height * yFraction))
+    const source = (y * image.width + x) * 3
+    const red = image.rgb[source]!, green = image.rgb[source + 1]!, blue = image.rgb[source + 2]!
+    samples[offset++] = red; samples[offset++] = green; samples[offset++] = blue
+    if (red + green + blue >= 48) nonBlackSamples += 1
+  }
+  const sha256 = new Bun.CryptoHasher("sha256").update(bytes).digest("hex")
+  const sampleSha256 = new Bun.CryptoHasher("sha256").update(samples).digest("hex")
+  const retainedPath = path.join(evidenceDirectory, `${identity}-${sha256}.png`)
+  try { await copyFile(temporaryPath, retainedPath, fsConstants.COPYFILE_EXCL) }
+  catch (error) { if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error }
+  finally { await rm(temporaryPath, { force: true }) }
+  return Object.freeze({ sha256, byteLength: bytes.byteLength, width: image.width, height: image.height, nonBlackSamples, sampleSha256 })
 }
 
 async function completeStartup(
@@ -930,6 +964,23 @@ export async function verifyBrowserAcceptance(
       && menuPresentation.characterVisible && menuPresentation.characterBounds[2]! > 0 && menuPresentation.characterBounds[3]! > 0
       && menuPresentation.characterCanvas[0]! > 0 && menuPresentation.characterCanvas[1]! > 0,
     `Main Menu presentation selection differs: ${JSON.stringify(menuPresentation)}`)
+    const gameUiBaseBackground = parseJson<{ count: number; identity: string | null; material: string | null; materialSha256: string | null; texture: string | null; textureSha256: string | null; source: string | null; sourceSha256: string | null; backgroundName: string | null; bounds: number[]; rasterBounds: number[]; opacity: string; baseZ: number; overrideZ: number }>(await agent([
+      "--session", session, "eval",
+      "(()=>{const layers=[...document.querySelectorAll('[data-tf2-gameui-base-background]')],base=layers[0],raster=base?.querySelector('canvas[data-vgui-raster=image-raster]'),menu=document.querySelector('[data-vgui-name=MainMenuOverride]'),rect=base?base.getBoundingClientRect():null,rasterRect=raster?.getBoundingClientRect(),style=base?getComputedStyle(base):null;return{count:layers.length,identity:base?.getAttribute('data-source-image')??null,material:base?.getAttribute('data-source-material')??null,materialSha256:base?.getAttribute('data-source-material-sha256')??null,texture:base?.getAttribute('data-source-texture')??null,textureSha256:base?.getAttribute('data-source-texture-sha256')??null,source:base?.getAttribute('data-source-list')??null,sourceSha256:base?.getAttribute('data-source-list-sha256')??null,backgroundName:base?.getAttribute('data-background-name')??null,bounds:rect?[rect.x,rect.y,rect.width,rect.height]:[],rasterBounds:rasterRect?[rasterRect.x,rasterRect.y,rasterRect.width,rasterRect.height]:[],opacity:style?.opacity??'',baseZ:base?Number(style.zIndex):NaN,overrideZ:Number(getComputedStyle(menu).zIndex)}})()",
+    ]))
+    require(gameUiBaseBackground.count === 1 && gameUiBaseBackground.identity === "../console/background_2fort_widescreen"
+      && gameUiBaseBackground.material === "materials/console/background_2fort_widescreen.vmt"
+      && gameUiBaseBackground.texture === "materials/console/background_2fort_widescreen.vtf"
+      && gameUiBaseBackground.source === "scripts/chapterbackgrounds.txt" && gameUiBaseBackground.backgroundName === "background_2fort"
+      && gameUiBaseBackground.materialSha256 === "62ea66916136838dec8b843437c21bb3c24cbc5811b00af4f253043156d7ba65"
+      && gameUiBaseBackground.textureSha256 === "da391abcb6d121dea3786c16014f216cdbbcaf0d5810aa3ef395341f601ddcec"
+      && gameUiBaseBackground.sourceSha256 === "9d24d5870425b7a793583e95db933bd66aec51495840c5a97d3278566048cc58"
+      && JSON.stringify(gameUiBaseBackground.bounds) === JSON.stringify([0, 0, 1280, 720])
+      && JSON.stringify(gameUiBaseBackground.rasterBounds) === JSON.stringify([0, 0, 1280, 720]) && gameUiBaseBackground.opacity === "1"
+      && Number.isFinite(gameUiBaseBackground.baseZ) && gameUiBaseBackground.baseZ < gameUiBaseBackground.overrideZ,
+    `ordinary GameUI base background is absent: ${JSON.stringify(gameUiBaseBackground)}`)
+    const desktopGameUiBackground = await captureGameUiBackground(session, config, "gameui-background-1280x720")
+    require(desktopGameUiBackground.nonBlackSamples >= 7, `ordinary GameUI background pixels are blank: ${JSON.stringify(desktopGameUiBackground)}`)
 
     await agent(["--session", session, "set", "viewport", "1192", "1339"])
     await agent(["--session", session, "wait", "--fn", "(()=>{const r=document.querySelector('[data-vgui-name=MainMenuOverride]').getBoundingClientRect();return r.width===1192&&r.height===1339})()", "--timeout", "30000"])
@@ -943,17 +994,22 @@ export async function verifyBrowserAcceptance(
       && tallMenu.bottom > 0 && tallMenu.bottom <= 1339 && tallMenu.overflow === "hidden",
     `1192x1339 proportional Main Menu differs: ${JSON.stringify(tallMenu)}`)
     const tallMenuCapture = await captureInterface(session, config, "main-menu-1192x1339")
-    const menuViewportMatrix: Array<{ width: number; height: number; devicePixelRatio: number; menu: number[]; bottom: number; characterImage: string | null }> = []
+    const tallGameUiBackground = await captureGameUiBackground(session, config, "gameui-background-1192x1339")
+    require(tallGameUiBackground.nonBlackSamples >= 7, `tall GameUI background pixels are blank: ${JSON.stringify(tallGameUiBackground)}`)
+    const menuViewportMatrix: Array<{ width: number; height: number; devicePixelRatio: number; menu: number[]; bottom: number; characterImage: string | null; backgroundImage: string | null; backgroundMaterialSha256: string | null; backgroundTextureSha256: string | null }> = []
     for (const [width, height, scale] of [[1280, 720, 1], [1024, 768, 1], [2560, 1080, 1], [390, 844, 1], [844, 390, 1], [1280, 720, 2], [1280, 720, 1]] as const) {
       await agent(["--session", session, "set", "viewport", String(width), String(height), String(scale)])
       await agent(["--session", session, "wait", "--fn", `(()=>{const r=document.querySelector('[data-vgui-name=MainMenuOverride]').getBoundingClientRect();return r.width===${width}&&r.height===${height}&&devicePixelRatio===${scale}})()`, "--timeout", "30000"])
-      const observation = parseJson<{ devicePixelRatio: number; menu: number[]; bottom: number; characterImage: string | null }>(await agent([
+      const observation = parseJson<{ devicePixelRatio: number; menu: number[]; bottom: number; characterImage: string | null; backgroundImage: string | null; backgroundMaterialSha256: string | null; backgroundTextureSha256: string | null }>(await agent([
         "--session", session, "eval",
-        "(()=>{const r=document.querySelector('[data-vgui-name=MainMenuOverride]').getBoundingClientRect(),bottom=Math.max(...[...document.querySelectorAll('[data-vgui-name=SettingsButton],[data-vgui-name=TF2SettingsButton],[data-vgui-name=QuitButton]')].map(e=>e.getBoundingClientRect().bottom));return{devicePixelRatio,menu:[r.x,r.y,r.width,r.height],bottom,characterImage:document.querySelector('[data-vgui-name=TFCharacterImage]')?.getAttribute('data-vgui-image')??document.querySelector('main').dataset.presentationCharacter??null}})()",
+        "(()=>{const r=document.querySelector('[data-vgui-name=MainMenuOverride]').getBoundingClientRect(),bottom=Math.max(...[...document.querySelectorAll('[data-vgui-name=SettingsButton],[data-vgui-name=TF2SettingsButton],[data-vgui-name=QuitButton]')].map(e=>e.getBoundingClientRect().bottom)),background=document.querySelector('[data-tf2-gameui-base-background]');return{devicePixelRatio,menu:[r.x,r.y,r.width,r.height],bottom,characterImage:document.querySelector('[data-vgui-name=TFCharacterImage]')?.getAttribute('data-vgui-image')??document.querySelector('main').dataset.presentationCharacter??null,backgroundImage:background?.getAttribute('data-source-image')??null,backgroundMaterialSha256:background?.getAttribute('data-source-material-sha256')??null,backgroundTextureSha256:background?.getAttribute('data-source-texture-sha256')??null}})()",
       ]))
       require(JSON.stringify(observation.menu) === JSON.stringify([0, 0, width, height])
         && observation.bottom > 0 && observation.bottom <= height && observation.devicePixelRatio === scale
-        && observation.characterImage === menuPresentation.character,
+        && observation.characterImage === menuPresentation.character
+        && observation.backgroundImage === `../console/background_2fort${width / height >= 1.5999 ? "_widescreen" : ""}`
+        && observation.backgroundMaterialSha256 === (width / height >= 1.5999 ? "62ea66916136838dec8b843437c21bb3c24cbc5811b00af4f253043156d7ba65" : "4fa05e0ddbf5da835ea7e1d70872775d91e56e918ad2f36ae4b24c4cb62afcc3")
+        && observation.backgroundTextureSha256 === (width / height >= 1.5999 ? "da391abcb6d121dea3786c16014f216cdbbcaf0d5810aa3ef395341f601ddcec" : "c6311965e57125bec0a98de320c4cd4ef7b297c874f47acb40107f0d31d911d9"),
       `proportional Main Menu resize differs at ${width}x${height}@${scale}: ${JSON.stringify(observation)}`)
       menuViewportMatrix.push({ width, height, ...observation })
     }
@@ -1124,15 +1180,15 @@ export async function verifyBrowserAcceptance(
       const state = await agent(["--session", session, "eval", "(()=>{const m=document.querySelector('main');return{phase:m.dataset.phase,gameui:m.dataset.gameui,detail:m.dataset.detail,loading:m.dataset.loadingStatus,body:document.body.innerText.slice(0,500)}})()"])
       throw new BrowserEvidenceError(`${String(error)}; loading state: ${state}`)
     }
-    const loadingPresentation = parseJson<{ background: number[]; dialog: number[]; progress: number; status: string; disposition: string }>(await agent([
+    const loadingPresentation = parseJson<{ background: number[]; dialog: number[]; progress: number; status: string; disposition: string; gameUiBaseDisplay: string }>(await agent([
       "--session", session, "eval",
-      "(()=>{const rect=n=>{const r=document.querySelector(`.loading-layer [data-vgui-name=${n}]`).getBoundingClientRect();return[r.x,r.y,r.width,r.height]},m=document.querySelector('main');return{background:rect('Background'),dialog:rect('LoadingDialog'),progress:Number(m.dataset.loadingProgress),status:m.dataset.loadingStatus,disposition:m.dataset.loadingBackground}})()",
+      "(()=>{const rect=n=>{const r=document.querySelector(`.loading-layer [data-vgui-name=${n}]`).getBoundingClientRect();return[r.x,r.y,r.width,r.height]},m=document.querySelector('main');return{background:rect('Background'),dialog:rect('LoadingDialog'),progress:Number(m.dataset.loadingProgress),status:m.dataset.loadingStatus,disposition:m.dataset.loadingBackground,gameUiBaseDisplay:getComputedStyle(document.querySelector('[data-tf2-gameui-base-background]')).display}})()",
     ]))
     require(Math.abs(loadingPresentation.background[0]!) < 0.001 && Math.abs(loadingPresentation.background[1]!) < 0.001
       && loadingPresentation.background[2] === 1125 && Math.abs(loadingPresentation.background[3]! - 844) < 0.001
       && JSON.stringify(loadingPresentation.dialog) === JSON.stringify([0, 722, 380, 112])
       && loadingPresentation.progress >= 0 && loadingPresentation.progress < 1
-      && loadingPresentation.status.length > 0 && loadingPresentation.disposition === "configured-generic",
+      && loadingPresentation.status.length > 0 && loadingPresentation.disposition === "configured-generic" && loadingPresentation.gameUiBaseDisplay === "none",
     `mobile loading presentation differs: ${JSON.stringify(loadingPresentation)}`)
     const mobileLoading = await captureInterface(session, config, "loading-390x844")
     await agent(["--session", session, "set", "viewport", String(VIEWPORT_WIDTH), String(VIEWPORT_HEIGHT)])
@@ -1362,15 +1418,20 @@ export async function verifyBrowserAcceptance(
     ] as const) {
       await agent(["--session", session, "fill", "[aria-label='Console command']", `mat_hdr_level ${level}`])
       await agent(["--session", session, "press", "Enter"])
-      await agent([
-        "--session",
-        session,
-        "wait",
-        "--fn",
-        `document.querySelector('.developer-layer [data-vgui-service=developer-console]')?.textContent.includes('Loaded jump_beef; generation ${generation}')`,
-        "--timeout",
-        "300000",
-      ])
+      try {
+        await agent([
+          "--session",
+          session,
+          "wait",
+          "--fn",
+          `document.querySelector('.developer-layer [data-vgui-service=developer-console]')?.textContent.includes('Loaded jump_beef; generation ${generation}')`,
+          "--timeout",
+          "300000",
+        ])
+      } catch (error) {
+        const state = await agent(["--session", session, "eval", "(()=>{const main=document.querySelector('main'),console=document.querySelector('.developer-layer [data-vgui-service=developer-console]');return{phase:main.dataset.phase,detail:main.dataset.detail,console:console?.textContent.slice(-1000)}})()"])
+        throw new BrowserEvidenceError(`${String(error)}; HDR replacement state: ${state}`)
+      }
       await agent(["--session", session, "wait", "--fn", `document.querySelector('.developer-layer [data-vgui-service=developer-console]')?.textContent.includes('mat_hdr_level = ${level}')`, "--timeout", "30000"])
       require(parseJson<string>(
         await agent(["--session", session, "eval", "document.querySelector('main').dataset.environment"]),
@@ -1604,6 +1665,8 @@ export async function verifyBrowserAcceptance(
       const state = await agent(["--session", session, "eval", "(()=>{const button=document.querySelector('[data-vgui-name=DisconnectButton]'),rect=button.getBoundingClientRect();return{gameui:document.querySelector('main').dataset.gameui,hidden:button.getAttribute('aria-hidden'),display:getComputedStyle(button).display,visibility:getComputedStyle(button).visibility,pointer:getComputedStyle(button).pointerEvents,rect:rect.toJSON(),stack:document.elementsFromPoint(rect.x+rect.width/2,rect.y+rect.height/2).slice(0,6).map(value=>({name:value.dataset.vguiName,control:value.dataset.vguiControl,id:value.id}))}})()"])
       throw new BrowserEvidenceError(`${String(error)}; second pause state=${state}`)
     }
+    require(parseJson<string>(await agent(["--session", session, "eval", "getComputedStyle(document.querySelector('[data-tf2-gameui-base-background]')).display"])) === "none",
+      "ordinary GameUI base background remained visible in pause")
     await mouseClickVguiPanel(session, "DisconnectButton")
     try {
       await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.phase==='MainMenu'&&document.querySelector('main').dataset.gameplayInitialized==='false'", "--timeout", "300000"])
@@ -1611,8 +1674,10 @@ export async function verifyBrowserAcceptance(
       const state = await agent(["--session", session, "eval", "(()=>{const main=document.querySelector('main');return{url:location.href,body:document.body.innerText.slice(0,300),phase:main?.dataset.phase??null,gameui:main?.dataset.gameui??null,gameplay:main?.dataset.gameplayInitialized??null,detail:main?.dataset.detail??null,options:main?.dataset.optionsVisible??null}})()"])
       throw new BrowserEvidenceError(`${String(error)}; disconnect state=${state}`)
     }
-    const returnStartup = parseJson<{ state: string; display: string }>(await agent(["--session", session, "eval", "(()=>({state:document.querySelector('main').dataset.startupState,display:getComputedStyle(document.querySelector('.startup-layer')).display}))()"] ))
-    require(returnStartup.state === "Skipped" && returnStartup.display === "none", `startup replayed after disconnect: ${JSON.stringify(returnStartup)}`)
+    const returnStartup = parseJson<{ state: string; display: string; background: string; backgroundDisplay: string }>(await agent(["--session", session, "eval", "(()=>({state:document.querySelector('main').dataset.startupState,display:getComputedStyle(document.querySelector('.startup-layer')).display,background:document.querySelector('[data-tf2-gameui-base-background]').getAttribute('data-source-image'),backgroundDisplay:getComputedStyle(document.querySelector('[data-tf2-gameui-base-background]')).display}))()"] ))
+    require(returnStartup.state === "Skipped" && returnStartup.display === "none"
+      && returnStartup.background === "../console/background_2fort_widescreen" && returnStartup.backgroundDisplay !== "none",
+    `startup or GameUI background return differs after disconnect: ${JSON.stringify(returnStartup)}`)
 
     const reloadTabs = await agent(["--session", session, "tab"])
     const reloadTab = /\[(t\d+)\]/.exec(reloadTabs)?.[1]
@@ -1706,7 +1771,7 @@ export async function verifyBrowserAcceptance(
       console: platformFontSupported
         ? "history-completion-focus-repeated-visibility-replacement-close-passed"
         : "unsupported-platform-fonts-suppressed-paint-and-input",
-      gameUi: { menuPresentation, tallMenu, tallMenuCapture, menuViewportMatrix, mobileInterface },
+      gameUi: { menuPresentation, gameUiBaseBackground, desktopGameUiBackground, tallMenu, tallMenuCapture, tallGameUiBackground, menuViewportMatrix, mobileInterface },
       options: { keyboard: keyboardOptions, visualDefault: optionsVisualDefault, armedButton, comboDefault, comboHover, captures: optionsCaptures, conflict: conflictBindings, reset: resetBindings, keyboardAdvanced, videoAdvanced, advanced: advancedOptions },
       hud: { initialOperations: initialHudOperations, initialPresentation: initialHudPresentation, pausedPresentation: pausedHudPresentation, pauseControls, animationTrace: hudAnimationTrace },
       presentationViewport: { desktopMenu: desktopMenuViewport, mobileMenu: mobileMenuViewport, gameplay: gameplayViewport },

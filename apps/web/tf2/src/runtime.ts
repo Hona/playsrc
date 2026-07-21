@@ -442,6 +442,23 @@ export class Tf2Application {
     if (snapshot) this.#loadingVgui.apply(snapshot)
   }
 
+  #syncGameUiBackgroundProbe(): void {
+    if (!this.#gameUi || !this.#uiResources) return
+    const panel = this.#gameUi.snapshot().panels.find((candidate) => candidate.name === "GameUiBaseBackground")
+    const variant = this.#uiResources.gameUiBackground.variants.find((candidate) => candidate.image === panel?.state.image)
+    const element = this.#gameUiRoot.querySelector<HTMLElement>("[data-vgui-name=GameUiBaseBackground]")
+    if (!panel || !variant || !element) throw new Error("TF2 GameUI base-background presentation is unavailable")
+    element.setAttribute("data-tf2-gameui-base-background", "")
+    element.setAttribute("data-source-image", variant.image)
+    element.setAttribute("data-source-material", variant.material)
+    element.setAttribute("data-source-material-sha256", variant.materialSha256)
+    element.setAttribute("data-source-texture", variant.texture)
+    element.setAttribute("data-source-texture-sha256", variant.textureSha256)
+    element.setAttribute("data-source-list", this.#uiResources.gameUiBackground.source.logicalPath)
+    element.setAttribute("data-source-list-sha256", this.#uiResources.gameUiBackground.source.sha256)
+    element.setAttribute("data-background-name", this.#uiResources.gameUiBackground.backgroundName)
+  }
+
   #advanceLoading(phase: Tf2LoadingPhase): void {
     const transition = this.#gameUi?.dispatch({ kind: "loading-progress", phase })
     if (transition?.state.kind === "loading") {
@@ -769,7 +786,7 @@ export class Tf2Application {
     })
     this.#set({ menuPreparation: "settings-ready" })
     const persistenceState = persisted === null ? "absent" : this.#settings.snapshot().persistenceDiagnostic ? "rejected" : "loaded"
-    this.#gameUi = initializeTf2GameUiIntegration({
+    try { this.#gameUi = initializeTf2GameUiIntegration({
       root: this.#gameUiRoot,
       resources: this.#uiResources,
       viewport: this.#viewport(),
@@ -784,8 +801,12 @@ export class Tf2Application {
         freeTrial: this.#configuration.presentation.freeTrial,
       },
       onRequest: (request) => this.#deferGameUiRequest(request),
-    })
+    }) } catch (error) {
+      this.#set({ menuPreparation: `gameui-error:${error instanceof Error ? error.message : String(error)}` })
+      throw error
+    }
     this.#set({ menuPreparation: "gameui-ready" })
+    this.#syncGameUiBackgroundProbe()
     for (const diagnostic of this.#gameUi.diagnostics()) this.#blockers.add(`TF2GameUi${diagnostic.code}: ${diagnostic.subject}`)
     const loadingResource = this.#uiResources.descriptor.panels.find((panel) => panel.source.logicalPath === "resource/loadingdialognobanner.res")
     const failureResource = this.#uiResources.descriptor.panels.find((panel) => panel.source.logicalPath === "resource/loadingdialogerror.res")
@@ -1318,6 +1339,7 @@ export class Tf2Application {
     this.#console?.apply({ kind: "set-viewport", viewport })
     this.#diagnostics?.apply({ kind: "set-viewport", viewport })
     this.#gameUi?.setViewport(viewport)
+    this.#syncGameUiBackgroundProbe()
     this.#hudIntegration?.setViewport(viewport)
     this.#options?.setViewport(viewport)
     this.#loadingVgui?.setViewport(viewport)

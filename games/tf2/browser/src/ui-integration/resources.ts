@@ -53,10 +53,29 @@ export type Tf2VguiResources = Readonly<{
   animations: VguiAnimationScriptSet
   activeConditions: readonly string[]
   customControls: readonly VguiControlRegistration[]
+  gameUiBackground: Tf2GameUiBackgroundDescriptor
   diagnostics: readonly Tf2UiIntegrationDiagnostic[]
   document(logicalPath: string): VguiResourceDocument
   panelDocument(logicalPath: string): Tf2UiPanelDocument
   destroy(): void
+}>
+
+export type Tf2GameUiBackgroundDescriptor = Readonly<{
+  identity: string
+  contentBuild: string
+  source: Readonly<{ logicalPath: string; byteLength: number; sha256: string }>
+  defaultChapter: 1
+  backgroundName: string
+  variants: readonly Readonly<{
+    aspect: "standard" | "widescreen"
+    image: string
+    material: string
+    materialSha256: string
+    texture: string
+    textureSha256: string
+    width: number
+    height: number
+  }>[]
 }>
 
 export type Tf2VguiResourceRequest = Readonly<{
@@ -70,6 +89,7 @@ export type Tf2VguiResourceRequest = Readonly<{
 type RawUiMaterial = Readonly<{
   configuredValue: string
   material: string
+  materialSha256: string
   shader: string
   baseTexture: string
   baseColorRead: string
@@ -110,6 +130,23 @@ type RawUiTexture = Readonly<{
   height: number
   frames: number
   rawFlags: number
+}>
+type RawGameUiBackground = Readonly<{
+  schema: string
+  contentBuild: string
+  chapterSource: Readonly<{ logicalPath: string; byteLength: number; sha256: string }>
+  defaultChapter: number
+  backgroundName: string
+  variants: readonly Readonly<{
+    aspect: string
+    configuredValue: string
+    material: string
+    materialSha256: string
+    texture: string
+    textureSha256: string
+    width: number
+    height: number
+  }>[]
 }>
 
 const SHA256 = /^[0-9a-f]{64}$/u
@@ -586,7 +623,8 @@ export async function initializeTf2VguiResources(request: Tf2VguiResourceRequest
   }
   const materialRecords = new Map<string, RawUiMaterial>()
   for (const value of (materialInput as { images: unknown[] }).images) {
-    if (!value || typeof value !== "object" || Array.isArray(value) || typeof (value as RawUiMaterial).configuredValue !== "string") {
+    if (!value || typeof value !== "object" || Array.isArray(value) || typeof (value as RawUiMaterial).configuredValue !== "string"
+      || !SHA256.test((value as RawUiMaterial).materialSha256)) {
       throw new Error("TF2 UI material record is malformed")
     }
     const record = value as RawUiMaterial
@@ -632,6 +670,7 @@ export async function initializeTf2VguiResources(request: Tf2VguiResourceRequest
     }
     const raw = materialRecords.get(lower(image.configuredValue))
     if (!raw) throw new Error(`TF2 UI material record ${image.configuredValue} is missing`)
+    if (raw.materialSha256 !== image.material!.sha256) throw new Error(`TF2 UI material record ${image.configuredValue} changed`)
     const base = texturePresentation(raw.baseTexture, raw.baseColorRead)
     const second = raw.secondTexture ? texturePresentation(raw.secondTexture, raw.secondColorRead) : null
     const detail = raw.detailTexture ? texturePresentation(raw.detailTexture, raw.detailColorRead) : null
@@ -716,7 +755,7 @@ export async function initializeTf2VguiResources(request: Tf2VguiResourceRequest
     images.push(Object.freeze({
       name: raw.configuredValue,
       logicalIdentity: raw.material,
-      revision: `${descriptor.identity}-${raw.material}`,
+      revision: raw.materialSha256,
       browserUrl: base.browserUrl,
       width: base.width,
       height: base.height,
@@ -725,6 +764,50 @@ export async function initializeTf2VguiResources(request: Tf2VguiResourceRequest
       material,
     }))
   }
+  const backgroundBytes = request.dependencies.get("playsrc/tf2-gameui-background.json")
+  if (!backgroundBytes) throw new Error("TF2 GameUI base-background descriptor is missing")
+  let backgroundInput: unknown
+  try { backgroundInput = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(backgroundBytes)) }
+  catch { throw new Error("TF2 GameUI base-background descriptor is malformed") }
+  if (!backgroundInput || typeof backgroundInput !== "object" || Array.isArray(backgroundInput)) throw new Error("TF2 GameUI base-background descriptor is malformed")
+  const rawBackground = backgroundInput as RawGameUiBackground
+  if (rawBackground.schema !== "playsrc-tf2-gameui-background-v1" || rawBackground.contentBuild !== descriptor.contentBuild
+    || rawBackground.defaultChapter !== 1 || !rawBackground.backgroundName
+    || !rawBackground.chapterSource || rawBackground.chapterSource.logicalPath !== "scripts/chapterbackgrounds.txt"
+    || !Number.isSafeInteger(rawBackground.chapterSource.byteLength) || rawBackground.chapterSource.byteLength < 1
+    || !SHA256.test(rawBackground.chapterSource.sha256) || !Array.isArray(rawBackground.variants) || rawBackground.variants.length !== 2) {
+    throw new Error("TF2 GameUI base-background descriptor identity differs")
+  }
+  const backgroundVariants = rawBackground.variants.map((variant, index) => {
+    const aspect = index === 0 ? "standard" : "widescreen"
+    const image = images.find((candidate) => lower(candidate.name) === lower(variant.configuredValue))
+    const material = image?.material
+    if (variant.aspect !== aspect || !image || !material || image.logicalIdentity !== variant.material
+      || image.revision !== variant.materialSha256 || material.base.logicalIdentity !== variant.texture
+      || material.base.revision !== variant.textureSha256 || image.width !== variant.width || image.height !== variant.height
+      || !SHA256.test(variant.materialSha256) || !SHA256.test(variant.textureSha256)
+      || !Number.isSafeInteger(variant.width) || !Number.isSafeInteger(variant.height) || variant.width < 1 || variant.height < 1) {
+      throw new Error(`TF2 GameUI base-background ${aspect} variant differs`)
+    }
+    return Object.freeze({
+      aspect,
+      image: variant.configuredValue,
+      material: variant.material,
+      materialSha256: variant.materialSha256,
+      texture: variant.texture,
+      textureSha256: variant.textureSha256,
+      width: variant.width,
+      height: variant.height,
+    })
+  })
+  const gameUiBackground: Tf2GameUiBackgroundDescriptor = Object.freeze({
+    identity: `tf2-gameui-background-${descriptor.contentBuild}-${rawBackground.chapterSource.sha256.slice(0, 16)}`,
+    contentBuild: rawBackground.contentBuild,
+    source: Object.freeze({ ...rawBackground.chapterSource }),
+    defaultChapter: 1,
+    backgroundName: rawBackground.backgroundName,
+    variants: Object.freeze(backgroundVariants),
+  })
   const [clientFonts, sourceFonts] = await Promise.all([
     fontPresentations(descriptor, "resource/clientscheme.res", request.dependencies, request.viewportHeight, request.platform, diagnostics, mounts),
     fontPresentations(descriptor, "resource/sourcescheme.res", request.dependencies, request.viewportHeight, request.platform, diagnostics, mounts),
@@ -826,6 +909,7 @@ export async function initializeTf2VguiResources(request: Tf2VguiResourceRequest
     animations,
     activeConditions,
     customControls: customControls(descriptor),
+    gameUiBackground,
     diagnostics: Object.freeze(diagnostics),
     document(logicalPath: string) {
       const document = documents.get(logicalPath)
