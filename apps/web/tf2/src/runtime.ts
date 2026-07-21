@@ -1774,12 +1774,7 @@ export class Tf2Application {
   }
 
   #materialStates(artifacts: PresentationArtifacts): ReadonlyMap<string, MaterialStateInput> {
-    const states = new Map<string, MaterialStateInput>(artifacts.materialStates)
-    for (const texture of artifacts.particleTextures) {
-      const state = artifacts.materialStates.get(texture.materialPath.toLowerCase())
-      if (state) states.set(texture.material.toLowerCase(), state)
-    }
-    return states
+    return artifacts.materialStates
   }
 
   #modelFacing(artifacts: PresentationArtifacts): ReadonlyMap<string, Readonly<{ frontFace: "clockwise" | "counter-clockwise"; cullFace: "back" }>> {

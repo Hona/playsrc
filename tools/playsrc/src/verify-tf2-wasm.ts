@@ -21,6 +21,7 @@ const EXPECTED_HDR_BYTES=78_255_422
 const EXPECTED_HDR_SHA256="4610e40fe34d61d2eb6a61c1cc2e7fa725bd4b91eded2584e2973f8c162dbac4"
 const EXPECTED_LDR_DERIVED_SHA256="9c2c6733cc61ffc78096982436b20b10ec94de439c3c37dd624b20dbaf5536fc"
 const EXPECTED_HDR_DERIVED_SHA256="91758c22e569c68df8e5de2c89179aa883385be98cdbef79d11fe83d1f10a7c3"
+const EXPECTED_PARTICLE_MATERIAL_STATE_SHA256 = "65510289b8254192ecf843283ee18b106a0decef9f0f718b1e54c043cfa9fbdb"
 function resourcePathOffset(bytes: Uint8Array, target: string): number {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   let offset = 12
@@ -501,6 +502,43 @@ export async function verifyTf2Wasm(
   const presentation = new Uint8Array(exports.memory.buffer, presentationPointer, presentationBytes).slice()
   exports.playsrc_free(presentationPointer, presentationBytes)
   const presentationArtifacts = await parsePresentationArtifacts(presentation)
+  const particleMaterialIdentities = [
+    "effects/brightglow_y_nomodel.vmt",
+    "effects/circle2.vmt",
+    "effects/circle3.vmt",
+    "effects/circle4.vmt",
+    "effects/debris/debris_chunk.vmt",
+    "effects/rocketrailsmoke.vmt",
+    "effects/sc_brightglow_y_nomodel.vmt",
+    "effects/sc_softglow.vmt",
+    "effects/smokelit2/smoke2lit.vmt",
+    "effects/softglow.vmt",
+    "effects/softglow_translucent.vmt",
+    "particle/smoke1/smoke1.vmt",
+  ] as const
+  require(JSON.stringify([...presentationArtifacts.particleMaterials].sort()) === JSON.stringify(particleMaterialIdentities)
+    && presentationArtifacts.particleTextures.length === particleMaterialIdentities.length
+    && presentationArtifacts.particleTextures.every((texture) => particleMaterialIdentities.includes(texture.material as typeof particleMaterialIdentities[number])),
+  "TF2 Particle material/texture identities differ")
+  const particleMaterialStates = particleMaterialIdentities.map((identity) => {
+    const state = presentationArtifacts.materialStates.get(identity)
+    require(state !== undefined, `TF2 Particle material state ${identity} is missing`)
+    return Object.freeze({ identity, state })
+  })
+  const spriteCards = new Set([
+    "effects/circle3.vmt", "effects/circle4.vmt", "effects/debris/debris_chunk.vmt",
+    "effects/rocketrailsmoke.vmt", "effects/sc_brightglow_y_nomodel.vmt", "effects/sc_softglow.vmt",
+    "effects/smokelit2/smoke2lit.vmt", "particle/smoke1/smoke1.vmt",
+  ])
+  require(particleMaterialStates.filter(({ identity }) => spriteCards.has(identity)).every(({ state }) =>
+    state.alphaTest && Math.abs(state.alphaTestReference - 0.01) < 1e-6 && state.cull === 1
+    && state.depthTest && !state.depthWrite && state.fragmentDiscard.kind === "alpha"
+    && state.fragmentDiscard.source === "shader-output" && state.fragmentDiscard.pass === "greater"),
+  "TF2 SpriteCard material state differs")
+  const particleMaterialStateSha256 = new Bun.CryptoHasher("sha256")
+    .update(new TextEncoder().encode(JSON.stringify(particleMaterialStates))).digest("hex")
+  require(particleMaterialStateSha256 === EXPECTED_PARTICLE_MATERIAL_STATE_SHA256,
+    "TF2 Particle material-state hash differs")
   require(presentationArtifacts.environment.markRecords.length === 39 &&
     presentationArtifacts.environment.waterVolumeFacts.length === 1 &&
     presentationArtifacts.environment.waterMaterials.size === 2,
@@ -912,6 +950,7 @@ export async function verifyTf2Wasm(
     degenerateTriangles,
     models: renderMap.models.length,
     presentationBytes,
+    particleMaterialStateSha256,
     modelOccurrences: renderMap.modelOccurrences.length,
     lightmapWidth: renderMap.lightmap.width,
     lightmapHeight: renderMap.lightmap.height,
