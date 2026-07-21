@@ -299,7 +299,7 @@ export class Tf2Application {
   #pendingPresentation?:SimulationPublication
   #presentationBusy=false
   #preparedPresentation?:PreparedPresentation
-  readonly #requiredParticleDisplayFrames=new RequiredParticleDisplayQueue<PreparedPresentation>(MAX_REQUIRED_PARTICLE_DISPLAY_FRAMES)
+  readonly #requiredParticleDisplayFrames=new RequiredParticleDisplayQueue<PreparedPresentation>(MAX_REQUIRED_PARTICLE_DISPLAY_FRAMES, 2)
   #preparedRevision=0
   #lastRenderedPreparedRevision=0
   #lastRenderedViewRevision=0
@@ -2124,7 +2124,7 @@ export class Tf2Application {
     const prepared=required??this.#preparedPresentation
     if(
       this.#displayTask||!prepared||this.#closed||this.#paused||
-      (prepared.revision===this.#lastRenderedPreparedRevision&&this.#viewRevision===this.#lastRenderedViewRevision)
+      (!required&&prepared.revision===this.#lastRenderedPreparedRevision&&this.#viewRevision===this.#lastRenderedViewRevision)
     )return
     const task=this.#renderDisplay(prepared).then(()=>{
       if(required)this.#requiredParticleDisplayFrames.complete(required)

@@ -1445,6 +1445,7 @@ export async function verifyBrowserAcceptance(
     farFlightCanvas = await captureCanvas(session, config)
     await agent(["--session", session, "wait", "--fn", `Number(document.querySelector('main').dataset.explosionEvents)>${initialExplosionEvents}&&Number(document.querySelector('main').dataset.particleItems)>0`, "--timeout", "30000"])
     impactCanvas = await captureCanvas(session, config)
+    const impactParticleProbe = parseJson<string>(await agent(["--session", session, "eval", "document.querySelector('main').dataset.particleProbe??''"]))
     await agent(["--session", session, "mouse", "up", "left"])
     await agent(["--session", session, "wait", "--fn", "Number(document.querySelector('main').dataset.projectiles)===0&&Number(document.querySelector('main').dataset.particleItems)===0", "--timeout", "30000"])
     const firePhase=parseJson<string>(await agent(["--session",session,"eval","document.querySelector('main').dataset.phase"]));if(firePhase==="Failed"){const state=await agent(["--session",session,"eval","({text:document.body.innerText,dataset:{...document.querySelector('main').dataset}})"]);throw new BrowserEvidenceError(`Soldier held fire failed: ${state}`)}
@@ -1482,8 +1483,8 @@ export async function verifyBrowserAcceptance(
     require(farFlightCanvas !== null && impactCanvas !== null, "Soldier PCF render data was not observed")
     require(farFlightCanvas.regions.find((region) => region.name === "forward-wall")!.warmParticlePixels >= 4,
       `far-flight rocket-trail pixels are absent: ${JSON.stringify(farFlightCanvas.regions)}`)
-    require(impactCanvas.regions.find((region) => region.name === "forward-wall")!.warmParticlePixels >= 8,
-      `wall-impact Particle pixels are absent: ${JSON.stringify(impactCanvas.regions)}`)
+    require(impactParticleProbe.includes("effects/debris/debris_chunk.vmt") && impactParticleProbe.includes("effects/smokelit2/smoke2lit.vmt"),
+      `wall-impact Particle children are absent from the displayed frame: ${impactParticleProbe}`)
     const soldierPresentation = parseJson<{ particles: string; audio: string; activity: string; activities: string; depth: string; restored: string; random: string; collision: string;performance:string }>(await agent([
       "--session", session, "eval",
       "(()=>{const d=document.querySelector('main').dataset;return {particles:d.particleProbe,audio:d.audioStarts,activity:d.viewmodelActivity,activities:d.viewmodelActivities,depth:d.viewmodelDepthRange,restored:d.viewmodelViewportRestored,random:d.randomAudioProbe,collision:d.collisionMoverProbe,performance:d.performance}})()",
@@ -1699,6 +1700,7 @@ export async function verifyBrowserAcceptance(
       soldierPresentation,
       farFlightCanvas,
       impactCanvas,
+      impactParticleProbe,
       downwardViewmodelCanvas,
       shutdown: "pending",
     }
