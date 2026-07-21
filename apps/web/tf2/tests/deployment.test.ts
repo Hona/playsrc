@@ -30,6 +30,12 @@ const release = {
 }
 
 describe("TF2 production release", () => {
+  test("keeps the HL2 landing-page teaser disabled", async () => {
+    const landing = await readFile(new URL("../../index.html", import.meta.url), "utf8")
+    expect(landing).toContain("<button type=\"button\" disabled>Half-Life 2 · Coming next</button>")
+    expect(landing).not.toContain("href=\"/hl2\"")
+  })
+
   test("admits Blob-backed VGUI images and the configured analytics beacon", async () => {
     const headers = await readFile(new URL("../../_headers", import.meta.url), "utf8")
     expect(headers).toContain("connect-src 'self' blob: https://assets.playsrc.online https://cloudflareinsights.com")
