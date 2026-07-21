@@ -113,7 +113,10 @@ export function createR2Adapter(environment: NodeJS.ProcessEnv = process.env): R
         return "Created"
       } catch (error) {
         if (preconditionFailed(error)) return "PreconditionFailed"
-        throw new CloudflareError(`remote object ${key} conditional create failed`)
+        const detail = error instanceof S3ServiceException
+          ? `${error.name} HTTP ${error.$metadata.httpStatusCode ?? "unknown"}: ${error.message}`
+          : error instanceof Error ? `${error.name}: ${error.message}` : "unknown error"
+        throw new CloudflareError(`remote object ${key} conditional create failed: ${detail}`)
       }
     },
     close(): void { client.destroy() },
