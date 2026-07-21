@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { readFile } from "node:fs/promises"
 import { TF2_CONTENT_BUILD } from "@playsrc/game-tf2-browser/content-build"
 import {
   createDeployedBrowserConfiguration,
@@ -29,6 +30,12 @@ const release = {
 }
 
 describe("TF2 production release", () => {
+  test("admits Blob-backed VGUI images and the configured analytics beacon", async () => {
+    const headers = await readFile(new URL("../../_headers", import.meta.url), "utf8")
+    expect(headers).toContain("connect-src 'self' blob: https://assets.playsrc.online https://cloudflareinsights.com")
+    expect(headers).toContain("script-src 'self' 'wasm-unsafe-eval' https://static.cloudflareinsights.com")
+  })
+
   test("accepts the checked jump_beef release descriptor", () => {
     const parsed = parseTf2Release(checkedRelease)
     expect(parsed.objects.dependencies.byteLength).toBe("256997450")
