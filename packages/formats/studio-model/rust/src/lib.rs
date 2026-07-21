@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, fmt, ops::Range};
+use std::{collections::BTreeSet, fmt, ops::Range, sync::Arc};
 
 mod eye;
 mod lighting;
@@ -143,7 +143,7 @@ pub struct DependencyResponse {
     pub requester: String,
     pub role: DependencyRole,
     pub logical_path: String,
-    pub bytes: Option<Vec<u8>>,
+    pub bytes: Option<Arc<[u8]>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -874,7 +874,7 @@ fn load_with_chain<'a>(
             },
             logical_path: response.logical_path.clone(),
             sha256: response.bytes.as_deref().map(presentation::content_sha256),
-            byte_length: response.bytes.as_ref().map_or(0, Vec::len),
+            byte_length: response.bytes.as_ref().map_or(0, |bytes| bytes.len()),
         });
         let Some(bytes) = &response.bytes else {
             if request.role == DependencyRole::Physics {
@@ -965,7 +965,7 @@ fn load_with_chain<'a>(
                         Some(4..12),
                     ));
                 }
-                ani_bytes = Some(bytes.as_slice());
+                ani_bytes = Some(bytes.as_ref());
             }
             DependencyRole::IncludeModel => {
                 let include_profile = profile_for_version(
@@ -3781,7 +3781,7 @@ mod tests {
             requester: request.requester.clone(),
             role: request.role,
             logical_path: request.logical_path.clone(),
-            bytes,
+            bytes: bytes.map(Arc::from),
         }
     }
 
@@ -4071,7 +4071,7 @@ mod tests {
         assert_eq!(document.companions.vtx_body_part_count, 1);
 
         let mut bad = responses;
-        bad[0].bytes = Some(vvd(5678));
+        bad[0].bytes = Some(vvd(5678).into());
         assert_eq!(
             load(
                 "models/prop.mdl",

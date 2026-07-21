@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 
 use flate2::{Compression, read::DeflateDecoder, write::DeflateEncoder};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -474,8 +475,7 @@ pub fn decode_batch(bytes: &[u8]) -> Result<Vec<DecodedEntry>, GraphError> {
     if count == 0 || count > 1_024 {
         return Err(GraphError::BoundExceeded);
     }
-    let mut entries = Vec::new();
-    let mut identities = BTreeSet::new();
+    let mut chunks = Vec::with_capacity(count);
     for _ in 0..count {
         let descriptor_length = u32_at(bytes, &mut offset)?;
         if descriptor_length == 0 || descriptor_length > 8 * 1024 * 1024 {
@@ -499,15 +499,24 @@ pub fn decode_batch(bytes: &[u8]) -> Result<Vec<DecodedEntry>, GraphError> {
             .get(offset..encoded_end)
             .ok_or(GraphError::MalformedChunk)?;
         offset = encoded_end;
-        for entry in decode(&descriptor, encoded)? {
+        chunks.push((descriptor, encoded));
+    }
+    if offset != bytes.len() {
+        return Err(GraphError::MalformedChunk);
+    }
+    let decoded = chunks
+        .par_iter()
+        .map(|(descriptor, encoded)| decode(descriptor, encoded))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut entries = Vec::new();
+    let mut identities = BTreeSet::new();
+    for chunk in decoded {
+        for entry in chunk {
             if !identities.insert(entry.logical_path.clone()) {
                 return Err(GraphError::DuplicateIdentity);
             }
             entries.push(entry);
         }
-    }
-    if offset != bytes.len() {
-        return Err(GraphError::MalformedChunk);
     }
     entries.sort_by(|left, right| left.logical_path.cmp(&right.logical_path));
     Ok(entries)

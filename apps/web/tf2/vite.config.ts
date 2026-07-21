@@ -30,16 +30,33 @@ export function tf2ViteConfiguration(
   return {
     base: deployment ? "/tf2/" : "/",
     plugins: [preact(), localRuntime()],
+    resolve: {
+      alias: {
+        playsrc_metrics: fileURLToPath(new URL("../../../games/tf2/browser/src/wasm-metrics.ts", import.meta.url)),
+      },
+    },
     server: {
       host: "127.0.0.1",
       port: 4173,
       strictPort: true,
+      headers: {
+        "Cross-Origin-Opener-Policy": "same-origin",
+        "Cross-Origin-Embedder-Policy": "require-corp",
+      },
       proxy: assetOrigin ? {
         "/objects": { target: assetOrigin, changeOrigin: false },
       } : undefined,
       fs: { allow: [fileURLToPath(new URL("../../../..", import.meta.url))] },
     },
-    preview: { host: "127.0.0.1", port: 4173, strictPort: true },
+    preview: {
+      host: "127.0.0.1",
+      port: 4173,
+      strictPort: true,
+      headers: {
+        "Cross-Origin-Opener-Policy": "same-origin",
+        "Cross-Origin-Embedder-Policy": "require-corp",
+      },
+    },
     build: {
       target: "es2022",
       sourcemap: true,

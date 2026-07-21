@@ -1005,7 +1005,7 @@ export class Tf2Application {
       this.#loaded = await this.#client.stage(this.#generation, bsp, profile, this.#dependencies, key)
       this.#coverageSamples=await this.#client.coverage(this.#generation)
       finishLoadPhase("stage")
-      this.#artifacts = await parsePresentationArtifacts(this.#loaded.presentation)
+      this.#artifacts = await parsePresentationArtifacts(this.#loaded.presentation, this.#dependencyEntries)
       finishLoadPhase("presentationParse")
       this.#recordVisualOutputBlockers(this.#artifacts)
       await this.#cacheModelArtifacts(this.#artifacts)
@@ -1096,6 +1096,8 @@ export class Tf2Application {
       this.#modelProbes = await this.#probePlayerModels(this.#artifacts)
       this.#viewmodelTimelineProbes = await this.#probeViewmodelTimelines(this.#artifacts)
       finishLoadPhase("initialProbes")
+      const persistence = await this.#loaded.persistence
+      finishLoadPhase("persistence")
       this.#paused = document.hidden
       this.#resetHudIntegration()
       this.#gameUi?.dispatch({ kind: "loading-progress", phase: "complete" })
@@ -1104,12 +1106,16 @@ export class Tf2Application {
       const loadPerformanceProbe=JSON.stringify({
         totalMilliseconds:performance.now()-loadStarted,
         application:loadTimings,
-        client:this.#loaded.timings,
+        client:{
+          ...this.#loaded.timings,
+          mapCacheWriteMilliseconds:persistence.mapCacheWriteMilliseconds,
+          presentationCacheWriteMilliseconds:persistence.presentationCacheWriteMilliseconds,
+        },
         mapBytes:this.#loaded.payload.byteLength,
         presentationBytes:this.#loaded.presentation.byteLength,
         mapCache:this.#loaded.cache,
-        presentationCache:this.#loaded.presentationCache,
-        presentationCacheError:this.#loaded.presentationCacheError,
+        presentationCache:persistence.presentationCache,
+        presentationCacheError:persistence.presentationCacheError,
       })
       this.#syncLoadingPresentation()
       this.#set({
@@ -1609,7 +1615,7 @@ export class Tf2Application {
     const staged = await this.#client.stage(generation, bytes, profile, this.#dependencies, key)
     const coverageSamples=await this.#client.coverage(generation)
     finishReplacePhase("stage")
-    const artifacts = await parsePresentationArtifacts(staged.presentation)
+    const artifacts = await parsePresentationArtifacts(staged.presentation, this.#dependencyEntries)
     finishReplacePhase("presentationParse")
     this.#recordVisualOutputBlockers(artifacts)
     await this.#cacheModelArtifacts(artifacts)
@@ -1617,6 +1623,7 @@ export class Tf2Application {
     const prior = this.#loaded
     const priorArtifacts = this.#artifacts
     const priorConfiguration = this.#renderer.configuration
+    let persistence!:Awaited<LoadedGame["persistence"]>
     try {
       if (this.#renderer.configuration.lightingProfile !== (this.#renderLevel === 2 ? "hdr" : "ldr")) {
         await this.#renderer.dispose()
@@ -1644,6 +1651,8 @@ export class Tf2Application {
       })
       finishReplacePhase("rendererLoadMap")
       this.#environmentDrawables = scene.environmentDrawables
+      persistence=await staged.persistence
+      finishReplacePhase("persistence")
       await this.#client.activate(generation)
       finishReplacePhase("activation")
     } catch (error) {
@@ -1730,7 +1739,7 @@ export class Tf2Application {
     this.#set({
       phase: "Ready",
       detail: `Playing ${name}`,
-      loadPerformanceProbe:JSON.stringify({totalMilliseconds:performance.now()-replaceStarted,application:replaceTimings,client:staged.timings,mapBytes:staged.payload.byteLength,presentationBytes:staged.presentation.byteLength,mapCache:staged.cache,presentationCache:staged.presentationCache,presentationCacheError:staged.presentationCacheError}),
+      loadPerformanceProbe:JSON.stringify({totalMilliseconds:performance.now()-replaceStarted,application:replaceTimings,client:{...staged.timings,mapCacheWriteMilliseconds:persistence.mapCacheWriteMilliseconds,presentationCacheWriteMilliseconds:persistence.presentationCacheWriteMilliseconds},mapBytes:staged.payload.byteLength,presentationBytes:staged.presentation.byteLength,mapCache:staged.cache,presentationCache:persistence.presentationCache,presentationCacheError:persistence.presentationCacheError}),
       cache: staged.cache,
       initialView: staged.initialView,
       environment: artifacts.environment,

@@ -5,10 +5,13 @@
   },
   "rust": {
     "toolchain": "1.97.1",
+    "threadedToolchain": "nightly-2025-12-10",
+    "threadedRustcVersion": "1.94.0-nightly",
     "releaseDate": "2026-07-16",
     "rustupVersion": "1.29.0",
     "components": ["clippy", "rustfmt"],
     "targets": ["wasm32-unknown-unknown"],
+    "threadedComponents": ["rust-src"],
     "hosts": {
       "arm64-darwin": {
         "target": "aarch64-apple-darwin",
@@ -35,5 +38,8 @@
         "sha256": "86478e53f769379d7f0ebfa7c9aa97cb76ca92233f79aa2cc0dbee2efaac73c7"
       }
     }
+  },
+  "wasmBindgen": {
+    "version": "0.2.126"
   }
 }

@@ -71,7 +71,24 @@ async function toolchainIsReady(
       ["target", "list", "--toolchain", toolchains.rust.toolchain, "--installed"],
       env,
     )
-    return toolchains.rust.targets.every((target) => targets.split("\n").includes(target))
+    if (!toolchains.rust.targets.every((target) => targets.split("\n").includes(target))) return false
+    const threadedRustc = await run(
+      rustup,
+      ["run", toolchains.rust.threadedToolchain, "rustc", "--version"],
+      env,
+    )
+    if (!threadedRustc.startsWith(`rustc ${toolchains.rust.threadedRustcVersion} `)) return false
+    const threadedComponents = await run(
+      rustup,
+      ["component", "list", "--toolchain", toolchains.rust.threadedToolchain, "--installed"],
+      env,
+    )
+    if (!toolchains.rust.threadedComponents.every((component) =>
+      threadedComponents.split("\n").some((line) => line === component || line.startsWith(`${component}-`)),
+    )) return false
+    const wasmBindgen = path.join(path.dirname(rustup), process.platform === "win32" ? "wasm-bindgen.exe" : "wasm-bindgen")
+    const wasmBindgenVersion = await run(wasmBindgen, ["--version"], env)
+    return wasmBindgenVersion === `wasm-bindgen ${toolchains.wasmBindgen.version}`
   } catch {
     return false
   }
@@ -144,6 +161,41 @@ export async function setup(): Promise<void> {
     ],
     env,
   )
+
+  await run(
+    rustup,
+    [
+      "toolchain",
+      "install",
+      toolchains.rust.threadedToolchain,
+      "--profile",
+      "minimal",
+      ...toolchains.rust.threadedComponents.flatMap((component) => ["--component", component]),
+    ],
+    env,
+  )
+  const cargo = path.join(cargoHome, "bin", process.platform === "win32" ? "cargo.exe" : "cargo")
+  const wasmBindgen = path.join(cargoHome, "bin", process.platform === "win32" ? "wasm-bindgen.exe" : "wasm-bindgen")
+  let wasmBindgenReady = false
+  try {
+    wasmBindgenReady = await run(wasmBindgen, ["--version"], env) === `wasm-bindgen ${toolchains.wasmBindgen.version}`
+  } catch {}
+  if (!wasmBindgenReady) {
+    await run(
+      cargo,
+      [
+        `+${toolchains.rust.toolchain}`,
+        "install",
+        "wasm-bindgen-cli",
+        "--version",
+        toolchains.wasmBindgen.version,
+        "--locked",
+        "--root",
+        cargoHome,
+      ],
+      env,
+    )
+  }
 
   if (!(await toolchainIsReady(rustup, env))) throw new SetupError("Rust toolchain verification failed")
 }

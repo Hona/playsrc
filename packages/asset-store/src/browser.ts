@@ -71,7 +71,7 @@ export function planDerivedCacheEviction(
 
 export type DerivedObjectCache = Readonly<{
   read(key: string): Promise<Uint8Array | undefined>
-  write(key: string, sha256: string, bytes: Uint8Array): Promise<void>
+  write(key: string, expectedSha256: string | null, bytes: Uint8Array): Promise<string>
   remove(key: string): Promise<void>
   close(): void
 }>
@@ -274,14 +274,15 @@ export async function openDerivedObjectCache(
       await done
       return value === undefined ? undefined : bounded(verifyDerivedRecord(value, key),"derived record verification")
     },
-    async write(key: string, expectedSha256: string, bytes: Uint8Array): Promise<void> {
-      if (!HASH.test(key) || !HASH.test(expectedSha256)) {
+    async write(key: string, expectedSha256: string | null, bytes: Uint8Array): Promise<string> {
+      if (!HASH.test(key) || (expectedSha256 !== null && !HASH.test(expectedSha256))) {
         throw new BrowserAssetError("MalformedIdentity", "derived identity is not canonical")
       }
       if (bytes.byteLength > MAX_OBJECT_BYTES) {
         throw new BrowserAssetError("BoundExceeded", "derived object exceeds browser byte limit")
       }
-      if (await bounded(sha256(bytes),"derived write hash") !== expectedSha256) {
+      const actualSha256 = await bounded(sha256(bytes),"derived write hash")
+      if (expectedSha256 !== null && actualSha256 !== expectedSha256) {
         throw new BrowserAssetError("IntegrityFailure", "derived bytes differ from their descriptor")
       }
       const [objects, transaction] = store("readwrite")
@@ -298,7 +299,7 @@ export async function openDerivedObjectCache(
       void requestResult(objects.add({
         key,
         byteLength: bytes.byteLength,
-        sha256: expectedSha256,
+        sha256: actualSha256,
         bytes: new Blob([bytes],{type:"application/octet-stream"}),
         storedAt,
       } satisfies DerivedRecord),"write request").catch(error=>{requestError=error})
@@ -308,8 +309,9 @@ export async function openDerivedObjectCache(
         const failure=requestError??error
         if(failure instanceof BrowserAssetError&&failure.message.includes("timed out"))throw failure
         const existing = await cache.read(key)
-        if (!existing || await bounded(sha256(existing),"existing derived hash") !== expectedSha256) throw failure
+        if (!existing || await bounded(sha256(existing),"existing derived hash") !== actualSha256) throw failure
       }
+      return actualSha256
     },
     async remove(key: string): Promise<void> {
       if (!HASH.test(key)) throw new BrowserAssetError("MalformedIdentity", "derived key is not canonical")

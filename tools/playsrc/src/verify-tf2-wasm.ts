@@ -12,7 +12,7 @@ import { decodeSnapshot, encodeCommand } from "../../../games/tf2/browser/src/co
 import { decodeModelPoseOutput, encodeModelPoseBatch } from "../../../games/tf2/browser/src/presentation"
 import { parsePresentationArtifacts } from "../../../games/tf2/browser/src/artifacts"
 import { buildTf2Wasm } from "./tf2-wasm-build"
-import { encodeResourceBatch } from "@playsrc/asset-store/graph"
+import { encodeResourceBatch, parseResourceSet } from "@playsrc/asset-store/graph"
 
 const EXPECTED_MAP_BYTES = 42_082_929
 const EXPECTED_MAP_SHA256 = "56153098a867c553651f9c773bd72c4659782bae8520277c80daaaa414bdf156"
@@ -398,7 +398,7 @@ export async function verifyTf2Wasm(
   identity: string | undefined,
 ): Promise<Record<string, number | string>> {
   const map = await acquireMap(config, identity)
-  const wasmPath = await buildTf2Wasm(config)
+  const wasmPath = await buildTf2Wasm(config, false)
   const sourceBundle = await buildSourceBundle(config, identity ?? "")
   const nativeHdr = await buildNativeHdr(config, identity ?? "")
   const wasmBytes = await readFile(wasmPath)
@@ -500,7 +500,7 @@ export async function verifyTf2Wasm(
     "TF2 presentation output copy failed")
   const presentation = new Uint8Array(exports.memory.buffer, presentationPointer, presentationBytes).slice()
   exports.playsrc_free(presentationPointer, presentationBytes)
-  const presentationArtifacts = await parsePresentationArtifacts(presentation)
+  const presentationArtifacts = await parsePresentationArtifacts(presentation, parseResourceSet(dependencyBytes))
   require(presentationArtifacts.environment.markRecords.length === 39 &&
     presentationArtifacts.environment.waterVolumeFacts.length === 1 &&
     presentationArtifacts.environment.waterMaterials.size === 2,

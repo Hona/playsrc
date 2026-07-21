@@ -35,8 +35,10 @@ describe("TF2 production release", () => {
     expect(landing).not.toContain("href=\"/hl2\"")
   })
 
-  test("admits Blob-backed VGUI images and the configured analytics beacon", async () => {
+  test("admits threaded WASM, Blob-backed VGUI images, and the configured analytics beacon", async () => {
     const headers = await readFile(new URL("../../_headers", import.meta.url), "utf8")
+    expect(headers).toContain("Cross-Origin-Opener-Policy: same-origin")
+    expect(headers).toContain("Cross-Origin-Embedder-Policy: require-corp")
     expect(headers).toContain("connect-src 'self' blob: https://assets.playsrc.online https://cloudflareinsights.com")
     expect(headers).toContain("script-src 'self' 'wasm-unsafe-eval' https://static.cloudflareinsights.com")
   })

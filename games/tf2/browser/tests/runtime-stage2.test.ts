@@ -116,7 +116,7 @@ function simulationOutput(){const state=new Uint8Array(snapshot()),output=new Ar
 
 class MemoryCache implements DerivedObjectCache {
   async read(): Promise<Uint8Array | undefined> { return undefined }
-  async write(): Promise<void> {}
+  async write(): Promise<string> { return "0".repeat(64) }
   async remove(): Promise<void> {}
   close(): void {}
 }

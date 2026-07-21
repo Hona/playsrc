@@ -479,6 +479,7 @@ export type AuthoredTextureInput = Readonly<{
   frameCount: number
   faces: readonly number[]
   scalarEncoding: "u8" | "f16"
+  sourceFormat: number | null
   sampling: Readonly<{
     wrapS: number
     wrapT: number
@@ -636,7 +637,7 @@ type WaterMeshResource = Readonly<{
   mesh: THREE.Mesh
   materialIdentity: string
 }>
-type WaterMaterialResource = Readonly<{material:THREE.MeshBasicNodeMaterial;normalFrames:readonly THREE.DataTexture[];normalNode:any}>
+type WaterMaterialResource = Readonly<{material:THREE.MeshBasicNodeMaterial;normalFrames:readonly THREE.Texture[];normalNode:any}>
 
 type SceneResources = {
   map: RuntimeMap
@@ -748,15 +749,15 @@ function modelOccurrenceMatrices(
   return matrices
 }
 
-function disposeScene(scene: Pick<SceneResources,"group"|"disposables"|"modelTemplates"|"modelOccurrenceInstances"|"disposed">): void {
+function disposeScene(scene: Pick<SceneResources,"group"|"disposables"|"modelTemplates"|"modelOccurrenceInstances"|"disposed"> & Partial<Pick<SceneResources,"particleBatchMaterials">>): void {
   if (scene.disposed) return
   scene.disposed = true
   scene.group.clear()
   scene.disposables.dispose()
   scene.modelTemplates.clear()
   scene.modelOccurrenceInstances.clear()
-  for(const material of scene.particleBatchMaterials.values())material.dispose()
-  scene.particleBatchMaterials.clear()
+  for(const material of scene.particleBatchMaterials?.values()??[])material.dispose()
+  scene.particleBatchMaterials?.clear()
 }
 
 function textureFromRgba(
@@ -777,7 +778,7 @@ function textureFromRgba(
   return texture
 }
 
-function textureFromAuthored(input: AuthoredTextureInput, colorSpace: string, frame = 0): THREE.DataTexture {
+function textureFromAuthored(input: AuthoredTextureInput, colorSpace: string, frame = 0): THREE.Texture {
   if (input.depth !== 1 || input.frameCount < 1 || !input.faces.includes(0) ||
     frame < 0 || frame >= input.frameCount || input.sampling.wrapS === 2 || input.sampling.wrapT === 2 || input.sampling.wrapU === 2) {
     throw new RenderingError("UnsupportedFeature", `authored 2D texture ${input.logicalPath} requires an unsupported topology or border sampler`)
@@ -788,18 +789,23 @@ function textureFromAuthored(input: AuthoredTextureInput, colorSpace: string, fr
   if (planes.length !== input.mipCount || planes.some((plane, mip) => plane.mip !== mip)) {
     throw new RenderingError("MissingInput", `authored texture ${input.logicalPath} has an incomplete selected mip chain`)
   }
-  const data = (plane: AuthoredTextureInput["planes"][number]) => input.scalarEncoding === "u8"
-    ? plane.rgba.slice()
-    : new Uint16Array(plane.rgba.slice().buffer)
+  const data = (plane: AuthoredTextureInput["planes"][number]) => {
+    if (input.scalarEncoding === "f16") return new Uint16Array(plane.rgba.slice().buffer)
+    return plane.rgba
+  }
   const base = planes[0]!
-  const texture = new THREE.DataTexture(
-    data(base),
-    base.width,
-    base.height,
-    THREE.RGBAFormat,
-    input.scalarEncoding === "u8" ? THREE.UnsignedByteType : THREE.HalfFloatType,
-  )
-  texture.mipmaps = planes.map((plane) => Object.freeze({ data: data(plane), width: plane.width, height: plane.height }))
+  const compressedFormat = input.sourceFormat === null ? null : new Map<number, THREE.CompressedPixelFormat>([
+    [13, THREE.RGBA_S3TC_DXT1_Format],
+    [20, THREE.RGBA_S3TC_DXT1_Format],
+    [14, THREE.RGBA_S3TC_DXT3_Format],
+    [15, THREE.RGBA_S3TC_DXT5_Format],
+  ]).get(input.sourceFormat)
+  if (input.sourceFormat !== null && ![0,1,11,12,16,24].includes(input.sourceFormat) && compressedFormat === undefined) throw new RenderingError("UnsupportedFeature", `authored texture ${input.logicalPath} has unsupported source format ${input.sourceFormat}`)
+  const mipmaps = planes.map((plane) => Object.freeze({ data: data(plane), width: plane.width, height: plane.height }))
+  const texture = compressedFormat === null || compressedFormat === undefined
+    ? new THREE.DataTexture(data(base), base.width, base.height, THREE.RGBAFormat, input.scalarEncoding === "u8" ? THREE.UnsignedByteType : THREE.HalfFloatType)
+    : new THREE.CompressedTexture(mipmaps, base.width, base.height, compressedFormat, THREE.UnsignedByteType)
+  texture.mipmaps = mipmaps
   texture.colorSpace = colorSpace
   const wrap = (value: number) => value === 0 ? THREE.RepeatWrapping : THREE.ClampToEdgeWrapping
   texture.wrapS = wrap(input.sampling.wrapS)
@@ -824,7 +830,7 @@ function textureFromAuthoredCubemap(input: AuthoredTextureInput, colorSpace: str
     throw new RenderingError("UnsupportedFeature", `authored cubemap ${input.logicalPath} requires an unsupported topology`)
   }
   const componentType=input.scalarEncoding==="u8"?THREE.UnsignedByteType:THREE.HalfFloatType
-  const data=(plane:AuthoredTextureInput["planes"][number])=>input.scalarEncoding==="u8"?plane.rgba.slice():new Uint16Array(plane.rgba.slice().buffer)
+  const data=(plane:AuthoredTextureInput["planes"][number])=>input.scalarEncoding==="u8"?plane.rgba:new Uint16Array(plane.rgba.slice().buffer)
   const level=(mip:number)=>Object.freeze({images:Object.freeze(Array.from({length:6},(_,face)=>{
     const plane=input.planes.find(value=>value.mip===mip&&value.frame===frame&&value.face===face&&value.slice===0)
     if(!plane)throw new RenderingError("MissingInput",`authored cubemap ${input.logicalPath} has an incomplete mip ${mip}`)
@@ -1202,8 +1208,15 @@ class RendererOwner implements Renderer {
         texture.sampling.wrapS < 0 || texture.sampling.wrapS > 2 || texture.sampling.wrapT < 0 || texture.sampling.wrapT > 2 ||
         texture.sampling.wrapU < 0 || texture.sampling.wrapU > 2 || texture.sampling.minFilter < 0 || texture.sampling.minFilter > 4 ||
         texture.sampling.magFilter < 0 || texture.sampling.magFilter > 2 || texture.sampling.anisotropyLevel < 1 ||
-        texture.planes.some((plane) => plane.width < 1 || plane.height < 1 ||
-          plane.rgba.length !== plane.width * plane.height * 4 * (texture.scalarEncoding === "u8" ? 1 : 2))) {
+        texture.planes.some((plane) => plane.width < 1 || plane.height < 1 || plane.rgba.length !== (texture.sourceFormat === null
+          ? plane.width * plane.height * 4 * (texture.scalarEncoding === "u8" ? 1 : 2)
+          : [2, 3].includes(texture.sourceFormat)
+            ? plane.width * plane.height * 3
+            : [0, 1, 11, 12, 16].includes(texture.sourceFormat)
+              ? plane.width * plane.height * 4
+            : texture.sourceFormat === 24
+              ? plane.width * plane.height * 8
+              : Math.max(1, Math.ceil(plane.width / 4)) * Math.max(1, Math.ceil(plane.height / 4)) * ([13, 20].includes(texture.sourceFormat) ? 8 : 16)))) {
         throw new RenderingError("MalformedInput", "authored model texture input is invalid")
       }
       authoredTextures.set(key, texture)
@@ -1346,7 +1359,7 @@ class RendererOwner implements Renderer {
       "float",
     )
     const directionalGpu = new Map<string, { input: DirectionalTextureInput; texture: THREE.DataTexture }>()
-    const authoredGpu = new Map<string, THREE.DataTexture>()
+    const authoredGpu = new Map<string, THREE.Texture>()
     const modelDrawInputs = new Map((request.modelDrawInputs ?? []).map((input) => [input.entity, input] as const))
     const missingLightingEntities = map.modelOccurrences
       .filter((occurrence) => !modelDrawInputs.has(occurrence.entity))
@@ -1390,7 +1403,7 @@ class RendererOwner implements Renderer {
     const supplemental = new Map(
       (request.modelTextures ?? []).map((texture) => [texture.material.toLowerCase(), texture] as const),
     )
-    const createModelBase = (identity: string): THREE.DataTexture | undefined => {
+    const createModelBase = (identity: string): Readonly<{texture:THREE.Texture;input:AuthoredTextureInput}> | undefined => {
       const material = request.modelMaterials?.get(identity.toLowerCase())
       if (!material) {
         diagnostics.push(diagnostic("MissingMaterial", identity, "typed model material state is unavailable"))
@@ -1402,15 +1415,15 @@ class RendererOwner implements Renderer {
         throw new RenderingError("MissingInput", `model texture ${binding.logicalPath} lacks a resolved color interpretation`)
       }
       const key = `${binding.logicalPath.toLowerCase()}:${binding.colorRead}`
+      const input = request.authoredTextures?.get(binding.logicalPath.toLowerCase())
+      if (!input) throw new RenderingError("MissingInput", `authored model texture ${binding.logicalPath} is unavailable`)
       let texture = authoredGpu.get(key)
       if (!texture) {
-        const input = request.authoredTextures?.get(binding.logicalPath.toLowerCase())
-        if (!input) throw new RenderingError("MissingInput", `authored model texture ${binding.logicalPath} is unavailable`)
         texture = textureFromAuthored(input, binding.colorRead === "srgb" ? THREE.SRGBColorSpace : THREE.NoColorSpace)
         authoredGpu.set(key, texture)
         disposables.add(texture)
       }
-      return texture
+      return Object.freeze({texture,input})
     }
     const createBase = (resolved: RuntimeMaterial, identity: string): THREE.DataTexture | undefined => {
       const state = materialStates.get(identity.toLowerCase())
@@ -1598,14 +1611,19 @@ class RendererOwner implements Renderer {
           const resolved = model.materials[primitive.material]!
           const materialState = materialStates.get(resolved.logicalPath.toLowerCase())
           if (materialState?.noDraw) continue
-          const baseTexture = createModelBase(resolved.logicalPath)
+           const baseTexture = createModelBase(resolved.logicalPath)
           const material = new THREE.MeshBasicNodeMaterial({
             ...materialOptions(resolved, materialState),
             side: sourceModelSide(request.modelFacing!.get(model.logicalPath.split("#skin=")[0]!.toLowerCase())!),
           })
-           const base = selectDiagnosticModelBase(baseTexture !== undefined) === "authored-texture"
-             ? TSL.texture(baseTexture!, TSL.uv())
-             : TSL.vec4(TSL.color(debugColor(`diagnostic:${resolved.logicalPath}`)), 1)
+           let sampled=baseTexture?TSL.texture(baseTexture.texture,TSL.uv()):undefined
+           if(sampled&&baseTexture?.input.sourceFormat===1)sampled=sampled.abgr
+           else if(sampled&&baseTexture?.input.sourceFormat===11)sampled=sampled.gbar
+           else if(sampled&&baseTexture?.input.sourceFormat===12)sampled=sampled.bgra
+           else if(sampled&&baseTexture?.input.sourceFormat===16)sampled=TSL.vec4(sampled.bgr,1)
+            const base = selectDiagnosticModelBase(baseTexture !== undefined) === "authored-texture"
+              ? sampled!
+              : TSL.vec4(TSL.color(debugColor(`diagnostic:${resolved.logicalPath}`)), 1)
           material.colorNode = sourceFragmentColor(base, materialState)
           material.toneMapped = false
           disposables.add(material)
@@ -1730,7 +1748,7 @@ class RendererOwner implements Renderer {
         authoredTextures: new Map([...(request.authoredTextures ?? [])].map(([identity, texture]) => [identity, Object.freeze({
           ...texture,
           faces: Object.freeze([...texture.faces]),
-          planes: Object.freeze(texture.planes.map((plane) => Object.freeze({ ...plane, rgba: plane.rgba.slice() }))),
+          planes: Object.freeze(texture.planes.map((plane) => Object.freeze({ ...plane }))),
         })])),
         modelDrawInputs: request.modelDrawInputs?.map((input) => Object.freeze({
           entity: input.entity,

@@ -27,9 +27,14 @@ export type LoadedGame = Readonly<{
   payloadSha256: string
   cache: "hit" | "stored"
   presentation: Uint8Array
-  presentationSha256: string
   presentationCache: "hit" | "stored" | "unavailable"
   presentationCacheError: string | null
+  persistence: Promise<Readonly<{
+    mapCacheWriteMilliseconds: number
+    presentationCacheWriteMilliseconds: number
+    presentationCache: "hit" | "stored" | "unavailable"
+    presentationCacheError: string | null
+  }>>
   timings: Readonly<{
     mapCacheReadMilliseconds: number
     presentationKeyMilliseconds: number
@@ -70,7 +75,7 @@ async function sha256(bytes: Uint8Array): Promise<string> {
   return Array.from(digest, (value) => value.toString(16).padStart(2, "0")).join("")
 }
 async function presentationKey(key: string): Promise<string> {
-  return sha256(new TextEncoder().encode(`playsrc-tf2-presentation-v8\0${key}`))
+  return sha256(new TextEncoder().encode(`playsrc-tf2-presentation-v10\0${key}`))
 }
 
 export class Tf2WorkerClient {
@@ -134,13 +139,14 @@ export class Tf2WorkerClient {
     })
   }
 
-  async initialize(wasmBytes: Uint8Array, wasmSha256: string): Promise<void> {
-    if (wasmBytes.byteLength < 1 || wasmBytes.byteLength > 64 * 1024 * 1024 || !HASH.test(wasmSha256)) {
+  async initialize(wasmBytes: Uint8Array, wasmSha256: string, threads = navigator.hardwareConcurrency): Promise<void> {
+    if (wasmBytes.byteLength < 1 || wasmBytes.byteLength > 64 * 1024 * 1024 || !HASH.test(wasmSha256)
+      || !Number.isSafeInteger(threads) || threads < 1 || threads > 64) {
       throw new Tf2WorkerError("BoundExceeded")
     }
     if ((await sha256(wasmBytes)) !== wasmSha256) throw new Tf2WorkerError("IntegrityFailure")
     const transferred = wasmBytes.slice().buffer
-    const response = await this.#request({ kind: "initialize", wasm: transferred, wasmSha256 }, [transferred])
+    const response = await this.#request({ kind: "initialize", wasm: transferred, wasmSha256, threads }, [transferred])
     if (response.kind !== "initialized") throw new Tf2WorkerError("WorkerFailed")
   }
 
@@ -203,7 +209,6 @@ export class Tf2WorkerClient {
         !Number.isSafeInteger(loaded.presentationBytes) ||
         loaded.presentationBytes < 1 ||
         loaded.presentationBytes > MAX_BSP_BYTES ||
-        !HASH.test(loaded.presentationSha256) ||
         !Number.isSafeInteger(loaded.initialView?.entity) ||
         loaded.initialView.entity < 0 ||
         loaded.initialView.entity > 0xffff_ffff ||
@@ -222,6 +227,7 @@ export class Tf2WorkerClient {
       let mapIntegrityMilliseconds = 0
       let mapReadMilliseconds = 0
       let mapCacheWriteMilliseconds = 0
+      let mapPersistence = Promise.resolve(0)
       if (cached) {
         phase = performance.now()
         if (cached.byteLength !== loaded.payloadBytes || (await sha256(cached)) !== loaded.payloadSha256) {
@@ -238,74 +244,66 @@ export class Tf2WorkerClient {
         }
         payload = new Uint8Array(map.payload)
         mapReadMilliseconds = performance.now() - phase
-        phase = performance.now()
-        if (payload.byteLength !== loaded.payloadBytes || (await sha256(payload)) !== loaded.payloadSha256) {
-          throw new Tf2WorkerError("IntegrityFailure")
-        }
-        mapIntegrityMilliseconds = performance.now() - phase
-        phase = performance.now()
-        await this.#cache.write(derivedKey, loaded.payloadSha256, payload)
-        mapCacheWriteMilliseconds = performance.now() - phase
+        if (payload.byteLength !== loaded.payloadBytes) throw new Tf2WorkerError("IntegrityFailure")
+        const writeStarted = performance.now()
+        mapPersistence = this.#cache.write(derivedKey, loaded.payloadSha256, payload)
+          .then(() => performance.now() - writeStarted)
         cache = "stored"
       }
       let presentation: Uint8Array
       let presentationCache: LoadedGame["presentationCache"]
       let presentationCacheError:string|null=null
-      let presentationIntegrityMilliseconds = 0
+      const presentationIntegrityMilliseconds = 0
       let presentationReadMilliseconds = 0
       let presentationCacheWriteMilliseconds = 0
+      let presentationPersistence = Promise.resolve({
+        milliseconds: 0,
+        cache: "hit" as const,
+        error: null as string | null,
+      })
       if (cachedPresentation) {
-        phase = performance.now()
-        if (
-          cachedPresentation.byteLength !== loaded.presentationBytes ||
-          (await sha256(cachedPresentation)) !== loaded.presentationSha256
-        )
-          throw new Tf2WorkerError("IntegrityFailure")
-        presentationIntegrityMilliseconds = performance.now() - phase
+        if (cachedPresentation.byteLength !== loaded.presentationBytes) throw new Tf2WorkerError("IntegrityFailure")
         presentation = cachedPresentation
         presentationCache = "hit"
       } else {
         phase = performance.now()
         const response = await this.#request({ kind: "read-presentation", generation })
-        if (
-          response.kind !== "presentation" ||
-          response.generation !== generation ||
-          !(response.payload instanceof ArrayBuffer)
-        )
+        if (response.kind !== "presentation" || response.generation !== generation || !(response.payload instanceof ArrayBuffer)) {
           throw new Tf2WorkerError("WorkerFailed")
+        }
         presentation = new Uint8Array(response.payload)
         presentationReadMilliseconds = performance.now() - phase
-        phase = performance.now()
-        if (
-          presentation.byteLength !== loaded.presentationBytes ||
-          (await sha256(presentation)) !== loaded.presentationSha256
+        if (presentation.byteLength !== loaded.presentationBytes) throw new Tf2WorkerError("IntegrityFailure")
+        const writeStarted = performance.now()
+        presentationPersistence = this.#cache.write(pkey, null, presentation).then(
+          () => ({ milliseconds: performance.now() - writeStarted, cache: "stored" as const, error: null }),
+          (error) => ({
+            milliseconds: performance.now() - writeStarted,
+            cache: "unavailable" as const,
+            error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+          }),
         )
-          throw new Tf2WorkerError("IntegrityFailure")
-        presentationIntegrityMilliseconds = performance.now() - phase
-        phase = performance.now()
-        try {
-          await this.#cache.write(pkey, loaded.presentationSha256, presentation)
-          presentationCacheWriteMilliseconds = performance.now() - phase
-          presentationCache = "stored"
-        } catch (error) {
-          presentationCacheWriteMilliseconds = performance.now() - phase
-          presentationCache = "unavailable"
-          presentationCacheError=error instanceof Error?`${error.name}: ${error.message}`:String(error)
-        }
+        presentationCache = "stored"
       }
       phase=performance.now()
       const released=await this.#request({kind:"release-presentation",generation})
       if(released.kind!=="presentation-released"||released.generation!==generation)throw new Tf2WorkerError("WorkerFailed")
       const presentationReleaseMilliseconds=performance.now()-phase
+      const persistence = Promise.all([mapPersistence, presentationPersistence]).then(([mapMilliseconds, retained]) => Object.freeze({
+        mapCacheWriteMilliseconds: mapMilliseconds,
+        presentationCacheWriteMilliseconds: retained.milliseconds,
+        presentationCache: retained.cache,
+        presentationCacheError: retained.error,
+      }))
       return Object.freeze({
         generation,
         payload,
         payloadSha256: loaded.payloadSha256,
         cache,
         presentation,
-        presentationSha256: loaded.presentationSha256,
         presentationCache,
         presentationCacheError,
+        persistence,
         timings:Object.freeze({
           mapCacheReadMilliseconds,
           presentationKeyMilliseconds,

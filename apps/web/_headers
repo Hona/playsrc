@@ -2,6 +2,8 @@
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
   Permissions-Policy: camera=(), geolocation=(), microphone=(), payment=(), usb=()
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
   Content-Security-Policy: default-src 'self'; base-uri 'none'; connect-src 'self' blob: https://assets.playsrc.online https://cloudflareinsights.com; font-src 'self' blob: data:; frame-ancestors 'none'; img-src 'self' blob: data:; media-src 'self' blob: https://assets.playsrc.online; object-src 'none'; script-src 'self' 'wasm-unsafe-eval' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:
 
 /tf2/playsrc-config.json
