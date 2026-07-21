@@ -65,6 +65,7 @@ Present generic Source 1 panel trees, controls, resources, schemes, localized te
 - Own the generic developer-console frame, pointer-captured title movement and eight-direction resize, bounded output and command history, catalog-driven completion presentation, text-entry interaction, and typed submission/completion/system requests without executing commands or owning convar state.
 - Own one bounded client diagnostic panel for immutable FPS and position inputs without owning `cl_showfps`, `cl_showpos`, map, camera, player, or Simulation state.
 - Own keyboard, pointer, cursor, capture, focus, navigation, IME, clipboard-seam, accessibility, reduced-motion, browser-resize, and device-pixel-ratio behavior.
+- Recompute screen-relative and explicit `proportionalToParent` resource geometry from each admitted integer CSS-pixel viewport; device-pixel ratio alone never changes panel bounds.
 - Compose lossless scheme documents, select desktop conditions and ordered font candidates, request exact content/external/bitmap/local sources, mount range faces atomically, consume supplied metrics/raster profiles, and suppress only unavailable glyph paint without disabling panel state or input.
 - Present VGUI through direct DOM and CSS without importing Preact.
 - Retain stable DOM parents and exact material rasters, skip geometry/DOM work for static frames, batch integration construction into one layout/publication commit, and publish only panels whose complete presentation signature changed.
