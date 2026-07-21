@@ -41,13 +41,14 @@ async function expectConfigurationError(
 }
 
 describe("local configuration", () => {
-  test("resolves the checked repository configuration independently of cwd", async () => {
+  test("resolves the checked repository root and explicit configuration independently of cwd", async () => {
+    const root = await fixture(true)
     const previous = process.cwd()
     process.chdir(os.tmpdir())
     try {
-      const config = await loadLocalConfig()
+      const config = await loadLocalConfig(root)
       expect(repositoryRoot).toBe(path.resolve(import.meta.dir, "../../..") + path.sep)
-      expect(path.basename(config.tf2Dir).toLowerCase()).toBe("tf")
+      expect(path.basename(config.tf2Dir).toLowerCase()).toBe("tf2")
       expect(Object.isFrozen(config)).toBe(true)
     } finally {
       process.chdir(previous)
