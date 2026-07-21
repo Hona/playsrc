@@ -84,11 +84,17 @@ jobs:
           terraform_version: 1.15.8
           terraform_wrapper: false
 
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1.97.1
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
       - name: Test
         run: bun test
+
+      - name: Test Rust
+        run: bun run test:rust
 
       - name: Bootstrap Terraform state
         run: bun run infra:bootstrap

@@ -23,7 +23,8 @@
     "profile:map-coverage": "playwright test --config=playwright.coverage-profile.config.ts",
     "profile:startup": "bun tools/playsrc/profile/dev-startup.profile.ts",
     "profile:startup-browser": "playwright test --config=playwright.startup-profile.config.ts",
-    "test": "bun test"
+    "test": "bun test",
+    "test:rust": "bun tools/playsrc/src/test-rust.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",
