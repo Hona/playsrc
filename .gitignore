@@ -5,6 +5,7 @@ target/
 dist/
 .playsrc/
 playsrc.local.json
+.env
 .terraform/
 *.tfplan
 *.tfstate
