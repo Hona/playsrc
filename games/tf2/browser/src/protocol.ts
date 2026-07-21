@@ -1,5 +1,5 @@
 export type WorkerRequest =
-  | Readonly<{ id: number; kind: "initialize"; wasm: ArrayBuffer; wasmSha256: string }>
+  | Readonly<{ id: number; kind: "initialize"; wasm: ArrayBuffer; wasmSha256: string; threads: number }>
   | Readonly<{ id: number; kind: "decode-resources"; batch: ArrayBuffer }>
   | Readonly<{
       id: number
@@ -60,7 +60,6 @@ export type WorkerResponse =
       payloadBytes: number
       payloadSha256: string
       presentationBytes: number
-      presentationSha256: string
       initialView: InitialView
       timings: Readonly<{
         inputCopyMilliseconds: number

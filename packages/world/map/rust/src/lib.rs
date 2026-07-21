@@ -217,13 +217,16 @@ pub fn compile(bsp: &Bsp, profile: LightingProfile) -> Result<CanonicalMap, Erro
     let entities =
         playsrc_entity::parse(bsp.lumps[0].bytes(bsp), playsrc_entity::Limits::default())
             .map_err(|_| error(ErrorCode::InvalidReference, None))?;
-    compile_with_entities(bsp, profile, &entities)
+    let collision =
+        playsrc_collision::compile(bsp).map_err(|_| error(ErrorCode::InvalidReference, None))?;
+    compile_prepared(bsp, profile, &entities, &collision)
 }
 
-fn compile_with_entities(
+pub fn compile_prepared(
     bsp: &Bsp,
     profile: LightingProfile,
     entities: &playsrc_entity::Graph,
+    collision: &playsrc_collision::World,
 ) -> Result<CanonicalMap, Error> {
     if !bsp.lumps[26].bytes(bsp).is_empty() {
         return Err(error(ErrorCode::UnsupportedDisplacement, None));
@@ -309,11 +312,9 @@ fn compile_with_entities(
         .iter()
         .filter_map(|entity| entity.bsp_model_index.map(|model| (entity.index, model)))
         .collect::<Vec<_>>();
-    let collision =
-        playsrc_collision::compile(bsp).map_err(|_| error(ErrorCode::InvalidReference, None))?;
     let (mut brush_models, face_models) =
         brush_model_layout(models, node_count, leaf_count, faces.len(), &entity_models)?;
-    fill_brush_model_collision(&mut brush_models, &collision)?;
+    fill_brush_model_collision(&mut brush_models, collision)?;
     let brush_model_occurrences = brush_model_occurrences(entities, brush_models.len())?;
     let mut output = Vec::with_capacity(faces.len());
     let mut normal_cursor = 0usize;
@@ -466,6 +467,25 @@ pub fn compile_runtime(
     profile: LightingProfile,
     assembly: RuntimeAssembly<'_>,
 ) -> Result<Runtime, Error> {
+    let entities =
+        playsrc_entity::parse(bsp.lumps[0].bytes(bsp), playsrc_entity::Limits::default())
+            .map_err(|_| error(ErrorCode::InvalidReference, None))?;
+    let collision =
+        playsrc_collision::compile(bsp).map_err(|_| error(ErrorCode::InvalidReference, None))?;
+    let map = compile_prepared(bsp, profile, &entities, &collision)?;
+    let visibility =
+        playsrc_visibility::compile(bsp).map_err(|_| error(ErrorCode::InvalidReference, None))?;
+    assemble_runtime(map, entities, collision, visibility, bsp_sha256, assembly)
+}
+
+pub fn assemble_runtime(
+    map: CanonicalMap,
+    entities: playsrc_entity::Graph,
+    collision: playsrc_collision::World,
+    visibility: playsrc_visibility::World,
+    bsp_sha256: [u8; 32],
+    assembly: RuntimeAssembly<'_>,
+) -> Result<Runtime, Error> {
     let RuntimeAssembly {
         compiler_identity,
         configuration,
@@ -476,14 +496,7 @@ pub fn compile_runtime(
         models: runtime_models,
         model_occurrences,
     } = assembly;
-    let entities =
-        playsrc_entity::parse(bsp.lumps[0].bytes(bsp), playsrc_entity::Limits::default())
-            .map_err(|_| error(ErrorCode::InvalidReference, None))?;
-    let map = compile_with_entities(bsp, profile, &entities)?;
-    let collision =
-        playsrc_collision::compile(bsp).map_err(|_| error(ErrorCode::InvalidReference, None))?;
-    let visibility =
-        playsrc_visibility::compile(bsp).map_err(|_| error(ErrorCode::InvalidReference, None))?;
+    let profile = map.lighting_profile;
     if !resolved_materials.is_empty() {
         if resolved_materials.len() != map.materials.len() {
             return Err(error(ErrorCode::InvalidMaterial, None));

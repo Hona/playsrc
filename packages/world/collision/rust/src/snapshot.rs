@@ -3,7 +3,7 @@ use crate::{
     sub,
 };
 use playsrc_phy::{Asset as PhyAsset, Classification as PhyClassification};
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, sync::Arc};
 
 pub const SNAPSHOT_VERSION: u32 = 2;
 const DIST_EPSILON: f32 = 1.0 / 32.0;
@@ -366,7 +366,7 @@ pub enum SnapshotShape {
     BrushModel { model: usize },
     BoundingBox { bounds: Hull },
     OrientedBox { bounds: Hull },
-    Physics(PhysicsShape),
+    Physics(Arc<PhysicsShape>),
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -8,6 +8,10 @@ license.workspace = true
 playsrc-collision = { path = "../../../packages/world/collision/rust" }
 playsrc-movement = { path = "../../../packages/runtime/movement/rust" }
 playsrc-entity = { path = "../../../packages/world/entity/rust" }
+playsrc-keyvalues = { path = "../../../packages/formats/keyvalues/rust" }
+playsrc-material = { path = "../../../packages/world/material/rust" }
+playsrc-studio-model = { path = "../../../packages/formats/studio-model/rust" }
+playsrc-vmt = { path = "../../../packages/formats/vmt/rust" }
 
 [lib]
 path = "src/lib.rs"

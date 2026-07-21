@@ -7,7 +7,7 @@ use playsrc_collision::{
 use playsrc_phy::{Limits as PhyLimits, Profile as PhyProfile, parse_standalone};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, fs, path::PathBuf};
+use std::{collections::BTreeMap, fs, path::PathBuf, sync::Arc};
 
 const BSP_SHA256: &str = "b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959";
 const COLLISION_WORLD_SHA256: &str =
@@ -256,7 +256,7 @@ fn configured_jump_beef_rocket_and_mover_inputs_are_queryable() {
             collision_group: 0,
             contents: 0,
             surface_flags: 0,
-            shape: SnapshotShape::Physics(shape),
+            shape: SnapshotShape::Physics(Arc::new(shape)),
         }],
         SnapshotLimits::default(),
     )
