@@ -13,7 +13,10 @@
       main { width: min(34rem, calc(100% - 3rem)); }
       h1 { margin: 0 0 .25rem; font-size: clamp(3rem, 12vw, 7rem); letter-spacing: -.08em; }
       p { color: #aeb8bc; }
-      a { display: inline-block; margin-top: 1.5rem; padding: .8rem 1.1rem; color: #15191c; background: #f4a340; border-radius: .35rem; font-weight: 750; text-decoration: none; }
+      .games { display: flex; flex-wrap: wrap; gap: .75rem; margin-top: 1.5rem; }
+      a, button { padding: .8rem 1.1rem; border: 0; border-radius: .35rem; font: inherit; font-weight: 750; }
+      a { color: #15191c; background: #f4a340; text-decoration: none; }
+      button { color: #7f898d; background: #252b2e; cursor: not-allowed; }
       a:focus-visible { outline: .2rem solid #fff; outline-offset: .2rem; }
     </style>
   </head>
@@ -21,7 +24,10 @@
     <main>
       <h1>playsrc</h1>
       <p>Source, directly in the browser.</p>
-      <a href="/tf2">Play Team Fortress 2</a>
+      <div class="games">
+        <a href="/tf2">Play Team Fortress 2</a>
+        <button type="button" disabled>Half-Life 2 · Coming next</button>
+      </div>
     </main>
   </body>
 </html>
