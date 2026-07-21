@@ -14,6 +14,7 @@
     "infra:verify": "bun tools/playsrc/src/cli.ts verify deploy",
     "infra:deploy": "bun tools/playsrc/src/cli.ts deploy",
     "generate:tf2-ui": "bun games/tf2/browser/src/ui-resources/generator/generate.ts",
+    "build:tf2-wasm-bindings": "bun tools/playsrc/src/build-tf2-wasm-bindings.ts",
     "verify:tf2-wasm": "bun tools/playsrc/src/cli.ts verify tf2-wasm",
     "verify:browser": "bun tools/playsrc/src/cli.ts verify browser",
     "profile:gameui": "playwright test --config=playwright.gameui-profile.config.ts",

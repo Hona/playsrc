@@ -36,11 +36,21 @@ describe("TF2 production release", () => {
   })
 
   test("admits threaded WASM, Blob-backed VGUI images, and the configured analytics beacon", async () => {
-    const headers = await readFile(new URL("../../_headers", import.meta.url), "utf8")
+    const [headers, ignore, workflow, applicationPackage] = await Promise.all([
+      readFile(new URL("../../_headers", import.meta.url), "utf8"),
+      readFile(new URL("../../../../.gitignore", import.meta.url), "utf8"),
+      readFile(new URL("../../../../.github/workflows/checks.yml", import.meta.url), "utf8"),
+      readFile(new URL("../package.json", import.meta.url), "utf8"),
+    ])
     expect(headers).toContain("Cross-Origin-Opener-Policy: same-origin")
     expect(headers).toContain("Cross-Origin-Embedder-Policy: require-corp")
     expect(headers).toContain("connect-src 'self' blob: https://assets.playsrc.online https://cloudflareinsights.com")
     expect(headers).toContain("script-src 'self' 'wasm-unsafe-eval' https://static.cloudflareinsights.com")
+    expect(ignore).toContain("games/tf2/browser/src/wasm-generated/")
+    expect(workflow).toContain("toolchain: nightly-2025-12-10")
+    expect(workflow).toContain("cargo +1.97.1 install wasm-bindgen-cli --version 0.2.126 --locked")
+    expect(workflow).toContain("bun run build:tf2-wasm-bindings")
+    expect(applicationPackage).toContain("build-tf2-wasm-bindings.ts && vite build")
   })
 
   test("accepts the checked jump_beef release descriptor", () => {

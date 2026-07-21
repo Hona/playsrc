@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "vite build",
+    "build": "bun ../../../tools/playsrc/src/build-tf2-wasm-bindings.ts && vite build",
     "dev": "vite"
   },
   "dependencies": {
