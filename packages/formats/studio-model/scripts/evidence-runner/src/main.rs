@@ -5,6 +5,7 @@ use std::{
     fs,
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 const BUILD: &str = "24207079";
@@ -1969,7 +1970,8 @@ fn build_artifact_for_profile(
                         logical_path: request.logical_path,
                         material_slot: request.material_slot,
                         texture_role: request.texture_role,
-                        bytes,
+                        bytes: bytes.map(Arc::from),
+                        verified_byte_length: None,
                         sha256,
                         material,
                     });

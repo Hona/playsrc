@@ -1145,7 +1145,7 @@ mod tests {
                 collision_group: 0,
                 contents: 0,
                 surface_flags: 0,
-                shape: SnapshotShape::Physics(shape),
+                shape: SnapshotShape::Physics(std::sync::Arc::new(shape)),
             }],
             SnapshotLimits::default(),
         )

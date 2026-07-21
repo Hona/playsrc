@@ -12,3 +12,4 @@ playsrc.local.json
 *.tfstate.*
 crash.log
 crash.*.log
+games/tf2/browser/src/wasm-generated/tf2_wasm_bg.wasm

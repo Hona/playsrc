@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 
 import type { InitialView, WorkerFailureCode, WorkerRequest, WorkerResponse } from "./protocol"
+import initializeWasm, { initThreadPool } from "./wasm-generated/tf2_wasm.js"
 
 const MAX_WASM_BYTES = 64 * 1024 * 1024
 const MAX_BSP_BYTES = 512 * 1024 * 1024
@@ -24,7 +25,6 @@ type WasmExports = Readonly<{
   playsrc_result_hash(handle: number, pointer: number): number
   playsrc_presentation_length(handle: number): number
   playsrc_presentation_copy(handle: number, pointer: number, capacity: number): number
-  playsrc_presentation_hash(handle: number, pointer: number): number
   playsrc_presentation_release(handle:number):number
   playsrc_coverage_length(handle:number):number
   playsrc_coverage_copy(handle:number,pointer:number,capacity:number):number
@@ -71,7 +71,10 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
     !(request.wasm instanceof ArrayBuffer) ||
     request.wasm.byteLength < 1 ||
     request.wasm.byteLength > MAX_WASM_BYTES ||
-    !/^[0-9a-f]{64}$/.test(request.wasmSha256)
+    !/^[0-9a-f]{64}$/.test(request.wasmSha256) ||
+    !Number.isSafeInteger(request.threads) ||
+    request.threads < 1 ||
+    request.threads > 64
   ) {
     fail(request.id, "MalformedRequest")
     return
@@ -83,8 +86,7 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
       fail(request.id, "WasmUnavailable")
       return
     }
-    const loaded = await WebAssembly.instantiate(request.wasm, { playsrc_metrics: { monotonic_milliseconds: () => performance.now() } })
-    const candidate = loaded.instance.exports as unknown as WasmExports
+    const candidate = await initializeWasm({ module_or_path: request.wasm }) as unknown as WasmExports
     if (
       !(candidate.memory instanceof WebAssembly.Memory) ||
       ![
@@ -102,7 +104,6 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         candidate.playsrc_result_hash,
         candidate.playsrc_presentation_length,
         candidate.playsrc_presentation_copy,
-        candidate.playsrc_presentation_hash,
         candidate.playsrc_presentation_release,
         candidate.playsrc_coverage_length,
         candidate.playsrc_coverage_copy,
@@ -129,6 +130,7 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
       fail(request.id, "WasmUnavailable")
       return
     }
+    await initThreadPool(request.threads)
     wasm = candidate
     post({ id: request.id, kind: "initialized" })
   } catch {
@@ -184,17 +186,6 @@ function readHash(exports: WasmExports, handle: number): string | undefined {
   exports.playsrc_free(pointer, 32)
   return hash
 }
-function readPresentationHash(exports: WasmExports, handle: number): string | undefined {
-  const pointer = exports.playsrc_alloc(32)
-  const copied = exports.playsrc_presentation_hash(handle, pointer)
-  const hash =
-    copied === 1
-      ? Array.from(new Uint8Array(exports.memory.buffer, pointer, 32), (v) => v.toString(16).padStart(2, "0")).join("")
-      : undefined
-  exports.playsrc_free(pointer, 32)
-  return hash
-}
-
 function readInitialView(exports: WasmExports, handle: number): InitialView | undefined {
   const length = 40
   const pointer = exports.playsrc_alloc(length)
@@ -272,7 +263,6 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
   const payloadBytes = exports.playsrc_result_length(candidate)
   const payloadSha256 = readHash(exports, candidate)
   const presentationBytes = exports.playsrc_presentation_length(candidate)
-  const presentationSha256 = readPresentationHash(exports, candidate)
   const initialView = readInitialView(exports, candidate)
   const compileMetrics = Array.from({ length: 17 }, (_, index) => exports.playsrc_compile_metric_milliseconds(candidate, index))
   if (
@@ -283,7 +273,6 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
     !Number.isSafeInteger(presentationBytes) ||
     presentationBytes < 1 ||
     presentationBytes > MAX_PRESENTATION_BYTES ||
-    presentationSha256 === undefined ||
     initialView === undefined
   ) {
     exports.playsrc_dispose(candidate)
@@ -299,7 +288,6 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
     payloadBytes,
     payloadSha256,
     presentationBytes,
-    presentationSha256,
     initialView,
     timings: {
       inputCopyMilliseconds,

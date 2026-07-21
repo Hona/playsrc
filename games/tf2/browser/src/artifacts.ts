@@ -169,6 +169,7 @@ export type AuthoredTextureArtifact = Readonly<{
   frameCount: number
   faces: readonly number[]
   scalarEncoding: "u8" | "f16"
+  sourceFormat: number | null
   sampling: Readonly<{
     wrapS: number
     wrapT: number
@@ -424,9 +425,9 @@ class Reader {
 }
 const hex = (bytes: Uint8Array) => Array.from(bytes, (v) => v.toString(16).padStart(2, "0")).join("")
 const digest = async (bytes: Uint8Array) => hex(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)))
-function parseEnvironment(bytes: Uint8Array): EnvironmentArtifact {
+function parseEnvironment(bytes: Uint8Array, resources: ReadonlyMap<string, Uint8Array>): EnvironmentArtifact {
   const r = new Reader(bytes)
-  if (r.decoder.decode(r.take(4)) !== "PENV" || r.u32() !== 3) throw new ArtifactError("environment identity")
+  if (r.decoder.decode(r.take(4)) !== "PENV" || r.u32() !== 4) throw new ArtifactError("environment identity")
   const profile = r.u8()
   if ((profile !== 0 && profile !== 1) || r.u8() || r.u8() || r.u8()) throw new ArtifactError("environment profile")
   const identity = hex(r.take(32)),
@@ -636,7 +637,7 @@ function parseEnvironment(bytes: Uint8Array): EnvironmentArtifact {
   }
   const authoredTextures = new Map<string, AuthoredTextureArtifact>()
   for (let count = r.u32(); count > 0; count--) {
-    const texture = parseAuthoredTextureRecord(r)
+    const texture = parseModelAuthoredTextureRecord(r, resources)
     if (authoredTextures.has(texture.logicalPath)) throw new ArtifactError("environment authored texture identity")
     authoredTextures.set(texture.logicalPath, texture)
   }
@@ -970,24 +971,81 @@ function parseAuthoredTextureRecord(r: Reader): AuthoredTextureArtifact {
     return Object.freeze({
     logicalPath, sourceSha256, width, height, depth, mipCount, frameCount, faces,
     scalarEncoding: scalarCode === 0 ? "u8" : "f16",
+    sourceFormat: null,
     sampling: Object.freeze({ wrapS, wrapT, wrapU, minFilter, magFilter, anisotropyLevel, mipmapped: mipmapped === 1, noLod: noLod === 1, allMips: allMips === 1 }),
     planes: Object.freeze(planes),
   })
 }
 
-function parseAuthoredTextures(r: Reader): ReadonlyMap<string, AuthoredTextureArtifact> {
-  magic(r, "PMIP")
+function parseModelAuthoredTextureRecord(r: Reader, resources: ReadonlyMap<string, Uint8Array>): AuthoredTextureArtifact {
+  const logicalPath = r.text().toLowerCase(), sourceSha256 = hex(r.take(32)), width = r.u32(), height = r.u32(), depth = r.u32(),
+    mipCount = r.u8(), scalarCode = r.u8(), frameCount = r.u16(), faces = Object.freeze(Array.from({ length: r.u32() }, () => r.u8()))
+  if (!logicalPath.startsWith("materials/") || !width || !height || !depth || !mipCount || !frameCount || scalarCode > 1
+    || faces.length < 1 || new Set(faces).size !== faces.length || faces.some((face) => face > 6)) throw new ArtifactError("model authored texture header")
+  const wrapS = r.u8(), wrapT = r.u8(), wrapU = r.u8(), minFilter = r.u8(), magFilter = r.u8(), anisotropyLevel = r.u8(),
+    mipmapped = r.u8(), noLod = r.u8(), allMips = r.u8()
+  if (wrapS > 2 || wrapT > 2 || wrapU > 2 || minFilter > 4 || magFilter > 2 || !anisotropyLevel || mipmapped > 1 || noLod > 1 || allMips > 1 || r.u8() || r.u8() || r.u8()) {
+    throw new ArtifactError("model authored texture sampling")
+  }
+  const expected: Array<readonly [number, number, number, number]> = []
+  for (let mip = mipCount - 1; mip >= 0; mip--) {
+    const slices = Math.max(1, depth >> mip)
+    for (let frame = 0; frame < frameCount; frame++) for (const face of faces) for (let slice = 0; slice < slices; slice++) expected.push([mip, frame, face, slice])
+  }
+  const planeCount = r.u32()
+  if (planeCount !== expected.length) throw new ArtifactError("model authored texture plane count")
+  const source = resources.get(logicalPath)
+  const planes: AuthoredTexturePlane[] = []
+  let sourceFormat: number | null = null
+  for (let index = 0; index < planeCount; index++) {
+    const mip = r.u8(), face = r.u8(), frame = r.u16(), slice = r.u16()
+    if (r.u16()) throw new ArtifactError("model authored texture plane reserved field")
+    const planeWidth = r.u32(), planeHeight = r.u32(), storage = r.u8()
+    if (r.u8() || r.u8() || r.u8()) throw new ArtifactError("model authored texture storage reserved field")
+    const format = r.i32(), target = expected[index]!
+    let rgba: Uint8Array
+    if (storage === 0 && format === -1) {
+      rgba = r.blob(256 * 1024 * 1024)
+      const componentBytes = scalarCode === 0 ? 1 : 2
+      if (rgba.length !== planeWidth * planeHeight * 4 * componentBytes) throw new ArtifactError("model authored decoded plane")
+    } else if (storage === 1 && [0, 1, 2, 3, 11, 12, 13, 14, 15, 16, 20, 24].includes(format) && source) {
+      const offset = r.u32(), length = r.u32(), expectedLength = [2, 3].includes(format)
+        ? planeWidth * planeHeight * 3
+        : [0, 1, 11, 12, 16].includes(format)
+          ? planeWidth * planeHeight * 4
+        : format === 24
+          ? planeWidth * planeHeight * 8
+          : Math.max(1, Math.ceil(planeWidth / 4)) * Math.max(1, Math.ceil(planeHeight / 4)) * ([13, 20].includes(format) ? 8 : 16)
+      if (offset + length > source.length || length !== expectedLength || (sourceFormat !== null && sourceFormat !== format)
+        || (format === 24) !== (scalarCode === 1)) throw new ArtifactError("model authored source plane")
+      sourceFormat = format
+      rgba = source.subarray(offset, offset + length)
+    } else throw new ArtifactError("model authored texture storage")
+    if (mip !== target[0] || frame !== target[1] || face !== target[2] || slice !== target[3]
+      || planeWidth !== Math.max(1, width >> mip) || planeHeight !== Math.max(1, height >> mip)) throw new ArtifactError("model authored texture plane")
+    planes.push(Object.freeze({ mip, frame, face, slice, width: planeWidth, height: planeHeight, rgba }))
+  }
+  return Object.freeze({
+    logicalPath, sourceSha256, width, height, depth, mipCount, frameCount, faces,
+    scalarEncoding: scalarCode === 0 ? "u8" : "f16", sourceFormat,
+    sampling: Object.freeze({ wrapS, wrapT, wrapU, minFilter, magFilter, anisotropyLevel, mipmapped: mipmapped === 1, noLod: noLod === 1, allMips: allMips === 1 }),
+    planes: Object.freeze(planes),
+  })
+}
+
+function parseAuthoredTextures(r: Reader, resources: ReadonlyMap<string, Uint8Array>): ReadonlyMap<string, AuthoredTextureArtifact> {
+  if (r.decoder.decode(r.take(4)) !== "PMIP" || r.u32() !== 2) throw new ArtifactError("PMIP identity")
   const output = new Map<string, AuthoredTextureArtifact>()
   for (let count = r.u32(); count > 0; count--) {
-    const texture = parseAuthoredTextureRecord(r)
+    const texture = parseModelAuthoredTextureRecord(r, resources)
     if (output.has(texture.logicalPath)) throw new ArtifactError("authored texture identity")
     output.set(texture.logicalPath, texture)
   }
   return output
 }
-export async function parsePresentationArtifacts(bytes: Uint8Array): Promise<PresentationArtifacts> {
+export async function parsePresentationArtifacts(bytes: Uint8Array, resources: ReadonlyMap<string, Uint8Array>): Promise<PresentationArtifacts> {
   const r = new Reader(bytes)
-  if (r.decoder.decode(r.take(4)) !== "PTF2" || r.u32() !== 8) throw new ArtifactError("artifact identity")
+  if (r.decoder.decode(r.take(4)) !== "PTF2" || r.u32() !== 10) throw new ArtifactError("artifact identity")
   const modelCount = r.u32(),
     textureCount = r.u32(),
     directionalCount = r.u32(),
@@ -1101,7 +1159,7 @@ export async function parsePresentationArtifacts(bytes: Uint8Array): Promise<Pre
     )
   }
   const particleMaterials = Object.freeze(Array.from({ length: particleMaterialCount }, () => r.text()))
-  const environment = parseEnvironment(r.blob(512 * 1024 * 1024))
+  const environment = parseEnvironment(r.blob(512 * 1024 * 1024), resources)
   const materialStates = parseMaterialStates(r)
   if (r.decoder.decode(r.bytes.subarray(r.offset, r.offset + 4)) !== "PPTM") {
     throw new ArtifactError(`material state boundary ${r.offset}:${hex(r.bytes.subarray(r.offset, r.offset + 16))}`)
@@ -1115,7 +1173,7 @@ export async function parsePresentationArtifacts(bytes: Uint8Array): Promise<Pre
   const audio = parseAudio(r)
   const modelOccurrences = parseOccurrenceMatrices(r)
   const modelMaterials = parseModelMaterials(r)
-  const authoredTextures = parseAuthoredTextures(r)
+  const authoredTextures = parseAuthoredTextures(r, resources)
   const brushModels:BrushModelArtifact[]=[];let previousEnd=0;for(let expected=0;expected<brushModelCount;expected++){const index=r.u32(),minimum=tuple3(r),maximum=tuple3(r),origin=tuple3(r),headNode=r.i32(),start=r.u32(),end=r.u32(),vertexCount=r.u32(),triangleCount=r.u32(),mc=r.u32(),ec=r.u32();if(mc>65536||ec>65536)throw new ArtifactError("brush counts");const materials=Object.freeze(Array.from({length:mc},()=>r.u32())),entities=Object.freeze(Array.from({length:ec},()=>r.u32()));if(index!==expected||start!==previousEnd||end<start)throw new ArtifactError("brush descriptor");previousEnd=end;brushModels.push(Object.freeze({index,bounds:Object.freeze([minimum,maximum]) as BrushModelArtifact["bounds"],origin,headNode,surfaceRange:Object.freeze([start,end]) as readonly[number,number],vertexCount,triangleCount,materials,entities}))}
   if (r.offset !== bytes.length) throw new ArtifactError("trailing bytes")
   if (new Set(modelOccurrences.map((occurrence) => occurrence.entity)).size !== modelOccurrences.length)

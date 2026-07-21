@@ -103,7 +103,7 @@ Strings cross only when they are required logical identities, diagnostics, local
 
 ## Memory
 
-The caller transferring an `ArrayBuffer` relinquishes access until ownership is explicitly returned. Shared memory is excluded from the initial contract. It may be introduced only after retained profiling proves that transferable batches cannot satisfy an accepted latency or throughput bound.
+The caller transferring an `ArrayBuffer` relinquishes access until ownership is explicitly returned. The TF2 browser compiler uses one cross-origin-isolated shared-memory WASM module and a bounded persistent worker pool after retained cold-load profiling proved that serial model and chunk compilation exceeded the accepted wall-time target. Simulation calls remain coordinator-owned and do not fan out per tick.
 
 Rust validates every offset, length, count, alignment, handle generation, and total byte bound before access. TypeScript treats every returned buffer as immutable unless its descriptor explicitly transfers mutable ownership.
 

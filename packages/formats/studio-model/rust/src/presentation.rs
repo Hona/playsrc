@@ -178,6 +178,7 @@ pub struct PresentationDependencyResponse {
     pub material_slot: usize,
     pub texture_role: Option<TextureRole>,
     pub bytes: Option<Vec<u8>>,
+    pub verified_byte_length: Option<usize>,
     pub sha256: Option<[u8; 32]>,
     pub material: Option<MaterialResolutionManifest>,
 }
@@ -427,6 +428,11 @@ pub enum PresentationBuild {
     Complete(Box<PresentationArtifact>),
 }
 
+pub enum PresentationModelBuild {
+    Needs(Vec<PresentationDependencyRequest>),
+    Complete(Box<PresentationModel>),
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PresentationErrorCode {
     InvalidLimits,
@@ -473,6 +479,35 @@ pub fn build_presentation(
     limits: PresentationLimits,
     cancellation: &CancellationToken,
 ) -> Result<PresentationBuild, PresentationError> {
+    match build_presentation_model(document, profile, responses, limits, cancellation)? {
+        PresentationModelBuild::Needs(requests) => Ok(PresentationBuild::Needs(requests)),
+        PresentationModelBuild::Complete(model) => {
+            let bytes = encode_model(&model, limits)?;
+            if bytes.len() >= MAX_MESSAGE_BYTES || bytes.len() > limits.max_artifact_bytes {
+                return Err(presentation_error(
+                    PresentationErrorCode::ArtifactLimit,
+                    &document.identity,
+                ));
+            }
+            let sha256 = sha256(&bytes);
+            Ok(PresentationBuild::Complete(Box::new(
+                PresentationArtifact {
+                    model: *model,
+                    bytes,
+                    sha256,
+                },
+            )))
+        }
+    }
+}
+
+pub fn build_presentation_model(
+    document: &Document,
+    profile: PresentationProfile,
+    responses: &[PresentationDependencyResponse],
+    limits: PresentationLimits,
+    cancellation: &CancellationToken,
+) -> Result<PresentationModelBuild, PresentationError> {
     validate_limits(limits)?;
     check_cancelled(cancellation, &document.identity)?;
     validate_model_limits(document, limits)?;
@@ -522,7 +557,9 @@ pub fn build_presentation(
                 .iter()
                 .find(|response| response_matches(response, &request))
             {
-                Some(response) if response.bytes.is_some() => {
+                Some(response)
+                    if response.bytes.is_some() || response.verified_byte_length.is_some() =>
+                {
                     validate_response(response, limits)?;
                     selected_response = Some(response);
                     break;
@@ -550,7 +587,7 @@ pub fn build_presentation(
     }
     if !candidate_needs.is_empty() {
         bound_requests(&candidate_needs, limits, &document.identity)?;
-        return Ok(PresentationBuild::Needs(candidate_needs));
+        return Ok(PresentationModelBuild::Needs(candidate_needs));
     }
 
     let mut closure_needs = Vec::new();
@@ -606,7 +643,7 @@ pub fn build_presentation(
     }
     if !closure_needs.is_empty() {
         bound_requests(&closure_needs, limits, &document.identity)?;
-        return Ok(PresentationBuild::Needs(closure_needs));
+        return Ok(PresentationModelBuild::Needs(closure_needs));
     }
 
     let mut dependencies: Vec<_> = document
@@ -650,7 +687,7 @@ pub fn build_presentation(
                 .iter()
                 .find(|response| response_matches(response, &request))
                 .expect("closure requests checked");
-            if response.bytes.is_none() {
+            if response.bytes.is_none() && response.verified_byte_length.is_none() {
                 return Err(presentation_error(
                     PresentationErrorCode::MissingDependency,
                     &response.logical_path,
@@ -673,7 +710,7 @@ pub fn build_presentation(
                     .iter()
                     .find(|response| response_matches(response, &request))
                     .expect("closure requests checked");
-                if response.bytes.is_none() {
+                if response.bytes.is_none() && response.verified_byte_length.is_none() {
                     return Err(presentation_error(
                         PresentationErrorCode::MissingDependency,
                         &response.logical_path,
@@ -766,21 +803,7 @@ pub fn build_presentation(
     };
     check_cancelled(cancellation, &document.identity)?;
     validate_decoded_model(&model, limits)?;
-    let bytes = encode_model(&model, limits)?;
-    if bytes.len() >= MAX_MESSAGE_BYTES || bytes.len() > limits.max_artifact_bytes {
-        return Err(presentation_error(
-            PresentationErrorCode::ArtifactLimit,
-            &document.identity,
-        ));
-    }
-    let sha256 = sha256(&bytes);
-    Ok(PresentationBuild::Complete(Box::new(
-        PresentationArtifact {
-            model,
-            bytes,
-            sha256,
-        },
-    )))
+    Ok(PresentationModelBuild::Complete(Box::new(model)))
 }
 
 fn validate_limits(limits: PresentationLimits) -> Result<(), PresentationError> {
@@ -1350,13 +1373,16 @@ fn validate_response(
     response: &PresentationDependencyResponse,
     limits: PresentationLimits,
 ) -> Result<(), PresentationError> {
-    let bytes = response.bytes.as_ref().ok_or_else(|| {
-        presentation_error(
-            PresentationErrorCode::MissingDependency,
-            &response.logical_path,
-        )
-    })?;
-    if bytes.len() > limits.max_dependency_bytes {
+    let byte_length = response
+        .verified_byte_length
+        .or_else(|| response.bytes.as_ref().map(Vec::len))
+        .ok_or_else(|| {
+            presentation_error(
+                PresentationErrorCode::MissingDependency,
+                &response.logical_path,
+            )
+        })?;
+    if byte_length > limits.max_dependency_bytes {
         return Err(presentation_error(
             PresentationErrorCode::DependencyLimit,
             &response.logical_path,
@@ -1365,7 +1391,9 @@ fn validate_response(
     let expected = response.sha256.ok_or_else(|| {
         presentation_error(PresentationErrorCode::HashMismatch, &response.logical_path)
     })?;
-    if sha256(bytes) != expected {
+    if response.verified_byte_length.is_none()
+        && sha256(response.bytes.as_ref().expect("response bytes checked")) != expected
+    {
         return Err(presentation_error(
             PresentationErrorCode::HashMismatch,
             &response.logical_path,
@@ -1378,12 +1406,15 @@ fn push_dependency(
     dependencies: &mut Vec<ArtifactDependency>,
     response: &PresentationDependencyResponse,
 ) -> Result<usize, PresentationError> {
-    let bytes = response.bytes.as_ref().ok_or_else(|| {
-        presentation_error(
-            PresentationErrorCode::MissingDependency,
-            &response.logical_path,
-        )
-    })?;
+    let byte_length = response
+        .verified_byte_length
+        .or_else(|| response.bytes.as_ref().map(Vec::len))
+        .ok_or_else(|| {
+            presentation_error(
+                PresentationErrorCode::MissingDependency,
+                &response.logical_path,
+            )
+        })?;
     let index = dependencies.len();
     dependencies.push(ArtifactDependency {
         requester: response.requester.clone(),
@@ -1392,7 +1423,7 @@ fn push_dependency(
         texture_role: response.texture_role,
         material_slot: Some(response.material_slot),
         sha256: response.sha256,
-        byte_length: bytes.len(),
+        byte_length,
     });
     Ok(index)
 }
@@ -5166,6 +5197,7 @@ mod tests {
             material_slot: request.material_slot,
             texture_role: request.texture_role,
             bytes: bytes.map(<[u8]>::to_vec),
+            verified_byte_length: None,
             sha256: bytes.map(sha256),
             material,
         }
