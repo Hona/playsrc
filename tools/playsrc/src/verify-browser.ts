@@ -931,6 +931,34 @@ export async function verifyBrowserAcceptance(
       && menuPresentation.characterCanvas[0]! > 0 && menuPresentation.characterCanvas[1]! > 0,
     `Main Menu presentation selection differs: ${JSON.stringify(menuPresentation)}`)
 
+    await agent(["--session", session, "set", "viewport", "1192", "1339"])
+    await agent(["--session", session, "wait", "--fn", "(()=>{const r=document.querySelector('[data-vgui-name=MainMenuOverride]').getBoundingClientRect();return r.width===1192&&r.height===1339})()", "--timeout", "30000"])
+    const tallMenu = parseJson<{ root: number[]; menu: number[]; character: number[]; bottom: number; overflow: string }>(await agent([
+      "--session", session, "eval",
+      "(()=>{const rect=e=>{const r=e.getBoundingClientRect();return[r.x,r.y,r.width,r.height]},root=document.querySelector('.gameui-layer'),menu=document.querySelector('[data-vgui-name=MainMenuOverride]'),character=document.querySelector('[data-vgui-name=TFCharacterImage]'),bottom=Math.max(...[...document.querySelectorAll('[data-vgui-name=SettingsButton],[data-vgui-name=TF2SettingsButton],[data-vgui-name=QuitButton]')].map(e=>e.getBoundingClientRect().bottom));return{root:rect(root),menu:rect(menu),character:rect(character),bottom,overflow:getComputedStyle(menu).overflow}})()",
+    ]))
+    require(JSON.stringify(tallMenu.root) === JSON.stringify([0, 0, 1192, 1339])
+      && JSON.stringify(tallMenu.menu) === JSON.stringify([0, 0, 1192, 1339])
+      && tallMenu.character[0]! < 1192 && tallMenu.character[1]! < 1339 && tallMenu.character[0]! + tallMenu.character[2]! > 0 && tallMenu.character[1]! + tallMenu.character[3]! > 0
+      && tallMenu.bottom > 0 && tallMenu.bottom <= 1339 && tallMenu.overflow === "hidden",
+    `1192x1339 proportional Main Menu differs: ${JSON.stringify(tallMenu)}`)
+    const tallMenuCapture = await captureInterface(session, config, "main-menu-1192x1339")
+    const menuViewportMatrix: Array<{ width: number; height: number; devicePixelRatio: number; menu: number[]; bottom: number; characterImage: string | null }> = []
+    for (const [width, height, scale] of [[1280, 720, 1], [1024, 768, 1], [2560, 1080, 1], [390, 844, 1], [844, 390, 1], [1280, 720, 2], [1280, 720, 1]] as const) {
+      await agent(["--session", session, "set", "viewport", String(width), String(height), String(scale)])
+      await agent(["--session", session, "wait", "--fn", `(()=>{const r=document.querySelector('[data-vgui-name=MainMenuOverride]').getBoundingClientRect();return r.width===${width}&&r.height===${height}&&devicePixelRatio===${scale}})()`, "--timeout", "30000"])
+      const observation = parseJson<{ devicePixelRatio: number; menu: number[]; bottom: number; characterImage: string | null }>(await agent([
+        "--session", session, "eval",
+        "(()=>{const r=document.querySelector('[data-vgui-name=MainMenuOverride]').getBoundingClientRect(),bottom=Math.max(...[...document.querySelectorAll('[data-vgui-name=SettingsButton],[data-vgui-name=TF2SettingsButton],[data-vgui-name=QuitButton]')].map(e=>e.getBoundingClientRect().bottom));return{devicePixelRatio,menu:[r.x,r.y,r.width,r.height],bottom,characterImage:document.querySelector('[data-vgui-name=TFCharacterImage]')?.getAttribute('data-vgui-image')??document.querySelector('main').dataset.presentationCharacter??null}})()",
+      ]))
+      require(JSON.stringify(observation.menu) === JSON.stringify([0, 0, width, height])
+        && observation.bottom > 0 && observation.bottom <= height && observation.devicePixelRatio === scale
+        && observation.characterImage === menuPresentation.character,
+      `proportional Main Menu resize differs at ${width}x${height}@${scale}: ${JSON.stringify(observation)}`)
+      menuViewportMatrix.push({ width, height, ...observation })
+    }
+
+
     await agent(["--session", session, "click", "[data-vgui-name='SettingsButton']"])
     await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.optionsVisible==='true'", "--timeout", "30000"])
     const keyboardOptions = parseJson<{ rows: number; localized: string; tabs: string[] }>(await agent([
@@ -1678,7 +1706,7 @@ export async function verifyBrowserAcceptance(
       console: platformFontSupported
         ? "history-completion-focus-repeated-visibility-replacement-close-passed"
         : "unsupported-platform-fonts-suppressed-paint-and-input",
-      gameUi: { menuPresentation, mobileInterface },
+      gameUi: { menuPresentation, tallMenu, tallMenuCapture, menuViewportMatrix, mobileInterface },
       options: { keyboard: keyboardOptions, visualDefault: optionsVisualDefault, armedButton, comboDefault, comboHover, captures: optionsCaptures, conflict: conflictBindings, reset: resetBindings, keyboardAdvanced, videoAdvanced, advanced: advancedOptions },
       hud: { initialOperations: initialHudOperations, initialPresentation: initialHudPresentation, pausedPresentation: pausedHudPresentation, pauseControls, animationTrace: hudAnimationTrace },
       presentationViewport: { desktopMenu: desktopMenuViewport, mobileMenu: mobileMenuViewport, gameplay: gameplayViewport },
