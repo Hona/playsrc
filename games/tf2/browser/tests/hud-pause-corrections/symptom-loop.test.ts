@@ -57,6 +57,10 @@ function scheme(): VguiScheme {
     logicalIdentity: `materials/vgui/symptom-loop/corner${corner}.vtf`, revision: `corner${corner}`,
     browserUrl: "data:image/png;base64,AA==", width: 8, height: 800, frames: 1, hardwareFiltered: false,
   }))
+  for (const [index, name] of ["../console/background_2fort", "../console/background_2fort_widescreen"].entries()) presentedImages.push(Object.freeze({
+    name, logicalIdentity: `materials/console/background_2fort${index ? "_widescreen" : ""}.vmt`, revision: `background-${index}`,
+    browserUrl: "data:image/png;base64,AA==", width: 1, height: 1, frames: 1, hardwareFiltered: false,
+  }))
   return Object.freeze({
     identity: "tf2-symptom-loop",
     revision: tf2UiResources.identity,
@@ -133,6 +137,16 @@ function resources(): Tf2VguiResources {
     animations: Object.freeze({ identity: "tf2-test", revision: "1", scripts: Object.freeze([]), activeConditions: Object.freeze([]) }),
     activeConditions: Object.freeze(["WIN32", "OSX", "POSIX"]),
     customControls: Object.freeze(customControls),
+    gameUiBackground: Object.freeze({
+      identity: "tf2-gameui-background-test", contentBuild: tf2UiResources.contentBuild,
+      source: Object.freeze({ logicalPath: "scripts/chapterbackgrounds.txt", byteLength: 1, sha256: "0".repeat(64) }),
+      defaultChapter: 1 as const, backgroundName: "background_2fort",
+      variants: Object.freeze(["standard", "widescreen"].map((aspect, index) => Object.freeze({
+        aspect: aspect as "standard" | "widescreen", image: `../console/background_2fort${index ? "_widescreen" : ""}`,
+        material: `materials/console/background_2fort${index ? "_widescreen" : ""}.vmt`, materialSha256: `${index}`.repeat(64),
+        texture: `materials/console/background_2fort${index ? "_widescreen" : ""}.vtf`, textureSha256: `${index}`.repeat(64), width: 1, height: 1,
+      }))),
+    }),
     diagnostics: Object.freeze([]),
     document(logicalPath) {
       const result = documents.get(logicalPath.toLowerCase())

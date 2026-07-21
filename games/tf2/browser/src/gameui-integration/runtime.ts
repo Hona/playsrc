@@ -21,6 +21,7 @@ import {
 } from "../gameui"
 import type { Tf2VguiResources } from "../ui-integration"
 import type { Tf2PresentationRandom } from "../ui-integration"
+import { tf2GameUiBaseBackground } from "./base-background"
 
 export type Tf2GameUiIntegrationDiagnostic = Readonly<{
   code: "UnsupportedResourceObject" | "MissingCodeControl" | "VguiRejected" | "InactiveCommand"
@@ -208,10 +209,24 @@ class Integration implements Tf2GameUiIntegration {
   readonly #onRequest: (request: Tf2GameUiRequest) => void
   readonly #diagnostics: Tf2GameUiIntegrationDiagnostic[] = []
   readonly #baseVisibility = new Map<VguiPanelId, boolean>()
+  #baseBackground: VguiPanelId | null = null
+  #baseBackgroundImage: string | null = null
+  #viewport: VguiViewport
   #mainMenu: VguiPanelId | null = null
   #mainMenuConditions: string[] = []
   #state: Tf2GameUiState = TF2_MAIN_MENU_STATE
   #destroyed = false
+
+  #configureBaseBackground(viewport: VguiViewport): void {
+    if (this.#baseBackground === null) throw new Error("TF2 GameUI base-background panel is missing")
+    const presentation = tf2GameUiBaseBackground(this.#resources.gameUiBackground, this.#state, viewport)
+    const variant = presentation.variant
+    mustApply(this.#runtime, { kind: "set-bounds", panel: this.#baseBackground, bounds: presentation.bounds })
+    if (this.#baseBackgroundImage !== variant.image) {
+      mustApply(this.#runtime, { kind: "mutate-control", panel: this.#baseBackground, mutation: { image: variant.image } })
+      this.#baseBackgroundImage = variant.image
+    }
+  }
 
   #selectCharacter(request: Tf2GameUiIntegrationRequest, parent: VguiPanelId): void {
     const source = this.#resources.panelDocument("scripts/characterbackgrounds.txt")
@@ -266,6 +281,7 @@ class Integration implements Tf2GameUiIntegration {
   }
 
   constructor(request: Tf2GameUiIntegrationRequest) {
+    this.#viewport = request.viewport
     this.#resources = request.resources
     this.#onRequest = request.onRequest
     const initialized = initializeVguiRuntime({
@@ -286,39 +302,43 @@ class Integration implements Tf2GameUiIntegration {
     if (!initialized.ok) throw new Error(`${initialized.diagnostic.code}:${initialized.diagnostic.subject}`)
     this.#runtime = initialized.runtime
     this.#runtime.deferPresentation(() => {
-    const mainMenu = createCodeControl(this.#runtime, 1, "CHudMainMenuOverride", "MainMenuOverride")
-    this.#mainMenu = mainMenu
-    mustApply(this.#runtime, { kind: "set-panel-state", panel: mainMenu, proportional: true })
-    createCodeControl(this.#runtime, mainMenu, "ImagePanel", "TFCharacterImage")
-    const dashboard = createCodeControl(this.#runtime, 1, "CTFMatchmakingDashboard", "MMDashboard")
-    const playlistContainer = createCodeControl(this.#runtime, 1, "EditablePanel", "ExpandableList")
-    const playlist = createCodeControl(this.#runtime, playlistContainer, "CTFPlaylistPanel", "playlist")
-    const conditions = [tf2MainMenuAspectCondition(request.viewport)]
-    if (request.presentation.activeHoliday !== "none") conditions.push(`if_${request.presentation.activeHoliday}`)
-    let characterBackground = true
-    if (request.presentation.activeHoliday === "halloween") {
-      const selected = request.presentation.random.nextInteger(0, 5)
-      conditions.push(`if_halloween_${selected}`)
-      characterBackground = selected !== 3 && selected !== 4
-    } else if (request.presentation.activeHoliday === "christmas") {
-      conditions.push(`if_christmas_${request.presentation.random.nextInteger(0, 1)}`)
-    }
-    this.#mainMenuConditions = conditions
-    this.#applyOwned(MAIN_MENU_PATH, mainMenu, conditions)
-    this.#configureScrollers(mainMenu)
-    if (characterBackground) this.#selectCharacter(request, mainMenu)
-    else {
-      const image = panelByName(this.#runtime, "TFCharacterImage", mainMenu)
-      if (image !== null) mustApply(this.#runtime, { kind: "set-panel-state", panel: image, visible: false })
-    }
-    this.#applyOwned(DASHBOARD_PATH, dashboard)
-    this.#applyOwned(DASHBOARD_PLAYLIST_PATH, playlistContainer)
-    this.#applyOwned(PLAYLIST_PATH, playlist, ["if_wider"])
-    this.#configurePlaylist()
-    this.#disableUnownedControls()
-    for (const identity of [1, mainMenu]) mustApply(this.#runtime, { kind: "set-panel-state", panel: identity, mouseInput: false, keyboardInput: false })
-    this.#captureBaseVisibility()
-    this.#presentState()
+      const baseBackground = createCodeControl(this.#runtime, 1, "ImagePanel", "GameUiBaseBackground")
+      this.#baseBackground = baseBackground
+      mustApply(this.#runtime, { kind: "set-panel-state", panel: baseBackground, mouseInput: false, keyboardInput: false, z: -100 })
+      this.#configureBaseBackground(request.viewport)
+      const mainMenu = createCodeControl(this.#runtime, 1, "CHudMainMenuOverride", "MainMenuOverride")
+      this.#mainMenu = mainMenu
+      mustApply(this.#runtime, { kind: "set-panel-state", panel: mainMenu, proportional: true })
+      createCodeControl(this.#runtime, mainMenu, "ImagePanel", "TFCharacterImage")
+      const dashboard = createCodeControl(this.#runtime, 1, "CTFMatchmakingDashboard", "MMDashboard")
+      const playlistContainer = createCodeControl(this.#runtime, 1, "EditablePanel", "ExpandableList")
+      const playlist = createCodeControl(this.#runtime, playlistContainer, "CTFPlaylistPanel", "playlist")
+      const conditions = [tf2MainMenuAspectCondition(request.viewport)]
+      if (request.presentation.activeHoliday !== "none") conditions.push(`if_${request.presentation.activeHoliday}`)
+      let characterBackground = true
+      if (request.presentation.activeHoliday === "halloween") {
+        const selected = request.presentation.random.nextInteger(0, 5)
+        conditions.push(`if_halloween_${selected}`)
+        characterBackground = selected !== 3 && selected !== 4
+      } else if (request.presentation.activeHoliday === "christmas") {
+        conditions.push(`if_christmas_${request.presentation.random.nextInteger(0, 1)}`)
+      }
+      this.#mainMenuConditions = conditions
+      this.#applyOwned(MAIN_MENU_PATH, mainMenu, conditions)
+      this.#configureScrollers(mainMenu)
+      if (characterBackground) this.#selectCharacter(request, mainMenu)
+      else {
+        const image = panelByName(this.#runtime, "TFCharacterImage", mainMenu)
+        if (image !== null) mustApply(this.#runtime, { kind: "set-panel-state", panel: image, visible: false })
+      }
+      this.#applyOwned(DASHBOARD_PATH, dashboard)
+      this.#applyOwned(DASHBOARD_PLAYLIST_PATH, playlistContainer)
+      this.#applyOwned(PLAYLIST_PATH, playlist, ["if_wider"])
+      this.#configurePlaylist()
+      this.#disableUnownedControls()
+      for (const identity of [1, mainMenu]) mustApply(this.#runtime, { kind: "set-panel-state", panel: identity, mouseInput: false, keyboardInput: false })
+      this.#captureBaseVisibility()
+      this.#presentState()
     })
   }
 
@@ -404,6 +424,7 @@ class Integration implements Tf2GameUiIntegration {
     const disconnect = before.find((panel) => panel.name === "DisconnectButton")
     const findGame = before.find((panel) => panel.name === "FindAGameButton")
     const quit = before.find((panel) => panel.name === "QuitButton")
+    if (this.#baseBackground !== null) mustApply(this.#runtime, { kind: "set-panel-state", panel: this.#baseBackground, visible: tf2GameUiBaseBackground(this.#resources.gameUiBackground, this.#state, this.#viewport).visible })
     const descendsFrom = (panelId: VguiPanelId, ancestorId: VguiPanelId): boolean => {
       let current = byId.get(panelId)
       while (current?.parent !== null) {
@@ -487,6 +508,8 @@ class Integration implements Tf2GameUiIntegration {
     const priorAspect = this.#mainMenuConditions.find((condition) => condition === "if_wider" || condition === "if_taller")
     this.#runtime.deferPresentation(() => {
       mustApply(this.#runtime, { kind: "set-viewport", viewport })
+      this.#viewport = viewport
+      this.#configureBaseBackground(viewport)
       if (this.#mainMenu !== null && priorAspect !== aspectCondition) {
         this.#mainMenuConditions = [aspectCondition, ...this.#mainMenuConditions.filter((condition) => condition !== "if_wider" && condition !== "if_taller")]
         this.#applyOwned(MAIN_MENU_PATH, this.#mainMenu, this.#mainMenuConditions)

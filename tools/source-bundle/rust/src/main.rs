@@ -135,11 +135,12 @@ struct Tf2UiMaterialTextureRecord {
     raw_flags: u32,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Tf2UiMaterialRecord {
     configured_value: String,
     material: String,
+    material_sha256: String,
     shader: String,
     base_texture: String,
     base_color_read: &'static str,
@@ -172,6 +173,38 @@ struct Tf2UiMaterialRecord {
     glow_end: f32,
     glow_x: f32,
     glow_y: f32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Tf2GameUiBackgroundSet {
+    schema: &'static str,
+    content_build: String,
+    chapter_source: Tf2GameUiBackgroundSource,
+    default_chapter: u32,
+    background_name: String,
+    variants: Vec<Tf2GameUiBackgroundVariant>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Tf2GameUiBackgroundSource {
+    logical_path: String,
+    byte_length: usize,
+    sha256: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Tf2GameUiBackgroundVariant {
+    aspect: &'static str,
+    configured_value: String,
+    material: String,
+    material_sha256: String,
+    texture: String,
+    texture_sha256: String,
+    width: u32,
+    height: u32,
 }
 
 #[derive(Deserialize)]
@@ -1249,6 +1282,7 @@ fn ui_role_color_read(
 fn ui_material_record(
     configured_value: &str,
     identity: &str,
+    material_sha256: &str,
     material: &playsrc_material::Material,
 ) -> Result<Tf2UiMaterialRecord, String> {
     let shader = String::from_utf8(material.shader_token.clone())
@@ -1264,6 +1298,7 @@ fn ui_material_record(
     Ok(Tf2UiMaterialRecord {
         configured_value: configured_value.to_owned(),
         material: identity.to_owned(),
+        material_sha256: material_sha256.to_owned(),
         shader,
         base_texture,
         base_color_read,
@@ -2156,13 +2191,68 @@ fn main() -> Result<(), String> {
         )?;
     }
     stage("declared-dependencies", &mut stage_started);
+    let chapter_path = "scripts/chapterbackgrounds.txt";
+    let chapter_bytes = resolver.required(chapter_path, "tf2-gameui-base-background-list")?;
+    let chapter_document = playsrc_keyvalues::parse_text(
+        &chapter_bytes,
+        playsrc_keyvalues::EscapeMode::LiteralBackslash,
+        playsrc_keyvalues::Limits::default(),
+    )
+    .map_err(|error| error.to_string())?
+    .evaluated(&ConditionEnvironment::default());
+    let chapter_root = chapter_document
+        .roots
+        .iter()
+        .find(|node| node.key.bytes.eq_ignore_ascii_case(b"ChapterBackgrounds"))
+        .or_else(|| chapter_document.roots.first())
+        .ok_or_else(|| "TF2 ChapterBackgrounds root is missing".to_owned())?;
+    let background_name = std::str::from_utf8(scalar(chapter_root, b"1")?)
+        .map_err(|_| "TF2 chapter background name is not UTF-8".to_owned())?
+        .to_ascii_lowercase();
+    if background_name.is_empty()
+        || background_name.len() > 128
+        || background_name.starts_with('/')
+        || background_name.contains("..")
+        || background_name.bytes().any(|byte| {
+            !byte.is_ascii_lowercase()
+                && !byte.is_ascii_digit()
+                && byte != b'_'
+                && byte != b'/'
+                && byte != b'-'
+        })
+    {
+        return Err("TF2 chapter background name is malformed".to_owned());
+    }
+    let gameui_backgrounds = [
+        (
+            "standard",
+            format!("../console/{background_name}"),
+            format!("materials/console/{background_name}.vmt"),
+        ),
+        (
+            "widescreen",
+            format!("../console/{background_name}_widescreen"),
+            format!("materials/console/{background_name}_widescreen.vmt"),
+        ),
+    ];
     let mut ui_materials = Vec::new();
     for image in &tf2_ui.images {
         let Some(identity) = image.material.as_deref() else {
             continue;
         };
         let material = resolve_ui_material(&mut resolver, identity)?;
-        let record = ui_material_record(&image.configured_value, identity, &material)?;
+        let material_sha256 = digest(
+            resolver
+                .bundle
+                .get(identity)
+                .ok_or_else(|| format!("TF2 UI material source is missing: {identity}"))?,
+        );
+        let record = ui_material_record(
+            &image.configured_value,
+            identity,
+            &material_sha256,
+            &material,
+        )?;
         if !record.shader.eq_ignore_ascii_case("UnlitGeneric")
             && !record.shader.eq_ignore_ascii_case("UnlitTwoTexture")
         {
@@ -2216,9 +2306,20 @@ fn main() -> Result<(), String> {
         "stamp_background_map".to_owned(),
         "materials/vgui/stamp_background_map.vmt".to_owned(),
     ));
+    runtime_ui_materials.extend(
+        gameui_backgrounds
+            .iter()
+            .map(|(_, configured, material)| (configured.clone(), material.clone())),
+    );
     for (configured_value, identity) in runtime_ui_materials {
         let material = resolve_ui_material(&mut resolver, &identity)?;
-        let record = ui_material_record(&configured_value, &identity, &material)?;
+        let material_sha256 = digest(
+            resolver
+                .bundle
+                .get(&identity)
+                .ok_or_else(|| format!("TF2 UI material source is missing: {identity}"))?,
+        );
+        let record = ui_material_record(&configured_value, &identity, &material_sha256, &material)?;
         let bytes = resolver.required(
             &record.base_texture,
             format!("tf2-ui-rounded-background:{configured_value}"),
@@ -2296,8 +2397,51 @@ fn main() -> Result<(), String> {
     let ui_material_bytes = serde_json::to_vec(&Tf2UiMaterialSet {
         schema: "playsrc-tf2-ui-materials-v1",
         descriptor: tf2_ui.identity.clone(),
-        images: ui_materials,
+        images: ui_materials.clone(),
         textures: texture_records,
+    })
+    .map_err(|error| error.to_string())?;
+    let background_variants = gameui_backgrounds
+        .iter()
+        .map(|(aspect, configured_value, material)| {
+            let record = ui_materials
+                .iter()
+                .find(|record| record.configured_value == *configured_value)
+                .ok_or_else(|| format!("TF2 GameUI background material is missing: {material}"))?;
+            let material_bytes = resolver
+                .bundle
+                .get(material)
+                .ok_or_else(|| format!("TF2 GameUI background source is missing: {material}"))?;
+            let (texture_sha256, width, height, _, _) =
+                ui_textures.get(&record.base_texture).ok_or_else(|| {
+                    format!(
+                        "TF2 GameUI background texture is missing: {}",
+                        record.base_texture
+                    )
+                })?;
+            Ok(Tf2GameUiBackgroundVariant {
+                aspect,
+                configured_value: configured_value.clone(),
+                material: material.clone(),
+                material_sha256: digest(material_bytes),
+                texture: record.base_texture.clone(),
+                texture_sha256: texture_sha256.clone(),
+                width: *width,
+                height: *height,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let gameui_background_bytes = serde_json::to_vec(&Tf2GameUiBackgroundSet {
+        schema: "playsrc-tf2-gameui-background-v1",
+        content_build: contract.content_build.clone(),
+        chapter_source: Tf2GameUiBackgroundSource {
+            logical_path: chapter_path.to_owned(),
+            byte_length: chapter_bytes.len(),
+            sha256: digest(&chapter_bytes),
+        },
+        default_chapter: 1,
+        background_name: background_name.clone(),
+        variants: background_variants,
     })
     .map_err(|error| error.to_string())?;
     stage("ui-materials", &mut stage_started);
@@ -2306,6 +2450,10 @@ fn main() -> Result<(), String> {
     ui_bundle.insert(
         "playsrc/tf2-ui/materials.json".to_owned(),
         ui_material_bytes,
+    );
+    ui_bundle.insert(
+        "playsrc/tf2-gameui-background.json".to_owned(),
+        gameui_background_bytes,
     );
     let textures = ui_textures.into_iter().collect::<Vec<_>>();
     if textures.is_empty() {
@@ -2372,6 +2520,24 @@ fn main() -> Result<(), String> {
         }
     }
     stage("ui-png", &mut stage_started);
+    let gameui_presentation_sources = BTreeSet::from([
+        chapter_path.to_owned(),
+        format!("materials/console/{background_name}.vmt"),
+        format!("materials/console/{background_name}.vtf"),
+        format!("materials/console/{background_name}_widescreen.vmt"),
+        format!("materials/console/{background_name}_widescreen.vtf"),
+    ]);
+    for logical_path in &gameui_presentation_sources {
+        let bytes = resolver
+            .bundle
+            .remove(logical_path)
+            .ok_or_else(|| format!("TF2 GameUI presentation source is absent: {logical_path}"))?;
+        if ui_bundle.insert(logical_path.clone(), bytes).is_some() {
+            return Err(format!(
+                "duplicate TF2 GameUI presentation source: {logical_path}"
+            ));
+        }
+    }
     let bundle = &resolver.bundle;
     if bundle.len() > MAX_DEPENDENCY_REQUESTS || resolver.requests.len() > MAX_DEPENDENCY_REQUESTS {
         return Err("source dependency request count exceeds bound".to_owned());
@@ -2442,7 +2608,7 @@ fn main() -> Result<(), String> {
         .iter()
         .filter(|record| record.outcome == "resolved")
         .count();
-    if resolved_entries != bundle.len() {
+    if resolved_entries != bundle.len() + gameui_presentation_sources.len() {
         return Err("resolved ledger identities differ from bundle entries".to_owned());
     }
     for request in request_records
@@ -2451,6 +2617,12 @@ fn main() -> Result<(), String> {
     {
         let bytes = bundle
             .get(&request.logical_path)
+            .or_else(|| {
+                gameui_presentation_sources
+                    .contains(&request.logical_path)
+                    .then(|| ui_bundle.get(&request.logical_path))
+                    .flatten()
+            })
             .ok_or_else(|| "resolved ledger entry is absent from bundle".to_owned())?;
         let descriptor = request
             .descriptor
