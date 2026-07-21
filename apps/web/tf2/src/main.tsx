@@ -130,6 +130,7 @@ function App() {
       data-water-cubemap={view.environment?.waterVolumeFacts[0]?.cubemapSample ?? undefined}
       data-viewmodel-depth-range={view.viewmodelDepthRange}
       data-viewmodel-viewport-restored={view.viewmodelViewportRestored}
+      data-viewmodel-world-depth-isolated={view.viewmodelWorldDepthIsolated}
       data-model-matrices={view.modelMatrices ? JSON.stringify(view.modelMatrices) : undefined}
       data-decal-state={view.decalStateProbe ? JSON.stringify(view.decalStateProbe) : undefined}
       data-weapon-trace={view.weaponTrace}

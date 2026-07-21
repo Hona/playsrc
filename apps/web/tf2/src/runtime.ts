@@ -72,9 +72,11 @@ import {
   type ApplicationPresentationViewport,
   type PresentationViewportOwner,
 } from "./presentation-viewport"
+import { RequiredParticleDisplayQueue } from "./particle-display"
 
 const MAX_EXTERNAL_BYTES = 536_870_912
 const SIMULATION_SAMPLE_INTERVAL_SECONDS = 0.015
+const MAX_REQUIRED_PARTICLE_DISPLAY_FRAMES = 256
 const SOUND_PATHS = [
   "sound/weapons/rocket_shoot.wav",
   "sound/weapons/stickybomblauncher_shoot.wav",
@@ -129,6 +131,7 @@ export type ApplicationView = Readonly<{
   viewmodelProjection?: string
   viewmodelDepthRange?: string
   viewmodelViewportRestored?: boolean
+  viewmodelWorldDepthIsolated?: boolean
   viewmodelActivities?: readonly string[]
   viewmodelSequences?: string
   crouchHistory?: readonly string[]
@@ -296,6 +299,7 @@ export class Tf2Application {
   #pendingPresentation?:SimulationPublication
   #presentationBusy=false
   #preparedPresentation?:PreparedPresentation
+  readonly #requiredParticleDisplayFrames=new RequiredParticleDisplayQueue<PreparedPresentation>(MAX_REQUIRED_PARTICLE_DISPLAY_FRAMES)
   #preparedRevision=0
   #lastRenderedPreparedRevision=0
   #lastRenderedViewRevision=0
@@ -1594,6 +1598,7 @@ export class Tf2Application {
     this.#simulationSamples.clear()
     this.#pendingPresentation=undefined
     this.#preparedPresentation=undefined
+    this.#requiredParticleDisplayFrames.reset()
     this.#nextSimulationSampleSeconds=0
     await this.#displayTask
     const generation = this.#generation + 1
@@ -1683,6 +1688,7 @@ export class Tf2Application {
     this.#fireTickHistory=[]
     this.#wasmCalls={observe:0,models:0,visibility:0,particles:0};this.#maximumScheduledSamples=0;this.#maximumPublicationTicks=0;this.#phaseTimings=[0,0,0,0,0]
     this.#pendingProjectileTimeline=[]
+    this.#requiredParticleDisplayFrames.reset()
     this.#lastRenderedPreparedRevision=0
     this.#lastRenderedViewRevision=0
     this.#lastRenderedTick=undefined
@@ -2114,12 +2120,15 @@ export class Tf2Application {
   }
 
   #offerDisplay():void{
-    const prepared=this.#preparedPresentation
+    const required=this.#requiredParticleDisplayFrames.peek()
+    const prepared=required??this.#preparedPresentation
     if(
       this.#displayTask||!prepared||this.#closed||this.#paused||
       (prepared.revision===this.#lastRenderedPreparedRevision&&this.#viewRevision===this.#lastRenderedViewRevision)
     )return
-    const task=this.#renderDisplay().catch((error)=>{
+    const task=this.#renderDisplay(prepared).then(()=>{
+      if(required)this.#requiredParticleDisplayFrames.complete(required)
+    }).catch((error)=>{
       if(this.#closed)return
       this.#paused=true
       this.#set({phase:"Failed",detail:error instanceof Error?error.message:"Display frame failed"})
@@ -2128,8 +2137,8 @@ export class Tf2Application {
     void task.finally(()=>{if(this.#displayTask===task)this.#displayTask=undefined})
   }
 
-  async #renderDisplay():Promise<void>{
-    const prepared=this.#preparedPresentation,client=this.#client,renderer=this.#renderer,generation=this.#generation
+  async #renderDisplay(prepared:PreparedPresentation):Promise<void>{
+    const client=this.#client,renderer=this.#renderer,generation=this.#generation
     if(!prepared||!client||!renderer||prepared.generation!==generation)return
     const viewRevision=this.#viewRevision,yaw=this.#yaw,pitch=this.#pitch
     const camera=tf2Camera(prepared.snapshot,yaw,pitch)
@@ -2195,6 +2204,7 @@ export class Tf2Application {
         visibleDecalFragments:rendered.visibleProjectedMarks,
         viewmodelDepthRange:rendered.viewModelPass?.depthRange.join(","),
         viewmodelViewportRestored:rendered.viewModelPass?.viewportRestored,
+        viewmodelWorldDepthIsolated:rendered.viewModelPass?.worldDepthCleared,
         waterPlanProbe:`${visibility.water.visibleWater?.eyeInVolume?"below":visibility.water.visibleWater?"above":"none"}:${visibility.water.render.cheap?"cheap":"expensive"}:${visibility.water.render.reflect?1:0}:${visibility.water.render.refract?1:0}:${visibility.water.nearPlaneIntersects?1:0}`,
         waterPasses:rendered.waterPasses,
         waterStateRestored:rendered.waterStateRestored,
@@ -2371,7 +2381,7 @@ export class Tf2Application {
         collisionWorldIdentity: snapshot.collisionSnapshot.worldIdentity,
       }) satisfies Omit<Frame,"camera"|"visibility"|"deltaSeconds">
       this.#preparedRevision+=1
-      this.#preparedPresentation=Object.freeze({
+      const prepared=Object.freeze({
         generation,
         revision:this.#preparedRevision,
         snapshot,
@@ -2387,6 +2397,8 @@ export class Tf2Application {
         audioMilliseconds,
         particleOutputBytes:particleOutput.byteLength,
       })
+      this.#requiredParticleDisplayFrames.admit(prepared, particleItems.map(item=>item.effectIdentity))
+      this.#preparedPresentation=prepared
       const hud = this.#hudIntegration?.publish(publication, Object.freeze({
         playerIdentity: 1,
         liveHudSuppressed: false,
@@ -2728,6 +2740,7 @@ export class Tf2Application {
     this.#simulationSamples.clear()
     this.#pendingPresentation = undefined
     this.#preparedPresentation = undefined
+    this.#requiredParticleDisplayFrames.reset()
     this.#pendingProjectileTimeline = []
     await this.#displayTask
     await this.#client?.shutdown().catch(() => {})

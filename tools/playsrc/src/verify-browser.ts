@@ -1449,6 +1449,11 @@ export async function verifyBrowserAcceptance(
     await agent(["--session", session, "wait", "--fn", "Number(document.querySelector('main').dataset.projectiles)===0&&Number(document.querySelector('main').dataset.particleItems)===0", "--timeout", "30000"])
     const firePhase=parseJson<string>(await agent(["--session",session,"eval","document.querySelector('main').dataset.phase"]));if(firePhase==="Failed"){const state=await agent(["--session",session,"eval","({text:document.body.innerText,dataset:{...document.querySelector('main').dataset}})"]);throw new BrowserEvidenceError(`Soldier held fire failed: ${state}`)}
     await agent(["--session", session, "eval", "(()=>{const e=new MouseEvent('mousemove',{bubbles:true});Object.defineProperties(e,{movementX:{value:0},movementY:{value:2000}});window.dispatchEvent(e);return true})()"])
+    await agent(["--session", session, "wait", "--fn", "Number(document.querySelector('main').dataset.cameraPitch)>=80", "--timeout", "30000"])
+    const downwardViewmodelCanvas = await captureCanvas(session, config)
+    const downwardDepthIsolated = parseJson<string>(await agent(["--session", session, "eval", "document.querySelector('main').dataset.viewmodelWorldDepthIsolated??''"]))
+    require(downwardDepthIsolated === "true" && downwardViewmodelCanvas.sha256 !== "559b1ae7a0e1749253214494256a65b010cb012172944660391c68667dbd7f49",
+      `downward viewmodel remains world-depth occluded: ${downwardViewmodelCanvas.sha256}`)
     let hudAnimationTrace = parseJson<string>(await agent(["--session", session, "eval", "document.querySelector('main').dataset.hudAnimationTrace??''"]))
     let animationFireEvents = parseJson<number>(await agent(["--session", session, "eval", "Number(document.querySelector('main').dataset.fireEvents)"]))
     for (let attempt = 0; attempt < 4 && !hudAnimationTrace.includes("HudHealthDyingPulse"); attempt += 1) {
@@ -1694,6 +1699,7 @@ export async function verifyBrowserAcceptance(
       soldierPresentation,
       farFlightCanvas,
       impactCanvas,
+      downwardViewmodelCanvas,
       shutdown: "pending",
     }
   } catch (error) {

@@ -18,6 +18,7 @@ Render canonical Source world, gameplay, and replay state in browser GPU environ
 
 - Own scenes, views, GPU resources, draw preparation, lighting presentation, and frame pacing.
 - Consume direct compiler buffers and runtime descriptors for map, model, material, visibility, particle, gameplay, and replay state without GLB translation.
+- Isolate the post-world viewmodel from world depth with a depth-only clear, then apply its supplied projection and `[0,0.1]` viewport depth range while retaining hand/item self-depth.
 - Derive presentation-only interpolation without changing authoritative state.
 - Verify and decode the direct `PSMP` runtime payload into material-batched Source-space Three.js/WebGPU world buffers; an explicit debug scene exposes geometry while reporting every unavailable resolved material instead of silently substituting it.
 - Upload decoded top-to-bottom RGBA planes without a browser row flip and execute supplied Material blend, alpha-test/reference, cull, depth, polygon-offset, wireframe/no-draw, and sampler state. A mipmapped texture supplied with mip zero only is `MissingTextureMips`; ordinary loading rejects it and diagnostic loading never promotes generated mips to Source output.

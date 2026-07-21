@@ -17,6 +17,7 @@ import { configureWorldLightmap, sourceDepthBias, worldMaterialSide } from "./ma
 import { OwnedResourceGeneration } from "./resource-generation"
 import { FramePacingController, type FramePacingRecord } from "./frame-pacing"
 import { particleBatchRanges } from "./particle-batches"
+import { executeViewModelDepthPhase } from "./viewmodel-depth-phase"
 import { selectDiagnosticModelBase } from "./diagnostic-model"
 import { sourceHorizontal4By3FovToVertical, sourceViewportDepthRange } from "./source-camera"
 import {
@@ -575,6 +576,7 @@ export type FrameResult = Readonly<{
   }>
   viewModelPass?: Readonly<{
     depthRange: readonly [number, number]
+    worldDepthCleared: boolean
     viewportRestored: boolean
   }>
   pacing: readonly FramePacingRecord[]
@@ -1832,18 +1834,25 @@ class RendererOwner implements Renderer {
           const matrixWorldAutoUpdate = this.#scene.matrixWorldAutoUpdate
           this.#scene.background = null
           this.#scene.matrixWorldAutoUpdate = false
-          this.#backend.setViewport(0, 0, this.#viewportWidth, this.#viewportHeight, viewModelDepthRange[0], viewModelDepthRange[1])
           const viewModelStarted=performance.now()
           try {
-            this.#backend.render(this.#scene, this.#viewCamera)
+            const phase = executeViewModelDepthPhase({
+              depthRange: viewModelDepthRange,
+              clearWorldDepth: () => this.#backend.clearDepth(),
+              setDepthRange: ([minimum, maximum]) => this.#backend.setViewport(0, 0, this.#viewportWidth, this.#viewportHeight, minimum, maximum),
+              draw: () => this.#backend.render(this.#scene, this.#viewCamera),
+            })
+            viewModelPass = Object.freeze({
+              depthRange: phase.depthRange,
+              worldDepthCleared: phase.worldDepthCleared,
+              viewportRestored: phase.depthRangeRestored,
+            })
           } finally {
             viewModelMilliseconds=performance.now()-viewModelStarted
-            this.#backend.setViewport(0, 0, this.#viewportWidth, this.#viewportHeight, 0, 1)
             this.#scene.background = background
             this.#scene.matrixWorldAutoUpdate = matrixWorldAutoUpdate
             this.#backend.autoClear = true
           }
-          viewModelPass = Object.freeze({ depthRange: viewModelDepthRange, viewportRestored: true })
         }
       }
       const capture = frame.capture ? await this.#capture(frame.capture) : undefined
