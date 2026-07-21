@@ -1970,7 +1970,7 @@ fn build_artifact_for_profile(
                         logical_path: request.logical_path,
                         material_slot: request.material_slot,
                         texture_role: request.texture_role,
-                        bytes: bytes.map(Arc::from),
+                        bytes,
                         verified_byte_length: None,
                         sha256,
                         material,
@@ -2158,7 +2158,7 @@ fn load(path: &str, files: &impl ExactFiles) -> Result<studio::Document, String>
                         requester: request.requester,
                         role: request.role,
                         logical_path: request.logical_path,
-                        bytes,
+                        bytes: bytes.map(Arc::from),
                     });
                 }
             }
