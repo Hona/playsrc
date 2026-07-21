@@ -293,6 +293,7 @@ type RegionMetric = Readonly<{
   height: number
   nonBackgroundRatio: number
   meanLuma: number
+  warmParticlePixels: number
   sha256: string
 }>
 
@@ -429,6 +430,7 @@ function measureRegion(image: DecodedPng, region: (typeof VISUAL_REGIONS)[number
     region.y + region.height <= image.height, `${region.name} sample region is outside the canvas`)
   let nonBackground = 0
   let luma = 0
+  let warmParticlePixels = 0
   const pixels = region.width * region.height
   const samples = new Uint8Array(pixels * 3)
   let sampleOffset = 0
@@ -447,6 +449,7 @@ function measureRegion(image: DecodedPng, region: (typeof VISUAL_REGIONS)[number
         Math.abs(blue - BACKGROUND_RGB[2]) > 2
       )
         nonBackground += 1
+      if (red >= 220 && green >= 140 && blue <= 100) warmParticlePixels += 1
       luma += red * 0.2126 + green * 0.7152 + blue * 0.0722
     }
   }
@@ -454,6 +457,7 @@ function measureRegion(image: DecodedPng, region: (typeof VISUAL_REGIONS)[number
     ...region,
     nonBackgroundRatio: Number((nonBackground / pixels).toFixed(6)),
     meanLuma: Number((luma / pixels).toFixed(3)),
+    warmParticlePixels,
     sha256: new Bun.CryptoHasher("sha256").update(samples).digest("hex"),
   })
 }
@@ -1428,14 +1432,21 @@ export async function verifyBrowserAcceptance(
     const initialFireEvents = parseJson<number>(
       await agent(["--session", session, "eval", "Number(document.querySelector('main').dataset.fireEvents)"]),
     )
+    const initialExplosionEvents = parseJson<number>(
+      await agent(["--session", session, "eval", "Number(document.querySelector('main').dataset.explosionEvents)"]),
+    )
     await acquirePointerLock(session, "soldier")
     const stockCamera=await cameraObservation(session)
-    let particleCanvas: CanvasEvidence | null = null
+    let farFlightCanvas: CanvasEvidence | null = null
+    let impactCanvas: CanvasEvidence | null = null
     await agent(["--session", session, "mouse", "down", "left"])
     await agent(["--session", session, "wait", "--fn", `document.querySelector('main').dataset.phase==='Failed'||Number(document.querySelector('main').dataset.fireEvents)>${initialFireEvents}`, "--timeout", "30000"])
-    await agent(["--session", session, "wait", "--fn", "Number(document.querySelector('main').dataset.particleItems)>0", "--timeout", "30000"])
-    particleCanvas = await captureCanvas(session, config)
+    await agent(["--session", session, "wait", "--fn", "Number(document.querySelector('main').dataset.projectiles)>0&&Number(document.querySelector('main').dataset.particleItems)>0", "--timeout", "30000"])
+    farFlightCanvas = await captureCanvas(session, config)
+    await agent(["--session", session, "wait", "--fn", `Number(document.querySelector('main').dataset.explosionEvents)>${initialExplosionEvents}&&Number(document.querySelector('main').dataset.particleItems)>0`, "--timeout", "30000"])
+    impactCanvas = await captureCanvas(session, config)
     await agent(["--session", session, "mouse", "up", "left"])
+    await agent(["--session", session, "wait", "--fn", "Number(document.querySelector('main').dataset.projectiles)===0&&Number(document.querySelector('main').dataset.particleItems)===0", "--timeout", "30000"])
     const firePhase=parseJson<string>(await agent(["--session",session,"eval","document.querySelector('main').dataset.phase"]));if(firePhase==="Failed"){const state=await agent(["--session",session,"eval","({text:document.body.innerText,dataset:{...document.querySelector('main').dataset}})"]);throw new BrowserEvidenceError(`Soldier held fire failed: ${state}`)}
     await agent(["--session", session, "eval", "(()=>{const e=new MouseEvent('mousemove',{bubbles:true});Object.defineProperties(e,{movementX:{value:0},movementY:{value:2000}});window.dispatchEvent(e);return true})()"])
     let hudAnimationTrace = parseJson<string>(await agent(["--session", session, "eval", "document.querySelector('main').dataset.hudAnimationTrace??''"]))
@@ -1463,7 +1474,11 @@ export async function verifyBrowserAcceptance(
         "JSON.parse(document.querySelector('main').dataset.blockers).length",
       ]),
     )
-    require(particleCanvas !== null, "Soldier PCF render data was not observed")
+    require(farFlightCanvas !== null && impactCanvas !== null, "Soldier PCF render data was not observed")
+    require(farFlightCanvas.regions.find((region) => region.name === "forward-wall")!.warmParticlePixels >= 4,
+      `far-flight rocket-trail pixels are absent: ${JSON.stringify(farFlightCanvas.regions)}`)
+    require(impactCanvas.regions.find((region) => region.name === "forward-wall")!.warmParticlePixels >= 8,
+      `wall-impact Particle pixels are absent: ${JSON.stringify(impactCanvas.regions)}`)
     const soldierPresentation = parseJson<{ particles: string; audio: string; activity: string; activities: string; depth: string; restored: string; random: string; collision: string;performance:string }>(await agent([
       "--session", session, "eval",
       "(()=>{const d=document.querySelector('main').dataset;return {particles:d.particleProbe,audio:d.audioStarts,activity:d.viewmodelActivity,activities:d.viewmodelActivities,depth:d.viewmodelDepthRange,restored:d.viewmodelViewportRestored,random:d.randomAudioProbe,collision:d.collisionMoverProbe,performance:d.performance}})()",
@@ -1677,7 +1692,8 @@ export async function verifyBrowserAcceptance(
       visibleDecalFragments,
       visualBlockers,
       soldierPresentation,
-      particleCanvas,
+      farFlightCanvas,
+      impactCanvas,
       shutdown: "pending",
     }
   } catch (error) {

@@ -1107,6 +1107,11 @@ export async function parsePresentationArtifacts(bytes: Uint8Array): Promise<Pre
     throw new ArtifactError(`material state boundary ${r.offset}:${hex(r.bytes.subarray(r.offset, r.offset + 16))}`)
   }
   const particleTextures = parseParticleTextures(r)
+  for (const texture of particleTextures) {
+    if (!materialStates.has(texture.material.toLowerCase())) {
+      throw new ArtifactError(`particle material state ${texture.material}`)
+    }
+  }
   const audio = parseAudio(r)
   const modelOccurrences = parseOccurrenceMatrices(r)
   const modelMaterials = parseModelMaterials(r)
