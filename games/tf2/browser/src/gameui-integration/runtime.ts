@@ -91,6 +91,10 @@ export function tf2CharacterImageVisible(state: Tf2GameUiState, backgroundUsesCh
   return state.kind === "main-menu" && backgroundUsesCharacterImage
 }
 
+export function tf2MainMenuAspectCondition(viewport: VguiViewport): "if_wider" | "if_taller" {
+  return viewport.width / viewport.height >= 1.6 ? "if_wider" : "if_taller"
+}
+
 const scalar = (node: VguiResourceNode, name: string): string | null =>
   node.children.find((child) => child.name.toLowerCase() === name.toLowerCase() && child.value !== null)?.value ?? null
 const cloneNode = (node: VguiResourceNode, children = node.children): VguiResourceNode => Object.freeze({
@@ -204,6 +208,8 @@ class Integration implements Tf2GameUiIntegration {
   readonly #onRequest: (request: Tf2GameUiRequest) => void
   readonly #diagnostics: Tf2GameUiIntegrationDiagnostic[] = []
   readonly #baseVisibility = new Map<VguiPanelId, boolean>()
+  #mainMenu: VguiPanelId | null = null
+  #mainMenuConditions: string[] = []
   #state: Tf2GameUiState = TF2_MAIN_MENU_STATE
   #destroyed = false
 
@@ -281,11 +287,13 @@ class Integration implements Tf2GameUiIntegration {
     this.#runtime = initialized.runtime
     this.#runtime.deferPresentation(() => {
     const mainMenu = createCodeControl(this.#runtime, 1, "CHudMainMenuOverride", "MainMenuOverride")
+    this.#mainMenu = mainMenu
+    mustApply(this.#runtime, { kind: "set-panel-state", panel: mainMenu, proportional: true })
     createCodeControl(this.#runtime, mainMenu, "ImagePanel", "TFCharacterImage")
     const dashboard = createCodeControl(this.#runtime, 1, "CTFMatchmakingDashboard", "MMDashboard")
     const playlistContainer = createCodeControl(this.#runtime, 1, "EditablePanel", "ExpandableList")
     const playlist = createCodeControl(this.#runtime, playlistContainer, "CTFPlaylistPanel", "playlist")
-    const conditions = [request.viewport.width / request.viewport.height >= 1.6 ? "if_wider" : "if_taller"]
+    const conditions = [tf2MainMenuAspectCondition(request.viewport)]
     if (request.presentation.activeHoliday !== "none") conditions.push(`if_${request.presentation.activeHoliday}`)
     let characterBackground = true
     if (request.presentation.activeHoliday === "halloween") {
@@ -295,6 +303,7 @@ class Integration implements Tf2GameUiIntegration {
     } else if (request.presentation.activeHoliday === "christmas") {
       conditions.push(`if_christmas_${request.presentation.random.nextInteger(0, 1)}`)
     }
+    this.#mainMenuConditions = conditions
     this.#applyOwned(MAIN_MENU_PATH, mainMenu, conditions)
     this.#configureScrollers(mainMenu)
     if (characterBackground) this.#selectCharacter(request, mainMenu)
@@ -308,9 +317,27 @@ class Integration implements Tf2GameUiIntegration {
     this.#configurePlaylist()
     this.#disableUnownedControls()
     for (const identity of [1, mainMenu]) mustApply(this.#runtime, { kind: "set-panel-state", panel: identity, mouseInput: false, keyboardInput: false })
-    for (const panel of this.#runtime.snapshot().panels) this.#baseVisibility.set(panel.id, panel.visible)
+    this.#captureBaseVisibility()
     this.#presentState()
     })
+  }
+
+  #captureBaseVisibility(owner?: VguiPanelId): void {
+    const panels = this.#runtime.snapshot().panels
+    if (owner === undefined) this.#baseVisibility.clear()
+    const byId = new Map(panels.map((panel) => [panel.id, panel]))
+    const owned = (panel: typeof panels[number]): boolean => {
+      if (owner === undefined || panel.id === owner) return true
+      let current = panel
+      while (current.parent !== null) {
+        if (current.parent === owner) return true
+        const parent = byId.get(current.parent)
+        if (!parent) return false
+        current = parent
+      }
+      return false
+    }
+    for (const panel of panels) if (owned(panel)) this.#baseVisibility.set(panel.id, panel.visible)
   }
 
   #apply(logicalPath: string, parent: VguiPanelId, conditions: readonly string[] = []): void {
@@ -455,7 +482,21 @@ class Integration implements Tf2GameUiIntegration {
   }
 
   frame(timeSeconds: number): void { mustApply(this.#runtime, { kind: "frame", timeSeconds }) }
-  setViewport(viewport: VguiViewport): void { mustApply(this.#runtime, { kind: "set-viewport", viewport }) }
+  setViewport(viewport: VguiViewport): void {
+    const aspectCondition = tf2MainMenuAspectCondition(viewport)
+    const priorAspect = this.#mainMenuConditions.find((condition) => condition === "if_wider" || condition === "if_taller")
+    this.#runtime.deferPresentation(() => {
+      mustApply(this.#runtime, { kind: "set-viewport", viewport })
+      if (this.#mainMenu !== null && priorAspect !== aspectCondition) {
+        this.#mainMenuConditions = [aspectCondition, ...this.#mainMenuConditions.filter((condition) => condition !== "if_wider" && condition !== "if_taller")]
+        this.#applyOwned(MAIN_MENU_PATH, this.#mainMenu, this.#mainMenuConditions)
+        this.#configureScrollers(this.#mainMenu)
+        this.#disableUnownedControls()
+        this.#captureBaseVisibility(this.#mainMenu)
+      }
+      this.#presentState()
+    })
+  }
   destroy(): void {
     if (this.#destroyed) return
     this.#destroyed = true
