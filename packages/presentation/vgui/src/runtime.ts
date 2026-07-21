@@ -5468,6 +5468,7 @@ class SourceVguiRuntime implements VguiRuntime {
     }, { passive: false })
     this.listen(this.document, "keydown", (raw) => {
       const event = raw as KeyboardEvent
+      if (!this.browserEventBelongsToHost(event)) return
       const key = this.browserKey(event.key)
       if (["Tab", "Enter", "Space", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End", "Backspace", "Delete"].includes(key)) event.preventDefault()
       this.apply({ kind: "key-press", key, shift: event.shiftKey, control: event.ctrlKey, alt: event.altKey, meta: event.metaKey, repeat: event.repeat })
@@ -5476,23 +5477,29 @@ class SourceVguiRuntime implements VguiRuntime {
     })
     this.listen(this.document, "keyup", (raw) => {
       const event = raw as KeyboardEvent
+      if (!this.browserEventBelongsToHost(event)) return
       this.apply({ kind: "key-release", key: this.browserKey(event.key), shift: event.shiftKey, control: event.ctrlKey, alt: event.altKey, meta: event.metaKey })
       this.browserFrame()
     })
     this.listen(this.document, "input", (raw) => {
       const target = raw.target as HTMLInputElement | null
+      if (!this.browserEventBelongsToHost(raw)) return
       const panelId = Number(target?.dataset.vguiPanel)
-      if (!target || !Number.isSafeInteger(panelId)) return
+      if (!target || !Number.isSafeInteger(panelId) || this.panels.get(panelId)?.element !== target) return
       this.browserInputValue(panelId, target.value)
       this.browserFrame()
     })
-    this.listen(this.document, "compositionstart", () => this.browserApply({ kind: "composition-start" }))
+    this.listen(this.document, "compositionstart", (raw) => {
+      if (this.browserEventBelongsToHost(raw)) this.browserApply({ kind: "composition-start" })
+    })
     this.listen(this.document, "compositionupdate", (raw) => {
       const event = raw as CompositionEvent
+      if (!this.browserEventBelongsToHost(event)) return
       this.browserApply({ kind: "composition-update", text: event.data, caret: event.data.length })
     })
     this.listen(this.document, "compositionend", (raw) => {
       const event = raw as CompositionEvent
+      if (!this.browserEventBelongsToHost(event)) return
       this.browserApply({ kind: "composition-end", text: event.data })
     })
     this.listen(this.document, "visibilitychange", () => {
@@ -5519,6 +5526,10 @@ class SourceVguiRuntime implements VguiRuntime {
   private browserApply(operation: VguiOperation): void {
     this.apply(operation)
     this.browserFrame()
+  }
+
+  private browserEventBelongsToHost(event: Event): boolean {
+    return event.target !== null && this.host.contains(event.target as Node)
   }
 
   private browserInputValue(panelId: VguiPanelId, value: string): void {
