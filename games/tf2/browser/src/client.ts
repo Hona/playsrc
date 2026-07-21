@@ -70,7 +70,7 @@ async function sha256(bytes: Uint8Array): Promise<string> {
   return Array.from(digest, (value) => value.toString(16).padStart(2, "0")).join("")
 }
 async function presentationKey(key: string): Promise<string> {
-  return sha256(new TextEncoder().encode(`playsrc-tf2-presentation-v8\0${key}`))
+  return sha256(new TextEncoder().encode(`playsrc-tf2-presentation-v9\0${key}`))
 }
 
 export class Tf2WorkerClient {

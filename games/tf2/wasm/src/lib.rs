@@ -608,6 +608,8 @@ unsafe fn compile_map(
             playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
         compile_metrics[3] = phase_finished.saturating_sub(phase_started);
         phase_started = phase_finished;
+        let (particles, particle_materials, particle_sheets, particle_presentation) =
+            compile_particles(configuration).map_err(|_| 10_u32)?;
         let (
             (presentation, studio_models, model_material_opacity, environment),
             presentation_metrics,
@@ -622,8 +624,15 @@ unsafe fn compile_map(
             )
             .map_err(|_| 9_u32)?
         } else {
-            compile_presentation(&canonical, &bsp, &entity_graph, configuration, profile)
-                .map_err(|_| 9_u32)?
+            compile_presentation(
+                &canonical,
+                &bsp,
+                &entity_graph,
+                configuration,
+                profile,
+                &particle_presentation,
+            )
+            .map_err(|_| 9_u32)?
         };
         compile_metrics[11..17].copy_from_slice(&presentation_metrics);
         let phase_finished =
@@ -638,8 +647,6 @@ unsafe fn compile_map(
         compile_metrics[5] = phase_finished.saturating_sub(phase_started);
         phase_started = phase_finished;
         let presentation_hash: [u8; 32] = Sha256::digest(&presentation).into();
-        let (particles, particle_materials, particle_sheets) =
-            compile_particles(configuration).map_err(|_| 10_u32)?;
         let profile_materials =
             resolve_profile_materials(&entity_graph, configuration, profile).map_err(|_| 7_u32)?;
         let inputs = runtime_inputs(configuration).map_err(|_| 7_u32)?;
@@ -5264,7 +5271,16 @@ fn encode_one_material_state(
         },
     )
     .map_err(|_| ())?;
-    let sampling = metadata.as_ref().map(|metadata| {
+    encode_resolved_material_state(out, identity, &state, metadata.as_ref())
+}
+
+fn encode_resolved_material_state(
+    out: &mut Vec<u8>,
+    identity: &str,
+    state: &playsrc_material::StaticState,
+    metadata: Option<&playsrc_vtf::Metadata>,
+) -> Result<(), ()> {
+    let sampling = metadata.map(|metadata| {
         playsrc_vtf::sampling_state(
             metadata,
             playsrc_vtf::SamplingEnvironment {
@@ -5345,10 +5361,12 @@ fn encode_material_states(
     bundle: &BTreeMap<String, &[u8]>,
     profile: playsrc_map::LightingProfile,
     models: &[(String, Box<playsrc_studio_model::PresentationArtifact>)],
+    particle_materials: &BTreeMap<String, CompiledParticlePresentation>,
 ) -> Result<(), ()> {
-    let mut targets = BTreeMap::<String, bool>::new();
+    let mut targets = BTreeMap::<String, (String, bool)>::new();
     for material in &canonical.materials {
-        targets.insert(material.logical_path.to_ascii_lowercase(), false);
+        let identity = material.logical_path.to_ascii_lowercase();
+        insert_material_state_target(&mut targets, identity.clone(), identity, false)?;
     }
     for entity in &graph.entities {
         if entity
@@ -5362,7 +5380,7 @@ fn encode_material_states(
         {
             let path = dependency_path(&reference.value)?;
             if bundle.contains_key(&path) {
-                targets.insert(path, false);
+                insert_material_state_target(&mut targets, path.clone(), path, false)?;
             }
         }
     }
@@ -5375,21 +5393,57 @@ fn encode_material_states(
                 .ok_or(())?
                 .logical_path
                 .to_ascii_lowercase();
-            targets.insert(path, true);
+            insert_material_state_target(&mut targets, path.clone(), path, true)?;
         }
+    }
+    for (identity, particle) in particle_materials {
+        insert_material_state_target(
+            &mut targets,
+            identity.clone(),
+            particle.source_path.clone(),
+            false,
+        )?;
     }
     let start = out.len();
     out.extend_from_slice(b"PMST");
     out.extend_from_slice(&2u32.to_le_bytes());
     out.extend_from_slice(&u32::try_from(targets.len()).map_err(|_| ())?.to_le_bytes());
-    for (identity, model) in targets {
-        let material =
-            resolve_material_semantics(&identity, bundle, material_environment(profile, model))?;
-        encode_one_material_state(out, &identity, &material, bundle)?;
+    for (identity, (source, model)) in targets {
+        if let Some(particle) = particle_materials.get(&identity) {
+            encode_resolved_material_state(
+                out,
+                &identity,
+                &particle.state,
+                Some(&particle.metadata),
+            )?;
+        } else {
+            let material =
+                resolve_material_semantics(&source, bundle, material_environment(profile, model))?;
+            encode_one_material_state(out, &identity, &material, bundle)?;
+        }
     }
     (out.len() - start <= 4 * 1024 * 1024)
         .then_some(())
         .ok_or(())
+}
+
+fn insert_material_state_target(
+    targets: &mut BTreeMap<String, (String, bool)>,
+    identity: String,
+    source: String,
+    model: bool,
+) -> Result<(), ()> {
+    if let Some(existing) = targets.get(&identity) {
+        return (existing == &(source, model)).then_some(()).ok_or(());
+    }
+    if targets
+        .values()
+        .any(|(existing_source, _)| existing_source == &source)
+    {
+        return Err(());
+    }
+    targets.insert(identity, (source, model));
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -6025,9 +6079,7 @@ fn rgba_texture(
 
 fn encode_particle_textures(
     out: &mut Vec<u8>,
-    materials: &[String],
-    bundle: &BTreeMap<String, &[u8]>,
-    profile: playsrc_map::LightingProfile,
+    materials: &BTreeMap<String, CompiledParticlePresentation>,
 ) -> Result<(), ()> {
     out.extend_from_slice(b"PPTM");
     out.extend_from_slice(&1u32.to_le_bytes());
@@ -6036,22 +6088,10 @@ fn encode_particle_textures(
             .map_err(|_| ())?
             .to_le_bytes(),
     );
-    for identity in materials {
-        let material_path = dependency_path(identity.as_bytes())?;
-        let material = resolve_material_semantics(
-            &material_path,
-            bundle,
-            material_environment(profile, false),
-        )?;
-        let (selected, _, _) = selected_texture(&material, bundle)?;
-        let texture_path = selected
-            .logical_path
-            .as_ref()
-            .ok_or(())?
-            .to_ascii_lowercase();
-        let texture = rgba_texture(&texture_path, bundle)?;
+    for (identity, material) in materials {
+        let texture = &material.texture;
         pbytes(out, identity.as_bytes())?;
-        pbytes(out, material_path.as_bytes())?;
+        pbytes(out, material.source_path.as_bytes())?;
         pbytes(out, texture.logical_path.as_bytes())?;
         out.extend_from_slice(&texture.width.to_le_bytes());
         out.extend_from_slice(&texture.height.to_le_bytes());
@@ -6404,6 +6444,7 @@ fn compile_presentation(
     graph: &playsrc_entity::Graph,
     configuration: &[u8],
     profile: playsrc_map::LightingProfile,
+    particle_presentation: &BTreeMap<String, CompiledParticlePresentation>,
 ) -> Result<MeasuredPresentation, ()> {
     let mut metrics_clock = RuntimeMetricsClock::new();
     let mut phase_started =
@@ -6498,43 +6539,7 @@ fn compile_presentation(
     phase_finished = playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
     metrics[2] = phase_finished.saturating_sub(phase_started);
     phase_started = phase_finished;
-    let particle_paths = [
-        "particles/rockettrail.pcf",
-        "particles/rocketbackblast.pcf",
-        "particles/stickybomb.pcf",
-        "particles/muzzle_flash.pcf",
-        "particles/explosion.pcf",
-    ];
-    let particle_sources = particle_paths
-        .iter()
-        .map(|path| {
-            Ok(playsrc_particle::PcfSource {
-                logical_path: path,
-                bytes: bundle.get(*path).ok_or(())?,
-            })
-        })
-        .collect::<Result<Vec<_>, ()>>()?;
-    let particle_registry = playsrc_particle::Registry::from_pcf(
-        &particle_sources,
-        playsrc_particle::RegistryLimits::default(),
-    )
-    .map_err(|_| ())?;
-    let particle_roots = [
-        "rockettrail",
-        "rocketbackblast",
-        "stickybombtrail_red",
-        "stickybombtrail_blue",
-        "stickybomb_pulse_red",
-        "stickybomb_pulse_blue",
-        "muzzle_pipelauncher",
-        "ExplosionCore_Wall",
-        "ExplosionCore_MidAir",
-    ]
-    .map(playsrc_particle::DefinitionLookup::Name);
-    let particle_materials = particle_registry
-        .target_closure(&particle_roots)
-        .map_err(|_| ())?
-        .materials;
+    let particle_materials = particle_presentation.keys().cloned().collect::<Vec<_>>();
     phase_finished = playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
     metrics[3] = phase_finished.saturating_sub(phase_started);
     phase_started = phase_finished;
@@ -6755,8 +6760,16 @@ fn compile_presentation(
         pbytes(&mut out, material.as_bytes())?;
     }
     pbytes(&mut out, &environment_bytes)?;
-    encode_material_states(&mut out, canonical, graph, &bundle, profile, &models)?;
-    encode_particle_textures(&mut out, &particle_materials, &bundle, profile)?;
+    encode_material_states(
+        &mut out,
+        canonical,
+        graph,
+        &bundle,
+        profile,
+        &models,
+        particle_presentation,
+    )?;
+    encode_particle_textures(&mut out, particle_presentation)?;
     encode_audio_documents(&mut out, &bundle)?;
     encode_model_occurrence_matrices(&mut out, graph)?;
     encode_model_materials(&mut out, &models, &bundle, profile)?;
@@ -8106,7 +8119,15 @@ type CompiledParticles = (
     playsrc_particle::ParticleWorld,
     Vec<String>,
     BTreeMap<String, playsrc_particle::ParticleMaterial>,
+    BTreeMap<String, CompiledParticlePresentation>,
 );
+
+struct CompiledParticlePresentation {
+    source_path: String,
+    state: playsrc_material::StaticState,
+    metadata: playsrc_vtf::Metadata,
+    texture: playsrc_map::RuntimeTexture,
+}
 
 fn compile_particles(configuration: &[u8]) -> Result<CompiledParticles, ()> {
     let b = bundle(configuration)?;
@@ -8142,7 +8163,7 @@ fn compile_particles(configuration: &[u8]) -> Result<CompiledParticles, ()> {
     ]
     .map(playsrc_particle::DefinitionLookup::Name);
     let materials = registry.target_closure(&roots).map_err(|_| ())?.materials;
-    let sheets = materials
+    let compiled = materials
         .iter()
         .map(|identity| {
             let material_path = dependency_path(identity.as_bytes())?;
@@ -8151,7 +8172,13 @@ fn compile_particles(configuration: &[u8]) -> Result<CompiledParticles, ()> {
                 &b,
                 playsrc_material::SelectionEnvironment::default(),
             )?;
-            let (_, bytes, metadata) = selected_texture(&material, &b)?;
+            let (selected, bytes, metadata) = selected_texture(&material, &b)?;
+            let texture_path = selected
+                .logical_path
+                .as_ref()
+                .ok_or(())?
+                .to_ascii_lowercase();
+            let texture = rgba_texture(&texture_path, &b)?;
             let state = playsrc_material::static_state(
                 &material,
                 playsrc_material::TextureAlphaFacts {
@@ -8171,28 +8198,43 @@ fn compile_particles(configuration: &[u8]) -> Result<CompiledParticles, ()> {
             };
             Ok((
                 identity.clone(),
-                playsrc_particle::ParticleMaterial {
-                    shader: if material.shader == playsrc_material::Shader::Sprite {
-                        playsrc_particle::ParticleMaterialShader::SpriteCard
-                    } else {
-                        playsrc_particle::ParticleMaterialShader::MeshSprite
+                (
+                    playsrc_particle::ParticleMaterial {
+                        shader: if material.shader == playsrc_material::Shader::Sprite {
+                            playsrc_particle::ParticleMaterialShader::SpriteCard
+                        } else {
+                            playsrc_particle::ParticleMaterialShader::MeshSprite
+                        },
+                        blend: playsrc_particle::ParticleBlendState {
+                            source: factor(state.blend.source),
+                            destination: factor(state.blend.destination),
+                        },
+                        color_space: playsrc_particle::ParticleColorSpace::SrgbTextureLinearTint,
+                        dual_sequence: false,
+                        sheet: decode_particle_sheet(bytes)?,
                     },
-                    blend: playsrc_particle::ParticleBlendState {
-                        source: factor(state.blend.source),
-                        destination: factor(state.blend.destination),
+                    CompiledParticlePresentation {
+                        source_path: material_path,
+                        state,
+                        metadata,
+                        texture,
                     },
-                    color_space: playsrc_particle::ParticleColorSpace::SrgbTextureLinearTint,
-                    dual_sequence: false,
-                    sheet: decode_particle_sheet(bytes)?,
-                },
+                ),
             ))
         })
         .collect::<Result<BTreeMap<_, _>, ()>>()?;
+    let mut sheets = BTreeMap::new();
+    let mut presentation = BTreeMap::new();
+    for (identity, (sheet, state)) in compiled {
+        sheets.insert(identity.clone(), sheet);
+        presentation.insert(identity, state);
+    }
     Ok((
         playsrc_particle::ParticleWorld::new(&registry, playsrc_particle::WorldLimits::default())
             .map_err(|_| ())?,
         materials,
         sheets,
+        presentation,
     ))
 }
 
@@ -8500,6 +8542,52 @@ fn with<T>(handle: u32, read: impl FnOnce(&Slot) -> T) -> Option<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn material_state_targets_reject_conflicting_identity_or_source() {
+        let mut targets = BTreeMap::new();
+        insert_material_state_target(
+            &mut targets,
+            "effects/rocketrailsmoke.vmt".to_owned(),
+            "materials/effects/rocketrailsmoke.vmt".to_owned(),
+            false,
+        )
+        .unwrap();
+        insert_material_state_target(
+            &mut targets,
+            "effects/rocketrailsmoke.vmt".to_owned(),
+            "materials/effects/rocketrailsmoke.vmt".to_owned(),
+            false,
+        )
+        .unwrap();
+        assert!(
+            insert_material_state_target(
+                &mut targets,
+                "effects/rocketrailsmoke.vmt".to_owned(),
+                "materials/effects/other.vmt".to_owned(),
+                false,
+            )
+            .is_err()
+        );
+        assert!(
+            insert_material_state_target(
+                &mut targets,
+                "materials/effects/rocketrailsmoke.vmt".to_owned(),
+                "materials/effects/rocketrailsmoke.vmt".to_owned(),
+                false,
+            )
+            .is_err()
+        );
+        assert!(
+            insert_material_state_target(
+                &mut targets,
+                "effects/rocketrailsmoke.vmt".to_owned(),
+                "materials/effects/rocketrailsmoke.vmt".to_owned(),
+                true,
+            )
+            .is_err()
+        );
+        assert_eq!(targets.len(), 1);
+    }
     #[test]
     fn cached_model_headers_consume_complete_sequence_records() {
         let mut bytes = b"PTF2".to_vec();
