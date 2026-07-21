@@ -7,6 +7,7 @@ publish = false
 [workspace]
 
 [dependencies]
+playsrc-asset-graph = { path = "../../../../asset-store/rust" }
 playsrc-bsp = { path = "../../../bsp/rust" }
 playsrc-entity = { path = "../../../../world/entity/rust" }
 playsrc-keyvalues = { path = "../../../keyvalues/rust" }

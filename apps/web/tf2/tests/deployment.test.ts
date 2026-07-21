@@ -9,7 +9,7 @@ import {
 } from "../src/deployment"
 import checkedRelease from "../releases/jump_beef.json"
 
-const object = (kind: "source-object" | "derived-object", hash: string, mediaType = "application/octet-stream") => ({
+const object = (kind: "source-object" | "derived-object" | "source-root", hash: string, mediaType = "application/octet-stream") => ({
   kind,
   mediaType,
   byteLength: "1",
@@ -23,8 +23,7 @@ const release = {
   objects: {
     bsp: object("source-object", "a"),
     wasm: object("derived-object", "b"),
-    dependencies: object("derived-object", "c"),
-    ui: object("derived-object", "d"),
+    catalog: object("catalog", "c", "application/vnd.playsrc.asset-catalog+json"),
     dependencyLedger: object("derived-object", "e", "application/vnd.playsrc.source-dependency-ledger+json"),
   },
 }
@@ -44,8 +43,7 @@ describe("TF2 production release", () => {
 
   test("accepts the checked jump_beef release descriptor", () => {
     const parsed = parseTf2Release(checkedRelease)
-    expect(parsed.objects.dependencies.byteLength).toBe("256997450")
-    expect(parsed.objects.ui.byteLength).toBe("36564904")
+    expect(parsed.objects.catalog.byteLength).toBe("286")
   })
 
   test("builds one exact cross-origin browser configuration", () => {

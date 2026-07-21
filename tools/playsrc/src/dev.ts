@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises"
 import path from "node:path"
 import { AssetStoreError, descriptor, putObject, verifyObject, type ObjectDescriptor } from "@playsrc/asset-store"
+import { canonicalGraphBytes, parseResourceCatalog, resourceChunkObject } from "@playsrc/asset-store/graph"
 import { startAssetService } from "@playsrc/assets-service"
 import { createServer, type ViteDevServer } from "vite"
 import type { LocalConfig } from "./config"
@@ -91,8 +92,10 @@ export async function startDevelopment(config: LocalConfig, target: string | und
     byteLength: String(map.decoded.byteLength),
     sha256: map.decoded.sha256,
   })
-  const dependencies = sourceBundle.report.bundleDescriptor
-  const ui = sourceBundle.report.uiDescriptor
+  const resources = sourceBundle.report.graphDescriptor
+  const catalogSource = JSON.parse(await readFile(path.join(repositoryRoot, "apps", "web", "tf2", "releases", "catalog.json"), "utf8"))
+  const catalogBytes = canonicalGraphBytes(parseResourceCatalog(catalogSource))
+  const catalog = descriptor("catalog", "application/vnd.playsrc.asset-catalog+json", catalogBytes)
   const dependencyLedger = sourceBundle.report.ledgerDescriptor
   const wasmBytes = await readFile(wasmPath)
   const wasm = descriptor("derived-object", "application/octet-stream", wasmBytes)
@@ -105,8 +108,7 @@ export async function startDevelopment(config: LocalConfig, target: string | und
     allowedExternalOrigins: ["https://allowed-host"],
     bsp,
     wasm,
-    dependencies,
-    ui,
+    catalog,
     startup: TF2_CONFIGURED_STARTUP,
     loading: {
       mapPhotoLocations: TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS,
@@ -161,9 +163,14 @@ export async function startDevelopment(config: LocalConfig, target: string | und
     await Promise.all([
       putObject(config.assetDir, wasm, wasmBytes),
       publishFile(config.assetDir, bsp, path.join(config.sourceCacheDir, map.decoded.cachePath)),
-      publishFile(config.assetDir, dependencies, sourceBundle.bundlePath),
-      publishFile(config.assetDir, ui, sourceBundle.uiPath),
+      publishFile(config.assetDir, resources, sourceBundle.graphPath),
+      putObject(config.assetDir, catalog, catalogBytes),
       publishFile(config.assetDir, dependencyLedger, sourceBundle.ledgerPath),
+      ...sourceBundle.graph.chunks.map((chunk) => publishFile(
+        config.assetDir,
+        resourceChunkObject(chunk),
+        path.join(sourceBundle.graphObjectDirectory, chunk.encodedSha256),
+      )),
     ])
     publicationMilliseconds = Math.round(performance.now() - publicationStarted)
     const viteStarted = performance.now()

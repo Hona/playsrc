@@ -416,6 +416,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "playsrc-asset-graph"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "playsrc-bsp"
 version = "0.1.0"
 dependencies = [
@@ -428,6 +438,7 @@ dependencies = [
 name = "playsrc-collision"
 version = "0.1.0"
 dependencies = [
+ "playsrc-asset-graph",
  "playsrc-bsp",
  "playsrc-phy",
  "serde",
@@ -462,6 +473,7 @@ version = "0.1.0"
 name = "playsrc-map"
 version = "0.1.0"
 dependencies = [
+ "playsrc-asset-graph",
  "playsrc-bsp",
  "playsrc-collision",
  "playsrc-entity",
@@ -488,6 +500,7 @@ dependencies = [
 name = "playsrc-material"
 version = "0.1.0"
 dependencies = [
+ "playsrc-asset-graph",
  "playsrc-keyvalues",
  "playsrc-vmt",
 ]
@@ -502,6 +515,9 @@ dependencies = [
 [[package]]
 name = "playsrc-particle"
 version = "0.1.0"
+dependencies = [
+ "playsrc-asset-graph",
+]
 
 [[package]]
 name = "playsrc-phy"
@@ -515,6 +531,7 @@ version = "0.1.0"
 name = "playsrc-source-bundle"
 version = "0.1.0"
 dependencies = [
+ "playsrc-asset-graph",
  "playsrc-bsp",
  "playsrc-content",
  "playsrc-entity",
@@ -550,6 +567,7 @@ dependencies = [
 name = "playsrc-tf2-wasm"
 version = "0.1.0"
 dependencies = [
+ "playsrc-asset-graph",
  "playsrc-bsp",
  "playsrc-collision",
  "playsrc-entity",

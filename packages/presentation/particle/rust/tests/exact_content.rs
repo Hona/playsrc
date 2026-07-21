@@ -15,7 +15,11 @@ fn configured_bundle() -> Vec<u8> {
         .to_owned();
     let configuration = fs::read_to_string(root.join("playsrc.local.json")).unwrap();
     let source_cache = json_string_field(&configuration, "sourceCacheDir");
-    fs::read(PathBuf::from(source_cache).join("browser-bundles/jump_beef.psdb")).unwrap()
+    playsrc_asset_graph::read_resource_set(
+        &PathBuf::from(source_cache).join("browser-bundles/jump_beef.graph.json"),
+        None,
+    )
+    .unwrap()
 }
 
 fn json_string_field(document: &str, field: &str) -> String {
@@ -64,7 +68,7 @@ fn bytes_at<'a>(bytes: &'a [u8], at: &mut usize) -> &'a [u8] {
 }
 
 fn bundle(bytes: &[u8]) -> BTreeMap<String, &[u8]> {
-    assert_eq!(&bytes[..4], b"PSDB");
+    assert_eq!(&bytes[..4], b"PSRE");
     let mut at = 4;
     assert_eq!(u32_at(bytes, &mut at), 1);
     let count = u32_at(bytes, &mut at);

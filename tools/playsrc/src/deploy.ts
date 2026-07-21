@@ -5,6 +5,8 @@ import { applyCloudflareInfrastructure, validateCloudflareInfrastructure } from 
 import { CLOUDFLARE_ASSET_ORIGIN, runWrangler, WRANGLER_CONFIG } from "./cloudflare"
 import { repositoryRoot } from "./config"
 import { readTf2Release } from "./tf2-release"
+import { parseResourceCatalogBytes, parseResourceGraphBytes, resourceChunkObject, selectCatalogTarget } from "@playsrc/asset-store/graph"
+import type { ObjectDescriptor } from "@playsrc/asset-store"
 
 const APP_DIRECTORY = path.join(repositoryRoot, "apps", "web", "tf2")
 const DIST_DIRECTORY = path.join(APP_DIRECTORY, "dist", "cloudflare")
@@ -78,8 +80,30 @@ async function verifyRemoteObjects(target: string | undefined): Promise<void> {
   let last = "asset origin did not respond"
   while (Date.now() < deadline) {
     try {
+      const readObject = async (descriptor: ObjectDescriptor): Promise<Uint8Array> => {
+        const response = await fetch(`${CLOUDFLARE_ASSET_ORIGIN}/objects/sha256/${descriptor.sha256}`, {
+          method: "GET",
+          headers: { origin: TF2_APPLICATION_ORIGIN },
+          redirect: "error",
+        })
+        if (response.status !== 200 || response.headers.get("content-length") !== descriptor.byteLength) {
+          throw new DeploymentError(`remote object ${descriptor.sha256} response differs`)
+        }
+        const bytes = new Uint8Array(await response.arrayBuffer())
+        if (String(bytes.byteLength) !== descriptor.byteLength || new Bun.CryptoHasher("sha256").update(bytes).digest("hex") !== descriptor.sha256) {
+          throw new DeploymentError(`remote object ${descriptor.sha256} bytes differ`)
+        }
+        return bytes
+      }
+      const catalogBytes = await readObject(release.objects.catalog)
+      const catalog = parseResourceCatalogBytes(catalogBytes)
+      const resources = selectCatalogTarget(catalog, release.target).resources
+      const graph = parseResourceGraphBytes(await readObject(resources))
+      if (graph.target !== release.target || graph.contentBuild !== release.contentBuild) throw new DeploymentError("remote resource graph identity differs")
+      const closure = [...Object.values(release.objects), resources, ...graph.chunks.map(resourceChunkObject)]
+      const unique = new Map(closure.map((descriptor) => [descriptor.sha256, descriptor]))
       let ready = true
-      for (const descriptor of Object.values(release.objects)) {
+      for (const descriptor of unique.values()) {
         const response = await fetch(`${CLOUDFLARE_ASSET_ORIGIN}/objects/sha256/${descriptor.sha256}`, {
           method: "HEAD",
           headers: { origin: TF2_APPLICATION_ORIGIN },

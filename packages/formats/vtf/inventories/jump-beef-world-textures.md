@@ -1,6 +1,6 @@
 # `jump_beef` World, Mark, Sky, And Cubemap VTF Inventory
 
-Source closure: configured `maps/jump_beef.bsp` SHA-256 `b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959`; exact 294-entry `PSDB` bundle SHA-256 `34cbd09a63f1ba8407c7a775de20467773f87a41db78e34447734799fa2dba78`.
+Source closure: configured `maps/jump_beef.bsp` SHA-256 `b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959` and the checked resource root.
 
 Each row records `version; top-level dimensions; format code; mip count; frame count; effective flags`. All selected planes use top-to-bottom row order. Codes 3, 12, 13, 15, and 24 are handled as BGR888/RGB-U8, BGRA8888/RGBA-U8, DXT1/RGBA-U8 opaque, DXT5/RGBA-U8 A8, and RGBA16F/RGBA-F16 respectively.
 

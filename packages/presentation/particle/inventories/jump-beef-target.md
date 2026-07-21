@@ -1,6 +1,6 @@
 # `jump_beef` Projectile Particle Target
 
-Authority: TF2 build `24207079`, exact configured `tf2_misc_dir.vpk` entries, and `jump_beef.psdb` SHA-256 `34cbd09a63f1ba8407c7a775de20467773f87a41db78e34447734799fa2dba78`.
+Authority: the configured TF2 content build, exact selected `tf2_misc_dir.vpk` entries, and the checked `jump_beef` resource root.
 
 ## PCF Inputs
 
@@ -130,7 +130,7 @@ None of the target SpriteCard materials enables dual-sequence rendering. SpriteC
 
 ## Deterministic Timeline Evidence
 
-`cargo test -p playsrc-particle --test exact_content -- --ignored` reads only the configured `jump_beef.psdb`, verifies the byte length and fixed FNV-1a identity of all five PCFs and ten VTFs above, advances with seed `1337 + root ordinal`, control point 0 at `[10,20,30]`, identity orientation, no-hit collision results, camera `[100,50,25]`, and `0.05`-second maximum steps. `rockettrail` receives a graceful stop at `1.00`; every other root reaches natural completion. Each cell is the complete resolved render-record count.
+`cargo test -p playsrc-particle --test exact_content -- --ignored` reads the configured resource graph, verifies the byte length and fixed FNV-1a identity of all five PCFs and ten VTFs above, advances with seed `1337 + root ordinal`, control point 0 at `[10,20,30]`, identity orientation, no-hit collision results, camera `[100,50,25]`, and `0.05`-second maximum steps. `rockettrail` receives a graceful stop at `1.00`; every other root reaches natural completion. Each cell is the complete resolved render-record count.
 
 | Root | 0.00 | 0.05 | 0.10 | 0.15 | 0.20 | 0.25 | 0.50 | 1.00 | 1.50 | 2.00 | 2.50 | 3.00 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|

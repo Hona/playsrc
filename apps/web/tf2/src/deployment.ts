@@ -17,8 +17,7 @@ export type Tf2Release = Readonly<{
   objects: Readonly<{
     bsp: ObjectDescriptor
     wasm: ObjectDescriptor
-    dependencies: ObjectDescriptor
-    ui: ObjectDescriptor
+    catalog: ObjectDescriptor
     dependencyLedger: ObjectDescriptor
   }>
 }>
@@ -31,14 +30,13 @@ export function parseTf2Release(value: unknown): Tf2Release {
     || value.target !== "jump_beef"
     || value.contentBuild !== TF2_CONTENT_BUILD.contentBuild
     || !record(value.objects)
-    || Object.keys(value.objects).sort().join("\0") !== "bsp\0dependencies\0dependencyLedger\0ui\0wasm"
+    || Object.keys(value.objects).sort().join("\0") !== "bsp\0catalog\0dependencyLedger\0wasm"
   ) throw new Error("TF2 release descriptor is malformed")
 
   const objects = Object.freeze({
     bsp: objectDescriptor(value.objects.bsp, "source-object", "application/octet-stream"),
     wasm: objectDescriptor(value.objects.wasm, "derived-object", "application/octet-stream"),
-    dependencies: objectDescriptor(value.objects.dependencies, "derived-object", "application/octet-stream"),
-    ui: objectDescriptor(value.objects.ui, "derived-object", "application/octet-stream"),
+    catalog: objectDescriptor(value.objects.catalog, "catalog", "application/vnd.playsrc.asset-catalog+json"),
     dependencyLedger: objectDescriptor(
       value.objects.dependencyLedger,
       "derived-object",
@@ -68,8 +66,7 @@ export function createDeployedBrowserConfiguration(
     allowedExternalOrigins: Object.freeze([]),
     bsp: release.objects.bsp,
     wasm: release.objects.wasm,
-    dependencies: release.objects.dependencies,
-    ui: release.objects.ui,
+    catalog: release.objects.catalog,
     startup: TF2_CONFIGURED_STARTUP,
     loading: Object.freeze({
       mapPhotoLocations: TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS,

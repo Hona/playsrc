@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "packages/asset-store/rust",
   "packages/formats/bsp/rust",
   "packages/formats/keyvalues/rust",
   "packages/formats/vpk/rust",

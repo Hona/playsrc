@@ -469,6 +469,10 @@ fn slots() -> &'static Mutex<Vec<Slot>> {
     static S: OnceLock<Mutex<Vec<Slot>>> = OnceLock::new();
     S.get_or_init(|| Mutex::new(Vec::new()))
 }
+fn resource_output() -> &'static Mutex<Vec<u8>> {
+    static OUTPUT: OnceLock<Mutex<Vec<u8>>> = OnceLock::new();
+    OUTPUT.get_or_init(|| Mutex::new(Vec::new()))
+}
 fn encode(index: usize, generation: u16) -> u32 {
     ((generation as u32) << 16) | (index as u32 + 1)
 }
@@ -491,6 +495,44 @@ pub unsafe extern "C" fn playsrc_free(pointer: *mut u8, length: usize) {
     if !pointer.is_null() {
         drop(unsafe { Vec::from_raw_parts(pointer, 0, length) });
     }
+}
+#[unsafe(no_mangle)]
+/// # Safety
+/// A nonempty pointer/length pair must identify readable bytes in this module's memory.
+pub unsafe extern "C" fn playsrc_resource_decode(pointer: *const u8, length: usize) -> u32 {
+    let bytes = if length == 0 {
+        &[]
+    } else if pointer.is_null() {
+        return 0;
+    } else {
+        unsafe { std::slice::from_raw_parts(pointer, length) }
+    };
+    let Ok(decoded) = playsrc_asset_graph::decode_to_resource_set(bytes) else {
+        resource_output().lock().expect("resource output").clear();
+        return 0;
+    };
+    *resource_output().lock().expect("resource output") = decoded;
+    1
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_resource_length() -> usize {
+    resource_output().lock().expect("resource output").len()
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+/// `pointer` must identify writable module memory of at least `capacity` bytes.
+pub unsafe extern "C" fn playsrc_resource_copy(pointer: *mut u8, capacity: usize) -> usize {
+    let mut output = resource_output().lock().expect("resource output");
+    if pointer.is_null() || capacity < output.len() {
+        return 0;
+    }
+    let length = output.len();
+    unsafe { std::ptr::copy_nonoverlapping(output.as_ptr(), pointer, output.len()) };
+    output.clear();
+    output.shrink_to_fit();
+    length
 }
 #[unsafe(no_mangle)]
 /// # Safety
@@ -4193,7 +4235,7 @@ fn bundle(bytes: &[u8]) -> Result<BTreeMap<String, &[u8]>, ()> {
         return Ok(BTreeMap::new());
     }
     if bytes.len() < 12
-        || &bytes[..4] != b"PSDB"
+        || &bytes[..4] != b"PSRE"
         || u32::from_le_bytes(bytes[4..8].try_into().map_err(|_| ())?) != 1
     {
         return Err(());

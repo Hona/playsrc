@@ -46,6 +46,30 @@ html, body, #app { width: 100%; height: 100%; margin: 0; overflow: hidden; }
   object-fit: fill;
   background: #000;
 }
+.startup-loading-plaque {
+  position: absolute;
+  z-index: 1;
+  right: 0;
+  bottom: 0;
+  width: 128px;
+  height: 64px;
+  color: #fff;
+  font: 16px/44px Arial, Helvetica, sans-serif;
+  padding: 4px 0 0 18px;
+  white-space: nowrap;
+}
+.startup-loading-plaque::before {
+  position: absolute;
+  z-index: -1;
+  top: 4px;
+  left: 2px;
+  width: 110px;
+  height: 44px;
+  border-radius: 6px;
+  background: #000;
+  content: "";
+}
+.tf2-application[data-bootstrap-loading="false"] .startup-loading-plaque { display: none; }
 .tf2-application:not([data-phase="Startup"]) .startup-layer { display: none; }
 .loading-layer { z-index: 15; }
 .tf2-application:not([data-gameui="loading"]):not([data-gameui="failure"]) .loading-layer { display: none; }

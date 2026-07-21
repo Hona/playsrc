@@ -2,7 +2,7 @@
 
 Source identity: configured `maps/jump_beef.bsp`, 33,379,388 bytes, SHA-256 `b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959`, Source-2013 BSP version 20, revision 731.
 
-Dependency closure identity: 317-entry `PSDB` source bundle, 120,412,213 bytes, SHA-256 `c8ccea4035c5e75e26ffc0855a425ff4139f079f35ab9abd09e22990726f03d5`. The bundle contains unchanged exact bytes selected from the active BSP PAK and declared TF2/HL2 VPK providers.
+Dependency closure identity: the configured `jump_beef` resource root containing unchanged exact bytes selected from the active BSP PAK and declared TF2/HL2 VPK providers.
 
 ## Surface totals
 

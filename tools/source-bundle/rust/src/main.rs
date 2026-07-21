@@ -1,3 +1,4 @@
+use playsrc_asset_graph::{Resource, ResourceGraph};
 use playsrc_content::{
     CheckedLocation, Content, Provenance, ProviderKind, ProviderSpec, Resolution,
 };
@@ -17,11 +18,10 @@ use std::{
 };
 
 const SOURCE_MEDIA_TYPE: &str = "application/octet-stream";
-const BUNDLE_MEDIA_TYPE: &str = "application/octet-stream";
 const LEDGER_MEDIA_TYPE: &str = "application/vnd.playsrc.source-dependency-ledger+json";
+const GRAPH_MEDIA_TYPE: &str = "application/vnd.playsrc.resource-graph+json";
 const MAX_GAME_PROVIDERS: usize = 64;
 const MAX_DEPENDENCY_REQUESTS: usize = 4_096;
-const MAX_BUNDLE_BYTES: usize = 512 * 1024 * 1024;
 const MAX_LEDGER_BYTES: usize = 8 * 1024 * 1024;
 const MAX_UI_PNG_WORKERS: usize = 8;
 
@@ -299,7 +299,7 @@ struct DependencyLedger {
     requests: Vec<RequestRecord>,
     resolved_entries: usize,
     authoritative_absences: usize,
-    bundle: ObjectDescriptor,
+    resource_graph: ObjectDescriptor,
 }
 
 #[derive(Clone, Serialize)]
@@ -1369,32 +1369,6 @@ fn collect_model(
     }
 }
 
-fn bytesv(output: &mut Vec<u8>, bytes: &[u8]) -> Result<(), String> {
-    output.extend_from_slice(
-        &u32::try_from(bytes.len())
-            .map_err(|_| "source dependency field exceeds u32".to_owned())?
-            .to_le_bytes(),
-    );
-    output.extend_from_slice(bytes);
-    (output.len() <= MAX_BUNDLE_BYTES)
-        .then_some(())
-        .ok_or_else(|| "source dependency bundle exceeds byte bound".to_owned())
-}
-
-fn bundle_capacity(entries: &BTreeMap<String, Vec<u8>>) -> Result<usize, String> {
-    let mut capacity = 12_usize;
-    for (path, bytes) in entries {
-        capacity = capacity
-            .checked_add(8)
-            .and_then(|value| value.checked_add(path.len()))
-            .and_then(|value| value.checked_add(bytes.len()))
-            .ok_or_else(|| "source dependency bundle exceeds byte bound".to_owned())?;
-    }
-    (capacity <= MAX_BUNDLE_BYTES)
-        .then_some(capacity)
-        .ok_or_else(|| "source dependency bundle exceeds byte bound".to_owned())
-}
-
 fn artifact_equals(path: &Path, bytes: &[u8]) -> Result<bool, String> {
     let metadata = match path.metadata() {
         Ok(metadata) => metadata,
@@ -1611,13 +1585,11 @@ struct BuildReport {
     requests: usize,
     authoritative_absences: usize,
     entries: usize,
-    bytes: usize,
-    sha256: String,
-    bundle_descriptor: ObjectDescriptor,
-    ui_entries: usize,
-    ui_bytes: usize,
-    ui_sha256: String,
-    ui_descriptor: ObjectDescriptor,
+    derived_entries: usize,
+    graph_entries: usize,
+    graph_chunks: usize,
+    graph_encoded_bytes: usize,
+    graph_descriptor: ObjectDescriptor,
     ledger_bytes: usize,
     ledger_sha256: String,
     ledger_descriptor: ObjectDescriptor,
@@ -2404,31 +2376,64 @@ fn main() -> Result<(), String> {
     if bundle.len() > MAX_DEPENDENCY_REQUESTS || resolver.requests.len() > MAX_DEPENDENCY_REQUESTS {
         return Err("source dependency request count exceeds bound".to_owned());
     }
-    let mut output = Vec::with_capacity(bundle_capacity(bundle)?);
-    output.extend_from_slice(b"PSDB");
-    output.extend_from_slice(&1_u32.to_le_bytes());
-    output.extend_from_slice(
-        &u32::try_from(bundle.len())
-            .map_err(|_| "source dependency entry count exceeds u32".to_owned())?
-            .to_le_bytes(),
-    );
-    for (path, bytes) in bundle {
-        bytesv(&mut output, path.as_bytes())?;
-        bytesv(&mut output, bytes)?;
-    }
-    let mut ui_output = Vec::with_capacity(bundle_capacity(&ui_bundle)?);
-    ui_output.extend_from_slice(b"PUIB");
-    ui_output.extend_from_slice(&1_u32.to_le_bytes());
-    ui_output.extend_from_slice(
-        &u32::try_from(ui_bundle.len())
-            .map_err(|_| "TF2 UI presentation entry count exceeds u32".to_owned())?
-            .to_le_bytes(),
-    );
-    for (path, bytes) in &ui_bundle {
-        bytesv(&mut ui_output, path.as_bytes())?;
-        bytesv(&mut ui_output, bytes)?;
-    }
     let request_records = resolver.records();
+
+    let mut resources = Vec::with_capacity(bundle.len() + ui_bundle.len());
+    for (logical_path, bytes) in bundle {
+        let request = resolver
+            .requests
+            .get(logical_path)
+            .ok_or_else(|| format!("resource graph request is absent: {logical_path}"))?;
+        let mut roles = BTreeSet::new();
+        for consumer in &request.consumers {
+            if consumer.starts_with("tf2-ui") || consumer.starts_with("vgui-") {
+                roles.insert("menu".to_owned());
+            } else {
+                roles.insert("gameplay".to_owned());
+            }
+        }
+        if roles.is_empty() {
+            return Err(format!("resource graph roles are absent: {logical_path}"));
+        }
+        resources.push(Resource {
+            logical_path: logical_path.clone(),
+            roles,
+            bytes: bytes.clone(),
+        });
+    }
+    for (logical_path, bytes) in &ui_bundle {
+        resources.push(Resource {
+            logical_path: logical_path.clone(),
+            roles: BTreeSet::from([
+                if logical_path == "media/startupvids.txt" || logical_path == "media/valve.webm" {
+                    "startup".to_owned()
+                } else {
+                    "menu".to_owned()
+                },
+            ]),
+            bytes: bytes.clone(),
+        });
+    }
+    let graph_entries = resources.len();
+    let packed = playsrc_asset_graph::pack(resources)
+        .map_err(|error| format!("resource graph packing failed: {error:?}"))?;
+    let graph_encoded_bytes = packed
+        .iter()
+        .map(|chunk| chunk.encoded.len())
+        .sum::<usize>();
+    let graph = ResourceGraph {
+        schema: "playsrc-resource-graph-v1".to_owned(),
+        game: "tf2".to_owned(),
+        content_build: contract.content_build.clone(),
+        target: target.clone(),
+        chunks: packed
+            .iter()
+            .map(|chunk| chunk.descriptor.clone())
+            .collect(),
+    };
+    let graph_bytes = playsrc_asset_graph::canonical_json(&graph)
+        .map_err(|error| format!("resource graph encoding failed: {error:?}"))?;
+    let graph_descriptor = ObjectDescriptor::new("source-root", GRAPH_MEDIA_TYPE, &graph_bytes);
     let authoritative_absences = request_records
         .iter()
         .filter(|record| record.outcome == "authoritative-absence")
@@ -2455,8 +2460,6 @@ fn main() -> Result<(), String> {
             return Err("resolved ledger descriptor differs from bundle bytes".to_owned());
         }
     }
-    let bundle_descriptor = ObjectDescriptor::new("derived-object", BUNDLE_MEDIA_TYPE, &output);
-    let ui_descriptor = ObjectDescriptor::new("derived-object", BUNDLE_MEDIA_TYPE, &ui_output);
     let ledger = DependencyLedger {
         schema: "playsrc-source-dependency-ledger-v1",
         game: "tf2",
@@ -2491,7 +2494,7 @@ fn main() -> Result<(), String> {
         requests: request_records,
         resolved_entries,
         authoritative_absences,
-        bundle: bundle_descriptor.clone(),
+        resource_graph: graph_descriptor.clone(),
     };
     let ledger_bytes = serde_json::to_vec(&ledger).map_err(|error| error.to_string())?;
     if ledger_bytes.len() > MAX_LEDGER_BYTES {
@@ -2501,12 +2504,18 @@ fn main() -> Result<(), String> {
         ObjectDescriptor::new("derived-object", LEDGER_MEDIA_TYPE, &ledger_bytes);
     let directory = cache.join("browser-bundles");
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
-    let destination = directory.join(format!("{target}.psdb"));
-    let ui_destination = directory.join(format!("{target}.ui.puib"));
     let ledger_destination = directory.join(format!("{target}.dependencies.json"));
-    install_artifact(&destination, &output)?;
-    install_artifact(&ui_destination, &ui_output)?;
+    let graph_destination = directory.join(format!("{target}.graph.json"));
+    let graph_object_directory = directory.join(format!("{target}.graph/objects"));
     install_artifact(&ledger_destination, &ledger_bytes)?;
+    install_artifact(&graph_destination, &graph_bytes)?;
+    fs::create_dir_all(&graph_object_directory).map_err(|error| error.to_string())?;
+    for chunk in &packed {
+        install_artifact(
+            &graph_object_directory.join(&chunk.descriptor.encoded_sha256),
+            &chunk.encoded,
+        )?;
+    }
     stage("serialize-and-install", &mut stage_started);
     #[allow(unused_mut)]
     let mut report = BuildReport {
@@ -2516,13 +2525,11 @@ fn main() -> Result<(), String> {
         requests: ledger.resolved_entries + ledger.authoritative_absences,
         authoritative_absences: ledger.authoritative_absences,
         entries: bundle.len(),
-        bytes: output.len(),
-        sha256: bundle_descriptor.sha256.clone(),
-        bundle_descriptor,
-        ui_entries: ui_bundle.len(),
-        ui_bytes: ui_output.len(),
-        ui_sha256: ui_descriptor.sha256.clone(),
-        ui_descriptor,
+        derived_entries: ui_bundle.len(),
+        graph_entries,
+        graph_chunks: packed.len(),
+        graph_encoded_bytes,
+        graph_descriptor,
         ledger_bytes: ledger_bytes.len(),
         ledger_sha256: ledger_descriptor.sha256.clone(),
         ledger_descriptor,
@@ -2535,7 +2542,16 @@ fn main() -> Result<(), String> {
         return Err("source bundle HDR verification feature is unavailable".to_owned());
         #[cfg(feature = "verify-hdr")]
         {
-            let artifact = playsrc_tf2_wasm::compile_artifact(&bsp_bytes, 1, &output)
+            let gameplay = packed
+                .iter()
+                .filter(|chunk| chunk.descriptor.roles.iter().any(|role| role == "gameplay"))
+                .cloned()
+                .collect::<Vec<_>>();
+            let batch = playsrc_asset_graph::encode_batch(&gameplay)
+                .map_err(|error| format!("native HDR resource batch failed: {error:?}"))?;
+            let resources = playsrc_asset_graph::decode_to_resource_set(&batch)
+                .map_err(|error| format!("native HDR resource decoding failed: {error:?}"))?;
+            let artifact = playsrc_tf2_wasm::compile_artifact(&bsp_bytes, 1, &resources)
                 .map_err(|error| format!("native HDR compilation failed with error {error}"))?;
             let native_destination = directory.join(format!("{target}.native-hdr.psmp"));
             install_artifact(&native_destination, &artifact.payload)?;

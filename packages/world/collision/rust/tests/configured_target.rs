@@ -216,7 +216,11 @@ fn configured_jump_beef_rocket_and_mover_inputs_are_queryable() {
         })
     ));
 
-    let bundle_bytes = fs::read(cache.join("browser-bundles/jump_beef.psdb")).unwrap();
+    let bundle_bytes = playsrc_asset_graph::read_resource_set(
+        &cache.join("browser-bundles/jump_beef.graph.json"),
+        None,
+    )
+    .unwrap();
     let bundle = parse_bundle(&bundle_bytes).unwrap();
     assert!(!bundle.contains_key("models/props_2fort/cow001_reference.phy"));
     assert!(!bundle.contains_key("models/props_2fort/frog.phy"));
@@ -281,7 +285,7 @@ fn configured_jump_beef_rocket_and_mover_inputs_are_queryable() {
 }
 
 fn parse_bundle(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, &'static str> {
-    if bytes.get(..4) != Some(b"PSDB") || u32_at(bytes, 4)? != 1 {
+    if bytes.get(..4) != Some(b"PSRE") || u32_at(bytes, 4)? != 1 {
         return Err("invalid bundle header");
     }
     let count = u32_at(bytes, 8)? as usize;

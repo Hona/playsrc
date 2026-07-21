@@ -19,7 +19,7 @@ Deliver faithful TF2 gameplay and presentation at `https://playsrc.online/tf2`.
 
 Run the checked end-to-end browser procedure with `bun run verify:browser jump_beef`. It captures the startup movie's first/middle/final frames, hidden Main Menu admission, Escape skip, desktop/mobile loading background/dialog, cold/warm gameplay, disconnect without startup replay, and one-interrupt shutdown at 1,280×720 and 390×844.
 
-Production releases serve the application shell and hashed browser files through Workers Static Assets at `playsrc.online`, load immutable Source and derived objects directly from `assets.playsrc.online`, and retain the current monolithic PSDB/PUIB contract until its separately reviewed indexed-chunk replacement.
+Production releases serve the application shell and hashed browser files through Workers Static Assets at `playsrc.online`. The browser verifies one resource root from `assets.playsrc.online`, fetches and caches only the encoded chunks selected by `startup`, `menu`, or `gameplay`, and decodes each bounded batch in Rust/WASM before publishing exact logical resources. Before the startup movie, the PC startup plaque reports verified bootstrap download percentage in the configured 128×64 lower-right footprint. If unmuted browser autoplay is denied, playback begins muted and the first subsequent input unmutes it without restarting.
 
 Run console capability evidence with `bun --cwd packages/presentation/vgui run verify:browser` and configured TF2 integration with `bun --cwd packages/presentation/vgui run verify:tf2`. Unsupported hosts suppress VGUI paint/input and retain no fallback-font raster.
 

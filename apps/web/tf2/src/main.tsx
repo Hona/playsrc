@@ -1,6 +1,7 @@
 import { render } from "preact"
 import { useEffect, useRef, useState } from "preact/hooks"
 import { Tf2Application, type ApplicationView } from "./runtime"
+import { tf2StartupLoadingLabel } from "@playsrc/game-tf2-browser/startup-presentation"
 import "./style.css"
 
 const initial: ApplicationView = Object.freeze({
@@ -12,6 +13,8 @@ const initial: ApplicationView = Object.freeze({
   blockers: Object.freeze([]),
   fireEvents: 0,
   explosionEvents: 0,
+  bootstrapLoading: true,
+  bootstrapProgress: 0,
 })
 
 function App() {
@@ -52,6 +55,9 @@ function App() {
       data-startup-state={view.startupState}
       data-startup-gestures={view.startupGestures}
       data-menu-preparation={view.menuPreparation}
+      data-bootstrap-loading={view.bootstrapLoading ? "true" : "false"}
+      data-bootstrap-progress={view.bootstrapProgress ?? 0}
+      data-startup-muted-fallback={view.startupMutedFallback ? "true" : "false"}
       data-loading-progress={view.loadingProgress}
       data-loading-status={view.loadingStatus}
       data-loading-background={view.loadingBackground}
@@ -166,6 +172,9 @@ function App() {
           onClick={() => runtime.current?.admitStartupGesture()}
           onKeyDown={(event) => { if (event.code === "Escape") runtime.current?.startupKey(event.code) }}
         />
+        <div class="startup-loading-plaque" role="status" aria-live="polite">
+          {tf2StartupLoadingLabel(view.bootstrapProgress ?? 0)}
+        </div>
       </div>
       <div ref={loading} class="vgui-layer loading-layer" aria-label="TF2 map loading" />
       <div ref={gameUi} class="vgui-layer gameui-layer" aria-label="TF2 GameUI" />

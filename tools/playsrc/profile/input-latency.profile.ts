@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process"
 import os from "node:os"
-import { expect, test } from "@playwright/test"
+import { expect, test } from "./application-test"
 
 type RpcRecord = { kind: string; started: number; finished?: number; bytes?: number; workerTimings?: Record<string, number> }
 type PresentationRecord = { at: number; detail: string; performance: string | undefined }

@@ -12,6 +12,9 @@ type WasmExports = Readonly<{
   memory: WebAssembly.Memory
   playsrc_alloc(length: number): number
   playsrc_free(pointer: number, length: number): void
+  playsrc_resource_decode(pointer: number, length: number): number
+  playsrc_resource_length(): number
+  playsrc_resource_copy(pointer: number, capacity: number): number
   playsrc_compile_map(bsp: number, length: number, profile: number, config: number, configLength: number): number
   playsrc_compile_map_cached(bsp: number, length: number, profile: number, config: number, configLength: number, presentation: number, presentationLength: number): number
   playsrc_compile_metric_milliseconds(handle: number, index: number): number
@@ -87,6 +90,9 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
       ![
         candidate.playsrc_alloc,
         candidate.playsrc_free,
+        candidate.playsrc_resource_decode,
+        candidate.playsrc_resource_length,
+        candidate.playsrc_resource_copy,
         candidate.playsrc_compile_map,
         candidate.playsrc_compile_map_cached,
         candidate.playsrc_compile_metric_milliseconds,
@@ -128,6 +134,36 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
   } catch {
     fail(request.id, "WasmUnavailable")
   }
+}
+
+function decodeResources(request: Extract<WorkerRequest, { kind: "decode-resources" }>): void {
+  const exports = wasm
+  if (!exports || !(request.batch instanceof ArrayBuffer) || request.batch.byteLength < 12 || request.batch.byteLength > MAX_MESSAGE_BYTES) {
+    fail(request.id, "MalformedRequest")
+    return
+  }
+  const input = allocateCopy(exports, request.batch)
+  const decoded = exports.playsrc_resource_decode(input, request.batch.byteLength)
+  exports.playsrc_free(input, request.batch.byteLength)
+  if (decoded !== 1) {
+    fail(request.id, "CompileFailed")
+    return
+  }
+  const length = exports.playsrc_resource_length()
+  if (!Number.isSafeInteger(length) || length < 12 || length > MAX_MESSAGE_BYTES) {
+    fail(request.id, "InternalFailure")
+    return
+  }
+  const pointer = exports.playsrc_alloc(length)
+  const bytes = new Uint8Array(length)
+  const copied = exports.playsrc_resource_copy(pointer, length)
+  if (copied === length) bytes.set(new Uint8Array(exports.memory.buffer, pointer, length))
+  exports.playsrc_free(pointer, length)
+  if (copied !== length) {
+    fail(request.id, "InternalFailure")
+    return
+  }
+  post({ id: request.id, kind: "resources", bytes: bytes.buffer }, [bytes.buffer])
 }
 
 function allocateCopy(exports: WasmExports, bytes: ArrayBuffer): number {
@@ -568,6 +604,8 @@ function dispatch(request: WorkerRequest): void | Promise<void> {
   switch (request.kind) {
     case "initialize":
       return initialize(request)
+    case "decode-resources":
+      return decodeResources(request)
     case "load":
       return load(request)
     case "read-map":

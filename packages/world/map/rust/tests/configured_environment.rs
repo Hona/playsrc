@@ -17,7 +17,6 @@ use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
 const BSP_SHA256: &str = "b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959";
-const BUNDLE_SHA256: &str = "6abb49c8f6ee46f58a80587a5506a41be97da7f8e6e30da52daec53d3102f8f0";
 const MARK_STREAM_SHA256: &str = "dc240ad45952f19150071cf235b433dcd1d035fd3c2f3afad55e9bd1f84d26c7";
 const RECEIVER_REVISION: u64 = 0x4d41_524b_5f52_3031;
 const PLACEMENT_REVISION: u64 = 0x4d41_524b_5f50_3031;
@@ -48,8 +47,11 @@ fn configured_environment_retains_collision_selected_marks_water_and_view_inputs
     )
     .unwrap();
     assert_eq!(hex(&Sha256::digest(&bsp_bytes)), BSP_SHA256);
-    let bundle_bytes = fs::read(cache.join("browser-bundles/jump_beef.psdb")).unwrap();
-    assert_eq!(hex(&Sha256::digest(&bundle_bytes)), BUNDLE_SHA256);
+    let bundle_bytes = playsrc_asset_graph::read_resource_set(
+        &cache.join("browser-bundles/jump_beef.graph.json"),
+        None,
+    )
+    .unwrap();
     let bundle = parse_bundle(&bundle_bytes).unwrap();
     assert_eq!(bundle.len(), 321);
 
@@ -620,7 +622,7 @@ fn mark_stream_identity(records: &[playsrc_map::MarkRecord]) -> String {
 }
 
 fn parse_bundle(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, &'static str> {
-    if bytes.get(..4) != Some(b"PSDB") || u32_at(bytes, 4)? != 1 {
+    if bytes.get(..4) != Some(b"PSRE") || u32_at(bytes, 4)? != 1 {
         return Err("invalid bundle header");
     }
     let count = u32_at(bytes, 8)? as usize;
