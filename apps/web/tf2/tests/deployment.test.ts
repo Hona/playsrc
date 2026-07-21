@@ -60,6 +60,10 @@ describe("TF2 production release", () => {
 
   test("accepts the checked jump_beef release descriptor", () => {
     const parsed = parseTf2Release(checkedRelease)
+    expect(parsed.objects.wasm).toMatchObject({
+      byteLength: "3923286",
+      sha256: "c9a816e2d39a614c2ad29de4336e36909f09f0e5ad1029b122eecd01edb8378c",
+    })
     expect(parsed.objects.catalog.byteLength).toBe("286")
     expect(parsed.objects.catalog.sha256).toBe("165f0604e52e086dc52612dd205b15f6a685132bd01494a6ecaaae670478fb1b")
     expect(parsed.objects.dependencyLedger).toMatchObject({
