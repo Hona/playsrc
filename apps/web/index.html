@@ -13,7 +13,7 @@
       main { width: min(34rem, calc(100% - 3rem)); }
       h1 { margin: 0 0 .25rem; font-size: clamp(3rem, 12vw, 7rem); letter-spacing: -.08em; }
       p { color: #aeb8bc; }
-      .games { display: flex; flex-wrap: wrap; gap: .75rem; margin-top: 1.5rem; }
+      .games { display: flex; flex-direction: column; align-items: flex-start; gap: .75rem; margin-top: 1.5rem; }
       a, button { padding: .8rem 1.1rem; border: 0; border-radius: .35rem; font: inherit; font-weight: 750; }
       a { color: #15191c; background: #f4a340; text-decoration: none; }
       button { color: #7f898d; background: #252b2e; cursor: not-allowed; }
@@ -26,7 +26,7 @@
       <p>Source, directly in the browser.</p>
       <div class="games">
         <a href="/tf2">Play Team Fortress 2</a>
-        <button type="button" disabled>Half-Life 2 · Coming next</button>
+        <button type="button" disabled>Half-Life 2</button>
       </div>
     </main>
   </body>
