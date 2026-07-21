@@ -13,7 +13,7 @@ import {
   type VguiRuntimeLimits,
   type VguiScheme,
 } from "../src"
-import { FakeDocument, createRoot, descendants } from "./fake-dom"
+import { FakeDocument, FakeEvent, createRoot, descendants } from "./fake-dom"
 
 const limits: VguiRuntimeLimits = Object.freeze({
   maxPanels: 128,
@@ -151,6 +151,39 @@ function setup(animationScripts = emptyAnimations, customControls: VguiRuntimeCo
 }
 
 describe("generic Source VGUI runtime", () => {
+  test("leaves foreign keyboard and input events to their owning DOM context", () => {
+    const { document, root, runtime } = setup()
+    const entry = operation(runtime, {
+      kind: "create-panel",
+      parent: 1,
+      control: "TextEntry",
+      name: "Entry",
+      properties: [{ name: "wide", value: "100" }, { name: "tall", value: "24" }],
+    }).panel!
+    const foreign = document.createElement("input")
+    foreign.dataset.vguiPanel = String(entry)
+    foreign.value = "foreign text"
+
+    for (const [key, code] of [[" ", "Space"], ["Backspace", "Backspace"]] as const) {
+      const event = new FakeEvent("keydown", { key, code })
+      event.target = foreign
+      document.dispatchEvent(event)
+      expect(event.defaultPrevented).toBeFalse()
+    }
+    const input = new FakeEvent("input")
+    input.target = foreign
+    document.dispatchEvent(input)
+
+    expect(runtime.snapshot().input.downKeys).toEqual([])
+    expect(runtime.snapshot().panels.find((panel) => panel.id === entry)?.text).toBe("")
+
+    const owned = descendants(root).find((element) => element.dataset.vguiPanel === String(entry))!
+    const backspace = new FakeEvent("keydown", { key: "Backspace", code: "Backspace" })
+    backspace.target = owned
+    document.dispatchEvent(backspace)
+    expect(backspace.defaultPrevented).toBeTrue()
+  })
+
   test("defers presentation and static frames retain mounted DOM", () => {
     const { root, runtime, time } = setup()
     let panelsDuringBatch = 0
