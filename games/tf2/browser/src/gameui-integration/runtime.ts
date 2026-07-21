@@ -87,6 +87,10 @@ const DASHBOARD_PLAYLIST_PATH = "resource/ui/matchmakingdashboardplaylist.res"
 const PLAYLIST_PATH = "resource/ui/matchmakingplaylist.res"
 const PLAYLIST_ENTRY_PATH = "resource/ui/mainmenuplaylistentry.res"
 
+export function tf2CharacterImageVisible(state: Tf2GameUiState, backgroundUsesCharacterImage: boolean): boolean {
+  return state.kind === "main-menu" && backgroundUsesCharacterImage
+}
+
 const scalar = (node: VguiResourceNode, name: string): string | null =>
   node.children.find((child) => child.name.toLowerCase() === name.toLowerCase() && child.value !== null)?.value ?? null
 const cloneNode = (node: VguiResourceNode, children = node.children): VguiResourceNode => Object.freeze({
@@ -399,7 +403,9 @@ class Integration implements Tf2GameUiIntegration {
         mustApply(this.#runtime, {
           kind: "set-panel-state",
           panel: panel.id,
-          visible: menu && panel.name !== "TFCharacterImage" ? (this.#baseVisibility.get(panel.id) ?? panel.visible) : false,
+          visible: panel.name === "TFCharacterImage"
+            ? tf2CharacterImageVisible(this.#state, this.#baseVisibility.get(panel.id) ?? panel.visible)
+            : menu ? (this.#baseVisibility.get(panel.id) ?? panel.visible) : false,
         })
       }
     }
