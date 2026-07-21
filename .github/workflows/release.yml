@@ -87,14 +87,20 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@1.97.1
 
+      - name: Set up threaded Rust
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: nightly-2025-12-10
+          components: rust-src
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Test
-        run: bun test
+      - name: Install wasm-bindgen
+        run: cargo +1.97.1 install wasm-bindgen-cli --version 0.2.126 --locked
 
-      - name: Test Rust
-        run: bun run test:rust
+      - name: Generate TF2 WASM bindings
+        run: bun run build:tf2-wasm-bindings
 
       - name: Bootstrap Terraform state
         run: bun run infra:bootstrap
