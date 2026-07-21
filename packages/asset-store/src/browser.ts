@@ -41,6 +41,14 @@ export type DerivedRecord = Readonly<{
 
 export type DerivedCacheMetadata = Readonly<{ key: string; byteLength: number; storedAt: number }>
 
+function sameDerivedRecordMetadata(left: DerivedRecord, right: DerivedRecord): boolean {
+  return left.key === right.key
+    && left.byteLength === right.byteLength
+    && left.sha256 === right.sha256
+    && left.storedAt === right.storedAt
+    && left.bytes.size === right.bytes.size
+}
+
 export function planDerivedCacheEviction(
   records: readonly DerivedCacheMetadata[],
   incoming: Readonly<{ key: string; byteLength: number }>,
@@ -265,6 +273,33 @@ export async function openDerivedObjectCache(
       throw new BrowserAssetError("PersistenceUnavailable", "IndexedDB object store is unavailable")
     }
   }
+  const refreshVerifiedRecency = async (verified: DerivedRecord): Promise<void> => {
+    const [objects, transaction] = store("readwrite")
+    const done = transactionDone(transaction, "read recency transaction")
+    const [current, inventory] = await Promise.all([
+      requestResult(objects.get(verified.key), "read recency request") as Promise<DerivedRecord | undefined>,
+      requestResult(objects.getAll(), "read recency inventory request") as Promise<DerivedRecord[]>,
+    ])
+    if (!current || !sameDerivedRecordMetadata(current, verified)) {
+      await done
+      return
+    }
+    if (inventory.some((record) => !Number.isSafeInteger(record.storedAt) || record.storedAt < 0)) {
+      try { transaction.abort() } catch {}
+      await done.catch(() => {})
+      throw new BrowserAssetError("IntegrityFailure", "derived cache recency inventory is malformed")
+    }
+    const now = Date.now()
+    const maximum = inventory.reduce((value, record) => Math.max(value, record.storedAt), 0)
+    const storedAt = Math.max(now, maximum + 1)
+    if (!Number.isSafeInteger(now) || now < 0 || !Number.isSafeInteger(storedAt)) {
+      try { transaction.abort() } catch {}
+      await done.catch(() => {})
+      throw new BrowserAssetError("BoundExceeded", "derived cache recency exceeds its bound")
+    }
+    await requestResult(objects.put({ ...current, storedAt } satisfies DerivedRecord), "read recency write request")
+    await done
+  }
   const cache: DerivedObjectCache = {
     async read(key: string): Promise<Uint8Array | undefined> {
       if (!HASH.test(key)) throw new BrowserAssetError("MalformedIdentity", "derived key is not canonical")
@@ -272,7 +307,10 @@ export async function openDerivedObjectCache(
       const done = transactionDone(transaction,"read transaction")
       const value = await requestResult(objects.get(key),"read request")
       await done
-      return value === undefined ? undefined : bounded(verifyDerivedRecord(value, key),"derived record verification")
+      if (value === undefined) return undefined
+      const bytes = await bounded(verifyDerivedRecord(value, key),"derived record verification")
+      await refreshVerifiedRecency(value as DerivedRecord)
+      return bytes
     },
     async write(key: string, expectedSha256: string, bytes: Uint8Array): Promise<void> {
       if (!HASH.test(key) || !HASH.test(expectedSha256)) {
