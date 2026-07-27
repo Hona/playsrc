@@ -10,7 +10,7 @@ import { acquireMap } from "./targets"
 import { buildTf2Wasm } from "./tf2-wasm-build"
 import { buildSourceBundle } from "./source-bundle"
 import { TF2_CONFIGURED_STARTUP } from "@playsrc/game-tf2-browser/startup-presentation"
-import { TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS, TF2_STAMP_BACKGROUND } from "@playsrc/game-tf2-browser/loading-presentation"
+import { TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS, TF2_PL_UPWARD_MAP_PHOTO_LOCATIONS, TF2_STAMP_BACKGROUND } from "@playsrc/game-tf2-browser/loading-presentation"
 
 const APPLICATION_URL = "http://127.0.0.1:4173/"
 const ASSET_ORIGIN = "http://127.0.0.1:4174"
@@ -77,11 +77,12 @@ export type DevelopmentOwner = Readonly<{
 
 export async function startDevelopment(config: LocalConfig, target: string | undefined): Promise<DevelopmentOwner> {
   const started = performance.now()
-  const map = await acquireMap(config, target)
+  const targetIdentity = target ?? ""
+  const map = await acquireMap(config, targetIdentity)
   const mapReady = performance.now()
   const [wasmPath, sourceBundle, applicationBuild, { tf2ViteConfiguration }] = await Promise.all([
     buildTf2Wasm(config),
-    buildSourceBundle(config, target ?? ""),
+    buildSourceBundle(config, targetIdentity),
     publicCommitIdentity(),
     import("../../../apps/web/tf2/vite.config"),
   ])
@@ -93,7 +94,14 @@ export async function startDevelopment(config: LocalConfig, target: string | und
     sha256: map.decoded.sha256,
   })
   const resources = sourceBundle.report.graphDescriptor
-  const catalogSource = JSON.parse(await readFile(path.join(repositoryRoot, "apps", "web", "tf2", "releases", "catalog.json"), "utf8"))
+  const checkedCatalog = JSON.parse(await readFile(path.join(repositoryRoot, "apps", "web", "tf2", "releases", "catalog.json"), "utf8")) as { application: string; schema: string; entries: Array<{ target: string; resources: ObjectDescriptor }> }
+  const catalogSource = {
+    ...checkedCatalog,
+    entries: [
+      ...checkedCatalog.entries.filter((entry) => entry.target !== targetIdentity),
+      { target: targetIdentity, resources },
+    ].sort((left, right) => left.target.localeCompare(right.target)),
+  }
   const catalogBytes = canonicalGraphBytes(parseResourceCatalog(catalogSource))
   const catalog = descriptor("catalog", "application/vnd.playsrc.asset-catalog+json", catalogBytes)
   const dependencyLedger = sourceBundle.report.ledgerDescriptor
@@ -102,7 +110,7 @@ export async function startDevelopment(config: LocalConfig, target: string | und
   const browserConfiguration = JSON.stringify({
     application: "tf2",
     applicationBuild,
-    target: "jump_beef",
+    target: targetIdentity,
     renderLevel: 2,
     assetOrigin: APPLICATION_URL.slice(0, -1),
     allowedExternalOrigins: ["https://allowed-host"],
@@ -111,7 +119,7 @@ export async function startDevelopment(config: LocalConfig, target: string | und
     catalog,
     startup: TF2_CONFIGURED_STARTUP,
     loading: {
-      mapPhotoLocations: TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS,
+      mapPhotoLocations: targetIdentity === "jump_beef" ? TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS : TF2_PL_UPWARD_MAP_PHOTO_LOCATIONS,
       stampBackground: TF2_STAMP_BACKGROUND,
     },
     presentation: {

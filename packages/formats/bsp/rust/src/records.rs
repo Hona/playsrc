@@ -19,8 +19,10 @@ pub const LEAFFACES: usize = 16;
 pub const LEAFBRUSHES: usize = 17;
 pub const BRUSHES: usize = 18;
 pub const BRUSHSIDES: usize = 19;
+pub const DISPINFO: usize = 26;
 pub const VERTNORMALS: usize = 30;
 pub const VERTNORMALINDICES: usize = 31;
+pub const DISP_VERTS: usize = 33;
 pub const PRIMITIVES: usize = 37;
 pub const PRIMVERTS: usize = 38;
 pub const PRIMINDICES: usize = 39;
@@ -28,6 +30,7 @@ pub const PAKFILE: usize = 40;
 pub const CUBEMAPS: usize = 42;
 pub const TEXDATA_STRING_DATA: usize = 43;
 pub const TEXDATA_STRING_TABLE: usize = 44;
+pub const DISP_TRIS: usize = 48;
 pub const LIGHTING_HDR: usize = 53;
 pub const FACES_HDR: usize = 58;
 
@@ -164,6 +167,51 @@ pub struct BrushSide {
     pub bevel: i16,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DispSubNeighbor {
+    pub neighbor: u16,
+    pub orientation: u8,
+    pub span: u8,
+    pub neighbor_span: u8,
+    pub padding: u8,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DispNeighbor {
+    pub sub_neighbors: [DispSubNeighbor; 2],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DispCornerNeighbors {
+    pub neighbors: [u16; 4],
+    pub neighbor_count: u8,
+    pub padding: u8,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DispInfo {
+    pub start_position: Vector3,
+    pub vertex_start: i32,
+    pub triangle_start: i32,
+    pub power: i32,
+    pub minimum_tessellation: i32,
+    pub smoothing_angle: Float32,
+    pub contents: i32,
+    pub map_face: u16,
+    pub lightmap_alpha_start: i32,
+    pub lightmap_sample_position_start: i32,
+    pub edge_neighbors: [DispNeighbor; 4],
+    pub corner_neighbors: [DispCornerNeighbors; 4],
+    pub allowed_vertices: [u32; 10],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DispVert {
+    pub vector: Vector3,
+    pub distance: Float32,
+    pub alpha: Float32,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Visibility {
     pub cluster_count: i32,
@@ -209,6 +257,9 @@ pub enum LumpData {
     LeafBrushes(Vec<u16>),
     Brushes(Vec<Brush>),
     BrushSides(Vec<BrushSide>),
+    DispInfo(Vec<DispInfo>),
+    DispVertices(Vec<DispVert>),
+    DispTriangles(Vec<u16>),
     VertexNormals(Vec<Vector3>),
     VertexNormalIndices(Vec<u16>),
     Primitives(Vec<Primitive>),
@@ -368,6 +419,59 @@ pub(crate) fn parse_lump(
             })
             .map(LumpData::BrushSides)
         }
+        DISPINFO => {
+            require_version(index, version, 0, bytes.len())?;
+            fixed(index, bytes, 176, max_records, |record| DispInfo {
+                start_position: vector3(record, 0),
+                vertex_start: i32_at(record, 12),
+                triangle_start: i32_at(record, 16),
+                power: i32_at(record, 20),
+                minimum_tessellation: i32_at(record, 24),
+                smoothing_angle: float32(record, 28),
+                contents: i32_at(record, 32),
+                map_face: u16_at(record, 36),
+                lightmap_alpha_start: i32_at(record, 40),
+                lightmap_sample_position_start: i32_at(record, 44),
+                edge_neighbors: std::array::from_fn(|edge| DispNeighbor {
+                    sub_neighbors: std::array::from_fn(|sub| {
+                        let at = 48 + edge * 12 + sub * 6;
+                        DispSubNeighbor {
+                            neighbor: u16_at(record, at),
+                            orientation: record[at + 2],
+                            span: record[at + 3],
+                            neighbor_span: record[at + 4],
+                            padding: record[at + 5],
+                        }
+                    }),
+                }),
+                corner_neighbors: std::array::from_fn(|corner| {
+                    let at = 96 + corner * 10;
+                    DispCornerNeighbors {
+                        neighbors: std::array::from_fn(|neighbor| {
+                            u16_at(record, at + neighbor * 2)
+                        }),
+                        neighbor_count: record[at + 8],
+                        padding: record[at + 9],
+                    }
+                }),
+                allowed_vertices: std::array::from_fn(|word| u32_at(record, 136 + word * 4)),
+            })
+            .map(LumpData::DispInfo)
+        }
+        DISP_VERTS => {
+            require_version(index, version, 0, bytes.len())?;
+            fixed(index, bytes, 20, max_records, |record| DispVert {
+                vector: vector3(record, 0),
+                distance: float32(record, 12),
+                alpha: float32(record, 16),
+            })
+            .map(LumpData::DispVertices)
+        }
+        DISP_TRIS => {
+            require_version(index, version, 0, bytes.len())?;
+            fixed(index, bytes, 2, max_records, |record| u16_at(record, 0))
+                .map(LumpData::DispTriangles)
+        }
         VERTNORMALS => {
             require_version(index, version, 0, bytes.len())?;
             fixed(index, bytes, 12, max_records, |record| vector3(record, 0))
@@ -439,6 +543,9 @@ pub(crate) fn is_implemented(index: usize) -> bool {
             | LEAFBRUSHES
             | BRUSHES
             | BRUSHSIDES
+            | DISPINFO
+            | DISP_VERTS
+            | DISP_TRIS
             | VERTNORMALS
             | VERTNORMALINDICES
             | PRIMITIVES
@@ -458,9 +565,9 @@ pub(crate) fn version_supported(index: usize, version: i32) -> bool {
         FACES | LIGHTING | LIGHTING_HDR | FACES_HDR => version == 1,
         LEAFS => matches!(version, 0 | 1),
         ENTITIES | PAKFILE | PLANES | TEXDATA | VERTEXES | VISIBILITY | NODES | TEXINFO | EDGES
-        | SURFEDGES | MODELS | LEAFFACES | LEAFBRUSHES | BRUSHES | BRUSHSIDES | VERTNORMALS
-        | VERTNORMALINDICES | PRIMITIVES | PRIMVERTS | PRIMINDICES | CUBEMAPS
-        | TEXDATA_STRING_DATA | TEXDATA_STRING_TABLE => version == 0,
+        | SURFEDGES | MODELS | LEAFFACES | LEAFBRUSHES | BRUSHES | BRUSHSIDES | DISPINFO
+        | DISP_VERTS | DISP_TRIS | VERTNORMALS | VERTNORMALINDICES | PRIMITIVES | PRIMVERTS
+        | PRIMINDICES | CUBEMAPS | TEXDATA_STRING_DATA | TEXDATA_STRING_TABLE => version == 0,
         _ => true,
     }
 }
@@ -716,6 +823,83 @@ mod tests {
         assert_eq!(
             parse_lump(PLANES, 9, &[0; 19], 1).unwrap(),
             LumpData::Opaque
+        );
+    }
+
+    #[test]
+    fn parses_complete_displacement_record_family_at_exact_boundaries() {
+        let mut info = [0_u8; 176];
+        for (offset, value) in [(0, 1.0_f32), (4, 2.0), (8, 3.0), (28, 45.0)] {
+            info[offset..offset + 4].copy_from_slice(&value.to_bits().to_le_bytes());
+        }
+        for (offset, value) in [(12, 7_i32), (16, 9), (20, 3), (24, i32::MIN), (32, 0x20)] {
+            info[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        info[36..38].copy_from_slice(&42_u16.to_le_bytes());
+        info[48..50].copy_from_slice(&5_u16.to_le_bytes());
+        info[50..54].copy_from_slice(&[3, 2, 1, 0xaa]);
+        info[96..104].copy_from_slice(&[1, 0, 2, 0, 3, 0, 4, 0]);
+        info[104..106].copy_from_slice(&[4, 0xbb]);
+        for word in 0..10 {
+            info[136 + word * 4..140 + word * 4].copy_from_slice(&(word as u32 + 10).to_le_bytes());
+        }
+        let LumpData::DispInfo(records) = parse_lump(DISPINFO, 0, &info, 1).unwrap() else {
+            panic!("displacement info was not selected")
+        };
+        let record = records[0];
+        assert_eq!(record.start_position.x.value(), 1.0);
+        assert_eq!(
+            (record.vertex_start, record.triangle_start, record.power),
+            (7, 9, 3)
+        );
+        assert_eq!(record.minimum_tessellation, i32::MIN);
+        assert_eq!(record.smoothing_angle.value(), 45.0);
+        assert_eq!((record.contents, record.map_face), (0x20, 42));
+        assert_eq!(
+            record.edge_neighbors[0].sub_neighbors[0],
+            DispSubNeighbor {
+                neighbor: 5,
+                orientation: 3,
+                span: 2,
+                neighbor_span: 1,
+                padding: 0xaa,
+            }
+        );
+        assert_eq!(
+            record.corner_neighbors[0],
+            DispCornerNeighbors {
+                neighbors: [1, 2, 3, 4],
+                neighbor_count: 4,
+                padding: 0xbb,
+            }
+        );
+        assert_eq!(
+            record.allowed_vertices,
+            [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+        );
+
+        let mut vertex = [0_u8; 20];
+        for (offset, value) in [(0, 1.0_f32), (4, -2.0), (8, 3.0), (12, 4.0), (16, 0.5)] {
+            vertex[offset..offset + 4].copy_from_slice(&value.to_bits().to_le_bytes());
+        }
+        let LumpData::DispVertices(vertices) = parse_lump(DISP_VERTS, 0, &vertex, 1).unwrap()
+        else {
+            panic!("displacement vertices were not selected")
+        };
+        assert_eq!(vertices[0].vector.y.value(), -2.0);
+        assert_eq!(vertices[0].distance.value(), 4.0);
+        assert_eq!(vertices[0].alpha.value(), 0.5);
+        assert_eq!(
+            parse_lump(DISPINFO, 0, &[0; 175], 1).unwrap_err().code,
+            ErrorCode::InvalidRecord
+        );
+        assert_eq!(
+            parse_lump(DISP_VERTS, 0, &[0; 19], 1).unwrap_err().code,
+            ErrorCode::InvalidRecord
+        );
+        assert_eq!(
+            parse_lump(DISP_TRIS, 0, &0x1f_u16.to_le_bytes(), 1).unwrap(),
+            LumpData::DispTriangles(vec![0x1f])
         );
     }
 }

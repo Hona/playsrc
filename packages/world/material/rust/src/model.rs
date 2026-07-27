@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ModelShader {
+    UnlitGeneric,
     VertexLitGeneric,
     EyeRefract,
     Eyes,
@@ -134,6 +135,13 @@ pub struct VertexLitGenericState {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct UnlitGenericState {
+    pub base: Option<TextureRequest>,
+    pub detail: Option<TextureRequest>,
+    pub environment: Option<TextureRequest>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct EyeRefractState {
     pub iris: Option<ModelTextureRequest>,
     pub cornea: Option<ModelTextureRequest>,
@@ -164,6 +172,7 @@ pub struct EyesState {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ModelShaderState {
+    UnlitGeneric(Box<UnlitGenericState>),
     VertexLitGeneric(Box<VertexLitGenericState>),
     EyeRefract(Box<EyeRefractState>),
     Eyes(Box<EyesState>),
@@ -231,6 +240,15 @@ pub fn model_draw_state(
         .as_ref()
         .ok_or_else(|| error(ErrorCode::InvalidParameter, None))?;
     let (cloak, sheen) = match &model.state {
+        ModelShaderState::UnlitGeneric(_) => (
+            CloakState {
+                enabled: false,
+                factor: 0.0,
+                color_tint: [1.0; 3],
+                refract_amount: 0.0,
+            },
+            false,
+        ),
         ModelShaderState::VertexLitGeneric(state) => (state.cloak, state.sheen.enabled),
         ModelShaderState::EyeRefract(state) => (state.cloak, false),
         ModelShaderState::Eyes(state) => (state.cloak, false),
@@ -637,7 +655,9 @@ pub(crate) fn resolve_model_state(
     proxy_program: &ProxyProgram,
     environment: SelectionEnvironment,
 ) -> Result<(Option<ModelMaterialState>, Vec<ModelTextureRequest>), Error> {
-    if shader.eq_ignore_ascii_case(b"VertexLitGeneric") {
+    if shader.eq_ignore_ascii_case(b"UnlitGeneric") {
+        Ok((Some(unlit(textures)), Vec::new()))
+    } else if shader.eq_ignore_ascii_case(b"VertexLitGeneric") {
         let model_textures = collect_model_textures(parameters, proxy_program, environment)?;
         Ok((
             Some(vertex_lit(
@@ -662,6 +682,27 @@ pub(crate) fn resolve_model_state(
         ))
     } else {
         Ok((None, Vec::new()))
+    }
+}
+
+fn unlit(textures: &[TextureRequest]) -> ModelMaterialState {
+    ModelMaterialState {
+        shader: ModelShader::UnlitGeneric,
+        state: ModelShaderState::UnlitGeneric(Box::new(UnlitGenericState {
+            base: core_texture(textures, TextureRole::Base).cloned(),
+            detail: core_texture(textures, TextureRole::Detail).cloned(),
+            environment: core_texture(textures, TextureRole::Environment).cloned(),
+        })),
+        vertex_requirements: ModelVertexRequirements {
+            position: true,
+            normal: false,
+            tangent_space: false,
+            texture_coordinate_0: true,
+            ambient_cube: false,
+            local_lights: false,
+            camera_position: false,
+            studio_eye_parameters: false,
+        },
     }
 }
 

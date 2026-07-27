@@ -732,6 +732,10 @@ unsafe fn compile_map(
             playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
         compile_metrics[6] = phase_finished.saturating_sub(phase_started);
         phase_started = phase_finished;
+        let displacement_runtime = canonical
+            .surfaces
+            .iter()
+            .any(|surface| surface.displacement.is_some());
         let runtime = playsrc_map::assemble_runtime(
             canonical,
             entity_graph,
@@ -740,7 +744,11 @@ unsafe fn compile_map(
             bsp_sha,
             playsrc_map::RuntimeAssembly {
                 compiler_identity: if profile == playsrc_map::LightingProfile::Hdr {
-                    "playsrc-map-runtime-hdr-1"
+                    if displacement_runtime {
+                        "playsrc-map-runtime-hdr-2"
+                    } else {
+                        "playsrc-map-runtime-hdr-1"
+                    }
                 } else {
                     "playsrc-map-runtime-2"
                 },
@@ -4363,36 +4371,50 @@ fn resolve_material(
             .as_ref()
             .ok_or(())?
             .to_ascii_lowercase();
-        let bytes = *bundle.get(&path).ok_or(())?;
-        let plane = playsrc_vtf::decode(
-            bytes,
-            playsrc_vtf::Dialect::Source2013Pc,
-            playsrc_vtf::SubresourceIdentity::HighResolution {
-                mip: 0,
-                frame: 0,
-                face: playsrc_vtf::Face::Right,
-                slice: 0,
-            },
-            playsrc_vtf::Limits::default(),
-        )
-        .map_err(|_| ())?;
-        let rgba = match plane.channel_layout {
-            playsrc_vtf::ChannelLayout::Rgba => plane.samples,
-            playsrc_vtf::ChannelLayout::Rgb => {
-                let mut output =
-                    Vec::with_capacity(plane.width as usize * plane.height as usize * 4);
-                for pixel in plane.samples.chunks_exact(3) {
-                    output.extend_from_slice(&[pixel[0], pixel[1], pixel[2], 255]);
-                }
-                output
-            }
-        };
-        Some(playsrc_map::RuntimeTexture {
-            logical_path: path,
-            width: plane.width,
-            height: plane.height,
-            rgba,
-        })
+        Some(runtime_texture(&path, bundle)?)
+    } else {
+        None
+    };
+    let detail = if include_texture {
+        material
+            .detail
+            .as_ref()
+            .map(|detail| {
+                let path = detail
+                    .texture
+                    .logical_path
+                    .as_ref()
+                    .ok_or(())?
+                    .to_ascii_lowercase();
+                Ok(playsrc_map::RuntimeDetail {
+                    texture: runtime_texture(&path, bundle)?,
+                    scale: detail.scale,
+                    blend_mode: detail.blend_mode,
+                    blend_factor: detail.blend_factor,
+                    tint: detail.tint,
+                })
+            })
+            .transpose()?
+    } else {
+        None
+    };
+    let second_texture = if include_texture {
+        material
+            .textures
+            .iter()
+            .find(|texture| {
+                texture.role == playsrc_material::TextureRole::Base2
+                    && texture.disposition == playsrc_material::TextureDisposition::Source
+            })
+            .map(|texture| {
+                let path = texture
+                    .logical_path
+                    .as_ref()
+                    .ok_or(())?
+                    .to_ascii_lowercase();
+                runtime_texture(&path, bundle)
+            })
+            .transpose()?
     } else {
         None
     };
@@ -4402,6 +4424,43 @@ fn resolve_material(
         features: feature_bits(material.features),
         texture_role: selected_role.map_or(0, texture_role),
         base_texture: base,
+        second_texture,
+        detail,
+    })
+}
+
+fn runtime_texture(
+    path: &str,
+    bundle: &BTreeMap<String, &[u8]>,
+) -> Result<playsrc_map::RuntimeTexture, ()> {
+    let bytes = *bundle.get(path).ok_or(())?;
+    let plane = playsrc_vtf::decode(
+        bytes,
+        playsrc_vtf::Dialect::Source2013Pc,
+        playsrc_vtf::SubresourceIdentity::HighResolution {
+            mip: 0,
+            frame: 0,
+            face: playsrc_vtf::Face::Right,
+            slice: 0,
+        },
+        playsrc_vtf::Limits::default(),
+    )
+    .map_err(|_| ())?;
+    let rgba = match plane.channel_layout {
+        playsrc_vtf::ChannelLayout::Rgba => plane.samples,
+        playsrc_vtf::ChannelLayout::Rgb => {
+            let mut output = Vec::with_capacity(plane.width as usize * plane.height as usize * 4);
+            for pixel in plane.samples.chunks_exact(3) {
+                output.extend_from_slice(&[pixel[0], pixel[1], pixel[2], 255]);
+            }
+            output
+        }
+    };
+    Ok(playsrc_map::RuntimeTexture {
+        logical_path: path.to_owned(),
+        width: plane.width,
+        height: plane.height,
+        rgba,
     })
 }
 
@@ -5843,6 +5902,7 @@ fn encode_model_material(
         | u16::from(requirements.studio_eye_parameters) << 7;
     out.extend_from_slice(&[
         match model.shader {
+            playsrc_material::ModelShader::UnlitGeneric => 3,
             playsrc_material::ModelShader::VertexLitGeneric => 0,
             playsrc_material::ModelShader::EyeRefract => 1,
             playsrc_material::ModelShader::Eyes => 2,
@@ -5891,6 +5951,7 @@ fn encode_model_material(
         out.extend_from_slice(&[0; 24]);
     }
     match &model.state {
+        State::UnlitGeneric(_) => {}
         State::VertexLitGeneric(state) => {
             let self_illumination = state.self_illumination;
             out.extend_from_slice(&[

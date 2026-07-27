@@ -358,6 +358,12 @@ pub(crate) fn alpha_ownership(
                     .any(|texture| texture.role == TextureRole::SelfIllumMask)
             },
             |model| {
+                if matches!(model.state, ModelShaderState::UnlitGeneric(_)) {
+                    return !material
+                        .textures
+                        .iter()
+                        .any(|texture| texture.role == TextureRole::SelfIllumMask);
+                }
                 let ModelShaderState::VertexLitGeneric(state) = &model.state else {
                     return false;
                 };

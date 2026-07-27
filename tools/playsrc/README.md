@@ -13,11 +13,13 @@ Provide one stable command interface for repeatable playsrc development, compila
 
 `bun run setup` verifies the checked Bun identity and installs the checked Rust toolchain, rustfmt, Clippy, and `wasm32-unknown-unknown` standard library under `sourceCacheDir`. It never changes a user-global Rust installation or shell path.
 
-Map commands accept one checked logical target. `jump_beef` resolves to its exact TF2 map registry entry and verified raw-source cache objects; aliases and path arguments are rejected.
+Map commands accept one checked logical target. `jump_beef` resolves to verified download-cache objects; `pl_upward` resolves exact configured build/provider bytes at `maps/pl_upward.bsp`. Aliases and path arguments are rejected.
 
 Native compilation and browser WASM compilation call the same owning Rust crates and use the same derived-cache identity. The tool can prepopulate caches but cannot make native preprocessing a browser gameplay prerequisite.
 
 `bun run dev jump_beef` verifies/acquires the declared BSP, concurrently builds checked TF2 WASM and native resource-graph targets, and reuses graph/chunk/ledger generation only when one cache report matches the exact generator executable and every declared artifact. It installs the independently hashed BSP, WASM, graph root, 144 chunks, and ledger in `assetDir`, starts the loopback Asset Service on port 4174 and TF2 Vite application on port 4173, waits for both readiness endpoints, prints `http://127.0.0.1:4173/`, and closes both listeners after one `SIGINT` or `SIGTERM`.
+
+`bun run dev pl_upward` uses the same application and lifecycle with a target-qualified dynamic catalog, exact installed BSP, 144-chunk graph and ledger. It retains Jump gameplay authority, admits existing noclip, and publishes no Payload gameplay state.
 
 `bun run infra:publish jump_beef` builds and locally verifies the BSP, WASM, catalog, resource root, every reachable chunk, and dependency ledger; replaces the checked release descriptor; processes leaves before roots and catalogs; conditionally creates missing R2 objects through S3 `If-None-Match: *`; verifies exact readback; and emits one bounded JSON report. A warm publication performs zero writes.
 

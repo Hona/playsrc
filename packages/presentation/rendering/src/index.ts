@@ -456,7 +456,7 @@ export type MaterialStateInput = Readonly<{
 }>
 export type ModelMaterialInput = Readonly<{
   identity: string
-  shader: "vertex-lit-generic" | "eye-refract" | "eyes"
+  shader: "unlit-generic" | "vertex-lit-generic" | "eye-refract" | "eyes"
   vertexRequirements: number
   bindings: readonly Readonly<{
     kind: "material" | "model"
@@ -468,7 +468,7 @@ export type ModelMaterialInput = Readonly<{
   opacity: "opaque" | "translucent"
   framebuffer: "none" | "potential" | "current"
   requiredInputs: readonly string[]
-  state: Readonly<{ kind: "vertex-lit-generic" | "eye-refract" | "eyes" }>
+  state: Readonly<{ kind: "unlit-generic" | "vertex-lit-generic" | "eye-refract" | "eyes" }>
 }>
 export type AuthoredTextureInput = Readonly<{
   logicalPath: string
@@ -888,10 +888,29 @@ function sourceFragmentColor(sample: any, state?: MaterialStateInput): any {
   })()
 }
 
+function detailColor(base: any, detail: RuntimeMaterial["detail"], texture?: THREE.DataTexture): any {
+  if (!detail || !texture) return base
+  if (detail.blendMode !== 0) throw new RenderingError("UnsupportedFeature", `detail blend mode ${detail.blendMode} is unavailable`)
+  const uv = TSL.uv()
+  const sample = TSL.texture(texture, TSL.vec2(uv.x.mul(detail.scale[0]), uv.y.mul(detail.scale[1])))
+  const tint = TSL.vec3(detail.tint[0], detail.tint[1], detail.tint[2])
+  const modulation = TSL.mix(TSL.vec3(1), sample.rgb.mul(tint).mul(2), detail.blendFactor)
+  return TSL.vec4(base.rgb.mul(modulation), base.a)
+}
+
+function worldBaseColor(resolved: RuntimeMaterial, base: any, second?: THREE.DataTexture): any {
+  if (resolved.shader !== 4) return base
+  if (!second) throw new RenderingError("MissingInput", `WorldVertexTransition second texture ${resolved.logicalPath} is unavailable`)
+  const blend = TSL.clamp(TSL.attribute("displacementAlpha", "float").div(255), 0, 1)
+  return TSL.vec4(TSL.mix(base.rgb, TSL.texture(second, TSL.uv()).rgb, blend), base.a)
+}
+
 function worldNodeMaterial(
   resolved: RuntimeMaterial,
   identity: string,
   baseTexture: THREE.DataTexture | undefined,
+  secondTexture: THREE.DataTexture | undefined,
+  detailTexture: THREE.DataTexture | undefined,
   lightmaps: readonly [THREE.DataTexture, THREE.DataTexture?, THREE.DataTexture?, THREE.DataTexture?],
   directional: THREE.DataTexture | undefined,
   directionalKind: "normal" | "ssbump" | undefined,
@@ -900,7 +919,7 @@ function worldNodeMaterial(
   state?: MaterialStateInput,
 ): THREE.MeshBasicNodeMaterial {
   const material = new THREE.MeshBasicNodeMaterial(materialOptions(resolved, state))
-  const base = baseTexture ? TSL.texture(baseTexture, TSL.uv()) : TSL.vec4(TSL.color(debugColor(identity)), 1)
+  const base = detailColor(worldBaseColor(resolved, baseTexture ? TSL.texture(baseTexture, TSL.uv()) : TSL.vec4(TSL.color(debugColor(identity)), 1), secondTexture), resolved.detail, detailTexture)
   const flat = TSL.texture(lightmaps[0], TSL.uv(1)).rgb
   let irradiance = flat
   if (directional && lightmaps[1] && lightmaps[2] && lightmaps[3] && directionalKind && directionalUvTransform) {
@@ -1194,9 +1213,9 @@ class RendererOwner implements Renderer {
     }
     for (const mark of request.environment?.markRecords ?? []) {
       const state = materialStates.get(mark.material.toLowerCase())
-      if (mark.status === 0 && (!mark.receiver || !state || (mark.polygonOffset === "decal") !== (state.polygonOffset === 1) ||
+      if (mark.status === 0 && (!state || (mark.polygonOffset === "decal") !== (state.polygonOffset === 1) ||
         mark.fragments.some((fragment) => fragment.visibility.kind === "brush-model"
-          ? mark.receiver?.entity !== fragment.visibility.entity || mark.receiver.model !== fragment.visibility.model
+          ? !mark.receiver || mark.receiver.entity !== fragment.visibility.entity || mark.receiver.model !== fragment.visibility.model
           : fragment.model !== 0))) {
         throw new RenderingError("IdentityMismatch", "projected mark receiver or material contract differs")
       }
@@ -1363,8 +1382,11 @@ class RendererOwner implements Renderer {
     const directionalGpu = new Map<string, { input: DirectionalTextureInput; texture: THREE.DataTexture }>()
     const authoredGpu = new Map<string, THREE.Texture>()
     const modelDrawInputs = new Map((request.modelDrawInputs ?? []).map((input) => [input.entity, input] as const))
+    const modelsRequiringLighting = new Set(map.models
+      .filter((model) => model.materials.some((material) => request.modelMaterials?.get(material.logicalPath.toLowerCase())?.shader !== "unlit-generic"))
+      .map((model) => model.logicalPath))
     const missingLightingEntities = map.modelOccurrences
-      .filter((occurrence) => !modelDrawInputs.has(occurrence.entity))
+      .filter((occurrence) => modelsRequiringLighting.has(map.models[occurrence.model]!.logicalPath) && !modelDrawInputs.has(occurrence.entity))
       .map((occurrence) => occurrence.entity)
     if (missingLightingEntities.length > 0) {
       diagnostics.push(diagnostic(
@@ -1462,6 +1484,7 @@ class RendererOwner implements Renderer {
         geometry.setAttribute("uv", new THREE.BufferAttribute(batch.uv, 2))
         geometry.setAttribute("uv1", new THREE.BufferAttribute(batch.lightmapUv, 2))
         geometry.setAttribute("lightmapKind", new THREE.BufferAttribute(batch.lightmapKind, 1))
+        geometry.setAttribute("displacementAlpha", new THREE.BufferAttribute(batch.displacementAlpha, 1))
         const sourceIndices = batch.indices.slice()
         const index = new THREE.BufferAttribute(sourceIndices.slice(), 1)
         index.setUsage(THREE.DynamicDrawUsage)
@@ -1474,6 +1497,10 @@ class RendererOwner implements Renderer {
         if (materialState?.noDraw) return null
         if(resolved.shader===5){const resource=createWaterMaterial(identity),mesh=new THREE.Mesh(geometry,resource.material);mesh.userData.materialIdentity=identity;waterMeshes.push(Object.freeze({mesh,materialIdentity:identity.toLowerCase()}));return mesh}
         const baseTexture = createBase(resolved, identity)
+        const secondTexture = resolved.secondTexture ? textureFromRgba(resolved.secondTexture, THREE.SRGBColorSpace) : undefined
+        if (secondTexture) disposables.add(secondTexture)
+        const detailTexture = resolved.detail ? textureFromRgba(resolved.detail.texture, THREE.NoColorSpace) : undefined
+        if (detailTexture) disposables.add(detailTexture)
         const kinds = new Set(batch.lightmapKind)
         const requiresNormal = kinds.has(2)
         const requiresSsbump = kinds.has(3)
@@ -1496,6 +1523,8 @@ class RendererOwner implements Renderer {
             resolved,
             identity,
             baseTexture,
+            secondTexture,
+            detailTexture,
             lightmapTextures,
             supplied?.texture,
             supplied?.input.kind,
@@ -1505,7 +1534,7 @@ class RendererOwner implements Renderer {
           )
         } else {
           const nodeMaterial = new THREE.MeshBasicNodeMaterial(materialOptions(resolved, materialState))
-          const base = baseTexture ? TSL.texture(baseTexture, TSL.uv()) : TSL.vec4(TSL.color(debugColor(identity)), 1)
+          const base = detailColor(worldBaseColor(resolved, baseTexture ? TSL.texture(baseTexture, TSL.uv()) : TSL.vec4(TSL.color(debugColor(identity)), 1), secondTexture), resolved.detail, detailTexture)
           const irradiance = TSL.texture(lightmapTextures[0], TSL.uv(1)).rgb
           nodeMaterial.colorNode = sourceFragmentColor(TSL.vec4(base.rgb.mul(irradiance), base.a), materialState)
           nodeMaterial.toneMapped = false

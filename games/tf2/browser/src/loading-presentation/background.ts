@@ -62,6 +62,22 @@ export const TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS = Object.freeze([
   "game-11-download:materials/vgui/maps/menu_photos_jump_beef.vmt",
 ] as const)
 
+export const TF2_PL_UPWARD_MAP_PHOTO_LOCATIONS = Object.freeze([
+  "pl_upward-pak:maps/pl_upward.bsp!materials/vgui/maps/menu_photos_pl_upward.vmt",
+  "game-00-workshop:materials/vgui/maps/menu_photos_pl_upward.vmt",
+  "game-01-tf2_textures_dir.vpk:tf2_textures_dir.vpk!materials/vgui/maps/menu_photos_pl_upward.vmt",
+  "game-02-tf2_sound_vo_english_dir.vpk:tf2_sound_vo_english_dir.vpk!materials/vgui/maps/menu_photos_pl_upward.vmt",
+  "game-03-tf2_sound_misc_dir.vpk:tf2_sound_misc_dir.vpk!materials/vgui/maps/menu_photos_pl_upward.vmt",
+  "game-04-tf2_misc_dir.vpk:tf2_misc_dir.vpk!materials/vgui/maps/menu_photos_pl_upward.vmt",
+  "game-05-hl2_textures_dir.vpk:hl2_textures_dir.vpk!materials/vgui/maps/menu_photos_pl_upward.vmt",
+  "game-06-hl2_sound_vo_english_dir.vpk:hl2_sound_vo_english_dir.vpk!materials/vgui/maps/menu_photos_pl_upward.vmt",
+  "game-07-hl2_sound_misc_dir.vpk:hl2_sound_misc_dir.vpk!materials/vgui/maps/menu_photos_pl_upward.vmt",
+  "game-08-hl2_misc_dir.vpk:hl2_misc_dir.vpk!materials/vgui/maps/menu_photos_pl_upward.vmt",
+  "game-09-tf:materials/vgui/maps/menu_photos_pl_upward.vmt",
+  "game-10-hl2:materials/vgui/maps/menu_photos_pl_upward.vmt",
+  "game-11-download:materials/vgui/maps/menu_photos_pl_upward.vmt",
+] as const)
+
 export function resolveTf2LoadingBackground(input: Tf2LoadingBackgroundInput): Tf2LoadingBackgroundResult {
   const checked = Object.freeze(input.mapPhotoLookups.map((lookup) => lookup.location))
   if (!Number.isSafeInteger(input.generation) || input.generation < 1 || !MAP.test(input.mapIdentity)

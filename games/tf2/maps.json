@@ -9,5 +9,14 @@
       "decodedByteLength": 33379388,
       "decodedSha256": "b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959"
     }
+  },
+  "pl_upward": {
+    "logicalPath": "maps/pl_upward.bsp",
+    "installed": {
+      "contentBuild": "24245096",
+      "provider": "game-09-tf",
+      "byteLength": 25446018,
+      "sha256": "15cbf91981b0d9902c645d1992d196b7e630742aa85111ed834d231f3c3a5709"
+    }
   }
 }

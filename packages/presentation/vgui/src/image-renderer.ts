@@ -165,7 +165,7 @@ export function shadeVguiImage(
       } else {
         let distance = color[3]
         if (detailTexture) {
-          const detail = [...sample(detailTexture, u * request.material.detailScale, v * request.material.detailScale)] as [number, number, number, number]
+          const detail = [...sample(detailTexture, u * request.material.detailScale[0], v * request.material.detailScale[1])] as [number, number, number, number]
           detail[0] *= request.material.detailTint[0]
           detail[1] *= request.material.detailTint[1]
           detail[2] *= request.material.detailTint[2]
@@ -194,7 +194,7 @@ export function shadeVguiImage(
           else color[3] = mask
           if (request.material.glow) {
             const glowSource = detailTexture ?? baseTexture
-            const glowSample = sample(glowSource, (u + request.material.glowX) * (detailTexture ? request.material.detailScale : 1), (v + request.material.glowY) * (detailTexture ? request.material.detailScale : 1))
+            const glowSample = sample(glowSource, (u + request.material.glowX) * (detailTexture ? request.material.detailScale[0] : 1), (v + request.material.glowY) * (detailTexture ? request.material.detailScale[1] : 1))
             const amount = smooth(request.material.glowStart, request.material.glowEnd, glowSample[3])
             const glow = [
               request.material.glowColor[0] * amount,

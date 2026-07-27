@@ -1284,7 +1284,7 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
   const authorityBlockers: AuthorityBlocker[] = []
   const blockerDetails = new Map<number, string>([
     [1, "TF2 sticky IVP solver unavailable: current body/contact transition"],
-    [2, "Tempus core and jump_beef zone contract unavailable"],
+    [2, "Tempus core and configured Jump course contract unavailable"],
   ])
   const blockerCodes = new Set<number>()
   for (let index = 0; index < blockerCount; index += 1) {

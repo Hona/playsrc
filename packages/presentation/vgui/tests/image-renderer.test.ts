@@ -17,7 +17,7 @@ const baseMaterial = (overrides: Partial<VguiImageMaterialPresentation> = {}): V
   base: texture("base"),
   second: null,
   detail: null,
-  detailScale: 1,
+  detailScale: [1, 1],
   detailBlendMode: 0,
   detailBlendFactor: 1,
   detailTint: Object.freeze([1, 1, 1]),

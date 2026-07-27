@@ -1203,7 +1203,7 @@ class SourceVguiRuntime implements VguiRuntime {
       )
       if (!["unlit-generic", "unlit-two-texture"].includes(material.shader)
         || !texture(material.base) || !texture(material.second) || !texture(material.detail)
-        || !finite(material.detailScale) || material.detailScale <= 0
+        || !Array.isArray(material.detailScale) || material.detailScale.length !== 2 || material.detailScale.some((value) => !finite(value) || value <= 0)
         || ![0, 8].includes(material.detailBlendMode)
         || !finite(material.detailBlendFactor)
         || !Array.isArray(material.detailTint) || material.detailTint.length !== 3 || material.detailTint.some((value) => !finite(value))

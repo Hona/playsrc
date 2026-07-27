@@ -49,6 +49,23 @@ pub struct Side {
     pub displacement: i16,
     pub bevel: i16,
 }
+#[derive(Clone, Debug, PartialEq)]
+pub struct DisplacementPatch {
+    pub source: usize,
+    pub map_face: u16,
+    pub power: u8,
+    pub contents: u32,
+    pub vertex_start: u32,
+    pub triangle_start: u32,
+    pub start_position: [f32; 3],
+    pub minimum_tessellation: i32,
+    pub smoothing_angle: f32,
+    pub allowed_vertices: [u32; 10],
+    pub edge_neighbors: [playsrc_bsp::DispNeighbor; 4],
+    pub corner_neighbors: [playsrc_bsp::DispCornerNeighbors; 4],
+    pub vertices: Vec<([f32; 3], f32, f32)>,
+    pub triangle_tags: Vec<u16>,
+}
 #[derive(Clone, Debug)]
 pub struct World {
     pub identity: [u8; 32],
@@ -63,6 +80,7 @@ pub struct World {
     pub model_brushes: Vec<Vec<usize>>,
     pub model_contents: Vec<u32>,
     pub texture_flags: Vec<u16>,
+    pub displacements: Vec<DisplacementPatch>,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Hull {
@@ -197,6 +215,21 @@ pub fn compile(bsp: &Bsp) -> Result<World, Error> {
         LumpData::Models(v) => v.clone(),
         _ => return Err(error(ErrorCode::MissingLump, None)),
     };
+    let displacement_info = match &bsp.lumps[26].records {
+        LumpData::DispInfo(value) => value.as_slice(),
+        LumpData::Opaque if bsp.lumps[26].bytes(bsp).is_empty() => &[],
+        _ => return Err(error(ErrorCode::MissingLump, Some(26))),
+    };
+    let displacement_vertices = match &bsp.lumps[33].records {
+        LumpData::DispVertices(value) => value.as_slice(),
+        LumpData::Opaque if bsp.lumps[33].bytes(bsp).is_empty() => &[],
+        _ => return Err(error(ErrorCode::MissingLump, Some(33))),
+    };
+    let displacement_triangles = match &bsp.lumps[48].records {
+        LumpData::DispTriangles(value) => value.as_slice(),
+        LumpData::Opaque if bsp.lumps[48].bytes(bsp).is_empty() => &[],
+        _ => return Err(error(ErrorCode::MissingLump, Some(48))),
+    };
     let planes = planes
         .iter()
         .enumerate()
@@ -264,6 +297,99 @@ pub fn compile(bsp: &Bsp) -> Result<World, Error> {
                 .fold(0_u32, |contents, brush| contents | output[*brush].contents)
         })
         .collect();
+    let displacements = displacement_info
+        .iter()
+        .enumerate()
+        .map(|(source, info)| {
+            let start_position = [
+                info.start_position.x.value(),
+                info.start_position.y.value(),
+                info.start_position.z.value(),
+            ];
+            let smoothing_angle = info.smoothing_angle.value();
+            if !(2..=4).contains(&info.power)
+                || start_position
+                    .iter()
+                    .chain([smoothing_angle].iter())
+                    .any(|value| !value.is_finite())
+                || info.corner_neighbors.iter().any(|corner| {
+                    corner.neighbor_count > 4
+                        || corner.neighbors[..usize::from(corner.neighbor_count)]
+                            .iter()
+                            .any(|neighbor| {
+                                *neighbor != u16::MAX
+                                    && usize::from(*neighbor) >= displacement_info.len()
+                            })
+                })
+                || info.edge_neighbors.iter().any(|edge| {
+                    edge.sub_neighbors.iter().any(|neighbor| {
+                        neighbor.neighbor != u16::MAX
+                            && (usize::from(neighbor.neighbor) >= displacement_info.len()
+                                || neighbor.orientation > 3
+                                || neighbor.span > 2
+                                || neighbor.neighbor_span > 2)
+                    })
+                })
+            {
+                return Err(error(ErrorCode::InvalidRange, Some(source)));
+            }
+            let side = (1_usize << info.power) + 1;
+            let vertex_count = side * side;
+            let triangle_count = (side - 1) * (side - 1) * 2;
+            let vertex_start = usize::try_from(info.vertex_start)
+                .map_err(|_| error(ErrorCode::InvalidRange, Some(source)))?;
+            let triangle_start = usize::try_from(info.triangle_start)
+                .map_err(|_| error(ErrorCode::InvalidRange, Some(source)))?;
+            let vertex_end = vertex_start
+                .checked_add(vertex_count)
+                .ok_or_else(|| error(ErrorCode::Limit, Some(source)))?;
+            let triangle_end = triangle_start
+                .checked_add(triangle_count)
+                .ok_or_else(|| error(ErrorCode::Limit, Some(source)))?;
+            let vertices = displacement_vertices
+                .get(vertex_start..vertex_end)
+                .ok_or_else(|| error(ErrorCode::InvalidRange, Some(source)))?
+                .iter()
+                .map(|vertex| {
+                    let direction = [
+                        vertex.vector.x.value(),
+                        vertex.vector.y.value(),
+                        vertex.vector.z.value(),
+                    ];
+                    let distance = vertex.distance.value();
+                    let alpha = vertex.alpha.value();
+                    if direction
+                        .iter()
+                        .chain([distance, alpha].iter())
+                        .any(|value| !value.is_finite())
+                    {
+                        return Err(error(ErrorCode::NonFinite, Some(source)));
+                    }
+                    Ok((direction, distance, alpha))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let triangle_tags = displacement_triangles
+                .get(triangle_start..triangle_end)
+                .ok_or_else(|| error(ErrorCode::InvalidRange, Some(source)))?
+                .to_vec();
+            Ok(DisplacementPatch {
+                source,
+                map_face: info.map_face,
+                power: info.power as u8,
+                contents: info.contents as u32,
+                vertex_start: vertex_start as u32,
+                triangle_start: triangle_start as u32,
+                start_position,
+                minimum_tessellation: info.minimum_tessellation,
+                smoothing_angle,
+                allowed_vertices: info.allowed_vertices,
+                edge_neighbors: info.edge_neighbors,
+                corner_neighbors: info.corner_neighbors,
+                vertices,
+                triangle_tags,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let mut world = World {
         identity: [0; 32],
         planes,
@@ -277,6 +403,7 @@ pub fn compile(bsp: &Bsp) -> Result<World, Error> {
         model_brushes,
         model_contents,
         texture_flags,
+        displacements,
     };
     world.identity = world_identity(&world);
     Ok(world)
@@ -331,6 +458,7 @@ impl World {
             model_brushes: Vec::new(),
             model_contents: Vec::new(),
             texture_flags: Vec::new(),
+            displacements: Vec::new(),
         };
         world.identity = world_identity(&world);
         world
@@ -753,7 +881,11 @@ fn brushes_for_model(
 
 fn world_identity(world: &World) -> [u8; 32] {
     let mut digest = Sha256::new();
-    digest.update(b"playsrc-collision-world-v2");
+    digest.update(if world.displacements.is_empty() {
+        b"playsrc-collision-world-v2".as_slice()
+    } else {
+        b"playsrc-collision-world-v3".as_slice()
+    });
     for plane in &world.planes {
         for value in plane.normal.into_iter().chain([plane.distance]) {
             digest.update(value.to_bits().to_le_bytes());
@@ -816,6 +948,47 @@ fn world_identity(world: &World) -> [u8; 32] {
             digest.update((*brush as u64).to_le_bytes());
         }
         digest.update(contents.to_le_bytes());
+    }
+    for displacement in &world.displacements {
+        digest.update((displacement.source as u64).to_le_bytes());
+        digest.update(displacement.map_face.to_le_bytes());
+        digest.update([displacement.power]);
+        digest.update(displacement.contents.to_le_bytes());
+        digest.update(displacement.vertex_start.to_le_bytes());
+        digest.update(displacement.triangle_start.to_le_bytes());
+        for value in displacement.start_position {
+            digest.update(value.to_bits().to_le_bytes());
+        }
+        digest.update(displacement.minimum_tessellation.to_le_bytes());
+        digest.update(displacement.smoothing_angle.to_bits().to_le_bytes());
+        for value in displacement.allowed_vertices {
+            digest.update(value.to_le_bytes());
+        }
+        for edge in displacement.edge_neighbors {
+            for neighbor in edge.sub_neighbors {
+                digest.update(neighbor.neighbor.to_le_bytes());
+                digest.update([
+                    neighbor.orientation,
+                    neighbor.span,
+                    neighbor.neighbor_span,
+                    neighbor.padding,
+                ]);
+            }
+        }
+        for corner in displacement.corner_neighbors {
+            for neighbor in corner.neighbors {
+                digest.update(neighbor.to_le_bytes());
+            }
+            digest.update([corner.neighbor_count, corner.padding]);
+        }
+        for (direction, distance, alpha) in &displacement.vertices {
+            for value in direction.iter().chain([distance, alpha]) {
+                digest.update(value.to_bits().to_le_bytes());
+            }
+        }
+        for tag in &displacement.triangle_tags {
+            digest.update(tag.to_le_bytes());
+        }
     }
     for flags in &world.texture_flags {
         digest.update(flags.to_le_bytes());

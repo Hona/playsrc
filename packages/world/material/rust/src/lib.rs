@@ -185,7 +185,7 @@ pub struct Features {
 #[derive(Clone, Debug, PartialEq)]
 pub struct DetailState {
     pub texture: TextureRequest,
-    pub scale: f32,
+    pub scale: [f32; 2],
     pub blend_mode: i32,
     pub blend_factor: f32,
     pub tint: [f32; 3],
@@ -435,6 +435,12 @@ pub fn resolve_for_environment(
         (b"$refracttexture", TextureRole::Refraction),
     ];
     let detail_blend_mode = integer_or(&first, b"$detailblendmode", 0)?;
+    if !(0..=11).contains(&detail_blend_mode) {
+        return Err(error(
+            ErrorCode::InvalidParameter,
+            Some(b"$detailblendmode".to_vec()),
+        ));
+    }
     let sprite_extract_green_alpha = integer_or(&first, b"$extractgreenalpha", 0)? != 0;
     let gamma_color_read = integer_or(&first, b"$gammacolorread", 0)? != 0;
     let sprite_card = document.root.key.bytes.eq_ignore_ascii_case(b"SpriteCard");
@@ -478,7 +484,7 @@ pub fn resolve_for_environment(
         .map(|texture| {
             Ok(DetailState {
                 texture,
-                scale: float_or(&first, b"$detailscale", 4.0)?,
+                scale: scalar_or_vector2(&first, b"$detailscale", [4.0; 2])?,
                 blend_mode: detail_blend_mode,
                 blend_factor: float_or(&first, b"$detailblendfactor", 1.0)?,
                 tint: color_or(&first, b"$detailtint", [1.0; 3])?,
@@ -1399,6 +1405,42 @@ pub(crate) fn color_or(
     let scale = if byte_color { 1.0 / 255.0 } else { 1.0 };
     Ok([values[0] * scale, values[1] * scale, values[2] * scale])
 }
+
+fn scalar_or_vector2(
+    parameters: &BTreeMap<Vec<u8>, Vec<u8>>,
+    parameter: &[u8],
+    default: [f32; 2],
+) -> Result<[f32; 2], Error> {
+    let Some(value) = get(parameters, parameter) else {
+        return Ok(default);
+    };
+    let text = std::str::from_utf8(value)
+        .map_err(|_| error(ErrorCode::InvalidParameter, Some(parameter.to_vec())))?
+        .trim();
+    let vector = (text.starts_with('[') && text.ends_with(']'))
+        || (text.starts_with('{') && text.ends_with('}'));
+    let content = if vector {
+        &text[1..text.len() - 1]
+    } else {
+        text
+    };
+    let values = content
+        .split_ascii_whitespace()
+        .map(str::parse::<f32>)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| error(ErrorCode::InvalidParameter, Some(parameter.to_vec())))?;
+    if values.iter().any(|value| !value.is_finite())
+        || (vector && values.len() != 2)
+        || (!vector && values.len() != 1)
+    {
+        return Err(error(ErrorCode::InvalidParameter, Some(parameter.to_vec())));
+    }
+    Ok(if vector {
+        [values[0], values[1]]
+    } else {
+        [values[0]; 2]
+    })
+}
 fn shader(v: &[u8]) -> Shader {
     if v.eq_ignore_ascii_case(b"LightmappedGeneric") {
         Shader::LightmappedGeneric
@@ -1754,6 +1796,33 @@ mod tests {
     }
 
     #[test]
+    fn detail_scale_preserves_scalar_and_two_axis_vector_forms() {
+        let vector = material(
+            br#"LightmappedGeneric { "$detail" "overlays/detail001" "$detailscale" "[1.1 2.3]" "$detailblendmode" "0" }"#,
+            SelectionEnvironment::default(),
+        )
+        .unwrap();
+        assert_eq!(vector.detail.unwrap().scale, [1.1, 2.3]);
+        let scalar = material(
+            br#"LightmappedGeneric { "$detail" "overlays/detail001" "$detailscale" "4" }"#,
+            SelectionEnvironment::default(),
+        )
+        .unwrap();
+        assert_eq!(scalar.detail.unwrap().scale, [4.0, 4.0]);
+        for value in ["[1]", "[1 2 3]", "1 2", "[nan 1]"] {
+            let source = format!(
+                "LightmappedGeneric {{ \"$detail\" \"overlays/detail001\" \"$detailscale\" \"{value}\" }}"
+            );
+            assert_eq!(
+                material(source.as_bytes(), SelectionEnvironment::default())
+                    .unwrap_err()
+                    .code,
+                ErrorCode::InvalidParameter
+            );
+        }
+    }
+
+    #[test]
     fn world_texture_roles_and_static_state_preserve_source_alpha_depth_and_color_reads() {
         let fence = material(
             br#"LightmappedGeneric {
@@ -1960,6 +2029,57 @@ mod tests {
                 .lighting,
             LightingModel::VertexLit
         );
+    }
+
+    #[test]
+    fn unlit_model_state_excludes_vertex_lighting_and_retains_authored_static_inputs() {
+        let unlit = material(
+            br#"UnLitGeneric {
+                "$basetexture" "models/props_ui/bannerflag_comp"
+                "$detail" "overlays/detail001"
+                "$detailscale" "[1.1 2.3]"
+                "$translucent" "1"
+                "$nocull" "1"
+            }"#,
+            SelectionEnvironment {
+                model: true,
+                ..SelectionEnvironment::default()
+            },
+        )
+        .unwrap();
+        let model = unlit.model.as_ref().unwrap();
+        assert_eq!(model.shader, ModelShader::UnlitGeneric);
+        assert_eq!(
+            model.vertex_requirements,
+            ModelVertexRequirements {
+                position: true,
+                normal: false,
+                tangent_space: false,
+                texture_coordinate_0: true,
+                ambient_cube: false,
+                local_lights: false,
+                camera_position: false,
+                studio_eye_parameters: false,
+            }
+        );
+        let ModelShaderState::UnlitGeneric(state) = &model.state else {
+            panic!("unlit model state was not selected")
+        };
+        assert!(state.base.is_some() && state.detail.is_some());
+        let draw = model_draw_state(
+            &unlit,
+            TextureAlphaFacts { base: true },
+            ModelRuntimeInputs {
+                alpha_modulation: 1.0,
+                cloak_factor: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(draw.static_state.lighting, LightingModel::Unlit);
+        assert_eq!(draw.static_state.cull, CullState::None);
+        assert_eq!(draw.opacity, ModelOpacity::Translucent);
+        assert!(!draw.required_inputs.contains(&ModelDrawInput::AmbientCube));
+        assert!(!draw.required_inputs.contains(&ModelDrawInput::LocalLights));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 import type { ObjectDescriptor } from "@playsrc/asset-store"
 import { TF2_CONFIGURED_STARTUP, validateTf2StartupDescriptor, type Tf2StartupDescriptor } from "@playsrc/game-tf2-browser/startup-presentation"
-import { TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS, TF2_STAMP_BACKGROUND, type Tf2LoadingAsset } from "@playsrc/game-tf2-browser/loading-presentation"
+import { TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS, TF2_PL_UPWARD_MAP_PHOTO_LOCATIONS, TF2_STAMP_BACKGROUND, type Tf2LoadingAsset } from "@playsrc/game-tf2-browser/loading-presentation"
 
 const HASH = /^[0-9a-f]{64}$/
 const PRODUCTION_APPLICATION_ORIGIN = "https://playsrc.online"
@@ -9,7 +9,7 @@ const PRODUCTION_ASSET_ORIGIN = "https://assets.playsrc.online"
 export type BrowserConfiguration = Readonly<{
   application: "tf2"
   applicationBuild: string
-  target: "jump_beef"
+  target: "jump_beef" | "pl_upward"
   renderLevel: 0 | 1 | 2
   assetOrigin: string
   allowedExternalOrigins: readonly string[]
@@ -18,7 +18,7 @@ export type BrowserConfiguration = Readonly<{
   catalog: ObjectDescriptor
   startup: Tf2StartupDescriptor
   loading: Readonly<{
-    mapPhotoLocations: typeof TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS
+    mapPhotoLocations: typeof TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS | typeof TF2_PL_UPWARD_MAP_PHOTO_LOCATIONS
     stampBackground: Readonly<{ material: Tf2LoadingAsset; texture: Tf2LoadingAsset }>
   }>
   presentation: Readonly<{
@@ -45,7 +45,7 @@ export function parseBrowserConfiguration(value: unknown, applicationOrigin: str
     value.application !== "tf2" ||
     typeof value.applicationBuild !== "string" ||
     !HASH.test(value.applicationBuild) ||
-    value.target !== "jump_beef" ||
+    (value.target !== "jump_beef" && value.target !== "pl_upward") ||
     (value.renderLevel !== 0 && value.renderLevel !== 1 && value.renderLevel !== 2) ||
     typeof value.assetOrigin !== "string" ||
     !acceptedAssetOrigin(applicationOrigin, value.assetOrigin) ||
@@ -72,7 +72,7 @@ export function parseBrowserConfiguration(value: unknown, applicationOrigin: str
     JSON.stringify(value.startup) !== JSON.stringify(TF2_CONFIGURED_STARTUP) ||
     !record(value.loading) ||
     Object.keys(value.loading).sort().join("\0") !== "mapPhotoLocations\0stampBackground" ||
-    JSON.stringify(value.loading.mapPhotoLocations) !== JSON.stringify(TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS) ||
+    JSON.stringify(value.loading.mapPhotoLocations) !== JSON.stringify(value.target === "jump_beef" ? TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS : TF2_PL_UPWARD_MAP_PHOTO_LOCATIONS) ||
     JSON.stringify(value.loading.stampBackground) !== JSON.stringify(TF2_STAMP_BACKGROUND) ||
     !record(value.presentation) ||
     Object.keys(value.presentation).sort().join("\0") !== "activeHoliday\0activeOperation\0activeWar\0freeTrial\0randomSeed" ||

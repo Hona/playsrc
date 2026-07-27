@@ -283,9 +283,6 @@ pub(crate) fn compile_lighting(
     }
     let map_flags = u32_at(map_flag_bytes, 0);
     let game = parse_game_lumps(bsp, profile, limits)?;
-    if game.static_props > 0 {
-        return Err(error(ErrorCode::UnsupportedPropLighting, None));
-    }
     for (index, (first, count)) in game.detail_style_ranges.iter().copied().enumerate() {
         let end = first
             .checked_add(count)
@@ -483,6 +480,13 @@ struct GameLighting {
     static_props: usize,
 }
 
+struct GameEntry {
+    id: u32,
+    version: u16,
+    encoded: Vec<u8>,
+    decoded: Vec<u8>,
+}
+
 fn parse_game_lumps(
     bsp: &Bsp,
     profile: LightingProfile,
@@ -519,7 +523,7 @@ fn parse_game_lumps(
     if directory_end > bytes.len() {
         return Err(error(ErrorCode::InvalidLightingProfile, Some(GAME_LUMP)));
     }
-    let mut entries = Vec::with_capacity(count);
+    let mut headers = Vec::with_capacity(count);
     let mut identities = BTreeSet::new();
     for index in 0..count {
         let at = 4 + index * 16;
@@ -533,13 +537,56 @@ fn parse_game_lumps(
             .map_err(|_| error(ErrorCode::InvalidLightingProfile, Some(index)))?;
         let length = usize::try_from(i32_at(bytes, at + 12))
             .map_err(|_| error(ErrorCode::InvalidLightingProfile, Some(index)))?;
-        let end = start
-            .checked_add(length)
-            .ok_or_else(|| error(ErrorCode::BoundExceeded, Some(index)))?;
-        if flags != 0 || end > bsp.source_bytes().len() {
+        if flags & !1 != 0 || start > bsp.source_bytes().len() {
             return Err(error(ErrorCode::InvalidLightingProfile, Some(index)));
         }
-        entries.push((id, version, &bsp.source_bytes()[start..end]));
+        headers.push((id, flags, version, start, length));
+    }
+    let mut entries = Vec::with_capacity(count);
+    for (index, (id, flags, version, start, length)) in headers.iter().copied().enumerate() {
+        let encoded_end = if flags & 1 != 0 {
+            headers
+                .iter()
+                .map(|entry| entry.3)
+                .filter(|candidate| *candidate > start)
+                .min()
+                .unwrap_or(directory.encoded_range.end)
+        } else {
+            start
+                .checked_add(length)
+                .ok_or_else(|| error(ErrorCode::BoundExceeded, Some(index)))?
+        };
+        let encoded_range = bsp
+            .source_bytes()
+            .get(start..encoded_end)
+            .ok_or_else(|| error(ErrorCode::InvalidLightingProfile, Some(index)))?;
+        let encoded = if flags & 1 != 0 {
+            let payload = encoded_range
+                .get(8..12)
+                .map(|value| u32::from_le_bytes(value.try_into().expect("fixed range")) as usize)
+                .ok_or_else(|| error(ErrorCode::InvalidLightingProfile, Some(index)))?;
+            encoded_range
+                .get(
+                    ..17_usize
+                        .checked_add(payload)
+                        .ok_or_else(|| error(ErrorCode::BoundExceeded, Some(index)))?,
+                )
+                .ok_or_else(|| error(ErrorCode::InvalidLightingProfile, Some(index)))?
+        } else {
+            encoded_range
+        };
+        let decoded = if flags & 1 != 0 {
+            playsrc_bsp::decode_source_lzma_member(encoded, length, playsrc_bsp::Limits::default())
+                .map_err(|_| error(ErrorCode::InvalidLightingProfile, Some(index)))?
+        } else {
+            encoded.to_vec()
+        };
+        entries.push(GameEntry {
+            id,
+            version,
+            encoded: encoded.to_vec(),
+            decoded,
+        });
     }
     let mut members = vec![standard_member(
         bsp,
@@ -548,16 +595,15 @@ fn parse_game_lumps(
         count,
     )?];
     let detail = find_game(&entries, *b"dprp");
-    let (detail_props, detail_style_ranges) = if let Some((version, bytes)) = detail {
-        if version != 4 {
+    let (detail_props, detail_style_ranges) = if let Some(entry) = detail {
+        if entry.version != 4 {
             return Err(error(ErrorCode::InvalidLightingProfile, None));
         }
-        let (props, styles) = detail_props(bytes)?;
+        let (props, styles) = detail_props(&entry.decoded)?;
         members.push(game_member(
             LightingMemberRole::DetailProps,
             *b"dprp",
-            version,
-            bytes,
+            entry,
             props,
         )?);
         (props, styles)
@@ -569,16 +615,15 @@ fn parse_game_lumps(
         LightingProfile::Ldr => *b"dplt",
         LightingProfile::Hdr => *b"dplh",
     };
-    let detail_style_samples = if let Some((version, bytes)) = find_game(&entries, detail_id) {
-        if version != 0 {
+    let detail_style_samples = if let Some(entry) = find_game(&entries, detail_id) {
+        if entry.version != 0 {
             return Err(error(ErrorCode::InvalidLightingProfile, None));
         }
-        let samples = detail_styles(bytes)?;
+        let samples = detail_styles(&entry.decoded)?;
         members.push(game_member(
             LightingMemberRole::DetailLighting,
             detail_id,
-            version,
-            bytes,
+            entry,
             samples,
         )?);
         samples
@@ -586,13 +631,12 @@ fn parse_game_lumps(
         members.push(absent_member(LightingMemberRole::DetailLighting));
         0
     };
-    let static_props = if let Some((version, bytes)) = find_game(&entries, *b"sprp") {
-        let props = static_prop_count(bytes)?;
+    let static_props = if let Some(entry) = find_game(&entries, *b"sprp") {
+        let props = static_prop_count(&entry.decoded)?;
         members.push(game_member(
             LightingMemberRole::StaticProps,
             *b"sprp",
-            version,
-            bytes,
+            entry,
             props,
         )?);
         props
@@ -609,11 +653,9 @@ fn parse_game_lumps(
     })
 }
 
-fn find_game<'a>(entries: &[(u32, u16, &'a [u8])], id: [u8; 4]) -> Option<(u16, &'a [u8])> {
+fn find_game(entries: &[GameEntry], id: [u8; 4]) -> Option<&GameEntry> {
     let id = u32::from_be_bytes(id);
-    entries
-        .iter()
-        .find_map(|entry| (entry.0 == id).then_some((entry.1, entry.2)))
+    entries.iter().find(|entry| entry.id == id)
 }
 
 fn detail_props(bytes: &[u8]) -> Result<(usize, Vec<(usize, usize)>), Error> {
@@ -718,17 +760,19 @@ fn standard_member(
 fn game_member(
     role: LightingMemberRole,
     id: [u8; 4],
-    version: u16,
-    bytes: &[u8],
+    entry: &GameEntry,
     count: usize,
 ) -> Result<LightingMember, Error> {
     Ok(LightingMember {
         role,
-        source: Some(LightingSource::GameLump { id, version }),
-        encoded_bytes: as_u32(bytes.len())?,
-        decoded_bytes: as_u32(bytes.len())?,
-        encoded_sha256: Sha256::digest(bytes).into(),
-        decoded_sha256: Sha256::digest(bytes).into(),
+        source: Some(LightingSource::GameLump {
+            id,
+            version: entry.version,
+        }),
+        encoded_bytes: as_u32(entry.encoded.len())?,
+        decoded_bytes: as_u32(entry.decoded.len())?,
+        encoded_sha256: Sha256::digest(&entry.encoded).into(),
+        decoded_sha256: Sha256::digest(&entry.decoded).into(),
         item_count: as_u32(count)?,
     })
 }

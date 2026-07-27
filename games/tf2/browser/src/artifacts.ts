@@ -100,7 +100,7 @@ export type ModelTextureBinding = Readonly<{
 export type CloakState = Readonly<{ enabled: boolean; factor: number; colorTint: readonly [number, number, number]; refractAmount: number }>
 export type ModelMaterialArtifact = Readonly<{
   identity: string
-  shader: "vertex-lit-generic" | "eye-refract" | "eyes"
+  shader: "unlit-generic" | "vertex-lit-generic" | "eye-refract" | "eyes"
   vertexRequirements: number
   bindings: readonly ModelTextureBinding[]
   environmentMap: null | Readonly<{ tint: readonly [number, number, number]; contrast: number; saturation: number }>
@@ -149,6 +149,7 @@ export type ModelMaterialArtifact = Readonly<{
         cloak: CloakState
       }>
     | Readonly<{ kind: "eyes"; halfLambert: boolean; dilation: number }>
+    | Readonly<{ kind: "unlit-generic" }>
 }>
 export type AuthoredTexturePlane = Readonly<{
   mip: number
@@ -846,7 +847,7 @@ function parseModelMaterials(r: Reader): ReadonlyMap<string, ModelMaterialArtifa
   const output = new Map<string, ModelMaterialArtifact>()
   for (let count = r.u32(); count > 0; count--) {
     const identity = r.text().toLowerCase(), shaderCode = r.u8()
-    if (!identity || output.has(identity) || shaderCode > 2 || r.u8()) throw new ArtifactError("model material identity")
+    if (!identity || output.has(identity) || shaderCode > 3 || r.u8()) throw new ArtifactError("model material identity")
     const vertexRequirements = r.u16(), bindings: ModelTextureBinding[] = [], bindingIdentities = new Set<string>()
     for (let bindingCount = r.u32(); bindingCount > 0; bindingCount--) {
       const kind = r.u8(), role = r.u8(), colorRead = r.u8()
@@ -920,15 +921,17 @@ function parseModelMaterials(r: Reader): ReadonlyMap<string, ModelMaterialArtifa
         halfLambert: halfLambert === 1, dilation, glossiness, parallaxStrength, corneaBumpStrength,
         ambientOcclusionColor, eyeballRadius, cloak: cloak(r),
       })
-    } else {
+    } else if (shaderCode === 2) {
       const halfLambert = r.u8()
       if (halfLambert > 1 || r.u8() || r.u8() || r.u8()) throw new ArtifactError("eyes flags")
       state = Object.freeze({ kind: "eyes", halfLambert: halfLambert === 1, dilation: r.f32() })
+    } else {
+      state = Object.freeze({ kind: "unlit-generic" })
     }
     const opacity=r.u8(),framebuffer=r.u8(),requirementCount=r.u8();if(opacity>1||framebuffer>2||requirementCount>8||r.u8())throw new ArtifactError("model draw state");const names=["ambient-cube","local-lights","camera-position","studio-eye-parameters","local-environment","current-framebuffer","authored-texture-planes","game-proxy-values"] as const,requiredInputs=Object.freeze(Array.from({length:requirementCount},()=>{const code=r.u8();if(code<1||code>8)throw new ArtifactError("model draw requirement");return names[code-1]!}))
     output.set(identity, Object.freeze({
       identity,
-      shader: (["vertex-lit-generic", "eye-refract", "eyes"] as const)[shaderCode]!,
+      shader: (["vertex-lit-generic", "eye-refract", "eyes", "unlit-generic"] as const)[shaderCode]!,
       vertexRequirements,
       bindings: Object.freeze(bindings),
       environmentMap,

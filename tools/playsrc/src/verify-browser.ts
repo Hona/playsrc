@@ -15,10 +15,10 @@ const APPLICATION_URL = "http://127.0.0.1:4173/"
 const VIEWPORT_WIDTH = 1280
 const VIEWPORT_HEIGHT = 720
 const BACKGROUND_RGB = [17, 24, 32] as const
-const EXPECTED_RESOURCE_GRAPH_SHA256 = "0ec0858f928bf4cd501fc87a5486941b043f2bcc9cff1c19f6f05261fe1cc265"
+const EXPECTED_RESOURCE_GRAPH_SHA256 = "ba780ccfeacf4352f88926218baf3edc78799a40c08b88f7655a7e85ff9c302b"
 const EXPECTED_RESOURCE_ROLES = Object.freeze({
   startup: Object.freeze({ entries: 2, encodedBytes: 1_323_980 }),
-  menu: Object.freeze({ entries: 860, encodedBytes: 62_171_063 }),
+  menu: Object.freeze({ entries: 860, encodedBytes: 62_171_070 }),
   gameplay: Object.freeze({ entries: 305, encodedBytes: 56_244_327 }),
 })
 
@@ -494,8 +494,8 @@ function measureRegion(image: DecodedPng, region: (typeof VISUAL_REGIONS)[number
   })
 }
 
-async function captureCanvas(session: string, config: LocalConfig): Promise<CanvasEvidence> {
-  const evidenceDirectory = path.join(config.sourceCacheDir, "evidence", "browser", "jump_beef")
+async function captureCanvas(session: string, config: LocalConfig, target = "jump_beef"): Promise<CanvasEvidence> {
+  const evidenceDirectory = path.join(config.sourceCacheDir, "evidence", "browser", target)
   await mkdir(evidenceDirectory, { recursive: true })
   const temporaryPath = path.join(evidenceDirectory, `capture-${process.pid}.png`)
   await agent([
@@ -978,10 +978,95 @@ async function viewportOwnership(session: string, width: number, height: number)
   return evidence
 }
 
+async function verifyPlUpwardBrowser(config: LocalConfig): Promise<Record<string, unknown>> {
+  const version = await agent(["--version"])
+  const session = `playsrc-upward-${process.pid}`
+  const owner = await startDevelopmentProcess("pl_upward")
+  let browserOpen = false
+  let primaryError: unknown
+  const submit = async (command: string): Promise<void> => {
+    const visible = parseJson<boolean>(await agent(["--session", session, "eval", "(()=>{const dialog=document.querySelector('.developer-layer [data-vgui-service=developer-console] [role=dialog]');return !!dialog&&getComputedStyle(dialog).display!=='none'})()"] ))
+    if (!visible) await agent(["--session", session, "press", "Backquote"])
+    await agent(["--session", session, "click", "[aria-label='Console command']"])
+    await agent(["--session", session, "wait", "--fn", "document.activeElement?.getAttribute('aria-label') === 'Console command'", "--timeout", "30000"])
+    await agent(["--session", session, "fill", "[aria-label='Console command']", command])
+    await agent(["--session", session, "press", "Enter"])
+  }
+  try {
+    await agent(["--session", session, "--headed", "--webgpu", "open", owner.url])
+    browserOpen = true
+    await agent(["--session", session, "set", "viewport", String(VIEWPORT_WIDTH), String(VIEWPORT_HEIGHT)])
+    const startup = await completeStartup(session, config, "pl-upward-cold", "complete")
+    await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.phase === 'MainMenu'", "--timeout", "300000"])
+    await submit("map pl_upward")
+    try {
+      await agent(["--session", session, "wait", "--fn", "['Ready','Failed'].includes(document.querySelector('main').dataset.phase)", "--timeout", "600000"])
+      const terminal = parseJson<{ phase: string; gameui: string }>(await agent(["--session", session, "eval", "(()=>{const m=document.querySelector('main');return{phase:m.dataset.phase,gameui:m.dataset.gameui}})()"] ))
+      if (terminal.phase !== "Ready" || terminal.gameui !== "in-game") throw new Error("loading entered failure")
+    } catch (error) {
+      const state = await agent(["--session", session, "eval", "(()=>{const m=document.querySelector('main');return{phase:m.dataset.phase,detail:m.dataset.detail,gameui:m.dataset.gameui,loading:m.dataset.loadingStatus,body:document.body.innerText.slice(-2000)}})()"])
+      throw new BrowserEvidenceError(`${String(error)}; pl_upward state: ${state}`)
+    }
+    await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.cameraPosition?.split(',').length===3", "--timeout", "30000"])
+    const firstCamera = await cameraObservation(session)
+    const firstCapture = await captureCanvas(session, config, "pl_upward")
+    require(firstCapture.width === VIEWPORT_WIDTH && firstCapture.height === VIEWPORT_HEIGHT
+      && firstCapture.regions.every((region) => region.nonBackgroundRatio > 0.95 && region.meanLuma > 17),
+    `pl_upward first terrain capture differs: ${JSON.stringify(firstCapture)}`)
+
+    await submit("noclip")
+    await agent(["--session", session, "press", "Backquote"])
+    await agent(["--session", session, "wait", "--fn", "Number(document.querySelector('main').dataset.movementMode) === 1", "--timeout", "30000"])
+    await agent(["--session", session, "eval", "window.dispatchEvent(new KeyboardEvent('keydown',{code:'KeyW',key:'w',bubbles:true}));true"])
+    await agent(["--session", session, "wait", "--fn", "Number(document.querySelector('main').dataset.wishSpeed)>0", "--timeout", "30000"])
+    await Bun.sleep(1000)
+    await agent(["--session", session, "eval", "window.dispatchEvent(new KeyboardEvent('keyup',{code:'KeyW',key:'w',bubbles:true}));true"])
+    const secondCamera = await cameraObservation(session)
+    require(secondCamera.position.some((value, index) => Math.abs(value - firstCamera.position[index]!) > 1),
+      `pl_upward noclip did not move the camera: ${JSON.stringify({ firstCamera, secondCamera })}`)
+    const secondCapture = await captureCanvas(session, config, "pl_upward")
+    require(secondCapture.regions.every((region) => region.nonBackgroundRatio > 0.95 && region.meanLuma > 17),
+      `pl_upward second terrain capture differs: ${JSON.stringify(secondCapture)}`)
+
+    await submit("map pl_upward")
+    await agent(["--session", session, "wait", "--fn", "document.querySelector('.developer-layer [data-vgui-service=developer-console]')?.textContent.includes('Loaded pl_upward; generation 2')", "--timeout", "600000"])
+    await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.phase === 'Ready'", "--timeout", "300000"])
+    const publication = parseJson<{ body: string; claims: string[]; displacement: number; materials: string }>(await agent([
+      "--session", session, "eval",
+      "(()=>{const main=document.querySelector('main'),claims=Object.entries(main.dataset).filter(([key])=>/payload|cart|checkpoint|overtime|score|winning|winner/i.test(key)).map(([key,value])=>`${key}:${value}`);return{body:document.body.innerText,claims,displacement:Number(main.dataset.displacementSurfaces),materials:main.dataset.modelMaterialProbe||''}})()",
+    ]))
+    require(publication.body.includes("pl_upward") && !publication.body.includes("jump_beef"), "active stock-map product identity differs")
+    require(publication.claims.length === 0, `Payload gameplay claims were published: ${JSON.stringify(publication.claims)}`)
+    return {
+      target: "pl_upward",
+      browser: version,
+      startup,
+      firstCamera,
+      secondCamera,
+      captures: [firstCapture, secondCapture],
+      noclip: "mode-1-movement-admitted",
+      replacementGeneration: 2,
+      payloadGameplayClaims: 0,
+      shutdown: "pending",
+    }
+  } catch (error) {
+    primaryError = error
+    throw error
+  } finally {
+    if (browserOpen) await agent(["--session", session, "close"]).catch(() => {})
+    try {
+      await owner.interrupt()
+    } catch (error) {
+      if (primaryError === undefined) throw error
+    }
+  }
+}
+
 export async function verifyBrowserAcceptance(
   config: LocalConfig,
   target: string | undefined,
 ): Promise<Record<string, unknown>> {
+  if (target === "pl_upward") return verifyPlUpwardBrowser(config)
   const version = await agent(["--version"])
   const session = `playsrc-acceptance-${process.pid}`
   const owner = await startDevelopmentProcess(target)
@@ -1681,7 +1766,7 @@ export async function verifyBrowserAcceptance(
       `content closure platform classification count changed: ${JSON.stringify(blockerPartition.platform)}`)
     require(!blockerPartition.authorityBehavior.some((blocker) => blocker.includes("random stream")) &&
       blockerPartition.authorityBehavior.some((blocker) => blocker.includes("sticky IVP solver unavailable")) &&
-      blockerPartition.authorityBehavior.some((blocker) => blocker.includes("Tempus core and jump_beef zone contract unavailable")),
+      blockerPartition.authorityBehavior.some((blocker) => blocker.includes("Tempus core and configured Jump course contract unavailable")),
     `authority blocker ledger differs: ${JSON.stringify(blockerPartition.authorityBehavior)}`)
     await agent(["--session", session, "press", "Escape"])
     await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.gameui==='pause'", "--timeout", "30000"])
@@ -1791,12 +1876,15 @@ export async function verifyBrowserAcceptance(
         record.sha256 === "4610e40fe34d61d2eb6a61c1cc2e7fa725bd4b91eded2584e2973f8c162dbac4" ||
         record.sha256 === "56153098a867c553651f9c773bd72c4659782bae8520277c80daaaa414bdf156",
     )
-    require(mapRecords.length === 1 &&
+    require(mapRecords.length >= 1 && mapRecords.length <= 2 && new Set(mapRecords.map((record) => record.sha256)).size === mapRecords.length &&
       mapRecords.some(
         (record) =>
           record.byteLength === 78_255_422 &&
           record.sha256 === "4610e40fe34d61d2eb6a61c1cc2e7fa725bd4b91eded2584e2973f8c162dbac4",
-      ), `warm active IndexedDB record identity differs: ${JSON.stringify(mapRecords)}`)
+      ) && mapRecords.every((record) =>
+        record.sha256 === "4610e40fe34d61d2eb6a61c1cc2e7fa725bd4b91eded2584e2973f8c162dbac4"
+          ? record.byteLength === 78_255_422
+          : record.byteLength === 42_082_929), `warm active IndexedDB record identity differs: ${JSON.stringify(mapRecords)}`)
     return {
       target: "jump_beef",
       browser: version,
