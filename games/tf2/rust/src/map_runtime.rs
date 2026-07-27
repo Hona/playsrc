@@ -384,9 +384,9 @@ impl MapRuntime {
             let Some(name) = entity.targetname.as_ref().filter(|name| !name.is_empty()) else {
                 continue;
             };
-            let negated = integer(entity, b"Negated", 0)? != 0;
+            let negated = boolean(entity, b"Negated", false);
             let filter = if class(entity, b"filter_activator_tfteam") {
-                let team = integer(entity, b"TeamNum", 0)?;
+                let team = integer(entity, b"TeamNum", 0);
                 if !(0..=u8::MAX as i32).contains(&team) {
                     return Err(invalid(entity.index));
                 }
@@ -395,7 +395,7 @@ impl MapRuntime {
                     negated,
                 })
             } else if class(entity, b"filter_tf_class") {
-                let class = integer(entity, b"tfclass", 0)?;
+                let class = integer(entity, b"tfclass", 0);
                 if !(0..=u8::MAX as i32).contains(&class) {
                     return Err(invalid(entity.index));
                 }
@@ -404,7 +404,7 @@ impl MapRuntime {
                     negated,
                 })
             } else if class(entity, b"filter_tf_condition") {
-                let condition = integer(entity, b"condition", 0)?;
+                let condition = integer(entity, b"condition", 0);
                 if !(0..160).contains(&condition) {
                     return Err(invalid(entity.index));
                 }
@@ -500,7 +500,7 @@ impl MapRuntime {
                         .filter(|value| !value.is_empty())
                         .and_then(|name| points.get(&ascii_lower(name)))
                         .copied();
-                    let flags = integer(entity, b"spawnflags", 0)?;
+                    let flags = integer(entity, b"spawnflags", 0);
                     teleports.insert(
                         handle,
                         TeleportLink {
@@ -527,9 +527,8 @@ impl MapRuntime {
                     .filter(|candidate| class(candidate, b"prop_dynamic"));
                 let associated_model =
                     associated.and_then(|candidate| u32::try_from(candidate.index).ok());
-                let associated_body = associated
-                    .map(|candidate| integer(candidate, b"SetBodyGroup", 0))
-                    .transpose()?;
+                let associated_body =
+                    associated.map(|candidate| integer(candidate, b"SetBodyGroup", 0));
                 volumes.push(Volume {
                     source,
                     handle: source_handles.get(&source).copied(),
@@ -538,7 +537,7 @@ impl MapRuntime {
                         .ok_or_else(|| invalid(entity.index))?,
                     origin: vector(entity, b"origin", Some([0.0; 3]))?,
                     kind: VolumeKind::Regenerate {
-                        enabled: integer(entity, b"StartDisabled", 0)? == 0,
+                        enabled: !boolean(entity, b"StartDisabled", false),
                         team,
                         associated_model,
                         associated_body,
@@ -557,7 +556,7 @@ impl MapRuntime {
                         .ok_or_else(|| invalid(entity.index))?,
                     origin: vector(entity, b"origin", Some([0.0; 3]))?,
                     kind: VolumeKind::RespawnRoom {
-                        enabled: integer(entity, b"StartDisabled", 0)? == 0,
+                        enabled: !boolean(entity, b"StartDisabled", false),
                         team,
                     },
                     touching: false,
@@ -1169,22 +1168,20 @@ fn field<'a>(entity: &'a playsrc_entity::Entity, name: &[u8]) -> Option<&'a [u8]
         .map(|pair| pair.value.as_slice())
 }
 
-fn integer(
-    entity: &playsrc_entity::Entity,
-    name: &[u8],
-    default: i32,
-) -> Result<i32, RuntimeFailure> {
-    match field(entity, name) {
-        None => Ok(default),
-        Some(value) => std::str::from_utf8(value)
-            .ok()
-            .and_then(|value| value.trim().parse().ok())
-            .ok_or_else(|| invalid(entity.index)),
-    }
+fn integer(entity: &playsrc_entity::Entity, name: &[u8], default: i32) -> i32 {
+    field(entity, name).map_or(default, |value| {
+        playsrc_keyvalues::NumericValue::Bytes(value).get_int()
+    })
+}
+
+fn boolean(entity: &playsrc_entity::Entity, name: &[u8], default: bool) -> bool {
+    field(entity, name).map_or(default, |value| {
+        playsrc_keyvalues::NumericValue::Bytes(value).get_bool()
+    })
 }
 
 fn source_team(entity: &playsrc_entity::Entity) -> Result<Option<u8>, RuntimeFailure> {
-    match integer(entity, b"TeamNum", 0)? {
+    match integer(entity, b"TeamNum", 0) {
         0 => Ok(None),
         2 => Ok(Some(2)),
         3 => Ok(Some(3)),
@@ -1200,9 +1197,7 @@ fn number(
     match field(entity, name) {
         None => Ok(default),
         Some(value) => {
-            let value = std::str::from_utf8(value)
-                .ok()
-                .and_then(|value| value.trim().parse::<f32>().ok())
+            let value = Some(playsrc_keyvalues::NumericValue::Bytes(value).get_float())
                 .filter(|value| value.is_finite())
                 .ok_or_else(|| invalid(entity.index))?;
             Ok(value)
@@ -1360,6 +1355,27 @@ mod tests {
             }
             .passes(winner)
         );
+    }
+
+    #[test]
+    fn tf_filter_uses_source_numeric_prefix_accessors_without_rewriting_entity_values() {
+        let raw = b"Allow entities that match criteria";
+        let graph = playsrc_entity::parse(
+            b"{\"classname\"\"filter_activator_tfteam\"\"targetname\"\"filter_team_blue\"\"TeamNum\"\"3 blue\"\"Negated\"\"Allow entities that match criteria\"}",
+            playsrc_entity::Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(field(&graph.entities[0], b"Negated"), Some(raw.as_slice()));
+
+        let runtime = MapRuntime::compile(&graph, 0.015, 1, Vec::new()).unwrap();
+        assert_eq!(
+            runtime.game_filters.get(b"filter_team_blue".as_slice()),
+            Some(&GameFilter::Team {
+                team: 3,
+                negated: false,
+            })
+        );
+        assert_eq!(field(&graph.entities[0], b"Negated"), Some(raw.as_slice()));
     }
 
     #[test]

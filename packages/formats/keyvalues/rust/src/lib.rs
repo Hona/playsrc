@@ -88,6 +88,187 @@ pub enum ScalarKind {
     Uint64(u64),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NumericValue<'a> {
+    Bytes(&'a [u8]),
+    Integer(i32),
+    Float(f32),
+    Uint64(u64),
+}
+
+impl NumericValue<'_> {
+    pub fn get_int(self) -> i32 {
+        match self {
+            Self::Bytes(value) => decimal_i32_prefix(value),
+            Self::Integer(value) => value,
+            Self::Float(value) => value as i32,
+            Self::Uint64(_) => 0,
+        }
+    }
+
+    pub fn get_uint64(self) -> u64 {
+        match self {
+            Self::Bytes(value) => source_i64_prefix(value) as u64,
+            Self::Integer(value) => value as u64,
+            Self::Float(value) => (value as i32) as u64,
+            Self::Uint64(value) => value,
+        }
+    }
+
+    pub fn get_float(self) -> f32 {
+        match self {
+            Self::Bytes(value) => decimal_float_prefix(value),
+            Self::Integer(value) => value as f32,
+            Self::Float(value) => value,
+            Self::Uint64(value) => value as f32,
+        }
+    }
+
+    pub fn get_bool(self) -> bool {
+        self.get_int() != 0
+    }
+}
+
+fn decimal_i32_prefix(value: &[u8]) -> i32 {
+    let mut cursor = source_whitespace_prefix(value);
+    let negative = match value.get(cursor) {
+        Some(b'-') => {
+            cursor += 1;
+            true
+        }
+        Some(b'+') => {
+            cursor += 1;
+            false
+        }
+        _ => false,
+    };
+    let limit = if negative {
+        i32::MAX as u64 + 1
+    } else {
+        i32::MAX as u64
+    };
+    let mut result = 0_u64;
+    let mut found = false;
+    while let Some(digit) = value.get(cursor).and_then(|byte| byte.checked_sub(b'0')) {
+        if digit > 9 {
+            break;
+        }
+        found = true;
+        result = result
+            .saturating_mul(10)
+            .saturating_add(u64::from(digit))
+            .min(limit);
+        cursor += 1;
+    }
+    if !found {
+        0
+    } else if negative && result == i32::MAX as u64 + 1 {
+        i32::MIN
+    } else if negative {
+        -(result as i32)
+    } else {
+        result as i32
+    }
+}
+
+fn source_i64_prefix(value: &[u8]) -> i64 {
+    let mut cursor = 0;
+    let negative = match value.first() {
+        Some(b'-') => {
+            cursor = 1;
+            true
+        }
+        Some(b'+') => {
+            cursor = 1;
+            false
+        }
+        _ => false,
+    };
+    let radix = if value
+        .get(cursor..cursor + 2)
+        .is_some_and(|prefix| prefix[0] == b'0' && matches!(prefix[1], b'x' | b'X'))
+    {
+        cursor += 2;
+        16
+    } else if value.get(cursor) == Some(&b'\'') {
+        return value
+            .get(cursor + 1)
+            .copied()
+            .map_or(0, |byte| i64::from(byte) * if negative { -1 } else { 1 });
+    } else {
+        10
+    };
+    let mut result = 0_u64;
+    while let Some(digit) = value.get(cursor).and_then(|byte| match *byte {
+        b'0'..=b'9' => Some(*byte - b'0'),
+        b'a'..=b'f' if radix == 16 => Some(*byte - b'a' + 10),
+        b'A'..=b'F' if radix == 16 => Some(*byte - b'A' + 10),
+        _ => None,
+    }) {
+        if digit >= radix {
+            break;
+        }
+        result = result
+            .wrapping_mul(u64::from(radix))
+            .wrapping_add(u64::from(digit));
+        cursor += 1;
+    }
+    let signed = result as i64;
+    if negative {
+        signed.wrapping_neg()
+    } else {
+        signed
+    }
+}
+
+fn decimal_float_prefix(value: &[u8]) -> f32 {
+    let start = source_whitespace_prefix(value);
+    let mut cursor = start;
+    if matches!(value.get(cursor), Some(b'+' | b'-')) {
+        cursor += 1;
+    }
+    let integer_start = cursor;
+    while value.get(cursor).is_some_and(u8::is_ascii_digit) {
+        cursor += 1;
+    }
+    let mut digits = cursor - integer_start;
+    if value.get(cursor) == Some(&b'.') {
+        cursor += 1;
+        let fraction_start = cursor;
+        while value.get(cursor).is_some_and(u8::is_ascii_digit) {
+            cursor += 1;
+        }
+        digits += cursor - fraction_start;
+    }
+    if digits == 0 {
+        return 0.0;
+    }
+    if matches!(value.get(cursor), Some(b'e' | b'E')) {
+        let mut exponent_end = cursor + 1;
+        if matches!(value.get(exponent_end), Some(b'+' | b'-')) {
+            exponent_end += 1;
+        }
+        let exponent_start = exponent_end;
+        while value.get(exponent_end).is_some_and(u8::is_ascii_digit) {
+            exponent_end += 1;
+        }
+        if exponent_end > exponent_start {
+            cursor = exponent_end;
+        }
+    }
+    std::str::from_utf8(&value[start..cursor])
+        .ok()
+        .and_then(|number| number.parse::<f64>().ok())
+        .map_or(0.0, |number| number as f32)
+}
+
+fn source_whitespace_prefix(value: &[u8]) -> usize {
+    value
+        .iter()
+        .take_while(|byte| matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c))
+        .count()
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Scalar {
     pub token: Token,
@@ -941,6 +1122,42 @@ Second {}
         );
         assert_eq!(scalar_kind(&children[6]), ScalarKind::Bytes);
         assert_eq!(scalar_kind(&children[7]), ScalarKind::Bytes);
+    }
+
+    #[test]
+    fn source_numeric_accessors_preserve_prefix_default_and_native_type_contracts() {
+        for (source, expected) in [
+            (&b"  +42suffix"[..], 42),
+            (&b"-17.5"[..], -17),
+            (&b"1e3"[..], 1),
+            (&b"descriptive text"[..], 0),
+            (&b""[..], 0),
+            (&b"2147483648"[..], i32::MAX),
+            (&b"-2147483649"[..], i32::MIN),
+        ] {
+            assert_eq!(NumericValue::Bytes(source).get_int(), expected);
+        }
+        assert!(!NumericValue::Bytes(b"Allow entities that match criteria").get_bool());
+        assert!(NumericValue::Bytes(b" -2 trailing").get_bool());
+        assert_eq!(NumericValue::Integer(-12).get_int(), -12);
+        assert_eq!(NumericValue::Float(12.75).get_int(), 12);
+        assert_eq!(NumericValue::Uint64(u64::MAX).get_int(), 0);
+
+        assert_eq!(NumericValue::Bytes(b"15tail").get_float(), 15.0);
+        assert_eq!(NumericValue::Bytes(b" -1.25e2suffix").get_float(), -125.0);
+        assert_eq!(NumericValue::Bytes(b"1e suffix").get_float(), 1.0);
+        assert_eq!(NumericValue::Bytes(b"text").get_float(), 0.0);
+        assert!(NumericValue::Bytes(b"1e9999").get_float().is_infinite());
+        assert_eq!(NumericValue::Integer(7).get_float(), 7.0);
+        assert_eq!(NumericValue::Float(2.5).get_float(), 2.5);
+
+        assert_eq!(NumericValue::Bytes(b"123tail").get_uint64(), 123);
+        assert_eq!(NumericValue::Bytes(b"0x10tail").get_uint64(), 16);
+        assert_eq!(NumericValue::Bytes(b"'Arest").get_uint64(), 65);
+        assert_eq!(NumericValue::Bytes(b" 12").get_uint64(), 0);
+        assert_eq!(NumericValue::Integer(-1).get_uint64(), u64::MAX);
+        assert_eq!(NumericValue::Float(3.75).get_uint64(), 3);
+        assert_eq!(NumericValue::Uint64(u64::MAX).get_uint64(), u64::MAX);
     }
 
     #[test]

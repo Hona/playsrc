@@ -26,6 +26,7 @@ Provide a bounded representation and parser for the Source 1 KeyValues format fa
 - Preserve ordering and distinctions required by consuming Source formats.
 - Expose explicit malformed and unsupported input states.
 - Retain original byte spans, ordered repeated keys, scalar inference, conditions, directives, and byte-exact unmodified text.
+- Project retained byte, integer, float, and unsigned-64 scalar values through Source `GetInt`, `GetUint64`, `GetFloat`, and `GetBool` conversion without rewriting stored values.
 
 ## Non-Responsibilities
 
