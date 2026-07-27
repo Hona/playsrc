@@ -9,7 +9,8 @@ use std::{
 };
 
 const BUILD: &str = "24207079";
-const RESOURCE_GRAPH_SHA256: &str = "e26089c098ddb15185ae1ea1f188c958c6e07c54cf631ca2c663d8ecb5933eaa";
+const RESOURCE_GRAPH_SHA256: &str =
+    "e26089c098ddb15185ae1ea1f188c958c6e07c54cf631ca2c663d8ecb5933eaa";
 const BSP_SHA256: &str = "b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959";
 const OCCURRENCE_TRANSFORM_SHA256: &str =
     "7a4eff4a2d9ca0892b6f576d21df4d44d03e03f957499c20245740b21b4edee6";
@@ -1230,6 +1231,7 @@ fn verify_model_materials(files: &VpkFiles) -> Result<(), String> {
         mip_digest.extend_from_slice(identity.as_bytes());
         mip_digest.extend_from_slice(&studio::content_sha256(&material_bytes));
         mip_digest.push(match model.shader {
+            playsrc_material::ModelShader::UnlitGeneric => 3,
             playsrc_material::ModelShader::VertexLitGeneric => 0,
             playsrc_material::ModelShader::EyeRefract => 1,
             playsrc_material::ModelShader::Eyes => 2,

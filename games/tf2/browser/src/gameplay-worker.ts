@@ -156,7 +156,7 @@ function decodeResources(request: Extract<WorkerRequest, { kind: "decode-resourc
     fail(request.id, "InternalFailure")
     return
   }
-  const pointer = exports.playsrc_alloc(length)
+  const pointer = exports.playsrc_alloc(length) >>> 0
   const bytes = new Uint8Array(length)
   const copied = exports.playsrc_resource_copy(pointer, length)
   if (copied === length) bytes.set(new Uint8Array(exports.memory.buffer, pointer, length))
@@ -169,13 +169,13 @@ function decodeResources(request: Extract<WorkerRequest, { kind: "decode-resourc
 }
 
 function allocateCopy(exports: WasmExports, bytes: ArrayBuffer): number {
-  const pointer = exports.playsrc_alloc(bytes.byteLength)
+  const pointer = exports.playsrc_alloc(bytes.byteLength) >>> 0
   new Uint8Array(exports.memory.buffer, pointer, bytes.byteLength).set(new Uint8Array(bytes))
   return pointer
 }
 
 function readHash(exports: WasmExports, handle: number): string | undefined {
-  const pointer = exports.playsrc_alloc(32)
+  const pointer = exports.playsrc_alloc(32) >>> 0
   const copied = exports.playsrc_result_hash(handle, pointer)
   const hash =
     copied === 1
@@ -188,7 +188,7 @@ function readHash(exports: WasmExports, handle: number): string | undefined {
 }
 function readInitialView(exports: WasmExports, handle: number): InitialView | undefined {
   const length = 40
-  const pointer = exports.playsrc_alloc(length)
+  const pointer = exports.playsrc_alloc(length) >>> 0
   const copied = exports.playsrc_spawn_copy(handle, pointer, length)
   if (copied !== length) {
     exports.playsrc_free(pointer, length)
@@ -333,7 +333,7 @@ function readMap(request: Extract<WorkerRequest, { kind: "read-map" }>): void {
     fail(request.id, "InternalFailure")
     return
   }
-  const pointer = value.exports.playsrc_alloc(length)
+  const pointer = value.exports.playsrc_alloc(length) >>> 0
   const copied = value.exports.playsrc_result_copy(value.handle, pointer, length)
   if (copied !== length) {
     value.exports.playsrc_free(pointer, length)
@@ -354,7 +354,7 @@ function readPresentation(request: Extract<WorkerRequest, { kind: "read-presenta
     fail(request.id, "InternalFailure")
     return
   }
-  const pointer = wasm.playsrc_alloc(length)
+  const pointer = wasm.playsrc_alloc(length) >>> 0
   const copied = wasm.playsrc_presentation_copy(pending.handle, pointer, length)
   if (copied !== length) {
     wasm.playsrc_free(pointer, length)
@@ -366,7 +366,7 @@ function readPresentation(request: Extract<WorkerRequest, { kind: "read-presenta
   post({ id: request.id, kind: "presentation", generation: request.generation, payload }, [payload])
 }
 function releasePresentation(request:Extract<WorkerRequest,{kind:"release-presentation"}>):void{if(!wasm||!pending||pending.generation!==request.generation||wasm.playsrc_presentation_release(pending.handle)!==1){fail(request.id,"StaleGeneration");return}post({id:request.id,kind:"presentation-released",generation:request.generation})}
-function readCoverage(request:Extract<WorkerRequest,{kind:"read-coverage"}>):void{if(!wasm||!pending||pending.generation!==request.generation){fail(request.id,"StaleGeneration");return}const length=wasm.playsrc_coverage_length(pending.handle);if(!Number.isSafeInteger(length)||length<12||length>4*1024*1024){fail(request.id,"InternalFailure");return}const pointer=wasm.playsrc_alloc(length),copied=wasm.playsrc_coverage_copy(pending.handle,pointer,length);if(copied!==length){wasm.playsrc_free(pointer,length);fail(request.id,"InternalFailure");return}const payload=new Uint8Array(wasm.memory.buffer,pointer,length).slice().buffer;wasm.playsrc_free(pointer,length);post({id:request.id,kind:"coverage",generation:request.generation,payload},[payload])}
+function readCoverage(request:Extract<WorkerRequest,{kind:"read-coverage"}>):void{if(!wasm||!pending||pending.generation!==request.generation){fail(request.id,"StaleGeneration");return}const length=wasm.playsrc_coverage_length(pending.handle);if(!Number.isSafeInteger(length)||length<12||length>4*1024*1024){fail(request.id,"InternalFailure");return}const pointer=wasm.playsrc_alloc(length)>>>0,copied=wasm.playsrc_coverage_copy(pending.handle,pointer,length);if(copied!==length){wasm.playsrc_free(pointer,length);fail(request.id,"InternalFailure");return}const payload=new Uint8Array(wasm.memory.buffer,pointer,length).slice().buffer;wasm.playsrc_free(pointer,length);post({id:request.id,kind:"coverage",generation:request.generation,payload},[payload])}
 
 function activate(request: Extract<WorkerRequest, { kind: "activate" }>): void {
   if (!wasm || !pending || pending.generation !== request.generation) {
@@ -440,7 +440,7 @@ function observe(request: Extract<WorkerRequest, { kind: "observe" }>): void {
   const transactMilliseconds = performance.now() - transactStarted
   value.exports.playsrc_free(pointer, request.command.byteLength)
   if (result !== 1) {
-    const length=value.exports.playsrc_simulation_error_length(),detailPointer=length?value.exports.playsrc_alloc(length):0,copied=length?value.exports.playsrc_simulation_error_copy(detailPointer,length):0,reason=copied===length&&length?new TextDecoder().decode(new Uint8Array(value.exports.memory.buffer,detailPointer,length)):undefined;if(detailPointer)value.exports.playsrc_free(detailPointer,length);fail(request.id,"TransitionFailed",value.exports.playsrc_simulation_error(),reason)
+    const length=value.exports.playsrc_simulation_error_length(),detailPointer=length?value.exports.playsrc_alloc(length)>>>0:0,copied=length?value.exports.playsrc_simulation_error_copy(detailPointer,length):0,reason=copied===length&&length?new TextDecoder().decode(new Uint8Array(value.exports.memory.buffer,detailPointer,length)):undefined;if(detailPointer)value.exports.playsrc_free(detailPointer,length);fail(request.id,"TransitionFailed",value.exports.playsrc_simulation_error(),reason)
     return
   }
   const length = value.exports.playsrc_simulation_output_length(value.handle)
@@ -449,7 +449,7 @@ function observe(request: Extract<WorkerRequest, { kind: "observe" }>): void {
     return
   }
   const outputCopyStarted = performance.now()
-  const snapshotPointer = value.exports.playsrc_alloc(length)
+  const snapshotPointer = value.exports.playsrc_alloc(length) >>> 0
   const copied = value.exports.playsrc_simulation_output_copy(value.handle, snapshotPointer, length)
   if (copied !== length) {
     value.exports.playsrc_free(snapshotPointer, length)
@@ -487,7 +487,7 @@ function particles(request: Extract<WorkerRequest, { kind: "particles" }>): void
     fail(request.id, "InternalFailure")
     return
   }
-  const outputCopyStarted=performance.now(),outputPointer = value.exports.playsrc_alloc(length)
+  const outputCopyStarted=performance.now(),outputPointer = value.exports.playsrc_alloc(length) >>> 0
   if (value.exports.playsrc_particle_output_copy(value.handle, outputPointer, length) !== length) {
     value.exports.playsrc_free(outputPointer, length)
     fail(request.id, "InternalFailure")
@@ -523,7 +523,7 @@ function models(request: Extract<WorkerRequest, { kind: "models" }>): void {
     return
   }
   const outputCopyStarted = performance.now()
-  const outputPointer = value.exports.playsrc_alloc(length)
+  const outputPointer = value.exports.playsrc_alloc(length) >>> 0
   if (value.exports.playsrc_model_output_copy(value.handle, outputPointer, length) !== length) {
     value.exports.playsrc_free(outputPointer, length)
     fail(request.id, "InternalFailure")
@@ -546,7 +546,7 @@ function visibility(request: Extract<WorkerRequest, { kind: "visibility" }>): vo
     return
   }
   const inputCopyStarted = performance.now()
-  const pointer = value.exports.playsrc_alloc(40)
+  const pointer = value.exports.playsrc_alloc(40) >>> 0
   new Float32Array(value.exports.memory.buffer, pointer, 10).set([
     ...view.position, view.yawDegrees, view.pitchDegrees, view.verticalFovDegrees,
     view.aspectRatio, view.near, view.far, view.presentationTimeSeconds,
@@ -566,7 +566,7 @@ function visibility(request: Extract<WorkerRequest, { kind: "visibility" }>): vo
     return
   }
   const outputCopyStarted = performance.now()
-  const outputPointer = value.exports.playsrc_alloc(length)
+  const outputPointer = value.exports.playsrc_alloc(length) >>> 0
   if (value.exports.playsrc_visibility_output_copy(value.handle, outputPointer, length) !== length) {
     value.exports.playsrc_free(outputPointer, length)
     fail(request.id, "InternalFailure")

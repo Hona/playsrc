@@ -5,6 +5,8 @@ mod lighting;
 pub use lighting::*;
 mod environment;
 pub use environment::*;
+mod displacement;
+pub use displacement::DisplacementSurface;
 #[derive(Clone, Debug, PartialEq)]
 pub struct MaterialReference {
     pub index: usize,
@@ -30,6 +32,7 @@ pub struct Surface {
     pub uv_origin: TextureCoordinateOrigin,
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
+    pub alpha: Vec<f32>,
     pub uv: Vec<[f32; 2]>,
     pub lightmap_uv: Vec<[f32; 2]>,
     pub triangles: Vec<[u32; 3]>,
@@ -37,6 +40,7 @@ pub struct Surface {
     pub light_styles: [u8; 4],
     pub lightmap_size: [i32; 2],
     pub compiled_primitives: bool,
+    pub displacement: Option<DisplacementSurface>,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BrushModelIdentity {
@@ -113,13 +117,23 @@ pub struct RuntimeTexture {
     pub height: u32,
     pub rgba: Vec<u8>,
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RuntimeMaterial {
     pub logical_path: String,
     pub shader: u8,
     pub features: u8,
     pub texture_role: u8,
     pub base_texture: Option<RuntimeTexture>,
+    pub second_texture: Option<RuntimeTexture>,
+    pub detail: Option<RuntimeDetail>,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct RuntimeDetail {
+    pub texture: RuntimeTexture,
+    pub scale: [f32; 2],
+    pub blend_mode: i32,
+    pub blend_factor: f32,
+    pub tint: [f32; 3],
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeInput {
@@ -194,7 +208,6 @@ pub enum ErrorCode {
     InvalidReference,
     InvalidRange,
     UnsupportedPrimitive,
-    UnsupportedDisplacement,
     InvalidMaterial,
     NonFinite,
     IncompleteLightingProfile,
@@ -228,9 +241,6 @@ pub fn compile_prepared(
     entities: &playsrc_entity::Graph,
     collision: &playsrc_collision::World,
 ) -> Result<CanonicalMap, Error> {
-    if !bsp.lumps[26].bytes(bsp).is_empty() {
-        return Err(error(ErrorCode::UnsupportedDisplacement, None));
-    }
     let faces = match &bsp.lumps[if profile == LightingProfile::Hdr {
         58
     } else {
@@ -305,6 +315,21 @@ pub fn compile_prepared(
         LumpData::PrimitiveIndices(v) => v.as_slice(),
         _ => &[],
     };
+    let displacement_info = match &bsp.lumps[26].records {
+        LumpData::DispInfo(v) => v.as_slice(),
+        LumpData::Opaque if bsp.lumps[26].bytes(bsp).is_empty() => &[],
+        _ => return Err(error(ErrorCode::MissingLump, Some(26))),
+    };
+    let displacement_vertices = match &bsp.lumps[33].records {
+        LumpData::DispVertices(v) => v.as_slice(),
+        LumpData::Opaque if bsp.lumps[33].bytes(bsp).is_empty() => &[],
+        _ => return Err(error(ErrorCode::MissingLump, Some(33))),
+    };
+    let displacement_triangles = match &bsp.lumps[48].records {
+        LumpData::DispTriangles(v) => v.as_slice(),
+        LumpData::Opaque if bsp.lumps[48].bytes(bsp).is_empty() => &[],
+        _ => return Err(error(ErrorCode::MissingLump, Some(48))),
+    };
     let materials = materials(texdata, offsets, strings)?;
     let lighting = compile_lighting(bsp, profile, faces, texinfo, LightingLimits::default())?;
     let entity_models = entities
@@ -358,42 +383,75 @@ pub fn compile_prepared(
         {
             return Err(error(ErrorCode::NonFinite, Some(face_index)));
         }
-        let face_normals = face_normals(
-            face,
-            face_index,
-            &positions,
-            normals,
-            normal_indices,
-            normal_cursor,
-            bsp,
-        )?;
+        let displacement = (face.displacement_info_index >= 0)
+            .then(|| {
+                displacement::compile(displacement::Inputs {
+                    face_index,
+                    face,
+                    corners: &positions,
+                    info,
+                    material: &texdata[material],
+                    displacements: displacement_info,
+                    vertices: displacement_vertices,
+                    triangle_tags: displacement_triangles,
+                })
+            })
+            .transpose()?;
+        let face_normals = if let Some(displacement) = &displacement {
+            displacement.normals.clone()
+        } else {
+            face_normals(
+                face,
+                face_index,
+                &positions,
+                normals,
+                normal_indices,
+                normal_cursor,
+                bsp,
+            )?
+        };
         normal_cursor = normal_cursor
             .checked_add(face.surface_edge_count as usize)
             .ok_or_else(|| error(ErrorCode::InvalidRange, Some(face_index)))?;
-        let uv = positions
-            .iter()
-            .map(|p| {
-                uv(
-                    p,
-                    &info.texture_vectors,
-                    material_info.width,
-                    material_info.height,
+        let (positions, uv, lightmap_uv, alpha, indices, compiled, displacement_descriptor) =
+            if let Some(displacement) = displacement {
+                (
+                    displacement.positions,
+                    displacement.uv,
+                    displacement.lightmap_uv,
+                    displacement.alpha,
+                    displacement.triangles,
+                    false,
+                    Some(displacement.descriptor),
                 )
-            })
-            .collect();
-        let lightmap_uv = positions
-            .iter()
-            .map(|p| lightmap_uv(p, info, face))
-            .collect();
-        let (mut indices, compiled) = triangles_for(
-            face,
-            face_index,
-            positions.len(),
-            primitives,
-            primitive_vertices,
-            primitive_indices,
-        )?;
-        normalize_triangle_winding(&positions, &face_normals, &mut indices);
+            } else {
+                let uv = positions
+                    .iter()
+                    .map(|p| {
+                        uv(
+                            p,
+                            &info.texture_vectors,
+                            material_info.width,
+                            material_info.height,
+                        )
+                    })
+                    .collect();
+                let lightmap_uv = positions
+                    .iter()
+                    .map(|p| lightmap_uv(p, info, face))
+                    .collect();
+                let (mut indices, compiled) = triangles_for(
+                    face,
+                    face_index,
+                    positions.len(),
+                    primitives,
+                    primitive_vertices,
+                    primitive_indices,
+                )?;
+                normalize_triangle_winding(&positions, &face_normals, &mut indices);
+                let alpha = vec![0.0; positions.len()];
+                (positions, uv, lightmap_uv, alpha, indices, compiled, None)
+            };
         triangles += indices.len();
         output_vertices += positions.len();
         let flags = info.flags;
@@ -419,6 +477,7 @@ pub fn compile_prepared(
             uv_origin: TextureCoordinateOrigin::TopLeft,
             positions,
             normals: face_normals,
+            alpha,
             uv,
             lightmap_uv,
             triangles: indices,
@@ -426,6 +485,7 @@ pub fn compile_prepared(
             light_styles: face.styles,
             lightmap_size: face.lightmap_size,
             compiled_primitives: compiled,
+            displacement: displacement_descriptor,
         });
     }
     let face_materials = output
@@ -608,18 +668,24 @@ fn serialize(context: &SerializationContext<'_>) -> Vec<u8> {
     let models = context.models;
     let occurrences = context.occurrences;
     let mut out = b"PSMP".to_vec();
-    u32v(
-        &mut out,
-        if map.lighting_profile == LightingProfile::Hdr {
-            4
-        } else if !models.is_empty() {
-            3
-        } else if !materials.is_empty() {
-            2
+    let schema = if map.lighting_profile == LightingProfile::Hdr {
+        if map
+            .surfaces
+            .iter()
+            .any(|surface| surface.displacement.is_some())
+        {
+            5
         } else {
-            1
-        },
-    );
+            4
+        }
+    } else if !models.is_empty() {
+        3
+    } else if !materials.is_empty() {
+        2
+    } else {
+        1
+    };
+    u32v(&mut out, schema);
     u32v(&mut out, map.bsp_version as u32);
     u32v(&mut out, map.map_revision as u32);
     out.push(match map.lighting_profile {
@@ -664,6 +730,11 @@ fn serialize(context: &SerializationContext<'_>) -> Vec<u8> {
             f32v(&mut out, uv[0]);
             f32v(&mut out, uv[1]);
         }
+        if schema == 5 {
+            for alpha in &s.alpha {
+                f32v(&mut out, *alpha);
+            }
+        }
         for t in &s.triangles {
             for v in t {
                 u32v(&mut out, *v)
@@ -673,6 +744,50 @@ fn serialize(context: &SerializationContext<'_>) -> Vec<u8> {
         out.extend_from_slice(&s.light_styles);
         i32v(&mut out, s.lightmap_size[0]);
         i32v(&mut out, s.lightmap_size[1]);
+        if schema == 5 {
+            if let Some(displacement) = &s.displacement {
+                out.push(1);
+                out.push(displacement.power);
+                out.extend_from_slice(&[0; 2]);
+                u32v(&mut out, displacement.source as u32);
+                i32v(&mut out, displacement.minimum_tessellation);
+                f32v(&mut out, displacement.smoothing_angle);
+                u32v(&mut out, displacement.contents);
+                out.extend_from_slice(&displacement.map_face.to_le_bytes());
+                out.extend_from_slice(&[0; 2]);
+                for value in displacement.start_position {
+                    f32v(&mut out, value);
+                }
+                u32v(&mut out, displacement.vertex_start);
+                u32v(&mut out, displacement.triangle_start);
+                for value in displacement.allowed_vertices {
+                    u32v(&mut out, value);
+                }
+                for edge in displacement.edge_neighbors {
+                    for neighbor in edge.sub_neighbors {
+                        out.extend_from_slice(&neighbor.neighbor.to_le_bytes());
+                        out.extend_from_slice(&[
+                            neighbor.orientation,
+                            neighbor.span,
+                            neighbor.neighbor_span,
+                            neighbor.padding,
+                        ]);
+                    }
+                }
+                for corner in displacement.corner_neighbors {
+                    for neighbor in corner.neighbors {
+                        out.extend_from_slice(&neighbor.to_le_bytes());
+                    }
+                    out.extend_from_slice(&[corner.neighbor_count, corner.padding]);
+                }
+                u32v(&mut out, displacement.triangle_tags.len() as u32);
+                for value in &displacement.triangle_tags {
+                    out.extend_from_slice(&value.to_le_bytes());
+                }
+            } else {
+                out.extend_from_slice(&[0; 4]);
+            }
+        }
     }
     match &map.lighting.samples {
         LightingSamples::RgbExp32(samples) => {
@@ -692,7 +807,7 @@ fn serialize(context: &SerializationContext<'_>) -> Vec<u8> {
     if !materials.is_empty() || map.lighting_profile == LightingProfile::Hdr {
         u32v(&mut out, materials.len() as u32);
         for material in materials {
-            materialv(&mut out, material);
+            materialv(&mut out, material, schema == 5);
         }
     }
     if !models.is_empty() || map.lighting_profile == LightingProfile::Hdr {
@@ -702,7 +817,7 @@ fn serialize(context: &SerializationContext<'_>) -> Vec<u8> {
             u32v(&mut out, model.materials.len() as u32);
             for material in &model.materials {
                 bytesv(&mut out, material.logical_path.as_bytes());
-                materialv(&mut out, material);
+                materialv(&mut out, material, schema == 5);
             }
             u32v(&mut out, model.primitives.len() as u32);
             for primitive in &model.primitives {
@@ -747,7 +862,7 @@ fn serialize(context: &SerializationContext<'_>) -> Vec<u8> {
     }
     out
 }
-fn materialv(out: &mut Vec<u8>, material: &RuntimeMaterial) {
+fn materialv(out: &mut Vec<u8>, material: &RuntimeMaterial, include_detail: bool) {
     out.push(material.shader);
     out.push(material.features);
     out.push(u8::from(material.base_texture.is_some()));
@@ -757,6 +872,32 @@ fn materialv(out: &mut Vec<u8>, material: &RuntimeMaterial) {
         u32v(out, texture.width);
         u32v(out, texture.height);
         bytesv(out, &texture.rgba);
+    }
+    if include_detail {
+        out.push(u8::from(material.second_texture.is_some()));
+        out.extend_from_slice(&[0; 3]);
+        if let Some(texture) = &material.second_texture {
+            bytesv(out, texture.logical_path.as_bytes());
+            u32v(out, texture.width);
+            u32v(out, texture.height);
+            bytesv(out, &texture.rgba);
+        }
+        out.push(u8::from(material.detail.is_some()));
+        out.extend_from_slice(&[0; 3]);
+        if let Some(detail) = &material.detail {
+            bytesv(out, detail.texture.logical_path.as_bytes());
+            u32v(out, detail.texture.width);
+            u32v(out, detail.texture.height);
+            bytesv(out, &detail.texture.rgba);
+            for value in detail.scale {
+                f32v(out, value);
+            }
+            i32v(out, detail.blend_mode);
+            f32v(out, detail.blend_factor);
+            for value in detail.tint {
+                f32v(out, value);
+            }
+        }
     }
 }
 fn lighting_sample_count(samples: &LightingSamples) -> usize {
@@ -921,6 +1062,48 @@ fn validate_runtime_material(material: &RuntimeMaterial, item: usize) -> Result<
             || texture.width == 0
             || texture.height == 0
             || pixels != Some(texture.rgba.len())
+        {
+            return Err(error(ErrorCode::InvalidMaterial, Some(item)));
+        }
+    }
+    if let Some(texture) = &material.second_texture {
+        let pixels = usize::try_from(texture.width)
+            .ok()
+            .and_then(|width| {
+                usize::try_from(texture.height)
+                    .ok()
+                    .and_then(|height| width.checked_mul(height))
+            })
+            .and_then(|pixels| pixels.checked_mul(4));
+        if texture.logical_path.is_empty()
+            || texture.width == 0
+            || texture.height == 0
+            || pixels != Some(texture.rgba.len())
+        {
+            return Err(error(ErrorCode::InvalidMaterial, Some(item)));
+        }
+    }
+    if let Some(detail) = &material.detail {
+        let texture = &detail.texture;
+        let pixels = usize::try_from(texture.width)
+            .ok()
+            .and_then(|width| {
+                usize::try_from(texture.height)
+                    .ok()
+                    .and_then(|height| width.checked_mul(height))
+            })
+            .and_then(|pixels| pixels.checked_mul(4));
+        if texture.logical_path.is_empty()
+            || texture.width == 0
+            || texture.height == 0
+            || pixels != Some(texture.rgba.len())
+            || detail
+                .scale
+                .iter()
+                .chain([detail.blend_factor].iter())
+                .any(|value| !value.is_finite())
+            || !(0..=11).contains(&detail.blend_mode)
+            || detail.tint.iter().any(|value| !value.is_finite())
         {
             return Err(error(ErrorCode::InvalidMaterial, Some(item)));
         }

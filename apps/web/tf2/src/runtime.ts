@@ -420,7 +420,7 @@ export class Tf2Application {
     this.#loadingPresentationGeneration += 1
     const result = resolveTf2LoadingBackground({
       generation: this.#loadingPresentationGeneration,
-      mapIdentity: "jump_beef",
+      mapIdentity: this.#configuration.target,
       viewport: this.#viewport(),
       mapPhotoLookups: this.#configuration.loading.mapPhotoLocations.map((location) => Object.freeze({ location, outcome: "missing" as const })),
       backingMaterial: this.#configuration.loading.stampBackground.material,
@@ -536,7 +536,7 @@ export class Tf2Application {
       return
     }
     if (request.kind === "load-map") {
-      if (request.mapIdentity !== "jump_beef") throw new Error(`Undeclared map request ${request.mapIdentity}`)
+      if (request.mapIdentity !== this.#configuration.target) throw new Error(`Undeclared map request ${request.mapIdentity}`)
       const started = this.#gameUi?.dispatch({ kind: "loading-started", mapIdentity: request.mapIdentity })
       if (started?.disposition !== "applied") throw new Error("TF2 GameUI rejected loading start")
       this.#beginLoadingPresentation()
@@ -1352,7 +1352,7 @@ export class Tf2Application {
     if (this.#loadingPresentationGeneration > 0 && this.#configuration) {
       const result = resolveTf2LoadingBackground({
         generation: this.#loadingPresentationGeneration,
-        mapIdentity: "jump_beef",
+        mapIdentity: this.#configuration.target,
         viewport,
         mapPhotoLookups: this.#configuration.loading.mapPhotoLocations.map((location) => Object.freeze({ location, outcome: "missing" as const })),
         backingMaterial: this.#configuration.loading.stampBackground.material,
@@ -1381,7 +1381,7 @@ export class Tf2Application {
     if (request.kind === "completion") {
       const candidates =
         request.commandName.toLowerCase() === "map"
-          ? ["map jump_beef"]
+          ? [`map ${this.#configuration.target}`]
           : request.commandName.toLowerCase() === "class"
             ? ["class soldier", "class demoman"]
             : []
@@ -1512,15 +1512,15 @@ export class Tf2Application {
       return
     }
     if (command === "map" && tokens.length === 1) {
-      if (tokens[0] === "jump_beef") {
+      if (tokens[0] === this.#configuration.target) {
         if (this.#client && this.#renderer && this.#loaded) await this.#replaceCatalogMap()
         else {
-          const transition = this.#gameUi?.dispatch({ kind: "map", mapIdentity: "jump_beef" })
+          const transition = this.#gameUi?.dispatch({ kind: "map", mapIdentity: this.#configuration.target })
           if (transition?.disposition !== "applied") this.#output(`ERROR: map rejected: ${transition?.reason ?? "GameUI unavailable"}`)
         }
       }
       else if (tokens[0]?.startsWith("https://")) await this.#replaceExternalMap(tokens[0])
-      else this.#output("Usage: map jump_beef")
+      else this.#output(`Usage: map ${this.#configuration.target}`)
       return
     }
     this.#output(`Unknown command: ${command}`)
@@ -1529,15 +1529,15 @@ export class Tf2Application {
   async #replaceCatalogMap(): Promise<void> {
     if (!this.#configuration) return
     if (!this.#client || !this.#renderer || !this.#loaded) {
-      const transition = this.#gameUi?.dispatch({ kind: "map", mapIdentity: "jump_beef" })
+      const transition = this.#gameUi?.dispatch({ kind: "map", mapIdentity: this.#configuration.target })
       if (transition?.disposition !== "applied") throw new Error(`map rejected: ${transition?.reason ?? "GameUI unavailable"}`)
       return
     }
     try {
       const signal = this.#nextOperationSignal()
-      this.#set({ phase: "Replacing", detail: "Reloading jump_beef through exact catalog identity" })
+      this.#set({ phase: "Replacing", detail: `Reloading ${this.#configuration.target} through exact catalog identity` })
       const bytes = await fetchImmutableObject(this.#configuration.assetOrigin, this.#configuration.bsp, signal)
-      await this.#replace(bytes, this.#configuration.bsp.sha256, "jump_beef")
+      await this.#replace(bytes, this.#configuration.bsp.sha256, this.#configuration.target)
     } catch (error) {
       const reason=error instanceof Error?`${error.name}: ${error.message}`:String(error)
       this.#output(`ERROR: Map replacement failed: ${reason}`)

@@ -18,6 +18,7 @@ Represent collision geometry and answer deterministic spatial queries.
 - Build queryable world, brush-model, prop, trigger, and model collision shapes.
 - Perform point contents, ray traces, hull sweeps, overlaps, and contact queries.
 - Preserve Source masks, contents, surfaces, fractions, normals, and solid-state results.
+- Retain every BSP displacement patch's source/parent/power/contents, vector-distance samples, and triangle tags in the immutable world identity; displacement ray, hull, overlap, and initial-overlap execution remains explicitly unimplemented.
 - Validate immutable BSP brush inputs, distinguish model 0 world brushes from non-world brush models through the model head-node leaf set, retain each model's ORed contents and one SHA-256 world identity, and sweep points or axis-aligned hulls through Source-space world convex half-spaces with the 1/32-inch brush epsilon.
 - Retain one exact brush set per BSP model and test translated model-space hull overlap for Entity-owned trigger contacts without adding inline models to world-solid traces.
 - Compile bounded immutable snapshots containing transformed inline brush models, world-aligned or oriented boxes, and supplied PHY polygon compounds. Every public immutable record retains stable identity, entity/static-prop role, enabled state, transform, conservative world bounds, linear/angular velocity, collision group, exact shape-derived contents, and surface flags; snapshot bytes and results bind the collision-world identity and monotonic revision.

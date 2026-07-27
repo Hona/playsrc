@@ -1619,10 +1619,21 @@ fn append_water_surfaces(
             .materials
             .get(&material)
             .ok_or_else(|| failure(EnvironmentErrorCode::InvalidReference, Some(material)))?;
-        let state = material_output
-            .water
-            .clone()
-            .ok_or_else(|| failure(EnvironmentErrorCode::InvalidReference, Some(material)))?;
+        let Some(state) = material_output.water.clone() else {
+            let compiled_cheap_water = material_output.shader
+                == playsrc_material::Shader::LightmappedGeneric
+                && material_output
+                    .first_parameters
+                    .get(b"%compilewater".as_slice())
+                    .is_some_and(|value| playsrc_keyvalues::NumericValue::Bytes(value).get_bool());
+            if compiled_cheap_water {
+                continue;
+            }
+            return Err(failure(
+                EnvironmentErrorCode::InvalidReference,
+                Some(material),
+            ));
+        };
         let positions = face_positions(face, face_index, vertices, edges, surfedges)
             .map_err(|_| failure(EnvironmentErrorCode::InvalidRecord, Some(face_index)))?;
         let plane = planes
@@ -1700,10 +1711,7 @@ fn compile_water_volumes(
         let material_output = materials
             .get(&material)
             .ok_or_else(|| failure(EnvironmentErrorCode::InvalidReference, Some(material)))?;
-        let state = material_output
-            .water
-            .clone()
-            .ok_or_else(|| failure(EnvironmentErrorCode::InvalidReference, Some(material)))?;
+        let state = material_output.water.clone();
         let member_leaves: Vec<_> = leaves
             .iter()
             .enumerate()
@@ -1715,9 +1723,16 @@ fn compile_water_volumes(
             return Err(failure(EnvironmentErrorCode::InvalidReference, Some(index)));
         }
         let bounds = leaf_union_bounds(leaves, &member_leaves, index)?;
-        let bottom = state
-            .bottom_material
+        let bottom_request = state
             .as_ref()
+            .and_then(|state| state.bottom_material.as_ref())
+            .or_else(|| {
+                material_output
+                    .material_requests
+                    .iter()
+                    .find(|request| request.role == playsrc_material::MaterialRole::Bottom)
+            });
+        let bottom = bottom_request
             .map(|request| {
                 if let Some(candidate) = map.materials.iter().find(|candidate| {
                     candidate
@@ -1756,9 +1771,19 @@ fn compile_water_volumes(
                     .ok_or_else(|| failure(EnvironmentErrorCode::InvalidReference, Some(index)))
             })
             .transpose()?;
+        let surface_state = state
+            .or_else(|| bottom_state.clone())
+            .ok_or_else(|| failure(EnvironmentErrorCode::InvalidReference, Some(material)))?;
         let bottom_material = bottom.as_ref().map(|(identity, _)| identity.clone());
         let center = bounds_center(bounds);
-        let surface_bindings = water_bindings(material_output, &state, center, cubemaps)?;
+        let surface_bindings = if material_output.water.is_some() {
+            water_bindings(material_output, &surface_state, center, cubemaps)?
+        } else {
+            let (_, bottom_material_output) = bottom
+                .as_ref()
+                .ok_or_else(|| failure(EnvironmentErrorCode::InvalidReference, Some(material)))?;
+            water_bindings(bottom_material_output, &surface_state, center, cubemaps)?
+        };
         let bottom_bindings = bottom
             .as_ref()
             .zip(bottom_state.as_ref())
@@ -1796,7 +1821,7 @@ fn compile_water_volumes(
             bottom_bindings,
             surface_translucent: material_output.features.translucent,
             bottom_translucent: bottom.map(|(_, material)| material.features.translucent),
-            surface_state: state,
+            surface_state,
             bottom_state,
         });
     }
@@ -2430,12 +2455,16 @@ fn compile_marks(input: MarkCompileInput<'_>) -> Result<MarkEnvironment, Environ
         let target_faces = unique_fragment_faces(&fragments);
         let fade = (overlay.kind == MarkKind::Overlay && !fade_bytes.is_empty()).then(|| {
             let offset = overlay.index * 8;
-            [f32_at(fade_bytes, offset), f32_at(fade_bytes, offset + 4)]
+            let mut values = [f32_at(fade_bytes, offset), f32_at(fade_bytes, offset + 4)];
+            for value in &mut values {
+                if *value > 0.0 {
+                    *value *= *value;
+                }
+            }
+            values
         });
         if fade.is_some_and(|values| {
-            values.iter().any(|value| !value.is_finite())
-                || values[0] < 0.0
-                || values[0] > values[1]
+            values.iter().any(|value| !value.is_finite()) || values[0] > values[1]
         }) {
             return Err(failure(
                 EnvironmentErrorCode::InvalidRecord,
@@ -3898,6 +3927,7 @@ mod tests {
             texture_size: [64, 64],
             uv_origin: super::super::TextureCoordinateOrigin::TopLeft,
             normals: vec![[plane[0], plane[1], plane[2]]; positions.len()],
+            alpha: vec![0.0; positions.len()],
             uv: vec![[0.0; 2]; positions.len()],
             lightmap_uv: vec![[0.0; 2]; positions.len()],
             triangles: Vec::new(),
@@ -3906,6 +3936,7 @@ mod tests {
             light_styles: [255; 4],
             lightmap_size: [0; 2],
             compiled_primitives: false,
+            displacement: None,
         }
     }
 

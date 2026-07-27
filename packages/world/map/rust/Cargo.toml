@@ -8,13 +8,13 @@ license.workspace = true
 playsrc-bsp = { path = "../../../formats/bsp/rust" }
 playsrc-collision = { path = "../../collision/rust" }
 playsrc-entity = { path = "../../entity/rust" }
+playsrc-keyvalues = { path = "../../../formats/keyvalues/rust" }
 playsrc-material = { path = "../../material/rust" }
 playsrc-visibility = { path = "../../visibility/rust" }
 sha2 = "0.10.9"
 
 [dev-dependencies]
 playsrc-asset-graph = { path = "../../../asset-store/rust" }
-playsrc-keyvalues = { path = "../../../formats/keyvalues/rust" }
 playsrc-vmt = { path = "../../../formats/vmt/rust" }
 playsrc-vtf = { path = "../../../formats/vtf/rust" }
 serde = { version = "1", features = ["derive"] }

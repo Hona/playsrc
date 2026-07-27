@@ -149,7 +149,7 @@ struct Tf2UiMaterialRecord {
     second_color_read: Option<&'static str>,
     detail_texture: Option<String>,
     detail_color_read: Option<&'static str>,
-    detail_scale: f32,
+    detail_scale: [f32; 2],
     detail_blend_mode: i32,
     detail_blend_factor: f32,
     detail_tint: [f32; 3],
@@ -212,7 +212,17 @@ struct Tf2GameUiBackgroundVariant {
 #[serde(rename_all = "camelCase")]
 struct MapTarget {
     logical_path: String,
-    download: Download,
+    download: Option<Download>,
+    installed: Option<InstalledMap>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InstalledMap {
+    content_build: String,
+    provider: String,
+    byte_length: usize,
+    sha256: String,
 }
 
 #[derive(Deserialize)]
@@ -262,7 +272,9 @@ struct EncodedMapSource {
 #[serde(rename_all = "camelCase")]
 struct MapSourceRecord {
     logical_path: String,
-    encoded: EncodedMapSource,
+    encoded: Option<EncodedMapSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
     decoded: ObjectDescriptor,
     cache_path: String,
 }
@@ -1307,7 +1319,7 @@ fn ui_material_record(
         second_color_read: ui_parameter(material, b"$texture2").map(|_| "srgb"),
         detail_texture: detail.and_then(|value| value.texture.logical_path.clone()),
         detail_color_read: detail.and_then(|_| ui_role_color_read(material, TextureRole::Detail)),
-        detail_scale: detail.map_or(1.0, |value| value.scale),
+        detail_scale: detail.map_or([1.0; 2], |value| value.scale),
         detail_blend_mode: detail.map_or(0, |value| value.blend_mode),
         detail_blend_factor: detail.map_or(1.0, |value| value.blend_factor),
         detail_tint: detail.map_or([1.0, 1.0, 1.0], |value| value.tint),
@@ -1684,27 +1696,37 @@ fn main() -> Result<(), String> {
         .get(&target)
         .ok_or_else(|| "target is not declared".to_owned())?;
     if map_target.logical_path != format!("maps/{target}.bsp")
-        || map_target.download.decoded_byte_length == 0
-        || map_target.download.encoded_byte_length == 0
-        || map_target.download.encoded_sha256.len() != 64
-        || map_target.download.decoded_sha256.len() != 64
+        || map_target.download.is_some() == map_target.installed.is_some()
+        || map_target.download.as_ref().is_some_and(|download| {
+            download.decoded_byte_length == 0
+                || download.encoded_byte_length == 0
+                || download.encoded_sha256.len() != 64
+                || download.decoded_sha256.len() != 64
+        })
+        || map_target.installed.as_ref().is_some_and(|installed| {
+            installed.content_build != contract.content_build
+                || installed.provider.is_empty()
+                || installed.byte_length == 0
+                || installed.sha256.len() != 64
+        })
     {
         return Err("declared map source is malformed".to_owned());
     }
     let cache = PathBuf::from(&config.source_cache_dir);
-    let bsp_bytes = fs::read(object_path(&cache, &map_target.download.decoded_sha256))
-        .map_err(|error| error.to_string())?;
-    if bsp_bytes.len() != map_target.download.decoded_byte_length
-        || digest(&bsp_bytes) != map_target.download.decoded_sha256
-    {
-        return Err("cached BSP differs from its declared identity".to_owned());
-    }
-    let bsp = playsrc_bsp::parse(
-        &bsp_bytes,
-        playsrc_bsp::Profile::Source2013V20,
-        playsrc_bsp::Limits::default(),
-    )
-    .map_err(|error| error.to_string())?;
+    let cached_bsp = map_target
+        .download
+        .as_ref()
+        .map(|download| {
+            let bytes = fs::read(object_path(&cache, &download.decoded_sha256))
+                .map_err(|error| error.to_string())?;
+            if bytes.len() != download.decoded_byte_length
+                || digest(&bytes) != download.decoded_sha256
+            {
+                return Err("cached BSP differs from its declared identity".to_owned());
+            }
+            Ok(bytes)
+        })
+        .transpose()?;
     let tf2 = PathBuf::from(&config.tf2_dir);
     let gameinfo = fs::read(tf2.join("gameinfo.txt")).map_err(|error| error.to_string())?;
     if digest(&gameinfo) != contract.gameinfo_sha256 {
@@ -1769,14 +1791,60 @@ fn main() -> Result<(), String> {
         playsrc_content::Limits::default(),
     )
     .map_err(|error| error.to_string())?;
+    let (bsp_bytes, map_sha256, map_provider) = if let Some(bytes) = cached_bsp {
+        let download = map_target.download.as_ref().expect("validated map source");
+        (
+            bytes,
+            download.decoded_sha256.clone(),
+            "source-cache".to_owned(),
+        )
+    } else {
+        let installed = map_target.installed.as_ref().expect("validated map source");
+        let playsrc_content::Resolution::Found(resolved) = content
+            .resolve_map(&map_target.logical_path)
+            .map_err(|error| error.to_string())?
+        else {
+            return Err(format!(
+                "installed map {} is missing",
+                map_target.logical_path
+            ));
+        };
+        if resolved.provenance.provider_id != installed.provider
+            || resolved.bytes.len() != installed.byte_length
+            || resolved.provenance.sha256 != installed.sha256
+        {
+            return Err("installed BSP differs from its declared provider or identity".to_owned());
+        }
+        let object = object_path(&cache, &installed.sha256);
+        if let Some(parent) = object.parent() {
+            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        fs::write(&object, &resolved.bytes).map_err(|error| error.to_string())?;
+        (
+            resolved.bytes,
+            installed.sha256.clone(),
+            installed.provider.clone(),
+        )
+    };
+    let bsp = playsrc_bsp::parse(
+        &bsp_bytes,
+        playsrc_bsp::Profile::Source2013V20,
+        playsrc_bsp::Limits::default(),
+    )
+    .map_err(|error| error.to_string())?;
+    let pak_provider = if target == "jump_beef" {
+        "jump-beef-pak".to_owned()
+    } else {
+        format!("{target}-pak")
+    };
     let pak = bsp.lumps[40]
         .pak
         .as_ref()
         .ok_or_else(|| "BSP PAK is unavailable".to_owned())?;
     let content = content
         .with_active_pak(
-            "jump-beef-pak",
-            map_target.download.decoded_sha256.clone(),
+            pak_provider.clone(),
+            map_sha256.clone(),
             map_target.logical_path.clone(),
             pak,
         )
@@ -1821,15 +1889,15 @@ fn main() -> Result<(), String> {
         0,
         ProviderRecord {
             order: 0,
-            identity: "jump-beef-pak".to_owned(),
+            identity: pak_provider,
             kind: "bsp-pak",
-            revision: map_target.download.decoded_sha256.clone(),
-            configured_location: format!("source-cache/{}", map_target.logical_path),
+            revision: map_sha256.clone(),
+            configured_location: format!("{map_provider}/{}", map_target.logical_path),
             path_ids: vec!["game".to_owned()],
         },
     );
     let canonical = playsrc_map::compile(&bsp, playsrc_map::LightingProfile::Ldr)
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| format!("{error:?}"))?;
     let mut resolver = Resolver::new(&content);
     for (path, bytes, sha256, consumer) in [
         (
@@ -2633,23 +2701,26 @@ fn main() -> Result<(), String> {
         gameinfo_sha256: contract.gameinfo_sha256.clone(),
         map: MapSourceRecord {
             logical_path: map_target.logical_path.clone(),
-            encoded: EncodedMapSource {
-                url: map_target.download.url.clone(),
-                byte_length: map_target.download.encoded_byte_length.to_string(),
-                sha256: map_target.download.encoded_sha256.clone(),
-                compression: "bzip2",
-            },
+            encoded: map_target
+                .download
+                .as_ref()
+                .map(|download| EncodedMapSource {
+                    url: download.url.clone(),
+                    byte_length: download.encoded_byte_length.to_string(),
+                    sha256: download.encoded_sha256.clone(),
+                    compression: "bzip2",
+                }),
+            provider: map_target
+                .installed
+                .as_ref()
+                .map(|installed| installed.provider.clone()),
             decoded: ObjectDescriptor {
                 kind: "source-object",
                 media_type: SOURCE_MEDIA_TYPE,
                 byte_length: bsp_bytes.len().to_string(),
-                sha256: map_target.download.decoded_sha256.clone(),
+                sha256: map_sha256.clone(),
             },
-            cache_path: format!(
-                "objects/sha256/{}/{}",
-                &map_target.download.decoded_sha256[..2],
-                map_target.download.decoded_sha256
-            ),
+            cache_path: format!("objects/sha256/{}/{}", &map_sha256[..2], map_sha256),
         },
         startup_sources,
         providers: provider_records,

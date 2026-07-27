@@ -415,12 +415,12 @@ export async function verifyTf2Wasm(
     }))),
   ])
   const batch = encodeResourceBatch(chunks)
-  const batchPointer = exports.playsrc_alloc(batch.byteLength)
+  const batchPointer = exports.playsrc_alloc(batch.byteLength) >>> 0
   new Uint8Array(exports.memory.buffer, batchPointer, batch.byteLength).set(batch)
   require(exports.playsrc_resource_decode(batchPointer, batch.byteLength) === 1, "resource graph decoding failed")
   exports.playsrc_free(batchPointer, batch.byteLength)
   const dependencyBytes = new Uint8Array(exports.playsrc_resource_length())
-  const resourcePointer = exports.playsrc_alloc(dependencyBytes.byteLength)
+  const resourcePointer = exports.playsrc_alloc(dependencyBytes.byteLength) >>> 0
   require(exports.playsrc_resource_copy(resourcePointer, dependencyBytes.byteLength) === dependencyBytes.byteLength, "resource set copy failed")
   dependencyBytes.set(new Uint8Array(exports.memory.buffer, resourcePointer, dependencyBytes.byteLength))
   exports.playsrc_free(resourcePointer, dependencyBytes.byteLength)
@@ -428,9 +428,9 @@ export async function verifyTf2Wasm(
   require(dependencyBytes.byteLength > 0 && dependencyBytes.byteLength <= 512 * 1024 * 1024, "resource set byte length changed")
 
   const compileProfile = (profile: 0 | 1) => {
-    const source = exports.playsrc_alloc(bspBytes.byteLength)
+    const source = exports.playsrc_alloc(bspBytes.byteLength) >>> 0
     new Uint8Array(exports.memory.buffer, source, bspBytes.byteLength).set(bspBytes)
-    const configuration = exports.playsrc_alloc(dependencyBytes.byteLength)
+    const configuration = exports.playsrc_alloc(dependencyBytes.byteLength) >>> 0
     new Uint8Array(exports.memory.buffer, configuration, dependencyBytes.byteLength).set(dependencyBytes)
     const result = exports.playsrc_compile_map(
       source,
@@ -445,11 +445,11 @@ export async function verifyTf2Wasm(
     require(error === 0, `TF2 WASM profile ${profile} compilation failed with error ${error}`)
     const length = exports.playsrc_result_length(result)
     require(length > 0 && length <= 512 * 1024 * 1024, `profile ${profile} payload length is invalid`)
-    const pointer = exports.playsrc_alloc(length)
+    const pointer = exports.playsrc_alloc(length) >>> 0
     require(exports.playsrc_result_copy(result, pointer, length) === length, `profile ${profile} payload copy failed`)
     const payload = new Uint8Array(exports.memory.buffer, pointer, length).slice()
     exports.playsrc_free(pointer, length)
-    const hashPointer = exports.playsrc_alloc(32)
+    const hashPointer = exports.playsrc_alloc(32) >>> 0
     require(exports.playsrc_result_hash(result, hashPointer) === 1, `profile ${profile} payload hash is unavailable`)
     const sha256 = hex(new Uint8Array(exports.memory.buffer, hashPointer, 32))
     require(new Bun.CryptoHasher("sha256").update(payload).digest("hex") ===
@@ -477,6 +477,50 @@ export async function verifyTf2Wasm(
     const error = exports.playsrc_result_error(result)
     require(exports.playsrc_dispose(result) === 1, "failed compilation handle disposal failed")
     return error
+  }
+
+  if (identity === "pl_upward") {
+    const hdr = compileProfile(1)
+    require(hdr.payload.byteLength === nativeHdr.bytes, "pl_upward native/WASM payload length differs")
+    require(hdr.sha256 === nativeHdr.sha256, "pl_upward native/WASM payload SHA-256 differs")
+    require(hdr.derivedSha256 === nativeHdr.derivedSha256, "pl_upward native/WASM derived identity differs")
+    const runtime = parseRuntimeMap(hdr.payload)
+    require(runtime.schema === 5 && runtime.displacementSurfaces === 558, "pl_upward displacement runtime coverage differs")
+    const wall = runtime.materials.find((material) => material.logicalPath.toLowerCase() === "materials/brick/wall028.vmt")
+    require(wall?.detail?.texture.logicalPath.toLowerCase() === "materials/overlays/detail001.vtf"
+      && wall.detail.scale[0] === Math.fround(1.1) && wall.detail.scale[1] === Math.fround(2.3)
+      && wall.detail.blendMode === 0 && wall.detail.blendFactor === 1,
+    "pl_upward wall detail state differs")
+    const transitions = runtime.materials.filter((material) => material.shader === 4)
+    require(transitions.length > 0 && transitions.every((material) => material.secondTexture),
+      "pl_upward WorldVertexTransition second-texture closure differs")
+    const presentationLength = exports.playsrc_presentation_length(hdr.handle)
+    require(presentationLength > 0 && presentationLength <= 512 * 1024 * 1024, "pl_upward presentation length is invalid")
+    const presentationPointer = exports.playsrc_alloc(presentationLength) >>> 0
+    require(exports.playsrc_presentation_copy(hdr.handle, presentationPointer, presentationLength) === presentationLength,
+      "pl_upward presentation copy failed")
+    const presentation = new Uint8Array(exports.memory.buffer, presentationPointer, presentationLength).slice()
+    exports.playsrc_free(presentationPointer, presentationLength)
+    const artifacts = await parsePresentationArtifacts(presentation, parseResourceSet(dependencyBytes))
+    const banner = artifacts.modelMaterials.get("materials/models/props_ui/bannerflag_comp.vmt")
+    require(banner?.shader === "unlit-generic" && banner.state.kind === "unlit-generic"
+      && banner.vertexRequirements === 9
+      && !banner.requiredInputs.includes("ambient-cube") && !banner.requiredInputs.includes("local-lights"),
+    "pl_upward banner UnlitGeneric model state differs")
+    require(exports.playsrc_dispose(hdr.handle) === 1, "pl_upward HDR handle disposal failed")
+    return Object.freeze({
+      target: identity,
+      bspBytes: bspBytes.byteLength,
+      dependencyBytes: dependencyBytes.byteLength,
+      payloadBytes: hdr.payload.byteLength,
+      payloadSha256: hdr.sha256,
+      derivedSha256: hdr.derivedSha256,
+      displacementSurfaces: runtime.displacementSurfaces,
+      drawableSurfaces: runtime.drawableSurfaces,
+      drawBatches: runtime.batches.length,
+      worldVertexTransitions: transitions.length,
+      presentationBytes: presentationLength,
+    })
   }
 
   const bspPointer = exports.playsrc_alloc(bspBytes.byteLength)

@@ -16,6 +16,18 @@ describe("map target registry", () => {
     })
   })
 
+  test("resolves the exact configured pl_upward installed-build identity", () => {
+    expect(resolveMapTarget("pl_upward")).toEqual({
+      logicalPath: "maps/pl_upward.bsp",
+      installed: {
+        contentBuild: "24245096",
+        provider: "game-09-tf",
+        byteLength: 25_446_018,
+        sha256: "15cbf91981b0d9902c645d1992d196b7e630742aa85111ed834d231f3c3a5709",
+      },
+    })
+  })
+
   test("rejects missing, malformed, aliased, and undeclared targets", () => {
     for (const [identity, code] of [
       [undefined, "TargetMalformed"],

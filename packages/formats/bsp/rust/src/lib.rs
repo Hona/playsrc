@@ -347,6 +347,14 @@ pub fn parse(source: &[u8], profile: Profile, limits: Limits) -> Result<Bsp, Par
     })
 }
 
+pub fn decode_source_lzma_member(
+    encoded: &[u8],
+    decoded_size: usize,
+    limits: Limits,
+) -> Result<Vec<u8>, ParseError> {
+    decode_lzma(encoded, decoded_size, 35, limits).map(|(_, decoded)| decoded)
+}
+
 fn decode_lzma(
     encoded: &[u8],
     declared: usize,

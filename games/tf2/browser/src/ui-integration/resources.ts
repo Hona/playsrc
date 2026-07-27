@@ -97,7 +97,7 @@ type RawUiMaterial = Readonly<{
   secondColorRead: string | null
   detailTexture: string | null
   detailColorRead: string | null
-  detailScale: number
+  detailScale: readonly [number, number]
   detailBlendMode: number
   detailBlendFactor: number
   detailTint: [number, number, number]

@@ -28,6 +28,14 @@ export type RuntimeMaterial = Readonly<{
     height: number
     rgba: Uint8Array
   }>
+  secondTexture?: Readonly<{ logicalPath: string; width: number; height: number; rgba: Uint8Array }>
+  detail?: Readonly<{
+    texture: Readonly<{ logicalPath: string; width: number; height: number; rgba: Uint8Array }>
+    scale: readonly [number, number]
+    blendMode: number
+    blendFactor: number
+    tint: Rgb
+  }>
 }>
 
 export type RuntimeBatch = Readonly<{
@@ -36,6 +44,7 @@ export type RuntimeBatch = Readonly<{
   normals: Float32Array
   uv: Float32Array
   lightmapUv: Float32Array
+  displacementAlpha: Float32Array
   lightmapKind: Float32Array
   indices: Uint32Array
   faces: Uint32Array
@@ -194,7 +203,7 @@ export type RuntimeLighting =
   | Readonly<{ profile: "hdr"; samples: Float32Array; descriptor: HdrProfile }>
 
 export type RuntimeMap = Readonly<{
-  schema: 3 | 4
+  schema: 3 | 4 | 5
   bspVersion: number
   mapRevision: number
   lightingProfile: 0 | 1
@@ -206,6 +215,7 @@ export type RuntimeMap = Readonly<{
   entityCount: number
   entityBytes: Uint8Array
   drawableSurfaces: number
+  displacementSurfaces: number
   models: readonly RuntimeModel[]
   modelOccurrences: readonly RuntimeModelOccurrence[]
   lightmapLayout: RuntimeLightmapLayout
@@ -290,6 +300,7 @@ type MutableBatch = {
   normals: number[]
   uv: number[]
   lightmapUv: number[]
+  displacementAlpha: number[]
   vertexFaces: number[]
   indices: number[]
   faces: number[]
@@ -350,6 +361,7 @@ function resolvedMaterial(
   reader: Reader,
   decoder: TextDecoder,
   base: Pick<RuntimeMaterial, "logicalPath" | "width" | "height">,
+  includeDetail: boolean,
 ): RuntimeMaterial {
   const shader = reader.u8()
   const features = reader.u8()
@@ -370,7 +382,37 @@ function resolvedMaterial(
     }
     baseTexture = Object.freeze({ logicalPath, width, height, rgba })
   }
-  return Object.freeze({ ...base, shader, features, textureRole, baseTexture })
+  let detail: RuntimeMaterial["detail"]
+  let secondTexture: RuntimeMaterial["secondTexture"]
+  if (includeDetail) {
+    const hasSecond = reader.u8()
+    zeros(reader.take(3), "runtime second texture reserved")
+    if (hasSecond > 1) throw new RuntimeMapError("runtime second texture disposition is invalid")
+    if (hasSecond === 1) {
+      const logicalPath = utf8(reader, decoder, "runtime second texture path")
+      const width = reader.u32(), height = reader.u32()
+      const pixels = multiplyBounded(width, height, MAX_VERTICES, "runtime second texture pixels")
+      const rgba = reader.sized().slice()
+      if (width < 1 || height < 1 || pixels * 4 !== rgba.byteLength) throw new RuntimeMapError("runtime second texture payload is invalid")
+      secondTexture = Object.freeze({ logicalPath, width, height, rgba })
+    }
+    const hasDetail = reader.u8()
+    zeros(reader.take(3), "runtime detail reserved")
+    if (hasDetail > 1) throw new RuntimeMapError("runtime detail disposition is invalid")
+    if (hasDetail === 1) {
+      const logicalPath = utf8(reader, decoder, "runtime detail texture path")
+      const width = reader.u32(), height = reader.u32()
+      const pixels = multiplyBounded(width, height, MAX_VERTICES, "runtime detail texture pixels")
+      const rgba = reader.sized().slice()
+      const scale = Object.freeze([reader.f32(), reader.f32()]) as readonly [number, number]
+      const blendMode = reader.i32(), blendFactor = reader.f32(), tint = readRgb(reader)
+      if (width < 1 || height < 1 || pixels * 4 !== rgba.byteLength || scale.some((value) => !Number.isFinite(value)) || blendMode < 0 || blendMode > 11 || !Number.isFinite(blendFactor) || tint.some((value) => !Number.isFinite(value))) {
+        throw new RuntimeMapError("runtime detail payload is invalid")
+      }
+      detail = Object.freeze({ texture: Object.freeze({ logicalPath, width, height, rgba }), scale, blendMode, blendFactor, tint })
+    }
+  }
+  return Object.freeze({ ...base, shader, features, textureRole, baseTexture, secondTexture, detail })
 }
 
 function readRgb(reader: Reader): Rgb {
@@ -1008,11 +1050,11 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
   const decoder = new TextDecoder("utf-8", { fatal: true })
   if (new TextDecoder().decode(reader.take(4)) !== "PSMP") throw new RuntimeMapError("runtime map identity is invalid")
   const schema = reader.u32()
-  if (schema !== 3 && schema !== 4) throw new RuntimeMapError("runtime map schema is invalid")
+  if (schema !== 3 && schema !== 4 && schema !== 5) throw new RuntimeMapError("runtime map schema is invalid")
   const bspVersion = reader.u32()
   const mapRevision = reader.u32()
   const lightingProfile = reader.u8()
-  if ((schema === 3 && lightingProfile !== 0) || (schema === 4 && lightingProfile !== 1)) {
+  if ((schema === 3 && lightingProfile !== 0) || ((schema === 4 || schema === 5) && lightingProfile !== 1)) {
     throw new RuntimeMapError("runtime map lighting profile differs from its schema")
   }
   const materialCount = bounded(reader.u32(), MAX_MATERIALS, "material count")
@@ -1035,7 +1077,7 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
   }
 
   const batches = Array.from({ length: materialCount }, (): MutableBatch => ({
-    positions: [], normals: [], uv: [], lightmapUv: [], vertexFaces: [], indices: [], faces: [],
+    positions: [], normals: [], uv: [], lightmapUv: [], displacementAlpha: [], vertexFaces: [], indices: [], faces: [],
   }))
   const brushTables=new Map<number,MutableBatch[]>(),brushCounts=new Map<number,number>()
   const commonSurfaces: CommonSurface[] = []
@@ -1043,6 +1085,7 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
   let totalVertices = 0
   let totalTriangles = 0
   let drawableSurfaces = 0
+  let displacementSurfaces = 0
   for (let index = 0; index < surfaceCount; index += 1) {
     const face = reader.u32()
     const model = reader.u32()
@@ -1058,16 +1101,32 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
     const normals = reader.f32Array(vertexCount * 3)
     const uv = reader.f32Array(vertexCount * 2)
     const lightmapUv = reader.f32Array(vertexCount * 2)
+    const displacementAlpha = schema === 5 ? reader.f32Array(vertexCount) : new Float32Array(vertexCount)
     const indices = reader.u32Array(triangleCount * 3)
     if (indices.some((value) => value >= vertexCount)) throw new RuntimeMapError("runtime map triangle index is invalid")
     const lightOffset = reader.i32()
     const styles = Object.freeze([reader.u8(), reader.u8(), reader.u8(), reader.u8()]) as readonly [number, number, number, number]
     const lightmapWidth = Math.max(1, reader.i32() + 1)
     const lightmapHeight = Math.max(1, reader.i32() + 1)
+    if (schema === 5) {
+      const displacement = reader.u8(), power = reader.u8()
+      zeros(reader.take(2), "runtime displacement reserved")
+      if (displacement > 1 || (displacement === 0 && power !== 0)) throw new RuntimeMapError("runtime displacement disposition is invalid")
+      if (displacement === 1) {
+        if (power < 2 || power > 4) throw new RuntimeMapError("runtime displacement power is invalid")
+        reader.u32(); reader.i32(); reader.f32(); reader.u32(); reader.u16(); zeros(reader.take(2), "runtime displacement face reserved")
+        reader.f32(); reader.f32(); reader.f32(); reader.u32(); reader.u32()
+        for (let word = 0; word < 10; word += 1) reader.u32()
+        reader.take(48 + 40)
+        const tags = bounded(reader.u32(), MAX_TRIANGLES, "runtime displacement triangle tags")
+        reader.take(tags * 2)
+        displacementSurfaces += 1
+      }
+    }
     const common = Object.freeze({ face, lightOffset, styles, lightmapWidth, lightmapHeight })
     commonSurfaces.push(common)
     if(draw===0)continue
-    let table=batches;if(model!==0){table=brushTables.get(model)??Array.from({length:materialCount},():MutableBatch=>({positions:[],normals:[],uv:[],lightmapUv:[],vertexFaces:[],indices:[],faces:[]}));brushTables.set(model,table)}
+    let table=batches;if(model!==0){table=brushTables.get(model)??Array.from({length:materialCount},():MutableBatch=>({positions:[],normals:[],uv:[],lightmapUv:[],displacementAlpha:[],vertexFaces:[],indices:[],faces:[]}));brushTables.set(model,table)}
     const batch=table[material]!
     const base = batch.positions.length / 3
     for (const value of positions) batch.positions.push(value)
@@ -1075,6 +1134,7 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
     for (const value of uv) batch.uv.push(value)
     const uvStart = batch.lightmapUv.length
     for (let value = 0; value < lightmapUv.length; value += 1) batch.lightmapUv.push(0)
+    for (const value of displacementAlpha) batch.displacementAlpha.push(value)
     for (let vertex = 0; vertex < vertexCount; vertex += 1) batch.vertexFaces.push(face)
     lightmapRecords.push({ surface: common, batch, uvStart, uv: [...lightmapUv] })
     for (const value of indices) batch.indices.push(value + base)
@@ -1094,7 +1154,7 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
   const resolvedCount = reader.u32()
   if (resolvedCount !== materials.length) throw new RuntimeMapError("runtime material payload count is invalid")
   for (let index = 0; index < resolvedCount; index += 1) {
-    materials[index] = resolvedMaterial(reader, decoder, materials[index]!)
+    materials[index] = resolvedMaterial(reader, decoder, materials[index]!, schema === 5)
   }
 
   const models: RuntimeModel[] = []
@@ -1105,7 +1165,7 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
     const modelMaterials: RuntimeMaterial[] = []
     for (let material = 0; material < modelMaterialCount; material += 1) {
       const materialPath = utf8(reader, decoder, "runtime model material path")
-      modelMaterials.push(resolvedMaterial(reader, decoder, { logicalPath: materialPath, width: 1, height: 1 }))
+      modelMaterials.push(resolvedMaterial(reader, decoder, { logicalPath: materialPath, width: 1, height: 1 }, schema === 5))
     }
     const primitiveCount = bounded(reader.u32(), 65_536, "model primitive count")
     const primitives: RuntimeModelPrimitive[] = []
@@ -1134,13 +1194,13 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
     modelOccurrences.push(Object.freeze({ entity, model, position, angles }))
   }
 
-  if (schema === 4) {
+  if (schema === 4 || schema === 5) {
     const descriptor = parseHdrProfile(reader, decoder, commonSurfaces, lightingSampleCount)
     lighting = Object.freeze({ profile: "hdr", samples: lighting.samples as Float32Array, descriptor })
   }
   if (reader.offset !== input.byteLength) throw new RuntimeMapError("runtime map has trailing bytes")
 
-  const lightmapLayout = packLightmaps(lightmapRecords, schema === 4 ? 1 : 0)
+  const lightmapLayout = packLightmaps(lightmapRecords, schema === 4 || schema === 5 ? 1 : 0)
   const lightingKinds = lighting.profile === "hdr"
     ? new Map(lighting.descriptor.surfaces.map((surface) => [surface.face, surface.kind === "unlit" ? 0 : surface.kind === "flat" ? 1 : surface.kind === "directional-normal" ? 2 : 3]))
     : new Map(commonSurfaces.map((surface) => [surface.face, surface.lightOffset < 0 ? 0 : 1]))
@@ -1150,6 +1210,7 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
     normals: new Float32Array(batch.normals),
     uv: new Float32Array(batch.uv),
     lightmapUv: new Float32Array(batch.lightmapUv),
+    displacementAlpha: new Float32Array(batch.displacementAlpha),
     lightmapKind: Float32Array.from(batch.vertexFaces, (face) => lightingKinds.get(face) ?? 0),
     indices: new Uint32Array(batch.indices),
     faces: new Uint32Array(batch.faces),
@@ -1172,6 +1233,7 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
     entityCount,
     entityBytes,
     drawableSurfaces,
+    displacementSurfaces,
     models: Object.freeze(models),
     modelOccurrences: Object.freeze(modelOccurrences),
     lightmapLayout,
