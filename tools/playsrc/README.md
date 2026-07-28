@@ -19,7 +19,7 @@ Native compilation and browser WASM compilation call the same owning Rust crates
 
 `bun run dev jump_beef` verifies/acquires the declared BSP, concurrently builds checked TF2 WASM and native resource-graph targets, and reuses graph/chunk/ledger generation only when one cache report matches the exact generator executable and every declared artifact. It installs the independently hashed BSP, WASM, graph root, 144 chunks, and ledger in `assetDir`, starts the loopback Asset Service on port 4174 and TF2 Vite application on port 4173, waits for both readiness endpoints, prints `http://127.0.0.1:4173/`, and closes both listeners after one `SIGINT` or `SIGTERM`.
 
-`bun run dev pl_upward` uses the same application and lifecycle with a target-qualified dynamic catalog, exact installed BSP, 144-chunk graph and ledger. It retains Jump gameplay authority, admits existing noclip, and publishes no Payload gameplay state.
+`bun run dev pl_upward` uses the same application and lifecycle with a target-qualified dynamic catalog, exact installed BSP, graph and ledger. Source-bundle generation resolves, parses, checksum/mesh/LOD joins and ledgers every profile-qualified static-prop VHV input, then packs the raw objects plus typed identities into one bounded gameplay aggregate. It retains Jump gameplay authority, admits existing noclip, and publishes no Payload gameplay state.
 
 `bun run verify:displacement-visuals` selects configured sources 147, 381 and 138, derives above/front cameras from canonical bounds and parent orientation, and requires exact CPU winding/normals, PVS/frustum admission, batch submission, cull/depth/material/lightmap state and projected headed captures.
 
