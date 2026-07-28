@@ -1126,9 +1126,13 @@ pub fn compile_environment(
     {
         return Err(failure(EnvironmentErrorCode::DependencyMismatch, None));
     }
-    let visibility_identity = playsrc_visibility::compile(bsp)
-        .map_err(|_| failure(EnvironmentErrorCode::DependencyMismatch, None))?
-        .identity;
+    let visibility_identity = crate::attach_displacement_visibility(
+        map,
+        &playsrc_visibility::compile(bsp)
+            .map_err(|_| failure(EnvironmentErrorCode::DependencyMismatch, None))?,
+    )
+    .map_err(|_| failure(EnvironmentErrorCode::DependencyMismatch, None))?
+    .identity;
     if input.visibility.identity != visibility_identity {
         return Err(failure(EnvironmentErrorCode::DependencyMismatch, None));
     }
@@ -3811,6 +3815,7 @@ mod tests {
             areas: Vec::new(),
             portals: Vec::new(),
             portal_vertices: Vec::new(),
+            leaf_displacements: vec![Vec::new(); 2],
         }
     }
 

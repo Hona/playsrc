@@ -38,6 +38,11 @@ async function main(): Promise<number> {
         await runBrowserAcceptance(config, argument)
         return 0
       }
+      if (target === "displacement-visuals") {
+        const { runDisplacementVisualEvidence } = await import("./verify-browser")
+        await runDisplacementVisualEvidence(config)
+        return 0
+      }
     }
     if (command === "dev") {
       const { runDevelopment } = await import("./dev")

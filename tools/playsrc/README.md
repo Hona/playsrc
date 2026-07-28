@@ -21,6 +21,8 @@ Native compilation and browser WASM compilation call the same owning Rust crates
 
 `bun run dev pl_upward` uses the same application and lifecycle with a target-qualified dynamic catalog, exact installed BSP, 144-chunk graph and ledger. It retains Jump gameplay authority, admits existing noclip, and publishes no Payload gameplay state.
 
+`bun run verify:displacement-visuals` selects configured sources 147, 381 and 138, derives above/front cameras from canonical bounds and parent orientation, and requires exact CPU winding/normals, PVS/frustum admission, batch submission, cull/depth/material/lightmap state and projected headed captures.
+
 `bun run infra:publish jump_beef` builds and locally verifies the BSP, WASM, catalog, resource root, every reachable chunk, and dependency ledger; replaces the checked release descriptor; processes leaves before roots and catalogs; conditionally creates missing R2 objects through S3 `If-None-Match: *`; verifies exact readback; and emits one bounded JSON report. A warm publication performs zero writes.
 
 `bun run infra:deploy jump_beef` never compiles Source content. It consumes the checked release descriptor, applies the exact Terraform plan, requires every object at `assets.playsrc.online`, builds `/` plus `/tf2`, deploys the mirrored static tree through Wrangler, and requires production readiness. `bun run infra:verify jump_beef` performs Terraform validation and a Wrangler dry run without changing Cloudflare.

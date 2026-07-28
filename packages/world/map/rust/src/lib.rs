@@ -538,6 +538,36 @@ pub fn compile_runtime(
     assemble_runtime(map, entities, collision, visibility, bsp_sha256, assembly)
 }
 
+pub fn attach_displacement_visibility(
+    map: &CanonicalMap,
+    visibility: &playsrc_visibility::World,
+) -> Result<playsrc_visibility::World, Error> {
+    let inputs = map
+        .surfaces
+        .iter()
+        .filter(|surface| surface.displacement.is_some())
+        .map(|surface| {
+            let mut minimum = [f32::INFINITY; 3];
+            let mut maximum = [f32::NEG_INFINITY; 3];
+            for position in &surface.positions {
+                for axis in 0..3 {
+                    minimum[axis] = minimum[axis].min(position[axis]);
+                    maximum[axis] = maximum[axis].max(position[axis]);
+                }
+            }
+            Ok((
+                u16::try_from(surface.face)
+                    .map_err(|_| error(ErrorCode::BoundExceeded, Some(surface.face)))?,
+                playsrc_visibility::Aabb::new(minimum, maximum)
+                    .map_err(|_| error(ErrorCode::InvalidRange, Some(surface.face)))?,
+            ))
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    visibility
+        .with_displacement_surfaces(&inputs)
+        .map_err(|_| error(ErrorCode::InvalidReference, None))
+}
+
 pub fn assemble_runtime(
     map: CanonicalMap,
     entities: playsrc_entity::Graph,
@@ -546,6 +576,7 @@ pub fn assemble_runtime(
     bsp_sha256: [u8; 32],
     assembly: RuntimeAssembly<'_>,
 ) -> Result<Runtime, Error> {
+    let visibility = attach_displacement_visibility(&map, &visibility)?;
     let RuntimeAssembly {
         compiler_identity,
         configuration,

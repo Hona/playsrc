@@ -551,6 +551,21 @@ export type SceneResult = Readonly<{
   resources: Readonly<{ geometries: number; materials: number; textures: number }>
   environment?: MapLoadRequest["environment"]
   environmentDrawables: number
+  displacements: readonly Readonly<{
+    source: number
+    face: number
+    material: string
+    positions: Float32Array
+    normals: Float32Array
+    indices: Uint32Array
+    bounds: readonly [readonly [number, number, number], readonly [number, number, number]]
+    submittedTriangles: number
+    cull: "back" | "none"
+    depthTest: boolean
+    depthWrite: boolean
+    blend: boolean
+    lighting: Readonly<{ kind: string; styles: readonly number[]; sampleStart: number; samplesPerLayer: number; layers: number }>
+  }>[]
 }>
 
 export type FrameCapture = Readonly<{
@@ -1734,6 +1749,39 @@ class RendererOwner implements Renderer {
     const directionalFaces = map.lighting.profile === "hdr" ? map.lighting.descriptor.directionalFaces : 0
     const worldLights = map.lighting.profile === "hdr" ? map.lighting.descriptor.worldLights.length : 0
     const ambientSamples = map.lighting.profile === "hdr" ? map.lighting.descriptor.ambientSamples.length : 0
+    const surfaceLighting = map.lighting.profile === "hdr"
+      ? new Map(map.lighting.descriptor.surfaces.map((surface) => [surface.face, surface] as const))
+      : new Map<number, never>()
+    const displacementEvidence = map.displacements.map((displacement) => {
+      const resolved = map.materials[displacement.material]!
+      const state = materialStates.get(resolved.logicalPath.toLowerCase())
+      const options = materialOptions(resolved, state)
+      const lighting = surfaceLighting.get(displacement.face)
+      const submittedTriangles = map.batches
+        .filter((batch) => batch.material === displacement.material)
+        .reduce((total, batch) => total + batch.faces.reduce((count, face) => count + Number(face === displacement.face), 0), 0)
+      return Object.freeze({
+        source: displacement.source,
+        face: displacement.face,
+        material: resolved.logicalPath,
+        positions: displacement.positions,
+        normals: displacement.normals,
+        indices: displacement.indices,
+        bounds: displacement.bounds,
+        submittedTriangles,
+        cull: options.side === THREE.DoubleSide ? "none" as const : "back" as const,
+        depthTest: options.depthTest !== false,
+        depthWrite: options.depthWrite !== false,
+        blend: options.transparent === true,
+        lighting: Object.freeze({
+          kind: lighting?.kind ?? (displacement.lightOffset < 0 ? "unlit" : "flat"),
+          styles: lighting?.styles ?? displacement.styles,
+          sampleStart: lighting?.sampleStart ?? Math.max(0, displacement.lightOffset / 4),
+          samplesPerLayer: lighting?.samplesPerLayer ?? displacement.lightmapWidth * displacement.lightmapHeight,
+          layers: lighting?.layerCount ?? (displacement.lightOffset < 0 ? 0 : 1),
+        }),
+      })
+    })
     const result: SceneResult = Object.freeze({
       payloadSha256,
       lightingProfile: map.lighting.profile,
@@ -1757,6 +1805,7 @@ class RendererOwner implements Renderer {
         request.environment?.markRecords
           .filter((mark) => mark.status === 0 && mark.enabled)
           .reduce((total, mark) => total + mark.fragments.length, 0) ?? 0,
+      displacements: Object.freeze(displacementEvidence),
     })
     disposables.activate()
     return {

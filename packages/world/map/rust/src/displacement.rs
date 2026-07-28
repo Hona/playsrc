@@ -170,12 +170,13 @@ pub(crate) fn compile(inputs: Inputs<'_>) -> Result<Geometry, Error> {
         }
     }
     let all_triangles = source_triangles(side);
-    let normals = source_normals(side, &positions, &all_triangles);
-    let triangles = all_triangles
+    let normals = source_normals(side, &positions);
+    let mut triangles = all_triangles
         .into_iter()
         .zip(tags)
         .filter_map(|(triangle, tag)| (tag & DISP_TRI_TAG_REMOVE == 0).then_some(triangle))
-        .collect();
+        .collect::<Vec<_>>();
+    crate::normalize_triangle_winding(&positions, &normals, &mut triangles);
     Ok(Geometry {
         descriptor: DisplacementSurface {
             source,
@@ -226,34 +227,64 @@ fn source_triangles(side: usize) -> Vec<[u32; 3]> {
     triangles
 }
 
-fn source_normals(side: usize, positions: &[[f32; 3]], triangles: &[[u32; 3]]) -> Vec<[f32; 3]> {
-    let cell_normals = triangles
-        .chunks_exact(2)
-        .map(|pair| {
-            [
-                triangle_normal(positions, pair[0]),
-                triangle_normal(positions, pair[1]),
-            ]
-        })
-        .collect::<Vec<_>>();
+fn source_normals(side: usize, positions: &[[f32; 3]]) -> Vec<[f32; 3]> {
+    let point = |column: usize, row: usize| positions[column * side + row];
     let mut normals = Vec::with_capacity(positions.len());
     for column in 0..side {
         for row in 0..side {
             let mut sum = [0.0; 3];
             let mut count = 0;
-            for (cell_column, cell_row) in [
-                (column, row),
-                (column, row.wrapping_sub(1)),
-                (column.wrapping_sub(1), row.wrapping_sub(1)),
-                (column.wrapping_sub(1), row),
-            ] {
-                if cell_column >= side - 1 || cell_row >= side - 1 {
-                    continue;
-                }
-                for normal in cell_normals[cell_column * (side - 1) + cell_row] {
-                    sum = add3(sum, normal);
-                    count += 1;
-                }
+            let mut add = |base: [f32; 3], first: [f32; 3], second: [f32; 3]| {
+                sum = add3(sum, normalize(cross(sub3(first, base), sub3(second, base))));
+                count += 1;
+            };
+            if column + 1 < side && row + 1 < side {
+                add(
+                    point(column, row),
+                    point(column, row + 1),
+                    point(column + 1, row),
+                );
+                add(
+                    point(column, row + 1),
+                    point(column + 1, row + 1),
+                    point(column + 1, row),
+                );
+            }
+            if column + 1 < side && row > 0 {
+                add(
+                    point(column, row - 1),
+                    point(column, row),
+                    point(column + 1, row - 1),
+                );
+                add(
+                    point(column, row),
+                    point(column + 1, row),
+                    point(column + 1, row - 1),
+                );
+            }
+            if column > 0 && row > 0 {
+                add(
+                    point(column - 1, row - 1),
+                    point(column - 1, row),
+                    point(column, row - 1),
+                );
+                add(
+                    point(column - 1, row),
+                    point(column, row),
+                    point(column, row - 1),
+                );
+            }
+            if column > 0 && row + 1 < side {
+                add(
+                    point(column - 1, row),
+                    point(column - 1, row + 1),
+                    point(column, row),
+                );
+                add(
+                    point(column - 1, row + 1),
+                    point(column, row + 1),
+                    point(column, row),
+                );
             }
             normals.push(if count == 0 {
                 [0.0; 3]
@@ -263,13 +294,6 @@ fn source_normals(side: usize, positions: &[[f32; 3]], triangles: &[[u32; 3]]) -
         }
     }
     normals
-}
-
-fn triangle_normal(positions: &[[f32; 3]], triangle: [u32; 3]) -> [f32; 3] {
-    let a = positions[triangle[0] as usize];
-    let b = positions[triangle[1] as usize];
-    let c = positions[triangle[2] as usize];
-    normalize(cross(sub3(b, a), sub3(c, a)))
 }
 
 fn vector(value: playsrc_bsp::Vector3) -> [f32; 3] {
@@ -343,7 +367,7 @@ mod tests {
         let positions = (0..3)
             .flat_map(|column| (0..3).map(move |row| [row as f32, column as f32, 0.0]))
             .collect::<Vec<_>>();
-        let normals = source_normals(3, &positions, &source_triangles(3));
-        assert_eq!(normals, vec![[0.0, 0.0, -1.0]; 9]);
+        let normals = source_normals(3, &positions);
+        assert_eq!(normals, vec![[0.0, 0.0, 1.0]; 9]);
     }
 }

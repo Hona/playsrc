@@ -677,6 +677,9 @@ unsafe fn compile_map(
                     }
                 },
             )?;
+        let visibility_world =
+            playsrc_map::attach_displacement_visibility(&canonical, &visibility_world)
+                .map_err(|_| 3_u32)?;
         let phase_finished =
             playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
         compile_metrics[1] = phase_finished.saturating_sub(phase_started);
@@ -2023,6 +2026,11 @@ fn frustum_world_surfaces(
         let start = usize::from(record.first_leaf_face);
         let end = start + usize::from(record.leaf_face_count);
         for face in &world.leaf_faces[start..end] {
+            if seen.insert(*face) {
+                surfaces.push(*face);
+            }
+        }
+        for face in &world.leaf_displacements[leaf] {
             if seen.insert(*face) {
                 surfaces.push(*face);
             }

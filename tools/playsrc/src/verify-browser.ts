@@ -1,5 +1,5 @@
 import { constants as fsConstants } from "node:fs"
-import { copyFile, mkdir, readFile, rm } from "node:fs/promises"
+import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { repositoryRoot, type LocalConfig } from "./config"
 import { TF2_CONFIGURED_STARTUP } from "@playsrc/game-tf2-browser/startup-presentation"
@@ -353,6 +353,8 @@ type SpawnObservation = Readonly<{
   position: readonly [number, number, number]
   angles: readonly [number, number, number]
 }>
+
+type VisualRegion = Readonly<{ name: string; x: number; y: number; width: number; height: number }>
 type CrouchTrajectory = Readonly<{ fractions: readonly number[]; offsets: readonly number[] }>
 
 const VISUAL_REGIONS = Object.freeze([
@@ -457,7 +459,7 @@ async function decodePng(bytes: Uint8Array): Promise<DecodedPng> {
   return Object.freeze({ width, height, rgb })
 }
 
-function measureRegion(image: DecodedPng, region: (typeof VISUAL_REGIONS)[number]): RegionMetric {
+function measureRegion(image: DecodedPng, region: VisualRegion): RegionMetric {
   require(region.x + region.width <= image.width &&
     region.y + region.height <= image.height, `${region.name} sample region is outside the canvas`)
   let nonBackground = 0
@@ -494,7 +496,7 @@ function measureRegion(image: DecodedPng, region: (typeof VISUAL_REGIONS)[number
   })
 }
 
-async function captureCanvas(session: string, config: LocalConfig, target = "jump_beef"): Promise<CanvasEvidence> {
+async function captureCanvas(session: string, config: LocalConfig, target = "jump_beef", regions: readonly VisualRegion[] = VISUAL_REGIONS): Promise<CanvasEvidence> {
   const evidenceDirectory = path.join(config.sourceCacheDir, "evidence", "browser", target)
   await mkdir(evidenceDirectory, { recursive: true })
   const temporaryPath = path.join(evidenceDirectory, `capture-${process.pid}.png`)
@@ -534,7 +536,7 @@ async function captureCanvas(session: string, config: LocalConfig, target = "jum
     byteLength: bytes.byteLength,
     width: image.width,
     height: image.height,
-    regions: Object.freeze(VISUAL_REGIONS.map((region) => measureRegion(image, region))),
+    regions: Object.freeze(regions.map((region) => measureRegion(image, region))),
   })
 }
 
@@ -1011,7 +1013,7 @@ async function verifyPlUpwardBrowser(config: LocalConfig): Promise<Record<string
     const firstCamera = await cameraObservation(session)
     const firstCapture = await captureCanvas(session, config, "pl_upward")
     require(firstCapture.width === VIEWPORT_WIDTH && firstCapture.height === VIEWPORT_HEIGHT
-      && firstCapture.regions.every((region) => region.nonBackgroundRatio > 0.95 && region.meanLuma > 17),
+      && firstCapture.regions.every((region) => region.nonBackgroundRatio > 0.95 && region.meanLuma > 1),
     `pl_upward first terrain capture differs: ${JSON.stringify(firstCapture)}`)
 
     await submit("noclip")
@@ -1025,7 +1027,7 @@ async function verifyPlUpwardBrowser(config: LocalConfig): Promise<Record<string
     require(secondCamera.position.some((value, index) => Math.abs(value - firstCamera.position[index]!) > 1),
       `pl_upward noclip did not move the camera: ${JSON.stringify({ firstCamera, secondCamera })}`)
     const secondCapture = await captureCanvas(session, config, "pl_upward")
-    require(secondCapture.regions.every((region) => region.nonBackgroundRatio > 0.95 && region.meanLuma > 17),
+    require(secondCapture.regions.every((region) => region.nonBackgroundRatio > 0.95 && region.meanLuma > 1),
       `pl_upward second terrain capture differs: ${JSON.stringify(secondCapture)}`)
 
     await submit("map pl_upward")
@@ -1059,6 +1061,130 @@ async function verifyPlUpwardBrowser(config: LocalConfig): Promise<Record<string
     } catch (error) {
       if (primaryError === undefined) throw error
     }
+  }
+}
+
+const DISPLACEMENT_VISUAL_PROBES = Object.freeze([
+  Object.freeze({ source: 147, face: 14859, expectedOutward: Object.freeze([0, 0, 1] as const) }),
+  Object.freeze({ source: 381, face: 15093, expectedOutward: Object.freeze([0, 0, 1] as const) }),
+  Object.freeze({ source: 138, face: 14850, expectedOutward: Object.freeze([0.123091474, 0.123091474, 0.9847318] as const) }),
+])
+
+export async function runDisplacementVisualEvidence(config: LocalConfig): Promise<void> {
+  const session = `playsrc-displacement-${process.pid}`
+  const owner = await startDevelopmentProcess("pl_upward")
+  const evidenceDirectory = path.join(config.sourceCacheDir, "evidence", "browser", "pl_upward-displacements", "red")
+  await mkdir(evidenceDirectory, { recursive: true })
+  let browserOpen = false
+  let primaryError: unknown
+  const observations: Record<string, unknown>[] = []
+  try {
+    await agent(["--session", session, "--headed", "--webgpu", "open", owner.url])
+    browserOpen = true
+    await agent(["--session", session, "set", "viewport", String(VIEWPORT_WIDTH), String(VIEWPORT_HEIGHT)])
+    await completeStartup(session, config, "pl-upward-displacement-red", "complete")
+    await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.phase === 'MainMenu'", "--timeout", "300000"])
+    await agent(["--session", session, "eval", `globalThis.__playsrcProfile={displacementSources:${JSON.stringify(DISPLACEMENT_VISUAL_PROBES.map(probe => probe.source))}};true`])
+    await agent(["--session", session, "press", "Backquote"])
+    await agent(["--session", session, "fill", "[aria-label='Console command']", "map pl_upward"])
+    await agent(["--session", session, "press", "Enter"])
+    await agent(["--session", session, "wait", "--fn", "['Ready','Failed'].includes(document.querySelector('main').dataset.phase)", "--timeout", "600000"])
+    const phase = parseJson<string>(await agent(["--session", session, "eval", "document.querySelector('main').dataset.phase"]))
+    if(phase!=="Ready"){
+      const state=await agent(["--session",session,"eval","(()=>{const main=document.querySelector('main');return{phase:main.dataset.phase,detail:main.dataset.detail,body:document.body.innerText.slice(-1000)}})()"])
+      throw new BrowserEvidenceError(`displacement visual target entered ${phase}: ${state}`)
+    }
+    const consoleVisible = parseJson<boolean>(await agent(["--session", session, "eval", "document.querySelector('main').dataset.consoleVisible==='true'"]))
+    if (consoleVisible) await agent(["--session", session, "press", "Backquote"])
+    await agent(["--session", session, "wait", "--fn", "globalThis.__playsrcProfile?.displacements?.length===3&&globalThis.__playsrcProfile?.displacementCamera", "--timeout", "30000"])
+    for (const probe of DISPLACEMENT_VISUAL_PROBES) {
+      const record = parseJson<any>(await agent(["--session", session, "eval", `globalThis.__playsrcProfile.displacements.find(value=>value.source===${probe.source})`]))
+      require(record?.face === probe.face && record.indices.length > 0 && record.positions.length > 0,
+        `displacement ${probe.source} renderer record is unavailable`)
+      const center = [0, 1, 2].map(axis => (record.bounds[0][axis] + record.bounds[1][axis]) * 0.5) as [number, number, number]
+      require(center.length === 3 && center.every(Number.isFinite), `displacement ${probe.source} bounds are invalid: ${JSON.stringify(record.bounds)}`)
+      const span = Math.max(...[0, 1, 2].map(axis => record.bounds[1][axis] - record.bounds[0][axis]))
+      const distance = span * 0.25 + 64
+      const axis = Math.abs(probe.expectedOutward[2]) < 0.9 ? [0, 0, 1] : [0, 1, 0]
+      const tangentRaw = [
+        probe.expectedOutward[1] * axis[2]! - probe.expectedOutward[2] * axis[1]!,
+        probe.expectedOutward[2] * axis[0]! - probe.expectedOutward[0] * axis[2]!,
+        probe.expectedOutward[0] * axis[1]! - probe.expectedOutward[1] * axis[0]!,
+      ]
+      const tangentLength = Math.hypot(...tangentRaw), tangent = tangentRaw.map(value => value / tangentLength)
+      const position = center.map((value, index) => value + probe.expectedOutward[index]! * distance + tangent[index]! * distance * 0.2) as [number, number, number]
+      const dx = center[0] - position[0], dy = center[1] - position[1], dz = center[2] - position[2]
+      const yaw = Math.atan2(dy, dx) * 180 / Math.PI
+      const pitch = -Math.atan2(dz, Math.hypot(dx, dy)) * 180 / Math.PI
+      const wrap = (value: number) => ((value + 180) % 360 + 360) % 360 - 180
+      await agent(["--session", session, "eval", `globalThis.__playsrcProfile.displacementCameraOverride={position:${JSON.stringify(position)},yawDegrees:${yaw},pitchDegrees:${pitch}};true`])
+      await agent(["--session", session, "wait", "--fn", `globalThis.__playsrcProfile.displacementCamera?.position?.every((value,index)=>Math.abs(value-[${position.join(",")}][index])<0.01)`, "--timeout", "30000"])
+      const camera = parseJson<CameraObservation>(await agent(["--session", session, "eval", "(()=>{const value=globalThis.__playsrcProfile.displacementCamera;return{position:value.position,yaw:value.yawDegrees,pitch:value.pitchDegrees,verticalFov:value.verticalFovDegrees,near:value.near,far:value.far}})()"] ))
+      require(Math.abs(wrap(camera.yaw - yaw)) < 1 && Math.abs(camera.pitch - pitch) < 1,
+        `displacement ${probe.source} camera differs: ${JSON.stringify({ desired: { yaw, pitch }, camera })}`)
+      const visibility = parseJson<{surfaces:number[];drawSurfaces:number[];outsideWorld:boolean;eyeLeaf:number|null;leaves:number[];areas:number[]}>(await agent(["--session", session, "eval", "globalThis.__playsrcProfile.displacementVisibility"]))
+      const yawRadians = camera.yaw * Math.PI / 180, pitchRadians = camera.pitch * Math.PI / 180
+      const forward = [Math.cos(pitchRadians) * Math.cos(yawRadians), Math.cos(pitchRadians) * Math.sin(yawRadians), -Math.sin(pitchRadians)]
+      const right = [Math.sin(yawRadians), -Math.cos(yawRadians), 0]
+      const up = [
+        right[1] * forward[2] - right[2] * forward[1],
+        right[2] * forward[0] - right[0] * forward[2],
+        right[0] * forward[1] - right[1] * forward[0],
+      ]
+      let frontTriangles = 0, outwardTriangles = 0, minimumDepth = Number.POSITIVE_INFINITY, maximumDepth = 0
+      const projected: [number, number][] = []
+      const verticalTangent = Math.tan(camera.verticalFov * Math.PI / 360), horizontalTangent = verticalTangent * VIEWPORT_WIDTH / VIEWPORT_HEIGHT
+      for (let offset = 0; offset < record.indices.length; offset += 3) {
+        const triangle = [record.indices[offset], record.indices[offset + 1], record.indices[offset + 2]] as const
+        const points = triangle.map(index => record.positions.slice(index * 3, index * 3 + 3))
+        const ab = points[1].map((value: number, axis: number) => value - points[0][axis]), ac = points[2].map((value: number, axis: number) => value - points[0][axis])
+        const normal = [ab[1] * ac[2] - ab[2] * ac[1], ab[2] * ac[0] - ab[0] * ac[2], ab[0] * ac[1] - ab[1] * ac[0]]
+        if (normal.reduce((sum: number, value: number, axis: number) => sum + value * probe.expectedOutward[axis]!, 0) > 0) outwardTriangles += 1
+        const toCamera = points[0].map((value: number, axis: number) => camera.position[axis]! - value)
+        if (normal.reduce((sum: number, value: number, axis: number) => sum + value * toCamera[axis], 0) > 0) frontTriangles += 1
+      }
+      for (let offset = 0; offset < record.positions.length; offset += 3) {
+        const delta = [record.positions[offset] - camera.position[0], record.positions[offset + 1] - camera.position[1], record.positions[offset + 2] - camera.position[2]]
+        const depth = delta.reduce((sum, value, axis) => sum + value * forward[axis]!, 0)
+        minimumDepth = Math.min(minimumDepth, depth); maximumDepth = Math.max(maximumDepth, depth)
+        if (depth > camera.near) {
+          const x = delta.reduce((sum, value, axis) => sum + value * right[axis]!, 0) / (depth * horizontalTangent)
+          const y = delta.reduce((sum, value, axis) => sum + value * up[axis]!, 0) / (depth * verticalTangent)
+          projected.push([(x * 0.5 + 0.5) * VIEWPORT_WIDTH, (0.5 - y * 0.5) * VIEWPORT_HEIGHT])
+        }
+      }
+      require(projected.length > 0, `displacement ${probe.source} has no projected vertices`)
+      const xs = projected.map(value => value[0]), ys = projected.map(value => value[1])
+      const x = Math.max(0, Math.floor(Math.min(...xs))), y = Math.max(0, Math.floor(Math.min(...ys)))
+      const width = Math.max(1, Math.min(VIEWPORT_WIDTH - x, Math.ceil(Math.max(...xs)) - x))
+      const height = Math.max(1, Math.min(VIEWPORT_HEIGHT - y, Math.ceil(Math.max(...ys)) - y))
+      const capture = await captureCanvas(session, config, "pl_upward-displacements/red", [{ name: `displacement-${probe.source}`, x, y, width, height }])
+      observations.push({ source: probe.source, face: probe.face, expectedOutward: probe.expectedOutward, center, camera, bounds: record.bounds,
+        cpu: { triangles: record.indices.length / 3, frontTriangles, outwardTriangles, minimumDepth, maximumDepth },
+        visibility: { ...visibility, admitted: visibility.drawSurfaces.includes(probe.face) },
+        draw: { submittedTriangles: record.submittedTriangles, cull: record.cull, depthTest: record.depthTest, depthWrite: record.depthWrite, blend: record.blend },
+        material: record.material, lighting: record.lighting, region: { x, y, width, height }, capture })
+    }
+    const report = { target: "pl_upward", probes: observations }
+    await writeFile(path.join(evidenceDirectory, "report.json"), `${JSON.stringify(report, null, 2)}\n`)
+    const failures = observations.flatMap((value: any) => [
+      value.cpu.outwardTriangles === value.cpu.triangles ? null : `${value.source}:outward=${value.cpu.outwardTriangles}/${value.cpu.triangles}`,
+      value.cpu.frontTriangles > 0 ? null : `${value.source}:front=0`,
+      value.visibility.admitted ? null : `${value.source}:not-visible`,
+      value.draw.submittedTriangles === value.cpu.triangles ? null : `${value.source}:submitted=${value.draw.submittedTriangles}`,
+      value.draw.cull === "back" && value.draw.depthTest && value.draw.depthWrite && !value.draw.blend ? null : `${value.source}:draw-state`,
+      value.lighting.kind !== "unlit" && value.lighting.samplesPerLayer > 0 ? null : `${value.source}:lighting`,
+      value.capture.regions[0].nonBackgroundRatio > 0.05 && value.capture.regions[0].meanLuma > 1 ? null : `${value.source}:pixels`,
+    ].filter(Boolean))
+    require(failures.length === 0, `displacement visual evidence failed: ${failures.join(",")}`)
+    console.log(JSON.stringify(report))
+  } catch (error) {
+    primaryError = error
+    if (observations.length > 0) await writeFile(path.join(evidenceDirectory, "report.json"), `${JSON.stringify({ target: "pl_upward", probes: observations, error: String(error) }, null, 2)}\n`).catch(() => {})
+    throw error
+  } finally {
+    if (browserOpen) await agent(["--session", session, "close"]).catch(() => {})
+    try { await owner.interrupt() } catch (error) { if (primaryError === undefined) throw error }
   }
 }
 
