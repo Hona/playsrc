@@ -163,12 +163,34 @@ fn comparison_bytes(
             }
             None => bytes.u8(0)?,
         }
-        hit_bytes(&mut bytes, ray.trace.hit)?;
+        hit_bytes(
+            &mut bytes,
+            ray.trace.hit,
+            ray.trace.displacement_flags,
+            ray.trace.surface,
+            ray.trace.displacement,
+        )?;
     }
     Ok(bytes.finish())
 }
 
-fn hit_bytes(bytes: &mut BatchBytes, hit: Option<Hit>) -> Result<(), Error> {
+fn hit_bytes(
+    bytes: &mut BatchBytes,
+    hit: Option<Hit>,
+    displacement_flags: u16,
+    surface: Option<crate::SurfaceIdentity>,
+    displacement: Option<crate::DisplacementFeature>,
+) -> Result<(), Error> {
+    if let Some(displacement) = displacement {
+        bytes.u8(3)?;
+        bytes.usize(displacement.source)?;
+        bytes.usize(displacement.parent_face)?;
+        bytes.usize(displacement.triangle)?;
+        bytes.u16(displacement_flags)?;
+        let surface = surface.ok_or_else(|| error(ErrorCode::InvalidReference, None))?;
+        bytes.add(&surface.registry)?;
+        return bytes.u32(surface.index);
+    }
     match hit {
         None => bytes.u8(0),
         Some(Hit::WorldBrush { brush }) => {
