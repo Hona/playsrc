@@ -31,7 +31,8 @@ Each child is an independently useful package. This directory is only a navigati
 | [`vtf/`](vtf/) | VTF headers, resource tables, formats, frames, faces, slices, mip levels, and decoded pixels. |
 | [`vmt/`](vmt/) | VMT shader names, parameters, proxies, references, and document-level composition. |
 | [`studio-model/`](studio-model/) | Coordinated MDL, VVD, VTX, and ANI geometry, skeleton, sequence, animation, attachment, bodygroup, skin, LOD, and flex data. |
+| [`vhv/`](vhv/) | VHV hardware vertex-light headers, ordered mesh streams, Source vertex-light BGRA8 records, ranges, checksums, and source identities. |
 | [`phy/`](phy/) | PHY solids, collision geometry, constraints, and physical metadata. |
 | [`demo/`](demo/) | Source DEM headers, commands, ticks, lengths, and encoded record payloads. |
 
-These eight package paths are the current public leaves. Proposed leaves remain roadmap decisions until the root Owner Registry accepts them; no proposed package exists by implication.
+These nine package paths are the current public leaves. Proposed leaves remain roadmap decisions until the root Owner Registry accepts them; no proposed package exists by implication.
