@@ -6,6 +6,7 @@ license.workspace = true
 
 [features]
 verify-hdr = ["dep:playsrc-tf2-wasm"]
+presentation-bound-diagnostic = ["dep:playsrc-tf2-wasm", "playsrc-tf2-wasm/presentation-bound-diagnostic"]
 
 [dependencies]
 playsrc-asset-graph = { path = "../../../packages/asset-store/rust" }

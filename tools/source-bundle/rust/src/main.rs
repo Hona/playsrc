@@ -2058,6 +2058,7 @@ fn main() -> Result<(), String> {
         .map(|value| String::from_utf8(value.clone()).map(|path| path.to_ascii_lowercase()))
         .collect::<Result<std::collections::BTreeSet<_>, _>>()
         .map_err(|_| "model identity is not UTF-8")?;
+    let mut diagnostic_report = None;
     if diagnose_presentation_bound {
         model_paths.extend(
             canonical
@@ -2157,26 +2158,21 @@ fn main() -> Result<(), String> {
                 "configured static-prop VHV join count changed: {joined_objects}"
             ));
         }
-        println!(
-            "{}",
-            serde_json::to_string(&json!({
-                "schema": "playsrc-static-prop-producer-diagnostic-v1",
-                "target": target,
-                "contentBuild": contract.content_build,
-                "mapSha256": map_sha256,
-                "dictionaryModels": canonical.static_props.models.len(),
-                "leafReferences": canonical.static_props.leaf_reference_count,
-                "occurrences": canonical.static_props.occurrences.len(),
-                "modelDocuments": model_documents.len(),
-                "vhvObjects": joined_objects,
-                "vhvDistinctByteIdentities": vhv_hashes.len(),
-                "vhvBytes": vhv_bytes.to_string(),
-                "joinedMeshes": joined_meshes,
-                "joinedVertices": joined_vertices.to_string(),
-            }))
-            .map_err(|error| error.to_string())?
-        );
-        return Ok(());
+        diagnostic_report = Some(json!({
+            "schema": "playsrc-static-prop-producer-diagnostic-v1",
+            "target": target,
+            "contentBuild": contract.content_build,
+            "mapSha256": map_sha256,
+            "dictionaryModels": canonical.static_props.models.len(),
+            "leafReferences": canonical.static_props.leaf_reference_count,
+            "occurrences": canonical.static_props.occurrences.len(),
+            "modelDocuments": model_documents.len(),
+            "vhvObjects": joined_objects,
+            "vhvDistinctByteIdentities": vhv_hashes.len(),
+            "vhvBytes": vhv_bytes.to_string(),
+            "joinedMeshes": joined_meshes,
+            "joinedVertices": joined_vertices.to_string(),
+        }));
     }
     stage("map-materials-and-models", &mut stage_started);
     let particle_paths = [
@@ -2353,6 +2349,44 @@ fn main() -> Result<(), String> {
         )?;
     }
     stage("declared-dependencies", &mut stage_started);
+    #[cfg(not(feature = "presentation-bound-diagnostic"))]
+    if diagnostic_report.is_some() {
+        return Err("presentation-bound diagnostic feature is unavailable".to_owned());
+    }
+    #[cfg(feature = "presentation-bound-diagnostic")]
+    if let Some(mut report) = diagnostic_report {
+        let presentation = playsrc_tf2_wasm::diagnose_presentation_bound(
+            &bsp_bytes,
+            &resolver.bundle,
+            &model_documents.keys().cloned().collect::<Vec<_>>(),
+        )
+        .map_err(|error| format!("presentation-bound compilation failed with error {error}"))?;
+        report["presentation"] = json!({
+            "modelCount": presentation.model_count,
+            "modelVertices": presentation.model_vertices.to_string(),
+            "modelTriangles": presentation.model_triangles.to_string(),
+            "decodedTextureCount": presentation.decoded_texture_count,
+            "distinctDecodedTextureCount": presentation.distinct_decoded_texture_count,
+            "decodedTextureBytes": presentation.decoded_texture_bytes.to_string(),
+            "uniqueDecodedTextureBytes": presentation.unique_decoded_texture_bytes.to_string(),
+            "repeatedDecodedTextureBytes": presentation.repeated_decoded_texture_bytes.to_string(),
+            "sourceTextureCount": presentation.source_texture_count,
+            "distinctSourceTextureCount": presentation.distinct_source_texture_count,
+            "sourceTextureBytes": presentation.source_texture_bytes.to_string(),
+            "uniqueSourceTextureBytes": presentation.unique_source_texture_bytes.to_string(),
+            "sectionEnds": presentation.section_ends.map(|value| value.to_string()),
+            "defaultBoundFirstExceededAt": presentation.default_bound_first_exceeded_at.map(|value| value.to_string()),
+            "finalLength": presentation.final_length.to_string(),
+            "finalCapacity": presentation.final_capacity.to_string(),
+            "diagnosticLimit": (512usize * 1024 * 1024).to_string(),
+            "phaseMilliseconds": presentation.phase_milliseconds.map(|value| value.to_string()),
+        });
+        println!(
+            "{}",
+            serde_json::to_string(&report).map_err(|error| error.to_string())?
+        );
+        return Ok(());
+    }
     let chapter_path = "scripts/chapterbackgrounds.txt";
     let chapter_bytes = resolver.required(chapter_path, "tf2-gameui-base-background-list")?;
     let chapter_document = playsrc_keyvalues::parse_text(

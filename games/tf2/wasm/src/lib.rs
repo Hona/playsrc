@@ -5,6 +5,11 @@ pub use wasm_bindgen_rayon::init_thread_pool;
 
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
+
+#[cfg(feature = "presentation-bound-diagnostic")]
+const PRESENTATION_OUTPUT_LIMIT: usize = 512 * 1024 * 1024;
+#[cfg(not(feature = "presentation-bound-diagnostic"))]
+const PRESENTATION_OUTPUT_LIMIT: usize = 512 * 1024 * 1024;
 use std::{
     collections::BTreeMap,
     sync::{
@@ -317,6 +322,7 @@ struct PresentationInputs<'a> {
     profile: playsrc_map::LightingProfile,
     visibility: &'a playsrc_visibility::World,
     collision: &'a playsrc_collision::World,
+    additional_model_roots: &'a [String],
 }
 
 struct Slot {
@@ -707,10 +713,12 @@ unsafe fn compile_map(
             profile,
             visibility: &visibility_world,
             collision: &collision_world,
+            additional_model_roots: &[],
         };
         let (
             (presentation, studio_models, model_material_opacity, environment),
             presentation_metrics,
+            _presentation_ledger,
         ) = if let Some(cached) = cached_presentation {
             load_cached_presentation(presentation_inputs, cached).map_err(|_| 9_u32)?
         } else {
@@ -1011,6 +1019,68 @@ pub fn compile_artifact(
         payload_sha256,
         derived_sha256,
     })
+}
+
+#[cfg(feature = "presentation-bound-diagnostic")]
+pub fn diagnose_presentation_bound(
+    bsp_bytes: &[u8],
+    resources: &BTreeMap<String, Vec<u8>>,
+    additional_model_roots: &[String],
+) -> Result<PresentationSizeLedger, u32> {
+    let resources = resources
+        .iter()
+        .map(|(identity, bytes)| (identity.clone(), bytes.as_slice()))
+        .collect::<BTreeMap<_, _>>();
+    let resource_hashes = resources
+        .iter()
+        .map(|(identity, bytes)| (identity.clone(), Sha256::digest(bytes).into()))
+        .collect::<BTreeMap<_, _>>();
+    let model_resources = resources
+        .iter()
+        .filter(|(identity, _)| {
+            [".mdl", ".vvd", ".vtx", ".ani", ".phy"]
+                .iter()
+                .any(|suffix| identity.ends_with(suffix))
+        })
+        .map(|(identity, bytes)| (identity.clone(), Arc::<[u8]>::from(*bytes)))
+        .collect::<BTreeMap<_, _>>();
+    let bsp = playsrc_bsp::parse(
+        bsp_bytes,
+        playsrc_bsp::Profile::Source2013V20,
+        playsrc_bsp::Limits::default(),
+    )
+    .map_err(|_| 1u32)?;
+    let entities =
+        playsrc_entity::parse(bsp.lumps[0].bytes(&bsp), playsrc_entity::Limits::default())
+            .map_err(|_| 3u32)?;
+    let collision = playsrc_collision::compile(&bsp).map_err(|_| 3u32)?;
+    let visibility = playsrc_visibility::compile(&bsp).map_err(|_| 3u32)?;
+    let canonical = playsrc_map::compile_prepared(
+        &bsp,
+        playsrc_map::LightingProfile::Hdr,
+        &entities,
+        &collision,
+    )
+    .map_err(|_| 3u32)?;
+    let visibility =
+        playsrc_map::attach_displacement_visibility(&canonical, &visibility).map_err(|_| 3u32)?;
+    let (_, _, _, particle_presentation) = compile_particles(&resources).map_err(|_| 10u32)?;
+    let (_, metrics, mut ledger) = compile_presentation(PresentationInputs {
+        canonical: &canonical,
+        bsp: &bsp,
+        graph: &entities,
+        bundle: &resources,
+        model_resources: &model_resources,
+        resource_hashes: &resource_hashes,
+        particle_presentation: &particle_presentation,
+        profile: playsrc_map::LightingProfile::Hdr,
+        visibility: &visibility,
+        collision: &collision,
+        additional_model_roots,
+    })
+    .map_err(|_| 9u32)?;
+    ledger.phase_milliseconds = metrics.map(|nanoseconds| nanoseconds / 1_000_000);
+    Ok(ledger)
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn playsrc_result_length(handle: u32) -> usize {
@@ -5089,7 +5159,9 @@ fn transform_normal(matrix: &playsrc_studio_model::Matrix3x4, normal: [f32; 3]) 
 fn pbytes(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), ()> {
     out.extend_from_slice(&u32::try_from(bytes.len()).map_err(|_| ())?.to_le_bytes());
     out.extend_from_slice(bytes);
-    (out.len() <= 512 * 1024 * 1024).then_some(()).ok_or(())
+    (out.len() <= PRESENTATION_OUTPUT_LIMIT)
+        .then_some(())
+        .ok_or(())
 }
 
 fn encode_profile_coverage(
@@ -6416,7 +6488,28 @@ type CompiledPresentation = (
     BTreeMap<String, Vec<playsrc_studio_model::ViewModelMaterialOpacity>>,
     RuntimeEnvironment,
 );
-type MeasuredPresentation = (CompiledPresentation, [u64; 6]);
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PresentationSizeLedger {
+    pub model_count: usize,
+    pub model_vertices: usize,
+    pub model_triangles: usize,
+    pub decoded_texture_count: usize,
+    pub distinct_decoded_texture_count: usize,
+    pub decoded_texture_bytes: usize,
+    pub unique_decoded_texture_bytes: usize,
+    pub repeated_decoded_texture_bytes: usize,
+    pub source_texture_count: usize,
+    pub distinct_source_texture_count: usize,
+    pub source_texture_bytes: usize,
+    pub unique_source_texture_bytes: usize,
+    pub section_ends: [usize; 8],
+    pub default_bound_first_exceeded_at: Option<usize>,
+    pub final_length: usize,
+    pub final_capacity: usize,
+    pub phase_milliseconds: [u64; 6],
+}
+
+type MeasuredPresentation = (CompiledPresentation, [u64; 6], PresentationSizeLedger);
 
 fn presentation_cache_u32(bytes: &[u8], offset: &mut usize) -> Result<u32, ()> {
     let end = offset.checked_add(4).ok_or(())?;
@@ -6441,9 +6534,9 @@ fn presentation_cache_skip(bytes: &[u8], offset: &mut usize, length: usize) -> R
 fn cached_presentation_models(
     bytes: &[u8],
 ) -> Result<Vec<(String, playsrc_studio_model::PresentationProfile, [u8; 32])>, ()> {
-    if bytes.len() < 28
+    if bytes.len() < 24
         || &bytes[..4] != b"PTF2"
-        || u32::from_le_bytes(bytes[4..8].try_into().map_err(|_| ())?) != 10
+        || u32::from_le_bytes(bytes[4..8].try_into().map_err(|_| ())?) != 11
     {
         return Err(());
     }
@@ -6452,7 +6545,7 @@ fn cached_presentation_models(
     if model_count > 256 {
         return Err(());
     }
-    presentation_cache_skip(bytes, &mut offset, 16)?;
+    presentation_cache_skip(bytes, &mut offset, 12)?;
     let mut models = Vec::with_capacity(model_count);
     for _ in 0..model_count {
         let identity = std::str::from_utf8(bundle_field(bytes, &mut offset)?)
@@ -6521,6 +6614,7 @@ fn load_cached_presentation(
         profile,
         visibility,
         collision,
+        additional_model_roots: _,
     } = inputs;
     let mut metrics_clock = RuntimeMetricsClock::new();
     let mut phase_started =
@@ -6595,7 +6689,7 @@ fn load_cached_presentation(
     phase_started = phase_finished;
     let model_material_opacity =
         model_material_opacity(&models, bundle, profile).map_err(|_| 7_u32)?;
-    let models = models
+    let models: BTreeMap<String, playsrc_studio_model::PresentationModel> = models
         .into_iter()
         .map(|(identity, artifact)| (identity, artifact.model))
         .collect();
@@ -6607,7 +6701,7 @@ fn load_cached_presentation(
     );
     phase_finished = playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
     metrics[5] = phase_finished.saturating_sub(phase_started);
-    Ok((output, metrics))
+    Ok((output, metrics, PresentationSizeLedger::default()))
 }
 
 fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresentation, ()> {
@@ -6622,6 +6716,7 @@ fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresen
         profile,
         visibility,
         collision,
+        additional_model_roots,
     } = inputs;
     let mut metrics_clock = RuntimeMetricsClock::new();
     let mut phase_started =
@@ -6650,6 +6745,7 @@ fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresen
             roots.insert(std::str::from_utf8(m).map_err(|_| ())?.to_ascii_lowercase());
         }
     }
+    roots.extend(additional_model_roots.iter().cloned());
     let models = roots
         .into_iter()
         .collect::<Vec<_>>()
@@ -6677,26 +6773,40 @@ fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresen
             Ok((id, artifact))
         })
         .collect::<Result<Vec<_>, ()>>()?;
+    let model_vertices = models
+        .iter()
+        .flat_map(|(_, artifact)| &artifact.model.geometry)
+        .map(|primitive| primitive.vertices.len())
+        .sum();
+    let model_triangles = models
+        .iter()
+        .flat_map(|(_, artifact)| &artifact.model.geometry)
+        .map(|primitive| primitive.triangles.len())
+        .sum();
     phase_finished = playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
     metrics[1] = phase_finished.saturating_sub(phase_started);
     phase_started = phase_finished;
-    let mut textures = BTreeMap::new();
-    for (_, a) in &models {
-        for m in &a.model.materials {
-            let path = a
-                .model
-                .dependencies
-                .get(m.material_dependency)
-                .ok_or(())?
-                .logical_path
-                .to_ascii_lowercase();
-            let resolved =
-                resolve_material(&path, bundle, true, material_environment(profile, true))?;
-            if let Some(texture) = resolved.base_texture {
-                textures.insert(path, texture);
-            }
-        }
-    }
+    let decoded_texture_count = 0;
+    let decoded_texture_bytes = 0;
+    let distinct_decoded_texture_count = 0;
+    let unique_decoded_texture_bytes = 0;
+    let repeated_decoded_texture_bytes = 0;
+    let source_textures = bundle
+        .iter()
+        .filter(|(identity, _)| identity.ends_with(".vtf"))
+        .map(|(_, bytes)| (*bytes, <[u8; 32]>::from(Sha256::digest(bytes))))
+        .collect::<Vec<_>>();
+    let source_texture_count = source_textures.len();
+    let source_texture_bytes = source_textures
+        .iter()
+        .map(|(bytes, _)| bytes.len())
+        .sum::<usize>();
+    let source_texture_identities = source_textures
+        .iter()
+        .map(|(bytes, identity)| (*identity, bytes.len()))
+        .collect::<BTreeMap<_, _>>();
+    let distinct_source_texture_count = source_texture_identities.len();
+    let unique_source_texture_bytes = source_texture_identities.values().sum::<usize>();
     let mut directional = Vec::new();
     for reference in &canonical.materials {
         let identity = reference.logical_path.to_ascii_lowercase();
@@ -6735,16 +6845,19 @@ fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresen
     metrics[4] = phase_finished.saturating_sub(phase_started);
     phase_started = phase_finished;
     let mut out = Vec::new();
-    out.try_reserve_exact(512 * 1024 * 1024).map_err(|_| ())?;
+    out.try_reserve_exact(PRESENTATION_OUTPUT_LIMIT)
+        .map_err(|_| ())?;
     out.extend_from_slice(b"PTF2");
-    out.extend_from_slice(&10u32.to_le_bytes());
+    out.extend_from_slice(&11u32.to_le_bytes());
     out.extend_from_slice(&u32::try_from(models.len()).map_err(|_| ())?.to_le_bytes());
-    out.extend_from_slice(&u32::try_from(textures.len()).map_err(|_| ())?.to_le_bytes());
     out.extend_from_slice(
         &u32::try_from(directional.len())
             .map_err(|_| ())?
             .to_le_bytes(),
     );
+    let mut section_ends = [0usize; 8];
+    let mut default_bound_first_exceeded_at = None;
+    section_ends[0] = out.len();
     out.extend_from_slice(
         &u32::try_from(particle_materials.len())
             .map_err(|_| ())?
@@ -6920,15 +7033,8 @@ fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresen
         }
         pbytes(&mut out, &[])?;
     }
-    for (material, texture) in textures {
-        pbytes(&mut out, material.as_bytes())?;
-        pbytes(&mut out, texture.logical_path.as_bytes())?;
-        out.extend_from_slice(&texture.width.to_le_bytes());
-        out.extend_from_slice(&texture.height.to_le_bytes());
-        let hash: [u8; 32] = Sha256::digest(&texture.rgba).into();
-        out.extend_from_slice(&hash);
-        pbytes(&mut out, &texture.rgba)?;
-    }
+    section_ends[1] = out.len();
+    section_ends[2] = out.len();
     for (material, kind, texture) in directional {
         pbytes(&mut out, material.as_bytes())?;
         out.extend_from_slice(&[kind, 0, 0, 0]);
@@ -6942,10 +7048,13 @@ fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresen
             out.extend_from_slice(&value.to_le_bytes())
         }
     }
+    section_ends[3] = out.len();
     for material in &particle_materials {
         pbytes(&mut out, material.as_bytes())?;
     }
+    section_ends[4] = out.len();
     pbytes(&mut out, &environment_bytes)?;
+    section_ends[5] = out.len();
     encode_material_states(
         &mut out,
         canonical,
@@ -6959,6 +7068,7 @@ fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresen
     encode_audio_documents(&mut out, bundle)?;
     encode_model_occurrence_matrices(&mut out, graph)?;
     encode_model_materials(&mut out, &models, bundle, profile)?;
+    section_ends[6] = out.len();
     for model in &canonical.brush_models {
         out.extend_from_slice(&u32::try_from(model.index).map_err(|_| ())?.to_le_bytes());
         for value in model.bounds[0]
@@ -6987,13 +7097,40 @@ fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresen
         }
     }
     let model_material_opacity = model_material_opacity(&models, bundle, profile)?;
-    let models = models
+    let models: BTreeMap<String, playsrc_studio_model::PresentationModel> = models
         .into_iter()
         .map(|(identity, artifact)| (identity, artifact.model))
         .collect();
     phase_finished = playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
     metrics[5] = phase_finished.saturating_sub(phase_started);
-    Ok(((out, models, model_material_opacity, environment), metrics))
+    section_ends[7] = out.len();
+    if default_bound_first_exceeded_at.is_none() && out.len() > 512 * 1024 * 1024 {
+        default_bound_first_exceeded_at = Some(out.len());
+    }
+    let ledger = PresentationSizeLedger {
+        model_count: models.len(),
+        model_vertices,
+        model_triangles,
+        decoded_texture_count,
+        distinct_decoded_texture_count,
+        decoded_texture_bytes,
+        unique_decoded_texture_bytes,
+        repeated_decoded_texture_bytes,
+        source_texture_count,
+        distinct_source_texture_count,
+        source_texture_bytes,
+        unique_source_texture_bytes,
+        section_ends,
+        default_bound_first_exceeded_at,
+        final_length: out.len(),
+        final_capacity: out.capacity(),
+        phase_milliseconds: [0; 6],
+    };
+    Ok((
+        (out, models, model_material_opacity, environment),
+        metrics,
+        ledger,
+    ))
 }
 
 fn model_material_opacity(
@@ -8776,9 +8913,9 @@ mod tests {
     #[test]
     fn cached_model_headers_consume_complete_sequence_records() {
         let mut bytes = b"PTF2".to_vec();
-        bytes.extend_from_slice(&10_u32.to_le_bytes());
+        bytes.extend_from_slice(&11_u32.to_le_bytes());
         bytes.extend_from_slice(&1_u32.to_le_bytes());
-        bytes.extend_from_slice(&[0; 16]);
+        bytes.extend_from_slice(&[0; 12]);
         pbytes(&mut bytes, b"models/test.mdl").unwrap();
         bytes.extend_from_slice(&[0; 4]);
         bytes.extend_from_slice(&[7; 32]);

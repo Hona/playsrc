@@ -1070,7 +1070,6 @@ export class Tf2Application {
       const scene = await this.#renderer.loadMap({
         payload: this.#loaded.payload,
         payloadSha256: this.#loaded.payloadSha256,
-        modelTextures: this.#artifacts.textures,
         directionalTextures: this.#artifacts.directionalTextures,
         environment: this.#artifacts.environment,
         materialStates: this.#materialStates(this.#artifacts),
@@ -1666,7 +1665,6 @@ export class Tf2Application {
       const scene = await this.#renderer.loadMap({
         payload: staged.payload,
         payloadSha256: staged.payloadSha256,
-        modelTextures: artifacts.textures,
         directionalTextures: artifacts.directionalTextures,
         environment: artifacts.environment,
         materialStates: this.#materialStates(artifacts),
@@ -1699,7 +1697,6 @@ export class Tf2Application {
       await this.#renderer.loadMap({
         payload: prior.payload,
         payloadSha256: prior.payloadSha256,
-        modelTextures: priorArtifacts?.textures,
         directionalTextures: priorArtifacts?.directionalTextures,
         environment: priorArtifacts?.environment,
         materialStates: priorArtifacts ? this.#materialStates(priorArtifacts) : undefined,
