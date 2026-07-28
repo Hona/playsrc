@@ -25,6 +25,7 @@ pub struct World {
     pub areas: Vec<Area>,
     pub portals: Vec<AreaPortal>,
     pub portal_vertices: Vec<[f32; 3]>,
+    pub leaf_displacements: Vec<Vec<u16>>,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VisibilityMode {
@@ -286,6 +287,7 @@ pub fn compile(bsp: &Bsp) -> Result<World, Error> {
             return Err(error(ErrorCode::InvalidArea, Some(index)));
         }
     }
+    let leaf_displacements = vec![Vec::new(); leaves.len()];
     let mut world = World {
         identity: [0; 32],
         visibility_mode,
@@ -301,6 +303,7 @@ pub fn compile(bsp: &Bsp) -> Result<World, Error> {
         areas,
         portals,
         portal_vertices,
+        leaf_displacements,
     };
     validate_heads(&world)?;
     world.identity = world_identity(&world);
@@ -512,7 +515,11 @@ fn validate_child(
 
 fn world_identity(world: &World) -> [u8; 32] {
     let mut digest = Sha256::new();
-    digest.update(b"playsrc-visibility-world-v1");
+    digest.update(if world.leaf_displacements.iter().all(Vec::is_empty) {
+        b"playsrc-visibility-world-v1".as_slice()
+    } else {
+        b"playsrc-visibility-world-v2".as_slice()
+    });
     digest.update([match world.visibility_mode {
         VisibilityMode::Compressed => 0,
         VisibilityMode::NoVis => 1,
@@ -560,6 +567,12 @@ fn world_identity(world: &World) -> [u8; 32] {
     }
     for face in &world.leaf_faces {
         digest.update(face.to_le_bytes());
+    }
+    for displacements in &world.leaf_displacements {
+        digest.update((displacements.len() as u64).to_le_bytes());
+        for face in displacements {
+            digest.update(face.to_le_bytes());
+        }
     }
     for model in &world.models {
         for value in [model.mins, model.maxs, model.origin]
@@ -616,6 +629,26 @@ fn f32_at(bytes: &[u8], offset: usize) -> f32 {
     )
 }
 impl World {
+    pub fn with_displacement_surfaces(&self, inputs: &[(u16, Aabb)]) -> Result<Self, Error> {
+        if inputs.len() > 1_000_000 {
+            return Err(error(ErrorCode::InvalidCount, None));
+        }
+        let mut seen = BTreeSet::new();
+        let mut leaf_displacements = vec![Vec::new(); self.leaves.len()];
+        for (face, bounds) in inputs {
+            if !seen.insert(*face) {
+                return Err(error(ErrorCode::InvalidReference, Some(usize::from(*face))));
+            }
+            for leaf in self.leaves_in_box(*bounds)? {
+                leaf_displacements[leaf].push(*face);
+            }
+        }
+        let mut world = self.clone();
+        world.leaf_displacements = leaf_displacements;
+        world.identity = world_identity(&world);
+        Ok(world)
+    }
+
     pub fn visible(&self, from: usize, to: usize) -> bool {
         from < self.cluster_count
             && to < self.cluster_count
@@ -787,6 +820,11 @@ impl World {
             let start = usize::from(record.first_leaf_face);
             let end = start + usize::from(record.leaf_face_count);
             for face in &self.leaf_faces[start..end] {
+                if seen_faces.insert(*face) {
+                    world_surfaces.push(*face);
+                }
+            }
+            for face in &self.leaf_displacements[*leaf] {
                 if seen_faces.insert(*face) {
                     world_surfaces.push(*face);
                 }
@@ -1172,6 +1210,7 @@ mod tests {
             areas: vec![],
             portals: vec![],
             portal_vertices: vec![],
+            leaf_displacements: vec![],
         };
         assert!(w.visible(0, 1));
         assert!(!w.visible(0, 2));
@@ -1224,6 +1263,7 @@ mod tests {
             areas: vec![],
             portals: vec![],
             portal_vertices: vec![],
+            leaf_displacements: vec![Vec::new(); 2],
         };
         assert_eq!(w.locate_leaf([1., 0., 0.]).unwrap(), 0);
         assert_eq!(w.locate_leaf([-1., 0., 0.]).unwrap(), 1);
@@ -1347,6 +1387,7 @@ mod tests {
                 },
             ],
             portal_vertices: vec![],
+            leaf_displacements: vec![Vec::new(); 3],
         };
         world.identity = world_identity(&world);
         world
@@ -1373,6 +1414,24 @@ mod tests {
                 .code,
             ErrorCode::InvalidRange
         );
+        let attached = world
+            .with_displacement_surfaces(&[(
+                14,
+                Aabb::new([0.0, -1.0, -1.0], [1.0, 1.0, 1.0]).unwrap(),
+            )])
+            .unwrap();
+        assert_eq!(attached.leaf_displacements, [vec![14], vec![14], vec![]]);
+        let view = attached
+            .view(
+                &AreaState::new(&attached),
+                &CandidateSet::compile(&attached, 0, &[]).unwrap(),
+                &ViewQuery {
+                    origins: vec![[1.0, 1.0, 0.0]],
+                    bypass_pvs: false,
+                },
+            )
+            .unwrap();
+        assert!(view.world_surfaces.contains(&14));
     }
 
     #[test]

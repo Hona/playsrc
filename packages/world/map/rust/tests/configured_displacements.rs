@@ -76,4 +76,96 @@ fn configured_pl_upward_displacements_are_complete_and_deterministic() {
             .sum::<usize>(),
         18_240
     );
+    let probes = first
+        .surfaces
+        .iter()
+        .filter(|surface| surface.model == 0 && surface.draw && surface.displacement.is_some())
+        .map(|surface| {
+            let bounds = [0, 1, 2].map(|axis| {
+                surface
+                    .positions
+                    .iter()
+                    .map(|position| position[axis])
+                    .fold(
+                        [f32::INFINITY, f32::NEG_INFINITY],
+                        |[minimum, maximum], value| [minimum.min(value), maximum.max(value)],
+                    )
+            });
+            let expected = [surface.plane[0], surface.plane[1], surface.plane[2]]
+                .map(|value| if surface.plane_back { -value } else { value });
+            let dots = surface
+                .triangles
+                .iter()
+                .map(|triangle| {
+                    let [a, b, c] = triangle.map(|index| surface.positions[index as usize]);
+                    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                    let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+                    let normal = [
+                        ab[1] * ac[2] - ab[2] * ac[1],
+                        ab[2] * ac[0] - ab[0] * ac[2],
+                        ab[0] * ac[1] - ab[1] * ac[0],
+                    ];
+                    normal[0] * expected[0] + normal[1] * expected[1] + normal[2] * expected[2]
+                })
+                .collect::<Vec<_>>();
+            (
+                surface.displacement.as_ref().unwrap().source,
+                surface.face,
+                surface.material,
+                expected,
+                bounds,
+                dots.iter().filter(|dot| **dot > 0.0).count(),
+                dots.iter().filter(|dot| **dot < 0.0).count(),
+                surface.triangles.len(),
+            )
+        })
+        .collect::<Vec<_>>();
+    for (source, face) in [(147, 14_859), (381, 15_093), (138, 14_850)] {
+        let probe = probes.iter().find(|probe| probe.0 == source).unwrap();
+        assert_eq!(probe.1, face);
+        assert_eq!((probe.5, probe.6, probe.7), (32, 0, 32));
+    }
+    let base_visibility = playsrc_visibility::compile(&bsp).unwrap();
+    let visibility = playsrc_map::attach_displacement_visibility(&first, &base_visibility).unwrap();
+    let state = playsrc_visibility::AreaState::new(&visibility);
+    let candidates = playsrc_visibility::CandidateSet::compile(&visibility, 0, &[]).unwrap();
+    for (source, face) in [(147, 14_859), (381, 15_093), (138, 14_850)] {
+        let probe = probes.iter().find(|probe| probe.0 == source).unwrap();
+        let center = probe.4.map(|[minimum, maximum]| (minimum + maximum) * 0.5);
+        let span = probe
+            .4
+            .iter()
+            .map(|[minimum, maximum]| maximum - minimum)
+            .fold(0.0f32, f32::max);
+        let position =
+            std::array::from_fn(|axis| center[axis] + probe.3[axis] * (span * 0.25 + 64.0));
+        let memberships = visibility
+            .leaf_displacements
+            .iter()
+            .enumerate()
+            .filter_map(|(leaf, faces)| {
+                faces
+                    .contains(&face)
+                    .then_some((leaf, visibility.leaves[leaf].cluster))
+            })
+            .collect::<Vec<_>>();
+        let view = visibility
+            .view(
+                &state,
+                &candidates,
+                &playsrc_visibility::ViewQuery {
+                    origins: vec![position],
+                    bypass_pvs: false,
+                },
+            )
+            .unwrap();
+        assert!(
+            !memberships.is_empty(),
+            "source {source} has no visibility leaves"
+        );
+        assert!(
+            view.world_surfaces.contains(&face),
+            "source {source} is absent from its above/front PVS"
+        );
+    }
 }

@@ -49,6 +49,22 @@ export type RuntimeBatch = Readonly<{
   indices: Uint32Array
   faces: Uint32Array
 }>
+export type RuntimeDisplacement = Readonly<{
+  source: number
+  face: number
+  model: number
+  material: number
+  power: number
+  positions: Float32Array
+  normals: Float32Array
+  lightmapUv: Float32Array
+  indices: Uint32Array
+  bounds: readonly [Rgb, Rgb]
+  lightOffset: number
+  styles: readonly [number, number, number, number]
+  lightmapWidth: number
+  lightmapHeight: number
+}>
 export type RuntimeBrushModel=Readonly<{index:number;batches:readonly RuntimeBatch[];drawableSurfaces:number}>
 
 export type RuntimeModelPrimitive = Readonly<{
@@ -216,6 +232,7 @@ export type RuntimeMap = Readonly<{
   entityBytes: Uint8Array
   drawableSurfaces: number
   displacementSurfaces: number
+  displacements: readonly RuntimeDisplacement[]
   models: readonly RuntimeModel[]
   modelOccurrences: readonly RuntimeModelOccurrence[]
   lightmapLayout: RuntimeLightmapLayout
@@ -1086,6 +1103,7 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
   let totalTriangles = 0
   let drawableSurfaces = 0
   let displacementSurfaces = 0
+  const displacements: RuntimeDisplacement[] = []
   for (let index = 0; index < surfaceCount; index += 1) {
     const face = reader.u32()
     const model = reader.u32()
@@ -1114,12 +1132,27 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
       if (displacement > 1 || (displacement === 0 && power !== 0)) throw new RuntimeMapError("runtime displacement disposition is invalid")
       if (displacement === 1) {
         if (power < 2 || power > 4) throw new RuntimeMapError("runtime displacement power is invalid")
-        reader.u32(); reader.i32(); reader.f32(); reader.u32(); reader.u16(); zeros(reader.take(2), "runtime displacement face reserved")
+        const source = reader.u32(); reader.i32(); reader.f32(); reader.u32(); const mapFace = reader.u16(); zeros(reader.take(2), "runtime displacement face reserved")
+        if (mapFace !== face) throw new RuntimeMapError("runtime displacement parent face differs")
         reader.f32(); reader.f32(); reader.f32(); reader.u32(); reader.u32()
         for (let word = 0; word < 10; word += 1) reader.u32()
         reader.take(48 + 40)
         const tags = bounded(reader.u32(), MAX_TRIANGLES, "runtime displacement triangle tags")
         reader.take(tags * 2)
+        const minimum = [Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY]
+        const maximum = [Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY]
+        for (let vertex = 0; vertex < vertexCount; vertex += 1) {
+          for (let axis = 0; axis < 3; axis += 1) {
+            const value = positions[vertex * 3 + axis]!
+            minimum[axis] = Math.min(minimum[axis]!, value)
+            maximum[axis] = Math.max(maximum[axis]!, value)
+          }
+        }
+        displacements.push(Object.freeze({
+          source, face, model, material, power, positions, normals, lightmapUv, indices,
+          bounds: Object.freeze([Object.freeze(minimum) as Rgb, Object.freeze(maximum) as Rgb]),
+          lightOffset, styles, lightmapWidth, lightmapHeight,
+        }))
         displacementSurfaces += 1
       }
     }
@@ -1234,6 +1267,7 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
     entityBytes,
     drawableSurfaces,
     displacementSurfaces,
+    displacements: Object.freeze(displacements),
     models: Object.freeze(models),
     modelOccurrences: Object.freeze(modelOccurrences),
     lightmapLayout,

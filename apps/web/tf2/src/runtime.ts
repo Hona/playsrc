@@ -181,6 +181,7 @@ type PreparedPresentation=Readonly<{
   snapshot:Snapshot
   publication:SimulationPublication
   visibility:VisibilityResult
+  visibilityPosition:readonly[number,number,number]
   visibilityYaw:number
   visibilityPitch:number
   frame:Omit<Frame,"camera"|"visibility"|"deltaSeconds">
@@ -1082,6 +1083,7 @@ export class Tf2Application {
         diagnostic: true,
       })
       this.#environmentDrawables = scene.environmentDrawables
+      this.#publishProfileDisplacements(scene)
       for (const diagnostic of scene.diagnostics) {
         this.#blockers.add(`${diagnostic.code}: ${diagnostic.identity} — ${diagnostic.detail}`)
       }
@@ -1678,6 +1680,7 @@ export class Tf2Application {
       })
       finishReplacePhase("rendererLoadMap")
       this.#environmentDrawables = scene.environmentDrawables
+      this.#publishProfileDisplacements(scene)
       persistence=await staged.persistence
       finishReplacePhase("persistence")
       await this.#client.activate(generation)
@@ -2172,23 +2175,18 @@ export class Tf2Application {
     const client=this.#client,renderer=this.#renderer,generation=this.#generation
     if(!prepared||!client||!renderer||prepared.generation!==generation)return
     const viewRevision=this.#viewRevision,yaw=this.#yaw,pitch=this.#pitch
-    const camera=tf2Camera(prepared.snapshot,yaw,pitch)
+    const profile=(globalThis as typeof globalThis&{__playsrcProfile?:Record<string,unknown>}).__playsrcProfile
+    const override=profile?.displacementCameraOverride as Partial<Camera>|undefined
+    const ordinaryCamera=tf2Camera(prepared.snapshot,yaw,pitch)
+    const camera=override&&Array.isArray(override.position)&&override.position.length===3&&override.position.every(Number.isFinite)
+      &&Number.isFinite(override.yawDegrees)&&Number.isFinite(override.pitchDegrees)
+      ?Object.freeze({...ordinaryCamera,position:Object.freeze([...override.position]) as readonly[number,number,number],yawDegrees:override.yawDegrees!,pitchDegrees:override.pitchDegrees!})
+      :ordinaryCamera
     const viewport=this.#viewport()
     const phaseStart=performance.now(),visibilityStart=phaseStart
     let visibility=prepared.visibility
-    if(visibility.water.visibleWater===null&&visibility.water.passes.every(pass=>pass.kind==="main")){
-      visibility=Object.freeze({
-        ...visibility,
-        water:Object.freeze({
-          ...visibility.water,
-          passes:Object.freeze(visibility.water.passes.map(pass=>Object.freeze({
-            ...pass,
-            origin:Object.freeze([...camera.position]) as readonly[number,number,number],
-            angles:Object.freeze([camera.pitchDegrees,camera.yawDegrees,0]) as readonly[number,number,number],
-          }))),
-        }),
-      })
-    }else if(camera.yawDegrees!==prepared.visibilityYaw||camera.pitchDegrees!==prepared.visibilityPitch){
+    const viewChanged=camera.position.some((value,index)=>value!==prepared.visibilityPosition[index])||camera.yawDegrees!==prepared.visibilityYaw||camera.pitchDegrees!==prepared.visibilityPitch
+    if(viewChanged){
       this.#wasmCalls.visibility+=1
       visibility=await client.visibility(generation,{
         position:camera.position,
@@ -2199,6 +2197,18 @@ export class Tf2Application {
         near:camera.near,
         far:camera.far,
         presentationTimeSeconds:Number(prepared.snapshot.tick)*0.015,
+      })
+    }else if(visibility.water.visibleWater===null&&visibility.water.passes.every(pass=>pass.kind==="main")){
+      visibility=Object.freeze({
+        ...visibility,
+        water:Object.freeze({
+          ...visibility.water,
+          passes:Object.freeze(visibility.water.passes.map(pass=>Object.freeze({
+            ...pass,
+            origin:Object.freeze([...camera.position]) as readonly[number,number,number],
+            angles:Object.freeze([camera.pitchDegrees,camera.yawDegrees,0]) as readonly[number,number,number],
+          }))),
+        }),
       })
     }
     const visibilityMilliseconds=performance.now()-visibilityStart
@@ -2216,6 +2226,7 @@ export class Tf2Application {
       deltaSeconds:deltaTicks*0.015,
     })
     const renderMilliseconds=performance.now()-renderStart,totalMilliseconds=performance.now()-phaseStart
+    if(profile){profile.displacementVisibility={surfaces:[...visibility.surfaces],drawSurfaces:[...visibility.drawSurfaces],outsideWorld:visibility.outsideWorld,eyeLeaf:visibility.eyeLeaf,leaves:visibility.leaves,areas:visibility.areas};profile.displacementCamera=camera}
     if(this.#closed||this.#paused||generation!==this.#generation||renderer!==this.#renderer)return
     const publishPrepared=prepared.revision!==this.#lastRenderedPreparedRevision
     this.#lastRenderedPreparedRevision=prepared.revision
@@ -2418,6 +2429,7 @@ export class Tf2Application {
         snapshot,
         publication,
         visibility,
+        visibilityPosition:camera.position,
         visibilityYaw:camera.yawDegrees,
         visibilityPitch:camera.pitchDegrees,
         frame,
@@ -2687,6 +2699,17 @@ export class Tf2Application {
     const profile=(globalThis as typeof globalThis&{__playsrcProfile?:Record<string,unknown>}).__playsrcProfile
     if(!profile)return
     profile.coverageSamples=this.#coverageSamples
+  }
+
+  #publishProfileDisplacements(scene: Awaited<ReturnType<Renderer["loadMap"]>>):void{
+    const profile=(globalThis as typeof globalThis&{__playsrcProfile?:Record<string,unknown>}).__playsrcProfile
+    const sources=profile?.displacementSources
+    if(!profile||!Array.isArray(sources)||sources.length<1||sources.length>16||sources.some(source=>!Number.isSafeInteger(source)))return
+    const selected=new Set<number>(sources as number[])
+    profile.displacements=scene.displacements.filter(displacement=>selected.has(displacement.source)).map(displacement=>Object.freeze({
+      ...displacement,
+      positions:Array.from(displacement.positions),normals:Array.from(displacement.normals),indices:Array.from(displacement.indices),
+    }))
   }
 
   selectClass(value: 1 | 2): void {
