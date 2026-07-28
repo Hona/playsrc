@@ -10,7 +10,7 @@ Generator command: Missing.
 
 Candidate item count: 62. Accepted item count: 0.
 
-Outcome counts: 12 existing-leaf assignments, 10 internal-format assignments to existing packages, 28 proposed-leaf assignments to 18 proposed packages, 7 exclusions, and 5 blocked decisions.
+Outcome counts: 13 existing-leaf assignments, 9 internal-format assignments to existing packages, 28 proposed-leaf assignments to 18 proposed packages, 7 exclusions, and 5 blocked decisions.
 
 An outcome assigns parser ownership only. Game, world, runtime, presentation, application, service, and tool behavior remains with the semantic owner named by [`../ROADMAP.md`](../ROADMAP.md).
 
@@ -36,7 +36,7 @@ An outcome assigns parser ownership only. Game, world, runtime, presentation, ap
 | StudioModel vertex data | `.vvd`; `IDSV`, checksum-linked fixups, vertices, bone weights, normals, texture coordinates, tangents, and LOD counts | StudioModel assembly and rendering | Source SDK `src/public/studio.h`; Valve Developer Community VVD contract | `packages/formats/studio-model` | Existing leaf package owner |
 | StudioModel optimized mesh | `.vtx`, `.dx80.vtx`, `.dx90.vtx`, and `.sw.vtx`; checksum-linked bodyparts, LODs, meshes, strip groups, strips, vertices, and indices | StudioModel assembly and rendering | Source SDK `src/public/optimize.h`; Valve Developer Community VTX contract | `packages/formats/studio-model` | Existing leaf package owner |
 | StudioModel animation blocks | `.ani`; MDL-referenced external animation sections | StudioModel animation and replay/game presentation | Source SDK `src/public/studio.h`; Valve Developer Community MDL and ANI documentation | `packages/formats/studio-model` | Existing leaf package owner |
-| StudioModel hardware vertex lighting | `.vhv`; checksum-linked per-mesh/per-vertex static-prop lighting records | StudioModel assembly, static-prop rendering, map lighting tools | Source SDK `src/public/materialsystem/hardwareverts.h` and `src/utils/vrad/vradstaticprops.cpp` | `packages/formats/studio-model` | Internal format owned by existing package |
+| StudioModel hardware vertex lighting | `.vhv`; checksum-linked per-mesh/per-vertex static-prop lighting records | StudioModel assembly, static-prop rendering, map lighting tools | Source SDK `src/public/materialsystem/hardwareverts.h` and `src/utils/vrad/vradstaticprops.cpp` | `packages/formats/vhv` | Existing leaf package owner |
 | Legacy CS:GO vertex-color companion | Candidate `.vvc` identity and relationship to MDL/VVD/VTX | Legacy CS:GO model rendering and tools if present in the declared build | Checked Source SDK `studio.h` and `optimize.h`, public MDL/VVD/VTX pages, and no configured legacy CS:GO archive index | Unassigned | Blocked: authoritative declared-build companion registry is missing |
 | VPhysics model asset | `.phy`; header/checksum, solid encodings, collision geometry, constraints, and textual key data | Collision, physics, StudioModel assembly, map compiler | Source SDK `src/public/phyfile.h` and VPhysics public interfaces; public PHY documentation | `packages/formats/phy` | Existing leaf package owner |
 | Source demo container | `.dem`; `HL2DEMO`, demo/network protocol identities, fixed header, ticked command stream, and length-delimited command payloads | Demo parser, networking-state decoder, replay | Source SDK `src/public/demofile/demoformat.h`; Valve Developer Community DEM contract | `packages/formats/demo` | Existing leaf package owner |

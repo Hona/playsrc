@@ -1,0 +1,23 @@
+[package]
+name = "playsrc-vhv"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[features]
+configured-inventory = ["dep:lzma-rs", "dep:playsrc-bsp", "dep:playsrc-vpk", "dep:serde_json"]
+
+[dependencies]
+lzma-rs = { version = "0.3.0", optional = true }
+playsrc-bsp = { path = "../../bsp/rust", optional = true }
+playsrc-vpk = { path = "../../vpk/rust", default-features = false, optional = true }
+serde_json = { version = "1.0.149", optional = true }
+sha2 = "0.10.9"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "playsrc-vhv-configured-inventory"
+path = "src/bin/configured_inventory.rs"
+required-features = ["configured-inventory"]

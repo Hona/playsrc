@@ -6,7 +6,7 @@ This document defines the execution and data boundary between Rust-owned Source 
 
 Rust owns:
 
-- Bounded KeyValues, BSP, VPK, VTF, VMT, StudioModel, PHY, and DEM parsing.
+- Bounded KeyValues, BSP, VPK, VTF, VMT, StudioModel, VHV, PHY, and DEM parsing.
 - Map dependency discovery and canonical compilation.
 - Geometry, displacement, lightmap, collision, and visibility preparation.
 - Movement, rigid-body physics, gameplay simulation, prediction transitions, replay decoding, and network codecs.

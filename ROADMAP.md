@@ -89,6 +89,7 @@ An Aggregation roadmap defines a finite child universe or cross-child exit crite
 | VTF | Behavior | Active | `packages/formats/vtf/ROADMAP.md` |
 | VMT | Behavior | Active | `packages/formats/vmt/ROADMAP.md` |
 | Studio model | Behavior | Active | `packages/formats/studio-model/ROADMAP.md` |
+| VHV | Behavior | Active | `packages/formats/vhv/ROADMAP.md` |
 | PHY | Behavior | Active | `packages/formats/phy/ROADMAP.md` |
 | Demo | Behavior | Active | `packages/formats/demo/ROADMAP.md` |
 | Map | Behavior | Active | `packages/world/map/ROADMAP.md` |
