@@ -176,7 +176,8 @@ export async function publishTf2Release(config: LocalConfig, target: string | un
   }
   console.log(JSON.stringify({
     schema: "playsrc-r2-publication-v1",
-    target: artifact.release.target,
+    defaultTarget: artifact.release.defaultTarget,
+    targets: artifact.release.targets.map((target) => target.target),
     assetOrigin: CLOUDFLARE_ASSET_ORIGIN,
     objects,
     totals: {

@@ -440,7 +440,7 @@ function observe(request: Extract<WorkerRequest, { kind: "observe" }>): void {
   const transactMilliseconds = performance.now() - transactStarted
   value.exports.playsrc_free(pointer, request.command.byteLength)
   if (result !== 1) {
-    const length=value.exports.playsrc_simulation_error_length(),detailPointer=length?value.exports.playsrc_alloc(length)>>>0:0,copied=length?value.exports.playsrc_simulation_error_copy(detailPointer,length):0,reason=copied===length&&length?new TextDecoder().decode(new Uint8Array(value.exports.memory.buffer,detailPointer,length)):undefined;if(detailPointer)value.exports.playsrc_free(detailPointer,length);fail(request.id,"TransitionFailed",value.exports.playsrc_simulation_error(),reason)
+    const length=value.exports.playsrc_simulation_error_length(),detailPointer=length?value.exports.playsrc_alloc(length)>>>0:0,copied=length?value.exports.playsrc_simulation_error_copy(detailPointer,length):0,reason=copied===length&&length?new TextDecoder().decode(new Uint8Array(value.exports.memory.buffer,detailPointer,length).slice()):undefined;if(detailPointer)value.exports.playsrc_free(detailPointer,length);fail(request.id,"TransitionFailed",value.exports.playsrc_simulation_error(),reason)
     return
   }
   const length = value.exports.playsrc_simulation_output_length(value.handle)
@@ -629,7 +629,7 @@ let queue = Promise.resolve()
 scope.onmessage = (event: MessageEvent<WorkerRequest>) => {
   queue = queue
     .then(() => dispatch(event.data))
-    .catch(() => {
-      if(canonicalId(event.data?.id))fail(event.data.id,"InternalFailure",({observe:901,particles:902,models:903,visibility:904} as Record<string,number>)[event.data.kind]??999)
+    .catch((error: unknown) => {
+      if(canonicalId(event.data?.id))fail(event.data.id,"InternalFailure",({observe:901,particles:902,models:903,visibility:904} as Record<string,number>)[event.data.kind]??999,error instanceof Error?`${error.name}:${error.message}`:String(error))
     })
 }
