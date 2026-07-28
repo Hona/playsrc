@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 use std::{fmt, ops::Range};
 
 mod contact;
+mod displacement;
 mod lighting;
 mod snapshot;
 
@@ -107,6 +108,7 @@ pub struct World {
     pub texture_flags: Vec<u16>,
     pub displacements: Vec<DisplacementPatch>,
     pub displacement_inputs: Vec<DisplacementInput>,
+    displacement_trees: Vec<displacement::Tree>,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Hull {
@@ -124,6 +126,9 @@ pub struct Trace {
     pub contents: u32,
     pub plane: Option<Plane>,
     pub surface_flags: u16,
+    pub displacement_flags: u16,
+    pub surface: Option<SurfaceIdentity>,
+    pub displacement: Option<DisplacementFeature>,
     pub hit: Option<Hit>,
     pub snapshot: Option<u64>,
     pub end: [f32; 3],
@@ -149,15 +154,22 @@ impl Trace {
     }
 
     pub fn hit_world(self) -> bool {
-        matches!(
-            self.hit,
-            Some(Hit::WorldBrush { .. })
-                | Some(Hit::Object {
-                    role: ObjectRole::StaticProp,
-                    ..
-                })
-        )
+        self.displacement.is_some()
+            || matches!(
+                self.hit,
+                Some(Hit::WorldBrush { .. })
+                    | Some(Hit::Object {
+                        role: ObjectRole::StaticProp,
+                        ..
+                    })
+            )
     }
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DisplacementFeature {
+    pub source: usize,
+    pub parent_face: usize,
+    pub triangle: usize,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Hit {
@@ -432,6 +444,7 @@ pub fn compile(bsp: &Bsp) -> Result<World, Error> {
         texture_flags,
         displacements,
         displacement_inputs: Vec::new(),
+        displacement_trees: Vec::new(),
     };
     world.identity = world_identity(&world);
     Ok(world)
@@ -469,6 +482,7 @@ impl World {
             }
         }
         self.displacement_inputs = inputs;
+        self.displacement_trees = displacement::build(&self)?;
         self.identity = world_identity(&self);
         Ok(self)
     }
@@ -525,6 +539,7 @@ impl World {
             texture_flags: Vec::new(),
             displacements: Vec::new(),
             displacement_inputs: Vec::new(),
+            displacement_trees: Vec::new(),
         };
         world.identity = world_identity(&world);
         world
@@ -537,10 +552,13 @@ impl World {
         hull: Hull,
         mask: u32,
     ) -> Result<Trace, Error> {
-        let Some(model) = self.models.first() else {
-            return self.trace_brushes(start, end, hull, mask, &[], BrushOwner::World);
+        let mut trace = if let Some(model) = self.models.first() {
+            self.trace_headnode(model.head_node, start, end, hull, mask, BrushOwner::World)?
+        } else {
+            self.trace_brushes(start, end, hull, mask, &[], BrushOwner::World)?
         };
-        self.trace_headnode(model.head_node, start, end, hull, mask, BrushOwner::World)
+        displacement::trace(self, start, end, hull, mask, &mut trace)?;
+        Ok(trace)
     }
 
     pub fn overlaps_model_hull(
@@ -775,6 +793,9 @@ impl World {
             contents: 0,
             plane: None,
             surface_flags: 0,
+            displacement_flags: 0,
+            surface: None,
+            displacement: None,
             hit: None,
             snapshot: None,
             end,
@@ -1634,12 +1655,28 @@ mod tests {
             triangle_tags: vec![0x20; 32],
         });
         let registry = [7; 32];
+        let positions = (0..25)
+            .map(|index| [(index / 5) as f32, (index % 5) as f32, 0.0])
+            .collect::<Vec<_>>();
+        let mut triangles = Vec::new();
+        for column in 0..4 {
+            for row in 0..4 {
+                let index = column * 5 + row;
+                if index % 2 == 1 {
+                    triangles.push([index, index + 5, index + 1]);
+                    triangles.push([index + 1, index + 5, index + 6]);
+                } else {
+                    triangles.push([index, index + 5, index + 6]);
+                    triangles.push([index, index + 6, index + 1]);
+                }
+            }
+        }
         let input = DisplacementInput {
             source: 0,
             parent_face: 3,
             contents: CONTENTS_SOLID,
-            positions: vec![[0.0; 3]; 25],
-            triangles: vec![[0, 1, 2]; 32],
+            positions,
+            triangles,
             triangle_tags: vec![0x20; 32],
             primary_surface: SurfaceIdentity { registry, index: 1 },
             secondary_surface: Some(SurfaceIdentity { registry, index: 2 }),
@@ -1653,6 +1690,80 @@ mod tests {
                 .iter()
                 .all(|tag| *tag == 0x20)
         );
+        let point = Hull {
+            mins: [0.0; 3],
+            maxs: [0.0; 3],
+        };
+        let ray = assembled
+            .trace_hull([0.25, 0.25, -1.0], [0.25, 0.25, 1.0], point, CONTENTS_SOLID)
+            .unwrap();
+        assert!(matches!(
+            ray.displacement,
+            Some(DisplacementFeature {
+                source: 0,
+                parent_face: 3,
+                triangle: 0,
+            })
+        ));
+        assert_eq!(ray.displacement_flags, 0x09);
+        assert_eq!(ray.surface, Some(SurfaceIdentity { registry, index: 1 }));
+        assert_eq!(ray.plane.unwrap().normal, [0.0, 0.0, -1.0]);
+        assert!(
+            !assembled
+                .trace_hull([0.25, 0.25, 1.0], [0.25, 0.25, -1.0], point, CONTENTS_SOLID)
+                .unwrap()
+                .did_hit()
+        );
+        assert!(
+            !assembled
+                .trace_hull([0.25, 0.25, 0.0], [0.25, 0.25, 0.0], point, CONTENTS_SOLID)
+                .unwrap()
+                .start_solid
+        );
+        let overlap = assembled
+            .trace_hull(
+                [0.25, 0.25, 0.0],
+                [0.25, 0.25, 0.0],
+                Hull {
+                    mins: [-0.1; 3],
+                    maxs: [0.1; 3],
+                },
+                CONTENTS_SOLID,
+            )
+            .unwrap();
+        assert!(overlap.start_solid && overlap.all_solid && overlap.fraction == 0.0);
+        let swept_hull = assembled
+            .trace_hull(
+                [0.25, 0.25, -1.0],
+                [0.25, 0.25, 1.0],
+                Hull {
+                    mins: [-0.1; 3],
+                    maxs: [0.1; 3],
+                },
+                CONTENTS_SOLID,
+            )
+            .unwrap();
+        assert!(swept_hull.displacement.is_some());
+        assert!(swept_hull.fraction < ray.fraction);
+        let snapshot =
+            Snapshot::compile(&assembled, 88, vec![], SnapshotLimits::default()).unwrap();
+        let lighting = assembled
+            .trace_lighting_rays(
+                &snapshot,
+                0x4449_5350_5f43_4c52,
+                LightingOccluders::World,
+                &[LightingRay {
+                    identity: 1,
+                    start: [0.25, 0.25, -1.0],
+                    end: [0.25, 0.25, 1.0],
+                    ignored_static_prop: None,
+                }],
+                LightingRayLimits::default(),
+                |_| false,
+            )
+            .unwrap();
+        assert_eq!(lighting.rays[0].trace.displacement, ray.displacement);
+        assert!(lighting.comparison_bytes().len() > 100);
         assert_eq!(
             assembled
                 .clone()
