@@ -1,4 +1,5 @@
 mod gameplay_protocol;
+pub mod static_prop_artifact;
 
 #[cfg(all(target_arch = "wasm32", feature = "threaded"))]
 pub use wasm_bindgen_rayon::init_thread_pool;
@@ -805,9 +806,17 @@ unsafe fn compile_map(
         compile_metrics[7] = phase_finished.saturating_sub(phase_started);
         phase_started = phase_finished;
         let spawn = spawn(&runtime.entities).ok_or(4_u32)?;
-        let collision_templates =
-            collision_object_templates(&runtime.map, &runtime.entities, &resources, &studio_models)
-                .map_err(|_| 5_u32)?;
+        let studio_model_checksums = studio_models
+            .iter()
+            .map(|(identity, model)| (identity.clone(), model.checksum))
+            .collect();
+        let collision_templates = collision_object_templates(
+            &runtime.map,
+            &runtime.entities,
+            &resources,
+            &studio_model_checksums,
+        )
+        .map_err(|_| 5_u32)?;
         let visibility = runtime.visibility;
         let area_state = playsrc_visibility::AreaState::new(&visibility);
         let collision = Arc::new(runtime.collision);
@@ -1097,8 +1106,13 @@ pub fn diagnose_presentation_bound(
         additional_model_roots,
     })
     .map_err(|_| 9u32)?;
+    let studio_model_checksums = models
+        .iter()
+        .map(|(identity, model)| (identity.clone(), model.checksum))
+        .collect();
     let templates =
-        collision_object_templates(&canonical, &entities, &resources, &models).map_err(|_| 5u32)?;
+        collision_object_templates(&canonical, &entities, &resources, &studio_model_checksums)
+            .map_err(|_| 5u32)?;
     ledger.displacement_input_count = collision.displacement_inputs.len();
     ledger.static_prop_collision_count = templates
         .iter()
@@ -4900,7 +4914,7 @@ fn collision_object_templates(
     map: &playsrc_map::CanonicalMap,
     graph: &playsrc_entity::Graph,
     bundle: &BTreeMap<String, &[u8]>,
-    studio_models: &BTreeMap<String, playsrc_studio_model::PresentationModel>,
+    studio_model_checksums: &BTreeMap<String, i32>,
 ) -> Result<Vec<CollisionObjectTemplate>, ()> {
     const CONTENTS_SOLID: u32 = 0x1;
     let limits = playsrc_collision::SnapshotLimits::default();
@@ -4974,7 +4988,7 @@ fn collision_object_templates(
             )
             .map_err(|_| ())?;
             if asset.header.as_ref().map(|header| header.checksum)
-                != Some(studio_models.get(&model).ok_or(())?.checksum)
+                != Some(*studio_model_checksums.get(&model).ok_or(())?)
             {
                 return Err(());
             }
@@ -5349,6 +5363,561 @@ fn pbytes(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), ()> {
     (out.len() <= PRESENTATION_OUTPUT_LIMIT)
         .then_some(())
         .ok_or(())
+}
+
+fn compile_static_prop_section(
+    canonical: &playsrc_map::CanonicalMap,
+    graph: &playsrc_entity::Graph,
+    bundle: &BTreeMap<String, &[u8]>,
+    visibility: &playsrc_visibility::World,
+    collision: &playsrc_collision::World,
+    environment: &RuntimeEnvironment,
+    models: &[(String, Box<CompiledPresentationModel>)],
+) -> Result<Vec<u8>, ()> {
+    use static_prop_artifact::{Lighting, Occurrence, RuntimeLight, ViewOwnership};
+    if canonical.static_props.occurrences.is_empty() {
+        return static_prop_artifact::encode_section(&static_prop_artifact::Section {
+            aggregate_sha256: [0; 32],
+            model_count: u32::try_from(models.len()).map_err(|_| ())?,
+            occurrences: Vec::new(),
+        });
+    }
+    let aggregate = static_prop_artifact::decode_aggregate(
+        bundle
+            .get(static_prop_artifact::AGGREGATE_PATH)
+            .copied()
+            .ok_or(())?,
+    )?;
+    let object_indexes = static_prop_artifact::object_indexes(&aggregate)?;
+    let model_indexes = models
+        .iter()
+        .enumerate()
+        .map(|(index, (identity, artifact))| {
+            Ok((
+                identity.as_str(),
+                (
+                    u32::try_from(index).map_err(|_| ())?,
+                    artifact.model.checksum,
+                ),
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, ()>>()?;
+    let checksums = model_indexes
+        .iter()
+        .map(|(identity, (_, checksum))| ((*identity).to_owned(), *checksum))
+        .collect();
+    let templates = collision_object_templates(canonical, graph, bundle, &checksums)?;
+    let snapshot = compile_collision_snapshot(
+        collision,
+        &templates,
+        1,
+        None,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    )
+    .map_err(|_| ())?;
+    let water_materials = environment
+        .world
+        .water
+        .surfaces
+        .iter()
+        .map(|surface| surface.material)
+        .collect();
+    let surface_world =
+        playsrc_map::SurfaceLightingWorld::compile(canonical, visibility, water_materials)
+            .map_err(|_| ())?;
+    let sky_area =
+        environment
+            .world
+            .controllers
+            .iter()
+            .find_map(|controller| match controller.state {
+                playsrc_map::ControllerState::SkyCamera { area, .. } => u16::try_from(area).ok(),
+                _ => None,
+            });
+    let runtime_props = canonical
+        .static_props
+        .occurrences
+        .iter()
+        .filter(|prop| prop.flags & playsrc_bsp::STATIC_PROP_NO_PER_VERTEX_LIGHTING != 0)
+        .collect::<Vec<_>>();
+    let mut direct_requests = Vec::new();
+    let mut direct_candidates = Vec::new();
+    let mut origin_query_identities = BTreeMap::new();
+    for prop in &runtime_props {
+        let origin = prop.lighting_origin.ok_or(())?;
+        let origin_identity =
+            0x4000_0000_0000_0000u64 | u64::try_from(prop.source).map_err(|_| ())?;
+        origin_query_identities.insert(prop.source, origin_identity);
+        direct_requests.push(playsrc_collision::LightingRay {
+            identity: origin_identity,
+            start: origin,
+            end: origin,
+            ignored_static_prop: Some(
+                0x8000_0000_0000_0000u64 | u64::try_from(prop.source).map_err(|_| ())?,
+            ),
+        });
+        let origin_leaf = visibility.locate_leaf(origin).map_err(|_| ())?;
+        let origin_cluster = visibility.leaves.get(origin_leaf).ok_or(())?.cluster;
+        if origin_cluster < 0 {
+            return Err(());
+        }
+        for (light_index, light) in canonical.lighting.world_lights.iter().enumerate() {
+            if light.kind == 5
+                || (light.kind != 3
+                    && (light.cluster < 0
+                        || !visibility.visible(origin_cluster as usize, light.cluster as usize)))
+            {
+                continue;
+            }
+            let (end, direction, ratio) = direct_light_ray(origin, light)?;
+            if ratio <= 0.0
+                || (light.kind != 0
+                    && light.intensity.into_iter().fold(0.0_f32, f32::max) * ratio < 0.0002)
+            {
+                continue;
+            }
+            let identity = (u64::try_from(prop.source).map_err(|_| ())? << 32)
+                | u64::try_from(light_index).map_err(|_| ())?;
+            direct_requests.push(playsrc_collision::LightingRay {
+                identity,
+                start: origin,
+                end,
+                ignored_static_prop: Some(
+                    0x8000_0000_0000_0000u64 | u64::try_from(prop.source).map_err(|_| ())?,
+                ),
+            });
+            direct_candidates.push((prop.source, light_index, identity, direction, ratio));
+        }
+    }
+    let direct_batch = collision
+        .trace_lighting_rays(
+            &snapshot,
+            u64::from_le_bytes(aggregate.sha256[..8].try_into().map_err(|_| ())?),
+            playsrc_collision::LightingOccluders::WorldAndStaticProps,
+            &direct_requests,
+            playsrc_collision::LightingRayLimits {
+                max_rays: direct_requests.len().max(1),
+                max_output_bytes: 4 * 1024 * 1024,
+            },
+            |_| false,
+        )
+        .map_err(|_| ())?;
+    let direct_results = direct_batch
+        .rays
+        .iter()
+        .map(|result| (result.identity, result))
+        .collect::<BTreeMap<_, _>>();
+    let mut runtime_lighting = BTreeMap::new();
+    for prop in runtime_props {
+        let origin = prop.lighting_origin.ok_or(())?;
+        let origin_trace = direct_results
+            .get(origin_query_identities.get(&prop.source).ok_or(())?)
+            .ok_or(())?;
+        if origin_trace.trace.start_solid || origin_trace.trace.all_solid {
+            return Err(());
+        }
+        let mut ambient_cube = surface_world
+            .ambient_cube(
+                origin,
+                &static_prop_artifact::SOURCE_AMBIENT_DIRECTIONS,
+                |_| false,
+            )
+            .map_err(|_| ())?;
+        let mut selected = Vec::<(f32, RuntimeLight)>::new();
+        for (_, light_index, identity, direction, ratio) in direct_candidates
+            .iter()
+            .filter(|(source, ..)| *source == prop.source)
+        {
+            let result = direct_results.get(identity).ok_or(())?;
+            let light = canonical
+                .lighting
+                .world_lights
+                .get(*light_index)
+                .ok_or(())?;
+            let distance = distance(
+                origin,
+                if light.kind == 3 {
+                    result.trace.end
+                } else {
+                    light.origin
+                },
+            );
+            let admitted = if light.kind == 3 {
+                result.trace.surface_flags & 0x0004 != 0
+            } else {
+                (1.0 - result.trace.fraction) * distance <= 8.0
+            };
+            if !admitted {
+                continue;
+            }
+            let angle = direct_light_angle(light, *direction)?;
+            let illumination = ratio * dot(light.intensity, [0.299, 0.587, 0.114]);
+            let record = RuntimeLight {
+                source: u32::try_from(*light_index).map_err(|_| ())?,
+                kind: light.kind,
+                style: light.style,
+                ratio: *ratio,
+                direction: *direction,
+                intensity: light.intensity,
+            };
+            if light.kind != 0 && illumination < 0.0002 {
+                add_light_to_cube(
+                    &mut ambient_cube,
+                    *direction,
+                    light.intensity,
+                    ratio * angle,
+                )?;
+            } else if selected.len() < playsrc_studio_model::MAX_MODEL_LOCAL_LIGHTS {
+                selected.push((illumination, record));
+            } else if let Some((minimum, _)) = selected
+                .iter()
+                .enumerate()
+                .min_by(|(_, left), (_, right)| left.0.total_cmp(&right.0))
+                && illumination > selected[minimum].0
+            {
+                let (_, demoted) =
+                    std::mem::replace(&mut selected[minimum], (illumination, record));
+                let demoted_source = canonical
+                    .lighting
+                    .world_lights
+                    .get(demoted.source as usize)
+                    .ok_or(())?;
+                add_light_to_cube(
+                    &mut ambient_cube,
+                    demoted.direction,
+                    demoted.intensity,
+                    demoted.ratio * direct_light_angle(demoted_source, demoted.direction)?,
+                )?;
+            } else {
+                add_light_to_cube(
+                    &mut ambient_cube,
+                    *direction,
+                    light.intensity,
+                    ratio * angle,
+                )?;
+            }
+        }
+        let mut digest = Sha256::new();
+        digest.update(b"playsrc-static-prop-runtime-lighting-v1\0");
+        digest.update(canonical.lighting.closure_sha256);
+        digest.update(collision.identity);
+        digest.update(snapshot.identity().to_le_bytes());
+        digest.update(u32::try_from(prop.source).map_err(|_| ())?.to_le_bytes());
+        for value in origin {
+            digest.update(value.to_le_bytes());
+        }
+        for value in ambient_cube.iter().flatten() {
+            digest.update(value.to_le_bytes());
+        }
+        let lights = selected
+            .into_iter()
+            .map(|(_, light)| light)
+            .collect::<Vec<_>>();
+        for light in &lights {
+            digest.update(light.source.to_le_bytes());
+            digest.update(light.ratio.to_le_bytes());
+        }
+        runtime_lighting.insert(
+            prop.source,
+            Lighting::Runtime {
+                sample_identity: digest.finalize().into(),
+                ambient_cube,
+                lights,
+            },
+        );
+    }
+    let mut occurrences = Vec::with_capacity(canonical.static_props.occurrences.len());
+    for prop in &canonical.static_props.occurrences {
+        let model = canonical.static_props.models.get(prop.model).ok_or(())?;
+        let (presentation_model, checksum) =
+            *model_indexes.get(model.logical_path.as_str()).ok_or(())?;
+        let ldr = object_indexes
+            .get(&(u32::try_from(prop.source).map_err(|_| ())?, 0))
+            .copied();
+        let hdr = object_indexes
+            .get(&(u32::try_from(prop.source).map_err(|_| ())?, 1))
+            .copied();
+        let lighting = if prop.flags & playsrc_bsp::STATIC_PROP_NO_PER_VERTEX_LIGHTING != 0 {
+            if ldr.is_some() || hdr.is_some() {
+                return Err(());
+            }
+            runtime_lighting.remove(&prop.source).ok_or(())?
+        } else {
+            let ldr = ldr.ok_or(())?;
+            let hdr = hdr.ok_or(())?;
+            for index in [ldr, hdr] {
+                let object = aggregate.objects.get(index as usize).ok_or(())?;
+                if object.model as usize != prop.model
+                    || object.meshes.is_empty()
+                    || object.join_sha256 == [0; 32]
+                {
+                    return Err(());
+                }
+            }
+            if aggregate.objects[hdr as usize].source_sha256 == [0; 32] || checksum == 0 {
+                return Err(());
+            }
+            Lighting::Vertex { ldr, hdr }
+        };
+        let mut areas = Vec::with_capacity(prop.leaves.len());
+        for leaf in &prop.leaves {
+            let area = visibility
+                .leaves
+                .get(usize::from(*leaf))
+                .ok_or(())?
+                .area_and_flags
+                & 0x01ff;
+            areas.push(area);
+        }
+        let ownership = static_prop_artifact::classify_ownership(&areas, sky_area)?;
+        let lod = match &lighting {
+            Lighting::Vertex { hdr, .. } => {
+                aggregate.objects[*hdr as usize]
+                    .meshes
+                    .first()
+                    .ok_or(())?
+                    .lod
+            }
+            Lighting::Runtime { .. } => models
+                .get(presentation_model as usize)
+                .and_then(|(_, artifact)| {
+                    artifact
+                        .model
+                        .geometry
+                        .iter()
+                        .map(|primitive| primitive.lod)
+                        .min()
+                })
+                .and_then(|value| u32::try_from(value).ok())
+                .ok_or(())?,
+        };
+        occurrences.push(Occurrence {
+            source: u32::try_from(prop.source).map_err(|_| ())?,
+            dictionary_model: u32::try_from(prop.model).map_err(|_| ())?,
+            presentation_model,
+            origin: prop.origin,
+            angles: prop.angles,
+            skin: prop.skin,
+            body: 0,
+            lod,
+            fade_minimum: prop.fade_minimum,
+            fade_maximum: prop.fade_maximum,
+            forced_fade_scale: prop.forced_fade_scale,
+            flags: prop.flags,
+            solidity: prop.solidity,
+            lighting_origin: prop.lighting_origin,
+            leaves: prop.leaves.clone(),
+            areas,
+            ownership: match ownership {
+                ViewOwnership::Main => ViewOwnership::Main,
+                ViewOwnership::Sky3d => ViewOwnership::Sky3d,
+            },
+            lighting,
+        });
+    }
+    if !runtime_lighting.is_empty() {
+        return Err(());
+    }
+    let section = static_prop_artifact::Section {
+        aggregate_sha256: aggregate.sha256,
+        model_count: u32::try_from(models.len()).map_err(|_| ())?,
+        occurrences,
+    };
+    let bytes = static_prop_artifact::encode_section(&section)?;
+    if static_prop_artifact::decode_section(&bytes)? != section {
+        return Err(());
+    }
+    Ok(bytes)
+}
+
+fn direct_light_ray(
+    origin: [f32; 3],
+    light: &playsrc_map::WorldLight,
+) -> Result<([f32; 3], [f32; 3], f32), ()> {
+    if !(0..=5).contains(&light.kind) {
+        return Err(());
+    }
+    if light.kind == 3 {
+        let direction = light.normal.map(|value| -value);
+        return Ok((
+            add3(
+                origin,
+                scale3(direction, playsrc_map::SOURCE_AMBIENT_RAY_LENGTH),
+            ),
+            direction,
+            1.0,
+        ));
+    }
+    let delta = sub3(light.origin, origin);
+    let distance_squared = dot(delta, delta);
+    let distance = distance_squared.sqrt();
+    if !distance.is_finite() || distance == 0.0 {
+        return Err(());
+    }
+    let direction = scale3(delta, distance.recip());
+    let (cache_minimum, cache_maximum) = lightcache_bounds(origin);
+    let cache_delta = sub3(cache_maximum, origin);
+    let sphere_radius = dot(cache_delta, cache_delta).sqrt();
+    if matches!(light.kind, 1 | 2) {
+        let closest = std::array::from_fn(|axis| {
+            light.origin[axis].clamp(cache_minimum[axis], cache_maximum[axis])
+        });
+        let closest_delta = sub3(closest, light.origin);
+        if dot(closest_delta, closest_delta) > light.radius * light.radius {
+            return Ok((light.origin, direction, 0.0));
+        }
+    }
+    if light.kind == 2 {
+        let sine = (1.0 - light.stop_dot2 * light.stop_dot2).max(0.0).sqrt();
+        if !sphere_intersects_cone(
+            origin,
+            sphere_radius,
+            light.origin,
+            light.normal,
+            sine,
+            light.stop_dot2,
+        )? {
+            return Ok((light.origin, direction, 0.0));
+        }
+    } else if light.kind == 0
+        && (distance > sphere_radius + light.radius
+            || !sphere_intersects_cone(
+                origin,
+                sphere_radius,
+                light.origin,
+                light.normal,
+                1.0,
+                0.0,
+            )?)
+    {
+        return Ok((light.origin, direction, 0.0));
+    }
+    let ratio = match light.kind {
+        0 => {
+            if light.radius != 0.0 && distance > light.radius {
+                0.0
+            } else {
+                distance_squared.max(1.0).recip()
+            }
+        }
+        1 | 2 => (light.constant_attenuation
+            + light.linear_attenuation * distance
+            + light.quadratic_attenuation * distance_squared)
+            .recip(),
+        4 => (light.linear_attenuation - distance).max(0.0),
+        _ => 0.0,
+    };
+    if !ratio.is_finite() {
+        return Err(());
+    }
+    Ok((light.origin, direction, ratio))
+}
+
+fn lightcache_bounds(origin: [f32; 3]) -> ([f32; 3], [f32; 3]) {
+    let sizes = [32.0, 32.0, 128.0];
+    let minimum = std::array::from_fn(|axis| {
+        let cell = (origin[axis].abs() as i32) / sizes[axis] as i32;
+        if origin[axis] >= 0.0 {
+            cell as f32 * sizes[axis]
+        } else {
+            -((cell + 1) as f32) * sizes[axis]
+        }
+    });
+    let maximum = std::array::from_fn(|axis| minimum[axis] + sizes[axis]);
+    (minimum, maximum)
+}
+
+fn sphere_intersects_cone(
+    center: [f32; 3],
+    radius: f32,
+    origin: [f32; 3],
+    normal: [f32; 3],
+    sine: f32,
+    cosine: f32,
+) -> Result<bool, ()> {
+    if !sine.is_finite() || sine <= 0.0 {
+        return Err(());
+    }
+    let back = sub3(origin, scale3(normal, radius / sine));
+    let delta = sub3(center, back);
+    let length = dot(delta, delta).sqrt();
+    if dot(normal, delta) >= length * cosine {
+        let delta = sub3(center, origin);
+        let length = dot(delta, delta).sqrt();
+        if -dot(normal, delta) >= length * sine {
+            return Ok(length <= radius);
+        }
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn direct_light_angle(light: &playsrc_map::WorldLight, direction: [f32; 3]) -> Result<f32, ()> {
+    let value = match light.kind {
+        0 => (-dot(direction, light.normal)).max(0.0),
+        1 | 4 => 1.0,
+        2 => {
+            let cone = -dot(direction, light.normal);
+            if cone <= light.stop_dot2 {
+                0.0
+            } else if cone >= light.stop_dot {
+                1.0
+            } else {
+                let value = (cone - light.stop_dot2) / (light.stop_dot - light.stop_dot2);
+                if light.exponent == 0.0 || light.exponent == 1.0 {
+                    value
+                } else {
+                    value.powf(light.exponent)
+                }
+            }
+        }
+        3 => 1.0,
+        _ => 0.0,
+    };
+    value.is_finite().then_some(value).ok_or(())
+}
+
+fn add_light_to_cube(
+    cube: &mut [[f32; 3]; 6],
+    direction: [f32; 3],
+    intensity: [f32; 3],
+    ratio: f32,
+) -> Result<(), ()> {
+    for (face, axis) in cube.iter_mut().zip([
+        [1., 0., 0.],
+        [-1., 0., 0.],
+        [0., 1., 0.],
+        [0., -1., 0.],
+        [0., 0., 1.],
+        [0., 0., -1.],
+    ]) {
+        let weight = dot(axis, direction);
+        if weight > 0.0 {
+            for channel in 0..3 {
+                face[channel] += ratio * weight * intensity[channel];
+                if !face[channel].is_finite() {
+                    return Err(());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0].mul_add(b[0], a[1].mul_add(b[1], a[2] * b[2]))
+}
+fn sub3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+fn add3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+fn scale3(a: [f32; 3], s: f32) -> [f32; 3] {
+    [a[0] * s, a[1] * s, a[2] * s]
+}
+fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
+    dot(sub3(a, b), sub3(a, b)).sqrt()
 }
 
 fn encode_profile_coverage(
@@ -6696,6 +7265,16 @@ pub struct PresentationSizeLedger {
     pub phase_milliseconds: [u64; 6],
     pub displacement_input_count: usize,
     pub static_prop_collision_count: usize,
+    pub static_prop_occurrence_count: usize,
+    pub static_prop_vhv_object_count: usize,
+    pub static_prop_runtime_lighting_count: usize,
+    pub static_prop_section_bytes: usize,
+    pub static_prop_section_sha256: [u8; 32],
+    pub static_prop_runtime_sources: Vec<usize>,
+    pub static_prop_runtime_light_records: Vec<(usize, usize, u8)>,
+    pub static_prop_main_count: usize,
+    pub static_prop_sky_count: usize,
+    pub static_prop_vertex_lighting_count: usize,
 }
 
 type MeasuredPresentation = (CompiledPresentation, [u64; 6], PresentationSizeLedger);
@@ -6725,7 +7304,11 @@ fn cached_presentation_models(
 ) -> Result<Vec<(String, playsrc_studio_model::PresentationProfile, [u8; 32])>, ()> {
     if bytes.len() < 24
         || &bytes[..4] != b"PTF2"
-        || u32::from_le_bytes(bytes[4..8].try_into().map_err(|_| ())?) != 11
+        || u32::from_le_bytes(bytes[4..8].try_into().map_err(|_| ())?) != 12
+        || static_prop_artifact::decode_section(static_prop_artifact::section_from_presentation(
+            bytes,
+        )?)
+        .is_err()
     {
         return Err(());
     }
@@ -7036,6 +7619,15 @@ fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresen
     let (environment_bytes, environment) = compile_environment_artifact(
         canonical, bsp, graph, bundle, profile, visibility, collision,
     )?;
+    let static_prop_bytes = compile_static_prop_section(
+        canonical,
+        graph,
+        bundle,
+        visibility,
+        collision,
+        &environment,
+        &models,
+    )?;
     phase_finished = playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
     metrics[4] = phase_finished.saturating_sub(phase_started);
     phase_started = phase_finished;
@@ -7043,7 +7635,7 @@ fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresen
     out.try_reserve_exact(PRESENTATION_OUTPUT_LIMIT)
         .map_err(|_| ())?;
     out.extend_from_slice(b"PTF2");
-    out.extend_from_slice(&11u32.to_le_bytes());
+    out.extend_from_slice(&12u32.to_le_bytes());
     out.extend_from_slice(&u32::try_from(models.len()).map_err(|_| ())?.to_le_bytes());
     out.extend_from_slice(
         &u32::try_from(directional.len())
@@ -7291,6 +7883,13 @@ fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresen
             out.extend_from_slice(&u32::try_from(*value).map_err(|_| ())?.to_le_bytes());
         }
     }
+    out.extend_from_slice(&static_prop_bytes);
+    out.extend_from_slice(
+        &u32::try_from(static_prop_bytes.len())
+            .map_err(|_| ())?
+            .to_le_bytes(),
+    );
+    out.extend_from_slice(b"PSPF");
     let model_material_opacity = model_material_opacity(&models, bundle, profile)?;
     let models: BTreeMap<String, playsrc_studio_model::PresentationModel> = models
         .into_iter()
@@ -7302,6 +7901,35 @@ fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresen
     if default_bound_first_exceeded_at.is_none() && out.len() > 512 * 1024 * 1024 {
         default_bound_first_exceeded_at = Some(out.len());
     }
+    let decoded_static_props = static_prop_artifact::decode_section(&static_prop_bytes)?;
+    let static_prop_runtime_sources = decoded_static_props
+        .occurrences
+        .iter()
+        .filter_map(|occurrence| {
+            matches!(
+                occurrence.lighting,
+                static_prop_artifact::Lighting::Runtime { .. }
+            )
+            .then_some(occurrence.source as usize)
+        })
+        .collect::<Vec<_>>();
+    let static_prop_runtime_light_records = decoded_static_props
+        .occurrences
+        .iter()
+        .flat_map(|occurrence| match &occurrence.lighting {
+            static_prop_artifact::Lighting::Runtime { lights, .. } => lights
+                .iter()
+                .map(|light| {
+                    (
+                        occurrence.source as usize,
+                        light.source as usize,
+                        light.style,
+                    )
+                })
+                .collect::<Vec<_>>(),
+            static_prop_artifact::Lighting::Vertex { .. } => Vec::new(),
+        })
+        .collect();
     let ledger = PresentationSizeLedger {
         model_count: models.len(),
         model_vertices,
@@ -7322,6 +7950,44 @@ fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresen
         phase_milliseconds: [0; 6],
         displacement_input_count: 0,
         static_prop_collision_count: 0,
+        static_prop_occurrence_count: canonical.static_props.occurrences.len(),
+        static_prop_vhv_object_count: if canonical.static_props.occurrences.is_empty() {
+            0
+        } else {
+            static_prop_artifact::decode_aggregate(
+                bundle
+                    .get(static_prop_artifact::AGGREGATE_PATH)
+                    .copied()
+                    .ok_or(())?,
+            )?
+            .objects
+            .len()
+        },
+        static_prop_runtime_lighting_count: static_prop_runtime_sources.len(),
+        static_prop_section_bytes: static_prop_bytes.len(),
+        static_prop_section_sha256: Sha256::digest(&static_prop_bytes).into(),
+        static_prop_runtime_sources,
+        static_prop_runtime_light_records,
+        static_prop_main_count: decoded_static_props
+            .occurrences
+            .iter()
+            .filter(|occurrence| occurrence.ownership == static_prop_artifact::ViewOwnership::Main)
+            .count(),
+        static_prop_sky_count: decoded_static_props
+            .occurrences
+            .iter()
+            .filter(|occurrence| occurrence.ownership == static_prop_artifact::ViewOwnership::Sky3d)
+            .count(),
+        static_prop_vertex_lighting_count: decoded_static_props
+            .occurrences
+            .iter()
+            .filter(|occurrence| {
+                matches!(
+                    occurrence.lighting,
+                    static_prop_artifact::Lighting::Vertex { .. }
+                )
+            })
+            .count(),
     };
     Ok((
         (out, models, model_material_opacity, environment),
@@ -9110,7 +9776,7 @@ mod tests {
     #[test]
     fn cached_model_headers_consume_complete_sequence_records() {
         let mut bytes = b"PTF2".to_vec();
-        bytes.extend_from_slice(&11_u32.to_le_bytes());
+        bytes.extend_from_slice(&12_u32.to_le_bytes());
         bytes.extend_from_slice(&1_u32.to_le_bytes());
         bytes.extend_from_slice(&[0; 12]);
         pbytes(&mut bytes, b"models/test.mdl").unwrap();
@@ -9128,6 +9794,15 @@ mod tests {
         bytes.extend_from_slice(&[0; 4]);
         bytes.extend_from_slice(&[0; 40]);
         pbytes(&mut bytes, &[]).unwrap();
+        let static_props = static_prop_artifact::encode_section(&static_prop_artifact::Section {
+            aggregate_sha256: [0; 32],
+            model_count: 1,
+            occurrences: Vec::new(),
+        })
+        .unwrap();
+        bytes.extend_from_slice(&static_props);
+        bytes.extend_from_slice(&(static_props.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(b"PSPF");
         let models = cached_presentation_models(&bytes).unwrap();
         assert_eq!(
             models,
@@ -9136,6 +9811,41 @@ mod tests {
                 playsrc_studio_model::PresentationProfile::World,
                 [7; 32]
             )]
+        );
+    }
+    #[test]
+    fn static_prop_direct_light_uses_source_attenuation_cone_and_cache_bounds() {
+        let mut light = playsrc_map::WorldLight {
+            origin: [64.0, 0.0, 0.0],
+            intensity: [1.0; 3],
+            normal: [-1.0, 0.0, 0.0],
+            cluster: 0,
+            kind: 1,
+            style: 0,
+            stop_dot: 0.9,
+            stop_dot2: 0.8,
+            exponent: 1.0,
+            radius: 128.0,
+            constant_attenuation: 1.0,
+            linear_attenuation: 0.0,
+            quadratic_attenuation: 1.0,
+            flags: 0,
+            texture_info: -1,
+            owner: -1,
+        };
+        let (_, direction, ratio) = direct_light_ray([0.0; 3], &light).unwrap();
+        assert_eq!(direction, [1.0, 0.0, 0.0]);
+        assert_eq!(ratio, 1.0 / 4097.0);
+        light.kind = 2;
+        assert_eq!(direct_light_angle(&light, direction).unwrap(), 1.0);
+        light.normal = [1.0, 0.0, 0.0];
+        assert_eq!(direct_light_angle(&light, direction).unwrap(), 0.0);
+        light.kind = 1;
+        light.radius = 1.0;
+        assert_eq!(direct_light_ray([0.0; 3], &light).unwrap().2, 0.0);
+        assert_eq!(
+            lightcache_bounds([-0.5, 32.0, -128.5]),
+            ([-32.0, 32.0, -256.0], [0.0, 64.0, -128.0])
         );
     }
     #[test]
