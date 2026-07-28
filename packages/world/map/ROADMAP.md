@@ -97,6 +97,8 @@ The active migration checkpoint implements immutable Source-space world geometry
 
 The active HDR compiler profile checkpoint selects one categorical face, RGBExp32 lighting, world-light, leaf-ambient, detail-prop-lighting, and static-prop-lighting input set; validates style/sample closure before output; serializes linear HDR radiance plus flat/directional/SSBump classifications in one bounded native/WASM artifact; and includes profile, source hashes, compiler identity, configuration identity, dependency hashes, and output role in its derived identity. Missing selected members return `IncompleteLightingProfile`; no profile substitutes for another. Exposure, tone mapping, blending, and canvas transfer remain excluded.
 
+The active surface-lighting checkpoint adds a distinct render-BSP ray authority for runtime static-prop ambient sampling. It preserves front-node/face/back-node traversal, leaf detail-face ordering/backface admission, deferred strict-closer displacement replacement, sky fallback, average-record and displacement-luxel sampling, reflectivity, 162 ordered caller-supplied directions, cancellation and six-axis projection without changing Collision queries.
+
 | Target behavior | playsrc behavior | Evidence | Status |
 |---|---|---|---|
 | Preserve the Source XYZ frame, one-inch units, degree/QAngle convention, nominal coordinate interval, brush-model bounds, and sky-excluding world gameplay bounds without transforming or clamping values. | No Map implementation exists. | Spatial-frame vectors: compare axis labels, unit scale, angle order, all bound bit patterns, and exact rejection classifications against fixed SDK-derived and synthetic boundary inputs. | Not started |
