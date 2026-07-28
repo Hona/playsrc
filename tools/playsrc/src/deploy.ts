@@ -52,7 +52,7 @@ export async function buildStaticSite(target: string | undefined): Promise<strin
     writeFile(path.join(DIST_DIRECTORY, "release.json"), `${JSON.stringify({
       schema: "playsrc-cloudflare-deployment-v1",
       application: "tf2",
-      target: release.target,
+      defaultTarget: release.defaultTarget,
       applicationBuild,
       applicationOrigin: TF2_APPLICATION_ORIGIN,
       assetOrigin: CLOUDFLARE_ASSET_ORIGIN,
@@ -97,10 +97,16 @@ async function verifyRemoteObjects(target: string | undefined): Promise<void> {
       }
       const catalogBytes = await readObject(release.objects.catalog)
       const catalog = parseResourceCatalogBytes(catalogBytes)
-      const resources = selectCatalogTarget(catalog, release.target).resources
-      const graph = parseResourceGraphBytes(await readObject(resources))
-      if (graph.target !== release.target || graph.contentBuild !== release.contentBuild) throw new DeploymentError("remote resource graph identity differs")
-      const closure = [...Object.values(release.objects), resources, ...graph.chunks.map(resourceChunkObject)]
+      if (catalog.application !== "tf2" || catalog.entries.length !== release.targets.length) throw new DeploymentError("remote resource catalog target table differs")
+      const targetClosures = await Promise.all(release.targets.map(async (targetRelease) => {
+        const resources = selectCatalogTarget(catalog, targetRelease.target).resources
+        if (resources.sha256 !== targetRelease.objects.resources.sha256 || resources.byteLength !== targetRelease.objects.resources.byteLength) throw new DeploymentError(`remote ${targetRelease.target} catalog descriptor differs`)
+        const graph = parseResourceGraphBytes(await readObject(resources))
+        if (graph.target !== targetRelease.target || graph.contentBuild !== targetRelease.contentBuild) throw new DeploymentError(`remote ${targetRelease.target} resource graph identity differs`)
+        await Promise.all([readObject(targetRelease.objects.bsp), readObject(targetRelease.objects.dependencyLedger)])
+        return [targetRelease.objects.bsp, targetRelease.objects.dependencyLedger, resources, ...graph.chunks.map(resourceChunkObject)]
+      }))
+      const closure = [...Object.values(release.objects), ...targetClosures.flat()]
       const unique = new Map(closure.map((descriptor) => [descriptor.sha256, descriptor]))
       let ready = true
       for (const descriptor of unique.values()) {

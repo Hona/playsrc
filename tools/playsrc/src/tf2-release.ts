@@ -2,16 +2,17 @@ import { createReadStream } from "node:fs"
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { AssetStoreError, descriptor, objectPath, putObject, verifyObject, type ObjectDescriptor } from "@playsrc/asset-store"
-import { canonicalGraphBytes, parseResourceCatalog, resourceChunkObject, selectCatalogTarget } from "@playsrc/asset-store/graph"
-import { parseTf2Release, TF2_RELEASE_SCHEMA, type Tf2Release } from "../../../apps/web/tf2/src/deployment"
+import { canonicalGraphBytes, parseResourceCatalogBytes, parseResourceGraphBytes, resourceChunkObject, selectCatalogTarget } from "@playsrc/asset-store/graph"
+import { parseTf2Release, TF2_RELEASE_SCHEMA, TF2_TARGET_NAMES, type Tf2Release } from "../../../apps/web/tf2/src/deployment"
 import type { LocalConfig } from "./config"
 import { repositoryRoot } from "./config"
 import { buildSourceBundle } from "./source-bundle"
 import { acquireMap } from "./targets"
 import { buildTf2Wasm } from "./tf2-wasm-build"
 
-const RELEASE_PATH = path.join(repositoryRoot, "apps", "web", "tf2", "releases", "jump_beef.json")
-const CATALOG_PATH = path.join(repositoryRoot, "apps", "web", "tf2", "releases", "catalog.json")
+const RELEASE_DIRECTORY = path.join(repositoryRoot, "apps", "web", "tf2", "releases")
+const RELEASE_PATH = path.join(RELEASE_DIRECTORY, "current.json")
+const CATALOG_PATH = path.join(RELEASE_DIRECTORY, "catalog.json")
 
 export type Tf2ReleaseArtifact = Readonly<{
   release: Tf2Release
@@ -19,109 +20,121 @@ export type Tf2ReleaseArtifact = Readonly<{
 }>
 
 export class Tf2ReleaseError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = "Tf2ReleaseError"
-  }
+  constructor(message: string) { super(message); this.name = "Tf2ReleaseError" }
 }
 
 async function ensureLocalObject(root: string, expected: ObjectDescriptor, pathname: string): Promise<void> {
-  try {
-    await verifyObject(root, expected)
-    return
-  } catch (error) {
-    if (!(error instanceof AssetStoreError) || error.code !== "MissingObject") throw error
-  }
+  try { await verifyObject(root, expected); return }
+  catch (error) { if (!(error instanceof AssetStoreError) || error.code !== "MissingObject") throw error }
   await putObject(root, expected, await readFile(pathname))
 }
 
 export async function prepareTf2Release(config: LocalConfig, target: string | undefined): Promise<Tf2ReleaseArtifact> {
-  if (target !== "jump_beef") throw new Tf2ReleaseError("release target must be jump_beef")
-  const map = await acquireMap(config, target)
-  const [wasmPath, sourceBundle] = await Promise.all([
-    buildTf2Wasm(config),
-    buildSourceBundle(config, target),
-  ])
+  if (target !== undefined) throw new Tf2ReleaseError("the current TF2 release does not accept a target argument")
+  const wasm = buildTf2Wasm(config)
+  const maps = await Promise.all(TF2_TARGET_NAMES.map(async (name) => Object.freeze({ name, map: await acquireMap(config, name) })))
+  const prepared = [] as Array<Readonly<{ name: (typeof TF2_TARGET_NAMES)[number]; map: Awaited<ReturnType<typeof acquireMap>>; sourceBundle: Awaited<ReturnType<typeof buildSourceBundle>> }>>
+  for (const { name, map } of maps) prepared.push(Object.freeze({ name, map, sourceBundle: await buildSourceBundle(config, name) }))
+  const wasmPath = await wasm
   const wasmBytes = await readFile(wasmPath)
-  const catalog = parseResourceCatalog(JSON.parse(await readFile(CATALOG_PATH, "utf8")))
-  const catalogBytes = canonicalGraphBytes(catalog)
+  const catalogBytes = canonicalGraphBytes({
+    application: "tf2",
+    entries: prepared.map(({ name, sourceBundle }) => ({ target: name, resources: sourceBundle.report.graphDescriptor })),
+    schema: "playsrc-resource-catalog-v1",
+  })
+  const catalog = parseResourceCatalogBytes(catalogBytes)
+  for (const { name, sourceBundle } of prepared) {
+    const graph = parseResourceGraphBytes(await readFile(sourceBundle.graphPath))
+    const selected = selectCatalogTarget(catalog, name)
+    if (graph.target !== name || graph.contentBuild !== sourceBundle.report.contentBuild || !sameDescriptor(selected.resources, sourceBundle.report.graphDescriptor)) {
+      throw new Tf2ReleaseError(`generated ${name} resource root differs from its catalog entry`)
+    }
+  }
   const catalogArtifactPath = path.join(config.sourceCacheDir, "browser-bundles", "catalog.json")
   await mkdir(path.dirname(catalogArtifactPath), { recursive: true })
   await writeFile(catalogArtifactPath, catalogBytes)
-  const catalogResources = selectCatalogTarget(catalog, target).resources
-  const generatedResources = sourceBundle.report.graphDescriptor
-  if (catalogResources.kind !== generatedResources.kind
-    || catalogResources.mediaType !== generatedResources.mediaType
-    || catalogResources.byteLength !== generatedResources.byteLength
-    || catalogResources.sha256 !== generatedResources.sha256) {
-    throw new Tf2ReleaseError("catalog resource root differs from generated target")
-  }
   const release = parseTf2Release({
     schema: TF2_RELEASE_SCHEMA,
-    target,
-    contentBuild: sourceBundle.report.contentBuild,
+    defaultTarget: "jump_beef",
     objects: {
-      bsp: {
-        kind: "source-object",
-        mediaType: "application/octet-stream",
-        byteLength: String(map.decoded.byteLength),
-        sha256: map.decoded.sha256,
-      },
       wasm: descriptor("derived-object", "application/octet-stream", wasmBytes),
       catalog: descriptor("catalog", "application/vnd.playsrc.asset-catalog+json", catalogBytes),
-      dependencyLedger: sourceBundle.report.ledgerDescriptor,
     },
+    targets: prepared.map(({ name, map, sourceBundle }) => ({
+      target: name,
+      contentBuild: sourceBundle.report.contentBuild,
+      objects: {
+        bsp: { kind: "source-object", mediaType: "application/octet-stream", byteLength: String(map.decoded.byteLength), sha256: map.decoded.sha256 },
+        resources: sourceBundle.report.graphDescriptor,
+        dependencyLedger: sourceBundle.report.ledgerDescriptor,
+      },
+    })),
   })
-  const files = new Map<string, Readonly<{ descriptor: ObjectDescriptor; pathname: string }>>([
-    [release.objects.bsp.sha256, { descriptor: release.objects.bsp, pathname: path.join(config.sourceCacheDir, map.decoded.cachePath) }],
-    [release.objects.wasm.sha256, { descriptor: release.objects.wasm, pathname: wasmPath }],
-    [release.objects.catalog.sha256, { descriptor: release.objects.catalog, pathname: catalogArtifactPath }],
-    [sourceBundle.report.graphDescriptor.sha256, { descriptor: sourceBundle.report.graphDescriptor, pathname: sourceBundle.graphPath }],
-    [release.objects.dependencyLedger.sha256, { descriptor: release.objects.dependencyLedger, pathname: sourceBundle.ledgerPath }],
-  ])
-  for (const chunk of sourceBundle.graph.chunks) {
-    const chunkDescriptor = resourceChunkObject(chunk)
-    files.set(chunkDescriptor.sha256, { descriptor: chunkDescriptor, pathname: path.join(sourceBundle.graphObjectDirectory, chunkDescriptor.sha256) })
+  const files = new Map<string, Readonly<{ descriptor: ObjectDescriptor; pathname: string }>>()
+  addFile(files, release.objects.wasm, wasmPath)
+  addFile(files, release.objects.catalog, catalogArtifactPath)
+  for (let index = 0; index < prepared.length; index += 1) {
+    const { map, sourceBundle } = prepared[index]
+    const targetRelease = release.targets[index]
+    addFile(files, targetRelease.objects.bsp, path.join(config.sourceCacheDir, map.decoded.cachePath))
+    addFile(files, targetRelease.objects.resources, sourceBundle.graphPath)
+    addFile(files, targetRelease.objects.dependencyLedger, sourceBundle.ledgerPath)
+    for (const chunk of sourceBundle.graph.chunks) {
+      const chunkDescriptor = resourceChunkObject(chunk)
+      addFile(files, chunkDescriptor, path.join(sourceBundle.graphObjectDirectory, chunkDescriptor.sha256))
+    }
   }
-  await Promise.all(
-    Array.from(files.values(), ({ descriptor, pathname }) => ensureLocalObject(config.assetDir, descriptor, pathname)),
-  )
-  await writeTf2Release(release)
+  await Promise.all([...files.values()].map(({ descriptor: expected, pathname }) => ensureLocalObject(config.assetDir, expected, pathname)))
+  await writeTf2Release(release, catalogBytes)
   return Object.freeze({ release, files })
 }
 
-export async function writeTf2Release(release: Tf2Release): Promise<void> {
+function addFile(files: Map<string, Readonly<{ descriptor: ObjectDescriptor; pathname: string }>>, expected: ObjectDescriptor, pathname: string): void {
+  const existing = files.get(expected.sha256)
+  if (existing && !sameDescriptor(existing.descriptor, expected)) throw new Tf2ReleaseError(`object ${expected.sha256} has conflicting descriptors`)
+  if (!existing) files.set(expected.sha256, Object.freeze({ descriptor: expected, pathname }))
+}
+
+function sameDescriptor(left: ObjectDescriptor, right: ObjectDescriptor): boolean {
+  return left.kind === right.kind && left.mediaType === right.mediaType && left.byteLength === right.byteLength && left.sha256 === right.sha256
+}
+
+export async function writeTf2Release(release: Tf2Release, catalogBytes: Uint8Array): Promise<void> {
   const checked = parseTf2Release(release)
-  await mkdir(path.dirname(RELEASE_PATH), { recursive: true })
-  const temporary = `${RELEASE_PATH}.${process.pid}.tmp`
+  const parsedCatalog = parseResourceCatalogBytes(catalogBytes)
+  if (parsedCatalog.application !== "tf2" || parsedCatalog.entries.length !== checked.targets.length) throw new Tf2ReleaseError("TF2 release catalog target table differs")
+  for (const target of checked.targets) {
+    if (!sameDescriptor(selectCatalogTarget(parsedCatalog, target.target).resources, target.objects.resources)) throw new Tf2ReleaseError(`TF2 release ${target.target} resource root differs from catalog`)
+  }
+  await mkdir(RELEASE_DIRECTORY, { recursive: true })
+  const releaseTemporary = `${RELEASE_PATH}.${process.pid}.tmp`
+  const catalogTemporary = `${CATALOG_PATH}.${process.pid}.tmp`
   try {
-    await writeFile(temporary, `${JSON.stringify(checked, null, 2)}\n`, { flag: "wx" })
-    await rm(RELEASE_PATH, { force: true })
-    await rename(temporary, RELEASE_PATH)
+    await Promise.all([
+      writeFile(releaseTemporary, `${JSON.stringify(checked, null, 2)}\n`, { flag: "wx" }),
+      writeFile(catalogTemporary, catalogBytes, { flag: "wx" }),
+    ])
+    await rename(catalogTemporary, CATALOG_PATH)
+    await rename(releaseTemporary, RELEASE_PATH)
   } finally {
-    await rm(temporary, { force: true })
+    await Promise.all([rm(releaseTemporary, { force: true }), rm(catalogTemporary, { force: true })])
   }
 }
 
 export async function readTf2Release(target: string | undefined): Promise<Tf2Release> {
-  if (target !== "jump_beef") throw new Tf2ReleaseError("release target must be jump_beef")
-  try {
-    return parseTf2Release(JSON.parse(await readFile(RELEASE_PATH, "utf8")))
-  } catch (error) {
+  if (target !== undefined) throw new Tf2ReleaseError("the current TF2 release does not accept a target argument")
+  try { return parseTf2Release(JSON.parse(await readFile(RELEASE_PATH, "utf8"))) }
+  catch (error) {
     if (error instanceof Tf2ReleaseError) throw error
     throw new Tf2ReleaseError(error instanceof Error ? error.message : "TF2 release descriptor could not be read")
   }
 }
 
-export function releaseObjectPath(config: LocalConfig, descriptor: ObjectDescriptor): string {
-  return objectPath(config.assetDir, descriptor.sha256)
-}
+export function releaseObjectPath(config: LocalConfig, expected: ObjectDescriptor): string { return objectPath(config.assetDir, expected.sha256) }
 
 export async function verifyFile(pathname: string, expected: ObjectDescriptor): Promise<void> {
   const metadata = await stat(pathname)
-  if (!metadata.isFile() || String(metadata.size) !== expected.byteLength) {
-    throw new Tf2ReleaseError(`object ${expected.sha256} byte length differs`)
-  }
+  if (!metadata.isFile() || String(metadata.size) !== expected.byteLength) throw new Tf2ReleaseError(`object ${expected.sha256} byte length differs`)
   const hash = new Bun.CryptoHasher("sha256")
   for await (const chunk of createReadStream(pathname, { highWaterMark: 1024 * 1024 })) hash.update(chunk as Uint8Array)
   if (hash.digest("hex") !== expected.sha256) throw new Tf2ReleaseError(`object ${expected.sha256} hash differs`)

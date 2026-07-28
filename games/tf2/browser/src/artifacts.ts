@@ -1139,8 +1139,10 @@ function parseStaticProps(r: Reader, expectedModelCount: number,models:readonly 
   leafOffsets[count]=leafValues.length;runtimeLightOffsets[count]=runtimeLights.length
   const sectionLength = r.offset - start
   if (r.u32() !== sectionLength || r.decoder.decode(r.take(4)) !== "PSPF") throw new ArtifactError("static prop footer")
-  const aggregate=resources.get("derived/static-prop-lighting.pvha");if(!aggregate)throw new ArtifactError("static prop VHV aggregate missing")
-  const vhv=parseStaticPropVhv(aggregate,aggregateSha256)
+  const aggregate=resources.get("derived/static-prop-lighting.pvha")
+  if(count===0&&aggregateSha256!=="0".repeat(64))throw new ArtifactError("empty static prop VHV identity")
+  if(count!==0&&!aggregate)throw new ArtifactError("static prop VHV aggregate missing")
+  const vhv=count===0?Object.freeze([]):parseStaticPropVhv(aggregate!,aggregateSha256)
   if(vhv.length!==count*2-runtimeLightingCount*2)throw new ArtifactError("static prop VHV closure")
   return Object.freeze({aggregateSha256,modelCount,count,source,dictionaryModel,presentationModel,transform,skin,body,lod,fades,flags,solidity,ownership,lightingKind,lightingOrigin,leafOffsets,leaves:Uint16Array.from(leafValues),areas:Uint16Array.from(areaValues),vhvObjects,runtimeAmbient,runtimeLightOffsets,runtimeLights:Object.freeze(runtimeLights),models:Object.freeze([...models]),vhv,runtimeLightingCount})
 }
@@ -1264,7 +1266,7 @@ export async function parsePresentationArtifacts(bytes: Uint8Array, resources: R
   const authoredTextures = parseAuthoredTextures(r, resources)
   const brushModels:BrushModelArtifact[]=[];let previousEnd=0;for(let expected=0;expected<brushModelCount;expected++){const index=r.u32(),minimum=tuple3(r),maximum=tuple3(r),origin=tuple3(r),headNode=r.i32(),start=r.u32(),end=r.u32(),vertexCount=r.u32(),triangleCount=r.u32(),mc=r.u32(),ec=r.u32();if(mc>65536||ec>65536)throw new ArtifactError("brush counts");const materials=Object.freeze(Array.from({length:mc},()=>r.u32())),entities=Object.freeze(Array.from({length:ec},()=>r.u32()));if(index!==expected||start!==previousEnd||end<start)throw new ArtifactError("brush descriptor");previousEnd=end;brushModels.push(Object.freeze({index,bounds:Object.freeze([minimum,maximum]) as BrushModelArtifact["bounds"],origin,headNode,surfaceRange:Object.freeze([start,end]) as readonly[number,number],vertexCount,triangleCount,materials,entities}))}
   const staticProps = parseStaticProps(r, modelCount,[...models.keys()],resources)
-  if (await digest(resources.get("derived/static-prop-lighting.pvha")!) !== staticProps.aggregateSha256) throw new ArtifactError("static prop VHV aggregate hash")
+  if (staticProps.count !== 0 && await digest(resources.get("derived/static-prop-lighting.pvha")!) !== staticProps.aggregateSha256) throw new ArtifactError("static prop VHV aggregate hash")
   if (r.offset !== bytes.length) throw new ArtifactError("trailing bytes")
   if (new Set(modelOccurrences.map((occurrence) => occurrence.entity)).size !== modelOccurrences.length)
     throw new ArtifactError("model occurrence identity")

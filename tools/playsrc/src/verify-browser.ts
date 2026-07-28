@@ -15,11 +15,11 @@ const APPLICATION_URL = "http://127.0.0.1:4173/"
 const VIEWPORT_WIDTH = 1280
 const VIEWPORT_HEIGHT = 720
 const BACKGROUND_RGB = [17, 24, 32] as const
-const EXPECTED_RESOURCE_GRAPH_SHA256 = "ba780ccfeacf4352f88926218baf3edc78799a40c08b88f7655a7e85ff9c302b"
+const EXPECTED_RESOURCE_GRAPH_SHA256 = "abccb94ba53b177333309fa9a82c85bf89a9b09d3866f5ed7af65a3546350027"
 const EXPECTED_RESOURCE_ROLES = Object.freeze({
   startup: Object.freeze({ entries: 2, encodedBytes: 1_323_980 }),
   menu: Object.freeze({ entries: 860, encodedBytes: 62_171_070 }),
-  gameplay: Object.freeze({ entries: 305, encodedBytes: 56_244_327 }),
+  gameplay: Object.freeze({ entries: 309, encodedBytes: 56_252_039 }),
 })
 
 export class BrowserEvidenceError extends Error {
@@ -175,8 +175,8 @@ async function classifySupportBlockers(
     ledger.target === "jump_beef" &&
     typeof ledger.resourceGraph === "object" && ledger.resourceGraph !== null &&
     (ledger.resourceGraph as Record<string, unknown>).sha256 === EXPECTED_RESOURCE_GRAPH_SHA256 &&
-    ledger.resolvedEntries === 904 && ledger.authoritativeAbsences === 40 &&
-    Array.isArray(ledger.requests) && ledger.requests.length === 944,
+    ledger.resolvedEntries === 908 && ledger.authoritativeAbsences === 40 &&
+    Array.isArray(ledger.requests) && ledger.requests.length === 948,
   "source dependency ledger identity is malformed")
   const outcomes = new Map<string, string>()
   const requests = new Map<string, Record<string, unknown>>()
@@ -2016,17 +2016,17 @@ export async function verifyBrowserAcceptance(
     )
     const mapRecords = records.filter(
       (record) =>
-        record.sha256 === "4610e40fe34d61d2eb6a61c1cc2e7fa725bd4b91eded2584e2973f8c162dbac4" ||
+        record.sha256 === "735995d68920adcb971fe4c5e773986f438c2a95c07c935882dc7fd081ce1e3a" ||
         record.sha256 === "56153098a867c553651f9c773bd72c4659782bae8520277c80daaaa414bdf156",
     )
     require(mapRecords.length >= 1 && mapRecords.length <= 2 && new Set(mapRecords.map((record) => record.sha256)).size === mapRecords.length &&
       mapRecords.some(
         (record) =>
-          record.byteLength === 78_255_422 &&
-          record.sha256 === "4610e40fe34d61d2eb6a61c1cc2e7fa725bd4b91eded2584e2973f8c162dbac4",
+          record.byteLength === 78_255_714 &&
+          record.sha256 === "735995d68920adcb971fe4c5e773986f438c2a95c07c935882dc7fd081ce1e3a",
       ) && mapRecords.every((record) =>
-        record.sha256 === "4610e40fe34d61d2eb6a61c1cc2e7fa725bd4b91eded2584e2973f8c162dbac4"
-          ? record.byteLength === 78_255_422
+        record.sha256 === "735995d68920adcb971fe4c5e773986f438c2a95c07c935882dc7fd081ce1e3a"
+          ? record.byteLength === 78_255_714
           : record.byteLength === 42_082_929), `warm active IndexedDB record identity differs: ${JSON.stringify(mapRecords)}`)
     return {
       target: "jump_beef",
@@ -2089,6 +2089,53 @@ export async function verifyBrowserAcceptance(
       if (primaryError === undefined) throw error
     }
   }
+}
+
+export async function runDualMapAcceptance(config: LocalConfig, target: string | undefined): Promise<void> {
+  if (target !== undefined) throw new BrowserEvidenceError("dual-map acceptance does not accept a target argument")
+  const owner = await startDevelopmentProcess("jump_beef")
+  const session = `playsrc-dual-map-${process.pid}`
+  let browserOpen = false
+  let primaryError: unknown
+  let report: Record<string, unknown> | undefined
+  try {
+    await agent(["--session", session, "--headed", "--webgpu", "open", owner.url])
+    browserOpen = true
+    await agent(["--session", session, "set", "viewport", String(VIEWPORT_WIDTH), String(VIEWPORT_HEIGHT)])
+    await completeStartup(session, config, "dual-map-1280x720", "skip")
+    await agent(["--session", session, "press", "Backquote"])
+    await agent(["--session", session, "fill", "[aria-label='Console command']", "map jump_beef"])
+    await agent(["--session", session, "press", "Enter"])
+    await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.phase==='Ready'&&document.querySelector('main').dataset.environmentSky==='sky_day01_01'", "--timeout", "600000"])
+    const unknownBefore = parseJson<{ detail: string; resources: number }>(await agent(["--session", session, "eval", "(()=>({detail:document.querySelector('main').dataset.detail,resources:performance.getEntriesByType('resource').length}))()"] ))
+    await agent(["--session", session, "fill", "[aria-label='Console command']", "map upward"])
+    await agent(["--session", session, "press", "Enter"])
+    await agent(["--session", session, "wait", "--fn", "document.querySelector('.developer-layer [data-vgui-service=developer-console]')?.textContent.includes('Usage: map jump_beef|pl_upward')", "--timeout", "30000"])
+    await Bun.sleep(500)
+    const unknownAfter = parseJson<{ detail: string; resources: number }>(await agent(["--session", session, "eval", "(()=>({detail:document.querySelector('main').dataset.detail,resources:performance.getEntriesByType('resource').length}))()"] ))
+    require(JSON.stringify(unknownAfter) === JSON.stringify(unknownBefore), `unknown map mutated state or fetched resources: ${JSON.stringify({ unknownBefore, unknownAfter })}`)
+    await agent(["--session", session, "fill", "[aria-label='Console command']", "map pl_upward"])
+    await agent(["--session", session, "press", "Enter"])
+    await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.phase==='Replacing'&&document.querySelector('main').dataset.detail.includes('pl_upward')&&document.querySelector('main').dataset.loadingBackground==='configured-generic'", "--timeout", "30000"])
+    await agent(["--session", session, "wait", "--fn", "document.querySelector('.developer-layer [data-vgui-service=developer-console]')?.textContent.includes('Loaded pl_upward; generation 2')&&document.querySelector('main').dataset.phase==='Ready'", "--timeout", "600000"])
+    await agent(["--session", session, "wait", "--fn", "JSON.parse(document.querySelector('.world-canvas').dataset.staticProps||'null')?.total===1244&&JSON.parse(document.querySelector('.world-canvas').dataset.sky3dPass||'null')?.skyProps>0", "--timeout", "30000"])
+    require(parseJson<string>(await agent(["--session", session, "eval", "document.querySelector('main').dataset.detail"] )) === "Playing pl_upward", "pl_upward gameplay publication is unavailable")
+    await agent(["--session", session, "fill", "[aria-label='Console command']", "map jump_beef"])
+    await agent(["--session", session, "press", "Enter"])
+    await agent(["--session", session, "wait", "--fn", "document.querySelector('.developer-layer [data-vgui-service=developer-console]')?.textContent.includes('Loaded jump_beef; generation 3')&&document.querySelector('main').dataset.phase==='Ready'", "--timeout", "600000"])
+    require(parseJson<number>(await agent(["--session", session, "eval", "JSON.parse(document.querySelector('.world-canvas').dataset.staticProps).total"] )) === 0, "jump_beef retained pl_upward static props")
+    report = { schema: "playsrc-tf2-dual-map-browser-evidence-v1", sequence: ["jump_beef", "pl_upward", "jump_beef"], generations: [1, 2, 3], unknownRejectedWithoutFetch: true, loadingDescriptorsSelected: true, plUpwardStaticPropsAndSky: true, plUpwardGameplaySnapshot: true, replacementResourcesReleased: true }
+  } catch (error) {
+    let state = "unavailable"
+    if (browserOpen) state = await agent(["--session", session, "eval", "(()=>{const m=document.querySelector('main'),c=document.querySelector('.developer-layer [data-vgui-service=developer-console]');return{phase:m?.dataset.phase,detail:m?.dataset.detail,gameui:m?.dataset.gameui,console:c?.textContent.slice(-2000)}})()"] ).catch(() => "unavailable")
+    primaryError = error
+    throw new BrowserEvidenceError(`${error instanceof Error ? error.message : String(error)}; dual-map state=${state}`)
+  } finally {
+    if (browserOpen) await agent(["--session", session, "close"]).catch(() => {})
+    try { await owner.interrupt() } catch (error) { if (primaryError === undefined) throw error }
+  }
+  require((await unavailable("http://127.0.0.1:4173/readyz")) && (await unavailable("http://127.0.0.1:4174/readyz")), "dual-map listeners remained available after shutdown")
+  console.log(JSON.stringify({ ...report, shutdown: "sigint-child-and-listeners-released" }))
 }
 
 export async function runBrowserAcceptance(config: LocalConfig, target: string | undefined): Promise<void> {

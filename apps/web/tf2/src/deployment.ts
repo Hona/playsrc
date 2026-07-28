@@ -1,84 +1,116 @@
 import type { ObjectDescriptor } from "@playsrc/asset-store"
 import { TF2_CONTENT_BUILD } from "@playsrc/game-tf2-browser/content-build"
-import { TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS, TF2_STAMP_BACKGROUND } from "@playsrc/game-tf2-browser/loading-presentation"
+import { TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS, TF2_PL_UPWARD_MAP_PHOTO_LOCATIONS, TF2_STAMP_BACKGROUND } from "@playsrc/game-tf2-browser/loading-presentation"
 import { TF2_CONFIGURED_STARTUP } from "@playsrc/game-tf2-browser/startup-presentation"
 import type { BrowserConfiguration } from "./config"
 
 const HASH = /^[0-9a-f]{64}$/
 
-export const TF2_RELEASE_SCHEMA = "playsrc-tf2-release-v1" as const
+export const TF2_RELEASE_SCHEMA = "playsrc-tf2-release-v2" as const
 export const TF2_APPLICATION_ORIGIN = "https://playsrc.online"
 export const TF2_ASSET_ORIGIN = "https://assets.playsrc.online"
+export const TF2_TARGET_NAMES = Object.freeze(["jump_beef", "pl_upward"] as const)
+export type Tf2TargetName = (typeof TF2_TARGET_NAMES)[number]
 
-export type Tf2Release = Readonly<{
-  schema: typeof TF2_RELEASE_SCHEMA
-  target: "jump_beef"
+export type Tf2ReleaseTarget = Readonly<{
+  target: Tf2TargetName
   contentBuild: typeof TF2_CONTENT_BUILD.contentBuild
   objects: Readonly<{
     bsp: ObjectDescriptor
-    wasm: ObjectDescriptor
-    catalog: ObjectDescriptor
+    resources: ObjectDescriptor
     dependencyLedger: ObjectDescriptor
   }>
 }>
 
+export type Tf2Release = Readonly<{
+  schema: typeof TF2_RELEASE_SCHEMA
+  defaultTarget: Tf2TargetName
+  objects: Readonly<{ wasm: ObjectDescriptor; catalog: ObjectDescriptor }>
+  targets: readonly Tf2ReleaseTarget[]
+}>
+
+const EXPECTED_BSP = Object.freeze({
+  jump_beef: Object.freeze({ byteLength: "33379388", sha256: "b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959" }),
+  pl_upward: Object.freeze({ byteLength: "25446018", sha256: "15cbf91981b0d9902c645d1992d196b7e630742aa85111ed834d231f3c3a5709" }),
+})
+
 export function parseTf2Release(value: unknown): Tf2Release {
   if (
     !record(value)
-    || Object.keys(value).sort().join("\0") !== "contentBuild\0objects\0schema\0target"
+    || Object.keys(value).sort().join("\0") !== "defaultTarget\0objects\0schema\0targets"
     || value.schema !== TF2_RELEASE_SCHEMA
-    || value.target !== "jump_beef"
-    || value.contentBuild !== TF2_CONTENT_BUILD.contentBuild
+    || !TF2_TARGET_NAMES.includes(value.defaultTarget as Tf2TargetName)
     || !record(value.objects)
-    || Object.keys(value.objects).sort().join("\0") !== "bsp\0catalog\0dependencyLedger\0wasm"
+    || Object.keys(value.objects).sort().join("\0") !== "catalog\0wasm"
+    || !Array.isArray(value.targets)
+    || value.targets.length !== TF2_TARGET_NAMES.length
   ) throw new Error("TF2 release descriptor is malformed")
 
   const objects = Object.freeze({
-    bsp: objectDescriptor(value.objects.bsp, "source-object", "application/octet-stream"),
     wasm: objectDescriptor(value.objects.wasm, "derived-object", "application/octet-stream"),
     catalog: objectDescriptor(value.objects.catalog, "catalog", "application/vnd.playsrc.asset-catalog+json"),
-    dependencyLedger: objectDescriptor(
-      value.objects.dependencyLedger,
-      "derived-object",
-      "application/vnd.playsrc.source-dependency-ledger+json",
-    ),
   })
-
+  const targets = value.targets.map((candidate, index): Tf2ReleaseTarget => {
+    const target = TF2_TARGET_NAMES[index]
+    if (
+      !record(candidate)
+      || Object.keys(candidate).sort().join("\0") !== "contentBuild\0objects\0target"
+      || candidate.target !== target
+      || candidate.contentBuild !== TF2_CONTENT_BUILD.contentBuild
+      || !record(candidate.objects)
+      || Object.keys(candidate.objects).sort().join("\0") !== "bsp\0dependencyLedger\0resources"
+    ) throw new Error("TF2 release target descriptor is malformed")
+    const bsp = objectDescriptor(candidate.objects.bsp, "source-object", "application/octet-stream")
+    if (bsp.byteLength !== EXPECTED_BSP[target].byteLength || bsp.sha256 !== EXPECTED_BSP[target].sha256) {
+      throw new Error("TF2 release BSP identity differs")
+    }
+    return Object.freeze({
+      target,
+      contentBuild: TF2_CONTENT_BUILD.contentBuild,
+      objects: Object.freeze({
+        bsp,
+        resources: objectDescriptor(candidate.objects.resources, "source-root", "application/vnd.playsrc.resource-graph+json"),
+        dependencyLedger: objectDescriptor(candidate.objects.dependencyLedger, "derived-object", "application/vnd.playsrc.source-dependency-ledger+json"),
+      }),
+    })
+  })
+  for (const field of ["bsp", "resources", "dependencyLedger"] as const) {
+    if (new Set(targets.map((target) => target.objects[field].sha256)).size !== targets.length) {
+      throw new Error(`TF2 release ${field} identities are duplicated`)
+    }
+  }
   return Object.freeze({
     schema: TF2_RELEASE_SCHEMA,
-    target: "jump_beef",
-    contentBuild: TF2_CONTENT_BUILD.contentBuild,
+    defaultTarget: value.defaultTarget as Tf2TargetName,
     objects,
+    targets: Object.freeze(targets),
   })
 }
 
-export function createDeployedBrowserConfiguration(
-  release: Tf2Release,
-  applicationBuild: string,
-): BrowserConfiguration {
+export function createDeployedBrowserConfiguration(release: Tf2Release, applicationBuild: string): BrowserConfiguration {
   if (!HASH.test(applicationBuild)) throw new Error("TF2 application build identity is malformed")
   return Object.freeze({
     application: "tf2",
     applicationBuild,
-    target: "jump_beef",
+    defaultTarget: release.defaultTarget,
     renderLevel: 2,
     assetOrigin: TF2_ASSET_ORIGIN,
     allowedExternalOrigins: Object.freeze([]),
-    bsp: release.objects.bsp,
     wasm: release.objects.wasm,
     catalog: release.objects.catalog,
+    targets: Object.freeze(release.targets.map((target) => Object.freeze({
+      ...target,
+      loading: loadingDescriptor(target.target),
+    }))),
     startup: TF2_CONFIGURED_STARTUP,
-    loading: Object.freeze({
-      mapPhotoLocations: TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS,
-      stampBackground: TF2_STAMP_BACKGROUND,
-    }),
-    presentation: Object.freeze({
-      randomSeed: 0,
-      activeHoliday: "none",
-      activeWar: null,
-      activeOperation: false,
-      freeTrial: false,
-    }),
+    presentation: Object.freeze({ randomSeed: 0, activeHoliday: "none", activeWar: null, activeOperation: false, freeTrial: false }),
+  })
+}
+
+function loadingDescriptor(target: Tf2TargetName): BrowserConfiguration["targets"][number]["loading"] {
+  return Object.freeze({
+    mapPhotoLocations: target === "jump_beef" ? TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS : TF2_PL_UPWARD_MAP_PHOTO_LOCATIONS,
+    stampBackground: TF2_STAMP_BACKGROUND,
   })
 }
 
@@ -97,8 +129,6 @@ function objectDescriptor(value: unknown, kind: ObjectDescriptor["kind"], mediaT
     || !HASH.test(value.sha256 as string)
   ) throw new Error("TF2 release object descriptor is malformed")
   const byteLength = Number(value.byteLength)
-  if (!Number.isSafeInteger(byteLength) || byteLength < 1 || byteLength > 536_870_912) {
-    throw new Error("TF2 release object byte length is outside its bound")
-  }
+  if (!Number.isSafeInteger(byteLength) || byteLength < 1 || byteLength > 536_870_912) throw new Error("TF2 release object byte length is outside its bound")
   return Object.freeze({ kind, mediaType, byteLength: value.byteLength, sha256: value.sha256 as string })
 }

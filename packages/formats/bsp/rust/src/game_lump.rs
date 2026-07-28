@@ -7,8 +7,11 @@ use crate::{
 pub const GAME_LUMP_SLOT: usize = 35;
 pub const STATIC_PROP_VERSION: u16 = 10;
 pub const STATIC_PROP_RECORD_BYTES: usize = 72;
+pub const STATIC_PROP_V6_VERSION: u16 = 6;
+pub const STATIC_PROP_V6_RECORD_BYTES: usize = 64;
 pub const STATIC_PROP_USE_LIGHTING_ORIGIN: u32 = 0x0002;
 pub const STATIC_PROP_NO_PER_VERTEX_LIGHTING: u32 = 0x0040;
+pub const STATIC_PROP_NO_PER_TEXEL_LIGHTING: u32 = 0x0100;
 
 const STATIC_PROP_ID: u32 = u32::from_be_bytes(*b"sprp");
 const DICTIONARY_BYTES: usize = 128;
@@ -117,7 +120,7 @@ pub fn parse_static_props(bsp: &Bsp, limits: Limits) -> Result<Option<StaticProp
     if selected.next().is_some() {
         return Err(invalid(0..directory_end));
     }
-    if header.version != STATIC_PROP_VERSION {
+    if header.version != STATIC_PROP_VERSION && header.version != STATIC_PROP_V6_VERSION {
         return Err(failure(
             ErrorCode::UnsupportedLumpVersion,
             Some(GAME_LUMP_SLOT),
@@ -172,6 +175,19 @@ fn decode_static_props(
     bytes: &[u8],
     limits: Limits,
 ) -> Result<StaticProps, ParseError> {
+    let record_bytes = match header.version {
+        STATIC_PROP_V6_VERSION => STATIC_PROP_V6_RECORD_BYTES,
+        STATIC_PROP_VERSION => STATIC_PROP_RECORD_BYTES,
+        _ => {
+            return Err(failure(
+                ErrorCode::UnsupportedLumpVersion,
+                Some(GAME_LUMP_SLOT),
+                0..0,
+                Some(usize::from(header.version)),
+                Some(usize::from(STATIC_PROP_VERSION)),
+            ));
+        }
+    };
     let model_count = nonnegative_i32(bytes, 0)?;
     bound(model_count, limits.max_records_per_lump, 0..4)?;
     let dictionary_end = model_count
@@ -223,7 +239,7 @@ fn decode_static_props(
     )?;
     let records_start = leaves_end + 4;
     let records_end = occurrence_count
-        .checked_mul(STATIC_PROP_RECORD_BYTES)
+        .checked_mul(record_bytes)
         .and_then(|length| records_start.checked_add(length))
         .ok_or_else(|| invalid(records_start..records_start))?;
     if records_end != bytes.len() {
@@ -233,7 +249,7 @@ fn decode_static_props(
     }
     let mut occurrences = Vec::with_capacity(occurrence_count);
     for (index, record) in bytes[records_start..]
-        .chunks_exact(STATIC_PROP_RECORD_BYTES)
+        .chunks_exact(record_bytes)
         .enumerate()
     {
         let model = u16_at(record, 24)?;
@@ -243,17 +259,29 @@ fn decode_static_props(
             .checked_add(usize::from(leaf_count))
             .ok_or_else(|| {
                 invalid(
-                    records_start + index * STATIC_PROP_RECORD_BYTES + 26
-                        ..records_start + index * STATIC_PROP_RECORD_BYTES + 30,
+                    records_start + index * record_bytes + 26
+                        ..records_start + index * record_bytes + 30,
                 )
             })?;
         if usize::from(model) >= dictionary.len() || leaf_end > leaves.len() {
             return Err(invalid(
-                records_start + index * STATIC_PROP_RECORD_BYTES + 24
-                    ..records_start + index * STATIC_PROP_RECORD_BYTES + 30,
+                records_start + index * record_bytes + 24
+                    ..records_start + index * record_bytes + 30,
             ));
         }
-        let flags = u32_at(record, 64)?;
+        let (padding, flags, lightmap_resolution) = if header.version == STATIC_PROP_V6_VERSION {
+            (
+                0,
+                u32::from(record[31]) | STATIC_PROP_NO_PER_TEXEL_LIGHTING,
+                [0, 0],
+            )
+        } else {
+            (
+                record[31],
+                u32_at(record, 64)?,
+                [u16_at(record, 68)?, u16_at(record, 70)?],
+            )
+        };
         let raw_lighting_origin = vector(record, 44)?;
         occurrences.push(StaticPropOccurrence {
             index,
@@ -264,7 +292,7 @@ fn decode_static_props(
             leaf_count,
             leaves: leaves[usize::from(first_leaf)..leaf_end].to_vec(),
             solidity: record[30],
-            padding: record[31],
+            padding,
             skin: i32_at(record, 32)?,
             fade_minimum: float(record, 36)?,
             fade_maximum: float(record, 40)?,
@@ -275,9 +303,9 @@ fn decode_static_props(
             minimum_dx_level: u16_at(record, 60)?,
             maximum_dx_level: u16_at(record, 62)?,
             flags,
-            lightmap_resolution: [u16_at(record, 68)?, u16_at(record, 70)?],
-            decoded_range: records_start + index * STATIC_PROP_RECORD_BYTES
-                ..records_start + (index + 1) * STATIC_PROP_RECORD_BYTES,
+            lightmap_resolution,
+            decoded_range: records_start + index * record_bytes
+                ..records_start + (index + 1) * record_bytes,
         });
     }
     Ok(StaticProps {
@@ -441,6 +469,33 @@ mod tests {
         .unwrap();
         assert_eq!(decoded.occurrences[0].lighting_origin, None);
         assert_eq!(decoded.occurrences[0].raw_lighting_origin.x.value(), 7.0);
+    }
+
+    #[test]
+    fn decodes_source_v6_fields_and_promotes_legacy_flags() {
+        let mut bytes = payload();
+        bytes.truncate(bytes.len() - (STATIC_PROP_RECORD_BYTES - STATIC_PROP_V6_RECORD_BYTES));
+        let props = decode_static_props(
+            Header {
+                ordinal: 0,
+                id: STATIC_PROP_ID,
+                flags: 0,
+                version: STATIC_PROP_V6_VERSION,
+                start: 0,
+                decoded_length: bytes.len(),
+            },
+            0..bytes.len(),
+            &bytes,
+            Limits::default(),
+        )
+        .unwrap();
+        let prop = &props.occurrences[0];
+        assert_eq!((prop.solidity, prop.padding, prop.skin), (6, 0, 3));
+        assert_eq!(prop.flags, 0x17f);
+        assert_eq!(prop.lighting_origin, Some(prop.raw_lighting_origin));
+        assert_eq!((prop.minimum_dx_level, prop.maximum_dx_level), (90, 95));
+        assert_eq!(prop.lightmap_resolution, [0, 0]);
+        assert_eq!(prop.decoded_range.end - prop.decoded_range.start, 64);
     }
 
     #[test]

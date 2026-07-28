@@ -59,4 +59,4 @@ jobs:
         run: bun run test:rust
 
       - name: Verify deployment package
-        run: bun run infra:verify jump_beef
+        run: bun run infra:verify
