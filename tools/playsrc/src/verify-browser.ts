@@ -1010,11 +1010,26 @@ async function verifyPlUpwardBrowser(config: LocalConfig): Promise<Record<string
       throw new BrowserEvidenceError(`${String(error)}; pl_upward state: ${state}`)
     }
     await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.cameraPosition?.split(',').length===3", "--timeout", "30000"])
+    await agent(["--session",session,"wait","--fn","document.querySelector('.world-canvas').dataset.staticProps?.length>2","--timeout","30000"])
+    const staticEvidence=parseJson<{staticProps:{total:number;main:number;sky3d:number;runtimeLit:number};visibleMain:number[];sky:null|{phases:string[];skySurfaces:number;skyProps:number;visibleSkyPropSources:number[];fog:{start:number;end:number;primary:number[]};stateRestored:boolean};visibility:string;detail:string}>(await agent(["--session",session,"eval","(()=>{const m=document.querySelector('main'),c=document.querySelector('.world-canvas');return{staticProps:JSON.parse(c.dataset.staticProps),visibleMain:JSON.parse(c.dataset.visibleMainStaticProps),sky:c.dataset.sky3dPass?JSON.parse(c.dataset.sky3dPass):null,visibility:m.dataset.environmentSky??'',detail:m.dataset.detail??''}})()"] ))
+    require(staticEvidence.staticProps.total===1244&&staticEvidence.staticProps.main===1184&&staticEvidence.staticProps.sky3d===60&&staticEvidence.staticProps.runtimeLit===4&&staticEvidence.visibleMain.length>0&&staticEvidence.sky!==null&&staticEvidence.sky.skySurfaces>0&&staticEvidence.sky.skyProps>0&&staticEvidence.sky.visibleSkyPropSources.length===staticEvidence.sky.skyProps&&staticEvidence.sky.phases.join(",")==="sky3d,depth-reset,main,restore"&&staticEvidence.sky.fog.start===100&&staticEvidence.sky.fog.end===20000&&staticEvidence.sky.fog.primary.join(",")==="174,193,205,255"&&staticEvidence.sky.stateRestored,`pl_upward static-prop/3D-sky evidence differs: ${JSON.stringify(staticEvidence)}`)
     const firstCamera = await cameraObservation(session)
     const firstCapture = await captureCanvas(session, config, "pl_upward")
     require(firstCapture.width === VIEWPORT_WIDTH && firstCapture.height === VIEWPORT_HEIGHT
       && firstCapture.regions.every((region) => region.nonBackgroundRatio > 0.95 && region.meanLuma > 1),
     `pl_upward first terrain capture differs: ${JSON.stringify(firstCapture)}`)
+    const runtimeProps=parseJson<readonly{source:number;origin:readonly[number,number,number];lightingOrigin:readonly[number,number,number];radius:number}[]>(await agent(["--session",session,"eval","JSON.parse(document.querySelector('.world-canvas').dataset.runtimeStaticProps)"]))
+    require(runtimeProps.length===4&&runtimeProps.map(prop=>prop.source).join(",")==="650,882,888,1105","runtime-lit static-prop inventory differs")
+    const runtimePropCaptures=[] as Array<{source:number;screen:{x:number;y:number;width:number;height:number};capture:Awaited<ReturnType<typeof captureCanvas>>}>
+    for(const prop of runtimeProps){const position:[number,number,number]=[prop.origin[0],prop.origin[1],prop.origin[2]+Math.max(16,prop.radius*0.25)],horizontal=Math.hypot(prop.origin[0]-position[0],prop.origin[1]-position[1]),yaw=0,pitch=Math.min(89,Math.atan2(position[2]-prop.origin[2],horizontal)*180/Math.PI)
+      await agent(["--session",session,"eval",`globalThis.__playsrcProfile??={};globalThis.__playsrcProfile.displacementCameraOverride={position:${JSON.stringify(position)},yawDegrees:${yaw},pitchDegrees:${pitch}};true`])
+      await Bun.sleep(1000)
+      const projection=parseJson<{screens:readonly{source:number;x:number;y:number;width:number;height:number}[];visible:number[];camera:string}>(await agent(["--session",session,"eval","(()=>{const c=document.querySelector('.world-canvas'),m=document.querySelector('main');return{screens:JSON.parse(c.dataset.runtimeStaticPropScreen||'[]'),visible:JSON.parse(c.dataset.visibleMainStaticProps||'[]'),camera:m.dataset.cameraPosition}})()"])),screen=projection.screens.find(value=>value.source===prop.source)
+      require(screen!==undefined&&screen.width>1&&screen.height>1,`runtime-lit static prop ${prop.source} is not projected: ${JSON.stringify({prop,projection})}`)
+      const x=Math.max(0,Math.floor(screen.x)),y=Math.max(0,Math.floor(screen.y)),width=Math.max(1,Math.min(VIEWPORT_WIDTH-x,Math.ceil(screen.width))),height=Math.max(1,Math.min(VIEWPORT_HEIGHT-y,Math.ceil(screen.height))),capture=await captureCanvas(session,config,"pl_upward",[{name:`runtime-static-prop-${prop.source}`,x,y,width,height}])
+      require(capture.regions[0]!.nonBackgroundRatio>0.05&&capture.regions[0]!.meanLuma>1,`runtime-lit static prop ${prop.source} capture differs`);runtimePropCaptures.push({source:prop.source,screen,capture})
+    }
+    await agent(["--session",session,"eval","delete globalThis.__playsrcProfile.displacementCameraOverride;true"])
 
     await submit("noclip")
     await agent(["--session", session, "press", "Backquote"])
@@ -1046,6 +1061,8 @@ async function verifyPlUpwardBrowser(config: LocalConfig): Promise<Record<string
       firstCamera,
       secondCamera,
       captures: [firstCapture, secondCapture],
+      staticProps:staticEvidence,
+      runtimePropCaptures,
       noclip: "mode-1-movement-admitted",
       replacementGeneration: 2,
       payloadGameplayClaims: 0,

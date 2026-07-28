@@ -5,7 +5,7 @@ import initializeWasm, { initThreadPool } from "./wasm-generated/tf2_wasm.js"
 
 const MAX_WASM_BYTES = 64 * 1024 * 1024
 const MAX_BSP_BYTES = 512 * 1024 * 1024
-const MAX_CONFIGURATION_BYTES = 256 * 1024 * 1024
+const MAX_CONFIGURATION_BYTES = 512 * 1024 * 1024
 const MAX_MESSAGE_BYTES = 512 * 1024 * 1024
 const MAX_PRESENTATION_BYTES = 512 * 1024 * 1024
 
@@ -539,23 +539,25 @@ function visibility(request: Extract<WorkerRequest, { kind: "visibility" }>): vo
   const value = requireActive(request.id, request.generation)
   if (!value) return
   const view = request.view
-  if (view.position.length !== 3 || !view.position.every(Number.isFinite) ||
-    ![view.yawDegrees, view.pitchDegrees, view.verticalFovDegrees, view.aspectRatio, view.near, view.far, view.presentationTimeSeconds].every(Number.isFinite) ||
+  const visibilityPosition=view.visibilityPosition??view.position
+  if (view.position.length !== 3 || !view.position.every(Number.isFinite) || visibilityPosition.length!==3||!visibilityPosition.every(Number.isFinite) ||
+    ![view.yawDegrees, view.pitchDegrees, view.verticalFovDegrees, view.aspectRatio, view.near, view.far, view.presentationTimeSeconds,view.areaFilter??-1].every(Number.isFinite) ||
+    (view.areaFilter!==undefined&&(!Number.isSafeInteger(view.areaFilter)||view.areaFilter<0||view.areaFilter>511))||
     view.verticalFovDegrees <= 0 || view.verticalFovDegrees >= 180 || view.aspectRatio <= 0 || view.near <= 0 || view.far <= view.near || view.presentationTimeSeconds < 0) {
     fail(request.id, "MalformedRequest")
     return
   }
   const inputCopyStarted = performance.now()
-  const pointer = value.exports.playsrc_alloc(40) >>> 0
-  new Float32Array(value.exports.memory.buffer, pointer, 10).set([
-    ...view.position, view.yawDegrees, view.pitchDegrees, view.verticalFovDegrees,
-    view.aspectRatio, view.near, view.far, view.presentationTimeSeconds,
+  const pointer = value.exports.playsrc_alloc(56) >>> 0
+  new Float32Array(value.exports.memory.buffer, pointer, 14).set([
+    ...visibilityPosition,...view.position, view.yawDegrees, view.pitchDegrees, view.verticalFovDegrees,
+    view.aspectRatio, view.near, view.far, view.presentationTimeSeconds,view.areaFilter??-1,
   ])
   const inputCopyMilliseconds = performance.now() - inputCopyStarted
   const transactStarted = performance.now()
   const ok = value.exports.playsrc_visibility_query(value.handle, pointer)
   const transactMilliseconds = performance.now() - transactStarted
-  value.exports.playsrc_free(pointer, 40)
+  value.exports.playsrc_free(pointer, 56)
   if (ok !== 1) {
     fail(request.id, "TransitionFailed",203)
     return

@@ -1079,9 +1079,12 @@ export class Tf2Application {
         modelMaterials: this.#artifacts.modelMaterials,
         authoredTextures: this.#artifacts.authoredTextures,
         brushModels:this.#artifacts.brushModels,
+        staticProps:this.#artifacts.staticProps,
         diagnostic: true,
       })
       this.#environmentDrawables = scene.environmentDrawables
+      this.#canvas.dataset.staticProps=JSON.stringify(scene.staticProps)
+      this.#canvas.dataset.runtimeStaticProps=JSON.stringify(scene.runtimeStaticProps)
       this.#publishProfileDisplacements(scene)
       for (const diagnostic of scene.diagnostics) {
         this.#blockers.add(`${diagnostic.code}: ${diagnostic.identity} — ${diagnostic.detail}`)
@@ -1674,10 +1677,13 @@ export class Tf2Application {
       modelMaterials: artifacts.modelMaterials,
       authoredTextures: artifacts.authoredTextures,
       brushModels:artifacts.brushModels,
+      staticProps:artifacts.staticProps,
         diagnostic: true,
       })
       finishReplacePhase("rendererLoadMap")
       this.#environmentDrawables = scene.environmentDrawables
+      this.#canvas.dataset.staticProps=JSON.stringify(scene.staticProps)
+      this.#canvas.dataset.runtimeStaticProps=JSON.stringify(scene.runtimeStaticProps)
       this.#publishProfileDisplacements(scene)
       persistence=await staged.persistence
       finishReplacePhase("persistence")
@@ -1704,6 +1710,7 @@ export class Tf2Application {
         modelOccurrences: priorArtifacts?.modelOccurrences,
         modelFacing: priorArtifacts ? this.#modelFacing(priorArtifacts) : undefined,
         modelMaterials: priorArtifacts?.modelMaterials,
+        staticProps:priorArtifacts?.staticProps,
         authoredTextures: priorArtifacts?.authoredTextures,
         brushModels:priorArtifacts?.brushModels,
         diagnostic: true,
@@ -1868,6 +1875,19 @@ export class Tf2Application {
     }
     const planes = [...artifacts.authoredTextures.values()].reduce((total, texture) => total + texture.planes.length, 0)
     return `${artifacts.modelMaterials.size}:${artifacts.authoredTextures.size}:${planes}:${[...shaders].sort().map(([shader, count]) => `${shader}=${count}`).join(",")}`
+  }
+
+  #skyController(artifacts:PresentationArtifacts):Readonly<{origin:readonly[number,number,number];scale:number;area:number;fog:import("@playsrc/game-tf2-browser/artifacts").FogArtifact}>|null{
+    const controller=artifacts.environment.controllersState.find(value=>value.kind===1),state=controller?.state
+    if(!state||!("origin" in state)||!("scale" in state)||!("area" in state)||!("fog" in state)||!Array.isArray(state.origin)||state.origin.length!==3||!state.origin.every(Number.isFinite)||!Number.isSafeInteger(state.scale)||state.scale<=0||!Number.isSafeInteger(state.area))return null
+    return Object.freeze({origin:state.origin,scale:state.scale,area:state.area,fog:state.fog})
+  }
+
+  #mainFog(artifacts:PresentationArtifacts):import("@playsrc/game-tf2-browser/artifacts").FogArtifact|undefined{
+    const index=artifacts.environment.masterFogController
+    if(index===null)return undefined
+    const state=artifacts.environment.controllersState[index]?.state
+    return state&&"enabled" in state&&"primary" in state?state:undefined
   }
 
   #recordVisualOutputBlockers(artifacts: PresentationArtifacts): void {
@@ -2208,6 +2228,15 @@ export class Tf2Application {
         }),
       })
     }
+    let sky3d:import("@playsrc/rendering").Frame["sky3d"]
+    const skyController=this.#artifacts?this.#skyController(this.#artifacts):null
+    if(visibility.sky===2){if(!skyController)throw new Error("3D-sky visibility requires one typed sky_camera")
+      const skyCamera=Object.freeze({...camera,position:Object.freeze([skyController.origin[0]+camera.position[0]/skyController.scale,skyController.origin[1]+camera.position[1]/skyController.scale,skyController.origin[2]+camera.position[2]/skyController.scale]) as readonly[number,number,number],near:2,far:32_768*1.732050807569})
+      this.#wasmCalls.visibility+=1
+      const skyVisibility=await client.visibility(generation,{position:skyCamera.position,visibilityPosition:skyController.origin,areaFilter:skyController.area,yawDegrees:skyCamera.yawDegrees,pitchDegrees:skyCamera.pitchDegrees,verticalFovDegrees:skyCamera.verticalFovDegrees,aspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),near:skyCamera.near,far:skyCamera.far,presentationTimeSeconds:Number(prepared.snapshot.tick)*0.015})
+      if(skyVisibility.areas.some(area=>area!==skyController.area))throw new Error("3D-sky visibility escaped its authored area")
+      sky3d=Object.freeze({camera:skyCamera,visibility:Object.freeze({...skyVisibility,surfaces:skyVisibility.drawSurfaces}),fog:skyController.fog})
+    }
     const visibilityMilliseconds=performance.now()-visibilityStart
     if(this.#closed||this.#paused||generation!==this.#generation||renderer!==this.#renderer)return
     const deltaTicks=this.#lastRenderedTick===undefined
@@ -2220,9 +2249,14 @@ export class Tf2Application {
       ...prepared.frame,
       camera,
       visibility:Object.freeze({...visibility,surfaces:visibility.drawSurfaces}),
+      fog:this.#artifacts?this.#mainFog(this.#artifacts):undefined,
+      sky3d,
       deltaSeconds:deltaTicks*0.015,
     })
     const renderMilliseconds=performance.now()-renderStart,totalMilliseconds=performance.now()-phaseStart
+    this.#canvas.dataset.visibleMainStaticProps=JSON.stringify(rendered.visibleMainStaticPropSources)
+    this.#canvas.dataset.sky3dPass=rendered.sky3dPass?JSON.stringify(rendered.sky3dPass):""
+    this.#canvas.dataset.runtimeStaticPropScreen=JSON.stringify(rendered.runtimeStaticPropScreen)
     if(profile){profile.displacementVisibility={surfaces:[...visibility.surfaces],drawSurfaces:[...visibility.drawSurfaces],outsideWorld:visibility.outsideWorld,eyeLeaf:visibility.eyeLeaf,leaves:visibility.leaves,areas:visibility.areas};profile.displacementCamera=camera}
     if(this.#closed||this.#paused||generation!==this.#generation||renderer!==this.#renderer)return
     const publishPrepared=prepared.revision!==this.#lastRenderedPreparedRevision

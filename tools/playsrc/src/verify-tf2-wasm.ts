@@ -905,16 +905,18 @@ export async function verifyTf2Wasm(
       pose.primitives.every((primitive) => primitive.tangents.length / 4 === primitive.positions.length / 3)),
   "fixed StudioModel viewmodel pose output differs")
   const visibilityProbe=(values:readonly number[])=>{
-    const pointer=exports.playsrc_alloc(40)
-    new Float32Array(exports.memory.buffer,pointer,10).set(values)
+    require(values.length===10,"fixed-camera visibility input differs")
+    const expanded=[...values.slice(0,3),...values,-1]
+    const pointer=exports.playsrc_alloc(56)
+    new Float32Array(exports.memory.buffer,pointer,14).set(expanded)
     require(exports.playsrc_visibility_query(handle,pointer)===1,"fixed-camera PVS query failed")
-    exports.playsrc_free(pointer,40)
+    exports.playsrc_free(pointer,56)
     const length=exports.playsrc_visibility_output_length(handle),outputPointer=exports.playsrc_alloc(length)
     require(exports.playsrc_visibility_output_copy(handle,outputPointer,length)===length,"fixed-camera PVS output copy failed")
     const output=new Uint8Array(exports.memory.buffer,outputPointer,length).slice()
     exports.playsrc_free(outputPointer,length)
     const view=new DataView(output.buffer)
-    require(new TextDecoder().decode(output.subarray(0,4))==="PVIS"&&view.getUint32(4,true)===3,"PVS output identity differs")
+    require(new TextDecoder().decode(output.subarray(0,4))==="PVIS"&&view.getUint32(4,true)===4,"PVS output identity differs")
     let at=76,surfaceCount=view.getUint32(at,true);at+=4+surfaceCount*4
     const drawSurfaceCount=view.getUint32(at,true);at+=4+drawSurfaceCount*4
     at+=4;const leafCount=view.getUint32(at,true);at+=4+leafCount*4

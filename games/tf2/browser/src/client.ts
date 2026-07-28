@@ -5,7 +5,7 @@ import type { InitialView, WorkerFailureCode, WorkerRequest, WorkerResponse } fr
 const HASH = /^[0-9a-f]{64}$/
 const MAX_PENDING = 64
 const MAX_BSP_BYTES = 512 * 1024 * 1024
-const MAX_CONFIGURATION_BYTES = 256 * 1024 * 1024
+const MAX_CONFIGURATION_BYTES = 512 * 1024 * 1024
 type RequestWithoutId = WorkerRequest extends infer Request
   ? Request extends { id: number }
     ? Omit<Request, "id">
@@ -418,7 +418,7 @@ export class Tf2WorkerClient {
   }
   async visibility(
     generation: number,
-    input: Readonly<{ position: readonly [number, number, number]; yawDegrees:number; pitchDegrees:number; verticalFovDegrees:number; aspectRatio:number; near:number; far:number; presentationTimeSeconds:number }>,
+    input: Readonly<{ position: readonly [number, number, number]; visibilityPosition?:readonly[number,number,number];areaFilter?:number;yawDegrees:number; pitchDegrees:number; verticalFovDegrees:number; aspectRatio:number; near:number; far:number; presentationTimeSeconds:number }>,
   ): Promise<VisibilityResult> {
     const response = await this.#request({ kind: "visibility", generation, view: input })
     if (
@@ -428,7 +428,7 @@ export class Tf2WorkerClient {
     )
       throw new Tf2WorkerError("WorkerFailed")
     const bytes = new Uint8Array(response.output), view = new DataView(response.output), decoder=new TextDecoder("utf-8",{fatal:true})
-    if (decoder.decode(bytes.subarray(0, 4)) !== "PVIS" || view.getUint32(4, true) !== 3)
+    if (decoder.decode(bytes.subarray(0, 4)) !== "PVIS" || view.getUint32(4, true) !== 4)
       throw new Tf2WorkerError("WorkerFailed")
     let at=76
     const require=(length:number)=>{if(at+length>bytes.length)throw new Tf2WorkerError("WorkerFailed")},u8=()=>{require(1);return bytes[at++]!},u32=()=>{require(4);const value=view.getUint32(at,true);at+=4;return value},i32=()=>{require(4);const value=view.getInt32(at,true);at+=4;return value},f32=()=>{require(4);const value=view.getFloat32(at,true);at+=4;if(!Number.isFinite(value))throw new Tf2WorkerError("WorkerFailed");return value},text=()=>{const length=u32();require(length);const value=decoder.decode(bytes.subarray(at,at+length));at+=length;return value},vector=()=>Object.freeze([f32(),f32(),f32()]) as readonly[number,number,number]
