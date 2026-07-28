@@ -18,4 +18,6 @@ Normal generation uses the bounded `source-bundle` Cargo profile, omits the `ver
 
 `bun run verify:tf2-wasm jump_beef` internally invokes the bounded `--verify-hdr` evidence mode. That mode writes `jump_beef.native-hdr.psmp` beside the bundle and reports its payload and derived hashes for byte comparison with WASM; it is not a development, publication, or browser prerequisite.
 
+`bun run diagnose:presentation-bound pl_upward` runs the non-publishing static-prop diagnostic twice, requires byte-identical output, checksum/LOD/mesh/vertex joins for all 2,480 selected VHV objects, and writes one machine-readable report under `sourceCacheDir/evidence/presentation-bound/pl_upward`.
+
 The browser transfers one encoded chunk batch per selected lifecycle role to Rust/WASM. Rust verifies encoded hashes, decodes identity or raw-DEFLATE chunks, verifies decoded and per-entry hashes, and emits one sorted resource set. Only the 305-entry gameplay set enters map compilation; VGUI consumes the independently decoded menu set.

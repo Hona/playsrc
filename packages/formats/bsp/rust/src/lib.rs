@@ -1,8 +1,10 @@
 use std::{fmt, io::Cursor, ops::Range, sync::Arc};
 
+mod game_lump;
 mod pak;
 mod records;
 
+pub use game_lump::*;
 pub use pak::{Pak, PakEntry, PakEntryClassification};
 pub use records::*;
 

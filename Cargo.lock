@@ -519,6 +519,9 @@ version = "0.1.0"
 dependencies = [
  "crc32fast",
  "lzma-rs",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
  "zip",
 ]
 
@@ -629,6 +632,7 @@ dependencies = [
  "playsrc-particle",
  "playsrc-studio-model",
  "playsrc-tf2-wasm",
+ "playsrc-vhv",
  "playsrc-vmt",
  "playsrc-vpk",
  "playsrc-vtf",
@@ -641,6 +645,9 @@ dependencies = [
 [[package]]
 name = "playsrc-studio-model"
 version = "0.1.0"
+dependencies = [
+ "playsrc-vhv",
+]
 
 [[package]]
 name = "playsrc-tf2"

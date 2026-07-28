@@ -18,6 +18,7 @@
     "verify:tf2-wasm": "bun tools/playsrc/src/cli.ts verify tf2-wasm",
     "verify:browser": "bun tools/playsrc/src/cli.ts verify browser",
     "verify:displacement-visuals": "bun tools/playsrc/src/cli.ts verify displacement-visuals",
+    "diagnose:presentation-bound": "bun tools/playsrc/src/diagnose-presentation-bound.ts",
     "profile:gameui": "playwright test --config=playwright.gameui-profile.config.ts",
     "profile:hud": "playwright test --config=playwright.hud-profile.config.ts",
     "profile:gameplay": "playwright test --config=playwright.profile.config.ts",

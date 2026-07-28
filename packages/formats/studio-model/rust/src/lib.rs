@@ -3,10 +3,12 @@ use std::{collections::BTreeSet, fmt, ops::Range, sync::Arc};
 mod eye;
 mod lighting;
 mod presentation;
+mod static_lighting;
 mod viewmodel;
 pub use eye::*;
 pub use lighting::*;
 pub use presentation::*;
+pub use static_lighting::*;
 pub use viewmodel::*;
 
 const MDL_HEADER_BYTES: usize = 408;
@@ -443,6 +445,8 @@ pub struct Hitbox {
     pub group: i32,
     pub bounds_min: Vector3,
     pub bounds_max: Vector3,
+    pub name_offset: i32,
+    pub name_resolved: bool,
     pub name: Vec<u8>,
 }
 
@@ -515,6 +519,8 @@ pub struct Document {
     pub internal_name: Vec<u8>,
     pub declared_length: usize,
     pub flags: i32,
+    pub root_lod: u8,
+    pub allowed_root_lods: u8,
     pub bounds: Bounds,
     pub illumination_attachment: i32,
     pub raw_max_eye_deflection: Float32,
@@ -1296,6 +1302,11 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
     let checksum = i32_at(bytes, 8, identity)?;
     let internal_name = fixed_string(&bytes[12..76], limits, identity)?;
     let flags = i32_at(bytes, 152, identity)?;
+    let root_lod = bytes[377];
+    let allowed_root_lods = bytes[378];
+    if root_lod >= 8 || allowed_root_lods > 8 {
+        return Err(invalid_range(identity, 377));
+    }
     let bounds = Bounds {
         eye: vector3(bytes, 80, identity)?,
         illumination: vector3(bytes, 92, identity)?,
@@ -1434,17 +1445,25 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
                 return Err(invalid_reference(identity, hitbox_offset));
             }
             let name_offset = i32_at(bytes, hitbox_offset + 32, identity)?;
+            let (name_resolved, name) = if name_offset == 0 {
+                (true, Vec::new())
+            } else {
+                let offset = relative_offset(hitbox_offset, name_offset, identity)?;
+                if offset < bytes.len() {
+                    (true, c_string(bytes, offset, limits, identity)?)
+                } else {
+                    (false, Vec::new())
+                }
+            };
             hitboxes.push(Hitbox {
                 index: hitbox_index,
                 bone,
                 group: i32_at(bytes, hitbox_offset + 4, identity)?,
                 bounds_min: vector3(bytes, hitbox_offset + 8, identity)?,
                 bounds_max: vector3(bytes, hitbox_offset + 20, identity)?,
-                name: if name_offset == 0 {
-                    Vec::new()
-                } else {
-                    relative_string(bytes, hitbox_offset, name_offset, limits, identity)?
-                },
+                name_offset,
+                name_resolved,
+                name,
             });
         }
         hitbox_sets.push(HitboxSet {
@@ -2223,6 +2242,8 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
         internal_name,
         declared_length,
         flags,
+        root_lod,
+        allowed_root_lods,
         bounds,
         illumination_attachment,
         raw_max_eye_deflection,

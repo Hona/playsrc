@@ -9,5 +9,10 @@ crc32fast = "1.5.0"
 lzma-rs = "0.3.0"
 zip = { version = "8.6.0", default-features = false, features = ["lzma"] }
 
+[dev-dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+sha2 = "0.10.9"
+
 [lib]
 path = "src/lib.rs"
