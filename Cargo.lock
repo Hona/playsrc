@@ -594,6 +594,7 @@ dependencies = [
  "playsrc-asset-graph",
  "playsrc-keyvalues",
  "playsrc-vmt",
+ "sha2 0.10.9",
 ]
 
 [[package]]

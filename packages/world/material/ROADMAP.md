@@ -100,6 +100,8 @@ The current denominator is Not accepted. Its target is runtime-neutral Source 1 
 
 The active migration checkpoint implements immutable semantic projection from composed VMT trees: explicit shader-family classification, ordered scalar parameter and proxy syntax, Source boolean/float flag inputs, surface properties, canonical exact VTF dependency identities and roles, built-in environment/render-target dispositions, and typed unsupported shader/proxy state required by `jump_beef`.
 
+The displacement-collision producer checkpoint resolves the configured manifest/file closure into stable source-ordered surface records, preserves later file overrides at the original index, and resolves independent primary and optional secondary VMT surface properties with exact default fallback.
+
 The active HDR compiler profile checkpoint evaluates one explicit PC LDR or integer-HDR environment before dependency requests. Material owns conditional-key and shader-override selection, `Sky` implementation selection, and exact `$hdrbasetexture`, one-file compressed-HDR, or three-file compressed-HDR texture roles. A missing selected role fails; Material never substitutes `$basetexture` for a required HDR texture.
 
 | Target behavior | playsrc behavior | Evidence | Status |
