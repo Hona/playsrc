@@ -23,9 +23,13 @@ const SOURCE_MEDIA_TYPE: &str = "application/octet-stream";
 const LEDGER_MEDIA_TYPE: &str = "application/vnd.playsrc.source-dependency-ledger+json";
 const GRAPH_MEDIA_TYPE: &str = "application/vnd.playsrc.resource-graph+json";
 const MAX_GAME_PROVIDERS: usize = 64;
-const MAX_DEPENDENCY_REQUESTS: usize = 4_096;
+const MAX_DEPENDENCY_REQUESTS: usize = 8_192;
 const MAX_LEDGER_BYTES: usize = 8 * 1024 * 1024;
 const MAX_UI_PNG_WORKERS: usize = 8;
+const STATIC_PROP_VHV_AGGREGATE_PATH: &str = "derived/static-prop-lighting.pvha";
+const STATIC_PROP_VHV_AGGREGATE_VERSION: u32 = 1;
+const MAX_STATIC_PROP_VHV_OBJECTS: usize = 8_192;
+const MAX_STATIC_PROP_VHV_AGGREGATE_BYTES: usize = 256 * 1024 * 1024;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -344,9 +348,19 @@ struct DependencyLedger {
     startup_sources: Vec<DeclaredSourceRecord>,
     providers: Vec<ProviderRecord>,
     requests: Vec<RequestRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    static_prop_vhv_aggregate: Option<StaticPropVhvAggregateDescriptor>,
     resolved_entries: usize,
     authoritative_absences: usize,
     resource_graph: ObjectDescriptor,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StaticPropVhvAggregateDescriptor {
+    logical_path: &'static str,
+    object_count: usize,
+    descriptor: ObjectDescriptor,
 }
 
 #[derive(Clone, Serialize)]
@@ -361,6 +375,7 @@ struct DeclaredSourceRecord {
 struct Resolver<'a> {
     content: &'a Content,
     bundle: BTreeMap<String, Vec<u8>>,
+    packed_sources: BTreeMap<String, ObjectDescriptor>,
     requests: BTreeMap<String, MutableRequestRecord>,
 }
 
@@ -369,8 +384,33 @@ impl<'a> Resolver<'a> {
         Self {
             content,
             bundle: BTreeMap::new(),
+            packed_sources: BTreeMap::new(),
             requests: BTreeMap::new(),
         }
+    }
+
+    fn pack_sources(&mut self, paths: &BTreeSet<String>) -> Result<(), String> {
+        for path in paths {
+            let bytes = self
+                .bundle
+                .remove(path)
+                .ok_or_else(|| format!("packed source is absent from bundle: {path}"))?;
+            let descriptor = ObjectDescriptor::source(&bytes);
+            let request = self
+                .requests
+                .get(path)
+                .and_then(|record| record.descriptor.as_ref())
+                .ok_or_else(|| format!("packed source request is absent: {path}"))?;
+            if request != &descriptor
+                || self
+                    .packed_sources
+                    .insert(path.clone(), descriptor)
+                    .is_some()
+            {
+                return Err(format!("packed source identity differs: {path}"));
+            }
+        }
+        Ok(())
     }
 
     fn required(&mut self, path: &str, consumer: impl Into<String>) -> Result<Vec<u8>, String> {
@@ -1408,6 +1448,218 @@ fn vhv_limits(source_bytes: usize) -> playsrc_vhv::Limits {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct StaticPropVhvRecord {
+    occurrence: u32,
+    model: u32,
+    profile: u8,
+    logical_path: String,
+    source_sha256: [u8; 32],
+    parsed_sha256: [u8; 32],
+    join_sha256: [u8; 32],
+    mesh_count: u32,
+    vertex_count: u32,
+    bytes: Vec<u8>,
+}
+
+fn static_prop_vhv_join_identity(
+    occurrence: usize,
+    model: usize,
+    profile: u8,
+    path: &str,
+    joined: &playsrc_studio_model::StaticLightingJoin,
+) -> Result<[u8; 32], String> {
+    let mut digest = Sha256::new();
+    digest.update(b"playsrc-static-prop-vhv-join-v1\0");
+    digest.update(
+        u32::try_from(occurrence)
+            .map_err(|_| "VHV occurrence overflow")?
+            .to_le_bytes(),
+    );
+    digest.update(
+        u32::try_from(model)
+            .map_err(|_| "VHV model overflow")?
+            .to_le_bytes(),
+    );
+    digest.update([profile]);
+    digest.update(
+        u32::try_from(path.len())
+            .map_err(|_| "VHV path overflow")?
+            .to_le_bytes(),
+    );
+    digest.update(path.as_bytes());
+    digest.update(joined.model_checksum.to_le_bytes());
+    digest.update(joined.vhv_sha256);
+    digest.update(
+        u32::try_from(joined.root_lod)
+            .map_err(|_| "VHV root LOD overflow")?
+            .to_le_bytes(),
+    );
+    for mesh in &joined.meshes {
+        for value in [
+            mesh.primitive,
+            mesh.body_part,
+            mesh.model,
+            mesh.lod,
+            mesh.mesh,
+            mesh.strip_group,
+            mesh.vertex_count,
+            mesh.encoded_bgra_range.start,
+            mesh.encoded_bgra_range.end,
+        ] {
+            digest.update(
+                u32::try_from(value)
+                    .map_err(|_| "VHV mesh field overflow")?
+                    .to_le_bytes(),
+            );
+        }
+    }
+    Ok(digest.finalize().into())
+}
+
+fn encode_static_prop_vhv_aggregate(records: &[StaticPropVhvRecord]) -> Result<Vec<u8>, String> {
+    if records.len() > MAX_STATIC_PROP_VHV_OBJECTS {
+        return Err("static-prop VHV aggregate object bound exceeded".to_owned());
+    }
+    let mut out = Vec::new();
+    out.extend_from_slice(b"PVHA");
+    out.extend_from_slice(&STATIC_PROP_VHV_AGGREGATE_VERSION.to_le_bytes());
+    out.extend_from_slice(
+        &u32::try_from(records.len())
+            .map_err(|_| "static-prop VHV record count overflow")?
+            .to_le_bytes(),
+    );
+    let mut previous = None;
+    for record in records {
+        let key = (record.occurrence, record.profile);
+        if previous.is_some_and(|value| value >= key)
+            || record.profile > 1
+            || record.logical_path.len() > 1_024
+            || record.bytes.is_empty()
+            || record.source_sha256 != <[u8; 32]>::from(Sha256::digest(&record.bytes))
+            || record.parsed_sha256 != record.source_sha256
+        {
+            return Err("static-prop VHV aggregate record is invalid".to_owned());
+        }
+        previous = Some(key);
+        out.extend_from_slice(&record.occurrence.to_le_bytes());
+        out.extend_from_slice(&record.model.to_le_bytes());
+        out.extend_from_slice(&[record.profile, 0, 0, 0]);
+        out.extend_from_slice(&record.mesh_count.to_le_bytes());
+        out.extend_from_slice(&record.vertex_count.to_le_bytes());
+        out.extend_from_slice(&record.source_sha256);
+        out.extend_from_slice(&record.parsed_sha256);
+        out.extend_from_slice(&record.join_sha256);
+        for bytes in [record.logical_path.as_bytes(), record.bytes.as_slice()] {
+            out.extend_from_slice(
+                &u32::try_from(bytes.len())
+                    .map_err(|_| "static-prop VHV aggregate field overflow")?
+                    .to_le_bytes(),
+            );
+            out.extend_from_slice(bytes);
+        }
+        if out.len() > MAX_STATIC_PROP_VHV_AGGREGATE_BYTES {
+            return Err("static-prop VHV aggregate byte bound exceeded".to_owned());
+        }
+    }
+    Ok(out)
+}
+
+fn decode_static_prop_vhv_aggregate(bytes: &[u8]) -> Result<Vec<StaticPropVhvRecord>, String> {
+    if bytes.len() > MAX_STATIC_PROP_VHV_AGGREGATE_BYTES || bytes.get(..4) != Some(b"PVHA") {
+        return Err("static-prop VHV aggregate identity is invalid".to_owned());
+    }
+    let mut offset = 4usize;
+    let version = aggregate_u32(bytes, &mut offset)?;
+    let count = usize::try_from(aggregate_u32(bytes, &mut offset)?)
+        .map_err(|_| "static-prop VHV count overflow")?;
+    if version != STATIC_PROP_VHV_AGGREGATE_VERSION || count > MAX_STATIC_PROP_VHV_OBJECTS {
+        return Err("static-prop VHV aggregate header is invalid".to_owned());
+    }
+    let mut records = Vec::with_capacity(count);
+    for _ in 0..count {
+        let occurrence = aggregate_u32(bytes, &mut offset)?;
+        let model = aggregate_u32(bytes, &mut offset)?;
+        let profile = *bytes
+            .get(offset)
+            .ok_or("static-prop VHV aggregate is truncated")?;
+        if profile > 1 || bytes.get(offset + 1..offset + 4) != Some(&[0, 0, 0]) {
+            return Err("static-prop VHV aggregate profile is invalid".to_owned());
+        }
+        offset += 4;
+        let mesh_count = aggregate_u32(bytes, &mut offset)?;
+        let vertex_count = aggregate_u32(bytes, &mut offset)?;
+        let source_sha256 = aggregate_hash(bytes, &mut offset)?;
+        let parsed_sha256 = aggregate_hash(bytes, &mut offset)?;
+        let join_sha256 = aggregate_hash(bytes, &mut offset)?;
+        let logical_path = String::from_utf8(aggregate_blob(bytes, &mut offset, 1_024)?)
+            .map_err(|_| "static-prop VHV path is not UTF-8")?;
+        let source = aggregate_blob(bytes, &mut offset, MAX_STATIC_PROP_VHV_AGGREGATE_BYTES)?;
+        records.push(StaticPropVhvRecord {
+            occurrence,
+            model,
+            profile,
+            logical_path,
+            source_sha256,
+            parsed_sha256,
+            join_sha256,
+            mesh_count,
+            vertex_count,
+            bytes: source,
+        });
+    }
+    if offset != bytes.len() {
+        return Err("static-prop VHV aggregate has trailing bytes".to_owned());
+    }
+    encode_static_prop_vhv_aggregate(&records)?;
+    Ok(records)
+}
+
+fn aggregate_u32(bytes: &[u8], offset: &mut usize) -> Result<u32, String> {
+    let end = offset
+        .checked_add(4)
+        .ok_or("static-prop VHV aggregate overflow")?;
+    let value = u32::from_le_bytes(
+        bytes
+            .get(*offset..end)
+            .ok_or("static-prop VHV aggregate is truncated")?
+            .try_into()
+            .map_err(|_| "static-prop VHV aggregate field is malformed")?,
+    );
+    *offset = end;
+    Ok(value)
+}
+
+fn aggregate_hash(bytes: &[u8], offset: &mut usize) -> Result<[u8; 32], String> {
+    let end = offset
+        .checked_add(32)
+        .ok_or("static-prop VHV aggregate overflow")?;
+    let value = bytes
+        .get(*offset..end)
+        .ok_or("static-prop VHV aggregate is truncated")?
+        .try_into()
+        .map_err(|_| "static-prop VHV aggregate hash is malformed")?;
+    *offset = end;
+    Ok(value)
+}
+
+fn aggregate_blob(bytes: &[u8], offset: &mut usize, maximum: usize) -> Result<Vec<u8>, String> {
+    let length = usize::try_from(aggregate_u32(bytes, offset)?)
+        .map_err(|_| "static-prop VHV length overflow")?;
+    if length > maximum {
+        return Err("static-prop VHV aggregate field exceeds bound".to_owned());
+    }
+    let end = offset
+        .checked_add(length)
+        .ok_or("static-prop VHV aggregate overflow")?;
+    let value = bytes
+        .get(*offset..end)
+        .ok_or("static-prop VHV aggregate is truncated")?
+        .to_vec();
+    *offset = end;
+    Ok(value)
+}
+
 fn collect_model(
     resolver: &mut Resolver<'_>,
     root_path: &str,
@@ -2145,16 +2397,20 @@ fn main() -> Result<(), String> {
                 )?;
             }
         }
-        if diagnose_presentation_bound {
+        if diagnose_presentation_bound || !canonical.static_props.occurrences.is_empty() {
             model_documents.insert(path, document);
         }
     }
-    if diagnose_presentation_bound {
+    let static_prop_vhv_aggregate = if canonical.static_props.occurrences.is_empty() {
+        None
+    } else {
         let mut joined_objects = 0usize;
         let mut joined_meshes = 0usize;
         let mut joined_vertices = 0usize;
         let mut vhv_bytes = 0usize;
         let mut vhv_hashes = BTreeMap::<String, usize>::new();
+        let mut packed_paths = BTreeSet::new();
+        let mut aggregate_records = Vec::new();
         for prop in &canonical.static_props.occurrences {
             if prop.flags & playsrc_bsp::STATIC_PROP_NO_PER_VERTEX_LIGHTING != 0 {
                 continue;
@@ -2163,9 +2419,9 @@ fn main() -> Result<(), String> {
             let model = model_documents
                 .get(model_path)
                 .ok_or_else(|| format!("static-prop model document is absent: {model_path}"))?;
-            for path in [
-                format!("sp_{}.vhv", prop.source),
-                format!("sp_hdr_{}.vhv", prop.source),
+            for (profile, path) in [
+                (0u8, format!("sp_{}.vhv", prop.source)),
+                (1u8, format!("sp_hdr_{}.vhv", prop.source)),
             ] {
                 let bytes =
                     resolver.required(&path, format!("static-prop-lighting:{}", prop.source))?;
@@ -2181,6 +2437,31 @@ fn main() -> Result<(), String> {
                 *vhv_hashes.entry(digest(&bytes)).or_default() += 1;
                 let joined = playsrc_studio_model::join_static_lighting(model, &vhv)
                     .map_err(|error| format!("{path}: {error:?}"))?;
+                let source_sha256: [u8; 32] = Sha256::digest(&bytes).into();
+                let join_sha256 = static_prop_vhv_join_identity(
+                    prop.source,
+                    prop.model,
+                    profile,
+                    &path,
+                    &joined,
+                )?;
+                aggregate_records.push(StaticPropVhvRecord {
+                    occurrence: u32::try_from(prop.source)
+                        .map_err(|_| "static-prop source index overflow")?,
+                    model: u32::try_from(prop.model)
+                        .map_err(|_| "static-prop model index overflow")?,
+                    profile,
+                    logical_path: path.clone(),
+                    source_sha256,
+                    parsed_sha256: vhv.source_identity.sha256,
+                    join_sha256,
+                    mesh_count: u32::try_from(joined.meshes.len())
+                        .map_err(|_| "static-prop VHV mesh count overflow")?,
+                    vertex_count: u32::try_from(joined.vertex_count)
+                        .map_err(|_| "static-prop VHV vertex count overflow")?,
+                    bytes,
+                });
+                packed_paths.insert(path);
                 joined_objects += 1;
                 joined_meshes = joined_meshes
                     .checked_add(joined.meshes.len())
@@ -2190,27 +2471,46 @@ fn main() -> Result<(), String> {
                     .ok_or_else(|| "static-prop joined vertex count overflow".to_owned())?;
             }
         }
-        if joined_objects != 2_480 {
+        let expected_objects = canonical
+            .static_props
+            .occurrences
+            .iter()
+            .filter(|prop| prop.flags & playsrc_bsp::STATIC_PROP_NO_PER_VERTEX_LIGHTING == 0)
+            .count()
+            .checked_mul(2)
+            .ok_or_else(|| "configured static-prop VHV count overflow".to_owned())?;
+        if joined_objects != expected_objects {
             return Err(format!(
-                "configured static-prop VHV join count changed: {joined_objects}"
+                "configured static-prop VHV join count differs: expected={expected_objects} actual={joined_objects}"
             ));
         }
-        diagnostic_report = Some(json!({
-            "schema": "playsrc-static-prop-producer-diagnostic-v1",
-            "target": target,
-            "contentBuild": contract.content_build,
-            "mapSha256": map_sha256,
-            "dictionaryModels": canonical.static_props.models.len(),
-            "leafReferences": canonical.static_props.leaf_reference_count,
-            "occurrences": canonical.static_props.occurrences.len(),
-            "modelDocuments": model_documents.len(),
-            "vhvObjects": joined_objects,
-            "vhvDistinctByteIdentities": vhv_hashes.len(),
-            "vhvBytes": vhv_bytes.to_string(),
-            "joinedMeshes": joined_meshes,
-            "joinedVertices": joined_vertices.to_string(),
-        }));
-    }
+        let aggregate = encode_static_prop_vhv_aggregate(&aggregate_records)?;
+        let decoded = decode_static_prop_vhv_aggregate(&aggregate)?;
+        if decoded != aggregate_records {
+            return Err("static-prop VHV aggregate round trip differs".to_owned());
+        }
+        resolver.pack_sources(&packed_paths)?;
+        if diagnose_presentation_bound {
+            diagnostic_report = Some(json!({
+                "schema": "playsrc-static-prop-producer-diagnostic-v1",
+                "target": target,
+                "contentBuild": contract.content_build,
+                "mapSha256": map_sha256,
+                "dictionaryModels": canonical.static_props.models.len(),
+                "leafReferences": canonical.static_props.leaf_reference_count,
+                "occurrences": canonical.static_props.occurrences.len(),
+                "modelDocuments": model_documents.len(),
+                "vhvObjects": joined_objects,
+                "vhvDistinctByteIdentities": vhv_hashes.len(),
+                "vhvBytes": vhv_bytes.to_string(),
+                "vhvAggregateBytes": aggregate.len().to_string(),
+                "vhvAggregateSha256": digest(&aggregate),
+                "joinedMeshes": joined_meshes,
+                "joinedVertices": joined_vertices.to_string(),
+            }));
+        }
+        Some(aggregate)
+    };
     stage("map-materials-and-models", &mut stage_started);
     let particle_paths = [
         "particles/rockettrail.pcf",
@@ -2681,6 +2981,9 @@ fn main() -> Result<(), String> {
     .map_err(|error| error.to_string())?;
     stage("ui-materials", &mut stage_started);
     let mut ui_bundle = BTreeMap::<String, Vec<u8>>::new();
+    if let Some(bytes) = static_prop_vhv_aggregate {
+        ui_bundle.insert(STATIC_PROP_VHV_AGGREGATE_PATH.to_owned(), bytes);
+    }
     ui_bundle.extend(startup_presentation);
     ui_bundle.insert(
         "playsrc/tf2-ui/materials.json".to_owned(),
@@ -2800,13 +3103,14 @@ fn main() -> Result<(), String> {
     for (logical_path, bytes) in &ui_bundle {
         resources.push(Resource {
             logical_path: logical_path.clone(),
-            roles: BTreeSet::from([
-                if logical_path == "media/startupvids.txt" || logical_path == "media/valve.webm" {
-                    "startup".to_owned()
-                } else {
-                    "menu".to_owned()
-                },
-            ]),
+            roles: BTreeSet::from([if logical_path == STATIC_PROP_VHV_AGGREGATE_PATH {
+                "gameplay".to_owned()
+            } else if logical_path == "media/startupvids.txt" || logical_path == "media/valve.webm"
+            {
+                "startup".to_owned()
+            } else {
+                "menu".to_owned()
+            }]),
             bytes: bytes.clone(),
         });
     }
@@ -2838,21 +3142,29 @@ fn main() -> Result<(), String> {
         .iter()
         .filter(|record| record.outcome == "resolved")
         .count();
-    if resolved_entries != bundle.len() {
+    if resolved_entries != bundle.len() + resolver.packed_sources.len() {
         return Err("resolved ledger identities differ from bundle entries".to_owned());
     }
     for request in request_records
         .iter()
         .filter(|record| record.outcome == "resolved")
     {
-        let bytes = bundle
-            .get(&request.logical_path)
-            .ok_or_else(|| "resolved ledger entry is absent from bundle".to_owned())?;
         let descriptor = request
             .descriptor
             .as_ref()
             .ok_or_else(|| "resolved ledger descriptor is absent".to_owned())?;
-        if descriptor.byte_length != bytes.len().to_string() || descriptor.sha256 != digest(bytes) {
+        let actual = if let Some(bytes) = bundle.get(&request.logical_path) {
+            ObjectDescriptor::source(bytes)
+        } else {
+            resolver
+                .packed_sources
+                .get(&request.logical_path)
+                .cloned()
+                .ok_or_else(|| {
+                    "resolved ledger entry is absent from bundle and aggregate".to_owned()
+                })?
+        };
+        if descriptor != &actual {
             return Err("resolved ledger descriptor differs from bundle bytes".to_owned());
         }
     }
@@ -2891,6 +3203,21 @@ fn main() -> Result<(), String> {
         startup_sources,
         providers: provider_records,
         requests: request_records,
+        static_prop_vhv_aggregate: ui_bundle.get(STATIC_PROP_VHV_AGGREGATE_PATH).map(|bytes| {
+            StaticPropVhvAggregateDescriptor {
+                logical_path: STATIC_PROP_VHV_AGGREGATE_PATH,
+                object_count: canonical
+                    .static_props
+                    .occurrences
+                    .iter()
+                    .filter(|prop| {
+                        prop.flags & playsrc_bsp::STATIC_PROP_NO_PER_VERTEX_LIGHTING == 0
+                    })
+                    .count()
+                    * 2,
+                descriptor: ObjectDescriptor::new("derived-object", SOURCE_MEDIA_TYPE, bytes),
+            }
+        }),
         resolved_entries,
         authoritative_absences,
         resource_graph: graph_descriptor.clone(),
@@ -2993,5 +3320,47 @@ mod tests {
             app_manifest_path(Path::new("steamapps/common/Team Fortress 2")),
             PathBuf::from("steamapps/appmanifest_440.acf")
         );
+    }
+
+    #[test]
+    fn static_prop_vhv_aggregate_round_trips_and_rejects_trailing_bytes() {
+        let source = vec![1, 2, 3, 4];
+        let sha256: [u8; 32] = Sha256::digest(&source).into();
+        let records = vec![StaticPropVhvRecord {
+            occurrence: 7,
+            model: 3,
+            profile: 1,
+            logical_path: "sp_hdr_7.vhv".to_owned(),
+            source_sha256: sha256,
+            parsed_sha256: sha256,
+            join_sha256: [9; 32],
+            mesh_count: 2,
+            vertex_count: 17,
+            bytes: source,
+        }];
+        let encoded = encode_static_prop_vhv_aggregate(&records).unwrap();
+        assert_eq!(decode_static_prop_vhv_aggregate(&encoded).unwrap(), records);
+        let mut malformed = encoded;
+        malformed.push(0);
+        assert!(decode_static_prop_vhv_aggregate(&malformed).is_err());
+    }
+
+    #[test]
+    fn static_prop_vhv_aggregate_requires_source_profile_order() {
+        let source = vec![1];
+        let sha256: [u8; 32] = Sha256::digest(&source).into();
+        let record = |profile| StaticPropVhvRecord {
+            occurrence: 1,
+            model: 0,
+            profile,
+            logical_path: format!("sp_{profile}.vhv"),
+            source_sha256: sha256,
+            parsed_sha256: sha256,
+            join_sha256: [profile; 32],
+            mesh_count: 1,
+            vertex_count: 1,
+            bytes: source.clone(),
+        };
+        assert!(encode_static_prop_vhv_aggregate(&[record(1), record(0)]).is_err());
     }
 }
