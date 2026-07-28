@@ -41,6 +41,10 @@ fn configured_pl_upward_displacements_are_complete_and_deterministic() {
     let second = playsrc_map::compile(&bsp, playsrc_map::LightingProfile::Hdr)
         .expect("repeated configured HDR map");
     assert_eq!(first, second);
+    assert_eq!(first.static_props.source_version, 10);
+    assert_eq!(first.static_props.models.len(), 234);
+    assert_eq!(first.static_props.leaf_reference_count, 2_756);
+    assert_eq!(first.static_props.occurrences.len(), 1_244);
     assert_eq!(
         first
             .surfaces

@@ -7,6 +7,8 @@ mod environment;
 pub use environment::*;
 mod displacement;
 pub use displacement::DisplacementSurface;
+mod static_props;
+pub use static_props::{StaticPropModel, StaticPropOccurrence, StaticProps};
 #[derive(Clone, Debug, PartialEq)]
 pub struct MaterialReference {
     pub index: usize,
@@ -88,6 +90,7 @@ pub struct CanonicalMap {
     pub surfaces: Vec<Surface>,
     pub brush_models: Vec<BrushModelGeometry>,
     pub brush_model_occurrences: Vec<BrushModelOccurrence>,
+    pub static_props: StaticProps,
     pub collision_world_identity: [u8; 32],
     pub lighting: LightingData,
     pub triangle_count: usize,
@@ -332,6 +335,7 @@ pub fn compile_prepared(
     };
     let materials = materials(texdata, offsets, strings)?;
     let lighting = compile_lighting(bsp, profile, faces, texinfo, LightingLimits::default())?;
+    let static_props = static_props::compile(bsp)?;
     let entity_models = entities
         .entities
         .iter()
@@ -514,6 +518,7 @@ pub fn compile_prepared(
         surfaces: output,
         brush_models,
         brush_model_occurrences,
+        static_props,
         collision_world_identity: collision.identity,
         lighting,
         triangle_count: triangles,

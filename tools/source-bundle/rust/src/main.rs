@@ -8,6 +8,7 @@ use playsrc_material::{
 };
 use playsrc_vmt::{Composition, DependencyResponse};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -1365,6 +1366,17 @@ fn model_profile(bytes: &[u8]) -> Result<playsrc_studio_model::Profile, String> 
     }
 }
 
+fn vhv_limits(source_bytes: usize) -> playsrc_vhv::Limits {
+    playsrc_vhv::Limits {
+        max_input_bytes: source_bytes,
+        max_retained_bytes: source_bytes.saturating_mul(2),
+        max_meshes: source_bytes / playsrc_vhv::MESH_HEADER_BYTES,
+        max_total_vertices: source_bytes / playsrc_vhv::VERTEX_BYTES,
+        max_vertices_per_mesh: source_bytes / playsrc_vhv::VERTEX_BYTES,
+        max_lod: u32::MAX as usize,
+    }
+}
+
 fn collect_model(
     resolver: &mut Resolver<'_>,
     root_path: &str,
@@ -1664,9 +1676,10 @@ fn main() -> Result<(), String> {
     let target = arguments
         .next()
         .ok_or_else(|| "target is required".to_owned())?;
-    let verify_hdr = match arguments.next().as_deref() {
-        None => false,
-        Some("--verify-hdr") => true,
+    let (verify_hdr, diagnose_presentation_bound) = match arguments.next().as_deref() {
+        None => (false, false),
+        Some("--verify-hdr") => (true, false),
+        Some("--diagnose-presentation-bound") => (false, true),
         Some(_) => return Err("source bundle mode is malformed".to_owned()),
     };
     if arguments.next().is_some() {
@@ -2045,6 +2058,15 @@ fn main() -> Result<(), String> {
         .map(|value| String::from_utf8(value.clone()).map(|path| path.to_ascii_lowercase()))
         .collect::<Result<std::collections::BTreeSet<_>, _>>()
         .map_err(|_| "model identity is not UTF-8")?;
+    if diagnose_presentation_bound {
+        model_paths.extend(
+            canonical
+                .static_props
+                .models
+                .iter()
+                .map(|model| model.logical_path.clone()),
+        );
+    }
     for path in [
         "models/weapons/w_models/w_rocket.mdl",
         "models/weapons/w_models/w_stickybomb.mdl",
@@ -2057,6 +2079,7 @@ fn main() -> Result<(), String> {
     ] {
         model_paths.insert(path.to_owned());
     }
+    let mut model_documents = BTreeMap::new();
     for path in model_paths {
         let document = collect_model(&mut resolver, &path)?;
         for material in &document.materials {
@@ -2084,6 +2107,76 @@ fn main() -> Result<(), String> {
                 )?;
             }
         }
+        if diagnose_presentation_bound {
+            model_documents.insert(path, document);
+        }
+    }
+    if diagnose_presentation_bound {
+        let mut joined_objects = 0usize;
+        let mut joined_meshes = 0usize;
+        let mut joined_vertices = 0usize;
+        let mut vhv_bytes = 0usize;
+        let mut vhv_hashes = BTreeMap::<String, usize>::new();
+        for prop in &canonical.static_props.occurrences {
+            if prop.flags & playsrc_bsp::STATIC_PROP_NO_PER_VERTEX_LIGHTING != 0 {
+                continue;
+            }
+            let model_path = &canonical.static_props.models[prop.model].logical_path;
+            let model = model_documents
+                .get(model_path)
+                .ok_or_else(|| format!("static-prop model document is absent: {model_path}"))?;
+            for path in [
+                format!("sp_{}.vhv", prop.source),
+                format!("sp_hdr_{}.vhv", prop.source),
+            ] {
+                let bytes =
+                    resolver.required(&path, format!("static-prop-lighting:{}", prop.source))?;
+                let vhv = playsrc_vhv::parse(
+                    &bytes,
+                    playsrc_vhv::Profile::source_pc_v2_color_bgra8888(model.checksum as u32),
+                    vhv_limits(bytes.len()),
+                )
+                .map_err(|error| format!("{path}: {error}"))?;
+                vhv_bytes = vhv_bytes
+                    .checked_add(bytes.len())
+                    .ok_or_else(|| "static-prop VHV byte count overflow".to_owned())?;
+                *vhv_hashes.entry(digest(&bytes)).or_default() += 1;
+                let joined = playsrc_studio_model::join_static_lighting(model, &vhv)
+                    .map_err(|error| format!("{path}: {error:?}"))?;
+                joined_objects += 1;
+                joined_meshes = joined_meshes
+                    .checked_add(joined.meshes.len())
+                    .ok_or_else(|| "static-prop joined mesh count overflow".to_owned())?;
+                joined_vertices = joined_vertices
+                    .checked_add(joined.vertex_count)
+                    .ok_or_else(|| "static-prop joined vertex count overflow".to_owned())?;
+            }
+        }
+        if joined_objects != 2_480 {
+            return Err(format!(
+                "configured static-prop VHV join count changed: {joined_objects}"
+            ));
+        }
+        println!(
+            "{}",
+            serde_json::to_string(&json!({
+                "schema": "playsrc-static-prop-producer-diagnostic-v1",
+                "target": target,
+                "contentBuild": contract.content_build,
+                "mapSha256": map_sha256,
+                "dictionaryModels": canonical.static_props.models.len(),
+                "leafReferences": canonical.static_props.leaf_reference_count,
+                "occurrences": canonical.static_props.occurrences.len(),
+                "modelDocuments": model_documents.len(),
+                "vhvObjects": joined_objects,
+                "vhvDistinctByteIdentities": vhv_hashes.len(),
+                "vhvBytes": vhv_bytes.to_string(),
+                "joinedMeshes": joined_meshes,
+                "joinedVertices": joined_vertices.to_string(),
+            }))
+            .map_err(|error| error.to_string())?
+        );
+        return Ok(());
     }
     stage("map-materials-and-models", &mut stage_started);
     let particle_paths = [

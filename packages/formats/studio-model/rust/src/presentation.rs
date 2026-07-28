@@ -3368,6 +3368,8 @@ fn encode_model(
             output.i32(hitbox.group)?;
             output.vector(hitbox.bounds_min)?;
             output.vector(hitbox.bounds_max)?;
+            output.i32(hitbox.name_offset)?;
+            output.u8(u8::from(hitbox.name_resolved))?;
             output.bytes(&hitbox.name, limits.max_string_bytes)?;
         }
     }
@@ -4175,6 +4177,17 @@ pub fn decode_presentation(
                 group: input.i32()?,
                 bounds_min: input.vector()?,
                 bounds_max: input.vector()?,
+                name_offset: input.i32()?,
+                name_resolved: match input.u8()? {
+                    0 => false,
+                    1 => true,
+                    _ => {
+                        return Err(presentation_error(
+                            PresentationErrorCode::InvalidArtifact,
+                            "hitbox name disposition",
+                        ));
+                    }
+                },
                 name: input.bytes(limits.max_string_bytes)?,
             });
         }
@@ -5059,6 +5072,8 @@ mod tests {
             internal_name: b"test".to_vec(),
             declared_length: 1_024,
             flags: 0,
+            root_lod: 0,
+            allowed_root_lods: 0,
             bounds: Bounds {
                 eye: vector([0.0; 3]),
                 illumination: vector([0.0; 3]),
@@ -5205,6 +5220,59 @@ mod tests {
 
     fn build() -> PresentationArtifact {
         build_profile(PresentationProfile::World)
+    }
+
+    #[test]
+    fn static_lighting_joins_root_lod_meshes_without_copying_color_bytes() {
+        let mut model = document();
+        model.checksum = 7;
+        model.root_lod = 0;
+        let vertex = |source_index| crate::Vertex {
+            source_index,
+            weights: [float(1.0), float(0.0), float(0.0)],
+            bones: [0; 3],
+            bone_count: 1,
+            position: vector([0.0; 3]),
+            normal: vector([0.0, 0.0, 1.0]),
+            uv: [float(0.0), float(0.0)],
+            tangent: [float(1.0), float(0.0), float(0.0), float(1.0)],
+        };
+        model.geometry[0].vertices = vec![vertex(0), vertex(1)];
+        let mut bytes = vec![0u8; 1_024];
+        bytes[0..4].copy_from_slice(&2i32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&7u32.to_le_bytes());
+        bytes[8..12].copy_from_slice(&4u32.to_le_bytes());
+        bytes[12..16].copy_from_slice(&4u32.to_le_bytes());
+        bytes[16..20].copy_from_slice(&2u32.to_le_bytes());
+        bytes[20..24].copy_from_slice(&1i32.to_le_bytes());
+        bytes[40..44].copy_from_slice(&0u32.to_le_bytes());
+        bytes[44..48].copy_from_slice(&2u32.to_le_bytes());
+        bytes[48..52].copy_from_slice(&512u32.to_le_bytes());
+        bytes[512..520].copy_from_slice(&[1, 2, 3, 255, 4, 5, 6, 255]);
+        let vhv = playsrc_vhv::parse(
+            &bytes,
+            playsrc_vhv::Profile::source_pc_v2_color_bgra8888(7),
+            playsrc_vhv::Limits {
+                max_input_bytes: 1_024,
+                max_retained_bytes: 2_048,
+                max_meshes: 1,
+                max_total_vertices: 2,
+                max_vertices_per_mesh: 2,
+                max_lod: 7,
+            },
+        )
+        .unwrap();
+        let joined = crate::join_static_lighting(&model, &vhv).unwrap();
+        assert_eq!(joined.root_lod, 0);
+        assert_eq!(joined.vertex_count, 2);
+        assert_eq!(joined.meshes[0].primitive, 0);
+        assert_eq!(joined.meshes[0].encoded_bgra_range, 512..520);
+
+        model.geometry[0].vertices.push(vertex(2));
+        assert_eq!(
+            crate::join_static_lighting(&model, &vhv),
+            Err(crate::StaticLightingJoinError::VertexCountMismatch)
+        );
     }
 
     fn build_profile(profile: PresentationProfile) -> PresentationArtifact {
@@ -5484,6 +5552,8 @@ mod tests {
                 group: 3,
                 bounds_min: vector([-1.0; 3]),
                 bounds_max: vector([1.0; 3]),
+                name_offset: 0,
+                name_resolved: true,
                 name: Vec::new(),
             }],
         });
