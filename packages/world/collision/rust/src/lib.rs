@@ -5,11 +5,17 @@ use sha2::{Digest, Sha256};
 use std::{fmt, ops::Range};
 
 mod contact;
+mod lighting;
 mod snapshot;
 
 pub use contact::{
     CONTACT_SNAPSHOT_VERSION, ContactEdge, ContactEdgeKind, ContactFrame, ContactLimits,
     ContactSnapshot, ContactSubject, TriggerVolume, produce_trigger_contacts,
+};
+
+pub use lighting::{
+    LIGHTING_RAY_BATCH_VERSION, LightingOccluders, LightingRay, LightingRayBatch,
+    LightingRayLimits, LightingRayResult,
 };
 
 pub use snapshot::{
@@ -21,6 +27,7 @@ pub use snapshot::{
 pub const CONTENTS_SOLID: u32 = 0x0000_0001;
 pub const CONTENTS_WINDOW: u32 = 0x0000_0002;
 pub const CONTENTS_GRATE: u32 = 0x0000_0008;
+pub const CONTENTS_OPAQUE: u32 = 0x0000_0080;
 pub const CONTENTS_MOVEABLE: u32 = 0x0000_4000;
 pub const CONTENTS_PLAYERCLIP: u32 = 0x0001_0000;
 pub const CONTENTS_MONSTER: u32 = 0x0200_0000;
@@ -28,6 +35,7 @@ pub const CONTENTS_TRANSLUCENT: u32 = 0x1000_0000;
 pub const MASK_SOLID: u32 =
     CONTENTS_SOLID | CONTENTS_MOVEABLE | CONTENTS_WINDOW | CONTENTS_MONSTER | CONTENTS_GRATE;
 pub const MASK_PLAYERSOLID: u32 = MASK_SOLID | CONTENTS_PLAYERCLIP;
+pub const MASK_OPAQUE: u32 = CONTENTS_SOLID | CONTENTS_MOVEABLE | CONTENTS_OPAQUE;
 pub const SURF_SKY: u16 = 0x0004;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -167,6 +175,7 @@ pub enum ErrorCode {
     InvalidSnapshot,
     DuplicateIdentity,
     Limit,
+    Cancelled,
     Unsupported,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1479,5 +1488,29 @@ mod tests {
             .trace_hull([-32.0, 0.0, 0.0], [32.0, 0.0, 0.0], point, 1)
             .unwrap();
         assert_eq!(reversed.hit, Some(Hit::WorldBrush { brush: 0 }));
+    }
+
+    #[test]
+    fn lighting_batch_uses_the_existing_world_ray_authority() {
+        let world = compile(&fixture()).unwrap();
+        let snapshot = Snapshot::compile(&world, 77, vec![], SnapshotLimits::default()).unwrap();
+        let batch = world
+            .trace_lighting_rays(
+                &snapshot,
+                0x4c49_4748_545f_574f,
+                LightingOccluders::World,
+                &[LightingRay {
+                    identity: 100,
+                    start: [-32.0, 0.0, 0.0],
+                    end: [32.0, 0.0, 0.0],
+                    ignored_static_prop: None,
+                }],
+                LightingRayLimits::default(),
+                |_| false,
+            )
+            .unwrap();
+        assert_eq!(batch.rays[0].trace.hit, Some(Hit::WorldBrush { brush: 0 }));
+        assert!(batch.rays[0].trace.is_sky());
+        assert_eq!(batch.snapshot, 77);
     }
 }

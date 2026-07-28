@@ -25,6 +25,10 @@ await run(
   ["test", "-p", "playsrc-collision", "--test", "configured_target", "--", "--ignored", "--nocapture"],
   "configured collision evidence",
 )
+await run(
+  ["check", "-p", "playsrc-collision", "--target", "wasm32-unknown-unknown"],
+  "collision WASM compilation",
+)
 await run(["fmt", "--all", "--", "--check"], "workspace formatting")
 await run(
   ["+stable", "clippy", "-p", "playsrc-collision", "--all-targets", "--no-deps", "--", "-D", "warnings"],

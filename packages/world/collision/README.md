@@ -23,6 +23,7 @@ Represent collision geometry and answer deterministic spatial queries.
 - Retain one exact brush set per BSP model and test translated model-space hull overlap for Entity-owned trigger contacts without adding inline models to world-solid traces.
 - Compile bounded immutable snapshots containing transformed inline brush models, world-aligned or oriented boxes, and supplied PHY polygon compounds. Every public immutable record retains stable identity, entity/static-prop role, enabled state, transform, conservative world bounds, linear/angular velocity, collision group, exact shape-derived contents, and surface flags; snapshot bytes and results bind the collision-world identity and monotonic revision.
 - Trace world brushes in near-leaf and encoded leaf-brush order, clip the entity segment to the world result, reject dynamically disjoint records through conservative swept bounds, preserve accepted record order and strict closer-hit replacement, and retain transformed model/prop/entity feature identity. `Trace::is_sky`, `Trace::entity_identity`, and `Trace::hit_world` expose the generic facts required by projectile consumers without selecting game damage targets.
+- Execute one bounded atomic model-lighting ray batch under fixed `MASK_OPAQUE`, caller-supplied sample-set/ray identities, world-only or world-plus-static-prop admission, exact self exclusion, existing nearest-hit ordering, cancellation, and versioned comparison bytes. Lighting owns spherical sample generation, light selection, color, and accumulation.
 - Serialize `CSNP` version 2 comparison records only within the snapshot byte limit. Shape, object, convex, vertex, triangle, axis, candidate, ignored-identity, and output bytes have explicit nonzero limits.
 - Produce bounded trigger-selected enter/stay/exit edges from exact transformed brush, AABB or OBB objects and subject hulls. `ContactSnapshot` version 1 retains geometric overlap pairs plus prior subject/trigger transforms so moving-trigger and swept-subject crossings remain collision facts; Entity alone evaluates filters and owns accepted touch state/I/O.
 
@@ -36,7 +37,7 @@ Represent collision geometry and answer deterministic spatial queries.
 
 Consumes BSP, PHY, and model geometry; supplies queries to movement, physics, entities, simulation, and inspection tools.
 
-`bun packages/world/collision/scripts/verify-parity.ts` validates local configuration and runs package, configured `jump_beef` BSP, transformed mover, enabled solid-divider standing/crouched hull, explicit never-solid alpha-fence, sky-surface, model-PHY, formatting, and stable-Clippy evidence.
+`bun packages/world/collision/scripts/verify-parity.ts` validates local configuration and runs package, configured `jump_beef` BSP, transformed mover, enabled solid-divider standing/crouched hull, explicit never-solid alpha-fence, sky-surface, model-PHY, WASM compilation, formatting, and stable-Clippy evidence.
 
 ## Completion
 
