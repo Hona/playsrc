@@ -296,6 +296,8 @@ export type WaterFramePlan = Readonly<{
   nearPlaneIntersects: boolean
   passes: readonly WaterFramePass[]
 }>
+export type FogInput=Readonly<{enabled:boolean;radial:boolean;primary:readonly[number,number,number,number];start:number;end:number;maximumDensity:number;farZ:number|null}>
+export type VisibilityFrame=Readonly<{worldIdentity:string;cacheIdentity:string;outsideWorld:boolean;sky:0|1|2;eyeLeaf:number|null;leaves:readonly number[];areas:readonly number[];surfaces:Uint32Array;water:WaterFramePlan}>
 
 export type Frame = Readonly<{
   camera: Camera
@@ -307,17 +309,9 @@ export type Frame = Readonly<{
   exposureHistogram?: Uint32Array
   deltaSeconds?: number
   capture?: FrameCaptureRequest
-  visibility?: Readonly<{
-    worldIdentity: string
-    cacheIdentity: string
-    outsideWorld: boolean
-    sky: 0 | 1 | 2
-    eyeLeaf: number | null
-    leaves: readonly number[]
-    areas: readonly number[]
-    surfaces: Uint32Array
-    water: WaterFramePlan
-  }>
+  visibility?:VisibilityFrame
+  fog?:FogInput
+  sky3d?:Readonly<{camera:Camera;visibility:VisibilityFrame;fog:FogInput}>
   brushModels?:Readonly<{sourceIdentity:bigint;registryIdentity:bigint;tick:bigint;entityRevision:bigint;collisionRevision:bigint;models:readonly Readonly<{sourceIndex:number;model:number;worldPosition:readonly[number,number,number];worldAngles:readonly[number,number,number];renderMode:number;color:readonly[number,number,number,number];renderFx:number;effects:number;draw:boolean;mover:unknown}>[]}>
   collisionWorldIdentity?: string
 }>
@@ -502,6 +496,9 @@ export type AuthoredTextureInput = Readonly<{
     rgba: Uint8Array
   }>[]
 }>
+export type StaticPropInput=Readonly<{
+  count:number;source:Uint32Array;dictionaryModel:Uint32Array;presentationModel:Uint32Array;transform:Float32Array;skin:Int32Array;body:Uint32Array;lod:Uint32Array;fades:Float32Array;flags:Uint32Array;solidity:Uint8Array;ownership:Uint8Array;lightingKind:Uint8Array;lightingOrigin:Float32Array;leafOffsets:Uint32Array;leaves:Uint16Array;areas:Uint16Array;vhvObjects:Uint32Array;runtimeAmbient:Float32Array;runtimeLightOffsets:Uint32Array;runtimeLights:readonly Readonly<{source:number;kind:number;style:number;ratio:number;direction:readonly[number,number,number];intensity:readonly[number,number,number]}>[];models:readonly string[];vhv:readonly Readonly<{occurrence:number;model:number;profile:0|1;vertexCount:number;meshes:readonly Readonly<{primitive:number;lod:number;vertexCount:number;colors:Uint8Array}>[]}>[]
+}>
 
 export type MapLoadRequest = Readonly<{
   payload: Uint8Array
@@ -517,6 +514,7 @@ export type MapLoadRequest = Readonly<{
   authoredTextures?: ReadonlyMap<string, AuthoredTextureInput>
   brushModels?:readonly Readonly<{index:number;surfaceRange:readonly[number,number];vertexCount:number;triangleCount:number;materials:readonly number[]}>[]
   modelDrawInputs?: readonly Readonly<{ entity: number; lighting: ModelLightingInput; eyes: readonly ModelEyeState[] }>[]
+  staticProps?:StaticPropInput
   diagnostic?: boolean
   signal?: AbortSignal
 }>
@@ -543,6 +541,8 @@ export type SceneResult = Readonly<{
   resources: Readonly<{ geometries: number; materials: number; textures: number }>
   environment?: MapLoadRequest["environment"]
   environmentDrawables: number
+  staticProps:Readonly<{total:number;main:number;sky3d:number;runtimeLit:number}>
+  runtimeStaticProps:readonly Readonly<{source:number;origin:readonly[number,number,number];lightingOrigin:readonly[number,number,number];radius:number}>[]
   displacements: readonly Readonly<{
     source: number
     face: number
@@ -574,6 +574,9 @@ export type FrameResult = Readonly<{
   visibleProjectedMarks: number
   waterPasses: readonly ("reflection"|"refraction"|"main"|"intersection")[]
   waterStateRestored: boolean
+  sky3dPass?:Readonly<{phases:readonly["sky3d","depth-reset","main","restore"];skySurfaces:number;skyProps:number;mainProps:number;visibleSkyPropSources:readonly number[];fog:Readonly<{start:number;end:number;primary:readonly[number,number,number,number]}>;stateRestored:boolean}>
+  visibleMainStaticPropSources:readonly number[]
+  runtimeStaticPropScreen:readonly Readonly<{source:number;x:number;y:number;width:number;height:number}>[]
   timings: Readonly<{
     particleItems: number
     particleBatches: number
@@ -678,6 +681,9 @@ type SceneResources = {
   waterMaterials: ReadonlyMap<string,WaterMaterialResource>
   cubemapTextures: ReadonlyMap<number,THREE.CubeTexture>
   skyGroup: THREE.Group | null
+  mainStaticProps:THREE.Group
+  skyStaticProps:THREE.Group
+  staticPropInstances:readonly Readonly<{object:THREE.Group;source:number;ownership:0|1;leaves:Uint16Array;origin:readonly[number,number,number];lightingOrigin:readonly[number,number,number]|null;flags:number;fadeMinimum:number;fadeMaximum:number;forcedFadeScale:number;radius:number;fadeUniform:any}>[]
   reflectionTarget: THREE.RenderTarget
   refractionTarget: THREE.RenderTarget
   result: SceneResult
@@ -727,6 +733,25 @@ function sourceTransform(object: THREE.Object3D, position: readonly number[], an
     THREE.MathUtils.degToRad(angles[1]!),
     "ZYX",
   )
+}
+function runtimeStaticLightingNode(map:RuntimeMap,input:StaticPropInput,index:number):any{
+  if(map.lighting.profile!=="hdr")throw new RenderingError("MissingInput","runtime static-prop lighting requires HDR world lights")
+  const normal=TSL.normalWorld.normalize(),cube=Array.from({length:6},(_,side)=>TSL.vec3(...input.runtimeAmbient.subarray(index*18+side*3,index*18+side*3+3) as unknown as [number,number,number]))
+  let lighting=normal.x.lessThan(0).select(cube[1],cube[0]).mul(normal.x.mul(normal.x)).add(normal.y.lessThan(0).select(cube[3],cube[2]).mul(normal.y.mul(normal.y))).add(normal.z.lessThan(0).select(cube[5],cube[4]).mul(normal.z.mul(normal.z)))
+  for(let at=input.runtimeLightOffsets[index]!;at<input.runtimeLightOffsets[index+1]!;at++){
+    const retained=input.runtimeLights[at]!,light=map.lighting.descriptor.worldLights[retained.source]
+    if(!light||light.kind!==retained.kind||light.style!==retained.style)throw new RenderingError("IdentityMismatch","runtime static-prop world-light identity differs")
+    const delta=TSL.vec3(...light.origin).sub(TSL.positionWorld),distance=delta.length(),direction=delta.normalize()
+    let attenuation:any
+    if(light.kind===3)attenuation=TSL.float(1)
+    else if(light.kind===0)attenuation=distance.mul(distance).max(1).reciprocal().mul(direction.dot(TSL.vec3(...light.normal)).negate().max(0))
+    else if(light.kind===4)attenuation=TSL.float(light.linearAttenuation).sub(distance).max(0)
+    else attenuation=TSL.float(light.constantAttenuation).add(distance.mul(light.linearAttenuation)).add(distance.mul(distance).mul(light.quadraticAttenuation)).reciprocal()
+    if(light.kind===2){const cone=direction.dot(TSL.vec3(...light.normal)).negate(),spread=Math.max(Number.EPSILON,light.stopDot-light.stopDot2),factor=cone.sub(light.stopDot2).div(spread).clamp(0,1);attenuation=attenuation.mul(light.exponent===0||light.exponent===1?factor:factor.pow(light.exponent))}
+    const lightDirection=light.kind===3?TSL.vec3(...light.normal).negate():direction,diffuse=normal.dot(lightDirection).mul(0.5).add(0.5).clamp(0,1).pow(2)
+    lighting=lighting.add(TSL.vec3(...light.intensity).mul(attenuation).mul(diffuse))
+  }
+  return lighting
 }
 function modelKey(model: string, skin: number) {
   return skin === 0 ? model : `${model}#skin=${skin}`
@@ -1274,6 +1299,8 @@ class RendererOwner implements Renderer {
       }
       modelDrawInputs.set(input.entity, Object.freeze({ ...input, eyes: Object.freeze([...input.eyes]) }))
     }
+    const staticProps=request.staticProps
+    if(staticProps){const count=staticProps.count;if(!Number.isSafeInteger(count)||count<0||count>65536||staticProps.source.length!==count||staticProps.dictionaryModel.length!==count||staticProps.presentationModel.length!==count||staticProps.transform.length!==count*6||staticProps.skin.length!==count||staticProps.body.length!==count||staticProps.lod.length!==count||staticProps.fades.length!==count*3||staticProps.flags.length!==count||staticProps.solidity.length!==count||staticProps.ownership.length!==count||staticProps.lightingKind.length!==count||staticProps.lightingOrigin.length!==count*3||staticProps.leafOffsets.length!==count+1||staticProps.vhvObjects.length!==count*2||staticProps.runtimeAmbient.length!==count*18||staticProps.runtimeLightOffsets.length!==count+1||staticProps.models.length!==modelFacing.size||staticProps.source.some((value,index)=>index>0&&value<=staticProps.source[index-1]!)||staticProps.presentationModel.some(value=>value>=staticProps.models.length)||staticProps.ownership.some(value=>value>1)||staticProps.lightingKind.some(value=>value>1)||staticProps.leafOffsets[count]!==staticProps.leaves.length||staticProps.leaves.length!==staticProps.areas.length||staticProps.runtimeLightOffsets[count]!==staticProps.runtimeLights.length)throw new RenderingError("MalformedInput","static-prop artifact input is invalid")}
     const materialIdentities = new Set([
       ...map.materials.map((material) => material.logicalPath.toLowerCase()),
       ...map.models.flatMap((model) => model.materials.map((material) => material.logicalPath.toLowerCase())),
@@ -1339,6 +1366,8 @@ class RendererOwner implements Renderer {
     const group = new THREE.Group()
     const worldBundle = new THREE.BundleGroup()
     group.add(worldBundle)
+    const mainStaticProps=new THREE.Group(),skyStaticProps=new THREE.Group(),staticPropInstances:SceneResources["staticPropInstances"][number][]=[]
+    group.add(mainStaticProps,skyStaticProps)
     const modelTemplates = new Map<string, THREE.Group>()
     const modelOccurrenceInstances=new Map<number,THREE.Group>()
     const brushModelTemplates=new Map<number,THREE.Group>()
@@ -1625,7 +1654,8 @@ class RendererOwner implements Renderer {
 
       for (const model of map.models) {
         const template = new THREE.Group()
-        for (const primitive of model.primitives) {
+        for (let primitiveIndex=0;primitiveIndex<model.primitives.length;primitiveIndex+=1) {
+          const primitive=model.primitives[primitiveIndex]!
           const geometry = new THREE.BufferGeometry()
           geometry.setAttribute("position", new THREE.BufferAttribute(primitive.positions, 3))
           geometry.setAttribute("normal", new THREE.BufferAttribute(primitive.normals, 3))
@@ -1654,9 +1684,29 @@ class RendererOwner implements Renderer {
           disposables.add(material)
           const mesh = new THREE.Mesh(geometry, material)
           mesh.userData.primitiveMaterial = primitive.material
+          mesh.userData.sourcePrimitive=primitiveIndex
+          mesh.userData.materialIdentity=resolved.logicalPath
           template.add(mesh)
         }
         modelTemplates.set(model.logicalPath, template)
+      }
+      if(request.staticProps){const props=request.staticProps,profile=this.configuration.lightingProfile==="hdr"?1:0
+        for(let propIndex=0;propIndex<props.count;propIndex+=1){const modelIdentity=props.models[props.presentationModel[propIndex]!]!,key=modelKey(modelIdentity,props.skin[propIndex]!),template=modelTemplates.get(key);if(!template)throw new RenderingError("MissingInput",`static-prop model ${key} is unavailable`)
+          if(props.body[propIndex]!==0)throw new RenderingError("UnsupportedFeature","nonzero static-prop body selection is unavailable")
+          const instance=template.clone(true),lightingKind=props.lightingKind[propIndex]!,fadeUniform=TSL.uniform(1,"float"),meshes:THREE.Mesh[]=[];instance.traverse(value=>{if(value instanceof THREE.Mesh)meshes.push(value)})
+          let colorMeshes:StaticPropInput["vhv"][number]["meshes"]=Object.freeze([])
+          if(lightingKind===0){const objectIndex=props.vhvObjects[propIndex*2+profile]!,object=props.vhv[objectIndex];if(!object||object.occurrence!==props.source[propIndex]||object.profile!==profile||object.model!==props.dictionaryModel[propIndex])throw new RenderingError("IdentityMismatch","static-prop VHV occurrence identity differs");colorMeshes=Object.freeze(object.meshes.filter(mesh=>mesh.lod===props.lod[propIndex]))}
+          let colorIndex=0
+          for(const mesh of meshes){const sourceGeometry=mesh.geometry,geometry=new THREE.BufferGeometry();for(const name of Object.keys(sourceGeometry.attributes))geometry.setAttribute(name,sourceGeometry.getAttribute(name));geometry.setIndex(sourceGeometry.getIndex());geometry.boundingBox=sourceGeometry.boundingBox;geometry.boundingSphere=sourceGeometry.boundingSphere
+            if(lightingKind===0){const color=colorMeshes[colorIndex++];const position=geometry.getAttribute("position");if(!color||color.vertexCount!==position.count||color.colors.length!==position.count*4)throw new RenderingError("IdentityMismatch","static-prop VHV mesh order differs");geometry.setAttribute("staticLighting",new THREE.Uint8BufferAttribute(color.colors,4,true))}
+            disposables.add(geometry);mesh.geometry=geometry
+            const original=mesh.material;if(Array.isArray(original)||!(original instanceof THREE.MeshBasicNodeMaterial))throw new RenderingError("UnsupportedFeature","static-prop model material family is unavailable")
+            const identity=String(mesh.userData.materialIdentity),state=request.modelMaterials?.get(identity.toLowerCase())?.shader,material=original.clone(),base=original.colorNode??TSL.vec4(1,1,1,1),rgb=state==="unlit-generic"?base.rgb:base.rgb.mul(lightingKind===0?TSL.attribute("staticLighting","vec4").bgra.rgb:runtimeStaticLightingNode(map,props,propIndex)).mul(exposureUniform);material.colorNode=sourceFragmentColor(TSL.vec4(rgb,base.a.mul(fadeUniform)),materialStates.get(identity.toLowerCase()));material.toneMapped=false;if((props.flags[propIndex]!&1)!==0){material.transparent=true;material.depthWrite=false}disposables.add(material);mesh.material=material
+          }
+          if(lightingKind===0&&colorIndex!==colorMeshes.length)throw new RenderingError("IdentityMismatch","static-prop VHV mesh closure differs")
+          const position=props.transform.subarray(propIndex*6,propIndex*6+3),angles=props.transform.subarray(propIndex*6+3,propIndex*6+6);sourceTransform(instance,position,angles);instance.updateMatrix();instance.matrixAutoUpdate=false;instance.userData.staticPropSource=props.source[propIndex]
+          const sphere=new THREE.Box3().setFromObject(instance).getBoundingSphere(new THREE.Sphere()),leafStart=props.leafOffsets[propIndex]!,leafEnd=props.leafOffsets[propIndex+1]!,ownership=props.ownership[propIndex] as 0|1,lightingOrigin=Number.isFinite(props.lightingOrigin[propIndex*3])?Object.freeze([props.lightingOrigin[propIndex*3]!,props.lightingOrigin[propIndex*3+1]!,props.lightingOrigin[propIndex*3+2]!] as const):null;(ownership===0?mainStaticProps:skyStaticProps).add(instance);staticPropInstances.push(Object.freeze({object:instance,source:props.source[propIndex]!,ownership,leaves:props.leaves.slice(leafStart,leafEnd),origin:Object.freeze([position[0]!,position[1]!,position[2]!] as const),lightingOrigin,flags:props.flags[propIndex]!,fadeMinimum:props.fades[propIndex*3]!,fadeMaximum:props.fades[propIndex*3+1]!,forcedFadeScale:props.fades[propIndex*3+2]!,radius:sphere.radius,fadeUniform}))
+        }
       }
       for (const occurrence of map.modelOccurrences) {
         const model = map.models[occurrence.model]!
@@ -1697,6 +1747,9 @@ class RendererOwner implements Renderer {
         particleMaterials,
         skyGroup,
         cubemapTextures,
+        mainStaticProps,
+        skyStaticProps,
+        staticPropInstances,
         materialStates,
         disposables,
         projectedMarks,
@@ -1784,6 +1837,8 @@ class RendererOwner implements Renderer {
         request.environment?.markRecords
           .filter((mark) => mark.status === 0 && mark.enabled)
           .reduce((total, mark) => total + mark.fragments.length, 0) ?? 0,
+      staticProps:Object.freeze({total:request.staticProps?.count??0,main:request.staticProps?request.staticProps.ownership.reduce((total,value)=>total+Number(value===0),0):0,sky3d:request.staticProps?request.staticProps.ownership.reduce((total,value)=>total+Number(value===1),0):0,runtimeLit:request.staticProps?request.staticProps.lightingKind.reduce((total,value)=>total+Number(value===1),0):0}),
+      runtimeStaticProps:Object.freeze(staticPropInstances.filter((_,index)=>request.staticProps?.lightingKind[index]===1).map(prop=>{if(!prop.lightingOrigin)throw new RenderingError("MissingInput","runtime static prop has no lighting origin");return Object.freeze({source:prop.source,origin:prop.origin,lightingOrigin:prop.lightingOrigin,radius:prop.radius})})),
       displacements: Object.freeze(displacementEvidence),
     })
     disposables.activate()
@@ -1833,6 +1888,9 @@ class RendererOwner implements Renderer {
       waterMaterials,
       cubemapTextures,
       skyGroup,
+      mainStaticProps,
+      skyStaticProps,
+      staticPropInstances:Object.freeze(staticPropInstances),
       reflectionTarget,
       refractionTarget,
       result,
@@ -1861,7 +1919,7 @@ class RendererOwner implements Renderer {
         const visibilityChanged = this.#worldVisibilityIdentity !== frame.visibility.cacheIdentity
         const visible = visibilityChanged ? new Set(frame.visibility.surfaces) : null
         this.#setWorldVisibility(frame.visibility.surfaces, frame.visibility.cacheIdentity)
-        if(this.#active.skyGroup)this.#active.skyGroup.visible=frame.visibility.sky===2
+        if(this.#active.skyGroup)this.#active.skyGroup.visible=frame.visibility.sky===1
         if (!frame.collisionWorldIdentity || frame.collisionWorldIdentity !== this.#active.result.environment?.collisionWorldIdentity) {
           throw new RenderingError("IdentityMismatch", "mark collision-world identity differs")
         }
@@ -1887,15 +1945,17 @@ class RendererOwner implements Renderer {
           : this.#exposure.snapshot()
       this.#active.exposureUniform.value = this.configuration.lightingProfile === "hdr" ? exposure.current : 1
       this.#setCamera(frame.camera)
+      if(frame.visibility)this.#setStaticPropVisibility(frame.visibility.leaves,0,frame.camera)
       const dynamicItemsStarted = performance.now()
       const viewModelDepthRange = this.#stageDynamicItems(frame)
       const dynamicItemsMilliseconds = performance.now() - dynamicItemsStarted
-      let viewModelPass: FrameResult["viewModelPass"]
+      let viewModelPass: FrameResult["viewModelPass"],sky3dPass:FrameResult["sky3dPass"]
       let waterPasses:FrameResult["waterPasses"]=Object.freeze([]),waterStateRestored=true
       let worldMilliseconds=0,viewModelMilliseconds=0
       if (!this.#suspended) {
         const worldStarted=performance.now()
-        const waterResult=this.#renderWaterPasses(frame)
+        sky3dPass=this.#renderSky3dPass(frame)
+        const waterResult=this.#renderWaterPasses(frame,sky3dPass!==undefined)
         worldMilliseconds=performance.now()-worldStarted
         waterPasses=waterResult.passes
         waterStateRestored=waterResult.restored
@@ -1936,6 +1996,9 @@ class RendererOwner implements Renderer {
         visibleProjectedMarks: this.#active.projectedMarks.reduce((total, mark) => total + Number(mark.mesh.visible), 0),
         waterPasses,
         waterStateRestored,
+        sky3dPass,
+        visibleMainStaticPropSources:Object.freeze(this.#active.staticPropInstances.filter(prop=>prop.ownership===0&&prop.object.visible).map(prop=>prop.source)),
+        runtimeStaticPropScreen:Object.freeze(this.#active.staticPropInstances.filter(prop=>prop.ownership===0&&prop.object.visible&&this.#active!.result.runtimeStaticProps.some(runtime=>runtime.source===prop.source)).map(prop=>{const box=new THREE.Box3().setFromObject(prop.object),points=[] as THREE.Vector3[];for(const x of [box.min.x,box.max.x])for(const y of [box.min.y,box.max.y])for(const z of [box.min.z,box.max.z])points.push(new THREE.Vector3(x,y,z).project(this.#camera));const minimumX=Math.min(...points.map(point=>point.x)),maximumX=Math.max(...points.map(point=>point.x)),minimumY=Math.min(...points.map(point=>point.y)),maximumY=Math.max(...points.map(point=>point.y));return Object.freeze({source:prop.source,x:(minimumX+1)*0.5*this.#viewportWidth,y:(1-maximumY)*0.5*this.#viewportHeight,width:(maximumX-minimumX)*0.5*this.#viewportWidth,height:(maximumY-minimumY)*0.5*this.#viewportHeight})})),
         timings:Object.freeze({particleItems:frame.particles?.length??0,particleBatches:this.#particleBatchCount,dynamicItemsMilliseconds,worldMilliseconds,viewModelMilliseconds,totalMilliseconds:performance.now()-frameStarted}),
         viewModelPass,
         pacing:this.#pacing.records(),
@@ -1989,6 +2052,15 @@ class RendererOwner implements Renderer {
     this.#active.worldBundle.needsUpdate=true
     this.#worldVisibilitySurfaces=surfaces
     this.#worldVisibilityIdentity=identity
+  }
+
+  #setStaticPropVisibility(leaves:readonly number[],ownership:0|1,camera:Camera):void{
+    if(!this.#active)return
+    const visible=new Set(leaves)
+    for(const prop of this.#active.staticPropInstances){if(prop.ownership!==ownership){prop.object.visible=false;continue}let alpha=1
+      if((prop.flags&1)!==0){if((prop.flags&0x20)!==0){const up=new THREE.Vector3(0,1,0).applyQuaternion(this.#camera.quaternion).multiplyScalar(prop.radius),center=new THREE.Vector3(...prop.origin),first=center.clone().add(up).project(this.#camera),second=center.clone().sub(up).project(this.#camera),pixelWidth=this.#viewportHeight*Math.abs(second.y-first.y),minimum=prop.fadeMinimum,maximum=prop.fadeMaximum;alpha=pixelWidth<=minimum?0:maximum>=0&&pixelWidth<maximum?Math.max(0,Math.min(1,(pixelWidth-minimum)/(maximum-minimum))):1}else{const dx=prop.origin[0]-camera.position[0],dy=prop.origin[1]-camera.position[1],dz=prop.origin[2]-camera.position[2],distanceSquared=dx*dx+dy*dy+dz*dz,minimum=prop.fadeMinimum*prop.fadeMinimum,maximum=prop.fadeMaximum*prop.fadeMaximum;alpha=distanceSquared>=maximum?0:minimum>=0&&distanceSquared>minimum?Math.max(0,Math.min(1,(maximum-distanceSquared)/(maximum-minimum))):1}}
+      alpha=Math.trunc(Math.max(0,Math.min(1,alpha))*255)/255;prop.fadeUniform.value=alpha;prop.object.visible=alpha>0&&prop.leaves.some(leaf=>visible.has(leaf))
+    }
   }
 
   #validateFrame(frame: Frame): void {
@@ -2140,14 +2212,32 @@ class RendererOwner implements Renderer {
     return()=>{for(const [material,value] of saved)material.clippingPlanes=value}
   }
 
-  #renderWaterPasses(frame:Frame):Readonly<{passes:FrameResult["waterPasses"];restored:boolean}>{
+  #fog(input:FogInput|undefined):THREE.Fog|null{
+    if(!input?.enabled)return null
+    if(input.radial||input.maximumDensity!==1||input.end<input.start)throw new RenderingError("UnsupportedEnvironment","selected fog contract is unavailable")
+    return new THREE.Fog(new THREE.Color().setRGB(input.primary[0]/255,input.primary[1]/255,input.primary[2]/255,THREE.SRGBColorSpace),input.start,input.end)
+  }
+
+  #renderSky3dPass(frame:Frame):FrameResult["sky3dPass"]{
+    if(!frame.sky3d)return undefined
+    if(!this.#active||frame.visibility?.sky!==2||frame.sky3d.visibility.worldIdentity!==this.#active.result.environment?.identity)return undefined
+    const sky=frame.sky3d,mainSurfaces=frame.visibility.surfaces,mainIdentity=frame.visibility.cacheIdentity,background=this.#scene.background,fog=this.#scene.fog,autoClear=this.#backend.autoClear,effects=this.#effects.visible,particles=this.#particles.visible,mainVisible=this.#active.mainStaticProps.visible,skyVisible=this.#active.skyStaticProps.visible,modelVisibility=[...this.#active.modelOccurrenceInstances.values()].map(model=>model.visible),markVisibility=this.#active.projectedMarks.map(mark=>mark.mesh.visible),waterVisibility=this.#active.waterMeshes.map(water=>water.mesh.visible),overlap=new Set(mainSurfaces)
+    if(sky.visibility.surfaces.some(surface=>overlap.has(surface)))throw new RenderingError("IdentityMismatch","main and 3D-sky world surfaces overlap")
+    let rendered=false,visibleSkyPropSources:readonly number[]=Object.freeze([])
+    try{this.#setWorldVisibility(sky.visibility.surfaces);this.#setStaticPropVisibility(sky.visibility.leaves,1,sky.camera);visibleSkyPropSources=Object.freeze(this.#active.staticPropInstances.filter(prop=>prop.ownership===1&&prop.object.visible).map(prop=>prop.source));this.#active.mainStaticProps.visible=false;this.#active.skyStaticProps.visible=true;for(const model of this.#active.modelOccurrenceInstances.values())model.visible=false;for(const mark of this.#active.projectedMarks)mark.mesh.visible=false;for(const water of this.#active.waterMeshes)water.mesh.visible=false;this.#effects.visible=false;this.#particles.visible=false;if(this.#active.skyGroup)this.#active.skyGroup.visible=true;this.#scene.fog=this.#fog(sky.fog);this.#setCamera(sky.camera);this.#backend.autoClear=true;this.#backend.render(this.#scene,this.#camera);rendered=true;this.#backend.clearDepth()}
+    finally{this.#setWorldVisibility(mainSurfaces,mainIdentity);this.#setCamera(frame.camera);this.#setStaticPropVisibility(frame.visibility.leaves,0,frame.camera);this.#active.mainStaticProps.visible=mainVisible;this.#active.skyStaticProps.visible=skyVisible;this.#active.modelOccurrenceInstances.forEach((model,index)=>model.visible=modelVisibility[index]??true);this.#active.projectedMarks.forEach((mark,index)=>mark.mesh.visible=markVisibility[index]??false);this.#active.waterMeshes.forEach((water,index)=>water.mesh.visible=waterVisibility[index]??false);this.#effects.visible=effects;this.#particles.visible=particles;if(this.#active.skyGroup)this.#active.skyGroup.visible=false;this.#scene.fog=this.#fog(frame.fog)??fog;this.#scene.background=background;this.#backend.autoClear=autoClear}
+    if(!rendered)return undefined
+    return Object.freeze({phases:Object.freeze(["sky3d","depth-reset","main","restore"] as const),skySurfaces:sky.visibility.surfaces.length,skyProps:visibleSkyPropSources.length,mainProps:this.#active.staticPropInstances.filter(prop=>prop.ownership===0&&prop.object.visible).length,visibleSkyPropSources,fog:Object.freeze({start:sky.fog.start,end:sky.fog.end,primary:sky.fog.primary}),stateRestored:this.#scene.background===background&&this.#effects.visible===effects&&this.#particles.visible===particles})
+  }
+
+  #renderWaterPasses(frame:Frame,preserveColor=false):Readonly<{passes:FrameResult["waterPasses"];restored:boolean}>{
     if(!this.#active)throw new RenderingError("InvalidState","renderer has no active Water resources")
     const plan=frame.visibility?.water
-    if(!plan){this.#backend.autoClear=true;this.#backend.render(this.#scene,this.#camera);return Object.freeze({passes:Object.freeze(["main"] as const),restored:true})}
+    if(!plan){this.#backend.autoClear=!preserveColor;this.#backend.render(this.#scene,this.#camera);this.#backend.autoClear=true;return Object.freeze({passes:Object.freeze(["main"] as const),restored:true})}
     const soleMain=plan.passes.length===1&&plan.passes[0]?.kind==="main"?plan.passes[0]:undefined
     if(!plan.visibleWater&&soleMain&&!soleMain.clip&&!soleMain.renderWaterSurface&&soleMain.drawEntities&&soleMain.drawSky2d===(frame.visibility?.sky===2)){
       const background=this.#scene.background
-      this.#backend.autoClear=true
+      this.#backend.autoClear=!preserveColor
       this.#scene.background=soleMain.drawSky2d?background:null
       try{this.#backend.render(this.#scene,this.#camera)}finally{this.#scene.background=background}
       return Object.freeze({passes:Object.freeze(["main"] as const),restored:true})
@@ -2156,7 +2246,7 @@ class RendererOwner implements Renderer {
     const completed:("reflection"|"refraction"|"main"|"intersection")[]=[]
     if(plan.visibleWater&&plan.passes.some(pass=>pass.kind!=="main"&&pass.drawSky2d)&&!this.#active.skyGroup)throw new RenderingError("MissingInput","Water auxiliary view requests the unresolved 2D sky pass")
     try{
-      for(const pass of plan.passes){const visible=new Set(pass.surfaces);this.#setWorldVisibility(pass.surfaces);this.#active.projectedMarks.forEach(mark=>{if(mark.visibility.kind==="world")mark.mesh.visible=visible.has(mark.face)});this.#active.waterMeshes.forEach((water,index)=>water.mesh.visible=pass.renderWaterSurface&&waterVisibility[index]===true);if(this.#active.skyGroup)this.#active.skyGroup.visible=pass.drawSky2d;this.#effects.visible=pass.drawEntities;this.#particles.visible=pass.drawEntities;this.#scene.background=pass.drawSky2d?background:null;this.#setWaterCamera(pass,frame.camera);const restoreClip=this.#setClip(pass.clip);try{this.#backend.setRenderTarget(pass.kind==="reflection"?this.#active.reflectionTarget:pass.kind==="refraction"?this.#active.refractionTarget:null);this.#backend.autoClear=pass.kind!=="intersection";this.#backend.render(this.#scene,this.#camera);completed.push(pass.kind)}finally{restoreClip()}}
+      for(const pass of plan.passes){const visible=new Set(pass.surfaces);this.#setWorldVisibility(pass.surfaces);this.#active.projectedMarks.forEach(mark=>{if(mark.visibility.kind==="world")mark.mesh.visible=visible.has(mark.face)});this.#active.waterMeshes.forEach((water,index)=>water.mesh.visible=pass.renderWaterSurface&&waterVisibility[index]===true);if(this.#active.skyGroup)this.#active.skyGroup.visible=pass.drawSky2d;this.#effects.visible=pass.drawEntities;this.#particles.visible=pass.drawEntities;this.#scene.background=pass.drawSky2d?background:null;this.#setWaterCamera(pass,frame.camera);const restoreClip=this.#setClip(pass.clip);try{this.#backend.setRenderTarget(pass.kind==="reflection"?this.#active.reflectionTarget:pass.kind==="refraction"?this.#active.refractionTarget:null);this.#backend.autoClear=pass.kind==="main"&&preserveColor?false:pass.kind!=="intersection";this.#backend.render(this.#scene,this.#camera);completed.push(pass.kind)}finally{restoreClip()}}
     }finally{this.#backend.setRenderTarget(null);this.#backend.autoClear=true;this.#scene.background=background;this.#effects.visible=effectsVisible;this.#particles.visible=particlesVisible;if(this.#active.skyGroup)this.#active.skyGroup.visible=skyVisible;this.#setWorldVisibility(frame.visibility!.surfaces);this.#active.projectedMarks.forEach((mark,index)=>mark.mesh.visible=markVisibility[index]!);this.#active.waterMeshes.forEach((water,index)=>water.mesh.visible=waterVisibility[index]!);this.#setCamera(frame.camera)}
     if(!completed.includes("main"))throw new RenderingError("MalformedInput","Water view plan omitted the main pass")
     return Object.freeze({passes:Object.freeze(completed),restored:this.#backend.autoClear&&this.#scene.background===background&&this.#effects.visible===effectsVisible&&this.#particles.visible===particlesVisible})

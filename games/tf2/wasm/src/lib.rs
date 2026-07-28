@@ -740,9 +740,14 @@ unsafe fn compile_map(
             playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
         compile_metrics[4] = phase_finished.saturating_sub(phase_started);
         phase_started = phase_finished;
-        let (runtime_models, model_occurrences) =
-            resolve_models(&entity_graph, &studio_models, &resources, profile)
-                .map_err(|_| 8_u32)?;
+        let (runtime_models, model_occurrences) = resolve_models(
+            &entity_graph,
+            &studio_models,
+            &resources,
+            profile,
+            &canonical.static_props,
+        )
+        .map_err(|_| 8_u32)?;
         let phase_finished =
             playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
         compile_metrics[5] = phase_finished.saturating_sub(phase_started);
@@ -2079,7 +2084,7 @@ fn world_node_cull_modes(world: &playsrc_visibility::World) -> Vec<i8> {
 
 fn frustum_world_surfaces(
     world: &playsrc_visibility::World,
-    visible: &playsrc_visibility::ViewResult,
+    allowed_leaves: &[usize],
     origin: [f32; 3],
     yaw: f32,
     pitch: f32,
@@ -2089,8 +2094,7 @@ fn frustum_world_surfaces(
     const SUPPRESS: u8 = u8::MAX;
     let planes = world_frustum(origin, yaw, pitch, vertical_fov, aspect);
     let modes = world_node_cull_modes(world);
-    let allowed = visible
-        .leaves
+    let allowed = allowed_leaves
         .iter()
         .copied()
         .collect::<std::collections::BTreeSet<_>>();
@@ -2150,23 +2154,27 @@ fn frustum_world_surfaces(
 
 #[unsafe(no_mangle)]
 /// # Safety
-/// `pointer` must identify ten readable finite f32 values.
+/// `pointer` must identify fourteen readable finite f32 values.
 pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f32) -> u32 {
     if pointer.is_null() {
         return 0;
     }
-    let input = unsafe { std::slice::from_raw_parts(pointer, 10) };
+    let input = unsafe { std::slice::from_raw_parts(pointer, 14) };
     if input.iter().any(|v| !v.is_finite())
-        || input[5] <= 0.0
-        || input[5] >= 180.0
-        || input[6] <= 0.0
-        || input[7] <= 0.0
-        || input[8] <= input[7]
-        || input[9] < 0.0
+        || input[8] <= 0.0
+        || input[8] >= 180.0
+        || input[9] <= 0.0
+        || input[10] <= 0.0
+        || input[11] <= input[10]
+        || input[12] < 0.0
+        || input[13] < -1.0
+        || input[13] > 511.0
+        || input[13].fract() != 0.0
     {
         return 0;
     }
-    let position = [input[0], input[1], input[2]];
+    let visibility_position = [input[0], input[1], input[2]];
+    let position = [input[3], input[4], input[5]];
     let Some((index, generation)) = decode(handle) else {
         return 0;
     };
@@ -2191,20 +2199,35 @@ pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f
         area,
         &candidates,
         &playsrc_visibility::ViewQuery {
-            origins: vec![position],
+            origins: vec![visibility_position],
             bypass_pvs: false,
         },
     ) else {
         return 0;
     };
+    let area_filter = (input[13] >= 0.0).then_some(input[13] as u16);
+    let qualified_leaves = view
+        .leaves
+        .iter()
+        .copied()
+        .filter(|leaf| {
+            area_filter.is_none_or(|area| world.leaves[*leaf].area_and_flags & 0x01ff == area)
+        })
+        .collect::<Vec<_>>();
     let Ok(world_surfaces) = frustum_world_surfaces(
-        world, &view, position, input[3], input[4], input[5], input[6],
+        world,
+        &qualified_leaves,
+        position,
+        input[6],
+        input[7],
+        input[8],
+        input[9],
     ) else {
         return 0;
     };
     let mut view_identity = Sha256::new();
     view_identity.update(view.cache_identity);
-    for value in &input[3..9] {
+    for value in input {
         view_identity.update(value.to_bits().to_le_bytes());
     }
     let view_identity: [u8; 32] = view_identity.finalize().into();
@@ -2221,7 +2244,7 @@ pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f
     };
     let base_water_input = playsrc_map::WaterViewInput {
         origin: position,
-        angles: [input[4], input[3], 0.0],
+        angles: [input[7], input[6], 0.0],
         eye_leaf: *view.origin_leaves.first().unwrap_or(&usize::MAX),
         qualified_visible_leaves: &view.leaves,
         near_plane_intersects_selected_volume: false,
@@ -2238,11 +2261,11 @@ pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f
             water.volume,
             water.surface_z,
             position,
-            input[3],
-            input[4],
-            input[5],
             input[6],
             input[7],
+            input[8],
+            input[9],
+            input[10],
         )
     });
     let Ok(water_plan) = environment.world.water.plan_view(
@@ -2266,7 +2289,7 @@ pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f
         let material = environment.water_materials.get(&identity)?;
         let frame_count = environment.normal_frame_counts.get(&identity).copied();
         let context = playsrc_material::ProxyEvaluationContext {
-            time: input[9],
+            time: input[12],
             frame_time: 0.015,
             water_lod: environment.water_lod,
             texture_frames: frame_count
@@ -2281,13 +2304,23 @@ pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f
     if water_plan.visible_water.is_some() != evaluated_water.is_some() {
         return 0;
     }
+    let mut visible_surfaces = std::collections::BTreeSet::new();
+    let mut visible_areas = std::collections::BTreeSet::new();
+    for leaf in &qualified_leaves {
+        let record = &world.leaves[*leaf];
+        visible_areas.insert(usize::from(record.area_and_flags & 0x01ff));
+        let start = usize::from(record.first_leaf_face);
+        let end = start + usize::from(record.leaf_face_count);
+        visible_surfaces.extend(world.leaf_faces[start..end].iter().copied());
+        visible_surfaces.extend(world.leaf_displacements[*leaf].iter().copied());
+    }
     let mut output = b"PVIS".to_vec();
-    output.extend_from_slice(&3u32.to_le_bytes());
+    output.extend_from_slice(&4u32.to_le_bytes());
     output.extend_from_slice(&view_identity);
     output.extend_from_slice(&world.identity);
     output.extend_from_slice(&[u8::from(view.outside_world), view.sky as u8, 0, 0]);
-    output.extend_from_slice(&(view.world_surfaces.len() as u32).to_le_bytes());
-    for face in &view.world_surfaces {
+    output.extend_from_slice(&(visible_surfaces.len() as u32).to_le_bytes());
+    for face in &visible_surfaces {
         output.extend_from_slice(&u32::from(*face).to_le_bytes());
     }
     output.extend_from_slice(&(world_surfaces.len() as u32).to_le_bytes());
@@ -2303,19 +2336,19 @@ pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f
             .to_le_bytes(),
     );
     output.extend_from_slice(
-        &u32::try_from(view.leaves.len())
+        &u32::try_from(qualified_leaves.len())
             .unwrap_or(u32::MAX)
             .to_le_bytes(),
     );
-    for leaf in &view.leaves {
+    for leaf in &qualified_leaves {
         output.extend_from_slice(&u32::try_from(*leaf).unwrap_or(u32::MAX).to_le_bytes());
     }
     output.extend_from_slice(
-        &u32::try_from(view.visible_areas.len())
+        &u32::try_from(visible_areas.len())
             .unwrap_or(u32::MAX)
             .to_le_bytes(),
     );
-    for area in &view.visible_areas {
+    for area in &visible_areas {
         output.extend_from_slice(&u32::try_from(*area).unwrap_or(u32::MAX).to_le_bytes());
     }
     output.extend_from_slice(&[
@@ -5134,6 +5167,7 @@ fn resolve_models(
     studio_models: &BTreeMap<String, playsrc_studio_model::PresentationModel>,
     bundle: &BTreeMap<String, &[u8]>,
     profile: playsrc_map::LightingProfile,
+    static_props: &playsrc_map::StaticProps,
 ) -> Result<
     (
         Vec<playsrc_map::RuntimeModel>,
@@ -5180,7 +5214,23 @@ fn resolve_models(
             },
         )
         .map_err(|_| ())?;
-        for skin_index in 0..model.skins.len().min(2) {
+        let mut selected_skins = std::collections::BTreeSet::from([0usize]);
+        if model.skins.len() > 1 {
+            selected_skins.insert(1);
+        }
+        for prop in &static_props.occurrences {
+            if static_props
+                .models
+                .get(prop.model)
+                .is_some_and(|entry| entry.logical_path == *identity)
+            {
+                selected_skins.insert(usize::try_from(prop.skin).map_err(|_| ())?);
+            }
+        }
+        for skin_index in selected_skins {
+            if skin_index >= model.skins.len() {
+                return Err(());
+            }
             let mut primitives = Vec::new();
             for selected in
                 playsrc_studio_model::select_primitives(model, &bodygroups, skin_index, 0)

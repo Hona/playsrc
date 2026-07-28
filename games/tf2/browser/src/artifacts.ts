@@ -322,7 +322,13 @@ export type WaterMaterialArtifact = Readonly<{
   requiredInputs: readonly number[]
 }>
 export type FogArtifact = Readonly<{ enabled: boolean; blend: boolean; radial: boolean; direction: readonly [number, number, number]; primary: readonly [number, number, number, number]; secondary: readonly [number, number, number, number]; start: number; end: number; maximumDensity: number; farZ: number | null; transitionDuration: number }>
-export type EnvironmentControllerArtifact = Readonly<{ entity: number; classname: string; kind: number; rawFields: readonly Readonly<{ key: string; value: string }>[]; state: unknown }>
+export type EnvironmentControllerArtifact = Readonly<{ entity: number; classname: string; kind: number; rawFields: readonly Readonly<{ key: string; value: string }>[]; state:
+  |FogArtifact
+  |Readonly<{origin:readonly[number,number,number];scale:number;area:number;fog:FogArtifact}>
+  |Readonly<{start:number;end:number}>
+  |Readonly<{values:readonly number[]}>
+  |Readonly<{angles:readonly[number,number,number];color:readonly number[];maximumDistance:number;disabled:boolean}>
+  |Readonly<Record<never,never>> }>
 export type EnvironmentArtifact = Readonly<{
   profile: "ldr" | "hdr"
   identity: string
@@ -369,14 +375,29 @@ export type PresentationArtifacts = Readonly<{
 export type StaticPropArtifact = Readonly<{
   aggregateSha256: string
   modelCount: number
-  occurrences: readonly Readonly<{
-    source: number
-    dictionaryModel: number
-    presentationModel: number
-    ownership: "main" | "sky3d"
-    lighting: "vertex" | "runtime"
-    leafCount: number
-  }>[]
+  count: number
+  source: Uint32Array
+  dictionaryModel: Uint32Array
+  presentationModel: Uint32Array
+  transform: Float32Array
+  skin: Int32Array
+  body: Uint32Array
+  lod: Uint32Array
+  fades: Float32Array
+  flags: Uint32Array
+  solidity: Uint8Array
+  ownership: Uint8Array
+  lightingKind: Uint8Array
+  lightingOrigin: Float32Array
+  leafOffsets: Uint32Array
+  leaves: Uint16Array
+  areas: Uint16Array
+  vhvObjects: Uint32Array
+  runtimeAmbient: Float32Array
+  runtimeLightOffsets: Uint32Array
+  runtimeLights: Readonly<{ source: number; kind: number; style: number; ratio: number; direction: readonly [number,number,number]; intensity: readonly [number,number,number] }>[]
+  models: readonly string[]
+  vhv: readonly Readonly<{ occurrence:number;model:number;profile:0|1;sha256:string;joinSha256:string;vertexCount:number;meshes:readonly Readonly<{primitive:number;lod:number;vertexCount:number;colors:Uint8Array}>[]}>[]
   runtimeLightingCount: number
 }>
 export class ArtifactError extends Error {
@@ -683,7 +704,7 @@ function parseEnvironment(bytes: Uint8Array, resources: ReadonlyMap<string, Uint
   const controllersState = Object.freeze(controllerFacts.map((controller) => {
     const entity = r.u32(), rawFields = Object.freeze(Array.from({ length: r.u32() }, () => Object.freeze({ key: r.text(), value: r.text() }))), kind = r.u8()
     if (entity !== controller.entity || kind !== controller.kind) throw new ArtifactError("environment controller extension identity")
-    let state: unknown
+    let state: EnvironmentControllerArtifact["state"]
     if (kind === 0) state = fogState()
     else if (kind === 1) state = Object.freeze({ origin: tuple3(r), scale: r.i32(), area: r.u32(), fog: fogState() })
     else if (kind === 2) state = Object.freeze({ start: r.f32(), end: r.f32() })
@@ -1060,48 +1081,68 @@ function parseAuthoredTextures(r: Reader, resources: ReadonlyMap<string, Uint8Ar
   return output
 }
 
-function parseStaticProps(r: Reader, expectedModelCount: number): StaticPropArtifact {
+function parseStaticPropVhv(bytes:Uint8Array,expectedSha256:string):StaticPropArtifact["vhv"]{
+  const r=new Reader(bytes)
+  if(r.decoder.decode(r.take(4))!=="PVHA"||r.u32()!==2)throw new ArtifactError("static prop VHV identity")
+  const count=r.u32();if(count>8192)throw new ArtifactError("static prop VHV count")
+  const objects:StaticPropArtifact["vhv"][number][]=[];let previous=-1
+  for(let index=0;index<count;index++){
+    const occurrence=r.u32(),model=r.u32(),profile=r.u8();if(profile>1||!r.take(3).every(value=>value===0)||occurrence*2+profile<=previous)throw new ArtifactError("static prop VHV order");previous=occurrence*2+profile
+    const meshCount=r.u32(),vertexCount=r.u32(),sha256=hex(r.take(32)),parsed=hex(r.take(32)),joinSha256=hex(r.take(32));if(meshCount>8192||sha256!==parsed)throw new ArtifactError("static prop VHV record")
+    const records=[] as {primitive:number;lod:number;vertexCount:number;start:number;end:number}[]
+    for(let mesh=0;mesh<meshCount;mesh++){const primitive=r.u32();r.u32();r.u32();const lod=r.u32();r.u32();r.u32();const vertices=r.u32(),start=r.u32(),end=r.u32();if(end<start)throw new ArtifactError("static prop VHV mesh");records.push({primitive,lod,vertexCount:vertices,start,end})}
+    r.text();const source=r.blob(256*1024*1024);if(source.length<1)throw new ArtifactError("static prop VHV source")
+    const meshes=Object.freeze(records.map(record=>{if(record.end>source.length||record.end-record.start!==record.vertexCount*4)throw new ArtifactError("static prop VHV colors");return Object.freeze({primitive:record.primitive,lod:record.lod,vertexCount:record.vertexCount,colors:source.subarray(record.start,record.end)})}))
+    objects.push(Object.freeze({occurrence,model,profile:profile as 0|1,sha256,joinSha256,vertexCount,meshes}))
+  }
+  if(r.offset!==bytes.length||expectedSha256.length!==64)throw new ArtifactError("static prop VHV trailing bytes")
+  return Object.freeze(objects)
+}
+
+function parseStaticProps(r: Reader, expectedModelCount: number,models:readonly string[],resources:ReadonlyMap<string,Uint8Array>): StaticPropArtifact {
   const start = r.offset
   if (r.decoder.decode(r.take(4)) !== "PSPA" || r.u32() !== 1) throw new ArtifactError("static prop identity")
   const aggregateSha256 = hex(r.take(32)), modelCount = r.u32(), count = r.u32()
   if (modelCount !== expectedModelCount || count > 65_536) throw new ArtifactError("static prop count")
-  const occurrences: StaticPropArtifact["occurrences"][number][] = []
+  const source=new Uint32Array(count),dictionaryModel=new Uint32Array(count),presentationModel=new Uint32Array(count),transform=new Float32Array(count*6),skin=new Int32Array(count),body=new Uint32Array(count),lod=new Uint32Array(count),fades=new Float32Array(count*3),flags=new Uint32Array(count),solidity=new Uint8Array(count),ownership=new Uint8Array(count),lightingKind=new Uint8Array(count),lightingOrigin=new Float32Array(count*3),leafOffsets=new Uint32Array(count+1),vhvObjects=new Uint32Array(count*2),runtimeAmbient=new Float32Array(count*18),runtimeLightOffsets=new Uint32Array(count+1),leafValues:number[]=[],areaValues:number[]=[],runtimeLights:StaticPropArtifact["runtimeLights"][number][]=[]
+  vhvObjects.fill(0xffff_ffff);lightingOrigin.fill(Number.NaN)
   let previous = -1, runtimeLightingCount = 0
   for (let index = 0; index < count; index++) {
-    const source = r.u32(), dictionaryModel = r.u32(), presentationModel = r.u32()
-    r.u32(); r.u32()
-    for (let n = 0; n < 6; n++) r.f32()
-    r.i32()
-    for (let n = 0; n < 3; n++) r.f32()
-    r.u32()
-    r.u8()
+    source[index]=r.u32();dictionaryModel[index]=r.u32();presentationModel[index]=r.u32();body[index]=r.u32();lod[index]=r.u32()
+    for(let n=0;n<6;n++)transform[index*6+n]=r.f32()
+    skin[index]=r.i32();for(let n=0;n<3;n++)fades[index*3+n]=r.f32();flags[index]=r.u32();solidity[index]=r.u8()
     const ownershipCode = r.u8(), hasLightingOrigin = r.u8(), lightingCode = r.u8()
-    if (source <= previous || presentationModel >= modelCount || ownershipCode > 1 || hasLightingOrigin > 1 || lightingCode > 1)
+    if (source[index]! <= previous || presentationModel[index]! >= modelCount || ownershipCode > 1 || hasLightingOrigin > 1 || lightingCode > 1)
       throw new ArtifactError("static prop record")
-    previous = source
-    for (let n = 0; n < 3; n++) r.f32()
+    previous = source[index]!;ownership[index]=ownershipCode;lightingKind[index]=lightingCode
+    for(let n=0;n<3;n++){const value=r.f32();if(hasLightingOrigin)lightingOrigin[index*3+n]=value}
     const leafCount = r.u32()
     if (leafCount > 1_000_000) throw new ArtifactError("static prop leaves")
-    r.take(leafCount * 4)
+    leafOffsets[index]=leafValues.length;for(let leaf=0;leaf<leafCount;leaf++){leafValues.push(r.u16());areaValues.push(r.u16())}
+    runtimeLightOffsets[index]=runtimeLights.length
     if (lightingCode === 0) {
-      r.u32(); r.u32()
+      vhvObjects[index*2]=r.u32();vhvObjects[index*2+1]=r.u32()
     } else {
       runtimeLightingCount++
       r.take(32)
-      for (let n = 0; n < 18; n++) r.f32()
+      for(let n=0;n<18;n++)runtimeAmbient[index*18+n]=r.f32()
       const lights = r.u32()
       if (lights > 4) throw new ArtifactError("static prop lights")
       for (let light = 0; light < lights; light++) {
-        r.u32(); r.i32(); r.u8()
+        const lightSource=r.u32(),kind=r.i32(),style=r.u8()
         if (!r.take(3).every((value) => value === 0)) throw new ArtifactError("static prop light reserved")
-        for (let n = 0; n < 7; n++) r.f32()
+        const ratio=r.f32(),direction=Object.freeze([r.f32(),r.f32(),r.f32()]) as readonly[number,number,number],intensity=Object.freeze([r.f32(),r.f32(),r.f32()]) as readonly[number,number,number]
+        runtimeLights.push(Object.freeze({source:lightSource,kind,style,ratio,direction,intensity}))
       }
     }
-    occurrences.push(Object.freeze({ source, dictionaryModel, presentationModel, ownership: ownershipCode === 0 ? "main" : "sky3d", lighting: lightingCode === 0 ? "vertex" : "runtime", leafCount }))
   }
+  leafOffsets[count]=leafValues.length;runtimeLightOffsets[count]=runtimeLights.length
   const sectionLength = r.offset - start
   if (r.u32() !== sectionLength || r.decoder.decode(r.take(4)) !== "PSPF") throw new ArtifactError("static prop footer")
-  return Object.freeze({ aggregateSha256, modelCount, occurrences: Object.freeze(occurrences), runtimeLightingCount })
+  const aggregate=resources.get("derived/static-prop-lighting.pvha");if(!aggregate)throw new ArtifactError("static prop VHV aggregate missing")
+  const vhv=parseStaticPropVhv(aggregate,aggregateSha256)
+  if(vhv.length!==count*2-runtimeLightingCount*2)throw new ArtifactError("static prop VHV closure")
+  return Object.freeze({aggregateSha256,modelCount,count,source,dictionaryModel,presentationModel,transform,skin,body,lod,fades,flags,solidity,ownership,lightingKind,lightingOrigin,leafOffsets,leaves:Uint16Array.from(leafValues),areas:Uint16Array.from(areaValues),vhvObjects,runtimeAmbient,runtimeLightOffsets,runtimeLights:Object.freeze(runtimeLights),models:Object.freeze([...models]),vhv,runtimeLightingCount})
 }
 export async function parsePresentationArtifacts(bytes: Uint8Array, resources: ReadonlyMap<string, Uint8Array>): Promise<PresentationArtifacts> {
   const r = new Reader(bytes)
@@ -1222,7 +1263,8 @@ export async function parsePresentationArtifacts(bytes: Uint8Array, resources: R
   const modelMaterials = parseModelMaterials(r)
   const authoredTextures = parseAuthoredTextures(r, resources)
   const brushModels:BrushModelArtifact[]=[];let previousEnd=0;for(let expected=0;expected<brushModelCount;expected++){const index=r.u32(),minimum=tuple3(r),maximum=tuple3(r),origin=tuple3(r),headNode=r.i32(),start=r.u32(),end=r.u32(),vertexCount=r.u32(),triangleCount=r.u32(),mc=r.u32(),ec=r.u32();if(mc>65536||ec>65536)throw new ArtifactError("brush counts");const materials=Object.freeze(Array.from({length:mc},()=>r.u32())),entities=Object.freeze(Array.from({length:ec},()=>r.u32()));if(index!==expected||start!==previousEnd||end<start)throw new ArtifactError("brush descriptor");previousEnd=end;brushModels.push(Object.freeze({index,bounds:Object.freeze([minimum,maximum]) as BrushModelArtifact["bounds"],origin,headNode,surfaceRange:Object.freeze([start,end]) as readonly[number,number],vertexCount,triangleCount,materials,entities}))}
-  const staticProps = parseStaticProps(r, modelCount)
+  const staticProps = parseStaticProps(r, modelCount,[...models.keys()],resources)
+  if (await digest(resources.get("derived/static-prop-lighting.pvha")!) !== staticProps.aggregateSha256) throw new ArtifactError("static prop VHV aggregate hash")
   if (r.offset !== bytes.length) throw new ArtifactError("trailing bytes")
   if (new Set(modelOccurrences.map((occurrence) => occurrence.entity)).size !== modelOccurrences.length)
     throw new ArtifactError("model occurrence identity")
