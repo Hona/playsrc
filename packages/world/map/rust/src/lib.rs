@@ -8,7 +8,9 @@ pub use environment::*;
 mod displacement;
 pub use displacement::{CollisionDisplacement, DisplacementSurface};
 mod static_props;
+mod surface_lighting;
 pub use static_props::{StaticPropModel, StaticPropOccurrence, StaticProps};
+pub use surface_lighting::*;
 #[derive(Clone, Debug, PartialEq)]
 pub struct MaterialReference {
     pub index: usize,
@@ -16,6 +18,7 @@ pub struct MaterialReference {
     pub logical_path: String,
     pub width: i32,
     pub height: i32,
+    pub reflectivity: [f32; 3],
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Surface {
@@ -1459,6 +1462,11 @@ fn materials(
                 logical_path: format!("materials/{name}{suffix}"),
                 width: v.width,
                 height: v.height,
+                reflectivity: [
+                    v.reflectivity.x.value(),
+                    v.reflectivity.y.value(),
+                    v.reflectivity.z.value(),
+                ],
             })
         })
         .collect()

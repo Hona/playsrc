@@ -148,6 +148,26 @@ fn configured_pl_upward_displacements_are_complete_and_deterministic() {
     }
     let base_visibility = playsrc_visibility::compile(&bsp).unwrap();
     let visibility = playsrc_map::attach_displacement_visibility(&first, &base_visibility).unwrap();
+    let surface_lighting = playsrc_map::SurfaceLightingWorld::compile(
+        &first,
+        &visibility,
+        std::collections::BTreeSet::new(),
+    )
+    .unwrap();
+    for source in [650, 882, 888, 1105] {
+        let origin = first.static_props.occurrences[source]
+            .lighting_origin
+            .expect("runtime-lit static prop lighting origin");
+        for direction in [[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]] {
+            let end = std::array::from_fn(|axis| {
+                origin[axis] + direction[axis] * playsrc_map::SOURCE_AMBIENT_RAY_LENGTH
+            });
+            assert_eq!(
+                surface_lighting.trace(origin, end).unwrap(),
+                surface_lighting.trace(origin, end).unwrap()
+            );
+        }
+    }
     let state = playsrc_visibility::AreaState::new(&visibility);
     let candidates = playsrc_visibility::CandidateSet::compile(&visibility, 0, &[]).unwrap();
     for (source, face) in [(147, 14_859), (381, 15_093), (138, 14_850)] {
