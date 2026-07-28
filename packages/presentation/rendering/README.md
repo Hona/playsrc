@@ -17,6 +17,7 @@ Render canonical Source world, gameplay, and replay state in browser GPU environ
 ## Responsibilities
 
 - Own scenes, views, GPU resources, draw preparation, lighting presentation, and frame pacing.
+- Consume each model's typed authored texture planes directly; no supplemental decoded-RGBA model-texture table or material-name fallback enters scene loading or recovery state.
 - Consume direct compiler buffers and runtime descriptors for map, model, material, visibility, particle, gameplay, and replay state without GLB translation.
 - Isolate the post-world viewmodel from world depth with a depth-only clear, then apply its supplied projection and `[0,0.1]` viewport depth range while retaining hand/item self-depth.
 - Derive presentation-only interpolation without changing authoritative state.

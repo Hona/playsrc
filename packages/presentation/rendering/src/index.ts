@@ -508,14 +508,6 @@ export type MapLoadRequest = Readonly<{
   payloadSha256: string
   lightStyles?: readonly Readonly<{ style: number; scalar: number }>[]
   directionalTextures?: readonly DirectionalTextureInput[]
-  modelTextures?: readonly Readonly<{
-    material: string
-    logicalPath: string
-    width: number
-    height: number
-    sha256: string
-    rgba: Uint8Array
-  }>[]
   environment?: EnvironmentInput
   materialStates?: ReadonlyMap<string, MaterialStateInput>
   particleTextures?: readonly EnvironmentTextureInput[]
@@ -1190,16 +1182,6 @@ class RendererOwner implements Renderer {
       if (texture.width * texture.height * 4 !== texture.rgba.byteLength || (await digest(texture.rgba)) !== texture.sha256)
         throw new RenderingError("MalformedInput", "particle texture input is invalid")
     }
-    const modelTextures = new Map<string, NonNullable<MapLoadRequest["modelTextures"]>[number]>()
-    for (const texture of request.modelTextures ?? []) {
-      if (
-        modelTextures.has(texture.material.toLowerCase()) ||
-        texture.width * texture.height * 4 !== texture.rgba.byteLength ||
-        (await digest(texture.rgba)) !== texture.sha256
-      )
-        throw new RenderingError("MalformedInput", "model texture input is invalid")
-      modelTextures.set(texture.material.toLowerCase(), texture)
-    }
     const materialStates = new Map<string, MaterialStateInput>()
     for (const [identity, state] of request.materialStates ?? []) {
       const key = identity.toLowerCase()
@@ -1439,9 +1421,6 @@ class RendererOwner implements Renderer {
       disposables.add(texture)
     }
 
-    const supplemental = new Map(
-      (request.modelTextures ?? []).map((texture) => [texture.material.toLowerCase(), texture] as const),
-    )
     const createModelBase = (identity: string): Readonly<{texture:THREE.Texture;input:AuthoredTextureInput}> | undefined => {
       const material = request.modelMaterials?.get(identity.toLowerCase())
       if (!material) {
@@ -1466,7 +1445,7 @@ class RendererOwner implements Renderer {
     }
     const createBase = (resolved: RuntimeMaterial, identity: string): THREE.DataTexture | undefined => {
       const state = materialStates.get(identity.toLowerCase())
-      const source = resolved.baseTexture ?? supplemental.get(identity.toLowerCase())
+      const source = resolved.baseTexture
       if (!source) {
         diagnostics.push(diagnostic("MissingMaterial", identity, "resolved base texture is unavailable"))
         return undefined
@@ -1816,9 +1795,6 @@ class RendererOwner implements Renderer {
         payloadSha256,
         lightStyles: request.lightStyles?.map((value) => Object.freeze({ ...value })),
         directionalTextures: [...directionalInputs.values()],
-        modelTextures: request.modelTextures?.map((texture) =>
-          Object.freeze({ ...texture, rgba: texture.rgba.slice() }),
-        ),
         environment: request.environment,
         materialStates: new Map(materialStates),
         particleTextures: request.particleTextures?.map((texture) => Object.freeze({ ...texture, rgba: texture.rgba.slice() })),

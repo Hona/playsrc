@@ -355,7 +355,6 @@ export type EnvironmentArtifact = Readonly<{
 }>
 export type PresentationArtifacts = Readonly<{
   models: ReadonlyMap<string, ModelArtifact>
-  textures: readonly SupplementalTexture[]
   particleMaterials: readonly string[]
   materialStates: ReadonlyMap<string, StaticMaterialState>
   particleTextures: readonly ParticleTextureArtifact[]
@@ -1048,12 +1047,11 @@ function parseAuthoredTextures(r: Reader, resources: ReadonlyMap<string, Uint8Ar
 }
 export async function parsePresentationArtifacts(bytes: Uint8Array, resources: ReadonlyMap<string, Uint8Array>): Promise<PresentationArtifacts> {
   const r = new Reader(bytes)
-  if (r.decoder.decode(r.take(4)) !== "PTF2" || r.u32() !== 10) throw new ArtifactError("artifact identity")
+  if (r.decoder.decode(r.take(4)) !== "PTF2" || r.u32() !== 11) throw new ArtifactError("artifact identity")
   const modelCount = r.u32(),
-    textureCount = r.u32(),
     directionalCount = r.u32(),
     particleMaterialCount = r.u32(),brushModelCount=r.u32()
-  if (modelCount > 256 || textureCount > 4096 || directionalCount > 4096 || particleMaterialCount > 65536||brushModelCount<1||brushModelCount>4096)
+  if (modelCount > 256 || directionalCount > 4096 || particleMaterialCount > 65536||brushModelCount<1||brushModelCount>4096)
     throw new ArtifactError("artifact count")
   const models = new Map<string, ModelArtifact>()
   for (let i = 0; i < modelCount; i++) {
@@ -1115,18 +1113,6 @@ export async function parsePresentationArtifacts(bytes: Uint8Array, resources: R
         descriptor,
       }),
     )
-  }
-  const textures: SupplementalTexture[] = []
-  for (let i = 0; i < textureCount; i++) {
-    const material = r.text(),
-      logicalPath = r.text(),
-      width = r.u32(),
-      height = r.u32(),
-      sha256 = hex(r.take(32)),
-      rgba = r.blob(256 * 1024 * 1024)
-    if (width * height * 4 !== rgba.length || (await digest(rgba)) !== sha256)
-      throw new ArtifactError("texture identity")
-    textures.push(Object.freeze({ material, logicalPath, width, height, sha256, rgba }))
   }
   const directionalTextures: DirectionalTextureArtifact[] = []
   for (let i = 0; i < directionalCount; i++) {
@@ -1191,7 +1177,6 @@ export async function parsePresentationArtifacts(bytes: Uint8Array, resources: R
   }))
   return Object.freeze({
     models,
-    textures: Object.freeze(textures),
     directionalTextures: Object.freeze(directionalTextures),
     particleMaterials,
     materialStates,
