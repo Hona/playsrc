@@ -364,6 +364,20 @@ export type PresentationArtifacts = Readonly<{
   authoredTextures: ReadonlyMap<string, AuthoredTextureArtifact>
   environment: EnvironmentArtifact
   brushModels:readonly BrushModelArtifact[]
+  staticProps: StaticPropArtifact
+}>
+export type StaticPropArtifact = Readonly<{
+  aggregateSha256: string
+  modelCount: number
+  occurrences: readonly Readonly<{
+    source: number
+    dictionaryModel: number
+    presentationModel: number
+    ownership: "main" | "sky3d"
+    lighting: "vertex" | "runtime"
+    leafCount: number
+  }>[]
+  runtimeLightingCount: number
 }>
 export class ArtifactError extends Error {
   constructor(message: string) {
@@ -1045,9 +1059,53 @@ function parseAuthoredTextures(r: Reader, resources: ReadonlyMap<string, Uint8Ar
   }
   return output
 }
+
+function parseStaticProps(r: Reader, expectedModelCount: number): StaticPropArtifact {
+  const start = r.offset
+  if (r.decoder.decode(r.take(4)) !== "PSPA" || r.u32() !== 1) throw new ArtifactError("static prop identity")
+  const aggregateSha256 = hex(r.take(32)), modelCount = r.u32(), count = r.u32()
+  if (modelCount !== expectedModelCount || count > 65_536) throw new ArtifactError("static prop count")
+  const occurrences: StaticPropArtifact["occurrences"][number][] = []
+  let previous = -1, runtimeLightingCount = 0
+  for (let index = 0; index < count; index++) {
+    const source = r.u32(), dictionaryModel = r.u32(), presentationModel = r.u32()
+    r.u32(); r.u32()
+    for (let n = 0; n < 6; n++) r.f32()
+    r.i32()
+    for (let n = 0; n < 3; n++) r.f32()
+    r.u32()
+    r.u8()
+    const ownershipCode = r.u8(), hasLightingOrigin = r.u8(), lightingCode = r.u8()
+    if (source <= previous || presentationModel >= modelCount || ownershipCode > 1 || hasLightingOrigin > 1 || lightingCode > 1)
+      throw new ArtifactError("static prop record")
+    previous = source
+    for (let n = 0; n < 3; n++) r.f32()
+    const leafCount = r.u32()
+    if (leafCount > 1_000_000) throw new ArtifactError("static prop leaves")
+    r.take(leafCount * 4)
+    if (lightingCode === 0) {
+      r.u32(); r.u32()
+    } else {
+      runtimeLightingCount++
+      r.take(32)
+      for (let n = 0; n < 18; n++) r.f32()
+      const lights = r.u32()
+      if (lights > 4) throw new ArtifactError("static prop lights")
+      for (let light = 0; light < lights; light++) {
+        r.u32(); r.i32(); r.u8()
+        if (!r.take(3).every((value) => value === 0)) throw new ArtifactError("static prop light reserved")
+        for (let n = 0; n < 7; n++) r.f32()
+      }
+    }
+    occurrences.push(Object.freeze({ source, dictionaryModel, presentationModel, ownership: ownershipCode === 0 ? "main" : "sky3d", lighting: lightingCode === 0 ? "vertex" : "runtime", leafCount }))
+  }
+  const sectionLength = r.offset - start
+  if (r.u32() !== sectionLength || r.decoder.decode(r.take(4)) !== "PSPF") throw new ArtifactError("static prop footer")
+  return Object.freeze({ aggregateSha256, modelCount, occurrences: Object.freeze(occurrences), runtimeLightingCount })
+}
 export async function parsePresentationArtifacts(bytes: Uint8Array, resources: ReadonlyMap<string, Uint8Array>): Promise<PresentationArtifacts> {
   const r = new Reader(bytes)
-  if (r.decoder.decode(r.take(4)) !== "PTF2" || r.u32() !== 11) throw new ArtifactError("artifact identity")
+  if (r.decoder.decode(r.take(4)) !== "PTF2" || r.u32() !== 12) throw new ArtifactError("artifact identity")
   const modelCount = r.u32(),
     directionalCount = r.u32(),
     particleMaterialCount = r.u32(),brushModelCount=r.u32()
@@ -1164,6 +1222,7 @@ export async function parsePresentationArtifacts(bytes: Uint8Array, resources: R
   const modelMaterials = parseModelMaterials(r)
   const authoredTextures = parseAuthoredTextures(r, resources)
   const brushModels:BrushModelArtifact[]=[];let previousEnd=0;for(let expected=0;expected<brushModelCount;expected++){const index=r.u32(),minimum=tuple3(r),maximum=tuple3(r),origin=tuple3(r),headNode=r.i32(),start=r.u32(),end=r.u32(),vertexCount=r.u32(),triangleCount=r.u32(),mc=r.u32(),ec=r.u32();if(mc>65536||ec>65536)throw new ArtifactError("brush counts");const materials=Object.freeze(Array.from({length:mc},()=>r.u32())),entities=Object.freeze(Array.from({length:ec},()=>r.u32()));if(index!==expected||start!==previousEnd||end<start)throw new ArtifactError("brush descriptor");previousEnd=end;brushModels.push(Object.freeze({index,bounds:Object.freeze([minimum,maximum]) as BrushModelArtifact["bounds"],origin,headNode,surfaceRange:Object.freeze([start,end]) as readonly[number,number],vertexCount,triangleCount,materials,entities}))}
+  const staticProps = parseStaticProps(r, modelCount)
   if (r.offset !== bytes.length) throw new ArtifactError("trailing bytes")
   if (new Set(modelOccurrences.map((occurrence) => occurrence.entity)).size !== modelOccurrences.length)
     throw new ArtifactError("model occurrence identity")
@@ -1187,5 +1246,6 @@ export async function parsePresentationArtifacts(bytes: Uint8Array, resources: R
     authoredTextures,
     environment,
     brushModels:Object.freeze(brushModels),
+    staticProps,
   })
 }

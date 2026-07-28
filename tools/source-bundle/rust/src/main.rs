@@ -27,7 +27,7 @@ const MAX_DEPENDENCY_REQUESTS: usize = 8_192;
 const MAX_LEDGER_BYTES: usize = 8 * 1024 * 1024;
 const MAX_UI_PNG_WORKERS: usize = 8;
 const STATIC_PROP_VHV_AGGREGATE_PATH: &str = "derived/static-prop-lighting.pvha";
-const STATIC_PROP_VHV_AGGREGATE_VERSION: u32 = 1;
+const STATIC_PROP_VHV_AGGREGATE_VERSION: u32 = 2;
 const MAX_STATIC_PROP_VHV_OBJECTS: usize = 8_192;
 const MAX_STATIC_PROP_VHV_AGGREGATE_BYTES: usize = 256 * 1024 * 1024;
 
@@ -1459,7 +1459,21 @@ struct StaticPropVhvRecord {
     join_sha256: [u8; 32],
     mesh_count: u32,
     vertex_count: u32,
+    meshes: Vec<StaticPropVhvMeshRecord>,
     bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct StaticPropVhvMeshRecord {
+    primitive: u32,
+    body_part: u32,
+    model: u32,
+    lod: u32,
+    mesh: u32,
+    strip_group: u32,
+    vertex_count: u32,
+    encoded_bgra_start: u32,
+    encoded_bgra_end: u32,
 }
 
 fn static_prop_vhv_join_identity(
@@ -1536,6 +1550,7 @@ fn encode_static_prop_vhv_aggregate(records: &[StaticPropVhvRecord]) -> Result<V
             || record.profile > 1
             || record.logical_path.len() > 1_024
             || record.bytes.is_empty()
+            || usize::try_from(record.mesh_count).ok() != Some(record.meshes.len())
             || record.source_sha256 != <[u8; 32]>::from(Sha256::digest(&record.bytes))
             || record.parsed_sha256 != record.source_sha256
         {
@@ -1550,6 +1565,27 @@ fn encode_static_prop_vhv_aggregate(records: &[StaticPropVhvRecord]) -> Result<V
         out.extend_from_slice(&record.source_sha256);
         out.extend_from_slice(&record.parsed_sha256);
         out.extend_from_slice(&record.join_sha256);
+        for mesh in &record.meshes {
+            for value in [
+                mesh.primitive,
+                mesh.body_part,
+                mesh.model,
+                mesh.lod,
+                mesh.mesh,
+                mesh.strip_group,
+                mesh.vertex_count,
+                mesh.encoded_bgra_start,
+                mesh.encoded_bgra_end,
+            ] {
+                out.extend_from_slice(&value.to_le_bytes());
+            }
+            if mesh.encoded_bgra_start > mesh.encoded_bgra_end
+                || usize::try_from(mesh.encoded_bgra_end)
+                    .map_or(true, |end| end > record.bytes.len())
+            {
+                return Err("static-prop VHV mesh range is invalid".to_owned());
+            }
+        }
         for bytes in [record.logical_path.as_bytes(), record.bytes.as_slice()] {
             out.extend_from_slice(
                 &u32::try_from(bytes.len())
@@ -1592,6 +1628,20 @@ fn decode_static_prop_vhv_aggregate(bytes: &[u8]) -> Result<Vec<StaticPropVhvRec
         let source_sha256 = aggregate_hash(bytes, &mut offset)?;
         let parsed_sha256 = aggregate_hash(bytes, &mut offset)?;
         let join_sha256 = aggregate_hash(bytes, &mut offset)?;
+        let mut meshes = Vec::with_capacity(mesh_count as usize);
+        for _ in 0..mesh_count {
+            meshes.push(StaticPropVhvMeshRecord {
+                primitive: aggregate_u32(bytes, &mut offset)?,
+                body_part: aggregate_u32(bytes, &mut offset)?,
+                model: aggregate_u32(bytes, &mut offset)?,
+                lod: aggregate_u32(bytes, &mut offset)?,
+                mesh: aggregate_u32(bytes, &mut offset)?,
+                strip_group: aggregate_u32(bytes, &mut offset)?,
+                vertex_count: aggregate_u32(bytes, &mut offset)?,
+                encoded_bgra_start: aggregate_u32(bytes, &mut offset)?,
+                encoded_bgra_end: aggregate_u32(bytes, &mut offset)?,
+            });
+        }
         let logical_path = String::from_utf8(aggregate_blob(bytes, &mut offset, 1_024)?)
             .map_err(|_| "static-prop VHV path is not UTF-8")?;
         let source = aggregate_blob(bytes, &mut offset, MAX_STATIC_PROP_VHV_AGGREGATE_BYTES)?;
@@ -1605,6 +1655,7 @@ fn decode_static_prop_vhv_aggregate(bytes: &[u8]) -> Result<Vec<StaticPropVhvRec
             join_sha256,
             mesh_count,
             vertex_count,
+            meshes,
             bytes: source,
         });
     }
@@ -1928,6 +1979,7 @@ struct BuildReport {
     requests: usize,
     authoritative_absences: usize,
     entries: usize,
+    packed_entries: usize,
     derived_entries: usize,
     graph_entries: usize,
     graph_chunks: usize,
@@ -2459,6 +2511,32 @@ fn main() -> Result<(), String> {
                         .map_err(|_| "static-prop VHV mesh count overflow")?,
                     vertex_count: u32::try_from(joined.vertex_count)
                         .map_err(|_| "static-prop VHV vertex count overflow")?,
+                    meshes: joined
+                        .meshes
+                        .iter()
+                        .map(|mesh| {
+                            Ok(StaticPropVhvMeshRecord {
+                                primitive: u32::try_from(mesh.primitive)
+                                    .map_err(|_| "static-prop VHV primitive overflow")?,
+                                body_part: u32::try_from(mesh.body_part)
+                                    .map_err(|_| "static-prop VHV body part overflow")?,
+                                model: u32::try_from(mesh.model)
+                                    .map_err(|_| "static-prop VHV model overflow")?,
+                                lod: u32::try_from(mesh.lod)
+                                    .map_err(|_| "static-prop VHV LOD overflow")?,
+                                mesh: u32::try_from(mesh.mesh)
+                                    .map_err(|_| "static-prop VHV mesh overflow")?,
+                                strip_group: u32::try_from(mesh.strip_group)
+                                    .map_err(|_| "static-prop VHV strip group overflow")?,
+                                vertex_count: u32::try_from(mesh.vertex_count)
+                                    .map_err(|_| "static-prop VHV mesh vertex count overflow")?,
+                                encoded_bgra_start: u32::try_from(mesh.encoded_bgra_range.start)
+                                    .map_err(|_| "static-prop VHV range overflow")?,
+                                encoded_bgra_end: u32::try_from(mesh.encoded_bgra_range.end)
+                                    .map_err(|_| "static-prop VHV range overflow")?,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, String>>()?,
                     bytes,
                 });
                 packed_paths.insert(path);
@@ -2692,6 +2770,11 @@ fn main() -> Result<(), String> {
     }
     #[cfg(feature = "presentation-bound-diagnostic")]
     if let Some(mut report) = diagnostic_report {
+        if let Some(bytes) = &static_prop_vhv_aggregate {
+            resolver
+                .bundle
+                .insert(STATIC_PROP_VHV_AGGREGATE_PATH.to_owned(), bytes.clone());
+        }
         let presentation = playsrc_tf2_wasm::diagnose_presentation_bound(
             &bsp_bytes,
             &resolver.bundle,
@@ -2719,6 +2802,16 @@ fn main() -> Result<(), String> {
             "phaseMilliseconds": presentation.phase_milliseconds.map(|value| value.to_string()),
             "displacementInputCount": presentation.displacement_input_count,
             "staticPropCollisionCount": presentation.static_prop_collision_count,
+            "staticPropOccurrenceCount": presentation.static_prop_occurrence_count,
+            "staticPropVhvObjectCount": presentation.static_prop_vhv_object_count,
+            "staticPropRuntimeLightingCount": presentation.static_prop_runtime_lighting_count,
+            "staticPropSectionBytes": presentation.static_prop_section_bytes.to_string(),
+            "staticPropSectionSha256": hex(&presentation.static_prop_section_sha256),
+            "staticPropRuntimeSources": presentation.static_prop_runtime_sources,
+            "staticPropRuntimeLights": presentation.static_prop_runtime_light_records.iter().map(|(prop, light, style)| json!({"prop":prop,"light":light,"style":style})).collect::<Vec<_>>(),
+            "staticPropMainCount": presentation.static_prop_main_count,
+            "staticPropSkyCount": presentation.static_prop_sky_count,
+            "staticPropVertexLightingCount": presentation.static_prop_vertex_lighting_count,
         });
         println!(
             "{}",
@@ -3251,6 +3344,7 @@ fn main() -> Result<(), String> {
         requests: ledger.resolved_entries + ledger.authoritative_absences,
         authoritative_absences: ledger.authoritative_absences,
         entries: bundle.len(),
+        packed_entries: resolver.packed_sources.len(),
         derived_entries: ui_bundle.len(),
         graph_entries,
         graph_chunks: packed.len(),
@@ -3297,7 +3391,7 @@ fn main() -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(feature = "verify-hdr")]
+#[cfg(any(feature = "verify-hdr", feature = "presentation-bound-diagnostic"))]
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -3334,8 +3428,19 @@ mod tests {
             source_sha256: sha256,
             parsed_sha256: sha256,
             join_sha256: [9; 32],
-            mesh_count: 2,
+            mesh_count: 1,
             vertex_count: 17,
+            meshes: vec![StaticPropVhvMeshRecord {
+                primitive: 0,
+                body_part: 0,
+                model: 0,
+                lod: 0,
+                mesh: 0,
+                strip_group: 0,
+                vertex_count: 1,
+                encoded_bgra_start: 0,
+                encoded_bgra_end: 4,
+            }],
             bytes: source,
         }];
         let encoded = encode_static_prop_vhv_aggregate(&records).unwrap();
@@ -3359,6 +3464,17 @@ mod tests {
             join_sha256: [profile; 32],
             mesh_count: 1,
             vertex_count: 1,
+            meshes: vec![StaticPropVhvMeshRecord {
+                primitive: 0,
+                body_part: 0,
+                model: 0,
+                lod: 0,
+                mesh: 0,
+                strip_group: 0,
+                vertex_count: 1,
+                encoded_bgra_start: 0,
+                encoded_bgra_end: 1,
+            }],
             bytes: source.clone(),
         };
         assert!(encode_static_prop_vhv_aggregate(&[record(1), record(0)]).is_err());

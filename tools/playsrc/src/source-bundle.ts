@@ -20,6 +20,7 @@ export type SourceBundleArtifact = Readonly<{
     requests: number
     authoritativeAbsences: number
     entries: number
+    packedEntries: number
     derivedEntries: number
     graphEntries: number
     graphChunks: number
@@ -36,6 +37,7 @@ type SourceBundleReport = Readonly<{
   requests?: unknown
   authoritativeAbsences?: unknown
   entries?: unknown
+  packedEntries?: unknown
   derivedEntries?: unknown
   graphEntries?: unknown
   graphChunks?: unknown
@@ -94,14 +96,17 @@ export function parseSourceBundleReport(output: string, target: string): SourceB
     || (report.providers as number) > 65
     || !Number.isSafeInteger(report.requests)
     || (report.requests as number) < 1
-    || (report.requests as number) > 4_096
+    || (report.requests as number) > 8_192
     || !Number.isSafeInteger(report.authoritativeAbsences)
     || (report.authoritativeAbsences as number) < 0
     || (report.authoritativeAbsences as number) > (report.requests as number)
     || !Number.isSafeInteger(report.entries)
     || (report.entries as number) < 1
     || (report.entries as number) > (report.requests as number)
-    || (report.entries as number) + (report.authoritativeAbsences as number) !== report.requests
+    || !Number.isSafeInteger(report.packedEntries)
+    || (report.packedEntries as number) < 0
+    || (report.packedEntries as number) > (report.requests as number)
+    || (report.entries as number) + (report.packedEntries as number) + (report.authoritativeAbsences as number) !== report.requests
     || !Number.isSafeInteger(report.derivedEntries)
     || (report.derivedEntries as number) < 1
     || (report.derivedEntries as number) > 2_048
@@ -143,6 +148,7 @@ export function parseSourceBundleReport(output: string, target: string): SourceB
     requests: report.requests as number,
     authoritativeAbsences: report.authoritativeAbsences as number,
     entries: report.entries as number,
+    packedEntries: report.packedEntries as number,
     derivedEntries: report.derivedEntries as number,
     graphEntries: report.graphEntries as number,
     graphChunks: report.graphChunks as number,
