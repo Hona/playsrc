@@ -6,7 +6,7 @@ pub use lighting::*;
 mod environment;
 pub use environment::*;
 mod displacement;
-pub use displacement::DisplacementSurface;
+pub use displacement::{CollisionDisplacement, DisplacementSurface};
 mod static_props;
 pub use static_props::{StaticPropModel, StaticPropOccurrence, StaticProps};
 #[derive(Clone, Debug, PartialEq)]
@@ -91,6 +91,7 @@ pub struct CanonicalMap {
     pub brush_models: Vec<BrushModelGeometry>,
     pub brush_model_occurrences: Vec<BrushModelOccurrence>,
     pub static_props: StaticProps,
+    pub collision_displacements: Vec<CollisionDisplacement>,
     pub collision_world_identity: [u8; 32],
     pub lighting: LightingData,
     pub triangle_count: usize,
@@ -349,6 +350,7 @@ pub fn compile_prepared(
     let mut normal_cursor = 0usize;
     let mut triangles = 0usize;
     let mut output_vertices = 0usize;
+    let mut collision_displacements = Vec::with_capacity(displacement_info.len());
     for (face_index, face) in faces.iter().enumerate() {
         let positions = face_positions(face, face_index, vertices, edges, surfedges)?;
         if positions.len() < 3 {
@@ -419,6 +421,7 @@ pub fn compile_prepared(
             .ok_or_else(|| error(ErrorCode::InvalidRange, Some(face_index)))?;
         let (positions, uv, lightmap_uv, alpha, indices, compiled, displacement_descriptor) =
             if let Some(displacement) = displacement {
+                collision_displacements.push(displacement.collision.clone());
                 (
                     displacement.positions,
                     displacement.uv,
@@ -519,6 +522,7 @@ pub fn compile_prepared(
         brush_models,
         brush_model_occurrences,
         static_props,
+        collision_displacements,
         collision_world_identity: collision.identity,
         lighting,
         triangle_count: triangles,

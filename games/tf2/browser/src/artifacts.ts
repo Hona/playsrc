@@ -1051,7 +1051,7 @@ export async function parsePresentationArtifacts(bytes: Uint8Array, resources: R
   const modelCount = r.u32(),
     directionalCount = r.u32(),
     particleMaterialCount = r.u32(),brushModelCount=r.u32()
-  if (modelCount > 256 || directionalCount > 4096 || particleMaterialCount > 65536||brushModelCount<1||brushModelCount>4096)
+  if (modelCount > 4096 || directionalCount > 4096 || particleMaterialCount > 65536||brushModelCount<1||brushModelCount>4096)
     throw new ArtifactError("artifact count")
   const models = new Map<string, ModelArtifact>()
   for (let i = 0; i < modelCount; i++) {

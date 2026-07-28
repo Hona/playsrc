@@ -1366,6 +1366,37 @@ fn model_profile(bytes: &[u8]) -> Result<playsrc_studio_model::Profile, String> 
     }
 }
 
+fn surface_property_manifest_files(bytes: &[u8]) -> Result<Vec<String>, String> {
+    let document = playsrc_keyvalues::parse_text(
+        bytes,
+        playsrc_keyvalues::EscapeMode::Escaped,
+        playsrc_keyvalues::Limits::default(),
+    )
+    .map_err(|error| error.to_string())?;
+    let nodes = if document.roots.len() == 1 {
+        match &document.roots[0].value {
+            playsrc_keyvalues::Value::Object(children) => children.as_slice(),
+            _ => document.roots.as_slice(),
+        }
+    } else {
+        document.roots.as_slice()
+    };
+    nodes
+        .iter()
+        .map(|node| {
+            if !node.key.bytes.eq_ignore_ascii_case(b"file") || node.condition.is_some() {
+                return Err("surface-property manifest contains a non-file entry".to_owned());
+            }
+            let playsrc_keyvalues::Value::Scalar(value) = &node.value else {
+                return Err("surface-property manifest file entry is not scalar".to_owned());
+            };
+            std::str::from_utf8(&value.token.bytes)
+                .map(|path| path.replace('\\', "/").to_ascii_lowercase())
+                .map_err(|_| "surface-property path is not UTF-8".to_owned())
+        })
+        .collect()
+}
+
 fn vhv_limits(source_bytes: usize) -> playsrc_vhv::Limits {
     playsrc_vhv::Limits {
         max_input_bytes: source_bytes,
@@ -1947,6 +1978,14 @@ fn main() -> Result<(), String> {
             "world-material",
         )?;
     }
+    let surface_manifest_path = "scripts/surfaceproperties_manifest.txt";
+    let surface_manifest = resolver.required(surface_manifest_path, "surface-property-manifest")?;
+    for path in surface_property_manifest_files(&surface_manifest)? {
+        resolver.required(
+            &path,
+            format!("surface-property-file:{surface_manifest_path}"),
+        )?;
+    }
     let graph = playsrc_entity::parse(bsp.lumps[0].bytes(&bsp), playsrc_entity::Limits::default())
         .map_err(|error| error.to_string())?;
     let world = graph
@@ -2059,15 +2098,13 @@ fn main() -> Result<(), String> {
         .collect::<Result<std::collections::BTreeSet<_>, _>>()
         .map_err(|_| "model identity is not UTF-8")?;
     let mut diagnostic_report = None;
-    if diagnose_presentation_bound {
-        model_paths.extend(
-            canonical
-                .static_props
-                .models
-                .iter()
-                .map(|model| model.logical_path.clone()),
-        );
-    }
+    model_paths.extend(
+        canonical
+            .static_props
+            .models
+            .iter()
+            .map(|model| model.logical_path.clone()),
+    );
     for path in [
         "models/weapons/w_models/w_rocket.mdl",
         "models/weapons/w_models/w_stickybomb.mdl",
@@ -2380,6 +2417,8 @@ fn main() -> Result<(), String> {
             "finalCapacity": presentation.final_capacity.to_string(),
             "diagnosticLimit": (512usize * 1024 * 1024).to_string(),
             "phaseMilliseconds": presentation.phase_milliseconds.map(|value| value.to_string()),
+            "displacementInputCount": presentation.displacement_input_count,
+            "staticPropCollisionCount": presentation.static_prop_collision_count,
         });
         println!(
             "{}",

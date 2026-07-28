@@ -3,10 +3,12 @@ use std::{collections::BTreeMap, fmt};
 mod alpha;
 mod model;
 mod proxy;
+mod surface_properties;
 mod water;
 pub use alpha::*;
 pub use model::*;
 pub use proxy::*;
+pub use surface_properties::*;
 pub use water::*;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Shader {
@@ -216,6 +218,7 @@ pub struct Material {
     pub selection_trace: Vec<SelectionDecision>,
     pub proxies: Vec<Proxy>,
     pub surface_property: Option<Vec<u8>>,
+    pub secondary_surface_property: Option<Vec<u8>>,
     pub features: Features,
     pub material_requests: Vec<MaterialRequest>,
     pub water: Option<WaterState>,
@@ -579,6 +582,7 @@ pub fn resolve_for_environment(
         selection_trace,
         proxies,
         surface_property: get(&first, b"$surfaceprop").cloned(),
+        secondary_surface_property: get(&first, b"$surfaceprop2").cloned(),
         features,
         material_requests,
         water,

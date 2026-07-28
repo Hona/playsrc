@@ -45,6 +45,23 @@ fn configured_pl_upward_displacements_are_complete_and_deterministic() {
     assert_eq!(first.static_props.models.len(), 234);
     assert_eq!(first.static_props.leaf_reference_count, 2_756);
     assert_eq!(first.static_props.occurrences.len(), 1_244);
+    assert_eq!(first.collision_displacements.len(), 558);
+    assert_eq!(
+        first
+            .collision_displacements
+            .iter()
+            .map(|patch| patch.positions.len())
+            .sum::<usize>(),
+        14_174
+    );
+    assert_eq!(
+        first
+            .collision_displacements
+            .iter()
+            .map(|patch| patch.triangles.len())
+            .sum::<usize>(),
+        18_240
+    );
     assert_eq!(
         first
             .surfaces

@@ -673,7 +673,7 @@ unsafe fn compile_map(
                 .map_err(|_| 3_u32)?;
         let collision_world = playsrc_collision::compile(&bsp).map_err(|_| 3_u32)?;
         let visibility_world = playsrc_visibility::compile(&bsp).map_err(|_| 3_u32)?;
-        let canonical =
+        let mut canonical =
             playsrc_map::compile_prepared(&bsp, profile, &entity_graph, &collision_world).map_err(
                 |error| {
                     if error.code == playsrc_map::ErrorCode::IncompleteLightingProfile {
@@ -692,6 +692,10 @@ unsafe fn compile_map(
         phase_started = phase_finished;
         let resolved_materials =
             resolve_materials(&canonical, &resources, profile).map_err(|_| 7_u32)?;
+        let collision_world =
+            attach_displacement_collision_inputs(collision_world, &canonical, &resources, profile)
+                .map_err(|_| 3_u32)?;
+        canonical.collision_world_identity = collision_world.identity;
         let phase_finished =
             playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
         compile_metrics[2] = phase_finished.saturating_sub(phase_started);
@@ -702,6 +706,12 @@ unsafe fn compile_map(
         phase_started = phase_finished;
         let (particles, particle_materials, particle_sheets, particle_presentation) =
             compile_particles(&resources).map_err(|_| 10_u32)?;
+        let static_model_roots = canonical
+            .static_props
+            .models
+            .iter()
+            .map(|model| model.logical_path.clone())
+            .collect::<Vec<_>>();
         let presentation_inputs = PresentationInputs {
             canonical: &canonical,
             bsp: &bsp,
@@ -713,7 +723,7 @@ unsafe fn compile_map(
             profile,
             visibility: &visibility_world,
             collision: &collision_world,
-            additional_model_roots: &[],
+            additional_model_roots: &static_model_roots,
         };
         let (
             (presentation, studio_models, model_material_opacity, environment),
@@ -796,7 +806,7 @@ unsafe fn compile_map(
         phase_started = phase_finished;
         let spawn = spawn(&runtime.entities).ok_or(4_u32)?;
         let collision_templates =
-            collision_object_templates(&runtime.entities, &resources, &studio_models)
+            collision_object_templates(&runtime.map, &runtime.entities, &resources, &studio_models)
                 .map_err(|_| 5_u32)?;
         let visibility = runtime.visibility;
         let area_state = playsrc_visibility::AreaState::new(&visibility);
@@ -1055,17 +1065,25 @@ pub fn diagnose_presentation_bound(
             .map_err(|_| 3u32)?;
     let collision = playsrc_collision::compile(&bsp).map_err(|_| 3u32)?;
     let visibility = playsrc_visibility::compile(&bsp).map_err(|_| 3u32)?;
-    let canonical = playsrc_map::compile_prepared(
+    let mut canonical = playsrc_map::compile_prepared(
         &bsp,
         playsrc_map::LightingProfile::Hdr,
         &entities,
         &collision,
     )
     .map_err(|_| 3u32)?;
+    let collision = attach_displacement_collision_inputs(
+        collision,
+        &canonical,
+        &resources,
+        playsrc_map::LightingProfile::Hdr,
+    )
+    .map_err(|_| 3u32)?;
+    canonical.collision_world_identity = collision.identity;
     let visibility =
         playsrc_map::attach_displacement_visibility(&canonical, &visibility).map_err(|_| 3u32)?;
     let (_, _, _, particle_presentation) = compile_particles(&resources).map_err(|_| 10u32)?;
-    let (_, metrics, mut ledger) = compile_presentation(PresentationInputs {
+    let ((_, models, _, _), metrics, mut ledger) = compile_presentation(PresentationInputs {
         canonical: &canonical,
         bsp: &bsp,
         graph: &entities,
@@ -1079,6 +1097,13 @@ pub fn diagnose_presentation_bound(
         additional_model_roots,
     })
     .map_err(|_| 9u32)?;
+    let templates =
+        collision_object_templates(&canonical, &entities, &resources, &models).map_err(|_| 5u32)?;
+    ledger.displacement_input_count = collision.displacement_inputs.len();
+    ledger.static_prop_collision_count = templates
+        .iter()
+        .filter(|template| template.input.role == playsrc_collision::ObjectRole::StaticProp)
+        .count();
     ledger.phase_milliseconds = metrics.map(|nanoseconds| nanoseconds / 1_000_000);
     Ok(ledger)
 }
@@ -4410,6 +4435,111 @@ fn dependency_path(token: &[u8]) -> Result<String, ()> {
     Ok(path.to_ascii_lowercase())
 }
 
+fn surface_property_registry(
+    bundle: &BTreeMap<String, &[u8]>,
+) -> Result<playsrc_material::SurfacePropertyRegistry, ()> {
+    let manifest_path = "scripts/surfaceproperties_manifest.txt";
+    let manifest = bundle.get(manifest_path).copied().ok_or(())?;
+    let document = playsrc_keyvalues::parse_text(
+        manifest,
+        playsrc_keyvalues::EscapeMode::Escaped,
+        playsrc_keyvalues::Limits::default(),
+    )
+    .map_err(|_| ())?;
+    let roots = if document.roots.len() == 1 {
+        match &document.roots[0].value {
+            playsrc_keyvalues::Value::Object(children) => children.as_slice(),
+            _ => document.roots.as_slice(),
+        }
+    } else {
+        document.roots.as_slice()
+    };
+    let mut paths = Vec::new();
+    for node in roots {
+        let playsrc_keyvalues::Value::Scalar(value) = &node.value else {
+            return Err(());
+        };
+        if !node.key.bytes.eq_ignore_ascii_case(b"file") || node.condition.is_some() {
+            return Err(());
+        }
+        paths.push(
+            std::str::from_utf8(&value.token.bytes)
+                .map_err(|_| ())?
+                .replace('\\', "/")
+                .to_ascii_lowercase(),
+        );
+    }
+    let files = paths
+        .iter()
+        .map(|path| {
+            Ok(playsrc_material::SurfacePropertyFile {
+                logical_path: path,
+                bytes: bundle.get(path).copied().ok_or(())?,
+            })
+        })
+        .collect::<Result<Vec<_>, ()>>()?;
+    playsrc_material::SurfacePropertyRegistry::compile(&files).map_err(|_| ())
+}
+
+fn attach_displacement_collision_inputs(
+    world: playsrc_collision::World,
+    map: &playsrc_map::CanonicalMap,
+    bundle: &BTreeMap<String, &[u8]>,
+    profile: playsrc_map::LightingProfile,
+) -> Result<playsrc_collision::World, ()> {
+    let registry = surface_property_registry(bundle)?;
+    let materials = map
+        .materials
+        .iter()
+        .map(|material| {
+            resolve_material_semantics(
+                &material.logical_path.to_ascii_lowercase(),
+                bundle,
+                material_environment(profile, false),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let inputs = map
+        .collision_displacements
+        .iter()
+        .map(|patch| {
+            let material = materials.get(patch.material).ok_or(())?;
+            let primary = registry
+                .resolve(material.surface_property.as_deref())
+                .or_else(|| registry.resolve(Some(b"default")))
+                .ok_or(())?;
+            let secondary = material
+                .secondary_surface_property
+                .as_deref()
+                .map(|name| registry.resolve(Some(name)).ok_or(()))
+                .transpose()?;
+            let has_secondary = secondary.is_some();
+            Ok(playsrc_collision::DisplacementInput {
+                source: patch.source,
+                parent_face: patch.parent_face,
+                contents: patch.contents,
+                positions: patch.positions.clone(),
+                triangles: patch.triangles.clone(),
+                triangle_tags: patch.triangle_tags.clone(),
+                primary_surface: playsrc_collision::SurfaceIdentity {
+                    registry: registry.identity,
+                    index: primary.index,
+                },
+                secondary_surface: secondary.map(|record| playsrc_collision::SurfaceIdentity {
+                    registry: registry.identity,
+                    index: record.index,
+                }),
+                use_secondary_surface: patch
+                    .secondary_surface
+                    .iter()
+                    .map(|selected| *selected && has_secondary)
+                    .collect(),
+            })
+        })
+        .collect::<Result<Vec<_>, ()>>()?;
+    world.with_displacement_inputs(inputs).map_err(|_| ())
+}
+
 fn resolve_materials(
     map: &playsrc_map::CanonicalMap,
     bundle: &BTreeMap<String, &[u8]>,
@@ -4767,6 +4897,7 @@ fn selected_sky_encoding(
 }
 
 fn collision_object_templates(
+    map: &playsrc_map::CanonicalMap,
     graph: &playsrc_entity::Graph,
     bundle: &BTreeMap<String, &[u8]>,
     studio_models: &BTreeMap<String, playsrc_studio_model::PresentationModel>,
@@ -4868,6 +4999,62 @@ fn collision_object_templates(
                 role: playsrc_collision::ObjectRole::Entity,
                 enabled: true,
                 transform,
+                linear_velocity: [0.0; 3],
+                angular_velocity: [0.0; 3],
+                collision_group: 0,
+                contents: CONTENTS_SOLID,
+                surface_flags: 0,
+                shape: playsrc_collision::SnapshotShape::Physics(shape),
+            },
+            runtime_transform: false,
+        });
+    }
+    for prop in &map.static_props.occurrences {
+        if prop.solidity == 0 {
+            continue;
+        }
+        if prop.solidity != 6 {
+            return Err(());
+        }
+        let model = &map
+            .static_props
+            .models
+            .get(prop.model)
+            .ok_or(())?
+            .logical_path;
+        let phy_path = model.strip_suffix(".mdl").ok_or(())?.to_owned() + ".phy";
+        let Some(bytes) = bundle.get(&phy_path).copied() else {
+            continue;
+        };
+        let shape = if let Some(shape) = physics_shapes.get(model) {
+            Arc::clone(shape)
+        } else {
+            let asset = playsrc_phy::parse_standalone(
+                bytes,
+                playsrc_phy::Profile::SourcePcPolygon,
+                playsrc_phy::Limits::default(),
+            )
+            .map_err(|_| ())?;
+            let identity =
+                u64::from_le_bytes(Sha256::digest(bytes)[..8].try_into().map_err(|_| ())?);
+            let shape = Arc::new(
+                playsrc_collision::PhysicsShape::from_phy(identity, &asset, 0, limits, |_| {
+                    CONTENTS_SOLID
+                })
+                .map_err(|_| ())?,
+            );
+            physics_shapes.insert(model.clone(), Arc::clone(&shape));
+            shape
+        };
+        output.push(CollisionObjectTemplate {
+            input: playsrc_collision::ObjectInput {
+                identity: 0x8000_0000_0000_0000u64 | u64::try_from(prop.source).map_err(|_| ())?,
+                role: playsrc_collision::ObjectRole::StaticProp,
+                enabled: true,
+                transform: playsrc_collision::Transform {
+                    origin: prop.origin,
+                    angles: prop.angles,
+                },
                 linear_velocity: [0.0; 3],
                 angular_velocity: [0.0; 3],
                 collision_group: 0,
@@ -6507,6 +6694,8 @@ pub struct PresentationSizeLedger {
     pub final_length: usize,
     pub final_capacity: usize,
     pub phase_milliseconds: [u64; 6],
+    pub displacement_input_count: usize,
+    pub static_prop_collision_count: usize,
 }
 
 type MeasuredPresentation = (CompiledPresentation, [u64; 6], PresentationSizeLedger);
@@ -6542,7 +6731,7 @@ fn cached_presentation_models(
     }
     let mut offset = 8;
     let model_count = presentation_cache_u32(bytes, &mut offset)? as usize;
-    if model_count > 256 {
+    if model_count > 4_096 {
         return Err(());
     }
     presentation_cache_skip(bytes, &mut offset, 12)?;
@@ -6614,7 +6803,7 @@ fn load_cached_presentation(
         profile,
         visibility,
         collision,
-        additional_model_roots: _,
+        additional_model_roots,
     } = inputs;
     let mut metrics_clock = RuntimeMetricsClock::new();
     let mut phase_started =
@@ -6653,6 +6842,12 @@ fn load_cached_presentation(
             );
             Ok::<_, u32>(output)
         })?;
+    let expected = additional_model_roots
+        .iter()
+        .fold(expected, |mut roots, model| {
+            roots.insert(model.clone());
+            roots
+        });
     let actual = model_headers
         .iter()
         .map(|(identity, _, _)| identity.clone())
@@ -7125,6 +7320,8 @@ fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresen
         final_length: out.len(),
         final_capacity: out.capacity(),
         phase_milliseconds: [0; 6],
+        displacement_input_count: 0,
+        static_prop_collision_count: 0,
     };
     Ok((
         (out, models, model_material_opacity, environment),

@@ -19,6 +19,17 @@ pub struct DisplacementSurface {
     pub corner_neighbors: [playsrc_bsp::DispCornerNeighbors; 4],
     pub triangle_tags: Vec<u16>,
 }
+#[derive(Clone, Debug, PartialEq)]
+pub struct CollisionDisplacement {
+    pub source: usize,
+    pub parent_face: usize,
+    pub material: usize,
+    pub contents: u32,
+    pub positions: Vec<[f32; 3]>,
+    pub triangles: Vec<[u32; 3]>,
+    pub triangle_tags: Vec<u16>,
+    pub secondary_surface: Vec<bool>,
+}
 
 pub(crate) struct Geometry {
     pub descriptor: DisplacementSurface,
@@ -28,6 +39,7 @@ pub(crate) struct Geometry {
     pub uv: Vec<[f32; 2]>,
     pub lightmap_uv: Vec<[f32; 2]>,
     pub triangles: Vec<[u32; 3]>,
+    pub collision: CollisionDisplacement,
 }
 
 pub(crate) struct Inputs<'a> {
@@ -170,9 +182,20 @@ pub(crate) fn compile(inputs: Inputs<'_>) -> Result<Geometry, Error> {
         }
     }
     let all_triangles = source_triangles(side);
+    let secondary_surface = all_triangles
+        .iter()
+        .map(|triangle| {
+            triangle
+                .iter()
+                .map(|index| alpha_values[*index as usize])
+                .sum::<f32>()
+                > 382.5
+        })
+        .collect();
     let normals = source_normals(side, &positions);
     let mut triangles = all_triangles
-        .into_iter()
+        .iter()
+        .copied()
         .zip(tags)
         .filter_map(|(triangle, tag)| (tag & DISP_TRI_TAG_REMOVE == 0).then_some(triangle))
         .collect::<Vec<_>>();
@@ -193,12 +216,22 @@ pub(crate) fn compile(inputs: Inputs<'_>) -> Result<Geometry, Error> {
             corner_neighbors: displacement.corner_neighbors,
             triangle_tags: tags.to_vec(),
         },
-        positions,
+        positions: positions.clone(),
         normals,
         alpha: alpha_values,
         uv: texture_coordinates,
         lightmap_uv: lightmap_coordinates,
         triangles,
+        collision: CollisionDisplacement {
+            source,
+            parent_face: inputs.face_index,
+            material: inputs.info.texture_data_index as usize,
+            contents: displacement.contents as u32,
+            positions: positions.clone(),
+            triangles: all_triangles,
+            triangle_tags: tags.to_vec(),
+            secondary_surface,
+        },
     })
 }
 

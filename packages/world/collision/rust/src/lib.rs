@@ -74,6 +74,23 @@ pub struct DisplacementPatch {
     pub vertices: Vec<([f32; 3], f32, f32)>,
     pub triangle_tags: Vec<u16>,
 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SurfaceIdentity {
+    pub registry: [u8; 32],
+    pub index: u32,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct DisplacementInput {
+    pub source: usize,
+    pub parent_face: usize,
+    pub contents: u32,
+    pub positions: Vec<[f32; 3]>,
+    pub triangles: Vec<[u32; 3]>,
+    pub triangle_tags: Vec<u16>,
+    pub primary_surface: SurfaceIdentity,
+    pub secondary_surface: Option<SurfaceIdentity>,
+    pub use_secondary_surface: Vec<bool>,
+}
 #[derive(Clone, Debug)]
 pub struct World {
     pub identity: [u8; 32],
@@ -89,6 +106,7 @@ pub struct World {
     pub model_contents: Vec<u32>,
     pub texture_flags: Vec<u16>,
     pub displacements: Vec<DisplacementPatch>,
+    pub displacement_inputs: Vec<DisplacementInput>,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Hull {
@@ -413,9 +431,47 @@ pub fn compile(bsp: &Bsp) -> Result<World, Error> {
         model_contents,
         texture_flags,
         displacements,
+        displacement_inputs: Vec::new(),
     };
     world.identity = world_identity(&world);
     Ok(world)
+}
+impl World {
+    pub fn with_displacement_inputs(
+        mut self,
+        inputs: Vec<DisplacementInput>,
+    ) -> Result<Self, Error> {
+        if !self.displacement_inputs.is_empty() || inputs.len() != self.displacements.len() {
+            return Err(error(ErrorCode::InvalidReference, None));
+        }
+        for (index, (input, source)) in inputs.iter().zip(&self.displacements).enumerate() {
+            if input.source != source.source
+                || input.parent_face != usize::from(source.map_face)
+                || input.contents != source.contents
+                || input.positions.len() != (1usize << source.power).saturating_add(1).pow(2)
+                || input.triangles.len() != source.triangle_tags.len()
+                || input.triangle_tags != source.triangle_tags
+                || input.use_secondary_surface.len() != input.triangles.len()
+                || input
+                    .positions
+                    .iter()
+                    .flatten()
+                    .any(|value| !value.is_finite())
+                || input
+                    .triangles
+                    .iter()
+                    .flatten()
+                    .any(|vertex| *vertex as usize >= input.positions.len())
+                || input.secondary_surface.is_none()
+                    && input.use_secondary_surface.iter().any(|selected| *selected)
+            {
+                return Err(error(ErrorCode::InvalidReference, Some(index)));
+            }
+        }
+        self.displacement_inputs = inputs;
+        self.identity = world_identity(&self);
+        Ok(self)
+    }
 }
 fn plane(p: &BspPlane, i: usize) -> Result<Plane, Error> {
     let normal = [p.normal.x.value(), p.normal.y.value(), p.normal.z.value()];
@@ -468,6 +524,7 @@ impl World {
             model_contents: Vec::new(),
             texture_flags: Vec::new(),
             displacements: Vec::new(),
+            displacement_inputs: Vec::new(),
         };
         world.identity = world_identity(&world);
         world
@@ -999,6 +1056,37 @@ fn world_identity(world: &World) -> [u8; 32] {
             digest.update(tag.to_le_bytes());
         }
     }
+    for input in &world.displacement_inputs {
+        digest.update((input.source as u64).to_le_bytes());
+        digest.update((input.parent_face as u64).to_le_bytes());
+        digest.update(input.contents.to_le_bytes());
+        for position in &input.positions {
+            for value in position {
+                digest.update(value.to_bits().to_le_bytes());
+            }
+        }
+        for triangle in &input.triangles {
+            for index in triangle {
+                digest.update(index.to_le_bytes());
+            }
+        }
+        for tag in &input.triangle_tags {
+            digest.update(tag.to_le_bytes());
+        }
+        digest.update(input.primary_surface.registry);
+        digest.update(input.primary_surface.index.to_le_bytes());
+        match input.secondary_surface {
+            Some(surface) => {
+                digest.update([1]);
+                digest.update(surface.registry);
+                digest.update(surface.index.to_le_bytes());
+            }
+            None => digest.update([0]),
+        }
+        for selected in &input.use_secondary_surface {
+            digest.update([u8::from(*selected)]);
+        }
+    }
     for flags in &world.texture_flags {
         digest.update(flags.to_le_bytes());
     }
@@ -1512,5 +1600,66 @@ mod tests {
         assert_eq!(batch.rays[0].trace.hit, Some(Hit::WorldBrush { brush: 0 }));
         assert!(batch.rays[0].trace.is_sky());
         assert_eq!(batch.snapshot, 77);
+    }
+
+    #[test]
+    fn displacement_inputs_attach_once_without_render_tag_filtering() {
+        let mut world = World::empty();
+        world.displacements.push(DisplacementPatch {
+            source: 0,
+            map_face: 3,
+            power: 2,
+            contents: CONTENTS_SOLID,
+            vertex_start: 0,
+            triangle_start: 0,
+            start_position: [0.0; 3],
+            minimum_tessellation: 0,
+            smoothing_angle: 0.0,
+            allowed_vertices: [u32::MAX; 10],
+            edge_neighbors: [playsrc_bsp::DispNeighbor {
+                sub_neighbors: [playsrc_bsp::DispSubNeighbor {
+                    neighbor: u16::MAX,
+                    orientation: 0,
+                    span: 0,
+                    neighbor_span: 0,
+                    padding: 0,
+                }; 2],
+            }; 4],
+            corner_neighbors: [playsrc_bsp::DispCornerNeighbors {
+                neighbors: [u16::MAX; 4],
+                neighbor_count: 0,
+                padding: 0,
+            }; 4],
+            vertices: vec![([0.0; 3], 0.0, 0.0); 25],
+            triangle_tags: vec![0x20; 32],
+        });
+        let registry = [7; 32];
+        let input = DisplacementInput {
+            source: 0,
+            parent_face: 3,
+            contents: CONTENTS_SOLID,
+            positions: vec![[0.0; 3]; 25],
+            triangles: vec![[0, 1, 2]; 32],
+            triangle_tags: vec![0x20; 32],
+            primary_surface: SurfaceIdentity { registry, index: 1 },
+            secondary_surface: Some(SurfaceIdentity { registry, index: 2 }),
+            use_secondary_surface: vec![false; 32],
+        };
+        let assembled = world.with_displacement_inputs(vec![input]).unwrap();
+        assert_eq!(assembled.displacement_inputs[0].triangles.len(), 32);
+        assert!(
+            assembled.displacement_inputs[0]
+                .triangle_tags
+                .iter()
+                .all(|tag| *tag == 0x20)
+        );
+        assert_eq!(
+            assembled
+                .clone()
+                .with_displacement_inputs(Vec::new())
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidReference
+        );
     }
 }
