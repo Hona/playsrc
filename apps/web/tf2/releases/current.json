@@ -5,8 +5,8 @@
     "wasm": {
       "kind": "derived-object",
       "mediaType": "application/octet-stream",
-      "byteLength": "4266166",
-      "sha256": "430bcba304e9e2f8a18db8bcfb1ac4328189c57adcd202325b1278806746379d"
+      "byteLength": "4266967",
+      "sha256": "9edbe70d4666f2cac223a6b24944a89f4c19e5feb9eec1f56bd495be22b9a9d3"
     },
     "catalog": {
       "kind": "catalog",
