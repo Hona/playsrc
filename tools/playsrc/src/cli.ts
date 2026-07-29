@@ -38,6 +38,11 @@ async function main(): Promise<number> {
         await runBrowserAcceptance(config, argument)
         return 0
       }
+      if (target === "browser-switch") {
+        const { runDualMapAcceptance } = await import("./verify-browser")
+        await runDualMapAcceptance(config, argument)
+        return 0
+      }
       if (target === "displacement-visuals") {
         const { runDisplacementVisualEvidence } = await import("./verify-browser")
         await runDisplacementVisualEvidence(config)

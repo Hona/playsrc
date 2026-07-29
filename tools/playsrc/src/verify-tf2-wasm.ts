@@ -17,10 +17,10 @@ import { encodeResourceBatch, parseResourceSet } from "@playsrc/asset-store/grap
 const EXPECTED_MAP_BYTES = 42_082_929
 const EXPECTED_MAP_SHA256 = "56153098a867c553651f9c773bd72c4659782bae8520277c80daaaa414bdf156"
 const EXPECTED_BSP_SHA256 = "b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959"
-const EXPECTED_HDR_BYTES=78_255_422
-const EXPECTED_HDR_SHA256="4610e40fe34d61d2eb6a61c1cc2e7fa725bd4b91eded2584e2973f8c162dbac4"
-const EXPECTED_LDR_DERIVED_SHA256="9c2c6733cc61ffc78096982436b20b10ec94de439c3c37dd624b20dbaf5536fc"
-const EXPECTED_HDR_DERIVED_SHA256="91758c22e569c68df8e5de2c89179aa883385be98cdbef79d11fe83d1f10a7c3"
+const EXPECTED_HDR_BYTES=78_255_714
+const EXPECTED_HDR_SHA256="735995d68920adcb971fe4c5e773986f438c2a95c07c935882dc7fd081ce1e3a"
+const EXPECTED_LDR_DERIVED_SHA256="23c6cd43e594a89e34514186dac3752c1ee31e497e48cebca412822c854228cd"
+const EXPECTED_HDR_DERIVED_SHA256="5be4cb1aa68586dbf0d786fdd5a85928638baeec361fde60003f0b1f200e8758"
 const EXPECTED_PARTICLE_MATERIAL_STATE_SHA256 = "65510289b8254192ecf843283ee18b106a0decef9f0f718b1e54c043cfa9fbdb"
 function resourcePathOffset(bytes: Uint8Array, target: string): number {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
@@ -323,7 +323,7 @@ function inspectHdrPayload(payload: Uint8Array, expectedConfigurationSha256: str
   }
   require(skyDimensions.join(",") === "512x256,512x256,512x256,512x256,512x512,4x4", "HDR sky dimensions are invalid")
   const inputCount = reader.u32()
-  require(inputCount===305,`HDR input-hash count is invalid: ${inputCount}`)
+  require(inputCount===309,`HDR input-hash count is invalid: ${inputCount}`)
   for (let index = 0; index < inputCount; index += 1) {
     require(reader.u8() === 1 && reader.take(3).every((value) => value === 0), "HDR input record is invalid")
     require(reader.text().length > 0, "HDR input path is empty")

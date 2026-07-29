@@ -11,6 +11,7 @@ import { buildTf2Wasm } from "./tf2-wasm-build"
 import { buildSourceBundle } from "./source-bundle"
 import { TF2_CONFIGURED_STARTUP } from "@playsrc/game-tf2-browser/startup-presentation"
 import { TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS, TF2_PL_UPWARD_MAP_PHOTO_LOCATIONS, TF2_STAMP_BACKGROUND } from "@playsrc/game-tf2-browser/loading-presentation"
+import { TF2_TARGET_NAMES, type Tf2TargetName } from "../../../apps/web/tf2/src/deployment"
 
 const APPLICATION_URL = "http://127.0.0.1:4173/"
 const ASSET_ORIGIN = "http://127.0.0.1:4174"
@@ -77,51 +78,47 @@ export type DevelopmentOwner = Readonly<{
 
 export async function startDevelopment(config: LocalConfig, target: string | undefined): Promise<DevelopmentOwner> {
   const started = performance.now()
-  const targetIdentity = target ?? ""
-  const map = await acquireMap(config, targetIdentity)
+  const targetIdentity = target ?? "jump_beef"
+  if (!TF2_TARGET_NAMES.includes(targetIdentity as Tf2TargetName)) throw new DevelopmentError("BuildFailed", "development default target is undeclared")
+  const maps = await Promise.all(TF2_TARGET_NAMES.map(async (name) => Object.freeze({ name, map: await acquireMap(config, name) })))
   const mapReady = performance.now()
-  const [wasmPath, sourceBundle, applicationBuild, { tf2ViteConfiguration }] = await Promise.all([
-    buildTf2Wasm(config),
-    buildSourceBundle(config, targetIdentity),
-    publicCommitIdentity(),
-    import("../../../apps/web/tf2/vite.config"),
-  ])
+  const concurrent = Promise.all([buildTf2Wasm(config), publicCommitIdentity(), import("../../../apps/web/tf2/vite.config")])
+  const sourceBundles = [] as Array<Readonly<{ name: (typeof TF2_TARGET_NAMES)[number]; sourceBundle: Awaited<ReturnType<typeof buildSourceBundle>> }>>
+  for (const name of TF2_TARGET_NAMES) sourceBundles.push(Object.freeze({ name, sourceBundle: await buildSourceBundle(config, name) }))
+  const [wasmPath, applicationBuild, { tf2ViteConfiguration }] = await concurrent
   const buildReady = performance.now()
-  const bsp: ObjectDescriptor = Object.freeze({
-    kind: "source-object",
-    mediaType: "application/octet-stream",
-    byteLength: String(map.decoded.byteLength),
-    sha256: map.decoded.sha256,
+  const targets = maps.map(({ name, map }, index) => {
+    const sourceBundle = sourceBundles[index].sourceBundle
+    return Object.freeze({
+      target: name,
+      contentBuild: sourceBundle.report.contentBuild,
+      objects: Object.freeze({
+        bsp: Object.freeze({ kind: "source-object" as const, mediaType: "application/octet-stream", byteLength: String(map.decoded.byteLength), sha256: map.decoded.sha256 }),
+        resources: sourceBundle.report.graphDescriptor,
+        dependencyLedger: sourceBundle.report.ledgerDescriptor,
+      }),
+      loading: Object.freeze({
+        mapPhotoLocations: name === "jump_beef" ? TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS : TF2_PL_UPWARD_MAP_PHOTO_LOCATIONS,
+        stampBackground: TF2_STAMP_BACKGROUND,
+      }),
+    })
   })
-  const resources = sourceBundle.report.graphDescriptor
-  const checkedCatalog = JSON.parse(await readFile(path.join(repositoryRoot, "apps", "web", "tf2", "releases", "catalog.json"), "utf8")) as { application: string; schema: string; entries: Array<{ target: string; resources: ObjectDescriptor }> }
-  const catalogSource = {
-    ...checkedCatalog,
-    entries: [
-      ...checkedCatalog.entries.filter((entry) => entry.target !== targetIdentity),
-      { target: targetIdentity, resources },
-    ].sort((left, right) => left.target.localeCompare(right.target)),
-  }
+  const catalogSource = { application: "tf2", entries: targets.map(({ target, objects }) => ({ target, resources: objects.resources })), schema: "playsrc-resource-catalog-v1" }
   const catalogBytes = canonicalGraphBytes(parseResourceCatalog(catalogSource))
   const catalog = descriptor("catalog", "application/vnd.playsrc.asset-catalog+json", catalogBytes)
-  const dependencyLedger = sourceBundle.report.ledgerDescriptor
   const wasmBytes = await readFile(wasmPath)
   const wasm = descriptor("derived-object", "application/octet-stream", wasmBytes)
   const browserConfiguration = JSON.stringify({
     application: "tf2",
     applicationBuild,
-    target: targetIdentity,
+    defaultTarget: targetIdentity,
     renderLevel: 2,
     assetOrigin: APPLICATION_URL.slice(0, -1),
     allowedExternalOrigins: ["https://allowed-host"],
-    bsp,
     wasm,
     catalog,
+    targets,
     startup: TF2_CONFIGURED_STARTUP,
-    loading: {
-      mapPhotoLocations: targetIdentity === "jump_beef" ? TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS : TF2_PL_UPWARD_MAP_PHOTO_LOCATIONS,
-      stampBackground: TF2_STAMP_BACKGROUND,
-    },
     presentation: {
       randomSeed: 0,
       activeHoliday: "none",
@@ -170,15 +167,17 @@ export async function startDevelopment(config: LocalConfig, target: string | und
     const publicationStarted = performance.now()
     await Promise.all([
       putObject(config.assetDir, wasm, wasmBytes),
-      publishFile(config.assetDir, bsp, path.join(config.sourceCacheDir, map.decoded.cachePath)),
-      publishFile(config.assetDir, resources, sourceBundle.graphPath),
       putObject(config.assetDir, catalog, catalogBytes),
-      publishFile(config.assetDir, dependencyLedger, sourceBundle.ledgerPath),
-      ...sourceBundle.graph.chunks.map((chunk) => publishFile(
-        config.assetDir,
-        resourceChunkObject(chunk),
-        path.join(sourceBundle.graphObjectDirectory, chunk.encodedSha256),
-      )),
+      ...maps.flatMap(({ map }, index) => {
+        const sourceBundle = sourceBundles[index].sourceBundle
+        const configured = targets[index]
+        return [
+          publishFile(config.assetDir, configured.objects.bsp, path.join(config.sourceCacheDir, map.decoded.cachePath)),
+          publishFile(config.assetDir, configured.objects.resources, sourceBundle.graphPath),
+          publishFile(config.assetDir, configured.objects.dependencyLedger, sourceBundle.ledgerPath),
+          ...sourceBundle.graph.chunks.map((chunk) => publishFile(config.assetDir, resourceChunkObject(chunk), path.join(sourceBundle.graphObjectDirectory, chunk.encodedSha256))),
+        ]
+      }),
     ])
     publicationMilliseconds = Math.round(performance.now() - publicationStarted)
     const viteStarted = performance.now()

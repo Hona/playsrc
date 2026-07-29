@@ -17,6 +17,7 @@
     "build:tf2-wasm-bindings": "bun tools/playsrc/src/build-tf2-wasm-bindings.ts",
     "verify:tf2-wasm": "bun tools/playsrc/src/cli.ts verify tf2-wasm",
     "verify:browser": "bun tools/playsrc/src/cli.ts verify browser",
+    "verify:browser-switch": "bun tools/playsrc/src/cli.ts verify browser-switch",
     "verify:displacement-visuals": "bun tools/playsrc/src/cli.ts verify displacement-visuals",
     "diagnose:presentation-bound": "bun tools/playsrc/src/diagnose-presentation-bound.ts",
     "profile:gameui": "playwright test --config=playwright.gameui-profile.config.ts",

@@ -1,0 +1,68 @@
+{
+  "schema": "playsrc-tf2-release-v2",
+  "defaultTarget": "jump_beef",
+  "objects": {
+    "wasm": {
+      "kind": "derived-object",
+      "mediaType": "application/octet-stream",
+      "byteLength": "4266967",
+      "sha256": "9edbe70d4666f2cac223a6b24944a89f4c19e5feb9eec1f56bd495be22b9a9d3"
+    },
+    "catalog": {
+      "kind": "catalog",
+      "mediaType": "application/vnd.playsrc.asset-catalog+json",
+      "byteLength": "500",
+      "sha256": "5359031886e19554387fee9aed94703c73464d9b7fb1da2872b2b9304882242c"
+    }
+  },
+  "targets": [
+    {
+      "target": "jump_beef",
+      "contentBuild": "24245096",
+      "objects": {
+        "bsp": {
+          "kind": "source-object",
+          "mediaType": "application/octet-stream",
+          "byteLength": "33379388",
+          "sha256": "b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959"
+        },
+        "resources": {
+          "kind": "source-root",
+          "mediaType": "application/vnd.playsrc.resource-graph+json",
+          "byteLength": "255330",
+          "sha256": "abccb94ba53b177333309fa9a82c85bf89a9b09d3866f5ed7af65a3546350027"
+        },
+        "dependencyLedger": {
+          "kind": "derived-object",
+          "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
+          "byteLength": "666641",
+          "sha256": "708db72030b85818c11f5f0a247cec6f9d04a384236e795c5012691b8663a793"
+        }
+      }
+    },
+    {
+      "target": "pl_upward",
+      "contentBuild": "24245096",
+      "objects": {
+        "bsp": {
+          "kind": "source-object",
+          "mediaType": "application/octet-stream",
+          "byteLength": "25446018",
+          "sha256": "15cbf91981b0d9902c645d1992d196b7e630742aa85111ed834d231f3c3a5709"
+        },
+        "resources": {
+          "kind": "source-root",
+          "mediaType": "application/vnd.playsrc.resource-graph+json",
+          "byteLength": "615030",
+          "sha256": "d2b30c9bfe2cc70a484ccb2c1fb5816362f344f5167d50afe4ad8997c25c2fc5"
+        },
+        "dependencyLedger": {
+          "kind": "derived-object",
+          "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
+          "byteLength": "3393455",
+          "sha256": "7752f45e127325564616385c4f537062f584e707b11fe7b2d2f2a34fbfb69e77"
+        }
+      }
+    }
+  ]
+}

@@ -20,6 +20,7 @@ use std::{
 };
 static SIMULATION_ERROR: AtomicU32 = AtomicU32::new(0);
 static SIMULATION_ERROR_DETAIL: OnceLock<Mutex<String>> = OnceLock::new();
+static GAME_ADVANCE_ERROR: AtomicU32 = AtomicU32::new(0);
 
 #[cfg(target_arch = "wasm32")]
 #[link(wasm_import_module = "playsrc_metrics")]
@@ -364,6 +365,18 @@ struct Tf2Simulation {
     current_command: Option<Arc<[u8]>>,
 }
 
+fn continuation_command(command: &[u8]) -> Result<Arc<[u8]>, playsrc_simulation::SimulationError> {
+    let mut continuation = command
+        .get(..48)
+        .ok_or_else(|| playsrc_simulation::SimulationError::new("command", "continuation"))?
+        .to_vec();
+    continuation[32..36].copy_from_slice(&0_u32.to_le_bytes());
+    continuation[36..40].copy_from_slice(&u32::MAX.to_le_bytes());
+    continuation[40..44].fill(0);
+    continuation[44..48].copy_from_slice(&48_u32.to_le_bytes());
+    Ok(Arc::from(continuation))
+}
+
 impl playsrc_simulation::Simulation for Tf2Simulation {
     fn advance(
         &mut self,
@@ -404,8 +417,9 @@ impl playsrc_simulation::Simulation for Tf2Simulation {
             merged[28..32].copy_from_slice(&flags.to_le_bytes());
             merged[32..36].copy_from_slice(&selectors.to_le_bytes());
             merged[36..40].copy_from_slice(&activate.to_le_bytes());
-            self.current_command = Some(latest.bytes.clone());
-            Arc::<[u8]>::from(merged)
+            let merged = Arc::<[u8]>::from(merged);
+            self.current_command = Some(continuation_command(&merged)?);
+            merged
         } else {
             self.current_command.clone().ok_or_else(|| {
                 playsrc_simulation::SimulationError::new(
@@ -417,7 +431,10 @@ impl playsrc_simulation::Simulation for Tf2Simulation {
         if unsafe { playsrc_game_advance(self.handle, command.as_ptr(), command.len(), 1) } != 1 {
             return Err(playsrc_simulation::SimulationError::new(
                 "tf2-transition",
-                "TF2 gameplay transition failed",
+                format!(
+                    "TF2 gameplay transition failed at game-advance:{}",
+                    GAME_ADVANCE_ERROR.load(Ordering::Relaxed)
+                ),
             ));
         }
         let snapshot = with(self.handle, |slot| slot.snapshot.clone()).ok_or_else(|| {
@@ -2837,32 +2854,39 @@ pub unsafe extern "C" fn playsrc_game_advance(
     length: usize,
     tick_count: u32,
 ) -> u32 {
+    GAME_ADVANCE_ERROR.store(0, Ordering::Relaxed);
+    macro_rules! fail {
+        ($code:expr) => {{
+            GAME_ADVANCE_ERROR.store($code, Ordering::Relaxed);
+            return 0;
+        }};
+    }
     if tick_count == 0 || tick_count > 64 {
-        return 0;
+        fail!(1);
     }
     let bytes = unsafe { std::slice::from_raw_parts(pointer, length) };
     let Some(input) = gameplay_protocol::decode(bytes) else {
-        return 0;
+        fail!(2);
     };
     let Some((index, generation)) = decode(handle) else {
-        return 0;
+        fail!(3);
     };
     let mut slots = slots().lock().expect("TF2 slots");
     let Some(slot) = slots.get_mut(index) else {
-        return 0;
+        fail!(4);
     };
     if slot.generation != generation {
-        return 0;
+        fail!(5);
     }
     let Some(session) = slot.session.as_ref() else {
-        return 0;
+        fail!(6);
     };
     let mut candidate = session.clone();
     let Some(collision) = slot.collision.clone() else {
-        return 0;
+        fail!(7);
     };
     let Some(gameplay_world) = slot.gameplay_world.clone() else {
-        return 0;
+        fail!(8);
     };
     let mut collision_transaction = CollisionSnapshotTransaction::new(gameplay_world.clone());
     let templates = slot.collision_templates.clone();
@@ -2908,7 +2932,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
                     playsrc_movement::PusherLimits::default(),
                 ) {
                     Ok(value) => value,
-                    Err(_) => return 0,
+                    Err(_) => fail!(10),
                 };
                 pushers.insert(request.request_id, pusher);
             }
@@ -2925,7 +2949,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
             &velocities,
         ) {
             Ok(value) => value,
-            Err(_) => return 0,
+            Err(_) => fail!(11),
         };
         let mut mover_phase = playsrc_tf2::MapPhase::default();
         if !pushers.is_empty() {
@@ -2973,15 +2997,15 @@ pub unsafe extern "C" fn playsrc_game_advance(
                     |_, _| true,
                 ) {
                     Ok(value) => value,
-                    Err(_) => return 0,
+                    Err(_) => fail!(12),
                 };
                 let Some(records) = mover_records(&frame) else {
-                    return 0;
+                    fail!(13);
                 };
                 for record in &records {
                     match candidate.apply_mover_results(std::slice::from_ref(record)) {
                         Ok(phase) => mover_phase.append(phase),
-                        Err(_) => return 0,
+                        Err(_) => fail!(14),
                     }
                 }
                 for result in &frame.results {
@@ -3010,12 +3034,12 @@ pub unsafe extern "C" fn playsrc_game_advance(
                 &velocities,
             ) {
                 Ok(value) => value,
-                Err(_) => return 0,
+                Err(_) => fail!(15),
             }
         };
         collision_snapshot_bytes = match collision_snapshot.snapshot_bytes() {
             Ok(value) => value,
-            Err(_) => return 0,
+            Err(_) => fail!(16),
         };
         let Some(rocket_results) = resolve_rocket_traces(
             &collision,
@@ -3023,7 +3047,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
             candidate.rocket_trace_requests(),
             candidate.producer_snapshot().tick,
         ) else {
-            return 0;
+            fail!(17);
         };
         consumed_rocket_results.extend_from_slice(&rocket_results);
         gameplay_world.replace_snapshot(collision_snapshot);
@@ -3080,7 +3104,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
                 producer = Some(current_producer);
                 snapshot = Some(value);
             }
-            Err(_) => return 0,
+            Err(error) => fail!(gameplay_error_code(&error)),
         }
     }
     let snapshot = snapshot.expect("positive tick count");
@@ -3091,7 +3115,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
             collision: collision_revision,
         }) {
             Ok(value) => value,
-            Err(_) => return 0,
+            Err(_) => fail!(19),
         };
     let Some(encoded) = encode_snapshot(
         &snapshot,
@@ -3108,7 +3132,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
             entity_presentation: &entity_presentation,
         },
     ) else {
-        return 0;
+        fail!(20);
     };
     slot.session = Some(candidate);
     slot.pushers = pushers;
@@ -3118,6 +3142,20 @@ pub unsafe extern "C" fn playsrc_game_advance(
     slot.error = 0;
     collision_transaction.committed = true;
     1
+}
+
+fn gameplay_error_code(error: &playsrc_tf2::Error) -> u32 {
+    1800 + match error {
+        playsrc_tf2::Error::Movement(_) => 1,
+        playsrc_tf2::Error::Entity(_) => 2,
+        playsrc_tf2::Error::Jump(_) => 3,
+        playsrc_tf2::Error::MissingEntity(_) => 4,
+        playsrc_tf2::Error::InvalidCourseTrigger(_) => 5,
+        playsrc_tf2::Error::ProjectileLimit => 6,
+        playsrc_tf2::Error::InvalidStickyLaunchRandom => 7,
+        playsrc_tf2::Error::InvalidProjectilePhysics => 8,
+        playsrc_tf2::Error::Random(_) => 9,
+    }
 }
 
 fn mover_records(frame: &playsrc_movement::PusherFrame) -> Option<Vec<playsrc_tf2::MoverResult>> {
@@ -10223,5 +10261,41 @@ mod tests {
         assert_eq!(&encoded[388..392], &[6, 1, 2, 0]);
         assert_eq!(&encoded[496..504], &[1, 1, 0, 0, 2, 1, 0, 0]);
         assert_eq!(&encoded[504..512], b"PRNG\x01\0\0\0");
+    }
+
+    #[test]
+    fn fixed_tick_continuation_retains_buttons_and_consumes_results_and_selectors() {
+        let mut bytes = vec![0; 48 + 80];
+        bytes[..4].copy_from_slice(b"PCMD");
+        bytes[4..8].copy_from_slice(&4_u32.to_le_bytes());
+        bytes[8..12].copy_from_slice(&240_f32.to_le_bytes());
+        bytes[12..16].copy_from_slice(&(-120_f32).to_le_bytes());
+        bytes[16..20].copy_from_slice(&100_f32.to_le_bytes());
+        bytes[28..32].copy_from_slice(&0xff_u32.to_le_bytes());
+        bytes[32..36].copy_from_slice(&0x0201_0302_u32.to_le_bytes());
+        bytes[36..40].copy_from_slice(&77_u32.to_le_bytes());
+        bytes[40..42].copy_from_slice(&1_u16.to_le_bytes());
+        let byte_length = bytes.len() as u32;
+        bytes[44..48].copy_from_slice(&byte_length.to_le_bytes());
+        let continued = continuation_command(&bytes).unwrap();
+        assert_eq!(continued.len(), 48);
+        assert_eq!(
+            &continued[8..20],
+            &[0, 0, 112, 67, 0, 0, 240, 194, 0, 0, 200, 66]
+        );
+        assert_eq!(
+            u32::from_le_bytes(continued[28..32].try_into().unwrap()),
+            0xff
+        );
+        assert_eq!(u32::from_le_bytes(continued[32..36].try_into().unwrap()), 0);
+        assert_eq!(
+            u32::from_le_bytes(continued[36..40].try_into().unwrap()),
+            u32::MAX
+        );
+        assert_eq!(u16::from_le_bytes(continued[40..42].try_into().unwrap()), 0);
+        assert_eq!(
+            u32::from_le_bytes(continued[44..48].try_into().unwrap()),
+            48
+        );
     }
 }
