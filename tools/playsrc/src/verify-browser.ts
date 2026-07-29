@@ -7,6 +7,8 @@ import { TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS, TF2_STAMP_BACKGROUND } from "@playsr
 import { TF2_CONTENT_BUILD } from "@playsrc/game-tf2-browser/content-build"
 import { TF2_BROWSER_SETTINGS_STORAGE_KEY } from "@playsrc/game-tf2-browser/settings-integration"
 import { chunksForRole, parseResourceGraphBytes } from "@playsrc/asset-store/graph"
+import checkedRelease from "../../../apps/web/tf2/releases/current.json"
+import { parseTf2Release } from "../../../apps/web/tf2/src/deployment"
 
 const MAX_OUTPUT_BYTES = 1024 * 1024
 const PROCESS_READY_TIMEOUT_MS = 300_000
@@ -15,6 +17,7 @@ const APPLICATION_URL = "http://127.0.0.1:4173/"
 const VIEWPORT_WIDTH = 1280
 const VIEWPORT_HEIGHT = 720
 const BACKGROUND_RGB = [17, 24, 32] as const
+const CURRENT_TF2_RELEASE=parseTf2Release(checkedRelease)
 const EXPECTED_RESOURCE_GRAPH_SHA256 = "abccb94ba53b177333309fa9a82c85bf89a9b09d3866f5ed7af65a3546350027"
 const EXPECTED_RESOURCE_ROLES = Object.freeze({
   startup: Object.freeze({ entries: 2, encodedBytes: 1_323_980 }),
@@ -2091,6 +2094,29 @@ export async function verifyBrowserAcceptance(
   }
 }
 
+async function exerciseSwitchedGameplay(session:string,target:string):Promise<Readonly<{target:string;firstTick:number;lastTick:number;distance:number}>>{
+  await agent(["--session",session,"fill","[aria-label='Console command']","noclip"])
+  await agent(["--session",session,"press","Enter"])
+  await agent(["--session",session,"press","Backquote"])
+  await agent(["--session",session,"wait","--fn","Number(document.querySelector('main').dataset.movementMode)===1","--timeout","30000"])
+  const before=parseJson<{tick:number;position:number[]}>(await agent(["--session",session,"eval","(()=>{const m=document.querySelector('main');return{tick:Number(m.dataset.snapshotTick),position:m.dataset.cameraPosition.split(',').map(Number)}})()"]));require(Number.isSafeInteger(before.tick)&&before.position.length===3&&before.position.every(Number.isFinite),`${target} pre-input gameplay state is malformed`)
+  await agent(["--session",session,"eval","window.dispatchEvent(new KeyboardEvent('keydown',{code:'KeyW',key:'w',bubbles:true}));true"])
+  await agent(["--session",session,"wait","--fn",`Number(document.querySelector('main').dataset.snapshotTick)>=${before.tick+3}&&Number(document.querySelector('main').dataset.wishSpeed)>0`,"--timeout","30000"])
+  await agent(["--session",session,"eval","window.dispatchEvent(new KeyboardEvent('keyup',{code:'KeyW',key:'w',bubbles:true}));true"])
+  const after=parseJson<{tick:number;position:number[]}>(await agent(["--session",session,"eval","(()=>{const m=document.querySelector('main');return{tick:Number(m.dataset.snapshotTick),position:m.dataset.cameraPosition.split(',').map(Number)}})()"])),distance=Math.hypot(...after.position.map((value,index)=>value-before.position[index]!));require(after.tick>=before.tick+3&&distance>1,`${target} post-activation gameplay did not advance: ${JSON.stringify({before,after,distance})}`)
+  await agent(["--session",session,"press","Backquote"])
+  return Object.freeze({target,firstTick:before.tick,lastTick:after.tick,distance})
+}
+
+async function captureFinalReadyGeometry(session:string,config:LocalConfig,target:string,generation:number,revision:number):Promise<Readonly<Record<string,unknown>>>{
+  await agent(["--session",session,"eval",`globalThis.__playsrcProfile??={};globalThis.__playsrcProfile.geometryEvidenceRevision=${revision};true`])
+  await agent(["--session",session,"wait","--fn",`globalThis.__playsrcProfile?.geometryEvidence?.revision===${revision}`,"--timeout","30000"])
+  const evidence=parseJson<{revision:number;generation:number;target:string;finalReady:boolean;identities:{bsp:string;resourceRoot:string;contentBuild:string;graphTarget:string;wasm:string;simulationTick:string};camera:{near:number};visibility:{outsideWorld:boolean;eyeLeaf:number|null;leaves:number[];areas:number[];pvsSurfaces:number[];drawSurfaces:number[]};geometry:{sceneGeneration:number;samples:{x:number;y:number;disposition:string;depth:number|null;primitive:number|null;object:number|null;material:string|null}[]}}>(await agent(["--session",session,"eval","globalThis.__playsrcProfile.geometryEvidence"])),expected=CURRENT_TF2_RELEASE.targets.find(candidate=>candidate.target===target);require(expected!==undefined&&evidence.revision===revision&&evidence.generation===generation&&evidence.target===target&&evidence.finalReady&&evidence.geometry.sceneGeneration===generation&&evidence.identities.bsp===expected.objects.bsp.sha256&&evidence.identities.resourceRoot===expected.objects.resources.sha256&&evidence.identities.contentBuild===expected.contentBuild&&evidence.identities.graphTarget===target&&evidence.identities.wasm===CURRENT_TF2_RELEASE.objects.wasm.sha256&&/^\d+$/.test(evidence.identities.simulationTick),`${target} final-Ready generation identity differs: ${JSON.stringify(evidence)}`);require(!evidence.visibility.outsideWorld&&evidence.visibility.eyeLeaf!==null&&evidence.visibility.leaves.length>0&&evidence.visibility.areas.length>0&&evidence.visibility.pvsSurfaces.length>0&&evidence.visibility.drawSurfaces.length>0,`${target} final-Ready PVS is empty: ${JSON.stringify(evidence.visibility)}`)
+  const admitted=new Set(evidence.visibility.drawSurfaces),hits=evidence.geometry.samples.filter(sample=>sample.disposition==="main-world");require(evidence.geometry.samples.length===25&&hits.length>0&&hits.every(sample=>sample.depth!==null&&sample.depth>evidence.camera.near&&sample.primitive!==null&&admitted.has(sample.primitive)&&Number.isSafeInteger(sample.object)&&sample.object!>=0&&Boolean(sample.material)),`${target} final-Ready depth/primitive/object evidence differs: ${JSON.stringify(evidence.geometry.samples)}`)
+  const regions=evidence.geometry.samples.map((sample,index)=>{const cx=(sample.x+1)*VIEWPORT_WIDTH/2,cy=(1-sample.y)*VIEWPORT_HEIGHT/2;return{name:`geometry-${index}`,x:Math.max(0,Math.floor(cx)-4),y:Math.max(0,Math.floor(cy)-4),width:8,height:8}}),color=await captureCanvas(session,config,target,regions),failed=hits.map(hit=>evidence.geometry.samples.indexOf(hit)).filter(index=>color.regions[index]!.nonBackgroundRatio<0.25||color.regions[index]!.meanLuma<=1);require(failed.length===0,`${target} final-Ready main-world primitives expose background/sky color: ${JSON.stringify(failed.map(index=>({sample:evidence.geometry.samples[index],color:color.regions[index]})))}`)
+  return Object.freeze({target,generation,identities:evidence.identities,sceneGeneration:evidence.geometry.sceneGeneration,eyeLeaf:evidence.visibility.eyeLeaf,leaves:evidence.visibility.leaves.length,areas:evidence.visibility.areas,pvsSurfaces:evidence.visibility.pvsSurfaces.length,drawSurfaces:evidence.visibility.drawSurfaces.length,mainWorldSamples:hits.length,depthRange:[Math.min(...hits.map(hit=>hit.depth!)),Math.max(...hits.map(hit=>hit.depth!))],primitiveSha256:new Bun.CryptoHasher("sha256").update(JSON.stringify(hits.map(hit=>hit.primitive))).digest("hex"),objectSha256:new Bun.CryptoHasher("sha256").update(JSON.stringify(hits.map(hit=>[hit.object,hit.material]))).digest("hex"),colorSha256:color.sha256,colorRegions:Object.freeze(color.regions.map(region=>Object.freeze({name:region.name,nonBackgroundRatio:region.nonBackgroundRatio,meanLuma:region.meanLuma,sha256:region.sha256})))})
+}
+
 export async function runDualMapAcceptance(config: LocalConfig, target: string | undefined): Promise<void> {
   if (target !== undefined) throw new BrowserEvidenceError("dual-map acceptance does not accept a target argument")
   const owner = await startDevelopmentProcess("jump_beef")
@@ -2107,6 +2133,8 @@ export async function runDualMapAcceptance(config: LocalConfig, target: string |
     await agent(["--session", session, "fill", "[aria-label='Console command']", "map jump_beef"])
     await agent(["--session", session, "press", "Enter"])
     await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.phase==='Ready'&&document.querySelector('main').dataset.environmentSky==='sky_day01_01'", "--timeout", "600000"])
+    const geometry=[await captureFinalReadyGeometry(session,config,"jump_beef",1,1)]
+    const gameplay=[await exerciseSwitchedGameplay(session,"jump_beef")]
     const unknownBefore = parseJson<{ detail: string; resources: number }>(await agent(["--session", session, "eval", "(()=>({detail:document.querySelector('main').dataset.detail,resources:performance.getEntriesByType('resource').length}))()"] ))
     await agent(["--session", session, "fill", "[aria-label='Console command']", "map upward"])
     await agent(["--session", session, "press", "Enter"])
@@ -2120,11 +2148,15 @@ export async function runDualMapAcceptance(config: LocalConfig, target: string |
     await agent(["--session", session, "wait", "--fn", "document.querySelector('.developer-layer [data-vgui-service=developer-console]')?.textContent.includes('Loaded pl_upward; generation 2')&&document.querySelector('main').dataset.phase==='Ready'", "--timeout", "600000"])
     await agent(["--session", session, "wait", "--fn", "JSON.parse(document.querySelector('.world-canvas').dataset.staticProps||'null')?.total===1244&&JSON.parse(document.querySelector('.world-canvas').dataset.sky3dPass||'null')?.skyProps>0", "--timeout", "30000"])
     require(parseJson<string>(await agent(["--session", session, "eval", "document.querySelector('main').dataset.detail"] )) === "Playing pl_upward", "pl_upward gameplay publication is unavailable")
+    geometry.push(await captureFinalReadyGeometry(session,config,"pl_upward",2,2))
+    gameplay.push(await exerciseSwitchedGameplay(session,"pl_upward"))
     await agent(["--session", session, "fill", "[aria-label='Console command']", "map jump_beef"])
     await agent(["--session", session, "press", "Enter"])
     await agent(["--session", session, "wait", "--fn", "document.querySelector('.developer-layer [data-vgui-service=developer-console]')?.textContent.includes('Loaded jump_beef; generation 3')&&document.querySelector('main').dataset.phase==='Ready'", "--timeout", "600000"])
     require(parseJson<number>(await agent(["--session", session, "eval", "JSON.parse(document.querySelector('.world-canvas').dataset.staticProps).total"] )) === 0, "jump_beef retained pl_upward static props")
-    report = { schema: "playsrc-tf2-dual-map-browser-evidence-v1", sequence: ["jump_beef", "pl_upward", "jump_beef"], generations: [1, 2, 3], unknownRejectedWithoutFetch: true, loadingDescriptorsSelected: true, plUpwardStaticPropsAndSky: true, plUpwardGameplaySnapshot: true, replacementResourcesReleased: true }
+    geometry.push(await captureFinalReadyGeometry(session,config,"jump_beef",3,3))
+    gameplay.push(await exerciseSwitchedGameplay(session,"jump_beef"))
+    report = { schema: "playsrc-tf2-dual-map-browser-evidence-v2", sequence: ["jump_beef", "pl_upward", "jump_beef"], generations: [1, 2, 3], unknownRejectedWithoutFetch: true, loadingDescriptorsSelected: true, plUpwardStaticPropsAndSky: true, gameplay,geometry,replacementResourcesReleased: true }
   } catch (error) {
     let state = "unavailable"
     if (browserOpen) state = await agent(["--session", session, "eval", "(()=>{const m=document.querySelector('main'),c=document.querySelector('.developer-layer [data-vgui-service=developer-console]');return{phase:m?.dataset.phase,detail:m?.dataset.detail,gameui:m?.dataset.gameui,console:c?.textContent.slice(-2000)}})()"] ).catch(() => "unavailable")

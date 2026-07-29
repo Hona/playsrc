@@ -304,6 +304,7 @@ export class Tf2Application {
   #simulationTask?: Promise<void>
   #pendingPresentation?:SimulationPublication
   #presentationBusy=false
+  #presentationTask?:Promise<void>
   #preparedPresentation?:PreparedPresentation
   readonly #requiredParticleDisplayFrames=new RequiredParticleDisplayQueue<PreparedPresentation>(MAX_REQUIRED_PARTICLE_DISPLAY_FRAMES, 2)
   #preparedRevision=0
@@ -1679,6 +1680,7 @@ export class Tf2Application {
     this.#neutral()
     this.#simulationSamples.clear()
     await this.#simulationTask
+    await this.#presentationTask
     this.#pendingPresentation=undefined
     this.#preparedPresentation=undefined
     this.#requiredParticleDisplayFrames.reset()
@@ -2315,6 +2317,10 @@ export class Tf2Application {
     this.#canvas.dataset.sky3dPass=rendered.sky3dPass?JSON.stringify(rendered.sky3dPass):""
     this.#canvas.dataset.runtimeStaticPropScreen=JSON.stringify(rendered.runtimeStaticPropScreen)
     if(profile){profile.displacementVisibility={surfaces:[...visibility.surfaces],drawSurfaces:[...visibility.drawSurfaces],outsideWorld:visibility.outsideWorld,eyeLeaf:visibility.eyeLeaf,leaves:visibility.leaves,areas:visibility.areas};profile.displacementCamera=camera}
+    const geometryEvidenceRevision=profile?.geometryEvidenceRevision
+    if(profile&&Number.isSafeInteger(geometryEvidenceRevision)&&geometryEvidenceRevision!==((profile.geometryEvidence as {revision?:unknown}|undefined)?.revision)&&this.#view.phase==="Ready"){
+      profile.geometryEvidence=Object.freeze({revision:geometryEvidenceRevision,generation,target:this.#mapIdentity,finalReady:true,identities:Object.freeze({bsp:this.#activeTarget?.objects.bsp.sha256,resourceRoot:this.#activeTarget?.objects.resources.sha256,contentBuild:this.#resourceGraph?.contentBuild,graphTarget:this.#resourceGraph?.target,wasm:this.#configuration?.wasm.sha256,simulationTick:prepared.snapshot.tick.toString()}),camera,visibility:Object.freeze({outsideWorld:visibility.outsideWorld,eyeLeaf:visibility.eyeLeaf,leaves:Object.freeze([...visibility.leaves]),areas:Object.freeze([...visibility.areas]),pvsSurfaces:Object.freeze([...visibility.surfaces]),drawSurfaces:Object.freeze([...visibility.drawSurfaces])}),geometry:renderer.captureGeometryEvidence(camera)})
+    }
     if(this.#closed||this.#paused||generation!==this.#generation||renderer!==this.#renderer)return
     const publishPrepared=prepared.revision!==this.#lastRenderedPreparedRevision
     this.#lastRenderedPreparedRevision=prepared.revision
@@ -2410,7 +2416,7 @@ export class Tf2Application {
     }
   }
   #enqueuePresentation(generation:number,publication:SimulationPublication,sampledMovementX:number):void{
-    if(generation!==this.#generation||this.#closed)return;this.#applyAuthoritativeView(publication,sampledMovementX);for(const batch of publication.eventBatches){const entry=batch.snapshot.projectileTimeline[0];if(!entry||this.#pendingProjectileTimeline.at(-1)?.tick===entry.tick)continue;if(this.#pendingProjectileTimeline.at(-1)&&this.#pendingProjectileTimeline.at(-1)!.tick>entry.tick){this.#paused=true;this.#set({phase:"Failed",detail:"Projectile presentation timeline reversed before admission"});return}this.#pendingProjectileTimeline.push(entry)}if(this.#pendingProjectileTimeline.length>4096){this.#paused=true;this.#set({phase:"Failed",detail:"Projectile presentation timeline reached its explicit limit"});return}this.#pendingPresentation=this.#pendingPresentation?this.#mergePublications(this.#pendingPresentation,publication):publication;this.#maximumPublicationTicks=Math.max(this.#maximumPublicationTicks,this.#pendingPresentation.selectedTicks);if(!this.#presentationBusy)void this.#drainPresentations()
+    if(generation!==this.#generation||this.#closed)return;this.#applyAuthoritativeView(publication,sampledMovementX);for(const batch of publication.eventBatches){const entry=batch.snapshot.projectileTimeline[0];if(!entry||this.#pendingProjectileTimeline.at(-1)?.tick===entry.tick)continue;if(this.#pendingProjectileTimeline.at(-1)&&this.#pendingProjectileTimeline.at(-1)!.tick>entry.tick){this.#paused=true;this.#set({phase:"Failed",detail:"Projectile presentation timeline reversed before admission"});return}this.#pendingProjectileTimeline.push(entry)}if(this.#pendingProjectileTimeline.length>4096){this.#paused=true;this.#set({phase:"Failed",detail:"Projectile presentation timeline reached its explicit limit"});return}this.#pendingPresentation=this.#pendingPresentation?this.#mergePublications(this.#pendingPresentation,publication):publication;this.#maximumPublicationTicks=Math.max(this.#maximumPublicationTicks,this.#pendingPresentation.selectedTicks);if(!this.#presentationBusy){const task=this.#drainPresentations();this.#presentationTask=task;void task.finally(()=>{if(this.#presentationTask===task)this.#presentationTask=undefined})}
   }
   #mergePublications(left:SimulationPublication,right:SimulationPublication):SimulationPublication{const snapshot=mergePublicationSnapshots([left.snapshot,right.snapshot]);return Object.freeze({...right,firstHostTick:left.firstHostTick,selectedTicks:left.selectedTicks+right.selectedTicks,eventBatches:Object.freeze([...left.eventBatches,...right.eventBatches]),snapshot})}
   async #drainPresentations():Promise<void>{this.#presentationBusy=true;try{while(this.#pendingPresentation&&!this.#closed){const value=this.#pendingPresentation;this.#pendingPresentation=undefined;await this.#present(value)}}finally{this.#presentationBusy=false}}
@@ -2780,6 +2786,8 @@ export class Tf2Application {
   #neutral(): void {
     this.#buttons.clear()
     this.#jumpPressed = this.#firePressed = this.#detonatePressed = this.#reloadPressed = false
+    this.#selectClass = undefined
+    this.#selectWeapon = undefined
     this.#modeRequest = undefined
   }
 
@@ -2881,6 +2889,7 @@ export class Tf2Application {
     this.#generation += 1
     this.#simulationSamples.clear()
     await this.#simulationTask
+    await this.#presentationTask
     this.#pendingPresentation = undefined
     this.#preparedPresentation = undefined
     this.#requiredParticleDisplayFrames.reset()

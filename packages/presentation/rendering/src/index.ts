@@ -612,6 +612,19 @@ export type RendererCreateRequest = Readonly<{
 
 export type FramePacingCallback = (timestampMilliseconds: number) => Frame | undefined | Promise<Frame | undefined>
 
+export type GeometryEvidence = Readonly<{
+  sceneGeneration: number
+  samples: readonly Readonly<{
+    x: number
+    y: number
+    disposition: "main-world" | "background"
+    depth: number | null
+    primitive: number | null
+    object: number | null
+    material: string | null
+  }>[]
+}>
+
 export interface Renderer {
   readonly configuration: RenderConfiguration
   readonly lifecycle: RendererLifecycle
@@ -619,6 +632,7 @@ export interface Renderer {
   readonly sceneGeneration: number
   loadMap(request: MapLoadRequest): Promise<SceneResult>
   render(frame: Frame): Promise<FrameResult>
+  captureGeometryEvidence(camera: Camera): GeometryEvidence
   resize(cssWidth: number, cssHeight: number, devicePixelRatio: number): ResizeResult
   startFramePacing(callback: FramePacingCallback): void
   stopFramePacing(): void
@@ -1099,6 +1113,48 @@ class RendererOwner implements Renderer {
   }
   get sceneGeneration(): number {
     return this.#sceneGeneration
+  }
+
+  captureGeometryEvidence(camera: Camera): GeometryEvidence {
+    if (!this.#active || this.#lifecycle !== "Ready") throw new RenderingError("InvalidState", "renderer geometry evidence is unavailable")
+    this.#setCamera(camera)
+    this.#world.updateMatrixWorld(true)
+    const raycaster = new THREE.Raycaster()
+    const meshes = this.#active.worldBatches.filter((batch) => batch.mesh.visible).map((batch) => batch.mesh)
+    const samples = [] as GeometryEvidence["samples"][number][]
+    for (const y of [-0.8, -0.4, 0, 0.4, 0.8]) {
+      for (const x of [-0.8, -0.4, 0, 0.4, 0.8]) {
+        raycaster.setFromCamera(new THREE.Vector2(x, y), this.#camera)
+        const intersection = raycaster.intersectObjects(meshes, false)[0]
+        if (!intersection || intersection.faceIndex === undefined) {
+          samples.push(Object.freeze({ x, y, disposition: "background", depth: null, primitive: null, object: null, material: null }))
+          continue
+        }
+        const object = this.#active.worldBatches.findIndex((batch) => batch.mesh === intersection.object)
+        const batch = this.#active.worldBatches[object]!
+        const current = batch.index.array as Uint32Array
+        const at = intersection.faceIndex * 3
+        let sourceTriangle = -1
+        for (let triangle = 0; triangle < batch.sourceIndices.length / 3; triangle += 1) {
+          const source = triangle * 3
+          if (batch.sourceIndices[source] === current[at] && batch.sourceIndices[source + 1] === current[at + 1] && batch.sourceIndices[source + 2] === current[at + 2]) {
+            sourceTriangle = triangle
+            break
+          }
+        }
+        if (sourceTriangle < 0) throw new RenderingError("InvalidState", "visible primitive identity is unavailable")
+        samples.push(Object.freeze({
+          x,
+          y,
+          disposition: "main-world",
+          depth: intersection.distance,
+          primitive: batch.faces[sourceTriangle]!,
+          object,
+          material: String(batch.mesh.userData.materialIdentity),
+        }))
+      }
+    }
+    return Object.freeze({ sceneGeneration: this.#sceneGeneration, samples: Object.freeze(samples) })
   }
 
   async initialize(): Promise<this> {
