@@ -227,7 +227,14 @@ class Integration implements Tf2HudIntegration {
   #notificationDeadline = 0n
   #objectiveCarrying = false
   #winPanel?: VguiPanelId
-  #roundPanels?: Readonly<{ match: VguiPanelId; timer: VguiPanelId; value: VguiPanelId; waiting: VguiPanelId }>
+  #roundPanels?: Readonly<{
+    match: VguiPanelId
+    timer: VguiPanelId
+    value: VguiPanelId
+    waiting: VguiPanelId
+    timerChildren: ReadonlyMap<string, VguiPanelId>
+    waitingChildren: ReadonlyMap<string, VguiPanelId>
+  }>
   #destroyed = false
 
   constructor(request: Tf2HudIntegrationRequest) {
@@ -402,12 +409,16 @@ class Integration implements Tf2HudIntegration {
     applyChildren(this.#runtime, timer, matchResource, resourceChildren(authoredTimer), this.#resources.activeConditions)
     applyPanelResource(this.#runtime, timer, this.#resources.document(HUD_TIME_PANEL), this.#resources.activeConditions)
     applyPanelResource(this.#runtime, waiting, this.#resources.document(HUD_WAITING_PANEL), this.#resources.activeConditions)
+    const timerChildren = new Map<string, VguiPanelId>()
+    const waitingChildren = new Map<string, VguiPanelId>()
     for (const panel of this.#runtime.snapshot().panels) {
       this.#panels.set(panel.name.toLowerCase(), panel.id)
+      if (panel.parent === timer) timerChildren.set(panel.name.toLowerCase(), panel.id)
+      if (panel.parent === waiting) waitingChildren.set(panel.name.toLowerCase(), panel.id)
       apply(this.#runtime, { kind: "set-panel-state", panel: panel.id, mouseInput: false, keyboardInput: false })
     }
     this.#captureBaseBounds()
-    this.#roundPanels = Object.freeze({ match, timer, value, waiting })
+    this.#roundPanels = Object.freeze({ match, timer, value, waiting, timerChildren, waitingChildren })
     return this.#roundPanels
   }
 
@@ -424,8 +435,8 @@ class Integration implements Tf2HudIntegration {
     const seconds = Math.max(0, Math.floor(round.waitingForPlayers ? round.waitingRemaining ?? 0 : round.timer?.remaining ?? 0))
     const text = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`
     this.#objectiveValue("round-time", text, { kind: "mutate-control", panel: panels.value, mutation: { text } })
-    const background = find(this.#runtime, "TimePanelBG", panels.timer)
-    if (background !== null) {
+    const background = panels.timerChildren.get("timepanelbg")
+    if (background !== undefined) {
       const image = `../hud/objectives_timepanel_${team === 2 ? "red" : "blue"}_bg`
       this.#objectiveValue("round-team-background", image, { kind: "mutate-control", panel: background, mutation: { image } })
     }
@@ -441,16 +452,16 @@ class Integration implements Tf2HudIntegration {
       ["ServerTimeLimitLabel", false],
       ["ServerTimeLimitLabelBG", false],
     ] as const) {
-      const panel = find(this.#runtime, name, panels.timer)
-      if (panel !== null) setVisible(panel, visible, `timer-${name}`)
+      const panel = panels.timerChildren.get(name.toLowerCase())
+      if (panel !== undefined) setVisible(panel, visible, `timer-${name}`)
     }
     const aboutToEnd = round.waitingRemaining !== null && round.waitingRemaining <= 10
     for (const [name, visible] of [
       ["WaitingForPlayersLabel", !aboutToEnd],
       ["WaitingForPlayersEndingLabel", aboutToEnd],
     ] as const) {
-      const panel = find(this.#runtime, name, panels.waiting)
-      if (panel !== null) setVisible(panel, visible, `waiting-${name}`)
+      const panel = panels.waitingChildren.get(name.toLowerCase())
+      if (panel !== undefined) setVisible(panel, visible, `waiting-${name}`)
     }
   }
 

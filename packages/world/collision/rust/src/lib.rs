@@ -1521,6 +1521,30 @@ mod tests {
     }
 
     #[test]
+    fn retained_collision_revision_preserves_exact_order_and_changes_only_identity_bytes() {
+        let world = World::empty();
+        let original = Snapshot::compile(
+            &world,
+            9,
+            vec![
+                box_object(8, [0.0, -1.0, -1.0], [2.0, 1.0, 1.0]),
+                box_object(7, [4.0, -1.0, -1.0], [6.0, 1.0, 1.0]),
+            ],
+            SnapshotLimits::default(),
+        )
+        .unwrap();
+        let retained = original.with_identity(10);
+        assert_eq!(original.identity(), 9);
+        assert_eq!(retained.identity(), 10);
+        assert_eq!(retained.records(), original.records());
+        let original_bytes = original.snapshot_bytes().unwrap();
+        let retained_bytes = retained.snapshot_bytes().unwrap();
+        assert_eq!(&retained_bytes[..40], &original_bytes[..40]);
+        assert_eq!(&retained_bytes[40..48], &10_u64.to_le_bytes());
+        assert_eq!(&retained_bytes[48..], &original_bytes[48..]);
+    }
+
+    #[test]
     fn snapshot_broad_phase_rejects_only_disjoint_records_and_preserves_order() {
         let world = World::empty();
         let snapshot = Snapshot::compile(

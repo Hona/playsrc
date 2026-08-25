@@ -404,7 +404,7 @@ pub struct SnapshotRecord {
 pub struct Snapshot {
     world: [u8; 32],
     identity: u64,
-    objects: Vec<SnapshotRecord>,
+    objects: Arc<[SnapshotRecord]>,
     limits: SnapshotLimits,
 }
 impl Snapshot {
@@ -515,13 +515,22 @@ impl Snapshot {
         Ok(Self {
             world: world.identity,
             identity,
-            objects,
+            objects: objects.into(),
             limits,
         })
     }
 
     pub fn identity(&self) -> u64 {
         self.identity
+    }
+
+    pub fn with_identity(&self, identity: u64) -> Self {
+        Self {
+            world: self.world,
+            identity,
+            objects: Arc::clone(&self.objects),
+            limits: self.limits,
+        }
     }
 
     pub fn world_identity(&self) -> [u8; 32] {
@@ -549,7 +558,7 @@ impl Snapshot {
         output.u64(self.identity)?;
         output
             .u32(u32::try_from(self.objects.len()).map_err(|_| error(ErrorCode::Limit, None))?)?;
-        for object in &self.objects {
+        for object in self.objects.iter() {
             output.u64(object.identity)?;
             output.u8(match object.role {
                 ObjectRole::Entity => 0,
@@ -721,7 +730,7 @@ impl World {
         }
 
         let mut visits = 0_usize;
-        for object in &snapshot.objects {
+        for object in snapshot.objects.iter() {
             if !object.enabled
                 || object.role == ObjectRole::Entity && !object.volume_contents
                 || point
@@ -950,7 +959,7 @@ impl World {
         let mut object_trace = miss(request.start, dynamic_end);
         object_trace.world = self.identity;
         let mut visits = 0_usize;
-        for object in &snapshot.objects {
+        for object in snapshot.objects.iter() {
             if !object.enabled
                 || request.scope == TraceScope::EntitiesOnly
                     && object.role == ObjectRole::StaticProp

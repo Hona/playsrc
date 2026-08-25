@@ -3469,7 +3469,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
         fail!(8);
     };
     let mut collision_transaction = CollisionSnapshotTransaction::new(gameplay_world.clone());
-    let templates = slot.collision_templates.clone();
+    let templates = &slot.collision_templates;
     let mut collision_revision = slot.collision_revision;
     let mut pushers = slot.pushers.clone();
     let mut latest_game_snapshot = slot.latest_game_snapshot.clone();
@@ -3530,16 +3530,27 @@ pub unsafe extern "C" fn playsrc_game_advance(
         let mut transforms = BTreeMap::new();
         let mut velocities = BTreeMap::new();
         let current_revision = collision_revision.saturating_add(1);
-        let current_collision = match compile_collision_snapshot(
-            &collision,
-            &templates,
+        let prior_collision = gameplay_world.snapshot();
+        let current_collision = match retain_collision_snapshot(
+            &prior_collision,
+            templates,
             current_revision,
             latest_game_snapshot.as_ref(),
             &transforms,
             &velocities,
         ) {
-            Ok(value) => value,
-            Err(_) => fail!(11),
+            Some(value) => value,
+            None => match compile_collision_snapshot(
+                &collision,
+                templates,
+                current_revision,
+                latest_game_snapshot.as_ref(),
+                &transforms,
+                &velocities,
+            ) {
+                Ok(value) => value,
+                Err(_) => fail!(11),
+            },
         };
         let mut mover_phase = playsrc_tf2::MapPhase::default();
         if !pushers.is_empty() {
@@ -3617,7 +3628,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
         } else {
             match compile_collision_snapshot(
                 &collision,
-                &templates,
+                templates,
                 collision_revision,
                 latest_game_snapshot.as_ref(),
                 &transforms,
@@ -6521,6 +6532,50 @@ fn compile_collision_snapshot(
         inputs,
         playsrc_collision::SnapshotLimits::default(),
     )
+}
+
+fn retain_collision_snapshot(
+    previous: &playsrc_collision::Snapshot,
+    templates: &[CollisionObjectTemplate],
+    revision: u64,
+    latest: Option<&playsrc_tf2::Snapshot>,
+    transform_overrides: &BTreeMap<u64, playsrc_collision::Transform>,
+    velocity_overrides: &BTreeMap<u64, [f32; 3]>,
+) -> Option<playsrc_collision::Snapshot> {
+    if previous.records().len() != templates.len() {
+        return None;
+    }
+    for (record, template) in previous.records().iter().zip(templates) {
+        let identity = template.input.identity;
+        if record.identity != identity {
+            return None;
+        }
+        let runtime = template.runtime_transform.then(|| {
+            latest.and_then(|snapshot| {
+                snapshot
+                    .entity_transforms
+                    .iter()
+                    .find(|value| u64::from(value.identity) == identity)
+                    .map(|value| playsrc_collision::Transform {
+                        origin: value.position,
+                        angles: value.angles,
+                    })
+            })
+        });
+        let transform = transform_overrides
+            .get(&identity)
+            .copied()
+            .or_else(|| runtime.flatten())
+            .unwrap_or(template.input.transform);
+        let velocity = velocity_overrides
+            .get(&identity)
+            .copied()
+            .unwrap_or(template.input.linear_velocity);
+        if record.transform != transform || record.linear_velocity != velocity {
+            return None;
+        }
+    }
+    Some(previous.with_identity(revision))
 }
 
 fn authored_entity_model(entity: &playsrc_entity::Entity) -> Result<Option<String>, ()> {
