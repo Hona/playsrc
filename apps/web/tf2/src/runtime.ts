@@ -383,6 +383,8 @@ export class Tf2Application {
   #teamSelectionModelPanels: readonly Tf2TeamSelectionModelPanel[] = Object.freeze([])
   #teamSelectionRenderTask?: Promise<void>
   #teamSelectionRenderRevision = 0
+  readonly #teamSelectionPoses = new Map<string, PosedModel>()
+  readonly #teamSelectionAnimations = new Map<string, Readonly<{ sequence: string; startedSeconds: number; previousSeconds: number }>>()
   #teamAdmission?: Readonly<{ generation: number; resolve(): void; reject(error: Error): void }>
   #hudRootCounts?: Readonly<{ playerStatus: number; ammo: number }>
   #hudContext?: SessionHudContext
@@ -1494,6 +1496,8 @@ export class Tf2Application {
     this.#predictedEye.clear()
     this.#particleBatches = createParticleBatchEncoder()
     this.#pendingProjectileTimeline = []
+    this.#teamSelectionPoses.clear()
+    this.#teamSelectionAnimations.clear()
     this.#pendingPresentation = undefined
     this.#preparedPresentation = undefined
     this.#requiredParticleDisplayFrames.reset()
@@ -1672,35 +1676,82 @@ export class Tf2Application {
   }
 
   #renderTeamSelection(): void {
-    if (!this.#renderer || this.#teamSelectionModelPanels.length === 0 || this.#teamSelectionRenderTask) return
+    if (!this.#renderer || !this.#client || !this.#artifacts
+      || this.#teamSelectionModelPanels.length === 0 || this.#teamSelectionRenderTask) return
     const renderer = this.#renderer as Renderer & Readonly<{
       renderModelPanels(panels: readonly Readonly<{
         identity: string; model: string; skin: number; horizontalFov4By3: number;
         origin: readonly [number, number, number]; angles: readonly [number, number, number];
         bounds: Readonly<{ x: number; y: number; width: number; height: number }>;
+        pose?: Readonly<{ primitives: PosedModel["primitives"] }>;
       }>[]): Promise<Readonly<{ panels: readonly Readonly<{ identity: string; model: string; skin: number; primitives: number }>[] }>>
     }>
+    const client = this.#client
+    const artifacts = this.#artifacts
     const revision = this.#teamSelectionRenderRevision
     const generation = this.#generation
-    const panels = this.#teamSelectionModelPanels.map((panel) => Object.freeze({
-      identity: panel.name,
-      model: panel.model,
-      skin: panel.skin,
-      horizontalFov4By3: panel.fov,
-      origin: panel.origin,
-      angles: panel.angles,
-      bounds: panel.bounds,
-    }))
-    this.#teamSelectionRenderTask = renderer.renderModelPanels(panels)
-      .then((result) => {
-        if (generation !== this.#generation || revision !== this.#teamSelectionRenderRevision) return
-        this.#set({ teamSelectionModels: result.panels.map((panel) => `${panel.identity}:${panel.model}:${panel.skin}:${panel.primitives}`).join("|") })
+    const now = this.#frameClock.current
+    const authored = this.#teamSelectionModelPanels
+    const viewport = this.#viewport()
+    this.#teamSelectionRenderTask = (async () => {
+      const requests = authored.flatMap((panel, index) => {
+        if (panel.sequence === "idle") return []
+        const artifact = artifacts.models.get(panel.model.toLowerCase())
+        const timing = artifact?.sequences.find((sequence) => sequence.label.toLowerCase() === panel.sequence.toLowerCase())
+        if (!artifact || !timing) throw new Error(`TF2 authored team-door sequence is unavailable: ${panel.model}:${panel.sequence}`)
+        const prior = this.#teamSelectionAnimations.get(panel.name)
+        const current = prior?.sequence === panel.sequence
+          ? prior
+          : Object.freeze({ sequence: panel.sequence, startedSeconds: now, previousSeconds: 0 })
+        const elapsed = Math.max(0, now - current.startedSeconds)
+        if (elapsed > timing.durationSeconds && this.#teamSelectionPoses.has(panel.name)) return []
+        const request = Object.freeze({
+          identity: 0x1000 + index,
+          model: panel.model.toLowerCase(),
+          activity: panel.sequence,
+          previousElapsedSeconds: Math.min(current.previousSeconds, elapsed),
+          elapsedSeconds: elapsed,
+          currentTimeSeconds: now,
+          frameTimeSeconds: Math.max(0, elapsed - current.previousSeconds),
+          planarSpeed: 0,
+          screenAspectRatio: viewport.width / viewport.height,
+          worldFarPlane: 1000,
+          skin: panel.skin,
+          lod: 0,
+          bodygroups: Object.freeze(artifact.bodygroupCounts.map(() => 0)),
+        })
+        this.#teamSelectionAnimations.set(panel.name, Object.freeze({ ...current, previousSeconds: elapsed }))
+        return [Object.freeze({ panel: panel.name, request })]
       })
-      .catch((error) => {
+      if (requests.length > 0) {
+        const posed = decodeModelPoseOutput(await client.models(generation, encodeModelPoseBatch(requests.map((value) => value.request))))
         if (generation !== this.#generation || !this.#teamSelection?.state().visible) return
-        this.#set({ phase: "Failed", gameUi: "failure", detail: error instanceof Error ? error.message : "TF2 team model rendering failed" })
+        for (const item of posed) {
+          const selected = requests.find((candidate) => candidate.request.identity === item.identity)
+          if (!selected) throw new Error("TF2 team-door pose identity differs from its authored request")
+          this.#teamSelectionPoses.set(selected.panel, item)
+        }
+      }
+      const panels = authored.map((panel) => {
+        const pose = this.#teamSelectionPoses.get(panel.name)
+        return Object.freeze({
+          identity: panel.name,
+          model: panel.model,
+          skin: panel.skin,
+          horizontalFov4By3: panel.fov,
+          origin: panel.origin,
+          angles: panel.angles,
+          bounds: panel.bounds,
+          ...(pose ? { pose: Object.freeze({ primitives: pose.primitives }) } : {}),
+        })
       })
-      .finally(() => { this.#teamSelectionRenderTask = undefined })
+      const result = await renderer.renderModelPanels(panels)
+      if (generation !== this.#generation || revision !== this.#teamSelectionRenderRevision) return
+      this.#set({ teamSelectionModels: result.panels.map((panel) => `${panel.identity}:${panel.model}:${panel.skin}:${panel.primitives}`).join("|") })
+    })().catch((error) => {
+      if (generation !== this.#generation || !this.#teamSelection?.state().visible) return
+      this.#set({ phase: "Failed", gameUi: "failure", detail: error instanceof Error ? error.message : "TF2 team model rendering failed" })
+    }).finally(() => { this.#teamSelectionRenderTask = undefined })
   }
 
   #hudPresentationObservation(
