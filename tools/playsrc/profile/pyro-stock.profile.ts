@@ -53,6 +53,7 @@ test("headed stock Pyro weapons preserve authored flame, compression blast, shot
   await expect(canvas).toBeVisible()
   const before = await canvas.screenshot()
   await canvas.click({ position: { x: 640, y: 360 } })
+  await page.waitForFunction(() => document.pointerLockElement?.classList.contains("world-canvas"), undefined, { timeout: 5_000, polling: 20 })
   const started = await page.evaluate(() => performance.now())
   const startTick = Number((await page.locator("main").getAttribute("data-snapshot-tick")) ?? "0")
   await page.mouse.down({ button: "left" })
