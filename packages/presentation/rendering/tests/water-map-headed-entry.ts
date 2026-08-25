@@ -158,7 +158,7 @@ function visibility(camera: Camera, time: number): VisibilityFrame {
   exports.playsrc_free(outputPointer, length)
   const view = new DataView(output.buffer)
   const decoder = new TextDecoder("utf-8", { fatal: true })
-  require(decoder.decode(output.subarray(0, 4)) === "PVIS" && view.getUint32(4, true) === 4, "Rust Water visibility identity differs")
+  require(decoder.decode(output.subarray(0, 4)) === "PVIS" && view.getUint32(4, true) === 5, "Rust Water visibility identity differs")
   let offset = 76
   const take = (count: number): number => {
     require(offset + count <= output.byteLength, "Rust Water visibility is truncated")
@@ -227,6 +227,21 @@ function visibility(camera: Camera, time: number): VisibilityFrame {
       surfaces: indices(),
     }))
   }
+  const worldMaterials: VisibilityFrame["worldMaterials"][number][] = []
+  for (let count = u32(); count > 0; count--) {
+    const identityLength = u32()
+    const identity = decoder.decode(output.subarray(take(identityLength), offset))
+    const mapMaterial = u32()
+    const textures: VisibilityFrame["worldMaterials"][number]["textures"][number][] = []
+    for (let textureCount = u32(); textureCount > 0; textureCount--) {
+      const role = u8(), hasFrame = u8(), hasTransform = u8()
+      require(u8() === 0, "Rust world material texture padding differs")
+      const frame = i32(), matrix = new Float32Array(16)
+      for (let index = 0; index < matrix.length; index++) matrix[index] = f32()
+      textures.push(Object.freeze({ role, frame: hasFrame ? frame : null, transform: hasTransform ? matrix : null }))
+    }
+    worldMaterials.push(Object.freeze({ identity, mapMaterial, textures: Object.freeze(textures) }))
+  }
   require(offset === output.byteLength, "Rust Water visibility contains trailing bytes")
   return Object.freeze({
     cacheIdentity: hex(output.subarray(8, 40)),
@@ -250,6 +265,7 @@ function visibility(camera: Camera, time: number): VisibilityFrame {
       nearPlaneIntersects: nearPlaneIntersects === 1,
       passes: Object.freeze(passes),
     }),
+    worldMaterials: Object.freeze(worldMaterials),
   })
 }
 

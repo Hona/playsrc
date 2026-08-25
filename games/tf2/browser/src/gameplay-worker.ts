@@ -19,6 +19,7 @@ type WasmExports = Readonly<{
   playsrc_compile_map(bsp: number, length: number, profile: number, config: number, configLength: number): number
   playsrc_compile_map_cached(bsp: number, length: number, profile: number, config: number, configLength: number, presentation: number, presentationLength: number): number
   playsrc_compile_metric_milliseconds(handle: number, index: number): number
+  playsrc_texture_inspection_count(handle: number, index: number): number
   playsrc_result_length(handle: number): number
   playsrc_result_error(handle: number): number
   playsrc_result_copy(handle: number, pointer: number, capacity: number): number
@@ -369,6 +370,8 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
       presentationParticlesMilliseconds: compileMetrics[14]!,
       presentationEnvironmentMilliseconds: compileMetrics[15]!,
       presentationSerializationMilliseconds: compileMetrics[16]!,
+      textureDecoderRequests: exports.playsrc_texture_inspection_count(candidate, 0),
+      textureMetadataInspections: exports.playsrc_texture_inspection_count(candidate, 1),
       totalMilliseconds: performance.now() - started,
     },
   }, [...(payload ? [payload] : []), presentation])

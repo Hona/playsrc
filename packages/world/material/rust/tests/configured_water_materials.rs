@@ -3,7 +3,7 @@ use playsrc_material::{
     HdrMode, Material, MaterialRole, ParameterOrigin, ProxyEvaluationContext, ProxyValue,
     SelectionEnvironment, Shader, TextureColorRead, TextureFrameSelection, TextureRole,
     WaterShaderVariant, WaterSurfaceOpacity, evaluate_proxy_program, evaluate_water_material,
-    resolve_for_environment, water_material_output,
+    evaluate_world_material, resolve_for_environment, water_material_output, world_material_output,
 };
 use playsrc_vmt::{Composition, DependencyResponse, Limits, compose};
 use std::{collections::BTreeMap, fs, path::Path};
@@ -128,6 +128,46 @@ fn configured_water_roots_preserve_shader_opacity_proxy_and_overlay_contracts() 
         ));
     }
     assert_eq!(cheap_surface.proxy_program.entries.len(), 1);
+    let world = world_material_output(&cheap_surface).unwrap().unwrap();
+    assert_eq!(world.shader, Shader::LightmappedGeneric);
+    assert_eq!(world.fresnel_reflection, 1.0);
+    assert_eq!(world.environment_map.as_ref().unwrap().tint, [0.2; 3]);
+    assert_eq!(
+        world
+            .environment_map
+            .as_ref()
+            .unwrap()
+            .texture
+            .logical_path
+            .as_deref(),
+        Some("materials/maps/pl_upward/c7168_-2048_128.vtf")
+    );
+    let evaluated_world = evaluate_world_material(
+        &cheap_surface,
+        &ProxyEvaluationContext {
+            time: 0.5,
+            frame_time: 0.015,
+            texture_frames: BTreeMap::from([
+                (b"$basetexture".to_vec(), 1),
+                (b"$bumpmap".to_vec(), 30),
+                (b"$normalmap".to_vec(), 30),
+                (b"$envmap".to_vec(), 1),
+            ]),
+            ..ProxyEvaluationContext::default()
+        },
+    )
+    .unwrap();
+    for role in [TextureRole::Bump, TextureRole::Normal] {
+        assert_eq!(
+            evaluated_world
+                .textures
+                .iter()
+                .find(|texture| texture.role == role)
+                .unwrap()
+                .frame,
+            Some(15)
+        );
+    }
     let evaluated = evaluate_proxy_program(
         &cheap_surface.proxy_program,
         &BTreeMap::from([(b"$bumpframe".to_vec(), ProxyValue::Int(0))]),

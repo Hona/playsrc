@@ -476,7 +476,7 @@ fn initial_proxy_variables(
     Ok(variables)
 }
 
-fn proxy_parameter(value: &[u8]) -> Option<ProxyValue> {
+pub(crate) fn proxy_parameter(value: &[u8]) -> Option<ProxyValue> {
     let text = std::str::from_utf8(value).ok()?.trim();
     if let Some(content) = text
         .strip_prefix('[')
