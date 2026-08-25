@@ -2401,11 +2401,16 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 projectile_events,
             );
         }
-        if matches!(attack.weapon, Weapon::Bat | Weapon::Shovel | Weapon::Fists) {
+        if matches!(
+            attack.weapon,
+            Weapon::Bat | Weapon::Shovel | Weapon::Fists | Weapon::Kukri | Weapon::Wrench
+        ) {
             let (amount, definition) = match attack.weapon {
                 Weapon::Bat => (ballistics::BAT_DAMAGE, SoundDefinition::BatHitFlesh),
                 Weapon::Shovel => (ballistics::SHOVEL_DAMAGE, SoundDefinition::ShovelHitFlesh),
                 Weapon::Fists => (65.0, SoundDefinition::FistHitFlesh),
+                Weapon::Kukri => (ballistics::KUKRI_DAMAGE, SoundDefinition::KukriHitFlesh),
+                Weapon::Wrench => (ballistics::WRENCH_DAMAGE, SoundDefinition::WrenchHitFlesh),
                 _ => unreachable!("only melee weapons reach this branch"),
             };
             self.apply_actor_damage(
@@ -2439,8 +2444,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
             };
             let sound = match attack.weapon {
                 Weapon::Scattergun => SoundDefinition::ScattergunSingle,
-                Weapon::Pistol => SoundDefinition::PistolSingle,
-                Weapon::Shotgun | Weapon::HeavyShotgun => SoundDefinition::ShotgunSingle,
+                Weapon::Pistol | Weapon::EngineerPistol => SoundDefinition::PistolSingle,
+                Weapon::Shotgun | Weapon::HeavyShotgun | Weapon::EngineerShotgun => {
+                    SoundDefinition::ShotgunSingle
+                }
+                Weapon::SniperRifle => SoundDefinition::SniperSingle,
+                Weapon::Smg => SoundDefinition::SmgSingle,
                 _ => unreachable!("hitscan profiles own their firing sounds"),
             };
             (profile, sound)

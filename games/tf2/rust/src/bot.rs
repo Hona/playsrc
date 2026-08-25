@@ -35,6 +35,7 @@ pub const TARGET_SELECTION_INTERVAL: f32 = 0.3;
 pub const MAX_VISION_RANGE: f32 = 6000.0;
 pub const IMMEDIATE_THREAT_RANGE: f32 = 500.0;
 pub const SOLDIER_SECONDARY_RANGE: f32 = 500.0;
+pub const SNIPER_SECONDARY_RANGE: f32 = 750.0;
 pub const ROCKET_MAX_ATTACK_RANGE: f32 = 3000.0;
 pub const ROCKET_DESIRED_ATTACK_RANGE: f32 = 1250.0;
 pub const RANGED_DESIRED_ATTACK_RANGE: f32 = 500.0;
@@ -1004,7 +1005,10 @@ fn bot_eye(bot: &Bot) -> [f32; 3] {
     ]
 }
 fn is_melee(weapon: Weapon) -> bool {
-    matches!(weapon, Weapon::Bat | Weapon::Shovel | Weapon::Fists)
+    matches!(
+        weapon,
+        Weapon::Bat | Weapon::Shovel | Weapon::Fists | Weapon::Kukri | Weapon::Wrench
+    )
 }
 
 fn visible_actor<W: GameplayWorld>(world: &W, bot: &Bot, actor: Actor) -> bool {
@@ -1094,6 +1098,16 @@ fn select_weapon(bot: &mut Bot, threat: Option<Actor>, tick: u64, interval: f32)
                         < SOLDIER_SECONDARY_RANGE =>
             {
                 selected = Weapon::Shotgun
+            }
+            PlayerClass::Sniper
+                if bot
+                    .loadout
+                    .get(&Weapon::Smg)
+                    .is_some_and(|weapon| weapon.clip > 0 || weapon.reserve > 0)
+                    && distance(bot.movement.position, threat.position)
+                        < SNIPER_SECONDARY_RANGE =>
+            {
+                selected = Weapon::Smg
             }
             _ => {}
         }
@@ -1715,6 +1729,14 @@ mod tests {
         .unwrap()
     }
 
+    fn capture_graph() -> Graph {
+        playsrc_entity::parse(
+            b"{\"classname\"\"info_player_teamspawn\"\"TeamNum\"\"2\"\"origin\"\"10 50 1\"}\n{\"classname\"\"info_player_teamspawn\"\"TeamNum\"\"3\"\"origin\"\"250 50 1\"}\n{\"classname\"\"item_teamflag\"\"TeamNum\"\"2\"\"origin\"\"10 50 1\"}\n{\"classname\"\"item_teamflag\"\"TeamNum\"\"3\"\"origin\"\"250 50 1\"}\n{\"classname\"\"func_capturezone\"\"TeamNum\"\"2\"\"origin\"\"20 50 1\"}\n{\"classname\"\"func_capturezone\"\"TeamNum\"\"3\"\"origin\"\"240 50 1\"}\0",
+            playsrc_entity::Limits::default(),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn source_difficulty_reaction_thresholds_are_exact() {
         assert_eq!(Difficulty::Easy.recognition_seconds(), 1.0);
@@ -1872,6 +1894,10 @@ mod tests {
                 assert_eq!(snapshot.health, class.data().maximum_health);
                 assert_eq!(snapshot.maximum_health, class.data().maximum_health);
                 assert_eq!(snapshot.lifecycle, PlayerLifecycle::Active);
+                assert_eq!(
+                    snapshot.weapon.map(|weapon| weapon.weapon),
+                    crate::default_weapon(class)
+                );
             }
         }
         assert_eq!(world.len(), 18);
@@ -2336,6 +2362,60 @@ mod tests {
         assert_eq!(
             segment_player([100.0, 0.0, 41.0], [200.0, 0.0, 41.0], [100.0, 0.0, 0.0]),
             Some(0.0)
+        );
+    }
+
+    #[test]
+    fn ctf_flags_pick_up_deliver_drop_and_return_on_the_exact_authored_timers() {
+        let mut world = BotWorld::new(fixture_mesh(), &capture_graph(), &Floor, 0.015).unwrap();
+        let mut random = UniformRandomStream::from_seed(0).unwrap();
+        add(
+            &mut world,
+            &mut random,
+            PlayerTeam::Blue,
+            PlayerClass::Scout,
+            Difficulty::Normal,
+        );
+        world.bots.get_mut(&2).unwrap().movement.position = [10.0, 50.0, 1.0];
+        world.advance(&Floor, 0, human_far(), &mut random).unwrap();
+        let carrier = world.snapshots()[0].clone();
+        assert_eq!(carrier.objective, ObjectiveKind::DeliverFlag);
+        assert!(carrier.carrying_flag);
+        world.bots.get_mut(&2).unwrap().movement.position = [240.0, 50.0, 1.0];
+        world.advance(&Floor, 1, human_far(), &mut random).unwrap();
+        let delivered = world.snapshots()[0].clone();
+        assert_eq!((delivered.captures, delivered.carrying_flag), (1, false));
+        assert_eq!(delivered.objective, ObjectiveKind::FetchFlag);
+
+        world.bots.get_mut(&2).unwrap().movement.position = [10.0, 50.0, 1.0];
+        world.advance(&Floor, 2, human_far(), &mut random).unwrap();
+        assert!(world.snapshots()[0].carrying_flag);
+        world
+            .damage(
+                Damage {
+                    attacker: 1,
+                    victim: 2,
+                    weapon: Weapon::Shotgun,
+                    amount: 200.0,
+                    position: [10.0, 50.0, 1.0],
+                },
+                PlayerTeam::Red,
+                3,
+                1,
+            )
+            .unwrap();
+        let Scenario::CaptureTheFlag { flags, .. } = world.scenario else {
+            panic!("capture scenario")
+        };
+        assert_eq!(flags[0].carrier, None);
+        assert_eq!(flags[0].return_tick, Some(3 + ticks(60.0, 0.015)));
+        world.return_expired_flags(3 + ticks(60.0, 0.015));
+        let Scenario::CaptureTheFlag { flags, .. } = world.scenario else {
+            panic!("capture scenario")
+        };
+        assert_eq!(
+            (flags[0].position, flags[0].return_tick),
+            (flags[0].home, None)
         );
     }
 }
