@@ -18,6 +18,13 @@ pub enum SoundDefinition {
     ShovelMiss,
     ShovelHitFlesh,
     ShovelHitWorld,
+    MinigunWindUp,
+    MinigunWindDown,
+    MinigunSpin,
+    MinigunFire,
+    FistMiss,
+    FistHitWorld,
+    FistHitFlesh,
 }
 
 impl SoundDefinition {
@@ -41,13 +48,23 @@ impl SoundDefinition {
             Self::ShovelMiss => "Weapon_Shovel.Miss",
             Self::ShovelHitFlesh => "Weapon_Shovel.HitFlesh",
             Self::ShovelHitWorld => "Weapon_Shovel.HitWorld",
+            Self::MinigunWindUp => "Weapon_Minigun.WindUp",
+            Self::MinigunWindDown => "Weapon_Minigun.WindDown",
+            Self::MinigunSpin => "Weapon_Minigun.Spin",
+            Self::MinigunFire => "Weapon_Minigun.Fire",
+            Self::FistMiss => "Weapon_Fist.Miss",
+            Self::FistHitWorld => "Weapon_Fist.HitWorld",
+            Self::FistHitFlesh => "Weapon_Fist.HitFlesh",
         }
     }
 
     pub(crate) const fn wave_count(self) -> u8 {
         match self {
-            Self::RocketExplosion | Self::StickyExplosion | Self::ShovelHitFlesh => 3,
-            Self::BatHitWorld | Self::ShovelHitWorld => 2,
+            Self::RocketExplosion
+            | Self::StickyExplosion
+            | Self::ShovelHitFlesh
+            | Self::FistHitFlesh => 3,
+            Self::BatHitWorld | Self::ShovelHitWorld | Self::FistMiss | Self::FistHitWorld => 2,
             Self::RocketSingle
             | Self::OriginalSingle
             | Self::StickySingle
@@ -60,7 +77,11 @@ impl SoundDefinition {
             | Self::PistolReload
             | Self::ShotgunSingle
             | Self::ShotgunReload
-            | Self::ShovelMiss => 1,
+            | Self::ShovelMiss
+            | Self::MinigunWindUp
+            | Self::MinigunWindDown
+            | Self::MinigunSpin
+            | Self::MinigunFire => 1,
         }
     }
 }
@@ -111,6 +132,9 @@ pub struct SoundSelectionState {
     pub bat_hit_world_available: u8,
     pub shovel_hit_world_available: u8,
     pub shovel_hit_flesh_available: u8,
+    pub fist_miss_available: u8,
+    pub fist_hit_world_available: u8,
+    pub fist_hit_flesh_available: u8,
 }
 
 #[derive(Clone, Copy)]
@@ -164,6 +188,9 @@ pub(crate) struct SoundSelection {
     bat_hit_world: WaveCycle,
     shovel_hit_world: WaveCycle,
     shovel_hit_flesh: WaveCycle,
+    fist_miss: WaveCycle,
+    fist_hit_world: WaveCycle,
+    fist_hit_flesh: WaveCycle,
 }
 
 impl SoundSelection {
@@ -174,6 +201,9 @@ impl SoundSelection {
             bat_hit_world: WaveCycle::new(WaveCycle::TWO),
             shovel_hit_world: WaveCycle::new(WaveCycle::TWO),
             shovel_hit_flesh: WaveCycle::new(WaveCycle::THREE),
+            fist_miss: WaveCycle::new(WaveCycle::TWO),
+            fist_hit_world: WaveCycle::new(WaveCycle::TWO),
+            fist_hit_flesh: WaveCycle::new(WaveCycle::THREE),
         }
     }
 
@@ -184,6 +214,9 @@ impl SoundSelection {
             bat_hit_world_available: self.bat_hit_world.available,
             shovel_hit_world_available: self.shovel_hit_world.available,
             shovel_hit_flesh_available: self.shovel_hit_flesh.available,
+            fist_miss_available: self.fist_miss.available,
+            fist_hit_world_available: self.fist_hit_world.available,
+            fist_hit_flesh_available: self.fist_hit_flesh.available,
         }
     }
 
@@ -193,6 +226,9 @@ impl SoundSelection {
             || state.bat_hit_world_available & !WaveCycle::TWO != 0
             || state.shovel_hit_world_available & !WaveCycle::TWO != 0
             || state.shovel_hit_flesh_available & !WaveCycle::THREE != 0
+            || state.fist_miss_available & !WaveCycle::TWO != 0
+            || state.fist_hit_world_available & !WaveCycle::TWO != 0
+            || state.fist_hit_flesh_available & !WaveCycle::THREE != 0
         {
             return false;
         }
@@ -201,6 +237,9 @@ impl SoundSelection {
         self.bat_hit_world.available = state.bat_hit_world_available;
         self.shovel_hit_world.available = state.shovel_hit_world_available;
         self.shovel_hit_flesh.available = state.shovel_hit_flesh_available;
+        self.fist_miss.available = state.fist_miss_available;
+        self.fist_hit_world.available = state.fist_hit_world_available;
+        self.fist_hit_flesh.available = state.fist_hit_flesh_available;
         true
     }
 
@@ -224,6 +263,9 @@ impl SoundSelection {
             SoundDefinition::BatHitWorld => &mut self.bat_hit_world,
             SoundDefinition::ShovelHitWorld => &mut self.shovel_hit_world,
             SoundDefinition::ShovelHitFlesh => &mut self.shovel_hit_flesh,
+            SoundDefinition::FistMiss => &mut self.fist_miss,
+            SoundDefinition::FistHitWorld => &mut self.fist_hit_world,
+            SoundDefinition::FistHitFlesh => &mut self.fist_hit_flesh,
             _ => unreachable!("only configured random-wave definitions have selection state"),
         }
     }

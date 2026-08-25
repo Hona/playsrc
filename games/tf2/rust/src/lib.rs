@@ -180,6 +180,9 @@ pub enum Weapon {
     Bat = 6,
     Shotgun = 7,
     Shovel = 8,
+    Minigun = 9,
+    HeavyShotgun = 10,
+    Fists = 11,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -418,6 +421,7 @@ pub struct ProjectileEvent {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum Condition {
+    Aiming = 0,
     Phase = 14,
     EnergyBuff = 19,
     Burning = 22,
@@ -1218,6 +1222,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
             modifiers: self.movement_modifiers,
         }
         .resolve();
+        if self.conditions.contains(Condition::Aiming) && self.class == PlayerClass::Heavy {
+            movement_policy.maximum_speed = movement_policy.maximum_speed.min(110.0);
+            movement_policy.allow_jump = false;
+        }
         if self.air_dashes != 0 {
             movement_policy.air_dash_impulse = None;
         }
@@ -1316,19 +1324,41 @@ impl<W: GameplayWorld + Clone> Session<W> {
             && let Some(active_weapon) = self.weapon
         {
             let released_primary = !command.fire && self.fire_was_held;
+            let previous_minigun_state = self.loadout[&active_weapon].minigun_state;
             let primary = {
                 let state = self
                     .loadout
                     .get_mut(&active_weapon)
                     .expect("active weapon belongs to loadout");
-                state.primary(
+                state.attack(
                     self.tick,
                     self.movement_configuration.tick_interval,
                     command.fire,
+                    command.detonate && active_weapon != Weapon::StickybombLauncher,
                     released_primary,
                     &mut self.activity_events,
                 )
             };
+            if active_weapon == Weapon::Minigun {
+                let state = self.loadout[&active_weapon].minigun_state;
+                if state == weapon::MinigunState::Idle {
+                    self.conditions.remove(Condition::Aiming);
+                } else {
+                    self.conditions.insert(Condition::Aiming);
+                }
+                if state != previous_minigun_state {
+                    let definition = match state {
+                        weapon::MinigunState::Idle => Some(SoundDefinition::MinigunWindDown),
+                        weapon::MinigunState::Starting => Some(SoundDefinition::MinigunWindUp),
+                        weapon::MinigunState::Firing => Some(SoundDefinition::MinigunFire),
+                        weapon::MinigunState::Spinning => Some(SoundDefinition::MinigunSpin),
+                        weapon::MinigunState::DryFire => None,
+                    };
+                    if let Some(definition) = definition {
+                        self.emit_weapon_sound(definition, self.movement.position);
+                    }
+                }
+            }
             if let PrimaryResult::Fired { charge_seconds } = primary {
                 if ballistics::HitscanProfile::configured(active_weapon).is_some() {
                     self.fire_hitscan(
@@ -1337,8 +1367,16 @@ impl<W: GameplayWorld + Clone> Session<W> {
                         command.movement.yaw_degrees,
                         &mut events,
                     )?;
+                } else if active_weapon == Weapon::Minigun {
+                    let phase = self.fire_minigun_hitscan(
+                        command.pitch_degrees,
+                        command.movement.yaw_degrees,
+                    )?;
+                    map_phase.append(phase);
                 } else if matches!(active_weapon, Weapon::Bat | Weapon::Shovel) {
                     self.swing_melee(active_weapon);
+                } else if active_weapon == Weapon::Fists {
+                    self.emit_weapon_sound(SoundDefinition::FistMiss, self.movement.position);
                 } else {
                     self.fire_projectile(
                         command.pitch_degrees,
@@ -1348,6 +1386,16 @@ impl<W: GameplayWorld + Clone> Session<W> {
                         &mut projectile_events,
                     )?;
                 }
+            }
+            if active_weapon == Weapon::Fists
+                && self.loadout[&active_weapon]
+                    .smack_due_tick
+                    .is_some_and(|due| self.tick > due)
+            {
+                self.loadout.get_mut(&active_weapon).unwrap().smack_due_tick = None;
+                let phase =
+                    self.smack_fists(command.pitch_degrees, command.movement.yaw_degrees)?;
+                map_phase.append(phase);
             }
             if self.pending_melee_tick.is_some_and(|due| self.tick > due) {
                 self.pending_melee_tick = None;
@@ -1389,9 +1437,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     (Weapon::Pistol, weapon::WeaponActivity::ReloadStart) => {
                         Some(SoundDefinition::PistolReload)
                     }
-                    (Weapon::Shotgun, weapon::WeaponActivity::ReloadLoop) => {
-                        Some(SoundDefinition::ShotgunReload)
-                    }
+                    (
+                        Weapon::Shotgun | Weapon::HeavyShotgun,
+                        weapon::WeaponActivity::ReloadLoop,
+                    ) => Some(SoundDefinition::ShotgunReload),
                     _ => None,
                 });
             if let Some(definition) = reload_sound {
@@ -2036,7 +2085,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         let definition = match weapon {
             Weapon::Scattergun => SoundDefinition::ScattergunSingle,
             Weapon::Pistol => SoundDefinition::PistolSingle,
-            Weapon::Shotgun => SoundDefinition::ShotgunSingle,
+            Weapon::Shotgun | Weapon::HeavyShotgun => SoundDefinition::ShotgunSingle,
             _ => unreachable!("only configured firearms use hitscan profiles"),
         };
         self.emit_weapon_sound(definition, self.movement.position);
@@ -2152,6 +2201,66 @@ impl<W: GameplayWorld + Clone> Session<W> {
         Ok(())
     }
 
+    fn fire_minigun_hitscan(&mut self, pitch: f32, yaw: f32) -> Result<MapPhase, Error> {
+        let (forward, right, up) = angle_vectors(pitch, yaw, 0.0);
+        let source = add(self.movement.position, self.movement.view_offset);
+        let (_, penalty) = self.loadout[&Weapon::Minigun]
+            .minigun_penalties(self.tick, self.movement_configuration.tick_interval);
+        let spread = 0.08 * penalty;
+        let mut phase = MapPhase::default();
+        for pellet in 0..4 {
+            let mut random = UniformRandomStream::from_seed(((self.tick as i32) & 255) + pellet)
+                .expect("bounded Source bullet seed");
+            let (x, y) = (
+                random.random_float(-0.5, 0.5) + random.random_float(-0.5, 0.5),
+                random.random_float(-0.5, 0.5) + random.random_float(-0.5, 0.5),
+            );
+            let direction = normalized(add(
+                add(forward, scale(right, x * spread)),
+                scale(up, y * spread),
+            ));
+            let trace = self.collision.trace(
+                source,
+                add(source, scale(direction, 8192.0)),
+                Hull {
+                    mins: [0.0; 3],
+                    maxs: [0.0; 3],
+                },
+                MASK_SOLID,
+            )?;
+            if let Some(target) = trace.hit.and_then(|identity| u32::try_from(identity).ok())
+                && let Ok(damage) = self.map.damage(self.tick, target)
+            {
+                phase.append(damage);
+            }
+        }
+        Ok(phase)
+    }
+
+    fn smack_fists(&mut self, pitch: f32, yaw: f32) -> Result<MapPhase, Error> {
+        let (forward, _, _) = angle_vectors(pitch, yaw, 0.0);
+        let source = add(self.movement.position, self.movement.view_offset);
+        let trace = self.collision.trace(
+            source,
+            add(source, scale(forward, 48.0)),
+            Hull {
+                mins: [-18.0; 3],
+                maxs: [18.0; 3],
+            },
+            MASK_SOLID,
+        )?;
+        if let Some(target) = trace.hit.and_then(|identity| u32::try_from(identity).ok())
+            && let Ok(phase) = self.map.damage(self.tick, target)
+        {
+            self.emit_weapon_sound(SoundDefinition::FistHitFlesh, self.movement.position);
+            return Ok(phase);
+        }
+        if trace.fraction < 1.0 {
+            self.emit_weapon_sound(SoundDefinition::FistHitWorld, self.movement.position);
+        }
+        Ok(MapPhase::default())
+    }
+
     fn fire_projectile(
         &mut self,
         pitch: f32,
@@ -2169,7 +2278,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
             | Weapon::Pistol
             | Weapon::Bat
             | Weapon::Shotgun
-            | Weapon::Shovel => {
+            | Weapon::Shovel
+            | Weapon::Minigun
+            | Weapon::HeavyShotgun
+            | Weapon::Fists => {
                 unreachable!("hitscan and melee weapons do not spawn projectiles")
             }
         };
@@ -2195,7 +2307,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
             | Weapon::Pistol
             | Weapon::Bat
             | Weapon::Shotgun
-            | Weapon::Shovel => {
+            | Weapon::Shovel
+            | Weapon::Minigun
+            | Weapon::HeavyShotgun
+            | Weapon::Fists => {
                 unreachable!("hitscan and melee weapons do not spawn projectiles")
             }
         };
@@ -2863,6 +2978,7 @@ fn default_weapon(class: PlayerClass) -> Option<Weapon> {
         PlayerClass::Scout => Some(Weapon::Scattergun),
         PlayerClass::Soldier => Some(Weapon::RocketLauncher),
         PlayerClass::Demoman => Some(Weapon::StickybombLauncher),
+        PlayerClass::Heavy => Some(Weapon::Minigun),
         _ => None,
     }
 }
@@ -2886,6 +3002,14 @@ fn default_loadout(class: PlayerClass) -> BTreeMap<Weapon, WeaponRuntime> {
             (Weapon::Pistol, WeaponRuntime::full(Weapon::Pistol)),
             (Weapon::Bat, WeaponRuntime::full(Weapon::Bat)),
         ]),
+        PlayerClass::Heavy => BTreeMap::from([
+            (Weapon::Minigun, WeaponRuntime::full(Weapon::Minigun)),
+            (
+                Weapon::HeavyShotgun,
+                WeaponRuntime::full(Weapon::HeavyShotgun),
+            ),
+            (Weapon::Fists, WeaponRuntime::full(Weapon::Fists)),
+        ]),
         _ => BTreeMap::new(),
     }
 }
@@ -2900,6 +3024,10 @@ fn allowed(class: PlayerClass, weapon: Weapon) -> bool {
             | (
                 PlayerClass::Scout,
                 Weapon::Scattergun | Weapon::Pistol | Weapon::Bat
+            )
+            | (
+                PlayerClass::Heavy,
+                Weapon::Minigun | Weapon::HeavyShotgun | Weapon::Fists
             )
     )
 }
@@ -3411,6 +3539,163 @@ mod tests {
     }
 
     #[test]
+    fn heavy_stock_weapons_preserve_spin_conditions_audio_ammo_and_delayed_fist_contact() {
+        let mut session = Session::new(MeleeWall, [0.0; 3], MapRuntime::empty(0.015));
+        let selected = session
+            .advance(Command {
+                select_class: Some(PlayerClass::Heavy),
+                ..Command::default()
+            })
+            .unwrap();
+        assert_eq!(selected.weapon, Some(Weapon::Minigun));
+        assert_eq!(
+            selected
+                .loadout
+                .iter()
+                .map(|item| item.weapon)
+                .collect::<Vec<_>>(),
+            vec![Weapon::Minigun, Weapon::HeavyShotgun, Weapon::Fists]
+        );
+        session
+            .loadout
+            .get_mut(&Weapon::Minigun)
+            .unwrap()
+            .next_primary_tick = 0;
+
+        session
+            .advance(Command {
+                detonate: true,
+                ..Command::default()
+            })
+            .unwrap();
+        assert_eq!(
+            session.loadout[&Weapon::Minigun].minigun_state,
+            weapon::MinigunState::Starting
+        );
+        assert!(session.conditions.contains(Condition::Aiming));
+        assert!(
+            session
+                .audio_events()
+                .iter()
+                .any(|event| event.definition == SoundDefinition::MinigunWindUp)
+        );
+        while session.loadout[&Weapon::Minigun].minigun_state == weapon::MinigunState::Starting {
+            session
+                .advance(Command {
+                    detonate: true,
+                    ..Command::default()
+                })
+                .unwrap();
+        }
+        assert_eq!(
+            session.loadout[&Weapon::Minigun].minigun_state,
+            weapon::MinigunState::Spinning
+        );
+        assert!(
+            session
+                .audio_events()
+                .iter()
+                .any(|event| event.definition == SoundDefinition::MinigunSpin)
+        );
+        let mut fire_sound = false;
+        while session.loadout[&Weapon::Minigun].reserve == 200 {
+            let snapshot = session
+                .advance(Command {
+                    fire: true,
+                    ..Command::default()
+                })
+                .unwrap();
+            assert!(snapshot.projectiles.is_empty());
+            fire_sound |= session
+                .audio_events()
+                .iter()
+                .any(|event| event.definition == SoundDefinition::MinigunFire);
+        }
+        assert_eq!(session.loadout[&Weapon::Minigun].reserve, 199);
+        assert!(fire_sound);
+        while session.loadout[&Weapon::Minigun].minigun_state != weapon::MinigunState::Idle {
+            session.advance(Command::default()).unwrap();
+        }
+        assert!(!session.conditions.contains(Condition::Aiming));
+        assert!(
+            session
+                .audio_events()
+                .iter()
+                .any(|event| event.definition == SoundDefinition::MinigunWindDown)
+        );
+
+        session
+            .advance(Command {
+                select_weapon: Some(Weapon::HeavyShotgun),
+                ..Command::default()
+            })
+            .unwrap();
+        session
+            .loadout
+            .get_mut(&Weapon::HeavyShotgun)
+            .unwrap()
+            .next_primary_tick = 0;
+        let shotgun = session
+            .advance(Command {
+                fire: true,
+                ..Command::default()
+            })
+            .unwrap();
+        assert!(shotgun.projectiles.is_empty());
+        assert!(shotgun.events.iter().any(|event| matches!(
+            event,
+            Event::HitscanFired {
+                weapon: Weapon::HeavyShotgun,
+                pellets: 10,
+            }
+        )));
+        assert_eq!(session.loadout[&Weapon::HeavyShotgun].clip, 5);
+        assert!(
+            session
+                .audio_events()
+                .iter()
+                .any(|event| event.definition == SoundDefinition::ShotgunSingle)
+        );
+
+        session
+            .advance(Command {
+                select_weapon: Some(Weapon::Fists),
+                ..Command::default()
+            })
+            .unwrap();
+        session
+            .loadout
+            .get_mut(&Weapon::Fists)
+            .unwrap()
+            .next_primary_tick = 0;
+        session
+            .advance(Command {
+                fire: true,
+                ..Command::default()
+            })
+            .unwrap();
+        assert!(
+            session
+                .audio_events()
+                .iter()
+                .any(|event| event.definition == SoundDefinition::FistMiss)
+        );
+        let due = session.loadout[&Weapon::Fists].smack_due_tick.unwrap();
+        while session.loadout[&Weapon::Fists].smack_due_tick.is_some() {
+            session.advance(Command::default()).unwrap();
+            if session.loadout[&Weapon::Fists].smack_due_tick.is_some() {
+                assert!(session.tick <= due + 1);
+            }
+        }
+        assert!(
+            session
+                .audio_events()
+                .iter()
+                .any(|event| event.definition == SoundDefinition::FistHitWorld)
+        );
+    }
+
+    #[test]
     fn soldier_shotgun_fires_ten_independent_source_pellets_without_scattergun_ramp() {
         let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.015));
         session
@@ -3639,6 +3924,10 @@ mod tests {
                 PlayerClass::Demoman => {
                     assert_eq!(snapshot.weapon, Some(Weapon::StickybombLauncher));
                     assert_eq!(snapshot.loadout.len(), 1);
+                }
+                PlayerClass::Heavy => {
+                    assert_eq!(snapshot.weapon, Some(Weapon::Minigun));
+                    assert_eq!(snapshot.loadout.len(), 3);
                 }
                 _ => {
                     assert_eq!(snapshot.weapon, None);
@@ -4822,6 +5111,9 @@ mod tests {
                 bat_hit_world_available: 0b11,
                 shovel_hit_world_available: 0b11,
                 shovel_hit_flesh_available: 0b111,
+                fist_miss_available: 0b11,
+                fist_hit_world_available: 0b11,
+                fist_hit_flesh_available: 0b111,
             }
         );
 
@@ -4854,6 +5146,9 @@ mod tests {
                 bat_hit_world_available: 0b11,
                 shovel_hit_world_available: 0b11,
                 shovel_hit_flesh_available: 0b111,
+                fist_miss_available: 0b11,
+                fist_hit_world_available: 0b11,
+                fist_hit_flesh_available: 0b111,
             }
         );
     }

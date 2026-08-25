@@ -863,6 +863,19 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
     reload: null | { clip: number; reserve: number; sound: string }
   }> = []
   const soldierWeaponEvidence: typeof scoutWeaponEvidence = []
+  const heavyWeaponEvidence: Array<{
+    team: 2 | 3
+    weapon: number
+    name: string
+    clip: number
+    reserve: number
+    activity: string
+    audio: string
+    ammoVisible: boolean
+    totalAmmoVisible: boolean
+    totalAmmoText: string
+    pixelsSha256: string
+  }> = []
   const activeFrameWindows: Array<{ started: number; finished: number }> = []
   const workloads: Array<{
     name: string
@@ -1030,7 +1043,7 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
             }
           })
           const [health, , weapon] = observation.hud.split(":")
-          const armed = identity === 1 || identity === 3 || identity === 4
+          const armed = identity === 1 || identity === 3 || identity === 4 || identity === 6
           const imageName = name === "demoman" ? "demo" : name === "engineer" ? "engi" : name
           expect(observation.phase).toBe("Ready")
           expect(Number(health)).toBe(maximumHealth[identity - 1])
@@ -1055,6 +1068,34 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
             model: tf2ClassPresentation(identity).model,
             pixelsSha256: createHash("sha256").update(pixels.pixels).digest("hex"),
           })
+          if (name === "heavy") {
+            if (await root.getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
+            for (const [key, selected, visible] of [["Digit2", "10", true], ["Digit3", "11", false], ["Digit1", "9", true]] as const) {
+              await page.keyboard.press(key)
+              await expect.poll(async () => (await root.getAttribute("data-hud-probe"))?.split(":")[2]).toBe(selected)
+              const state = await root.evaluate((element) => ({
+                phase: (element as HTMLElement).dataset.phase,
+                activity: (element as HTMLElement).dataset.viewmodelActivity,
+                ammo: document.querySelector<HTMLElement>("[data-vgui-name='HudWeaponAmmo']")?.style.display !== "none",
+              }))
+              expect(state.phase).toBe("Ready")
+              expect(state.ammo).toBe(visible)
+              expect(state.activity).toContain(selected === "11" ? "FISTS" : selected === "10" ? "SECONDARY" : "PRIMARY")
+              const canvas = page.locator("canvas").first()
+              await canvas.screenshot({ path: path.join(evidenceDirectory, `heavy-${teamName}-weapon-${selected}.png`) })
+              if (teamName === "red") {
+                await canvas.click({ position: { x: 640, y: 360 } })
+                await page.mouse.down({ button: "left" })
+                if (selected === "11") {
+                  await expect.poll(async () => await root.getAttribute("data-viewmodel-activity")).toContain("HITLEFT")
+                } else {
+                  await expect.poll(async () => await root.getAttribute("data-weapon-trace"), { timeout: 10_000 })
+                    .toMatch(selected === "10" ? /10:[0-5]\// : /9:0\/1\d\d/)
+                }
+                await page.mouse.up({ button: "left" })
+              }
+            }
+          }
         }
       }
       expect(new Set(classEvidence.map((item) => item.pixelsSha256)).size).toBe(18)
@@ -1063,7 +1104,7 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
       await expect.poll(async () => (await root.getAttribute("data-hud-probe"))?.split(":")[1]).toBe("3")
       if (await root.getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
     }
-    if (scenarioMode === "scout") {
+    if (scenarioMode === "scout" || scenarioMode === "heavy") {
       const root = page.locator("main")
       const entry = page.locator("[aria-label='Console command']")
       if (await root.getAttribute("data-console-visible") !== "true") await page.keyboard.press("Backquote")
@@ -1114,8 +1155,17 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
       }
       expect(new Set(scoutWeaponEvidence.map((item) => item.pixelsSha256)).size).toBe(3)
     }
-    if (scenarioMode === "soldier") {
+    if (scenarioMode === "soldier" || scenarioMode === "heavy") {
       const root = page.locator("main")
+      if (scenarioMode === "heavy") {
+        if (await root.getAttribute("data-console-visible") !== "true") await page.keyboard.press("Backquote")
+        const entry = page.locator("[aria-label='Console command']")
+        await expect(entry).toBeVisible()
+        await entry.fill("class soldier")
+        await page.keyboard.press("Enter")
+        await page.keyboard.press("Backquote")
+        await expect.poll(async () => (await root.getAttribute("data-hud-probe"))?.split(":")[1]).toBe("3")
+      }
       for (const [key, weapon, name] of [["Digit1", 1, "Rocket Launcher"], ["Digit2", 7, "Shotgun"], ["Digit3", 8, "Shovel"]] as const) {
         await page.keyboard.press(key)
         await expect.poll(async () => (await root.getAttribute("data-hud-probe"))?.split(":")[2]).toBe(String(weapon))
@@ -1158,6 +1208,94 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
         soldierWeaponEvidence.push({ weapon, name, ...observation, pixelsSha256: createHash("sha256").update(pixels.pixels).digest("hex"), reload })
       }
       expect(new Set(soldierWeaponEvidence.map((item) => item.pixelsSha256)).size).toBe(3)
+    }
+    if (scenarioMode === "heavy") {
+      const local = await loadLocalConfig()
+      const evidenceDirectory = path.join(local.sourceCacheDir, "profiles", "tf2-heavy-integrated")
+      await mkdir(evidenceDirectory, { recursive: true })
+      const root = page.locator("main")
+      const entry = page.locator("[aria-label='Console command']")
+      const command = async (value: string) => {
+        if (await root.getAttribute("data-console-visible") !== "true") await page.keyboard.press("Backquote")
+        await expect(entry).toBeVisible()
+        await entry.fill(value)
+        await page.keyboard.press("Enter")
+        if (await root.getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
+      }
+      const mouse = async (button: 0 | 2, down: boolean) => {
+        await page.evaluate(async ({ button, down }) => {
+          const canvas = document.querySelector(".world-canvas")
+          if (!canvas) throw new Error("Heavy weapon evidence canvas is unavailable")
+          if (document.pointerLockElement !== canvas) await canvas.requestPointerLock()
+          dispatchEvent(new MouseEvent(down ? "mousedown" : "mouseup", { button, bubbles: true }))
+        }, { button, down })
+      }
+      for (const [teamName, team] of [["red", 2], ["blue", 3]] as const) {
+        await command(`jointeam ${teamName}`)
+        await command("class heavy")
+        await expect.poll(async () => (await root.getAttribute("data-hud-probe"))?.split(":")[1]).toBe("6")
+        for (const [key, weapon, name, expectedActivity] of [
+          ["Digit2", 10, "Shotgun", "SECONDARY"],
+          ["Digit3", 11, "Fists", "FISTS"],
+          ["Digit1", 9, "Minigun", "PRIMARY"],
+        ] as const) {
+          await page.keyboard.press(key)
+          await expect.poll(async () => (await root.getAttribute("data-hud-probe"))?.split(":")[2]).toBe(String(weapon))
+          if (weapon === 9) {
+            await mouse(2, true)
+            await expect.poll(async () => (await root.getAttribute("data-audio-starts") ?? "").includes("Weapon_Minigun.Spin"), { timeout: 10_000 }).toBe(true)
+            await mouse(2, false)
+            await expect.poll(async () => (await root.getAttribute("data-audio-starts") ?? "").includes("Weapon_Minigun.WindDown"), { timeout: 10_000 }).toBe(true)
+          }
+          await mouse(0, true)
+          if (weapon === 11) {
+            await expect.poll(async () => await root.getAttribute("data-viewmodel-activity"), { timeout: 10_000 }).toContain("HITLEFT")
+          } else {
+            await expect.poll(async () => await root.getAttribute("data-weapon-trace"), { timeout: 10_000 })
+              .toMatch(weapon === 10 ? /10:[0-5]\// : /9:0\/1\d\d/)
+          }
+          await mouse(0, false)
+          const observation = await root.evaluate((element) => {
+            const data = (element as HTMLElement).dataset
+            const active = data.hudProbe?.split(":")[2]
+            const record = (data.weaponTrace ?? "").split("|").find((value) => value.startsWith(`${active}:`)) ?? ""
+            const [clip, reserve] = (record.split(":")[1] ?? "0/0").split("/").map(Number)
+            const totalAmmo = document.querySelector<HTMLElement>("[data-vgui-name='AmmoNoClip']")
+            return {
+              clip: clip ?? 0,
+              reserve: reserve ?? 0,
+              activity: data.viewmodelActivity ?? "",
+              audio: data.audioStarts ?? "",
+              ammoVisible: document.querySelector<HTMLElement>("[data-vgui-name='HudWeaponAmmo']")?.style.display !== "none",
+              totalAmmoVisible: totalAmmo !== null && totalAmmo.getClientRects().length > 0 && getComputedStyle(totalAmmo).visibility === "visible",
+              totalAmmoText: totalAmmo?.textContent?.trim() ?? "",
+            }
+          })
+          expect(observation.activity).toContain(expectedActivity)
+          expect(observation.ammoVisible).toBe(weapon !== 11)
+          expect(observation.totalAmmoVisible).toBe(weapon === 9)
+          if (weapon === 9) expect(observation.totalAmmoText).toBe(String(observation.reserve))
+          expect(observation.audio).toContain(weapon === 9 ? "Weapon_Minigun.Fire" : weapon === 10 ? "Weapon_Shotgun.Single" : "Weapon_Fist.Miss")
+          const screenshot = await page.locator("canvas.world-canvas")
+            .screenshot({ path: path.join(evidenceDirectory, `${teamName}-${name.toLowerCase()}.png`) })
+          const pixels = decodeScreenshot(screenshot)
+          expect(pixels.width * pixels.height).toBeGreaterThan(100)
+          heavyWeaponEvidence.push({ team, weapon, name, ...observation, pixelsSha256: createHash("sha256").update(pixels.pixels).digest("hex") })
+          if (weapon === 10) {
+            await page.keyboard.press("KeyR")
+            await expect.poll(async () => {
+              const record = (await root.getAttribute("data-weapon-trace") ?? "").split("|").find((item) => item.startsWith("10:"))
+              return Number(record?.split(":")[1]?.split("/")[0] ?? -1)
+            }, { timeout: 10_000 }).toBe(6)
+          }
+        }
+        expect(new Set(heavyWeaponEvidence.filter((item) => item.team === team).map((item) => item.pixelsSha256)).size).toBe(3)
+      }
+      workloads.push({
+        name: "heavy-minigun-fire",
+        start: async () => { await mouse(0, true) },
+        stop: async () => { await mouse(0, false) },
+      })
     }
     if (shouldRunScenario("jump")) workloads.push({
       name: "repeated-jump",
@@ -1391,6 +1529,7 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
     classEvidence,
     scoutWeaponEvidence,
     soldierWeaponEvidence,
+    heavyWeaponEvidence,
     scenarios: scenarios.map((scenario) => ({
       name: scenario.name,
       presentationTrace: presentationSummary(scenario.samples[0]!.at, scenario.samples.at(-1)!.at),
@@ -1501,6 +1640,11 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
   })}`)
   expect(raw.dataset.phase).toBe("Ready")
   if (scenarioMode === "classes") expect(classEvidence).toHaveLength(18)
+  if (scenarioMode === "heavy") {
+    expect(scoutWeaponEvidence).toHaveLength(3)
+    expect(soldierWeaponEvidence).toHaveLength(3)
+    expect(heavyWeaponEvidence).toHaveLength(6)
+  }
   expect(report.menu.startupState).toBe("Skipped")
   if (!mapOnly) {
     expect(report.sampleSeconds).toBeGreaterThanOrEqual(5)

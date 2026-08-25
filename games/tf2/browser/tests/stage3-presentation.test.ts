@@ -8,6 +8,7 @@ import {
   ProjectilePresentationError,
   hitscanMuzzleParticles,
   tf2Camera,
+  tf2Hud,
   type ProjectileParticleRequest,
 } from "../src/presentation"
 import type { PresentationArtifacts } from "../src/artifacts"
@@ -110,6 +111,31 @@ test("encodes each Unicode model/activity exactly once into the fire-tick PMRQ v
   expect(view.getBigUint64(16, true)).toBe(0n)
   expect(view.getUint32(56, true)).toBe(new TextEncoder().encode(request.model).byteLength)
   expect(new TextDecoder().decode(bytes.subarray(60, 60 + view.getUint32(56, true)))).toBe(request.model)
+})
+
+test("encodes stock fists as one hands-only viewmodel without an invented item", () => {
+  const request = Object.freeze({
+    identity: 7,
+    model: "models/weapons/c_models/c_heavy_arms.mdl",
+    handsOnlyViewmodel: true,
+    activity: "ACT_FISTS_VM_DRAW",
+    previousElapsedSeconds: 0,
+    elapsedSeconds: 0,
+    currentTimeSeconds: 0,
+    frameTimeSeconds: 0.015,
+    planarSpeed: 0,
+    screenAspectRatio: 16 / 9,
+    worldFarPlane: 32_768,
+    phase: 0 as const,
+    skin: 2,
+    lod: 0,
+    bodygroups: Object.freeze([0]),
+  })
+  const bytes = encodeModelPoseBatch([request])
+  expect(bytes[24]).toBe(2)
+  const modelBytes = new TextEncoder().encode(request.model).byteLength
+  expect(new DataView(bytes.buffer).getUint32(60 + modelBytes, true)).toBe(0)
+  expect(() => encodeModelPoseBatch([{ ...request, itemModel: "models/invented.mdl", itemBodygroups: [] }])).toThrow(ProjectilePresentationError)
 })
 
 test("encodes historical attachment-only fire samples without extra model transactions", () => {
@@ -303,6 +329,38 @@ test("composes Soldier shotgun and shovel with exact secondary and melee activit
   }
 })
 
+test("composes every Heavy stock weapon with distinct identities and hands-only Fists", () => {
+  const hands = "models/weapons/c_models/c_heavy_arms.mdl"
+  const descriptor = Object.freeze({ kind: "viewmodel", horizontalFov4By3: 54, minimumFov: 54, maximumFov: 70, near: 1, depthRange: Object.freeze([0, 0.1]), drawsAfterWorld: true, opaqueBeforeTranslucent: true, optionalViewSpaceYReflection: true })
+  const sequences = Object.freeze([
+    "ACT_PRIMARY_VM_PRIMARYATTACK", "ACT_SECONDARY_VM_PRIMARYATTACK", "ACT_FISTS_VM_HITLEFT",
+  ].map((activity) => ({ activity, durationSeconds: 0.8 })))
+  const models = new Map([[hands, { identity: hands, bodygroupCounts: Object.freeze([]), descriptor, sequences }]])
+  const items = [
+    [9, "models/weapons/c_models/c_minigun/c_minigun.mdl", "ACT_PRIMARY_VM_PRIMARYATTACK", "Minigun"],
+    [10, "models/weapons/c_models/c_shotgun/c_shotgun.mdl", "ACT_SECONDARY_VM_PRIMARYATTACK", "Shotgun"],
+    [11, undefined, "ACT_FISTS_VM_HITLEFT", "Fists"],
+  ] as const
+  for (const [, identity] of items) {
+    if (identity !== undefined) models.set(identity, { identity, bodygroupCounts: Object.freeze([]), descriptor, sequences: Object.freeze([]) })
+  }
+  const artifacts = { models } as unknown as PresentationArtifacts
+  for (const [weapon, item, activity, name] of items) {
+    const snapshot = {
+      class: 6, team: 2, tick: 1n, weapon, health: 300, maximumHealth: 300,
+      velocity: Object.freeze([0, 0, 0]), projectiles: Object.freeze([]),
+      loadout: Object.freeze([{ weapon, reload: 0, clip: weapon === 10 ? 6 : 0 }]),
+      activities: Object.freeze([{ tick: 1n, weapon, activity: 2 }]),
+    } as unknown as Snapshot
+    const request = createViewmodelPresenter(artifacts).map(snapshot).request
+    expect(request.model).toBe(hands)
+    expect(request.itemModel).toBe(item)
+    expect(request.handsOnlyViewmodel).toBe(weapon === 11 ? true : undefined)
+    expect(request.activity).toBe(activity)
+    expect(tf2Hud(snapshot).weaponName).toBe(name)
+  }
+})
+
 test("starts authored hitscan muzzle systems from exact fire-tick attachment transforms", () => {
   const position = Object.freeze([1, 2, 3]) as readonly [number, number, number]
   const orientation = Object.freeze([0, 0, 0, 1]) as readonly [number, number, number, number]
@@ -313,9 +371,11 @@ test("starts authored hitscan muzzle systems from exact fire-tick attachment tra
   expect(requests[0]).toMatchObject({ kind: "start", tick: 17n, system: "muzzle_scattergun", launcherIdentity: 4, team: "red", controlPoints: [{ position, orientation, ownerIdentity: 1 }] })
   expect(() => hitscanMuzzleParticles(snapshot, { ...catalog, systems: new Set() })).toThrow(ProjectilePresentationError)
   expect(() => hitscanMuzzleParticles(snapshot, { ...catalog, attachmentTransforms: new Map() })).toThrow(ProjectilePresentationError)
-  const shotgun = { ...snapshot, events: Object.freeze([{ kind: 12, detail: 7, subject: 10 }]) } as unknown as Snapshot
-  expect(hitscanMuzzleParticles(shotgun, {
-    systems: new Set(["muzzle_shotgun"]),
-    attachmentTransforms: new Map([[7, new Map([["muzzle", { position, orientation }]])]]),
-  })[0]).toMatchObject({ system: "muzzle_shotgun", launcherIdentity: 7 })
+  for (const identity of [7, 10] as const) {
+    const shotgun = { ...snapshot, events: Object.freeze([{ kind: 12, detail: identity, subject: 10 }]) } as unknown as Snapshot
+    expect(hitscanMuzzleParticles(shotgun, {
+      systems: new Set(["muzzle_shotgun"]),
+      attachmentTransforms: new Map([[identity, new Map([["muzzle", { position, orientation }]])]]),
+    })[0]).toMatchObject({ system: "muzzle_shotgun", launcherIdentity: identity })
+  }
 })

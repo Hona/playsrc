@@ -612,8 +612,9 @@ function panelValues(snapshot: Tf2HudSnapshot): readonly Tf2HudPanelValue[] {
   setVisible("AmmoInReserveShadow", ammoVisible && clipMode)
   setVisible("AmmoNoClip", ammoVisible && totalMode)
   setVisible("AmmoNoClipShadow", ammoVisible && totalMode)
-  setDialog("HudWeaponAmmo", "Ammo", activeWeapon?.clip.kind === "available" ? tf2HudAvailable(activeWeapon.clip.value) : unavailableNumber())
-  setDialog("HudWeaponAmmo", "AmmoInReserve", activeWeapon?.reserve.kind === "available" ? tf2HudAvailable(activeWeapon.reserve.value) : unavailableNumber())
+  const primaryAmmo = totalMode ? activeWeapon?.reserve : activeWeapon?.clip
+  setDialog("HudWeaponAmmo", "Ammo", primaryAmmo?.kind === "available" ? tf2HudAvailable(primaryAmmo.value) : unavailableNumber())
+  setDialog("HudWeaponAmmo", "AmmoInReserve", clipMode && activeWeapon?.reserve.kind === "available" ? tf2HudAvailable(activeWeapon.reserve.value) : unavailableNumber())
   setVisible("HudWeaponLowAmmoImage", ammoVisible && activeWeapon !== null && lowAmmo(activeWeapon))
   setScalar("HudWeaponLowAmmoImage", "boundsAdjustment", activeWeapon ? tf2HudAvailable(lowAmmoAdjustment(activeWeapon)) : unavailableNumber())
   setColor("HudWeaponLowAmmoImage", "foreground", ammoVisible && activeWeapon !== null && lowAmmo(activeWeapon)

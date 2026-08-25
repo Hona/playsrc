@@ -14,7 +14,7 @@ pub struct HitscanProfile {
 impl HitscanProfile {
     pub const fn configured(weapon: Weapon) -> Option<Self> {
         match weapon {
-            Weapon::Scattergun | Weapon::Shotgun => Some(Self {
+            Weapon::Scattergun | Weapon::Shotgun | Weapon::HeavyShotgun => Some(Self {
                 pellets: 10,
                 damage: 6.0,
                 range: 8192.0,

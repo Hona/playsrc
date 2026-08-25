@@ -167,6 +167,9 @@ describe("authored TF2 crosshair content closure", () => {
       { identities: [6], script: "scripts/tf_weapon_bat.ctx", crop: { x: 32, y: 32, width: 32, height: 32 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
       { identities: [7], script: "scripts/tf_weapon_shotgun_soldier.ctx", crop: { x: 0, y: 0, width: 32, height: 32 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
       { identities: [8], script: "scripts/tf_weapon_shovel.ctx", crop: { x: 32, y: 32, width: 32, height: 32 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
+      { identities: [9], script: "scripts/tf_weapon_minigun.ctx", crop: { x: 64, y: 64, width: 64, height: 64 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
+      { identities: [10], script: "scripts/tf_weapon_shotgun_hwg.ctx", crop: { x: 0, y: 0, width: 32, height: 32 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
+      { identities: [11], script: "scripts/tf_weapon_fists.ctx", crop: { x: 32, y: 32, width: 32, height: 32 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
     ])
   })
 

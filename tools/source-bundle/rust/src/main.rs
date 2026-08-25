@@ -2441,6 +2441,8 @@ fn main() -> Result<(), String> {
         "models/weapons/c_models/c_bat.mdl",
         "models/weapons/c_models/c_shotgun/c_shotgun.mdl",
         "models/weapons/c_models/c_shovel/c_shovel.mdl",
+        "models/weapons/c_models/c_heavy_arms.mdl",
+        "models/weapons/c_models/c_minigun/c_minigun.mdl",
     ] {
         model_paths.insert(path.to_owned());
     }
@@ -2713,6 +2715,17 @@ fn main() -> Result<(), String> {
         "sound/weapons/axe_hit_flesh1.wav",
         "sound/weapons/axe_hit_flesh2.wav",
         "sound/weapons/axe_hit_flesh3.wav",
+        "sound/weapons/minigun_wind_up.wav",
+        "sound/weapons/minigun_wind_down.wav",
+        "sound/weapons/minigun_spin.wav",
+        "sound/weapons/minigun_shoot.wav",
+        "sound/weapons/bat_draw_swoosh1.wav",
+        "sound/weapons/bat_draw_swoosh2.wav",
+        "sound/weapons/cbar_hitbod1.wav",
+        "sound/weapons/cbar_hitbod2.wav",
+        "sound/weapons/cbar_hitbod3.wav",
+        "sound/weapons/fist_hit_world1.wav",
+        "sound/weapons/fist_hit_world2.wav",
     ] {
         let consumer = if path.starts_with("sound/") {
             "audio-wave"
