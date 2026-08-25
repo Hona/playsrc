@@ -10,6 +10,7 @@ import {
 } from "@playsrc/vgui"
 import { initializeTf2GameUiIntegration } from "../../src/gameui-integration"
 import { initializeTf2HudIntegration } from "../../src/hud-integration"
+import { initializeTf2BrowserSettings, initializeTf2OptionsPresentation } from "../../src/settings-integration"
 import { TF2_HUD_DYNAMIC_IMAGES, tf2HudUnavailable, type CompactSessionHudContext, type CompactSessionSimulationPublication } from "../../src/hud"
 import type { Tf2VguiResources } from "../../src/ui-integration"
 import { tf2UiResources, type Tf2UiResourceNode } from "../../src/ui-resources"
@@ -118,12 +119,19 @@ function resources(): Tf2VguiResources {
     .filter((control) => !generic.has(control.name))
     .map((control) => Object.freeze({
       name: control.name,
-      baseControl: /button/iu.test(control.name) ? "Button" : /image|class/iu.test(control.name) ? "ImagePanel" : "EditablePanel",
+      baseControl: /COptionsSubVideoAdvancedDlg|CGammaDialog/u.test(control.name) ? "Frame"
+        : /CCvarSlider/u.test(control.name) ? "Slider"
+          : /CLabeledCommandComboBox/u.test(control.name) ? "ComboBox"
+            : /CCvar.*CheckButton/u.test(control.name) ? "CheckButton"
+              : /button/iu.test(control.name) ? "Button" : /image|class/iu.test(control.name) ? "ImagePanel" : "EditablePanel",
       element: /button/iu.test(control.name) ? "button" : "div",
       role: null,
-      focusable: /button/iu.test(control.name),
+      focusable: /button|slider|combo|dialog/iu.test(control.name),
       animationVariables: Object.freeze([]),
-      acceptedProperties: Object.freeze([...(accepted.get(control.name) ?? [])]),
+      acceptedProperties: Object.freeze([
+        ...(accepted.get(control.name) ?? []),
+        ...(/COptionsSubVideoAdvancedDlg|CGammaDialog/u.test(control.name) ? ["sizeable", "moveable", "title"] : []),
+      ]),
     }))
   for (const name of ["CTFHudElement", "CTFHealthPanel", "CHudMainMenuOverride", "CTFMatchmakingDashboard", "CTFPlaylistPanel"]) {
     if (customControls.some((control) => control.name === name)) continue
@@ -313,6 +321,118 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     expect(hud.snapshot().vgui.panels.find((panel) => panel.name === "PlayerStatusClassImage")?.state.image).toBe("../hud/class_demored")
     hud.reset("disconnect")
     expect(visible(hud.snapshot().vgui.panels, ["HudPlayerStatus", "HudWeaponAmmo"])).toEqual([])
+  })
+
+  test("paints an authored, centered crosshair instead of publishing eligibility alone", () => {
+    const root = createRoot(new FakeDocument())
+    const hud = initializeTf2HudIntegration({
+      root: root as unknown as HTMLElement,
+      resources: resources(), viewport: { width: 1280, height: 720, devicePixelRatio: 1 }, reducedMotion: true,
+      clock: { nowSeconds: () => 0 }, random: { nextUnit: () => 0.5 }, onCommand() {},
+    })
+    hud.publish(compact(1n, 1, 1, 1, 4, 20), context)
+    const authoredCrosshair = descendants(root).find((element) => element.dataset.tf2Crosshair === "authored")
+    expect(authoredCrosshair).toBeDefined()
+    expect(authoredCrosshair!.style.left).toBe("624px")
+    expect(authoredCrosshair!.style.top).toBe("344px")
+    expect(authoredCrosshair!.style.width).toBe("32px")
+    expect(authoredCrosshair!.style.height).toBe("32px")
+    expect(authoredCrosshair!.dataset.sourceTexture).toBe("materials/sprites/crosshairs.vtf")
+    expect(authoredCrosshair!.style.backgroundImage).toContain("url(")
+  })
+
+  test("replaces authored style, tint, size, viewport, suppression, and map lifecycle atomically", () => {
+    const root = createRoot(new FakeDocument())
+    const hud = initializeTf2HudIntegration({
+      root: root as unknown as HTMLElement,
+      resources: resources(), viewport: { width: 1280, height: 720, devicePixelRatio: 1 }, reducedMotion: true,
+      clock: { nowSeconds: () => 0 }, random: { nextUnit: () => 0.5 }, onCommand() {},
+    })
+    hud.publish(compact(1n, 1, 1, 1, 4, 20), context)
+    const element = descendants(root).find((candidate) => candidate.dataset.tf2Crosshair === "authored")!
+    hud.setCrosshair(Object.freeze({
+      ...context.crosshair,
+      texture: "vgui/crosshairs/crosshair5",
+      color: Object.freeze([17, 33, 65, 1]),
+      scale: 48,
+    }))
+    expect(element.dataset.crosshairStyle).toBe("crosshair5")
+    expect(element.dataset.crosshairColor).toBe("17 33 65 255")
+    expect(element.dataset.sourceTextureSha256).toBe("76567689515145389b2814b403f484625b0b5cb456f0a59ef582f060b541d0e3")
+    expect([element.style.left, element.style.top, element.style.width, element.style.height]).toEqual([
+      "592px", "312px", "96px", "96px",
+    ])
+    hud.setViewport({ width: 1025, height: 769, devicePixelRatio: 2 })
+    expect([element.style.left, element.style.top]).toEqual(["465px", "337px"])
+    hud.setCrosshair(Object.freeze({ ...context.crosshair, paused: true }))
+    expect(element.style.display).toBe("none")
+    hud.setCrosshair(Object.freeze({ ...context.crosshair }))
+    expect(element.style.display).toBe("block")
+    expect(element.dataset.crosshairStyle).toBe("stock")
+    hud.reset("map-replaced")
+    expect(element.style.display).toBe("none")
+    hud.publish(compact(1n, 2, 2, 3, 8, 24), context)
+    expect(element.dataset.sourceTexture).toBe("materials/sprites/crosshairs.vtf")
+    expect(element.style.display).toBe("block")
+    hud.destroy()
+    expect(root.contains(element)).toBe(false)
+  })
+
+  test("previews exact Multiplayer drafts and commits only through Apply", async () => {
+    const applied: unknown[] = []
+    const persisted: Uint8Array[] = []
+    const settings = initializeTf2BrowserSettings({
+      persistence: null,
+      owners: { renderer: "available", audio: "available", input: "available", game: "available", application: "available" },
+      async apply(request) {
+        applied.push(request)
+        return Object.freeze({ requestId: request.requestId, status: "applied" as const })
+      },
+    })
+    const root = createRoot(new FakeDocument())
+    const options = initializeTf2OptionsPresentation({
+      root: root as unknown as HTMLElement,
+      resources: resources(), settings,
+      viewport: { width: 1280, height: 720, devicePixelRatio: 1 }, reducedMotion: true,
+      clock: { nowSeconds: () => 0 }, random: { nextUnit: () => 0.5 },
+      onPersistence(bytes) { persisted.push(bytes) }, onApply() {}, onVisibility() {},
+    })
+    options.show("multiplayer")
+    const selector = options.snapshot().vgui.panels.find((candidate) => candidate.name === "AdvCrosshairList")!
+    expect(selector.state.items.map((item) => item.text)).toEqual([
+      "None", "crosshair1", "crosshair2", "crosshair3", "crosshair4", "crosshair5", "crosshair6", "crosshair7", "default",
+    ])
+    const preview = descendants(root).find((candidate) => candidate.dataset.tf2Crosshair === "preview")!
+    expect(preview.style.display).toBe("none")
+    options.set("multiplayer.crosshair-file", "crosshair1")
+    options.set("multiplayer.crosshair-red", 32)
+    options.set("multiplayer.crosshair-green", 64)
+    options.set("multiplayer.crosshair-blue", 128)
+    options.set("multiplayer.crosshair-scale", 48)
+    expect(preview.style.display).toBe("block")
+    expect(preview.dataset.crosshairStyle).toBe("crosshair1")
+    expect(preview.dataset.crosshairColor).toBe("32 64 128 255")
+    expect([preview.style.left, preview.style.top, preview.style.width]).toEqual(["0px", "0px", "64px"])
+    expect(settings.snapshot().settings.current).toMatchObject({
+      "multiplayer.crosshair-file": "", "multiplayer.crosshair-red": 200,
+    })
+    expect(preview.dataset.sourceFrame).toBe("0")
+    options.frame(0.2)
+    expect(preview.dataset.sourceFrame).toBe("1")
+    options.hide("cancel")
+    expect(settings.snapshot().settings.current["multiplayer.crosshair-file"]).toBe("")
+    expect(applied).toEqual([])
+    options.show("multiplayer")
+    expect(preview.style.display).toBe("none")
+    options.set("multiplayer.crosshair-file", "crosshair7")
+    options.set("multiplayer.crosshair-red", 9)
+    const result = await options.apply()
+    expect(result.lastApply?.complete).toBe(true)
+    expect(settings.snapshot().settings.current).toMatchObject({
+      "multiplayer.crosshair-file": "crosshair7", "multiplayer.crosshair-red": 9,
+    })
+    expect(applied).toHaveLength(1)
+    expect(persisted).toHaveLength(1)
   })
 
   test("Escape exposes only pause controls and waits for Resume/Disconnect owner acknowledgement", () => {

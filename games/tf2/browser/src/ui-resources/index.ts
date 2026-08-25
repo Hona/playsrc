@@ -1,4 +1,13 @@
 export { classifyTf2UiCommand, createTf2UiResourceDescriptor, tf2UiResources } from "./descriptor"
+export { createTf2AuthoredCrosshairDescriptor, tf2AuthoredCrosshairs } from "./crosshair"
+export type {
+  Tf2AuthoredCrosshair,
+  Tf2AuthoredCrosshairCrop,
+  Tf2AuthoredCrosshairDescriptor,
+  Tf2AuthoredCrosshairFrame,
+  Tf2AuthoredCrosshairSource,
+  Tf2AuthoredWeaponCrosshair,
+} from "./crosshair"
 export { tf2UiResourceBounds } from "./types"
 export type {
   Tf2UiCommandCategory,

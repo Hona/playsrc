@@ -15,6 +15,7 @@ import {
   type SettingValue,
 } from "@playsrc/settings"
 import { TF2_CONTENT_BUILD } from "../content-build"
+import { TF2_CROSSHAIR_SETTINGS } from "../hud"
 
 export const TF2_BROWSER_SETTINGS_STORAGE_KEY = `playsrc.tf2.options.build-${TF2_CONTENT_BUILD.contentBuild}.patch-${TF2_CONTENT_BUILD.patchVersion}`
 
@@ -29,6 +30,13 @@ export type Tf2BrowserSettingsSnapshot = Readonly<{
   }> | null
 }>
 
+export type Tf2BrowserCrosshairConVar = Readonly<{
+  name: string
+  settingId: string
+  defaultValue: string
+  value: string
+}>
+
 export type Tf2BrowserSettings = Readonly<{
   snapshot(): Tf2BrowserSettingsSnapshot
   begin(): number
@@ -39,6 +47,8 @@ export type Tf2BrowserSettings = Readonly<{
   cancel(): void
   apply(): Promise<Tf2BrowserSettingsSnapshot>
   synchronize(values: Readonly<Record<string, SettingValue>>): void
+  crosshairConVars(): readonly Tf2BrowserCrosshairConVar[]
+  setCrosshairConVar(name: string, value: string): Tf2BrowserCrosshairConVar
   persistence(): Uint8Array
 }>
 
@@ -120,6 +130,32 @@ class BrowserSettings implements Tf2BrowserSettings {
   }
 
   synchronize(values: Readonly<Record<string, SettingValue>>): void { expect(this.#state.synchronize(values)) }
+
+  crosshairConVars(): readonly Tf2BrowserCrosshairConVar[] {
+    const current = this.#state.snapshot().current
+    return Object.freeze(TF2_CROSSHAIR_SETTINGS.map((definition) => Object.freeze({
+      name: definition.name,
+      settingId: definition.settingId,
+      defaultValue: definition.defaultValue,
+      value: String(current[definition.settingId]),
+    })))
+  }
+
+  setCrosshairConVar(name: string, value: string): Tf2BrowserCrosshairConVar {
+    const definition = TF2_CROSSHAIR_SETTINGS.find((candidate) => candidate.name.toLowerCase() === name.toLowerCase())
+    if (!definition) throw new Error(`Unknown TF2 crosshair ConVar ${name}`)
+    if (typeof value !== "string") throw new Error(`TF2 crosshair ConVar ${definition.name} value is not a string`)
+    let parsed: SettingValue
+    if (definition.name === "cl_crosshair_file") {
+      parsed = value
+    } else {
+      const numeric = Number.parseFloat(value)
+      parsed = Number.isNaN(numeric) ? 0 : Math.fround(numeric)
+      if (!Number.isFinite(parsed)) throw new Error(`TF2 crosshair ConVar ${definition.name} value is not finite`)
+    }
+    this.synchronize(Object.freeze({ [definition.settingId]: parsed }))
+    return this.crosshairConVars().find((candidate) => candidate.name === definition.name)!
+  }
 
   persistence(): Uint8Array {
     return encodeSettingsPersistence(TF2_SELECTED_OPTIONS, this.#state.snapshot().current)

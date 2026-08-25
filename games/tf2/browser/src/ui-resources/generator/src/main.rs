@@ -1,3 +1,5 @@
+mod crosshair;
+
 use playsrc_content::{Content, ProviderSpec, Resolution};
 use playsrc_keyvalues::{ConditionEnvironment, EscapeMode, Node, ScalarKind, Value};
 use playsrc_vmt::{Composition, DependencyResponse, EffectiveNode, EffectiveValue};
@@ -1638,6 +1640,14 @@ fn main() -> Result<(), String> {
         .ok_or_else(|| "generator has no ui-resources parent".to_owned())?
         .join("configured.generated.ts");
     fs::write(&output, generated.as_bytes()).map_err(|error| error.to_string())?;
+    crosshair::write(
+        &content,
+        &tf2,
+        &report.content_build,
+        output
+            .parent()
+            .ok_or_else(|| "generator output has no parent".to_owned())?,
+    )?;
     println!(
         "generated {} bytes sha256 {}",
         generated.len(),

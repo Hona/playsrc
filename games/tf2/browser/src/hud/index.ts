@@ -1,4 +1,12 @@
 export { adaptCompactSessionHud } from "./compact-session"
+export {
+  TF2_CROSSHAIR_SETTINGS,
+  resolveTf2CrosshairGeometry,
+  tf2CrosshairHudValues,
+  tf2CrosshairSettings,
+  tf2CustomCrosshairFile,
+} from "./crosshair"
+export type { Tf2CrosshairGeometry, Tf2CrosshairSettings } from "./crosshair"
 export type { CompactSessionHudContext, CompactSessionSimulationPublication } from "./compact-session"
 export {
   bindTf2Hud,

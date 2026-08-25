@@ -25,10 +25,12 @@ import {
   type Tf2HudAvailability,
   type Tf2HudBinding,
   type Tf2HudCommand,
+  type Tf2HudCrosshair,
   type Tf2HudPanelValue,
   type Tf2HudSnapshot,
 } from "../hud"
 import type { Tf2VguiResources } from "../ui-integration"
+import { Tf2HudCrosshairPresentation } from "./crosshair"
 
 export type Tf2HudIntegrationDiagnostic = Readonly<{
   code: "VguiRejected" | "PanelUnavailable" | "ValueUnavailable" | "UnsupportedPanelValue" | "AnimationUnavailable"
@@ -55,6 +57,7 @@ export type Tf2HudIntegration = Readonly<{
   probe(): Tf2HudIntegrationProbe
   snapshot(): Tf2HudIntegrationSnapshot
   setPlayerClassUsePlayerModel(value: boolean): void
+  setCrosshair(value: Tf2HudCrosshair): void
   reset(reason: "map-replaced" | "disconnect"): void
   destroy(): void
 }>
@@ -158,6 +161,7 @@ function applyPanelResource(runtime: VguiRuntime, panel: VguiPanelId, source: Vg
 
 class Integration implements Tf2HudIntegration {
   readonly #runtime: VguiRuntime
+  readonly #crosshair: Tf2HudCrosshairPresentation
   readonly #onCommand: (command: Tf2HudCommand) => void
   readonly #diagnostics: Tf2HudIntegrationDiagnostic[] = []
   readonly #diagnosticSubjects = new Set<string>()
@@ -225,6 +229,7 @@ class Integration implements Tf2HudIntegration {
     }
     this.#captureBaseBounds(panels)
     })
+    this.#crosshair = new Tf2HudCrosshairPresentation(request.root)
   }
 
   #diagnostic(code: Tf2HudIntegrationDiagnostic["code"], subject: string): void {
@@ -295,6 +300,7 @@ class Integration implements Tf2HudIntegration {
 
   #applyValues(binding: Tf2HudBinding): void {
     for (const value of binding.values) this.#value(value)
+    this.#crosshair.publish(binding, this.#viewport)
   }
 
   publish(publication: CompactSessionSimulationPublication, context: CompactSessionHudContext): Tf2HudBinding {
@@ -387,6 +393,25 @@ class Integration implements Tf2HudIntegration {
       this.#binding = binding
     })
   }
+  setCrosshair(value: Tf2HudCrosshair): void {
+    if (this.#destroyed) throw new Error("TF2 HUD integration is destroyed")
+    const current = this.#binding
+    if (!current || current.facts.player.kind !== "available") return
+    const previousPlayer = current.facts.player.value
+    this.#runtime.deferPresentation(() => {
+      const player = Object.freeze({ ...previousPlayer, crosshair: tf2HudAvailable(value) })
+      const snapshot: Tf2HudSnapshot = Object.freeze({ ...current.facts, player: tf2HudAvailable(player) })
+      const binding = bindTf2Hud(Object.freeze({
+        previous: tf2HudUnavailable<Tf2HudSnapshot>("replay-discontinuity"),
+        snapshot,
+        events: Object.freeze([]),
+      }))
+      this.#applyValues(binding)
+      this.#previous = tf2HudAvailable(binding.facts)
+      this.#binding = binding
+    })
+  }
+
   reset(reason: "map-replaced" | "disconnect"): void {
     if (this.#destroyed) throw new Error("TF2 HUD integration is destroyed")
     void reason
@@ -409,6 +434,7 @@ class Integration implements Tf2HudIntegration {
   destroy(): void {
     if (this.#destroyed) return
     this.#destroyed = true
+    this.#crosshair.destroy()
     apply(this.#runtime, { kind: "destroy" })
   }
 }

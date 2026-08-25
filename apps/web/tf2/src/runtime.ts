@@ -14,7 +14,17 @@ import {
   type Tf2OptionsPresentation,
 } from "@playsrc/game-tf2-browser/settings-integration"
 import { createTf2PresentationRandom, initializeTf2VguiResources, type Tf2PresentationRandom, type Tf2VguiResources } from "@playsrc/game-tf2-browser/ui-integration"
-import { tf2HudUnavailable, type CompactSessionHudContext, type Tf2HudBinding, type Tf2HudFreezePanel, type Tf2HudScoreboard } from "@playsrc/game-tf2-browser/hud"
+import {
+  TF2_CROSSHAIR_SETTINGS,
+  tf2CrosshairHudValues,
+  tf2CrosshairSettings,
+  tf2HudUnavailable,
+  type CompactSessionHudContext,
+  type Tf2CrosshairSettings,
+  type Tf2HudBinding,
+  type Tf2HudFreezePanel,
+  type Tf2HudScoreboard,
+} from "@playsrc/game-tf2-browser/hud"
 import {
   createTf2StartupController,
   validateTf2StartupDescriptor,
@@ -268,6 +278,7 @@ export class Tf2Application {
   #hudContext?: CompactSessionHudContext
   #hudContextIdentity = -1
   #playerClassUsePlayerModel = true
+  #crosshairSettings?: Tf2CrosshairSettings
   #settings?: Tf2BrowserSettings
   #options?: Tf2OptionsPresentation
   #loaded?: LoadedGame
@@ -392,6 +403,15 @@ export class Tf2Application {
       || Object.entries(patch).some(([key, value]) => !Object.is(prior[key as keyof ApplicationView], value))
     if (!changed) return
     this.#view = Object.freeze({ ...prior, ...patch, blockers })
+    if (this.#hudIntegration && this.#snapshot && this.#crosshairSettings
+      && (this.#view.gameUi !== prior.gameUi
+        || this.#view.phase !== prior.phase
+        || this.#view.consoleVisible !== prior.consoleVisible
+        || this.#view.optionsVisible !== prior.optionsVisible)) {
+      this.#hudContext = undefined
+      this.#hudContextIdentity = -1
+      this.#hudIntegration.setCrosshair(this.#currentHudContext(this.#snapshot).crosshair)
+    }
     this.#publish(this.#view)
     const progressChanged = (patch.phase !== undefined && patch.phase !== priorPhase) || (patch.detail !== undefined && patch.detail !== priorDetail)
     if (progressChanged) {
@@ -513,7 +533,10 @@ export class Tf2Application {
         localStorage.setItem(TF2_BROWSER_SETTINGS_STORAGE_KEY,new TextDecoder().decode(bytes))
         this.#set({settingsPersistence:"stored"})
       },
-      onApply:(snapshot)=>this.#set({settingsApply:JSON.stringify(snapshot.lastApply)}),
+      onApply:(snapshot)=>{
+        if (this.#console) this.#console.apply({ kind: "replace-catalog", catalog: this.#catalog() })
+        this.#set({settingsApply:JSON.stringify(snapshot.lastApply)})
+      },
       onVisibility:(visible)=>this.#set({optionsVisible:visible}),
     })
     return this.#options
@@ -535,7 +558,6 @@ export class Tf2Application {
     if (request.kind === "show-options") {
       const options = this.#ensureOptions()
       options.show(request.page === "advanced-options" ? "advanced" : "keyboard")
-      options.frame(performance.now() / 1_000)
       this.#set({ optionsVisible: true })
       return
     }
@@ -627,11 +649,24 @@ export class Tf2Application {
       return Object.freeze({ requestId: request.requestId, status: "applied" })
     }
     if (request.owner === "game") {
-      if (request.changes.some((change) => change.settingId !== "cl_hud_playerclass_use_playermodel" || typeof change.nextValue !== "boolean")) {
+      const crosshairIds = new Set<string>(TF2_CROSSHAIR_SETTINGS.map((setting) => setting.settingId))
+      if (request.changes.some((change) => !crosshairIds.has(change.settingId)
+        && (change.settingId !== "cl_hud_playerclass_use_playermodel" || typeof change.nextValue !== "boolean"))) {
         return reject(`browser game owner does not implement every requested effect: ${request.changes.map((change) => `${change.settingId}=${String(change.nextValue)}`).join(",")}`)
       }
-      this.#playerClassUsePlayerModel = request.changes.at(-1)?.nextValue as boolean
-      this.#hudIntegration?.setPlayerClassUsePlayerModel(this.#playerClassUsePlayerModel)
+      const model = request.changes.find((change) => change.settingId === "cl_hud_playerclass_use_playermodel")
+      if (model) {
+        this.#playerClassUsePlayerModel = model.nextValue as boolean
+        this.#hudIntegration?.setPlayerClassUsePlayerModel(this.#playerClassUsePlayerModel)
+      }
+      if (request.changes.some((change) => crosshairIds.has(change.settingId))) {
+        if (!this.#settings) return reject("browser crosshair settings authority is unavailable")
+        const values = {
+          ...this.#settings.snapshot().settings.current,
+          ...Object.fromEntries(request.changes.map((change) => [change.settingId, change.nextValue])),
+        }
+        this.#replaceCrosshair(tf2CrosshairSettings(values))
+      }
       this.#set({ hudPresentationProbe: this.#hudPresentationObservation() })
       return Object.freeze({ requestId: request.requestId, status: "applied" })
     }
@@ -902,6 +937,7 @@ export class Tf2Application {
     this.#mouseSensitivity = currentSettings["mouse.sensitivity"] as number
     this.#reverseMouse = currentSettings["mouse.reverse"] === true
     this.#playerClassUsePlayerModel = currentSettings["cl_hud_playerclass_use_playermodel"] === true
+    this.#crosshairSettings = tf2CrosshairSettings(currentSettings)
     this.#installListeners()
     this.#animationFrame = requestAnimationFrame(this.#frame)
     this.#paused = true
@@ -1302,14 +1338,29 @@ export class Tf2Application {
     })
   }
 
+  #replaceCrosshair(settings: Tf2CrosshairSettings): void {
+    this.#crosshairSettings = settings
+    this.#hudContext = undefined
+    this.#hudContextIdentity = -1
+    if (this.#hudIntegration && this.#snapshot) {
+      this.#hudIntegration.setCrosshair(this.#currentHudContext(this.#snapshot).crosshair)
+    }
+    if (this.#console) this.#console.apply({ kind: "replace-catalog", catalog: this.#catalog() })
+  }
+
   #currentHudContext(snapshot: Snapshot): CompactSessionHudContext {
+    if (!this.#crosshairSettings) throw new Error("TF2 crosshair settings are unavailable")
     const respawnAllowed = snapshot.lifecycle === 2
     const paused = this.#view.gameUi === "pause"
+    const loadingImage = this.#view.gameUi === "loading" || this.#view.phase === "Loading" || this.#view.phase === "Replacing"
+    const clientModeAllows = this.#view.gameUi === "in-game"
     const vguiInput = this.#view.consoleVisible || this.#view.optionsVisible === true
     const identity = Number(respawnAllowed)
       | Number(paused) << 1
       | Number(vguiInput) << 2
       | Number(this.#playerClassUsePlayerModel) << 3
+      | Number(loadingImage) << 4
+      | Number(clientModeAllows) << 5
     if (this.#hudContext && this.#hudContextIdentity === identity) return this.#hudContext
     this.#hudContextIdentity = identity
     this.#hudContext = Object.freeze({
@@ -1318,21 +1369,19 @@ export class Tf2Application {
       respawnAllowed,
       weaponSelection: Object.freeze({ open: false, selectedWeapon: tf2HudUnavailable<number>("not-produced") }),
       crosshair: Object.freeze({
-        configured: false,
+        configured: true,
         weaponAllows: true,
-        loadingImage: false,
+        loadingImage,
         paused,
-        clientModeAllows: true,
+        clientModeAllows,
         frozen: false,
         localViewEntity: true,
         vguiInput,
         observerMode: "none" as const,
-        observerCrosshair: false,
+        observerCrosshair: true,
         tfSuppressed: false,
         countdownHidden: false,
-        texture: "",
-        color: Object.freeze([255, 255, 255, 255] as const),
-        scale: 1,
+        ...tf2CrosshairHudValues(this.#crosshairSettings),
         weaponScale: 1,
       }),
       scoreboard: tf2HudUnavailable<Tf2HudScoreboard>("not-produced"),
@@ -1377,8 +1426,9 @@ export class Tf2Application {
   }
 
   #catalog(): ConsoleCatalog {
+    const crosshair = this.#settings?.crosshairConVars() ?? []
     return Object.freeze({
-      revision: `tf2-jump-catalog-developer-${this.#developer}-console-${Number(this.#consoleEnabled)}-fps-${this.#showFps}-pos-${this.#showPos}-hdr-${this.#renderLevel}`,
+      revision: `tf2-jump-catalog-developer-${this.#developer}-console-${Number(this.#consoleEnabled)}-fps-${this.#showFps}-pos-${this.#showPos}-hdr-${this.#renderLevel}-settings-${this.#settings?.snapshot().settings.revision ?? 0}`,
       items: Object.freeze([
         Object.freeze({
           kind: "command" as const,
@@ -1440,6 +1490,12 @@ export class Tf2Application {
           disposition: "visible" as const,
           displayValue: String(this.#renderLevel),
         }),
+        ...crosshair.map((setting) => Object.freeze({
+          kind: "convar" as const,
+          name: setting.name,
+          disposition: "visible" as const,
+          displayValue: setting.value,
+        })),
       ]),
     })
   }
@@ -1548,6 +1604,32 @@ export class Tf2Application {
         true,
       )
       for (const blocker of [...this.#blockers].sort()) this.#output(`BLOCKED: ${blocker}`)
+      return
+    }
+    const crosshair = TF2_CROSSHAIR_SETTINGS.find((setting) => setting.name === command)
+    if (crosshair) {
+      if (!this.#settings) {
+        this.#output(`ERROR: ${command} settings authority is unavailable`)
+        return
+      }
+      if (tokens.length > 1) {
+        this.#output(`${command} accepts exactly one value`)
+        return
+      }
+      if (tokens.length === 1) {
+        try {
+          const value = tokens[0] === '""' ? "" : tokens[0]!
+          this.#settings.setCrosshairConVar(command, value)
+          this.#replaceCrosshair(tf2CrosshairSettings(this.#settings.snapshot().settings.current))
+          localStorage.setItem(TF2_BROWSER_SETTINGS_STORAGE_KEY, new TextDecoder().decode(this.#settings.persistence()))
+          this.#set({ settingsPersistence: "stored" })
+        } catch (error) {
+          this.#output(`ERROR: ${error instanceof Error ? error.message : "crosshair setting failed"}`)
+          return
+        }
+      }
+      const current = this.#settings.crosshairConVars().find((setting) => setting.name === command)!
+      this.#output(`"${command}" = "${current.value}" ( def. "${current.defaultValue}" )`)
       return
     }
     if (command === "developer" && tokens.length <= 1) {
@@ -2304,7 +2386,7 @@ export class Tf2Application {
 
   readonly #frame = (time: number): void => {
     this.#animationFrame = requestAnimationFrame(this.#frame)
-    const timeSeconds = time / 1_000
+    const timeSeconds = performance.now() / 1_000
     try {
       const owners = visibleFrameOwners(this.#view, !this.#gameUiRoot.hidden)
       if (owners & GAME_UI_FRAME_OWNER) this.#gameUi?.frame(timeSeconds)

@@ -3,6 +3,7 @@ export {
   initializeTf2BrowserSettings,
 } from "./state"
 export type {
+  Tf2BrowserCrosshairConVar,
   Tf2BrowserSettings,
   Tf2BrowserSettingsRequest,
   Tf2BrowserSettingsSnapshot,

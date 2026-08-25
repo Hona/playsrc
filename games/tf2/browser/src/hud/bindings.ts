@@ -30,6 +30,7 @@ import type {
   Tf2Team,
 } from "./contract"
 import { TF2_HUD_LIMITS, Tf2HudBindingError } from "./contract"
+import { tf2CustomCrosshairFile } from "./crosshair"
 import {
   TF2_CLASS_IMAGES,
   TF2_GROUPED_CONDITION_PANELS,
@@ -650,7 +651,7 @@ function panelValues(snapshot: Tf2HudSnapshot): readonly Tf2HudPanelValue[] {
     && !crosshair.tfSuppressed
     && !crosshair.countdownHidden
     && (player?.lifecycle === "active" || observerEligible)
-    && crosshair.weaponAllows
+    && (crosshair.weaponAllows && activeWeapon?.drawsCrosshair !== false || tf2CustomCrosshairFile(crosshair.texture) !== null)
   setVisible("HudCrosshair", crosshairVisible)
   setImage("HudCrosshair", crosshair ? tf2HudAvailable(crosshair.texture) : unavailableString())
   setColor("HudCrosshair", "drawColor", crosshair
@@ -717,7 +718,7 @@ export function bindTf2Hud(publication: Tf2HudPublication): Tf2HudBinding {
     : null
   let indicatorWeapon = rollingActiveWeapon === null ? null : rollingWeapons.get(rollingActiveWeapon) ?? null
   let lastHealth: Tf2HudHealth | null = null
-  const lastAmmo = new Map<number, Extract<Tf2HudEvent, { kind: "ammo" }>>()
+  const lastAmmo = new Map<number, Tf2HudWeapon>()
   let lastWeapon: number | null = null
   let lastLifecycle: Tf2HudPlayer["lifecycle"] | null = null
   let lastConditions: Tf2ConditionWords | null = null
@@ -731,6 +732,7 @@ export function bindTf2Hud(publication: Tf2HudPublication): Tf2HudBinding {
   }
   const transitionWeapon = (next: Tf2HudWeapon, event: Pick<Tf2HudEvent, "tick" | "ordinal">) => {
     rollingWeapons.set(next.identity, next)
+    lastAmmo.set(next.identity, next)
     if (next.identity === rollingActiveWeapon) {
       pushAmmoAnimation(animations, indicatorWeapon, next, event.tick, event.ordinal)
       indicatorWeapon = next
@@ -752,7 +754,6 @@ export function bindTf2Hud(publication: Tf2HudPublication): Tf2HudBinding {
         const source = rollingWeapons.get(event.weapon) ?? weaponsFrom(snapshot).get(event.weapon)
         if (!source) throw new Tf2HudBindingError("InconsistentPublication", "ammo event weapon is absent")
         transitionWeapon(withAmmo(source, event), event)
-        lastAmmo.set(event.weapon, event)
         break
       }
       case "weapon-selected":

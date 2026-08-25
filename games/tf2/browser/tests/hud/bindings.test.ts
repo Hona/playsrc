@@ -3,6 +3,9 @@ import {
   adaptCompactSessionHud,
   bindTf2Hud,
   bindTf2HudAction,
+  resolveTf2CrosshairGeometry,
+  tf2CrosshairHudValues,
+  tf2CrosshairSettings,
   TF2_GROUPED_CONDITION_PANELS,
   TF2_INDEPENDENT_CONDITION_PANELS,
   tf2HudAvailable,
@@ -298,6 +301,41 @@ describe("immutable TF2 HUD binding", () => {
     expect(value(binding.values, "visible", "PlayerStatusBleedImage")).toMatchObject({ value: false })
   })
 
+  test("lets pickup weapon facts supersede earlier fire ammo while rejecting stale final state", () => {
+    const prior = snapshot(17n)
+    const recovered = snapshot(18n)
+    const fired: Tf2HudEvent = {
+      tick: 18n,
+      ordinal: 0,
+      kind: "ammo",
+      weapon: 1,
+      clip: tf2HudAvailable(3),
+      reserve: tf2HudAvailable(20),
+      reload: "ready",
+      cause: "fire",
+    }
+    const pickup: Tf2HudEvent = {
+      tick: 18n,
+      ordinal: 1,
+      kind: "pickup",
+      notification: {
+        pickupIdentity: 42,
+        pickup: "ammo",
+        itemIdentity: tf2HudAvailable("item_ammopack_small"),
+        amount: tf2HudAvailable(1),
+      },
+      health: unavailable("not-applicable"),
+      weapon: tf2HudAvailable(weapon()),
+    }
+    const result = bindTf2Hud({ previous: availablePrevious(prior), snapshot: recovered, events: [fired, pickup] })
+    expect(value(result.values, "dialog-variable", "HudWeaponAmmo", "Ammo")).toMatchObject({ value: { value: 4 } })
+    const incorrect = snapshot(18n, {
+      player: tf2HudAvailable(player({ weapons: Object.freeze([weapon({ clip: tf2HudAvailable(3) })]) })),
+    })
+    expect(() => bindTf2Hud({ previous: availablePrevious(prior), snapshot: incorrect, events: [fired, pickup] }))
+      .toThrow("final HUD ammo differs from the event stream")
+  })
+
   test("maps class/team, grouped conditions and exact crosshair eligibility", () => {
     const conditioned = snapshot(20n, {
       player: tf2HudAvailable(player({
@@ -347,6 +385,64 @@ describe("immutable TF2 HUD binding", () => {
     for (const item of TF2_INDEPENDENT_CONDITION_PANELS) {
       expect(value(everyConditionBinding.values, "visible", item.panel)).toMatchObject({ value: true })
     }
+  })
+
+  test("applies every SDK crosshair suppression and custom-weapon override", () => {
+    const visibleFor = (crosshairOverrides: Partial<Tf2HudCrosshair>, overrides: Partial<Tf2HudPlayer> = {}) => {
+      const facts = snapshot(24n, {
+        player: tf2HudAvailable(player({ ...overrides, crosshair: tf2HudAvailable(crosshair(crosshairOverrides)) })),
+      })
+      return value(bindTf2Hud({ previous: unavailable("initial"), snapshot: facts, events: [] }).values, "visible", "HudCrosshair")
+    }
+    for (const suppressed of [
+      { configured: false }, { weaponAllows: false }, { loadingImage: true }, { paused: true },
+      { clientModeAllows: false }, { frozen: true }, { localViewEntity: false }, { vguiInput: true },
+      { tfSuppressed: true }, { countdownHidden: true },
+    ]) expect(visibleFor(suppressed), JSON.stringify(suppressed)).toMatchObject({ value: false })
+    expect(visibleFor({}, { weapons: Object.freeze([weapon({ drawsCrosshair: false })]) })).toMatchObject({ value: false })
+    expect(visibleFor({ texture: "vgui/crosshairs/crosshair7", weaponAllows: false }, {
+      weapons: Object.freeze([weapon({ drawsCrosshair: false })]),
+    })).toMatchObject({ value: true })
+    expect(visibleFor({ observerMode: "in-eye" }, { lifecycle: "observer" })).toMatchObject({ value: true })
+    expect(visibleFor({ observerMode: "roaming", observerCrosshair: false }, { lifecycle: "observer" })).toMatchObject({ value: false })
+    expect(visibleFor({ observerMode: "roaming", observerCrosshair: true }, { lifecycle: "observer" })).toMatchObject({ value: true })
+    expect(visibleFor({ observerMode: "other", observerCrosshair: true }, { lifecycle: "observer" })).toMatchObject({ value: false })
+  })
+
+  test("uses exact weapon-selected versus custom dimensions, centering, tint, and wrapping", () => {
+    const settings = tf2CrosshairSettings({
+      "multiplayer.crosshair-red": 300.75,
+      "multiplayer.crosshair-green": -1,
+      "multiplayer.crosshair-blue": 511,
+      "multiplayer.crosshair-scale": 47,
+      "multiplayer.crosshair-file": "crosshair4",
+    })
+    expect(settings).toMatchObject({ red: 44, green: 255, blue: 255, scale: 47, file: "crosshair4" })
+    expect(tf2CrosshairHudValues(settings)).toEqual({
+      texture: "vgui/crosshairs/crosshair4",
+      color: [44, 255, 255, 255],
+      scale: 47,
+    })
+    const stock = bindTf2Hud({ previous: unavailable("initial"), snapshot: snapshot(24n, {
+      player: tf2HudAvailable(player({ crosshair: tf2HudAvailable(crosshair({ scale: 31, weaponScale: 1.5 })) })),
+    }), events: [] })
+    expect(resolveTf2CrosshairGeometry(stock, { width: 1025, height: 769 })).toMatchObject({
+      kind: "stock", left: 490, top: 362, width: 47, height: 47,
+      asset: { crop: { x: 32, y: 32, width: 32, height: 32 } },
+    })
+    const custom = bindTf2Hud({ previous: unavailable("initial"), snapshot: snapshot(25n, {
+      player: tf2HudAvailable(player({ crosshair: tf2HudAvailable(crosshair({
+        texture: "vgui/crosshairs/crosshair4", scale: 31, weaponScale: 1.5,
+      })) })),
+    }), events: [] })
+    expect(resolveTf2CrosshairGeometry(custom, { width: 1025, height: 769 })).toMatchObject({
+      kind: "custom", left: 466, top: 338, width: 94, height: 94,
+      asset: { file: "crosshair4" },
+    })
+    const absent = bindTf2Hud({ previous: unavailable("initial"), snapshot: snapshot(26n, {
+      player: tf2HudAvailable(player({ crosshair: tf2HudAvailable(crosshair({ texture: "vgui/crosshairs/not_installed" })) })),
+    }), events: [] })
+    expect(resolveTf2CrosshairGeometry(absent, { width: 1025, height: 769 })).toBeNull()
   })
 
   test("hides the complete zero-condition baseline and removes every prior condition panel", () => {
@@ -572,6 +668,23 @@ describe("current compact Soldier/Demoman HUD adapter", () => {
     expect(regenerate.weapons[0]).toMatchObject({ clip: { value: 4 }, reserve: { value: 20 }, reload: "ready" })
     expect(fired).toMatchObject({ clip: { value: 3 }, reserve: { value: 20 }, cause: "fire" })
     expect(bindTf2Hud(publication).commands.map((command) => command.kind)).toEqual(["regenerate-notification"])
+  })
+
+  test("retains fire-before-regenerate ammo within one coalesced publication", () => {
+    const initial = adaptCompactSessionHud(unavailable("initial"), compactPublication(compactSnapshot(1n)), context)
+    const prior = bindTf2Hud(initial).facts
+    const fired = compactSnapshot(2n, {
+      loadout: Object.freeze([Object.freeze({ weapon: 1, reload: 0, clip: 3, reserve: 20, maximumClip: 4, maximumReserve: 20 })]),
+      projectileEvents: Object.freeze([Object.freeze({ type: "fire", launcherIdentity: 1 })]),
+    })
+    const regenerated = compactSnapshot(3n, {
+      events: Object.freeze([Object.freeze({ kind: 5, detail: 1, subject: 85, auxiliary: 0, values: Object.freeze([200, 4, 20, 0]) })]),
+    })
+    const publication = adaptCompactSessionHud(availablePrevious(prior), compactPublication(fired, regenerated), context)
+    expect(publication.events.map((event) => event.kind)).toEqual(["ammo", "regenerate"])
+    expect(() => bindTf2Hud(publication)).not.toThrow()
+    expect(value(bindTf2Hud(publication).values, "dialog-variable", "HudWeaponAmmo", "Ammo"))
+      .toMatchObject({ value: { value: 4 } })
   })
 
   test("marks unavailable compact damage direction and preserves death ordering", () => {

@@ -4,7 +4,9 @@ import { TF2_HUD_DYNAMIC_IMAGES } from "../../src/hud"
 import { configuredTf2UiResourceInput } from "../../src/ui-resources/configured.generated"
 import {
   classifyTf2UiCommand,
+  createTf2AuthoredCrosshairDescriptor,
   createTf2UiResourceDescriptor,
+  tf2AuthoredCrosshairs,
   tf2UiResourceBounds,
   tf2UiResources,
 } from "../../src/ui-resources"
@@ -121,6 +123,58 @@ describe("configured TF2 UI resource descriptor", () => {
     })
     const conditions = tf2UiResources.properties.flatMap((property) => property.condition ? [property.condition.token] : [])
     expect(conditions.length).toBeGreaterThan(0)
+  })
+})
+
+describe("authored TF2 crosshair content closure", () => {
+  test("retains the exact transparent default icon and visible decrypted weapon icons", () => {
+    expect(tf2AuthoredCrosshairs.contentBuild).toBe("24245096")
+    expect(tf2AuthoredCrosshairs.iconSource).toMatchObject({
+      logicalPath: "scripts/mod_textures.txt",
+      sha256: "33a38ee5a1ffe71d461d7ea0d8317e08b512aaf69ad26f2922fb5da07e443b0c",
+    })
+    expect(tf2AuthoredCrosshairs.stock).toMatchObject({
+      file: "",
+      crop: { x: 32, y: 0, width: 32, height: 32 },
+      material: { logicalPath: "materials/sprites/crosshairs.vmt", sha256: "ebb03a5623c41393c07e1ce9c18be187faedc5418a144af3bf1a21b3bc60b36f" },
+      texture: { logicalPath: "materials/sprites/crosshairs.vtf", sha256: "e38c69d9c961a0bf8e39043c73d6d9f322d8138c7b4c05fc2b9dfee52d828b59" },
+    })
+    expect(tf2AuthoredCrosshairs.weapons.map((weapon) => ({
+      identities: weapon.weaponIdentities,
+      script: weapon.source.logicalPath,
+      crop: weapon.crosshair.crop,
+      autoaim: weapon.autoaim?.crop,
+    }))).toEqual([
+      { identities: [1, 2], script: "scripts/tf_weapon_rocketlauncher.ctx", crop: { x: 32, y: 32, width: 32, height: 32 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
+      { identities: [3], script: "scripts/tf_weapon_pipebomblauncher.ctx", crop: { x: 32, y: 32, width: 32, height: 32 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
+    ])
+  })
+
+  test("admits exactly the sorted paired authored styles and every animation frame", () => {
+    expect(tf2AuthoredCrosshairs.styles.map((style) => [style.file, style.frames.length])).toEqual([
+      ["crosshair1", 11], ["crosshair2", 11], ["crosshair3", 1], ["crosshair4", 1],
+      ["crosshair5", 1], ["crosshair6", 11], ["crosshair7", 1], ["default", 1],
+    ])
+    for (const style of tf2AuthoredCrosshairs.styles) {
+      expect(style.material.logicalPath).toBe(`materials/vgui/crosshairs/${style.file}.vmt`)
+      expect(style.texture.logicalPath).toBe(`materials/vgui/crosshairs/${style.file}.vtf`)
+      expect(style.frames.every((frame, index) => frame.index === index && frame.pngDataUrl.startsWith("data:image/png;base64,"))).toBe(true)
+    }
+    expect(Object.isFrozen(tf2AuthoredCrosshairs.styles[0]!.frames)).toBe(true)
+  })
+
+  test("rejects mismatched source crops, duplicate weapons, and missing style pairs", () => {
+    const cropped = structuredClone(tf2AuthoredCrosshairs)
+    cropped.stock.crop!.x = 128
+    expect(() => createTf2AuthoredCrosshairDescriptor(cropped)).toThrow("source crop exceeds")
+
+    const duplicate = structuredClone(tf2AuthoredCrosshairs)
+    duplicate.weapons[1]!.weaponIdentities[0] = 1
+    expect(() => createTf2AuthoredCrosshairDescriptor(duplicate)).toThrow("duplicated")
+
+    const missing = structuredClone(tf2AuthoredCrosshairs)
+    missing.styles[0]!.material.logicalPath = "materials/vgui/crosshairs/missing.vmt"
+    expect(() => createTf2AuthoredCrosshairDescriptor(missing)).toThrow("exact material/texture pair")
   })
 })
 
