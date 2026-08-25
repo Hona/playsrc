@@ -928,6 +928,28 @@ fn substep_limit_fails_without_consuming_partial_time() {
 }
 
 #[test]
+fn configured_substep_capacity_survives_coalesced_live_bot_combat() {
+    let bytes = fixture(false);
+    let registry = registry(&bytes);
+    let mut world =
+        playsrc_particle::ParticleWorld::new(&registry, WorldLimits::default()).unwrap();
+    world
+        .advance(
+            &[create_event(vec![control([0.0; 3], [0.0; 3])])],
+            AdvanceRequest {
+                from_seconds: 0.0,
+                to_seconds: 0.3,
+                maximum_step_seconds: 0.015,
+                camera_position: [0.0; 3],
+            },
+            &mut NoHit,
+        )
+        .unwrap();
+    assert_eq!(world.time(), 0.3);
+    assert_eq!(world.effect_count(), 1);
+}
+
+#[test]
 fn authored_capacity_drops_excess_emission_without_failing_the_world() {
     let bytes = fixture_with_limit(false, 1);
     let registry = registry(&bytes);

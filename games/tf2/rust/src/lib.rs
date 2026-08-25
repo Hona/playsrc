@@ -276,6 +276,7 @@ pub struct Command {
     pub activate_entity: Option<u32>,
     pub bot_request: Option<bot::Request>,
     pub building_request: Option<building::Request>,
+    pub bot_configuration: Option<bot::Configuration>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1495,11 +1496,20 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 self.deploy_active_weapon();
             }
         }
+        if let Some(configuration) = command.bot_configuration {
+            self.bots
+                .as_mut()
+                .ok_or(Error::Bot(bot::Error::MissingScenario))?
+                .configure(configuration)
+                .map_err(Error::Bot)?;
+        }
+        let mut roster_changed = false;
         if let Some(request) = command.bot_request {
             let bots = self
                 .bots
                 .as_mut()
                 .ok_or(Error::Bot(bot::Error::MissingScenario))?;
+            let previous = bots.len();
             bots.apply(
                 request,
                 self.team_selection.local_team(),
@@ -1507,6 +1517,31 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 &mut self.authority_random,
             )
             .map_err(Error::Bot)?;
+            let current = bots.len();
+            bots.forced_change(
+                current.saturating_sub(previous),
+                previous.saturating_sub(current),
+                self.tick,
+            );
+            roster_changed = current != previous;
+        }
+        if let Some(bots) = self.bots.as_mut() {
+            if bots.configuration().is_some() {
+                let scores = self.round.snapshot(Vec::new());
+                roster_changed |= bots
+                    .maintain_quota(
+                        self.tick,
+                        self.team_selection.local_team(),
+                        self.class,
+                        scores.red_score,
+                        scores.blue_score,
+                        &mut self.authority_random,
+                    )
+                    .map_err(Error::Bot)?;
+            }
+        }
+        if roster_changed {
+            let bots = self.bots.as_ref().expect("changed TF2 bot roster");
             let mut roster = vec![team_selection::RosterPlayer {
                 identity: PLAYER_IDENTITY,
                 team: self.team_selection.local_team(),

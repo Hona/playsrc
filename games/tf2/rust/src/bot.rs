@@ -2,7 +2,9 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use playsrc_collision::Hull;
 use playsrc_entity::{Entity, Graph};
-use playsrc_movement::{Command as MoveCommand, Configuration, Player, State, StepInput, step};
+use playsrc_movement::{
+    Command as MoveCommand, Configuration as MovementConfiguration, Player, State, StepInput, step,
+};
 use playsrc_nav::{Area, Direction, Mesh};
 
 use crate::{
@@ -17,6 +19,7 @@ use crate::{
 };
 
 pub const MAX_BOTS: usize = 31;
+pub const QUOTA_THINK_INTERVAL: f32 = 0.25;
 
 const BOT_NAMES: &[&str] = &[
     "Chucklenuts",
@@ -158,6 +161,25 @@ pub enum Difficulty {
     Normal = 1,
     Hard = 2,
     Expert = 3,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum QuotaMode {
+    Normal = 0,
+    Fill = 1,
+    Match = 2,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Configuration {
+    pub quota: u8,
+    pub maximum_players: u8,
+    pub mode: QuotaMode,
+    pub difficulty: Difficulty,
+    pub join_after_player: bool,
+    pub auto_vacate: bool,
+    pub offline_practice: bool,
 }
 
 impl Difficulty {
@@ -383,6 +405,8 @@ pub struct BotWorld {
     next_name: Option<usize>,
     tick_interval: f32,
     respawn_waves: [f32; 2],
+    configuration: Option<Configuration>,
+    next_quota_think: f32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -479,6 +503,8 @@ impl BotWorld {
             next_name: None,
             tick_interval,
             respawn_waves: initial_respawn_waves(graph),
+            configuration: None,
+            next_quota_think: 0.0,
         })
     }
 
@@ -492,6 +518,134 @@ impl BotWorld {
 
     pub fn is_empty(&self) -> bool {
         self.bots.is_empty()
+    }
+
+    pub fn configuration(&self) -> Option<Configuration> {
+        self.configuration
+    }
+
+    pub fn configure(&mut self, configuration: Configuration) -> Result<(), Error> {
+        if configuration.quota > MAX_BOTS as u8
+            || configuration.maximum_players == 0
+            || configuration.maximum_players > MAX_BOTS as u8 + 1
+        {
+            return Err(Error::Limit);
+        }
+        self.configuration = Some(configuration);
+        self.next_quota_think = 0.0;
+        Ok(())
+    }
+
+    pub fn forced_change(&mut self, added: usize, removed: usize, tick: u64) {
+        let Some(configuration) = &mut self.configuration else {
+            return;
+        };
+        configuration.quota = configuration
+            .quota
+            .saturating_add(added.min(MAX_BOTS) as u8)
+            .saturating_sub(removed.min(MAX_BOTS) as u8)
+            .min(MAX_BOTS as u8);
+        self.next_quota_think =
+            tick as f32 * self.tick_interval + if removed == 0 { 1.0 } else { 2.0 };
+    }
+
+    pub fn maintain_quota(
+        &mut self,
+        tick: u64,
+        human_team: PlayerTeam,
+        human_class: PlayerClass,
+        red_score: u16,
+        blue_score: u16,
+        random: &mut UniformRandomStream,
+    ) -> Result<bool, Error> {
+        let Some(configuration) = self.configuration else {
+            return Ok(false);
+        };
+        let now = tick as f32 * self.tick_interval;
+        if now < self.next_quota_think {
+            return Ok(false);
+        }
+        self.next_quota_think = now + QUOTA_THINK_INTERVAL;
+
+        let human_on_team = usize::from(human_team.is_gameplay());
+        let spectators = usize::from(human_team == PlayerTeam::Spectator);
+        let mut desired = match configuration.mode {
+            QuotaMode::Normal => usize::from(configuration.quota),
+            QuotaMode::Fill => usize::from(configuration.quota).saturating_sub(human_on_team),
+            QuotaMode::Match => usize::from(configuration.quota) * human_on_team,
+        };
+        if configuration.join_after_player && human_on_team == 0 && spectators == 0 {
+            desired = 0;
+        }
+        desired = desired.min(
+            usize::from(configuration.maximum_players)
+                .saturating_sub(1)
+                .saturating_sub(usize::from(configuration.auto_vacate)),
+        );
+
+        if desired > self.bots.len() {
+            self.apply(
+                Request {
+                    operation: Operation::Add,
+                    count: 1,
+                    class: None,
+                    team: None,
+                    difficulty: configuration.difficulty,
+                },
+                human_team,
+                human_class,
+                random,
+            )?;
+            return Ok(true);
+        }
+        if desired >= self.bots.len() {
+            return Ok(false);
+        }
+
+        let red = self
+            .bots
+            .values()
+            .filter(|bot| bot.team == PlayerTeam::Red)
+            .count()
+            + usize::from(human_team == PlayerTeam::Red);
+        let blue = self
+            .bots
+            .values()
+            .filter(|bot| bot.team == PlayerTeam::Blue)
+            .count()
+            + usize::from(human_team == PlayerTeam::Blue);
+        let team = if blue > red {
+            PlayerTeam::Blue
+        } else if red > blue {
+            PlayerTeam::Red
+        } else if blue_score > red_score {
+            PlayerTeam::Blue
+        } else if red_score > blue_score {
+            PlayerTeam::Red
+        } else if random.random_int(0, 1).map_err(|_| Error::Limit)? == 0 {
+            PlayerTeam::Blue
+        } else {
+            PlayerTeam::Red
+        };
+        let candidate = |team| {
+            self.bots
+                .values()
+                .filter(|bot| bot.team == team)
+                .min_by_key(|bot| (bot.lifecycle == PlayerLifecycle::Active, bot.identity))
+                .map(|bot| bot.identity)
+        };
+        let identity = candidate(team).or_else(|| {
+            candidate(if team == PlayerTeam::Blue {
+                PlayerTeam::Red
+            } else {
+                PlayerTeam::Blue
+            })
+        });
+        if let Some(identity) = identity {
+            self.bots.remove(&identity);
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     pub fn round_respawn(
@@ -1027,11 +1181,11 @@ impl BotWorld {
                     speed_button: false,
                     mode_request: None,
                 },
-                Configuration {
+                MovementConfiguration {
                     tick_interval: self.tick_interval,
                     water_exit_forward: 30.0,
                     water_exit_up_speed: 300.0,
-                    ..Configuration::default()
+                    ..MovementConfiguration::default()
                 },
                 policy,
             )
@@ -2435,6 +2589,152 @@ mod tests {
         assert_eq!(Difficulty::Normal.recognition_seconds(), 0.5);
         assert_eq!(Difficulty::Hard.recognition_seconds(), 0.3);
         assert_eq!(Difficulty::Expert.recognition_seconds(), 0.2);
+    }
+
+    #[test]
+    fn source_quota_manager_waits_for_a_human_and_adds_one_balanced_bot_per_quarter_second() {
+        let mut world =
+            BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015, None).unwrap();
+        let mut random = UniformRandomStream::from_seed(0).unwrap();
+        world
+            .configure(Configuration {
+                quota: 4,
+                maximum_players: 24,
+                mode: QuotaMode::Normal,
+                difficulty: Difficulty::Hard,
+                join_after_player: true,
+                auto_vacate: false,
+                offline_practice: true,
+            })
+            .unwrap();
+        assert!(
+            !world
+                .maintain_quota(
+                    0,
+                    PlayerTeam::Unassigned,
+                    PlayerClass::Soldier,
+                    0,
+                    0,
+                    &mut random,
+                )
+                .unwrap()
+        );
+        assert!(
+            !world
+                .maintain_quota(16, PlayerTeam::Red, PlayerClass::Soldier, 0, 0, &mut random)
+                .unwrap()
+        );
+        assert!(
+            world
+                .maintain_quota(17, PlayerTeam::Red, PlayerClass::Soldier, 0, 0, &mut random)
+                .unwrap()
+        );
+        assert_eq!(world.snapshots()[0].team, PlayerTeam::Blue);
+        assert_eq!(world.snapshots()[0].difficulty, Difficulty::Hard);
+        assert!(
+            !world
+                .maintain_quota(33, PlayerTeam::Red, PlayerClass::Soldier, 0, 0, &mut random)
+                .unwrap()
+        );
+        assert!(
+            world
+                .maintain_quota(34, PlayerTeam::Red, PlayerClass::Soldier, 0, 0, &mut random)
+                .unwrap()
+        );
+        assert_eq!(world.len(), 2);
+        assert_eq!(world.snapshots()[1].team, PlayerTeam::Red);
+    }
+
+    #[test]
+    fn source_quota_modes_honor_fill_match_vacancy_and_balanced_removal() {
+        for (mode, expected) in [
+            (QuotaMode::Normal, 3),
+            (QuotaMode::Fill, 2),
+            (QuotaMode::Match, 3),
+        ] {
+            let mut world =
+                BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015, None).unwrap();
+            let mut random = UniformRandomStream::from_seed(0).unwrap();
+            world
+                .configure(Configuration {
+                    quota: 3,
+                    maximum_players: 5,
+                    mode,
+                    difficulty: Difficulty::Normal,
+                    join_after_player: true,
+                    auto_vacate: true,
+                    offline_practice: false,
+                })
+                .unwrap();
+            for tick in (0..100).step_by(17) {
+                world
+                    .maintain_quota(
+                        tick,
+                        PlayerTeam::Red,
+                        PlayerClass::Soldier,
+                        0,
+                        0,
+                        &mut random,
+                    )
+                    .unwrap();
+            }
+            assert_eq!(world.len(), expected, "{mode:?}");
+            assert!(
+                world
+                    .snapshots()
+                    .iter()
+                    .filter(|bot| bot.team == PlayerTeam::Red)
+                    .count()
+                    .abs_diff(
+                        world
+                            .snapshots()
+                            .iter()
+                            .filter(|bot| bot.team == PlayerTeam::Blue)
+                            .count()
+                            .saturating_sub(1),
+                    )
+                    <= 1
+            );
+        }
+
+        let mut world =
+            BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015, None).unwrap();
+        let mut random = UniformRandomStream::from_seed(0).unwrap();
+        world
+            .configure(Configuration {
+                quota: 3,
+                maximum_players: 32,
+                mode: QuotaMode::Normal,
+                difficulty: Difficulty::Normal,
+                join_after_player: true,
+                auto_vacate: false,
+                offline_practice: false,
+            })
+            .unwrap();
+        for tick in [0, 17, 34] {
+            world
+                .maintain_quota(
+                    tick,
+                    PlayerTeam::Red,
+                    PlayerClass::Soldier,
+                    0,
+                    0,
+                    &mut random,
+                )
+                .unwrap();
+        }
+        world
+            .configure(Configuration {
+                quota: 1,
+                ..world.configuration().unwrap()
+            })
+            .unwrap();
+        assert!(
+            world
+                .maintain_quota(51, PlayerTeam::Red, PlayerClass::Soldier, 0, 0, &mut random)
+                .unwrap()
+        );
+        assert_eq!(world.len(), 2);
     }
 
     #[test]

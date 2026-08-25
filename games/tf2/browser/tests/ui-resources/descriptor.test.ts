@@ -38,10 +38,10 @@ describe("configured TF2 UI resource descriptor", () => {
   })
 
   test("binds the exact configured provider and selected source closure", () => {
-    expect(tf2UiResources.identity).toBe("tf2-ui-24245096-fc91ef9c95eb2227")
+    expect(tf2UiResources.identity).toBe("tf2-ui-24245096-72773685d94d5de1")
     expect(tf2UiResources.providers).toHaveLength(14)
-    expect(tf2UiResources.sources).toHaveLength(119)
-    expect(tf2UiResources.panels).toHaveLength(105)
+    expect(tf2UiResources.sources).toHaveLength(127)
+    expect(tf2UiResources.panels).toHaveLength(113)
     expect(tf2UiResources.sources.find((source) => source.logicalPath === "resource/ui/statsummary.res")?.sha256)
       .toBe("bf146199fcd7aec0a5467752853b89ead6f882d11533de383c09561bd3455903")
     expect(tf2UiResources.sources.find((source) => source.logicalPath === "resource/ui/mainmenuoverride.res")?.sha256)
@@ -56,6 +56,10 @@ describe("configured TF2 UI resource descriptor", () => {
       .toBe("ed6e7d1619dcfa7423d00cf77c19026d7fe00c6a2bca634bb742d20d870b3e52")
     expect(tf2UiResources.sources.find((source) => source.logicalPath === "resource/ui/teammenu.res"))
       .toMatchObject({ domain: "team-selection", byteLength: 14_354, sha256: "650867b7928f728ff6fce107745018223f3a19b1193b4c7f5fae54e391f102a0" })
+    expect(tf2UiResources.sources.find((source) => source.logicalPath === "resource/offline_practice.res"))
+      .toMatchObject({ domain: "practice", byteLength: 1_525, sha256: "0bfd8e281c89a45b08d5d78ff049159c7b8c19cbe3c32594bdfa3c8b0586a507" })
+    expect(tf2UiResources.sources.find((source) => source.logicalPath === "resource/createmultiplayergameserverpage.res"))
+      .toMatchObject({ domain: "create-server", byteLength: 1_797, sha256: "9e718333bba8f969137955db8321374926d2589b58837c5c9a4d2aa05f462eff" })
     expect(tf2UiResources.sources.find((source) => source.logicalPath === "resource/ui/hudobjectivetimepanel.res")?.sha256)
       .toBe("cae1af088a6fbe3ca6607d3e756ed2cf7e3d8f574ef18492a20f29cba7591500")
     expect(tf2UiResources.sources.find((source) => source.logicalPath === "resource/ui/waitingforplayerspanel.res")?.sha256)
@@ -97,13 +101,13 @@ describe("configured TF2 UI resource descriptor", () => {
   })
 
   test("retains every selected inventory with no unclassified item", () => {
-    expect(tf2UiResources.controls).toHaveLength(72)
-    expect(tf2UiResources.properties).toHaveLength(20_771)
-    expect(tf2UiResources.commands).toHaveLength(99)
-    expect(tf2UiResources.localization.tokens).toHaveLength(609)
+    expect(tf2UiResources.controls).toHaveLength(80)
+    expect(tf2UiResources.properties).toHaveLength(21_738)
+    expect(tf2UiResources.commands).toHaveLength(108)
+    expect(tf2UiResources.localization.tokens).toHaveLength(640)
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#Valve_Move_Forward")?.definitions[0]?.value).toBe("Move forward")
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#TF_OptionCategory_Combat")?.definitions[0]?.value).toBe("Combat Options")
-    expect(tf2UiResources.images).toHaveLength(391)
+    expect(tf2UiResources.images).toHaveLength(401)
     expect(tf2UiResources.images.find((image) => image.configuredValue === "maps/menu_photos_pl_upward")?.material?.sha256)
       .toBe("79ca3d5e39f80c8d18c79eb63fd9b457a359e2a2db147c426eb7814a2cd1101e")
     expect(tf2UiResources.fonts).toHaveLength(80)
@@ -240,7 +244,7 @@ describe("TF2 UI command and capability inventory", () => {
     expect(classifyTf2UiCommand("OpenOptionsDialog")).toEqual({ category: "application", capabilityOwner: "settings", executable: false })
     expect(classifyTf2UiCommand("play_casual")).toEqual({ category: "service", capabilityOwner: "service", executable: false })
     expect(classifyTf2UiCommand("view_newuser_forums")).toEqual({ category: "external", capabilityOwner: "external", executable: false })
-    expect(classifyTf2UiCommand("play_training")).toEqual({ category: "unsupported", capabilityOwner: "unsupported", executable: false })
+    expect(classifyTf2UiCommand("play_training")).toEqual({ category: "gameplay", capabilityOwner: "tf2", executable: false })
     expect(classifyTf2UiCommand("not-configured")).toBeNull()
     expect(new Set(tf2UiResources.commands.map((command) => command.category))).toEqual(
       new Set(["gameplay", "application", "service", "external", "unsupported"]),

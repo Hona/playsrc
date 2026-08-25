@@ -19,6 +19,16 @@ export type ProjectileKind = 1 | 2
 export type ProjectileState = 1 | 2 | 3
 export type ContactKind = 1 | 2 | 3
 export type BotDifficulty = 0 | 1 | 2 | 3
+export type BotQuotaMode = "normal" | "fill" | "match"
+export type BotConfiguration = Readonly<{
+  quota: number
+  maximumPlayers: number
+  mode: BotQuotaMode
+  difficulty: BotDifficulty
+  joinAfterPlayer: boolean
+  autoVacate: boolean
+  offlinePractice: boolean
+}>
 export type BotRequest = Readonly<
   | { action: "add"; count: number; class?: Tf2Class; team?: Tf2Team; difficulty: BotDifficulty }
   | { action: "kick-all" }
@@ -133,6 +143,7 @@ export type Command = Readonly<{
   physicsResults?: readonly ProjectilePhysicsResult[]
   bot?: BotRequest
   building?: Tf2BuildingRequest
+  botConfiguration?: BotConfiguration
 }>
 
 export type MovementSnapshot = Readonly<{
@@ -752,12 +763,12 @@ export function encodeCommand(command: Command): ArrayBuffer {
       throw new Tf2CodecError("command projectile Physics result is invalid")
     }
   }
-  const length = 48 + physics.length * 80
+  const length = 52 + physics.length * 80
   const bytes = new ArrayBuffer(length)
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x43, 0x4d, 0x44])
-  view.setUint32(4, 6, true)
+  view.setUint32(4, 7, true)
   scalars.forEach((value, index) => view.setFloat32(8 + index * 4, value, true))
   let buildingFlags = 0
   if (command.building) {
@@ -813,8 +824,24 @@ export function encodeCommand(command: Command): ArrayBuffer {
     }
   }
   view.setUint16(42, packedBot, true)
-  view.setUint32(44, length, true)
-  let at = 48
+  let packedConfiguration = 0
+  if (command.botConfiguration) {
+    const { quota, maximumPlayers, mode, difficulty, joinAfterPlayer, autoVacate, offlinePractice } = command.botConfiguration
+    if (!Number.isSafeInteger(quota) || quota < 0 || quota > 31
+      || !Number.isSafeInteger(maximumPlayers) || maximumPlayers < 1 || maximumPlayers > 32
+      || !["normal", "fill", "match"].includes(mode)
+      || !Number.isSafeInteger(difficulty) || difficulty < 0 || difficulty > 3
+      || typeof joinAfterPlayer !== "boolean" || typeof autoVacate !== "boolean" || typeof offlinePractice !== "boolean") {
+      throw new Tf2CodecError("command bot configuration is invalid")
+    }
+    packedConfiguration = (0x8000_0000 | quota | (maximumPlayers << 6)
+      | (difficulty << 12) | (["normal", "fill", "match"].indexOf(mode) << 14)
+      | (Number(joinAfterPlayer) << 16) | (Number(autoVacate) << 17)
+      | (Number(offlinePractice) << 18)) >>> 0
+  }
+  view.setUint32(44, packedConfiguration, true)
+  view.setUint32(48, length, true)
+  let at = 52
   const writeVector = (value: readonly number[]): void => {
     value.forEach((scalar, index) => view.setFloat32(at + index * 4, scalar, true))
     at += value.length * 4

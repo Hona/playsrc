@@ -102,6 +102,19 @@ describe("TF2 GameUI map-command ownership", () => {
 })
 
 describe("TF2 GameUI Escape and pending owner operations", () => {
+  test("moves the authored playlist on-screen only after Find a Game opens its right-side stack", () => {
+    const { gameUi, requests } = createTf2GameUiTransitionFixture()
+    const closed = gameUi.snapshot().panels.find((panel) => panel.name === "ExpandableList")!
+    expect(closed).toMatchObject({ visible: false, bounds: { x: 1280, width: 280 } })
+    expect(gameUi.dispatch({ kind: "activate-button", button: "find-game" }).request).toEqual({ kind: "show-play-list" })
+    const opened = gameUi.snapshot().panels.find((panel) => panel.name === "ExpandableList")!
+    expect(opened).toMatchObject({ visible: true, effectivelyVisible: true, bounds: { x: 1000, width: 280 } })
+    expect(opened.clip.width).toBe(280)
+    expect(requests).toEqual([])
+    expect(gameUi.snapshot().panels.find((panel) => panel.name === "TrainingEntry")?.effectivelyVisible).toBeTrue()
+    expect(gameUi.snapshot().panels.find((panel) => panel.name === "CreateServerEntry")?.effectivelyVisible).toBeTrue()
+  })
+
   test("hides source-disabled promotions, account content, and overlapping duplicate settings", () => {
     const panels = createTf2GameUiTransitionFixture().gameUi.snapshot().panels
     for (const name of [

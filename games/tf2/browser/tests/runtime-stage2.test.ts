@@ -298,13 +298,15 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     })
     const commandView = new DataView(command)
     expect(new TextDecoder().decode(command.slice(0, 4))).toBe("PCMD")
-    expect(commandView.getUint32(4, true)).toBe(6)
-    expect(command.byteLength).toBe(128)
+    expect(commandView.getUint32(4, true)).toBe(7)
+    expect(command.byteLength).toBe(132)
     expect(commandView.getUint32(28, true)).toBe(0xff)
     expect(commandView.getUint32(32, true)).toBe(0x0203_0304)
     expect(commandView.getUint32(36, true)).toBe(213)
     expect(commandView.getUint16(40, true)).toBe(1)
     expect(commandView.getUint16(42, true)).toBe(0)
+    expect(commandView.getUint32(44, true)).toBe(0)
+    expect(commandView.getUint32(48, true)).toBe(132)
 
     const source = snapshot()
     const value = decodeSnapshot(source)
@@ -393,6 +395,21 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     expect(new DataView(encodeCommand({ ...base, bot: { action: "kick-all" } })).getUint16(42, true)).toBe(2)
     expect(new DataView(encodeCommand({ ...base, bot: { action: "kick-team", team: 2 } })).getUint16(42, true)).toBe(3 | (2 << 11))
     expect(() => encodeCommand({ ...base, bot: { action: "add", count: 32, class: 3, difficulty: 1 } })).toThrow(Tf2CodecError)
+    const configured = new DataView(encodeCommand({
+      ...base,
+      botConfiguration: {
+        quota: 7, maximumPlayers: 24, mode: "fill", difficulty: 2,
+        joinAfterPlayer: true, autoVacate: false, offlinePractice: true,
+      },
+    }))
+    expect(configured.getUint32(44, true)).toBe((0x8000_0000 | 7 | (24 << 6) | (2 << 12) | (1 << 14) | (1 << 16) | (1 << 18)) >>> 0)
+    expect(() => encodeCommand({
+      ...base,
+      botConfiguration: {
+        quota: 32, maximumPlayers: 24, mode: "fill", difficulty: 2,
+        joinAfterPlayer: true, autoVacate: false, offlinePractice: true,
+      },
+    })).toThrow("command bot configuration is invalid")
 
     const prior = new Uint8Array(snapshot())
     const objectiveOffset = prior.byteLength - 120
