@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process"
 import { expect, test } from "./application-test"
+import { profileSampleSeconds, summarizeFrameTimes } from "./profile-window"
 
-test("profile whole-map noclip gameplay coverage", async ({ page, browser }, testInfo) => {
+test("profile bounded dual-map noclip gameplay coverage", async ({ page, browser }, testInfo) => {
+  const sampleSeconds = profileSampleSeconds()
   const cdp = await browser.newBrowserCDPSession()
   const systemInfo = await cdp.send("SystemInfo.getInfo") as { gpu?: { devices?: unknown; featureStatus?: unknown; auxAttributes?: Record<string, unknown> } }
   const sampler = process.platform === "win32" ? spawn("typeperf", [
@@ -83,7 +85,7 @@ test("profile whole-map noclip gameplay coverage", async ({ page, browser }, tes
   await page.waitForFunction(() => document.pointerLockElement?.classList.contains("world-canvas"), undefined, { timeout: 5_000 })
   console.log(`PLAYSRC_MAP_COVERAGE_PREFLIGHT ${JSON.stringify({ targets: [secondary, target], secondaryTraversal, active: target })}`)
 
-  const result = await page.evaluate(async () => {
+  const result = await page.evaluate(async (seconds) => {
     type Sample = { leaf: number; cluster: number; area: number; position: readonly [number, number, number] }
     const state = (window as any).__playsrcProfile as { coverageSamples: readonly Sample[]; longTasks: { at: number; duration: number }[]; controllerFreeSkyViews?: number }
     const main = document.querySelector("main") as HTMLElement
@@ -106,12 +108,11 @@ test("profile whole-map noclip gameplay coverage", async ({ page, browser }, tes
     let activeGoal = -1
     const observer = new MutationObserver(() => { const detail = main.dataset.performanceDetail; if (detail) frameRecords.push({ at: performance.now(), goal: activeGoal, camera: position(), frame: Number(canvas.dataset.displayFrame ?? 0), detail: JSON.parse(detail) }) })
     observer.observe(main, { attributes: true, attributeFilter: ["data-performance-detail"] })
-    const runStarted=performance.now(),runDeadline=runStarted+300_000
+    const runStarted=performance.now(),runDeadline=runStarted+seconds*1_000
     let lastTick=main.dataset.snapshotTick,lastFrame=canvas.dataset.displayFrame,lastTickAt=performance.now(),lastFrameAt=performance.now()
     key("keydown", "KeyW", "w")
     try{
-      for (let ordinal = 0; pending.size; ordinal += 1) {
-        if(performance.now()>runDeadline)throw new Error(`coverage run exceeded 300000 ms after ${route.length}/${state.coverageSamples.length} goals`)
+      for (let ordinal = 0; pending.size && performance.now() < runDeadline; ordinal += 1) {
         let index=-1,best=Number.POSITIVE_INFINITY;const current=position();for(const candidate of pending){const value=distance(current,state.coverageSamples[candidate]!.position);if(value<best){best=value;index=candidate}}pending.delete(index);route.push(index)
         const sample = state.coverageSamples[index]!, started = performance.now()
         activeGoal = index
@@ -120,7 +121,7 @@ test("profile whole-map noclip gameplay coverage", async ({ page, browser }, tes
         if (crouch) key("keydown", "ShiftLeft", "Shift", true)
         if (fire){dispatchEvent(new MouseEvent("mousedown",{button:0,bubbles:true}));setTimeout(()=>dispatchEvent(new MouseEvent("mouseup",{button:0,bubbles:true})),35)}
         let lastTurn = 0, arrived = false,lastDistance=distance(position(),sample.position),lastProgressAt=performance.now()
-        while (performance.now() - started < 1_500) {
+        while (performance.now() - started < 1_500 && performance.now() < runDeadline) {
           await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
           const now=performance.now(),phase=main.dataset.phase,tick=main.dataset.snapshotTick,frame=canvas.dataset.displayFrame
           if(phase!=="Ready")throw new Error(`coverage authority entered ${phase}: ${main.dataset.detail}; goal=${index}; tick=${tick}; camera=${main.dataset.cameraPosition}; controllerFreeSkyViews=${state.controllerFreeSkyViews??0}`)
@@ -138,25 +139,66 @@ test("profile whole-map noclip gameplay coverage", async ({ page, browser }, tes
     }finally{
       key("keyup", "KeyW", "w");key("keyup", "KeyA", "a");key("keyup", "ShiftLeft", "Shift");dispatchEvent(new MouseEvent("mouseup",{button:0,bubbles:true}));observer.disconnect()
     }
-    return { samples: state.coverageSamples, route, reached, unreachable, frameRecords, longTasks: state.longTasks, controllerFreeSkyViews: state.controllerFreeSkyViews ?? 0 }
-  })
+    return {
+      samples: state.coverageSamples,
+      route,
+      reached,
+      unreachable,
+      frameRecords,
+      longTasks: state.longTasks,
+      elapsedMilliseconds: Number((performance.now()-runStarted).toFixed(3)),
+      terminalTick: Number(main.dataset.snapshotTick ?? 0),
+      water: {
+        plan: main.dataset.waterPlan ?? "",
+        passes: main.dataset.waterPasses?.split(",").filter(Boolean) ?? [],
+        stateRestored: main.dataset.waterRestored === "true",
+        normalFrame: Number(main.dataset.waterNormalFrame ?? 0),
+      },
+      hud: main.dataset.hudProbe ?? "",
+      controllerFreeSkyViews: state.controllerFreeSkyViews ?? 0,
+    }
+  }, sampleSeconds)
 
   if (sampler) { sampler.kill(); await samplerExit }
   await cdp.detach()
-  const durations = result.frameRecords.map((record) => Number((record.detail as Record<string, unknown>).total ?? 0)).sort((a, b) => a - b)
-  const percentile = (fraction: number) => durations[Math.min(durations.length - 1, Math.floor(durations.length * fraction))] ?? 0
-  const worst = result.frameRecords.toSorted((left, right) => Number((right.detail as Record<string, unknown>).total ?? 0) - Number((left.detail as Record<string, unknown>).total ?? 0)).slice(0, 100)
+  const durations = result.frameRecords.map((record) => Number((record.detail as Record<string, unknown>).total ?? 0))
+  const frameTimes = summarizeFrameTimes(durations)
+  const worst = result.frameRecords.toSorted((left, right) => Number((right.detail as Record<string, unknown>).total ?? 0) - Number((left.detail as Record<string, unknown>).total ?? 0)).slice(0, 10)
   const report = {
-    target, targets: [secondary, target], secondaryTraversal, controllerFreeSkyViews: result.controllerFreeSkyViews, samples: result.samples.length, reached: result.reached.length, unreachable: result.unreachable.length,
-    frames: result.frameRecords.length, p50Milliseconds: percentile(.5), p95Milliseconds: percentile(.95),
-    p99Milliseconds: percentile(.99), maximumMilliseconds: durations.at(-1) ?? 0, worst,
-    unreachableSamples: result.unreachable, longTasks: result.longTasks,
+    target,
+    targets: [secondary, target],
+    sampleSeconds,
+    elapsedMilliseconds: result.elapsedMilliseconds,
+    secondaryTraversal,
+    controllerFreeSkyViews: result.controllerFreeSkyViews,
+    samples: result.samples.length,
+    attempted: result.route.length,
+    reached: result.reached.length,
+    unreachable: result.unreachable.length,
+    ...frameTimes,
+    worst,
+    unreachableSamples: result.unreachable,
+    longTasks: result.longTasks,
+    terminalTick: result.terminalTick,
+    water: result.water,
+    hud: result.hud,
     gpu: { devices: systemInfo.gpu?.devices ?? [], featureStatus: systemInfo.gpu?.featureStatus ?? {}, renderer: systemInfo.gpu?.auxAttributes?.glRenderer ?? null },
     counterErrors: counterErrors.trim() || null,
   }
   await testInfo.attach("map-coverage", { body: Buffer.from(JSON.stringify({ ...report, route: result.route, records: result.frameRecords }, null, 2)), contentType: "application/json" })
   await testInfo.attach("map-coverage-typeperf", { body: Buffer.from(counters), contentType: "text/csv" })
-  console.log(`PLAYSRCMAPCOVERAGE ${JSON.stringify(report)}`)
+  console.log(`PLAYSRCMAPCOVERAGE ${JSON.stringify({
+    maps: report.targets,
+    sampleSeconds: report.sampleSeconds,
+    elapsedMilliseconds: report.elapsedMilliseconds,
+    goals: { available: report.samples, attempted: report.attempted, reached: report.reached, unreachable: report.unreachable },
+    frames: frameTimes,
+    secondarySkySurfaces: report.secondaryTraversal.skySurfaces,
+    water: report.water,
+    hud: report.hud,
+    terminalTick: report.terminalTick,
+  })}`)
+  expect(result.elapsedMilliseconds).toBeGreaterThanOrEqual(sampleSeconds * 1_000)
   expect(result.frameRecords.length).toBeGreaterThan(0)
   expect(result.reached.length).toBeGreaterThan(0)
   expect(await page.locator("main").getAttribute("data-phase")).toBe("Ready")

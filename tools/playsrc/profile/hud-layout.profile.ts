@@ -3,6 +3,7 @@ import { createHash } from "node:crypto"
 import path from "node:path"
 import type { Page } from "@playwright/test"
 import { expect, test } from "./application-test"
+import { summarizeFrameTimes } from "./profile-window"
 import { loadLocalConfig } from "../src/config"
 
 const TARGET = "jump_beef"
@@ -44,6 +45,8 @@ type PixelMetric = Readonly<{
 }>
 type Capture = Readonly<{
   viewport: (typeof VIEWPORTS)[number]
+  captureMilliseconds: number
+  frameMilliseconds: number
   innerViewport: Readonly<{ width: number; height: number; devicePixelRatio: number }>
   visualViewport: Readonly<{ x: number; y: number; width: number; height: number; scale: number }> | null
   ownerViewport: string
@@ -261,6 +264,7 @@ test("profile TF2 HUD layout and composed viewport ownership", async ({ page }) 
   const client = await page.context().newCDPSession(page)
   const captures: Capture[] = []
   for (let index = 0; index < VIEWPORTS.length; index += 1) {
+    const captureStarted = Date.now()
     const viewport = VIEWPORTS[index]!
     await page.setViewportSize({ width: viewport.width, height: viewport.height })
     await client.send("Emulation.setDeviceMetricsOverride", {
@@ -310,6 +314,7 @@ test("profile TF2 HUD layout and composed viewport ownership", async ({ page }) 
         visualViewport: visual ? { x: visual.offsetLeft, y: visual.offsetTop, width: visual.width, height: visual.height, scale: visual.scale } : null,
         ownerViewport: main.dataset.presentationViewport ?? "",
         ownerRevision: Number(main.dataset.presentationViewportRevision),
+        frameMilliseconds: Number((JSON.parse(main.dataset.performanceDetail ?? "{}") as { total?: number }).total ?? 0),
         rectangles: {
           html: readRect(document.documentElement), body: readRect(document.body), app: readRect(required("#app")), main: readRect(main),
           canvas: readRect(required(".world-canvas")), hudLayer: readRect(required(".hud-layer")), hudHost: readRect(host),
@@ -330,7 +335,11 @@ test("profile TF2 HUD layout and composed viewport ownership", async ({ page }) 
     expect([composed.width, composed.height]).toEqual([viewport.width, viewport.height])
     expect([canvas.width, canvas.height]).toEqual([composed.width, composed.height])
     expect([hud.width, hud.height]).toEqual([composed.width, composed.height])
-    captures.push(Object.freeze({ ...geometry, pixels: Object.freeze({ canvas: bottomMetrics(canvas), hud: bottomMetrics(hud), composed: bottomMetrics(composed) }) }))
+    captures.push(Object.freeze({
+      ...geometry,
+      captureMilliseconds: Date.now() - captureStarted,
+      pixels: Object.freeze({ canvas: bottomMetrics(canvas), hud: bottomMetrics(hud), composed: bottomMetrics(composed) }),
+    }))
   }
 
   const duplicateRevision = captures.at(-1)!.ownerRevision
@@ -362,4 +371,17 @@ test("profile TF2 HUD layout and composed viewport ownership", async ({ page }) 
   }
   const stableGeometry = (capture: Capture | undefined) => Object.fromEntries(Object.entries(capture?.panels ?? {}).map(([name, panel]) => [name, { id: panel.id, parent: panel.parent, local: panel.local }]))
   expect(stableGeometry(captures.at(-1))).toEqual(stableGeometry(captures[0]))
+  console.log(`PLAYSRC_HUD_PROFILE ${JSON.stringify({
+    map: TARGET,
+    viewports: captures.length,
+    panels: PANELS.length,
+    frames: summarizeFrameTimes(captures.map((capture) => capture.frameMilliseconds)),
+    captures: captures.map((capture) => ({
+      name: capture.viewport.name,
+      milliseconds: capture.captureMilliseconds,
+      classImage: capture.panels.PlayerStatusClassImage!.local,
+      finalRowOpaqueBlack: capture.pixels.composed.at(-1)!.opaqueBlackOccupancy,
+    })),
+    report: path.join(outputDirectory, "report.json"),
+  })}`)
 })

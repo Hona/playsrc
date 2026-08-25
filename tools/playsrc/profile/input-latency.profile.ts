@@ -5,6 +5,7 @@ import os from "node:os"
 import path from "node:path"
 import { inflateSync } from "node:zlib"
 import { expect, test } from "./application-test"
+import { divideProfileWindow, profileSampleSeconds, summarizeFrameTimes } from "./profile-window"
 import { loadLocalConfig } from "../src/config"
 
 type RpcRecord = { kind: string; started: number; finished?: number; bytes?: number; workerTimings?: Record<string, number> }
@@ -198,7 +199,10 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
   systemSampler?.stdout.setEncoding("utf8").on("data",chunk=>{systemSamplerOutput+=chunk})
   systemSampler?.stderr.setEncoding("utf8").on("data",chunk=>{systemSamplerError+=chunk})
   const systemSamplerExit=systemSampler?new Promise<void>(resolve=>systemSampler.once("exit",()=>resolve())):Promise.resolve()
-  const rafHz = Number(process.env.PROFILE_RAF_HZ ?? 0)
+  if (process.env.PROFILE_RAF_HZ !== undefined) {
+    throw new Error("headed gameplay profiling must preserve native requestAnimationFrame scheduling")
+  }
+  const sampleSeconds = profileSampleSeconds()
   const pointerStressRounds = Number(process.env.PROFILE_POINTER_STRESS ?? 0)
   if (!Number.isSafeInteger(pointerStressRounds) || pointerStressRounds < 0 || pointerStressRounds > 32) {
     throw new Error("pointer stress round count is invalid")
@@ -207,7 +211,7 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
   const mapOnly = process.env.PROFILE_MAP_ONLY === "1" || process.env.npm_lifecycle_event === "profile:map-load"
   const runScenarios = scenarioMode !== ""
   const shouldRunScenario = (name: string) => scenarioMode === "1" || scenarioMode === name
-  await page.addInitScript(({ rafHz, pointerStressRounds }) => {
+  await page.addInitScript(({ pointerStressRounds }) => {
     if (pointerStressRounds === 0) {
       let pointerLockElement: Element | null = null
       Object.defineProperty(document, "pointerLockElement", {
@@ -229,17 +233,6 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
           queueMicrotask(() => document.dispatchEvent(new Event("pointerlockchange")))
           return Promise.resolve()
         },
-      })
-    }
-    if (rafHz > 0) {
-      const interval = 1_000 / rafHz
-      Object.defineProperty(window, "requestAnimationFrame", {
-        configurable: true,
-        value: (callback: FrameRequestCallback) => window.setTimeout(() => callback(performance.now()), interval),
-      })
-      Object.defineProperty(window, "cancelAnimationFrame", {
-        configurable: true,
-        value: (handle: number) => clearTimeout(handle),
       })
     }
     const state = {
@@ -345,7 +338,7 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
         if (records.some((record) => record.attributeName === "data-performance-detail")) capturePresentation()
       }).observe(main, { attributes: true, attributeFilter: ["data-phase", "data-detail", "data-gameui", "data-performance-detail"] })
     })
-  }, { rafHz, pointerStressRounds })
+  }, { pointerStressRounds })
 
   const wallStarted = Date.now()
   await page.goto("/", { waitUntil: "load", timeout: 30_000 })
@@ -354,6 +347,17 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
     return phase === "MainMenu" || phase === "Failed"
   }, undefined, { timeout: 180_000, polling: 50 })
   const mainMenuMilliseconds = await page.evaluate(() => performance.now())
+  const menuMetrics = await page.evaluate(() => {
+    const main = document.querySelector<HTMLElement>("main")
+    const menu = document.querySelector<HTMLElement>(".gameui-layer")
+    return {
+      phase: main?.dataset.phase ?? "Absent",
+      startupState: main?.dataset.startupState ?? "",
+      character: main?.dataset.presentationCharacter ?? null,
+      controls: menu?.querySelectorAll("[data-vgui-name]").length ?? 0,
+      visible: !!menu && !menu.hidden && getComputedStyle(menu).visibility !== "hidden",
+    }
+  })
   const configurationResponse = await page.request.get("/playsrc-config.json")
   expect(configurationResponse.status()).toBe(200)
   const configuration = await configurationResponse.json() as { defaultTarget: string; targets: readonly { target: string }[] }
@@ -459,7 +463,7 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
     await expect.poll(async () => Number(await main.getAttribute("data-crouch-fraction"))).toBe(0)
   }
   if (!mapOnly && initial.phase === "Ready") {
-    await page.waitForTimeout(5_000)
+    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
     const settledPhase = await page.locator("main").getAttribute("data-phase")
     if (settledPhase !== "Ready") {
       input.skipped = `phase became ${settledPhase} during settle`
@@ -593,8 +597,6 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
             pointerTransitions: readonly { at: number; locked: boolean; focused: boolean; phase: string; gameUi: string }[]
           }> = []
           for (let round = 0; round < rounds; round += 1) {
-            const nativeRaf = requestAnimationFrame.bind(window)
-            const nativeCancel = cancelAnimationFrame.bind(window)
             const start = {
               frame: Number(canvas.dataset.displayFrame),
               view: Number(canvas.dataset.displayViewRevision),
@@ -607,8 +609,6 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
             const frames: number[] = []
             const observer = new MutationObserver(() => frames.push(Number(canvas.dataset.displayPreparedRevision)))
             observer.observe(canvas, { attributes: true, attributeFilter: ["data-display-frame"] })
-            window.requestAnimationFrame = (callback) => setTimeout(() => callback(performance.now()), 1)
-            window.cancelAnimationFrame = (handle) => clearTimeout(handle)
             let events = 0
             let lockedEvents = 0
             let firstUnlockedEvent: number | null = null
@@ -623,8 +623,6 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
             }, 4)
             await new Promise((resolve) => setTimeout(resolve, 600))
             clearInterval(interval)
-            window.requestAnimationFrame = nativeRaf
-            window.cancelAnimationFrame = nativeCancel
             await new Promise((resolve) => setTimeout(resolve, 200))
             observer.disconnect()
             records.push({
@@ -745,6 +743,45 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
     }
   }
 
+  const classes: Array<{
+    identity: "soldier" | "demoman"
+    sourceClass: number
+    milliseconds: number
+    health: number
+    hudControls: number
+    viewmodel: string
+  }> = []
+  if (!mapOnly && initial.phase === "Ready") {
+    const selectClass = async (identity: "soldier" | "demoman", sourceClass: number) => {
+      const root = page.locator("main")
+      if (await root.getAttribute("data-console-visible") !== "true") await page.keyboard.press("Backquote")
+      const entry = page.locator("[aria-label='Console command']")
+      await expect(entry).toBeVisible()
+      await entry.fill(`class ${identity}`)
+      const started = await page.evaluate(() => performance.now())
+      await page.keyboard.press("Enter")
+      await page.keyboard.press("Backquote")
+      await page.waitForFunction((expected) => {
+        const main = document.querySelector<HTMLElement>("main")
+        return main?.dataset.phase === "Failed" || Number(main?.dataset.hudProbe?.split(":")[1]) === expected
+      }, sourceClass, { timeout: 30_000, polling: 20 })
+      const observation = await page.evaluate((began) => {
+        const main = document.querySelector<HTMLElement>("main")
+        const hud = document.querySelector<HTMLElement>("[data-vgui-runtime='tf2-hud']")
+        const probe = main?.dataset.hudProbe?.split(":") ?? []
+        return {
+          milliseconds: Number((performance.now() - began).toFixed(3)),
+          health: Number(probe[0] ?? 0),
+          hudControls: hud?.querySelectorAll("[data-vgui-name]").length ?? 0,
+          viewmodel: main?.dataset.viewmodelActivity ?? "",
+        }
+      }, started)
+      classes.push({ identity, sourceClass, ...observation })
+    }
+    await selectClass("demoman", 4)
+    await selectClass("soldier", 3)
+  }
+
   const steadyState: {
     elapsedMilliseconds: number
     phase: string | undefined
@@ -756,14 +793,17 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
   }[] = []
   const captureRuntime = () => page.locator("main").evaluate((main) => {
     const profile = (window as any).__playsrcProfile as { frames: number; rpcs: RpcRecord[] }
+    const rpcStarted: Record<string, number> = {}
     const rpcCompleted: Record<string, number> = {}
     for (const rpc of profile.rpcs) {
+      rpcStarted[rpc.kind] = (rpcStarted[rpc.kind] ?? 0) + 1
       if (rpc.finished !== undefined) rpcCompleted[rpc.kind] = (rpcCompleted[rpc.kind] ?? 0) + 1
     }
     const dataset = (main as HTMLElement).dataset
     return {
       at: performance.now(),
       frames: profile.frames,
+      rpcStarted,
       rpcCompleted,
       tick: Number(dataset.snapshotTick ?? 0),
       cameraPosition: dataset.cameraPosition,
@@ -777,82 +817,100 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
       particleItems: Number(dataset.particleItems ?? 0),
       performance: dataset.performance,
       performanceDetail: dataset.performanceDetail,
+      hudProbe: dataset.hudProbe ?? "",
+      hudOperations: dataset.hudOperationProbe ?? "",
+      waterPlan: dataset.waterPlan ?? "",
+      waterPasses: dataset.waterPasses ?? "",
+      waterRestored: dataset.waterRestored ?? "",
+      waterNormalFrame: Number(dataset.waterNormalFrame ?? 0),
+      environment: dataset.environment ?? "",
       phase: dataset.phase,
     }
   })
-  const steadyStarted = Date.now()
-  for (let second = 0; second < (mapOnly ? 0 : 10); second += 1) {
-    await page.waitForTimeout(1_000)
-    const sample = await page.locator("main").evaluate((main) => {
-      const profile = (window as any).__playsrcProfile as { frames: number; rpcs: RpcRecord[] }
-      const rpcStarted: Record<string, number> = {}
-      const rpcCompleted: Record<string, number> = {}
-      for (const rpc of profile.rpcs) {
-        rpcStarted[rpc.kind] = (rpcStarted[rpc.kind] ?? 0) + 1
-        if (rpc.finished !== undefined) rpcCompleted[rpc.kind] = (rpcCompleted[rpc.kind] ?? 0) + 1
-      }
-      return { ...((main as HTMLElement).dataset), frames: profile.frames, rpcStarted, rpcCompleted }
-    })
-    steadyState.push({
-      elapsedMilliseconds: Date.now() - steadyStarted,
-      phase: sample.phase,
-      performance: sample.performance,
-      tick: sample.snapshotTick,
-      frames: sample.frames,
-      rpcStarted: sample.rpcStarted,
-      rpcCompleted: sample.rpcCompleted,
-    })
-    if (sample.phase === "Failed") break
-  }
-
   const scenarios: {
     name: string
     samples: Awaited<ReturnType<typeof captureRuntime>>[]
   }[] = []
-  const runScenario = async (name: string, seconds: number, start: () => Promise<void>, stop: () => Promise<void>) => {
-    await start()
-    const samples = [await captureRuntime()]
-    for (let second = 0; second < seconds; second += 1) {
-      await page.waitForTimeout(1_000)
-      samples.push(await captureRuntime())
+  const activeFrameWindows: Array<{ started: number; finished: number }> = []
+  const workloads: Array<{
+    name: string
+    start: () => Promise<void>
+    stop: () => Promise<void>
+  }> = []
+  if (runScenarios && initial.phase === "Ready") {
+    if (shouldRunScenario("jump")) workloads.push({
+      name: "repeated-jump",
+      start: async () => {
+        await page.evaluate(() => {
+          const press = () => {
+            dispatchEvent(new KeyboardEvent("keydown", { code: "Space", key: " ", bubbles: true }))
+            setTimeout(() => dispatchEvent(new KeyboardEvent("keyup", { code: "Space", key: " ", bubbles: true })), 35)
+          }
+          press()
+          ;(window as any).__playsrcJumpInterval = setInterval(press, 100)
+        })
+      },
+      stop: async () => {
+        await page.evaluate(() => {
+          clearInterval((window as any).__playsrcJumpInterval)
+          dispatchEvent(new KeyboardEvent("keyup", { code: "Space", key: " ", bubbles: true }))
+        })
+      },
+    })
+    if (shouldRunScenario("wall")) workloads.push({
+      name: "held-forward",
+      start: async () => { await page.evaluate(() => dispatchEvent(new KeyboardEvent("keydown", { code: "KeyW", key: "w", bubbles: true }))) },
+      stop: async () => { await page.evaluate(() => dispatchEvent(new KeyboardEvent("keyup", { code: "KeyW", key: "w", bubbles: true }))) },
+    })
+    if (shouldRunScenario("fire")) workloads.push({
+      name: "held-primary-fire",
+      start: async () => {
+        await page.evaluate(async () => {
+          const canvas = document.querySelector(".world-canvas")
+          if (!canvas) throw new Error("world canvas is unavailable")
+          if (document.pointerLockElement !== canvas) await canvas.requestPointerLock()
+          dispatchEvent(new MouseEvent("mousedown", { button: 0, bubbles: true }))
+        })
+      },
+      stop: async () => { await page.evaluate(() => dispatchEvent(new MouseEvent("mouseup", { button: 0, bubbles: true }))) },
+    })
+  }
+  if (!mapOnly && workloads.length === 0) workloads.push({
+    name: "steady-gameplay",
+    start: async () => {},
+    stop: async () => {},
+  })
+  let activeSampleMilliseconds = 0
+  if (workloads.length > 0) {
+    const durations = divideProfileWindow(sampleSeconds, workloads.length)
+    const steadyStarted = Date.now()
+    for (const [index, workload] of workloads.entries()) {
+      await workload.start()
+      const samples = [await captureRuntime()]
+      try {
+        for (let second = 0; second < durations[index]!; second += 1) {
+          await page.waitForTimeout(1_000)
+          const sample = await captureRuntime()
+          samples.push(sample)
+          steadyState.push({
+            elapsedMilliseconds: Date.now() - steadyStarted,
+            phase: sample.phase,
+            performance: sample.performance,
+            tick: String(sample.tick),
+            frames: sample.frames,
+            rpcStarted: sample.rpcStarted,
+            rpcCompleted: sample.rpcCompleted,
+          })
+          if (sample.phase === "Failed") break
+        }
+      } finally {
+        await workload.stop()
+      }
+      activeFrameWindows.push({ started: samples[0]!.at, finished: samples.at(-1)!.at })
+      if (workload.name !== "steady-gameplay") scenarios.push({ name: workload.name, samples })
       if (samples.at(-1)?.phase === "Failed") break
     }
-    await stop()
-    scenarios.push({ name, samples })
-  }
-  if (runScenarios && initial.phase === "Ready") {
-    if (shouldRunScenario("jump")) await runScenario("repeated-jump", 8, async () => {
-      await page.evaluate(() => {
-        const press = () => {
-          dispatchEvent(new KeyboardEvent("keydown", { code: "Space", key: " ", bubbles: true }))
-          setTimeout(() => dispatchEvent(new KeyboardEvent("keyup", { code: "Space", key: " ", bubbles: true })), 35)
-        }
-        press()
-        ;(window as any).__playsrcJumpInterval = setInterval(press, 100)
-      })
-    }, async () => {
-      await page.evaluate(() => {
-        clearInterval((window as any).__playsrcJumpInterval)
-        dispatchEvent(new KeyboardEvent("keyup", { code: "Space", key: " ", bubbles: true }))
-      })
-    })
-    if (shouldRunScenario("wall")) await page.waitForTimeout(1_000)
-    if (shouldRunScenario("wall")) await runScenario("held-forward", 15, async () => {
-      await page.evaluate(() => dispatchEvent(new KeyboardEvent("keydown", { code: "KeyW", key: "w", bubbles: true })))
-    }, async () => {
-      await page.evaluate(() => dispatchEvent(new KeyboardEvent("keyup", { code: "KeyW", key: "w", bubbles: true })))
-    })
-    if (shouldRunScenario("fire")) await page.waitForTimeout(1_000)
-    if (shouldRunScenario("fire")) await runScenario("held-primary-fire", 10, async () => {
-      await page.evaluate(async () => {
-        const canvas = document.querySelector(".world-canvas")
-        if (!canvas) throw new Error("world canvas is unavailable")
-        if (document.pointerLockElement !== canvas) await canvas.requestPointerLock()
-        dispatchEvent(new MouseEvent("mousedown", { button: 0, bubbles: true }))
-      })
-    }, async () => {
-      await page.evaluate(() => dispatchEvent(new MouseEvent("mouseup", { button: 0, bubbles: true })))
-    })
+    activeSampleMilliseconds = Date.now() - steadyStarted
   }
 
   const raw = await page.evaluate(() => {
@@ -945,7 +1003,7 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
       })
     return { count: entries.length, distributions, worst }
   }
-  const firstSteady = steadyState[Math.floor((steadyState.length - 1) / 2)]
+  const firstSteady = steadyState[0]
   const lastSteady = steadyState.at(-1)
   const steadySeconds = firstSteady && lastSteady
     ? (lastSteady.elapsedMilliseconds - firstSteady.elapsedMilliseconds) / 1_000
@@ -956,10 +1014,31 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
     lastSteady?.rpcCompleted[kind] ?? 0,
     firstSteady?.rpcCompleted[kind] ?? 0,
   )
+  const activePresentation = activeFrameWindows.flatMap((window) => presentationRecords
+    .filter((record) => record.at >= window.started && record.at <= window.finished)
+    .map((record) => Number((JSON.parse(record.detail) as { total?: number }).total ?? 0)))
+  const finalRuntime = !mapOnly && initial.phase === "Ready" ? await captureRuntime() : null
   const report = {
-    requestedRafHz: rafHz || "native",
+    requestedRafHz: "native" as const,
+    sampleSeconds: mapOnly ? 0 : sampleSeconds,
+    activeSampleMilliseconds,
     mapOnly,
     startupMilliseconds,
+    menu: menuMetrics,
+    classes,
+    hud: finalRuntime ? {
+      probe: finalRuntime.hudProbe,
+      operations: finalRuntime.hudOperations,
+      controls: classes.at(-1)?.hudControls ?? 0,
+    } : null,
+    water: finalRuntime ? {
+      plan: finalRuntime.waterPlan,
+      passes: finalRuntime.waterPasses ? finalRuntime.waterPasses.split(",") : [],
+      stateRestored: finalRuntime.waterRestored === "true",
+      normalFrame: finalRuntime.waterNormalFrame,
+      volumes: Number(finalRuntime.environment.split(",")[3] ?? 0),
+    } : null,
+    frameTimes: summarizeFrameTimes(activePresentation),
     mapLoad: {
       mainMenuMilliseconds: Number(mainMenuMilliseconds.toFixed(3)),
       submittedMilliseconds: mapSubmittedMilliseconds === undefined ? null : Number(mapSubmittedMilliseconds.toFixed(3)),
@@ -1059,8 +1138,40 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
   const comparisonLabel=process.env.PROFILE_COMPARISON_LABEL??"candidate"
   if(!/^(latest-main|candidate)$/u.test(comparisonLabel))throw new Error("application performance comparison label is invalid")
   await writeFile(path.join(performanceDirectory,`${comparisonLabel}-${process.pid}.json`),`${JSON.stringify(report,null,2)}\n`)
-  console.log(`PLAYSRCPROFILE ${JSON.stringify({...report,browserSystem:{...report.browserSystem,timeline:`${report.browserSystem.timeline.length} samples retained in playsrc-profile attachment`}})}`)
+  console.log(`PLAYSRCPROFILE ${JSON.stringify({
+    map: target,
+    sampleSeconds: report.sampleSeconds,
+    activeSampleMilliseconds: report.activeSampleMilliseconds,
+    startupState: report.menu.startupState,
+    mapLoadMilliseconds: report.mapLoad.durationMilliseconds,
+    repeatedMapLoadMilliseconds: report.mapLoad.repeatedDurationMilliseconds,
+    pageReloadMapLoadMilliseconds: report.mapLoad.pageReloadDurationMilliseconds,
+    menu: report.menu,
+    classes: report.classes,
+    hud: report.hud,
+    water: report.water,
+    frames: report.frameTimes,
+    inputMilliseconds: { down: input.keyDownMilliseconds, up: input.keyUpMilliseconds, fire: input.fireMilliseconds },
+    simulationTicksPerSecond: report.steadyRates.simulationTicksPerSecond,
+    workerRpcPerSecond: { observe: report.steadyRates.observeCompletedPerSecond, presentation: report.steadyRates.presentationsCompletedPerSecond },
+    scenarios: report.scenarios.map((scenario) => ({
+      name: scenario.name,
+      seconds: Number(scenario.intervals.reduce((sum, interval) => sum + interval.seconds, 0).toFixed(3)),
+      frames: scenario.presentationTrace.count,
+      p95Milliseconds: scenario.presentationTrace.distributions.total.p95Milliseconds,
+    })),
+    report: path.join(performanceDirectory, `${comparisonLabel}-${process.pid}.json`),
+  })}`)
   expect(raw.dataset.phase).toBe("Ready")
+  expect(report.menu.startupState).toBe("Skipped")
+  if (!mapOnly) {
+    expect(report.sampleSeconds).toBeGreaterThanOrEqual(5)
+    expect(report.sampleSeconds).toBeLessThanOrEqual(10)
+    expect(report.activeSampleMilliseconds).toBeGreaterThanOrEqual(report.sampleSeconds * 1_000)
+    expect(report.frameTimes.frames).toBeGreaterThan(0)
+    expect(report.classes.map((entry) => entry.identity)).toEqual(["demoman", "soldier"])
+    expect(report.steadyRates.simulationTicksPerSecond).toBeGreaterThan(30)
+  }
   if (pointerStressRounds > 0) expect(input.pointerStress).toBeDefined()
   if (typeof input.lookDisplayFrames === "number") {
     expect(input.lookDisplayFrames).toBeGreaterThan(1)
@@ -1117,7 +1228,9 @@ test.describe("TF2 application generation lifecycle", () => {
   test.use({ allowRecoverableApplicationFailure: true })
 
   test("loads both catalog maps, preserves sky ownership, routes Escape, rolls back, and recovers", async ({ page }, testInfo) => {
-    test.skip(process.env.PROFILE_BASELINE_ONLY === "1", "baseline-only run measures the unchanged gameplay execution path")
+    test.skip(process.env.PROFILE_APPLICATION_LIFECYCLE !== "1"
+      && process.env.npm_lifecycle_event !== "profile:application-lifecycle",
+    "complete generation lifecycle is selected explicitly rather than extending a bounded gameplay profile")
     await page.addInitScript(() => {
       ;(window as any).__playsrcProfile = { controllerFreeSkyViews: 0 }
       let locked: Element | null = null

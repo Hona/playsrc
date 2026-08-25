@@ -119,5 +119,15 @@ test("profiles BSP-prefetched cold map loading", async ({ page }, testInfo) => {
   await mkdir(output, { recursive: true })
   await writeFile(path.join(output, "report.json"), `${JSON.stringify(report, null, 2)}\n`)
   await testInfo.attach("cold-map-profile", { body: Buffer.from(JSON.stringify(report, null, 2)), contentType: "application/json" })
-  console.log(`PLAYSRC_COLD_MAP ${JSON.stringify(report)}`)
+  console.log(`PLAYSRC_COLD_MAP ${JSON.stringify({
+    map: report.target,
+    threads: report.browserThreads,
+    loadMilliseconds: report.consoleToReadyMilliseconds,
+    targetMilliseconds: report.targetMilliseconds,
+    targetMet: report.targetMet,
+    bspBytes: report.bsp.byteLength,
+    networkRequestsInsideMeasurement: report.bsp.networkRequestsInsideMeasurement,
+    workerLoad: report.workerLoad,
+    report: path.join(output, "report.json"),
+  })}`)
 })

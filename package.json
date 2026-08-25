@@ -23,6 +23,7 @@
     "profile:gameui": "playwright test --config=playwright.gameui-profile.config.ts",
     "profile:hud": "playwright test --config=playwright.hud-profile.config.ts",
     "profile:gameplay": "playwright test --config=playwright.profile.config.ts",
+    "profile:application-lifecycle": "playwright test --config=playwright.profile.config.ts --grep 'TF2 application generation lifecycle'",
     "profile:map-load": "playwright test --config=playwright.profile.config.ts",
     "profile:cold-map": "playwright test --config=playwright.cold-map-profile.config.ts",
     "profile:map-coverage": "playwright test --config=playwright.coverage-profile.config.ts",
