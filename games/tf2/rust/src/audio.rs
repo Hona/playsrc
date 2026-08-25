@@ -6,6 +6,11 @@ pub enum SoundDefinition {
     RocketExplosion,
     OriginalExplosion,
     StickyExplosion,
+    ScattergunSingle,
+    PistolSingle,
+    BatMiss,
+    BatHitFlesh,
+    BatHitWorld,
 }
 
 impl SoundDefinition {
@@ -17,16 +22,26 @@ impl SoundDefinition {
             Self::RocketExplosion => "BaseExplosionEffect.Sound",
             Self::OriginalExplosion => "Weapon_QuakeRPG.Explode",
             Self::StickyExplosion => "Weapon_Grenade_Pipebomb.Explode",
+            Self::ScattergunSingle => "Weapon_Scatter_Gun.Single",
+            Self::PistolSingle => "Weapon_Pistol.Single",
+            Self::BatMiss => "Weapon_Bat.Miss",
+            Self::BatHitFlesh => "Weapon_Bat.HitFlesh",
+            Self::BatHitWorld => "Weapon_Bat.HitWorld",
         }
     }
 
     pub(crate) const fn wave_count(self) -> u8 {
         match self {
             Self::RocketExplosion | Self::StickyExplosion => 3,
+            Self::BatHitWorld => 2,
             Self::RocketSingle
             | Self::OriginalSingle
             | Self::StickySingle
-            | Self::OriginalExplosion => 1,
+            | Self::OriginalExplosion
+            | Self::ScattergunSingle
+            | Self::PistolSingle
+            | Self::BatMiss
+            | Self::BatHitFlesh => 1,
         }
     }
 }
@@ -74,25 +89,29 @@ pub struct AudioEvent {
 pub struct SoundSelectionState {
     pub rocket_explosion_available: u8,
     pub sticky_explosion_available: u8,
+    pub bat_hit_world_available: u8,
 }
 
 #[derive(Clone, Copy)]
 struct WaveCycle {
     available: u8,
+    all: u8,
 }
 
 impl WaveCycle {
-    const ALL: u8 = 0b111;
+    const THREE: u8 = 0b111;
+    const TWO: u8 = 0b011;
 
-    const fn new() -> Self {
+    const fn new(all: u8) -> Self {
         Self {
-            available: Self::ALL,
+            available: all,
+            all,
         }
     }
 
     fn available_count(&mut self) -> u8 {
         if self.available == 0 {
-            self.available = Self::ALL;
+            self.available = self.all;
         }
         self.available.count_ones() as u8
     }
@@ -121,13 +140,15 @@ impl WaveCycle {
 pub(crate) struct SoundSelection {
     rocket_explosion: WaveCycle,
     sticky_explosion: WaveCycle,
+    bat_hit_world: WaveCycle,
 }
 
 impl SoundSelection {
     pub(crate) const fn new() -> Self {
         Self {
-            rocket_explosion: WaveCycle::new(),
-            sticky_explosion: WaveCycle::new(),
+            rocket_explosion: WaveCycle::new(WaveCycle::THREE),
+            sticky_explosion: WaveCycle::new(WaveCycle::THREE),
+            bat_hit_world: WaveCycle::new(WaveCycle::TWO),
         }
     }
 
@@ -135,17 +156,20 @@ impl SoundSelection {
         SoundSelectionState {
             rocket_explosion_available: self.rocket_explosion.available,
             sticky_explosion_available: self.sticky_explosion.available,
+            bat_hit_world_available: self.bat_hit_world.available,
         }
     }
 
     pub(crate) fn restore(&mut self, state: SoundSelectionState) -> bool {
-        if state.rocket_explosion_available & !WaveCycle::ALL != 0
-            || state.sticky_explosion_available & !WaveCycle::ALL != 0
+        if state.rocket_explosion_available & !WaveCycle::THREE != 0
+            || state.sticky_explosion_available & !WaveCycle::THREE != 0
+            || state.bat_hit_world_available & !WaveCycle::TWO != 0
         {
             return false;
         }
         self.rocket_explosion.available = state.rocket_explosion_available;
         self.sticky_explosion.available = state.sticky_explosion_available;
+        self.bat_hit_world.available = state.bat_hit_world_available;
         true
     }
 
@@ -166,6 +190,7 @@ impl SoundSelection {
         match definition {
             SoundDefinition::RocketExplosion => &mut self.rocket_explosion,
             SoundDefinition::StickyExplosion => &mut self.sticky_explosion,
+            SoundDefinition::BatHitWorld => &mut self.bat_hit_world,
             _ => unreachable!("only configured random-wave definitions have selection state"),
         }
     }

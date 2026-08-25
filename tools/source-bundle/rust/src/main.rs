@@ -2414,6 +2414,7 @@ fn main() -> Result<(), String> {
         "models/weapons/w_models/w_stickybomb.mdl",
         "models/weapons/c_models/c_soldier_arms.mdl",
         "models/weapons/c_models/c_demo_arms.mdl",
+        "models/weapons/c_models/c_scout_arms.mdl",
         "models/player/scout.mdl",
         "models/player/sniper.mdl",
         "models/player/soldier.mdl",
@@ -2427,6 +2428,9 @@ fn main() -> Result<(), String> {
         "models/class_menu/random_class_icon.mdl",
         "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl",
         "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl",
+        "models/weapons/c_models/c_scattergun.mdl",
+        "models/weapons/c_models/c_pistol/c_pistol.mdl",
+        "models/weapons/c_models/c_bat.mdl",
     ] {
         model_paths.insert(path.to_owned());
     }
@@ -2636,6 +2640,8 @@ fn main() -> Result<(), String> {
         "stickybomb_pulse_red",
         "stickybomb_pulse_blue",
         "muzzle_pipelauncher",
+        "muzzle_scattergun",
+        "muzzle_pistol",
         "ExplosionCore_Wall",
         "ExplosionCore_MidAir",
     ]
@@ -2682,6 +2688,12 @@ fn main() -> Result<(), String> {
         "sound/weapons/pipe_bomb1.wav",
         "sound/weapons/pipe_bomb2.wav",
         "sound/weapons/pipe_bomb3.wav",
+        "sound/weapons/scatter_gun_shoot.wav",
+        "sound/weapons/pistol_shoot.wav",
+        "sound/weapons/cbar_miss1.wav",
+        "sound/weapons/bat_hit.wav",
+        "sound/weapons/cbar_hit1.wav",
+        "sound/weapons/cbar_hit2.wav",
     ] {
         let consumer = if path.starts_with("sound/") {
             "audio-wave"

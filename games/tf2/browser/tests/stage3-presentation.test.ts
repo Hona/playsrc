@@ -6,6 +6,7 @@ import {
   decodeModelPoseOutput,
   encodeModelPoseBatch,
   ProjectilePresentationError,
+  scoutMuzzleParticles,
   tf2Camera,
   type ProjectileParticleRequest,
 } from "../src/presentation"
@@ -259,4 +260,41 @@ test("joins the current team skin to the matching viewmodel template", () => {
     activities: Object.freeze([{ tick: 1n, weapon: 1, activity: 3 }]),
   } as unknown as Snapshot
   expect(createViewmodelPresenter(artifacts).map(reloading).request.activity).toBe("ACT_PRIMARY_RELOAD_START")
+})
+
+test("composes every Scout stock item with its exact primary, secondary, and melee activities", () => {
+  const hands = "models/weapons/c_models/c_scout_arms.mdl"
+  const descriptor = Object.freeze({ kind: "viewmodel", horizontalFov4By3: 54, minimumFov: 54, maximumFov: 70, near: 1, depthRange: Object.freeze([0, 0.1]), drawsAfterWorld: true, opaqueBeforeTranslucent: true, optionalViewSpaceYReflection: true })
+  const sequences = Object.freeze([
+    "ACT_PRIMARY_VM_DRAW", "ACT_PRIMARY_VM_PRIMARYATTACK", "ACT_PRIMARY_RELOAD_START",
+    "ACT_SECONDARY_VM_DRAW", "ACT_SECONDARY_VM_PRIMARYATTACK", "ACT_SECONDARY_VM_RELOAD",
+    "ACT_MELEE_VM_DRAW", "ACT_MELEE_VM_HITCENTER",
+  ].map((activity) => ({ activity, durationSeconds: 0.8 })))
+  const models = new Map([[hands, { identity: hands, bodygroupCounts: Object.freeze([]), descriptor, sequences }]])
+  const items = [
+    [4, "models/weapons/c_models/c_scattergun.mdl", "ACT_PRIMARY_VM_PRIMARYATTACK"],
+    [5, "models/weapons/c_models/c_pistol/c_pistol.mdl", "ACT_SECONDARY_VM_PRIMARYATTACK"],
+    [6, "models/weapons/c_models/c_bat.mdl", "ACT_MELEE_VM_HITCENTER"],
+  ] as const
+  for (const [, identity] of items) models.set(identity, { identity, bodygroupCounts: Object.freeze([]), descriptor, sequences: Object.freeze([]) })
+  const artifacts = { models } as unknown as PresentationArtifacts
+  for (const [weapon, item, activity] of items) {
+    const snapshot = { class: 1, team: 2, tick: 1n, weapon, velocity: Object.freeze([0, 0, 0]), loadout: Object.freeze([{ weapon, reload: 0, clip: weapon === 6 ? 0 : 1 }]), activities: Object.freeze([{ tick: 1n, weapon, activity: 2 }]) } as unknown as Snapshot
+    const request = createViewmodelPresenter(artifacts).map(snapshot).request
+    expect(request.model).toBe(hands)
+    expect(request.itemModel).toBe(item)
+    expect(request.activity).toBe(activity)
+  }
+})
+
+test("starts authored Scout muzzle systems from exact fire-tick attachment transforms", () => {
+  const position = Object.freeze([1, 2, 3]) as readonly [number, number, number]
+  const orientation = Object.freeze([0, 0, 0, 1]) as readonly [number, number, number, number]
+  const snapshot = { tick: 17n, team: 2, events: Object.freeze([{ kind: 12, detail: 4, subject: 10 }]) } as unknown as Snapshot
+  const catalog = { systems: new Set(["muzzle_scattergun"]), attachmentTransforms: new Map([[4, new Map([["muzzle", { position, orientation }]])]]) }
+  const requests = scoutMuzzleParticles(snapshot, catalog)
+  expect(requests).toHaveLength(1)
+  expect(requests[0]).toMatchObject({ kind: "start", tick: 17n, system: "muzzle_scattergun", launcherIdentity: 4, team: "red", controlPoints: [{ position, orientation, ownerIdentity: 1 }] })
+  expect(() => scoutMuzzleParticles(snapshot, { ...catalog, systems: new Set() })).toThrow(ProjectilePresentationError)
+  expect(() => scoutMuzzleParticles(snapshot, { ...catalog, attachmentTransforms: new Map() })).toThrow(ProjectilePresentationError)
 })
