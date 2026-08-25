@@ -125,6 +125,9 @@ const CODE_LOCALIZATION_TOKENS: &[&str] = &[
     "#Winpanel_BlueMVPs",
     "#Winreason_FlagCaptureLimit",
     "#Winreason_FlagCaptureLimit_One",
+    "#Winreason_DefendedUntilTimeLimit",
+    "#Winreason_OpponentsDead",
+    "#Winreason_Stalemate",
     "#GameUI_AdjustGamma_Title",
     "#GameUI_Audio",
     "#GameUI_Bilinear",
@@ -294,6 +297,9 @@ const ROOTS: &[(&str, &str, bool)] = &[
     ("hud", "resource/ui/hudammoweapons.res", true),
     ("hud", "resource/ui/hudweaponselection.res", true),
     ("hud", "resource/ui/hudobjectivestatus.res", true),
+    ("hud", "resource/ui/hudmatchstatus.res", true),
+    ("hud", "resource/ui/hudobjectivetimepanel.res", true),
+    ("hud", "resource/ui/waitingforplayerspanel.res", true),
     ("hud", "resource/ui/hudobjectiveflagpanel.res", true),
     ("hud", "resource/ui/flagstatus.res", true),
     ("hud", "resource/ui/winpanel.res", true),
@@ -1696,6 +1702,8 @@ fn main() -> Result<(), String> {
         };
         resources.push(summary);
     }
+    let mut folded_images = BTreeSet::new();
+    unique_image_values.retain(|value| folded_images.insert(value.to_ascii_lowercase()));
     let images = unique_image_values
         .iter()
         .enumerate()

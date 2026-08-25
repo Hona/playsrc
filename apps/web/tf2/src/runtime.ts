@@ -300,6 +300,7 @@ export type ApplicationView = Readonly<{
   lockerProbe?: string
   objectiveProbe?: string
   objectiveEventProbe?: string
+  roundProbe?: string
   botCount?: number
   botProbe?: string
   unsupportedState?: "StickyPhysicsSolverUnavailable" | "GrenadePhysicsSolverUnavailable"
@@ -3755,6 +3756,7 @@ export class Tf2Application {
         explosionEvents: this.#explosionEvents,
         objectiveProbe: snapshot.objectives ? `${snapshot.objectives.redCaptures}:${snapshot.objectives.blueCaptures}:${snapshot.objectives.captureLimit}:${snapshot.objectives.winner??0}:${snapshot.objectives.flags.map(flag=>`${flag.identity},${flag.team},${flag.status},${flag.carrier??0},${flag.returnDeadline??-1}`).join("|")}` : undefined,
         objectiveEventProbe: snapshot.objectives?.events.map(event=>`${event.kind}:${event.detail}:${event.team}:${event.subject}:${event.player??0}`).join("|"),
+        roundProbe: `${snapshot.round.state}:${Number(snapshot.round.waitingForPlayers)}:${Number(snapshot.round.inSetup)}:${Number(snapshot.round.inOvertime)}:${snapshot.round.winningTeam??0}:${snapshot.round.redScore}:${snapshot.round.blueScore}:${snapshot.round.timer?.remaining.toFixed(2)??"none"}`,
         botCount: snapshot.bots.length,
         botProbe: snapshot.bots.map(bot=>`${bot.identity}:${bot.team}:${bot.class}:${bot.objective}:${bot.area??"none"}:${bot.remainingPathAreas}:${bot.position.map(value=>value.toFixed(1)).join(",")}:${bot.target??"none"}:${bot.weapon?.identity??"none"}:${bot.weapon?.clip??0}:${bot.shots}:${bot.hits}:${bot.kills}:${bot.deaths}`).join("|"),
         particleRenderItems: particleItems.length,

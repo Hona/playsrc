@@ -48,6 +48,8 @@ export const TF2_HUD_DYNAMIC_IMAGES = Object.freeze([
   "../hud/objectives_flagpanel_compass_blue_noarrow",
   "../hud/objectives_flagpanel_carried_red",
   "../hud/objectives_flagpanel_carried_blue",
+  "../hud/objectives_timepanel_red_bg",
+  "../hud/objectives_timepanel_blue_bg",
 ])
 
 export const TF2_CLASS_IMAGES: Readonly<Record<Tf2PlayableTeam, Readonly<Record<Tf2Class, string>>>> =

@@ -12,6 +12,7 @@ mod map_runtime;
 pub mod pickup;
 pub mod pyro;
 pub mod random;
+pub mod round;
 pub mod schema;
 pub mod state;
 pub mod team_selection;
@@ -638,6 +639,7 @@ pub struct Snapshot {
     pub entity_transforms: Vec<EntityTransform>,
     pub entity_events: Vec<EntityEvent>,
     pub objectives: Option<ctf::Snapshot>,
+    pub round: round::Snapshot,
     pub jump: Option<jump::TickOutput>,
     pub events: Vec<Event>,
     pub bots: Vec<bot::Snapshot>,
@@ -735,6 +737,7 @@ pub struct Session<W: GameplayWorld + Clone> {
     contact_reconcile_requests: Vec<ContactReconcileRequest>,
     movement_configuration: MovementConfiguration,
     map: MapRuntime,
+    round: round::Rules,
     next_regenerate_tick: u64,
     hurt_next_tick: BTreeMap<u32, u64>,
     hurt_active: std::collections::BTreeSet<u32>,
@@ -762,6 +765,7 @@ pub enum Error {
     Bot(bot::Error),
     TeamSelection(team_selection::TeamSelectionError),
     Objectives(ctf::Error),
+    Round(round::Error),
 }
 
 impl From<MoveError> for Error {
@@ -816,6 +820,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
             .get_mut(&Weapon::RocketLauncher)
             .expect("stock Soldier loadout")
             .deploy(0, movement_configuration.tick_interval);
+        let round = round::Rules::active(map.round_configuration())
+            .expect("compiled map round configuration is valid");
         let authority_random = UniformRandomStream::from_seed(RandomSeeds::INVARIANT.authority)
             .expect("invariant authority seed is valid");
         let predicted_presentation_random =
@@ -889,6 +895,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             contact_reconcile_requests: Vec::new(),
             movement_configuration,
             map,
+            round,
             next_regenerate_tick: 0,
             hurt_next_tick: BTreeMap::new(),
             hurt_active: std::collections::BTreeSet::new(),
@@ -910,6 +917,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
         let mut session = Self::new(collision, spawn, map);
         session.team_selection = team_selection::TeamSelection::new(PLAYER_IDENTITY, rules)
             .expect("local team selection identity is valid");
+        session.round = round::Rules::new(session.map.round_configuration())
+            .expect("compiled map round configuration is valid");
         session.lifecycle = PlayerLifecycle::Welcome;
         session.weapon = None;
         session.loadout.clear();
@@ -920,6 +929,14 @@ impl<W: GameplayWorld + Clone> Session<W> {
 
     pub fn team_snapshot(&self) -> team_selection::TeamSnapshot {
         self.team_selection.snapshot()
+    }
+
+    pub fn round_snapshot(&self) -> round::Snapshot {
+        self.round.snapshot(Vec::new())
+    }
+
+    pub fn configure_waiting(&mut self, seconds: f32) -> Result<(), round::Error> {
+        self.round.configure_waiting(seconds)
     }
 
     pub fn select_team_choice(
@@ -1424,6 +1441,83 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 .replace_roster(roster)
                 .map_err(Error::TeamSelection)?;
         }
+        let roster = self.team_selection.snapshot();
+        let mut round_facts = round::Facts {
+            red_players: roster.red_count,
+            blue_players: roster.blue_count,
+            red_alive: usize::from(
+                self.lifecycle == PlayerLifecycle::Active
+                    && self.health > 0
+                    && roster.local_team == PlayerTeam::Red,
+            ),
+            blue_alive: usize::from(
+                self.lifecycle == PlayerLifecycle::Active
+                    && self.health > 0
+                    && roster.local_team == PlayerTeam::Blue,
+            ),
+            objective_contested: false,
+            flag_away_from_home: self.map.objectives().is_some_and(|objectives| {
+                objectives
+                    .flags()
+                    .any(|flag| flag.status != ctf::FlagStatus::Home)
+            }),
+        };
+        if let Some(bots) = &self.bots {
+            for bot in bots.combat_targets() {
+                if bot.team == PlayerTeam::Red {
+                    round_facts.red_alive += 1;
+                } else {
+                    round_facts.blue_alive += 1;
+                }
+            }
+        }
+        let mut round_events = self
+            .round
+            .advance(
+                self.tick as f32 * self.movement_configuration.tick_interval,
+                self.movement_configuration.tick_interval,
+                round_facts,
+            )
+            .map_err(Error::Round)?;
+        let round_phase = self.map.emit_round_outputs(self.tick, &round_events)?;
+        map_phase.append(round_phase);
+        let round_winner = round_events.iter().find_map(|event| match event {
+            round::Event::RoundWon { team, .. } => Some(*team),
+            _ => None,
+        });
+        if let Some(team) = round_winner {
+            self.restrictions.team_win = Some(team);
+            let definition = if team == self.team_selection.local_team() {
+                SoundDefinition::TeamWon
+            } else {
+                SoundDefinition::TeamLost
+            };
+            self.emit_objective_sound(PLAYER_IDENTITY, definition, self.movement.position);
+        }
+        let reset_round = round_events
+            .iter()
+            .any(|event| matches!(event, round::Event::RoundRespawn));
+        if reset_round {
+            self.restrictions.team_win = None;
+            let scores = self.round.snapshot(Vec::new());
+            if let Some(objectives) = self.map.objectives_mut() {
+                objectives.reset_round(scores.red_score, scores.blue_score);
+            }
+            if let Some(bots) = &mut self.bots {
+                bots.round_respawn(self.tick, &mut self.authority_random)
+                    .map_err(Error::Bot)?;
+            }
+        }
+        if let Some(objectives) = self.map.objectives_mut() {
+            let mut configuration = objectives.configuration();
+            let waiting = self.round.waiting_for_players();
+            if configuration.waiting_for_players != waiting {
+                configuration.waiting_for_players = waiting;
+                objectives
+                    .configure(configuration)
+                    .map_err(Error::Objectives)?;
+            }
+        }
         self.advance_sniper_scope(command);
         let mut movement_policy = MovementPolicy {
             class: self.class,
@@ -1903,8 +1997,13 @@ impl<W: GameplayWorld + Clone> Session<W> {
                             + (*duration / self.movement_configuration.tick_interval).ceil() as u64,
                     );
                 }
-                if let ctf::Event::RoundWon { team, .. } = event {
+                if let ctf::Event::RoundWon { team, reason, .. } = event {
+                    round_events.extend(self.round.win(*team, *reason).map_err(Error::Round)?);
                     self.restrictions.team_win = Some(*team);
+                    let scores = self.round.snapshot(Vec::new());
+                    if let Some(objectives) = self.map.objectives_mut() {
+                        objectives.set_round_scores(scores.red_score, scores.blue_score);
+                    }
                 }
             }
             let sounds = objective_events
@@ -2001,6 +2100,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 .map
                 .objectives()
                 .map(|objectives| objectives.snapshot(objective_events)),
+            round: self.round.snapshot(round_events),
             jump: jump_output,
             events,
             bots: self

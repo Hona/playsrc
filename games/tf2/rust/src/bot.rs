@@ -377,6 +377,33 @@ impl BotWorld {
         self.bots.is_empty()
     }
 
+    pub fn round_respawn(
+        &mut self,
+        tick: u64,
+        random: &mut crate::UniformRandomStream,
+    ) -> Result<(), Error> {
+        for bot in self.bots.values_mut() {
+            let candidates = &self.spawns[team_index(bot.team)];
+            if candidates.is_empty() {
+                return Err(Error::MissingSpawn(bot.team));
+            }
+            let choice = random
+                .random_int(
+                    0,
+                    i32::try_from(candidates.len() - 1).map_err(|_| Error::Limit)?,
+                )
+                .map_err(|_| Error::Limit)? as usize;
+            respawn_bot(
+                bot,
+                candidates[choice],
+                &self.mesh,
+                tick,
+                self.tick_interval,
+            );
+        }
+        Ok(())
+    }
+
     pub fn combat_targets(&self) -> impl Iterator<Item = CombatTarget> + '_ {
         self.bots
             .values()
