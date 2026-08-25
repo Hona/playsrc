@@ -75,6 +75,7 @@ import {
   type ModelPoseRequest,
   type PosedModel,
   type ProjectileParticleRequest,
+  type Tf2AudioRequest,
 } from "@playsrc/game-tf2-browser/presentation"
 import { decodeParticleRenderOutput } from "@playsrc/particle"
 import { createRenderer, SOURCE_LDR, SOURCE_PC_INTEGER_HDR, type Camera, type Frame, type MaterialStateInput } from "@playsrc/rendering"
@@ -339,6 +340,7 @@ export class Tf2Application {
   #audioWorld?: SourceAudioWorld
   #audioBuffers = new Map<string, AudioBuffer>()
   #audioStarts: string[] = []
+  #pendingAudioRequests: Tf2AudioRequest[] = []
   #lockerAnimations = new Map<number, LockerAnimationState>()
   #reloadHistory:string[]=[]
   #fireTickHistory:string[]=[]
@@ -1523,6 +1525,7 @@ export class Tf2Application {
     this.#fireEvents = 0
     this.#explosionEvents = 0
     this.#audioStarts = []
+    this.#pendingAudioRequests = []
     this.#pyroFlameEffect = undefined
     this.#pyroEffectSerial = 0
     this.#attachmentTransforms.clear()
@@ -2903,7 +2906,14 @@ export class Tf2Application {
   }
 
   #playAudio(snapshot: Snapshot, camera: Camera): void {
-    if (!this.#audioRunning || !this.#audio || !this.#audioWorld || !this.#audioRegistry || !this.#audioContext || !this.#artifacts) return
+    const incoming = tf2Audio(snapshot)
+    if (!this.#audioRunning || !this.#audio || !this.#audioWorld || !this.#audioRegistry || !this.#audioContext || !this.#artifacts) {
+      if (incoming.length > 0) this.#pendingAudioRequests.push(...incoming)
+      return
+    }
+    const requests = this.#pendingAudioRequests.length === 0
+      ? incoming
+      : [...this.#pendingAudioRequests.splice(0), ...incoming]
     const browserVoices = new Set(this.#audio.activeVoices())
     for (const voice of this.#audioWorld.voices()) if (!browserVoices.has(voice.identity)) this.#audioWorld.stop(voice.identity)
     const yaw = (camera.yawDegrees * Math.PI) / 180, pitch = (camera.pitchDegrees * Math.PI) / 180
@@ -2917,7 +2927,7 @@ export class Tf2Application {
       categoryGain: 1,
       muted: this.#masterMuted,
     })
-    for (const request of tf2Audio(snapshot)) {
+    for (const request of requests) {
       const definition = this.#audioRegistry.get(request.definition)
       const resource = definition?.waves[request.samples.wave]?.resource
       const buffer = resource ? this.#audioBuffers.get(resource) : undefined
