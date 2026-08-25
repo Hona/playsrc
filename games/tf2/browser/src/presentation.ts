@@ -23,14 +23,14 @@ export type Tf2Hud = Readonly<{
   health: number
   maxHealth: number
   className: Tf2ClassPresentation["displayName"]
-  weaponName: "Rocket Launcher" | "Original" | "Stickybomb Launcher" | null
+  weaponName: "Rocket Launcher" | "Original" | "Stickybomb Launcher" | "Scattergun" | "Pistol" | "Bat" | null
   speed: number
   projectileCount: number
 }>
 
 export type Tf2AudioRequest = Readonly<{
   voiceIdentity: number
-  definition: "Weapon_RPG.Single" | "Weapon_QuakeRPG.Single" | "Weapon_StickyBombLauncher.Single" | "BaseExplosionEffect.Sound" | "Weapon_QuakeRPG.Explode" | "Weapon_Grenade_Pipebomb.Explode"
+  definition: "Weapon_RPG.Single" | "Weapon_QuakeRPG.Single" | "Weapon_StickyBombLauncher.Single" | "BaseExplosionEffect.Sound" | "Weapon_QuakeRPG.Explode" | "Weapon_Grenade_Pipebomb.Explode" | "Weapon_Scatter_Gun.Single" | "Weapon_Pistol.Single" | "Weapon_Bat.Miss" | "Weapon_Bat.HitFlesh" | "Weapon_Bat.HitWorld"
   source: Readonly<{
     kind: "entity" | "world"
     identity: number
@@ -50,6 +50,11 @@ export function tf2Audio(snapshot: Snapshot): readonly Tf2AudioRequest[] {
     "BaseExplosionEffect.Sound",
     "Weapon_QuakeRPG.Explode",
     "Weapon_Grenade_Pipebomb.Explode",
+    "Weapon_Scatter_Gun.Single",
+    "Weapon_Pistol.Single",
+    "Weapon_Bat.Miss",
+    "Weapon_Bat.HitFlesh",
+    "Weapon_Bat.HitWorld",
   ]
   return Object.freeze(snapshot.audioEvents.map((event) => Object.freeze({
     voiceIdentity: stable32(`${event.tick}:${event.ordinal}:${event.definition}:${event.sourceIdentity}`),
@@ -156,13 +161,19 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
   let activity = "ACT_VM_DRAW"
   return Object.freeze({
     map(snapshot: Snapshot,view:Readonly<{aspectRatio:number;farPlane:number}>=Object.freeze({aspectRatio:4/3,farPlane:32768})): Readonly<{ item: ModelItem; request: ModelPoseRequest }> {
-      if (snapshot.weapon === null || (snapshot.class !== 3 && snapshot.class !== 4)) {
+      if (snapshot.weapon === null || (snapshot.class !== 1 && snapshot.class !== 3 && snapshot.class !== 4)) {
         throw new ProjectilePresentationError("MalformedFact", "class has no implemented viewmodel weapon")
       }
       const identity = tf2ClassPresentation(snapshot.class).hands
-      const itemIdentity = snapshot.class === 3
-        ? "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl"
-        : "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl"
+      const itemIdentity = snapshot.weapon === 4
+        ? "models/weapons/c_models/c_scattergun.mdl"
+        : snapshot.weapon === 5
+          ? "models/weapons/c_models/c_pistol/c_pistol.mdl"
+          : snapshot.weapon === 6
+            ? "models/weapons/c_models/c_bat.mdl"
+            : snapshot.class === 3
+              ? "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl"
+              : "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl"
       const artifact = artifacts.models.get(identity)
       const itemArtifact = artifacts.models.get(itemIdentity)
       if (!artifact) throw new ProjectilePresentationError("MissingModel", identity)
@@ -173,12 +184,12 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
       if (!weapon) throw new ProjectilePresentationError("MissingModel", `${identity}:weapon-state`)
       const selectionChanged = prior !== snapshot.weapon || priorClass !== snapshot.class
       const exact = snapshot.activities.filter((event) => event.weapon === snapshot.weapon).at(-1)
-      const role = snapshot.class === 3 ? "PRIMARY" : "SECONDARY"
+      const role = snapshot.weapon === 6 ? "MELEE" : snapshot.weapon === 5 || snapshot.class === 4 ? "SECONDARY" : "PRIMARY"
       const mapped = exact === undefined ? undefined : [
         "",
         `ACT_${role}_VM_DRAW`,
-        `ACT_${role}_VM_PRIMARYATTACK`,
-        `ACT_${role}_RELOAD_START`,
+        role === "MELEE" ? "ACT_MELEE_VM_HITCENTER" : `ACT_${role}_VM_PRIMARYATTACK`,
+        snapshot.weapon === 5 ? "ACT_SECONDARY_VM_RELOAD" : `ACT_${role}_RELOAD_START`,
         `ACT_${role}_VM_RELOAD`,
         `ACT_${role}_RELOAD_FINISH`,
         `ACT_${role}_VM_IDLE`,
@@ -628,9 +639,7 @@ export function tf2Hud(snapshot: Snapshot): Tf2Hud {
     maxHealth: snapshot.maximumHealth,
     className: tf2ClassPresentation(snapshot.class).displayName,
     weaponName: snapshot.weapon === null ? null
-      : snapshot.weapon === 1 ? "Rocket Launcher"
-        : snapshot.weapon === 2 ? "Original"
-          : "Stickybomb Launcher",
+      : (["", "Rocket Launcher", "Original", "Stickybomb Launcher", "Scattergun", "Pistol", "Bat"] as const)[snapshot.weapon],
     speed: Math.hypot(...snapshot.velocity),
     projectileCount: snapshot.projectiles.length,
   })
@@ -778,6 +787,41 @@ export type ProjectileParticleRequest =
       projectileIdentity: number
       immediate: boolean
     }>
+
+export function scoutMuzzleParticles(
+  snapshot: Snapshot,
+  catalog: Pick<ProjectileResourceCatalog, "systems" | "attachmentTransforms">,
+): readonly ProjectileParticleRequest[] {
+  const requests: ProjectileParticleRequest[] = []
+  for (const event of snapshot.events) {
+    if (event.kind !== 12 || (event.detail !== 4 && event.detail !== 5)) continue
+    const system = event.detail === 4 ? "muzzle_scattergun" : "muzzle_pistol"
+    if (!catalog.systems.has(system)) throw new ProjectilePresentationError("MissingSystem", system)
+    const transform = catalog.attachmentTransforms?.get(event.detail)?.get("muzzle")
+    if (!transform) throw new ProjectilePresentationError("MissingAttachment", `${event.detail}:muzzle`)
+    const eventIdentity = `hitscan:${snapshot.tick}:${event.detail}:${requests.length}`
+    requests.push(Object.freeze({
+      kind: "start",
+      identity: eventIdentity,
+      effectIdentity: eventIdentity,
+      eventIdentity,
+      tick: snapshot.tick,
+      projectileIdentity: 0x7fff_0000 + event.detail,
+      ownerIdentity: 1,
+      launcherIdentity: event.detail,
+      team: snapshot.team === 2 ? "red" : "blue",
+      system,
+      attachment: Object.freeze({ entityIdentity: event.detail, name: "muzzle" }),
+      controlPoints: Object.freeze([Object.freeze({
+        index: 0,
+        position: transform.position,
+        orientation: transform.orientation,
+        ownerIdentity: 1,
+      })]),
+    }))
+  }
+  return Object.freeze(requests)
+}
 
 export type ProjectileResourceCatalog = Readonly<{
   models: ReadonlySet<string>

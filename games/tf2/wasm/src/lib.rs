@@ -4124,7 +4124,7 @@ fn encode_random_state(state: playsrc_tf2::Tf2RandomState) -> Option<Vec<u8>> {
     output.extend_from_slice(&[
         state.sound_selection.rocket_explosion_available,
         state.sound_selection.sticky_explosion_available,
-        0,
+        state.sound_selection.bat_hit_world_available,
         0,
     ]);
     (output.len() == 284).then_some(output)
@@ -4138,6 +4138,11 @@ fn sound_definition_code(value: playsrc_tf2::SoundDefinition) -> u8 {
         playsrc_tf2::SoundDefinition::RocketExplosion => 4,
         playsrc_tf2::SoundDefinition::OriginalExplosion => 5,
         playsrc_tf2::SoundDefinition::StickyExplosion => 6,
+        playsrc_tf2::SoundDefinition::ScattergunSingle => 7,
+        playsrc_tf2::SoundDefinition::PistolSingle => 8,
+        playsrc_tf2::SoundDefinition::BatMiss => 9,
+        playsrc_tf2::SoundDefinition::BatHitFlesh => 10,
+        playsrc_tf2::SoundDefinition::BatHitWorld => 11,
     }
 }
 
@@ -4468,6 +4473,9 @@ fn weapon_code(weapon: playsrc_tf2::Weapon) -> u8 {
         playsrc_tf2::Weapon::RocketLauncher => 1,
         playsrc_tf2::Weapon::Original => 2,
         playsrc_tf2::Weapon::StickybombLauncher => 3,
+        playsrc_tf2::Weapon::Scattergun => 4,
+        playsrc_tf2::Weapon::Pistol => 5,
+        playsrc_tf2::Weapon::Bat => 6,
     }
 }
 fn projectile_code(kind: playsrc_tf2::ProjectileKind) -> u8 {
@@ -4576,6 +4584,34 @@ fn encode_game_event(output: &mut Vec<u8>, event: &playsrc_tf2::Event, limit: us
             [velocity[0], velocity[1], velocity[2], 0.0],
         ),
         playsrc_tf2::Event::Respawned => (11, 0, 0, 0, [0.0; 4]),
+        playsrc_tf2::Event::HitscanFired { weapon, pellets } => {
+            (12, weapon_code(*weapon), u32::from(*pellets), 0, [0.0; 4])
+        }
+        playsrc_tf2::Event::HitscanImpact {
+            weapon,
+            target,
+            pellet,
+            position,
+            damage,
+        } => (
+            13,
+            weapon_code(*weapon),
+            target.unwrap_or(0),
+            u32::from(*pellet),
+            [position[0], position[1], position[2], *damage],
+        ),
+        playsrc_tf2::Event::MeleeImpact {
+            weapon,
+            target,
+            position,
+            damage,
+        } => (
+            14,
+            weapon_code(*weapon),
+            target.unwrap_or(0),
+            0,
+            [position[0], position[1], position[2], *damage],
+        ),
     };
     extend(output, &[kind, detail, 0, 0], limit)?;
     u32_field(output, subject, limit)?;
@@ -7512,6 +7548,11 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>) -
         "BaseExplosionEffect.Sound",
         "Weapon_QuakeRPG.Explode",
         "Weapon_Grenade_Pipebomb.Explode",
+        "Weapon_Scatter_Gun.Single",
+        "Weapon_Pistol.Single",
+        "Weapon_Bat.Miss",
+        "Weapon_Bat.HitFlesh",
+        "Weapon_Bat.HitWorld",
     ];
     let nodes = targets
         .iter()
@@ -7795,6 +7836,7 @@ fn load_cached_presentation(
         "models/weapons/w_models/w_stickybomb.mdl".to_owned(),
         "models/weapons/c_models/c_soldier_arms.mdl".to_owned(),
         "models/weapons/c_models/c_demo_arms.mdl".to_owned(),
+        "models/weapons/c_models/c_scout_arms.mdl".to_owned(),
         "models/player/scout.mdl".to_owned(),
         "models/player/sniper.mdl".to_owned(),
         "models/player/soldier.mdl".to_owned(),
@@ -7808,6 +7850,9 @@ fn load_cached_presentation(
         "models/class_menu/random_class_icon.mdl".to_owned(),
         "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl".to_owned(),
         "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl".to_owned(),
+        "models/weapons/c_models/c_scattergun.mdl".to_owned(),
+        "models/weapons/c_models/c_pistol/c_pistol.mdl".to_owned(),
+        "models/weapons/c_models/c_bat.mdl".to_owned(),
     ]);
     let expected = graph
         .entities
@@ -8008,6 +8053,7 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
         "models/weapons/w_models/w_stickybomb.mdl".to_owned(),
         "models/weapons/c_models/c_soldier_arms.mdl".to_owned(),
         "models/weapons/c_models/c_demo_arms.mdl".to_owned(),
+        "models/weapons/c_models/c_scout_arms.mdl".to_owned(),
         "models/player/scout.mdl".to_owned(),
         "models/player/sniper.mdl".to_owned(),
         "models/player/soldier.mdl".to_owned(),
@@ -8021,6 +8067,9 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
         "models/class_menu/random_class_icon.mdl".to_owned(),
         "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl".to_owned(),
         "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl".to_owned(),
+        "models/weapons/c_models/c_scattergun.mdl".to_owned(),
+        "models/weapons/c_models/c_pistol/c_pistol.mdl".to_owned(),
+        "models/weapons/c_models/c_bat.mdl".to_owned(),
     ]);
     for e in &graph.entities {
         if e.classname
@@ -8041,8 +8090,12 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
                 id.as_str(),
                 "models/weapons/c_models/c_soldier_arms.mdl"
                     | "models/weapons/c_models/c_demo_arms.mdl"
+                    | "models/weapons/c_models/c_scout_arms.mdl"
                     | "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl"
                     | "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl"
+                    | "models/weapons/c_models/c_scattergun.mdl"
+                    | "models/weapons/c_models/c_pistol/c_pistol.mdl"
+                    | "models/weapons/c_models/c_bat.mdl"
             ) {
                 playsrc_studio_model::PresentationProfile::ViewModel
             } else {
@@ -10016,6 +10069,8 @@ fn compile_particles(
         "stickybomb_pulse_red",
         "stickybomb_pulse_blue",
         "muzzle_pipelauncher",
+        "muzzle_scattergun",
+        "muzzle_pistol",
         "ExplosionCore_Wall",
         "ExplosionCore_MidAir",
     ]
@@ -10943,6 +10998,7 @@ mod tests {
             sound_selection: playsrc_tf2::SoundSelectionState {
                 rocket_explosion_available: 7,
                 sticky_explosion_available: 7,
+                bat_hit_world_available: 3,
             },
         };
         let mut collision_snapshot = b"CSNP".to_vec();

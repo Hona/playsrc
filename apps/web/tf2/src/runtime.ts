@@ -50,7 +50,7 @@ import {
   type Tf2LoadingPresentation,
   type Tf2LoadingVguiRuntime,
 } from "@playsrc/game-tf2-browser/loading-presentation"
-import { encodeCommand, mapDerivedKey, type Snapshot, type Tf2Class, type Tf2Team } from "@playsrc/game-tf2-browser/codec"
+import { encodeCommand, mapDerivedKey, type Snapshot, type Tf2Class, type Tf2Team, type Tf2Weapon } from "@playsrc/game-tf2-browser/codec"
 import { TF2_CLASS_NAMES, tf2ClassFromName, tf2ClassPresentation } from "@playsrc/game-tf2-browser/class"
 import { parsePresentationArtifacts, type PresentationArtifacts } from "@playsrc/game-tf2-browser/artifacts"
 import {
@@ -61,6 +61,7 @@ import {
   encodeModelPoseBatch,
   projectileFrame,
   projectileModels,
+  scoutMuzzleParticles,
   sourceViewOrientation,
   tf2Audio,
   tf2Camera,
@@ -110,6 +111,19 @@ import {
 const MAX_EXTERNAL_BYTES = 536_870_912
 const SIMULATION_SAMPLE_INTERVAL_SECONDS = 0.015
 const MAX_REQUIRED_PARTICLE_DISPLAY_FRAMES = 256
+const PARTICLE_SYSTEMS = new Set([
+  "rockettrail",
+  "rocketbackblast",
+  "stickybombtrail_red",
+  "stickybombtrail_blue",
+  "stickybomb_pulse_red",
+  "stickybomb_pulse_blue",
+  "muzzle_pipelauncher",
+  "muzzle_scattergun",
+  "muzzle_pistol",
+  "ExplosionCore_Wall",
+  "ExplosionCore_MidAir",
+])
 const SOUND_PATHS = [
   "sound/weapons/rocket_shoot.wav",
   "sound/weapons/stickybomblauncher_shoot.wav",
@@ -121,6 +135,12 @@ const SOUND_PATHS = [
   "sound/weapons/pipe_bomb1.wav",
   "sound/weapons/pipe_bomb2.wav",
   "sound/weapons/pipe_bomb3.wav",
+  "sound/weapons/scatter_gun_shoot.wav",
+  "sound/weapons/pistol_shoot.wav",
+  "sound/weapons/cbar_miss1.wav",
+  "sound/weapons/bat_hit.wav",
+  "sound/weapons/cbar_hit1.wav",
+  "sound/weapons/cbar_hit2.wav",
 ] as const
 
 export type ApplicationView = Readonly<{
@@ -347,7 +367,7 @@ export class Tf2Application {
   #reloadPressed = false
   #selectClass: Tf2Class | 12 | undefined
   #selectTeam: Tf2Team | undefined
-  #selectWeapon: 1 | 2 | 3 | undefined
+  #selectWeapon: Tf2Weapon | undefined
   #modeRequest: 0 | 1 | undefined
   #coverageSamples:readonly CoverageSample[]=Object.freeze([])
   #developer = 1
@@ -1255,17 +1275,7 @@ export class Tf2Application {
       this.#projectiles = createProjectilePresentationMapper(
         Object.freeze({
           models: new Set(this.#artifacts.models.keys()),
-          systems: new Set([
-            "rockettrail",
-            "rocketbackblast",
-            "stickybombtrail_red",
-            "stickybombtrail_blue",
-            "stickybomb_pulse_red",
-            "stickybomb_pulse_blue",
-            "muzzle_pipelauncher",
-            "ExplosionCore_Wall",
-            "ExplosionCore_MidAir",
-          ]),
+          systems: PARTICLE_SYSTEMS,
           attachments: this.#attachments,
           attachmentTransforms: this.#attachmentTransforms,
           fireAttachmentTransforms: this.#fireAttachmentTransforms,
@@ -1455,7 +1465,7 @@ export class Tf2Application {
       clock: { nowSeconds: () => this.#frameClock.current },
       random: this.#presentationRandom,
       onCommand: (command) => {
-        if (command.kind === "select-weapon" && command.weapon >= 1 && command.weapon <= 3) this.#selectWeapon = command.weapon as 1 | 2 | 3
+        if (command.kind === "select-weapon" && command.weapon >= 1 && command.weapon <= 6) this.#selectWeapon = command.weapon as Tf2Weapon
       },
     })
     const panels = this.#hudIntegration.snapshot().vgui.panels
@@ -2285,17 +2295,7 @@ export class Tf2Application {
     this.#projectiles = createProjectilePresentationMapper(
       Object.freeze({
         models: new Set(artifacts.models.keys()),
-        systems: new Set([
-          "rockettrail",
-          "rocketbackblast",
-          "stickybombtrail_red",
-          "stickybombtrail_blue",
-          "stickybomb_pulse_red",
-          "stickybomb_pulse_blue",
-          "muzzle_pipelauncher",
-          "ExplosionCore_Wall",
-          "ExplosionCore_MidAir",
-        ]),
+        systems: PARTICLE_SYSTEMS,
         attachments: this.#attachments,
         attachmentTransforms: this.#attachmentTransforms,
         fireAttachmentTransforms: this.#fireAttachmentTransforms,
@@ -2673,6 +2673,7 @@ export class Tf2Application {
     const launchers = new Set([
       ...snapshot.projectiles.map((projectile) => projectile.launcherIdentity),
       ...snapshot.projectileEvents.map((event) => event.launcherIdentity),
+      ...snapshot.events.filter((event) => event.kind === 12).map((event) => event.detail),
     ])
     for (const launcher of launchers) {
       if (viewmodelAttachments.size > 0) {
@@ -3087,6 +3088,7 @@ export class Tf2Application {
         if (event.type === "fire") {this.#fireEvents += 1;this.#fireTickHistory.push(`${event.kind}:${event.tick}:${event.position.join(",")}`);if(this.#fireTickHistory.length>128)this.#fireTickHistory.shift()}
         if (event.type === "explode") this.#explosionEvents += 1
       }
+      for(const event of snapshot.events)if(event.kind===12)this.#fireEvents+=1
       this.#recordLockerAnimations(snapshot)
       for (const p of snapshot.projectiles) {
         const add = (identity: number, next: ReadonlySet<string>) =>
@@ -3164,7 +3166,8 @@ export class Tf2Application {
       const visibility=await visibilityRequest
       if(!ownsGeneration())return
       const particleStart=performance.now()
-      const particleBatch=owners.encoder.encode(snapshot.tick,camera.position,presentation.particles)
+      const scoutMuzzles=snapshot.class===1?publication.eventBatches.flatMap(batch=>scoutMuzzleParticles(batch.snapshot,{systems:PARTICLE_SYSTEMS,attachmentTransforms:this.#attachmentTransforms})):null
+      const particleBatch=owners.encoder.encode(snapshot.tick,camera.position,scoutMuzzles===null||scoutMuzzles.length===0?presentation.particles:[...presentation.particles,...scoutMuzzles])
       if(!ownsGeneration())return
       this.#wasmCalls.particles++
       const particleOutput=await client.particles(generation,particleBatch)
@@ -3353,9 +3356,9 @@ export class Tf2Application {
       if (this.#buttons.press(identity, action)) this.#detonatePressed = true
     } else if (action === "+reload") {
       if (this.#buttons.press(identity, action)) this.#reloadPressed = true
-    } else if (action === "slot1") this.#selectWeapon = 1
-    else if (action === "slot2") this.#selectWeapon = 2
-    else if (action === "slot3") this.#selectWeapon = 3
+    } else if (action === "slot1") this.#selectWeapon = this.#snapshot?.class === 1 ? 4 : 1
+    else if (action === "slot2") this.#selectWeapon = this.#snapshot?.class === 1 ? 5 : 2
+    else if (action === "slot3") this.#selectWeapon = this.#snapshot?.class === 1 ? 6 : 3
   }
 
   readonly #keyDown = (event: KeyboardEvent): void => {

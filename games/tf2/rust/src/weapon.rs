@@ -79,6 +79,36 @@ impl WeaponProfile {
                 center_fire_projectile: false,
                 flip_viewmodel: false,
             },
+            Weapon::Scattergun => Self {
+                maximum_clip: 6,
+                maximum_reserve: 32,
+                fire_delay: 0.625,
+                reload_start: 0.1,
+                reload_round: 0.5,
+                maximum_charge: None,
+                center_fire_projectile: false,
+                flip_viewmodel: false,
+            },
+            Weapon::Pistol => Self {
+                maximum_clip: 12,
+                maximum_reserve: 36,
+                fire_delay: 0.15,
+                reload_start: 0.5,
+                reload_round: 0.0,
+                maximum_charge: None,
+                center_fire_projectile: false,
+                flip_viewmodel: false,
+            },
+            Weapon::Bat => Self {
+                maximum_clip: 0,
+                maximum_reserve: 0,
+                fire_delay: 0.5,
+                reload_start: 0.0,
+                reload_round: 0.0,
+                maximum_charge: None,
+                center_fire_projectile: false,
+                flip_viewmodel: false,
+            },
         }
     }
 }
@@ -195,14 +225,28 @@ impl WeaponRuntime {
         let profile = self.profile();
         match self.reload {
             ReloadPhase::Start => {
-                self.reload = ReloadPhase::Insert;
-                self.reload_due_tick =
-                    Some(tick.saturating_add(delay_ticks(profile.reload_round, tick_interval)));
-                activities.push(ActivityEvent {
-                    tick,
-                    weapon: self.weapon,
-                    activity: WeaponActivity::ReloadLoop,
-                });
+                if self.weapon == Weapon::Pistol {
+                    let inserted = (profile.maximum_clip - self.clip).min(self.reserve);
+                    self.clip += inserted;
+                    self.reserve -= inserted;
+                    ammo.push(AmmoEvent {
+                        tick,
+                        weapon: self.weapon,
+                        clip: self.clip,
+                        reserve: self.reserve,
+                    });
+                    self.reload = ReloadPhase::Finish;
+                    self.reload_due_tick = Some(tick);
+                } else {
+                    self.reload = ReloadPhase::Insert;
+                    self.reload_due_tick =
+                        Some(tick.saturating_add(delay_ticks(profile.reload_round, tick_interval)));
+                    activities.push(ActivityEvent {
+                        tick,
+                        weapon: self.weapon,
+                        activity: WeaponActivity::ReloadLoop,
+                    });
+                }
             }
             ReloadPhase::Insert => {
                 if self.reserve > 0 && self.clip < profile.maximum_clip {
@@ -265,7 +309,7 @@ impl WeaponRuntime {
             }
             return PrimaryResult::None;
         }
-        if held && self.clip > 0 && tick >= self.next_primary_tick {
+        if held && (self.clip > 0 || self.weapon == Weapon::Bat) && tick >= self.next_primary_tick {
             return self.commit_shot(tick, tick_interval, 0.0, activities);
         }
         PrimaryResult::None
@@ -278,7 +322,9 @@ impl WeaponRuntime {
         charge_seconds: f32,
         activities: &mut Vec<ActivityEvent>,
     ) -> PrimaryResult {
-        self.clip -= 1;
+        if self.weapon != Weapon::Bat {
+            self.clip -= 1;
+        }
         self.abort_reload();
         self.charge_begin_tick = None;
         self.next_primary_tick =
@@ -332,6 +378,73 @@ mod tests {
                 flip_viewmodel: false,
             }
         );
+    }
+
+    #[test]
+    fn scout_stock_weapons_preserve_script_cadence_and_class_ammo_ledgers() {
+        let scattergun = WeaponProfile::configured(Weapon::Scattergun);
+        assert_eq!(
+            (scattergun.maximum_clip, scattergun.maximum_reserve),
+            (6, 32)
+        );
+        assert_eq!(
+            (
+                scattergun.fire_delay,
+                scattergun.reload_start,
+                scattergun.reload_round
+            ),
+            (0.625, 0.1, 0.5)
+        );
+
+        let pistol = WeaponProfile::configured(Weapon::Pistol);
+        assert_eq!((pistol.maximum_clip, pistol.maximum_reserve), (12, 36));
+        assert_eq!((pistol.fire_delay, pistol.reload_start), (0.15, 0.5));
+
+        let bat = WeaponProfile::configured(Weapon::Bat);
+        assert_eq!((bat.maximum_clip, bat.maximum_reserve), (0, 0));
+        assert_eq!(bat.fire_delay, 0.5);
+    }
+
+    #[test]
+    fn pistol_reloads_the_complete_available_magazine_atomically() {
+        let mut pistol = WeaponRuntime::full(Weapon::Pistol);
+        pistol.clip = 3;
+        pistol.reserve = 7;
+        let mut activities = Vec::new();
+        let mut ammo = Vec::new();
+        assert!(pistol.start_reload(10, 0.01, &mut activities));
+        pistol.advance_reload(59, 0.01, &mut activities, &mut ammo);
+        assert_eq!((pistol.clip, pistol.reserve), (3, 7));
+        pistol.advance_reload(60, 0.01, &mut activities, &mut ammo);
+        assert_eq!((pistol.clip, pistol.reserve), (10, 0));
+        assert_eq!(ammo.len(), 1);
+        assert_eq!(pistol.reload, ReloadPhase::Finish);
+        pistol.advance_reload(60, 0.01, &mut activities, &mut ammo);
+        assert_eq!(pistol.reload, ReloadPhase::Ready);
+    }
+
+    #[test]
+    fn bat_swings_without_consuming_or_producing_ammunition() {
+        let mut bat = WeaponRuntime::full(Weapon::Bat);
+        let mut activities = Vec::new();
+        assert_eq!(
+            bat.primary(0, 0.01, true, false, &mut activities),
+            PrimaryResult::Fired {
+                charge_seconds: 0.0
+            }
+        );
+        assert_eq!((bat.clip, bat.reserve, bat.next_primary_tick), (0, 0, 50));
+        assert_eq!(
+            bat.primary(49, 0.01, true, false, &mut activities),
+            PrimaryResult::None
+        );
+        assert_eq!(
+            bat.primary(50, 0.01, true, false, &mut activities),
+            PrimaryResult::Fired {
+                charge_seconds: 0.0
+            }
+        );
+        assert!(!bat.start_reload(100, 0.01, &mut activities));
     }
 
     #[test]
