@@ -648,6 +648,8 @@ describe("canonical all-class TF2 session HUD adapter", () => {
       health: 0,
       weapon: null,
       loadout: Object.freeze([]),
+      events: Object.freeze([Object.freeze({ kind: 2, detail: 1, subject: 0, auxiliary: 0,
+        values: Object.freeze([0, 0, 0, 0]) as readonly [number, number, number, number] })]),
     })
     const binding = bindTf2Hud(adaptSessionHud(unavailable("initial"), compactPublication(observer), context))
     const player = (binding.facts.player as Extract<Tf2HudSnapshot["player"], { kind: "available" }>).value
