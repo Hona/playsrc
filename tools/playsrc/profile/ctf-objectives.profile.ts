@@ -3,6 +3,7 @@ import path from "node:path"
 import { loadLocalConfig } from "../src/config"
 import { expect, test } from "./application-test"
 import { profileSampleSeconds, summarizeFrameTimes } from "./profile-window"
+import { chooseTf2Team } from "./team-selection-evidence"
 
 const BLUE_FLAG = [489.005, -3348.51, -170] as const
 const RED_CAPTURE = [-500, 3366, -170] as const
@@ -19,12 +20,20 @@ test("headed ctf_2fort intelligence, objective HUD, announcer, and round victory
   const entry = page.locator("[aria-label='Console command']")
   await entry.fill("map ctf_2fort")
   await entry.press("Enter")
+  await page.waitForFunction(() => {
+    const main = document.querySelector<HTMLElement>("main")
+    return main?.dataset.teamSelectionVisible === "true" || main?.dataset.phase === "Ready" || main?.dataset.phase === "Failed"
+  }, undefined, { timeout: 600_000, polling: 50 })
+  if (await root.getAttribute("data-team-selection-visible") === "true") {
+    if (await root.getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
+    await chooseTf2Team(page, "red")
+  }
   await expect(root).toHaveAttribute("data-phase", "Ready", { timeout: 600_000 })
   if (await root.getAttribute("data-class-selection-visible") === "true") {
-    await entry.fill("joinclass soldier")
-    await entry.press("Enter")
+    await page.keyboard.press("Digit2")
     await expect(root).toHaveAttribute("data-class-selection-visible", "false")
   }
+  if (await root.getAttribute("data-console-visible") !== "true") await page.keyboard.press("Backquote")
   await expect(root).toHaveAttribute("data-ctf", /^0:0:3:0:/)
   await expect(page.locator("[data-vgui-name='HudObjectiveStatus']")).toBeVisible()
   await expect(page.locator("[data-vgui-name='RedFlag']")).toBeVisible()
