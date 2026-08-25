@@ -10,11 +10,11 @@ import {
 import type { WorkerRequest, WorkerResponse } from "../src/protocol"
 
 function snapshot(): ArrayBuffer {
-  const bytes = new ArrayBuffer(1149)
+  const bytes = new ArrayBuffer(1153)
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x53, 0x53, 0x4e])
-  view.setUint32(4, 17, true)
+  view.setUint32(4, 18, true)
   view.setBigUint64(8, 7n, true)
   data.set([3, 2, 1, 0], 16)
   view.setFloat32(20, 200, true)
@@ -125,6 +125,7 @@ function snapshot(): ArrayBuffer {
   data[scoreboard + 40] = 7
   data.set(new TextEncoder().encode("unnamed"), scoreboard + 41)
   at += 48
+  at += 4
   data.set(new TextEncoder().encode("PGRL"), at)
   view.setUint32(at + 4, 1, true)
   data[at + 8] = 4
@@ -191,13 +192,13 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     for (const team of [0, 1, 4]) {
       expect(() => encodeCommand({ ...base, selectTeam: team as 2 })).toThrow("team selector is invalid")
     }
-    for (let weapon = 1; weapon <= 18; weapon += 1) {
+    for (const weapon of [...Array.from({length:18},(_,index)=>index+1),40,41,42,43,44,45]) {
       expect(new DataView(encodeCommand({ ...base, selectWeapon: weapon as 1 })).getUint32(32, true)).toBe(weapon << 8)
     }
-    for (const weapon of [40, 41, 42] as const) {
+    for (const weapon of [40, 41, 42, 43, 44, 45] as const) {
       expect(new DataView(encodeCommand({ ...base, selectWeapon: weapon })).getUint32(32, true)).toBe(weapon << 8)
     }
-    for (const weapon of [0, 19, 39, 43, 1.5, Number.NaN]) {
+    for (const weapon of [0, 19, 39, 46, 1.5, Number.NaN]) {
       expect(() => encodeCommand({ ...base, selectWeapon: weapon as 1 })).toThrow("weapon selector is invalid")
     }
   })
@@ -373,6 +374,18 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     expect(decodeSnapshot(stuck).projectiles[0]).toMatchObject({ kind: 2, state: 3, velocity: [100, 0, 0], contactNormal: [0, 0, 1] })
   })
 
+  test("encodes canonical Engineer object commands without inventing object modes",()=>{
+    const base={forward:0,side:0,yawDegrees:0,pitchDegrees:0,jump:false,crouch:false,fire:false,detonate:false}
+    const build=new DataView(encodeCommand({...base,building:{action:"build",object:{kind:2,mode:0}}}))
+    expect(build.getUint32(28,true)).toBe((1<<16)|(2<<19))
+    const exit=new DataView(encodeCommand({...base,building:{action:"destroy",object:{kind:1,mode:1}}}))
+    expect(exit.getUint32(28,true)).toBe((2<<16)|(1<<19)|(1<<21))
+    expect(new DataView(encodeCommand({...base,building:{action:"rotate"}})).getUint32(28,true)).toBe(3<<16)
+    expect(new DataView(encodeCommand({...base,building:{action:"hurt",amount:100}})).getUint32(28,true)).toBe(0x8000|(100<<16))
+    expect(()=>encodeCommand({...base,building:{action:"build",object:{kind:2,mode:1}}})).toThrow("building object is invalid")
+    expect(()=>encodeCommand({...base,building:{action:"hurt",amount:65536}})).toThrow("building damage is invalid")
+  })
+
   test("encodes bounded bot commands and decodes ordered player lifecycle snapshots", () => {
     const base = { forward: 0, side: 0, yawDegrees: 0, pitchDegrees: 0, jump: false, crouch: false, fire: false, detonate: false }
     const add = new DataView(encodeCommand({ ...base, bot: { action: "add", count: 3, class: 4, team: 3, difficulty: 3 } }))
@@ -382,7 +395,7 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     expect(() => encodeCommand({ ...base, bot: { action: "add", count: 32, class: 3, difficulty: 1 } })).toThrow(Tf2CodecError)
 
     const prior = new Uint8Array(snapshot())
-    const objectiveOffset = prior.byteLength - 116
+    const objectiveOffset = prior.byteLength - 120
     const botName = new TextEncoder().encode("Chucklenuts")
     const bytes = new Uint8Array(prior.byteLength + 128 + 29 + botName.length)
     const roundOffset = prior.byteLength - 48

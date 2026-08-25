@@ -10,6 +10,7 @@ import {
 } from "@playsrc/vgui"
 import { initializeTf2GameUiIntegration } from "../../src/gameui-integration"
 import { initializeTf2HudIntegration } from "../../src/hud-integration"
+import { initializeTf2EngineerPresentation } from "../../src/engineer"
 import { initializeTf2BrowserSettings, initializeTf2OptionsPresentation } from "../../src/settings-integration"
 import { TF2_HUD_DYNAMIC_IMAGES, adaptTf2Scoreboard, tf2HudAvailable, tf2HudUnavailable, type SessionHudContext, type SessionSimulationPublication } from "../../src/hud"
 import type { Tf2VguiResources } from "../../src/ui-integration"
@@ -44,6 +45,7 @@ function scheme(): VguiScheme {
     height: image.textures[0]?.height ?? 1,
     frames: image.textures[0]?.frames ?? 1,
     hardwareFiltered: false,
+    variants: Object.freeze(([[0, 0, 0, 255], [255, 255, 255, 128], [117, 107, 94, 255]] as const).map(tint => Object.freeze({ frame: 0, rotation: 0, tint, browserUrl: "data:image/png;base64,AA==" }))),
   }))
   const presentedNames = new Set(presentedImages.map((image) => image.name.toLowerCase()))
   for (const [index, name] of TF2_HUD_DYNAMIC_IMAGES.entries()) {
@@ -227,6 +229,22 @@ const contextWithModel = (playerClassUsePlayerModel: boolean): SessionHudContext
   Object.freeze({ ...context, playerClassUsePlayerModel })
 
 describe("TF2 HUD and pause headed symptom loop", () => {
+  test("renders authored Engineer build and destroy menu states from stock resources", () => {
+    const root = createRoot(new FakeDocument())
+    const engineer = initializeTf2EngineerPresentation({ root: root as unknown as HTMLElement, resources: resources(), viewport: { width: 1280, height: 720, devicePixelRatio: 1 }, reducedMotion: true, clock: { nowSeconds: () => 0 }, random: { nextUnit: () => 0.5 } })
+    const base = { tick: 1n, class: 9, team: 2, lifecycle: 1, weapon: 43, metal: 200, buildings: [] } as never
+    engineer.publish(base)
+    expect(engineer.menu()).toBe("build")
+    engineer.frame(0)
+    expect(engineer.select(1)).toEqual({ action: "build", object: { kind: 2, mode: 0 } })
+    expect(descendants(root).some(element => element.dataset.vguiName === "BuildingIcon" && element.style.backgroundImage.includes("data:image"))).toBeTrue()
+    engineer.publish({ ...base as object, tick: 2n, weapon: 44, metal: 70, buildings: [{ object: { kind: 2, mode: 0 },phase:0,level:1,health:10,maximumHealth:150,upgradeMetal:0,shells:0,maximumShells:150,timesUsed:0 }] } as never)
+    expect(engineer.menu()).toBe("destroy")
+    expect(engineer.select(1)).toEqual({ action: "destroy", object: { kind: 2, mode: 0 } })
+    expect(engineer.select(2)).toBeNull()
+    engineer.destroy()
+  })
+
   test("rejects an image closure that would preserve a configured Scout fallback", () => {
     const complete = resources()
     const incomplete: Tf2VguiResources = Object.freeze({

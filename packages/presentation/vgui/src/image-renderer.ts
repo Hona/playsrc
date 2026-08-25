@@ -189,6 +189,8 @@ export function shadeVguiImage(
             for (let channel = 0; channel < 4; channel += 1) {
               color[channel] = mix(color[channel]!, color[channel]! * detail[channel]!, request.material.detailBlendFactor)
             }
+          } else if (request.material.detailBlendMode === 9) {
+            color[3] = mix(color[3], color[3] * detail[3], request.material.detailBlendFactor)
           }
         }
         if (request.material.distanceAlpha) {

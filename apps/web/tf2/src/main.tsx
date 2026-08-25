@@ -24,6 +24,7 @@ function App() {
   const vgui = useRef<HTMLDivElement>(null)
   const gameUi = useRef<HTMLDivElement>(null)
   const hud = useRef<HTMLDivElement>(null)
+  const engineer = useRef<HTMLDivElement>(null)
   const classSelection = useRef<HTMLDivElement>(null)
   const teamSelection = useRef<HTMLDivElement>(null)
   const options = useRef<HTMLDivElement>(null)
@@ -34,7 +35,7 @@ function App() {
   const runtime = useRef<Tf2Application>()
 
   useEffect(() => {
-    if (!applicationRoot.current || !canvas.current || !vgui.current || !gameUi.current || !hud.current || !classSelection.current || !teamSelection.current
+    if (!applicationRoot.current || !canvas.current || !vgui.current || !gameUi.current || !hud.current || !engineer.current || !classSelection.current || !teamSelection.current
       || !options.current || !loading.current || !startup.current || !startupVideo.current || !startupLoading.current) return
     const publication = new ApplicationPublication({
       root: applicationRoot.current,
@@ -46,6 +47,7 @@ function App() {
       vgui: vgui.current,
       gameUi: gameUi.current,
       hud: hud.current,
+      engineer: engineer.current,
       classSelection: classSelection.current,
       teamSelection: teamSelection.current,
       options: options.current,
@@ -110,6 +112,7 @@ function App() {
       <div ref={loading} class="vgui-layer loading-layer" aria-label="TF2 map loading" />
       <div ref={gameUi} class="vgui-layer gameui-layer" aria-label="TF2 GameUI" />
       <div ref={hud} class="vgui-layer hud-layer" aria-label="TF2 HUD" />
+      <div ref={engineer} class="vgui-layer engineer-layer" aria-label="Engineer buildings" />
       <div ref={classSelection} class="vgui-layer class-selection-layer" aria-label="TF2 class selection" />
       <div ref={teamSelection} class="vgui-layer team-selection-layer" aria-label="TF2 team selection" />
       <div ref={options} class="vgui-layer options-layer" aria-label="TF2 Options" />

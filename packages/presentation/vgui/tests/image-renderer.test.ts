@@ -99,6 +99,12 @@ describe("configured VGUI image material raster", () => {
     expect([...result]).toEqual([188, 188, 99, 131])
   })
 
+  test("masks only base alpha for authored Source detail blend mode 9", () => {
+    const material=baseMaterial({detail:texture("detail"),detailBlendMode:9})
+    const result=shadeVguiImage(request(material),new Map([["base",pixels([255,128,64,200])],["detail",pixels([0,255,0,128])]]))
+    expect([...result]).toEqual([255,188,137,100])
+  })
+
   test("uses actual viewport dimensions for configured outline scaling", () => {
     const detailTexture = texture("detail")
     const material = baseMaterial({

@@ -174,7 +174,7 @@ export type VguiImageMaterialPresentation = Readonly<{
   second: VguiImageMaterialTexture | null
   detail: VguiImageMaterialTexture | null
   detailScale: readonly [number, number]
-  detailBlendMode: 0 | 8
+  detailBlendMode: 0 | 8 | 9
   detailBlendFactor: number
   detailTint: readonly [number, number, number]
   distanceAlpha: boolean

@@ -58,7 +58,8 @@ import {
   type Tf2LoadingPresentation,
   type Tf2LoadingVguiRuntime,
 } from "@playsrc/game-tf2-browser/loading-presentation"
-import { encodeCommand, mapDerivedKey, type BotRequest, type Snapshot, type Tf2Class, type Tf2Weapon } from "@playsrc/game-tf2-browser/codec"
+import { encodeCommand, mapDerivedKey, type BotRequest, type Snapshot, type Tf2Class, type Tf2Team, type Tf2Weapon, type Tf2BuildingRequest } from "@playsrc/game-tf2-browser/codec"
+import { blueprintModel, buildingModel, initializeTf2EngineerPresentation, type Tf2EngineerPresentation } from "@playsrc/game-tf2-browser/engineer"
 import { TF2_CLASS_NAMES, tf2ClassFromName, tf2ClassPresentation } from "@playsrc/game-tf2-browser/class"
 import { parsePresentationArtifacts, type PresentationArtifacts } from "@playsrc/game-tf2-browser/artifacts"
 import {
@@ -123,6 +124,7 @@ const SIMULATION_SAMPLE_INTERVAL_SECONDS = 0.015
 const MAX_REQUIRED_PARTICLE_DISPLAY_FRAMES = 256
 const BOT_MODEL_IDENTITY_BASE = 0x6000_0000
 const OBJECTIVE_MODEL_IDENTITY_BASE = 0x6100_0000
+const BUILDING_BLUEPRINT_IDENTITY = 0x5fff_ffff
 const PARTICLE_SYSTEMS = new Set([
   "rockettrail",
   "rocketbackblast",
@@ -327,6 +329,11 @@ export type ApplicationView = Readonly<{
   pickupCount?: number
   pickupProbe?: string
   metal?: number
+  buildingCount?: number
+  buildingProbe?: string
+  engineerMetal?: number
+  engineerMenu?: "build" | "destroy" | "none"
+  placementProbe?: string
   unsupportedState?: "StickyPhysicsSolverUnavailable" | "GrenadePhysicsSolverUnavailable"
   startupState?: Tf2StartupState["kind"]
   loadingProgress?: number
@@ -374,6 +381,7 @@ export class Tf2Application {
   readonly #vguiRoot: HTMLElement
   readonly #gameUiRoot: HTMLElement
   readonly #hudRoot: HTMLElement
+  readonly #engineerRoot: HTMLElement
   readonly #classSelectionRoot: HTMLElement
   readonly #teamSelectionRoot: HTMLElement
   readonly #optionsRoot: HTMLElement
@@ -447,6 +455,7 @@ export class Tf2Application {
   #bootstrapObjectProgress = new Map<string, Readonly<{ loaded: number; total: number }>>()
   readonly #gameUiRequestTasks = new Set<number>()
   #hudIntegration?: Tf2HudIntegration
+  #engineer?: Tf2EngineerPresentation
   #classSelection?: Tf2ClassSelectionIntegration
   #classSelectionModelPanels: readonly Tf2ClassSelectionModelPanel[] = Object.freeze([])
   #classSelectionRenderTask?: Promise<void>
@@ -495,6 +504,7 @@ export class Tf2Application {
   #disguise: Readonly<{ class: Tf2Class; team: Tf2Team }> | undefined
   #modeRequest: 0 | 1 | undefined
   #botRequest: BotRequest | undefined
+  #buildingRequest: Tf2BuildingRequest | undefined
   #botDifficulty: 0 | 1 | 2 | 3 = 1
   #coverageSamples:readonly CoverageSample[]=Object.freeze([])
   #developer = 1
@@ -556,18 +566,19 @@ export class Tf2Application {
 
   constructor(
     canvas: HTMLCanvasElement,
-    roots: Readonly<{ vgui: HTMLElement; gameUi: HTMLElement; hud: HTMLElement; classSelection: HTMLElement; teamSelection: HTMLElement; options: HTMLElement; loading: HTMLElement; startup: HTMLElement; startupVideo: HTMLVideoElement }>,
+    roots: Readonly<{ vgui: HTMLElement; gameUi: HTMLElement; hud: HTMLElement; engineer: HTMLElement; classSelection: HTMLElement; teamSelection: HTMLElement; options: HTMLElement; loading: HTMLElement; startup: HTMLElement; startupVideo: HTMLVideoElement }>,
     publish: (view: ApplicationView) => void,
   ) {
     this.#canvas = canvas
     const presentationRoot = canvas.parentElement
-    if (!presentationRoot || [roots.vgui, roots.gameUi, roots.hud, roots.classSelection, roots.teamSelection, roots.options, roots.loading, roots.startup].some((root) => root.parentElement !== presentationRoot)) {
+    if (!presentationRoot || [roots.vgui, roots.gameUi, roots.hud, roots.engineer, roots.classSelection, roots.teamSelection, roots.options, roots.loading, roots.startup].some((root) => root.parentElement !== presentationRoot)) {
       throw new Error("TF2 presentation owners do not share one application mount")
     }
     this.#presentationRoot = presentationRoot
     this.#vguiRoot = roots.vgui
     this.#gameUiRoot = roots.gameUi
     this.#hudRoot = roots.hud
+    this.#engineerRoot = roots.engineer
     this.#classSelectionRoot = roots.classSelection
     this.#teamSelectionRoot = roots.teamSelection
     this.#optionsRoot = roots.options
@@ -1221,6 +1232,8 @@ export class Tf2Application {
     this.#gameUi = undefined
     this.#hudIntegration?.destroy()
     this.#hudIntegration = undefined
+    this.#engineer?.destroy()
+    this.#engineer = undefined
     this.#classSelection?.destroy()
     this.#classSelection = undefined
     this.#teamSelection?.destroy()
@@ -1626,7 +1639,7 @@ export class Tf2Application {
       random: this.#presentationRandom,
       onCommand: (command) => {
 
-        if (command.kind === "select-weapon" && (command.weapon >= 1 && command.weapon <= 18 || command.weapon >= 40 && command.weapon <= 42 || command.weapon >= 50 && command.weapon <= 54) && command.weapon !== 54) this.#selectWeapon = command.weapon as Tf2Weapon
+        if (command.kind === "select-weapon" && (command.weapon >= 1 && command.weapon <= 18 || command.weapon >= 40 && command.weapon <= 45 || command.weapon >= 50 && command.weapon <= 54) && command.weapon !== 54) this.#selectWeapon = command.weapon as Tf2Weapon
         else if (command.kind === "scoreboard") this.#setScoreboardVisible(command.visible)
 
       },
@@ -2010,6 +2023,7 @@ export class Tf2Application {
           disposition: "visible" as const,
           acceptsSuggestions: true,
         }),
+        ...["build","destroy","hurtbuilding","+attack","-attack"].map(name=>Object.freeze({kind:"command" as const,name,disposition:"visible" as const,acceptsSuggestions:false})),
         Object.freeze({
           kind: "command" as const,
           name: "dropitem",
@@ -2122,7 +2136,7 @@ export class Tf2Application {
   #commitPresentationViewport(viewport: ApplicationPresentationViewport): void {
     this.#presentationViewport = viewport
     const identity = `${viewport.revision}:${viewport.width}x${viewport.height}@${viewport.devicePixelRatio}`
-    for (const owner of [this.#canvas, this.#startupRoot, this.#loadingRoot, this.#gameUiRoot, this.#hudRoot, this.#classSelectionRoot, this.#teamSelectionRoot, this.#optionsRoot, this.#vguiRoot]) {
+    for (const owner of [this.#canvas, this.#startupRoot, this.#loadingRoot, this.#gameUiRoot, this.#hudRoot, this.#engineerRoot, this.#classSelectionRoot, this.#teamSelectionRoot, this.#optionsRoot, this.#vguiRoot]) {
       owner.dataset.presentationViewport = identity
       owner.dataset.presentationViewportState = "active"
     }
@@ -2132,6 +2146,7 @@ export class Tf2Application {
     this.#gameUi?.setViewport(viewport)
     this.#syncGameUiBackgroundProbe()
     this.#hudIntegration?.setViewport(viewport)
+    this.#engineer?.setViewport(viewport)
     this.#classSelection?.setViewport(viewport)
     this.#teamSelection?.setViewport(viewport)
     this.#options?.setViewport(viewport)
@@ -2146,7 +2161,7 @@ export class Tf2Application {
 
   #suspendPresentationViewport(): void {
     this.#presentationViewport = undefined
-    for (const owner of [this.#canvas, this.#startupRoot, this.#loadingRoot, this.#gameUiRoot, this.#hudRoot, this.#classSelectionRoot, this.#teamSelectionRoot, this.#optionsRoot, this.#vguiRoot]) {
+    for (const owner of [this.#canvas, this.#startupRoot, this.#loadingRoot, this.#gameUiRoot, this.#hudRoot, this.#engineerRoot, this.#classSelectionRoot, this.#teamSelectionRoot, this.#optionsRoot, this.#vguiRoot]) {
       delete owner.dataset.presentationViewport
       owner.dataset.presentationViewportState = "suspended"
     }
@@ -2346,6 +2361,16 @@ export class Tf2Application {
       this.#output("Intelligence drop queued")
       return
     }
+    if((command==="+attack"||command==="-attack")&&tokens.length===0){if(command==="+attack"){if(this.#buttons.press("console:+attack","+attack"))this.#firePressed=true}else this.#buttons.release("console:+attack");return}
+    if((command==="build"||command==="destroy")&&(tokens.length===1||tokens.length===2)){
+      const kind=Number(tokens[0]),mode=Number(tokens[1]??"0")
+      if(this.#snapshot?.class!==9||![0,1,2].includes(kind)||![0,1].includes(mode)||(kind!==1&&mode!==0)){this.#output(`Usage: ${command} <0|1|2> [0|1]`);return}
+      this.#buildingRequest=Object.freeze({action:command,object:Object.freeze({kind:kind as 0|1|2,mode:mode as 0|1})})
+      if(command==="destroy")this.#selectWeapon=42
+      this.#output(`Queued ${command} ${kind} ${mode}`)
+      return
+    }
+    if(command==="hurtbuilding"&&tokens.length===1){const amount=Number(tokens[0]);if(this.#snapshot?.class!==9||!Number.isSafeInteger(amount)||amount<0||amount>65535){this.#output("Usage: hurtbuilding <0-65535>");return}this.#buildingRequest={action:"hurt",amount};return}
     if (command === "tf_bot_difficulty" && tokens.length <= 1) {
       if (tokens.length === 1 && !["0", "1", "2", "3"].includes(tokens[0]!)) {
         this.#output("tf_bot_difficulty accepts exactly 0, 1, 2, or 3")
@@ -3277,12 +3302,14 @@ export class Tf2Application {
       disguise: this.#disguise,
       modeRequest: this.#modeRequest,
       bot: this.#botRequest,
+      building: this.#buildingRequest,
     })
     this.#selectClass = undefined
     this.#selectWeapon = undefined
     this.#disguise = undefined
     this.#modeRequest = undefined
     this.#botRequest = undefined
+    this.#buildingRequest = undefined
     this.#jumpPressed = false
     this.#firePressed = false
     this.#detonatePressed = false
@@ -3300,7 +3327,7 @@ export class Tf2Application {
       if (owners & GAME_UI_FRAME_OWNER) this.#gameUi?.frame(timeSeconds)
       if (owners & LOADING_FRAME_OWNER) this.#loadingVgui?.frame(timeSeconds)
       if (owners & OPTIONS_FRAME_OWNER) this.#options?.frame(timeSeconds)
-      if (owners & HUD_FRAME_OWNER) this.#hudIntegration?.frame(timeSeconds)
+      if (owners & HUD_FRAME_OWNER) { this.#hudIntegration?.frame(timeSeconds); this.#engineer?.frame(timeSeconds) }
       if (this.#classSelection?.state().visible) this.#classSelection.frame(timeSeconds)
       if (this.#teamSelection?.state().visible) this.#teamSelection.frame(timeSeconds)
     } catch (error) {
@@ -3473,6 +3500,8 @@ export class Tf2Application {
         scores:prepared.snapshot.scoreboard.players.map(player=>({...player,killstreak:player.kills,
           respawnTick:prepared.snapshot.bots.find(bot=>bot.identity===player.identity)?.respawnTick?.toString()??null}))}
       profile.pickups=prepared.snapshot.pickups.map(pickup=>({...pickup,respawnTick:pickup.respawnTick?.toString()??null}))
+      profile.buildings=prepared.snapshot.buildings.map(building=>({...building,startedTick:building.startedTick.toString(),rechargeEndTick:building.rechargeEndTick?.toString()??null,tick:prepared.snapshot.tick.toString()}))
+      profile.placement=prepared.snapshot.placement
     }
     const geometryEvidenceRevision=profile?.geometryEvidenceRevision
     if(profile&&Number.isSafeInteger(geometryEvidenceRevision)&&geometryEvidenceRevision!==((profile.geometryEvidence as {revision?:unknown}|undefined)?.revision)&&this.#view.phase==="Ready"){
@@ -3517,7 +3546,7 @@ export class Tf2Application {
         waterNormalFrame:visibility.water.visibleWater?.evaluated.normalFrame,
         worldMaterialFrames:visibility.worldMaterials.map(material=>`${material.identity}:${material.textures.find(texture=>texture.role===7)?.frame??"none"}`).join("|"),
         performanceProbe:`${this.#phaseTimings.map(value=>value.toFixed(3)).join(",")}:${this.#wasmCalls.observe},${this.#wasmCalls.models},${this.#wasmCalls.visibility},${this.#wasmCalls.particles}:${this.#maximumScheduledSamples},${this.#maximumPublicationTicks}:${prepared.particleOutputBytes},${prepared.publication.snapshotBytes.byteLength}`,
-        performanceDetailProbe:JSON.stringify({tick:prepared.snapshot.tick.toString(),selectedTicks:prepared.publication.selectedTicks,bots:prepared.snapshot.bots.length,pickups:prepared.snapshot.pickups.length,models:prepared.modelMilliseconds,projectiles:prepared.projectileMilliseconds,visibility:visibilityMilliseconds,particleWorker:prepared.particleMilliseconds,particleDecode:prepared.particleDecodeMilliseconds,audio:prepared.audioMilliseconds,particleItems:rendered.timings.particleItems,particleBatches:rendered.timings.particleBatches,dynamicItems:rendered.timings.dynamicItemsMilliseconds,world:rendered.timings.worldMilliseconds,viewmodel:rendered.timings.viewModelMilliseconds,render:renderMilliseconds,total:totalMilliseconds}),
+        performanceDetailProbe:JSON.stringify({tick:prepared.snapshot.tick.toString(),selectedTicks:prepared.publication.selectedTicks,bots:prepared.snapshot.bots.length,buildings:prepared.snapshot.buildings.length,pickups:prepared.snapshot.pickups.length,models:prepared.modelMilliseconds,projectiles:prepared.projectileMilliseconds,visibility:visibilityMilliseconds,particleWorker:prepared.particleMilliseconds,particleDecode:prepared.particleDecodeMilliseconds,audio:prepared.audioMilliseconds,particleItems:rendered.timings.particleItems,particleBatches:rendered.timings.particleBatches,dynamicItems:rendered.timings.dynamicItemsMilliseconds,world:rendered.timings.worldMilliseconds,viewmodel:rendered.timings.viewModelMilliseconds,render:renderMilliseconds,total:totalMilliseconds}),
         displayFrame:this.#displayFrame,
         displayViewRevision:viewRevision,
         displayPreparedRevision:prepared.revision,
@@ -3770,7 +3799,17 @@ export class Tf2Application {
         const elapsed=Number(snapshot.tick)*SIMULATION_SAMPLE_INTERVAL_SECONDS
         return [Object.freeze({identity:OBJECTIVE_MODEL_IDENTITY_BASE+flag.identity,model:flag.model,activity,previousElapsedSeconds:Math.max(0,elapsed-publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS),elapsedSeconds:elapsed,currentTimeSeconds:elapsed,frameTimeSeconds:publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS,planarSpeed:0,screenAspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),worldFarPlane:camera.far,skin:flag.skin,lod:0,bodygroups:Object.freeze(artifact.bodygroupCounts.map(()=>0))})]
       })
-      const modelStart=performance.now(),modelRequests=[...historicalViewmodels,...(currentViewmodelRequest?[currentViewmodelRequest]:[]),...(watchRequest?[watchRequest]:[]),...lockerRequests,...botRequests,...objectiveRequests]
+      const buildingRequests=snapshot.buildings.map(building=>{
+        const model=buildingModel(building),artifact=this.#artifacts!.models.get(model)
+        if(!artifact)throw new Error(`Authored TF2 building model unavailable: ${model}`)
+        const desired=building.phase===0?"ACT_OBJ_ASSEMBLING":building.phase===2?"ACT_OBJ_UPGRADING":"ACT_OBJ_RUNNING"
+        const selected=artifact.sequences.find(sequence=>sequence.activity===desired)??artifact.sequences.find(sequence=>sequence.activity==="ACT_OBJ_IDLE")??artifact.sequences[0]
+        if(!selected)throw new Error(`Authored TF2 building activity unavailable: ${model}:${desired}`)
+        const elapsed=Math.max(0,Number(snapshot.tick-building.startedTick)*SIMULATION_SAMPLE_INTERVAL_SECONDS)
+        return Object.freeze({identity:building.identity,model,activity:selected.activity||selected.label,previousElapsedSeconds:Math.max(0,elapsed-publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS),elapsedSeconds:elapsed,currentTimeSeconds:Number(snapshot.tick)*SIMULATION_SAMPLE_INTERVAL_SECONDS,frameTimeSeconds:publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS,planarSpeed:0,screenAspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),worldFarPlane:camera.far,skin:building.team===2?0:1,lod:0,bodygroups:Object.freeze(artifact.bodygroupCounts.map(()=>0))})
+      })
+      const placementRequest=snapshot.placement?(()=>{const placement=snapshot.placement!,model=blueprintModel(placement.object),artifact=this.#artifacts!.models.get(model),sequence=artifact?.sequences[0];if(!artifact||!sequence)throw new Error(`Authored TF2 building blueprint unavailable: ${model}`);const elapsed=Number(snapshot.tick)*SIMULATION_SAMPLE_INTERVAL_SECONDS;return Object.freeze({identity:BUILDING_BLUEPRINT_IDENTITY,model,activity:sequence.activity||sequence.label,previousElapsedSeconds:Math.max(0,elapsed-publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS),elapsedSeconds:elapsed,currentTimeSeconds:elapsed,frameTimeSeconds:publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS,planarSpeed:0,screenAspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),worldFarPlane:camera.far,skin:snapshot.team===2?0:1,lod:0,bodygroups:Object.freeze(artifact.bodygroupCounts.map(()=>0))})})():undefined
+      const modelStart=performance.now(),modelRequests=[...historicalViewmodels,...(currentViewmodelRequest?[currentViewmodelRequest]:[]),...(watchRequest?[watchRequest]:[]),...lockerRequests,...botRequests,...objectiveRequests,...buildingRequests,...(placementRequest?[placementRequest]:[])]
       const modelRequest=modelRequests.length===0?undefined:(this.#wasmCalls.models++,client.models(generation,encodeModelPoseBatch(modelRequests)))
       this.#wasmCalls.visibility++;const visibilityRequest=client.visibility(generation,{
         position:camera.position,
@@ -3794,6 +3833,9 @@ export class Tf2Application {
       const botPoses=modelPoses.filter(pose=>pose.identity>=BOT_MODEL_IDENTITY_BASE&&pose.identity<BOT_MODEL_IDENTITY_BASE+0x10000)
       const objectivePoses=modelPoses.filter(pose=>pose.identity>=OBJECTIVE_MODEL_IDENTITY_BASE&&pose.identity<OBJECTIVE_MODEL_IDENTITY_BASE+0x10000)
       if(objectivePoses.length!==objectiveRequests.length)throw new Error("TF2 intelligence pose output differs from authoritative objective state")
+      const buildingPoses=modelPoses.filter(pose=>snapshot.buildings.some(building=>building.identity===pose.identity))
+      const blueprintPose=modelPoses.find(pose=>pose.identity===BUILDING_BLUEPRINT_IDENTITY)
+      if(buildingPoses.length!==snapshot.buildings.length||Boolean(blueprintPose)!==Boolean(snapshot.placement))throw new Error("TF2 building pose output differs from authoritative object state")
       if(botPoses.length!==livingBots.length)throw new Error("TF2 bot player pose output differs from authoritative living player state")
       if(viewmodel!==undefined&&((snapshot.weapon===11||viewmodel.standalone)?(viewmodelPoses.length!==1||viewmodelPoses[0]?.role!=="hand"):(viewmodelPoses.length!==2||viewmodelPoses.filter(pose=>pose.role==="item").length!==1||viewmodelPoses.filter(pose=>pose.role==="hand").length!==1)))throw new Error(`Viewmodel composition output differs: weapon=${snapshot.weapon}; roles=${viewmodelPoses.map(pose=>pose.role).join(",")}`);const viewmodelPose=viewmodelPoses.find(pose=>pose.role==="hand")
       if(viewmodelPose)this.#viewmodelActivities.add(viewmodelPose.activity)
@@ -3827,6 +3869,8 @@ export class Tf2Application {
           ...lockerPoses.map(pose=>{const occurrence=this.#artifacts!.modelOccurrences.find(value=>value.entity===pose.identity)!;return Object.freeze({identity:pose.identity,model:pose.model,position:occurrence.origin,angles:occurrence.angles,scale:1,skin:occurrence.skin,pose})}),
           ...botPoses.map(pose=>{const bot=snapshot.bots.find(value=>BOT_MODEL_IDENTITY_BASE+value.identity===pose.identity);if(!bot)throw new Error("TF2 bot player pose identity is unavailable");return Object.freeze({identity:pose.identity,model:pose.model,position:bot.position,angles:Object.freeze([0,bot.yawDegrees,0]) as readonly[number,number,number],scale:1,skin:bot.team===2?0:1,pose})}),
           ...objectivePoses.map(pose=>{const flag=snapshot.objectives?.flags.find(value=>OBJECTIVE_MODEL_IDENTITY_BASE+value.identity===pose.identity);if(!flag)throw new Error("TF2 intelligence pose identity is unavailable");const carrier=flag.carrier===null?undefined:snapshot.bots.find(bot=>bot.identity===flag.carrier);if(carrier){const carrierPose=botPoses.find(value=>value.identity===BOT_MODEL_IDENTITY_BASE+carrier.identity);const attachment=carrierPose?.attachments.find(value=>value.name.toLowerCase()==="flag");if(!attachment)throw new Error(`Authored TF2 flag attachment unavailable: ${carrier.identity}`);const transform=transformAttachment(attachment.matrix,carrier.position,sourceViewOrientation(0,carrier.yawDegrees));return Object.freeze({identity:pose.identity,model:pose.model,position:transform.position,orientation:transform.orientation,scale:1,skin:flag.skin,pose})}return Object.freeze({identity:pose.identity,model:pose.model,position:flag.position,angles:flag.angles,scale:1,skin:flag.skin,pose})}),
+          ...buildingPoses.map(pose=>{const building=snapshot.buildings.find(value=>value.identity===pose.identity);if(!building)throw new Error("TF2 building pose identity is unavailable");return Object.freeze({identity:pose.identity,model:pose.model,position:building.position,angles:Object.freeze([0,building.yawDegrees,0]) as readonly[number,number,number],scale:1,skin:building.team===2?0:1,pose})}),
+          ...(blueprintPose&&snapshot.placement?[Object.freeze({identity:blueprintPose.identity,model:blueprintPose.model,position:snapshot.placement.position,angles:Object.freeze([0,snapshot.placement.yawDegrees,0]) as readonly[number,number,number],scale:1,skin:snapshot.team===2?0:1,pose:blueprintPose})]:[]),
           ...viewmodelPoses.map((pose, index) => Object.freeze({
             ...viewmodel!.item,
             identity: viewmodel!.item.identity + index,
@@ -3872,6 +3916,8 @@ export class Tf2Application {
       })
       this.#requiredParticleDisplayFrames.admit(prepared, particleItems.map(item=>item.effectIdentity))
       this.#preparedPresentation=prepared
+      if(snapshot.class===9&&!this.#engineer){if(!this.#uiResources||!this.#presentationRandom)throw new Error("TF2 Engineer presentation resources are unavailable");this.#engineer=initializeTf2EngineerPresentation({root:this.#engineerRoot,resources:this.#uiResources,viewport:this.#viewport(),clock:{nowSeconds:()=>this.#frameClock.current},random:this.#presentationRandom,reducedMotion:matchMedia("(prefers-reduced-motion: reduce)").matches})}
+      this.#engineer?.publish(snapshot)
       const hud = this.#hudIntegration?.publish(publication, this.#currentHudContext(snapshot))
       const hudPlayer = hud?.facts.player.kind === "available" ? hud.facts.player.value : null
       const hudHealth = hudPlayer?.health.kind === "available" ? hudPlayer.health.value.current : "unavailable"
@@ -3909,6 +3955,11 @@ export class Tf2Application {
         objectiveProbe: snapshot.objectives ? `${snapshot.objectives.redCaptures}:${snapshot.objectives.blueCaptures}:${snapshot.objectives.captureLimit}:${snapshot.objectives.winner??0}:${snapshot.objectives.flags.map(flag=>`${flag.identity},${flag.team},${flag.status},${flag.carrier??0},${flag.returnDeadline??-1}`).join("|")}` : undefined,
         objectiveEventProbe: snapshot.objectives?.events.map(event=>`${event.kind}:${event.detail}:${event.team}:${event.subject}:${event.player??0}`).join("|"),
         roundProbe: `${snapshot.round.state}:${Number(snapshot.round.waitingForPlayers)}:${Number(snapshot.round.inSetup)}:${Number(snapshot.round.inOvertime)}:${snapshot.round.winningTeam??0}:${snapshot.round.redScore}:${snapshot.round.blueScore}:${snapshot.round.timer?.remaining.toFixed(2)??"none"}`,
+        buildingCount:snapshot.buildings.length,
+        engineerMetal:snapshot.metal,
+        engineerMenu:this.#engineer?.menu()??"none",
+        placementProbe:snapshot.placement?`${snapshot.placement.object.kind}:${snapshot.placement.object.mode}:${Number(snapshot.placement.valid)}:${snapshot.placement.position.join(",")}:${snapshot.placement.yawDegrees}`:"",
+        buildingProbe:snapshot.buildings.map(building=>`${building.identity}:${building.object.kind}:${building.object.mode}:${building.phase}:${building.level}:${building.health.toFixed(1)}/${building.maximumHealth}:${building.upgradeMetal}:${building.shells}/${building.maximumShells}:${building.target??"none"}`).join("|"),
         botCount: snapshot.bots.length,
         pickupCount: snapshot.pickups.length,
         pickupProbe: snapshot.pickups.map(pickup=>`${pickup.identity}:${pickup.kind}:${pickup.size}:${pickup.available?1:0}:${pickup.respawnTick??"none"}:${pickup.origin.join(",")}`).join("|"),
@@ -4051,6 +4102,7 @@ export class Tf2Application {
     } else if (action === "+attack") {
       if (this.#buttons.press(identity, action)) this.#firePressed = true
     } else if (action === "+attack2") {
+      if(this.#snapshot?.placement){this.#buildingRequest={action:"rotate"};return}
       if (this.#buttons.press(identity, action)) this.#detonatePressed = true
     } else if (action === "+reload") {
       if (this.#buttons.press(identity, action)) this.#reloadPressed = true
@@ -4061,6 +4113,8 @@ export class Tf2Application {
     else if (action === "slot2") this.#selectWeapon = this.#snapshot?.class === 8 ? 52 : this.#snapshot?.class === 1 ? 5 : this.#snapshot?.class === 2 ? 13 : this.#snapshot?.class === 3 ? 7 : this.#snapshot?.class === 6 ? 10 : this.#snapshot?.class === 9 ? 41 : this.#snapshot?.class === 7 ? 7 : 3
     else if (action === "slot3") this.#selectWeapon = this.#snapshot?.class === 8 ? 51 : this.#snapshot?.class === 1 ? 6 : this.#snapshot?.class === 2 ? 14 : this.#snapshot?.class === 3 ? 8 : this.#snapshot?.class === 4 ? 17 : this.#snapshot?.class === 6 ? 11 : this.#snapshot?.class === 9 ? 42 : this.#snapshot?.class === 7 ? 16 : undefined
     else if (action === "slot4" && this.#snapshot?.class === 8) this.#selectWeapon = 53
+    else if(action==="slot4"&&this.#snapshot?.class===9)this.#selectWeapon=43
+    else if(action==="slot5"&&this.#snapshot?.class===9)this.#selectWeapon=44
 
   }
 
@@ -4122,6 +4176,12 @@ export class Tf2Application {
     if (action === "changeteam") {
       event.preventDefault()
       void this.#showTeamSelection()
+      return
+    }
+    if(this.#engineer?.menu()&&/^slot[1-4]$/.test(action)){
+      event.preventDefault()
+      const request=this.#engineer.select(Number(action.slice(4)))
+      if(request){this.#buildingRequest=request;if(request.action==="destroy")this.#selectWeapon=42}
       return
     }
     if (action === "changeclass") {
