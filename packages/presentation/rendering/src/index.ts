@@ -13,7 +13,8 @@ import {
   type RenderConfiguration,
   type ToneOperator,
 } from "./color-output"
-import { applyParticleDepthState, configureWorldLightmap, sourceDepthBias, worldMaterialSide } from "./material-state"
+import { applyParticleDepthState, configureWorldLightmap, worldMaterialSide } from "./material-state"
+import { projectedDecalDepthBias, projectedDecalReceiverIsValid } from "./decal-occlusion"
 import { OwnedResourceGeneration } from "./resource-generation"
 import { FramePacingController, type FramePacingRecord } from "./frame-pacing"
 import { fillParticleBatchRanges, type MutableParticleBatchRange } from "./particle-batches"
@@ -394,6 +395,8 @@ export type EnvironmentInput = Readonly<{
     fragments: readonly EnvironmentFragmentInput[]
     sourceIndex: number
     receiver: null | Readonly<{ entity: bigint | null; model: number; parentEntity: number | null; localOrigin: readonly [number, number, number]; origin: readonly [number, number, number]; angles: readonly [number, number, number] }>
+    targetFaces: readonly number[]
+    renderOrder: number
     normalOffset: number
     polygonOffset: "none" | "decal"
   }>[]
@@ -935,7 +938,7 @@ function textureFromLightmap(lightmap: RuntimeLightmap, plane: Float32Array): TH
 
 function materialOptions(resolved: RuntimeMaterial, state?: MaterialStateInput): THREE.MeshBasicMaterialParameters {
   const blendFactor = (value: number) => [THREE.ZeroFactor, THREE.OneFactor, THREE.SrcAlphaFactor, THREE.OneMinusSrcAlphaFactor][value] ?? THREE.OneFactor
-  const bias = sourceDepthBias(state?.polygonOffset === 1 ? "decal" : "none")
+  const bias = projectedDecalDepthBias(state?.polygonOffset === 1 ? "decal" : "none")
   return {
     transparent: state?.blendEnabled ?? (resolved.features & 1) !== 0,
     blending: state?.blendEnabled ? THREE.CustomBlending : THREE.NormalBlending,
@@ -1351,10 +1354,8 @@ class RendererOwner implements Renderer {
     }
     for (const mark of request.environment?.markRecords ?? []) {
       const state = materialStates.get(mark.material.toLowerCase())
-      if (mark.status === 0 && (!state || (mark.polygonOffset === "decal") !== (state.polygonOffset === 1) ||
-        mark.fragments.some((fragment) => fragment.visibility.kind === "brush-model"
-          ? !mark.receiver || mark.receiver.entity !== fragment.visibility.entity || mark.receiver.model !== fragment.visibility.model
-          : fragment.model !== 0))) {
+      if (mark.status === 0 && (!state || (mark.polygonOffset === "decal") !== (state.polygonOffset === 1)
+        || !projectedDecalReceiverIsValid(mark))) {
         throw new RenderingError("IdentityMismatch", "projected mark receiver or material contract differs")
       }
     }
@@ -1807,6 +1808,7 @@ class RendererOwner implements Renderer {
           material.toneMapped = false
           disposables.add(material)
           const mesh = new THREE.Mesh(geometry, material)
+          mesh.renderOrder = mark.renderOrder
           mesh.visible = false
           if (fragment.visibility.kind === "world") {
             mesh.matrixAutoUpdate = false
