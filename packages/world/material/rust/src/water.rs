@@ -236,7 +236,7 @@ pub fn water_material_output(material: &Material) -> Result<Option<WaterMaterial
     {
         required_inputs.push(WaterInputRequirement::WaterLodController);
     }
-    let opacity = if textures.refraction.is_some() || material.features.translucent {
+    let opacity = if material.features.translucent {
         WaterSurfaceOpacity::Translucent
     } else {
         WaterSurfaceOpacity::Opaque
@@ -782,7 +782,7 @@ mod tests {
         );
         assert_eq!(output.reflect_amount.value, 0.25);
         assert_eq!(output.reflect_amount.origin, ParameterOrigin::Authored);
-        assert_eq!(output.opacity, WaterSurfaceOpacity::Translucent);
+        assert_eq!(output.opacity, WaterSurfaceOpacity::Opaque);
         assert!(output.fog.enabled.as_ref().unwrap().value);
         assert!(output.normal_transform.proxy_mutated);
         assert!(
@@ -856,9 +856,40 @@ mod tests {
         assert!(output.textures.environment.is_none());
         assert!(output.textures.reflection.is_none());
         assert!(output.textures.refraction.is_some());
+        assert_eq!(output.opacity, WaterSurfaceOpacity::Opaque);
         assert_eq!(output.refract_tint.value, [0.95, 1.0, 0.97]);
         assert!(output.blur_refraction.value);
         assert_eq!(beneath.proxy_program.entries.len(), 3);
+    }
+
+    #[test]
+    fn refraction_does_not_change_authored_material_translucency() {
+        let refractive = material(
+            br#"Water {
+                "$normalmap" "water/tfwater001_normal"
+                "$refracttexture" "_rt_WaterRefraction"
+            }"#,
+            SelectionEnvironment::default(),
+        );
+        let state = water_material_output(&refractive).unwrap().unwrap();
+        assert_eq!(state.opacity, WaterSurfaceOpacity::Opaque);
+        assert!(state.textures.refraction.is_some());
+
+        let translucent = material(
+            br#"Water {
+                "$normalmap" "water/tfwater001_normal"
+                "$refracttexture" "_rt_WaterRefraction"
+                "$translucent" "1"
+            }"#,
+            SelectionEnvironment::default(),
+        );
+        assert_eq!(
+            water_material_output(&translucent)
+                .unwrap()
+                .unwrap()
+                .opacity,
+            WaterSurfaceOpacity::Translucent,
+        );
     }
 
     #[test]

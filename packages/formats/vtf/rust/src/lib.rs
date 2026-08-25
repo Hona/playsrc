@@ -703,13 +703,103 @@ pub fn inspect(bytes: &[u8], dialect: Dialect, limits: Limits) -> Result<Metadat
     })
 }
 
+#[derive(Debug)]
+pub struct Decoder<'source> {
+    bytes: &'source [u8],
+    metadata: Metadata,
+    limits: Limits,
+}
+
+impl<'source> Decoder<'source> {
+    pub fn new(bytes: &'source [u8], dialect: Dialect, limits: Limits) -> Result<Self, Error> {
+        Ok(Self {
+            bytes,
+            metadata: inspect(bytes, dialect, limits)?,
+            limits,
+        })
+    }
+
+    pub fn metadata(&self) -> &Metadata {
+        &self.metadata
+    }
+
+    pub fn decode(&self, selector: SubresourceIdentity) -> Result<Plane, Error> {
+        decode_inspected(self.bytes, &self.metadata, selector, self.limits)
+    }
+
+    pub fn decode_high_resolution(&self) -> Result<Vec<Plane>, Error> {
+        let count = self
+            .metadata
+            .subresources
+            .iter()
+            .filter(|subresource| {
+                matches!(
+                    subresource.identity,
+                    SubresourceIdentity::HighResolution { .. }
+                )
+            })
+            .count();
+        let mut planes = Vec::with_capacity(count);
+        let mut decoded_bytes = 0_usize;
+        for subresource in &self.metadata.subresources {
+            if !matches!(
+                subresource.identity,
+                SubresourceIdentity::HighResolution { .. }
+            ) {
+                continue;
+            }
+            if let Some(length) = decoded_subresource_bytes(subresource)? {
+                decoded_bytes = decoded_bytes
+                    .checked_add(length)
+                    .ok_or_else(|| malformed(ErrorCode::ArithmeticOverflow, None))?;
+                if decoded_bytes > self.limits.max_decoded_bytes {
+                    return Err(malformed(ErrorCode::AllocationLimit, None));
+                }
+            }
+            planes.push(self.decode(subresource.identity)?);
+        }
+        Ok(planes)
+    }
+}
+
 pub fn decode(
     bytes: &[u8],
     dialect: Dialect,
     selector: SubresourceIdentity,
     limits: Limits,
 ) -> Result<Plane, Error> {
-    let metadata = inspect(bytes, dialect, limits)?;
+    Decoder::new(bytes, dialect, limits)?.decode(selector)
+}
+
+fn decoded_subresource_bytes(subresource: &Subresource) -> Result<Option<usize>, Error> {
+    let components = match subresource.format {
+        ImageFormat::Bgr888 => 3,
+        ImageFormat::Rgba8888
+        | ImageFormat::Bgra8888
+        | ImageFormat::Dxt1
+        | ImageFormat::Dxt1OneBitAlpha
+        | ImageFormat::Dxt5 => 4,
+        ImageFormat::Rgba16F => 8,
+        _ => return Ok(None),
+    };
+    usize::try_from(subresource.width)
+        .ok()
+        .and_then(|width| {
+            usize::try_from(subresource.height)
+                .ok()
+                .and_then(|height| width.checked_mul(height))
+                .and_then(|pixels| pixels.checked_mul(components))
+        })
+        .map(Some)
+        .ok_or_else(|| malformed(ErrorCode::ArithmeticOverflow, None))
+}
+
+fn decode_inspected(
+    bytes: &[u8],
+    metadata: &Metadata,
+    selector: SubresourceIdentity,
+    limits: Limits,
+) -> Result<Plane, Error> {
     let subresource = metadata
         .subresources
         .iter()
@@ -1240,6 +1330,85 @@ mod tests {
         assert_eq!(plane.row_stride, 6);
         assert_eq!(plane.channel_layout, ChannelLayout::Rgb);
         assert_eq!(plane.row_order, RowOrder::TopToBottom);
+    }
+
+    #[test]
+    fn prepared_decoder_retains_every_authored_frame_and_mip_in_disk_order() {
+        let mut input = ordinary(1, 3, 2, 2);
+        input.frames = 2;
+        input.mips = 2;
+        let mut bytes = header(input, 0);
+        bytes.extend_from_slice(&[3, 2, 1, 6, 5, 4]);
+        bytes.extend((10_u8..22).chain(30_u8..42));
+
+        let decoder = Decoder::new(&bytes, Dialect::Source2013Pc, Limits::default()).unwrap();
+        assert_eq!(decoder.metadata().frame_count, 2);
+        assert_eq!(decoder.metadata().mip_count, 2);
+
+        let planes = decoder.decode_high_resolution().unwrap();
+        assert_eq!(
+            planes
+                .iter()
+                .map(|plane| plane.identity)
+                .collect::<Vec<_>>(),
+            [
+                SubresourceIdentity::HighResolution {
+                    mip: 1,
+                    frame: 0,
+                    face: Face::Right,
+                    slice: 0,
+                },
+                SubresourceIdentity::HighResolution {
+                    mip: 1,
+                    frame: 1,
+                    face: Face::Right,
+                    slice: 0,
+                },
+                SubresourceIdentity::HighResolution {
+                    mip: 0,
+                    frame: 0,
+                    face: Face::Right,
+                    slice: 0,
+                },
+                SubresourceIdentity::HighResolution {
+                    mip: 0,
+                    frame: 1,
+                    face: Face::Right,
+                    slice: 0,
+                },
+            ],
+        );
+        assert_eq!(planes[0].samples, [1, 2, 3]);
+        assert_eq!(planes[1].samples, [4, 5, 6]);
+        assert_eq!(planes[2].samples[..3], [12, 11, 10]);
+        assert_eq!(planes[3].samples[..3], [32, 31, 30]);
+
+        let limited = Decoder::new(
+            &bytes,
+            Dialect::Source2013Pc,
+            Limits {
+                max_decoded_bytes: 25,
+                ..Limits::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            limited.decode_high_resolution().unwrap_err().code,
+            ErrorCode::AllocationLimit,
+        );
+        assert_eq!(
+            limited
+                .decode(SubresourceIdentity::HighResolution {
+                    mip: 0,
+                    frame: 1,
+                    face: Face::Right,
+                    slice: 0,
+                })
+                .unwrap()
+                .samples
+                .len(),
+            12,
+        );
     }
 
     #[test]
