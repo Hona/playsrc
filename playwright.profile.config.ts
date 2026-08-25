@@ -22,7 +22,7 @@ export default defineConfig({
     command: `bun tools/playsrc/src/cli.ts dev ${process.env.PROFILE_MATERIAL_ANIMATION === "1" ? "pl_upward" : "jump_beef"}`,
     url: `http://127.0.0.1:${process.env.PLAYSRC_DEV_PORT ?? "4173"}/`,
     reuseExistingServer: false,
-    timeout: 180_000,
+    timeout: process.env.PROFILE_PYRO_STOCK === "1" ? 600_000 : 180_000,
     stdout: "pipe",
     stderr: "pipe",
   },
