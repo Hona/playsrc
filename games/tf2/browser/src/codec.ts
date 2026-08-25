@@ -524,6 +524,28 @@ export type MapPickup = Readonly<{
   respawnTick: bigint | null
 }>
 
+export type ScoreboardPlayerSnapshot = Readonly<{
+  identity: number
+  name: string
+  team: Tf2Team
+  class: Tf2Class
+  alive: boolean
+  fake: boolean
+  score: number
+  kills: number
+  deaths: number
+  captures: number
+  damage: number
+}>
+
+export type ScoreboardSnapshot = Readonly<{
+  redScore: number
+  blueScore: number
+  redCount: number
+  blueCount: number
+  players: readonly ScoreboardPlayerSnapshot[]
+}>
+
 export type Snapshot = Readonly<{
   tick: bigint
   class: Tf2Class
@@ -575,6 +597,7 @@ export type Snapshot = Readonly<{
   bots: readonly BotSnapshot[]
   pickups: readonly MapPickup[]
   metal: number
+  scoreboard: ScoreboardSnapshot
 }>
 
 export class Tf2CodecError extends Error {
@@ -1240,7 +1263,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
   const buffer = data.buffer as ArrayBuffer
   const base = data.byteOffset
   const view = new DataView(buffer, base, data.byteLength)
-  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 16)
+  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 17)
     throw new Tf2CodecError("snapshot identity is invalid")
   const tf2Class = data[16]
   const team = data[17]
@@ -1902,6 +1925,55 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     }))
   }
   at += pickupCount * 40
+  requireBytes(12, "scoreboard")
+  const redScore = view.getInt32(at, true), blueScore = view.getInt32(at + 4, true)
+  const redCount = data[at + 8]!, blueCount = data[at + 9]!, playerCount = data[at + 10]!
+  if (redCount > 32 || blueCount > 32 || playerCount < 1 || playerCount > 32 || data[at + 11] !== 0) {
+    throw new Tf2CodecError("scoreboard header is invalid")
+  }
+  at += 12
+  const scoreboardPlayers: ScoreboardPlayerSnapshot[] = []
+  let previousPlayer = 0
+  for (let index = 0; index < playerCount; index += 1) {
+    requireBytes(29, "scoreboard player")
+    const identity = view.getUint32(at, true), playerClass = data[at + 4]!, playerTeam = data[at + 5]!
+    const alive = data[at + 6]!, fake = data[at + 7]!, nameLength = data[at + 28]!
+    if (identity <= previousPlayer || playerClass < 1 || playerClass > 9 || playerTeam > 3
+      || alive > 1 || fake > 1 || nameLength < 1 || nameLength > 31
+      || (identity === 1) !== (index === 0) || (identity === 1) === (fake === 1)) {
+      throw new Tf2CodecError("scoreboard player record is invalid")
+    }
+    requireBytes(29 + nameLength, "scoreboard player name")
+    let name: string
+    try { name = decoder.decode(data.subarray(at + 29, at + 29 + nameLength)) }
+    catch { throw new Tf2CodecError("scoreboard player name is invalid") }
+    scoreboardPlayers.push(Object.freeze({
+      identity,
+      name,
+      team: playerTeam as Tf2Team,
+      class: playerClass as Tf2Class,
+      alive: alive === 1,
+      fake: fake === 1,
+      score: view.getInt32(at + 8, true),
+      kills: view.getUint32(at + 12, true),
+      deaths: view.getUint32(at + 16, true),
+      captures: view.getUint32(at + 20, true),
+      damage: view.getUint32(at + 24, true),
+    }))
+    previousPlayer = identity
+    at += 29 + nameLength
+  }
+  if (scoreboardPlayers.filter((player) => player.team === 2).length !== redCount
+    || scoreboardPlayers.filter((player) => player.team === 3).length !== blueCount
+    || scoreboardPlayers.length !== botCount + 1
+    || scoreboardPlayers.slice(1).some((player, index) => {
+      const bot = bots[index]!
+      return player.identity !== bot.identity || player.team !== bot.team || player.class !== bot.class
+        || player.alive !== (bot.lifecycle === 1)
+    })) throw new Tf2CodecError("scoreboard roster differs from player authority")
+  const scoreboard: ScoreboardSnapshot = Object.freeze({
+    redScore, blueScore, redCount, blueCount, players: Object.freeze(scoreboardPlayers),
+  })
   const round = decodeRound(buffer, base + at, bytes.byteLength - at)
   at = bytes.byteLength
   if(entityPresentation.collisionRevision!==collisionSnapshot.identity)throw new Tf2CodecError("Entity presentation revision join is invalid")
@@ -1962,6 +2034,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     bots: Object.freeze(bots),
     pickups: Object.freeze(pickups),
     metal,
+    scoreboard,
   })
 }
 

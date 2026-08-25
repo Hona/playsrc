@@ -1,4 +1,5 @@
 export { adaptSessionHud } from "./session"
+export { adaptTf2Scoreboard } from "./scoreboard"
 export {
   TF2_CROSSHAIR_SETTINGS,
   resolveTf2CrosshairGeometry,
@@ -55,4 +56,6 @@ export {
   TF2_HUD_DYNAMIC_IMAGES,
   TF2_HUD_RESOURCE_REVISIONS,
   TF2_INDEPENDENT_CONDITION_PANELS,
+  TF2_SCOREBOARD_CLASS_IMAGES,
+  TF2_SCOREBOARD_IMAGES,
 } from "./inventory"

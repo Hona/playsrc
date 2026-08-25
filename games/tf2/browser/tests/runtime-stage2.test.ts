@@ -10,11 +10,11 @@ import {
 import type { WorkerRequest, WorkerResponse } from "../src/protocol"
 
 function snapshot(): ArrayBuffer {
-  const bytes = new ArrayBuffer(1101)
+  const bytes = new ArrayBuffer(1149)
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x53, 0x53, 0x4e])
-  view.setUint32(4, 16, true)
+  view.setUint32(4, 17, true)
   view.setBigUint64(8, 7n, true)
   data.set([3, 2, 1, 0], 16)
   view.setFloat32(20, 200, true)
@@ -118,6 +118,13 @@ function snapshot(): ArrayBuffer {
   view.setUint32(at + 4, 1, true)
   at += 12
   at += 8
+  const scoreboard = at
+  data.set([1, 0, 1, 0], scoreboard + 8)
+  view.setUint32(scoreboard + 12, 1, true)
+  data.set([3, 2, 1, 0], scoreboard + 16)
+  data[scoreboard + 40] = 7
+  data.set(new TextEncoder().encode("unnamed"), scoreboard + 41)
+  at += 48
   data.set(new TextEncoder().encode("PGRL"), at)
   view.setUint32(at + 4, 1, true)
   data[at + 8] = 4
@@ -370,13 +377,17 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     expect(() => encodeCommand({ ...base, bot: { action: "add", count: 32, class: 3, difficulty: 1 } })).toThrow(Tf2CodecError)
 
     const prior = new Uint8Array(snapshot())
-    const bytes = new Uint8Array(prior.byteLength + 128)
-    const objectiveOffset = prior.byteLength - 68
+    const objectiveOffset = prior.byteLength - 116
+    const botName = new TextEncoder().encode("Chucklenuts")
+    const bytes = new Uint8Array(prior.byteLength + 128 + 29 + botName.length)
+    const roundOffset = prior.byteLength - 48
     bytes.set(prior.subarray(0, objectiveOffset))
-    bytes.set(prior.subarray(objectiveOffset), objectiveOffset + 128)
+    bytes.set(prior.subarray(objectiveOffset, roundOffset), objectiveOffset + 128)
+    bytes.set(prior.subarray(roundOffset), roundOffset + 128 + 29 + botName.length)
     const view = new DataView(bytes.buffer)
     view.setUint32(objectiveOffset - 4, 1, true)
     const at = objectiveOffset
+    const scoreboardOffset = objectiveOffset + 20
     view.setUint32(at, 2, true)
     bytes.set([3, 3, 1, 1, 1], at + 4)
     view.setInt32(at + 12, 200, true)
@@ -397,7 +408,17 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     view.setBigUint64(at + 96, 6n, true)
     view.setBigUint64(at + 104, 0xffff_ffff_ffff_ffffn, true)
     view.setBigUint64(at + 112, 20n, true)
-    expect(decodeSnapshot(bytes).bots).toEqual([{
+    const scoreboard = scoreboardOffset + 128
+    bytes[scoreboard + 9] = 1
+    bytes[scoreboard + 10] = 2
+    const scoreboardBot = scoreboard + 48
+    view.setUint32(scoreboardBot, 2, true)
+    bytes.set([3, 3, 1, 1], scoreboardBot + 4)
+    bytes[scoreboardBot + 28] = botName.length
+    bytes.set(botName, scoreboardBot + 29)
+    const decoded = decodeSnapshot(bytes)
+    expect(decoded.scoreboard).toMatchObject({ redCount: 1, blueCount: 1, players: [{ name: "unnamed" }, { name: "Chucklenuts", fake: true }] })
+    expect(decoded.bots).toEqual([{
       identity: 2,
       class: 3,
       team: 3,
@@ -416,8 +437,9 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
       weapon: { identity: 1, reload: 0, clip: 3, reserve: 20, maximumClip: 4, maximumReserve: 20, nextPrimaryTick: 20n, nextReloadTick: 0n },
       shots: 4, hits: 2, kills: 0, deaths: 0, captures: 0, carryingFlag: false, lastFireTick: 6n, respawnTick: null,
     }])
-    for (const [playerClass, weapon] of [[2, 12], [2, 13], [4, 17], [4, 18], [9, 40], [9, 41]] as const) {
+    for (const [playerClass, weapon] of [[2, 12], [2, 13], [7, 15], [7, 16], [4, 17], [4, 18], [9, 40], [9, 41]] as const) {
       bytes[at + 4] = playerClass
+      bytes[scoreboardBot + 4] = playerClass
       bytes[at + 64] = weapon
       expect(decodeSnapshot(bytes).bots[0]?.weapon?.identity).toBe(weapon)
     }

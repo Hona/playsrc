@@ -11,7 +11,7 @@ import {
 import { initializeTf2GameUiIntegration } from "../../src/gameui-integration"
 import { initializeTf2HudIntegration } from "../../src/hud-integration"
 import { initializeTf2BrowserSettings, initializeTf2OptionsPresentation } from "../../src/settings-integration"
-import { TF2_HUD_DYNAMIC_IMAGES, tf2HudUnavailable, type SessionHudContext, type SessionSimulationPublication } from "../../src/hud"
+import { TF2_HUD_DYNAMIC_IMAGES, adaptTf2Scoreboard, tf2HudAvailable, tf2HudUnavailable, type SessionHudContext, type SessionSimulationPublication } from "../../src/hud"
 import type { Tf2VguiResources } from "../../src/ui-integration"
 import { tf2UiResources, type Tf2UiResourceNode } from "../../src/ui-resources"
 import { FakeDocument, createRoot, descendants } from "../../../../../packages/presentation/vgui/tests/fake-dom"
@@ -241,6 +241,57 @@ describe("TF2 HUD and pause headed symptom loop", () => {
       resources: incomplete, viewport: { width: 1280, height: 720, devicePixelRatio: 1 }, reducedMotion: true,
       clock: { nowSeconds: () => 0 }, random: { nextUnit: () => 0.5 }, onCommand() {},
     })).toThrow("TF2 HUD dynamic images are unavailable: ../hud/class_soldierred")
+  })
+
+  test("renders authored scoreboard rows, class secrecy, bot icons, counters and immediate visibility", () => {
+    const root = createRoot(new FakeDocument())
+    const configured = resources()
+    const localized = Object.freeze({ ...configured, localization: Object.freeze({
+      ...configured.localization,
+      tokens: Object.freeze([
+        Object.freeze({ name: "TF_ScoreBoard_Player", value: "%s1 player" }),
+        Object.freeze({ name: "TF_ScoreBoard_Players", value: "%s1 players" }),
+        Object.freeze({ name: "ScoreBoard_Spectator", value: "%s1 spectator: %s2" }),
+      ]),
+    }) })
+    const hud = initializeTf2HudIntegration({
+      root: root as unknown as HTMLElement,
+      resources: localized, viewport: { width: 1280, height: 720, devicePixelRatio: 1 }, reducedMotion: true,
+      clock: { nowSeconds: () => 0 }, random: { nextUnit: () => 0.5 }, onCommand() {},
+    })
+    const authority = Object.freeze({
+      redScore: 2, blueScore: 1, redCount: 2, blueCount: 1,
+      players: Object.freeze([
+        Object.freeze({ identity: 1, name: "unnamed", team: 2 as const, class: 3 as const, alive: true, fake: false, score: 4, kills: 4, deaths: 1, captures: 0, damage: 425 }),
+        Object.freeze({ identity: 2, name: "Chucklenuts", team: 2 as const, class: 5 as const, alive: false, fake: true, score: 7, kills: 7, deaths: 2, captures: 0, damage: 0 }),
+        Object.freeze({ identity: 3, name: "CryBaby", team: 3 as const, class: 8 as const, alive: true, fake: true, score: 3, kills: 3, deaths: 0, captures: 0, damage: 0 }),
+      ]),
+    })
+    const scoreboard = adaptTf2Scoreboard(authority, 2, true, "ctf_2fort", false)
+    hud.publish(compact(1n, 3, 2, 1, 3, 20), Object.freeze({ ...context, scoreboard: tf2HudAvailable(scoreboard) }))
+    const observation = hud.snapshot()
+    const panel = (name: string) => observation.vgui.panels.find((value) => value.name === name)!
+    expect(observation.vgui.panels.filter((value) => value.name === "scoreinfo")).toHaveLength(1)
+    expect(panel("scoreinfo").effectivelyVisible).toBe(true)
+    expect(panel("RedPlayerList").state.sectionedItems.map((value) => value.id)).toEqual([2, 1])
+    expect(panel("BluePlayerList").state.sectionedItems[0]?.cells.class).toBe("")
+    expect(panel("RedPlayerList").state.sectionedItems[0]?.cells.class).toEqual({ kind: "image", image: "../hud/leaderboard_class_medic_d" })
+    expect(panel("RedPlayerList").state.sectionedItems[0]?.cells.ping).toEqual({ kind: "image", image: "../hud/scoreboard_ping_bot_red_d" })
+    expect(panel("BluePlayerList").state.sectionedItems[0]?.cells.ping).toEqual({ kind: "image", image: "../hud/scoreboard_ping_bot_blue" })
+    expect(panel("Kills").text).toBe("4")
+    expect(panel("Deaths").text).toBe("1")
+    expect(panel("Damage").text).toBe("425")
+    expect(panel("RedTeamScore").text).toBe("2")
+    expect(panel("BlueTeamScore").text).toBe("1")
+    expect(panel("RedTeamPlayerCount").text).toBe("2 players")
+    expect(panel("BlueTeamPlayerCount").text).toBe("1 player")
+    expect(panel("mapname").text).toBe("ctf_2fort")
+    expect(panel("PlayerNameLabel").text).toBe("unnamed")
+    expect(descendants(root).filter((element) => element.dataset.vguiImage === "../hud/leaderboard_class_medic_d")).toHaveLength(1)
+    hud.setScoreboardVisibility(false)
+    expect(hud.snapshot().vgui.panels.find((value) => value.name === "scoreinfo")?.effectivelyVisible).toBe(false)
+    hud.setScoreboardVisibility(true)
+    expect(hud.snapshot().vgui.panels.find((value) => value.name === "scoreinfo")?.effectivelyVisible).toBe(true)
   })
 
   test("renders one exact class/team/ammo identity and no inactive condition icon", () => {

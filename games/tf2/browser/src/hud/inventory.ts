@@ -32,6 +32,24 @@ export const TF2_HUD_RESOURCE_REVISIONS = Object.freeze({
   freezePanel: "aa7eb65149c32af23766daccee2fa6cb45a88ca09e4875008bdf692671f6a15e",
 })
 
+export const TF2_SCOREBOARD_CLASS_IMAGES = Object.freeze([
+  "../hud/leaderboard_class_scout",
+  "../hud/leaderboard_class_sniper",
+  "../hud/leaderboard_class_soldier",
+  "../hud/leaderboard_class_demo",
+  "../hud/leaderboard_class_medic",
+  "../hud/leaderboard_class_heavy",
+  "../hud/leaderboard_class_pyro",
+  "../hud/leaderboard_class_spy",
+  "../hud/leaderboard_class_engineer",
+] as const)
+
+export const TF2_SCOREBOARD_IMAGES = Object.freeze([
+  ...TF2_SCOREBOARD_CLASS_IMAGES.flatMap((image) => [image, `${image}_d`]),
+  ...["low", "med", "high", "very_high", "bot_red", "bot_blue"]
+    .flatMap((level) => [`../hud/scoreboard_ping_${level}`, `../hud/scoreboard_ping_${level}_d`]),
+])
+
 export const TF2_HUD_DYNAMIC_IMAGES = Object.freeze([
   "../hud/class_scoutred", "../hud/class_sniperred", "../hud/class_soldierred", "../hud/class_demored",
   "../hud/class_medicred", "../hud/class_heavyred", "../hud/class_pyrored", "../hud/class_spyred", "../hud/class_engired",

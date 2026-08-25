@@ -118,6 +118,7 @@ struct Report {
 }
 
 const CODE_LOCALIZATION_TOKENS: &[&str] = &[
+    "#Gametype_CTF",
     "#Gametype_Escort",
     "#Winpanel_TeamWins",
     "#Winpanel_Team1",
@@ -128,6 +129,16 @@ const CODE_LOCALIZATION_TOKENS: &[&str] = &[
     "#Winreason_DefendedUntilTimeLimit",
     "#Winreason_OpponentsDead",
     "#Winreason_Stalemate",
+    "#ScoreBoard_Spectator",
+    "#ScoreBoard_Spectators",
+    "#TF_MM_PlayerConnecting",
+    "#TF_MM_PlayerLostConnection",
+    "#TF_ScoreBoard_Player",
+    "#TF_ScoreBoard_Players",
+    "#TF_Scoreboard_Bot",
+    "#TF_Scoreboard_Name",
+    "#TF_Scoreboard_Ping",
+    "#TF_Scoreboard_Score",
     "#GameUI_AdjustGamma_Title",
     "#GameUI_Audio",
     "#GameUI_Bilinear",
@@ -296,6 +307,7 @@ const ROOTS: &[(&str, &str, bool)] = &[
     ("hud", "resource/ui/hudplayerhealth.res", true),
     ("hud", "resource/ui/hudammoweapons.res", true),
     ("hud", "resource/ui/hudweaponselection.res", true),
+    ("hud", "resource/ui/scoreboard.res", true),
     ("hud", "resource/ui/hudobjectivestatus.res", true),
     ("hud", "resource/ui/hudmatchstatus.res", true),
     ("hud", "resource/ui/hudobjectivetimepanel.res", true),
@@ -1490,7 +1502,7 @@ fn main() -> Result<(), String> {
     )
     .map_err(|error| format!("TF2 HUD class image inventory is malformed: {error}"))?;
     if arguments.next().is_some()
-        || class_images.len() < 18
+        || class_images.len() < 48
         || class_images.len() > 128
         || class_images
             .iter()

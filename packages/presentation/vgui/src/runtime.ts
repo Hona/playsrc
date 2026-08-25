@@ -1707,6 +1707,7 @@ class SourceVguiRuntime implements VguiRuntime {
   }
 
   private computePosition(value: string, panel: PanelState | null, horizontal: boolean, resourceSemantics = false): number {
+    value = value.trim()
     if (!panel) return this.proportional(parseFloatValue(value, "position"), null)
     const parent = panel.parent === null ? null : this.requirePanel(panel.parent)
     const proportionalToParent = [...panel.properties].find(([name]) => sameName(name, "proportionalToParent"))?.[1] === "1"
@@ -2962,7 +2963,13 @@ class SourceVguiRuntime implements VguiRuntime {
       for (const item of mutation.sectionedItems) {
         if (!item || !safeInteger(item.id) || ids.has(item.id) || !sections.has(item.section) || typeof item.enabled !== "boolean"
           || !item.cells || typeof item.cells !== "object" || Array.isArray(item.cells)
-          || Object.entries(item.cells).some(([name, value]) => !validString(name, 255, false) || !validString(value, this.limits.maxTextCodeUnits))) throw new RuntimeFault("MalformedValue", `${panel.name}:sectioned-items`)
+          || (item.foregroundColor !== undefined && !this.validColor(item.foregroundColor))
+          || (item.backgroundColor !== undefined && !this.validColor(item.backgroundColor))
+          || Object.entries(item.cells).some(([name, value]) => !validString(name, 255, false)
+            || (typeof value === "string"
+              ? !validString(value, this.limits.maxTextCodeUnits)
+              : !value || value.kind !== "image" || !validString(value.image, this.limits.maxStringCodeUnits, false)
+                || !this.images.has(asciiFold(value.image))))) throw new RuntimeFault("MalformedValue", `${panel.name}:sectioned-items`)
         ids.add(item.id)
       }
     }
@@ -2979,8 +2986,11 @@ class SourceVguiRuntime implements VguiRuntime {
         throw new RuntimeFault("MissingReference", `${panel.name}:image-variant:${mutation.imageFrame}`)
       }
     }
+    const selectableItems = sameName(panel.sourceControl, "SectionedListPanel")
+      ? mutation.sectionedItems ?? panel.sectionedItems
+      : mutation.items ?? panel.items
     if (mutation.activeIndex !== undefined && mutation.activeIndex !== null
-      && (!safeInteger(mutation.activeIndex) || mutation.activeIndex < 0 || mutation.activeIndex >= (mutation.items ?? panel.items).length)) {
+      && (!safeInteger(mutation.activeIndex) || mutation.activeIndex < 0 || mutation.activeIndex >= selectableItems.length)) {
       throw new RuntimeFault("MalformedValue", `${panel.name}:activeIndex`)
     }
     if (mutation.url !== undefined && !URL.test(mutation.url)) throw new RuntimeFault("MalformedValue", `${panel.name}:url`)
@@ -5485,14 +5495,27 @@ class SourceVguiRuntime implements VguiRuntime {
           if (this.panels.size + this.auxiliaryNodes.size + 3 > this.limits.maxDomNodes) throw new RuntimeFault("DomLimit", `${panel.name}:item:${item.id}:cell`)
           this.auxiliaryNodes.add(cell)
           cell.setAttribute("role", "gridcell")
-          cell.textContent = this.resolveTextValue(item.cells[column.name] ?? "", panel)
+          cell.dataset.vguiColumn = column.name
+          const value = item.cells[column.name] ?? ""
+          if (typeof value === "string") {
+            cell.textContent = this.resolveTextValue(value, panel)
+          } else {
+            const image = this.images.get(asciiFold(value.image))!
+            cell.dataset.vguiImage = value.image
+            cell.setAttribute("role", "img")
+            cell.style.backgroundImage = `url(${JSON.stringify(image.browserUrl)})`
+            cell.style.backgroundRepeat = "no-repeat"
+            cell.style.backgroundPosition = "center"
+            const icon = Math.min(line, Math.max(0, column.width - 4))
+            cell.style.backgroundSize = `${icon}px ${icon}px`
+          }
           cell.style.position = "absolute"
           cell.style.left = `${x + (columnIndex === 0 ? 4 : 0)}px`
           cell.style.top = "0"
           cell.style.width = `${Math.max(0, column.width - (columnIndex === 0 ? 8 : 4))}px`
           cell.style.height = `${line}px`
           cell.style.textAlign = (column.flags & 0x10) !== 0 ? "right" : (column.flags & 0x08) !== 0 ? "center" : "left"
-          cell.style.color = rgba(this.resolveColor(
+          cell.style.color = rgba(item.foregroundColor ?? this.resolveColor(
             (column.flags & 0x04) !== 0 ? "SectionedListPanel.BrightTextColor" : selected ? "SectionedListPanel.SelectedTextColor" : "SectionedListPanel.TextColor",
             WHITE,
           ))
@@ -5506,8 +5529,10 @@ class SourceVguiRuntime implements VguiRuntime {
         element.style.pointerEvents = item.enabled ? "auto" : "none"
         element.setAttribute("aria-disabled", item.enabled ? "false" : "true")
         element.setAttribute("aria-selected", panel.activeIndex === itemIndex ? "true" : "false")
-        element.style.color = rgba(this.resolveColor(selected ? "SectionedListPanel.SelectedTextColor" : "SectionedListPanel.TextColor", WHITE))
-        element.style.backgroundColor = selected ? rgba(this.resolveColor("SectionedListPanel.SelectedBgColor", TRANSPARENT)) : "transparent"
+        element.style.color = rgba(item.foregroundColor ?? this.resolveColor(selected ? "SectionedListPanel.SelectedTextColor" : "SectionedListPanel.TextColor", WHITE))
+        element.style.backgroundColor = selected
+          ? rgba(this.resolveColor("SectionedListPanel.SelectedBgColor", TRANSPARENT))
+          : item.backgroundColor ? rgba(item.backgroundColor) : "transparent"
         y += line + lineGap
         itemIndex += 1
       }
