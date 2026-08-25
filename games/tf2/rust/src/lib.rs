@@ -644,6 +644,26 @@ pub enum Event {
         clip: u16,
         reserve: u16,
     },
+    PlayerDamaged {
+        attacker: u32,
+        victim: u32,
+        weapon: Weapon,
+        amount: u32,
+        health: i32,
+        critical: bool,
+        custom: u8,
+    },
+    PlayerKilled {
+        attacker: u32,
+        victim: u32,
+        weapon: Weapon,
+        critical: bool,
+        custom: u8,
+    },
+    PlayerRespawned {
+        player: u32,
+        team: PlayerTeam,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -779,6 +799,7 @@ pub struct Session<W: GameplayWorld + Clone> {
     bots: Option<bot::BotWorld>,
     scoreboard: scoreboard::State,
     posed_player_hitboxes: Vec<PosedPlayerHitbox>,
+    respawn_tick: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -943,6 +964,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             bots: None,
             scoreboard: scoreboard::State::default(),
             posed_player_hitboxes: Vec::new(),
+            respawn_tick: None,
         }
     }
 
@@ -1992,7 +2014,14 @@ impl<W: GameplayWorld + Clone> Session<W> {
             self.die(&mut projectile_events);
         }
         let mut respawned = false;
-        if command.respawn {
+        let eligible = self.respawn_tick.is_some_and(|due| self.tick >= due);
+        if (command.respawn
+            && (self.lifecycle == PlayerLifecycle::Active
+                || eligible
+                || self.jump.is_some()
+                || self.bots.is_none()))
+            || eligible
+        {
             self.respawn(&mut projectile_events, &mut events, movement_policy);
             respawned = true;
         }
@@ -3312,34 +3341,132 @@ impl<W: GameplayWorld + Clone> Session<W> {
         attacker_team: PlayerTeam,
         events: &mut Vec<Event>,
     ) -> Result<(), Error> {
+        let (critical, custom) = events
+            .iter()
+            .rev()
+            .find_map(|event| match event {
+                Event::HitscanImpact {
+                    weapon,
+                    target: Some(target),
+                    hitgroup,
+                    critical,
+                    ..
+                } if *weapon == input.weapon && *target == input.victim => {
+                    Some((*critical, if *critical && *hitgroup == 1 { 1 } else { 0 }))
+                }
+                _ => None,
+            })
+            .unwrap_or((false, 0));
+        let before = if input.victim == PLAYER_IDENTITY {
+            self.health
+        } else {
+            self.bots
+                .as_ref()
+                .and_then(|bots| bots.health(input.victim))
+                .unwrap_or(0)
+        };
+        let after;
         if input.victim == PLAYER_IDENTITY {
             if self.lifecycle != PlayerLifecycle::Active
                 || !attacker_team.is_enemy(self.team_selection.local_team())
             {
                 return Ok(());
             }
-            let amount = (input.amount + 0.5) as i32;
-            self.health = self.health.saturating_sub(amount).max(0);
+            let mut health = health::HealthState::spawn(self.class, 0.0, 0.0)
+                .map_err(|_| Error::Bot(bot::Error::Damage))?;
+            health.current = self.health;
+            health.maximum = self.maximum_health();
+            let mut conditions = condition::ConditionState::default();
+            if self.conditions.contains(Condition::Phase) {
+                conditions
+                    .add(
+                        condition::ConditionId::PHASE,
+                        condition::ConditionDuration::Permanent,
+                        None,
+                        true,
+                        false,
+                    )
+                    .map_err(|_| Error::Bot(bot::Error::Damage))?;
+            }
+            let result = damage::apply_damage(
+                true,
+                &mut health,
+                &mut conditions,
+                &damage::DamageInput {
+                    attacker: input.attacker,
+                    attacker_team,
+                    attacker_conditions: condition::ConditionState::default(),
+                    source: damage::DamageSourceKind::Player,
+                    weapon_position: None,
+                    victim: PLAYER_IDENTITY,
+                    victim_team: self.team_selection.local_team(),
+                    base_damage: input.amount,
+                    range_multiplier: 1.0,
+                    damage_type: bot::weapon_damage_type(input.weapon),
+                    custom: damage::CustomDamage::None,
+                    crit: damage::CritKind::None,
+                    friendly_fire: false,
+                    force_friendly_fire: false,
+                    bypass_invulnerability: false,
+                    force: [0.0; 3],
+                },
+                damage::DamageModifiers::default(),
+            )
+            .map_err(|_| Error::Bot(bot::Error::Damage))?;
+            if !result.admitted {
+                return Ok(());
+            }
+            self.health = health.current.max(0);
+            after = self.health;
             events.push(Event::Damaged {
-                amount: amount as f32,
-                health: self.health as f32,
+                amount: result.health_damage as f32,
+                health: after as f32,
             });
             if let Some(bots) = &mut self.bots {
-                bots.record_human_hit(input.attacker, self.health == 0);
+                bots.record_human_hit(
+                    input.attacker,
+                    u32::try_from((before - after).max(0)).unwrap_or(0),
+                    after == 0,
+                );
             }
         } else if let Some(bots) = &mut self.bots {
             let victim_team = bots.team(input.victim).unwrap_or(attacker_team);
             let population = bots.team_population(victim_team, self.team_selection.local_team());
-            if let Some(damage) = bots
+            if bots
                 .damage(input, attacker_team, self.tick, population)
                 .map_err(Error::Bot)?
-                && input.attacker == PLAYER_IDENTITY
+                .is_none()
             {
-                self.scoreboard.local_damage(damage.max(0) as u32);
-                if !bots.active(input.victim) {
-                    self.scoreboard.local_kill();
-                }
+                return Ok(());
             }
+            after = bots.health(input.victim).unwrap_or(0);
+        } else {
+            return Ok(());
+        }
+        let dealt = u32::try_from((before - after).max(0)).unwrap_or(0);
+        events.push(Event::PlayerDamaged {
+            attacker: input.attacker,
+            victim: input.victim,
+            weapon: input.weapon,
+            amount: dealt,
+            health: after,
+            critical,
+            custom,
+        });
+        if input.attacker == PLAYER_IDENTITY {
+            self.scoreboard.local_damage(dealt);
+            if after == 0 {
+                self.scoreboard.local_kill();
+            }
+        }
+        if after == 0 {
+            events.push(Event::PlayerKilled {
+                attacker: input.attacker,
+                victim: input.victim,
+                weapon: input.weapon,
+                critical,
+                custom,
+            });
         }
         Ok(())
     }
@@ -5162,6 +5289,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
     fn die(&mut self, projectile_events: &mut Vec<ProjectileEvent>) {
         self.lifecycle = PlayerLifecycle::Dying;
         self.scoreboard.local_death();
+        if self.jump.is_none() {
+            self.respawn_tick = self
+                .bots
+                .as_ref()
+                .map(|bots| bots.respawn_tick(self.team_selection.local_team(), self.tick));
+        }
         self.lifecycle_events.push(LifecycleEvent {
             tick: self.tick,
             kind: LifecycleEventKind::Died,
@@ -5192,6 +5325,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             *state = spy::SpyState::default();
         }
         self.lifecycle = PlayerLifecycle::Active;
+        self.respawn_tick = None;
         self.lifecycle_events.push(LifecycleEvent {
             tick: self.tick,
             kind: LifecycleEventKind::Respawned,
@@ -5202,6 +5336,13 @@ impl<W: GameplayWorld + Clone> Session<W> {
             weapon.reset_for_spawn();
         }
         self.deploy_active_weapon();
+        if let Some(bots) = &self.bots {
+            if let Some(position) =
+                bots.select_spawn(self.team_selection.local_team(), &mut self.authority_random)
+            {
+                self.spawn = position;
+            }
+        }
         self.movement = MovementState::from_player(
             Player {
                 position: self.spawn,
@@ -5225,6 +5366,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
             });
         }
         events.push(Event::Respawned);
+        events.push(Event::PlayerRespawned {
+            player: PLAYER_IDENTITY,
+            team: self.team_selection.local_team(),
+        });
     }
 
     fn maximum_health(&self) -> i32 {
