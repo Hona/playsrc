@@ -916,6 +916,40 @@ describe("generic Source VGUI runtime", () => {
     expect(descendants(root).some((node) => node.dataset.vguiItem === "7")).toBeTrue()
   })
 
+  test("applies Source CExLabel resource foreground colors after its inherited Label scheme", () => {
+    const { root, runtime } = setup(emptyAnimations, [{
+      name: "CExLabel",
+      baseControl: "Label",
+      element: "div",
+      role: null,
+      focusable: false,
+      animationVariables: [],
+      acceptedProperties: ["fgcolor"],
+    }])
+    for (const [name, color, override] of [
+      ["Named", "Button.BgColor", null],
+      ["Literal", "10 20 30 128", null],
+      ["Missing", "MissingColor", null],
+      ["Override", "Button.BgColor", "1 2 3 255"],
+    ] as const) {
+      operation(runtime, {
+        kind: "create-panel",
+        parent: 1,
+        control: "CExLabel",
+        name,
+        properties: [
+          { name: "fgcolor", value: color },
+          ...(override === null ? [] : [{ name: "fgcolor_override", value: override }]),
+        ],
+      })
+    }
+    const color = (name: string) => descendants(root).find((element) => element.dataset.vguiName === name)!.style.color
+    expect(color("Named")).toBe("rgba(50, 60, 70, 1)")
+    expect(color("Literal")).toBe("rgba(10, 20, 30, 0.5019607843137255)")
+    expect(color("Missing")).toBe("rgba(0, 255, 0, 1)")
+    expect(color("Override")).toBe("rgba(1, 2, 3, 1)")
+  })
+
   test("executes an explicitly registered custom control through its Source base control", () => {
     const { runtime, requests } = setup(emptyAnimations, [{
       name: "CExButton",

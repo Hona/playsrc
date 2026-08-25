@@ -568,6 +568,7 @@ function panelValues(snapshot: Tf2HudSnapshot): readonly Tf2HudPanelValue[] {
   setVisible("PlayerStatusClassImageBG", useClassImage)
   setVisible("classmodelpanel", usePlayerModel)
   setVisible("classmodelpanelBG", usePlayerModel)
+  setVisible("CarryingWeapon", false)
   setVisible("PlayerStatusSpyImage", false)
   setVisible("PlayerStatusSpyOutlineImage", false)
   setImage("PlayerStatusClassImage", playableTeam && tfClass ? tf2HudAvailable(TF2_CLASS_IMAGES[playableTeam][tfClass]) : unavailableString())
