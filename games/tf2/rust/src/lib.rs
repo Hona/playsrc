@@ -2557,6 +2557,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     MASK_SOLID,
                 )?;
                 if muzzle.fraction == 1.0 {
+                    let began_firing = !self.fire_was_held || self.flames.points().is_empty();
                     self.flames.add_authored_point(
                         pyro::FlameSpawn {
                             tick: self.tick,
@@ -2572,7 +2573,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     let consumed = self.flames.consume_primary_ammo(&mut state.reserve);
                     state.next_primary_tick =
                         self.tick + weapon::delay_ticks(pyro::FLAME_FIRE_DELAY, interval);
-                    if !self.fire_was_held {
+                    if began_firing {
                         self.activity_events.push(ActivityEvent {
                             tick: self.tick,
                             weapon: Weapon::Flamethrower,
@@ -2587,7 +2588,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                             reserve: state.reserve,
                         });
                     }
-                    if !self.fire_was_held {
+                    if began_firing {
                         self.emit_weapon_sound(SoundDefinition::FlameFire, self.movement.position);
                     }
                 }
@@ -4945,6 +4946,43 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn pyro_held_attack_plays_first_flame_sound_after_viewmodel_draw() {
+        let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.015));
+        session
+            .advance(Command {
+                select_class: Some(PlayerClass::Pyro),
+                ..Command::default()
+            })
+            .unwrap();
+        let mut fired = false;
+        for _ in 0..50 {
+            session
+                .advance(Command {
+                    fire: true,
+                    ..Command::default()
+                })
+                .unwrap();
+            if !session.flames.points().is_empty() {
+                assert!(
+                    session
+                        .audio_events()
+                        .iter()
+                        .any(|event| event.definition == SoundDefinition::FlameFire)
+                );
+                assert!(
+                    session
+                        .activity_events()
+                        .iter()
+                        .any(|event| event.activity == weapon::WeaponActivity::PrimaryAttack)
+                );
+                fired = true;
+                break;
+            }
+        }
+        assert!(fired);
     }
 
     #[test]
