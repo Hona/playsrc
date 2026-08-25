@@ -358,7 +358,10 @@ pub(crate) fn alpha_ownership(
                     .any(|texture| texture.role == TextureRole::SelfIllumMask)
             },
             |model| {
-                if matches!(model.state, ModelShaderState::UnlitGeneric(_)) {
+                if matches!(
+                    model.state,
+                    ModelShaderState::UnlitGeneric(_) | ModelShaderState::UnlitTwoTexture(_)
+                ) {
                     return !material
                         .textures
                         .iter()

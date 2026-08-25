@@ -2196,6 +2196,69 @@ mod tests {
     }
 
     #[test]
+    fn unlit_two_texture_preserves_authored_spectator_screen_and_proxy_inputs() {
+        let screen = material(
+            br#"UnlitTwoTexture {
+                "$basetexture" "models/vgui/tv_spectate_on"
+                "$texture2" "models/vgui/tv_noise"
+                "$selfillum" "1"
+                "$model" "1"
+                Proxies {
+                    TextureScroll {
+                        "texturescrollvar" "$texture2transform"
+                        "texturescrollrate" ".6"
+                        "texturescrollangle" "90"
+                    }
+                    AnimatedTexture {
+                        "animatedtexturevar" "$texture2"
+                        "animatedtextureframenumvar" "$frame2"
+                        "animatedtextureframerate" "30"
+                    }
+                }
+            }"#,
+            SelectionEnvironment {
+                model: true,
+                ..SelectionEnvironment::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(screen.shader, Shader::UnlitTwoTexture);
+        let state = screen.model.as_ref().unwrap();
+        assert_eq!(state.shader, ModelShader::UnlitTwoTexture);
+        assert!(state.vertex_requirements.normal);
+        assert!(!state.vertex_requirements.ambient_cube);
+        let ModelShaderState::UnlitTwoTexture(value) = &state.state else {
+            panic!("authored two-texture spectator shader is absent")
+        };
+        assert_eq!(
+            value.base.logical_path.as_deref(),
+            Some("materials/models/vgui/tv_spectate_on.vtf")
+        );
+        assert_eq!(
+            value.second.logical_path.as_deref(),
+            Some("materials/models/vgui/tv_noise.vtf")
+        );
+        assert_eq!(value.second_frame_rate, Some(30.0));
+        assert_eq!(value.second_scroll_rate, Some(0.6));
+        assert_eq!(value.second_scroll_angle, Some(90.0));
+        let second_use = screen
+            .texture_uses
+            .iter()
+            .find(|value| value.role == TextureRole::Base2)
+            .unwrap();
+        assert_eq!(
+            second_use.transform.as_ref().unwrap().parameter,
+            b"$texture2transform"
+        );
+        assert_eq!(
+            static_state(&screen, TextureAlphaFacts { base: false })
+                .unwrap()
+                .lighting,
+            LightingModel::Unlit
+        );
+    }
+
+    #[test]
     fn model_draw_state_keeps_runtime_opacity_framebuffer_and_missing_inputs_explicit() {
         let cloak = material(
             br#"VertexLitGeneric {

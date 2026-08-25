@@ -7611,7 +7611,22 @@ fn encode_model_material(
         out.extend_from_slice(&[0; 24]);
     }
     match &model.state {
-        State::UnlitGeneric(_) | State::UnlitTwoTexture(_) => {}
+        State::UnlitGeneric(_) => {}
+        State::UnlitTwoTexture(state) => {
+            out.extend_from_slice(&[
+                u8::from(state.second_frame_rate.is_some()),
+                u8::from(state.second_scroll_rate.is_some()),
+                0,
+                0,
+            ]);
+            for value in [
+                state.second_frame_rate.unwrap_or(0.0),
+                state.second_scroll_rate.unwrap_or(0.0),
+                state.second_scroll_angle.unwrap_or(0.0),
+            ] {
+                out.extend_from_slice(&value.to_le_bytes());
+            }
+        }
         State::VertexLitGeneric(state) => {
             let self_illumination = state.self_illumination;
             out.extend_from_slice(&[

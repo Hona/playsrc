@@ -564,7 +564,8 @@ export type ModelMaterialInput = Readonly<{
   opacity: "opaque" | "translucent"
   framebuffer: "none" | "potential" | "current"
   requiredInputs: readonly string[]
-  state: Readonly<{ kind: "unlit-generic" | "unlit-two-texture" | "vertex-lit-generic" | "eye-refract" | "eyes" }>
+  state: Readonly<{ kind: "unlit-generic" | "vertex-lit-generic" | "eye-refract" | "eyes" }>
+    | Readonly<{ kind: "unlit-two-texture"; secondFrameRate: number | null; secondScrollRate: number | null; secondScrollAngle: number | null }>
 }>
 export type AuthoredTextureInput = Readonly<{
   logicalPath: string
