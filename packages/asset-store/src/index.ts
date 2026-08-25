@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import { createReadStream } from "node:fs"
 import { link, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
 import path from "node:path"
@@ -73,7 +74,7 @@ export async function putObject(
   }
   throwIfCancelled(signal)
   await mkdir(path.dirname(pathname), { recursive: true })
-  const temporary = `${pathname}.${process.pid}.tmp`
+  const temporary = `${pathname}.${process.pid}.${randomUUID()}.tmp`
   try {
     await rm(temporary, { force: true })
     await writeFile(temporary, bytes, { flag: "wx", signal })

@@ -66,12 +66,17 @@ const clone = (node: VguiResourceNode, children = node.children): VguiResourceNo
   children: Object.freeze(children),
 })
 
-function withoutFrame(document: VguiResourceDocument): VguiResourceDocument {
+function selectedDocument(document: VguiResourceDocument, identity: string, nodes: readonly VguiResourceNode[]): VguiResourceDocument {
   return Object.freeze({
-    logicalIdentity: `${document.logicalIdentity}/loading-children`,
+    logicalIdentity: `${document.logicalIdentity}/${identity}`,
     revision: document.revision,
-    root: clone(document.root, document.root.children.filter((node) => (scalar(node, "fieldName") ?? node.name).toLowerCase() !== "loadingdialog")),
+    root: clone(document.root, nodes.map((node) => clone(node, node.children.filter((child) => child.value !== null)))),
   })
+}
+
+function withoutFrame(document: VguiResourceDocument): VguiResourceDocument {
+  return selectedDocument(document, "loading-children", document.root.children.filter((node) =>
+    (scalar(node, "fieldName") ?? node.name).toLowerCase() !== "loadingdialog"))
 }
 
 function mustApply(runtime: VguiRuntime, operation: VguiOperation): VguiPanelId | undefined {
@@ -104,38 +109,51 @@ export function initializeTf2LoadingVguiRuntime(input: Tf2LoadingVguiRuntimeInpu
   })
   if (!initialized.ok) throw new Error(`${initialized.diagnostic.code}:${initialized.diagnostic.subject}`)
   const runtime = initialized.runtime
-  const mapInfo = mustApply(runtime, {
-    kind: "create-panel",
+  const summaryResource = input.resources.document("resource/ui/statsummary.res")
+  const summaryNode = summaryResource.root.children.find((node) => node.name === "TFStatsSummary")
+  const mapInfoNode = summaryResource.root.children.find((node) => node.name === "MapInfo")
+  if (!summaryNode || !mapInfoNode) throw new Error("Configured TF2 map-loading summary is incomplete")
+  const selection = { activeConditions: input.resources.activeConditions, resolutionSuffixes: ["_hidef"] }
+  const summary = mustApply(runtime, { kind: "create-panel", parent: 1, control: "EditablePanel", name: "TFStatsSummary" })!
+  mustApply(runtime, { kind: "set-panel-state", panel: summary, proportional: true, mouseInput: false, keyboardInput: false })
+  mustApply(runtime, {
+    kind: "replace-resource",
     parent: 1,
-    control: "EditablePanel",
-    name: "MapInfo",
-    properties: [
-      { name: "xpos", value: "0" }, { name: "ypos", value: "0" },
-      { name: "wide", value: String(viewport.width) }, { name: "tall", value: String(viewport.height) },
-      { name: "paintbackground", value: "1" }, { name: "bgcolor_override", value: "46 43 42 255" },
-    ],
-  })!
-  const background = mustApply(runtime, {
-    kind: "create-panel",
-    parent: mapInfo,
-    control: "ImagePanel",
-    name: "Background",
-    properties: [
-      { name: "xpos", value: "0" }, { name: "ypos", value: "0" },
-      { name: "wide", value: String(Math.trunc(viewport.height * (4 / 3))) }, { name: "tall", value: String(viewport.height) },
-      { name: "image", value: "stamp_background_map" }, { name: "scaleImage", value: "1" },
-    ],
-  })!
-  const dialog = mustApply(runtime, { kind: "create-panel", parent: 1, control: "Frame", name: "LoadingDialog" })!
-  mustApply(runtime, { kind: "set-panel-state", panel: 1, visible: false, mouseInput: false, keyboardInput: false })
+    document: selectedDocument(summaryResource, "summary-root", [summaryNode]),
+    selection,
+  })
+  mustApply(runtime, {
+    kind: "replace-resource",
+    parent: summary,
+    document: selectedDocument(summaryResource, "summary-content", summaryResource.root.children.filter((node) => node !== summaryNode)),
+    selection,
+  })
 
   const panel = (name: string): VguiPanelId => {
     const found = runtime.snapshot().panels.find((candidate) => candidate.name.toLowerCase() === name.toLowerCase())
     if (!found) throw new Error(`TF2 loading control ${name} is missing`)
     return found.id
   }
+  const mapInfo = panel("MapInfo")
+  mustApply(runtime, {
+    kind: "replace-resource",
+    parent: mapInfo,
+    document: selectedDocument(summaryResource, "map-information", mapInfoNode.children.filter((node) => node.value === null)),
+    selection,
+  })
+  mustApply(runtime, { kind: "set-panel-state", panel: mapInfo, visible: true })
+  for (const name of ["InfoBG", "Title", "MapAuthors", "MapLeaderboardTitle"]) {
+    mustApply(runtime, { kind: "set-panel-state", panel: panel(name), visible: false })
+  }
+  const background = panel("Background")
+  const mapImage = panel("MapImage")
+  mustApply(runtime, { kind: "set-panel-state", panel: mapImage, visible: false })
+  const dialog = mustApply(runtime, { kind: "create-panel", parent: 1, control: "Frame", name: "LoadingDialog" })!
+  mustApply(runtime, { kind: "set-panel-state", panel: 1, visible: false, mouseInput: false, keyboardInput: false })
+
   const layoutBackground = (snapshot: Tf2LoadingPresentationSnapshot): void => {
     const width = snapshot.background?.backgroundWidth ?? Math.trunc(viewport.height * (4 / 3))
+    mustApply(runtime, { kind: "set-bounds", panel: summary, bounds: { x: 0, y: 0, width: viewport.width, height: viewport.height } })
     mustApply(runtime, { kind: "set-bounds", panel: mapInfo, bounds: { x: 0, y: 0, width: viewport.width, height: viewport.height } })
     mustApply(runtime, { kind: "set-bounds", panel: background, bounds: { x: 0, y: 0, width, height: viewport.height } })
   }
@@ -157,6 +175,15 @@ export function initializeTf2LoadingVguiRuntime(input: Tf2LoadingVguiRuntimeInpu
           mustApply(runtime, { kind: "set-panel-state", panel: dialog, visible: true, popup: true, mouseInput: true, keyboardInput: true })
           mustApply(runtime, { kind: "set-application-modal", panel: dialog })
           mustApply(runtime, { kind: "move-to-front", panel: dialog })
+        } else if (operation.kind === "map") {
+          const type = operation.typeToken
+            ? input.resources.localization.tokens.find((token) => token.name.toLowerCase() === operation.typeToken.slice(1).toLowerCase())?.value
+            : ""
+          if (type === undefined) throw new Error(`TF2 map type localization ${operation.typeToken} is missing`)
+          mustApply(runtime, { kind: "set-dialog-variable", panel: summary, name: "maplabel", value: operation.displayName })
+          mustApply(runtime, { kind: "set-dialog-variable", panel: summary, name: "maptype", value: type })
+          if (operation.image) mustApply(runtime, { kind: "mutate-control", panel: mapImage, mutation: { image: operation.image } })
+          mustApply(runtime, { kind: "set-panel-state", panel: mapImage, visible: operation.image !== null })
         } else if (operation.kind === "bounds") {
           mustApply(runtime, { kind: "set-bounds", panel: dialog, bounds: { x: operation.x, y: operation.y, width: operation.width, height: operation.height } })
         } else if (operation.kind === "status") {

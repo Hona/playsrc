@@ -21,6 +21,18 @@ describe("local immutable asset store", () => {
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 
+  test("publishes one shared immutable object concurrently without temporary-file collisions", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "playsrc-assets-"))
+    try {
+      const bytes = new TextEncoder().encode("shared map-loading presentation")
+      const expected = descriptor("derived-object", "application/octet-stream", bytes)
+      const results = await Promise.all(Array.from({ length: 16 }, () => putObject(root, expected, bytes)))
+      expect(results.filter((result) => result.outcome === "Stored")).toHaveLength(1)
+      expect(results.filter((result) => result.outcome === "AlreadyPresent")).toHaveLength(15)
+      expect(await readObject(root, expected)).toEqual(bytes)
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+
   test("atomically writes and reads exact channel bytes", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "playsrc-assets-"))
     try {

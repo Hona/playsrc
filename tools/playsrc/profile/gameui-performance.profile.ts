@@ -47,7 +47,7 @@ test("profile TF2 Main Menu startup and steady state", async ({ page, context, b
   const local = await loadLocalConfig()
   const outputDirectory = path.join(local.sourceCacheDir, "profiles", "gameui", TARGET)
   await mkdir(outputDirectory, { recursive: true })
-  for (const name of ["report.json", "playwright-trace.zip", "startup-cdp-trace.json", "steady-cdp-trace.json", "options-open-cdp-trace.json", "options-steady-cdp-trace.json", "startup-cpu-profile.cpuprofile", "steady-cpu-profile.cpuprofile", "options-open-cpu-profile.cpuprofile", "options-steady-cpu-profile.cpuprofile", "main-menu.png", "options.png"]) {
+  for (const name of ["report.json", "playwright-trace.zip", "startup-cdp-trace.json", "steady-cdp-trace.json", "options-open-cdp-trace.json", "options-steady-cdp-trace.json", "startup-cpu-profile.cpuprofile", "steady-cpu-profile.cpuprofile", "options-open-cpu-profile.cpuprofile", "options-steady-cpu-profile.cpuprofile", "main-menu.png", "options.png", "loading-presentation.png", "loading-presentation.json"]) {
     await rm(path.join(outputDirectory, name), { force: true })
   }
 
@@ -187,6 +187,12 @@ test("profile TF2 Main Menu startup and steady state", async ({ page, context, b
   const startupCapture = await startCdpCapture(cdp)
   await page.goto("/", { waitUntil: "domcontentloaded", timeout: 30_000 })
   await page.waitForFunction(() => {
+    const main = document.querySelector<HTMLElement>("main")
+    return main?.dataset.phase === "MainMenu" || main?.dataset.phase === "Failed"
+      || ["Playing", "AwaitingGesture"].includes(main?.dataset.startupState ?? "")
+  }, undefined, { timeout: 180_000, polling: 50 })
+  if (await page.locator("main").getAttribute("data-phase") === "Startup") await page.keyboard.press("Escape")
+  await page.waitForFunction(() => {
     const phase = document.querySelector("main")?.getAttribute("data-phase")
     return phase === "MainMenu" || phase === "Failed"
   }, undefined, { timeout: 180_000, polling: 50 })
@@ -204,6 +210,13 @@ test("profile TF2 Main Menu startup and steady state", async ({ page, context, b
   await writeFile(path.join(outputDirectory, "steady-cdp-trace.json"), steady.traceText)
   await writeFile(path.join(outputDirectory, "steady-cpu-profile.cpuprofile"), JSON.stringify(steady.cpuProfile))
   await page.screenshot({ path: path.join(outputDirectory, "main-menu.png") })
+  for (const name of [
+    "EventPromo", "FriendsContainer", "ShowPromoCodesButton", "CharacterSetupButton", "GeneralStoreButton",
+    "Notifications_ShowButtonPanel", "MOTD_ShowButtonPanel", "WatchStreamButton", "QuestLogButton",
+    "NoGCMessage", "NoGCImage", "RankBorder", "SettingsButtonSDK", "TF2SettingsButtonSDK",
+  ]) await expect(page.locator(`[data-vgui-name="${name}"]`)).toBeHidden()
+  await expect(page.locator('[data-vgui-name="SettingsButton"]')).toBeVisible()
+  await expect(page.locator('[data-vgui-name="TF2SettingsButton"]')).toBeVisible()
 
   const optionsStartedMilliseconds = await page.evaluate(() => performance.now())
   const optionsOpenCapture = await startCdpCapture(cdp)
@@ -360,6 +373,8 @@ test("profile TF2 Main Menu startup and steady state", async ({ page, context, b
       optionsSteadyCpuProfile: "options-steady-cpu-profile.cpuprofile",
       mainMenuScreenshot: "main-menu.png",
       optionsScreenshot: "options.png",
+      loadingScreenshot: "loading-presentation.png",
+      loadingEvidence: "loading-presentation.json",
     }),
   })
   await writeFile(path.join(outputDirectory, "report.json"), `${JSON.stringify(report, null, 2)}\n`)
@@ -397,4 +412,53 @@ test("profile TF2 Main Menu startup and steady state", async ({ page, context, b
   expect(report.optionsSteady.trace.eventCount).toBeGreaterThan(0)
   expect(report.dom.finalGameUiNodes).toBeGreaterThan(0)
   expect(report.budget.observedMaximumMilliseconds).toBeLessThan(5)
+
+  await page.keyboard.press("Escape")
+  await expect(page.locator("main")).toHaveAttribute("data-options-visible", "false")
+  const configuration = await (await page.request.get("/playsrc-config.json")).json() as {
+    targets: ReadonlyArray<{ target: string; objects: { bsp: { sha256: string } } }>
+  }
+  const upward = configuration.targets.find((target) => target.target === "pl_upward")
+  if (!upward) throw new Error("Configured Upward map is missing")
+  let releaseMap: (() => void) | undefined
+  const withheldMap = new Promise<void>((resolve) => { releaseMap = resolve })
+  await page.route(`**/objects/sha256/${upward.objects.bsp.sha256}`, async (route) => {
+    await withheldMap
+    await route.abort()
+  })
+  try {
+    await page.keyboard.press("Backquote")
+    await page.getByLabel("Console command").fill("map pl_upward")
+    await page.getByLabel("Console command").press("Enter")
+    await expect(page.locator("main")).toHaveAttribute("data-gameui", "loading", { timeout: 30_000 })
+    await expect(page.locator('.loading-layer [data-vgui-name="OnYourWayLabel"]')).toHaveText("You're on your way to:")
+    await expect(page.locator('.loading-layer [data-vgui-name="MapLabel"]')).toHaveText("Upward")
+    await expect(page.locator('.loading-layer [data-vgui-name="MapType"]')).toHaveText("Payload")
+    const mapImage = page.locator('.loading-layer [data-vgui-name="MapImage"]')
+    await expect(mapImage).toBeVisible()
+    await expect(page.locator("main")).toHaveAttribute("data-loading-background", "map-photo")
+    const imageBounds = await mapImage.boundingBox()
+    if (!imageBounds) throw new Error("Upward map photograph has no visible bounds")
+    const screenshot = await page.screenshot({ path: path.join(outputDirectory, "loading-presentation.png") })
+    const pixels = await page.evaluate(async ({ encoded, bounds }) => {
+      const bytes = Uint8Array.from(atob(encoded), (value) => value.charCodeAt(0))
+      const image = await createImageBitmap(new Blob([bytes], { type: "image/png" }))
+      const canvas = new OffscreenCanvas(image.width, image.height)
+      const context = canvas.getContext("2d")
+      if (!context) throw new Error("Loading screenshot pixel context is unavailable")
+      context.drawImage(image, 0, 0)
+      return [0.25, 0.5, 0.75].map((fraction) => {
+        const x = Math.floor(bounds.x + bounds.width * fraction)
+        const y = Math.floor(bounds.y + bounds.height * fraction)
+        return { x, y, rgba: [...context.getImageData(x, y, 1, 1).data] }
+      })
+    }, { encoded: screenshot.toString("base64"), bounds: imageBounds })
+    expect(new Set(pixels.map((pixel) => pixel.rgba.slice(0, 3).join(","))).size).toBeGreaterThan(1)
+    const evidence = { map: "pl_upward", displayName: "Upward", type: "Payload", imageBounds, pixels }
+    await writeFile(path.join(outputDirectory, "loading-presentation.json"), `${JSON.stringify(evidence, null, 2)}\n`)
+    console.log(`PLAYSRCLOADINGPRESENTATION ${JSON.stringify(evidence)}`)
+  } finally {
+    releaseMap?.()
+    await page.unroute(`**/objects/sha256/${upward.objects.bsp.sha256}`)
+  }
 })

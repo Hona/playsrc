@@ -2930,10 +2930,16 @@ fn main() -> Result<(), String> {
             .iter()
             .map(|image| (image.configured_value.clone(), image.material.clone())),
     );
-    runtime_ui_materials.push((
-        "stamp_background_map".to_owned(),
-        "materials/vgui/stamp_background_map.vmt".to_owned(),
-    ));
+    if !tf2_ui.images.iter().any(|image| {
+        image
+            .configured_value
+            .eq_ignore_ascii_case("stamp_background_map")
+    }) {
+        runtime_ui_materials.push((
+            "stamp_background_map".to_owned(),
+            "materials/vgui/stamp_background_map.vmt".to_owned(),
+        ));
+    }
     runtime_ui_materials.extend(
         gameui_backgrounds
             .iter()

@@ -38,10 +38,12 @@ describe("configured TF2 UI resource descriptor", () => {
   })
 
   test("binds the exact configured provider and selected source closure", () => {
-    expect(tf2UiResources.identity).toBe("tf2-ui-24245096-665e7e9c968b7b13")
+    expect(tf2UiResources.identity).toBe("tf2-ui-24245096-133ed8e03976ee77")
     expect(tf2UiResources.providers).toHaveLength(14)
-    expect(tf2UiResources.sources).toHaveLength(49)
-    expect(tf2UiResources.panels).toHaveLength(35)
+    expect(tf2UiResources.sources).toHaveLength(50)
+    expect(tf2UiResources.panels).toHaveLength(36)
+    expect(tf2UiResources.sources.find((source) => source.logicalPath === "resource/ui/statsummary.res")?.sha256)
+      .toBe("bf146199fcd7aec0a5467752853b89ead6f882d11533de383c09561bd3455903")
     expect(tf2UiResources.sources.find((source) => source.logicalPath === "resource/ui/mainmenuoverride.res")?.sha256)
       .toBe("5f628eb8ec62ea557cf49bc13e587b48c5e7ebd480742e1795e1653c5ae8ed92")
     expect(tf2UiResources.sources.find((source) => source.logicalPath === "resource/clientscheme.res")?.sha256)
@@ -82,12 +84,14 @@ describe("configured TF2 UI resource descriptor", () => {
 
   test("retains every selected inventory with no unclassified item", () => {
     expect(tf2UiResources.controls).toHaveLength(52)
-    expect(tf2UiResources.properties).toHaveLength(11_077)
+    expect(tf2UiResources.properties).toHaveLength(11_226)
     expect(tf2UiResources.commands).toHaveLength(79)
-    expect(tf2UiResources.localization.tokens).toHaveLength(454)
+    expect(tf2UiResources.localization.tokens).toHaveLength(456)
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#Valve_Move_Forward")?.definitions[0]?.value).toBe("Move forward")
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#TF_OptionCategory_Combat")?.definitions[0]?.value).toBe("Combat Options")
-    expect(tf2UiResources.images).toHaveLength(264)
+    expect(tf2UiResources.images).toHaveLength(266)
+    expect(tf2UiResources.images.find((image) => image.configuredValue === "maps/menu_photos_pl_upward")?.material?.sha256)
+      .toBe("79ca3d5e39f80c8d18c79eb63fd9b457a359e2a2db147c426eb7814a2cd1101e")
     expect(tf2UiResources.fonts).toHaveLength(48)
     expect(tf2UiResources.advancedOptions).toHaveLength(88)
     expect(tf2UiResources.keyboardActions).toHaveLength(70)
