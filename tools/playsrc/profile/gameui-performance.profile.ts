@@ -423,7 +423,9 @@ test("profile TF2 Main Menu startup and steady state", async ({ page, context, b
   const withheldMap = new Promise<void>((resolve) => { releaseMap = resolve })
   await page.route(`**/objects/sha256/${upward.objects.bsp.sha256}`, async (route) => {
     await withheldMap
-    await route.abort()
+    await route.abort().catch((error) => {
+      if (!(error instanceof Error) || !error.message.includes("Route is already handled")) throw error
+    })
   })
   try {
     await page.keyboard.press("Backquote")
