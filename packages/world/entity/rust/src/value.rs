@@ -103,7 +103,7 @@ pub(crate) fn project_string(
     }
 }
 
-pub(crate) fn source_integer(value: &[u8]) -> i32 {
+pub fn source_integer(value: &[u8]) -> i32 {
     let Ok(text) = std::str::from_utf8(value) else {
         return 0;
     };
