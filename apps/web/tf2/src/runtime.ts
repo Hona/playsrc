@@ -19,7 +19,6 @@ import {
   type Tf2TeamSelectionIntegration,
   type Tf2TeamSelectionModelPanel,
   type Tf2TeamSelectionRequest,
-  type Tf2TeamSelectionServerState,
 } from "@playsrc/game-tf2-browser/team-selection"
 import {
   TF2_BROWSER_SETTINGS_STORAGE_KEY,
@@ -1470,7 +1469,7 @@ export class Tf2Application {
         loadingProgress: 1,
       })
       this.#showClassSelection(true)
-      this.#showTeamSelection()
+      await this.#showTeamSelection()
     } catch (error) {
       if (!this.#operations.current(operation)) return
       await this.#teardownGameplay()
@@ -1604,23 +1603,6 @@ export class Tf2Application {
       .finally(() => { this.#classSelectionRenderTask = undefined })
   }
 
-  #teamServerState(snapshot: Snapshot): Tf2TeamSelectionServerState {
-    const localTeam = snapshot.team === 1 ? 2 : 3
-    return Object.freeze({
-      localTeam,
-      redCount: Number(localTeam === 2),
-      blueCount: Number(localTeam === 3),
-      redDisabled: false,
-      blueDisabled: false,
-      spectatorsVisible: true,
-      autoAssignVisible: true,
-      cancelVisible: localTeam !== 0,
-      highlander: false,
-      teamsFull: false,
-      teamsFullArrow: false,
-    })
-  }
-
   #resetTeamSelection(): void {
     if (!this.#uiResources || !this.#presentationRandom) throw new Error("TF2 team selection resources are unavailable")
     if (this.#teamSelection) {
@@ -1634,7 +1616,7 @@ export class Tf2Application {
       reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
       clock: { nowSeconds: () => this.#frameClock.current },
       random: this.#presentationRandom,
-      onRequest: (request) => this.#teamSelectionRequest(request),
+      onRequest: (request) => { void this.#teamSelectionRequest(request) },
       onModelPanels: (panels) => {
         this.#teamSelectionModelPanels = panels
         this.#teamSelectionRenderRevision += 1
@@ -1650,26 +1632,29 @@ export class Tf2Application {
     })
   }
 
-  #teamSelectionRequest(request: Tf2TeamSelectionRequest): void {
-    if (request.team === "red") this.#selectTeam = 1
-    else if (request.team === "blue") this.#selectTeam = 2
-    else if (request.team === "auto") {
-      const server = this.#teamSelection?.state().server
-      if (!server) throw new Error("TF2 authoritative team state is unavailable")
-      this.#selectTeam = server.redCount < server.blueCount ? 1 : 2
-    } else {
-      this.#blockers.add("TF2 spectator state has not been admitted by gameplay authority")
-      this.#set({ detail: "TF2 spectator state is unavailable" })
-      return
-    }
-    this.#set({ teamSelectionVisible: false, teamSelectionModels: "", detail: `Team selected: ${request.team}` })
+  async #teamSelectionRequest(request: Tf2TeamSelectionRequest): Promise<void> {
+    if (!this.#client || !this.#teamSelection) return
+    const generation = this.#generation
+    const server = await this.#client.teamSelection(generation, request.team)
+    if (generation !== this.#generation || this.#closed) return
+    this.#set({
+      teamSelectionVisible: false,
+      teamSelectionLocal: server.localTeam,
+      teamSelectionRedCount: server.redCount,
+      teamSelectionBlueCount: server.blueCount,
+      teamSelectionModels: "",
+      detail: `Team selected: ${request.team}`,
+    })
   }
 
-  #showTeamSelection(): void {
-    if (!this.#teamSelection || !this.#snapshot || this.#view.gameUi !== "in-game") return
+  async #showTeamSelection(): Promise<void> {
+    if (!this.#teamSelection || !this.#client || !this.#snapshot || this.#view.gameUi !== "in-game") return
+    const generation = this.#generation
+    const server = await this.#client.teamSelection(generation)
+    if (generation !== this.#generation || this.#closed) return
     this.#neutral()
-    if (document.pointerLockElement === this.#canvas) void document.exitPointerLock()
-    this.#teamSelection.dispatch({ kind: "show", server: this.#teamServerState(this.#snapshot) })
+    if (document.pointerLockElement === this.#canvas) await document.exitPointerLock()
+    this.#teamSelection.dispatch({ kind: "show", server })
   }
 
   #renderTeamSelection(): void {
@@ -2152,7 +2137,7 @@ export class Tf2Application {
       this.#classSelectionRequest({ kind: "join-class", identity: selected.identity, sourceCommand: `joinclass ${selected.name}` })
       this.#classSelection?.dispatch({ kind: "hide" })
     if (command === "changeteam" && tokens.length === 0) {
-      this.#showTeamSelection()
+      void this.#showTeamSelection()
       return
     }
     if (command === "jointeam" && tokens.length === 1) {
@@ -2161,7 +2146,7 @@ export class Tf2Application {
         this.#output(`Unknown TF2 team: ${tokens[0]}`)
         return
       }
-      this.#teamSelectionRequest({ kind: "join-team", team, sourceCommand: `jointeam ${team}` })
+      await this.#teamSelectionRequest({ kind: "join-team", team, sourceCommand: `jointeam ${team}` })
       this.#teamSelection?.dispatch({ kind: "hide" })
       return
     }
@@ -2988,13 +2973,11 @@ export class Tf2Application {
       detonate: this.#buttons.held("+attack2") || this.#detonatePressed,
       reload: this.#buttons.held("+reload") || this.#reloadPressed,
       selectClass: this.#selectClass,
-      selectTeam: this.#selectTeam,
       selectWeapon: this.#selectWeapon,
       modeRequest: this.#modeRequest,
       bot: this.#botRequest,
     })
     this.#selectClass = undefined
-    this.#selectTeam = undefined
     this.#selectWeapon = undefined
     this.#modeRequest = undefined
     this.#botRequest = undefined
@@ -3702,7 +3685,7 @@ export class Tf2Application {
     if (!action) return
     if (action === "changeteam") {
       event.preventDefault()
-      this.#showTeamSelection()
+      void this.#showTeamSelection()
       return
     }
     if (action === "changeclass") {
@@ -3768,7 +3751,6 @@ export class Tf2Application {
     this.#buttons.clear()
     this.#jumpPressed = this.#firePressed = this.#detonatePressed = this.#reloadPressed = false
     this.#selectClass = undefined
-    this.#selectTeam = undefined
     this.#selectWeapon = undefined
     this.#modeRequest = undefined
   }

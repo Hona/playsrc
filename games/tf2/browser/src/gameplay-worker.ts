@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 
 import type { InitialView, WorkerFailureCode, WorkerRequest, WorkerResponse } from "./protocol"
+import { decodeTf2TeamSelectionServerState } from "./team-selection/model"
 import initializeWasm, { initThreadPool } from "./wasm-generated/tf2_wasm.js"
 
 const MAX_WASM_BYTES = 64 * 1024 * 1024
@@ -39,6 +40,8 @@ type WasmExports = Readonly<{
   playsrc_visibility_output_length(handle: number): number
   playsrc_visibility_output_copy(handle: number, pointer: number, capacity: number): number
   playsrc_spawn_copy(handle: number, pointer: number, capacity: number): number
+  playsrc_team_state_copy(handle: number, pointer: number, capacity: number): number
+  playsrc_team_select(handle: number, choice: number): number
   playsrc_jump_configure(handle: number, definition: number, length: number): number
   playsrc_simulation_observe(handle: number, nowSeconds: number, command: number, length: number, suspended: number): number
   playsrc_simulation_output_length(handle: number): number
@@ -124,6 +127,8 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         candidate.playsrc_visibility_output_length,
         candidate.playsrc_visibility_output_copy,
         candidate.playsrc_spawn_copy,
+        candidate.playsrc_team_state_copy,
+        candidate.playsrc_team_select,
         candidate.playsrc_jump_configure,
         candidate.playsrc_simulation_observe,
         candidate.playsrc_simulation_output_length,
@@ -387,6 +392,46 @@ function requireActive(id: number, generation: number): { exports: WasmExports; 
 
 function readCoverage(request:Extract<WorkerRequest,{kind:"read-coverage"}>):void{if(!wasm||!pending||pending.generation!==request.generation){fail(request.id,"StaleGeneration");return}const length=wasm.playsrc_coverage_length(pending.handle);if(!Number.isSafeInteger(length)||length<12||length>4*1024*1024){fail(request.id,"InternalFailure");return}const pointer=wasm.playsrc_alloc(length)>>>0,copied=wasm.playsrc_coverage_copy(pending.handle,pointer,length);if(copied!==length){wasm.playsrc_free(pointer,length);fail(request.id,"InternalFailure");return}const payload=new Uint8Array(wasm.memory.buffer,pointer,length).slice().buffer;wasm.playsrc_free(pointer,length);post({id:request.id,kind:"coverage",generation:request.generation,payload},[payload])}
 
+function teamSelection(request: Extract<WorkerRequest, { kind: "team-selection" }>): void {
+  const selected = pending?.generation === request.generation
+    ? pending
+    : active?.generation === request.generation ? active : undefined
+  if (!wasm || !selected) {
+    fail(request.id, "StaleGeneration")
+    return
+  }
+  const choices = { red: 2, blue: 3, spectate: 1, auto: 4 } as const
+  if (request.choice !== null) {
+    const code = choices[request.choice]
+    if (code === undefined) {
+      fail(request.id, "MalformedRequest")
+      return
+    }
+    if (wasm.playsrc_team_select(selected.handle, code) !== 1) {
+      fail(request.id, "TransitionFailed", 201)
+      return
+    }
+  }
+  const length = 12
+  const pointer = wasm.playsrc_alloc(length) >>> 0
+  try {
+    if (wasm.playsrc_team_state_copy(selected.handle, pointer, length) !== length) {
+      fail(request.id, "InternalFailure")
+      return
+    }
+    const bytes = new Uint8Array(wasm.memory.buffer, pointer, length)
+    if (bytes[0] !== 0x50 || bytes[1] !== 0x54 || bytes[2] !== 0x45 || bytes[3] !== 0x4d
+      || new DataView(wasm.memory.buffer, pointer, length).getUint32(4, true) !== 1) {
+      fail(request.id, "InternalFailure")
+      return
+    }
+    const state = decodeTf2TeamSelectionServerState(bytes[8]!, bytes[9]!, bytes[10]!, bytes[11]!)
+    post({ id: request.id, kind: "team-selection", generation: request.generation, state })
+  } finally {
+    wasm.playsrc_free(pointer, length)
+  }
+}
+
 function activate(request: Extract<WorkerRequest, { kind: "activate" }>): void {
   if (!wasm || !pending || pending.generation !== request.generation) {
     fail(request.id, "StaleGeneration")
@@ -621,6 +666,8 @@ function dispatch(request: WorkerRequest): void | Promise<void> {
       return readCoverage(request)
     case "activate":
       return activate(request)
+    case "team-selection":
+      return teamSelection(request)
     case "discard":
       return discard(request)
     case "configure-course":
