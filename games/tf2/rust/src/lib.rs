@@ -3364,6 +3364,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 }
                 Weapon::SniperRifle => SoundDefinition::SniperSingle,
                 Weapon::Smg => SoundDefinition::SmgSingle,
+                Weapon::Revolver => SoundDefinition::RevolverSingle,
                 _ => unreachable!("hitscan profiles own their firing sounds"),
             };
             (profile, sound)
@@ -5479,12 +5480,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
             weapon.reset_for_spawn();
         }
         self.deploy_active_weapon();
-        if let Some(bots) = &self.bots {
-            if let Some(position) =
+        if let Some(bots) = &self.bots
+            && let Some(position) =
                 bots.select_spawn(self.team_selection.local_team(), &mut self.authority_random)
-            {
-                self.spawn = position;
-            }
+        {
+            self.spawn = position;
         }
         self.movement = MovementState::from_player(
             Player {

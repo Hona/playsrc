@@ -10,6 +10,7 @@ pub const TF2_SUBVERSION: u32 = 2;
 pub const NAV_MESH_CROUCH: u32 = 0x0000_0001;
 pub const NAV_MESH_JUMP: u32 = 0x0000_0002;
 pub const NAV_MESH_NO_JUMP: u32 = 0x0000_0008;
+const GRID_CELL_SIZE: f32 = 300.0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Limits {
@@ -266,6 +267,15 @@ pub struct Mesh {
     pub areas: Vec<Area>,
     pub ladders: Vec<Ladder>,
     index: HashMap<u32, usize>,
+    grid: Grid,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct Grid {
+    minimum: [f32; 2],
+    width: usize,
+    height: usize,
+    cells: Vec<Vec<usize>>,
 }
 
 impl Mesh {
@@ -274,11 +284,39 @@ impl Mesh {
     }
 
     pub fn nearest_area(&self, position: [f32; 3]) -> Option<&Area> {
-        self.areas.iter().min_by(|left, right| {
-            distance_squared(left.closest_point(position), position)
-                .total_cmp(&distance_squared(right.closest_point(position), position))
-                .then_with(|| left.identity.cmp(&right.identity))
-        })
+        let origin_x = self.grid.coordinate(position[0], 0, self.grid.width);
+        let origin_y = self.grid.coordinate(position[1], 1, self.grid.height);
+        let mut best: Option<(&Area, f32)> = None;
+        let mut shift = 0;
+        let mut limit = self.grid.width.max(self.grid.height);
+        while shift <= limit {
+            let min_x = origin_x.saturating_sub(shift);
+            let max_x = origin_x.saturating_add(shift).min(self.grid.width - 1);
+            let min_y = origin_y.saturating_sub(shift);
+            let max_y = origin_y.saturating_add(shift).min(self.grid.height - 1);
+            for x in min_x..=max_x {
+                for y in min_y..=max_y {
+                    if x > min_x && x < max_x && y > min_y && y < max_y {
+                        continue;
+                    }
+                    for &index in &self.grid.cells[x + y * self.grid.width] {
+                        let area = &self.areas[index];
+                        let distance = distance_squared(area.closest_point(position), position);
+                        if best.is_none_or(|(prior, prior_distance)| {
+                            distance
+                                .total_cmp(&prior_distance)
+                                .then_with(|| area.identity.cmp(&prior.identity))
+                                .is_lt()
+                        }) {
+                            best = Some((area, distance));
+                            limit = shift.saturating_add(1);
+                        }
+                    }
+                }
+            }
+            shift += 1;
+        }
+        best.map(|(area, _)| area)
     }
 
     pub fn build_path<F>(&self, start: u32, goal: u32, mut cost: F) -> Option<Vec<u32>>
@@ -352,6 +390,63 @@ impl Mesh {
             }
         }
         None
+    }
+}
+
+impl Grid {
+    fn new(areas: &[Area], maximum_areas: usize, reader: &Reader<'_>) -> Result<Self, Error> {
+        let minimum = [
+            areas
+                .iter()
+                .map(|area| area.northwest[0])
+                .fold(f32::INFINITY, f32::min),
+            areas
+                .iter()
+                .map(|area| area.northwest[1])
+                .fold(f32::INFINITY, f32::min),
+        ];
+        let maximum = [
+            areas
+                .iter()
+                .map(|area| area.southeast[0])
+                .fold(f32::NEG_INFINITY, f32::max),
+            areas
+                .iter()
+                .map(|area| area.southeast[1])
+                .fold(f32::NEG_INFINITY, f32::max),
+        ];
+        let width = (((maximum[0] - minimum[0]) / GRID_CELL_SIZE) as usize)
+            .checked_add(1)
+            .ok_or_else(|| reader.error(ErrorCode::InvalidArea))?;
+        let height = (((maximum[1] - minimum[1]) / GRID_CELL_SIZE) as usize)
+            .checked_add(1)
+            .ok_or_else(|| reader.error(ErrorCode::InvalidArea))?;
+        let count = width
+            .checked_mul(height)
+            .filter(|count| *count <= maximum_areas.saturating_mul(16))
+            .ok_or_else(|| reader.error(ErrorCode::InvalidArea))?;
+        let mut grid = Self {
+            minimum,
+            width,
+            height,
+            cells: vec![Vec::new(); count],
+        };
+        for (index, area) in areas.iter().enumerate() {
+            let min_x = grid.coordinate(area.northwest[0], 0, width);
+            let max_x = grid.coordinate(area.southeast[0], 0, width);
+            let min_y = grid.coordinate(area.northwest[1], 1, height);
+            let max_y = grid.coordinate(area.southeast[1], 1, height);
+            for y in min_y..=max_y {
+                for x in min_x..=max_x {
+                    grid.cells[x + y * width].push(index);
+                }
+            }
+        }
+        Ok(grid)
+    }
+
+    fn coordinate(&self, value: f32, axis: usize, size: usize) -> usize {
+        (((value - self.minimum[axis]) / GRID_CELL_SIZE) as usize).min(size - 1)
     }
 }
 
@@ -746,6 +841,7 @@ pub fn parse(
             }
         }
     }
+    let grid = Grid::new(&areas, limits.max_areas, &reader)?;
     Ok(Mesh {
         version,
         subversion,
@@ -756,6 +852,7 @@ pub fn parse(
         areas,
         ladders,
         index,
+        grid,
     })
 }
 
@@ -834,7 +931,9 @@ impl<'a> Reader<'a> {
 mod tests {
     use super::*;
 
-    fn fixture(areas: &[([f32; 3], [f32; 3], [Vec<u32>; 4], u32)]) -> Vec<u8> {
+    type FixtureArea = ([f32; 3], [f32; 3], [Vec<u32>; 4], u32);
+
+    fn fixture(areas: &[FixtureArea]) -> Vec<u8> {
         let mut bytes = Vec::new();
         let mut u32 = |value: u32| bytes.extend(value.to_le_bytes());
         u32(MAGIC);
@@ -940,6 +1039,35 @@ mod tests {
             first.connection_height_change(second, Direction::East),
             20.0
         );
+    }
+
+    #[test]
+    fn source_spatial_grid_checks_the_adjacent_ring_and_breaks_distance_ties_by_identity() {
+        let bytes = fixture(&[
+            (
+                [0.0, 0.0, 0.0],
+                [200.0, 200.0, 0.0],
+                [vec![], vec![], vec![], vec![]],
+                0,
+            ),
+            (
+                [300.0, 0.0, 0.0],
+                [500.0, 200.0, 0.0],
+                [vec![], vec![], vec![], vec![]],
+                0,
+            ),
+            (
+                [900.0, 0.0, 0.0],
+                [1000.0, 200.0, 0.0],
+                [vec![], vec![], vec![], vec![]],
+                0,
+            ),
+        ]);
+        let mesh = parse(&bytes, Profile::TeamFortress2, Some(128), Limits::default()).unwrap();
+        assert_eq!(mesh.nearest_area([299.0, 100.0, 0.0]).unwrap().identity, 2);
+        assert_eq!(mesh.nearest_area([250.0, 100.0, 0.0]).unwrap().identity, 1);
+        assert_eq!(mesh.nearest_area([-500.0, 100.0, 0.0]).unwrap().identity, 1);
+        assert_eq!(mesh.nearest_area([1200.0, 100.0, 0.0]).unwrap().identity, 3);
     }
 
     #[test]

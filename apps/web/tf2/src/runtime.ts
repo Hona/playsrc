@@ -2384,8 +2384,8 @@ export class Tf2Application {
       return
     }
     if (command === "tf_bot_add") {
-      if (!this.#snapshot || this.#mapIdentity !== "pl_upward") {
-        this.#output("tf_bot_add rejected: the active map has no authored TF2 navigation mesh")
+      if (!this.#snapshot || !this.#dependencyEntries.has(`maps/${this.#mapIdentity}.nav`)) {
+        this.#output("tf_bot_add rejected: the active map has no TF2 navigation mesh")
         return
       }
       let count = 1
@@ -2425,8 +2425,8 @@ export class Tf2Application {
       return
     }
     if (command === "tf_bot_kick" && tokens.length === 1) {
-      if (!this.#snapshot || this.#mapIdentity !== "pl_upward") {
-        this.#output("tf_bot_kick rejected: the active map has no authored TF2 navigation mesh")
+      if (!this.#snapshot || !this.#dependencyEntries.has(`maps/${this.#mapIdentity}.nav`)) {
+        this.#output("tf_bot_kick rejected: the active map has no TF2 navigation mesh")
         return
       }
       const token = tokens[0]!.toLowerCase()

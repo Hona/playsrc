@@ -2280,7 +2280,12 @@ fn main() -> Result<(), String> {
             "13de0c3e2666d2194474d855683cbabb807eead1c24587fd093a5c70a04cd0b4",
         )?;
     } else if target == "ctf_2fort" {
-        resolver.optional("maps/ctf_2fort.nav", "tf2-bot-navigation")?;
+        resolver.required_pinned(
+            "maps/ctf_2fort.nav",
+            "tf2-bot-navigation",
+            307_701,
+            "6c1e5b37b3cffb9ad97c554aa9e104119a5c5fb38bd6c9d2903a4d405f609017",
+        )?;
     }
     for (path, bytes, sha256, consumer) in [
         (
