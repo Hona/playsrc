@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises"
 import { runInNewContext } from "node:vm"
 import { expect, test } from "bun:test"
+import { TF2_CLASS_NAMES, type Tf2ClassName } from "@playsrc/game-tf2-browser/class"
 import { Tf2BrowserAutomation, type Tf2BrowserAutomationTransport } from "../src/browser-automation"
 
 type RecordedCall = readonly [string, ...unknown[]]
@@ -40,6 +41,29 @@ test("semantic TF2 console and map operations preserve the actual VGUI submissio
   expect(value.calls.find((call) => call[0] === "fill")).toEqual([
     "fill", "[aria-label='Console command']", "class demoman",
   ])
+})
+
+test("semantic class selection submits each of the nine canonical TF2 class names", async () => {
+  const value = transport(() => false)
+  const automation = new Tf2BrowserAutomation(value.driver)
+  for (const identity of TF2_CLASS_NAMES) {
+    value.calls.length = 0
+    await automation.player.selectClass(identity)
+    expect(value.calls.find((call) => call[0] === "fill")).toEqual([
+      "fill", "[aria-label='Console command']", `class ${identity}`,
+    ])
+  }
+  await expect(automation.player.selectClass("civilian" as Tf2ClassName))
+    .rejects.toThrow("TF2 automation class is invalid")
+  for (const team of ["red", "blue"] as const) {
+    value.calls.length = 0
+    await automation.player.selectTeam(team)
+    expect(value.calls.find((call) => call[0] === "fill")).toEqual([
+      "fill", "[aria-label='Console command']", `jointeam ${team}`,
+    ])
+  }
+  await expect(automation.player.selectTeam("spectate" as "red"))
+    .rejects.toThrow("TF2 automation team is invalid")
 })
 
 test("semantic TF2 commands reject malformed identities and the exact console-byte ceiling", async () => {

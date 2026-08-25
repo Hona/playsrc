@@ -3,6 +3,7 @@ import { sourceHorizontal4By3FovToVertical } from "@playsrc/rendering"
 import type { Camera, Effect } from "@playsrc/rendering"
 import type { ModelItem } from "@playsrc/rendering"
 import type { PresentationArtifacts } from "./artifacts"
+import { tf2ClassPresentation, type Tf2ClassPresentation } from "./class"
 import type { Snapshot } from "./codec"
 
 const UINT32_MAX = 0xffff_ffff
@@ -21,8 +22,8 @@ export type PresentationDiagnostic = Readonly<{
 export type Tf2Hud = Readonly<{
   health: number
   maxHealth: number
-  className: "Soldier" | "Demoman"
-  weaponName: "Rocket Launcher" | "Original" | "Stickybomb Launcher"
+  className: Tf2ClassPresentation["displayName"]
+  weaponName: "Rocket Launcher" | "Original" | "Stickybomb Launcher" | null
   speed: number
   projectileCount: number
 }>
@@ -72,7 +73,7 @@ export function projectileFrame(snapshot: Snapshot): ProjectileFrame {
       projectiles: Object.freeze(entry.projectiles.map((projectile) => Object.freeze({
         identity: projectile.identity,
         kind: projectile.kind === 1 ? "rocket" : "sticky",
-        team: projectile.team === 1 ? "red" : "blue",
+        team: projectile.team === 2 ? "red" : "blue",
         ownerIdentity: projectile.ownerIdentity,
         launcherIdentity: projectile.launcherIdentity,
         state: projectile.state === 1 ? "flying" : projectile.state === 2 ? "stuck-unarmed" : "stuck-armed",
@@ -110,7 +111,7 @@ function projectileTimelineEvents(
       projectileIdentity: event.projectile,
       ownerIdentity: event.ownerIdentity,
       launcherIdentity: event.launcherIdentity,
-      team: event.team === 1 ? "red" : "blue",
+      team: event.team === 2 ? "red" : "blue",
       tick: event.tick,
       sourceOrdinal: output.length,
       sourceEventOrdinal,
@@ -155,11 +156,11 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
   let activity = "ACT_VM_DRAW"
   return Object.freeze({
     map(snapshot: Snapshot,view:Readonly<{aspectRatio:number;farPlane:number}>=Object.freeze({aspectRatio:4/3,farPlane:32768})): Readonly<{ item: ModelItem; request: ModelPoseRequest }> {
-      const identity =
-        snapshot.class === 1
-          ? "models/weapons/c_models/c_soldier_arms.mdl"
-          : "models/weapons/c_models/c_demo_arms.mdl"
-      const itemIdentity = snapshot.class === 1
+      if (snapshot.weapon === null || (snapshot.class !== 3 && snapshot.class !== 4)) {
+        throw new ProjectilePresentationError("MalformedFact", "class has no implemented viewmodel weapon")
+      }
+      const identity = tf2ClassPresentation(snapshot.class).hands
+      const itemIdentity = snapshot.class === 3
         ? "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl"
         : "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl"
       const artifact = artifacts.models.get(identity)
@@ -172,7 +173,7 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
       if (!weapon) throw new ProjectilePresentationError("MissingModel", `${identity}:weapon-state`)
       const selectionChanged = prior !== snapshot.weapon || priorClass !== snapshot.class
       const exact = snapshot.activities.filter((event) => event.weapon === snapshot.weapon).at(-1)
-      const role = snapshot.class === 1 ? "PRIMARY" : "SECONDARY"
+      const role = snapshot.class === 3 ? "PRIMARY" : "SECONDARY"
       const mapped = exact === undefined ? undefined : [
         "",
         `ACT_${role}_VM_DRAW`,
@@ -213,7 +214,7 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
           model: identity,
           position:Object.freeze([0,0,0]) as Vector3,angles:Object.freeze([0,0,0]) as Vector3,
           scale: 1,
-          skin: snapshot.team === 1 ? 0 : 1,
+          skin: snapshot.team === 2 ? 0 : 1,
           viewModel: true,
           viewModelProjection: artifact.descriptor,
         }),
@@ -228,7 +229,7 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
           phase: phase as 0 | 1 | 2 | 3 | 4 | 5,
           reflectedViewmodel: false,
           ownerAlive: snapshot.lifecycle === 1,
-          skin: snapshot.team === 1 ? 0 : 1,
+          skin: snapshot.team === 2 ? 0 : 1,
           lod: 0,
           bodygroups: Object.freeze(artifact.bodygroupCounts.map(() => 0)),
           itemBodygroups: Object.freeze(itemArtifact.bodygroupCounts.map(() => 0)),
@@ -624,9 +625,12 @@ function particleControlPoint(value: ParticleControlPoint | undefined): value is
 export function tf2Hud(snapshot: Snapshot): Tf2Hud {
   return Object.freeze({
     health: snapshot.health,
-    maxHealth: snapshot.class === 1 ? 200 : 175,
-    className: snapshot.class === 1 ? "Soldier" : "Demoman",
-    weaponName: snapshot.weapon === 1 ? "Rocket Launcher" : snapshot.weapon === 2 ? "Original" : "Stickybomb Launcher",
+    maxHealth: snapshot.maximumHealth,
+    className: tf2ClassPresentation(snapshot.class).displayName,
+    weaponName: snapshot.weapon === null ? null
+      : snapshot.weapon === 1 ? "Rocket Launcher"
+        : snapshot.weapon === 2 ? "Original"
+          : "Stickybomb Launcher",
     speed: Math.hypot(...snapshot.velocity),
     projectileCount: snapshot.projectiles.length,
   })

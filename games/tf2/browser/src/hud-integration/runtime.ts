@@ -11,7 +11,7 @@ import {
   type VguiViewport,
 } from "@playsrc/vgui"
 import {
-  adaptCompactSessionHud,
+  adaptSessionHud,
   bindTf2Hud,
   bindTf2HudAction,
   TF2_HUD_DYNAMIC_IMAGES,
@@ -19,8 +19,8 @@ import {
   TF2_INDEPENDENT_CONDITION_PANELS,
   tf2HudAvailable,
   tf2HudUnavailable,
-  type CompactSessionHudContext,
-  type CompactSessionSimulationPublication,
+  type SessionHudContext,
+  type SessionSimulationPublication,
   type Tf2HudAction,
   type Tf2HudAvailability,
   type Tf2HudBinding,
@@ -50,7 +50,7 @@ export type Tf2HudIntegrationProbe = Readonly<{
 }>
 
 export type Tf2HudIntegration = Readonly<{
-  publish(publication: CompactSessionSimulationPublication, context: CompactSessionHudContext): Tf2HudBinding
+  publish(publication: SessionSimulationPublication, context: SessionHudContext): Tf2HudBinding
   action(action: Tf2HudAction): Tf2HudAvailability<Tf2HudCommand>
   frame(timeSeconds: number): void
   setViewport(viewport: VguiViewport): void
@@ -303,10 +303,10 @@ class Integration implements Tf2HudIntegration {
     this.#crosshair.publish(binding, this.#viewport)
   }
 
-  publish(publication: CompactSessionSimulationPublication, context: CompactSessionHudContext): Tf2HudBinding {
+  publish(publication: SessionSimulationPublication, context: SessionHudContext): Tf2HudBinding {
     if (this.#destroyed) throw new Error("TF2 HUD integration is destroyed")
     return this.#runtime.deferPresentation(() => {
-    const adapted = adaptCompactSessionHud(this.#previous, publication, context)
+    const adapted = adaptSessionHud(this.#previous, publication, context)
     const binding = bindTf2Hud(adapted)
     this.#applyValues(binding)
     for (const animation of binding.animations) {
