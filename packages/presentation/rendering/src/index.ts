@@ -42,6 +42,7 @@ import {
   type ModelLightingInput,
 } from "./model-lighting"
 import { buildSourceSkyGeometry } from "./source-environment"
+import { createSourceLightmappedEnvironmentNode, type SourceLightmappedEnvironmentNode } from "./source-lightmapped"
 import {
   createSourceViewFogUniforms,
   createSourceWaterFogUniforms,
@@ -336,7 +337,12 @@ export type WaterFramePlan = Readonly<{
   passes: readonly WaterFramePass[]
 }>
 export type FogInput=Readonly<{enabled:boolean;radial:boolean;primary:readonly[number,number,number,number];start:number;end:number;maximumDensity:number;farZ:number|null}>
-export type VisibilityFrame=Readonly<{worldIdentity:string;cacheIdentity:string;outsideWorld:boolean;sky:0|1|2;eyeLeaf:number|null;leaves:readonly number[];areas:readonly number[];surfaces:Uint32Array;water:WaterFramePlan}>
+export type EvaluatedWorldMaterialInput = Readonly<{
+  identity: string
+  mapMaterial: number
+  textures: readonly Readonly<{ role: number; frame: number | null; transform: Float32Array | null }>[]
+}>
+export type VisibilityFrame=Readonly<{worldIdentity:string;cacheIdentity:string;outsideWorld:boolean;sky:0|1|2;eyeLeaf:number|null;leaves:readonly number[];areas:readonly number[];surfaces:Uint32Array;water:WaterFramePlan;worldMaterials:readonly EvaluatedWorldMaterialInput[]}>
 
 export type Frame = Readonly<{
   camera: Camera
@@ -440,6 +446,26 @@ export type WaterMaterialInput = Readonly<{
   fresnel: Readonly<{ cheapEnabled: boolean; expensiveConstant: readonly [number, number, number, number] }>
   requiredInputs: readonly number[]
 }>
+export type WorldMaterialInput = Readonly<{
+  identity: string
+  mapMaterial: number
+  shader: "lightmapped-generic" | "world-vertex-transition"
+  textures: readonly Readonly<{
+    role: number
+    disposition: "source" | "environment" | "render-target"
+    colorRead: "srgb" | "linear" | "format-dependent"
+    parameter: string
+    reference: string
+    logicalPath: string | null
+    initialFrame: number | null
+    frameProxyMutated: boolean
+    transform: Float32Array | null
+    transformProxyMutated: boolean
+  }>[]
+  proxies: readonly Readonly<{ name: string; disposition: "handled" | "malformed" | "unsupported" }>[]
+  environmentMap: null | Readonly<{ tint: readonly [number, number, number]; contrast: number; saturation: number }>
+  fresnelReflection: number
+}>
 export type EnvironmentInput = Readonly<{
   profile: "ldr" | "hdr"
   identity: string
@@ -475,6 +501,7 @@ export type EnvironmentInput = Readonly<{
   waterSurfaceFacts: readonly Readonly<{ face:number; model:number; material:number; selected:boolean; plane:readonly[number,number,number,number]; bindings:Readonly<{environment:boolean;reflection:boolean;refraction:boolean}>}>[]
   waterVolumeFacts: readonly Readonly<{index:number;surfaceZ:number;minimumZ:number;bounds:readonly[readonly[number,number,number],readonly[number,number,number]];surfaceMaterial:number;bottomMaterial:unknown;leaves:readonly number[];clusters:readonly number[];areas:readonly number[];contents:number;plane:readonly[number,number,number,number];surfaceTranslucent:boolean;bottomTranslucent:boolean|null;surfaceBindings:Readonly<{environment:boolean;reflection:boolean;refraction:boolean}>;bottomBindings:Readonly<{environment:boolean;reflection:boolean;refraction:boolean}>|null}>[]
   waterMaterials: ReadonlyMap<string, WaterMaterialInput>
+  worldMaterials: ReadonlyMap<string, WorldMaterialInput>
   leafMinimumDistanceToWater: Uint16Array
   sky:null|Readonly<{name:string;faces:readonly Readonly<{face:number;material:string;encoding:"srgb"|"linear"|"hdr-rgbs";selectedTextures:readonly Readonly<{logicalPath:string;sha256:string}>[]}>[]}>
   cubemapFacts:readonly Readonly<{index:number;origin:readonly[number,number,number];logicalPath:string;sha256:string;width:number;height:number}>[]
@@ -723,7 +750,7 @@ export interface Renderer {
   readonly sceneGeneration: number
   loadMap(request: MapLoadRequest): Promise<SceneResult>
   render(frame: Frame): Promise<FrameResult>
-  captureGeometryEvidence(camera: Camera): GeometryEvidence
+  captureGeometryEvidence(camera: Camera, ownership?: "main" | "sky3d"): GeometryEvidence
   captureWaterTargetEvidence(x: number, y: number): Promise<WaterTargetEvidence>
   resize(cssWidth: number, cssHeight: number, devicePixelRatio: number): ResizeResult
   startFramePacing(callback: FramePacingCallback): void
@@ -763,6 +790,12 @@ type WaterMaterialResource = Readonly<{
   cheapNormalNode: ReturnType<typeof TSL.texture> | null
   fog: THREE.Fog | null
   state: WaterMaterialInput
+}>
+type WorldMaterialResource = Readonly<{
+  mapMaterial: number
+  normalFrames: readonly THREE.Texture[]
+  normalNode: ReturnType<typeof TSL.texture>
+  state: WorldMaterialInput
 }>
 type WorldBatchResource = Readonly<{
   mesh: THREE.Mesh
@@ -827,6 +860,7 @@ type SceneResources = {
   projectedMarks: readonly ProjectedMarkResource[]
   waterMeshes: readonly WaterMeshResource[]
   waterMaterials: ReadonlyMap<string,WaterMaterialResource>
+  worldMaterials: ReadonlyMap<string,WorldMaterialResource>
   cubemapTextures: ReadonlyMap<number,THREE.CubeTexture>
   skyGroup: THREE.Group | null
   mainStaticProps:THREE.Group
@@ -1086,7 +1120,7 @@ function detailColor(base: any, detail: RuntimeMaterial["detail"], texture?: THR
   return TSL.vec4(base.rgb.mul(modulation), base.a)
 }
 
-function worldBaseColor(resolved: RuntimeMaterial, base: any, second?: THREE.DataTexture): any {
+function worldBaseColor(resolved: RuntimeMaterial, base: any, second?: THREE.Texture): any {
   if (resolved.shader !== 4) return base
   if (!second) throw new RenderingError("MissingInput", `WorldVertexTransition second texture ${resolved.logicalPath} is unavailable`)
   const blend = TSL.clamp(TSL.attribute("displacementAlpha", "float").div(255), 0, 1)
@@ -1096,8 +1130,8 @@ function worldBaseColor(resolved: RuntimeMaterial, base: any, second?: THREE.Dat
 function worldNodeMaterial(
   resolved: RuntimeMaterial,
   identity: string,
-  baseTexture: THREE.DataTexture | undefined,
-  secondTexture: THREE.DataTexture | undefined,
+  baseTexture: THREE.Texture | undefined,
+  secondTexture: THREE.Texture | undefined,
   detailTexture: THREE.DataTexture | undefined,
   lightmaps: readonly [THREE.DataTexture, THREE.DataTexture?, THREE.DataTexture?, THREE.DataTexture?],
   directional: THREE.DataTexture | undefined,
@@ -1105,6 +1139,7 @@ function worldNodeMaterial(
   directionalUvTransform: DirectionalTextureInput["uvTransform"] | undefined,
   exposure: ReturnType<typeof TSL.uniform>,
   waterFogUniforms: SourceWaterFogUniforms,
+  environment: SourceLightmappedEnvironmentNode | undefined,
   state?: MaterialStateInput,
 ): THREE.MeshBasicNodeMaterial {
   const material = new THREE.MeshBasicNodeMaterial(materialOptions(resolved, state))
@@ -1123,7 +1158,7 @@ function worldNodeMaterial(
         .add(baseUv.y.mul(directionalUvTransform[3]))
         .add(directionalUvTransform[5]),
     )
-    const source = TSL.texture(directional, directionalUv).rgb
+    const source = environment ? environment.normalNode.rgb : TSL.texture(directional, directionalUv).rgb
     let weights
     if (directionalKind === "ssbump") {
       weights = TSL.max(source, TSL.vec3(0))
@@ -1147,8 +1182,10 @@ function worldNodeMaterial(
       .add(TSL.texture(lightmaps[3], TSL.uv(1)).rgb.mul(weights.z))
     irradiance = TSL.attribute("lightmapKind", "float").greaterThan(1.5).select(directionalLight, flat)
   }
+  const diffuse = base.rgb.mul(irradiance)
+  const lit = environment ? diffuse.add(environment.specular) : diffuse
   material.colorNode = sourceFragmentColor(
-    TSL.vec4(base.rgb.mul(irradiance).mul(exposure), base.a),
+    TSL.vec4(lit.mul(exposure), base.a),
     state,
     waterFogUniforms,
   )
@@ -1290,12 +1327,13 @@ class RendererOwner implements Renderer {
     return this.#sceneGeneration
   }
 
-  captureGeometryEvidence(camera: Camera): GeometryEvidence {
+  captureGeometryEvidence(camera: Camera, ownership: "main" | "sky3d" = "main"): GeometryEvidence {
     if (!this.#active || this.#lifecycle !== "Ready") throw new RenderingError("InvalidState", "renderer geometry evidence is unavailable")
     this.#setCamera(camera)
     this.#world.updateMatrixWorld(true)
     const raycaster = new THREE.Raycaster()
-    const meshes = this.#active.worldBatches.filter((batch) => batch.mesh.visible).map((batch) => batch.mesh)
+    const batches = ownership === "sky3d" ? this.#active.skyWorldBatches : this.#active.worldBatches
+    const meshes = batches.filter((batch) => batch.mesh.visible).map((batch) => batch.mesh)
     const samples = [] as GeometryEvidence["samples"][number][]
     for (const y of [-0.8, -0.4, 0, 0.4, 0.8]) {
       for (const x of [-0.8, -0.4, 0, 0.4, 0.8]) {
@@ -1305,8 +1343,8 @@ class RendererOwner implements Renderer {
           samples.push(Object.freeze({ x, y, disposition: "background", depth: null, primitive: null, object: null, material: null }))
           continue
         }
-        const object = this.#active.worldBatches.findIndex((batch) => batch.mesh === intersection.object)
-        const batch = this.#active.worldBatches[object]!
+        const object = batches.findIndex((batch) => batch.mesh === intersection.object)
+        const batch = batches[object]!
         const current = batch.index.array as Uint32Array
         const at = intersection.faceIndex * 3
         let sourceTriangle = -1
@@ -1747,6 +1785,7 @@ class RendererOwner implements Renderer {
     reflectionTarget.texture.colorSpace=THREE.NoColorSpace
     refractionTarget.texture.colorSpace=THREE.NoColorSpace
     const waterMaterials = new Map<string, WaterMaterialResource>()
+    const worldMaterials = new Map<string, WorldMaterialResource>()
     const waterNormalFrames = new Map<string, readonly THREE.Texture[]>()
     const cubemapTextures = new Map<number, THREE.CubeTexture>()
     let skyGroup:THREE.Group|null=null
@@ -1836,7 +1875,7 @@ class RendererOwner implements Renderer {
       }
       return Object.freeze({texture,input})
     }
-    const createBase = (resolved: RuntimeMaterial, identity: string): THREE.DataTexture | undefined => {
+    const createBase = (resolved: RuntimeMaterial, identity: string): THREE.Texture | undefined => {
       const state = materialStates.get(identity.toLowerCase())
       const source = resolved.baseTexture
       if (!source) {
@@ -1875,6 +1914,20 @@ class RendererOwner implements Renderer {
       waterSurfacePlanes.set(surface.face, surface.plane)
     }
 
+    const authoredNormalFrames = (authored: AuthoredTextureInput): readonly THREE.Texture[] => {
+      const identity = `${authored.logicalPath.toLowerCase()}:${authored.sourceSha256}`
+      let frames = waterNormalFrames.get(identity)
+      if (!frames) {
+        frames = Object.freeze(Array.from({ length: authored.frameCount }, (_, frame) => {
+          const texture = textureFromAuthored(authored, THREE.NoColorSpace, frame)
+          disposables.add(texture)
+          return texture
+        }))
+        waterNormalFrames.set(identity, frames)
+      }
+      return frames
+    }
+
     const createWaterMaterial = (identity: string, geometry: THREE.BufferGeometry): WaterMaterialResource => {
       const key = identity.toLowerCase()
       const existing = waterMaterials.get(key)
@@ -1897,16 +1950,7 @@ class RendererOwner implements Renderer {
       if (!Number.isSafeInteger(state.normalFrame.value) || state.normalFrame.value < 0 || state.normalFrame.value >= authored.frameCount) {
         throw new RenderingError("MalformedInput", `Water normal frame ${state.normalFrame.value} is outside its authored chain`)
       }
-      const normalIdentity = `${authored.logicalPath.toLowerCase()}:${authored.sourceSha256}`
-      let normalFrames = waterNormalFrames.get(normalIdentity)
-      if (!normalFrames) {
-        normalFrames = Object.freeze(Array.from({ length: authored.frameCount }, (_, frame) => {
-          const texture = textureFromAuthored(authored, THREE.NoColorSpace, frame)
-          disposables.add(texture)
-          return texture
-        }))
-        waterNormalFrames.set(normalIdentity, normalFrames)
-      }
+      const normalFrames = authoredNormalFrames(authored)
 
       const reflectionBinding = state.textures.find((texture) => texture.role === 16)
       const refractionBinding = state.textures.find((texture) => texture.role === 17)
@@ -2005,6 +2049,97 @@ class RendererOwner implements Renderer {
       waterMaterials.set(key, resource)
       return resource
     }
+    const createWorldEnvironment = (
+      resolved: RuntimeMaterial,
+      batch: RuntimeBatch,
+      geometry: THREE.BufferGeometry,
+    ): SourceLightmappedEnvironmentNode | undefined => {
+      const identity = resolved.logicalPath.toLowerCase()
+      const state = request.environment?.worldMaterials.get(identity)
+      if (!state) return undefined
+      if (state.mapMaterial !== batch.material || state.shader !== "lightmapped-generic") {
+        throw new RenderingError("IdentityMismatch", `animated world material ${resolved.logicalPath} has a different shader or map identity`)
+      }
+      const existing = worldMaterials.get(identity)
+      if (existing) {
+        if (!state.environmentMap) return { normalNode: existing.normalNode, specular: TSL.vec3(0) }
+        throw new RenderingError("IdentityMismatch", `animated world material ${resolved.logicalPath} has multiple independent world batches`)
+      }
+      const binding = state.textures.find((texture) => texture.role === 7 && texture.disposition === "source")
+      if (!binding?.logicalPath || binding.colorRead !== "linear") {
+        throw new RenderingError("MissingInput", `animated world material ${resolved.logicalPath} has no authored linear bump texture`)
+      }
+      const authored = request.environment?.authoredTextures.get(binding.logicalPath.toLowerCase())
+      if (!authored || binding.initialFrame === null || binding.initialFrame < 0 || binding.initialFrame >= authored.frameCount) {
+        throw new RenderingError("MissingInput", `animated world material ${resolved.logicalPath} has an incomplete authored bump frame chain`)
+      }
+      if (!state.environmentMap) {
+        throw new RenderingError("MissingInput", `animated world material ${resolved.logicalPath} has no authored environment state`)
+      }
+      const environmentBinding = state.textures.find((texture) => texture.role === 12)
+      if (!environmentBinding?.logicalPath) {
+        throw new RenderingError("MissingInput", `animated world material ${resolved.logicalPath} has no selected authored cubemap`)
+      }
+      const selectedPath = this.configuration.lightingProfile === "hdr"
+        ? environmentBinding.logicalPath.replace(/\.vtf$/i, ".hdr.vtf")
+        : environmentBinding.logicalPath
+      const cubemap = request.environment?.cubemapFacts.find((fact) =>
+        fact.logicalPath.toLowerCase() === selectedPath.toLowerCase(),
+      )
+      if (!cubemap) {
+        throw new RenderingError("MissingInput", `animated world material ${resolved.logicalPath} has no selected cubemap ${selectedPath}`)
+      }
+      const surfacePlanes = new Map(waterSurfacePlanes)
+      for (let triangle = 0; triangle < batch.faces.length; triangle += 1) {
+        const face = batch.faces[triangle]!
+        if (surfacePlanes.has(face)) continue
+        const vertex = batch.indices[triangle * 3]!
+        const offset = vertex * 3
+        const normal = [
+          batch.normals[offset]!,
+          batch.normals[offset + 1]!,
+          batch.normals[offset + 2]!,
+        ] as const
+        if (!normal.every(Number.isFinite) || Math.hypot(...normal) === 0) {
+          throw new RenderingError("MalformedInput", `animated world material ${resolved.logicalPath} has no authored face normal`)
+        }
+        const distance = normal[0] * batch.positions[offset]!
+          + normal[1] * batch.positions[offset + 1]!
+          + normal[2] * batch.positions[offset + 2]!
+        surfacePlanes.set(face, [normal[0], normal[1], normal[2], distance])
+      }
+      const tangents = sourceWaterTangentAttributes({
+        positions: batch.positions,
+        normals: batch.normals,
+        uv: batch.uv,
+        indices: batch.indices,
+        faces: batch.faces,
+        surfacePlanes,
+      })
+      geometry.setAttribute("sourceTangentS", new THREE.BufferAttribute(tangents.tangentS, 3))
+      geometry.setAttribute("sourceTangentT", new THREE.BufferAttribute(tangents.tangentT, 3))
+      const frames = authoredNormalFrames(authored)
+      const environment = createSourceLightmappedEnvironmentNode({
+        geometry,
+        normal: frames[binding.initialFrame]!,
+        cubemap: loadCubemap(cubemap),
+        state: Object.freeze({
+          tint: state.environmentMap.tint,
+          contrast: state.environmentMap.contrast,
+          saturation: state.environmentMap.saturation,
+          fresnelReflection: state.fresnelReflection,
+          environmentScale: this.configuration.lightingProfile === "hdr" ? 16 : 1,
+        }),
+      })
+      worldMaterials.set(identity, Object.freeze({
+        mapMaterial: state.mapMaterial,
+        normalFrames: frames,
+        normalNode: environment.normalNode,
+        state,
+      }))
+      return environment
+    }
+
     const createWorldMesh=(batch:RuntimeBatch):THREE.Mesh|null=>{
         const geometry = new THREE.BufferGeometry()
         geometry.setAttribute("position", new THREE.BufferAttribute(batch.positions, 3))
@@ -2060,34 +2195,22 @@ class RendererOwner implements Renderer {
             ),
           )
         }
-        let material: THREE.Material
-        if (map.lighting.profile === "hdr") {
-          material = worldNodeMaterial(
-            resolved,
-            identity,
-            baseTexture,
-            secondTexture,
-            detailTexture,
-            lightmapTextures,
-            supplied?.texture,
-            supplied?.input.kind,
-            supplied?.input.uvTransform,
-            exposureUniform,
-            waterFogUniforms,
-            materialState,
-          )
-        } else {
-          const nodeMaterial = new THREE.MeshBasicNodeMaterial(materialOptions(resolved, materialState))
-          const base = detailColor(worldBaseColor(resolved, baseTexture ? TSL.texture(baseTexture, TSL.uv()) : TSL.vec4(TSL.color(debugColor(identity)), 1), secondTexture), resolved.detail, detailTexture)
-          const irradiance = TSL.texture(lightmapTextures[0], TSL.uv(1)).rgb
-          nodeMaterial.colorNode = sourceFragmentColor(
-            TSL.vec4(base.rgb.mul(irradiance), base.a),
-            materialState,
-            waterFogUniforms,
-          )
-          nodeMaterial.toneMapped = false
-          material = nodeMaterial
-        }
+        const environment = createWorldEnvironment(resolved, batch, geometry)
+        const material = worldNodeMaterial(
+          resolved,
+          identity,
+          baseTexture,
+          secondTexture,
+          detailTexture,
+          lightmapTextures,
+          supplied?.texture,
+          supplied?.input.kind,
+          supplied?.input.uvTransform,
+          exposureUniform,
+          waterFogUniforms,
+          environment,
+          materialState,
+        )
         disposables.add(material)
         const mesh = new THREE.Mesh(geometry, material)
         mesh.matrixAutoUpdate = false
@@ -2506,6 +2629,7 @@ class RendererOwner implements Renderer {
       projectedMarks: Object.freeze(projectedMarks),
       waterMeshes:Object.freeze(waterMeshes),
       waterMaterials,
+      worldMaterials,
       cubemapTextures,
       skyGroup,
       mainStaticProps,
@@ -2569,6 +2693,30 @@ class RendererOwner implements Renderer {
           if (mark.mesh.visible !== visible) this.#visibleProjectedMarkCount += visible ? 1 : -1
           mark.mesh.visible = visible
           if (receiver) sourceTransform(mark.mesh, receiver.worldPosition, receiver.worldAngles)
+        }
+        if (frame.visibility.worldMaterials.length !== this.#active.worldMaterials.size) {
+          throw new RenderingError("IdentityMismatch", "evaluated world material state does not match the active scene")
+        }
+        for (const evaluated of frame.visibility.worldMaterials) {
+          const resource = this.#active.worldMaterials.get(evaluated.identity.toLowerCase())
+          if (!resource || resource.mapMaterial !== evaluated.mapMaterial) {
+            throw new RenderingError("IdentityMismatch", `evaluated world material ${evaluated.identity} is unavailable`)
+          }
+          const bump = evaluated.textures.find((texture) => texture.role === 7)
+          if (!bump || bump.frame === null || bump.frame < 0 || bump.frame >= resource.normalFrames.length) {
+            throw new RenderingError("MalformedInput", `evaluated world material ${evaluated.identity} selected an invalid bump frame`)
+          }
+          const texture = resource.normalFrames[bump.frame]!
+          if (bump.transform) {
+            const matrix = bump.transform
+            texture.matrixAutoUpdate = false
+            texture.matrix.set(
+              matrix[0]!, matrix[1]!, matrix[3]!,
+              matrix[4]!, matrix[5]!, matrix[7]!,
+              matrix[12]!, matrix[13]!, matrix[15]!,
+            )
+          }
+          resource.normalNode.value = texture
         }
         const water = frame.visibility.water
         const visibleWater = water.visibleWater
@@ -2965,7 +3113,7 @@ class RendererOwner implements Renderer {
       ) throw new RenderingError("MalformedInput", "particle draw item is invalid")
     }
     if(this.#active!.result.environment&&!frame.visibility)throw new RenderingError("MissingInput","an exact visibility result is required")
-    if(frame.visibility){if(!Array.isArray(frame.visibility.leaves)||!Array.isArray(frame.visibility.areas)||frame.visibility.sky<0||frame.visibility.sky>2||(frame.visibility.eyeLeaf!==null&&(!Number.isSafeInteger(frame.visibility.eyeLeaf)||frame.visibility.eyeLeaf<0)))throw new RenderingError("MalformedInput","visibility view state is invalid");const water=frame.visibility.water;if(water.passes.length<1||water.passes.length>4||water.passes.filter(pass=>pass.kind==="main").length!==1)throw new RenderingError("MalformedInput","Water view plan is invalid");let prior=-1;for(const pass of water.passes){const order=pass.kind==="reflection"?0:pass.kind==="refraction"?1:pass.kind==="main"?2:3;if(order<prior||!finite([...pass.origin,...pass.angles,pass.clip?.height??0])||pass.surfaces.length>100_000)throw new RenderingError("MalformedInput","Water pass is invalid");prior=order}if(water.visibleWater&&(!finite([water.visibleWater.surfaceZ,water.visibleWater.evaluated.cheapStart,water.visibleWater.evaluated.cheapEnd,...water.visibleWater.evaluated.normalTransform])||water.visibleWater.evaluated.normalTransform.length!==16))throw new RenderingError("MalformedInput","current Water state is invalid")}
+    if(frame.visibility){if(!Array.isArray(frame.visibility.leaves)||!Array.isArray(frame.visibility.areas)||!Array.isArray(frame.visibility.worldMaterials)||frame.visibility.sky<0||frame.visibility.sky>2||(frame.visibility.eyeLeaf!==null&&(!Number.isSafeInteger(frame.visibility.eyeLeaf)||frame.visibility.eyeLeaf<0)))throw new RenderingError("MalformedInput","visibility view state is invalid");const water=frame.visibility.water;if(water.passes.length<1||water.passes.length>4||water.passes.filter(pass=>pass.kind==="main").length!==1)throw new RenderingError("MalformedInput","Water view plan is invalid");let prior=-1;for(const pass of water.passes){const order=pass.kind==="reflection"?0:pass.kind==="refraction"?1:pass.kind==="main"?2:3;if(order<prior||!finite([...pass.origin,...pass.angles,pass.clip?.height??0])||pass.surfaces.length>100_000)throw new RenderingError("MalformedInput","Water pass is invalid");prior=order}if(water.visibleWater&&(!finite([water.visibleWater.surfaceZ,water.visibleWater.evaluated.cheapStart,water.visibleWater.evaluated.cheapEnd,...water.visibleWater.evaluated.normalTransform])||water.visibleWater.evaluated.normalTransform.length!==16))throw new RenderingError("MalformedInput","current Water state is invalid")}
     if(frame.brushModels){let prior=-1;for(const model of frame.brushModels.models){if(model.sourceIndex<=prior||model.model<1||model.model>=(this.#active!.loadRequest.brushModels?.length??0)||!finite([...model.worldPosition,...model.worldAngles])||model.renderMode<0||model.renderMode>10)throw new RenderingError("MalformedInput","brush-model publication record is invalid");prior=model.sourceIndex}}
   }
 

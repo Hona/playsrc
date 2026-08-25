@@ -7,6 +7,7 @@ let material = playsrc_material::resolve(&effective_vmt)?;
 let state = playsrc_material::static_state(&material, texture_alpha_facts)?;
 let evaluated = playsrc_material::evaluate_proxy_program(&material.proxy_program, &variables, &context)?;
 let water = playsrc_material::water_material_output(&material)?;
+let world = playsrc_material::world_material_output(&material)?;
 ```
 
 ## Objective
@@ -25,6 +26,7 @@ Resolve Source material documents and textures into runtime-neutral material beh
 - Emit one texture-use record per request with initial frame, transform, proxy-mutation facts, color read, and a join to caller-supplied Source sampling plus every authored mip/frame/face/slice. Undefined Water textures remain undefined, out-of-range frames and incomplete authored chains fail, and no generated mip or substitute request exists.
 - Classify the encountered `SpriteCard` family independently from legacy `Sprite`: forced two-sided blend/depth/discard state, exact PC initializers, dual-sequence/frame-blend/depth-feather controls, and explicit viewport/camera/depth/sheet inputs. An absent process-selected depth-feather default remains a named missing input.
 - Project `Water` into a complete LDR `Water_DX90` or HDR `Water_DX9_HDR` output with only defined base/normal/flow/environment/reflection/refraction bindings; base/normal/environment frames and transforms; scale/time/depth; reflection/refraction amounts, tints, Fresnel, blur, and blend factor; fog; force/LOD state; linked beneath/overlay materials; ordered proxy evaluation; and exact authored-plane/lightmap/environment/framebuffer/view/controller/time requirements. Material opacity follows the authored translucency flag only: a refraction framebuffer never turns the opaque, depth-writing Water shader into a transparent plane. Declaration metadata strings never create active textures or render targets.
+- Project and evaluate `LightmappedGeneric`/`WorldVertexTransition` texture frames, transforms, ordered proxy writes, authored environment tint/contrast/saturation, and Fresnel constants from explicit immutable time and VTF frame counts.
 - Project decal scale, alpha-test, and suppress-decal inputs needed by Map's bounded mark association without owning decal geometry.
 - Assign exact sRGB, linear, compressed-HDR, normal-data, or format-dependent read intent to target texture roles and emit typed detail, SSBump, environment-map, alpha-test, blend, cull, depth, decal-offset, fog, wireframe, and vertex-input state.
 - Compile and evaluate the target AnimatedTexture, Sine, Equals, TextureTransform, TextureScroll, and WaterLOD proxies in VMT order from supplied time, frame interval, texture frame counts, variables, and water-LOD values; malformed and unsupported declarations remain explicit no-operations.
@@ -42,7 +44,7 @@ Resolve Source material documents and textures into runtime-neutral material beh
 
 `cargo test --locked -p playsrc-material --test exact_alpha_water -- --ignored` reads the configured `jump_beef` graph's 309 gameplay entries and verifies the fence, three glass patches, all 13 present marks, 55 model materials, 12 projectile-particle materials, both opaque refractive Water roots, the 60-frame/nine-mip normal-map chain, and the fixed semantic identity recorded in [`inventories/jump-beef-alpha-water.md`](inventories/jump-beef-alpha-water.md).
 
-`bun packages/presentation/rendering/tests/water-map-headed.ts` visibly renders the exact `jump_beef` BSP through browser WASM and WebGPU; it verifies reflection/refraction/intersection order, Source fog depth alpha, above/below colors, frame-0/frame-30 normal animation, and 160 timed Water-transition frames below an 8.333 ms p95 budget.
+`bun packages/presentation/rendering/tests/water-map-headed.ts` visibly renders the exact `jump_beef` BSP through browser WASM and WebGPU; it verifies reflection/refraction/intersection order, Source fog depth alpha, above/below colors, frame-0/frame-30 normal animation, and 160 timed Water-transition frames below an 8.333 ms p95 budget. `PROFILE_MATERIAL_ANIMATION=1 bun run profile:gameplay --headed` verifies all 30 authored `pl_upward` bump frames, real 3D-sky water pixels/depth, immutable VTF inspection reuse, fixed simulation cadence, and replacement back to existing `jump_beef` Water.
 
 ## Non-Responsibilities
 
@@ -60,4 +62,4 @@ Complete when the declared shader, parameter, proxy, and material-state inventor
 
 ## Licensing
 
-The Source material-state behavior in `rust/src/{lib,model,alpha,water}.rs` is adapted from Valve's Source SDK 2013 and is governed by the Source 1 SDK License retained in this repository. All other original package material remains under the repository MIT license unless identified otherwise.
+The Source material-state behavior in `rust/src/{lib,model,alpha,water,world}.rs` is adapted from Valve's Source SDK 2013 and is governed by the Source 1 SDK License retained in this repository. All other original package material remains under the repository MIT license unless identified otherwise.

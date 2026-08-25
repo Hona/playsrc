@@ -502,6 +502,16 @@ export async function verifyTf2Wasm(
     const presentation = new Uint8Array(exports.memory.buffer, presentationPointer, presentationLength).slice()
     exports.playsrc_free(presentationPointer, presentationLength)
     const artifacts = await parsePresentationArtifacts(presentation, parseResourceSet(dependencyBytes))
+    const upwardWater = artifacts.environment.worldMaterials.get("materials/maps/pl_upward/water/water_hydro_cheap_dx80_7168_-2048_128.vmt")
+    const upwardNormal = artifacts.environment.authoredTextures.get("materials/water/dx80_tfwater001_normal.vtf")
+    require(upwardWater?.shader === "lightmapped-generic"
+      && upwardWater.proxies.length === 1
+      && upwardWater.proxies[0]?.name === "AnimatedTexture"
+      && upwardWater.environmentMap?.tint.every((value) => value === Math.fround(0.2))
+      && upwardWater.textures.find((texture) => texture.role === 7)?.frameProxyMutated === true
+      && upwardNormal?.frameCount === 30 && upwardNormal.mipCount === 9
+      && upwardNormal.planes.length === 270,
+    "pl_upward authored animated LightmappedGeneric state differs")
     const banner = artifacts.modelMaterials.get("materials/models/props_ui/bannerflag_comp.vmt")
     require(banner?.shader === "unlit-generic" && banner.state.kind === "unlit-generic"
       && banner.vertexRequirements === 9
@@ -926,7 +936,7 @@ export async function verifyTf2Wasm(
     const output=new Uint8Array(exports.memory.buffer,outputPointer,length).slice()
     exports.playsrc_free(outputPointer,length)
     const view=new DataView(output.buffer)
-    require(new TextDecoder().decode(output.subarray(0,4))==="PVIS"&&view.getUint32(4,true)===4,"PVS output identity differs")
+    require(new TextDecoder().decode(output.subarray(0,4))==="PVIS"&&view.getUint32(4,true)===5,"PVS output identity differs")
     let at=76,surfaceCount=view.getUint32(at,true);at+=4+surfaceCount*4
     const drawSurfaceCount=view.getUint32(at,true);at+=4+drawSurfaceCount*4
     at+=4;const leafCount=view.getUint32(at,true);at+=4+leafCount*4
@@ -936,6 +946,8 @@ export async function verifyTf2Wasm(
     if(flags[0]===1){at+=12+4+4+4;const textLength=view.getUint32(at,true);at+=4+textLength;normalFrame=view.getInt32(at,true);at+=4+64+8}
     const passCount=view.getUint32(at,true);at+=4;const passes:number[]=[]
     for(let index=0;index<passCount;index++){passes.push(output[at]!);at+=8+24+4+4+8;const count=view.getUint32(at,true);at+=4+count*4}
+    const worldMaterialCount=view.getUint32(at,true);at+=4
+    for(let index=0;index<worldMaterialCount;index++){const identityLength=view.getUint32(at,true);at+=4+identityLength+4;const textures=view.getUint32(at,true);at+=4+textures*(4+4+64)}
     require(at===output.length,"Water visibility output is truncated")
     return Object.freeze({surfaceCount,drawSurfaceCount,flags,normalFrame,passes})
   }

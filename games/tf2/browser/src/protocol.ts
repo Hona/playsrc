@@ -115,6 +115,8 @@ export type WorkerResponse =
         presentationParticlesMilliseconds: number
         presentationEnvironmentMilliseconds: number
         presentationSerializationMilliseconds: number
+        textureDecoderRequests: number
+        textureMetadataInspections: number
         totalMilliseconds: number
       }>
     }>

@@ -295,12 +295,66 @@ struct Spawn {
     angles: [f32; 3],
 }
 
+struct RuntimeWorldMaterial {
+    map_material: usize,
+    material: playsrc_material::Material,
+    texture_frames: BTreeMap<Vec<u8>, u32>,
+}
+
 struct RuntimeEnvironment {
     world: playsrc_map::WorldEnvironment,
     water_materials: BTreeMap<String, playsrc_material::Material>,
+    world_materials: BTreeMap<String, RuntimeWorldMaterial>,
     map_materials: BTreeMap<usize, String>,
     normal_frame_counts: BTreeMap<String, u32>,
     water_lod: Option<[f32; 2]>,
+}
+
+type InspectedTexture<'source> =
+    OnceLock<Result<playsrc_vtf::Decoder<'source>, playsrc_vtf::Error>>;
+
+struct TextureDecoders<'source> {
+    entries: BTreeMap<String, (&'source [u8], InspectedTexture<'source>)>,
+    requests: AtomicU32,
+    inspections: AtomicU32,
+}
+
+impl<'source> TextureDecoders<'source> {
+    fn new(bundle: &BTreeMap<String, &'source [u8]>) -> Self {
+        Self {
+            entries: bundle
+                .iter()
+                .filter(|(identity, _)| identity.ends_with(".vtf"))
+                .map(|(identity, bytes)| (identity.clone(), (*bytes, OnceLock::new())))
+                .collect(),
+            requests: AtomicU32::new(0),
+            inspections: AtomicU32::new(0),
+        }
+    }
+
+    fn decoder(&self, path: &str) -> Result<&playsrc_vtf::Decoder<'source>, ()> {
+        let (bytes, inspected) = self.entries.get(path).ok_or(())?;
+        self.requests.fetch_add(1, Ordering::Relaxed);
+        inspected
+            .get_or_init(|| {
+                self.inspections.fetch_add(1, Ordering::Relaxed);
+                playsrc_vtf::Decoder::new(
+                    bytes,
+                    playsrc_vtf::Dialect::Source2013Pc,
+                    playsrc_vtf::Limits::default(),
+                )
+            })
+            .as_ref()
+            .map_err(|_| ())
+    }
+
+    fn metadata(&self, path: &str) -> Result<&playsrc_vtf::Metadata, ()> {
+        Ok(self.decoder(path)?.metadata())
+    }
+
+    fn bytes(&self, path: &str) -> Result<&'source [u8], ()> {
+        self.entries.get(path).map(|(bytes, _)| *bytes).ok_or(())
+    }
 }
 
 struct CompiledPresentationModel {
@@ -309,11 +363,12 @@ struct CompiledPresentationModel {
 }
 
 #[derive(Clone, Copy)]
-struct PresentationInputs<'a> {
+struct PresentationInputs<'a, 'source> {
     canonical: &'a playsrc_map::CanonicalMap,
     bsp: &'a playsrc_bsp::Bsp,
     graph: &'a playsrc_entity::Graph,
-    bundle: &'a BTreeMap<String, &'a [u8]>,
+    bundle: &'a BTreeMap<String, &'source [u8]>,
+    decoders: &'a TextureDecoders<'source>,
     model_resources: &'a BTreeMap<String, Arc<[u8]>>,
     resource_hashes: &'a BTreeMap<String, [u8; 32]>,
     map_materials: &'a [playsrc_material::Material],
@@ -355,6 +410,7 @@ struct Slot {
     session: Option<playsrc_tf2::Session<SharedWorld>>,
     snapshot: Vec<u8>,
     compile_metrics: [u64; 17],
+    texture_inspections: [u32; 2],
 }
 
 struct Tf2Simulation {
@@ -670,6 +726,7 @@ unsafe fn compile_map(
             _ => return Err(2),
         };
         let resources = bundle(configuration).map_err(|_| 7_u32)?;
+        let decoders = TextureDecoders::new(&resources);
         let resource_hashes = resources
             .par_iter()
             .map(|(identity, bytes)| (identity.clone(), Sha256::digest(bytes).into()))
@@ -706,7 +763,7 @@ unsafe fn compile_map(
         compile_metrics[1] = phase_finished.saturating_sub(phase_started);
         phase_started = phase_finished;
         let (resolved_materials, map_materials) =
-            resolve_materials(&canonical, &resources, profile).map_err(|_| 7_u32)?;
+            resolve_materials(&canonical, &resources, &decoders, profile).map_err(|_| 7_u32)?;
         let collision_world = attach_displacement_collision_inputs(
             collision_world,
             &canonical,
@@ -724,7 +781,7 @@ unsafe fn compile_map(
         compile_metrics[3] = phase_finished.saturating_sub(phase_started);
         phase_started = phase_finished;
         let (particles, particle_materials, particle_sheets, particle_presentation) =
-            compile_particles(&resources).map_err(|_| 10_u32)?;
+            compile_particles(&resources, &decoders).map_err(|_| 10_u32)?;
         let static_model_roots = canonical
             .static_props
             .models
@@ -736,6 +793,7 @@ unsafe fn compile_map(
             bsp: &bsp,
             graph: &entity_graph,
             bundle: &resources,
+            decoders: &decoders,
             model_resources: &model_resource_bytes,
             resource_hashes: &resource_hashes,
             map_materials: &map_materials,
@@ -763,6 +821,7 @@ unsafe fn compile_map(
             &entity_graph,
             &studio_models,
             &resources,
+            &decoders,
             profile,
             &canonical.static_props,
         )
@@ -771,9 +830,14 @@ unsafe fn compile_map(
             playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
         compile_metrics[5] = phase_finished.saturating_sub(phase_started);
         phase_started = phase_finished;
-        let profile_materials =
-            resolve_profile_materials(&entity_graph, &resources, &resource_hashes, profile)
-                .map_err(|_| 7_u32)?;
+        let profile_materials = resolve_profile_materials(
+            &entity_graph,
+            &resources,
+            &decoders,
+            &resource_hashes,
+            profile,
+        )
+        .map_err(|_| 7_u32)?;
         let inputs = runtime_inputs(&resources, &resource_hashes);
         let phase_finished =
             playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
@@ -913,6 +977,10 @@ unsafe fn compile_map(
             bsp_sha,
             spawn,
             session,
+            [
+                decoders.requests.load(Ordering::Relaxed),
+                decoders.inspections.load(Ordering::Relaxed),
+            ],
         ))
     })();
     let mut slots = slots().lock().expect("TF2 slots");
@@ -946,6 +1014,7 @@ unsafe fn compile_map(
             bsp_hash,
             spawn,
             session,
+            texture_inspections,
         )) => Slot {
             generation,
             payload: Some(payload),
@@ -977,6 +1046,7 @@ unsafe fn compile_map(
             session: Some(session),
             snapshot: Vec::new(),
             compile_metrics,
+            texture_inspections,
         },
         Err(error) => Slot {
             generation,
@@ -1009,6 +1079,7 @@ unsafe fn compile_map(
             session: None,
             snapshot: Vec::new(),
             compile_metrics,
+            texture_inspections: [0; 2],
         },
     };
     if index == slots.len() {
@@ -1075,6 +1146,7 @@ pub fn diagnose_presentation_bound(
         .iter()
         .map(|(identity, bytes)| (identity.clone(), bytes.as_slice()))
         .collect::<BTreeMap<_, _>>();
+    let decoders = TextureDecoders::new(&resources);
     let resource_hashes = resources
         .iter()
         .map(|(identity, bytes)| (identity.clone(), Sha256::digest(bytes).into()))
@@ -1124,12 +1196,14 @@ pub fn diagnose_presentation_bound(
     canonical.collision_world_identity = collision.identity;
     let visibility =
         playsrc_map::attach_displacement_visibility(&canonical, &visibility).map_err(|_| 3u32)?;
-    let (_, _, _, particle_presentation) = compile_particles(&resources).map_err(|_| 10u32)?;
+    let (_, _, _, particle_presentation) =
+        compile_particles(&resources, &decoders).map_err(|_| 10u32)?;
     let ((_, models, _, _), metrics, mut ledger) = compile_presentation(PresentationInputs {
         canonical: &canonical,
         bsp: &bsp,
         graph: &entities,
         bundle: &resources,
+        decoders: &decoders,
         model_resources: &model_resources,
         resource_hashes: &resource_hashes,
         map_materials: &map_materials,
@@ -1172,6 +1246,14 @@ pub extern "C" fn playsrc_compile_metric_milliseconds(handle: u32, index: usize)
     })
     .unwrap_or(0.0)
 }
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_texture_inspection_count(handle: u32, index: usize) -> u32 {
+    with(handle, |slot| {
+        slot.texture_inspections.get(index).copied().unwrap_or(0)
+    })
+    .unwrap_or(0)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn playsrc_presentation_length(handle: u32) -> usize {
     with(handle, |slot| slot.presentation.len()).unwrap_or(0)
@@ -2411,7 +2493,7 @@ pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f
         visible_surfaces.extend(world.leaf_displacements[*leaf].iter().copied());
     }
     let mut output = b"PVIS".to_vec();
-    output.extend_from_slice(&4u32.to_le_bytes());
+    output.extend_from_slice(&5u32.to_le_bytes());
     output.extend_from_slice(&view_identity);
     output.extend_from_slice(&world.identity);
     output.extend_from_slice(&[u8::from(view.outside_world), view.sky as u8, 0, 0]);
@@ -2566,6 +2648,49 @@ pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f
         );
         for face in pass_view.world_surfaces {
             output.extend_from_slice(&u32::from(face).to_le_bytes());
+        }
+    }
+    output.extend_from_slice(
+        &u32::try_from(environment.world_materials.len())
+            .unwrap_or(u32::MAX)
+            .to_le_bytes(),
+    );
+    for (identity, material) in &environment.world_materials {
+        let context = playsrc_material::ProxyEvaluationContext {
+            time: input[12],
+            frame_time: 0.015,
+            water_lod: environment.water_lod,
+            texture_frames: material.texture_frames.clone(),
+            model_inputs: playsrc_material::ModelProxyInputs::default(),
+        };
+        let Ok(evaluated) = playsrc_material::evaluate_world_material(&material.material, &context)
+        else {
+            return 0;
+        };
+        if pbytes(&mut output, identity.as_bytes()).is_err() {
+            return 0;
+        }
+        output.extend_from_slice(
+            &u32::try_from(material.map_material)
+                .unwrap_or(u32::MAX)
+                .to_le_bytes(),
+        );
+        output.extend_from_slice(
+            &u32::try_from(evaluated.textures.len())
+                .unwrap_or(u32::MAX)
+                .to_le_bytes(),
+        );
+        for texture in evaluated.textures {
+            output.extend_from_slice(&[
+                texture.role as u8,
+                u8::from(texture.frame.is_some()),
+                u8::from(texture.transform.is_some()),
+                0,
+            ]);
+            output.extend_from_slice(&texture.frame.unwrap_or(0).to_le_bytes());
+            for value in texture.transform.unwrap_or([0.0; 16]) {
+                output.extend_from_slice(&value.to_le_bytes());
+            }
         }
     }
     slot.visibility_output = output;
@@ -4704,6 +4829,7 @@ fn attach_displacement_collision_inputs(
 fn resolve_materials(
     map: &playsrc_map::CanonicalMap,
     bundle: &BTreeMap<String, &[u8]>,
+    decoders: &TextureDecoders<'_>,
     profile: playsrc_map::LightingProfile,
 ) -> Result<
     (
@@ -4725,7 +4851,7 @@ fn resolve_materials(
         runtime.push(resolve_material_output(
             &identity,
             &material,
-            bundle,
+            decoders,
             true,
             &mut textures,
         )?);
@@ -4737,6 +4863,7 @@ fn resolve_materials(
 fn resolve_material(
     identity: &str,
     bundle: &BTreeMap<String, &[u8]>,
+    decoders: &TextureDecoders<'_>,
     include_texture: bool,
     environment: playsrc_material::SelectionEnvironment,
 ) -> Result<playsrc_map::RuntimeMaterial, ()> {
@@ -4744,7 +4871,7 @@ fn resolve_material(
     resolve_material_output(
         identity,
         &material,
-        bundle,
+        decoders,
         include_texture,
         &mut BTreeMap::new(),
     )
@@ -4753,7 +4880,7 @@ fn resolve_material(
 fn resolve_material_output(
     identity: &str,
     material: &playsrc_material::Material,
-    bundle: &BTreeMap<String, &[u8]>,
+    decoders: &TextureDecoders<'_>,
     include_texture: bool,
     textures: &mut BTreeMap<String, playsrc_map::RuntimeTexture>,
 ) -> Result<playsrc_map::RuntimeMaterial, ()> {
@@ -4768,7 +4895,7 @@ fn resolve_material_output(
             .as_ref()
             .ok_or(())?
             .to_ascii_lowercase();
-        Some(cached_runtime_texture(&path, bundle, textures)?)
+        Some(cached_runtime_texture(&path, decoders, textures)?)
     } else {
         None
     };
@@ -4784,7 +4911,7 @@ fn resolve_material_output(
                     .ok_or(())?
                     .to_ascii_lowercase();
                 Ok(playsrc_map::RuntimeDetail {
-                    texture: cached_runtime_texture(&path, bundle, textures)?,
+                    texture: cached_runtime_texture(&path, decoders, textures)?,
                     scale: detail.scale,
                     blend_mode: detail.blend_mode,
                     blend_factor: detail.blend_factor,
@@ -4809,7 +4936,7 @@ fn resolve_material_output(
                     .as_ref()
                     .ok_or(())?
                     .to_ascii_lowercase();
-                cached_runtime_texture(&path, bundle, textures)
+                cached_runtime_texture(&path, decoders, textures)
             })
             .transpose()?
     } else {
@@ -4828,34 +4955,30 @@ fn resolve_material_output(
 
 fn cached_runtime_texture(
     path: &str,
-    bundle: &BTreeMap<String, &[u8]>,
+    decoders: &TextureDecoders<'_>,
     textures: &mut BTreeMap<String, playsrc_map::RuntimeTexture>,
 ) -> Result<playsrc_map::RuntimeTexture, ()> {
     if let Some(texture) = textures.get(path) {
         return Ok(texture.clone());
     }
-    let texture = runtime_texture(path, bundle)?;
+    let texture = runtime_texture(path, decoders)?;
     textures.insert(path.to_owned(), texture.clone());
     Ok(texture)
 }
 
 fn runtime_texture(
     path: &str,
-    bundle: &BTreeMap<String, &[u8]>,
+    decoders: &TextureDecoders<'_>,
 ) -> Result<playsrc_map::RuntimeTexture, ()> {
-    let bytes = *bundle.get(path).ok_or(())?;
-    let plane = playsrc_vtf::decode(
-        bytes,
-        playsrc_vtf::Dialect::Source2013Pc,
-        playsrc_vtf::SubresourceIdentity::HighResolution {
+    let plane = decoders
+        .decoder(path)?
+        .decode(playsrc_vtf::SubresourceIdentity::HighResolution {
             mip: 0,
             frame: 0,
             face: playsrc_vtf::Face::Right,
             slice: 0,
-        },
-        playsrc_vtf::Limits::default(),
-    )
-    .map_err(|_| ())?;
+        })
+        .map_err(|_| ())?;
     let rgba = match plane.channel_layout {
         playsrc_vtf::ChannelLayout::Rgba => plane.samples,
         playsrc_vtf::ChannelLayout::Rgb => {
@@ -4965,6 +5088,7 @@ fn texture_role(role: playsrc_material::TextureRole) -> u8 {
 fn resolve_profile_materials(
     graph: &playsrc_entity::Graph,
     bundle: &BTreeMap<String, &[u8]>,
+    decoders: &TextureDecoders<'_>,
     resource_hashes: &BTreeMap<String, [u8; 32]>,
     profile: playsrc_map::LightingProfile,
 ) -> Result<Vec<playsrc_map::RuntimeProfileMaterial>, ()> {
@@ -5012,13 +5136,8 @@ fn resolve_profile_materials(
                 .as_ref()
                 .ok_or(())?
                 .to_ascii_lowercase();
-            let bytes = *bundle.get(&path).ok_or(())?;
-            let metadata = playsrc_vtf::inspect(
-                bytes,
-                playsrc_vtf::Dialect::Source2013Pc,
-                playsrc_vtf::Limits::default(),
-            )
-            .map_err(|_| ())?;
+            let bytes = decoders.bytes(&path)?;
+            let metadata = decoders.metadata(&path)?;
             if metadata.frame_count != 1
                 || metadata.depth != 1
                 || metadata.width == 0
@@ -5329,6 +5448,7 @@ fn resolve_models(
     graph: &playsrc_entity::Graph,
     studio_models: &BTreeMap<String, playsrc_studio_model::PresentationModel>,
     bundle: &BTreeMap<String, &[u8]>,
+    decoders: &TextureDecoders<'_>,
     profile: playsrc_map::LightingProfile,
     static_props: &playsrc_map::StaticProps,
 ) -> Result<
@@ -5356,8 +5476,13 @@ fn resolve_models(
             if let Some(material) = material_cache.get(&path) {
                 materials.push(material.clone());
             } else {
-                let mut material =
-                    resolve_material(&path, bundle, false, material_environment(profile, true))?;
+                let mut material = resolve_material(
+                    &path,
+                    bundle,
+                    decoders,
+                    false,
+                    material_environment(profile, true),
+                )?;
                 material.base_texture = None;
                 material_cache.insert(path, material.clone());
                 materials.push(material);
@@ -6272,14 +6397,14 @@ fn encode_profile_coverage(
     Ok(out)
 }
 
-fn selected_texture<'a>(
-    material: &'a playsrc_material::Material,
-    bundle: &BTreeMap<String, &'a [u8]>,
+fn selected_texture<'material, 'source, 'cache>(
+    material: &'material playsrc_material::Material,
+    decoders: &'cache TextureDecoders<'source>,
 ) -> Result<
     (
-        &'a playsrc_material::TextureRequest,
-        &'a [u8],
-        playsrc_vtf::Metadata,
+        &'material playsrc_material::TextureRequest,
+        &'source [u8],
+        &'cache playsrc_vtf::Metadata,
     ),
     (),
 > {
@@ -6299,23 +6424,20 @@ fn selected_texture<'a>(
         .as_ref()
         .ok_or(())?
         .to_ascii_lowercase();
-    let bytes = *bundle.get(&logical_path).ok_or(())?;
-    let metadata = playsrc_vtf::inspect(
-        bytes,
-        playsrc_vtf::Dialect::Source2013Pc,
-        playsrc_vtf::Limits::default(),
-    )
-    .map_err(|_| ())?;
-    Ok((selected, bytes, metadata))
+    Ok((
+        selected,
+        decoders.bytes(&logical_path)?,
+        decoders.metadata(&logical_path)?,
+    ))
 }
 
 fn encode_one_material_state(
     out: &mut Vec<u8>,
     identity: &str,
     material: &playsrc_material::Material,
-    bundle: &BTreeMap<String, &[u8]>,
+    decoders: &TextureDecoders<'_>,
 ) -> Result<(), ()> {
-    let metadata = selected_texture(material, bundle)
+    let metadata = selected_texture(material, decoders)
         .ok()
         .map(|(_, _, metadata)| metadata);
     let state = playsrc_material::static_state(
@@ -6327,7 +6449,7 @@ fn encode_one_material_state(
         },
     )
     .map_err(|_| ())?;
-    encode_resolved_material_state(out, identity, &state, metadata.as_ref())
+    encode_resolved_material_state(out, identity, &state, metadata)
 }
 
 fn encode_resolved_material_state(
@@ -6416,6 +6538,7 @@ fn encode_material_states(
     canonical: &playsrc_map::CanonicalMap,
     graph: &playsrc_entity::Graph,
     bundle: &BTreeMap<String, &[u8]>,
+    decoders: &TextureDecoders<'_>,
     profile: playsrc_map::LightingProfile,
     models: &[(String, Box<CompiledPresentationModel>)],
     map_materials: &[playsrc_material::Material],
@@ -6497,7 +6620,7 @@ fn encode_material_states(
                 )?;
                 &owned
             };
-            encode_one_material_state(out, &identity, material, bundle)?;
+            encode_one_material_state(out, &identity, material, decoders)?;
         }
     }
     (out.len() - start <= 4 * 1024 * 1024)
@@ -6686,23 +6809,15 @@ fn vtf_subresource(
 
 fn authored_texture(
     path: &str,
-    bundle: &BTreeMap<String, &[u8]>,
+    decoder: &playsrc_vtf::Decoder<'_>,
     resource_hashes: &BTreeMap<String, [u8; 32]>,
-    metadata: &playsrc_vtf::Metadata,
 ) -> Result<EncodedAuthoredTexture, ()> {
-    let bytes = *bundle.get(path).ok_or(())?;
-    let manifest = material_texture_manifest(metadata);
+    let manifest = material_texture_manifest(decoder.metadata());
     let mut evidence = Vec::with_capacity(manifest.subresources.len());
     let mut planes = Vec::with_capacity(manifest.subresources.len());
     let mut scalar_encoding = None;
     for identity in &manifest.subresources {
-        let plane = playsrc_vtf::decode(
-            bytes,
-            playsrc_vtf::Dialect::Source2013Pc,
-            vtf_subresource(*identity),
-            playsrc_vtf::Limits::default(),
-        )
-        .map_err(|_| ())?;
+        let plane = decoder.decode(vtf_subresource(*identity)).map_err(|_| ())?;
         if plane.row_order != playsrc_vtf::RowOrder::TopToBottom
             || scalar_encoding.is_some_and(|value| value != plane.scalar_encoding)
         {
@@ -6769,17 +6884,12 @@ fn authored_texture(
 
 fn model_authored_texture(
     path: &str,
-    bundle: &BTreeMap<String, &[u8]>,
+    decoders: &TextureDecoders<'_>,
     resource_hashes: &BTreeMap<String, [u8; 32]>,
     allow_channel_order: bool,
 ) -> Result<ModelAuthoredTexture, ()> {
-    let bytes = *bundle.get(path).ok_or(())?;
-    let metadata = playsrc_vtf::inspect(
-        bytes,
-        playsrc_vtf::Dialect::Source2013Pc,
-        playsrc_vtf::Limits::default(),
-    )
-    .map_err(|_| ())?;
+    let decoder = decoders.decoder(path)?;
+    let metadata = decoder.metadata();
     let direct = matches!(
         metadata.high_format,
         playsrc_vtf::ImageFormat::Rgba8888 | playsrc_vtf::ImageFormat::Rgba16F
@@ -6841,7 +6951,7 @@ fn model_authored_texture(
             },
         ));
     }
-    authored_texture(path, bundle, resource_hashes, &metadata).map(ModelAuthoredTexture::Decoded)
+    authored_texture(path, decoder, resource_hashes).map(ModelAuthoredTexture::Decoded)
 }
 
 fn texture_role_code(role: playsrc_material::TextureRole) -> u8 {
@@ -6869,6 +6979,7 @@ struct PreparedModelMaterials {
 fn prepare_model_materials(
     models: &[(String, Box<CompiledPresentationModel>)],
     bundle: &BTreeMap<String, &[u8]>,
+    decoders: &TextureDecoders<'_>,
     resource_hashes: &BTreeMap<String, [u8; 32]>,
     profile: playsrc_map::LightingProfile,
 ) -> Result<PreparedModelMaterials, ()> {
@@ -6922,7 +7033,7 @@ fn prepare_model_materials(
         .map(|path| {
             Ok((
                 path.clone(),
-                model_authored_texture(&path, bundle, resource_hashes, true).map_err(|_| ())?,
+                model_authored_texture(&path, decoders, resource_hashes, true).map_err(|_| ())?,
             ))
         })
         .collect::<Result<BTreeMap<_, _>, ()>>()?;
@@ -6963,7 +7074,7 @@ fn prepare_model_materials(
             .to_le_bytes(),
     );
     for (identity, material) in &materials {
-        encode_model_material(&mut material_section, identity, material, bundle)?;
+        encode_model_material(&mut material_section, identity, material, decoders)?;
     }
     Ok(PreparedModelMaterials {
         materials,
@@ -7002,7 +7113,7 @@ fn encode_model_material(
     out: &mut Vec<u8>,
     identity: &str,
     material: &playsrc_material::Material,
-    bundle: &BTreeMap<String, &[u8]>,
+    decoders: &TextureDecoders<'_>,
 ) -> Result<(), ()> {
     use playsrc_material::ModelShaderState as State;
     let model = material.model.as_ref().ok_or(())?;
@@ -7166,7 +7277,7 @@ fn encode_model_material(
             out.extend_from_slice(&state.dilation.to_le_bytes());
         }
     }
-    let alpha = selected_texture(material, bundle)
+    let alpha = selected_texture(material, decoders)
         .ok()
         .is_some_and(|(_, _, m)| m.alpha_flags.one_bit || m.alpha_flags.eight_bit);
     let draw = playsrc_material::model_draw_state(
@@ -7335,9 +7446,9 @@ fn encode_model_authored_texture(
 
 fn rgba_texture(
     path: &str,
-    bundle: &BTreeMap<String, &[u8]>,
+    decoders: &TextureDecoders<'_>,
 ) -> Result<playsrc_map::RuntimeTexture, ()> {
-    decoded_texture(path, bundle)
+    decoded_texture(path, decoders)
 }
 
 fn encode_particle_textures(
@@ -7487,20 +7598,17 @@ fn encode_model_occurrence_matrices(
 }
 fn decoded_texture(
     path: &str,
-    bundle: &BTreeMap<String, &[u8]>,
+    decoders: &TextureDecoders<'_>,
 ) -> Result<playsrc_map::RuntimeTexture, ()> {
-    let plane = playsrc_vtf::decode(
-        bundle.get(path).ok_or(())?,
-        playsrc_vtf::Dialect::Source2013Pc,
-        playsrc_vtf::SubresourceIdentity::HighResolution {
+    let plane = decoders
+        .decoder(path)?
+        .decode(playsrc_vtf::SubresourceIdentity::HighResolution {
             mip: 0,
             frame: 0,
             face: playsrc_vtf::Face::Right,
             slice: 0,
-        },
-        playsrc_vtf::Limits::default(),
-    )
-    .map_err(|_| ())?;
+        })
+        .map_err(|_| ())?;
     let rgba = match plane.channel_layout {
         playsrc_vtf::ChannelLayout::Rgba => plane.samples,
         playsrc_vtf::ChannelLayout::Rgb => {
@@ -7584,7 +7692,7 @@ fn cached_presentation_models(
 ) -> Result<Vec<(String, playsrc_studio_model::PresentationProfile, [u8; 32])>, ()> {
     if bytes.len() < 24
         || &bytes[..4] != b"PTF2"
-        || u32::from_le_bytes(bytes[4..8].try_into().map_err(|_| ())?) != 12
+        || u32::from_le_bytes(bytes[4..8].try_into().map_err(|_| ())?) != 13
         || static_prop_artifact::decode_section(static_prop_artifact::section_from_presentation(
             bytes,
         )?)
@@ -7652,7 +7760,7 @@ fn cached_presentation_models(
 }
 
 fn load_cached_presentation(
-    inputs: PresentationInputs<'_>,
+    inputs: PresentationInputs<'_, '_>,
     presentation: &[u8],
 ) -> Result<MeasuredPresentation, u32> {
     let PresentationInputs {
@@ -7660,6 +7768,7 @@ fn load_cached_presentation(
         bsp,
         graph,
         bundle,
+        decoders,
         model_resources,
         resource_hashes,
         map_materials,
@@ -7744,6 +7853,7 @@ fn load_cached_presentation(
         bsp,
         graph,
         bundle,
+        decoders,
         resource_hashes,
         map_materials,
         profile,
@@ -7755,7 +7865,7 @@ fn load_cached_presentation(
     metrics[4] = phase_finished.saturating_sub(phase_started);
     phase_started = phase_finished;
     let model_material_opacity =
-        model_material_opacity(&models, bundle, profile, None).map_err(|_| 7_u32)?;
+        model_material_opacity(&models, bundle, decoders, profile, None).map_err(|_| 7_u32)?;
     let models: BTreeMap<String, playsrc_studio_model::PresentationModel> = models
         .into_iter()
         .map(|(identity, artifact)| (identity, artifact.model))
@@ -7857,12 +7967,13 @@ fn encoded_model_authored_texture_length(
     Ok(length)
 }
 
-fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresentation, ()> {
+fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPresentation, ()> {
     let PresentationInputs {
         canonical,
         bsp,
         graph,
         bundle,
+        decoders,
         model_resources,
         resource_hashes,
         map_materials,
@@ -7980,7 +8091,7 @@ fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresen
         directional.push((
             identity,
             u8::from(material.features.ss_bump),
-            decoded_texture(&path, bundle)?,
+            decoded_texture(&path, decoders)?,
         ));
     }
     phase_finished = playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
@@ -7995,6 +8106,7 @@ fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresen
         bsp,
         graph,
         bundle,
+        decoders,
         resource_hashes,
         map_materials,
         profile,
@@ -8014,7 +8126,7 @@ fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresen
     metrics[4] = phase_finished.saturating_sub(phase_started);
     phase_started = phase_finished;
     let prepared_model_materials =
-        prepare_model_materials(&models, bundle, resource_hashes, profile)?;
+        prepare_model_materials(&models, bundle, decoders, resource_hashes, profile)?;
     let capacity = presentation_capacity(
         &models,
         &directional,
@@ -8029,7 +8141,7 @@ fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresen
     let mut out = Vec::new();
     out.try_reserve_exact(capacity).map_err(|_| ())?;
     out.extend_from_slice(b"PTF2");
-    out.extend_from_slice(&12u32.to_le_bytes());
+    out.extend_from_slice(&13u32.to_le_bytes());
     out.extend_from_slice(&u32::try_from(models.len()).map_err(|_| ())?.to_le_bytes());
     out.extend_from_slice(
         &u32::try_from(directional.len())
@@ -8240,6 +8352,7 @@ fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresen
         canonical,
         graph,
         bundle,
+        decoders,
         profile,
         &models,
         map_materials,
@@ -8285,8 +8398,13 @@ fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresen
             .to_le_bytes(),
     );
     out.extend_from_slice(b"PSPF");
-    let model_material_opacity =
-        model_material_opacity(&models, bundle, profile, Some(&prepared_model_materials))?;
+    let model_material_opacity = model_material_opacity(
+        &models,
+        bundle,
+        decoders,
+        profile,
+        Some(&prepared_model_materials),
+    )?;
     let models: BTreeMap<String, playsrc_studio_model::PresentationModel> = models
         .into_iter()
         .map(|(identity, artifact)| (identity, artifact.model))
@@ -8388,6 +8506,7 @@ fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresen
 fn model_material_opacity(
     models: &[(String, Box<CompiledPresentationModel>)],
     bundle: &BTreeMap<String, &[u8]>,
+    decoders: &TextureDecoders<'_>,
     profile: playsrc_map::LightingProfile,
     prepared: Option<&PreparedModelMaterials>,
 ) -> Result<BTreeMap<String, Vec<playsrc_studio_model::ViewModelMaterialOpacity>>, ()> {
@@ -8420,12 +8539,11 @@ fn model_material_opacity(
                         )?;
                         &owned
                     };
-                    let texture_alpha =
-                        selected_texture(material, bundle)
-                            .ok()
-                            .is_some_and(|(_, _, metadata)| {
-                                metadata.alpha_flags.one_bit || metadata.alpha_flags.eight_bit
-                            });
+                    let texture_alpha = selected_texture(material, decoders).ok().is_some_and(
+                        |(_, _, metadata)| {
+                            metadata.alpha_flags.one_bit || metadata.alpha_flags.eight_bit
+                        },
+                    );
                     let draw = playsrc_material::model_draw_state(
                         material,
                         playsrc_material::TextureAlphaFacts {
@@ -8642,6 +8760,76 @@ fn encode_water_material(
     Ok(())
 }
 
+fn encode_world_material(
+    out: &mut Vec<u8>,
+    identity: &str,
+    map_material: usize,
+    material: &playsrc_material::Material,
+    state: &playsrc_material::WorldMaterialOutput,
+) -> Result<(), ()> {
+    pbytes(out, identity.as_bytes())?;
+    out.extend_from_slice(&u32::try_from(map_material).map_err(|_| ())?.to_le_bytes());
+    out.extend_from_slice(&[
+        shader_code(state.shader),
+        u8::try_from(state.textures.len()).map_err(|_| ())?,
+        u8::try_from(material.proxy_program.entries.len()).map_err(|_| ())?,
+        u8::from(state.environment_map.is_some()),
+    ]);
+    for binding in &state.textures {
+        encode_texture_request(out, &binding.texture)?;
+        let usage = material
+            .texture_uses
+            .iter()
+            .find(|usage| usage.role == binding.texture.role)
+            .ok_or(())?;
+        let frame_mutated = matches!(
+            usage.frame,
+            playsrc_material::TextureFrameSelection::Static {
+                proxy_mutated: true,
+                ..
+            }
+        );
+        let transform_mutated = usage
+            .transform
+            .as_ref()
+            .is_some_and(|transform| transform.proxy_mutated);
+        out.extend_from_slice(&[
+            u8::from(binding.initial_frame.is_some()),
+            u8::from(frame_mutated),
+            u8::from(binding.transform.is_some()),
+            u8::from(transform_mutated),
+        ]);
+        out.extend_from_slice(&binding.initial_frame.unwrap_or(0).to_le_bytes());
+        for value in binding.transform.unwrap_or([0.0; 16]) {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+    for proxy in &material.proxy_program.entries {
+        pbytes(out, &proxy.name)?;
+        out.extend_from_slice(&[
+            match proxy.disposition {
+                playsrc_material::ProxyDisposition::Handled => 0,
+                playsrc_material::ProxyDisposition::Malformed => 1,
+                playsrc_material::ProxyDisposition::Unsupported => 2,
+            },
+            0,
+            0,
+            0,
+        ]);
+    }
+    if let Some(environment) = &state.environment_map {
+        for value in environment
+            .tint
+            .into_iter()
+            .chain([environment.contrast, environment.saturation])
+        {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+    out.extend_from_slice(&state.fresnel_reflection.to_le_bytes());
+    Ok(())
+}
+
 fn encode_fog_state(out: &mut Vec<u8>, value: &playsrc_map::FogState) {
     out.extend_from_slice(&[
         u8::from(value.enabled),
@@ -8671,6 +8859,7 @@ fn compile_environment_artifact(
     bsp: &playsrc_bsp::Bsp,
     graph: &playsrc_entity::Graph,
     bundle: &BTreeMap<String, &[u8]>,
+    decoders: &TextureDecoders<'_>,
     resource_hashes: &BTreeMap<String, [u8; 32]>,
     materials: &[playsrc_material::Material],
     profile: playsrc_map::LightingProfile,
@@ -8816,13 +9005,7 @@ fn compile_environment_artifact(
             "materials/maps/{map_name}/c{}_{}_{}{suffix}.vtf",
             r.origin[0], r.origin[1], r.origin[2]
         );
-        let bytes = *bundle.get(&path).ok_or(())?;
-        let m = playsrc_vtf::inspect(
-            bytes,
-            playsrc_vtf::Dialect::Source2013Pc,
-            playsrc_vtf::Limits::default(),
-        )
-        .map_err(|_| ())?;
+        let m = decoders.metadata(&path)?;
         let source_sha256 = *resource_hashes.get(&path).ok_or(())?;
         dependencies.push(playsrc_map::DependencyResponse {
             request: playsrc_map::DependencyRequest {
@@ -8870,20 +9053,13 @@ fn compile_environment_artifact(
                     && t.disposition == playsrc_material::TextureDisposition::Source
             })
             .ok_or(())?;
-        let tm = playsrc_vtf::inspect(
-            bundle
-                .get(
-                    &texture
-                        .logical_path
-                        .as_ref()
-                        .ok_or(())?
-                        .to_ascii_lowercase(),
-                )
-                .ok_or(())?,
-            playsrc_vtf::Dialect::Source2013Pc,
-            playsrc_vtf::Limits::default(),
-        )
-        .map_err(|_| ())?;
+        let tm = decoders.metadata(
+            &texture
+                .logical_path
+                .as_ref()
+                .ok_or(())?
+                .to_ascii_lowercase(),
+        )?;
         marks
             .entry(reference.to_ascii_lowercase())
             .or_insert(playsrc_map::MarkMaterial {
@@ -8982,7 +9158,7 @@ fn compile_environment_artifact(
     )
     .map_err(|_| ())?;
     let mut out = b"PENV".to_vec();
-    out.extend_from_slice(&4u32.to_le_bytes());
+    out.extend_from_slice(&5u32.to_le_bytes());
     out.extend_from_slice(&[
         if profile == playsrc_map::LightingProfile::Hdr {
             1
@@ -9049,6 +9225,7 @@ fn compile_environment_artifact(
         if let Some(texture) = resolve_material(
             &mark.logical_path,
             bundle,
+            decoders,
             true,
             material_environment(profile, false),
         )?
@@ -9321,7 +9498,61 @@ fn compile_environment_artifact(
     for (identity, map_material, material) in &water_materials {
         encode_water_material(&mut out, identity, *map_material, material)?;
     }
+    let world_materials = canonical
+        .materials
+        .iter()
+        .zip(materials)
+        .filter(|(_, material)| {
+            matches!(
+                material.shader,
+                playsrc_material::Shader::LightmappedGeneric
+                    | playsrc_material::Shader::WorldVertexTransition
+            ) && material.bump.is_some()
+                && material.proxy_program.entries.iter().any(|entry| {
+                    matches!(
+                        entry.operation,
+                        Some(
+                            playsrc_material::ProxyOperation::AnimatedTexture { .. }
+                                | playsrc_material::ProxyOperation::TextureTransform { .. }
+                                | playsrc_material::ProxyOperation::TextureScroll { .. }
+                        )
+                    )
+                })
+        })
+        .map(|(reference, material)| {
+            Ok((
+                reference.logical_path.to_ascii_lowercase(),
+                reference.index,
+                material,
+                playsrc_material::world_material_output(material)
+                    .map_err(|_| ())?
+                    .ok_or(())?,
+            ))
+        })
+        .collect::<Result<Vec<_>, ()>>()?;
+    out.extend_from_slice(
+        &u32::try_from(world_materials.len())
+            .map_err(|_| ())?
+            .to_le_bytes(),
+    );
+    for (identity, map_material, material, output) in &world_materials {
+        encode_world_material(&mut out, identity, *map_material, material, output)?;
+    }
     let mut environment_texture_paths = std::collections::BTreeSet::new();
+    for (_, _, _, world) in &world_materials {
+        for texture in &world.textures {
+            if texture.texture.disposition == playsrc_material::TextureDisposition::Source {
+                environment_texture_paths.insert(
+                    texture
+                        .texture
+                        .logical_path
+                        .as_ref()
+                        .ok_or(())?
+                        .to_ascii_lowercase(),
+                );
+            }
+        }
+    }
     for (_, _, material) in &water_materials {
         let water = playsrc_material::water_material_output(material)
             .map_err(|_| ())?
@@ -9404,7 +9635,7 @@ fn compile_environment_artifact(
             .to_le_bytes(),
     );
     for identity in environment_texture_paths {
-        let texture = model_authored_texture(&identity, bundle, resource_hashes, false)?;
+        let texture = model_authored_texture(&identity, decoders, resource_hashes, false)?;
         encode_model_authored_texture(&mut out, &identity, &texture)?;
     }
     out.extend_from_slice(
@@ -9625,8 +9856,35 @@ fn compile_environment_artifact(
         out.extend_from_slice(&0_u32.to_le_bytes());
     }
     let mut runtime_materials = BTreeMap::new();
+    let mut runtime_world_materials = BTreeMap::new();
     let mut map_materials = BTreeMap::new();
     let mut normal_frame_counts = BTreeMap::new();
+    for (identity, map_material, material, output) in &world_materials {
+        let mut texture_frames = BTreeMap::new();
+        for texture in &output.textures {
+            if texture.texture.disposition != playsrc_material::TextureDisposition::Source {
+                continue;
+            }
+            let path = texture
+                .texture
+                .logical_path
+                .as_ref()
+                .ok_or(())?
+                .to_ascii_lowercase();
+            texture_frames.insert(
+                texture.texture.parameter.clone(),
+                u32::from(decoders.metadata(&path)?.frame_count),
+            );
+        }
+        runtime_world_materials.insert(
+            identity.clone(),
+            RuntimeWorldMaterial {
+                map_material: *map_material,
+                material: (*material).clone(),
+                texture_frames,
+            },
+        );
+    }
     for (index, material) in materials.iter().enumerate() {
         if material.water.is_none() {
             continue;
@@ -9643,12 +9901,7 @@ fn compile_environment_artifact(
             .filter(|value| value.is_defined())
         {
             let path = normal.logical_path.as_ref().ok_or(())?.to_ascii_lowercase();
-            let metadata = playsrc_vtf::inspect(
-                bundle.get(&path).ok_or(())?,
-                playsrc_vtf::Dialect::Source2013Pc,
-                playsrc_vtf::Limits::default(),
-            )
-            .map_err(|_| ())?;
+            let metadata = decoders.metadata(&path)?;
             normal_frame_counts.insert(identity.clone(), u32::from(metadata.frame_count));
         }
         map_materials.insert(reference.index, identity.clone());
@@ -9668,12 +9921,7 @@ fn compile_environment_artifact(
             .filter(|value| value.is_defined())
         {
             let path = normal.logical_path.as_ref().ok_or(())?.to_ascii_lowercase();
-            let metadata = playsrc_vtf::inspect(
-                bundle.get(&path).ok_or(())?,
-                playsrc_vtf::Dialect::Source2013Pc,
-                playsrc_vtf::Limits::default(),
-            )
-            .map_err(|_| ())?;
+            let metadata = decoders.metadata(&path)?;
             normal_frame_counts.insert(identity.clone(), u32::from(metadata.frame_count));
         }
         runtime_materials.insert(identity, material);
@@ -9694,6 +9942,7 @@ fn compile_environment_artifact(
         RuntimeEnvironment {
             world: env,
             water_materials: runtime_materials,
+            world_materials: runtime_world_materials,
             map_materials,
             normal_frame_counts,
             water_lod: water_lods.first().copied(),
@@ -9715,7 +9964,10 @@ struct CompiledParticlePresentation {
     texture: playsrc_map::RuntimeTexture,
 }
 
-fn compile_particles(b: &BTreeMap<String, &[u8]>) -> Result<CompiledParticles, ()> {
+fn compile_particles(
+    b: &BTreeMap<String, &[u8]>,
+    decoders: &TextureDecoders<'_>,
+) -> Result<CompiledParticles, ()> {
     let paths = [
         "particles/rockettrail.pcf",
         "particles/rocketbackblast.pcf",
@@ -9757,13 +10009,13 @@ fn compile_particles(b: &BTreeMap<String, &[u8]>) -> Result<CompiledParticles, (
                 b,
                 playsrc_material::SelectionEnvironment::default(),
             )?;
-            let (selected, bytes, metadata) = selected_texture(&material, b)?;
+            let (selected, _bytes, metadata) = selected_texture(&material, decoders)?;
             let texture_path = selected
                 .logical_path
                 .as_ref()
                 .ok_or(())?
                 .to_ascii_lowercase();
-            let texture = rgba_texture(&texture_path, b)?;
+            let texture = rgba_texture(&texture_path, decoders)?;
             let state = playsrc_material::static_state(
                 &material,
                 playsrc_material::TextureAlphaFacts {
@@ -9796,12 +10048,12 @@ fn compile_particles(b: &BTreeMap<String, &[u8]>) -> Result<CompiledParticles, (
                         },
                         color_space: playsrc_particle::ParticleColorSpace::SrgbTextureLinearTint,
                         dual_sequence: false,
-                        sheet: decode_particle_sheet(bytes)?,
+                        sheet: decode_particle_sheet(metadata)?,
                     },
                     CompiledParticlePresentation {
                         source_path: material_path,
                         state,
-                        metadata,
+                        metadata: metadata.clone(),
                         texture,
                     },
                 ),
@@ -9823,13 +10075,9 @@ fn compile_particles(b: &BTreeMap<String, &[u8]>) -> Result<CompiledParticles, (
     ))
 }
 
-fn decode_particle_sheet(bytes: &[u8]) -> Result<playsrc_particle::ParticleSheet, ()> {
-    let metadata = playsrc_vtf::inspect(
-        bytes,
-        playsrc_vtf::Dialect::Source2013Pc,
-        playsrc_vtf::Limits::default(),
-    )
-    .map_err(|_| ())?;
+fn decode_particle_sheet(
+    metadata: &playsrc_vtf::Metadata,
+) -> Result<playsrc_particle::ParticleSheet, ()> {
     let resource = metadata.resources.iter().find_map(|resource| {
         if resource.tag == [0x10, 0, 0]
             && let playsrc_vtf::ResourceData::External { bytes, .. } = &resource.data
@@ -10129,6 +10377,38 @@ fn with<T>(handle: u32, read: impl FnOnce(&Slot) -> T) -> Option<T> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn texture_decoders_inspect_each_immutable_source_once_even_across_parallel_consumers() {
+        let mut source = vec![0_u8; 67];
+        source[..4].copy_from_slice(b"VTF\0");
+        source[4..8].copy_from_slice(&7_u32.to_le_bytes());
+        source[8..12].copy_from_slice(&1_u32.to_le_bytes());
+        source[12..16].copy_from_slice(&64_u32.to_le_bytes());
+        source[16..18].copy_from_slice(&1_u16.to_le_bytes());
+        source[18..20].copy_from_slice(&1_u16.to_le_bytes());
+        source[24..26].copy_from_slice(&1_u16.to_le_bytes());
+        source[52..56].copy_from_slice(&3_i32.to_le_bytes());
+        source[56] = 1;
+        source[57..61].copy_from_slice(&(-1_i32).to_le_bytes());
+        source[64..67].copy_from_slice(&[1, 2, 3]);
+        let invalid = [0_u8; 1];
+        let bundle = BTreeMap::from([
+            ("materials/invalid.vtf".to_owned(), invalid.as_slice()),
+            ("materials/valid.vtf".to_owned(), source.as_slice()),
+        ]);
+        let cache = TextureDecoders::new(&bundle);
+        (0..64_usize).into_par_iter().for_each(|_| {
+            let metadata = cache.metadata("materials/valid.vtf").unwrap();
+            assert_eq!((metadata.width, metadata.frame_count), (1, 1));
+        });
+        assert_eq!(cache.requests.load(Ordering::Relaxed), 64);
+        assert_eq!(cache.inspections.load(Ordering::Relaxed), 1);
+        assert!(cache.decoder("materials/invalid.vtf").is_err());
+        assert!(cache.decoder("materials/invalid.vtf").is_err());
+        assert_eq!(cache.requests.load(Ordering::Relaxed), 66);
+        assert_eq!(cache.inspections.load(Ordering::Relaxed), 2);
+    }
+
     fn particle_stop_transaction(mode: u8) -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(b"PPTX");
@@ -10261,7 +10541,7 @@ mod tests {
     #[test]
     fn cached_model_headers_consume_complete_sequence_records() {
         let mut bytes = b"PTF2".to_vec();
-        bytes.extend_from_slice(&12_u32.to_le_bytes());
+        bytes.extend_from_slice(&13_u32.to_le_bytes());
         bytes.extend_from_slice(&1_u32.to_le_bytes());
         bytes.extend_from_slice(&[0; 12]);
         pbytes(&mut bytes, b"models/test.mdl").unwrap();
@@ -10437,6 +10717,7 @@ mod tests {
             session: None,
             snapshot: Vec::new(),
             compile_metrics: [0; 17],
+            texture_inspections: [0; 2],
         });
         drop(guard);
         let old = encode(0, 1);
@@ -10474,6 +10755,7 @@ mod tests {
             session: None,
             snapshot: Vec::new(),
             compile_metrics: [0; 17],
+            texture_inspections: [0; 2],
         };
         drop(guard);
         assert_eq!(playsrc_result_length(old), 0);

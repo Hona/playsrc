@@ -38,6 +38,8 @@ const LOAD_TIMINGS = Object.freeze({
   presentationParticlesMilliseconds: 0,
   presentationEnvironmentMilliseconds: 0,
   presentationSerializationMilliseconds: 0,
+  textureDecoderRequests: 0,
+  textureMetadataInspections: 0,
   totalMilliseconds: 0,
 })
 
@@ -48,15 +50,16 @@ async function digest(bytes: Uint8Array): Promise<string> {
 }
 
 async function presentationIdentity(key: string): Promise<string> {
-  return digest(new TextEncoder().encode(`playsrc-tf2-presentation-v12\0${key}`))
+  return digest(new TextEncoder().encode(`playsrc-tf2-presentation-v13\0${key}`))
 }
 
-function visibilityOutput(): ArrayBuffer {
+function visibilityOutput(animated = false): ArrayBuffer {
   const words = [2, 4, 9, 1, 9, 3, 1, 3, 1, 7]
-  const bytes = new Uint8Array(76 + words.length * 4 + 8 + 4)
+  const identity = new TextEncoder().encode("materials/water/test.vmt")
+  const bytes = new Uint8Array(76 + words.length * 4 + 8 + 8 + (animated ? 12 + identity.length + 72 : 0))
   const view = new DataView(bytes.buffer)
   bytes.set([0x50, 0x56, 0x49, 0x53])
-  view.setUint32(4, 4, true)
+  view.setUint32(4, 5, true)
   bytes.fill(0x11, 8, 40)
   bytes.fill(0x22, 40, 72)
   let offset = 76
@@ -66,6 +69,22 @@ function visibilityOutput(): ArrayBuffer {
   }
   offset += 8
   view.setUint32(offset, 0, true)
+  offset += 4
+  view.setUint32(offset, animated ? 1 : 0, true)
+  offset += 4
+  if (animated) {
+    view.setUint32(offset, identity.length, true)
+    offset += 4
+    bytes.set(identity, offset)
+    offset += identity.length
+    view.setUint32(offset, 84, true)
+    view.setUint32(offset + 4, 1, true)
+    offset += 8
+    bytes.set([7, 1, 1, 0], offset)
+    view.setInt32(offset + 4, 15, true)
+    offset += 8
+    for (let index = 0; index < 16; index++) view.setFloat32(offset + index * 4, index % 5 === 0 ? 1 : 0, true)
+  }
   return bytes.buffer
 }
 
@@ -115,6 +134,7 @@ class PipelineWorker implements WorkerLike {
   readonly requests: WorkerRequest[] = []
   readonly mapHash: string
   failure?: WorkerResponse
+  animatedWorldMaterial = false
   terminated = false
   #message?: (event: MessageEvent<WorkerResponse>) => void
   #error?: (event: ErrorEvent) => void
@@ -170,7 +190,7 @@ class PipelineWorker implements WorkerLike {
         const output = new Uint8Array([0x50, 0x4d, 0x50, 0x4f]).buffer
         this.#respond({ id: request.id, kind: "models", generation: request.generation, output, timings: TIMINGS }, [output])
         if (request.visibility) {
-          const visibility = visibilityOutput()
+          const visibility = visibilityOutput(this.animatedWorldMaterial)
           this.#respond({
             id: request.visibility.id,
             kind: "visibility",
@@ -182,7 +202,7 @@ class PipelineWorker implements WorkerLike {
         return
       }
       case "visibility": {
-        const output = visibilityOutput()
+        const output = visibilityOutput(this.animatedWorldMaterial)
         this.#respond({ id: request.id, kind: "visibility", generation: request.generation, output, timings: TIMINGS }, [output])
         return
       }
@@ -287,6 +307,27 @@ describe("TF2 Worker transport ownership", () => {
     expect(visible.leaves).toEqual([3])
     expect(visible.areas).toEqual([7])
     expect(order).toEqual(["models", "visibility"])
+    await client.shutdown()
+  })
+
+  test("transports Rust-evaluated world bump frames and transforms in the existing visibility response", async () => {
+    const worker = new PipelineWorker(await digest(MAP))
+    worker.animatedWorldMaterial = true
+    const client = new Tf2WorkerClient(worker, new MemoryCache())
+    const visible = await client.visibility(2, VIEW)
+    expect(worker.requests.map((request) => request.kind)).toEqual(["visibility"])
+    expect(visible.worldMaterials).toHaveLength(1)
+    expect(visible.worldMaterials[0]).toMatchObject({
+      identity: "materials/water/test.vmt",
+      mapMaterial: 84,
+      textures: [{ role: 7, frame: 15 }],
+    })
+    expect([...visible.worldMaterials[0]!.textures[0]!.transform!]).toEqual([
+      1, 0, 0, 0,
+      0, 1, 0, 0,
+      0, 0, 1, 0,
+      0, 0, 0, 1,
+    ])
     await client.shutdown()
   })
 

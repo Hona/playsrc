@@ -321,6 +321,27 @@ export type WaterMaterialArtifact = Readonly<{
   fresnel: Readonly<{ cheapEnabled: boolean; expensiveConstant: readonly [number, number, number, number] }>
   requiredInputs: readonly number[]
 }>
+export type WorldMaterialTextureArtifact = Readonly<{
+  role: number
+  disposition: "source" | "environment" | "render-target"
+  colorRead: "srgb" | "linear" | "format-dependent"
+  parameter: string
+  reference: string
+  logicalPath: string | null
+  initialFrame: number | null
+  frameProxyMutated: boolean
+  transform: Float32Array | null
+  transformProxyMutated: boolean
+}>
+export type WorldMaterialArtifact = Readonly<{
+  identity: string
+  mapMaterial: number
+  shader: "lightmapped-generic" | "world-vertex-transition"
+  textures: readonly WorldMaterialTextureArtifact[]
+  proxies: readonly Readonly<{ name: string; disposition: "handled" | "malformed" | "unsupported" }>[]
+  environmentMap: null | Readonly<{ tint: readonly [number, number, number]; contrast: number; saturation: number }>
+  fresnelReflection: number
+}>
 export type FogArtifact = Readonly<{ enabled: boolean; blend: boolean; radial: boolean; direction: readonly [number, number, number]; primary: readonly [number, number, number, number]; secondary: readonly [number, number, number, number]; start: number; end: number; maximumDensity: number; farZ: number | null; transitionDuration: number }>
 export type EnvironmentControllerArtifact = Readonly<{ entity: number; classname: string; kind: number; rawFields: readonly Readonly<{ key: string; value: string }>[]; state:
   |FogArtifact
@@ -355,6 +376,7 @@ export type EnvironmentArtifact = Readonly<{
   placementRevision: bigint
   leafMinimumDistanceToWater: Uint16Array
   waterMaterials: ReadonlyMap<string, WaterMaterialArtifact>
+  worldMaterials: ReadonlyMap<string, WorldMaterialArtifact>
   authoredTextures: ReadonlyMap<string, AuthoredTextureArtifact>
   controllersState: readonly EnvironmentControllerArtifact[]
   masterFogController: number | null
@@ -462,7 +484,7 @@ const hex = (bytes: Uint8Array) => Array.from(bytes, (v) => v.toString(16).padSt
 const digest = async (bytes: Uint8Array) => hex(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)))
 function parseEnvironment(bytes: Uint8Array, resources: ReadonlyMap<string, Uint8Array>): EnvironmentArtifact {
   const r = new Reader(bytes)
-  if (r.decoder.decode(r.take(4)) !== "PENV" || r.u32() !== 4) throw new ArtifactError("environment identity")
+  if (r.decoder.decode(r.take(4)) !== "PENV" || r.u32() !== 5) throw new ArtifactError("environment identity")
   const profile = r.u8()
   if ((profile !== 0 && profile !== 1) || r.u8() || r.u8() || r.u8()) throw new ArtifactError("environment profile")
   const identity = hex(r.take(32)),
@@ -670,6 +692,63 @@ function parseEnvironment(bytes: Uint8Array, resources: ReadonlyMap<string, Uint
       scroll: Object.freeze([scroll0, scroll1]), fresnel: Object.freeze({ cheapEnabled: cheapEnabled === 1, expensiveConstant }), requiredInputs,
     }))
   }
+  const worldMaterials = new Map<string, WorldMaterialArtifact>()
+  for (let count = r.u32(); count > 0; count--) {
+    const identity = r.text().toLowerCase(), mapMaterial = r.u32()
+    const shader = r.u8(), textureCount = r.u8(), proxyCount = r.u8(), hasEnvironment = r.u8()
+    if (!identity || worldMaterials.has(identity) || (shader !== 1 && shader !== 4)
+      || textureCount > 18 || proxyCount > 64 || hasEnvironment > 1) {
+      throw new ArtifactError("world material header")
+    }
+    const textures = Object.freeze(Array.from({ length: textureCount }, () => {
+      const role = r.u8(), disposition = r.u8(), colorRead = r.u8()
+      if (role > 17 || disposition > 2 || colorRead > 2 || r.u8()) throw new ArtifactError("world texture request")
+      const parameter = r.text(), reference = r.text(), logicalPath = r.text()
+      const hasFrame = r.u8(), frameProxyMutated = r.u8(), hasTransform = r.u8(), transformProxyMutated = r.u8()
+      if ([hasFrame, frameProxyMutated, hasTransform, transformProxyMutated].some((value) => value > 1)
+        || (!hasFrame && frameProxyMutated) || (!hasTransform && transformProxyMutated)) {
+        throw new ArtifactError("world texture animation flags")
+      }
+      const frame = r.i32(), matrix = new Float32Array(16)
+      for (let index = 0; index < matrix.length; index++) matrix[index] = r.f32()
+      if ((!hasFrame && frame !== 0) || (!hasTransform && matrix.some((value) => value !== 0))) {
+        throw new ArtifactError("world texture absent animation state")
+      }
+      return Object.freeze({
+        role,
+        disposition: (["source", "environment", "render-target"] as const)[disposition]!,
+        colorRead: (["srgb", "linear", "format-dependent"] as const)[colorRead]!,
+        parameter,
+        reference,
+        logicalPath: logicalPath || null,
+        initialFrame: hasFrame ? frame : null,
+        frameProxyMutated: frameProxyMutated === 1,
+        transform: hasTransform ? matrix : null,
+        transformProxyMutated: transformProxyMutated === 1,
+      })
+    }))
+    const proxies = Object.freeze(Array.from({ length: proxyCount }, () => {
+      const name = r.text(), disposition = r.u8()
+      if (!name || disposition > 2 || r.u8() || r.u8() || r.u8()) throw new ArtifactError("world material proxy")
+      return Object.freeze({ name, disposition: (["handled", "malformed", "unsupported"] as const)[disposition]! })
+    }))
+    const environmentMap = hasEnvironment
+      ? Object.freeze({ tint: tuple3(r), contrast: r.f32(), saturation: r.f32() })
+      : null
+    const fresnelReflection = r.f32()
+    if (Boolean(environmentMap) !== textures.some((texture) => texture.role === 12)) {
+      throw new ArtifactError("world material environment binding")
+    }
+    worldMaterials.set(identity, Object.freeze({
+      identity,
+      mapMaterial,
+      shader: shader === 1 ? "lightmapped-generic" : "world-vertex-transition",
+      textures,
+      proxies,
+      environmentMap,
+      fresnelReflection,
+    }))
+  }
   const authoredTextures = new Map<string, AuthoredTextureArtifact>()
   for (let count = r.u32(); count > 0; count--) {
     const texture = parseModelAuthoredTextureRecord(r, resources)
@@ -744,6 +823,7 @@ function parseEnvironment(bytes: Uint8Array, resources: ReadonlyMap<string, Uint
     placementRevision,
     leafMinimumDistanceToWater,
     waterMaterials,
+    worldMaterials,
     authoredTextures,
     controllersState,
     masterFogController,
@@ -1148,7 +1228,7 @@ function parseStaticProps(r: Reader, expectedModelCount: number,models:readonly 
 }
 export async function parsePresentationArtifacts(bytes: Uint8Array, resources: ReadonlyMap<string, Uint8Array>): Promise<PresentationArtifacts> {
   const r = new Reader(bytes)
-  if (r.decoder.decode(r.take(4)) !== "PTF2" || r.u32() !== 12) throw new ArtifactError("artifact identity")
+  if (r.decoder.decode(r.take(4)) !== "PTF2" || r.u32() !== 13) throw new ArtifactError("artifact identity")
   const modelCount = r.u32(),
     directionalCount = r.u32(),
     particleMaterialCount = r.u32(),brushModelCount=r.u32()
