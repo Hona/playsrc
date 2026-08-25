@@ -60,6 +60,14 @@ describe("runtime map rendering input", () => {
     expect([...map.batches[0]!.faces]).toEqual([7])
   })
 
+  test("admits the authored UnlitTwoTexture model shader without weakening unknown-shader rejection", () => {
+    const bytes = fixture()
+    bytes[bytes.length - 12] = 10
+    expect(parseRuntimeMap(bytes).materials[0]?.shader).toBe(10)
+    bytes[bytes.length - 12] = 11
+    expect(() => parseRuntimeMap(bytes)).toThrow("runtime material payload is invalid")
+  })
+
   test("rejects truncation and trailing bytes", () => {
     const bytes = fixture()
     expect(() => parseRuntimeMap(bytes.subarray(0, bytes.length - 1))).toThrow()
