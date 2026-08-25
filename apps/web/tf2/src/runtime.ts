@@ -14,7 +14,7 @@ import {
   type Tf2OptionsPresentation,
 } from "@playsrc/game-tf2-browser/settings-integration"
 import { createTf2PresentationRandom, initializeTf2VguiResources, type Tf2PresentationRandom, type Tf2VguiResources } from "@playsrc/game-tf2-browser/ui-integration"
-import { tf2HudUnavailable, type Tf2HudFreezePanel, type Tf2HudScoreboard } from "@playsrc/game-tf2-browser/hud"
+import { tf2HudUnavailable, type CompactSessionHudContext, type Tf2HudBinding, type Tf2HudFreezePanel, type Tf2HudScoreboard } from "@playsrc/game-tf2-browser/hud"
 import {
   createTf2StartupController,
   validateTf2StartupDescriptor,
@@ -64,7 +64,7 @@ import { bytesToHex } from "@noble/hashes/utils.js"
 import { sha256 } from "@noble/hashes/sha2.js"
 import {consoleLimits,resolveConfiguredConsoleResources,type ResolvedConsoleResources} from "./console-resources"
 import { loadBrowserConfiguration, type BrowserConfiguration, type BrowserTargetConfiguration } from "./config"
-import { PhysicalButtonState, applyPointerDelta, rawPointerMovementUnsupported, rebasePointerYaw, resolvePhysicalBinding } from "./input"
+import { PhysicalBindingIndex, PhysicalButtonState, applyPointerDelta, rawPointerMovementUnsupported, rebasePointerYaw, type PhysicalBinding } from "./input"
 import { TF2_SELECTED_OPTIONS, type AdapterRequestResult, type SettingsAdapterRequest } from "@playsrc/settings"
 import { SimulationClockQueue } from "./simulation-clock"
 import {
@@ -73,6 +73,9 @@ import {
   type PresentationViewportOwner,
 } from "./presentation-viewport"
 import { RequiredParticleDisplayQueue } from "./particle-display"
+import { CanvasFrameDiagnostics } from "./frame-diagnostics"
+import { GAME_UI_FRAME_OWNER, HUD_FRAME_OWNER, LOADING_FRAME_OWNER, OPTIONS_FRAME_OWNER, visibleFrameOwners } from "./frame-owners"
+import { ExactSkyVisibilityCache, type SkyVisibilityIdentity } from "./visibility-cache"
 
 const MAX_EXTERNAL_BYTES = 536_870_912
 const SIMULATION_SAMPLE_INTERVAL_SECONDS = 0.015
@@ -261,6 +264,9 @@ export class Tf2Application {
   #bootstrapObjectProgress = new Map<string, Readonly<{ loaded: number; total: number }>>()
   readonly #gameUiRequestTasks = new Set<number>()
   #hudIntegration?: Tf2HudIntegration
+  #hudRootCounts?: Readonly<{ playerStatus: number; ammo: number }>
+  #hudContext?: CompactSessionHudContext
+  #hudContextIdentity = -1
   #playerClassUsePlayerModel = true
   #settings?: Tf2BrowserSettings
   #options?: Tf2OptionsPresentation
@@ -276,6 +282,8 @@ export class Tf2Application {
   #pointerMovement?: "raw" | "adjusted"
   #pointerRequestPending=false
   #lastPointerLockFailure="Pointer lock failed"
+  readonly #bindings = new PhysicalBindingIndex()
+  readonly #bindingValues = new Map<string, PhysicalBinding>()
   readonly #buttons = new PhysicalButtonState()
   #jumpPressed = false
   #firePressed = false
@@ -292,6 +300,7 @@ export class Tf2Application {
   #mapIdentity = ""
   #environmentDrawables = 0
   #modelProbes: NonNullable<ApplicationView["modelProbes"]> = Object.freeze([])
+  readonly #viewmodelSequenceCache = new Map<1 | 2, string>()
   #viewmodelActivities = new Set<string>()
   #crouchHistory: string[] = []
   #viewmodelTimelineProbes: string[] = []
@@ -311,6 +320,8 @@ export class Tf2Application {
   #lastRenderedPreparedRevision=0
   #lastRenderedViewRevision=0
   #lastRenderedTick?:bigint
+  readonly #skyVisibility = new ExactSkyVisibilityCache<VisibilityResult>()
+  readonly #canvasDiagnostics = new CanvasFrameDiagnostics()
   #displayFrame=0
   #displayTask?:Promise<void>
   #fireEvents = 0
@@ -369,14 +380,18 @@ export class Tf2Application {
   }
 
   #set(patch: Partial<ApplicationView>): void {
-    const priorPhase = this.#view.phase
-    const priorDetail = this.#view.detail
-    const enteredFailure = patch.phase === "Failed" && this.#view.phase !== "Failed"
-    this.#view = Object.freeze({
-      ...this.#view,
-      ...patch,
-      blockers: Object.freeze([...this.#blockers].sort()),
-    })
+    const prior = this.#view
+    const priorPhase = prior.phase
+    const priorDetail = prior.detail
+    const enteredFailure = patch.phase === "Failed" && prior.phase !== "Failed"
+    const blockers = prior.blockers.length === this.#blockers.size
+      && prior.blockers.every((blocker) => this.#blockers.has(blocker))
+      ? prior.blockers
+      : Object.freeze([...this.#blockers].sort())
+    const changed = blockers !== prior.blockers
+      || Object.entries(patch).some(([key, value]) => !Object.is(prior[key as keyof ApplicationView], value))
+    if (!changed) return
+    this.#view = Object.freeze({ ...prior, ...patch, blockers })
     this.#publish(this.#view)
     const progressChanged = (patch.phase !== undefined && patch.phase !== priorPhase) || (patch.detail !== undefined && patch.detail !== priorDetail)
     if (progressChanged) {
@@ -395,7 +410,7 @@ export class Tf2Application {
     }
     if (enteredFailure) {
       this.#output(`FATAL: ${this.#view.detail}`)
-      if (this.#console && !this.#console.snapshot().visible) this.toggleConsole()
+      if (this.#console && !this.#view.consoleVisible) this.toggleConsole()
     }
   }
 
@@ -583,10 +598,27 @@ export class Tf2Application {
     if (request.owner === "input") {
       const accepted = new Set(["mouse.sensitivity", "mouse.reverse"])
       if (request.changes.some((change) => change.kind !== "binding" && !accepted.has(change.settingId))) return reject("browser input owner does not implement every requested effect")
+      if (request.changes.some((change) => change.kind === "binding"
+        && !TF2_SELECTED_OPTIONS.settings.some((schema) => schema.id === change.settingId && schema.kind === "binding"))) {
+        return reject("browser input binding schema is unavailable")
+      }
+      let bindingsChanged = false
       for (const change of request.changes) {
         if (change.settingId === "mouse.sensitivity") this.#mouseSensitivity = change.nextValue as number
         else if (change.settingId === "mouse.reverse") this.#reverseMouse = change.nextValue as boolean
+        else if (change.kind === "binding") {
+          const schema = TF2_SELECTED_OPTIONS.settings.find((candidate) => candidate.id === change.settingId)
+          if (!schema || schema.kind !== "binding") throw new Error("validated browser input binding schema disappeared")
+          const value = change.nextValue
+          if (value && typeof value === "object") {
+            this.#bindingValues.set(schema.id, Object.freeze({ action: schema.action, code: value.code, modifiers: value.modifiers }))
+          } else {
+            this.#bindingValues.delete(schema.id)
+          }
+          bindingsChanged = true
+        }
       }
+      if (bindingsChanged) this.#bindings.replace([...this.#bindingValues.values()])
       return Object.freeze({ requestId: request.requestId, status: "applied" })
     }
     if (request.owner === "application") {
@@ -854,6 +886,15 @@ export class Tf2Application {
     this.#sharedDependencyEntries = new Map(this.#dependencyEntries)
     this.#initializeConsole()
     const currentSettings = this.#settings.snapshot().settings.current
+    this.#bindingValues.clear()
+    for (const schema of TF2_SELECTED_OPTIONS.settings) {
+      if (schema.kind !== "binding") continue
+      const value = currentSettings[schema.id]
+      if (value && typeof value === "object") {
+        this.#bindingValues.set(schema.id, Object.freeze({ action: schema.action, code: value.code, modifiers: value.modifiers }))
+      }
+    }
+    this.#bindings.replace([...this.#bindingValues.values()])
     this.#consoleEnabled = currentSettings["keyboard.console-enabled"] === true
     this.#effectVolume = currentSettings["audio.effect-volume"] as number
     this.#musicVolume = currentSettings["audio.music-volume"] as number
@@ -897,6 +938,9 @@ export class Tf2Application {
     this.#gameUi = undefined
     this.#hudIntegration?.destroy()
     this.#hudIntegration = undefined
+    this.#hudRootCounts = undefined
+    this.#hudContext = undefined
+    this.#hudContextIdentity = -1
     this.#options?.destroy()
     this.#options = undefined
     this.#uiResources?.destroy()
@@ -1210,6 +1254,8 @@ export class Tf2Application {
 
   #resetHudIntegration(): void {
     if (!this.#uiResources || !this.#presentationRandom) throw new Error("TF2 HUD resources are unavailable")
+    this.#hudContext = undefined
+    this.#hudContextIdentity = -1
     if (this.#hudIntegration) {
       this.#hudIntegration.reset("map-replaced")
       return
@@ -1225,17 +1271,24 @@ export class Tf2Application {
         if (command.kind === "select-weapon" && command.weapon >= 1 && command.weapon <= 3) this.#selectWeapon = command.weapon as 1 | 2 | 3
       },
     })
+    const panels = this.#hudIntegration.snapshot().vgui.panels
+    this.#hudRootCounts = Object.freeze({
+      playerStatus: panels.filter((panel) => panel.name === "HudPlayerStatus").length,
+      ammo: panels.filter((panel) => panel.name === "HudWeaponAmmo").length,
+    })
   }
 
-  #hudPresentationObservation(): string {
+  #hudPresentationObservation(
+    observation?: ReturnType<Tf2HudIntegration["probe"]>,
+    currentBinding?: Tf2HudBinding,
+  ): string {
     const integration = this.#hudIntegration
-    if (!integration) return "unavailable"
-    const probe = integration.probe()
-    const snapshot = integration.snapshot()
+    if (!integration || !this.#hudRootCounts) return "unavailable"
+    const probe = observation ?? integration.probe()
+    const binding = currentBinding ?? integration.snapshot().binding
     const panel = (name: string) => probe.panels.find((value) => value.name === name)
     const classImage = panel("PlayerStatusClassImage")
     const classModel = panel("classmodelpanel")
-    const binding = snapshot.binding
     const modelIdentity = binding?.values.find((value) => value.kind === "dialog-variable" && value.panel === "classmodelpanel" && value.variable === "modelIdentity")
     const conditionPanels = probe.panels.filter((value) => /(?:Bleed|Milk|Marked|Slowed|Gas|Resist|Buff|Rune|Parachute|WheelOfDoom)/u.test(value.name))
     return JSON.stringify({
@@ -1244,12 +1297,49 @@ export class Tf2Application {
       classImageBackground: panel("PlayerStatusClassImageBG")?.state.image ?? null,
       classModelBackground: panel("classmodelpanelBG")?.state.image ?? null,
       ammoBackground: panel("HudWeaponAmmoBG")?.state.image ?? null,
-      roots: {
-        playerStatus: snapshot.vgui.panels.filter((value) => value.name === "HudPlayerStatus").length,
-        ammo: snapshot.vgui.panels.filter((value) => value.name === "HudWeaponAmmo").length,
-      },
+      roots: this.#hudRootCounts,
       activeConditions: conditionPanels.filter((value) => value.effectivelyVisible).map((value) => value.name),
     })
+  }
+
+  #currentHudContext(snapshot: Snapshot): CompactSessionHudContext {
+    const respawnAllowed = snapshot.lifecycle === 2
+    const paused = this.#view.gameUi === "pause"
+    const vguiInput = this.#view.consoleVisible || this.#view.optionsVisible === true
+    const identity = Number(respawnAllowed)
+      | Number(paused) << 1
+      | Number(vguiInput) << 2
+      | Number(this.#playerClassUsePlayerModel) << 3
+    if (this.#hudContext && this.#hudContextIdentity === identity) return this.#hudContext
+    this.#hudContextIdentity = identity
+    this.#hudContext = Object.freeze({
+      playerIdentity: 1,
+      liveHudSuppressed: false,
+      respawnAllowed,
+      weaponSelection: Object.freeze({ open: false, selectedWeapon: tf2HudUnavailable<number>("not-produced") }),
+      crosshair: Object.freeze({
+        configured: false,
+        weaponAllows: true,
+        loadingImage: false,
+        paused,
+        clientModeAllows: true,
+        frozen: false,
+        localViewEntity: true,
+        vguiInput,
+        observerMode: "none" as const,
+        observerCrosshair: false,
+        tfSuppressed: false,
+        countdownHidden: false,
+        texture: "",
+        color: Object.freeze([255, 255, 255, 255] as const),
+        scale: 1,
+        weaponScale: 1,
+      }),
+      scoreboard: tf2HudUnavailable<Tf2HudScoreboard>("not-produced"),
+      freezePanel: tf2HudUnavailable<Tf2HudFreezePanel>("not-produced"),
+      playerClassUsePlayerModel: this.#playerClassUsePlayerModel,
+    })
+    return this.#hudContext
   }
 
   #initializeConsole(): void {
@@ -1771,6 +1861,9 @@ export class Tf2Application {
       throw error
     }
     this.#generation = generation
+    this.#skyVisibility.clear()
+    this.#canvasDiagnostics.clear()
+    this.#viewmodelSequenceCache.clear()
     if (candidate) {
       this.#activeTarget = candidate.target
       this.#resourceGraph = candidate.graph
@@ -1994,13 +2087,17 @@ export class Tf2Application {
   }
 
   #viewmodelSequences(artifacts: PresentationArtifacts, tf2Class: 1 | 2): string {
+    const cached = this.#viewmodelSequenceCache.get(tf2Class)
+    if (cached !== undefined) return cached
     const identity = tf2Class === 1
       ? "models/weapons/c_models/c_soldier_arms.mdl"
       : "models/weapons/c_models/c_demo_arms.mdl"
-    return artifacts.models.get(identity)?.sequences
+    const sequences = artifacts.models.get(identity)?.sequences
       .filter((sequence) => sequence.timingAvailable)
       .map((sequence) => `${sequence.activity}:${sequence.durationSeconds}`)
       .join("|") ?? ""
+    this.#viewmodelSequenceCache.set(tf2Class, sequences)
+    return sequences
   }
 
   #recordCrouch(snapshot: Snapshot): void {
@@ -2209,10 +2306,11 @@ export class Tf2Application {
     this.#animationFrame = requestAnimationFrame(this.#frame)
     const timeSeconds = time / 1_000
     try {
-      this.#gameUi?.frame(timeSeconds)
-      this.#loadingVgui?.frame(timeSeconds)
-      if(this.#view.optionsVisible)this.#options?.frame(performance.now()/1_000)
-      this.#hudIntegration?.frame(timeSeconds)
+      const owners = visibleFrameOwners(this.#view, !this.#gameUiRoot.hidden)
+      if (owners & GAME_UI_FRAME_OWNER) this.#gameUi?.frame(timeSeconds)
+      if (owners & LOADING_FRAME_OWNER) this.#loadingVgui?.frame(timeSeconds)
+      if (owners & OPTIONS_FRAME_OWNER) this.#options?.frame(timeSeconds)
+      if (owners & HUD_FRAME_OWNER) this.#hudIntegration?.frame(timeSeconds)
     } catch (error) {
       this.#paused = true
       this.#set({ phase: "Failed", gameUi: "failure", detail: error instanceof Error ? error.message : "VGUI frame failed" })
@@ -2260,41 +2358,88 @@ export class Tf2Application {
       :ordinaryCamera
     const viewport=this.#viewport()
     const phaseStart=performance.now(),visibilityStart=phaseStart
-    let visibility=prepared.visibility
-    const viewChanged=camera.position.some((value,index)=>value!==prepared.visibilityPosition[index])||camera.yawDegrees!==prepared.visibilityYaw||camera.pitchDegrees!==prepared.visibilityPitch
-    if(viewChanged){
-      this.#wasmCalls.visibility+=1
-      visibility=await client.visibility(generation,{
-        position:camera.position,
-        yawDegrees:camera.yawDegrees,
-        pitchDegrees:camera.pitchDegrees,
-        verticalFovDegrees:camera.verticalFovDegrees,
-        aspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),
-        near:camera.near,
-        far:camera.far,
-        presentationTimeSeconds:Number(prepared.snapshot.tick)*0.015,
+    const presentationTimeSeconds = Number(prepared.snapshot.tick) * SIMULATION_SAMPLE_INTERVAL_SECONDS
+    const aspectRatio = viewport.width / viewport.height
+    const skyController = this.#artifacts ? this.#skyController(this.#artifacts) : null
+    let skyRequest: Promise<Readonly<{ camera: Camera; visibility: VisibilityResult }>> | undefined
+    const prepareSky = (): Promise<Readonly<{ camera: Camera; visibility: VisibilityResult }>> => {
+      if (!skyController) throw new Error("3D-sky visibility requires one typed sky_camera")
+      const skyCamera = Object.freeze({
+        ...camera,
+        position: Object.freeze([
+          skyController.origin[0] + camera.position[0] / skyController.scale,
+          skyController.origin[1] + camera.position[1] / skyController.scale,
+          skyController.origin[2] + camera.position[2] / skyController.scale,
+        ]) as readonly [number, number, number],
+        near: 2,
+        far: 32_768 * 1.732050807569,
       })
-    }else if(visibility.water.visibleWater===null&&visibility.water.passes.every(pass=>pass.kind==="main")){
-      visibility=Object.freeze({
-        ...visibility,
-        water:Object.freeze({
-          ...visibility.water,
-          passes:Object.freeze(visibility.water.passes.map(pass=>Object.freeze({
-            ...pass,
-            origin:Object.freeze([...camera.position]) as readonly[number,number,number],
-            angles:Object.freeze([camera.pitchDegrees,camera.yawDegrees,0]) as readonly[number,number,number],
-          }))),
-        }),
+      const identity: SkyVisibilityIdentity = {
+        generation,
+        viewportRevision: viewport.revision,
+        tick: prepared.snapshot.tick,
+        position: skyCamera.position,
+        origin: skyController.origin,
+        area: skyController.area,
+        yawDegrees: skyCamera.yawDegrees,
+        pitchDegrees: skyCamera.pitchDegrees,
+        verticalFovDegrees: skyCamera.verticalFovDegrees,
+        near: skyCamera.near,
+        far: skyCamera.far,
+      }
+      const cached = this.#skyVisibility.read(identity)
+      if (cached) return Promise.resolve({ camera: skyCamera, visibility: cached })
+      this.#wasmCalls.visibility += 1
+      const request = client.visibility(generation, {
+        position: skyCamera.position,
+        visibilityPosition: skyController.origin,
+        areaFilter: skyController.area,
+        yawDegrees: skyCamera.yawDegrees,
+        pitchDegrees: skyCamera.pitchDegrees,
+        verticalFovDegrees: skyCamera.verticalFovDegrees,
+        aspectRatio,
+        near: skyCamera.near,
+        far: skyCamera.far,
+        presentationTimeSeconds,
+      }).then((result) => {
+        if (result.areas.some((area) => area !== skyController.area)) {
+          throw new Error("3D-sky visibility escaped its authored area")
+        }
+        if (!this.#closed && generation === this.#generation && this.#presentationViewport?.revision === viewport.revision) {
+          this.#skyVisibility.write(identity, result)
+        }
+        return { camera: skyCamera, visibility: result }
+      })
+      void request.catch(() => {})
+      return request
+    }
+    if (prepared.visibility.sky === 2 && skyController) skyRequest = prepareSky()
+    let visibility = prepared.visibility
+    const viewChanged = camera.position.some((value, index) => value !== prepared.visibilityPosition[index])
+      || camera.yawDegrees !== prepared.visibilityYaw
+      || camera.pitchDegrees !== prepared.visibilityPitch
+    if (viewChanged) {
+      this.#wasmCalls.visibility += 1
+      visibility = await client.visibility(generation, {
+        position: camera.position,
+        yawDegrees: camera.yawDegrees,
+        pitchDegrees: camera.pitchDegrees,
+        verticalFovDegrees: camera.verticalFovDegrees,
+        aspectRatio,
+        near: camera.near,
+        far: camera.far,
+        presentationTimeSeconds,
       })
     }
-    let sky3d:import("@playsrc/rendering").Frame["sky3d"]
-    const skyController=this.#artifacts?this.#skyController(this.#artifacts):null
-    if(visibility.sky===2){if(!skyController)throw new Error("3D-sky visibility requires one typed sky_camera")
-      const skyCamera=Object.freeze({...camera,position:Object.freeze([skyController.origin[0]+camera.position[0]/skyController.scale,skyController.origin[1]+camera.position[1]/skyController.scale,skyController.origin[2]+camera.position[2]/skyController.scale]) as readonly[number,number,number],near:2,far:32_768*1.732050807569})
-      this.#wasmCalls.visibility+=1
-      const skyVisibility=await client.visibility(generation,{position:skyCamera.position,visibilityPosition:skyController.origin,areaFilter:skyController.area,yawDegrees:skyCamera.yawDegrees,pitchDegrees:skyCamera.pitchDegrees,verticalFovDegrees:skyCamera.verticalFovDegrees,aspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),near:skyCamera.near,far:skyCamera.far,presentationTimeSeconds:Number(prepared.snapshot.tick)*0.015})
-      if(skyVisibility.areas.some(area=>area!==skyController.area))throw new Error("3D-sky visibility escaped its authored area")
-      sky3d=Object.freeze({camera:skyCamera,visibility:Object.freeze({...skyVisibility,surfaces:skyVisibility.drawSurfaces}),fog:skyController.fog})
+    let sky3d: Frame["sky3d"]
+    if (visibility.sky === 2) {
+      if (!skyController) throw new Error("3D-sky visibility requires one typed sky_camera")
+      const result = await (skyRequest ?? prepareSky())
+      sky3d = Object.freeze({
+        camera: result.camera,
+        visibility: Object.freeze({ ...result.visibility, surfaces: result.visibility.drawSurfaces }),
+        fog: skyController.fog,
+      })
     }
     const visibilityMilliseconds=performance.now()-visibilityStart
     if(this.#closed||this.#paused||generation!==this.#generation||renderer!==this.#renderer)return
@@ -2313,15 +2458,13 @@ export class Tf2Application {
       deltaSeconds:deltaTicks*0.015,
     })
     const renderMilliseconds=performance.now()-renderStart,totalMilliseconds=performance.now()-phaseStart
-    this.#canvas.dataset.visibleMainStaticProps=JSON.stringify(rendered.visibleMainStaticPropSources)
-    this.#canvas.dataset.sky3dPass=rendered.sky3dPass?JSON.stringify(rendered.sky3dPass):""
-    this.#canvas.dataset.runtimeStaticPropScreen=JSON.stringify(rendered.runtimeStaticPropScreen)
+    if (this.#closed || this.#paused || generation !== this.#generation || renderer !== this.#renderer) return
+    this.#canvasDiagnostics.publish(this.#canvas, rendered)
     if(profile){profile.displacementVisibility={surfaces:[...visibility.surfaces],drawSurfaces:[...visibility.drawSurfaces],outsideWorld:visibility.outsideWorld,eyeLeaf:visibility.eyeLeaf,leaves:visibility.leaves,areas:visibility.areas};profile.displacementCamera=camera}
     const geometryEvidenceRevision=profile?.geometryEvidenceRevision
     if(profile&&Number.isSafeInteger(geometryEvidenceRevision)&&geometryEvidenceRevision!==((profile.geometryEvidence as {revision?:unknown}|undefined)?.revision)&&this.#view.phase==="Ready"){
       profile.geometryEvidence=Object.freeze({revision:geometryEvidenceRevision,generation,target:this.#mapIdentity,finalReady:true,identities:Object.freeze({bsp:this.#activeTarget?.objects.bsp.sha256,resourceRoot:this.#activeTarget?.objects.resources.sha256,contentBuild:this.#resourceGraph?.contentBuild,graphTarget:this.#resourceGraph?.target,wasm:this.#configuration?.wasm.sha256,simulationTick:prepared.snapshot.tick.toString()}),camera,visibility:Object.freeze({outsideWorld:visibility.outsideWorld,eyeLeaf:visibility.eyeLeaf,leaves:Object.freeze([...visibility.leaves]),areas:Object.freeze([...visibility.areas]),pvsSurfaces:Object.freeze([...visibility.surfaces]),drawSurfaces:Object.freeze([...visibility.drawSurfaces])}),geometry:renderer.captureGeometryEvidence(camera)})
     }
-    if(this.#closed||this.#paused||generation!==this.#generation||renderer!==this.#renderer)return
     const publishPrepared=prepared.revision!==this.#lastRenderedPreparedRevision
     this.#lastRenderedPreparedRevision=prepared.revision
     this.#lastRenderedViewRevision=viewRevision
@@ -2536,33 +2679,7 @@ export class Tf2Application {
       })
       this.#requiredParticleDisplayFrames.admit(prepared, particleItems.map(item=>item.effectIdentity))
       this.#preparedPresentation=prepared
-      const hud = this.#hudIntegration?.publish(publication, Object.freeze({
-        playerIdentity: 1,
-        liveHudSuppressed: false,
-        respawnAllowed: snapshot.lifecycle === 2,
-        weaponSelection: Object.freeze({ open: false, selectedWeapon: tf2HudUnavailable<number>("not-produced") }),
-        crosshair: Object.freeze({
-          configured: false,
-          weaponAllows: true,
-          loadingImage: false,
-          paused: this.#gameUi?.state().kind === "pause",
-          clientModeAllows: true,
-          frozen: false,
-          localViewEntity: true,
-          vguiInput: this.#view.consoleVisible === true || this.#view.optionsVisible === true,
-          observerMode: "none" as const,
-          observerCrosshair: false,
-          tfSuppressed: false,
-          countdownHidden: false,
-          texture: "",
-          color: Object.freeze([255, 255, 255, 255] as const),
-          scale: 1,
-          weaponScale: 1,
-        }),
-        scoreboard: tf2HudUnavailable<Tf2HudScoreboard>("not-produced"),
-        freezePanel: tf2HudUnavailable<Tf2HudFreezePanel>("not-produced"),
-        playerClassUsePlayerModel: this.#playerClassUsePlayerModel,
-      }))
+      const hud = this.#hudIntegration?.publish(publication, this.#currentHudContext(snapshot))
       const hudPlayer = hud?.facts.player.kind === "available" ? hud.facts.player.value : null
       const hudHealth = hudPlayer?.health.kind === "available" ? hudPlayer.health.value.current : "unavailable"
       const hudWeaponIdentity = hudPlayer?.activeWeapon.kind === "available" ? hudPlayer.activeWeapon.value : null
@@ -2578,7 +2695,7 @@ export class Tf2Application {
         hudOperationProbe: healthPanel && ammoPanel && weaponPanel
           ? `${healthPanel.state.imageFill}:${healthPanel.bounds.x},${healthPanel.bounds.y},${healthPanel.bounds.width},${healthPanel.bounds.height}:${healthPanel.state.drawColor.join(",")}:${healthPanel.state.foregroundColor?.join(",") ?? "none"}:${ammoPanel.state.scalarProperties.reloadPhase ?? "none"}:${weaponPanel.state.scalarProperties.weaponIdentity ?? "none"}`
           : "unavailable",
-        hudPresentationProbe: this.#hudPresentationObservation(),
+        hudPresentationProbe: hudProbe && hud ? this.#hudPresentationObservation(hudProbe, hud) : "unavailable",
         fireEvents: this.#fireEvents,
         explosionEvents: this.#explosionEvents,
         particleRenderItems: particleItems.length,
@@ -2595,20 +2712,28 @@ export class Tf2Application {
         snapshotTick: snapshot.tick.toString(),
         projectileStates: snapshot.projectiles.map((projectile) => `${projectile.identity}:${projectile.state}`).join(","),
         particleProbe: [...new Set(particleItems.map((item) => `${item.primitive}:${item.material}:${item.primarySheet ? "sheet" : "missing"}`))].sort().join("|"),
-        audioStarts: Object.freeze([...this.#audioStarts]),
+        audioStarts: this.#view.audioStarts?.length === this.#audioStarts.length
+          ? this.#view.audioStarts
+          : Object.freeze([...this.#audioStarts]),
         viewmodelProjection: viewmodel.item.viewModelProjection ? `${viewmodel.item.viewModelProjection.horizontalFov4By3}:${viewmodel.item.viewModelProjection.near}:${viewmodel.item.viewModelProjection.depthRange.join(",")}` : undefined,
-        viewmodelActivities: Object.freeze([...this.#viewmodelActivities]),
+        viewmodelActivities: this.#view.viewmodelActivities?.length === this.#viewmodelActivities.size
+          ? this.#view.viewmodelActivities
+          : Object.freeze([...this.#viewmodelActivities]),
         viewmodelSequences: this.#viewmodelSequences(this.#artifacts, snapshot.class),
         crouchHistory: Object.freeze([...this.#crouchHistory]),
-        viewmodelTimelineProbes: Object.freeze([...this.#viewmodelTimelineProbes]),
+        viewmodelTimelineProbes: this.#view.viewmodelTimelineProbes,
         ...this.#gameplayTraces(snapshot),
         ...this.#snapshotProbes(snapshot),
         simulationProbe: `${publication.hostFrame}:${publication.firstHostTick}-${publication.lastHostTick}:${publication.selectedTicks}:${publication.snapshotBytes.byteLength}:${publication.eventBatches.reduce((n,e)=>n+e.bytes.byteLength,0)}`,
         brushModelProbe: `${snapshot.entityPresentation.entityRevision}:${snapshot.entityPresentation.collisionRevision}:${snapshot.entityPresentation.models.length}:${snapshot.entityPresentation.models.filter(model=>model.draw).length}`,
         reloadHistory:Object.freeze([...this.#reloadHistory]),
-        fireTickHistory:Object.freeze([...this.#fireTickHistory]),
+        fireTickHistory: this.#view.fireTickHistory?.length === this.#fireTickHistory.length
+          && this.#view.fireTickHistory.at(-1) === this.#fireTickHistory.at(-1)
+          ? this.#view.fireTickHistory
+          : Object.freeze([...this.#fireTickHistory]),
         lockerProbe:this.#lockerProbe(snapshot.tick),
       })
+      this.#offerDisplay()
     } catch (error) {
       if(this.#closed||generation!==this.#generation||this.#view.phase==="Replacing")return
       this.#paused = true
@@ -2661,13 +2786,7 @@ export class Tf2Application {
   }
 
   #boundAction(code: string, modifiers: number): string | null {
-    const values = this.#settings?.snapshot().settings.current
-    if (!values) return null
-    const resolved = resolvePhysicalBinding(code, modifiers, TF2_SELECTED_OPTIONS.settings, (schema) => {
-      if (schema.kind !== "binding") return null
-      const value = values[schema.id]
-      return value && typeof value === "object" ? { action: schema.action, code: value.code, modifiers: value.modifiers } : null
-    })
+    const resolved = this.#bindings.resolve(code, modifiers)
     return resolved?.match === "unmodified" && resolved.action === "toggleconsole" ? null : resolved?.action ?? null
   }
 
@@ -2706,14 +2825,14 @@ export class Tf2Application {
     if (this.#options?.handleKey(event)) return
     if (event.code === "Backquote") {
       if (!this.#consoleEnabled || this.#keyboardAction(event) !== "toggleconsole"
-        || (this.#vguiRoot.contains(event.target as Node) && !this.#console?.snapshot().visible)
+        || (this.#vguiRoot.contains(event.target as Node) && !this.#view.consoleVisible)
         || this.#optionsRoot.contains(event.target as Node)) return
       event.preventDefault()
       this.toggleConsole()
       return
     }
     if (event.code === "Escape") {
-      if (this.#options?.snapshot().visible) {
+      if (this.#view.optionsVisible && this.#options) {
         this.#options.hide("cancel")
         this.#set({ optionsVisible: false })
         return
@@ -2727,7 +2846,7 @@ export class Tf2Application {
         return
       }
     }
-    if (this.#console?.snapshot().visible || this.#options?.snapshot().visible || this.#gameUi?.state().kind !== "in-game" || event.repeat) return
+    if (this.#view.consoleVisible || this.#view.optionsVisible || this.#view.gameUi !== "in-game" || event.repeat) return
     const action = this.#keyboardAction(event)
     if (!action) return
     void this.resumeAudio()
@@ -2821,7 +2940,7 @@ export class Tf2Application {
       return
     }
     this.#canvas = connected
-    if (this.#closed || this.#console?.snapshot().visible) return
+    if (this.#closed || this.#view.consoleVisible) return
     const audioAdmission=this.resumeAudio()
     const request=async(raw:boolean):Promise<"raw"|"adjusted">=>{
       const admission=this.#canvas.requestPointerLock(raw?{unadjustedMovement:true}:undefined)
@@ -2852,6 +2971,7 @@ export class Tf2Application {
 
   async resumeAudio(): Promise<void> {
     if (!this.#audio || this.#closed) return
+    if (this.#audioRunning && this.#audioContext?.state === "running") return
     try {
       await this.#audio.resume()
       this.#audioRunning = true
@@ -2864,7 +2984,7 @@ export class Tf2Application {
 
   toggleConsole(): void {
     if (!this.#console) return
-    if (this.#console.snapshot().visible) {
+    if (this.#view.consoleVisible) {
       this.#console.apply({ kind: "hide" })
       this.#set({ consoleVisible: false })
       return
@@ -2893,6 +3013,11 @@ export class Tf2Application {
     this.#pendingPresentation = undefined
     this.#preparedPresentation = undefined
     this.#requiredParticleDisplayFrames.reset()
+    this.#skyVisibility.clear()
+    this.#canvasDiagnostics.clear()
+    this.#viewmodelSequenceCache.clear()
+    this.#hudContext = undefined
+    this.#hudContextIdentity = -1
     this.#pendingProjectileTimeline = []
     await this.#displayTask
     await this.#client?.shutdown().catch(() => {})
@@ -2940,6 +3065,8 @@ export class Tf2Application {
     cancelAnimationFrame(this.#animationFrame)
     this.#removeListeners()
     this.#neutral()
+    this.#bindings.clear()
+    this.#bindingValues.clear()
     await this.#displayTask
     if (document.pointerLockElement === this.#canvas) {
       try {

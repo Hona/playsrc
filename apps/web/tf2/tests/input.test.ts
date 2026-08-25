@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test"
 import {
+  PhysicalBindingIndex,
   PhysicalButtonState,
   applyPointerDelta,
   rawPointerMovementUnsupported,
   rebasePointerYaw,
-  resolvePhysicalBinding,
   type PhysicalBinding,
 } from "../src/input"
 import {
@@ -44,11 +44,33 @@ test("keeps unmodified physical bindings active under unrelated modifiers", () =
     ...base,
     Object.freeze({ action: "+use", code: "w", modifiers: 1 }),
   ] satisfies PhysicalBinding[])
-  const read = (binding: PhysicalBinding): PhysicalBinding => binding
+  const index = new PhysicalBindingIndex()
+  index.replace(base)
+  expect(index.resolve("W", 1)).toEqual({ action: "+forward", match: "unmodified" })
+  expect(index.resolve("w", 2)).toEqual({ action: "+forward", match: "unmodified" })
+  index.replace(chords)
+  expect(index.resolve("w", 1)).toEqual({ action: "+use", match: "exact" })
+})
 
-  expect(resolvePhysicalBinding("W", 1, base, read)).toEqual({ action: "+forward", match: "unmodified" })
-  expect(resolvePhysicalBinding("w", 2, base, read)).toEqual({ action: "+forward", match: "unmodified" })
-  expect(resolvePhysicalBinding("w", 1, chords, read)).toEqual({ action: "+use", match: "exact" })
+test("indexes exact physical chords without rebuilding settings snapshots per input", () => {
+  const index = new PhysicalBindingIndex()
+  index.replace([
+    { action: "+forward", code: "w", modifiers: 0 },
+    { action: "+use", code: "W", modifiers: 1 },
+    { action: "+attack", code: "MOUSE1", modifiers: 0 },
+  ])
+  expect(index.resolve("W", 0)).toEqual({ action: "+forward", match: "exact" })
+  expect(index.resolve("w", 1)).toEqual({ action: "+use", match: "exact" })
+  expect(index.resolve("w", 2)).toEqual({ action: "+forward", match: "unmodified" })
+  expect(index.resolve("mouse1", 4)).toEqual({ action: "+attack", match: "unmodified" })
+  expect(index.resolve("x", 0)).toBeNull()
+  expect(index.resolve("w", 1)).toBe(index.resolve("w", 1))
+
+  index.replace([{ action: "+back", code: "s", modifiers: 0 }])
+  expect(index.resolve("w", 0)).toBeNull()
+  expect(index.resolve("S", 0)).toEqual({ action: "+back", match: "exact" })
+  index.clear()
+  expect(index.resolve("s", 0)).toBeNull()
 })
 
 test("retains simultaneous physical-key actions until their own releases", () => {
