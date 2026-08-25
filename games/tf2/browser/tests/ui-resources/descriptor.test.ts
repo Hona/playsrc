@@ -161,6 +161,9 @@ describe("authored TF2 crosshair content closure", () => {
     }))).toEqual([
       { identities: [1, 2], script: "scripts/tf_weapon_rocketlauncher.ctx", crop: { x: 32, y: 32, width: 32, height: 32 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
       { identities: [3], script: "scripts/tf_weapon_pipebomblauncher.ctx", crop: { x: 32, y: 32, width: 32, height: 32 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
+      { identities: [4], script: "scripts/tf_weapon_minigun.ctx", crop: { x: 64, y: 64, width: 64, height: 64 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
+      { identities: [5], script: "scripts/tf_weapon_shotgun_hwg.ctx", crop: { x: 0, y: 0, width: 32, height: 32 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
+      { identities: [6], script: "scripts/tf_weapon_fists.ctx", crop: { x: 32, y: 32, width: 32, height: 32 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
     ])
   })
 

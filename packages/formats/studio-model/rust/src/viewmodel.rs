@@ -837,8 +837,13 @@ pub fn compose_viewmodel(
     let item_pose = merged_item_pose(item, &item_pose, hand, &hand_pose, &item_to_hand_bones)?;
     let hand_primitives =
         select_primitives(hand, &request.hand_bodygroups, request.skin, request.lod)?;
+    let item_skin = if request.skin < item.skins.len() {
+        request.skin
+    } else {
+        0
+    };
     let item_primitives =
-        select_primitives(item, &request.item_bodygroups, request.skin, request.lod)?;
+        select_primitives(item, &request.item_bodygroups, item_skin, request.lod)?;
     Ok(ViewModelComposition {
         translated_activity: request.translated_activity.clone(),
         skin: request.skin,

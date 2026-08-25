@@ -1015,7 +1015,7 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
             }
           })
           const [health, , weapon] = observation.hud.split(":")
-          const armed = identity === 3 || identity === 4
+          const armed = identity === 3 || identity === 4 || identity === 6
           const imageName = name === "demoman" ? "demo" : name === "engineer" ? "engi" : name
           expect(observation.phase).toBe("Ready")
           expect(Number(health)).toBe(maximumHealth[identity - 1])
@@ -1040,6 +1040,34 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
             model: tf2ClassPresentation(identity).model,
             pixelsSha256: createHash("sha256").update(pixels.pixels).digest("hex"),
           })
+          if (name === "heavy") {
+            if (await root.getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
+            for (const [key, selected, visible] of [["Digit2", "5", true], ["Digit3", "6", false], ["Digit1", "4", true]] as const) {
+              await page.keyboard.press(key)
+              await expect.poll(async () => (await root.getAttribute("data-hud-probe"))?.split(":")[2]).toBe(selected)
+              const state = await root.evaluate((element) => ({
+                phase: (element as HTMLElement).dataset.phase,
+                activity: (element as HTMLElement).dataset.viewmodelActivity,
+                ammo: document.querySelector<HTMLElement>("[data-vgui-name='HudWeaponAmmo']")?.style.display !== "none",
+              }))
+              expect(state.phase).toBe("Ready")
+              expect(state.ammo).toBe(visible)
+              expect(state.activity).toContain(selected === "6" ? "FISTS" : selected === "5" ? "SECONDARY" : "PRIMARY")
+              const canvas = page.locator("canvas").first()
+              await canvas.screenshot({ path: path.join(evidenceDirectory, `heavy-${teamName}-weapon-${selected}.png`) })
+              if (teamName === "red") {
+                await canvas.click({ position: { x: 640, y: 360 } })
+                await page.mouse.down({ button: "left" })
+                if (selected === "6") {
+                  await expect.poll(async () => await root.getAttribute("data-viewmodel-activity")).toContain("HITLEFT")
+                } else {
+                  await expect.poll(async () => await root.getAttribute("data-weapon-trace"), { timeout: 10_000 })
+                    .toMatch(selected === "5" ? /5:[0-5]\// : /4:0\/1\d\d/)
+                }
+                await page.mouse.up({ button: "left" })
+              }
+            }
+          }
         }
       }
       expect(new Set(classEvidence.map((item) => item.pixelsSha256)).size).toBe(18)

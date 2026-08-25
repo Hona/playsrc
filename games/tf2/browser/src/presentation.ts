@@ -23,14 +23,14 @@ export type Tf2Hud = Readonly<{
   health: number
   maxHealth: number
   className: Tf2ClassPresentation["displayName"]
-  weaponName: "Rocket Launcher" | "Original" | "Stickybomb Launcher" | null
+  weaponName: "Rocket Launcher" | "Original" | "Stickybomb Launcher" | "Minigun" | "Shotgun" | "Fists" | null
   speed: number
   projectileCount: number
 }>
 
 export type Tf2AudioRequest = Readonly<{
   voiceIdentity: number
-  definition: "Weapon_RPG.Single" | "Weapon_QuakeRPG.Single" | "Weapon_StickyBombLauncher.Single" | "BaseExplosionEffect.Sound" | "Weapon_QuakeRPG.Explode" | "Weapon_Grenade_Pipebomb.Explode"
+  definition: "Weapon_RPG.Single" | "Weapon_QuakeRPG.Single" | "Weapon_StickyBombLauncher.Single" | "BaseExplosionEffect.Sound" | "Weapon_QuakeRPG.Explode" | "Weapon_Grenade_Pipebomb.Explode" | "Weapon_Minigun.WindUp" | "Weapon_Minigun.WindDown" | "Weapon_Minigun.Spin" | "Weapon_Minigun.Fire" | "Weapon_Shotgun.Single" | "Weapon_Fist.Miss" | "Weapon_Fist.HitWorld" | "Weapon_Fist.HitFlesh"
   source: Readonly<{
     kind: "entity" | "world"
     identity: number
@@ -50,6 +50,14 @@ export function tf2Audio(snapshot: Snapshot): readonly Tf2AudioRequest[] {
     "BaseExplosionEffect.Sound",
     "Weapon_QuakeRPG.Explode",
     "Weapon_Grenade_Pipebomb.Explode",
+    "Weapon_Minigun.WindUp",
+    "Weapon_Minigun.WindDown",
+    "Weapon_Minigun.Spin",
+    "Weapon_Minigun.Fire",
+    "Weapon_Shotgun.Single",
+    "Weapon_Fist.Miss",
+    "Weapon_Fist.HitWorld",
+    "Weapon_Fist.HitFlesh",
   ]
   return Object.freeze(snapshot.audioEvents.map((event) => Object.freeze({
     voiceIdentity: stable32(`${event.tick}:${event.ordinal}:${event.definition}:${event.sourceIdentity}`),
@@ -156,28 +164,34 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
   let activity = "ACT_VM_DRAW"
   return Object.freeze({
     map(snapshot: Snapshot,view:Readonly<{aspectRatio:number;farPlane:number}>=Object.freeze({aspectRatio:4/3,farPlane:32768})): Readonly<{ item: ModelItem; request: ModelPoseRequest }> {
-      if (snapshot.weapon === null || (snapshot.class !== 3 && snapshot.class !== 4)) {
+      if (snapshot.weapon === null || (snapshot.class !== 3 && snapshot.class !== 4 && snapshot.class !== 6)) {
         throw new ProjectilePresentationError("MalformedFact", "class has no implemented viewmodel weapon")
       }
       const identity = tf2ClassPresentation(snapshot.class).hands
-      const itemIdentity = snapshot.class === 3
-        ? "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl"
-        : "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl"
+      const itemIdentity = snapshot.weapon === 4
+        ? "models/weapons/c_models/c_minigun/c_minigun.mdl"
+        : snapshot.weapon === 5
+          ? "models/weapons/c_models/c_shotgun/c_shotgun.mdl"
+          : snapshot.weapon === 6
+            ? undefined
+            : snapshot.class === 3
+              ? "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl"
+              : "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl"
       const artifact = artifacts.models.get(identity)
-      const itemArtifact = artifacts.models.get(itemIdentity)
+      const itemArtifact = itemIdentity === undefined ? undefined : artifacts.models.get(itemIdentity)
       if (!artifact) throw new ProjectilePresentationError("MissingModel", identity)
-      if (!itemArtifact) throw new ProjectilePresentationError("MissingModel", itemIdentity)
+      if (itemIdentity !== undefined && !itemArtifact) throw new ProjectilePresentationError("MissingModel", itemIdentity)
       if (artifact.descriptor.kind !== "viewmodel") throw new ProjectilePresentationError("MissingModel", `${identity}:descriptor`)
-      if (itemArtifact.descriptor.kind !== "viewmodel") throw new ProjectilePresentationError("MissingModel", `${itemIdentity}:descriptor`)
+      if (itemArtifact && itemArtifact.descriptor.kind !== "viewmodel") throw new ProjectilePresentationError("MissingModel", `${itemIdentity}:descriptor`)
       const weapon = snapshot.loadout.find((value) => value.weapon === snapshot.weapon)
       if (!weapon) throw new ProjectilePresentationError("MissingModel", `${identity}:weapon-state`)
       const selectionChanged = prior !== snapshot.weapon || priorClass !== snapshot.class
       const exact = snapshot.activities.filter((event) => event.weapon === snapshot.weapon).at(-1)
-      const role = snapshot.class === 3 ? "PRIMARY" : "SECONDARY"
+      const role = snapshot.weapon === 5 ? "SECONDARY" : snapshot.weapon === 6 ? "FISTS" : snapshot.class === 4 ? "SECONDARY" : "PRIMARY"
       const mapped = exact === undefined ? undefined : [
         "",
         `ACT_${role}_VM_DRAW`,
-        `ACT_${role}_VM_PRIMARYATTACK`,
+        snapshot.weapon === 6 ? `ACT_${role}_VM_HITLEFT` : `ACT_${role}_VM_PRIMARYATTACK`,
         `ACT_${role}_RELOAD_START`,
         `ACT_${role}_VM_RELOAD`,
         `ACT_${role}_RELOAD_FINISH`,
@@ -221,7 +235,7 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
         request: Object.freeze({
           identity: 0x7fff_ff00 + snapshot.class * 4,
           model: identity,
-          itemModel: itemIdentity,
+          ...(itemIdentity === undefined ? { handsOnlyViewmodel: true } : { itemModel: itemIdentity }),
           activity,
           previousElapsedSeconds: Math.min(previousElapsed, currentElapsed),
           elapsedSeconds: currentElapsed,
@@ -232,7 +246,7 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
           skin: snapshot.team === 2 ? 0 : 1,
           lod: 0,
           bodygroups: Object.freeze(artifact.bodygroupCounts.map(() => 0)),
-          itemBodygroups: Object.freeze(itemArtifact.bodygroupCounts.map(() => 0)),
+          ...(itemArtifact ? { itemBodygroups: Object.freeze(itemArtifact.bodygroupCounts.map(() => 0)) } : {}),
         }),
       })
     },
@@ -259,6 +273,7 @@ export type ModelPoseRequest = Readonly<{
   identity: number
   model: string
   itemModel?: string
+  handsOnlyViewmodel?: boolean
   activity: string
   sampleTick?: bigint
   attachmentsOnly?: boolean
@@ -344,7 +359,7 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
       throw new ProjectilePresentationError("MalformedFact", "model pose sample")
     }
     view.setBigUint64(at, sampleTick, true); at += 8
-    bytes[at] = request.itemModel === undefined ? 0 : 1
+    bytes[at] = request.handsOnlyViewmodel ? 2 : request.itemModel === undefined ? 0 : 1
     bytes[at + 1] = Number(request.attachmentsOnly ?? false)
     bytes[at + 2] = Number(request.fireView !== undefined)
     at += 4
@@ -358,12 +373,14 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
     for(const value of [request.currentTimeSeconds,request.frameTimeSeconds,request.planarSpeed,request.screenAspectRatio,request.worldFarPlane]){view.setFloat32(at,value,true);at+=4}
     view.setUint32(at, request.skin, true); at += 4
     view.setUint32(at, request.lod, true); at += 4
-    bytes[at] = request.itemModel === undefined ? 0xff : (request.phase ?? 0xff)
+    bytes[at] = request.itemModel === undefined && !request.handsOnlyViewmodel ? 0xff : (request.phase ?? 0xff)
     bytes[at + 1] = Number(request.reflectedViewmodel ?? false)
     bytes[at + 2] = Number(request.ownerAlive ?? true)
     bytes[at + 3] = 0
-    if ((request.itemModel !== undefined && (request.phase === undefined || request.phase < 0 || request.phase > 5)) ||
-      (request.itemModel === undefined && request.phase !== undefined) || typeof (request.reflectedViewmodel ?? false) !== "boolean" ||
+    if (((request.itemModel !== undefined || request.handsOnlyViewmodel) && (request.phase === undefined || request.phase < 0 || request.phase > 5)) ||
+      (request.itemModel === undefined && !request.handsOnlyViewmodel && request.phase !== undefined) ||
+      (request.handsOnlyViewmodel && (request.itemModel !== undefined || request.itemBodygroups !== undefined)) ||
+      typeof (request.reflectedViewmodel ?? false) !== "boolean" ||
       typeof (request.ownerAlive ?? true) !== "boolean") throw new ProjectilePresentationError("MalformedFact", "viewmodel frame request")
     at += 4
     view.setInt32(at, request.packedBody ?? -0x8000_0000, true);at+=4

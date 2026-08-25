@@ -113,6 +113,18 @@ const SOUND_PATHS = [
   "sound/weapons/pipe_bomb1.wav",
   "sound/weapons/pipe_bomb2.wav",
   "sound/weapons/pipe_bomb3.wav",
+  "sound/weapons/minigun_wind_up.wav",
+  "sound/weapons/minigun_wind_down.wav",
+  "sound/weapons/minigun_spin.wav",
+  "sound/weapons/minigun_shoot.wav",
+  "sound/weapons/shotgun_shoot.wav",
+  "sound/weapons/bat_draw_swoosh1.wav",
+  "sound/weapons/bat_draw_swoosh2.wav",
+  "sound/weapons/cbar_hitbod1.wav",
+  "sound/weapons/cbar_hitbod2.wav",
+  "sound/weapons/cbar_hitbod3.wav",
+  "sound/weapons/fist_hit_world1.wav",
+  "sound/weapons/fist_hit_world2.wav",
 ] as const
 
 export type ApplicationView = Readonly<{
@@ -330,7 +342,7 @@ export class Tf2Application {
   #reloadPressed = false
   #selectClass: Tf2Class | undefined
   #selectTeam: Tf2Team | undefined
-  #selectWeapon: 1 | 2 | 3 | undefined
+  #selectWeapon: 1 | 2 | 3 | 4 | 5 | 6 | undefined
   #modeRequest: 0 | 1 | undefined
   #coverageSamples:readonly CoverageSample[]=Object.freeze([])
   #developer = 1
@@ -1432,7 +1444,7 @@ export class Tf2Application {
       clock: { nowSeconds: () => this.#frameClock.current },
       random: this.#presentationRandom,
       onCommand: (command) => {
-        if (command.kind === "select-weapon" && command.weapon >= 1 && command.weapon <= 3) this.#selectWeapon = command.weapon as 1 | 2 | 3
+        if (command.kind === "select-weapon" && command.weapon >= 1 && command.weapon <= 6) this.#selectWeapon = command.weapon as 1 | 2 | 3 | 4 | 5 | 6
       },
     })
     const panels = this.#hudIntegration.snapshot().vgui.panels
@@ -3022,7 +3034,7 @@ export class Tf2Application {
       const timelineViewmodelPoses = modelPoses.filter((pose) => viewmodelIdentities.has(pose.identity))
       const viewmodelPoses = currentViewmodelRequest===undefined?[]:timelineViewmodelPoses.filter((pose) => pose.identity===currentViewmodelRequest.identity&&!pose.attachmentsOnly&&pose.sampleTick===currentViewmodelRequest.sampleTick)
       const lockerPoses=modelPoses.filter(pose=>this.#lockerAnimations.has(pose.identity))
-      if(viewmodel!==undefined&&(viewmodelPoses.length!==2||viewmodelPoses[0]?.role!=="item"||viewmodelPoses[1]?.role!=="hand"))throw new Error("Viewmodel composition output differs");const viewmodelPose=viewmodelPoses[1]
+      if(viewmodel!==undefined&&(snapshot.weapon===6?(viewmodelPoses.length!==1||viewmodelPoses[0]?.role!=="hand"):(viewmodelPoses.length!==2||viewmodelPoses[0]?.role!=="item"||viewmodelPoses[1]?.role!=="hand")))throw new Error("Viewmodel composition output differs");const viewmodelPose=viewmodelPoses.at(-1)
       if(viewmodelPose)this.#viewmodelActivities.add(viewmodelPose.activity)
       this.#updateAttachmentTransforms(snapshot, timelineViewmodelPoses, camera)
       let presentation:ReturnType<ProjectileMapper["map"]>
@@ -3053,6 +3065,7 @@ export class Tf2Application {
             ...viewmodel!.item,
             identity: viewmodel!.item.identity + index,
             model: pose.model,
+            skin: viewmodel!.item.skin < (this.#artifacts!.models.get(pose.model)?.skinCount ?? 0) ? viewmodel!.item.skin : 0,
             position:pose.viewmodel!.transform.origin,angles:pose.viewmodel!.transform.angles,
             viewModelProjection:Object.freeze({kind:"viewmodel" as const,horizontalFov4By3:pose.viewmodel!.projection.unscaledHorizontalFov4By3,near:pose.viewmodel!.projection.near,depthRange:pose.viewmodel!.depthRange,drawsAfterWorld:true,opaqueBeforeTranslucent:true,optionalViewSpaceYReflection:pose.viewmodel!.reflected}),
             pose,
@@ -3221,9 +3234,9 @@ export class Tf2Application {
       if (this.#buttons.press(identity, action)) this.#detonatePressed = true
     } else if (action === "+reload") {
       if (this.#buttons.press(identity, action)) this.#reloadPressed = true
-    } else if (action === "slot1") this.#selectWeapon = 1
-    else if (action === "slot2") this.#selectWeapon = 2
-    else if (action === "slot3") this.#selectWeapon = 3
+    } else if (action === "slot1") this.#selectWeapon = this.#snapshot?.class === 6 ? 4 : 1
+    else if (action === "slot2") this.#selectWeapon = this.#snapshot?.class === 6 ? 5 : 2
+    else if (action === "slot3") this.#selectWeapon = this.#snapshot?.class === 6 ? 6 : 3
   }
 
   readonly #keyDown = (event: KeyboardEvent): void => {

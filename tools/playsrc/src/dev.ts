@@ -13,8 +13,10 @@ import { TF2_CONFIGURED_STARTUP } from "@playsrc/game-tf2-browser/startup-presen
 import { TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS, TF2_PL_UPWARD_MAP_PHOTO_LOCATIONS, TF2_STAMP_BACKGROUND } from "@playsrc/game-tf2-browser/loading-presentation"
 import { TF2_TARGET_NAMES, type Tf2TargetName } from "../../../apps/web/tf2/src/deployment"
 
-const APPLICATION_URL = "http://127.0.0.1:4173/"
-const ASSET_ORIGIN = "http://127.0.0.1:4174"
+const APPLICATION_PORT = Number(process.env.PLAYSRC_DEV_PORT ?? 4173)
+const ASSET_PORT = APPLICATION_PORT + 1
+const APPLICATION_URL = `http://127.0.0.1:${APPLICATION_PORT}/`
+const ASSET_ORIGIN = `http://127.0.0.1:${ASSET_PORT}`
 const READY_TIMEOUT_MS = 120_000
 
 export class DevelopmentError extends Error {
@@ -189,7 +191,7 @@ export async function startDevelopment(config: LocalConfig, target: string | und
     })
     viteCreationMilliseconds = Math.round(performance.now() - viteStarted)
     const listenerStarted = performance.now()
-    assets = startAssetService(config.assetDir, 4174)
+    assets = startAssetService(config.assetDir, ASSET_PORT)
     await application.listen()
     await Promise.all([waitReady(`${ASSET_ORIGIN}/readyz`), waitReady(APPLICATION_URL)])
     const ready = performance.now()

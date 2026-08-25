@@ -6,6 +6,14 @@ pub enum SoundDefinition {
     RocketExplosion,
     OriginalExplosion,
     StickyExplosion,
+    MinigunWindUp,
+    MinigunWindDown,
+    MinigunSpin,
+    MinigunFire,
+    ShotgunSingle,
+    FistMiss,
+    FistHitWorld,
+    FistHitFlesh,
 }
 
 impl SoundDefinition {
@@ -17,16 +25,30 @@ impl SoundDefinition {
             Self::RocketExplosion => "BaseExplosionEffect.Sound",
             Self::OriginalExplosion => "Weapon_QuakeRPG.Explode",
             Self::StickyExplosion => "Weapon_Grenade_Pipebomb.Explode",
+            Self::MinigunWindUp => "Weapon_Minigun.WindUp",
+            Self::MinigunWindDown => "Weapon_Minigun.WindDown",
+            Self::MinigunSpin => "Weapon_Minigun.Spin",
+            Self::MinigunFire => "Weapon_Minigun.Fire",
+            Self::ShotgunSingle => "Weapon_Shotgun.Single",
+            Self::FistMiss => "Weapon_Fist.Miss",
+            Self::FistHitWorld => "Weapon_Fist.HitWorld",
+            Self::FistHitFlesh => "Weapon_Fist.HitFlesh",
         }
     }
 
     pub(crate) const fn wave_count(self) -> u8 {
         match self {
-            Self::RocketExplosion | Self::StickyExplosion => 3,
+            Self::RocketExplosion | Self::StickyExplosion | Self::FistHitFlesh => 3,
+            Self::FistMiss | Self::FistHitWorld => 2,
             Self::RocketSingle
             | Self::OriginalSingle
             | Self::StickySingle
-            | Self::OriginalExplosion => 1,
+            | Self::OriginalExplosion
+            | Self::MinigunWindUp
+            | Self::MinigunWindDown
+            | Self::MinigunSpin
+            | Self::MinigunFire
+            | Self::ShotgunSingle => 1,
         }
     }
 }
@@ -74,25 +96,30 @@ pub struct AudioEvent {
 pub struct SoundSelectionState {
     pub rocket_explosion_available: u8,
     pub sticky_explosion_available: u8,
+    pub fist_miss_available: u8,
+    pub fist_hit_world_available: u8,
+    pub fist_hit_flesh_available: u8,
 }
 
 #[derive(Clone, Copy)]
 struct WaveCycle {
     available: u8,
+    mask: u8,
 }
 
 impl WaveCycle {
     const ALL: u8 = 0b111;
 
-    const fn new() -> Self {
+    const fn new(mask: u8) -> Self {
         Self {
-            available: Self::ALL,
+            available: mask,
+            mask,
         }
     }
 
     fn available_count(&mut self) -> u8 {
         if self.available == 0 {
-            self.available = Self::ALL;
+            self.available = self.mask;
         }
         self.available.count_ones() as u8
     }
@@ -121,13 +148,19 @@ impl WaveCycle {
 pub(crate) struct SoundSelection {
     rocket_explosion: WaveCycle,
     sticky_explosion: WaveCycle,
+    fist_miss: WaveCycle,
+    fist_hit_world: WaveCycle,
+    fist_hit_flesh: WaveCycle,
 }
 
 impl SoundSelection {
     pub(crate) const fn new() -> Self {
         Self {
-            rocket_explosion: WaveCycle::new(),
-            sticky_explosion: WaveCycle::new(),
+            rocket_explosion: WaveCycle::new(0b111),
+            sticky_explosion: WaveCycle::new(0b111),
+            fist_miss: WaveCycle::new(0b11),
+            fist_hit_world: WaveCycle::new(0b11),
+            fist_hit_flesh: WaveCycle::new(0b111),
         }
     }
 
@@ -135,17 +168,26 @@ impl SoundSelection {
         SoundSelectionState {
             rocket_explosion_available: self.rocket_explosion.available,
             sticky_explosion_available: self.sticky_explosion.available,
+            fist_miss_available: self.fist_miss.available,
+            fist_hit_world_available: self.fist_hit_world.available,
+            fist_hit_flesh_available: self.fist_hit_flesh.available,
         }
     }
 
     pub(crate) fn restore(&mut self, state: SoundSelectionState) -> bool {
         if state.rocket_explosion_available & !WaveCycle::ALL != 0
             || state.sticky_explosion_available & !WaveCycle::ALL != 0
+            || state.fist_miss_available & !0b11 != 0
+            || state.fist_hit_world_available & !0b11 != 0
+            || state.fist_hit_flesh_available & !WaveCycle::ALL != 0
         {
             return false;
         }
         self.rocket_explosion.available = state.rocket_explosion_available;
         self.sticky_explosion.available = state.sticky_explosion_available;
+        self.fist_miss.available = state.fist_miss_available;
+        self.fist_hit_world.available = state.fist_hit_world_available;
+        self.fist_hit_flesh.available = state.fist_hit_flesh_available;
         true
     }
 
@@ -166,6 +208,9 @@ impl SoundSelection {
         match definition {
             SoundDefinition::RocketExplosion => &mut self.rocket_explosion,
             SoundDefinition::StickyExplosion => &mut self.sticky_explosion,
+            SoundDefinition::FistMiss => &mut self.fist_miss,
+            SoundDefinition::FistHitWorld => &mut self.fist_hit_world,
+            SoundDefinition::FistHitFlesh => &mut self.fist_hit_flesh,
             _ => unreachable!("only configured random-wave definitions have selection state"),
         }
     }

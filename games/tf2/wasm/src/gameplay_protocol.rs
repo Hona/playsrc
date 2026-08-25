@@ -46,6 +46,9 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
         1 => Some(playsrc_tf2::Weapon::RocketLauncher),
         2 => Some(playsrc_tf2::Weapon::Original),
         3 => Some(playsrc_tf2::Weapon::StickybombLauncher),
+        4 => Some(playsrc_tf2::Weapon::Minigun),
+        5 => Some(playsrc_tf2::Weapon::Shotgun),
+        6 => Some(playsrc_tf2::Weapon::Fists),
         _ => return None,
     };
     let select_team = match (select >> 16) & 0xff {

@@ -1504,7 +1504,7 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
         let kind = reader.u8()?;
         let attachments_only = reader.u8()?;
         let has_fire_view = reader.u8()?;
-        if kind > 1
+        if kind > 2
             || attachments_only > 1
             || has_fire_view > 1
             || (attachments_only == 1 && (kind != 1 || has_fire_view != 1))
@@ -1530,7 +1530,7 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
         let model = reader.text()?.to_ascii_lowercase();
         let item_text = reader.text()?.to_ascii_lowercase();
         let item = match kind {
-            0 if item_text.is_empty() => None,
+            0 | 2 if item_text.is_empty() => None,
             1 if !item_text.is_empty() => Some(item_text),
             _ => return Err(()),
         };
@@ -1562,7 +1562,7 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
         };
         let packed_body_value = i32::from_le_bytes(reader.take(4)?.try_into().map_err(|_| ())?);
         let packed_body = (packed_body_value != i32::MIN).then_some(packed_body_value);
-        if (kind == 1 && packed_body.is_some()) || packed_body.is_some_and(|value| value < 0) {
+        if (kind != 0 && packed_body.is_some()) || packed_body.is_some_and(|value| value < 0) {
             return Err(());
         }
         let bodygroup_count = reader.u32()? as usize;
@@ -1865,6 +1865,84 @@ fn encode_model_poses(
                 return Err(());
             }
             output_count = output_count.checked_add(part_count).ok_or(())?;
+        } else if let Some(phase) = request.phase {
+            let bob = playsrc_studio_model::update_viewmodel_bob(
+                viewmodel_bob
+                    .get(&request.identity)
+                    .copied()
+                    .unwrap_or_default(),
+                playsrc_studio_model::ViewModelBobRequest {
+                    current_time: playsrc_studio_model::Float32(request.current_time.to_bits()),
+                    frame_time: playsrc_studio_model::Float32(request.frame_time.to_bits()),
+                    planar_speed: playsrc_studio_model::Float32(request.planar_speed.to_bits()),
+                    cycle: playsrc_studio_model::Float32(0.8f32.to_bits()),
+                    up_fraction: playsrc_studio_model::Float32(0.5f32.to_bits()),
+                },
+            )
+            .map_err(|_| ())?;
+            viewmodel_bob.insert(request.identity, bob);
+            let transform = playsrc_studio_model::apply_viewmodel_bob(
+                playsrc_studio_model::ViewModelTransform {
+                    origin: playsrc_studio_model::Vector3([playsrc_studio_model::Float32(0); 3]),
+                    angles: playsrc_studio_model::Vector3([playsrc_studio_model::Float32(0); 3]),
+                },
+                bob,
+            )
+            .map_err(|_| ())?;
+            let configured = match model.descriptor {
+                playsrc_studio_model::PresentationDescriptor::ViewModel {
+                    default_horizontal_fov_4_by_3,
+                    ..
+                } => default_horizontal_fov_4_by_3,
+                _ => return Err(()),
+            };
+            let pass = playsrc_studio_model::viewmodel_pass_state(
+                playsrc_studio_model::ViewModelProjectionRequest {
+                    configured_horizontal_fov_4_by_3: configured,
+                    default_world_fov: playsrc_studio_model::Float32(75f32.to_bits()),
+                    current_world_fov: playsrc_studio_model::Float32(75f32.to_bits()),
+                    screen_aspect_ratio: playsrc_studio_model::Float32(
+                        request.screen_aspect_ratio.to_bits(),
+                    ),
+                    world_far_plane: playsrc_studio_model::Float32(
+                        request.world_far_plane.to_bits(),
+                    ),
+                },
+            )
+            .map_err(|_| ())?;
+            let facing = playsrc_studio_model::GeometryFacing {
+                front_face: playsrc_studio_model::TriangleWinding::Clockwise,
+                cull_face: playsrc_studio_model::CullFace::Back,
+            };
+            let state = ViewOutput {
+                transform,
+                pass,
+                item_translucent: false,
+                phase,
+                draw_disposition: playsrc_studio_model::ViewModelDrawDisposition::Draw,
+                reflected: request.reflected_viewmodel,
+                hand_facing: facing,
+                item_facing: facing,
+                hand_bodygroups: bodygroups,
+                item_bodygroups: Vec::new(),
+                item_bodygroup_mutations: Vec::new(),
+            };
+            encode_model_pose_part(
+                &mut out,
+                request,
+                1,
+                model,
+                sequence,
+                timing,
+                previous_cycle,
+                cycle,
+                &events,
+                &pose,
+                &selected,
+                selected.len(),
+                Some(&state),
+            )?;
+            output_count = output_count.checked_add(1).ok_or(())?;
         } else {
             encode_model_pose_part(
                 &mut out,
@@ -4124,10 +4202,14 @@ fn encode_random_state(state: playsrc_tf2::Tf2RandomState) -> Option<Vec<u8>> {
     output.extend_from_slice(&[
         state.sound_selection.rocket_explosion_available,
         state.sound_selection.sticky_explosion_available,
+        state.sound_selection.fist_miss_available,
+        state.sound_selection.fist_hit_world_available,
+        state.sound_selection.fist_hit_flesh_available,
+        0,
         0,
         0,
     ]);
-    (output.len() == 284).then_some(output)
+    (output.len() == 288).then_some(output)
 }
 
 fn sound_definition_code(value: playsrc_tf2::SoundDefinition) -> u8 {
@@ -4138,6 +4220,14 @@ fn sound_definition_code(value: playsrc_tf2::SoundDefinition) -> u8 {
         playsrc_tf2::SoundDefinition::RocketExplosion => 4,
         playsrc_tf2::SoundDefinition::OriginalExplosion => 5,
         playsrc_tf2::SoundDefinition::StickyExplosion => 6,
+        playsrc_tf2::SoundDefinition::MinigunWindUp => 7,
+        playsrc_tf2::SoundDefinition::MinigunWindDown => 8,
+        playsrc_tf2::SoundDefinition::MinigunSpin => 9,
+        playsrc_tf2::SoundDefinition::MinigunFire => 10,
+        playsrc_tf2::SoundDefinition::ShotgunSingle => 11,
+        playsrc_tf2::SoundDefinition::FistMiss => 12,
+        playsrc_tf2::SoundDefinition::FistHitWorld => 13,
+        playsrc_tf2::SoundDefinition::FistHitFlesh => 14,
     }
 }
 
@@ -4465,6 +4555,9 @@ fn weapon_code(weapon: playsrc_tf2::Weapon) -> u8 {
         playsrc_tf2::Weapon::RocketLauncher => 1,
         playsrc_tf2::Weapon::Original => 2,
         playsrc_tf2::Weapon::StickybombLauncher => 3,
+        playsrc_tf2::Weapon::Minigun => 4,
+        playsrc_tf2::Weapon::Shotgun => 5,
+        playsrc_tf2::Weapon::Fists => 6,
     }
 }
 fn projectile_code(kind: playsrc_tf2::ProjectileKind) -> u8 {
@@ -6910,7 +7003,7 @@ fn model_authored_texture(
                 | playsrc_vtf::ImageFormat::Bgrx8888
         );
     if direct || two_dimensional && converted_or_compressed {
-        let manifest = material_texture_manifest(&metadata);
+        let manifest = material_texture_manifest(metadata);
         let planes = metadata
             .subresources
             .iter()
@@ -7509,6 +7602,14 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>) -
         "BaseExplosionEffect.Sound",
         "Weapon_QuakeRPG.Explode",
         "Weapon_Grenade_Pipebomb.Explode",
+        "Weapon_Minigun.WindUp",
+        "Weapon_Minigun.WindDown",
+        "Weapon_Minigun.Spin",
+        "Weapon_Minigun.Fire",
+        "Weapon_Shotgun.Single",
+        "Weapon_Fist.Miss",
+        "Weapon_Fist.HitWorld",
+        "Weapon_Fist.HitFlesh",
     ];
     let nodes = targets
         .iter()
@@ -7792,10 +7893,14 @@ fn load_cached_presentation(
         "models/weapons/w_models/w_stickybomb.mdl".to_owned(),
         "models/weapons/c_models/c_soldier_arms.mdl".to_owned(),
         "models/weapons/c_models/c_demo_arms.mdl".to_owned(),
+        "models/weapons/c_models/c_heavy_arms.mdl".to_owned(),
         "models/player/soldier.mdl".to_owned(),
         "models/player/demo.mdl".to_owned(),
+        "models/player/heavy.mdl".to_owned(),
         "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl".to_owned(),
         "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl".to_owned(),
+        "models/weapons/c_models/c_minigun/c_minigun.mdl".to_owned(),
+        "models/weapons/c_models/c_shotgun/c_shotgun.mdl".to_owned(),
     ]);
     let expected = graph
         .entities
@@ -7996,10 +8101,14 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
         "models/weapons/w_models/w_stickybomb.mdl".to_owned(),
         "models/weapons/c_models/c_soldier_arms.mdl".to_owned(),
         "models/weapons/c_models/c_demo_arms.mdl".to_owned(),
+        "models/weapons/c_models/c_heavy_arms.mdl".to_owned(),
         "models/player/soldier.mdl".to_owned(),
         "models/player/demo.mdl".to_owned(),
+        "models/player/heavy.mdl".to_owned(),
         "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl".to_owned(),
         "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl".to_owned(),
+        "models/weapons/c_models/c_minigun/c_minigun.mdl".to_owned(),
+        "models/weapons/c_models/c_shotgun/c_shotgun.mdl".to_owned(),
     ]);
     for e in &graph.entities {
         if e.classname
@@ -8020,8 +8129,11 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
                 id.as_str(),
                 "models/weapons/c_models/c_soldier_arms.mdl"
                     | "models/weapons/c_models/c_demo_arms.mdl"
+                    | "models/weapons/c_models/c_heavy_arms.mdl"
                     | "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl"
                     | "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl"
+                    | "models/weapons/c_models/c_minigun/c_minigun.mdl"
+                    | "models/weapons/c_models/c_shotgun/c_shotgun.mdl"
             ) {
                 playsrc_studio_model::PresentationProfile::ViewModel
             } else {
@@ -10897,6 +11009,11 @@ mod tests {
                 reload_due_tick: None,
                 charge_begin_tick: None,
                 first_primary_tick: 0,
+                minigun_state: playsrc_tf2::weapon::MinigunState::Idle,
+                spin_begin_tick: None,
+                firing_begin_tick: None,
+                idle_due_tick: None,
+                smack_due_tick: None,
             }],
             projectiles: vec![projectile],
             activities: vec![playsrc_tf2::weapon::ActivityEvent {
@@ -10922,6 +11039,9 @@ mod tests {
             sound_selection: playsrc_tf2::SoundSelectionState {
                 rocket_explosion_available: 7,
                 sticky_explosion_available: 7,
+                fist_miss_available: 3,
+                fist_hit_world_available: 3,
+                fist_hit_flesh_available: 7,
             },
         };
         let mut collision_snapshot = b"CSNP".to_vec();
@@ -10955,7 +11075,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(&encoded[..8], b"PSSN\x0b\0\0\0");
-        assert_eq!(encoded.len(), 908);
+        assert_eq!(encoded.len(), 912);
         assert_eq!(
             u32::from_le_bytes(encoded[160..164].try_into().unwrap()),
             playsrc_tf2::FL_CLIENT | playsrc_tf2::FL_INWATER

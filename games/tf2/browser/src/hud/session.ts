@@ -94,26 +94,23 @@ function reload(value: CompactWeaponState["reload"]): Tf2ReloadPhase {
 }
 
 function weaponName(identity: CompactWeaponState["weapon"]): string {
-  return identity === 1 ? "Rocket Launcher" : identity === 2 ? "Original" : "Stickybomb Launcher"
-}
-
-function weaponPosition(identity: CompactWeaponState["weapon"]): number {
-  return identity === 2 ? 1 : 0
+  return (["", "Rocket Launcher", "Original", "Stickybomb Launcher", "Minigun", "Shotgun", "Fists"] as const)[identity]
 }
 
 function weapon(value: CompactWeaponState): Tf2HudWeapon {
+  const minigun = value.weapon === 4, fists = value.weapon === 6
   return Object.freeze({
     identity: value.weapon,
-    itemDefinition: tf2HudUnavailable<number>("not-produced"),
+    itemDefinition: value.weapon >= 4 ? tf2HudAvailable(([0, 0, 0, 0, 15, 11, 5] as const)[value.weapon]) : tf2HudUnavailable<number>("not-produced"),
     displayName: weaponName(value.weapon),
-    slot: 0,
-    position: weaponPosition(value.weapon),
+    slot: value.weapon === 5 ? 1 : fists ? 2 : 0,
+    position: value.weapon === 2 ? 1 : 0,
     selectable: true,
-    ammoDisplay: "clip-and-reserve",
-    clip: tf2HudAvailable(value.clip),
-    reserve: tf2HudAvailable(value.reserve),
-    maximumClip: tf2HudAvailable(value.maximumClip),
-    maximumReserve: tf2HudAvailable(value.maximumReserve),
+    ammoDisplay: fists ? "hidden" as const : minigun ? "total" as const : "clip-and-reserve" as const,
+    clip: minigun || fists ? tf2HudUnavailable<number>("not-applicable") : tf2HudAvailable(value.clip),
+    reserve: fists ? tf2HudUnavailable<number>("not-applicable") : tf2HudAvailable(value.reserve),
+    maximumClip: minigun || fists ? tf2HudUnavailable<number>("not-applicable") : tf2HudAvailable(value.maximumClip),
+    maximumReserve: fists ? tf2HudUnavailable<number>("not-applicable") : tf2HudAvailable(value.maximumReserve),
     reload: reload(value.reload),
     drawsCrosshair: true,
   })

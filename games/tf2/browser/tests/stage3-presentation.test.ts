@@ -111,6 +111,31 @@ test("encodes each Unicode model/activity exactly once into the fire-tick PMRQ v
   expect(new TextDecoder().decode(bytes.subarray(60, 60 + view.getUint32(56, true)))).toBe(request.model)
 })
 
+test("encodes stock fists as one hands-only viewmodel without an invented item", () => {
+  const request = Object.freeze({
+    identity: 7,
+    model: "models/weapons/c_models/c_heavy_arms.mdl",
+    handsOnlyViewmodel: true,
+    activity: "ACT_FISTS_VM_DRAW",
+    previousElapsedSeconds: 0,
+    elapsedSeconds: 0,
+    currentTimeSeconds: 0,
+    frameTimeSeconds: 0.015,
+    planarSpeed: 0,
+    screenAspectRatio: 16 / 9,
+    worldFarPlane: 32_768,
+    phase: 0 as const,
+    skin: 2,
+    lod: 0,
+    bodygroups: Object.freeze([0]),
+  })
+  const bytes = encodeModelPoseBatch([request])
+  expect(bytes[24]).toBe(2)
+  const modelBytes = new TextEncoder().encode(request.model).byteLength
+  expect(new DataView(bytes.buffer).getUint32(60 + modelBytes, true)).toBe(0)
+  expect(() => encodeModelPoseBatch([{ ...request, itemModel: "models/invented.mdl", itemBodygroups: [] }])).toThrow(ProjectilePresentationError)
+})
+
 test("encodes historical attachment-only fire samples without extra model transactions", () => {
   const request = Object.freeze({
     identity: 7,

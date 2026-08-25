@@ -2414,10 +2414,14 @@ fn main() -> Result<(), String> {
         "models/weapons/w_models/w_stickybomb.mdl",
         "models/weapons/c_models/c_soldier_arms.mdl",
         "models/weapons/c_models/c_demo_arms.mdl",
+        "models/weapons/c_models/c_heavy_arms.mdl",
         "models/player/soldier.mdl",
         "models/player/demo.mdl",
+        "models/player/heavy.mdl",
         "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl",
         "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl",
+        "models/weapons/c_models/c_minigun/c_minigun.mdl",
+        "models/weapons/c_models/c_shotgun/c_shotgun.mdl",
     ] {
         model_paths.insert(path.to_owned());
     }
@@ -2671,6 +2675,18 @@ fn main() -> Result<(), String> {
         "sound/weapons/pipe_bomb1.wav",
         "sound/weapons/pipe_bomb2.wav",
         "sound/weapons/pipe_bomb3.wav",
+        "sound/weapons/minigun_wind_up.wav",
+        "sound/weapons/minigun_wind_down.wav",
+        "sound/weapons/minigun_spin.wav",
+        "sound/weapons/minigun_shoot.wav",
+        "sound/weapons/shotgun_shoot.wav",
+        "sound/weapons/bat_draw_swoosh1.wav",
+        "sound/weapons/bat_draw_swoosh2.wav",
+        "sound/weapons/cbar_hitbod1.wav",
+        "sound/weapons/cbar_hitbod2.wav",
+        "sound/weapons/cbar_hitbod3.wav",
+        "sound/weapons/fist_hit_world1.wav",
+        "sound/weapons/fist_hit_world2.wav",
     ] {
         let consumer = if path.starts_with("sound/") {
             "audio-wave"
