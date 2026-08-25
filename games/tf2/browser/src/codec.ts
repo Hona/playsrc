@@ -36,7 +36,7 @@ export type Tf2RandomState = Readonly<{
 export type RandomDraw = Readonly<{
   context: 1 | 2
   decision: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8
-  definition: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11
+  definition: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13
   phase: 0 | 1 | 2
   raw: number
   result: Readonly<{ kind: "float-bits"; bits: number } | { kind: "integer"; value: number } | { kind: "rejected-integer" }>
@@ -45,7 +45,7 @@ export type AudioEvent = Readonly<{
   tick: bigint
   ordinal: number
   identity: 1 | 2
-  definition: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11
+  definition: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13
   sourceKind: 1 | 2
   sourceIdentity: number
   ownerIdentity: number | null
@@ -1339,7 +1339,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     const soundDecision = decision !== undefined && decision >= 1 && decision <= 4
     if (
       (context !== 1 && context !== 2) || decision === undefined || decision < 1 || decision > 8 ||
-      (soundDecision ? definition === undefined || definition < 1 || definition > 11 || (phase !== 1 && phase !== 2) : definition !== 0 || phase !== 0 || context !== 1) ||
+      (soundDecision ? definition === undefined || definition < 1 || definition > 13 || (phase !== 1 && phase !== 2) : definition !== 0 || phase !== 0 || context !== 1) ||
       raw <= 0 || raw >= 2_147_483_647 || resultKind === undefined || resultKind < 1 || resultKind > 3 ||
       data[item + 9] !== 0 || data[item + 10] !== 0 || data[item + 11] !== 0 ||
       ((decision === 3 || decision === 7 || decision === 8) ? resultKind === 1 : resultKind !== 1) ||
@@ -1364,7 +1364,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     const volume = view.getFloat32(item + 36, true), pitch = view.getFloat32(item + 40, true), soundLevel = view.getFloat32(item + 44, true)
     const expectedOrdinal = nextOrdinal.get(tick) ?? 0, waveCount = definition === 4 || definition === 6 ? 3 : definition === 11 ? 2 : 1
     if (
-      (identity !== 1 && identity !== 2) || definition === undefined || definition < 1 || definition > 11 ||
+      (identity !== 1 && identity !== 2) || definition === undefined || definition < 1 || definition > 13 ||
       (sourceKind !== 1 && sourceKind !== 2) || (hasOwner !== 0 && hasOwner !== 1) || data[item + 15] !== 0 ||
       ordinal !== expectedOrdinal || !canonicalIdentity(sourceIdentity) ||
       (hasOwner === 0 ? rawOwner !== 0xffff_ffff : !canonicalIdentity(rawOwner)) ||

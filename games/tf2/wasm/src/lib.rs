@@ -4143,6 +4143,8 @@ fn sound_definition_code(value: playsrc_tf2::SoundDefinition) -> u8 {
         playsrc_tf2::SoundDefinition::BatMiss => 9,
         playsrc_tf2::SoundDefinition::BatHitFlesh => 10,
         playsrc_tf2::SoundDefinition::BatHitWorld => 11,
+        playsrc_tf2::SoundDefinition::ScattergunReload => 12,
+        playsrc_tf2::SoundDefinition::PistolReload => 13,
     }
 }
 
@@ -7553,6 +7555,8 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>) -
         "Weapon_Bat.Miss",
         "Weapon_Bat.HitFlesh",
         "Weapon_Bat.HitWorld",
+        "Weapon_Scatter_Gun.WorldReload",
+        "Weapon_Pistol.WorldReload",
     ];
     let nodes = targets
         .iter()

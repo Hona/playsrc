@@ -2694,6 +2694,8 @@ fn main() -> Result<(), String> {
         "sound/weapons/bat_hit.wav",
         "sound/weapons/cbar_hit1.wav",
         "sound/weapons/cbar_hit2.wav",
+        "sound/weapons/scatter_gun_worldreload.wav",
+        "sound/weapons/pistol_worldreload.wav",
     ] {
         let consumer = if path.starts_with("sound/") {
             "audio-wave"

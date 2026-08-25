@@ -30,7 +30,7 @@ export type Tf2Hud = Readonly<{
 
 export type Tf2AudioRequest = Readonly<{
   voiceIdentity: number
-  definition: "Weapon_RPG.Single" | "Weapon_QuakeRPG.Single" | "Weapon_StickyBombLauncher.Single" | "BaseExplosionEffect.Sound" | "Weapon_QuakeRPG.Explode" | "Weapon_Grenade_Pipebomb.Explode" | "Weapon_Scatter_Gun.Single" | "Weapon_Pistol.Single" | "Weapon_Bat.Miss" | "Weapon_Bat.HitFlesh" | "Weapon_Bat.HitWorld"
+  definition: "Weapon_RPG.Single" | "Weapon_QuakeRPG.Single" | "Weapon_StickyBombLauncher.Single" | "BaseExplosionEffect.Sound" | "Weapon_QuakeRPG.Explode" | "Weapon_Grenade_Pipebomb.Explode" | "Weapon_Scatter_Gun.Single" | "Weapon_Pistol.Single" | "Weapon_Bat.Miss" | "Weapon_Bat.HitFlesh" | "Weapon_Bat.HitWorld" | "Weapon_Scatter_Gun.WorldReload" | "Weapon_Pistol.WorldReload"
   source: Readonly<{
     kind: "entity" | "world"
     identity: number
@@ -55,6 +55,8 @@ export function tf2Audio(snapshot: Snapshot): readonly Tf2AudioRequest[] {
     "Weapon_Bat.Miss",
     "Weapon_Bat.HitFlesh",
     "Weapon_Bat.HitWorld",
+    "Weapon_Scatter_Gun.WorldReload",
+    "Weapon_Pistol.WorldReload",
   ]
   return Object.freeze(snapshot.audioEvents.map((event) => Object.freeze({
     voiceIdentity: stable32(`${event.tick}:${event.ordinal}:${event.definition}:${event.sourceIdentity}`),
