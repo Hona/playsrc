@@ -1,3 +1,5 @@
+import type { Tf2TeamChoice, Tf2TeamSelectionServerState } from "./team-selection/model"
+
 export type VisibilityView = Readonly<{
   position: readonly [number, number, number]
   visibilityPosition?: readonly [number, number, number]
@@ -28,6 +30,7 @@ export type WorkerRequest = WorkerEnvelope & (
     }>
   | Readonly<{ id: number; kind: "read-coverage"; generation: number }>
   | Readonly<{ id: number; kind: "activate"; generation: number }>
+  | Readonly<{ id: number; kind: "team-selection"; generation: number; choice: Tf2TeamChoice | null }>
   | Readonly<{
       id: number
       kind: "configure-course"
@@ -122,6 +125,7 @@ export type WorkerResponse =
     }>
   | Readonly<{ id: number; kind: "coverage"; generation: number; payload: ArrayBuffer }>
   | Readonly<{ id: number; kind: "activated"; generation: number }>
+  | Readonly<{ id: number; kind: "team-selection"; generation: number; state: Tf2TeamSelectionServerState }>
   | Readonly<{ id: number; kind: "course-configured"; generation: number }>
   | Readonly<{ id: number; kind: "discarded"; generation: number }>
   | Readonly<{ id: number; kind: "particles"; generation: number; output: ArrayBuffer; timings: WorkerTransactionTimings }>

@@ -675,6 +675,7 @@ pub struct Session<W: GameplayWorld + Clone> {
     tick: u64,
     class: PlayerClass,
     team: PlayerTeam,
+    team_selection: team_selection::TeamSelection,
     weapon: Option<Weapon>,
     loadout: BTreeMap<Weapon, WeaponRuntime>,
     movement: MovementState,
@@ -801,6 +802,17 @@ impl<W: GameplayWorld + Clone> Session<W> {
             tick: 0,
             class: PlayerClass::Soldier,
             team: PlayerTeam::Red,
+            team_selection: {
+                let mut selection = team_selection::TeamSelection::new(
+                    PLAYER_IDENTITY,
+                    team_selection::TeamRules::default(),
+                )
+                .expect("local team selection identity is valid");
+                selection
+                    .select(team_selection::TeamChoice::Red, false)
+                    .expect("initial active RED player is admitted");
+                selection
+            },
             weapon: Some(Weapon::RocketLauncher),
             loadout,
             movement: MovementState::from_player(
@@ -858,6 +870,45 @@ impl<W: GameplayWorld + Clone> Session<W> {
             bots: None,
             posed_player_hitboxes: Vec::new(),
         }
+    }
+
+    pub fn connected(collision: W, spawn: [f32; 3], map: MapRuntime) -> Self {
+        let mut session = Self::new(collision, spawn, map);
+        session.team_selection = team_selection::TeamSelection::new(
+            PLAYER_IDENTITY,
+            team_selection::TeamRules::default(),
+        )
+        .expect("local team selection identity is valid");
+        session
+    }
+
+    pub fn team_snapshot(&self) -> team_selection::TeamSnapshot {
+        self.team_selection.snapshot()
+    }
+
+    pub fn select_team_choice(
+        &mut self,
+        choice: team_selection::TeamChoice,
+    ) -> Result<Option<class::PlayerTeam>, team_selection::TeamSelectionError> {
+        let before = self.team_selection.snapshot();
+        let random = if matches!(choice, team_selection::TeamChoice::Auto)
+            && before.red_count == before.blue_count
+            && !before.rules.attack_defend
+            && !before.rules.mann_vs_machine
+            && !(before.rules.highlander && before.teams_full)
+        {
+            self.authority_random
+                .random_int(0, 1)
+                .expect("auto-assign random interval is valid")
+                != 0
+        } else {
+            false
+        };
+        let selected = self.team_selection.select(choice, random)?;
+        if let Some(team) = selected {
+            self.team = team;
+        }
+        Ok(selected)
     }
 
     pub fn new_with_random_seeds(
@@ -1631,6 +1682,14 @@ impl<W: GameplayWorld + Clone> Session<W> {
             && team != self.team
         {
             self.team = team;
+            let _ = self.team_selection.select(
+                if matches!(team, PlayerTeam::Red) {
+                    team_selection::TeamChoice::Red
+                } else {
+                    team_selection::TeamChoice::Blue
+                },
+                false,
+            );
             self.fizzle_projectiles(projectile_events);
             self.lifecycle_events.push(LifecycleEvent {
                 tick: self.tick,

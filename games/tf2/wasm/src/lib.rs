@@ -961,7 +961,8 @@ unsafe fn compile_map(
             model_bounds,
         )
         .map_err(|_| 5_u32)?;
-        let mut session = playsrc_tf2::Session::new(gameplay_world.clone(), spawn.position, map);
+        let mut session =
+            playsrc_tf2::Session::connected(gameplay_world.clone(), spawn.position, map);
         if let Some(bytes) = resources.get("maps/pl_upward.nav") {
             let mesh = playsrc_nav::parse(
                 bytes,
@@ -3050,6 +3051,67 @@ pub unsafe extern "C" fn playsrc_spawn_copy(
     })
     .unwrap_or(0)
 }
+#[unsafe(no_mangle)]
+/// # Safety
+/// `pointer` must identify writable module memory of at least `capacity` bytes.
+pub unsafe extern "C" fn playsrc_team_state_copy(
+    handle: u32,
+    pointer: *mut u8,
+    capacity: usize,
+) -> usize {
+    const LENGTH: usize = 12;
+    if pointer.is_null() || capacity < LENGTH {
+        return 0;
+    }
+    with(handle, |slot| {
+        let Some(session) = slot.session.as_ref() else {
+            return 0;
+        };
+        let snapshot = session.team_snapshot();
+        let Ok(red) = u8::try_from(snapshot.red_count) else {
+            return 0;
+        };
+        let Ok(blue) = u8::try_from(snapshot.blue_count) else {
+            return 0;
+        };
+        let mut bytes = [0_u8; LENGTH];
+        bytes[..4].copy_from_slice(b"PTEM");
+        bytes[4..8].copy_from_slice(&1_u32.to_le_bytes());
+        bytes[8] = snapshot.local_team as u8;
+        bytes[9] = red;
+        bytes[10] = blue;
+        bytes[11] = snapshot.wire_flags();
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer, LENGTH) };
+        LENGTH
+    })
+    .unwrap_or(0)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_team_select(handle: u32, choice: u32) -> u32 {
+    let selected = match choice {
+        1 => playsrc_tf2::team_selection::TeamChoice::Spectator,
+        2 => playsrc_tf2::team_selection::TeamChoice::Red,
+        3 => playsrc_tf2::team_selection::TeamChoice::Blue,
+        4 => playsrc_tf2::team_selection::TeamChoice::Auto,
+        _ => return 0,
+    };
+    let Some((index, generation)) = decode(handle) else {
+        return 0;
+    };
+    let mut slots = slots().lock().expect("TF2 slots");
+    let Some(slot) = slots.get_mut(index) else {
+        return 0;
+    };
+    if slot.generation != generation || slot.payload.is_none() {
+        return 0;
+    }
+    let Some(session) = slot.session.as_mut() else {
+        return 0;
+    };
+    u32::from(session.select_team_choice(selected).is_ok())
+}
+
 #[unsafe(no_mangle)]
 /// # Safety
 /// `pointer` must identify one complete version-4 gameplay command in this module's memory.
