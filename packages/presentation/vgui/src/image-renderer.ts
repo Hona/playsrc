@@ -34,6 +34,18 @@ export type VguiImageRasterRequest = Readonly<{
   material: VguiImageMaterialPresentation
 }>
 
+export function isDirectVguiImageMaterial(material: VguiImageMaterialPresentation): boolean {
+  return material.shader === "unlit-generic"
+    && material.base.colorRead === "srgb"
+    && material.second === null
+    && material.detail === null
+    && !material.distanceAlpha
+    && !material.distanceAlphaFromDetail
+    && !material.softEdges
+    && !material.outline
+    && !material.glow
+}
+
 const clamp = (value: number, minimum = 0, maximum = 1): number => Math.max(minimum, Math.min(maximum, value))
 const mix = (left: number, right: number, amount: number): number => left + (right - left) * amount
 const smooth = (edge0: number, edge1: number, value: number): number => {

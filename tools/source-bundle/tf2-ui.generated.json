@@ -1741,6 +1741,182 @@
       ]
     },
     {
+      "logicalPath": "materials/hud/class_demoblue.vmt",
+      "sha256": "d5671930970b23a703c6e9248c4410e8fa2e7fbbe6720f6302dc664248680dbf",
+      "byteLength": 155,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/hud/class_demoblue.vtf",
+      "sha256": "5e2d2e32c86a1ba659e229224d3fca87ececf1ce524c9700a1c2fc724c968171",
+      "byteLength": 87640,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/hud/class_demored.vmt",
+      "sha256": "8e8d400d983731a9706b01b38ce5dedfdc09d13bddd806c427d0b8898d160809",
+      "byteLength": 154,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/hud/class_demored.vtf",
+      "sha256": "7491b169f11c47cfbae493a8834ee4d3fc89a36086cb9ea3dbce5044e8a3e8e9",
+      "byteLength": 87640,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/hud/class_engiblue.vmt",
+      "sha256": "5cc09a320548f8c297008fe83bee1ab0213e62f274bb74c88da740793e4eae5e",
+      "byteLength": 155,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/hud/class_engiblue.vtf",
+      "sha256": "06b737bf6f3c85329f69061afeecf6938d74f827cf3586e646792f3f8b0b0e3b",
+      "byteLength": 87616,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/hud/class_engired.vmt",
+      "sha256": "fd94e811aef40543e6bdd1b99ca6a0251e19ba19ffee1bffcc5faa5d281cb69f",
+      "byteLength": 154,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/hud/class_engired.vtf",
+      "sha256": "48c3154036beefd795686190ede89d1e6554923c09edcc5df44a90bf4c776491",
+      "byteLength": 87616,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/hud/class_heavyblue.vmt",
+      "sha256": "8f09d269cf0a8be7fec113abcfb13dacc134f4422a433033c2535567708c025d",
+      "byteLength": 156,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/hud/class_heavyblue.vtf",
+      "sha256": "d3876e4c01a18e638aede3261a6a64a2c2c78b918cf5581b9be657c70ad0c352",
+      "byteLength": 87616,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/hud/class_heavyred.vmt",
+      "sha256": "887c3a0c3e1c9bf6a67df16daccb68ff40f0131f8eac2d19ca9bbcbec1ee734d",
+      "byteLength": 155,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/hud/class_heavyred.vtf",
+      "sha256": "05b785f1fa81406a57d3303d85774b7e13336a95750ab327fa55f25479e807a5",
+      "byteLength": 87616,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/hud/class_medicblue.vmt",
+      "sha256": "6eba6819334da20a8291cb28d20d2c1ad21faca87e36ed317ddf4e8b53eb0cef",
+      "byteLength": 156,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/hud/class_medicblue.vtf",
+      "sha256": "a999ecad5b5980a5ce84e105323aab1e2b66c8fb6e9b0e4d60f7bc996f0ed2db",
+      "byteLength": 87640,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/hud/class_medicred.vmt",
+      "sha256": "0950d102d589433b8f05d0cbfadd9bf7e1436f44ff8426baf0def764229440e7",
+      "byteLength": 155,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/hud/class_medicred.vtf",
+      "sha256": "727322de6d678e34011fc227472b5736da5bb614deaafcd3e6ab4962d7d5f370",
+      "byteLength": 87640,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/hud/class_pyroblue.vmt",
+      "sha256": "9b4370b747d2956e00849fa366657128710459d82fd81d0c822d1e79e69471d9",
+      "byteLength": 155,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/hud/class_pyroblue.vtf",
+      "sha256": "32eca15d1db7e14d1ccfb33dd6f72a31d5de99aa2f5a90acf13c46e41f5e924d",
+      "byteLength": 87616,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/hud/class_pyrored.vmt",
+      "sha256": "c3341ceb9304c637b49a691fa74d0352ddaf0b2bcace809e5a8ced17f69cebf6",
+      "byteLength": 154,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/hud/class_pyrored.vtf",
+      "sha256": "c1236720a817972a715961e5563b232ca93df779726a290ea914537f5c858b30",
+      "byteLength": 87616,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/hud/class_scoutblue.vmt",
+      "sha256": "e5b18bdaeecd5d5c47dbe4662cfc24c1a425cca00f4876a3202d96697a96ce64",
+      "byteLength": 156,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/hud/class_scoutblue.vtf",
+      "sha256": "27741416ccf0b6fee2f5099b04f983325e61e21c8aebb717feeea4b54f79a609",
+      "byteLength": 87640,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
       "logicalPath": "materials/hud/class_scoutred.vmt",
       "sha256": "12e351df34c460ed25f72a789eb86fe9a51208c562ad798a5bcacf45004667ea",
       "byteLength": 155,
@@ -1751,6 +1927,70 @@
     {
       "logicalPath": "materials/hud/class_scoutred.vtf",
       "sha256": "79a8ff686e879a0fbf3a9f535270ebbbb522b7d1917cbcd51d17be8b785da22c",
+      "byteLength": 87640,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/hud/class_sniperblue.vmt",
+      "sha256": "4365bb8c12f3d177521db27a12073a3e97ab40831b4d6f0673126a6702de139f",
+      "byteLength": 157,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/hud/class_sniperblue.vtf",
+      "sha256": "1d9f9eb93fbfdbdb5270fd0333ecf0e3d9e1091f88dbf1b0371bbbc665a94547",
+      "byteLength": 87616,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/hud/class_sniperred.vmt",
+      "sha256": "000e11702e63d90038d845fc2448ffc4122de770248621643e35767a2cb81b3d",
+      "byteLength": 156,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/hud/class_sniperred.vtf",
+      "sha256": "04a763cee96a984d6d380999024e29e5b52119e374d68eef15a351f922303718",
+      "byteLength": 87616,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/hud/class_soldierblue.vmt",
+      "sha256": "e6428c5039f7aa97c08394a2c1e7e8a1311b14e4443a4867114d5b21123782ad",
+      "byteLength": 158,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/hud/class_soldierblue.vtf",
+      "sha256": "e9acac0a0b5cae33c44f51a0b66df90454c9b12461aa262bfbe5c721928ee398",
+      "byteLength": 87640,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/hud/class_soldierred.vmt",
+      "sha256": "35cf65e9141f777e7d1a7a1f1cca56363405fb61f9a0cabd9bfb0672f8453135",
+      "byteLength": 157,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/hud/class_soldierred.vtf",
+      "sha256": "516c1375eb96642b538fdbfc8d83128bd26f4bbcb5bc8a3b1eb5982725dbaea2",
       "byteLength": 87640,
       "kinds": [
         "texture"
@@ -6336,6 +6576,182 @@
     },
     {
       "identity": "image-0115",
+      "configuredValue": "../hud/class_demoblue",
+      "classification": "content-vtf",
+      "material": "materials/hud/class_demoblue.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/hud/class_demoblue.vtf",
+          "sha256": "5e2d2e32c86a1ba659e229224d3fca87ececf1ce524c9700a1c2fc724c968171",
+          "width": 256,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0116",
+      "configuredValue": "../hud/class_demored",
+      "classification": "content-vtf",
+      "material": "materials/hud/class_demored.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/hud/class_demored.vtf",
+          "sha256": "7491b169f11c47cfbae493a8834ee4d3fc89a36086cb9ea3dbce5044e8a3e8e9",
+          "width": 256,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0117",
+      "configuredValue": "../hud/class_engiblue",
+      "classification": "content-vtf",
+      "material": "materials/hud/class_engiblue.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/hud/class_engiblue.vtf",
+          "sha256": "06b737bf6f3c85329f69061afeecf6938d74f827cf3586e646792f3f8b0b0e3b",
+          "width": 256,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0118",
+      "configuredValue": "../hud/class_engired",
+      "classification": "content-vtf",
+      "material": "materials/hud/class_engired.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/hud/class_engired.vtf",
+          "sha256": "48c3154036beefd795686190ede89d1e6554923c09edcc5df44a90bf4c776491",
+          "width": 256,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0119",
+      "configuredValue": "../hud/class_heavyblue",
+      "classification": "content-vtf",
+      "material": "materials/hud/class_heavyblue.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/hud/class_heavyblue.vtf",
+          "sha256": "d3876e4c01a18e638aede3261a6a64a2c2c78b918cf5581b9be657c70ad0c352",
+          "width": 256,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0120",
+      "configuredValue": "../hud/class_heavyred",
+      "classification": "content-vtf",
+      "material": "materials/hud/class_heavyred.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/hud/class_heavyred.vtf",
+          "sha256": "05b785f1fa81406a57d3303d85774b7e13336a95750ab327fa55f25479e807a5",
+          "width": 256,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0121",
+      "configuredValue": "../hud/class_medicblue",
+      "classification": "content-vtf",
+      "material": "materials/hud/class_medicblue.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/hud/class_medicblue.vtf",
+          "sha256": "a999ecad5b5980a5ce84e105323aab1e2b66c8fb6e9b0e4d60f7bc996f0ed2db",
+          "width": 256,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0122",
+      "configuredValue": "../hud/class_medicred",
+      "classification": "content-vtf",
+      "material": "materials/hud/class_medicred.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/hud/class_medicred.vtf",
+          "sha256": "727322de6d678e34011fc227472b5736da5bb614deaafcd3e6ab4962d7d5f370",
+          "width": 256,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0123",
+      "configuredValue": "../hud/class_pyroblue",
+      "classification": "content-vtf",
+      "material": "materials/hud/class_pyroblue.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/hud/class_pyroblue.vtf",
+          "sha256": "32eca15d1db7e14d1ccfb33dd6f72a31d5de99aa2f5a90acf13c46e41f5e924d",
+          "width": 256,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0124",
+      "configuredValue": "../hud/class_pyrored",
+      "classification": "content-vtf",
+      "material": "materials/hud/class_pyrored.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/hud/class_pyrored.vtf",
+          "sha256": "c1236720a817972a715961e5563b232ca93df779726a290ea914537f5c858b30",
+          "width": 256,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0125",
+      "configuredValue": "../hud/class_scoutblue",
+      "classification": "content-vtf",
+      "material": "materials/hud/class_scoutblue.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/hud/class_scoutblue.vtf",
+          "sha256": "27741416ccf0b6fee2f5099b04f983325e61e21c8aebb717feeea4b54f79a609",
+          "width": 256,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0126",
       "configuredValue": "../hud/class_scoutred",
       "classification": "content-vtf",
       "material": "materials/hud/class_scoutred.vmt",
@@ -6351,7 +6767,71 @@
       ]
     },
     {
-      "identity": "image-0116",
+      "identity": "image-0127",
+      "configuredValue": "../hud/class_sniperblue",
+      "classification": "content-vtf",
+      "material": "materials/hud/class_sniperblue.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/hud/class_sniperblue.vtf",
+          "sha256": "1d9f9eb93fbfdbdb5270fd0333ecf0e3d9e1091f88dbf1b0371bbbc665a94547",
+          "width": 256,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0128",
+      "configuredValue": "../hud/class_sniperred",
+      "classification": "content-vtf",
+      "material": "materials/hud/class_sniperred.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/hud/class_sniperred.vtf",
+          "sha256": "04a763cee96a984d6d380999024e29e5b52119e374d68eef15a351f922303718",
+          "width": 256,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0129",
+      "configuredValue": "../hud/class_soldierblue",
+      "classification": "content-vtf",
+      "material": "materials/hud/class_soldierblue.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/hud/class_soldierblue.vtf",
+          "sha256": "e9acac0a0b5cae33c44f51a0b66df90454c9b12461aa262bfbe5c721928ee398",
+          "width": 256,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0130",
+      "configuredValue": "../hud/class_soldierred",
+      "classification": "content-vtf",
+      "material": "materials/hud/class_soldierred.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/hud/class_soldierred.vtf",
+          "sha256": "516c1375eb96642b538fdbfc8d83128bd26f4bbcb5bc8a3b1eb5982725dbaea2",
+          "width": 256,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0131",
       "configuredValue": "../hud/class_spy_outline",
       "classification": "content-vtf",
       "material": "materials/hud/class_spy_outline.vmt",
@@ -6367,7 +6847,7 @@
       ]
     },
     {
-      "identity": "image-0117",
+      "identity": "image-0132",
       "configuredValue": "../hud/class_spyblue",
       "classification": "content-vtf",
       "material": "materials/hud/class_spyblue.vmt",
@@ -6383,7 +6863,7 @@
       ]
     },
     {
-      "identity": "image-0118",
+      "identity": "image-0133",
       "configuredValue": "../hud/class_spyred",
       "classification": "content-vtf",
       "material": "materials/hud/class_spyred.vmt",
@@ -6399,7 +6879,7 @@
       ]
     },
     {
-      "identity": "image-0119",
+      "identity": "image-0134",
       "configuredValue": "../hud/color_panel_blu",
       "classification": "content-vtf",
       "material": "materials/hud/color_panel_blu.vmt",
@@ -6415,7 +6895,7 @@
       ]
     },
     {
-      "identity": "image-0120",
+      "identity": "image-0135",
       "configuredValue": "../hud/color_panel_blu_more_opaque",
       "classification": "content-vtf",
       "material": "materials/hud/color_panel_blu_more_opaque.vmt",
@@ -6431,7 +6911,7 @@
       ]
     },
     {
-      "identity": "image-0121",
+      "identity": "image-0136",
       "configuredValue": "../hud/color_panel_blu_opaque",
       "classification": "content-vtf",
       "material": "materials/hud/color_panel_blu_opaque.vmt",
@@ -6447,7 +6927,7 @@
       ]
     },
     {
-      "identity": "image-0122",
+      "identity": "image-0137",
       "configuredValue": "../hud/color_panel_brown",
       "classification": "content-vtf",
       "material": "materials/hud/color_panel_brown.vmt",
@@ -6463,7 +6943,7 @@
       ]
     },
     {
-      "identity": "image-0123",
+      "identity": "image-0138",
       "configuredValue": "../hud/color_panel_brown_opaque",
       "classification": "content-vtf",
       "material": "materials/hud/color_panel_brown_opaque.vmt",
@@ -6479,7 +6959,7 @@
       ]
     },
     {
-      "identity": "image-0124",
+      "identity": "image-0139",
       "configuredValue": "../hud/color_panel_clear",
       "classification": "content-vtf",
       "material": "materials/hud/color_panel_clear.vmt",
@@ -6495,7 +6975,7 @@
       ]
     },
     {
-      "identity": "image-0125",
+      "identity": "image-0140",
       "configuredValue": "../hud/color_panel_red",
       "classification": "content-vtf",
       "material": "materials/hud/color_panel_red.vmt",
@@ -6511,7 +6991,7 @@
       ]
     },
     {
-      "identity": "image-0126",
+      "identity": "image-0141",
       "configuredValue": "../hud/color_panel_red_more_opaque",
       "classification": "content-vtf",
       "material": "materials/hud/color_panel_red_more_opaque.vmt",
@@ -6527,7 +7007,7 @@
       ]
     },
     {
-      "identity": "image-0127",
+      "identity": "image-0142",
       "configuredValue": "../hud/color_panel_red_opaque",
       "classification": "content-vtf",
       "material": "materials/hud/color_panel_red_opaque.vmt",
@@ -6543,7 +7023,7 @@
       ]
     },
     {
-      "identity": "image-0128",
+      "identity": "image-0143",
       "configuredValue": "../hud/eng_sel_item_movable",
       "classification": "content-vtf",
       "material": "materials/hud/eng_sel_item_movable.vmt",
@@ -6559,7 +7039,7 @@
       ]
     },
     {
-      "identity": "image-0129",
+      "identity": "image-0144",
       "configuredValue": "../hud/health_bg",
       "classification": "content-vtf",
       "material": "materials/hud/health_bg.vmt",
@@ -6575,7 +7055,7 @@
       ]
     },
     {
-      "identity": "image-0130",
+      "identity": "image-0145",
       "configuredValue": "../hud/health_over_bg",
       "classification": "content-vtf",
       "material": "materials/hud/health_over_bg.vmt",
@@ -6591,7 +7071,7 @@
       ]
     },
     {
-      "identity": "image-0131",
+      "identity": "image-0146",
       "configuredValue": "../hud/ico_stickybomb_blue",
       "classification": "content-vtf",
       "material": "materials/hud/ico_stickybomb_blue.vmt",
@@ -6607,7 +7087,7 @@
       ]
     },
     {
-      "identity": "image-0132",
+      "identity": "image-0147",
       "configuredValue": "../hud/ico_stickybomb_blue_faded",
       "classification": "content-vtf",
       "material": "materials/hud/ico_stickybomb_blue_faded.vmt",
@@ -6623,7 +7103,7 @@
       ]
     },
     {
-      "identity": "image-0133",
+      "identity": "image-0148",
       "configuredValue": "../hud/ico_stickybomb_red",
       "classification": "content-vtf",
       "material": "materials/hud/ico_stickybomb_red.vmt",
@@ -6639,7 +7119,7 @@
       ]
     },
     {
-      "identity": "image-0134",
+      "identity": "image-0149",
       "configuredValue": "../hud/ico_stickybomb_red_faded",
       "classification": "content-vtf",
       "material": "materials/hud/ico_stickybomb_red_faded.vmt",
@@ -6655,7 +7135,7 @@
       ]
     },
     {
-      "identity": "image-0135",
+      "identity": "image-0150",
       "configuredValue": "../hud/leaderboard_class_heavy",
       "classification": "content-vtf",
       "material": "materials/hud/leaderboard_class_heavy.vmt",
@@ -6671,7 +7151,7 @@
       ]
     },
     {
-      "identity": "image-0136",
+      "identity": "image-0151",
       "configuredValue": "../hud/leaderboard_streak",
       "classification": "content-vtf",
       "material": "materials/hud/leaderboard_streak.vmt",
@@ -6687,7 +7167,7 @@
       ]
     },
     {
-      "identity": "image-0137",
+      "identity": "image-0152",
       "configuredValue": "../hud/misc_ammo_area_blue",
       "classification": "content-vtf",
       "material": "materials/hud/misc_ammo_area_blue.vmt",
@@ -6711,7 +7191,7 @@
       ]
     },
     {
-      "identity": "image-0138",
+      "identity": "image-0153",
       "configuredValue": "../hud/misc_ammo_area_blue_lodef",
       "classification": "content-vtf",
       "material": "materials/hud/misc_ammo_area_blue_lodef.vmt",
@@ -6735,7 +7215,7 @@
       ]
     },
     {
-      "identity": "image-0139",
+      "identity": "image-0154",
       "configuredValue": "../hud/misc_ammo_area_red",
       "classification": "content-vtf",
       "material": "materials/hud/misc_ammo_area_red.vmt",
@@ -6759,7 +7239,7 @@
       ]
     },
     {
-      "identity": "image-0140",
+      "identity": "image-0155",
       "configuredValue": "../hud/misc_ammo_area_red_lodef",
       "classification": "content-vtf",
       "material": "materials/hud/misc_ammo_area_red_lodef.vmt",
@@ -6783,7 +7263,7 @@
       ]
     },
     {
-      "identity": "image-0141",
+      "identity": "image-0156",
       "configuredValue": "../hud/panel_scalable_blue",
       "classification": "content-vtf",
       "material": "materials/hud/panel_scalable_blue.vmt",
@@ -6799,7 +7279,7 @@
       ]
     },
     {
-      "identity": "image-0142",
+      "identity": "image-0157",
       "configuredValue": "../hud/panel_scalable_red",
       "classification": "content-vtf",
       "material": "materials/hud/panel_scalable_red.vmt",
@@ -6815,7 +7295,7 @@
       ]
     },
     {
-      "identity": "image-0143",
+      "identity": "image-0158",
       "configuredValue": "../hud/tournament_panel_brown",
       "classification": "content-vtf",
       "material": "materials/hud/tournament_panel_brown.vmt",
@@ -6831,7 +7311,7 @@
       ]
     },
     {
-      "identity": "image-0144",
+      "identity": "image-0159",
       "configuredValue": "../logo/new_tf2_logo",
       "classification": "content-vtf",
       "material": "materials/logo/new_tf2_logo.vmt",
@@ -6847,7 +7327,7 @@
       ]
     },
     {
-      "identity": "image-0145",
+      "identity": "image-0160",
       "configuredValue": "../signs/death_wheel_whammy",
       "classification": "content-vtf",
       "material": "materials/signs/death_wheel_whammy.vmt",
@@ -6863,7 +7343,7 @@
       ]
     },
     {
-      "identity": "image-0146",
+      "identity": "image-0161",
       "configuredValue": "../vgui/bleed_drop",
       "classification": "content-vtf",
       "material": "materials/vgui/bleed_drop.vmt",
@@ -6879,7 +7359,7 @@
       ]
     },
     {
-      "identity": "image-0147",
+      "identity": "image-0162",
       "configuredValue": "../vgui/bleed_drop_grapple",
       "classification": "content-vtf",
       "material": "materials/vgui/bleed_drop_grapple.vmt",
@@ -6895,7 +7375,7 @@
       ]
     },
     {
-      "identity": "image-0148",
+      "identity": "image-0163",
       "configuredValue": "../vgui/covered_in_gas",
       "classification": "content-vtf",
       "material": "materials/vgui/covered_in_gas.vmt",
@@ -6911,7 +7391,7 @@
       ]
     },
     {
-      "identity": "image-0149",
+      "identity": "image-0164",
       "configuredValue": "../vgui/marked_for_death",
       "classification": "content-vtf",
       "material": "materials/vgui/marked_for_death.vmt",
@@ -6927,7 +7407,7 @@
       ]
     },
     {
-      "identity": "image-0150",
+      "identity": "image-0165",
       "configuredValue": "../vgui/new",
       "classification": "content-vtf",
       "material": "materials/vgui/new.vmt",
@@ -6943,7 +7423,7 @@
       ]
     },
     {
-      "identity": "image-0151",
+      "identity": "image-0166",
       "configuredValue": "../vgui/slowed",
       "classification": "content-vtf",
       "material": "materials/vgui/slowed.vmt",
@@ -6959,7 +7439,7 @@
       ]
     },
     {
-      "identity": "image-0152",
+      "identity": "image-0167",
       "configuredValue": "alert_rect",
       "classification": "content-vtf",
       "material": "materials/vgui/alert_rect.vmt",
@@ -6975,7 +7455,7 @@
       ]
     },
     {
-      "identity": "image-0153",
+      "identity": "image-0168",
       "configuredValue": "backpack_rect",
       "classification": "content-vtf",
       "material": "materials/vgui/backpack_rect.vmt",
@@ -6991,7 +7471,7 @@
       ]
     },
     {
-      "identity": "image-0154",
+      "identity": "image-0169",
       "configuredValue": "backpack_rect_color",
       "classification": "content-vtf",
       "material": "materials/vgui/backpack_rect_color.vmt",
@@ -7007,7 +7487,7 @@
       ]
     },
     {
-      "identity": "image-0155",
+      "identity": "image-0170",
       "configuredValue": "backpack_rect_mouseover",
       "classification": "content-vtf",
       "material": "materials/vgui/backpack_rect_mouseover.vmt",
@@ -7023,7 +7503,7 @@
       ]
     },
     {
-      "identity": "image-0156",
+      "identity": "image-0171",
       "configuredValue": "backpack_rect_mouseover_color",
       "classification": "content-vtf",
       "material": "materials/vgui/backpack_rect_mouseover_color.vmt",
@@ -7039,7 +7519,7 @@
       ]
     },
     {
-      "identity": "image-0157",
+      "identity": "image-0172",
       "configuredValue": "backpack_rect_selected",
       "classification": "content-vtf",
       "material": "materials/vgui/backpack_rect_selected.vmt",
@@ -7055,7 +7535,7 @@
       ]
     },
     {
-      "identity": "image-0158",
+      "identity": "image-0173",
       "configuredValue": "blog_back",
       "classification": "content-vtf",
       "material": "materials/vgui/blog_back.vmt",
@@ -7071,7 +7551,7 @@
       ]
     },
     {
-      "identity": "image-0159",
+      "identity": "image-0174",
       "configuredValue": "blog_forward",
       "classification": "content-vtf",
       "material": "materials/vgui/blog_forward.vmt",
@@ -7087,7 +7567,7 @@
       ]
     },
     {
-      "identity": "image-0160",
+      "identity": "image-0175",
       "configuredValue": "blog_tabby",
       "classification": "content-vtf",
       "material": "materials/vgui/blog_tabby.vmt",
@@ -7103,7 +7583,7 @@
       ]
     },
     {
-      "identity": "image-0161",
+      "identity": "image-0176",
       "configuredValue": "button_Alert",
       "classification": "content-vtf",
       "material": "materials/vgui/button_alert.vmt",
@@ -7119,7 +7599,7 @@
       ]
     },
     {
-      "identity": "image-0162",
+      "identity": "image-0177",
       "configuredValue": "button_MOTD",
       "classification": "content-vtf",
       "material": "materials/vgui/button_motd.vmt",
@@ -7135,7 +7615,7 @@
       ]
     },
     {
-      "identity": "image-0163",
+      "identity": "image-0178",
       "configuredValue": "button_central",
       "classification": "content-vtf",
       "material": "materials/vgui/button_central.vmt",
@@ -7151,7 +7631,7 @@
       ]
     },
     {
-      "identity": "image-0164",
+      "identity": "image-0179",
       "configuredValue": "button_central_adv",
       "classification": "content-vtf",
       "material": "materials/vgui/button_central_adv.vmt",
@@ -7167,7 +7647,7 @@
       ]
     },
     {
-      "identity": "image-0165",
+      "identity": "image-0180",
       "configuredValue": "button_central_adv_hover",
       "classification": "content-vtf",
       "material": "materials/vgui/button_central_adv_hover.vmt",
@@ -7183,7 +7663,7 @@
       ]
     },
     {
-      "identity": "image-0166",
+      "identity": "image-0181",
       "configuredValue": "button_central_depressed",
       "classification": "content-vtf",
       "material": "materials/vgui/button_central_depressed.vmt",
@@ -7199,7 +7679,7 @@
       ]
     },
     {
-      "identity": "image-0167",
+      "identity": "image-0182",
       "configuredValue": "button_central_depressed_armed",
       "classification": "content-vtf",
       "material": "materials/vgui/button_central_depressed_armed.vmt",
@@ -7215,7 +7695,7 @@
       ]
     },
     {
-      "identity": "image-0168",
+      "identity": "image-0183",
       "configuredValue": "button_central_disabled",
       "classification": "content-vtf",
       "material": "materials/vgui/button_central_disabled.vmt",
@@ -7231,7 +7711,7 @@
       ]
     },
     {
-      "identity": "image-0169",
+      "identity": "image-0184",
       "configuredValue": "button_central_hover",
       "classification": "content-vtf",
       "material": "materials/vgui/button_central_hover.vmt",
@@ -7247,7 +7727,7 @@
       ]
     },
     {
-      "identity": "image-0170",
+      "identity": "image-0185",
       "configuredValue": "button_glow",
       "classification": "content-vtf",
       "material": "materials/vgui/button_glow.vmt",
@@ -7263,7 +7743,7 @@
       ]
     },
     {
-      "identity": "image-0171",
+      "identity": "image-0186",
       "configuredValue": "button_holder_central",
       "classification": "content-vtf",
       "material": "materials/vgui/button_holder_central.vmt",
@@ -7279,7 +7759,7 @@
       ]
     },
     {
-      "identity": "image-0172",
+      "identity": "image-0187",
       "configuredValue": "button_holder_central_alpha",
       "classification": "content-vtf",
       "material": "materials/vgui/button_holder_central_alpha.vmt",
@@ -7295,7 +7775,7 @@
       ]
     },
     {
-      "identity": "image-0173",
+      "identity": "image-0188",
       "configuredValue": "button_quests_pda",
       "classification": "content-vtf",
       "material": "materials/vgui/button_quests_pda.vmt",
@@ -7311,7 +7791,7 @@
       ]
     },
     {
-      "identity": "image-0174",
+      "identity": "image-0189",
       "configuredValue": "button_streaming",
       "classification": "content-vtf",
       "material": "materials/vgui/button_streaming.vmt",
@@ -7327,7 +7807,7 @@
       ]
     },
     {
-      "identity": "image-0175",
+      "identity": "image-0190",
       "configuredValue": "callout_bubble",
       "classification": "content-vtf",
       "material": "materials/vgui/callout_bubble.vmt",
@@ -7343,7 +7823,7 @@
       ]
     },
     {
-      "identity": "image-0176",
+      "identity": "image-0191",
       "configuredValue": "class_icons/filter_all",
       "classification": "content-vtf",
       "material": "materials/vgui/class_icons/filter_all.vmt",
@@ -7359,7 +7839,7 @@
       ]
     },
     {
-      "identity": "image-0177",
+      "identity": "image-0192",
       "configuredValue": "class_icons/filter_all_motd",
       "classification": "content-vtf",
       "material": "materials/vgui/class_icons/filter_all_motd.vmt",
@@ -7375,7 +7855,7 @@
       ]
     },
     {
-      "identity": "image-0178",
+      "identity": "image-0193",
       "configuredValue": "close_button",
       "classification": "content-vtf",
       "material": "materials/vgui/close_button.vmt",
@@ -7391,7 +7871,7 @@
       ]
     },
     {
-      "identity": "image-0179",
+      "identity": "image-0194",
       "configuredValue": "crosshair_bg",
       "classification": "content-vtf",
       "material": "materials/vgui/crosshair_bg.vmt",
@@ -7407,7 +7887,7 @@
       ]
     },
     {
-      "identity": "image-0180",
+      "identity": "image-0195",
       "configuredValue": "cyoa/cyoa_map_screen_border",
       "classification": "content-vtf",
       "material": "materials/vgui/cyoa/cyoa_map_screen_border.vmt",
@@ -7423,7 +7903,7 @@
       ]
     },
     {
-      "identity": "image-0181",
+      "identity": "image-0196",
       "configuredValue": "cyoa/node_view_border",
       "classification": "content-vtf",
       "material": "materials/vgui/cyoa/node_view_border.vmt",
@@ -7439,7 +7919,7 @@
       ]
     },
     {
-      "identity": "image-0182",
+      "identity": "image-0197",
       "configuredValue": "cyoa/node_view_border_active",
       "classification": "content-vtf",
       "material": "materials/vgui/cyoa/node_view_border_active.vmt",
@@ -7455,7 +7935,7 @@
       ]
     },
     {
-      "identity": "image-0183",
+      "identity": "image-0198",
       "configuredValue": "cyoa/node_view_border_inactive",
       "classification": "content-vtf",
       "material": "materials/vgui/cyoa/node_view_border_inactive.vmt",
@@ -7471,7 +7951,7 @@
       ]
     },
     {
-      "identity": "image-0184",
+      "identity": "image-0199",
       "configuredValue": "cyoa/node_view_border_turnin",
       "classification": "content-vtf",
       "material": "materials/vgui/cyoa/node_view_border_turnin.vmt",
@@ -7487,7 +7967,7 @@
       ]
     },
     {
-      "identity": "image-0185",
+      "identity": "image-0200",
       "configuredValue": "featured_corner",
       "classification": "content-vtf",
       "material": "materials/vgui/featured_corner.vmt",
@@ -7503,7 +7983,7 @@
       ]
     },
     {
-      "identity": "image-0186",
+      "identity": "image-0201",
       "configuredValue": "gamma",
       "classification": "content-vtf",
       "material": "materials/vgui/gamma.vmt",
@@ -7519,7 +7999,7 @@
       ]
     },
     {
-      "identity": "image-0187",
+      "identity": "image-0202",
       "configuredValue": "gc_dc",
       "classification": "content-vtf",
       "material": "materials/vgui/gc_dc.vmt",
@@ -7535,7 +8015,7 @@
       ]
     },
     {
-      "identity": "image-0188",
+      "identity": "image-0203",
       "configuredValue": "glyph_achievements",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_achievements.vmt",
@@ -7551,7 +8031,7 @@
       ]
     },
     {
-      "identity": "image-0189",
+      "identity": "image-0204",
       "configuredValue": "glyph_alert",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_alert.vmt",
@@ -7567,7 +8047,7 @@
       ]
     },
     {
-      "identity": "image-0190",
+      "identity": "image-0205",
       "configuredValue": "glyph_bug",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_bug.vmt",
@@ -7583,7 +8063,7 @@
       ]
     },
     {
-      "identity": "image-0191",
+      "identity": "image-0206",
       "configuredValue": "glyph_chat",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_chat.vmt",
@@ -7599,7 +8079,7 @@
       ]
     },
     {
-      "identity": "image-0192",
+      "identity": "image-0207",
       "configuredValue": "glyph_commentary",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_commentary.vmt",
@@ -7615,7 +8095,7 @@
       ]
     },
     {
-      "identity": "image-0193",
+      "identity": "image-0208",
       "configuredValue": "glyph_create",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_create.vmt",
@@ -7631,7 +8111,7 @@
       ]
     },
     {
-      "identity": "image-0194",
+      "identity": "image-0209",
       "configuredValue": "glyph_disconnect",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_disconnect.vmt",
@@ -7647,7 +8127,7 @@
       ]
     },
     {
-      "identity": "image-0195",
+      "identity": "image-0210",
       "configuredValue": "glyph_forums",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_forums.vmt",
@@ -7663,7 +8143,7 @@
       ]
     },
     {
-      "identity": "image-0196",
+      "identity": "image-0211",
       "configuredValue": "glyph_items",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_items.vmt",
@@ -7679,7 +8159,7 @@
       ]
     },
     {
-      "identity": "image-0197",
+      "identity": "image-0212",
       "configuredValue": "glyph_multiplayer",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_multiplayer.vmt",
@@ -7695,7 +8175,7 @@
       ]
     },
     {
-      "identity": "image-0198",
+      "identity": "image-0213",
       "configuredValue": "glyph_muted",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_muted.vmt",
@@ -7711,7 +8191,7 @@
       ]
     },
     {
-      "identity": "image-0199",
+      "identity": "image-0214",
       "configuredValue": "glyph_options",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_options.vmt",
@@ -7727,7 +8207,7 @@
       ]
     },
     {
-      "identity": "image-0200",
+      "identity": "image-0215",
       "configuredValue": "glyph_quit",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_quit.vmt",
@@ -7743,7 +8223,7 @@
       ]
     },
     {
-      "identity": "image-0201",
+      "identity": "image-0216",
       "configuredValue": "glyph_steamworkshop",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_steamworkshop.vmt",
@@ -7759,7 +8239,7 @@
       ]
     },
     {
-      "identity": "image-0202",
+      "identity": "image-0217",
       "configuredValue": "glyph_store",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_store.vmt",
@@ -7775,7 +8255,7 @@
       ]
     },
     {
-      "identity": "image-0203",
+      "identity": "image-0218",
       "configuredValue": "glyph_tutorial",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_tutorial.vmt",
@@ -7791,7 +8271,7 @@
       ]
     },
     {
-      "identity": "image-0204",
+      "identity": "image-0219",
       "configuredValue": "glyph_tv",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_tv.vmt",
@@ -7807,7 +8287,7 @@
       ]
     },
     {
-      "identity": "image-0205",
+      "identity": "image-0220",
       "configuredValue": "glyph_vr",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_vr.vmt",
@@ -7823,7 +8303,7 @@
       ]
     },
     {
-      "identity": "image-0206",
+      "identity": "image-0221",
       "configuredValue": "gradient_pure_black",
       "classification": "content-vtf",
       "material": "materials/vgui/gradient_pure_black.vmt",
@@ -7839,7 +8319,7 @@
       ]
     },
     {
-      "identity": "image-0207",
+      "identity": "image-0222",
       "configuredValue": "icon_checkbox",
       "classification": "content-vtf",
       "material": "materials/vgui/icon_checkbox.vmt",
@@ -7855,7 +8335,7 @@
       ]
     },
     {
-      "identity": "image-0208",
+      "identity": "image-0223",
       "configuredValue": "icon_resume",
       "classification": "content-vtf",
       "material": "materials/vgui/icon_resume.vmt",
@@ -7871,7 +8351,7 @@
       ]
     },
     {
-      "identity": "image-0209",
+      "identity": "image-0224",
       "configuredValue": "icon_whistle",
       "classification": "content-vtf",
       "material": "materials/vgui/icon_whistle.vmt",
@@ -7887,7 +8367,7 @@
       ]
     },
     {
-      "identity": "image-0210",
+      "identity": "image-0225",
       "configuredValue": "info",
       "classification": "content-vtf",
       "material": "materials/vgui/info.vmt",
@@ -7903,7 +8383,7 @@
       ]
     },
     {
-      "identity": "image-0211",
+      "identity": "image-0226",
       "configuredValue": "inner_shadow_border",
       "classification": "content-vtf",
       "material": "materials/vgui/inner_shadow_border.vmt",
@@ -7919,7 +8399,7 @@
       ]
     },
     {
-      "identity": "image-0212",
+      "identity": "image-0227",
       "configuredValue": "item_bg",
       "classification": "content-vtf",
       "material": "materials/vgui/item_bg.vmt",
@@ -7935,7 +8415,7 @@
       ]
     },
     {
-      "identity": "image-0213",
+      "identity": "image-0228",
       "configuredValue": "loadout_bottom_gradient",
       "classification": "content-vtf",
       "material": "materials/vgui/loadout_bottom_gradient.vmt",
@@ -7951,7 +8431,7 @@
       ]
     },
     {
-      "identity": "image-0214",
+      "identity": "image-0229",
       "configuredValue": "loadout_header",
       "classification": "content-vtf",
       "material": "materials/vgui/loadout_header.vmt",
@@ -7967,7 +8447,7 @@
       ]
     },
     {
-      "identity": "image-0215",
+      "identity": "image-0230",
       "configuredValue": "loadout_rect",
       "classification": "content-vtf",
       "material": "materials/vgui/loadout_rect.vmt",
@@ -7983,7 +8463,7 @@
       ]
     },
     {
-      "identity": "image-0216",
+      "identity": "image-0231",
       "configuredValue": "loadout_rect_mouseover",
       "classification": "content-vtf",
       "material": "materials/vgui/loadout_rect_mouseover.vmt",
@@ -7999,7 +8479,7 @@
       ]
     },
     {
-      "identity": "image-0217",
+      "identity": "image-0232",
       "configuredValue": "loadout_rect_red",
       "classification": "content-vtf",
       "material": "materials/vgui/loadout_rect_red.vmt",
@@ -8015,7 +8495,7 @@
       ]
     },
     {
-      "identity": "image-0218",
+      "identity": "image-0233",
       "configuredValue": "loadout_round_rect",
       "classification": "content-vtf",
       "material": "materials/vgui/loadout_round_rect.vmt",
@@ -8031,7 +8511,7 @@
       ]
     },
     {
-      "identity": "image-0219",
+      "identity": "image-0234",
       "configuredValue": "loadout_round_rect_selected",
       "classification": "content-vtf",
       "material": "materials/vgui/loadout_round_rect_selected.vmt",
@@ -8047,7 +8527,7 @@
       ]
     },
     {
-      "identity": "image-0220",
+      "identity": "image-0235",
       "configuredValue": "loadout_solid_line",
       "classification": "content-vtf",
       "material": "materials/vgui/loadout_solid_line.vmt",
@@ -8063,7 +8543,7 @@
       ]
     },
     {
-      "identity": "image-0221",
+      "identity": "image-0236",
       "configuredValue": "locked_icon",
       "classification": "content-vtf",
       "material": "materials/vgui/locked_icon.vmt",
@@ -8079,14 +8559,14 @@
       ]
     },
     {
-      "identity": "image-0222",
+      "identity": "image-0237",
       "configuredValue": "logos/UI/spray",
       "classification": "missing-material",
       "material": null,
       "textures": []
     },
     {
-      "identity": "image-0223",
+      "identity": "image-0238",
       "configuredValue": "new_corner",
       "classification": "content-vtf",
       "material": "materials/vgui/new_corner.vmt",
@@ -8102,7 +8582,7 @@
       ]
     },
     {
-      "identity": "image-0224",
+      "identity": "image-0239",
       "configuredValue": "outer_shadow_border",
       "classification": "content-vtf",
       "material": "materials/vgui/outer_shadow_border.vmt",
@@ -8118,7 +8598,7 @@
       ]
     },
     {
-      "identity": "image-0225",
+      "identity": "image-0240",
       "configuredValue": "replay/dullgreybox",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/dullgreybox.vmt",
@@ -8134,7 +8614,7 @@
       ]
     },
     {
-      "identity": "image-0226",
+      "identity": "image-0241",
       "configuredValue": "replay/fatlineborder",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/fatlineborder.vmt",
@@ -8150,7 +8630,7 @@
       ]
     },
     {
-      "identity": "image-0227",
+      "identity": "image-0242",
       "configuredValue": "replay/fatlineborder_red",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/fatlineborder_red.vmt",
@@ -8166,7 +8646,7 @@
       ]
     },
     {
-      "identity": "image-0228",
+      "identity": "image-0243",
       "configuredValue": "replay/graydialogborder",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/graydialogborder.vmt",
@@ -8182,7 +8662,7 @@
       ]
     },
     {
-      "identity": "image-0229",
+      "identity": "image-0244",
       "configuredValue": "replay/outlinedgreybox",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/outlinedgreybox.vmt",
@@ -8198,7 +8678,7 @@
       ]
     },
     {
-      "identity": "image-0230",
+      "identity": "image-0245",
       "configuredValue": "replay/panel_scalable_balloon",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/panel_scalable_balloon.vmt",
@@ -8214,7 +8694,7 @@
       ]
     },
     {
-      "identity": "image-0231",
+      "identity": "image-0246",
       "configuredValue": "replay/panel_scalable_default",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/panel_scalable_default.vmt",
@@ -8230,7 +8710,7 @@
       ]
     },
     {
-      "identity": "image-0232",
+      "identity": "image-0247",
       "configuredValue": "replay/panel_scalable_highlight",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/panel_scalable_highlight.vmt",
@@ -8246,7 +8726,7 @@
       ]
     },
     {
-      "identity": "image-0233",
+      "identity": "image-0248",
       "configuredValue": "replay/panel_scalable_transparent",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/panel_scalable_transparent.vmt",
@@ -8262,7 +8742,7 @@
       ]
     },
     {
-      "identity": "image-0234",
+      "identity": "image-0249",
       "configuredValue": "resource/icon_vac",
       "classification": "content-vtf",
       "material": "materials/vgui/resource/icon_vac.vmt",
@@ -8278,7 +8758,7 @@
       ]
     },
     {
-      "identity": "image-0235",
+      "identity": "image-0250",
       "configuredValue": "resource/mic_meter_dead",
       "classification": "content-vtf",
       "material": "materials/vgui/resource/mic_meter_dead.vmt",
@@ -8294,7 +8774,7 @@
       ]
     },
     {
-      "identity": "image-0236",
+      "identity": "image-0251",
       "configuredValue": "resource/mic_meter_live",
       "classification": "content-vtf",
       "material": "materials/vgui/resource/mic_meter_live.vmt",
@@ -8310,7 +8790,7 @@
       ]
     },
     {
-      "identity": "image-0237",
+      "identity": "image-0252",
       "configuredValue": "sale_corner",
       "classification": "content-vtf",
       "material": "materials/vgui/sale_corner.vmt",
@@ -8326,7 +8806,7 @@
       ]
     },
     {
-      "identity": "image-0238",
+      "identity": "image-0253",
       "configuredValue": "scroll_button_off",
       "classification": "content-vtf",
       "material": "materials/vgui/scroll_button_off.vmt",
@@ -8342,7 +8822,7 @@
       ]
     },
     {
-      "identity": "image-0239",
+      "identity": "image-0254",
       "configuredValue": "scroll_well",
       "classification": "content-vtf",
       "material": "materials/vgui/scroll_well.vmt",
@@ -8358,7 +8838,7 @@
       ]
     },
     {
-      "identity": "image-0240",
+      "identity": "image-0255",
       "configuredValue": "store/innershadow_border",
       "classification": "content-vtf",
       "material": "materials/vgui/store/innershadow_border.vmt",
@@ -8374,7 +8854,7 @@
       ]
     },
     {
-      "identity": "image-0241",
+      "identity": "image-0256",
       "configuredValue": "store/store_add_to_cart",
       "classification": "content-vtf",
       "material": "materials/vgui/store/store_add_to_cart.vmt",
@@ -8390,7 +8870,7 @@
       ]
     },
     {
-      "identity": "image-0242",
+      "identity": "image-0257",
       "configuredValue": "store/store_coupon_border",
       "classification": "content-vtf",
       "material": "materials/vgui/store/store_coupon_border.vmt",
@@ -8406,7 +8886,7 @@
       ]
     },
     {
-      "identity": "image-0243",
+      "identity": "image-0258",
       "configuredValue": "store/store_featured_item_bg01",
       "classification": "content-vtf",
       "material": "materials/vgui/store/store_featured_item_bg01.vmt",
@@ -8422,7 +8902,7 @@
       ]
     },
     {
-      "identity": "image-0244",
+      "identity": "image-0259",
       "configuredValue": "store/store_inspector_bg_small",
       "classification": "content-vtf",
       "material": "materials/vgui/store/store_inspector_bg_small.vmt",
@@ -8438,7 +8918,7 @@
       ]
     },
     {
-      "identity": "image-0245",
+      "identity": "image-0260",
       "configuredValue": "store/store_tab_selected",
       "classification": "content-vtf",
       "material": "materials/vgui/store/store_tab_selected.vmt",
@@ -8454,7 +8934,7 @@
       ]
     },
     {
-      "identity": "image-0246",
+      "identity": "image-0261",
       "configuredValue": "store/store_tab_unselected",
       "classification": "content-vtf",
       "material": "materials/vgui/store/store_tab_unselected.vmt",
@@ -8470,7 +8950,7 @@
       ]
     },
     {
-      "identity": "image-0247",
+      "identity": "image-0262",
       "configuredValue": "techcredits/bink",
       "classification": "content-vtf",
       "material": "materials/vgui/techcredits/bink.vmt",
@@ -8486,14 +8966,14 @@
       ]
     },
     {
-      "identity": "image-0248",
+      "identity": "image-0263",
       "configuredValue": "vgui/hud/icon_commentary",
       "classification": "missing-material",
       "material": null,
       "textures": []
     },
     {
-      "identity": "image-0249",
+      "identity": "image-0264",
       "configuredValue": "viewmode_loaner",
       "classification": "content-vtf",
       "material": "materials/vgui/viewmode_loaner.vmt",
@@ -8510,66 +8990,6 @@
     }
   ],
   "dynamicImages": [
-    {
-      "configuredValue": "../hud/class_demoblue",
-      "material": "materials/hud/class_demoblue.vmt"
-    },
-    {
-      "configuredValue": "../hud/class_demored",
-      "material": "materials/hud/class_demored.vmt"
-    },
-    {
-      "configuredValue": "../hud/class_engiblue",
-      "material": "materials/hud/class_engiblue.vmt"
-    },
-    {
-      "configuredValue": "../hud/class_engired",
-      "material": "materials/hud/class_engired.vmt"
-    },
-    {
-      "configuredValue": "../hud/class_heavyblue",
-      "material": "materials/hud/class_heavyblue.vmt"
-    },
-    {
-      "configuredValue": "../hud/class_heavyred",
-      "material": "materials/hud/class_heavyred.vmt"
-    },
-    {
-      "configuredValue": "../hud/class_medicblue",
-      "material": "materials/hud/class_medicblue.vmt"
-    },
-    {
-      "configuredValue": "../hud/class_medicred",
-      "material": "materials/hud/class_medicred.vmt"
-    },
-    {
-      "configuredValue": "../hud/class_pyroblue",
-      "material": "materials/hud/class_pyroblue.vmt"
-    },
-    {
-      "configuredValue": "../hud/class_pyrored",
-      "material": "materials/hud/class_pyrored.vmt"
-    },
-    {
-      "configuredValue": "../hud/class_scoutblue",
-      "material": "materials/hud/class_scoutblue.vmt"
-    },
-    {
-      "configuredValue": "../hud/class_sniperblue",
-      "material": "materials/hud/class_sniperblue.vmt"
-    },
-    {
-      "configuredValue": "../hud/class_sniperred",
-      "material": "materials/hud/class_sniperred.vmt"
-    },
-    {
-      "configuredValue": "../hud/class_soldierblue",
-      "material": "materials/hud/class_soldierblue.vmt"
-    },
-    {
-      "configuredValue": "../hud/class_soldierred",
-      "material": "materials/hud/class_soldierred.vmt"
-    },
     {
       "configuredValue": "hud/health_color",
       "material": "materials/hud/health_color.vmt"

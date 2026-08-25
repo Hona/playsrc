@@ -367,6 +367,18 @@ describe("immutable TF2 HUD binding", () => {
           .toMatchObject({ value: { value: `../hud/${expectedImages[team][index]}` } })
       }
     }
+    for (const overrides of [
+      { class: unavailable("not-produced") },
+      { team: unavailable("not-produced") },
+      { team: tf2HudAvailable(1 as const) },
+    ]) {
+      const current = snapshot(22n, { player: tf2HudAvailable(player(overrides)) })
+      const values = bindTf2Hud({ previous: unavailable("initial"), snapshot: current, events: [] }).values
+      expect(value(values, "visible", "PlayerStatusClassImage")).toMatchObject({ value: false })
+      expect(value(values, "visible", "PlayerStatusClassImageBG")).toMatchObject({ value: false })
+      expect(value(values, "visible", "classmodelpanel")).toMatchObject({ value: false })
+      expect(value(values, "visible", "classmodelpanelBG")).toMatchObject({ value: false })
+    }
 
     const everyReviewedCondition = words(
       ...TF2_GROUPED_CONDITION_PANELS.map((item) => item.condition),

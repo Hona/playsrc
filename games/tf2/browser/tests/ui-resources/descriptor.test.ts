@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import bundleManifest from "../../../../../tools/source-bundle/tf2-ui.generated.json" with { type: "json" }
-import { TF2_HUD_DYNAMIC_IMAGES } from "../../src/hud"
+import { TF2_CLASS_IMAGES, TF2_HUD_DYNAMIC_IMAGES } from "../../src/hud"
 import { configuredTf2UiResourceInput } from "../../src/ui-resources/configured.generated"
 import {
   classifyTf2UiCommand,
@@ -16,8 +16,18 @@ const cloneInput = (): any => structuredClone(configuredTf2UiResourceInput)
 describe("configured TF2 UI resource descriptor", () => {
   test("exports every code-selected HUD image through the generated source-bundle closure", () => {
     const staticImages = new Set(tf2UiResources.images.map((image) => image.configuredValue.toLowerCase()))
+    const dependencies = new Map(bundleManifest.dependencies.map((dependency) => [dependency.logicalPath, dependency]))
     const dynamic = new Map(bundleManifest.dynamicImages.map((image) => [image.configuredValue.toLowerCase(), image.material]))
-    expect(bundleManifest.dynamicImages).toHaveLength(17)
+    expect(bundleManifest.dynamicImages).toHaveLength(2)
+    for (const image of Object.values(TF2_CLASS_IMAGES).flatMap((images) => Object.values(images))) {
+      const record = tf2UiResources.images.find((candidate) => candidate.configuredValue === image)
+      expect(record?.classification, image).toBe("content-vtf")
+      expect(record?.material?.sha256, image).toMatch(/^[0-9a-f]{64}$/u)
+      expect(record?.textures, image).toHaveLength(1)
+      expect(dependencies.get(record!.material!.logicalPath)?.kinds, image).toContain("material")
+      expect(dependencies.get(record!.textures[0]!.source.logicalPath)?.kinds, image).toContain("texture")
+      expect(dynamic.has(image.toLowerCase()), image).toBeFalse()
+    }
     for (const image of TF2_HUD_DYNAMIC_IMAGES) {
       const folded = image.toLowerCase()
       expect(staticImages.has(folded) || dynamic.has(folded), image).toBeTrue()
@@ -77,7 +87,7 @@ describe("configured TF2 UI resource descriptor", () => {
     expect(tf2UiResources.localization.tokens).toHaveLength(454)
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#Valve_Move_Forward")?.definitions[0]?.value).toBe("Move forward")
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#TF_OptionCategory_Combat")?.definitions[0]?.value).toBe("Combat Options")
-    expect(tf2UiResources.images).toHaveLength(249)
+    expect(tf2UiResources.images).toHaveLength(264)
     expect(tf2UiResources.fonts).toHaveLength(48)
     expect(tf2UiResources.advancedOptions).toHaveLength(88)
     expect(tf2UiResources.keyboardActions).toHaveLength(70)

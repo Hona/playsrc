@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { shadeVguiImage, type VguiImageRasterRequest, type VguiImageRasterTexturePixels } from "../src/image-renderer"
+import { isDirectVguiImageMaterial, shadeVguiImage, type VguiImageRasterRequest, type VguiImageRasterTexturePixels } from "../src/image-renderer"
 import type { VguiImageMaterialPresentation, VguiImageMaterialTexture } from "../src"
 
 const texture = (identity: string): VguiImageMaterialTexture => Object.freeze({
@@ -64,6 +64,23 @@ const request = (material: VguiImageMaterialPresentation): VguiImageRasterReques
 })
 
 describe("configured VGUI image material raster", () => {
+  test("uses authored sRGB textures directly only when the material has no shader effects", () => {
+    const srgb = Object.freeze({ ...texture("base"), colorRead: "srgb" as const })
+    const direct = baseMaterial({ base: srgb })
+    expect(isDirectVguiImageMaterial(direct)).toBeTrue()
+    expect(isDirectVguiImageMaterial(baseMaterial())).toBeFalse()
+    for (const override of [
+      { shader: "unlit-two-texture" as const },
+      { second: texture("second") },
+      { detail: texture("detail") },
+      { distanceAlpha: true },
+      { distanceAlphaFromDetail: true },
+      { softEdges: true },
+      { outline: true },
+      { glow: true },
+    ]) expect(isDirectVguiImageMaterial(baseMaterial({ base: srgb, ...override }))).toBeFalse()
+  })
+
   test("applies detail blend mode 8 and distance-alpha soft mask in target order", () => {
     const detailTexture = texture("detail")
     const material = baseMaterial({
