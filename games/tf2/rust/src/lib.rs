@@ -5,6 +5,7 @@ pub mod bot;
 pub mod class;
 pub mod combat;
 pub mod condition;
+pub mod ctf;
 pub mod damage;
 pub mod health;
 mod map_runtime;
@@ -250,6 +251,7 @@ pub struct Command {
     pub reload: bool,
     pub reset: bool,
     pub respawn: bool,
+    pub drop_item: bool,
     pub select_class: Option<PlayerClass>,
     pub select_random_class: bool,
     pub select_team: Option<PlayerTeam>,
@@ -633,6 +635,7 @@ pub struct Snapshot {
     pub projectile_events: Vec<ProjectileEvent>,
     pub entity_transforms: Vec<EntityTransform>,
     pub entity_events: Vec<EntityEvent>,
+    pub objectives: Option<ctf::Snapshot>,
     pub jump: Option<jump::TickOutput>,
     pub events: Vec<Event>,
     pub bots: Vec<bot::Snapshot>,
@@ -735,6 +738,7 @@ pub struct Session<W: GameplayWorld + Clone> {
     hurt_active: std::collections::BTreeSet<u32>,
     hurt_applied: std::collections::BTreeSet<u32>,
     respawn_touch_count: u32,
+    ctf_capture_bonus_until: Option<u64>,
     jump: Option<jump::Session>,
     bots: Option<bot::BotWorld>,
     posed_player_hitboxes: Vec<PosedPlayerHitbox>,
@@ -754,6 +758,7 @@ pub enum Error {
     Random(RandomError),
     Bot(bot::Error),
     TeamSelection(team_selection::TeamSelectionError),
+    Objectives(ctf::Error),
 }
 
 impl From<MoveError> for Error {
@@ -886,6 +891,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             hurt_active: std::collections::BTreeSet::new(),
             hurt_applied: std::collections::BTreeSet::new(),
             respawn_touch_count: 0,
+            ctf_capture_bonus_until: None,
             jump: None,
             bots: None,
             posed_player_hitboxes: Vec::new(),
@@ -1221,6 +1227,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 graph,
                 &self.collision,
                 self.movement_configuration.tick_interval,
+                self.map.objectives(),
             )
             .map_err(Error::Bot)?,
         );
@@ -1300,6 +1307,15 @@ impl<W: GameplayWorld + Clone> Session<W> {
             _ => {}
         }
 
+        if self
+            .ctf_capture_bonus_until
+            .is_some_and(|deadline| self.tick >= deadline)
+        {
+            let condition = usize::from(ctf::CRIT_BOOSTED_CTF_CAPTURE);
+            self.conditions.words[condition / 32] &= !(1_u32 << (condition % 32));
+            self.ctf_capture_bonus_until = None;
+        }
+
         let expected_physics_results: Vec<_> = self
             .physics_requests
             .iter()
@@ -1327,6 +1343,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.contact_reconcile_requests.clear();
         let mut events = Vec::new();
         let mut projectile_events = Vec::new();
+        let mut objective_events = Vec::new();
+        if self.pending_team_change.is_some() {
+            objective_events.extend(self.drop_objective(false)?);
+        }
         if let Some(team) = self.pending_team_change.take() {
             self.fizzle_projectiles(&mut projectile_events);
             self.lifecycle_events.push(LifecycleEvent {
@@ -1336,6 +1356,17 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 team,
             });
             events.push(Event::TeamChanged(team));
+        }
+        if command.drop_item
+            || command
+                .select_team
+                .is_some_and(|team| team != self.team_selection.local_team())
+            || command
+                .select_class
+                .is_some_and(|class| class != self.class)
+            || command.select_random_class
+        {
+            objective_events.extend(self.drop_objective(command.drop_item)?);
         }
         self.apply_projectile_physics(
             &expected_physics_results,
@@ -1459,6 +1490,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     velocity: self.movement.velocity,
                 },
                 &mut self.authority_random,
+                self.map.objectives(),
             )
             .map_err(Error::Bot)?
         } else {
@@ -1485,6 +1517,59 @@ impl<W: GameplayWorld + Clone> Session<W> {
         let discontinuity = self.apply_map_effects(&phase, &mut events, &mut teleported);
         let jump_contacts = phase.contacts.clone();
         map_phase.append(phase);
+        if self.map.objectives().is_some() {
+            let mut actor = ctf::Actor::active(
+                PLAYER_IDENTITY,
+                self.team_selection.local_team(),
+                self.movement.position,
+                self.movement.active_hull(movement_policy),
+            );
+            actor.alive = self.lifecycle == PlayerLifecycle::Active && self.health > 0;
+            actor.invulnerable = [5_u8, 8, 51, 52, 57]
+                .into_iter()
+                .any(|condition| self.condition_word_contains(condition));
+            actor.stealthed = self.condition_word_contains(4)
+                || self.condition_word_contains(9)
+                || self.condition_word_contains(64);
+            actor.selected_to_teleport = self.condition_word_contains(10);
+            actor.phased = self.condition_word_contains(14);
+            actor.in_respawn_room = self.respawn_touch_count != 0;
+            let mut actors = vec![actor];
+            if let Some(bots) = &self.bots {
+                actors.extend(bots.snapshots().into_iter().map(|bot| {
+                    let mut actor = ctf::Actor::active(
+                        bot.identity,
+                        bot.team,
+                        bot.position,
+                        MovementPolicy {
+                            class: bot.class,
+                            modifiers: MovementModifiers::default(),
+                        }
+                        .resolve()
+                        .standing_hull,
+                    );
+                    actor.alive = bot.lifecycle == PlayerLifecycle::Active && bot.health > 0;
+                    actor
+                }));
+            }
+            let current = self
+                .map
+                .objectives_mut()
+                .expect("known objective world")
+                .advance(
+                    &self.collision,
+                    self.tick as f32 * self.movement_configuration.tick_interval,
+                    &actors,
+                )
+                .map_err(Error::Objectives)?;
+            if let Some(bots) = &mut self.bots {
+                bots.synchronize_objectives(
+                    self.map.objectives().expect("known objective world"),
+                    &current,
+                );
+            }
+            objective_events.extend(current);
+        }
         if discontinuity {
             self.contact_reconcile_requests
                 .push(ContactReconcileRequest {
@@ -1698,6 +1783,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         }
 
         if self.health <= 0 && self.lifecycle == PlayerLifecycle::Active {
+            objective_events.extend(self.drop_objective(false)?);
             self.die(&mut projectile_events);
         }
         let mut respawned = false;
@@ -1771,6 +1857,92 @@ impl<W: GameplayWorld + Clone> Session<W> {
             None
         };
 
+        if !objective_events.is_empty() {
+            let phase = self
+                .map
+                .emit_objective_outputs(self.tick, &objective_events)?;
+            map_phase.append(phase);
+            for event in &objective_events {
+                if let ctf::Event::CaptureBonus {
+                    team,
+                    condition,
+                    duration,
+                } = event
+                    && *team == self.team_selection.local_team()
+                    && self.lifecycle == PlayerLifecycle::Active
+                {
+                    let index = usize::from(*condition);
+                    self.conditions.words[index / 32] |= 1_u32 << (index % 32);
+                    self.ctf_capture_bonus_until = Some(
+                        self.tick
+                            + (*duration / self.movement_configuration.tick_interval).ceil() as u64,
+                    );
+                }
+                if let ctf::Event::RoundWon { team, .. } = event {
+                    self.restrictions.team_win = Some(*team);
+                }
+            }
+            let sounds = objective_events
+                .iter()
+                .filter_map(|event| match event {
+                    ctf::Event::Announcer {
+                        flag,
+                        recipient,
+                        sound,
+                        exclude_player,
+                    } if (*recipient == self.team_selection.local_team()
+                        || *recipient == PlayerTeam::Unassigned)
+                        && *exclude_player != Some(PLAYER_IDENTITY) =>
+                    {
+                        Some((
+                            *flag,
+                            match sound {
+                                ctf::AnnouncerSound::EnemyStolen => {
+                                    SoundDefinition::FlagEnemyStolen
+                                }
+                                ctf::AnnouncerSound::EnemyDropped => {
+                                    SoundDefinition::FlagEnemyDropped
+                                }
+                                ctf::AnnouncerSound::EnemyCaptured => {
+                                    SoundDefinition::FlagEnemyCaptured
+                                }
+                                ctf::AnnouncerSound::EnemyReturned => {
+                                    SoundDefinition::FlagEnemyReturned
+                                }
+                                ctf::AnnouncerSound::TeamStolen => SoundDefinition::FlagTeamStolen,
+                                ctf::AnnouncerSound::TeamDropped => {
+                                    SoundDefinition::FlagTeamDropped
+                                }
+                                ctf::AnnouncerSound::TeamCaptured => {
+                                    SoundDefinition::FlagTeamCaptured
+                                }
+                                ctf::AnnouncerSound::TeamReturned => {
+                                    SoundDefinition::FlagTeamReturned
+                                }
+                                ctf::AnnouncerSound::FlagSpawn => SoundDefinition::FlagSpawn,
+                            },
+                        ))
+                    }
+                    ctf::Event::RoundWon { team, .. } => Some((
+                        PLAYER_IDENTITY,
+                        if *team == self.team_selection.local_team() {
+                            SoundDefinition::TeamWon
+                        } else {
+                            SoundDefinition::TeamLost
+                        },
+                    )),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            for (identity, definition) in sounds {
+                let position = self
+                    .map
+                    .objectives()
+                    .and_then(|objectives| objectives.flag(identity))
+                    .map_or(self.movement.position, |flag| flag.position);
+                self.emit_objective_sound(identity, definition, position);
+            }
+        }
         self.tick += 1;
         merge_mover_requests(&mut self.mover_requests, &map_phase.mover_requests);
         self.map_effects = map_phase.effects.clone();
@@ -1799,6 +1971,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
             projectile_events,
             entity_transforms: self.map.transforms(),
             entity_events: map_phase.events,
+            objectives: self
+                .map
+                .objectives()
+                .map(|objectives| objectives.snapshot(objective_events)),
             jump: jump_output,
             events,
             bots: self
@@ -1806,6 +1982,54 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 .as_ref()
                 .map_or_else(Vec::new, bot::BotWorld::snapshots),
         })
+    }
+
+    fn condition_word_contains(&self, condition: u8) -> bool {
+        let index = usize::from(condition);
+        self.conditions.words[index / 32] & (1_u32 << (index % 32)) != 0
+    }
+
+    fn drop_objective(&mut self, thrown: bool) -> Result<Vec<ctf::Event>, Error> {
+        let Some(flag_team) = self
+            .map
+            .objectives()
+            .and_then(|objectives| objectives.carrier_flag(PLAYER_IDENTITY))
+            .map(|flag| flag.team)
+        else {
+            return Ok(Vec::new());
+        };
+        let carrier_team = if flag_team == PlayerTeam::Red {
+            PlayerTeam::Blue
+        } else {
+            PlayerTeam::Red
+        };
+        let hull = self.movement.active_hull(
+            MovementPolicy {
+                class: self.class,
+                modifiers: self.movement_modifiers,
+            }
+            .resolve(),
+        );
+        let center = [
+            self.movement.position[0],
+            self.movement.position[1],
+            self.movement.position[2] + (hull.mins[2] + hull.maxs[2]) * 0.5,
+        ];
+        let end = [center[0], center[1], center[2] - 8_000.0];
+        let trace = self
+            .collision
+            .trace(center, end, ctf::FLAG_COLLISION_HULL, MASK_SOLID)?;
+        let position = if trace.start_solid { center } else { trace.end };
+        self.map
+            .objectives_mut()
+            .expect("known carried objective")
+            .drop(
+                ctf::Actor::active(PLAYER_IDENTITY, carrier_team, self.movement.position, hull),
+                position,
+                thrown,
+                false,
+            )
+            .map_err(Error::Objectives)
     }
 
     fn apply_selection(
@@ -1871,6 +2095,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             self.deploy_active_weapon();
             self.health = self.maximum_health();
             self.conditions.clear();
+            self.ctf_capture_bonus_until = None;
             self.lifecycle = PlayerLifecycle::Active;
             self.fizzle_projectiles(projectile_events);
             self.movement = MovementState::from_player(
@@ -2855,6 +3080,26 @@ impl<W: GameplayWorld + Clone> Session<W> {
             }
         }
         Ok(())
+    }
+
+    fn emit_objective_sound(
+        &mut self,
+        identity: u32,
+        definition: SoundDefinition,
+        position: [f32; 3],
+    ) {
+        let samples = self.sample_weapon_sound(definition);
+        self.push_audio_event(AudioEvent {
+            tick: self.tick,
+            ordinal: 0,
+            identity: AudioEventIdentity::WeaponSingle,
+            definition,
+            source_kind: AudioSourceKind::World,
+            source_identity: identity,
+            owner_identity: None,
+            position,
+            samples,
+        });
     }
 
     fn fire_hitscan(
@@ -4177,6 +4422,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.fizzle_projectiles(projectile_events);
         self.health = self.maximum_health();
         self.conditions.clear();
+        self.ctf_capture_bonus_until = None;
         self.lifecycle = PlayerLifecycle::Active;
         self.lifecycle_events.push(LifecycleEvent {
             tick: self.tick,
@@ -6954,6 +7200,11 @@ mod tests {
                 wrench_hit_flesh_available: 0b111,
                 fire_axe_hit_world_available: 0b11,
                 fire_axe_hit_flesh_available: 0b111,
+                flag_enemy_stolen_available: 0b1111,
+                flag_enemy_dropped_available: 0b11,
+                flag_enemy_captured_available: 0b111,
+                flag_enemy_returned_available: 0b111,
+                flag_team_dropped_available: 0b11,
             }
         );
 
@@ -6995,6 +7246,11 @@ mod tests {
                 wrench_hit_flesh_available: 0b111,
                 fire_axe_hit_world_available: 0b11,
                 fire_axe_hit_flesh_available: 0b111,
+                flag_enemy_stolen_available: 0b1111,
+                flag_enemy_dropped_available: 0b11,
+                flag_enemy_captured_available: 0b111,
+                flag_enemy_returned_available: 0b111,
+                flag_team_dropped_available: 0b11,
             }
         );
     }

@@ -38,10 +38,10 @@ describe("configured TF2 UI resource descriptor", () => {
   })
 
   test("binds the exact configured provider and selected source closure", () => {
-    expect(tf2UiResources.identity).toBe("tf2-ui-24245096-3db60ccec968a1a6")
+    expect(tf2UiResources.identity).toBe("tf2-ui-24245096-54f26ec6d717ccc9")
     expect(tf2UiResources.providers).toHaveLength(14)
-    expect(tf2UiResources.sources).toHaveLength(54)
-    expect(tf2UiResources.panels).toHaveLength(40)
+    expect(tf2UiResources.sources).toHaveLength(76)
+    expect(tf2UiResources.panels).toHaveLength(62)
     expect(tf2UiResources.sources.find((source) => source.logicalPath === "resource/ui/statsummary.res")?.sha256)
       .toBe("bf146199fcd7aec0a5467752853b89ead6f882d11533de383c09561bd3455903")
     expect(tf2UiResources.sources.find((source) => source.logicalPath === "resource/ui/mainmenuoverride.res")?.sha256)
@@ -54,6 +54,10 @@ describe("configured TF2 UI resource descriptor", () => {
       .toBe("99cc7c486fa19b58c76842a8ce5abf8b65ff13fbbd097f5eb7e195783b570902")
     expect(tf2UiResources.sources.find((source) => source.logicalPath === "resource/ui/teammenu.res"))
       .toMatchObject({ domain: "team-selection", byteLength: 14_354, sha256: "650867b7928f728ff6fce107745018223f3a19b1193b4c7f5fae54e391f102a0" })
+    expect(tf2UiResources.sources.find((source) => source.logicalPath === "resource/ui/hudobjectiveflagpanel.res")?.sha256)
+      .toBe("8affbaac643b77e07e3561497d4f6cbc1abd919d497c92fe0a683015d9adc683")
+    expect(tf2UiResources.sources.find((source) => source.logicalPath === "resource/ui/flagstatus.res")?.sha256)
+      .toBe("69b56afcf854afe54cd745054f1f720540933a23838bf8f77f34d780091176ca")
     expect(tf2UiResources.animation.compositionOrder).toEqual([
       "scripts/hudanimations.txt",
       "scripts/hudanimations_tf.txt",
@@ -85,16 +89,16 @@ describe("configured TF2 UI resource descriptor", () => {
   })
 
   test("retains every selected inventory with no unclassified item", () => {
-    expect(tf2UiResources.controls).toHaveLength(60)
-    expect(tf2UiResources.properties).toHaveLength(13_347)
+    expect(tf2UiResources.controls).toHaveLength(63)
+    expect(tf2UiResources.properties).toHaveLength(13_927)
     expect(tf2UiResources.commands).toHaveLength(99)
-    expect(tf2UiResources.localization.tokens).toHaveLength(527)
+    expect(tf2UiResources.localization.tokens).toHaveLength(537)
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#Valve_Move_Forward")?.definitions[0]?.value).toBe("Move forward")
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#TF_OptionCategory_Combat")?.definitions[0]?.value).toBe("Combat Options")
-    expect(tf2UiResources.images).toHaveLength(299)
+    expect(tf2UiResources.images).toHaveLength(318)
     expect(tf2UiResources.images.find((image) => image.configuredValue === "maps/menu_photos_pl_upward")?.material?.sha256)
       .toBe("79ca3d5e39f80c8d18c79eb63fd9b457a359e2a2db147c426eb7814a2cd1101e")
-    expect(tf2UiResources.fonts).toHaveLength(59)
+    expect(tf2UiResources.fonts).toHaveLength(61)
     expect(tf2UiResources.advancedOptions).toHaveLength(88)
     expect(tf2UiResources.keyboardActions).toHaveLength(70)
     expect(new Set(tf2UiResources.keyboardActions.map((row) => row.binding.toLowerCase())).size).toBe(65)

@@ -120,6 +120,7 @@ const MAX_EXTERNAL_BYTES = 536_870_912
 const SIMULATION_SAMPLE_INTERVAL_SECONDS = 0.015
 const MAX_REQUIRED_PARTICLE_DISPLAY_FRAMES = 256
 const BOT_MODEL_IDENTITY_BASE = 0x6000_0000
+const OBJECTIVE_MODEL_IDENTITY_BASE = 0x6100_0000
 const PARTICLE_SYSTEMS = new Set([
   "rockettrail",
   "rocketbackblast",
@@ -185,6 +186,27 @@ const SOUND_PATHS = [
   "sound/weapons/flame_thrower_loop.wav",
   "sound/weapons/flame_thrower_end.wav",
   "sound/weapons/flame_thrower_airblast.wav",
+] as const
+const CTF_SOUND_PATHS = [
+  "sound/vo/intel_enemystolen.mp3",
+  "sound/vo/intel_enemystolen2.mp3",
+  "sound/vo/intel_enemystolen3.mp3",
+  "sound/vo/intel_enemystolen4.mp3",
+  "sound/vo/intel_enemydropped.mp3",
+  "sound/vo/intel_enemydropped2.mp3",
+  "sound/vo/intel_enemycaptured.mp3",
+  "sound/vo/intel_enemycaptured2.mp3",
+  "sound/vo/intel_enemyreturned.mp3",
+  "sound/vo/intel_enemyreturned2.mp3",
+  "sound/vo/intel_enemyreturned3.mp3",
+  "sound/vo/intel_teamstolen.mp3",
+  "sound/vo/intel_teamdropped.mp3",
+  "sound/vo/intel_teamdropped2.mp3",
+  "sound/vo/intel_teamcaptured.mp3",
+  "sound/vo/intel_teamreturned.mp3",
+  "sound/items/itembk2.wav",
+  "sound/misc/your_team_won.mp3",
+  "sound/misc/your_team_lost.mp3",
 ] as const
 
 export type ApplicationView = Readonly<{
@@ -270,6 +292,8 @@ export type ApplicationView = Readonly<{
   displayViewRevision?: number
   displayPreparedRevision?: number
   lockerProbe?: string
+  objectiveProbe?: string
+  objectiveEventProbe?: string
   botCount?: number
   botProbe?: string
   unsupportedState?: "StickyPhysicsSolverUnavailable"
@@ -429,6 +453,7 @@ export class Tf2Application {
   #firePressed = false
   #detonatePressed = false
   #reloadPressed = false
+  #dropItem = false
   #selectClass: Tf2Class | 12 | undefined
   #selectWeapon: Tf2Weapon | undefined
   #modeRequest: 0 | 1 | undefined
@@ -1392,8 +1417,11 @@ export class Tf2Application {
       const AudioContextConstructor = window.AudioContext
       if (!AudioContextConstructor) throw new Error("Web Audio is unavailable")
       const audioContext = new AudioContextConstructor()
+      const audioPaths = this.#artifacts.audio.documents.some((document) => document.logicalPath === "scripts/game_sounds_vo.txt")
+        ? [...SOUND_PATHS, ...CTF_SOUND_PATHS]
+        : SOUND_PATHS
       const audioResources = await Promise.all(
-        SOUND_PATHS.map(async (identity) => {
+        audioPaths.map(async (identity) => {
           const bytes = this.#dependencyEntries.get(identity)
           if (!bytes) throw new Error(`Audio dependency ${identity} is missing`)
           const buffer = await audioContext.decodeAudioData(bytes.slice().buffer)
@@ -1403,14 +1431,12 @@ export class Tf2Application {
       this.#audio = createAudioSystem(audioContext, audioResources)
       this.#audioContext = audioContext
       this.#audioBuffers = new Map(audioResources.map((resource) => [resource.identity, resource.buffer]))
-      this.#audioRegistry = new SoundRegistry([
-        Object.freeze({
-          logicalPath: this.#artifacts.audio.logicalPath,
-          mode: "base" as const,
-          preload: false,
-          entries: this.#artifacts.audio.entries,
-        }),
-      ])
+      this.#audioRegistry = new SoundRegistry(this.#artifacts.audio.documents.map((document) => Object.freeze({
+        logicalPath: document.logicalPath,
+        mode: "base" as const,
+        preload: false,
+        entries: document.entries,
+      })))
       this.#audioWorld = new SourceAudioWorld(this.#audioRegistry, { maxActiveVoices: 128 })
       finishLoadPhase("audioSetup")
       this.#requireOperation(operation)
@@ -1929,6 +1955,12 @@ export class Tf2Application {
         }),
         Object.freeze({
           kind: "command" as const,
+          name: "dropitem",
+          disposition: "visible" as const,
+          acceptsSuggestions: false,
+        }),
+        Object.freeze({
+          kind: "command" as const,
           name: "tf_bot_add",
           disposition: "visible" as const,
           acceptsSuggestions: true,
@@ -2234,6 +2266,15 @@ export class Tf2Application {
       }
       await this.#teamSelectionRequest({ kind: "join-team", team, sourceCommand: `jointeam ${team}` })
       this.#teamSelection?.dispatch({ kind: "hide" })
+      return
+    }
+    if (command === "dropitem" && tokens.length === 0) {
+      if (!this.#snapshot?.objectives?.flags.some((flag) => flag.carrier === 1)) {
+        this.#output("dropitem rejected: you are not carrying the intelligence")
+        return
+      }
+      this.#dropItem = true
+      this.#output("Intelligence drop queued")
       return
     }
     if (command === "tf_bot_difficulty" && tokens.length <= 1) {
@@ -3123,6 +3164,7 @@ export class Tf2Application {
       fire: !unsupportedSticky && (this.#buttons.held("+attack") || this.#firePressed),
       detonate: this.#buttons.held("+attack2") || this.#detonatePressed,
       reload: this.#buttons.held("+reload") || this.#reloadPressed,
+      dropItem: this.#dropItem,
       selectClass: this.#selectClass,
       selectWeapon: this.#selectWeapon,
       modeRequest: this.#modeRequest,
@@ -3136,6 +3178,7 @@ export class Tf2Application {
     this.#firePressed = false
     this.#detonatePressed = false
     this.#reloadPressed = false
+    this.#dropItem = false
     return command
   }
 
@@ -3559,7 +3602,16 @@ export class Tf2Application {
         const elapsed=Number(snapshot.tick)*SIMULATION_SAMPLE_INTERVAL_SECONDS
         return Object.freeze({identity:BOT_MODEL_IDENTITY_BASE+bot.identity,model,activity,previousElapsedSeconds:Math.max(0,elapsed-publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS),elapsedSeconds:elapsed,currentTimeSeconds:elapsed,frameTimeSeconds:publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS,planarSpeed:Math.hypot(bot.velocity[0],bot.velocity[1]),screenAspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),worldFarPlane:camera.far,skin:bot.team===2?0:1,lod:0,bodygroups:Object.freeze(artifact.bodygroupCounts.map(()=>0))})
       })
-      const modelStart=performance.now(),modelRequests=[...historicalViewmodels,...(currentViewmodelRequest?[currentViewmodelRequest]:[]),...lockerRequests,...botRequests]
+      const objectiveRequests=(snapshot.objectives?.flags??[]).flatMap(flag=>{
+        if(flag.disabled&&!flag.visibleWhenDisabled||flag.carrier===1)return []
+        const artifact=this.#artifacts!.models.get(flag.model)
+        if(!artifact)throw new Error(`Authored TF2 intelligence model unavailable: ${flag.model}`)
+        const activity=flag.status===1?"idle":"spin"
+        if(!artifact.sequences.some(sequence=>sequence.label.toLowerCase()===activity))throw new Error(`Authored TF2 intelligence sequence unavailable: ${flag.model}:${activity}`)
+        const elapsed=Number(snapshot.tick)*SIMULATION_SAMPLE_INTERVAL_SECONDS
+        return [Object.freeze({identity:OBJECTIVE_MODEL_IDENTITY_BASE+flag.identity,model:flag.model,activity,previousElapsedSeconds:Math.max(0,elapsed-publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS),elapsedSeconds:elapsed,currentTimeSeconds:elapsed,frameTimeSeconds:publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS,planarSpeed:0,screenAspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),worldFarPlane:camera.far,skin:flag.skin,lod:0,bodygroups:Object.freeze(artifact.bodygroupCounts.map(()=>0))})]
+      })
+      const modelStart=performance.now(),modelRequests=[...historicalViewmodels,...(currentViewmodelRequest?[currentViewmodelRequest]:[]),...lockerRequests,...botRequests,...objectiveRequests]
       const modelRequest=modelRequests.length===0?undefined:(this.#wasmCalls.models++,client.models(generation,encodeModelPoseBatch(modelRequests)))
       this.#wasmCalls.visibility++;const visibilityRequest=client.visibility(generation,{
         position:camera.position,
@@ -3579,6 +3631,8 @@ export class Tf2Application {
       const viewmodelPoses = currentViewmodelRequest===undefined?[]:timelineViewmodelPoses.filter((pose) => pose.identity===currentViewmodelRequest.identity&&!pose.attachmentsOnly&&pose.sampleTick===currentViewmodelRequest.sampleTick)
       const lockerPoses=modelPoses.filter(pose=>this.#lockerAnimations.has(pose.identity))
       const botPoses=modelPoses.filter(pose=>pose.identity>=BOT_MODEL_IDENTITY_BASE&&pose.identity<BOT_MODEL_IDENTITY_BASE+0x10000)
+      const objectivePoses=modelPoses.filter(pose=>pose.identity>=OBJECTIVE_MODEL_IDENTITY_BASE&&pose.identity<OBJECTIVE_MODEL_IDENTITY_BASE+0x10000)
+      if(objectivePoses.length!==objectiveRequests.length)throw new Error("TF2 intelligence pose output differs from authoritative objective state")
       if(botPoses.length!==livingBots.length)throw new Error("TF2 bot player pose output differs from authoritative living player state")
       if(viewmodel!==undefined&&(snapshot.weapon===11?(viewmodelPoses.length!==1||viewmodelPoses[0]?.role!=="hand"):(viewmodelPoses.length!==2||viewmodelPoses[0]?.role!=="item"||viewmodelPoses[1]?.role!=="hand")))throw new Error("Viewmodel composition output differs");const viewmodelPose=viewmodelPoses.at(-1)
       if(viewmodelPose)this.#viewmodelActivities.add(viewmodelPose.activity)
@@ -3611,6 +3665,7 @@ export class Tf2Application {
           ...projectileModels(presentation.models),
           ...lockerPoses.map(pose=>{const occurrence=this.#artifacts!.modelOccurrences.find(value=>value.entity===pose.identity)!;return Object.freeze({identity:pose.identity,model:pose.model,position:occurrence.origin,angles:occurrence.angles,scale:1,skin:occurrence.skin,pose})}),
           ...botPoses.map(pose=>{const bot=snapshot.bots.find(value=>BOT_MODEL_IDENTITY_BASE+value.identity===pose.identity);if(!bot)throw new Error("TF2 bot player pose identity is unavailable");return Object.freeze({identity:pose.identity,model:pose.model,position:bot.position,angles:Object.freeze([0,bot.yawDegrees,0]) as readonly[number,number,number],scale:1,skin:bot.team===2?0:1,pose})}),
+          ...objectivePoses.map(pose=>{const flag=snapshot.objectives?.flags.find(value=>OBJECTIVE_MODEL_IDENTITY_BASE+value.identity===pose.identity);if(!flag)throw new Error("TF2 intelligence pose identity is unavailable");const carrier=flag.carrier===null?undefined:snapshot.bots.find(bot=>bot.identity===flag.carrier);if(carrier){const carrierPose=botPoses.find(value=>value.identity===BOT_MODEL_IDENTITY_BASE+carrier.identity);const attachment=carrierPose?.attachments.find(value=>value.name.toLowerCase()==="flag");if(!attachment)throw new Error(`Authored TF2 flag attachment unavailable: ${carrier.identity}`);const transform=transformAttachment(attachment.matrix,carrier.position,sourceViewOrientation(0,carrier.yawDegrees));return Object.freeze({identity:pose.identity,model:pose.model,position:transform.position,orientation:transform.orientation,scale:1,skin:flag.skin,pose})}return Object.freeze({identity:pose.identity,model:pose.model,position:flag.position,angles:flag.angles,scale:1,skin:flag.skin,pose})}),
           ...viewmodelPoses.map((pose, index) => Object.freeze({
             ...viewmodel!.item,
             identity: viewmodel!.item.identity + index,
@@ -3663,6 +3718,8 @@ export class Tf2Application {
         hudPresentationProbe: hudProbe && hud ? this.#hudPresentationObservation(hudProbe, hud) : "unavailable",
         fireEvents: this.#fireEvents,
         explosionEvents: this.#explosionEvents,
+        objectiveProbe: snapshot.objectives ? `${snapshot.objectives.redCaptures}:${snapshot.objectives.blueCaptures}:${snapshot.objectives.captureLimit}:${snapshot.objectives.winner??0}:${snapshot.objectives.flags.map(flag=>`${flag.identity},${flag.team},${flag.status},${flag.carrier??0},${flag.returnDeadline??-1}`).join("|")}` : undefined,
+        objectiveEventProbe: snapshot.objectives?.events.map(event=>`${event.kind}:${event.detail}:${event.team}:${event.subject}:${event.player??0}`).join("|"),
         botCount: snapshot.bots.length,
         botProbe: snapshot.bots.map(bot=>`${bot.identity}:${bot.team}:${bot.class}:${bot.objective}:${bot.area??"none"}:${bot.remainingPathAreas}:${bot.position.map(value=>value.toFixed(1)).join(",")}:${bot.target??"none"}:${bot.weapon?.identity??"none"}:${bot.weapon?.clip??0}:${bot.shots}:${bot.hits}:${bot.kills}:${bot.deaths}`).join("|"),
         particleRenderItems: particleItems.length,

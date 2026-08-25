@@ -55,6 +55,8 @@ pub struct MapCounts {
     pub teleport_destinations: u32,
     pub regenerate_zones: u32,
     pub respawn_rooms: u32,
+    pub capture_flags: u32,
+    pub capture_zones: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -287,6 +289,7 @@ pub struct MapRuntime {
     teleports: BTreeMap<EntityHandle, TeleportLink>,
     movers: BTreeMap<EntityHandle, ActiveMover>,
     game_filters: BTreeMap<Vec<u8>, GameFilter>,
+    objectives: Option<crate::ctf::World>,
     counts: MapCounts,
     next_producer_sequence: u64,
     last_player_position: [f32; 3],
@@ -299,6 +302,16 @@ impl MapRuntime {
         source_identity: u64,
         model_bounds: Vec<ModelBounds>,
     ) -> Result<Self, RuntimeFailure> {
+        let mut objectives =
+            crate::ctf::World::compile(graph, crate::ctf::Configuration::default()).map_err(
+                |error| match error {
+                    crate::ctf::Error::InvalidEntity(entity) => invalid(entity as usize),
+                    _ => invalid(0),
+                },
+            )?;
+        if let Some(objectives) = &mut objectives {
+            objectives.set_model_bounds(&model_bounds);
+        }
         let config = EntityWorldConfig {
             tick_interval,
             source_identity,
@@ -325,6 +338,31 @@ impl MapRuntime {
                     .collect(),
                 },
                 playsrc_entity::ExternalClassBinding {
+                    classname: b"item_teamflag".to_vec(),
+                    inputs: [
+                        b"Enable".as_slice(),
+                        b"Disable",
+                        b"RoundActivate",
+                        b"ForceDrop",
+                        b"ForceReset",
+                        b"ForceResetSilent",
+                        b"ForceResetAndDisableSilent",
+                        b"SetReturnTime",
+                        b"ShowTimer",
+                        b"ForceGlowDisabled",
+                    ]
+                    .into_iter()
+                    .map(<[u8]>::to_vec)
+                    .collect(),
+                },
+                playsrc_entity::ExternalClassBinding {
+                    classname: b"func_capturezone".to_vec(),
+                    inputs: [b"Enable".as_slice(), b"Disable"]
+                        .into_iter()
+                        .map(<[u8]>::to_vec)
+                        .collect(),
+                },
+                playsrc_entity::ExternalClassBinding {
                     classname: b"filter_activator_tfteam".to_vec(),
                     inputs: [b"TestActivator".as_slice(), b"RoundSpawn", b"RoundActivate"]
                         .into_iter()
@@ -340,13 +378,17 @@ impl MapRuntime {
                     inputs: vec![b"TestActivator".to_vec()],
                 },
             ],
-            external_brush_models: [b"func_regenerate".as_slice(), b"func_respawnroom"]
-                .into_iter()
-                .map(|classname| ExternalBrushModelBinding {
-                    classname: classname.to_vec(),
-                    initial_visibility: ExternalBrushModelVisibility::Hidden,
-                })
-                .collect(),
+            external_brush_models: [
+                b"func_regenerate".as_slice(),
+                b"func_respawnroom",
+                b"func_capturezone",
+            ]
+            .into_iter()
+            .map(|classname| ExternalBrushModelBinding {
+                classname: classname.to_vec(),
+                initial_visibility: ExternalBrushModelVisibility::Hidden,
+            })
+            .collect(),
             ..EntityWorldConfig::default()
         };
         let (mut world, _) = EntityWorld::compile(graph, config)?;
@@ -446,6 +488,12 @@ impl MapRuntime {
 
         let mut counts = MapCounts {
             teleport_destinations: destination_count,
+            capture_flags: objectives
+                .as_ref()
+                .map_or(0, |objectives| objectives.flags().count() as u32),
+            capture_zones: objectives
+                .as_ref()
+                .map_or(0, |objectives| objectives.zones().count() as u32),
             ..MapCounts::default()
         };
         let mut volumes = Vec::new();
@@ -572,6 +620,7 @@ impl MapRuntime {
             teleports,
             movers: BTreeMap::new(),
             game_filters,
+            objectives,
             counts,
             next_producer_sequence: 1,
             last_player_position: [0.0; 3],
@@ -601,6 +650,52 @@ impl MapRuntime {
 
     pub fn source_handle(&self, source: u32) -> Option<EntityHandle> {
         self.source_handles.get(&source).copied()
+    }
+
+    pub fn objectives(&self) -> Option<&crate::ctf::World> {
+        self.objectives.as_ref()
+    }
+
+    pub fn objectives_mut(&mut self) -> Option<&mut crate::ctf::World> {
+        self.objectives.as_mut()
+    }
+
+    pub fn emit_objective_outputs(
+        &mut self,
+        tick: u64,
+        events: &[crate::ctf::Event],
+    ) -> Result<MapPhase, MapError> {
+        let mut commands = Vec::new();
+        for event in events {
+            let crate::ctf::Event::MapOutput {
+                entity,
+                output,
+                activator,
+            } = event
+            else {
+                continue;
+            };
+            let Some(handle) = self.source_handle(*entity) else {
+                return Err(MapError::MissingEntity(*entity));
+            };
+            let activator = activator
+                .filter(|identity| *identity == crate::PLAYER_IDENTITY)
+                .map(|_| self.player)
+                .or(Some(handle));
+            commands.push(WorldCommand::EmitOutput {
+                entity: handle,
+                output: output.as_bytes().to_vec(),
+                value: Variant::Void,
+                activator,
+                caller: Some(handle),
+                delay: 0.0,
+            });
+        }
+        if commands.is_empty() {
+            return Ok(MapPhase::default());
+        }
+        let batch = self.world.phase(tick, &commands)?;
+        self.consume(batch).map_err(MapError::from)
     }
 
     pub fn input(
@@ -1066,6 +1161,21 @@ impl MapRuntime {
                     }
                     RuntimeRequest::ExternalInput { entity, input, .. } => {
                         let source = self.source(entity);
+                        if let Some(objectives) = &mut self.objectives {
+                            if objectives.flag(source).is_some() {
+                                if input.eq_ignore_ascii_case(b"Enable") {
+                                    let _ = objectives.set_flag_disabled(source, false);
+                                } else if input.eq_ignore_ascii_case(b"Disable") {
+                                    let _ = objectives.set_flag_disabled(source, true);
+                                }
+                            } else if objectives.zones().any(|zone| zone.identity == source) {
+                                if input.eq_ignore_ascii_case(b"Enable") {
+                                    let _ = objectives.set_zone_disabled(source, false);
+                                } else if input.eq_ignore_ascii_case(b"Disable") {
+                                    let _ = objectives.set_zone_disabled(source, true);
+                                }
+                            }
+                        }
                         if let Some(volume) = self
                             .volumes
                             .iter_mut()

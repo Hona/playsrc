@@ -33,7 +33,7 @@ export type Tf2Hud = Readonly<{
 export type Tf2AudioRequest = Readonly<{
   voiceIdentity: number
 
-  definition: "Weapon_RPG.Single" | "Weapon_QuakeRPG.Single" | "Weapon_StickyBombLauncher.Single" | "BaseExplosionEffect.Sound" | "Weapon_QuakeRPG.Explode" | "Weapon_Grenade_Pipebomb.Explode" | "Weapon_Scatter_Gun.Single" | "Weapon_Pistol.Single" | "Weapon_Bat.Miss" | "Weapon_Bat.HitFlesh" | "Weapon_Bat.HitWorld" | "Weapon_Scatter_Gun.WorldReload" | "Weapon_Pistol.WorldReload" | "Weapon_Shotgun.Single" | "Weapon_Shotgun.WorldReload" | "Weapon_Shovel.Miss" | "Weapon_Shovel.HitFlesh" | "Weapon_Shovel.HitWorld" | "Weapon_Minigun.WindUp" | "Weapon_Minigun.WindDown" | "Weapon_Minigun.Spin" | "Weapon_Minigun.Fire" | "Weapon_Fist.Miss" | "Weapon_Fist.HitWorld" | "Weapon_Fist.HitFlesh" | "Weapon_SniperRifle.Single" | "Weapon_SMG.Single" | "Weapon_Machete.Miss" | "Weapon_Machete.HitFlesh" | "Weapon_Machete.HitWorld" | "Weapon_SMG.WorldReload" | "Weapon_Shotgun.Empty" | "Weapon_Pistol.ClipEmpty" | "Weapon_Wrench.Miss" | "Weapon_Wrench.HitFlesh" | "Weapon_Wrench.HitWorld" | "Weapon_FlameThrower.Fire" | "Weapon_FlameThrower.FireLoop" | "Weapon_FlameThrower.WindDown" | "Weapon_FlameThrower.AirBurstAttack" | "Weapon_FireAxe.Miss" | "Weapon_FireAxe.HitFlesh" | "Weapon_FireAxe.HitWorld"
+  definition: "Weapon_RPG.Single" | "Weapon_QuakeRPG.Single" | "Weapon_StickyBombLauncher.Single" | "BaseExplosionEffect.Sound" | "Weapon_QuakeRPG.Explode" | "Weapon_Grenade_Pipebomb.Explode" | "Weapon_Scatter_Gun.Single" | "Weapon_Pistol.Single" | "Weapon_Bat.Miss" | "Weapon_Bat.HitFlesh" | "Weapon_Bat.HitWorld" | "Weapon_Scatter_Gun.WorldReload" | "Weapon_Pistol.WorldReload" | "Weapon_Shotgun.Single" | "Weapon_Shotgun.WorldReload" | "Weapon_Shovel.Miss" | "Weapon_Shovel.HitFlesh" | "Weapon_Shovel.HitWorld" | "Weapon_Minigun.WindUp" | "Weapon_Minigun.WindDown" | "Weapon_Minigun.Spin" | "Weapon_Minigun.Fire" | "Weapon_Fist.Miss" | "Weapon_Fist.HitWorld" | "Weapon_Fist.HitFlesh" | "Weapon_SniperRifle.Single" | "Weapon_SMG.Single" | "Weapon_Machete.Miss" | "Weapon_Machete.HitFlesh" | "Weapon_Machete.HitWorld" | "Weapon_SMG.WorldReload" | "Weapon_Shotgun.Empty" | "Weapon_Pistol.ClipEmpty" | "Weapon_Wrench.Miss" | "Weapon_Wrench.HitFlesh" | "Weapon_Wrench.HitWorld" | "Weapon_FlameThrower.Fire" | "Weapon_FlameThrower.FireLoop" | "Weapon_FlameThrower.WindDown" | "Weapon_FlameThrower.AirBurstAttack" | "Weapon_FireAxe.Miss" | "Weapon_FireAxe.HitFlesh" | "Weapon_FireAxe.HitWorld" | "CaptureFlag.EnemyStolen" | "CaptureFlag.EnemyDropped" | "CaptureFlag.EnemyCaptured" | "CaptureFlag.EnemyReturned" | "CaptureFlag.TeamStolen" | "CaptureFlag.TeamDropped" | "CaptureFlag.TeamCaptured" | "CaptureFlag.TeamReturned" | "CaptureFlag.FlagSpawn" | "Game.YourTeamWon" | "Game.YourTeamLost"
   source: Readonly<{
     kind: "entity" | "world"
     identity: number
@@ -91,6 +91,17 @@ export function tf2Audio(snapshot: Snapshot): readonly Tf2AudioRequest[] {
     "Weapon_FireAxe.Miss",
     "Weapon_FireAxe.HitFlesh",
     "Weapon_FireAxe.HitWorld",
+    "CaptureFlag.EnemyStolen",
+    "CaptureFlag.EnemyDropped",
+    "CaptureFlag.EnemyCaptured",
+    "CaptureFlag.EnemyReturned",
+    "CaptureFlag.TeamStolen",
+    "CaptureFlag.TeamDropped",
+    "CaptureFlag.TeamCaptured",
+    "CaptureFlag.TeamReturned",
+    "CaptureFlag.FlagSpawn",
+    "Game.YourTeamWon",
+    "Game.YourTeamLost",
   ]
   return Object.freeze(snapshot.audioEvents.map((event) => Object.freeze({
     voiceIdentity: stable32(`${event.tick}:${event.ordinal}:${event.definition}:${event.sourceIdentity}`),

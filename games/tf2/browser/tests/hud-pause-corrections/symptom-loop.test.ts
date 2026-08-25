@@ -323,6 +323,54 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     expect(visible(hud.snapshot().vgui.panels, ["HudPlayerStatus", "HudWeaponAmmo"])).toEqual([])
   })
 
+  test("renders authored two-flag CTF status, scores, carried intelligence, and notifications", () => {
+    const root = createRoot(new FakeDocument())
+    const hud = initializeTf2HudIntegration({
+      root: root as unknown as HTMLElement,
+      resources: resources(), viewport: { width: 1280, height: 720, devicePixelRatio: 1 }, reducedMotion: true,
+      clock: { nowSeconds: () => 0 }, random: { nextUnit: () => 0.5 }, onCommand() {},
+    })
+    const flag = (identity: number, team: 2 | 3, status: 0 | 1 | 2, carrier: number | null = null) => Object.freeze({
+      identity, team, status, carrier, previousCarrier: carrier, initialCarrier: carrier,
+      disabled: false, visibleWhenDisabled: false, shotClock: false, allowOwnerPickup: true,
+      trailEnabled: true, captured: false, skin: team - 2 + (status === 1 ? 3 : 0),
+      returnDeadline: status === 2 ? 60 : null, maximumReturnSeconds: status === 2 ? 60 : 0,
+      ownerPickupDeadline: null, configuredReturnSeconds: 60,
+      position: Object.freeze([0, 0, 0]) as readonly [number, number, number],
+      home: Object.freeze([0, 0, 0]) as readonly [number, number, number],
+      angles: Object.freeze([0, 0, 0]) as readonly [number, number, number],
+      homeAngles: Object.freeze([0, 0, 0]) as readonly [number, number, number],
+      model: "models/flag/briefcase.mdl", icon: "../hud/objectives_flagpanel_carried",
+      paperEffect: "player_intel_papertrail", trailEffect: "flagtrail",
+    })
+    const publish = (tick: bigint, red: ReturnType<typeof flag>, blue: ReturnType<typeof flag>, redCaptures: number, events: readonly any[] = []) => {
+      const base = compact(tick, 3, 2, 1, 4, 20)
+      const objectives = Object.freeze({ redCaptures, blueCaptures: 0, redScore: 0, blueScore: 0, captureLimit: 3, winner: null, flags: Object.freeze([red, blue]), zones: Object.freeze([]), events: Object.freeze(events) })
+      const snapshot = Object.freeze({ ...base.snapshot, objectives })
+      return hud.publish(Object.freeze({ snapshot, eventBatches: Object.freeze([Object.freeze({ snapshot })]) }), context)
+    }
+    publish(1n, flag(10, 2, 0), flag(20, 3, 0), 0)
+    let panels = hud.snapshot().vgui.panels
+    expect(visible(panels, ["HudObjectiveStatus", "RedFlag", "BlueFlag"])).toEqual(["HudObjectiveStatus", "BlueFlag", "RedFlag"])
+    expect(panels.filter((panel) => panel.name === "StatusIcon").map((panel) => panel.state.image)).toEqual([
+      "../hud/objectives_flagpanel_ico_flag_home", "../hud/objectives_flagpanel_ico_flag_home",
+    ])
+    expect(visible(panels, ["CarriedImage", "CaptureFlag", "NotificationPanel"])).toEqual([])
+    publish(2n, flag(10, 2, 0), flag(20, 3, 1, 1), 1)
+    panels = hud.snapshot().vgui.panels
+    expect(visible(panels, ["RedFlag", "BlueFlag"])).toEqual([])
+    expect(visible(panels, ["CarriedImage", "CaptureFlag"])).toEqual(["CarriedImage", "CaptureFlag"])
+    expect(panels.find((panel) => panel.name === "CarriedImage")?.state.image).toBe("../hud/objectives_flagpanel_carried_blue")
+    publish(3n, flag(10, 2, 0), flag(20, 3, 2), 1, [Object.freeze({ kind: 4, detail: 5, team: 2, flags: 0, subject: 20, player: null, auxiliary: 0, value: 0 })])
+    panels = hud.snapshot().vgui.panels
+    expect(panels.filter((panel) => panel.name === "StatusIcon").map((panel) => panel.state.image)).toContain("../hud/objectives_flagpanel_ico_flag_dropped")
+    expect(visible(panels, ["NotificationPanel"])).toEqual(["NotificationPanel"])
+    expect(panels.find((panel) => panel.name === "Notification_Label")?.text).toBe("#TF_CTF_PlayerTeamDrop")
+    publish(203n, flag(10, 2, 0), flag(20, 3, 0), 1)
+    expect(visible(hud.snapshot().vgui.panels, ["NotificationPanel"])).toEqual([])
+    hud.destroy()
+  })
+
   test("paints an authored, centered crosshair instead of publishing eligibility alone", () => {
     const root = createRoot(new FakeDocument())
     const hud = initializeTf2HudIntegration({
