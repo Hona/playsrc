@@ -419,6 +419,9 @@ pub(crate) fn write(
         weapon(content, "scripts/tf_weapon_pda_engineer_build.ctx", &[43])?,
         weapon(content, "scripts/tf_weapon_pda_engineer_destroy.ctx", &[44])?,
         weapon(content, "scripts/tf_weapon_builder.ctx", &[45])?,
+        weapon(content, "scripts/tf_weapon_syringegun_medic.ctx", &[19])?,
+        weapon(content, "scripts/tf_weapon_medigun.ctx", &[20])?,
+        weapon(content, "scripts/tf_weapon_bonesaw.ctx", &[21])?,
     ];
 
     let directory_bytes = fs::read(tf2.join("tf2_textures_dir.vpk"))

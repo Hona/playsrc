@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { chunksForRole, encodeResourceBatch, parseResourceCatalog, parseResourceGraph, parseResourceGraphBytes, selectCatalogTarget } from "../src/graph"
+import { chunksForRole, encodeResourceBatch, parseResourceCatalog, parseResourceGraph, parseResourceGraphBytes, partitionResourceChunks, selectCatalogTarget } from "../src/graph"
 
 const hash = (value: string) => value.repeat(64)
 const chunk = Object.freeze({
@@ -26,6 +26,27 @@ describe("resource graph", () => {
     const batch = encodeResourceBatch([{ descriptor: chunk, bytes: new Uint8Array(64) }])
     expect(new TextDecoder().decode(batch.subarray(0, 4))).toBe("PSGB")
     expect(new DataView(batch.buffer).getUint32(8, true)).toBe(1)
+  })
+
+  test("partitions source-backed chunks by both encoded and decoded bounds without duplicate transfers", () => {
+    const records = Array.from({ length: 3 }, (_, index) => ({
+      descriptor: {
+        ...chunk,
+        encodedSha256: hash(String(index + 1)),
+        entries: [{ ...chunk.entries[0]!, logicalPath: `materials/${index}.vmt`, byteLength: "260" }],
+      },
+      bytes: new Uint8Array(64),
+    }))
+    const maximum = 650
+    const sections = partitionResourceChunks([records[0]!, records[0]!, records[1]!, records[2]!], maximum)
+    expect(sections.map((section) => section.map((entry) => entry.descriptor.encodedSha256))).toEqual([
+      [hash("1")],
+      [hash("2")],
+      [hash("3")],
+    ])
+    for (const section of sections) expect(encodeResourceBatch(section).byteLength).toBeLessThanOrEqual(maximum)
+    expect(() => partitionResourceChunks(records, 300)).toThrow("resource chunk exceeds section byte bound")
+    expect(() => partitionResourceChunks([{ ...records[0]!, bytes: new Uint8Array(63) }])).toThrow("encoded byte length differs")
   })
 
   test("rejects duplicate logical paths and noncanonical chunk order", () => {

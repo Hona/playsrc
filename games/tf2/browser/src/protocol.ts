@@ -28,7 +28,7 @@ export type WorkerRequest = WorkerEnvelope & (
       generation: number
       profile: 0 | 1
       bsp: ArrayBuffer
-      configuration: ArrayBuffer
+      configuration: readonly ArrayBuffer[]
       includeMap: boolean
       presentation?: ArrayBuffer
     }>

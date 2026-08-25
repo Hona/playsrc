@@ -10,11 +10,12 @@ use playsrc_nav::{Area, Direction, Mesh};
 use crate::{
     GameplayWorld, MovementModifiers, MovementPolicy, PlayerClass, PlayerLifecycle, PlayerTeam,
     UniformRandomStream, Weapon, WeaponState, ballistics,
-    condition::ConditionState,
+    condition::{ConditionId, ConditionState},
     damage::{
         self, CritKind, CustomDamage, DamageInput, DamageModifiers, DamageSourceKind, DamageType,
     },
-    health::HealthState,
+    health::{HealthConfiguration, HealthState},
+    medic::PatientFacts,
     weapon::{ActivityEvent, AmmoEvent, PrimaryResult, WeaponRuntime},
 };
 
@@ -366,7 +367,8 @@ struct Bot {
     movement: State,
     yaw_degrees: f32,
     pitch_degrees: f32,
-    health: i32,
+    health: HealthState,
+    conditions: ConditionState,
     afterburn: Option<crate::pyro::Afterburn>,
     last_flame_damage_time: f32,
     ammo: crate::class::AmmoLedger,
@@ -693,11 +695,19 @@ impl BotWorld {
         let Some(bot) = self.bots.get_mut(&identity) else {
             return false;
         };
-        if bot.lifecycle != PlayerLifecycle::Active || damage <= 0.0 || !damage.is_finite() {
+        if bot.lifecycle != PlayerLifecycle::Active
+            || bot.conditions.is_invulnerable()
+            || damage <= 0.0
+            || !damage.is_finite()
+        {
             return false;
         }
-        bot.health = bot.health.saturating_sub((damage + 0.5) as i32).max(0);
-        if bot.health == 0 {
+        bot.health.current = bot
+            .health
+            .current
+            .saturating_sub((damage + 0.5) as i32)
+            .max(0);
+        if bot.health.current == 0 {
             bot.lifecycle = PlayerLifecycle::Dying;
             bot.afterburn = None;
         }
@@ -715,13 +725,18 @@ impl BotWorld {
             return false;
         };
         if bot.lifecycle != PlayerLifecycle::Active
+            || bot.conditions.is_invulnerable()
             || now - bot.last_flame_damage_time < crate::pyro::FLAME_BURN_FREQUENCY
         {
             return false;
         }
         bot.last_flame_damage_time = now;
-        bot.health = bot.health.saturating_sub((damage + 0.5) as i32).max(0);
-        if bot.health == 0 {
+        bot.health.current = bot
+            .health
+            .current
+            .saturating_sub((damage + 0.5) as i32)
+            .max(0);
+        if bot.health.current == 0 {
             bot.lifecycle = PlayerLifecycle::Dying;
             bot.afterburn = None;
         } else {
@@ -858,7 +873,9 @@ impl BotWorld {
                     ),
                     yaw_degrees: spawn.yaw_degrees,
                     pitch_degrees: 0.0,
-                    health: class.data().maximum_health,
+                    health: HealthState::spawn(class, 0.0, 0.0)
+                        .map_err(|_| Error::InvalidEntity)?,
+                    conditions: ConditionState::default(),
                     afterburn: None,
                     last_flame_damage_time: f32::NEG_INFINITY,
                     ammo: class.data().maximum_ammo,
@@ -909,13 +926,20 @@ impl BotWorld {
         let now = tick as f32 * self.tick_interval;
         for bot in self.bots.values_mut() {
             if let Some(burn) = bot.afterburn.as_mut() {
-                if let Some(damage) = burn.advance(now) {
-                    bot.health = bot.health.saturating_sub((damage + 0.5) as i32).max(0);
+                if let Some(damage) = burn.advance(now)
+                    && !bot.conditions.is_invulnerable()
+                {
+                    bot.health.current = bot
+                        .health
+                        .current
+                        .saturating_sub((damage + 0.5) as i32)
+                        .max(0);
                 }
-                if burn.duration <= 0.0 || bot.health == 0 || bot.movement.water_level >= 2 {
+                if burn.duration <= 0.0 || bot.health.current == 0 || bot.movement.water_level >= 2
+                {
                     bot.afterburn = None;
                 }
-                if bot.health == 0 {
+                if bot.health.current == 0 {
                     bot.lifecycle = PlayerLifecycle::Dying;
                 }
             }
@@ -985,7 +1009,7 @@ impl BotWorld {
                 );
             }
             sync_bot_ammo(bot);
-            let health_ratio = bot.health as f32 / bot.class.data().maximum_health as f32;
+            let health_ratio = bot.health.current as f32 / bot.class.data().maximum_health as f32;
             let health_needed = bot.afterburn.is_some()
                 || health_ratio
                     < if threat.is_some() || bot.class == PlayerClass::Sniper {
@@ -1277,6 +1301,69 @@ impl BotWorld {
         Ok(attacks)
     }
 
+    pub fn patient(&self, identity: u32, origin: [f32; 3]) -> Option<PatientFacts> {
+        let bot = self.bots.get(&identity)?;
+        let position = bot.movement.position;
+        let nearest_point = [
+            origin[0].clamp(position[0] - 24.0, position[0] + 24.0),
+            origin[1].clamp(position[1] - 24.0, position[1] + 24.0),
+            origin[2].clamp(position[2], position[2] + 82.0),
+        ];
+        Some(PatientFacts {
+            identity,
+            team: bot.team,
+            alive: bot.lifecycle == PlayerLifecycle::Active && bot.health.current > 0,
+            stealthed: bot.conditions.contains(ConditionId::STEALTHED),
+            disguised_as: None,
+            blocks_healing: bot.conditions.contains(ConditionId::NO_HEALING_DAMAGE_BUFF),
+            nearest_point,
+            center: [position[0], position[1], position[2] + 41.0],
+            eyes: [
+                position[0],
+                position[1],
+                position[2] + bot.class.standing_eye_height(),
+            ],
+            current_health: bot.health.current,
+            maximum_health: bot.health.maximum,
+            maximum_buffed_health: bot
+                .health
+                .max_buffed_health(HealthConfiguration::default(), false, false)
+                .ok()?,
+            healer_count: bot.health.healers.len().max(1),
+        })
+    }
+
+    pub fn patient_identities(&self) -> impl Iterator<Item = u32> + '_ {
+        self.bots.keys().copied()
+    }
+
+    pub fn patient_state(
+        &mut self,
+        identity: u32,
+    ) -> Option<(&mut HealthState, &mut ConditionState)> {
+        let bot = self.bots.get_mut(&identity)?;
+        Some((&mut bot.health, &mut bot.conditions))
+    }
+
+    pub fn advance_health(&mut self, now: f32) -> Result<(), Error> {
+        for bot in self.bots.values_mut() {
+            if bot.lifecycle == PlayerLifecycle::Active {
+                bot.health
+                    .advance(
+                        now,
+                        self.tick_interval,
+                        HealthConfiguration::default(),
+                        1.0,
+                        1.0,
+                        1.0,
+                        &mut bot.conditions,
+                    )
+                    .map_err(|_| Error::InvalidEntity)?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn intersect_enemy(
         &self,
         attacker_team: PlayerTeam,
@@ -1319,16 +1406,16 @@ impl BotWorld {
         match definition.kind {
             crate::pickup::MapPickupKind::Health => {
                 let maximum = bot.class.data().maximum_health;
-                if bot.health >= maximum && bot.afterburn.is_none() {
+                if bot.health.current >= maximum && bot.afterburn.is_none() {
                     return None;
                 }
                 let requested = (maximum as f32 * definition.size.ratio()).ceil() as i32;
-                let before = bot.health;
-                if bot.health < maximum {
-                    bot.health = bot.health.saturating_add(requested).min(maximum);
+                let before = bot.health.current;
+                if bot.health.current < maximum {
+                    bot.health.current = bot.health.current.saturating_add(requested).min(maximum);
                 }
                 bot.afterburn = None;
-                Some((bot.health - before) as u16)
+                Some((bot.health.current - before) as u16)
             }
             crate::pickup::MapPickupKind::Ammo => {
                 sync_bot_ammo(bot);
@@ -1367,7 +1454,7 @@ impl BotWorld {
         if bot.lifecycle != PlayerLifecycle::Active || tick < bot.next_regenerate_tick {
             return false;
         }
-        bot.health = bot.class.data().maximum_health.max(bot.health);
+        bot.health.current = bot.class.data().maximum_health.max(bot.health.current);
         bot.afterburn = None;
         bot.ammo = bot.class.data().maximum_ammo;
         for state in bot.loadout.values_mut() {
@@ -1401,16 +1488,13 @@ impl BotWorld {
         let Some(victim) = self.bots.get_mut(&input.victim) else {
             return Ok(None);
         };
-        let mut health = HealthState::spawn(victim.class, 0.0, 0.0).map_err(|_| Error::Damage)?;
-        health.current = victim.health;
-        let mut conditions = ConditionState::default();
         let Some(damage_type) = weapon_damage_type(input.weapon) else {
             return Ok(None);
         };
         let result = damage::apply_damage(
             victim.lifecycle == PlayerLifecycle::Active,
-            &mut health,
-            &mut conditions,
+            &mut victim.health,
+            &mut victim.conditions,
             &DamageInput {
                 attacker: input.attacker,
                 attacker_team,
@@ -1435,7 +1519,7 @@ impl BotWorld {
         if !result.admitted {
             return Ok(None);
         }
-        victim.health = health.current.max(0);
+        victim.health.current = victim.health.current.max(0);
         let killed = result.death.is_some();
         if killed {
             victim.lifecycle = PlayerLifecycle::Dying;
@@ -1467,7 +1551,7 @@ impl BotWorld {
     }
 
     pub fn health(&self, identity: u32) -> Option<i32> {
-        self.bots.get(&identity).map(|bot| bot.health)
+        self.bots.get(&identity).map(|bot| bot.health.current)
     }
 
     pub fn select_spawn(
@@ -1513,7 +1597,7 @@ impl BotWorld {
         let yaw = bot.yaw_degrees.to_radians();
         Some(crate::CombatPlayerFacts {
             team: bot.team,
-            health: bot.health,
+            health: bot.health.current,
             world_center: [
                 bot.movement.position[0],
                 bot.movement.position[1],
@@ -1539,8 +1623,8 @@ impl BotWorld {
                 velocity: bot.movement.velocity,
                 yaw_degrees: bot.yaw_degrees,
                 pitch_degrees: bot.pitch_degrees,
-                health: bot.health,
-                maximum_health: bot.class.data().maximum_health,
+                health: bot.health.current,
+                maximum_health: bot.health.maximum,
                 target: bot.target,
                 area: bot.current_area,
                 remaining_path_areas: bot.path.len().saturating_sub(bot.path_index) as u32,
@@ -1643,7 +1727,7 @@ fn select_supply(
     supplies: &[SupplyTarget],
     wanted: crate::pickup::MapPickupKind,
 ) -> Option<SupplyTarget> {
-    let ratio = bot.health as f32 / bot.class.data().maximum_health as f32;
+    let ratio = bot.health.current as f32 / bot.class.data().maximum_health as f32;
     let range = if wanted == crate::pickup::MapPickupKind::Health {
         let blend = if bot.afterburn.is_some() {
             0.0
@@ -1898,7 +1982,8 @@ pub(crate) fn weapon_damage_type(weapon: Weapon) -> Option<DamageType> {
         | Weapon::Wrench
         | Weapon::FireAxe
         | Weapon::Bottle
-        | Weapon::Knife => DamageType::MELEE,
+        | Weapon::Knife
+        | Weapon::Bonesaw => DamageType::MELEE,
         Weapon::Flamethrower => DamageType::BURN | DamageType::IGNITE,
         Weapon::RocketLauncher
         | Weapon::Original
@@ -1912,13 +1997,15 @@ pub(crate) fn weapon_damage_type(weapon: Weapon) -> Option<DamageType> {
         | Weapon::SniperRifle
         | Weapon::Smg
         | Weapon::EngineerPistol
-        | Weapon::Revolver => DamageType::BULLET,
+        | Weapon::Revolver
+        | Weapon::SyringeGun => DamageType::BULLET,
         Weapon::Sapper
         | Weapon::DisguiseKit
         | Weapon::InvisibilityWatch
         | Weapon::BuildPda
         | Weapon::DestroyPda
-        | Weapon::Toolbox => return None,
+        | Weapon::Toolbox
+        | Weapon::MediGun => return None,
     })
 }
 
@@ -1990,7 +2077,9 @@ fn respawn_bot(bot: &mut Bot, spawn: Spawn, mesh: &Mesh, tick: u64, interval: f3
         policy,
     );
     bot.lifecycle = PlayerLifecycle::Active;
-    bot.health = bot.class.data().maximum_health;
+    bot.health =
+        HealthState::spawn(bot.class, 0.0, 0.0).expect("authored bot class health is valid");
+    bot.conditions = ConditionState::default();
     bot.ammo = bot.class.data().maximum_ammo;
     bot.next_regenerate_tick = 0;
     bot.yaw_degrees = spawn.yaw_degrees;
@@ -2545,7 +2634,7 @@ mod tests {
                 &mut random,
             )
             .unwrap();
-        world.bots.get_mut(&2).unwrap().health = 100;
+        world.bots.get_mut(&2).unwrap().health.current = 100;
         let supplies = [
             SupplyTarget {
                 identity: 80,
@@ -2581,6 +2670,105 @@ mod tests {
         let ammo = crate::pickup::map_pickup_definition(b"item_ammopack_small").unwrap();
         assert!(world.grant_pickup(2, ammo).unwrap() >= 4);
         assert_eq!(world.snapshots()[0].weapon.unwrap().reserve, 5);
+    }
+
+    #[test]
+    fn medic_healing_and_uber_share_the_authoritative_combat_bot_health() {
+        let graph = fixture_graph();
+        let mut session =
+            crate::Session::new(Floor, [-90.0, 50.0, 1.0], crate::MapRuntime::empty(0.015));
+        session
+            .configure_navigation(fixture_mesh(), &graph)
+            .unwrap();
+        session
+            .advance(crate::Command {
+                select_class: Some(PlayerClass::Medic),
+                select_weapon: Some(crate::Weapon::MediGun),
+                bot_request: Some(Request {
+                    operation: Operation::Add,
+                    count: 1,
+                    class: Some(PlayerClass::Soldier),
+                    team: Some(PlayerTeam::Red),
+                    difficulty: Difficulty::Normal,
+                }),
+                ..crate::Command::default()
+            })
+            .unwrap();
+        assert!(session.bots.as_mut().unwrap().apply_damage(2, 100.0));
+        let stopped_position = session.bot_world().unwrap().snapshots()[0].position;
+        for _ in 0..60 {
+            session
+                .advance(crate::Command {
+                    fire: true,
+                    pitch_degrees: 16.7,
+                    nextbot_stop: true,
+                    ..crate::Command::default()
+                })
+                .unwrap();
+        }
+        assert_eq!(session.medigun().target, Some(2));
+        assert!(session.medigun().charge > 0.0);
+        assert!(session.bot_world().unwrap().snapshots()[0].health > 100);
+        assert_eq!(
+            session.bot_world().unwrap().snapshots()[0].position,
+            stopped_position
+        );
+        session.medigun.charge = 1.0;
+        let uber = session
+            .advance(crate::Command {
+                fire: true,
+                detonate: true,
+                pitch_degrees: 16.7,
+                ..crate::Command::default()
+            })
+            .unwrap();
+        assert!(uber.medigun_releasing);
+        assert!(session.conditions.contains(crate::Condition::Invulnerable));
+        let medic_health = session.health;
+        let mut combat_events = Vec::new();
+        session
+            .apply_actor_damage(
+                Damage {
+                    attacker: 3,
+                    victim: crate::PLAYER_IDENTITY,
+                    weapon: Weapon::Knife,
+                    amount: 65.0,
+                    position: [0.0; 3],
+                },
+                PlayerTeam::Blue,
+                &mut combat_events,
+            )
+            .unwrap();
+        assert_eq!(session.health, medic_health);
+        assert!(combat_events.is_empty());
+        let before = session.bot_world().unwrap().snapshots()[0].health;
+        let result = session.bots.as_mut().unwrap().damage(
+            Damage {
+                attacker: 3,
+                victim: 2,
+                weapon: Weapon::Bonesaw,
+                amount: 65.0,
+                position: [0.0; 3],
+            },
+            PlayerTeam::Blue,
+            100,
+            1,
+        );
+        assert_eq!(result, Ok(None));
+        assert_eq!(session.bot_world().unwrap().snapshots()[0].health, before);
+        let detached = session.advance(crate::Command::default()).unwrap();
+        assert_eq!(detached.medigun_target, None);
+        assert!(
+            session
+                .bots
+                .as_mut()
+                .unwrap()
+                .patient_state(2)
+                .unwrap()
+                .0
+                .healers
+                .is_empty()
+        );
     }
 
     #[test]

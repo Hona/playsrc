@@ -1,5 +1,5 @@
 import { fetchImmutableObject, openDerivedObjectCache, type DerivedObjectCache } from "@playsrc/asset-store/browser"
-import { chunksForRole, parseResourceCatalogBytes, parseResourceGraphBytes, parseResourceSet, resourceChunkObject, selectCatalogTarget, type ResourceCatalog, type ResourceGraph, type ResourceChunkDescriptor } from "@playsrc/asset-store/graph"
+import { chunksForRole, partitionResourceChunks, parseResourceCatalogBytes, parseResourceGraphBytes, parseResourceSet, resourceChunkObject, selectCatalogTarget, type ResourceCatalog, type ResourceGraph, type ResourceChunkDescriptor } from "@playsrc/asset-store/graph"
 import { createAudioSystem, SoundRegistry, SourceAudioWorld } from "@playsrc/audio"
 import GameplayWorker from "@playsrc/game-tf2-browser/worker?worker"
 import { Tf2WorkerClient, mergePublicationSnapshots, type CoverageSample, type LoadedGame, type SimulationPublication, type VisibilityResult } from "@playsrc/game-tf2-browser"
@@ -146,6 +146,13 @@ const PARTICLE_SYSTEMS = new Set([
   "muzzle_revolver",
   "ExplosionCore_Wall",
   "ExplosionCore_MidAir",
+  "nailtrails_medic_red",
+  "nailtrails_medic_blue",
+  "muzzle_syringe",
+  "medicgun_beam_red",
+  "medicgun_beam_blue",
+  "medicgun_beam_red_invun",
+  "medicgun_beam_blue_invun",
 ])
 const SOUND_PATHS = [
   "sound/items/smallmedkit1.wav",
@@ -217,6 +224,11 @@ const SOUND_PATHS = [
   "sound/weapons/blade_hitworld.wav",
   "sound/player/spy_cloak.wav",
   "sound/player/spy_uncloak.wav",
+  "sound/weapons/syringegun_shoot.wav",
+  "sound/weapons/syringegun_worldreload.wav",
+  "sound/weapons/medigun_heal.wav",
+  "sound/weapons/medigun_heal_detach.wav",
+  "sound/weapons/medigun_charged.wav",
 ] as const
 const CTF_SOUND_PATHS = [
   "sound/vo/intel_enemystolen.mp3",
@@ -342,6 +354,9 @@ export type ApplicationView = Readonly<{
   engineerMetal?: number
   engineerMenu?: "build" | "destroy" | "none"
   placementProbe?: string
+  medigunCharge?: number
+  medigunTarget?: number | null
+  medigunReleasing?: boolean
   unsupportedState?: "StickyPhysicsSolverUnavailable" | "GrenadePhysicsSolverUnavailable"
   startupState?: Tf2StartupState["kind"]
   loadingProgress?: number
@@ -405,7 +420,7 @@ export class Tf2Application {
   #activeTarget?: BrowserTargetConfiguration
   #loadingTarget?: BrowserTargetConfiguration
   #resourceGraph?: ResourceGraph
-  #dependencies: Uint8Array = new Uint8Array()
+  #dependencies: readonly Uint8Array[] = Object.freeze([])
   #dependencyEntries = new Map<string, Uint8Array>()
   #sharedDependencyEntries = new Map<string, Uint8Array>()
   #cache?: DerivedObjectCache
@@ -491,6 +506,9 @@ export class Tf2Application {
   #pendingLocalMatch?: Tf2LocalMatchLaunch
   #loaded?: LoadedGame
   #snapshot?: Snapshot
+  #medicBeamTarget: number | null = null
+  #medicBeamReleasing = false
+  #nextBotStop = false
   #generation = 0
   #yaw = 0
   #pitch = 0
@@ -1029,12 +1047,12 @@ export class Tf2Application {
     }
   }
 
-  async #resourceSet(roles: readonly string[], signal = this.#operation.signal): Promise<Uint8Array> {
+  async #resourceSet(roles: readonly string[], signal = this.#operation.signal): Promise<readonly Uint8Array[]> {
     if (!this.#configuration || !this.#resourceGraph) throw new Error("Resource graph is unavailable")
     return this.#decodeResourceSet(this.#resourceGraph, roles, this.#dependencyEntries, signal)
   }
 
-  async #decodeResourceSet(graph: ResourceGraph, roles: readonly string[], destination: Map<string, Uint8Array>, signal: AbortSignal): Promise<Uint8Array> {
+  async #decodeResourceSet(graph: ResourceGraph, roles: readonly string[], destination: Map<string, Uint8Array>, signal: AbortSignal): Promise<readonly Uint8Array[]> {
     if (!this.#configuration) throw new Error("Browser configuration is unavailable")
     await this.#ensureResourceRuntime(signal)
     const chunks = new Map<string, ResourceChunkDescriptor>()
@@ -1050,15 +1068,19 @@ export class Tf2Application {
       }
       return Object.freeze({ descriptor: chunk, bytes })
     }))
-    const set = await this.#client!.decodeResources(records)
-    for (const [logicalPath, bytes] of parseResourceSet(set)) {
-      const existing = destination.get(logicalPath)
-      if (existing && (existing.byteLength !== bytes.byteLength || bytesToHex(sha256(existing)) !== bytesToHex(sha256(bytes)))) {
-        throw new Error(`Conflicting resource ${logicalPath}`)
+    const sections: Uint8Array[] = []
+    for (const chunks of partitionResourceChunks(records)) {
+      const section = await this.#client!.decodeResources(chunks)
+      for (const [logicalPath, bytes] of parseResourceSet(section)) {
+        const existing = destination.get(logicalPath)
+        if (existing && (existing.byteLength !== bytes.byteLength || bytesToHex(sha256(existing)) !== bytesToHex(sha256(bytes)))) {
+          throw new Error(`Conflicting resource ${logicalPath}`)
+        }
+        destination.set(logicalPath, bytes)
       }
-      destination.set(logicalPath, bytes)
+      sections.push(section)
     }
-    return set
+    return Object.freeze(sections)
   }
 
   async #prepareStartupMedia(
@@ -1660,6 +1682,8 @@ export class Tf2Application {
   #resetGenerationPresentation(): void {
     this.#predictedEye.clear()
     this.#particleBatches = createParticleBatchEncoder()
+    this.#medicBeamTarget = null
+    this.#medicBeamReleasing = false
     this.#pendingProjectileTimeline = []
     this.#teamSelectionPoses.clear()
     this.#teamSelectionAnimations.clear()
@@ -1705,7 +1729,7 @@ export class Tf2Application {
       random: this.#presentationRandom,
       onCommand: (command) => {
 
-        if (command.kind === "select-weapon" && (command.weapon >= 1 && command.weapon <= 18 || command.weapon >= 40 && command.weapon <= 45 || command.weapon >= 50 && command.weapon <= 54) && command.weapon !== 54) this.#selectWeapon = command.weapon as Tf2Weapon
+        if (command.kind === "select-weapon" && (command.weapon >= 1 && command.weapon <= 21 || command.weapon >= 40 && command.weapon <= 45 || command.weapon >= 50 && command.weapon <= 54) && command.weapon !== 54) this.#selectWeapon = command.weapon as Tf2Weapon
         else if (command.kind === "scoreboard") this.#setScoreboardVisible(command.visible)
 
       },
@@ -2110,6 +2134,12 @@ export class Tf2Application {
         }),
         Object.freeze({
           kind: "convar" as const,
+          name: "nb_stop",
+          disposition: "visible" as const,
+          displayValue: this.#nextBotStop ? "1" : "0",
+        }),
+        Object.freeze({
+          kind: "convar" as const,
           name: "tf_bot_difficulty",
           disposition: "visible" as const,
           displayValue: String(this.#botDifficulty),
@@ -2450,6 +2480,18 @@ export class Tf2Application {
       return
     }
     if(command==="hurtbuilding"&&tokens.length===1){const amount=Number(tokens[0]);if(this.#snapshot?.class!==9||!Number.isSafeInteger(amount)||amount<0||amount>65535){this.#output("Usage: hurtbuilding <0-65535>");return}this.#buildingRequest={action:"hurt",amount};return}
+    if (command === "nb_stop" && tokens.length <= 1) {
+      if (tokens.length === 1 && !["0", "1"].includes(tokens[0]!)) {
+        this.#output("nb_stop accepts exactly 0 or 1")
+        return
+      }
+      if (tokens.length === 1) {
+        this.#nextBotStop = tokens[0] === "1"
+        this.#console?.apply({ kind: "replace-catalog", catalog: this.#catalog() })
+      }
+      this.#output(`"nb_stop" = "${this.#nextBotStop ? 1 : 0}" ( def. "0" )`)
+      return
+    }
     if (command === "tf_bot_difficulty" && tokens.length <= 1) {
       if (tokens.length === 1 && !["0", "1", "2", "3"].includes(tokens[0]!)) {
         this.#output("tf_bot_difficulty accepts exactly 0, 1, 2, or 3")
@@ -2811,7 +2853,7 @@ export class Tf2Application {
     bytes: Uint8Array,
     bspSha256: string,
     name: string,
-    candidate?: Readonly<{ target: BrowserTargetConfiguration; graph: ResourceGraph; dependencies: Uint8Array; entries: Map<string, Uint8Array> }>,
+    candidate?: Readonly<{ target: BrowserTargetConfiguration; graph: ResourceGraph; dependencies: readonly Uint8Array[]; entries: Map<string, Uint8Array> }>,
     operation?: ApplicationOperation,
   ): Promise<void> {
     const replaceStarted=performance.now();let replacePhase=replaceStarted;const replaceTimings:Record<string,number>={};const finishReplacePhase=(phase:string)=>{const now=performance.now();replaceTimings[phase]=now-replacePhase;replacePhase=now}
@@ -3287,7 +3329,7 @@ export class Tf2Application {
     this.#fireAttachmentTransforms.clear()
     for (const projectile of snapshot.projectiles) {
       const artifact = this.#artifacts.models.get(
-        projectile.kind === 1 ? "models/weapons/w_models/w_rocket.mdl" : "models/weapons/w_models/w_stickybomb.mdl",
+        projectile.kind === 1 ? "models/weapons/w_models/w_rocket.mdl" : projectile.kind === 2 ? "models/weapons/w_models/w_stickybomb.mdl" : "models/weapons/w_models/w_syringe_proj.mdl",
       )
       if (artifact) {
         this.#attachments.set(projectile.identity, new Set(artifact.attachments.keys()))
@@ -3303,7 +3345,7 @@ export class Tf2Application {
     for (const event of snapshot.projectileEvents) {
       if (this.#attachmentTransforms.has(event.projectile)) continue
       const artifact = this.#artifacts.models.get(
-        event.kind === 1 ? "models/weapons/w_models/w_rocket.mdl" : "models/weapons/w_models/w_stickybomb.mdl",
+        event.kind === 1 ? "models/weapons/w_models/w_rocket.mdl" : event.kind === 2 ? "models/weapons/w_models/w_stickybomb.mdl" : "models/weapons/w_models/w_syringe_proj.mdl",
       )
       if (!artifact) continue
       this.#attachments.set(event.projectile, new Set(artifact.attachments.keys()))
@@ -3372,6 +3414,7 @@ export class Tf2Application {
         attachment.name.toLowerCase(),
         transformAttachment(attachment.matrix, [0, 0, 0], [0, 0, 0, 1]),
       ]))
+      this.#attachments.set(event.launcherIdentity, new Set(transforms.keys()))
       this.#fireAttachmentTransforms.set(event.projectile, transforms)
       if (event.kind === 1 && event.ownerIdentity === 1) continue
       const attachment = event.kind === 1 ? "backblast" : "muzzle"
@@ -3451,6 +3494,7 @@ export class Tf2Application {
       detonate: this.#buttons.held("+attack2") || this.#detonatePressed,
       reload: this.#buttons.held("+reload") || this.#reloadPressed,
       dropItem: this.#dropItem,
+      nextbotStop: this.#nextBotStop,
       selectClass: this.#selectClass,
       selectWeapon: this.#selectWeapon,
       disguise: this.#disguise,
@@ -3847,13 +3891,17 @@ export class Tf2Application {
         const add = (identity: number, next: ReadonlySet<string>) =>
           this.#attachments.set(identity, new Set([...(this.#attachments.get(identity) ?? []), ...next]))
         const m = this.#artifacts.models.get(
-          p.kind === 1 ? "models/weapons/w_models/w_rocket.mdl" : "models/weapons/w_models/w_stickybomb.mdl",
+          p.kind === 1 ? "models/weapons/w_models/w_rocket.mdl"
+            : p.kind === 2 ? "models/weapons/w_models/w_stickybomb.mdl"
+              : "models/weapons/w_models/w_syringe_proj.mdl",
         )
         if (m) add(p.identity, new Set(m.attachments.keys()))
         const l = this.#artifacts.models.get(
           p.kind === 1
             ? "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl"
-            : "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl",
+            : p.kind === 2
+              ? "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl"
+              : "models/weapons/c_models/c_syringegun/c_syringegun.mdl",
         )
         if (l) add(p.launcherIdentity, new Set(l.attachments.keys()))
       }
@@ -4009,7 +4057,33 @@ export class Tf2Application {
       const particleStart=performance.now()
       const pyroParticles=snapshot.class===7||this.#pyroFlameEffect?this.#pyroParticles(snapshot):[]
       const hitscanMuzzles=snapshot.class===1||snapshot.class===3||snapshot.class===6||snapshot.class===9||snapshot.class===8?publication.eventBatches.flatMap(batch=>hitscanMuzzleParticles(batch.snapshot,{systems:PARTICLE_SYSTEMS,attachmentTransforms:this.#attachmentTransforms})):null
-      const supplementalParticles=[...(hitscanMuzzles??[]),...pyroParticles]
+      const medicBeam: ProjectileParticleRequest[] = []
+      if (this.#medicBeamTarget !== null && (this.#medicBeamTarget !== snapshot.medigunTarget || this.#medicBeamReleasing !== snapshot.medigunReleasing)) {
+        const prior = this.#medicBeamTarget
+        const replacing = prior === snapshot.medigunTarget
+        medicBeam.push(Object.freeze({ kind: "stop", identity: `${snapshot.tick}:medic:${prior}:stop`, effectIdentity: `medic:1:${prior}`, eventIdentity: `${snapshot.tick}:medic:${prior}:stop`, tick: snapshot.tick, projectileIdentity: prior, immediate: replacing }))
+        this.#medicBeamTarget = null
+        this.#medicBeamReleasing = false
+      }
+      if (snapshot.medigunTarget !== null) {
+        const patient = snapshot.bots.find(bot => bot.identity === snapshot.medigunTarget)
+        if (!patient) throw new Error("Medi Gun patient is missing from the authoritative player roster")
+        const muzzle = this.#attachmentTransforms.get(20)?.get("muzzle")
+        if (!muzzle) throw new Error("Medi Gun muzzle attachment is unavailable")
+        const patientPoint = Object.freeze({ index: 1 as const, position: Object.freeze([patient.position[0], patient.position[1], patient.position[2] + 41] as const), orientation: Object.freeze([0, 0, 0, 1] as const), ownerIdentity: patient.identity })
+        if (this.#medicBeamTarget !== patient.identity) {
+          const system = snapshot.team === 2
+            ? snapshot.medigunReleasing ? "medicgun_beam_red_invun" : "medicgun_beam_red"
+            : snapshot.medigunReleasing ? "medicgun_beam_blue_invun" : "medicgun_beam_blue"
+          medicBeam.push(Object.freeze({ kind: "start", identity: `${snapshot.tick}:medic:${patient.identity}:start`, effectIdentity: `medic:1:${patient.identity}`, eventIdentity: `${snapshot.tick}:medic:${patient.identity}:start`, tick: snapshot.tick, projectileIdentity: patient.identity, ownerIdentity: 1, launcherIdentity: 20, team: snapshot.team === 2 ? "red" : "blue", system, attachment: Object.freeze({ entityIdentity: 20, name: "muzzle" }), controlPoints: Object.freeze([Object.freeze({ index: 0 as const, position: muzzle.position, orientation: muzzle.orientation, ownerIdentity: 1 }), patientPoint]) }))
+          this.#medicBeamTarget = patient.identity
+          this.#medicBeamReleasing = snapshot.medigunReleasing
+        } else {
+          medicBeam.push(Object.freeze({ kind: "set-control-point", identity: `${snapshot.tick}:medic:${patient.identity}:muzzle`, effectIdentity: `medic:1:${patient.identity}`, eventIdentity: `${snapshot.tick}:medic:${patient.identity}:muzzle`, tick: snapshot.tick, projectileIdentity: patient.identity, controlPoint: Object.freeze({ index: 0 as const, position: muzzle.position, orientation: muzzle.orientation, ownerIdentity: 1 }) }))
+          medicBeam.push(Object.freeze({ kind: "set-control-point", identity: `${snapshot.tick}:medic:${patient.identity}:patient`, effectIdentity: `medic:1:${patient.identity}`, eventIdentity: `${snapshot.tick}:medic:${patient.identity}:patient`, tick: snapshot.tick, projectileIdentity: patient.identity, controlPoint: patientPoint }))
+        }
+      }
+      const supplementalParticles=[...(hitscanMuzzles??[]),...pyroParticles,...medicBeam]
       const particleBatch=owners.encoder.encode(snapshot.tick,camera.position,supplementalParticles.length===0?presentation.particles:[...presentation.particles,...supplementalParticles])
       if(!ownsGeneration())return
       this.#wasmCalls.particles++
@@ -4122,6 +4196,9 @@ export class Tf2Application {
         pickupCount: snapshot.pickups.length,
         pickupProbe: snapshot.pickups.map(pickup=>`${pickup.identity}:${pickup.kind}:${pickup.size}:${pickup.available?1:0}:${pickup.respawnTick??"none"}:${pickup.origin.join(",")}`).join("|"),
         metal: snapshot.metal,
+        medigunCharge: snapshot.medigunCharge,
+        medigunTarget: snapshot.medigunTarget,
+        medigunReleasing: snapshot.medigunReleasing,
         botProbe: snapshot.bots.map(bot=>`${bot.identity}:${bot.team}:${bot.class}:${bot.objective}:${bot.area??"none"}:${bot.remainingPathAreas}:${bot.position.map(value=>value.toFixed(1)).join(",")}:${bot.target??"none"}:${bot.weapon?.identity??"none"}:${bot.weapon?.clip??0}:${bot.shots}:${bot.hits}:${bot.kills}:${bot.deaths}`).join("|"),
         particleRenderItems: particleItems.length,
         flamePoints: snapshot.flamePoints.length,
@@ -4267,9 +4344,9 @@ export class Tf2Application {
     } else if (action === "+showscores") {
       if (this.#buttons.press(identity, action)) this.#setScoreboardVisible(true)
 
-    } else if (action === "slot1") this.#selectWeapon = this.#snapshot?.class === 8 ? 50 : this.#snapshot?.class === 1 ? 4 : this.#snapshot?.class === 2 ? 12 : this.#snapshot?.class === 4 ? 18 : this.#snapshot?.class === 6 ? 9 : this.#snapshot?.class === 9 ? 40 : this.#snapshot?.class === 7 ? 15 : 1
-    else if (action === "slot2") this.#selectWeapon = this.#snapshot?.class === 8 ? 52 : this.#snapshot?.class === 1 ? 5 : this.#snapshot?.class === 2 ? 13 : this.#snapshot?.class === 3 ? 7 : this.#snapshot?.class === 6 ? 10 : this.#snapshot?.class === 9 ? 41 : this.#snapshot?.class === 7 ? 7 : 3
-    else if (action === "slot3") this.#selectWeapon = this.#snapshot?.class === 8 ? 51 : this.#snapshot?.class === 1 ? 6 : this.#snapshot?.class === 2 ? 14 : this.#snapshot?.class === 3 ? 8 : this.#snapshot?.class === 4 ? 17 : this.#snapshot?.class === 6 ? 11 : this.#snapshot?.class === 9 ? 42 : this.#snapshot?.class === 7 ? 16 : undefined
+    } else if (action === "slot1") this.#selectWeapon = this.#snapshot?.class === 8 ? 50 : this.#snapshot?.class === 1 ? 4 : this.#snapshot?.class === 2 ? 12 : this.#snapshot?.class === 4 ? 18 : this.#snapshot?.class === 5 ? 19 : this.#snapshot?.class === 6 ? 9 : this.#snapshot?.class === 9 ? 40 : this.#snapshot?.class === 7 ? 15 : 1
+    else if (action === "slot2") this.#selectWeapon = this.#snapshot?.class === 8 ? 52 : this.#snapshot?.class === 1 ? 5 : this.#snapshot?.class === 2 ? 13 : this.#snapshot?.class === 3 ? 7 : this.#snapshot?.class === 5 ? 20 : this.#snapshot?.class === 6 ? 10 : this.#snapshot?.class === 9 ? 41 : this.#snapshot?.class === 7 ? 7 : 3
+    else if (action === "slot3") this.#selectWeapon = this.#snapshot?.class === 8 ? 51 : this.#snapshot?.class === 1 ? 6 : this.#snapshot?.class === 2 ? 14 : this.#snapshot?.class === 3 ? 8 : this.#snapshot?.class === 4 ? 17 : this.#snapshot?.class === 5 ? 21 : this.#snapshot?.class === 6 ? 11 : this.#snapshot?.class === 9 ? 42 : this.#snapshot?.class === 7 ? 16 : undefined
     else if (action === "slot4" && this.#snapshot?.class === 8) this.#selectWeapon = 53
     else if(action==="slot4"&&this.#snapshot?.class===9)this.#selectWeapon=43
     else if(action==="slot5"&&this.#snapshot?.class===9)this.#selectWeapon=44

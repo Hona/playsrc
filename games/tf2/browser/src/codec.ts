@@ -5,7 +5,7 @@ const MOVEMENT_BYTES = 96
 
 export type Tf2Class = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
 export type Tf2Team = 0 | 1 | 2 | 3
-export type Tf2Weapon = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 40 | 41 | 42 | 43 | 44 | 45 | 50 | 51 | 52 | 53 | 54
+export type Tf2Weapon = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 40 | 41 | 42 | 43 | 44 | 45 | 50 | 51 | 52 | 53 | 54
 export type Tf2BuildingKind = 0 | 1 | 2
 export type Tf2BuildingMode = 0 | 1
 export type Tf2BuildingObject = Readonly<{ kind: Tf2BuildingKind; mode: Tf2BuildingMode }>
@@ -15,7 +15,7 @@ export type Tf2BuildingRequest = Readonly<
   | { action: "hurt"; amount: number }
 >
 export type MovementMode = 0 | 1
-export type ProjectileKind = 1 | 2
+export type ProjectileKind = 1 | 2 | 3
 export type ProjectileState = 1 | 2 | 3
 export type ContactKind = 1 | 2 | 3
 export type BotDifficulty = 0 | 1 | 2 | 3
@@ -56,10 +56,9 @@ export type Tf2RandomState = Readonly<{
   rocketExplosionAvailable: number
   stickyExplosionAvailable: number
   batHitWorldAvailable: number
-
   shovelHitWorldAvailable: number
   shovelHitFleshAvailable: number
-fistMissAvailable: number
+  fistMissAvailable: number
   fistHitWorldAvailable: number
   fistHitFleshAvailable: number
   kukriHitFleshAvailable: number
@@ -76,11 +75,13 @@ fistMissAvailable: number
   flagEnemyCapturedAvailable: number
   flagEnemyReturnedAvailable: number
   flagTeamDroppedAvailable: number
+  bonesawHitFleshAvailable: number
+  bonesawHitWorldAvailable: number
 }>
 export type RandomDraw = Readonly<{
   context: 1 | 2
-  decision: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8
-  definition: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68
+  decision: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10
+  definition: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76
   phase: 0 | 1 | 2
   raw: number
   result: Readonly<{ kind: "float-bits"; bits: number } | { kind: "integer"; value: number } | { kind: "rejected-integer" }>
@@ -89,7 +90,7 @@ export type AudioEvent = Readonly<{
   tick: bigint
   ordinal: number
   identity: 1 | 2 | 3 | 4
-  definition: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68
+  definition: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76
   sourceKind: 1 | 2
   sourceIdentity: number
   ownerIdentity: number | null
@@ -134,6 +135,7 @@ export type Command = Readonly<{
   reset?: boolean
   respawn?: boolean
   dropItem?: boolean
+  nextbotStop?: boolean
   selectClass?: Tf2Class | 12
   selectTeam?: Tf2Team
   selectWeapon?: Tf2Weapon
@@ -657,6 +659,9 @@ export type Snapshot = Readonly<{
   placement: BuildingPlacement | null
   metal: number
   scoreboard: ScoreboardSnapshot
+  medigunCharge: number
+  medigunTarget: number | null
+  medigunReleasing: boolean
 }>
 
 export class Tf2CodecError extends Error {
@@ -738,7 +743,7 @@ export function encodeCommand(command: Command): ArrayBuffer {
     throw new Tf2CodecError("command team selector is invalid")
   }
 
-  if (command.selectWeapon !== undefined && (!Number.isInteger(command.selectWeapon) || command.selectWeapon < 1 || command.selectWeapon > 18 && (command.selectWeapon < 40 || command.selectWeapon > 45) && (command.selectWeapon < 50 || command.selectWeapon > 54))) {
+  if (command.selectWeapon !== undefined && (!Number.isInteger(command.selectWeapon) || command.selectWeapon < 1 || command.selectWeapon > 21 && (command.selectWeapon < 40 || command.selectWeapon > 45) && (command.selectWeapon < 50 || command.selectWeapon > 54))) {
 
     throw new Tf2CodecError("command weapon selector is invalid")
   }
@@ -823,7 +828,7 @@ export function encodeCommand(command: Command): ArrayBuffer {
       throw new Tf2CodecError("command bot operation is invalid")
     }
   }
-  view.setUint16(42, packedBot, true)
+  view.setUint16(42, packedBot | (Number(command.nextbotStop ?? false) << 15), true)
   let packedConfiguration = 0
   if (command.botConfiguration) {
     const { quota, maximumPlayers, mode, difficulty, joinAfterPlayer, autoVacate, offlinePractice } = command.botConfiguration
@@ -1327,16 +1332,16 @@ function decodeRandomState(bytes: ArrayBuffer, offset: number, length: number): 
   }
   const authority = stream(), predictedPresentation = stream(), rocketSelections = data[at]!, stickySelections = data[at + 1]!
   const batSelections = data[at + 2]!, batHitWorldAvailable = batSelections & 3, shovelSelections = data[at + 3]!
-  const fistMissAvailable = data[at + 4]!, fistHitWorldAvailable = data[at + 5]!, fistHitFleshAvailable = data[at + 6]!, kukriSelections = data[at + 7]!
+  const fistAndBonesawFlesh = data[at + 4]!, fistAndBonesawWorld = data[at + 5]!, fistHitFleshAvailable = data[at + 6]!, kukriSelections = data[at + 7]!
   const flagEnemyStolenAvailable = data[at + 8]!, flagEnemyDroppedAvailable = data[at + 9]!, flagEnemyCapturedAvailable = data[at + 10]!, flagEnemyReturnedAvailable = data[at + 11]!, flagTeamDroppedAvailable = data[at + 12]!
   if ((rocketSelections & ~31) !== 0 || (stickySelections & ~63) !== 0 || (batHitWorldAvailable & ~3) !== 0
-    || (fistMissAvailable & ~3) !== 0 || (fistHitWorldAvailable & ~3) !== 0 || (fistHitFleshAvailable & ~7) !== 0
+    || (fistAndBonesawFlesh & ~31) !== 0 || (fistAndBonesawWorld & ~15) !== 0 || (fistHitFleshAvailable & ~7) !== 0
     || (flagEnemyStolenAvailable & ~15) !== 0 || (flagEnemyDroppedAvailable & ~3) !== 0
     || (flagEnemyCapturedAvailable & ~7) !== 0 || (flagEnemyReturnedAvailable & ~7) !== 0 || (flagTeamDroppedAvailable & ~3) !== 0
     || data[at + 13] !== 0 || data[at + 14] !== 0 || data[at + 15] !== 0) {
     throw new Tf2CodecError("TF2 sound selection state is invalid")
   }
-  return Object.freeze({ authority, predictedPresentation, rocketExplosionAvailable: rocketSelections & 7, stickyExplosionAvailable: stickySelections & 7, batHitWorldAvailable, shovelHitWorldAvailable: shovelSelections & 3, shovelHitFleshAvailable: (shovelSelections >> 2) & 7, knifeHitFleshAvailable: shovelSelections >> 5, fistMissAvailable, fistHitWorldAvailable, fistHitFleshAvailable, kukriHitFleshAvailable: kukriSelections & 7, kukriHitWorldAvailable: (kukriSelections >> 3) & 3, wrenchHitFleshAvailable: kukriSelections >> 5, fireAxeHitWorldAvailable: rocketSelections >> 3, fireAxeHitFleshAvailable: stickySelections >> 3, flagEnemyStolenAvailable, flagEnemyDroppedAvailable, flagEnemyCapturedAvailable, flagEnemyReturnedAvailable, flagTeamDroppedAvailable, bottleHitFleshAvailable: (batSelections >> 2) & 7, bottleHitWorldAvailable: batSelections >> 5 })
+  return Object.freeze({ authority, predictedPresentation, rocketExplosionAvailable: rocketSelections & 7, stickyExplosionAvailable: stickySelections & 7, batHitWorldAvailable, shovelHitWorldAvailable: shovelSelections & 3, shovelHitFleshAvailable: (shovelSelections >> 2) & 7, knifeHitFleshAvailable: shovelSelections >> 5, fistMissAvailable: fistAndBonesawFlesh & 3, fistHitWorldAvailable: fistAndBonesawWorld & 3, fistHitFleshAvailable, bonesawHitFleshAvailable: fistAndBonesawFlesh >> 2, bonesawHitWorldAvailable: fistAndBonesawWorld >> 2, kukriHitFleshAvailable: kukriSelections & 7, kukriHitWorldAvailable: (kukriSelections >> 3) & 3, wrenchHitFleshAvailable: kukriSelections >> 5, fireAxeHitWorldAvailable: rocketSelections >> 3, fireAxeHitFleshAvailable: stickySelections >> 3, flagEnemyStolenAvailable, flagEnemyDroppedAvailable, flagEnemyCapturedAvailable, flagEnemyReturnedAvailable, flagTeamDroppedAvailable, bottleHitFleshAvailable: (batSelections >> 2) & 7, bottleHitWorldAvailable: batSelections >> 5 })
 }
 
 function decodeCollisionSnapshot(bytes: ArrayBuffer, offset: number, length: number): CollisionSnapshot {
@@ -1358,7 +1363,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
   const buffer = data.buffer as ArrayBuffer
   const base = data.byteOffset
   const view = new DataView(buffer, base, data.byteLength)
-  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 18)
+  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 19)
     throw new Tf2CodecError("snapshot identity is invalid")
   const tf2Class = data[16]
   const team = data[17]
@@ -1367,7 +1372,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
   if (
     (tf2Class === undefined || tf2Class < 1 || tf2Class > 9) ||
     (team === undefined || team > 3) ||
-    (weapon === undefined || weapon > 18 && (weapon < 40 || weapon > 45) && (weapon < 50 || weapon > 54)) ||
+    (weapon === undefined || weapon > 21 && (weapon < 40 || weapon > 45) && (weapon < 50 || weapon > 54)) ||
     (team === 0 && lifecycle !== 3) ||
     (team === 1 && lifecycle !== 4) ||
     ((team === 2 || team === 3) && lifecycle !== 1 && lifecycle !== 2) ||
@@ -1436,7 +1441,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
       itemWeapon === undefined ||
       itemWeapon < 1 ||
 
-      (itemWeapon > 18 && (itemWeapon < 40 || itemWeapon > 45) && (itemWeapon < 50 || itemWeapon > 54)) ||
+      (itemWeapon > 21 && (itemWeapon < 40 || itemWeapon > 45) && (itemWeapon < 50 || itemWeapon > 54)) ||
 
       reload === undefined ||
       reload > 3 ||
@@ -1531,7 +1536,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     const rawNormal = vector(view, item + 68)
     const ageSeconds = view.getFloat32(item + 80, true)
     if (
-      (kind !== 1 && kind !== 2) ||
+      (kind !== 1 && kind !== 2 && kind !== 3) ||
       (projectileTeam !== 2 && projectileTeam !== 3) ||
       state === undefined ||
       state < 1 ||
@@ -1585,7 +1590,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
       eventCode === undefined ||
       eventCode < 1 ||
       eventCode > 6 ||
-      (kind !== 1 && kind !== 2) ||
+      (kind !== 1 && kind !== 2 && kind !== 3) ||
       (projectileTeam !== 2 && projectileTeam !== 3) ||
       flags === undefined ||
       flags > 3 ||
@@ -1714,7 +1719,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     const itemWeapon = data[item + 8]
     const activity = data[item + 9]
 
-    if (itemWeapon === undefined || itemWeapon < 1 || itemWeapon > 18 && (itemWeapon < 40 || itemWeapon > 45) && (itemWeapon < 50 || itemWeapon > 54) || activity === undefined || activity < 1 || activity > 7 ||
+    if (itemWeapon === undefined || itemWeapon < 1 || itemWeapon > 21 && (itemWeapon < 40 || itemWeapon > 45) && (itemWeapon < 50 || itemWeapon > 54) || activity === undefined || activity < 1 || activity > 7 ||
 
       !data.subarray(item + 10, item + 16).every((value) => value === 0)) {
       throw new Tf2CodecError("activity record is invalid")
@@ -1882,8 +1887,8 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     const raw = view.getInt32(item + 4, true), resultKind = data[item + 8], resultValue = view.getUint32(item + 12, true)
     const soundDecision = decision !== undefined && decision >= 1 && decision <= 4
     if (
-      (context !== 1 && context !== 2) || decision === undefined || decision < 1 || decision > 8 ||
-      (soundDecision ? definition === undefined || definition < 1 || definition > 68 || (phase !== 1 && phase !== 2) : definition !== 0 || phase !== 0 || context !== 1) ||
+      (context !== 1 && context !== 2) || decision === undefined || decision < 1 || decision > 10 ||
+      (soundDecision ? definition === undefined || definition < 1 || definition > 76 || (phase !== 1 && phase !== 2) : definition !== 0 || phase !== 0 || context !== 1) ||
       raw <= 0 || raw >= 2_147_483_647 || resultKind === undefined || resultKind < 1 || resultKind > 3 ||
       data[item + 9] !== 0 || data[item + 10] !== 0 || data[item + 11] !== 0 ||
       ((decision === 3 || decision === 7 || decision === 8) ? resultKind === 1 : resultKind !== 1) ||
@@ -1907,10 +1912,10 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     const sourceIdentity = view.getUint32(item + 16, true), rawOwner = view.getUint32(item + 20, true), position = vector(view, item + 24)
     const volume = view.getFloat32(item + 36, true), pitch = view.getFloat32(item + 40, true), soundLevel = view.getFloat32(item + 44, true)
     const expectedOrdinal = nextOrdinal.get(tick) ?? 0, waveCount = definition === 44 ? 4
-      : definition === 4 || definition === 6 || definition === 17 || definition === 25 || definition === 29 || definition === 35 || definition === 42 || definition === 46 || definition === 47 || definition === 56 || definition === 57 ? 3
-        : definition === 11 || definition === 18 || definition === 23 || definition === 24 || definition === 30 || definition === 43 || definition === 45 || definition === 49 ? 2 : 1
+      : definition === 4 || definition === 6 || definition === 17 || definition === 25 || definition === 29 || definition === 35 || definition === 42 || definition === 46 || definition === 47 || definition === 56 || definition === 57 || definition === 65 || definition === 74 ? 3
+        : definition === 11 || definition === 18 || definition === 23 || definition === 24 || definition === 30 || definition === 43 || definition === 45 || definition === 49 || definition === 75 ? 2 : 1
     if (
-      (identity === undefined || identity < 1 || identity > 4) || definition === undefined || definition < 1 || definition > 68 ||
+      (identity === undefined || identity < 1 || identity > 4) || definition === undefined || definition < 1 || definition > 76 ||
       (sourceKind !== 1 && sourceKind !== 2) || (hasOwner !== 0 && hasOwner !== 1) || data[item + 15] !== 0 ||
       ordinal !== expectedOrdinal || !canonicalIdentity(sourceIdentity) ||
       (hasOwner === 0 ? rawOwner !== 0xffff_ffff : !canonicalIdentity(rawOwner)) ||
@@ -1990,8 +1995,8 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
       || (lifecycle !== 1 && lifecycle !== 2) || difficulty === undefined || difficulty > 3
       || objective === undefined || objective < 1 || objective > 7
       || data[item + 9] !== 0 || data[item + 10] !== 0 || data[item + 11] !== 0 || data[item + 67] !== 0
-      || weapon === undefined || (weapon > 18 && (weapon < 40 || weapon > 42) && (weapon < 50 || weapon > 54)) || reload === undefined || reload > 3 || carryingFlag === undefined || carryingFlag > 1
-      || health < 0 || maximumHealth < 1 || health > maximumHealth || clip > maximumClip || reserve > maximumReserve
+      || weapon === undefined || (weapon > 21 && (weapon < 40 || weapon > 42) && (weapon < 50 || weapon > 54)) || reload === undefined || reload > 3 || carryingFlag === undefined || carryingFlag > 1
+      || health < 0 || maximumHealth < 1 || health > Math.max(maximumHealth, Math.floor(maximumHealth * 1.5 / 5) * 5) || clip > maximumClip || reserve > maximumReserve
       || (weapon === 0 && (reload !== 0 || clip !== 0 || reserve !== 0 || maximumClip !== 0 || maximumReserve !== 0 || nextPrimaryTick !== 0n || nextReloadTick !== 0n))
       || (lifecycle === 1 && respawnTick !== 0xffff_ffff_ffff_ffffn)
       || (lifecycle === 2 && (health !== 0 || respawnTick === 0xffff_ffff_ffff_ffffn))
@@ -2126,9 +2131,18 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
       target: target === 0xffff_ffff ? null : target, position, yawDegrees, construction, rechargeEndTick: rechargeEndTick === 0xffff_ffff_ffff_ffffn ? null : rechargeEndTick, startedTick: view.getBigUint64(at + 64, true), timesUsed: view.getUint32(at + 72, true) }))
     at += 76
   }
-  const round = decodeRound(buffer, base + at, bytes.byteLength - at)
-  at = bytes.byteLength
-  if(entityPresentation.collisionRevision!==collisionSnapshot.identity)throw new Tf2CodecError("Entity presentation revision join is invalid")
+  const roundLength = bytes.byteLength - at - 12
+  const round = decodeRound(buffer, base + at, roundLength)
+  at += roundLength
+  requireBytes(12, "Medi Gun state")
+  const medigunCharge = view.getFloat32(at, true), rawMedigunTarget = view.getUint32(at + 4, true), medigunFlags = view.getUint32(at + 8, true)
+  if (!Number.isFinite(medigunCharge) || medigunCharge < 0 || medigunCharge > 1 || medigunFlags > 1
+    || (rawMedigunTarget !== 0xffff_ffff && !bots.some(bot => bot.identity === rawMedigunTarget))) {
+    throw new Tf2CodecError("Medi Gun state is invalid")
+  }
+  const medigunTarget = rawMedigunTarget === 0xffff_ffff ? null : rawMedigunTarget
+  at += 12
+  if(at!==bytes.byteLength||entityPresentation.collisionRevision!==collisionSnapshot.identity)throw new Tf2CodecError("Entity presentation revision join is invalid")
 
   const tick = view.getBigUint64(8, true)
   const frozenProjectiles = Object.freeze(projectiles)
@@ -2190,6 +2204,9 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     placement,
     metal,
     scoreboard,
+    medigunCharge,
+    medigunTarget,
+    medigunReleasing: medigunFlags === 1,
   })
 }
 
@@ -2198,16 +2215,21 @@ export async function mapDerivedKey(
   profile: 0 | 1,
   renderLevel: 0 | 1 | 2,
   compilerSha256: string,
-  configuration: Uint8Array,
+  configuration: readonly Uint8Array[],
 ): Promise<string> {
   if (!HASH.test(bspSha256) || !HASH.test(compilerSha256) || (renderLevel === 2) !== (profile === 1))
     throw new Tf2CodecError("BSP, compiler, or render profile identity is invalid")
-  const configurationHash = new Uint8Array(await crypto.subtle.digest("SHA-256", configuration))
+  if (configuration.length < 1 || configuration.length > 64) throw new Tf2CodecError("map resource sections are invalid")
+  const hashes: string[] = []
+  for (const section of configuration) {
+    if (!(section instanceof Uint8Array) || section.byteLength < 1 || section.byteLength > 512 * 1024 * 1024) {
+      throw new Tf2CodecError("map resource section byte length is invalid")
+    }
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", section))
+    hashes.push(Array.from(digest, (value) => value.toString(16).padStart(2, "0")).join(""))
+  }
   const identity = new TextEncoder().encode(
-    `playsrc-map-runtime-9\n${bspSha256}\n${compilerSha256}\n${profile}\n${renderLevel}\n${Array.from(
-      configurationHash,
-      (value) => value.toString(16).padStart(2, "0"),
-    ).join("")}\n`,
+    `playsrc-map-runtime-10\n${bspSha256}\n${compilerSha256}\n${profile}\n${renderLevel}\n${hashes.join("\n")}\n`,
   )
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", identity))
   return Array.from(digest, (value) => value.toString(16).padStart(2, "0")).join("")

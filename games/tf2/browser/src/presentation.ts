@@ -24,7 +24,7 @@ export type Tf2Hud = Readonly<{
   maxHealth: number
   className: Tf2ClassPresentation["displayName"]
 
-  weaponName: "Rocket Launcher" | "Original" | "Stickybomb Launcher" | "Scattergun" | "Pistol" | "Bat" | "Shotgun" | "Shovel" | "Minigun" | "Fists" | "Sniper Rifle" | "SMG" | "Kukri" | "Wrench" | "Flamethrower" | "Fire Axe" | "Bottle" | "Grenade Launcher" | "Construction PDA" | "Destruction PDA" | "Toolbox" | "Revolver" | "Knife" | "Sapper" | "Disguise Kit" | "Invisibility Watch" | null
+  weaponName: "Rocket Launcher" | "Original" | "Stickybomb Launcher" | "Scattergun" | "Pistol" | "Bat" | "Shotgun" | "Shovel" | "Minigun" | "Fists" | "Sniper Rifle" | "SMG" | "Kukri" | "Wrench" | "Flamethrower" | "Fire Axe" | "Bottle" | "Grenade Launcher" | "Construction PDA" | "Destruction PDA" | "Toolbox" | "Revolver" | "Knife" | "Sapper" | "Disguise Kit" | "Invisibility Watch" | "Syringe Gun" | "Medi Gun" | "Bonesaw" | null
 
   speed: number
   projectileCount: number
@@ -33,7 +33,7 @@ export type Tf2Hud = Readonly<{
 export type Tf2AudioRequest = Readonly<{
   voiceIdentity: number
 
-  definition: "Weapon_RPG.Single" | "Weapon_QuakeRPG.Single" | "Weapon_StickyBombLauncher.Single" | "BaseExplosionEffect.Sound" | "Weapon_QuakeRPG.Explode" | "Weapon_Grenade_Pipebomb.Explode" | "Weapon_Scatter_Gun.Single" | "Weapon_Pistol.Single" | "Weapon_Bat.Miss" | "Weapon_Bat.HitFlesh" | "Weapon_Bat.HitWorld" | "Weapon_Scatter_Gun.WorldReload" | "Weapon_Pistol.WorldReload" | "Weapon_Shotgun.Single" | "Weapon_Shotgun.WorldReload" | "Weapon_Shovel.Miss" | "Weapon_Shovel.HitFlesh" | "Weapon_Shovel.HitWorld" | "Weapon_Minigun.WindUp" | "Weapon_Minigun.WindDown" | "Weapon_Minigun.Spin" | "Weapon_Minigun.Fire" | "Weapon_Fist.Miss" | "Weapon_Fist.HitWorld" | "Weapon_Fist.HitFlesh" | "Weapon_SniperRifle.Single" | "Weapon_SMG.Single" | "Weapon_Machete.Miss" | "Weapon_Machete.HitFlesh" | "Weapon_Machete.HitWorld" | "Weapon_SMG.WorldReload" | "Weapon_Shotgun.Empty" | "Weapon_Pistol.ClipEmpty" | "Weapon_Wrench.Miss" | "Weapon_Wrench.HitFlesh" | "Weapon_Wrench.HitWorld" | "Weapon_FlameThrower.Fire" | "Weapon_FlameThrower.FireLoop" | "Weapon_FlameThrower.WindDown" | "Weapon_FlameThrower.AirBurstAttack" | "Weapon_FireAxe.Miss" | "Weapon_FireAxe.HitFlesh" | "Weapon_FireAxe.HitWorld" | "CaptureFlag.EnemyStolen" | "CaptureFlag.EnemyDropped" | "CaptureFlag.EnemyCaptured" | "CaptureFlag.EnemyReturned" | "CaptureFlag.TeamStolen" | "CaptureFlag.TeamDropped" | "CaptureFlag.TeamCaptured" | "CaptureFlag.TeamReturned" | "CaptureFlag.FlagSpawn" | "Game.YourTeamWon" | "Game.YourTeamLost" | "Weapon_Bottle.Miss" | "Weapon_Bottle.HitFlesh" | "Weapon_Bottle.HitWorld" | "HealthKit.Touch" | "AmmoPack.Touch" | "Regenerate.Touch" | "Item.Materialize" | "Weapon_Revolver.Single" | "Weapon_Revolver.WorldReload" | "Weapon_Knife.Miss" | "Weapon_Knife.HitFlesh" | "Weapon_Knife.HitWorld" | "Player.Spy_Cloak" | "Player.Spy_UnCloak"
+  definition: "Weapon_RPG.Single" | "Weapon_QuakeRPG.Single" | "Weapon_StickyBombLauncher.Single" | "BaseExplosionEffect.Sound" | "Weapon_QuakeRPG.Explode" | "Weapon_Grenade_Pipebomb.Explode" | "Weapon_Scatter_Gun.Single" | "Weapon_Pistol.Single" | "Weapon_Bat.Miss" | "Weapon_Bat.HitFlesh" | "Weapon_Bat.HitWorld" | "Weapon_Scatter_Gun.WorldReload" | "Weapon_Pistol.WorldReload" | "Weapon_Shotgun.Single" | "Weapon_Shotgun.WorldReload" | "Weapon_Shovel.Miss" | "Weapon_Shovel.HitFlesh" | "Weapon_Shovel.HitWorld" | "Weapon_Minigun.WindUp" | "Weapon_Minigun.WindDown" | "Weapon_Minigun.Spin" | "Weapon_Minigun.Fire" | "Weapon_Fist.Miss" | "Weapon_Fist.HitWorld" | "Weapon_Fist.HitFlesh" | "Weapon_SniperRifle.Single" | "Weapon_SMG.Single" | "Weapon_Machete.Miss" | "Weapon_Machete.HitFlesh" | "Weapon_Machete.HitWorld" | "Weapon_SMG.WorldReload" | "Weapon_Shotgun.Empty" | "Weapon_Pistol.ClipEmpty" | "Weapon_Wrench.Miss" | "Weapon_Wrench.HitFlesh" | "Weapon_Wrench.HitWorld" | "Weapon_FlameThrower.Fire" | "Weapon_FlameThrower.FireLoop" | "Weapon_FlameThrower.WindDown" | "Weapon_FlameThrower.AirBurstAttack" | "Weapon_FireAxe.Miss" | "Weapon_FireAxe.HitFlesh" | "Weapon_FireAxe.HitWorld" | "CaptureFlag.EnemyStolen" | "CaptureFlag.EnemyDropped" | "CaptureFlag.EnemyCaptured" | "CaptureFlag.EnemyReturned" | "CaptureFlag.TeamStolen" | "CaptureFlag.TeamDropped" | "CaptureFlag.TeamCaptured" | "CaptureFlag.TeamReturned" | "CaptureFlag.FlagSpawn" | "Game.YourTeamWon" | "Game.YourTeamLost" | "Weapon_Bottle.Miss" | "Weapon_Bottle.HitFlesh" | "Weapon_Bottle.HitWorld" | "HealthKit.Touch" | "AmmoPack.Touch" | "Regenerate.Touch" | "Item.Materialize" | "Weapon_Revolver.Single" | "Weapon_Revolver.WorldReload" | "Weapon_Knife.Miss" | "Weapon_Knife.HitFlesh" | "Weapon_Knife.HitWorld" | "Player.Spy_Cloak" | "Player.Spy_UnCloak" | "Weapon_SyringeGun.Single" | "Weapon_BoneSaw.Miss" | "WeaponMedigun.HealingHealer" | "WeaponMedigun.HealingDetachHealer" | "WeaponMedigun.Charged" | "Weapon_BoneSaw.HitFlesh" | "Weapon_BoneSaw.HitWorld" | "Weapon_SyringeGun.WorldReload"
   source: Readonly<{
     kind: "entity" | "world"
     identity: number
@@ -115,7 +115,16 @@ export function tf2Audio(snapshot: Snapshot): readonly Tf2AudioRequest[] {
     "Weapon_Knife.HitWorld",
     "Player.Spy_Cloak",
     "Player.Spy_UnCloak",
+    "Weapon_SyringeGun.Single",
+    "Weapon_BoneSaw.Miss",
+    "WeaponMedigun.HealingHealer",
+    "WeaponMedigun.HealingDetachHealer",
+    "WeaponMedigun.Charged",
+    "Weapon_BoneSaw.HitFlesh",
+    "Weapon_BoneSaw.HitWorld",
+    "Weapon_SyringeGun.WorldReload",
   ]
+
   return Object.freeze(snapshot.audioEvents.map((event) => Object.freeze({
     voiceIdentity: stable32(`${event.tick}:${event.ordinal}:${event.definition}:${event.sourceIdentity}`),
     definition: definitions[event.definition - 1]!,
@@ -137,7 +146,7 @@ export function projectileFrame(snapshot: Snapshot): ProjectileFrame {
       tick: entry.tick,
       projectiles: Object.freeze(entry.projectiles.map((projectile) => Object.freeze({
         identity: projectile.identity,
-        kind: projectile.kind === 1 ? "rocket" : "sticky",
+        kind: projectile.kind === 1 ? "rocket" : projectile.kind === 2 ? "sticky" : "syringe",
         team: projectile.team === 2 ? "red" : "blue",
         ownerIdentity: projectile.ownerIdentity,
         launcherIdentity: projectile.launcherIdentity,
@@ -172,7 +181,7 @@ function projectileTimelineEvents(
   ) => {
     output.push(Object.freeze({
       kind,
-      projectileKind: event.kind === 1 ? "rocket" : "sticky",
+      projectileKind: event.kind === 1 ? "rocket" : event.kind === 2 ? "sticky" : "syringe",
       projectileIdentity: event.projectile,
       ownerIdentity: event.ownerIdentity,
       launcherIdentity: event.launcherIdentity,
@@ -221,14 +230,17 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
   let activity = "ACT_VM_DRAW"
   return Object.freeze({
     map(snapshot: Snapshot, view: Readonly<{ aspectRatio: number; farPlane: number }> = Object.freeze({ aspectRatio: 4 / 3, farPlane: 32768 })): Readonly<{ item: ModelItem; request: ModelPoseRequest; standalone: boolean }> {
-      if (snapshot.weapon === null || ![1, 2, 3, 4, 6, 7, 8, 9].includes(snapshot.class) || snapshot.weapon === 54) {
+      if (snapshot.weapon === null || ![1, 2, 3, 4, 5, 6, 7, 8, 9].includes(snapshot.class) || snapshot.weapon === 54) {
         throw new ProjectilePresentationError("MalformedFact", "class has no implemented viewmodel weapon")
       }
       const standalone = snapshot.weapon === 53
       const identity = standalone ? "models/weapons/v_models/v_pda_spy.mdl" : tf2ClassPresentation(snapshot.class).hands
       const itemIdentity = snapshot.weapon === 17 ? "models/weapons/c_models/c_bottle/c_bottle.mdl"
         : snapshot.weapon === 18 ? "models/weapons/c_models/c_grenadelauncher/c_grenadelauncher.mdl"
-          : snapshot.weapon === 40 ? "models/weapons/c_models/c_shotgun/c_shotgun.mdl"
+          : snapshot.weapon === 19 ? "models/weapons/c_models/c_syringegun/c_syringegun.mdl"
+            : snapshot.weapon === 20 ? "models/weapons/c_models/c_medigun/c_medigun.mdl"
+              : snapshot.weapon === 21 ? "models/weapons/c_models/c_bonesaw/c_bonesaw.mdl"
+                : snapshot.weapon === 40 ? "models/weapons/c_models/c_shotgun/c_shotgun.mdl"
         : snapshot.weapon === 41 ? "models/weapons/c_models/c_pistol/c_pistol.mdl"
           : snapshot.weapon === 42 ? "models/weapons/c_models/c_wrench/c_wrench.mdl"
             : snapshot.weapon === 4 ? "models/weapons/c_models/c_scattergun.mdl"
@@ -260,9 +272,9 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
       if (!weapon) throw new ProjectilePresentationError("MissingModel", `${identity}:weapon-state`)
       const selectionChanged = prior !== snapshot.weapon || priorClass !== snapshot.class
       const exact = snapshot.activities.filter((event) => event.weapon === snapshot.weapon).at(-1)
-      const role = snapshot.weapon === 6 || snapshot.weapon === 8 || snapshot.weapon === 14 || snapshot.weapon === 16 || snapshot.weapon === 17 || snapshot.weapon === 42 || snapshot.weapon === 51 ? "MELEE"
+      const role = snapshot.weapon === 6 || snapshot.weapon === 8 || snapshot.weapon === 14 || snapshot.weapon === 16 || snapshot.weapon === 17 || snapshot.weapon === 42 || snapshot.weapon === 51 || snapshot.weapon === 21 ? "MELEE"
         : snapshot.weapon === 11 ? "FISTS"
-          : snapshot.weapon === 5 || snapshot.weapon === 7 || snapshot.weapon === 10 || snapshot.weapon === 13 || snapshot.weapon === 50 || snapshot.weapon === 41 || snapshot.weapon === 3 ? "SECONDARY"
+          : snapshot.weapon === 5 || snapshot.weapon === 7 || snapshot.weapon === 10 || snapshot.weapon === 13 || snapshot.weapon === 50 || snapshot.weapon === 41 || snapshot.weapon === 3 || snapshot.weapon === 20 ? "SECONDARY"
             : snapshot.weapon === 43 ? "ENGINEER_PDA1" : snapshot.weapon === 44 ? "ENGINEER_PDA2" : snapshot.weapon === 45 ? "ENGINEER_BLD" : snapshot.weapon === 52 || standalone ? "" : "PRIMARY"
       const prefix = role ? `ACT_${role}_` : "ACT_"
       const draw = `${prefix}VM_DRAW`, idle = `${prefix}VM_IDLE`
@@ -612,9 +624,10 @@ export function createParticleBatchEncoder() {
             || typeof request.system !== "string"
             || request.system.length === 0
             || !Array.isArray(request.controlPoints)
-            || request.controlPoints.length !== 1
-            || !particleControlPoint(request.controlPoints[0])
-            || request.controlPoints[0].ownerIdentity !== request.ownerIdentity
+            || request.controlPoints.length < 1
+            || request.controlPoints.length > 2
+            || request.controlPoints.some((control, index) => !particleControlPoint(control) || control.index !== index)
+            || request.controlPoints[0]!.ownerIdentity !== request.ownerIdentity
             || (request.attachment !== null && (
               !uint32(request.attachment.entityIdentity)
               || !["backblast", "muzzle", "trail"].includes(request.attachment.name)
@@ -633,7 +646,7 @@ export function createParticleBatchEncoder() {
             }
             systems.set(request.system, encoded)
           }
-          length += 16 + encoded.byteLength + 32
+          length += 16 + encoded.byteLength + request.controlPoints.length * 32
         } else if (request.kind === "set-control-point") {
           if (!particleControlPoint(request.controlPoint)) {
             throw new ProjectilePresentationError("MalformedFact", "particle control-point request is invalid")
@@ -660,7 +673,7 @@ export function createParticleBatchEncoder() {
       const bytes = new Uint8Array(length)
       const view = new DataView(bytes.buffer)
       bytes.set([0x50, 0x50, 0x54, 0x58])
-      view.setUint32(4, 2, true)
+      view.setUint32(4, 3, true)
       view.setFloat32(8, previousTime, true)
       view.setFloat32(12, to, true)
       camera.forEach((value, index) => view.setFloat32(16 + index * 4, value, true))
@@ -670,6 +683,8 @@ export function createParticleBatchEncoder() {
         const request = requests[index]!
         bytes[at] = request.kind === "start" ? 1 : request.kind === "set-control-point" ? 2 : request.kind === "set-flame-control-point" ? 4 : 3
         bytes[at + 1] = request.kind === "stop" && request.immediate ? 1 : 0
+        bytes[at + 2] = request.kind === "start" ? request.controlPoints.length
+          : request.kind === "set-control-point" ? request.controlPoint.index : 0
         view.setBigUint64(at + 4, requestIdentities[index]!, true)
         view.setFloat32(at + 12, Math.fround(Number(request.tick) * 0.015), true)
         view.setUint32(at + 16, stable32(request.effectIdentity), true)
@@ -681,11 +696,12 @@ export function createParticleBatchEncoder() {
           view.setUint32(at + 12, system.byteLength, true)
           bytes.set(system, at + 16)
           at += 16 + system.byteLength
-          const control = request.controlPoints[0]!
-          control.position.forEach((value, index) => view.setFloat32(at + index * 4, value, true))
-          control.orientation.forEach((value, index) => view.setFloat32(at + 12 + index * 4, value, true))
-          view.setUint32(at + 28, control.ownerIdentity, true)
-          at += 32
+          for (const control of request.controlPoints) {
+            control.position.forEach((value, index) => view.setFloat32(at + index * 4, value, true))
+            control.orientation.forEach((value, index) => view.setFloat32(at + 12 + index * 4, value, true))
+            view.setUint32(at + 28, control.ownerIdentity, true)
+            at += 32
+          }
         } else if (request.kind === "set-control-point") {
           const control = request.controlPoint
           control.position.forEach((value, index) => view.setFloat32(at + index * 4, value, true))
@@ -718,7 +734,7 @@ function particleIdentity(value: string): boolean {
 
 function particleControlPoint(value: ParticleControlPoint | undefined): value is ParticleControlPoint {
   return value !== undefined
-    && value.index === 0
+    && (value.index === 0 || value.index === 1)
     && finite(value.position)
     && value.position.every(component => Number.isFinite(Math.fround(component)))
     && quaternion(value.orientation)
@@ -737,7 +753,7 @@ export function tf2Hud(snapshot: Snapshot): Tf2Hud {
           : snapshot.weapon === 42 ? "Wrench"
             : snapshot.weapon === 43 ? "Construction PDA" : snapshot.weapon === 44 ? "Destruction PDA" : snapshot.weapon === 45 ? "Toolbox"
             : snapshot.weapon === 50 ? "Revolver" : snapshot.weapon === 51 ? "Knife" : snapshot.weapon === 52 ? "Sapper" : snapshot.weapon === 53 ? "Disguise Kit" : snapshot.weapon === 54 ? "Invisibility Watch"
-            : (["", "Rocket Launcher", "Original", "Stickybomb Launcher", "Scattergun", "Pistol", "Bat", "Shotgun", "Shovel", "Minigun", "Shotgun", "Fists", "Sniper Rifle", "SMG", "Kukri", "Flamethrower", "Fire Axe", "Bottle", "Grenade Launcher"] as const)[snapshot.weapon],
+            : (["", "Rocket Launcher", "Original", "Stickybomb Launcher", "Scattergun", "Pistol", "Bat", "Shotgun", "Shovel", "Minigun", "Shotgun", "Fists", "Sniper Rifle", "SMG", "Kukri", "Flamethrower", "Fire Axe", "Bottle", "Grenade Launcher", "Syringe Gun", "Medi Gun", "Bonesaw"] as const)[snapshot.weapon],
 
     speed: Math.hypot(...snapshot.velocity),
     projectileCount: snapshot.projectiles.length,
@@ -773,7 +789,7 @@ export function particleEffects(items: readonly ParticleRenderItem[]): readonly 
   )
 }
 
-export type ProjectileKind = "rocket" | "sticky"
+export type ProjectileKind = "rocket" | "sticky" | "syringe"
 export type ProjectileTeam = "red" | "blue"
 export type ProjectileState = "flying" | "stuck-unarmed" | "stuck-armed"
 export type ProjectileEventKind =
@@ -831,7 +847,7 @@ export type ProjectileFrame = Readonly<{
 export type ProjectileModelRequest = Readonly<{
   identity: number
   projectileIdentity: number
-  model: "models/weapons/w_models/w_rocket.mdl" | "models/weapons/w_models/w_stickybomb.mdl"
+  model: "models/weapons/w_models/w_rocket.mdl" | "models/weapons/w_models/w_stickybomb.mdl" | "models/weapons/w_models/w_syringe_proj.mdl"
   skin: 0 | 1
   materialVariant: ProjectileTeam
   position: Vector3
@@ -847,7 +863,7 @@ export type ParticleAttachment = Readonly<{
 export type AttachmentTransform = Readonly<{ position: Vector3; orientation: Quaternion }>
 
 export type ParticleControlPoint = Readonly<{
-  index: 0
+  index: 0 | 1
   position: Vector3
   orientation: Quaternion
   ownerIdentity: number
@@ -1092,7 +1108,7 @@ export function createProjectilePresentationMapper(
             )
             push(particles, limits, trailStart)
             startedControls.set(source.identity, trailStart.controlPoints[0]!)
-            const muzzle = source.kind === "rocket" ? "rocketbackblast" : "muzzle_pipelauncher"
+            const muzzle = source.kind === "rocket" ? "rocketbackblast" : source.kind === "syringe" ? "muzzle_syringe" : "muzzle_pipelauncher"
             if (!(source.kind === "rocket" && source.ownerIdentity === catalog.localOwnerIdentity)) {
               const attachment = requireAttachment(
                 catalog,
@@ -1274,7 +1290,9 @@ export function createProjectilePresentationMapper(
       const models = [...finalFacts.values()].filter((fact) => fact.kind !== "sticky" || fact.ageSeconds >= 0.1).map((fact) => {
         const model = fact.kind === "rocket"
           ? ("models/weapons/w_models/w_rocket.mdl" as const)
-          : ("models/weapons/w_models/w_stickybomb.mdl" as const)
+          : fact.kind === "sticky"
+            ? ("models/weapons/w_models/w_stickybomb.mdl" as const)
+            : ("models/weapons/w_models/w_syringe_proj.mdl" as const)
         if (!catalog.models.has(model)) {
           throw new ProjectilePresentationError("MissingModel", `projectile model ${model} is missing`)
         }
@@ -1319,7 +1337,7 @@ function validateFact(fact: ProjectileFact): void {
     !uint32(fact.identity) ||
     !uint32(fact.ownerIdentity) ||
     !uint32(fact.launcherIdentity) ||
-    (fact.kind !== "rocket" && fact.kind !== "sticky") ||
+    (fact.kind !== "rocket" && fact.kind !== "sticky" && fact.kind !== "syringe") ||
     (fact.team !== "red" && fact.team !== "blue") ||
     (fact.state !== "flying" && fact.state !== "stuck-unarmed" && fact.state !== "stuck-armed") ||
     !finite(fact.position) ||
@@ -1340,7 +1358,7 @@ function validateFact(fact: ProjectileFact): void {
 function validateEvent(event: ProjectileEvent, frameTick: bigint, earliestTick: bigint, sourceOrdinal: number): void {
   if (
     !["fire", "impact", "bounce", "stick", "arm", "fizzle", "explode", "destroy"].includes(event.kind) ||
-    (event.projectileKind !== "rocket" && event.projectileKind !== "sticky") ||
+    (event.projectileKind !== "rocket" && event.projectileKind !== "sticky" && event.projectileKind !== "syringe") ||
     !uint32(event.projectileIdentity) ||
     !uint32(event.ownerIdentity) ||
     !uint32(event.launcherIdentity) ||
@@ -1437,6 +1455,7 @@ function controlPoint(position: Vector3, orientation: Quaternion, ownerIdentity:
 
 function trailSystem(fact: ProjectileSource): string {
   if (fact.kind === "rocket") return "rockettrail"
+  if (fact.kind === "syringe") return fact.team === "red" ? "nailtrails_medic_red" : "nailtrails_medic_blue"
   return fact.team === "red" ? "stickybombtrail_red" : "stickybombtrail_blue"
 }
 

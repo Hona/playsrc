@@ -10,6 +10,7 @@ pub mod ctf;
 pub mod damage;
 pub mod health;
 mod map_runtime;
+pub mod medic;
 pub mod pickup;
 pub mod pyro;
 pub mod random;
@@ -211,6 +212,9 @@ pub enum Weapon {
     BuildPda = 43,
     DestroyPda = 44,
     Toolbox = 45,
+    SyringeGun = 19,
+    MediGun = 20,
+    Bonesaw = 21,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -267,6 +271,7 @@ pub struct Command {
     pub reset: bool,
     pub respawn: bool,
     pub drop_item: bool,
+    pub nextbot_stop: bool,
     pub select_class: Option<PlayerClass>,
     pub select_random_class: bool,
     pub select_team: Option<PlayerTeam>,
@@ -284,6 +289,7 @@ pub struct Command {
 pub enum ProjectileKind {
     Rocket = 1,
     Sticky = 2,
+    Syringe = 3,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -460,7 +466,10 @@ pub enum Condition {
     Disguising = 2,
     Disguised = 3,
     Stealthed = 4,
+    Invulnerable = 5,
     Phase = 14,
+    HealthBuff = 21,
+    Overhealed = 23,
     EnergyBuff = 19,
     Burning = 22,
     Urine = 24,
@@ -699,6 +708,9 @@ pub struct Snapshot {
     pub placement: Option<building::Placement>,
     pub metal: u16,
     pub scoreboard: scoreboard::Snapshot,
+    pub medigun_charge: f32,
+    pub medigun_target: Option<u32>,
+    pub medigun_releasing: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -809,6 +821,7 @@ pub struct Session<W: GameplayWorld + Clone> {
     posed_player_hitboxes: Vec<PosedPlayerHitbox>,
     respawn_tick: Option<u64>,
     buildings: building::World,
+    medigun: medic::MedigunState,
 }
 
 #[derive(Debug)]
@@ -975,6 +988,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             posed_player_hitboxes: Vec::new(),
             respawn_tick: None,
             buildings: building::World::new(movement_configuration.tick_interval),
+            medigun: medic::MedigunState::default(),
         }
     }
 
@@ -1331,6 +1345,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
 
     pub fn set_posed_player_hitboxes(&mut self, hitboxes: Vec<PosedPlayerHitbox>) {
         self.posed_player_hitboxes = hitboxes;
+    }
+
+    pub fn medigun(&self) -> &medic::MedigunState {
+        &self.medigun
     }
 
     pub fn configure_jump(&mut self, definition: jump::CourseDefinition) -> Result<(), Error> {
@@ -1771,7 +1789,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 events.push(Event::WeaponChanged(Weapon::Wrench));
             }
         }
-        let bot_attacks = if let Some(bots) = &mut self.bots {
+        let bot_attacks = if command.nextbot_stop {
+            Vec::new()
+        } else if let Some(bots) = &mut self.bots {
             bots.advance(
                 &self.collision,
                 self.tick,
@@ -1981,6 +2001,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                         | Weapon::Wrench
                         | Weapon::FireAxe
                         | Weapon::Bottle
+                        | Weapon::Bonesaw
                 ) {
                     self.swing_melee(active_weapon);
                 } else if active_weapon == Weapon::Knife {
@@ -2026,6 +2047,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                         | Weapon::Wrench
                         | Weapon::FireAxe
                         | Weapon::Bottle
+                        | Weapon::Bonesaw
                 ) {
                     self.resolve_melee(
                         active_weapon,
@@ -2107,16 +2129,32 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     (Weapon::Revolver, weapon::WeaponActivity::ReloadStart) => {
                         Some(SoundDefinition::RevolverReload)
                     }
+                    (Weapon::SyringeGun, weapon::WeaponActivity::ReloadLoop) => {
+                        Some(SoundDefinition::SyringeReload)
+                    }
                     _ => None,
                 });
             if let Some(definition) = reload_sound {
                 self.emit_weapon_sound(definition, self.movement.position);
+            }
+            if active_weapon == Weapon::MediGun {
+                self.advance_medigun(command)?;
+            } else if self.medigun.target.is_some() || self.medigun.releasing {
+                self.advance_medigun(Command {
+                    fire: false,
+                    detonate: false,
+                    ..command
+                })?;
             }
             self.fire_was_held = command.fire
                 && (active_weapon != Weapon::Flamethrower
                     || (self.movement.water_level != 3 && !command.detonate));
         } else {
             self.fire_was_held = false;
+        }
+        if let Some(bots) = &mut self.bots {
+            bots.advance_health(self.tick as f32 * self.movement_configuration.tick_interval)
+                .map_err(Error::Bot)?;
         }
         for event in ammo_events {
             events.push(Event::Reloaded {
@@ -2373,6 +2411,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
             scoreboard,
             buildings: self.buildings.snapshots(),
             placement: self.buildings.placement(),
+            medigun_charge: self.medigun.charge,
+            medigun_target: self.medigun.target,
+            medigun_releasing: self.medigun.releasing,
         })
     }
 
@@ -3523,6 +3564,17 @@ impl<W: GameplayWorld + Clone> Session<W> {
             health.current = self.health;
             health.maximum = self.maximum_health();
             let mut conditions = condition::ConditionState::default();
+            if self.conditions.contains(Condition::Invulnerable) {
+                conditions
+                    .add(
+                        condition::ConditionId::INVULNERABLE,
+                        condition::ConditionDuration::Permanent,
+                        Some(PLAYER_IDENTITY),
+                        true,
+                        false,
+                    )
+                    .map_err(|_| Error::Bot(bot::Error::Damage))?;
+            }
             if self.conditions.contains(Condition::Phase) {
                 conditions
                     .add(
@@ -4139,21 +4191,279 @@ impl<W: GameplayWorld + Clone> Session<W> {
         Ok(())
     }
 
+    fn advance_medigun(&mut self, command: Command) -> Result<(), Error> {
+        let interval = self.movement_configuration.tick_interval;
+        let now = self.tick as f32 * interval;
+        let origin = add(self.movement.position, self.movement.view_offset);
+        let direction = angle_vectors(command.pitch_degrees, command.movement.yaw_degrees, 0.0).0;
+        if !command.fire {
+            if let Some(identity) = self.medigun.target
+                && let Some((health, conditions)) = self
+                    .bots
+                    .as_mut()
+                    .and_then(|bots| bots.patient_state(identity))
+            {
+                self.medigun
+                    .detach(now, PLAYER_IDENTITY, health, conditions);
+                self.emit_weapon_sound(SoundDefinition::MedigunDetach, self.movement.position);
+            }
+        } else {
+            if let Some(identity) = self.medigun.target {
+                let facts = self
+                    .bots
+                    .as_ref()
+                    .and_then(|bots| bots.patient(identity, origin));
+                let retained = if let Some(patient) = facts {
+                    let visible = |point| {
+                        self.collision
+                            .trace(
+                                origin,
+                                point,
+                                Hull {
+                                    mins: [0.0; 3],
+                                    maxs: [0.0; 3],
+                                },
+                                MASK_SOLID,
+                            )
+                            .is_ok_and(|trace| trace.fraction >= 1.0)
+                    };
+                    self.medigun.maintain(
+                        now,
+                        origin,
+                        patient,
+                        false,
+                        visible(patient.center),
+                        visible(patient.eyes),
+                    )
+                } else {
+                    false
+                };
+                if !retained {
+                    if let Some((health, conditions)) = self
+                        .bots
+                        .as_mut()
+                        .and_then(|bots| bots.patient_state(identity))
+                    {
+                        self.medigun
+                            .detach(now, PLAYER_IDENTITY, health, conditions);
+                    } else {
+                        self.medigun.target = None;
+                    }
+                    self.emit_weapon_sound(SoundDefinition::MedigunDetach, self.movement.position);
+                }
+            }
+            if self.medigun.target.is_none() {
+                let candidate = self.bots.as_ref().and_then(|bots| {
+                    bots.patient_identities()
+                        .filter_map(|identity| bots.patient(identity, origin))
+                        .filter(|patient| patient.allowed(self.team_selection.local_team(), false))
+                        .filter_map(|patient| {
+                            let relative = sub(patient.center, origin);
+                            let along = relative[0] * direction[0]
+                                + relative[1] * direction[1]
+                                + relative[2] * direction[2];
+                            if !(0.0..=medic::MEDIGUN_TARGET_RANGE).contains(&along) {
+                                return None;
+                            }
+                            let closest = sub(relative, scale(direction, along));
+                            if length(closest) > 24.0 {
+                                return None;
+                            }
+                            let trace = self
+                                .collision
+                                .trace(
+                                    origin,
+                                    patient.center,
+                                    Hull {
+                                        mins: [0.0; 3],
+                                        maxs: [0.0; 3],
+                                    },
+                                    MASK_SOLID,
+                                )
+                                .ok()?;
+                            (trace.fraction >= 1.0).then_some((along, patient))
+                        })
+                        .min_by(|left, right| left.0.total_cmp(&right.0))
+                        .map(|(_, patient)| patient)
+                });
+                if let Some(patient) = candidate
+                    && let Some((health, conditions)) = self
+                        .bots
+                        .as_mut()
+                        .and_then(|bots| bots.patient_state(patient.identity))
+                {
+                    self.medigun
+                        .attach(
+                            now,
+                            PLAYER_IDENTITY,
+                            self.team_selection.local_team(),
+                            false,
+                            origin,
+                            patient,
+                            health,
+                            conditions,
+                        )
+                        .map_err(|_| Error::InvalidProjectilePhysics)?;
+                    self.activity_events.push(ActivityEvent {
+                        tick: self.tick,
+                        weapon: Weapon::MediGun,
+                        activity: weapon::WeaponActivity::PrimaryAttack,
+                    });
+                    self.emit_weapon_sound(SoundDefinition::MedigunHealing, self.movement.position);
+                }
+            }
+            if let Some(patient) = self
+                .medigun
+                .target
+                .and_then(|identity| self.bots.as_ref()?.patient(identity, origin))
+                && self.medigun.build_charge(
+                    interval,
+                    patient,
+                    self.round
+                        .timer()
+                        .is_some_and(|timer| timer.state == round::TimerState::Setup),
+                ) == Some(medic::BeamTransition::ChargeReady)
+            {
+                self.emit_weapon_sound(SoundDefinition::MedigunCharged, self.movement.position);
+            }
+        }
+        if command.detonate && !self.medigun.releasing && self.medigun.charge >= 1.0 {
+            let mut medic_conditions = condition::ConditionState::default();
+            let patient_conditions = self
+                .medigun
+                .target
+                .and_then(|identity| self.bots.as_mut()?.patient_state(identity))
+                .map(|(_, conditions)| conditions);
+            self.medigun
+                .activate(PLAYER_IDENTITY, &mut medic_conditions, patient_conditions)
+                .map_err(|_| Error::InvalidProjectilePhysics)?;
+            if self.medigun.releasing {
+                self.conditions.insert(Condition::Invulnerable);
+            }
+        }
+        if self.medigun.releasing {
+            let alive = self
+                .bots
+                .as_ref()
+                .map(|bots| {
+                    bots.patient_identities()
+                        .filter(|identity| {
+                            bots.patient(*identity, origin)
+                                .is_some_and(|patient| patient.alive)
+                        })
+                        .collect::<std::collections::BTreeSet<_>>()
+                })
+                .unwrap_or_default();
+            if self
+                .medigun
+                .drain(now, interval, |identity| alive.contains(&identity))
+                == Some(medic::BeamTransition::ChargeEnded)
+            {
+                self.conditions.remove(Condition::Invulnerable);
+                if let Some((_, conditions)) = self
+                    .medigun
+                    .target
+                    .and_then(|identity| self.bots.as_mut()?.patient_state(identity))
+                {
+                    conditions.remove(condition::ConditionId::INVULNERABLE, false);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn enemy_bot_trace(
+        &self,
+        start: [f32; 3],
+        end: [f32; 3],
+        expand: f32,
+    ) -> Option<(u32, [f32; 3], [f32; 3])> {
+        let bots = self.bots.as_ref()?;
+        let delta = sub(end, start);
+        bots.patient_identities()
+            .filter_map(|identity| {
+                let patient = bots.patient(identity, start)?;
+                if !patient.alive || patient.team == self.team_selection.local_team() {
+                    return None;
+                }
+                let origin = [
+                    patient.center[0],
+                    patient.center[1],
+                    patient.center[2] - 41.0,
+                ];
+                let minimum = [
+                    origin[0] - 24.0 - expand,
+                    origin[1] - 24.0 - expand,
+                    origin[2] - expand,
+                ];
+                let maximum = [
+                    origin[0] + 24.0 + expand,
+                    origin[1] + 24.0 + expand,
+                    origin[2] + 82.0 + expand,
+                ];
+                let mut entering = 0.0_f32;
+                let mut exiting = 1.0_f32;
+                let mut normal = [0.0_f32; 3];
+                for axis in 0..3 {
+                    if delta[axis].abs() < f32::EPSILON {
+                        if start[axis] < minimum[axis] || start[axis] > maximum[axis] {
+                            return None;
+                        }
+                        continue;
+                    }
+                    let mut first = (minimum[axis] - start[axis]) / delta[axis];
+                    let mut second = (maximum[axis] - start[axis]) / delta[axis];
+                    let sign = if first > second {
+                        std::mem::swap(&mut first, &mut second);
+                        1.0
+                    } else {
+                        -1.0
+                    };
+                    if first > entering {
+                        entering = first;
+                        normal = [0.0; 3];
+                        normal[axis] = sign;
+                    }
+                    exiting = exiting.min(second);
+                    if entering > exiting {
+                        return None;
+                    }
+                }
+                if !(0.0..=1.0).contains(&entering) {
+                    return None;
+                }
+                if normal == [0.0; 3] {
+                    normal = normalized(scale(delta, -1.0));
+                }
+                Some((
+                    entering,
+                    identity,
+                    add(start, scale(delta, entering)),
+                    normal,
+                ))
+            })
+            .min_by(|left, right| left.0.total_cmp(&right.0))
+            .map(|(_, identity, position, normal)| (identity, position, normal))
+    }
+
     fn swing_melee(&mut self, weapon: Weapon) {
-        let definition = match weapon {
-            Weapon::Bat => SoundDefinition::BatMiss,
-            Weapon::Shovel => SoundDefinition::ShovelMiss,
-            Weapon::Kukri => SoundDefinition::KukriMiss,
-            Weapon::Bottle => SoundDefinition::BottleMiss,
-            Weapon::Wrench => SoundDefinition::WrenchMiss,
-            Weapon::FireAxe => SoundDefinition::FireAxeMiss,
+        let (definition, smack_delay) = match weapon {
+            Weapon::Bat => (SoundDefinition::BatMiss, ballistics::MELEE_SMACK_DELAY),
+            Weapon::Shovel => (SoundDefinition::ShovelMiss, ballistics::MELEE_SMACK_DELAY),
+            Weapon::Kukri => (SoundDefinition::KukriMiss, ballistics::MELEE_SMACK_DELAY),
+            Weapon::Bottle => (SoundDefinition::BottleMiss, ballistics::MELEE_SMACK_DELAY),
+            Weapon::Wrench => (SoundDefinition::WrenchMiss, ballistics::MELEE_SMACK_DELAY),
+            Weapon::FireAxe => (SoundDefinition::FireAxeMiss, ballistics::MELEE_SMACK_DELAY),
+            Weapon::Bonesaw => (SoundDefinition::BonesawMiss, medic::BONESAW_SMACK_DELAY),
             _ => unreachable!("only melee weapons swing"),
         };
         self.emit_weapon_sound(definition, self.movement.position);
-        self.pending_melee_tick = Some(self.tick.saturating_add(
-            (ballistics::MELEE_SMACK_DELAY / self.movement_configuration.tick_interval).floor()
-                as u64,
-        ));
+        let delay = if weapon == Weapon::Bonesaw {
+            weapon::delay_ticks(smack_delay, self.movement_configuration.tick_interval)
+        } else {
+            (smack_delay / self.movement_configuration.tick_interval).floor() as u64
+        };
+        self.pending_melee_tick = Some(self.tick.saturating_add(delay));
     }
 
     fn resolve_melee(
@@ -4295,6 +4605,14 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 (Weapon::FireAxe, false) => {
                     (SoundDefinition::FireAxeHitWorld, pyro::FIRE_AXE_DAMAGE)
                 }
+                (Weapon::Bonesaw, true) => (
+                    SoundDefinition::BonesawHitFlesh,
+                    medic::BONESAW_DAMAGE as f32,
+                ),
+                (Weapon::Bonesaw, false) => (
+                    SoundDefinition::BonesawHitWorld,
+                    medic::BONESAW_DAMAGE as f32,
+                ),
                 _ => unreachable!("only melee weapons resolve swings"),
             };
             self.emit_weapon_sound(definition, position);
@@ -4318,6 +4636,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 )?;
             }
         }
+
         Ok(())
     }
 
@@ -4653,6 +4972,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
             | Weapon::Toolbox => {
                 unreachable!("hitscan and melee weapons do not spawn projectiles")
             }
+            Weapon::SyringeGun => SoundDefinition::SyringeSingle,
+            Weapon::MediGun | Weapon::Bonesaw => return Err(Error::InvalidProjectilePhysics),
         };
         let sound_samples = self.sample_weapon_sound(definition);
         self.push_audio_event(AudioEvent {
@@ -4700,6 +5021,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
             | Weapon::Toolbox => {
                 unreachable!("hitscan and melee weapons do not spawn projectiles")
             }
+            Weapon::SyringeGun => ProjectileKind::Syringe,
+            Weapon::MediGun | Weapon::Bonesaw => return Err(Error::InvalidProjectilePhysics),
         };
         let profile = weapon::WeaponProfile::configured(weapon);
         let (mut direction, right, up) = angle_vectors(pitch, yaw, 0.0);
@@ -4734,7 +5057,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 },
                 MASK_SOLID,
             )?;
-            let mut offset = [23.5, 12.0, -3.0];
+            let mut offset = if kind == ProjectileKind::Syringe {
+                [16.0, 6.0, -8.0]
+            } else {
+                [23.5, 12.0, -3.0]
+            };
             if viewmodel_flipped {
                 offset[1] *= -1.0;
             }
@@ -4756,16 +5083,37 @@ impl<W: GameplayWorld + Clone> Session<W> {
             } else {
                 sub(forward_end, source)
             });
-            let clipped = self.collision.trace(
-                eye,
-                source,
-                Hull {
-                    mins: [0.0; 3],
-                    maxs: [0.0; 3],
-                },
-                MASK_SOLID_BRUSH_ONLY,
-            )?;
-            (clipped.end, quaternion_from_direction(direction))
+            if kind == ProjectileKind::Syringe {
+                let aim_pitch = (-direction[2])
+                    .atan2(direction[0].hypot(direction[1]))
+                    .to_degrees();
+                let aim_yaw = direction[1].atan2(direction[0]).to_degrees();
+                let pitch_spread = self.draw_random_float(
+                    RandomContext::Authority,
+                    RandomDecision::SyringePitchSpread,
+                    -1.5,
+                    1.5,
+                );
+                let yaw_spread = self.draw_random_float(
+                    RandomContext::Authority,
+                    RandomDecision::SyringeYawSpread,
+                    -1.5,
+                    1.5,
+                );
+                direction = angle_vectors(aim_pitch + pitch_spread, aim_yaw + yaw_spread, 0.0).0;
+                (source, quaternion_from_direction(direction))
+            } else {
+                let clipped = self.collision.trace(
+                    eye,
+                    source,
+                    Hull {
+                        mins: [0.0; 3],
+                        maxs: [0.0; 3],
+                    },
+                    MASK_SOLID_BRUSH_ONLY,
+                )?;
+                (clipped.end, quaternion_from_direction(direction))
+            }
         };
         let (velocity, angular_velocity) = if kind == ProjectileKind::Sticky {
             let random = StickyLaunchRandom {
@@ -4806,7 +5154,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
             if expected_sticky_random.is_some() {
                 return Err(Error::InvalidStickyLaunchRandom);
             }
-            (scale(direction, 1_100.0), [0.0; 3])
+            let speed = if kind == ProjectileKind::Syringe {
+                medic::SYRINGE_SPEED
+            } else {
+                1_100.0
+            };
+            (scale(direction, speed), [0.0; 3])
         };
         let identity = self.next_projectile;
         self.next_projectile = self.next_projectile.wrapping_add(1).max(1);
@@ -4989,13 +5342,27 @@ impl<W: GameplayWorld + Clone> Session<W> {
             }
             let Some(index) = self.projectiles.iter().position(|projectile| {
                 projectile.presentation.identity == result.projectile
-                    && projectile.presentation.kind == ProjectileKind::Rocket
+                    && matches!(
+                        projectile.presentation.kind,
+                        ProjectileKind::Rocket | ProjectileKind::Syringe
+                    )
                     && projectile.presentation.state == ProjectileState::Flying
             }) else {
                 return Err(Error::InvalidProjectilePhysics);
             };
-            let mut projectile = self.projectiles.remove(index);
             let mut result = *result;
+            if self.projectiles[index].presentation.kind == ProjectileKind::Syringe
+                && !result.sky
+                && let Some((identity, impact, normal)) =
+                    self.enemy_bot_trace(request.start, result.end, 0.0)
+            {
+                result.end = impact;
+                result.solid = true;
+                result.sky = false;
+                result.normal = Some(normal);
+                result.direct_target = Some(identity);
+            }
+            let mut projectile = self.projectiles.remove(index);
             let mut actor_hit = self.bots.as_ref().and_then(|bots| {
                 bots.intersect_enemy(
                     projectile.presentation.team,
@@ -5048,6 +5415,31 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     &projectile.presentation,
                     self.tick,
                 ));
+                if projectile.presentation.kind == ProjectileKind::Syringe {
+                    projectile_events.push(projectile_event(
+                        ProjectileEventKind::Fizzle,
+                        &projectile.presentation,
+                        self.tick,
+                    ));
+                    if let Some(target) = result.direct_target {
+                        if self.bots.as_ref().is_some_and(|bots| bots.contains(target)) {
+                            self.apply_actor_damage(
+                                bot::Damage {
+                                    attacker: projectile.presentation.owner_identity,
+                                    victim: target,
+                                    weapon: Weapon::SyringeGun,
+                                    amount: medic::SYRINGE_DAMAGE as f32,
+                                    position: result.end,
+                                },
+                                projectile.presentation.team,
+                                events,
+                            )?;
+                        } else {
+                            map_phase.append(self.map.damage(self.tick, target)?);
+                        }
+                    }
+                    continue;
+                }
                 if let Some(target) = result.direct_target {
                     let presentation = self.publish_explosion(projectile, projectile_events);
                     if target != PLAYER_IDENTITY
@@ -5126,6 +5518,13 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 projectile.presentation.position,
                 scale(projectile.presentation.velocity, tick_interval),
             );
+            if projectile.presentation.kind == ProjectileKind::Syringe {
+                projectile.presentation.velocity[2] -= self.movement_configuration.gravity
+                    * medic::SYRINGE_GRAVITY_SCALE
+                    * tick_interval;
+                projectile.presentation.orientation =
+                    quaternion_from_direction(projectile.presentation.velocity);
+            }
             self.rocket_trace_requests.push(RocketTraceRequest {
                 projectile: projectile.presentation.identity,
                 tick: self.tick,
@@ -5311,6 +5710,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             }
             (ProjectileKind::Rocket, _) => SoundDefinition::RocketExplosion,
             (ProjectileKind::Sticky, _) => SoundDefinition::StickyExplosion,
+            (ProjectileKind::Syringe, _) => unreachable!("syringes do not explode"),
         };
         let sound_samples = self.sample_sound(
             RandomContext::PredictedPresentation,
@@ -5331,6 +5731,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         let (base_damage, radius, self_radius) = match projectile.presentation.kind {
             ProjectileKind::Rocket => (90.0, 146.0, 121.0),
             ProjectileKind::Sticky => (120.0, 146.0, 146.0),
+            ProjectileKind::Syringe => unreachable!("syringes do not cause blast damage"),
         };
         self.radius_damage_requests.push(RadiusDamageRequest {
             projectile: projectile.presentation.identity,
@@ -5568,7 +5969,8 @@ pub(crate) const fn weapon_ammo_kind(weapon: Weapon) -> Option<class::AmmoType> 
         | Weapon::SniperRifle
         | Weapon::EngineerShotgun
         | Weapon::GrenadeLauncher
-        | Weapon::Flamethrower => Some(class::AmmoType::Primary),
+        | Weapon::Flamethrower
+        | Weapon::SyringeGun => Some(class::AmmoType::Primary),
         Weapon::StickybombLauncher
         | Weapon::Pistol
         | Weapon::Shotgun
@@ -5589,7 +5991,9 @@ pub(crate) const fn weapon_ammo_kind(weapon: Weapon) -> Option<class::AmmoType> 
         | Weapon::InvisibilityWatch
         | Weapon::BuildPda
         | Weapon::DestroyPda
-        | Weapon::Toolbox => None,
+        | Weapon::Toolbox
+        | Weapon::MediGun
+        | Weapon::Bonesaw => None,
     }
 }
 
@@ -5603,7 +6007,7 @@ fn default_weapon(class: PlayerClass) -> Option<Weapon> {
         PlayerClass::Engineer => Some(Weapon::EngineerShotgun),
         PlayerClass::Pyro => Some(Weapon::Flamethrower),
         PlayerClass::Spy => Some(Weapon::Revolver),
-        _ => None,
+        PlayerClass::Medic => Some(Weapon::SyringeGun),
     }
 }
 
@@ -5684,7 +6088,11 @@ fn default_loadout(class: PlayerClass) -> BTreeMap<Weapon, WeaponRuntime> {
                 WeaponRuntime::full(Weapon::InvisibilityWatch),
             ),
         ]),
-        _ => BTreeMap::new(),
+        PlayerClass::Medic => BTreeMap::from([
+            (Weapon::SyringeGun, WeaponRuntime::full(Weapon::SyringeGun)),
+            (Weapon::MediGun, WeaponRuntime::full(Weapon::MediGun)),
+            (Weapon::Bonesaw, WeaponRuntime::full(Weapon::Bonesaw)),
+        ]),
     }
 }
 
@@ -5720,6 +6128,9 @@ fn allowed(class: PlayerClass, weapon: Weapon) -> bool {
         ) | (
             PlayerClass::Spy,
             Weapon::Revolver | Weapon::Knife | Weapon::Sapper | Weapon::DisguiseKit
+        ) | (
+            PlayerClass::Medic,
+            Weapon::SyringeGun | Weapon::MediGun | Weapon::Bonesaw
         )
     )
 }
@@ -7644,11 +8055,16 @@ mod tests {
                     assert_eq!(snapshot.loadout.len(), 5);
                     assert_eq!(snapshot.spy, Some(spy::SpyState::default()));
                 }
-                _ => {
-                    assert_eq!(snapshot.weapon, None);
-                    assert!(snapshot.loadout.is_empty());
-                    assert!(snapshot.projectiles.is_empty());
-                    assert!(session.activity_events().is_empty());
+                PlayerClass::Medic => {
+                    assert_eq!(snapshot.weapon, Some(Weapon::SyringeGun));
+                    assert_eq!(
+                        snapshot
+                            .loadout
+                            .iter()
+                            .map(|weapon| weapon.weapon)
+                            .collect::<Vec<_>>(),
+                        vec![Weapon::SyringeGun, Weapon::MediGun, Weapon::Bonesaw],
+                    );
                 }
             }
             let respawned = session
@@ -7742,6 +8158,7 @@ mod tests {
                 launcher_identity: match kind {
                     ProjectileKind::Rocket => Weapon::RocketLauncher as u32,
                     ProjectileKind::Sticky => Weapon::StickybombLauncher as u32,
+                    ProjectileKind::Syringe => Weapon::SyringeGun as u32,
                 },
                 state: ProjectileState::Flying,
                 position,
@@ -8860,6 +9277,8 @@ mod tests {
                 bottle_hit_flesh_available: 0b111,
                 bottle_hit_world_available: 0b111,
                 knife_hit_flesh_available: 0b111,
+                bonesaw_hit_flesh_available: 0b111,
+                bonesaw_hit_world_available: 0b11,
             }
         );
 
@@ -8909,6 +9328,8 @@ mod tests {
                 bottle_hit_flesh_available: 0b111,
                 bottle_hit_world_available: 0b111,
                 knife_hit_flesh_available: 0b111,
+                bonesaw_hit_flesh_available: 0b111,
+                bonesaw_hit_world_available: 0b11,
             }
         );
     }
@@ -9204,6 +9625,70 @@ mod tests {
                 .conditions
                 .contains(Condition::CannotSwitchFromMelee)
         );
+    }
+
+    #[test]
+    fn medic_syringes_preserve_stock_clip_offset_spread_gravity_and_nonexplosive_impact() {
+        let mut session = Session::new(Floor, [0.0, 0.0, 20.0], MapRuntime::empty(0.015));
+        session
+            .advance(Command {
+                select_class: Some(PlayerClass::Medic),
+                ..Command::default()
+            })
+            .unwrap();
+        let deploy = session
+            .weapon_runtime(Weapon::SyringeGun)
+            .unwrap()
+            .next_primary_tick;
+        while session.tick < deploy {
+            session.advance(Command::default()).unwrap();
+        }
+        let fired = session
+            .advance(Command {
+                fire: true,
+                ..Command::default()
+            })
+            .unwrap();
+        assert_eq!(fired.projectiles.len(), 1);
+        let syringe = &fired.projectiles[0];
+        assert_eq!(syringe.kind, ProjectileKind::Syringe);
+        assert_eq!(session.weapon_runtime(Weapon::SyringeGun).unwrap().clip, 39);
+        assert!((syringe.position[0] - 16.0).abs() < 0.001);
+        assert!((syringe.position[1] + 6.0).abs() < 0.001);
+        assert!((length(syringe.velocity) - medic::SYRINGE_SPEED).abs() < 5.0);
+        assert!(
+            session
+                .random_draws()
+                .iter()
+                .any(|draw| { matches!(draw.decision, RandomDecision::SyringePitchSpread) })
+        );
+        let request = session.rocket_trace_requests()[0];
+        let impact = session
+            .advance_with_external(
+                Command::default(),
+                &[],
+                &[RocketTraceResult {
+                    projectile: request.projectile,
+                    tick: session.tick,
+                    end: request.end,
+                    solid: true,
+                    sky: false,
+                    normal: Some([0.0, 0.0, 1.0]),
+                    direct_target: None,
+                }],
+                None,
+            )
+            .unwrap();
+        assert!(impact.projectiles.is_empty());
+        assert_eq!(
+            impact
+                .projectile_events
+                .iter()
+                .map(|event| event.kind)
+                .collect::<Vec<_>>(),
+            vec![ProjectileEventKind::Impact, ProjectileEventKind::Fizzle]
+        );
+        assert!(session.radius_damage_requests().is_empty());
     }
 
     #[test]

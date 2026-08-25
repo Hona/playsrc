@@ -666,6 +666,7 @@ fn supported(category: FunctionCategory, identity: &str) -> bool {
             "Lifespan Decay",
             "Movement Basic",
             "Movement Follow CP",
+            "Remap Scalar",
             "Movement Lock to Control Point",
             "Oscillate Scalar",
             "Oscillate Vector",
@@ -681,7 +682,9 @@ fn supported(category: FunctionCategory, identity: &str) -> bool {
             "Color Random",
             "Lifetime From Control Point Life Time",
             "Lifetime Random",
+            "Position Along Path Random",
             "Position Modify Offset Random",
+            "remap initial scalar",
             "Position Within Box Random",
             "Position Within Sphere Random",
             "Radius Random",
@@ -694,8 +697,11 @@ fn supported(category: FunctionCategory, identity: &str) -> bool {
             "Trail Length Random",
         ],
         FunctionCategory::Emitter => &["emit_continuously", "emit_instantaneously"],
-        FunctionCategory::Force => &["random force"],
-        FunctionCategory::Constraint => &["Collision via traces"],
+        FunctionCategory::Force => &["random force", "twist around axis"],
+        FunctionCategory::Constraint => &[
+            "Collision via traces",
+            "Constrain distance to path between two control points",
+        ],
     };
     names
         .iter()
@@ -741,6 +747,7 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
             "kill particle on collision",
             "use bounding box",
             "use local system",
+            "object local space axis 0/1",
             "output is scalar of initial random range",
             "only active within specified input range",
         ]
@@ -777,6 +784,9 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
             "collision mode",
             "input field",
             "output field",
+            "start control point number",
+            "end control point number",
+            "bulge control 0=random 1=orientation of start pnt 2=orientation of end point",
         ]
         .contains(&name.as_str())
         {
@@ -794,6 +804,7 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
             "min force",
             "max force",
             "control point offset for fast collisions",
+            "twist axis",
         ]
         .contains(&name.as_str())
             || ([
@@ -845,7 +856,7 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
             || (function
                 .identity
                 .eq_ignore_ascii_case("render_animated_sprites")
-                && (int_parameter(function, "orientation_type", 0) != 0
+                && (![0, 2].contains(&int_parameter(function, "orientation_type", 0))
                     || int_parameter(function, "orientation control point", -1) >= 0))
     } else if function.identity.eq_ignore_ascii_case("Color Random") {
         float_parameter(function, "tint_perc", 0.0) != 0.0
@@ -882,7 +893,7 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
         .eq_ignore_ascii_case("Remap Initial Scalar")
     {
         int_parameter(function, "input field", 8) != 8
-            || !matches!(int_parameter(function, "output field", 3), 1 | 3 | 7)
+            || !matches!(int_parameter(function, "output field", 3), 1 | 3 | 4 | 7)
     } else if function
         .identity
         .eq_ignore_ascii_case("Remap Scalar to Vector")
@@ -1021,8 +1032,19 @@ fn accepted_parameter(function: &Function, name: &str) -> bool {
             "fade_end_time",
             "ease_in_and_out",
         ]
-    } else if function.identity.eq_ignore_ascii_case("Rotation Basic") {
+    } else if function.identity.eq_ignore_ascii_case("Rotation Basic")
+        || function.identity.eq_ignore_ascii_case("Lifespan Decay")
+    {
         &[]
+    } else if function.identity.eq_ignore_ascii_case("Remap Scalar") {
+        &[
+            "input field",
+            "input minimum",
+            "input maximum",
+            "output field",
+            "output minimum",
+            "output maximum",
+        ]
     } else if function.identity.eq_ignore_ascii_case("Rotation Spin Roll") {
         &["spin_rate_degrees", "spin_stop_time", "spin_rate_min"]
     } else if function
@@ -1237,6 +1259,34 @@ fn accepted_parameter(function: &Function, name: &str) -> bool {
         &["length_min", "length_max", "length_random_exponent"]
     } else if function
         .identity
+        .eq_ignore_ascii_case("Position Along Path Random")
+    {
+        &[
+            "maximum distance",
+            "bulge",
+            "start control point number",
+            "end control point number",
+            "bulge control 0=random 1=orientation of start pnt 2=orientation of end point",
+            "mid point position",
+        ]
+    } else if function
+        .identity
+        .eq_ignore_ascii_case("remap initial scalar")
+    {
+        &[
+            "input field",
+            "input minimum",
+            "input maximum",
+            "output field",
+            "output minimum",
+            "output maximum",
+            "output is scalar of initial random range",
+            "only active within specified input range",
+            "emitter lifetime start time (seconds)",
+            "emitter lifetime end time (seconds)",
+        ]
+    } else if function
+        .identity
         .eq_ignore_ascii_case("Position Within Box Random")
     {
         &["min", "max", "control point number"]
@@ -1293,6 +1343,28 @@ fn accepted_parameter(function: &Function, name: &str) -> bool {
         ]
     } else if function.identity.eq_ignore_ascii_case("random force") {
         &["min force", "max force"]
+    } else if function.identity.eq_ignore_ascii_case("twist around axis") {
+        &[
+            "amount of force",
+            "twist axis",
+            "object local space axis 0/1",
+        ]
+    } else if function
+        .identity
+        .eq_ignore_ascii_case("Constrain distance to path between two control points")
+    {
+        &[
+            "minimum distance",
+            "maximum distance",
+            "maximum distance middle",
+            "maximum distance end",
+            "travel time",
+            "random bulge",
+            "start control point number",
+            "end control point number",
+            "bulge control 0=random 1=orientation of start pnt 2=orientation of end point",
+            "mid point position",
+        ]
     } else if function
         .identity
         .eq_ignore_ascii_case("Collision via traces")

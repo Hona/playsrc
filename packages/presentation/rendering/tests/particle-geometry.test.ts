@@ -46,6 +46,16 @@ describe("allocation-free Source Particle geometry", () => {
     expect(actual).toEqual(previousQuad(base, camera))
   })
 
+  test("keeps authored orientation-two Medi Gun sprites on the Source world XY plane", () => {
+    const oriented: ParticleQuad = { ...base, position: [2, 3, 4], radius: 2, rollRadians: 0, orientationType: 2 }
+    const first = new Float32Array(12)
+    const second = new Float32Array(12)
+    writeParticleQuad(oriented, camera, first, 0)
+    writeParticleQuad(oriented, { position: [100, 200, 300], yawDegrees: -41, pitchDegrees: 63 }, second, 0)
+    expect([...first]).toEqual([0, 1, 4, 4, 1, 4, 4, 5, 4, 0, 5, 4])
+    expect(second).toEqual(first)
+  })
+
   test("preserves exact binary32 rocket trail endpoints and camera-facing width", () => {
     const trail = { ...base, primitive: "trail" as const }
     const actual = new Float32Array(16)

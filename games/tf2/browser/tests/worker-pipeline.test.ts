@@ -294,7 +294,7 @@ describe("TF2 Worker transport ownership", () => {
     const client = new Tf2WorkerClient(worker, cache)
     const bsp = Uint8Array.from([1, 2, 3, 4])
     const configuration = Uint8Array.from([5, 6, 7])
-    const staged = await client.stage(3, bsp, 0, configuration, KEY)
+    const staged = await client.stage(3, bsp, 0, [configuration], KEY)
     await staged.persistence
     expect(worker.requests.map((request) => request.kind)).toEqual(["load"])
     expect(worker.requests[0]).toMatchObject({ includeMap: true, generation: 3 })
@@ -310,13 +310,29 @@ describe("TF2 Worker transport ownership", () => {
     expect(worker.terminated).toBe(true)
   })
 
+  test("transfers every bounded source-backed section in one map request without detaching its retained closure", async () => {
+    const worker = new PipelineWorker(await digest(MAP))
+    const client = new Tf2WorkerClient(worker, new MemoryCache())
+    const first = Uint8Array.from([1, 2, 3])
+    const second = Uint8Array.from([4, 5, 6, 7])
+    await client.stage(9, Uint8Array.from([8]), 0, [first, second], KEY)
+    const request = worker.requests[0]
+    expect(request?.kind).toBe("load")
+    if (request?.kind !== "load") throw new Error("sectioned Worker map request is absent")
+    expect(request.configuration.map((section) => [...new Uint8Array(section)])).toEqual([[1, 2, 3], [4, 5, 6, 7]])
+    expect([...first]).toEqual([1, 2, 3])
+    expect([...second]).toEqual([4, 5, 6, 7])
+    await expect(client.stage(10, Uint8Array.from([8]), 0, [], KEY)).rejects.toMatchObject({ code: "BoundExceeded" })
+    await client.shutdown()
+  })
+
   test("round-trips authenticated warm presentation ownership without map copy or follow-up RPC", async () => {
     const cache = new MemoryCache()
     cache.entries.set(KEY, MAP.slice())
     cache.entries.set(await presentationIdentity(KEY), PRESENTATION.slice())
     const worker = new PipelineWorker(await digest(MAP))
     const client = new Tf2WorkerClient(worker, cache)
-    const staged = await client.stage(8, Uint8Array.from([8]), 1, Uint8Array.from([7]), KEY)
+    const staged = await client.stage(8, Uint8Array.from([8]), 1, [Uint8Array.from([7])], KEY)
     expect(worker.requests.map((request) => request.kind)).toEqual(["load"])
     expect(worker.requests[0]).toMatchObject({ includeMap: false, generation: 8 })
     expect(staged.cache).toBe("hit")
@@ -333,7 +349,7 @@ describe("TF2 Worker transport ownership", () => {
     cache.entries.set(KEY, Uint8Array.from([1, 2, 3, 4, 5, 6, 7, 8]))
     const worker = new PipelineWorker(await digest(MAP))
     const client = new Tf2WorkerClient(worker, cache)
-    await expect(client.stage(4, Uint8Array.from([1]), 0, Uint8Array.from([2]), KEY))
+    await expect(client.stage(4, Uint8Array.from([1]), 0, [Uint8Array.from([2])], KEY))
       .rejects.toMatchObject({ code: "IntegrityFailure" })
     expect(worker.requests.map((request) => request.kind)).toEqual(["load", "discard"])
     await client.shutdown()
@@ -439,7 +455,7 @@ describe("TF2 Worker transport ownership", () => {
     }()
     const worker = new PipelineWorker(await digest(MAP))
     const client = new Tf2WorkerClient(worker, cache)
-    const staged = await client.stage(3, Uint8Array.from([1]), 0, Uint8Array.from([2]), KEY)
+    const staged = await client.stage(3, Uint8Array.from([1]), 0, [Uint8Array.from([2])], KEY)
     expect(await staged.persistence).toMatchObject({
       presentationCache: "unavailable",
       presentationCacheError: "Error: presentation storage unavailable",

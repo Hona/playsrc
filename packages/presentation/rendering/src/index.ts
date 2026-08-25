@@ -3294,7 +3294,7 @@ class RendererOwner implements Renderer {
         || item.radius < 0
         || item.opacity < 0
         || item.opacity > 1
-        || item.orientationType !== 0
+        || (item.orientationType !== 0 && item.orientationType !== 2)
         || !this.#active!.particleTextures.has(item.material.toLowerCase())
         || !item.primarySheet
       ) throw new RenderingError("MalformedInput", "particle draw item is invalid")

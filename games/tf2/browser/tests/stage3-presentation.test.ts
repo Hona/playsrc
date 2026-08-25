@@ -39,10 +39,35 @@ test("encodes one bounded complete PCF phase without per-particle calls", () => 
   const bytes = createParticleBatchEncoder().encode(7n, [4, 5, 6], [request])
   const view = new DataView(bytes.buffer)
   expect(new TextDecoder().decode(bytes.subarray(0, 4))).toBe("PPTX")
-  expect(view.getUint32(4, true)).toBe(2)
+  expect(view.getUint32(4, true)).toBe(3)
   expect(view.getUint32(28, true)).toBe(1)
   expect(bytes[32]).toBe(1)
   expect(new TextDecoder().decode(bytes.subarray(68, 79))).toBe("rockettrail")
+})
+
+test("encodes both authored Medi Gun beam endpoints in one particle transaction", () => {
+  const controls = Object.freeze([
+    Object.freeze({ index: 0 as const, position: Object.freeze([1, 2, 3] as const), orientation: Object.freeze([0, 0, 0, 1] as const), ownerIdentity: 1 }),
+    Object.freeze({ index: 1 as const, position: Object.freeze([100, 20, 68] as const), orientation: Object.freeze([0, 0, 0, 1] as const), ownerIdentity: 2 }),
+  ])
+  const start: ProjectileParticleRequest = Object.freeze({
+    kind: "start", identity: "8:medic:1:2:start", effectIdentity: "medic:1:2", eventIdentity: "8:medic:1:2", tick: 8n,
+    projectileIdentity: 2, ownerIdentity: 1, launcherIdentity: 20, team: "red", system: "medicgun_beam_red", attachment: null,
+    controlPoints: controls,
+  })
+  const update: ProjectileParticleRequest = Object.freeze({
+    kind: "set-control-point", identity: "9:medic:1:2:patient", effectIdentity: "medic:1:2", eventIdentity: "9:medic:1:2", tick: 9n,
+    projectileIdentity: 2, controlPoint: controls[1]!,
+  })
+  const bytes = createParticleBatchEncoder().encode(9n, [0, 0, 0], [start, update])
+  const view = new DataView(bytes.buffer)
+  expect(view.getUint32(4, true)).toBe(3)
+  expect(bytes[34]).toBe(2)
+  const nameBytes = new TextEncoder().encode("medicgun_beam_red").length
+  const patient = 68 + nameBytes + 32
+  expect(view.getFloat32(patient, true)).toBe(100)
+  expect(view.getUint32(patient + 28, true)).toBe(2)
+  expect(bytes[patient + 34]).toBe(1)
 })
 
 test("preserves source ticks and graceful stop in one multi-tick Particle phase", () => {
@@ -381,6 +406,33 @@ test("composes every Heavy stock weapon with distinct identities and hands-only 
     expect(request.itemModel).toBe(item)
     expect(request.handsOnlyViewmodel).toBe(weapon === 11 ? true : undefined)
     expect(request.activity).toBe(activity)
+    expect(tf2Hud(snapshot).weaponName).toBe(name)
+  }
+})
+
+test("composes every Medic stock item without colliding with Heavy or Sniper identities", () => {
+  const hands = "models/weapons/c_models/c_medic_arms.mdl"
+  const descriptor = Object.freeze({ kind: "viewmodel", horizontalFov4By3: 54, minimumFov: 54, maximumFov: 70, near: 1, depthRange: Object.freeze([0, 0.1]), drawsAfterWorld: true, opaqueBeforeTranslucent: true, optionalViewSpaceYReflection: true })
+  const sequences = Object.freeze([
+    "ACT_PRIMARY_VM_PRIMARYATTACK", "ACT_SECONDARY_VM_PRIMARYATTACK", "ACT_MELEE_VM_HITCENTER",
+  ].map((activity) => ({ activity, durationSeconds: 0.8 })))
+  const models = new Map([[hands, { identity: hands, bodygroupCounts: Object.freeze([]), descriptor, sequences }]])
+  const items = [
+    [19, "models/weapons/c_models/c_syringegun/c_syringegun.mdl", "ACT_PRIMARY_VM_PRIMARYATTACK", "Syringe Gun"],
+    [20, "models/weapons/c_models/c_medigun/c_medigun.mdl", "ACT_SECONDARY_VM_PRIMARYATTACK", "Medi Gun"],
+    [21, "models/weapons/c_models/c_bonesaw/c_bonesaw.mdl", "ACT_MELEE_VM_HITCENTER", "Bonesaw"],
+  ] as const
+  for (const [, identity] of items) models.set(identity, { identity, bodygroupCounts: Object.freeze([]), descriptor, sequences: Object.freeze([]) })
+  const artifacts = { models } as unknown as PresentationArtifacts
+  for (const [weapon, item, activity, name] of items) {
+    const snapshot = {
+      class: 5, team: 2, tick: 1n, weapon, health: 150, maximumHealth: 150,
+      velocity: Object.freeze([0, 0, 0]), projectiles: Object.freeze([]),
+      loadout: Object.freeze([{ weapon, reload: 0, clip: weapon === 19 ? 40 : 0 }]),
+      activities: Object.freeze([{ tick: 1n, weapon, activity: 2 }]),
+    } as unknown as Snapshot
+    expect(createViewmodelPresenter(artifacts).map(snapshot).request)
+      .toMatchObject({ model: hands, itemModel: item, activity })
     expect(tf2Hud(snapshot).weaponName).toBe(name)
   }
 })

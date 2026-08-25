@@ -16,9 +16,9 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
         return None;
     }
     let physics_count = usize::from(u16::from_le_bytes(bytes[40..42].try_into().ok()?));
-    let packed_bot = u16::from_le_bytes(bytes[42..44].try_into().ok()?);
+    let bot_flags = u16::from_le_bytes(bytes[42..44].try_into().ok()?);
+    let packed_bot = bot_flags & 0x7fff;
     if physics_count > MAX_RESULTS
-        || packed_bot & 0x8000 != 0
         || u32::from_le_bytes(bytes[48..52].try_into().ok()?) as usize != bytes.len()
     {
         return None;
@@ -35,6 +35,7 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
     };
     let flags = u32::from_le_bytes(bytes[28..32].try_into().ok()?);
     let select = u32::from_le_bytes(bytes[32..36].try_into().ok()?);
+
     let disguise = match (((flags >> 9) & 15) as u8, ((flags >> 13) & 3) as u8) {
         (0, 0) => None,
         (class, team @ (2 | 3)) => Some(playsrc_tf2::spy::Disguise {
@@ -127,6 +128,9 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
         43 => Some(playsrc_tf2::Weapon::BuildPda),
         44 => Some(playsrc_tf2::Weapon::DestroyPda),
         45 => Some(playsrc_tf2::Weapon::Toolbox),
+        19 => Some(playsrc_tf2::Weapon::SyringeGun),
+        20 => Some(playsrc_tf2::Weapon::MediGun),
+        21 => Some(playsrc_tf2::Weapon::Bonesaw),
         _ => return None,
     };
     let select_team = match (select >> 16) & 0xff {
@@ -230,6 +234,7 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
         reset: flags & 64 != 0,
         respawn: flags & 128 != 0,
         drop_item: flags & 256 != 0,
+        nextbot_stop: bot_flags & 0x8000 != 0,
         select_class,
         select_random_class,
         select_team,

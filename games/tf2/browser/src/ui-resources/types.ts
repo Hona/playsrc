@@ -257,7 +257,7 @@ export type Tf2UiResourceResolution =
 
 export const tf2UiResourceBounds = Object.freeze({
   maximumProviders: 64,
-  maximumSources: 128,
+  maximumSources: 256,
   maximumNodes: 32_768,
   maximumDepth: 101,
   maximumStringBytes: 4_095,

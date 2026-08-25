@@ -50,6 +50,8 @@ pub enum RandomDecision {
     StickyUpVelocity,
     StickyAngularY,
     ClassSelection,
+    SyringePitchSpread,
+    SyringeYawSpread,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

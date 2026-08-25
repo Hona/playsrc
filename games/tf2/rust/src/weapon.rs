@@ -202,6 +202,36 @@ impl WeaponProfile {
                 center_fire_projectile: false,
                 flip_viewmodel: false,
             },
+            Weapon::SyringeGun => Self {
+                maximum_clip: crate::medic::SYRINGE_CLIP,
+                maximum_reserve: crate::medic::SYRINGE_RESERVE,
+                fire_delay: crate::medic::SYRINGE_FIRE_DELAY,
+                reload_start: crate::medic::SYRINGE_RELOAD_SECONDS,
+                reload_round: 0.0,
+                maximum_charge: None,
+                center_fire_projectile: false,
+                flip_viewmodel: false,
+            },
+            Weapon::MediGun => Self {
+                maximum_clip: 0,
+                maximum_reserve: 0,
+                fire_delay: 0.5,
+                reload_start: 0.0,
+                reload_round: 0.0,
+                maximum_charge: None,
+                center_fire_projectile: false,
+                flip_viewmodel: false,
+            },
+            Weapon::Bonesaw => Self {
+                maximum_clip: 0,
+                maximum_reserve: 0,
+                fire_delay: crate::medic::BONESAW_FIRE_DELAY,
+                reload_start: 0.0,
+                reload_round: 0.0,
+                maximum_charge: None,
+                center_fire_projectile: false,
+                flip_viewmodel: false,
+            },
             Weapon::FireAxe => Self {
                 maximum_clip: 0,
                 maximum_reserve: 0,
@@ -403,7 +433,11 @@ impl WeaponRuntime {
         activities.push(ActivityEvent {
             tick,
             weapon: self.weapon,
-            activity: WeaponActivity::ReloadStart,
+            activity: if self.weapon == Weapon::SyringeGun {
+                WeaponActivity::ReloadLoop
+            } else {
+                WeaponActivity::ReloadStart
+            },
         });
         true
     }
@@ -422,6 +456,20 @@ impl WeaponRuntime {
             return;
         }
         let profile = self.profile();
+        if self.weapon == Weapon::SyringeGun && self.reload == ReloadPhase::Start {
+            let transferred = self.reserve.min(profile.maximum_clip - self.clip);
+            self.clip += transferred;
+            self.reserve -= transferred;
+            self.reload = ReloadPhase::Ready;
+            self.reload_due_tick = None;
+            ammo.push(AmmoEvent {
+                tick,
+                weapon: self.weapon,
+                clip: self.clip,
+                reserve: self.reserve,
+            });
+            return;
+        }
         match self.reload {
             ReloadPhase::Start => {
                 if matches!(
@@ -565,7 +613,8 @@ impl WeaponRuntime {
             | Weapon::Wrench
             | Weapon::FireAxe
             | Weapon::Bottle
-            | Weapon::Knife => true,
+            | Weapon::Knife
+            | Weapon::Bonesaw => true,
             _ => self.clip > 0,
         };
         if held && available && tick >= self.next_primary_tick {
@@ -681,7 +730,8 @@ impl WeaponRuntime {
             | Weapon::Wrench
             | Weapon::FireAxe
             | Weapon::Bottle
-            | Weapon::Knife => {}
+            | Weapon::Knife
+            | Weapon::Bonesaw => {}
             _ => self.clip -= 1,
         }
         self.abort_reload();
@@ -1038,6 +1088,24 @@ mod tests {
         ));
         assert_eq!(weapon.reload, ReloadPhase::Ready);
         assert_eq!((weapon.clip, weapon.reserve), (2, 19));
+    }
+
+    #[test]
+    fn syringe_reloads_its_complete_clip_at_the_authored_animation_deadline() {
+        let mut weapon = WeaponRuntime::full(Weapon::SyringeGun);
+        weapon.clip = 3;
+        weapon.reserve = 20;
+        let mut activities = Vec::new();
+        let mut ammo = Vec::new();
+        assert!(weapon.start_reload(10, 0.01, &mut activities));
+        assert_eq!(weapon.reload_due_tick, Some(140));
+        assert_eq!(activities[0].activity, WeaponActivity::ReloadLoop);
+        weapon.advance_reload(139, 0.01, &mut activities, &mut ammo);
+        assert_eq!((weapon.clip, weapon.reserve), (3, 20));
+        weapon.advance_reload(140, 0.01, &mut activities, &mut ammo);
+        assert_eq!((weapon.clip, weapon.reserve), (23, 0));
+        assert_eq!(weapon.reload, ReloadPhase::Ready);
+        assert_eq!(ammo.len(), 1);
     }
 
     #[test]

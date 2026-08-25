@@ -675,6 +675,30 @@ describe("canonical all-class TF2 session HUD adapter", () => {
     }
   })
 
+  test("publishes exact Medic stock item identities, authored slots, and hidden healing/melee ammunition", () => {
+    const source = compactSnapshot(1n, {
+      class: 5,
+      weapon: 20,
+      health: 150,
+      maximumHealth: 150,
+      loadout: Object.freeze([
+        Object.freeze({ weapon: 19 as const, reload: 0 as const, clip: 40, reserve: 150, maximumClip: 40, maximumReserve: 150 }),
+        Object.freeze({ weapon: 20 as const, reload: 0 as const, clip: 0, reserve: 0, maximumClip: 0, maximumReserve: 0 }),
+        Object.freeze({ weapon: 21 as const, reload: 0 as const, clip: 0, reserve: 0, maximumClip: 0, maximumReserve: 0 }),
+      ]),
+    })
+    const binding = bindTf2Hud(adaptSessionHud(unavailable("initial"), compactPublication(source), context))
+    const player = (binding.facts.player as Extract<Tf2HudSnapshot["player"], { kind: "available" }>).value
+    expect(player.weapons.map((weapon) => [weapon.identity, weapon.slot, weapon.displayName, weapon.itemDefinition])).toEqual([
+      [19, 0, "Syringe Gun", { kind: "available", value: 17 }],
+      [20, 1, "Medi Gun", { kind: "available", value: 29 }],
+      [21, 2, "Bonesaw", { kind: "available", value: 8 }],
+    ])
+    expect(player.weapons[0]?.ammoDisplay).toBe("clip-and-reserve")
+    expect(player.weapons[1]?.ammoDisplay).toBe("hidden")
+    expect(player.weapons[2]?.ammoDisplay).toBe("hidden")
+  })
+
   test("suppresses observer HUD and carries the authoritative spectator team without a weapon", () => {
     const observer = compactSnapshot(1n, {
       team: 1,

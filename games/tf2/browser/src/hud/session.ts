@@ -102,14 +102,14 @@ function weaponName(identity: CompactWeaponState["weapon"]): string {
 
   return identity === 43 ? "Construction PDA" : identity === 44 ? "Destruction PDA" : identity === 45 ? "Toolbox" : identity === 40 ? "Shotgun" : identity === 41 ? "Pistol" : identity === 42 ? "Wrench"
     : identity === 50 ? "Revolver" : identity === 51 ? "Knife" : identity === 52 ? "Sapper" : identity === 53 ? "Disguise Kit" : identity === 54 ? "Invisibility Watch"
-    : (["", "Rocket Launcher", "Original", "Stickybomb Launcher", "Scattergun", "Pistol", "Bat", "Shotgun", "Shovel", "Minigun", "Shotgun", "Fists", "Sniper Rifle", "SMG", "Kukri", "Flamethrower", "Fire Axe", "Bottle", "Grenade Launcher"] as const)[identity]
+    : (["", "Rocket Launcher", "Original", "Stickybomb Launcher", "Scattergun", "Pistol", "Bat", "Shotgun", "Shovel", "Minigun", "Shotgun", "Fists", "Sniper Rifle", "SMG", "Kukri", "Flamethrower", "Fire Axe", "Bottle", "Grenade Launcher", "Syringe Gun", "Medi Gun", "Bonesaw"] as const)[identity]
 }
 
 function weapon(value: CompactWeaponState, playerClass: Tf2Class): Tf2HudWeapon {
   const totalAmmo = value.weapon === 9 || value.weapon === 12 || value.weapon === 15
-  const melee = value.weapon === 6 || value.weapon === 8 || value.weapon === 11 || value.weapon === 14 || value.weapon === 16 || value.weapon === 42 || value.weapon === 17 || value.weapon === 51
-  const noAmmo = melee || value.weapon === 43 || value.weapon === 44 || value.weapon === 45 || value.weapon === 52 || value.weapon === 53 || value.weapon === 54
-  const definitions = ([undefined, 18, undefined, 20, 13, 23, 0, 10, 6, 15, 11, 5, 14, 16, 3, 21, 2, 1, 19] as const)
+  const melee = value.weapon === 6 || value.weapon === 8 || value.weapon === 11 || value.weapon === 14 || value.weapon === 16 || value.weapon === 42 || value.weapon === 17 || value.weapon === 21 || value.weapon === 51
+  const noAmmo = melee || value.weapon === 20 || value.weapon === 43 || value.weapon === 44 || value.weapon === 45 || value.weapon === 52 || value.weapon === 53 || value.weapon === 54
+  const definitions = ([undefined, 18, undefined, 20, 13, 23, 0, 10, 6, 15, 11, 5, 14, 16, 3, 21, 2, 1, 19, 17, 29, 8] as const)
   const definition = value.weapon === 7 && playerClass === 7 ? 12 : value.weapon === 15 ? 21 : value.weapon === 16 ? 2
     : value.weapon === 43 ? 25 : value.weapon === 44 ? 26 : value.weapon === 45 ? 28 : value.weapon === 40 ? 9 : value.weapon === 41 ? 22 : value.weapon === 42 ? 7
       : value.weapon === 50 ? 24 : value.weapon === 51 ? 4 : value.weapon === 52 ? 735 : value.weapon === 53 ? 27 : value.weapon === 54 ? 30
@@ -120,7 +120,7 @@ function weapon(value: CompactWeaponState, playerClass: Tf2Class): Tf2HudWeapon 
     itemDefinition: definition === undefined ? tf2HudUnavailable<number>("not-produced") : tf2HudAvailable(definition),
     displayName: weaponName(value.weapon),
 
-    slot: value.weapon === 43 || value.weapon === 45 || value.weapon === 53 ? 3 : value.weapon === 44 || value.weapon === 54 ? 4 : value.weapon === 52 || value.weapon === 41 || value.weapon === 3 || value.weapon === 5 || value.weapon === 7 || value.weapon === 10 || value.weapon === 13 ? 1 : melee ? 2 : 0,
+    slot: value.weapon === 43 || value.weapon === 45 || value.weapon === 53 ? 3 : value.weapon === 44 || value.weapon === 54 ? 4 : value.weapon === 52 || value.weapon === 41 || value.weapon === 3 || value.weapon === 5 || value.weapon === 7 || value.weapon === 10 || value.weapon === 13 || value.weapon === 20 ? 1 : melee ? 2 : 0,
     position: value.weapon === 2 ? 1 : 0,
     selectable: value.weapon !== 54,
     ammoDisplay: noAmmo ? "hidden" as const : totalAmmo ? "total" as const : "clip-and-reserve" as const,

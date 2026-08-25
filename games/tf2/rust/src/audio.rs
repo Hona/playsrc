@@ -69,6 +69,14 @@ pub enum SoundDefinition {
     KnifeHitWorld,
     SpyCloak,
     SpyUncloak,
+    SyringeSingle,
+    BonesawMiss,
+    BonesawHitFlesh,
+    BonesawHitWorld,
+    SyringeReload,
+    MedigunHealing,
+    MedigunDetach,
+    MedigunCharged,
 }
 
 impl SoundDefinition {
@@ -143,6 +151,14 @@ impl SoundDefinition {
             Self::KnifeHitWorld => "Weapon_Knife.HitWorld",
             Self::SpyCloak => "Player.Spy_Cloak",
             Self::SpyUncloak => "Player.Spy_UnCloak",
+            Self::SyringeSingle => "Weapon_SyringeGun.Single",
+            Self::BonesawMiss => "Weapon_BoneSaw.Miss",
+            Self::BonesawHitFlesh => "Weapon_BoneSaw.HitFlesh",
+            Self::BonesawHitWorld => "Weapon_BoneSaw.HitWorld",
+            Self::SyringeReload => "Weapon_SyringeGun.WorldReload",
+            Self::MedigunHealing => "WeaponMedigun.HealingHealer",
+            Self::MedigunDetach => "WeaponMedigun.HealingDetachHealer",
+            Self::MedigunCharged => "WeaponMedigun.Charged",
         }
     }
 
@@ -159,7 +175,8 @@ impl SoundDefinition {
             | Self::FlagEnemyReturned
             | Self::BottleHitFlesh
             | Self::BottleHitWorld
-            | Self::KnifeHitFlesh => 3,
+            | Self::KnifeHitFlesh
+            | Self::BonesawHitFlesh => 3,
             Self::FlagEnemyStolen => 4,
             Self::BatHitWorld
             | Self::ShovelHitWorld
@@ -168,7 +185,8 @@ impl SoundDefinition {
             | Self::KukriHitWorld
             | Self::FireAxeHitWorld
             | Self::FlagEnemyDropped
-            | Self::FlagTeamDropped => 2,
+            | Self::FlagTeamDropped
+            | Self::BonesawHitWorld => 2,
             Self::RocketSingle
             | Self::OriginalSingle
             | Self::StickySingle
@@ -215,7 +233,13 @@ impl SoundDefinition {
             | Self::KnifeMiss
             | Self::KnifeHitWorld
             | Self::SpyCloak
-            | Self::SpyUncloak => 1,
+            | Self::SpyUncloak
+            | Self::SyringeSingle
+            | Self::BonesawMiss
+            | Self::SyringeReload
+            | Self::MedigunHealing
+            | Self::MedigunDetach
+            | Self::MedigunCharged => 1,
         }
     }
 }
@@ -285,6 +309,8 @@ pub struct SoundSelectionState {
     pub bottle_hit_flesh_available: u8,
     pub bottle_hit_world_available: u8,
     pub knife_hit_flesh_available: u8,
+    pub bonesaw_hit_flesh_available: u8,
+    pub bonesaw_hit_world_available: u8,
 }
 
 #[derive(Clone, Copy)]
@@ -356,6 +382,8 @@ pub(crate) struct SoundSelection {
     bottle_hit_flesh: WaveCycle,
     bottle_hit_world: WaveCycle,
     knife_hit_flesh: WaveCycle,
+    bonesaw_hit_flesh: WaveCycle,
+    bonesaw_hit_world: WaveCycle,
 }
 
 impl SoundSelection {
@@ -383,6 +411,8 @@ impl SoundSelection {
             bottle_hit_flesh: WaveCycle::new(WaveCycle::THREE),
             bottle_hit_world: WaveCycle::new(WaveCycle::THREE),
             knife_hit_flesh: WaveCycle::new(WaveCycle::THREE),
+            bonesaw_hit_flesh: WaveCycle::new(WaveCycle::THREE),
+            bonesaw_hit_world: WaveCycle::new(WaveCycle::TWO),
         }
     }
 
@@ -410,6 +440,8 @@ impl SoundSelection {
             bottle_hit_flesh_available: self.bottle_hit_flesh.available,
             bottle_hit_world_available: self.bottle_hit_world.available,
             knife_hit_flesh_available: self.knife_hit_flesh.available,
+            bonesaw_hit_flesh_available: self.bonesaw_hit_flesh.available,
+            bonesaw_hit_world_available: self.bonesaw_hit_world.available,
         }
     }
 
@@ -435,6 +467,8 @@ impl SoundSelection {
             || state.bottle_hit_flesh_available & !WaveCycle::THREE != 0
             || state.bottle_hit_world_available & !WaveCycle::THREE != 0
             || state.knife_hit_flesh_available & !WaveCycle::THREE != 0
+            || state.bonesaw_hit_flesh_available & !WaveCycle::THREE != 0
+            || state.bonesaw_hit_world_available & !WaveCycle::TWO != 0
         {
             return false;
         }
@@ -461,6 +495,8 @@ impl SoundSelection {
         self.flag_enemy_returned.available = state.flag_enemy_returned_available;
         self.flag_team_dropped.available = state.flag_team_dropped_available;
         self.knife_hit_flesh.available = state.knife_hit_flesh_available;
+        self.bonesaw_hit_flesh.available = state.bonesaw_hit_flesh_available;
+        self.bonesaw_hit_world.available = state.bonesaw_hit_world_available;
         true
     }
 
@@ -502,6 +538,8 @@ impl SoundSelection {
             SoundDefinition::FlagEnemyReturned => &mut self.flag_enemy_returned,
             SoundDefinition::FlagTeamDropped => &mut self.flag_team_dropped,
             SoundDefinition::KnifeHitFlesh => &mut self.knife_hit_flesh,
+            SoundDefinition::BonesawHitFlesh => &mut self.bonesaw_hit_flesh,
+            SoundDefinition::BonesawHitWorld => &mut self.bonesaw_hit_world,
             _ => unreachable!("only configured random-wave definitions have selection state"),
         }
     }

@@ -2499,6 +2499,7 @@ fn main() -> Result<(), String> {
     for path in [
         "models/weapons/w_models/w_rocket.mdl",
         "models/weapons/w_models/w_stickybomb.mdl",
+        "models/weapons/w_models/w_syringe_proj.mdl",
         "models/weapons/c_models/c_soldier_arms.mdl",
         "models/weapons/c_models/c_demo_arms.mdl",
         "models/weapons/c_models/c_scout_arms.mdl",
@@ -2516,6 +2517,7 @@ fn main() -> Result<(), String> {
         "models/player/engineer.mdl",
         "models/vgui/ui_class01.mdl",
         "models/class_menu/random_class_icon.mdl",
+        "models/weapons/c_models/c_medic_arms.mdl",
         "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl",
         "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl",
         "models/weapons/c_models/c_grenadelauncher/c_grenadelauncher.mdl",
@@ -2569,6 +2571,9 @@ fn main() -> Result<(), String> {
         "models/buildables/teleporter_blueprint_exit.mdl",
         "models/buildables/teleporter.mdl",
         "models/buildables/teleporter_light.mdl",
+        "models/weapons/c_models/c_syringegun/c_syringegun.mdl",
+        "models/weapons/c_models/c_medigun/c_medigun.mdl",
+        "models/weapons/c_models/c_bonesaw/c_bonesaw.mdl",
     ] {
         model_paths.insert(path.to_owned());
     }
@@ -2753,6 +2758,8 @@ fn main() -> Result<(), String> {
         "particles/muzzle_flash.pcf",
         "particles/explosion.pcf",
         "particles/flamethrower.pcf",
+        "particles/nailtrails.pcf",
+        "particles/medicgun_beam.pcf",
     ];
     let particle_bytes = particle_paths
         .iter()
@@ -2794,6 +2801,13 @@ fn main() -> Result<(), String> {
         "flamethrower_underwater",
         "pyro_blast",
         "muzzle_shotgun",
+        "nailtrails_medic_red",
+        "nailtrails_medic_blue",
+        "muzzle_syringe",
+        "medicgun_beam_red",
+        "medicgun_beam_blue",
+        "medicgun_beam_red_invun",
+        "medicgun_beam_blue_invun",
     ]
     .map(playsrc_particle::DefinitionLookup::Name);
     let closure = registry
@@ -2897,6 +2911,11 @@ fn main() -> Result<(), String> {
         "sound/weapons/blade_hitworld.wav",
         "sound/player/spy_cloak.wav",
         "sound/player/spy_uncloak.wav",
+        "sound/weapons/syringegun_shoot.wav",
+        "sound/weapons/syringegun_worldreload.wav",
+        "sound/weapons/medigun_heal.wav",
+        "sound/weapons/medigun_heal_detach.wav",
+        "sound/weapons/medigun_charged.wav",
     ] {
         let consumer = if path.starts_with("sound/") {
             "audio-wave"
