@@ -2376,7 +2376,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             )?;
             let mut player_hit: Option<playsrc_collision::StudioHitboxTrace> = None;
             for candidate in &self.posed_player_hitboxes {
-                if candidate.team == self.team {
+                if candidate.team == self.team_selection.local_team() {
                     continue;
                 }
                 let entry = playsrc_collision::StudioHitbox {
