@@ -789,6 +789,17 @@ unsafe fn compile_map(
             .models
             .iter()
             .map(|model| model.logical_path.clone())
+            .chain(
+                [
+                    "models/vgui/ui_team01.mdl",
+                    "models/vgui/ui_team01_blue.mdl",
+                    "models/vgui/ui_team01_red.mdl",
+                    "models/vgui/ui_team01_random.mdl",
+                    "models/vgui/ui_team01_spectate.mdl",
+                ]
+                .into_iter()
+                .map(str::to_owned),
+            )
             .collect::<Vec<_>>();
         let presentation_inputs = PresentationInputs {
             canonical: &canonical,

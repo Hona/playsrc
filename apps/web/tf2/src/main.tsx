@@ -25,6 +25,7 @@ function App() {
   const gameUi = useRef<HTMLDivElement>(null)
   const hud = useRef<HTMLDivElement>(null)
   const classSelection = useRef<HTMLDivElement>(null)
+  const teamSelection = useRef<HTMLDivElement>(null)
   const options = useRef<HTMLDivElement>(null)
   const loading = useRef<HTMLDivElement>(null)
   const startup = useRef<HTMLDivElement>(null)
@@ -33,7 +34,7 @@ function App() {
   const runtime = useRef<Tf2Application>()
 
   useEffect(() => {
-    if (!applicationRoot.current || !canvas.current || !vgui.current || !gameUi.current || !hud.current || !classSelection.current
+    if (!applicationRoot.current || !canvas.current || !vgui.current || !gameUi.current || !hud.current || !classSelection.current || !teamSelection.current
       || !options.current || !loading.current || !startup.current || !startupVideo.current || !startupLoading.current) return
     const publication = new ApplicationPublication({
       root: applicationRoot.current,
@@ -46,6 +47,7 @@ function App() {
       gameUi: gameUi.current,
       hud: hud.current,
       classSelection: classSelection.current,
+      teamSelection: teamSelection.current,
       options: options.current,
       loading: loading.current,
       startup: startup.current,
@@ -74,6 +76,7 @@ function App() {
       data-console-visible="false"
       data-class-selection-visible="false"
       data-options-visible="false"
+      data-team-selection-visible="false"
       data-fire-events="0"
       data-explosion-events="0"
       data-particle-items="0"
@@ -108,6 +111,7 @@ function App() {
       <div ref={gameUi} class="vgui-layer gameui-layer" aria-label="TF2 GameUI" />
       <div ref={hud} class="vgui-layer hud-layer" aria-label="TF2 HUD" />
       <div ref={classSelection} class="vgui-layer class-selection-layer" aria-label="TF2 class selection" />
+      <div ref={teamSelection} class="vgui-layer team-selection-layer" aria-label="TF2 team selection" />
       <div ref={options} class="vgui-layer options-layer" aria-label="TF2 Options" />
       <div ref={vgui} class="vgui-layer developer-layer" aria-label="TF2 developer interface" />
     </main>

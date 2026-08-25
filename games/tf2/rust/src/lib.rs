@@ -12,6 +12,7 @@ pub mod pickup;
 pub mod random;
 pub mod schema;
 pub mod state;
+pub mod team_selection;
 pub mod weapon;
 
 pub use audio::{

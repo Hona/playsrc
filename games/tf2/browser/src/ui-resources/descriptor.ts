@@ -38,6 +38,7 @@ const DOMAINS = new Set<Tf2UiResourceDomain>([
   "scheme-base",
   "hud",
   "class-selection",
+  "team-selection",
   "animation-manifest",
   "animation-script",
   "options",
@@ -123,6 +124,11 @@ const commandClassifications: Readonly<Record<string, readonly [Tf2UiCommandCate
   TestMicrophone: ["application", "application"],
   TestSpeakers: ["application", "application"],
   callvote: ["gameplay", "tf2"],
+  cancelmenu: ["gameplay", "tf2"],
+  "jointeam auto": ["gameplay", "tf2"],
+  "jointeam blue": ["gameplay", "tf2"],
+  "jointeam red": ["gameplay", "tf2"],
+  "jointeam spectate": ["gameplay", "tf2"],
   comp_access_info: ["service", "service"],
   create_server: ["gameplay", "application"],
   "engine OpenSteamWorkshopDialog": ["service", "service"],
@@ -185,7 +191,7 @@ function controlOwner(name: string): Tf2UiOwner | null {
   if (VGUI_CONTROLS.has(name)) return "vgui"
   if (SETTINGS_CONTROLS.has(name)) return "settings"
   if (GAMEUI_CONTROLS.has(name)) return "gameui"
-  if (/^(?:C(?:AutoFittingLabel|AvatarImagePanel|CompetitiveAccessInfoPanel|CurrencyStatusPanel|CyclingAdContainerPanel|DashboardPartyMember|EmbeddedItemModelPanel|EventPlayListEntry|ExButton|ExImageButton|ExLabel|ExplanationPopup|IconPanel|ItemModelPanel|MainMenuNotificationsControl|ModelPanel|PlayListEntry|PvPRankPanel|SteamFriendsListPanel|TFClassImage|TFClassTipsItemPanel|TFClassTipsPanel|TFFooter|TFImagePanel|TFLogoPanel|TFPlayerModelPanel)|PanelListPanel)$/u.test(name)) return "tf2"
+  if (/^(?:C(?:AutoFittingLabel|AvatarImagePanel|CompetitiveAccessInfoPanel|CurrencyStatusPanel|CyclingAdContainerPanel|DashboardPartyMember|EmbeddedItemModelPanel|EventPlayListEntry|ExButton|ExImageButton|ExLabel|ExplanationPopup|IconPanel|ItemModelPanel|MainMenuNotificationsControl|ModelPanel|PlayListEntry|PvPRankPanel|SteamFriendsListPanel|TeamMenu|TFClassImage|TFFooter|TFClassTipsItemPanel|TFClassTipsPanel|TFFooter|TFImagePanel|TFLogoPanel|TFPlayerModelPanel|TFTeamButton)|PanelListPanel)$/u.test(name)) return "tf2"
   return null
 }
 
@@ -594,8 +600,8 @@ export function createTf2UiResourceDescriptor(input: unknown): Tf2UiResourceReso
   ]
 
   const panels = resources
-    .filter((source): source is Tf2UiResourceSource & { domain: "main-menu" | "loading" | "hud" | "class-selection" | "options"; document: readonly Tf2UiResourceNode[] } =>
-      ["main-menu", "loading", "hud", "class-selection", "options"].includes(source.domain) && source.document !== null)
+    .filter((source): source is Tf2UiResourceSource & { domain: "main-menu" | "loading" | "hud" | "class-selection" | "team-selection" | "options"; document: readonly Tf2UiResourceNode[] } =>
+      ["main-menu", "loading", "hud", "class-selection", "team-selection", "options"].includes(source.domain) && source.document !== null)
     .map((source) => Object.freeze({
       identity: `panel-document-${source.logicalPath.replace(/[^a-z0-9]+/gu, "-").replace(/^-|-$/gu, "")}`,
       domain: source.domain,
