@@ -641,6 +641,20 @@ describe("canonical all-class TF2 session HUD adapter", () => {
       expect(shovel.ammoDisplay).toBe("hidden")
       expect(shovel.clip).toEqual({ kind: "unavailable", reason: "not-applicable" })
     }
+  test("suppresses observer HUD and carries the authoritative spectator team without a weapon", () => {
+    const observer = compactSnapshot(1n, {
+      team: 1,
+      lifecycle: 4,
+      health: 0,
+      weapon: null,
+      loadout: Object.freeze([]),
+    })
+    const binding = bindTf2Hud(adaptSessionHud(unavailable("initial"), compactPublication(observer), context))
+    const player = (binding.facts.player as Extract<Tf2HudSnapshot["player"], { kind: "available" }>).value
+    expect(player.lifecycle).toBe("observer")
+    expect(player.team).toEqual({ kind: "available", value: 1 })
+    expect(player.activeWeapon.kind).toBe("unavailable")
+    expect(player.liveHudSuppressed).toBeTrue()
   })
 
   test("publishes all nine canonical class models and both team images without inventing weapons", () => {
