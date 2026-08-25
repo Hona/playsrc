@@ -2423,6 +2423,7 @@ fn main() -> Result<(), String> {
         "models/weapons/c_models/c_soldier_arms.mdl",
         "models/weapons/c_models/c_demo_arms.mdl",
         "models/weapons/c_models/c_scout_arms.mdl",
+        "models/weapons/c_models/c_sniper_arms.mdl",
         "models/player/scout.mdl",
         "models/player/sniper.mdl",
         "models/player/soldier.mdl",
@@ -2443,6 +2444,9 @@ fn main() -> Result<(), String> {
         "models/weapons/c_models/c_shovel/c_shovel.mdl",
         "models/weapons/c_models/c_heavy_arms.mdl",
         "models/weapons/c_models/c_minigun/c_minigun.mdl",
+        "models/weapons/c_models/c_sniperrifle/c_sniperrifle.mdl",
+        "models/weapons/c_models/c_smg/c_smg.mdl",
+        "models/weapons/c_models/c_machete/c_machete.mdl",
     ] {
         model_paths.insert(path.to_owned());
     }
@@ -2726,6 +2730,10 @@ fn main() -> Result<(), String> {
         "sound/weapons/cbar_hitbod3.wav",
         "sound/weapons/fist_hit_world1.wav",
         "sound/weapons/fist_hit_world2.wav",
+        "sound/weapons/sniper_shoot.wav",
+        "sound/weapons/smg_shoot.wav",
+        "sound/weapons/smg_worldreload.wav",
+        "sound/weapons/machete_swing.wav",
     ] {
         let consumer = if path.starts_with("sound/") {
             "audio-wave"

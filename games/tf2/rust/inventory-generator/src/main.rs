@@ -14,15 +14,14 @@ use playsrc_tf2::{
     class::{CLASS_DATA, PlayerClass, PlayerTeam},
     condition::CONDITION_COUNT,
     schema::{
-        ITEM_SCHEMA_SHA256, ITEM_SCHEMA_SIGNATURE_SHA256, ItemSchema, Loadout, SchemaInput,
-        SchemaNode, SchemaValue,
+        CONTENT_BUILD, ITEM_SCHEMA_SHA256, ITEM_SCHEMA_SIGNATURE_SHA256, ItemSchema, Loadout,
+        SchemaInput, SchemaNode, SchemaValue,
     },
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 const SDK_REVISION: &str = "88fa198fba3fb85d46d4c95018254693fdc3af0a";
-const CONTENT_BUILD: u32 = 10_822_003;
 const MISC_VPK_SHA256: &str = "63f7db0d1c509e303ca9002fee9e3d805e9220ea5afdd639d8a6b68b8a3710b9";
 
 const STOCK_ITEM_DEFINITIONS: &[u32] = &[

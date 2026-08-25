@@ -2,10 +2,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::class::{PlayerClass, PlayerTeam};
 
+pub const CONTENT_BUILD: u32 = 24_245_096;
 pub const ITEM_SCHEMA_SHA256: &str =
-    "47900e0d174971625a76625fe311a012910031171d0b121ff5f628078c83214d";
+    "4d1f15b63e63e3e897552cfb8042cccb99d2e233a0c8d8afd8734a3ea49d08da";
 pub const ITEM_SCHEMA_SIGNATURE_SHA256: &str =
-    "2a9de0701878250a20329bf8bd2b974e54f19dd18ba709778736e4828f7daad6";
+    "353a124196f1218738b2d2d1982052b3900d71c8afac4428f35c13aaf5dbbccb";
 pub const CLASS_SLOT_COUNT: usize = 19;
 pub const ACCOUNT_SLOT_COUNT: usize = 3;
 pub const PRESET_COUNT: u8 = 4;
@@ -624,7 +625,7 @@ pub enum SchemaError {
 }
 
 fn validate_identity(input: &SchemaInput) -> Result<(), SchemaError> {
-    if input.content_build != 10_822_003 {
+    if input.content_build != CONTENT_BUILD {
         return Err(SchemaError::WrongContentBuild(input.content_build));
     }
     if input.schema_sha256 != ITEM_SCHEMA_SHA256 {
@@ -1072,7 +1073,7 @@ mod tests {
             ),
         );
         SchemaInput {
-            content_build: 10_822_003,
+            content_build: 24_245_096,
             schema_sha256: ITEM_SCHEMA_SHA256.into(),
             signature_sha256: ITEM_SCHEMA_SIGNATURE_SHA256.into(),
             game_info: [
@@ -1171,6 +1172,13 @@ mod tests {
         assert!(matches!(
             ItemSchema::compose(base_input(Vec::new(), Vec::new(), vec![duplicate])),
             Err(SchemaError::DuplicateKey(_))
+        ));
+
+        let mut stale = base_input(Vec::new(), Vec::new(), Vec::new());
+        stale.content_build = 10_822_003;
+        assert!(matches!(
+            ItemSchema::compose(stale),
+            Err(SchemaError::WrongContentBuild(10_822_003))
         ));
 
         let mut wrong = base_input(Vec::new(), Vec::new(), Vec::new());

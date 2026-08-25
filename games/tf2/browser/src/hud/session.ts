@@ -94,24 +94,28 @@ function reload(value: CompactWeaponState["reload"]): Tf2ReloadPhase {
 }
 
 function weaponName(identity: CompactWeaponState["weapon"]): string {
-  return (["", "Rocket Launcher", "Original", "Stickybomb Launcher", "Scattergun", "Pistol", "Bat", "Shotgun", "Shovel", "Minigun", "Shotgun", "Fists"] as const)[identity]
+
+  return (["", "Rocket Launcher", "Original", "Stickybomb Launcher", "Scattergun", "Pistol", "Bat", "Shotgun", "Shovel", "Minigun", "Shotgun", "Fists", "Sniper Rifle", "SMG", "Kukri"] as const)[identity]
 }
 
 function weapon(value: CompactWeaponState): Tf2HudWeapon {
-  const minigun = value.weapon === 9
-  const melee = value.weapon === 6 || value.weapon === 8 || value.weapon === 11
-  const definition = ([undefined, 18, undefined, undefined, 13, 23, 0, 10, 6, 15, 11, 5] as const)[value.weapon]
+  const totalAmmo = value.weapon === 9 || value.weapon === 12
+  const melee = value.weapon === 6 || value.weapon === 8 || value.weapon === 11 || value.weapon === 14
+  const definition = ([undefined, 18, undefined, undefined, 13, 23, 0, 10, 6, 15, 11, 5, 14, 16, 3] as const)[value.weapon]
+
   return Object.freeze({
     identity: value.weapon,
     itemDefinition: definition === undefined ? tf2HudUnavailable<number>("not-produced") : tf2HudAvailable(definition),
     displayName: weaponName(value.weapon),
-    slot: value.weapon === 3 || value.weapon === 5 || value.weapon === 7 || value.weapon === 10 ? 1 : melee ? 2 : 0,
+
+    slot: value.weapon === 3 || value.weapon === 5 || value.weapon === 7 || value.weapon === 10 || value.weapon === 13 ? 1 : melee ? 2 : 0,
     position: value.weapon === 2 ? 1 : 0,
     selectable: true,
-    ammoDisplay: melee ? "hidden" as const : minigun ? "total" as const : "clip-and-reserve" as const,
-    clip: minigun || melee ? tf2HudUnavailable<number>("not-applicable") : tf2HudAvailable(value.clip),
+    ammoDisplay: melee ? "hidden" as const : totalAmmo ? "total" as const : "clip-and-reserve" as const,
+    clip: totalAmmo || melee ? tf2HudUnavailable<number>("not-applicable") : tf2HudAvailable(value.clip),
     reserve: melee ? tf2HudUnavailable<number>("not-applicable") : tf2HudAvailable(value.reserve),
-    maximumClip: minigun || melee ? tf2HudUnavailable<number>("not-applicable") : tf2HudAvailable(value.maximumClip),
+    maximumClip: totalAmmo || melee ? tf2HudUnavailable<number>("not-applicable") : tf2HudAvailable(value.maximumClip),
+
     maximumReserve: melee ? tf2HudUnavailable<number>("not-applicable") : tf2HudAvailable(value.maximumReserve),
     reload: reload(value.reload),
     drawsCrosshair: true,
@@ -131,7 +135,7 @@ function conditions(value: SessionSnapshot["conditions"]): Tf2ConditionWords {
 
 function canonicalSnapshot(snapshot: SessionSnapshot, context: SessionHudContext): Tf2HudSnapshot {
   const words = conditions(snapshot.conditions)
-  const tfSuppressed = context.crosshair.tfSuppressed || conditionActive(words, 7) || conditionActive(words, 77)
+  const tfSuppressed = context.crosshair.tfSuppressed || conditionActive(words, 1) || conditionActive(words, 7) || conditionActive(words, 77)
   const crosshair = Object.freeze({ ...context.crosshair, tfSuppressed })
   return Object.freeze({
     tick: snapshot.tick,

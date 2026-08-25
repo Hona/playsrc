@@ -13,6 +13,7 @@ pub enum SoundDefinition {
     BatHitWorld,
     ScattergunReload,
     PistolReload,
+
     ShotgunSingle,
     ShotgunReload,
     ShovelMiss,
@@ -25,6 +26,12 @@ pub enum SoundDefinition {
     FistMiss,
     FistHitWorld,
     FistHitFlesh,
+    SniperSingle,
+    SmgSingle,
+    KukriMiss,
+    KukriHitFlesh,
+    KukriHitWorld,
+    SmgReload,
 }
 
 impl SoundDefinition {
@@ -43,6 +50,7 @@ impl SoundDefinition {
             Self::BatHitWorld => "Weapon_Bat.HitWorld",
             Self::ScattergunReload => "Weapon_Scatter_Gun.WorldReload",
             Self::PistolReload => "Weapon_Pistol.WorldReload",
+
             Self::ShotgunSingle => "Weapon_Shotgun.Single",
             Self::ShotgunReload => "Weapon_Shotgun.WorldReload",
             Self::ShovelMiss => "Weapon_Shovel.Miss",
@@ -55,6 +63,12 @@ impl SoundDefinition {
             Self::FistMiss => "Weapon_Fist.Miss",
             Self::FistHitWorld => "Weapon_Fist.HitWorld",
             Self::FistHitFlesh => "Weapon_Fist.HitFlesh",
+            Self::SniperSingle => "Weapon_SniperRifle.Single",
+            Self::SmgSingle => "Weapon_SMG.Single",
+            Self::KukriMiss => "Weapon_Machete.Miss",
+            Self::KukriHitFlesh => "Weapon_Machete.HitFlesh",
+            Self::KukriHitWorld => "Weapon_Machete.HitWorld",
+            Self::SmgReload => "Weapon_SMG.WorldReload",
         }
     }
 
@@ -63,8 +77,14 @@ impl SoundDefinition {
             Self::RocketExplosion
             | Self::StickyExplosion
             | Self::ShovelHitFlesh
-            | Self::FistHitFlesh => 3,
-            Self::BatHitWorld | Self::ShovelHitWorld | Self::FistMiss | Self::FistHitWorld => 2,
+            | Self::FistHitFlesh
+            | Self::KukriHitFlesh => 3,
+            Self::BatHitWorld
+            | Self::ShovelHitWorld
+            | Self::FistMiss
+            | Self::FistHitWorld
+            | Self::KukriHitWorld => 2,
+
             Self::RocketSingle
             | Self::OriginalSingle
             | Self::StickySingle
@@ -82,6 +102,7 @@ impl SoundDefinition {
             | Self::MinigunWindDown
             | Self::MinigunSpin
             | Self::MinigunFire => 1,
+            Self::SniperSingle | Self::SmgSingle | Self::KukriMiss | Self::SmgReload => 1,
         }
     }
 }
@@ -130,11 +151,14 @@ pub struct SoundSelectionState {
     pub rocket_explosion_available: u8,
     pub sticky_explosion_available: u8,
     pub bat_hit_world_available: u8,
+
     pub shovel_hit_world_available: u8,
     pub shovel_hit_flesh_available: u8,
     pub fist_miss_available: u8,
     pub fist_hit_world_available: u8,
     pub fist_hit_flesh_available: u8,
+    pub kukri_hit_flesh_available: u8,
+    pub kukri_hit_world_available: u8,
 }
 
 #[derive(Clone, Copy)]
@@ -186,11 +210,14 @@ pub(crate) struct SoundSelection {
     rocket_explosion: WaveCycle,
     sticky_explosion: WaveCycle,
     bat_hit_world: WaveCycle,
+
     shovel_hit_world: WaveCycle,
     shovel_hit_flesh: WaveCycle,
     fist_miss: WaveCycle,
     fist_hit_world: WaveCycle,
     fist_hit_flesh: WaveCycle,
+    kukri_hit_flesh: WaveCycle,
+    kukri_hit_world: WaveCycle,
 }
 
 impl SoundSelection {
@@ -199,11 +226,14 @@ impl SoundSelection {
             rocket_explosion: WaveCycle::new(WaveCycle::THREE),
             sticky_explosion: WaveCycle::new(WaveCycle::THREE),
             bat_hit_world: WaveCycle::new(WaveCycle::TWO),
+
             shovel_hit_world: WaveCycle::new(WaveCycle::TWO),
             shovel_hit_flesh: WaveCycle::new(WaveCycle::THREE),
             fist_miss: WaveCycle::new(WaveCycle::TWO),
             fist_hit_world: WaveCycle::new(WaveCycle::TWO),
             fist_hit_flesh: WaveCycle::new(WaveCycle::THREE),
+            kukri_hit_flesh: WaveCycle::new(WaveCycle::THREE),
+            kukri_hit_world: WaveCycle::new(WaveCycle::TWO),
         }
     }
 
@@ -212,11 +242,14 @@ impl SoundSelection {
             rocket_explosion_available: self.rocket_explosion.available,
             sticky_explosion_available: self.sticky_explosion.available,
             bat_hit_world_available: self.bat_hit_world.available,
+
             shovel_hit_world_available: self.shovel_hit_world.available,
             shovel_hit_flesh_available: self.shovel_hit_flesh.available,
             fist_miss_available: self.fist_miss.available,
             fist_hit_world_available: self.fist_hit_world.available,
             fist_hit_flesh_available: self.fist_hit_flesh.available,
+            kukri_hit_flesh_available: self.kukri_hit_flesh.available,
+            kukri_hit_world_available: self.kukri_hit_world.available,
         }
     }
 
@@ -229,17 +262,23 @@ impl SoundSelection {
             || state.fist_miss_available & !WaveCycle::TWO != 0
             || state.fist_hit_world_available & !WaveCycle::TWO != 0
             || state.fist_hit_flesh_available & !WaveCycle::THREE != 0
+            || state.kukri_hit_flesh_available & !WaveCycle::THREE != 0
+            || state.kukri_hit_world_available & !WaveCycle::TWO != 0
         {
             return false;
         }
         self.rocket_explosion.available = state.rocket_explosion_available;
         self.sticky_explosion.available = state.sticky_explosion_available;
         self.bat_hit_world.available = state.bat_hit_world_available;
+
         self.shovel_hit_world.available = state.shovel_hit_world_available;
         self.shovel_hit_flesh.available = state.shovel_hit_flesh_available;
         self.fist_miss.available = state.fist_miss_available;
         self.fist_hit_world.available = state.fist_hit_world_available;
         self.fist_hit_flesh.available = state.fist_hit_flesh_available;
+        self.kukri_hit_flesh.available = state.kukri_hit_flesh_available;
+        self.kukri_hit_world.available = state.kukri_hit_world_available;
+
         true
     }
 
@@ -261,11 +300,15 @@ impl SoundSelection {
             SoundDefinition::RocketExplosion => &mut self.rocket_explosion,
             SoundDefinition::StickyExplosion => &mut self.sticky_explosion,
             SoundDefinition::BatHitWorld => &mut self.bat_hit_world,
+
             SoundDefinition::ShovelHitWorld => &mut self.shovel_hit_world,
             SoundDefinition::ShovelHitFlesh => &mut self.shovel_hit_flesh,
             SoundDefinition::FistMiss => &mut self.fist_miss,
             SoundDefinition::FistHitWorld => &mut self.fist_hit_world,
             SoundDefinition::FistHitFlesh => &mut self.fist_hit_flesh,
+            SoundDefinition::KukriHitFlesh => &mut self.kukri_hit_flesh,
+            SoundDefinition::KukriHitWorld => &mut self.kukri_hit_world,
+
             _ => unreachable!("only configured random-wave definitions have selection state"),
         }
     }

@@ -145,6 +145,7 @@ const SOUND_PATHS = [
   "sound/weapons/cbar_hit2.wav",
   "sound/weapons/scatter_gun_worldreload.wav",
   "sound/weapons/pistol_worldreload.wav",
+
   "sound/weapons/shotgun_shoot.wav",
   "sound/weapons/shotgun_worldreload.wav",
   "sound/weapons/shovel_swing.wav",
@@ -162,6 +163,11 @@ const SOUND_PATHS = [
   "sound/weapons/cbar_hitbod3.wav",
   "sound/weapons/fist_hit_world1.wav",
   "sound/weapons/fist_hit_world2.wav",
+  "sound/weapons/sniper_shoot.wav",
+  "sound/weapons/smg_shoot.wav",
+  "sound/weapons/smg_worldreload.wav",
+  "sound/weapons/machete_swing.wav",
+
 ] as const
 
 export type ApplicationView = Readonly<{
@@ -1490,7 +1496,9 @@ export class Tf2Application {
       clock: { nowSeconds: () => this.#frameClock.current },
       random: this.#presentationRandom,
       onCommand: (command) => {
-        if (command.kind === "select-weapon" && command.weapon >= 1 && command.weapon <= 11) this.#selectWeapon = command.weapon as Tf2Weapon
+
+        if (command.kind === "select-weapon" && command.weapon >= 1 && command.weapon <= 14) this.#selectWeapon = command.weapon as Tf2Weapon
+
       },
     })
     const panels = this.#hudIntegration.snapshot().vgui.panels
@@ -3233,7 +3241,8 @@ export class Tf2Application {
           this.#viewmodels = createViewmodelPresenter(this.#artifacts!)
         }
         this.#viewmodelClass = value.class
-        return value.weapon === null ? undefined : this.#viewmodels!.map(value, view)
+        return value.weapon === null || (value.class === 2 && value.weapon === 12 && (value.conditions[0] & 2) !== 0)
+          ? undefined : this.#viewmodels!.map(value, view)
       }
       for (const batch of publication.eventBatches) {
         if (batch.snapshot.tick >= snapshot.tick || !batch.snapshot.projectileEvents.some((event) => event.type === "fire")) continue
@@ -3475,7 +3484,9 @@ export class Tf2Application {
   }
 
   #mouseAction(event: MouseEvent): string | null {
+
     const code = sourceMouseButtonCode(event.button)
+
     const modifiers = Number(event.shiftKey) | (Number(event.ctrlKey) << 1) | (Number(event.altKey) << 2)
     return code === null ? null : this.#boundAction(code, modifiers)
   }
@@ -3491,9 +3502,11 @@ export class Tf2Application {
       if (this.#buttons.press(identity, action)) this.#detonatePressed = true
     } else if (action === "+reload") {
       if (this.#buttons.press(identity, action)) this.#reloadPressed = true
-    } else if (action === "slot1") this.#selectWeapon = this.#snapshot?.class === 1 ? 4 : this.#snapshot?.class === 6 ? 9 : 1
-    else if (action === "slot2") this.#selectWeapon = this.#snapshot?.class === 1 ? 5 : this.#snapshot?.class === 3 ? 7 : this.#snapshot?.class === 6 ? 10 : 3
-    else if (action === "slot3") this.#selectWeapon = this.#snapshot?.class === 1 ? 6 : this.#snapshot?.class === 3 ? 8 : this.#snapshot?.class === 6 ? 11 : undefined
+
+    } else if (action === "slot1") this.#selectWeapon = this.#snapshot?.class === 1 ? 4 : this.#snapshot?.class === 2 ? 12 : this.#snapshot?.class === 6 ? 9 : 1
+    else if (action === "slot2") this.#selectWeapon = this.#snapshot?.class === 1 ? 5 : this.#snapshot?.class === 2 ? 13 : this.#snapshot?.class === 3 ? 7 : this.#snapshot?.class === 6 ? 10 : 3
+    else if (action === "slot3") this.#selectWeapon = this.#snapshot?.class === 1 ? 6 : this.#snapshot?.class === 2 ? 14 : this.#snapshot?.class === 3 ? 8 : this.#snapshot?.class === 6 ? 11 : undefined
+
   }
 
   readonly #keyDown = (event: KeyboardEvent): void => {

@@ -4,7 +4,7 @@ Owning roadmap: [`../ROADMAP.md`](../ROADMAP.md)
 
 Authority identity: Valve Source SDK 2013 class, loadout, economy schema, attribute manager, player condition, health/healing, damage/death, health-kit, ammo-pack and dropped-weapon contracts; configured TF2 class records and `scripts/items/items_game.txt`.
 
-Authority revision: SDK `88fa198fba3fb85d46d4c95018254693fdc3af0a`; TF2 content build `10822003`; `scripts/items/items_game.txt` SHA-256 `47900e0d174971625a76625fe311a012910031171d0b121ff5f628078c83214d`; signature SHA-256 `2a9de0701878250a20329bf8bd2b974e54f19dd18ba709778736e4828f7daad6`; `tf2_misc_dir.vpk` SHA-256 `63f7db0d1c509e303ca9002fee9e3d805e9220ea5afdd639d8a6b68b8a3710b9`.
+Authority revision: SDK `88fa198fba3fb85d46d4c95018254693fdc3af0a`; TF2 content build `24245096`; `scripts/items/items_game.txt` SHA-256 `4d1f15b63e63e3e897552cfb8042cccb99d2e233a0c8d8afd8734a3ea49d08da`; signature SHA-256 `353a124196f1218738b2d2d1982052b3900d71c8afac4428f35c13aaf5dbbccb`; `tf2_misc_dir.vpk` SHA-256 `63f7db0d1c509e303ca9002fee9e3d805e9220ea5afdd639d8a6b68b8a3710b9`.
 
 Generator command: `cargo run --locked --manifest-path games/tf2/rust/inventory-generator/Cargo.toml`
 

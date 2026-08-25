@@ -560,6 +560,21 @@ impl BotWorld {
         Ok(())
     }
 
+    pub fn damage(&mut self, identity: u32, amount: f32) -> bool {
+        let Some(bot) = self.bots.get_mut(&identity) else {
+            return false;
+        };
+        if bot.lifecycle != PlayerLifecycle::Active || !amount.is_finite() || amount <= 0.0 {
+            return false;
+        }
+        bot.health = bot.health.saturating_sub((amount + 0.5) as i32).max(0);
+        if bot.health == 0 {
+            bot.lifecycle = PlayerLifecycle::Dying;
+            bot.target = None;
+        }
+        true
+    }
+
     pub fn snapshots(&self) -> Vec<Snapshot> {
         self.bots
             .values()

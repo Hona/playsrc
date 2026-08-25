@@ -636,7 +636,7 @@ mod tests {
         })
         .collect();
         ItemSchema::compose(SchemaInput {
-            content_build: 10_822_003,
+            content_build: 24_245_096,
             schema_sha256: ITEM_SCHEMA_SHA256.into(),
             signature_sha256: ITEM_SCHEMA_SIGNATURE_SHA256.into(),
             game_info: [

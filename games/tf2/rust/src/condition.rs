@@ -5,6 +5,7 @@ pub struct ConditionId(u8);
 
 impl ConditionId {
     pub const AIMING: Self = Self(0);
+    pub const ZOOMED: Self = Self(1);
     pub const DISGUISING: Self = Self(2);
     pub const DISGUISED: Self = Self(3);
     pub const STEALTHED: Self = Self(4);

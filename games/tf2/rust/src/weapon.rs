@@ -133,6 +133,36 @@ impl WeaponProfile {
                 center_fire_projectile: false,
                 flip_viewmodel: false,
             },
+            Weapon::SniperRifle => Self {
+                maximum_clip: 0,
+                maximum_reserve: 25,
+                fire_delay: 1.5,
+                reload_start: 0.0,
+                reload_round: 0.0,
+                maximum_charge: None,
+                center_fire_projectile: false,
+                flip_viewmodel: false,
+            },
+            Weapon::Smg => Self {
+                maximum_clip: 25,
+                maximum_reserve: 75,
+                fire_delay: 0.1,
+                reload_start: 1.233_333_3,
+                reload_round: 0.0,
+                maximum_charge: None,
+                center_fire_projectile: false,
+                flip_viewmodel: false,
+            },
+            Weapon::Kukri => Self {
+                maximum_clip: 0,
+                maximum_reserve: 0,
+                fire_delay: 0.8,
+                reload_start: 0.0,
+                reload_round: 0.0,
+                maximum_charge: None,
+                center_fire_projectile: false,
+                flip_viewmodel: false,
+            },
         }
     }
 }
@@ -158,11 +188,17 @@ pub struct WeaponRuntime {
     pub reload_due_tick: Option<u64>,
     pub charge_begin_tick: Option<u64>,
     pub first_primary_tick: u64,
+
     pub minigun_state: MinigunState,
     pub spin_begin_tick: Option<u64>,
     pub firing_begin_tick: Option<u64>,
     pub idle_due_tick: Option<u64>,
     pub smack_due_tick: Option<u64>,
+    pub charged_damage: f32,
+    pub next_secondary_tick: u64,
+    pub unzoom_due_tick: Option<u64>,
+    pub rezoom_due_tick: Option<u64>,
+    pub rezoom_after_shot: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -184,16 +220,43 @@ impl WeaponRuntime {
             reload_due_tick: None,
             charge_begin_tick: None,
             first_primary_tick: 0,
+
             minigun_state: MinigunState::Idle,
             spin_begin_tick: None,
             firing_begin_tick: None,
             idle_due_tick: None,
             smack_due_tick: None,
+            charged_damage: 0.0,
+            next_secondary_tick: 0,
+            unzoom_due_tick: None,
+            rezoom_due_tick: None,
+            rezoom_after_shot: false,
         }
     }
 
     pub fn profile(self) -> WeaponProfile {
         WeaponProfile::configured(self.weapon)
+    }
+
+    pub fn sniper_damage(self) -> Option<f32> {
+        (self.weapon == Weapon::SniperRifle).then_some(self.charged_damage.max(50.0))
+    }
+
+    pub fn sniper_headshot_is_critical(
+        self,
+        tick: u64,
+        tick_interval: f32,
+        zoomed: bool,
+        headshot: bool,
+        crit_boosted: bool,
+    ) -> bool {
+        self.weapon == Weapon::SniperRifle
+            && (crit_boosted
+                || headshot
+                    && zoomed
+                    && self.charge_begin_tick.is_some_and(|start| {
+                        tick.saturating_sub(start) as f32 * tick_interval >= 0.2
+                    }))
     }
 
     pub fn regenerate(&mut self, tick: u64, tick_interval: f32) {
@@ -218,11 +281,17 @@ impl WeaponRuntime {
         self.reserve = profile.maximum_reserve;
         self.abort_reload();
         self.charge_begin_tick = None;
+
         self.minigun_state = MinigunState::Idle;
         self.spin_begin_tick = None;
         self.firing_begin_tick = None;
         self.idle_due_tick = None;
         self.smack_due_tick = None;
+        self.charged_damage = 0.0;
+        self.next_secondary_tick = 0;
+        self.unzoom_due_tick = None;
+        self.rezoom_due_tick = None;
+        self.rezoom_after_shot = false;
     }
 
     pub fn reset_for_spawn(&mut self) {
@@ -275,7 +344,7 @@ impl WeaponRuntime {
         let profile = self.profile();
         match self.reload {
             ReloadPhase::Start => {
-                if self.weapon == Weapon::Pistol {
+                if matches!(self.weapon, Weapon::Pistol | Weapon::Smg) {
                     let inserted = (profile.maximum_clip - self.clip).min(self.reserve);
                     self.clip += inserted;
                     self.reserve -= inserted;
@@ -402,11 +471,14 @@ impl WeaponRuntime {
             }
             return PrimaryResult::None;
         }
-        if held
-            && (self.clip > 0 || matches!(self.weapon, Weapon::Bat | Weapon::Shovel))
-            && tick >= self.next_primary_tick
-        {
-            return self.commit_shot(tick, tick_interval, 0.0, activities);
+
+        let available = match self.weapon {
+            Weapon::SniperRifle => self.reserve > 0,
+            Weapon::Bat | Weapon::Shovel | Weapon::Kukri => true,
+            _ => self.clip > 0,
+        };
+        if held && available && tick >= self.next_primary_tick {
+            return self.commit_shot(tick, tick_interval, self.charged_damage, activities);
         }
         PrimaryResult::None
     }
@@ -510,11 +582,15 @@ impl WeaponRuntime {
         charge_seconds: f32,
         activities: &mut Vec<ActivityEvent>,
     ) -> PrimaryResult {
-        if !matches!(self.weapon, Weapon::Bat | Weapon::Shovel) {
-            self.clip -= 1;
+        match self.weapon {
+            Weapon::SniperRifle => self.reserve -= 1,
+            Weapon::Bat | Weapon::Shovel | Weapon::Kukri => {}
+            _ => self.clip -= 1,
         }
         self.abort_reload();
-        self.charge_begin_tick = None;
+        if self.weapon != Weapon::SniperRifle {
+            self.charge_begin_tick = None;
+        }
         self.next_primary_tick =
             tick.saturating_add(delay_ticks(self.profile().fire_delay, tick_interval));
         activities.push(ActivityEvent {

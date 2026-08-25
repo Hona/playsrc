@@ -31,6 +31,7 @@ import {
 } from "../hud"
 import type { Tf2VguiResources } from "../ui-integration"
 import { Tf2HudCrosshairPresentation } from "./crosshair"
+import { Tf2HudScopePresentation } from "./scope"
 
 export type Tf2HudIntegrationDiagnostic = Readonly<{
   code: "VguiRejected" | "PanelUnavailable" | "ValueUnavailable" | "UnsupportedPanelValue" | "AnimationUnavailable"
@@ -162,6 +163,7 @@ function applyPanelResource(runtime: VguiRuntime, panel: VguiPanelId, source: Vg
 class Integration implements Tf2HudIntegration {
   readonly #runtime: VguiRuntime
   readonly #crosshair: Tf2HudCrosshairPresentation
+  readonly #scope: Tf2HudScopePresentation
   readonly #onCommand: (command: Tf2HudCommand) => void
   readonly #diagnostics: Tf2HudIntegrationDiagnostic[] = []
   readonly #diagnosticSubjects = new Set<string>()
@@ -230,6 +232,7 @@ class Integration implements Tf2HudIntegration {
     this.#captureBaseBounds(panels)
     })
     this.#crosshair = new Tf2HudCrosshairPresentation(request.root)
+    this.#scope = new Tf2HudScopePresentation(request.root)
   }
 
   #diagnostic(code: Tf2HudIntegrationDiagnostic["code"], subject: string): void {
@@ -309,6 +312,15 @@ class Integration implements Tf2HudIntegration {
     const adapted = adaptSessionHud(this.#previous, publication, context)
     const binding = bindTf2Hud(adapted)
     this.#applyValues(binding)
+    const scoped = publication.snapshot.class === 2 && publication.snapshot.weapon === 12
+      && (publication.snapshot.conditions[0] & 2) !== 0
+    if (scoped) {
+      const state = publication.snapshot.loadout.find(value => value.weapon === 12) as { chargedDamage?: number } | undefined
+      if (!state || state.chargedDamage === undefined) throw new Error("TF2 Sniper scope has no authoritative charge")
+      this.#scope.publish(true, state.chargedDamage, this.#viewport)
+    } else {
+      this.#scope.hide()
+    }
     for (const animation of binding.animations) {
       const parent = animation.target === "viewport" ? 1 : find(this.#runtime, animation.target)
       if (parent === null) {
@@ -428,6 +440,7 @@ class Integration implements Tf2HudIntegration {
       this.#applyValues(binding)
       this.#previous = unavailable
       this.#binding = null
+      this.#scope.hide()
       this.#animationTrace.length = 0
     })
   }
@@ -435,6 +448,7 @@ class Integration implements Tf2HudIntegration {
     if (this.#destroyed) return
     this.#destroyed = true
     this.#crosshair.destroy()
+    this.#scope.destroy()
     apply(this.#runtime, { kind: "destroy" })
   }
 }
