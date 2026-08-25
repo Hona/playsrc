@@ -334,7 +334,7 @@ export type EntityEvent = Readonly<{
 }>
 
 export type GameplayEvent = Readonly<{
-  kind: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16
+  kind: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19
   detail: number
   subject: number
   auxiliary: number
@@ -1571,7 +1571,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
       view.getFloat32(item + 20, true),
       view.getFloat32(item + 24, true),
     ]) as readonly [number, number, number, number]
-    if (kind === undefined || kind < 1 || kind > 16 || ((kind === 15 || kind === 16) && data[item + 1]! > 2) || data[item + 2] !== 0 || data[item + 3] !== 0 || !finite(values))
+    if (kind === undefined || kind < 1 || kind > 19 || ((kind === 15 || kind === 16) && data[item + 1]! > 2) || data[item + 2] !== 0 || data[item + 3] !== 0 || !finite(values))
       throw new Tf2CodecError("gameplay event record is invalid")
     events.push(
       Object.freeze({

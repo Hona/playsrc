@@ -91,7 +91,7 @@ impl State {
                     kills: bot.kills,
                     deaths: bot.deaths,
                     captures: bot.captures,
-                    damage: 0,
+                    damage: bot.damage,
                 },
             }
         }));
