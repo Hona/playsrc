@@ -292,6 +292,7 @@ const ROOTS: &[(&str, &str, bool)] = &[
     ("class-selection", "resource/ui/classselection.res", true),
     ("class-selection", "resource/ui/classtipslist.res", true),
     ("class-selection", "resource/ui/classtipsitem.res", true),
+    ("team-selection", "resource/ui/teammenu.res", true),
     ("options", "resource/optionssubkeyboard.res", true),
     (
         "options",

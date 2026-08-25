@@ -78,10 +78,13 @@ html, body, #app { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 .class-selection-layer { z-index: 25; }
 .tf2-application[data-class-selection-visible="false"] .class-selection-layer { display: none; }
 .tf2-application[data-class-selection-visible="true"] .hud-layer { visibility: hidden; }
+.team-selection-layer { z-index: 25; }
 .options-layer { z-index: 30; }
 .developer-layer { z-index: 40; }
 
 .tf2-application[data-options-visible="false"] .options-layer { display: none; }
+.tf2-application[data-team-selection-visible="false"] .team-selection-layer { display: none; }
+.tf2-application[data-team-selection-visible="true"] .hud-layer { display: none; }
 
 .tf2-application[data-gameui="main-menu"] .world-canvas,
 .tf2-application[data-gameui="loading"] .world-canvas,

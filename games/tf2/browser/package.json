@@ -15,6 +15,7 @@
     "./class-selection": "./src/class-selection/index.ts",
     "./hud-integration": "./src/hud-integration/index.ts",
     "./settings-integration": "./src/settings-integration/index.ts",
+    "./team-selection": "./src/team-selection/index.ts",
     "./gameui": "./src/gameui/index.ts",
     "./gameui-integration": "./src/gameui-integration/index.ts",
     "./startup-presentation": "./src/startup-presentation/index.ts",

@@ -2477,6 +2477,11 @@ fn main() -> Result<(), String> {
         "models/weapons/c_models/c_sniperrifle/c_sniperrifle.mdl",
         "models/weapons/c_models/c_smg/c_smg.mdl",
         "models/weapons/c_models/c_machete/c_machete.mdl",
+        "models/vgui/ui_team01.mdl",
+        "models/vgui/ui_team01_blue.mdl",
+        "models/vgui/ui_team01_red.mdl",
+        "models/vgui/ui_team01_random.mdl",
+        "models/vgui/ui_team01_spectate.mdl",
     ] {
         model_paths.insert(path.to_owned());
     }

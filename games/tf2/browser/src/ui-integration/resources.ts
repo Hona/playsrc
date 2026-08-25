@@ -188,6 +188,7 @@ const CUSTOM_BASES: Readonly<Record<string, VguiControlRegistration["baseControl
   CPlayListEntry: "EditablePanel",
   CPvPRankPanel: "EditablePanel",
   CSteamFriendsListPanel: "EditablePanel",
+  CTeamMenu: "Frame",
   CTFClassImage: "ImagePanel",
   CTFClassTipsItemPanel: "EditablePanel",
   CTFClassTipsPanel: "EditablePanel",
@@ -196,6 +197,7 @@ const CUSTOM_BASES: Readonly<Record<string, VguiControlRegistration["baseControl
   CTFLogoPanel: "Panel",
   CTFPlayerModelPanel: "Panel",
   PanelListPanel: "ScrollableEditablePanel",
+  CTFTeamButton: "Button",
   URLButton: "Button",
 })
 
@@ -882,7 +884,7 @@ export async function initializeTf2VguiResources(request: Tf2VguiResourceRequest
           return false
         }
         if ((lower(child.name) === "border" || lower(child.name) === "border_override")
-          && !borderNames.get(panel.domain === "hud" || panel.domain === "main-menu" ? "resource/clientscheme.res" : "resource/sourcescheme.res")?.has(lower(child.value))) {
+          && !borderNames.get(panel.domain === "hud" || panel.domain === "main-menu" || panel.domain === "team-selection" ? "resource/clientscheme.res" : "resource/sourcescheme.res")?.has(lower(child.value))) {
           diagnostics.push(Object.freeze({ code: "UnsupportedBorder", subject: `${panel.source.logicalPath}:${node.name}:${child.value}` }))
           return false
         }

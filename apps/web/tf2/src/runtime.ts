@@ -15,6 +15,13 @@ import {
   type Tf2ClassSelectionRequest,
 } from "@playsrc/game-tf2-browser/class-selection"
 import {
+  initializeTf2TeamSelectionIntegration,
+  type Tf2TeamSelectionIntegration,
+  type Tf2TeamSelectionModelPanel,
+  type Tf2TeamSelectionRequest,
+  type Tf2TeamSelectionServerState,
+} from "@playsrc/game-tf2-browser/team-selection"
+import {
   TF2_BROWSER_SETTINGS_STORAGE_KEY,
   initializeTf2BrowserSettings,
   initializeTf2OptionsPresentation,
@@ -193,6 +200,11 @@ export type ApplicationView = Readonly<{
   classSelectionTeam?: number
   classSelectionSelected?: number
   classSelectionModels?: string
+  teamSelectionVisible?: boolean
+  teamSelectionLocal?: number
+  teamSelectionRedCount?: number
+  teamSelectionBlueCount?: number
+  teamSelectionModels?: string
   blockers: readonly string[]
   fireEvents: number
   explosionEvents: number
@@ -297,6 +309,7 @@ export class Tf2Application {
   readonly #gameUiRoot: HTMLElement
   readonly #hudRoot: HTMLElement
   readonly #classSelectionRoot: HTMLElement
+  readonly #teamSelectionRoot: HTMLElement
   readonly #optionsRoot: HTMLElement
   readonly #loadingRoot: HTMLElement
   readonly #startupRoot: HTMLElement
@@ -367,6 +380,10 @@ export class Tf2Application {
   #classSelectionModelPanels: readonly Tf2ClassSelectionModelPanel[] = Object.freeze([])
   #classSelectionRenderTask?: Promise<void>
   #classSelectionRenderRevision = 0
+  #teamSelection?: Tf2TeamSelectionIntegration
+  #teamSelectionModelPanels: readonly Tf2TeamSelectionModelPanel[] = Object.freeze([])
+  #teamSelectionRenderTask?: Promise<void>
+  #teamSelectionRenderRevision = 0
   #hudRootCounts?: Readonly<{ playerStatus: number; ammo: number }>
   #hudContext?: SessionHudContext
   #hudContextIdentity = -1
@@ -460,12 +477,12 @@ export class Tf2Application {
 
   constructor(
     canvas: HTMLCanvasElement,
-    roots: Readonly<{ vgui: HTMLElement; gameUi: HTMLElement; hud: HTMLElement; classSelection: HTMLElement; options: HTMLElement; loading: HTMLElement; startup: HTMLElement; startupVideo: HTMLVideoElement }>,
+    roots: Readonly<{ vgui: HTMLElement; gameUi: HTMLElement; hud: HTMLElement; classSelection: HTMLElement; teamSelection: HTMLElement; options: HTMLElement; loading: HTMLElement; startup: HTMLElement; startupVideo: HTMLVideoElement }>,
     publish: (view: ApplicationView) => void,
   ) {
     this.#canvas = canvas
     const presentationRoot = canvas.parentElement
-    if (!presentationRoot || [roots.vgui, roots.gameUi, roots.hud, roots.classSelection, roots.options, roots.loading, roots.startup].some((root) => root.parentElement !== presentationRoot)) {
+    if (!presentationRoot || [roots.vgui, roots.gameUi, roots.hud, roots.classSelection, roots.teamSelection, roots.options, roots.loading, roots.startup].some((root) => root.parentElement !== presentationRoot)) {
       throw new Error("TF2 presentation owners do not share one application mount")
     }
     this.#presentationRoot = presentationRoot
@@ -473,6 +490,7 @@ export class Tf2Application {
     this.#gameUiRoot = roots.gameUi
     this.#hudRoot = roots.hud
     this.#classSelectionRoot = roots.classSelection
+    this.#teamSelectionRoot = roots.teamSelection
     this.#optionsRoot = roots.options
     this.#loadingRoot = roots.loading
     this.#startupRoot = roots.startup
@@ -1118,6 +1136,8 @@ export class Tf2Application {
     this.#hudIntegration = undefined
     this.#classSelection?.destroy()
     this.#classSelection = undefined
+    this.#teamSelection?.destroy()
+    this.#teamSelection = undefined
     this.#hudRootCounts = undefined
     this.#hudContext = undefined
     this.#hudContextIdentity = -1
@@ -1395,6 +1415,7 @@ export class Tf2Application {
       this.#paused = document.hidden
       this.#resetHudIntegration()
       this.#resetClassSelection()
+      this.#resetTeamSelection()
       this.#gameUi?.dispatch({ kind: "loading-progress", phase: "complete" })
       this.#gameUi?.dispatch({ kind: "loading-succeeded" })
       this.#publishProfileCoverage()
@@ -1449,6 +1470,7 @@ export class Tf2Application {
         loadingProgress: 1,
       })
       this.#showClassSelection(true)
+      this.#showTeamSelection()
     } catch (error) {
       if (!this.#operations.current(operation)) return
       await this.#teardownGameplay()
@@ -1580,6 +1602,106 @@ export class Tf2Application {
         this.#set({ phase: "Failed", gameUi: "failure", detail: error instanceof Error ? error.message : "TF2 class model rendering failed" })
       })
       .finally(() => { this.#classSelectionRenderTask = undefined })
+  }
+
+  #teamServerState(snapshot: Snapshot): Tf2TeamSelectionServerState {
+    const localTeam = snapshot.team === 1 ? 2 : 3
+    return Object.freeze({
+      localTeam,
+      redCount: Number(localTeam === 2),
+      blueCount: Number(localTeam === 3),
+      redDisabled: false,
+      blueDisabled: false,
+      spectatorsVisible: true,
+      autoAssignVisible: true,
+      cancelVisible: localTeam !== 0,
+      highlander: false,
+      teamsFull: false,
+      teamsFullArrow: false,
+    })
+  }
+
+  #resetTeamSelection(): void {
+    if (!this.#uiResources || !this.#presentationRandom) throw new Error("TF2 team selection resources are unavailable")
+    if (this.#teamSelection) {
+      this.#teamSelection.dispatch({ kind: "hide" })
+      return
+    }
+    this.#teamSelection = initializeTf2TeamSelectionIntegration({
+      root: this.#teamSelectionRoot,
+      resources: this.#uiResources,
+      viewport: this.#viewport(),
+      reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
+      clock: { nowSeconds: () => this.#frameClock.current },
+      random: this.#presentationRandom,
+      onRequest: (request) => this.#teamSelectionRequest(request),
+      onModelPanels: (panels) => {
+        this.#teamSelectionModelPanels = panels
+        this.#teamSelectionRenderRevision += 1
+        const server = this.#teamSelection?.state().server
+        this.#set({
+          teamSelectionVisible: panels.length > 0,
+          teamSelectionLocal: server?.localTeam,
+          teamSelectionRedCount: server?.redCount,
+          teamSelectionBlueCount: server?.blueCount,
+          teamSelectionModels: panels.map((panel) => `${panel.name}:${panel.model}:${panel.animation}`).join("|"),
+        })
+      },
+    })
+  }
+
+  #teamSelectionRequest(request: Tf2TeamSelectionRequest): void {
+    if (request.team === "red") this.#selectTeam = 1
+    else if (request.team === "blue") this.#selectTeam = 2
+    else if (request.team === "auto") {
+      const server = this.#teamSelection?.state().server
+      if (!server) throw new Error("TF2 authoritative team state is unavailable")
+      this.#selectTeam = server.redCount < server.blueCount ? 1 : 2
+    } else {
+      this.#blockers.add("TF2 spectator state has not been admitted by gameplay authority")
+      this.#set({ detail: "TF2 spectator state is unavailable" })
+      return
+    }
+    this.#set({ teamSelectionVisible: false, teamSelectionModels: "", detail: `Team selected: ${request.team}` })
+  }
+
+  #showTeamSelection(): void {
+    if (!this.#teamSelection || !this.#snapshot || this.#view.gameUi !== "in-game") return
+    this.#neutral()
+    if (document.pointerLockElement === this.#canvas) void document.exitPointerLock()
+    this.#teamSelection.dispatch({ kind: "show", server: this.#teamServerState(this.#snapshot) })
+  }
+
+  #renderTeamSelection(): void {
+    if (!this.#renderer || this.#teamSelectionModelPanels.length === 0 || this.#teamSelectionRenderTask) return
+    const renderer = this.#renderer as Renderer & Readonly<{
+      renderModelPanels(panels: readonly Readonly<{
+        identity: string; model: string; skin: number; horizontalFov4By3: number;
+        origin: readonly [number, number, number]; angles: readonly [number, number, number];
+        bounds: Readonly<{ x: number; y: number; width: number; height: number }>;
+      }>[]): Promise<Readonly<{ panels: readonly Readonly<{ identity: string; model: string; skin: number; primitives: number }>[] }>>
+    }>
+    const revision = this.#teamSelectionRenderRevision
+    const generation = this.#generation
+    const panels = this.#teamSelectionModelPanels.map((panel) => Object.freeze({
+      identity: panel.name,
+      model: panel.model,
+      skin: panel.skin,
+      horizontalFov4By3: panel.fov,
+      origin: panel.origin,
+      angles: panel.angles,
+      bounds: panel.bounds,
+    }))
+    this.#teamSelectionRenderTask = renderer.renderModelPanels(panels)
+      .then((result) => {
+        if (generation !== this.#generation || revision !== this.#teamSelectionRenderRevision) return
+        this.#set({ teamSelectionModels: result.panels.map((panel) => `${panel.identity}:${panel.model}:${panel.skin}:${panel.primitives}`).join("|") })
+      })
+      .catch((error) => {
+        if (generation !== this.#generation || !this.#teamSelection?.state().visible) return
+        this.#set({ phase: "Failed", gameUi: "failure", detail: error instanceof Error ? error.message : "TF2 team model rendering failed" })
+      })
+      .finally(() => { this.#teamSelectionRenderTask = undefined })
   }
 
   #hudPresentationObservation(
@@ -1714,6 +1836,12 @@ export class Tf2Application {
         }),
         Object.freeze({
           kind: "command" as const,
+          name: "changeteam",
+          disposition: "visible" as const,
+          acceptsSuggestions: false,
+        }),
+        Object.freeze({
+          kind: "command" as const,
           name: "jointeam",
           disposition: "visible" as const,
           acceptsSuggestions: true,
@@ -1824,7 +1952,7 @@ export class Tf2Application {
   #commitPresentationViewport(viewport: ApplicationPresentationViewport): void {
     this.#presentationViewport = viewport
     const identity = `${viewport.revision}:${viewport.width}x${viewport.height}@${viewport.devicePixelRatio}`
-    for (const owner of [this.#canvas, this.#startupRoot, this.#loadingRoot, this.#gameUiRoot, this.#hudRoot, this.#classSelectionRoot, this.#optionsRoot, this.#vguiRoot]) {
+    for (const owner of [this.#canvas, this.#startupRoot, this.#loadingRoot, this.#gameUiRoot, this.#hudRoot, this.#classSelectionRoot, this.#teamSelectionRoot, this.#optionsRoot, this.#vguiRoot]) {
       owner.dataset.presentationViewport = identity
       owner.dataset.presentationViewportState = "active"
     }
@@ -1835,6 +1963,7 @@ export class Tf2Application {
     this.#syncGameUiBackgroundProbe()
     this.#hudIntegration?.setViewport(viewport)
     this.#classSelection?.setViewport(viewport)
+    this.#teamSelection?.setViewport(viewport)
     this.#options?.setViewport(viewport)
     this.#loadingVgui?.setViewport(viewport)
     if (this.#loadingPresentationGeneration > 0 && this.#configuration) {
@@ -1847,7 +1976,7 @@ export class Tf2Application {
 
   #suspendPresentationViewport(): void {
     this.#presentationViewport = undefined
-    for (const owner of [this.#canvas, this.#startupRoot, this.#loadingRoot, this.#gameUiRoot, this.#hudRoot, this.#classSelectionRoot, this.#optionsRoot, this.#vguiRoot]) {
+    for (const owner of [this.#canvas, this.#startupRoot, this.#loadingRoot, this.#gameUiRoot, this.#hudRoot, this.#classSelectionRoot, this.#teamSelectionRoot, this.#optionsRoot, this.#vguiRoot]) {
       delete owner.dataset.presentationViewport
       owner.dataset.presentationViewportState = "suspended"
     }
@@ -1867,7 +1996,7 @@ export class Tf2Application {
           : request.commandName.toLowerCase() === "class"
             ? TF2_CLASS_NAMES.map((name) => `class ${name}`)
             : request.commandName.toLowerCase() === "jointeam"
-              ? ["jointeam red", "jointeam blue"]
+              ? ["jointeam auto", "jointeam blue", "jointeam red", "jointeam spectate"]
               : request.commandName.toLowerCase() === "joinclass"
                 ? ["scout", "soldier", "pyro", "demoman", "heavyweapons", "engineer", "medic", "sniper", "spy", "random"].map((name) => `joinclass ${name}`)
                 : request.commandName.toLowerCase() === "tf_bot_add"
@@ -2022,6 +2151,18 @@ export class Tf2Application {
       }
       this.#classSelectionRequest({ kind: "join-class", identity: selected.identity, sourceCommand: `joinclass ${selected.name}` })
       this.#classSelection?.dispatch({ kind: "hide" })
+    if (command === "changeteam" && tokens.length === 0) {
+      this.#showTeamSelection()
+      return
+    }
+    if (command === "jointeam" && tokens.length === 1) {
+      const team = tokens[0]!.toLowerCase()
+      if (team !== "red" && team !== "blue" && team !== "auto" && team !== "spectate") {
+        this.#output(`Unknown TF2 team: ${tokens[0]}`)
+        return
+      }
+      this.#teamSelectionRequest({ kind: "join-team", team, sourceCommand: `jointeam ${team}` })
+      this.#teamSelection?.dispatch({ kind: "hide" })
       return
     }
     if (command === "tf_bot_difficulty" && tokens.length <= 1) {
@@ -2875,6 +3016,7 @@ export class Tf2Application {
       if (owners & OPTIONS_FRAME_OWNER) this.#options?.frame(timeSeconds)
       if (owners & HUD_FRAME_OWNER) this.#hudIntegration?.frame(timeSeconds)
       if (this.#classSelection?.state().visible) this.#classSelection.frame(timeSeconds)
+      if (this.#teamSelection?.state().visible) this.#teamSelection.frame(timeSeconds)
     } catch (error) {
       this.#paused = true
       this.#set({ phase: "Failed", gameUi: "failure", detail: error instanceof Error ? error.message : "VGUI frame failed" })
@@ -2889,11 +3031,12 @@ export class Tf2Application {
       else do{this.#nextSimulationSampleSeconds+=SIMULATION_SAMPLE_INTERVAL_SECONDS}while(this.#nextSimulationSampleSeconds<=nowSeconds)
     }
     if (this.#classSelection?.state().visible) this.#renderClassSelection()
+    else if (this.#teamSelection?.state().visible) this.#renderTeamSelection()
     else this.#offerDisplay()
   }
 
   #offerDisplay():void{
-    if (this.#classSelection?.state().visible) return
+    if (this.#classSelection?.state().visible || this.#teamSelection?.state().visible) return
     const required=this.#requiredParticleDisplayFrames.peek()
     const prepared=required??this.#preparedPresentation
     if(
@@ -3514,6 +3657,7 @@ export class Tf2Application {
 
   readonly #keyDown = (event: KeyboardEvent): void => {
     if (!this.#view.consoleVisible && this.#classSelection?.handleKey(event, this.#keyboardAction(event) === "changeclass")) return
+    if (!this.#view.consoleVisible && this.#teamSelection?.handleKey(event, this.#keyboardAction(event) === "changeteam")) return
     if (event.code === "Escape" && this.#view.optionsVisible && this.#options?.handleKey(event)) return
     if (event.code === "Escape" && !this.#view.consoleVisible) {
       const route = routeApplicationEscape({
@@ -3556,6 +3700,11 @@ export class Tf2Application {
     if (this.#view.consoleVisible || this.#view.optionsVisible || this.#view.gameUi !== "in-game" || event.repeat) return
     const action = this.#keyboardAction(event)
     if (!action) return
+    if (action === "changeteam") {
+      event.preventDefault()
+      this.#showTeamSelection()
+      return
+    }
     if (action === "changeclass") {
       event.preventDefault()
       this.#showClassSelection()
@@ -3675,7 +3824,7 @@ export class Tf2Application {
       return
     }
     this.#canvas = connected
-    if (this.#closed || this.#view.consoleVisible || this.#classSelection?.state().visible) return
+    if (this.#closed || this.#view.consoleVisible || this.#classSelection?.state().visible || this.#teamSelection?.state().visible) return
     const audioAdmission=this.resumeAudio()
     const request=async(raw:boolean):Promise<"raw"|"adjusted">=>{
       const admission=this.#canvas.requestPointerLock(raw?{unadjustedMovement:true}:undefined)
@@ -3768,6 +3917,8 @@ export class Tf2Application {
     this.#hudIntegration?.reset("disconnect")
     this.#classSelection?.dispatch({ kind: "hide" })
     await this.#classSelectionRenderTask
+    this.#teamSelection?.dispatch({ kind: "hide" })
+    await this.#teamSelectionRenderTask
     this.#loaded = undefined
     this.#snapshot = undefined
     this.#artifacts = undefined
