@@ -2,12 +2,12 @@ use playsrc_bsp::{Limits as BspLimits, Profile as BspProfile};
 use playsrc_collision::{DisplacementInput, Hull, MASK_PLAYERSOLID, SurfaceIdentity};
 use playsrc_entity::{Entity, Limits as EntityLimits};
 use playsrc_map::{
-    ControllerState, LightingProfile, attach_displacement_visibility,
+    ControllerState, LightingProfile, attach_displacement_visibility, compile_area_portal_state,
     compile_environment_controllers, compile_prepared,
 };
 use playsrc_visibility::{
-    AreaState, CandidateId, CandidateInput, CandidateKind, CandidateMembership, CandidateSet,
-    SkyVisibility, ViewQuery,
+    CandidateId, CandidateInput, CandidateKind, CandidateMembership, CandidateSet, SkyVisibility,
+    ViewQuery,
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -83,6 +83,16 @@ fn configured_maps_preserve_controller_independent_sky_and_complete_world_produc
             &playsrc_visibility::compile(&bsp).expect("BSP visibility authority"),
         )
         .expect("complete displacement visibility authority");
+        let area_state = compile_area_portal_state(&entities, &visibility)
+            .expect("authored initial area-portal states");
+        let portal_count = match name {
+            "jump_beef" => 0,
+            "pl_upward" => 59,
+            "ctf_2fort" => 29,
+            _ => unreachable!("configured map"),
+        };
+        assert!((1..=portal_count).all(|portal| area_state.portal_open(portal) == Some(true)));
+        assert_eq!(area_state.portal_open(0), Some(false));
         let authored_sky_cameras = entities
             .entities
             .iter()
@@ -150,11 +160,10 @@ fn configured_maps_preserve_controller_independent_sky_and_complete_world_produc
                 flags[0] > 0,
                 "authored sky leaf flags require no sky controller"
             );
-            let state = AreaState::new(&visibility);
             let candidates = CandidateSet::compile(&visibility, 0, &[]).unwrap();
             let view = visibility
                 .view(
-                    &state,
+                    &area_state,
                     &candidates,
                     &ViewQuery {
                         origins: vec![FAILING_JUMP_BEEF_CAMERA],
@@ -198,7 +207,7 @@ fn configured_maps_preserve_controller_independent_sky_and_complete_world_produc
                 .expect("reachable 3D-sky-flagged leaf on a map without sky_camera");
             let flagged_view = visibility
                 .view(
-                    &state,
+                    &area_state,
                     &candidates,
                     &ViewQuery {
                         origins: vec![flagged_origin],
@@ -407,11 +416,10 @@ fn configured_maps_preserve_controller_independent_sky_and_complete_world_produc
             })
             .collect::<Vec<_>>();
         assert_eq!([main_props, sky_props], [1184, 60]);
-        let state = AreaState::new(&visibility);
         let candidates = CandidateSet::compile(&visibility, 0, &candidate_inputs).unwrap();
         let sky_view = visibility
             .view(
-                &state,
+                &area_state,
                 &candidates,
                 &ViewQuery {
                     origins: vec![UPWARD_SKY_ORIGIN],
@@ -438,6 +446,19 @@ fn configured_maps_preserve_controller_independent_sky_and_complete_world_produc
         assert_eq!(sky_view.visible_areas, [sky_area as usize]);
         assert_eq!(sky_view.candidates.len(), 60);
         assert_eq!(sky_drawable_surfaces, 752);
+        let spawn_door_view = visibility
+            .view(
+                &area_state,
+                &candidates,
+                &ViewQuery {
+                    origins: vec![[-1850.0, -1536.0, 132.0]],
+                    bypass_pvs: false,
+                },
+            )
+            .unwrap();
+        assert!(spawn_door_view.visible_areas.contains(&2));
+        assert!(spawn_door_view.visible_areas.contains(&30));
+        assert!(spawn_door_view.world_surfaces.contains(&14_755));
         assert_eq!(
             map.surfaces
                 .iter()

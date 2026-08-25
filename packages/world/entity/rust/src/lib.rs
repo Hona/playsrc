@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, fmt, ops::Range};
 mod source_random;
 mod value;
 mod world;
-pub use value::{FieldType, ValueConversionError};
+pub use value::{FieldType, ValueConversionError, source_integer};
 pub use world::*;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

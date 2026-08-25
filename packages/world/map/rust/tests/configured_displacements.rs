@@ -168,7 +168,19 @@ fn configured_pl_upward_displacements_are_complete_and_deterministic() {
             );
         }
     }
-    let state = playsrc_visibility::AreaState::new(&visibility);
+    let entities =
+        playsrc_entity::parse(bsp.lumps[0].bytes(&bsp), playsrc_entity::Limits::default())
+            .expect("configured map entities");
+    let state = playsrc_map::compile_area_portal_state(&entities, &visibility)
+        .expect("configured authored area portals");
+    assert_eq!(
+        state.portal_open(1),
+        Some(true),
+        "Upward's authored-open spawn area portal must connect its outdoor terrain"
+    );
+    assert!((1..=59).all(|portal| state.portal_open(portal) == Some(true)));
+    assert!(state.connected(&visibility, 33, 2).unwrap());
+    assert!(!state.connected(&visibility, 1, 2).unwrap());
     let candidates = playsrc_visibility::CandidateSet::compile(&visibility, 0, &[]).unwrap();
     for (source, face) in [(147, 14_859), (381, 15_093), (138, 14_850)] {
         let probe = probes.iter().find(|probe| probe.0 == source).unwrap();
