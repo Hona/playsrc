@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use super::{
     Connection, ConnectionError, Entity, FieldType, Graph, Pair, ValueConversionError,
@@ -968,7 +968,7 @@ struct PathLookAhead {
 #[derive(Clone, Debug)]
 struct Slot {
     generation: u32,
-    entity: Option<RuntimeEntity>,
+    entity: Option<Arc<RuntimeEntity>>,
 }
 
 #[derive(Clone, Debug)]
@@ -993,7 +993,7 @@ struct WorldState {
 
 #[derive(Clone, Debug)]
 pub struct EntityWorld {
-    config: EntityWorldConfig,
+    config: Arc<EntityWorldConfig>,
     state: WorldState,
 }
 
@@ -1097,7 +1097,7 @@ impl EntityWorld {
                 classname_index: BTreeMap::new(),
                 queue: Vec::new(),
             },
-            config,
+            config: Arc::new(config),
         };
         let mut batch = TransitionBatch::default();
         let skipped = template_prototype_indices(graph)?;
@@ -1196,7 +1196,7 @@ impl EntityWorld {
     pub fn entity(&self, handle: EntityHandle) -> Option<&RuntimeEntity> {
         let slot = self.state.slots.get(usize::from(handle.slot))?;
         (slot.generation == handle.generation)
-            .then_some(slot.entity.as_ref())
+            .then_some(slot.entity.as_deref())
             .flatten()
     }
 
@@ -1323,7 +1323,7 @@ impl EntityWorld {
     fn entity_mut(&mut self, handle: EntityHandle) -> Option<&mut RuntimeEntity> {
         let slot = self.state.slots.get_mut(usize::from(handle.slot))?;
         (slot.generation == handle.generation)
-            .then_some(slot.entity.as_mut())
+            .then_some(slot.entity.as_mut().map(Arc::make_mut))
             .flatten()
     }
 
@@ -1506,7 +1506,7 @@ impl EntityWorld {
                 runtime_entity.world_transform.angles = angles;
             }
         }
-        self.state.slots[slot_index].entity = Some(runtime_entity);
+        self.state.slots[slot_index].entity = Some(Arc::new(runtime_entity));
         self.state.creation_order.push(handle);
         self.state.next_creation_order += 1;
         self.index_insert(&classname, targetname.as_deref(), handle);
