@@ -63,6 +63,7 @@ test("headed stock Pyro weapons preserve authored flame, compression blast, shot
     activateCurrentTab: async () => { await page.bringToFront() },
   })
   const pointer = await automation.pointer.capture("Pyro stock weapons")
+  await page.waitForFunction(() => document.querySelector<HTMLElement>("main")?.dataset.detail === "Audio running", undefined, { timeout: 10_000, polling: 20 })
   const started = await page.evaluate(() => performance.now())
   const startTick = Number((await page.locator("main").getAttribute("data-snapshot-tick")) ?? "0")
   await automation.player.pressPrimaryFire()
