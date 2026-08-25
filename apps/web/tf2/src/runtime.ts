@@ -133,6 +133,8 @@ const SOUND_PATHS = [
   "sound/weapons/bat_hit.wav",
   "sound/weapons/cbar_hit1.wav",
   "sound/weapons/cbar_hit2.wav",
+  "sound/weapons/scatter_gun_worldreload.wav",
+  "sound/weapons/pistol_worldreload.wav",
 ] as const
 
 export type ApplicationView = Readonly<{

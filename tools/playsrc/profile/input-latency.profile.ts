@@ -856,6 +856,7 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
     activity: string
     audio: string
     pixelsSha256: string
+    reload: null | { clip: number; reserve: number; sound: string }
   }> = []
   const activeFrameWindows: Array<{ started: number; finished: number }> = []
   const workloads: Array<{
@@ -1089,7 +1090,22 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
         const screenshot = await page.locator("canvas.world-canvas").screenshot()
         const pixels = decodeScreenshot(screenshot)
         expect(pixels.width * pixels.height).toBeGreaterThan(100)
-        scoutWeaponEvidence.push({ weapon, name, ...observation, pixelsSha256: createHash("sha256").update(pixels.pixels).digest("hex") })
+        let reload: null | { clip: number; reserve: number; sound: string } = null
+        if (weapon !== 6) {
+          const expectedClip = weapon === 4 ? 6 : 12
+          const sound = weapon === 4 ? "Weapon_Scatter_Gun.WorldReload" : "Weapon_Pistol.WorldReload"
+          await page.keyboard.press("KeyR")
+          await expect.poll(async () => {
+            const trace = await root.getAttribute("data-weapon-trace") ?? ""
+            const record = trace.split("|").find((item) => item.startsWith(`${weapon}:`))
+            return Number(record?.split(":")[1]?.split("/")[0] ?? -1)
+          }, { timeout: 10_000 }).toBe(expectedClip)
+          await expect.poll(async () => (await root.getAttribute("data-audio-starts") ?? "").includes(sound)).toBe(true)
+          const record = (await root.getAttribute("data-weapon-trace") ?? "").split("|").find((item) => item.startsWith(`${weapon}:`))!
+          const [clip, reserve] = record.split(":")[1]!.split("/").map(Number)
+          reload = { clip: clip!, reserve: reserve!, sound }
+        }
+        scoutWeaponEvidence.push({ weapon, name, ...observation, pixelsSha256: createHash("sha256").update(pixels.pixels).digest("hex"), reload })
       }
       expect(new Set(scoutWeaponEvidence.map((item) => item.pixelsSha256)).size).toBe(3)
     }

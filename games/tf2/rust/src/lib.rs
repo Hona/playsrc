@@ -1316,6 +1316,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     )?;
                 }
             }
+            let reload_activity_start = self.activity_events.len();
             {
                 let state = self
                     .loadout
@@ -1334,6 +1335,20 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     &mut self.activity_events,
                     &mut ammo_events,
                 );
+            }
+            let reload_sound = self.activity_events[reload_activity_start..]
+                .iter()
+                .find_map(|event| match (active_weapon, event.activity) {
+                    (Weapon::Scattergun, weapon::WeaponActivity::ReloadLoop) => {
+                        Some(SoundDefinition::ScattergunReload)
+                    }
+                    (Weapon::Pistol, weapon::WeaponActivity::ReloadStart) => {
+                        Some(SoundDefinition::PistolReload)
+                    }
+                    _ => None,
+                });
+            if let Some(definition) = reload_sound {
+                self.emit_weapon_sound(definition, self.movement.position);
             }
             self.fire_was_held = command.fire;
         } else {

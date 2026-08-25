@@ -1611,6 +1611,83 @@ fn initialize_particle(system: &mut System, definition: &Definition, creation: f
                     )
                 });
             velocity = add(velocity, local_velocity);
+        } else if initializer
+            .identity
+            .eq_ignore_ascii_case("Remap Initial Scalar")
+        {
+            let start = float_parameter(initializer, "emitter lifetime start time (seconds)", -1.0);
+            let end = float_parameter(initializer, "emitter lifetime end time (seconds)", -1.0);
+            if start != -1.0 && end != -1.0 && (creation < start || creation >= end) {
+                continue;
+            }
+            let minimum = float_parameter(initializer, "input minimum", 0.0);
+            let maximum = float_parameter(initializer, "input maximum", 1.0);
+            if bool_parameter(
+                initializer,
+                "only active within specified input range",
+                false,
+            ) && (creation < minimum || creation > maximum)
+            {
+                continue;
+            }
+            let field = integer_parameter(initializer, "output field", 3);
+            let mut low = float_parameter(initializer, "output minimum", 0.0);
+            let mut high = float_parameter(initializer, "output maximum", 1.0);
+            if field == 7 {
+                low = low.clamp(0.0, 1.0);
+                high = high.clamp(0.0, 1.0);
+            }
+            let mut value = mix(low, high, remap(creation, minimum, maximum));
+            let destination = match field {
+                1 => &mut particle.lifetime_seconds,
+                3 => &mut particle.radius,
+                7 => &mut particle.alpha,
+                _ => unreachable!("validated particle scalar output field"),
+            };
+            if bool_parameter(
+                initializer,
+                "output is scalar of initial random range",
+                false,
+            ) {
+                value *= *destination;
+            }
+            *destination = value;
+        } else if initializer
+            .identity
+            .eq_ignore_ascii_case("Remap Scalar to Vector")
+        {
+            let start = float_parameter(initializer, "emitter lifetime start time (seconds)", -1.0);
+            let end = float_parameter(initializer, "emitter lifetime end time (seconds)", -1.0);
+            if start != -1.0 && end != -1.0 && (creation < start || creation >= end) {
+                continue;
+            }
+            let minimum = vector_parameter(initializer, "output minimum", [0.0; 3]);
+            let maximum = vector_parameter(initializer, "output maximum", [1.0; 3]);
+            let fraction = remap(
+                creation,
+                float_parameter(initializer, "input minimum", 0.0),
+                float_parameter(initializer, "input maximum", 1.0),
+            );
+            let mut output =
+                std::array::from_fn(|index| mix(minimum[index], maximum[index], fraction));
+            let control = integer_parameter(initializer, "control_point_number", 0);
+            if bool_parameter(initializer, "use local system", true) {
+                if let Some(orientation) = control_orientation(system, control) {
+                    output = rotate(orientation, output);
+                }
+            }
+            output = add(control_at_time(system, control, creation), output);
+            if bool_parameter(
+                initializer,
+                "output is scalar of initial random range",
+                false,
+            ) {
+                for (component, prior) in output.iter_mut().zip(particle.position) {
+                    *component *= prior;
+                }
+            }
+            particle.position = output;
+            velocity = [0.0; 3];
         }
     }
     for initializer in definition.functions(FunctionCategory::Initializer) {
