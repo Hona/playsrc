@@ -453,10 +453,10 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
       if(await page.locator("main").getAttribute("data-phase")==="Ready"){pageReloadGameplayReadyMilliseconds=await page.evaluate(()=>performance.now());pageReloadLoadPerformance=JSON.parse((await page.locator("main").getAttribute("data-load-performance"))??"null");storageAfterPageReload=await storageSnapshot();if(await page.locator("main").getAttribute("data-console-visible")==="true")await page.keyboard.press("Backquote")}
     }
   }
+  const startupMilliseconds = Date.now() - wallStarted
   if (!mapOnly && gameplayReadyMilliseconds !== undefined) {
     teamSelectionTransitions = await exerciseTf2TeamTransitions(page)
   }
-  const startupMilliseconds = Date.now() - wallStarted
 
   const initial = await page.locator("main").evaluate((main) => ({ ...((main as HTMLElement).dataset) }))
   const input: Record<string, unknown> = {}
