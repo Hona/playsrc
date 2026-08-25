@@ -40,8 +40,10 @@ function catalog(suppliedSystems: ReadonlySet<string> = systems): ProjectileReso
     ]),
     attachmentTransforms: new Map([
       [7, new Map([["trail", { position: [2, 3, 4] as Vector3, orientation: [0, 0, 0, 1] as Quaternion }]])],
-      [20, new Map([["backblast", { position: [5, 6, 7] as Vector3, orientation: [0, 0, 0, 1] as Quaternion }]])],
-      [21, new Map([["muzzle", { position: [8, 9, 10] as Vector3, orientation: [0, 0, 0, 1] as Quaternion }]])],
+    ]),
+    fireAttachmentTransforms: new Map([
+      [7, new Map([["backblast", { position: [5, 6, 7] as Vector3, orientation: [0, 0, 0, 1] as Quaternion }]])],
+      [9, new Map([["muzzle", { position: [8, 9, 10] as Vector3, orientation: [0, 0, 0, 1] as Quaternion }]])],
     ]),
   })
 }
@@ -310,6 +312,34 @@ describe("TF2 projectile presentation contract", () => {
     explosion.controlPoints[0]!.orientation.forEach((component, index) => {
       expect(component).toBeCloseTo(sourceViewOrientation(0, 180)[index]!, 12)
     })
+  })
+
+  test("binds coalesced launcher effects to each authoritative fire-tick pose", () => {
+    const first = rocket({ position: [10, 20, 30], orientation: [0, 0, 0, 1] })
+    const second = rocket({ identity: 8, position: [40, 50, 60], orientation: [0, 0, 0, 1] })
+    const resources: ProjectileResourceCatalog = Object.freeze({
+      ...catalog(),
+      attachments: new Map([
+        [7, new Set(["trail"])],
+        [8, new Set(["trail"])],
+        [20, new Set(["backblast"])],
+      ]),
+      attachmentTransforms: new Map([
+        [7, new Map([["trail", { position: [11, 20, 30] as Vector3, orientation: [0, 0, 0, 1] as Quaternion }]])],
+        [8, new Map([["trail", { position: [41, 50, 60] as Vector3, orientation: [0, 0, 0, 1] as Quaternion }]])],
+      ]),
+      fireAttachmentTransforms: new Map([
+        [7, new Map([["backblast", { position: [1, 2, 3] as Vector3, orientation: [0, 0, 0, 1] as Quaternion }]])],
+        [8, new Map([["backblast", { position: [101, 102, 103] as Vector3, orientation: [0, 0, 0, 1] as Quaternion }]])],
+      ]),
+    })
+    const result = createProjectilePresentationMapper(resources).map(timeline(
+      projectileTick(4n, [first], [event(first, "fire", 4n)]),
+      projectileTick(5n, [first, second], [event(second, "fire", 5n)]),
+    ))
+    expect(result.particles.filter((request) => request.kind === "start" && request.system === "rocketbackblast")
+      .map((request) => request.kind === "start" ? [request.tick, request.controlPoints[0]!.position] : null))
+      .toEqual([[4n, [1, 2, 3]], [5n, [101, 102, 103]]])
   })
 
   test("retains every far-flight control with one attachment-local transform", () => {

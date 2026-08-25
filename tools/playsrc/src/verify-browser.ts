@@ -2041,6 +2041,8 @@ export async function verifyBrowserAcceptance(
     let impactCanvas: CanvasEvidence | null = null
     await automation.player.pressPrimaryFire()
     await agent(["--session", session, "wait", "--fn", `document.querySelector('main').dataset.phase==='Failed'||Number(document.querySelector('main').dataset.fireEvents)>${initialFireEvents}`, "--timeout", "30000"])
+    const fireAdmission=parseJson<{phase:string;detail:string}>(await agent(["--session",session,"eval","(()=>{const m=document.querySelector('main');return{phase:m.dataset.phase,detail:m.dataset.detail??m.textContent??''}})()"]))
+    require(fireAdmission.phase!=="Failed",`rocket fire presentation failed: ${fireAdmission.detail}`)
     await agent(["--session", session, "wait", "--fn", "Number(document.querySelector('main').dataset.projectiles)>0&&Number(document.querySelector('main').dataset.particleItems)>0", "--timeout", "30000"])
     const farFlightState = await rocketFrameState(session)
     farFlightCanvas = await captureCanvas(session, config, "jump_beef", ROCKET_VISUAL_REGIONS)

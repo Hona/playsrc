@@ -56,6 +56,7 @@ import {
   tf2Audio,
   tf2Camera,
   transformAttachment,
+  type ModelPoseRequest,
   type PosedModel,
 } from "@playsrc/game-tf2-browser/presentation"
 import { decodeParticleRenderOutput } from "@playsrc/particle"
@@ -269,6 +270,7 @@ export class Tf2Application {
   #viewmodelClass?: Snapshot["class"]
   #attachments = new Map<number, ReadonlySet<string>>()
   #attachmentTransforms = new Map<number, ReadonlyMap<string, ReturnType<typeof transformAttachment>>>()
+  #fireAttachmentTransforms = new Map<number, ReadonlyMap<string, ReturnType<typeof transformAttachment>>>()
   #particleBatches = createParticleBatchEncoder()
   #console?: DeveloperConsole
   #pendingConsoleOutput: Readonly<{ text: string; developer: boolean }>[] = []
@@ -1216,6 +1218,7 @@ export class Tf2Application {
           ]),
           attachments: this.#attachments,
           attachmentTransforms: this.#attachmentTransforms,
+          fireAttachmentTransforms: this.#fireAttachmentTransforms,
           localOwnerIdentity: 1,
         }),
       )
@@ -1379,6 +1382,7 @@ export class Tf2Application {
     this.#explosionEvents = 0
     this.#audioStarts = []
     this.#attachmentTransforms.clear()
+    this.#fireAttachmentTransforms.clear()
   }
 
   #resetHudIntegration(): void {
@@ -2101,6 +2105,7 @@ export class Tf2Application {
         ]),
         attachments: this.#attachments,
         attachmentTransforms: this.#attachmentTransforms,
+        fireAttachmentTransforms: this.#fireAttachmentTransforms,
         localOwnerIdentity: 1,
       }),
     )
@@ -2429,6 +2434,7 @@ export class Tf2Application {
   #updateAttachmentTransforms(snapshot: Snapshot, viewmodels: readonly PosedModel[], camera: Camera): void {
     if (!this.#artifacts) return
     this.#attachmentTransforms.clear()
+    this.#fireAttachmentTransforms.clear()
     for (const projectile of snapshot.projectiles) {
       const artifact = this.#artifacts.models.get(
         projectile.kind === 1 ? "models/weapons/w_models/w_rocket.mdl" : "models/weapons/w_models/w_stickybomb.mdl",
@@ -2460,11 +2466,16 @@ export class Tf2Application {
       )
     }
     const cameraOrientation = sourceViewOrientation(camera.pitchDegrees, camera.yawDegrees)
+    const currentViewmodels = viewmodels.filter((viewmodel) => !viewmodel.attachmentsOnly)
     const viewmodelAttachments = new Map(
-      viewmodels.flatMap((viewmodel) => viewmodel.attachments).map((attachment) => [
+      currentViewmodels.flatMap((viewmodel) => viewmodel.attachments.map((attachment) => [
         attachment.name.toLowerCase(),
-        transformAttachment(attachment.matrix, camera.position, cameraOrientation),
-      ]),
+        transformAttachment(
+          attachment.matrix,
+          viewmodel.attachmentsWorld ? [0, 0, 0] : camera.position,
+          viewmodel.attachmentsWorld ? [0, 0, 0, 1] : cameraOrientation,
+        ),
+      ] as const)),
     )
     const launchers = new Set([
       ...snapshot.projectiles.map((projectile) => projectile.launcherIdentity),
@@ -2478,10 +2489,23 @@ export class Tf2Application {
         ]))
       }
     }
+    const posedFireTicks = new Map(
+      viewmodels.filter((pose) => pose.role === "item").map((pose) => [pose.sampleTick, pose]),
+    )
     for (const event of snapshot.projectileEvents.filter((value) => value.type === "fire")) {
+      const launcherPose = event.launcherPose
+      const firePose = posedFireTicks.get(event.tick)
+      if (!launcherPose || !firePose || !firePose.attachmentsWorld) {
+        throw new Error(`TF2 fire-tick launcher pose unavailable: ${event.tick}:${event.projectile}; source=${Number(!!launcherPose)}; posed=${Number(!!firePose)}; world=${Number(!!firePose?.attachmentsWorld)}; samples=${[...posedFireTicks.keys()].join(",")}`)
+      }
+      const transforms = new Map(firePose.attachments.map((attachment) => [
+        attachment.name.toLowerCase(),
+        transformAttachment(attachment.matrix, [0, 0, 0], [0, 0, 0, 1]),
+      ]))
+      this.#fireAttachmentTransforms.set(event.projectile, transforms)
       if (event.kind === 1 && event.ownerIdentity === 1) continue
       const attachment = event.kind === 1 ? "backblast" : "muzzle"
-      if (!this.#attachmentTransforms.get(event.launcherIdentity)?.has(attachment)) {
+      if (!transforms.has(attachment)) {
         this.#blockers.add(`TF2 viewmodel attachment transform unavailable: ${attachment}`)
       }
     }
@@ -2860,10 +2884,6 @@ export class Tf2Application {
         if (event.type === "fire") {this.#fireEvents += 1;this.#fireTickHistory.push(`${event.kind}:${event.tick}:${event.position.join(",")}`);if(this.#fireTickHistory.length>128)this.#fireTickHistory.shift()}
         if (event.type === "explode") this.#explosionEvents += 1
       }
-      if (this.#viewmodelClass !== undefined && this.#viewmodelClass !== snapshot.class) {
-        this.#viewmodels = createViewmodelPresenter(this.#artifacts)
-      }
-      this.#viewmodelClass = snapshot.class
       this.#recordLockerAnimations(snapshot)
       for (const p of snapshot.projectiles) {
         const add = (identity: number, next: ReadonlySet<string>) =>
@@ -2883,9 +2903,33 @@ export class Tf2Application {
       const presentedEye=this.#predictedEye.sample(publication.interpolation)
       const camera=presentedEye?Object.freeze({...authoritativeCamera,position:presentedEye}):authoritativeCamera
       if(!ownsGeneration())return
-      const viewport=this.#viewport(),viewmodel=this.#viewmodels.map(snapshot,{aspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),farPlane:camera.far})
+      const viewport=this.#viewport(),view={aspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),farPlane:camera.far}
+      const historicalViewmodels: ModelPoseRequest[] = []
+      const mapViewmodel = (value: Snapshot) => {
+        if (this.#viewmodelClass !== undefined && this.#viewmodelClass !== value.class) {
+          this.#viewmodels = createViewmodelPresenter(this.#artifacts!)
+        }
+        this.#viewmodelClass = value.class
+        return this.#viewmodels!.map(value, view)
+      }
+      for (const batch of publication.eventBatches) {
+        if (batch.snapshot.tick >= snapshot.tick || !batch.snapshot.projectileEvents.some((event) => event.type === "fire")) continue
+        const fire = batch.snapshot.projectileEvents.find((event) => event.type === "fire")!
+        if (!fire.launcherPose) throw new Error(`TF2 fire-tick launcher pose unavailable: ${fire.tick}:${fire.projectile}`)
+        const historical = mapViewmodel(batch.snapshot)
+        historicalViewmodels.push(Object.freeze({
+          ...historical.request,
+          sampleTick: fire.tick,
+          attachmentsOnly: true,
+          fireView: fire.launcherPose,
+        }))
+      }
+      const viewmodel=mapViewmodel(snapshot)
+      const currentFire=publication.eventBatches.at(-1)?.snapshot.projectileEvents.find((event)=>event.type==="fire")
+      if(currentFire&&!currentFire.launcherPose)throw new Error(`TF2 fire-tick launcher pose unavailable: ${currentFire.tick}:${currentFire.projectile}`)
+      const currentViewmodelRequest=Object.freeze({...viewmodel.request,sampleTick:currentFire?.tick??snapshot.tick,...(currentFire?{fireView:currentFire.launcherPose!}:{})})
       const lockerRequests=[...this.#lockerAnimations].flatMap(([identity,state])=>{const occurrence=this.#artifacts!.modelOccurrences.find(value=>value.entity===identity),artifact=occurrence&&this.#artifacts!.models.get(occurrence.model);if(!occurrence||!artifact){this.#blockers.add(`TF2 regenerate model presentation unavailable: ${identity}`);return []}const closed=snapshot.tick>=state.closeTick,animation=closed?state.closeAnimation:state.openAnimation,start=closed?state.closeTick:state.openTick,elapsed=Math.max(0,Number(snapshot.tick-start)*0.015),previousTick=snapshot.tick>BigInt(publication.selectedTicks)?snapshot.tick-BigInt(publication.selectedTicks):0n,previousElapsed=Math.max(0,Number(previousTick-start)*0.015);return [Object.freeze({identity,model:occurrence.model,activity:animation,previousElapsedSeconds:Math.min(previousElapsed,elapsed),elapsedSeconds:elapsed,currentTimeSeconds:Number(snapshot.tick)*0.015,frameTimeSeconds:publication.selectedTicks*0.015,planarSpeed:0,screenAspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),worldFarPlane:camera.far,skin:occurrence.skin,lod:0,bodygroups:Object.freeze([]),packedBody:state.body})]})
-      const modelStart=performance.now();this.#wasmCalls.models++;const modelRequest=client.models(generation, encodeModelPoseBatch([viewmodel.request,...lockerRequests]));this.#wasmCalls.visibility++;const visibilityRequest=client.visibility(generation,{
+      const modelStart=performance.now();this.#wasmCalls.models++;const modelRequest=client.models(generation, encodeModelPoseBatch([...historicalViewmodels,currentViewmodelRequest,...lockerRequests]));this.#wasmCalls.visibility++;const visibilityRequest=client.visibility(generation,{
         position:camera.position,
         yawDegrees:camera.yawDegrees,
         pitchDegrees:camera.pitchDegrees,
@@ -2898,11 +2942,12 @@ export class Tf2Application {
       if(!ownsGeneration())return
       const modelPoses=decodeModelPoseOutput(modelOutput)
       const modelMilliseconds=performance.now()-modelStart
-      const viewmodelPoses = modelPoses.filter((pose) => pose.identity === viewmodel.item.identity)
+      const timelineViewmodelPoses = modelPoses.filter((pose) => pose.identity === viewmodel.item.identity)
+      const viewmodelPoses = timelineViewmodelPoses.filter((pose) => !pose.attachmentsOnly && pose.sampleTick === currentViewmodelRequest.sampleTick)
       const lockerPoses=modelPoses.filter(pose=>this.#lockerAnimations.has(pose.identity))
       if(viewmodelPoses.length!==2||viewmodelPoses[0]?.role!=="item"||viewmodelPoses[1]?.role!=="hand")throw new Error("Viewmodel composition output differs");const viewmodelPose=viewmodelPoses[1]!
       this.#viewmodelActivities.add(viewmodelPose.activity)
-      this.#updateAttachmentTransforms(snapshot, viewmodelPoses, camera)
+      this.#updateAttachmentTransforms(snapshot, timelineViewmodelPoses, camera)
       let presentation:ReturnType<ProjectileMapper["map"]>
       const projectileStart=performance.now()
       if(!ownsGeneration())return
@@ -3335,6 +3380,7 @@ export class Tf2Application {
     this.#viewmodelClass = undefined
     this.#attachments.clear()
     this.#attachmentTransforms.clear()
+    this.#fireAttachmentTransforms.clear()
     if (document.pointerLockElement === this.#canvas) {
       try { await document.exitPointerLock() } catch {}
     }

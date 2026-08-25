@@ -598,6 +598,49 @@ pub struct ViewModelAttachmentFormatRequest {
     pub inverse: bool,
 }
 
+pub fn position_viewmodel_attachment(
+    attachment: Matrix3x4,
+    view_origin: Vector3,
+    view_orientation: [Float32; 4],
+    viewmodel_transform: ViewModelTransform,
+    world_horizontal_fov: Float32,
+    viewmodel_horizontal_fov: Float32,
+) -> Result<Matrix3x4, PresentationError> {
+    let mut magnitude = 0.0;
+    for component in view_orientation {
+        let value = finite(component)?;
+        magnitude += value * value;
+    }
+    if (magnitude - 1.0).abs() > 1.0e-4 {
+        return Err(invalid_viewmodel_state());
+    }
+    let camera = quaternion_matrix(view_orientation, view_origin);
+    let origin = vector_values(viewmodel_transform.origin)?;
+    let angles = vector_values(viewmodel_transform.angles)?;
+    let (forward, right, up) = angle_vectors(angles);
+    let local = Matrix3x4(
+        [
+            forward[0], -right[0], up[0], origin[0], forward[1], -right[1], up[1], origin[1],
+            forward[2], -right[2], up[2], origin[2],
+        ]
+        .map(float),
+    );
+    let positioned = multiply_matrix(&multiply_matrix(&camera, &local), &attachment);
+    let matrix = camera.0.map(|value| f32::from_bits(value.0));
+    format_viewmodel_attachment(
+        positioned,
+        ViewModelAttachmentFormatRequest {
+            view_origin,
+            view_right: vector([-matrix[1], -matrix[5], -matrix[9]]),
+            view_up: vector([matrix[2], matrix[6], matrix[10]]),
+            view_forward: vector([matrix[0], matrix[4], matrix[8]]),
+            world_horizontal_fov,
+            viewmodel_horizontal_fov,
+            inverse: false,
+        },
+    )
+}
+
 pub fn format_viewmodel_attachment(
     mut transform: Matrix3x4,
     request: ViewModelAttachmentFormatRequest,
@@ -1224,6 +1267,20 @@ mod tests {
         assert_eq!(f32::from_bits(bob.last_speed.0), 32.0);
         assert!((f32::from_bits(bob.bob_time.0) - 0.01).abs() < 1.0e-8);
         assert_ne!(apply_viewmodel_bob(offset, bob).unwrap(), offset);
+
+        let positioned = position_viewmodel_attachment(
+            identity([1.0, 2.0, 3.0]),
+            vector([10.0, 20.0, 30.0]),
+            [float(0.0), float(0.0), float(0.0), float(1.0)],
+            ViewModelTransform {
+                origin: vector([4.0, 0.0, 0.0]),
+                angles: vector([0.0; 3]),
+            },
+            float(90.0),
+            float(90.0),
+        )
+        .unwrap();
+        assert_eq!(values(matrix_translation(&positioned)), [15.0, 22.0, 33.0]);
 
         let formatted = format_viewmodel_attachment(
             identity([1.0, 2.0, 3.0]),

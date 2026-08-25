@@ -10,11 +10,11 @@ import {
 import type { WorkerRequest, WorkerResponse } from "../src/protocol"
 
 function snapshot(): ArrayBuffer {
-  const bytes = new ArrayBuffer(969)
+  const bytes = new ArrayBuffer(997)
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x53, 0x53, 0x4e])
-  view.setUint32(4, 8, true)
+  view.setUint32(4, 9, true)
   view.setBigUint64(8, 7n, true)
   data.set([1, 1, 1, 0], 16)
   view.setFloat32(20, 200, true)
@@ -65,15 +65,15 @@ function snapshot(): ArrayBuffer {
   })
   at += 84
 
-  data.set([1, 1, 1, 0], at)
+  data.set([1, 1, 1, 2], at)
   view.setUint32(at + 4, 9, true)
   view.setUint32(at + 8, 1, true)
   view.setUint32(at + 12, 1, true)
   view.setBigUint64(at + 16, 7n, true)
-  ;[10, 11, 12, 0, 0, 0, 1, 0, 0, 0].forEach((value, index) => {
+  ;[10, 11, 12, 0, 0, 0, 1, 0, 0, 0, 1, 2, 71, 0, 0, 0, 1].forEach((value, index) => {
     view.setFloat32(at + 24 + index * 4, value, true)
   })
-  at += 64
+  at += 92
 
   view.setUint32(at, 67, true)
   view.setUint32(at + 4, 26, true)
@@ -220,7 +220,10 @@ describe("TF2 playable runtime Stage 2 contract", () => {
       contactNormal: null,
       ageSeconds: expect.closeTo(0.1),
     })
-    expect(value.projectileEvents[0]?.type).toBe("fire")
+    expect(value.projectileEvents[0]).toMatchObject({
+      type: "fire",
+      launcherPose: { eyePosition: [1, 2, 71], viewOrientation: [0, 0, 0, 1] },
+    })
     expect(value.projectileTimeline).toEqual([{
       tick: 7n,
       projectiles: value.projectiles,
