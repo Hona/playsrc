@@ -605,6 +605,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "playsrc-nav"
+version = "0.1.0"
+dependencies = [
+ "playsrc-vpk",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "playsrc-particle"
 version = "0.1.0"
 dependencies = [
@@ -660,6 +668,7 @@ dependencies = [
  "playsrc-keyvalues",
  "playsrc-material",
  "playsrc-movement",
+ "playsrc-nav",
  "playsrc-studio-model",
  "playsrc-vmt",
 ]
@@ -676,6 +685,7 @@ dependencies = [
  "playsrc-map",
  "playsrc-material",
  "playsrc-movement",
+ "playsrc-nav",
  "playsrc-particle",
  "playsrc-phy",
  "playsrc-simulation",

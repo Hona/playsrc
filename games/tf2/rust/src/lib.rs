@@ -1,6 +1,7 @@
 pub mod attribute;
 pub mod audio;
 pub mod ballistics;
+pub mod bot;
 pub mod class;
 pub mod combat;
 pub mod condition;
@@ -238,6 +239,7 @@ pub struct Command {
     pub select_weapon: Option<Weapon>,
     pub mode_request: Option<Mode>,
     pub activate_entity: Option<u32>,
+    pub bot_request: Option<bot::Request>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -608,6 +610,7 @@ pub struct Snapshot {
     pub entity_events: Vec<EntityEvent>,
     pub jump: Option<jump::TickOutput>,
     pub events: Vec<Event>,
+    pub bots: Vec<bot::Snapshot>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -685,6 +688,7 @@ pub struct Session<W: GameplayWorld + Clone> {
     hurt_applied: std::collections::BTreeSet<u32>,
     respawn_touch_count: u32,
     jump: Option<jump::Session>,
+    bots: Option<bot::BotWorld>,
 }
 
 #[derive(Debug)]
@@ -699,6 +703,7 @@ pub enum Error {
     InvalidStickyLaunchRandom,
     InvalidProjectilePhysics,
     Random(RandomError),
+    Bot(bot::Error),
 }
 
 impl From<MoveError> for Error {
@@ -823,6 +828,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             hurt_applied: std::collections::BTreeSet::new(),
             respawn_touch_count: 0,
             jump: None,
+            bots: None,
         }
     }
 
@@ -1078,6 +1084,27 @@ impl<W: GameplayWorld + Clone> Session<W> {
         Ok(phase)
     }
 
+    pub fn configure_navigation(
+        &mut self,
+        mesh: playsrc_nav::Mesh,
+        graph: &playsrc_entity::Graph,
+    ) -> Result<(), Error> {
+        self.bots = Some(
+            bot::BotWorld::new(
+                mesh,
+                graph,
+                &self.collision,
+                self.movement_configuration.tick_interval,
+            )
+            .map_err(Error::Bot)?,
+        );
+        Ok(())
+    }
+
+    pub fn bot_world(&self) -> Option<&bot::BotWorld> {
+        self.bots.as_ref()
+    }
+
     pub fn configure_jump(&mut self, definition: jump::CourseDefinition) -> Result<(), Error> {
         if !matches!(self.class, PlayerClass::Soldier | PlayerClass::Demoman) {
             return Err(Error::UnsupportedJumpClass(self.class));
@@ -1182,6 +1209,14 @@ impl<W: GameplayWorld + Clone> Session<W> {
         )?;
         self.emit_due_regenerate_model_closes();
         self.apply_selection(command, &mut events, &mut projectile_events);
+        if let Some(request) = command.bot_request {
+            let bots = self
+                .bots
+                .as_mut()
+                .ok_or(Error::Bot(bot::Error::MissingScenario))?;
+            bots.apply(request, self.team, self.class, &mut self.authority_random)
+                .map_err(Error::Bot)?;
+        }
         let mut movement_policy = MovementPolicy {
             class: self.class,
             modifiers: self.movement_modifiers,
@@ -1241,6 +1276,17 @@ impl<W: GameplayWorld + Clone> Session<W> {
             self.air_dashes = self.air_dashes.saturating_add(1);
         }
         self.last_movement = Some(movement_result);
+        if let Some(bots) = &mut self.bots {
+            bots.advance(
+                &self.collision,
+                self.tick,
+                self.team,
+                self.lifecycle == PlayerLifecycle::Active,
+                self.movement.position,
+                &mut self.authority_random,
+            )
+            .map_err(Error::Bot)?;
+        }
 
         let mut teleported = false;
         let phase = self.map.contact_phase(
@@ -1474,6 +1520,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
             entity_events: map_phase.events,
             jump: jump_output,
             events,
+            bots: self
+                .bots
+                .as_ref()
+                .map_or_else(Vec::new, bot::BotWorld::snapshots),
         })
     }
 

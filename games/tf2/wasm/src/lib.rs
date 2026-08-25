@@ -949,6 +949,18 @@ unsafe fn compile_map(
         )
         .map_err(|_| 5_u32)?;
         let mut session = playsrc_tf2::Session::new(gameplay_world.clone(), spawn.position, map);
+        if let Some(bytes) = resources.get("maps/pl_upward.nav") {
+            let mesh = playsrc_nav::parse(
+                bytes,
+                playsrc_nav::Profile::TeamFortress2,
+                Some(u32::try_from(bsp_bytes.len()).map_err(|_| 11_u32)?),
+                playsrc_nav::Limits::default(),
+            )
+            .map_err(|_| 11_u32)?;
+            session
+                .configure_navigation(mesh, &runtime.entities)
+                .map_err(|_| 11_u32)?;
+        }
         session.set_movement_modifiers(playsrc_tf2::MovementModifiers {
             noclip_allowed: true,
             ..playsrc_tf2::MovementModifiers::default()
@@ -3360,6 +3372,7 @@ fn gameplay_error_code(error: &playsrc_tf2::Error) -> u32 {
         playsrc_tf2::Error::InvalidProjectilePhysics => 8,
         playsrc_tf2::Error::Random(_) => 9,
         playsrc_tf2::Error::UnsupportedJumpClass(_) => 10,
+        playsrc_tf2::Error::Bot(_) => 11,
     }
 }
 
@@ -3626,7 +3639,7 @@ fn encode_snapshot(
     encode_movement_tick(&mut movement_tick_bytes, movement_tick, MAX)?;
     let mut out = Vec::new();
     extend(&mut out, b"PSSN", MAX)?;
-    u32_field(&mut out, 11, MAX)?;
+    u32_field(&mut out, 12, MAX)?;
     u64_field(&mut out, snapshot.tick, MAX)?;
     extend(
         &mut out,
@@ -3993,6 +4006,34 @@ fn encode_snapshot(
     extend(&mut out, &jump, MAX)?;
     extend(&mut out, &movement_tick_bytes, MAX)?;
     extend(&mut out, &entity_presentation, MAX)?;
+    u32_field(&mut out, u32::try_from(snapshot.bots.len()).ok()?, MAX)?;
+    for bot in &snapshot.bots {
+        u32_field(&mut out, bot.identity, MAX)?;
+        extend(
+            &mut out,
+            &[
+                class_code(bot.class),
+                team_code(bot.team),
+                match bot.lifecycle {
+                    playsrc_tf2::PlayerLifecycle::Active => 1,
+                    playsrc_tf2::PlayerLifecycle::Dying => 2,
+                },
+                bot.difficulty as u8,
+                bot.objective as u8,
+                0,
+                0,
+                0,
+            ],
+            MAX,
+        )?;
+        i32_field(&mut out, bot.health, MAX)?;
+        i32_field(&mut out, bot.maximum_health, MAX)?;
+        u32_field(&mut out, bot.target.unwrap_or(u32::MAX), MAX)?;
+        u32_field(&mut out, bot.area.unwrap_or(u32::MAX), MAX)?;
+        u32_field(&mut out, bot.remaining_path_areas, MAX)?;
+        f32_field(&mut out, bot.yaw_degrees, MAX)?;
+        floats(&mut out, bot.position.into_iter().chain(bot.velocity), MAX)?;
+    }
     Some(out)
 }
 
@@ -10957,6 +10998,7 @@ mod tests {
                 position: [13., 14., 15.],
                 yaw_degrees: Some(90.),
             }],
+            bots: Vec::new(),
         };
         let producer = playsrc_tf2::ProducerSnapshot {
             tick: 9,
@@ -11035,8 +11077,8 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(&encoded[..8], b"PSSN\x0b\0\0\0");
-        assert_eq!(encoded.len(), 908);
+        assert_eq!(&encoded[..8], b"PSSN\x0c\0\0\0");
+        assert_eq!(encoded.len(), 912);
         assert_eq!(
             u32::from_le_bytes(encoded[160..164].try_into().unwrap()),
             playsrc_tf2::FL_CLIENT | playsrc_tf2::FL_INWATER
@@ -11062,6 +11104,8 @@ mod tests {
         bytes[32..36].copy_from_slice(&0x0202_0304_u32.to_le_bytes());
         bytes[36..40].copy_from_slice(&77_u32.to_le_bytes());
         bytes[40..42].copy_from_slice(&1_u16.to_le_bytes());
+        bytes[42..44]
+            .copy_from_slice(&(1_u16 | (2 << 2) | (1 << 7) | (2 << 9) | (1 << 11)).to_le_bytes());
         let byte_length = bytes.len() as u32;
         bytes[44..48].copy_from_slice(&byte_length.to_le_bytes());
         let continued = continuation_command(&bytes).unwrap();
@@ -11080,6 +11124,14 @@ mod tests {
             u32::MAX
         );
         assert_eq!(u16::from_le_bytes(continued[40..42].try_into().unwrap()), 0);
+        assert_eq!(u16::from_le_bytes(continued[42..44].try_into().unwrap()), 0);
+        assert!(
+            gameplay_protocol::decode(&continued)
+                .unwrap()
+                .command
+                .bot_request
+                .is_none()
+        );
         assert_eq!(
             u32::from_le_bytes(continued[44..48].try_into().unwrap()),
             48

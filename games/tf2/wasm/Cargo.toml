@@ -18,6 +18,7 @@ playsrc-bsp = { path = "../../../packages/formats/bsp/rust" }
 playsrc-map = { path = "../../../packages/world/map/rust" }
 playsrc-tf2 = { path = "../rust" }
 playsrc-movement = { path = "../../../packages/runtime/movement/rust" }
+playsrc-nav = { path = "../../../packages/formats/nav/rust" }
 playsrc-collision = { path = "../../../packages/world/collision/rust" }
 playsrc-entity = { path = "../../../packages/world/entity/rust" }
 playsrc-keyvalues = { path = "../../../packages/formats/keyvalues/rust" }

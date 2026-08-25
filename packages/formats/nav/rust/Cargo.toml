@@ -1,0 +1,12 @@
+[package]
+name = "playsrc-nav"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dev-dependencies]
+playsrc-vpk = { path = "../../vpk/rust" }
+sha2 = "0.10.9"

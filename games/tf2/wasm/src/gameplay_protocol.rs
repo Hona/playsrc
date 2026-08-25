@@ -16,8 +16,9 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
         return None;
     }
     let physics_count = usize::from(u16::from_le_bytes(bytes[40..42].try_into().ok()?));
+    let packed_bot = u16::from_le_bytes(bytes[42..44].try_into().ok()?);
     if physics_count > MAX_RESULTS
-        || u16::from_le_bytes(bytes[42..44].try_into().ok()?) != 0
+        || packed_bot & 0x8000 != 0
         || u32::from_le_bytes(bytes[44..48].try_into().ok()?) as usize != bytes.len()
     {
         return None;
@@ -65,6 +66,42 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
         _ => return None,
     };
     let target = u32::from_le_bytes(bytes[36..40].try_into().ok()?);
+    let bot_request = if packed_bot == 0 {
+        None
+    } else {
+        let operation_code = packed_bot & 3;
+        let count = ((packed_bot >> 2) & 31) as u8;
+        let class = match ((packed_bot >> 7) & 15) as u8 {
+            0 => None,
+            value => Some(playsrc_tf2::PlayerClass::try_from(value).ok()?),
+        };
+        let team = match (packed_bot >> 11) & 3 {
+            0 => None,
+            2 => Some(playsrc_tf2::PlayerTeam::Red),
+            3 => Some(playsrc_tf2::PlayerTeam::Blue),
+            _ => return None,
+        };
+        let difficulty = match (packed_bot >> 13) & 3 {
+            0 => playsrc_tf2::bot::Difficulty::Easy,
+            1 => playsrc_tf2::bot::Difficulty::Normal,
+            2 => playsrc_tf2::bot::Difficulty::Hard,
+            3 => playsrc_tf2::bot::Difficulty::Expert,
+            _ => unreachable!(),
+        };
+        let operation = match operation_code {
+            1 if count != 0 => playsrc_tf2::bot::Operation::Add,
+            2 if count == 0 && team.is_none() => playsrc_tf2::bot::Operation::KickAll,
+            3 if count == 0 => playsrc_tf2::bot::Operation::KickTeam(team?),
+            _ => return None,
+        };
+        Some(playsrc_tf2::bot::Request {
+            operation,
+            count,
+            class,
+            team,
+            difficulty,
+        })
+    };
     let command = playsrc_tf2::Command {
         movement: playsrc_movement::Command {
             forward: f(8)?,
@@ -87,6 +124,7 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
         select_weapon,
         mode_request,
         activate_entity: (target != u32::MAX).then_some(target),
+        bot_request,
     };
     if [
         command.movement.forward,

@@ -2247,6 +2247,14 @@ fn main() -> Result<(), String> {
     let canonical = playsrc_map::compile(&bsp, playsrc_map::LightingProfile::Ldr)
         .map_err(|error| format!("map-compile:{error:?}"))?;
     let mut resolver = Resolver::new(&content);
+    if target == "pl_upward" {
+        resolver.required_pinned(
+            "maps/pl_upward.nav",
+            "tf2-bot-navigation",
+            2_471_913,
+            "13de0c3e2666d2194474d855683cbabb807eead1c24587fd093a5c70a04cd0b4",
+        )?;
+    }
     for (path, bytes, sha256, consumer) in [
         (
             "materials/vgui/stamp_background_map.vmt",

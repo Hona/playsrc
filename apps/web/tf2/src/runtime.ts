@@ -50,7 +50,7 @@ import {
   type Tf2LoadingPresentation,
   type Tf2LoadingVguiRuntime,
 } from "@playsrc/game-tf2-browser/loading-presentation"
-import { encodeCommand, mapDerivedKey, type Snapshot, type Tf2Class, type Tf2Team, type Tf2Weapon } from "@playsrc/game-tf2-browser/codec"
+import { encodeCommand, mapDerivedKey, type BotRequest, type Snapshot, type Tf2Class, type Tf2Team, type Tf2Weapon } from "@playsrc/game-tf2-browser/codec"
 import { TF2_CLASS_NAMES, tf2ClassFromName, tf2ClassPresentation } from "@playsrc/game-tf2-browser/class"
 import { parsePresentationArtifacts, type PresentationArtifacts } from "@playsrc/game-tf2-browser/artifacts"
 import {
@@ -111,6 +111,7 @@ import {
 const MAX_EXTERNAL_BYTES = 536_870_912
 const SIMULATION_SAMPLE_INTERVAL_SECONDS = 0.015
 const MAX_REQUIRED_PARTICLE_DISPLAY_FRAMES = 256
+const BOT_MODEL_IDENTITY_BASE = 0x6000_0000
 const PARTICLE_SYSTEMS = new Set([
   "rockettrail",
   "rocketbackblast",
@@ -222,6 +223,8 @@ export type ApplicationView = Readonly<{
   displayViewRevision?: number
   displayPreparedRevision?: number
   lockerProbe?: string
+  botCount?: number
+  botProbe?: string
   unsupportedState?: "StickyPhysicsSolverUnavailable"
   startupState?: Tf2StartupState["kind"]
   loadingProgress?: number
@@ -371,6 +374,8 @@ export class Tf2Application {
   #selectTeam: Tf2Team | undefined
   #selectWeapon: Tf2Weapon | undefined
   #modeRequest: 0 | 1 | undefined
+  #botRequest: BotRequest | undefined
+  #botDifficulty: 0 | 1 | 2 | 3 = 1
   #coverageSamples:readonly CoverageSample[]=Object.freeze([])
   #developer = 1
   #showFps: ClientDiagnosticMode = 0
@@ -1698,6 +1703,24 @@ export class Tf2Application {
         }),
         Object.freeze({
           kind: "command" as const,
+          name: "tf_bot_add",
+          disposition: "visible" as const,
+          acceptsSuggestions: true,
+        }),
+        Object.freeze({
+          kind: "command" as const,
+          name: "tf_bot_kick",
+          disposition: "visible" as const,
+          acceptsSuggestions: true,
+        }),
+        Object.freeze({
+          kind: "convar" as const,
+          name: "tf_bot_difficulty",
+          disposition: "visible" as const,
+          displayValue: String(this.#botDifficulty),
+        }),
+        Object.freeze({
+          kind: "command" as const,
           name: "noclip",
           disposition: "visible" as const,
           acceptsSuggestions: false,
@@ -1818,7 +1841,11 @@ export class Tf2Application {
               ? ["jointeam red", "jointeam blue"]
               : request.commandName.toLowerCase() === "joinclass"
                 ? ["scout", "soldier", "pyro", "demoman", "heavyweapons", "engineer", "medic", "sniper", "spy", "random"].map((name) => `joinclass ${name}`)
-                : []
+                : request.commandName.toLowerCase() === "tf_bot_add"
+                  ? TF2_CLASS_NAMES.flatMap((name) => [`tf_bot_add red ${name}`, `tf_bot_add blue ${name}`])
+                  : request.commandName.toLowerCase() === "tf_bot_kick"
+                    ? ["tf_bot_kick all", "tf_bot_kick red", "tf_bot_kick blue"]
+                    : []
       const suggestions: ConsoleCompletionSuggestion[] = candidates
         .filter((value) => value.startsWith(request.partialText.toLowerCase()))
         .slice(0, request.maxItems)
@@ -1966,6 +1993,74 @@ export class Tf2Application {
       }
       this.#classSelectionRequest({ kind: "join-class", identity: selected.identity, sourceCommand: `joinclass ${selected.name}` })
       this.#classSelection?.dispatch({ kind: "hide" })
+      return
+    }
+    if (command === "tf_bot_difficulty" && tokens.length <= 1) {
+      if (tokens.length === 1 && !["0", "1", "2", "3"].includes(tokens[0]!)) {
+        this.#output("tf_bot_difficulty accepts exactly 0, 1, 2, or 3")
+        return
+      }
+      if (tokens[0]) {
+        this.#botDifficulty = Number(tokens[0]) as 0 | 1 | 2 | 3
+        this.#console?.apply({ kind: "replace-catalog", catalog: this.#catalog() })
+      }
+      this.#output(`"tf_bot_difficulty" = "${this.#botDifficulty}" ( def. "1" )`)
+      return
+    }
+    if (command === "tf_bot_add") {
+      if (!this.#snapshot || this.#mapIdentity !== "pl_upward") {
+        this.#output("tf_bot_add rejected: the active map has no authored TF2 navigation mesh")
+        return
+      }
+      let count = 1
+      let identity: Tf2Class | undefined
+      let team: Tf2Team | undefined
+      let difficulty = this.#botDifficulty
+      for (const raw of tokens) {
+        const token = raw.toLowerCase()
+        const selectedClass = tf2ClassFromName(token)
+        if (selectedClass !== undefined) identity = selectedClass
+        else if (token === "red") team = 2
+        else if (token === "blue") team = 3
+        else if (["easy", "normal", "hard", "expert"].includes(token)) {
+          difficulty = ["easy", "normal", "hard", "expert"].indexOf(token) as 0 | 1 | 2 | 3
+        } else if (/^[1-9][0-9]*$/u.test(token)) {
+          count = Number(token)
+        } else if (token !== "noquota") {
+          this.#output(`Invalid argument '${raw}'`)
+          return
+        }
+      }
+      if (!Number.isSafeInteger(count) || count > 31 || count + this.#snapshot.bots.length > 31) {
+        this.#output("tf_bot_add rejected: the Source player limit would be exceeded")
+        return
+      }
+      const selectedClass = identity === undefined ? undefined : tf2ClassPresentation(identity)
+      if (selectedClass && !this.#artifacts?.models.has(selectedClass.model)) {
+        this.#output(`tf_bot_add rejected: authored player model is unavailable: ${selectedClass.model}`)
+        return
+      }
+      if (this.#botRequest) {
+        this.#output("tf_bot_add rejected: an earlier bot command is pending")
+        return
+      }
+      this.#botRequest = Object.freeze({ action: "add", count, ...(identity ? { class: identity } : {}), ...(team ? { team } : {}), difficulty })
+      this.#output(`Queued ${count} ${team === 2 ? "RED" : team === 3 ? "BLU" : "auto-team"} ${selectedClass?.displayName ?? "preset-roster"} bot${count === 1 ? "" : "s"}`)
+      return
+    }
+    if (command === "tf_bot_kick" && tokens.length === 1) {
+      if (!this.#snapshot || this.#mapIdentity !== "pl_upward") {
+        this.#output("tf_bot_kick rejected: the active map has no authored TF2 navigation mesh")
+        return
+      }
+      const token = tokens[0]!.toLowerCase()
+      if (token === "all") this.#botRequest = Object.freeze({ action: "kick-all" })
+      else if (token === "red" || token === "blue") this.#botRequest = Object.freeze({ action: "kick-team", team: token === "red" ? 2 : 3 })
+      else {
+        this.#output("Usage: tf_bot_kick all|red|blue")
+        return
+      }
+      this.#output(`Queued bot removal: ${token}`)
       return
     }
     if (command === "class" && tokens.length === 1) {
@@ -2726,11 +2821,13 @@ export class Tf2Application {
       selectTeam: this.#selectTeam,
       selectWeapon: this.#selectWeapon,
       modeRequest: this.#modeRequest,
+      bot: this.#botRequest,
     })
     this.#selectClass = undefined
     this.#selectTeam = undefined
     this.#selectWeapon = undefined
     this.#modeRequest = undefined
+    this.#botRequest = undefined
     this.#jumpPressed = false
     this.#firePressed = false
     this.#detonatePressed = false
@@ -2909,6 +3006,7 @@ export class Tf2Application {
     if(profile){
       if(skyDisposition==="controller-absent")profile.controllerFreeSkyViews=Number(profile.controllerFreeSkyViews??0)+1
       profile.displacementVisibility={surfaces:[...visibility.surfaces],drawSurfaces:[...visibility.drawSurfaces],outsideWorld:visibility.outsideWorld,eyeLeaf:visibility.eyeLeaf,leaves:visibility.leaves,areas:visibility.areas};profile.displacementCamera=camera
+      profile.bots=prepared.snapshot.bots.map(bot=>({...bot,tick:prepared.snapshot.tick.toString()}))
     }
     const geometryEvidenceRevision=profile?.geometryEvidenceRevision
     if(profile&&Number.isSafeInteger(geometryEvidenceRevision)&&geometryEvidenceRevision!==((profile.geometryEvidence as {revision?:unknown}|undefined)?.revision)&&this.#view.phase==="Ready"){
@@ -2953,7 +3051,7 @@ export class Tf2Application {
         waterNormalFrame:visibility.water.visibleWater?.evaluated.normalFrame,
         worldMaterialFrames:visibility.worldMaterials.map(material=>`${material.identity}:${material.textures.find(texture=>texture.role===7)?.frame??"none"}`).join("|"),
         performanceProbe:`${this.#phaseTimings.map(value=>value.toFixed(3)).join(",")}:${this.#wasmCalls.observe},${this.#wasmCalls.models},${this.#wasmCalls.visibility},${this.#wasmCalls.particles}:${this.#maximumScheduledSamples},${this.#maximumPublicationTicks}:${prepared.particleOutputBytes},${prepared.publication.snapshotBytes.byteLength}`,
-        performanceDetailProbe:JSON.stringify({tick:prepared.snapshot.tick.toString(),selectedTicks:prepared.publication.selectedTicks,models:prepared.modelMilliseconds,projectiles:prepared.projectileMilliseconds,visibility:visibilityMilliseconds,particleWorker:prepared.particleMilliseconds,particleDecode:prepared.particleDecodeMilliseconds,audio:prepared.audioMilliseconds,particleItems:rendered.timings.particleItems,particleBatches:rendered.timings.particleBatches,dynamicItems:rendered.timings.dynamicItemsMilliseconds,world:rendered.timings.worldMilliseconds,viewmodel:rendered.timings.viewModelMilliseconds,render:renderMilliseconds,total:totalMilliseconds}),
+        performanceDetailProbe:JSON.stringify({tick:prepared.snapshot.tick.toString(),selectedTicks:prepared.publication.selectedTicks,bots:prepared.snapshot.bots.length,models:prepared.modelMilliseconds,projectiles:prepared.projectileMilliseconds,visibility:visibilityMilliseconds,particleWorker:prepared.particleMilliseconds,particleDecode:prepared.particleDecodeMilliseconds,audio:prepared.audioMilliseconds,particleItems:rendered.timings.particleItems,particleBatches:rendered.timings.particleBatches,dynamicItems:rendered.timings.dynamicItemsMilliseconds,world:rendered.timings.worldMilliseconds,viewmodel:rendered.timings.viewModelMilliseconds,render:renderMilliseconds,total:totalMilliseconds}),
         displayFrame:this.#displayFrame,
         displayViewRevision:viewRevision,
         displayPreparedRevision:prepared.revision,
@@ -3137,7 +3235,18 @@ export class Tf2Application {
       if(currentFire&&(!currentFire.launcherPose||!viewmodel))throw new Error(`TF2 fire-tick launcher pose unavailable: ${currentFire.tick}:${currentFire.projectile}`)
       const currentViewmodelRequest=viewmodel===undefined?undefined:Object.freeze({...viewmodel.request,sampleTick:currentFire?.tick??snapshot.tick,...(currentFire?{fireView:currentFire.launcherPose!}:{})})
       const lockerRequests=[...this.#lockerAnimations].flatMap(([identity,state])=>{const occurrence=this.#artifacts!.modelOccurrences.find(value=>value.entity===identity),artifact=occurrence&&this.#artifacts!.models.get(occurrence.model);if(!occurrence||!artifact){this.#blockers.add(`TF2 regenerate model presentation unavailable: ${identity}`);return []}const closed=snapshot.tick>=state.closeTick,animation=closed?state.closeAnimation:state.openAnimation,start=closed?state.closeTick:state.openTick,elapsed=Math.max(0,Number(snapshot.tick-start)*0.015),previousTick=snapshot.tick>BigInt(publication.selectedTicks)?snapshot.tick-BigInt(publication.selectedTicks):0n,previousElapsed=Math.max(0,Number(previousTick-start)*0.015);return [Object.freeze({identity,model:occurrence.model,activity:animation,previousElapsedSeconds:Math.min(previousElapsed,elapsed),elapsedSeconds:elapsed,currentTimeSeconds:Number(snapshot.tick)*0.015,frameTimeSeconds:publication.selectedTicks*0.015,planarSpeed:0,screenAspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),worldFarPlane:camera.far,skin:occurrence.skin,lod:0,bodygroups:Object.freeze([]),packedBody:state.body})]})
-      const modelStart=performance.now(),modelRequests=[...historicalViewmodels,...(currentViewmodelRequest?[currentViewmodelRequest]:[]),...lockerRequests]
+      const botRequests=snapshot.bots.map(bot=>{
+        const model=tf2ClassPresentation(bot.class).model
+        const artifact=this.#artifacts!.models.get(model)
+        if(!artifact)throw new Error(`Authored TF2 bot player model unavailable: ${model}`)
+        const role=bot.class===8?"MELEE":bot.class===4?"SECONDARY":"PRIMARY"
+        const moving=Math.hypot(bot.velocity[0],bot.velocity[1])>1
+        const activity=`ACT_MP_${moving?"RUN":"STAND"}_${role}`
+        if(!artifact.sequences.some(sequence=>sequence.activity===activity))throw new Error(`Authored TF2 bot player activity unavailable: ${model}:${activity}`)
+        const elapsed=Number(snapshot.tick)*SIMULATION_SAMPLE_INTERVAL_SECONDS
+        return Object.freeze({identity:BOT_MODEL_IDENTITY_BASE+bot.identity,model,activity,previousElapsedSeconds:Math.max(0,elapsed-publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS),elapsedSeconds:elapsed,currentTimeSeconds:elapsed,frameTimeSeconds:publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS,planarSpeed:Math.hypot(bot.velocity[0],bot.velocity[1]),screenAspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),worldFarPlane:camera.far,skin:bot.team===2?0:1,lod:0,bodygroups:Object.freeze(artifact.bodygroupCounts.map(()=>0))})
+      })
+      const modelStart=performance.now(),modelRequests=[...historicalViewmodels,...(currentViewmodelRequest?[currentViewmodelRequest]:[]),...lockerRequests,...botRequests]
       const modelRequest=modelRequests.length===0?undefined:(this.#wasmCalls.models++,client.models(generation,encodeModelPoseBatch(modelRequests)))
       this.#wasmCalls.visibility++;const visibilityRequest=client.visibility(generation,{
         position:camera.position,
@@ -3156,6 +3265,8 @@ export class Tf2Application {
       const timelineViewmodelPoses = modelPoses.filter((pose) => viewmodelIdentities.has(pose.identity))
       const viewmodelPoses = currentViewmodelRequest===undefined?[]:timelineViewmodelPoses.filter((pose) => pose.identity===currentViewmodelRequest.identity&&!pose.attachmentsOnly&&pose.sampleTick===currentViewmodelRequest.sampleTick)
       const lockerPoses=modelPoses.filter(pose=>this.#lockerAnimations.has(pose.identity))
+      const botPoses=modelPoses.filter(pose=>pose.identity>=BOT_MODEL_IDENTITY_BASE&&pose.identity<BOT_MODEL_IDENTITY_BASE+0x10000)
+      if(botPoses.length!==snapshot.bots.length)throw new Error("TF2 bot player pose output differs from authoritative player state")
       if(viewmodel!==undefined&&(viewmodelPoses.length!==2||viewmodelPoses[0]?.role!=="item"||viewmodelPoses[1]?.role!=="hand"))throw new Error("Viewmodel composition output differs");const viewmodelPose=viewmodelPoses[1]
       if(viewmodelPose)this.#viewmodelActivities.add(viewmodelPose.activity)
       this.#updateAttachmentTransforms(snapshot, timelineViewmodelPoses, camera)
@@ -3184,6 +3295,7 @@ export class Tf2Application {
         models: Object.freeze([
           ...projectileModels(presentation.models),
           ...lockerPoses.map(pose=>{const occurrence=this.#artifacts!.modelOccurrences.find(value=>value.entity===pose.identity)!;return Object.freeze({identity:pose.identity,model:pose.model,position:occurrence.origin,angles:occurrence.angles,scale:1,skin:occurrence.skin,pose})}),
+          ...botPoses.map(pose=>{const bot=snapshot.bots.find(value=>BOT_MODEL_IDENTITY_BASE+value.identity===pose.identity);if(!bot)throw new Error("TF2 bot player pose identity is unavailable");return Object.freeze({identity:pose.identity,model:pose.model,position:bot.position,angles:Object.freeze([0,bot.yawDegrees,0]) as readonly[number,number,number],scale:1,skin:bot.team===2?0:1,pose})}),
           ...viewmodelPoses.map((pose, index) => Object.freeze({
             ...viewmodel!.item,
             identity: viewmodel!.item.identity + index,
@@ -3235,6 +3347,8 @@ export class Tf2Application {
         hudPresentationProbe: hudProbe && hud ? this.#hudPresentationObservation(hudProbe, hud) : "unavailable",
         fireEvents: this.#fireEvents,
         explosionEvents: this.#explosionEvents,
+        botCount: snapshot.bots.length,
+        botProbe: snapshot.bots.map(bot=>`${bot.identity}:${bot.team}:${bot.class}:${bot.objective}:${bot.area??"none"}:${bot.remainingPathAreas}:${bot.position.map(value=>value.toFixed(1)).join(",")}:${bot.target??"none"}`).join("|"),
         particleRenderItems: particleItems.length,
         movement: snapshot.movement,
         playerFlags: snapshot.playerFlags,

@@ -416,6 +416,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "playsrc-nav"
+version = "0.1.0"
+
+[[package]]
 name = "playsrc-phy"
 version = "0.1.0"
 
@@ -436,6 +440,7 @@ dependencies = [
  "playsrc-keyvalues",
  "playsrc-material",
  "playsrc-movement",
+ "playsrc-nav",
  "playsrc-studio-model",
  "playsrc-vmt",
 ]
