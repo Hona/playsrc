@@ -1634,10 +1634,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
                         PlayerClass::Demoman => jump::Class::Demoman,
                         _ => return Err(Error::UnsupportedJumpClass(self.class)),
                     },
-                    team: if self.team_selection.local_team() == PlayerTeam::Red {
-                        jump::Team::Red
-                    } else {
-                        jump::Team::Blue
+                    team: match self.team_selection.local_team() {
+                        PlayerTeam::Unassigned => jump::Team::Unassigned,
+                        PlayerTeam::Spectator => jump::Team::Spectator,
+                        PlayerTeam::Red => jump::Team::Red,
+                        PlayerTeam::Blue => jump::Team::Blue,
                     },
                     alive: self.lifecycle == PlayerLifecycle::Active,
                     active: self.lifecycle == PlayerLifecycle::Active,
