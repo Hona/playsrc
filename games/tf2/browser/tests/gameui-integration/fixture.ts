@@ -111,7 +111,7 @@ function createResources(): Tf2VguiResources {
         hardwareFiltered: false,
       })
     })
-  for (const [index, name] of ["../console/background_2fort", "../console/background_2fort_widescreen", "stamp_background_map"].entries()) {
+  for (const [index, name] of ["../console/background_2fort", "../console/background_2fort_widescreen"].entries()) {
     images.push(Object.freeze({
       name,
       logicalIdentity: `materials/console/background_2fort${index ? "_widescreen" : ""}.vmt`,
@@ -155,7 +155,15 @@ function createResources(): Tf2VguiResources {
     descriptor: tf2UiResources,
     clientScheme,
     sourceScheme: clientScheme,
-    localization: Object.freeze({ identity: "tf2-gameui-transitions", revision: "1", language: "english", tokens: Object.freeze([]) }),
+    localization: Object.freeze({
+      identity: "tf2-gameui-transitions",
+      revision: "1",
+      language: "english",
+      tokens: Object.freeze(tf2UiResources.localization.tokens.flatMap((token) =>
+        token.definitions[0] && ["#LoadingMap", "#Gametype_Escort"].includes(token.name)
+          ? [Object.freeze({ name: token.name.replace(/^#/u, ""), value: token.definitions[0].value })]
+          : [])),
+    }),
     animations: Object.freeze({ identity: "tf2-gameui-transitions", revision: "1", scripts: Object.freeze([]), activeConditions: Object.freeze([]) }),
     activeConditions: Object.freeze(["WIN32", "OSX", "POSIX"]),
     customControls: Object.freeze(customControls),

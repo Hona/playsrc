@@ -117,6 +117,7 @@ struct Report {
 }
 
 const CODE_LOCALIZATION_TOKENS: &[&str] = &[
+    "#Gametype_Escort",
     "#GameUI_AdjustGamma_Title",
     "#GameUI_Audio",
     "#GameUI_Bilinear",
@@ -253,6 +254,7 @@ const ROOTS: &[(&str, &str, bool)] = &[
         true,
     ),
     ("main-menu", "scripts/characterbackgrounds.txt", true),
+    ("loading", "resource/ui/statsummary.res", true),
     ("loading", "resource/loadingdialognobanner.res", true),
     ("loading", "resource/loadingdialognobannersingle.res", true),
     ("loading", "resource/loadingdialogvac.res", true),
@@ -1064,9 +1066,42 @@ fn parse_summary(
     } else {
         EscapeMode::LiteralBackslash
     };
-    let document =
+    let mut document =
         playsrc_keyvalues::parse_text(bytes, escape_mode, playsrc_keyvalues::Limits::default())
             .map_err(|error| error.to_string())?;
+    if logical_path == "resource/ui/statsummary.res" {
+        for root in &mut document.roots {
+            let Value::Object(children) = &mut root.value else {
+                return Err("statistics summary root is not an object".to_owned());
+            };
+            children.retain(|child| {
+                matches!(
+                    child.key.bytes.as_slice(),
+                    b"TFStatsSummary" | b"MapInfo" | b"OnYourWayLabel" | b"MapLabel" | b"MapType"
+                )
+            });
+            for child in children {
+                if child.key.bytes.as_slice() != b"MapInfo" {
+                    continue;
+                }
+                let Value::Object(properties) = &mut child.value else {
+                    return Err("statistics summary map information is not an object".to_owned());
+                };
+                properties.retain(|property| {
+                    !matches!(&property.value, Value::Object(_))
+                        || matches!(
+                            property.key.bytes.as_slice(),
+                            b"Background"
+                                | b"MapImage"
+                                | b"InfoBG"
+                                | b"Title"
+                                | b"MapAuthors"
+                                | b"MapLeaderboardTitle"
+                        )
+                });
+            }
+        }
+    }
     let mut occurrences = Occurrences::default();
     collect(&document.roots, &mut occurrences);
     let directives = document
@@ -1490,6 +1525,7 @@ fn main() -> Result<(), String> {
         .map(|value| (*value).to_owned())
         .collect::<BTreeSet<_>>();
     let mut unique_image_values = class_images.into_iter().collect::<BTreeSet<_>>();
+    unique_image_values.insert("maps/menu_photos_pl_upward".to_owned());
     let mut unique_font_values = BTreeSet::new();
     let mut configured_advanced_options = None;
     let mut configured_keyboard_actions = None;

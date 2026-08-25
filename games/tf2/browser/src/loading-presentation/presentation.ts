@@ -10,6 +10,7 @@ export type Tf2LoadingVguiOperation =
   | Readonly<{ kind: "mount"; resource: Tf2UiPanelDocument; modal: true }>
   | Readonly<{ kind: "bounds"; x: number; y: number; width: number; height: number }>
   | Readonly<{ kind: "failure-layout"; placement: "screen-center"; contentBottomPadding: 50; buttonGap: 6 }>
+  | Readonly<{ kind: "map"; identity: string; displayName: string; typeToken: string; image: string | null }>
   | Readonly<{ kind: "status"; control: "InfoLabel"; text: string }>
   | Readonly<{ kind: "progress"; control: "Progress"; value: number }>
   | Readonly<{ kind: "button"; control: "CancelButton"; text: "#GameUI_Cancel" | "#GameUI_Close"; command: "Cancel" | "Close" }>
@@ -32,6 +33,15 @@ export type Tf2LoadingPresentationInput = Readonly<{
   loadingResource: Tf2UiPanelDocument
   failureResource: Tf2UiPanelDocument
 }>
+
+export function tf2LoadingMapDisplayName(identity: string): string {
+  if (identity.toLowerCase() === "pl_upward") return "Upward"
+  return identity.toLowerCase()
+    .replace(/_final1?$/u, "")
+    .replace(/^(?:cp|tc|pl|ad|sd|rd|pd)_|^(?:ctf|plr|mvm)_|^(?:koth|pass)_|^arena_/u, "")
+    .replaceAll("_", " ")
+    .toUpperCase()
+}
 
 export function createTf2LoadingPresentation(input: Tf2LoadingPresentationInput): Tf2LoadingPresentation {
   let generation = 0
@@ -63,6 +73,13 @@ export function createTf2LoadingPresentation(input: Tf2LoadingPresentationInput)
         if (mounted !== "loading") operations.push({ kind: "mount", resource: input.loadingResource, modal: true })
         mounted = "loading"
         operations.push(
+          {
+            kind: "map",
+            identity: state.mapIdentity,
+            displayName: tf2LoadingMapDisplayName(state.mapIdentity),
+            typeToken: state.mapIdentity.toLowerCase().startsWith("pl_") ? "#Gametype_Escort" : "",
+            image: background?.mapPhoto ? `maps/menu_photos_${state.mapIdentity.toLowerCase()}` : null,
+          },
           { kind: "bounds", x: viewport.width - 390, y: viewport.height - 122, width: 380, height: 112 },
           { kind: "status", control: "InfoLabel", text: state.statusText },
           { kind: "progress", control: "Progress", value: state.progress },

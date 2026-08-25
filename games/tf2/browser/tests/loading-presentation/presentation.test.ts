@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { TF2_LOCAL_LOADING_PHASES, TF2_MAIN_MENU_STATE, transitionTf2GameUi, type Tf2GameUiState, type Tf2LoadingState } from "../../src/gameui"
-import { createTf2LoadingPresentation, resolveTf2LoadingBackground, TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS, TF2_STAMP_BACKGROUND } from "../../src/loading-presentation"
+import { createTf2LoadingPresentation, resolveTf2LoadingBackground, TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS, TF2_STAMP_BACKGROUND, tf2LoadingMapDisplayName } from "../../src/loading-presentation"
 import { tf2UiResources } from "../../src/ui-resources"
 
 const resource = (path: string) => tf2UiResources.panels.find((panel) => panel.source.logicalPath === path)!
@@ -10,6 +10,18 @@ const background = resolveTf2LoadingBackground({ generation: 1, mapIdentity: "ju
 const loading = (): Tf2LoadingState => transitionTf2GameUi(TF2_MAIN_MENU_STATE, { kind: "loading-started", mapIdentity: "jump_beef" }).state as Tf2LoadingState
 
 describe("TF2 loading presentation operations", () => {
+  test("uses authored Valve names and exact custom-map display cleanup", () => {
+    expect(tf2LoadingMapDisplayName("pl_upward")).toBe("Upward")
+    expect(tf2LoadingMapDisplayName("jump_beef")).toBe("JUMP BEEF")
+    expect(tf2LoadingMapDisplayName("cp_granary_final1")).toBe("GRANARY")
+  })
+
+  test("publishes the exact current map and hides a genuinely missing map photograph", () => {
+    const presentation = createTf2LoadingPresentation({ loadingResource, failureResource })
+    expect(presentation.update(1, loading(), { width: 1_280, height: 720 }, background)?.operations)
+      .toContainEqual({ kind: "map", identity: "jump_beef", displayName: "JUMP BEEF", typeToken: "", image: null })
+  })
+
   test("maps every owner milestone directly without synthetic progress", () => {
     const presentation = createTf2LoadingPresentation({ loadingResource, failureResource })
     let state: Tf2GameUiState = loading()
