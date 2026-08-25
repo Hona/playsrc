@@ -7,9 +7,6 @@ pub use wasm_bindgen_rayon::init_thread_pool;
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 
-#[cfg(feature = "presentation-bound-diagnostic")]
-const PRESENTATION_OUTPUT_LIMIT: usize = 512 * 1024 * 1024;
-#[cfg(not(feature = "presentation-bound-diagnostic"))]
 const PRESENTATION_OUTPUT_LIMIT: usize = 512 * 1024 * 1024;
 use std::{
     collections::BTreeMap,
@@ -320,6 +317,7 @@ struct PresentationInputs<'a> {
     bundle: &'a BTreeMap<String, &'a [u8]>,
     model_resources: &'a BTreeMap<String, Arc<[u8]>>,
     resource_hashes: &'a BTreeMap<String, [u8; 32]>,
+    map_materials: &'a [playsrc_material::Material],
     particle_presentation: &'a BTreeMap<String, CompiledParticlePresentation>,
     profile: playsrc_map::LightingProfile,
     visibility: &'a playsrc_visibility::World,
@@ -708,11 +706,15 @@ unsafe fn compile_map(
             playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
         compile_metrics[1] = phase_finished.saturating_sub(phase_started);
         phase_started = phase_finished;
-        let resolved_materials =
+        let (resolved_materials, map_materials) =
             resolve_materials(&canonical, &resources, profile).map_err(|_| 7_u32)?;
-        let collision_world =
-            attach_displacement_collision_inputs(collision_world, &canonical, &resources, profile)
-                .map_err(|_| 3_u32)?;
+        let collision_world = attach_displacement_collision_inputs(
+            collision_world,
+            &canonical,
+            &resources,
+            &map_materials,
+        )
+        .map_err(|_| 3_u32)?;
         canonical.collision_world_identity = collision_world.identity;
         let phase_finished =
             playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
@@ -737,6 +739,7 @@ unsafe fn compile_map(
             bundle: &resources,
             model_resources: &model_resource_bytes,
             resource_hashes: &resource_hashes,
+            map_materials: &map_materials,
             particle_presentation: &particle_presentation,
             profile,
             visibility: &visibility_world,
@@ -770,7 +773,8 @@ unsafe fn compile_map(
         compile_metrics[5] = phase_finished.saturating_sub(phase_started);
         phase_started = phase_finished;
         let profile_materials =
-            resolve_profile_materials(&entity_graph, &resources, profile).map_err(|_| 7_u32)?;
+            resolve_profile_materials(&entity_graph, &resources, &resource_hashes, profile)
+                .map_err(|_| 7_u32)?;
         let inputs = runtime_inputs(&resources, &resource_hashes);
         let phase_finished =
             playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
@@ -780,7 +784,7 @@ unsafe fn compile_map(
             .surfaces
             .iter()
             .any(|surface| surface.displacement.is_some());
-        let runtime = playsrc_map::assemble_runtime(
+        let runtime = playsrc_map::assemble_prepared_runtime(
             canonical,
             entity_graph,
             collision_world,
@@ -1103,13 +1107,21 @@ pub fn diagnose_presentation_bound(
         &collision,
     )
     .map_err(|_| 3u32)?;
-    let collision = attach_displacement_collision_inputs(
-        collision,
-        &canonical,
-        &resources,
-        playsrc_map::LightingProfile::Hdr,
-    )
-    .map_err(|_| 3u32)?;
+    let map_materials = canonical
+        .materials
+        .iter()
+        .map(|material| {
+            resolve_material_semantics(
+                &material.logical_path.to_ascii_lowercase(),
+                &resources,
+                material_environment(playsrc_map::LightingProfile::Hdr, false),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| 3u32)?;
+    let collision =
+        attach_displacement_collision_inputs(collision, &canonical, &resources, &map_materials)
+            .map_err(|_| 3u32)?;
     canonical.collision_world_identity = collision.identity;
     let visibility =
         playsrc_map::attach_displacement_visibility(&canonical, &visibility).map_err(|_| 3u32)?;
@@ -1121,6 +1133,7 @@ pub fn diagnose_presentation_bound(
         bundle: &resources,
         model_resources: &model_resources,
         resource_hashes: &resource_hashes,
+        map_materials: &map_materials,
         particle_presentation: &particle_presentation,
         profile: playsrc_map::LightingProfile::Hdr,
         visibility: &visibility,
@@ -4570,20 +4583,9 @@ fn attach_displacement_collision_inputs(
     world: playsrc_collision::World,
     map: &playsrc_map::CanonicalMap,
     bundle: &BTreeMap<String, &[u8]>,
-    profile: playsrc_map::LightingProfile,
+    materials: &[playsrc_material::Material],
 ) -> Result<playsrc_collision::World, ()> {
     let registry = surface_property_registry(bundle)?;
-    let materials = map
-        .materials
-        .iter()
-        .map(|material| {
-            resolve_material_semantics(
-                &material.logical_path.to_ascii_lowercase(),
-                bundle,
-                material_environment(profile, false),
-            )
-        })
-        .collect::<Result<Vec<_>, _>>()?;
     let inputs = map
         .collision_displacements
         .iter()
@@ -4629,21 +4631,33 @@ fn resolve_materials(
     map: &playsrc_map::CanonicalMap,
     bundle: &BTreeMap<String, &[u8]>,
     profile: playsrc_map::LightingProfile,
-) -> Result<Vec<playsrc_map::RuntimeMaterial>, ()> {
+) -> Result<
+    (
+        Vec<playsrc_map::RuntimeMaterial>,
+        Vec<playsrc_material::Material>,
+    ),
+    (),
+> {
     if bundle.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
-    map.materials
-        .iter()
-        .map(|reference| {
-            resolve_material(
-                &reference.logical_path.to_ascii_lowercase(),
-                bundle,
-                true,
-                material_environment(profile, false),
-            )
-        })
-        .collect()
+    let mut textures = BTreeMap::new();
+    let mut runtime = Vec::with_capacity(map.materials.len());
+    let mut semantics = Vec::with_capacity(map.materials.len());
+    for reference in &map.materials {
+        let identity = reference.logical_path.to_ascii_lowercase();
+        let material =
+            resolve_material_semantics(&identity, bundle, material_environment(profile, false))?;
+        runtime.push(resolve_material_output(
+            &identity,
+            &material,
+            bundle,
+            true,
+            &mut textures,
+        )?);
+        semantics.push(material);
+    }
+    Ok((runtime, semantics))
 }
 
 fn resolve_material(
@@ -4653,6 +4667,22 @@ fn resolve_material(
     environment: playsrc_material::SelectionEnvironment,
 ) -> Result<playsrc_map::RuntimeMaterial, ()> {
     let material = resolve_material_semantics(identity, bundle, environment)?;
+    resolve_material_output(
+        identity,
+        &material,
+        bundle,
+        include_texture,
+        &mut BTreeMap::new(),
+    )
+}
+
+fn resolve_material_output(
+    identity: &str,
+    material: &playsrc_material::Material,
+    bundle: &BTreeMap<String, &[u8]>,
+    include_texture: bool,
+    textures: &mut BTreeMap<String, playsrc_map::RuntimeTexture>,
+) -> Result<playsrc_map::RuntimeMaterial, ()> {
     let selected_role = material.selected_textures.first().copied();
     let base = if include_texture
         && let Some(texture) = material.textures.iter().find(|texture| {
@@ -4664,7 +4694,7 @@ fn resolve_material(
             .as_ref()
             .ok_or(())?
             .to_ascii_lowercase();
-        Some(runtime_texture(&path, bundle)?)
+        Some(cached_runtime_texture(&path, bundle, textures)?)
     } else {
         None
     };
@@ -4680,7 +4710,7 @@ fn resolve_material(
                     .ok_or(())?
                     .to_ascii_lowercase();
                 Ok(playsrc_map::RuntimeDetail {
-                    texture: runtime_texture(&path, bundle)?,
+                    texture: cached_runtime_texture(&path, bundle, textures)?,
                     scale: detail.scale,
                     blend_mode: detail.blend_mode,
                     blend_factor: detail.blend_factor,
@@ -4705,7 +4735,7 @@ fn resolve_material(
                     .as_ref()
                     .ok_or(())?
                     .to_ascii_lowercase();
-                runtime_texture(&path, bundle)
+                cached_runtime_texture(&path, bundle, textures)
             })
             .transpose()?
     } else {
@@ -4714,12 +4744,25 @@ fn resolve_material(
     Ok(playsrc_map::RuntimeMaterial {
         logical_path: identity.to_owned(),
         shader: shader_code(material.shader),
-        features: feature_bits(material.features),
+        features: feature_bits(&material.features),
         texture_role: selected_role.map_or(0, texture_role),
         base_texture: base,
         second_texture,
         detail,
     })
+}
+
+fn cached_runtime_texture(
+    path: &str,
+    bundle: &BTreeMap<String, &[u8]>,
+    textures: &mut BTreeMap<String, playsrc_map::RuntimeTexture>,
+) -> Result<playsrc_map::RuntimeTexture, ()> {
+    if let Some(texture) = textures.get(path) {
+        return Ok(texture.clone());
+    }
+    let texture = runtime_texture(path, bundle)?;
+    textures.insert(path.to_owned(), texture.clone());
+    Ok(texture)
 }
 
 fn runtime_texture(
@@ -4753,7 +4796,7 @@ fn runtime_texture(
         logical_path: path.to_owned(),
         width: plane.width,
         height: plane.height,
-        rgba,
+        rgba: Arc::new(rgba),
     })
 }
 
@@ -4809,7 +4852,7 @@ fn shader_code(shader: playsrc_material::Shader) -> u8 {
     }
 }
 
-fn feature_bits(features: playsrc_material::Features) -> u8 {
+fn feature_bits(features: &playsrc_material::Features) -> u8 {
     u8::from(features.translucent)
         | (u8::from(features.additive) << 1)
         | (u8::from(features.alpha_test) << 2)
@@ -4848,6 +4891,7 @@ fn texture_role(role: playsrc_material::TextureRole) -> u8 {
 fn resolve_profile_materials(
     graph: &playsrc_entity::Graph,
     bundle: &BTreeMap<String, &[u8]>,
+    resource_hashes: &BTreeMap<String, [u8; 32]>,
     profile: playsrc_map::LightingProfile,
 ) -> Result<Vec<playsrc_map::RuntimeProfileMaterial>, ()> {
     if profile != playsrc_map::LightingProfile::Hdr {
@@ -4910,17 +4954,18 @@ fn resolve_profile_materials(
             {
                 return Err(());
             }
+            let source_sha256 = *resource_hashes.get(&path).ok_or(())?;
             Ok(playsrc_map::RuntimeProfileMaterial {
                 logical_path: identity,
                 shader: shader_code(material.shader),
-                features: feature_bits(material.features),
+                features: feature_bits(&material.features),
                 texture_role: texture_role(role),
                 texture: playsrc_map::RuntimeProfileTexture {
                     logical_path: path,
                     width: metadata.width,
                     height: metadata.height,
                     format: metadata.high_format.code(),
-                    source_sha256: Sha256::digest(bytes).into(),
+                    source_sha256,
                     source_bytes: bytes.to_vec(),
                 },
             })
@@ -5218,6 +5263,7 @@ fn resolve_models(
     }
     let mut models = Vec::new();
     let mut indexes = BTreeMap::new();
+    let mut material_cache = BTreeMap::<String, playsrc_map::RuntimeMaterial>::new();
     for (identity, model) in studio_models {
         let mut materials = Vec::new();
         for material in &model.materials {
@@ -5227,10 +5273,15 @@ fn resolve_models(
                 .ok_or(())?
                 .logical_path
                 .to_ascii_lowercase();
-            let mut material =
-                resolve_material(&path, bundle, false, material_environment(profile, true))?;
-            material.base_texture = None;
-            materials.push(material);
+            if let Some(material) = material_cache.get(&path) {
+                materials.push(material.clone());
+            } else {
+                let mut material =
+                    resolve_material(&path, bundle, false, material_environment(profile, true))?;
+                material.base_texture = None;
+                material_cache.insert(path, material.clone());
+                materials.push(material);
+            }
         }
         if model.skins.is_empty() || model.sequences.is_empty() {
             return Err(());
@@ -5446,11 +5497,24 @@ fn transform_normal(matrix: &playsrc_studio_model::Matrix3x4, normal: [f32; 3]) 
     ]
 }
 fn pbytes(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), ()> {
-    out.extend_from_slice(&u32::try_from(bytes.len()).map_err(|_| ())?.to_le_bytes());
+    let length = u32::try_from(bytes.len()).map_err(|_| ())?;
+    let required = bytes.len().checked_add(4).ok_or(())?;
+    let total = out.len().checked_add(required).ok_or(())?;
+    if total > PRESENTATION_OUTPUT_LIMIT {
+        return Err(());
+    }
+    if out.capacity().saturating_sub(out.len()) < required {
+        out.try_reserve_exact(required).map_err(|_| ())?;
+    }
+    out.extend_from_slice(&length.to_le_bytes());
     out.extend_from_slice(bytes);
-    (out.len() <= PRESENTATION_OUTPUT_LIMIT)
-        .then_some(())
-        .ok_or(())
+    Ok(())
+}
+
+struct CompiledStaticProps {
+    bytes: Vec<u8>,
+    section: static_prop_artifact::Section,
+    aggregate_object_count: usize,
 }
 
 fn compile_static_prop_section(
@@ -5461,13 +5525,18 @@ fn compile_static_prop_section(
     collision: &playsrc_collision::World,
     environment: &RuntimeEnvironment,
     models: &[(String, Box<CompiledPresentationModel>)],
-) -> Result<Vec<u8>, ()> {
+) -> Result<CompiledStaticProps, ()> {
     use static_prop_artifact::{Lighting, Occurrence, RuntimeLight, ViewOwnership};
     if canonical.static_props.occurrences.is_empty() {
-        return static_prop_artifact::encode_section(&static_prop_artifact::Section {
+        let section = static_prop_artifact::Section {
             aggregate_sha256: [0; 32],
             model_count: u32::try_from(models.len()).map_err(|_| ())?,
             occurrences: Vec::new(),
+        };
+        return Ok(CompiledStaticProps {
+            bytes: static_prop_artifact::encode_section(&section)?,
+            section,
+            aggregate_object_count: 0,
         });
     }
     let aggregate = static_prop_artifact::decode_aggregate(
@@ -5816,7 +5885,11 @@ fn compile_static_prop_section(
     if static_prop_artifact::decode_section(&bytes)? != section {
         return Err(());
     }
-    Ok(bytes)
+    Ok(CompiledStaticProps {
+        bytes,
+        section,
+        aggregate_object_count: aggregate.objects.len(),
+    })
 }
 
 fn direct_light_ray(
@@ -6257,6 +6330,7 @@ fn encode_resolved_material_state(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn encode_material_states(
     out: &mut Vec<u8>,
     canonical: &playsrc_map::CanonicalMap,
@@ -6264,6 +6338,8 @@ fn encode_material_states(
     bundle: &BTreeMap<String, &[u8]>,
     profile: playsrc_map::LightingProfile,
     models: &[(String, Box<CompiledPresentationModel>)],
+    map_materials: &[playsrc_material::Material],
+    model_materials: &PreparedModelMaterials,
     particle_materials: &BTreeMap<String, CompiledParticlePresentation>,
 ) -> Result<(), ()> {
     let mut targets = BTreeMap::<String, (String, bool)>::new();
@@ -6320,9 +6396,28 @@ fn encode_material_states(
                 Some(&particle.metadata),
             )?;
         } else {
-            let material =
-                resolve_material_semantics(&source, bundle, material_environment(profile, model))?;
-            encode_one_material_state(out, &identity, &material, bundle)?;
+            let owned;
+            let material = if model {
+                let index = model_materials
+                    .materials
+                    .binary_search_by(|(path, _)| path.as_str().cmp(&source))
+                    .map_err(|_| ())?;
+                &model_materials.materials[index].1
+            } else if let Some(index) = canonical
+                .materials
+                .iter()
+                .position(|reference| reference.logical_path.eq_ignore_ascii_case(&source))
+            {
+                map_materials.get(index).ok_or(())?
+            } else {
+                owned = resolve_material_semantics(
+                    &source,
+                    bundle,
+                    material_environment(profile, false),
+                )?;
+                &owned
+            };
+            encode_one_material_state(out, &identity, material, bundle)?;
         }
     }
     (out.len() - start <= 4 * 1024 * 1024)
@@ -6512,15 +6607,11 @@ fn vtf_subresource(
 fn authored_texture(
     path: &str,
     bundle: &BTreeMap<String, &[u8]>,
+    resource_hashes: &BTreeMap<String, [u8; 32]>,
+    metadata: &playsrc_vtf::Metadata,
 ) -> Result<EncodedAuthoredTexture, ()> {
     let bytes = *bundle.get(path).ok_or(())?;
-    let metadata = playsrc_vtf::inspect(
-        bytes,
-        playsrc_vtf::Dialect::Source2013Pc,
-        playsrc_vtf::Limits::default(),
-    )
-    .map_err(|_| ())?;
-    let manifest = material_texture_manifest(&metadata);
+    let manifest = material_texture_manifest(metadata);
     let mut evidence = Vec::with_capacity(manifest.subresources.len());
     let mut planes = Vec::with_capacity(manifest.subresources.len());
     let mut scalar_encoding = None;
@@ -6589,7 +6680,7 @@ fn authored_texture(
         playsrc_material::bind_authored_texture(&placeholder, &manifest).map_err(|_| ())?;
     playsrc_material::validate_authored_planes(&binding, &evidence).map_err(|_| ())?;
     Ok(EncodedAuthoredTexture {
-        source_sha256: Sha256::digest(bytes).into(),
+        source_sha256: *resource_hashes.get(path).ok_or(())?,
         manifest,
         scalar_encoding: scalar_encoding.ok_or(())?,
         planes,
@@ -6599,6 +6690,7 @@ fn authored_texture(
 fn model_authored_texture(
     path: &str,
     bundle: &BTreeMap<String, &[u8]>,
+    resource_hashes: &BTreeMap<String, [u8; 32]>,
     allow_channel_order: bool,
 ) -> Result<ModelAuthoredTexture, ()> {
     let bytes = *bundle.get(path).ok_or(())?;
@@ -6662,14 +6754,14 @@ fn model_authored_texture(
             .collect();
         return Ok(ModelAuthoredTexture::Referenced(
             ReferencedAuthoredTexture {
-                source_sha256: Sha256::digest(bytes).into(),
+                source_sha256: *resource_hashes.get(path).ok_or(())?,
                 manifest,
                 format: metadata.high_format.code(),
                 planes,
             },
         ));
     }
-    authored_texture(path, bundle).map(ModelAuthoredTexture::Decoded)
+    authored_texture(path, bundle, resource_hashes, &metadata).map(ModelAuthoredTexture::Decoded)
 }
 
 fn texture_role_code(role: playsrc_material::TextureRole) -> u8 {
@@ -6688,12 +6780,18 @@ fn color_read_code(value: playsrc_material::TextureColorRead) -> u8 {
     }
 }
 
-fn encode_model_materials(
-    out: &mut Vec<u8>,
+struct PreparedModelMaterials {
+    materials: Vec<(String, playsrc_material::Material)>,
+    textures: BTreeMap<String, ModelAuthoredTexture>,
+    material_section: Vec<u8>,
+}
+
+fn prepare_model_materials(
     models: &[(String, Box<CompiledPresentationModel>)],
     bundle: &BTreeMap<String, &[u8]>,
+    resource_hashes: &BTreeMap<String, [u8; 32]>,
     profile: playsrc_map::LightingProfile,
-) -> Result<(), ()> {
+) -> Result<PreparedModelMaterials, ()> {
     let mut identities = std::collections::BTreeSet::new();
     for (_, artifact) in models {
         for material in &artifact.model.materials {
@@ -6744,7 +6842,7 @@ fn encode_model_materials(
         .map(|path| {
             Ok((
                 path.clone(),
-                model_authored_texture(&path, bundle, true).map_err(|_| ())?,
+                model_authored_texture(&path, bundle, resource_hashes, true).map_err(|_| ())?,
             ))
         })
         .collect::<Result<BTreeMap<_, _>, ()>>()?;
@@ -6776,21 +6874,35 @@ fn encode_model_materials(
             }
         }
     }
-    out.extend_from_slice(b"PMDL");
-    out.extend_from_slice(&1_u32.to_le_bytes());
-    out.extend_from_slice(
+    let mut material_section = Vec::new();
+    material_section.extend_from_slice(b"PMDL");
+    material_section.extend_from_slice(&1_u32.to_le_bytes());
+    material_section.extend_from_slice(
         &u32::try_from(materials.len())
             .map_err(|_| ())?
             .to_le_bytes(),
     );
     for (identity, material) in &materials {
-        encode_model_material(out, identity, material, bundle)?;
+        encode_model_material(&mut material_section, identity, material, bundle)?;
     }
+    Ok(PreparedModelMaterials {
+        materials,
+        textures,
+        material_section,
+    })
+}
+
+fn encode_model_materials(out: &mut Vec<u8>, prepared: &PreparedModelMaterials) -> Result<(), ()> {
+    out.extend_from_slice(&prepared.material_section);
     out.extend_from_slice(b"PMIP");
     out.extend_from_slice(&2_u32.to_le_bytes());
-    out.extend_from_slice(&u32::try_from(textures.len()).map_err(|_| ())?.to_le_bytes());
-    for (identity, texture) in textures {
-        encode_model_authored_texture(out, &identity, &texture)?;
+    out.extend_from_slice(
+        &u32::try_from(prepared.textures.len())
+            .map_err(|_| ())?
+            .to_le_bytes(),
+    );
+    for (identity, texture) in &prepared.textures {
+        encode_model_authored_texture(out, identity, texture)?;
     }
     Ok(())
 }
@@ -7166,7 +7278,7 @@ fn encode_particle_textures(
         pbytes(out, texture.logical_path.as_bytes())?;
         out.extend_from_slice(&texture.width.to_le_bytes());
         out.extend_from_slice(&texture.height.to_le_bytes());
-        out.extend_from_slice(&<[u8; 32]>::from(Sha256::digest(&texture.rgba)));
+        out.extend_from_slice(&<[u8; 32]>::from(Sha256::digest(texture.rgba.as_slice())));
         pbytes(out, &texture.rgba)?;
     }
     Ok(())
@@ -7323,7 +7435,7 @@ fn decoded_texture(
         logical_path: path.to_owned(),
         width: plane.width,
         height: plane.height,
-        rgba,
+        rgba: Arc::new(rgba),
     })
 }
 type CompiledPresentation = (
@@ -7470,6 +7582,7 @@ fn load_cached_presentation(
         bundle,
         model_resources,
         resource_hashes,
+        map_materials,
         particle_presentation: _,
         profile,
         visibility,
@@ -7547,14 +7660,22 @@ fn load_cached_presentation(
     metrics[1] = phase_finished.saturating_sub(phase_started);
     phase_started = phase_finished;
     let (_, environment) = compile_environment_artifact(
-        canonical, bsp, graph, bundle, profile, visibility, collision,
+        canonical,
+        bsp,
+        graph,
+        bundle,
+        resource_hashes,
+        map_materials,
+        profile,
+        visibility,
+        collision,
     )
     .map_err(|_| 6_u32)?;
     phase_finished = playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
     metrics[4] = phase_finished.saturating_sub(phase_started);
     phase_started = phase_finished;
     let model_material_opacity =
-        model_material_opacity(&models, bundle, profile).map_err(|_| 7_u32)?;
+        model_material_opacity(&models, bundle, profile, None).map_err(|_| 7_u32)?;
     let models: BTreeMap<String, playsrc_studio_model::PresentationModel> = models
         .into_iter()
         .map(|(identity, artifact)| (identity, artifact.model))
@@ -7570,6 +7691,92 @@ fn load_cached_presentation(
     Ok((output, metrics, PresentationSizeLedger::default()))
 }
 
+#[allow(clippy::too_many_arguments)]
+fn presentation_capacity(
+    models: &[(String, Box<CompiledPresentationModel>)],
+    directional: &[(String, u8, playsrc_map::RuntimeTexture)],
+    particles: &BTreeMap<String, CompiledParticlePresentation>,
+    particle_materials: &[String],
+    environment: &[u8],
+    static_props: &[u8],
+    model_materials: &PreparedModelMaterials,
+    map: &playsrc_map::CanonicalMap,
+    resource_count: usize,
+) -> Result<usize, ()> {
+    let mut bytes = 24usize;
+    let mut add = |value: usize| -> Result<(), ()> {
+        bytes = bytes.checked_add(value).ok_or(())?;
+        Ok(())
+    };
+    for (identity, artifact) in models {
+        let model = &artifact.model;
+        add(96 + identity.len())?;
+        add(model.body_parts.len().checked_mul(4).ok_or(())?)?;
+        for attachment in &model.attachments {
+            add(52 + attachment.name.len())?;
+        }
+        for sequence in &model.sequences {
+            add(36 + sequence.label.len() + sequence.activity_name.len())?;
+        }
+    }
+    for (identity, _, texture) in directional {
+        add(76 + identity.len() + texture.logical_path.len())?;
+        add(texture.rgba.len())?;
+    }
+    for identity in particle_materials {
+        add(4 + identity.len())?;
+    }
+    add(4 + environment.len())?;
+    add(12)?;
+    for (identity, particle) in particles {
+        add(56
+            + identity.len()
+            + particle.source_path.len()
+            + particle.texture.logical_path.len())?;
+        add(particle.texture.rgba.len())?;
+    }
+    for model in &map.brush_models {
+        add(68)?;
+        add(model.materials.len().checked_mul(4).ok_or(())?)?;
+        add(model.entities.len().checked_mul(4).ok_or(())?)?;
+    }
+    add(static_props.len() + 8)?;
+    add(model_materials.material_section.len())?;
+    add(12)?;
+    for (identity, texture) in &model_materials.textures {
+        add(encoded_model_authored_texture_length(identity, texture)?)?;
+    }
+    add(resource_count.checked_mul(256).ok_or(())?)?;
+    Ok(bytes.min(PRESENTATION_OUTPUT_LIMIT))
+}
+
+fn encoded_model_authored_texture_length(
+    identity: &str,
+    texture: &ModelAuthoredTexture,
+) -> Result<usize, ()> {
+    let manifest = texture.manifest();
+    let mut length = 72usize
+        .checked_add(identity.len())
+        .and_then(|value| value.checked_add(manifest.faces.len()))
+        .ok_or(())?;
+    match texture {
+        ModelAuthoredTexture::Decoded(texture) => {
+            for plane in &texture.planes {
+                length = length
+                    .checked_add(28)
+                    .and_then(|value| value.checked_add(plane.rgba.len()))
+                    .ok_or(())?;
+            }
+        }
+        ModelAuthoredTexture::Referenced(texture) => {
+            length = length
+                .checked_add(texture.planes.len().checked_mul(32).ok_or(())?)
+                .ok_or(())?;
+        }
+    }
+    Ok(length)
+}
+
 fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresentation, ()> {
     let PresentationInputs {
         canonical,
@@ -7578,6 +7785,7 @@ fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresen
         bundle,
         model_resources,
         resource_hashes,
+        map_materials,
         particle_presentation,
         profile,
         visibility,
@@ -7660,7 +7868,7 @@ fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresen
     let source_textures = bundle
         .iter()
         .filter(|(identity, _)| identity.ends_with(".vtf"))
-        .map(|(_, bytes)| (*bytes, <[u8; 32]>::from(Sha256::digest(bytes))))
+        .map(|(identity, bytes)| (*bytes, resource_hashes[identity]))
         .collect::<Vec<_>>();
     let source_texture_count = source_textures.len();
     let source_texture_bytes = source_textures
@@ -7674,10 +7882,8 @@ fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresen
     let distinct_source_texture_count = source_texture_identities.len();
     let unique_source_texture_bytes = source_texture_identities.values().sum::<usize>();
     let mut directional = Vec::new();
-    for reference in &canonical.materials {
+    for (reference, material) in canonical.materials.iter().zip(map_materials) {
         let identity = reference.logical_path.to_ascii_lowercase();
-        let material =
-            resolve_material_semantics(&identity, bundle, material_environment(profile, false))?;
         let Some(texture) = material.textures.iter().find(|texture| {
             matches!(
                 texture.role,
@@ -7705,9 +7911,17 @@ fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresen
     metrics[3] = phase_finished.saturating_sub(phase_started);
     phase_started = phase_finished;
     let (environment_bytes, environment) = compile_environment_artifact(
-        canonical, bsp, graph, bundle, profile, visibility, collision,
+        canonical,
+        bsp,
+        graph,
+        bundle,
+        resource_hashes,
+        map_materials,
+        profile,
+        visibility,
+        collision,
     )?;
-    let static_prop_bytes = compile_static_prop_section(
+    let static_props = compile_static_prop_section(
         canonical,
         graph,
         bundle,
@@ -7719,9 +7933,21 @@ fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresen
     phase_finished = playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
     metrics[4] = phase_finished.saturating_sub(phase_started);
     phase_started = phase_finished;
+    let prepared_model_materials =
+        prepare_model_materials(&models, bundle, resource_hashes, profile)?;
+    let capacity = presentation_capacity(
+        &models,
+        &directional,
+        particle_presentation,
+        &particle_materials,
+        &environment_bytes,
+        &static_props.bytes,
+        &prepared_model_materials,
+        canonical,
+        bundle.len(),
+    )?;
     let mut out = Vec::new();
-    out.try_reserve_exact(PRESENTATION_OUTPUT_LIMIT)
-        .map_err(|_| ())?;
+    out.try_reserve_exact(capacity).map_err(|_| ())?;
     out.extend_from_slice(b"PTF2");
     out.extend_from_slice(&12u32.to_le_bytes());
     out.extend_from_slice(&u32::try_from(models.len()).map_err(|_| ())?.to_le_bytes());
@@ -7731,7 +7957,6 @@ fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresen
             .to_le_bytes(),
     );
     let mut section_ends = [0usize; 8];
-    let mut default_bound_first_exceeded_at = None;
     section_ends[0] = out.len();
     out.extend_from_slice(
         &u32::try_from(particle_materials.len())
@@ -7916,7 +8141,7 @@ fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresen
         pbytes(&mut out, texture.logical_path.as_bytes())?;
         out.extend_from_slice(&texture.width.to_le_bytes());
         out.extend_from_slice(&texture.height.to_le_bytes());
-        let hash: [u8; 32] = Sha256::digest(&texture.rgba).into();
+        let hash: [u8; 32] = Sha256::digest(texture.rgba.as_slice()).into();
         out.extend_from_slice(&hash);
         pbytes(&mut out, &texture.rgba)?;
         for value in [1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0] {
@@ -7937,12 +8162,14 @@ fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresen
         bundle,
         profile,
         &models,
+        map_materials,
+        &prepared_model_materials,
         particle_presentation,
     )?;
     encode_particle_textures(&mut out, particle_presentation)?;
     encode_audio_documents(&mut out, bundle)?;
     encode_model_occurrence_matrices(&mut out, graph)?;
-    encode_model_materials(&mut out, &models, bundle, profile)?;
+    encode_model_materials(&mut out, &prepared_model_materials)?;
     section_ends[6] = out.len();
     for model in &canonical.brush_models {
         out.extend_from_slice(&u32::try_from(model.index).map_err(|_| ())?.to_le_bytes());
@@ -7971,14 +8198,15 @@ fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresen
             out.extend_from_slice(&u32::try_from(*value).map_err(|_| ())?.to_le_bytes());
         }
     }
-    out.extend_from_slice(&static_prop_bytes);
+    out.extend_from_slice(&static_props.bytes);
     out.extend_from_slice(
-        &u32::try_from(static_prop_bytes.len())
+        &u32::try_from(static_props.bytes.len())
             .map_err(|_| ())?
             .to_le_bytes(),
     );
     out.extend_from_slice(b"PSPF");
-    let model_material_opacity = model_material_opacity(&models, bundle, profile)?;
+    let model_material_opacity =
+        model_material_opacity(&models, bundle, profile, Some(&prepared_model_materials))?;
     let models: BTreeMap<String, playsrc_studio_model::PresentationModel> = models
         .into_iter()
         .map(|(identity, artifact)| (identity, artifact.model))
@@ -7986,11 +8214,11 @@ fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresen
     phase_finished = playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
     metrics[5] = phase_finished.saturating_sub(phase_started);
     section_ends[7] = out.len();
-    if default_bound_first_exceeded_at.is_none() && out.len() > 512 * 1024 * 1024 {
-        default_bound_first_exceeded_at = Some(out.len());
+    if out.len() > PRESENTATION_OUTPUT_LIMIT {
+        return Err(());
     }
-    let decoded_static_props = static_prop_artifact::decode_section(&static_prop_bytes)?;
-    let static_prop_runtime_sources = decoded_static_props
+    let static_prop_runtime_sources = static_props
+        .section
         .occurrences
         .iter()
         .filter_map(|occurrence| {
@@ -8001,7 +8229,8 @@ fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresen
             .then_some(occurrence.source as usize)
         })
         .collect::<Vec<_>>();
-    let static_prop_runtime_light_records = decoded_static_props
+    let static_prop_runtime_light_records = static_props
+        .section
         .occurrences
         .iter()
         .flat_map(|occurrence| match &occurrence.lighting {
@@ -8032,41 +8261,33 @@ fn compile_presentation(inputs: PresentationInputs<'_>) -> Result<MeasuredPresen
         source_texture_bytes,
         unique_source_texture_bytes,
         section_ends,
-        default_bound_first_exceeded_at,
+        default_bound_first_exceeded_at: None,
         final_length: out.len(),
         final_capacity: out.capacity(),
         phase_milliseconds: [0; 6],
         displacement_input_count: 0,
         static_prop_collision_count: 0,
         static_prop_occurrence_count: canonical.static_props.occurrences.len(),
-        static_prop_vhv_object_count: if canonical.static_props.occurrences.is_empty() {
-            0
-        } else {
-            static_prop_artifact::decode_aggregate(
-                bundle
-                    .get(static_prop_artifact::AGGREGATE_PATH)
-                    .copied()
-                    .ok_or(())?,
-            )?
-            .objects
-            .len()
-        },
+        static_prop_vhv_object_count: static_props.aggregate_object_count,
         static_prop_runtime_lighting_count: static_prop_runtime_sources.len(),
-        static_prop_section_bytes: static_prop_bytes.len(),
-        static_prop_section_sha256: Sha256::digest(&static_prop_bytes).into(),
+        static_prop_section_bytes: static_props.bytes.len(),
+        static_prop_section_sha256: Sha256::digest(&static_props.bytes).into(),
         static_prop_runtime_sources,
         static_prop_runtime_light_records,
-        static_prop_main_count: decoded_static_props
+        static_prop_main_count: static_props
+            .section
             .occurrences
             .iter()
             .filter(|occurrence| occurrence.ownership == static_prop_artifact::ViewOwnership::Main)
             .count(),
-        static_prop_sky_count: decoded_static_props
+        static_prop_sky_count: static_props
+            .section
             .occurrences
             .iter()
             .filter(|occurrence| occurrence.ownership == static_prop_artifact::ViewOwnership::Sky3d)
             .count(),
-        static_prop_vertex_lighting_count: decoded_static_props
+        static_prop_vertex_lighting_count: static_props
+            .section
             .occurrences
             .iter()
             .filter(|occurrence| {
@@ -8088,6 +8309,7 @@ fn model_material_opacity(
     models: &[(String, Box<CompiledPresentationModel>)],
     bundle: &BTreeMap<String, &[u8]>,
     profile: playsrc_map::LightingProfile,
+    prepared: Option<&PreparedModelMaterials>,
 ) -> Result<BTreeMap<String, Vec<playsrc_studio_model::ViewModelMaterialOpacity>>, ()> {
     models
         .iter()
@@ -8102,19 +8324,30 @@ fn model_material_opacity(
                         .dependencies
                         .get(selected.material_dependency)
                         .ok_or(())?;
-                    let material = resolve_material_semantics(
-                        &dependency.logical_path.to_ascii_lowercase(),
-                        bundle,
-                        material_environment(profile, true),
-                    )?;
+                    let path = dependency.logical_path.to_ascii_lowercase();
+                    let owned;
+                    let material = if let Some(prepared) = prepared {
+                        let index = prepared
+                            .materials
+                            .binary_search_by(|(identity, _)| identity.as_str().cmp(&path))
+                            .map_err(|_| ())?;
+                        &prepared.materials[index].1
+                    } else {
+                        owned = resolve_material_semantics(
+                            &path,
+                            bundle,
+                            material_environment(profile, true),
+                        )?;
+                        &owned
+                    };
                     let texture_alpha =
-                        selected_texture(&material, bundle)
+                        selected_texture(material, bundle)
                             .ok()
                             .is_some_and(|(_, _, metadata)| {
                                 metadata.alpha_flags.one_bit || metadata.alpha_flags.eight_bit
                             });
                     let draw = playsrc_material::model_draw_state(
-                        &material,
+                        material,
                         playsrc_material::TextureAlphaFacts {
                             base: texture_alpha,
                         },
@@ -8352,30 +8585,25 @@ fn encode_fog_state(out: &mut Vec<u8>, value: &playsrc_map::FogState) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compile_environment_artifact(
     canonical: &playsrc_map::CanonicalMap,
     bsp: &playsrc_bsp::Bsp,
     graph: &playsrc_entity::Graph,
     bundle: &BTreeMap<String, &[u8]>,
+    resource_hashes: &BTreeMap<String, [u8; 32]>,
+    materials: &[playsrc_material::Material],
     profile: playsrc_map::LightingProfile,
     visibility: &playsrc_visibility::World,
     collision: &playsrc_collision::World,
 ) -> Result<(Vec<u8>, RuntimeEnvironment), ()> {
-    let materials = canonical
-        .materials
-        .iter()
-        .map(|r| {
-            resolve_material_semantics(
-                &r.logical_path.to_ascii_lowercase(),
-                bundle,
-                material_environment(profile, false),
-            )
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    if materials.len() != canonical.materials.len() {
+        return Err(());
+    }
     let bindings = canonical
         .materials
         .iter()
-        .zip(&materials)
+        .zip(materials)
         .map(|(reference, material)| playsrc_map::MaterialBinding {
             material_index: reference.index,
             material,
@@ -8444,7 +8672,7 @@ fn compile_environment_artifact(
             ""
         };
         let path = format!("materials/skybox/{sky}{suffix}{face_suffix}.vmt");
-        let source = *bundle.get(&path).ok_or(())?;
+        let source_sha256 = *resource_hashes.get(&path).ok_or(())?;
         let m = resolve_material_semantics(&path, bundle, material_environment(profile, false))?;
         let encoding = selected_sky_encoding(&m.selected_textures).ok_or(())?;
         let selected_textures = m
@@ -8457,7 +8685,7 @@ fn compile_environment_artifact(
             .map(|t| {
                 let logical_path = t.logical_path.as_ref().ok_or(())?.to_ascii_lowercase();
                 Ok(playsrc_map::ResolvedTexture {
-                    sha256: Sha256::digest(*bundle.get(&logical_path).ok_or(())?).into(),
+                    sha256: *resource_hashes.get(&logical_path).ok_or(())?,
                     logical_path,
                 })
             })
@@ -8469,7 +8697,7 @@ fn compile_environment_artifact(
                 logical_path: path,
             },
             metadata: playsrc_map::DependencyMetadata::SkyMaterial {
-                source_sha256: Sha256::digest(source).into(),
+                source_sha256,
                 encoding,
                 selected_textures,
             },
@@ -8515,6 +8743,7 @@ fn compile_environment_artifact(
             playsrc_vtf::Limits::default(),
         )
         .map_err(|_| ())?;
+        let source_sha256 = *resource_hashes.get(&path).ok_or(())?;
         dependencies.push(playsrc_map::DependencyResponse {
             request: playsrc_map::DependencyRequest {
                 role: playsrc_map::DependencyRole::CubemapTexture { sample: index },
@@ -8522,7 +8751,7 @@ fn compile_environment_artifact(
                 logical_path: path,
             },
             metadata: playsrc_map::DependencyMetadata::CubemapTexture {
-                source_sha256: Sha256::digest(bytes).into(),
+                source_sha256,
                 width: m.width,
                 height: m.height,
                 mip_count: m.mip_count,
@@ -8548,9 +8777,10 @@ fn compile_environment_artifact(
             continue;
         };
         let path = dependency_path(&reference)?;
-        let Some(source) = bundle.get(&path).copied() else {
+        if !bundle.contains_key(&path) {
             continue;
-        };
+        }
+        let source_sha256 = *resource_hashes.get(&path).ok_or(())?;
         let m = resolve_material_semantics(&path, bundle, material_environment(profile, false))?;
         let texture = m
             .textures
@@ -8579,7 +8809,7 @@ fn compile_environment_artifact(
             .or_insert(playsrc_map::MarkMaterial {
                 reference,
                 logical_path: path,
-                source_sha256: Sha256::digest(source).into(),
+                source_sha256,
                 width: tm.width,
                 height: tm.height,
                 state: m.decal,
@@ -8651,7 +8881,7 @@ fn compile_environment_artifact(
             })
             .collect::<Result<Vec<_>, ()>>()?,
     };
-    let env = playsrc_map::compile_environment(
+    let env = playsrc_map::compile_environment_prepared(
         canonical,
         bsp,
         playsrc_map::EnvironmentInputs {
@@ -8667,6 +8897,7 @@ fn compile_environment_artifact(
             dependencies: &dependencies,
             limits: playsrc_map::EnvironmentLimits::default(),
         },
+        visibility.identity,
     )
     .map_err(|_| ())?;
     let mut out = b"PENV".to_vec();
@@ -8751,7 +8982,7 @@ fn compile_environment_artifact(
         pbytes(&mut out, texture.logical_path.as_bytes())?;
         out.extend_from_slice(&texture.width.to_le_bytes());
         out.extend_from_slice(&texture.height.to_le_bytes());
-        let hash: [u8; 32] = Sha256::digest(&texture.rgba).into();
+        let hash: [u8; 32] = Sha256::digest(texture.rgba.as_slice()).into();
         out.extend_from_slice(&hash);
         pbytes(&mut out, &texture.rgba)?
     }
@@ -9038,7 +9269,7 @@ fn compile_environment_artifact(
             }
         }
     }
-    for material in &materials {
+    for material in materials {
         if !material.features.alpha_test && !material.features.translucent {
             continue;
         }
@@ -9092,7 +9323,7 @@ fn compile_environment_artifact(
             .to_le_bytes(),
     );
     for identity in environment_texture_paths {
-        let texture = model_authored_texture(&identity, bundle, false)?;
+        let texture = model_authored_texture(&identity, bundle, resource_hashes, false)?;
         encode_model_authored_texture(&mut out, &identity, &texture)?;
     }
     out.extend_from_slice(

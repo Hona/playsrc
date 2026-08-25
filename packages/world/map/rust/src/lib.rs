@@ -1,6 +1,6 @@
 use playsrc_bsp::{Bsp, Face, LumpData, Model, Primitive, TextureData, TextureInfo, Vector3};
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeSet, fmt, ops::Range};
+use std::{collections::BTreeSet, fmt, ops::Range, sync::Arc};
 mod lighting;
 pub use lighting::*;
 mod environment;
@@ -122,7 +122,7 @@ pub struct RuntimeTexture {
     pub logical_path: String,
     pub width: u32,
     pub height: u32,
-    pub rgba: Vec<u8>,
+    pub rgba: Arc<Vec<u8>>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct RuntimeMaterial {
@@ -392,7 +392,7 @@ pub fn compile_prepared(
         {
             return Err(error(ErrorCode::NonFinite, Some(face_index)));
         }
-        let displacement = (face.displacement_info_index >= 0)
+        let mut displacement = (face.displacement_info_index >= 0)
             .then(|| {
                 displacement::compile(displacement::Inputs {
                     face_index,
@@ -406,8 +406,8 @@ pub fn compile_prepared(
                 })
             })
             .transpose()?;
-        let face_normals = if let Some(displacement) = &displacement {
-            displacement.normals.clone()
+        let face_normals = if let Some(displacement) = &mut displacement {
+            std::mem::take(&mut displacement.normals)
         } else {
             face_normals(
                 face,
@@ -424,7 +424,7 @@ pub fn compile_prepared(
             .ok_or_else(|| error(ErrorCode::InvalidRange, Some(face_index)))?;
         let (positions, uv, lightmap_uv, alpha, indices, compiled, displacement_descriptor) =
             if let Some(displacement) = displacement {
-                collision_displacements.push(displacement.collision.clone());
+                collision_displacements.push(displacement.collision);
                 (
                     displacement.positions,
                     displacement.uv,
@@ -589,6 +589,17 @@ pub fn assemble_runtime(
     assembly: RuntimeAssembly<'_>,
 ) -> Result<Runtime, Error> {
     let visibility = attach_displacement_visibility(&map, &visibility)?;
+    assemble_prepared_runtime(map, entities, collision, visibility, bsp_sha256, assembly)
+}
+
+pub fn assemble_prepared_runtime(
+    map: CanonicalMap,
+    entities: playsrc_entity::Graph,
+    collision: playsrc_collision::World,
+    visibility: playsrc_visibility::World,
+    bsp_sha256: [u8; 32],
+    assembly: RuntimeAssembly<'_>,
+) -> Result<Runtime, Error> {
     let RuntimeAssembly {
         compiler_identity,
         configuration,
@@ -681,10 +692,7 @@ pub fn assemble_runtime(
         models: runtime_models,
         occurrences: model_occurrences,
     };
-    let payload = serialize(&serialization);
-    if payload.len() > 512 * 1024 * 1024 {
-        return Err(error(ErrorCode::BoundExceeded, None));
-    }
+    let payload = serialize(&serialization)?;
     let payload_sha256 = Sha256::digest(&payload).into();
     let derived_sha256 = derived_identity(&serialization, payload_sha256);
     let descriptor = RuntimeDescriptor {
@@ -704,30 +712,21 @@ pub fn assemble_runtime(
         descriptor,
     })
 }
-fn serialize(context: &SerializationContext<'_>) -> Vec<u8> {
+fn serialize(context: &SerializationContext<'_>) -> Result<Vec<u8>, Error> {
     let map = context.map;
     let entities = context.entities;
     let materials = context.materials;
     let models = context.models;
     let occurrences = context.occurrences;
-    let mut out = b"PSMP".to_vec();
-    let schema = if map.lighting_profile == LightingProfile::Hdr {
-        if map
-            .surfaces
-            .iter()
-            .any(|surface| surface.displacement.is_some())
-        {
-            5
-        } else {
-            4
-        }
-    } else if !models.is_empty() {
-        3
-    } else if !materials.is_empty() {
-        2
-    } else {
-        1
-    };
+    let schema = runtime_schema(map, materials, models);
+    let expected = serialized_length(context, schema)?;
+    if expected > 512 * 1024 * 1024 {
+        return Err(error(ErrorCode::BoundExceeded, None));
+    }
+    let mut out = Vec::new();
+    out.try_reserve_exact(expected)
+        .map_err(|_| error(ErrorCode::BoundExceeded, None))?;
+    out.extend_from_slice(b"PSMP");
     u32v(&mut out, schema);
     u32v(&mut out, map.bsp_version as u32);
     u32v(&mut out, map.map_revision as u32);
@@ -903,8 +902,206 @@ fn serialize(context: &SerializationContext<'_>) -> Vec<u8> {
     if map.lighting_profile == LightingProfile::Hdr {
         serialize_hdr(&mut out, context);
     }
-    out
+    if out.len() != expected {
+        return Err(error(ErrorCode::InvalidRange, None));
+    }
+    Ok(out)
 }
+
+fn runtime_schema(
+    map: &CanonicalMap,
+    materials: &[RuntimeMaterial],
+    models: &[RuntimeModel],
+) -> u32 {
+    if map.lighting_profile == LightingProfile::Hdr {
+        if map
+            .surfaces
+            .iter()
+            .any(|surface| surface.displacement.is_some())
+        {
+            5
+        } else {
+            4
+        }
+    } else if !models.is_empty() {
+        3
+    } else if !materials.is_empty() {
+        2
+    } else {
+        1
+    }
+}
+
+#[derive(Default)]
+struct SerializationLength {
+    bytes: usize,
+}
+
+impl SerializationLength {
+    fn add(&mut self, bytes: usize) -> Result<(), Error> {
+        self.bytes = self
+            .bytes
+            .checked_add(bytes)
+            .ok_or_else(|| error(ErrorCode::BoundExceeded, None))?;
+        Ok(())
+    }
+
+    fn records(&mut self, count: usize, stride: usize) -> Result<(), Error> {
+        self.add(
+            count
+                .checked_mul(stride)
+                .ok_or_else(|| error(ErrorCode::BoundExceeded, None))?,
+        )
+    }
+
+    fn field(&mut self, bytes: usize) -> Result<(), Error> {
+        self.add(4)?;
+        self.add(bytes)
+    }
+}
+
+fn serialized_length(context: &SerializationContext<'_>, schema: u32) -> Result<usize, Error> {
+    let map = context.map;
+    let mut length = SerializationLength::default();
+    length.add(33)?;
+    for material in &map.materials {
+        length.field(material.logical_path.len())?;
+        length.add(8)?;
+    }
+    for surface in &map.surfaces {
+        length.add(41)?;
+        length.records(surface.positions.len(), 12)?;
+        length.records(surface.normals.len(), 12)?;
+        length.records(surface.uv.len(), 8)?;
+        length.records(surface.lightmap_uv.len(), 8)?;
+        if schema == 5 {
+            length.records(surface.alpha.len(), 4)?;
+        }
+        length.records(surface.triangles.len(), 12)?;
+        if schema == 5 {
+            if let Some(displacement) = &surface.displacement {
+                length.add(176)?;
+                length.records(displacement.triangle_tags.len(), 2)?;
+            } else {
+                length.add(4)?;
+            }
+        }
+    }
+    match &map.lighting.samples {
+        LightingSamples::RgbExp32(samples) => length.records(samples.len(), 4)?,
+        LightingSamples::LinearRgb32(samples) => length.records(samples.len(), 12)?,
+    }
+    length.field(context.entities.source.len())?;
+    if !context.materials.is_empty() || map.lighting_profile == LightingProfile::Hdr {
+        length.add(4)?;
+        for material in context.materials {
+            add_material_length(&mut length, material, schema == 5)?;
+        }
+    }
+    if !context.models.is_empty() || map.lighting_profile == LightingProfile::Hdr {
+        length.add(4)?;
+        for model in context.models {
+            length.field(model.logical_path.len())?;
+            length.add(4)?;
+            for material in &model.materials {
+                length.field(material.logical_path.len())?;
+                add_material_length(&mut length, material, schema == 5)?;
+            }
+            length.add(4)?;
+            for primitive in &model.primitives {
+                length.add(12)?;
+                length.records(primitive.positions.len(), 12)?;
+                length.records(primitive.normals.len(), 12)?;
+                length.records(primitive.uv.len(), 8)?;
+                length.records(primitive.triangles.len(), 12)?;
+            }
+        }
+        length.add(4)?;
+        length.records(context.occurrences.len(), 32)?;
+    }
+    if map.lighting_profile == LightingProfile::Hdr {
+        add_hdr_length(&mut length, context)?;
+    }
+    Ok(length.bytes)
+}
+
+fn add_texture_length(
+    length: &mut SerializationLength,
+    texture: &RuntimeTexture,
+) -> Result<(), Error> {
+    length.field(texture.logical_path.len())?;
+    length.add(8)?;
+    length.field(texture.rgba.len())
+}
+
+fn add_material_length(
+    length: &mut SerializationLength,
+    material: &RuntimeMaterial,
+    include_detail: bool,
+) -> Result<(), Error> {
+    length.add(4)?;
+    if let Some(texture) = &material.base_texture {
+        add_texture_length(length, texture)?;
+    }
+    if include_detail {
+        length.add(4)?;
+        if let Some(texture) = &material.second_texture {
+            add_texture_length(length, texture)?;
+        }
+        length.add(4)?;
+        if let Some(detail) = &material.detail {
+            add_texture_length(length, &detail.texture)?;
+            length.add(28)?;
+        }
+    }
+    Ok(())
+}
+
+fn add_hdr_length(
+    length: &mut SerializationLength,
+    context: &SerializationContext<'_>,
+) -> Result<(), Error> {
+    let lighting = &context.map.lighting;
+    length.add(12)?;
+    length.field(context.output_role.len())?;
+    length.field(context.compiler_identity.len())?;
+    length.add(96)?;
+    length.add(4)?;
+    for member in &lighting.members {
+        length.add(
+            if matches!(member.source, Some(LightingSource::GameLump { .. })) {
+                89
+            } else {
+                85
+            },
+        )?;
+    }
+    length.add(12)?;
+    length.records(lighting.surfaces.len(), 20)?;
+    length.add(4)?;
+    length.records(lighting.world_lights.len(), 88)?;
+    length.add(4)?;
+    length.records(lighting.ambient_indexes.len(), 4)?;
+    length.add(4)?;
+    length.records(lighting.ambient_samples.len(), 76)?;
+    length.add(16)?;
+    length.add(4)?;
+    for material in context.profile_materials {
+        length.field(material.logical_path.len())?;
+        length.add(4)?;
+        length.field(material.texture.logical_path.len())?;
+        length.add(44)?;
+        length.field(material.texture.source_bytes.len())?;
+    }
+    length.add(4)?;
+    for input in context.inputs {
+        length.add(4)?;
+        length.field(input.logical_path.len())?;
+        length.add(32)?;
+    }
+    Ok(())
+}
+
 fn materialv(out: &mut Vec<u8>, material: &RuntimeMaterial, include_detail: bool) {
     out.push(material.shader);
     out.push(material.features);
@@ -1716,6 +1913,31 @@ mod tests {
             first_primitive: 0,
             smoothing_groups: 0,
         }
+    }
+
+    #[test]
+    fn runtime_texture_clones_share_the_existing_decoded_allocation() {
+        let texture = RuntimeTexture {
+            logical_path: "materials/test.vtf".to_owned(),
+            width: 1,
+            height: 1,
+            rgba: Arc::new(vec![1, 2, 3, 4]),
+        };
+        let duplicate = texture.clone();
+        assert!(Arc::ptr_eq(&texture.rgba, &duplicate.rgba));
+        assert_eq!(duplicate.rgba.as_slice(), &[1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn serialization_size_rejects_overflow_before_output_allocation() {
+        let mut length = SerializationLength::default();
+        length.add(usize::MAX).unwrap();
+        assert_eq!(length.add(1).unwrap_err().code, ErrorCode::BoundExceeded);
+        let mut length = SerializationLength::default();
+        assert_eq!(
+            length.records(usize::MAX, 2).unwrap_err().code,
+            ErrorCode::BoundExceeded
+        );
     }
 
     #[test]

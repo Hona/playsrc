@@ -168,9 +168,9 @@ struct SupplementProvider {
 pub struct Content {
     game: String,
     content_build: String,
-    providers: Vec<Provider>,
-    active_pak: Option<PakProvider>,
-    supplement: Option<SupplementProvider>,
+    providers: Arc<[Provider]>,
+    active_pak: Option<Arc<PakProvider>>,
+    supplement: Option<Arc<SupplementProvider>>,
     limits: Limits,
 }
 
@@ -333,7 +333,7 @@ impl Content {
         Ok(Self {
             game,
             content_build,
-            providers,
+            providers: providers.into(),
             active_pak: None,
             supplement: None,
             limits,
@@ -364,13 +364,13 @@ impl Content {
             }
         }
         let mut next = self.clone();
-        next.active_pak = Some(PakProvider {
+        next.active_pak = Some(Arc::new(PakProvider {
             id,
             revision,
             map_identity,
             pak: pak.clone(),
             lookup,
-        });
+        }));
         Ok(next)
     }
 
@@ -404,11 +404,11 @@ impl Content {
             }
         }
         let mut next = self.clone();
-        next.supplement = Some(SupplementProvider {
+        next.supplement = Some(Arc::new(SupplementProvider {
             id,
             revision,
             lookup,
-        });
+        }));
         Ok(next)
     }
 
@@ -507,7 +507,7 @@ impl Content {
         logical_path: String,
         mut checked: Vec<CheckedLocation>,
     ) -> Result<Resolution, Error> {
-        for provider in &self.providers {
+        for provider in self.providers.iter() {
             match provider {
                 Provider::Directory(provider) => {
                     checked.push(CheckedLocation {
@@ -1089,6 +1089,7 @@ mod tests {
                 }],
             )
             .unwrap();
+        assert!(Arc::ptr_eq(&content.providers, &supplemented.providers));
         let Resolution::Found(supplemented_result) =
             supplemented.resolve_resource("materials/a.vmt").unwrap()
         else {
@@ -1112,6 +1113,11 @@ mod tests {
                 ),
             )
             .unwrap();
+        assert!(Arc::ptr_eq(&content.providers, &active.providers));
+        assert!(Arc::ptr_eq(
+            supplemented.supplement.as_ref().unwrap(),
+            active.supplement.as_ref().unwrap()
+        ));
         let Resolution::Found(found) = active.resolve_resource("materials/a.vmt").unwrap() else {
             panic!("active PAK did not resolve")
         };

@@ -1120,12 +1120,7 @@ pub fn compile_environment(
     bsp: &Bsp,
     input: EnvironmentInputs<'_>,
 ) -> Result<WorldEnvironment, EnvironmentError> {
-    if map.bsp_version != bsp.container_version
-        || map.map_revision != bsp.map_revision
-        || input.entities.source != bsp.lumps[0].bytes(bsp)
-    {
-        return Err(failure(EnvironmentErrorCode::DependencyMismatch, None));
-    }
+    validate_environment_sources(map, bsp, &input)?;
     let visibility_identity = crate::attach_displacement_visibility(
         map,
         &playsrc_visibility::compile(bsp)
@@ -1133,7 +1128,17 @@ pub fn compile_environment(
     )
     .map_err(|_| failure(EnvironmentErrorCode::DependencyMismatch, None))?
     .identity;
-    if input.visibility.identity != visibility_identity {
+    compile_environment_prepared(map, bsp, input, visibility_identity)
+}
+
+pub fn compile_environment_prepared(
+    map: &CanonicalMap,
+    bsp: &Bsp,
+    input: EnvironmentInputs<'_>,
+    verified_visibility_identity: [u8; 32],
+) -> Result<WorldEnvironment, EnvironmentError> {
+    validate_environment_sources(map, bsp, &input)?;
+    if input.visibility.identity != verified_visibility_identity {
         return Err(failure(EnvironmentErrorCode::DependencyMismatch, None));
     }
     if input.collision.identity != map.collision_world_identity
@@ -1208,6 +1213,20 @@ pub fn compile_environment(
         master_fog_controller,
         dependencies: requests,
     })
+}
+
+fn validate_environment_sources(
+    map: &CanonicalMap,
+    bsp: &Bsp,
+    input: &EnvironmentInputs<'_>,
+) -> Result<(), EnvironmentError> {
+    if map.bsp_version != bsp.container_version
+        || map.map_revision != bsp.map_revision
+        || input.entities.source != bsp.lumps[0].bytes(bsp)
+    {
+        return Err(failure(EnvironmentErrorCode::DependencyMismatch, None));
+    }
+    Ok(())
 }
 
 pub fn select_cubemap(
