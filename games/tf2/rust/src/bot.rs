@@ -2935,6 +2935,81 @@ mod tests {
     }
 
     #[test]
+    fn spy_bot_advances_with_its_authored_stock_revolver() {
+        let mut world =
+            BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015, None).unwrap();
+        let mut random = UniformRandomStream::from_seed(0).unwrap();
+        world
+            .apply(
+                Request {
+                    operation: Operation::Add,
+                    count: 1,
+                    class: Some(PlayerClass::Spy),
+                    team: Some(PlayerTeam::Blue),
+                    difficulty: Difficulty::Expert,
+                },
+                PlayerTeam::Red,
+                PlayerClass::Heavy,
+                &mut random,
+            )
+            .unwrap();
+        for tick in 0..60 {
+            world
+                .advance(
+                    &Floor,
+                    tick,
+                    Human {
+                        team: PlayerTeam::Red,
+                        class: PlayerClass::Heavy,
+                        alive: true,
+                        position: [190.0, 50.0, 1.0],
+                        velocity: [0.0; 3],
+                    },
+                    &[],
+                    &mut random,
+                    None,
+                )
+                .unwrap();
+        }
+        assert_eq!(world.snapshots()[0].class, PlayerClass::Spy);
+        assert_eq!(
+            world.snapshots()[0].weapon.unwrap().weapon,
+            Weapon::Revolver
+        );
+        assert!(world.snapshots()[0].shots > 0);
+
+        let graph = fixture_graph();
+        let map = crate::MapRuntime::compile(&graph, 0.015, 0, Vec::new()).unwrap();
+        let mut session = crate::Session::new(Floor, [190.0, 50.0, 1.0], map);
+        session
+            .configure_navigation(fixture_mesh(), &graph)
+            .unwrap();
+        let snapshot = session
+            .advance(crate::Command {
+                bot_request: Some(Request {
+                    operation: Operation::Add,
+                    count: 1,
+                    class: Some(PlayerClass::Spy),
+                    team: Some(PlayerTeam::Blue),
+                    difficulty: Difficulty::Expert,
+                }),
+                ..crate::Command::default()
+            })
+            .unwrap();
+        assert_eq!(snapshot.bots[0].class, PlayerClass::Spy);
+        assert_eq!(snapshot.bots[0].weapon.unwrap().weapon, Weapon::Revolver);
+        let mut heard_revolver = false;
+        for _ in 0..60 {
+            session.advance(crate::Command::default()).unwrap();
+            heard_revolver |= session
+                .audio_events()
+                .iter()
+                .any(|event| event.definition == crate::SoundDefinition::RevolverSingle);
+        }
+        assert!(heard_revolver);
+    }
+
+    #[test]
     fn preset_payload_rosters_select_exact_offense_and_defense_classes() {
         let mut world =
             BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015, None).unwrap();
