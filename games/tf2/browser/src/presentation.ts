@@ -198,7 +198,7 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
       ][exact.activity]
       let nextActivity = mapped ?? (selectionChanged ? `ACT_${role}_VM_DRAW` : activity)
       let selected = artifact.sequences.find((value) => value.activity === nextActivity)
-      if (!selected) throw new ProjectilePresentationError("MissingModel", `${identity}:${activity}`)
+      if (!selected) throw new ProjectilePresentationError("MissingModel", `${identity}:${nextActivity}`)
       const elapsed = Number(snapshot.tick - actionTick) * 0.015
       if (!selectionChanged && exact === undefined && weapon.reload === 0 && nextActivity === activity && nextActivity !== `ACT_${role}_VM_IDLE` && elapsed >= selected.durationSeconds) {
         nextActivity = `ACT_${role}_VM_IDLE`

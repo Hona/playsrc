@@ -235,8 +235,8 @@ impl WeaponRuntime {
                         clip: self.clip,
                         reserve: self.reserve,
                     });
-                    self.reload = ReloadPhase::Finish;
-                    self.reload_due_tick = Some(tick);
+                    self.reload = ReloadPhase::Ready;
+                    self.reload_due_tick = None;
                 } else {
                     self.reload = ReloadPhase::Insert;
                     self.reload_due_tick =
@@ -418,9 +418,12 @@ mod tests {
         pistol.advance_reload(60, 0.01, &mut activities, &mut ammo);
         assert_eq!((pistol.clip, pistol.reserve), (10, 0));
         assert_eq!(ammo.len(), 1);
-        assert_eq!(pistol.reload, ReloadPhase::Finish);
-        pistol.advance_reload(60, 0.01, &mut activities, &mut ammo);
         assert_eq!(pistol.reload, ReloadPhase::Ready);
+        assert!(
+            !activities
+                .iter()
+                .any(|event| event.activity == WeaponActivity::ReloadFinish)
+        );
     }
 
     #[test]
