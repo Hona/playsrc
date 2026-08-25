@@ -85,6 +85,12 @@ export type Tf2HudPlayer = Readonly<{
   classModel: Tf2HudAvailability<Tf2HudClassModel>
   health: Tf2HudAvailability<Tf2HudHealth>
   conditions: Tf2ConditionWords
+  spy?: Readonly<{
+    cloakMeter: number
+    invisibility: number
+    disguise: Readonly<{ class: Tf2Class; team: Tf2PlayableTeam }> | null
+    desiredDisguise: Readonly<{ class: Tf2Class; team: Tf2PlayableTeam }> | null
+  }>
   weapons: readonly Tf2HudWeapon[]
   activeWeapon: Tf2HudAvailability<number>
   weaponSelection: Tf2HudWeaponSelection

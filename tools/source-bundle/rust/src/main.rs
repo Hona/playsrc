@@ -2498,6 +2498,7 @@ fn main() -> Result<(), String> {
         "models/weapons/c_models/c_scout_arms.mdl",
         "models/weapons/c_models/c_engineer_arms.mdl",
         "models/weapons/c_models/c_sniper_arms.mdl",
+        "models/weapons/c_models/c_spy_arms.mdl",
         "models/player/scout.mdl",
         "models/player/sniper.mdl",
         "models/player/soldier.mdl",
@@ -2535,6 +2536,11 @@ fn main() -> Result<(), String> {
         "models/weapons/c_models/c_pyro_arms.mdl",
         "models/weapons/c_models/c_flamethrower/c_flamethrower.mdl",
         "models/weapons/c_models/c_fireaxe_pyro/c_fireaxe_pyro.mdl",
+        "models/weapons/c_models/c_revolver/c_revolver.mdl",
+        "models/weapons/c_models/c_knife/c_knife.mdl",
+        "models/weapons/c_models/c_sapper/c_sapper.mdl",
+        "models/weapons/v_models/v_pda_spy.mdl",
+        "models/weapons/v_models/v_watch_spy.mdl",
     ] {
         model_paths.insert(path.to_owned());
     }
@@ -2751,6 +2757,7 @@ fn main() -> Result<(), String> {
         "muzzle_scattergun",
         "muzzle_pistol",
         "muzzle_shotgun",
+        "muzzle_revolver",
         "ExplosionCore_Wall",
         "ExplosionCore_MidAir",
         "new_flame",
@@ -2793,6 +2800,7 @@ fn main() -> Result<(), String> {
         "resource/linux_fonts/firasans-regular.ttf",
         "scripts/game_sounds_weapons.txt",
         "scripts/game_sounds.txt",
+        "scripts/game_sounds_player.txt",
         "scripts/soundmixers.txt",
         "sound/items/smallmedkit1.wav",
         "sound/items/gunpickup2.wav",
@@ -2852,6 +2860,15 @@ fn main() -> Result<(), String> {
         "sound/weapons/bottle_hit1.wav",
         "sound/weapons/bottle_hit2.wav",
         "sound/weapons/bottle_hit3.wav",
+        "sound/weapons/revolver_shoot.wav",
+        "sound/weapons/revolver_worldreload.wav",
+        "sound/weapons/knife_swing.wav",
+        "sound/weapons/blade_hit1.wav",
+        "sound/weapons/blade_hit2.wav",
+        "sound/weapons/blade_hit3.wav",
+        "sound/weapons/blade_hitworld.wav",
+        "sound/player/spy_cloak.wav",
+        "sound/player/spy_uncloak.wav",
     ] {
         let consumer = if path.starts_with("sound/") {
             "audio-wave"
