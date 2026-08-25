@@ -52,6 +52,8 @@ describe("configured TF2 UI resource descriptor", () => {
       .toBe("1f18cb73d9ef54ff79ea208c9996db0655ac731b2ee8e9a82ff63a4b697f400f")
     expect(tf2UiResources.sources.find((source) => source.logicalPath === "resource/optionssubkeyboard.res")?.sha256)
       .toBe("99cc7c486fa19b58c76842a8ce5abf8b65ff13fbbd097f5eb7e195783b570902")
+    expect(tf2UiResources.sources.find((source) => source.logicalPath === "resource/ui/teammenu.res"))
+      .toMatchObject({ domain: "team-selection", byteLength: 14_354, sha256: "650867b7928f728ff6fce107745018223f3a19b1193b4c7f5fae54e391f102a0" })
     expect(tf2UiResources.animation.compositionOrder).toEqual([
       "scripts/hudanimations.txt",
       "scripts/hudanimations_tf.txt",
