@@ -1396,6 +1396,8 @@ export class Tf2Application {
       this.#audioWorld = new SourceAudioWorld(this.#audioRegistry, { maxActiveVoices: 128 })
       finishLoadPhase("audioSetup")
       this.#requireOperation(operation)
+      await this.#client!.activate(this.#generation)
+      finishLoadPhase("activation")
       this.#paused = document.hidden
       this.#resetTeamSelection()
       this.#gameUi?.dispatch({ kind: "loading-progress", phase: "complete" })
@@ -1408,8 +1410,6 @@ export class Tf2Application {
       await this.#showTeamSelection()
       await admission
       this.#requireOperation(operation)
-      await this.#client!.activate(this.#generation)
-      finishLoadPhase("activation")
       this.#advanceLoading("synchronizing-game-state")
       this.#snapshot = (await this.#initialPublication(this.#generation)).snapshot
       this.#requireOperation(operation)
