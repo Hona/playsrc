@@ -67,6 +67,12 @@ The denominator is Not accepted. Reviewer identity, review date, reviewed commit
 
 ## Behavior Families
 
+### Bounded BSP/PVS query-performance checkpoint
+
+| Source/TF2 behavior | playsrc behavior | Evidence | Status |
+|---|---|---|---|
+| Immutable cluster membership and visible BSP ancestors are retained across repeated views; camera-side traversal emits exactly the same ordered leaves, first-encounter surfaces, sky state, area-connected candidates, no-vis/outside decisions, and world/view SHA-256 identities. Exact origin bits, portal state/revision, candidate identity, and bypass mode invalidate complete results; independently selected 3D-sky origins and authored area restrictions remain unchanged at the consumer seam. | Direct PVS/PAS word decoding, at most four immutable map-wide cluster/all-parent indexes within 8 MiB, reusable dense leaf/node/face scratch, 256-area connectivity bits, and 64 exact-key complete views within 8 MiB replace full-leaf/full-node scans and tree-based membership without changing public structures or Worker/PVIS interfaces. | Eleven deterministic package vectors, exact configured `jump_beef`/`pl_upward` output-hash equality over 165 queries each, configured displacement/brush integrations, checked owner-phase reports, and headed Chromium visibility-transaction p50/p95 `0.150/0.260 -> 0.115/0.185 ms` with 3,161 unchanged Worker RPCs; unrelated shared-profile display assertions remain application-owned. | Ready |
+
 ### `jump_beef` world-surface parity checkpoint
 
 | Source/TF2 behavior | playsrc behavior | Evidence | Status |

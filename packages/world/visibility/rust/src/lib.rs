@@ -1,6 +1,7 @@
 use playsrc_bsp::{Bsp, Leaf, LumpData, Model, Node, Visibility as BspVisibility};
 use sha2::{Digest, Sha256};
 use std::{
+    cell::RefCell,
     collections::{BTreeMap, BTreeSet, VecDeque},
     fmt,
 };
@@ -139,6 +140,50 @@ pub struct ViewCache {
     order: VecDeque<[u8; 32]>,
     entries: BTreeMap<[u8; 32], (usize, ViewResult)>,
 }
+
+const MAX_INDEXED_WORLDS: usize = 4;
+const MAX_INDEX_BYTES: usize = 8 * 1024 * 1024;
+const MAX_MEMOIZED_VIEWS: usize = 64;
+const MAX_MEMOIZED_VIEW_BYTES: usize = 8 * 1024 * 1024;
+
+struct TopologyIndex {
+    identity: [u8; 32],
+    cluster_offsets: Vec<usize>,
+    cluster_leaves: Vec<usize>,
+    node_parent_offsets: Vec<usize>,
+    node_parents: Vec<usize>,
+    leaf_parent_offsets: Vec<usize>,
+    leaf_parents: Vec<usize>,
+    face_words: usize,
+}
+
+#[derive(Default)]
+struct TraversalScratch {
+    allowed_leaves: Vec<u64>,
+    active_nodes: Vec<u64>,
+    emitted_leaves: Vec<u64>,
+    seen_faces: Vec<u64>,
+    ancestor_stack: Vec<usize>,
+    traversal_stack: Vec<i32>,
+}
+
+struct QueryRuntime {
+    index_bytes: usize,
+    indexes: VecDeque<TopologyIndex>,
+    views: ViewCache,
+    scratch: TraversalScratch,
+}
+
+thread_local! {
+    static QUERY_RUNTIME: RefCell<QueryRuntime> = RefCell::new(QueryRuntime {
+        index_bytes: 0,
+        indexes: VecDeque::new(),
+        views: ViewCache::new(MAX_MEMOIZED_VIEWS, MAX_MEMOIZED_VIEW_BYTES)
+            .expect("nonzero internal visibility cache bounds"),
+        scratch: TraversalScratch::default(),
+    });
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ErrorCode {
     MissingLump,
@@ -328,42 +373,219 @@ fn decode_rows(
         if offset < v.compressed_range.start || offset > v.compressed_range.end {
             return Err(error(ErrorCode::InvalidOffset, Some(cluster)));
         }
+        let row_start = result.len();
+        result.resize(row_start + words, 0);
         let mut at = offset - v.compressed_range.start;
-        let mut decoded = Vec::with_capacity(row_bytes);
-        while decoded.len() < row_bytes {
+        let mut decoded = 0;
+        while decoded < row_bytes {
             let Some(&byte) = v.compressed_bytes.get(at) else {
                 return Err(error(ErrorCode::TruncatedRow, Some(cluster)));
             };
             at += 1;
-            if byte != 0 {
-                decoded.push(byte)
-            } else {
+            if byte == 0 {
                 let Some(&run) = v.compressed_bytes.get(at) else {
                     return Err(error(ErrorCode::TruncatedRow, Some(cluster)));
                 };
                 at += 1;
-                if run == 0 || decoded.len() + run as usize > row_bytes {
+                if run == 0 || decoded + usize::from(run) > row_bytes {
                     return Err(error(ErrorCode::InvalidRun, Some(cluster)));
                 }
-                decoded.resize(decoded.len() + run as usize, 0);
+                decoded += usize::from(run);
+            } else {
+                result[row_start + decoded / 4] |= u32::from(byte) << ((decoded % 4) * 8);
+                decoded += 1;
             }
         }
-        if !clusters.is_multiple_of(8)
-            && decoded
-                .last()
-                .is_some_and(|byte| byte & !((1_u8 << (clusters % 8)) - 1) != 0)
-        {
-            return Err(error(ErrorCode::InvalidRun, Some(cluster)));
-        }
-        let mut row = vec![0_u32; words];
-        for bit in 0..clusters {
-            if decoded[bit / 8] & (1 << (bit % 8)) != 0 {
-                row[bit / 32] |= 1 << (bit % 32);
+        if !clusters.is_multiple_of(8) {
+            let last =
+                (result[row_start + (row_bytes - 1) / 4] >> (((row_bytes - 1) % 4) * 8)) as u8;
+            if last & !((1_u8 << (clusters % 8)) - 1) != 0 {
+                return Err(error(ErrorCode::InvalidRun, Some(cluster)));
             }
         }
-        result.extend(row);
     }
     Ok(result)
+}
+
+impl TopologyIndex {
+    fn build(world: &World) -> Result<Self, Error> {
+        let mut cluster_offsets = vec![0; world.cluster_count + 1];
+        let mut node_parent_offsets = vec![0; world.nodes.len() + 1];
+        let mut leaf_parent_offsets = vec![0; world.leaves.len() + 1];
+        for (leaf_index, leaf) in world.leaves.iter().enumerate() {
+            if let Ok(cluster) = usize::try_from(leaf.cluster) {
+                let count = cluster_offsets
+                    .get_mut(cluster + 1)
+                    .ok_or_else(|| error(ErrorCode::InvalidReference, Some(leaf_index)))?;
+                *count += 1;
+            }
+        }
+        for (node_index, node) in world.nodes.iter().enumerate() {
+            for child in node.children {
+                if child < 0 {
+                    let leaf = (-1_i64 - i64::from(child)) as usize;
+                    let count = leaf_parent_offsets
+                        .get_mut(leaf + 1)
+                        .ok_or_else(|| error(ErrorCode::InvalidReference, Some(node_index)))?;
+                    *count += 1;
+                } else {
+                    let count = node_parent_offsets
+                        .get_mut(child as usize + 1)
+                        .ok_or_else(|| error(ErrorCode::InvalidReference, Some(node_index)))?;
+                    *count += 1;
+                }
+            }
+        }
+        for offsets in [
+            &mut cluster_offsets,
+            &mut node_parent_offsets,
+            &mut leaf_parent_offsets,
+        ] {
+            for index in 1..offsets.len() {
+                offsets[index] += offsets[index - 1];
+            }
+        }
+        let mut cluster_leaves = vec![0; *cluster_offsets.last().unwrap_or(&0)];
+        let mut node_parents = vec![0; *node_parent_offsets.last().unwrap_or(&0)];
+        let mut leaf_parents = vec![0; *leaf_parent_offsets.last().unwrap_or(&0)];
+        let mut cluster_cursor = cluster_offsets[..world.cluster_count].to_vec();
+        let mut node_cursor = node_parent_offsets[..world.nodes.len()].to_vec();
+        let mut leaf_cursor = leaf_parent_offsets[..world.leaves.len()].to_vec();
+        for (leaf_index, leaf) in world.leaves.iter().enumerate() {
+            if let Ok(cluster) = usize::try_from(leaf.cluster) {
+                let cursor = &mut cluster_cursor[cluster];
+                cluster_leaves[*cursor] = leaf_index;
+                *cursor += 1;
+            }
+        }
+        for (node_index, node) in world.nodes.iter().enumerate() {
+            for child in node.children {
+                if child < 0 {
+                    let leaf = (-1_i64 - i64::from(child)) as usize;
+                    let cursor = &mut leaf_cursor[leaf];
+                    leaf_parents[*cursor] = node_index;
+                    *cursor += 1;
+                } else {
+                    let cursor = &mut node_cursor[child as usize];
+                    node_parents[*cursor] = node_index;
+                    *cursor += 1;
+                }
+            }
+        }
+        let face_words = world
+            .leaf_faces
+            .iter()
+            .chain(world.leaf_displacements.iter().flatten())
+            .copied()
+            .max()
+            .map_or(0, |face| (usize::from(face) + 1).div_ceil(64));
+        Ok(Self {
+            identity: world.identity,
+            cluster_offsets,
+            cluster_leaves,
+            node_parent_offsets,
+            node_parents,
+            leaf_parent_offsets,
+            leaf_parents,
+            face_words,
+        })
+    }
+
+    fn bytes(&self) -> usize {
+        size_of::<Self>()
+            + [
+                self.cluster_offsets.capacity(),
+                self.cluster_leaves.capacity(),
+                self.node_parent_offsets.capacity(),
+                self.node_parents.capacity(),
+                self.leaf_parent_offsets.capacity(),
+                self.leaf_parents.capacity(),
+            ]
+            .into_iter()
+            .sum::<usize>()
+                * size_of::<usize>()
+    }
+}
+
+impl QueryRuntime {
+    fn index(&mut self, world: &World) -> Result<usize, Error> {
+        if let Some(position) = self
+            .indexes
+            .iter()
+            .position(|index| index.identity == world.identity)
+        {
+            if position + 1 != self.indexes.len() {
+                let index = self.indexes.remove(position).expect("existing index");
+                self.indexes.push_back(index);
+            }
+            return Ok(self.indexes.len() - 1);
+        }
+        let index = TopologyIndex::build(world)?;
+        let bytes = index.bytes();
+        if bytes > MAX_INDEX_BYTES {
+            return Err(error(ErrorCode::CacheLimit, None));
+        }
+        while self.indexes.len() >= MAX_INDEXED_WORLDS || self.index_bytes + bytes > MAX_INDEX_BYTES
+        {
+            let oldest = self.indexes.pop_front().expect("index budget is nonzero");
+            self.index_bytes -= oldest.bytes();
+        }
+        self.index_bytes += bytes;
+        self.indexes.push_back(index);
+        Ok(self.indexes.len() - 1)
+    }
+}
+
+impl TraversalScratch {
+    fn prepare(&mut self, leaves: usize, nodes: usize, faces: usize) {
+        reset_bits(&mut self.allowed_leaves, leaves.div_ceil(64));
+        reset_bits(&mut self.active_nodes, nodes.div_ceil(64));
+        reset_bits(&mut self.emitted_leaves, leaves.div_ceil(64));
+        reset_bits(&mut self.seen_faces, faces);
+        self.ancestor_stack.clear();
+        self.traversal_stack.clear();
+    }
+}
+
+fn reset_bits(bits: &mut Vec<u64>, words: usize) {
+    bits.resize(words, 0);
+    bits.fill(0);
+}
+
+#[inline]
+fn insert_bit(bits: &mut [u64], index: usize) -> bool {
+    let word = &mut bits[index / 64];
+    let mask = 1_u64 << (index % 64);
+    let inserted = *word & mask == 0;
+    *word |= mask;
+    inserted
+}
+
+#[inline]
+fn contains_bit(bits: &[u64], index: usize) -> bool {
+    bits[index / 64] & (1_u64 << (index % 64)) != 0
+}
+
+fn activate_leaf(index: &TopologyIndex, scratch: &mut TraversalScratch, leaf: usize) {
+    if !insert_bit(&mut scratch.allowed_leaves, leaf) {
+        return;
+    }
+    let start = index.leaf_parent_offsets[leaf];
+    let end = index.leaf_parent_offsets[leaf + 1];
+    for parent in &index.leaf_parents[start..end] {
+        if insert_bit(&mut scratch.active_nodes, *parent) {
+            scratch.ancestor_stack.push(*parent);
+        }
+    }
+    while let Some(node) = scratch.ancestor_stack.pop() {
+        let start = index.node_parent_offsets[node];
+        let end = index.node_parent_offsets[node + 1];
+        for parent in &index.node_parents[start..end] {
+            if insert_bit(&mut scratch.active_nodes, *parent) {
+                scratch.ancestor_stack.push(*parent);
+            }
+        }
+    }
 }
 
 fn parse_areas(bsp: &Bsp) -> Result<Vec<Area>, Error> {
@@ -708,7 +930,7 @@ impl World {
             bounds.maximum[2] - center[2],
         ];
         let mut stack = vec![model.head_node];
-        let mut seen = BTreeSet::new();
+        let mut seen = vec![0_u64; self.leaves.len().div_ceil(64)];
         let mut output = Vec::new();
         while let Some(child) = stack.pop() {
             if child < 0 {
@@ -716,7 +938,7 @@ impl World {
                 if leaf >= self.leaves.len() {
                     return Err(error(ErrorCode::InvalidReference, Some(leaf)));
                 }
-                if seen.insert(leaf) {
+                if insert_bit(&mut seen, leaf) {
                     output.push(leaf);
                 }
                 continue;
@@ -776,6 +998,22 @@ impl World {
             .collect();
         unique_clusters.sort_unstable();
         unique_clusters.dedup();
+        let cache_identity = view_identity(ViewIdentityInput {
+            world: self,
+            state,
+            candidates,
+            clusters: &unique_clusters,
+            origins: &query.origins,
+            origin_leaves: &origin_leaves,
+            bypass: query.bypass_pvs,
+            outside: outside_world,
+        });
+        if let Some(cached) =
+            QUERY_RUNTIME.with(|runtime| runtime.borrow_mut().views.get(&cache_identity).cloned())
+        {
+            return Ok(cached);
+        }
+
         let all_clusters =
             outside_world || query.bypass_pvs || self.visibility_mode == VisibilityMode::NoVis;
         let merged_pvs = if all_clusters {
@@ -799,107 +1037,127 @@ impl World {
         } else {
             state.visible_areas(self, start_area)?
         };
-        let visible_area_set: BTreeSet<_> = visible_areas.iter().copied().collect();
-        let mut allowed = vec![false; self.leaves.len()];
-        for (index, leaf) in self.leaves.iter().enumerate() {
-            let area = usize::from(leaf.area_and_flags & 0x01ff);
-            let cluster_visible = outside_world
-                || (leaf.cluster >= 0
-                    && cluster_bit(&merged_pvs, self.cluster_count, leaf.cluster as usize));
-            let area_visible = outside_world
-                || start_area == 0
-                || self.areas.is_empty()
-                || visible_area_set.contains(&area);
-            allowed[index] = cluster_visible && area_visible;
-        }
-        let leaves = self.front_to_back_leaves(query.origins[0], &allowed)?;
-        let mut seen_faces = BTreeSet::new();
-        let mut world_surfaces = Vec::new();
-        for leaf in &leaves {
-            let record = &self.leaves[*leaf];
-            let start = usize::from(record.first_leaf_face);
-            let end = start + usize::from(record.leaf_face_count);
-            for face in &self.leaf_faces[start..end] {
-                if seen_faces.insert(*face) {
-                    world_surfaces.push(*face);
-                }
-            }
-            for face in &self.leaf_displacements[*leaf] {
-                if seen_faces.insert(*face) {
-                    world_surfaces.push(*face);
-                }
-            }
-        }
-        let visible_leaf_set: BTreeSet<_> = leaves.iter().copied().collect();
-        let candidate_ids = candidates
-            .candidates
-            .iter()
-            .filter(|candidate| {
-                outside_world
-                    || candidate
-                        .leaves
-                        .iter()
-                        .any(|leaf| visible_leaf_set.contains(leaf))
-            })
-            .map(|candidate| candidate.id)
-            .collect();
         let sky = sky_visibility(&origin_leaves, &self.leaves);
-        let cache_identity = view_identity(ViewIdentityInput {
-            world: self,
-            state,
-            candidates,
-            clusters: &unique_clusters,
-            origins: &query.origins,
-            origin_leaves: &origin_leaves,
-            bypass: query.bypass_pvs,
-            outside: outside_world,
-        });
-        Ok(ViewResult {
-            cache_identity,
-            origin_leaves,
-            origin_clusters,
-            outside_world,
-            merged_pvs,
-            visible_areas,
-            sky,
-            leaves,
-            world_surfaces,
-            candidates: candidate_ids,
-        })
-    }
 
-    fn front_to_back_leaves(
-        &self,
-        origin: [f32; 3],
-        allowed: &[bool],
-    ) -> Result<Vec<usize>, Error> {
-        let mut output = Vec::new();
-        let mut seen = BTreeSet::new();
-        let mut stack = vec![
-            self.models
+        QUERY_RUNTIME.with(|runtime| {
+            let mut runtime = runtime.borrow_mut();
+            let position = runtime.index(self)?;
+            let QueryRuntime {
+                indexes,
+                views,
+                scratch,
+                ..
+            } = &mut *runtime;
+            let index = &indexes[position];
+            scratch.prepare(self.leaves.len(), self.nodes.len(), index.face_words);
+            let mut area_bits = [0_u64; 4];
+            for area in &visible_areas {
+                insert_bit(&mut area_bits, *area);
+            }
+            if outside_world {
+                for leaf in 0..self.leaves.len() {
+                    activate_leaf(index, scratch, leaf);
+                }
+            } else {
+                for (word_index, mut word) in merged_pvs.iter().copied().enumerate() {
+                    while word != 0 {
+                        let cluster = word_index * 32 + word.trailing_zeros() as usize;
+                        word &= word - 1;
+                        if cluster >= self.cluster_count {
+                            continue;
+                        }
+                        let start = index.cluster_offsets[cluster];
+                        let end = index.cluster_offsets[cluster + 1];
+                        for leaf in &index.cluster_leaves[start..end] {
+                            let area = usize::from(self.leaves[*leaf].area_and_flags & 0x01ff);
+                            if start_area == 0
+                                || self.areas.is_empty()
+                                || contains_bit(&area_bits, area)
+                            {
+                                activate_leaf(index, scratch, *leaf);
+                            }
+                        }
+                    }
+                }
+            }
+
+            let head = self
+                .models
                 .first()
                 .ok_or_else(|| error(ErrorCode::InvalidReference, None))?
-                .head_node,
-        ];
-        while let Some(child) = stack.pop() {
-            if child < 0 {
-                let leaf = (-1_i64 - i64::from(child)) as usize;
-                if allowed.get(leaf).copied().unwrap_or(false) && seen.insert(leaf) {
-                    output.push(leaf);
+                .head_node;
+            scratch.traversal_stack.push(head);
+            let mut leaves = Vec::new();
+            while let Some(child) = scratch.traversal_stack.pop() {
+                if child < 0 {
+                    let leaf = (-1_i64 - i64::from(child)) as usize;
+                    if leaf >= self.leaves.len() {
+                        return Err(error(ErrorCode::InvalidReference, Some(leaf)));
+                    }
+                    if contains_bit(&scratch.allowed_leaves, leaf)
+                        && insert_bit(&mut scratch.emitted_leaves, leaf)
+                    {
+                        leaves.push(leaf);
+                    }
+                    continue;
                 }
-                continue;
+                let node_index = child as usize;
+                let node = self
+                    .nodes
+                    .get(node_index)
+                    .ok_or_else(|| error(ErrorCode::InvalidReference, Some(node_index)))?;
+                if !contains_bit(&scratch.active_nodes, node_index) {
+                    continue;
+                }
+                let plane = self.planes[node.plane_index as usize];
+                let distance = dot3(plane.normal, query.origins[0]) - plane.distance;
+                let near_side = usize::from(distance < 0.0);
+                scratch.traversal_stack.push(node.children[1 - near_side]);
+                scratch.traversal_stack.push(node.children[near_side]);
             }
-            let node = self
-                .nodes
-                .get(child as usize)
-                .ok_or_else(|| error(ErrorCode::InvalidReference, Some(child as usize)))?;
-            let plane = self.planes[node.plane_index as usize];
-            let distance = dot3(plane.normal, origin) - plane.distance;
-            let near_side = usize::from(distance < 0.0);
-            stack.push(node.children[1 - near_side]);
-            stack.push(node.children[near_side]);
-        }
-        Ok(output)
+            let mut world_surfaces = Vec::new();
+            for leaf in &leaves {
+                let record = &self.leaves[*leaf];
+                let start = usize::from(record.first_leaf_face);
+                let end = start + usize::from(record.leaf_face_count);
+                for face in self.leaf_faces[start..end]
+                    .iter()
+                    .chain(&self.leaf_displacements[*leaf])
+                {
+                    if insert_bit(&mut scratch.seen_faces, usize::from(*face)) {
+                        world_surfaces.push(*face);
+                    }
+                }
+            }
+            let candidate_ids = candidates
+                .candidates
+                .iter()
+                .filter(|candidate| {
+                    outside_world
+                        || candidate
+                            .leaves
+                            .iter()
+                            .any(|leaf| contains_bit(&scratch.emitted_leaves, *leaf))
+                })
+                .map(|candidate| candidate.id)
+                .collect();
+            let result = ViewResult {
+                cache_identity,
+                origin_leaves,
+                origin_clusters,
+                outside_world,
+                merged_pvs,
+                visible_areas,
+                sky,
+                leaves,
+                world_surfaces,
+                candidates: candidate_ids,
+            };
+            if view_result_bytes(&result) <= MAX_MEMOIZED_VIEW_BYTES {
+                views.insert(result.clone())?;
+            }
+            Ok(result)
+        })
     }
 }
 
@@ -1007,20 +1265,22 @@ impl AreaState {
         if start == 0 {
             return Ok((0..world.areas.len()).collect());
         }
-        let mut visited = BTreeSet::new();
+        let mut visited = [0_u64; 4];
         let mut queue = VecDeque::from([start]);
-        visited.insert(start);
+        insert_bit(&mut visited, start);
         while let Some(area_index) = queue.pop_front() {
             let area = world.areas[area_index];
             for portal in &world.portals[area.first_portal..area.first_portal + area.portal_count] {
                 if self.open.get(&portal.key).copied().unwrap_or(false)
-                    && visited.insert(portal.destination_area)
+                    && insert_bit(&mut visited, portal.destination_area)
                 {
                     queue.push_back(portal.destination_area);
                 }
             }
         }
-        Ok(visited.into_iter().collect())
+        Ok((0..world.areas.len())
+            .filter(|area| contains_bit(&visited, *area))
+            .collect())
     }
 }
 
@@ -1086,10 +1346,6 @@ fn all_cluster_words(clusters: usize, words: usize) -> Vec<u32> {
         *last = (1_u32 << (clusters % 32)) - 1;
     }
     result
-}
-
-fn cluster_bit(words: &[u32], clusters: usize, cluster: usize) -> bool {
-    cluster < clusters && words[cluster / 32] & (1 << (cluster % 32)) != 0
 }
 
 fn sky_visibility(origin_leaves: &[usize], leaves: &[Leaf]) -> SkyVisibility {
@@ -1594,5 +1850,238 @@ mod tests {
             .unwrap();
         assert_eq!(result.merged_pvs, [0b111]);
         assert_eq!(result.leaves, [0, 1]);
+    }
+
+    #[test]
+    fn packed_row_decode_preserves_word_boundaries_and_error_precedence() {
+        let valid = BspVisibility {
+            cluster_count: 33,
+            offsets: vec![[268, 268]; 33],
+            compressed_bytes: vec![0x81, 0, 2, 0x80, 0x01],
+            compressed_range: 268..273,
+        };
+        let rows = decode_rows(&valid, 0, 33, 2).unwrap();
+        assert_eq!(&rows[..2], &[0x8000_0081, 0x0000_0001]);
+        assert_eq!(rows.len(), 66);
+
+        for (bytes, expected) in [
+            (vec![0], ErrorCode::TruncatedRow),
+            (vec![0, 0], ErrorCode::InvalidRun),
+            (vec![0, 6], ErrorCode::InvalidRun),
+            (vec![0, 4, 0b10], ErrorCode::InvalidRun),
+        ] {
+            let invalid = BspVisibility {
+                cluster_count: 33,
+                offsets: vec![[268, 268]; 33],
+                compressed_range: 268..268 + bytes.len(),
+                compressed_bytes: bytes,
+            };
+            assert_eq!(decode_rows(&invalid, 0, 33, 2).unwrap_err().code, expected);
+        }
+        let mut bad_offset = valid;
+        bad_offset.offsets[0][0] = 267;
+        assert_eq!(
+            decode_rows(&bad_offset, 0, 33, 2).unwrap_err(),
+            error(ErrorCode::InvalidOffset, Some(0))
+        );
+    }
+
+    #[test]
+    fn shared_children_keep_camera_side_order_and_first_face_occurrence() {
+        let mut world = view_world();
+        world.nodes[0].children = [1, 2];
+        world.nodes.push(Node {
+            plane_index: 1,
+            children: [-1, -3],
+            mins: [-16; 3],
+            maxs: [16; 3],
+            first_face: 0,
+            face_count: 0,
+            area: 0,
+            padding: 0,
+        });
+        world.leaf_faces = vec![0, 63, 63, 64, u16::MAX];
+        world.leaf_displacements[1] = vec![u16::MAX, 0];
+        world.identity = world_identity(&world);
+        let mut state = AreaState::new(&world);
+        state.set_portals(&[(7, true)]).unwrap();
+        let candidates = CandidateSet::compile(&world, 0, &[]).unwrap();
+
+        let front = world
+            .view(
+                &state,
+                &candidates,
+                &ViewQuery {
+                    origins: vec![[1.0, 1.0, 0.0]],
+                    bypass_pvs: false,
+                },
+            )
+            .unwrap();
+        assert_eq!(front.leaves, [0, 1, 2]);
+        assert_eq!(front.world_surfaces, [0, 63, 64, u16::MAX]);
+        assert_eq!(
+            front,
+            world
+                .view(
+                    &state,
+                    &candidates,
+                    &ViewQuery {
+                        origins: vec![[1.0, 1.0, 0.0]],
+                        bypass_pvs: false,
+                    },
+                )
+                .unwrap()
+        );
+
+        let back = world
+            .view(
+                &state,
+                &candidates,
+                &ViewQuery {
+                    origins: vec![[-1.0, 1.0, 0.0]],
+                    bypass_pvs: false,
+                },
+            )
+            .unwrap();
+        assert_eq!(back.leaves, [0, 2, 1]);
+        assert_eq!(back.world_surfaces, [0, 63, u16::MAX, 64]);
+        assert_ne!(front.cache_identity, back.cache_identity);
+    }
+
+    #[test]
+    fn exact_origin_portal_and_candidate_keys_never_reuse_stale_views() {
+        let world = view_world();
+        let mut state = AreaState::new(&world);
+        let empty = CandidateSet::compile(&world, 0, &[]).unwrap();
+        let first_query = ViewQuery {
+            origins: vec![[1.0, 1.0, 0.0]],
+            bypass_pvs: false,
+        };
+        let first = world.view(&state, &empty, &first_query).unwrap();
+        let moved = world
+            .view(
+                &state,
+                &empty,
+                &ViewQuery {
+                    origins: vec![[1.125, 1.0, 0.0]],
+                    bypass_pvs: false,
+                },
+            )
+            .unwrap();
+        assert_eq!(first.origin_leaves, moved.origin_leaves);
+        assert_eq!(first.leaves, moved.leaves);
+        assert_ne!(first.cache_identity, moved.cache_identity);
+
+        state.set_portals(&[(7, true)]).unwrap();
+        let open = world.view(&state, &empty, &first_query).unwrap();
+        assert_eq!(open.visible_areas, [1, 2]);
+        assert_eq!(open.leaves, [0, 1, 2]);
+        assert_ne!(open.cache_identity, first.cache_identity);
+        state.set_portals(&[(7, false)]).unwrap();
+        let closed_again = world.view(&state, &empty, &first_query).unwrap();
+        assert_eq!(closed_again.leaves, first.leaves);
+        assert_ne!(closed_again.cache_identity, first.cache_identity);
+
+        let occupied = CandidateSet::compile(
+            &world,
+            0,
+            &[CandidateInput {
+                id: CandidateId {
+                    kind: CandidateKind::StaticProp,
+                    index: 9,
+                },
+                membership: CandidateMembership::CompiledLeaves(vec![0]),
+                bounds: None,
+            }],
+        )
+        .unwrap();
+        let with_candidate = world.view(&state, &occupied, &first_query).unwrap();
+        assert_eq!(with_candidate.candidates.len(), 1);
+        assert_ne!(with_candidate.cache_identity, closed_again.cache_identity);
+        assert_eq!(
+            world
+                .view(
+                    &state,
+                    &empty,
+                    &ViewQuery {
+                        origins: vec![[f32::NAN, 1.0, 0.0]],
+                        bypass_pvs: false,
+                    },
+                )
+                .unwrap_err()
+                .code,
+            ErrorCode::NonFinite
+        );
+        let revision = state.revision;
+        assert_eq!(
+            state.set_portals(&[(7, true), (7, false)]).unwrap_err(),
+            error(ErrorCode::InvalidPortal, Some(7))
+        );
+        assert_eq!(state.revision, revision);
+        assert_eq!(
+            world.view(&state, &empty, &first_query).unwrap(),
+            closed_again
+        );
+    }
+
+    #[test]
+    fn dense_area_membership_preserves_the_highest_supported_area() {
+        let mut world = view_world();
+        world.areas.resize(
+            256,
+            Area {
+                first_portal: 0,
+                portal_count: 0,
+            },
+        );
+        world.leaves[0].area_and_flags = 255;
+        world.leaves[1].area_and_flags = 255;
+        world.identity = world_identity(&world);
+        let view = world
+            .view(
+                &AreaState::new(&world),
+                &CandidateSet::compile(&world, 0, &[]).unwrap(),
+                &ViewQuery {
+                    origins: vec![[1.0, 1.0, 0.0]],
+                    bypass_pvs: false,
+                },
+            )
+            .unwrap();
+        assert_eq!(view.visible_areas, [255]);
+        assert_eq!(view.leaves, [0, 1]);
+    }
+
+    #[test]
+    fn bounded_world_index_eviction_preserves_every_world_result() {
+        let mut worlds = Vec::new();
+        for offset in 0..MAX_INDEXED_WORLDS + 2 {
+            let mut world = view_world();
+            world.planes[0].distance = -(offset as f32);
+            world.identity = world_identity(&world);
+            worlds.push(world);
+        }
+        let query = ViewQuery {
+            origins: vec![[1.0, 1.0, 0.0]],
+            bypass_pvs: false,
+        };
+        let mut identities = Vec::new();
+        for world in &worlds {
+            let state = AreaState::new(world);
+            let candidates = CandidateSet::compile(world, 0, &[]).unwrap();
+            let result = world.view(&state, &candidates, &query).unwrap();
+            assert_eq!(result.leaves, [0, 1]);
+            identities.push(result.cache_identity);
+        }
+        for (world, identity) in worlds.iter().zip(identities) {
+            let state = AreaState::new(world);
+            let candidates = CandidateSet::compile(world, 0, &[]).unwrap();
+            assert_eq!(
+                world
+                    .view(&state, &candidates, &query)
+                    .unwrap()
+                    .cache_identity,
+                identity
+            );
+        }
     }
 }
