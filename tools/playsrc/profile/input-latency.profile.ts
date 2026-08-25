@@ -8,6 +8,7 @@ import { TF2_CLASS_NAMES, tf2ClassFromName, tf2ClassPresentation } from "@playsr
 import { expect, test } from "./application-test"
 import { divideProfileWindow, profileSampleSeconds, summarizeFrameTimes } from "./profile-window"
 import { captureTf2TeamSelection, chooseTf2Team, type Tf2TeamSelectionEvidence } from "./team-selection-evidence"
+import { exerciseTf2TeamTransitions } from "./team-selection-transitions"
 import { loadLocalConfig } from "../src/config"
 
 type RpcRecord = { kind: string; started: number; finished?: number; bytes?: number; workerTimings?: Record<string, number> }
@@ -393,6 +394,7 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
   let pageReloadLoadPerformance:unknown=null
   let storageAfterPageReload:Awaited<ReturnType<typeof storageSnapshot>>|null=null
   let teamSelectionEvidence: Tf2TeamSelectionEvidence | undefined
+  let teamSelectionTransitions: Awaited<ReturnType<typeof exerciseTf2TeamTransitions>> | undefined
   if (await page.locator("main").getAttribute("data-phase") === "MainMenu") {
     await page.keyboard.press("Backquote")
     const consoleEntry = page.locator("[aria-label='Console command']")
@@ -450,6 +452,9 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
       if(await page.locator("main").getAttribute("data-team-selection-visible")==="true"){if(await page.locator("main").getAttribute("data-console-visible")==="true")await page.keyboard.press("Backquote");await captureTf2TeamSelection(page);await chooseTf2Team(page,"red")}
       if(await page.locator("main").getAttribute("data-phase")==="Ready"){pageReloadGameplayReadyMilliseconds=await page.evaluate(()=>performance.now());pageReloadLoadPerformance=JSON.parse((await page.locator("main").getAttribute("data-load-performance"))??"null");storageAfterPageReload=await storageSnapshot();if(await page.locator("main").getAttribute("data-console-visible")==="true")await page.keyboard.press("Backquote")}
     }
+  }
+  if (!mapOnly && gameplayReadyMilliseconds !== undefined) {
+    teamSelectionTransitions = await exerciseTf2TeamTransitions(page)
   }
   const startupMilliseconds = Date.now() - wallStarted
 
@@ -1529,7 +1534,7 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
     mapOnly,
     startupMilliseconds,
     menu: menuMetrics,
-    teamSelection: teamSelectionEvidence ?? null,
+    teamSelection: teamSelectionEvidence ? { initial: teamSelectionEvidence, transitions: teamSelectionTransitions ?? null } : null,
     classes,
     hud: finalRuntime ? {
       probe: finalRuntime.hudProbe,
