@@ -96,6 +96,7 @@ pub enum TeamSelectionError {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TeamSelection {
     local_identity: u32,
+    local_index: usize,
     roster: Vec<RosterPlayer>,
     rules: TeamRules,
 }
@@ -107,6 +108,7 @@ impl TeamSelection {
         }
         Ok(Self {
             local_identity,
+            local_index: 0,
             roster: vec![RosterPlayer {
                 identity: local_identity,
                 team: PlayerTeam::Unassigned,
@@ -128,9 +130,13 @@ impl TeamSelection {
                 return Err(TeamSelectionError::DuplicatePlayer);
             }
         }
-        if !identities.contains(&self.local_identity) {
+        let Some(local_index) = roster
+            .iter()
+            .position(|player| player.identity == self.local_identity)
+        else {
             return Err(TeamSelectionError::MissingLocalPlayer);
-        }
+        };
+        self.local_index = local_index;
         self.roster = roster;
         Ok(())
     }
@@ -149,10 +155,11 @@ impl TeamSelection {
     }
 
     fn local(&self) -> &RosterPlayer {
-        self.roster
-            .iter()
-            .find(|player| player.identity == self.local_identity)
-            .expect("validated local roster identity")
+        &self.roster[self.local_index]
+    }
+
+    pub fn local_team(&self) -> PlayerTeam {
+        self.local().team
     }
 
     fn would_unbalance(&self, team: PlayerTeam, current: PlayerTeam) -> bool {
@@ -269,11 +276,7 @@ impl TeamSelection {
         {
             return Err(TeamSelectionError::TeamDisabled);
         }
-        self.roster
-            .iter_mut()
-            .find(|player| player.identity == self.local_identity)
-            .expect("validated local roster identity")
-            .team = target;
+        self.roster[self.local_index].team = target;
         Ok(Some(target))
     }
 }
