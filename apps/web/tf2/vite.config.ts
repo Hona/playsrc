@@ -37,7 +37,7 @@ export function tf2ViteConfiguration(
     },
     server: {
       host: "127.0.0.1",
-      port: 4173,
+      port: Number(process.env.PLAYSRC_DEV_PORT ?? "4173"),
       strictPort: true,
       headers: {
         "Cross-Origin-Opener-Policy": "same-origin",
@@ -50,7 +50,7 @@ export function tf2ViteConfiguration(
     },
     preview: {
       host: "127.0.0.1",
-      port: 4173,
+      port: Number(process.env.PLAYSRC_DEV_PORT ?? "4173"),
       strictPort: true,
       headers: {
         "Cross-Origin-Opener-Policy": "same-origin",
