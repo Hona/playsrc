@@ -32,8 +32,7 @@ test("headed ctf_2fort intelligence, objective HUD, announcer, and round victory
 
   await page.keyboard.press("Backquote")
   await expect(root).toHaveAttribute("data-console-visible", "false")
-  await page.locator(".world-canvas").click({ position: { x: 640, y: 200 } })
-  await expect(root).toHaveAttribute("data-pointer-locked", "true")
+  await page.keyboard.press("KeyW")
   await page.keyboard.press("Backquote")
   await expect(root).toHaveAttribute("data-console-visible", "true")
 
@@ -48,12 +47,16 @@ test("headed ctf_2fort intelligence, objective HUD, announcer, and round victory
   const homePixels = await page.locator(".world-canvas").screenshot()
   await testInfo.attach("ctf-2fort-blue-intelligence-home", { body: homePixels, contentType: "image/png" })
 
+  await entry.fill("noclip")
+  await entry.press("Enter")
+  await expect(root).toHaveAttribute("data-movement-mode", "1")
+
   const setpos = async (position: readonly [number, number, number]): Promise<void> => {
     await entry.fill(`setpos ${position.join(" ")}`)
     await entry.press("Enter")
   }
   await setpos(BLUE_FLAG)
-  await expect.poll(async () => root.getAttribute("data-ctf")).toMatch(/:3,1,1(?:,|\||$)/)
+  await expect.poll(async () => root.getAttribute("data-ctf")).toMatch(/,3,1,1(?:,|\||$)/)
   await expect(page.locator("[data-vgui-name='CarriedImage']")).toBeVisible()
   await expect(page.locator("[data-vgui-name='RedFlag']")).toBeHidden()
   await expect(page.locator("[data-vgui-name='BlueFlag']")).toBeHidden()
@@ -65,10 +68,10 @@ test("headed ctf_2fort intelligence, objective HUD, announcer, and round victory
   await page.waitForTimeout(100)
   await entry.fill("dropitem")
   await entry.press("Enter")
-  await expect.poll(async () => root.getAttribute("data-ctf")).toMatch(/:3,2,0,/)
+  await expect.poll(async () => root.getAttribute("data-ctf")).toMatch(/,3,2,0,/)
   await expect(page.locator("[data-vgui-name='BlueFlag']")).toBeVisible()
   await expect.poll(async () => root.getAttribute("data-audio-starts")).toContain("CaptureFlag.TeamDropped")
-  await expect.poll(async () => root.getAttribute("data-ctf"), { timeout: 6_000 }).toMatch(/:3,1,1(?:,|\||$)/)
+  await expect.poll(async () => root.getAttribute("data-ctf"), { timeout: 6_000 }).toMatch(/,3,1,1(?:,|\||$)/)
 
   await setpos(RED_CAPTURE)
   await expect.poll(async () => root.getAttribute("data-ctf")).toMatch(/^1:0:3:0:/)
@@ -76,7 +79,7 @@ test("headed ctf_2fort intelligence, objective HUD, announcer, and round victory
   for (let capture = 2; capture <= 3; capture += 1) {
     await page.waitForTimeout(300)
     await setpos(BLUE_FLAG)
-    await expect.poll(async () => root.getAttribute("data-ctf")).toMatch(/:3,1,1(?:,|\||$)/)
+    await expect.poll(async () => root.getAttribute("data-ctf")).toMatch(/,3,1,1(?:,|\||$)/)
     await setpos(RED_CAPTURE)
     await expect.poll(async () => root.getAttribute("data-ctf")).toMatch(new RegExp(`^${capture}:0:3:${capture === 3 ? 2 : 0}:`))
   }

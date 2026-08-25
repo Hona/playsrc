@@ -1841,6 +1841,88 @@ mod tests {
     }
 
     #[test]
+    fn capture_objectives_follow_live_flag_carriers_and_authored_brush_centers() {
+        let graph = playsrc_entity::parse(
+            b"{\"classname\"\"info_player_teamspawn\"\"TeamNum\"\"2\"\"origin\"\"10 50 1\"}{\"classname\"\"info_player_teamspawn\"\"TeamNum\"\"3\"\"origin\"\"250 50 1\"}{\"classname\"\"item_teamflag\"\"TeamNum\"\"2\"\"origin\"\"250 50 1\"}{\"classname\"\"item_teamflag\"\"TeamNum\"\"3\"\"origin\"\"10 50 1\"}{\"classname\"\"func_capturezone\"\"TeamNum\"\"2\"\"model\"\"*1\"}{\"classname\"\"func_capturezone\"\"TeamNum\"\"3\"\"model\"\"*2\"}\0",
+            playsrc_entity::Limits::default(),
+        )
+        .unwrap();
+        let mut objectives =
+            crate::ctf::World::compile(&graph, crate::ctf::Configuration::default())
+                .unwrap()
+                .unwrap();
+        objectives.set_model_bounds(&[
+            playsrc_entity::ModelBounds {
+                model: 1,
+                mins: [0.0, 0.0, 0.0],
+                maxs: [100.0, 100.0, 100.0],
+            },
+            playsrc_entity::ModelBounds {
+                model: 2,
+                mins: [200.0, 0.0, 0.0],
+                maxs: [300.0, 100.0, 100.0],
+            },
+        ]);
+        let mut world =
+            BotWorld::new(fixture_mesh(), &graph, &Floor, 0.015, Some(&objectives)).unwrap();
+        let mut random = UniformRandomStream::from_seed(0).unwrap();
+        world
+            .apply(
+                Request {
+                    operation: Operation::Add,
+                    count: 1,
+                    class: Some(PlayerClass::Soldier),
+                    team: Some(PlayerTeam::Blue),
+                    difficulty: Difficulty::Normal,
+                },
+                PlayerTeam::Red,
+                PlayerClass::Soldier,
+                &mut random,
+            )
+            .unwrap();
+        let initial = world.snapshots()[0].clone();
+        assert_eq!(initial.objective, ObjectiveKind::FetchFlag);
+        objectives
+            .advance(
+                &Floor,
+                0.0,
+                &[crate::ctf::Actor::active(
+                    initial.identity,
+                    initial.team,
+                    initial.position,
+                    Hull {
+                        mins: [-24.0, -24.0, 0.0],
+                        maxs: [24.0, 24.0, 82.0],
+                    },
+                )],
+            )
+            .unwrap();
+        assert_eq!(
+            objectives.carrier_flag(initial.identity).unwrap().team,
+            PlayerTeam::Red
+        );
+        world
+            .advance(
+                &Floor,
+                1,
+                PlayerTeam::Red,
+                false,
+                [0.0; 3],
+                &mut random,
+                Some(&objectives),
+            )
+            .unwrap();
+        assert_eq!(world.snapshots()[0].objective, ObjectiveKind::DeliverFlag);
+        assert_eq!(
+            objectives
+                .bot_objective(initial.identity, PlayerTeam::Blue)
+                .unwrap()
+                .capture_position,
+            Some([250.0, 50.0, 50.0])
+        );
+    }
+
+    #[test]
     fn source_difficulty_reaction_thresholds_are_exact() {
         assert_eq!(Difficulty::Easy.recognition_seconds(), 1.0);
         assert_eq!(Difficulty::Normal.recognition_seconds(), 0.5);
