@@ -12244,7 +12244,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(&encoded[..8], b"PSSN\x0d\0\0\0");
+        assert_eq!(&encoded[..8], b"PSSN\x0f\0\0\0");
         assert_eq!(encoded.len(), 1000);
         assert_eq!(&encoded[988..996], b"PCTF\x01\0\0\0");
         assert_eq!(

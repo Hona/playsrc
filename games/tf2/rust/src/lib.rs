@@ -1927,6 +1927,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 .emit_objective_outputs(self.tick, &objective_events)?;
             map_phase.append(phase);
             for event in &objective_events {
+                if let ctf::Event::Captured { player, .. } = event
+                    && *player == PLAYER_IDENTITY
+                {
+                    self.score.captures = self.score.captures.saturating_add(1);
+                }
                 if let ctf::Event::CaptureBonus {
                     team,
                     condition,
