@@ -4009,6 +4009,57 @@ mod tests {
     }
 
     #[test]
+    fn spectator_team_change_drops_the_carried_enemy_intelligence_before_publication() {
+        let graph = playsrc_entity::parse(
+            b"{\"classname\"\"item_teamflag\"\"TeamNum\"\"2\"\"origin\"\"100 0 8\"}{\"classname\"\"item_teamflag\"\"TeamNum\"\"3\"\"origin\"\"0 0 8\"}\0",
+            playsrc_entity::Limits::default(),
+        )
+        .unwrap();
+        let map = MapRuntime::compile(&graph, 0.015, 1, Vec::new()).unwrap();
+        let mut session =
+            Session::connected(Floor, [0.0; 3], map, team_selection::TeamRules::default());
+        session
+            .select_team_choice(team_selection::TeamChoice::Red)
+            .unwrap();
+        let stolen = session.advance(Command::default()).unwrap();
+        assert_eq!(
+            stolen
+                .objectives
+                .as_ref()
+                .unwrap()
+                .flags
+                .iter()
+                .find(|flag| flag.team == PlayerTeam::Blue)
+                .unwrap()
+                .carrier,
+            Some(PLAYER_IDENTITY)
+        );
+        session
+            .select_team_choice(team_selection::TeamChoice::Spectator)
+            .unwrap();
+        let observed = session.advance(Command::default()).unwrap();
+        assert_eq!(observed.team, PlayerTeam::Spectator);
+        let objectives = observed.objectives.unwrap();
+        assert_eq!(
+            objectives
+                .flags
+                .iter()
+                .find(|flag| flag.team == PlayerTeam::Blue)
+                .unwrap()
+                .status,
+            ctf::FlagStatus::Dropped
+        );
+        assert!(objectives.events.iter().any(|event| matches!(
+            event,
+            ctf::Event::Flag {
+                kind: ctf::FlagEventKind::Dropped,
+                player: Some(PLAYER_IDENTITY),
+                ..
+            }
+        )));
+    }
+
+    #[test]
     fn spectator_selection_owns_observer_lifecycle_without_weapons_or_health() {
         let mut session = Session::connected(
             Floor,
