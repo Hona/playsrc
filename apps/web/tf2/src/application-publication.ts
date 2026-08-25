@@ -29,6 +29,7 @@ const attribute = (
 
 const attributes: readonly PublicationBinding[] = Object.freeze([
   attribute("phase", "phase"),
+  attribute("generation", "generation"),
   attribute("startup-state", "startupState"),
   attribute("startup-gestures", "startupGestures"),
   attribute("menu-preparation", "menuPreparation"),

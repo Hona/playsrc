@@ -1,8 +1,6 @@
 import { spawn } from "node:child_process"
 import { expect, test } from "./application-test"
 
-const TARGET = "jump_beef"
-
 test("profile whole-map noclip gameplay coverage", async ({ page, browser }, testInfo) => {
   const cdp = await browser.newBrowserCDPSession()
   const systemInfo = await cdp.send("SystemInfo.getInfo") as { gpu?: { devices?: unknown; featureStatus?: unknown; auxAttributes?: Record<string, unknown> } }
@@ -30,10 +28,19 @@ test("profile whole-map noclip gameplay coverage", async ({ page, browser }, tes
   await page.goto("/", { waitUntil: "load", timeout: 30_000 })
   await page.waitForFunction(() => ["MainMenu", "Failed"].includes(document.querySelector<HTMLElement>("main")?.dataset.phase ?? ""), undefined, { timeout: 180_000, polling: 50 })
   expect(await page.locator("main").getAttribute("data-phase")).toBe("MainMenu")
+  const configurationResponse = await page.request.get("/playsrc-config.json")
+  expect(configurationResponse.status()).toBe(200)
+  const configuration = await configurationResponse.json() as { defaultTarget: string; targets: readonly { target: string }[] }
+  if (configuration.targets.length !== 2 || configuration.targets.map((target) => target.target).join(",") !== "jump_beef,pl_upward") {
+    throw new Error("current dual-map catalog differs")
+  }
+  const target = configuration.defaultTarget
+  const secondary = configuration.targets.find((candidate) => candidate.target !== target)?.target
+  if (!secondary) throw new Error("current dual-map catalog has no secondary target")
   await page.keyboard.press("Backquote")
   const entry = page.locator("[aria-label='Console command']")
   await expect(entry).toBeVisible()
-  await entry.fill(`map ${TARGET}`)
+  await entry.fill(`map ${secondary}`)
   await page.keyboard.press("Enter")
   await page.waitForFunction(() => { const main = document.querySelector<HTMLElement>("main"); return (main?.dataset.phase === "Ready" && main.dataset.gameui === "in-game") || main?.dataset.phase === "Failed" }, undefined, { timeout: 600_000, polling: 50 })
   expect(await page.locator("main").getAttribute("data-phase")).toBe("Ready")
@@ -42,11 +49,43 @@ test("profile whole-map noclip gameplay coverage", async ({ page, browser }, tes
   await page.keyboard.press("Backquote")
   await page.waitForFunction(() => document.querySelector<HTMLElement>("main")?.dataset.movementMode === "1", undefined, { timeout: 30_000, polling: 20 })
   await page.locator("canvas.world-canvas").click()
+  const secondaryTraversal = await page.evaluate(async () => {
+    const main = document.querySelector<HTMLElement>("main")
+    if (!main) throw new Error("secondary map application root is unavailable")
+    const position = () => (main.dataset.cameraPosition ?? "").split(",").map(Number)
+    const before = position()
+    dispatchEvent(new KeyboardEvent("keydown", { code: "KeyW", key: "w", bubbles: true }))
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    dispatchEvent(new KeyboardEvent("keyup", { code: "KeyW", key: "w", bubbles: true }))
+    const after = position()
+    const canvas = document.querySelector<HTMLCanvasElement>("canvas.world-canvas")
+    const sky = canvas?.dataset.sky3dPass ? JSON.parse(canvas.dataset.sky3dPass) as { skySurfaces: number } : null
+    return { before, after, distance: Math.hypot(...before.map((value, index) => value - after[index]!)), skySurfaces: sky?.skySurfaces ?? 0 }
+  })
+  expect(secondaryTraversal.distance).toBeGreaterThan(0)
+  expect(secondaryTraversal.skySurfaces).toBeGreaterThan(0)
+  await testInfo.attach("dual-map-authored-sky-preflight", {
+    body: Buffer.from(JSON.stringify({ target: secondary, ...secondaryTraversal }, null, 2)),
+    contentType: "application/json",
+  })
+  await page.keyboard.press("Backquote")
+  await expect(entry).toBeVisible()
+  await entry.fill(`map ${target}`)
+  await page.keyboard.press("Enter")
+  await page.waitForFunction(() => document.querySelector<HTMLElement>("main")?.dataset.phase === "Replacing", undefined, { timeout: 30_000, polling: 10 })
+  await page.waitForFunction(() => { const main = document.querySelector<HTMLElement>("main"); return (main?.dataset.phase === "Ready" && main.dataset.gameui === "in-game") || main?.dataset.phase === "Failed" }, undefined, { timeout: 600_000, polling: 50 })
+  expect(await page.locator("main").getAttribute("data-phase")).toBe("Ready")
+  await entry.fill("noclip")
+  await page.keyboard.press("Enter")
+  await page.keyboard.press("Backquote")
+  await page.waitForFunction(() => document.querySelector<HTMLElement>("main")?.dataset.movementMode === "1", undefined, { timeout: 30_000, polling: 20 })
+  await page.locator("canvas.world-canvas").click()
   await page.waitForFunction(() => document.pointerLockElement?.classList.contains("world-canvas"), undefined, { timeout: 5_000 })
+  console.log(`PLAYSRC_MAP_COVERAGE_PREFLIGHT ${JSON.stringify({ targets: [secondary, target], secondaryTraversal, active: target })}`)
 
   const result = await page.evaluate(async () => {
     type Sample = { leaf: number; cluster: number; area: number; position: readonly [number, number, number] }
-    const state = (window as any).__playsrcProfile as { coverageSamples: readonly Sample[]; longTasks: { at: number; duration: number }[] }
+    const state = (window as any).__playsrcProfile as { coverageSamples: readonly Sample[]; longTasks: { at: number; duration: number }[]; controllerFreeSkyViews?: number }
     const main = document.querySelector("main") as HTMLElement
     const canvas = document.querySelector("canvas.world-canvas") as HTMLCanvasElement
     if (!state.coverageSamples?.length) throw new Error("coverage goals unavailable")
@@ -84,7 +123,7 @@ test("profile whole-map noclip gameplay coverage", async ({ page, browser }, tes
         while (performance.now() - started < 1_500) {
           await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
           const now=performance.now(),phase=main.dataset.phase,tick=main.dataset.snapshotTick,frame=canvas.dataset.displayFrame
-          if(phase!=="Ready")throw new Error(`coverage authority entered ${phase}: ${main.dataset.detail}; goal=${index}; tick=${tick}; camera=${main.dataset.cameraPosition}`)
+          if(phase!=="Ready")throw new Error(`coverage authority entered ${phase}: ${main.dataset.detail}; goal=${index}; tick=${tick}; camera=${main.dataset.cameraPosition}; controllerFreeSkyViews=${state.controllerFreeSkyViews??0}`)
           if(tick!==lastTick){lastTick=tick;lastTickAt=now}else if(now-lastTickAt>1000)throw new Error(`coverage Simulation stalled at tick ${tick}, goal ${index}, camera ${main.dataset.cameraPosition}`)
           if(frame!==lastFrame){lastFrame=frame;lastFrameAt=now}else if(now-lastFrameAt>1000)throw new Error(`coverage display stalled at frame ${frame}, goal ${index}, camera ${main.dataset.cameraPosition}`)
           const remaining=distance(position(),sample.position);if(remaining<96){arrived=true;break}if(remaining<lastDistance-4){lastDistance=remaining;lastProgressAt=now}else if(now-lastProgressAt>750)break
@@ -99,7 +138,7 @@ test("profile whole-map noclip gameplay coverage", async ({ page, browser }, tes
     }finally{
       key("keyup", "KeyW", "w");key("keyup", "KeyA", "a");key("keyup", "ShiftLeft", "Shift");dispatchEvent(new MouseEvent("mouseup",{button:0,bubbles:true}));observer.disconnect()
     }
-    return { samples: state.coverageSamples, route, reached, unreachable, frameRecords, longTasks: state.longTasks }
+    return { samples: state.coverageSamples, route, reached, unreachable, frameRecords, longTasks: state.longTasks, controllerFreeSkyViews: state.controllerFreeSkyViews ?? 0 }
   })
 
   if (sampler) { sampler.kill(); await samplerExit }
@@ -108,7 +147,7 @@ test("profile whole-map noclip gameplay coverage", async ({ page, browser }, tes
   const percentile = (fraction: number) => durations[Math.min(durations.length - 1, Math.floor(durations.length * fraction))] ?? 0
   const worst = result.frameRecords.toSorted((left, right) => Number((right.detail as Record<string, unknown>).total ?? 0) - Number((left.detail as Record<string, unknown>).total ?? 0)).slice(0, 100)
   const report = {
-    target: TARGET, samples: result.samples.length, reached: result.reached.length, unreachable: result.unreachable.length,
+    target, targets: [secondary, target], secondaryTraversal, controllerFreeSkyViews: result.controllerFreeSkyViews, samples: result.samples.length, reached: result.reached.length, unreachable: result.unreachable.length,
     frames: result.frameRecords.length, p50Milliseconds: percentile(.5), p95Milliseconds: percentile(.95),
     p99Milliseconds: percentile(.99), maximumMilliseconds: durations.at(-1) ?? 0, worst,
     unreachableSamples: result.unreachable, longTasks: result.longTasks,

@@ -92,6 +92,7 @@ describe("TF2 incremental application publication", () => {
     const ready: ApplicationView = Object.freeze({
       ...value.startup,
       phase: "Ready",
+      generation: 4,
       gameUi: "in-game",
       detail: "Playing jump_beef",
       snapshotTick: "41",
@@ -110,6 +111,7 @@ describe("TF2 incremental application publication", () => {
     })
     value.publication.publish(ready)
     expect(value.root.attributes.get("data-phase")).toBe("Ready")
+    expect(value.root.attributes.get("data-generation")).toBe("4")
     expect(value.root.attributes.get("data-gameplay-initialized")).toBe("true")
     expect(value.root.attributes.get("data-projectiles")).toBe("2")
     expect(value.root.attributes.get("data-camera-position")).toBe("1,2,3")

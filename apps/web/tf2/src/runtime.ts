@@ -86,6 +86,16 @@ import { RequiredParticleDisplayQueue } from "./particle-display"
 import { CanvasFrameDiagnostics } from "./frame-diagnostics"
 import { GAME_UI_FRAME_OWNER, HUD_FRAME_OWNER, LOADING_FRAME_OWNER, OPTIONS_FRAME_OWNER, visibleFrameOwners } from "./frame-owners"
 import { ExactSkyVisibilityCache, type SkyVisibilityIdentity } from "./visibility-cache"
+import {
+  ApplicationFrameClock,
+  ApplicationOperationLedger,
+  PredictedEyeInterpolation,
+  composeViewmodelTransform,
+  currentPresentationGeneration,
+  routeApplicationEscape,
+  selectAuthoredSky,
+  type ApplicationOperation,
+} from "./application-lifecycle"
 
 const MAX_EXTERNAL_BYTES = 536_870_912
 const SIMULATION_SAMPLE_INTERVAL_SECONDS = 0.015
@@ -105,6 +115,7 @@ const SOUND_PATHS = [
 
 export type ApplicationView = Readonly<{
   phase: "Startup" | "MainMenu" | "Loading" | "Ready" | "Replacing" | "Failed" | "Closed"
+  generation?: number
   detail: string
   gameUi: "main-menu" | "loading" | "in-game" | "pause" | "disconnecting" | "failure"
   hudProbe?: string
@@ -206,6 +217,13 @@ type PreparedPresentation=Readonly<{
   particleOutputBytes:number
 }>
 
+function changedCamera(previous: Camera | undefined, next: Camera): boolean {
+  return previous === undefined
+    || previous.position.some((value, index) => !Object.is(value, next.position[index]))
+    || !Object.is(previous.yawDegrees, next.yawDegrees)
+    || !Object.is(previous.pitchDegrees, next.pitchDegrees)
+}
+
 export class Tf2Application {
   #canvas: HTMLCanvasElement
   readonly #presentationRoot: HTMLElement
@@ -255,7 +273,10 @@ export class Tf2Application {
   #console?: DeveloperConsole
   #pendingConsoleOutput: Readonly<{ text: string; developer: boolean }>[] = []
   #operationWatchdog?: ReturnType<typeof setTimeout>
-  #operationAbort = new AbortController()
+  readonly #operations = new ApplicationOperationLedger()
+  #operation = this.#operations.begin()
+  readonly #frameClock = new ApplicationFrameClock()
+  readonly #predictedEye = new PredictedEyeInterpolation()
   #diagnostics?: ClientDiagnostics
   #consoleResources?:ResolvedConsoleResources
   #uiResources?: Tf2VguiResources
@@ -292,6 +313,7 @@ export class Tf2Application {
   #authoritativeViewRevision=0
   #pointerMovement?: "raw" | "adjusted"
   #pointerRequestPending=false
+  #resumePointerOnAcknowledge=false
   #lastPointerLockFailure="Pointer lock failed"
   readonly #bindings = new PhysicalBindingIndex()
   readonly #bindingValues = new Map<string, PhysicalBinding>()
@@ -347,6 +369,7 @@ export class Tf2Application {
   #consoleEnabled = true
   #closed = false
   #blockers=new Set<string>()
+  readonly #sharedBlockers=new Set<string>()
   #view: ApplicationView = Object.freeze({
     phase: "Startup",
     detail: "Reading local configuration",
@@ -527,7 +550,7 @@ export class Tf2Application {
       settings:this.#settings,
       viewport:this.#viewport(),
       reducedMotion:matchMedia("(prefers-reduced-motion: reduce)").matches,
-      clock:{nowSeconds:()=>performance.now()/1_000},
+      clock:{nowSeconds:()=>this.#frameClock.admit(performance.now()/1_000)},
       random:this.#presentationRandom,
       onPersistence:(bytes)=>{
         localStorage.setItem(TF2_BROWSER_SETTINGS_STORAGE_KEY,new TextDecoder().decode(bytes))
@@ -543,10 +566,12 @@ export class Tf2Application {
   }
 
   #deferGameUiRequest(request: Tf2GameUiRequest): void {
+    const operation = this.#operation
     const handle = window.setTimeout(() => {
       this.#gameUiRequestTasks.delete(handle)
-      if (this.#closed) return
+      if (this.#closed || !this.#operations.current(operation)) return
       void this.#gameUiRequest(request).catch((error) => {
+        if (this.#closed || (request.kind !== "load-map" && !this.#operations.current(operation))) return
         this.#set({ phase: "Failed", gameUi: "failure", detail: error instanceof Error ? error.message : "GameUI owner request failed" })
       })
     }, 0)
@@ -562,9 +587,14 @@ export class Tf2Application {
       return
     }
     if (request.kind === "resume-game") {
-      this.#gameUi?.dispatch({ kind: "gameui-hidden" })
+      const restorePointer = this.#resumePointerOnAcknowledge
+      this.#resumePointerOnAcknowledge = false
+      const transition = this.#gameUi?.dispatch({ kind: "gameui-hidden" })
+      if (transition?.disposition !== "applied") return
       this.#paused = document.hidden
+      this.#nextSimulationSampleSeconds = 0
       this.#set({ gameUi: "in-game", detail: `Playing ${this.#mapIdentity}` })
+      if (restorePointer && !this.#paused) void this.requestPointer()
       return
     }
     if (request.kind === "disconnect") {
@@ -582,15 +612,16 @@ export class Tf2Application {
       return
     }
     if (request.kind === "load-map") {
-      const target = this.#configuration.targets.find((candidate) => candidate.target === request.mapIdentity)
+      const target = this.#configuration?.targets.find((candidate) => candidate.target === request.mapIdentity)
       if (!target) throw new Error(`Undeclared map request ${request.mapIdentity}`)
+      this.#loadingTarget = target
       const started = this.#gameUi?.dispatch({ kind: "loading-started", mapIdentity: request.mapIdentity })
       if (started?.disposition !== "applied") throw new Error("TF2 GameUI rejected loading start")
       this.#beginLoadingPresentation()
       this.#set({ phase: "Loading", gameUi: "loading", detail: "Starting local game server...", loadingProgress: 0, loadingStatus: "", loadingBackground: this.#loadingBackground?.disposition })
       this.#advanceLoading("changing-map")
-      if (target.target === this.#activeTarget?.target) await this.#startGameplay()
-      else await this.#switchCatalogMap(target)
+      await this.#startGameplay(target)
+      if (this.#loadingTarget === target) this.#loadingTarget = undefined
     }
   }
 
@@ -681,10 +712,15 @@ export class Tf2Application {
     return bytes
   }
 
-  #nextOperationSignal(): AbortSignal {
-    this.#operationAbort.abort()
-    this.#operationAbort = new AbortController()
-    return this.#operationAbort.signal
+  #nextOperation(): ApplicationOperation {
+    this.#operation = this.#operations.begin()
+    return this.#operation
+  }
+
+  #requireOperation(operation: ApplicationOperation): void {
+    if (this.#closed || !this.#operations.current(operation)) {
+      throw new DOMException("Application operation was superseded", "AbortError")
+    }
   }
 
   #trackBootstrapObject(sha256: string, loaded: number, total: number): void {
@@ -703,7 +739,7 @@ export class Tf2Application {
     this.#set({ bootstrapLoading: true, bootstrapProgress: percentage })
   }
 
-  async #ensureResourceRuntime(signal = this.#operationAbort.signal): Promise<void> {
+  async #ensureResourceRuntime(signal = this.#operation.signal): Promise<void> {
     if (!this.#configuration) throw new Error("Browser configuration is unavailable")
     if (!this.#cache) this.#cache = await openDerivedObjectCache()
     if (!this.#client) {
@@ -714,7 +750,7 @@ export class Tf2Application {
     }
   }
 
-  async #resourceSet(roles: readonly string[], signal = this.#operationAbort.signal): Promise<Uint8Array> {
+  async #resourceSet(roles: readonly string[], signal = this.#operation.signal): Promise<Uint8Array> {
     if (!this.#configuration || !this.#resourceGraph) throw new Error("Resource graph is unavailable")
     return this.#decodeResourceSet(this.#resourceGraph, roles, this.#dependencyEntries, signal)
   }
@@ -874,7 +910,7 @@ export class Tf2Application {
       resources: this.#uiResources,
       viewport: this.#viewport(),
       reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
-      clock: { nowSeconds: () => 0 },
+      clock: { nowSeconds: () => this.#frameClock.current },
       random: this.#presentationRandom,
       presentation: {
         random: this.#presentationRandom,
@@ -902,7 +938,7 @@ export class Tf2Application {
         resources: this.#uiResources,
         viewport: this.#viewport(),
         reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
-        clock: { nowSeconds: () => 0 },
+        clock: { nowSeconds: () => this.#frameClock.current },
         random: this.#presentationRandom,
         onRequest: (request) => {
           if (request.kind === "disconnect") this.#gameUi?.dispatch({ kind: "activate-button", button: "cancel-loading" })
@@ -917,6 +953,8 @@ export class Tf2Application {
       this.#set({ menuPreparation: `loading-error:${error instanceof Error ? error.message : String(error)}` })
       throw error
     }
+    this.#sharedBlockers.clear()
+    for (const blocker of this.#blockers) this.#sharedBlockers.add(blocker)
     this.#set({ menuPreparation: "ready" })
     this.#sharedDependencyEntries = new Map(this.#dependencyEntries)
     this.#initializeConsole()
@@ -1055,7 +1093,7 @@ export class Tf2Application {
       this.#mapIdentity = this.#activeTarget.target
       this.#set({ phase: "Startup", startupState: "Preparing", detail: "Preparing configured Valve startup movie" })
       const catalogDescriptor = this.#configuration.catalog
-      const catalogBytes = await fetchImmutableObject(this.#configuration.assetOrigin, catalogDescriptor, this.#operationAbort.signal, fetch, (loaded, total) => this.#trackBootstrapObject(catalogDescriptor.sha256, loaded, total))
+      const catalogBytes = await fetchImmutableObject(this.#configuration.assetOrigin, catalogDescriptor, this.#operation.signal, fetch, (loaded, total) => this.#trackBootstrapObject(catalogDescriptor.sha256, loaded, total))
       const catalog = parseResourceCatalogBytes(catalogBytes)
       if (catalog.application !== "tf2" || catalog.entries.length !== this.#configuration.targets.length) throw new Error("Resource catalog target table differs")
       for (const target of this.#configuration.targets) {
@@ -1064,7 +1102,7 @@ export class Tf2Application {
       }
       this.#resourceCatalog = catalog
       const selected = selectCatalogTarget(catalog, this.#activeTarget.target)
-      const graphBytes = await fetchImmutableObject(this.#configuration.assetOrigin, selected.resources, this.#operationAbort.signal, fetch, (loaded, total) => this.#trackBootstrapObject(selected.resources.sha256, loaded, total))
+      const graphBytes = await fetchImmutableObject(this.#configuration.assetOrigin, selected.resources, this.#operation.signal, fetch, (loaded, total) => this.#trackBootstrapObject(selected.resources.sha256, loaded, total))
       this.#resourceGraph = parseResourceGraphBytes(graphBytes)
       if (this.#resourceGraph.target !== this.#activeTarget.target || this.#resourceGraph.contentBuild !== this.#activeTarget.contentBuild) throw new Error("Resource graph target differs")
       this.#bootstrapExpectedObjects = new Set([
@@ -1100,21 +1138,38 @@ export class Tf2Application {
     }
   }
 
-  async #startGameplay(): Promise<void> {
+  async #startGameplay(target: BrowserTargetConfiguration): Promise<void> {
     const loadStarted=performance.now()
     let loadPhase=loadStarted
     const loadTimings:Record<string,number>={}
     const finishLoadPhase=(name:string):void=>{const now=performance.now();loadTimings[name]=now-loadPhase;loadPhase=now}
+    const operation = this.#nextOperation()
+    const signal = operation.signal
     try {
-      if (!this.#configuration) throw new Error("Browser configuration is unavailable")
-      if (!this.#activeTarget) throw new Error("Active TF2 target is unavailable")
-      const signal = this.#nextOperationSignal()
+      if (!this.#configuration || !this.#resourceCatalog) throw new Error("Browser configuration is unavailable")
+      if (this.#activeTarget?.target !== target.target) {
+        const selected = selectCatalogTarget(this.#resourceCatalog, target.target)
+        if (selected.resources.sha256 !== target.objects.resources.sha256 || selected.resources.byteLength !== target.objects.resources.byteLength) {
+          throw new Error("Target resource root differs from catalog")
+        }
+        const bytes = await fetchImmutableObject(this.#configuration.assetOrigin, selected.resources, signal)
+        this.#requireOperation(operation)
+        const graph = parseResourceGraphBytes(bytes)
+        if (graph.target !== target.target || graph.contentBuild !== target.contentBuild) {
+          throw new Error("Target resource graph identity differs")
+        }
+        this.#resourceGraph = graph
+        this.#dependencyEntries = new Map(this.#sharedDependencyEntries)
+        this.#activeTarget = target
+        this.#mapIdentity = target.target
+      }
       this.#set({ detail: "Fetching exact BSP and gameplay WASM objects" })
       this.#advanceLoading("reading-world")
       const [bsp, resources] = await Promise.all([
-        fetchImmutableObject(this.#configuration.assetOrigin, this.#activeTarget.objects.bsp, signal),
+        fetchImmutableObject(this.#configuration.assetOrigin, target.objects.bsp, signal),
         this.#resourceSet(["gameplay"], signal),
       ])
+      this.#requireOperation(operation)
       this.#dependencies = resources
       finishLoadPhase("fetch")
       this.#advanceLoading("building-resource-index")
@@ -1133,11 +1188,15 @@ export class Tf2Application {
       this.#set({ detail: "Compiling direct map authority" })
       this.#advanceLoading("preparing-resources")
       this.#generation += 1
-      this.#loaded = await this.#client.stage(this.#generation, bsp, profile, this.#dependencies, key)
-      this.#coverageSamples=await this.#client.coverage(this.#generation)
+      this.#resetGenerationPresentation()
+      this.#loaded = await this.#client!.stage(this.#generation, bsp, profile, this.#dependencies, key)
+      this.#requireOperation(operation)
+      this.#coverageSamples=await this.#client!.coverage(this.#generation)
+      this.#requireOperation(operation)
       finishLoadPhase("stage")
       this.#artifacts = await parsePresentationArtifacts(this.#loaded.presentation, this.#dependencyEntries)
       finishLoadPhase("presentationParse")
+      this.#resetMapBlockers()
       this.#recordVisualOutputBlockers(this.#artifacts)
       await this.#cacheModelArtifacts(this.#artifacts)
       finishLoadPhase("modelCache")
@@ -1219,10 +1278,13 @@ export class Tf2Application {
       ])
       this.#audioWorld = new SourceAudioWorld(this.#audioRegistry, { maxActiveVoices: 128 })
       finishLoadPhase("audioSetup")
-      await this.#client.activate(this.#generation)
+      this.#requireOperation(operation)
+      await this.#client!.activate(this.#generation)
       finishLoadPhase("activation")
       this.#advanceLoading("synchronizing-game-state")
       this.#snapshot = (await this.#initialPublication(this.#generation)).snapshot
+      this.#requireOperation(operation)
+      this.#predictedEye.reset(this.#snapshot.tick, tf2Camera(this.#snapshot, this.#yaw, this.#pitch).position)
       finishLoadPhase("initialPublication")
       this.#recordAuthorityBlockers(this.#snapshot)
       this.#recordCrouch(this.#snapshot)
@@ -1231,6 +1293,7 @@ export class Tf2Application {
       this.#viewmodelTimelineProbes = await this.#probeViewmodelTimelines(this.#artifacts)
       finishLoadPhase("initialProbes")
       const persistence = await this.#loaded.persistence
+      this.#requireOperation(operation)
       finishLoadPhase("persistence")
       this.#paused = document.hidden
       this.#resetHudIntegration()
@@ -1254,10 +1317,16 @@ export class Tf2Application {
       this.#syncLoadingPresentation()
       this.#set({
         phase: "Ready",
+        generation: this.#generation,
         gameUi: "in-game",
+        camera: tf2Camera(this.#snapshot, this.#yaw, this.#pitch),
         detail: "Click the field to capture the mouse",
         loadPerformanceProbe,
         cache: this.#loaded.cache,
+        fireEvents: 0,
+        explosionEvents: 0,
+        particleRenderItems: 0,
+        audioStarts: Object.freeze([]),
         initialView: this.#loaded.initialView,
         environment: this.#artifacts.environment,
         environmentDrawables: this.#environmentDrawables,
@@ -1280,12 +1349,36 @@ export class Tf2Application {
         loadingProgress: 1,
       })
     } catch (error) {
+      if (!this.#operations.current(operation)) return
       await this.#teardownGameplay()
+      if (this.#closed || !this.#operations.current(operation)) return
       const detail = error instanceof Error ? error.message : "Gameplay startup failed"
       this.#gameUi?.dispatch({ kind: "loading-failed", reason: "Map load failed", extendedReason: detail.slice(0, 255) })
       this.#syncLoadingPresentation()
       this.#set({ phase: "Failed", gameUi: "failure", detail })
     }
+  }
+
+  #resetGenerationPresentation(): void {
+    this.#predictedEye.clear()
+    this.#particleBatches = createParticleBatchEncoder()
+    this.#pendingProjectileTimeline = []
+    this.#pendingPresentation = undefined
+    this.#preparedPresentation = undefined
+    this.#requiredParticleDisplayFrames.reset()
+    this.#skyVisibility.clear()
+    this.#canvasDiagnostics.clear()
+    this.#canvas.dataset.sky3dPass = ""
+    this.#canvas.dataset.skyVisibilityDisposition = "not-visible"
+    this.#nextSimulationSampleSeconds = 0
+    this.#lastRenderedPreparedRevision = 0
+    this.#lastRenderedViewRevision = 0
+    this.#lastRenderedTick = undefined
+    this.#resumePointerOnAcknowledge = false
+    this.#fireEvents = 0
+    this.#explosionEvents = 0
+    this.#audioStarts = []
+    this.#attachmentTransforms.clear()
   }
 
   #resetHudIntegration(): void {
@@ -1301,7 +1394,7 @@ export class Tf2Application {
       resources: this.#uiResources,
       viewport: this.#viewport(),
       reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
-      clock: { nowSeconds: () => 0 },
+      clock: { nowSeconds: () => this.#frameClock.current },
       random: this.#presentationRandom,
       onCommand: (command) => {
         if (command.kind === "select-weapon" && command.weapon >= 1 && command.weapon <= 3) this.#selectWeapon = command.weapon as 1 | 2 | 3
@@ -1715,8 +1808,15 @@ export class Tf2Application {
       return
     }
     if (command === "map" && tokens.length === 1) {
-      const target = this.#configuration.targets.find((candidate) => candidate.target === tokens[0])
+      const target = this.#configuration?.targets.find((candidate) => candidate.target === tokens[0])
       if (target) {
+        if (this.#view.phase === "Startup") this.#startup?.key("Escape")
+        if (this.#gameUi?.state().kind === "failure") {
+          const dismissed = this.#gameUi.dispatch({ kind: "dismiss-failure" })
+          if (dismissed.disposition === "applied") {
+            this.#set({ phase: "MainMenu", gameUi: "main-menu", detail: "TF2 Main Menu" })
+          }
+        }
         if (this.#client && this.#renderer && this.#loaded) await this.#switchCatalogMap(target)
         else {
           const transition = this.#gameUi?.dispatch({ kind: "map", mapIdentity: target.target })
@@ -1724,7 +1824,7 @@ export class Tf2Application {
         }
       }
       else if (tokens[0]?.startsWith("https://")) await this.#replaceExternalMap(tokens[0])
-      else this.#output(`Usage: map ${this.#configuration.targets.map((candidate) => candidate.target).join("|")}`)
+      else this.#output(`Usage: map ${this.#configuration?.targets.map((candidate) => candidate.target).join("|") ?? "<unavailable>"}`)
       return
     }
     this.#output(`Unknown command: ${command}`)
@@ -1742,8 +1842,11 @@ export class Tf2Application {
       if (transition?.disposition !== "applied") throw new Error(`map rejected: ${transition?.reason ?? "GameUI unavailable"}`)
       return
     }
+    const operation = this.#nextOperation()
+    const previousGeneration = this.#generation
+    const previousBlockers = new Set(this.#blockers)
     try {
-      const signal = this.#nextOperationSignal()
+      const signal = operation.signal
       this.#loadingTarget = target
       this.#beginLoadingPresentation()
       this.#set({ phase: "Replacing", detail: `Loading ${target.target} through exact catalog identity`, loadingBackground: this.#loadingBackground?.disposition })
@@ -1753,18 +1856,30 @@ export class Tf2Application {
         fetchImmutableObject(this.#configuration.assetOrigin, target.objects.bsp, signal),
         fetchImmutableObject(this.#configuration.assetOrigin, target.objects.resources, signal),
       ])
+      this.#requireOperation(operation)
       const graph = parseResourceGraphBytes(graphBytes)
       if (graph.target !== target.target || graph.contentBuild !== target.contentBuild) throw new Error("Target resource graph identity differs")
       const entries = new Map(this.#sharedDependencyEntries)
       const dependencies = await this.#decodeResourceSet(graph, ["gameplay"], entries, signal)
-      await this.#replace(bytes, target.objects.bsp.sha256, target.target, { target, graph, dependencies, entries })
-      this.#loadingTarget = undefined
+      this.#requireOperation(operation)
+      await this.#replace(bytes, target.objects.bsp.sha256, target.target, { target, graph, dependencies, entries }, operation)
+      if (this.#operations.current(operation)) this.#loadingTarget = undefined
     } catch (error) {
+      if (!this.#operations.current(operation)) return
       this.#loadingTarget = undefined
       const reason=error instanceof Error?`${error.name}: ${error.message}`:String(error)
       this.#output(`ERROR: Map replacement failed: ${reason}`)
+      if (this.#generation !== previousGeneration) {
+        this.#paused = true
+        this.#set({ phase: "Failed", gameUi: "failure", detail: `Activated map authority failed: ${reason}` })
+        return
+      }
+      await this.#client?.discard(previousGeneration + 1).catch(() => undefined)
+      this.#blockers.clear()
+      for (const blocker of previousBlockers) this.#blockers.add(blocker)
       this.#paused = document.hidden
-      this.#set({ phase: "Ready", detail: `Prior map retained: ${reason}` })
+      this.#nextSimulationSampleSeconds = 0
+      this.#set({ phase: "Ready", gameUi: "in-game", detail: `Prior map retained: ${reason}` })
     }
   }
 
@@ -1845,11 +1960,13 @@ export class Tf2Application {
     bspSha256: string,
     name: string,
     candidate?: Readonly<{ target: BrowserTargetConfiguration; graph: ResourceGraph; dependencies: Uint8Array; entries: Map<string, Uint8Array> }>,
+    operation?: ApplicationOperation,
   ): Promise<void> {
     const replaceStarted=performance.now();let replacePhase=replaceStarted;const replaceTimings:Record<string,number>={};const finishReplacePhase=(phase:string)=>{const now=performance.now();replaceTimings[phase]=now-replacePhase;replacePhase=now}
     if (!this.#client || !this.#renderer || !this.#loaded) throw new Error("Application is not ready")
     this.#paused = true
     this.#neutral()
+    this.#predictedEye.suspend()
     this.#simulationSamples.clear()
     await this.#simulationTask
     await this.#presentationTask
@@ -1858,6 +1975,7 @@ export class Tf2Application {
     this.#requiredParticleDisplayFrames.reset()
     this.#nextSimulationSampleSeconds=0
     await this.#displayTask
+    if (operation) this.#requireOperation(operation)
     const generation = this.#generation + 1
     const profile = this.#renderLevel === 2 ? 1 : 0
     const key = await mapDerivedKey(
@@ -1869,10 +1987,13 @@ export class Tf2Application {
     )
     finishReplacePhase("derivedKey")
     const staged = await this.#client.stage(generation, bytes, profile, candidate?.dependencies ?? this.#dependencies, key)
+    if (operation) this.#requireOperation(operation)
     const coverageSamples=await this.#client.coverage(generation)
+    if (operation) this.#requireOperation(operation)
     finishReplacePhase("stage")
     const artifacts = await parsePresentationArtifacts(staged.presentation, candidate?.entries ?? this.#dependencyEntries)
     finishReplacePhase("presentationParse")
+    this.#resetMapBlockers()
     this.#recordVisualOutputBlockers(artifacts)
     await this.#cacheModelArtifacts(artifacts)
     finishReplacePhase("modelCache")
@@ -1910,8 +2031,12 @@ export class Tf2Application {
       this.#canvas.dataset.staticProps=JSON.stringify(scene.staticProps)
       this.#canvas.dataset.runtimeStaticProps=JSON.stringify(scene.runtimeStaticProps)
       this.#publishProfileDisplacements(scene)
+      for (const diagnostic of scene.diagnostics) {
+        this.#blockers.add(`${diagnostic.code}: ${diagnostic.identity} — ${diagnostic.detail}`)
+      }
       persistence=await staged.persistence
       finishReplacePhase("persistence")
+      if (operation) this.#requireOperation(operation)
       await this.#client.activate(generation)
       finishReplacePhase("activation")
     } catch (error) {
@@ -1943,8 +2068,7 @@ export class Tf2Application {
       throw error
     }
     this.#generation = generation
-    this.#skyVisibility.clear()
-    this.#canvasDiagnostics.clear()
+    this.#resetGenerationPresentation()
     this.#viewmodelSequenceCache.clear()
     if (candidate) {
       this.#activeTarget = candidate.target
@@ -1959,11 +2083,6 @@ export class Tf2Application {
     this.#reloadHistory=[]
     this.#fireTickHistory=[]
     this.#wasmCalls={observe:0,models:0,visibility:0,particles:0};this.#maximumScheduledSamples=0;this.#maximumPublicationTicks=0;this.#phaseTimings=[0,0,0,0,0]
-    this.#pendingProjectileTimeline=[]
-    this.#requiredParticleDisplayFrames.reset()
-    this.#lastRenderedPreparedRevision=0
-    this.#lastRenderedViewRevision=0
-    this.#lastRenderedTick=undefined
     this.#attachments.clear()
     this.#projectiles?.dispose()
     this.#projectiles = createProjectilePresentationMapper(
@@ -1987,10 +2106,11 @@ export class Tf2Application {
     )
     this.#viewmodels = createViewmodelPresenter(artifacts)
     this.#viewmodelClass = undefined
-    this.#particleBatches = createParticleBatchEncoder()
     this.#mapIdentity = name
     this.#applyInitialView(staged)
     this.#snapshot = (await this.#initialPublication(generation)).snapshot
+    if (operation) this.#requireOperation(operation)
+    this.#predictedEye.reset(this.#snapshot.tick, tf2Camera(this.#snapshot, this.#yaw, this.#pitch).position)
     this.#resetHudIntegration()
     this.#recordAuthorityBlockers(this.#snapshot)
     this.#crouchHistory = []
@@ -2007,9 +2127,16 @@ export class Tf2Application {
     this.#output(`Loaded ${name}; generation ${generation}; derived cache ${staged.cache}.`, true)
     this.#set({
       phase: "Ready",
+      generation,
+      gameUi: "in-game",
+      camera: tf2Camera(this.#snapshot, this.#yaw, this.#pitch),
       detail: `Playing ${name}`,
       loadPerformanceProbe:JSON.stringify({totalMilliseconds:performance.now()-replaceStarted,application:replaceTimings,client:{...staged.timings,mapCacheWriteMilliseconds:persistence.mapCacheWriteMilliseconds,presentationCacheWriteMilliseconds:persistence.presentationCacheWriteMilliseconds},mapBytes:staged.payload.byteLength,presentationBytes:staged.presentation.byteLength,mapCache:staged.cache,presentationCache:persistence.presentationCache,presentationCacheError:persistence.presentationCacheError}),
       cache: staged.cache,
+      fireEvents: 0,
+      explosionEvents: 0,
+      particleRenderItems: 0,
+      audioStarts: Object.freeze([]),
       initialView: staged.initialView,
       environment: artifacts.environment,
       environmentDrawables: this.#environmentDrawables,
@@ -2122,6 +2249,11 @@ export class Tf2Application {
     if(index===null)return undefined
     const state=artifacts.environment.controllersState[index]?.state
     return state&&"enabled" in state&&"primary" in state?state:undefined
+  }
+
+  #resetMapBlockers(): void {
+    this.#blockers.clear()
+    for (const blocker of this.#sharedBlockers) this.#blockers.add(blocker)
   }
 
   #recordVisualOutputBlockers(artifacts: PresentationArtifacts): void {
@@ -2386,8 +2518,9 @@ export class Tf2Application {
 
   readonly #frame = (time: number): void => {
     this.#animationFrame = requestAnimationFrame(this.#frame)
-    const timeSeconds = performance.now() / 1_000
+    let timeSeconds: number
     try {
+      timeSeconds = this.#frameClock.admit(performance.now() / 1_000)
       const owners = visibleFrameOwners(this.#view, !this.#gameUiRoot.hidden)
       if (owners & GAME_UI_FRAME_OWNER) this.#gameUi?.frame(timeSeconds)
       if (owners & LOADING_FRAME_OWNER) this.#loadingVgui?.frame(timeSeconds)
@@ -2400,7 +2533,7 @@ export class Tf2Application {
     }
     if (!this.#paused && this.#snapshot && (this.#showFps !== 0 || this.#showPos !== 0)) this.#updateDiagnostics(time)
     if (this.#paused || !this.#client || !this.#renderer || !this.#snapshot) return
-    const nowSeconds=time/1_000
+    const nowSeconds=timeSeconds
     if(nowSeconds+Number.EPSILON>=this.#nextSimulationSampleSeconds){
       this.#scheduleSimulation(nowSeconds, false)
       if(this.#nextSimulationSampleSeconds===0)this.#nextSimulationSampleSeconds=nowSeconds+SIMULATION_SAMPLE_INTERVAL_SECONDS
@@ -2417,11 +2550,12 @@ export class Tf2Application {
       (!required&&prepared.revision===this.#lastRenderedPreparedRevision&&this.#viewRevision===this.#lastRenderedViewRevision)
     )return
     const task=this.#renderDisplay(prepared).then(()=>{
-      if(required)this.#requiredParticleDisplayFrames.complete(required)
+      if(required&&prepared.generation===this.#generation)this.#requiredParticleDisplayFrames.complete(required)
     }).catch((error)=>{
-      if(this.#closed)return
+      if(this.#closed||prepared.generation!==this.#generation||this.#view.phase==="Replacing")return
       this.#paused=true
-      this.#set({phase:"Failed",detail:error instanceof Error?error.message:"Display frame failed"})
+      this.#predictedEye.suspend()
+      this.#set({phase:"Failed",gameUi:"failure",detail:error instanceof Error?error.message:"Display frame failed"})
     })
     this.#displayTask=task
     void task.finally(()=>{if(this.#displayTask===task)this.#displayTask=undefined})
@@ -2433,7 +2567,8 @@ export class Tf2Application {
     const viewRevision=this.#viewRevision,yaw=this.#yaw,pitch=this.#pitch
     const profile=(globalThis as typeof globalThis&{__playsrcProfile?:Record<string,unknown>}).__playsrcProfile
     const override=profile?.displacementCameraOverride as Partial<Camera>|undefined
-    const ordinaryCamera=tf2Camera(prepared.snapshot,yaw,pitch)
+    const authorityCamera=tf2Camera(prepared.snapshot,yaw,pitch)
+    const ordinaryCamera=Object.freeze({...authorityCamera,position:prepared.visibilityPosition})
     const camera=override&&Array.isArray(override.position)&&override.position.length===3&&override.position.every(Number.isFinite)
       &&Number.isFinite(override.yawDegrees)&&Number.isFinite(override.pitchDegrees)
       ?Object.freeze({...ordinaryCamera,position:Object.freeze([...override.position]) as readonly[number,number,number],yawDegrees:override.yawDegrees!,pitchDegrees:override.pitchDegrees!})
@@ -2445,7 +2580,7 @@ export class Tf2Application {
     const skyController = this.#artifacts ? this.#skyController(this.#artifacts) : null
     let skyRequest: Promise<Readonly<{ camera: Camera; visibility: VisibilityResult }>> | undefined
     const prepareSky = (): Promise<Readonly<{ camera: Camera; visibility: VisibilityResult }>> => {
-      if (!skyController) throw new Error("3D-sky visibility requires one typed sky_camera")
+      if (!skyController) throw new Error("Authored 3D-sky controller disappeared")
       const skyCamera = Object.freeze({
         ...camera,
         position: Object.freeze([
@@ -2495,7 +2630,7 @@ export class Tf2Application {
       void request.catch(() => {})
       return request
     }
-    if (prepared.visibility.sky === 2 && skyController) skyRequest = prepareSky()
+    if (selectAuthoredSky(prepared.visibility.sky, skyController !== null)) skyRequest = prepareSky()
     let visibility = prepared.visibility
     const viewChanged = camera.position.some((value, index) => value !== prepared.visibilityPosition[index])
       || camera.yawDegrees !== prepared.visibilityYaw
@@ -2514,8 +2649,8 @@ export class Tf2Application {
       })
     }
     let sky3d: Frame["sky3d"]
-    if (visibility.sky === 2) {
-      if (!skyController) throw new Error("3D-sky visibility requires one typed sky_camera")
+    if (selectAuthoredSky(visibility.sky, skyController !== null)) {
+      if (!skyController) throw new Error("Authored 3D-sky controller disappeared")
       const result = await (skyRequest ?? prepareSky())
       sky3d = Object.freeze({
         camera: result.camera,
@@ -2530,19 +2665,26 @@ export class Tf2Application {
       : prepared.snapshot.tick>=this.#lastRenderedTick
         ? Number(prepared.snapshot.tick-this.#lastRenderedTick)
         : prepared.publication.selectedTicks
+    const models=prepared.frame.models
     const renderStart=performance.now()
     const rendered=await renderer.render({
       ...prepared.frame,
+      models,
       camera,
       visibility:Object.freeze({...visibility,surfaces:visibility.drawSurfaces}),
       fog:this.#artifacts?this.#mainFog(this.#artifacts):undefined,
       sky3d,
-      deltaSeconds:deltaTicks*0.015,
+      deltaSeconds:deltaTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS,
     })
     const renderMilliseconds=performance.now()-renderStart,totalMilliseconds=performance.now()-phaseStart
     if (this.#closed || this.#paused || generation !== this.#generation || renderer !== this.#renderer) return
     this.#canvasDiagnostics.publish(this.#canvas, rendered)
-    if(profile){profile.displacementVisibility={surfaces:[...visibility.surfaces],drawSurfaces:[...visibility.drawSurfaces],outsideWorld:visibility.outsideWorld,eyeLeaf:visibility.eyeLeaf,leaves:visibility.leaves,areas:visibility.areas};profile.displacementCamera=camera}
+    const skyDisposition=sky3d?"authored":visibility.sky===2?"controller-absent":"not-visible"
+    if(this.#canvas.dataset.skyVisibilityDisposition!==skyDisposition)this.#canvas.dataset.skyVisibilityDisposition=skyDisposition
+    if(profile){
+      if(skyDisposition==="controller-absent")profile.controllerFreeSkyViews=Number(profile.controllerFreeSkyViews??0)+1
+      profile.displacementVisibility={surfaces:[...visibility.surfaces],drawSurfaces:[...visibility.drawSurfaces],outsideWorld:visibility.outsideWorld,eyeLeaf:visibility.eyeLeaf,leaves:visibility.leaves,areas:visibility.areas};profile.displacementCamera=camera
+    }
     const geometryEvidenceRevision=profile?.geometryEvidenceRevision
     if(profile&&Number.isSafeInteger(geometryEvidenceRevision)&&geometryEvidenceRevision!==((profile.geometryEvidence as {revision?:unknown}|undefined)?.revision)&&this.#view.phase==="Ready"){
       profile.geometryEvidence=Object.freeze({revision:geometryEvidenceRevision,generation,target:this.#mapIdentity,finalReady:true,identities:Object.freeze({bsp:this.#activeTarget?.objects.bsp.sha256,resourceRoot:this.#activeTarget?.objects.resources.sha256,contentBuild:this.#resourceGraph?.contentBuild,graphTarget:this.#resourceGraph?.target,wasm:this.#configuration?.wasm.sha256,simulationTick:prepared.snapshot.tick.toString()}),camera,visibility:Object.freeze({outsideWorld:visibility.outsideWorld,eyeLeaf:visibility.eyeLeaf,leaves:Object.freeze([...visibility.leaves]),areas:Object.freeze([...visibility.areas]),pvsSurfaces:Object.freeze([...visibility.surfaces]),drawSurfaces:Object.freeze([...visibility.drawSurfaces])}),geometry:renderer.captureGeometryEvidence(camera)})
@@ -2558,6 +2700,19 @@ export class Tf2Application {
     this.#canvas.dataset.displayPreparedRevision=String(prepared.revision)
     this.#canvas.dataset.displayCameraYaw=String(camera.yawDegrees)
     this.#canvas.dataset.displayCameraPitch=String(camera.pitchDegrees)
+    if(profile){
+      this.#canvas.dataset.displayCameraPosition=camera.position.join(",")
+      const displayedViewmodel=models?.find(model=>model.viewModel)
+      if(displayedViewmodel?.angles){
+        const worldViewmodel=composeViewmodelTransform({position:displayedViewmodel.position,angles:displayedViewmodel.angles},camera)
+        this.#canvas.dataset.displayViewmodelPitch=String(worldViewmodel.angles[0])
+        this.#canvas.dataset.displayViewmodelYaw=String(worldViewmodel.angles[1])
+        this.#canvas.dataset.displayViewmodelPosition=worldViewmodel.position.join(",")
+        this.#canvas.dataset.displayViewmodelLocalPitch=String(displayedViewmodel.angles[0])
+        this.#canvas.dataset.displayViewmodelLocalYaw=String(displayedViewmodel.angles[1])
+        this.#canvas.dataset.displayViewmodelLocalPosition=displayedViewmodel.position.join(",")
+      }
+    }
     this.#canvas.dataset.displayMouseRevision=String(this.#mouseViewRevision)
     this.#canvas.dataset.displaySnapRevision=String(this.#authoritativeViewRevision)
     if(publishPrepared)this.#set({
@@ -2576,6 +2731,7 @@ export class Tf2Application {
         displayViewRevision:viewRevision,
         displayPreparedRevision:prepared.revision,
       })
+    else if(changedCamera(this.#view.camera,camera))this.#set({camera})
   }
 
   #updateDiagnostics(realTimeMilliseconds: number): void {
@@ -2606,7 +2762,7 @@ export class Tf2Application {
     const frame=()=>new Promise<number>(resolve=>requestAnimationFrame(resolve))
     const observe=async(now:number)=>{
       const sampledMovementX=this.#pointerMovementX
-      const publications=await this.#client!.observe(generation,now/1_000,this.#command(),false)
+      const publications=await this.#client!.observe(generation,this.#frameClock.admit(now/1_000),this.#command(),false)
       for(const publication of publications)this.#applyAuthoritativeView(publication,sampledMovementX)
       return publications
     }
@@ -2627,7 +2783,28 @@ export class Tf2Application {
   }
   async #drainSimulation():Promise<void>{
     this.#simulationBusy=true
-    try{while(!this.#closed){const sample=this.#simulationSamples.shift();if(!sample)break;if(!this.#client||sample.generation!==this.#generation)continue;const sampledMovementX=this.#pointerMovementX,command=this.#command();this.#wasmCalls.observe++;for(const publication of await this.#client.observe(sample.generation,sample.nowSeconds,command,sample.suspended))this.#enqueuePresentation(sample.generation,publication,sampledMovementX)}}catch(error){this.#simulationSamples.clear();this.#paused=true;this.#set({phase:"Failed",detail:error instanceof Error?error.message:"Simulation scheduling failed"})}finally{this.#simulationBusy=false}
+    let activeGeneration=this.#generation
+    try{
+      while(!this.#closed){
+        const sample=this.#simulationSamples.shift()
+        if(!sample)break
+        const client=this.#client
+        if(!client||sample.generation!==this.#generation)continue
+        activeGeneration=sample.generation
+        const sampledMovementX=this.#pointerMovementX,command=this.#command()
+        this.#wasmCalls.observe++
+        const publications=await client.observe(sample.generation,sample.nowSeconds,command,sample.suspended)
+        if(this.#closed||sample.generation!==this.#generation||client!==this.#client)continue
+        for(const publication of publications)this.#enqueuePresentation(sample.generation,publication,sampledMovementX)
+      }
+    }catch(error){
+      if(!this.#closed&&activeGeneration===this.#generation&&this.#view.phase!=="Replacing"){
+        this.#simulationSamples.clear()
+        this.#paused=true
+        this.#predictedEye.suspend()
+        this.#set({phase:"Failed",gameUi:"failure",detail:error instanceof Error?error.message:"Simulation scheduling failed"})
+      }
+    }finally{this.#simulationBusy=false}
   }
   #applyAuthoritativeView(publication:SimulationPublication,sampledMovementX:number):void{
     for(const batch of publication.eventBatches){
@@ -2656,12 +2833,24 @@ export class Tf2Application {
     )
       return
     const generation=this.#generation,client=this.#client
+    const owners=Object.freeze({generation,mapper:this.#projectiles,encoder:this.#particleBatches})
+    const ownsGeneration=()=>!this.#closed&&client===this.#client
+      &&currentPresentationGeneration(owners,this.#generation,this.#projectiles,this.#particleBatches)
     try {
+      if(!ownsGeneration())return
       const authoritySnapshot = mergePublicationSnapshots(publication.eventBatches.map(batch=>batch.snapshot))
       if(authoritySnapshot.tick!==publication.snapshot.tick)throw new Error("Simulation publication differs from its ordered event batches")
       const projectileTimeline=this.#pendingProjectileTimeline.filter(entry=>entry.tick<=authoritySnapshot.tick)
       if(projectileTimeline.length===0)throw new Error("Projectile presentation timeline has no admitted tick")
       const snapshot=Object.freeze({...authoritySnapshot,projectileTimeline:Object.freeze(projectileTimeline),projectileEvents:Object.freeze(projectileTimeline.flatMap(entry=>entry.events))}) as Snapshot
+      let previousSnapshot=this.#snapshot
+      for(const batch of publication.eventBatches){
+        if(batch.snapshot.tick<=previousSnapshot.tick)continue
+        const teleported=batch.snapshot.events.some(event=>event.kind===9&&event.detail===1)
+        const lifecycleChanged=batch.snapshot.lifecycle!==previousSnapshot.lifecycle
+        this.#predictedEye.admit(batch.snapshot.tick,tf2Camera(batch.snapshot,this.#yaw,this.#pitch).position,teleported||lifecycleChanged)
+        previousSnapshot=batch.snapshot
+      }
       this.#snapshot = snapshot
       this.#recordCrouch(snapshot)
       this.#recordAuthorityBlockers(snapshot)
@@ -2690,7 +2879,10 @@ export class Tf2Application {
         )
         if (l) add(p.launcherIdentity, new Set(l.attachments.keys()))
       }
-      const camera = tf2Camera(snapshot, this.#yaw, this.#pitch)
+      const authoritativeCamera=tf2Camera(snapshot,this.#yaw,this.#pitch)
+      const presentedEye=this.#predictedEye.sample(publication.interpolation)
+      const camera=presentedEye?Object.freeze({...authoritativeCamera,position:presentedEye}):authoritativeCamera
+      if(!ownsGeneration())return
       const viewport=this.#viewport(),viewmodel=this.#viewmodels.map(snapshot,{aspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),farPlane:camera.far})
       const lockerRequests=[...this.#lockerAnimations].flatMap(([identity,state])=>{const occurrence=this.#artifacts!.modelOccurrences.find(value=>value.entity===identity),artifact=occurrence&&this.#artifacts!.models.get(occurrence.model);if(!occurrence||!artifact){this.#blockers.add(`TF2 regenerate model presentation unavailable: ${identity}`);return []}const closed=snapshot.tick>=state.closeTick,animation=closed?state.closeAnimation:state.openAnimation,start=closed?state.closeTick:state.openTick,elapsed=Math.max(0,Number(snapshot.tick-start)*0.015),previousTick=snapshot.tick>BigInt(publication.selectedTicks)?snapshot.tick-BigInt(publication.selectedTicks):0n,previousElapsed=Math.max(0,Number(previousTick-start)*0.015);return [Object.freeze({identity,model:occurrence.model,activity:animation,previousElapsedSeconds:Math.min(previousElapsed,elapsed),elapsedSeconds:elapsed,currentTimeSeconds:Number(snapshot.tick)*0.015,frameTimeSeconds:publication.selectedTicks*0.015,planarSpeed:0,screenAspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),worldFarPlane:camera.far,skin:occurrence.skin,lod:0,bodygroups:Object.freeze([]),packedBody:state.body})]})
       const modelStart=performance.now();this.#wasmCalls.models++;const modelRequest=client.models(generation, encodeModelPoseBatch([viewmodel.request,...lockerRequests]));this.#wasmCalls.visibility++;const visibilityRequest=client.visibility(generation,{
@@ -2702,7 +2894,9 @@ export class Tf2Application {
         near:camera.near,
         far:camera.far,
         presentationTimeSeconds:Number(snapshot.tick)*0.015,
-      });void visibilityRequest.catch(()=>{});const modelPoses = decodeModelPoseOutput(await modelRequest)
+      });void visibilityRequest.catch(()=>{});const modelOutput=await modelRequest
+      if(!ownsGeneration())return
+      const modelPoses=decodeModelPoseOutput(modelOutput)
       const modelMilliseconds=performance.now()-modelStart
       const viewmodelPoses = modelPoses.filter((pose) => pose.identity === viewmodel.item.identity)
       const lockerPoses=modelPoses.filter(pose=>this.#lockerAnimations.has(pose.identity))
@@ -2711,18 +2905,22 @@ export class Tf2Application {
       this.#updateAttachmentTransforms(snapshot, viewmodelPoses, camera)
       let presentation:ReturnType<ProjectileMapper["map"]>
       const projectileStart=performance.now()
-      try{presentation=this.#projectiles.map(projectileFrame(snapshot))}catch(error){const timeline=snapshot.projectileTimeline.map(value=>`${value.tick}[${value.projectiles.map(projectile=>projectile.identity).join(",")}]{${value.events.map(event=>`${event.type}:${event.projectile}@${event.tick}`).join(",")}}`).join("|"),top=snapshot.projectileEvents.map(event=>`${event.type}:${event.projectile}@${event.tick}`).join(",");throw new Error(`${error instanceof Error?error.message:"projectile presentation failed"}; top ${top}; timeline ${timeline}`)}
+      if(!ownsGeneration())return
+      try{presentation=owners.mapper.map(projectileFrame(snapshot))}catch(error){const timeline=snapshot.projectileTimeline.map(value=>`${value.tick}[${value.projectiles.map(projectile=>projectile.identity).join(",")}]{${value.events.map(event=>`${event.type}:${event.projectile}@${event.tick}`).join(",")}}`).join("|"),top=snapshot.projectileEvents.map(event=>`${event.type}:${event.projectile}@${event.tick}`).join(",");throw new Error(`${error instanceof Error?error.message:"projectile presentation failed"}; top ${top}; timeline ${timeline}`)}
       const projectileMilliseconds=performance.now()-projectileStart
       this.#pendingProjectileTimeline.splice(0,projectileTimeline.length)
       const visibility=await visibilityRequest
-      const particleStart=performance.now();this.#wasmCalls.particles++;const particleOutput = await client.particles(
-        generation,
-        this.#particleBatches.encode(snapshot.tick, camera.position, presentation.particles),
-      )
+      if(!ownsGeneration())return
+      const particleStart=performance.now()
+      const particleBatch=owners.encoder.encode(snapshot.tick,camera.position,presentation.particles)
+      if(!ownsGeneration())return
+      this.#wasmCalls.particles++
+      const particleOutput=await client.particles(generation,particleBatch)
+      if(!ownsGeneration())return
       const particleMilliseconds=performance.now()-particleStart
       const particleDecodeStart=performance.now(),particleItems=decodeParticleRenderOutput(particleOutput,this.#artifacts.particleMaterials).items,particleDecodeMilliseconds=performance.now()-particleDecodeStart
       const audioStart=performance.now();this.#playAudio(snapshot, camera);const audioMilliseconds=performance.now()-audioStart
-      if(this.#closed||this.#paused||generation!==this.#generation||client!==this.#client)return
+      if(this.#paused||!ownsGeneration())return
       const frame=Object.freeze({
         effects: Object.freeze([]),
         particles: particleItems,
@@ -2819,7 +3017,8 @@ export class Tf2Application {
     } catch (error) {
       if(this.#closed||generation!==this.#generation||this.#view.phase==="Replacing")return
       this.#paused = true
-      this.#set({ phase: "Failed", detail: error instanceof Error ? error.message : "Gameplay frame failed" })
+      this.#predictedEye.suspend()
+      this.#set({ phase: "Failed", gameUi: "failure", detail: error instanceof Error ? error.message : "Gameplay frame failed" })
     }
   }
 
@@ -2904,6 +3103,36 @@ export class Tf2Application {
   }
 
   readonly #keyDown = (event: KeyboardEvent): void => {
+    if (event.code === "Escape" && this.#view.optionsVisible && this.#options?.handleKey(event)) return
+    if (event.code === "Escape" && !this.#view.consoleVisible) {
+      const route = routeApplicationEscape({
+        code: event.code,
+        repeat: event.repeat,
+        phase: this.#view.phase,
+        gameUi: this.#view.gameUi,
+        optionsVisible: this.#view.optionsVisible === true,
+      })
+      if (route !== "ignore") {
+        event.preventDefault()
+        event.stopImmediatePropagation()
+        if (route === "options" && this.#options) {
+          this.#options.hide("cancel")
+          this.#set({ optionsVisible: false })
+        } else if (route === "activate" && this.#gameUi?.state().kind === "in-game") {
+          this.#neutral()
+          this.#paused = true
+          this.#predictedEye.suspend()
+          if (document.pointerLockElement) void document.exitPointerLock()
+          const transition = this.#gameUi.dispatch({ kind: "escape" })
+          if (transition.disposition === "applied") this.#set({ gameUi: "pause", detail: "Game paused" })
+        } else if (route === "resume" && this.#gameUi?.state().kind === "pause") {
+          this.#resumePointerOnAcknowledge = true
+          const transition = this.#gameUi.dispatch({ kind: "escape" })
+          if (transition.disposition !== "applied") this.#resumePointerOnAcknowledge = false
+        }
+        return
+      }
+    }
     if (this.#options?.handleKey(event)) return
     if (event.code === "Backquote") {
       if (!this.#consoleEnabled || this.#keyboardAction(event) !== "toggleconsole"
@@ -2912,21 +3141,6 @@ export class Tf2Application {
       event.preventDefault()
       this.toggleConsole()
       return
-    }
-    if (event.code === "Escape") {
-      if (this.#view.optionsVisible && this.#options) {
-        this.#options.hide("cancel")
-        this.#set({ optionsVisible: false })
-        return
-      }
-      if (this.#gameUi?.state().kind === "in-game") {
-        this.#neutral()
-        this.#paused = true
-        if (document.pointerLockElement) void document.exitPointerLock()
-        this.#gameUi.dispatch({ kind: "gameui-activated" })
-        this.#set({ gameUi: "pause", detail: "Game paused" })
-        return
-      }
     }
     if (this.#view.consoleVisible || this.#view.optionsVisible || this.#view.gameUi !== "in-game" || event.repeat) return
     const action = this.#keyboardAction(event)
@@ -2965,9 +3179,10 @@ export class Tf2Application {
 
   readonly #blur = (): void => this.#neutral()
   readonly #visibility = (): void => {
-    this.#paused = document.hidden
+    this.#paused = document.hidden || this.#view.gameUi === "pause"
+    this.#predictedEye.suspend()
     this.#neutral()
-    const nowSeconds=performance.now()/1_000
+    const nowSeconds=this.#frameClock.admit(performance.now()/1_000)
     this.#nextSimulationSampleSeconds=nowSeconds+SIMULATION_SAMPLE_INTERVAL_SECONDS
     if(this.#client&&this.#snapshot)this.#scheduleSimulation(nowSeconds,this.#paused)
   }
@@ -3092,15 +3307,10 @@ export class Tf2Application {
     this.#simulationSamples.clear()
     await this.#simulationTask
     await this.#presentationTask
-    this.#pendingPresentation = undefined
-    this.#preparedPresentation = undefined
-    this.#requiredParticleDisplayFrames.reset()
-    this.#skyVisibility.clear()
-    this.#canvasDiagnostics.clear()
+    this.#resetGenerationPresentation()
     this.#viewmodelSequenceCache.clear()
     this.#hudContext = undefined
     this.#hudContextIdentity = -1
-    this.#pendingProjectileTimeline = []
     await this.#displayTask
     await this.#client?.shutdown().catch(() => {})
     this.#client = undefined
@@ -3134,7 +3344,7 @@ export class Tf2Application {
     if (this.#closed) return
     this.#closed = true
     this.#viewportOwner.destroy()
-    this.#operationAbort.abort()
+    this.#operations.cancel()
     if (this.#operationWatchdog) clearTimeout(this.#operationWatchdog)
     this.#operationWatchdog = undefined
     this.#removeStartupListeners()

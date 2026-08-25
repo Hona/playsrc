@@ -8,8 +8,9 @@ type ApplicationState = Readonly<{
   blockers: string
 }>
 
-export const test = base.extend<{ applicationDiagnostics: void }>({
-  applicationDiagnostics: [async ({ page }, use, testInfo) => {
+export const test = base.extend<{ applicationDiagnostics: void; allowRecoverableApplicationFailure: boolean }>({
+  allowRecoverableApplicationFailure: [false, { option: true }],
+  applicationDiagnostics: [async ({ page, allowRecoverableApplicationFailure }, use, testInfo) => {
     let rejectFailure: (error: Error) => void = () => {}
     let stallTimer: ReturnType<typeof setTimeout> | undefined
     let lastState: ApplicationState | undefined
@@ -24,7 +25,9 @@ export const test = base.extend<{ applicationDiagnostics: void }>({
       lastState = state
       if (stallTimer) clearTimeout(stallTimer)
       if (state.phase === "Failed") {
-        fail(`TF2 application failed: ${state.detail}\nIn-game console:\n${state.consoleOutput || "<not mounted>"}\nBlockers: ${state.blockers}`)
+        if (!allowRecoverableApplicationFailure) {
+          fail(`TF2 application failed: ${state.detail}\nIn-game console:\n${state.consoleOutput || "<not mounted>"}\nBlockers: ${state.blockers}`)
+        }
         return
       }
       if (["Startup", "Loading", "Replacing"].includes(state.phase)) {
