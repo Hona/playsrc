@@ -58,18 +58,19 @@ export async function captureTf2TeamSelection(page: Page): Promise<Tf2TeamSelect
       models: main.dataset.teamSelectionModels ?? "",
     }
   })
-  expect(evidence.localTeam).toBe(0)
-  expect(evidence.redCount).toBe(0)
-  expect(evidence.blueCount).toBe(0)
-  expect(evidence.buttons.map((button) => button.label)).toEqual(["BLU", "RED", "Auto-assign", "Spectate"])
-  expect(evidence.buttons.every((button) => button.visible)).toBeTrue()
-  expect(evidence.pixels.nonBlack).toBeGreaterThan(20_000)
-  expect(evidence.pixels.redDominant).toBeGreaterThan(250)
-  expect(evidence.pixels.blueDominant).toBeGreaterThan(250)
   const local = await loadLocalConfig()
   const output = path.join(local.sourceCacheDir, "profiles", "team-selection")
   await mkdir(output, { recursive: true })
   await page.screenshot({ path: path.join(output, "initial-unassigned-team-menu.png") })
+  console.log(`TF2_TEAM_SELECTION ${JSON.stringify({ localTeam: evidence.localTeam, redCount: evidence.redCount, blueCount: evidence.blueCount, pixels: evidence.pixels })}`)
+  expect(evidence.localTeam).toBe(0)
+  expect(evidence.redCount).toBe(0)
+  expect(evidence.blueCount).toBe(0)
+  expect(evidence.buttons.map((button) => button.label)).toEqual(["BLU", "RED", "Auto-assign", "Spectate"])
+  expect(evidence.buttons.every((button) => button.visible)).toBe(true)
+  expect(evidence.pixels.nonBlack).toBeGreaterThan(20_000)
+  expect(evidence.pixels.redDominant).toBeGreaterThan(250)
+  expect(evidence.pixels.blueDominant).toBeGreaterThan(250)
   return Object.freeze(evidence)
 }
 
