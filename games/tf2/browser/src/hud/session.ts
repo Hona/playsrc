@@ -97,13 +97,13 @@ function reload(value: CompactWeaponState["reload"]): Tf2ReloadPhase {
 function weaponName(identity: CompactWeaponState["weapon"]): string {
 
   return identity === 40 ? "Shotgun" : identity === 41 ? "Pistol" : identity === 42 ? "Wrench"
-    : (["", "Rocket Launcher", "Original", "Stickybomb Launcher", "Scattergun", "Pistol", "Bat", "Shotgun", "Shovel", "Minigun", "Shotgun", "Fists", "Sniper Rifle", "SMG", "Kukri", "Flamethrower", "Fire Axe"] as const)[identity]
+    : (["", "Rocket Launcher", "Original", "Stickybomb Launcher", "Scattergun", "Pistol", "Bat", "Shotgun", "Shovel", "Minigun", "Shotgun", "Fists", "Sniper Rifle", "SMG", "Kukri", "Flamethrower", "Fire Axe", "Bottle", "Grenade Launcher"] as const)[identity]
 }
 
 function weapon(value: CompactWeaponState, playerClass: Tf2Class): Tf2HudWeapon {
   const totalAmmo = value.weapon === 9 || value.weapon === 12 || value.weapon === 15
-  const melee = value.weapon === 6 || value.weapon === 8 || value.weapon === 11 || value.weapon === 14 || value.weapon === 16 || value.weapon === 42
-  const definitions = ([undefined, 18, undefined, undefined, 13, 23, 0, 10, 6, 15, 11, 5, 14, 16, 3] as const)
+  const melee = value.weapon === 6 || value.weapon === 8 || value.weapon === 11 || value.weapon === 14 || value.weapon === 16 || value.weapon === 17 || value.weapon === 42
+  const definitions = ([undefined, 18, undefined, 20, 13, 23, 0, 10, 6, 15, 11, 5, 14, 16, 3, 21, 2, 1, 19] as const)
   const definition = value.weapon === 7 && playerClass === 7 ? 12 : value.weapon === 15 ? 21 : value.weapon === 16 ? 2
     : value.weapon === 40 ? 9 : value.weapon === 41 ? 22 : value.weapon === 42 ? 7 : definitions[value.weapon]
 

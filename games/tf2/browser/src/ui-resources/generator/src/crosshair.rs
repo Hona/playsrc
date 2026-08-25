@@ -404,6 +404,8 @@ pub(crate) fn write(
         weapon(content, "scripts/tf_weapon_sniperrifle.ctx", &[12])?,
         weapon(content, "scripts/tf_weapon_smg.ctx", &[13])?,
         weapon(content, "scripts/tf_weapon_club.ctx", &[14])?,
+        weapon(content, "scripts/tf_weapon_bottle.ctx", &[17])?,
+        weapon(content, "scripts/tf_weapon_grenadelauncher.ctx", &[18])?,
         weapon(content, "scripts/tf_weapon_shotgun_primary.ctx", &[40])?,
         weapon(content, "scripts/tf_weapon_pistol.ctx", &[41])?,
         weapon(content, "scripts/tf_weapon_wrench.ctx", &[42])?,

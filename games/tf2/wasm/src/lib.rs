@@ -4816,7 +4816,9 @@ fn encode_random_state(state: playsrc_tf2::Tf2RandomState) -> Option<Vec<u8>> {
             | state.sound_selection.fire_axe_hit_world_available << 3,
         state.sound_selection.sticky_explosion_available
             | state.sound_selection.fire_axe_hit_flesh_available << 3,
-        state.sound_selection.bat_hit_world_available,
+        state.sound_selection.bat_hit_world_available
+            | state.sound_selection.bottle_hit_flesh_available << 2
+            | state.sound_selection.bottle_hit_world_available << 5,
         state.sound_selection.shovel_hit_world_available
             | state.sound_selection.shovel_hit_flesh_available << 2,
         state.sound_selection.fist_miss_available,
@@ -4894,6 +4896,9 @@ fn sound_definition_code(value: playsrc_tf2::SoundDefinition) -> u8 {
         playsrc_tf2::SoundDefinition::FlagSpawn => 52,
         playsrc_tf2::SoundDefinition::TeamWon => 53,
         playsrc_tf2::SoundDefinition::TeamLost => 54,
+        playsrc_tf2::SoundDefinition::BottleMiss => 55,
+        playsrc_tf2::SoundDefinition::BottleHitFlesh => 56,
+        playsrc_tf2::SoundDefinition::BottleHitWorld => 57,
     }
 }
 
@@ -5236,6 +5241,8 @@ fn weapon_code(weapon: playsrc_tf2::Weapon) -> u8 {
         playsrc_tf2::Weapon::SniperRifle => 12,
         playsrc_tf2::Weapon::Smg => 13,
         playsrc_tf2::Weapon::Kukri => 14,
+        playsrc_tf2::Weapon::Bottle => 17,
+        playsrc_tf2::Weapon::GrenadeLauncher => 18,
         playsrc_tf2::Weapon::EngineerShotgun => 40,
         playsrc_tf2::Weapon::EngineerPistol => 41,
         playsrc_tf2::Weapon::Wrench => 42,
@@ -8398,6 +8405,9 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>) -
         "Weapon_FireAxe.Miss",
         "Weapon_FireAxe.HitFlesh",
         "Weapon_FireAxe.HitWorld",
+        "Weapon_Bottle.Miss",
+        "Weapon_Bottle.HitFlesh",
+        "Weapon_Bottle.HitWorld",
     ];
     let flag_targets: &[&str] = &[
         "CaptureFlag.EnemyStolen",
@@ -8731,6 +8741,8 @@ fn load_cached_presentation(
         "models/class_menu/random_class_icon.mdl".to_owned(),
         "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl".to_owned(),
         "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl".to_owned(),
+        "models/weapons/c_models/c_grenadelauncher/c_grenadelauncher.mdl".to_owned(),
+        "models/weapons/c_models/c_bottle/c_bottle.mdl".to_owned(),
         "models/weapons/c_models/c_scattergun.mdl".to_owned(),
         "models/weapons/c_models/c_pistol/c_pistol.mdl".to_owned(),
         "models/weapons/c_models/c_bat.mdl".to_owned(),
@@ -8969,6 +8981,8 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
         "models/class_menu/random_class_icon.mdl".to_owned(),
         "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl".to_owned(),
         "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl".to_owned(),
+        "models/weapons/c_models/c_grenadelauncher/c_grenadelauncher.mdl".to_owned(),
+        "models/weapons/c_models/c_bottle/c_bottle.mdl".to_owned(),
         "models/weapons/c_models/c_scattergun.mdl".to_owned(),
         "models/weapons/c_models/c_pistol/c_pistol.mdl".to_owned(),
         "models/weapons/c_models/c_bat.mdl".to_owned(),
@@ -9019,6 +9033,8 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
                     | "models/weapons/c_models/c_sniper_arms.mdl"
                     | "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl"
                     | "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl"
+                    | "models/weapons/c_models/c_grenadelauncher/c_grenadelauncher.mdl"
+                    | "models/weapons/c_models/c_bottle/c_bottle.mdl"
                     | "models/weapons/c_models/c_scattergun.mdl"
                     | "models/weapons/c_models/c_pistol/c_pistol.mdl"
                     | "models/weapons/c_models/c_bat.mdl"
@@ -12105,6 +12121,8 @@ mod tests {
                 flag_enemy_captured_available: 7,
                 flag_enemy_returned_available: 7,
                 flag_team_dropped_available: 3,
+                bottle_hit_flesh_available: 0b111,
+                bottle_hit_world_available: 0b111,
             },
         };
         let mut collision_snapshot = b"CSNP".to_vec();

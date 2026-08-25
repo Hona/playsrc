@@ -176,13 +176,13 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     for (const team of [0, 1, 4]) {
       expect(() => encodeCommand({ ...base, selectTeam: team as 2 })).toThrow("team selector is invalid")
     }
-    for (let weapon = 1; weapon <= 16; weapon += 1) {
+    for (let weapon = 1; weapon <= 18; weapon += 1) {
       expect(new DataView(encodeCommand({ ...base, selectWeapon: weapon as 1 })).getUint32(32, true)).toBe(weapon << 8)
     }
     for (const weapon of [40, 41, 42] as const) {
       expect(new DataView(encodeCommand({ ...base, selectWeapon: weapon })).getUint32(32, true)).toBe(weapon << 8)
     }
-    for (const weapon of [0, 17, 39, 43, 1.5, Number.NaN]) {
+    for (const weapon of [0, 19, 39, 43, 1.5, Number.NaN]) {
       expect(() => encodeCommand({ ...base, selectWeapon: weapon as 1 })).toThrow("weapon selector is invalid")
     }
   })
@@ -392,12 +392,12 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
       weapon: { identity: 1, reload: 0, clip: 3, reserve: 20, maximumClip: 4, maximumReserve: 20, nextPrimaryTick: 20n, nextReloadTick: 0n },
       shots: 4, hits: 2, kills: 0, deaths: 0, captures: 0, carryingFlag: false, lastFireTick: 6n, respawnTick: null,
     }])
-    for (const [playerClass, weapon] of [[2, 12], [2, 13], [9, 40], [9, 41]] as const) {
+    for (const [playerClass, weapon] of [[2, 12], [2, 13], [4, 17], [4, 18], [9, 40], [9, 41]] as const) {
       bytes[at + 4] = playerClass
       bytes[at + 64] = weapon
       expect(decodeSnapshot(bytes).bots[0]?.weapon?.identity).toBe(weapon)
     }
-    bytes[at + 64] = 15
+    bytes[at + 64] = 19
     expect(() => decodeSnapshot(bytes)).toThrow(Tf2CodecError)
     bytes[at + 64] = 40
     view.setUint32(at, 1, true)

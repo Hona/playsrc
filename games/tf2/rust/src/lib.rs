@@ -191,6 +191,8 @@ pub enum Weapon {
     SniperRifle = 12,
     Smg = 13,
     Kukri = 14,
+    Bottle = 17,
+    GrenadeLauncher = 18,
     EngineerShotgun = 40,
     EngineerPistol = 41,
     Wrench = 42,
@@ -1650,7 +1652,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     map_phase.append(phase);
                 } else if matches!(
                     active_weapon,
-                    Weapon::Bat | Weapon::Shovel | Weapon::Kukri | Weapon::Wrench | Weapon::FireAxe
+                    Weapon::Bat
+                        | Weapon::Shovel
+                        | Weapon::Kukri
+                        | Weapon::Wrench
+                        | Weapon::FireAxe
+                        | Weapon::Bottle
                 ) {
                     self.swing_melee(active_weapon);
                 } else if active_weapon == Weapon::Fists {
@@ -1681,7 +1688,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
 
                 if matches!(
                     active_weapon,
-                    Weapon::Bat | Weapon::Shovel | Weapon::Kukri | Weapon::Wrench | Weapon::FireAxe
+                    Weapon::Bat
+                        | Weapon::Shovel
+                        | Weapon::Kukri
+                        | Weapon::Wrench
+                        | Weapon::FireAxe
+                        | Weapon::Bottle
                 ) {
                     self.resolve_melee(
                         active_weapon,
@@ -2163,7 +2175,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 previous.abort_reload();
                 if matches!(
                     active_weapon,
-                    Weapon::Bat | Weapon::Shovel | Weapon::Kukri | Weapon::Wrench | Weapon::FireAxe
+                    Weapon::Bat
+                        | Weapon::Shovel
+                        | Weapon::Kukri
+                        | Weapon::Wrench
+                        | Weapon::FireAxe
+                        | Weapon::Bottle
                 ) {
                     self.pending_melee_tick = None;
                 }
@@ -3327,6 +3344,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             Weapon::Bat => SoundDefinition::BatMiss,
             Weapon::Shovel => SoundDefinition::ShovelMiss,
             Weapon::Kukri => SoundDefinition::KukriMiss,
+            Weapon::Bottle => SoundDefinition::BottleMiss,
             Weapon::Wrench => SoundDefinition::WrenchMiss,
             Weapon::FireAxe => SoundDefinition::FireAxeMiss,
             _ => unreachable!("only melee weapons swing"),
@@ -3371,33 +3389,34 @@ impl<W: GameplayWorld + Clone> Session<W> {
             }
         }
         let end = add(origin, scale(direction, ballistics::MELEE_RANGE));
-        let line = self.collision.trace(
-            origin,
-            end,
-            Hull {
-                mins: [0.0; 3],
-                maxs: [0.0; 3],
-            },
-            MASK_SOLID,
-        )?;
-        let impact = if line.fraction < 1.0 || line.start_solid {
-            line
-        } else {
-            self.collision.trace(
-                origin,
-                end,
-                Hull {
-                    mins: [-ballistics::MELEE_HULL_RADIUS; 3],
-                    maxs: [ballistics::MELEE_HULL_RADIUS; 3],
-                },
-                MASK_SOLID,
-            )?
+        let line_hull = Hull {
+            mins: [0.0; 3],
+            maxs: [0.0; 3],
         };
-        let actor = self
-            .bots
+        let line = self.collision.trace(origin, end, line_hull, MASK_SOLID)?;
+        let line_player = self.trace_melee_players(origin, end, line_hull, line.fraction)?;
+        let (impact, player) = if line.fraction < 1.0 || line.start_solid || line_player.is_some() {
+            (line, line_player)
+        } else {
+            let hull = Hull {
+                mins: [-ballistics::MELEE_HULL_RADIUS; 3],
+                maxs: [ballistics::MELEE_HULL_RADIUS; 3],
+            };
+            let impact = self.collision.trace(origin, end, hull, MASK_SOLID)?;
+            let player = self.trace_melee_players(origin, end, hull, impact.fraction)?;
+            (impact, player)
+        };
+        let actor = player
             .as_ref()
-            .and_then(|bots| {
-                bots.intersect_enemy(
+            .and_then(|hit| {
+                let identity = u32::try_from(hit.entity).ok()?;
+                self.bots
+                    .as_ref()?
+                    .contains(identity)
+                    .then_some((identity, hit.fraction, hit.end))
+            })
+            .or_else(|| {
+                self.bots.as_ref()?.intersect_enemy(
                     self.team_selection.local_team(),
                     origin,
                     end,
@@ -3405,13 +3424,25 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 )
             })
             .filter(|(_, fraction, _)| *fraction <= impact.fraction);
-        if impact.fraction < 1.0 || impact.start_solid || actor.is_some() {
-            let target = actor.map(|(identity, _, _)| identity).or_else(|| {
-                impact
-                    .hit
-                    .filter(|identity| !self.collision.is_world(*identity))
-                    .and_then(|identity| u32::try_from(identity).ok())
-            });
+        if player.is_some() || actor.is_some() || impact.fraction < 1.0 || impact.start_solid {
+            let position = actor.map_or_else(
+                || player.as_ref().map_or(impact.end, |hit| hit.end),
+                |(_, _, position)| position,
+            );
+            let target = actor
+                .map(|(identity, _, _)| identity)
+                .or_else(|| {
+                    player
+                        .as_ref()
+                        .and_then(|hit| u32::try_from(hit.entity).ok())
+                })
+                .or_else(|| {
+                    impact
+                        .hit
+                        .filter(|identity| !self.collision.is_world(*identity))
+                        .and_then(|identity| u32::try_from(identity).ok())
+                });
+
             let (definition, damage) = match (weapon, target.is_some()) {
                 (Weapon::Bat, true) => (SoundDefinition::BatHitFlesh, ballistics::BAT_DAMAGE),
                 (Weapon::Bat, false) => (SoundDefinition::BatHitWorld, ballistics::BAT_DAMAGE),
@@ -3420,6 +3451,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 }
                 (Weapon::Shovel, false) => {
                     (SoundDefinition::ShovelHitWorld, ballistics::SHOVEL_DAMAGE)
+                }
+                (Weapon::Bottle, true) => {
+                    (SoundDefinition::BottleHitFlesh, ballistics::BOTTLE_DAMAGE)
+                }
+                (Weapon::Bottle, false) => {
+                    (SoundDefinition::BottleHitWorld, ballistics::BOTTLE_DAMAGE)
                 }
                 (Weapon::Wrench, true) => {
                     (SoundDefinition::WrenchHitFlesh, ballistics::WRENCH_DAMAGE)
@@ -3439,7 +3476,6 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 }
                 _ => unreachable!("only melee weapons resolve swings"),
             };
-            let position = actor.map_or(impact.end, |(_, _, position)| position);
             self.emit_weapon_sound(definition, position);
             events.push(Event::MeleeImpact {
                 weapon,
@@ -3462,6 +3498,53 @@ impl<W: GameplayWorld + Clone> Session<W> {
             }
         }
         Ok(())
+    }
+
+    fn trace_melee_players(
+        &self,
+        start: [f32; 3],
+        end: [f32; 3],
+        hull: Hull,
+        maximum_fraction: f32,
+    ) -> Result<Option<playsrc_collision::StudioHitboxTrace>, Error> {
+        let mut nearest: Option<playsrc_collision::StudioHitboxTrace> = None;
+        for candidate in &self.posed_player_hitboxes {
+            if candidate.team == self.team_selection.local_team() {
+                continue;
+            }
+            let hitbox = playsrc_collision::StudioHitbox {
+                identity: candidate.hitbox,
+                group: candidate.group,
+                bone: candidate.bone,
+                physics_bone: candidate.physics_bone,
+                bone_contents: candidate.bone_contents,
+                surface: None,
+                minimum: candidate.minimum,
+                maximum: candidate.maximum,
+                bone_to_world: &candidate.bone_to_world,
+            };
+            let trace =
+                playsrc_collision::trace_studio_hitboxes(playsrc_collision::StudioHitboxRequest {
+                    entity: u64::from(candidate.entity),
+                    origin: candidate.origin,
+                    scale: 1.0,
+                    start,
+                    end,
+                    hull,
+                    mask: MASK_SOLID,
+                    hitboxes: std::slice::from_ref(&hitbox),
+                })
+                .map_err(|_| Error::InvalidProjectilePhysics)?;
+            if let Some(trace) = trace
+                && trace.fraction <= maximum_fraction
+                && nearest
+                    .as_ref()
+                    .is_none_or(|previous| trace.fraction < previous.fraction)
+            {
+                nearest = Some(trace);
+            }
+        }
+        Ok(nearest)
     }
 
     fn fire_minigun_hitscan(
@@ -3597,6 +3680,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
             | Weapon::SniperRifle
             | Weapon::Smg
             | Weapon::Kukri
+            | Weapon::Bottle
+            | Weapon::GrenadeLauncher
             | Weapon::EngineerShotgun
             | Weapon::EngineerPistol
             | Weapon::Wrench
@@ -3634,6 +3719,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
             | Weapon::SniperRifle
             | Weapon::Smg
             | Weapon::Kukri
+            | Weapon::Bottle
+            | Weapon::GrenadeLauncher
             | Weapon::EngineerShotgun
             | Weapon::EngineerPistol
             | Weapon::Wrench
@@ -4483,7 +4570,7 @@ fn default_weapon(class: PlayerClass) -> Option<Weapon> {
         PlayerClass::Scout => Some(Weapon::Scattergun),
         PlayerClass::Sniper => Some(Weapon::SniperRifle),
         PlayerClass::Soldier => Some(Weapon::RocketLauncher),
-        PlayerClass::Demoman => Some(Weapon::StickybombLauncher),
+        PlayerClass::Demoman => Some(Weapon::GrenadeLauncher),
         PlayerClass::Heavy => Some(Weapon::Minigun),
         PlayerClass::Engineer => Some(Weapon::EngineerShotgun),
         PlayerClass::Pyro => Some(Weapon::Flamethrower),
@@ -4501,10 +4588,17 @@ fn default_loadout(class: PlayerClass) -> BTreeMap<Weapon, WeaponRuntime> {
             (Weapon::Shotgun, WeaponRuntime::full(Weapon::Shotgun)),
             (Weapon::Shovel, WeaponRuntime::full(Weapon::Shovel)),
         ]),
-        PlayerClass::Demoman => BTreeMap::from([(
-            Weapon::StickybombLauncher,
-            WeaponRuntime::full(Weapon::StickybombLauncher),
-        )]),
+        PlayerClass::Demoman => BTreeMap::from([
+            (
+                Weapon::StickybombLauncher,
+                WeaponRuntime::full(Weapon::StickybombLauncher),
+            ),
+            (Weapon::Bottle, WeaponRuntime::full(Weapon::Bottle)),
+            (
+                Weapon::GrenadeLauncher,
+                WeaponRuntime::full(Weapon::GrenadeLauncher),
+            ),
+        ]),
         PlayerClass::Scout => BTreeMap::from([
             (Weapon::Scattergun, WeaponRuntime::full(Weapon::Scattergun)),
             (Weapon::Pistol, WeaponRuntime::full(Weapon::Pistol)),
@@ -4555,27 +4649,25 @@ fn allowed(class: PlayerClass, weapon: Weapon) -> bool {
         (
             PlayerClass::Soldier,
             Weapon::RocketLauncher | Weapon::Original | Weapon::Shotgun | Weapon::Shovel
-        ) | (PlayerClass::Demoman, Weapon::StickybombLauncher)
-            | (
-                PlayerClass::Scout,
-                Weapon::Scattergun | Weapon::Pistol | Weapon::Bat
-            )
-            | (
-                PlayerClass::Heavy,
-                Weapon::Minigun | Weapon::HeavyShotgun | Weapon::Fists
-            )
-            | (
-                PlayerClass::Sniper,
-                Weapon::SniperRifle | Weapon::Smg | Weapon::Kukri
-            )
-            | (
-                PlayerClass::Engineer,
-                Weapon::EngineerShotgun | Weapon::EngineerPistol | Weapon::Wrench
-            )
-            | (
-                PlayerClass::Pyro,
-                Weapon::Flamethrower | Weapon::Shotgun | Weapon::FireAxe
-            )
+        ) | (
+            PlayerClass::Demoman,
+            Weapon::GrenadeLauncher | Weapon::StickybombLauncher | Weapon::Bottle
+        ) | (
+            PlayerClass::Scout,
+            Weapon::Scattergun | Weapon::Pistol | Weapon::Bat
+        ) | (
+            PlayerClass::Heavy,
+            Weapon::Minigun | Weapon::HeavyShotgun | Weapon::Fists
+        ) | (
+            PlayerClass::Sniper,
+            Weapon::SniperRifle | Weapon::Smg | Weapon::Kukri
+        ) | (
+            PlayerClass::Engineer,
+            Weapon::EngineerShotgun | Weapon::EngineerPistol | Weapon::Wrench
+        ) | (
+            PlayerClass::Pyro,
+            Weapon::Flamethrower | Weapon::Shotgun | Weapon::FireAxe
+        )
     )
 }
 
@@ -5499,6 +5591,196 @@ mod tests {
     }
 
     #[test]
+    fn demoman_bottle_delays_authored_world_impact_and_preserves_zero_ammunition() {
+        let mut session = Session::new(MeleeWall, [0.0; 3], MapRuntime::empty(0.015));
+        session
+            .advance(Command {
+                select_class: Some(PlayerClass::Demoman),
+                select_weapon: Some(Weapon::Bottle),
+                ..Command::default()
+            })
+            .unwrap();
+        session
+            .loadout
+            .get_mut(&Weapon::Bottle)
+            .unwrap()
+            .next_primary_tick = 0;
+        let started = session
+            .advance(Command {
+                fire: true,
+                ..Command::default()
+            })
+            .unwrap();
+        assert_eq!(
+            session.audio_events()[0].definition,
+            SoundDefinition::BottleMiss
+        );
+        assert!(
+            !started
+                .events
+                .iter()
+                .any(|event| matches!(event, Event::MeleeImpact { .. }))
+        );
+        let swing_tick = started.tick;
+        while session.pending_melee_tick.is_some() {
+            let snapshot = session.advance(Command::default()).unwrap();
+            if session.pending_melee_tick.is_none() {
+                assert_eq!(snapshot.tick - swing_tick, 14);
+                assert!(snapshot.events.iter().any(|event| matches!(event,
+                    Event::MeleeImpact { weapon: Weapon::Bottle, target: None, damage, .. }
+                    if *damage == 65.0
+                )));
+                assert_eq!(
+                    session.audio_events()[0].definition,
+                    SoundDefinition::BottleHitWorld
+                );
+            }
+        }
+        assert_eq!(
+            (
+                session.weapon_runtime(Weapon::Bottle).unwrap().clip,
+                session.weapon_runtime(Weapon::Bottle).unwrap().reserve
+            ),
+            (0, 0)
+        );
+    }
+
+    #[test]
+    fn demoman_bottle_traces_enemy_line_then_hull_without_hitting_friendly_players() {
+        for (lateral, enemy) in [(0.0, true), (20.0, true), (0.0, false)] {
+            let world = RecordingWorld::default();
+            let traces = world.traces.clone();
+            let mut session = Session::new(world, [0.0; 3], MapRuntime::empty(0.015));
+            session.movement_configuration.gravity = 0.0;
+            session
+                .advance(Command {
+                    select_class: Some(PlayerClass::Demoman),
+                    select_weapon: Some(Weapon::Bottle),
+                    ..Command::default()
+                })
+                .unwrap();
+            session.set_posed_player_hitboxes(vec![PosedPlayerHitbox {
+                entity: 7,
+                team: if enemy {
+                    PlayerTeam::Blue
+                } else {
+                    PlayerTeam::Red
+                },
+                hitbox: 0,
+                group: 2,
+                bone: 0,
+                physics_bone: 0,
+                bone_contents: 0x0200_0000,
+                minimum: [-3.0; 3],
+                maximum: [3.0; 3],
+                bone_to_world: [
+                    1.0, 0.0, 0.0, 30.0, 0.0, 1.0, 0.0, lateral, 0.0, 0.0, 1.0, 68.0,
+                ],
+                origin: [30.0, lateral, 0.0],
+            }]);
+            session
+                .loadout
+                .get_mut(&Weapon::Bottle)
+                .unwrap()
+                .next_primary_tick = 0;
+            session
+                .advance(Command {
+                    fire: true,
+                    ..Command::default()
+                })
+                .unwrap();
+            traces.lock().unwrap().clear();
+            let mut impact = None;
+            while session.pending_melee_tick.is_some() {
+                let snapshot = session.advance(Command::default()).unwrap();
+                impact = snapshot
+                    .events
+                    .into_iter()
+                    .find(|event| matches!(event, Event::MeleeImpact { .. }));
+            }
+            if enemy {
+                assert!(
+                    matches!(impact,
+                        Some(Event::MeleeImpact { weapon: Weapon::Bottle, target: Some(7), damage, .. })
+                        if damage == 65.0
+                    ),
+                    "lateral={lateral}, impact={impact:?}"
+                );
+                assert_eq!(
+                    session.audio_events()[0].definition,
+                    SoundDefinition::BottleHitFlesh
+                );
+                let melee = traces.lock().unwrap();
+                let swings = melee
+                    .iter()
+                    .filter(|(_, _, _, mask)| *mask == MASK_SOLID)
+                    .collect::<Vec<_>>();
+                assert_eq!(swings.len(), if lateral == 0.0 { 1 } else { 2 });
+                assert_eq!(swings[0].2.mins, [0.0; 3]);
+                if lateral != 0.0 {
+                    assert_eq!(swings[1].2.mins, [-18.0; 3]);
+                }
+            } else {
+                assert!(impact.is_none());
+                assert!(session.audio_events().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn demoman_bottle_does_not_damage_an_enemy_behind_world_geometry() {
+        let mut session = Session::new(MeleeWall, [0.0; 3], MapRuntime::empty(0.015));
+        session
+            .advance(Command {
+                select_class: Some(PlayerClass::Demoman),
+                select_weapon: Some(Weapon::Bottle),
+                ..Command::default()
+            })
+            .unwrap();
+        session.set_posed_player_hitboxes(vec![PosedPlayerHitbox {
+            entity: 7,
+            team: PlayerTeam::Blue,
+            hitbox: 0,
+            group: 2,
+            bone: 0,
+            physics_bone: 0,
+            bone_contents: 0x0200_0000,
+            minimum: [-2.0; 3],
+            maximum: [2.0; 3],
+            bone_to_world: [1.0, 0.0, 0.0, 40.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 68.0],
+            origin: [40.0, 0.0, 0.0],
+        }]);
+        session
+            .loadout
+            .get_mut(&Weapon::Bottle)
+            .unwrap()
+            .next_primary_tick = 0;
+        session
+            .advance(Command {
+                fire: true,
+                ..Command::default()
+            })
+            .unwrap();
+        while session.pending_melee_tick.is_some() {
+            let snapshot = session.advance(Command::default()).unwrap();
+            if session.pending_melee_tick.is_none() {
+                assert!(snapshot.events.iter().any(|event| matches!(
+                    event,
+                    Event::MeleeImpact {
+                        weapon: Weapon::Bottle,
+                        target: None,
+                        ..
+                    }
+                )));
+                assert_eq!(
+                    session.audio_events()[0].definition,
+                    SoundDefinition::BottleHitWorld
+                );
+            }
+        }
+    }
+
+    #[test]
     fn engineer_stock_firearms_preserve_distinct_item_profiles_and_damage_ramp() {
         let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.015));
         session
@@ -6020,8 +6302,19 @@ mod tests {
                     );
                 }
                 PlayerClass::Demoman => {
-                    assert_eq!(snapshot.weapon, Some(Weapon::StickybombLauncher));
-                    assert_eq!(snapshot.loadout.len(), 1);
+                    assert_eq!(snapshot.weapon, Some(Weapon::GrenadeLauncher));
+                    assert_eq!(
+                        snapshot
+                            .loadout
+                            .iter()
+                            .map(|weapon| weapon.weapon)
+                            .collect::<Vec<_>>(),
+                        vec![
+                            Weapon::StickybombLauncher,
+                            Weapon::Bottle,
+                            Weapon::GrenadeLauncher
+                        ],
+                    );
                 }
                 PlayerClass::Heavy => {
                     assert_eq!(snapshot.weapon, Some(Weapon::Minigun));
@@ -6178,6 +6471,7 @@ mod tests {
         session
             .advance(Command {
                 select_class: Some(PlayerClass::Demoman),
+                select_weapon: Some(Weapon::StickybombLauncher),
                 ..Command::default()
             })
             .unwrap();
@@ -6821,6 +7115,7 @@ mod tests {
         session
             .advance(Command {
                 select_class: Some(PlayerClass::Demoman),
+                select_weapon: Some(Weapon::StickybombLauncher),
                 ..Command::default()
             })
             .unwrap();
@@ -7266,6 +7561,8 @@ mod tests {
                 flag_enemy_captured_available: 0b111,
                 flag_enemy_returned_available: 0b111,
                 flag_team_dropped_available: 0b11,
+                bottle_hit_flesh_available: 0b111,
+                bottle_hit_world_available: 0b111,
             }
         );
 
@@ -7312,6 +7609,8 @@ mod tests {
                 flag_enemy_captured_available: 0b111,
                 flag_enemy_returned_available: 0b111,
                 flag_team_dropped_available: 0b11,
+                bottle_hit_flesh_available: 0b111,
+                bottle_hit_world_available: 0b111,
             }
         );
     }
@@ -7401,10 +7700,10 @@ mod tests {
             .unwrap();
         assert_eq!(changed.class, PlayerClass::Demoman);
         assert!(changed.projectile_events.is_empty());
-        let sticky = session.weapon_runtime(Weapon::StickybombLauncher).unwrap();
-        assert_eq!(sticky.next_primary_tick, 45);
-        assert_eq!(sticky.first_primary_tick, 45);
-        assert!(sticky.charge_begin_tick.is_none());
+        let grenade = session.weapon_runtime(Weapon::GrenadeLauncher).unwrap();
+        assert_eq!(grenade.next_primary_tick, 45);
+        assert_eq!(grenade.first_primary_tick, 45);
+        assert!(grenade.charge_begin_tick.is_none());
     }
 
     #[test]

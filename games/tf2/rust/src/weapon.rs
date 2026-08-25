@@ -70,6 +70,16 @@ impl WeaponProfile {
                 center_fire_projectile: true,
                 flip_viewmodel: false,
             },
+            Weapon::GrenadeLauncher => Self {
+                maximum_clip: 4,
+                maximum_reserve: 16,
+                fire_delay: 0.6,
+                reload_start: 0.1,
+                reload_round: 0.6,
+                maximum_charge: None,
+                center_fire_projectile: false,
+                flip_viewmodel: false,
+            },
             Weapon::StickybombLauncher => Self {
                 maximum_clip: 8,
                 maximum_reserve: 24,
@@ -128,10 +138,10 @@ impl WeaponProfile {
                 center_fire_projectile: false,
                 flip_viewmodel: false,
             },
-            Weapon::Bat | Weapon::Shovel | Weapon::Wrench => Self {
+            Weapon::Bat | Weapon::Shovel | Weapon::Bottle | Weapon::Wrench => Self {
                 maximum_clip: 0,
                 maximum_reserve: 0,
-                fire_delay: if matches!(weapon, Weapon::Shovel | Weapon::Wrench) {
+                fire_delay: if matches!(weapon, Weapon::Shovel | Weapon::Bottle | Weapon::Wrench) {
                     0.8
                 } else {
                     0.5
@@ -482,6 +492,9 @@ impl WeaponRuntime {
         if self.weapon == Weapon::Minigun {
             return self.minigun_attack(tick, tick_interval, held, secondary, activities);
         }
+        if self.weapon == Weapon::GrenadeLauncher {
+            return PrimaryResult::None;
+        }
         if self.weapon == Weapon::Fists {
             if (held || secondary) && tick >= self.next_primary_tick {
                 self.next_primary_tick = tick.saturating_add(delay_ticks(0.8, tick_interval));
@@ -515,7 +528,12 @@ impl WeaponRuntime {
         }
         let available = match self.weapon {
             Weapon::SniperRifle => self.reserve > 0,
-            Weapon::Bat | Weapon::Shovel | Weapon::Kukri | Weapon::Wrench | Weapon::FireAxe => true,
+            Weapon::Bat
+            | Weapon::Shovel
+            | Weapon::Kukri
+            | Weapon::Wrench
+            | Weapon::FireAxe
+            | Weapon::Bottle => true,
             _ => self.clip > 0,
         };
         if held && available && tick >= self.next_primary_tick {
@@ -625,7 +643,12 @@ impl WeaponRuntime {
     ) -> PrimaryResult {
         match self.weapon {
             Weapon::SniperRifle => self.reserve -= 1,
-            Weapon::Bat | Weapon::Shovel | Weapon::Kukri | Weapon::Wrench | Weapon::FireAxe => {}
+            Weapon::Bat
+            | Weapon::Shovel
+            | Weapon::Kukri
+            | Weapon::Wrench
+            | Weapon::FireAxe
+            | Weapon::Bottle => {}
             _ => self.clip -= 1,
         }
         self.abort_reload();
@@ -666,6 +689,51 @@ fn elapsed_seconds(begin: u64, tick: u64, tick_interval: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn demoman_stock_profiles_preserve_exact_scripts_without_inventing_grenade_physics() {
+        let grenade = WeaponProfile::configured(Weapon::GrenadeLauncher);
+        assert_eq!((grenade.maximum_clip, grenade.maximum_reserve), (4, 16));
+        assert_eq!(
+            (
+                grenade.fire_delay,
+                grenade.reload_start,
+                grenade.reload_round
+            ),
+            (0.6, 0.1, 0.6)
+        );
+        let bottle = WeaponProfile::configured(Weapon::Bottle);
+        assert_eq!(
+            (
+                bottle.maximum_clip,
+                bottle.maximum_reserve,
+                bottle.fire_delay
+            ),
+            (0, 0, 0.8)
+        );
+
+        let mut grenade = WeaponRuntime::full(Weapon::GrenadeLauncher);
+        let mut activities = Vec::new();
+        assert_eq!(
+            grenade.primary(10, 0.015, true, false, &mut activities),
+            PrimaryResult::None,
+        );
+        assert_eq!((grenade.clip, grenade.reserve), (4, 16));
+        assert!(activities.is_empty());
+
+        let mut bottle = WeaponRuntime::full(Weapon::Bottle);
+        assert_eq!(
+            bottle.primary(10, 0.015, true, false, &mut activities),
+            PrimaryResult::Fired {
+                charge_seconds: 0.0
+            },
+        );
+        assert_eq!(
+            (bottle.clip, bottle.reserve, bottle.next_primary_tick),
+            (0, 0, 64)
+        );
+        assert_eq!(activities[0].activity, WeaponActivity::PrimaryAttack);
+    }
 
     #[test]
     fn heavy_stock_profiles_and_spin_penalties_match_configured_source_scripts() {

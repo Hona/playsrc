@@ -186,6 +186,13 @@ const SOUND_PATHS = [
   "sound/weapons/flame_thrower_loop.wav",
   "sound/weapons/flame_thrower_end.wav",
   "sound/weapons/flame_thrower_airblast.wav",
+  "sound/weapons/bottle_hit_flesh1.wav",
+  "sound/weapons/bottle_hit_flesh2.wav",
+  "sound/weapons/bottle_hit_flesh3.wav",
+  "sound/weapons/bottle_hit1.wav",
+  "sound/weapons/bottle_hit2.wav",
+  "sound/weapons/bottle_hit3.wav",
+
 ] as const
 const CTF_SOUND_PATHS = [
   "sound/vo/intel_enemystolen.mp3",
@@ -295,7 +302,7 @@ export type ApplicationView = Readonly<{
   objectiveEventProbe?: string
   botCount?: number
   botProbe?: string
-  unsupportedState?: "StickyPhysicsSolverUnavailable"
+  unsupportedState?: "StickyPhysicsSolverUnavailable" | "GrenadePhysicsSolverUnavailable"
   startupState?: Tf2StartupState["kind"]
   loadingProgress?: number
   loadingStatus?: string
@@ -1579,7 +1586,7 @@ export class Tf2Application {
       random: this.#presentationRandom,
       onCommand: (command) => {
 
-        if (command.kind === "select-weapon" && (command.weapon >= 1 && command.weapon <= 16 || command.weapon >= 40 && command.weapon <= 42)) this.#selectWeapon = command.weapon as Tf2Weapon
+        if (command.kind === "select-weapon" && (command.weapon >= 1 && command.weapon <= 18 || command.weapon >= 40 && command.weapon <= 42)) this.#selectWeapon = command.weapon as Tf2Weapon
 
       },
     })
@@ -3175,8 +3182,13 @@ export class Tf2Application {
   #command(): ArrayBuffer {
     const forward = Number(this.#buttons.held("+forward")) - Number(this.#buttons.held("+back"))
     const side = Number(this.#buttons.held("+moveleft")) - Number(this.#buttons.held("+moveright"))
-    const unsupportedSticky = this.#snapshot?.class === 4 && (this.#buttons.held("+attack") || this.#firePressed)
-    if (unsupportedSticky) { this.#blockers.add("Missing exact IVP sticky rigid-body solver: launch is rejected before projectile creation"); this.#set({unsupportedState:"StickyPhysicsSolverUnavailable"}) }
+    const attacking = this.#buttons.held("+attack") || this.#firePressed
+    const unsupportedProjectile = this.#snapshot?.class === 4 && attacking && (this.#snapshot.weapon === 3 || this.#snapshot.weapon === 18)
+    if (unsupportedProjectile) {
+      const sticky = this.#snapshot?.weapon === 3
+      this.#blockers.add(`Missing exact IVP ${sticky ? "sticky" : "grenade"} rigid-body solver: launch is rejected before projectile creation`)
+      this.#set({ unsupportedState: sticky ? "StickyPhysicsSolverUnavailable" : "GrenadePhysicsSolverUnavailable" })
+    }
     const command = encodeCommand({
       forward: forward * 450,
       side: side * 450,
@@ -3184,7 +3196,7 @@ export class Tf2Application {
       pitchDegrees: this.#pitch,
       jump: this.#buttons.held("+jump") || this.#jumpPressed,
       crouch: this.#buttons.held("+duck"),
-      fire: !unsupportedSticky && (this.#buttons.held("+attack") || this.#firePressed),
+      fire: !unsupportedProjectile && attacking,
       detonate: this.#buttons.held("+attack2") || this.#detonatePressed,
       reload: this.#buttons.held("+reload") || this.#reloadPressed,
       dropItem: this.#dropItem,
@@ -3876,9 +3888,9 @@ export class Tf2Application {
     } else if (action === "+reload") {
       if (this.#buttons.press(identity, action)) this.#reloadPressed = true
 
-    } else if (action === "slot1") this.#selectWeapon = this.#snapshot?.class === 1 ? 4 : this.#snapshot?.class === 2 ? 12 : this.#snapshot?.class === 6 ? 9 : this.#snapshot?.class === 9 ? 40 : this.#snapshot?.class === 7 ? 15 : 1
+    } else if (action === "slot1") this.#selectWeapon = this.#snapshot?.class === 1 ? 4 : this.#snapshot?.class === 2 ? 12 : this.#snapshot?.class === 4 ? 18 : this.#snapshot?.class === 6 ? 9 : this.#snapshot?.class === 9 ? 40 : this.#snapshot?.class === 7 ? 15 : 1
     else if (action === "slot2") this.#selectWeapon = this.#snapshot?.class === 1 ? 5 : this.#snapshot?.class === 2 ? 13 : this.#snapshot?.class === 3 ? 7 : this.#snapshot?.class === 6 ? 10 : this.#snapshot?.class === 9 ? 41 : this.#snapshot?.class === 7 ? 7 : 3
-    else if (action === "slot3") this.#selectWeapon = this.#snapshot?.class === 1 ? 6 : this.#snapshot?.class === 2 ? 14 : this.#snapshot?.class === 3 ? 8 : this.#snapshot?.class === 6 ? 11 : this.#snapshot?.class === 9 ? 42 : this.#snapshot?.class === 7 ? 16 : undefined
+    else if (action === "slot3") this.#selectWeapon = this.#snapshot?.class === 1 ? 6 : this.#snapshot?.class === 2 ? 14 : this.#snapshot?.class === 3 ? 8 : this.#snapshot?.class === 4 ? 17 : this.#snapshot?.class === 6 ? 11 : this.#snapshot?.class === 9 ? 42 : this.#snapshot?.class === 7 ? 16 : undefined
 
   }
 

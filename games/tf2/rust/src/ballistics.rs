@@ -98,6 +98,7 @@ pub const MELEE_HULL_RADIUS: f32 = 18.0;
 pub const BAT_DAMAGE: f32 = 35.0;
 
 pub const SHOVEL_DAMAGE: f32 = 65.0;
+pub const BOTTLE_DAMAGE: f32 = 65.0;
 pub const WRENCH_DAMAGE: f32 = 65.0;
 pub const WRENCH_BUILDING_RANGE: f32 = 70.0;
 pub const KUKRI_DAMAGE: f32 = 65.0;

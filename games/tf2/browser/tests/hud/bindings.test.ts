@@ -729,7 +729,26 @@ describe("canonical all-class TF2 session HUD adapter", () => {
     }
   })
 
-test("publishes distinct Heavy stock item identities, total Minigun ammo, and hidden Fists ammo", () => {
+  test("publishes every Demoman stock item, authored slot, and hidden Bottle ammunition", () => {
+    const loadout = Object.freeze([
+      Object.freeze({ weapon: 3 as const, reload: 0 as const, clip: 8, reserve: 24, maximumClip: 8, maximumReserve: 24 }),
+      Object.freeze({ weapon: 17 as const, reload: 0 as const, clip: 0, reserve: 0, maximumClip: 0, maximumReserve: 0 }),
+      Object.freeze({ weapon: 18 as const, reload: 0 as const, clip: 4, reserve: 16, maximumClip: 4, maximumReserve: 16 }),
+    ])
+    for (const active of [18, 3, 17] as const) {
+      const source = compactSnapshot(1n, { class: 4, weapon: active, health: 175, maximumHealth: 175, loadout })
+      const binding = bindTf2Hud(adaptSessionHud(unavailable("initial"), compactPublication(source), context))
+      const player = (binding.facts.player as Extract<Tf2HudSnapshot["player"], { kind: "available" }>).value
+      expect(player.weapons.map((item) => ({ identity: item.identity, item: item.itemDefinition, slot: item.slot, name: item.displayName, ammo: item.ammoDisplay }))).toEqual([
+        { identity: 3, item: { kind: "available", value: 20 }, slot: 1, name: "Stickybomb Launcher", ammo: "clip-and-reserve" },
+        { identity: 17, item: { kind: "available", value: 1 }, slot: 2, name: "Bottle", ammo: "hidden" },
+        { identity: 18, item: { kind: "available", value: 19 }, slot: 0, name: "Grenade Launcher", ammo: "clip-and-reserve" },
+      ])
+      expect(value(binding.values, "visible", "HudWeaponAmmo")).toMatchObject({ value: active !== 17 })
+    }
+  })
+
+  test("publishes distinct Heavy stock item identities, total Minigun ammo, and hidden Fists ammo", () => {
     const loadout = Object.freeze([
       Object.freeze({ weapon: 9 as const, reload: 0 as const, clip: 0, reserve: 200, maximumClip: 0, maximumReserve: 200 }),
       Object.freeze({ weapon: 10 as const, reload: 0 as const, clip: 6, reserve: 32, maximumClip: 6, maximumReserve: 32 }),
@@ -858,7 +877,7 @@ test("publishes distinct Heavy stock item identities, total Minigun ammo, and hi
     })
     expect(value(binding.values, "image", "PlayerStatusClassImage")).toMatchObject({ value: { value: "../hud/class_demoblue" } })
     expect(value(binding.values, "dialog-variable", "classmodelpanel", "weaponName")).toMatchObject({ value: { value: "Stickybomb Launcher" } })
-    expect(value(binding.values, "scalar", "classmodelpanel", "itemDefinition")).toMatchObject({ value: { kind: "unavailable" } })
+    expect(value(binding.values, "scalar", "classmodelpanel", "itemDefinition")).toMatchObject({ value: { kind: "available", value: 20 } })
   })
 
   test("retains regenerate-before-fire ammo within one compact tick", () => {

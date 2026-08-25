@@ -24,7 +24,7 @@ export type Tf2Hud = Readonly<{
   maxHealth: number
   className: Tf2ClassPresentation["displayName"]
 
-  weaponName: "Rocket Launcher" | "Original" | "Stickybomb Launcher" | "Scattergun" | "Pistol" | "Bat" | "Shotgun" | "Shovel" | "Minigun" | "Fists" | "Sniper Rifle" | "SMG" | "Kukri" | "Wrench" | "Flamethrower" | "Fire Axe" | null
+  weaponName: "Rocket Launcher" | "Original" | "Stickybomb Launcher" | "Scattergun" | "Pistol" | "Bat" | "Shotgun" | "Shovel" | "Minigun" | "Fists" | "Sniper Rifle" | "SMG" | "Kukri" | "Wrench" | "Flamethrower" | "Fire Axe" | "Bottle" | "Grenade Launcher" | null
 
   speed: number
   projectileCount: number
@@ -33,7 +33,7 @@ export type Tf2Hud = Readonly<{
 export type Tf2AudioRequest = Readonly<{
   voiceIdentity: number
 
-  definition: "Weapon_RPG.Single" | "Weapon_QuakeRPG.Single" | "Weapon_StickyBombLauncher.Single" | "BaseExplosionEffect.Sound" | "Weapon_QuakeRPG.Explode" | "Weapon_Grenade_Pipebomb.Explode" | "Weapon_Scatter_Gun.Single" | "Weapon_Pistol.Single" | "Weapon_Bat.Miss" | "Weapon_Bat.HitFlesh" | "Weapon_Bat.HitWorld" | "Weapon_Scatter_Gun.WorldReload" | "Weapon_Pistol.WorldReload" | "Weapon_Shotgun.Single" | "Weapon_Shotgun.WorldReload" | "Weapon_Shovel.Miss" | "Weapon_Shovel.HitFlesh" | "Weapon_Shovel.HitWorld" | "Weapon_Minigun.WindUp" | "Weapon_Minigun.WindDown" | "Weapon_Minigun.Spin" | "Weapon_Minigun.Fire" | "Weapon_Fist.Miss" | "Weapon_Fist.HitWorld" | "Weapon_Fist.HitFlesh" | "Weapon_SniperRifle.Single" | "Weapon_SMG.Single" | "Weapon_Machete.Miss" | "Weapon_Machete.HitFlesh" | "Weapon_Machete.HitWorld" | "Weapon_SMG.WorldReload" | "Weapon_Shotgun.Empty" | "Weapon_Pistol.ClipEmpty" | "Weapon_Wrench.Miss" | "Weapon_Wrench.HitFlesh" | "Weapon_Wrench.HitWorld" | "Weapon_FlameThrower.Fire" | "Weapon_FlameThrower.FireLoop" | "Weapon_FlameThrower.WindDown" | "Weapon_FlameThrower.AirBurstAttack" | "Weapon_FireAxe.Miss" | "Weapon_FireAxe.HitFlesh" | "Weapon_FireAxe.HitWorld" | "CaptureFlag.EnemyStolen" | "CaptureFlag.EnemyDropped" | "CaptureFlag.EnemyCaptured" | "CaptureFlag.EnemyReturned" | "CaptureFlag.TeamStolen" | "CaptureFlag.TeamDropped" | "CaptureFlag.TeamCaptured" | "CaptureFlag.TeamReturned" | "CaptureFlag.FlagSpawn" | "Game.YourTeamWon" | "Game.YourTeamLost"
+  definition: "Weapon_RPG.Single" | "Weapon_QuakeRPG.Single" | "Weapon_StickyBombLauncher.Single" | "BaseExplosionEffect.Sound" | "Weapon_QuakeRPG.Explode" | "Weapon_Grenade_Pipebomb.Explode" | "Weapon_Scatter_Gun.Single" | "Weapon_Pistol.Single" | "Weapon_Bat.Miss" | "Weapon_Bat.HitFlesh" | "Weapon_Bat.HitWorld" | "Weapon_Scatter_Gun.WorldReload" | "Weapon_Pistol.WorldReload" | "Weapon_Shotgun.Single" | "Weapon_Shotgun.WorldReload" | "Weapon_Shovel.Miss" | "Weapon_Shovel.HitFlesh" | "Weapon_Shovel.HitWorld" | "Weapon_Minigun.WindUp" | "Weapon_Minigun.WindDown" | "Weapon_Minigun.Spin" | "Weapon_Minigun.Fire" | "Weapon_Fist.Miss" | "Weapon_Fist.HitWorld" | "Weapon_Fist.HitFlesh" | "Weapon_SniperRifle.Single" | "Weapon_SMG.Single" | "Weapon_Machete.Miss" | "Weapon_Machete.HitFlesh" | "Weapon_Machete.HitWorld" | "Weapon_SMG.WorldReload" | "Weapon_Shotgun.Empty" | "Weapon_Pistol.ClipEmpty" | "Weapon_Wrench.Miss" | "Weapon_Wrench.HitFlesh" | "Weapon_Wrench.HitWorld" | "Weapon_FlameThrower.Fire" | "Weapon_FlameThrower.FireLoop" | "Weapon_FlameThrower.WindDown" | "Weapon_FlameThrower.AirBurstAttack" | "Weapon_FireAxe.Miss" | "Weapon_FireAxe.HitFlesh" | "Weapon_FireAxe.HitWorld" | "CaptureFlag.EnemyStolen" | "CaptureFlag.EnemyDropped" | "CaptureFlag.EnemyCaptured" | "CaptureFlag.EnemyReturned" | "CaptureFlag.TeamStolen" | "CaptureFlag.TeamDropped" | "CaptureFlag.TeamCaptured" | "CaptureFlag.TeamReturned" | "CaptureFlag.FlagSpawn" | "Game.YourTeamWon" | "Game.YourTeamLost" | "Weapon_Bottle.Miss" | "Weapon_Bottle.HitFlesh" | "Weapon_Bottle.HitWorld"
   source: Readonly<{
     kind: "entity" | "world"
     identity: number
@@ -83,7 +83,6 @@ export function tf2Audio(snapshot: Snapshot): readonly Tf2AudioRequest[] {
     "Weapon_Wrench.Miss",
     "Weapon_Wrench.HitFlesh",
     "Weapon_Wrench.HitWorld",
-
     "Weapon_FlameThrower.Fire",
     "Weapon_FlameThrower.FireLoop",
     "Weapon_FlameThrower.WindDown",
@@ -102,6 +101,9 @@ export function tf2Audio(snapshot: Snapshot): readonly Tf2AudioRequest[] {
     "CaptureFlag.FlagSpawn",
     "Game.YourTeamWon",
     "Game.YourTeamLost",
+    "Weapon_Bottle.Miss",
+    "Weapon_Bottle.HitFlesh",
+    "Weapon_Bottle.HitWorld",
   ]
   return Object.freeze(snapshot.audioEvents.map((event) => Object.freeze({
     voiceIdentity: stable32(`${event.tick}:${event.ordinal}:${event.definition}:${event.sourceIdentity}`),
@@ -214,7 +216,11 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
         throw new ProjectilePresentationError("MalformedFact", "class has no implemented viewmodel weapon")
       }
       const identity = tf2ClassPresentation(snapshot.class).hands
-      const itemIdentity = snapshot.weapon === 40
+      const itemIdentity = snapshot.weapon === 17
+        ? "models/weapons/c_models/c_bottle/c_bottle.mdl"
+        : snapshot.weapon === 18
+          ? "models/weapons/c_models/c_grenadelauncher/c_grenadelauncher.mdl"
+          : snapshot.weapon === 40
         ? "models/weapons/c_models/c_shotgun/c_shotgun.mdl"
         : snapshot.weapon === 41
           ? "models/weapons/c_models/c_pistol/c_pistol.mdl"
@@ -260,7 +266,7 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
       const selectionChanged = prior !== snapshot.weapon || priorClass !== snapshot.class
       const exact = snapshot.activities.filter((event) => event.weapon === snapshot.weapon).at(-1)
 
-      const role = snapshot.weapon === 6 || snapshot.weapon === 8 || snapshot.weapon === 14 || snapshot.weapon === 42 || snapshot.weapon === 16 ? "MELEE" : snapshot.weapon === 11 ? "FISTS" : snapshot.weapon === 5 || snapshot.weapon === 7 || snapshot.weapon === 10 || snapshot.weapon === 13 || snapshot.weapon === 41 || snapshot.class === 4 ? "SECONDARY" : "PRIMARY"
+      const role = snapshot.weapon === 6 || snapshot.weapon === 8 || snapshot.weapon === 14 || snapshot.weapon === 42 || snapshot.weapon === 16 || snapshot.weapon === 17 ? "MELEE" : snapshot.weapon === 11 ? "FISTS" : snapshot.weapon === 5 || snapshot.weapon === 7 || snapshot.weapon === 10 || snapshot.weapon === 13 || snapshot.weapon === 41 || snapshot.weapon === 3 ? "SECONDARY" : "PRIMARY"
       const mapped = exact === undefined ? undefined : [
         "",
         `ACT_${role}_VM_DRAW`,
@@ -741,7 +747,7 @@ export function tf2Hud(snapshot: Snapshot): Tf2Hud {
       : snapshot.weapon === 40 ? "Shotgun"
         : snapshot.weapon === 41 ? "Pistol"
           : snapshot.weapon === 42 ? "Wrench"
-            : (["", "Rocket Launcher", "Original", "Stickybomb Launcher", "Scattergun", "Pistol", "Bat", "Shotgun", "Shovel", "Minigun", "Shotgun", "Fists", "Sniper Rifle", "SMG", "Kukri", "Flamethrower", "Fire Axe"] as const)[snapshot.weapon],
+            : (["", "Rocket Launcher", "Original", "Stickybomb Launcher", "Scattergun", "Pistol", "Bat", "Shotgun", "Shovel", "Minigun", "Shotgun", "Fists", "Sniper Rifle", "SMG", "Kukri", "Flamethrower", "Fire Axe", "Bottle", "Grenade Launcher"] as const)[snapshot.weapon],
 
     speed: Math.hypot(...snapshot.velocity),
     projectileCount: snapshot.projectiles.length,
