@@ -1,5 +1,5 @@
 use crate::{Error, ErrorCode, error};
-use playsrc_bsp::{Bsp, STATIC_PROP_USE_LIGHTING_ORIGIN};
+use playsrc_bsp::{Bsp, Leaf, LumpData, STATIC_PROP_USE_LIGHTING_ORIGIN};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StaticPropModel {
@@ -47,6 +47,10 @@ pub(crate) fn compile(bsp: &Bsp) -> Result<StaticProps, Error> {
             occurrences: Vec::new(),
         });
     };
+    let leaves = match &bsp.lumps[10].records {
+        LumpData::Leaves(leaves) => leaves.as_slice(),
+        _ => return Err(error(ErrorCode::MissingLump, Some(10))),
+    };
     let mut models = Vec::with_capacity(source.dictionary.len());
     for model in source.dictionary {
         let path = std::str::from_utf8(&model.name)
@@ -88,6 +92,7 @@ pub(crate) fn compile(bsp: &Bsp) -> Result<StaticProps, Error> {
         {
             return Err(error(ErrorCode::NonFinite, Some(prop.index)));
         }
+        validate_leaf_memberships(prop.index, &prop.leaves, leaves)?;
         occurrences.push(StaticPropOccurrence {
             source: prop.index,
             model: usize::from(prop.model),
@@ -116,6 +121,63 @@ pub(crate) fn compile(bsp: &Bsp) -> Result<StaticProps, Error> {
     })
 }
 
+fn validate_leaf_memberships(
+    source: usize,
+    membership: &[u16],
+    leaves: &[Leaf],
+) -> Result<(), Error> {
+    if membership.is_empty()
+        || membership.iter().any(|index| {
+            leaves
+                .get(usize::from(*index))
+                .is_none_or(|leaf| leaf.contents as u32 & playsrc_collision::CONTENTS_SOLID != 0)
+        })
+    {
+        return Err(error(ErrorCode::InvalidReference, Some(source)));
+    }
+    Ok(())
+}
+
 fn vector(value: playsrc_bsp::Vector3) -> [f32; 3] {
     [value.x.value(), value.y.value(), value.z.value()]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn leaf(contents: i32) -> playsrc_bsp::Leaf {
+        playsrc_bsp::Leaf {
+            contents,
+            cluster: 0,
+            area_and_flags: 1,
+            mins: [-1; 3],
+            maxs: [1; 3],
+            first_leaf_face: 0,
+            leaf_face_count: 0,
+            first_leaf_brush: 0,
+            leaf_brush_count: 0,
+            leaf_water_data_id: -1,
+            padding: 0,
+            ambient_cube: None,
+        }
+    }
+
+    #[test]
+    fn static_props_reject_empty_missing_and_solid_bsp_leaf_memberships() {
+        let leaves = [leaf(0), leaf(playsrc_collision::CONTENTS_SOLID as i32)];
+        assert!(validate_leaf_memberships(4, &[0, 0], &leaves).is_ok());
+        assert_eq!(
+            validate_leaf_memberships(4, &[], &leaves),
+            Err(error(ErrorCode::InvalidReference, Some(4)))
+        );
+        assert_eq!(
+            validate_leaf_memberships(4, &[2], &leaves),
+            Err(error(ErrorCode::InvalidReference, Some(4)))
+        );
+        assert_eq!(
+            validate_leaf_memberships(4, &[1], &leaves),
+            Err(error(ErrorCode::InvalidReference, Some(4)))
+        );
+    }
 }

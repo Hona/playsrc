@@ -248,6 +248,9 @@ pub fn compile_prepared(
     entities: &playsrc_entity::Graph,
     collision: &playsrc_collision::World,
 ) -> Result<CanonicalMap, Error> {
+    if entities.source != bsp.lumps[0].bytes(bsp) {
+        return Err(error(ErrorCode::InvalidReference, Some(0)));
+    }
     let faces = match &bsp.lumps[if profile == LightingProfile::Hdr {
         58
     } else {
