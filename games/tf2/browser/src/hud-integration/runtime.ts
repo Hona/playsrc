@@ -107,6 +107,7 @@ const HUD_AMMO = "resource/ui/hudammoweapons.res"
 const HUD_WEAPONS = "resource/ui/hudweaponselection.res"
 const HUD_OBJECTIVE_FLAGS = "resource/ui/hudobjectiveflagpanel.res"
 const HUD_FLAG_STATUS = "resource/ui/flagstatus.res"
+const HUD_WIN_PANEL = "resource/ui/winpanel.res"
 const HUD_NOTIFICATION_BASE = "resource/ui/notifications/base_notification.res"
 const FLAG_STATUS_IMAGES = Object.freeze([
   "../hud/objectives_flagpanel_ico_flag_home",
@@ -199,6 +200,7 @@ class Integration implements Tf2HudIntegration {
     redArrow: VguiPanelId
     blueArrow: VguiPanelId
     carried: VguiPanelId
+    outline: VguiPanelId
     captureArrow: VguiPanelId
     playingTo: VguiPanelId
     playingToBackground: VguiPanelId
@@ -207,6 +209,8 @@ class Integration implements Tf2HudIntegration {
     notificationLabel: VguiPanelId
   }>
   #notificationDeadline = 0n
+  #objectiveCarrying = false
+  #winPanel?: VguiPanelId
   #destroyed = false
 
   constructor(request: Tf2HudIntegrationRequest) {
@@ -302,6 +306,7 @@ class Integration implements Tf2HudIntegration {
     const objective = Object.freeze({
       root, panel, redFlag, blueFlag, redStatus, blueStatus, redArrow, blueArrow,
       carried: required("CarriedImage", panel),
+      outline: required("OutlineImage", panel),
       captureArrow: required("CaptureFlag", panel),
       playingTo: required("PlayingTo", panel),
       playingToBackground: required("PlayingToBG", panel),
@@ -313,9 +318,63 @@ class Integration implements Tf2HudIntegration {
       this.#panels.set(value.name.toLowerCase(), value.id)
       apply(this.#runtime, { kind: "set-panel-state", panel: value.id, mouseInput: false, keyboardInput: false })
     }
+    apply(this.#runtime, { kind: "set-panel-state", panel: objective.outline, visible: false })
     this.#captureBaseBounds()
     this.#objective = objective
     return objective
+  }
+
+  #publishWinPanel(objectives: CaptureObjectives): void {
+    const winner = objectives.winner
+    if (winner === null) {
+      if (this.#winPanel !== undefined) {
+        this.#objectiveValue("ctf-win:visible", "false", { kind: "set-panel-state", panel: this.#winPanel, visible: false })
+      }
+      return
+    }
+    let panel = this.#winPanel
+    if (panel === undefined) {
+      panel = apply(this.#runtime, { kind: "create-panel", parent: 1, control: "CTFHudElement", name: "WinPanel" })!
+      const layout = this.#resources.document(HUD_LAYOUT)
+      const selected = layout.root.children.find((value) => (scalar(value, "fieldName") ?? value.name) === "WinPanel")
+      if (!selected) throw new Error("TF2 authored round-win layout is unavailable")
+      apply(this.#runtime, {
+        kind: "replace-resource",
+        parent: 1,
+        document: document(layout, "ctf-win-panel", node(layout.root.name, [shallow(selected)])),
+        selection: { activeConditions: this.#resources.activeConditions, resolutionSuffixes: ["_hidef"] },
+      })
+      applyPanelResource(this.#runtime, panel, this.#resources.document(HUD_WIN_PANEL), this.#resources.activeConditions)
+      this.#winPanel = panel
+      for (const value of this.#runtime.snapshot().panels) {
+        this.#panels.set(value.name.toLowerCase(), value.id)
+        apply(this.#runtime, { kind: "set-panel-state", panel: value.id, mouseInput: false, keyboardInput: false })
+      }
+      this.#captureBaseBounds()
+    }
+    this.#objectiveValue("ctf-win:visible", "true", { kind: "set-panel-state", panel, visible: true })
+    const localized = (name: string): string => this.#resources.localization.tokens
+      .find((value) => value.name.toLowerCase() === name.replace(/^#/u, "").toLowerCase())?.value ?? name
+    const team = winner === 2 ? "RED" : "BLU"
+    const winning = localized("#Winpanel_TeamWins")
+      .replace("%s1", team)
+      .replace("%s2", localized("#Winpanel_Team1"))
+    const reason = localized(objectives.captureLimit === 1 ? "#Winreason_FlagCaptureLimit_One" : "#Winreason_FlagCaptureLimit")
+      .replace("%s1", team)
+      .replace("%s2", String(objectives.captureLimit))
+    for (const [name, value] of [
+      ["WinningTeamLabel", winning],
+      ["AdvancingTeamLabel", ""],
+      ["WinReasonLabel", reason],
+      ["DetailsLabel", ""],
+      ["TopPlayersLabel", localized(winner === 2 ? "#Winpanel_RedMVPs" : "#Winpanel_BlueMVPs")],
+      ["redteamname", "RED"],
+      ["blueteamname", "BLU"],
+      ["redteamscore", objectives.redScore + Number(winner === 2)],
+      ["blueteamscore", objectives.blueScore + Number(winner === 3)],
+    ] as const) {
+      this.#objectiveValue(`ctf-win:${name}`, String(value), { kind: "set-dialog-variable", panel, name, value })
+    }
   }
 
   #objectiveValue(identity: string, value: string, operation: VguiOperation): void {
@@ -344,6 +403,16 @@ class Integration implements Tf2HudIntegration {
     }
     visible(panels.carried, carried !== undefined, "carried")
     visible(panels.captureArrow, carried !== undefined, "capture-arrow")
+    if (this.#objectiveCarrying !== (carried !== undefined)) {
+      this.#objectiveCarrying = carried !== undefined
+      visible(panels.outline, true, "outline")
+      try {
+        apply(this.#runtime, { kind: "start-animation-sequence", parent: 1, sequence: "FlagOutline", cancelable: true })
+        this.#animationTrace.push(`${tick}:ctf:viewport:FlagOutline`)
+      } catch {
+        this.#diagnostic("AnimationUnavailable", "viewport:FlagOutline")
+      }
+    }
     if (carried) {
       const enemy = team === 2 ? "blue" : "red"
       image(panels.carried, `${carried.icon}_${enemy}`, "carried")
@@ -377,6 +446,7 @@ class Integration implements Tf2HudIntegration {
       visible(panels.notification, true, "notification")
     }
     if (tick >= this.#notificationDeadline) visible(panels.notification, false, "notification")
+    this.#publishWinPanel(objectives)
   }
 
   #diagnostic(code: Tf2HudIntegrationDiagnostic["code"], subject: string): void {
@@ -518,7 +588,7 @@ class Integration implements Tf2HudIntegration {
       "PlayerStatusHealthImage", "HudWeaponAmmo", "HudWeaponAmmoBG", "modelpanel0",
       "PlayerStatusClassImage", "PlayerStatusClassImageBG", "classmodelpanel", "classmodelpanelBG",
       "PlayerStatusSpyImage", "PlayerStatusSpyOutlineImage", "PlayerStatus_WheelOfDoom",
-      "HudObjectiveStatus", "ObjectiveStatusFlagPanel", "BlueFlag", "RedFlag", "CarriedImage", "CaptureFlag", "BlueScore", "RedScore", "PlayingTo", "NotificationPanel", "Notification_Label",
+      "HudObjectiveStatus", "ObjectiveStatusFlagPanel", "BlueFlag", "RedFlag", "CarriedImage", "CaptureFlag", "BlueScore", "RedScore", "PlayingTo", "NotificationPanel", "Notification_Label", "WinPanel", "WinningTeamLabel", "WinReasonLabel",
       ...TF2_GROUPED_CONDITION_PANELS.map((item) => item.panel),
       ...TF2_INDEPENDENT_CONDITION_PANELS.map((item) => item.panel),
     ]
@@ -598,7 +668,11 @@ class Integration implements Tf2HudIntegration {
         apply(this.#runtime, { kind: "set-panel-state", panel: this.#objective.root, visible: false })
         apply(this.#runtime, { kind: "set-panel-state", panel: this.#objective.notification, visible: false })
       }
+      if (this.#winPanel !== undefined) {
+        apply(this.#runtime, { kind: "set-panel-state", panel: this.#winPanel, visible: false })
+      }
       this.#notificationDeadline = 0n
+      this.#objectiveCarrying = false
     })
   }
   destroy(): void {

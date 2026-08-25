@@ -323,11 +323,22 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     expect(visible(hud.snapshot().vgui.panels, ["HudPlayerStatus", "HudWeaponAmmo"])).toEqual([])
   })
 
-  test("renders authored two-flag CTF status, scores, carried intelligence, and notifications", () => {
+  test("renders authored two-flag CTF status, notifications, scores, and round victory", () => {
     const root = createRoot(new FakeDocument())
+    const source = resources()
+    const localized = Object.freeze({
+      ...source,
+      localization: Object.freeze({
+        ...source.localization,
+        tokens: Object.freeze(tf2UiResources.localization.tokens.flatMap((token) => {
+          const definition = token.definitions[0]
+          return definition ? [Object.freeze({ name: token.name.replace(/^#/u, ""), value: definition.value })] : []
+        })),
+      }),
+    })
     const hud = initializeTf2HudIntegration({
       root: root as unknown as HTMLElement,
-      resources: resources(), viewport: { width: 1280, height: 720, devicePixelRatio: 1 }, reducedMotion: true,
+      resources: localized, viewport: { width: 1280, height: 720, devicePixelRatio: 1 }, reducedMotion: true,
       clock: { nowSeconds: () => 0 }, random: { nextUnit: () => 0.5 }, onCommand() {},
     })
     const flag = (identity: number, team: 2 | 3, status: 0 | 1 | 2, carrier: number | null = null) => Object.freeze({
@@ -343,9 +354,9 @@ describe("TF2 HUD and pause headed symptom loop", () => {
       model: "models/flag/briefcase.mdl", icon: "../hud/objectives_flagpanel_carried",
       paperEffect: "player_intel_papertrail", trailEffect: "flagtrail",
     })
-    const publish = (tick: bigint, red: ReturnType<typeof flag>, blue: ReturnType<typeof flag>, redCaptures: number, events: readonly any[] = []) => {
+    const publish = (tick: bigint, red: ReturnType<typeof flag>, blue: ReturnType<typeof flag>, redCaptures: number, events: readonly any[] = [], winner: 2 | 3 | null = null) => {
       const base = compact(tick, 3, 2, 1, 4, 20)
-      const objectives = Object.freeze({ redCaptures, blueCaptures: 0, redScore: 0, blueScore: 0, captureLimit: 3, winner: null, flags: Object.freeze([red, blue]), zones: Object.freeze([]), events: Object.freeze(events) })
+      const objectives = Object.freeze({ redCaptures, blueCaptures: 0, redScore: 0, blueScore: 0, captureLimit: 3, winner, flags: Object.freeze([red, blue]), zones: Object.freeze([]), events: Object.freeze(events) })
       const snapshot = Object.freeze({ ...base.snapshot, objectives })
       return hud.publish(Object.freeze({ snapshot, eventBatches: Object.freeze([Object.freeze({ snapshot })]) }), context)
     }
@@ -365,9 +376,16 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     panels = hud.snapshot().vgui.panels
     expect(panels.filter((panel) => panel.name === "StatusIcon").map((panel) => panel.state.image)).toContain("../hud/objectives_flagpanel_ico_flag_dropped")
     expect(visible(panels, ["NotificationPanel"])).toEqual(["NotificationPanel"])
-    expect(panels.find((panel) => panel.name === "Notification_Label")?.text).toBe("#TF_CTF_PlayerTeamDrop")
+    expect(panels.find((panel) => panel.name === "Notification_Label")?.text).toBe("The ENEMY INTELLIGENCE was dropped!")
     publish(203n, flag(10, 2, 0), flag(20, 3, 0), 1)
     expect(visible(hud.snapshot().vgui.panels, ["NotificationPanel"])).toEqual([])
+    publish(204n, flag(10, 2, 0), flag(20, 3, 0), 3, [], 2)
+    panels = hud.snapshot().vgui.panels
+    expect(visible(panels, ["WinPanel"])).toEqual(["WinPanel"])
+    expect(panels.find((panel) => panel.name === "WinningTeamLabel")?.text).toBe("RED TEAM WINS!")
+    expect(panels.find((panel) => panel.name === "WinReasonLabel")?.text).toBe("RED captured the enemy intelligence 3 times")
+    hud.reset("map-replaced")
+    expect(visible(hud.snapshot().vgui.panels, ["WinPanel", "HudObjectiveStatus"])).toEqual([])
     hud.destroy()
   })
 

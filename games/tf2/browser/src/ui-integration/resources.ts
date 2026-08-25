@@ -191,6 +191,7 @@ const CUSTOM_BASES: Readonly<Record<string, VguiControlRegistration["baseControl
   CSteamFriendsListPanel: "EditablePanel",
   CTeamMenu: "Frame",
   CTFArrowPanel: "ImagePanel",
+  CTFBadgePanel: "EditablePanel",
   CTFClassImage: "ImagePanel",
   CTFClassTipsItemPanel: "EditablePanel",
   CTFClassTipsPanel: "EditablePanel",
