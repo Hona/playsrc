@@ -70,8 +70,18 @@ jobs:
               exit 2
             fi
           fi
+          notes="apps/web/tf2/releases/notes/${tag}.md"
+          if [[ ! -s "$notes" ]]; then
+            echo "authored release notes are missing: ${notes}" >&2
+            exit 2
+          fi
+          if [[ "$(head -n 1 "$notes")" != "# playsrc ${tag}" ]]; then
+            echo "release notes must begin with # playsrc ${tag}" >&2
+            exit 2
+          fi
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "notes=${notes}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -139,10 +149,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_NOTES: ${{ steps.release.outputs.notes }}
         run: |
           set -euo pipefail
           gh release create "$TAG" \
             "apps/web/tf2/dist/cloudflare/release.json#Cloudflare deployment manifest" \
             --verify-tag \
-            --generate-notes \
+            --notes-file "$RELEASE_NOTES" \
             --title "playsrc ${TAG}"
