@@ -5566,6 +5566,42 @@ fn encode_game_event(output: &mut Vec<u8>, event: &playsrc_tf2::Event, limit: us
                 },
             ],
         ),
+        playsrc_tf2::Event::PlayerDamaged {
+            attacker,
+            victim,
+            weapon,
+            amount,
+            health,
+            critical,
+            custom,
+        } => (
+            17,
+            weapon_code(*weapon),
+            *victim,
+            *attacker,
+            [
+                *amount as f32,
+                *health as f32,
+                f32::from(u8::from(*critical)),
+                f32::from(*custom),
+            ],
+        ),
+        playsrc_tf2::Event::PlayerKilled {
+            attacker,
+            victim,
+            weapon,
+            critical,
+            custom,
+        } => (
+            18,
+            weapon_code(*weapon),
+            *victim,
+            *attacker,
+            [0.0, f32::from(u8::from(*critical)), f32::from(*custom), 0.0],
+        ),
+        playsrc_tf2::Event::PlayerRespawned { player, team } => {
+            (19, team_code(*team), *player, 0, [0.0; 4])
+        }
     };
     extend(output, &[kind, detail, 0, 0], limit)?;
     u32_field(output, subject, limit)?;
