@@ -3,6 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { expect, test } from "./application-test"
 import { loadLocalConfig } from "../src/config"
+import { chooseTf2Team } from "./team-selection-evidence"
 
 const SAMPLE_MILLISECONDS = 6_000
 
@@ -21,8 +22,13 @@ test("headed stock Pyro weapons preserve authored flame, compression blast, shot
   await submit("map jump_beef")
   await page.waitForFunction(() => {
     const main = document.querySelector<HTMLElement>("main")
-    return main?.dataset.phase === "Failed" || (main?.dataset.phase === "Ready" && main.dataset.gameui === "in-game")
+    return main?.dataset.phase === "Failed" || main?.dataset.phase === "Ready" || main?.dataset.teamSelectionVisible === "true"
   }, undefined, { timeout: 600_000, polling: 25 })
+  if (await page.locator("main").getAttribute("data-team-selection-visible") === "true") {
+    if (await page.locator("main").getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
+    await chooseTf2Team(page, "red")
+    await page.waitForFunction(() => ["Ready", "Failed"].includes(document.querySelector<HTMLElement>("main")?.dataset.phase ?? ""), undefined, { timeout: 60_000, polling: 20 })
+  }
   expect(await page.locator("main").getAttribute("data-phase")).toBe("Ready")
 
   await submit("joinclass pyro")
