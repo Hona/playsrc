@@ -2201,6 +2201,8 @@ export class Tf2Application {
       }
       this.#classSelectionRequest({ kind: "join-class", identity: selected.identity, sourceCommand: `joinclass ${selected.name}` })
       this.#classSelection?.dispatch({ kind: "hide" })
+      return
+    }
     if (command === "changeteam" && tokens.length === 0) {
       void this.#showTeamSelection()
       return
