@@ -3562,6 +3562,35 @@ mod tests {
         }
     }
 
+    #[test]
+    fn connected_session_starts_unassigned_and_selects_authoritative_teams() {
+        let mut session = Session::connected(Floor, [0.0; 3], MapRuntime::empty(0.015));
+        let initial = session.team_snapshot();
+        assert_eq!(initial.local_team, class::PlayerTeam::Unassigned);
+        assert_eq!((initial.red_count, initial.blue_count), (0, 0));
+        assert!(!initial.cancel_visible);
+        assert_eq!(
+            session.select_team_choice(team_selection::TeamChoice::Blue),
+            Ok(Some(class::PlayerTeam::Blue))
+        );
+        let selected = session.team_snapshot();
+        assert_eq!(selected.local_team, class::PlayerTeam::Blue);
+        assert_eq!((selected.red_count, selected.blue_count), (0, 1));
+        assert!(selected.cancel_visible);
+    }
+
+    #[test]
+    fn auto_assign_consumes_randomness_only_for_equal_unrestricted_teams() {
+        let mut session = Session::connected(Floor, [0.0; 3], MapRuntime::empty(0.015));
+        let before = session.random_state().authority;
+        let selected = session
+            .select_team_choice(team_selection::TeamChoice::Auto)
+            .unwrap()
+            .unwrap();
+        assert!(selected.is_gameplay());
+        assert_ne!(session.random_state().authority, before);
+    }
+
     #[derive(Clone)]
     struct MeleeWall;
 

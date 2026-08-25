@@ -222,6 +222,28 @@ class PipelineWorker implements WorkerLike {
       case "activate":
         this.#respond({ id: request.id, kind: "activated", generation: request.generation })
         return
+      case "team-selection": {
+        const team = request.choice === "red" ? 2 : request.choice === "blue" ? 3 : request.choice === "spectate" ? 1 : 0
+        this.#respond({
+          id: request.id,
+          kind: "team-selection",
+          generation: request.generation,
+          state: Object.freeze({
+            localTeam: team,
+            redCount: Number(team === 2),
+            blueCount: Number(team === 3),
+            redDisabled: false,
+            blueDisabled: false,
+            spectatorsVisible: true,
+            autoAssignVisible: true,
+            cancelVisible: team !== 0,
+            highlander: false,
+            teamsFull: false,
+            teamsFullArrow: false,
+          }),
+        })
+        return
+      }
       case "shutdown":
         this.#respond({ id: request.id, kind: "shutdown" })
         return
@@ -237,6 +259,15 @@ class PipelineWorker implements WorkerLike {
 }
 
 describe("TF2 Worker transport ownership", () => {
+  test("reads and changes the authoritative team roster without a simulation-frame crossing", async () => {
+    const worker = new PipelineWorker(await digest(MAP))
+    const client = new Tf2WorkerClient(worker, new MemoryCache())
+    expect(await client.teamSelection(7)).toMatchObject({ localTeam: 0, redCount: 0, blueCount: 0, cancelVisible: false })
+    expect(await client.teamSelection(7, "blue")).toMatchObject({ localTeam: 3, redCount: 0, blueCount: 1, cancelVisible: true })
+    expect(worker.requests.map((request) => request.kind)).toEqual(["team-selection", "team-selection"])
+    await client.shutdown()
+  })
+
   test("publishes authenticated cold map and presentation bytes in one staged Worker request", async () => {
     const cache = new MemoryCache()
     const worker = new PipelineWorker(await digest(MAP))
