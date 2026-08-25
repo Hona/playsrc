@@ -4942,6 +4942,7 @@ class SourceVguiRuntime implements VguiRuntime {
           else delete panel.element.dataset.interaction
           this.publishControlDom(panel)
         }
+        if (!panel.effectivelyVisible && !changed) return
         const children = panel.children.filter((childId) => !this.requirePanel(childId).popup)
         for (const childId of children) place(childId)
         orderChildren(panel.element, children)

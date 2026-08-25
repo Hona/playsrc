@@ -411,7 +411,6 @@ test("profile TF2 Main Menu startup and steady state", async ({ page, context, b
   expect(report.optionsOpen.trace.eventCount).toBeGreaterThan(0)
   expect(report.optionsSteady.trace.eventCount).toBeGreaterThan(0)
   expect(report.dom.finalGameUiNodes).toBeGreaterThan(0)
-  expect(report.budget.observedMaximumMilliseconds).toBeLessThan(5)
 
   await page.keyboard.press("Escape")
   await expect(page.locator("main")).toHaveAttribute("data-options-visible", "false")
@@ -461,4 +460,5 @@ test("profile TF2 Main Menu startup and steady state", async ({ page, context, b
     releaseMap?.()
     await page.unroute(`**/objects/sha256/${upward.objects.bsp.sha256}`)
   }
+  expect(report.budget.observedMaximumMilliseconds).toBeLessThan(5)
 })
