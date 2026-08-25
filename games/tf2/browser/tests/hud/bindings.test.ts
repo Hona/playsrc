@@ -697,6 +697,10 @@ describe("canonical all-class TF2 session HUD adapter", () => {
     const source = compactSnapshot(9n, {
       team: 3,
       bots: Object.freeze([Object.freeze({ identity: 2, team: 2 as const, class: 1 as const })]),
+      scoreboard: Object.freeze({ players: Object.freeze([
+        Object.freeze({ identity: 1, name: "unnamed", team: 3 as const }),
+        Object.freeze({ identity: 2, name: "Chucklenuts", team: 2 as const }),
+      ]) }),
       events: Object.freeze([
         Object.freeze({ kind: 18 as const, detail: 12, subject: 2, auxiliary: 1,
           values: Object.freeze([0, 1, 1, 0]) as readonly [number, number, number, number] }),
@@ -706,8 +710,8 @@ describe("canonical all-class TF2 session HUD adapter", () => {
     })
     const publication = adaptSessionHud(unavailable("initial"), compactPublication(source), context)
     expect(publication.events).toMatchObject([
-      { tick: 9n, ordinal: 0, kind: "killfeed", notice: { killer: { name: "Player", team: 3 },
-        victim: { name: "Bot 2", team: 2 }, customKill: 1, critical: true,
+      { tick: 9n, ordinal: 0, kind: "killfeed", notice: { killer: { name: "unnamed", team: 3 },
+        victim: { name: "Chucklenuts", team: 2 }, customKill: 1, critical: true,
         weaponIdentity: { kind: "available", value: 12 } } },
       { tick: 9n, ordinal: 1, kind: "pickup", notification: { pickupIdentity: 45, pickup: "health",
         amount: { kind: "available", value: 25 } } },

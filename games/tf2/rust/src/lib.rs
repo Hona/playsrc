@@ -3365,6 +3365,14 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 .and_then(|bots| bots.health(input.victim))
                 .unwrap_or(0)
         };
+        let (critical, custom) = if input.weapon == Weapon::Knife
+            && before > 0
+            && input.amount >= spy::backstab_damage(before)
+        {
+            (true, 2)
+        } else {
+            (critical, custom)
+        };
         let after;
         if input.victim == PLAYER_IDENTITY {
             if self.lifecycle != PlayerLifecycle::Active
@@ -3372,6 +3380,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
             {
                 return Ok(());
             }
+            let Some(damage_type) = bot::weapon_damage_type(input.weapon) else {
+                return Ok(());
+            };
             let mut health = health::HealthState::spawn(self.class, 0.0, 0.0)
                 .map_err(|_| Error::Bot(bot::Error::Damage))?;
             health.current = self.health;
@@ -3402,8 +3413,14 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     victim_team: self.team_selection.local_team(),
                     base_damage: input.amount,
                     range_multiplier: 1.0,
-                    damage_type: bot::weapon_damage_type(input.weapon),
-                    custom: damage::CustomDamage::None,
+                    damage_type,
+                    custom: if custom == 2 {
+                        damage::CustomDamage::Backstab
+                    } else if custom == 1 {
+                        damage::CustomDamage::Headshot
+                    } else {
+                        damage::CustomDamage::None
+                    },
                     crit: damage::CritKind::None,
                     friendly_fire: false,
                     force_friendly_fire: false,
