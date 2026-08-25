@@ -212,6 +212,37 @@ impl WeaponProfile {
                 center_fire_projectile: false,
                 flip_viewmodel: false,
             },
+
+            Weapon::Revolver => Self {
+                maximum_clip: 6,
+                maximum_reserve: 24,
+                fire_delay: 0.5,
+                reload_start: 1.133_333_3,
+                reload_round: 0.0,
+                maximum_charge: None,
+                center_fire_projectile: false,
+                flip_viewmodel: false,
+            },
+            Weapon::Knife => Self {
+                maximum_clip: 0,
+                maximum_reserve: 0,
+                fire_delay: 0.8,
+                reload_start: 0.0,
+                reload_round: 0.0,
+                maximum_charge: None,
+                center_fire_projectile: false,
+                flip_viewmodel: false,
+            },
+            Weapon::Sapper | Weapon::DisguiseKit | Weapon::InvisibilityWatch => Self {
+                maximum_clip: 0,
+                maximum_reserve: 0,
+                fire_delay: 0.0,
+                reload_start: 0.0,
+                reload_round: 0.0,
+                maximum_charge: None,
+                center_fire_projectile: false,
+                flip_viewmodel: false,
+            },
         }
     }
 }
@@ -395,7 +426,7 @@ impl WeaponRuntime {
             ReloadPhase::Start => {
                 if matches!(
                     self.weapon,
-                    Weapon::Pistol | Weapon::Smg | Weapon::EngineerPistol
+                    Weapon::Pistol | Weapon::Smg | Weapon::EngineerPistol | Weapon::Revolver
                 ) {
                     let inserted = (profile.maximum_clip - self.clip).min(self.reserve);
                     self.clip += inserted;
@@ -533,7 +564,8 @@ impl WeaponRuntime {
             | Weapon::Kukri
             | Weapon::Wrench
             | Weapon::FireAxe
-            | Weapon::Bottle => true,
+            | Weapon::Bottle
+            | Weapon::Knife => true,
             _ => self.clip > 0,
         };
         if held && available && tick >= self.next_primary_tick {
@@ -648,7 +680,8 @@ impl WeaponRuntime {
             | Weapon::Kukri
             | Weapon::Wrench
             | Weapon::FireAxe
-            | Weapon::Bottle => {}
+            | Weapon::Bottle
+            | Weapon::Knife => {}
             _ => self.clip -= 1,
         }
         self.abort_reload();

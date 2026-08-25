@@ -472,7 +472,7 @@ function customControls(descriptor: Tf2UiResourceDescriptor): readonly VguiContr
         "PlusStyleExpandSelected", "LargeBoxWide", "LargeBoxTall", "BoxGap", "SelectionNumberXPos",
         "SelectionNumberYPos", "IconXPos", "IconYPos", "TextYPos", "ErrorYPos", "TextColor", "MaxSlots",
         "PlaySelectSounds", "SelectionAlpha", "BoxColor", "SelectedBoxClor", "SelectionNumberFg", "NumberFont",
-        "HealthBonusPosAdj", "HealthDeathWarning", "HealthDeathWarningColor",
+        "HealthBonusPosAdj", "HealthDeathWarning", "HealthDeathWarningColor", "MeterFG", "MeterBG",
       ]),
     }),
     Object.freeze({

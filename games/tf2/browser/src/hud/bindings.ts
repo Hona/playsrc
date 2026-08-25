@@ -236,6 +236,12 @@ function copyPlayer(value: Tf2HudPlayer): Tf2HudPlayer {
     classModel: copyAvailability(value.classModel, copyClassModel, "player class model"),
     health: copyAvailability(value.health, copyHealth, "player health"),
     conditions: copyConditions(value.conditions),
+    ...(value.spy ? { spy: Object.freeze({
+      cloakMeter: finite(value.spy.cloakMeter, "Spy cloak meter", 0),
+      invisibility: finite(value.spy.invisibility, "Spy invisibility", 0),
+      disguise: value.spy.disguise ? Object.freeze({ class: copyClass(value.spy.disguise.class), team: copyTeam(value.spy.disguise.team) as 2 | 3 }) : null,
+      desiredDisguise: value.spy.desiredDisguise ? Object.freeze({ class: copyClass(value.spy.desiredDisguise.class), team: copyTeam(value.spy.desiredDisguise.team) as 2 | 3 }) : null,
+    }) } : {}),
     weapons,
     activeWeapon,
     weaponSelection: Object.freeze({ open: value.weaponSelection.open === true, selectedWeapon }),
@@ -578,8 +584,18 @@ function panelValues(snapshot: Tf2HudSnapshot): readonly Tf2HudPanelValue[] {
   setVisible("classmodelpanel", usePlayerModel)
   setVisible("classmodelpanelBG", usePlayerModel)
   setVisible("CarryingWeapon", false)
-  setVisible("PlayerStatusSpyImage", false)
-  setVisible("PlayerStatusSpyOutlineImage", false)
+  const disguised = live && tfClass === 8 && player?.spy?.disguise !== null && player?.spy?.disguise !== undefined
+  setVisible("PlayerStatusSpyImage", disguised)
+  setVisible("PlayerStatusSpyOutlineImage", disguised)
+  if (tfClass === 8 && player?.spy) {
+    setVisible("HudItemEffectMeter", live)
+    setVisible("ItemEffectMeter", live)
+    setScalar("ItemEffectMeter", "progress", tf2HudAvailable(player.spy.cloakMeter / 100))
+    setDialog("HudItemEffectMeter", "progresscount", tf2HudAvailable(Math.floor(player.spy.cloakMeter)))
+    setDialog("ItemEffectMeterLabel", "labelText", tf2HudAvailable("#TF_CLOAK"))
+  } else {
+    setVisible("HudItemEffectMeter", false)
+  }
   setImage("PlayerStatusClassImage", playableTeam && tfClass ? tf2HudAvailable(TF2_CLASS_IMAGES[playableTeam][tfClass]) : unavailableString())
   setImage("PlayerStatusClassImageBG", playableTeam ? tf2HudAvailable(playableTeam === 2 ? "../hud/character_red_bg" : "../hud/character_blue_bg") : unavailableString())
   setImage("classmodelpanelBG", playableTeam ? tf2HudAvailable(playableTeam === 2 ? "../hud/character_red_bg_clipped" : "../hud/character_blue_bg_clipped") : unavailableString())
@@ -608,6 +624,7 @@ function panelValues(snapshot: Tf2HudSnapshot): readonly Tf2HudPanelValue[] {
   const activeWeapon = activeWeaponIdentity !== null
     ? player?.weapons.find((weapon) => weapon.identity === activeWeaponIdentity) ?? null
     : null
+  setVisible("HudMenuSpyDisguise", live && tfClass === 8 && activeWeaponIdentity === 53)
   const ammoVisible = live && activeWeapon !== null && activeWeapon.ammoDisplay !== "hidden"
   setVisible("HudWeaponAmmo", ammoVisible)
   setImage("HudWeaponAmmoBG", playableTeam ? tf2HudAvailable(playableTeam === 2 ? "../hud/ammo_red_bg" : "../hud/ammo_blue_bg") : unavailableString())

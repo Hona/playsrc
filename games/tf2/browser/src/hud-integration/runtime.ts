@@ -129,6 +129,8 @@ const NOTIFICATION_FILES = Object.freeze([
   "enemy_flag_taken", "enemy_flag_dropped", "enemy_flag_returned", "enemy_flag_captured",
   "touching_enemy_ctf_cap",
 ])
+const HUD_SPY_METER = "resource/ui/huditemeffectmeter_spy.res"
+const HUD_SPY_DISGUISE_MENU = "resource/ui/disguise_menu/hudmenuspydisguise.res"
 const scalar = (node: VguiResourceNode, name: string): string | null =>
   node.children.find((child) => child.name.toLowerCase() === name.toLowerCase() && child.value !== null)?.value ?? null
 const node = (name: string, children: readonly VguiResourceNode[]): VguiResourceNode => Object.freeze({ name, value: null, condition: null, children: Object.freeze(children) })
@@ -191,6 +193,7 @@ class Integration implements Tf2HudIntegration {
   readonly #scope: Tf2HudScopePresentation
   readonly #resources: Tf2VguiResources
   readonly #onCommand: (command: Tf2HudCommand) => void
+  readonly #cloakLabel: string | undefined
   readonly #diagnostics: Tf2HudIntegrationDiagnostic[] = []
   readonly #diagnosticSubjects = new Set<string>()
   readonly #animationTrace: string[] = []
@@ -230,6 +233,7 @@ class Integration implements Tf2HudIntegration {
   constructor(request: Tf2HudIntegrationRequest) {
     this.#resources = request.resources
     this.#onCommand = request.onCommand
+    this.#cloakLabel = request.resources.localization.tokens.find(token => token.name.toLowerCase() === "tf_cloak")?.value
     this.#viewport = Object.freeze({ ...request.viewport })
     this.#localization = new Map(request.resources.localization.tokens.map((token) => [`#${token.name.replace(/^#/u, "").toLowerCase()}`, token.value]))
     const scoreboardDocument = request.resources.document(HUD_SCOREBOARD)
@@ -262,6 +266,8 @@ class Integration implements Tf2HudIntegration {
       ["HudPlayerStatus", "CTFHudElement"],
       ["HudWeaponAmmo", "CTFHudElement"],
       ["HudWeaponSelection", "CTFHudElement"],
+      ["HudItemEffectMeter", "CTFHudElement"],
+      ["HudMenuSpyDisguise", "CTFHudElement"],
       ["HudCrosshair", "CTFHudElement"],
     ] as const
     for (const [name, control] of roots) apply(this.#runtime, { kind: "create-panel", parent: 1, control, name })
@@ -307,6 +313,8 @@ class Integration implements Tf2HudIntegration {
       const panel = find(this.#runtime, name)
       if (panel !== null) apply(this.#runtime, { kind: "set-panel-state", panel, visible: false })
     }
+    applyPanelResource(this.#runtime, find(this.#runtime, "HudItemEffectMeter")!, request.resources.document(HUD_SPY_METER), request.resources.activeConditions)
+    applyPanelResource(this.#runtime, find(this.#runtime, "HudMenuSpyDisguise")!, request.resources.document(HUD_SPY_DISGUISE_MENU), request.resources.activeConditions)
     const panels = this.#runtime.snapshot().panels
     for (const panel of panels) {
       if (!this.#panels.has(panel.name.toLowerCase())) this.#panels.set(panel.name.toLowerCase(), panel.id)
@@ -613,7 +621,12 @@ class Integration implements Tf2HudIntegration {
         ? (this.#localization.get(available.token.toLowerCase()) ?? available.token)
           .replace(/%s([1-9])/gu, (_match, index: string) => String(available.parameters[Number(index) - 1] ?? ""))
         : available
-      apply(this.#runtime, { kind: "set-dialog-variable", panel, name: value.variable, value: rendered })
+      if (value.panel === "ItemEffectMeterLabel" && value.variable === "labelText") {
+        if (!this.#cloakLabel) throw new Error("Authored Spy cloak localization is unavailable")
+        apply(this.#runtime, { kind: "mutate-control", panel, mutation: { text: this.#cloakLabel } })
+      } else {
+        apply(this.#runtime, { kind: "set-dialog-variable", panel, name: value.variable, value: rendered })
+      }
     } else if (value.kind === "image") {
       try { apply(this.#runtime, { kind: "mutate-control", panel, mutation: { image: value.value.value } }) }
       catch { this.#diagnostic("ValueUnavailable", `image:${value.panel}:${value.value.value}`); return }
@@ -626,6 +639,8 @@ class Integration implements Tf2HudIntegration {
           imageFill: value.value.value,
           image: value.value.value <= 0 ? "hud/health_dead" : "hud/health_color",
         } })
+      } else if (value.property === "progress") {
+        apply(this.#runtime, { kind: "mutate-control", panel, mutation: { progress: value.value.value } })
       } else if (value.property === "boundsAdjustment") {
         const base = this.#baseBounds.get(value.panel)
         if (!base) {
