@@ -373,8 +373,27 @@ export type BotSnapshot = Readonly<{
   area: number | null
   remainingPathAreas: number
   yawDegrees: number
+  pitchDegrees: number
   position: readonly [number, number, number]
   velocity: readonly [number, number, number]
+  weapon: Readonly<{
+    identity: Tf2Weapon
+    reload: 0 | 1 | 2 | 3
+    clip: number
+    reserve: number
+    maximumClip: number
+    maximumReserve: number
+    nextPrimaryTick: bigint
+    nextReloadTick: bigint
+  }> | null
+  shots: number
+  hits: number
+  kills: number
+  deaths: number
+  captures: number
+  carryingFlag: boolean
+  lastFireTick: bigint | null
+  respawnTick: bigint | null
 }>
 
 export type Snapshot = Readonly<{
@@ -946,7 +965,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
   const buffer = data.buffer as ArrayBuffer
   const base = data.byteOffset
   const view = new DataView(buffer, base, data.byteLength)
-  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 12)
+  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 13)
     throw new Tf2CodecError("snapshot identity is invalid")
   const tf2Class = data[16]
   const team = data[17]
@@ -1507,43 +1526,45 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
   const botCount = view.getUint32(at, true)
   at += 4
   if (botCount > 31) throw new Tf2CodecError("bot count exceeds its bound")
-  requireBytes(botCount * 60, "bot")
+  requireBytes(botCount * 128, "bot")
   const bots: BotSnapshot[] = []
   let previousBot = 1
   for (let index = 0; index < botCount; index += 1) {
-    const item = at + index * 60
+    const item = at + index * 128
     const identity = view.getUint32(item, true), botClass = data[item + 4], botTeam = data[item + 5]
     const lifecycle = data[item + 6], difficulty = data[item + 7], objective = data[item + 8]
     const health = view.getInt32(item + 12, true), maximumHealth = view.getInt32(item + 16, true)
     const target = view.getUint32(item + 20, true), area = view.getUint32(item + 24, true)
     const yawDegrees = view.getFloat32(item + 32, true), position = vector(view, item + 36), velocity = vector(view, item + 48)
+    const pitchDegrees = view.getFloat32(item + 60, true), weapon = data[item + 64], reload = data[item + 65], carryingFlag = data[item + 66]
+    const clip = view.getUint16(item + 68, true), reserve = view.getUint16(item + 70, true)
+    const maximumClip = view.getUint16(item + 72, true), maximumReserve = view.getUint16(item + 74, true)
+    const lastFireTick = view.getBigUint64(item + 96, true), respawnTick = view.getBigUint64(item + 104, true)
+    const nextPrimaryTick = view.getBigUint64(item + 112, true), nextReloadTick = view.getBigUint64(item + 120, true)
     if (identity <= previousBot || botClass === undefined || botClass < 1 || botClass > 9 || (botTeam !== 2 && botTeam !== 3)
       || (lifecycle !== 1 && lifecycle !== 2) || difficulty === undefined || difficulty > 3
       || objective === undefined || objective < 1 || objective > 5
-      || data[item + 9] !== 0 || data[item + 10] !== 0 || data[item + 11] !== 0
-      || health < 0 || maximumHealth < 1 || health > maximumHealth
-      || !finite([yawDegrees, ...position, ...velocity])) {
-      throw new Tf2CodecError("bot snapshot record is invalid")
-    }
+      || data[item + 9] !== 0 || data[item + 10] !== 0 || data[item + 11] !== 0 || data[item + 67] !== 0
+      || weapon === undefined || weapon > 11 || reload === undefined || reload > 3 || carryingFlag === undefined || carryingFlag > 1
+      || health < 0 || maximumHealth < 1 || health > maximumHealth || clip > maximumClip || reserve > maximumReserve
+      || (weapon === 0 && (reload !== 0 || clip !== 0 || reserve !== 0 || maximumClip !== 0 || maximumReserve !== 0 || nextPrimaryTick !== 0n || nextReloadTick !== 0n))
+      || (lifecycle === 1 && respawnTick !== 0xffff_ffff_ffff_ffffn)
+      || (lifecycle === 2 && (health !== 0 || respawnTick === 0xffff_ffff_ffff_ffffn))
+      || !finite([yawDegrees, pitchDegrees, ...position, ...velocity])) throw new Tf2CodecError("bot snapshot record is invalid")
     previousBot = identity
     bots.push(Object.freeze({
-      identity,
-      class: botClass,
-      team: botTeam,
-      lifecycle,
-      difficulty: difficulty as BotDifficulty,
-      objective: objective as BotSnapshot["objective"],
-      health,
-      maximumHealth,
-      target: target === 0xffff_ffff ? null : target,
-      area: area === 0xffff_ffff ? null : area,
-      remainingPathAreas: view.getUint32(item + 28, true),
-      yawDegrees,
-      position,
-      velocity,
+      identity, class: botClass, team: botTeam, lifecycle, difficulty: difficulty as BotDifficulty,
+      objective: objective as BotSnapshot["objective"], health, maximumHealth,
+      target: target === 0xffff_ffff ? null : target, area: area === 0xffff_ffff ? null : area,
+      remainingPathAreas: view.getUint32(item + 28, true), yawDegrees, pitchDegrees, position, velocity,
+      weapon: weapon === 0 ? null : Object.freeze({ identity: weapon as Tf2Weapon, reload: reload as 0 | 1 | 2 | 3, clip, reserve, maximumClip, maximumReserve, nextPrimaryTick, nextReloadTick }),
+      shots: view.getUint32(item + 76, true), hits: view.getUint32(item + 80, true), kills: view.getUint32(item + 84, true), deaths: view.getUint32(item + 88, true), captures: view.getUint32(item + 92, true),
+      carryingFlag: carryingFlag === 1,
+      lastFireTick: lastFireTick === 0xffff_ffff_ffff_ffffn ? null : lastFireTick,
+      respawnTick: respawnTick === 0xffff_ffff_ffff_ffffn ? null : respawnTick,
     }))
   }
-  at += botCount * 60
+  at += botCount * 128
   if(at!==bytes.byteLength||entityPresentation.collisionRevision!==collisionSnapshot.identity)throw new Tf2CodecError("Entity presentation revision join is invalid")
 
   const tick = view.getBigUint64(8, true)

@@ -3911,7 +3911,7 @@ fn encode_snapshot(
     encode_movement_tick(&mut movement_tick_bytes, movement_tick, MAX)?;
     let mut out = Vec::new();
     extend(&mut out, b"PSSN", MAX)?;
-    u32_field(&mut out, 12, MAX)?;
+    u32_field(&mut out, 13, MAX)?;
     u64_field(&mut out, snapshot.tick, MAX)?;
     extend(
         &mut out,
@@ -4309,6 +4309,40 @@ fn encode_snapshot(
         u32_field(&mut out, bot.remaining_path_areas, MAX)?;
         f32_field(&mut out, bot.yaw_degrees, MAX)?;
         floats(&mut out, bot.position.into_iter().chain(bot.velocity), MAX)?;
+        f32_field(&mut out, bot.pitch_degrees, MAX)?;
+        extend(
+            &mut out,
+            &[
+                bot.weapon.map_or(0, |weapon| weapon.weapon as u8),
+                bot.weapon.map_or(0, |weapon| weapon.reload as u8),
+                u8::from(bot.carrying_flag),
+                0,
+            ],
+            MAX,
+        )?;
+        for value in [
+            bot.weapon.map_or(0, |weapon| weapon.clip),
+            bot.weapon.map_or(0, |weapon| weapon.reserve),
+            bot.weapon.map_or(0, |weapon| weapon.maximum_clip),
+            bot.weapon.map_or(0, |weapon| weapon.maximum_reserve),
+        ] {
+            u16_field(&mut out, value, MAX)?;
+        }
+        for value in [bot.shots, bot.hits, bot.kills, bot.deaths, bot.captures] {
+            u32_field(&mut out, value, MAX)?;
+        }
+        u64_field(&mut out, bot.last_fire_tick.unwrap_or(u64::MAX), MAX)?;
+        u64_field(&mut out, bot.respawn_tick.unwrap_or(u64::MAX), MAX)?;
+        u64_field(
+            &mut out,
+            bot.weapon.map_or(0, |weapon| weapon.next_primary_tick),
+            MAX,
+        )?;
+        u64_field(
+            &mut out,
+            bot.weapon.map_or(0, |weapon| weapon.next_reload_tick),
+            MAX,
+        )?;
     }
     Some(out)
 }
@@ -11538,7 +11572,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(&encoded[..8], b"PSSN\x0c\0\0\0");
+        assert_eq!(&encoded[..8], b"PSSN\x0d\0\0\0");
         assert_eq!(encoded.len(), 916);
         assert_eq!(
             u32::from_le_bytes(encoded[160..164].try_into().unwrap()),

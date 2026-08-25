@@ -14,7 +14,7 @@ function snapshot(): ArrayBuffer {
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x53, 0x53, 0x4e])
-  view.setUint32(4, 12, true)
+  view.setUint32(4, 13, true)
   view.setBigUint64(8, 7n, true)
   data.set([3, 2, 1, 0], 16)
   view.setFloat32(20, 200, true)
@@ -343,7 +343,7 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     expect(() => encodeCommand({ ...base, bot: { action: "add", count: 32, class: 3, difficulty: 1 } })).toThrow(Tf2CodecError)
 
     const prior = new Uint8Array(snapshot())
-    const bytes = new Uint8Array(prior.byteLength + 60)
+    const bytes = new Uint8Array(prior.byteLength + 128)
     bytes.set(prior)
     const view = new DataView(bytes.buffer)
     view.setUint32(prior.byteLength - 4, 1, true)
@@ -357,6 +357,17 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     view.setUint32(at + 28, 16, true)
     view.setFloat32(at + 32, 90, true)
     ;[-2528, -1744, 17, 240, 0, 0].forEach((value, index) => view.setFloat32(at + 36 + index * 4, value, true))
+    view.setFloat32(at + 60, -8, true)
+    bytes.set([1, 0, 0], at + 64)
+    view.setUint16(at + 68, 3, true)
+    view.setUint16(at + 70, 20, true)
+    view.setUint16(at + 72, 4, true)
+    view.setUint16(at + 74, 20, true)
+    view.setUint32(at + 76, 4, true)
+    view.setUint32(at + 80, 2, true)
+    view.setBigUint64(at + 96, 6n, true)
+    view.setBigUint64(at + 104, 0xffff_ffff_ffff_ffffn, true)
+    view.setBigUint64(at + 112, 20n, true)
     expect(decodeSnapshot(bytes).bots).toEqual([{
       identity: 2,
       class: 3,
@@ -370,8 +381,11 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
       area: 10785,
       remainingPathAreas: 16,
       yawDegrees: 90,
+      pitchDegrees: -8,
       position: [-2528, -1744, 17],
       velocity: [240, 0, 0],
+      weapon: { identity: 1, reload: 0, clip: 3, reserve: 20, maximumClip: 4, maximumReserve: 20, nextPrimaryTick: 20n, nextReloadTick: 0n },
+      shots: 4, hits: 2, kills: 0, deaths: 0, captures: 0, carryingFlag: false, lastFireTick: 6n, respawnTick: null,
     }])
     view.setUint32(at, 1, true)
     expect(() => decodeSnapshot(bytes)).toThrow(Tf2CodecError)
