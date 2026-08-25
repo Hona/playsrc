@@ -14,7 +14,7 @@ pub struct HitscanProfile {
 impl HitscanProfile {
     pub const fn configured(weapon: Weapon) -> Option<Self> {
         match weapon {
-            Weapon::Scattergun => Some(Self {
+            Weapon::Scattergun | Weapon::Shotgun => Some(Self {
                 pellets: 10,
                 damage: 6.0,
                 range: 8192.0,
@@ -79,7 +79,8 @@ impl HitscanProfile {
 pub const MELEE_RANGE: f32 = 48.0;
 pub const MELEE_HULL_RADIUS: f32 = 18.0;
 pub const BAT_DAMAGE: f32 = 35.0;
-pub const BAT_SMACK_DELAY: f32 = 0.2;
+pub const SHOVEL_DAMAGE: f32 = 65.0;
+pub const MELEE_SMACK_DELAY: f32 = 0.2;
 
 #[cfg(test)]
 mod tests {
@@ -96,6 +97,10 @@ mod tests {
                 spread: 0.0675,
                 accurate_after_seconds: 0.25,
             })
+        );
+        assert_eq!(
+            HitscanProfile::configured(Weapon::Shotgun),
+            HitscanProfile::configured(Weapon::Scattergun),
         );
         assert_eq!(
             HitscanProfile::configured(Weapon::Pistol),

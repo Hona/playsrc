@@ -620,6 +620,29 @@ describe("canonical all-class TF2 session HUD adapter", () => {
     playerClassUsePlayerModel: false,
   })
 
+  test("publishes exact Soldier stock slots, item identities, and hidden shovel ammunition", () => {
+    for (const active of [1, 7, 8] as const) {
+      const source = compactSnapshot(1n, {
+        weapon: active,
+        loadout: Object.freeze([
+          Object.freeze({ weapon: 1 as const, reload: 0 as const, clip: 4, reserve: 20, maximumClip: 4, maximumReserve: 20 }),
+          Object.freeze({ weapon: 7 as const, reload: 0 as const, clip: 6, reserve: 32, maximumClip: 6, maximumReserve: 32 }),
+          Object.freeze({ weapon: 8 as const, reload: 0 as const, clip: 0, reserve: 0, maximumClip: 0, maximumReserve: 0 }),
+        ]),
+      })
+      const binding = bindTf2Hud(adaptSessionHud(unavailable("initial"), compactPublication(source), context))
+      const player = (binding.facts.player as Extract<Tf2HudSnapshot["player"], { kind: "available" }>).value
+      expect(player.weapons.map((weapon) => [weapon.identity, weapon.slot, weapon.itemDefinition])).toEqual([
+        [1, 0, { kind: "available", value: 18 }],
+        [7, 1, { kind: "available", value: 10 }],
+        [8, 2, { kind: "available", value: 6 }],
+      ])
+      const shovel = player.weapons[2]!
+      expect(shovel.ammoDisplay).toBe("hidden")
+      expect(shovel.clip).toEqual({ kind: "unavailable", reason: "not-applicable" })
+    }
+  })
+
   test("publishes all nine canonical class models and both team images without inventing weapons", () => {
     const classes = [
       [1, "scout", 125],

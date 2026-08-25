@@ -4166,7 +4166,8 @@ fn encode_random_state(state: playsrc_tf2::Tf2RandomState) -> Option<Vec<u8>> {
         state.sound_selection.rocket_explosion_available,
         state.sound_selection.sticky_explosion_available,
         state.sound_selection.bat_hit_world_available,
-        0,
+        state.sound_selection.shovel_hit_world_available
+            | state.sound_selection.shovel_hit_flesh_available << 2,
     ]);
     (output.len() == 284).then_some(output)
 }
@@ -4186,6 +4187,11 @@ fn sound_definition_code(value: playsrc_tf2::SoundDefinition) -> u8 {
         playsrc_tf2::SoundDefinition::BatHitWorld => 11,
         playsrc_tf2::SoundDefinition::ScattergunReload => 12,
         playsrc_tf2::SoundDefinition::PistolReload => 13,
+        playsrc_tf2::SoundDefinition::ShotgunSingle => 14,
+        playsrc_tf2::SoundDefinition::ShotgunReload => 15,
+        playsrc_tf2::SoundDefinition::ShovelMiss => 16,
+        playsrc_tf2::SoundDefinition::ShovelHitFlesh => 17,
+        playsrc_tf2::SoundDefinition::ShovelHitWorld => 18,
     }
 }
 
@@ -4519,6 +4525,8 @@ fn weapon_code(weapon: playsrc_tf2::Weapon) -> u8 {
         playsrc_tf2::Weapon::Scattergun => 4,
         playsrc_tf2::Weapon::Pistol => 5,
         playsrc_tf2::Weapon::Bat => 6,
+        playsrc_tf2::Weapon::Shotgun => 7,
+        playsrc_tf2::Weapon::Shovel => 8,
     }
 }
 fn projectile_code(kind: playsrc_tf2::ProjectileKind) -> u8 {
@@ -7598,6 +7606,11 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>) -
         "Weapon_Bat.HitWorld",
         "Weapon_Scatter_Gun.WorldReload",
         "Weapon_Pistol.WorldReload",
+        "Weapon_Shotgun.Single",
+        "Weapon_Shotgun.WorldReload",
+        "Weapon_Shovel.Miss",
+        "Weapon_Shovel.HitFlesh",
+        "Weapon_Shovel.HitWorld",
     ];
     let nodes = targets
         .iter()
@@ -7898,6 +7911,8 @@ fn load_cached_presentation(
         "models/weapons/c_models/c_scattergun.mdl".to_owned(),
         "models/weapons/c_models/c_pistol/c_pistol.mdl".to_owned(),
         "models/weapons/c_models/c_bat.mdl".to_owned(),
+        "models/weapons/c_models/c_shotgun/c_shotgun.mdl".to_owned(),
+        "models/weapons/c_models/c_shovel/c_shovel.mdl".to_owned(),
     ]);
     let expected = graph
         .entities
@@ -8115,6 +8130,8 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
         "models/weapons/c_models/c_scattergun.mdl".to_owned(),
         "models/weapons/c_models/c_pistol/c_pistol.mdl".to_owned(),
         "models/weapons/c_models/c_bat.mdl".to_owned(),
+        "models/weapons/c_models/c_shotgun/c_shotgun.mdl".to_owned(),
+        "models/weapons/c_models/c_shovel/c_shovel.mdl".to_owned(),
     ]);
     for e in &graph.entities {
         if e.classname
@@ -8141,6 +8158,8 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
                     | "models/weapons/c_models/c_scattergun.mdl"
                     | "models/weapons/c_models/c_pistol/c_pistol.mdl"
                     | "models/weapons/c_models/c_bat.mdl"
+                    | "models/weapons/c_models/c_shotgun/c_shotgun.mdl"
+                    | "models/weapons/c_models/c_shovel/c_shovel.mdl"
             ) {
                 playsrc_studio_model::PresentationProfile::ViewModel
             } else {
@@ -10116,6 +10135,7 @@ fn compile_particles(
         "muzzle_pipelauncher",
         "muzzle_scattergun",
         "muzzle_pistol",
+        "muzzle_shotgun",
         "ExplosionCore_Wall",
         "ExplosionCore_MidAir",
     ]
@@ -11045,6 +11065,8 @@ mod tests {
                 rocket_explosion_available: 7,
                 sticky_explosion_available: 7,
                 bat_hit_world_available: 3,
+                shovel_hit_world_available: 3,
+                shovel_hit_flesh_available: 7,
             },
         };
         let mut collision_snapshot = b"CSNP".to_vec();

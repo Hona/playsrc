@@ -13,6 +13,11 @@ pub enum SoundDefinition {
     BatHitWorld,
     ScattergunReload,
     PistolReload,
+    ShotgunSingle,
+    ShotgunReload,
+    ShovelMiss,
+    ShovelHitFlesh,
+    ShovelHitWorld,
 }
 
 impl SoundDefinition {
@@ -31,13 +36,18 @@ impl SoundDefinition {
             Self::BatHitWorld => "Weapon_Bat.HitWorld",
             Self::ScattergunReload => "Weapon_Scatter_Gun.WorldReload",
             Self::PistolReload => "Weapon_Pistol.WorldReload",
+            Self::ShotgunSingle => "Weapon_Shotgun.Single",
+            Self::ShotgunReload => "Weapon_Shotgun.WorldReload",
+            Self::ShovelMiss => "Weapon_Shovel.Miss",
+            Self::ShovelHitFlesh => "Weapon_Shovel.HitFlesh",
+            Self::ShovelHitWorld => "Weapon_Shovel.HitWorld",
         }
     }
 
     pub(crate) const fn wave_count(self) -> u8 {
         match self {
-            Self::RocketExplosion | Self::StickyExplosion => 3,
-            Self::BatHitWorld => 2,
+            Self::RocketExplosion | Self::StickyExplosion | Self::ShovelHitFlesh => 3,
+            Self::BatHitWorld | Self::ShovelHitWorld => 2,
             Self::RocketSingle
             | Self::OriginalSingle
             | Self::StickySingle
@@ -47,7 +57,10 @@ impl SoundDefinition {
             | Self::BatMiss
             | Self::BatHitFlesh
             | Self::ScattergunReload
-            | Self::PistolReload => 1,
+            | Self::PistolReload
+            | Self::ShotgunSingle
+            | Self::ShotgunReload
+            | Self::ShovelMiss => 1,
         }
     }
 }
@@ -96,6 +109,8 @@ pub struct SoundSelectionState {
     pub rocket_explosion_available: u8,
     pub sticky_explosion_available: u8,
     pub bat_hit_world_available: u8,
+    pub shovel_hit_world_available: u8,
+    pub shovel_hit_flesh_available: u8,
 }
 
 #[derive(Clone, Copy)]
@@ -147,6 +162,8 @@ pub(crate) struct SoundSelection {
     rocket_explosion: WaveCycle,
     sticky_explosion: WaveCycle,
     bat_hit_world: WaveCycle,
+    shovel_hit_world: WaveCycle,
+    shovel_hit_flesh: WaveCycle,
 }
 
 impl SoundSelection {
@@ -155,6 +172,8 @@ impl SoundSelection {
             rocket_explosion: WaveCycle::new(WaveCycle::THREE),
             sticky_explosion: WaveCycle::new(WaveCycle::THREE),
             bat_hit_world: WaveCycle::new(WaveCycle::TWO),
+            shovel_hit_world: WaveCycle::new(WaveCycle::TWO),
+            shovel_hit_flesh: WaveCycle::new(WaveCycle::THREE),
         }
     }
 
@@ -163,6 +182,8 @@ impl SoundSelection {
             rocket_explosion_available: self.rocket_explosion.available,
             sticky_explosion_available: self.sticky_explosion.available,
             bat_hit_world_available: self.bat_hit_world.available,
+            shovel_hit_world_available: self.shovel_hit_world.available,
+            shovel_hit_flesh_available: self.shovel_hit_flesh.available,
         }
     }
 
@@ -170,12 +191,16 @@ impl SoundSelection {
         if state.rocket_explosion_available & !WaveCycle::THREE != 0
             || state.sticky_explosion_available & !WaveCycle::THREE != 0
             || state.bat_hit_world_available & !WaveCycle::TWO != 0
+            || state.shovel_hit_world_available & !WaveCycle::TWO != 0
+            || state.shovel_hit_flesh_available & !WaveCycle::THREE != 0
         {
             return false;
         }
         self.rocket_explosion.available = state.rocket_explosion_available;
         self.sticky_explosion.available = state.sticky_explosion_available;
         self.bat_hit_world.available = state.bat_hit_world_available;
+        self.shovel_hit_world.available = state.shovel_hit_world_available;
+        self.shovel_hit_flesh.available = state.shovel_hit_flesh_available;
         true
     }
 
@@ -197,6 +222,8 @@ impl SoundSelection {
             SoundDefinition::RocketExplosion => &mut self.rocket_explosion,
             SoundDefinition::StickyExplosion => &mut self.sticky_explosion,
             SoundDefinition::BatHitWorld => &mut self.bat_hit_world,
+            SoundDefinition::ShovelHitWorld => &mut self.shovel_hit_world,
+            SoundDefinition::ShovelHitFlesh => &mut self.shovel_hit_flesh,
             _ => unreachable!("only configured random-wave definitions have selection state"),
         }
     }

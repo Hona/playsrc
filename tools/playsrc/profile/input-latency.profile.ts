@@ -862,6 +862,7 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
     pixelsSha256: string
     reload: null | { clip: number; reserve: number; sound: string }
   }> = []
+  const soldierWeaponEvidence: typeof scoutWeaponEvidence = []
   const activeFrameWindows: Array<{ started: number; finished: number }> = []
   const workloads: Array<{
     name: string
@@ -1113,6 +1114,51 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
       }
       expect(new Set(scoutWeaponEvidence.map((item) => item.pixelsSha256)).size).toBe(3)
     }
+    if (scenarioMode === "soldier") {
+      const root = page.locator("main")
+      for (const [key, weapon, name] of [["Digit1", 1, "Rocket Launcher"], ["Digit2", 7, "Shotgun"], ["Digit3", 8, "Shovel"]] as const) {
+        await page.keyboard.press(key)
+        await expect.poll(async () => (await root.getAttribute("data-hud-probe"))?.split(":")[2]).toBe(String(weapon))
+        const before = await root.getAttribute("data-weapon-trace") ?? ""
+        await page.evaluate(async () => {
+          const canvas = document.querySelector(".world-canvas")
+          if (!canvas) throw new Error("Soldier weapon evidence canvas is unavailable")
+          if (document.pointerLockElement !== canvas) await canvas.requestPointerLock()
+          dispatchEvent(new MouseEvent("mousedown", { button: 0, bubbles: true }))
+        })
+        await expect.poll(async () => weapon === 8
+          ? (await root.getAttribute("data-audio-starts") ?? "").includes("Weapon_Shovel.Miss")
+          : (await root.getAttribute("data-weapon-trace")) !== before, { timeout: 10_000 }).toBe(true)
+        await page.evaluate(() => dispatchEvent(new MouseEvent("mouseup", { button: 0, bubbles: true })))
+        const observation = await root.evaluate((element) => {
+          const data = (element as HTMLElement).dataset
+          const record = (data.weaponTrace ?? "").split("|").find((value) => value.startsWith(`${data.hudProbe?.split(":")[2]}:`)) ?? ""
+          const [clip, reserve] = (record.split(":")[1] ?? "0/0").split("/").map(Number)
+          const ammo = document.querySelector<HTMLElement>("[data-vgui-name='HudWeaponAmmo']")
+          return { clip: clip ?? 0, reserve: reserve ?? 0, activity: data.viewmodelActivity ?? "", audio: data.audioStarts ?? "", ammoVisible: ammo?.style.display !== "none" }
+        })
+        expect(observation.ammoVisible).toBe(weapon !== 8)
+        if (weapon === 7) expect(observation.audio).toContain("Weapon_Shotgun.Single")
+        const screenshot = await page.locator("canvas.world-canvas").screenshot()
+        const pixels = decodeScreenshot(screenshot)
+        expect(pixels.width * pixels.height).toBeGreaterThan(100)
+        let reload: null | { clip: number; reserve: number; sound: string } = null
+        if (weapon === 7) {
+          await page.keyboard.press("KeyR")
+          await expect.poll(async () => {
+            const record = (await root.getAttribute("data-weapon-trace") ?? "").split("|").find((item) => item.startsWith("7:"))
+            return Number(record?.split(":")[1]?.split("/")[0] ?? -1)
+          }, { timeout: 10_000 }).toBe(6)
+          const sound = "Weapon_Shotgun.WorldReload"
+          await expect.poll(async () => (await root.getAttribute("data-audio-starts") ?? "").includes(sound)).toBe(true)
+          const record = (await root.getAttribute("data-weapon-trace") ?? "").split("|").find((item) => item.startsWith("7:"))!
+          const [clip, reserve] = record.split(":")[1]!.split("/").map(Number)
+          reload = { clip: clip!, reserve: reserve!, sound }
+        }
+        soldierWeaponEvidence.push({ weapon, name, ...observation, pixelsSha256: createHash("sha256").update(pixels.pixels).digest("hex"), reload })
+      }
+      expect(new Set(soldierWeaponEvidence.map((item) => item.pixelsSha256)).size).toBe(3)
+    }
     if (shouldRunScenario("jump")) workloads.push({
       name: "repeated-jump",
       start: async () => {
@@ -1344,6 +1390,7 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
     steadyState,
     classEvidence,
     scoutWeaponEvidence,
+    soldierWeaponEvidence,
     scenarios: scenarios.map((scenario) => ({
       name: scenario.name,
       presentationTrace: presentationSummary(scenario.samples[0]!.at, scenario.samples.at(-1)!.at),
