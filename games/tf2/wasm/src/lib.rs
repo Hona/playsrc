@@ -920,7 +920,8 @@ unsafe fn compile_map(
         )
         .map_err(|_| 5_u32)?;
         let visibility = runtime.visibility;
-        let area_state = playsrc_visibility::AreaState::new(&visibility);
+        let area_state = playsrc_map::compile_area_portal_state(&runtime.entities, &visibility)
+            .map_err(|_| 3_u32)?;
         let collision = Arc::new(runtime.collision);
         let initial_collision = compile_collision_snapshot(
             &collision,
