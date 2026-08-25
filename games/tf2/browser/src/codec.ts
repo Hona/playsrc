@@ -6,7 +6,7 @@ const MOVEMENT_BYTES = 96
 export type Tf2Class = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
 export type Tf2Team = 2 | 3
 
-export type Tf2Weapon = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14
+export type Tf2Weapon = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 40 | 41 | 42
 
 export type MovementMode = 0 | 1
 export type ProjectileKind = 1 | 2
@@ -48,13 +48,14 @@ export type Tf2RandomState = Readonly<{
   fistHitFleshAvailable: number
   kukriHitFleshAvailable: number
   kukriHitWorldAvailable: number
+  wrenchHitFleshAvailable: number
 
 }>
 export type RandomDraw = Readonly<{
   context: 1 | 2
   decision: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8
 
-  definition: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31
+  definition: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36
 
   phase: 0 | 1 | 2
   raw: number
@@ -65,7 +66,7 @@ export type AudioEvent = Readonly<{
   ordinal: number
   identity: 1 | 2
 
-  definition: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31
+  definition: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36
 
   sourceKind: 1 | 2
   sourceIdentity: number
@@ -503,7 +504,7 @@ export function encodeCommand(command: Command): ArrayBuffer {
     throw new Tf2CodecError("command team selector is invalid")
   }
 
-  if (command.selectWeapon !== undefined && (!Number.isInteger(command.selectWeapon) || command.selectWeapon < 1 || command.selectWeapon > 14)) {
+  if (command.selectWeapon !== undefined && (!Number.isInteger(command.selectWeapon) || command.selectWeapon < 1 || command.selectWeapon > 14 && (command.selectWeapon < 40 || command.selectWeapon > 42))) {
 
     throw new Tf2CodecError("command weapon selector is invalid")
   }
@@ -918,13 +919,13 @@ function decodeRandomState(bytes: ArrayBuffer, offset: number, length: number): 
   const fistMissAvailable = data[at + 4]!, fistHitWorldAvailable = data[at + 5]!, fistHitFleshAvailable = data[at + 6]!, kukriSelections = data[at + 7]!
   if ((rocketExplosionAvailable & ~7) !== 0 || (stickyExplosionAvailable & ~7) !== 0 || (batHitWorldAvailable & ~3) !== 0 ||
     (shovelSelections & ~31) !== 0 || (fistMissAvailable & ~3) !== 0 || (fistHitWorldAvailable & ~3) !== 0 ||
-    (fistHitFleshAvailable & ~7) !== 0 || (kukriSelections & ~31) !== 0) {
+    (fistHitFleshAvailable & ~7) !== 0) {
     throw new Tf2CodecError("TF2 sound selection state is invalid")
   }
   return Object.freeze({ authority, predictedPresentation, rocketExplosionAvailable, stickyExplosionAvailable, batHitWorldAvailable,
     shovelHitWorldAvailable: shovelSelections & 3, shovelHitFleshAvailable: shovelSelections >> 2,
     fistMissAvailable, fistHitWorldAvailable, fistHitFleshAvailable,
-    kukriHitFleshAvailable: kukriSelections & 7, kukriHitWorldAvailable: kukriSelections >> 3 })
+    kukriHitFleshAvailable: kukriSelections & 7, kukriHitWorldAvailable: (kukriSelections >> 3) & 3, wrenchHitFleshAvailable: kukriSelections >> 5 })
 
 }
 
@@ -956,7 +957,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     (tf2Class === undefined || tf2Class < 1 || tf2Class > 9) ||
     (team !== 2 && team !== 3) ||
 
-    (weapon === undefined || weapon > 14) ||
+    (weapon === undefined || weapon > 14 && (weapon < 40 || weapon > 42)) ||
 
     data[19]! > 1 || (data[28] !== 1 && data[28] !== 2) || data[29] !== 0 || data[30] !== 0 || data[31] !== 0
   )
@@ -1018,7 +1019,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
       itemWeapon === undefined ||
       itemWeapon < 1 ||
 
-      itemWeapon > 14 ||
+      (itemWeapon > 14 && (itemWeapon < 40 || itemWeapon > 42)) ||
 
       reload === undefined ||
       reload > 3 ||
@@ -1247,7 +1248,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     const itemWeapon = data[item + 8]
     const activity = data[item + 9]
 
-    if (itemWeapon === undefined || itemWeapon < 1 || itemWeapon > 14 || activity === undefined || activity < 1 || activity > 6 ||
+    if (itemWeapon === undefined || itemWeapon < 1 || itemWeapon > 14 && (itemWeapon < 40 || itemWeapon > 42) || activity === undefined || activity < 1 || activity > 6 ||
 
       !data.subarray(item + 10, item + 16).every((value) => value === 0)) {
       throw new Tf2CodecError("activity record is invalid")
@@ -1416,7 +1417,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     if (
       (context !== 1 && context !== 2) || decision === undefined || decision < 1 || decision > 8 ||
 
-      (soundDecision ? definition === undefined || definition < 1 || definition > 31 || (phase !== 1 && phase !== 2) : definition !== 0 || phase !== 0 || context !== 1) ||
+      (soundDecision ? definition === undefined || definition < 1 || definition > 36 || (phase !== 1 && phase !== 2) : definition !== 0 || phase !== 0 || context !== 1) ||
 
       raw <= 0 || raw >= 2_147_483_647 || resultKind === undefined || resultKind < 1 || resultKind > 3 ||
       data[item + 9] !== 0 || data[item + 10] !== 0 || data[item + 11] !== 0 ||
@@ -1440,10 +1441,10 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
       definition = data[item + 11], sourceKind = data[item + 12], hasOwner = data[item + 13], wave = data[item + 14]
     const sourceIdentity = view.getUint32(item + 16, true), rawOwner = view.getUint32(item + 20, true), position = vector(view, item + 24)
     const volume = view.getFloat32(item + 36, true), pitch = view.getFloat32(item + 40, true), soundLevel = view.getFloat32(item + 44, true)
-    const expectedOrdinal = nextOrdinal.get(tick) ?? 0, waveCount = definition === 4 || definition === 6 || definition === 17 || definition === 25 ? 3 : definition === 11 || definition === 18 || definition === 23 || definition === 24 ? 2 : 1
+    const expectedOrdinal = nextOrdinal.get(tick) ?? 0, waveCount = definition === 4 || definition === 6 || definition === 17 || definition === 25 || definition === 29 || definition === 35 ? 3 : definition === 11 || definition === 18 || definition === 23 || definition === 24 || definition === 30 ? 2 : 1
     if (
 
-      (identity !== 1 && identity !== 2) || definition === undefined || definition < 1 || definition > 31 ||
+      (identity !== 1 && identity !== 2) || definition === undefined || definition < 1 || definition > 36 ||
 
       (sourceKind !== 1 && sourceKind !== 2) || (hasOwner !== 0 && hasOwner !== 1) || data[item + 15] !== 0 ||
       ordinal !== expectedOrdinal || !canonicalIdentity(sourceIdentity) ||

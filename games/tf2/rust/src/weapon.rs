@@ -99,20 +99,38 @@ impl WeaponProfile {
                 center_fire_projectile: false,
                 flip_viewmodel: false,
             },
-            Weapon::Pistol => Self {
+            Weapon::EngineerShotgun => Self {
+                maximum_clip: 6,
+                maximum_reserve: 32,
+                fire_delay: 0.625,
+                reload_start: 0.333_333_34,
+                reload_round: 0.5,
+                maximum_charge: None,
+                center_fire_projectile: false,
+                flip_viewmodel: false,
+            },
+            Weapon::Pistol | Weapon::EngineerPistol => Self {
                 maximum_clip: 12,
-                maximum_reserve: 36,
+                maximum_reserve: if matches!(weapon, Weapon::EngineerPistol) {
+                    200
+                } else {
+                    36
+                },
                 fire_delay: 0.15,
-                reload_start: 0.5,
+                reload_start: if matches!(weapon, Weapon::EngineerPistol) {
+                    1.033_333_3
+                } else {
+                    0.5
+                },
                 reload_round: 0.0,
                 maximum_charge: None,
                 center_fire_projectile: false,
                 flip_viewmodel: false,
             },
-            Weapon::Bat | Weapon::Shovel => Self {
+            Weapon::Bat | Weapon::Shovel | Weapon::Wrench => Self {
                 maximum_clip: 0,
                 maximum_reserve: 0,
-                fire_delay: if matches!(weapon, Weapon::Shovel) {
+                fire_delay: if matches!(weapon, Weapon::Shovel | Weapon::Wrench) {
                     0.8
                 } else {
                     0.5
@@ -344,7 +362,10 @@ impl WeaponRuntime {
         let profile = self.profile();
         match self.reload {
             ReloadPhase::Start => {
-                if matches!(self.weapon, Weapon::Pistol | Weapon::Smg) {
+                if matches!(
+                    self.weapon,
+                    Weapon::Pistol | Weapon::Smg | Weapon::EngineerPistol
+                ) {
                     let inserted = (profile.maximum_clip - self.clip).min(self.reserve);
                     self.clip += inserted;
                     self.reserve -= inserted;
@@ -474,7 +495,7 @@ impl WeaponRuntime {
 
         let available = match self.weapon {
             Weapon::SniperRifle => self.reserve > 0,
-            Weapon::Bat | Weapon::Shovel | Weapon::Kukri => true,
+            Weapon::Bat | Weapon::Shovel | Weapon::Kukri | Weapon::Wrench => true,
             _ => self.clip > 0,
         };
         if held && available && tick >= self.next_primary_tick {
@@ -584,15 +605,18 @@ impl WeaponRuntime {
     ) -> PrimaryResult {
         match self.weapon {
             Weapon::SniperRifle => self.reserve -= 1,
-            Weapon::Bat | Weapon::Shovel | Weapon::Kukri => {}
+            Weapon::Bat | Weapon::Shovel | Weapon::Kukri | Weapon::Wrench => {}
             _ => self.clip -= 1,
         }
         self.abort_reload();
         if self.weapon != Weapon::SniperRifle {
             self.charge_begin_tick = None;
         }
-        self.next_primary_tick =
-            tick.saturating_add(delay_ticks(self.profile().fire_delay, tick_interval));
+        self.next_primary_tick = if self.weapon == Weapon::EngineerPistol {
+            source_deadline_tick(tick, self.profile().fire_delay, tick_interval)
+        } else {
+            tick.saturating_add(delay_ticks(self.profile().fire_delay, tick_interval))
+        };
         activities.push(ActivityEvent {
             tick,
             weapon: self.weapon,
@@ -604,6 +628,15 @@ impl WeaponRuntime {
 
 pub fn delay_ticks(seconds: f32, tick_interval: f32) -> u64 {
     (seconds / tick_interval).ceil() as u64
+}
+
+pub fn source_deadline_tick(tick: u64, seconds: f32, tick_interval: f32) -> u64 {
+    let deadline = tick as f32 * tick_interval + seconds;
+    let mut due = tick.saturating_add((seconds / tick_interval).floor() as u64);
+    while due as f32 * tick_interval < deadline {
+        due = due.saturating_add(1);
+    }
+    due
 }
 
 fn elapsed_seconds(begin: u64, tick: u64, tick_interval: f32) -> f32 {
@@ -763,6 +796,54 @@ mod tests {
             (0, 0, 80)
         );
         assert!(!shovel.start_reload(80, 0.01, &mut activities));
+    }
+
+    #[test]
+    fn engineer_stock_profiles_use_engineer_ammo_and_authored_animation_durations() {
+        let shotgun = WeaponProfile::configured(Weapon::EngineerShotgun);
+        assert_eq!((shotgun.maximum_clip, shotgun.maximum_reserve), (6, 32));
+        assert_eq!(
+            (
+                shotgun.fire_delay,
+                shotgun.reload_start,
+                shotgun.reload_round
+            ),
+            (0.625, 0.333_333_34, 0.5),
+        );
+        let pistol = WeaponProfile::configured(Weapon::EngineerPistol);
+        assert_eq!((pistol.maximum_clip, pistol.maximum_reserve), (12, 200));
+        assert_eq!(
+            (pistol.fire_delay, pistol.reload_start),
+            (0.15, 1.033_333_3)
+        );
+        let wrench = WeaponProfile::configured(Weapon::Wrench);
+        assert_eq!(
+            (
+                wrench.maximum_clip,
+                wrench.maximum_reserve,
+                wrench.fire_delay
+            ),
+            (0, 0, 0.8)
+        );
+        assert_eq!(source_deadline_tick(34, 0.15, 0.015), 44);
+        assert_eq!(source_deadline_tick(45, 0.15, 0.015), 56);
+    }
+
+    #[test]
+    fn engineer_pistol_reloads_the_whole_magazine_at_the_authored_animation_deadline() {
+        let mut pistol = WeaponRuntime::full(Weapon::EngineerPistol);
+        pistol.clip = 3;
+        pistol.reserve = 5;
+        let mut activities = Vec::new();
+        let mut ammo = Vec::new();
+        assert!(pistol.start_reload(10, 0.015, &mut activities));
+        assert_eq!(pistol.reload_due_tick, Some(79));
+        pistol.advance_reload(78, 0.015, &mut activities, &mut ammo);
+        assert_eq!((pistol.clip, pistol.reserve), (3, 5));
+        pistol.advance_reload(79, 0.015, &mut activities, &mut ammo);
+        assert_eq!((pistol.clip, pistol.reserve), (8, 0));
+        assert_eq!(pistol.reload, ReloadPhase::Ready);
+        assert_eq!(ammo.len(), 1);
     }
 
     #[test]

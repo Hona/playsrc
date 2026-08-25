@@ -167,6 +167,10 @@ const SOUND_PATHS = [
   "sound/weapons/smg_shoot.wav",
   "sound/weapons/smg_worldreload.wav",
   "sound/weapons/machete_swing.wav",
+  "sound/weapons/shotgun_empty.wav",
+  "sound/weapons/pistol/pistol_empty.wav",
+  "sound/weapons/wrench_swing.wav",
+  "sound/weapons/wrench_hit_world.wav",
 
 ] as const
 
@@ -1500,7 +1504,7 @@ export class Tf2Application {
       random: this.#presentationRandom,
       onCommand: (command) => {
 
-        if (command.kind === "select-weapon" && command.weapon >= 1 && command.weapon <= 14) this.#selectWeapon = command.weapon as Tf2Weapon
+        if (command.kind === "select-weapon" && (command.weapon >= 1 && command.weapon <= 14 || command.weapon >= 40 && command.weapon <= 42)) this.#selectWeapon = command.weapon as Tf2Weapon
 
       },
     })
@@ -3309,7 +3313,7 @@ export class Tf2Application {
       const visibility=await visibilityRequest
       if(!ownsGeneration())return
       const particleStart=performance.now()
-      const hitscanMuzzles=snapshot.class===1||snapshot.class===3||snapshot.class===6?publication.eventBatches.flatMap(batch=>hitscanMuzzleParticles(batch.snapshot,{systems:PARTICLE_SYSTEMS,attachmentTransforms:this.#attachmentTransforms})):null
+      const hitscanMuzzles=snapshot.class===1||snapshot.class===3||snapshot.class===6||snapshot.class===9?publication.eventBatches.flatMap(batch=>hitscanMuzzleParticles(batch.snapshot,{systems:PARTICLE_SYSTEMS,attachmentTransforms:this.#attachmentTransforms})):null
       const particleBatch=owners.encoder.encode(snapshot.tick,camera.position,hitscanMuzzles===null||hitscanMuzzles.length===0?presentation.particles:[...presentation.particles,...hitscanMuzzles])
       if(!ownsGeneration())return
       this.#wasmCalls.particles++
@@ -3506,9 +3510,9 @@ export class Tf2Application {
     } else if (action === "+reload") {
       if (this.#buttons.press(identity, action)) this.#reloadPressed = true
 
-    } else if (action === "slot1") this.#selectWeapon = this.#snapshot?.class === 1 ? 4 : this.#snapshot?.class === 2 ? 12 : this.#snapshot?.class === 6 ? 9 : 1
-    else if (action === "slot2") this.#selectWeapon = this.#snapshot?.class === 1 ? 5 : this.#snapshot?.class === 2 ? 13 : this.#snapshot?.class === 3 ? 7 : this.#snapshot?.class === 6 ? 10 : 3
-    else if (action === "slot3") this.#selectWeapon = this.#snapshot?.class === 1 ? 6 : this.#snapshot?.class === 2 ? 14 : this.#snapshot?.class === 3 ? 8 : this.#snapshot?.class === 6 ? 11 : undefined
+    } else if (action === "slot1") this.#selectWeapon = this.#snapshot?.class === 1 ? 4 : this.#snapshot?.class === 2 ? 12 : this.#snapshot?.class === 6 ? 9 : this.#snapshot?.class === 9 ? 40 : 1
+    else if (action === "slot2") this.#selectWeapon = this.#snapshot?.class === 1 ? 5 : this.#snapshot?.class === 2 ? 13 : this.#snapshot?.class === 3 ? 7 : this.#snapshot?.class === 6 ? 10 : this.#snapshot?.class === 9 ? 41 : 3
+    else if (action === "slot3") this.#selectWeapon = this.#snapshot?.class === 1 ? 6 : this.#snapshot?.class === 2 ? 14 : this.#snapshot?.class === 3 ? 8 : this.#snapshot?.class === 6 ? 11 : this.#snapshot?.class === 9 ? 42 : undefined
 
   }
 

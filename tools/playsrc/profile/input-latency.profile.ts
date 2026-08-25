@@ -864,6 +864,7 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
   }> = []
 
   const soldierWeaponEvidence: typeof scoutWeaponEvidence = []
+  const engineerWeaponEvidence: typeof scoutWeaponEvidence = []
   const heavyWeaponEvidence: Array<{
     team: 2 | 3
     weapon: number
@@ -1047,7 +1048,7 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
           })
           const [health, , weapon] = observation.hud.split(":")
 
-          const armed = identity === 1 || identity === 2 || identity === 3 || identity === 4 || identity === 6
+          const armed = identity === 1 || identity === 2 || identity === 3 || identity === 4 || identity === 6 || identity === 9
 
           const imageName = name === "demoman" ? "demo" : name === "engineer" ? "engi" : name
           expect(observation.phase).toBe("Ready")
@@ -1108,6 +1109,78 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
       await command("class soldier")
       await expect.poll(async () => (await root.getAttribute("data-hud-probe"))?.split(":")[1]).toBe("3")
       if (await root.getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
+    }
+    if (scenarioMode === "engineer") {
+      const engineer = scenarioMode === "engineer"
+      const evidence = engineer ? engineerWeaponEvidence : scoutWeaponEvidence
+      const entries = engineer
+        ? [["Digit1", 40, "Shotgun"], ["Digit2", 41, "Pistol"], ["Digit3", 42, "Wrench"]] as const
+        : [["Digit1", 4, "Scattergun"], ["Digit2", 5, "Pistol"], ["Digit3", 6, "Bat"]] as const
+      const root = page.locator("main")
+      const entry = page.locator("[aria-label='Console command']")
+      if (await root.getAttribute("data-console-visible") !== "true") await page.keyboard.press("Backquote")
+      await expect(entry).toBeVisible()
+      await entry.fill(`class ${engineer ? "engineer" : "scout"}`)
+      await page.keyboard.press("Enter")
+      await page.keyboard.press("Backquote")
+      await expect.poll(async () => (await root.getAttribute("data-hud-probe"))?.split(":")[1]).toBe(engineer ? "9" : "1")
+      for (const [key, weapon, name] of entries) {
+        const melee = weapon === 6 || weapon === 42
+        await page.keyboard.press(key)
+        await expect.poll(async () => (await root.getAttribute("data-hud-probe"))?.split(":")[2]).toBe(String(weapon))
+        const before = await root.getAttribute("data-weapon-trace") ?? ""
+        await page.evaluate(async () => {
+          const canvas = document.querySelector(".world-canvas")
+          if (!canvas) throw new Error("Stock weapon evidence canvas is unavailable")
+          if (document.pointerLockElement !== canvas) await canvas.requestPointerLock()
+          dispatchEvent(new MouseEvent("mousedown", { button: 0, bubbles: true }))
+        })
+        await expect.poll(async () => melee
+          ? (await root.getAttribute("data-audio-starts") ?? "").includes(weapon === 42 ? "Weapon_Wrench.Miss" : "Weapon_Bat.Miss")
+          : (await root.getAttribute("data-weapon-trace")) !== before, { timeout: 10_000 }).toBe(true)
+        await page.evaluate(() => dispatchEvent(new MouseEvent("mouseup", { button: 0, bubbles: true })))
+        const observation = await root.evaluate((element) => {
+          const data = (element as HTMLElement).dataset
+          const record = (data.weaponTrace ?? "").split("|").find((value) => value.startsWith(`${data.hudProbe?.split(":")[2]}:`)) ?? ""
+          const [clip, reserve] = (record.split(":")[1] ?? "0/0").split("/").map(Number)
+          return { clip: clip ?? 0, reserve: reserve ?? 0, activity: data.viewmodelActivity ?? "", audio: data.audioStarts ?? "" }
+        })
+        expect(await root.evaluate(() => document.querySelector<HTMLElement>("[data-vgui-name='HudWeaponAmmo']")?.style.display !== "none")).toBe(!melee)
+        const screenshot = await page.locator("canvas.world-canvas").screenshot()
+        const pixels = decodeScreenshot(screenshot)
+        expect(pixels.width * pixels.height).toBeGreaterThan(100)
+        let reload: null | { clip: number; reserve: number; sound: string } = null
+        if (!melee) {
+          const expectedClip = weapon === 4 || weapon === 40 ? 6 : 12
+          const sound = weapon === 4 ? "Weapon_Scatter_Gun.WorldReload"
+            : weapon === 40 ? "Weapon_Shotgun.WorldReload" : "Weapon_Pistol.WorldReload"
+          await page.keyboard.press("KeyR")
+          await expect.poll(async () => {
+            const trace = await root.getAttribute("data-weapon-trace") ?? ""
+            const record = trace.split("|").find((item) => item.startsWith(`${weapon}:`))
+            return Number(record?.split(":")[1]?.split("/")[0] ?? -1)
+          }, { timeout: 10_000 }).toBe(expectedClip)
+          await expect.poll(async () => (await root.getAttribute("data-audio-starts") ?? "").includes(sound)).toBe(true)
+          const record = (await root.getAttribute("data-weapon-trace") ?? "").split("|").find((item) => item.startsWith(`${weapon}:`))!
+          const [clip, reserve] = record.split(":")[1]!.split("/").map(Number)
+          reload = { clip: clip!, reserve: reserve!, sound }
+          if (engineer) expect(reserve).toBe((weapon === 40 ? 32 : 200) - (expectedClip - observation.clip))
+        }
+        evidence.push({ weapon, name, ...observation, pixelsSha256: createHash("sha256").update(pixels.pixels).digest("hex"), reload })
+      }
+      expect(new Set(evidence.map((item) => item.pixelsSha256)).size).toBe(3)
+      if (engineer) {
+        workloads.push({
+          name: "engineer-held-pistol-fire",
+          start: async () => {
+            await page.keyboard.press("Digit2")
+            await expect.poll(async () => (await root.getAttribute("data-hud-probe"))?.split(":")[2]).toBe("41")
+            await page.waitForTimeout(550)
+            await page.evaluate(() => dispatchEvent(new MouseEvent("mousedown", { button: 0, bubbles: true })))
+          },
+          stop: async () => { await page.evaluate(() => dispatchEvent(new MouseEvent("mouseup", { button: 0, bubbles: true }))) },
+        })
+      }
     }
     if (scenarioMode === "scout" || scenarioMode === "heavy") {
       const root = page.locator("main")
@@ -1567,6 +1640,7 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
 
     soldierWeaponEvidence,
     heavyWeaponEvidence,
+    engineerWeaponEvidence,
     sniperScopeEvidence,
 
     scenarios: scenarios.map((scenario) => ({
@@ -1679,6 +1753,7 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
   })}`)
   expect(raw.dataset.phase).toBe("Ready")
   if (scenarioMode === "classes") expect(classEvidence).toHaveLength(18)
+  if (scenarioMode === "engineer") expect(engineerWeaponEvidence.map((weapon) => weapon.weapon)).toEqual([40, 41, 42])
   if (scenarioMode === "heavy") {
     expect(scoutWeaponEvidence).toHaveLength(3)
     expect(soldierWeaponEvidence).toHaveLength(3)

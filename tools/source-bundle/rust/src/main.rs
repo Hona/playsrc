@@ -2453,6 +2453,7 @@ fn main() -> Result<(), String> {
         "models/weapons/c_models/c_soldier_arms.mdl",
         "models/weapons/c_models/c_demo_arms.mdl",
         "models/weapons/c_models/c_scout_arms.mdl",
+        "models/weapons/c_models/c_engineer_arms.mdl",
         "models/weapons/c_models/c_sniper_arms.mdl",
         "models/player/scout.mdl",
         "models/player/sniper.mdl",
@@ -2472,6 +2473,10 @@ fn main() -> Result<(), String> {
         "models/weapons/c_models/c_bat.mdl",
         "models/weapons/c_models/c_shotgun/c_shotgun.mdl",
         "models/weapons/c_models/c_shovel/c_shovel.mdl",
+        "models/weapons/c_models/c_wrench/c_wrench.mdl",
+        "models/weapons/w_models/w_shotgun.mdl",
+        "models/weapons/w_models/w_pistol.mdl",
+        "models/weapons/w_models/w_wrench.mdl",
         "models/weapons/c_models/c_heavy_arms.mdl",
         "models/weapons/c_models/c_minigun/c_minigun.mdl",
         "models/weapons/c_models/c_sniperrifle/c_sniperrifle.mdl",
@@ -2767,6 +2772,10 @@ fn main() -> Result<(), String> {
         "sound/weapons/smg_shoot.wav",
         "sound/weapons/smg_worldreload.wav",
         "sound/weapons/machete_swing.wav",
+        "sound/weapons/shotgun_empty.wav",
+        "sound/weapons/pistol/pistol_empty.wav",
+        "sound/weapons/wrench_swing.wav",
+        "sound/weapons/wrench_hit_world.wav",
     ] {
         let consumer = if path.starts_with("sound/") {
             "audio-wave"

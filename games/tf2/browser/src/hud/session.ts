@@ -95,20 +95,22 @@ function reload(value: CompactWeaponState["reload"]): Tf2ReloadPhase {
 
 function weaponName(identity: CompactWeaponState["weapon"]): string {
 
-  return (["", "Rocket Launcher", "Original", "Stickybomb Launcher", "Scattergun", "Pistol", "Bat", "Shotgun", "Shovel", "Minigun", "Shotgun", "Fists", "Sniper Rifle", "SMG", "Kukri"] as const)[identity]
+  return identity === 40 ? "Shotgun" : identity === 41 ? "Pistol" : identity === 42 ? "Wrench"
+    : (["", "Rocket Launcher", "Original", "Stickybomb Launcher", "Scattergun", "Pistol", "Bat", "Shotgun", "Shovel", "Minigun", "Shotgun", "Fists", "Sniper Rifle", "SMG", "Kukri"] as const)[identity]
 }
 
 function weapon(value: CompactWeaponState): Tf2HudWeapon {
   const totalAmmo = value.weapon === 9 || value.weapon === 12
-  const melee = value.weapon === 6 || value.weapon === 8 || value.weapon === 11 || value.weapon === 14
-  const definition = ([undefined, 18, undefined, undefined, 13, 23, 0, 10, 6, 15, 11, 5, 14, 16, 3] as const)[value.weapon]
+  const melee = value.weapon === 6 || value.weapon === 8 || value.weapon === 11 || value.weapon === 14 || value.weapon === 42
+  const definition = value.weapon === 40 ? 9 : value.weapon === 41 ? 22 : value.weapon === 42 ? 7
+    : ([undefined, 18, undefined, undefined, 13, 23, 0, 10, 6, 15, 11, 5, 14, 16, 3] as const)[value.weapon]
 
   return Object.freeze({
     identity: value.weapon,
     itemDefinition: definition === undefined ? tf2HudUnavailable<number>("not-produced") : tf2HudAvailable(definition),
     displayName: weaponName(value.weapon),
 
-    slot: value.weapon === 3 || value.weapon === 5 || value.weapon === 7 || value.weapon === 10 || value.weapon === 13 ? 1 : melee ? 2 : 0,
+    slot: value.weapon === 3 || value.weapon === 5 || value.weapon === 7 || value.weapon === 10 || value.weapon === 13 || value.weapon === 41 ? 1 : melee ? 2 : 0,
     position: value.weapon === 2 ? 1 : 0,
     selectable: true,
     ammoDisplay: melee ? "hidden" as const : totalAmmo ? "total" as const : "clip-and-reserve" as const,

@@ -664,13 +664,12 @@ pub fn path_cost(
     now: f32,
 ) -> Option<f32> {
     let flags = destination.game_attributes;
-    if flags & TF_NAV_UNBLOCKABLE == 0 {
-        if flags & TF_NAV_BLOCKED != 0
+    if flags & TF_NAV_UNBLOCKABLE == 0
+        && (flags & TF_NAV_BLOCKED != 0
             || team == PlayerTeam::Red && flags & TF_NAV_BLUE_ONE_WAY_DOOR != 0
-            || team == PlayerTeam::Blue && flags & TF_NAV_RED_ONE_WAY_DOOR != 0
-        {
-            return None;
-        }
+            || team == PlayerTeam::Blue && flags & TF_NAV_RED_ONE_WAY_DOOR != 0)
+    {
+        return None;
     }
     if team == PlayerTeam::Red && flags & TF_NAV_SPAWN_ROOM_BLUE != 0
         || team == PlayerTeam::Blue && flags & TF_NAV_SPAWN_ROOM_RED != 0

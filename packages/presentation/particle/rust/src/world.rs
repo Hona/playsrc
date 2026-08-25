@@ -1671,10 +1671,10 @@ fn initialize_particle(system: &mut System, definition: &Definition, creation: f
             let mut output =
                 std::array::from_fn(|index| mix(minimum[index], maximum[index], fraction));
             let control = integer_parameter(initializer, "control_point_number", 0);
-            if bool_parameter(initializer, "use local system", true) {
-                if let Some(orientation) = control_orientation(system, control) {
-                    output = rotate(orientation, output);
-                }
+            if bool_parameter(initializer, "use local system", true)
+                && let Some(orientation) = control_orientation(system, control)
+            {
+                output = rotate(orientation, output);
             }
             output = add(control_at_time(system, control, creation), output);
             if bool_parameter(
