@@ -13,7 +13,7 @@ import { initializeTf2HudIntegration } from "../../src/hud-integration"
 import { TF2_HUD_DYNAMIC_IMAGES, tf2HudUnavailable, type CompactSessionHudContext, type CompactSessionSimulationPublication } from "../../src/hud"
 import type { Tf2VguiResources } from "../../src/ui-integration"
 import { tf2UiResources, type Tf2UiResourceNode } from "../../src/ui-resources"
-import { FakeDocument, createRoot } from "../../../../../packages/presentation/vgui/tests/fake-dom"
+import { FakeDocument, createRoot, descendants } from "../../../../../packages/presentation/vgui/tests/fake-dom"
 
 const generic = new Set<string>(VGUI_GENERIC_CONTROL_NAMES)
 
@@ -65,7 +65,12 @@ function scheme(): VguiScheme {
     identity: "tf2-symptom-loop",
     revision: tf2UiResources.identity,
     tag: "ClientScheme",
-    colors: Object.freeze([]),
+    colors: Object.freeze([
+      { name: "TanLight", value: "235 226 202 255" },
+      { name: "TanDark", value: "117 107 94 255" },
+      { name: "Black", value: "46 43 42 255" },
+      { name: "TransparentBlack", value: "0 0 0 196" },
+    ]),
     settings: Object.freeze([]),
     fonts: Object.freeze([...new Set(tf2UiResources.schemes.flatMap((value) => value.fontDefinitions.map((font) => font.name)))].map((name) => Object.freeze({
       name, cssFamily: "sans-serif", sizePx: 12, lineHeightPx: 12, weight: 400, style: "normal" as const, available: true,
@@ -245,6 +250,12 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     expect(first.find((panel) => panel.name === "PlayerStatusClassImage")?.state.image).toBe("../hud/class_soldierred")
     expect(first.filter((panel) => panel.name === "HudWeaponAmmo")).toHaveLength(1)
     expect(first.find((panel) => panel.name === "HudWeaponAmmo")?.state.scalarProperties).toMatchObject({ reloadPhase: 0 })
+    expect(first.find((panel) => panel.name === "CarryingWeapon")?.effectivelyVisible).toBe(false)
+    const hudElement = (name: string) => descendants(root).find((element) => element.dataset.vguiName === name)!
+    expect(hudElement("AmmoInClip").style.color).toBe("rgba(235, 226, 202, 1)")
+    expect(hudElement("AmmoInClipShadow").style.color).toBe("rgba(46, 43, 42, 1)")
+    expect(hudElement("AmmoInReserve").style.color).toBe("rgba(235, 226, 202, 1)")
+    expect(hudElement("AmmoInReserveShadow").style.color).toBe("rgba(0, 0, 0, 0.7686274509803922)")
     expect(first.filter((panel) => /scout|spy|unknown/iu.test(`${panel.name}:${panel.state.image ?? ""}`) && panel.effectivelyVisible)).toEqual([])
     expect(first.filter((panel) => /bleed|milk|marked|slowed|gas|resist|buff|rune|parachute|wheel|skull|poison/iu.test(panel.name) && panel.effectivelyVisible)).toEqual([])
     expect(first.find((panel) => panel.name === "PlayerStatusClassImageBG")?.state.image).toBe("../hud/character_red_bg")

@@ -2490,6 +2490,11 @@ class SourceVguiRuntime implements VguiRuntime {
       foreground = this.resolveColor("ListPanel.TextColor", foreground)
       background = this.resolveColor("ListPanel.BgColor", background)
     }
+    const extendedLabelColor = sameName(panel.control, "CExLabel") ? panel.properties.get("fgcolor") : undefined
+    if (extendedLabelColor) {
+      foreground = parseColorLiteral(extendedLabelColor, 255)
+        ?? this.resolveColor(extendedLabelColor, Object.freeze([0, 255, 0, 255]) as Rgba)
+    }
     const foregroundOverride = panel.properties.get(panel.depressed ? "depressedFgColor_override" : panel.armed ? "armedFgColor_override" : panel.selected ? "selectedFgColor_override" : "defaultFgColor_override")
       ?? panel.properties.get("fgcolor_override")
     const backgroundOverride = panel.properties.get(panel.depressed ? "depressedBgColor_override" : panel.armed ? "armedBgColor_override" : panel.selected ? "selectedBgColor_override" : "defaultBgColor_override")
