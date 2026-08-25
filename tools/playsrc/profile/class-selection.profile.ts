@@ -17,11 +17,13 @@ test("authored TF2 class selection shows real model pixels and preserves gamepla
   await expect(entry).toBeVisible()
   await entry.fill("map jump_beef")
   await page.keyboard.press("Enter")
+  await page.waitForFunction(() => document.querySelector<HTMLElement>("main")?.dataset.teamSelectionVisible === "true", undefined, { timeout: 480_000 })
+  if (await page.locator("main").getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
+  await page.locator(".team-selection-layer [data-vgui-name='teambutton1']").click()
   await page.waitForFunction(() => {
     const main = document.querySelector<HTMLElement>("main")
     return main?.dataset.phase === "Ready" && main.dataset.classSelectionVisible === "true"
-  }, undefined, { timeout: 480_000 })
-  if (await page.locator("main").getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
+  }, undefined, { timeout: 60_000 })
   await page.waitForFunction(() => /TFPlayerModel:[^|]+:[0-9]+:[1-9][0-9]*/u.test(document.querySelector<HTMLElement>("main")?.dataset.classSelectionModels ?? ""), undefined, { timeout: 60_000 })
   await page.screenshot({ path: path.join(output, "initial-join.png") })
   const canvasScreenshot = await page.locator("canvas.world-canvas").screenshot()
