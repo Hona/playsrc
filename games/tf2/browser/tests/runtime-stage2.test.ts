@@ -10,7 +10,7 @@ import {
 import type { WorkerRequest, WorkerResponse } from "../src/protocol"
 
 function snapshot(): ArrayBuffer {
-  const bytes = new ArrayBuffer(1013)
+  const bytes = new ArrayBuffer(1025)
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x53, 0x53, 0x4e])
@@ -35,17 +35,17 @@ function snapshot(): ArrayBuffer {
   view.setUint32(152,52,true);view.setUint32(156,12,true)
 
   view.setUint32(160, 0x101, true)
-  data.set([0x50, 0x4d, 0x4f, 0x56], 168)
-  view.setUint32(172, 1, true)
-  data[183] = 1
-  view.setBigUint64(184, 0xffff_ffff_ffff_ffffn, true)
+  data.set([0x50, 0x4d, 0x4f, 0x56], 180)
+  view.setUint32(184, 1, true)
+  data[195] = 1
+  view.setBigUint64(196, 0xffff_ffff_ffff_ffffn, true)
   ;[1, 2, 3, 4, 5, 6, 0, 0, 68].forEach((value, index) => {
-    view.setFloat32(192 + index * 4, value, true)
+    view.setFloat32(204 + index * 4, value, true)
   })
-  view.setFloat32(248, 1, true)
   view.setFloat32(260, 1, true)
+  view.setFloat32(272, 1, true)
 
-  let at = 264
+  let at = 276
   data.set([1, 0, 0, 0], at)
   view.setUint16(at + 4, 3, true)
   view.setUint16(at + 6, 20, true)
@@ -173,13 +173,13 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     for (const team of [0, 1, 4]) {
       expect(() => encodeCommand({ ...base, selectTeam: team as 2 })).toThrow("team selector is invalid")
     }
-    for (let weapon = 1; weapon <= 14; weapon += 1) {
+    for (let weapon = 1; weapon <= 16; weapon += 1) {
       expect(new DataView(encodeCommand({ ...base, selectWeapon: weapon as 1 })).getUint32(32, true)).toBe(weapon << 8)
     }
     for (const weapon of [40, 41, 42] as const) {
       expect(new DataView(encodeCommand({ ...base, selectWeapon: weapon })).getUint32(32, true)).toBe(weapon << 8)
     }
-    for (const weapon of [0, 15, 39, 43, 1.5, Number.NaN]) {
+    for (const weapon of [0, 17, 39, 43, 1.5, Number.NaN]) {
       expect(() => encodeCommand({ ...base, selectWeapon: weapon as 1 })).toThrow("weapon selector is invalid")
     }
   })
@@ -192,8 +192,8 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     }
     const armed = new Uint8Array(snapshot())
     const unarmed = new Uint8Array(armed.length - 48)
-    unarmed.set(armed.subarray(0, 264))
-    unarmed.set(armed.subarray(312), 264)
+    unarmed.set(armed.subarray(0, 276))
+    unarmed.set(armed.subarray(324), 276)
     unarmed[16] = 1
     unarmed[18] = 0
     new DataView(unarmed.buffer).setUint32(56, 0, true)
@@ -322,15 +322,15 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     expect(value.events[0]).toMatchObject({ kind: 5, subject: 85, values: [200, 4, 20, 0] })
 
     const malformed = snapshot()
-    new DataView(malformed).setFloat32(352 + 12, 0, true)
+    new DataView(malformed).setFloat32(364 + 12, 0, true)
     expect(() => decodeSnapshot(malformed)).toThrow(Tf2CodecError)
     const priorVersion = snapshot()
     new DataView(priorVersion).setUint32(4, 5, true)
     expect(() => decodeSnapshot(priorVersion)).toThrow(Tf2CodecError)
     const stuck = snapshot()
     const stuckData = new Uint8Array(stuck), stuckView = new DataView(stuck)
-    stuckData.set([2, 2, 3, 1], 316)
-    stuckView.setFloat32(388, 1, true)
+    stuckData.set([2, 2, 3, 1], 328)
+    stuckView.setFloat32(400, 1, true)
     expect(decodeSnapshot(stuck).projectiles[0]).toMatchObject({ kind: 2, state: 3, velocity: [100, 0, 0], contactNormal: [0, 0, 1] })
   })
 
@@ -411,7 +411,7 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
       const bytes = snapshot(), view = new DataView(bytes), data = new Uint8Array(bytes)
       view.setUint32(160, flags, true)
       view.setUint32(164, fluid, true)
-      data[178] = level
+      data[190] = level
       const decoded = decodeSnapshot(bytes)
       expect(decoded.playerFlags).toBe(flags)
       expect(decoded.inWater).toBe(inWater)

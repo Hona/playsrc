@@ -488,6 +488,9 @@ fn exact_projectile_timelines_cover_every_output_field_through_cleanup() {
                     previous_position: [10.0, 20.0, 30.0],
                     orientation: [0.0, 0.0, 0.0, 1.0],
                     velocity: [0.0; 3],
+                    radius: 0.0,
+                    density: 1.0,
+                    duration: 0.0,
                     parent: None,
                     object_identity: None,
                 }],
@@ -636,6 +639,9 @@ fn configured_wall_explosion_stays_in_front_of_every_oriented_impact_plane() {
                             previous_position: origin,
                             orientation,
                             velocity: [0.0; 3],
+                            radius: 0.0,
+                            density: 1.0,
+                            duration: 0.0,
                             parent: None,
                             object_identity: None,
                         }],
@@ -674,5 +680,132 @@ fn configured_wall_explosion_stays_in_front_of_every_oriented_impact_plane() {
             }
         }
         assert_eq!(flashes, 1);
+    }
+}
+
+#[test]
+#[ignore = "requires the exact configured TF2 source bundle"]
+fn exact_pyro_flame_airblast_and_shotgun_closures_emit_authored_particles() {
+    struct ConfiguredSegments(PathBuf);
+    impl playsrc_vpk::SegmentReader for ConfiguredSegments {
+        fn len(&self, index: u32) -> Result<u64, playsrc_vpk::SourceError> {
+            fs::metadata(self.0.join(format!("tf2_misc_{index:03}.vpk")))
+                .map(|metadata| metadata.len())
+                .map_err(|_| playsrc_vpk::SourceError {
+                    code: playsrc_vpk::SourceErrorCode::Missing,
+                    range: 0..0,
+                })
+        }
+        fn read(
+            &self,
+            index: u32,
+            range: std::ops::Range<u64>,
+        ) -> Result<Vec<u8>, playsrc_vpk::SourceError> {
+            use std::io::{Read, Seek};
+            let mut file = fs::File::open(self.0.join(format!("tf2_misc_{index:03}.vpk")))
+                .map_err(|_| playsrc_vpk::SourceError {
+                    code: playsrc_vpk::SourceErrorCode::Missing,
+                    range: range.clone(),
+                })?;
+            file.seek(std::io::SeekFrom::Start(range.start))
+                .map_err(|_| playsrc_vpk::SourceError {
+                    code: playsrc_vpk::SourceErrorCode::Io,
+                    range: range.clone(),
+                })?;
+            let mut bytes = vec![0; (range.end - range.start) as usize];
+            file.read_exact(&mut bytes)
+                .map_err(|_| playsrc_vpk::SourceError {
+                    code: playsrc_vpk::SourceErrorCode::ShortRead,
+                    range,
+                })?;
+            Ok(bytes)
+        }
+    }
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(4)
+        .unwrap()
+        .to_owned();
+    let local = fs::read_to_string(root.join("playsrc.local.json")).unwrap();
+    let tf2 = PathBuf::from(json_string_field(&local, "tf2Dir"));
+    let index = fs::read(tf2.join("tf2_misc_dir.vpk")).unwrap();
+    let archive = playsrc_vpk::parse(
+        &index,
+        "tf2_misc_dir.vpk",
+        playsrc_vpk::Layout::Split,
+        playsrc_vpk::Limits::default(),
+    )
+    .unwrap();
+    let segments = ConfiguredSegments(tf2);
+    let paths = ["particles/flamethrower.pcf", "particles/muzzle_flash.pcf"];
+    let bytes = paths.map(|path| archive.read_entry(path, &segments).unwrap().bytes);
+    let sources = [
+        PcfSource {
+            logical_path: paths[0],
+            bytes: &bytes[0],
+        },
+        PcfSource {
+            logical_path: paths[1],
+            bytes: &bytes[1],
+        },
+    ];
+    let registry = Registry::from_pcf(&sources, RegistryLimits::default()).unwrap();
+    for (root, definitions, materials) in [
+        ("new_flame", 5, 4),
+        ("new_flame_crit_red", 6, 5),
+        ("new_flame_crit_blue", 6, 5),
+        ("pyro_blast", 5, 4),
+        ("muzzle_shotgun", 4, 3),
+    ] {
+        let closure = registry
+            .target_closure(&[DefinitionLookup::Name(root)])
+            .unwrap();
+        assert_eq!(
+            (closure.definitions.len(), closure.materials.len()),
+            (definitions, materials)
+        );
+        let mut world = ParticleWorld::new(&registry, WorldLimits::default()).unwrap();
+        let control = |index, position, duration| ControlPoint {
+            index,
+            position,
+            previous_position: position,
+            orientation: [0.0, 0.0, 0.0, 1.0],
+            velocity: [200.0, 0.0, 0.0],
+            radius: 12.0,
+            density: 1.0,
+            duration,
+            parent: None,
+            object_identity: Some(1),
+        };
+        let event = Event {
+            identity: 1,
+            timestamp_seconds: 0.0,
+            source_order: 0,
+            command: EventCommand::Create {
+                effect_identity: 1,
+                definition: root.into(),
+                seed: 42,
+                owner_identity: Some(1),
+                control_points: vec![control(0, [0.0; 3], 0.0), control(1, [20.0, 0.0, 0.0], 0.6)],
+            },
+        };
+        let (items, _) = world
+            .advance(
+                &[event],
+                AdvanceRequest {
+                    from_seconds: 0.0,
+                    to_seconds: 0.06,
+                    maximum_step_seconds: 0.015,
+                    camera_position: [-10.0, 0.0, 0.0],
+                },
+                &mut NoHit,
+            )
+            .unwrap();
+        assert!(!items.is_empty(), "{root} emitted no authored particles");
+        assert!(
+            items
+                .iter()
+                .all(|item| item.position.iter().all(|value| value.is_finite()))
+        );
     }
 }

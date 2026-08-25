@@ -66,6 +66,7 @@ describe("TF2 incremental application publication", () => {
       "data-fire-events": "0",
       "data-explosion-events": "0",
       "data-particle-items": "0",
+      "data-flame-points": "0",
       "data-projectiles": "0",
       "data-environment-drawables": "0",
       "data-blockers": "[]",

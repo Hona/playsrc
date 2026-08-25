@@ -5,7 +5,7 @@ const MOVEMENT_BYTES = 96
 
 export type Tf2Class = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
 export type Tf2Team = 0 | 1 | 2 | 3
-export type Tf2Weapon = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 40 | 41 | 42
+export type Tf2Weapon = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 40 | 41 | 42
 export type MovementMode = 0 | 1
 export type ProjectileKind = 1 | 2
 export type ProjectileState = 1 | 2 | 3
@@ -41,20 +41,20 @@ export type Tf2RandomState = Readonly<{
 
   shovelHitWorldAvailable: number
   shovelHitFleshAvailable: number
-  fistMissAvailable: number
+fistMissAvailable: number
   fistHitWorldAvailable: number
   fistHitFleshAvailable: number
   kukriHitFleshAvailable: number
   kukriHitWorldAvailable: number
   wrenchHitFleshAvailable: number
 
+  fireAxeHitWorldAvailable: number
+  fireAxeHitFleshAvailable: number
 }>
 export type RandomDraw = Readonly<{
   context: 1 | 2
   decision: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8
-
-  definition: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36
-
+  definition: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43
   phase: 0 | 1 | 2
   raw: number
   result: Readonly<{ kind: "float-bits"; bits: number } | { kind: "integer"; value: number } | { kind: "rejected-integer" }>
@@ -63,9 +63,7 @@ export type AudioEvent = Readonly<{
   tick: bigint
   ordinal: number
   identity: 1 | 2
-
-  definition: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36
-
+  definition: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43
   sourceKind: 1 | 2
   sourceIdentity: number
   ownerIdentity: number | null
@@ -179,7 +177,25 @@ export type WeaponState = Readonly<{
   chargedDamage: number
 }>
 
-export type WeaponActivity = 1 | 2 | 3 | 4 | 5 | 6
+export type FlamePoint = Readonly<{
+  slot: number
+  wallsHit: number
+  spawnTick: bigint
+  spawnTime: number
+  lifetime: number
+  initialPosition: readonly [number, number, number]
+  previousPosition: readonly [number, number, number]
+  position: readonly [number, number, number]
+  velocity: readonly [number, number, number]
+  attackerVelocity: readonly [number, number, number]
+}>
+export type ShotgunPellet = Readonly<{
+  index: number
+  direction: readonly [number, number, number]
+  damage: number
+  range: number
+}>
+export type WeaponActivity = 1 | 2 | 3 | 4 | 5 | 6 | 7
 export type ActivityEvent = Readonly<{ tick: bigint; weapon: Tf2Weapon; activity: WeaponActivity }>
 export type LifecycleEvent = Readonly<{ tick: bigint; kind: 1 | 2 | 3 | 4; class: Tf2Class; team: Tf2Team }>
 export type ProjectilePhysicsRequest = Readonly<{
@@ -415,6 +431,9 @@ export type Snapshot = Readonly<{
   grounded: boolean
   crouched: boolean
   loadout: readonly WeaponState[]
+  flamePoints: readonly FlamePoint[]
+  shotgunPellets: readonly ShotgunPellet[]
+  flameFiring: boolean
   projectiles: readonly Projectile[]
   projectileEvents: readonly ProjectileEvent[]
   projectileTimeline: readonly ProjectileTimelineTick[]
@@ -521,7 +540,7 @@ export function encodeCommand(command: Command): ArrayBuffer {
     throw new Tf2CodecError("command team selector is invalid")
   }
 
-  if (command.selectWeapon !== undefined && (!Number.isInteger(command.selectWeapon) || command.selectWeapon < 1 || command.selectWeapon > 14 && (command.selectWeapon < 40 || command.selectWeapon > 42))) {
+  if (command.selectWeapon !== undefined && (!Number.isInteger(command.selectWeapon) || command.selectWeapon < 1 || command.selectWeapon > 16 && (command.selectWeapon < 40 || command.selectWeapon > 42))) {
 
     throw new Tf2CodecError("command weapon selector is invalid")
   }
@@ -930,19 +949,19 @@ function decodeRandomState(bytes: ArrayBuffer, offset: number, length: number): 
     if (!initialized && !uninitialized) throw new Tf2CodecError("TF2 random stream state is invalid")
     return Object.freeze({ current, shuffled, table })
   }
-
-  const authority = stream(), predictedPresentation = stream(), rocketExplosionAvailable = data[at]!, stickyExplosionAvailable = data[at + 1]!
+  const authority = stream(), predictedPresentation = stream(), rocketSelections = data[at]!, stickySelections = data[at + 1]!
   const batHitWorldAvailable = data[at + 2]!, shovelSelections = data[at + 3]!
   const fistMissAvailable = data[at + 4]!, fistHitWorldAvailable = data[at + 5]!, fistHitFleshAvailable = data[at + 6]!, kukriSelections = data[at + 7]!
-  if ((rocketExplosionAvailable & ~7) !== 0 || (stickyExplosionAvailable & ~7) !== 0 || (batHitWorldAvailable & ~3) !== 0 ||
+  if ((rocketSelections & ~31) !== 0 || (stickySelections & ~63) !== 0 || (batHitWorldAvailable & ~3) !== 0 ||
     (shovelSelections & ~31) !== 0 || (fistMissAvailable & ~3) !== 0 || (fistHitWorldAvailable & ~3) !== 0 ||
     (fistHitFleshAvailable & ~7) !== 0) {
     throw new Tf2CodecError("TF2 sound selection state is invalid")
   }
-  return Object.freeze({ authority, predictedPresentation, rocketExplosionAvailable, stickyExplosionAvailable, batHitWorldAvailable,
+  return Object.freeze({ authority, predictedPresentation, rocketExplosionAvailable:rocketSelections&7, stickyExplosionAvailable:stickySelections&7, batHitWorldAvailable,
     shovelHitWorldAvailable: shovelSelections & 3, shovelHitFleshAvailable: shovelSelections >> 2,
     fistMissAvailable, fistHitWorldAvailable, fistHitFleshAvailable,
-    kukriHitFleshAvailable: kukriSelections & 7, kukriHitWorldAvailable: (kukriSelections >> 3) & 3, wrenchHitFleshAvailable: kukriSelections >> 5 })
+    kukriHitFleshAvailable: kukriSelections & 7, kukriHitWorldAvailable: kukriSelections >> 3,
+    fireAxeHitWorldAvailable:rocketSelections>>3,fireAxeHitFleshAvailable:stickySelections>>3 })
 
 }
 
@@ -958,7 +977,7 @@ function decodeCollisionSnapshot(bytes: ArrayBuffer, offset: number, length: num
 }
 
 export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
-  if (bytes.byteLength < 172 || bytes.byteLength > MAX_SNAPSHOT_BYTES) {
+  if (bytes.byteLength < 184 || bytes.byteLength > MAX_SNAPSHOT_BYTES) {
     throw new Tf2CodecError("snapshot byte length is invalid")
   }
   const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
@@ -974,7 +993,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
   if (
     (tf2Class === undefined || tf2Class < 1 || tf2Class > 9) ||
     (team === undefined || team > 3) ||
-    (weapon === undefined || weapon > 14 && (weapon < 40 || weapon > 42)) ||
+    (weapon === undefined || weapon > 16 && (weapon < 40 || weapon > 42)) ||
     (team === 0 && lifecycle !== 3) ||
     (team === 1 && lifecycle !== 4) ||
     ((team === 2 || team === 3) && lifecycle !== 1 && lifecycle !== 2) ||
@@ -1015,14 +1034,17 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
   const randomStateLength = view.getUint32(148, true)
   const entityPresentationLength=view.getUint32(152,true),movementTickLength=view.getUint32(156,true)
   const playerFlags=view.getUint32(160,true),waterType=view.getUint32(164,true)
-  if (entityPresentationLength<52||movementTickLength<12||168 + movementLength > bytes.byteLength||waterType&~0x30) {
+  const flamePointCount=count(view.getUint32(168,true),"flame point")
+  const shotgunPelletCount=count(view.getUint32(172,true),"shotgun pellet")
+  const flameFlags=view.getUint32(176,true)
+  if (entityPresentationLength<52||movementTickLength<12||180 + movementLength > bytes.byteLength||waterType&~0x30||flameFlags>1||flamePointCount>30||shotgunPelletCount>10) {
     throw new Tf2CodecError("snapshot extension header is invalid")
   }
-  const movement = movementSnapshot(buffer, base + 168, movementLength, waterType)
+  const movement = movementSnapshot(buffer, base + 180, movementLength, waterType)
   if (movement.mode !== data[19]||movement.waterLevel>3||(movement.waterLevel===0)!==(waterType===0)) {
     throw new Tf2CodecError("Movement mode or water projection differs")
   }
-  let at = 168 + movementLength
+  let at = 180 + movementLength
   const requireBytes = (length: number, label: string): void => {
     if (!Number.isSafeInteger(at + length) || at + length > bytes.byteLength) {
       throw new Tf2CodecError(`${label} records exceed snapshot bytes`)
@@ -1039,7 +1061,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
       itemWeapon === undefined ||
       itemWeapon < 1 ||
 
-      (itemWeapon > 14 && (itemWeapon < 40 || itemWeapon > 42)) ||
+      (itemWeapon > 16 && (itemWeapon < 40 || itemWeapon > 42)) ||
 
       reload === undefined ||
       reload > 3 ||
@@ -1069,6 +1091,29 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     throw new Tf2CodecError("snapshot active weapon does not match its loadout")
   }
   at += loadoutCount * 48
+
+  requireBytes(flamePointCount * 80, "flame point")
+  const flamePoints: FlamePoint[] = []
+  for(let index=0;index<flamePointCount;index+=1){
+    const item=at+index*80,slot=data[item]!,wallsHit=data[item+1]!
+    if(slot>=30||data[item+2]!==0||data[item+3]!==0)throw new Tf2CodecError("flame point record is invalid")
+    const vector=(offset:number)=>Object.freeze([view.getFloat32(item+offset,true),view.getFloat32(item+offset+4,true),view.getFloat32(item+offset+8,true)]) as readonly[number,number,number]
+    const spawnTime=view.getFloat32(item+12,true),lifetime=view.getFloat32(item+16,true),initialPosition=vector(20),previousPosition=vector(32),position=vector(44),velocity=vector(56),attackerVelocity=vector(68)
+    if(!finite([spawnTime,lifetime,...initialPosition,...previousPosition,...position,...velocity,...attackerVelocity])||lifetime<=0)throw new Tf2CodecError("flame point record is invalid")
+    flamePoints.push(Object.freeze({slot,wallsHit,spawnTick:view.getBigUint64(item+4,true),spawnTime,lifetime,initialPosition,previousPosition,position,velocity,attackerVelocity}))
+  }
+  at+=flamePointCount*80
+  requireBytes(shotgunPelletCount*24,"shotgun pellet")
+  const shotgunPellets:ShotgunPellet[]=[]
+  for(let index=0;index<shotgunPelletCount;index+=1){
+    const item=at+index*24,pellet=data[item]!
+    if(pellet>=10||data[item+1]!==0||data[item+2]!==0||data[item+3]!==0)throw new Tf2CodecError("shotgun pellet record is invalid")
+    const direction=Object.freeze([view.getFloat32(item+4,true),view.getFloat32(item+8,true),view.getFloat32(item+12,true)]) as readonly[number,number,number]
+    const damage=view.getFloat32(item+16,true),range=view.getFloat32(item+20,true)
+    if(!finite([...direction,damage,range])||damage<=0||range<=0)throw new Tf2CodecError("shotgun pellet record is invalid")
+    shotgunPellets.push(Object.freeze({index:pellet,direction,damage,range}))
+  }
+  at+=shotgunPelletCount*24
 
   requireBytes(projectileCount * 84, "projectile")
   const projectiles: Projectile[] = []
@@ -1268,7 +1313,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     const itemWeapon = data[item + 8]
     const activity = data[item + 9]
 
-    if (itemWeapon === undefined || itemWeapon < 1 || itemWeapon > 14 && (itemWeapon < 40 || itemWeapon > 42) || activity === undefined || activity < 1 || activity > 6 ||
+    if (itemWeapon === undefined || itemWeapon < 1 || itemWeapon > 16 && (itemWeapon < 40 || itemWeapon > 42) || activity === undefined || activity < 1 || activity > 7 ||
 
       !data.subarray(item + 10, item + 16).every((value) => value === 0)) {
       throw new Tf2CodecError("activity record is invalid")
@@ -1437,7 +1482,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     if (
       (context !== 1 && context !== 2) || decision === undefined || decision < 1 || decision > 8 ||
 
-      (soundDecision ? definition === undefined || definition < 1 || definition > 36 || (phase !== 1 && phase !== 2) : definition !== 0 || phase !== 0 || context !== 1) ||
+      (soundDecision ? definition === undefined || definition < 1 || definition > 43 || (phase !== 1 && phase !== 2) : definition !== 0 || phase !== 0 || context !== 1) ||
 
       raw <= 0 || raw >= 2_147_483_647 || resultKind === undefined || resultKind < 1 || resultKind > 3 ||
       data[item + 9] !== 0 || data[item + 10] !== 0 || data[item + 11] !== 0 ||
@@ -1464,7 +1509,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     const expectedOrdinal = nextOrdinal.get(tick) ?? 0, waveCount = definition === 4 || definition === 6 || definition === 17 || definition === 25 || definition === 29 || definition === 35 ? 3 : definition === 11 || definition === 18 || definition === 23 || definition === 24 || definition === 30 ? 2 : 1
     if (
 
-      (identity !== 1 && identity !== 2) || definition === undefined || definition < 1 || definition > 36 ||
+      (identity !== 1 && identity !== 2) || definition === undefined || definition < 1 || definition > 43 ||
 
       (sourceKind !== 1 && sourceKind !== 2) || (hasOwner !== 0 && hasOwner !== 1) || data[item + 15] !== 0 ||
       ordinal !== expectedOrdinal || !canonicalIdentity(sourceIdentity) ||
@@ -1589,6 +1634,9 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     grounded: movement.grounded,
     crouched: movement.crouchPhase >= 2,
     loadout: Object.freeze(loadout),
+    flamePoints: Object.freeze(flamePoints),
+    shotgunPellets: Object.freeze(shotgunPellets),
+    flameFiring: flameFlags === 1,
     projectiles: frozenProjectiles,
     projectileEvents: frozenProjectileEvents,
     projectileTimeline: Object.freeze([

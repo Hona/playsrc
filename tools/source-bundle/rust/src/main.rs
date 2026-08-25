@@ -2487,6 +2487,9 @@ fn main() -> Result<(), String> {
         "models/vgui/ui_team01_red.mdl",
         "models/vgui/ui_team01_random.mdl",
         "models/vgui/ui_team01_spectate.mdl",
+        "models/weapons/c_models/c_pyro_arms.mdl",
+        "models/weapons/c_models/c_flamethrower/c_flamethrower.mdl",
+        "models/weapons/c_models/c_fireaxe_pyro/c_fireaxe_pyro.mdl",
     ] {
         model_paths.insert(path.to_owned());
     }
@@ -2670,6 +2673,7 @@ fn main() -> Result<(), String> {
         "particles/stickybomb.pcf",
         "particles/muzzle_flash.pcf",
         "particles/explosion.pcf",
+        "particles/flamethrower.pcf",
     ];
     let particle_bytes = particle_paths
         .iter()
@@ -2704,6 +2708,12 @@ fn main() -> Result<(), String> {
         "muzzle_shotgun",
         "ExplosionCore_Wall",
         "ExplosionCore_MidAir",
+        "new_flame",
+        "new_flame_crit_red",
+        "new_flame_crit_blue",
+        "flamethrower_underwater",
+        "pyro_blast",
+        "muzzle_shotgun",
     ]
     .map(playsrc_particle::DefinitionLookup::Name);
     let closure = registry
@@ -2759,6 +2769,11 @@ fn main() -> Result<(), String> {
         "sound/weapons/shotgun_shoot.wav",
         "sound/weapons/shotgun_worldreload.wav",
         "sound/weapons/shovel_swing.wav",
+        "sound/weapons/flame_thrower_start.wav",
+        "sound/weapons/flame_thrower_loop.wav",
+        "sound/weapons/flame_thrower_end.wav",
+        "sound/weapons/flame_thrower_pilot.wav",
+        "sound/weapons/flame_thrower_airblast.wav",
         "sound/weapons/axe_hit_flesh1.wav",
         "sound/weapons/axe_hit_flesh2.wav",
         "sound/weapons/axe_hit_flesh3.wav",

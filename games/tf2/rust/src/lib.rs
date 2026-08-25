@@ -9,6 +9,7 @@ pub mod damage;
 pub mod health;
 mod map_runtime;
 pub mod pickup;
+pub mod pyro;
 pub mod random;
 pub mod schema;
 pub mod state;
@@ -192,6 +193,8 @@ pub enum Weapon {
     EngineerShotgun = 40,
     EngineerPistol = 41,
     Wrench = 42,
+    Flamethrower = 15,
+    FireAxe = 16,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -647,6 +650,9 @@ pub struct ProducerSnapshot {
     pub maximum_health: i32,
     pub conditions: [u32; 5],
     pub weapons: Vec<WeaponRuntime>,
+    pub flame_points: Vec<pyro::FlamePoint>,
+    pub shotgun_pellets: Vec<pyro::ShotgunPellet>,
+    pub flame_firing: bool,
     pub projectiles: Vec<Projectile>,
     pub activities: Vec<ActivityEvent>,
     pub lifecycle_events: Vec<LifecycleEvent>,
@@ -701,6 +707,9 @@ pub struct Session<W: GameplayWorld + Clone> {
     fire_on_empty: bool,
     previous_hitscan_ticks: BTreeMap<Weapon, u64>,
     pending_melee_tick: Option<u64>,
+    flames: pyro::FlameManager,
+    next_airblast_tick: u64,
+    shotgun_pellets: Vec<pyro::ShotgunPellet>,
     authority_random: UniformRandomStream,
     predicted_presentation_random: UniformRandomStream,
     sound_selection: SoundSelection,
@@ -849,6 +858,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
             fire_on_empty: false,
             previous_hitscan_ticks: BTreeMap::new(),
             pending_melee_tick: None,
+            flames: pyro::FlameManager::default(),
+            next_airblast_tick: 0,
+            shotgun_pellets: Vec::with_capacity(pyro::SHOTGUN_PELLETS),
             authority_random,
             predicted_presentation_random,
             sound_selection: SoundSelection::new(),
@@ -1139,6 +1151,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
             maximum_health: self.maximum_health(),
             conditions: self.conditions.words(),
             weapons: self.loadout.values().copied().collect(),
+            flame_points: self.flames.points().to_vec(),
+            shotgun_pellets: self.shotgun_pellets.clone(),
+            flame_firing: self.weapon == Some(Weapon::Flamethrower) && self.fire_was_held,
             projectiles: self
                 .projectiles
                 .iter()
@@ -1299,6 +1314,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         let expected_rocket_results = self.rocket_trace_requests.clone();
         self.random_draws.clear();
         self.audio_events.clear();
+        self.shotgun_pellets.clear();
         self.physics_requests.clear();
         self.activity_events.clear();
         self.lifecycle_events.clear();
@@ -1485,7 +1501,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
         {
             let released_primary = !command.fire && self.fire_was_held;
             let previous_minigun_state = self.loadout[&active_weapon].minigun_state;
-            let primary = {
+            let primary = if active_weapon == Weapon::Flamethrower {
+                self.advance_flamethrower(command, &mut ammo_events, &mut events)?;
+                PrimaryResult::None
+            } else {
                 let state = self
                     .loadout
                     .get_mut(&active_weapon)
@@ -1537,7 +1556,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     map_phase.append(phase);
                 } else if matches!(
                     active_weapon,
-                    Weapon::Bat | Weapon::Shovel | Weapon::Kukri | Weapon::Wrench
+                    Weapon::Bat | Weapon::Shovel | Weapon::Kukri | Weapon::Wrench | Weapon::FireAxe
                 ) {
                     self.swing_melee(active_weapon);
                 } else if active_weapon == Weapon::Fists {
@@ -1568,7 +1587,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
 
                 if matches!(
                     active_weapon,
-                    Weapon::Bat | Weapon::Shovel | Weapon::Kukri | Weapon::Wrench
+                    Weapon::Bat | Weapon::Shovel | Weapon::Kukri | Weapon::Wrench | Weapon::FireAxe
                 ) {
                     self.resolve_melee(
                         active_weapon,
@@ -1652,7 +1671,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
             if let Some(definition) = reload_sound {
                 self.emit_weapon_sound(definition, self.movement.position);
             }
-            self.fire_was_held = command.fire;
+            self.fire_was_held = command.fire
+                && (active_weapon != Weapon::Flamethrower
+                    || (self.movement.water_level != 3 && !command.detonate));
         } else {
             self.fire_was_held = false;
         }
@@ -1668,7 +1689,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
             &mut projectile_events,
             &mut events,
         )?;
-        if command.detonate && self.lifecycle == PlayerLifecycle::Active && self.health > 0 {
+        if command.detonate
+            && self.weapon != Some(Weapon::Flamethrower)
+            && self.lifecycle == PlayerLifecycle::Active
+            && self.health > 0
+        {
             self.detonate(&mut projectile_events, &mut events)?;
         }
 
@@ -1903,7 +1928,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 previous.abort_reload();
                 if matches!(
                     active_weapon,
-                    Weapon::Bat | Weapon::Shovel | Weapon::Kukri | Weapon::Wrench
+                    Weapon::Bat | Weapon::Shovel | Weapon::Kukri | Weapon::Wrench | Weapon::FireAxe
                 ) {
                     self.pending_melee_tick = None;
                 }
@@ -2550,6 +2575,288 @@ impl<W: GameplayWorld + Clone> Session<W> {
         Ok(())
     }
 
+    fn bot_intersection(
+        &self,
+        start: [f32; 3],
+        end: [f32; 3],
+        radius: f32,
+        maximum_fraction: f32,
+        enemies_only: bool,
+    ) -> Option<(bot::CombatTarget, f32, [f32; 3])> {
+        let bots = self.bots.as_ref()?;
+        bots.combat_targets()
+            .filter(|target| !enemies_only || target.team != self.team_selection.local_team())
+            .filter_map(|target| {
+                let mins = [
+                    target.position[0] - 24.0 - radius,
+                    target.position[1] - 24.0 - radius,
+                    target.position[2] - radius,
+                ];
+                let maxs = [
+                    target.position[0] + 24.0 + radius,
+                    target.position[1] + 24.0 + radius,
+                    target.position[2] + 82.0 + radius,
+                ];
+                let fraction = ray_box_fraction(start, end, mins, maxs)?;
+                (fraction <= maximum_fraction).then_some((
+                    target,
+                    fraction,
+                    add(start, scale(sub(end, start), fraction)),
+                ))
+            })
+            .min_by(|left, right| {
+                left.1
+                    .total_cmp(&right.1)
+                    .then_with(|| left.0.identity.cmp(&right.0.identity))
+            })
+    }
+
+    fn advance_flamethrower(
+        &mut self,
+        command: Command,
+        ammo_events: &mut Vec<weapon::AmmoEvent>,
+        events: &mut Vec<Event>,
+    ) -> Result<(), Error> {
+        let interval = self.movement_configuration.tick_interval;
+        let now = self.tick as f32 * interval;
+        if command.detonate
+            && self.movement.water_level != 3
+            && self.tick >= self.next_airblast_tick
+        {
+            let state = self
+                .loadout
+                .get_mut(&Weapon::Flamethrower)
+                .expect("Pyro has the stock Flamethrower");
+            if state.reserve >= pyro::AIRBLAST_AMMO {
+                state.reserve -= pyro::AIRBLAST_AMMO;
+                state.next_primary_tick =
+                    self.tick + weapon::delay_ticks(pyro::AIRBLAST_PRIMARY_DELAY, interval);
+                self.next_airblast_tick =
+                    self.tick + weapon::delay_ticks(pyro::AIRBLAST_SECONDARY_DELAY, interval);
+                self.activity_events.push(ActivityEvent {
+                    tick: self.tick,
+                    weapon: Weapon::Flamethrower,
+                    activity: weapon::WeaponActivity::SecondaryAttack,
+                });
+                ammo_events.push(weapon::AmmoEvent {
+                    tick: self.tick,
+                    weapon: Weapon::Flamethrower,
+                    clip: 0,
+                    reserve: state.reserve,
+                });
+                self.emit_weapon_sound(SoundDefinition::FlameAirblast, self.movement.position);
+                let (forward, _, _) =
+                    angle_vectors(command.pitch_degrees, command.movement.yaw_degrees, 0.0);
+                let eye = add(self.movement.position, self.movement.view_offset);
+                let aim = self
+                    .collision
+                    .trace(
+                        eye,
+                        add(eye, scale(forward, 1.732_050_8 * 32_768.0)),
+                        Hull {
+                            mins: [0.0; 3],
+                            maxs: [0.0; 3],
+                        },
+                        MASK_SOLID,
+                    )?
+                    .end;
+                let player_team = self.team_selection.local_team();
+                for projectile in &mut self.projectiles {
+                    let delta = sub(projectile.presentation.position, eye);
+                    let distance = length(delta);
+                    if projectile.presentation.team == player_team
+                        || distance <= 0.0
+                        || distance > pyro::AIRBLAST_RADIUS * 2.0
+                        || delta
+                            .iter()
+                            .zip(forward)
+                            .map(|(component, axis)| component * axis)
+                            .sum::<f32>()
+                            / distance
+                            < pyro::AIRBLAST_CONE_DEGREES.to_radians().cos()
+                    {
+                        continue;
+                    }
+                    let target = sub(aim, projectile.presentation.position);
+                    let target_length = length(target);
+                    if target_length == 0.0 {
+                        continue;
+                    }
+                    let direction = scale(target, 1.0 / target_length);
+                    let speed = length(projectile.presentation.velocity);
+                    projectile.presentation.velocity = scale(direction, speed);
+                    projectile.presentation.orientation = quaternion_from_direction(direction);
+                    projectile.presentation.team = player_team;
+                    projectile.presentation.owner_identity = PLAYER_IDENTITY;
+                    projectile.presentation.launcher_identity = Weapon::Flamethrower as u32;
+                    projectile.presentation.contact_normal = None;
+                    projectile.motion_enabled = true;
+                    projectile.direct_target = None;
+                }
+                let targets: Vec<_> = self.bots.as_ref().map_or_else(Vec::new, |bots| {
+                    bots.combat_targets()
+                        .filter(|target| {
+                            let center = add(target.position, [0.0, 0.0, 41.0]);
+                            let delta = sub(center, eye);
+                            let distance = length(delta);
+                            distance <= pyro::AIRBLAST_RADIUS * 2.0
+                                && distance > 0.0
+                                && delta
+                                    .iter()
+                                    .zip(forward)
+                                    .map(|(component, axis)| component * axis)
+                                    .sum::<f32>()
+                                    / distance
+                                    >= pyro::AIRBLAST_CONE_DEGREES.to_radians().cos()
+                        })
+                        .collect()
+                });
+                let maximum_health = self.maximum_health();
+                if let Some(bots) = self.bots.as_mut() {
+                    for target in targets {
+                        if target.team == self.team_selection.local_team() {
+                            if bots.extinguish(target.identity) {
+                                self.health = (self.health + 20).min(maximum_health);
+                            }
+                        } else {
+                            let impulse = pyro::airblast_impulse(
+                                forward,
+                                target.velocity,
+                                Some([0.0, 0.0, 1.0]),
+                            );
+                            bots.apply_impulse(target.identity, impulse);
+                        }
+                    }
+                }
+            }
+        } else if command.fire && self.movement.water_level != 3 {
+            let state = self
+                .loadout
+                .get_mut(&Weapon::Flamethrower)
+                .expect("Pyro has the stock Flamethrower");
+            if state.reserve > 0 && self.tick >= state.next_primary_tick {
+                let (forward, right, up) =
+                    angle_vectors(command.pitch_degrees, command.movement.yaw_degrees, 0.0);
+                let eye = add(self.movement.position, self.movement.view_offset);
+                let origin = add(add(eye, scale(forward, 40.0)), scale(right, 5.0));
+                let muzzle = self.collision.trace(
+                    eye,
+                    origin,
+                    Hull {
+                        mins: [0.0; 3],
+                        maxs: [0.0; 3],
+                    },
+                    MASK_SOLID,
+                )?;
+                if muzzle.fraction == 1.0 {
+                    let began_firing = !self.fire_was_held || self.flames.points().is_empty();
+                    self.flames.add_authored_point(
+                        pyro::FlameSpawn {
+                            tick: self.tick,
+                            now,
+                            position: origin,
+                            forward,
+                            right,
+                            up,
+                            attacker_velocity: self.movement.velocity,
+                        },
+                        &mut self.authority_random,
+                    )?;
+                    let consumed = self.flames.consume_primary_ammo(&mut state.reserve);
+                    state.next_primary_tick =
+                        self.tick + weapon::delay_ticks(pyro::FLAME_FIRE_DELAY, interval);
+                    if began_firing {
+                        self.activity_events.push(ActivityEvent {
+                            tick: self.tick,
+                            weapon: Weapon::Flamethrower,
+                            activity: weapon::WeaponActivity::PrimaryAttack,
+                        });
+                    }
+                    if consumed > 0 {
+                        ammo_events.push(weapon::AmmoEvent {
+                            tick: self.tick,
+                            weapon: Weapon::Flamethrower,
+                            clip: 0,
+                            reserve: state.reserve,
+                        });
+                    }
+                    if began_firing {
+                        self.emit_weapon_sound(SoundDefinition::FlameFire, self.movement.position);
+                    }
+                }
+            }
+        } else if self.fire_was_held {
+            self.emit_weapon_sound(SoundDefinition::FlameEnd, self.movement.position);
+        }
+        let world = &self.collision;
+        self.flames.advance(
+            now,
+            interval,
+            |point, destination| {
+                let radius = pyro::FlameConfiguration::STOCK.radius;
+                let trace = world.trace(
+                    point.position,
+                    destination,
+                    Hull {
+                        mins: [-radius; 3],
+                        maxs: [radius; 3],
+                    },
+                    MASK_SOLID,
+                )?;
+                Ok::<_, MoveError>(if trace.start_solid || trace.fraction < 1.0 {
+                    Some(pyro::FlameWorldContact {
+                        fraction: trace.fraction,
+                        start_solid: trace.start_solid,
+                        end: trace.end,
+                        normal: trace.normal.unwrap_or([0.0, 0.0, 1.0]),
+                    })
+                } else {
+                    None
+                })
+            },
+            |position| Ok::<_, MoveError>(world.point_contents(position)? & 0x30 != 0),
+        )?;
+        let contacts: Vec<_> = self
+            .flames
+            .points()
+            .iter()
+            .filter_map(|point| {
+                self.bot_intersection(
+                    point.previous_position,
+                    point.position,
+                    pyro::FlameConfiguration::STOCK.radius,
+                    1.0,
+                    true,
+                )
+                .map(|(target, _, position)| {
+                    let elapsed = (now - point.spawn_time).max(0.0);
+                    let fraction = (elapsed / (point.lifetime * 0.5)).clamp(0.0, 1.0);
+                    (
+                        target.identity,
+                        position,
+                        (pyro::FLAME_DAMAGE * (1.0 - fraction * 0.5)).max(1.0),
+                    )
+                })
+            })
+            .collect();
+        if let Some(bots) = self.bots.as_mut() {
+            for (target, position, damage) in contacts {
+                if bots.apply_flame_contact(target, PLAYER_IDENTITY, now, damage) {
+                    events.push(Event::HitscanImpact {
+                        weapon: Weapon::Flamethrower,
+                        target: Some(target),
+                        pellet: 0,
+                        position,
+                        damage,
+                        hitgroup: 0,
+                        critical: false,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn fire_hitscan(
         &mut self,
         weapon: Weapon,
@@ -2598,6 +2905,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
         });
         let (forward, right, up) = angle_vectors(pitch, yaw, 0.0);
         let origin = add(self.movement.position, self.movement.view_offset);
+        if weapon == Weapon::Shotgun {
+            self.shotgun_pellets.clear();
+        }
         events.push(Event::HitscanFired {
             weapon,
             pellets: profile.pellets,
@@ -2606,6 +2916,14 @@ impl<W: GameplayWorld + Clone> Session<W> {
         for pellet in 0..profile.pellets {
             let direction =
                 profile.pellet_direction(self.tick as u32, pellet, elapsed, forward, right, up);
+            if weapon == Weapon::Shotgun {
+                self.shotgun_pellets.push(pyro::ShotgunPellet {
+                    index: pellet,
+                    direction,
+                    damage: profile.damage,
+                    range: profile.range,
+                });
+            }
             let end = add(origin, scale(direction, profile.range));
             let impact = self.collision.trace(
                 origin,
@@ -2755,6 +3073,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             Weapon::Shovel => SoundDefinition::ShovelMiss,
             Weapon::Kukri => SoundDefinition::KukriMiss,
             Weapon::Wrench => SoundDefinition::WrenchMiss,
+            Weapon::FireAxe => SoundDefinition::FireAxeMiss,
             _ => unreachable!("only melee weapons swing"),
         };
         self.emit_weapon_sound(definition, self.movement.position);
@@ -2856,6 +3175,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 (Weapon::Kukri, true) => (SoundDefinition::KukriHitFlesh, ballistics::KUKRI_DAMAGE),
                 (Weapon::Kukri, false) => {
                     (SoundDefinition::KukriHitWorld, ballistics::KUKRI_DAMAGE)
+                }
+                (Weapon::FireAxe, true) => {
+                    (SoundDefinition::FireAxeHitFlesh, pyro::FIRE_AXE_DAMAGE)
+                }
+                (Weapon::FireAxe, false) => {
+                    (SoundDefinition::FireAxeHitWorld, pyro::FIRE_AXE_DAMAGE)
                 }
                 _ => unreachable!("only melee weapons resolve swings"),
             };
@@ -3019,7 +3344,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
             | Weapon::Kukri
             | Weapon::EngineerShotgun
             | Weapon::EngineerPistol
-            | Weapon::Wrench => {
+            | Weapon::Wrench
+            | Weapon::Flamethrower
+            | Weapon::FireAxe => {
                 unreachable!("hitscan and melee weapons do not spawn projectiles")
             }
         };
@@ -3054,7 +3381,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
             | Weapon::Kukri
             | Weapon::EngineerShotgun
             | Weapon::EngineerPistol
-            | Weapon::Wrench => {
+            | Weapon::Wrench
+            | Weapon::Flamethrower
+            | Weapon::FireAxe => {
                 unreachable!("hitscan and melee weapons do not spawn projectiles")
             }
         };
@@ -3901,6 +4230,7 @@ fn default_weapon(class: PlayerClass) -> Option<Weapon> {
         PlayerClass::Demoman => Some(Weapon::StickybombLauncher),
         PlayerClass::Heavy => Some(Weapon::Minigun),
         PlayerClass::Engineer => Some(Weapon::EngineerShotgun),
+        PlayerClass::Pyro => Some(Weapon::Flamethrower),
         _ => None,
     }
 }
@@ -3924,7 +4254,6 @@ fn default_loadout(class: PlayerClass) -> BTreeMap<Weapon, WeaponRuntime> {
             (Weapon::Pistol, WeaponRuntime::full(Weapon::Pistol)),
             (Weapon::Bat, WeaponRuntime::full(Weapon::Bat)),
         ]),
-
         PlayerClass::Heavy => BTreeMap::from([
             (Weapon::Minigun, WeaponRuntime::full(Weapon::Minigun)),
             (
@@ -3952,6 +4281,14 @@ fn default_loadout(class: PlayerClass) -> BTreeMap<Weapon, WeaponRuntime> {
             ),
             (Weapon::Wrench, WeaponRuntime::full(Weapon::Wrench)),
         ]),
+        PlayerClass::Pyro => BTreeMap::from([
+            (
+                Weapon::Flamethrower,
+                WeaponRuntime::full(Weapon::Flamethrower),
+            ),
+            (Weapon::Shotgun, WeaponRuntime::full(Weapon::Shotgun)),
+            (Weapon::FireAxe, WeaponRuntime::full(Weapon::FireAxe)),
+        ]),
         _ => BTreeMap::new(),
     }
 }
@@ -3978,6 +4315,10 @@ fn allowed(class: PlayerClass, weapon: Weapon) -> bool {
             | (
                 PlayerClass::Engineer,
                 Weapon::EngineerShotgun | Weapon::EngineerPistol | Weapon::Wrench
+            )
+            | (
+                PlayerClass::Pyro,
+                Weapon::Flamethrower | Weapon::Shotgun | Weapon::FireAxe
             )
     )
 }
@@ -4130,6 +4471,28 @@ fn normalized_quaternion(value: [f32; 4]) -> [f32; 4] {
     } else {
         [0.0, 0.0, 0.0, 1.0]
     }
+}
+
+fn ray_box_fraction(start: [f32; 3], end: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> Option<f32> {
+    let mut near = 0.0_f32;
+    let mut far = 1.0_f32;
+    for axis in 0..3 {
+        let delta = end[axis] - start[axis];
+        if delta.abs() < f32::EPSILON {
+            if start[axis] < mins[axis] || start[axis] > maxs[axis] {
+                return None;
+            }
+            continue;
+        }
+        let first = (mins[axis] - start[axis]) / delta;
+        let second = (maxs[axis] - start[axis]) / delta;
+        near = near.max(first.min(second));
+        far = far.min(first.max(second));
+        if near > far {
+            return None;
+        }
+    }
+    Some(near)
 }
 
 fn add(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
@@ -5071,6 +5434,214 @@ mod tests {
     }
 
     #[test]
+    fn pyro_held_attack_plays_first_flame_sound_after_viewmodel_draw() {
+        let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.015));
+        session
+            .advance(Command {
+                select_class: Some(PlayerClass::Pyro),
+                ..Command::default()
+            })
+            .unwrap();
+        let mut fired = false;
+        for _ in 0..50 {
+            session
+                .advance(Command {
+                    fire: true,
+                    ..Command::default()
+                })
+                .unwrap();
+            if !session.flames.points().is_empty() {
+                assert!(
+                    session
+                        .audio_events()
+                        .iter()
+                        .any(|event| event.definition == SoundDefinition::FlameFire)
+                );
+                assert!(
+                    session
+                        .activity_events()
+                        .iter()
+                        .any(|event| event.activity == weapon::WeaponActivity::PrimaryAttack)
+                );
+                fired = true;
+                break;
+            }
+        }
+        assert!(fired);
+    }
+
+    #[test]
+    fn pyro_airblast_reflects_enemy_projectiles_without_touching_friendly_rockets() {
+        let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.015));
+        session
+            .advance(Command {
+                select_class: Some(PlayerClass::Pyro),
+                ..Command::default()
+            })
+            .unwrap();
+        for _ in 0..40 {
+            session.advance(Command::default()).unwrap();
+        }
+        let team = session.team_selection.local_team();
+        let opposite = if team == PlayerTeam::Red {
+            PlayerTeam::Blue
+        } else {
+            PlayerTeam::Red
+        };
+        let create = |identity, team| LiveProjectile {
+            presentation: Projectile {
+                identity,
+                kind: ProjectileKind::Rocket,
+                team,
+                owner_identity: 30,
+                launcher_identity: 1,
+                state: ProjectileState::Flying,
+                position: [80.0, 0.0, 68.0],
+                velocity: [-1_100.0, 0.0, 0.0],
+                orientation: [0.0, 0.0, 0.0, 1.0],
+                angular_velocity: [0.0; 3],
+                contact_normal: None,
+                age_seconds: 0.1,
+            },
+            armed: false,
+            creation_tick: 0,
+            arm_tick: 0,
+            next_think_tick: 0,
+            forced_detonate_tick: None,
+            motion_enabled: true,
+            direct_target: None,
+        };
+        session.projectiles.push(create(1, opposite));
+        session.projectiles.push(create(2, team));
+        session
+            .advance_flamethrower(
+                Command {
+                    detonate: true,
+                    ..Command::default()
+                },
+                &mut Vec::new(),
+                &mut Vec::new(),
+            )
+            .unwrap();
+        assert_eq!(session.projectiles[0].presentation.team, team);
+        assert_eq!(
+            session.projectiles[0].presentation.owner_identity,
+            PLAYER_IDENTITY
+        );
+        assert!((length(session.projectiles[0].presentation.velocity) - 1_100.0).abs() < 0.01);
+        assert!(session.projectiles[0].presentation.velocity[0] > 1_099.0);
+        assert_eq!(
+            session.projectiles[1].presentation.velocity,
+            [-1_100.0, 0.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn pyro_stock_weapons_preserve_flame_airblast_shotgun_and_melee_authority() {
+        let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.015));
+        session
+            .advance(Command {
+                select_class: Some(PlayerClass::Pyro),
+                ..Command::default()
+            })
+            .unwrap();
+        for _ in 0..40 {
+            session.advance(Command::default()).unwrap();
+        }
+        assert_eq!(
+            session
+                .weapon_runtime(Weapon::Flamethrower)
+                .unwrap()
+                .reserve,
+            200
+        );
+        for _ in 0..10 {
+            session
+                .advance(Command {
+                    fire: true,
+                    ..Command::default()
+                })
+                .unwrap();
+        }
+        let producer = session.producer_snapshot();
+        assert!(!producer.flame_points.is_empty());
+        assert!(producer.flame_firing);
+        let reserve = session
+            .weapon_runtime(Weapon::Flamethrower)
+            .unwrap()
+            .reserve;
+        session
+            .advance(Command {
+                detonate: true,
+                ..Command::default()
+            })
+            .unwrap();
+        assert_eq!(
+            session
+                .weapon_runtime(Weapon::Flamethrower)
+                .unwrap()
+                .reserve,
+            reserve - 20
+        );
+        assert!(
+            session
+                .activity_events()
+                .iter()
+                .any(|event| event.activity == weapon::WeaponActivity::SecondaryAttack)
+        );
+        session
+            .advance(Command {
+                select_weapon: Some(Weapon::Shotgun),
+                ..Command::default()
+            })
+            .unwrap();
+        for _ in 0..40 {
+            session.advance(Command::default()).unwrap();
+        }
+        let fired = session
+            .advance(Command {
+                fire: true,
+                ..Command::default()
+            })
+            .unwrap();
+        assert_eq!(session.producer_snapshot().shotgun_pellets.len(), 10);
+        assert!(fired.events.iter().any(|event| matches!(
+            event,
+            Event::HitscanFired {
+                weapon: Weapon::Shotgun,
+                pellets: 10
+            }
+        )));
+        assert_eq!(session.weapon_runtime(Weapon::Shotgun).unwrap().clip, 5);
+        session
+            .advance(Command {
+                select_weapon: Some(Weapon::FireAxe),
+                ..Command::default()
+            })
+            .unwrap();
+        for _ in 0..40 {
+            session.advance(Command::default()).unwrap();
+        }
+        session
+            .advance(Command {
+                fire: true,
+                ..Command::default()
+            })
+            .unwrap();
+        assert!(session.pending_melee_tick.is_some());
+        assert!(
+            session
+                .audio_events()
+                .iter()
+                .any(|event| event.definition == SoundDefinition::FireAxeMiss)
+        );
+        for _ in 0..15 {
+            session.advance(Command::default()).unwrap();
+        }
+        assert!(session.pending_melee_tick.is_none());
+    }
+
+    #[test]
     fn every_class_uses_one_script_backed_identity_spawn_and_movement_policy() {
         let spawn = [16.0, -24.0, 0.0];
         for class in PlayerClass::ALL {
@@ -5163,6 +5734,19 @@ mod tests {
                             Weapon::Wrench
                         ],
                     );
+                }
+                PlayerClass::Pyro => {
+                    assert_eq!(snapshot.weapon, Some(Weapon::Flamethrower));
+                    assert_eq!(snapshot.loadout.len(), 3);
+                    assert_eq!(
+                        (snapshot.loadout[0].clip, snapshot.loadout[0].reserve),
+                        (6, 32)
+                    );
+                    assert_eq!(
+                        (snapshot.loadout[1].clip, snapshot.loadout[1].reserve),
+                        (0, 200)
+                    );
+                    assert_eq!(snapshot.loadout[2].weapon, Weapon::FireAxe);
                 }
                 _ => {
                     assert_eq!(snapshot.weapon, None);
@@ -6368,6 +6952,8 @@ mod tests {
                 kukri_hit_flesh_available: 0b111,
                 kukri_hit_world_available: 0b11,
                 wrench_hit_flesh_available: 0b111,
+                fire_axe_hit_world_available: 0b11,
+                fire_axe_hit_flesh_available: 0b111,
             }
         );
 
@@ -6407,6 +6993,8 @@ mod tests {
                 kukri_hit_flesh_available: 0b111,
                 kukri_hit_world_available: 0b11,
                 wrench_hit_flesh_available: 0b111,
+                fire_axe_hit_world_available: 0b11,
+                fire_axe_hit_flesh_available: 0b111,
             }
         );
     }
