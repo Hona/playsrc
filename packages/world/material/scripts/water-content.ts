@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { inflateRawSync } from "node:zlib"
 import { loadLocalConfig } from "../../../../tools/playsrc/src/config"
+import { buildSourceBundle } from "../../../../tools/playsrc/src/source-bundle"
 
 type Entry = Readonly<{ logicalPath: string; offset: string; byteLength: string; sha256: string }>
 type Chunk = Readonly<{
@@ -26,6 +27,8 @@ const TARGETS = Object.freeze({
       "materials/water/water_2fort_expensive.vmt": "5f61b7786628a7e267419a7b709548102c115f2ef1f468bd3e3dc73aa6349806",
       "materials/water/water_2fort_beneath.vmt": "118cae4c43eda381491f99c0753fbc8963b35c2de787ee58194d3d7feaa028c8",
       "materials/water/tfwater001_normal.vtf": "7b5de49340bfe1ec2f1e37d771289d42773414f130767b5632ca29467494c017",
+      "materials/effects/water_warp_2fort.vmt": "6c4fda53eae46e9f728b060eba72ff3645d99da63c7362f2bcae1f411d726ff0",
+      "materials/dev/water_dudv.vtf": "36650f9065eb9420f834ba84cbf7bc19d8be2c3207d503e2df29fe351580bdd9",
     }),
     overlay: "materials/effects/water_warp_2fort.vmt",
   }),
@@ -37,8 +40,21 @@ const TARGETS = Object.freeze({
       "materials/water/tfwater001_normal.vtf": "7b5de49340bfe1ec2f1e37d771289d42773414f130767b5632ca29467494c017",
       "materials/water/dx80_tfwater001_normal.vtf": "f763f3afc234f3ad6e9468dc9a98cca0e289f67810d8b6669f4cefd61cc5aea5",
       "materials/water/water_hydro_base.vtf": "f035cc70dfd265564ed6ed33f322eef7a025ab42f616349b92ee85d514281429",
+      "materials/effects/water_warp_well.vmt": "113ea2913bb06e68178910e6fbfd217464369c41b349ea839416b1b0cdef1b50",
+      "materials/dev/water_dudv.vtf": "36650f9065eb9420f834ba84cbf7bc19d8be2c3207d503e2df29fe351580bdd9",
     }),
     overlay: "materials/effects/water_warp_well.vmt",
+  }),
+  ctf_2fort: Object.freeze({
+    files: Object.freeze({
+      "materials/maps/ctf_2fort/water/water_2fort_-294_29_-127.vmt": "df9b7163f49c59562271cc8fa8193d6b7c72f0b2a49fd3de246dfa5811231bc7",
+      "materials/water/water_2fort.vmt": "eb85fab91823f8fedd2824abbabdc16fc9419b3500472adc25388b24d010417b",
+      "materials/water/water_2fort_beneath.vmt": "118cae4c43eda381491f99c0753fbc8963b35c2de787ee58194d3d7feaa028c8",
+      "materials/water/tfwater001_normal.vtf": "7b5de49340bfe1ec2f1e37d771289d42773414f130767b5632ca29467494c017",
+      "materials/effects/water_warp_2fort.vmt": "6c4fda53eae46e9f728b060eba72ff3645d99da63c7362f2bcae1f411d726ff0",
+      "materials/dev/water_dudv.vtf": "36650f9065eb9420f834ba84cbf7bc19d8be2c3207d503e2df29fe351580bdd9",
+    }),
+    overlay: "materials/effects/water_warp_2fort.vmt",
   }),
 })
 
@@ -68,8 +84,8 @@ const reports: unknown[] = []
 const retained = new Set<string>()
 
 for (const [target, requirements] of Object.entries(TARGETS)) {
-  const graphPath = path.join(configuration.sourceCacheDir, "browser-bundles", `${target}.graph.json`)
-  const graphBytes = await readFile(graphPath)
+  const artifact = await buildSourceBundle(configuration, target)
+  const graphBytes = await readFile(artifact.graphPath)
   const graph = JSON.parse(graphBytes.toString("utf8")) as Graph
   if (graph.schema !== "playsrc-resource-graph-v1" || graph.game !== "tf2" || graph.target !== target || graph.contentBuild !== build.contentBuild) {
     throw new Error(`${target} resource graph does not match configured TF2 build ${build.contentBuild}`)
@@ -99,7 +115,7 @@ for (const [target, requirements] of Object.entries(TARGETS)) {
 
   const objects: unknown[] = []
   for (const [chunk, items] of selected) {
-    const encoded = await readFile(path.join(configuration.sourceCacheDir, "browser-bundles", `${target}.graph`, "objects", chunk.encodedSha256))
+    const encoded = await readFile(path.join(artifact.graphObjectDirectory, chunk.encodedSha256))
     if (encoded.byteLength !== bounded(chunk.encodedByteLength, MAX_CHUNK_BYTES, "encoded chunk") || digest(encoded) !== chunk.encodedSha256) {
       throw new Error(`${target} encoded chunk ${chunk.encodedSha256} failed integrity verification`)
     }
@@ -126,6 +142,8 @@ for (const [target, requirements] of Object.entries(TARGETS)) {
       objects.push(Object.freeze({ logicalPath: entry.logicalPath, byteLength: bytes.byteLength, sha256: entry.sha256 }))
     }
   }
+
+  if (!entries.has(requirements.overlay)) throw new Error(`${target} resource graph omits required underwater overlay ${requirements.overlay}`)
 
   reports.push(Object.freeze({
     target,

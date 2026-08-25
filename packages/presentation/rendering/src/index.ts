@@ -552,7 +552,7 @@ export type MaterialStateInput = Readonly<{
 }>
 export type ModelMaterialInput = Readonly<{
   identity: string
-  shader: "unlit-generic" | "vertex-lit-generic" | "eye-refract" | "eyes"
+  shader: "unlit-generic" | "unlit-two-texture" | "vertex-lit-generic" | "eye-refract" | "eyes"
   vertexRequirements: number
   bindings: readonly Readonly<{
     kind: "material" | "model"
@@ -564,7 +564,7 @@ export type ModelMaterialInput = Readonly<{
   opacity: "opaque" | "translucent"
   framebuffer: "none" | "potential" | "current"
   requiredInputs: readonly string[]
-  state: Readonly<{ kind: "unlit-generic" | "vertex-lit-generic" | "eye-refract" | "eyes" }>
+  state: Readonly<{ kind: "unlit-generic" | "unlit-two-texture" | "vertex-lit-generic" | "eye-refract" | "eyes" }>
 }>
 export type AuthoredTextureInput = Readonly<{
   logicalPath: string
@@ -1128,7 +1128,7 @@ function sourceFragmentColor(
   })()
 }
 
-function detailColor(base: any, detail: RuntimeMaterial["detail"], texture?: THREE.DataTexture): any {
+function detailColor(base: any, detail: RuntimeMaterial["detail"], texture?: THREE.Texture): any {
   if (!detail || !texture) return base
   if (detail.blendMode !== 0) throw new RenderingError("UnsupportedFeature", `detail blend mode ${detail.blendMode} is unavailable`)
   const uv = TSL.uv()
@@ -1150,7 +1150,7 @@ function worldNodeMaterial(
   identity: string,
   baseTexture: THREE.Texture | undefined,
   secondTexture: THREE.Texture | undefined,
-  detailTexture: THREE.DataTexture | undefined,
+  detailTexture: THREE.Texture | undefined,
   lightmaps: readonly [THREE.DataTexture, THREE.DataTexture?, THREE.DataTexture?, THREE.DataTexture?],
   directional: THREE.DataTexture | undefined,
   directionalKind: "normal" | "ssbump" | undefined,
@@ -1841,7 +1841,10 @@ class RendererOwner implements Renderer {
     const authoredGpu = new Map<string, THREE.Texture>()
     const modelDrawInputs = new Map((request.modelDrawInputs ?? []).map((input) => [input.entity, input] as const))
     const modelsRequiringLighting = new Set(map.models
-      .filter((model) => model.materials.some((material) => request.modelMaterials?.get(material.logicalPath.toLowerCase())?.shader !== "unlit-generic"))
+      .filter((model) => model.materials.some((material) => {
+        const shader = request.modelMaterials?.get(material.logicalPath.toLowerCase())?.shader
+        return shader !== "unlit-generic" && shader !== "unlit-two-texture"
+      }))
       .map((model) => model.logicalPath))
     const missingLightingEntities = map.modelOccurrences
       .filter((occurrence) => modelsRequiringLighting.has(map.models[occurrence.model]!.logicalPath) && !modelDrawInputs.has(occurrence.entity))
@@ -1882,13 +1885,13 @@ class RendererOwner implements Renderer {
       disposables.add(texture)
     }
 
-    const createModelBase = (identity: string): Readonly<{texture:THREE.Texture;input:AuthoredTextureInput}> | undefined => {
+    const createModelTexture = (identity: string, role: number): Readonly<{texture:THREE.Texture;input:AuthoredTextureInput}> | undefined => {
       const material = request.modelMaterials?.get(identity.toLowerCase())
       if (!material) {
         diagnostics.push(diagnostic("MissingMaterial", identity, "typed model material state is unavailable"))
         return undefined
       }
-      const binding = material.bindings.find((value) => value.kind === "material" && value.role === 0)
+      const binding = material.bindings.find((value) => value.kind === "material" && value.role === role)
       if (!binding) return undefined
       if (binding.colorRead === "format-dependent") {
         throw new RenderingError("MissingInput", `model texture ${binding.logicalPath} lacks a resolved color interpretation`)
@@ -1904,19 +1907,30 @@ class RendererOwner implements Renderer {
       }
       return Object.freeze({texture,input})
     }
+    const createWorldTexture = (
+      source: Readonly<{ logicalPath: string; width: number; height: number }>,
+      colorSpace: string,
+    ): THREE.Texture => {
+      const identity = source.logicalPath.toLowerCase()
+      const authored = request.environment?.authoredTextures.get(identity)
+      if (!authored || authored.width !== source.width || authored.height !== source.height) {
+        throw new RenderingError("MissingInput", `authored world texture ${source.logicalPath} is unavailable`)
+      }
+      const key = `environment:${identity}:${colorSpace}`
+      const retained = authoredGpu.get(key)
+      if (retained) return retained
+      const texture = textureFromAuthored(authored, colorSpace)
+      authoredGpu.set(key, texture)
+      disposables.add(texture)
+      return texture
+    }
     const createBase = (resolved: RuntimeMaterial, identity: string): THREE.Texture | undefined => {
-      const state = materialStates.get(identity.toLowerCase())
       const source = resolved.baseTexture
       if (!source) {
         diagnostics.push(diagnostic("MissingMaterial", identity, "resolved base texture is unavailable"))
         return undefined
       }
-      const authored=request.environment?.authoredTextures.get(source.logicalPath.toLowerCase())
-      if(authored){const key=`environment:${source.logicalPath.toLowerCase()}`,retained=authoredGpu.get(key);if(retained)return retained;const texture=textureFromAuthored(authored,THREE.SRGBColorSpace);authoredGpu.set(key,texture);disposables.add(texture);return texture}
-      requireMipInputs(identity, state)
-      const texture = textureFromRgba(source, THREE.SRGBColorSpace, state)
-      disposables.add(texture)
-      return texture
+      return createWorldTexture(source, THREE.SRGBColorSpace)
     }
     const loadCubemap = (fact: EnvironmentInput["cubemapFacts"][number]): THREE.CubeTexture => {
       const existing = cubemapTextures.get(fact.index)
@@ -2204,10 +2218,8 @@ class RendererOwner implements Renderer {
           return mesh
         }
         const baseTexture = createBase(resolved, identity)
-        const secondTexture = resolved.secondTexture ? textureFromRgba(resolved.secondTexture, THREE.SRGBColorSpace) : undefined
-        if (secondTexture) disposables.add(secondTexture)
-        const detailTexture = resolved.detail ? textureFromRgba(resolved.detail.texture, THREE.NoColorSpace) : undefined
-        if (detailTexture) disposables.add(detailTexture)
+        const secondTexture = resolved.secondTexture ? createWorldTexture(resolved.secondTexture, THREE.SRGBColorSpace) : undefined
+        const detailTexture = resolved.detail ? createWorldTexture(resolved.detail.texture, THREE.NoColorSpace) : undefined
         const kinds = new Set(batch.lightmapKind)
         const requiresNormal = kinds.has(2)
         const requiresSsbump = kinds.has(3)
@@ -2372,7 +2384,7 @@ class RendererOwner implements Renderer {
           const resolved = model.materials[primitive.material]!
           const materialState = materialStates.get(resolved.logicalPath.toLowerCase())
           if (materialState?.noDraw) continue
-           const baseTexture = createModelBase(resolved.logicalPath)
+           const baseTexture = createModelTexture(resolved.logicalPath, 0)
           const material = new THREE.MeshBasicNodeMaterial({
             ...materialOptions(resolved, materialState),
             side: sourceModelSide(request.modelFacing!.get(model.logicalPath.split("#skin=")[0]!.toLowerCase())!),
@@ -2382,9 +2394,21 @@ class RendererOwner implements Renderer {
            else if(sampled&&baseTexture?.input.sourceFormat===11)sampled=sampled.gbar
            else if(sampled&&baseTexture?.input.sourceFormat===12)sampled=sampled.bgra
            else if(sampled&&baseTexture?.input.sourceFormat===16)sampled=TSL.vec4(sampled.bgr,1)
-            const base = selectDiagnosticModelBase(baseTexture !== undefined) === "authored-texture"
+            const first = selectDiagnosticModelBase(baseTexture !== undefined) === "authored-texture"
               ? sampled!
               : TSL.vec4(TSL.color(debugColor(`diagnostic:${resolved.logicalPath}`)), 1)
+            const typedMaterial = request.modelMaterials?.get(resolved.logicalPath.toLowerCase())
+            let base = first
+            if (typedMaterial?.shader === "unlit-two-texture") {
+              const second = createModelTexture(resolved.logicalPath, 6)
+              if (!second) throw new RenderingError("MissingInput", `second model texture ${resolved.logicalPath} is unavailable`)
+              let sampledSecond = TSL.texture(second.texture, TSL.uv())
+              if (second.input.sourceFormat === 1) sampledSecond = sampledSecond.abgr
+              else if (second.input.sourceFormat === 11) sampledSecond = sampledSecond.gbar
+              else if (second.input.sourceFormat === 12) sampledSecond = sampledSecond.bgra
+              else if (second.input.sourceFormat === 16) sampledSecond = TSL.vec4(sampledSecond.bgr, 1)
+              base = TSL.vec4(first.rgb.mul(sampledSecond.rgb), 1)
+            }
           material.colorNode = sourceFragmentColor(base, materialState, waterFogUniforms)
           material.toneMapped = false
           disposables.add(material)
@@ -2407,7 +2431,7 @@ class RendererOwner implements Renderer {
             if(lightingKind===0){const color=colorMeshes[colorIndex++];const position=geometry.getAttribute("position");if(!color||color.vertexCount!==position.count||color.colors.length!==position.count*4)throw new RenderingError("IdentityMismatch","static-prop VHV mesh order differs");geometry.setAttribute("staticLighting",new THREE.Uint8BufferAttribute(color.colors,4,true))}
             disposables.add(geometry);mesh.geometry=geometry
             const original=mesh.material;if(Array.isArray(original)||!(original instanceof THREE.MeshBasicNodeMaterial))throw new RenderingError("UnsupportedFeature","static-prop model material family is unavailable")
-            const identity=String(mesh.userData.materialIdentity),state=request.modelMaterials?.get(identity.toLowerCase())?.shader,material=original.clone(),base=original.colorNode??TSL.vec4(1,1,1,1),rgb=state==="unlit-generic"?base.rgb:base.rgb.mul(lightingKind===0?TSL.attribute("staticLighting","vec4").bgra.rgb:runtimeStaticLightingNode(map,props,propIndex)).mul(exposureUniform);material.colorNode=sourceFragmentColor(TSL.vec4(rgb,base.a.mul(fadeUniform)),materialStates.get(identity.toLowerCase()),waterFogUniforms);material.toneMapped=false;if((props.flags[propIndex]!&1)!==0){material.transparent=true;material.depthWrite=false}disposables.add(material);mesh.material=material
+            const identity=String(mesh.userData.materialIdentity),state=request.modelMaterials?.get(identity.toLowerCase())?.shader,material=original.clone(),base=original.colorNode??TSL.vec4(1,1,1,1),rgb=state==="unlit-generic"||state==="unlit-two-texture"?base.rgb:base.rgb.mul(lightingKind===0?TSL.attribute("staticLighting","vec4").bgra.rgb:runtimeStaticLightingNode(map,props,propIndex)).mul(exposureUniform);material.colorNode=sourceFragmentColor(TSL.vec4(rgb,base.a.mul(fadeUniform)),materialStates.get(identity.toLowerCase()),waterFogUniforms);material.toneMapped=false;if((props.flags[propIndex]!&1)!==0){material.transparent=true;material.depthWrite=false}disposables.add(material);mesh.material=material
           }
           if(lightingKind===0&&colorIndex!==colorMeshes.length)throw new RenderingError("IdentityMismatch","static-prop VHV mesh closure differs")
           const position=props.transform.subarray(propIndex*6,propIndex*6+3),angles=props.transform.subarray(propIndex*6+3,propIndex*6+6);sourceTransform(instance,position,angles);instance.updateMatrix();instance.matrixAutoUpdate=false;instance.userData.staticPropSource=props.source[propIndex]

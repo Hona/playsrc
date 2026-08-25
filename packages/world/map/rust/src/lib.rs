@@ -1,6 +1,6 @@
 use playsrc_bsp::{Bsp, Face, LumpData, Model, Primitive, TextureData, TextureInfo, Vector3};
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeSet, fmt, ops::Range, sync::Arc};
+use std::{collections::BTreeSet, fmt, ops::Range};
 mod lighting;
 pub use lighting::*;
 mod environment;
@@ -122,7 +122,6 @@ pub struct RuntimeTexture {
     pub logical_path: String,
     pub width: u32,
     pub height: u32,
-    pub rgba: Arc<Vec<u8>>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct RuntimeMaterial {
@@ -775,7 +774,7 @@ fn serialize(context: &SerializationContext<'_>) -> Result<Vec<u8>, Error> {
             f32v(&mut out, uv[0]);
             f32v(&mut out, uv[1]);
         }
-        if schema == 5 {
+        if schema == 8 {
             for alpha in &s.alpha {
                 f32v(&mut out, *alpha);
             }
@@ -789,7 +788,7 @@ fn serialize(context: &SerializationContext<'_>) -> Result<Vec<u8>, Error> {
         out.extend_from_slice(&s.light_styles);
         i32v(&mut out, s.lightmap_size[0]);
         i32v(&mut out, s.lightmap_size[1]);
-        if schema == 5 {
+        if schema == 8 {
             if let Some(displacement) = &s.displacement {
                 out.push(1);
                 out.push(displacement.power);
@@ -852,7 +851,7 @@ fn serialize(context: &SerializationContext<'_>) -> Result<Vec<u8>, Error> {
     if !materials.is_empty() || map.lighting_profile == LightingProfile::Hdr {
         u32v(&mut out, materials.len() as u32);
         for material in materials {
-            materialv(&mut out, material, schema == 5);
+            materialv(&mut out, material, schema == 8);
         }
     }
     if !models.is_empty() || map.lighting_profile == LightingProfile::Hdr {
@@ -862,7 +861,7 @@ fn serialize(context: &SerializationContext<'_>) -> Result<Vec<u8>, Error> {
             u32v(&mut out, model.materials.len() as u32);
             for material in &model.materials {
                 bytesv(&mut out, material.logical_path.as_bytes());
-                materialv(&mut out, material, schema == 5);
+                materialv(&mut out, material, schema == 8);
             }
             u32v(&mut out, model.primitives.len() as u32);
             for primitive in &model.primitives {
@@ -922,12 +921,12 @@ fn runtime_schema(
             .iter()
             .any(|surface| surface.displacement.is_some())
         {
-            5
+            8
         } else {
-            4
+            7
         }
     } else if !models.is_empty() {
-        3
+        6
     } else if !materials.is_empty() {
         2
     } else {
@@ -977,11 +976,11 @@ fn serialized_length(context: &SerializationContext<'_>, schema: u32) -> Result<
         length.records(surface.normals.len(), 12)?;
         length.records(surface.uv.len(), 8)?;
         length.records(surface.lightmap_uv.len(), 8)?;
-        if schema == 5 {
+        if schema == 8 {
             length.records(surface.alpha.len(), 4)?;
         }
         length.records(surface.triangles.len(), 12)?;
-        if schema == 5 {
+        if schema == 8 {
             if let Some(displacement) = &surface.displacement {
                 length.add(176)?;
                 length.records(displacement.triangle_tags.len(), 2)?;
@@ -998,7 +997,7 @@ fn serialized_length(context: &SerializationContext<'_>, schema: u32) -> Result<
     if !context.materials.is_empty() || map.lighting_profile == LightingProfile::Hdr {
         length.add(4)?;
         for material in context.materials {
-            add_material_length(&mut length, material, schema == 5)?;
+            add_material_length(&mut length, material, schema == 8)?;
         }
     }
     if !context.models.is_empty() || map.lighting_profile == LightingProfile::Hdr {
@@ -1008,7 +1007,7 @@ fn serialized_length(context: &SerializationContext<'_>, schema: u32) -> Result<
             length.add(4)?;
             for material in &model.materials {
                 length.field(material.logical_path.len())?;
-                add_material_length(&mut length, material, schema == 5)?;
+                add_material_length(&mut length, material, schema == 8)?;
             }
             length.add(4)?;
             for primitive in &model.primitives {
@@ -1033,8 +1032,7 @@ fn add_texture_length(
     texture: &RuntimeTexture,
 ) -> Result<(), Error> {
     length.field(texture.logical_path.len())?;
-    length.add(8)?;
-    length.field(texture.rgba.len())
+    length.add(8)
 }
 
 fn add_material_length(
@@ -1114,7 +1112,6 @@ fn materialv(out: &mut Vec<u8>, material: &RuntimeMaterial, include_detail: bool
         bytesv(out, texture.logical_path.as_bytes());
         u32v(out, texture.width);
         u32v(out, texture.height);
-        bytesv(out, &texture.rgba);
     }
     if include_detail {
         out.push(u8::from(material.second_texture.is_some()));
@@ -1123,7 +1120,6 @@ fn materialv(out: &mut Vec<u8>, material: &RuntimeMaterial, include_detail: bool
             bytesv(out, texture.logical_path.as_bytes());
             u32v(out, texture.width);
             u32v(out, texture.height);
-            bytesv(out, &texture.rgba);
         }
         out.push(u8::from(material.detail.is_some()));
         out.extend_from_slice(&[0; 3]);
@@ -1131,7 +1127,6 @@ fn materialv(out: &mut Vec<u8>, material: &RuntimeMaterial, include_detail: bool
             bytesv(out, detail.texture.logical_path.as_bytes());
             u32v(out, detail.texture.width);
             u32v(out, detail.texture.height);
-            bytesv(out, &detail.texture.rgba);
             for value in detail.scale {
                 f32v(out, value);
             }
@@ -1292,64 +1287,41 @@ fn validate_runtime_material(material: &RuntimeMaterial, item: usize) -> Result<
     if material.logical_path.is_empty() {
         return Err(error(ErrorCode::InvalidMaterial, Some(item)));
     }
-    if let Some(texture) = &material.base_texture {
-        let pixels = usize::try_from(texture.width)
-            .ok()
-            .and_then(|width| {
-                usize::try_from(texture.height)
-                    .ok()
-                    .and_then(|height| width.checked_mul(height))
-            })
-            .and_then(|pixels| pixels.checked_mul(4));
-        if texture.logical_path.is_empty()
-            || texture.width == 0
-            || texture.height == 0
-            || pixels != Some(texture.rgba.len())
-        {
-            return Err(error(ErrorCode::InvalidMaterial, Some(item)));
-        }
+    let valid_texture = |texture: &RuntimeTexture| {
+        !texture.logical_path.is_empty()
+            && texture.width > 0
+            && texture.height > 0
+            && usize::try_from(texture.width)
+                .ok()
+                .and_then(|width| {
+                    usize::try_from(texture.height)
+                        .ok()
+                        .and_then(|height| width.checked_mul(height))
+                })
+                .is_some()
+    };
+    if material
+        .base_texture
+        .as_ref()
+        .is_some_and(|texture| !valid_texture(texture))
+        || material
+            .second_texture
+            .as_ref()
+            .is_some_and(|texture| !valid_texture(texture))
+    {
+        return Err(error(ErrorCode::InvalidMaterial, Some(item)));
     }
-    if let Some(texture) = &material.second_texture {
-        let pixels = usize::try_from(texture.width)
-            .ok()
-            .and_then(|width| {
-                usize::try_from(texture.height)
-                    .ok()
-                    .and_then(|height| width.checked_mul(height))
-            })
-            .and_then(|pixels| pixels.checked_mul(4));
-        if texture.logical_path.is_empty()
-            || texture.width == 0
-            || texture.height == 0
-            || pixels != Some(texture.rgba.len())
-        {
-            return Err(error(ErrorCode::InvalidMaterial, Some(item)));
-        }
-    }
-    if let Some(detail) = &material.detail {
-        let texture = &detail.texture;
-        let pixels = usize::try_from(texture.width)
-            .ok()
-            .and_then(|width| {
-                usize::try_from(texture.height)
-                    .ok()
-                    .and_then(|height| width.checked_mul(height))
-            })
-            .and_then(|pixels| pixels.checked_mul(4));
-        if texture.logical_path.is_empty()
-            || texture.width == 0
-            || texture.height == 0
-            || pixels != Some(texture.rgba.len())
+    if let Some(detail) = &material.detail
+        && (!valid_texture(&detail.texture)
             || detail
                 .scale
                 .iter()
                 .chain([detail.blend_factor].iter())
                 .any(|value| !value.is_finite())
             || !(0..=11).contains(&detail.blend_mode)
-            || detail.tint.iter().any(|value| !value.is_finite())
-        {
-            return Err(error(ErrorCode::InvalidMaterial, Some(item)));
-        }
+            || detail.tint.iter().any(|value| !value.is_finite()))
+    {
+        return Err(error(ErrorCode::InvalidMaterial, Some(item)));
     }
     Ok(())
 }
@@ -1919,16 +1891,14 @@ mod tests {
     }
 
     #[test]
-    fn runtime_texture_clones_share_the_existing_decoded_allocation() {
+    fn runtime_textures_retain_only_authored_identity_and_dimensions() {
         let texture = RuntimeTexture {
             logical_path: "materials/test.vtf".to_owned(),
-            width: 1,
-            height: 1,
-            rgba: Arc::new(vec![1, 2, 3, 4]),
+            width: 256,
+            height: 128,
         };
-        let duplicate = texture.clone();
-        assert!(Arc::ptr_eq(&texture.rgba, &duplicate.rgba));
-        assert_eq!(duplicate.rgba.as_slice(), &[1, 2, 3, 4]);
+        assert_eq!(texture.clone(), texture);
+        assert_eq!((texture.width, texture.height), (256, 128));
     }
 
     #[test]

@@ -569,8 +569,11 @@ export class Tf2Application {
   #resolveLoadingBackground(target: BrowserTargetConfiguration, viewport: ApplicationPresentationViewport): Extract<Tf2LoadingBackgroundResult, { ok: true }> {
     const image = this.#uiResources?.descriptor.images.find((candidate) =>
       candidate.configuredValue.toLowerCase() === `maps/menu_photos_${target.target}`)
-    const material = image?.classification === "content-vtf" ? image.material : null
-    const provider = material?.providerIdentity?.replace(/^ui-(\d+)-/u, "game-$1-")
+    const material = target.loading.mapPhoto?.material
+      ?? (image?.classification === "content-vtf" ? image.material : null)
+    const provider = target.loading.mapPhoto
+      ? `game-04-${material?.providerIdentity}`
+      : material?.providerIdentity?.replace(/^ui-(\d+)-/u, "game-$1-")
     const result = resolveTf2LoadingBackground({
       generation: this.#loadingPresentationGeneration,
       mapIdentity: target.target,

@@ -89,20 +89,20 @@ pub fn model_lighting_origin(
     model_to_world: Matrix3x4,
     world_pose: &SampledWorldPose,
 ) -> Result<Vector3, PresentationError> {
-    transformed_lighting_origin(
+    source_model_lighting_origin(
         document.bounds.illumination,
         document.illumination_attachment,
         model_to_world,
-        world_pose,
+        Some(world_pose),
         &document.identity,
     )
 }
 
-fn transformed_lighting_origin(
+pub fn source_model_lighting_origin(
     illumination: Vector3,
     illumination_attachment: i32,
     model_to_world: Matrix3x4,
-    world_pose: &SampledWorldPose,
+    world_pose: Option<&SampledWorldPose>,
     identity: &str,
 ) -> Result<Vector3, PresentationError> {
     let matrix = if illumination_attachment == 0 {
@@ -111,6 +111,7 @@ fn transformed_lighting_origin(
         let index = usize::try_from(illumination_attachment - 1)
             .map_err(|_| invalid_lighting_origin(identity))?;
         world_pose
+            .ok_or_else(|| invalid_lighting_origin(identity))?
             .attachments
             .get(index)
             .filter(|attachment| attachment.index == index)
@@ -233,13 +234,13 @@ mod tests {
         };
         let illumination = vector([1.0, 2.0, 3.0]);
         assert_eq!(
-            transformed_lighting_origin(illumination, 0, matrix([4.0, 5.0, 6.0]), &pose, "model",)
+            source_model_lighting_origin(illumination, 0, matrix([4.0, 5.0, 6.0]), None, "model",)
                 .map(values3)
                 .unwrap(),
             [5.0, 7.0, 9.0]
         );
         assert_eq!(
-            transformed_lighting_origin(illumination, 1, matrix([0.0; 3]), &pose, "model")
+            source_model_lighting_origin(illumination, 1, matrix([0.0; 3]), Some(&pose), "model")
                 .map(values3)
                 .unwrap(),
             [11.0, 22.0, 33.0]

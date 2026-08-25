@@ -33,8 +33,8 @@ function distribution(values: readonly number[]) {
 }
 
 async function main(arguments_: string[]): Promise<void> {
-  if (arguments_.length !== 1 || !["jump_beef", "pl_upward"].includes(arguments_[0]!)) {
-    throw new Error("Usage: bun packages/world/visibility/scripts/profile.ts <jump_beef|pl_upward>")
+  if (arguments_.length !== 1 || !["jump_beef", "pl_upward", "ctf_2fort"].includes(arguments_[0]!)) {
+    throw new Error("Usage: bun packages/world/visibility/scripts/profile.ts <jump_beef|pl_upward|ctf_2fort>")
   }
 
   const target = arguments_[0]!

@@ -264,6 +264,19 @@ describe("Source Water pixel contracts", () => {
     expect(() => sourceWaterTangentAttributes({ ...input, uv: new Float32Array(6) })).toThrow(/texture basis/)
   })
 
+  test("retains authored water-face tangents across invisible degenerate triangles", () => {
+    const result = sourceWaterTangentAttributes({
+      positions: new Float32Array([0, 0, -128, 64, 0, -128, 0, 64, -128, 32, 0, -128]),
+      normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]),
+      uv: new Float32Array([0, 0, 0.25, 0, 0, -0.25, 0.125, 0]),
+      indices: new Uint32Array([0, 1, 2, 0, 3, 1]),
+      faces: new Uint32Array([9270, 9270]),
+      surfacePlanes: new Map([[9270, [0, 0, 1, -128] as const]]),
+    })
+    expect([...result.tangentS.slice(9)].map((value) => Object.is(value, -0) ? 0 : value)).toEqual([1, 0, 0])
+    expect([...result.tangentT.slice(9)]).toEqual([0, -1, 0])
+  })
+
   test("GPU Water rejects missing authored tangents and missing depth-alpha provenance", () => {
     const normal = texture([128, 128, 255, 255])
     const refraction = texture([64, 128, 192, 128])

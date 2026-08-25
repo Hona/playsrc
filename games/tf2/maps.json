@@ -18,5 +18,14 @@
       "byteLength": 25446018,
       "sha256": "15cbf91981b0d9902c645d1992d196b7e630742aa85111ed834d231f3c3a5709"
     }
+  },
+  "ctf_2fort": {
+    "logicalPath": "maps/ctf_2fort.bsp",
+    "installed": {
+      "contentBuild": "24245096",
+      "provider": "game-09-tf",
+      "byteLength": 22751863,
+      "sha256": "cbd191411c0be57099da73458167001ec80d58bf37c71cb3c36b2911b6e80fd7"
+    }
   }
 }

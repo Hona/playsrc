@@ -6,11 +6,11 @@ import {
 } from "../src/runtime-map"
 import { hdrFixture } from "./hdr-fixture"
 
-describe("schema-4 HDR runtime map", () => {
+describe("schema-7 HDR runtime map", () => {
   test("validates the complete descriptor and preserves raw radiance above one", async () => {
     const map = parseRuntimeMap(hdrFixture().bytes)
     await validateRuntimeMapHashes(map)
-    expect(map).toMatchObject({ schema: 4, lightingProfile: 1, lightingSampleCount: 4 })
+    expect(map).toMatchObject({ schema: 7, lightingProfile: 1, lightingSampleCount: 4 })
     expect(map.lighting.profile).toBe("hdr")
     if (map.lighting.profile !== "hdr") throw new Error("expected HDR")
     expect([...map.lighting.samples.slice(0, 3)]).toEqual([20, 1, 0.5])
@@ -30,6 +30,12 @@ describe("schema-4 HDR runtime map", () => {
       ["water", "Missing"],
       ["environment", "Missing"],
     ])
+  })
+
+  test("retains authored negative world-light attenuation coefficients", () => {
+    const map = parseRuntimeMap(hdrFixture([0], -0.00020752029377035797).bytes)
+    if (map.lighting.profile !== "hdr") throw new Error("expected HDR")
+    expect(map.lighting.descriptor.worldLights[0]!.linearAttenuation).toBe(Math.fround(-0.00020752029377035797))
   })
 
   test("constructs four float planes and applies integer-HDR quantization without RGBA8", () => {

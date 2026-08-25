@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ModelShader {
     UnlitGeneric,
+    UnlitTwoTexture,
     VertexLitGeneric,
     EyeRefract,
     Eyes,
@@ -142,6 +143,12 @@ pub struct UnlitGenericState {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct UnlitTwoTextureState {
+    pub base: TextureRequest,
+    pub second: TextureRequest,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct EyeRefractState {
     pub iris: Option<ModelTextureRequest>,
     pub cornea: Option<ModelTextureRequest>,
@@ -173,6 +180,7 @@ pub struct EyesState {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ModelShaderState {
     UnlitGeneric(Box<UnlitGenericState>),
+    UnlitTwoTexture(Box<UnlitTwoTextureState>),
     VertexLitGeneric(Box<VertexLitGenericState>),
     EyeRefract(Box<EyeRefractState>),
     Eyes(Box<EyesState>),
@@ -240,7 +248,7 @@ pub fn model_draw_state(
         .as_ref()
         .ok_or_else(|| error(ErrorCode::InvalidParameter, None))?;
     let (cloak, sheen) = match &model.state {
-        ModelShaderState::UnlitGeneric(_) => (
+        ModelShaderState::UnlitGeneric(_) | ModelShaderState::UnlitTwoTexture(_) => (
             CloakState {
                 enabled: false,
                 factor: 0.0,
@@ -657,6 +665,8 @@ pub(crate) fn resolve_model_state(
 ) -> Result<(Option<ModelMaterialState>, Vec<ModelTextureRequest>), Error> {
     if shader.eq_ignore_ascii_case(b"UnlitGeneric") {
         Ok((Some(unlit(textures)), Vec::new()))
+    } else if shader.eq_ignore_ascii_case(b"UnlitTwoTexture") {
+        Ok((Some(unlit_two_texture(textures)?), Vec::new()))
     } else if shader.eq_ignore_ascii_case(b"VertexLitGeneric") {
         let model_textures = collect_model_textures(parameters, proxy_program, environment)?;
         Ok((
@@ -704,6 +714,39 @@ fn unlit(textures: &[TextureRequest]) -> ModelMaterialState {
             studio_eye_parameters: false,
         },
     }
+}
+
+fn unlit_two_texture(textures: &[TextureRequest]) -> Result<ModelMaterialState, Error> {
+    let base = core_texture(textures, TextureRole::Base)
+        .cloned()
+        .ok_or_else(|| {
+            error(
+                ErrorCode::MissingProfileTexture,
+                Some(b"$basetexture".to_vec()),
+            )
+        })?;
+    let second = core_texture(textures, TextureRole::Base2)
+        .cloned()
+        .ok_or_else(|| {
+            error(
+                ErrorCode::MissingProfileTexture,
+                Some(b"$texture2".to_vec()),
+            )
+        })?;
+    Ok(ModelMaterialState {
+        shader: ModelShader::UnlitTwoTexture,
+        state: ModelShaderState::UnlitTwoTexture(Box::new(UnlitTwoTextureState { base, second })),
+        vertex_requirements: ModelVertexRequirements {
+            position: true,
+            normal: true,
+            tangent_space: false,
+            texture_coordinate_0: true,
+            ambient_cube: false,
+            local_lights: false,
+            camera_position: false,
+            studio_eye_parameters: false,
+        },
+    })
 }
 
 fn vertex_lit(

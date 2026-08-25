@@ -14,13 +14,13 @@ import { parsePresentationArtifacts } from "../../../games/tf2/browser/src/artif
 import { buildTf2Wasm } from "./tf2-wasm-build"
 import { encodeResourceBatch, parseResourceSet } from "@playsrc/asset-store/graph"
 
-const EXPECTED_MAP_BYTES = 42_082_929
-const EXPECTED_MAP_SHA256 = "56153098a867c553651f9c773bd72c4659782bae8520277c80daaaa414bdf156"
+const EXPECTED_MAP_BYTES = 27_137_800
+const EXPECTED_MAP_SHA256 = "15cdbb753aedac70a3eee1a2f0dfe627455e25619650a534eba1a9280e47aa17"
 const EXPECTED_BSP_SHA256 = "b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959"
-const EXPECTED_HDR_BYTES=78_255_714
-const EXPECTED_HDR_SHA256="735995d68920adcb971fe4c5e773986f438c2a95c07c935882dc7fd081ce1e3a"
-const EXPECTED_LDR_DERIVED_SHA256="23c6cd43e594a89e34514186dac3752c1ee31e497e48cebca412822c854228cd"
-const EXPECTED_HDR_DERIVED_SHA256="5be4cb1aa68586dbf0d786fdd5a85928638baeec361fde60003f0b1f200e8758"
+const EXPECTED_HDR_BYTES=63_346_564
+const EXPECTED_HDR_SHA256="fa66808948ae3c0f8ebc94fcab5d203bd5032d59dc30712614da80dd619ee986"
+const EXPECTED_LDR_DERIVED_SHA256="aad5272deacd8cbfd3883e722c87a549794ddc0a86ddadaa33852955cb5db3ef"
+const EXPECTED_HDR_DERIVED_SHA256="e5e30e00773fb030e34b6722b4593290322749ab07f2bad96d1132bb64aaf5fa"
 const EXPECTED_PARTICLE_MATERIAL_STATE_SHA256 = "65510289b8254192ecf843283ee18b106a0decef9f0f718b1e54c043cfa9fbdb"
 function resourcePathOffset(bytes: Uint8Array, target: string): number {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
@@ -38,9 +38,9 @@ function resourcePathOffset(bytes: Uint8Array, target: string): number {
 }
 function collisionBrushRecords(bytes:Uint8Array):ReadonlyMap<bigint,Readonly<{enabled:boolean;contents:number;model:number|null}>>{
   const view=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength)
-  require(new TextDecoder().decode(bytes.subarray(0,4))==="CSNP"&&view.getUint32(4,true)===2,"Collision snapshot schema differs")
+  require(new TextDecoder().decode(bytes.subarray(0,4))==="CSNP"&&view.getUint32(4,true)===3,"Collision snapshot schema differs")
   let at=52;const output=new Map<bigint,Readonly<{enabled:boolean;contents:number;model:number|null}>>()
-  for(let count=view.getUint32(48,true);count>0;count--){const identity=view.getBigUint64(at,true),enabled=bytes[at+9]===1,contents=view.getUint32(at+16,true),shape=bytes[at+68]!,model=shape===0?Number(view.getBigUint64(at+69,true)):null;output.set(identity,Object.freeze({enabled,contents,model}));at+=shape===0?77:shape===1||shape===2?93:81}
+  for(let count=view.getUint32(48,true);count>0;count--){const identity=view.getBigUint64(at,true),enabled=(bytes[at+9]!&1)===1,contents=view.getUint32(at+16,true),shape=bytes[at+68]!,model=shape===0?Number(view.getBigUint64(at+69,true)):null;output.set(identity,Object.freeze({enabled,contents,model}));at+=shape===0?77:shape===1||shape===2?93:81}
   require(at===bytes.length,"Collision snapshot records are truncated")
   return output
 }
@@ -153,7 +153,6 @@ function skipRuntimeMaterial(reader: ProfileReader): { shader: number; role: num
     reader.sized()
     reader.u32()
     reader.u32()
-    reader.sized()
   }
   return { shader, role }
 }
@@ -161,7 +160,7 @@ function skipRuntimeMaterial(reader: ProfileReader): { shader: number; role: num
 function inspectHdrPayload(payload: Uint8Array, expectedConfigurationSha256: string) {
   const reader = new ProfileReader(payload)
   require(new TextDecoder().decode(reader.take(4)) === "PSMP", "HDR map magic is invalid")
-  require(reader.u32() === 4, "HDR map schema is invalid")
+  require(reader.u32() === 7, "HDR map schema is invalid")
   require(reader.u32() === 20 && reader.u32() === 731 && reader.u8() === 1, "HDR map identity is invalid")
   const materialCount = reader.u32()
   const surfaceCount = reader.u32()
@@ -203,7 +202,7 @@ function inspectHdrPayload(payload: Uint8Array, expectedConfigurationSha256: str
   require(reader.u32() === materialCount, "HDR resolved-material count is invalid")
   for (let index = 0; index < materialCount; index += 1) skipRuntimeMaterial(reader)
   const modelCount = reader.u32()
-  require(modelCount === 20, "HDR model count is invalid")
+  require(modelCount === 56, "HDR model count is invalid")
   for (let model = 0; model < modelCount; model += 1) {
     reader.sized()
     const modelMaterials = reader.u32()
@@ -323,7 +322,7 @@ function inspectHdrPayload(payload: Uint8Array, expectedConfigurationSha256: str
   }
   require(skyDimensions.join(",") === "512x256,512x256,512x256,512x256,512x512,4x4", "HDR sky dimensions are invalid")
   const inputCount = reader.u32()
-  require(inputCount===309,`HDR input-hash count is invalid: ${inputCount}`)
+  require(inputCount===725,`HDR input-hash count is invalid: ${inputCount}`)
   for (let index = 0; index < inputCount; index += 1) {
     require(reader.u8() === 1 && reader.take(3).every((value) => value === 0), "HDR input record is invalid")
     require(reader.text().length > 0, "HDR input path is empty")
@@ -425,7 +424,7 @@ export async function verifyTf2Wasm(
   dependencyBytes.set(new Uint8Array(exports.memory.buffer, resourcePointer, dependencyBytes.byteLength))
   exports.playsrc_free(resourcePointer, dependencyBytes.byteLength)
   require(bspBytes.byteLength === map.decoded.byteLength, "cached BSP byte length changed")
-  require(dependencyBytes.byteLength > 0 && dependencyBytes.byteLength <= 512 * 1024 * 1024, "resource set byte length changed")
+  require(dependencyBytes.byteLength > 0 && dependencyBytes.byteLength <= 768 * 1024 * 1024, "resource set byte length changed")
 
   const compileProfile = (profile: 0 | 1) => {
     const source = exports.playsrc_alloc(bspBytes.byteLength) >>> 0
@@ -479,13 +478,56 @@ export async function verifyTf2Wasm(
     return error
   }
 
+  if (identity === "ctf_2fort") {
+    const hdr = compileProfile(1)
+    require(hdr.payload.byteLength === nativeHdr.bytes, "ctf_2fort native/WASM payload length differs")
+    require(hdr.sha256 === nativeHdr.sha256, "ctf_2fort native/WASM payload SHA-256 differs")
+    require(hdr.derivedSha256 === nativeHdr.derivedSha256, "ctf_2fort native/WASM derived identity differs")
+    const runtime = parseRuntimeMap(hdr.payload)
+    require(runtime.schema === 8 && runtime.displacementSurfaces === 232, "ctf_2fort displacement runtime coverage differs")
+    require(runtime.materials.every((material) => !material.baseTexture || !Object.hasOwn(material.baseTexture, "rgba")),
+      "ctf_2fort world textures duplicate authored source planes")
+    const presentationLength = exports.playsrc_presentation_length(hdr.handle)
+    require(presentationLength > 0 && presentationLength <= 512 * 1024 * 1024, "ctf_2fort presentation length is invalid")
+    const presentationPointer = exports.playsrc_alloc(presentationLength) >>> 0
+    require(exports.playsrc_presentation_copy(hdr.handle, presentationPointer, presentationLength) === presentationLength,
+      "ctf_2fort presentation copy failed")
+    const presentation = new Uint8Array(exports.memory.buffer, presentationPointer, presentationLength).slice()
+    exports.playsrc_free(presentationPointer, presentationLength)
+    const artifacts = await parsePresentationArtifacts(presentation, parseResourceSet(dependencyBytes))
+    require(artifacts.staticProps.count === 2265 && artifacts.staticProps.vhv.length === 4482,
+      "ctf_2fort static-prop and accepted VHV coverage differs")
+    require(artifacts.staticProps.runtimeLightingCount === 24,
+      "ctf_2fort invalid or unavailable baked-lighting disposition differs")
+    const sun = artifacts.modelMaterials.get("materials/models/props_skybox/sun_ray1.vmt")
+    require(sun?.shader === "unlit-two-texture" && sun.bindings.filter((binding) => binding.kind === "material").length === 2,
+      "ctf_2fort authored dual-texture sky model differs")
+    require(artifacts.environment.waterMaterials.get("materials/water/water_2fort_beneath.vmt")?.underwaterOverlay === "materials/effects/water_warp_2fort.vmt",
+      "ctf_2fort underwater overlay identity differs")
+    require(exports.playsrc_dispose(hdr.handle) === 1, "ctf_2fort HDR handle disposal failed")
+    return Object.freeze({
+      target: identity,
+      bspBytes: bspBytes.byteLength,
+      dependencyBytes: dependencyBytes.byteLength,
+      payloadBytes: hdr.payload.byteLength,
+      payloadSha256: hdr.sha256,
+      derivedSha256: hdr.derivedSha256,
+      displacementSurfaces: runtime.displacementSurfaces,
+      drawableSurfaces: runtime.drawableSurfaces,
+      drawBatches: runtime.batches.length,
+      staticProps: artifacts.staticProps.count,
+      runtimeLitProps: artifacts.staticProps.runtimeLightingCount,
+      presentationBytes: presentationLength,
+    })
+  }
+
   if (identity === "pl_upward") {
     const hdr = compileProfile(1)
     require(hdr.payload.byteLength === nativeHdr.bytes, "pl_upward native/WASM payload length differs")
     require(hdr.sha256 === nativeHdr.sha256, "pl_upward native/WASM payload SHA-256 differs")
     require(hdr.derivedSha256 === nativeHdr.derivedSha256, "pl_upward native/WASM derived identity differs")
     const runtime = parseRuntimeMap(hdr.payload)
-    require(runtime.schema === 5 && runtime.displacementSurfaces === 558, "pl_upward displacement runtime coverage differs")
+    require(runtime.schema === 8 && runtime.displacementSurfaces === 558, "pl_upward displacement runtime coverage differs")
     const wall = runtime.materials.find((material) => material.logicalPath.toLowerCase() === "materials/brick/wall028.vmt")
     require(wall?.detail?.texture.logicalPath.toLowerCase() === "materials/overlays/detail001.vtf"
       && wall.detail.scale[0] === Math.fround(1.1) && wall.detail.scale[1] === Math.fround(2.3)
@@ -570,9 +612,11 @@ export async function verifyTf2Wasm(
     "effects/softglow_translucent.vmt",
     "particle/smoke1/smoke1.vmt",
   ] as const
-  require(JSON.stringify([...presentationArtifacts.particleMaterials].sort()) === JSON.stringify(particleMaterialIdentities)
-    && presentationArtifacts.particleTextures.length === particleMaterialIdentities.length
-    && presentationArtifacts.particleTextures.every((texture) => particleMaterialIdentities.includes(texture.material as typeof particleMaterialIdentities[number])),
+  const suppliedParticleMaterials = [...presentationArtifacts.particleMaterials].sort()
+  require(particleMaterialIdentities.every((identity) => suppliedParticleMaterials.includes(identity))
+    && new Set(suppliedParticleMaterials).size === suppliedParticleMaterials.length
+    && presentationArtifacts.particleTextures.length === suppliedParticleMaterials.length
+    && presentationArtifacts.particleTextures.every((texture) => suppliedParticleMaterials.includes(texture.material)),
   "TF2 Particle material/texture identities differ")
   const particleMaterialStates = particleMaterialIdentities.map((identity) => {
     const state = presentationArtifacts.materialStates.get(identity)
@@ -681,7 +725,7 @@ export async function verifyTf2Wasm(
     opposedTriangles === 0 &&
     degenerateTriangles ===
       0, `runtime triangle orientation is ${alignedTriangles} aligned, ${opposedTriangles} opposed, ${degenerateTriangles} degenerate`)
-  require(renderMap.models.length === 20, `runtime model count ${renderMap.models.length} is invalid`)
+  require(renderMap.models.length === 56, `runtime model count ${renderMap.models.length} is invalid`)
   require(renderMap.modelOccurrences.length === 33, "runtime model occurrence count is invalid")
   require(renderMap.lightmap !== undefined, "runtime lightmap atlas is unavailable")
   const teleports = exports.playsrc_teleport_count(handle)

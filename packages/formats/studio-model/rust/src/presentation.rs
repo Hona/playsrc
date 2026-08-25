@@ -1633,6 +1633,13 @@ pub fn transformed_geometry_facing(
     }
 }
 
+pub fn source_skin_family(skin: i32, family_count: usize) -> usize {
+    usize::try_from(skin)
+        .ok()
+        .filter(|&selected| selected < family_count)
+        .unwrap_or(0)
+}
+
 pub fn source_entity_transform(
     position: Vector3,
     angles: Vector3,
@@ -5395,6 +5402,15 @@ mod tests {
             sha256(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
             hex_hash("248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1")
         );
+    }
+
+    #[test]
+    fn source_skin_family_selects_zero_for_invalid_or_outdated_indexes() {
+        assert_eq!(source_skin_family(-1, 2), 0);
+        assert_eq!(source_skin_family(0, 2), 0);
+        assert_eq!(source_skin_family(1, 2), 1);
+        assert_eq!(source_skin_family(1, 1), 0);
+        assert_eq!(source_skin_family(i32::MAX, 2), 0);
     }
 
     #[test]

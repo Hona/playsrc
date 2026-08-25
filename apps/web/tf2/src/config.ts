@@ -1,6 +1,6 @@
 import type { ObjectDescriptor } from "@playsrc/asset-store"
 import { TF2_CONFIGURED_STARTUP, validateTf2StartupDescriptor, type Tf2StartupDescriptor } from "@playsrc/game-tf2-browser/startup-presentation"
-import { TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS, TF2_PL_UPWARD_MAP_PHOTO_LOCATIONS, TF2_STAMP_BACKGROUND, type Tf2LoadingAsset } from "@playsrc/game-tf2-browser/loading-presentation"
+import { TF2_MAP_LOADING, TF2_STAMP_BACKGROUND, type Tf2LoadingAsset } from "@playsrc/game-tf2-browser/loading-presentation"
 import { TF2_TARGET_NAMES, type Tf2TargetName } from "./deployment"
 
 const HASH = /^[0-9a-f]{64}$/
@@ -12,7 +12,8 @@ export type BrowserTargetConfiguration = Readonly<{
   contentBuild: string
   objects: Readonly<{ bsp: ObjectDescriptor; resources: ObjectDescriptor; dependencyLedger: ObjectDescriptor }>
   loading: Readonly<{
-    mapPhotoLocations: typeof TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS | typeof TF2_PL_UPWARD_MAP_PHOTO_LOCATIONS
+    mapPhotoLocations: (typeof TF2_MAP_LOADING)[Tf2TargetName]["photoLocations"]
+    mapPhoto: (typeof TF2_MAP_LOADING)[Tf2TargetName]["photo"]
     stampBackground: Readonly<{ material: Tf2LoadingAsset; texture: Tf2LoadingAsset }>
   }>
 }>
@@ -62,7 +63,7 @@ export function parseBrowserConfiguration(value: unknown, applicationOrigin: str
 }
 
 function parseTarget(value: unknown, target: Tf2TargetName): BrowserTargetConfiguration {
-  const loadingLocations = target === "jump_beef" ? TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS : TF2_PL_UPWARD_MAP_PHOTO_LOCATIONS
+  const loading = TF2_MAP_LOADING[target]
   if (
     !record(value) || Object.keys(value).sort().join("\0") !== "contentBuild\0loading\0objects\0target"
     || value.target !== target || value.contentBuild !== "24245096"
@@ -70,8 +71,9 @@ function parseTarget(value: unknown, target: Tf2TargetName): BrowserTargetConfig
     || !descriptor(value.objects.bsp, "source-object")
     || !descriptor(value.objects.resources, "source-root", "application/vnd.playsrc.resource-graph+json")
     || !descriptor(value.objects.dependencyLedger, "derived-object", "application/vnd.playsrc.source-dependency-ledger+json")
-    || !record(value.loading) || Object.keys(value.loading).sort().join("\0") !== "mapPhotoLocations\0stampBackground"
-    || JSON.stringify(value.loading.mapPhotoLocations) !== JSON.stringify(loadingLocations)
+    || !record(value.loading) || Object.keys(value.loading).sort().join("\0") !== "mapPhoto\0mapPhotoLocations\0stampBackground"
+    || JSON.stringify(value.loading.mapPhotoLocations) !== JSON.stringify(loading.photoLocations)
+    || JSON.stringify(value.loading.mapPhoto) !== JSON.stringify(loading.photo)
     || JSON.stringify(value.loading.stampBackground) !== JSON.stringify(TF2_STAMP_BACKGROUND)
   ) throw new BrowserConfigurationError("Browser target configuration is invalid")
   return Object.freeze(value as BrowserTargetConfiguration)

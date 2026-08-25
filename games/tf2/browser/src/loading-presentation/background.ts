@@ -78,6 +78,45 @@ export const TF2_PL_UPWARD_MAP_PHOTO_LOCATIONS = Object.freeze([
   "game-11-download:materials/vgui/maps/menu_photos_pl_upward.vmt",
 ] as const)
 
+export const TF2_CTF_2FORT_MAP_PHOTO_LOCATIONS = Object.freeze([
+  "ctf_2fort-pak:maps/ctf_2fort.bsp!materials/vgui/maps/menu_photos_ctf_2fort.vmt",
+  "game-00-workshop:materials/vgui/maps/menu_photos_ctf_2fort.vmt",
+  "game-01-tf2_textures_dir.vpk:tf2_textures_dir.vpk!materials/vgui/maps/menu_photos_ctf_2fort.vmt",
+  "game-02-tf2_sound_vo_english_dir.vpk:tf2_sound_vo_english_dir.vpk!materials/vgui/maps/menu_photos_ctf_2fort.vmt",
+  "game-03-tf2_sound_misc_dir.vpk:tf2_sound_misc_dir.vpk!materials/vgui/maps/menu_photos_ctf_2fort.vmt",
+  "game-04-tf2_misc_dir.vpk:tf2_misc_dir.vpk!materials/vgui/maps/menu_photos_ctf_2fort.vmt",
+  "game-05-hl2_textures_dir.vpk:hl2_textures_dir.vpk!materials/vgui/maps/menu_photos_ctf_2fort.vmt",
+  "game-06-hl2_sound_vo_english_dir.vpk:hl2_sound_vo_english_dir.vpk!materials/vgui/maps/menu_photos_ctf_2fort.vmt",
+  "game-07-hl2_sound_misc_dir.vpk:hl2_sound_misc_dir.vpk!materials/vgui/maps/menu_photos_ctf_2fort.vmt",
+  "game-08-hl2_misc_dir.vpk:hl2_misc_dir.vpk!materials/vgui/maps/menu_photos_ctf_2fort.vmt",
+  "game-09-tf:materials/vgui/maps/menu_photos_ctf_2fort.vmt",
+  "game-10-hl2:materials/vgui/maps/menu_photos_ctf_2fort.vmt",
+  "game-11-download:materials/vgui/maps/menu_photos_ctf_2fort.vmt",
+] as const)
+
+export const TF2_CTF_2FORT_MAP_PHOTO = Object.freeze({
+  material: Object.freeze({
+    logicalPath: "materials/vgui/maps/menu_photos_ctf_2fort.vmt",
+    byteLength: 126,
+    sha256: "6c1228fd96a0f6029a924ea19d7801c9681db084742db8583e8f3d425056aac4",
+    providerIdentity: "tf2_misc_dir.vpk",
+    providerRevision: TF2_CONTENT_BUILD.archiveIndexes.tf2Misc,
+  }),
+  texture: Object.freeze({
+    logicalPath: "materials/vgui/maps/menu_photos_ctf_2fort.vtf",
+    byteLength: 349_784,
+    sha256: "1ec1d0a675522d3245e72817d83f9292ea9c60bcfde8d40bfe1b38eff2c889ad",
+    providerIdentity: "tf2_textures_dir.vpk",
+    providerRevision: TF2_CONTENT_BUILD.archiveIndexes.tf2Textures,
+  }),
+})
+
+export const TF2_MAP_LOADING = Object.freeze({
+  jump_beef: Object.freeze({ photoLocations: TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS, photo: null }),
+  pl_upward: Object.freeze({ photoLocations: TF2_PL_UPWARD_MAP_PHOTO_LOCATIONS, photo: null }),
+  ctf_2fort: Object.freeze({ photoLocations: TF2_CTF_2FORT_MAP_PHOTO_LOCATIONS, photo: TF2_CTF_2FORT_MAP_PHOTO }),
+})
+
 export function resolveTf2LoadingBackground(input: Tf2LoadingBackgroundInput): Tf2LoadingBackgroundResult {
   const checked = Object.freeze(input.mapPhotoLookups.map((lookup) => lookup.location))
   if (!Number.isSafeInteger(input.generation) || input.generation < 1 || !MAP.test(input.mapIdentity)

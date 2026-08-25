@@ -1830,7 +1830,7 @@ test.describe("TF2 application generation lifecycle", () => {
       defaultTarget: string
       targets: readonly { target: string; objects: { bsp: { sha256: string } } }[]
     }
-    expect(configuration.targets.map((target) => target.target)).toEqual(["jump_beef", "pl_upward"])
+    expect(configuration.targets.map((target) => target.target)).toEqual(["jump_beef", "pl_upward", "ctf_2fort"])
     const jump = configuration.targets.find((target) => target.target === "jump_beef")!
     const upward = configuration.targets.find((target) => target.target === "pl_upward")!
     const crosshair = page.locator("[data-tf2-crosshair='authored']")

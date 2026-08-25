@@ -10,7 +10,7 @@ import { acquireMap } from "./targets"
 import { buildTf2Wasm } from "./tf2-wasm-build"
 import { buildSourceBundle } from "./source-bundle"
 import { TF2_CONFIGURED_STARTUP } from "@playsrc/game-tf2-browser/startup-presentation"
-import { TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS, TF2_PL_UPWARD_MAP_PHOTO_LOCATIONS, TF2_STAMP_BACKGROUND } from "@playsrc/game-tf2-browser/loading-presentation"
+import { TF2_MAP_LOADING, TF2_STAMP_BACKGROUND } from "@playsrc/game-tf2-browser/loading-presentation"
 import { TF2_TARGET_NAMES, type Tf2TargetName } from "../../../apps/web/tf2/src/deployment"
 
 const APPLICATION_PORT = Number(process.env.PLAYSRC_DEV_PORT ?? "4173")
@@ -114,12 +114,18 @@ export async function startDevelopment(config: LocalConfig, target: string | und
         dependencyLedger: sourceBundle.report.ledgerDescriptor,
       }),
       loading: Object.freeze({
-        mapPhotoLocations: name === "jump_beef" ? TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS : TF2_PL_UPWARD_MAP_PHOTO_LOCATIONS,
+        mapPhotoLocations: TF2_MAP_LOADING[name].photoLocations,
+        mapPhoto: TF2_MAP_LOADING[name].photo,
         stampBackground: TF2_STAMP_BACKGROUND,
       }),
     })
   })
-  const catalogSource = { application: "tf2", entries: targets.map(({ target, objects }) => ({ target, resources: objects.resources })), schema: "playsrc-resource-catalog-v1" }
+  const catalogSource = {
+    application: "tf2",
+    entries: targets.map(({ target, objects }) => ({ target, resources: objects.resources }))
+      .toSorted((left, right) => left.target.localeCompare(right.target)),
+    schema: "playsrc-resource-catalog-v1",
+  }
   const catalogBytes = canonicalGraphBytes(parseResourceCatalog(catalogSource))
   const catalog = descriptor("catalog", "application/vnd.playsrc.asset-catalog+json", catalogBytes)
   const wasmBytes = await readFile(wasmPath)
