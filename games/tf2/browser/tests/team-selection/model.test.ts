@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import {
   TF2_TEAM_SELECTION_INITIAL_STATE,
+  decodeTf2TeamSelectionServerState,
   transitionTf2TeamSelection,
   type Tf2TeamSelectionServerState,
 } from "../../src/team-selection"
@@ -21,6 +22,13 @@ const server = (overrides: Partial<Tf2TeamSelectionServerState> = {}): Tf2TeamSe
 })
 
 describe("Source TF2 team-selection state", () => {
+  test("decodes compact authoritative roster and rule facts without inventing players", () => {
+    expect(decodeTf2TeamSelectionServerState(0, 0, 0, 0b00001100)).toEqual(server())
+    expect(decodeTf2TeamSelectionServerState(2, 1, 0, 0b00011100)).toMatchObject({ localTeam: 2, redCount: 1, blueCount: 0, cancelVisible: true })
+    expect(() => decodeTf2TeamSelectionServerState(0, 1, 64, 0b00001100)).toThrow("inconsistent")
+    expect(() => decodeTf2TeamSelectionServerState(4, 0, 0, 0)).toThrow("malformed")
+  })
+
   test("starts unassigned with authoritative empty team counts and auto-assign focus", () => {
     const shown = transitionTf2TeamSelection(TF2_TEAM_SELECTION_INITIAL_STATE, { kind: "show", server: server() })
     expect(shown.state).toMatchObject({ visible: true, focused: "auto", server: { localTeam: 0, redCount: 0, blueCount: 0, cancelVisible: false } })

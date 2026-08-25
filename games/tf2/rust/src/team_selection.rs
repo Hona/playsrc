@@ -380,6 +380,53 @@ mod tests {
     }
 
     #[test]
+    fn roster_replacement_rejects_duplicate_missing_and_out_of_range_players_atomically() {
+        let mut state = TeamSelection::new(1, TeamRules::default()).unwrap();
+        let initial = state.snapshot();
+        assert_eq!(
+            state.replace_roster(vec![
+                RosterPlayer {
+                    identity: 1,
+                    team: PlayerTeam::Red
+                },
+                RosterPlayer {
+                    identity: 1,
+                    team: PlayerTeam::Blue
+                },
+            ]),
+            Err(TeamSelectionError::DuplicatePlayer)
+        );
+        assert_eq!(state.snapshot(), initial);
+        assert_eq!(
+            state.replace_roster(vec![RosterPlayer {
+                identity: 2,
+                team: PlayerTeam::Blue
+            }]),
+            Err(TeamSelectionError::MissingLocalPlayer)
+        );
+        assert_eq!(state.snapshot(), initial);
+    }
+
+    #[test]
+    fn mvm_disables_blu_and_respects_exact_defender_capacity() {
+        let mut state = TeamSelection::new(
+            1,
+            TeamRules {
+                mann_vs_machine: true,
+                defenders_team_size: 1,
+                ..TeamRules::default()
+            },
+        )
+        .unwrap();
+        assert!(state.snapshot().blue_disabled);
+        assert_eq!(
+            state.select(TeamChoice::Auto, false),
+            Ok(Some(PlayerTeam::Red))
+        );
+        assert!(state.snapshot().red_disabled);
+    }
+
+    #[test]
     fn spectator_permission_is_checked_against_live_state() {
         let mut state = TeamSelection::new(
             1,

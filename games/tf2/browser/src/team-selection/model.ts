@@ -43,6 +43,33 @@ export type Tf2TeamSelectionTransition = Readonly<{
   request: Tf2TeamSelectionRequest | null
 }>
 
+export function decodeTf2TeamSelectionServerState(
+  localTeam: number,
+  redCount: number,
+  blueCount: number,
+  flags: number,
+): Tf2TeamSelectionServerState {
+  if (![localTeam, redCount, blueCount, flags].every(Number.isSafeInteger)
+    || localTeam < 0 || localTeam > 3 || flags < 0 || flags > 255) {
+    throw new TypeError("TF2 authoritative team-selection snapshot is malformed")
+  }
+  const state: Tf2TeamSelectionServerState = Object.freeze({
+    localTeam: localTeam as Tf2TeamIdentity,
+    redCount,
+    blueCount,
+    redDisabled: Boolean(flags & 1),
+    blueDisabled: Boolean(flags & 2),
+    spectatorsVisible: Boolean(flags & 4),
+    autoAssignVisible: Boolean(flags & 8),
+    cancelVisible: Boolean(flags & 16),
+    highlander: Boolean(flags & 32),
+    teamsFull: Boolean(flags & 64),
+    teamsFullArrow: Boolean(flags & 128),
+  })
+  if (!validServer(state)) throw new TypeError("TF2 authoritative team-selection snapshot is inconsistent")
+  return state
+}
+
 export const TF2_TEAM_SELECTION_INITIAL_STATE: Tf2TeamSelectionState = Object.freeze({
   visible: false,
   server: null,
