@@ -5,7 +5,7 @@ import initializeWasm, { initThreadPool } from "./wasm-generated/tf2_wasm.js"
 
 const MAX_WASM_BYTES = 64 * 1024 * 1024
 const MAX_BSP_BYTES = 512 * 1024 * 1024
-const MAX_CONFIGURATION_BYTES = 512 * 1024 * 1024
+const MAX_CONFIGURATION_BYTES = 768 * 1024 * 1024
 const MAX_MESSAGE_BYTES = 512 * 1024 * 1024
 const MAX_PRESENTATION_BYTES = 512 * 1024 * 1024
 
@@ -159,7 +159,7 @@ function decodeResources(request: Extract<WorkerRequest, { kind: "decode-resourc
     return
   }
   const length = exports.playsrc_resource_length()
-  if (!Number.isSafeInteger(length) || length < 12 || length > MAX_MESSAGE_BYTES) {
+  if (!Number.isSafeInteger(length) || length < 12 || length > MAX_CONFIGURATION_BYTES) {
     fail(request.id, "InternalFailure")
     return
   }

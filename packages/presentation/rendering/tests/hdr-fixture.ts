@@ -20,7 +20,7 @@ const encoder = new TextEncoder()
 const hash = (bytes: Uint8Array): Uint8Array =>
   new Uint8Array(new Bun.CryptoHasher("sha256").update(bytes).digest())
 
-export function hdrFixture(styles: readonly number[] = [0]): HdrFixture {
+export function hdrFixture(styles: readonly number[] = [0], linearAttenuation = 0): HdrFixture {
   const bytes: number[] = []
   const u8 = (value: number) => bytes.push(value & 0xff)
   const u16 = (value: number) => bytes.push(value & 0xff, value >>> 8 & 0xff)
@@ -32,7 +32,7 @@ export function hdrFixture(styles: readonly number[] = [0]): HdrFixture {
   const text = (value: string) => sized(encoder.encode(value))
 
   raw(encoder.encode("PSMP"))
-  u32(4)
+  u32(7)
   u32(20)
   u32(731)
   u8(1)
@@ -80,7 +80,6 @@ export function hdrFixture(styles: readonly number[] = [0]): HdrFixture {
   text("materials/test.vtf")
   u32(1)
   u32(1)
-  sized(new Uint8Array([255, 255, 255, 255]))
   u32(0)
   u32(0)
 
@@ -169,7 +168,7 @@ export function hdrFixture(styles: readonly number[] = [0]): HdrFixture {
   i32(1)
   u8(0)
   raw([0, 0, 0])
-  for (const value of [0.9, 0.8, 1, 100, 1, 0, 0]) f32(value)
+  for (const value of [0.9, 0.8, 1, 100, 1, linearAttenuation, 0]) f32(value)
   i32(0)
   i32(-1)
   i32(-1)

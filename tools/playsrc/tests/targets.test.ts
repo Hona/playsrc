@@ -28,6 +28,18 @@ describe("map target registry", () => {
     })
   })
 
+  test("resolves the exact configured ctf_2fort installed-build identity", () => {
+    expect(resolveMapTarget("ctf_2fort")).toEqual({
+      logicalPath: "maps/ctf_2fort.bsp",
+      installed: {
+        contentBuild: "24245096",
+        provider: "game-09-tf",
+        byteLength: 22_751_863,
+        sha256: "cbd191411c0be57099da73458167001ec80d58bf37c71cb3c36b2911b6e80fd7",
+      },
+    })
+  })
+
   test("rejects missing, malformed, aliased, and undeclared targets", () => {
     for (const [identity, code] of [
       [undefined, "TargetMalformed"],

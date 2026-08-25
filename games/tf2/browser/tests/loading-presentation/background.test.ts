@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { resolveTf2LoadingBackground, TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS, TF2_STAMP_BACKGROUND, type Tf2LoadingAsset } from "../../src/loading-presentation"
+import { resolveTf2LoadingBackground, TF2_CTF_2FORT_MAP_PHOTO, TF2_CTF_2FORT_MAP_PHOTO_LOCATIONS, TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS, TF2_STAMP_BACKGROUND, type Tf2LoadingAsset } from "../../src/loading-presentation"
 
 const missing = TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS.map((location) => ({ location, outcome: "missing" as const }))
 const input = (width = 1_280, height = 720) => ({ generation: 1, mapIdentity: "jump_beef", viewport: { width, height }, mapPhotoLookups: missing, backingMaterial: TF2_STAMP_BACKGROUND.material, backingTexture: TF2_STAMP_BACKGROUND.texture })
@@ -18,6 +18,25 @@ describe("TF2 loading background resolution", () => {
       backgroundWidth: 960,
       disposition: "configured-generic",
     })
+  })
+
+  test("selects the exact configured ctf_2fort map photo from its indexed provider", () => {
+    const result = resolveTf2LoadingBackground({
+      ...input(),
+      mapIdentity: "ctf_2fort",
+      mapPhotoLookups: TF2_CTF_2FORT_MAP_PHOTO_LOCATIONS.map((location) =>
+        location.startsWith("game-04-tf2_misc_dir.vpk:")
+          ? { location, outcome: "found" as const, asset: TF2_CTF_2FORT_MAP_PHOTO.material }
+          : { location, outcome: "missing" as const }),
+    })
+    expect(result).toMatchObject({
+      ok: true,
+      mapIdentity: "ctf_2fort",
+      mapPhoto: TF2_CTF_2FORT_MAP_PHOTO.material,
+      disposition: "map-photo",
+      checkedLocations: TF2_CTF_2FORT_MAP_PHOTO_LOCATIONS,
+    })
+    expect(TF2_CTF_2FORT_MAP_PHOTO.texture.sha256).toBe("1ec1d0a675522d3245e72817d83f9292ea9c60bcfde8d40bfe1b38eff2c889ad")
   })
 
   test("uses the first resolved mounted candidate and retains all checked locations", () => {

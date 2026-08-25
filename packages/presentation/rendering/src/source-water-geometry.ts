@@ -84,6 +84,17 @@ export function sourceWaterTangentAttributes(input: SourceWaterGeometryInput): S
   const tangentS = new Float32Array(input.positions.length)
   const tangentT = new Float32Array(input.positions.length)
   const assigned = new Uint8Array(vertexCount)
+  const faceBases = new Map<number, Readonly<{ sourceT: Vector3; reverse: boolean }>>()
+  const pending = new Map<number, number>()
+  const assign = (index: number, face: number, sourceT: Vector3, reverse: boolean): void => {
+    if (assigned[index]) return
+    const normal = vertex(input.normals, index)
+    const firstTangent = normalize(cross(normal, sourceT), face)
+    const secondTangent = normalize(cross(firstTangent, normal), face)
+    tangentS.set(reverse ? firstTangent.map((component) => -component) : firstTangent, index * 3)
+    tangentT.set(secondTangent, index * 3)
+    assigned[index] = 1
+  }
   for (let triangle = 0; triangle < input.faces.length; triangle += 1) {
     const face = input.faces[triangle]!
     const plane = input.surfacePlanes.get(face)
@@ -99,6 +110,14 @@ export function sourceWaterTangentAttributes(input: SourceWaterGeometryInput): S
     const firstEdge = subtract(vertex(input.positions, second), vertex(input.positions, first))
     const secondEdge = subtract(vertex(input.positions, third), vertex(input.positions, first))
     const area = cross(firstEdge, secondEdge)
+    const squared = dot(area, area)
+    if (!Number.isFinite(squared)) throw new SourceWaterError(`Water surface ${face} has an invalid triangle area`)
+    if (squared === 0) {
+      for (const index of [first, second, third]) {
+        if (!assigned[index]) pending.set(index, face)
+      }
+      continue
+    }
     const sourceS = gradient(
       firstEdge,
       secondEdge,
@@ -116,15 +135,14 @@ export function sourceWaterTangentAttributes(input: SourceWaterGeometryInput): S
       face,
     )
     const reverse = dot([plane[0], plane[1], plane[2]], cross(sourceS, sourceT)) > 0
-    for (const index of [first, second, third]) {
-      if (assigned[index]) continue
-      const normal = vertex(input.normals, index)
-      const firstTangent = normalize(cross(normal, sourceT), face)
-      const secondTangent = normalize(cross(firstTangent, normal), face)
-      tangentS.set(reverse ? firstTangent.map((component) => -component) : firstTangent, index * 3)
-      tangentT.set(secondTangent, index * 3)
-      assigned[index] = 1
-    }
+    faceBases.set(face, Object.freeze({ sourceT, reverse }))
+    for (const index of [first, second, third]) assign(index, face, sourceT, reverse)
+  }
+  for (const [index, face] of pending) {
+    if (assigned[index]) continue
+    const basis = faceBases.get(face)
+    if (!basis) throw new SourceWaterError(`Water surface ${face} has no nondegenerate authored triangle`)
+    assign(index, face, basis.sourceT, basis.reverse)
   }
   if (assigned.some((value) => value === 0)) {
     throw new SourceWaterError("Water surface contains a vertex without an authored triangle")

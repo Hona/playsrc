@@ -16,6 +16,12 @@ pub enum ModelPresentationError {
     Invalid,
 }
 
+pub struct BuiltModelPresentation {
+    pub model: Box<PresentationModel>,
+    pub illumination_position: playsrc_studio_model::Vector3,
+    pub illumination_attachment: i32,
+}
+
 pub fn build_model(
     identity: &str,
     resources: &BTreeMap<String, &[u8]>,
@@ -23,7 +29,7 @@ pub fn build_model(
     resource_hashes: &BTreeMap<String, [u8; 32]>,
     integer_hdr: bool,
     profile: PresentationProfile,
-) -> Result<Box<PresentationModel>, ModelPresentationError> {
+) -> Result<BuiltModelPresentation, ModelPresentationError> {
     let document = load_model(identity, resources, model_resources)?;
     let mut responses = Vec::new();
     loop {
@@ -36,7 +42,13 @@ pub fn build_model(
         )
         .map_err(|_| ModelPresentationError::Invalid)?
         {
-            PresentationModelBuild::Complete(model) => return Ok(model),
+            PresentationModelBuild::Complete(model) => {
+                return Ok(BuiltModelPresentation {
+                    model,
+                    illumination_position: document.bounds.illumination,
+                    illumination_attachment: document.illumination_attachment,
+                });
+            }
             PresentationModelBuild::Needs(requests) => {
                 for request in requests {
                     let path = request.logical_path.to_ascii_lowercase();

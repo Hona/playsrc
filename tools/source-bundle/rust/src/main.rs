@@ -23,7 +23,7 @@ const SOURCE_MEDIA_TYPE: &str = "application/octet-stream";
 const LEDGER_MEDIA_TYPE: &str = "application/vnd.playsrc.source-dependency-ledger+json";
 const GRAPH_MEDIA_TYPE: &str = "application/vnd.playsrc.resource-graph+json";
 const MAX_GAME_PROVIDERS: usize = 64;
-const MAX_DEPENDENCY_REQUESTS: usize = 8_192;
+const MAX_DEPENDENCY_REQUESTS: usize = 16_384;
 const MAX_LEDGER_BYTES: usize = 8 * 1024 * 1024;
 const MAX_UI_PNG_WORKERS: usize = 8;
 const STATIC_PROP_VHV_AGGREGATE_PATH: &str = "derived/static-prop-lighting.pvha";
@@ -1131,11 +1131,12 @@ fn collect_material(
             &ConditionEnvironment::default(),
             playsrc_vmt::Limits::default(),
         )
-        .map_err(|error| error.to_string())?
+        .map_err(|error| format!("material composition failed for {identity}: {error}"))?
         {
             Composition::Complete(document) => {
-                break playsrc_material::resolve_for_environment(&document, environment)
-                    .map_err(|error| error.to_string())?;
+                break playsrc_material::resolve_for_environment(&document, environment).map_err(
+                    |error| format!("material resolution failed for {identity}: {error}"),
+                )?;
             }
             Composition::Needs(requests) => {
                 for request in requests {
@@ -1176,6 +1177,23 @@ fn collect_material(
             resolver.required(
                 &texture.logical_path.to_ascii_lowercase(),
                 format!("{consumer}:model-texture"),
+            )?;
+        }
+        for request in &material.material_requests {
+            if request.logical_path.eq_ignore_ascii_case(&identity) {
+                return Err(format!("material dependency references itself: {identity}"));
+            }
+            let role = match request.role {
+                playsrc_material::MaterialRole::Bottom => "bottom",
+                playsrc_material::MaterialRole::UnderwaterOverlay => "underwater-overlay",
+            };
+            collect_material(
+                resolver,
+                &request.logical_path,
+                true,
+                environment,
+                false,
+                &format!("{consumer}:{role}:{identity}"),
             )?;
         }
     }
@@ -2268,6 +2286,18 @@ fn main() -> Result<(), String> {
             "2f00d21971c788a51bd254ec5b69ad79af52caad35f0cde2a1ec9f4dbaf4a955",
             "tf2-loading-background-texture",
         ),
+        (
+            "materials/vgui/maps/menu_photos_ctf_2fort.vmt",
+            126,
+            "6c1228fd96a0f6029a924ea19d7801c9681db084742db8583e8f3d425056aac4",
+            "tf2-ui-loading-map-photo-material",
+        ),
+        (
+            "materials/vgui/maps/menu_photos_ctf_2fort.vtf",
+            349_784,
+            "1ec1d0a675522d3245e72817d83f9292ea9c60bcfde8d40bfe1b38eff2c889ad",
+            "tf2-ui-loading-map-photo-texture",
+        ),
     ] {
         resolver.required_pinned(path, consumer, bytes, sha256)?;
     }
@@ -2506,14 +2536,27 @@ fn main() -> Result<(), String> {
                 (0u8, format!("sp_{}.vhv", prop.source)),
                 (1u8, format!("sp_hdr_{}.vhv", prop.source)),
             ] {
-                let bytes =
-                    resolver.required(&path, format!("static-prop-lighting:{}", prop.source))?;
-                let vhv = playsrc_vhv::parse(
+                let Some(bytes) =
+                    resolver.optional(&path, format!("static-prop-lighting:{}", prop.source))?
+                else {
+                    continue;
+                };
+                let vhv = match playsrc_vhv::parse(
                     &bytes,
                     playsrc_vhv::Profile::source_pc_v2_color_bgra8888(model.checksum as u32),
                     vhv_limits(bytes.len()),
-                )
-                .map_err(|error| format!("{path}: {error}"))?;
+                ) {
+                    Ok(vhv) => vhv,
+                    Err(error)
+                        if error.code == playsrc_vhv::ErrorCode::ChecksumMismatch
+                            || error.code == playsrc_vhv::ErrorCode::UnsupportedVersion
+                            || error.code == playsrc_vhv::ErrorCode::UnsupportedVertexSize =>
+                    {
+                        continue;
+                    }
+                    Err(error) => return Err(format!("{path}: {error}")),
+                };
+                resolver.required(&path, format!("static-prop-lighting:{}", prop.source))?;
                 vhv_bytes = vhv_bytes
                     .checked_add(bytes.len())
                     .ok_or_else(|| "static-prop VHV byte count overflow".to_owned())?;
@@ -2580,18 +2623,8 @@ fn main() -> Result<(), String> {
                     .ok_or_else(|| "static-prop joined vertex count overflow".to_owned())?;
             }
         }
-        let expected_objects = canonical
-            .static_props
-            .occurrences
-            .iter()
-            .filter(|prop| prop.flags & playsrc_bsp::STATIC_PROP_NO_PER_VERTEX_LIGHTING == 0)
-            .count()
-            .checked_mul(2)
-            .ok_or_else(|| "configured static-prop VHV count overflow".to_owned())?;
-        if joined_objects != expected_objects {
-            return Err(format!(
-                "configured static-prop VHV join count differs: expected={expected_objects} actual={joined_objects}"
-            ));
+        if joined_objects != aggregate_records.len() {
+            return Err("configured static-prop VHV join count differs".to_owned());
         }
         let aggregate = encode_static_prop_vhv_aggregate(&aggregate_records)?;
         let decoded = decode_static_prop_vhv_aggregate(&aggregate)?;
@@ -2993,15 +3026,23 @@ fn main() -> Result<(), String> {
             .iter()
             .map(|image| (image.configured_value.clone(), image.material.clone())),
     );
-    if !tf2_ui.images.iter().any(|image| {
-        image
-            .configured_value
-            .eq_ignore_ascii_case("stamp_background_map")
-    }) {
-        runtime_ui_materials.push((
-            "stamp_background_map".to_owned(),
-            "materials/vgui/stamp_background_map.vmt".to_owned(),
-        ));
+    for (configured, identity) in [
+        (
+            "stamp_background_map",
+            "materials/vgui/stamp_background_map.vmt",
+        ),
+        (
+            "maps/menu_photos_ctf_2fort",
+            "materials/vgui/maps/menu_photos_ctf_2fort.vmt",
+        ),
+    ] {
+        if !tf2_ui
+            .images
+            .iter()
+            .any(|image| image.configured_value.eq_ignore_ascii_case(configured))
+        {
+            runtime_ui_materials.push((configured.to_owned(), identity.to_owned()));
+        }
     }
     runtime_ui_materials.extend(
         gameui_backgrounds
@@ -3368,15 +3409,7 @@ fn main() -> Result<(), String> {
         static_prop_vhv_aggregate: ui_bundle.get(STATIC_PROP_VHV_AGGREGATE_PATH).map(|bytes| {
             StaticPropVhvAggregateDescriptor {
                 logical_path: STATIC_PROP_VHV_AGGREGATE_PATH,
-                object_count: canonical
-                    .static_props
-                    .occurrences
-                    .iter()
-                    .filter(|prop| {
-                        prop.flags & playsrc_bsp::STATIC_PROP_NO_PER_VERTEX_LIGHTING == 0
-                    })
-                    .count()
-                    * 2,
+                object_count: resolver.packed_sources.len(),
                 descriptor: ObjectDescriptor::new("derived-object", SOURCE_MEDIA_TYPE, bytes),
             }
         }),

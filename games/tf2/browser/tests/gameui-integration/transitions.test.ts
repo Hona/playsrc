@@ -33,9 +33,9 @@ function stateTable(): Record<Tf2GameUiState["kind"], Tf2GameUiState> {
 }
 
 describe("TF2 GameUI map-command ownership", () => {
-  test("accepts both map commands after startup loading fails", () => {
+  test("accepts every configured map command after startup loading fails", () => {
     const failure = stateTable().failure
-    for (const mapIdentity of ["pl_upward", "jump_beef"] as const) {
+    for (const mapIdentity of ["pl_upward", "jump_beef", "ctf_2fort"] as const) {
       const transition = transitionTf2GameUi(failure, { kind: "map", mapIdentity })
       expect(transition.disposition, mapIdentity).toBe("applied")
       expect(transition.state, mapIdentity).toBe(failure)
@@ -51,9 +51,9 @@ describe("TF2 GameUI map-command ownership", () => {
     expect(transition.request).toEqual({ kind: "load-map", mapIdentity: "pl_upward" })
   })
 
-  test("publishes both map requests and accepts owner loading starts in all six states", () => {
+  test("publishes every configured map request and accepts owner loading starts in all six states", () => {
     for (const [kind, state] of Object.entries(stateTable()) as [Tf2GameUiState["kind"], Tf2GameUiState][]) {
-      for (const mapIdentity of ["jump_beef", "pl_upward"] as const) {
+      for (const mapIdentity of ["jump_beef", "pl_upward", "ctf_2fort"] as const) {
         const request = transitionTf2GameUi(state, { kind: "map", mapIdentity })
         expect(request.disposition, `${kind}:${mapIdentity}`).toBe("applied")
         expect(request.state, `${kind}:${mapIdentity}`).toBe(state)

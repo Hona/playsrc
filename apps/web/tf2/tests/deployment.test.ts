@@ -12,6 +12,7 @@ const release = {
   targets: [
     { target: "jump_beef", contentBuild: TF2_CONTENT_BUILD.contentBuild, objects: { bsp: object("source-object", "b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959", "application/octet-stream", "33379388"), resources: object("source-root", "c", "application/vnd.playsrc.resource-graph+json"), dependencyLedger: object("derived-object", "d", "application/vnd.playsrc.source-dependency-ledger+json") } },
     { target: "pl_upward", contentBuild: TF2_CONTENT_BUILD.contentBuild, objects: { bsp: object("source-object", "15cbf91981b0d9902c645d1992d196b7e630742aa85111ed834d231f3c3a5709", "application/octet-stream", "25446018"), resources: object("source-root", "e", "application/vnd.playsrc.resource-graph+json"), dependencyLedger: object("derived-object", "f", "application/vnd.playsrc.source-dependency-ledger+json") } },
+    { target: "ctf_2fort", contentBuild: TF2_CONTENT_BUILD.contentBuild, objects: { bsp: object("source-object", "cbd191411c0be57099da73458167001ec80d58bf37c71cb3c36b2911b6e80fd7", "application/octet-stream", "22751863"), resources: object("source-root", "1", "application/vnd.playsrc.resource-graph+json"), dependencyLedger: object("derived-object", "2", "application/vnd.playsrc.source-dependency-ledger+json") } },
   ],
 }
 
@@ -21,18 +22,19 @@ describe("TF2 production release", () => {
     expect(landing).toContain("<button type=\"button\" disabled>Half-Life 2</button>")
   })
 
-  test("admits the checked dual-map descriptor", () => {
+  test("admits every checked configured map descriptor", () => {
     const parsed = parseTf2Release(checkedRelease)
     expect(parsed.defaultTarget).toBe("jump_beef")
-    expect(parsed.targets.map((target) => target.target)).toEqual(["jump_beef", "pl_upward"])
+    expect(parsed.targets.map((target) => target.target)).toEqual(["jump_beef", "pl_upward", "ctf_2fort"])
     expect(parsed.targets[1].objects.bsp.sha256).toBe("15cbf91981b0d9902c645d1992d196b7e630742aa85111ed834d231f3c3a5709")
+    expect(parsed.targets[2].objects.bsp.sha256).toBe("cbd191411c0be57099da73458167001ec80d58bf37c71cb3c36b2911b6e80fd7")
   })
 
-  test("builds one exact dual-map browser configuration", () => {
+  test("builds one exact configured-map browser configuration", () => {
     const configuration = createDeployedBrowserConfiguration(parseTf2Release(release), "f".repeat(64))
     expect(configuration.assetOrigin).toBe(TF2_ASSET_ORIGIN)
     expect(configuration.defaultTarget).toBe("jump_beef")
-    expect(configuration.targets.map((target) => target.target)).toEqual(["jump_beef", "pl_upward"])
+    expect(configuration.targets.map((target) => target.target)).toEqual(["jump_beef", "pl_upward", "ctf_2fort"])
   })
 
   test("rejects old shape, missing, duplicate, swapped, malformed and changed descriptors", () => {
@@ -40,7 +42,7 @@ describe("TF2 production release", () => {
       { schema: "playsrc-tf2-release-v1", target: "jump_beef", contentBuild: TF2_CONTENT_BUILD.contentBuild, objects: {} },
       { ...release, targets: release.targets.slice(0, 1) },
       { ...release, targets: [release.targets[0], release.targets[0]] },
-      { ...release, targets: [release.targets[1], release.targets[0]] },
+      { ...release, targets: [release.targets[1], release.targets[0], release.targets[2]] },
       { ...release, targets: release.targets.map((target) => ({ ...target, objects: { ...target.objects, resources: release.targets[0].objects.resources } })) },
       { ...release, objects: { ...release.objects, wasm: { ...release.objects.wasm, byteLength: "536870913" } } },
       { ...release, objects: { ...release.objects, wasm: { ...release.objects.wasm, mediaType: "application/wasm" } } },

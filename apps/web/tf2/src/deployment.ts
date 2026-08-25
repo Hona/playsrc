@@ -1,6 +1,6 @@
 import type { ObjectDescriptor } from "@playsrc/asset-store"
 import { TF2_CONTENT_BUILD } from "@playsrc/game-tf2-browser/content-build"
-import { TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS, TF2_PL_UPWARD_MAP_PHOTO_LOCATIONS, TF2_STAMP_BACKGROUND } from "@playsrc/game-tf2-browser/loading-presentation"
+import { TF2_MAP_LOADING, TF2_STAMP_BACKGROUND } from "@playsrc/game-tf2-browser/loading-presentation"
 import { TF2_CONFIGURED_STARTUP } from "@playsrc/game-tf2-browser/startup-presentation"
 import type { BrowserConfiguration } from "./config"
 
@@ -9,7 +9,7 @@ const HASH = /^[0-9a-f]{64}$/
 export const TF2_RELEASE_SCHEMA = "playsrc-tf2-release-v2" as const
 export const TF2_APPLICATION_ORIGIN = "https://playsrc.online"
 export const TF2_ASSET_ORIGIN = "https://assets.playsrc.online"
-export const TF2_TARGET_NAMES = Object.freeze(["jump_beef", "pl_upward"] as const)
+export const TF2_TARGET_NAMES = Object.freeze(["jump_beef", "pl_upward", "ctf_2fort"] as const)
 export type Tf2TargetName = (typeof TF2_TARGET_NAMES)[number]
 
 export type Tf2ReleaseTarget = Readonly<{
@@ -32,6 +32,7 @@ export type Tf2Release = Readonly<{
 const EXPECTED_BSP = Object.freeze({
   jump_beef: Object.freeze({ byteLength: "33379388", sha256: "b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959" }),
   pl_upward: Object.freeze({ byteLength: "25446018", sha256: "15cbf91981b0d9902c645d1992d196b7e630742aa85111ed834d231f3c3a5709" }),
+  ctf_2fort: Object.freeze({ byteLength: "22751863", sha256: "cbd191411c0be57099da73458167001ec80d58bf37c71cb3c36b2911b6e80fd7" }),
 })
 
 export function parseTf2Release(value: unknown): Tf2Release {
@@ -109,7 +110,8 @@ export function createDeployedBrowserConfiguration(release: Tf2Release, applicat
 
 function loadingDescriptor(target: Tf2TargetName): BrowserConfiguration["targets"][number]["loading"] {
   return Object.freeze({
-    mapPhotoLocations: target === "jump_beef" ? TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS : TF2_PL_UPWARD_MAP_PHOTO_LOCATIONS,
+    mapPhotoLocations: TF2_MAP_LOADING[target].photoLocations,
+    mapPhoto: TF2_MAP_LOADING[target].photo,
     stampBackground: TF2_STAMP_BACKGROUND,
   })
 }

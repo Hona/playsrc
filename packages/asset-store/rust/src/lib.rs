@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 
 pub const MAX_CHUNK_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_CHUNK_ENTRIES: usize = 2_048;
-pub const MAX_GRAPH_ENTRIES: usize = 4_096;
+pub const MAX_GRAPH_ENTRIES: usize = 8_192;
 pub const MAX_LOGICAL_PATH_BYTES: usize = 4_096;
 pub const LARGE_RESOURCE_BYTES: usize = 4 * 1024 * 1024;
 const COMPRESSION_PERCENT: usize = 95;
@@ -523,7 +523,7 @@ pub fn decode_batch(bytes: &[u8]) -> Result<Vec<DecodedEntry>, GraphError> {
 }
 
 pub fn encode_resource_set(entries: &[DecodedEntry]) -> Result<Vec<u8>, GraphError> {
-    if entries.is_empty() || entries.len() > 4_096 {
+    if entries.is_empty() || entries.len() > MAX_GRAPH_ENTRIES {
         return Err(GraphError::BoundExceeded);
     }
     let mut output = Vec::new();

@@ -96,7 +96,7 @@ export function parseSourceBundleReport(output: string, target: string): SourceB
     || (report.providers as number) > 65
     || !Number.isSafeInteger(report.requests)
     || (report.requests as number) < 1
-    || (report.requests as number) > 8_192
+    || (report.requests as number) > 16_384
     || !Number.isSafeInteger(report.authoritativeAbsences)
     || (report.authoritativeAbsences as number) < 0
     || (report.authoritativeAbsences as number) > (report.requests as number)
@@ -189,11 +189,14 @@ async function readVerifiedGraph(
   report: SourceBundleArtifact["report"],
 ): Promise<Readonly<{ graph: ResourceGraph | null; error?: string }>> {
   try {
-    const [graphBytes, ledger] = await Promise.all([
+    const [graphBytes, ledgerBytes] = await Promise.all([
       readFile(paths.graphPath),
-      stat(paths.ledgerPath),
+      readFile(paths.ledgerPath),
     ])
-    if (graphBytes.byteLength !== Number(report.graphDescriptor.byteLength) || sha256(graphBytes) !== report.graphDescriptor.sha256 || !ledger.isFile() || ledger.size !== Number(report.ledgerDescriptor.byteLength)) return Object.freeze({ graph: null, error: "root or ledger descriptor differs" })
+    if (graphBytes.byteLength !== Number(report.graphDescriptor.byteLength) || sha256(graphBytes) !== report.graphDescriptor.sha256
+      || ledgerBytes.byteLength !== Number(report.ledgerDescriptor.byteLength) || sha256(ledgerBytes) !== report.ledgerDescriptor.sha256) {
+      return Object.freeze({ graph: null, error: "root or ledger descriptor differs" })
+    }
     const graph = parseResourceGraphBytes(graphBytes)
     if (graph.chunks.length !== report.graphChunks || graph.chunks.reduce((total, chunk) => total + Number(chunk.encodedByteLength), 0) !== report.graphEncodedBytes) return Object.freeze({ graph: null, error: "chunk totals differ" })
     const objects = await Promise.all(graph.chunks.map((chunk) => stat(path.join(paths.graphObjectDirectory, chunk.encodedSha256))))
@@ -232,12 +235,13 @@ export async function buildSourceBundle(config: LocalConfig, target: string): Pr
   )
   const generatorSha256 = sha256(await readFile(generatorPath))
   const directory = path.join(config.sourceCacheDir, "browser-bundles")
+  const snapshotDirectory = path.join(directory, "generators", generatorSha256)
   const paths = Object.freeze({
-    graphPath: path.join(directory, `${target}.graph.json`),
+    graphPath: path.join(snapshotDirectory, `${target}.graph.json`),
     graphObjectDirectory: path.join(directory, `${target}.graph`, "objects"),
-    ledgerPath: path.join(directory, `${target}.dependencies.json`),
+    ledgerPath: path.join(snapshotDirectory, `${target}.dependencies.json`),
   })
-  const cachePath = path.join(directory, `${target}.source-bundle-cache.json`)
+  const cachePath = path.join(snapshotDirectory, `${target}.source-bundle-cache.json`)
   try {
     const cached = parseSourceBundleCache(await readFile(cachePath, "utf8"), target, generatorSha256)
     const cachedGraph = cached ? await readVerifiedGraph(paths, cached) : null
@@ -255,15 +259,31 @@ export async function buildSourceBundle(config: LocalConfig, target: string): Pr
   const output = await new Response(child.stdout).text()
   if (await child.exited !== 0) throw new Error("source bundle build failed")
   const report = parseSourceBundleReport(output, target)
+  const generated = Object.freeze({
+    graphPath: path.join(directory, `${target}.graph.json`),
+    graphObjectDirectory: paths.graphObjectDirectory,
+    ledgerPath: path.join(directory, `${target}.dependencies.json`),
+  })
+  const generatedGraph = await readVerifiedGraph(generated, report)
+  if (!generatedGraph.graph) throw new Error(`resource graph artifacts differ from their report: ${generatedGraph.error}`)
+  const [graphBytes, ledgerBytes] = await Promise.all([readFile(generated.graphPath), readFile(generated.ledgerPath)])
+  if (sha256(graphBytes) !== report.graphDescriptor.sha256 || sha256(ledgerBytes) !== report.ledgerDescriptor.sha256) {
+    throw new Error("source bundle changed during generator-qualified snapshot")
+  }
+  await mkdir(snapshotDirectory, { recursive: true })
+  await Promise.all([
+    writeFile(paths.graphPath, graphBytes),
+    writeFile(paths.ledgerPath, ledgerBytes),
+  ])
   const verified = await readVerifiedGraph(paths, report)
-  if (!verified.graph) throw new Error(`resource graph artifacts differ from their report: ${verified.error}`)
+  if (!verified.graph) throw new Error(`resource graph snapshot differs from its report: ${verified.error}`)
   const graph = verified.graph
   const cache: SourceBundleCache = Object.freeze({
     schema: "playsrc-resource-graph-cache-v1",
     generatorSha256,
     report: JSON.parse(output) as SourceBundleReport,
   })
-  await mkdir(directory, { recursive: true })
+  await mkdir(snapshotDirectory, { recursive: true })
   const temporary = `${cachePath}.${process.pid}.tmp`
   try {
     await writeFile(temporary, `${JSON.stringify(cache)}\n`)

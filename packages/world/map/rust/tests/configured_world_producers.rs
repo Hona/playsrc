@@ -15,6 +15,7 @@ use std::{collections::BTreeSet, fs, path::PathBuf};
 
 const JUMP_BEEF_SHA256: &str = "b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959";
 const PL_UPWARD_SHA256: &str = "15cbf91981b0d9902c645d1992d196b7e630742aa85111ed834d231f3c3a5709";
+const CTF_2FORT_SHA256: &str = "cbd191411c0be57099da73458167001ec80d58bf37c71cb3c36b2911b6e80fd7";
 const FAILING_JUMP_BEEF_CAMERA: [f32; 3] = [
     f32::from_bits(0xc51c_783d),
     f32::from_bits(0x4622_6b1e),
@@ -31,7 +32,7 @@ struct LocalConfig {
 }
 
 #[test]
-#[ignore = "requires playsrc.local.json and both exact configured TF2 maps"]
+#[ignore = "requires playsrc.local.json and all exact configured TF2 maps"]
 fn configured_maps_preserve_controller_independent_sky_and_complete_world_producers() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
@@ -59,6 +60,11 @@ fn configured_maps_preserve_controller_independent_sky_and_complete_world_produc
             "pl_upward",
             PL_UPWARD_SHA256,
             PathBuf::from(&configuration.tf2_dir).join("maps/pl_upward.bsp"),
+        ),
+        (
+            "ctf_2fort",
+            CTF_2FORT_SHA256,
+            PathBuf::from(&configuration.tf2_dir).join("maps/ctf_2fort.bsp"),
         ),
     ] {
         let bytes = fs::read(&path).unwrap_or_else(|error| {
@@ -206,6 +212,25 @@ fn configured_maps_preserve_controller_independent_sky_and_complete_world_produc
             );
             assert!(!flagged_view.outside_world);
             assert_eq!(flagged_view.sky, SkyVisibility::Sky3d);
+            continue;
+        }
+
+        if name == "ctf_2fort" {
+            assert_eq!(bytes.len(), 22_751_863);
+            assert_eq!(bsp.map_revision, 4067);
+            assert_eq!(bsp.lumps[0].bytes(&bsp).len(), 314_566);
+            assert_eq!(entities.entities.len(), 1097);
+            assert_eq!(collision.brushes.len(), 5676);
+            assert_eq!(collision.models.len(), 148);
+            assert_eq!(visibility.leaves.len(), 7971);
+            assert_eq!(visibility.cluster_count, 2489);
+            assert_eq!(visibility.areas.len(), 20);
+            assert_eq!(flags, [4107, 0, 5248]);
+            assert_eq!(map.static_props.occurrences.len(), 2265);
+            assert_eq!(map.collision_displacements.len(), 232);
+            assert!(!authored_sky_cameras.is_empty());
+            assert!(!sky_controllers.is_empty());
+            assert!(!map.lighting.surfaces.is_empty());
             continue;
         }
 

@@ -33,8 +33,8 @@ test("profile bounded dual-map noclip gameplay coverage", async ({ page, browser
   const configurationResponse = await page.request.get("/playsrc-config.json")
   expect(configurationResponse.status()).toBe(200)
   const configuration = await configurationResponse.json() as { defaultTarget: string; targets: readonly { target: string }[] }
-  if (configuration.targets.length !== 2 || configuration.targets.map((target) => target.target).join(",") !== "jump_beef,pl_upward") {
-    throw new Error("current dual-map catalog differs")
+  if (configuration.targets.length !== 3 || configuration.targets.map((target) => target.target).join(",") !== "jump_beef,pl_upward,ctf_2fort") {
+    throw new Error("current map catalog differs")
   }
   const target = configuration.defaultTarget
   const secondary = configuration.targets.find((candidate) => candidate.target !== target)?.target

@@ -17,6 +17,7 @@ pub enum Shader {
     LightmappedGeneric,
     VertexLitGeneric,
     UnlitGeneric,
+    UnlitTwoTexture,
     WorldVertexTransition,
     Water,
     Refract,
@@ -419,6 +420,11 @@ pub fn resolve_for_environment(
             first.entry(lower(&key)).or_insert(value);
         }
     }
+    let second_texture_parameter = if shader == Shader::UnlitTwoTexture {
+        b"$texture2".as_slice()
+    } else {
+        b"$basetexture2".as_slice()
+    };
     let specs = [
         (b"$basetexture".as_slice(), TextureRole::Base),
         (b"$hdrbasetexture", TextureRole::HdrBase),
@@ -426,7 +432,7 @@ pub fn resolve_for_environment(
         (b"$hdrcompressedtexture0", TextureRole::HdrCompressed0),
         (b"$hdrcompressedtexture1", TextureRole::HdrCompressed1),
         (b"$hdrcompressedtexture2", TextureRole::HdrCompressed2),
-        (b"$basetexture2", TextureRole::Base2),
+        (second_texture_parameter, TextureRole::Base2),
         (b"$bumpmap", TextureRole::Bump),
         (b"$normalmap", TextureRole::Normal),
         (b"$bumpmap2", TextureRole::Bump2),
@@ -692,7 +698,9 @@ fn static_state_with_alpha(
         }
         Shader::VertexLitGeneric => LightingModel::VertexLit,
         Shader::Sprite if material.particle.is_some() => LightingModel::Particle,
-        Shader::UnlitGeneric | Shader::Sprite | Shader::Refract => LightingModel::Unlit,
+        Shader::UnlitGeneric | Shader::UnlitTwoTexture | Shader::Sprite | Shader::Refract => {
+            LightingModel::Unlit
+        }
         Shader::Water => LightingModel::Water,
         Shader::SkyLdr | Shader::SkyHdr => LightingModel::Sky,
         Shader::Unsupported if material.model.is_some() => LightingModel::VertexLit,
@@ -1039,6 +1047,12 @@ fn selected_textures(
     if matches!(shader, Shader::SkyLdr) && !has(TextureRole::Base) {
         return Err(error(ErrorCode::MissingProfileTexture, None));
     }
+    if shader == Shader::UnlitTwoTexture {
+        if !has(TextureRole::Base) || !has(TextureRole::Base2) {
+            return Err(error(ErrorCode::MissingProfileTexture, None));
+        }
+        return Ok(vec![TextureRole::Base, TextureRole::Base2]);
+    }
     let _ = environment;
     Ok(has(TextureRole::Base)
         .then_some(TextureRole::Base)
@@ -1087,8 +1101,12 @@ fn texture_use_states(
                 | TextureRole::HdrCompressed
                 | TextureRole::HdrCompressed0
                 | TextureRole::HdrCompressed1
-                | TextureRole::HdrCompressed2
-                | TextureRole::Base2 => Some(b"$basetexturetransform".as_slice()),
+                | TextureRole::HdrCompressed2 => Some(b"$basetexturetransform".as_slice()),
+                TextureRole::Base2 => Some(if texture.parameter == b"$texture2" {
+                    b"$texture2transform".as_slice()
+                } else {
+                    b"$basetexturetransform".as_slice()
+                }),
                 TextureRole::Bump | TextureRole::Normal => Some(b"$bumptransform".as_slice()),
                 TextureRole::Bump2 => Some(b"$bumptransform2".as_slice()),
                 TextureRole::EnvironmentMask => Some(b"$envmapmasktransform".as_slice()),
@@ -1390,9 +1408,8 @@ pub(crate) fn color_or(
         .map_err(|_| error(ErrorCode::InvalidParameter, Some(parameter.to_vec())))?
         .trim();
     let byte_color = text.starts_with('{') && text.ends_with('}');
-    let content = if (text.starts_with('[') && text.ends_with(']'))
-        || (text.starts_with('{') && text.ends_with('}'))
-    {
+    let vector = (text.starts_with('[') && text.ends_with(']')) || byte_color;
+    let content = if vector {
         &text[1..text.len() - 1]
     } else {
         text
@@ -1407,7 +1424,7 @@ pub(crate) fn color_or(
     {
         return Err(error(ErrorCode::InvalidParameter, Some(parameter.to_vec())));
     }
-    if values.len() == 1 && !byte_color && !text.starts_with('[') {
+    if values.len() == 1 && !vector {
         return Ok([values[0]; 3]);
     }
     if !(3..=4).contains(&values.len()) {
@@ -1459,6 +1476,8 @@ fn shader(v: &[u8]) -> Shader {
         Shader::VertexLitGeneric
     } else if v.eq_ignore_ascii_case(b"UnlitGeneric") {
         Shader::UnlitGeneric
+    } else if v.eq_ignore_ascii_case(b"UnlitTwoTexture") {
+        Shader::UnlitTwoTexture
     } else if v.eq_ignore_ascii_case(b"WorldVertexTransition") {
         Shader::WorldVertexTransition
     } else if v.eq_ignore_ascii_case(b"Water") {
@@ -1817,6 +1836,76 @@ mod tests {
         .unwrap_err();
         assert_eq!(decal.code, ErrorCode::InvalidParameter);
         assert_eq!(decal.parameter.as_deref(), Some(b"$decalscale".as_slice()));
+    }
+
+    #[test]
+    fn unlit_two_texture_models_select_both_authored_srgb_inputs() {
+        let selected = material(
+            br#"UnlitTwoTexture {
+                "$basetexture" "models/props_skybox/sun_ray1"
+                "$texture2" "models/props_skybox/sun_ray2"
+                "$model" "1"
+                "$translucent" "1"
+                "$additive" "1"
+                Proxies {
+                    TextureScroll { "texturescrollvar" "$basetexturetransform" "texturescrollrate" ".03" "texturescrollangle" "0" }
+                    TextureScroll { "texturescrollvar" "$texture2transform" "texturescrollrate" "-.03" "texturescrollangle" "0" }
+                }
+            }"#,
+            SelectionEnvironment {
+                model: true,
+                ..SelectionEnvironment::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(selected.shader, Shader::UnlitTwoTexture);
+        assert_eq!(
+            selected.selected_textures,
+            [TextureRole::Base, TextureRole::Base2]
+        );
+        assert!(
+            selected
+                .textures
+                .iter()
+                .all(|texture| texture.color_read == TextureColorRead::Srgb)
+        );
+        assert_eq!(
+            selected.model.as_ref().unwrap().shader,
+            ModelShader::UnlitTwoTexture
+        );
+        assert!(selected.model.as_ref().unwrap().vertex_requirements.normal);
+        assert!(
+            !selected
+                .model
+                .as_ref()
+                .unwrap()
+                .vertex_requirements
+                .ambient_cube
+        );
+        let second = selected
+            .texture_uses
+            .iter()
+            .find(|value| value.role == TextureRole::Base2)
+            .unwrap();
+        assert_eq!(
+            second.transform.as_ref().unwrap().parameter,
+            b"$texture2transform"
+        );
+        assert!(second.transform.as_ref().unwrap().proxy_mutated);
+    }
+
+    #[test]
+    fn scalar_color_parameters_broadcast_to_all_shader_components() {
+        let selected = material(
+            br#"VertexLitGeneric {
+                "$basetexture" "models/props_spytech/railing_stairs001"
+                "$envmap" "env_cubemap"
+                "$envmaptint" ".8"
+            }"#,
+            SelectionEnvironment::default(),
+        )
+        .unwrap();
+        assert_eq!(selected.environment_map.unwrap().tint, [0.8; 3]);
     }
 
     #[test]

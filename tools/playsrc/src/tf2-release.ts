@@ -26,7 +26,10 @@ export class Tf2ReleaseError extends Error {
 async function ensureLocalObject(root: string, expected: ObjectDescriptor, pathname: string): Promise<void> {
   try { await verifyObject(root, expected); return }
   catch (error) { if (!(error instanceof AssetStoreError) || error.code !== "MissingObject") throw error }
-  await putObject(root, expected, await readFile(pathname))
+  try { await putObject(root, expected, await readFile(pathname)) }
+  catch (error) {
+    throw new Tf2ReleaseError(`local object ${expected.sha256} from ${path.basename(pathname)} differs: ${error instanceof Error ? error.message : String(error)}`)
+  }
 }
 
 export async function prepareTf2Release(config: LocalConfig, target: string | undefined): Promise<Tf2ReleaseArtifact> {
@@ -39,7 +42,8 @@ export async function prepareTf2Release(config: LocalConfig, target: string | un
   const wasmBytes = await readFile(wasmPath)
   const catalogBytes = canonicalGraphBytes({
     application: "tf2",
-    entries: prepared.map(({ name, sourceBundle }) => ({ target: name, resources: sourceBundle.report.graphDescriptor })),
+    entries: prepared.map(({ name, sourceBundle }) => ({ target: name, resources: sourceBundle.report.graphDescriptor }))
+      .toSorted((left, right) => left.target.localeCompare(right.target)),
     schema: "playsrc-resource-catalog-v1",
   })
   const catalog = parseResourceCatalogBytes(catalogBytes)

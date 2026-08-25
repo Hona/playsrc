@@ -360,6 +360,8 @@ impl<'source> TextureDecoders<'source> {
 struct CompiledPresentationModel {
     model: playsrc_studio_model::PresentationModel,
     identity: [u8; 32],
+    illumination_position: playsrc_studio_model::Vector3,
+    illumination_attachment: i32,
 }
 
 #[derive(Clone, Copy)]
@@ -5269,30 +5271,11 @@ fn runtime_texture(
     path: &str,
     decoders: &TextureDecoders<'_>,
 ) -> Result<playsrc_map::RuntimeTexture, ()> {
-    let plane = decoders
-        .decoder(path)?
-        .decode(playsrc_vtf::SubresourceIdentity::HighResolution {
-            mip: 0,
-            frame: 0,
-            face: playsrc_vtf::Face::Right,
-            slice: 0,
-        })
-        .map_err(|_| ())?;
-    let rgba = match plane.channel_layout {
-        playsrc_vtf::ChannelLayout::Rgba => plane.samples,
-        playsrc_vtf::ChannelLayout::Rgb => {
-            let mut output = Vec::with_capacity(plane.width as usize * plane.height as usize * 4);
-            for pixel in plane.samples.chunks_exact(3) {
-                output.extend_from_slice(&[pixel[0], pixel[1], pixel[2], 255]);
-            }
-            output
-        }
-    };
+    let metadata = decoders.metadata(path)?;
     Ok(playsrc_map::RuntimeTexture {
         logical_path: path.to_owned(),
-        width: plane.width,
-        height: plane.height,
-        rgba: Arc::new(rgba),
+        width: metadata.width,
+        height: metadata.height,
     })
 }
 
@@ -5338,6 +5321,7 @@ fn shader_code(shader: playsrc_material::Shader) -> u8 {
         playsrc_material::Shader::LightmappedGeneric => 1,
         playsrc_material::Shader::VertexLitGeneric => 2,
         playsrc_material::Shader::UnlitGeneric => 3,
+        playsrc_material::Shader::UnlitTwoTexture => 10,
         playsrc_material::Shader::WorldVertexTransition => 4,
         playsrc_material::Shader::Water => 5,
         playsrc_material::Shader::Refract => 6,
@@ -5817,7 +5801,10 @@ fn resolve_models(
                 .get(prop.model)
                 .is_some_and(|entry| entry.logical_path == *identity)
             {
-                selected_skins.insert(usize::try_from(prop.skin).map_err(|_| ())?);
+                selected_skins.insert(playsrc_studio_model::source_skin_family(
+                    prop.skin,
+                    model.skins.len(),
+                ));
             }
         }
         for skin_index in selected_skins {
@@ -5941,7 +5928,7 @@ fn build_model_presentation(
     profile: playsrc_map::LightingProfile,
     presentation_profile: playsrc_studio_model::PresentationProfile,
 ) -> Result<Box<CompiledPresentationModel>, ()> {
-    let model = playsrc_tf2::presentation::build_model(
+    let built = playsrc_tf2::presentation::build_model(
         identity,
         bundle,
         model_resources,
@@ -5950,6 +5937,7 @@ fn build_model_presentation(
         presentation_profile,
     )
     .map_err(|_| ())?;
+    let model = built.model;
     let mut digest = Sha256::new();
     digest.update(b"playsrc-tf2-presentation-model-1\0");
     digest.update(model.identity.as_bytes());
@@ -5972,6 +5960,8 @@ fn build_model_presentation(
     Ok(Box::new(CompiledPresentationModel {
         model: *model,
         identity: digest.finalize().into(),
+        illumination_position: built.illumination_position,
+        illumination_attachment: built.illumination_attachment,
     }))
 }
 
@@ -6100,13 +6090,47 @@ fn compile_static_prop_section(
         .static_props
         .occurrences
         .iter()
-        .filter(|prop| prop.flags & playsrc_bsp::STATIC_PROP_NO_PER_VERTEX_LIGHTING != 0)
+        .filter(|prop| {
+            prop.flags & playsrc_bsp::STATIC_PROP_NO_PER_VERTEX_LIGHTING != 0
+                || !object_indexes.contains_key(&(prop.source as u32, 0))
+                || !object_indexes.contains_key(&(prop.source as u32, 1))
+        })
         .collect::<Vec<_>>();
+    let lighting_origin = |prop: &playsrc_map::StaticPropOccurrence| -> Result<[f32; 3], ()> {
+        if let Some(origin) = prop.lighting_origin {
+            return Ok(origin);
+        }
+        let identity = &canonical
+            .static_props
+            .models
+            .get(prop.model)
+            .ok_or(())?
+            .logical_path;
+        let (index, _) = *model_indexes.get(identity.as_str()).ok_or(())?;
+        let model = &models.get(index as usize).ok_or(())?.1;
+        let vector = |values: [f32; 3]| {
+            playsrc_studio_model::Vector3(
+                values.map(|value| playsrc_studio_model::Float32(value.to_bits())),
+            )
+        };
+        let transform =
+            playsrc_studio_model::source_entity_transform(vector(prop.origin), vector(prop.angles))
+                .map_err(|_| ())?;
+        playsrc_studio_model::source_model_lighting_origin(
+            model.illumination_position,
+            model.illumination_attachment,
+            transform,
+            None,
+            identity,
+        )
+        .map(|origin| origin.0.map(|value| f32::from_bits(value.0)))
+        .map_err(|_| ())
+    };
     let mut direct_requests = Vec::new();
     let mut direct_candidates = Vec::new();
     let mut origin_query_identities = BTreeMap::new();
     for prop in &runtime_props {
-        let origin = prop.lighting_origin.ok_or(())?;
+        let origin = lighting_origin(prop)?;
         let origin_identity =
             0x4000_0000_0000_0000u64 | u64::try_from(prop.source).map_err(|_| ())?;
         origin_query_identities.insert(prop.source, origin_identity);
@@ -6171,7 +6195,7 @@ fn compile_static_prop_section(
         .collect::<BTreeMap<_, _>>();
     let mut runtime_lighting = BTreeMap::new();
     for prop in runtime_props {
-        let origin = prop.lighting_origin.ok_or(())?;
+        let origin = lighting_origin(prop)?;
         let origin_trace = direct_results
             .get(origin_query_identities.get(&prop.source).ok_or(())?)
             .ok_or(())?;
@@ -6299,8 +6323,13 @@ fn compile_static_prop_section(
         let hdr = object_indexes
             .get(&(u32::try_from(prop.source).map_err(|_| ())?, 1))
             .copied();
-        let lighting = if prop.flags & playsrc_bsp::STATIC_PROP_NO_PER_VERTEX_LIGHTING != 0 {
-            if ldr.is_some() || hdr.is_some() {
+        let lighting = if prop.flags & playsrc_bsp::STATIC_PROP_NO_PER_VERTEX_LIGHTING != 0
+            || ldr.is_none()
+            || hdr.is_none()
+        {
+            if prop.flags & playsrc_bsp::STATIC_PROP_NO_PER_VERTEX_LIGHTING != 0
+                && (ldr.is_some() || hdr.is_some())
+            {
                 return Err(());
             }
             runtime_lighting.remove(&prop.source).ok_or(())?
@@ -6359,7 +6388,17 @@ fn compile_static_prop_section(
             presentation_model,
             origin: prop.origin,
             angles: prop.angles,
-            skin: prop.skin,
+            skin: i32::try_from(playsrc_studio_model::source_skin_family(
+                prop.skin,
+                models
+                    .get(presentation_model as usize)
+                    .ok_or(())?
+                    .1
+                    .model
+                    .skins
+                    .len(),
+            ))
+            .map_err(|_| ())?,
             body: 0,
             lod,
             fade_minimum: prop.fade_minimum,
@@ -6367,7 +6406,11 @@ fn compile_static_prop_section(
             forced_fade_scale: prop.forced_fade_scale,
             flags: prop.flags,
             solidity: prop.solidity,
-            lighting_origin: prop.lighting_origin,
+            lighting_origin: if matches!(lighting, Lighting::Runtime { .. }) {
+                Some(lighting_origin(prop)?)
+            } else {
+                prop.lighting_origin
+            },
             leaves: prop.leaves.clone(),
             areas,
             ownership: match ownership {
@@ -7429,6 +7472,7 @@ fn encode_model_material(
     out.extend_from_slice(&[
         match model.shader {
             playsrc_material::ModelShader::UnlitGeneric => 3,
+            playsrc_material::ModelShader::UnlitTwoTexture => 4,
             playsrc_material::ModelShader::VertexLitGeneric => 0,
             playsrc_material::ModelShader::EyeRefract => 1,
             playsrc_material::ModelShader::Eyes => 2,
@@ -7477,7 +7521,7 @@ fn encode_model_material(
         out.extend_from_slice(&[0; 24]);
     }
     match &model.state {
-        State::UnlitGeneric(_) => {}
+        State::UnlitGeneric(_) | State::UnlitTwoTexture(_) => {}
         State::VertexLitGeneric(state) => {
             let self_illumination = state.self_illumination;
             out.extend_from_slice(&[
@@ -7743,10 +7787,7 @@ fn encode_model_authored_texture(
     Ok(())
 }
 
-fn rgba_texture(
-    path: &str,
-    decoders: &TextureDecoders<'_>,
-) -> Result<playsrc_map::RuntimeTexture, ()> {
+fn rgba_texture(path: &str, decoders: &TextureDecoders<'_>) -> Result<DecodedTexture, ()> {
     decoded_texture(path, decoders)
 }
 
@@ -7914,10 +7955,14 @@ fn encode_model_occurrence_matrices(
     }
     Ok(())
 }
-fn decoded_texture(
-    path: &str,
-    decoders: &TextureDecoders<'_>,
-) -> Result<playsrc_map::RuntimeTexture, ()> {
+struct DecodedTexture {
+    logical_path: String,
+    width: u32,
+    height: u32,
+    rgba: Vec<u8>,
+}
+
+fn decoded_texture(path: &str, decoders: &TextureDecoders<'_>) -> Result<DecodedTexture, ()> {
     let plane = decoders
         .decoder(path)?
         .decode(playsrc_vtf::SubresourceIdentity::HighResolution {
@@ -7937,11 +7982,11 @@ fn decoded_texture(
             output
         }
     };
-    Ok(playsrc_map::RuntimeTexture {
+    Ok(DecodedTexture {
         logical_path: path.to_owned(),
         width: plane.width,
         height: plane.height,
-        rgba: Arc::new(rgba),
+        rgba,
     })
 }
 type CompiledPresentation = (
@@ -8223,7 +8268,7 @@ fn load_cached_presentation(
 #[allow(clippy::too_many_arguments)]
 fn presentation_capacity(
     models: &[(String, Box<CompiledPresentationModel>)],
-    directional: &[(String, u8, playsrc_map::RuntimeTexture)],
+    directional: &[(String, u8, DecodedTexture)],
     particles: &BTreeMap<String, CompiledParticlePresentation>,
     particle_materials: &[String],
     environment: &[u8],
@@ -9603,7 +9648,10 @@ fn compile_environment_artifact(
         )?
         .base_texture
         {
-            decal_textures.insert(mark.logical_path.clone(), texture);
+            decal_textures.insert(
+                mark.logical_path.clone(),
+                decoded_texture(&texture.logical_path, decoders)?,
+            );
         }
     }
     out.extend_from_slice(&(decal_textures.len() as u32).to_le_bytes());
@@ -9954,12 +10002,11 @@ fn compile_environment_artifact(
         }
     }
     for material in materials {
-        if !material.features.alpha_test && !material.features.translucent {
-            continue;
-        }
         for texture in &material.textures {
             if texture.disposition == playsrc_material::TextureDisposition::Source
-                && material.selected_textures.contains(&texture.role)
+                && (material.selected_textures.contains(&texture.role)
+                    || texture.role == playsrc_material::TextureRole::Base2
+                    || texture.role == playsrc_material::TextureRole::Detail)
             {
                 environment_texture_paths.insert(
                     texture
@@ -10333,7 +10380,7 @@ struct CompiledParticlePresentation {
     source_path: String,
     state: playsrc_material::StaticState,
     metadata: playsrc_vtf::Metadata,
-    texture: playsrc_map::RuntimeTexture,
+    texture: DecodedTexture,
 }
 
 fn compile_particles(

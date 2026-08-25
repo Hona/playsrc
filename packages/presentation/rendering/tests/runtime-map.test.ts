@@ -7,7 +7,7 @@ function fixture(): Uint8Array {
   const i32 = (value: number) => bytes.push(...new Uint8Array(new Int32Array([value]).buffer))
   const f32 = (value: number) => bytes.push(...new Uint8Array(new Float32Array([value]).buffer))
   const sized = (value: Uint8Array) => { u32(value.byteLength); bytes.push(...value) }
-  u32(3)
+  u32(6)
   u32(20)
   u32(731)
   bytes.push(0)

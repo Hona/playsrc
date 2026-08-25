@@ -10,6 +10,7 @@ import { chunksForRole, parseResourceGraphBytes } from "@playsrc/asset-store/gra
 import checkedRelease from "../../../apps/web/tf2/releases/current.json"
 import { parseTf2Release } from "../../../apps/web/tf2/src/deployment"
 import { Tf2BrowserAutomation } from "../../../apps/web/tf2/src/browser-automation"
+import { buildSourceBundle } from "./source-bundle"
 
 const MAX_OUTPUT_BYTES = 1024 * 1024
 const PROCESS_READY_TIMEOUT_MS = 300_000
@@ -20,11 +21,11 @@ const VIEWPORT_WIDTH = 1280
 const VIEWPORT_HEIGHT = 720
 const BACKGROUND_RGB = [17, 24, 32] as const
 const CURRENT_TF2_RELEASE=parseTf2Release(checkedRelease)
-const EXPECTED_RESOURCE_GRAPH_SHA256 = "abccb94ba53b177333309fa9a82c85bf89a9b09d3866f5ed7af65a3546350027"
+const EXPECTED_RESOURCE_GRAPH_SHA256 = CURRENT_TF2_RELEASE.targets.find((target) => target.target === "jump_beef")!.objects.resources.sha256
 const EXPECTED_RESOURCE_ROLES = Object.freeze({
   startup: Object.freeze({ entries: 2, encodedBytes: 1_323_980 }),
-  menu: Object.freeze({ entries: 860, encodedBytes: 62_171_070 }),
-  gameplay: Object.freeze({ entries: 309, encodedBytes: 56_252_039 }),
+  menu: Object.freeze({ entries: 966, encodedBytes: 63_600_378 }),
+  gameplay: Object.freeze({ entries: 725, encodedBytes: 168_705_971 }),
 })
 
 export class BrowserEvidenceError extends Error {
@@ -167,11 +168,8 @@ async function classifySupportBlockers(
   config: LocalConfig,
   blockers: readonly string[],
 ): Promise<BlockerPartition> {
-  const bytes = await readFile(path.join(
-    config.sourceCacheDir,
-    "browser-bundles",
-    "jump_beef.dependencies.json",
-  ))
+  const artifact = await buildSourceBundle(config, "jump_beef")
+  const bytes = await readFile(artifact.ledgerPath)
   let value: unknown
   try {
     value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes))
@@ -191,8 +189,8 @@ async function classifySupportBlockers(
     ledger.target === "jump_beef" &&
     typeof ledger.resourceGraph === "object" && ledger.resourceGraph !== null &&
     (ledger.resourceGraph as Record<string, unknown>).sha256 === EXPECTED_RESOURCE_GRAPH_SHA256 &&
-    ledger.resolvedEntries === 908 && ledger.authoritativeAbsences === 40 &&
-    Array.isArray(ledger.requests) && ledger.requests.length === 948,
+    ledger.resolvedEntries === 1396 && ledger.authoritativeAbsences === 104 &&
+    Array.isArray(ledger.requests) && ledger.requests.length === 1500,
   "source dependency ledger identity is malformed")
   const outcomes = new Map<string, string>()
   const requests = new Map<string, Record<string, unknown>>()
@@ -232,7 +230,7 @@ async function classifySupportBlockers(
   requireSource("materials/console/background_2fort.vtf", 2_796_448, "c6311965e57125bec0a98de320c4cd4ef7b297c874f47acb40107f0d31d911d9", "game-01-tf2_textures_dir.vpk")
   requireSource("materials/console/background_2fort_widescreen.vmt", 187, "62ea66916136838dec8b843437c21bb3c24cbc5811b00af4f253043156d7ba65", "game-04-tf2_misc_dir.vpk")
   requireSource("materials/console/background_2fort_widescreen.vtf", 2_796_448, "da391abcb6d121dea3786c16014f216cdbbcaf0d5810aa3ef395341f601ddcec", "game-01-tf2_textures_dir.vpk")
-  const graph = parseResourceGraphBytes(await readFile(path.join(config.sourceCacheDir, "browser-bundles", "jump_beef.graph.json")))
+  const graph = parseResourceGraphBytes(await readFile(artifact.graphPath))
   for (const [role, expected] of Object.entries(EXPECTED_RESOURCE_ROLES)) {
     const chunks = chunksForRole(graph, role)
     require(chunks.reduce((total, chunk) => total + chunk.entries.length, 0) === expected.entries
@@ -1057,7 +1055,7 @@ async function consumeOutput(
 }
 
 function excerpt(value: string): string {
-  return value.trim().replaceAll(/\s+/gu, " ").slice(0, 500)
+  return value.trim().replaceAll(/\s+/gu, " ").slice(-500)
 }
 
 async function startDevelopmentProcess(target: string | undefined): Promise<DevelopmentProcessOwner> {
@@ -1463,10 +1461,81 @@ export async function runDisplacementVisualEvidence(config: LocalConfig): Promis
   }
 }
 
+async function verifyCtf2fortBrowser(config: LocalConfig): Promise<Record<string, unknown>> {
+  const version = await agent(["--version"])
+  const session = `playsrc-2fort-${process.pid}`
+  const automation = tf2BrowserAutomation(session)
+  const owner = await startDevelopmentProcess("ctf_2fort")
+  let browserOpen = false
+  let primaryError: unknown
+  try {
+    await agent(["--session", session, "--headed", "--webgpu", "--init-script", TF2_BROWSER_AUTOMATION_INIT, "open", owner.url])
+    browserOpen = true
+    await agent(["--session", session, "set", "viewport", String(VIEWPORT_WIDTH), String(VIEWPORT_HEIGHT)])
+    const startup = await completeStartup(session, config, "ctf-2fort-cold", "skip")
+    await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.phase === 'MainMenu'", "--timeout", "300000"])
+    await automation.maps.load("ctf_2fort")
+    await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.gameui==='loading'&&document.querySelector('main').dataset.loadingBackground==='map-photo'", "--timeout", "30000"])
+    const loadingPhoto = parseJson<{ background: { width: number; height: number }; image: { x: number; y: number; width: number; height: number; display: string; source: string } }>(await agent([
+      "--session", session, "eval",
+      "(()=>{const backing=document.querySelector('.loading-layer [data-vgui-name=Background]').getBoundingClientRect(),panel=document.querySelector('.loading-layer [data-vgui-name=MapImage]'),rect=panel.getBoundingClientRect(),style=getComputedStyle(panel);return{background:{width:backing.width,height:backing.height},image:{x:rect.x,y:rect.y,width:rect.width,height:rect.height,display:style.display,source:style.backgroundImage}}})()",
+    ]))
+    require(loadingPhoto.background.width === 960 && loadingPhoto.background.height === 720
+      && loadingPhoto.image.width === 450 && loadingPhoto.image.height === 450
+      && loadingPhoto.image.display !== "none" && loadingPhoto.image.source.startsWith("url("),
+    `ctf_2fort loading photo presentation differs: ${JSON.stringify(loadingPhoto)}`)
+    const loadingCapture = await captureInterface(session, config, "loading-ctf-2fort-1280x720")
+    await agent(["--session", session, "wait", "--fn", "['Ready','Failed'].includes(document.querySelector('main').dataset.phase)", "--timeout", "600000"])
+    const terminal = parseJson<{ phase: string; detail: string; gameui: string }>(await agent([
+      "--session", session, "eval", "(()=>{const m=document.querySelector('main');return{phase:m.dataset.phase,detail:m.dataset.detail,gameui:m.dataset.gameui}})()",
+    ]))
+    require(terminal.phase === "Ready" && terminal.gameui === "in-game", `ctf_2fort failed to activate: ${JSON.stringify(terminal)}`)
+    await admitInitialClassSelection(session)
+    await agent(["--session", session, "wait", "--fn", "JSON.parse(document.querySelector('.world-canvas').dataset.staticProps||'null')?.total===2265", "--timeout", "30000"])
+    const geometry = await captureFinalReadyGeometry(session, config, "ctf_2fort", 1, 1)
+    const facts = parseJson<{
+      staticProps: { total: number; main: number; sky3d: number; runtimeLit: number }
+      visibleMain: number[]
+      sky: { skySurfaces: number; skyProps: number; stateRestored: boolean } | null
+      load: { totalMilliseconds: number; mapBytes: number; presentationBytes: number }
+      target: string
+    }>(await agent([
+      "--session", session, "eval",
+      "(()=>{const m=document.querySelector('main'),c=document.querySelector('.world-canvas');return{staticProps:JSON.parse(c.dataset.staticProps),visibleMain:JSON.parse(c.dataset.visibleMainStaticProps||'[]'),sky:c.dataset.sky3dPass?JSON.parse(c.dataset.sky3dPass):null,load:JSON.parse(m.dataset.loadPerformance),target:m.dataset.detail}})()",
+    ]))
+    require(facts.staticProps.total === 2265 && facts.staticProps.runtimeLit === 24
+      && facts.staticProps.main === 2227 && facts.staticProps.sky3d === 38 && facts.visibleMain.length > 0
+      && (facts.sky === null || (facts.sky.skySurfaces > 0 && facts.sky.skyProps > 0 && facts.sky.stateRestored))
+      && facts.load.mapBytes < 128 * 1024 * 1024,
+    `ctf_2fort configured world facts differ: ${JSON.stringify(facts)}`)
+    const gameplay = await exerciseSwitchedGameplay(session, "ctf_2fort")
+    const performance = parseJson<{ milliseconds: number; frames: number; frameHz: number; simulationHz: number; p95FrameMilliseconds: number }>(await agent([
+      "--session", session, "eval",
+      "(async()=>{const main=document.querySelector('main'),firstTick=Number(main.dataset.snapshotTick),started=performance.now(),frames=[];let previous=started;await new Promise(resolve=>{const next=now=>{frames.push(now-previous);previous=now;if(now-started>=5000)resolve();else requestAnimationFrame(next)};requestAnimationFrame(next)});const milliseconds=previous-started,sorted=[...frames].sort((a,b)=>a-b);return{milliseconds,frames:frames.length,frameHz:frames.length*1000/milliseconds,simulationHz:(Number(main.dataset.snapshotTick)-firstTick)*1000/milliseconds,p95FrameMilliseconds:sorted[Math.min(sorted.length-1,Math.floor(sorted.length*.95))]}})()",
+    ]))
+    require(performance.milliseconds >= 5000 && performance.frameHz >= 30
+      && performance.simulationHz >= 60 && performance.simulationHz <= 75,
+    `ctf_2fort headed frame or fixed-tick cadence differs: ${JSON.stringify(performance)}`)
+    return Object.freeze({ target: "ctf_2fort", browser: version, startup, loadingPhoto, loadingCapture, facts, geometry, gameplay, performance })
+  } catch (error) {
+    primaryError = error
+    const state = browserOpen
+      ? await agent(["--session", session, "eval", "(()=>{const m=document.querySelector('main'),c=document.querySelector('.world-canvas');return{phase:m?.dataset.phase,detail:m?.dataset.detail,gameui:m?.dataset.gameui,tick:m?.dataset.snapshotTick,performance:m?.dataset.performance,simulation:m?.dataset.simulationProbe,static:c?.dataset.staticProps,visible:c?.dataset.visibleMainStaticProps,sky:c?.dataset.sky3dPass,console:document.querySelector('.developer-layer [data-vgui-service=developer-console]')?.textContent.slice(-2000)}})()"]).catch(() => "unavailable")
+      : "unavailable"
+    const errors = browserOpen ? await agent(["--session", session, "errors"]).catch(() => "unavailable") : "unavailable"
+    const console = browserOpen ? await agent(["--session", session, "console"]).catch(() => "unavailable") : "unavailable"
+    throw new BrowserEvidenceError(`${error instanceof Error ? error.message : String(error)}; ctf_2fort state=${state}; errors=${errors.slice(-2000)}; console=${console.slice(-2000)}`)
+  } finally {
+    if (browserOpen) await agent(["--session", session, "close"]).catch(() => {})
+    try { await owner.interrupt() } catch (error) { if (primaryError === undefined) throw error }
+  }
+}
+
 export async function verifyBrowserAcceptance(
   config: LocalConfig,
   target: string | undefined,
 ): Promise<Record<string, unknown>> {
+  if (target === "ctf_2fort") return verifyCtf2fortBrowser(config)
   if (target === "pl_upward") return verifyPlUpwardBrowser(config)
   const version = await agent(["--version"])
   const session = `playsrc-acceptance-${process.pid}`
@@ -2490,23 +2559,28 @@ export async function runDualMapAcceptance(config: LocalConfig, target: string |
     const gameplay=[await exerciseSwitchedGameplay(session,"jump_beef")]
     const unknownBefore = parseJson<{ detail: string; resources: number }>(await agent(["--session", session, "eval", "(()=>({detail:document.querySelector('main').dataset.detail,resources:performance.getEntriesByType('resource').length}))()"] ))
     await automation.console.submitCommand("map upward")
-    await agent(["--session", session, "wait", "--fn", "document.querySelector('.developer-layer [data-vgui-service=developer-console]')?.textContent.includes('Usage: map jump_beef|pl_upward')", "--timeout", "30000"])
+    await agent(["--session", session, "wait", "--fn", "document.querySelector('.developer-layer [data-vgui-service=developer-console]')?.textContent.includes('Usage: map jump_beef|pl_upward|ctf_2fort')", "--timeout", "30000"])
     await Bun.sleep(500)
     const unknownAfter = parseJson<{ detail: string; resources: number }>(await agent(["--session", session, "eval", "(()=>({detail:document.querySelector('main').dataset.detail,resources:performance.getEntriesByType('resource').length}))()"] ))
     require(JSON.stringify(unknownAfter) === JSON.stringify(unknownBefore), `unknown map mutated state or fetched resources: ${JSON.stringify({ unknownBefore, unknownAfter })}`)
+    await automation.maps.load("ctf_2fort")
+    await agent(["--session", session, "wait", "--fn", "document.querySelector('.developer-layer [data-vgui-service=developer-console]')?.textContent.includes('Loaded ctf_2fort; generation 2')&&document.querySelector('main').dataset.phase==='Ready'", "--timeout", "600000"])
+    await agent(["--session", session, "wait", "--fn", "(()=>{const p=JSON.parse(document.querySelector('.world-canvas').dataset.staticProps||'null');return p?.total===2265&&p.runtimeLit===24})()", "--timeout", "30000"])
+    geometry.push(await captureFinalReadyGeometry(session,config,"ctf_2fort",2,2))
+    gameplay.push(await exerciseSwitchedGameplay(session,"ctf_2fort"))
     await automation.maps.load("pl_upward")
-    await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.phase==='Replacing'&&document.querySelector('main').dataset.detail.includes('pl_upward')&&document.querySelector('main').dataset.loadingBackground==='configured-generic'", "--timeout", "30000"])
-    await agent(["--session", session, "wait", "--fn", "document.querySelector('.developer-layer [data-vgui-service=developer-console]')?.textContent.includes('Loaded pl_upward; generation 2')&&document.querySelector('main').dataset.phase==='Ready'", "--timeout", "600000"])
+    await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.phase==='Replacing'&&document.querySelector('main').dataset.detail.includes('pl_upward')&&document.querySelector('main').dataset.loadingBackground==='map-photo'", "--timeout", "30000"])
+    await agent(["--session", session, "wait", "--fn", "document.querySelector('.developer-layer [data-vgui-service=developer-console]')?.textContent.includes('Loaded pl_upward; generation 3')&&document.querySelector('main').dataset.phase==='Ready'", "--timeout", "600000"])
     await agent(["--session", session, "wait", "--fn", "JSON.parse(document.querySelector('.world-canvas').dataset.staticProps||'null')?.total===1244&&JSON.parse(document.querySelector('.world-canvas').dataset.sky3dPass||'null')?.skyProps>0", "--timeout", "30000"])
     require(parseJson<string>(await agent(["--session", session, "eval", "document.querySelector('main').dataset.detail"] )) === "Playing pl_upward", "pl_upward gameplay publication is unavailable")
-    geometry.push(await captureFinalReadyGeometry(session,config,"pl_upward",2,2))
+    geometry.push(await captureFinalReadyGeometry(session,config,"pl_upward",3,3))
     gameplay.push(await exerciseSwitchedGameplay(session,"pl_upward"))
     await automation.maps.load("jump_beef")
-    await agent(["--session", session, "wait", "--fn", "document.querySelector('.developer-layer [data-vgui-service=developer-console]')?.textContent.includes('Loaded jump_beef; generation 3')&&document.querySelector('main').dataset.phase==='Ready'", "--timeout", "600000"])
-    require(parseJson<number>(await agent(["--session", session, "eval", "JSON.parse(document.querySelector('.world-canvas').dataset.staticProps).total"] )) === 0, "jump_beef retained pl_upward static props")
-    geometry.push(await captureFinalReadyGeometry(session,config,"jump_beef",3,3))
+    await agent(["--session", session, "wait", "--fn", "document.querySelector('.developer-layer [data-vgui-service=developer-console]')?.textContent.includes('Loaded jump_beef; generation 4')&&document.querySelector('main').dataset.phase==='Ready'", "--timeout", "600000"])
+    require(parseJson<number>(await agent(["--session", session, "eval", "JSON.parse(document.querySelector('.world-canvas').dataset.staticProps).total"] )) === 0, "jump_beef retained stock-map static props")
+    geometry.push(await captureFinalReadyGeometry(session,config,"jump_beef",4,4))
     gameplay.push(await exerciseSwitchedGameplay(session,"jump_beef"))
-    report = { schema: "playsrc-tf2-dual-map-browser-evidence-v2", sequence: ["jump_beef", "pl_upward", "jump_beef"], generations: [1, 2, 3], unknownRejectedWithoutFetch: true, loadingDescriptorsSelected: true, plUpwardStaticPropsAndSky: true, gameplay,geometry,replacementResourcesReleased: true }
+    report = { schema: "playsrc-tf2-configured-map-browser-evidence-v3", sequence: ["jump_beef", "ctf_2fort", "pl_upward", "jump_beef"], generations: [1, 2, 3, 4], unknownRejectedWithoutFetch: true, loadingDescriptorsSelected: true, stockMapStaticPropsAndSky: true, gameplay,geometry,replacementResourcesReleased: true }
   } catch (error) {
     let state = "unavailable"
     if (browserOpen) state = await agent(["--session", session, "eval", "(()=>{const m=document.querySelector('main'),c=document.querySelector('.developer-layer [data-vgui-service=developer-console]');return{phase:m?.dataset.phase,detail:m?.dataset.detail,gameui:m?.dataset.gameui,console:c?.textContent.slice(-2000)}})()"] ).catch(() => "unavailable")
