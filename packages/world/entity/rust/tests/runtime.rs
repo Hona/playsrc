@@ -42,6 +42,30 @@ fn request(batch: &playsrc_entity::TransitionBatch) -> RuntimeRequest {
 }
 
 #[test]
+fn cloned_entity_world_mutates_only_its_transactional_entities() {
+    let original = compile(
+        b"{\"classname\"\"worldspawn\"}{\"classname\"\"func_brush\"\"targetname\"\"shared\"\"StartDisabled\"\"1\"}",
+        |_| {},
+    );
+    let handle = original.resolve(b"shared", None, None, None)[0];
+    let mut changed = original.clone();
+    changed
+        .phase(1, &[input(handle, b"Enable", Variant::Void, 1)])
+        .unwrap();
+
+    assert!(matches!(
+        original.entity(handle).unwrap().behavior,
+        BehaviorState::Brush(ref brush) if !brush.enabled
+    ));
+    assert!(matches!(
+        changed.entity(handle).unwrap().behavior,
+        BehaviorState::Brush(ref brush) if brush.enabled
+    ));
+    assert_eq!(original.current_tick(), 0);
+    assert_eq!(changed.current_tick(), 1);
+}
+
+#[test]
 fn live_handles_duplicate_resolution_reverse_outputs_and_same_tick_queue_are_deterministic() {
     let bytes = b"\
 {\"classname\"\"worldspawn\"}\

@@ -2458,7 +2458,7 @@ class RendererOwner implements Renderer {
         }
         modelTemplates.set(model.logicalPath, template)
       }
-      if(request.staticProps){const props=request.staticProps,profile=this.configuration.lightingProfile==="hdr"?1:0
+      if(request.staticProps){const props=request.staticProps,profile=this.configuration.lightingProfile==="hdr"?1:0,sharedStaticMaterials=new Map<string,THREE.MeshBasicNodeMaterial>()
         for(let propIndex=0;propIndex<props.count;propIndex+=1){const modelIdentity=props.models[props.presentationModel[propIndex]!]!,key=modelKey(modelIdentity,props.skin[propIndex]!),template=modelTemplates.get(key);if(!template)throw new RenderingError("MissingInput",`static-prop model ${key} is unavailable`)
           if(props.body[propIndex]!==0)throw new RenderingError("UnsupportedFeature","nonzero static-prop body selection is unavailable")
           const instance=template.clone(true),lightingKind=props.lightingKind[propIndex]!,fadeUniform=TSL.uniform(1,"float"),meshes:THREE.Mesh[]=[];instance.traverse(value=>{if(value instanceof THREE.Mesh)meshes.push(value)})
@@ -2469,7 +2469,18 @@ class RendererOwner implements Renderer {
             if(lightingKind===0){const color=colorMeshes[colorIndex++];const position=geometry.getAttribute("position");if(!color||color.vertexCount!==position.count||color.colors.length!==position.count*4)throw new RenderingError("IdentityMismatch","static-prop VHV mesh order differs");geometry.setAttribute("staticLighting",new THREE.Uint8BufferAttribute(color.colors,4,true))}
             disposables.add(geometry);mesh.geometry=geometry
             const original=mesh.material;if(Array.isArray(original)||!(original instanceof THREE.MeshBasicNodeMaterial))throw new RenderingError("UnsupportedFeature","static-prop model material family is unavailable")
-            const identity=String(mesh.userData.materialIdentity),state=request.modelMaterials?.get(identity.toLowerCase())?.shader,material=original.clone(),base=original.colorNode??TSL.vec4(1,1,1,1),rgb=state==="unlit-generic"||state==="unlit-two-texture"?base.rgb:base.rgb.mul(lightingKind===0?TSL.attribute("staticLighting","vec4").bgra.rgb:runtimeStaticLightingNode(map,props,propIndex)).mul(exposureUniform);material.colorNode=sourceFragmentColor(TSL.vec4(rgb,base.a.mul(fadeUniform)),materialStates.get(identity.toLowerCase()),waterFogUniforms);material.toneMapped=false;if((props.flags[propIndex]!&1)!==0){material.transparent=true;material.depthWrite=false}disposables.add(material);mesh.material=material
+            const identity=String(mesh.userData.materialIdentity),shader=request.modelMaterials?.get(identity.toLowerCase())?.shader,unlit=shader==="unlit-generic"||shader==="unlit-two-texture",fading=(props.flags[propIndex]!&1)!==0,sharingKey=!fading&&(lightingKind===0||unlit)?`${original.uuid}:${unlit?"unlit":"vertex"}`:undefined
+            let material=sharingKey===undefined?undefined:sharedStaticMaterials.get(sharingKey)
+            if(!material){
+              material=original.clone()
+              const base=original.colorNode??TSL.vec4(1,1,1,1),rgb=unlit?base.rgb:base.rgb.mul(lightingKind===0?TSL.attribute("staticLighting","vec4").bgra.rgb:runtimeStaticLightingNode(map,props,propIndex)).mul(exposureUniform)
+              material.colorNode=sourceFragmentColor(TSL.vec4(rgb,base.a.mul(fadeUniform)),materialStates.get(identity.toLowerCase()),waterFogUniforms)
+              material.toneMapped=false
+              if(fading){material.transparent=true;material.depthWrite=false}
+              disposables.add(material)
+              if(sharingKey!==undefined)sharedStaticMaterials.set(sharingKey,material)
+            }
+            mesh.material=material
           }
           if(lightingKind===0&&colorIndex!==colorMeshes.length)throw new RenderingError("IdentityMismatch","static-prop VHV mesh closure differs")
           const position=props.transform.subarray(propIndex*6,propIndex*6+3),angles=props.transform.subarray(propIndex*6+3,propIndex*6+6);sourceTransform(instance,position,angles);instance.updateMatrix();instance.matrixAutoUpdate=false;instance.userData.staticPropSource=props.source[propIndex]

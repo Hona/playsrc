@@ -43,6 +43,19 @@ describe("retained world-face postings", () => {
     expect(visibility.count(0)).toBe(3)
   })
 
+  test("retains dense opaque source order and sparse high-face duplicate rejection", () => {
+    const opaque = batch([40, 7, 18, 40, 3, 18, 92, 7])
+    const visibility = new RetainedWorldVisibility([opaque])
+    expect(visibility.apply(Uint32Array.from([7, 40, 18, 0xffff_fffe]))).toBe(true)
+    expect([...opaque.targetIndices.slice(0, visibility.count(0))]).toEqual([
+      0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 15, 16, 17, 21, 22, 23,
+    ])
+    expect(visibility.has(0xffff_fffe)).toBe(true)
+    const before = opaque.targetIndices.slice()
+    expect(() => visibility.apply(Uint32Array.from([0xffff_fffe, 0xffff_fffe]))).toThrow(/duplicate world face/i)
+    expect(opaque.targetIndices).toEqual(before)
+  })
+
   test("shares immutable face postings while keeping main and authored-sky selections independent", () => {
     const main = batch([2, 4, 6])
     const sky = { ...main, targetIndices: main.sourceIndices.slice() }

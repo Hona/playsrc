@@ -2,7 +2,9 @@ import { defineConfig } from "@playwright/test"
 
 export default defineConfig({
   testDir: "tools/playsrc/profile",
-  testMatch: process.env.PROFILE_SCENARIOS === "scoreboard"
+  testMatch: process.env.PROFILE_UPWARD_OUTDOORS === "1"
+    ? "upward-outdoor.profile.ts"
+    : process.env.PROFILE_SCENARIOS === "scoreboard"
     ? "scoreboard-hud.profile.ts"
     : process.env.PROFILE_PICKUPS === "1"
       ? "pickup-resupply.profile.ts"
@@ -31,7 +33,7 @@ export default defineConfig({
     viewport: { width: 1280, height: 720 },
   },
   webServer: {
-    command: `bun tools/playsrc/src/cli.ts dev ${process.env.PROFILE_CTF_OBJECTIVES === "1" ? "ctf_2fort" : process.env.PROFILE_COMBAT === "1" || process.env.PROFILE_ROUND_RULES === "1" || process.env.PROFILE_PICKUPS === "1" || process.env.PROFILE_MATERIAL_ANIMATION === "1" || process.env.PROFILE_SCENARIOS === "demoman" || process.env.PROFILE_SCENARIOS === "scoreboard" || process.env.PROFILE_TRACKTRAIN === "1" ? "pl_upward" : "jump_beef"}`,
+    command: `bun tools/playsrc/src/cli.ts dev ${process.env.PROFILE_CTF_OBJECTIVES === "1" ? "ctf_2fort" : process.env.PROFILE_COMBAT === "1" || process.env.PROFILE_UPWARD_OUTDOORS === "1" || process.env.PROFILE_ROUND_RULES === "1" || process.env.PROFILE_PICKUPS === "1" || process.env.PROFILE_MATERIAL_ANIMATION === "1" || process.env.PROFILE_SCENARIOS === "demoman" || process.env.PROFILE_SCENARIOS === "scoreboard" || process.env.PROFILE_TRACKTRAIN === "1" ? "pl_upward" : "jump_beef"}`,
     url: `http://127.0.0.1:${process.env.PLAYSRC_DEV_PORT ?? "4173"}/`,
     reuseExistingServer: false,
     timeout: 600_000,
