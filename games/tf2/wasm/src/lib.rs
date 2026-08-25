@@ -2111,10 +2111,80 @@ fn encode_model_poses(
             )?;
             output_count = output_count.checked_add(1).ok_or(())?;
         } else {
+            let legacy_view = if let playsrc_studio_model::PresentationDescriptor::ViewModel {
+                default_horizontal_fov_4_by_3,
+                ..
+            } = model.descriptor
+            {
+                let bob = playsrc_studio_model::update_viewmodel_bob(
+                    viewmodel_bob
+                        .get(&request.identity)
+                        .copied()
+                        .unwrap_or_default(),
+                    playsrc_studio_model::ViewModelBobRequest {
+                        current_time: playsrc_studio_model::Float32(request.current_time.to_bits()),
+                        frame_time: playsrc_studio_model::Float32(request.frame_time.to_bits()),
+                        planar_speed: playsrc_studio_model::Float32(request.planar_speed.to_bits()),
+                        cycle: playsrc_studio_model::Float32(0.8f32.to_bits()),
+                        up_fraction: playsrc_studio_model::Float32(0.5f32.to_bits()),
+                    },
+                )
+                .map_err(|_| ())?;
+                viewmodel_bob.insert(request.identity, bob);
+                let transform = playsrc_studio_model::apply_viewmodel_bob(
+                    playsrc_studio_model::ViewModelTransform {
+                        origin: playsrc_studio_model::Vector3(
+                            [playsrc_studio_model::Float32(0); 3],
+                        ),
+                        angles: playsrc_studio_model::Vector3(
+                            [playsrc_studio_model::Float32(0); 3],
+                        ),
+                    },
+                    bob,
+                )
+                .map_err(|_| ())?;
+                let pass = playsrc_studio_model::viewmodel_pass_state(
+                    playsrc_studio_model::ViewModelProjectionRequest {
+                        configured_horizontal_fov_4_by_3: default_horizontal_fov_4_by_3,
+                        default_world_fov: playsrc_studio_model::Float32(75f32.to_bits()),
+                        current_world_fov: playsrc_studio_model::Float32(75f32.to_bits()),
+                        screen_aspect_ratio: playsrc_studio_model::Float32(
+                            request.screen_aspect_ratio.to_bits(),
+                        ),
+                        world_far_plane: playsrc_studio_model::Float32(
+                            request.world_far_plane.to_bits(),
+                        ),
+                    },
+                )
+                .map_err(|_| ())?;
+                let facing = playsrc_studio_model::GeometryFacing {
+                    front_face: playsrc_studio_model::TriangleWinding::Clockwise,
+                    cull_face: playsrc_studio_model::CullFace::Back,
+                };
+                Some(ViewOutput {
+                    transform,
+                    pass,
+                    item_translucent: false,
+                    phase: if request.activity.eq_ignore_ascii_case("ACT_VM_DRAW") {
+                        playsrc_studio_model::ViewModelPhase::Draw
+                    } else {
+                        playsrc_studio_model::ViewModelPhase::Idle
+                    },
+                    draw_disposition: playsrc_studio_model::ViewModelDrawDisposition::Draw,
+                    reflected: false,
+                    hand_facing: facing,
+                    item_facing: facing,
+                    hand_bodygroups: bodygroups,
+                    item_bodygroups: Vec::new(),
+                    item_bodygroup_mutations: Vec::new(),
+                })
+            } else {
+                None
+            };
             encode_model_pose_part(
                 &mut out,
                 request,
-                0,
+                u8::from(legacy_view.is_some()),
                 model,
                 sequence,
                 timing,
@@ -2124,7 +2194,7 @@ fn encode_model_poses(
                 &pose,
                 &selected,
                 selected.len(),
-                None,
+                legacy_view.as_ref(),
             )?;
             output_count = output_count.checked_add(1).ok_or(())?;
         }
@@ -4005,9 +4075,20 @@ fn encode_snapshot(
                 playsrc_tf2::PlayerLifecycle::Welcome => 3,
                 playsrc_tf2::PlayerLifecycle::Observer => 4,
             },
-            0,
-            0,
-            0,
+            snapshot
+                .spy
+                .and_then(|state| state.disguise)
+                .map_or(0, |value| class_code(value.class)),
+            snapshot
+                .spy
+                .and_then(|state| state.disguise)
+                .map_or(0, |value| team_code(value.team)),
+            snapshot
+                .spy
+                .and_then(|state| state.desired_disguise)
+                .map_or(0, |value| {
+                    class_code(value.class) | (team_code(value.team) << 4)
+                }),
         ],
         MAX,
     )?;
@@ -4094,7 +4175,16 @@ fn encode_snapshot(
         u64_field(&mut out, state.reload_due_tick.unwrap_or(u64::MAX), MAX)?;
         u64_field(&mut out, state.charge_begin_tick.unwrap_or(u64::MAX), MAX)?;
         u64_field(&mut out, state.first_primary_tick, MAX)?;
-        f32_field(&mut out, state.charged_damage, MAX)?;
+        let scalar = snapshot
+            .spy
+            .map_or(state.charged_damage, |spy| match state.weapon {
+                playsrc_tf2::Weapon::InvisibilityWatch => spy.cloak_meter,
+                playsrc_tf2::Weapon::DisguiseKit => spy.invisibility,
+                playsrc_tf2::Weapon::Knife => spy.disguise_complete_time,
+                playsrc_tf2::Weapon::Sapper => spy.no_attack_until,
+                _ => state.charged_damage,
+            });
+        f32_field(&mut out, scalar, MAX)?;
     }
     for point in &producer.flame_points {
         extend(&mut out, &[point.slot, point.walls_hit, 0, 0], MAX)?;
@@ -4964,7 +5054,8 @@ fn encode_random_state(state: playsrc_tf2::Tf2RandomState) -> Option<Vec<u8>> {
             | state.sound_selection.bottle_hit_flesh_available << 2
             | state.sound_selection.bottle_hit_world_available << 5,
         state.sound_selection.shovel_hit_world_available
-            | state.sound_selection.shovel_hit_flesh_available << 2,
+            | state.sound_selection.shovel_hit_flesh_available << 2
+            | state.sound_selection.knife_hit_flesh_available << 5,
         state.sound_selection.fist_miss_available,
         state.sound_selection.fist_hit_world_available,
         state.sound_selection.fist_hit_flesh_available,
@@ -5047,6 +5138,13 @@ fn sound_definition_code(value: playsrc_tf2::SoundDefinition) -> u8 {
         playsrc_tf2::SoundDefinition::AmmoPackTouch => 59,
         playsrc_tf2::SoundDefinition::RegenerateTouch => 60,
         playsrc_tf2::SoundDefinition::ItemMaterialize => 61,
+        playsrc_tf2::SoundDefinition::RevolverSingle => 62,
+        playsrc_tf2::SoundDefinition::RevolverReload => 63,
+        playsrc_tf2::SoundDefinition::KnifeMiss => 64,
+        playsrc_tf2::SoundDefinition::KnifeHitFlesh => 65,
+        playsrc_tf2::SoundDefinition::KnifeHitWorld => 66,
+        playsrc_tf2::SoundDefinition::SpyCloak => 67,
+        playsrc_tf2::SoundDefinition::SpyUncloak => 68,
     }
 }
 
@@ -5398,6 +5496,11 @@ fn weapon_code(weapon: playsrc_tf2::Weapon) -> u8 {
         playsrc_tf2::Weapon::Wrench => 42,
         playsrc_tf2::Weapon::Flamethrower => 15,
         playsrc_tf2::Weapon::FireAxe => 16,
+        playsrc_tf2::Weapon::Revolver => 50,
+        playsrc_tf2::Weapon::Knife => 51,
+        playsrc_tf2::Weapon::Sapper => 52,
+        playsrc_tf2::Weapon::DisguiseKit => 53,
+        playsrc_tf2::Weapon::InvisibilityWatch => 54,
     }
 }
 fn projectile_code(kind: playsrc_tf2::ProjectileKind) -> u8 {
@@ -8614,6 +8717,11 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>) -
         "Weapon_Bottle.Miss",
         "Weapon_Bottle.HitFlesh",
         "Weapon_Bottle.HitWorld",
+        "Weapon_Revolver.Single",
+        "Weapon_Revolver.WorldReload",
+        "Weapon_Knife.Miss",
+        "Weapon_Knife.HitFlesh",
+        "Weapon_Knife.HitWorld",
     ];
     let flag_targets: &[&str] = &[
         "CaptureFlag.EnemyStolen",
@@ -8640,7 +8748,11 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>) -
         "Game.YourTeamWon",
         "Game.YourTeamLost",
     ];
-    let mut documents = vec![("scripts/game_sounds_weapons.txt", weapon_targets)];
+    let player_targets: &[&str] = &["Player.Spy_Cloak", "Player.Spy_UnCloak"];
+    let mut documents = vec![
+        ("scripts/game_sounds_weapons.txt", weapon_targets),
+        ("scripts/game_sounds_player.txt", player_targets),
+    ];
     if bundle.contains_key("scripts/game_sounds_vo.txt") {
         documents.push(("scripts/game_sounds_vo.txt", flag_targets));
         documents.push(("scripts/game_sounds.txt", item_and_round_targets));
@@ -8944,6 +9056,7 @@ fn load_cached_presentation(
         "models/weapons/c_models/c_scout_arms.mdl".to_owned(),
         "models/weapons/c_models/c_engineer_arms.mdl".to_owned(),
         "models/weapons/c_models/c_sniper_arms.mdl".to_owned(),
+        "models/weapons/c_models/c_spy_arms.mdl".to_owned(),
         "models/player/scout.mdl".to_owned(),
         "models/player/sniper.mdl".to_owned(),
         "models/player/soldier.mdl".to_owned(),
@@ -8976,6 +9089,11 @@ fn load_cached_presentation(
         "models/weapons/c_models/c_pyro_arms.mdl".to_owned(),
         "models/weapons/c_models/c_flamethrower/c_flamethrower.mdl".to_owned(),
         "models/weapons/c_models/c_fireaxe_pyro/c_fireaxe_pyro.mdl".to_owned(),
+        "models/weapons/c_models/c_revolver/c_revolver.mdl".to_owned(),
+        "models/weapons/c_models/c_knife/c_knife.mdl".to_owned(),
+        "models/weapons/c_models/c_sapper/c_sapper.mdl".to_owned(),
+        "models/weapons/v_models/v_pda_spy.mdl".to_owned(),
+        "models/weapons/v_models/v_watch_spy.mdl".to_owned(),
     ]);
     let expected = graph
         .entities
@@ -9183,6 +9301,7 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
         "models/weapons/c_models/c_scout_arms.mdl".to_owned(),
         "models/weapons/c_models/c_engineer_arms.mdl".to_owned(),
         "models/weapons/c_models/c_sniper_arms.mdl".to_owned(),
+        "models/weapons/c_models/c_spy_arms.mdl".to_owned(),
         "models/player/scout.mdl".to_owned(),
         "models/player/sniper.mdl".to_owned(),
         "models/player/soldier.mdl".to_owned(),
@@ -9215,6 +9334,11 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
         "models/weapons/c_models/c_pyro_arms.mdl".to_owned(),
         "models/weapons/c_models/c_flamethrower/c_flamethrower.mdl".to_owned(),
         "models/weapons/c_models/c_fireaxe_pyro/c_fireaxe_pyro.mdl".to_owned(),
+        "models/weapons/c_models/c_revolver/c_revolver.mdl".to_owned(),
+        "models/weapons/c_models/c_knife/c_knife.mdl".to_owned(),
+        "models/weapons/c_models/c_sapper/c_sapper.mdl".to_owned(),
+        "models/weapons/v_models/v_pda_spy.mdl".to_owned(),
+        "models/weapons/v_models/v_watch_spy.mdl".to_owned(),
     ]);
     for entity in &graph.entities {
         if let Some(model) = authored_entity_model(entity)? {
@@ -9246,6 +9370,7 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
                     | "models/weapons/c_models/c_scout_arms.mdl"
                     | "models/weapons/c_models/c_engineer_arms.mdl"
                     | "models/weapons/c_models/c_sniper_arms.mdl"
+                    | "models/weapons/c_models/c_spy_arms.mdl"
                     | "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl"
                     | "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl"
                     | "models/weapons/c_models/c_grenadelauncher/c_grenadelauncher.mdl"
@@ -9264,6 +9389,11 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
                     | "models/weapons/c_models/c_pyro_arms.mdl"
                     | "models/weapons/c_models/c_flamethrower/c_flamethrower.mdl"
                     | "models/weapons/c_models/c_fireaxe_pyro/c_fireaxe_pyro.mdl"
+                    | "models/weapons/c_models/c_revolver/c_revolver.mdl"
+                    | "models/weapons/c_models/c_knife/c_knife.mdl"
+                    | "models/weapons/c_models/c_sapper/c_sapper.mdl"
+                    | "models/weapons/v_models/v_pda_spy.mdl"
+                    | "models/weapons/v_models/v_watch_spy.mdl"
             ) {
                 playsrc_studio_model::PresentationProfile::ViewModel
             } else {
@@ -12147,7 +12277,7 @@ mod tests {
     fn command_and_snapshot_binary_contract_is_stable() {
         let mut bytes = vec![0; 48];
         bytes[..4].copy_from_slice(b"PCMD");
-        bytes[4..8].copy_from_slice(&5_u32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&6_u32.to_le_bytes());
         bytes[8..12].copy_from_slice(&240_f32.to_le_bytes());
         bytes[16..20].copy_from_slice(&100_f32.to_le_bytes());
         bytes[24..28].copy_from_slice(&(-30_f32).to_le_bytes());
@@ -12224,6 +12354,7 @@ mod tests {
             movement,
             health: 175.,
             maximum_health: 200.,
+            spy: None,
             loadout: vec![playsrc_tf2::WeaponState {
                 weapon: playsrc_tf2::Weapon::Original,
                 clip: 3,
@@ -12344,6 +12475,7 @@ mod tests {
                 flag_team_dropped_available: 3,
                 bottle_hit_flesh_available: 0b111,
                 bottle_hit_world_available: 0b111,
+                knife_hit_flesh_available: 7,
             },
         };
         let mut collision_snapshot = b"CSNP".to_vec();
@@ -12426,7 +12558,7 @@ mod tests {
     fn fixed_tick_continuation_retains_buttons_and_consumes_results_and_selectors() {
         let mut bytes = vec![0; 48 + 80];
         bytes[..4].copy_from_slice(b"PCMD");
-        bytes[4..8].copy_from_slice(&5_u32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&6_u32.to_le_bytes());
         bytes[8..12].copy_from_slice(&240_f32.to_le_bytes());
         bytes[12..16].copy_from_slice(&(-120_f32).to_le_bytes());
         bytes[16..20].copy_from_slice(&100_f32.to_le_bytes());

@@ -128,6 +128,8 @@ const attributes: readonly PublicationBinding[] = Object.freeze([
   attribute("model-matrices", "modelMatrices", (view) => view.modelMatrices ? JSON.stringify(view.modelMatrices) : undefined),
   attribute("decal-state", "decalStateProbe", (view) => view.decalStateProbe ? JSON.stringify(view.decalStateProbe) : undefined),
   attribute("weapon-trace", "weaponTrace"),
+  attribute("spy-probe", "spyProbe"),
+  attribute("spy-watch-activity", "spyWatchActivity"),
   attribute("authority-trace", "authorityTrace"),
   attribute("entity-trace", "entityTrace"),
   attribute("model-material-probe", "modelMaterialProbe"),

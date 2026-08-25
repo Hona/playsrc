@@ -74,6 +74,16 @@ const documents = new Map<string, VguiResourceDocument>([
       scalar("tall", "448"),
     ])]),
   })],
+  ["resource/ui/huditemeffectmeter_spy.res", Object.freeze({
+    logicalIdentity: "resource/ui/huditemeffectmeter_spy.res",
+    revision: "spy-meter-fixture",
+    root: object("Resource", []),
+  })],
+  ["resource/ui/disguise_menu/hudmenuspydisguise.res", Object.freeze({
+    logicalIdentity: "resource/ui/disguise_menu/hudmenuspydisguise.res",
+    revision: "spy-disguise-menu-fixture",
+    root: object("Resource", []),
+  })],
 ])
 
 const customControls: readonly VguiControlRegistration[] = Object.freeze(["CTFHudElement", "CTFHealthPanel", "CTFClientScoreBoardDialog"].map((name) => Object.freeze({
