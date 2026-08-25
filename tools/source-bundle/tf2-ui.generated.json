@@ -1,8 +1,8 @@
 {
   "schema": "playsrc-tf2-ui-bundle-v1",
-  "identity": "tf2-ui-24245096-133ed8e03976ee77",
+  "identity": "tf2-ui-24245096-3e38152245e02d31",
   "contentBuild": "24245096",
-  "sourceLedger": "resource/ui/mainmenuoverride.res=5f628eb8ec62ea557cf49bc13e587b48c5e7ebd480742e1795e1653c5ae8ed92\nresource/gamemenu.res=09eac01db08203960e10a0d5febe4c6e6b92fbb3cf9302ff9282fcd62ce12044\nresource/ui/matchmakingdashboard.res=edde2b40a83a8513251773799a37967ea8d3c4d578d4a7043c2378e158e29289\nresource/ui/matchmakingdashboardplaylist.res=5bc6d3e1e101f9b3dc30bcc40d631703d0c9bddce90b1b207937d4b3d9c90367\nresource/ui/matchmakingplaylist.res=86cda545847d2219d67b31ac39e5a26a6f711c1662404e62a26b7871d038b8a7\nresource/ui/mainmenuplaylistentry.res=f8379b432cee49b0696775788b5eac15a2c7f1ded8364386991cf7bc5e4af570\nresource/ui/mainmenueventplaylistentry.res=1e752c4072e60e3985141ed522fc9d41f424c0027313bd8e0e5fd43b9a2cac34\nscripts/characterbackgrounds.txt=9cfe4a4006b65adc31f1012cc8ca8d20d24dcd5ded3ca35c167ddf1b7f3e9c6f\nresource/ui/statsummary.res=bf146199fcd7aec0a5467752853b89ead6f882d11533de383c09561bd3455903\nresource/loadingdialognobanner.res=7cb4533c43c99512be637450c0ceba681621a140d0fe058a32781470e3a14290\nresource/loadingdialognobannersingle.res=cffde579cef52d36f2dd794e68848014da866e38c2404b8adcc56c579df4718b\nresource/loadingdialogvac.res=81cdac564b982aa4bed0658cda3d895caf46690194e24b870938ad89a82a87c9\nresource/loadingdialogdualprogress.res=missing\nresource/loadingdialogerror.res=f18624dea43ddeb196475fb5ae15831b72597686dd09e3716a8ce09a0c80a3cc\nresource/loadingdialogerrorvacbanned.res=8f0e097a4efd485c9c733d8de4d4632312afe1904e7bf1516f14e2fcaf95d66b\nresource/loadingdialogerrornosteamconnection.res=c9aa0c669d6d40d1c06204949ca2236cc2d2c2f7b9a2aa194a6ad9fb1fe52751\nresource/loadingdialogerrorloggedinelsewhere.res=4f2f0536c944961830f1bff66694e2e24af369aa5b027588ced8aa7568967562\nresource/clientscheme.res=1d071b99def0405cbf73d97642a396e6dcbad1a7488f12696ca5dd62893c604c\nresource/sourcescheme.res=97e6bb4816a567e1dea0333462f519a7be1434e4e7c10c728be25663d0f4134c\nresource/sourceschemebase.res=1ca27ea2d70db6af5a76605bd8f1655aabfecd61e3d19d89981e7eded972ea99\nscripts/hudlayout.res=1f18cb73d9ef54ff79ea208c9996db0655ac731b2ee8e9a82ff63a4b697f400f\nscripts/hudanimations_manifest.txt=927b61008081eafac302db71d32d75c63b4c9ed1b23c4bd5b8725826733c1acc\nscripts/hudanimations.txt=7e2e97c91493d7cfee9a67bd04fcc242c8f6cfec2834a796df08bdbac8a94e1a\nscripts/hudanimations_tf.txt=cffca69ab872c358d8afb566e78acde022062e87b4fdcfa1779e77dd28ad52ff\nresource/ui/hudplayerclass.res=10181165d10a81821672fd8e104d798e18cf896ca1156cf92df8ce0a07f8c89d\nresource/ui/hudplayerhealth.res=31fabca97c196eb2cff565b18ff8b3a17aa8806c8e1a980c9376782be7fa4774\nresource/ui/hudammoweapons.res=a23a98f009dd34ac8c94e7149b1ded56eb9ed66e03d583fcd9c2ab68c3cb7734\nresource/ui/hudweaponselection.res=7a6f02c7eab4f0befdac5c69082c9334b0a03975738e1fc6d598ba6c91967138\nresource/ui/huddemomanpipes.res=607417c4abf5e469cf15e2d15d45ae5ccc826fe4a6b5f28444241a91a701bb55\nresource/ui/hudkillstreaknotice.res=551c477ae179b47715074091375612eae36fd22a0ddcd3a7c98f213925224aba\nresource/ui/targetid.res=1f9f3567a38238aa7a0ce2c1343a8b2b2fd18518a4220984268571a5e443f321\nresource/optionssubkeyboard.res=99cc7c486fa19b58c76842a8ce5abf8b65ff13fbbd097f5eb7e195783b570902\nresource/optionssubkeyboardadvanceddlg.res=fc9cfe367a14c0afdf31e09a87e571a8bfc9fe7080611b64a0f6be115fee0a55\nresource/optionssubmouse.res=d66b4e5c5138ab5a03488f04275532e249834dfc56c55d648a61cc95e62730a7\nresource/optionssubaudio.res=610c003f70285085917e930015d17ad772d6ec24d7ec4beda55f22f4d87bf42e\nresource/optionssubaudiothirdpartydlg.res=6e03e67f08e7fb52c8bb2e589ac11475188da913e4cde7f6431f409f03c30419\nresource/optionssubvideo.res=0753652e496d0df7a8935a10f3360c275ed24f6dfe5c70f83695953754f0333a\nresource/optionssubvideoadvanceddlg.res=6810e7b776ddaf2350fb2370fde6313cfc724bc7115841236cecccb5fd9e53c4\nresource/optionssubvideogammadlg.res=1820881866018ea5499fa796dc81d6ebb79e37a228f808236af3f05994da229e\nresource/optionssubvideothirdpartydlg.res=d284eda8d6e578cc4645e6fba94044d14c870e491e4b0ba5d497a5ce9fc094d5\nresource/optionssubvoice.res=c72f989c979091c6ad9b0456039b9444be39962fc66fd816019914b7cf7f247d\nresource/optionssubmultiplayer.res=40cacfeaff5f0304edbbdfe03a970dddb786a6c4ad8c9492edafae556a00c19e\nresource/ui/tfadvancedoptionsdialog.res=38926822b667e916f5df3c3aeca41b86bab6f155ce3b2cc31edf53598fb29cc4\ncfg/user_default.scr=d8f4cf14cebc84082b555fe4277f05aa5959cbd2b2e9f920252f43fe70b6b020\ncfg/user.scr=missing\nscripts/kb_act.lst=403843357e1e3dd4212fba5f4d253db92096531d224595a47eadc07cb6b1f8da\nresource/tf_english.txt=9c6b1b289b03c1d3d8c44b11378b785c06b98de73b406a5f118b0aabfb65e1ef\nresource/gameui_english.txt=43730a193cec6892915532f809fa274397a122e827e75820514bced96f1f83f5\nresource/vgui_english.txt=56a86da0be3ab3045d2fe766b852043ba1d641df70675097e24537f46c0096b4\nresource/valve_english.txt=4bbd3d8d9fca9d4f1dae999d9bdac16a0152dc28e8b3fcb9c5508c60a32dbcfa",
+  "sourceLedger": "resource/ui/mainmenuoverride.res=5f628eb8ec62ea557cf49bc13e587b48c5e7ebd480742e1795e1653c5ae8ed92\nresource/gamemenu.res=09eac01db08203960e10a0d5febe4c6e6b92fbb3cf9302ff9282fcd62ce12044\nresource/ui/matchmakingdashboard.res=edde2b40a83a8513251773799a37967ea8d3c4d578d4a7043c2378e158e29289\nresource/ui/matchmakingdashboardplaylist.res=5bc6d3e1e101f9b3dc30bcc40d631703d0c9bddce90b1b207937d4b3d9c90367\nresource/ui/matchmakingplaylist.res=86cda545847d2219d67b31ac39e5a26a6f711c1662404e62a26b7871d038b8a7\nresource/ui/mainmenuplaylistentry.res=f8379b432cee49b0696775788b5eac15a2c7f1ded8364386991cf7bc5e4af570\nresource/ui/mainmenueventplaylistentry.res=1e752c4072e60e3985141ed522fc9d41f424c0027313bd8e0e5fd43b9a2cac34\nscripts/characterbackgrounds.txt=9cfe4a4006b65adc31f1012cc8ca8d20d24dcd5ded3ca35c167ddf1b7f3e9c6f\nresource/ui/statsummary.res=bf146199fcd7aec0a5467752853b89ead6f882d11533de383c09561bd3455903\nresource/loadingdialognobanner.res=7cb4533c43c99512be637450c0ceba681621a140d0fe058a32781470e3a14290\nresource/loadingdialognobannersingle.res=cffde579cef52d36f2dd794e68848014da866e38c2404b8adcc56c579df4718b\nresource/loadingdialogvac.res=81cdac564b982aa4bed0658cda3d895caf46690194e24b870938ad89a82a87c9\nresource/loadingdialogdualprogress.res=missing\nresource/loadingdialogerror.res=f18624dea43ddeb196475fb5ae15831b72597686dd09e3716a8ce09a0c80a3cc\nresource/loadingdialogerrorvacbanned.res=8f0e097a4efd485c9c733d8de4d4632312afe1904e7bf1516f14e2fcaf95d66b\nresource/loadingdialogerrornosteamconnection.res=c9aa0c669d6d40d1c06204949ca2236cc2d2c2f7b9a2aa194a6ad9fb1fe52751\nresource/loadingdialogerrorloggedinelsewhere.res=4f2f0536c944961830f1bff66694e2e24af369aa5b027588ced8aa7568967562\nresource/clientscheme.res=1d071b99def0405cbf73d97642a396e6dcbad1a7488f12696ca5dd62893c604c\nresource/sourcescheme.res=97e6bb4816a567e1dea0333462f519a7be1434e4e7c10c728be25663d0f4134c\nresource/sourceschemebase.res=1ca27ea2d70db6af5a76605bd8f1655aabfecd61e3d19d89981e7eded972ea99\nscripts/hudlayout.res=1f18cb73d9ef54ff79ea208c9996db0655ac731b2ee8e9a82ff63a4b697f400f\nscripts/hudanimations_manifest.txt=927b61008081eafac302db71d32d75c63b4c9ed1b23c4bd5b8725826733c1acc\nscripts/hudanimations.txt=7e2e97c91493d7cfee9a67bd04fcc242c8f6cfec2834a796df08bdbac8a94e1a\nscripts/hudanimations_tf.txt=cffca69ab872c358d8afb566e78acde022062e87b4fdcfa1779e77dd28ad52ff\nresource/ui/hudplayerclass.res=10181165d10a81821672fd8e104d798e18cf896ca1156cf92df8ce0a07f8c89d\nresource/ui/hudplayerhealth.res=31fabca97c196eb2cff565b18ff8b3a17aa8806c8e1a980c9376782be7fa4774\nresource/ui/hudammoweapons.res=a23a98f009dd34ac8c94e7149b1ded56eb9ed66e03d583fcd9c2ab68c3cb7734\nresource/ui/hudweaponselection.res=7a6f02c7eab4f0befdac5c69082c9334b0a03975738e1fc6d598ba6c91967138\nresource/ui/huddemomanpipes.res=607417c4abf5e469cf15e2d15d45ae5ccc826fe4a6b5f28444241a91a701bb55\nresource/ui/hudkillstreaknotice.res=551c477ae179b47715074091375612eae36fd22a0ddcd3a7c98f213925224aba\nresource/ui/targetid.res=1f9f3567a38238aa7a0ce2c1343a8b2b2fd18518a4220984268571a5e443f321\nresource/ui/classselection.res=e6fc4be62822eb351e6e678ece2f6e42b92b0b8e825a12c8120fc14b82154fcc\nresource/ui/classtipslist.res=c7be1fb87a7d748df8f5d59db54b79020d57675e983939cb4b7f2f3a8ec968cc\nresource/ui/classtipsitem.res=524eac0cddd5625561cf1d0034653624d3daffcc1e99313ebdbfd5fd00a1a9d7\nresource/optionssubkeyboard.res=99cc7c486fa19b58c76842a8ce5abf8b65ff13fbbd097f5eb7e195783b570902\nresource/optionssubkeyboardadvanceddlg.res=fc9cfe367a14c0afdf31e09a87e571a8bfc9fe7080611b64a0f6be115fee0a55\nresource/optionssubmouse.res=d66b4e5c5138ab5a03488f04275532e249834dfc56c55d648a61cc95e62730a7\nresource/optionssubaudio.res=610c003f70285085917e930015d17ad772d6ec24d7ec4beda55f22f4d87bf42e\nresource/optionssubaudiothirdpartydlg.res=6e03e67f08e7fb52c8bb2e589ac11475188da913e4cde7f6431f409f03c30419\nresource/optionssubvideo.res=0753652e496d0df7a8935a10f3360c275ed24f6dfe5c70f83695953754f0333a\nresource/optionssubvideoadvanceddlg.res=6810e7b776ddaf2350fb2370fde6313cfc724bc7115841236cecccb5fd9e53c4\nresource/optionssubvideogammadlg.res=1820881866018ea5499fa796dc81d6ebb79e37a228f808236af3f05994da229e\nresource/optionssubvideothirdpartydlg.res=d284eda8d6e578cc4645e6fba94044d14c870e491e4b0ba5d497a5ce9fc094d5\nresource/optionssubvoice.res=c72f989c979091c6ad9b0456039b9444be39962fc66fd816019914b7cf7f247d\nresource/optionssubmultiplayer.res=40cacfeaff5f0304edbbdfe03a970dddb786a6c4ad8c9492edafae556a00c19e\nresource/ui/tfadvancedoptionsdialog.res=38926822b667e916f5df3c3aeca41b86bab6f155ce3b2cc31edf53598fb29cc4\ncfg/user_default.scr=d8f4cf14cebc84082b555fe4277f05aa5959cbd2b2e9f920252f43fe70b6b020\ncfg/user.scr=missing\nscripts/kb_act.lst=403843357e1e3dd4212fba5f4d253db92096531d224595a47eadc07cb6b1f8da\nresource/tf_english.txt=9c6b1b289b03c1d3d8c44b11378b785c06b98de73b406a5f118b0aabfb65e1ef\nresource/gameui_english.txt=43730a193cec6892915532f809fa274397a122e827e75820514bced96f1f83f5\nresource/vgui_english.txt=56a86da0be3ab3045d2fe766b852043ba1d641df70675097e24537f46c0096b4\nresource/valve_english.txt=4bbd3d8d9fca9d4f1dae999d9bdac16a0152dc28e8b3fcb9c5508c60a32dbcfa",
   "dependencies": [
     {
       "logicalPath": "cfg/user_default.scr",
@@ -2941,6 +2941,486 @@
       ]
     },
     {
+      "logicalPath": "materials/vgui/class_sel_sm_demo_blu.vmt",
+      "sha256": "20009e21b10fabcb6d1cf6963b8ccee62d4e31e58d16f0a318c85c0abf754d46",
+      "byteLength": 140,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_demo_blu.vtf",
+      "sha256": "8a10d5caeb0ffcdd6df6a9b0367c0ab04cb763cb2a65e1ddec818d48ae1a913e",
+      "byteLength": 43896,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_demo_inactive.vmt",
+      "sha256": "c6b314579a1fce98ae24e0117d9654d0161ee22d52dddf9bfd95ef979806aaff",
+      "byteLength": 145,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_demo_inactive.vtf",
+      "sha256": "1b540707808c454e883b66e7c42ae030bd6bf92cd3b8a1f888e7559a31e53350",
+      "byteLength": 43896,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_demo_red.vmt",
+      "sha256": "a6fe77c7501013f2c278a0a05fcb74b6064e8db983f2144fa486630ceb40c224",
+      "byteLength": 140,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_demo_red.vtf",
+      "sha256": "496323691dcf90ef9cf6bac0e0d2129c019196432fab3fa99cd24ebc8797c684",
+      "byteLength": 43896,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_engineer_blu.vmt",
+      "sha256": "05161f9297e1af44df4f4c1d8cea5c245a26576c272accbfe521d7f22a49d1b8",
+      "byteLength": 144,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_engineer_blu.vtf",
+      "sha256": "2aa9b317dd8e30bb2a27cf42dafc9fdb5aedb8401ad5d64bc38bc0211130c883",
+      "byteLength": 43896,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_engineer_inactive.vmt",
+      "sha256": "9c0bfee52c116ecca0e620ce13b04fedbb87effc241e9cefdc6dfbfa9d71d5de",
+      "byteLength": 149,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_engineer_inactive.vtf",
+      "sha256": "967e97731dad60b4f9bc8fe212073e9c0f6fb7aa5d5fb3b5bf969577edf9eb07",
+      "byteLength": 43896,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_engineer_red.vmt",
+      "sha256": "0fb3c9a26cafb5f011b324b26582ce210f43fc521c7bff1a02ebf63e513435e8",
+      "byteLength": 144,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_engineer_red.vtf",
+      "sha256": "bb141e8a49bb48bd2c5fe065765bb4698506fc2fcddecee9cff595e1cc41f943",
+      "byteLength": 43896,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_heavy_blu.vmt",
+      "sha256": "c163e1edaab19064229d80b0c9872e59460047979a91f3749fcf0df68774ce2d",
+      "byteLength": 141,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_heavy_blu.vtf",
+      "sha256": "3590d5fdbe0919cce6cfc0345fdc00032582e44dbea9dbf4c45e80a3179d0f9b",
+      "byteLength": 43896,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_heavy_inactive.vmt",
+      "sha256": "5aec59d08380c795337060b24b5887d7797e3521163b467c9ac517894919a4d4",
+      "byteLength": 146,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_heavy_inactive.vtf",
+      "sha256": "252f2884897d6b1385c655898b3169170bd3d5d362bfd7c8971c7556c5dbaa27",
+      "byteLength": 43896,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_heavy_red.vmt",
+      "sha256": "5d583f7e704b34ecc5541470bb887b3e030025839afb990f568f5ee20585470d",
+      "byteLength": 141,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_heavy_red.vtf",
+      "sha256": "4919da9d9227a9477a7eb4aef9eac12d1341a87321e59d07cb48f693b55cb305",
+      "byteLength": 43896,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_medic_blu.vmt",
+      "sha256": "9ac7a726df29f0e4b71e06dc0bc1ec0a1bfd570915a3d10821eaafc1c04df32b",
+      "byteLength": 141,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_medic_blu.vtf",
+      "sha256": "25b480b247b19cc789e253cfadd14d0f2348bea916e29404cf70d5f1e50b0e9b",
+      "byteLength": 43896,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_medic_inactive.vmt",
+      "sha256": "959626392df98e5fbdaf7fc0897e887212333053198b27ae15820c9fb8511f7f",
+      "byteLength": 146,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_medic_inactive.vtf",
+      "sha256": "e614a6e640476df4e520617156d267c8e99ac1ee810c7011fd167cc9df5ade52",
+      "byteLength": 43896,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_medic_red.vmt",
+      "sha256": "e4dfcf8600ca78cf87b3b1d29fbb6b3ac36c39034d1ce9abd0b376c15cc42f45",
+      "byteLength": 141,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_medic_red.vtf",
+      "sha256": "2e0b97600b70623c840d9ddf46cee2ad5441bf5925dc904eeb214f8552610571",
+      "byteLength": 43896,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_pyro_blu.vmt",
+      "sha256": "061c334e70a8d29526453b406546d3f1856a7a80ab97793676a9193f4b055b17",
+      "byteLength": 140,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_pyro_blu.vtf",
+      "sha256": "7243d683182d42c5ef21ed3b32ee4456738590e987fc1ef7434cb0c8d20d9dba",
+      "byteLength": 43896,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_pyro_inactive.vmt",
+      "sha256": "eef9030d43118e6bc3fb32b1caf2d0ff12f159dda83bfdeeccfa5fa0609e24f6",
+      "byteLength": 145,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_pyro_inactive.vtf",
+      "sha256": "ef80bf83e90507fd32e486f7d97cdd0e263fd6d515ebf88fcb4f4156e4809388",
+      "byteLength": 43896,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_pyro_red.vmt",
+      "sha256": "1f49f32cc6c53d6faad103008622af282df9bbc0af07710bbecb2a3d656b3c08",
+      "byteLength": 140,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_pyro_red.vtf",
+      "sha256": "85c18611a9da68e95c5ae8188ce14c4bdffc9891db863b7eb3d6aef484159db8",
+      "byteLength": 43896,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_random_blu.vmt",
+      "sha256": "6ec28a31abb1be6d77ba778963880be2c728549514335eabf1b817892fe23d31",
+      "byteLength": 142,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_random_blu.vtf",
+      "sha256": "181f6ce86d88a91c0d88dddad98247c512bc61120756c32523c969cb229fab6b",
+      "byteLength": 43896,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_random_inactive.vmt",
+      "sha256": "0d1fe8010e037d818b955afb1a7329edee83b152ab18fee2cbd366134109070a",
+      "byteLength": 147,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_random_inactive.vtf",
+      "sha256": "5908713e8d57704a40e348262d5ab0f43ca36a23221e572b6abd996943ff3870",
+      "byteLength": 43896,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_random_red.vmt",
+      "sha256": "32e61c1e29553b6b2e2c348957132cbf58d4f506283c51cd25adbe7801d1bc64",
+      "byteLength": 142,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_random_red.vtf",
+      "sha256": "42dc73ddba80ce23ea9062830caf508f288cd66724fee58c033ab8ee156f9123",
+      "byteLength": 43896,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_scout_blu.vmt",
+      "sha256": "26f86e801a93984cf0888f58b5c080b1a948ed94c197380e5cff4bda24734588",
+      "byteLength": 141,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_scout_blu.vtf",
+      "sha256": "60e7a88305ac5290683f3dc1f68240075ab5219be3f561a96f95406febe5408f",
+      "byteLength": 43896,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_scout_inactive.vmt",
+      "sha256": "f1d057255f9745170de15a54985c52e74b1a7d4f80d4199893ac0fee0cd3d67a",
+      "byteLength": 146,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_scout_inactive.vtf",
+      "sha256": "a6575782f346141d523497b0ef49bdfa403a84cb344b6f3719dd06ee9fb9c22f",
+      "byteLength": 43896,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_scout_red.vmt",
+      "sha256": "6b67bdbdbf1da277f14330fe6c13bf4283e7f5fcc89028f1c00f86b829792110",
+      "byteLength": 141,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_scout_red.vtf",
+      "sha256": "e4f42698e3a4bd652fcbb4eba8e4826ed20e31e1aa742a20848dfaf64fa6db7f",
+      "byteLength": 43896,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_sniper_blu.vmt",
+      "sha256": "a706909c1dbad0269887f1dc4f32a6a6de92ae708dcf9699983a68695eaabd29",
+      "byteLength": 142,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_sniper_blu.vtf",
+      "sha256": "8194998c57e37193f2849650bafbe2a0434a450375add60be4e49a8a6664b137",
+      "byteLength": 43896,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_sniper_inactive.vmt",
+      "sha256": "7c2e4e817a014fe9cfccc4760e267434b7d2d31a6a29e3d08ed32e1a541bf993",
+      "byteLength": 147,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_sniper_inactive.vtf",
+      "sha256": "4c25013ea155da9c01242cac46dea9af73eb85dfb075836ae99d94fa5c44af80",
+      "byteLength": 43896,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_sniper_red.vmt",
+      "sha256": "5dc9b7a22f85f02ec60cd669f7f80f1834f6fb79758d570b83c6713ccd689b99",
+      "byteLength": 142,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_sniper_red.vtf",
+      "sha256": "3dafe54afe37a008f9fcad624d5f545bf22b103826ab65b1902042d758d33f9c",
+      "byteLength": 43896,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_soldier_blu.vmt",
+      "sha256": "52701890e198eadc914e1e1d9f3781803bf3caf8f84b06f76ae0dc7d75e7b90f",
+      "byteLength": 143,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_soldier_blu.vtf",
+      "sha256": "c041ae52c795ce97b0bf451980ca798d6cffcea30db4b1201ca4f426cf1e76fb",
+      "byteLength": 43896,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_soldier_inactive.vmt",
+      "sha256": "6983ae2c8fa4652cdd7575a4a71cf211a63f2daa4a6bb420471bffd5de92d51e",
+      "byteLength": 148,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_soldier_inactive.vtf",
+      "sha256": "df685352bde9f67062bda90319d7436dbb76586c8a8c3617beb8c2fbefaa06d2",
+      "byteLength": 43896,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_soldier_red.vmt",
+      "sha256": "786e066eab0b00e0fce6635f27b4a34b9a974ce4537629f3438e18bf7896b530",
+      "byteLength": 143,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_soldier_red.vtf",
+      "sha256": "c5da7f6b6c8257d59f099e92f78ae5dfb44f452b01ebbf4b279226b78c75f7eb",
+      "byteLength": 43896,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_spy_blu.vmt",
+      "sha256": "f9b1894c55636b2d28580ee8b9f8dda18175697fad4f0126869a51fa2d60e7fd",
+      "byteLength": 139,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_spy_blu.vtf",
+      "sha256": "a5eddadca5a64e25b43524522b3aeb22a1b6543743c4b546dea6bc3dccf09119",
+      "byteLength": 43896,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_spy_inactive.vmt",
+      "sha256": "6cbe12534bfad05353ab34eb2ae76440928fd0a9ef13cd9a18959e4b3c4f5dcc",
+      "byteLength": 144,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_spy_inactive.vtf",
+      "sha256": "2d648ad9a1f0c12328a6fcf6d962123be304dfb8981ba849b2655d1de3dc26ce",
+      "byteLength": 43896,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_spy_red.vmt",
+      "sha256": "88b47b1fcbbbabb945a7601addc376e6dc75fbfa840980717dc8387c49a5c45c",
+      "byteLength": 139,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/class_sel_sm_spy_red.vtf",
+      "sha256": "39d32be8afe42114cfd3781c5500e178550022e0320c50694f8f3131038f7935",
+      "byteLength": 43896,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
       "logicalPath": "materials/vgui/close_button.vmt",
       "sha256": "185b84d7f072e46b7bfe7d53d2347df61f786749c536afbf2bd471ef42eb7f5c",
       "byteLength": 112,
@@ -3709,6 +4189,22 @@
       ]
     },
     {
+      "logicalPath": "materials/vgui/mvm/class_upgraded.vmt",
+      "sha256": "66f59bd9b229c3e5d8f4186650aa15ae7d9549c048e50f58f8ccad516e426f55",
+      "byteLength": 187,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/mvm/class_upgraded.vtf",
+      "sha256": "d6f5fdb10b1c59c9562ae736535bf3d0b2b9ecded2a222d2fb94cba9254b870d",
+      "byteLength": 349764,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
       "logicalPath": "materials/vgui/new.vmt",
       "sha256": "5823243aeaa3af7d5d7f199a212ea1f193b774ba0c3c8a2c17d76930df3543c9",
       "byteLength": 143,
@@ -3752,6 +4248,22 @@
       "logicalPath": "materials/vgui/outer_shadow_border.vtf",
       "sha256": "98cb083a00a3bd6ad091124ffa6040d849ce441ac35d31bec3a226749bccd0af",
       "byteLength": 1624,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/pve/chalf_circle.vmt",
+      "sha256": "599a2a056c77b75a3dcc6ce0b4d3dc93f442b60109b27b7f9360276d68fe41f8",
+      "byteLength": 158,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/pve/chalf_circle.vtf",
+      "sha256": "dc03a6c2b2eb29f3c863ff0eeee42b7694c03038ab08b817725bd186ad46d609",
+      "byteLength": 5720,
       "kinds": [
         "texture"
       ]
@@ -4506,6 +5018,30 @@
       "byteLength": 44180,
       "kinds": [
         "font"
+      ]
+    },
+    {
+      "logicalPath": "resource/ui/classselection.res",
+      "sha256": "e6fc4be62822eb351e6e678ece2f6e42b92b0b8e825a12c8120fc14b82154fcc",
+      "byteLength": 37109,
+      "kinds": [
+        "resource"
+      ]
+    },
+    {
+      "logicalPath": "resource/ui/classtipsitem.res",
+      "sha256": "524eac0cddd5625561cf1d0034653624d3daffcc1e99313ebdbfd5fd00a1a9d7",
+      "byteLength": 903,
+      "kinds": [
+        "resource"
+      ]
+    },
+    {
+      "logicalPath": "resource/ui/classtipslist.res",
+      "sha256": "c7be1fb87a7d748df8f5d59db54b79020d57675e983939cb4b7f2f3a8ec968cc",
+      "byteLength": 355,
+      "kinds": [
+        "resource"
       ]
     },
     {
@@ -7480,6 +8016,22 @@
     },
     {
       "identity": "image-0167",
+      "configuredValue": "/pve/chalf_circle.vmt",
+      "classification": "content-vtf",
+      "material": "materials/vgui/pve/chalf_circle.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/pve/chalf_circle.vtf",
+          "sha256": "dc03a6c2b2eb29f3c863ff0eeee42b7694c03038ab08b817725bd186ad46d609",
+          "width": 64,
+          "height": 64,
+          "frames": 1,
+          "rawFlags": 8192
+        }
+      ]
+    },
+    {
+      "identity": "image-0168",
       "configuredValue": "alert_rect",
       "classification": "content-vtf",
       "material": "materials/vgui/alert_rect.vmt",
@@ -7495,7 +8047,7 @@
       ]
     },
     {
-      "identity": "image-0168",
+      "identity": "image-0169",
       "configuredValue": "backpack_rect",
       "classification": "content-vtf",
       "material": "materials/vgui/backpack_rect.vmt",
@@ -7511,7 +8063,7 @@
       ]
     },
     {
-      "identity": "image-0169",
+      "identity": "image-0170",
       "configuredValue": "backpack_rect_color",
       "classification": "content-vtf",
       "material": "materials/vgui/backpack_rect_color.vmt",
@@ -7527,7 +8079,7 @@
       ]
     },
     {
-      "identity": "image-0170",
+      "identity": "image-0171",
       "configuredValue": "backpack_rect_mouseover",
       "classification": "content-vtf",
       "material": "materials/vgui/backpack_rect_mouseover.vmt",
@@ -7543,7 +8095,7 @@
       ]
     },
     {
-      "identity": "image-0171",
+      "identity": "image-0172",
       "configuredValue": "backpack_rect_mouseover_color",
       "classification": "content-vtf",
       "material": "materials/vgui/backpack_rect_mouseover_color.vmt",
@@ -7559,7 +8111,7 @@
       ]
     },
     {
-      "identity": "image-0172",
+      "identity": "image-0173",
       "configuredValue": "backpack_rect_selected",
       "classification": "content-vtf",
       "material": "materials/vgui/backpack_rect_selected.vmt",
@@ -7575,7 +8127,7 @@
       ]
     },
     {
-      "identity": "image-0173",
+      "identity": "image-0174",
       "configuredValue": "blog_back",
       "classification": "content-vtf",
       "material": "materials/vgui/blog_back.vmt",
@@ -7591,7 +8143,7 @@
       ]
     },
     {
-      "identity": "image-0174",
+      "identity": "image-0175",
       "configuredValue": "blog_forward",
       "classification": "content-vtf",
       "material": "materials/vgui/blog_forward.vmt",
@@ -7607,7 +8159,7 @@
       ]
     },
     {
-      "identity": "image-0175",
+      "identity": "image-0176",
       "configuredValue": "blog_tabby",
       "classification": "content-vtf",
       "material": "materials/vgui/blog_tabby.vmt",
@@ -7623,7 +8175,7 @@
       ]
     },
     {
-      "identity": "image-0176",
+      "identity": "image-0177",
       "configuredValue": "button_Alert",
       "classification": "content-vtf",
       "material": "materials/vgui/button_alert.vmt",
@@ -7639,7 +8191,7 @@
       ]
     },
     {
-      "identity": "image-0177",
+      "identity": "image-0178",
       "configuredValue": "button_MOTD",
       "classification": "content-vtf",
       "material": "materials/vgui/button_motd.vmt",
@@ -7655,7 +8207,7 @@
       ]
     },
     {
-      "identity": "image-0178",
+      "identity": "image-0179",
       "configuredValue": "button_central",
       "classification": "content-vtf",
       "material": "materials/vgui/button_central.vmt",
@@ -7671,7 +8223,7 @@
       ]
     },
     {
-      "identity": "image-0179",
+      "identity": "image-0180",
       "configuredValue": "button_central_adv",
       "classification": "content-vtf",
       "material": "materials/vgui/button_central_adv.vmt",
@@ -7687,7 +8239,7 @@
       ]
     },
     {
-      "identity": "image-0180",
+      "identity": "image-0181",
       "configuredValue": "button_central_adv_hover",
       "classification": "content-vtf",
       "material": "materials/vgui/button_central_adv_hover.vmt",
@@ -7703,7 +8255,7 @@
       ]
     },
     {
-      "identity": "image-0181",
+      "identity": "image-0182",
       "configuredValue": "button_central_depressed",
       "classification": "content-vtf",
       "material": "materials/vgui/button_central_depressed.vmt",
@@ -7719,7 +8271,7 @@
       ]
     },
     {
-      "identity": "image-0182",
+      "identity": "image-0183",
       "configuredValue": "button_central_depressed_armed",
       "classification": "content-vtf",
       "material": "materials/vgui/button_central_depressed_armed.vmt",
@@ -7735,7 +8287,7 @@
       ]
     },
     {
-      "identity": "image-0183",
+      "identity": "image-0184",
       "configuredValue": "button_central_disabled",
       "classification": "content-vtf",
       "material": "materials/vgui/button_central_disabled.vmt",
@@ -7751,7 +8303,7 @@
       ]
     },
     {
-      "identity": "image-0184",
+      "identity": "image-0185",
       "configuredValue": "button_central_hover",
       "classification": "content-vtf",
       "material": "materials/vgui/button_central_hover.vmt",
@@ -7767,7 +8319,7 @@
       ]
     },
     {
-      "identity": "image-0185",
+      "identity": "image-0186",
       "configuredValue": "button_glow",
       "classification": "content-vtf",
       "material": "materials/vgui/button_glow.vmt",
@@ -7783,7 +8335,7 @@
       ]
     },
     {
-      "identity": "image-0186",
+      "identity": "image-0187",
       "configuredValue": "button_holder_central",
       "classification": "content-vtf",
       "material": "materials/vgui/button_holder_central.vmt",
@@ -7799,7 +8351,7 @@
       ]
     },
     {
-      "identity": "image-0187",
+      "identity": "image-0188",
       "configuredValue": "button_holder_central_alpha",
       "classification": "content-vtf",
       "material": "materials/vgui/button_holder_central_alpha.vmt",
@@ -7815,7 +8367,7 @@
       ]
     },
     {
-      "identity": "image-0188",
+      "identity": "image-0189",
       "configuredValue": "button_quests_pda",
       "classification": "content-vtf",
       "material": "materials/vgui/button_quests_pda.vmt",
@@ -7831,7 +8383,7 @@
       ]
     },
     {
-      "identity": "image-0189",
+      "identity": "image-0190",
       "configuredValue": "button_streaming",
       "classification": "content-vtf",
       "material": "materials/vgui/button_streaming.vmt",
@@ -7847,7 +8399,7 @@
       ]
     },
     {
-      "identity": "image-0190",
+      "identity": "image-0191",
       "configuredValue": "callout_bubble",
       "classification": "content-vtf",
       "material": "materials/vgui/callout_bubble.vmt",
@@ -7863,7 +8415,7 @@
       ]
     },
     {
-      "identity": "image-0191",
+      "identity": "image-0192",
       "configuredValue": "class_icons/filter_all",
       "classification": "content-vtf",
       "material": "materials/vgui/class_icons/filter_all.vmt",
@@ -7879,7 +8431,7 @@
       ]
     },
     {
-      "identity": "image-0192",
+      "identity": "image-0193",
       "configuredValue": "class_icons/filter_all_motd",
       "classification": "content-vtf",
       "material": "materials/vgui/class_icons/filter_all_motd.vmt",
@@ -7895,7 +8447,487 @@
       ]
     },
     {
-      "identity": "image-0193",
+      "identity": "image-0194",
+      "configuredValue": "class_sel_sm_demo_blu",
+      "classification": "content-vtf",
+      "material": "materials/vgui/class_sel_sm_demo_blu.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/class_sel_sm_demo_blu.vtf",
+          "sha256": "8a10d5caeb0ffcdd6df6a9b0367c0ab04cb763cb2a65e1ddec818d48ae1a913e",
+          "width": 128,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0195",
+      "configuredValue": "class_sel_sm_demo_inactive",
+      "classification": "content-vtf",
+      "material": "materials/vgui/class_sel_sm_demo_inactive.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/class_sel_sm_demo_inactive.vtf",
+          "sha256": "1b540707808c454e883b66e7c42ae030bd6bf92cd3b8a1f888e7559a31e53350",
+          "width": 128,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0196",
+      "configuredValue": "class_sel_sm_demo_red",
+      "classification": "content-vtf",
+      "material": "materials/vgui/class_sel_sm_demo_red.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/class_sel_sm_demo_red.vtf",
+          "sha256": "496323691dcf90ef9cf6bac0e0d2129c019196432fab3fa99cd24ebc8797c684",
+          "width": 128,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0197",
+      "configuredValue": "class_sel_sm_engineer_blu",
+      "classification": "content-vtf",
+      "material": "materials/vgui/class_sel_sm_engineer_blu.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/class_sel_sm_engineer_blu.vtf",
+          "sha256": "2aa9b317dd8e30bb2a27cf42dafc9fdb5aedb8401ad5d64bc38bc0211130c883",
+          "width": 128,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0198",
+      "configuredValue": "class_sel_sm_engineer_inactive",
+      "classification": "content-vtf",
+      "material": "materials/vgui/class_sel_sm_engineer_inactive.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/class_sel_sm_engineer_inactive.vtf",
+          "sha256": "967e97731dad60b4f9bc8fe212073e9c0f6fb7aa5d5fb3b5bf969577edf9eb07",
+          "width": 128,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0199",
+      "configuredValue": "class_sel_sm_engineer_red",
+      "classification": "content-vtf",
+      "material": "materials/vgui/class_sel_sm_engineer_red.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/class_sel_sm_engineer_red.vtf",
+          "sha256": "bb141e8a49bb48bd2c5fe065765bb4698506fc2fcddecee9cff595e1cc41f943",
+          "width": 128,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0200",
+      "configuredValue": "class_sel_sm_heavy_blu",
+      "classification": "content-vtf",
+      "material": "materials/vgui/class_sel_sm_heavy_blu.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/class_sel_sm_heavy_blu.vtf",
+          "sha256": "3590d5fdbe0919cce6cfc0345fdc00032582e44dbea9dbf4c45e80a3179d0f9b",
+          "width": 128,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0201",
+      "configuredValue": "class_sel_sm_heavy_inactive",
+      "classification": "content-vtf",
+      "material": "materials/vgui/class_sel_sm_heavy_inactive.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/class_sel_sm_heavy_inactive.vtf",
+          "sha256": "252f2884897d6b1385c655898b3169170bd3d5d362bfd7c8971c7556c5dbaa27",
+          "width": 128,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0202",
+      "configuredValue": "class_sel_sm_heavy_red",
+      "classification": "content-vtf",
+      "material": "materials/vgui/class_sel_sm_heavy_red.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/class_sel_sm_heavy_red.vtf",
+          "sha256": "4919da9d9227a9477a7eb4aef9eac12d1341a87321e59d07cb48f693b55cb305",
+          "width": 128,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0203",
+      "configuredValue": "class_sel_sm_medic_blu",
+      "classification": "content-vtf",
+      "material": "materials/vgui/class_sel_sm_medic_blu.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/class_sel_sm_medic_blu.vtf",
+          "sha256": "25b480b247b19cc789e253cfadd14d0f2348bea916e29404cf70d5f1e50b0e9b",
+          "width": 128,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0204",
+      "configuredValue": "class_sel_sm_medic_inactive",
+      "classification": "content-vtf",
+      "material": "materials/vgui/class_sel_sm_medic_inactive.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/class_sel_sm_medic_inactive.vtf",
+          "sha256": "e614a6e640476df4e520617156d267c8e99ac1ee810c7011fd167cc9df5ade52",
+          "width": 128,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0205",
+      "configuredValue": "class_sel_sm_medic_red",
+      "classification": "content-vtf",
+      "material": "materials/vgui/class_sel_sm_medic_red.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/class_sel_sm_medic_red.vtf",
+          "sha256": "2e0b97600b70623c840d9ddf46cee2ad5441bf5925dc904eeb214f8552610571",
+          "width": 128,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0206",
+      "configuredValue": "class_sel_sm_pyro_blu",
+      "classification": "content-vtf",
+      "material": "materials/vgui/class_sel_sm_pyro_blu.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/class_sel_sm_pyro_blu.vtf",
+          "sha256": "7243d683182d42c5ef21ed3b32ee4456738590e987fc1ef7434cb0c8d20d9dba",
+          "width": 128,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0207",
+      "configuredValue": "class_sel_sm_pyro_inactive",
+      "classification": "content-vtf",
+      "material": "materials/vgui/class_sel_sm_pyro_inactive.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/class_sel_sm_pyro_inactive.vtf",
+          "sha256": "ef80bf83e90507fd32e486f7d97cdd0e263fd6d515ebf88fcb4f4156e4809388",
+          "width": 128,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0208",
+      "configuredValue": "class_sel_sm_pyro_red",
+      "classification": "content-vtf",
+      "material": "materials/vgui/class_sel_sm_pyro_red.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/class_sel_sm_pyro_red.vtf",
+          "sha256": "85c18611a9da68e95c5ae8188ce14c4bdffc9891db863b7eb3d6aef484159db8",
+          "width": 128,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0209",
+      "configuredValue": "class_sel_sm_random_blu",
+      "classification": "content-vtf",
+      "material": "materials/vgui/class_sel_sm_random_blu.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/class_sel_sm_random_blu.vtf",
+          "sha256": "181f6ce86d88a91c0d88dddad98247c512bc61120756c32523c969cb229fab6b",
+          "width": 128,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0210",
+      "configuredValue": "class_sel_sm_random_inactive",
+      "classification": "content-vtf",
+      "material": "materials/vgui/class_sel_sm_random_inactive.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/class_sel_sm_random_inactive.vtf",
+          "sha256": "5908713e8d57704a40e348262d5ab0f43ca36a23221e572b6abd996943ff3870",
+          "width": 128,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0211",
+      "configuredValue": "class_sel_sm_random_red",
+      "classification": "content-vtf",
+      "material": "materials/vgui/class_sel_sm_random_red.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/class_sel_sm_random_red.vtf",
+          "sha256": "42dc73ddba80ce23ea9062830caf508f288cd66724fee58c033ab8ee156f9123",
+          "width": 128,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0212",
+      "configuredValue": "class_sel_sm_scout_blu",
+      "classification": "content-vtf",
+      "material": "materials/vgui/class_sel_sm_scout_blu.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/class_sel_sm_scout_blu.vtf",
+          "sha256": "60e7a88305ac5290683f3dc1f68240075ab5219be3f561a96f95406febe5408f",
+          "width": 128,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0213",
+      "configuredValue": "class_sel_sm_scout_inactive",
+      "classification": "content-vtf",
+      "material": "materials/vgui/class_sel_sm_scout_inactive.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/class_sel_sm_scout_inactive.vtf",
+          "sha256": "a6575782f346141d523497b0ef49bdfa403a84cb344b6f3719dd06ee9fb9c22f",
+          "width": 128,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0214",
+      "configuredValue": "class_sel_sm_scout_red",
+      "classification": "content-vtf",
+      "material": "materials/vgui/class_sel_sm_scout_red.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/class_sel_sm_scout_red.vtf",
+          "sha256": "e4f42698e3a4bd652fcbb4eba8e4826ed20e31e1aa742a20848dfaf64fa6db7f",
+          "width": 128,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0215",
+      "configuredValue": "class_sel_sm_sniper_blu",
+      "classification": "content-vtf",
+      "material": "materials/vgui/class_sel_sm_sniper_blu.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/class_sel_sm_sniper_blu.vtf",
+          "sha256": "8194998c57e37193f2849650bafbe2a0434a450375add60be4e49a8a6664b137",
+          "width": 128,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0216",
+      "configuredValue": "class_sel_sm_sniper_inactive",
+      "classification": "content-vtf",
+      "material": "materials/vgui/class_sel_sm_sniper_inactive.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/class_sel_sm_sniper_inactive.vtf",
+          "sha256": "4c25013ea155da9c01242cac46dea9af73eb85dfb075836ae99d94fa5c44af80",
+          "width": 128,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0217",
+      "configuredValue": "class_sel_sm_sniper_red",
+      "classification": "content-vtf",
+      "material": "materials/vgui/class_sel_sm_sniper_red.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/class_sel_sm_sniper_red.vtf",
+          "sha256": "3dafe54afe37a008f9fcad624d5f545bf22b103826ab65b1902042d758d33f9c",
+          "width": 128,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0218",
+      "configuredValue": "class_sel_sm_soldier_blu",
+      "classification": "content-vtf",
+      "material": "materials/vgui/class_sel_sm_soldier_blu.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/class_sel_sm_soldier_blu.vtf",
+          "sha256": "c041ae52c795ce97b0bf451980ca798d6cffcea30db4b1201ca4f426cf1e76fb",
+          "width": 128,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0219",
+      "configuredValue": "class_sel_sm_soldier_inactive",
+      "classification": "content-vtf",
+      "material": "materials/vgui/class_sel_sm_soldier_inactive.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/class_sel_sm_soldier_inactive.vtf",
+          "sha256": "df685352bde9f67062bda90319d7436dbb76586c8a8c3617beb8c2fbefaa06d2",
+          "width": 128,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0220",
+      "configuredValue": "class_sel_sm_soldier_red",
+      "classification": "content-vtf",
+      "material": "materials/vgui/class_sel_sm_soldier_red.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/class_sel_sm_soldier_red.vtf",
+          "sha256": "c5da7f6b6c8257d59f099e92f78ae5dfb44f452b01ebbf4b279226b78c75f7eb",
+          "width": 128,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0221",
+      "configuredValue": "class_sel_sm_spy_blu",
+      "classification": "content-vtf",
+      "material": "materials/vgui/class_sel_sm_spy_blu.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/class_sel_sm_spy_blu.vtf",
+          "sha256": "a5eddadca5a64e25b43524522b3aeb22a1b6543743c4b546dea6bc3dccf09119",
+          "width": 128,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0222",
+      "configuredValue": "class_sel_sm_spy_inactive",
+      "classification": "content-vtf",
+      "material": "materials/vgui/class_sel_sm_spy_inactive.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/class_sel_sm_spy_inactive.vtf",
+          "sha256": "2d648ad9a1f0c12328a6fcf6d962123be304dfb8981ba849b2655d1de3dc26ce",
+          "width": 128,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0223",
+      "configuredValue": "class_sel_sm_spy_red",
+      "classification": "content-vtf",
+      "material": "materials/vgui/class_sel_sm_spy_red.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/class_sel_sm_spy_red.vtf",
+          "sha256": "39d32be8afe42114cfd3781c5500e178550022e0320c50694f8f3131038f7935",
+          "width": 128,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0224",
       "configuredValue": "close_button",
       "classification": "content-vtf",
       "material": "materials/vgui/close_button.vmt",
@@ -7911,7 +8943,7 @@
       ]
     },
     {
-      "identity": "image-0194",
+      "identity": "image-0225",
       "configuredValue": "crosshair_bg",
       "classification": "content-vtf",
       "material": "materials/vgui/crosshair_bg.vmt",
@@ -7927,7 +8959,7 @@
       ]
     },
     {
-      "identity": "image-0195",
+      "identity": "image-0226",
       "configuredValue": "cyoa/cyoa_map_screen_border",
       "classification": "content-vtf",
       "material": "materials/vgui/cyoa/cyoa_map_screen_border.vmt",
@@ -7943,7 +8975,7 @@
       ]
     },
     {
-      "identity": "image-0196",
+      "identity": "image-0227",
       "configuredValue": "cyoa/node_view_border",
       "classification": "content-vtf",
       "material": "materials/vgui/cyoa/node_view_border.vmt",
@@ -7959,7 +8991,7 @@
       ]
     },
     {
-      "identity": "image-0197",
+      "identity": "image-0228",
       "configuredValue": "cyoa/node_view_border_active",
       "classification": "content-vtf",
       "material": "materials/vgui/cyoa/node_view_border_active.vmt",
@@ -7975,7 +9007,7 @@
       ]
     },
     {
-      "identity": "image-0198",
+      "identity": "image-0229",
       "configuredValue": "cyoa/node_view_border_inactive",
       "classification": "content-vtf",
       "material": "materials/vgui/cyoa/node_view_border_inactive.vmt",
@@ -7991,7 +9023,7 @@
       ]
     },
     {
-      "identity": "image-0199",
+      "identity": "image-0230",
       "configuredValue": "cyoa/node_view_border_turnin",
       "classification": "content-vtf",
       "material": "materials/vgui/cyoa/node_view_border_turnin.vmt",
@@ -8007,7 +9039,7 @@
       ]
     },
     {
-      "identity": "image-0200",
+      "identity": "image-0231",
       "configuredValue": "featured_corner",
       "classification": "content-vtf",
       "material": "materials/vgui/featured_corner.vmt",
@@ -8023,7 +9055,7 @@
       ]
     },
     {
-      "identity": "image-0201",
+      "identity": "image-0232",
       "configuredValue": "gamma",
       "classification": "content-vtf",
       "material": "materials/vgui/gamma.vmt",
@@ -8039,7 +9071,7 @@
       ]
     },
     {
-      "identity": "image-0202",
+      "identity": "image-0233",
       "configuredValue": "gc_dc",
       "classification": "content-vtf",
       "material": "materials/vgui/gc_dc.vmt",
@@ -8055,7 +9087,7 @@
       ]
     },
     {
-      "identity": "image-0203",
+      "identity": "image-0234",
       "configuredValue": "glyph_achievements",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_achievements.vmt",
@@ -8071,7 +9103,7 @@
       ]
     },
     {
-      "identity": "image-0204",
+      "identity": "image-0235",
       "configuredValue": "glyph_alert",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_alert.vmt",
@@ -8087,7 +9119,7 @@
       ]
     },
     {
-      "identity": "image-0205",
+      "identity": "image-0236",
       "configuredValue": "glyph_bug",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_bug.vmt",
@@ -8103,7 +9135,7 @@
       ]
     },
     {
-      "identity": "image-0206",
+      "identity": "image-0237",
       "configuredValue": "glyph_chat",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_chat.vmt",
@@ -8119,7 +9151,7 @@
       ]
     },
     {
-      "identity": "image-0207",
+      "identity": "image-0238",
       "configuredValue": "glyph_commentary",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_commentary.vmt",
@@ -8135,7 +9167,7 @@
       ]
     },
     {
-      "identity": "image-0208",
+      "identity": "image-0239",
       "configuredValue": "glyph_create",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_create.vmt",
@@ -8151,7 +9183,7 @@
       ]
     },
     {
-      "identity": "image-0209",
+      "identity": "image-0240",
       "configuredValue": "glyph_disconnect",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_disconnect.vmt",
@@ -8167,7 +9199,7 @@
       ]
     },
     {
-      "identity": "image-0210",
+      "identity": "image-0241",
       "configuredValue": "glyph_forums",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_forums.vmt",
@@ -8183,7 +9215,7 @@
       ]
     },
     {
-      "identity": "image-0211",
+      "identity": "image-0242",
       "configuredValue": "glyph_items",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_items.vmt",
@@ -8199,7 +9231,7 @@
       ]
     },
     {
-      "identity": "image-0212",
+      "identity": "image-0243",
       "configuredValue": "glyph_multiplayer",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_multiplayer.vmt",
@@ -8215,7 +9247,7 @@
       ]
     },
     {
-      "identity": "image-0213",
+      "identity": "image-0244",
       "configuredValue": "glyph_muted",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_muted.vmt",
@@ -8231,7 +9263,7 @@
       ]
     },
     {
-      "identity": "image-0214",
+      "identity": "image-0245",
       "configuredValue": "glyph_options",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_options.vmt",
@@ -8247,7 +9279,7 @@
       ]
     },
     {
-      "identity": "image-0215",
+      "identity": "image-0246",
       "configuredValue": "glyph_quit",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_quit.vmt",
@@ -8263,7 +9295,7 @@
       ]
     },
     {
-      "identity": "image-0216",
+      "identity": "image-0247",
       "configuredValue": "glyph_steamworkshop",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_steamworkshop.vmt",
@@ -8279,7 +9311,7 @@
       ]
     },
     {
-      "identity": "image-0217",
+      "identity": "image-0248",
       "configuredValue": "glyph_store",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_store.vmt",
@@ -8295,7 +9327,7 @@
       ]
     },
     {
-      "identity": "image-0218",
+      "identity": "image-0249",
       "configuredValue": "glyph_tutorial",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_tutorial.vmt",
@@ -8311,7 +9343,7 @@
       ]
     },
     {
-      "identity": "image-0219",
+      "identity": "image-0250",
       "configuredValue": "glyph_tv",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_tv.vmt",
@@ -8327,7 +9359,7 @@
       ]
     },
     {
-      "identity": "image-0220",
+      "identity": "image-0251",
       "configuredValue": "glyph_vr",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_vr.vmt",
@@ -8343,7 +9375,7 @@
       ]
     },
     {
-      "identity": "image-0221",
+      "identity": "image-0252",
       "configuredValue": "gradient_pure_black",
       "classification": "content-vtf",
       "material": "materials/vgui/gradient_pure_black.vmt",
@@ -8359,7 +9391,7 @@
       ]
     },
     {
-      "identity": "image-0222",
+      "identity": "image-0253",
       "configuredValue": "icon_checkbox",
       "classification": "content-vtf",
       "material": "materials/vgui/icon_checkbox.vmt",
@@ -8375,7 +9407,7 @@
       ]
     },
     {
-      "identity": "image-0223",
+      "identity": "image-0254",
       "configuredValue": "icon_resume",
       "classification": "content-vtf",
       "material": "materials/vgui/icon_resume.vmt",
@@ -8391,7 +9423,7 @@
       ]
     },
     {
-      "identity": "image-0224",
+      "identity": "image-0255",
       "configuredValue": "icon_whistle",
       "classification": "content-vtf",
       "material": "materials/vgui/icon_whistle.vmt",
@@ -8407,7 +9439,7 @@
       ]
     },
     {
-      "identity": "image-0225",
+      "identity": "image-0256",
       "configuredValue": "info",
       "classification": "content-vtf",
       "material": "materials/vgui/info.vmt",
@@ -8423,7 +9455,7 @@
       ]
     },
     {
-      "identity": "image-0226",
+      "identity": "image-0257",
       "configuredValue": "inner_shadow_border",
       "classification": "content-vtf",
       "material": "materials/vgui/inner_shadow_border.vmt",
@@ -8439,7 +9471,7 @@
       ]
     },
     {
-      "identity": "image-0227",
+      "identity": "image-0258",
       "configuredValue": "item_bg",
       "classification": "content-vtf",
       "material": "materials/vgui/item_bg.vmt",
@@ -8455,7 +9487,7 @@
       ]
     },
     {
-      "identity": "image-0228",
+      "identity": "image-0259",
       "configuredValue": "loadout_bottom_gradient",
       "classification": "content-vtf",
       "material": "materials/vgui/loadout_bottom_gradient.vmt",
@@ -8471,7 +9503,7 @@
       ]
     },
     {
-      "identity": "image-0229",
+      "identity": "image-0260",
       "configuredValue": "loadout_header",
       "classification": "content-vtf",
       "material": "materials/vgui/loadout_header.vmt",
@@ -8487,7 +9519,7 @@
       ]
     },
     {
-      "identity": "image-0230",
+      "identity": "image-0261",
       "configuredValue": "loadout_rect",
       "classification": "content-vtf",
       "material": "materials/vgui/loadout_rect.vmt",
@@ -8503,7 +9535,7 @@
       ]
     },
     {
-      "identity": "image-0231",
+      "identity": "image-0262",
       "configuredValue": "loadout_rect_mouseover",
       "classification": "content-vtf",
       "material": "materials/vgui/loadout_rect_mouseover.vmt",
@@ -8519,7 +9551,7 @@
       ]
     },
     {
-      "identity": "image-0232",
+      "identity": "image-0263",
       "configuredValue": "loadout_rect_red",
       "classification": "content-vtf",
       "material": "materials/vgui/loadout_rect_red.vmt",
@@ -8535,7 +9567,7 @@
       ]
     },
     {
-      "identity": "image-0233",
+      "identity": "image-0264",
       "configuredValue": "loadout_round_rect",
       "classification": "content-vtf",
       "material": "materials/vgui/loadout_round_rect.vmt",
@@ -8551,7 +9583,7 @@
       ]
     },
     {
-      "identity": "image-0234",
+      "identity": "image-0265",
       "configuredValue": "loadout_round_rect_selected",
       "classification": "content-vtf",
       "material": "materials/vgui/loadout_round_rect_selected.vmt",
@@ -8567,7 +9599,7 @@
       ]
     },
     {
-      "identity": "image-0235",
+      "identity": "image-0266",
       "configuredValue": "loadout_solid_line",
       "classification": "content-vtf",
       "material": "materials/vgui/loadout_solid_line.vmt",
@@ -8583,7 +9615,7 @@
       ]
     },
     {
-      "identity": "image-0236",
+      "identity": "image-0267",
       "configuredValue": "locked_icon",
       "classification": "content-vtf",
       "material": "materials/vgui/locked_icon.vmt",
@@ -8599,14 +9631,14 @@
       ]
     },
     {
-      "identity": "image-0237",
+      "identity": "image-0268",
       "configuredValue": "logos/UI/spray",
       "classification": "missing-material",
       "material": null,
       "textures": []
     },
     {
-      "identity": "image-0238",
+      "identity": "image-0269",
       "configuredValue": "maps/menu_photos_pl_upward",
       "classification": "content-vtf",
       "material": "materials/vgui/maps/menu_photos_pl_upward.vmt",
@@ -8622,7 +9654,23 @@
       ]
     },
     {
-      "identity": "image-0239",
+      "identity": "image-0270",
+      "configuredValue": "mvm/class_upgraded",
+      "classification": "content-vtf",
+      "material": "materials/vgui/mvm/class_upgraded.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/mvm/class_upgraded.vtf",
+          "sha256": "d6f5fdb10b1c59c9562ae736535bf3d0b2b9ecded2a222d2fb94cba9254b870d",
+          "width": 256,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 8784
+        }
+      ]
+    },
+    {
+      "identity": "image-0271",
       "configuredValue": "new_corner",
       "classification": "content-vtf",
       "material": "materials/vgui/new_corner.vmt",
@@ -8638,7 +9686,7 @@
       ]
     },
     {
-      "identity": "image-0240",
+      "identity": "image-0272",
       "configuredValue": "outer_shadow_border",
       "classification": "content-vtf",
       "material": "materials/vgui/outer_shadow_border.vmt",
@@ -8654,7 +9702,7 @@
       ]
     },
     {
-      "identity": "image-0241",
+      "identity": "image-0273",
       "configuredValue": "replay/dullgreybox",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/dullgreybox.vmt",
@@ -8670,7 +9718,7 @@
       ]
     },
     {
-      "identity": "image-0242",
+      "identity": "image-0274",
       "configuredValue": "replay/fatlineborder",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/fatlineborder.vmt",
@@ -8686,7 +9734,7 @@
       ]
     },
     {
-      "identity": "image-0243",
+      "identity": "image-0275",
       "configuredValue": "replay/fatlineborder_red",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/fatlineborder_red.vmt",
@@ -8702,7 +9750,7 @@
       ]
     },
     {
-      "identity": "image-0244",
+      "identity": "image-0276",
       "configuredValue": "replay/graydialogborder",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/graydialogborder.vmt",
@@ -8718,7 +9766,7 @@
       ]
     },
     {
-      "identity": "image-0245",
+      "identity": "image-0277",
       "configuredValue": "replay/outlinedgreybox",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/outlinedgreybox.vmt",
@@ -8734,7 +9782,7 @@
       ]
     },
     {
-      "identity": "image-0246",
+      "identity": "image-0278",
       "configuredValue": "replay/panel_scalable_balloon",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/panel_scalable_balloon.vmt",
@@ -8750,7 +9798,7 @@
       ]
     },
     {
-      "identity": "image-0247",
+      "identity": "image-0279",
       "configuredValue": "replay/panel_scalable_default",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/panel_scalable_default.vmt",
@@ -8766,7 +9814,7 @@
       ]
     },
     {
-      "identity": "image-0248",
+      "identity": "image-0280",
       "configuredValue": "replay/panel_scalable_highlight",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/panel_scalable_highlight.vmt",
@@ -8782,7 +9830,7 @@
       ]
     },
     {
-      "identity": "image-0249",
+      "identity": "image-0281",
       "configuredValue": "replay/panel_scalable_transparent",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/panel_scalable_transparent.vmt",
@@ -8798,7 +9846,7 @@
       ]
     },
     {
-      "identity": "image-0250",
+      "identity": "image-0282",
       "configuredValue": "resource/icon_vac",
       "classification": "content-vtf",
       "material": "materials/vgui/resource/icon_vac.vmt",
@@ -8814,7 +9862,7 @@
       ]
     },
     {
-      "identity": "image-0251",
+      "identity": "image-0283",
       "configuredValue": "resource/mic_meter_dead",
       "classification": "content-vtf",
       "material": "materials/vgui/resource/mic_meter_dead.vmt",
@@ -8830,7 +9878,7 @@
       ]
     },
     {
-      "identity": "image-0252",
+      "identity": "image-0284",
       "configuredValue": "resource/mic_meter_live",
       "classification": "content-vtf",
       "material": "materials/vgui/resource/mic_meter_live.vmt",
@@ -8846,7 +9894,7 @@
       ]
     },
     {
-      "identity": "image-0253",
+      "identity": "image-0285",
       "configuredValue": "sale_corner",
       "classification": "content-vtf",
       "material": "materials/vgui/sale_corner.vmt",
@@ -8862,7 +9910,7 @@
       ]
     },
     {
-      "identity": "image-0254",
+      "identity": "image-0286",
       "configuredValue": "scroll_button_off",
       "classification": "content-vtf",
       "material": "materials/vgui/scroll_button_off.vmt",
@@ -8878,7 +9926,7 @@
       ]
     },
     {
-      "identity": "image-0255",
+      "identity": "image-0287",
       "configuredValue": "scroll_well",
       "classification": "content-vtf",
       "material": "materials/vgui/scroll_well.vmt",
@@ -8894,7 +9942,7 @@
       ]
     },
     {
-      "identity": "image-0256",
+      "identity": "image-0288",
       "configuredValue": "stamp_background_map",
       "classification": "content-vtf",
       "material": "materials/vgui/stamp_background_map.vmt",
@@ -8910,7 +9958,7 @@
       ]
     },
     {
-      "identity": "image-0257",
+      "identity": "image-0289",
       "configuredValue": "store/innershadow_border",
       "classification": "content-vtf",
       "material": "materials/vgui/store/innershadow_border.vmt",
@@ -8926,7 +9974,7 @@
       ]
     },
     {
-      "identity": "image-0258",
+      "identity": "image-0290",
       "configuredValue": "store/store_add_to_cart",
       "classification": "content-vtf",
       "material": "materials/vgui/store/store_add_to_cart.vmt",
@@ -8942,7 +9990,7 @@
       ]
     },
     {
-      "identity": "image-0259",
+      "identity": "image-0291",
       "configuredValue": "store/store_coupon_border",
       "classification": "content-vtf",
       "material": "materials/vgui/store/store_coupon_border.vmt",
@@ -8958,7 +10006,7 @@
       ]
     },
     {
-      "identity": "image-0260",
+      "identity": "image-0292",
       "configuredValue": "store/store_featured_item_bg01",
       "classification": "content-vtf",
       "material": "materials/vgui/store/store_featured_item_bg01.vmt",
@@ -8974,7 +10022,7 @@
       ]
     },
     {
-      "identity": "image-0261",
+      "identity": "image-0293",
       "configuredValue": "store/store_inspector_bg_small",
       "classification": "content-vtf",
       "material": "materials/vgui/store/store_inspector_bg_small.vmt",
@@ -8990,7 +10038,7 @@
       ]
     },
     {
-      "identity": "image-0262",
+      "identity": "image-0294",
       "configuredValue": "store/store_tab_selected",
       "classification": "content-vtf",
       "material": "materials/vgui/store/store_tab_selected.vmt",
@@ -9006,7 +10054,7 @@
       ]
     },
     {
-      "identity": "image-0263",
+      "identity": "image-0295",
       "configuredValue": "store/store_tab_unselected",
       "classification": "content-vtf",
       "material": "materials/vgui/store/store_tab_unselected.vmt",
@@ -9022,7 +10070,7 @@
       ]
     },
     {
-      "identity": "image-0264",
+      "identity": "image-0296",
       "configuredValue": "techcredits/bink",
       "classification": "content-vtf",
       "material": "materials/vgui/techcredits/bink.vmt",
@@ -9038,14 +10086,14 @@
       ]
     },
     {
-      "identity": "image-0265",
+      "identity": "image-0297",
       "configuredValue": "vgui/hud/icon_commentary",
       "classification": "missing-material",
       "material": null,
       "textures": []
     },
     {
-      "identity": "image-0266",
+      "identity": "image-0298",
       "configuredValue": "viewmode_loaner",
       "classification": "content-vtf",
       "material": "materials/vgui/viewmode_loaner.vmt",
@@ -9076,6 +10124,7 @@
     "cfg/user.scr",
     "image:logos/UI/spray",
     "image:vgui/hud/icon_commentary",
+    "localization:#CMenu_ClassHighlightPanel_Title",
     "localization:#Replay_SaveReplay",
     "localization:#Steam_ValidLoginRequired",
     "localization:#VAC_ConnectingToSecureServer",

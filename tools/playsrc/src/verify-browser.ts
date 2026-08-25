@@ -55,6 +55,17 @@ async function agent(args: string[]): Promise<string> {
   return output
 }
 
+async function admitInitialClassSelection(session: string): Promise<void> {
+  const state = parseJson<{ visible: boolean; consoleVisible: boolean }>(await agent([
+    "--session", session, "eval",
+    "(()=>{const value=document.querySelector('main').dataset;return{visible:value.classSelectionVisible==='true',consoleVisible:value.consoleVisible==='true'}})()",
+  ]))
+  if (!state.visible) return
+  if (state.consoleVisible) await agent(["--session", session, "press", "Backquote"])
+  await agent(["--session", session, "press", "2"])
+  await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.classSelectionVisible==='false'", "--timeout", "30000"])
+}
+
 async function clickVguiPanel(session: string, name: string): Promise<void> {
   const result = parseJson<boolean>(await agent([
     "--session", session, "eval",
@@ -1254,6 +1265,7 @@ async function verifyPlUpwardBrowser(config: LocalConfig): Promise<Record<string
       const state = await agent(["--session", session, "eval", "(()=>{const m=document.querySelector('main');return{phase:m.dataset.phase,detail:m.dataset.detail,gameui:m.dataset.gameui,loading:m.dataset.loadingStatus,body:document.body.innerText.slice(-2000)}})()"])
       throw new BrowserEvidenceError(`${String(error)}; pl_upward state: ${state}`)
     }
+    await admitInitialClassSelection(session)
     await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.cameraPosition?.split(',').length===3", "--timeout", "30000"])
     await agent(["--session",session,"wait","--fn","document.querySelector('.world-canvas').dataset.staticProps?.length>2","--timeout","30000"])
     const staticEvidence=parseJson<{staticProps:{total:number;main:number;sky3d:number;runtimeLit:number};visibleMain:number[];sky:null|{phases:string[];skySurfaces:number;skyProps:number;visibleSkyPropSources:number[];fog:{start:number;end:number;primary:number[]};stateRestored:boolean};visibility:string;detail:string}>(await agent(["--session",session,"eval","(()=>{const m=document.querySelector('main'),c=document.querySelector('.world-canvas');return{staticProps:JSON.parse(c.dataset.staticProps),visibleMain:JSON.parse(c.dataset.visibleMainStaticProps),sky:c.dataset.sky3dPass?JSON.parse(c.dataset.sky3dPass):null,visibility:m.dataset.environmentSky??'',detail:m.dataset.detail??''}})()"] ))
@@ -1358,6 +1370,7 @@ export async function runDisplacementVisualEvidence(config: LocalConfig): Promis
     }
     const consoleVisible = parseJson<boolean>(await agent(["--session", session, "eval", "document.querySelector('main').dataset.consoleVisible==='true'"]))
     if (consoleVisible) await agent(["--session", session, "press", "Backquote"])
+    await admitInitialClassSelection(session)
     await agent(["--session", session, "wait", "--fn", "globalThis.__playsrcProfile?.displacements?.length===3&&globalThis.__playsrcProfile?.displacementCamera", "--timeout", "30000"])
     for (const probe of DISPLACEMENT_VISUAL_PROBES) {
       const record = parseJson<any>(await agent(["--session", session, "eval", `globalThis.__playsrcProfile.displacements.find(value=>value.source===${probe.source})`]))
@@ -1725,6 +1738,7 @@ export async function verifyBrowserAcceptance(
       const state = await agent(["--session", session, "eval", "(()=>{const m=document.querySelector('main');return{phase:m.dataset.phase,gameui:m.dataset.gameui,detail:m.dataset.detail,loading:m.dataset.loadingStatus,progress:m.dataset.loadingProgress}})()"])
       throw new BrowserEvidenceError(`${String(error)}; post-loading state: ${state}`)
     }
+    await admitInitialClassSelection(session)
     await agent([
       "--session",
       session,
@@ -2316,6 +2330,7 @@ export async function verifyBrowserAcceptance(
     `warm loading presentation differs: ${JSON.stringify(warmLoadingPresentation)}`)
     const warmLoading = await captureInterface(session, config, "loading-warm-1280x720")
     await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.phase === 'Ready'", "--timeout", "600000"])
+    await admitInitialClassSelection(session)
     await agent([
       "--session",
       session,
@@ -2470,6 +2485,7 @@ export async function runDualMapAcceptance(config: LocalConfig, target: string |
     await completeStartup(session, config, "dual-map-1280x720", "skip")
     await automation.maps.load("jump_beef")
     await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.phase==='Ready'&&document.querySelector('main').dataset.environmentSky==='sky_day01_01'", "--timeout", "600000"])
+    await admitInitialClassSelection(session)
     const geometry=[await captureFinalReadyGeometry(session,config,"jump_beef",1,1)]
     const gameplay=[await exerciseSwitchedGameplay(session,"jump_beef")]
     const unknownBefore = parseJson<{ detail: string; resources: number }>(await agent(["--session", session, "eval", "(()=>({detail:document.querySelector('main').dataset.detail,resources:performance.getEntriesByType('resource').length}))()"] ))

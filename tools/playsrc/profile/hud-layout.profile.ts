@@ -52,7 +52,7 @@ type Capture = Readonly<{
   ownerViewport: string
   ownerRevision: number
   rectangles: Readonly<Record<"html" | "body" | "app" | "main" | "canvas" | "hudLayer" | "hudHost", Rect>>
-  ownerRecords: Readonly<Record<"canvas" | "startup" | "loading" | "gameUi" | "hud" | "options" | "developer", string>>
+  ownerRecords: Readonly<Record<"canvas" | "startup" | "loading" | "gameUi" | "hud" | "classSelection" | "options" | "developer", string>>
   panels: Readonly<Record<string, Readonly<{ id: string; parent: string | null; local: Rect; rect: Rect }>>>
   pixels: Readonly<{ canvas: readonly PixelMetric[]; hud: readonly PixelMetric[]; composed: readonly PixelMetric[] }>
 }>
@@ -260,6 +260,10 @@ test("profile TF2 HUD layout and composed viewport ownership", async ({ page }) 
     return main?.dataset.phase === "Ready" && main.dataset.gameui === "in-game"
   }, undefined, { timeout: 600_000, polling: 50 })
   await page.keyboard.press("Backquote")
+  if (await page.locator("main").getAttribute("data-class-selection-visible") === "true") {
+    await page.keyboard.press("Digit2")
+    await expect(page.locator("main")).toHaveAttribute("data-class-selection-visible", "false")
+  }
 
   const client = await page.context().newCDPSession(page)
   const captures: Capture[] = []
@@ -321,7 +325,7 @@ test("profile TF2 HUD layout and composed viewport ownership", async ({ page }) 
         },
         ownerRecords: {
           canvas: ownerRecord(".world-canvas"), startup: ownerRecord(".startup-layer"), loading: ownerRecord(".loading-layer"),
-          gameUi: ownerRecord(".gameui-layer"), hud: ownerRecord(".hud-layer"), options: ownerRecord(".options-layer"), developer: ownerRecord(".developer-layer"),
+          gameUi: ownerRecord(".gameui-layer"), hud: ownerRecord(".hud-layer"), classSelection: ownerRecord(".class-selection-layer"), options: ownerRecord(".options-layer"), developer: ownerRecord(".developer-layer"),
         },
         panels,
       }

@@ -12,6 +12,7 @@
     "./ui-integration": "./src/ui-integration/index.ts",
     "./ui-resources": "./src/ui-resources/index.ts",
     "./hud": "./src/hud/index.ts",
+    "./class-selection": "./src/class-selection/index.ts",
     "./hud-integration": "./src/hud-integration/index.ts",
     "./settings-integration": "./src/settings-integration/index.ts",
     "./gameui": "./src/gameui/index.ts",

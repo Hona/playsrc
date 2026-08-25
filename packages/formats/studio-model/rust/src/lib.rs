@@ -1899,10 +1899,19 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
             limits,
             identity,
         )?;
-        let candidates = search_paths
-            .iter()
-            .map(|path| material_candidate(path, &name, identity))
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut candidates = Vec::with_capacity(search_paths.len());
+        let mut rejected = None;
+        for path in &search_paths {
+            match material_candidate(path, &name, identity) {
+                Ok(candidate) => candidates.push(candidate),
+                Err(error) => rejected = Some(error),
+            }
+        }
+        if candidates.is_empty()
+            && let Some(error) = rejected
+        {
+            return Err(error);
+        }
         materials.push(Material {
             index,
             name,
@@ -3414,6 +3423,14 @@ fn material_candidate(path: &[u8], name: &[u8], identity: &str) -> Result<String
             .to_ascii_lowercase())
     };
     let path = normalize(path)?;
+    if path.split('/').any(|part| part == "." || part == "..") {
+        return Err(failure(
+            Classification::Malformed,
+            ErrorCode::InvalidIdentity,
+            identity,
+            None,
+        ));
+    }
     let mut name = normalize(name)?;
     if name.ends_with(".vmt") {
         name.truncate(name.len() - 4);
@@ -3425,11 +3442,31 @@ fn material_candidate(path: &[u8], name: &[u8], identity: &str) -> Result<String
     } else {
         format!("{path}/{name}")
     };
-    if relative.is_empty()
-        || relative
-            .split('/')
-            .any(|part| part.is_empty() || part == "." || part == "..")
-    {
+    let mut canonical = Vec::new();
+    for part in relative.split('/') {
+        match part {
+            "" | "." => {
+                return Err(failure(
+                    Classification::Malformed,
+                    ErrorCode::InvalidIdentity,
+                    identity,
+                    None,
+                ));
+            }
+            ".." => {
+                if canonical.pop().is_none() {
+                    return Err(failure(
+                        Classification::Malformed,
+                        ErrorCode::InvalidIdentity,
+                        identity,
+                        None,
+                    ));
+                }
+            }
+            _ => canonical.push(part),
+        }
+    }
+    if canonical.is_empty() {
         return Err(failure(
             Classification::Malformed,
             ErrorCode::InvalidIdentity,
@@ -3437,7 +3474,7 @@ fn material_candidate(path: &[u8], name: &[u8], identity: &str) -> Result<String
             None,
         ));
     }
-    Ok(format!("materials/{relative}.vmt"))
+    Ok(format!("materials/{}.vmt", canonical.join("/")))
 }
 
 fn safe_stored_path_byte(byte: u8) -> bool {

@@ -289,6 +289,9 @@ const ROOTS: &[(&str, &str, bool)] = &[
     ("hud", "resource/ui/huddemomanpipes.res", true),
     ("hud", "resource/ui/hudkillstreaknotice.res", true),
     ("hud", "resource/ui/targetid.res", true),
+    ("class-selection", "resource/ui/classselection.res", true),
+    ("class-selection", "resource/ui/classtipslist.res", true),
+    ("class-selection", "resource/ui/classtipsitem.res", true),
     ("options", "resource/optionssubkeyboard.res", true),
     (
         "options",
@@ -1520,12 +1523,29 @@ fn main() -> Result<(), String> {
 
     let mut resources = Vec::new();
     let mut unique_controls = BTreeSet::new();
-    let mut unique_localization_tokens = CODE_LOCALIZATION_TOKENS
+    let mut code_localization_tokens = CODE_LOCALIZATION_TOKENS
         .iter()
         .map(|value| (*value).to_owned())
-        .collect::<BTreeSet<_>>();
+        .collect::<Vec<_>>();
+    for (class, count) in [(1, 2), (2, 2), (3, 2), (4, 2), (5, 2), (6, 1), (7, 2), (8, 4), (9, 3)] {
+        code_localization_tokens.push(format!("#ClassTips_{class}_Count"));
+        for tip in 1..=count {
+            code_localization_tokens.push(format!("#ClassTips_{class}_{tip}"));
+            code_localization_tokens.push(format!("#ClassTips_{class}_{tip}_Icon"));
+        }
+    }
+    let mut unique_localization_tokens = code_localization_tokens.iter().cloned().collect::<BTreeSet<_>>();
     let mut unique_image_values = class_images.into_iter().collect::<BTreeSet<_>>();
     unique_image_values.insert("maps/menu_photos_pl_upward".to_owned());
+    unique_image_values.insert("/pve/chalf_circle.vmt".to_owned());
+    for class in [
+        "scout", "soldier", "pyro", "demo", "heavy", "engineer", "medic", "sniper", "spy",
+        "random",
+    ] {
+        for team in ["red", "blu"] {
+            unique_image_values.insert(format!("class_sel_sm_{class}_{team}"));
+        }
+    }
     let mut unique_font_values = BTreeSet::new();
     let mut configured_advanced_options = None;
     let mut configured_keyboard_actions = None;
@@ -1669,10 +1689,7 @@ fn main() -> Result<(), String> {
         providers,
         resources,
         unique_controls: unique_controls.into_iter().collect(),
-        code_localization_tokens: CODE_LOCALIZATION_TOKENS
-            .iter()
-            .map(|value| (*value).to_owned())
-            .collect(),
+        code_localization_tokens,
         images,
         fonts,
         advanced_options: configured_advanced_options

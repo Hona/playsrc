@@ -7,6 +7,14 @@ import { initializeTf2GameUiIntegration, type Tf2GameUiIntegration } from "@play
 import type { Tf2GameUiRequest, Tf2LoadingPhase } from "@playsrc/game-tf2-browser/gameui"
 import { initializeTf2HudIntegration, type Tf2HudIntegration } from "@playsrc/game-tf2-browser/hud-integration"
 import {
+  initializeTf2ClassSelectionIntegration,
+  tf2ClassSelectionByName,
+  type Tf2ClassIdentity,
+  type Tf2ClassSelectionIntegration,
+  type Tf2ClassSelectionModelPanel,
+  type Tf2ClassSelectionRequest,
+} from "@playsrc/game-tf2-browser/class-selection"
+import {
   TF2_BROWSER_SETTINGS_STORAGE_KEY,
   initializeTf2BrowserSettings,
   initializeTf2OptionsPresentation,
@@ -134,6 +142,10 @@ export type ApplicationView = Readonly<{
   pointerLocked: boolean
   pointerMovement?: "raw" | "adjusted"
   consoleVisible: boolean
+  classSelectionVisible?: boolean
+  classSelectionTeam?: number
+  classSelectionSelected?: number
+  classSelectionModels?: string
   blockers: readonly string[]
   fireEvents: number
   explosionEvents: number
@@ -235,6 +247,7 @@ export class Tf2Application {
   readonly #vguiRoot: HTMLElement
   readonly #gameUiRoot: HTMLElement
   readonly #hudRoot: HTMLElement
+  readonly #classSelectionRoot: HTMLElement
   readonly #optionsRoot: HTMLElement
   readonly #loadingRoot: HTMLElement
   readonly #startupRoot: HTMLElement
@@ -301,6 +314,10 @@ export class Tf2Application {
   #bootstrapObjectProgress = new Map<string, Readonly<{ loaded: number; total: number }>>()
   readonly #gameUiRequestTasks = new Set<number>()
   #hudIntegration?: Tf2HudIntegration
+  #classSelection?: Tf2ClassSelectionIntegration
+  #classSelectionModelPanels: readonly Tf2ClassSelectionModelPanel[] = Object.freeze([])
+  #classSelectionRenderTask?: Promise<void>
+  #classSelectionRenderRevision = 0
   #hudRootCounts?: Readonly<{ playerStatus: number; ammo: number }>
   #hudContext?: SessionHudContext
   #hudContextIdentity = -1
@@ -328,7 +345,7 @@ export class Tf2Application {
   #firePressed = false
   #detonatePressed = false
   #reloadPressed = false
-  #selectClass: Tf2Class | undefined
+  #selectClass: Tf2Class | 12 | undefined
   #selectTeam: Tf2Team | undefined
   #selectWeapon: 1 | 2 | 3 | undefined
   #modeRequest: 0 | 1 | undefined
@@ -392,18 +409,19 @@ export class Tf2Application {
 
   constructor(
     canvas: HTMLCanvasElement,
-    roots: Readonly<{ vgui: HTMLElement; gameUi: HTMLElement; hud: HTMLElement; options: HTMLElement; loading: HTMLElement; startup: HTMLElement; startupVideo: HTMLVideoElement }>,
+    roots: Readonly<{ vgui: HTMLElement; gameUi: HTMLElement; hud: HTMLElement; classSelection: HTMLElement; options: HTMLElement; loading: HTMLElement; startup: HTMLElement; startupVideo: HTMLVideoElement }>,
     publish: (view: ApplicationView) => void,
   ) {
     this.#canvas = canvas
     const presentationRoot = canvas.parentElement
-    if (!presentationRoot || [roots.vgui, roots.gameUi, roots.hud, roots.options, roots.loading, roots.startup].some((root) => root.parentElement !== presentationRoot)) {
+    if (!presentationRoot || [roots.vgui, roots.gameUi, roots.hud, roots.classSelection, roots.options, roots.loading, roots.startup].some((root) => root.parentElement !== presentationRoot)) {
       throw new Error("TF2 presentation owners do not share one application mount")
     }
     this.#presentationRoot = presentationRoot
     this.#vguiRoot = roots.vgui
     this.#gameUiRoot = roots.gameUi
     this.#hudRoot = roots.hud
+    this.#classSelectionRoot = roots.classSelection
     this.#optionsRoot = roots.options
     this.#loadingRoot = roots.loading
     this.#startupRoot = roots.startup
@@ -437,6 +455,7 @@ export class Tf2Application {
       && (this.#view.gameUi !== prior.gameUi
         || this.#view.phase !== prior.phase
         || this.#view.consoleVisible !== prior.consoleVisible
+        || this.#view.classSelectionVisible !== prior.classSelectionVisible
         || this.#view.optionsVisible !== prior.optionsVisible)) {
       this.#hudContext = undefined
       this.#hudContextIdentity = -1
@@ -1043,6 +1062,8 @@ export class Tf2Application {
     this.#gameUi = undefined
     this.#hudIntegration?.destroy()
     this.#hudIntegration = undefined
+    this.#classSelection?.destroy()
+    this.#classSelection = undefined
     this.#hudRootCounts = undefined
     this.#hudContext = undefined
     this.#hudContextIdentity = -1
@@ -1329,6 +1350,7 @@ export class Tf2Application {
       finishLoadPhase("persistence")
       this.#paused = document.hidden
       this.#resetHudIntegration()
+      this.#resetClassSelection()
       this.#gameUi?.dispatch({ kind: "loading-progress", phase: "complete" })
       this.#gameUi?.dispatch({ kind: "loading-succeeded" })
       this.#publishProfileCoverage()
@@ -1382,6 +1404,7 @@ export class Tf2Application {
         ...this.#snapshotProbes(this.#snapshot),
         loadingProgress: 1,
       })
+      this.#showClassSelection(true)
     } catch (error) {
       if (!this.#operations.current(operation)) return
       await this.#teardownGameplay()
@@ -1442,6 +1465,77 @@ export class Tf2Application {
     })
   }
 
+  #resetClassSelection(): void {
+    if (!this.#uiResources || !this.#presentationRandom) throw new Error("TF2 class selection resources are unavailable")
+    if (this.#classSelection) {
+      this.#classSelection.dispatch({ kind: "hide" })
+      return
+    }
+    this.#classSelection = initializeTf2ClassSelectionIntegration({
+      root: this.#classSelectionRoot,
+      resources: this.#uiResources,
+      viewport: this.#viewport(),
+      reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
+      clock: { nowSeconds: () => this.#frameClock.current },
+      random: this.#presentationRandom,
+      onRequest: (request) => this.#classSelectionRequest(request),
+      onModelPanels: (panels) => {
+        this.#classSelectionModelPanels = panels
+        this.#classSelectionRenderRevision += 1
+        this.#set({
+          classSelectionVisible: panels.length > 0,
+          classSelectionTeam: this.#classSelection?.state().team ?? undefined,
+          classSelectionSelected: this.#classSelection?.state().selected,
+          classSelectionModels: panels.map((panel) => `${panel.name}:${panel.model}:${panel.skin}`).join("|"),
+        })
+      },
+    })
+  }
+
+  #classSelectionRequest(request: Tf2ClassSelectionRequest): void {
+    const identity = request.identity
+    if (identity === 12) this.#selectClass = 12
+    else this.selectClass(identity)
+    this.#set({ classSelectionVisible: false, classSelectionModels: "" })
+  }
+
+  #showClassSelection(initialJoin = false): void {
+    if (!this.#classSelection || !this.#snapshot || this.#view.gameUi !== "in-game") return
+    this.#neutral()
+    if (document.pointerLockElement === this.#canvas) void document.exitPointerLock()
+    this.#classSelection.dispatch({
+      kind: "show",
+      team: this.#snapshot.team,
+      current: initialJoin ? null : this.#snapshot.class as Tf2ClassIdentity,
+    })
+  }
+
+  #renderClassSelection(): void {
+    if (!this.#renderer || this.#classSelectionModelPanels.length === 0 || this.#classSelectionRenderTask) return
+    const renderer = this.#renderer
+    const revision = this.#classSelectionRenderRevision
+    const generation = this.#generation
+    const panels = this.#classSelectionModelPanels.map((panel) => Object.freeze({
+      identity: panel.name,
+      model: panel.model,
+      skin: panel.skin,
+      horizontalFov4By3: panel.fov,
+      origin: panel.origin,
+      angles: panel.angles,
+      bounds: panel.bounds,
+    }))
+    this.#classSelectionRenderTask = renderer.renderModelPanels(panels)
+      .then((result) => {
+        if (generation !== this.#generation || revision !== this.#classSelectionRenderRevision) return
+        this.#set({ classSelectionModels: result.panels.map((panel) => `${panel.identity}:${panel.model}:${panel.skin}:${panel.primitives}`).join("|") })
+      })
+      .catch((error) => {
+        if (generation !== this.#generation || !this.#classSelection?.state().visible) return
+        this.#set({ phase: "Failed", gameUi: "failure", detail: error instanceof Error ? error.message : "TF2 class model rendering failed" })
+      })
+      .finally(() => { this.#classSelectionRenderTask = undefined })
+  }
+
   #hudPresentationObservation(
     observation?: ReturnType<Tf2HudIntegration["probe"]>,
     currentBinding?: Tf2HudBinding,
@@ -1482,7 +1576,8 @@ export class Tf2Application {
     const paused = this.#view.gameUi === "pause"
     const loadingImage = this.#view.gameUi === "loading" || this.#view.phase === "Loading" || this.#view.phase === "Replacing"
     const clientModeAllows = this.#view.gameUi === "in-game"
-    const vguiInput = this.#view.consoleVisible || this.#view.optionsVisible === true
+    const classSelection = this.#view.classSelectionVisible === true
+    const vguiInput = this.#view.consoleVisible || this.#view.optionsVisible === true || classSelection
     const identity = Number(respawnAllowed)
       | Number(paused) << 1
       | Number(vguiInput) << 2
@@ -1494,7 +1589,7 @@ export class Tf2Application {
     this.#hudContextIdentity = identity
     this.#hudContext = Object.freeze({
       playerIdentity: 1,
-      liveHudSuppressed: false,
+      liveHudSuppressed: classSelection,
       respawnAllowed,
       weaponSelection: Object.freeze({ open: false, selectedWeapon: tf2HudUnavailable<number>("not-produced") }),
       crosshair: Object.freeze({
@@ -1579,6 +1674,18 @@ export class Tf2Application {
         }),
         Object.freeze({
           kind: "command" as const,
+          name: "changeclass",
+          disposition: "visible" as const,
+          acceptsSuggestions: false,
+        }),
+        Object.freeze({
+          kind: "command" as const,
+          name: "joinclass",
+          disposition: "visible" as const,
+          acceptsSuggestions: true,
+        }),
+        Object.freeze({
+          kind: "command" as const,
           name: "noclip",
           disposition: "visible" as const,
           acceptsSuggestions: false,
@@ -1653,7 +1760,7 @@ export class Tf2Application {
   #commitPresentationViewport(viewport: ApplicationPresentationViewport): void {
     this.#presentationViewport = viewport
     const identity = `${viewport.revision}:${viewport.width}x${viewport.height}@${viewport.devicePixelRatio}`
-    for (const owner of [this.#canvas, this.#startupRoot, this.#loadingRoot, this.#gameUiRoot, this.#hudRoot, this.#optionsRoot, this.#vguiRoot]) {
+    for (const owner of [this.#canvas, this.#startupRoot, this.#loadingRoot, this.#gameUiRoot, this.#hudRoot, this.#classSelectionRoot, this.#optionsRoot, this.#vguiRoot]) {
       owner.dataset.presentationViewport = identity
       owner.dataset.presentationViewportState = "active"
     }
@@ -1663,6 +1770,7 @@ export class Tf2Application {
     this.#gameUi?.setViewport(viewport)
     this.#syncGameUiBackgroundProbe()
     this.#hudIntegration?.setViewport(viewport)
+    this.#classSelection?.setViewport(viewport)
     this.#options?.setViewport(viewport)
     this.#loadingVgui?.setViewport(viewport)
     if (this.#loadingPresentationGeneration > 0 && this.#configuration) {
@@ -1675,7 +1783,7 @@ export class Tf2Application {
 
   #suspendPresentationViewport(): void {
     this.#presentationViewport = undefined
-    for (const owner of [this.#canvas, this.#startupRoot, this.#loadingRoot, this.#gameUiRoot, this.#hudRoot, this.#optionsRoot, this.#vguiRoot]) {
+    for (const owner of [this.#canvas, this.#startupRoot, this.#loadingRoot, this.#gameUiRoot, this.#hudRoot, this.#classSelectionRoot, this.#optionsRoot, this.#vguiRoot]) {
       delete owner.dataset.presentationViewport
       owner.dataset.presentationViewportState = "suspended"
     }
@@ -1696,7 +1804,9 @@ export class Tf2Application {
             ? TF2_CLASS_NAMES.map((name) => `class ${name}`)
             : request.commandName.toLowerCase() === "jointeam"
               ? ["jointeam red", "jointeam blue"]
-              : []
+              : request.commandName.toLowerCase() === "joinclass"
+                ? ["scout", "soldier", "pyro", "demoman", "heavyweapons", "engineer", "medic", "sniper", "spy", "random"].map((name) => `joinclass ${name}`)
+                : []
       const suggestions: ConsoleCompletionSuggestion[] = candidates
         .filter((value) => value.startsWith(request.partialText.toLowerCase()))
         .slice(0, request.maxItems)
@@ -1830,6 +1940,20 @@ export class Tf2Application {
       }
       const value = command === "cl_showfps" ? this.#showFps : this.#showPos
       this.#output(`"${command}" = "${value}"${value === 0 ? "" : ' ( def. "0" )'} min. 0.000000 max. 2.000000`)
+      return
+    }
+    if (command === "changeclass" && tokens.length === 0) {
+      this.#showClassSelection()
+      return
+    }
+    if (command === "joinclass" && tokens.length === 1) {
+      const selected = tf2ClassSelectionByName(tokens[0]!)
+      if (!selected) {
+        this.#output(`Unknown TF2 class: ${tokens[0]}`)
+        return
+      }
+      this.#classSelectionRequest({ kind: "join-class", identity: selected.identity, sourceCommand: `joinclass ${selected.name}` })
+      this.#classSelection?.dispatch({ kind: "hide" })
       return
     }
     if (command === "class" && tokens.length === 1) {
@@ -2621,6 +2745,7 @@ export class Tf2Application {
       if (owners & LOADING_FRAME_OWNER) this.#loadingVgui?.frame(timeSeconds)
       if (owners & OPTIONS_FRAME_OWNER) this.#options?.frame(timeSeconds)
       if (owners & HUD_FRAME_OWNER) this.#hudIntegration?.frame(timeSeconds)
+      if (this.#classSelection?.state().visible) this.#classSelection.frame(timeSeconds)
     } catch (error) {
       this.#paused = true
       this.#set({ phase: "Failed", gameUi: "failure", detail: error instanceof Error ? error.message : "VGUI frame failed" })
@@ -2634,10 +2759,12 @@ export class Tf2Application {
       if(this.#nextSimulationSampleSeconds===0)this.#nextSimulationSampleSeconds=nowSeconds+SIMULATION_SAMPLE_INTERVAL_SECONDS
       else do{this.#nextSimulationSampleSeconds+=SIMULATION_SAMPLE_INTERVAL_SECONDS}while(this.#nextSimulationSampleSeconds<=nowSeconds)
     }
-    this.#offerDisplay()
+    if (this.#classSelection?.state().visible) this.#renderClassSelection()
+    else this.#offerDisplay()
   }
 
   #offerDisplay():void{
+    if (this.#classSelection?.state().visible) return
     const required=this.#requiredParticleDisplayFrames.peek()
     const prepared=required??this.#preparedPresentation
     if(
@@ -2949,6 +3076,9 @@ export class Tf2Application {
         previousSnapshot=batch.snapshot
       }
       this.#snapshot = snapshot
+      if (this.#classSelection?.state().visible && this.#classSelection.state().team !== snapshot.team) {
+        this.#classSelection.dispatch({ kind: "team-changed", team: snapshot.team })
+      }
       this.#recordCrouch(snapshot)
       this.#recordAuthorityBlockers(snapshot)
       const activeWeapon=snapshot.loadout.find(value=>value.weapon===snapshot.weapon),reloadObservation=activeWeapon&&`${snapshot.tick}:${activeWeapon.weapon}:${activeWeapon.clip}/${activeWeapon.reserve}:${activeWeapon.reload}`
@@ -3178,6 +3308,8 @@ export class Tf2Application {
     if (code.startsWith("Key")) return code.slice(3).toLowerCase()
     if (code.startsWith("Digit")) return code.slice(5)
     if (code === "Backquote") return "`"
+    if (code === "Comma") return ","
+    if (code === "Period") return "."
     if (code === "Space") return "SPACE"
     if (code === "Tab") return "TAB"
     if (code === "ControlLeft") return "CTRL"
@@ -3227,6 +3359,7 @@ export class Tf2Application {
   }
 
   readonly #keyDown = (event: KeyboardEvent): void => {
+    if (!this.#view.consoleVisible && this.#classSelection?.handleKey(event, this.#keyboardAction(event) === "changeclass")) return
     if (event.code === "Escape" && this.#view.optionsVisible && this.#options?.handleKey(event)) return
     if (event.code === "Escape" && !this.#view.consoleVisible) {
       const route = routeApplicationEscape({
@@ -3269,6 +3402,11 @@ export class Tf2Application {
     if (this.#view.consoleVisible || this.#view.optionsVisible || this.#view.gameUi !== "in-game" || event.repeat) return
     const action = this.#keyboardAction(event)
     if (!action) return
+    if (action === "changeclass") {
+      event.preventDefault()
+      this.#showClassSelection()
+      return
+    }
     void this.resumeAudio()
     this.#activateBoundAction(`keyboard:${event.code}`, action)
   }
@@ -3383,7 +3521,7 @@ export class Tf2Application {
       return
     }
     this.#canvas = connected
-    if (this.#closed || this.#view.consoleVisible) return
+    if (this.#closed || this.#view.consoleVisible || this.#classSelection?.state().visible) return
     const audioAdmission=this.resumeAudio()
     const request=async(raw:boolean):Promise<"raw"|"adjusted">=>{
       const admission=this.#canvas.requestPointerLock(raw?{unadjustedMovement:true}:undefined)
@@ -3474,6 +3612,8 @@ export class Tf2Application {
     this.#audioBuffers.clear()
     this.#audioRunning = false
     this.#hudIntegration?.reset("disconnect")
+    this.#classSelection?.dispatch({ kind: "hide" })
+    await this.#classSelectionRenderTask
     this.#loaded = undefined
     this.#snapshot = undefined
     this.#artifacts = undefined

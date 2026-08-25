@@ -229,6 +229,7 @@ pub struct Command {
     pub reset: bool,
     pub respawn: bool,
     pub select_class: Option<PlayerClass>,
+    pub select_random_class: bool,
     pub select_team: Option<PlayerTeam>,
     pub select_weapon: Option<Weapon>,
     pub mode_request: Option<Mode>,
@@ -1435,7 +1436,30 @@ impl<W: GameplayWorld + Clone> Session<W> {
             });
             events.push(Event::TeamChanged(team));
         }
-        if let Some(class) = command.select_class
+        let selected_class = if command.select_random_class {
+            let choices = PlayerClass::ALL
+                .into_iter()
+                .filter(|class| {
+                    *class != self.class
+                        && (self.jump.is_none()
+                            || matches!(class, PlayerClass::Soldier | PlayerClass::Demoman))
+                })
+                .collect::<Vec<_>>();
+            if choices.is_empty() {
+                None
+            } else {
+                let index = self.draw_random_int(
+                    RandomContext::Authority,
+                    RandomDecision::ClassSelection,
+                    0,
+                    choices.len() as i32 - 1,
+                ) as usize;
+                Some(choices[index])
+            }
+        } else {
+            command.select_class
+        };
+        if let Some(class) = selected_class
             && class != self.class
             && (self.jump.is_none() || matches!(class, PlayerClass::Soldier | PlayerClass::Demoman))
         {
@@ -2925,6 +2949,26 @@ mod tests {
         ) -> Result<bool, MoveError> {
             Ok(false)
         }
+    }
+
+    #[test]
+    fn random_class_selection_uses_authority_random_and_excludes_the_current_class() {
+        let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.015));
+        let original = session.class;
+        let before = session.random_state();
+        let snapshot = session
+            .advance(Command {
+                select_random_class: true,
+                ..Command::default()
+            })
+            .unwrap();
+        assert_ne!(snapshot.class, original);
+        assert!(PlayerClass::ALL.contains(&snapshot.class));
+        assert_ne!(session.random_state().authority, before.authority);
+        assert!(session.random_draws().iter().any(|draw| {
+            draw.context == RandomContext::Authority
+                && draw.decision == RandomDecision::ClassSelection
+        }));
     }
 
     #[test]

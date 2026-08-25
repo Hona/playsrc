@@ -26,6 +26,7 @@ import { RetainedStaticSceneGroup } from "./static-scene-group"
 import { distanceFadeOpacity, quantizeStaticPropOpacity, screenFadeOpacity } from "./static-prop-fade"
 import { executeViewModelDepthPhase } from "./viewmodel-depth-phase"
 import { selectDiagnosticModelBase } from "./diagnostic-model"
+import { sourceModelPanelPresentation } from "./model-panel"
 import { sourceHorizontal4By3FovToVertical, sourceViewportDepthRange } from "./source-camera"
 import {
   validateDynamicLights,
@@ -661,6 +662,22 @@ export type SceneResult = Readonly<{
   }>[]
 }>
 
+export type ModelPanelPass = Readonly<{
+  identity: string
+  model: string
+  skin: number
+  horizontalFov4By3: number
+  origin: readonly [number, number, number]
+  angles: readonly [number, number, number]
+  bounds: Readonly<{ x: number; y: number; width: number; height: number }>
+  pose?: NonNullable<ModelItem["pose"]>
+}>
+
+export type ModelPanelFrameResult = Readonly<{
+  panels: readonly Readonly<{ identity: string; model: string; skin: number; primitives: number }>[]
+  milliseconds: number
+}>
+
 export type FrameCapture = Readonly<{
   format: "image/png"
   sha256: string
@@ -750,6 +767,7 @@ export interface Renderer {
   readonly sceneGeneration: number
   loadMap(request: MapLoadRequest): Promise<SceneResult>
   render(frame: Frame): Promise<FrameResult>
+  renderModelPanels(panels: readonly ModelPanelPass[]): Promise<ModelPanelFrameResult>
   captureGeometryEvidence(camera: Camera, ownership?: "main" | "sky3d"): GeometryEvidence
   captureWaterTargetEvidence(x: number, y: number): Promise<WaterTargetEvidence>
   resize(cssWidth: number, cssHeight: number, devicePixelRatio: number): ResizeResult
@@ -1253,6 +1271,9 @@ class RendererOwner implements Renderer {
   #viewModels = new THREE.Group()
   #camera = new THREE.PerspectiveCamera(75, 1, 1, 32_768)
   #viewCamera = new THREE.PerspectiveCamera(41.114, 1, 1, 32_768)
+  #modelPanelScene = new THREE.Scene()
+  #modelPanelCamera = new THREE.PerspectiveCamera(25, 1, 7, 1000)
+  #modelPanelInstances = new Map<string, { instance: THREE.Group; meshes?: THREE.Mesh[] }>()
   #viewModelInstances = new Map<number, { model: string; root: THREE.Group; instance: THREE.Group; meshes: THREE.Mesh[]; seen: number }>()
   #dynamicModelInstances = new Map<number, { model: string; instance: THREE.Group; meshes?: THREE.Mesh[]; seen: number }>()
   #dynamicBrushInstances = new Map<number, { model: number; appearance: string; instance: THREE.Group; seen: number }>()
@@ -1315,6 +1336,10 @@ class RendererOwner implements Renderer {
     this.#viewModels.layers.set(1)
     this.#camera.up.set(0, 0, 1)
     this.#viewCamera.up.set(0, 0, 1)
+    this.#modelPanelCamera.up.set(0, 0, 1)
+    this.#modelPanelCamera.position.set(0, 0, 0)
+    this.#modelPanelCamera.lookAt(1, 0, 0)
+    this.#modelPanelScene.background = new THREE.Color(0x000000)
   }
 
   get lifecycle(): RendererLifecycle {
@@ -1428,8 +1453,10 @@ class RendererOwner implements Renderer {
       this.#restoreOrderedBundles = installOrderedWebGpuBundles(backend.backend as unknown as OrderedBundleBackend)
       this.#camera.coordinateSystem = backend.coordinateSystem
       this.#viewCamera.coordinateSystem = backend.coordinateSystem
+      this.#modelPanelCamera.coordinateSystem = backend.coordinateSystem
       this.#camera.updateProjectionMatrix()
       this.#viewCamera.updateProjectionMatrix()
+      this.#modelPanelCamera.updateProjectionMatrix()
       backend.outputColorSpace = THREE.SRGBColorSpace
       backend.toneMapping = THREE.NoToneMapping
       context = backend.backend.context
@@ -1650,6 +1677,8 @@ class RendererOwner implements Renderer {
       this.#clearParticleBatches()
       this.#clearDynamic(this.#viewModels)
       this.#viewModelInstances.clear()
+      for (const retained of this.#modelPanelInstances.values()) this.#disposeDynamicInstance(retained.instance)
+      this.#modelPanelInstances.clear()
       this.#stagedDynamic = undefined
       this.#worldVisibilitySurfaces = undefined
       this.#worldVisibilityIdentity = undefined
@@ -2639,6 +2668,70 @@ class RendererOwner implements Renderer {
       refractionTarget,
       result,
       disposed: false,
+    }
+  }
+
+  async renderModelPanels(panels: readonly ModelPanelPass[]): Promise<ModelPanelFrameResult> {
+    const started = performance.now()
+    this.#requireReady()
+    if (!this.#active) throw new RenderingError("InvalidState", "model-panel rendering has no active map")
+    if (this.#renderBusy) throw new RenderingError("InvalidState", "a render is already in progress")
+    if (panels.length < 1 || panels.length > 16) throw new RenderingError("BoundExceeded", "model-panel pass count is invalid")
+    this.#renderBusy = true
+    const result: { identity: string; model: string; skin: number; primitives: number }[] = []
+    const previousAutoClear = this.#backend.autoClear
+    try {
+      for (const [index, panel] of panels.entries()) {
+        if (!panel.identity || !panel.model || !Number.isSafeInteger(panel.skin) || panel.skin < 0
+          || !finite([...panel.origin, ...panel.angles, panel.horizontalFov4By3,
+            panel.bounds.x, panel.bounds.y, panel.bounds.width, panel.bounds.height])
+          || panel.bounds.width <= 0 || panel.bounds.height <= 0
+          || panel.horizontalFov4By3 <= 0 || panel.horizontalFov4By3 >= 180) {
+          throw new RenderingError("MalformedInput", `model-panel pass is invalid: ${panel.identity}`)
+        }
+        const identity = modelKey(panel.model.toLowerCase(), panel.skin)
+        const template = this.#active.modelTemplates.get(identity)
+        if (!template) throw new RenderingError("MissingInput", `model-panel model is unavailable: ${identity}`)
+        let retained = this.#modelPanelInstances.get(identity)
+        if (!retained) {
+          retained = { instance: template.clone(true) }
+          this.#modelPanelInstances.set(identity, retained)
+        }
+        if (panel.pose) retained.meshes = this.#applyPose(retained.instance, panel.pose, retained.meshes !== undefined, retained.meshes)
+        this.#modelPanelScene.clear()
+        this.#modelPanelScene.add(retained.instance)
+        const presentation = sourceModelPanelPresentation({
+          model: panel.model,
+          horizontalFov4By3: panel.horizontalFov4By3,
+          origin: panel.origin,
+          bounds: panel.bounds,
+          displayWidth: this.#viewportWidth,
+          displayHeight: this.#viewportHeight,
+          devicePixelRatio: this.#devicePixelRatio,
+        })
+        sourceTransform(retained.instance, presentation.origin, panel.angles)
+        const { x, y, width, height } = presentation.viewport
+        this.#modelPanelCamera.aspect = width / height
+        this.#modelPanelCamera.fov = presentation.verticalFovDegrees
+        this.#modelPanelCamera.updateProjectionMatrix()
+        this.#backend.setViewport(x, y, width, height)
+        this.#backend.setScissor(x, y, width, height)
+        this.#backend.setScissorTest(true)
+        this.#backend.autoClear = index === 0
+        this.#modelPanelScene.background = index === 0 ? new THREE.Color(0x000000) : null
+        if (index > 0) this.#backend.clearDepth()
+        this.#backend.render(this.#modelPanelScene, this.#modelPanelCamera)
+        let primitives = 0
+        retained.instance.traverse((object) => { if (object instanceof THREE.Mesh) primitives += 1 })
+        result.push({ identity: panel.identity, model: panel.model, skin: panel.skin, primitives })
+      }
+      return Object.freeze({ panels: Object.freeze(result.map((item) => Object.freeze(item))), milliseconds: performance.now() - started })
+    } finally {
+      this.#modelPanelScene.clear()
+      this.#backend.setScissorTest(false)
+      this.#backend.setViewport(0, 0, this.#viewportWidth, this.#viewportHeight)
+      this.#backend.autoClear = previousAutoClear
+      this.#renderBusy = false
     }
   }
 
@@ -3955,6 +4048,8 @@ class RendererOwner implements Renderer {
     this.#clearParticleBatches()
     this.#clearDynamic(this.#viewModels)
     this.#viewModelInstances.clear()
+    for (const retained of this.#modelPanelInstances.values()) this.#disposeDynamicInstance(retained.instance)
+    this.#modelPanelInstances.clear()
     this.#stagedDynamic = undefined
     this.#worldVisibilitySurfaces = undefined
     this.#worldVisibilityIdentity = undefined
@@ -4050,6 +4145,8 @@ class RendererOwner implements Renderer {
     this.#clearParticleBatches()
     this.#clearDynamic(this.#viewModels)
     this.#viewModelInstances.clear()
+    for (const retained of this.#modelPanelInstances.values()) this.#disposeDynamicInstance(retained.instance)
+    this.#modelPanelInstances.clear()
     this.#stagedDynamic = undefined
     this.#worldVisibilitySurfaces = undefined
     this.#worldVisibilityIdentity = undefined

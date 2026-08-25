@@ -2245,7 +2245,7 @@ fn main() -> Result<(), String> {
         },
     );
     let canonical = playsrc_map::compile(&bsp, playsrc_map::LightingProfile::Ldr)
-        .map_err(|error| format!("{error:?}"))?;
+        .map_err(|error| format!("map-compile:{error:?}"))?;
     let mut resolver = Resolver::new(&content);
     for (path, bytes, sha256, consumer) in [
         (
@@ -2414,8 +2414,17 @@ fn main() -> Result<(), String> {
         "models/weapons/w_models/w_stickybomb.mdl",
         "models/weapons/c_models/c_soldier_arms.mdl",
         "models/weapons/c_models/c_demo_arms.mdl",
+        "models/player/scout.mdl",
+        "models/player/sniper.mdl",
         "models/player/soldier.mdl",
         "models/player/demo.mdl",
+        "models/player/medic.mdl",
+        "models/player/heavy.mdl",
+        "models/player/pyro.mdl",
+        "models/player/spy.mdl",
+        "models/player/engineer.mdl",
+        "models/vgui/ui_class01.mdl",
+        "models/class_menu/random_class_icon.mdl",
         "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl",
         "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl",
     ] {
@@ -2423,7 +2432,8 @@ fn main() -> Result<(), String> {
     }
     let mut model_documents = BTreeMap::new();
     for path in model_paths {
-        let document = collect_model(&mut resolver, &path)?;
+        let document = collect_model(&mut resolver, &path)
+            .map_err(|error| format!("studio-model:{path}:{error}"))?;
         for material in &document.materials {
             let mut found = None;
             for candidate in &material.candidates {
@@ -2446,7 +2456,8 @@ fn main() -> Result<(), String> {
                     },
                     false,
                     &format!("studio-model:{path}:material"),
-                )?;
+                )
+                .map_err(|error| format!("studio-model:{path}:material:{candidate}:{error}"))?;
             }
         }
         if diagnose_presentation_bound || !canonical.static_props.occurrences.is_empty() {
