@@ -2101,9 +2101,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 || request.tick.checked_add(1) != Some(result.tick)
                 || result.projectile != request.projectile
                 || result.end.into_iter().any(|value| !value.is_finite())
-                || result
-                    .normal
-                    .is_some_and(|normal| normal.into_iter().any(|value| !value.is_finite()))
+                || result.normal.is_some_and(|normal| {
+                    normal.into_iter().any(|value| !value.is_finite())
+                        || length(normal) <= f32::EPSILON
+                })
                 || result.sky && !result.solid
                 || result.sky && result.direct_target.is_some()
                 || result.solid && !result.sky && result.normal.is_none()
@@ -3005,6 +3006,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             [ProjectileEventKind::Impact, ProjectileEventKind::Explode]
         );
+        for event in &exploded.projectile_events {
+            assert_eq!(event.position, add(trace.end, [0.0, 0.0, 1.0]));
+            assert_eq!(event.contact_normal, Some([0.0, 0.0, 1.0]));
+        }
         assert_eq!(session.radius_damage_requests().len(), 1);
         assert_eq!(session.radius_damage_requests()[0].direct_target, None);
         assert_eq!(session.audio_events().len(), 1);
@@ -3056,6 +3061,70 @@ mod tests {
             ProjectileEventKind::Fizzle
         );
         assert!(sky.radius_damage_requests().is_empty());
+    }
+
+    #[test]
+    fn rocket_wall_impact_preserves_one_normal_unit_and_rejects_invalid_normals() {
+        for normal in [
+            [1.0, 0.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, 2.0],
+            [3.0, 4.0, 0.0],
+        ] {
+            let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.015));
+            session
+                .loadout
+                .get_mut(&Weapon::RocketLauncher)
+                .unwrap()
+                .next_primary_tick = 0;
+            session
+                .advance(Command {
+                    pitch_degrees: 89.0,
+                    fire: true,
+                    ..Command::default()
+                })
+                .unwrap();
+            let trace = session.rocket_trace_requests()[0];
+            let expected_normal = normalized(normal);
+            let result = RocketTraceResult {
+                projectile: trace.projectile,
+                tick: session.tick,
+                end: trace.end,
+                solid: true,
+                sky: false,
+                normal: Some([0.0; 3]),
+                direct_target: None,
+            };
+            let before_tick = session.tick;
+            assert!(matches!(
+                session.advance_with_external(Command::default(), &[], &[result], None),
+                Err(Error::InvalidProjectilePhysics)
+            ));
+            assert_eq!(session.tick, before_tick);
+            assert_eq!(session.rocket_trace_requests(), &[trace]);
+
+            let exploded = session
+                .advance_with_external(
+                    Command::default(),
+                    &[],
+                    &[RocketTraceResult {
+                        normal: Some(normal),
+                        ..result
+                    }],
+                    None,
+                )
+                .unwrap();
+            assert_eq!(exploded.projectile_events.len(), 2);
+            for event in exploded.projectile_events {
+                assert_eq!(event.contact_normal, Some(expected_normal));
+                for axis in 0..3 {
+                    assert!(
+                        (event.position[axis] - trace.end[axis] - expected_normal[axis]).abs()
+                            < 0.0001
+                    );
+                }
+            }
+        }
     }
 
     #[test]

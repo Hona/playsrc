@@ -359,12 +359,39 @@ type SpawnObservation = Readonly<{
 
 type VisualRegion = Readonly<{ name: string; x: number; y: number; width: number; height: number }>
 type CrouchTrajectory = Readonly<{ fractions: readonly number[]; offsets: readonly number[] }>
+type RocketPixelPlane = Readonly<{
+  name: string
+  changedPixels: number
+  brightenedPixels: number
+  darkenedPixels: number
+  warmFlashPixels: number
+  smokePixels: number
+  debrisPixels: number
+  samples: readonly Readonly<{ x: number; y: number; before: readonly number[]; after: readonly number[]; classes: readonly string[] }>[]
+}>
+type RocketFrameState = Readonly<{ tick: number; displayFrame: number; fireEvents: number; explosionEvents: number; projectiles: number; particleItems: number; materials: string }>
+type RocketWorldSample = Readonly<{ x: number; y: number; disposition: string; depth: number | null; primitive: number | null; object: number | null; material: string | null }>
 
 const VISUAL_REGIONS = Object.freeze([
   Object.freeze({ name: "ceiling", x: 400, y: 120, width: 320, height: 100 }),
   Object.freeze({ name: "forward-wall", x: 400, y: 270, width: 320, height: 180 }),
   Object.freeze({ name: "floor", x: 180, y: 500, width: 160, height: 130 }),
 ])
+const ROCKET_IMPACT_REGION: VisualRegion = Object.freeze({
+  name: "rocket-impact-wall",
+  x: 480,
+  y: 240,
+  width: 272,
+  height: 216,
+})
+const ROCKET_IMPACT_SURFACE_REGION: VisualRegion = Object.freeze({
+  name: "rocket-impacted-opaque-surface",
+  x: 640,
+  y: 320,
+  width: 64,
+  height: 80,
+})
+const ROCKET_VISUAL_REGIONS = Object.freeze([...VISUAL_REGIONS, ROCKET_IMPACT_REGION, ROCKET_IMPACT_SURFACE_REGION])
 
 function readUint32(bytes: Uint8Array, offset: number): number {
   return new DataView(bytes.buffer, bytes.byteOffset + offset, 4).getUint32(0, false)
@@ -541,6 +568,208 @@ async function captureCanvas(session: string, config: LocalConfig, target = "jum
     height: image.height,
     regions: Object.freeze(regions.map((region) => measureRegion(image, region))),
   })
+}
+
+async function rocketFrameState(session: string): Promise<RocketFrameState> {
+  const state = parseJson<RocketFrameState>(await agent([
+    "--session", session, "eval",
+    "(()=>{const m=document.querySelector('main'),c=document.querySelector('.world-canvas'),d=m.dataset;return{tick:Number(d.snapshotTick),displayFrame:Number(c.dataset.displayFrame),fireEvents:Number(d.fireEvents),explosionEvents:Number(d.explosionEvents),projectiles:Number(d.projectiles),particleItems:Number(d.particleItems),materials:d.particleProbe??''}})()",
+  ]))
+  require([state.tick, state.displayFrame, state.fireEvents, state.explosionEvents, state.projectiles, state.particleItems]
+    .every((value) => Number.isSafeInteger(value) && value >= 0), `rocket frame observation is malformed: ${JSON.stringify(state)}`)
+  return Object.freeze(state)
+}
+
+async function retainedCanvas(config: LocalConfig, capture: CanvasEvidence): Promise<DecodedPng> {
+  return decodePng(new Uint8Array(await readFile(path.join(
+    config.sourceCacheDir, "evidence", "browser", "jump_beef", `${capture.sha256}.png`,
+  ))))
+}
+
+function rocketPixelPlane(before: DecodedPng, after: DecodedPng, region: VisualRegion): RocketPixelPlane {
+  require(before.width === after.width && before.height === after.height,
+    `${region.name} color planes do not share one image geometry`)
+  require(region.x >= 0 && region.y >= 0 && region.x + region.width <= before.width && region.y + region.height <= before.height,
+    `${region.name} color plane escapes the fixed canvas`)
+  let changedPixels = 0, brightenedPixels = 0, darkenedPixels = 0, warmFlashPixels = 0, smokePixels = 0, debrisPixels = 0
+  const samples: { x: number; y: number; before: readonly number[]; after: readonly number[]; classes: readonly string[] }[] = []
+  for (let y = region.y; y < region.y + region.height; y += 1) {
+    for (let x = region.x; x < region.x + region.width; x += 1) {
+      const at = (y * before.width + x) * 3
+      const previous = [before.rgb[at]!, before.rgb[at + 1]!, before.rgb[at + 2]!] as const
+      const current = [after.rgb[at]!, after.rgb[at + 1]!, after.rgb[at + 2]!] as const
+      const red = current[0] - previous[0], green = current[1] - previous[1], blue = current[2] - previous[2]
+      if (Math.abs(red) + Math.abs(green) + Math.abs(blue) < 24) continue
+      changedPixels += 1
+      const luma = red * 0.2126 + green * 0.7152 + blue * 0.0722
+      const classes: string[] = []
+      if (luma >= 12) { brightenedPixels += 1; classes.push("brightened") }
+      if (luma <= -12) { darkenedPixels += 1; classes.push("darkened") }
+      if (red >= 24 && green >= 12 && current[0] >= current[1] && current[1] > current[2]) {
+        warmFlashPixels += 1
+        classes.push("warm-flash")
+      }
+      if (luma <= -12 && Math.max(...current) - Math.min(...current) <= 72) {
+        smokePixels += 1
+        classes.push("smoke")
+      }
+      if (luma <= -12 && current[0] >= current[1] && current[1] >= current[2] && current[0] - current[2] >= 12) {
+        debrisPixels += 1
+        classes.push("debris")
+      }
+      if (samples.length < 24 && classes.length > 0) samples.push(Object.freeze({
+        x, y, before: Object.freeze([...previous]), after: Object.freeze([...current]), classes: Object.freeze(classes),
+      }))
+    }
+  }
+  return Object.freeze({ name: region.name, changedPixels, brightenedPixels, darkenedPixels, warmFlashPixels, smokePixels, debrisPixels, samples: Object.freeze(samples) })
+}
+
+async function installRocketGpuEvidence(session: string): Promise<void> {
+  const installed = parseJson<boolean>(await agent([
+    "--session", session, "eval",
+    `(() => {
+      if (typeof GPUDevice === 'undefined' || typeof GPURenderPassEncoder === 'undefined') return false
+      const evidence = {
+        armed: false, pipelines: [], draws: [], transactions: [], outputs: [], passes: [], impact: null,
+        pipelineByObject: new WeakMap(), passByObject: new WeakMap(), renderPassByObject: new WeakMap(), observedWorkers: new WeakSet(),
+      }
+      globalThis.__playsrcRocketGpuEvidence = evidence
+      const summary = descriptor => ({
+        label: descriptor.label ?? '',
+        depthTest: descriptor.depthStencil?.depthCompare ?? null,
+        depthWrite: descriptor.depthStencil?.depthWriteEnabled ?? false,
+        blend: (descriptor.fragment?.targets ?? []).map(target => target?.blend
+          ? { color: target.blend.color, alpha: target.blend.alpha } : null),
+        vertexStrides: (descriptor.vertex?.buffers ?? []).map(buffer => buffer?.arrayStride ?? null),
+        topology: descriptor.primitive?.topology ?? 'triangle-list',
+        cullMode: descriptor.primitive?.cullMode ?? 'none',
+      })
+      for (const name of ['createRenderPipeline', 'createRenderPipelineAsync']) {
+        const original = GPUDevice.prototype[name]
+        if (typeof original !== 'function') continue
+        GPUDevice.prototype[name] = function (descriptor) {
+          const state = summary(descriptor), pipeline = original.call(this, descriptor)
+          const remember = result => {
+            evidence.pipelineByObject.set(result, state)
+            if (evidence.pipelines.length < 512) evidence.pipelines.push(state)
+            return result
+          }
+          return name === 'createRenderPipelineAsync' ? pipeline.then(remember) : remember(pipeline)
+        }
+      }
+      const beginRenderPass = GPUCommandEncoder.prototype.beginRenderPass
+      GPUCommandEncoder.prototype.beginRenderPass = function (descriptor) {
+        const pass = beginRenderPass.call(this, descriptor)
+        if (evidence.armed) {
+          const state = {
+            colorLoad: (descriptor.colorAttachments ?? []).map(attachment => attachment?.loadOp ?? null),
+            depthLoad: descriptor.depthStencilAttachment?.depthLoadOp ?? null,
+            operations: [],
+          }
+          if (evidence.passes.length === 64) evidence.passes.shift()
+          evidence.passes.push(state)
+          evidence.renderPassByObject.set(pass, state)
+        }
+        return pass
+      }
+      const executeBundles = GPURenderPassEncoder.prototype.executeBundles
+      GPURenderPassEncoder.prototype.executeBundles = function (bundles) {
+        const state = evidence.renderPassByObject.get(this)
+        if (state && state.operations.length < 24) state.operations.push({ kind: 'world-bundles', count: bundles.length })
+        return executeBundles.call(this, bundles)
+      }
+      const setPipeline = GPURenderPassEncoder.prototype.setPipeline
+      GPURenderPassEncoder.prototype.setPipeline = function (pipeline) {
+        evidence.passByObject.set(this, evidence.pipelineByObject.get(pipeline) ?? null)
+        return setPipeline.call(this, pipeline)
+      }
+      const drawIndexed = GPURenderPassEncoder.prototype.drawIndexed
+      GPURenderPassEncoder.prototype.drawIndexed = function (...args) {
+        const pipeline = evidence.passByObject.get(this) ?? null
+        if (evidence.armed && evidence.draws.length < 2048)
+          evidence.draws.push({ indices: args[0], instances: args[1] ?? 1, pipeline })
+        const state = evidence.renderPassByObject.get(this)
+        if (state && state.operations.length < 24) {
+          const particle = pipeline?.vertexStrides.join(',') === '8,4,8,16,12'
+          if (particle || state.operations.filter(operation => operation.kind === 'indexed').length < 2) {
+            state.operations.push({ kind: particle ? 'particle' : 'indexed', indices: args[0], depthTest: pipeline?.depthTest ?? null })
+          }
+        }
+        return drawIndexed.apply(this, args)
+      }
+      const rotateForward = quaternion => [
+        1 - 2 * (quaternion[1] ** 2 + quaternion[2] ** 2),
+        2 * (quaternion[0] * quaternion[1] + quaternion[2] * quaternion[3]),
+        2 * (quaternion[0] * quaternion[2] - quaternion[1] * quaternion[3]),
+      ]
+      const vector = (view, offset) => [0, 1, 2].map(axis => view.getFloat32(offset + axis * 4, true))
+      const captureOutput = event => {
+        if (!evidence.armed || event.data?.kind !== 'particles' || !(event.data.output instanceof ArrayBuffer)) return
+        const view = new DataView(event.data.output)
+        if (view.byteLength < 40 || view.getUint32(4, true) !== 3) return
+        const count = view.getUint32(8, true)
+        const materials = new Map()
+        for (let index = 0; index < count; index++) {
+          const at = 40 + index * 436
+          if (at + 436 > view.byteLength) break
+          const identity = view.getUint32(at + 32, true), position = vector(view, at + 36)
+          const group = materials.get(identity) ?? { materialIndex: identity, count: 0, front: 0, behind: 0, minimumPlaneDistance: null, maximumPlaneDistance: null, samples: [] }
+          group.count++
+          if (evidence.impact) {
+            const distance = position.reduce((total, value, axis) => total
+              + (value - evidence.impact.wall[axis]) * evidence.impact.normal[axis], 0)
+            if (distance >= 0) group.front++; else group.behind++
+            group.minimumPlaneDistance = group.minimumPlaneDistance === null ? distance : Math.min(group.minimumPlaneDistance, distance)
+            group.maximumPlaneDistance = group.maximumPlaneDistance === null ? distance : Math.max(group.maximumPlaneDistance, distance)
+            if (group.samples.length < 3) group.samples.push({ position, planeDistance: distance })
+          }
+          materials.set(identity, group)
+        }
+        if (evidence.outputs.length === 96) evidence.outputs.shift()
+        evidence.outputs.push({ tick: Number(document.querySelector('main')?.dataset.snapshotTick ?? 0), count, materials: [...materials.values()] })
+      }
+      const originalPostMessage = Worker.prototype.postMessage
+      Worker.prototype.postMessage = function (message, ...rest) {
+        if (message?.kind === 'particles' && !evidence.observedWorkers.has(this)) {
+          evidence.observedWorkers.add(this)
+          this.addEventListener('message', captureOutput)
+        }
+        if (evidence.armed && message?.kind === 'particles' && message.batch instanceof ArrayBuffer) {
+          const view = new DataView(message.batch)
+          if (view.byteLength >= 32 && view.getUint32(4, true) === 2) {
+            const events = [], count = view.getUint32(28, true)
+            let offset = 32
+            for (let index = 0; index < count && offset + 20 <= view.byteLength; index++) {
+              const kind = view.getUint8(offset), time = view.getFloat32(offset + 12, true), effectIdentity = view.getUint32(offset + 16, true)
+              offset += 20
+              if (kind === 1) {
+                const length = view.getUint32(offset + 12, true)
+                const system = new TextDecoder().decode(new Uint8Array(message.batch, offset + 16, length))
+                offset += 16 + length
+                const position = vector(view, offset), orientation = [0, 1, 2, 3].map(axis => view.getFloat32(offset + 12 + axis * 4, true))
+                events.push({ kind: 'start', time, effectIdentity, system, position, orientation })
+                if (system.toLowerCase() === 'explosioncore_wall') {
+                  const normal = rotateForward(orientation)
+                  evidence.impact = { origin: position, normal, wall: position.map((value, axis) => value - normal[axis]) }
+                }
+                offset += 32
+              } else if (kind === 2) {
+                events.push({ kind: 'set-control-point', time, effectIdentity, position: vector(view, offset) })
+                offset += 32
+              } else events.push({ kind: kind === 3 ? 'graceful-stop' : 'immediate-stop', time, effectIdentity })
+            }
+            if (events.length && evidence.transactions.length < 96) evidence.transactions.push({
+              from: view.getFloat32(8, true), to: view.getFloat32(12, true), events,
+            })
+          }
+        }
+        return originalPostMessage.call(this, message, ...rest)
+      }
+      return true
+    })()`,
+  ]))
+  require(installed, "headed Chromium did not expose the WebGPU pipeline and render-pass evidence seam")
 }
 
 async function captureInterface(session: string, config: LocalConfig, identity: string): Promise<InterfaceEvidence> {
@@ -771,6 +1000,28 @@ function cameraForward(camera: CameraObservation): readonly [number, number, num
   const pitch = (camera.pitch * Math.PI) / 180
   const horizontal = Math.cos(pitch)
   return Object.freeze([horizontal * Math.cos(yaw), horizontal * Math.sin(yaw), -Math.sin(pitch)])
+}
+
+function projectSourcePoint(camera: CameraObservation, point: readonly number[]): Readonly<{ x: number; y: number; depth: number }> {
+  require(point.length === 3 && point.every(Number.isFinite), "projected Source point is malformed")
+  const yaw = camera.yaw * Math.PI / 180
+  const forward = cameraForward(camera)
+  const right = [Math.sin(yaw), -Math.cos(yaw), 0] as const
+  const up = [
+    right[1] * forward[2] - right[2] * forward[1],
+    right[2] * forward[0] - right[0] * forward[2],
+    right[0] * forward[1] - right[1] * forward[0],
+  ] as const
+  const delta = point.map((value, index) => value - camera.position[index]!)
+  const depth = delta.reduce((total, value, index) => total + value * forward[index]!, 0)
+  require(depth > camera.near, `projected Source point is behind the camera: ${JSON.stringify(point)}`)
+  const verticalTangent = Math.tan(camera.verticalFov * Math.PI / 360)
+  const horizontalTangent = verticalTangent * VIEWPORT_WIDTH / VIEWPORT_HEIGHT
+  return Object.freeze({
+    x: (delta.reduce((total, value, index) => total + value * right[index]!, 0) / (depth * horizontalTangent) * 0.5 + 0.5) * VIEWPORT_WIDTH,
+    y: (0.5 - delta.reduce((total, value, index) => total + value * up[index]!, 0) / (depth * verticalTangent) * 0.5) * VIEWPORT_HEIGHT,
+    depth,
+  })
 }
 
 type DevelopmentProcessOwner = Readonly<{
@@ -1427,6 +1678,7 @@ export async function verifyBrowserAcceptance(
 
     await agent(["--session", session, "set", "viewport", "390", "844"])
     await agent(["--session", session, "reload"])
+    await installRocketGpuEvidence(session)
     const mobileStartup = await completeStartup(session, config, "mobile-390x844", "skip")
     const mobileMenuViewport = await viewportOwnership(session, 390, 844)
     const mobileState = parseJson<{ settings: number[]; quit: number[] }>(await agent([
@@ -1773,12 +2025,6 @@ export async function verifyBrowserAcceptance(
       "window.dispatchEvent(new KeyboardEvent('keydown',{code:'KeyW',key:'w',bubbles:true})); true",
     ])
     await agent(["--session",session,"wait","--fn","Number(document.querySelector('main').dataset.wishSpeed)>0","--timeout","30000"])
-    await agent([
-      "--session",
-      session,
-      "eval",
-      "window.dispatchEvent(new KeyboardEvent('keyup',{code:'KeyW',key:'w',bubbles:true})); true",
-    ])
     const movingSpeed = parseJson<number>(
       await agent([
         "--session",
@@ -1787,6 +2033,12 @@ export async function verifyBrowserAcceptance(
         "Number(document.querySelector('main').dataset.wishSpeed)",
       ]),
     )
+    await agent([
+      "--session",
+      session,
+      "eval",
+      "window.dispatchEvent(new KeyboardEvent('keyup',{code:'KeyW',key:'w',bubbles:true})); true",
+    ])
     require(movingSpeed > 0, "movement binding did not advance the player")
     await agent(["--session", session, "press", "Space"])
     await agent(["--session", session, "wait", "--fn", "Number(document.querySelector('main').dataset.verticalSpeed)>0", "--timeout", "30000"])
@@ -1800,6 +2052,7 @@ export async function verifyBrowserAcceptance(
     )
     require(jumpSpeed > 0, "jump binding did not advance the player")
 
+    await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.grounded==='true'", "--timeout", "30000"])
     const initialFireEvents = parseJson<number>(
       await agent(["--session", session, "eval", "Number(document.querySelector('main').dataset.fireEvents)"]),
     )
@@ -1807,18 +2060,141 @@ export async function verifyBrowserAcceptance(
       await agent(["--session", session, "eval", "Number(document.querySelector('main').dataset.explosionEvents)"]),
     )
     await acquirePointerLock(session, "soldier")
-    const stockCamera=await cameraObservation(session)
+    await agent(["--session", session, "eval", "(()=>{const e=new MouseEvent('mousemove',{bubbles:true});Object.defineProperties(e,{movementX:{value:-182},movementY:{value:0}});window.dispatchEvent(e);return true})()"])
+    try {
+      await agent(["--session", session, "wait", "--fn", "Math.abs(((Number(document.querySelector('main').dataset.cameraYaw)-192+540)%360)-180)<2", "--timeout", "10000"])
+    } catch (error) {
+      const camera = await agent(["--session", session, "eval", "(()=>{const m=document.querySelector('main');return{yaw:m.dataset.cameraYaw,pitch:m.dataset.cameraPitch,pointer:m.dataset.pointerLocked,focus:document.hasFocus()}})()"])
+      throw new BrowserEvidenceError(`${String(error)}; uninterrupted rocket-wall camera state: ${camera}`)
+    }
+    const stockCamera = await cameraObservation(session)
+    await agent(["--session", session, "eval", "globalThis.__playsrcProfile??={};globalThis.__playsrcProfile.geometryEvidenceRevision=157001;true"])
+    await agent(["--session", session, "wait", "--fn", "globalThis.__playsrcProfile?.geometryEvidence?.revision===157001", "--timeout", "30000"])
+    const rocketWorld = parseJson<{ camera: { position: readonly number[] }; geometry: { samples: readonly RocketWorldSample[] } }>(
+      await agent(["--session", session, "eval", "({camera:globalThis.__playsrcProfile.geometryEvidence.camera,geometry:globalThis.__playsrcProfile.geometryEvidence.geometry})"]),
+    )
+    const impactWall = rocketWorld.geometry.samples.find((sample) => sample.x === 0 && sample.y === 0)
+    require(impactWall?.disposition === "main-world" && impactWall.depth !== null && impactWall.material !== null,
+      `fixed rocket target does not expose one depth-tested center world surface: ${JSON.stringify(impactWall)}`)
+    const beforeRocketState = await rocketFrameState(session)
+    const beforeRocketCanvas = await captureCanvas(session, config, "jump_beef", ROCKET_VISUAL_REGIONS)
+    await agent(["--session", session, "eval", "(()=>{const e=globalThis.__playsrcRocketGpuEvidence;e.draws=[];e.transactions=[];e.outputs=[];e.passes=[];e.impact=null;e.armed=true;return true})()"])
     let farFlightCanvas: CanvasEvidence | null = null
     let impactCanvas: CanvasEvidence | null = null
     await agent(["--session", session, "mouse", "down", "left"])
     await agent(["--session", session, "wait", "--fn", `document.querySelector('main').dataset.phase==='Failed'||Number(document.querySelector('main').dataset.fireEvents)>${initialFireEvents}`, "--timeout", "30000"])
     await agent(["--session", session, "wait", "--fn", "Number(document.querySelector('main').dataset.projectiles)>0&&Number(document.querySelector('main').dataset.particleItems)>0", "--timeout", "30000"])
-    farFlightCanvas = await captureCanvas(session, config)
+    const farFlightState = await rocketFrameState(session)
+    farFlightCanvas = await captureCanvas(session, config, "jump_beef", ROCKET_VISUAL_REGIONS)
     await agent(["--session", session, "wait", "--fn", `Number(document.querySelector('main').dataset.explosionEvents)>${initialExplosionEvents}&&Number(document.querySelector('main').dataset.particleItems)>0`, "--timeout", "30000"])
-    impactCanvas = await captureCanvas(session, config)
+    const impactState = await rocketFrameState(session)
+    impactCanvas = await captureCanvas(session, config, "jump_beef", ROCKET_VISUAL_REGIONS)
     const impactParticleProbe = parseJson<string>(await agent(["--session", session, "eval", "document.querySelector('main').dataset.particleProbe??''"]))
     await agent(["--session", session, "mouse", "up", "left"])
+    await agent(["--session", session, "wait", "--fn", `Number(document.querySelector('main').dataset.snapshotTick)>=${impactState.tick + 6}&&Number(document.querySelector('main').dataset.projectiles)===0&&Number(document.querySelector('main').dataset.particleItems)>0`, "--timeout", "30000"])
+    const lateSmokeState = await rocketFrameState(session)
+    const lateSmokeCanvas = await captureCanvas(session, config, "jump_beef", ROCKET_VISUAL_REGIONS)
+    const rocketGpu = parseJson<{
+      pipelines: readonly Record<string, unknown>[]
+      draws: readonly Readonly<{ count: number; indices: number; pipeline: Record<string, unknown> | null }>[]
+      totalDraws: number
+      impact: Readonly<{ origin: readonly number[]; normal: readonly number[]; wall: readonly number[] }> | null
+      transactions: readonly Readonly<{ from: number; to: number; events: readonly Record<string, unknown>[] }>[]
+      outputs: readonly Readonly<{ tick: number; count: number; materials: readonly Record<string, unknown>[] }>[]
+      passes: readonly Readonly<{ colorLoad: readonly string[]; depthLoad: string | null; operations: readonly Record<string, unknown>[] }>[]
+    }>(await agent([
+      "--session", session, "eval",
+      "(()=>{const e=globalThis.__playsrcRocketGpuEvidence;e.armed=false;const grouped=new Map();for(const draw of e.draws){const key=JSON.stringify({indices:draw.indices,pipeline:draw.pipeline});const prior=grouped.get(key);if(prior)prior.count++;else grouped.set(key,{count:1,indices:draw.indices,pipeline:draw.pipeline})}return{pipelines:e.pipelines.filter(pipeline=>pipeline.blend.some(Boolean)).slice(0,16),draws:[...grouped.values()].slice(0,48),totalDraws:e.draws.length,impact:e.impact,transactions:e.transactions,outputs:e.outputs.filter(output=>output.count>0).slice(-16),passes:e.passes.filter(pass=>pass.operations.some(operation=>operation.kind==='particle')).slice(-8)}})()",
+    ]))
+    const beforeRocketImage = await retainedCanvas(config, beforeRocketCanvas)
+    const flightPlane = rocketPixelPlane(beforeRocketImage, await retainedCanvas(config, farFlightCanvas), ROCKET_IMPACT_REGION)
+    const impactImage = await retainedCanvas(config, impactCanvas)
+    const impactPlane = rocketPixelPlane(beforeRocketImage, impactImage, ROCKET_IMPACT_REGION)
+    const impactSurfacePlane = rocketPixelPlane(beforeRocketImage, impactImage, ROCKET_IMPACT_SURFACE_REGION)
+    const lateSmokeImage = await retainedCanvas(config, lateSmokeCanvas)
+    const lateSmokePlane = rocketPixelPlane(beforeRocketImage, lateSmokeImage, ROCKET_IMPACT_REGION)
+    const lateSmokeSurfacePlane = rocketPixelPlane(beforeRocketImage, lateSmokeImage, ROCKET_IMPACT_SURFACE_REGION)
+    const foregroundSamples = rocketWorld.geometry.samples.filter((sample) => {
+      if (sample.disposition !== "main-world" || sample.depth === null || sample.depth + 8 >= impactWall.depth!) return false
+      const x = (sample.x + 1) * VIEWPORT_WIDTH / 2, y = (1 - sample.y) * VIEWPORT_HEIGHT / 2
+      return x <= VIEWPORT_WIDTH / 2 && y < 540 && Math.hypot(x - VIEWPORT_WIDTH / 2, y - VIEWPORT_HEIGHT / 2) >= 200
+    })
+    const occlusionPlanes = foregroundSamples.map((sample, index) => {
+      const x = Math.round((sample.x + 1) * VIEWPORT_WIDTH / 2), y = Math.round((1 - sample.y) * VIEWPORT_HEIGHT / 2)
+      const region = { name: `intervening-wall-${index}`, x: x - 6, y: y - 6, width: 12, height: 12 }
+      return Object.freeze({ surface: sample, ...rocketPixelPlane(beforeRocketImage, impactImage, region) })
+    })
     await agent(["--session", session, "wait", "--fn", "Number(document.querySelector('main').dataset.projectiles)===0&&Number(document.querySelector('main').dataset.particleItems)===0", "--timeout", "30000"])
+    const extinctionState = await rocketFrameState(session)
+    const impactProjection = rocketGpu.impact ? projectSourcePoint(stockCamera, rocketGpu.impact.origin) : null
+    const rocketVisibilityEvidence = Object.freeze({
+      contentBuild: TF2_CONTENT_BUILD.contentBuild,
+      viewport: Object.freeze([VIEWPORT_WIDTH, VIEWPORT_HEIGHT]),
+      camera: stockCamera,
+      impactedWall: impactWall,
+      impactProjection,
+      states: Object.freeze({ before: beforeRocketState, flight: farFlightState, impact: impactState, lateSmoke: lateSmokeState, extinction: extinctionState }),
+      captures: Object.freeze({ before: beforeRocketCanvas, flight: farFlightCanvas, impact: impactCanvas, lateSmoke: lateSmokeCanvas }),
+      colorPlanes: Object.freeze({
+        flight: flightPlane, impact: impactPlane, impactedSurface: impactSurfacePlane,
+        lateSmoke: lateSmokePlane, lateSmokeSurface: lateSmokeSurfacePlane,
+        interveningWalls: Object.freeze(occlusionPlanes),
+      }),
+      gpu: rocketGpu,
+    })
+    const rocketEvidenceDirectory = path.join(config.sourceCacheDir, "evidence", "browser", "jump_beef", "rocket-visibility")
+    await mkdir(rocketEvidenceDirectory, { recursive: true })
+    const rocketEvidencePath = path.join(rocketEvidenceDirectory, "report.json")
+    await writeFile(rocketEvidencePath, `${JSON.stringify(rocketVisibilityEvidence, null, 2)}\n`)
+    const rocketFailures: string[] = []
+    if (farFlightState.fireEvents <= beforeRocketState.fireEvents || impactState.explosionEvents <= beforeRocketState.explosionEvents)
+      rocketFailures.push("fire/explosion Source event order")
+    if (!rocketGpu.impact || Math.abs(Math.hypot(...rocketGpu.impact.normal) - 1) > 0.0001
+      || Math.abs(Math.hypot(...rocketGpu.impact.origin.map((value, index) => value - rocketGpu.impact!.wall[index]!)) - 1) > 0.0001)
+      rocketFailures.push(`Source one-unit wall-normal producer placement=${JSON.stringify(rocketGpu.impact)}`)
+    if (!impactProjection || impactProjection.x < ROCKET_IMPACT_SURFACE_REGION.x - 1
+      || impactProjection.x > ROCKET_IMPACT_SURFACE_REGION.x + ROCKET_IMPACT_SURFACE_REGION.width + 1
+      || impactProjection.y < ROCKET_IMPACT_SURFACE_REGION.y - 1
+      || impactProjection.y > ROCKET_IMPACT_SURFACE_REGION.y + ROCKET_IMPACT_SURFACE_REGION.height + 1
+      || Math.abs(impactWall.depth! - impactProjection.depth) > 2)
+      rocketFailures.push(`actual rocket contact does not project onto the sampled opaque wall=${JSON.stringify(impactProjection)}`)
+    const producerEvents = rocketGpu.transactions.flatMap((transaction) => transaction.events)
+    const trailStart = producerEvents.findIndex((event) => event.kind === "start" && event.system === "rockettrail")
+    const gracefulStop = producerEvents.findIndex((event) => event.kind === "graceful-stop")
+    const wallStart = producerEvents.findIndex((event) => event.kind === "start" && event.system === "ExplosionCore_Wall")
+    const trailControls = producerEvents.filter((event) => event.kind === "set-control-point")
+    if (trailStart < 0 || gracefulStop <= trailStart || wallStart <= gracefulStop || trailControls.length < 2)
+      rocketFailures.push(`rocket attachment/trail/explosion lifecycle=${JSON.stringify(producerEvents)}`)
+    if (!["effects/debris/debris_chunk.vmt", "effects/smokelit2/smoke2lit.vmt", "effects/sc_brightglow_y_nomodel.vmt"]
+      .every((material) => impactState.materials.includes(material)))
+      rocketFailures.push(`authored impact flash/debris/smoke materials=${impactState.materials}`)
+    if (!rocketGpu.outputs.some((output) => output.materials.some((material) => Number(material.front) > 0)))
+      rocketFailures.push("no authored particle producer position reached the front of the impacted wall")
+    const particleDraws = rocketGpu.draws.filter((draw) =>
+      JSON.stringify(draw.pipeline?.vertexStrides) === JSON.stringify([8, 4, 8, 16, 12]))
+    if (particleDraws.length === 0 || particleDraws.some((draw) =>
+      draw.pipeline?.depthTest !== "less-equal" || draw.pipeline.depthWrite !== false))
+      rocketFailures.push(`particle pipelines weakened Source opaque-world depth state=${JSON.stringify(particleDraws)}`)
+    if (foregroundSamples.length === 0) rocketFailures.push("no nearer opaque-world negative occlusion control")
+    if (!rocketGpu.passes.some((pass) => {
+      const world = pass.operations.findIndex((operation) => operation.kind === "world-bundles")
+      const particle = pass.operations.findIndex((operation) => operation.kind === "particle")
+      return world >= 0 && particle > world
+    })) rocketFailures.push(`opaque world GPU bundle was not submitted before translucent particles=${JSON.stringify(rocketGpu.passes)}`)
+    if (lateSmokeState.tick <= impactState.tick || lateSmokeState.particleItems === 0 || extinctionState.particleItems !== 0)
+      rocketFailures.push("graceful post-impact smoke lifetime")
+    if (impactPlane.warmFlashPixels < 8) rocketFailures.push(`front-of-wall warm flash pixels=${impactPlane.warmFlashPixels}`)
+    if (impactPlane.brightenedPixels < 24) rocketFailures.push(`front-of-wall bright impact pixels=${impactPlane.brightenedPixels}`)
+    if (impactSurfacePlane.changedPixels < 8)
+      rocketFailures.push(`impact pixels on the actual opaque hit surface=${impactSurfacePlane.changedPixels}; nearby doorway pixels=${impactPlane.changedPixels}`)
+    if (lateSmokeSurfacePlane.changedPixels < 8)
+      rocketFailures.push(`late smoke/debris pixels on the actual opaque hit surface=${lateSmokeSurfacePlane.changedPixels}`)
+    if (lateSmokePlane.smokePixels < 12 && lateSmokePlane.debrisPixels < 12)
+      rocketFailures.push(`front-of-wall late smoke/debris pixels=${lateSmokePlane.smokePixels}/${lateSmokePlane.debrisPixels}`)
+    if (occlusionPlanes.some((plane) => plane.warmFlashPixels > 0))
+      rocketFailures.push(`warm particles leaked through nearer opaque world geometry=${JSON.stringify(occlusionPlanes.map((plane) => plane.warmFlashPixels))}`)
+    require(rocketFailures.length === 0,
+      `headed rocket wall-pixel/depth regression failed: ${rocketFailures.join("; ")}; evidence ${rocketEvidencePath}`)
     const firePhase=parseJson<string>(await agent(["--session",session,"eval","document.querySelector('main').dataset.phase"]));if(firePhase==="Failed"){const state=await agent(["--session",session,"eval","({text:document.body.innerText,dataset:{...document.querySelector('main').dataset}})"]);throw new BrowserEvidenceError(`Soldier held fire failed: ${state}`)}
     await agent(["--session", session, "eval", "(()=>{const e=new MouseEvent('mousemove',{bubbles:true});Object.defineProperties(e,{movementX:{value:0},movementY:{value:2000}});window.dispatchEvent(e);return true})()"])
     await agent(["--session", session, "wait", "--fn", "Number(document.querySelector('main').dataset.cameraPitch)>=80", "--timeout", "30000"])
@@ -2078,6 +2454,14 @@ export async function verifyBrowserAcceptance(
       farFlightCanvas,
       impactCanvas,
       impactParticleProbe,
+      rocketVisibilityEvidence: Object.freeze({
+        report: rocketEvidencePath,
+        impactSurfacePixels: impactSurfacePlane.changedPixels,
+        lateSmokeSurfacePixels: lateSmokeSurfacePlane.changedPixels,
+        impactOrigin: rocketGpu.impact?.origin,
+        impactNormal: rocketGpu.impact?.normal,
+        impactProjection,
+      }),
       downwardViewmodelCanvas,
       shutdown: "pending",
     }

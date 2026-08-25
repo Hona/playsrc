@@ -1575,9 +1575,12 @@ fn initialize_particle(system: &mut System, definition: &Definition, creation: f
                 mix(speed_min[1], speed_max[1], next_random(system)),
                 mix(speed_min[2], speed_max[2], next_random(system)),
             ];
-            let local_velocity = control_orientation(system, cp_index)
-                .map_or(local_velocity, |orientation| {
-                    rotate(orientation, local_velocity)
+            let local_velocity =
+                control_orientation(system, cp_index).map_or(local_velocity, |orientation| {
+                    rotate(
+                        orientation,
+                        [local_velocity[0], -local_velocity[1], local_velocity[2]],
+                    )
                 });
             velocity = add(velocity, local_velocity);
         }
