@@ -706,6 +706,7 @@ export async function verifyTf2Wasm(
   require(decoded.projectileEvents.some((event) => event.type === "fire"), "fixed phase omitted fire event")
   const initialStockFire=decoded.projectileEvents.find(event=>event.type==="fire"&&event.kind===1),initialEye=[decoded.position[0]+decoded.movement.viewOffset[0],decoded.position[1]+decoded.movement.viewOffset[1],decoded.position[2]+decoded.movement.viewOffset[2]]
   require(!!initialStockFire&&Math.abs(initialStockFire.position[1]-initialEye[1]!+12)<0.05,"stock rocket source side differs")
+  require(!!initialStockFire?.launcherPose&&initialStockFire.launcherPose.eyePosition.every((value,index)=>Math.abs(value-initialEye[index]!)<0.001)&&initialStockFire.launcherPose.viewOrientation.every((value,index)=>Math.abs(value-[0,0,0,1][index]!)<0.001),"stock rocket authoritative fire-tick launcher pose differs")
   require(decoded.authorityBlockers.map((blocker) => blocker.code).join(",") === "1,2",
     "authority blocker ledger differs")
   require(decoded.jump === null, "unavailable Tempus course was inferred")
@@ -871,7 +872,7 @@ export async function verifyTf2Wasm(
   require((particleOutputView.getUint32(40+124,true)&1)!==0,
     "configured rockettrail render output omitted its primary sheet sample")
 
-  const modelBatch = encodeModelPoseBatch([{
+  const modelRequest = Object.freeze({
     identity: 1,
     model: "models/weapons/c_models/c_soldier_arms.mdl",
     itemModel: "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl",
@@ -879,14 +880,19 @@ export async function verifyTf2Wasm(
     previousElapsedSeconds: 0,
     elapsedSeconds: 0.4,
     currentTimeSeconds:0.4,frameTimeSeconds:0.015,planarSpeed:0,screenAspectRatio:16/9,worldFarPlane:32768,
-    phase: 0,
+    phase: 0 as const,
     reflectedViewmodel: false,
     ownerAlive: true,
     skin: 0,
     lod: 0,
     bodygroups: [0],
     itemBodygroups: [0],
-  }])
+  })
+  const modelBatch = encodeModelPoseBatch([
+    {...modelRequest,sampleTick:3n,attachmentsOnly:true,fireView:{eyePosition:[10,20,30],viewOrientation:[0,0,0,1]}},
+    {...modelRequest,sampleTick:4n,attachmentsOnly:true,fireView:{eyePosition:[110,20,30],viewOrientation:[0,0,0,1]}},
+    {...modelRequest,sampleTick:5n},
+  ])
   const modelPointer = exports.playsrc_alloc(modelBatch.byteLength)
   new Uint8Array(exports.memory.buffer, modelPointer, modelBatch.byteLength).set(modelBatch)
   require(exports.playsrc_model_transact(handle, modelPointer, modelBatch.byteLength) === 1,
@@ -898,10 +904,14 @@ export async function verifyTf2Wasm(
   const modelPoses = decodeModelPoseOutput(
     new Uint8Array(exports.memory.buffer, modelOutputPointer, modelOutputLength).slice(),
   )
-  require(modelPoses.length===2&&modelPoses[0]?.role==="item"&&modelPoses[1]?.role==="hand"&&
-    modelPoses[1].model === "models/weapons/c_models/c_soldier_arms.mdl" &&
-    modelPoses[0].model === "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl" &&
-    modelPoses.every((pose) => pose.activity === "ACT_PRIMARY_VM_DRAW" && pose.primitives.length > 0 &&
+  const firePoses=modelPoses.filter(pose=>pose.attachmentsOnly),displayPoses=modelPoses.filter(pose=>!pose.attachmentsOnly)
+  require(firePoses.length===2&&firePoses.every((pose,index)=>pose.role==="item"&&pose.attachmentsWorld&&pose.primitives.length===0&&pose.sampleTick===BigInt(index+3)),"fixed StudioModel fire-tick attachment-only timeline differs")
+  const firstMuzzle=firePoses[0]!.attachments.find(attachment=>attachment.name.toLowerCase()==="muzzle"),secondMuzzle=firePoses[1]!.attachments.find(attachment=>attachment.name.toLowerCase()==="muzzle")
+  require(!!firstMuzzle&&!!secondMuzzle&&Math.abs(secondMuzzle.matrix[3]!-firstMuzzle.matrix[3]!-100)<0.001,"fixed StudioModel fire-tick launcher attachment poses differ")
+  require(displayPoses.length===2&&displayPoses[0]?.role==="item"&&displayPoses[1]?.role==="hand"&&
+    displayPoses[1].model === "models/weapons/c_models/c_soldier_arms.mdl" &&
+    displayPoses[0].model === "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl" &&
+    displayPoses.every((pose) => pose.sampleTick===5n&&pose.activity === "ACT_PRIMARY_VM_DRAW" && pose.primitives.length > 0 &&
       pose.primitives.every((primitive) => primitive.tangents.length / 4 === primitive.positions.length / 3)),
   "fixed StudioModel viewmodel pose output differs")
   const visibilityProbe=(values:readonly number[])=>{

@@ -255,6 +255,10 @@ export type ProjectileEvent = Readonly<{
   position: readonly [number, number, number]
   orientation: readonly [number, number, number, number]
   contactNormal: readonly [number, number, number] | null
+  launcherPose: Readonly<{
+    eyePosition: readonly [number, number, number]
+    viewOrientation: readonly [number, number, number, number]
+  }> | null
 }>
 
 export type ProjectileTimelineTick = Readonly<{
@@ -877,7 +881,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
   const buffer = data.buffer as ArrayBuffer
   const base = data.byteOffset
   const view = new DataView(buffer, base, data.byteLength)
-  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 9)
+  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 10)
     throw new Tf2CodecError("snapshot identity is invalid")
   const tf2Class = data[16]
   const team = data[17]
@@ -1019,31 +1023,40 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
   }
   at += projectileCount * 84
 
-  requireBytes(projectileEventCount * 64, "projectile event")
+  requireBytes(projectileEventCount * 92, "projectile event")
   const projectileEvents: ProjectileEvent[] = []
   const eventNames: readonly ProjectileEventType[] = ["fire", "impact", "stick", "arm", "fizzle", "explode"]
   for (let index = 0; index < projectileEventCount; index += 1) {
-    const item = at + index * 64
+    const item = at + index * 92
     const eventCode = data[item]
     const kind = data[item + 1]
     const projectileTeam = data[item + 2]
-    const hasNormal = data[item + 3]
+    const flags = data[item + 3]
+    const hasNormal = flags === undefined ? undefined : flags & 1
+    const hasLauncherPose = flags === undefined ? undefined : (flags >> 1) & 1
     const position = vector(view, item + 24)
     const orientation = quaternion(view, item + 36)
     const rawNormal = vector(view, item + 52)
+    const eyePosition = vector(view, item + 64)
+    const viewOrientation = quaternion(view, item + 76)
     if (
       eventCode === undefined ||
       eventCode < 1 ||
       eventCode > 6 ||
       (kind !== 1 && kind !== 2) ||
       (projectileTeam !== 1 && projectileTeam !== 2) ||
+      flags === undefined ||
+      flags > 3 ||
       hasNormal === undefined ||
-      hasNormal > 1 ||
+      hasLauncherPose === undefined ||
       !finite(position) ||
       !normalized(orientation) ||
       (hasNormal === 1 && !normalized(rawNormal)) ||
       (hasNormal === 0 && rawNormal.some((value) => value !== 0)) ||
-      ((eventCode === 2 || eventCode === 3) && hasNormal !== 1)
+      ((eventCode === 2 || eventCode === 3) && hasNormal !== 1) ||
+      (eventCode === 1) !== (hasLauncherPose === 1) ||
+      (hasLauncherPose === 1 && (!finite(eyePosition) || !normalized(viewOrientation))) ||
+      (hasLauncherPose === 0 && [...eyePosition, ...viewOrientation].some((value) => value !== 0))
     )
       throw new Tf2CodecError("projectile event record is invalid")
     projectileEvents.push(
@@ -1058,11 +1071,14 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
         position,
         orientation,
         contactNormal: hasNormal === 1 ? rawNormal : null,
+        launcherPose: hasLauncherPose === 1
+          ? Object.freeze({ eyePosition, viewOrientation })
+          : null,
       }),
     )
   }
   validateProjectileTransitions(projectileEvents)
-  at += projectileEventCount * 64
+  at += projectileEventCount * 92
 
   requireBytes(entityTransformCount * 32, "entity transform")
   const entityTransforms: EntityTransform[] = []

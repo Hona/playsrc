@@ -259,6 +259,9 @@ export type ModelPoseRequest = Readonly<{
   model: string
   itemModel?: string
   activity: string
+  sampleTick?: bigint
+  attachmentsOnly?: boolean
+  fireView?: Readonly<{ eyePosition: Vector3; viewOrientation: Quaternion }>
   previousElapsedSeconds: number
   elapsedSeconds: number
   currentTimeSeconds:number;frameTimeSeconds:number;planarSpeed:number;screenAspectRatio:number;worldFarPlane:number
@@ -282,6 +285,9 @@ export type PosedPrimitive = Readonly<{
 export type PosedAttachment = Readonly<{ name: string; worldAligned: boolean; matrix: Float32Array }>
 export type PosedModel = Readonly<{
   identity: number
+  sampleTick: bigint
+  attachmentsOnly: boolean
+  attachmentsWorld: boolean
   role: "single" | "hand" | "item"
   model: string
   activity: string
@@ -306,14 +312,14 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
     const model = UTF8_ENCODER.encode(request.model)
     const item = UTF8_ENCODER.encode(request.itemModel ?? "")
     const activity = UTF8_ENCODER.encode(request.activity)
-    length += 72 + model.length + item.length + activity.length +
+    length += 108 + model.length + item.length + activity.length +
       (request.bodygroups.length + (request.itemBodygroups?.length ?? 0)) * 4
     return { request, model, item, activity }
   })
   if (length > 1024 * 1024) throw new ProjectilePresentationError("BoundExceeded", "model pose request bytes")
   const bytes = new Uint8Array(length), view = new DataView(bytes.buffer)
   bytes.set([0x50, 0x4d, 0x52, 0x51])
-  view.setUint32(4, 5, true)
+  view.setUint32(4, 6, true)
   view.setUint32(8, requests.length, true)
   let at = 12
   const text = (encoded: Uint8Array) => {
@@ -327,7 +333,24 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
       throw new ProjectilePresentationError("MalformedFact", "model pose request")
     }
     view.setUint32(at, request.identity, true); at += 4
-    bytes[at] = request.itemModel === undefined ? 0 : 1; at += 4
+    const sampleTick = request.sampleTick ?? 0n
+    if (typeof sampleTick !== "bigint" || sampleTick < 0n || sampleTick > 0xffff_ffff_ffff_ffffn ||
+      typeof (request.attachmentsOnly ?? false) !== "boolean" ||
+      (request.attachmentsOnly && request.itemModel === undefined) ||
+      (request.attachmentsOnly && request.fireView === undefined) ||
+      (request.fireView !== undefined && (request.itemModel === undefined ||
+        !finite(request.fireView.eyePosition) || !quaternion(request.fireView.viewOrientation)))) {
+      throw new ProjectilePresentationError("MalformedFact", "model pose sample")
+    }
+    view.setBigUint64(at, sampleTick, true); at += 8
+    bytes[at] = request.itemModel === undefined ? 0 : 1
+    bytes[at + 1] = Number(request.attachmentsOnly ?? false)
+    bytes[at + 2] = Number(request.fireView !== undefined)
+    at += 4
+    for (const value of [...(request.fireView?.eyePosition ?? [0, 0, 0]),
+      ...(request.fireView?.viewOrientation ?? [0, 0, 0, 0])]) {
+      view.setFloat32(at, value, true); at += 4
+    }
     text(model); text(item); text(activity)
     view.setFloat32(at, request.previousElapsedSeconds, true); at += 4
     view.setFloat32(at, request.elapsedSeconds, true); at += 4
@@ -355,7 +378,7 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
 export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] {
   if (bytes.byteLength < 12 || bytes.byteLength > 64 * 1024 * 1024) throw new ProjectilePresentationError("BoundExceeded", "model pose output bytes")
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), decoder = new TextDecoder("utf-8", { fatal: true })
-  if (decoder.decode(bytes.subarray(0, 4)) !== "PMPO" || view.getUint32(4, true) !== 4) throw new ProjectilePresentationError("MalformedFact", "model pose output identity")
+  if (decoder.decode(bytes.subarray(0, 4)) !== "PMPO" || view.getUint32(4, true) !== 5) throw new ProjectilePresentationError("MalformedFact", "model pose output identity")
   let at = 12
   const ensure = (length: number) => { if (at + length > bytes.length) throw new ProjectilePresentationError("MalformedFact", "model pose output truncation") }
   const u8 = () => { ensure(1); return bytes[at++]! }, u32 = () => { ensure(4); const value = view.getUint32(at, true); at += 4; return value },
@@ -364,8 +387,14 @@ export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] 
     text = () => { const length = u32(); ensure(length); const value = decoder.decode(bytes.subarray(at, at + length)); at += length; return value }
   const output: PosedModel[] = []
   for (let count = view.getUint32(8, true); count > 0; count--) {
-    const identity = u32(), roleCode = u8()
-    if (roleCode > 2 || u8() || u8() || u8()) throw new ProjectilePresentationError("MalformedFact", "model pose role")
+    const identity = u32()
+    ensure(8)
+    const sampleTick = view.getBigUint64(at, true); at += 8
+    const roleCode = u8(), attachmentMode = u8(), attachmentsWorld = u8()
+    if (roleCode > 2 || attachmentMode > 1 || attachmentsWorld > 1 ||
+      (attachmentMode === 1 && (roleCode !== 2 || attachmentsWorld !== 1)) || u8()) {
+      throw new ProjectilePresentationError("MalformedFact", "model pose role")
+    }
     const model = text(), activity = text(), sequence = u32(), framesPerSecond = f32(), weightedFrameCount = f32(),
       cyclesPerSecond = f32(), durationSeconds = f32(), looping = u8()
     if (looping > 1 || u8() || u8() || u8()) throw new ProjectilePresentationError("MalformedFact", "model pose timing")
@@ -430,7 +459,8 @@ export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] 
       const matrix = new Float32Array(12); for (let index = 0; index < 12; index++) matrix[index] = f32()
       return Object.freeze({ name, worldAligned: worldAligned === 1, matrix })
     }))
-    output.push(Object.freeze({ identity, role: (["single", "hand", "item"] as const)[roleCode]!, model, activity, sequence, framesPerSecond, weightedFrameCount, cyclesPerSecond, durationSeconds, looping: looping === 1, previousCycle, cycle, events, primitives, attachments,viewmodel }))
+    if (attachmentMode === 1 && primitives.length !== 0) throw new ProjectilePresentationError("MalformedFact", "attachment-only pose contains geometry")
+    output.push(Object.freeze({ identity, sampleTick, attachmentsOnly: attachmentMode === 1, attachmentsWorld: attachmentsWorld === 1, role: (["single", "hand", "item"] as const)[roleCode]!, model, activity, sequence, framesPerSecond, weightedFrameCount, cyclesPerSecond, durationSeconds, looping: looping === 1, previousCycle, cycle, events, primitives, attachments,viewmodel }))
   }
   if (at !== bytes.length) throw new ProjectilePresentationError("MalformedFact", "model pose output trailing bytes")
   return Object.freeze(output)
@@ -749,7 +779,8 @@ export type ProjectileResourceCatalog = Readonly<{
   models: ReadonlySet<string>
   systems: ReadonlySet<string>
   attachments: ReadonlyMap<number, ReadonlySet<string>>
-  attachmentTransforms?: ReadonlyMap<number, ReadonlyMap<string, AttachmentTransform>>
+  attachmentTransforms: ReadonlyMap<number, ReadonlyMap<string, AttachmentTransform>>
+  fireAttachmentTransforms: ReadonlyMap<number, ReadonlyMap<string, AttachmentTransform>>
   localOwnerIdentity?: number
 }>
 
@@ -902,7 +933,7 @@ export function createProjectilePresentationMapper(
                 source.launcherIdentity,
                 source.kind === "rocket" ? "backblast" : "muzzle",
               )
-              const muzzleTransform = requireAttachmentTransform(catalog, attachment)
+              const muzzleTransform = requireFireAttachmentTransform(catalog, event, attachment)
               requireSystem(catalog, muzzle)
               push(
                 particles,
@@ -1264,15 +1295,31 @@ function requireAttachmentTransform(
   catalog: ProjectileResourceCatalog,
   attachment: ParticleAttachment,
 ): AttachmentTransform {
-  const transform = catalog.attachmentTransforms?.get(attachment.entityIdentity)?.get(attachment.name)
-  if (!transform) throw new ProjectilePresentationError("MissingAttachment", `attachment transform ${attachment.entityIdentity}:${attachment.name} is missing`)
+  const transform = catalog.attachmentTransforms.get(attachment.entityIdentity)?.get(attachment.name)
+  return validateAttachmentTransform(transform, `${attachment.entityIdentity}:${attachment.name}`)
+}
+
+function requireFireAttachmentTransform(
+  catalog: ProjectileResourceCatalog,
+  event: ProjectileEvent,
+  attachment: ParticleAttachment,
+): AttachmentTransform {
+  const transform = catalog.fireAttachmentTransforms.get(event.projectileIdentity)?.get(attachment.name)
+  return validateAttachmentTransform(transform, `${event.tick}:${attachment.entityIdentity}:${attachment.name}`)
+}
+
+function validateAttachmentTransform(
+  transform: AttachmentTransform | undefined,
+  identity: string,
+): AttachmentTransform {
+  if (!transform) throw new ProjectilePresentationError("MissingAttachment", `attachment transform ${identity} is missing`)
   if (
     !finite(transform.position)
     || transform.position.some(value => !Number.isFinite(Math.fround(value)))
     || !quaternion(transform.orientation)
     || transform.orientation.some(value => !Number.isFinite(Math.fround(value)))
   ) {
-    throw new ProjectilePresentationError("MalformedFact", `attachment transform ${attachment.entityIdentity}:${attachment.name} is invalid`)
+    throw new ProjectilePresentationError("MalformedFact", `attachment transform ${identity} is invalid`)
   }
   return transform
 }

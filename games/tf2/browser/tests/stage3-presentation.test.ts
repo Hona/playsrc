@@ -85,7 +85,7 @@ test("preserves source ticks and graceful stop in one multi-tick Particle phase"
   expect(() => reversed.encode(4n, [0, 0, 0], [requests[0]!])).toThrow(ProjectilePresentationError)
 })
 
-test("encodes each Unicode model/activity exactly once into the unchanged PMRQ v5 contract", () => {
+test("encodes each Unicode model/activity exactly once into the fire-tick PMRQ v6 contract", () => {
   const request = Object.freeze({
     identity: 7,
     model: "models/é.mdl",
@@ -104,10 +104,46 @@ test("encodes each Unicode model/activity exactly once into the unchanged PMRQ v
   const bytes = encodeModelPoseBatch([request])
   const view = new DataView(bytes.buffer)
   expect(new TextDecoder().decode(bytes.subarray(0, 4))).toBe("PMRQ")
-  expect(view.getUint32(4, true)).toBe(5)
+  expect(view.getUint32(4, true)).toBe(6)
   expect(view.getUint32(8, true)).toBe(1)
-  expect(view.getUint32(20, true)).toBe(new TextEncoder().encode(request.model).byteLength)
-  expect(new TextDecoder().decode(bytes.subarray(24, 24 + view.getUint32(20, true)))).toBe(request.model)
+  expect(view.getBigUint64(16, true)).toBe(0n)
+  expect(view.getUint32(56, true)).toBe(new TextEncoder().encode(request.model).byteLength)
+  expect(new TextDecoder().decode(bytes.subarray(60, 60 + view.getUint32(56, true)))).toBe(request.model)
+})
+
+test("encodes historical attachment-only fire samples without extra model transactions", () => {
+  const request = Object.freeze({
+    identity: 7,
+    model: "models/weapons/c_models/c_soldier_arms.mdl",
+    itemModel: "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl",
+    activity: "ACT_PRIMARY_VM_PRIMARYATTACK",
+    sampleTick: 18n,
+    attachmentsOnly: true,
+    fireView: Object.freeze({
+      eyePosition: Object.freeze([10, 20, 30]) as readonly [number, number, number],
+      viewOrientation: Object.freeze([0, 0, 0, 1]) as readonly [number, number, number, number],
+    }),
+    previousElapsedSeconds: 0,
+    elapsedSeconds: 0,
+    currentTimeSeconds: 0.27,
+    frameTimeSeconds: 0.015,
+    planarSpeed: 0,
+    screenAspectRatio: 16 / 9,
+    worldFarPlane: 32_768,
+    phase: 1 as const,
+    skin: 0,
+    lod: 0,
+    bodygroups: Object.freeze([0]),
+    itemBodygroups: Object.freeze([0]),
+  })
+  const bytes = encodeModelPoseBatch([request, { ...request, sampleTick: 19n, attachmentsOnly: false }])
+  const view = new DataView(bytes.buffer)
+  expect(view.getUint32(8, true)).toBe(2)
+  expect(view.getBigUint64(16, true)).toBe(18n)
+  expect([...bytes.subarray(24, 28)]).toEqual([1, 1, 1, 0])
+  expect([0, 1, 2].map((index) => view.getFloat32(28 + index * 4, true))).toEqual([10, 20, 30])
+  expect(() => encodeModelPoseBatch([{ ...request, fireView: undefined }]))
+    .toThrow(ProjectilePresentationError)
 })
 
 test("decodes exact interleaved PMPO vertex planes and rejects non-finite or truncated geometry", () => {
@@ -127,9 +163,11 @@ test("decodes exact interleaved PMPO vertex planes and rejects non-finite or tru
     u32(bytes.byteLength)
     output.push(...bytes)
   }
-  u32(4)
+  u32(5)
   u32(1)
   u32(9)
+  u32(7)
+  u32(0)
   output.push(0, 0, 0, 0)
   text("models/example.mdl")
   text("ACT_IDLE")
@@ -152,7 +190,10 @@ test("decodes exact interleaved PMPO vertex planes and rejects non-finite or tru
   ;[1, 2, 3, 0, 0, 1, 4, 5, 6, 1, 7, 8, 9, 0, 1, 0, 10, 11, 12, -1].forEach(f32)
   u32(0)
   const bytes = Uint8Array.from(output)
-  const primitive = decodeModelPoseOutput(bytes)[0]!.primitives[0]!
+  const pose = decodeModelPoseOutput(bytes)[0]!
+  expect(pose.sampleTick).toBe(7n)
+  expect(pose.attachmentsOnly).toBe(false)
+  const primitive = pose.primitives[0]!
   expect([...primitive.positions]).toEqual([1, 2, 3, 7, 8, 9])
   expect([...primitive.normals]).toEqual([0, 0, 1, 0, 1, 0])
   expect([...primitive.tangents]).toEqual([4, 5, 6, 1, 10, 11, 12, -1])

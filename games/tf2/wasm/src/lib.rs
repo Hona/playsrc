@@ -1316,6 +1316,9 @@ pub unsafe extern "C" fn playsrc_particle_output_copy(
 #[derive(Debug)]
 struct ModelPoseRequest {
     identity: u32,
+    sample_tick: u64,
+    attachments_only: bool,
+    fire_view: Option<([f32; 3], [f32; 4])>,
     model: String,
     item: Option<String>,
     activity: String,
@@ -1404,7 +1407,7 @@ pub unsafe extern "C" fn playsrc_model_output_copy(
 
 fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
     let mut reader = ParticleReader { bytes, at: 0 };
-    if reader.take(4)? != b"PMRQ" || reader.u32()? != 5 {
+    if reader.take(4)? != b"PMRQ" || reader.u32()? != 6 {
         return Err(());
     }
     let count = reader.u32()? as usize;
@@ -1412,13 +1415,36 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
         return Err(());
     }
     let mut requests = Vec::with_capacity(count);
-    let mut identities = std::collections::BTreeSet::new();
+    let mut identities = std::collections::BTreeMap::<u32, (u64, bool)>::new();
     for _ in 0..count {
         let identity = reader.u32()?;
+        let sample_tick = reader.u64()?;
         let kind = reader.u8()?;
-        if kind > 1 || reader.take(3)? != [0; 3] {
+        let attachments_only = reader.u8()?;
+        let has_fire_view = reader.u8()?;
+        if kind > 1
+            || attachments_only > 1
+            || has_fire_view > 1
+            || (attachments_only == 1 && (kind != 1 || has_fire_view != 1))
+            || (has_fire_view == 1 && kind != 1)
+            || reader.u8()? != 0
+        {
             return Err(());
         }
+        let eye = [reader.f32()?, reader.f32()?, reader.f32()?];
+        let orientation = [reader.f32()?, reader.f32()?, reader.f32()?, reader.f32()?];
+        let fire_view = if has_fire_view == 1 {
+            let magnitude = orientation.iter().map(|value| value * value).sum::<f32>();
+            if (magnitude - 1.0).abs() > 1.0e-4 {
+                return Err(());
+            }
+            Some((eye, orientation))
+        } else {
+            if eye.into_iter().chain(orientation).any(|value| value != 0.0) {
+                return Err(());
+            }
+            None
+        };
         let model = reader.text()?.to_ascii_lowercase();
         let item_text = reader.text()?.to_ascii_lowercase();
         let item = match kind {
@@ -1459,7 +1485,13 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
         }
         let bodygroup_count = reader.u32()? as usize;
         if identity == 0
-            || !identities.insert(identity)
+            || identities
+                .get(&identity)
+                .is_some_and(|(prior_tick, prior_attachment)| {
+                    !*prior_attachment
+                        || sample_tick < *prior_tick
+                        || (sample_tick == *prior_tick && attachments_only == 1)
+                })
             || model.is_empty()
             || activity.is_empty()
             || previous_elapsed < 0.0
@@ -1483,8 +1515,12 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
         let item_bodygroups = (0..item_bodygroup_count)
             .map(|_| reader.u32().map(|value| value as usize))
             .collect::<Result<Vec<_>, _>>()?;
+        identities.insert(identity, (sample_tick, attachments_only == 1));
         requests.push(ModelPoseRequest {
             identity,
+            sample_tick,
+            attachments_only: attachments_only == 1,
+            fire_view,
             model,
             item,
             activity,
@@ -1537,7 +1573,7 @@ fn encode_model_poses(
     requests: &[ModelPoseRequest],
 ) -> Result<Vec<u8>, ()> {
     let mut out = b"PMPO".to_vec();
-    out.extend_from_slice(&4u32.to_le_bytes());
+    out.extend_from_slice(&5u32.to_le_bytes());
     out.extend_from_slice(&0_u32.to_le_bytes());
     let mut output_count = 0_u32;
     for request in requests {
@@ -1702,7 +1738,13 @@ fn encode_model_poses(
                 item_bodygroup_mutations: frame.item_bodygroup_mutations,
             };
             let event_refs = frame.crossed_events.iter().collect::<Vec<_>>();
+            let mut part_count = 0_u32;
             for part in frame.draw_plan.parts {
+                if request.attachments_only
+                    && part.part != playsrc_studio_model::ViewModelPart::Item
+                {
+                    continue;
+                }
                 let (role, part_model, pose) = match part.part {
                     playsrc_studio_model::ViewModelPart::Hand => {
                         (1, model, &frame.composition.hand.pose)
@@ -1711,12 +1753,15 @@ fn encode_model_poses(
                         (2, item, &frame.composition.item.pose)
                     }
                 };
-                let selected = part
-                    .opaque_primitives
-                    .iter()
-                    .chain(&part.translucent_primitives)
-                    .copied()
-                    .collect::<Vec<_>>();
+                let selected = if request.attachments_only {
+                    Vec::new()
+                } else {
+                    part.opaque_primitives
+                        .iter()
+                        .chain(&part.translucent_primitives)
+                        .copied()
+                        .collect::<Vec<_>>()
+                };
                 encode_model_pose_part(
                     &mut out,
                     request,
@@ -1732,8 +1777,12 @@ fn encode_model_poses(
                     part.opaque_primitives.len(),
                     Some(&state),
                 )?;
+                part_count = part_count.checked_add(1).ok_or(())?;
             }
-            output_count = output_count.checked_add(2).ok_or(())?;
+            if part_count != if request.attachments_only { 1 } else { 2 } {
+                return Err(());
+            }
+            output_count = output_count.checked_add(part_count).ok_or(())?;
         } else {
             encode_model_pose_part(
                 &mut out,
@@ -1817,7 +1866,13 @@ fn encode_model_pose_part(
     view: Option<&ViewOutput>,
 ) -> Result<(), ()> {
     out.extend_from_slice(&request.identity.to_le_bytes());
-    out.extend_from_slice(&[role, 0, 0, 0]);
+    out.extend_from_slice(&request.sample_tick.to_le_bytes());
+    out.extend_from_slice(&[
+        role,
+        u8::from(request.attachments_only),
+        u8::from(request.fire_view.is_some()),
+        0,
+    ]);
     pbytes(out, model.identity.as_bytes())?;
     pbytes(out, request.activity.as_bytes())?;
     out.extend_from_slice(&u32::try_from(sequence).map_err(|_| ())?.to_le_bytes());
@@ -1970,7 +2025,23 @@ fn encode_model_pose_part(
     for attachment in &pose.attachments {
         pbytes(out, &attachment.name)?;
         out.extend_from_slice(&[u8::from(attachment.world_aligned), 0, 0, 0]);
-        for value in attachment.model_transform.0 {
+        let matrix = if let Some((eye, orientation)) = request.fire_view {
+            let state = view.ok_or(())?;
+            playsrc_studio_model::position_viewmodel_attachment(
+                attachment.model_transform,
+                playsrc_studio_model::Vector3(
+                    eye.map(|value| playsrc_studio_model::Float32(value.to_bits())),
+                ),
+                orientation.map(|value| playsrc_studio_model::Float32(value.to_bits())),
+                state.transform,
+                playsrc_studio_model::Float32(75.0_f32.to_bits()),
+                state.pass.projection.unscaled_horizontal_fov_4_by_3,
+            )
+            .map_err(|_| ())?
+        } else {
+            attachment.model_transform
+        };
+        for value in matrix.0 {
             out.extend_from_slice(&value.0.to_le_bytes());
         }
     }
@@ -3429,7 +3500,7 @@ fn encode_snapshot(
     encode_movement_tick(&mut movement_tick_bytes, movement_tick, MAX)?;
     let mut out = Vec::new();
     extend(&mut out, b"PSSN", MAX)?;
-    u32_field(&mut out, 9, MAX)?;
+    u32_field(&mut out, 10, MAX)?;
     u64_field(&mut out, snapshot.tick, MAX)?;
     extend(
         &mut out,
@@ -3564,7 +3635,8 @@ fn encode_snapshot(
                 event.kind as u8,
                 projectile_code(event.projectile_kind),
                 team_code(event.team),
-                u8::from(event.contact_normal.is_some()),
+                u8::from(event.contact_normal.is_some())
+                    | (u8::from(event.launcher_pose.is_some()) << 1),
             ],
             MAX,
         )?;
@@ -3578,7 +3650,17 @@ fn encode_snapshot(
                 .position
                 .into_iter()
                 .chain(event.orientation)
-                .chain(event.contact_normal.unwrap_or([0.0; 3])),
+                .chain(event.contact_normal.unwrap_or([0.0; 3]))
+                .chain(
+                    event
+                        .launcher_pose
+                        .map_or([0.0; 3], |pose| pose.eye_position),
+                )
+                .chain(
+                    event
+                        .launcher_pose
+                        .map_or([0.0; 4], |pose| pose.view_orientation),
+                ),
             MAX,
         )?;
     }
@@ -10488,6 +10570,7 @@ mod tests {
                 position: projectile.position,
                 orientation: projectile.orientation,
                 contact_normal: None,
+                launcher_pose: None,
             }],
             entity_transforms: Vec::new(),
             entity_events: Vec::new(),
@@ -10575,8 +10658,8 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(&encoded[..8], b"PSSN\x09\0\0\0");
-        assert_eq!(encoded.len(), 880);
+        assert_eq!(&encoded[..8], b"PSSN\x0a\0\0\0");
+        assert_eq!(encoded.len(), 908);
         assert_eq!(
             u32::from_le_bytes(encoded[160..164].try_into().unwrap()),
             playsrc_tf2::FL_CLIENT | playsrc_tf2::FL_INWATER
@@ -10586,8 +10669,8 @@ mod tests {
         assert_eq!(u32::from_le_bytes(encoded[64..68].try_into().unwrap()), 1);
         assert_eq!(&encoded[312..316], &[12, 0, 0, 0]);
         assert_eq!(&encoded[396..400], &[6, 1, 2, 0]);
-        assert_eq!(&encoded[504..512], &[1, 1, 0, 0, 2, 1, 0, 0]);
-        assert_eq!(&encoded[512..520], b"PRNG\x01\0\0\0");
+        assert_eq!(&encoded[532..540], &[1, 1, 0, 0, 2, 1, 0, 0]);
+        assert_eq!(&encoded[540..548], b"PRNG\x01\0\0\0");
     }
 
     #[test]
