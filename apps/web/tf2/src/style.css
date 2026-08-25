@@ -75,16 +75,20 @@ html, body, #app { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 .tf2-application:not([data-gameui="loading"]):not([data-gameui="failure"]) .loading-layer { display: none; }
 .gameui-layer { z-index: 10; }
 .hud-layer { z-index: 20; }
+.engineer-layer { z-index: 24; }
+.engineer-layer > *, .engineer-layer * { pointer-events: none !important; }
 .class-selection-layer { z-index: 25; }
 .tf2-application[data-class-selection-visible="false"] .class-selection-layer { display: none; }
-.tf2-application[data-class-selection-visible="true"] .hud-layer { visibility: hidden; }
+.tf2-application[data-class-selection-visible="true"] .hud-layer,
+.tf2-application[data-class-selection-visible="true"] .engineer-layer { visibility: hidden; }
 .team-selection-layer { z-index: 25; }
 .options-layer { z-index: 30; }
 .developer-layer { z-index: 40; }
 
 .tf2-application[data-options-visible="false"] .options-layer { display: none; }
 .tf2-application[data-team-selection-visible="false"] .team-selection-layer { display: none; }
-.tf2-application[data-team-selection-visible="true"] .hud-layer { display: none; }
+.tf2-application[data-team-selection-visible="true"] .hud-layer,
+.tf2-application[data-team-selection-visible="true"] .engineer-layer { display: none; }
 
 .tf2-application[data-gameui="main-menu"] .world-canvas,
 .tf2-application[data-gameui="loading"] .world-canvas,

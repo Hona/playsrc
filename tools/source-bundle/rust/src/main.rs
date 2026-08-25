@@ -1263,13 +1263,14 @@ fn ui_float(
     let Some(value) = ui_parameter(material, name) else {
         return Ok(default);
     };
-    let value = std::str::from_utf8(value).map_err(|_| "UI material float is not UTF-8")?;
-    value.trim().parse::<f32>().map_err(|_| {
-        format!(
-            "UI material float is malformed: {}",
+    let value = playsrc_keyvalues::NumericValue::Bytes(value).get_float();
+    if !value.is_finite() {
+        return Err(format!(
+            "UI material float is not finite: {}",
             String::from_utf8_lossy(name)
-        )
-    })
+        ));
+    }
+    Ok(value)
 }
 
 fn ui_integer(
@@ -2541,6 +2542,28 @@ fn main() -> Result<(), String> {
         "models/weapons/c_models/c_sapper/c_sapper.mdl",
         "models/weapons/v_models/v_pda_spy.mdl",
         "models/weapons/v_models/v_watch_spy.mdl",
+        "models/weapons/c_models/c_engineer_arms.mdl",
+        "models/weapons/c_models/c_wrench/c_wrench.mdl",
+        "models/weapons/c_models/c_pda_engineer/c_pda_engineer.mdl",
+        "models/weapons/c_models/c_toolbox/c_toolbox.mdl",
+        "models/buildables/sentry1_blueprint.mdl",
+        "models/buildables/sentry1.mdl",
+        "models/buildables/sentry1_heavy.mdl",
+        "models/buildables/sentry2.mdl",
+        "models/buildables/sentry2_heavy.mdl",
+        "models/buildables/sentry3.mdl",
+        "models/buildables/sentry3_heavy.mdl",
+        "models/buildables/dispenser_blueprint.mdl",
+        "models/buildables/dispenser.mdl",
+        "models/buildables/dispenser_light.mdl",
+        "models/buildables/dispenser_lvl2.mdl",
+        "models/buildables/dispenser_lvl2_light.mdl",
+        "models/buildables/dispenser_lvl3.mdl",
+        "models/buildables/dispenser_lvl3_light.mdl",
+        "models/buildables/teleporter_blueprint_enter.mdl",
+        "models/buildables/teleporter_blueprint_exit.mdl",
+        "models/buildables/teleporter.mdl",
+        "models/buildables/teleporter_light.mdl",
     ] {
         model_paths.insert(path.to_owned());
     }
@@ -3122,7 +3145,7 @@ fn main() -> Result<(), String> {
         {
             return Err(format!("unsupported selected UI shader: {}", record.shader));
         }
-        if record.detail_texture.is_some() && record.detail_blend_mode != 8 {
+        if record.detail_texture.is_some() && !matches!(record.detail_blend_mode, 8 | 9) {
             return Err(format!(
                 "unsupported selected UI detail blend mode: {}:{}",
                 identity, record.detail_blend_mode
@@ -3563,9 +3586,22 @@ fn main() -> Result<(), String> {
     }
     let ledger_descriptor =
         ObjectDescriptor::new("derived-object", LEDGER_MEDIA_TYPE, &ledger_bytes);
-    let root = cache.join("browser-bundles");
     let generator = std::env::current_exe().map_err(|error| error.to_string())?;
-    let generator_identity = digest(&fs::read(&generator).map_err(|error| error.to_string())?);
+    let generator_bytes = fs::read(&generator).map_err(|error| error.to_string())?;
+    let ui_manifest_bytes = fs::read(root.join("tools/source-bundle/tf2-ui.generated.json"))
+        .map_err(|error| error.to_string())?;
+    let mut producer = Sha256::new();
+    producer.update(
+        format!(
+            "playsrc-source-bundle-producer-v2\0{}\0",
+            generator_bytes.len()
+        )
+        .as_bytes(),
+    );
+    producer.update(&generator_bytes);
+    producer.update(&ui_manifest_bytes);
+    let generator_identity = format!("{:x}", producer.finalize());
+    let root = cache.join("browser-bundles");
     let directory = root.join("generators").join(generator_identity);
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     let ledger_destination = directory.join(format!("{target}.dependencies.json"));

@@ -266,7 +266,15 @@ export async function buildSourceBundle(config: LocalConfig, target: string): Pr
     "source-bundle",
     process.platform === "win32" ? "playsrc-source-bundle.exe" : "playsrc-source-bundle",
   )
-  const generatorSha256 = sha256(await readFile(generatorPath))
+  const [generatorBytes,uiManifestBytes]=await Promise.all([
+    readFile(generatorPath),
+    readFile(path.join(repositoryRoot,"tools/source-bundle/tf2-ui.generated.json")),
+  ])
+  const generatorSha256=new Bun.CryptoHasher("sha256")
+    .update(`playsrc-source-bundle-producer-v2\0${generatorBytes.byteLength}\0`)
+    .update(generatorBytes)
+    .update(uiManifestBytes)
+    .digest("hex")
   const directory = path.join(config.sourceCacheDir, "browser-bundles")
   const snapshotDirectory = path.join(directory, "generators", generatorSha256)
   const paths = Object.freeze({

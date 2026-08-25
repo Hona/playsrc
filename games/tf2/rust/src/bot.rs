@@ -1759,7 +1759,12 @@ pub(crate) fn weapon_damage_type(weapon: Weapon) -> Option<DamageType> {
         | Weapon::Smg
         | Weapon::EngineerPistol
         | Weapon::Revolver => DamageType::BULLET,
-        Weapon::Sapper | Weapon::DisguiseKit | Weapon::InvisibilityWatch => return None,
+        Weapon::Sapper
+        | Weapon::DisguiseKit
+        | Weapon::InvisibilityWatch
+        | Weapon::BuildPda
+        | Weapon::DestroyPda
+        | Weapon::Toolbox => return None,
     })
 }
 

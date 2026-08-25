@@ -338,6 +338,16 @@ struct MapPickup {
 }
 
 #[derive(Clone, Debug)]
+struct BuildingExclusion {
+    model: usize,
+    origin: [f32; 3],
+    team: Option<u8>,
+    allow_sentry: bool,
+    allow_dispenser: bool,
+    allow_teleporters: bool,
+}
+
+#[derive(Clone, Debug)]
 pub struct MapRuntime {
     world: EntityWorld,
     player: EntityHandle,
@@ -345,6 +355,7 @@ pub struct MapRuntime {
     source_handles: BTreeMap<u32, EntityHandle>,
     volumes: Vec<Volume>,
     pickups: Vec<MapPickup>,
+    building_exclusions: Vec<BuildingExclusion>,
     teleports: BTreeMap<EntityHandle, TeleportLink>,
     movers: BTreeMap<EntityHandle, ActiveMover>,
     game_filters: BTreeMap<Vec<u8>, GameFilter>,
@@ -596,6 +607,7 @@ impl MapRuntime {
         };
         let mut volumes = Vec::new();
         let mut pickups = Vec::new();
+        let mut building_exclusions = Vec::new();
         let mut teleports = BTreeMap::new();
         for entity in &graph.entities {
             if let Some(definition) = entity.classname.as_deref().and_then(map_pickup_definition) {
@@ -677,6 +689,17 @@ impl MapRuntime {
                         },
                     );
                 }
+            } else if class(entity, b"func_nobuild") && !boolean(entity, b"StartDisabled", false) {
+                building_exclusions.push(BuildingExclusion {
+                    model: entity
+                        .bsp_model_index
+                        .ok_or_else(|| invalid(entity.index))?,
+                    origin: vector(entity, b"origin", Some([0.0; 3]))?,
+                    team: source_team(entity)?,
+                    allow_sentry: boolean(entity, b"AllowSentry", false),
+                    allow_dispenser: boolean(entity, b"AllowDispenser", false),
+                    allow_teleporters: boolean(entity, b"AllowTeleporters", false),
+                });
             } else if class(entity, b"func_regenerate") {
                 counts.regenerate_zones += 1;
                 let source = u32::try_from(entity.index).map_err(|_| invalid(entity.index))?;
@@ -763,6 +786,7 @@ impl MapRuntime {
             source_handles,
             volumes,
             pickups,
+            building_exclusions,
             teleports,
             movers: BTreeMap::new(),
             game_filters,
@@ -1019,6 +1043,55 @@ impl MapRuntime {
             .ok_or(MapError::MissingEntity(actor))?;
         self.actor_handles.insert(actor, handle);
         Ok(handle)
+    }
+
+    pub(crate) fn building_position_allowed<W: GameplayWorld>(
+        &self,
+        world: &W,
+        object: crate::building::Object,
+        team: crate::PlayerTeam,
+        position: [f32; 3],
+    ) -> Result<bool, MoveError> {
+        let point = Hull {
+            mins: [0.0; 3],
+            maxs: [0.0; 3],
+        };
+        let center = [
+            position[0],
+            position[1],
+            position[2] + object.hull().maxs[2] * 0.5,
+        ];
+        for value in &self.building_exclusions {
+            if value
+                .team
+                .is_some_and(|number| number != team.source_number())
+            {
+                continue;
+            }
+            let allowed = match object.kind {
+                crate::building::Kind::Sentry => value.allow_sentry,
+                crate::building::Kind::Dispenser => value.allow_dispenser,
+                crate::building::Kind::Teleporter => value.allow_teleporters,
+            };
+            if !allowed {
+                for test in [position, center] {
+                    if world.overlaps_model_hull(value.model, value.origin, test, point)? {
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+        for volume in &self.volumes {
+            if !matches!(volume.kind, VolumeKind::RespawnRoom { enabled: true, .. }) {
+                continue;
+            }
+            for test in [position, center] {
+                if world.overlaps_model_hull(volume.model, volume.origin, test, point)? {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
     }
 
     pub(crate) fn entity_revision(&self) -> u64 {

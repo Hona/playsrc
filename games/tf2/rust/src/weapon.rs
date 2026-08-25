@@ -152,7 +152,7 @@ impl WeaponProfile {
                 center_fire_projectile: false,
                 flip_viewmodel: false,
             },
-            Weapon::Fists => Self {
+            Weapon::Fists | Weapon::BuildPda | Weapon::DestroyPda | Weapon::Toolbox => Self {
                 maximum_clip: 0,
                 maximum_reserve: 0,
                 fire_delay: 0.8,

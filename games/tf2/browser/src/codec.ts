@@ -5,7 +5,15 @@ const MOVEMENT_BYTES = 96
 
 export type Tf2Class = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
 export type Tf2Team = 0 | 1 | 2 | 3
-export type Tf2Weapon = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 40 | 41 | 42 | 50 | 51 | 52 | 53 | 54
+export type Tf2Weapon = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 40 | 41 | 42 | 43 | 44 | 45 | 50 | 51 | 52 | 53 | 54
+export type Tf2BuildingKind = 0 | 1 | 2
+export type Tf2BuildingMode = 0 | 1
+export type Tf2BuildingObject = Readonly<{ kind: Tf2BuildingKind; mode: Tf2BuildingMode }>
+export type Tf2BuildingRequest = Readonly<
+  | { action: "build" | "destroy"; object: Tf2BuildingObject }
+  | { action: "rotate" | "cancel" }
+  | { action: "hurt"; amount: number }
+>
 export type MovementMode = 0 | 1
 export type ProjectileKind = 1 | 2
 export type ProjectileState = 1 | 2 | 3
@@ -124,6 +132,7 @@ export type Command = Readonly<{
   activateEntity?: number
   physicsResults?: readonly ProjectilePhysicsResult[]
   bot?: BotRequest
+  building?: Tf2BuildingRequest
 }>
 
 export type MovementSnapshot = Readonly<{
@@ -557,6 +566,31 @@ export type SpySnapshot = Readonly<{
   noAttackUntil: number
 }>
 
+export type BuildingPlacement = Readonly<{ object: Tf2BuildingObject; position: readonly [number, number, number]; yawDegrees: number; valid: boolean }>
+export type BuildingSnapshot = Readonly<{
+  identity: number
+  owner: number
+  object: Tf2BuildingObject
+  team: Tf2Team
+  phase: 0 | 1 | 2 | 3
+  level: 1 | 2 | 3
+  health: number
+  maximumHealth: number
+  upgradeMetal: number
+  shells: number
+  maximumShells: number
+  rockets: number
+  maximumRockets: number
+  dispenserMetal: number
+  target: number | null
+  position: readonly [number, number, number]
+  yawDegrees: number
+  construction: number
+  rechargeEndTick: bigint | null
+  startedTick: bigint
+  timesUsed: number
+}>
+
 export type Snapshot = Readonly<{
   tick: bigint
   class: Tf2Class
@@ -608,6 +642,8 @@ export type Snapshot = Readonly<{
   authorityBlockers: readonly AuthorityBlocker[]
   bots: readonly BotSnapshot[]
   pickups: readonly MapPickup[]
+  buildings: readonly BuildingSnapshot[]
+  placement: BuildingPlacement | null
   metal: number
   scoreboard: ScoreboardSnapshot
 }>
@@ -691,7 +727,7 @@ export function encodeCommand(command: Command): ArrayBuffer {
     throw new Tf2CodecError("command team selector is invalid")
   }
 
-  if (command.selectWeapon !== undefined && (!Number.isInteger(command.selectWeapon) || command.selectWeapon < 1 || command.selectWeapon > 18 && (command.selectWeapon < 40 || command.selectWeapon > 42) && (command.selectWeapon < 50 || command.selectWeapon > 54))) {
+  if (command.selectWeapon !== undefined && (!Number.isInteger(command.selectWeapon) || command.selectWeapon < 1 || command.selectWeapon > 18 && (command.selectWeapon < 40 || command.selectWeapon > 45) && (command.selectWeapon < 50 || command.selectWeapon > 54))) {
 
     throw new Tf2CodecError("command weapon selector is invalid")
   }
@@ -723,7 +759,22 @@ export function encodeCommand(command: Command): ArrayBuffer {
   data.set([0x50, 0x43, 0x4d, 0x44])
   view.setUint32(4, 6, true)
   scalars.forEach((value, index) => view.setFloat32(8 + index * 4, value, true))
+  let buildingFlags = 0
+  if (command.building) {
+    const request = command.building
+    if (request.action === "build" || request.action === "destroy") {
+      if (![0, 1, 2].includes(request.object.kind) || ![0, 1].includes(request.object.mode)
+        || (request.object.kind !== 1 && request.object.mode !== 0)) throw new Tf2CodecError("command building object is invalid")
+      buildingFlags = ((request.action === "build" ? 1 : 2) << 16) | (request.object.kind << 19) | (request.object.mode << 21)
+    } else if (request.action === "rotate" || request.action === "cancel") {
+      buildingFlags = (request.action === "rotate" ? 3 : 4) << 16
+    } else if (request.action === "hurt") {
+      if (!Number.isSafeInteger(request.amount) || request.amount < 0 || request.amount > 0xffff) throw new Tf2CodecError("command building damage is invalid")
+      buildingFlags = 0x8000 | (request.amount << 16)
+    }
+  }
   const flags =
+    buildingFlags |
     Number(command.jump) |
     (Number(command.crouch) << 1) |
     (Number(command.speedButton ?? false) << 2) |
@@ -1280,7 +1331,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
   const buffer = data.buffer as ArrayBuffer
   const base = data.byteOffset
   const view = new DataView(buffer, base, data.byteLength)
-  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 17)
+  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 18)
     throw new Tf2CodecError("snapshot identity is invalid")
   const tf2Class = data[16]
   const team = data[17]
@@ -1289,7 +1340,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
   if (
     (tf2Class === undefined || tf2Class < 1 || tf2Class > 9) ||
     (team === undefined || team > 3) ||
-    (weapon === undefined || weapon > 18 && (weapon < 40 || weapon > 42) && (weapon < 50 || weapon > 54)) ||
+    (weapon === undefined || weapon > 18 && (weapon < 40 || weapon > 45) && (weapon < 50 || weapon > 54)) ||
     (team === 0 && lifecycle !== 3) ||
     (team === 1 && lifecycle !== 4) ||
     ((team === 2 || team === 3) && lifecycle !== 1 && lifecycle !== 2) ||
@@ -1358,7 +1409,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
       itemWeapon === undefined ||
       itemWeapon < 1 ||
 
-      (itemWeapon > 18 && (itemWeapon < 40 || itemWeapon > 42) && (itemWeapon < 50 || itemWeapon > 54)) ||
+      (itemWeapon > 18 && (itemWeapon < 40 || itemWeapon > 45) && (itemWeapon < 50 || itemWeapon > 54)) ||
 
       reload === undefined ||
       reload > 3 ||
@@ -1636,7 +1687,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     const itemWeapon = data[item + 8]
     const activity = data[item + 9]
 
-    if (itemWeapon === undefined || itemWeapon < 1 || itemWeapon > 18 && (itemWeapon < 40 || itemWeapon > 42) && (itemWeapon < 50 || itemWeapon > 54) || activity === undefined || activity < 1 || activity > 7 ||
+    if (itemWeapon === undefined || itemWeapon < 1 || itemWeapon > 18 && (itemWeapon < 40 || itemWeapon > 45) && (itemWeapon < 50 || itemWeapon > 54) || activity === undefined || activity < 1 || activity > 7 ||
 
       !data.subarray(item + 10, item + 16).every((value) => value === 0)) {
       throw new Tf2CodecError("activity record is invalid")
@@ -2018,6 +2069,36 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
   const scoreboard: ScoreboardSnapshot = Object.freeze({
     redScore, blueScore, redCount, blueCount, players: Object.freeze(scoreboardPlayers),
   })
+  requireBytes(4, "building header")
+  const buildingCount = data[at]!, hasPlacement = data[at + 1]!
+  at += 4
+  if (buildingCount > 4 || hasPlacement > 1 || data[at - 2] !== 0 || data[at - 1] !== 0) throw new Tf2CodecError("building header is invalid")
+  let placement: BuildingPlacement | null = null
+  if (hasPlacement === 1) {
+    requireBytes(20, "building placement")
+    const kind = data[at]!, mode = data[at + 1]!, valid = data[at + 2]!
+    const position = vector(view, at + 4), yawDegrees = view.getFloat32(at + 16, true)
+    if (kind > 2 || mode > 1 || (kind !== 1 && mode !== 0) || valid > 1 || data[at + 3] !== 0 || !finite([...position, yawDegrees])) throw new Tf2CodecError("building placement is invalid")
+    placement = Object.freeze({ object: Object.freeze({ kind: kind as Tf2BuildingKind, mode: mode as Tf2BuildingMode }), position, yawDegrees, valid: valid === 1 })
+    at += 20
+  }
+  const buildings: BuildingSnapshot[] = []
+  for (let index = 0; index < buildingCount; index += 1) {
+    requireBytes(76, "building")
+    const identity = view.getUint32(at, true), owner = view.getUint32(at + 4, true)
+    const kind = data[at + 8]!, mode = data[at + 9]!, buildingTeam = data[at + 10]!, phase = data[at + 11]!, level = data[at + 12]!
+    const maximumHealth = view.getUint16(at + 14, true), buildingHealth = view.getFloat32(at + 16, true)
+    const target = view.getUint32(at + 32, true), position = vector(view, at + 36), yawDegrees = view.getFloat32(at + 48, true), construction = view.getFloat32(at + 52, true)
+    if (kind > 2 || mode > 1 || (kind !== 1 && mode !== 0) || (buildingTeam !== 2 && buildingTeam !== 3) || phase > 3 || level < 1 || level > 3 || data[at + 13] !== 0
+      || !finite([buildingHealth, ...position, yawDegrees, construction]) || buildingHealth <= 0 || buildingHealth > maximumHealth || construction < 0 || construction > 1) {
+      throw new Tf2CodecError("building snapshot record is invalid")
+    }
+    const rechargeEndTick = view.getBigUint64(at + 56, true)
+    buildings.push(Object.freeze({ identity, owner, object: Object.freeze({ kind: kind as Tf2BuildingKind, mode: mode as Tf2BuildingMode }), team: buildingTeam, phase: phase as BuildingSnapshot["phase"], level: level as BuildingSnapshot["level"], health: buildingHealth, maximumHealth,
+      upgradeMetal: view.getUint16(at + 20, true), shells: view.getUint16(at + 22, true), maximumShells: view.getUint16(at + 24, true), rockets: view.getUint16(at + 26, true), maximumRockets: view.getUint16(at + 28, true), dispenserMetal: view.getUint16(at + 30, true),
+      target: target === 0xffff_ffff ? null : target, position, yawDegrees, construction, rechargeEndTick: rechargeEndTick === 0xffff_ffff_ffff_ffffn ? null : rechargeEndTick, startedTick: view.getBigUint64(at + 64, true), timesUsed: view.getUint32(at + 72, true) }))
+    at += 76
+  }
   const round = decodeRound(buffer, base + at, bytes.byteLength - at)
   at = bytes.byteLength
   if(entityPresentation.collisionRevision!==collisionSnapshot.identity)throw new Tf2CodecError("Entity presentation revision join is invalid")
@@ -2078,6 +2159,8 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     authorityBlockers: Object.freeze(authorityBlockers),
     bots: Object.freeze(bots),
     pickups: Object.freeze(pickups),
+    buildings: Object.freeze(buildings),
+    placement,
     metal,
     scoreboard,
   })
