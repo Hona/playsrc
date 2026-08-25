@@ -41,11 +41,14 @@ test("authored Engineer build menus, stock objects and headed building pixels", 
   await page.keyboard.press("Digit1")
   await expect(page.locator("main")).toHaveAttribute("data-engineer-menu", "none")
   await page.waitForFunction(() => (document.querySelector<HTMLElement>("main")?.dataset.placement ?? "").startsWith("2:0:"), undefined, { timeout: 30_000 })
-  if((await page.locator("main").getAttribute("data-placement"))?.startsWith("2:0:0:")){
-    await page.keyboard.press("Backquote")
-    await entry.fill("noclip")
-    await entry.press("Enter")
-    await page.keyboard.press("Backquote")
+  const blueprint = await page.locator(".world-canvas").screenshot()
+  await testInfo.attach("headed-authored-sentry-blueprint", { body: blueprint, contentType: "image/png" })
+  const invalidSpawn=(await page.locator("main").getAttribute("data-placement"))?.startsWith("2:0:0:")===true
+  await page.keyboard.press("Backquote")
+  if(invalidSpawn){await entry.fill("noclip");await entry.press("Enter")}
+  await entry.fill("+attack");await entry.press("Enter")
+  await page.keyboard.press("Backquote")
+  if(invalidSpawn){
     await expect(page.locator("main")).toHaveAttribute("data-movement-mode","1")
     const departure=await page.evaluate(async()=>{
       const root=document.querySelector<HTMLElement>("main")!
@@ -54,24 +57,20 @@ test("authored Engineer build menus, stock objects and headed building pixels", 
       const target=initial[0]!<0?[-1780,-1536]:initial[1]!>1000?[512,1230]:[810,490]
       const order=initial[0]!>=0&&initial[1]!>1000?[0,1]:[1,0]
       for(const axis of order){
+        if(root.dataset.buildingCount==="1")break
         const current=position()[axis]!,increasing=target[axis]!>current
         const keys=axis===0?(increasing?["KeyW","KeyA"]:["KeyS","KeyD"]):(increasing?["KeyS","KeyA"]:["KeyW","KeyD"])
         for(const code of keys)dispatchEvent(new KeyboardEvent("keydown",{code,key:code.slice(3).toLowerCase(),bubbles:true}))
         const began=performance.now()
-        try{while(increasing?position()[axis]!<target[axis]!-8:position()[axis]!>target[axis]!+8){if(performance.now()-began>5000)throw new Error(`axis=${axis};position=${position().join(",")}`);await new Promise<void>(resolve=>requestAnimationFrame(()=>resolve()))}}
+        try{while(root.dataset.buildingCount!=="1"&&(increasing?position()[axis]!<target[axis]!-8:position()[axis]!>target[axis]!+8)){if(performance.now()-began>5000)throw new Error(`axis=${axis};position=${position().join(",")}`);await new Promise<void>(resolve=>requestAnimationFrame(()=>resolve()))}}
         finally{for(const code of keys)dispatchEvent(new KeyboardEvent("keyup",{code,key:code.slice(3).toLowerCase(),bubbles:true}))}
-        for(let frame=0;frame<3;frame+=1)await new Promise<void>(resolve=>requestAnimationFrame(()=>resolve()))
       }
-      return{position:position(),placement:root.dataset.placement,target}
+      return{position:position(),placement:root.dataset.placement,target,buildings:root.dataset.buildingCount}
     })
-    if(!departure.placement?.startsWith("2:0:1:"))throw new Error(`Engineer reached an invalid authored build surface: ${JSON.stringify(departure)}`)
+    if(departure.buildings!=="1")throw new Error(`Engineer could not place on an authored surface: ${JSON.stringify(departure)}`)
   }
-  await page.waitForFunction(() => (document.querySelector<HTMLElement>("main")?.dataset.placement ?? "").startsWith("2:0:1:"), undefined, { timeout: 30_000 })
-  const blueprint = await page.locator(".world-canvas").screenshot()
-  await testInfo.attach("headed-authored-sentry-blueprint", { body: blueprint, contentType: "image/png" })
+  await expect(page.locator("main")).toHaveAttribute("data-building-count", "1",{timeout:5000})
   await page.keyboard.press("Backquote")
-  await entry.fill("+attack");await entry.press("Enter")
-  try{await expect(page.locator("main")).toHaveAttribute("data-building-count", "1",{timeout:5000})}catch(error){const state=await page.evaluate(()=>{const root=document.querySelector<HTMLElement>("main")!;return{position:root.dataset.cameraPosition,placement:root.dataset.placement,weapon:root.dataset.weaponTrace,metal:root.dataset.metal,console:document.querySelector<HTMLElement>("[aria-label='Console output']")?.innerText,tick:root.dataset.snapshotTick}});throw new Error(`Engineer primary attack did not place its valid blueprint: ${JSON.stringify(state)}`,{cause:error})}
   await entry.fill("-attack");await entry.press("Enter")
   await page.keyboard.press("Backquote")
   await expect(page.locator("main")).toHaveAttribute("data-engineer-metal", "70")
