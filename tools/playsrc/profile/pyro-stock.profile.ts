@@ -4,6 +4,7 @@ import path from "node:path"
 import { expect, test } from "./application-test"
 import { loadLocalConfig } from "../src/config"
 import { chooseTf2Team } from "./team-selection-evidence"
+import { Tf2BrowserAutomation } from "../../../apps/web/tf2/src/browser-automation"
 
 const SAMPLE_MILLISECONDS = 6_000
 
@@ -52,11 +53,19 @@ test("headed stock Pyro weapons preserve authored flame, compression blast, shot
   const canvas = page.locator("canvas.world-canvas")
   await expect(canvas).toBeVisible()
   const before = await canvas.screenshot()
-  await canvas.click({ position: { x: 640, y: 360 } })
-  await page.waitForFunction(() => document.pointerLockElement?.classList.contains("world-canvas"), undefined, { timeout: 5_000, polling: 20 })
+  const automation = new Tf2BrowserAutomation({
+    evaluate: async <T>(expression: string): Promise<T> => page.evaluate(expression) as Promise<T>,
+    press: async (key) => { await page.keyboard.press(key) },
+    click: async (selector) => { await page.locator(selector).click() },
+    focus: async (selector) => { await page.locator(selector).focus() },
+    fill: async (selector, value) => { await page.locator(selector).fill(value) },
+    waitFor: async (expression, timeout) => { await page.waitForFunction(expression, undefined, { timeout }) },
+    activateCurrentTab: async () => { await page.bringToFront() },
+  })
+  const pointer = await automation.pointer.capture("Pyro stock weapons")
   const started = await page.evaluate(() => performance.now())
   const startTick = Number((await page.locator("main").getAttribute("data-snapshot-tick")) ?? "0")
-  await page.mouse.down({ button: "left" })
+  await automation.player.pressPrimaryFire()
   await page.waitForFunction(() => {
     const main = document.querySelector<HTMLElement>("main")
     return main?.dataset.phase === "Failed" || main?.dataset.weaponTrace?.includes("15:0/19")
@@ -74,7 +83,7 @@ test("headed stock Pyro weapons preserve authored flame, compression blast, shot
   }))
   expect(flame.particles).toBeGreaterThan(0)
   expect(flame.audio).toContain("Weapon_FlameThrower.Fire")
-  await page.mouse.up({ button: "left" })
+  await automation.player.releasePrimaryFire()
 
   const beforeAirblast = Number(flame.weapon?.match(/15:0\/(\d+)/)?.[1] ?? "0")
   await page.mouse.click(640, 360, { button: "right" })
@@ -118,6 +127,7 @@ test("headed stock Pyro weapons preserve authored flame, compression blast, shot
     schema: "playsrc-tf2-pyro-stock-profile-v1",
     elapsedMilliseconds: Number(elapsed.toFixed(2)),
     ticksPerSecond: Number(ticksPerSecond.toFixed(2)),
+    pointer,
     initial,
     flame,
     final,
