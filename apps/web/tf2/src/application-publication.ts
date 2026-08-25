@@ -156,6 +156,11 @@ const attributes: readonly PublicationBinding[] = Object.freeze([
   attribute("pickup-count", "pickupCount"),
   attribute("pickup-probe", "pickupProbe"),
   attribute("metal", "metal"),
+  attribute("building-count", "buildingCount"),
+  attribute("building-probe", "buildingProbe"),
+  attribute("engineer-metal", "engineerMetal"),
+  attribute("engineer-menu", "engineerMenu"),
+  attribute("placement", "placementProbe"),
   attribute("unsupported-state", "unsupportedState"),
   attribute("blockers", "blockers", (view) => JSON.stringify(view.blockers)),
 ])

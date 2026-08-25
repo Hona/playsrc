@@ -35,9 +35,6 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
     };
     let flags = u32::from_le_bytes(bytes[28..32].try_into().ok()?);
     let select = u32::from_le_bytes(bytes[32..36].try_into().ok()?);
-    if flags & !0x7fff != 0 {
-        return None;
-    }
     let disguise = match (((flags >> 9) & 15) as u8, ((flags >> 13) & 3) as u8) {
         (0, 0) => None,
         (class, team @ (2 | 3)) => Some(playsrc_tf2::spy::Disguise {
@@ -49,6 +46,48 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
             },
         }),
         _ => return None,
+    };
+    let hurt = flags & 0x8000 != 0;
+    let operation = ((flags >> 16) & 7) as u8;
+    let object_kind = ((flags >> 19) & 3) as u8;
+    let object_mode = ((flags >> 21) & 1) as u8;
+    if !hurt && flags & 0xffc0_0000 != 0 {
+        return None;
+    }
+    let object = || -> Option<playsrc_tf2::building::Object> {
+        let kind = match object_kind {
+            0 => playsrc_tf2::building::Kind::Dispenser,
+            1 => playsrc_tf2::building::Kind::Teleporter,
+            2 => playsrc_tf2::building::Kind::Sentry,
+            _ => return None,
+        };
+        if kind != playsrc_tf2::building::Kind::Teleporter && object_mode != 0 {
+            return None;
+        }
+        Some(playsrc_tf2::building::Object {
+            kind,
+            mode: if object_mode == 0 {
+                playsrc_tf2::building::Mode::Entrance
+            } else {
+                playsrc_tf2::building::Mode::Exit
+            },
+        })
+    };
+    let building_request = if hurt {
+        Some(playsrc_tf2::building::Request::Hurt((flags >> 16) as u16))
+    } else {
+        match operation {
+            0 if object_kind == 0 && object_mode == 0 => None,
+            1 => Some(playsrc_tf2::building::Request::Build(object()?)),
+            2 => Some(playsrc_tf2::building::Request::Destroy(object()?)),
+            3 if object_kind == 0 && object_mode == 0 => {
+                Some(playsrc_tf2::building::Request::Rotate)
+            }
+            4 if object_kind == 0 && object_mode == 0 => {
+                Some(playsrc_tf2::building::Request::Cancel)
+            }
+            _ => return None,
+        }
     };
     let (select_class, select_random_class) = match (select & 0xff) as u8 {
         0 => (None, false),
@@ -85,6 +124,9 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
 
         15 => Some(playsrc_tf2::Weapon::Flamethrower),
         16 => Some(playsrc_tf2::Weapon::FireAxe),
+        43 => Some(playsrc_tf2::Weapon::BuildPda),
+        44 => Some(playsrc_tf2::Weapon::DestroyPda),
+        45 => Some(playsrc_tf2::Weapon::Toolbox),
         _ => return None,
     };
     let select_team = match (select >> 16) & 0xff {
@@ -161,6 +203,7 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
         mode_request,
         activate_entity: (target != u32::MAX).then_some(target),
         bot_request,
+        building_request,
     };
     if [
         command.movement.forward,

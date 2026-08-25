@@ -18,6 +18,7 @@ use std::{
 static SIMULATION_ERROR: AtomicU32 = AtomicU32::new(0);
 static SIMULATION_ERROR_DETAIL: OnceLock<Mutex<String>> = OnceLock::new();
 static GAME_ADVANCE_ERROR: AtomicU32 = AtomicU32::new(0);
+static GAME_ADVANCE_DETAIL: OnceLock<Mutex<String>> = OnceLock::new();
 
 #[cfg(target_arch = "wasm32")]
 #[link(wasm_import_module = "playsrc_metrics")]
@@ -487,8 +488,12 @@ impl playsrc_simulation::Simulation for Tf2Simulation {
             return Err(playsrc_simulation::SimulationError::new(
                 "tf2-transition",
                 format!(
-                    "TF2 gameplay transition failed at game-advance:{}",
-                    GAME_ADVANCE_ERROR.load(Ordering::Relaxed)
+                    "TF2 gameplay transition failed at game-advance:{}{}",
+                    GAME_ADVANCE_ERROR.load(Ordering::Relaxed),
+                    GAME_ADVANCE_DETAIL
+                        .get_or_init(|| Mutex::new(String::new()))
+                        .lock()
+                        .expect("game advance detail")
                 ),
             ));
         }
@@ -3435,6 +3440,11 @@ pub unsafe extern "C" fn playsrc_game_advance(
     tick_count: u32,
 ) -> u32 {
     GAME_ADVANCE_ERROR.store(0, Ordering::Relaxed);
+    GAME_ADVANCE_DETAIL
+        .get_or_init(|| Mutex::new(String::new()))
+        .lock()
+        .expect("game advance detail")
+        .clear();
     macro_rules! fail {
         ($code:expr) => {{
             GAME_ADVANCE_ERROR.store($code, Ordering::Relaxed);
@@ -3603,18 +3613,39 @@ pub unsafe extern "C" fn playsrc_game_advance(
                 let Some(records) = mover_records(&frame) else {
                     fail!(13);
                 };
+                let mut superseded = false;
+                let mut consumed_records = 0;
                 for record in &records {
                     match candidate.apply_mover_results(std::slice::from_ref(record)) {
-                        Ok(phase) => mover_phase.append(phase),
-                        Err(_) => fail!(14),
+                        Ok(phase) => {
+                            consumed_records += 1;
+                            superseded |= phase.mover_requests.iter().any(|replacement| {
+                                replacement.entity == record.entity
+                                    && replacement.request_id != record.request_id
+                            });
+                            mover_phase.append(phase);
+                            if superseded {
+                                break;
+                            }
+                        }
+                        Err(error) => {
+                            *GAME_ADVANCE_DETAIL
+                                .get_or_init(|| Mutex::new(String::new()))
+                                .lock()
+                                .expect("game advance detail") = format!(
+                                "; mover entity={} request={} kind={:?} error={error:?}",
+                                record.entity, record.request_id, record.kind
+                            );
+                            fail!(14)
+                        }
                     }
                 }
                 for result in &frame.results {
                     transforms.insert(result.identity, result.transform);
                     velocities.insert(result.identity, result.trajectory_velocity);
                 }
-                consumed_mover_results.extend(records);
-                if frame.next.active_count() != 0 {
+                consumed_mover_results.extend(records.into_iter().take(consumed_records));
+                if frame.next.active_count() != 0 && !superseded {
                     next_pushers.insert(request_id, frame.next);
                 }
             }
@@ -4063,7 +4094,7 @@ fn encode_snapshot(
     encode_movement_tick(&mut movement_tick_bytes, movement_tick, MAX)?;
     let mut out = Vec::new();
     extend(&mut out, b"PSSN", MAX)?;
-    u32_field(&mut out, 17, MAX)?;
+    u32_field(&mut out, 18, MAX)?;
     u64_field(&mut out, snapshot.tick, MAX)?;
     extend(
         &mut out,
@@ -4615,6 +4646,80 @@ fn encode_snapshot(
         u32_field(&mut out, player.counters.damage, MAX)?;
         extend(&mut out, &[u8::try_from(name.len()).ok()?], MAX)?;
         extend(&mut out, name, MAX)?;
+    }
+    extend(
+        &mut out,
+        &[
+            u8::try_from(snapshot.buildings.len()).ok()?,
+            u8::from(snapshot.placement.is_some()),
+            0,
+            0,
+        ],
+        MAX,
+    )?;
+    if let Some(placement) = snapshot.placement {
+        extend(
+            &mut out,
+            &[
+                placement.object.kind as u8,
+                placement.object.mode as u8,
+                u8::from(placement.valid),
+                0,
+            ],
+            MAX,
+        )?;
+        floats(
+            &mut out,
+            placement
+                .position
+                .into_iter()
+                .chain([placement.yaw_degrees]),
+            MAX,
+        )?;
+    }
+    for building in &snapshot.buildings {
+        u32_field(&mut out, building.identity, MAX)?;
+        u32_field(&mut out, building.owner, MAX)?;
+        extend(
+            &mut out,
+            &[
+                building.object.kind as u8,
+                building.object.mode as u8,
+                team_code(building.team),
+                building.phase as u8,
+                building.level,
+                0,
+            ],
+            MAX,
+        )?;
+        extend(&mut out, &building.maximum_health.to_le_bytes(), MAX)?;
+        f32_field(&mut out, building.health, MAX)?;
+        for value in [
+            building.upgrade_metal,
+            building.shells,
+            building.maximum_shells,
+            building.rockets,
+            building.maximum_rockets,
+            building.dispenser_metal,
+        ] {
+            extend(&mut out, &value.to_le_bytes(), MAX)?;
+        }
+        u32_field(&mut out, building.target.unwrap_or(u32::MAX), MAX)?;
+        floats(
+            &mut out,
+            building
+                .position
+                .into_iter()
+                .chain([building.yaw_degrees, building.construction]),
+            MAX,
+        )?;
+        u64_field(
+            &mut out,
+            building.recharge_end_tick.unwrap_or(u64::MAX),
+            MAX,
+        )?;
+        u64_field(&mut out, building.started_tick, MAX)?;
+        u32_field(&mut out, building.times_used, MAX)?;
     }
     encode_round(&mut out, &snapshot.round, MAX)?;
     Some(out)
@@ -5512,6 +5617,9 @@ fn weapon_code(weapon: playsrc_tf2::Weapon) -> u8 {
         playsrc_tf2::Weapon::Sapper => 52,
         playsrc_tf2::Weapon::DisguiseKit => 53,
         playsrc_tf2::Weapon::InvisibilityWatch => 54,
+        playsrc_tf2::Weapon::BuildPda => 43,
+        playsrc_tf2::Weapon::DestroyPda => 44,
+        playsrc_tf2::Weapon::Toolbox => 45,
     }
 }
 fn projectile_code(kind: playsrc_tf2::ProjectileKind) -> u8 {
@@ -6561,6 +6669,29 @@ fn compile_collision_snapshot(
             }
             input
         })
+        .chain(
+            latest
+                .into_iter()
+                .flat_map(|snapshot| snapshot.buildings.iter())
+                .map(|building| playsrc_collision::ObjectInput {
+                    identity: u64::from(building.identity),
+                    role: playsrc_collision::ObjectRole::Entity,
+                    enabled: true,
+                    volume_contents: false,
+                    transform: playsrc_collision::Transform {
+                        origin: building.position,
+                        angles: [0.0, building.yaw_degrees, 0.0],
+                    },
+                    linear_velocity: [0.0; 3],
+                    angular_velocity: [0.0; 3],
+                    collision_group: 0,
+                    contents: playsrc_collision::CONTENTS_SOLID,
+                    surface_flags: 0,
+                    shape: playsrc_collision::SnapshotShape::OrientedBox {
+                        bounds: building.object.hull(),
+                    },
+                }),
+        )
         .collect();
     playsrc_collision::Snapshot::compile(
         world,
@@ -9185,6 +9316,28 @@ fn load_cached_presentation(
         "models/weapons/c_models/c_sapper/c_sapper.mdl".to_owned(),
         "models/weapons/v_models/v_pda_spy.mdl".to_owned(),
         "models/weapons/v_models/v_watch_spy.mdl".to_owned(),
+        "models/weapons/c_models/c_engineer_arms.mdl".to_owned(),
+        "models/weapons/c_models/c_wrench/c_wrench.mdl".to_owned(),
+        "models/weapons/c_models/c_pda_engineer/c_pda_engineer.mdl".to_owned(),
+        "models/weapons/c_models/c_toolbox/c_toolbox.mdl".to_owned(),
+        "models/buildables/sentry1_blueprint.mdl".to_owned(),
+        "models/buildables/sentry1.mdl".to_owned(),
+        "models/buildables/sentry1_heavy.mdl".to_owned(),
+        "models/buildables/sentry2.mdl".to_owned(),
+        "models/buildables/sentry2_heavy.mdl".to_owned(),
+        "models/buildables/sentry3.mdl".to_owned(),
+        "models/buildables/sentry3_heavy.mdl".to_owned(),
+        "models/buildables/dispenser_blueprint.mdl".to_owned(),
+        "models/buildables/dispenser.mdl".to_owned(),
+        "models/buildables/dispenser_light.mdl".to_owned(),
+        "models/buildables/dispenser_lvl2.mdl".to_owned(),
+        "models/buildables/dispenser_lvl2_light.mdl".to_owned(),
+        "models/buildables/dispenser_lvl3.mdl".to_owned(),
+        "models/buildables/dispenser_lvl3_light.mdl".to_owned(),
+        "models/buildables/teleporter_blueprint_enter.mdl".to_owned(),
+        "models/buildables/teleporter_blueprint_exit.mdl".to_owned(),
+        "models/buildables/teleporter.mdl".to_owned(),
+        "models/buildables/teleporter_light.mdl".to_owned(),
     ]);
     let expected = graph
         .entities
@@ -9430,6 +9583,28 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
         "models/weapons/c_models/c_sapper/c_sapper.mdl".to_owned(),
         "models/weapons/v_models/v_pda_spy.mdl".to_owned(),
         "models/weapons/v_models/v_watch_spy.mdl".to_owned(),
+        "models/weapons/c_models/c_engineer_arms.mdl".to_owned(),
+        "models/weapons/c_models/c_wrench/c_wrench.mdl".to_owned(),
+        "models/weapons/c_models/c_pda_engineer/c_pda_engineer.mdl".to_owned(),
+        "models/weapons/c_models/c_toolbox/c_toolbox.mdl".to_owned(),
+        "models/buildables/sentry1_blueprint.mdl".to_owned(),
+        "models/buildables/sentry1.mdl".to_owned(),
+        "models/buildables/sentry1_heavy.mdl".to_owned(),
+        "models/buildables/sentry2.mdl".to_owned(),
+        "models/buildables/sentry2_heavy.mdl".to_owned(),
+        "models/buildables/sentry3.mdl".to_owned(),
+        "models/buildables/sentry3_heavy.mdl".to_owned(),
+        "models/buildables/dispenser_blueprint.mdl".to_owned(),
+        "models/buildables/dispenser.mdl".to_owned(),
+        "models/buildables/dispenser_light.mdl".to_owned(),
+        "models/buildables/dispenser_lvl2.mdl".to_owned(),
+        "models/buildables/dispenser_lvl2_light.mdl".to_owned(),
+        "models/buildables/dispenser_lvl3.mdl".to_owned(),
+        "models/buildables/dispenser_lvl3_light.mdl".to_owned(),
+        "models/buildables/teleporter_blueprint_enter.mdl".to_owned(),
+        "models/buildables/teleporter_blueprint_exit.mdl".to_owned(),
+        "models/buildables/teleporter.mdl".to_owned(),
+        "models/buildables/teleporter_light.mdl".to_owned(),
     ]);
     for entity in &graph.entities {
         if let Some(model) = authored_entity_model(entity)? {
@@ -9485,6 +9660,8 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
                     | "models/weapons/c_models/c_sapper/c_sapper.mdl"
                     | "models/weapons/v_models/v_pda_spy.mdl"
                     | "models/weapons/v_models/v_watch_spy.mdl"
+                    | "models/weapons/c_models/c_pda_engineer/c_pda_engineer.mdl"
+                    | "models/weapons/c_models/c_toolbox/c_toolbox.mdl"
             ) {
                 playsrc_studio_model::PresentationProfile::ViewModel
             } else {
@@ -12488,6 +12665,8 @@ mod tests {
             pickups: Vec::new(),
             metal: 100,
             scoreboard: playsrc_tf2::scoreboard::Snapshot::default(),
+            buildings: Vec::new(),
+            placement: None,
         };
         let producer = playsrc_tf2::ProducerSnapshot {
             tick: 9,
@@ -12600,10 +12779,10 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(&encoded[..8], b"PSSN\x11\0\0\0");
-        assert_eq!(encoded.len(), 1016);
+        assert_eq!(&encoded[..8], b"PSSN\x12\0\0\0");
+        assert_eq!(encoded.len(), 1020);
         assert_eq!(&encoded[936..944], b"PCTF\x01\0\0\0");
-        assert_eq!(&encoded[968..976], b"PGRL\x01\0\0\0");
+        assert_eq!(&encoded[972..980], b"PGRL\x01\0\0\0");
         assert_eq!(
             u32::from_le_bytes(encoded[160..164].try_into().unwrap()),
             playsrc_tf2::FL_CLIENT | playsrc_tf2::FL_INWATER

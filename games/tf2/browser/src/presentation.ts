@@ -24,7 +24,7 @@ export type Tf2Hud = Readonly<{
   maxHealth: number
   className: Tf2ClassPresentation["displayName"]
 
-  weaponName: "Rocket Launcher" | "Original" | "Stickybomb Launcher" | "Scattergun" | "Pistol" | "Bat" | "Shotgun" | "Shovel" | "Minigun" | "Fists" | "Sniper Rifle" | "SMG" | "Kukri" | "Wrench" | "Flamethrower" | "Fire Axe" | "Bottle" | "Grenade Launcher" | "Revolver" | "Knife" | "Sapper" | "Disguise Kit" | "Invisibility Watch" | null
+  weaponName: "Rocket Launcher" | "Original" | "Stickybomb Launcher" | "Scattergun" | "Pistol" | "Bat" | "Shotgun" | "Shovel" | "Minigun" | "Fists" | "Sniper Rifle" | "SMG" | "Kukri" | "Wrench" | "Flamethrower" | "Fire Axe" | "Bottle" | "Grenade Launcher" | "Construction PDA" | "Destruction PDA" | "Toolbox" | "Revolver" | "Knife" | "Sapper" | "Disguise Kit" | "Invisibility Watch" | null
 
   speed: number
   projectileCount: number
@@ -243,7 +243,9 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
                         : snapshot.weapon === 14 ? "models/weapons/c_models/c_machete/c_machete.mdl"
                           : snapshot.weapon === 15 ? "models/weapons/c_models/c_flamethrower/c_flamethrower.mdl"
                             : snapshot.weapon === 16 ? "models/weapons/c_models/c_fireaxe_pyro/c_fireaxe_pyro.mdl"
-                              : snapshot.weapon === 50 ? "models/weapons/c_models/c_revolver/c_revolver.mdl"
+                              : snapshot.weapon === 43 || snapshot.weapon === 44 ? "models/weapons/c_models/c_pda_engineer/c_pda_engineer.mdl"
+                               : snapshot.weapon === 45 ? "models/weapons/c_models/c_toolbox/c_toolbox.mdl"
+                               : snapshot.weapon === 50 ? "models/weapons/c_models/c_revolver/c_revolver.mdl"
                                 : snapshot.weapon === 51 ? "models/weapons/c_models/c_knife/c_knife.mdl"
                                   : snapshot.weapon === 52 ? "models/weapons/c_models/c_sapper/c_sapper.mdl"
                                 : snapshot.class === 3 ? "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl"
@@ -261,7 +263,7 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
       const role = snapshot.weapon === 6 || snapshot.weapon === 8 || snapshot.weapon === 14 || snapshot.weapon === 16 || snapshot.weapon === 17 || snapshot.weapon === 42 || snapshot.weapon === 51 ? "MELEE"
         : snapshot.weapon === 11 ? "FISTS"
           : snapshot.weapon === 5 || snapshot.weapon === 7 || snapshot.weapon === 10 || snapshot.weapon === 13 || snapshot.weapon === 50 || snapshot.weapon === 41 || snapshot.weapon === 3 ? "SECONDARY"
-            : snapshot.weapon === 52 || standalone ? "" : "PRIMARY"
+            : snapshot.weapon === 43 ? "ENGINEER_PDA1" : snapshot.weapon === 44 ? "ENGINEER_PDA2" : snapshot.weapon === 45 ? "ENGINEER_BLD" : snapshot.weapon === 52 || standalone ? "" : "PRIMARY"
       const prefix = role ? `ACT_${role}_` : "ACT_"
       const draw = `${prefix}VM_DRAW`, idle = `${prefix}VM_IDLE`
       const mapped = exact === undefined ? undefined : [
@@ -733,6 +735,7 @@ export function tf2Hud(snapshot: Snapshot): Tf2Hud {
       : snapshot.weapon === 40 ? "Shotgun"
         : snapshot.weapon === 41 ? "Pistol"
           : snapshot.weapon === 42 ? "Wrench"
+            : snapshot.weapon === 43 ? "Construction PDA" : snapshot.weapon === 44 ? "Destruction PDA" : snapshot.weapon === 45 ? "Toolbox"
             : snapshot.weapon === 50 ? "Revolver" : snapshot.weapon === 51 ? "Knife" : snapshot.weapon === 52 ? "Sapper" : snapshot.weapon === 53 ? "Disguise Kit" : snapshot.weapon === 54 ? "Invisibility Watch"
             : (["", "Rocket Launcher", "Original", "Stickybomb Launcher", "Scattergun", "Pistol", "Bat", "Shotgun", "Shovel", "Minigun", "Shotgun", "Fists", "Sniper Rifle", "SMG", "Kukri", "Flamethrower", "Fire Axe", "Bottle", "Grenade Launcher"] as const)[snapshot.weapon],
 

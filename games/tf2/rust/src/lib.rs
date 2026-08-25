@@ -2,6 +2,7 @@ pub mod attribute;
 pub mod audio;
 pub mod ballistics;
 pub mod bot;
+pub mod building;
 pub mod class;
 pub mod combat;
 pub mod condition;
@@ -207,6 +208,9 @@ pub enum Weapon {
     Sapper = 52,
     DisguiseKit = 53,
     InvisibilityWatch = 54,
+    BuildPda = 43,
+    DestroyPda = 44,
+    Toolbox = 45,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -271,6 +275,7 @@ pub struct Command {
     pub mode_request: Option<Mode>,
     pub activate_entity: Option<u32>,
     pub bot_request: Option<bot::Request>,
+    pub building_request: Option<building::Request>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -689,6 +694,8 @@ pub struct Snapshot {
     pub events: Vec<Event>,
     pub bots: Vec<bot::Snapshot>,
     pub pickups: Vec<MapPickupSnapshot>,
+    pub buildings: Vec<building::Snapshot>,
+    pub placement: Option<building::Placement>,
     pub metal: u16,
     pub scoreboard: scoreboard::Snapshot,
 }
@@ -800,6 +807,7 @@ pub struct Session<W: GameplayWorld + Clone> {
     scoreboard: scoreboard::State,
     posed_player_hitboxes: Vec<PosedPlayerHitbox>,
     respawn_tick: Option<u64>,
+    buildings: building::World,
 }
 
 #[derive(Debug)]
@@ -965,6 +973,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             scoreboard: scoreboard::State::default(),
             posed_player_hitboxes: Vec::new(),
             respawn_tick: None,
+            buildings: building::World::new(movement_configuration.tick_interval),
         }
     }
 
@@ -1474,6 +1483,18 @@ impl<W: GameplayWorld + Clone> Session<W> {
         )?;
         self.emit_due_regenerate_model_closes();
         self.apply_selection(command, &mut events, &mut projectile_events);
+        if let Some(request) = command.building_request {
+            self.buildings.request(request, self.class, self.ammo.metal);
+            if matches!(request, building::Request::Build(_))
+                && self.buildings.placement().is_some()
+            {
+                self.weapon = Some(Weapon::Toolbox);
+                self.loadout
+                    .entry(Weapon::Toolbox)
+                    .or_insert_with(|| WeaponRuntime::full(Weapon::Toolbox));
+                self.deploy_active_weapon();
+            }
+        }
         if let Some(request) = command.bot_request {
             let bots = self
                 .bots
@@ -1678,6 +1699,43 @@ impl<W: GameplayWorld + Clone> Session<W> {
         } else {
             Vec::new()
         };
+        if self.class == PlayerClass::Engineer {
+            self.buildings.update_placement(
+                &self.collision,
+                self.movement.position,
+                self.movement.view_offset[2],
+                command.movement.yaw_degrees,
+            )?;
+            if let Some(placement) = self.buildings.placement()
+                && placement.valid
+                && !self.map.building_position_allowed(
+                    &self.collision,
+                    placement.object,
+                    self.team_selection.local_team(),
+                    placement.position,
+                )?
+            {
+                self.buildings.invalidate_placement();
+            }
+            if command.fire
+                && self.weapon == Some(Weapon::Toolbox)
+                && self.buildings.confirm(
+                    self.tick,
+                    PLAYER_IDENTITY,
+                    self.team_selection.local_team(),
+                    &mut self.ammo.metal,
+                )
+            {
+                self.weapon = Some(Weapon::Wrench);
+                self.deploy_active_weapon();
+                self.activity_events.push(ActivityEvent {
+                    tick: self.tick,
+                    weapon: Weapon::Wrench,
+                    activity: weapon::WeaponActivity::Draw,
+                });
+                events.push(Event::WeaponChanged(Weapon::Wrench));
+            }
+        }
         let bot_attacks = if let Some(bots) = &mut self.bots {
             bots.advance(
                 &self.collision,
@@ -1701,7 +1759,42 @@ impl<W: GameplayWorld + Clone> Session<W> {
             self.execute_bot_attack(attack, &mut projectile_events, &mut events)?;
         }
 
+        let bot_snapshots = self
+            .bots
+            .as_ref()
+            .map_or_else(Vec::new, bot::BotWorld::snapshots);
+        let building_effects = self.buildings.advance(
+            &self.collision,
+            self.tick,
+            self.team_selection.local_team(),
+            self.movement.position,
+            self.health,
+            self.maximum_health(),
+            &bot_snapshots,
+            &mut self.ammo.metal,
+        )?;
+        if building_effects.healing > 0 && self.health < self.maximum_health() {
+            self.health = (self.health + building_effects.healing).min(self.maximum_health());
+        }
+        if let Some((target, damage)) = building_effects.sentry_target {
+            self.apply_actor_damage(
+                bot::Damage {
+                    attacker: PLAYER_IDENTITY,
+                    victim: target,
+                    weapon: Weapon::EngineerPistol,
+                    amount: damage as f32,
+                    position: self.movement.position,
+                },
+                self.team_selection.local_team(),
+                &mut events,
+            )?;
+        }
         let mut teleported = false;
+        if let Some((position, _yaw)) = building_effects.teleport {
+            self.movement.position = position;
+            self.movement.ground = None;
+            teleported = true;
+        }
         let phase = self.map.contact_phase(
             &self.collision,
             self.tick,
@@ -1863,7 +1956,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     )?;
                 } else if active_weapon == Weapon::Fists {
                     self.emit_weapon_sound(SoundDefinition::FistMiss, self.movement.position);
-                } else {
+                } else if !matches!(
+                    active_weapon,
+                    Weapon::BuildPda | Weapon::DestroyPda | Weapon::Toolbox
+                ) {
                     self.fire_projectile(
                         command.pitch_degrees,
                         command.movement.yaw_degrees,
@@ -1965,7 +2061,6 @@ impl<W: GameplayWorld + Clone> Session<W> {
                         Weapon::Pistol | Weapon::EngineerPistol,
                         weapon::WeaponActivity::ReloadStart,
                     ) => Some(SoundDefinition::PistolReload),
-
                     (
                         Weapon::Shotgun | Weapon::HeavyShotgun | Weapon::EngineerShotgun,
                         weapon::WeaponActivity::ReloadLoop,
@@ -2241,6 +2336,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
             pickups: self.map.pickups(),
             metal: self.ammo.metal,
             scoreboard,
+            buildings: self.buildings.snapshots(),
+            placement: self.buildings.placement(),
         })
     }
 
@@ -2576,6 +2673,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 )
                 .is_ok()
         {
+            self.buildings.reset();
             self.fizzle_projectiles(projectile_events);
             self.lifecycle_events.push(LifecycleEvent {
                 tick: self.tick,
@@ -2614,6 +2712,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         {
             self.class = class;
             self.spy = (class == PlayerClass::Spy).then(spy::SpyState::default);
+            self.buildings.reset();
             self.weapon = default_weapon(class);
             self.loadout = default_loadout(class);
             self.ammo = class.data().maximum_ammo;
@@ -4030,6 +4129,27 @@ impl<W: GameplayWorld + Clone> Session<W> {
     ) -> Result<(), Error> {
         let (direction, _, _) = angle_vectors(pitch, yaw, 0.0);
         let origin = add(self.movement.position, self.movement.view_offset);
+        if weapon == Weapon::Wrench
+            && let Some(target) = self.buildings.nearest_wrench_target(
+                origin,
+                direction,
+                self.team_selection.local_team(),
+            )
+            && self.buildings.wrench(
+                target,
+                self.team_selection.local_team(),
+                self.tick,
+                &mut self.ammo.metal,
+            )
+        {
+            events.push(Event::MeleeImpact {
+                weapon,
+                target: Some(target),
+                position: origin,
+                damage: 0.0,
+            });
+            return Ok(());
+        }
         if weapon == Weapon::Wrench {
             let building_end = add(origin, scale(direction, ballistics::WRENCH_BUILDING_RANGE));
             let building = self.collision.trace(
@@ -4491,7 +4611,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
             | Weapon::Knife
             | Weapon::Sapper
             | Weapon::DisguiseKit
-            | Weapon::InvisibilityWatch => {
+            | Weapon::InvisibilityWatch
+            | Weapon::BuildPda
+            | Weapon::DestroyPda
+            | Weapon::Toolbox => {
                 unreachable!("hitscan and melee weapons do not spawn projectiles")
             }
         };
@@ -4535,7 +4658,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
             | Weapon::Knife
             | Weapon::Sapper
             | Weapon::DisguiseKit
-            | Weapon::InvisibilityWatch => {
+            | Weapon::InvisibilityWatch
+            | Weapon::BuildPda
+            | Weapon::DestroyPda
+            | Weapon::Toolbox => {
                 unreachable!("hitscan and melee weapons do not spawn projectiles")
             }
         };
@@ -5425,7 +5551,10 @@ pub(crate) const fn weapon_ammo_kind(weapon: Weapon) -> Option<class::AmmoType> 
         | Weapon::Knife
         | Weapon::Sapper
         | Weapon::DisguiseKit
-        | Weapon::InvisibilityWatch => None,
+        | Weapon::InvisibilityWatch
+        | Weapon::BuildPda
+        | Weapon::DestroyPda
+        | Weapon::Toolbox => None,
     }
 }
 
@@ -5495,6 +5624,9 @@ fn default_loadout(class: PlayerClass) -> BTreeMap<Weapon, WeaponRuntime> {
                 WeaponRuntime::full(Weapon::EngineerPistol),
             ),
             (Weapon::Wrench, WeaponRuntime::full(Weapon::Wrench)),
+            (Weapon::BuildPda, WeaponRuntime::full(Weapon::BuildPda)),
+            (Weapon::DestroyPda, WeaponRuntime::full(Weapon::DestroyPda)),
+            (Weapon::Toolbox, WeaponRuntime::full(Weapon::Toolbox)),
         ]),
         PlayerClass::Pyro => BTreeMap::from([
             (
@@ -5541,7 +5673,12 @@ fn allowed(class: PlayerClass, weapon: Weapon) -> bool {
             Weapon::SniperRifle | Weapon::Smg | Weapon::Kukri
         ) | (
             PlayerClass::Engineer,
-            Weapon::EngineerShotgun | Weapon::EngineerPistol | Weapon::Wrench
+            Weapon::EngineerShotgun
+                | Weapon::EngineerPistol
+                | Weapon::Wrench
+                | Weapon::BuildPda
+                | Weapon::DestroyPda
+                | Weapon::Toolbox
         ) | (
             PlayerClass::Pyro,
             Weapon::Flamethrower | Weapon::Shotgun | Weapon::FireAxe
@@ -7446,9 +7583,13 @@ mod tests {
                         vec![
                             Weapon::EngineerShotgun,
                             Weapon::EngineerPistol,
-                            Weapon::Wrench
+                            Weapon::Wrench,
+                            Weapon::BuildPda,
+                            Weapon::DestroyPda,
+                            Weapon::Toolbox
                         ],
                     );
+                    assert_eq!(snapshot.metal, 200);
                 }
                 PlayerClass::Pyro => {
                     assert_eq!(snapshot.weapon, Some(Weapon::Flamethrower));
