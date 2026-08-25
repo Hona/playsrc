@@ -25,11 +25,13 @@ type BatchState = {
 export class RetainedWorldVisibility {
   readonly #postings: ReadonlyMap<number, readonly FacePosting[]>
   readonly #seen = new Map<number, number>()
+  readonly #denseSeen: Uint32Array | undefined
   readonly #batches: readonly BatchState[]
   #epoch = 0
 
   constructor(batches: readonly RetainedWorldBatch[], source?: RetainedWorldVisibility) {
     const groups = source ? undefined : new Map<number, Map<number, number[]>>()
+    let maximumFace = 0
     if (source && source.#batches.length !== batches.length) {
       throw new RetainedVisibilityError("shared world-face batch identity differs")
     }
@@ -47,6 +49,8 @@ export class RetainedWorldVisibility {
       if (groups) {
         for (let triangle = 0; triangle < input.faces.length; triangle += 1) {
           const face = input.faces[triangle]!
+          if (face > maximumFace) maximumFace = face
+          if (!input.transparent) continue
           let byBatch = groups.get(face)
           if (!byBatch) groups.set(face, byBatch = new Map())
           let triangles = byBatch.get(batch)
@@ -64,6 +68,7 @@ export class RetainedWorldVisibility {
     })
     if (source) {
       this.#postings = source.#postings
+      this.#denseSeen = source.#denseSeen ? new Uint32Array(source.#denseSeen.length) : undefined
     } else {
       const postings = new Map<number, readonly FacePosting[]>()
       for (const [face, byBatch] of groups!) {
@@ -71,40 +76,34 @@ export class RetainedWorldVisibility {
           Object.freeze({ batch, triangles: Uint32Array.from(triangles) }))))
       }
       this.#postings = postings
+      this.#denseSeen = maximumFace <= 1_048_576 ? new Uint32Array(maximumFace + 1) : undefined
     }
   }
 
   apply(surfaces: Uint32Array): boolean {
     this.#epoch += 1
-    if (!Number.isSafeInteger(this.#epoch)) {
+    if (this.#epoch > 0xffff_ffff) {
       this.#seen.clear()
+      this.#denseSeen?.fill(0)
       this.#epoch = 1
     }
+    const dense = this.#denseSeen
     for (let index = 0; index < surfaces.length; index += 1) {
       const face = surfaces[index]!
-      if (this.#seen.get(face) === this.#epoch) {
+      const previous = dense && face < dense.length ? dense[face] : this.#seen.get(face)
+      if (previous === this.#epoch) {
         throw new RetainedVisibilityError("visibility contains a duplicate world face")
       }
-      this.#seen.set(face, this.#epoch)
+      if (dense && face < dense.length) dense[face] = this.#epoch
+      else this.#seen.set(face, this.#epoch)
     }
 
     for (const state of this.#batches) state.count = 0
-    for (let index = 0; index < surfaces.length; index += 1) {
-      const postings = this.#postings.get(surfaces[index]!)
-      if (!postings) continue
-      for (const posting of postings) {
-        const state = this.#batches[posting.batch]!
-        if (state.input.transparent) continue
-        state.selected.set(posting.triangles, state.count)
-        state.count += posting.triangles.length
-      }
-    }
     for (let index = surfaces.length - 1; index >= 0; index -= 1) {
       const postings = this.#postings.get(surfaces[index]!)
       if (!postings) continue
       for (const posting of postings) {
         const state = this.#batches[posting.batch]!
-        if (!state.input.transparent) continue
         state.selected.set(posting.triangles, state.count)
         state.count += posting.triangles.length
       }
@@ -112,16 +111,18 @@ export class RetainedWorldVisibility {
 
     let changed = false
     for (const state of this.#batches) {
-      if (!state.input.transparent && state.count > 1) {
-        state.selected.subarray(0, state.count).sort()
-      }
-      const indexCount = state.count * 3
-      let different = indexCount !== state.previousCount
       const source = state.input.sourceIndices
       const target = state.input.targetIndices
-      for (let index = 0; index < state.count; index += 1) {
-        const from = state.selected[index]! * 3
-        const to = index * 3
+      let different = false
+      let selected = 0
+      const limit = state.input.transparent ? state.count : state.input.faces.length
+      for (let index = 0; index < limit; index += 1) {
+        if (!state.input.transparent) {
+          const face = state.input.faces[index]!
+          if ((dense && face < dense.length ? dense[face] : this.#seen.get(face)) !== this.#epoch) continue
+        }
+        const from = (state.input.transparent ? state.selected[index]! : index) * 3
+        const to = selected++ * 3
         const first = source[from]!
         const second = source[from + 1]!
         const third = source[from + 2]!
@@ -132,6 +133,9 @@ export class RetainedWorldVisibility {
         target[to + 1] = second
         target[to + 2] = third
       }
+      state.count = selected
+      const indexCount = selected * 3
+      different ||= indexCount !== state.previousCount
       state.changed = different
       state.previousCount = indexCount
       changed ||= different
@@ -140,7 +144,7 @@ export class RetainedWorldVisibility {
   }
 
   has(face: number): boolean {
-    return this.#seen.get(face) === this.#epoch
+    return (this.#denseSeen && face < this.#denseSeen.length ? this.#denseSeen[face] : this.#seen.get(face)) === this.#epoch
   }
 
   count(batch: number): number {

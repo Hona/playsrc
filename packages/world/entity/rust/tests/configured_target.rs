@@ -10,6 +10,72 @@ use std::{fs, path::PathBuf};
 const BSP_SHA256: &str = "b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959";
 
 #[test]
+#[ignore = "requires the exact configured pl_upward BSP cache"]
+fn configured_upward_transactional_entity_phases_preserve_authored_state() {
+    const UPWARD_BSP_SHA256: &str =
+        "15cbf91981b0d9902c645d1992d196b7e630742aa85111ed834d231f3c3a5709";
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../..");
+    let config = fs::read(root.join("playsrc.local.json")).unwrap();
+    let cache = PathBuf::from(configured_string(&config, "sourceCacheDir"));
+    let bytes = fs::read(
+        cache
+            .join("objects/sha256")
+            .join(&UPWARD_BSP_SHA256[..2])
+            .join(UPWARD_BSP_SHA256),
+    )
+    .unwrap();
+    let bsp = parse_bsp(&bytes, BspProfile::Source2013V20, BspLimits::default()).unwrap();
+    let graph = parse(bsp.lumps[0].bytes(&bsp), Limits::default()).unwrap();
+    let models = match &bsp.lumps[14].records {
+        playsrc_bsp::LumpData::Models(models) => models,
+        _ => panic!("configured Upward model lump"),
+    };
+    let model_bounds = models
+        .iter()
+        .enumerate()
+        .map(|(model, bounds)| ModelBounds {
+            model,
+            mins: [
+                bounds.mins.x.value(),
+                bounds.mins.y.value(),
+                bounds.mins.z.value(),
+            ],
+            maxs: [
+                bounds.maxs.x.value(),
+                bounds.maxs.y.value(),
+                bounds.maxs.z.value(),
+            ],
+        })
+        .collect();
+    let (mut world, _) = EntityWorld::compile(
+        &graph,
+        EntityWorldConfig {
+            source_identity: 0x7570_7761_7264,
+            registry_identity: 0x534d_4546,
+            model_bounds,
+            ..EntityWorldConfig::default()
+        },
+    )
+    .unwrap();
+    let baseline = world.clone();
+    let entities = world.live_handles().len();
+    let started = std::time::Instant::now();
+    for tick in 1..=120 {
+        world.phase(tick, &[]).unwrap();
+    }
+    let elapsed = started.elapsed();
+    eprintln!(
+        "UPWARD_ENTITY_PHASE entities={entities} phases=120 total_ms={:.3} phase_ms={:.3}",
+        elapsed.as_secs_f64() * 1_000.0,
+        elapsed.as_secs_f64() * 1_000.0 / 120.0,
+    );
+    assert_eq!(baseline.current_tick(), 0);
+    assert_eq!(baseline.live_handles().len(), entities);
+    assert_eq!(world.current_tick(), 120);
+    assert!(world.live_handles().len() > 900);
+}
+
+#[test]
 #[ignore = "requires playsrc.local.json and the configured TF2 target cache"]
 fn configured_jump_beef_inventory_and_selected_generic_runtime_are_fixed() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../..");
