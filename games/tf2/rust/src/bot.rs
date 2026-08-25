@@ -223,6 +223,8 @@ pub struct Snapshot {
     pub kills: u32,
     pub deaths: u32,
     pub captures: u32,
+    pub damage: u32,
+    pub killstreak: u32,
     pub carrying_flag: bool,
     pub last_fire_tick: Option<u64>,
     pub respawn_tick: Option<u64>,
@@ -1314,22 +1316,6 @@ impl BotWorld {
         self.bots.get(&identity).map(|bot| bot.health)
     }
 
-    pub fn scores(&self) -> impl Iterator<Item = crate::lifecycle::ScoreEntry> + '_ {
-        self.bots.values().map(|bot| crate::lifecycle::ScoreEntry {
-            identity: bot.identity,
-            team: bot.team,
-            counters: crate::lifecycle::ScoreCounters {
-                kills: bot.kills,
-                deaths: bot.deaths,
-                captures: bot.captures,
-                damage: bot.damage_dealt,
-                killstreak: bot.killstreak,
-                ..crate::lifecycle::ScoreCounters::default()
-            },
-            respawn_tick: bot.respawn_tick,
-        })
-    }
-
     pub fn select_spawn(
         &self,
         team: PlayerTeam,
@@ -1413,6 +1399,8 @@ impl BotWorld {
                 kills: bot.kills,
                 deaths: bot.deaths,
                 captures: bot.captures,
+                damage: bot.damage_dealt,
+                killstreak: bot.killstreak,
                 carrying_flag: bot.carrying_flag.is_some(),
                 last_fire_tick: bot.last_fire_tick,
                 respawn_tick: bot.respawn_tick,
