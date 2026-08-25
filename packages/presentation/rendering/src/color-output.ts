@@ -1,3 +1,6 @@
+// Source shader gamma behavior is adapted from Valve Source SDK 2013;
+// the Source 1 SDK License applies.
+
 export type OutputColorSpace = "srgb"
 export type CanvasFormat = "bgra8unorm" | "rgba8unorm"
 export type CanvasAlphaMode = "opaque" | "premultiplied"
@@ -266,6 +269,20 @@ export class ExposureController {
 export function linearToSrgb(value: number): number {
   const linear = clamp(value, 0, 1)
   return linear <= 0.0031308 ? linear * 12.92 : 1.055 * Math.pow(linear, 1 / 2.4) - 0.055
+}
+
+export function sourceShaderGammaToLinear(value: number): number {
+  if (!Number.isFinite(value)) throw new ColorOutputError("Source shader gamma input is invalid")
+  const gamma = Math.fround(value)
+  if (gamma > 1) return gamma
+  if (gamma < 0) return 0
+  if (gamma >= Math.fround(0.95)) return 1
+
+  const scaled = Math.fround(gamma * Math.fround(255))
+  const lower = Math.floor(scaled)
+  const fraction = scaled - lower
+  const index = fraction < 0.5 ? lower : fraction > 0.5 ? lower + 1 : lower % 2 === 0 ? lower : lower + 1
+  return Math.fround(Math.pow(Math.fround(index / 255), Math.fround(2.2)))
 }
 
 export function applyColorOutput(

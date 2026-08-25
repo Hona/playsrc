@@ -4,18 +4,18 @@ use playsrc_material::{
     Material, ParticleMaterialInput, SelectionEnvironment, TextureAlphaFacts, TextureColorRead,
     TextureDisposition, TextureFace, TextureMagFilter, TextureMetadataManifest, TextureMinFilter,
     TextureSamplingState, TextureSubresourceIdentity, TextureWrapMode, WaterInputRequirement,
-    WaterShaderVariant, bind_authored_texture_use, evaluate_water_material,
+    WaterShaderVariant, WaterSurfaceOpacity, bind_authored_texture_use, evaluate_water_material,
     resolve_for_environment, static_state, validate_authored_planes, water_material_output,
 };
 use playsrc_vmt::{Composition, DependencyResponse, Limits, compose};
 use std::{collections::BTreeMap, fs, path::Path};
 
-const ENTRY_COUNT: usize = 317;
-const VMT_COUNT: usize = 108;
-const VTF_COUNT: usize = 126;
+const ENTRY_COUNT: usize = 309;
+const VMT_COUNT: usize = 109;
+const VTF_COUNT: usize = 127;
 
 #[test]
-#[ignore = "requires configured build-24207079 jump_beef source bundle"]
+#[ignore = "requires configured build-24245096 jump_beef resource graph"]
 fn configured_alpha_spritecard_and_water_semantics_are_exact() {
     let files = configured_bundle();
     assert_eq!(
@@ -222,6 +222,8 @@ fn configured_alpha_spritecard_and_water_semantics_are_exact() {
     let surface_output = water_material_output(&surface).unwrap().unwrap();
     let beneath_output = water_material_output(&beneath).unwrap().unwrap();
     assert_eq!(surface_output.shader, WaterShaderVariant::Dx9Hdr);
+    assert_eq!(surface_output.opacity, WaterSurfaceOpacity::Opaque);
+    assert_eq!(beneath_output.opacity, WaterSurfaceOpacity::Opaque);
     assert!(surface_output.textures.base.is_none());
     assert!(surface_output.textures.flow.is_none());
     assert!(surface_output.textures.environment.is_some());
@@ -341,7 +343,7 @@ fn configured_bundle() -> BTreeMap<String, Vec<u8>> {
     let source_cache = json_string(&config, "sourceCacheDir");
     let bytes = playsrc_asset_graph::read_resource_set(
         &Path::new(&source_cache).join("browser-bundles/jump_beef.graph.json"),
-        None,
+        Some("gameplay"),
     )
     .unwrap();
     parse_bundle(&bytes)

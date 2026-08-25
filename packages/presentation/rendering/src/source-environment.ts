@@ -279,13 +279,13 @@ export function evaluateCheapWater(request: CheapWaterRequest): readonly [number
     || ![request.environmentScale, request.reflectionBlendFactor, request.distance, request.cheapStart, request.cheapEnd, request.refractionDepth ?? 0].every(Number.isFinite)
     || request.cheapEnd === request.cheapStart
   ) throw new SourceEnvironmentError("cheap Water input is invalid")
-  const normal = normalized(request.worldNormal)
+  const normal = request.worldNormal
   const eye = normalized(request.worldEyeVector)
   const dotValue = 1 - Math.max(0, dot(eye, normal))
   const fresnel = request.fresnel ? dotValue ** 5 : request.reflectionBlendFactor
   const reflected = [0, 1, 2].map((channel) => request.cubemap[channel]! * request.environmentScale * request.reflectTint[channel]!) as unknown as SourceVector3
   if (!request.blend) {
-    const fog = request.hdr ? request.fogColor.map((value) => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4) as unknown as SourceVector3 : request.fogColor
+    const fog = request.hdr ? request.fogColor.map((value) => value ** 2.2) as unknown as SourceVector3 : request.fogColor
     return [...mix(fog, reflected, fresnel), 1]
   }
   const distanceBlend = saturate(request.distance / (request.cheapEnd - request.cheapStart) - request.cheapStart / (request.cheapEnd - request.cheapStart))
@@ -296,8 +296,8 @@ export function evaluateCheapWater(request: CheapWaterRequest): readonly [number
 
 export function waterBlurOffsets(): readonly (readonly [number, number])[] {
   return Object.freeze(Array.from({ length: 25 }, (_, index) => Object.freeze([
-    (index % 5 - 2) * 0.005,
     (Math.floor(index / 5) - 2) * 0.005,
+    (index % 5 - 2) * 0.005,
   ]) as readonly [number, number]))
 }
 
@@ -317,6 +317,7 @@ export type ExpensiveWaterRequest = Readonly<{
   fogStart: number
   fogEnd: number
   hasBaseTexture: boolean
+  blurRefraction?: boolean
 }>
 
 export function evaluateExpensiveWater(request: ExpensiveWaterRequest): SourceVector3 {
@@ -328,12 +329,19 @@ export function evaluateExpensiveWater(request: ExpensiveWaterRequest): SourceVe
     || ![request.reflectionOverbright, request.linearLightScale, request.waterFogDepth, request.projectedDepth, request.fogStart, request.fogEnd].every(Number.isFinite)
     || (!request.aboveWater && request.fogEnd === request.fogStart)
   ) throw new SourceEnvironmentError("expensive Water input is invalid")
-  const normal = normalized(request.normal)
+  const normal = request.normal
   const eye = normalized(request.tangentEyeVector)
   let fresnel = (1 - saturate(dot(eye, normal))) ** 5
   if (!request.hasBaseTexture) fresnel *= saturate((request.waterFogDepth - 0.05) * 20)
-  const reflection = request.reflection && [0, 1, 2].map((channel) => request.reflection![channel]! * request.reflectionTint[channel]! * request.reflectionOverbright) as unknown as SourceVector3
-  let refraction = request.refraction && [0, 1, 2].map((channel) => request.refraction![channel]! * request.refractionTint[channel]!) as unknown as SourceVector3
+  const reflection = request.reflection && [0, 1, 2].map((channel) =>
+    request.reflection![channel]!
+    * request.reflectionTint[channel]!
+    * (request.blurRefraction === true ? request.reflectionOverbright : 1),
+  ) as unknown as SourceVector3
+  let refraction = request.refraction && [0, 1, 2].map((channel) =>
+    request.refraction![channel]!
+    * (request.blurRefraction === true ? request.refractionTint[channel]! : 1),
+  ) as unknown as SourceVector3
   if (refraction) {
     const fog = request.aboveWater
       ? saturate(request.waterFogDepth - 0.05)
