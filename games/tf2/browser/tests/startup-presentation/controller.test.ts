@@ -84,6 +84,32 @@ describe("TF2 startup presentation lifecycle", () => {
     expect(admitted.calls).toContain("media:prepare")
   })
 
+  test("keeps hidden-menu startup transitions and media visibility on one monotonic clock", async () => {
+    const f = fixture()
+    const initial = f.controller.transitionTimeMicroseconds()
+    f.controller.start()
+    const preparing = f.controller.transitionTimeMicroseconds()
+    expect(preparing).toBeGreaterThanOrEqual(initial)
+
+    f.mediaReady.resolve(f.session)
+    await tick()
+    expect(f.controller.state()).toEqual({ kind: "Playing" })
+    const playing = f.controller.transitionTimeMicroseconds()
+    expect(playing).toBeGreaterThanOrEqual(preparing)
+    f.controller.visibility(false)
+    f.controller.visibility(true)
+    expect(f.calls.slice(-2)).toEqual(["visible:false", "visible:true"])
+
+    f.controller.key("Escape")
+    expect(f.controller.state()).toEqual({ kind: "WaitingForMenu", movieResult: "Skipped" })
+    const hiddenMenu = f.controller.transitionTimeMicroseconds()
+    expect(hiddenMenu).toBeGreaterThanOrEqual(playing)
+    f.menuReady.resolve(f.menu)
+    await tick()
+    expect(f.controller.state()).toEqual({ kind: "Skipped", reason: "Escape" })
+    expect(f.controller.transitionTimeMicroseconds()).toBeGreaterThanOrEqual(hiddenMenu)
+  })
+
   test("keeps preparation and playback failures typed", async () => {
     const preparation = fixture()
     preparation.controller.start(); preparation.mediaReady.reject(new Error("decode")); await tick()

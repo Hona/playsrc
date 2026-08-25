@@ -196,9 +196,10 @@ describe("TF2 GameUI transition model", () => {
       event: Tf2GameUiEvent
       accepted: readonly Tf2GameUiState["kind"][]
     }>[] = [
+      { event: { kind: "escape" }, accepted: ["main-menu", "loading", "in-game", "pause", "disconnecting", "failure"] },
       { event: { kind: "show-console" }, accepted: ["main-menu", "in-game", "pause"] },
-      { event: { kind: "map", mapIdentity: "jump_beef" }, accepted: ["main-menu", "pause"] },
-      { event: { kind: "loading-started", mapIdentity: "jump_beef" }, accepted: ["main-menu", "in-game", "pause"] },
+      { event: { kind: "map", mapIdentity: "jump_beef" }, accepted: ["main-menu", "loading", "in-game", "pause", "disconnecting", "failure"] },
+      { event: { kind: "loading-started", mapIdentity: "jump_beef" }, accepted: ["main-menu", "loading", "in-game", "pause", "disconnecting", "failure"] },
       { event: { kind: "loading-progress", phase: "reading-world" }, accepted: ["loading"] },
       { event: { kind: "loading-succeeded" }, accepted: ["loading"] },
       { event: { kind: "loading-failed", reason: "Failed", extendedReason: "Detail" }, accepted: ["loading"] },
@@ -230,9 +231,18 @@ describe("TF2 GameUI transition model", () => {
     const inGame = states()["in-game"]
     const pause = applied(inGame, { kind: "gameui-activated" }).state
     const resume = transitionTf2GameUi(pause, { kind: "activate-button", button: "resume" })
-    expect(resume).toMatchObject({ disposition: "applied", state: pause, request: { kind: "resume-game" } })
-    expect(resume.state).toBe(pause)
-    const resumed = applied(pause, { kind: "gameui-hidden" }).state
+    expect(resume).toMatchObject({
+      disposition: "applied",
+      state: { kind: "pause", mapIdentity: "jump_beef", pendingRequest: "resume-game" },
+      request: { kind: "resume-game" },
+    })
+    expect(transitionTf2GameUi(resume.state, { kind: "activate-button", button: "resume" })).toMatchObject({
+      disposition: "ignored",
+      state: resume.state,
+      request: null,
+      reason: "operation-pending",
+    })
+    const resumed = applied(resume.state, { kind: "gameui-hidden" }).state
     expect(resumed).toEqual({ kind: "in-game", mapIdentity: "jump_beef" })
 
     const disconnect = applied(pause, { kind: "activate-button", button: "disconnect" })

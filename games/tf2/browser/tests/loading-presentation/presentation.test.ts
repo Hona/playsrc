@@ -23,8 +23,10 @@ describe("TF2 loading presentation operations", () => {
 
   test("emits exact desktop and tall-viewport dialog geometry and suppresses repeats", () => {
     const presentation = createTf2LoadingPresentation({ loadingResource, failureResource })
-    expect(presentation.update(1, loading(), { width: 1_280, height: 720 }, background)?.operations[1]).toEqual({ kind: "bounds", x: 890, y: 598, width: 380, height: 112 })
-    expect(presentation.update(1, loading(), { width: 390, height: 844 }, background)?.operations[1]).toEqual({ kind: "bounds", x: 0, y: 722, width: 380, height: 112 })
+    expect(presentation.update(1, loading(), { width: 1_280, height: 720 }, background)?.operations.find((operation) => operation.kind === "bounds"))
+      .toEqual({ kind: "bounds", x: 890, y: 598, width: 380, height: 112 })
+    expect(presentation.update(1, loading(), { width: 390, height: 844 }, background)?.operations.find((operation) => operation.kind === "bounds"))
+      .toEqual({ kind: "bounds", x: 0, y: 722, width: 380, height: 112 })
     expect(presentation.update(1, loading(), { width: 390, height: 844 }, background)).toBeNull()
   })
 
@@ -43,7 +45,7 @@ describe("TF2 loading presentation operations", () => {
 
     const game = transitionTf2GameUi(load, { kind: "loading-succeeded" }).state
     expect(presentation.update(3, game, { width: 1_280, height: 720 }, null)?.operations).toEqual([{ kind: "unmount" }])
-    expect(presentation.destroy()?.operations).toEqual([{ kind: "unmount" }])
+    expect(presentation.destroy()).toBeNull()
     expect(presentation.destroy()).toBeNull()
   })
 })
