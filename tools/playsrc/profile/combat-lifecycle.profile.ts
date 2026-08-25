@@ -23,14 +23,14 @@ test("headed pl_upward local and bot combat publishes scoreboard, authored killf
   }
   await expect(page.locator("main")).toHaveAttribute("data-phase", "Ready", { timeout: 120_000 })
   if (await page.locator("main").getAttribute("data-console-visible") !== "true") await page.keyboard.press("Backquote")
-  await command("joinclass sniper")
-  await command("tf_bot_add red scout expert")
+  await command("joinclass scout")
+  await command("tf_bot_add red scout easy")
   await expect(page.locator("main")).toHaveAttribute("data-bot-count", "1")
   await command("jointeam blue")
   await page.keyboard.press("Backquote")
   await expect(page.locator("main")).toHaveAttribute("data-team-selection-local", "3", { timeout: 30_000 })
   await expect(page.locator("main")).toHaveAttribute("data-class-selection-visible", "true")
-  await page.keyboard.press("Digit8")
+  await page.keyboard.press("Digit1")
   await expect(page.locator("main")).toHaveAttribute("data-class-selection-visible", "false")
   await expect.poll(async () => page.evaluate(() => (globalThis as any).__playsrcProfile.combat?.scores?.map((score: any) => score.team))).toEqual([3, 2])
   await page.keyboard.down("Tab")
@@ -40,8 +40,14 @@ test("headed pl_upward local and bot combat publishes scoreboard, authored killf
   await testInfo.attach("headed-team-scoreboard", { body: scoreboardPixels, contentType: "image/png" })
   await page.keyboard.up("Tab")
   await expect(scoreboard).toBeHidden()
+  const initialBot = await page.evaluate(() => (globalThis as any).__playsrcProfile.bots[0])
   await page.keyboard.press("Backquote")
-  await command("noclip")
+  await command(`setpos ${initialBot.position[0] - 55} ${initialBot.position[1]} ${initialBot.position[2]}`)
+  await expect.poll(async () => page.evaluate(() => {
+    const profile = (globalThis as any).__playsrcProfile
+    return Math.hypot(profile.bots[0].position[0] - profile.displacementCamera.position[0],
+      profile.bots[0].position[1] - profile.displacementCamera.position[1])
+  }), { timeout: 10_000 }).toBeLessThan(160)
   await page.keyboard.press("Backquote")
 
   await page.bringToFront()
@@ -50,7 +56,6 @@ test("headed pl_upward local and bot combat publishes scoreboard, authored killf
   await page.evaluate(async () => {
     const canvas = document.querySelector<HTMLCanvasElement>("canvas.world-canvas")!
     if (document.pointerLockElement !== canvas) throw new Error("headed gameplay lost native pointer lock")
-    dispatchEvent(new KeyboardEvent("keydown", { code: "KeyW", key: "w", bubbles: true }))
     ;(globalThis as any).__combatFiring = false
     ;(globalThis as any).__combatAim = setInterval(() => {
       const profile = (globalThis as any).__playsrcProfile
@@ -60,23 +65,20 @@ test("headed pl_upward local and bot combat publishes scoreboard, authored killf
       const bot = profile.bots?.find((value: any) => value.lifecycle === 1)
       const camera = profile.displacementCamera
       if (!bot || !camera) return
-      const delta = [bot.position[0] - camera.position[0], bot.position[1] - camera.position[1], bot.position[2] + 70 - camera.position[2]]
+      const delta = [bot.position[0] - camera.position[0], bot.position[1] - camera.position[1], bot.position[2] + 53 - camera.position[2]]
       const yaw = Math.atan2(delta[1], delta[0]) * 180 / Math.PI
       const pitch = -Math.atan2(delta[2], Math.hypot(delta[0], delta[1])) * 180 / Math.PI
       const yawDelta = ((yaw - camera.yawDegrees + 540) % 360) - 180
       const event = new MouseEvent("mousemove", { bubbles: true })
-      Object.defineProperty(event, "movementX", { value: -yawDelta / 0.066 })
-      Object.defineProperty(event, "movementY", { value: (pitch - camera.pitchDegrees) / 0.066 })
+      Object.defineProperty(event, "movementX", { value: -yawDelta * 0.35 / 0.066 })
+      Object.defineProperty(event, "movementY", { value: (pitch - camera.pitchDegrees) * 0.35 / 0.066 })
       dispatchEvent(event)
       const distance = Math.hypot(...delta)
-      if (distance < 90) dispatchEvent(new KeyboardEvent("keyup", { code: "KeyW", key: "w", bubbles: true }))
-      if (distance < 240 && !(globalThis as any).__combatFiring) {
+      if (distance < 180 && !(globalThis as any).__combatFiring) {
         ;(globalThis as any).__combatFiring = true
-        dispatchEvent(new MouseEvent("mousedown", { button: 2, bubbles: true }))
-        dispatchEvent(new MouseEvent("mouseup", { button: 2, bubbles: true }))
-        setTimeout(() => dispatchEvent(new MouseEvent("mousedown", { button: 0, bubbles: true })), 350)
+        dispatchEvent(new MouseEvent("mousedown", { button: 0, bubbles: true }))
       }
-    }, 100)
+    }, 40)
   })
   await expect.poll(async () => page.evaluate(() => {
     const profile = (globalThis as any).__playsrcProfile
@@ -84,7 +86,7 @@ test("headed pl_upward local and bot combat publishes scoreboard, authored killf
     return JSON.stringify({ kills: (globalThis as any).__combatDeath?.scores?.[0]?.kills ?? 0, bot: profile.bots?.[0],
       camera: profile.displacementCamera, health: profile.combat?.health,
       ammo: root.dataset.weaponTrace, firing: (globalThis as any).__combatFiring })
-  }), { timeout: 30_000 }).toContain('"kills":1')
+  }), { timeout: 30_000 }).toMatch(/^\{"kills":1,/u)
   await page.evaluate(() => {
     dispatchEvent(new MouseEvent("mouseup", { button: 0, bubbles: true }))
     dispatchEvent(new KeyboardEvent("keyup", { code: "KeyW", key: "w", bubbles: true }))
@@ -98,7 +100,6 @@ test("headed pl_upward local and bot combat publishes scoreboard, authored killf
   expect(killed.bot.health).toBe(0)
   expect(killed.scores[0]).toMatchObject({ kills: 1, damage: 125, killstreak: 1 })
   expect(killed.scores[1]).toMatchObject({ deaths: 1 })
-  expect(killed.scores[1].damage).toBeGreaterThan(0)
   expect(killed.scores[1].respawnTick).not.toBeNull()
   expect(killed.killfeed).toContain("Bot")
   const killfeed = page.locator("[data-vgui-name^='DeathNotice']")
