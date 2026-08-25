@@ -244,8 +244,12 @@ function mapGameplayEvent(
       push({
         kind: "ammo",
         weapon: state.identity,
-        clip: tf2HudAvailable(integerEventValue(source.values[0], "compact reload clip")),
-        reserve: tf2HudAvailable(integerEventValue(source.values[1], "compact reload reserve")),
+        clip: state.clip.kind === "available"
+          ? tf2HudAvailable(integerEventValue(source.values[0], "compact reload clip"))
+          : state.clip,
+        reserve: state.reserve.kind === "available"
+          ? tf2HudAvailable(integerEventValue(source.values[1], "compact reload reserve"))
+          : state.reserve,
         reload: state.reload,
         cause: "reload",
       })
@@ -255,8 +259,12 @@ function mapGameplayEvent(
       const active = eventWeapon(snapshot, source.detail)
       const restoredActive = Object.freeze({
         ...active,
-        clip: tf2HudAvailable(integerEventValue(source.values[1], "compact regenerate clip")),
-        reserve: tf2HudAvailable(integerEventValue(source.values[2], "compact regenerate reserve")),
+        clip: active.clip.kind === "available"
+          ? tf2HudAvailable(integerEventValue(source.values[1], "compact regenerate clip"))
+          : active.clip,
+        reserve: active.reserve.kind === "available"
+          ? tf2HudAvailable(integerEventValue(source.values[2], "compact regenerate reserve"))
+          : active.reserve,
         reload: "ready" as const,
       })
       push({

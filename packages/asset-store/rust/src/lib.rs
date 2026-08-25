@@ -526,7 +526,14 @@ pub fn encode_resource_set(entries: &[DecodedEntry]) -> Result<Vec<u8>, GraphErr
     if entries.is_empty() || entries.len() > MAX_GRAPH_ENTRIES {
         return Err(GraphError::BoundExceeded);
     }
-    let mut output = Vec::new();
+    let capacity = entries.iter().try_fold(12_usize, |total, entry| {
+        total
+            .checked_add(8)
+            .and_then(|value| value.checked_add(entry.logical_path.len()))
+            .and_then(|value| value.checked_add(entry.bytes.len()))
+            .ok_or(GraphError::BoundExceeded)
+    })?;
+    let mut output = Vec::with_capacity(capacity);
     output.extend_from_slice(b"PSRE");
     output.extend_from_slice(&1_u32.to_le_bytes());
     write_u32(&mut output, entries.len())?;

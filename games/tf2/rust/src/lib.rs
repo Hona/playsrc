@@ -1532,6 +1532,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     let phase = self.fire_minigun_hitscan(
                         command.pitch_degrees,
                         command.movement.yaw_degrees,
+                        &mut events,
                     )?;
                     map_phase.append(phase);
                 } else if matches!(
@@ -2383,6 +2384,13 @@ impl<W: GameplayWorld + Clone> Session<W> {
         projectile_events: &mut Vec<ProjectileEvent>,
         events: &mut Vec<Event>,
     ) -> Result<(), Error> {
+        if !self
+            .bots
+            .as_ref()
+            .is_some_and(|bots| bots.active(attack.attacker))
+        {
+            return Ok(());
+        }
         if matches!(attack.weapon, Weapon::RocketLauncher | Weapon::Original) {
             return self.fire_projectile(
                 attack.pitch_degrees,
@@ -2510,7 +2518,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
         events: &mut Vec<Event>,
     ) -> Result<(), Error> {
         if input.victim == PLAYER_IDENTITY {
-            if self.lifecycle != PlayerLifecycle::Active || !attacker_team.is_enemy(self.team_selection.local_team()) {
+            if self.lifecycle != PlayerLifecycle::Active
+                || !attacker_team.is_enemy(self.team_selection.local_team())
+            {
                 return Ok(());
             }
             let amount = (input.amount + 0.5) as i32;
@@ -2523,12 +2533,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 bots.record_human_hit(input.attacker, self.health == 0);
             }
         } else if let Some(bots) = &mut self.bots {
-            let victim_team = bots
-                .snapshots()
-                .into_iter()
-                .find(|bot| bot.identity == input.victim)
-                .map(|bot| bot.team)
-                .unwrap_or(attacker_team);
+            let victim_team = bots.team(input.victim).unwrap_or(attacker_team);
             let population = bots.team_population(victim_team, self.team_selection.local_team());
             bots.damage(input, attacker_team, self.tick, population)
                 .map_err(Error::Bot)?;
@@ -2644,12 +2649,28 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 }
             }
             let boxed_hit = if player_hit.is_none() {
-                self.bots.as_ref()
-                    .and_then(|bots| bots.intersect_enemy(self.team_selection.local_team(), origin, end, PLAYER_IDENTITY))
+                self.bots
+                    .as_ref()
+                    .and_then(|bots| {
+                        bots.intersect_enemy(
+                            self.team_selection.local_team(),
+                            origin,
+                            end,
+                            PLAYER_IDENTITY,
+                        )
+                    })
                     .filter(|(_, fraction, _)| *fraction <= impact.fraction)
-            } else { None };
-            if player_hit.is_some() || boxed_hit.is_some() || impact.fraction < 1.0 || impact.start_solid {
-                let position = player_hit.as_ref().map(|hit| hit.end)
+            } else {
+                None
+            };
+            if player_hit.is_some()
+                || boxed_hit.is_some()
+                || impact.fraction < 1.0
+                || impact.start_solid
+            {
+                let position = player_hit
+                    .as_ref()
+                    .map(|hit| hit.end)
                     .or_else(|| boxed_hit.map(|(_, _, position)| position))
                     .unwrap_or(impact.end);
                 let distance = length(sub(position, origin));
@@ -2684,7 +2705,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     profile.damage_at_distance(distance, weapon == Weapon::Scattergun)
                 };
                 if let Some(identity) = target
-                    && self.bots.as_ref().is_some_and(|bots| bots.contains(identity))
+                    && self
+                        .bots
+                        .as_ref()
+                        .is_some_and(|bots| bots.contains(identity))
                 {
                     damage.entry(identity).or_insert((0.0, position)).0 += amount;
                 }
@@ -2789,7 +2813,14 @@ impl<W: GameplayWorld + Clone> Session<W> {
         let actor = self
             .bots
             .as_ref()
-            .and_then(|bots| bots.intersect_enemy(self.team_selection.local_team(), origin, end, PLAYER_IDENTITY))
+            .and_then(|bots| {
+                bots.intersect_enemy(
+                    self.team_selection.local_team(),
+                    origin,
+                    end,
+                    PLAYER_IDENTITY,
+                )
+            })
             .filter(|(_, fraction, _)| *fraction <= impact.fraction);
         if impact.fraction < 1.0 || impact.start_solid || actor.is_some() {
             let target = actor.map(|(identity, _, _)| identity).or_else(|| {
@@ -2844,13 +2875,19 @@ impl<W: GameplayWorld + Clone> Session<W> {
         Ok(())
     }
 
-    fn fire_minigun_hitscan(&mut self, pitch: f32, yaw: f32) -> Result<MapPhase, Error> {
+    fn fire_minigun_hitscan(
+        &mut self,
+        pitch: f32,
+        yaw: f32,
+        events: &mut Vec<Event>,
+    ) -> Result<MapPhase, Error> {
         let (forward, right, up) = angle_vectors(pitch, yaw, 0.0);
         let source = add(self.movement.position, self.movement.view_offset);
-        let (_, penalty) = self.loadout[&Weapon::Minigun]
+        let (damage_penalty, spread_penalty) = self.loadout[&Weapon::Minigun]
             .minigun_penalties(self.tick, self.movement_configuration.tick_interval);
-        let spread = 0.08 * penalty;
+        let spread = 0.08 * spread_penalty;
         let mut phase = MapPhase::default();
+        let mut victims = BTreeMap::<u32, (f32, [f32; 3])>::new();
         for pellet in 0..4 {
             let mut random = UniformRandomStream::from_seed(((self.tick as i32) & 255) + pellet)
                 .expect("bounded Source bullet seed");
@@ -2862,20 +2899,52 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 add(forward, scale(right, x * spread)),
                 scale(up, y * spread),
             ));
+            let end = add(source, scale(direction, 8192.0));
             let trace = self.collision.trace(
                 source,
-                add(source, scale(direction, 8192.0)),
+                end,
                 Hull {
                     mins: [0.0; 3],
                     maxs: [0.0; 3],
                 },
                 MASK_SOLID,
             )?;
-            if let Some(target) = trace.hit.and_then(|identity| u32::try_from(identity).ok())
+            if let Some((target, fraction, position)) = self.bots.as_ref().and_then(|bots| {
+                bots.intersect_enemy(
+                    self.team_selection.local_team(),
+                    source,
+                    end,
+                    PLAYER_IDENTITY,
+                )
+            }) && fraction <= trace.fraction
+            {
+                let profile = ballistics::HitscanProfile {
+                    pellets: 4,
+                    damage: 9.0 * damage_penalty,
+                    range: 8192.0,
+                    spread,
+                    accurate_after_seconds: f32::MAX,
+                };
+                victims.entry(target).or_insert((0.0, position)).0 +=
+                    profile.damage_at_distance(length(sub(position, source)), false);
+            } else if let Some(target) = trace.hit.and_then(|identity| u32::try_from(identity).ok())
                 && let Ok(damage) = self.map.damage(self.tick, target)
             {
                 phase.append(damage);
             }
+        }
+        for (victim, (amount, position)) in victims {
+            self.apply_actor_damage(
+                bot::Damage {
+                    attacker: PLAYER_IDENTITY,
+                    victim,
+                    weapon: Weapon::Minigun,
+                    amount,
+                    position,
+                },
+                self.team_selection.local_team(),
+                events,
+            )?;
         }
         Ok(phase)
     }
@@ -3284,7 +3353,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 )
             });
             if self.lifecycle == PlayerLifecycle::Active
-                && projectile.presentation.team.is_enemy(self.team_selection.local_team())
+                && projectile
+                    .presentation
+                    .team
+                    .is_enemy(self.team_selection.local_team())
                 && let Some(fraction) =
                     bot::segment_player(request.start, result.end, self.movement.position)
                 && actor_hit.is_none_or(|(_, prior, _)| fraction < prior)
@@ -3454,7 +3526,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
     ) -> Result<(), Error> {
         if projectile.owner_identity == PLAYER_IDENTITY {
             self.apply_self_blast(projectile, events);
-        } else if projectile.team.is_enemy(self.team_selection.local_team()) && self.lifecycle == PlayerLifecycle::Active {
+        } else if projectile.team.is_enemy(self.team_selection.local_team())
+            && self.lifecycle == PlayerLifecycle::Active
+        {
             let center = add(self.movement.position, [0.0, 0.0, 41.0]);
             let visible = self
                 .collision
@@ -3711,7 +3785,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
     }
 
     fn fizzle_projectiles(&mut self, events: &mut Vec<ProjectileEvent>) {
+        let mut retained = Vec::new();
         for projectile in std::mem::take(&mut self.projectiles) {
+            if projectile.presentation.owner_identity != PLAYER_IDENTITY {
+                retained.push(projectile);
+                continue;
+            }
             self.rocket_trace_requests
                 .retain(|request| request.projectile != projectile.presentation.identity);
             if projectile.presentation.kind == ProjectileKind::Sticky {
@@ -3731,6 +3810,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 self.tick,
             ));
         }
+        self.projectiles = retained;
     }
 
     fn die(&mut self, projectile_events: &mut Vec<ProjectileEvent>) {

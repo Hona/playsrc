@@ -772,6 +772,31 @@ describe("canonical all-class TF2 session HUD adapter", () => {
     }
   })
 
+  test("retains unavailable Minigun clip and Fists ammunition through locker regeneration", () => {
+    for (const active of [9, 11] as const) {
+      const loadout = Object.freeze([
+        Object.freeze({ weapon: 9 as const, reload: 0 as const, clip: 0, reserve: 200, maximumClip: 0, maximumReserve: 200 }),
+        Object.freeze({ weapon: 11 as const, reload: 0 as const, clip: 0, reserve: 0, maximumClip: 0, maximumReserve: 0 }),
+      ])
+      const initial = compactSnapshot(1n, { class: 6, weapon: active, health: 300, maximumHealth: 300, loadout })
+      const previous = bindTf2Hud(adaptSessionHud(unavailable("initial"), compactPublication(initial), context)).facts
+      const regenerated = compactSnapshot(2n, {
+        class: 6,
+        weapon: active,
+        health: 300,
+        maximumHealth: 300,
+        loadout,
+        events: Object.freeze([Object.freeze({ kind: 5, detail: active, subject: 85, auxiliary: 0, values: Object.freeze([300, 0, active === 9 ? 200 : 0, 0]) })]),
+      })
+      const publication = adaptSessionHud(availablePrevious(previous), compactPublication(regenerated), context)
+      expect(() => bindTf2Hud(publication)).not.toThrow()
+      const event = publication.events.find((value) => value.kind === "regenerate") as Extract<Tf2HudEvent, { kind: "regenerate" }>
+      const state = event.weapons.find((value) => value.identity === active)!
+      expect(state.clip).toEqual({ kind: "unavailable", reason: "not-applicable" })
+      expect(state.reserve.kind).toBe(active === 9 ? "available" : "unavailable")
+    }
+  })
+
   test("retains fire/reload ticks across one coalesced host publication", () => {
     const initial = adaptSessionHud(unavailable("initial"), compactPublication(compactSnapshot(1n)), context)
     const prior = bindTf2Hud(initial).facts

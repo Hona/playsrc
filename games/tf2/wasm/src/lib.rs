@@ -622,18 +622,13 @@ pub extern "C" fn playsrc_resource_length() -> usize {
 }
 
 #[unsafe(no_mangle)]
-/// # Safety
-/// `pointer` must identify writable module memory of at least `capacity` bytes.
-pub unsafe extern "C" fn playsrc_resource_copy(pointer: *mut u8, capacity: usize) -> usize {
+pub extern "C" fn playsrc_resource_take() -> *mut u8 {
     let mut output = resource_output().lock().expect("resource output");
-    if pointer.is_null() || capacity < output.len() {
-        return 0;
+    if output.is_empty() {
+        return std::ptr::null_mut();
     }
-    let length = output.len();
-    unsafe { std::ptr::copy_nonoverlapping(output.as_ptr(), pointer, output.len()) };
-    output.clear();
-    output.shrink_to_fit();
-    length
+    let bytes = std::mem::take(&mut *output).into_boxed_slice();
+    Box::into_raw(bytes) as *mut u8
 }
 #[unsafe(no_mangle)]
 /// # Safety
@@ -1376,6 +1371,26 @@ pub unsafe extern "C" fn playsrc_particle_transact(
     }
     let bytes = unsafe { std::slice::from_raw_parts(pointer, length) };
     let Ok((events, request)) = decode_particle_transaction(bytes) else {
+        *SIMULATION_ERROR_DETAIL
+            .get_or_init(|| Mutex::new(String::new()))
+            .lock()
+            .expect("particle decode error detail") = format!(
+            "particle transaction rejected: bytes={}, events={}, from={:?}, to={:?}",
+            bytes.len(),
+            bytes
+                .get(28..32)
+                .and_then(|value| value.try_into().ok())
+                .map(u32::from_le_bytes)
+                .unwrap_or(u32::MAX),
+            bytes
+                .get(8..12)
+                .and_then(|value| value.try_into().ok())
+                .map(f32::from_le_bytes),
+            bytes
+                .get(12..16)
+                .and_then(|value| value.try_into().ok())
+                .map(f32::from_le_bytes),
+        );
         return 0;
     };
     let Some((index, generation)) = decode(handle) else {
@@ -1395,15 +1410,22 @@ pub unsafe extern "C" fn playsrc_particle_transact(
         return 0;
     };
     let mut collision = ParticleCollision(collision_world);
-    let Ok(output) = world.transact_render_output(
+    let output = match world.transact_render_output(
         &events,
         request,
         &mut collision,
         &slot.particle_sheets,
         &slot.particle_materials,
         64 * 1024 * 1024,
-    ) else {
-        return 0;
+    ) {
+        Ok(output) => output,
+        Err(error) => {
+            *SIMULATION_ERROR_DETAIL
+                .get_or_init(|| Mutex::new(String::new()))
+                .lock()
+                .expect("particle error detail") = error.to_string();
+            return 0;
+        }
     };
     slot.particle_output = output;
     1
