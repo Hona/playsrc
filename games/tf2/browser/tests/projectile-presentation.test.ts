@@ -204,7 +204,7 @@ describe("TF2 projectile presentation contract", () => {
     const rawFact = Object.freeze({
       identity: flying.identity,
       kind: 2 as const,
-      team: 1 as const,
+      team: 2 as const,
       ownerIdentity: flying.ownerIdentity,
       launcherIdentity: flying.launcherIdentity,
       state: 1 as const,
@@ -221,7 +221,7 @@ describe("TF2 projectile presentation contract", () => {
       kind: 2 as const,
       ownerIdentity: flying.ownerIdentity,
       launcherIdentity: flying.launcherIdentity,
-      team: 1 as const,
+      team: 2 as const,
       tick: 2n,
       position: flying.position,
       orientation: flying.orientation,

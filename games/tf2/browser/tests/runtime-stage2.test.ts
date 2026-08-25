@@ -14,9 +14,9 @@ function snapshot(): ArrayBuffer {
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x53, 0x53, 0x4e])
-  view.setUint32(4, 9, true)
+  view.setUint32(4, 10, true)
   view.setBigUint64(8, 7n, true)
-  data.set([1, 1, 1, 0], 16)
+  data.set([3, 2, 1, 0], 16)
   view.setFloat32(20, 200, true)
   view.setFloat32(24, 200, true)
   data[28] = 1
@@ -58,7 +58,7 @@ function snapshot(): ArrayBuffer {
   at += 48
 
   view.setUint32(at, 9, true)
-  data.set([1, 1, 1, 0], at + 4)
+  data.set([1, 2, 1, 0], at + 4)
   view.setUint32(at + 8, 1, true)
   view.setUint32(at + 12, 1, true)
   ;[10, 11, 12, 100, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0.1].forEach((value, index) => {
@@ -66,7 +66,7 @@ function snapshot(): ArrayBuffer {
   })
   at += 84
 
-  data.set([1, 1, 1, 0], at)
+  data.set([1, 1, 2, 0], at)
   view.setUint32(at + 4, 9, true)
   view.setUint32(at + 8, 1, true)
   view.setUint32(at + 12, 1, true)
@@ -146,7 +146,53 @@ class CourseWorker implements WorkerLike {
   }
 }
 
-describe("TF2 playable runtime Stage 2 contract", () => {
+describe("TF2 canonical gameplay command and snapshot contract", () => {
+  test("preserves all nine Source class selectors and rejects invalid class/team identities", () => {
+    const base = {
+      forward: 0,
+      side: 0,
+      yawDegrees: 0,
+      pitchDegrees: 0,
+      jump: false,
+      crouch: false,
+      fire: false,
+      detonate: false,
+    }
+    for (let identity = 1; identity <= 9; identity += 1) {
+      for (const team of [2, 3] as const) {
+        const bytes = encodeCommand({ ...base, selectClass: identity as 1, selectTeam: team })
+        expect(new DataView(bytes).getUint32(32, true)).toBe(identity | team << 16)
+      }
+    }
+    for (const identity of [0, 10, 1.5, Number.NaN]) {
+      expect(() => encodeCommand({ ...base, selectClass: identity as 1 })).toThrow("class selector is invalid")
+    }
+    for (const team of [0, 1, 4]) {
+      expect(() => encodeCommand({ ...base, selectTeam: team as 2 })).toThrow("team selector is invalid")
+    }
+  })
+
+  test("decodes every canonical class identity and a genuinely unarmed class snapshot", () => {
+    for (let identity = 1; identity <= 9; identity += 1) {
+      const bytes = new Uint8Array(snapshot())
+      bytes[16] = identity
+      expect(decodeSnapshot(bytes).class).toBe(identity)
+    }
+    const armed = new Uint8Array(snapshot())
+    const unarmed = new Uint8Array(armed.length - 48)
+    unarmed.set(armed.subarray(0, 264))
+    unarmed.set(armed.subarray(312), 264)
+    unarmed[16] = 1
+    unarmed[18] = 0
+    new DataView(unarmed.buffer).setUint32(56, 0, true)
+    const decoded = decodeSnapshot(unarmed)
+    expect(decoded.class).toBe(1)
+    expect(decoded.weapon).toBeNull()
+    expect(decoded.loadout).toEqual([])
+    unarmed[18] = 1
+    expect(() => decodeSnapshot(unarmed)).toThrow("active weapon does not match its loadout")
+  })
+
   test("encodes complete commands and atomically decodes runtime facts", () => {
     const command = encodeCommand({
       forward: 240,
@@ -162,9 +208,9 @@ describe("TF2 playable runtime Stage 2 contract", () => {
       reload: true,
       reset: true,
       respawn: true,
-      selectClass: 2,
+      selectClass: 4,
       selectWeapon: 3,
-      selectTeam: 2,
+      selectTeam: 3,
       modeRequest: 1,
       activateEntity: 213,
       physicsResults: [{
@@ -180,10 +226,10 @@ describe("TF2 playable runtime Stage 2 contract", () => {
     })
     const commandView = new DataView(command)
     expect(new TextDecoder().decode(command.slice(0, 4))).toBe("PCMD")
-    expect(commandView.getUint32(4, true)).toBe(4)
+    expect(commandView.getUint32(4, true)).toBe(5)
     expect(command.byteLength).toBe(128)
     expect(commandView.getUint32(28, true)).toBe(0xff)
-    expect(commandView.getUint32(32, true)).toBe(0x0202_0302)
+    expect(commandView.getUint32(32, true)).toBe(0x0203_0304)
     expect(commandView.getUint32(36, true)).toBe(213)
     expect(commandView.getUint16(40, true)).toBe(1)
     expect(commandView.getUint16(42, true)).toBe(0)
@@ -214,7 +260,7 @@ describe("TF2 playable runtime Stage 2 contract", () => {
     expect(value.projectiles[0]).toEqual({
       identity: 9,
       kind: 1,
-      team: 1,
+      team: 2,
       ownerIdentity: 1,
       launcherIdentity: 1,
       state: 1,
@@ -248,7 +294,7 @@ describe("TF2 playable runtime Stage 2 contract", () => {
     expect(() => decodeSnapshot(priorVersion)).toThrow(Tf2CodecError)
     const stuck = snapshot()
     const stuckData = new Uint8Array(stuck), stuckView = new DataView(stuck)
-    stuckData.set([2, 1, 3, 1], 316)
+    stuckData.set([2, 2, 3, 1], 316)
     stuckView.setFloat32(388, 1, true)
     expect(decodeSnapshot(stuck).projectiles[0]).toMatchObject({ kind: 2, state: 3, velocity: [100, 0, 0], contactNormal: [0, 0, 1] })
   })

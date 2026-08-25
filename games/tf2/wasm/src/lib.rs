@@ -3163,6 +3163,7 @@ fn gameplay_error_code(error: &playsrc_tf2::Error) -> u32 {
         playsrc_tf2::Error::InvalidStickyLaunchRandom => 7,
         playsrc_tf2::Error::InvalidProjectilePhysics => 8,
         playsrc_tf2::Error::Random(_) => 9,
+        playsrc_tf2::Error::UnsupportedJumpClass(_) => 10,
     }
 }
 
@@ -3429,14 +3430,14 @@ fn encode_snapshot(
     encode_movement_tick(&mut movement_tick_bytes, movement_tick, MAX)?;
     let mut out = Vec::new();
     extend(&mut out, b"PSSN", MAX)?;
-    u32_field(&mut out, 9, MAX)?;
+    u32_field(&mut out, 10, MAX)?;
     u64_field(&mut out, snapshot.tick, MAX)?;
     extend(
         &mut out,
         &[
             class_code(snapshot.class),
             team_code(snapshot.team),
-            weapon_code(snapshot.weapon),
+            snapshot.weapon.map_or(0, weapon_code),
             snapshot.movement.mode as u8,
         ],
         MAX,
@@ -4246,17 +4247,11 @@ fn encode_movement_tick(
     }
 }
 
-fn class_code(class: playsrc_tf2::Class) -> u8 {
-    match class {
-        playsrc_tf2::Class::Soldier => 1,
-        playsrc_tf2::Class::Demoman => 2,
-    }
+fn class_code(class: playsrc_tf2::PlayerClass) -> u8 {
+    class.source_number()
 }
-fn team_code(team: playsrc_tf2::Team) -> u8 {
-    match team {
-        playsrc_tf2::Team::Red => 1,
-        playsrc_tf2::Team::Blue => 2,
-    }
+fn team_code(team: playsrc_tf2::PlayerTeam) -> u8 {
+    team.source_number()
 }
 fn weapon_code(weapon: playsrc_tf2::Weapon) -> u8 {
     match weapon {
@@ -10407,12 +10402,12 @@ mod tests {
     fn command_and_snapshot_binary_contract_is_stable() {
         let mut bytes = vec![0; 48];
         bytes[..4].copy_from_slice(b"PCMD");
-        bytes[4..8].copy_from_slice(&4_u32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&5_u32.to_le_bytes());
         bytes[8..12].copy_from_slice(&240_f32.to_le_bytes());
         bytes[16..20].copy_from_slice(&100_f32.to_le_bytes());
         bytes[24..28].copy_from_slice(&(-30_f32).to_le_bytes());
         bytes[28..32].copy_from_slice(&0xad_u32.to_le_bytes());
-        bytes[32..36].copy_from_slice(&0x0201_0302_u32.to_le_bytes());
+        bytes[32..36].copy_from_slice(&0x0202_0304_u32.to_le_bytes());
         bytes[36..40].copy_from_slice(&77_u32.to_le_bytes());
         bytes[44..48].copy_from_slice(&48_u32.to_le_bytes());
         let input = gameplay_protocol::decode(&bytes).unwrap();
@@ -10423,13 +10418,32 @@ mod tests {
         assert!(command.movement.jump && command.fire && command.reload && command.respawn);
         assert_eq!(command.mode_request, Some(playsrc_movement::Mode::Noclip));
         assert_eq!(command.activate_entity, Some(77));
-        assert_eq!(command.select_class, Some(playsrc_tf2::Class::Demoman));
-        assert_eq!(command.select_team, Some(playsrc_tf2::Team::Red));
+        assert_eq!(
+            command.select_class,
+            Some(playsrc_tf2::PlayerClass::Demoman)
+        );
+        assert_eq!(command.select_team, Some(playsrc_tf2::PlayerTeam::Red));
         assert_eq!(
             command.select_weapon,
             Some(playsrc_tf2::Weapon::StickybombLauncher)
         );
         assert!(input.physics_results.is_empty());
+        for class in playsrc_tf2::PlayerClass::ALL {
+            let selection = 0x0202_0300_u32 | u32::from(class.source_number());
+            bytes[32..36].copy_from_slice(&selection.to_le_bytes());
+            assert_eq!(
+                gameplay_protocol::decode(&bytes)
+                    .unwrap()
+                    .command
+                    .select_class,
+                Some(class)
+            );
+        }
+        bytes[32..36].copy_from_slice(&0x0201_0303_u32.to_le_bytes());
+        assert!(gameplay_protocol::decode(&bytes).is_none());
+        bytes[32..36].copy_from_slice(&0x0202_030a_u32.to_le_bytes());
+        assert!(gameplay_protocol::decode(&bytes).is_none());
+        bytes[32..36].copy_from_slice(&0x0202_0304_u32.to_le_bytes());
         bytes[8..12].copy_from_slice(&f32::NAN.to_le_bytes());
         assert!(gameplay_protocol::decode(&bytes).is_none());
         let movement = playsrc_movement::State::from_player(
@@ -10445,7 +10459,7 @@ mod tests {
         let projectile = playsrc_tf2::Projectile {
             identity: 12,
             kind: playsrc_tf2::ProjectileKind::Rocket,
-            team: playsrc_tf2::Team::Blue,
+            team: playsrc_tf2::PlayerTeam::Blue,
             owner_identity: 1,
             launcher_identity: 2,
             state: playsrc_tf2::ProjectileState::Flying,
@@ -10458,9 +10472,9 @@ mod tests {
         };
         let snapshot = playsrc_tf2::Snapshot {
             tick: 9,
-            class: playsrc_tf2::Class::Soldier,
-            team: playsrc_tf2::Team::Blue,
-            weapon: playsrc_tf2::Weapon::Original,
+            class: playsrc_tf2::PlayerClass::Soldier,
+            team: playsrc_tf2::PlayerTeam::Blue,
+            weapon: Some(playsrc_tf2::Weapon::Original),
             player_flags: playsrc_tf2::FL_CLIENT | playsrc_tf2::FL_INWATER,
             movement,
             health: 175.,
@@ -10483,7 +10497,7 @@ mod tests {
                 projectile_kind: playsrc_tf2::ProjectileKind::Rocket,
                 owner_identity: 1,
                 launcher_identity: 2,
-                team: playsrc_tf2::Team::Blue,
+                team: playsrc_tf2::PlayerTeam::Blue,
                 tick: 9,
                 position: projectile.position,
                 orientation: projectile.orientation,
@@ -10502,9 +10516,9 @@ mod tests {
         let producer = playsrc_tf2::ProducerSnapshot {
             tick: 9,
             lifecycle: playsrc_tf2::PlayerLifecycle::Active,
-            class: playsrc_tf2::Class::Soldier,
-            team: playsrc_tf2::Team::Blue,
-            active_weapon: playsrc_tf2::Weapon::Original,
+            class: playsrc_tf2::PlayerClass::Soldier,
+            team: playsrc_tf2::PlayerTeam::Blue,
+            active_weapon: Some(playsrc_tf2::Weapon::Original),
             player_flags: playsrc_tf2::FL_CLIENT | playsrc_tf2::FL_INWATER,
             health: 175,
             maximum_health: 200,
@@ -10575,7 +10589,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(&encoded[..8], b"PSSN\x09\0\0\0");
+        assert_eq!(&encoded[..8], b"PSSN\x0a\0\0\0");
         assert_eq!(encoded.len(), 880);
         assert_eq!(
             u32::from_le_bytes(encoded[160..164].try_into().unwrap()),
@@ -10585,7 +10599,7 @@ mod tests {
         assert_eq!(u32::from_le_bytes(encoded[60..64].try_into().unwrap()), 1);
         assert_eq!(u32::from_le_bytes(encoded[64..68].try_into().unwrap()), 1);
         assert_eq!(&encoded[312..316], &[12, 0, 0, 0]);
-        assert_eq!(&encoded[396..400], &[6, 1, 2, 0]);
+        assert_eq!(&encoded[396..400], &[6, 1, 3, 0]);
         assert_eq!(&encoded[504..512], &[1, 1, 0, 0, 2, 1, 0, 0]);
         assert_eq!(&encoded[512..520], b"PRNG\x01\0\0\0");
     }
@@ -10594,12 +10608,12 @@ mod tests {
     fn fixed_tick_continuation_retains_buttons_and_consumes_results_and_selectors() {
         let mut bytes = vec![0; 48 + 80];
         bytes[..4].copy_from_slice(b"PCMD");
-        bytes[4..8].copy_from_slice(&4_u32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&5_u32.to_le_bytes());
         bytes[8..12].copy_from_slice(&240_f32.to_le_bytes());
         bytes[12..16].copy_from_slice(&(-120_f32).to_le_bytes());
         bytes[16..20].copy_from_slice(&100_f32.to_le_bytes());
         bytes[28..32].copy_from_slice(&0xff_u32.to_le_bytes());
-        bytes[32..36].copy_from_slice(&0x0201_0302_u32.to_le_bytes());
+        bytes[32..36].copy_from_slice(&0x0202_0304_u32.to_le_bytes());
         bytes[36..40].copy_from_slice(&77_u32.to_le_bytes());
         bytes[40..42].copy_from_slice(&1_u16.to_le_bytes());
         let byte_length = bytes.len() as u32;

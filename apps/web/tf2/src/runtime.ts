@@ -19,7 +19,7 @@ import {
   tf2CrosshairHudValues,
   tf2CrosshairSettings,
   tf2HudUnavailable,
-  type CompactSessionHudContext,
+  type SessionHudContext,
   type Tf2CrosshairSettings,
   type Tf2HudBinding,
   type Tf2HudFreezePanel,
@@ -42,7 +42,8 @@ import {
   type Tf2LoadingPresentation,
   type Tf2LoadingVguiRuntime,
 } from "@playsrc/game-tf2-browser/loading-presentation"
-import { encodeCommand, mapDerivedKey, type Snapshot } from "@playsrc/game-tf2-browser/codec"
+import { encodeCommand, mapDerivedKey, type Snapshot, type Tf2Class, type Tf2Team } from "@playsrc/game-tf2-browser/codec"
+import { TF2_CLASS_NAMES, tf2ClassFromName, tf2ClassPresentation } from "@playsrc/game-tf2-browser/class"
 import { parsePresentationArtifacts, type PresentationArtifacts } from "@playsrc/game-tf2-browser/artifacts"
 import {
   createParticleBatchEncoder,
@@ -298,7 +299,7 @@ export class Tf2Application {
   readonly #gameUiRequestTasks = new Set<number>()
   #hudIntegration?: Tf2HudIntegration
   #hudRootCounts?: Readonly<{ playerStatus: number; ammo: number }>
-  #hudContext?: CompactSessionHudContext
+  #hudContext?: SessionHudContext
   #hudContextIdentity = -1
   #playerClassUsePlayerModel = true
   #crosshairSettings?: Tf2CrosshairSettings
@@ -324,7 +325,8 @@ export class Tf2Application {
   #firePressed = false
   #detonatePressed = false
   #reloadPressed = false
-  #selectClass: 1 | 2 | undefined
+  #selectClass: Tf2Class | undefined
+  #selectTeam: Tf2Team | undefined
   #selectWeapon: 1 | 2 | 3 | undefined
   #modeRequest: 0 | 1 | undefined
   #coverageSamples:readonly CoverageSample[]=Object.freeze([])
@@ -335,7 +337,7 @@ export class Tf2Application {
   #mapIdentity = ""
   #environmentDrawables = 0
   #modelProbes: NonNullable<ApplicationView["modelProbes"]> = Object.freeze([])
-  readonly #viewmodelSequenceCache = new Map<1 | 2, string>()
+  readonly #viewmodelSequenceCache = new Map<Tf2Class, string>()
   #viewmodelActivities = new Set<string>()
   #crouchHistory: string[] = []
   #viewmodelTimelineProbes: string[] = []
@@ -1341,7 +1343,7 @@ export class Tf2Application {
         projectileStates: this.#snapshot.projectiles.map((projectile) => `${projectile.identity}:${projectile.state}`).join(","),
         decalProbe: this.#decalProbe(this.#artifacts),
         modelOccurrenceCount: this.#artifacts.modelOccurrences.length,
-        viewmodelSequences: this.#viewmodelSequences(this.#artifacts, 1),
+        viewmodelSequences: this.#viewmodelSequences(this.#artifacts, this.#snapshot.class),
         crouchHistory: Object.freeze([...this.#crouchHistory]),
         viewmodelTimelineProbes: Object.freeze([...this.#viewmodelTimelineProbes]),
         modelMatrices: this.#modelMatrices(this.#artifacts),
@@ -1445,7 +1447,7 @@ export class Tf2Application {
     if (this.#console) this.#console.apply({ kind: "replace-catalog", catalog: this.#catalog() })
   }
 
-  #currentHudContext(snapshot: Snapshot): CompactSessionHudContext {
+  #currentHudContext(snapshot: Snapshot): SessionHudContext {
     if (!this.#crosshairSettings) throw new Error("TF2 crosshair settings are unavailable")
     const respawnAllowed = snapshot.lifecycle === 2
     const paused = this.#view.gameUi === "pause"
@@ -1458,6 +1460,7 @@ export class Tf2Application {
       | Number(this.#playerClassUsePlayerModel) << 3
       | Number(loadingImage) << 4
       | Number(clientModeAllows) << 5
+      | Number(snapshot.weapon !== null) << 6
     if (this.#hudContext && this.#hudContextIdentity === identity) return this.#hudContext
     this.#hudContextIdentity = identity
     this.#hudContext = Object.freeze({
@@ -1467,7 +1470,7 @@ export class Tf2Application {
       weaponSelection: Object.freeze({ open: false, selectedWeapon: tf2HudUnavailable<number>("not-produced") }),
       crosshair: Object.freeze({
         configured: true,
-        weaponAllows: true,
+        weaponAllows: snapshot.weapon !== null,
         loadingImage,
         paused,
         clientModeAllows,
@@ -1541,6 +1544,12 @@ export class Tf2Application {
         }),
         Object.freeze({
           kind: "command" as const,
+          name: "jointeam",
+          disposition: "visible" as const,
+          acceptsSuggestions: true,
+        }),
+        Object.freeze({
+          kind: "command" as const,
           name: "noclip",
           disposition: "visible" as const,
           acceptsSuggestions: false,
@@ -1562,6 +1571,12 @@ export class Tf2Application {
           name: "con_enable",
           disposition: "visible" as const,
           displayValue: String(Number(this.#consoleEnabled)),
+        }),
+        Object.freeze({
+          kind: "convar" as const,
+          name: "cl_hud_playerclass_use_playermodel",
+          disposition: "visible" as const,
+          displayValue: String(Number(this.#playerClassUsePlayerModel)),
         }),
         Object.freeze({
           kind: "convar" as const,
@@ -1657,8 +1672,10 @@ export class Tf2Application {
         request.commandName.toLowerCase() === "map"
           ? this.#configuration.targets.map((target) => `map ${target.target}`)
           : request.commandName.toLowerCase() === "class"
-            ? ["class soldier", "class demoman"]
-            : []
+            ? TF2_CLASS_NAMES.map((name) => `class ${name}`)
+            : request.commandName.toLowerCase() === "jointeam"
+              ? ["jointeam red", "jointeam blue"]
+              : []
       const suggestions: ConsoleCompletionSuggestion[] = candidates
         .filter((value) => value.startsWith(request.partialText.toLowerCase()))
         .slice(0, request.maxItems)
@@ -1741,6 +1758,27 @@ export class Tf2Application {
       this.#output(`developer = ${this.#developer}`, true)
       return
     }
+    if (command === "cl_hud_playerclass_use_playermodel" && tokens.length <= 1) {
+      if (tokens.length === 1 && tokens[0] !== "0" && tokens[0] !== "1") {
+        this.#output(`${command} accepts exactly 0 or 1`)
+        return
+      }
+      if (tokens[0]) {
+        this.#playerClassUsePlayerModel = tokens[0] === "1"
+        this.#hudIntegration?.setPlayerClassUsePlayerModel(this.#playerClassUsePlayerModel)
+        this.#hudContext = undefined
+        this.#hudContextIdentity = -1
+        if (this.#settings?.snapshot().settings.activeTransactionId === null) {
+          this.#settings.synchronize({ [command]: this.#playerClassUsePlayerModel })
+          localStorage.setItem(TF2_BROWSER_SETTINGS_STORAGE_KEY, new TextDecoder().decode(this.#settings.persistence()))
+          this.#set({ settingsPersistence: "stored" })
+        }
+        this.#console?.apply({ kind: "replace-catalog", catalog: this.#catalog() })
+        this.#set({ hudPresentationProbe: this.#hudPresentationObservation() })
+      }
+      this.#output(`"${command}" = "${Number(this.#playerClassUsePlayerModel)}" ( def. "1" )`)
+      return
+    }
     if (command === "con_enable" && tokens.length <= 1) {
       if (tokens.length === 1 && tokens[0] !== "0" && tokens[0] !== "1") {
         this.#output("con_enable accepts exactly 0 or 1")
@@ -1774,13 +1812,23 @@ export class Tf2Application {
       return
     }
     if (command === "class" && tokens.length === 1) {
-      if (tokens[0]?.toLowerCase() === "soldier") this.selectClass(1)
-      else if (tokens[0]?.toLowerCase() === "demoman") this.selectClass(2)
-      else {
-        this.#output("Usage: class soldier|demoman")
+      const identity = tf2ClassFromName(tokens[0]!.toLowerCase())
+      if (identity === undefined) {
+        this.#output(`Usage: class ${TF2_CLASS_NAMES.join("|")}`)
         return
       }
+      this.selectClass(identity)
       this.#output(`Class selection queued: ${tokens[0]}`)
+      return
+    }
+    if (command === "jointeam" && tokens.length === 1) {
+      const team = tokens[0]!.toLowerCase()
+      if (team !== "red" && team !== "blue") {
+        this.#output("Usage: jointeam red|blue")
+        return
+      }
+      this.#selectTeam = team === "red" ? 2 : 3
+      this.#output(`Team selection queued: ${tokens[0]}`)
       return
     }
     if (command === "noclip" && tokens.length === 0) {
@@ -2306,12 +2354,10 @@ export class Tf2Application {
     })
   }
 
-  #viewmodelSequences(artifacts: PresentationArtifacts, tf2Class: 1 | 2): string {
+  #viewmodelSequences(artifacts: PresentationArtifacts, tf2Class: Tf2Class): string {
     const cached = this.#viewmodelSequenceCache.get(tf2Class)
     if (cached !== undefined) return cached
-    const identity = tf2Class === 1
-      ? "models/weapons/c_models/c_soldier_arms.mdl"
-      : "models/weapons/c_models/c_demo_arms.mdl"
+    const identity = tf2ClassPresentation(tf2Class).hands
     const sequences = artifacts.models.get(identity)?.sequences
       .filter((sequence) => sequence.timingAvailable)
       .map((sequence) => `${sequence.activity}:${sequence.durationSeconds}`)
@@ -2496,7 +2542,7 @@ export class Tf2Application {
   #command(): ArrayBuffer {
     const forward = Number(this.#buttons.held("+forward")) - Number(this.#buttons.held("+back"))
     const side = Number(this.#buttons.held("+moveleft")) - Number(this.#buttons.held("+moveright"))
-    const unsupportedSticky = this.#snapshot?.class === 2 && (this.#buttons.held("+attack") || this.#firePressed)
+    const unsupportedSticky = this.#snapshot?.class === 4 && (this.#buttons.held("+attack") || this.#firePressed)
     if (unsupportedSticky) { this.#blockers.add("Missing exact IVP sticky rigid-body solver: launch is rejected before projectile creation"); this.#set({unsupportedState:"StickyPhysicsSolverUnavailable"}) }
     const command = encodeCommand({
       forward: forward * 450,
@@ -2509,10 +2555,12 @@ export class Tf2Application {
       detonate: this.#buttons.held("+attack2") || this.#detonatePressed,
       reload: this.#buttons.held("+reload") || this.#reloadPressed,
       selectClass: this.#selectClass,
+      selectTeam: this.#selectTeam,
       selectWeapon: this.#selectWeapon,
       modeRequest: this.#modeRequest,
     })
     this.#selectClass = undefined
+    this.#selectTeam = undefined
     this.#selectWeapon = undefined
     this.#modeRequest = undefined
     this.#jumpPressed = false
@@ -2889,9 +2937,11 @@ export class Tf2Application {
       const presentedEye=this.#predictedEye.sample(publication.interpolation)
       const camera=presentedEye?Object.freeze({...authoritativeCamera,position:presentedEye}):authoritativeCamera
       if(!ownsGeneration())return
-      const viewport=this.#viewport(),viewmodel=this.#viewmodels.map(snapshot,{aspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),farPlane:camera.far})
+      const viewport=this.#viewport(),viewmodel=snapshot.weapon===null?undefined:this.#viewmodels.map(snapshot,{aspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),farPlane:camera.far})
       const lockerRequests=[...this.#lockerAnimations].flatMap(([identity,state])=>{const occurrence=this.#artifacts!.modelOccurrences.find(value=>value.entity===identity),artifact=occurrence&&this.#artifacts!.models.get(occurrence.model);if(!occurrence||!artifact){this.#blockers.add(`TF2 regenerate model presentation unavailable: ${identity}`);return []}const closed=snapshot.tick>=state.closeTick,animation=closed?state.closeAnimation:state.openAnimation,start=closed?state.closeTick:state.openTick,elapsed=Math.max(0,Number(snapshot.tick-start)*0.015),previousTick=snapshot.tick>BigInt(publication.selectedTicks)?snapshot.tick-BigInt(publication.selectedTicks):0n,previousElapsed=Math.max(0,Number(previousTick-start)*0.015);return [Object.freeze({identity,model:occurrence.model,activity:animation,previousElapsedSeconds:Math.min(previousElapsed,elapsed),elapsedSeconds:elapsed,currentTimeSeconds:Number(snapshot.tick)*0.015,frameTimeSeconds:publication.selectedTicks*0.015,planarSpeed:0,screenAspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),worldFarPlane:camera.far,skin:occurrence.skin,lod:0,bodygroups:Object.freeze([]),packedBody:state.body})]})
-      const modelStart=performance.now();this.#wasmCalls.models++;const modelRequest=client.models(generation, encodeModelPoseBatch([viewmodel.request,...lockerRequests]));this.#wasmCalls.visibility++;const visibilityRequest=client.visibility(generation,{
+      const modelStart=performance.now(),modelRequests=viewmodel?[viewmodel.request,...lockerRequests]:lockerRequests
+      const modelRequest=modelRequests.length===0?undefined:(this.#wasmCalls.models++,client.models(generation,encodeModelPoseBatch(modelRequests)))
+      this.#wasmCalls.visibility++;const visibilityRequest=client.visibility(generation,{
         position:camera.position,
         yawDegrees:camera.yawDegrees,
         pitchDegrees:camera.pitchDegrees,
@@ -2900,14 +2950,14 @@ export class Tf2Application {
         near:camera.near,
         far:camera.far,
         presentationTimeSeconds:Number(snapshot.tick)*0.015,
-      });void visibilityRequest.catch(()=>{});const modelOutput=await modelRequest
+      });void visibilityRequest.catch(()=>{});const modelOutput=modelRequest===undefined?undefined:await modelRequest
       if(!ownsGeneration())return
-      const modelPoses=decodeModelPoseOutput(modelOutput)
+      const modelPoses=modelOutput===undefined?[]:decodeModelPoseOutput(modelOutput)
       const modelMilliseconds=performance.now()-modelStart
-      const viewmodelPoses = modelPoses.filter((pose) => pose.identity === viewmodel.item.identity)
+      const viewmodelPoses = viewmodel===undefined?[]:modelPoses.filter((pose) => pose.identity === viewmodel.item.identity)
       const lockerPoses=modelPoses.filter(pose=>this.#lockerAnimations.has(pose.identity))
-      if(viewmodelPoses.length!==2||viewmodelPoses[0]?.role!=="item"||viewmodelPoses[1]?.role!=="hand")throw new Error("Viewmodel composition output differs");const viewmodelPose=viewmodelPoses[1]!
-      this.#viewmodelActivities.add(viewmodelPose.activity)
+      if(viewmodel!==undefined&&(viewmodelPoses.length!==2||viewmodelPoses[0]?.role!=="item"||viewmodelPoses[1]?.role!=="hand"))throw new Error("Viewmodel composition output differs");const viewmodelPose=viewmodelPoses[1]
+      if(viewmodelPose)this.#viewmodelActivities.add(viewmodelPose.activity)
       this.#updateAttachmentTransforms(snapshot, viewmodelPoses, camera)
       let presentation:ReturnType<ProjectileMapper["map"]>
       const projectileStart=performance.now()
@@ -2934,8 +2984,8 @@ export class Tf2Application {
           ...projectileModels(presentation.models),
           ...lockerPoses.map(pose=>{const occurrence=this.#artifacts!.modelOccurrences.find(value=>value.entity===pose.identity)!;return Object.freeze({identity:pose.identity,model:pose.model,position:occurrence.origin,angles:occurrence.angles,scale:1,skin:occurrence.skin,pose})}),
           ...viewmodelPoses.map((pose, index) => Object.freeze({
-            ...viewmodel.item,
-            identity: viewmodel.item.identity + index,
+            ...viewmodel!.item,
+            identity: viewmodel!.item.identity + index,
             model: pose.model,
             position:pose.viewmodel!.transform.origin,angles:pose.viewmodel!.transform.angles,
             viewModelProjection:Object.freeze({kind:"viewmodel" as const,horizontalFov4By3:pose.viewmodel!.projection.unscaledHorizontalFov4By3,near:pose.viewmodel!.projection.near,depthRange:pose.viewmodel!.depthRange,drawsAfterWorld:true,opaqueBeforeTranslucent:true,optionalViewSpaceYReflection:pose.viewmodel!.reflected}),
@@ -2989,7 +3039,7 @@ export class Tf2Application {
         playerFlags: snapshot.playerFlags,
         inWater: snapshot.inWater,
         movementTick: snapshot.movementTick,
-        viewmodelPose: Object.freeze({
+        viewmodelPose: viewmodelPose===undefined?undefined:Object.freeze({
           activity: viewmodelPose.activity,
           sequence: viewmodelPose.sequence,
           cycle: viewmodelPose.cycle,
@@ -3003,7 +3053,7 @@ export class Tf2Application {
         audioStarts: this.#view.audioStarts?.length === this.#audioStarts.length
           ? this.#view.audioStarts
           : Object.freeze([...this.#audioStarts]),
-        viewmodelProjection: viewmodel.item.viewModelProjection ? `${viewmodel.item.viewModelProjection.horizontalFov4By3}:${viewmodel.item.viewModelProjection.near}:${viewmodel.item.viewModelProjection.depthRange.join(",")}` : undefined,
+        viewmodelProjection: viewmodel?.item.viewModelProjection ? `${viewmodel.item.viewModelProjection.horizontalFov4By3}:${viewmodel.item.viewModelProjection.near}:${viewmodel.item.viewModelProjection.depthRange.join(",")}` : undefined,
         viewmodelActivities: this.#view.viewmodelActivities?.length === this.#viewmodelActivities.size
           ? this.#view.viewmodelActivities
           : Object.freeze([...this.#viewmodelActivities]),
@@ -3211,6 +3261,7 @@ export class Tf2Application {
     this.#buttons.clear()
     this.#jumpPressed = this.#firePressed = this.#detonatePressed = this.#reloadPressed = false
     this.#selectClass = undefined
+    this.#selectTeam = undefined
     this.#selectWeapon = undefined
     this.#modeRequest = undefined
   }
@@ -3232,7 +3283,7 @@ export class Tf2Application {
     }))
   }
 
-  selectClass(value: 1 | 2): void {
+  selectClass(value: Tf2Class): void {
     this.#selectClass = value
   }
 

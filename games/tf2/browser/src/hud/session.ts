@@ -11,10 +11,12 @@ import type {
   Tf2HudWeapon,
   Tf2ReloadPhase,
 } from "./contract"
+import type { Tf2Class, Tf2Team, Tf2Weapon } from "../codec"
+import { tf2ClassPresentation } from "../class"
 import { Tf2HudBindingError } from "./contract"
 import { tf2HudAvailable, tf2HudUnavailable } from "./bindings"
 
-export type CompactSessionHudContext = Readonly<{
+export type SessionHudContext = Readonly<{
   playerIdentity: number
   liveHudSuppressed: boolean
   respawnAllowed: boolean
@@ -29,7 +31,7 @@ export type CompactSessionHudContext = Readonly<{
 }>
 
 type CompactWeaponState = Readonly<{
-  weapon: 1 | 2 | 3
+  weapon: Tf2Weapon
   reload: 0 | 1 | 2 | 3
   clip: number
   reserve: number
@@ -45,24 +47,24 @@ type CompactGameplayEvent = Readonly<{
   values: readonly [number, number, number, number]
 }>
 
-type CompactSessionSnapshot = Readonly<{
+type SessionSnapshot = Readonly<{
   tick: bigint
-  class: 1 | 2
-  team: 1 | 2
-  weapon: 1 | 2 | 3
+  class: Tf2Class
+  team: Tf2Team
+  weapon: Tf2Weapon | null
   health: number
   maximumHealth: number
   lifecycle: 1 | 2
   conditions: readonly [number, number, number, number, number]
   loadout: readonly CompactWeaponState[]
   events: readonly CompactGameplayEvent[]
-  lifecycleEvents: readonly Readonly<{ tick: bigint; kind: 1 | 2 | 3 | 4; class: 1 | 2; team: 1 | 2 }>[]
+  lifecycleEvents: readonly Readonly<{ tick: bigint; kind: 1 | 2 | 3 | 4; class: Tf2Class; team: Tf2Team }>[]
   projectileEvents: readonly Readonly<{ type: "fire" | "impact" | "stick" | "arm" | "fizzle" | "explode"; launcherIdentity: number }>[]
 }>
 
-export type CompactSessionSimulationPublication = Readonly<{
-  eventBatches: readonly Readonly<{ snapshot: CompactSessionSnapshot }>[]
-  snapshot: CompactSessionSnapshot
+export type SessionSimulationPublication = Readonly<{
+  eventBatches: readonly Readonly<{ snapshot: SessionSnapshot }>[]
+  snapshot: SessionSnapshot
 }>
 
 type Tf2HudEventPayload = Tf2HudEvent extends infer Event
@@ -79,7 +81,7 @@ function maximumBuffedHealth(current: number, maximum: number): number {
   return Math.max(Math.floor((maximum * 1.5) / 5) * 5, maximum, current)
 }
 
-function health(snapshot: CompactSessionSnapshot, current = snapshot.health): Tf2HudHealth {
+function health(snapshot: SessionSnapshot, current = snapshot.health): Tf2HudHealth {
   return Object.freeze({
     current,
     maximum: snapshot.maximumHealth,
@@ -117,26 +119,18 @@ function weapon(value: CompactWeaponState): Tf2HudWeapon {
   })
 }
 
-function classIdentity(value: CompactSessionSnapshot["class"]): 3 | 4 {
-  return value === 1 ? 3 : 4
-}
-
-function teamIdentity(value: CompactSessionSnapshot["team"]): 2 | 3 {
-  return value === 1 ? 2 : 3
-}
-
-function classModel(snapshot: CompactSessionSnapshot) {
+function classModel(snapshot: SessionSnapshot) {
   return Object.freeze({
-    identity: snapshot.class === 1 ? "models/player/soldier.mdl" : "models/player/demo.mdl",
-    skin: snapshot.team === 1 ? 0 : 1,
+    identity: tf2ClassPresentation(snapshot.class).model,
+    skin: snapshot.team === 2 ? 0 : 1,
   })
 }
 
-function conditions(value: CompactSessionSnapshot["conditions"]): Tf2ConditionWords {
+function conditions(value: SessionSnapshot["conditions"]): Tf2ConditionWords {
   return Object.freeze([...value]) as Tf2ConditionWords
 }
 
-function canonicalSnapshot(snapshot: CompactSessionSnapshot, context: CompactSessionHudContext): Tf2HudSnapshot {
+function canonicalSnapshot(snapshot: SessionSnapshot, context: SessionHudContext): Tf2HudSnapshot {
   const words = conditions(snapshot.conditions)
   const tfSuppressed = context.crosshair.tfSuppressed || conditionActive(words, 7) || conditionActive(words, 77)
   const crosshair = Object.freeze({ ...context.crosshair, tfSuppressed })
@@ -145,14 +139,16 @@ function canonicalSnapshot(snapshot: CompactSessionSnapshot, context: CompactSes
     player: tf2HudAvailable(Object.freeze({
       identity: context.playerIdentity,
       lifecycle: snapshot.lifecycle === 1 ? "active" as const : "dying" as const,
-      class: tf2HudAvailable(classIdentity(snapshot.class)),
-      team: tf2HudAvailable(teamIdentity(snapshot.team)),
+      class: tf2HudAvailable(snapshot.class),
+      team: tf2HudAvailable(snapshot.team),
       playerClassUsePlayerModel: context.playerClassUsePlayerModel,
       classModel: tf2HudAvailable(classModel(snapshot)),
       health: tf2HudAvailable(health(snapshot)),
       conditions: words,
       weapons: Object.freeze(snapshot.loadout.map(weapon)),
-      activeWeapon: tf2HudAvailable(snapshot.weapon),
+      activeWeapon: snapshot.weapon === null
+        ? tf2HudUnavailable<number>("not-applicable")
+        : tf2HudAvailable(snapshot.weapon),
       weaponSelection: Object.freeze({
         open: context.weaponSelection.open,
         selectedWeapon: context.weaponSelection.selectedWeapon,
@@ -190,29 +186,27 @@ function finalPlayer(snapshot: Tf2HudSnapshot) {
   return snapshot.player.value
 }
 
-function eventHealth(snapshot: CompactSessionSnapshot, current: number): Tf2HudHealth {
+function eventHealth(snapshot: SessionSnapshot, current: number): Tf2HudHealth {
   return health(snapshot, current)
 }
 
-function ammoCause(snapshot: CompactSessionSnapshot, identity: number): Extract<Tf2HudEvent, { kind: "ammo" }>["cause"] {
+function ammoCause(snapshot: SessionSnapshot, identity: number): Extract<Tf2HudEvent, { kind: "ammo" }>["cause"] {
   return snapshot.projectileEvents.some((event) => event.type === "fire" && event.launcherIdentity === identity)
     ? "fire"
     : "state"
 }
 
-function compactEventClass(detail: number): 3 | 4 {
-  if (detail === 1) return 3
-  if (detail === 2) return 4
-  throw new Tf2HudBindingError("MalformedFacts", "compact class event is invalid")
+function compactEventClass(detail: number): Tf2Class {
+  if (Number.isInteger(detail) && detail >= 1 && detail <= 9) return detail as Tf2Class
+  throw new Tf2HudBindingError("MalformedFacts", "session class event is invalid")
 }
 
-function compactEventTeam(detail: number): 2 | 3 {
-  if (detail === 1) return 2
-  if (detail === 2) return 3
-  throw new Tf2HudBindingError("MalformedFacts", "compact team event is invalid")
+function compactEventTeam(detail: number): Tf2Team {
+  if (detail === 2 || detail === 3) return detail
+  throw new Tf2HudBindingError("MalformedFacts", "session team event is invalid")
 }
 
-function eventWeapon(snapshot: CompactSessionSnapshot, identity: number): Tf2HudWeapon {
+function eventWeapon(snapshot: SessionSnapshot, identity: number): Tf2HudWeapon {
   const value = snapshot.loadout.find((item) => item.weapon === identity)
   if (!value) throw new Tf2HudBindingError("InconsistentPublication", "compact event weapon is absent from its tick")
   return weapon(value)
@@ -225,7 +219,7 @@ function integerEventValue(value: number, subject: string): number {
 
 function mapGameplayEvent(
   source: CompactGameplayEvent,
-  snapshot: CompactSessionSnapshot,
+  snapshot: SessionSnapshot,
   push: (event: Tf2HudEventPayload) => void,
 ): void {
   switch (source.kind) {
@@ -286,10 +280,10 @@ function mapGameplayEvent(
   }
 }
 
-export function adaptCompactSessionHud(
+export function adaptSessionHud(
   previous: Tf2HudAvailability<Tf2HudSnapshot>,
-  publication: CompactSessionSimulationPublication,
-  context: CompactSessionHudContext,
+  publication: SessionSimulationPublication,
+  context: SessionHudContext,
 ): Tf2HudPublication {
   if (publication.eventBatches.length === 0) {
     throw new Tf2HudBindingError("MalformedFacts", "compact simulation publication has no event batches")

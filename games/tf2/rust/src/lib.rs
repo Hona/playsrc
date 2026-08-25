@@ -73,37 +73,7 @@ pub enum PresentationError {
     CollisionRevisionMismatch { expected: u64, actual: u64 },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u8)]
-pub enum Class {
-    Soldier = 1,
-    Demoman = 2,
-}
-
-impl Class {
-    pub const fn source_number(self) -> u8 {
-        match self {
-            Self::Soldier => 3,
-            Self::Demoman => 4,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u8)]
-pub enum Team {
-    Red = 1,
-    Blue = 2,
-}
-
-impl Team {
-    pub const fn source_number(self) -> u8 {
-        match self {
-            Self::Red => 2,
-            Self::Blue => 3,
-        }
-    }
-}
+pub use class::{PlayerClass, PlayerTeam};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MovementModifiers {
@@ -138,16 +108,13 @@ impl Default for MovementModifiers {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MovementPolicy {
-    pub class: Class,
+    pub class: PlayerClass,
     pub modifiers: MovementModifiers,
 }
 
 impl MovementPolicy {
     pub fn resolve(self) -> GenericMovementPolicy {
-        let class_speed = match self.class {
-            Class::Soldier => 240.0,
-            Class::Demoman => 280.0,
-        };
+        let class_speed = self.class.data().maximum_speed;
         let maximum_speed =
             class_speed * self.modifiers.condition_speed_factor * self.modifiers.item_speed_factor;
         GenericMovementPolicy {
@@ -160,6 +127,9 @@ impl MovementPolicy {
             jump_impulse: 289.0
                 * self.modifiers.condition_jump_factor
                 * self.modifiers.item_jump_factor,
+            air_dash_impulse: (self.class == PlayerClass::Scout).then_some(
+                268.328_16 * self.modifiers.condition_jump_factor * self.modifiers.item_jump_factor,
+            ),
             surface_friction: self.modifiers.surface_friction,
             surface_jump_factor: self.modifiers.surface_jump_factor,
             standing_hull: Hull {
@@ -170,7 +140,7 @@ impl MovementPolicy {
                 mins: [-24.0, -24.0, 0.0],
                 maxs: [24.0, 24.0, 62.0],
             },
-            standing_view: [0.0, 0.0, 68.0],
+            standing_view: [0.0, 0.0, self.class.standing_eye_height()],
             crouched_view: [0.0, 0.0, 45.0],
             duck_duration: 0.2,
             unduck_duration: 0.2,
@@ -258,8 +228,8 @@ pub struct Command {
     pub reload: bool,
     pub reset: bool,
     pub respawn: bool,
-    pub select_class: Option<Class>,
-    pub select_team: Option<Team>,
+    pub select_class: Option<PlayerClass>,
+    pub select_team: Option<PlayerTeam>,
     pub select_weapon: Option<Weapon>,
     pub mode_request: Option<Mode>,
     pub activate_entity: Option<u32>,
@@ -380,7 +350,7 @@ impl StickyLaunchRandom {
 pub struct Projectile {
     pub identity: u32,
     pub kind: ProjectileKind,
-    pub team: Team,
+    pub team: PlayerTeam,
     pub owner_identity: u32,
     pub launcher_identity: u32,
     pub state: ProjectileState,
@@ -422,7 +392,7 @@ pub struct ProjectileEvent {
     pub projectile_kind: ProjectileKind,
     pub owner_identity: u32,
     pub launcher_identity: u32,
-    pub team: Team,
+    pub team: PlayerTeam,
     pub tick: u64,
     pub position: [f32; 3],
     pub orientation: [f32; 4],
@@ -497,8 +467,8 @@ pub enum LifecycleEventKind {
 pub struct LifecycleEvent {
     pub tick: u64,
     pub kind: LifecycleEventKind,
-    pub class: Class,
-    pub team: Team,
+    pub class: PlayerClass,
+    pub team: PlayerTeam,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -546,13 +516,13 @@ pub struct ContactReconcileRequest {
 pub struct PlayerRestrictions {
     pub taunting: bool,
     pub stalemate: bool,
-    pub team_win: Option<Team>,
+    pub team_win: Option<PlayerTeam>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
-    ClassChanged(Class),
-    TeamChanged(Team),
+    ClassChanged(PlayerClass),
+    TeamChanged(PlayerTeam),
     WeaponChanged(Weapon),
     Reloaded {
         weapon: Weapon,
@@ -594,9 +564,9 @@ pub enum Event {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
     pub tick: u64,
-    pub class: Class,
-    pub team: Team,
-    pub weapon: Weapon,
+    pub class: PlayerClass,
+    pub team: PlayerTeam,
+    pub weapon: Option<Weapon>,
     pub player_flags: u32,
     pub movement: MovementState,
     pub health: f32,
@@ -615,9 +585,9 @@ pub struct Snapshot {
 pub struct ProducerSnapshot {
     pub tick: u64,
     pub lifecycle: PlayerLifecycle,
-    pub class: Class,
-    pub team: Team,
-    pub active_weapon: Weapon,
+    pub class: PlayerClass,
+    pub team: PlayerTeam,
+    pub active_weapon: Option<Weapon>,
     pub player_flags: u32,
     pub health: i32,
     pub maximum_health: i32,
@@ -639,11 +609,12 @@ pub struct ProducerSnapshot {
 pub struct Session<W: GameplayWorld + Clone> {
     collision: W,
     tick: u64,
-    class: Class,
-    team: Team,
-    weapon: Weapon,
+    class: PlayerClass,
+    team: PlayerTeam,
+    weapon: Option<Weapon>,
     loadout: BTreeMap<Weapon, WeaponRuntime>,
     movement: MovementState,
+    air_dashes: u8,
     in_water: bool,
     movement_modifiers: MovementModifiers,
     last_movement: Option<MovementStepResult>,
@@ -692,6 +663,7 @@ pub enum Error {
     Jump(jump::Error),
     MissingEntity(u32),
     InvalidCourseTrigger(u32),
+    UnsupportedJumpClass(PlayerClass),
     ProjectileLimit,
     InvalidStickyLaunchRandom,
     InvalidProjectilePhysics,
@@ -736,7 +708,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
     pub fn new(collision: W, spawn: [f32; 3], map: MapRuntime) -> Self {
         let movement_modifiers = MovementModifiers::default();
         let movement_policy = MovementPolicy {
-            class: Class::Soldier,
+            class: PlayerClass::Soldier,
             modifiers: movement_modifiers,
         }
         .resolve();
@@ -764,9 +736,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
         Self {
             collision,
             tick: 0,
-            class: Class::Soldier,
-            team: Team::Red,
-            weapon: Weapon::RocketLauncher,
+            class: PlayerClass::Soldier,
+            team: PlayerTeam::Red,
+            weapon: Some(Weapon::RocketLauncher),
             loadout,
             movement: MovementState::from_player(
                 Player {
@@ -778,10 +750,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 },
                 movement_policy,
             ),
+            air_dashes: 0,
             in_water: false,
             movement_modifiers,
             last_movement: None,
-            health: stock_maximum_health(Class::Soldier),
+            health: PlayerClass::Soldier.data().maximum_health,
             conditions: ConditionSet::default(),
             lifecycle: PlayerLifecycle::Active,
             restrictions: PlayerRestrictions::default(),
@@ -1073,6 +1046,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
     }
 
     pub fn configure_jump(&mut self, definition: jump::CourseDefinition) -> Result<(), Error> {
+        if !matches!(self.class, PlayerClass::Soldier | PlayerClass::Demoman) {
+            return Err(Error::UnsupportedJumpClass(self.class));
+        }
         for zone in &definition.zones {
             if !self.map.accepts_course_trigger(zone.trigger_entity) {
                 return Err(Error::InvalidCourseTrigger(zone.trigger_entity));
@@ -1173,11 +1149,14 @@ impl<W: GameplayWorld + Clone> Session<W> {
         )?;
         self.emit_due_regenerate_model_closes();
         self.apply_selection(command, &mut events, &mut projectile_events);
-        let movement_policy = MovementPolicy {
+        let mut movement_policy = MovementPolicy {
             class: self.class,
             modifiers: self.movement_modifiers,
         }
         .resolve();
+        if self.air_dashes != 0 {
+            movement_policy.air_dash_impulse = None;
+        }
         let hull = self.movement.active_hull(movement_policy);
         let begin_phase = self.map.begin_tick(
             &self.collision,
@@ -1192,6 +1171,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         )?;
         map_phase.append(begin_phase);
         self.movement.position = add(self.movement.position, map_phase.carry);
+        let airborne_before_movement = self.movement.ground.is_none();
 
         let movement_result = step(
             &self.collision,
@@ -1217,6 +1197,16 @@ impl<W: GameplayWorld + Clone> Session<W> {
             movement_policy,
         )?;
         self.movement = movement_result.state;
+        if self.movement.ground.is_some() {
+            self.air_dashes = 0;
+        } else if airborne_before_movement
+            && self.class == PlayerClass::Scout
+            && movement_result
+                .events
+                .contains(&playsrc_movement::Event::Jumped)
+        {
+            self.air_dashes = self.air_dashes.saturating_add(1);
+        }
         self.last_movement = Some(movement_result);
 
         let mut teleported = false;
@@ -1230,7 +1220,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 class: self.class.source_number(),
                 observer: self.lifecycle != PlayerLifecycle::Active,
                 conditions: self.conditions.words(),
-                winning_team: self.restrictions.team_win.map(Team::source_number),
+                winning_team: self.restrictions.team_win.map(PlayerTeam::source_number),
             },
         )?;
         let discontinuity = self.apply_map_effects(&phase, &mut events, &mut teleported);
@@ -1246,12 +1236,15 @@ impl<W: GameplayWorld + Clone> Session<W> {
         }
 
         let mut ammo_events = Vec::new();
-        if self.lifecycle == PlayerLifecycle::Active && self.health > 0 {
+        if self.lifecycle == PlayerLifecycle::Active
+            && self.health > 0
+            && let Some(active_weapon) = self.weapon
+        {
             let released_primary = !command.fire && self.fire_was_held;
             let primary = {
                 let state = self
                     .loadout
-                    .get_mut(&self.weapon)
+                    .get_mut(&active_weapon)
                     .expect("active weapon belongs to loadout");
                 state.primary(
                     self.tick,
@@ -1273,7 +1266,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             {
                 let state = self
                     .loadout
-                    .get_mut(&self.weapon)
+                    .get_mut(&active_weapon)
                     .expect("active weapon belongs to loadout");
                 if command.reload || (self.auto_reload && !command.fire && !command.detonate) {
                     state.start_reload(
@@ -1342,12 +1335,14 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 player: jump::PlayerFacts {
                     identity: PLAYER_IDENTITY,
                     class: match self.class {
-                        Class::Soldier => jump::Class::Soldier,
-                        Class::Demoman => jump::Class::Demoman,
+                        PlayerClass::Soldier => jump::Class::Soldier,
+                        PlayerClass::Demoman => jump::Class::Demoman,
+                        _ => return Err(Error::UnsupportedJumpClass(self.class)),
                     },
-                    team: match self.team {
-                        Team::Red => jump::Team::Red,
-                        Team::Blue => jump::Team::Blue,
+                    team: if self.team == PlayerTeam::Red {
+                        jump::Team::Red
+                    } else {
+                        jump::Team::Blue
                     },
                     alive: self.lifecycle == PlayerLifecycle::Active,
                     active: self.lifecycle == PlayerLifecycle::Active,
@@ -1420,6 +1415,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         projectile_events: &mut Vec<ProjectileEvent>,
     ) {
         if let Some(team) = command.select_team
+            && team.is_gameplay()
             && team != self.team
         {
             self.team = team;
@@ -1434,6 +1430,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         }
         if let Some(class) = command.select_class
             && class != self.class
+            && (self.jump.is_none() || matches!(class, PlayerClass::Soldier | PlayerClass::Demoman))
         {
             self.class = class;
             self.weapon = default_weapon(class);
@@ -1457,6 +1454,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 }
                 .resolve(),
             );
+            self.air_dashes = 0;
             self.in_water = false;
             self.last_movement = None;
             self.lifecycle_events.extend([
@@ -1473,24 +1471,30 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     team: self.team,
                 },
             ]);
-            self.activity_events.push(ActivityEvent {
-                tick: self.tick,
-                weapon: self.weapon,
-                activity: weapon::WeaponActivity::Draw,
-            });
+            if let Some(weapon) = self.weapon {
+                self.activity_events.push(ActivityEvent {
+                    tick: self.tick,
+                    weapon,
+                    activity: weapon::WeaponActivity::Draw,
+                });
+            }
             events.push(Event::ClassChanged(class));
-            events.push(Event::WeaponChanged(self.weapon));
+            if let Some(weapon) = self.weapon {
+                events.push(Event::WeaponChanged(weapon));
+            }
             events.push(Event::Respawned);
         }
         if let Some(weapon) = command.select_weapon
             && allowed(self.class, weapon)
-            && weapon != self.weapon
+            && Some(weapon) != self.weapon
         {
-            if let Some(previous) = self.loadout.get_mut(&self.weapon) {
+            if let Some(active_weapon) = self.weapon
+                && let Some(previous) = self.loadout.get_mut(&active_weapon)
+            {
                 previous.charge_begin_tick = None;
                 previous.abort_reload();
             }
-            self.weapon = weapon;
+            self.weapon = Some(weapon);
             self.loadout
                 .entry(weapon)
                 .or_insert_with(|| WeaponRuntime::full(weapon));
@@ -1505,11 +1509,14 @@ impl<W: GameplayWorld + Clone> Session<W> {
     }
 
     fn deploy_active_weapon(&mut self) {
+        let Some(active_weapon) = self.weapon else {
+            return;
+        };
         let interval = self.movement_configuration.tick_interval;
         let first_primary_tick = {
             let active = self
                 .loadout
-                .get_mut(&self.weapon)
+                .get_mut(&active_weapon)
                 .expect("active weapon belongs to loadout");
             active.deploy(self.tick, interval);
             active.first_primary_tick
@@ -1666,7 +1673,6 @@ impl<W: GameplayWorld + Clone> Session<W> {
         for weapon in self.loadout.values_mut() {
             weapon.regenerate(self.tick, self.movement_configuration.tick_interval);
         }
-        let active = self.loadout[&self.weapon];
         self.next_regenerate_tick =
             self.tick + ticks(3.0, self.movement_configuration.tick_interval);
         if let Some(associated_model) = associated_model {
@@ -1702,13 +1708,16 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     body,
                 });
         }
-        events.push(Event::Resupplied {
-            entity,
-            health: self.health as f32,
-            weapon: self.weapon,
-            clip: active.clip,
-            reserve: active.reserve,
-        });
+        if let Some(weapon) = self.weapon {
+            let active = self.loadout[&weapon];
+            events.push(Event::Resupplied {
+                entity,
+                health: self.health as f32,
+                weapon,
+                clip: active.clip,
+                reserve: active.reserve,
+            });
+        }
     }
 
     fn emit_due_regenerate_model_closes(&mut self) {
@@ -1863,7 +1872,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
         expected_sticky_random: Option<StickyLaunchRandom>,
         projectile_events: &mut Vec<ProjectileEvent>,
     ) -> Result<(), Error> {
-        let definition = match self.weapon {
+        let weapon = self.weapon.expect("firing requires an active weapon");
+        let definition = match weapon {
             Weapon::RocketLauncher => SoundDefinition::RocketSingle,
             Weapon::Original => SoundDefinition::OriginalSingle,
             Weapon::StickybombLauncher => SoundDefinition::StickySingle,
@@ -1883,13 +1893,13 @@ impl<W: GameplayWorld + Clone> Session<W> {
         if self.projectiles.len() >= MAX_PROJECTILES {
             return Err(Error::ProjectileLimit);
         }
-        let kind = match self.weapon {
+        let kind = match weapon {
             Weapon::RocketLauncher | Weapon::Original => ProjectileKind::Rocket,
             Weapon::StickybombLauncher => ProjectileKind::Sticky,
         };
         let profile = self
             .loadout
-            .get(&self.weapon)
+            .get(&weapon)
             .expect("active weapon belongs to loadout")
             .profile();
         let (mut direction, right, up) = angle_vectors(pitch, yaw, 0.0);
@@ -2008,7 +2018,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 kind,
                 team: self.team,
                 owner_identity: PLAYER_IDENTITY,
-                launcher_identity: self.weapon as u32,
+                launcher_identity: weapon as u32,
                 state: ProjectileState::Flying,
                 position,
                 velocity,
@@ -2402,8 +2412,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
         };
         let grounded = self.movement.ground.is_some();
         let class = match self.class {
-            Class::Soldier => combat::BlastClass::Soldier,
-            Class::Demoman => combat::BlastClass::Demoman,
+            PlayerClass::Soldier => combat::BlastClass::Soldier,
+            PlayerClass::Demoman => combat::BlastClass::Demoman,
+            _ => return,
         };
         if let Some(base_damage) = combat::player_blast_damage(
             kind,
@@ -2515,61 +2526,61 @@ impl<W: GameplayWorld + Clone> Session<W> {
             },
             movement_policy,
         );
+        self.air_dashes = 0;
         self.in_water = false;
         self.last_movement = None;
         self.fire_was_held = false;
-        self.activity_events.push(ActivityEvent {
-            tick: self.tick,
-            weapon: self.weapon,
-            activity: weapon::WeaponActivity::Draw,
-        });
+        if let Some(weapon) = self.weapon {
+            self.activity_events.push(ActivityEvent {
+                tick: self.tick,
+                weapon,
+                activity: weapon::WeaponActivity::Draw,
+            });
+        }
         events.push(Event::Respawned);
     }
 
     fn maximum_health(&self) -> i32 {
-        if self.jump.is_some() && self.class == Class::Soldier {
+        if self.jump.is_some() && self.class == PlayerClass::Soldier {
             900
         } else {
-            stock_maximum_health(self.class)
+            self.class.data().maximum_health
         }
     }
 }
 
-fn default_weapon(class: Class) -> Weapon {
+fn default_weapon(class: PlayerClass) -> Option<Weapon> {
     match class {
-        Class::Soldier => Weapon::RocketLauncher,
-        Class::Demoman => Weapon::StickybombLauncher,
+        PlayerClass::Soldier => Some(Weapon::RocketLauncher),
+        PlayerClass::Demoman => Some(Weapon::StickybombLauncher),
+        _ => None,
     }
 }
 
-fn default_loadout(class: Class) -> BTreeMap<Weapon, WeaponRuntime> {
+fn default_loadout(class: PlayerClass) -> BTreeMap<Weapon, WeaponRuntime> {
     match class {
-        Class::Soldier => BTreeMap::from([
+        PlayerClass::Soldier => BTreeMap::from([
             (
                 Weapon::RocketLauncher,
                 WeaponRuntime::full(Weapon::RocketLauncher),
             ),
             (Weapon::Original, WeaponRuntime::full(Weapon::Original)),
         ]),
-        Class::Demoman => BTreeMap::from([(
+        PlayerClass::Demoman => BTreeMap::from([(
             Weapon::StickybombLauncher,
             WeaponRuntime::full(Weapon::StickybombLauncher),
         )]),
+        _ => BTreeMap::new(),
     }
 }
 
-fn stock_maximum_health(class: Class) -> i32 {
-    match class {
-        Class::Soldier => 200,
-        Class::Demoman => 175,
-    }
-}
-
-fn allowed(class: Class, weapon: Weapon) -> bool {
+fn allowed(class: PlayerClass, weapon: Weapon) -> bool {
     matches!(
         (class, weapon),
-        (Class::Soldier, Weapon::RocketLauncher | Weapon::Original)
-            | (Class::Demoman, Weapon::StickybombLauncher)
+        (
+            PlayerClass::Soldier,
+            Weapon::RocketLauncher | Weapon::Original
+        ) | (PlayerClass::Demoman, Weapon::StickybombLauncher)
     )
 }
 
@@ -2632,11 +2643,12 @@ fn angle_vectors(pitch: f32, yaw: f32, roll: f32) -> ([f32; 3], [f32; 3], [f32; 
     )
 }
 
-fn rocket_flight_mask(team: Team) -> u32 {
+fn rocket_flight_mask(team: PlayerTeam) -> u32 {
     MASK_SOLID
         | match team {
-            Team::Red => CONTENTS_BLUE_TEAM,
-            Team::Blue => CONTENTS_RED_TEAM,
+            PlayerTeam::Red => CONTENTS_BLUE_TEAM,
+            PlayerTeam::Blue => CONTENTS_RED_TEAM,
+            PlayerTeam::Unassigned | PlayerTeam::Spectator => 0,
         }
 }
 
@@ -2902,12 +2914,145 @@ mod tests {
         }
     }
 
+    #[test]
+    fn every_class_uses_one_script_backed_identity_spawn_and_movement_policy() {
+        let spawn = [16.0, -24.0, 0.0];
+        for class in PlayerClass::ALL {
+            let mut session = Session::new(Floor, spawn, MapRuntime::empty(0.015));
+            let snapshot = session
+                .advance(Command {
+                    select_class: Some(class),
+                    select_team: Some(PlayerTeam::Blue),
+                    movement: MoveCommand {
+                        forward: 450.0,
+                        ..MoveCommand::default()
+                    },
+                    fire: true,
+                    reload: true,
+                    ..Command::default()
+                })
+                .unwrap();
+            let policy = MovementPolicy {
+                class,
+                modifiers: MovementModifiers::default(),
+            }
+            .resolve();
+            assert_eq!(snapshot.class, class);
+            assert_eq!(snapshot.team, PlayerTeam::Blue);
+            assert_eq!(snapshot.maximum_health, class.data().maximum_health as f32);
+            assert_eq!(snapshot.health, class.data().maximum_health as f32);
+            assert_eq!(policy.maximum_speed, class.data().maximum_speed);
+            assert_eq!(policy.standing_hull.mins, [-24.0, -24.0, 0.0]);
+            assert_eq!(policy.standing_hull.maxs, [24.0, 24.0, 82.0]);
+            assert_eq!(policy.crouched_hull.maxs, [24.0, 24.0, 62.0]);
+            assert_eq!(
+                snapshot.movement.view_offset[2],
+                class.standing_eye_height()
+            );
+            assert!(snapshot.movement.velocity[0] > 0.0);
+            match class {
+                PlayerClass::Soldier => {
+                    assert_eq!(snapshot.weapon, Some(Weapon::RocketLauncher));
+                    assert_eq!(snapshot.loadout.len(), 2);
+                }
+                PlayerClass::Demoman => {
+                    assert_eq!(snapshot.weapon, Some(Weapon::StickybombLauncher));
+                    assert_eq!(snapshot.loadout.len(), 1);
+                }
+                _ => {
+                    assert_eq!(snapshot.weapon, None);
+                    assert!(snapshot.loadout.is_empty());
+                    assert!(snapshot.projectiles.is_empty());
+                    assert!(session.activity_events().is_empty());
+                }
+            }
+            let respawned = session
+                .advance(Command {
+                    respawn: true,
+                    ..Command::default()
+                })
+                .unwrap();
+            assert_eq!(respawned.movement.position, spawn);
+            assert_eq!(respawned.health, class.data().maximum_health as f32);
+        }
+    }
+
+    #[test]
+    fn scout_air_dash_requires_a_new_edge_and_resets_only_on_ground_or_spawn() {
+        for class in PlayerClass::ALL {
+            let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.015));
+            session
+                .advance(Command {
+                    select_class: Some(class),
+                    ..Command::default()
+                })
+                .unwrap();
+            session
+                .advance(Command {
+                    movement: MoveCommand {
+                        forward: 450.0,
+                        jump: true,
+                        ..MoveCommand::default()
+                    },
+                    ..Command::default()
+                })
+                .unwrap();
+            let released = session.advance(Command::default()).unwrap();
+            assert!(released.movement.ground.is_none());
+            let second = session
+                .advance(Command {
+                    movement: MoveCommand {
+                        side: 450.0,
+                        jump: true,
+                        ..MoveCommand::default()
+                    },
+                    ..Command::default()
+                })
+                .unwrap();
+            let dashed = session
+                .last_movement_result()
+                .unwrap()
+                .events
+                .contains(&playsrc_movement::Event::Jumped);
+            assert_eq!(dashed, class == PlayerClass::Scout);
+            if class == PlayerClass::Scout {
+                assert!((second.movement.velocity[2] - 262.328_16).abs() < 0.001);
+                assert!(second.movement.velocity[1].abs() > 300.0);
+                assert_eq!(session.air_dashes, 1);
+                session.advance(Command::default()).unwrap();
+                session
+                    .advance(Command {
+                        movement: MoveCommand {
+                            jump: true,
+                            ..MoveCommand::default()
+                        },
+                        ..Command::default()
+                    })
+                    .unwrap();
+                assert!(
+                    !session
+                        .last_movement_result()
+                        .unwrap()
+                        .events
+                        .contains(&playsrc_movement::Event::Jumped)
+                );
+                session
+                    .advance(Command {
+                        respawn: true,
+                        ..Command::default()
+                    })
+                    .unwrap();
+                assert_eq!(session.air_dashes, 0);
+            }
+        }
+    }
+
     fn explosive(kind: ProjectileKind, position: [f32; 3]) -> LiveProjectile {
         LiveProjectile {
             presentation: Projectile {
                 identity: 99,
                 kind,
-                team: Team::Red,
+                team: PlayerTeam::Red,
                 owner_identity: PLAYER_IDENTITY,
                 launcher_identity: match kind {
                     ProjectileKind::Rocket => Weapon::RocketLauncher as u32,
@@ -2936,7 +3081,7 @@ mod tests {
         session.movement_configuration.tick_interval = tick_interval;
         session
             .advance(Command {
-                select_class: Some(Class::Demoman),
+                select_class: Some(PlayerClass::Demoman),
                 ..Command::default()
             })
             .unwrap();
@@ -2996,7 +3141,7 @@ mod tests {
             let collision = RecordingWorld::default();
             let traces = collision.traces.clone();
             let mut session = Session::new(collision, [0.0; 3], MapRuntime::empty(0.015));
-            session.weapon = weapon;
+            session.weapon = Some(weapon);
             session.flip_viewmodels = flipped;
             if crouched {
                 session.movement = MovementState::from_player(
@@ -3008,7 +3153,7 @@ mod tests {
                         jump_latched: false,
                     },
                     MovementPolicy {
-                        class: Class::Soldier,
+                        class: PlayerClass::Soldier,
                         modifiers: MovementModifiers::default(),
                     }
                     .resolve(),
@@ -3040,11 +3185,11 @@ mod tests {
         let (crouched, _) = launch(Weapon::RocketLauncher, false, true);
         assert_eq!(crouched.position, [23.5, -12.0, 53.0]);
         assert_eq!(
-            rocket_flight_mask(Team::Red),
+            rocket_flight_mask(PlayerTeam::Red),
             MASK_SOLID | CONTENTS_BLUE_TEAM
         );
         assert_eq!(
-            rocket_flight_mask(Team::Blue),
+            rocket_flight_mask(PlayerTeam::Blue),
             MASK_SOLID | CONTENTS_RED_TEAM
         );
     }
@@ -3463,7 +3608,7 @@ mod tests {
     #[test]
     fn self_blast_integration_preserves_damage_force_and_ground_order() {
         let policy = MovementPolicy {
-            class: Class::Soldier,
+            class: PlayerClass::Soldier,
             modifiers: MovementModifiers::default(),
         }
         .resolve();
@@ -3520,14 +3665,14 @@ mod tests {
         assert!((crouched.movement.velocity[2] - crouched_expected).abs() <= f32::EPSILON * 512.0);
 
         let demo_policy = MovementPolicy {
-            class: Class::Demoman,
+            class: PlayerClass::Demoman,
             modifiers: MovementModifiers::default(),
         }
         .resolve();
         let mut demo = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.015));
-        demo.class = Class::Demoman;
-        demo.weapon = Weapon::StickybombLauncher;
-        demo.loadout = default_loadout(Class::Demoman);
+        demo.class = PlayerClass::Demoman;
+        demo.weapon = Some(Weapon::StickybombLauncher);
+        demo.loadout = default_loadout(PlayerClass::Demoman);
         demo.health = 175;
         demo.movement = MovementState::from_player(
             Player {
@@ -3553,7 +3698,7 @@ mod tests {
         let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.01));
         session
             .advance(Command {
-                select_class: Some(Class::Demoman),
+                select_class: Some(PlayerClass::Demoman),
                 ..Command::default()
             })
             .unwrap();
@@ -3896,7 +4041,7 @@ mod tests {
         let fizzled = fizzle
             .advance_with_external(
                 Command {
-                    select_team: Some(Team::Blue),
+                    select_team: Some(PlayerTeam::Blue),
                     ..Command::default()
                 },
                 &[result],
@@ -3919,9 +4064,9 @@ mod tests {
         );
 
         let mut oldest = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.2));
-        oldest.class = Class::Demoman;
-        oldest.weapon = Weapon::StickybombLauncher;
-        oldest.loadout = default_loadout(Class::Demoman);
+        oldest.class = PlayerClass::Demoman;
+        oldest.weapon = Some(Weapon::StickybombLauncher);
+        oldest.loadout = default_loadout(PlayerClass::Demoman);
         for identity in 1..=8 {
             let mut sticky = explosive(ProjectileKind::Sticky, [identity as f32, 0.0, 0.0]);
             sticky.presentation.identity = identity;
@@ -4044,7 +4189,7 @@ mod tests {
             .advance_with_external(
                 Command {
                     pitch_degrees: f32::NAN,
-                    select_class: Some(Class::Demoman),
+                    select_class: Some(PlayerClass::Demoman),
                     ..Command::default()
                 },
                 &[],
@@ -4068,7 +4213,7 @@ mod tests {
                 ..
             })
         ));
-        assert_eq!(session.class, Class::Soldier);
+        assert_eq!(session.class, PlayerClass::Soldier);
         assert_eq!(session.movement_snapshot_bytes(), before);
     }
 
@@ -4085,7 +4230,7 @@ mod tests {
                 ..Command::default()
             })
             .unwrap();
-        assert_eq!(switched.weapon, Weapon::Original);
+        assert_eq!(switched.weapon, Some(Weapon::Original));
         assert!(switched.projectile_events.is_empty());
         let original = session.weapon_runtime(Weapon::Original).unwrap();
         assert_eq!(original.next_primary_tick, 44);
@@ -4093,12 +4238,12 @@ mod tests {
 
         let changed = session
             .advance(Command {
-                select_class: Some(Class::Demoman),
+                select_class: Some(PlayerClass::Demoman),
                 fire: true,
                 ..Command::default()
             })
             .unwrap();
-        assert_eq!(changed.class, Class::Demoman);
+        assert_eq!(changed.class, PlayerClass::Demoman);
         assert!(changed.projectile_events.is_empty());
         let sticky = session.weapon_runtime(Weapon::StickybombLauncher).unwrap();
         assert_eq!(sticky.next_primary_tick, 45);

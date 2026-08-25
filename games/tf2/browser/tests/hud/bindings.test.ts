@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import {
-  adaptCompactSessionHud,
+  adaptSessionHud,
   bindTf2Hud,
   bindTf2HudAction,
   resolveTf2CrosshairGeometry,
@@ -10,8 +10,8 @@ import {
   TF2_INDEPENDENT_CONDITION_PANELS,
   tf2HudAvailable,
   tf2HudUnavailable,
-  type CompactSessionHudContext,
-  type CompactSessionSimulationPublication,
+  type SessionHudContext,
+  type SessionSimulationPublication,
   type Tf2Class,
   type Tf2ConditionWords,
   type Tf2HudAvailability,
@@ -582,12 +582,12 @@ describe("immutable TF2 HUD binding", () => {
 
 function compactSnapshot(
   tick: bigint,
-  overrides: Partial<CompactSessionSimulationPublication["snapshot"]> = {},
-): CompactSessionSimulationPublication["snapshot"] {
+  overrides: Partial<SessionSimulationPublication["snapshot"]> = {},
+): SessionSimulationPublication["snapshot"] {
   return Object.freeze({
     tick,
-    class: 1,
-    team: 1,
+    class: 3,
+    team: 2,
     weapon: 1,
     health: 200,
     maximumHealth: 200,
@@ -601,15 +601,15 @@ function compactSnapshot(
   })
 }
 
-function compactPublication(...snapshots: CompactSessionSimulationPublication["snapshot"][]): CompactSessionSimulationPublication {
+function compactPublication(...snapshots: SessionSimulationPublication["snapshot"][]): SessionSimulationPublication {
   return Object.freeze({
     eventBatches: Object.freeze(snapshots.map((item) => Object.freeze({ snapshot: item }))),
     snapshot: snapshots.at(-1)!,
   })
 }
 
-describe("current compact Soldier/Demoman HUD adapter", () => {
-  const context: CompactSessionHudContext = Object.freeze({
+describe("canonical all-class TF2 session HUD adapter", () => {
+  const context: SessionHudContext = Object.freeze({
     playerIdentity: 1,
     liveHudSuppressed: false,
     respawnAllowed: true,
@@ -620,8 +620,57 @@ describe("current compact Soldier/Demoman HUD adapter", () => {
     playerClassUsePlayerModel: false,
   })
 
+  test("publishes all nine canonical class models and both team images without inventing weapons", () => {
+    const classes = [
+      [1, "scout", 125],
+      [2, "sniper", 125],
+      [3, "soldier", 200],
+      [4, "demo", 175],
+      [5, "medic", 150],
+      [6, "heavy", 300],
+      [7, "pyro", 175],
+      [8, "spy", 125],
+      [9, "engineer", 125],
+    ] as const
+    for (const [identity, model, maximumHealth] of classes) {
+      for (const team of [2, 3] as const) {
+        const armed = identity === 3 || identity === 4
+        const active = identity === 3 ? 1 : identity === 4 ? 3 : null
+        const source = compactSnapshot(1n, {
+          class: identity,
+          team,
+          weapon: active,
+          health: maximumHealth,
+          maximumHealth,
+          loadout: armed
+            ? Object.freeze([Object.freeze({
+              weapon: active!, reload: 0 as const, clip: 4, reserve: 20, maximumClip: 8, maximumReserve: 24,
+            })])
+            : Object.freeze([]),
+        })
+        const binding = bindTf2Hud(adaptSessionHud(unavailable("initial"), compactPublication(source), context))
+        const player = (binding.facts.player as Extract<Tf2HudSnapshot["player"], { kind: "available" }>).value
+        expect(player.class).toEqual({ kind: "available", value: identity })
+        expect(player.team).toEqual({ kind: "available", value: team })
+        expect(player.classModel).toEqual({
+          kind: "available",
+          value: { identity: `models/player/${model}.mdl`, skin: team === 2 ? 0 : 1 },
+        })
+        expect(player.health).toMatchObject({ kind: "available", value: { maximum: maximumHealth } })
+        expect(player.activeWeapon).toEqual(active === null
+          ? { kind: "unavailable", reason: "not-applicable" }
+          : { kind: "available", value: active })
+        const image = model === "engineer" ? "engi" : model
+        expect(value(binding.values, "image", "PlayerStatusClassImage"))
+          .toMatchObject({ value: { value: `../hud/class_${image}${team === 2 ? "red" : "blue"}` } })
+        expect(value(binding.values, "visible", "HudWeaponAmmo"))
+          .toMatchObject({ value: armed })
+      }
+    }
+  })
+
   test("retains fire/reload ticks across one coalesced host publication", () => {
-    const initial = adaptCompactSessionHud(unavailable("initial"), compactPublication(compactSnapshot(1n)), context)
+    const initial = adaptSessionHud(unavailable("initial"), compactPublication(compactSnapshot(1n)), context)
     const prior = bindTf2Hud(initial).facts
     const fired = compactSnapshot(2n, {
       loadout: Object.freeze([Object.freeze({ weapon: 1, reload: 0, clip: 3, reserve: 20, maximumClip: 4, maximumReserve: 20 })]),
@@ -631,7 +680,7 @@ describe("current compact Soldier/Demoman HUD adapter", () => {
       loadout: Object.freeze([Object.freeze({ weapon: 1, reload: 3, clip: 4, reserve: 19, maximumClip: 4, maximumReserve: 20 })]),
       events: Object.freeze([Object.freeze({ kind: 4, detail: 1, subject: 0, auxiliary: 0, values: Object.freeze([4, 19, 0, 0]) })]),
     })
-    const publication = adaptCompactSessionHud(availablePrevious(prior), compactPublication(fired, reloaded), context)
+    const publication = adaptSessionHud(availablePrevious(prior), compactPublication(fired, reloaded), context)
     expect(publication.events.map((event) => [event.tick, event.ordinal, event.kind, "cause" in event ? event.cause : null])).toEqual([
       [2n, 0, "ammo", "fire"],
       [3n, 0, "ammo", "reload"],
@@ -641,16 +690,16 @@ describe("current compact Soldier/Demoman HUD adapter", () => {
     expect(value(binding.values, "scalar", "HudWeaponAmmo", "reloadPhase")).toMatchObject({ value: { value: 3 } })
   })
 
-  test("maps the compact Demoman/BLU stock session to SDK class, team and overheal identities", () => {
+  test("preserves canonical Demoman/BLU stock class, team and overheal identities", () => {
     const demo = compactSnapshot(1n, {
-      class: 2,
-      team: 2,
+      class: 4,
+      team: 3,
       weapon: 3,
       health: 175,
       maximumHealth: 175,
       loadout: Object.freeze([Object.freeze({ weapon: 3, reload: 0, clip: 8, reserve: 24, maximumClip: 8, maximumReserve: 24 })]),
     })
-    const binding = bindTf2Hud(adaptCompactSessionHud(unavailable("initial"), compactPublication(demo), context))
+    const binding = bindTf2Hud(adaptSessionHud(unavailable("initial"), compactPublication(demo), context))
     const mappedPlayer = (binding.facts.player as Extract<Tf2HudSnapshot["player"], { kind: "available" }>).value
     expect(mappedPlayer).toMatchObject({
       class: { kind: "available", value: 4 },
@@ -666,14 +715,14 @@ describe("current compact Soldier/Demoman HUD adapter", () => {
   })
 
   test("retains regenerate-before-fire ammo within one compact tick", () => {
-    const initial = adaptCompactSessionHud(unavailable("initial"), compactPublication(compactSnapshot(1n)), context)
+    const initial = adaptSessionHud(unavailable("initial"), compactPublication(compactSnapshot(1n)), context)
     const prior = bindTf2Hud(initial).facts
     const regeneratedAndFired = compactSnapshot(2n, {
       loadout: Object.freeze([Object.freeze({ weapon: 1, reload: 0, clip: 3, reserve: 20, maximumClip: 4, maximumReserve: 20 })]),
       events: Object.freeze([Object.freeze({ kind: 5, detail: 1, subject: 85, auxiliary: 0, values: Object.freeze([200, 4, 20, 0]) })]),
       projectileEvents: Object.freeze([Object.freeze({ type: "fire", launcherIdentity: 1 })]),
     })
-    const publication = adaptCompactSessionHud(availablePrevious(prior), compactPublication(regeneratedAndFired), context)
+    const publication = adaptSessionHud(availablePrevious(prior), compactPublication(regeneratedAndFired), context)
     expect(publication.events.map((event) => event.kind)).toEqual(["regenerate", "ammo"])
     const regenerate = publication.events[0] as Extract<Tf2HudEvent, { kind: "regenerate" }>
     const fired = publication.events[1] as Extract<Tf2HudEvent, { kind: "ammo" }>
@@ -683,7 +732,7 @@ describe("current compact Soldier/Demoman HUD adapter", () => {
   })
 
   test("retains fire-before-regenerate ammo within one coalesced publication", () => {
-    const initial = adaptCompactSessionHud(unavailable("initial"), compactPublication(compactSnapshot(1n)), context)
+    const initial = adaptSessionHud(unavailable("initial"), compactPublication(compactSnapshot(1n)), context)
     const prior = bindTf2Hud(initial).facts
     const fired = compactSnapshot(2n, {
       loadout: Object.freeze([Object.freeze({ weapon: 1, reload: 0, clip: 3, reserve: 20, maximumClip: 4, maximumReserve: 20 })]),
@@ -692,7 +741,7 @@ describe("current compact Soldier/Demoman HUD adapter", () => {
     const regenerated = compactSnapshot(3n, {
       events: Object.freeze([Object.freeze({ kind: 5, detail: 1, subject: 85, auxiliary: 0, values: Object.freeze([200, 4, 20, 0]) })]),
     })
-    const publication = adaptCompactSessionHud(availablePrevious(prior), compactPublication(fired, regenerated), context)
+    const publication = adaptSessionHud(availablePrevious(prior), compactPublication(fired, regenerated), context)
     expect(publication.events.map((event) => event.kind)).toEqual(["ammo", "regenerate"])
     expect(() => bindTf2Hud(publication)).not.toThrow()
     expect(value(bindTf2Hud(publication).values, "dialog-variable", "HudWeaponAmmo", "Ammo"))
@@ -700,15 +749,15 @@ describe("current compact Soldier/Demoman HUD adapter", () => {
   })
 
   test("marks unavailable compact damage direction and preserves death ordering", () => {
-    const initial = adaptCompactSessionHud(unavailable("initial"), compactPublication(compactSnapshot(1n)), context)
+    const initial = adaptSessionHud(unavailable("initial"), compactPublication(compactSnapshot(1n)), context)
     const prior = bindTf2Hud(initial).facts
     const dead = compactSnapshot(2n, {
       health: 0,
       lifecycle: 2,
       events: Object.freeze([Object.freeze({ kind: 6, detail: 0, subject: 0, auxiliary: 0, values: Object.freeze([200, 0, 0, 0]) })]),
-      lifecycleEvents: Object.freeze([Object.freeze({ tick: 2n, kind: 1, class: 1, team: 1 })]),
+      lifecycleEvents: Object.freeze([Object.freeze({ tick: 2n, kind: 1, class: 3, team: 2 })]),
     })
-    const publication = adaptCompactSessionHud(availablePrevious(prior), compactPublication(dead), context)
+    const publication = adaptSessionHud(availablePrevious(prior), compactPublication(dead), context)
     expect(publication.events.map((event) => [event.ordinal, event.kind])).toEqual([[0, "damage"], [1, "lifecycle"]])
     expect((publication.events[0] as Extract<Tf2HudEvent, { kind: "damage" }>).direction)
       .toEqual({ kind: "unavailable", reason: "missing-source-fact" })
