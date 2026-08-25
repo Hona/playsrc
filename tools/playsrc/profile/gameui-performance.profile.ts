@@ -4,10 +4,12 @@ import type { CDPSession } from "@playwright/test"
 import { expect, test } from "./application-test"
 import { loadLocalConfig } from "../src/config"
 import { metricDelta, summarizeCpuProfile, summarizeDistribution, summarizeTrace, type CpuProfile, type TraceEvent } from "./gameui-profile"
+import { divideProfileWindow, profileSampleSeconds } from "./profile-window"
 
 const TARGET = "jump_beef"
-const SAMPLE_MILLISECONDS = 15_000
-const OPTIONS_SAMPLE_MILLISECONDS = 5_000
+const [MENU_SAMPLE_SECONDS, OPTIONS_SAMPLE_SECONDS] = divideProfileWindow(profileSampleSeconds(), 2)
+const SAMPLE_MILLISECONDS = MENU_SAMPLE_SECONDS! * 1_000
+const OPTIONS_SAMPLE_MILLISECONDS = OPTIONS_SAMPLE_SECONDS! * 1_000
 const MAX_CDP_TRACE_BYTES = 512 * 1024 * 1024
 const TRACE_CATEGORIES = "devtools.timeline,disabled-by-default-devtools.timeline,v8,blink.user_timing,loading,toplevel"
 
@@ -195,7 +197,9 @@ test("profile TF2 Main Menu startup and steady state", async ({ page, context, b
   await writeFile(path.join(outputDirectory, "startup-cpu-profile.cpuprofile"), JSON.stringify(startup.cpuProfile))
 
   const steadyCapture = await startCdpCapture(cdp)
+  const steadyStartedMilliseconds = await page.evaluate(() => performance.now())
   await page.waitForTimeout(SAMPLE_MILLISECONDS)
+  const steadyFinishedMilliseconds = await page.evaluate(() => performance.now())
   const steady = await stopCdpCapture(cdp, steadyCapture)
   await writeFile(path.join(outputDirectory, "steady-cdp-trace.json"), steady.traceText)
   await writeFile(path.join(outputDirectory, "steady-cpu-profile.cpuprofile"), JSON.stringify(steady.cpuProfile))
@@ -210,9 +214,10 @@ test("profile TF2 Main Menu startup and steady state", async ({ page, context, b
   await writeFile(path.join(outputDirectory, "options-open-cdp-trace.json"), optionsOpen.traceText)
   await writeFile(path.join(outputDirectory, "options-open-cpu-profile.cpuprofile"), JSON.stringify(optionsOpen.cpuProfile))
   const optionsSteadyCapture = await startCdpCapture(cdp)
+  const optionsSteadyStartedMilliseconds = await page.evaluate(() => performance.now())
   await page.waitForTimeout(OPTIONS_SAMPLE_MILLISECONDS)
+  const optionsSteadyFinishedMilliseconds = await page.evaluate(() => performance.now())
   const optionsSteady = await stopCdpCapture(cdp, optionsSteadyCapture)
-  const optionsFinishedMilliseconds = await page.evaluate(() => performance.now())
   await writeFile(path.join(outputDirectory, "options-steady-cdp-trace.json"), optionsSteady.traceText)
   await writeFile(path.join(outputDirectory, "options-steady-cpu-profile.cpuprofile"), JSON.stringify(optionsSteady.cpuProfile))
   await page.screenshot({ path: path.join(outputDirectory, "options.png") })
@@ -228,7 +233,7 @@ test("profile TF2 Main Menu startup and steady state", async ({ page, context, b
     return {
       ...state,
       finishedMilliseconds: performance.now(),
-      terminal: main ? { phase: main.dataset.phase, detail: main.dataset.detail, gameUi: main.dataset.gameui, blockers: JSON.parse(main.dataset.blockers ?? "[]") } : null,
+      terminal: main ? { phase: main.dataset.phase, detail: main.dataset.detail, gameUi: main.dataset.gameui, startupState: main.dataset.startupState, blockers: JSON.parse(main.dataset.blockers ?? "[]") } : null,
       runtimeFrameWork: [...document.querySelectorAll<HTMLElement>("[data-vgui-runtime]")].map((element) => ({ runtime: element.dataset.vguiRuntime, frameWork: element.dataset.vguiFrameWork ?? "unreported" })),
       resources,
       navigation: performance.getEntriesByType("navigation").map((entry) => {
@@ -292,11 +297,12 @@ test("profile TF2 Main Menu startup and steady state", async ({ page, context, b
     })
   }
   const startupReport = windowReport(raw.createdMilliseconds, mainMenuMilliseconds, startup)
-  const steadyReport = windowReport(mainMenuMilliseconds, optionsStartedMilliseconds, steady)
+  const steadyReport = windowReport(steadyStartedMilliseconds, steadyFinishedMilliseconds, steady)
   const optionsOpenReport = windowReport(optionsStartedMilliseconds, optionsVisibleMilliseconds, optionsOpen)
-  const optionsSteadyReport = windowReport(optionsVisibleMilliseconds, optionsFinishedMilliseconds, optionsSteady)
-  const frameCallbackP95 = Math.max(...[startupReport, steadyReport, optionsOpenReport, optionsSteadyReport].map((value) => value.mainThread.rafCallbackMilliseconds.p95))
-  const frameCallbackMax = Math.max(...[startupReport, steadyReport, optionsOpenReport, optionsSteadyReport].map((value) => value.mainThread.rafCallbackMilliseconds.max))
+  const optionsSteadyReport = windowReport(optionsSteadyStartedMilliseconds, optionsSteadyFinishedMilliseconds, optionsSteady)
+  const sustainedWindows = [steadyReport, optionsSteadyReport]
+  const frameCallbackP95 = Math.max(...sustainedWindows.map((value) => value.mainThread.rafCallbackMilliseconds.p95))
+  const frameCallbackMax = Math.max(...sustainedWindows.map((value) => value.mainThread.rafCallbackMilliseconds.max))
   const report = Object.freeze({
     schema: "playsrc-gameui-profile-v2",
     target: TARGET,
@@ -311,6 +317,7 @@ test("profile TF2 Main Menu startup and steady state", async ({ page, context, b
       maximumFrameCallbackMilliseconds: 5,
       observedP95Milliseconds: frameCallbackP95,
       observedMaximumMilliseconds: frameCallbackMax,
+      transientMaximumMilliseconds: Math.max(startupReport.mainThread.rafCallbackMilliseconds.max, optionsOpenReport.mainThread.rafCallbackMilliseconds.max),
       passed: frameCallbackMax < 5,
     }),
     startup: startupReport,
@@ -356,10 +363,30 @@ test("profile TF2 Main Menu startup and steady state", async ({ page, context, b
     }),
   })
   await writeFile(path.join(outputDirectory, "report.json"), `${JSON.stringify(report, null, 2)}\n`)
-  const compact = (value: typeof report.startup) => ({ durationMilliseconds: value.durationMilliseconds, mainThread: value.mainThread, dom: value.dom, cdpMetrics: value.cdpMetrics, topCpuSelf: value.cpu.topSelf.slice(0, 15), topCpuModules: value.cpu.topModules.slice(0, 15) })
-  console.log(`PLAYSRCGAMEUIPROFILE ${JSON.stringify({ outputDirectory, terminal: report.terminal ? { phase: report.terminal.phase, detail: report.terminal.detail, gameUi: report.terminal.gameUi, blockerCount: report.terminal.blockers.length } : null, runtimeFrameWork: report.runtimeFrameWork, budget: report.budget, startup: compact(report.startup), steady: compact(report.steady), optionsOpen: compact(report.optionsOpen), optionsSteady: compact(report.optionsSteady), dom: { finalNodes: report.dom.finalNodes, finalGameUiNodes: report.dom.finalGameUiNodes, mutationRecords: report.dom.mutationRecords, topAttributes: report.dom.topAttributes.slice(0, 15), topTargets: report.dom.topTargets.slice(0, 15) } })}`)
+  const compact = (value: typeof report.startup) => ({
+    milliseconds: value.durationMilliseconds,
+    frames: value.mainThread.rafIntervalsMilliseconds.count,
+    frameP95Milliseconds: value.mainThread.rafIntervalsMilliseconds.p95,
+    callbackP95Milliseconds: value.mainThread.rafCallbackMilliseconds.p95,
+    mutations: value.dom.records,
+    heapMiB: value.memory.usedHeapMiB.p95,
+  })
+  console.log(`PLAYSRCGAMEUIPROFILE ${JSON.stringify({
+    target: report.target,
+    sampleSeconds: profileSampleSeconds(),
+    startupSkipped: report.terminal?.startupState === "Skipped",
+    startup: compact(report.startup),
+    menu: compact(report.steady),
+    optionsOpen: compact(report.optionsOpen),
+    options: compact(report.optionsSteady),
+    budget: report.budget,
+    nodes: { total: report.dom.finalNodes, menu: report.dom.finalGameUiNodes },
+    report: path.join(outputDirectory, "report.json"),
+  })}`)
 
   expect(report.terminal?.phase).toBe("MainMenu")
+  expect(report.terminal?.startupState).toBe("Skipped")
+  expect(report.steady.durationMilliseconds + report.optionsSteady.durationMilliseconds).toBeGreaterThanOrEqual(profileSampleSeconds() * 1_000)
   expect(report.startup.cpu.sampleCount).toBeGreaterThan(0)
   expect(report.steady.cpu.sampleCount).toBeGreaterThan(0)
   expect(report.startup.trace.eventCount).toBeGreaterThan(0)

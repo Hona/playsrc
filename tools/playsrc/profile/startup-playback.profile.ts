@@ -1,5 +1,7 @@
 import { expect, test } from "./application-test"
 
+test.use({ preserveStartupMovie: true })
+
 test("plays the configured startup movie and loads jump_beef", async ({ page }, testInfo) => {
   await page.route("**/objects/sha256/**", async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 150))

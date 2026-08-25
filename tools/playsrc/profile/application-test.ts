@@ -4,16 +4,23 @@ type ApplicationState = Readonly<{
   phase: string
   detail: string
   gameUi: string
+  startupState: string
   consoleOutput: string
   blockers: string
 }>
 
-export const test = base.extend<{ applicationDiagnostics: void; allowRecoverableApplicationFailure: boolean }>({
+export const test = base.extend<{
+  applicationDiagnostics: void
+  allowRecoverableApplicationFailure: boolean
+  preserveStartupMovie: boolean
+}>({
   allowRecoverableApplicationFailure: [false, { option: true }],
-  applicationDiagnostics: [async ({ page, allowRecoverableApplicationFailure }, use, testInfo) => {
+  preserveStartupMovie: [false, { option: true }],
+  applicationDiagnostics: [async ({ page, allowRecoverableApplicationFailure, preserveStartupMovie }, use, testInfo) => {
     let rejectFailure: (error: Error) => void = () => {}
     let stallTimer: ReturnType<typeof setTimeout> | undefined
     let lastState: ApplicationState | undefined
+    let startupSkipRequested = false
     let finished = false
     const failure = new Promise<never>((_, reject) => { rejectFailure = reject })
     const fail = (message: string) => {
@@ -24,6 +31,12 @@ export const test = base.extend<{ applicationDiagnostics: void; allowRecoverable
     await page.exposeBinding("__playsrcApplicationState", async (_source, state: ApplicationState) => {
       lastState = state
       if (stallTimer) clearTimeout(stallTimer)
+      if (state.startupState === "Preparing") startupSkipRequested = false
+      if (!preserveStartupMovie && !startupSkipRequested && state.phase === "Startup"
+        && (state.startupState === "Playing" || state.startupState === "AwaitingGesture")) {
+        startupSkipRequested = true
+        await page.keyboard.press("Escape")
+      }
       if (state.phase === "Failed") {
         if (!allowRecoverableApplicationFailure) {
           fail(`TF2 application failed: ${state.detail}\nIn-game console:\n${state.consoleOutput || "<not mounted>"}\nBlockers: ${state.blockers}`)
@@ -42,6 +55,7 @@ export const test = base.extend<{ applicationDiagnostics: void; allowRecoverable
           phase: main.dataset.phase ?? "Absent",
           detail: main.dataset.detail ?? "",
           gameUi: main.dataset.gameui ?? "",
+          startupState: main.dataset.startupState ?? "",
           consoleOutput: document.querySelector<HTMLElement>("[aria-label='Console output']")?.innerText ?? "",
           blockers: main.dataset.blockers ?? "[]",
         })
@@ -49,7 +63,7 @@ export const test = base.extend<{ applicationDiagnostics: void; allowRecoverable
       const install = () => {
         const main = document.querySelector<HTMLElement>("main")
         if (!main) { setTimeout(install, 0); return }
-        new MutationObserver(report).observe(main, { attributes: true, attributeFilter: ["data-phase", "data-detail", "data-gameui", "data-blockers"] })
+        new MutationObserver(report).observe(main, { attributes: true, attributeFilter: ["data-phase", "data-detail", "data-gameui", "data-startup-state", "data-blockers"] })
         report()
       }
       if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", install, { once: true })
