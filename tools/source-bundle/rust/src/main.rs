@@ -2913,7 +2913,6 @@ fn main() -> Result<(), String> {
             "sound/vo/intel_teamdropped2.mp3",
             "sound/vo/intel_teamcaptured.mp3",
             "sound/vo/intel_teamreturned.mp3",
-            "sound/items/itembk2.wav",
             "sound/misc/your_team_won.mp3",
             "sound/misc/your_team_lost.mp3",
         ] {

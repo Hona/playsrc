@@ -43,6 +43,7 @@ type WasmExports = Readonly<{
   playsrc_team_state_copy(handle: number, pointer: number, capacity: number): number
   playsrc_team_select(handle: number, choice: number): number
   playsrc_jump_configure(handle: number, definition: number, length: number): number
+  playsrc_player_set_position(handle: number, x: number, y: number, z: number): number
   playsrc_simulation_observe(handle: number, nowSeconds: number, command: number, length: number, suspended: number): number
   playsrc_simulation_output_length(handle: number): number
   playsrc_simulation_output_copy(handle: number, pointer: number, capacity: number): number
@@ -130,6 +131,7 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         candidate.playsrc_team_state_copy,
         candidate.playsrc_team_select,
         candidate.playsrc_jump_configure,
+        candidate.playsrc_player_set_position,
         candidate.playsrc_simulation_observe,
         candidate.playsrc_simulation_output_length,
         candidate.playsrc_simulation_output_copy,
@@ -483,6 +485,20 @@ function configureCourse(request: Extract<WorkerRequest, { kind: "configure-cour
   post({ id: request.id, kind: "course-configured", generation: request.generation })
 }
 
+function setPosition(request: Extract<WorkerRequest, { kind: "set-position" }>): void {
+  const value = requireActive(request.id, request.generation)
+  if (!value) return
+  if (!Array.isArray(request.position) || request.position.length !== 3 || !request.position.every(Number.isFinite)) {
+    fail(request.id, "MalformedRequest")
+    return
+  }
+  if (value.exports.playsrc_player_set_position(value.handle, request.position[0], request.position[1], request.position[2]) !== 1) {
+    fail(request.id, "TransitionFailed", 202)
+    return
+  }
+  post({ id: request.id, kind: "position-set", generation: request.generation })
+}
+
 function observe(request: Extract<WorkerRequest, { kind: "observe" }>): void {
   const started = performance.now()
   const value = requireActive(request.id, request.generation)
@@ -672,6 +688,8 @@ function dispatch(request: WorkerRequest): void | Promise<void> {
       return discard(request)
     case "configure-course":
       return configureCourse(request)
+    case "set-position":
+      return setPosition(request)
     case "observe":
       return observe(request)
     case "particles":

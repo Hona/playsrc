@@ -746,6 +746,7 @@ pub enum Error {
     ProjectileLimit,
     InvalidStickyLaunchRandom,
     InvalidProjectilePhysics,
+    InvalidPlayerPosition,
     Random(RandomError),
     Bot(bot::Error),
     TeamSelection(team_selection::TeamSelectionError),
@@ -1243,6 +1244,14 @@ impl<W: GameplayWorld + Clone> Session<W> {
 
     pub fn movement_state(&self) -> MovementState {
         self.movement
+    }
+
+    pub fn set_position(&mut self, position: [f32; 3]) -> Result<(), Error> {
+        if position.into_iter().any(|value| !value.is_finite()) {
+            return Err(Error::InvalidPlayerPosition);
+        }
+        self.movement.position = position.map(|value| value.clamp(-16_384.0, 16_384.0));
+        Ok(())
     }
 
     pub fn movement_snapshot_bytes(&self) -> Vec<u8> {
@@ -1850,7 +1859,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
                         exclude_player,
                     } if (*recipient == self.team_selection.local_team()
                         || *recipient == PlayerTeam::Unassigned)
-                        && *exclude_player != Some(PLAYER_IDENTITY) =>
+                        && *exclude_player != Some(PLAYER_IDENTITY)
+                        && *sound != ctf::AnnouncerSound::FlagSpawn =>
                     {
                         Some((
                             *flag,
