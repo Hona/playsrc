@@ -11,7 +11,7 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
     if bytes.len() < HEADER_BYTES
         || bytes.len() > 64 * 1024
         || &bytes[..4] != b"PCMD"
-        || u32::from_le_bytes(bytes[4..8].try_into().ok()?) != 4
+        || u32::from_le_bytes(bytes[4..8].try_into().ok()?) != 5
     {
         return None;
     }
@@ -37,11 +37,9 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
     if flags & !0xff != 0 {
         return None;
     }
-    let select_class = match select & 0xff {
+    let select_class = match (select & 0xff) as u8 {
         0 => None,
-        1 => Some(playsrc_tf2::Class::Soldier),
-        2 => Some(playsrc_tf2::Class::Demoman),
-        _ => return None,
+        value => Some(playsrc_tf2::PlayerClass::try_from(value).ok()?),
     };
     let select_weapon = match (select >> 8) & 0xff {
         0 => None,
@@ -52,8 +50,8 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
     };
     let select_team = match (select >> 16) & 0xff {
         0 => None,
-        1 => Some(playsrc_tf2::Team::Red),
-        2 => Some(playsrc_tf2::Team::Blue),
+        2 => Some(playsrc_tf2::PlayerTeam::Red),
+        3 => Some(playsrc_tf2::PlayerTeam::Blue),
         _ => return None,
     };
     let mode_request = match (select >> 24) & 0xff {

@@ -1,3 +1,4 @@
+import { TF2_CLASS_NAMES, type Tf2ClassName } from "@playsrc/game-tf2-browser/class"
 import { SOURCE_CONSOLE_CEILINGS } from "@playsrc/vgui"
 
 const CONSOLE_INPUT = "[aria-label='Console command']"
@@ -162,9 +163,13 @@ export class Tf2BrowserAutomation {
   })
 
   readonly player = Object.freeze({
-    selectClass: async (identity: "soldier" | "demoman"): Promise<void> => {
-      if (identity !== "soldier" && identity !== "demoman") throw new TypeError("TF2 automation class is invalid")
+    selectClass: async (identity: Tf2ClassName): Promise<void> => {
+      if (!TF2_CLASS_NAMES.includes(identity)) throw new TypeError("TF2 automation class is invalid")
       await this.console.submitCommand(`class ${identity}`)
+    },
+    selectTeam: async (identity: "red" | "blue"): Promise<void> => {
+      if (identity !== "red" && identity !== "blue") throw new TypeError("TF2 automation team is invalid")
+      await this.console.submitCommand(`jointeam ${identity}`)
     },
     lookBy: async (movement: Readonly<{ x: number; y: number }>): Promise<Tf2CameraEvidence> => {
       if (!Number.isFinite(movement.x) || !Number.isFinite(movement.y) || (movement.x === 0 && movement.y === 0)) {

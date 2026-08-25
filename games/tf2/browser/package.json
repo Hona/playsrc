@@ -6,6 +6,7 @@
     ".": "./src/index.ts",
     "./artifacts": "./src/artifacts.ts",
     "./codec": "./src/codec.ts",
+    "./class": "./src/class.ts",
     "./content-build": "./src/content-build.ts",
     "./presentation": "./src/presentation.ts",
     "./ui-integration": "./src/ui-integration/index.ts",
