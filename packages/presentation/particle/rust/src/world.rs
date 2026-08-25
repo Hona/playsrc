@@ -811,7 +811,7 @@ impl ParticleWorld {
                 break;
             }
             *substeps += 1;
-            if *substeps > self.limits.max_substeps.min(10) {
+            if *substeps > self.limits.max_substeps {
                 return Err(Error::new(
                     ErrorCode::BoundExceeded,
                     "particle-world",

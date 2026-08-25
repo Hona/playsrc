@@ -22,6 +22,9 @@ export type Tf2UnavailableOwner =
 export type Tf2GameUiRequestIdentity =
   | "show-options"
   | "show-advanced-options"
+  | "show-play-list"
+  | "show-training"
+  | "show-create-server"
   | "resume-game"
   | "disconnect"
   | "quit"
@@ -75,12 +78,12 @@ const panel = (identity: Tf2MenuPanel["identity"], buttons: readonly Tf2MenuButt
   Object.freeze({ identity, buttons: Object.freeze([...buttons]) })
 
 const dashboardMain = panel("dashboard-main", [
-  button("find-game", "Find a Game", "find_game", inactive("community-server-browser")),
+  button("find-game", "Find a Game", "find_game", request("show-play-list")),
   button("quit", "QUIT", "quit", request("quit")),
 ])
 const dashboardPause = panel("dashboard-pause", [
   button("resume", "Resume", "resume_game", request("resume-game")),
-  button("find-game", "Find a Game", "find_game", inactive("community-server-browser")),
+  button("find-game", "Find a Game", "find_game", request("show-play-list")),
   button("disconnect", "Disconnect", "quit", request("disconnect")),
 ])
 const playList = panel("play-list", [
@@ -89,8 +92,8 @@ const playList = panel("play-list", [
   button("competitive", "Competitive", "play_competitive", inactive("competitive-matchmaking")),
   button("mann-vs-machine", "Mann vs. Machine", "play_mvm", inactive("mann-vs-machine")),
   button("community-servers", "Community Servers", "play_community", inactive("community-server-browser")),
-  button("training", "Training", "play_training", inactive("training")),
-  button("create-server", "Create Server", "create_server", inactive("community-server-creation")),
+  button("training", "Training", "play_training", request("show-training")),
+  button("create-server", "Create Server", "create_server", request("show-create-server")),
 ])
 const account = panel("account", [
   button("items", "ITEMS", "engine open_charinfo", inactive("account-items")),
@@ -252,6 +255,8 @@ export type Tf2GameUiEvent =
 export type Tf2GameUiRequest =
   | Readonly<{ kind: "show-console" }>
   | Readonly<{ kind: "show-options"; page: "options" | "advanced-options" }>
+  | Readonly<{ kind: "show-play-list" }>
+  | Readonly<{ kind: "show-local-match"; entry: "training" | "create-server" }>
   | Readonly<{ kind: "load-map"; mapIdentity: string }>
   | Readonly<{ kind: "resume-game" }>
   | Readonly<{ kind: "disconnect" }>
@@ -321,6 +326,9 @@ const buttonRequest = (identity: Tf2GameUiRequestIdentity): Tf2GameUiRequest => 
   switch (identity) {
     case "show-options": return Object.freeze({ kind: "show-options", page: "options" })
     case "show-advanced-options": return Object.freeze({ kind: "show-options", page: "advanced-options" })
+    case "show-play-list": return Object.freeze({ kind: "show-play-list" })
+    case "show-training": return Object.freeze({ kind: "show-local-match", entry: "training" })
+    case "show-create-server": return Object.freeze({ kind: "show-local-match", entry: "create-server" })
     case "resume-game": return Object.freeze({ kind: "resume-game" })
     case "disconnect": return Object.freeze({ kind: "disconnect" })
     case "quit": return Object.freeze({ kind: "quit" })

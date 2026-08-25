@@ -508,7 +508,7 @@ function observe(request: Extract<WorkerRequest, { kind: "observe" }>): void {
   if (!value) return
   if (
     !(request.command instanceof ArrayBuffer) ||
-    request.command.byteLength < 48 ||
+    request.command.byteLength < 52 ||
     request.command.byteLength > 64 * 1024 ||
     !Number.isFinite(request.nowSeconds) || request.nowSeconds < 0 || typeof request.suspended !== "boolean"
   ) {

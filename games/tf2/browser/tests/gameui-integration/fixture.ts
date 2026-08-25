@@ -78,6 +78,7 @@ function createResources(): Tf2VguiResources {
     .map((control) => Object.freeze({
       name: control.name,
       baseControl: control.name === "CTeamMenu" ? "Frame"
+        : control.name === "CCreateMultiplayerGameServerPage" ? "PropertyPage"
         : /button/iu.test(control.name) ? "Button" : /image|class/iu.test(control.name) ? "ImagePanel" : "EditablePanel",
       element: /button/iu.test(control.name) ? "button" : "div",
       role: null,

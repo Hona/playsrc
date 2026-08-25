@@ -5,6 +5,11 @@ import GameplayWorker from "@playsrc/game-tf2-browser/worker?worker"
 import { Tf2WorkerClient, mergePublicationSnapshots, type CoverageSample, type LoadedGame, type SimulationPublication, type VisibilityResult } from "@playsrc/game-tf2-browser"
 import { initializeTf2GameUiIntegration, type Tf2GameUiIntegration } from "@playsrc/game-tf2-browser/gameui-integration"
 import type { Tf2GameUiRequest, Tf2LoadingPhase } from "@playsrc/game-tf2-browser/gameui"
+import {
+  initializeTf2LocalMatchPresentation,
+  type Tf2LocalMatchLaunch,
+  type Tf2LocalMatchPresentation,
+} from "@playsrc/game-tf2-browser/local-match"
 import { initializeTf2HudIntegration, type Tf2HudIntegration } from "@playsrc/game-tf2-browser/hud-integration"
 import {
   initializeTf2ClassSelectionIntegration,
@@ -58,7 +63,7 @@ import {
   type Tf2LoadingPresentation,
   type Tf2LoadingVguiRuntime,
 } from "@playsrc/game-tf2-browser/loading-presentation"
-import { encodeCommand, mapDerivedKey, type BotRequest, type Snapshot, type Tf2Class, type Tf2Team, type Tf2Weapon, type Tf2BuildingRequest } from "@playsrc/game-tf2-browser/codec"
+import { encodeCommand, mapDerivedKey, type BotConfiguration, type BotQuotaMode, type BotRequest, type Snapshot, type Tf2Class, type Tf2Team, type Tf2Weapon, type Tf2BuildingRequest } from "@playsrc/game-tf2-browser/codec"
 import { blueprintModel, buildingModel, initializeTf2EngineerPresentation, type Tf2EngineerPresentation } from "@playsrc/game-tf2-browser/engineer"
 import { TF2_CLASS_NAMES, tf2ClassFromName, tf2ClassPresentation } from "@playsrc/game-tf2-browser/class"
 import { parsePresentationArtifacts, type PresentationArtifacts } from "@playsrc/game-tf2-browser/artifacts"
@@ -246,6 +251,9 @@ export type ApplicationView = Readonly<{
   scoreboardVisible?: boolean
   scoreboardProbe?: string
   optionsVisible?: boolean
+  localMatchVisible?: boolean
+  localMatchEntry?: "training" | "create-server"
+  localMatchSettings?: string
   settingsPersistence?: "absent" | "loaded" | "rejected" | "stored"
   settingsApply?: string
   hostRequest?: "quit"
@@ -385,6 +393,7 @@ export class Tf2Application {
   readonly #classSelectionRoot: HTMLElement
   readonly #teamSelectionRoot: HTMLElement
   readonly #optionsRoot: HTMLElement
+  readonly #localMatchRoot: HTMLElement
   readonly #loadingRoot: HTMLElement
   readonly #startupRoot: HTMLElement
   readonly #startupVideo: HTMLVideoElement
@@ -478,6 +487,8 @@ export class Tf2Application {
   #crosshairSettings?: Tf2CrosshairSettings
   #settings?: Tf2BrowserSettings
   #options?: Tf2OptionsPresentation
+  #localMatch?: Tf2LocalMatchPresentation
+  #pendingLocalMatch?: Tf2LocalMatchLaunch
   #loaded?: LoadedGame
   #snapshot?: Snapshot
   #generation = 0
@@ -505,6 +516,8 @@ export class Tf2Application {
   #modeRequest: 0 | 1 | undefined
   #botRequest: BotRequest | undefined
   #buildingRequest: Tf2BuildingRequest | undefined
+  #botConfiguration: BotConfiguration | undefined
+  #activeBotConfiguration: BotConfiguration | undefined
   #botDifficulty: 0 | 1 | 2 | 3 = 1
   #coverageSamples:readonly CoverageSample[]=Object.freeze([])
   #developer = 1
@@ -566,12 +579,12 @@ export class Tf2Application {
 
   constructor(
     canvas: HTMLCanvasElement,
-    roots: Readonly<{ vgui: HTMLElement; gameUi: HTMLElement; hud: HTMLElement; engineer: HTMLElement; classSelection: HTMLElement; teamSelection: HTMLElement; options: HTMLElement; loading: HTMLElement; startup: HTMLElement; startupVideo: HTMLVideoElement }>,
+    roots: Readonly<{ vgui: HTMLElement; gameUi: HTMLElement; hud: HTMLElement; engineer: HTMLElement; classSelection: HTMLElement; teamSelection: HTMLElement; options: HTMLElement; localMatch: HTMLElement; loading: HTMLElement; startup: HTMLElement; startupVideo: HTMLVideoElement }>,
     publish: (view: ApplicationView) => void,
   ) {
     this.#canvas = canvas
     const presentationRoot = canvas.parentElement
-    if (!presentationRoot || [roots.vgui, roots.gameUi, roots.hud, roots.engineer, roots.classSelection, roots.teamSelection, roots.options, roots.loading, roots.startup].some((root) => root.parentElement !== presentationRoot)) {
+    if (!presentationRoot || [roots.vgui, roots.gameUi, roots.hud, roots.engineer, roots.classSelection, roots.teamSelection, roots.options, roots.localMatch, roots.loading, roots.startup].some((root) => root.parentElement !== presentationRoot)) {
       throw new Error("TF2 presentation owners do not share one application mount")
     }
     this.#presentationRoot = presentationRoot
@@ -582,6 +595,7 @@ export class Tf2Application {
     this.#classSelectionRoot = roots.classSelection
     this.#teamSelectionRoot = roots.teamSelection
     this.#optionsRoot = roots.options
+    this.#localMatchRoot = roots.localMatch
     this.#loadingRoot = roots.loading
     this.#startupRoot = roots.startup
     this.#startupVideo = roots.startupVideo
@@ -654,6 +668,7 @@ export class Tf2Application {
       fireEvents: 0,
       explosionEvents: 0,
       optionsVisible: false,
+      localMatchVisible: false,
       settingsPersistence: this.#view.settingsPersistence,
       settingsApply: this.#view.settingsApply,
       presentationRandomState: this.#presentationRandom ? JSON.stringify(this.#presentationRandom.snapshot()) : this.#view.presentationRandomState,
@@ -778,6 +793,45 @@ export class Tf2Application {
     return this.#options
   }
 
+  #ensureLocalMatch(): Tf2LocalMatchPresentation {
+    if (this.#localMatch) return this.#localMatch
+    if (!this.#uiResources || !this.#presentationRandom || !this.#configuration) {
+      throw new Error("TF2 local match configured resources are unavailable")
+    }
+    this.#localMatch = initializeTf2LocalMatchPresentation({
+      root: this.#localMatchRoot,
+      resources: this.#uiResources,
+      configuredMaps: this.#configuration.targets.map((target) => target.target),
+      viewport: this.#viewport(),
+      reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
+      clock: { nowSeconds: () => this.#frameClock.current },
+      random: this.#presentationRandom,
+      storage: localStorage,
+      onVisibility: (visible) => this.#set({
+        localMatchVisible: visible,
+        localMatchEntry: visible ? this.#localMatch?.snapshot().entry ?? undefined : undefined,
+      }),
+      onLaunch: (launch) => {
+        this.#pendingLocalMatch = launch
+        this.#activeBotConfiguration = launch.configuration
+        this.#botDifficulty = launch.configuration.difficulty
+        this.#set({ localMatchSettings: JSON.stringify(launch), localMatchVisible: false })
+        this.#console?.apply({ kind: "replace-catalog", catalog: this.#catalog() })
+        if (this.#client && this.#renderer && this.#loaded) {
+          const target = this.#configuration!.targets.find((candidate) => candidate.target === launch.mapIdentity)
+          if (!target) throw new Error(`Undeclared local match map ${launch.mapIdentity}`)
+          void this.#switchCatalogMap(target)
+          return
+        }
+        const transition = this.#gameUi?.dispatch({ kind: "map", mapIdentity: launch.mapIdentity })
+        if (transition?.disposition !== "applied") {
+          throw new Error(`TF2 local match map rejected: ${transition?.reason ?? "GameUI unavailable"}`)
+        }
+      },
+    })
+    return this.#localMatch
+  }
+
   #deferGameUiRequest(request: Tf2GameUiRequest): void {
     const operation = this.#operation
     const handle = window.setTimeout(() => {
@@ -797,6 +851,12 @@ export class Tf2Application {
       const options = this.#ensureOptions()
       options.show(request.page === "advanced-options" ? "advanced" : "keyboard")
       this.#set({ optionsVisible: true })
+      return
+    }
+    if (request.kind === "show-local-match") {
+      const presentation = this.#ensureLocalMatch()
+      presentation.show(request.entry)
+      this.#set({ localMatchVisible: true, localMatchEntry: request.entry })
       return
     }
     if (request.kind === "resume-game") {
@@ -1243,6 +1303,8 @@ export class Tf2Application {
     this.#hudContextIdentity = -1
     this.#options?.destroy()
     this.#options = undefined
+    this.#localMatch?.destroy()
+    this.#localMatch = undefined
     this.#uiResources?.destroy()
     this.#uiResources = undefined
     this.#console?.apply({ kind: "destroy" })
@@ -1513,6 +1575,10 @@ export class Tf2Application {
       this.#requireOperation(operation)
       this.#advanceLoading("synchronizing-game-state")
       this.#snapshot = (await this.#initialPublication(this.#generation)).snapshot
+      if (this.#pendingLocalMatch?.mapIdentity === target.target) {
+        this.#botConfiguration = this.#pendingLocalMatch.configuration
+        this.#pendingLocalMatch = undefined
+      }
       this.#requireOperation(operation)
       this.#predictedEye.reset(this.#snapshot.tick, tf2Camera(this.#snapshot, this.#yaw, this.#pitch).position)
       finishLoadPhase("initialPublication")
@@ -2048,6 +2114,18 @@ export class Tf2Application {
           disposition: "visible" as const,
           displayValue: String(this.#botDifficulty),
         }),
+        ...([
+          ["tf_bot_quota", String(this.#activeBotConfiguration?.quota ?? 0)],
+          ["tf_bot_quota_mode", this.#activeBotConfiguration?.mode ?? "normal"],
+          ["tf_bot_join_after_player", String(Number(this.#activeBotConfiguration?.joinAfterPlayer ?? true))],
+          ["tf_bot_auto_vacate", String(Number(this.#activeBotConfiguration?.autoVacate ?? true))],
+          ["tf_bot_offline_practice", String(Number(this.#activeBotConfiguration?.offlinePractice ?? false))],
+        ] as const).map(([name, displayValue]) => Object.freeze({
+          kind: "convar" as const,
+          name,
+          disposition: "visible" as const,
+          displayValue,
+        })),
         Object.freeze({
           kind: "command" as const,
           name: "setpos",
@@ -2136,7 +2214,7 @@ export class Tf2Application {
   #commitPresentationViewport(viewport: ApplicationPresentationViewport): void {
     this.#presentationViewport = viewport
     const identity = `${viewport.revision}:${viewport.width}x${viewport.height}@${viewport.devicePixelRatio}`
-    for (const owner of [this.#canvas, this.#startupRoot, this.#loadingRoot, this.#gameUiRoot, this.#hudRoot, this.#engineerRoot, this.#classSelectionRoot, this.#teamSelectionRoot, this.#optionsRoot, this.#vguiRoot]) {
+    for (const owner of [this.#canvas, this.#startupRoot, this.#loadingRoot, this.#gameUiRoot, this.#hudRoot, this.#engineerRoot, this.#classSelectionRoot, this.#teamSelectionRoot, this.#optionsRoot, this.#localMatchRoot, this.#vguiRoot]) {
       owner.dataset.presentationViewport = identity
       owner.dataset.presentationViewportState = "active"
     }
@@ -2150,6 +2228,7 @@ export class Tf2Application {
     this.#classSelection?.setViewport(viewport)
     this.#teamSelection?.setViewport(viewport)
     this.#options?.setViewport(viewport)
+    this.#localMatch?.setViewport(viewport)
     this.#loadingVgui?.setViewport(viewport)
     if (this.#loadingPresentationGeneration > 0 && this.#configuration) {
       const target = this.#loadingTarget ?? this.#activeTarget
@@ -2161,7 +2240,7 @@ export class Tf2Application {
 
   #suspendPresentationViewport(): void {
     this.#presentationViewport = undefined
-    for (const owner of [this.#canvas, this.#startupRoot, this.#loadingRoot, this.#gameUiRoot, this.#hudRoot, this.#engineerRoot, this.#classSelectionRoot, this.#teamSelectionRoot, this.#optionsRoot, this.#vguiRoot]) {
+    for (const owner of [this.#canvas, this.#startupRoot, this.#loadingRoot, this.#gameUiRoot, this.#hudRoot, this.#engineerRoot, this.#classSelectionRoot, this.#teamSelectionRoot, this.#optionsRoot, this.#localMatchRoot, this.#vguiRoot]) {
       delete owner.dataset.presentationViewport
       owner.dataset.presentationViewportState = "suspended"
     }
@@ -2378,13 +2457,68 @@ export class Tf2Application {
       }
       if (tokens[0]) {
         this.#botDifficulty = Number(tokens[0]) as 0 | 1 | 2 | 3
+        if (this.#activeBotConfiguration) {
+          this.#activeBotConfiguration = Object.freeze({ ...this.#activeBotConfiguration, difficulty: this.#botDifficulty })
+          this.#botConfiguration = this.#activeBotConfiguration
+        }
         this.#console?.apply({ kind: "replace-catalog", catalog: this.#catalog() })
       }
       this.#output(`"tf_bot_difficulty" = "${this.#botDifficulty}" ( def. "1" )`)
       return
     }
+    if (["tf_bot_quota", "tf_bot_quota_mode", "tf_bot_join_after_player", "tf_bot_auto_vacate"].includes(command) && tokens.length <= 1) {
+      const current = this.#activeBotConfiguration ?? Object.freeze({
+        quota: 0,
+        maximumPlayers: 32,
+        mode: "normal" as const,
+        difficulty: this.#botDifficulty,
+        joinAfterPlayer: true,
+        autoVacate: true,
+        offlinePractice: false,
+      })
+      if (tokens.length === 1) {
+        const value = tokens[0]!
+        if (command === "tf_bot_quota") {
+          if (!/^(?:0|[1-9][0-9]*)$/u.test(value) || Number(value) > 31) {
+            this.#output("tf_bot_quota accepts exactly 0 through 31")
+            return
+          }
+          this.#activeBotConfiguration = Object.freeze({ ...current, quota: Number(value) })
+        } else if (command === "tf_bot_quota_mode") {
+          if (!["normal", "fill", "match"].includes(value)) {
+            this.#output("tf_bot_quota_mode accepts exactly normal, fill, or match")
+            return
+          }
+          this.#activeBotConfiguration = Object.freeze({ ...current, mode: value as BotQuotaMode })
+        } else {
+          if (value !== "0" && value !== "1") {
+            this.#output(`${command} accepts exactly 0 or 1`)
+            return
+          }
+          this.#activeBotConfiguration = Object.freeze({
+            ...current,
+            ...(command === "tf_bot_join_after_player" ? { joinAfterPlayer: value === "1" } : { autoVacate: value === "1" }),
+          })
+        }
+        if (this.#snapshot && this.#dependencyEntries.has(`maps/${this.#mapIdentity}.nav`)) {
+          this.#botConfiguration = this.#activeBotConfiguration
+        }
+        this.#console?.apply({ kind: "replace-catalog", catalog: this.#catalog() })
+      }
+      const next = this.#activeBotConfiguration ?? current
+      const displayed = command === "tf_bot_quota" ? String(next.quota)
+        : command === "tf_bot_quota_mode" ? next.mode
+          : command === "tf_bot_join_after_player" ? String(Number(next.joinAfterPlayer)) : String(Number(next.autoVacate))
+      const defaults = command === "tf_bot_quota" ? "0" : command === "tf_bot_quota_mode" ? "normal" : "1"
+      this.#output(`"${command}" = "${displayed}" ( def. "${defaults}" )`)
+      return
+    }
+    if (command === "tf_bot_offline_practice" && tokens.length === 0) {
+      this.#output(`"tf_bot_offline_practice" = "${Number(this.#activeBotConfiguration?.offlinePractice ?? false)}" ( def. "0" )`)
+      return
+    }
     if (command === "tf_bot_add") {
-      if (!this.#snapshot || this.#mapIdentity !== "pl_upward") {
+      if (!this.#snapshot || !this.#dependencyEntries.has(`maps/${this.#mapIdentity}.nav`)) {
         this.#output("tf_bot_add rejected: the active map has no authored TF2 navigation mesh")
         return
       }
@@ -2421,11 +2555,18 @@ export class Tf2Application {
         return
       }
       this.#botRequest = Object.freeze({ action: "add", count, ...(identity ? { class: identity } : {}), ...(team ? { team } : {}), difficulty })
+      if (this.#activeBotConfiguration) {
+        this.#activeBotConfiguration = Object.freeze({
+          ...this.#activeBotConfiguration,
+          quota: Math.min(31, this.#activeBotConfiguration.quota + count),
+        })
+        this.#console?.apply({ kind: "replace-catalog", catalog: this.#catalog() })
+      }
       this.#output(`Queued ${count} ${team === 2 ? "RED" : team === 3 ? "BLU" : "auto-team"} ${selectedClass?.displayName ?? "preset-roster"} bot${count === 1 ? "" : "s"}`)
       return
     }
     if (command === "tf_bot_kick" && tokens.length === 1) {
-      if (!this.#snapshot || this.#mapIdentity !== "pl_upward") {
+      if (!this.#snapshot || !this.#dependencyEntries.has(`maps/${this.#mapIdentity}.nav`)) {
         this.#output("tf_bot_kick rejected: the active map has no authored TF2 navigation mesh")
         return
       }
@@ -2435,6 +2576,15 @@ export class Tf2Application {
       else {
         this.#output("Usage: tf_bot_kick all|red|blue")
         return
+      }
+      if (this.#activeBotConfiguration) {
+        const removed = token === "all" ? this.#snapshot.bots.length
+          : this.#snapshot.bots.filter((bot) => bot.team === (token === "red" ? 2 : 3)).length
+        this.#activeBotConfiguration = Object.freeze({
+          ...this.#activeBotConfiguration,
+          quota: Math.max(0, this.#activeBotConfiguration.quota - removed),
+        })
+        this.#console?.apply({ kind: "replace-catalog", catalog: this.#catalog() })
       }
       this.#output(`Queued bot removal: ${token}`)
       return
@@ -2802,6 +2952,10 @@ export class Tf2Application {
     this.#mapIdentity = name
     this.#applyInitialView(staged)
     this.#snapshot = (await this.#initialPublication(generation)).snapshot
+    if (this.#pendingLocalMatch?.mapIdentity === name) {
+      this.#botConfiguration = this.#pendingLocalMatch.configuration
+      this.#pendingLocalMatch = undefined
+    }
     if (operation) this.#requireOperation(operation)
     this.#predictedEye.reset(this.#snapshot.tick, tf2Camera(this.#snapshot, this.#yaw, this.#pitch).position)
     this.#resetHudIntegration()
@@ -3303,6 +3457,7 @@ export class Tf2Application {
       modeRequest: this.#modeRequest,
       bot: this.#botRequest,
       building: this.#buildingRequest,
+      botConfiguration: this.#botConfiguration,
     })
     this.#selectClass = undefined
     this.#selectWeapon = undefined
@@ -3310,6 +3465,7 @@ export class Tf2Application {
     this.#modeRequest = undefined
     this.#botRequest = undefined
     this.#buildingRequest = undefined
+    this.#botConfiguration = undefined
     this.#jumpPressed = false
     this.#firePressed = false
     this.#detonatePressed = false
@@ -3328,6 +3484,7 @@ export class Tf2Application {
       if (owners & LOADING_FRAME_OWNER) this.#loadingVgui?.frame(timeSeconds)
       if (owners & OPTIONS_FRAME_OWNER) this.#options?.frame(timeSeconds)
       if (owners & HUD_FRAME_OWNER) { this.#hudIntegration?.frame(timeSeconds); this.#engineer?.frame(timeSeconds) }
+      if (this.#view.localMatchVisible) this.#localMatch?.frame(timeSeconds)
       if (this.#classSelection?.state().visible) this.#classSelection.frame(timeSeconds)
       if (this.#teamSelection?.state().visible) this.#teamSelection.frame(timeSeconds)
     } catch (error) {
@@ -4120,6 +4277,7 @@ export class Tf2Application {
   }
 
   readonly #keyDown = (event: KeyboardEvent): void => {
+    if (this.#localMatch?.handleKey(event)) return
     if (!this.#view.consoleVisible && this.#classSelection?.handleKey(event, this.#keyboardAction(event) === "changeclass")) return
     if (!this.#view.consoleVisible && this.#teamSelection?.handleKey(event, this.#keyboardAction(event) === "changeteam")) return
     if (event.code === "Escape" && this.#view.optionsVisible && this.#options?.handleKey(event)) return
@@ -4161,7 +4319,7 @@ export class Tf2Application {
       this.toggleConsole()
       return
     }
-    if (this.#view.consoleVisible || this.#view.optionsVisible || this.#teamSelection?.state().visible
+    if (this.#view.consoleVisible || this.#view.optionsVisible || this.#view.localMatchVisible || this.#teamSelection?.state().visible
       || this.#view.gameUi !== "in-game" || event.repeat) return
     if (this.#snapshot?.class === 8 && this.#snapshot.weapon === 53 && /^Digit[1-9]$/u.test(event.code)) {
       const classes: readonly Tf2Class[] = [1, 3, 7, 4, 6, 9, 5, 2, 8]
@@ -4418,6 +4576,13 @@ export class Tf2Application {
     this.#attachments.clear()
     this.#attachmentTransforms.clear()
     this.#fireAttachmentTransforms.clear()
+    this.#botRequest = undefined
+    this.#botConfiguration = undefined
+    if (this.#activeBotConfiguration?.offlinePractice) {
+      this.#activeBotConfiguration = undefined
+      this.#botDifficulty = 1
+      this.#console?.apply({ kind: "replace-catalog", catalog: this.#catalog() })
+    }
     if (document.pointerLockElement === this.#canvas) {
       try { await document.exitPointerLock() } catch {}
     }

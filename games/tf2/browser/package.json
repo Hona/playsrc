@@ -19,6 +19,7 @@
     "./team-selection": "./src/team-selection/index.ts",
     "./gameui": "./src/gameui/index.ts",
     "./gameui-integration": "./src/gameui-integration/index.ts",
+    "./local-match": "./src/local-match/index.ts",
     "./startup-presentation": "./src/startup-presentation/index.ts",
     "./loading-presentation": "./src/loading-presentation/index.ts",
     "./worker": "./src/gameplay-worker.ts"

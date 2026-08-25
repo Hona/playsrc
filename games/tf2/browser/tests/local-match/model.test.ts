@@ -1,0 +1,80 @@
+import { describe, expect, test } from "bun:test"
+import {
+  createTf2LocalMatchMaps,
+  createTf2OfflinePracticeCatalog,
+  tf2LocalMatchLaunch,
+} from "../../src/local-match/model"
+import { tf2UiResources } from "../../src/ui-resources"
+
+const source = tf2UiResources.panels.find((panel) => panel.source.logicalPath === "resource/offline_practice.res")!
+const configuredMaps = Object.freeze(["jump_beef", "pl_upward", "ctf_2fort"])
+
+describe("TF2 authored offline practice and local server configuration", () => {
+  test("retains exact authored defaults and excludes unsupported practice modes and maps", () => {
+    const practice = createTf2OfflinePracticeCatalog(source, configuredMaps)
+    expect(practice.defaults).toEqual({
+      difficulty: 0,
+      minimumPlayers: 1,
+      maximumPlayers: 32,
+      suggestedPlayers: 16,
+      map: "cp_dustbowl",
+    })
+    expect(practice.maps).toEqual([{
+      identity: "pl_upward",
+      displayName: "Upward",
+      mode: "payload",
+      minimumPlayers: 12,
+      maximumPlayers: 24,
+    }])
+    expect(createTf2LocalMatchMaps(configuredMaps, practice)).toEqual([
+      practice.maps[0],
+      { identity: "ctf_2fort", displayName: "2FORT", mode: "capture-the-flag", minimumPlayers: 1, maximumPlayers: 32 },
+    ])
+  })
+
+  test("subtracts the listen-server host from the authored offline-practice player count", () => {
+    const map = createTf2OfflinePracticeCatalog(source, configuredMaps).maps[0]!
+    expect(tf2LocalMatchLaunch("training", {
+      mapIdentity: "pl_upward", difficulty: 2, playerCount: 8, quotaMode: "fill",
+    }, map)).toEqual({
+      entry: "training",
+      mapIdentity: "pl_upward",
+      configuration: {
+        quota: 7,
+        maximumPlayers: 24,
+        mode: "normal",
+        difficulty: 2,
+        joinAfterPlayer: true,
+        autoVacate: false,
+        offlinePractice: true,
+      },
+    })
+    expect(tf2LocalMatchLaunch("training", {
+      mapIdentity: "pl_upward", difficulty: 0, playerCount: 99, quotaMode: "normal",
+    }, map).configuration.quota).toBe(30)
+  })
+
+  test("retains normal, fill, and match bot quota modes for both configured server maps", () => {
+    const maps = createTf2LocalMatchMaps(configuredMaps, createTf2OfflinePracticeCatalog(source, configuredMaps))
+    for (const map of maps) for (const mode of ["normal", "fill", "match"] as const) {
+      expect(tf2LocalMatchLaunch("create-server", {
+        mapIdentity: map.identity, difficulty: 3, playerCount: 6, quotaMode: mode,
+      }, map)).toEqual({
+        entry: "create-server",
+        mapIdentity: map.identity,
+        configuration: {
+          quota: 6,
+          maximumPlayers: map.maximumPlayers,
+          mode,
+          difficulty: 3,
+          joinAfterPlayer: true,
+          autoVacate: true,
+          offlinePractice: false,
+        },
+      })
+    }
+    expect(() => tf2LocalMatchLaunch("training", {
+      mapIdentity: "ctf_2fort", difficulty: 1, playerCount: 6, quotaMode: "normal",
+    }, maps[1]!)).toThrow("offline practice excludes")
+  })
+})
