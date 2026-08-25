@@ -92,7 +92,15 @@ export async function startDevelopment(config: LocalConfig, target: string | und
   const mapReady = performance.now()
   const concurrent = Promise.all([buildTf2Wasm(config), publicCommitIdentity(), import("../../../apps/web/tf2/vite.config")])
   const sourceBundles = [] as Array<Readonly<{ name: (typeof TF2_TARGET_NAMES)[number]; sourceBundle: Awaited<ReturnType<typeof buildSourceBundle>> }>>
-  for (const name of TF2_TARGET_NAMES) sourceBundles.push(Object.freeze({ name, sourceBundle: await buildSourceBundle(config, name) }))
+  for (const name of TF2_TARGET_NAMES) {
+    const sourceBundle = await buildSourceBundle(config, name)
+    await Promise.all([
+      publishFile(config.assetDir, sourceBundle.report.graphDescriptor, sourceBundle.graphPath),
+      publishFile(config.assetDir, sourceBundle.report.ledgerDescriptor, sourceBundle.ledgerPath),
+      ...sourceBundle.graph.chunks.map((chunk) => publishFile(config.assetDir, resourceChunkObject(chunk), path.join(sourceBundle.graphObjectDirectory, chunk.encodedSha256))),
+    ])
+    sourceBundles.push(Object.freeze({ name, sourceBundle }))
+  }
   const [wasmPath, applicationBuild, { tf2ViteConfiguration }] = await concurrent
   const buildReady = performance.now()
   const targets = maps.map(({ name, map }, index) => {
@@ -176,16 +184,11 @@ export async function startDevelopment(config: LocalConfig, target: string | und
     await Promise.all([
       putObject(config.assetDir, wasm, wasmBytes),
       putObject(config.assetDir, catalog, catalogBytes),
-      ...maps.flatMap(({ map }, index) => {
-        const sourceBundle = sourceBundles[index].sourceBundle
-        const configured = targets[index]
-        return [
-          publishFile(config.assetDir, configured.objects.bsp, path.join(config.sourceCacheDir, map.decoded.cachePath)),
-          publishFile(config.assetDir, configured.objects.resources, sourceBundle.graphPath),
-          publishFile(config.assetDir, configured.objects.dependencyLedger, sourceBundle.ledgerPath),
-          ...sourceBundle.graph.chunks.map((chunk) => publishFile(config.assetDir, resourceChunkObject(chunk), path.join(sourceBundle.graphObjectDirectory, chunk.encodedSha256))),
-        ]
-      }),
+      ...maps.map(({ map }, index) => publishFile(
+        config.assetDir,
+        targets[index]!.objects.bsp,
+        path.join(config.sourceCacheDir, map.decoded.cachePath),
+      )),
     ])
     publicationMilliseconds = Math.round(performance.now() - publicationStarted)
     const viteStarted = performance.now()
