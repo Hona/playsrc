@@ -52,6 +52,8 @@ const attributes: readonly PublicationBinding[] = Object.freeze([
   attribute("hud-animation-trace", "hudAnimationTrace"),
   attribute("hud-operation-probe", "hudOperationProbe"),
   attribute("hud-presentation-probe", "hudPresentationProbe"),
+  attribute("scoreboard-visible", "scoreboardVisible", (view) => Boolean(view.scoreboardVisible)),
+  attribute("scoreboard-probe", "scoreboardProbe"),
   attribute("options-visible", "optionsVisible", (view) => Boolean(view.optionsVisible)),
   attribute("team-selection-visible", "teamSelectionVisible", (view) => Boolean(view.teamSelectionVisible)),
   attribute("team-selection-local", "teamSelectionLocal"),

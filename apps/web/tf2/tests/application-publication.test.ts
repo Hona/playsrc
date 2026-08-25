@@ -61,6 +61,7 @@ describe("TF2 incremental application publication", () => {
       "data-pointer-locked": "false",
       "data-console-visible": "false",
       "data-class-selection-visible": "false",
+      "data-scoreboard-visible": "false",
       "data-options-visible": "false",
       "data-team-selection-visible": "false",
       "data-fire-events": "0",

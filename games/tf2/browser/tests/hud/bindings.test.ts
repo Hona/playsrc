@@ -496,6 +496,9 @@ describe("immutable TF2 HUD binding", () => {
     })
     const scoreboard: Tf2HudScoreboard = Object.freeze({
       visible: true,
+      mapName: "ctf_2fort",
+      gameType: tf2HudAvailable("#Gametype_CTF"),
+      pingAsText: false,
       red: Object.freeze({ team: 2, localizedName: "RED", score: 2, playerCount: 1 }),
       blue: Object.freeze({ team: 3, localizedName: "BLU", score: 1, playerCount: 0 }),
       players: Object.freeze([Object.freeze({
@@ -568,6 +571,9 @@ describe("immutable TF2 HUD binding", () => {
     }))
     const oversized = snapshot(51n, { scoreboard: tf2HudAvailable({
       visible: true,
+      mapName: "jump_beef",
+      gameType: unavailable("not-applicable"),
+      pingAsText: false,
       red: { team: 2, localizedName: "RED", score: 0, playerCount: 64 },
       blue: { team: 3, localizedName: "BLU", score: 0, playerCount: 0 },
       players,

@@ -8,6 +8,7 @@ import {
   type VguiRuntime,
   type VguiRuntimeLimits,
   type VguiRuntimeSnapshot,
+  type VguiSectionedListItem,
   type VguiViewport,
 } from "@playsrc/vgui"
 import {
@@ -15,6 +16,8 @@ import {
   bindTf2Hud,
   bindTf2HudAction,
   TF2_HUD_DYNAMIC_IMAGES,
+  TF2_SCOREBOARD_CLASS_IMAGES,
+  TF2_SCOREBOARD_IMAGES,
   TF2_GROUPED_CONDITION_PANELS,
   TF2_INDEPENDENT_CONDITION_PANELS,
   tf2HudAvailable,
@@ -27,7 +30,9 @@ import {
   type Tf2HudCommand,
   type Tf2HudCrosshair,
   type Tf2HudPanelValue,
+  type Tf2HudScoreboard,
   type Tf2HudSnapshot,
+  type Tf2ScoreboardPlayer,
 } from "../hud"
 import type { CaptureObjectives, RoundSnapshot, Tf2Team } from "../codec"
 import type { Tf2VguiResources } from "../ui-integration"
@@ -60,6 +65,7 @@ export type Tf2HudIntegration = Readonly<{
   snapshot(): Tf2HudIntegrationSnapshot
   setPlayerClassUsePlayerModel(value: boolean): void
   setCrosshair(value: Tf2HudCrosshair): void
+  setScoreboardVisibility(visible: boolean): void
   reset(reason: "map-replaced" | "disconnect"): void
   destroy(): void
 }>
@@ -108,6 +114,7 @@ const HUD_WEAPONS = "resource/ui/hudweaponselection.res"
 const HUD_MATCH_STATUS = "resource/ui/hudmatchstatus.res"
 const HUD_TIME_PANEL = "resource/ui/hudobjectivetimepanel.res"
 const HUD_WAITING_PANEL = "resource/ui/waitingforplayerspanel.res"
+const HUD_SCOREBOARD = "resource/ui/scoreboard.res"
 const HUD_OBJECTIVE_FLAGS = "resource/ui/hudobjectiveflagpanel.res"
 const HUD_FLAG_STATUS = "resource/ui/flagstatus.res"
 const HUD_WIN_PANEL = "resource/ui/winpanel.res"
@@ -190,6 +197,9 @@ class Integration implements Tf2HudIntegration {
   readonly #baseBounds = new Map<string, Readonly<{ x: number; y: number; width: number; height: number }>>()
   readonly #panels = new Map<string, VguiPanelId>()
   readonly #publishedValues = new Map<string, string>()
+  readonly #localization: ReadonlyMap<string, string>
+  readonly #scoreboardProperties: ReadonlyMap<string, string>
+  #scoreboardFingerprint = ""
   #previous: Tf2HudAvailability<Tf2HudSnapshot> = tf2HudUnavailable("initial")
   #binding: Tf2HudBinding | null = null
   #viewport: VguiViewport
@@ -221,8 +231,13 @@ class Integration implements Tf2HudIntegration {
     this.#resources = request.resources
     this.#onCommand = request.onCommand
     this.#viewport = Object.freeze({ ...request.viewport })
+    this.#localization = new Map(request.resources.localization.tokens.map((token) => [`#${token.name.replace(/^#/u, "").toLowerCase()}`, token.value]))
+    const scoreboardDocument = request.resources.document(HUD_SCOREBOARD)
+    const scoreboardRoot = scoreboardDocument.root.children.find((block) => (scalar(block, "fieldName") ?? block.name).toLowerCase() === "scoreinfo")
+    if (!scoreboardRoot) throw new Error("TF2 scoreboard authored root is unavailable")
+    this.#scoreboardProperties = new Map(scoreboardRoot.children.filter((child) => child.value !== null).map((child) => [child.name.toLowerCase(), child.value!]))
     const availableImages = new Set(request.resources.clientScheme.images.map((image) => image.name.toLowerCase()))
-    const missingImages = TF2_HUD_DYNAMIC_IMAGES.filter((image) => !availableImages.has(image.toLowerCase()))
+    const missingImages = [...TF2_HUD_DYNAMIC_IMAGES, ...TF2_SCOREBOARD_IMAGES].filter((image) => !availableImages.has(image.toLowerCase()))
     if (missingImages.length > 0) throw new Error(`TF2 HUD dynamic images are unavailable: ${missingImages.join(",")}`)
     const initialized = initializeVguiRuntime({
       runtimeIdentity: "tf2-hud",
@@ -266,9 +281,35 @@ class Integration implements Tf2HudIntegration {
     applyPanelResource(this.#runtime, playerHealth, request.resources.document(HUD_HEALTH), request.resources.activeConditions)
     applyPanelResource(this.#runtime, find(this.#runtime, "HudWeaponAmmo")!, request.resources.document(HUD_AMMO), request.resources.activeConditions)
     applyPanelResource(this.#runtime, find(this.#runtime, "HudWeaponSelection")!, request.resources.document(HUD_WEAPONS), request.resources.activeConditions)
+    const scoreboard = apply(this.#runtime, { kind: "create-panel", parent: 1, control: "CTFClientScoreBoardDialog", name: "scoreinfo" })!
+    const scoreboardNames = new Set<string>()
+    const normalizedBlocks = scoreboardDocument.root.children.map((block) => {
+      if (block.value !== null) return block
+      const identity = (scalar(block, "fieldName") ?? block.name).toLowerCase()
+      if (!scoreboardNames.has(identity)) {
+        scoreboardNames.add(identity)
+        return identity === "scoreinfo" && block.name.toLowerCase() !== identity
+          ? Object.freeze({ ...block, name: "scoreinfo" })
+          : block
+      }
+      return Object.freeze({
+        ...block,
+        children: Object.freeze(block.children.map((child) => child.name.toLowerCase() === "fieldname"
+          ? Object.freeze({ ...child, value: block.name })
+          : child)),
+      })
+    })
+    applyPanelResource(this.#runtime, scoreboard,
+      document(scoreboardDocument, "authored", node(scoreboardDocument.root.name, normalizedBlocks)),
+      request.resources.activeConditions)
+    apply(this.#runtime, { kind: "set-panel-state", panel: scoreboard, visible: false, z: 100 })
+    for (const name of ["LocalPlayerDuelStatsPanel", "ButtonLegend", "ButtonLegendBG", "MvMScoreboard"]) {
+      const panel = find(this.#runtime, name)
+      if (panel !== null) apply(this.#runtime, { kind: "set-panel-state", panel, visible: false })
+    }
     const panels = this.#runtime.snapshot().panels
     for (const panel of panels) {
-      this.#panels.set(panel.name.toLowerCase(), panel.id)
+      if (!this.#panels.has(panel.name.toLowerCase())) this.#panels.set(panel.name.toLowerCase(), panel.id)
       apply(this.#runtime, { kind: "set-panel-state", panel: panel.id, mouseInput: false, keyboardInput: false })
     }
     this.#captureBaseBounds(panels)
@@ -569,7 +610,8 @@ class Integration implements Tf2HudIntegration {
     if (value.kind === "dialog-variable") {
       const available = value.value.value
       const rendered = typeof available === "object"
-        ? `${available.token}:${available.parameters.join(",")}`
+        ? (this.#localization.get(available.token.toLowerCase()) ?? available.token)
+          .replace(/%s([1-9])/gu, (_match, index: string) => String(available.parameters[Number(index) - 1] ?? ""))
         : available
       apply(this.#runtime, { kind: "set-dialog-variable", panel, name: value.variable, value: rendered })
     } else if (value.kind === "image") {
@@ -599,8 +641,129 @@ class Integration implements Tf2HudIntegration {
     this.#publishedValues.set(identity, fingerprint)
   }
 
+  #scoreboardColumnWidth(name: string): number {
+    const value = Number(this.#scoreboardProperties.get(name))
+    if (!Number.isSafeInteger(value) || value < 0) throw new Error(`TF2 scoreboard authored width is invalid: ${name}`)
+    return Math.trunc(value * this.#viewport.height / 480)
+  }
+
+  #scoreboardPlayer(player: Tf2ScoreboardPlayer, pingAsText: boolean): VguiSectionedListItem {
+    const dead = player.alive ? "" : "_d"
+    const cells: Record<string, string | Readonly<{ kind: "image"; image: string }>> = {
+      medal: "",
+      avatar: "",
+      spacer: "",
+      name: player.connection === "connected"
+        ? player.name
+        : player.connection === "disconnected" ? "#TF_MM_PlayerLostConnection" : "#TF_MM_PlayerConnecting",
+      killstreak: player.killstreak ? String(player.killstreak) : "",
+      killstreak_image: "",
+      dominating: "",
+      nemesis: "",
+      score: String(player.score),
+      class: player.class.kind === "available"
+        ? Object.freeze({ kind: "image", image: `${TF2_SCOREBOARD_CLASS_IMAGES[player.class.value - 1]}${dead}` })
+        : "",
+      ping: "",
+    }
+    if (player.ping.kind === "available") {
+      const ping = player.ping.value
+      if (pingAsText) cells.ping = ping === "bot" ? "#TF_Scoreboard_Bot" : ping > 0 ? String(ping) : ""
+      else if (ping === "bot") cells.ping = Object.freeze({
+        kind: "image",
+        image: `../hud/scoreboard_ping_bot_${player.team === 2 ? "red" : "blue"}${dead}`,
+      })
+      else if (ping > 0) cells.ping = Object.freeze({
+        kind: "image",
+        image: `../hud/scoreboard_ping_${ping < 125 ? "low" : ping < 200 ? "med" : ping < 275 ? "high" : "very_high"}${dead}`,
+      })
+    }
+    const local = player.identity === 1
+    const foregroundColor = Object.freeze(player.alive
+      ? player.team === 2 ? [255, 64, 64, 255] : [153, 204, 255, 255]
+      : player.team === 2
+        ? local ? [182, 75, 75, 255] : [135, 83, 83, 255]
+        : local ? [123, 153, 187, 255] : [81, 97, 129, 255]) as readonly [number, number, number, number]
+    return Object.freeze({
+      id: player.identity,
+      section: 0,
+      cells: Object.freeze(cells),
+      enabled: true,
+      foregroundColor,
+      backgroundColor: Object.freeze([0, 0, 0, 80]) as readonly [number, number, number, number],
+    })
+  }
+
+  #publishScoreboard(value: Tf2HudScoreboard): void {
+    const fingerprint = JSON.stringify(value)
+    if (this.#scoreboardFingerprint === fingerprint) return
+    this.#scoreboardFingerprint = fingerprint
+    const root = this.#panels.get("scoreinfo")
+    if (root === undefined) throw new Error("TF2 scoreboard authored root is absent")
+    const widths = {
+      medal: this.#scoreboardColumnWidth("medal_column_width"),
+      avatar: this.#scoreboardColumnWidth("avatar_width"),
+      spacer: this.#scoreboardColumnWidth("spacer"),
+      killstreak: this.#scoreboardColumnWidth("killstreak_width"),
+      killstreakImage: this.#scoreboardColumnWidth("killstreak_image_width"),
+      nemesis: this.#scoreboardColumnWidth("nemesis_width"),
+      score: this.#scoreboardColumnWidth("score_width"),
+      class: this.#scoreboardColumnWidth("class_width"),
+      ping: this.#scoreboardColumnWidth("ping_width"),
+    }
+    for (const [name, team] of [["RedPlayerList", 2], ["BluePlayerList", 3]] as const) {
+      const id = this.#panels.get(name.toLowerCase())
+      if (id === undefined) throw new Error(`TF2 scoreboard authored list is absent: ${name}`)
+      const panel = this.#runtime.snapshotPanels([id])[0]!
+      const reserved = widths.medal + widths.avatar + widths.spacer + widths.killstreak
+        + widths.killstreakImage + widths.nemesis * 2 + widths.score + widths.class + widths.ping + 10
+      const nameWidth = Math.max(0, panel.bounds.width - reserved)
+      const image = 0x02, center = 0x08, right = 0x10
+      const columns = [
+        { name: "medal", text: "", flags: image | center, width: widths.medal },
+        { name: "avatar", text: "", flags: image, width: widths.avatar },
+        { name: "spacer", text: "", flags: 0, width: widths.spacer },
+        { name: "name", text: "#TF_Scoreboard_Name", flags: 0, width: nameWidth },
+        { name: "killstreak", text: "", flags: right, width: widths.killstreak },
+        { name: "killstreak_image", text: "", flags: image, width: widths.killstreakImage },
+        { name: "dominating", text: "", flags: image | center, width: widths.nemesis },
+        { name: "nemesis", text: "", flags: image | center, width: widths.nemesis },
+        { name: "score", text: "#TF_Scoreboard_Score", flags: right, width: widths.score },
+        { name: "class", text: "", flags: image | right, width: widths.class },
+        { name: "ping", text: value.pingAsText ? "#TF_Scoreboard_Ping" : "", flags: value.pingAsText ? right : image | right, width: widths.ping },
+      ]
+      const sectionedItems = value.players.filter((player) => player.team === team)
+        .map((player) => this.#scoreboardPlayer(player, value.pingAsText))
+      const selected = sectionedItems.findIndex((player) => value.selectedPlayer.kind === "available" && player.id === value.selectedPlayer.value)
+      apply(this.#runtime, { kind: "mutate-control", panel: id, mutation: {
+        sections: [Object.freeze({ id: 0, name: "", alwaysVisible: true, minimumHeight: 0, columns: Object.freeze(columns) })],
+        sectionedItems,
+        activeIndex: selected >= 0 ? selected : null,
+      } })
+    }
+    const spectators = value.spectators.length === 0 ? "" : (
+      this.#localization.get((value.spectators.length === 1 ? "#ScoreBoard_Spectator" : "#ScoreBoard_Spectators").toLowerCase()) ?? ""
+    ).replace("%s1", String(value.spectators.length)).replace("%s2", value.spectators.join(", "))
+    apply(this.#runtime, { kind: "set-dialog-variable", panel: root, name: "spectators", value: spectators })
+    apply(this.#runtime, { kind: "set-dialog-variable", panel: root, name: "waitingtoplay", value: value.waitingToPlay.join(", ") })
+    apply(this.#runtime, { kind: "set-dialog-variable", panel: root, name: "mapname", value: value.mapName })
+    apply(this.#runtime, { kind: "set-dialog-variable", panel: root, name: "server", value: "" })
+    apply(this.#runtime, { kind: "set-dialog-variable", panel: root, name: "servertime", value: "" })
+    const local = value.players.find((player) => player.identity === 1)
+    apply(this.#runtime, { kind: "set-dialog-variable", panel: root, name: "playername", value: local?.name ?? "" })
+    const stats = this.#panels.get("localplayerstatspanel")
+    if (stats !== undefined) {
+      const counters = local?.counters.kind === "available" ? local.counters.value : null
+      for (const name of ["kills", "deaths", "assists", "destruction", "captures", "defenses", "dominations", "revenge", "healing", "invulns", "teleports", "headshots", "backstabs", "bonus", "support", "damage"] as const) {
+        apply(this.#runtime, { kind: "set-dialog-variable", panel: stats, name, value: counters?.[name] ?? "" })
+      }
+      apply(this.#runtime, { kind: "set-dialog-variable", panel: stats, name: "gametype", value: value.gameType.kind === "available" ? this.#localization.get(value.gameType.value.toLowerCase()) ?? value.gameType.value : "" })
+    }
+  }
+
   #applyValues(binding: Tf2HudBinding): void {
     for (const value of binding.values) this.#value(value)
+    if (binding.scoreboard.kind === "available") this.#publishScoreboard(binding.scoreboard.value)
     this.#crosshair.publish(binding, this.#viewport)
   }
 
@@ -666,6 +829,7 @@ class Integration implements Tf2HudIntegration {
       this.#captureBaseBounds()
       if (this.#binding) {
         this.#publishedValues.clear()
+        this.#scoreboardFingerprint = ""
         this.#applyValues(this.#binding)
       }
     })
@@ -676,6 +840,7 @@ class Integration implements Tf2HudIntegration {
       "PlayerStatusClassImage", "PlayerStatusClassImageBG", "classmodelpanel", "classmodelpanelBG",
       "PlayerStatusSpyImage", "PlayerStatusSpyOutlineImage", "PlayerStatus_WheelOfDoom",
       "HudObjectiveStatus", "ObjectiveStatusFlagPanel", "BlueFlag", "RedFlag", "CarriedImage", "CaptureFlag", "BlueScore", "RedScore", "PlayingTo", "NotificationPanel", "Notification_Label", "WinPanel", "WinningTeamLabel", "WinReasonLabel",
+      "scoreinfo", "RedPlayerList", "BluePlayerList", "Spectators", "Kills", "Deaths",
       ...TF2_GROUPED_CONDITION_PANELS.map((item) => item.panel),
       ...TF2_INDEPENDENT_CONDITION_PANELS.map((item) => item.panel),
     ]
@@ -733,6 +898,24 @@ class Integration implements Tf2HudIntegration {
     })
   }
 
+  setScoreboardVisibility(visible: boolean): void {
+    if (this.#destroyed) throw new Error("TF2 HUD integration is destroyed")
+    const current = this.#binding
+    if (!current || current.scoreboard.kind !== "available" || current.scoreboard.value.visible === visible) return
+    this.#runtime.deferPresentation(() => {
+      const scoreboard = tf2HudAvailable(Object.freeze({ ...current.scoreboard.value, visible }))
+      const snapshot: Tf2HudSnapshot = Object.freeze({ ...current.facts, scoreboard })
+      const binding = bindTf2Hud(Object.freeze({
+        previous: tf2HudUnavailable<Tf2HudSnapshot>("replay-discontinuity"),
+        snapshot,
+        events: Object.freeze([]),
+      }))
+      this.#applyValues(binding)
+      this.#previous = tf2HudAvailable(binding.facts)
+      this.#binding = binding
+    })
+  }
+
   reset(reason: "map-replaced" | "disconnect"): void {
     if (this.#destroyed) throw new Error("TF2 HUD integration is destroyed")
     void reason
@@ -746,6 +929,7 @@ class Integration implements Tf2HudIntegration {
       })
       const binding = bindTf2Hud(Object.freeze({ previous: unavailable, snapshot, events: Object.freeze([]) }))
       this.#publishedValues.clear()
+      this.#scoreboardFingerprint = ""
       this.#applyValues(binding)
       this.#previous = unavailable
       this.#binding = null

@@ -14,6 +14,7 @@ pub mod pyro;
 pub mod random;
 pub mod round;
 pub mod schema;
+pub mod scoreboard;
 pub mod state;
 pub mod team_selection;
 pub mod weapon;
@@ -657,6 +658,7 @@ pub struct Snapshot {
     pub bots: Vec<bot::Snapshot>,
     pub pickups: Vec<MapPickupSnapshot>,
     pub metal: u16,
+    pub scoreboard: scoreboard::Snapshot,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -761,6 +763,7 @@ pub struct Session<W: GameplayWorld + Clone> {
     ctf_capture_bonus_until: Option<u64>,
     jump: Option<jump::Session>,
     bots: Option<bot::BotWorld>,
+    scoreboard: scoreboard::State,
     posed_player_hitboxes: Vec<PosedPlayerHitbox>,
 }
 
@@ -922,6 +925,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             ctf_capture_bonus_until: None,
             jump: None,
             bots: None,
+            scoreboard: scoreboard::State::default(),
             posed_player_hitboxes: Vec::new(),
         }
     }
@@ -2032,6 +2036,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 .emit_objective_outputs(self.tick, &objective_events)?;
             map_phase.append(phase);
             for event in &objective_events {
+                if let ctf::Event::Captured { player, .. } = event
+                    && *player == PLAYER_IDENTITY
+                {
+                    self.scoreboard.local_capture();
+                }
                 if let ctf::Event::CaptureBonus {
                     team,
                     condition,
@@ -2122,6 +2131,19 @@ impl<W: GameplayWorld + Clone> Session<W> {
         merge_mover_requests(&mut self.mover_requests, &map_phase.mover_requests);
         self.map_effects = map_phase.effects.clone();
         self.regenerate_contacts = map_phase.regenerate_contacts.clone();
+        let bots = self
+            .bots
+            .as_ref()
+            .map_or_else(Vec::new, bot::BotWorld::snapshots);
+        let round = self.round.snapshot(round_events);
+        let scoreboard = self.scoreboard.snapshot(
+            self.team_selection.local_team(),
+            self.class,
+            self.lifecycle,
+            &bots,
+            self.map.objectives().map(ctf::World::scores),
+            (round.red_score, round.blue_score),
+        );
         Ok(Snapshot {
             tick: self.tick,
             class: self.class,
@@ -2150,15 +2172,13 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 .map
                 .objectives()
                 .map(|objectives| objectives.snapshot(objective_events)),
-            round: self.round.snapshot(round_events),
+            round,
             jump: jump_output,
             events,
-            bots: self
-                .bots
-                .as_ref()
-                .map_or_else(Vec::new, bot::BotWorld::snapshots),
+            bots,
             pickups: self.map.pickups(),
             metal: self.ammo.metal,
+            scoreboard,
         })
     }
 
@@ -3210,8 +3230,16 @@ impl<W: GameplayWorld + Clone> Session<W> {
         } else if let Some(bots) = &mut self.bots {
             let victim_team = bots.team(input.victim).unwrap_or(attacker_team);
             let population = bots.team_population(victim_team, self.team_selection.local_team());
-            bots.damage(input, attacker_team, self.tick, population)
-                .map_err(Error::Bot)?;
+            if let Some(damage) = bots
+                .damage(input, attacker_team, self.tick, population)
+                .map_err(Error::Bot)?
+                && input.attacker == PLAYER_IDENTITY
+            {
+                self.scoreboard.local_damage(damage.max(0) as u32);
+                if !bots.active(input.victim) {
+                    self.scoreboard.local_kill();
+                }
+            }
         }
         Ok(())
     }
@@ -4884,6 +4912,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
 
     fn die(&mut self, projectile_events: &mut Vec<ProjectileEvent>) {
         self.lifecycle = PlayerLifecycle::Dying;
+        self.scoreboard.local_death();
         self.lifecycle_events.push(LifecycleEvent {
             tick: self.tick,
             kind: LifecycleEventKind::Died,

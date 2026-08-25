@@ -17,6 +17,95 @@ use crate::{
 };
 
 pub const MAX_BOTS: usize = 31;
+
+const BOT_NAMES: &[&str] = &[
+    "Chucklenuts",
+    "CryBaby",
+    "WITCH",
+    "ThatGuy",
+    "Still Alive",
+    "Hat-Wearing MAN",
+    "Me",
+    "Numnutz",
+    "H@XX0RZ",
+    "The G-Man",
+    "Chell",
+    "The Combine",
+    "Totally Not A Bot",
+    "Pow!",
+    "Zepheniah Mann",
+    "THEM",
+    "LOS LOS LOS",
+    "10001011101",
+    "DeadHead",
+    "ZAWMBEEZ",
+    "MindlessElectrons",
+    "TAAAAANK!",
+    "The Freeman",
+    "Black Mesa",
+    "Soulless",
+    "CEDA",
+    "BeepBeepBoop",
+    "NotMe",
+    "CreditToTeam",
+    "BoomerBile",
+    "Someone Else",
+    "Mann Co.",
+    "Dog",
+    "Kaboom!",
+    "AmNot",
+    "0xDEADBEEF",
+    "HI THERE",
+    "SomeDude",
+    "GLaDOS",
+    "Hostage",
+    "Headful of Eyeballs",
+    "CrySomeMore",
+    "Aperture Science Prototype XR7",
+    "Humans Are Weak",
+    "AimBot",
+    "C++",
+    "GutsAndGlory!",
+    "Nobody",
+    "Saxton Hale",
+    "RageQuit",
+    "Screamin' Eagles",
+    "Ze Ubermensch",
+    "Maggot",
+    "CRITRAWKETS",
+    "Herr Doktor",
+    "Gentlemanne of Leisure",
+    "Companion Cube",
+    "Target Practice",
+    "One-Man Cheeseburger Apocalypse",
+    "Crowbar",
+    "Delicious Cake",
+    "IvanTheSpaceBiker",
+    "I LIVE!",
+    "Cannon Fodder",
+    "trigger_hurt",
+    "Nom Nom Nom",
+    "Divide by Zero",
+    "GENTLE MANNE of LEISURE",
+    "MoreGun",
+    "Tiny Baby Man",
+    "Big Mean Muther Hubbard",
+    "Force of Nature",
+    "Crazed Gunman",
+    "Grim Bloody Fable",
+    "Poopy Joe",
+    "A Professional With Standards",
+    "Freakin' Unbelievable",
+    "SMELLY UNFORTUNATE",
+    "The Administrator",
+    "Mentlegen",
+    "Archimedes!",
+    "Ribs Grow Back",
+    "It's Filthy in There!",
+    "Mega Baboon",
+    "Kill Me",
+    "Glorified Toaster with Legs",
+];
 pub const TF_NAV_BLOCKED: u32 = 0x0000_0001;
 pub const TF_NAV_SPAWN_ROOM_RED: u32 = 0x0000_0002;
 pub const TF_NAV_SPAWN_ROOM_BLUE: u32 = 0x0000_0004;
@@ -113,6 +202,7 @@ pub enum ObjectiveKind {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
     pub identity: u32,
+    pub name: String,
     pub class: PlayerClass,
     pub team: PlayerTeam,
     pub lifecycle: PlayerLifecycle,
@@ -244,6 +334,7 @@ impl Actor {
 #[derive(Clone, Debug)]
 struct Bot {
     identity: u32,
+    name: String,
     class: PlayerClass,
     team: PlayerTeam,
     lifecycle: PlayerLifecycle,
@@ -285,6 +376,7 @@ pub struct BotWorld {
     scenario: Scenario,
     bots: BTreeMap<u32, Bot>,
     next_identity: u32,
+    next_name: Option<usize>,
     tick_interval: f32,
     respawn_waves: [f32; 2],
 }
@@ -380,6 +472,7 @@ impl BotWorld {
             scenario,
             bots: BTreeMap::new(),
             next_identity: crate::PLAYER_IDENTITY + 1,
+            next_name: None,
             tick_interval,
             respawn_waves: initial_respawn_waves(graph),
         })
@@ -575,10 +668,22 @@ impl BotWorld {
             if let Some(weapon) = active_weapon.and_then(|weapon| loadout.get_mut(&weapon)) {
                 weapon.deploy(0, self.tick_interval);
             }
+            let name_index = match self.next_name {
+                Some(index) => index,
+                None => random
+                    .random_int(
+                        0,
+                        i32::try_from(BOT_NAMES.len() - 1).map_err(|_| Error::Limit)?,
+                    )
+                    .map_err(|_| Error::Limit)? as usize,
+            };
+            let name = BOT_NAMES[name_index].to_owned();
+            self.next_name = Some((name_index + 1) % BOT_NAMES.len());
             self.bots.insert(
                 identity,
                 Bot {
                     identity,
+                    name,
                     class,
                     team,
                     lifecycle: PlayerLifecycle::Active,
@@ -1234,6 +1339,7 @@ impl BotWorld {
             .values()
             .map(|bot| Snapshot {
                 identity: bot.identity,
+                name: bot.name.clone(),
                 class: bot.class,
                 team: bot.team,
                 lifecycle: bot.lifecycle,

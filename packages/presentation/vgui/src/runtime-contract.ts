@@ -412,11 +412,15 @@ export type VguiSectionedListSection = Readonly<{
   columns: readonly VguiSectionedListColumn[]
 }>
 
+export type VguiSectionedListCell = string | Readonly<{ kind: "image"; image: string }>
+
 export type VguiSectionedListItem = Readonly<{
   id: number
   section: number
-  cells: Readonly<Record<string, string>>
+  cells: Readonly<Record<string, VguiSectionedListCell>>
   enabled: boolean
+  foregroundColor?: Rgba
+  backgroundColor?: Rgba
 }>
 
 export type VguiOperation =

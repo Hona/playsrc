@@ -36,6 +36,7 @@ export const test = base.extend<{
         && (state.startupState === "Playing" || state.startupState === "AwaitingGesture")) {
         startupSkipRequested = true
         await page.keyboard.press("Escape")
+        if (lastState !== state) return
       }
       if (state.phase === "Failed") {
         if (!allowRecoverableApplicationFailure) {

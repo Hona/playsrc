@@ -316,8 +316,15 @@ function copyScoreboard(value: Tf2HudScoreboard): Tf2HudScoreboard {
   if (selectedPlayer.kind === "available" && !players.some((player) => player.identity === selectedPlayer.value)) {
     malformed("scoreboard selected player is absent")
   }
+  const gameType = copyAvailability(value.gameType, (item) => {
+    if (item !== "#Gametype_CTF" && item !== "#Gametype_Escort") malformed("scoreboard game type is invalid")
+    return item
+  }, "scoreboard game type")
   return Object.freeze({
     visible: value.visible === true,
+    mapName: text(value.mapName, "scoreboard map name", 255),
+    gameType,
+    pingAsText: value.pingAsText === true,
     red: copyScoreboardTeam(value.red, 2),
     blue: copyScoreboardTeam(value.blue, 3),
     players,

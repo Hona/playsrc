@@ -8,7 +8,7 @@ import type {
 } from "@playsrc/vgui"
 import { FakeDocument, createRoot } from "../../../../../packages/presentation/vgui/tests/fake-dom"
 import { initializeTf2HudIntegration } from "../../src/hud-integration"
-import { TF2_HUD_DYNAMIC_IMAGES } from "../../src/hud"
+import { TF2_HUD_DYNAMIC_IMAGES, TF2_SCOREBOARD_IMAGES } from "../../src/hud"
 import type { Tf2VguiResources } from "../../src/ui-integration"
 import { tf2UiResources } from "../../src/ui-resources"
 
@@ -62,9 +62,21 @@ const documents = new Map<string, VguiResourceDocument>([
     revision: "7a6f02c7eab4f0befdac5c69082c9334b0a03975738e1fc6d598ba6c91967138",
     root: object("Resource", []),
   })],
+  ["resource/ui/scoreboard.res", Object.freeze({
+    logicalIdentity: "resource/ui/scoreboard.res",
+    revision: "ed6e7d1619dcfa7423d00cf77c19026d7fe00c6a2bca634bb742d20d870b3e52",
+    root: object("Resource", [object("scores", [
+      scalar("ControlName", "CTFClientScoreBoardDialog"),
+      scalar("fieldName", "scoreinfo"),
+      scalar("xpos", "cs-0.5"),
+      scalar("ypos", "31"),
+      scalar("wide", "640"),
+      scalar("tall", "448"),
+    ])]),
+  })],
 ])
 
-const customControls: readonly VguiControlRegistration[] = Object.freeze(["CTFHudElement", "CTFHealthPanel"].map((name) => Object.freeze({
+const customControls: readonly VguiControlRegistration[] = Object.freeze(["CTFHudElement", "CTFHealthPanel", "CTFClientScoreBoardDialog"].map((name) => Object.freeze({
   name,
   baseControl: "EditablePanel" as const,
   element: "div" as const,
@@ -74,7 +86,7 @@ const customControls: readonly VguiControlRegistration[] = Object.freeze(["CTFHu
   acceptedProperties: Object.freeze([]),
 })))
 
-const images: readonly VguiImagePresentation[] = Object.freeze(TF2_HUD_DYNAMIC_IMAGES.map((name, index) => Object.freeze({
+const images: readonly VguiImagePresentation[] = Object.freeze([...TF2_HUD_DYNAMIC_IMAGES, ...TF2_SCOREBOARD_IMAGES].map((name, index) => Object.freeze({
   name,
   logicalIdentity: `materials/vgui/hud-vertical-layout/${index}.vtf`,
   revision: `hud-vertical-layout-${index}`,

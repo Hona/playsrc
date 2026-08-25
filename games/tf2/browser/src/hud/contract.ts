@@ -136,6 +136,9 @@ export type Tf2ScoreboardTeam = Readonly<{
 
 export type Tf2HudScoreboard = Readonly<{
   visible: boolean
+  mapName: string
+  gameType: Tf2HudAvailability<"#Gametype_CTF" | "#Gametype_Escort">
+  pingAsText: boolean
   red: Tf2ScoreboardTeam
   blue: Tf2ScoreboardTeam
   players: readonly Tf2ScoreboardPlayer[]

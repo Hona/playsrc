@@ -3982,7 +3982,7 @@ fn encode_snapshot(
     encode_movement_tick(&mut movement_tick_bytes, movement_tick, MAX)?;
     let mut out = Vec::new();
     extend(&mut out, b"PSSN", MAX)?;
-    u32_field(&mut out, 16, MAX)?;
+    u32_field(&mut out, 17, MAX)?;
     u64_field(&mut out, snapshot.tick, MAX)?;
     extend(
         &mut out,
@@ -4477,6 +4477,43 @@ fn encode_snapshot(
             MAX,
         )?;
         u64_field(&mut out, pickup.respawn_tick.unwrap_or(u64::MAX), MAX)?;
+    }
+    let scoreboard = &snapshot.scoreboard;
+    i32_field(&mut out, scoreboard.red_score, MAX)?;
+    i32_field(&mut out, scoreboard.blue_score, MAX)?;
+    extend(
+        &mut out,
+        &[
+            scoreboard.red_count,
+            scoreboard.blue_count,
+            u8::try_from(scoreboard.players.len()).ok()?,
+            0,
+        ],
+        MAX,
+    )?;
+    for player in &scoreboard.players {
+        let name = player.name.as_bytes();
+        if name.is_empty() || name.len() > 31 {
+            return None;
+        }
+        u32_field(&mut out, player.identity, MAX)?;
+        extend(
+            &mut out,
+            &[
+                class_code(player.class),
+                team_code(player.team),
+                player.alive as u8,
+                player.fake as u8,
+            ],
+            MAX,
+        )?;
+        i32_field(&mut out, player.score, MAX)?;
+        u32_field(&mut out, player.counters.kills, MAX)?;
+        u32_field(&mut out, player.counters.deaths, MAX)?;
+        u32_field(&mut out, player.counters.captures, MAX)?;
+        u32_field(&mut out, player.counters.damage, MAX)?;
+        extend(&mut out, &[u8::try_from(name.len()).ok()?], MAX)?;
+        extend(&mut out, name, MAX)?;
     }
     encode_round(&mut out, &snapshot.round, MAX)?;
     Some(out)
@@ -12228,6 +12265,7 @@ mod tests {
             bots: Vec::new(),
             pickups: Vec::new(),
             metal: 100,
+            scoreboard: playsrc_tf2::scoreboard::Snapshot::default(),
         };
         let producer = playsrc_tf2::ProducerSnapshot {
             tick: 9,
@@ -12339,10 +12377,10 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(&encoded[..8], b"PSSN\x10\0\0\0");
-        assert_eq!(encoded.len(), 1004);
+        assert_eq!(&encoded[..8], b"PSSN\x11\0\0\0");
+        assert_eq!(encoded.len(), 1016);
         assert_eq!(&encoded[936..944], b"PCTF\x01\0\0\0");
-        assert_eq!(&encoded[956..964], b"PGRL\x01\0\0\0");
+        assert_eq!(&encoded[968..976], b"PGRL\x01\0\0\0");
         assert_eq!(
             u32::from_le_bytes(encoded[160..164].try_into().unwrap()),
             playsrc_tf2::FL_CLIENT | playsrc_tf2::FL_INWATER

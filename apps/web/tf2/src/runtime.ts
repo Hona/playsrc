@@ -30,8 +30,10 @@ import {
 import { createTf2PresentationRandom, initializeTf2VguiResources, type Tf2PresentationRandom, type Tf2VguiResources } from "@playsrc/game-tf2-browser/ui-integration"
 import {
   TF2_CROSSHAIR_SETTINGS,
+  adaptTf2Scoreboard,
   tf2CrosshairHudValues,
   tf2CrosshairSettings,
+  tf2HudAvailable,
   tf2HudUnavailable,
   type SessionHudContext,
   type Tf2CrosshairSettings,
@@ -228,6 +230,8 @@ export type ApplicationView = Readonly<{
   hudAnimationTrace?: string
   hudOperationProbe?: string
   hudPresentationProbe?: string
+  scoreboardVisible?: boolean
+  scoreboardProbe?: string
   optionsVisible?: boolean
   settingsPersistence?: "absent" | "loaded" | "rejected" | "stored"
   settingsApply?: string
@@ -443,6 +447,9 @@ export class Tf2Application {
   #hudRootCounts?: Readonly<{ playerStatus: number; ammo: number }>
   #hudContext?: SessionHudContext
   #hudContextIdentity = -1
+  #hudScoreboardIdentity = ""
+  #scoreboardVisible = false
+  #scoreboardPingAsText = false
   #playerClassUsePlayerModel = true
   #crosshairSettings?: Tf2CrosshairSettings
   #settings?: Tf2BrowserSettings
@@ -861,13 +868,19 @@ export class Tf2Application {
     if (request.owner === "game") {
       const crosshairIds = new Set<string>(TF2_CROSSHAIR_SETTINGS.map((setting) => setting.settingId))
       if (request.changes.some((change) => !crosshairIds.has(change.settingId)
-        && (change.settingId !== "cl_hud_playerclass_use_playermodel" || typeof change.nextValue !== "boolean"))) {
+        && (!["cl_hud_playerclass_use_playermodel", "tf_scoreboard_ping_as_text"].includes(change.settingId)
+          || typeof change.nextValue !== "boolean"))) {
         return reject(`browser game owner does not implement every requested effect: ${request.changes.map((change) => `${change.settingId}=${String(change.nextValue)}`).join(",")}`)
       }
       const model = request.changes.find((change) => change.settingId === "cl_hud_playerclass_use_playermodel")
       if (model) {
         this.#playerClassUsePlayerModel = model.nextValue as boolean
         this.#hudIntegration?.setPlayerClassUsePlayerModel(this.#playerClassUsePlayerModel)
+      }
+      const scoreboardPing = request.changes.find((change) => change.settingId === "tf_scoreboard_ping_as_text")
+      if (scoreboardPing) {
+        this.#scoreboardPingAsText = scoreboardPing.nextValue as boolean
+        this.#hudContext = undefined
       }
       if (request.changes.some((change) => crosshairIds.has(change.settingId))) {
         if (!this.#settings) return reject("browser crosshair settings authority is unavailable")
@@ -1154,6 +1167,7 @@ export class Tf2Application {
     this.#mouseSensitivity = currentSettings["mouse.sensitivity"] as number
     this.#reverseMouse = currentSettings["mouse.reverse"] === true
     this.#playerClassUsePlayerModel = currentSettings["cl_hud_playerclass_use_playermodel"] === true
+    this.#scoreboardPingAsText = currentSettings["tf_scoreboard_ping_as_text"] === true
     this.#crosshairSettings = tf2CrosshairSettings(currentSettings)
     this.#installListeners()
     this.#animationFrame = requestAnimationFrame(this.#frame)
@@ -1581,6 +1595,8 @@ export class Tf2Application {
     if (!this.#uiResources || !this.#presentationRandom) throw new Error("TF2 HUD resources are unavailable")
     this.#hudContext = undefined
     this.#hudContextIdentity = -1
+    this.#hudScoreboardIdentity = ""
+    this.#scoreboardVisible = false
     if (this.#hudIntegration) {
       this.#hudIntegration.reset("map-replaced")
       return
@@ -1595,6 +1611,7 @@ export class Tf2Application {
       onCommand: (command) => {
 
         if (command.kind === "select-weapon" && (command.weapon >= 1 && command.weapon <= 18 || command.weapon >= 40 && command.weapon <= 42)) this.#selectWeapon = command.weapon as Tf2Weapon
+        else if (command.kind === "scoreboard") this.#setScoreboardVisible(command.visible)
 
       },
     })
@@ -1862,8 +1879,12 @@ export class Tf2Application {
       | Number(loadingImage) << 4
       | Number(clientModeAllows) << 5
       | Number(snapshot.weapon !== null) << 6
-    if (this.#hudContext && this.#hudContextIdentity === identity) return this.#hudContext
+      | Number(this.#scoreboardVisible) << 7
+      | Number(this.#scoreboardPingAsText) << 8
+    const scoreboardIdentity = `${snapshot.team}:${snapshot.scoreboard.redScore}:${snapshot.scoreboard.blueScore}:${snapshot.scoreboard.redCount}:${snapshot.scoreboard.blueCount}:${snapshot.scoreboard.players.map((player) => `${player.identity},${player.team},${player.class},${Number(player.alive)},${player.score},${player.kills},${player.deaths},${player.captures},${player.damage}`).join(";")}`
+    if (this.#hudContext && this.#hudContextIdentity === identity && this.#hudScoreboardIdentity === scoreboardIdentity) return this.#hudContext
     this.#hudContextIdentity = identity
+    this.#hudScoreboardIdentity = scoreboardIdentity
     this.#hudContext = Object.freeze({
       playerIdentity: 1,
       liveHudSuppressed: classSelection || this.#view.teamSelectionVisible === true,
@@ -1885,7 +1906,13 @@ export class Tf2Application {
         ...tf2CrosshairHudValues(this.#crosshairSettings),
         weaponScale: 1,
       }),
-      scoreboard: tf2HudUnavailable<Tf2HudScoreboard>("not-produced"),
+      scoreboard: tf2HudAvailable<Tf2HudScoreboard>(adaptTf2Scoreboard(
+        snapshot.scoreboard,
+        snapshot.team,
+        this.#scoreboardVisible,
+        this.#mapIdentity,
+        this.#scoreboardPingAsText,
+      )),
       freezePanel: tf2HudUnavailable<Tf2HudFreezePanel>("not-produced"),
       playerClassUsePlayerModel: this.#playerClassUsePlayerModel,
     })
@@ -3761,6 +3788,21 @@ export class Tf2Application {
           ? `${healthPanel.state.imageFill}:${healthPanel.bounds.x},${healthPanel.bounds.y},${healthPanel.bounds.width},${healthPanel.bounds.height}:${healthPanel.state.drawColor.join(",")}:${healthPanel.state.foregroundColor?.join(",") ?? "none"}:${ammoPanel.state.scalarProperties.reloadPhase ?? "none"}:${weaponPanel.state.scalarProperties.weaponIdentity ?? "none"}`
           : "unavailable",
         hudPresentationProbe: hudProbe && hud ? this.#hudPresentationObservation(hudProbe, hud) : "unavailable",
+        scoreboardVisible: this.#scoreboardVisible,
+        scoreboardProbe: hud?.scoreboard.kind === "available" ? JSON.stringify({
+          map: hud.scoreboard.value.mapName,
+          red: hud.scoreboard.value.red,
+          blue: hud.scoreboard.value.blue,
+          players: hud.scoreboard.value.players.map((player) => ({
+            identity: player.identity, name: player.name, team: player.team,
+            class: player.class.kind === "available" ? player.class.value : null,
+            score: player.score, alive: player.alive,
+            ping: player.ping.kind === "available" ? player.ping.value : null,
+            kills: player.counters.kind === "available" ? player.counters.value.kills : null,
+            deaths: player.counters.kind === "available" ? player.counters.value.deaths : null,
+          })),
+          spectators: hud.scoreboard.value.spectators,
+        }) : "unavailable",
         fireEvents: this.#fireEvents,
         explosionEvents: this.#explosionEvents,
         objectiveProbe: snapshot.objectives ? `${snapshot.objectives.redCaptures}:${snapshot.objectives.blueCaptures}:${snapshot.objectives.captureLimit}:${snapshot.objectives.winner??0}:${snapshot.objectives.flags.map(flag=>`${flag.identity},${flag.team},${flag.status},${flag.carrier??0},${flag.returnDeadline??-1}`).join("|")}` : undefined,
@@ -3890,6 +3932,15 @@ export class Tf2Application {
     return code === null ? null : this.#boundAction(code, modifiers)
   }
 
+  #setScoreboardVisible(visible: boolean): void {
+    if (this.#scoreboardVisible === visible) return
+    this.#scoreboardVisible = visible
+    this.#hudContext = undefined
+    this.#hudContextIdentity = -1
+    this.#hudIntegration?.setScoreboardVisibility(visible)
+    this.#set({ scoreboardVisible: visible })
+  }
+
   #activateBoundAction(identity: string, action: string): void {
     if (action === "+forward" || action === "+back" || action === "+moveleft" || action === "+moveright" || action === "+duck") {
       this.#buttons.press(identity, action)
@@ -3901,6 +3952,8 @@ export class Tf2Application {
       if (this.#buttons.press(identity, action)) this.#detonatePressed = true
     } else if (action === "+reload") {
       if (this.#buttons.press(identity, action)) this.#reloadPressed = true
+    } else if (action === "+showscores") {
+      if (this.#buttons.press(identity, action)) this.#setScoreboardVisible(true)
 
     } else if (action === "slot1") this.#selectWeapon = this.#snapshot?.class === 1 ? 4 : this.#snapshot?.class === 2 ? 12 : this.#snapshot?.class === 4 ? 18 : this.#snapshot?.class === 6 ? 9 : this.#snapshot?.class === 9 ? 40 : this.#snapshot?.class === 7 ? 15 : 1
     else if (action === "slot2") this.#selectWeapon = this.#snapshot?.class === 1 ? 5 : this.#snapshot?.class === 2 ? 13 : this.#snapshot?.class === 3 ? 7 : this.#snapshot?.class === 6 ? 10 : this.#snapshot?.class === 9 ? 41 : this.#snapshot?.class === 7 ? 7 : 3
@@ -3954,6 +4007,7 @@ export class Tf2Application {
       || this.#view.gameUi !== "in-game" || event.repeat) return
     const action = this.#keyboardAction(event)
     if (!action) return
+    if (action === "+showscores") event.preventDefault()
     if (action === "changeteam") {
       event.preventDefault()
       void this.#showTeamSelection()
@@ -3969,7 +4023,12 @@ export class Tf2Application {
   }
 
   readonly #keyUp = (event: KeyboardEvent): void => {
+    const showingScores = this.#buttons.held("+showscores")
     this.#buttons.release(`keyboard:${event.code}`)
+    if (showingScores && !this.#buttons.held("+showscores")) {
+      event.preventDefault()
+      this.#setScoreboardVisible(false)
+    }
   }
 
   readonly #mouseDown = (event: MouseEvent): void => {
@@ -3980,7 +4039,9 @@ export class Tf2Application {
   }
 
   readonly #mouseUp = (event: MouseEvent): void => {
+    const showingScores = this.#buttons.held("+showscores")
     this.#buttons.release(`mouse:${event.button}`)
+    if (showingScores && !this.#buttons.held("+showscores")) this.#setScoreboardVisible(false)
   }
 
   readonly #mouseMove = (event: MouseEvent): void => {
@@ -4020,6 +4081,7 @@ export class Tf2Application {
 
   #neutral(): void {
     this.#buttons.clear()
+    this.#setScoreboardVisible(false)
     this.#jumpPressed = this.#firePressed = this.#detonatePressed = this.#reloadPressed = false
     this.#selectClass = undefined
     this.#selectWeapon = undefined
