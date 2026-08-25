@@ -2302,6 +2302,8 @@ export async function verifyBrowserAcceptance(
     if (classPhase === "Failed") throw new BrowserEvidenceError(`Demoman transition failed: ${await agent(["--session", session, "eval", "({text:document.body.innerText,dataset:{...document.querySelector('main').dataset}})"])}`)
     require(parseJson<string>(await agent(["--session", session, "eval", "document.querySelector('main').dataset.hudProbe"]))
       .split(":")[1] === "4", "Demoman HUD class binding failed")
+    await agent(["--session", session, "press", "2"])
+    await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.hudProbe?.split(':')[2]==='3'", "--timeout", "30000"])
     await automation.pointer.capture("sticky")
     await automation.player.pressPrimaryFire()
     await agent(["--session",session,"wait","--fn","document.querySelector('main').dataset.unsupportedState==='StickyPhysicsSolverUnavailable'","--timeout","30000"])

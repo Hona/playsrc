@@ -55,6 +55,9 @@ pub enum SoundDefinition {
     FlagSpawn,
     TeamWon,
     TeamLost,
+    BottleMiss,
+    BottleHitFlesh,
+    BottleHitWorld,
 }
 
 impl SoundDefinition {
@@ -115,6 +118,9 @@ impl SoundDefinition {
             Self::FlagSpawn => "CaptureFlag.FlagSpawn",
             Self::TeamWon => "Game.YourTeamWon",
             Self::TeamLost => "Game.YourTeamLost",
+            Self::BottleMiss => "Weapon_Bottle.Miss",
+            Self::BottleHitFlesh => "Weapon_Bottle.HitFlesh",
+            Self::BottleHitWorld => "Weapon_Bottle.HitWorld",
         }
     }
 
@@ -128,7 +134,9 @@ impl SoundDefinition {
             | Self::WrenchHitFlesh
             | Self::FireAxeHitFlesh
             | Self::FlagEnemyCaptured
-            | Self::FlagEnemyReturned => 3,
+            | Self::FlagEnemyReturned
+            | Self::BottleHitFlesh
+            | Self::BottleHitWorld => 3,
             Self::FlagEnemyStolen => 4,
             Self::BatHitWorld
             | Self::ShovelHitWorld
@@ -173,7 +181,8 @@ impl SoundDefinition {
             | Self::FlagTeamReturned
             | Self::FlagSpawn
             | Self::TeamWon
-            | Self::TeamLost => 1,
+            | Self::TeamLost
+            | Self::BottleMiss => 1,
         }
     }
 }
@@ -238,6 +247,8 @@ pub struct SoundSelectionState {
     pub flag_enemy_captured_available: u8,
     pub flag_enemy_returned_available: u8,
     pub flag_team_dropped_available: u8,
+    pub bottle_hit_flesh_available: u8,
+    pub bottle_hit_world_available: u8,
 }
 
 #[derive(Clone, Copy)]
@@ -306,6 +317,8 @@ pub(crate) struct SoundSelection {
     flag_enemy_captured: WaveCycle,
     flag_enemy_returned: WaveCycle,
     flag_team_dropped: WaveCycle,
+    bottle_hit_flesh: WaveCycle,
+    bottle_hit_world: WaveCycle,
 }
 
 impl SoundSelection {
@@ -330,6 +343,8 @@ impl SoundSelection {
             flag_enemy_captured: WaveCycle::new(WaveCycle::THREE),
             flag_enemy_returned: WaveCycle::new(WaveCycle::THREE),
             flag_team_dropped: WaveCycle::new(WaveCycle::TWO),
+            bottle_hit_flesh: WaveCycle::new(WaveCycle::THREE),
+            bottle_hit_world: WaveCycle::new(WaveCycle::THREE),
         }
     }
 
@@ -354,6 +369,8 @@ impl SoundSelection {
             flag_enemy_captured_available: self.flag_enemy_captured.available,
             flag_enemy_returned_available: self.flag_enemy_returned.available,
             flag_team_dropped_available: self.flag_team_dropped.available,
+            bottle_hit_flesh_available: self.bottle_hit_flesh.available,
+            bottle_hit_world_available: self.bottle_hit_world.available,
         }
     }
 
@@ -376,6 +393,8 @@ impl SoundSelection {
             || state.flag_enemy_captured_available & !WaveCycle::THREE != 0
             || state.flag_enemy_returned_available & !WaveCycle::THREE != 0
             || state.flag_team_dropped_available & !WaveCycle::TWO != 0
+            || state.bottle_hit_flesh_available & !WaveCycle::THREE != 0
+            || state.bottle_hit_world_available & !WaveCycle::THREE != 0
         {
             return false;
         }
@@ -391,6 +410,8 @@ impl SoundSelection {
         self.wrench_hit_flesh.available = state.wrench_hit_flesh_available;
         self.kukri_hit_flesh.available = state.kukri_hit_flesh_available;
         self.kukri_hit_world.available = state.kukri_hit_world_available;
+        self.bottle_hit_flesh.available = state.bottle_hit_flesh_available;
+        self.bottle_hit_world.available = state.bottle_hit_world_available;
 
         self.fire_axe_hit_world.available = state.fire_axe_hit_world_available;
         self.fire_axe_hit_flesh.available = state.fire_axe_hit_flesh_available;
@@ -429,6 +450,8 @@ impl SoundSelection {
             SoundDefinition::WrenchHitFlesh => &mut self.wrench_hit_flesh,
             SoundDefinition::KukriHitFlesh => &mut self.kukri_hit_flesh,
             SoundDefinition::KukriHitWorld => &mut self.kukri_hit_world,
+            SoundDefinition::BottleHitFlesh => &mut self.bottle_hit_flesh,
+            SoundDefinition::BottleHitWorld => &mut self.bottle_hit_world,
 
             SoundDefinition::FireAxeHitWorld => &mut self.fire_axe_hit_world,
             SoundDefinition::FireAxeHitFlesh => &mut self.fire_axe_hit_flesh,

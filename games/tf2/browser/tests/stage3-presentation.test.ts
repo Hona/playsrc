@@ -313,6 +313,30 @@ test("composes every Scout stock item with its exact primary, secondary, and mel
   }
 })
 
+test("composes every Demoman stock item with authored primary, secondary, and Bottle activities", () => {
+  const hands = "models/weapons/c_models/c_demo_arms.mdl"
+  const descriptor = Object.freeze({ kind: "viewmodel", horizontalFov4By3: 54, minimumFov: 54, maximumFov: 70, near: 1, depthRange: Object.freeze([0, 0.1]), drawsAfterWorld: true, opaqueBeforeTranslucent: true, optionalViewSpaceYReflection: true })
+  const sequences = Object.freeze([
+    "ACT_PRIMARY_VM_DRAW", "ACT_PRIMARY_VM_PRIMARYATTACK",
+    "ACT_SECONDARY_VM_DRAW", "ACT_SECONDARY_VM_PRIMARYATTACK",
+    "ACT_MELEE_VM_DRAW", "ACT_MELEE_VM_HITCENTER",
+  ].map((activity) => ({ activity, durationSeconds: 0.8 })))
+  const models = new Map([[hands, { identity: hands, bodygroupCounts: Object.freeze([]), descriptor, sequences }]])
+  const items = [
+    [18, "models/weapons/c_models/c_grenadelauncher/c_grenadelauncher.mdl", "ACT_PRIMARY_VM_PRIMARYATTACK", "Grenade Launcher"],
+    [3, "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl", "ACT_SECONDARY_VM_PRIMARYATTACK", "Stickybomb Launcher"],
+    [17, "models/weapons/c_models/c_bottle/c_bottle.mdl", "ACT_MELEE_VM_HITCENTER", "Bottle"],
+  ] as const
+  for (const [, identity] of items) models.set(identity, { identity, bodygroupCounts: Object.freeze([]), descriptor, sequences: Object.freeze([]) })
+  const artifacts = { models } as unknown as PresentationArtifacts
+  for (const [weapon, item, activity, name] of items) {
+    const snapshot = { class: 4, team: 2, tick: 1n, weapon, health: 175, maximumHealth: 175, projectiles: Object.freeze([]), velocity: Object.freeze([0, 0, 0]), loadout: Object.freeze([{ weapon, reload: 0, clip: weapon === 17 ? 0 : 1 }]), activities: Object.freeze([{ tick: 1n, weapon, activity: 2 }]) } as unknown as Snapshot
+    const request = createViewmodelPresenter(artifacts).map(snapshot).request
+    expect(request).toMatchObject({ model: hands, itemModel: item, activity })
+    expect(tf2Hud(snapshot).weaponName).toBe(name)
+  }
+})
+
 test("composes Soldier shotgun and shovel with exact secondary and melee activities", () => {
   const hands = "models/weapons/c_models/c_soldier_arms.mdl"
   const descriptor = Object.freeze({ kind: "viewmodel", horizontalFov4By3: 54, minimumFov: 54, maximumFov: 70, near: 1, depthRange: Object.freeze([0, 0.1]), drawsAfterWorld: true, opaqueBeforeTranslucent: true, optionalViewSpaceYReflection: true })

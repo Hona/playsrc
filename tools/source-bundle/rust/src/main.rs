@@ -2492,6 +2492,8 @@ fn main() -> Result<(), String> {
         "models/class_menu/random_class_icon.mdl",
         "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl",
         "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl",
+        "models/weapons/c_models/c_grenadelauncher/c_grenadelauncher.mdl",
+        "models/weapons/c_models/c_bottle/c_bottle.mdl",
         "models/weapons/c_models/c_scattergun.mdl",
         "models/weapons/c_models/c_pistol/c_pistol.mdl",
         "models/weapons/c_models/c_bat.mdl",
@@ -2820,6 +2822,12 @@ fn main() -> Result<(), String> {
         "sound/weapons/pistol/pistol_empty.wav",
         "sound/weapons/wrench_swing.wav",
         "sound/weapons/wrench_hit_world.wav",
+        "sound/weapons/bottle_hit_flesh1.wav",
+        "sound/weapons/bottle_hit_flesh2.wav",
+        "sound/weapons/bottle_hit_flesh3.wav",
+        "sound/weapons/bottle_hit1.wav",
+        "sound/weapons/bottle_hit2.wav",
+        "sound/weapons/bottle_hit3.wav",
     ] {
         let consumer = if path.starts_with("sound/") {
             "audio-wave"

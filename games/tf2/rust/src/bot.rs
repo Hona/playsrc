@@ -971,11 +971,13 @@ impl BotWorld {
             | Weapon::Fists
             | Weapon::Kukri
             | Weapon::Wrench
-            | Weapon::FireAxe => DamageType::MELEE,
+            | Weapon::FireAxe
+            | Weapon::Bottle => DamageType::MELEE,
             Weapon::Flamethrower => DamageType::BURN | DamageType::IGNITE,
-            Weapon::RocketLauncher | Weapon::Original | Weapon::StickybombLauncher => {
-                DamageType::BLAST
-            }
+            Weapon::RocketLauncher
+            | Weapon::Original
+            | Weapon::StickybombLauncher
+            | Weapon::GrenadeLauncher => DamageType::BLAST,
             Weapon::Scattergun
             | Weapon::Shotgun
             | Weapon::HeavyShotgun
@@ -1164,7 +1166,12 @@ fn bot_eye(bot: &Bot) -> [f32; 3] {
 fn is_melee(weapon: Weapon) -> bool {
     matches!(
         weapon,
-        Weapon::Bat | Weapon::Shovel | Weapon::Fists | Weapon::Kukri | Weapon::Wrench
+        Weapon::Bat
+            | Weapon::Shovel
+            | Weapon::Fists
+            | Weapon::Kukri
+            | Weapon::Bottle
+            | Weapon::Wrench
     )
 }
 
