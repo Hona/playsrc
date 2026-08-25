@@ -3408,6 +3408,12 @@ pub unsafe extern "C" fn playsrc_game_advance(
     let mut consumed_mover_results = Vec::new();
     let mut collision_snapshot_bytes = Vec::new();
     for index in 0..tick_count {
+        pushers.retain(|request_id, _| {
+            candidate
+                .mover_requests()
+                .iter()
+                .any(|request| request.request_id == *request_id)
+        });
         let pending_movers = candidate
             .mover_requests()
             .iter()
@@ -3416,24 +3422,28 @@ pub unsafe extern "C" fn playsrc_game_advance(
             .collect::<Vec<_>>();
         if !pending_movers.is_empty() {
             for request in pending_movers {
-                let angles = latest_game_snapshot
-                    .as_ref()
-                    .and_then(|snapshot| {
-                        snapshot
-                            .entity_transforms
-                            .iter()
-                            .find(|transform| transform.identity == request.entity)
-                    })
-                    .map_or([0.0; 3], |transform| transform.angles);
-                let input = playsrc_movement::LinearPusherRequest {
+                let angular_speed = request
+                    .angular_velocity
+                    .into_iter()
+                    .map(|value| value * value)
+                    .sum::<f32>()
+                    .sqrt();
+                let input = playsrc_movement::TransformPusherRequest {
                     request_id: request.request_id,
                     identity: u64::from(request.entity),
-                    start: request.start,
-                    angles,
-                    destination: request.destination,
-                    speed: request.speed,
+                    start: playsrc_collision::Transform {
+                        origin: request.start,
+                        angles: request.start_angles,
+                    },
+                    destination: playsrc_collision::Transform {
+                        origin: request.destination,
+                        angles: request.destination_angles,
+                    },
+                    linear_speed: request.speed,
+                    angular_speed,
+                    hierarchy: Vec::new(),
                 };
-                let pusher = match playsrc_movement::PusherSnapshot::start(
+                let pusher = match playsrc_movement::PusherSnapshot::start_transforms(
                     collision_revision,
                     std::slice::from_ref(&input),
                     playsrc_movement::PusherLimits::default(),
@@ -3651,6 +3661,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
             mover_results: &consumed_mover_results,
             collision_snapshot: &collision_snapshot_bytes,
             entity_presentation: &entity_presentation,
+            payload_constraint_blocked: candidate.payload_constraint_blocked(),
         },
     ) else {
         fail!(20);
@@ -3944,6 +3955,7 @@ struct SnapshotExtensions<'a> {
     mover_results: &'a [playsrc_tf2::MoverResult],
     collision_snapshot: &'a [u8],
     entity_presentation: &'a playsrc_tf2::EntityPresentationSnapshot,
+    payload_constraint_blocked: bool,
 }
 
 fn encode_snapshot(
@@ -4032,7 +4044,7 @@ fn encode_snapshot(
         producer.contact_reconcile_requests.len(),
         producer.map_effects.len(),
         producer.regenerate_animation_events.len(),
-        2,
+        2 + usize::from(extensions.payload_constraint_blocked),
     ] {
         u32_field(&mut out, u32::try_from(count).ok()?, MAX)?;
     }
@@ -4355,6 +4367,9 @@ fn encode_snapshot(
         )?;
     }
     extend(&mut out, &[1, 1, 0, 0, 2, 1, 0, 0], MAX)?;
+    if extensions.payload_constraint_blocked {
+        extend(&mut out, &[3, 1, 0, 0], MAX)?;
+    }
     extend(&mut out, &random_state, MAX)?;
     for draw in extensions.random_draws {
         encode_random_draw(&mut out, *draw, MAX)?;
@@ -6042,6 +6057,7 @@ fn collision_object_templates(
             let ordinary_mover = classname.eq_ignore_ascii_case(b"func_door")
                 || classname.eq_ignore_ascii_case(b"func_button")
                 || classname.eq_ignore_ascii_case(b"func_movelinear")
+                || classname.eq_ignore_ascii_case(b"func_tracktrain")
                 || water_volume;
             let brush = classname.eq_ignore_ascii_case(b"func_brush");
             if !ordinary_mover && !brush {
@@ -12152,6 +12168,7 @@ mod tests {
                 mover_results: &[],
                 collision_snapshot: &collision_snapshot,
                 entity_presentation: &entity_presentation,
+                payload_constraint_blocked: false,
             },
         )
         .unwrap();
@@ -12168,6 +12185,34 @@ mod tests {
         assert_eq!(&encoded[408..412], &[6, 1, 3, 0]);
         assert_eq!(&encoded[544..552], &[1, 1, 0, 0, 2, 1, 0, 0]);
         assert_eq!(&encoded[552..560], b"PRNG\x01\0\0\0");
+
+        let constrained = encode_snapshot(
+            &snapshot,
+            &producer,
+            2,
+            None,
+            SnapshotExtensions {
+                random_state,
+                random_draws: &[],
+                audio_events: &[],
+                rocket_results: &[],
+                mover_results: &[],
+                collision_snapshot: &collision_snapshot,
+                entity_presentation: &entity_presentation,
+                payload_constraint_blocked: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            u32::from_le_bytes(constrained[124..128].try_into().unwrap()),
+            3
+        );
+        assert_eq!(
+            &constrained[544..556],
+            &[1, 1, 0, 0, 2, 1, 0, 0, 3, 1, 0, 0]
+        );
+        assert_eq!(&constrained[556..564], b"PRNG\x01\0\0\0");
+        assert_eq!(constrained.len(), encoded.len() + 4);
     }
 
     #[test]

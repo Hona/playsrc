@@ -362,6 +362,18 @@ pub struct TrainPathState {
     pub length_bits: u32,
     pub maximum_speed_bits: u32,
     pub current_speed_bits: u32,
+    pub desired_speed_bits: u32,
+    pub unmodified_desired_speed_bits: u32,
+    pub old_speed_bits: u32,
+    pub forward_modifier_bits: u32,
+    pub acceleration_bits: u32,
+    pub deceleration_bits: u32,
+    pub bank_bits: u32,
+    pub velocity_type: i32,
+    pub orientation_type: i32,
+    pub manual_speed_changes: bool,
+    pub accelerating: bool,
+    pub controls_disabled: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -935,10 +947,13 @@ enum TimerAction {
 #[derive(Clone, Debug, PartialEq)]
 enum TrainAction {
     Find,
+    Think,
     Start,
     Stop,
+    Resume,
     Reverse,
-    SetSpeed(f32),
+    SetSpeed { speed: f32, accelerate: bool },
+    SetForwardModifier(f32),
     Teleport(Vec<u8>),
 }
 
@@ -947,6 +962,7 @@ struct PathLookAhead {
     current: EntityHandle,
     next: Option<EntityHandle>,
     position: [f32; 3],
+    dead_end: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -1699,11 +1715,28 @@ impl EntityWorld {
                 node.next = next;
                 node.alternate = alternate;
             }
-            if let Some(next) = next
-                && let BehaviorState::PathNode(node) =
-                    &mut self.entity_mut(next).expect("next path node").behavior
-            {
-                node.previous = Some(*handle);
+            for candidate in [next, alternate].into_iter().flatten() {
+                let is_own_alternate = self
+                    .entity(candidate)
+                    .and_then(|entity| match &entity.behavior {
+                        BehaviorState::PathNode(node) => Some(node.alternate_name.as_slice()),
+                        _ => None,
+                    })
+                    .zip(
+                        self.entity(*handle)
+                            .and_then(|entity| entity.targetname.as_deref()),
+                    )
+                    .is_some_and(|(alternate_name, previous_name)| {
+                        alternate_name.eq_ignore_ascii_case(previous_name)
+                    });
+                if !is_own_alternate
+                    && let BehaviorState::PathNode(node) = &mut self
+                        .entity_mut(candidate)
+                        .expect("linked path node")
+                        .behavior
+                {
+                    node.previous = Some(*handle);
+                }
             }
         }
         Ok(())
@@ -2132,7 +2165,15 @@ impl EntityWorld {
                     flags,
                     wait_bits: field_f32(definition, b"wait", 0.0)?.to_bits(),
                     speed_bits: field_f32(definition, b"speed", 0.0)?.to_bits(),
-                    orientation: field_i32(definition, b"orientationtype", 0)?,
+                    orientation: field_i32(
+                        definition,
+                        b"orientationtype",
+                        if classname.eq_ignore_ascii_case(b"path_track") {
+                            1
+                        } else {
+                            0
+                        },
+                    )?,
                 }),
                 Coverage::Handled,
             ));
@@ -2206,6 +2247,20 @@ impl EntityWorld {
                         length_bits: field_f32(definition, b"wheels", 0.0)?.to_bits(),
                         maximum_speed_bits: maximum_speed.to_bits(),
                         current_speed_bits: current_speed.to_bits(),
+                        desired_speed_bits: 0.0_f32.to_bits(),
+                        unmodified_desired_speed_bits: 0.0_f32.to_bits(),
+                        old_speed_bits: 0.0_f32.to_bits(),
+                        forward_modifier_bits: 1.0_f32.to_bits(),
+                        acceleration_bits: field_f32(definition, b"ManualAccelSpeed", 0.0)?
+                            .to_bits(),
+                        deceleration_bits: field_f32(definition, b"ManualDecelSpeed", 0.0)?
+                            .to_bits(),
+                        bank_bits: field_f32(definition, b"bank", 0.0)?.to_bits(),
+                        velocity_type: field_i32(definition, b"velocitytype", 0)?,
+                        orientation_type: field_i32(definition, b"orientationtype", 1)?,
+                        manual_speed_changes: field_i32(definition, b"ManualSpeedChanges", 0)? != 0,
+                        accelerating: false,
+                        controls_disabled: flags & 2 != 0,
                     }),
                     rotator: None,
                 }),
@@ -3900,13 +3955,32 @@ impl EntityWorld {
                         };
                         match input.as_slice() {
                             b"__train_find" => train_action = Some(TrainAction::Find),
-                            b"__train_start" | b"__train_next" | b"start" | b"resume" => {
+                            b"__tracktrain_next" if path.track => {
+                                train_action = Some(TrainAction::Think);
+                            }
+                            b"__train_start" | b"__train_next" | b"start" => {
                                 path.running = true;
                                 train_action = Some(TrainAction::Start);
                             }
-                            b"stop" => {
-                                path.running = false;
-                                train_action = Some(TrainAction::Stop);
+                            b"resume" => {
+                                train_action = Some(if path.track {
+                                    TrainAction::Resume
+                                } else {
+                                    path.running = true;
+                                    TrainAction::Start
+                                });
+                            }
+                            b"stop" => train_action = Some(TrainAction::Stop),
+                            b"toggle" if path.track => {
+                                let speed = if f32::from_bits(path.current_speed_bits) == 0.0 {
+                                    f32::from_bits(path.maximum_speed_bits)
+                                } else {
+                                    0.0
+                                };
+                                train_action = Some(TrainAction::SetSpeed {
+                                    speed,
+                                    accelerate: false,
+                                });
                             }
                             b"toggle" => {
                                 path.running = !path.running;
@@ -3917,49 +3991,55 @@ impl EntityWorld {
                                 });
                             }
                             b"reverse" => {
-                                path.forward = !path.forward;
+                                self.set_train_direction(path, !path.forward);
                                 train_action = Some(TrainAction::Reverse);
                             }
-                            b"startforward" => {
-                                path.forward = true;
-                                path.running = true;
-                                let speed = f32::from_bits(path.maximum_speed_bits);
-                                path.current_speed_bits = speed.to_bits();
-                                train_action = Some(TrainAction::SetSpeed(speed));
-                            }
-                            b"startbackward" => {
-                                path.forward = false;
-                                path.running = true;
-                                let speed = -f32::from_bits(path.maximum_speed_bits);
-                                path.current_speed_bits = speed.to_bits();
-                                train_action = Some(TrainAction::SetSpeed(speed));
+                            b"startforward" | b"startbackward" => {
+                                self.set_train_direction(path, input == b"startforward");
+                                train_action = Some(TrainAction::SetSpeed {
+                                    speed: f32::from_bits(path.maximum_speed_bits),
+                                    accelerate: false,
+                                });
                             }
                             b"setspeed" | b"setspeeddir" | b"setspeedreal"
                             | b"setspeeddiraccel" => {
                                 match record.value.as_float().filter(|value| value.is_finite()) {
                                     Some(value) => {
-                                        let maximum = f32::from_bits(path.maximum_speed_bits);
+                                        let maximum = f32::from_bits(path.maximum_speed_bits).abs();
+                                        if input == b"setspeeddir" || input == b"setspeeddiraccel" {
+                                            self.set_train_direction(path, value >= 0.0);
+                                        }
                                         let speed = if input == b"setspeedreal" {
                                             value.clamp(0.0, maximum)
                                         } else if input == b"setspeed" {
                                             value.clamp(0.0, 1.0) * maximum
                                         } else {
-                                            path.forward = value >= 0.0;
-                                            value.abs().clamp(0.0, 1.0)
-                                                * maximum
-                                                * if path.forward { 1.0 } else { -1.0 }
+                                            value.abs().clamp(0.0, 1.0) * maximum
                                         };
-                                        path.current_speed_bits = speed.to_bits();
-                                        path.running = speed != 0.0;
-                                        train_action = Some(TrainAction::SetSpeed(speed));
+                                        train_action = Some(TrainAction::SetSpeed {
+                                            speed,
+                                            accelerate: input == b"setspeeddiraccel",
+                                        });
                                     }
                                     None => accepted = false,
                                 }
                             }
-                            b"teleporttopathtrack" => match self.variant_string(&record.value) {
-                                Some(value) => train_action = Some(TrainAction::Teleport(value)),
-                                None => accepted = false,
-                            },
+                            b"setspeedforwardmodifier" if path.track => {
+                                match record.value.as_float().filter(|value| value.is_finite()) {
+                                    Some(value) => {
+                                        train_action = Some(TrainAction::SetForwardModifier(value));
+                                    }
+                                    None => accepted = false,
+                                }
+                            }
+                            b"teleporttopathtrack" if path.track => {
+                                match self.variant_string(&record.value) {
+                                    Some(value) => {
+                                        train_action = Some(TrainAction::Teleport(value))
+                                    }
+                                    None => accepted = false,
+                                }
+                            }
                             _ => accepted = false,
                         }
                     } else if state.class == MoverClass::Rotating {
@@ -6372,6 +6452,19 @@ impl EntityWorld {
         Ok(())
     }
 
+    fn set_train_direction(&self, path: &mut TrainPathState, forward: bool) {
+        if path.forward == forward {
+            return;
+        }
+        if path.track
+            && let Some(current) = path.current
+            && let Some(adjusted) = self.path_next(current, !forward, false)
+        {
+            path.current = Some(adjusted);
+        }
+        path.forward = forward;
+    }
+
     fn initialize_train(
         &mut self,
         entity: EntityHandle,
@@ -6417,8 +6510,35 @@ impl EntityWorld {
         if class == MoverClass::Train {
             transform.origin = sub(transform.origin, self.mover_model_center(entity));
         } else {
+            let authored_angles = self
+                .entity(entity)
+                .expect("track train")
+                .world_transform
+                .angles;
+            let wheels = match &self.entity(entity).expect("track train").behavior {
+                BehaviorState::Mover(mover) => mover
+                    .path
+                    .as_ref()
+                    .map(|path| f32::from_bits(path.length_bits))
+                    .unwrap_or(0.0),
+                _ => 0.0,
+            };
+            let look = self.path_look_ahead(path, transform.origin, wheels, false)?;
+            let flags = self
+                .entity(entity)
+                .and_then(|train| field(&train.definition, b"spawnflags"))
+                .and_then(parse_i32)
+                .unwrap_or(0);
             transform.origin[2] += height;
-            transform.angles = self.track_train_orientation(entity, path, true, transform.angles);
+            transform.angles = if flags & 0x10 != 0 {
+                authored_angles
+            } else {
+                let mut angles = vector_angles(sub(look.position, node.world_transform.origin));
+                if flags & 1 != 0 {
+                    angles[0] = 0.0;
+                }
+                angles
+            };
         }
         self.set_entity_world_transform(entity, transform, batch)?;
         if let BehaviorState::Mover(mover) = &mut self.entity_mut(entity).expect("train").behavior {
@@ -6433,19 +6553,7 @@ impl EntityWorld {
             mover.open_angles = transform.angles;
         }
         if class == MoverClass::TrackTrain {
-            self.dispatch_input(
-                path,
-                &InputRecord {
-                    target: EventTarget::Direct(path),
-                    input: b"InPass".to_vec(),
-                    value: Variant::Void,
-                    activator: Some(entity),
-                    caller: Some(entity),
-                    output_action: None,
-                    producer_sequence: self.state.next_transition_sequence,
-                },
-                batch,
-            )?;
+            self.arrive_track_node(entity, path, batch)?;
         }
         Ok(())
     }
@@ -6463,31 +6571,65 @@ impl EntityWorld {
                     matches!(&entity.behavior, BehaviorState::Mover(mover) if mover.path.as_ref().is_some_and(|path| path.running))
                 });
                 if running {
-                    self.start_train_segment(entity, batch)?;
+                    self.schedule_track_train_think(entity, 0.1, batch)?;
                 }
                 Ok(())
             }
+            TrainAction::Think => self.start_train_segment(entity, batch),
             TrainAction::Stop => self.stop_train(entity, batch),
-            TrainAction::Start | TrainAction::Reverse | TrainAction::SetSpeed(_) => {
-                let speed = match action {
-                    TrainAction::SetSpeed(speed) => speed,
-                    _ => self
-                        .entity(entity)
-                        .and_then(|entity| match &entity.behavior {
-                            BehaviorState::Mover(mover) => mover
-                                .path
-                                .as_ref()
-                                .map(|path| f32::from_bits(path.current_speed_bits)),
-                            _ => None,
-                        })
-                        .unwrap_or(0.0),
-                };
-                if speed == 0.0 {
-                    self.stop_train(entity, batch)
-                } else {
-                    self.start_train_segment(entity, batch)
+            TrainAction::Resume => {
+                let old_speed = self
+                    .entity(entity)
+                    .and_then(|entity| match &entity.behavior {
+                        BehaviorState::Mover(mover) => mover
+                            .path
+                            .as_ref()
+                            .map(|path| f32::from_bits(path.old_speed_bits)),
+                        _ => None,
+                    })
+                    .unwrap_or(0.0);
+                if let Some(BehaviorState::Mover(mover)) =
+                    self.entity_mut(entity).map(|entity| &mut entity.behavior)
+                {
+                    let path = mover.path.as_mut().expect("track train path");
+                    path.current_speed_bits = old_speed.to_bits();
+                    path.running = old_speed != 0.0;
                 }
+                self.start_track_train(entity, batch)
             }
+            TrainAction::Reverse => {
+                let speed = self
+                    .entity(entity)
+                    .and_then(|entity| match &entity.behavior {
+                        BehaviorState::Mover(mover) => mover
+                            .path
+                            .as_ref()
+                            .map(|path| f32::from_bits(path.current_speed_bits)),
+                        _ => None,
+                    })
+                    .unwrap_or(0.0);
+                self.set_track_train_speed(entity, speed, false, batch)
+            }
+            TrainAction::SetSpeed { speed, accelerate } => {
+                self.set_track_train_speed(entity, speed, accelerate, batch)
+            }
+            TrainAction::SetForwardModifier(modifier) => {
+                let unmodified = if let Some(BehaviorState::Mover(mover)) =
+                    self.entity_mut(entity).map(|entity| &mut entity.behavior)
+                {
+                    let path = mover.path.as_mut().expect("track train path");
+                    path.forward_modifier_bits = modifier.abs().clamp(0.0, 1.0).to_bits();
+                    f32::from_bits(path.unmodified_desired_speed_bits)
+                } else {
+                    return self.diagnostic(
+                        batch,
+                        DiagnosticCode::MoverRequestMismatch,
+                        Some(entity),
+                    );
+                };
+                self.set_track_train_speed(entity, unmodified, true, batch)
+            }
+            TrainAction::Start => self.start_track_train(entity, batch),
             TrainAction::Teleport(name) => {
                 let destination = self
                     .resolve(&name, Some(entity), Some(entity), Some(entity))
@@ -6504,44 +6646,140 @@ impl EntityWorld {
                 if let BehaviorState::Mover(mover) =
                     &mut self.entity_mut(entity).expect("train").behavior
                 {
-                    let path = mover.path.as_mut().expect("train path");
-                    path.current = Some(destination);
-                    path.target_name = name;
+                    mover.path.as_mut().expect("train path").target_name = name;
                 }
-                let node = self
-                    .entity(destination)
-                    .expect("track destination")
-                    .world_transform;
-                let height = self
-                    .entity(entity)
-                    .and_then(|entity| match &entity.behavior {
-                        BehaviorState::Mover(mover) => mover
-                            .path
-                            .as_ref()
-                            .map(|path| f32::from_bits(path.height_bits)),
-                        _ => None,
-                    })
-                    .unwrap_or(0.0);
-                let transform = Transform {
-                    origin: add(node.origin, [0.0, 0.0, height]),
-                    angles: self.track_train_orientation(entity, destination, true, node.angles),
-                };
-                self.set_entity_world_transform(entity, transform, batch)?;
-                self.dispatch_input(
-                    destination,
-                    &InputRecord {
-                        target: EventTarget::Direct(destination),
-                        input: b"InTeleport".to_vec(),
-                        value: Variant::Void,
-                        activator: Some(entity),
-                        caller: Some(entity),
-                        output_action: None,
-                        producer_sequence: self.state.next_transition_sequence,
-                    },
-                    batch,
-                )
+                self.teleport_track_train(entity, destination, true, batch)
             }
         }
+    }
+
+    fn schedule_track_train_think(
+        &mut self,
+        entity: EntityHandle,
+        delay: f32,
+        batch: &mut TransitionBatch,
+    ) -> Result<(), RuntimeFailure> {
+        if !self.has_pending(entity, b"__tracktrain_next") {
+            self.schedule_event(
+                EventTarget::Direct(entity),
+                b"__tracktrain_next".to_vec(),
+                Variant::Void,
+                delay,
+                Some(entity),
+                Some(entity),
+                None,
+                batch,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn start_track_train(
+        &mut self,
+        entity: EntityHandle,
+        batch: &mut TransitionBatch,
+    ) -> Result<(), RuntimeFailure> {
+        let track = self.entity(entity).is_some_and(|entity| {
+            matches!(&entity.behavior, BehaviorState::Mover(mover)
+                if mover.path.as_ref().is_some_and(|path| path.track))
+        });
+        if track {
+            self.fire_output(
+                entity,
+                b"OnStart",
+                Variant::Void,
+                Some(entity),
+                Some(entity),
+                0.0,
+                batch,
+            )?;
+        }
+        self.start_train_segment(entity, batch)
+    }
+
+    fn set_track_train_speed(
+        &mut self,
+        entity: EntityHandle,
+        requested: f32,
+        accelerate: bool,
+        batch: &mut TransitionBatch,
+    ) -> Result<(), RuntimeFailure> {
+        let (old_speed, new_speed, track) = {
+            let Some(BehaviorState::Mover(mover)) =
+                self.entity_mut(entity).map(|entity| &mut entity.behavior)
+            else {
+                return self.diagnostic(batch, DiagnosticCode::MoverRequestMismatch, Some(entity));
+            };
+            let path = mover.path.as_mut().expect("train path");
+            let old_speed = f32::from_bits(path.current_speed_bits);
+            path.unmodified_desired_speed_bits = requested.to_bits();
+            let modifier = if path.forward {
+                f32::from_bits(path.forward_modifier_bits)
+            } else {
+                1.0
+            };
+            let signed = requested.abs() * modifier * if path.forward { 1.0 } else { -1.0 };
+            path.accelerating = accelerate;
+            if accelerate {
+                path.desired_speed_bits = signed.to_bits();
+                if old_speed == 0.0 && signed != 0.0 {
+                    path.current_speed_bits = 0.1_f32.to_bits();
+                }
+                path.running = f32::from_bits(path.current_speed_bits) != 0.0;
+                (
+                    old_speed,
+                    f32::from_bits(path.current_speed_bits),
+                    path.track,
+                )
+            } else {
+                path.current_speed_bits = signed.to_bits();
+                path.running = signed != 0.0;
+                (old_speed, signed, path.track)
+            }
+        };
+        if accelerate {
+            return self.start_track_train(entity, batch);
+        }
+        if old_speed.to_bits() == new_speed.to_bits() {
+            return Ok(());
+        }
+        if new_speed == 0.0 {
+            self.stop_train(entity, batch)
+        } else if track && old_speed == 0.0 {
+            self.start_track_train(entity, batch)
+        } else {
+            self.start_train_segment(entity, batch)
+        }
+    }
+
+    fn arrive_track_node(
+        &mut self,
+        train: EntityHandle,
+        node: EntityHandle,
+        batch: &mut TransitionBatch,
+    ) -> Result<(), RuntimeFailure> {
+        self.pass_path_node(train, node, true, batch)?;
+        let Some(BehaviorState::PathNode(path_node)) =
+            self.entity(node).map(|entity| entity.behavior.clone())
+        else {
+            return Ok(());
+        };
+        let node_speed = f32::from_bits(path_node.speed_bits);
+        let apply_speed = if let Some(BehaviorState::Mover(mover)) =
+            self.entity_mut(train).map(|entity| &mut entity.behavior)
+        {
+            let path = mover.path.as_mut().expect("track train path");
+            if path_node.flags & 8 != 0 {
+                path.controls_disabled = true;
+            }
+            path.controls_disabled && node_speed != 0.0
+        } else {
+            false
+        };
+        if apply_speed {
+            self.set_track_train_speed(train, node_speed, false, batch)?;
+        }
+        Ok(())
     }
 
     fn start_train_segment(
@@ -6606,6 +6844,7 @@ impl EntityWorld {
                 transform,
                 speed.abs(),
                 Some(destination),
+                None,
                 batch,
             );
         }
@@ -6627,44 +6866,43 @@ impl EntityWorld {
         let Some(current) = path.current else {
             return self.stop_train(entity, batch);
         };
-        let mut speed = f32::from_bits(path.current_speed_bits);
-        if !path.forward {
-            speed = -speed.abs();
+        let speed = f32::from_bits(path.current_speed_bits);
+        if speed == 0.0 {
+            return Ok(());
         }
+        let transform = self.entity(entity).expect("track train").world_transform;
         let height = f32::from_bits(path.height_bits);
-        let start = sub(
-            self.entity(entity)
-                .expect("track train")
-                .world_transform
-                .origin,
-            [0.0, 0.0, height],
-        );
-        let Some(look_ahead) = self.path_look_ahead(current, start, speed * 0.1, true)? else {
-            return self.stop_train(entity, batch);
-        };
-        let destination = Transform {
-            origin: add(look_ahead.position, [0.0, 0.0, height]),
-            angles: look_ahead.next.map_or_else(
-                || {
-                    self.entity(entity)
-                        .expect("track train")
-                        .world_transform
-                        .angles
+        let start = sub(transform.origin, [0.0, 0.0, height]);
+        let look_ahead = self.path_look_ahead(current, start, speed * 0.1, true)?;
+        if look_ahead.dead_end {
+            let endpoint = add(look_ahead.position, [0.0, 0.0, height]);
+            let remaining = length(sub(endpoint, transform.origin));
+            if let BehaviorState::Mover(current_mover) =
+                &mut self.entity_mut(entity).expect("track train").behavior
+            {
+                let state = current_mover.path.as_mut().expect("track train path");
+                state.old_speed_bits = speed.to_bits();
+                state.current_speed_bits = 0.0_f32.to_bits();
+                state.running = false;
+            }
+            if remaining == 0.0 {
+                self.pass_path_node(entity, look_ahead.current, true, batch)?;
+                return self.stop_train(entity, batch);
+            }
+            return self.start_path_request(
+                entity,
+                Transform {
+                    origin: endpoint,
+                    angles: transform.angles,
                 },
-                |node| {
-                    self.track_train_orientation(
-                        entity,
-                        node,
-                        path.forward,
-                        self.entity(entity)
-                            .expect("track train")
-                            .world_transform
-                            .angles,
-                    )
-                },
-            ),
-        };
-        let crossed = (look_ahead.current != current).then_some(look_ahead.current);
+                speed.abs(),
+                Some(look_ahead.current),
+                None,
+                batch,
+            );
+        }
+
+        let next_speed = self.track_train_velocity(entity, path, &look_ahead, transform.origin);
         if let BehaviorState::Mover(current_mover) =
             &mut self.entity_mut(entity).expect("track train").behavior
         {
@@ -6672,9 +6910,314 @@ impl EntityWorld {
                 .path
                 .as_mut()
                 .expect("track train path")
-                .current = Some(look_ahead.current);
+                .current_speed_bits = next_speed.to_bits();
         }
-        self.start_path_request(entity, destination, speed.abs(), crossed, batch)
+        let (angles, angular_velocity) =
+            self.track_train_motion_orientation(entity, path, current, &look_ahead, transform)?;
+        let direction = sub(
+            add(look_ahead.position, [0.0, 0.0, height]),
+            transform.origin,
+        );
+        let distance = length(direction);
+        let travel = distance.max(next_speed.abs() * self.config.tick_interval);
+        let destination = Transform {
+            origin: if distance == 0.0 {
+                transform.origin
+            } else {
+                add(transform.origin, scale(direction, travel / distance))
+            },
+            angles,
+        };
+
+        if look_ahead.current != current {
+            if let BehaviorState::Mover(current_mover) =
+                &mut self.entity_mut(entity).expect("track train").behavior
+            {
+                current_mover
+                    .path
+                    .as_mut()
+                    .expect("track train path")
+                    .current = Some(look_ahead.current);
+            }
+            self.arrive_track_node(entity, look_ahead.current, batch)?;
+            if let Some(teleport) = self.path_next(look_ahead.current, true, false)
+                && self.entity(teleport).is_some_and(|node| {
+                    matches!(&node.behavior, BehaviorState::PathNode(state) if state.flags & 0x10 != 0)
+                })
+            {
+                self.teleport_track_train(entity, teleport, false, batch)?;
+            }
+        }
+        self.fire_output(
+            entity,
+            b"OnNextPoint",
+            Variant::Void,
+            Some(look_ahead.current),
+            Some(entity),
+            0.0,
+            batch,
+        )?;
+        if next_speed == 0.0 {
+            return self.stop_train(entity, batch);
+        }
+        if distance != 0.0 {
+            self.start_path_request(
+                entity,
+                destination,
+                next_speed.abs(),
+                None,
+                Some(angular_velocity),
+                batch,
+            )?;
+            self.schedule_track_train_think(entity, self.config.tick_interval, batch)?;
+        }
+        Ok(())
+    }
+
+    fn track_train_velocity(
+        &self,
+        _entity: EntityHandle,
+        path: &TrainPathState,
+        look_ahead: &PathLookAhead,
+        origin: [f32; 3],
+    ) -> f32 {
+        let current = f32::from_bits(path.current_speed_bits);
+        if !matches!(path.velocity_type, 1 | 2) {
+            return current;
+        }
+        if path.accelerating {
+            let desired = f32::from_bits(path.desired_speed_bits);
+            let rate = if desired.abs() > current.abs() {
+                f32::from_bits(path.acceleration_bits)
+            } else {
+                f32::from_bits(path.deceleration_bits)
+            };
+            return approach(desired, current, rate * self.config.tick_interval);
+        }
+        let Some(next) = look_ahead.next else {
+            return current;
+        };
+        let node_speed = |handle| {
+            self.entity(handle)
+                .and_then(|entity| match &entity.behavior {
+                    BehaviorState::PathNode(node) => Some(f32::from_bits(node.speed_bits)),
+                    _ => None,
+                })
+        };
+        let previous_speed = node_speed(look_ahead.current)
+            .filter(|value| *value != 0.0)
+            .unwrap_or(current.abs());
+        let next_speed = node_speed(next)
+            .filter(|value| *value != 0.0)
+            .unwrap_or(previous_speed);
+        let blended = if previous_speed == next_speed {
+            previous_speed
+        } else {
+            let previous_origin = self
+                .entity(look_ahead.current)
+                .expect("previous track node")
+                .world_transform
+                .origin;
+            let next_origin = self
+                .entity(next)
+                .expect("next track node")
+                .world_transform
+                .origin;
+            let distance = length(sub(next_origin, previous_origin));
+            if distance == 0.0 {
+                current.abs()
+            } else {
+                let mut fraction = length(sub(origin, previous_origin)) / distance;
+                if path.velocity_type == 2 {
+                    fraction = simple_spline(fraction);
+                }
+                previous_speed * (1.0 - fraction) + next_speed * fraction
+            }
+        };
+        blended * if path.forward { 1.0 } else { -1.0 }
+    }
+
+    fn track_train_motion_orientation(
+        &self,
+        entity: EntityHandle,
+        path: &TrainPathState,
+        current: EntityHandle,
+        look_ahead: &PathLookAhead,
+        transform: Transform,
+    ) -> Result<([f32; 3], [f32; 3]), RuntimeFailure> {
+        let flags = self
+            .entity(entity)
+            .and_then(|entity| field(&entity.definition, b"spawnflags"))
+            .and_then(parse_i32)
+            .unwrap_or(0);
+        if flags & 0x10 != 0 || path.orientation_type == 0 {
+            return Ok((transform.angles, [0.0; 3]));
+        }
+        let mut desired = match path.orientation_type {
+            1 => {
+                let height = f32::from_bits(path.height_bits);
+                let wheels = f32::from_bits(path.length_bits);
+                let distance = if wheels > 0.0 { wheels } else { 100.0 }
+                    * if path.forward { 1.0 } else { -1.0 };
+                let front = self.path_look_ahead(
+                    current,
+                    sub(transform.origin, [0.0, 0.0, height]),
+                    distance,
+                    false,
+                )?;
+                let mut face = sub(add(front.position, [0.0, 0.0, height]), transform.origin);
+                if !path.forward {
+                    face = scale(face, -1.0);
+                }
+                let mut angles = if face[0] == 0.0 && face[1] == 0.0 {
+                    transform.angles
+                } else {
+                    vector_angles(face)
+                };
+                if path.manual_speed_changes
+                    && let Some(next) = front.next
+                    && self.entity(next).is_some_and(|node| {
+                        matches!(&node.behavior, BehaviorState::PathNode(state) if state.orientation == 2)
+                    })
+                {
+                    angles = self.track_orientation(next, path.forward, transform.angles);
+                }
+                angles
+            }
+            2 | 3 => {
+                let previous =
+                    self.track_orientation(look_ahead.current, path.forward, transform.angles);
+                let mut next = look_ahead.next.map_or(previous, |node| {
+                    self.track_orientation(node, path.forward, previous)
+                });
+                if flags & 1 != 0 {
+                    next[0] = previous[0];
+                }
+                let fraction = if previous != next
+                    && let Some(next_node) = look_ahead.next
+                {
+                    let previous_origin = self
+                        .entity(look_ahead.current)
+                        .expect("previous track node")
+                        .world_transform
+                        .origin;
+                    let next_origin = self
+                        .entity(next_node)
+                        .expect("next track node")
+                        .world_transform
+                        .origin;
+                    let segment_length = length(sub(next_origin, previous_origin));
+                    if segment_length == 0.0 {
+                        0.0
+                    } else {
+                        let value = length(sub(transform.origin, previous_origin)) / segment_length;
+                        if path.orientation_type == 3 {
+                            simple_spline(value)
+                        } else {
+                            value
+                        }
+                    }
+                } else {
+                    0.0
+                };
+                let mut result = angles_from_quat(quat_slerp(
+                    quat_from_angles(previous),
+                    quat_from_angles(next),
+                    f64::from(fraction),
+                ));
+                if flags & 1 != 0 {
+                    result[0] = previous[0];
+                }
+                result
+            }
+            _ => transform.angles,
+        };
+        if flags & 1 != 0 {
+            desired[0] = transform.angles[0];
+        }
+        let mut pitch = angle_distance(desired[0], transform.angles[0]);
+        let mut yaw = angle_distance(desired[1], transform.angles[1]);
+        if pitch.abs() < 0.1 {
+            pitch = 0.0;
+        }
+        if yaw.abs() < 0.1 {
+            yaw = 0.0;
+        }
+        let interval = self.config.tick_interval;
+        let mut angular_velocity = [pitch / interval, yaw / interval, 0.0];
+        let bank = f32::from_bits(path.bank_bits);
+        if bank != 0.0 {
+            let target = if angular_velocity[1] < -5.0 {
+                -bank
+            } else if angular_velocity[1] > 5.0 {
+                bank
+            } else {
+                0.0
+            };
+            let rate = if target == 0.0 {
+                bank * 4.0
+            } else {
+                bank * 2.0
+            };
+            angular_velocity[2] = angle_distance(
+                approach_angle(target, transform.angles[2], rate),
+                transform.angles[2],
+            ) * if target == 0.0 { 4.0 } else { 1.0 };
+        }
+        Ok((
+            add(transform.angles, scale(angular_velocity, interval)),
+            angular_velocity,
+        ))
+    }
+
+    fn teleport_track_train(
+        &mut self,
+        entity: EntityHandle,
+        destination: EntityHandle,
+        update_current: bool,
+        batch: &mut TransitionBatch,
+    ) -> Result<(), RuntimeFailure> {
+        let node = self
+            .entity(destination)
+            .expect("track destination")
+            .world_transform;
+        let (forward, current_angles) = self
+            .entity(entity)
+            .and_then(|train| match &train.behavior {
+                BehaviorState::Mover(mover) => mover
+                    .path
+                    .as_ref()
+                    .map(|path| (path.forward, train.world_transform.angles)),
+                _ => None,
+            })
+            .unwrap_or((true, node.angles));
+        self.set_entity_world_transform(
+            entity,
+            Transform {
+                origin: node.origin,
+                angles: self.track_train_orientation(entity, destination, forward, current_angles),
+            },
+            batch,
+        )?;
+        if update_current
+            && let BehaviorState::Mover(mover) =
+                &mut self.entity_mut(entity).expect("track train").behavior
+        {
+            mover.path.as_mut().expect("track train path").current = Some(destination);
+        }
+        self.dispatch_input(
+            destination,
+            &InputRecord {
+                target: EventTarget::Direct(destination),
+                input: b"InTeleport".to_vec(),
+                value: Variant::Void,
+                activator: Some(entity),
+                caller: Some(entity),
+                output_action: None,
+                producer_sequence: self.state.next_transition_sequence,
+            },
+            batch,
+        )
     }
 
     fn start_path_request(
@@ -6683,6 +7226,7 @@ impl EntityWorld {
         destination: Transform,
         speed: f32,
         path_destination: Option<EntityHandle>,
+        requested_angular_velocity: Option<[f32; 3]>,
         batch: &mut TransitionBatch,
     ) -> Result<(), RuntimeFailure> {
         let current = self.entity(entity).expect("path mover").world_transform;
@@ -6693,11 +7237,13 @@ impl EntityWorld {
         } else {
             length(angular_delta) / speed.max(f32::EPSILON)
         };
-        let angular_velocity = if travel_time > f32::EPSILON {
-            scale(angular_delta, 1.0 / travel_time)
-        } else {
-            [0.0; 3]
-        };
+        let angular_velocity = requested_angular_velocity.unwrap_or_else(|| {
+            if travel_time > f32::EPSILON {
+                scale(angular_delta, 1.0 / travel_time)
+            } else {
+                [0.0; 3]
+            }
+        });
         let request_id = self.state.next_mover_request_id;
         self.state.next_mover_request_id += 1;
         let solid = match &mut self.entity_mut(entity).expect("path mover").behavior {
@@ -6749,11 +7295,16 @@ impl EntityWorld {
                 mover.pending = None;
                 mover.position = MoverPosition::Positioned(0.0_f32.to_bits());
                 let path = mover.path.as_mut().expect("train path");
+                path.old_speed_bits = path.current_speed_bits;
+                path.current_speed_bits = 0.0_f32.to_bits();
                 path.running = false;
                 (mover.solid, path.track)
             }
             _ => return self.diagnostic(batch, DiagnosticCode::MoverRequestMismatch, Some(entity)),
         };
+        if track {
+            self.cancel_direct(entity, b"__tracktrain_next", batch)?;
+        }
         let request_id = self.state.next_mover_request_id;
         self.state.next_mover_request_id += 1;
         self.push_transition(
@@ -6779,7 +7330,7 @@ impl EntityWorld {
         &mut self,
         train: EntityHandle,
         node: EntityHandle,
-        track: bool,
+        _track: bool,
         batch: &mut TransitionBatch,
     ) -> Result<(), RuntimeFailure> {
         self.dispatch_input(
@@ -6795,17 +7346,6 @@ impl EntityWorld {
             },
             batch,
         )?;
-        if track {
-            self.fire_output(
-                train,
-                b"OnNextPoint",
-                Variant::Void,
-                Some(node),
-                Some(train),
-                0.0,
-                batch,
-            )?;
-        }
         Ok(())
     }
 
@@ -6888,7 +7428,7 @@ impl EntityWorld {
         mut origin: [f32; 3],
         distance: f32,
         move_path: bool,
-    ) -> Result<Option<PathLookAhead>, RuntimeFailure> {
+    ) -> Result<PathLookAhead, RuntimeFailure> {
         let forward = distance >= 0.0;
         let mut remaining = distance.abs();
         let original = remaining;
@@ -6896,49 +7436,70 @@ impl EntityWorld {
         let mut visits = 0;
         while remaining > 0.0 {
             visits += 1;
-            if visits > self.config.limits.max_hierarchy_depth {
+            if visits > self.config.limits.max_entities {
                 return Err(failure(
                     RuntimeFailureCode::HierarchyLimit,
                     self.entity(current).map(|entity| entity.source_index),
-                    self.config.limits.max_hierarchy_depth,
+                    self.config.limits.max_entities,
                     visits,
                 ));
             }
             let Some(next) = self.path_next(current, forward, move_path) else {
-                return Ok((remaining != original).then_some(PathLookAhead {
+                if !move_path && let Some(previous) = self.path_next(current, !forward, false) {
+                    let from = self
+                        .entity(previous)
+                        .expect("previous track node")
+                        .world_transform
+                        .origin;
+                    let to = self
+                        .entity(current)
+                        .expect("current track node")
+                        .world_transform
+                        .origin;
+                    let direction = sub(to, from);
+                    let segment = length(direction);
+                    if segment != 0.0 {
+                        origin = add(to, scale(direction, remaining / segment));
+                    }
+                }
+                return Ok(PathLookAhead {
                     current,
                     next: None,
                     position: origin,
-                }));
+                    dead_end: true,
+                });
             };
             let next_position = self.entity(next).expect("next path").world_transform.origin;
             let delta = sub(next_position, current_position);
             let segment = length(delta);
             if segment == 0.0 && self.path_next(next, forward, move_path).is_none() {
-                return Ok((remaining != original).then_some(PathLookAhead {
-                    current: next,
+                return Ok(PathLookAhead {
+                    current: if remaining == original { current } else { next },
                     next: None,
                     position: origin,
-                }));
+                    dead_end: remaining == original,
+                });
             }
             if segment > remaining {
                 origin = add(current_position, scale(delta, remaining / segment));
-                return Ok(Some(PathLookAhead {
+                return Ok(PathLookAhead {
                     current,
                     next: Some(next),
                     position: origin,
-                }));
+                    dead_end: false,
+                });
             }
             remaining -= segment;
             current_position = next_position;
             current = next;
             origin = current_position;
         }
-        Ok(Some(PathLookAhead {
+        Ok(PathLookAhead {
             current,
             next: self.path_next(current, forward, move_path),
             position: origin,
-        }))
+            dead_end: false,
+        })
     }
 
     fn track_orientation(&self, node: EntityHandle, forward: bool, fallback: [f32; 3]) -> [f32; 3] {
@@ -7039,12 +7600,6 @@ impl EntityWorld {
                 self.pass_path_node(entity, node, path.track, batch)?;
             }
             if path.track {
-                let running = self.entity(entity).is_some_and(|entity| {
-                    matches!(&entity.behavior, BehaviorState::Mover(mover) if mover.path.as_ref().is_some_and(|path| path.running))
-                });
-                if running {
-                    self.start_train_segment(entity, batch)?;
-                }
                 return Ok(());
             }
             let node_state = pending.path_destination.and_then(|node| {
@@ -8084,6 +8639,35 @@ fn delay_ticks(delay: f32, tick_interval: f32) -> u64 {
     }
 }
 
+fn approach(target: f32, value: f32, speed: f32) -> f32 {
+    let delta = target - value;
+    if delta > speed {
+        value + speed
+    } else if delta < -speed {
+        value - speed
+    } else {
+        target
+    }
+}
+
+fn simple_spline(value: f32) -> f32 {
+    value * value * (3.0 - 2.0 * value)
+}
+
+fn angle_distance(target: f32, value: f32) -> f32 {
+    let mut delta = (target - value) % 360.0;
+    if delta > 180.0 {
+        delta -= 360.0;
+    } else if delta < -180.0 {
+        delta += 360.0;
+    }
+    delta
+}
+
+fn approach_angle(target: f32, value: f32, speed: f32) -> f32 {
+    value + angle_distance(target, value).clamp(-speed.abs(), speed.abs())
+}
+
 fn direction_from_angles(angles: [f32; 3]) -> [f32; 3] {
     let pitch = angles[0].to_radians();
     let yaw = angles[1].to_radians();
@@ -8199,6 +8783,25 @@ fn quat_from_angles(angles: [f32; 3]) -> [f64; 4] {
         cr * cp * sy - sr * sp * cy,
         cr * cp * cy + sr * sp * sy,
     ]
+}
+
+fn quat_slerp(from: [f64; 4], mut to: [f64; 4], fraction: f64) -> [f64; 4] {
+    let mut cosine = from.into_iter().zip(to).map(|(a, b)| a * b).sum::<f64>();
+    if cosine < 0.0 {
+        cosine = -cosine;
+        to = to.map(|value| -value);
+    }
+    let (first, second) = if cosine > 0.999_999 {
+        (1.0 - fraction, fraction)
+    } else {
+        let angle = cosine.clamp(-1.0, 1.0).acos();
+        let sine = angle.sin();
+        (
+            ((1.0 - fraction) * angle).sin() / sine,
+            (fraction * angle).sin() / sine,
+        )
+    };
+    std::array::from_fn(|index| from[index] * first + to[index] * second)
 }
 
 fn quat_mul(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
@@ -8701,6 +9304,18 @@ fn encode_behavior(
                 output.u32(path.length_bits)?;
                 output.u32(path.maximum_speed_bits)?;
                 output.u32(path.current_speed_bits)?;
+                output.u32(path.desired_speed_bits)?;
+                output.u32(path.unmodified_desired_speed_bits)?;
+                output.u32(path.old_speed_bits)?;
+                output.u32(path.forward_modifier_bits)?;
+                output.u32(path.acceleration_bits)?;
+                output.u32(path.deceleration_bits)?;
+                output.u32(path.bank_bits)?;
+                output.i32(path.velocity_type)?;
+                output.i32(path.orientation_type)?;
+                output.bool(path.manual_speed_changes)?;
+                output.bool(path.accelerating)?;
+                output.bool(path.controls_disabled)?;
             }
             output.bool(state.rotator.is_some())?;
             if let Some(rotator) = &state.rotator {

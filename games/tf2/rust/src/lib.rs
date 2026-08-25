@@ -1197,9 +1197,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
         let phase = candidate.map.apply_mover_results(candidate.tick, results)?;
         candidate.movement.position = add(candidate.movement.position, phase.carry);
         candidate.mover_requests.retain(|request| {
-            !results
-                .iter()
-                .any(|result| result.request_id == request.request_id)
+            !results.iter().any(|result| {
+                result.request_id == request.request_id && result.kind == MoverResultKind::Completed
+            })
         });
         merge_mover_requests(&mut candidate.mover_requests, &phase.mover_requests);
         *self = candidate;
@@ -1281,6 +1281,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
 
     pub fn map_counts(&self) -> MapCounts {
         self.map.counts()
+    }
+
+    pub fn payload_constraint_blocked(&self) -> bool {
+        self.map.payload_constraint_blocked()
     }
 
     pub fn advance(&mut self, command: Command) -> Result<Snapshot, Error> {
@@ -4745,7 +4749,9 @@ fn merge_mover_requests(current: &mut Vec<MoverRequest>, emitted: &[MoverRequest
         current.retain(|existing| {
             existing.entity != request.entity && existing.request_id != request.request_id
         });
-        current.push(*request);
+        if request.speed > 0.0 || request.angular_velocity != [0.0; 3] {
+            current.push(*request);
+        }
     }
 }
 
