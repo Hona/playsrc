@@ -10,6 +10,12 @@ export type MovementMode = 0 | 1
 export type ProjectileKind = 1 | 2
 export type ProjectileState = 1 | 2 | 3
 export type ContactKind = 1 | 2 | 3
+export type BotDifficulty = 0 | 1 | 2 | 3
+export type BotRequest = Readonly<
+  | { action: "add"; count: number; class?: Tf2Class; team?: Tf2Team; difficulty: BotDifficulty }
+  | { action: "kick-all" }
+  | { action: "kick-team"; team: Tf2Team }
+>
 
 export type ProjectilePhysicsResult = Readonly<{
   projectile: number
@@ -95,6 +101,7 @@ export type Command = Readonly<{
   modeRequest?: MovementMode
   activateEntity?: number
   physicsResults?: readonly ProjectilePhysicsResult[]
+  bot?: BotRequest
 }>
 
 export type MovementSnapshot = Readonly<{
@@ -338,6 +345,23 @@ export type JumpSnapshot = Readonly<{
   result: JumpResult | null
 }>
 
+export type BotSnapshot = Readonly<{
+  identity: number
+  class: Tf2Class
+  team: Tf2Team
+  lifecycle: 1 | 2
+  difficulty: BotDifficulty
+  objective: 1 | 2 | 3 | 4 | 5
+  health: number
+  maximumHealth: number
+  target: number | null
+  area: number | null
+  remainingPathAreas: number
+  yawDegrees: number
+  position: readonly [number, number, number]
+  velocity: readonly [number, number, number]
+}>
+
 export type Snapshot = Readonly<{
   tick: bigint
   class: Tf2Class
@@ -381,6 +405,7 @@ export type Snapshot = Readonly<{
   collisionSnapshot: CollisionSnapshot
   entityPresentation: EntityPresentation
   authorityBlockers: readonly AuthorityBlocker[]
+  bots: readonly BotSnapshot[]
 }>
 
 export class Tf2CodecError extends Error {
@@ -507,7 +532,24 @@ export function encodeCommand(command: Command): ArrayBuffer {
   )
   view.setUint32(36, command.activateEntity ?? 0xffff_ffff, true)
   view.setUint16(40, physics.length, true)
-  view.setUint16(42, 0, true)
+  let packedBot = 0
+  if (command.bot) {
+    if (command.bot.action === "add") {
+      const { count, class: identity, team, difficulty } = command.bot
+      if (!Number.isSafeInteger(count) || count < 1 || count > 31 || (identity !== undefined && (!Number.isSafeInteger(identity) || identity < 1 || identity > 9))
+        || (team !== undefined && team !== 2 && team !== 3) || !Number.isSafeInteger(difficulty) || difficulty < 0 || difficulty > 3) {
+        throw new Tf2CodecError("command bot addition is invalid")
+      }
+      packedBot = 1 | (count << 2) | ((identity ?? 0) << 7) | ((team ?? 0) << 11) | (difficulty << 13)
+    } else if (command.bot.action === "kick-all") {
+      packedBot = 2
+    } else if (command.bot.action === "kick-team" && (command.bot.team === 2 || command.bot.team === 3)) {
+      packedBot = 3 | (command.bot.team << 11)
+    } else {
+      throw new Tf2CodecError("command bot operation is invalid")
+    }
+  }
+  view.setUint16(42, packedBot, true)
   view.setUint32(44, length, true)
   let at = 48
   const writeVector = (value: readonly number[]): void => {
@@ -871,14 +913,14 @@ function decodeCollisionSnapshot(bytes: ArrayBuffer, offset: number, length: num
 }
 
 export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
-  if (bytes.byteLength < 168 || bytes.byteLength > MAX_SNAPSHOT_BYTES) {
+  if (bytes.byteLength < 172 || bytes.byteLength > MAX_SNAPSHOT_BYTES) {
     throw new Tf2CodecError("snapshot byte length is invalid")
   }
   const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
   const buffer = data.buffer as ArrayBuffer
   const base = data.byteOffset
   const view = new DataView(buffer, base, data.byteLength)
-  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 11)
+  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 12)
     throw new Tf2CodecError("snapshot identity is invalid")
   const tf2Class = data[16]
   const team = data[17]
@@ -1421,6 +1463,47 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
   at += jumpLength
   requireBytes(movementTickLength,"Movement tick");const movementTick=decodeMovementTick(buffer,base+at,movementTickLength);at+=movementTickLength
   requireBytes(entityPresentationLength,"Entity presentation");const entityPresentation=decodeEntityPresentation(buffer,base+at,entityPresentationLength);at+=entityPresentationLength
+  requireBytes(4, "bot count")
+  const botCount = view.getUint32(at, true)
+  at += 4
+  if (botCount > 31) throw new Tf2CodecError("bot count exceeds its bound")
+  requireBytes(botCount * 60, "bot")
+  const bots: BotSnapshot[] = []
+  let previousBot = 1
+  for (let index = 0; index < botCount; index += 1) {
+    const item = at + index * 60
+    const identity = view.getUint32(item, true), botClass = data[item + 4], botTeam = data[item + 5]
+    const lifecycle = data[item + 6], difficulty = data[item + 7], objective = data[item + 8]
+    const health = view.getInt32(item + 12, true), maximumHealth = view.getInt32(item + 16, true)
+    const target = view.getUint32(item + 20, true), area = view.getUint32(item + 24, true)
+    const yawDegrees = view.getFloat32(item + 32, true), position = vector(view, item + 36), velocity = vector(view, item + 48)
+    if (identity <= previousBot || botClass === undefined || botClass < 1 || botClass > 9 || (botTeam !== 2 && botTeam !== 3)
+      || (lifecycle !== 1 && lifecycle !== 2) || difficulty === undefined || difficulty > 3
+      || objective === undefined || objective < 1 || objective > 5
+      || data[item + 9] !== 0 || data[item + 10] !== 0 || data[item + 11] !== 0
+      || health < 0 || maximumHealth < 1 || health > maximumHealth
+      || !finite([yawDegrees, ...position, ...velocity])) {
+      throw new Tf2CodecError("bot snapshot record is invalid")
+    }
+    previousBot = identity
+    bots.push(Object.freeze({
+      identity,
+      class: botClass,
+      team: botTeam,
+      lifecycle,
+      difficulty: difficulty as BotDifficulty,
+      objective: objective as BotSnapshot["objective"],
+      health,
+      maximumHealth,
+      target: target === 0xffff_ffff ? null : target,
+      area: area === 0xffff_ffff ? null : area,
+      remainingPathAreas: view.getUint32(item + 28, true),
+      yawDegrees,
+      position,
+      velocity,
+    }))
+  }
+  at += botCount * 60
   if(at!==bytes.byteLength||entityPresentation.collisionRevision!==collisionSnapshot.identity)throw new Tf2CodecError("Entity presentation revision join is invalid")
 
   const tick = view.getBigUint64(8, true)
@@ -1471,6 +1554,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     collisionSnapshot,
     entityPresentation,
     authorityBlockers: Object.freeze(authorityBlockers),
+    bots: Object.freeze(bots),
   })
 }
 

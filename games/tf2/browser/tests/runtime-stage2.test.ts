@@ -10,11 +10,11 @@ import {
 import type { WorkerRequest, WorkerResponse } from "../src/protocol"
 
 function snapshot(): ArrayBuffer {
-  const bytes = new ArrayBuffer(1005)
+  const bytes = new ArrayBuffer(1009)
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x53, 0x53, 0x4e])
-  view.setUint32(4, 11, true)
+  view.setUint32(4, 12, true)
   view.setBigUint64(8, 7n, true)
   data.set([3, 2, 1, 0], 16)
   view.setFloat32(20, 200, true)
@@ -301,6 +301,49 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     stuckData.set([2, 2, 3, 1], 316)
     stuckView.setFloat32(388, 1, true)
     expect(decodeSnapshot(stuck).projectiles[0]).toMatchObject({ kind: 2, state: 3, velocity: [100, 0, 0], contactNormal: [0, 0, 1] })
+  })
+
+  test("encodes bounded bot commands and decodes ordered player lifecycle snapshots", () => {
+    const base = { forward: 0, side: 0, yawDegrees: 0, pitchDegrees: 0, jump: false, crouch: false, fire: false, detonate: false }
+    const add = new DataView(encodeCommand({ ...base, bot: { action: "add", count: 3, class: 4, team: 3, difficulty: 3 } }))
+    expect(add.getUint16(42, true)).toBe(1 | (3 << 2) | (4 << 7) | (3 << 11) | (3 << 13))
+    expect(new DataView(encodeCommand({ ...base, bot: { action: "kick-all" } })).getUint16(42, true)).toBe(2)
+    expect(new DataView(encodeCommand({ ...base, bot: { action: "kick-team", team: 2 } })).getUint16(42, true)).toBe(3 | (2 << 11))
+    expect(() => encodeCommand({ ...base, bot: { action: "add", count: 32, class: 3, difficulty: 1 } })).toThrow(Tf2CodecError)
+
+    const prior = new Uint8Array(snapshot())
+    const bytes = new Uint8Array(prior.byteLength + 60)
+    bytes.set(prior)
+    const view = new DataView(bytes.buffer)
+    view.setUint32(prior.byteLength - 4, 1, true)
+    const at = prior.byteLength
+    view.setUint32(at, 2, true)
+    bytes.set([3, 3, 1, 1, 1], at + 4)
+    view.setInt32(at + 12, 200, true)
+    view.setInt32(at + 16, 200, true)
+    view.setUint32(at + 20, 1, true)
+    view.setUint32(at + 24, 10785, true)
+    view.setUint32(at + 28, 16, true)
+    view.setFloat32(at + 32, 90, true)
+    ;[-2528, -1744, 17, 240, 0, 0].forEach((value, index) => view.setFloat32(at + 36 + index * 4, value, true))
+    expect(decodeSnapshot(bytes).bots).toEqual([{
+      identity: 2,
+      class: 3,
+      team: 3,
+      lifecycle: 1,
+      difficulty: 1,
+      objective: 1,
+      health: 200,
+      maximumHealth: 200,
+      target: 1,
+      area: 10785,
+      remainingPathAreas: 16,
+      yawDegrees: 90,
+      position: [-2528, -1744, 17],
+      velocity: [240, 0, 0],
+    }])
+    view.setUint32(at, 1, true)
+    expect(() => decodeSnapshot(bytes)).toThrow(Tf2CodecError)
   })
 
   test("retains independent Source in-water flags and canonical fluid contents", () => {
