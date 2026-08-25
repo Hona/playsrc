@@ -20,7 +20,7 @@ type Exports = Readonly<{
   playsrc_free(pointer: number, length: number): void
   playsrc_resource_decode(pointer: number, length: number): number
   playsrc_resource_length(): number
-  playsrc_resource_copy(pointer: number, capacity: number): number
+  playsrc_resource_take(): number
   playsrc_compile_map(bsp: number, length: number, profile: number, config: number, configLength: number): number
   playsrc_result_error(handle: number): number
   playsrc_result_length(handle: number): number
@@ -78,8 +78,8 @@ const batchPointer = copied(exports, batch)
 require(exports.playsrc_resource_decode(batchPointer, batch.byteLength) === 1, "Rust resource graph decoding failed")
 exports.playsrc_free(batchPointer, batch.byteLength)
 const resourceLength = exports.playsrc_resource_length()
-const resourcePointer = exports.playsrc_alloc(resourceLength) >>> 0
-require(exports.playsrc_resource_copy(resourcePointer, resourceLength) === resourceLength, "Rust resource set copy failed")
+const resourcePointer = exports.playsrc_resource_take() >>> 0
+require(resourcePointer !== 0, "Rust resource set ownership transfer failed")
 const resources = new Uint8Array(exports.memory.buffer, resourcePointer, resourceLength).slice()
 exports.playsrc_free(resourcePointer, resourceLength)
 

@@ -810,7 +810,7 @@ export function bindTf2Hud(publication: Tf2HudPublication): Tf2HudBinding {
     for (const [identity, event] of lastAmmo) {
       const weapon = final.weapons.find((item) => item.identity === identity)
       if (!weapon || !sameAvailabilityNumber(event.clip, weapon.clip) || !sameAvailabilityNumber(event.reserve, weapon.reserve) || event.reload !== weapon.reload) {
-        throw new Tf2HudBindingError("InconsistentPublication", "final HUD ammo differs from the event stream")
+        throw new Tf2HudBindingError("InconsistentPublication", `final HUD ammo differs from the event stream: identity=${identity} expected=${JSON.stringify({clip:event.clip,reserve:event.reserve,reload:event.reload})} actual=${JSON.stringify(weapon&&{clip:weapon.clip,reserve:weapon.reserve,reload:weapon.reload})}`)
       }
     }
     if (lastWeapon !== null && (final.activeWeapon.kind !== "available" || final.activeWeapon.value !== lastWeapon)) throw new Tf2HudBindingError("InconsistentPublication", "final active weapon differs from the event stream")

@@ -7,6 +7,7 @@ import initializeWasm, { initThreadPool } from "./wasm-generated/tf2_wasm.js"
 const MAX_WASM_BYTES = 64 * 1024 * 1024
 const MAX_BSP_BYTES = 512 * 1024 * 1024
 const MAX_CONFIGURATION_BYTES = 768 * 1024 * 1024
+
 const MAX_MESSAGE_BYTES = 512 * 1024 * 1024
 const MAX_PRESENTATION_BYTES = 512 * 1024 * 1024
 
@@ -16,7 +17,7 @@ type WasmExports = Readonly<{
   playsrc_free(pointer: number, length: number): void
   playsrc_resource_decode(pointer: number, length: number): number
   playsrc_resource_length(): number
-  playsrc_resource_copy(pointer: number, capacity: number): number
+  playsrc_resource_take(): number
   playsrc_compile_map(bsp: number, length: number, profile: number, config: number, configLength: number): number
   playsrc_compile_map_cached(bsp: number, length: number, profile: number, config: number, configLength: number, presentation: number, presentationLength: number): number
   playsrc_compile_metric_milliseconds(handle: number, index: number): number
@@ -104,7 +105,7 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         candidate.playsrc_free,
         candidate.playsrc_resource_decode,
         candidate.playsrc_resource_length,
-        candidate.playsrc_resource_copy,
+        candidate.playsrc_resource_take,
         candidate.playsrc_compile_map,
         candidate.playsrc_compile_map_cached,
         candidate.playsrc_compile_metric_milliseconds,
@@ -168,14 +169,16 @@ function decodeResources(request: Extract<WorkerRequest, { kind: "decode-resourc
     fail(request.id, "InternalFailure")
     return
   }
-  const pointer = exports.playsrc_alloc(length) >>> 0
-  const bytes = new Uint8Array(length)
-  const copied = exports.playsrc_resource_copy(pointer, length)
-  if (copied === length) bytes.set(new Uint8Array(exports.memory.buffer, pointer, length))
-  exports.playsrc_free(pointer, length)
-  if (copied !== length) {
+  const pointer = exports.playsrc_resource_take() >>> 0
+  if (pointer === 0) {
     fail(request.id, "InternalFailure")
     return
+  }
+  let bytes: Uint8Array
+  try {
+    bytes = new Uint8Array(exports.memory.buffer, pointer, length).slice()
+  } finally {
+    exports.playsrc_free(pointer, length)
   }
   post({ id: request.id, kind: "resources", bytes: bytes.buffer }, [bytes.buffer])
 }
@@ -543,7 +546,14 @@ function particles(request: Extract<WorkerRequest, { kind: "particles" }>): void
   const transactMilliseconds=performance.now()-transactStarted
   value.exports.playsrc_free(pointer, request.batch.byteLength)
   if (ok !== 1) {
-    fail(request.id, "TransitionFailed",201)
+    const length = value.exports.playsrc_simulation_error_length()
+    const pointer = length ? value.exports.playsrc_alloc(length) >>> 0 : 0
+    const copied = pointer ? value.exports.playsrc_simulation_error_copy(pointer, length) : 0
+    const reason = copied === length && length
+      ? new TextDecoder().decode(new Uint8Array(value.exports.memory.buffer, pointer, length).slice())
+      : undefined
+    if (pointer) value.exports.playsrc_free(pointer, length)
+    fail(request.id, "TransitionFailed", 201, reason)
     return
   }
   const length = value.exports.playsrc_particle_output_length(value.handle)

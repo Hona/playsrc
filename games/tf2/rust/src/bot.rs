@@ -808,6 +808,16 @@ impl BotWorld {
         self.bots.contains_key(&identity)
     }
 
+    pub fn active(&self, identity: u32) -> bool {
+        self.bots
+            .get(&identity)
+            .is_some_and(|bot| bot.lifecycle == PlayerLifecycle::Active)
+    }
+
+    pub fn team(&self, identity: u32) -> Option<PlayerTeam> {
+        self.bots.get(&identity).map(|bot| bot.team)
+    }
+
     pub fn damage(
         &mut self,
         input: Damage,
@@ -824,13 +834,14 @@ impl BotWorld {
         let damage_type = match input.weapon {
             Weapon::Bat | Weapon::Shovel | Weapon::Fists | Weapon::Kukri | Weapon::Wrench => {
                 DamageType::MELEE
-            },
+            }
             Weapon::RocketLauncher | Weapon::Original | Weapon::StickybombLauncher => {
                 DamageType::BLAST
             }
-            Weapon::Scattergun | Weapon::Shotgun | Weapon::HeavyShotgun | Weapon::EngineerShotgun => {
-                DamageType::BUCKSHOT
-            }
+            Weapon::Scattergun
+            | Weapon::Shotgun
+            | Weapon::HeavyShotgun
+            | Weapon::EngineerShotgun => DamageType::BUCKSHOT,
             Weapon::Pistol
             | Weapon::Minigun
             | Weapon::SniperRifle
@@ -910,7 +921,6 @@ impl BotWorld {
             }
         }
     }
-
 
     pub fn snapshots(&self) -> Vec<Snapshot> {
         self.bots

@@ -7,6 +7,7 @@ const HASH = /^[0-9a-f]{64}$/
 const MAX_PENDING = 64
 const MAX_BSP_BYTES = 512 * 1024 * 1024
 const MAX_CONFIGURATION_BYTES = 768 * 1024 * 1024
+
 const LITTLE_ENDIAN = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1
 const HEX_BYTES = Array.from({ length: 256 }, (_, value) => value.toString(16).padStart(2, "0"))
 type RequestWithoutId = WorkerRequest extends infer Request
