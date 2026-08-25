@@ -3,6 +3,8 @@ import { sourceHorizontal4By3FovToVertical } from "@playsrc/rendering"
 import {
   createParticleBatchEncoder,
   createViewmodelPresenter,
+  decodeModelPoseOutput,
+  encodeModelPoseBatch,
   ProjectilePresentationError,
   tf2Camera,
   type ProjectileParticleRequest,
@@ -81,6 +83,84 @@ test("preserves source ticks and graceful stop in one multi-tick Particle phase"
   const reversed = createParticleBatchEncoder()
   reversed.encode(3n, [0, 0, 0], [])
   expect(() => reversed.encode(4n, [0, 0, 0], [requests[0]!])).toThrow(ProjectilePresentationError)
+})
+
+test("encodes each Unicode model/activity exactly once into the unchanged PMRQ v5 contract", () => {
+  const request = Object.freeze({
+    identity: 7,
+    model: "models/é.mdl",
+    activity: "ACT_雪",
+    previousElapsedSeconds: 0,
+    elapsedSeconds: 0.25,
+    currentTimeSeconds: 0.25,
+    frameTimeSeconds: 0.015,
+    planarSpeed: 0,
+    screenAspectRatio: 16 / 9,
+    worldFarPlane: 32_768,
+    skin: 0,
+    lod: 0,
+    bodygroups: Object.freeze([1, 2]),
+  })
+  const bytes = encodeModelPoseBatch([request])
+  const view = new DataView(bytes.buffer)
+  expect(new TextDecoder().decode(bytes.subarray(0, 4))).toBe("PMRQ")
+  expect(view.getUint32(4, true)).toBe(5)
+  expect(view.getUint32(8, true)).toBe(1)
+  expect(view.getUint32(20, true)).toBe(new TextEncoder().encode(request.model).byteLength)
+  expect(new TextDecoder().decode(bytes.subarray(24, 24 + view.getUint32(20, true)))).toBe(request.model)
+})
+
+test("decodes exact interleaved PMPO vertex planes and rejects non-finite or truncated geometry", () => {
+  const output: number[] = [0x50, 0x4d, 0x50, 0x4f]
+  const u32 = (value: number): void => {
+    const bytes = new Uint8Array(4)
+    new DataView(bytes.buffer).setUint32(0, value, true)
+    output.push(...bytes)
+  }
+  const f32 = (value: number): void => {
+    const bytes = new Uint8Array(4)
+    new DataView(bytes.buffer).setFloat32(0, value, true)
+    output.push(...bytes)
+  }
+  const text = (value: string): void => {
+    const bytes = new TextEncoder().encode(value)
+    u32(bytes.byteLength)
+    output.push(...bytes)
+  }
+  u32(4)
+  u32(1)
+  u32(9)
+  output.push(0, 0, 0, 0)
+  text("models/example.mdl")
+  text("ACT_IDLE")
+  u32(3)
+  ;[24, 1, 1, 1].forEach(f32)
+  output.push(0, 0, 0, 0)
+  f32(0)
+  f32(0.25)
+  output.push(...new Array(68).fill(0))
+  output.push(...new Array(8).fill(0))
+  u32(0)
+  u32(0)
+  u32(0)
+  u32(0)
+  u32(1)
+  u32(5)
+  u32(6)
+  u32(2)
+  output.push(1, 0, 0, 0)
+  ;[1, 2, 3, 0, 0, 1, 4, 5, 6, 1, 7, 8, 9, 0, 1, 0, 10, 11, 12, -1].forEach(f32)
+  u32(0)
+  const bytes = Uint8Array.from(output)
+  const primitive = decodeModelPoseOutput(bytes)[0]!.primitives[0]!
+  expect([...primitive.positions]).toEqual([1, 2, 3, 7, 8, 9])
+  expect([...primitive.normals]).toEqual([0, 0, 1, 0, 1, 0])
+  expect([...primitive.tangents]).toEqual([4, 5, 6, 1, 10, 11, 12, -1])
+  expect(primitive.translucent).toBe(true)
+  const invalid = bytes.slice()
+  new DataView(invalid.buffer).setFloat32(invalid.byteLength - 84, Number.NaN, true)
+  expect(() => decodeModelPoseOutput(invalid)).toThrow(ProjectilePresentationError)
+  expect(() => decodeModelPoseOutput(bytes.subarray(0, bytes.byteLength - 1))).toThrow(ProjectilePresentationError)
 })
 
 test("uses the default TF2 horizontal-4:3 world projection and Source clip planes", () => {

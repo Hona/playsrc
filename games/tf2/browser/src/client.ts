@@ -1,16 +1,25 @@
 import type { DerivedObjectCache } from "@playsrc/asset-store/browser"
 import { decodeSnapshot, type Snapshot } from "./codec"
-import type { InitialView, WorkerFailureCode, WorkerRequest, WorkerResponse } from "./protocol"
+import type { InitialView, VisibilityView, WorkerFailureCode, WorkerRequest, WorkerResponse } from "./protocol"
 
 const HASH = /^[0-9a-f]{64}$/
 const MAX_PENDING = 64
 const MAX_BSP_BYTES = 512 * 1024 * 1024
 const MAX_CONFIGURATION_BYTES = 512 * 1024 * 1024
+const LITTLE_ENDIAN = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1
+const HEX_BYTES = Array.from({ length: 256 }, (_, value) => value.toString(16).padStart(2, "0"))
 type RequestWithoutId = WorkerRequest extends infer Request
   ? Request extends { id: number }
     ? Omit<Request, "id">
     : never
   : never
+
+type QueuedModels = {
+  id: number
+  generation: number
+  batch: ArrayBuffer
+  visibility?: { id: number; queuedAt: number; view: VisibilityView }
+}
 
 export type WorkerLike = Readonly<{
   postMessage(message: WorkerRequest, transfer?: Transferable[]): void
@@ -78,6 +87,16 @@ async function presentationKey(key: string): Promise<string> {
   return sha256(new TextEncoder().encode(`playsrc-tf2-presentation-v12\0${key}`))
 }
 
+function transferredBytes(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer instanceof ArrayBuffer && bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
+    ? bytes.buffer
+    : bytes.slice().buffer
+}
+
+function queuedAt(): number {
+  return performance.timeOrigin + performance.now()
+}
+
 export class Tf2WorkerClient {
   readonly #worker: WorkerLike
   readonly #cache: DerivedObjectCache
@@ -90,6 +109,7 @@ export class Tf2WorkerClient {
   >()
   #nextId = 1
   #closed = false
+  #queuedModels?: QueuedModels
 
   constructor(worker: WorkerLike, cache: DerivedObjectCache) {
     this.#worker = worker
@@ -116,27 +136,61 @@ export class Tf2WorkerClient {
   }
 
   #failAll(error: Error): void {
+    this.#queuedModels = undefined
     for (const pending of this.#pending.values()) pending.reject(error)
     this.#pending.clear()
   }
 
-  #request(request: RequestWithoutId, transfer: Transferable[] = []): Promise<WorkerResponse> {
-    if (this.#closed) return Promise.reject(new Tf2WorkerError("Closed"))
-    if (this.#pending.size >= MAX_PENDING) return Promise.reject(new Tf2WorkerError("BoundExceeded"))
+  #reserve(): { id: number; response: Promise<WorkerResponse> } {
+    if (this.#closed) throw new Tf2WorkerError("Closed")
+    if (this.#pending.size >= MAX_PENDING) throw new Tf2WorkerError("BoundExceeded")
     while (this.#pending.has(this.#nextId)) {
       this.#nextId = this.#nextId === 0xffff_ffff ? 1 : this.#nextId + 1
     }
     const id = this.#nextId
     this.#nextId = id === 0xffff_ffff ? 1 : id + 1
-    return new Promise((resolve, reject) => {
+    const response = new Promise<WorkerResponse>((resolve, reject) => {
       this.#pending.set(id, { resolve, reject })
-      try {
-        this.#worker.postMessage({ ...request, id } as WorkerRequest, transfer)
-      } catch {
-        this.#pending.delete(id)
-        reject(new Tf2WorkerError("WorkerFailed"))
-      }
     })
+    return { id, response }
+  }
+
+  #send(request: RequestWithoutId, id: number, transfer: Transferable[] = []): void {
+    try {
+      this.#worker.postMessage({ ...request, id, queuedAt: queuedAt() } as WorkerRequest, transfer)
+    } catch {
+      const pending = this.#pending.get(id)
+      this.#pending.delete(id)
+      pending?.reject(new Tf2WorkerError("WorkerFailed"))
+      if (request.kind === "models" && request.visibility) {
+        const companion = this.#pending.get(request.visibility.id)
+        this.#pending.delete(request.visibility.id)
+        companion?.reject(new Tf2WorkerError("WorkerFailed"))
+      }
+    }
+  }
+
+  #flushModels(): void {
+    const queued = this.#queuedModels
+    if (!queued) return
+    this.#queuedModels = undefined
+    this.#send({
+      kind: "models",
+      generation: queued.generation,
+      batch: queued.batch,
+      ...(queued.visibility ? { visibility: queued.visibility } : {}),
+    }, queued.id, [queued.batch])
+  }
+
+  #request(request: RequestWithoutId, transfer: Transferable[] = []): Promise<WorkerResponse> {
+    if (this.#queuedModels) this.#flushModels()
+    try {
+      const pending = this.#reserve()
+      this.#send(request, pending.id, transfer)
+      return pending.response
+    } catch (error) {
+      return Promise.reject(error)
+    }
   }
 
   async initialize(wasmBytes: Uint8Array, wasmSha256: string, threads = navigator.hardwareConcurrency): Promise<void> {
@@ -145,14 +199,14 @@ export class Tf2WorkerClient {
       throw new Tf2WorkerError("BoundExceeded")
     }
     if ((await sha256(wasmBytes)) !== wasmSha256) throw new Tf2WorkerError("IntegrityFailure")
-    const transferred = wasmBytes.slice().buffer
+    const transferred = transferredBytes(wasmBytes)
     const response = await this.#request({ kind: "initialize", wasm: transferred, wasmSha256, threads }, [transferred])
     if (response.kind !== "initialized") throw new Tf2WorkerError("WorkerFailed")
   }
 
   async decodeResources(batch: Uint8Array): Promise<Uint8Array> {
     if (batch.byteLength < 12 || batch.byteLength > 512 * 1024 * 1024) throw new Tf2WorkerError("BoundExceeded")
-    const transferred = batch.buffer.slice(batch.byteOffset, batch.byteOffset + batch.byteLength)
+    const transferred = transferredBytes(batch)
     const response = await this.#request({ kind: "decode-resources", batch: transferred }, [transferred])
     if (response.kind !== "resources" || !(response.bytes instanceof ArrayBuffer) || response.bytes.byteLength < 12 || response.bytes.byteLength > 512 * 1024 * 1024) {
       throw new Tf2WorkerError("WorkerFailed")
@@ -179,25 +233,50 @@ export class Tf2WorkerClient {
     ) {
       throw new Tf2WorkerError("BoundExceeded")
     }
+    let mapCacheReadMilliseconds = 0
+    let presentationKeyMilliseconds = 0
+    let presentationCacheReadMilliseconds = 0
+    let pkey = ""
+    const mapRead = (async () => {
+      const phase = performance.now()
+      try {
+        return await this.#cache.read(derivedKey)
+      } finally {
+        mapCacheReadMilliseconds = performance.now() - phase
+      }
+    })()
+    const presentationRead = (async () => {
+      let phase = performance.now()
+      pkey = await presentationKey(derivedKey)
+      presentationKeyMilliseconds = performance.now() - phase
+      phase = performance.now()
+      try {
+        return await this.#cache.read(pkey)
+      } finally {
+        presentationCacheReadMilliseconds = performance.now() - phase
+      }
+    })()
+    const [mapResult, presentationResult] = await Promise.allSettled([mapRead, presentationRead])
+    if (mapResult.status === "rejected") throw mapResult.reason
+    if (presentationResult.status === "rejected") throw presentationResult.reason
+    const cached = mapResult.value
+    const cachedPresentation = presentationResult.value
+    const cachedPresentationBytes = cachedPresentation?.byteLength
     let phase = performance.now()
-    const cached = await this.#cache.read(derivedKey)
-    const mapCacheReadMilliseconds = performance.now() - phase
-    phase = performance.now()
-    const pkey = await presentationKey(derivedKey)
-    const presentationKeyMilliseconds = performance.now() - phase
-    phase = performance.now()
-    const cachedPresentation = await this.#cache.read(pkey)
-    const presentationCacheReadMilliseconds = performance.now() - phase
-    phase = performance.now()
-    const bspBuffer = bsp.slice().buffer
+    const bspBuffer = transferredBytes(bsp)
     const configurationBuffer = configuration.slice().buffer
-    const presentationBuffer = cachedPresentation?.slice().buffer
+    const presentationBuffer = cachedPresentation ? transferredBytes(cachedPresentation) : undefined
     const inputCloneMilliseconds = performance.now() - phase
     phase = performance.now()
-    const loaded = await this.#request(
-      { kind: "load", generation, profile, bsp: bspBuffer, configuration: configurationBuffer, ...(presentationBuffer ? { presentation: presentationBuffer } : {}) },
-      [bspBuffer, configurationBuffer, ...(presentationBuffer ? [presentationBuffer] : [])],
-    )
+    const loaded = await this.#request({
+      kind: "load",
+      generation,
+      profile,
+      bsp: bspBuffer,
+      configuration: configurationBuffer,
+      includeMap: !cached,
+      ...(presentationBuffer ? { presentation: presentationBuffer } : {}),
+    }, [bspBuffer, configurationBuffer, ...(presentationBuffer ? [presentationBuffer] : [])])
     const workerLoadMilliseconds = performance.now() - phase
     try {
       if (
@@ -205,10 +284,14 @@ export class Tf2WorkerClient {
         loaded.generation !== generation ||
         !Number.isSafeInteger(loaded.payloadBytes) ||
         loaded.payloadBytes < 1 ||
+        loaded.payloadBytes > MAX_BSP_BYTES ||
         !HASH.test(loaded.payloadSha256) ||
         !Number.isSafeInteger(loaded.presentationBytes) ||
         loaded.presentationBytes < 1 ||
         loaded.presentationBytes > MAX_BSP_BYTES ||
+        !(loaded.presentation instanceof ArrayBuffer) ||
+        loaded.presentation.byteLength !== loaded.presentationBytes ||
+        (cached ? loaded.payload !== undefined : !(loaded.payload instanceof ArrayBuffer)) ||
         !Number.isSafeInteger(loaded.initialView?.entity) ||
         loaded.initialView.entity < 0 ||
         loaded.initialView.entity > 0xffff_ffff ||
@@ -225,8 +308,6 @@ export class Tf2WorkerClient {
       let payload: Uint8Array
       let cache: LoadedGame["cache"]
       let mapIntegrityMilliseconds = 0
-      let mapReadMilliseconds = 0
-      let mapCacheWriteMilliseconds = 0
       let mapPersistence = Promise.resolve(0)
       if (cached) {
         phase = performance.now()
@@ -237,43 +318,28 @@ export class Tf2WorkerClient {
         payload = cached
         cache = "hit"
       } else {
-        phase = performance.now()
-        const map = await this.#request({ kind: "read-map", generation })
-        if (map.kind !== "map" || map.generation !== generation || !(map.payload instanceof ArrayBuffer)) {
-          throw new Tf2WorkerError("WorkerFailed")
-        }
-        payload = new Uint8Array(map.payload)
-        mapReadMilliseconds = performance.now() - phase
+        payload = new Uint8Array(loaded.payload!)
         if (payload.byteLength !== loaded.payloadBytes) throw new Tf2WorkerError("IntegrityFailure")
         const writeStarted = performance.now()
         mapPersistence = this.#cache.write(derivedKey, loaded.payloadSha256, payload)
           .then(() => performance.now() - writeStarted)
         cache = "stored"
       }
-      let presentation: Uint8Array
+      const presentation = new Uint8Array(loaded.presentation)
       let presentationCache: LoadedGame["presentationCache"]
-      let presentationCacheError:string|null=null
-      const presentationIntegrityMilliseconds = 0
-      let presentationReadMilliseconds = 0
-      let presentationCacheWriteMilliseconds = 0
-      let presentationPersistence = Promise.resolve({
+      let presentationPersistence: Promise<{
+        milliseconds: number
+        cache: "hit" | "stored" | "unavailable"
+        error: string | null
+      }> = Promise.resolve({
         milliseconds: 0,
-        cache: "hit" as const,
-        error: null as string | null,
+        cache: "hit",
+        error: null,
       })
-      if (cachedPresentation) {
-        if (cachedPresentation.byteLength !== loaded.presentationBytes) throw new Tf2WorkerError("IntegrityFailure")
-        presentation = cachedPresentation
+      if (cachedPresentationBytes !== undefined) {
+        if (cachedPresentationBytes !== loaded.presentationBytes) throw new Tf2WorkerError("IntegrityFailure")
         presentationCache = "hit"
       } else {
-        phase = performance.now()
-        const response = await this.#request({ kind: "read-presentation", generation })
-        if (response.kind !== "presentation" || response.generation !== generation || !(response.payload instanceof ArrayBuffer)) {
-          throw new Tf2WorkerError("WorkerFailed")
-        }
-        presentation = new Uint8Array(response.payload)
-        presentationReadMilliseconds = performance.now() - phase
-        if (presentation.byteLength !== loaded.presentationBytes) throw new Tf2WorkerError("IntegrityFailure")
         const writeStarted = performance.now()
         presentationPersistence = this.#cache.write(pkey, null, presentation).then(
           () => ({ milliseconds: performance.now() - writeStarted, cache: "stored" as const, error: null }),
@@ -285,16 +351,13 @@ export class Tf2WorkerClient {
         )
         presentationCache = "stored"
       }
-      phase=performance.now()
-      const released=await this.#request({kind:"release-presentation",generation})
-      if(released.kind!=="presentation-released"||released.generation!==generation)throw new Tf2WorkerError("WorkerFailed")
-      const presentationReleaseMilliseconds=performance.now()-phase
-      const persistence = Promise.all([mapPersistence, presentationPersistence]).then(([mapMilliseconds, retained]) => Object.freeze({
-        mapCacheWriteMilliseconds: mapMilliseconds,
-        presentationCacheWriteMilliseconds: retained.milliseconds,
-        presentationCache: retained.cache,
-        presentationCacheError: retained.error,
-      }))
+      const persistence = Promise.all([mapPersistence, presentationPersistence])
+        .then(([mapMilliseconds, retained]) => Object.freeze({
+          mapCacheWriteMilliseconds: mapMilliseconds,
+          presentationCacheWriteMilliseconds: retained.milliseconds,
+          presentationCache: retained.cache,
+          presentationCacheError: retained.error,
+        }))
       return Object.freeze({
         generation,
         payload,
@@ -302,22 +365,22 @@ export class Tf2WorkerClient {
         cache,
         presentation,
         presentationCache,
-        presentationCacheError,
+        presentationCacheError: null,
         persistence,
-        timings:Object.freeze({
+        timings: Object.freeze({
           mapCacheReadMilliseconds,
           presentationKeyMilliseconds,
           presentationCacheReadMilliseconds,
           inputCloneMilliseconds,
           workerLoadMilliseconds,
           mapIntegrityMilliseconds,
-          mapReadMilliseconds,
-          mapCacheWriteMilliseconds,
-          presentationIntegrityMilliseconds,
-          presentationReadMilliseconds,
-          presentationCacheWriteMilliseconds,
-          presentationReleaseMilliseconds,
-          totalMilliseconds:performance.now()-started,
+          mapReadMilliseconds: loaded.timings.mapCopyMilliseconds,
+          mapCacheWriteMilliseconds: 0,
+          presentationIntegrityMilliseconds: 0,
+          presentationReadMilliseconds: loaded.timings.presentationCopyMilliseconds,
+          presentationCacheWriteMilliseconds: 0,
+          presentationReleaseMilliseconds: loaded.timings.presentationReleaseMilliseconds,
+          totalMilliseconds: performance.now() - started,
         }),
         initialView: Object.freeze({
           entity: loaded.initialView.entity,
@@ -330,7 +393,7 @@ export class Tf2WorkerClient {
       try {
         await this.#request({ kind: "discard", generation })
       } catch {
-        // The worker can already have failed; the original classified failure remains authoritative.
+        // The original classified failure remains authoritative if the Worker has already failed.
       }
       throw error
     }
@@ -355,7 +418,7 @@ export class Tf2WorkerClient {
     if (definition.byteLength < 52 || definition.byteLength > 64 * 1024) {
       throw new Tf2WorkerError("BoundExceeded")
     }
-    const transferred = definition.slice().buffer
+    const transferred = transferredBytes(definition)
     const response = await this.#request({ kind: "configure-course", generation, definition: transferred }, [
       transferred,
     ])
@@ -388,8 +451,7 @@ export class Tf2WorkerClient {
   async observe(generation: number, nowSeconds: number, command: ArrayBuffer, suspended = false): Promise<readonly SimulationPublication[]> {
     if (command.byteLength < 48 || command.byteLength > 64 * 1024) throw new Tf2WorkerError("BoundExceeded")
     if (!Number.isFinite(nowSeconds) || nowSeconds < 0) throw new Tf2WorkerError("BoundExceeded")
-    const transferred = command.slice(0)
-    const response = await this.#request({ kind: "observe", generation, nowSeconds, suspended, command: transferred }, [transferred])
+    const response = await this.#request({ kind: "observe", generation, nowSeconds, suspended, command }, [command])
     if (response.kind !== "simulation" || response.generation !== generation || !(response.output instanceof ArrayBuffer)) {
       throw new Tf2WorkerError("WorkerFailed")
     }
@@ -397,7 +459,7 @@ export class Tf2WorkerClient {
   }
   async particles(generation: number, batch: Uint8Array): Promise<Uint8Array> {
     if (batch.byteLength < 32 || batch.byteLength > 4 * 1024 * 1024) throw new Tf2WorkerError("BoundExceeded")
-    const transferred = batch.slice().buffer
+    const transferred = transferredBytes(batch)
     const response = await this.#request({ kind: "particles", generation, batch: transferred }, [transferred])
     if (
       response.kind !== "particles" ||
@@ -409,18 +471,32 @@ export class Tf2WorkerClient {
   }
   async models(generation: number, batch: Uint8Array): Promise<Uint8Array> {
     if (batch.byteLength < 12 || batch.byteLength > 1024 * 1024) throw new Tf2WorkerError("BoundExceeded")
-    const transferred = batch.slice().buffer
-    const response = await this.#request({ kind: "models", generation, batch: transferred }, [transferred])
+    if (this.#queuedModels) this.#flushModels()
+    const pending = this.#reserve()
+    const queued: QueuedModels = { id: pending.id, generation, batch: transferredBytes(batch) }
+    this.#queuedModels = queued
+    queueMicrotask(() => {
+      if (this.#queuedModels === queued) this.#flushModels()
+    })
+    const response = await pending.response
     if (response.kind !== "models" || response.generation !== generation || !(response.output instanceof ArrayBuffer)) {
       throw new Tf2WorkerError("WorkerFailed")
     }
     return new Uint8Array(response.output)
   }
-  async visibility(
-    generation: number,
-    input: Readonly<{ position: readonly [number, number, number]; visibilityPosition?:readonly[number,number,number];areaFilter?:number;yawDegrees:number; pitchDegrees:number; verticalFovDegrees:number; aspectRatio:number; near:number; far:number; presentationTimeSeconds:number }>,
-  ): Promise<VisibilityResult> {
-    const response = await this.#request({ kind: "visibility", generation, view: input })
+
+  async visibility(generation: number, input: VisibilityView): Promise<VisibilityResult> {
+    let requested: Promise<WorkerResponse>
+    const queued = this.#queuedModels
+    if (queued && queued.generation === generation && !queued.visibility) {
+      const companion = this.#reserve()
+      queued.visibility = { id: companion.id, queuedAt: queuedAt(), view: input }
+      requested = companion.response
+      this.#flushModels()
+    } else {
+      requested = this.#request({ kind: "visibility", generation, view: input })
+    }
+    const response = await requested
     if (
       response.kind !== "visibility" ||
       response.generation !== generation ||
@@ -432,17 +508,32 @@ export class Tf2WorkerClient {
       throw new Tf2WorkerError("WorkerFailed")
     let at=76
     const require=(length:number)=>{if(at+length>bytes.length)throw new Tf2WorkerError("WorkerFailed")},u8=()=>{require(1);return bytes[at++]!},u32=()=>{require(4);const value=view.getUint32(at,true);at+=4;return value},i32=()=>{require(4);const value=view.getInt32(at,true);at+=4;return value},f32=()=>{require(4);const value=view.getFloat32(at,true);at+=4;if(!Number.isFinite(value))throw new Tf2WorkerError("WorkerFailed");return value},text=()=>{const length=u32();require(length);const value=decoder.decode(bytes.subarray(at,at+length));at+=length;return value},vector=()=>Object.freeze([f32(),f32(),f32()]) as readonly[number,number,number]
-    const count = u32(), surfaces=new Uint32Array(count);for(let index=0;index<count;index++)surfaces[index]=u32()
-    const drawCount=u32(),drawSurfaces=new Uint32Array(drawCount);for(let index=0;index<drawCount;index++)drawSurfaces[index]=u32()
+    const indices = (count: number): Uint32Array => {
+      require(count * Uint32Array.BYTES_PER_ELEMENT)
+      if (LITTLE_ENDIAN && at % Uint32Array.BYTES_PER_ELEMENT === 0) {
+        const values = new Uint32Array(response.output, at, count)
+        at += count * Uint32Array.BYTES_PER_ELEMENT
+        return values
+      }
+      const values = new Uint32Array(count)
+      for (let index = 0; index < count; index += 1) values[index] = u32()
+      return values
+    }
+    const surfaces = indices(u32())
+    const drawSurfaces = indices(u32())
     const eyeLeafValue=u32(),leaves=Object.freeze(Array.from({length:u32()},u32)),areas=Object.freeze(Array.from({length:u32()},u32))
     const present=u8(),cheap=u8(),reflect=u8(),refract=u8(),reflectEntities=u8(),drawSurface=u8(),opaque=u8(),nearPlaneIntersects=u8()
     if([present,cheap,reflect,refract,reflectEntities,drawSurface,opaque,nearPlaneIntersects].some(value=>value>1))throw new Tf2WorkerError("WorkerFailed")
     let visibleWater:WaterViewPlan["visibleWater"]=null
     if(present===1){const volume=u32(),visibleLeaf=u32(),eyeLeaf=u32(),eyeInVolume=u8(),translucent=u8();if(eyeInVolume>1||translucent>1||u8()||u8())throw new Tf2WorkerError("WorkerFailed");const surfaceZ=f32(),distance=u32(),material=text(),normalFrame=i32(),normalTransform=new Float32Array(16);for(let index=0;index<16;index++)normalTransform[index]=f32();visibleWater=Object.freeze({volume,visibleLeaf,eyeLeaf,eyeInVolume:eyeInVolume===1,surfaceZ,distanceToWater:distance===0xffff?null:distance,material,translucent:translucent===1,evaluated:Object.freeze({normalFrame,normalTransform,cheapStart:f32(),cheapEnd:f32()})})}
     const passes:WaterViewPass[]=[]
-    for(let passCount=u32();passCount>0;passCount--){const kind=u8(),renderAboveWater=u8(),renderUnderWater=u8(),renderWaterSurface=u8(),drawEntities=u8(),drawSky2d=u8(),hasClip=u8(),keep=u8();if(kind>3||[renderAboveWater,renderUnderWater,renderWaterSurface,drawEntities,drawSky2d,hasClip].some(value=>value>1)||keep>2||(hasClip===0)!==(keep===0))throw new Tf2WorkerError("WorkerFailed");const origin=vector(),angles=vector(),clipHeight=f32(),forced=u32(),fogKind=u8(),heightFog=u8();if(fogKind>1||heightFog>1||u8()||u8())throw new Tf2WorkerError("WorkerFailed");const fogVolume=u32();if(fogKind===0&&(heightFog!==0||fogVolume!==0))throw new Tf2WorkerError("WorkerFailed");const passSurfaces=new Uint32Array(u32());for(let index=0;index<passSurfaces.length;index++)passSurfaces[index]=u32();passes.push(Object.freeze({kind:(["reflection","refraction","main","intersection"] as const)[kind]!,origin,angles,renderAboveWater:renderAboveWater===1,renderUnderWater:renderUnderWater===1,renderWaterSurface:renderWaterSurface===1,drawEntities:drawEntities===1,drawSky2d:drawSky2d===1,clip:hasClip===1?Object.freeze({height:clipHeight,keep:keep===1?"above" as const:"below" as const}):null,forcedVisibilityLeaf:forced===0xffff_ffff?null:forced,fog:fogKind===0?Object.freeze({kind:"world" as const}):Object.freeze({kind:"water" as const,volume:fogVolume,heightFog:heightFog===1}),surfaces:passSurfaces}))}
+    for(let passCount=u32();passCount>0;passCount--){const kind=u8(),renderAboveWater=u8(),renderUnderWater=u8(),renderWaterSurface=u8(),drawEntities=u8(),drawSky2d=u8(),hasClip=u8(),keep=u8();if(kind>3||[renderAboveWater,renderUnderWater,renderWaterSurface,drawEntities,drawSky2d,hasClip].some(value=>value>1)||keep>2||(hasClip===0)!==(keep===0))throw new Tf2WorkerError("WorkerFailed");const origin=vector(),angles=vector(),clipHeight=f32(),forced=u32(),fogKind=u8(),heightFog=u8();if(fogKind>1||heightFog>1||u8()||u8())throw new Tf2WorkerError("WorkerFailed");const fogVolume=u32();if(fogKind===0&&(heightFog!==0||fogVolume!==0))throw new Tf2WorkerError("WorkerFailed");const passSurfaces=indices(u32());passes.push(Object.freeze({kind:(["reflection","refraction","main","intersection"] as const)[kind]!,origin,angles,renderAboveWater:renderAboveWater===1,renderUnderWater:renderUnderWater===1,renderWaterSurface:renderWaterSurface===1,drawEntities:drawEntities===1,drawSky2d:drawSky2d===1,clip:hasClip===1?Object.freeze({height:clipHeight,keep:keep===1?"above" as const:"below" as const}):null,forcedVisibilityLeaf:forced===0xffff_ffff?null:forced,fog:fogKind===0?Object.freeze({kind:"world" as const}):Object.freeze({kind:"water" as const,volume:fogVolume,heightFog:heightFog===1}),surfaces:passSurfaces}))}
     if(at!==bytes.length||(present===0&&visibleWater!==null))throw new Tf2WorkerError("WorkerFailed")
-    const hex = (values: Uint8Array) => Array.from(values, (value) => value.toString(16).padStart(2, "0")).join("")
+    const hex = (values: Uint8Array): string => {
+      let output = ""
+      for (let index = 0; index < values.byteLength; index += 1) output += HEX_BYTES[values[index]!]!
+      return output
+    }
     return Object.freeze({
       cacheIdentity: hex(bytes.subarray(8, 40)),
       worldIdentity: hex(bytes.subarray(40, 72)),
@@ -469,23 +560,33 @@ export class Tf2WorkerClient {
   }
 }
 
-function equalBytes(a: Uint8Array,b:Uint8Array){return a.length===b.length&&a.every((v,i)=>v===b[i])}
+function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) return false
+  for (let index = 0; index < left.byteLength; index += 1) {
+    if (left[index] !== right[index]) return false
+  }
+  return true
+}
+
 export function mergePublicationSnapshots(snapshots: readonly Snapshot[]): Snapshot {
   const final = snapshots.at(-1)
   if (!final) throw new Tf2WorkerError("WorkerFailed")
-  const all = (key: keyof Snapshot) => Object.freeze(snapshots.flatMap((snapshot) => snapshot[key] as readonly unknown[]))
-  const projectileTimeline = Object.freeze(snapshots.flatMap((snapshot) => snapshot.projectileTimeline))
-  if (
-    projectileTimeline.length === 0
-    || projectileTimeline.at(-1)?.tick !== final.tick
-    || projectileTimeline.some((entry, index) => index > 0 && entry.tick <= projectileTimeline[index - 1]!.tick)
-  ) {
-    throw new Tf2WorkerError("WorkerFailed")
+  let previous: bigint | undefined
+  let entries = 0
+  for (const snapshot of snapshots) {
+    for (const entry of snapshot.projectileTimeline) {
+      if (previous !== undefined && entry.tick <= previous) throw new Tf2WorkerError("WorkerFailed")
+      previous = entry.tick
+      entries += 1
+    }
   }
+  if (entries === 0 || previous !== final.tick) throw new Tf2WorkerError("WorkerFailed")
+  if (snapshots.length === 1) return final
+  const all = (key: keyof Snapshot) => Object.freeze(snapshots.flatMap((snapshot) => snapshot[key] as readonly unknown[]))
   return Object.freeze({
     ...final,
     projectileEvents: all("projectileEvents"),
-    projectileTimeline,
+    projectileTimeline: all("projectileTimeline"),
     entityEvents: all("entityEvents"),
     events: all("events"),
     activities: all("activities"),
@@ -503,10 +604,66 @@ export function mergePublicationSnapshots(snapshots: readonly Snapshot[]): Snaps
     moverResults: all("moverResults"),
   }) as Snapshot
 }
-function decodeSimulationPublications(bytes:ArrayBuffer):readonly SimulationPublication[]{
-  const data=new Uint8Array(bytes),view=new DataView(bytes); if(bytes.byteLength<16||new TextDecoder().decode(data.subarray(0,4))!=="PSIM"||view.getUint32(4,true)!==1||view.getUint32(12,true)!==0)throw new Tf2WorkerError("WorkerFailed")
-  const count=view.getUint32(8,true);if(count>256)throw new Tf2WorkerError("BoundExceeded");let at=16;const output:SimulationPublication[]=[]
-  const require=(n:number)=>{if(at+n>bytes.byteLength)throw new Tf2WorkerError("WorkerFailed")}
-  for(let i=0;i<count;i++){require(40);const hostFrame=view.getBigUint64(at,true),first=view.getBigUint64(at+8,true),last=view.getBigUint64(at+16,true),selected=view.getUint32(at+24,true),interpolation=view.getFloat32(at+28,true),sl=view.getUint32(at+32,true),ec=view.getUint32(at+36,true);at+=40;if(selected<1||ec!==selected||last-first+1n!==BigInt(selected))throw new Tf2WorkerError("WorkerFailed");require(sl);const snapshotBytes=data.slice(at,at+sl);at+=sl;const eventBatches:SimulationEventBatch[]=[];for(let e=0;e<ec;e++){require(12);const hostTick=view.getBigUint64(at,true),l=view.getUint32(at+8,true);at+=12;require(l);const value=data.slice(at,at+l);at+=l;eventBatches.push(Object.freeze({hostTick,bytes:value,snapshot:decodeSnapshot(value.slice().buffer)}))}if(!equalBytes(eventBatches.at(-1)!.bytes,snapshotBytes))throw new Tf2WorkerError("WorkerFailed");output.push(Object.freeze({hostFrame,firstHostTick:first,lastHostTick:last,selectedTicks:selected,interpolation,snapshotBytes,eventBatches:Object.freeze(eventBatches),snapshot:mergePublicationSnapshots(eventBatches.map(e=>e.snapshot))}))}
-  if(at!==bytes.byteLength)throw new Tf2WorkerError("WorkerFailed");return Object.freeze(output)
+
+function decodeSimulationPublications(buffer: ArrayBuffer): readonly SimulationPublication[] {
+  const bytes = new Uint8Array(buffer)
+  const view = new DataView(buffer)
+  if (
+    bytes.byteLength < 16 ||
+    bytes[0] !== 0x50 || bytes[1] !== 0x53 || bytes[2] !== 0x49 || bytes[3] !== 0x4d ||
+    view.getUint32(4, true) !== 1 || view.getUint32(12, true) !== 0
+  ) throw new Tf2WorkerError("WorkerFailed")
+  const count = view.getUint32(8, true)
+  if (count > 256) throw new Tf2WorkerError("BoundExceeded")
+  let offset = 16
+  const publications: SimulationPublication[] = []
+  const require = (length: number): void => {
+    if (length > bytes.byteLength - offset) throw new Tf2WorkerError("WorkerFailed")
+  }
+  for (let index = 0; index < count; index += 1) {
+    require(40)
+    const hostFrame = view.getBigUint64(offset, true)
+    const firstHostTick = view.getBigUint64(offset + 8, true)
+    const lastHostTick = view.getBigUint64(offset + 16, true)
+    const selectedTicks = view.getUint32(offset + 24, true)
+    const interpolation = view.getFloat32(offset + 28, true)
+    const snapshotLength = view.getUint32(offset + 32, true)
+    const eventCount = view.getUint32(offset + 36, true)
+    offset += 40
+    if (
+      selectedTicks < 1 || eventCount !== selectedTicks ||
+      lastHostTick - firstHostTick + 1n !== BigInt(selectedTicks)
+    ) throw new Tf2WorkerError("WorkerFailed")
+    require(snapshotLength)
+    const snapshotBytes = bytes.subarray(offset, offset + snapshotLength)
+    offset += snapshotLength
+    const eventBatches: SimulationEventBatch[] = []
+    for (let event = 0; event < eventCount; event += 1) {
+      require(12)
+      const hostTick = view.getBigUint64(offset, true)
+      const length = view.getUint32(offset + 8, true)
+      offset += 12
+      require(length)
+      const eventBytes = bytes.subarray(offset, offset + length)
+      offset += length
+      eventBatches.push(Object.freeze({
+        hostTick,
+        bytes: eventBytes,
+        snapshot: decodeSnapshot(eventBytes),
+      }))
+    }
+    if (!equalBytes(eventBatches.at(-1)!.bytes, snapshotBytes)) throw new Tf2WorkerError("WorkerFailed")
+    publications.push(Object.freeze({
+      hostFrame,
+      firstHostTick,
+      lastHostTick,
+      selectedTicks,
+      interpolation,
+      snapshotBytes,
+      eventBatches: Object.freeze(eventBatches),
+      snapshot: mergePublicationSnapshots(eventBatches.map((event) => event.snapshot)),
+    }))
+  }
+  if (offset !== bytes.byteLength) throw new Tf2WorkerError("WorkerFailed")
+  return Object.freeze(publications)
 }

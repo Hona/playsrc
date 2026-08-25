@@ -61,6 +61,12 @@ function fail(id: number, code: WorkerFailureCode, detail = 0,reason?:string): v
   post({ id, kind: "failure", code, detail,...(reason?{reason}:{}) })
 }
 
+function queueMilliseconds(request: Pick<WorkerRequest, "queuedAt">, started: number): number {
+  return request.queuedAt === undefined || !Number.isFinite(request.queuedAt)
+    ? 0
+    : Math.max(0, performance.timeOrigin + started - request.queuedAt)
+}
+
 function canonicalId(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) > 0 && (value as number) <= 0xffff_ffff
 }
@@ -189,23 +195,45 @@ function readHash(exports: WasmExports, handle: number): string | undefined {
 function readInitialView(exports: WasmExports, handle: number): InitialView | undefined {
   const length = 40
   const pointer = exports.playsrc_alloc(length) >>> 0
-  const copied = exports.playsrc_spawn_copy(handle, pointer, length)
-  if (copied !== length) {
+  try {
+    if (exports.playsrc_spawn_copy(handle, pointer, length) !== length) return undefined
+    const bytes = new Uint8Array(exports.memory.buffer, pointer, length)
+    const view = new DataView(exports.memory.buffer, pointer, length)
+    if (
+      bytes[0] !== 0x50 || bytes[1] !== 0x53 || bytes[2] !== 0x49 || bytes[3] !== 0x56 ||
+      view.getUint32(4, true) !== 1
+    ) return undefined
+    const position = Object.freeze([
+      view.getFloat32(16, true), view.getFloat32(20, true), view.getFloat32(24, true),
+    ]) as readonly [number, number, number]
+    const angles = Object.freeze([
+      view.getFloat32(28, true), view.getFloat32(32, true), view.getFloat32(36, true),
+    ]) as readonly [number, number, number]
+    if (!position.every(Number.isFinite) || !angles.every(Number.isFinite)) return undefined
+    const hammerId = view.getUint32(12, true)
+    return Object.freeze({
+      entity: view.getUint32(8, true),
+      hammerId: hammerId === 0xffff_ffff ? null : hammerId,
+      position,
+      angles,
+    })
+  } finally {
     exports.playsrc_free(pointer, length)
-    return undefined
   }
-  const bytes = new Uint8Array(exports.memory.buffer, pointer, length).slice()
-  exports.playsrc_free(pointer, length)
-  const view = new DataView(bytes.buffer)
-  if (new TextDecoder().decode(bytes.subarray(0, 4)) !== "PSIV" || view.getUint32(4, true) !== 1) return undefined
-  const scalars = Array.from({ length: 6 }, (_, index) => view.getFloat32(16 + index * 4, true))
-  if (!scalars.every(Number.isFinite)) return undefined
-  return Object.freeze({
-    entity: view.getUint32(8, true),
-    hammerId: view.getUint32(12, true) === 0xffff_ffff ? null : view.getUint32(12, true),
-    position: Object.freeze(scalars.slice(0, 3)) as readonly [number, number, number],
-    angles: Object.freeze(scalars.slice(3, 6)) as readonly [number, number, number],
-  })
+}
+
+function copyOutput(
+  exports: WasmExports,
+  length: number,
+  copy: (pointer: number, capacity: number) => number,
+): ArrayBuffer | undefined {
+  const pointer = exports.playsrc_alloc(length) >>> 0
+  try {
+    if (copy(pointer, length) !== length) return undefined
+    return new Uint8Array(exports.memory.buffer, pointer, length).slice().buffer
+  } finally {
+    exports.playsrc_free(pointer, length)
+  }
 }
 
 function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
@@ -221,7 +249,12 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
     request.bsp.byteLength > MAX_BSP_BYTES ||
     !(request.configuration instanceof ArrayBuffer) ||
     request.configuration.byteLength > MAX_CONFIGURATION_BYTES ||
-    (request.presentation !== undefined && (!(request.presentation instanceof ArrayBuffer) || request.presentation.byteLength < 1 || request.presentation.byteLength > MAX_PRESENTATION_BYTES))
+    typeof request.includeMap !== "boolean" ||
+    (request.presentation !== undefined && (
+      !(request.presentation instanceof ArrayBuffer) ||
+      request.presentation.byteLength < 1 ||
+      request.presentation.byteLength > MAX_PRESENTATION_BYTES
+    ))
   ) {
     fail(request.id, "MalformedRequest")
     return
@@ -266,19 +299,40 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
   const initialView = readInitialView(exports, candidate)
   const compileMetrics = Array.from({ length: 17 }, (_, index) => exports.playsrc_compile_metric_milliseconds(candidate, index))
   if (
-    !Number.isSafeInteger(payloadBytes) ||
-    payloadBytes < 1 ||
-    payloadBytes > MAX_MESSAGE_BYTES ||
+    !Number.isSafeInteger(payloadBytes) || payloadBytes < 1 || payloadBytes > MAX_MESSAGE_BYTES ||
     payloadSha256 === undefined ||
-    !Number.isSafeInteger(presentationBytes) ||
-    presentationBytes < 1 ||
-    presentationBytes > MAX_PRESENTATION_BYTES ||
+    !Number.isSafeInteger(presentationBytes) || presentationBytes < 1 || presentationBytes > MAX_PRESENTATION_BYTES ||
+    (request.presentation && request.presentation.byteLength !== presentationBytes) ||
     initialView === undefined
   ) {
     exports.playsrc_dispose(candidate)
     fail(request.id, "CompileFailed", 5)
     return
   }
+  let phase = performance.now()
+  const payload = request.includeMap
+    ? copyOutput(exports, payloadBytes, (pointer, capacity) => exports.playsrc_result_copy(candidate, pointer, capacity))
+    : undefined
+  const mapCopyMilliseconds = performance.now() - phase
+  phase = performance.now()
+  const presentation = request.presentation ?? copyOutput(
+    exports,
+    presentationBytes,
+    (pointer, capacity) => exports.playsrc_presentation_copy(candidate, pointer, capacity),
+  )
+  const presentationCopyMilliseconds = performance.now() - phase
+  if ((request.includeMap && !payload) || !presentation) {
+    exports.playsrc_dispose(candidate)
+    fail(request.id, "InternalFailure")
+    return
+  }
+  phase = performance.now()
+  if (exports.playsrc_presentation_release(candidate) !== 1) {
+    exports.playsrc_dispose(candidate)
+    fail(request.id, "StaleGeneration")
+    return
+  }
+  const presentationReleaseMilliseconds = performance.now() - phase
   if (pending) exports.playsrc_dispose(pending.handle)
   pending = { generation: request.generation, handle: candidate }
   post({
@@ -287,12 +341,18 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
     generation: request.generation,
     payloadBytes,
     payloadSha256,
+    ...(payload ? { payload } : {}),
     presentationBytes,
+    presentation,
     initialView,
     timings: {
+      queueMilliseconds: queueMilliseconds(request, started),
       inputCopyMilliseconds,
       compileMilliseconds,
       resultMilliseconds: performance.now() - resultStarted,
+      mapCopyMilliseconds,
+      presentationCopyMilliseconds,
+      presentationReleaseMilliseconds,
       bspParseMilliseconds: compileMetrics[0]!,
       canonicalMapMilliseconds: compileMetrics[1]!,
       materialResolutionMilliseconds: compileMetrics[2]!,
@@ -303,15 +363,15 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
       runtimeMapMilliseconds: compileMetrics[7]!,
       collisionSetupMilliseconds: compileMetrics[8]!,
       gameSetupMilliseconds: compileMetrics[9]!,
-      presentationBundleMilliseconds:compileMetrics[11]!,
-      presentationModelsMilliseconds:compileMetrics[12]!,
-      presentationTexturesMilliseconds:compileMetrics[13]!,
-      presentationParticlesMilliseconds:compileMetrics[14]!,
-      presentationEnvironmentMilliseconds:compileMetrics[15]!,
-      presentationSerializationMilliseconds:compileMetrics[16]!,
+      presentationBundleMilliseconds: compileMetrics[11]!,
+      presentationModelsMilliseconds: compileMetrics[12]!,
+      presentationTexturesMilliseconds: compileMetrics[13]!,
+      presentationParticlesMilliseconds: compileMetrics[14]!,
+      presentationEnvironmentMilliseconds: compileMetrics[15]!,
+      presentationSerializationMilliseconds: compileMetrics[16]!,
       totalMilliseconds: performance.now() - started,
     },
-  })
+  }, [...(payload ? [payload] : []), presentation])
 }
 
 function requireActive(id: number, generation: number): { exports: WasmExports; handle: number } | undefined {
@@ -322,50 +382,6 @@ function requireActive(id: number, generation: number): { exports: WasmExports; 
   return { exports: wasm, handle: active.handle }
 }
 
-function readMap(request: Extract<WorkerRequest, { kind: "read-map" }>): void {
-  if (!wasm || !pending || pending.generation !== request.generation) {
-    fail(request.id, "StaleGeneration")
-    return
-  }
-  const value = { exports: wasm, handle: pending.handle }
-  const length = value.exports.playsrc_result_length(value.handle)
-  if (!Number.isSafeInteger(length) || length < 1 || length > MAX_MESSAGE_BYTES) {
-    fail(request.id, "InternalFailure")
-    return
-  }
-  const pointer = value.exports.playsrc_alloc(length) >>> 0
-  const copied = value.exports.playsrc_result_copy(value.handle, pointer, length)
-  if (copied !== length) {
-    value.exports.playsrc_free(pointer, length)
-    fail(request.id, "InternalFailure")
-    return
-  }
-  const payload = new Uint8Array(value.exports.memory.buffer, pointer, length).slice().buffer
-  value.exports.playsrc_free(pointer, length)
-  post({ id: request.id, kind: "map", generation: request.generation, payload }, [payload])
-}
-function readPresentation(request: Extract<WorkerRequest, { kind: "read-presentation" }>): void {
-  if (!wasm || !pending || pending.generation !== request.generation) {
-    fail(request.id, "StaleGeneration")
-    return
-  }
-  const length = wasm.playsrc_presentation_length(pending.handle)
-  if (!Number.isSafeInteger(length) || length < 1 || length > MAX_PRESENTATION_BYTES) {
-    fail(request.id, "InternalFailure")
-    return
-  }
-  const pointer = wasm.playsrc_alloc(length) >>> 0
-  const copied = wasm.playsrc_presentation_copy(pending.handle, pointer, length)
-  if (copied !== length) {
-    wasm.playsrc_free(pointer, length)
-    fail(request.id, "InternalFailure")
-    return
-  }
-  const payload = new Uint8Array(wasm.memory.buffer, pointer, length).slice().buffer
-  wasm.playsrc_free(pointer, length)
-  post({ id: request.id, kind: "presentation", generation: request.generation, payload }, [payload])
-}
-function releasePresentation(request:Extract<WorkerRequest,{kind:"release-presentation"}>):void{if(!wasm||!pending||pending.generation!==request.generation||wasm.playsrc_presentation_release(pending.handle)!==1){fail(request.id,"StaleGeneration");return}post({id:request.id,kind:"presentation-released",generation:request.generation})}
 function readCoverage(request:Extract<WorkerRequest,{kind:"read-coverage"}>):void{if(!wasm||!pending||pending.generation!==request.generation){fail(request.id,"StaleGeneration");return}const length=wasm.playsrc_coverage_length(pending.handle);if(!Number.isSafeInteger(length)||length<12||length>4*1024*1024){fail(request.id,"InternalFailure");return}const pointer=wasm.playsrc_alloc(length)>>>0,copied=wasm.playsrc_coverage_copy(pending.handle,pointer,length);if(copied!==length){wasm.playsrc_free(pointer,length);fail(request.id,"InternalFailure");return}const payload=new Uint8Array(wasm.memory.buffer,pointer,length).slice().buffer;wasm.playsrc_free(pointer,length);post({id:request.id,kind:"coverage",generation:request.generation,payload},[payload])}
 
 function activate(request: Extract<WorkerRequest, { kind: "activate" }>): void {
@@ -459,7 +475,7 @@ function observe(request: Extract<WorkerRequest, { kind: "observe" }>): void {
   const snapshot = new Uint8Array(value.exports.memory.buffer, snapshotPointer, length).slice().buffer
   value.exports.playsrc_free(snapshotPointer, length)
   const outputCopyMilliseconds = performance.now() - outputCopyStarted
-  post({ id: request.id, kind: "simulation", generation: request.generation, output: snapshot, timings: { inputCopyMilliseconds, transactMilliseconds, outputCopyMilliseconds, totalMilliseconds: performance.now() - started } }, [snapshot])
+  post({ id: request.id, kind: "simulation", generation: request.generation, output: snapshot, timings: { queueMilliseconds: queueMilliseconds(request, started), inputCopyMilliseconds, transactMilliseconds, outputCopyMilliseconds, totalMilliseconds: performance.now() - started } }, [snapshot])
 }
 function particles(request: Extract<WorkerRequest, { kind: "particles" }>): void {
   const started=performance.now()
@@ -496,7 +512,7 @@ function particles(request: Extract<WorkerRequest, { kind: "particles" }>): void
   const output = new Uint8Array(value.exports.memory.buffer, outputPointer, length).slice().buffer
   value.exports.playsrc_free(outputPointer, length)
   const outputCopyMilliseconds=performance.now()-outputCopyStarted
-  post({ id: request.id, kind: "particles", generation: request.generation, output, timings:{inputCopyMilliseconds,transactMilliseconds,outputCopyMilliseconds,totalMilliseconds:performance.now()-started} }, [output])
+  post({ id: request.id, kind: "particles", generation: request.generation, output, timings:{queueMilliseconds:queueMilliseconds(request,started),inputCopyMilliseconds,transactMilliseconds,outputCopyMilliseconds,totalMilliseconds:performance.now()-started} }, [output])
 }
 function models(request: Extract<WorkerRequest, { kind: "models" }>): void {
   const started = performance.now()
@@ -532,7 +548,7 @@ function models(request: Extract<WorkerRequest, { kind: "models" }>): void {
   const output = new Uint8Array(value.exports.memory.buffer, outputPointer, length).slice().buffer
   value.exports.playsrc_free(outputPointer, length)
   const outputCopyMilliseconds = performance.now() - outputCopyStarted
-  post({ id: request.id, kind: "models", generation: request.generation, output, timings: { inputCopyMilliseconds, transactMilliseconds, outputCopyMilliseconds, totalMilliseconds: performance.now() - started } }, [output])
+  post({ id: request.id, kind: "models", generation: request.generation, output, timings: { queueMilliseconds: queueMilliseconds(request, started), inputCopyMilliseconds, transactMilliseconds, outputCopyMilliseconds, totalMilliseconds: performance.now() - started } }, [output])
 }
 function visibility(request: Extract<WorkerRequest, { kind: "visibility" }>): void {
   const started = performance.now()
@@ -577,7 +593,7 @@ function visibility(request: Extract<WorkerRequest, { kind: "visibility" }>): vo
   const output = new Uint8Array(value.exports.memory.buffer, outputPointer, length).slice().buffer
   value.exports.playsrc_free(outputPointer, length)
   const outputCopyMilliseconds = performance.now() - outputCopyStarted
-  post({ id: request.id, kind: "visibility", generation: request.generation, output, timings: { inputCopyMilliseconds, transactMilliseconds, outputCopyMilliseconds, totalMilliseconds: performance.now() - started } }, [output])
+  post({ id: request.id, kind: "visibility", generation: request.generation, output, timings: { queueMilliseconds: queueMilliseconds(request, started), inputCopyMilliseconds, transactMilliseconds, outputCopyMilliseconds, totalMilliseconds: performance.now() - started } }, [output])
 }
 
 function shutdown(request: Extract<WorkerRequest, { kind: "shutdown" }>): void {
@@ -598,12 +614,8 @@ function dispatch(request: WorkerRequest): void | Promise<void> {
       return decodeResources(request)
     case "load":
       return load(request)
-    case "read-map":
-      return readMap(request)
-    case "read-presentation":
-      return readPresentation(request)
-    case "read-coverage":return readCoverage(request)
-    case "release-presentation":return releasePresentation(request)
+    case "read-coverage":
+      return readCoverage(request)
     case "activate":
       return activate(request)
     case "discard":
@@ -614,8 +626,33 @@ function dispatch(request: WorkerRequest): void | Promise<void> {
       return observe(request)
     case "particles":
       return particles(request)
-    case "models":
-      return models(request)
+    case "models": {
+      const companion = request.visibility
+      if (companion && (!canonicalId(companion.id) || companion.id === request.id || !Number.isFinite(companion.queuedAt))) {
+        fail(request.id, "MalformedRequest")
+        if (canonicalId(companion.id) && companion.id !== request.id) fail(companion.id, "MalformedRequest")
+        return
+      }
+      try {
+        models(request)
+      } catch {
+        fail(request.id, "InternalFailure", 903)
+      }
+      if (companion) {
+        try {
+          visibility({
+            id: companion.id,
+            kind: "visibility",
+            generation: request.generation,
+            queuedAt: companion.queuedAt,
+            view: companion.view,
+          })
+        } catch {
+          fail(companion.id, "InternalFailure", 904)
+        }
+      }
+      return
+    }
     case "visibility":
       return visibility(request)
     case "shutdown":
@@ -625,11 +662,34 @@ function dispatch(request: WorkerRequest): void | Promise<void> {
   }
 }
 
-let queue = Promise.resolve()
+let initializing: Promise<void> | undefined
+const deferred: WorkerRequest[] = []
+
+function unexpected(request: WorkerRequest, error: unknown): void {
+  if (!canonicalId(request?.id)) return
+  fail(
+    request.id,
+    "InternalFailure",
+    ({ observe: 901, particles: 902, models: 903, visibility: 904 } as Record<string, number>)[request.kind] ?? 999,
+    error instanceof Error ? `${error.name}:${error.message}` : String(error),
+  )
+}
+
+function handle(request: WorkerRequest): void {
+  try {
+    const result = dispatch(request)
+    if (result instanceof Promise) {
+      initializing = result.catch((error: unknown) => unexpected(request, error)).finally(() => {
+        initializing = undefined
+        while (deferred.length > 0 && !initializing) handle(deferred.shift()!)
+      })
+    }
+  } catch (error) {
+    unexpected(request, error)
+  }
+}
+
 scope.onmessage = (event: MessageEvent<WorkerRequest>) => {
-  queue = queue
-    .then(() => dispatch(event.data))
-    .catch((error: unknown) => {
-      if(canonicalId(event.data?.id))fail(event.data.id,"InternalFailure",({observe:901,particles:902,models:903,visibility:904} as Record<string,number>)[event.data.kind]??999,error instanceof Error?`${error.name}:${error.message}`:String(error))
-    })
+  if (initializing) deferred.push(event.data)
+  else handle(event.data)
 }
