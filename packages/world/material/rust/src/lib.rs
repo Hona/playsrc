@@ -1402,10 +1402,15 @@ pub(crate) fn color_or(
         .map(str::parse::<f32>)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| error(ErrorCode::InvalidParameter, Some(parameter.to_vec())))?;
-    if !(3..=4).contains(&values.len())
-        || values.iter().any(|value| !value.is_finite())
+    if values.iter().any(|value| !value.is_finite())
         || (byte_color && values.iter().any(|value| !(0.0..=255.0).contains(value)))
     {
+        return Err(error(ErrorCode::InvalidParameter, Some(parameter.to_vec())));
+    }
+    if values.len() == 1 && !byte_color && !text.starts_with('[') {
+        return Ok([values[0]; 3]);
+    }
+    if !(3..=4).contains(&values.len()) {
         return Err(error(ErrorCode::InvalidParameter, Some(parameter.to_vec())));
     }
     let scale = if byte_color { 1.0 / 255.0 } else { 1.0 };
@@ -1711,6 +1716,19 @@ mod tests {
         assert_eq!(
             selected.first_parameters.get(b"$basetexture".as_slice()),
             Some(&b"exact".to_vec())
+        );
+    }
+
+    #[test]
+    fn scalar_material_colors_replicate_all_source_vector_components() {
+        let selected = material(
+            br#"VertexLitGeneric { "$basetexture" "models/class_menu/random_class_icon_red" "$envmap" "env_cubemap" "$envmaptint" ".6" }"#,
+            SelectionEnvironment { model: true, ..SelectionEnvironment::default() },
+        )
+        .unwrap();
+        assert_eq!(
+            selected.environment_map.as_ref().unwrap().tint,
+            [0.6, 0.6, 0.6]
         );
     }
 

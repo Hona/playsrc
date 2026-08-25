@@ -49,6 +49,7 @@ pub enum RandomDecision {
     StickyRightVelocity,
     StickyUpVelocity,
     StickyAngularY,
+    ClassSelection,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

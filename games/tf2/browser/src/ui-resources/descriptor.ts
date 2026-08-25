@@ -37,6 +37,7 @@ const DOMAINS = new Set<Tf2UiResourceDomain>([
   "scheme",
   "scheme-base",
   "hud",
+  "class-selection",
   "animation-manifest",
   "animation-script",
   "options",
@@ -184,7 +185,7 @@ function controlOwner(name: string): Tf2UiOwner | null {
   if (VGUI_CONTROLS.has(name)) return "vgui"
   if (SETTINGS_CONTROLS.has(name)) return "settings"
   if (GAMEUI_CONTROLS.has(name)) return "gameui"
-  if (/^(?:C(?:AutoFittingLabel|AvatarImagePanel|CompetitiveAccessInfoPanel|CurrencyStatusPanel|CyclingAdContainerPanel|DashboardPartyMember|EmbeddedItemModelPanel|EventPlayListEntry|ExButton|ExImageButton|ExLabel|IconPanel|ItemModelPanel|MainMenuNotificationsControl|PlayListEntry|PvPRankPanel|SteamFriendsListPanel|TFClassImage|TFImagePanel|TFLogoPanel|TFPlayerModelPanel))$/u.test(name)) return "tf2"
+  if (/^(?:C(?:AutoFittingLabel|AvatarImagePanel|CompetitiveAccessInfoPanel|CurrencyStatusPanel|CyclingAdContainerPanel|DashboardPartyMember|EmbeddedItemModelPanel|EventPlayListEntry|ExButton|ExImageButton|ExLabel|ExplanationPopup|IconPanel|ItemModelPanel|MainMenuNotificationsControl|ModelPanel|PlayListEntry|PvPRankPanel|SteamFriendsListPanel|TFClassImage|TFClassTipsItemPanel|TFClassTipsPanel|TFFooter|TFImagePanel|TFLogoPanel|TFPlayerModelPanel)|PanelListPanel)$/u.test(name)) return "tf2"
   return null
 }
 
@@ -408,6 +409,13 @@ export function createTf2UiResourceDescriptor(input: unknown): Tf2UiResourceReso
       }
       if ((node.name.toLowerCase() === "command" || node.name.toLowerCase() === "button_command") && node.value !== null) {
         const classification = commandClassifications[node.value]
+          ?? (/^select (?:[1-9]|12)$/u.test(node.value) || node.value === "resetclass"
+            ? ["gameplay", "tf2"] as const
+            : node.value === "vguicancel" || node.value === "close"
+              ? ["application", "application"] as const
+              : node.value === "openloadout"
+                ? ["service", "service"] as const
+                : undefined)
         if (!classification) return failure("UnclassifiedCommand", node.value)
         commands.push(Object.freeze({
           identity: `command-${String(commands.length + 1).padStart(4, "0")}`,
@@ -586,8 +594,8 @@ export function createTf2UiResourceDescriptor(input: unknown): Tf2UiResourceReso
   ]
 
   const panels = resources
-    .filter((source): source is Tf2UiResourceSource & { domain: "main-menu" | "loading" | "hud" | "options"; document: readonly Tf2UiResourceNode[] } =>
-      ["main-menu", "loading", "hud", "options"].includes(source.domain) && source.document !== null)
+    .filter((source): source is Tf2UiResourceSource & { domain: "main-menu" | "loading" | "hud" | "class-selection" | "options"; document: readonly Tf2UiResourceNode[] } =>
+      ["main-menu", "loading", "hud", "class-selection", "options"].includes(source.domain) && source.document !== null)
     .map((source) => Object.freeze({
       identity: `panel-document-${source.logicalPath.replace(/[^a-z0-9]+/gu, "-").replace(/^-|-$/gu, "")}`,
       domain: source.domain,

@@ -407,6 +407,10 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
       firstLoadPerformance = JSON.parse((await page.locator("main").getAttribute("data-load-performance")) ?? "null")
       storageAfterFirstMap = await storageSnapshot()
       await page.keyboard.press("Backquote")
+      if (await page.locator("main").getAttribute("data-class-selection-visible") === "true") {
+        await page.keyboard.press("Digit2")
+        await expect(page.locator("main")).toHaveAttribute("data-class-selection-visible", "false")
+      }
     }
   }
   if (mapOnly && gameplayReadyMilliseconds !== undefined) {

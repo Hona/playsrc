@@ -4,6 +4,7 @@ export type Tf2UiResourceDomain =
   | "scheme"
   | "scheme-base"
   | "hud"
+  | "class-selection"
   | "animation-manifest"
   | "animation-script"
   | "options"
@@ -64,7 +65,7 @@ export type Tf2UiResourceSource = Readonly<{
 
 export type Tf2UiPanelDocument = Readonly<{
   identity: string
-  domain: "main-menu" | "loading" | "hud" | "options"
+  domain: "main-menu" | "loading" | "hud" | "class-selection" | "options"
   source: Tf2UiResourceSource
   roots: readonly Tf2UiResourceNode[]
 }>

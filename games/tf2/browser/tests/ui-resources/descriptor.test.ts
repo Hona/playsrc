@@ -38,10 +38,10 @@ describe("configured TF2 UI resource descriptor", () => {
   })
 
   test("binds the exact configured provider and selected source closure", () => {
-    expect(tf2UiResources.identity).toBe("tf2-ui-24245096-133ed8e03976ee77")
+    expect(tf2UiResources.identity).toBe("tf2-ui-24245096-3e38152245e02d31")
     expect(tf2UiResources.providers).toHaveLength(14)
-    expect(tf2UiResources.sources).toHaveLength(50)
-    expect(tf2UiResources.panels).toHaveLength(36)
+    expect(tf2UiResources.sources).toHaveLength(53)
+    expect(tf2UiResources.panels).toHaveLength(39)
     expect(tf2UiResources.sources.find((source) => source.logicalPath === "resource/ui/statsummary.res")?.sha256)
       .toBe("bf146199fcd7aec0a5467752853b89ead6f882d11533de383c09561bd3455903")
     expect(tf2UiResources.sources.find((source) => source.logicalPath === "resource/ui/mainmenuoverride.res")?.sha256)
@@ -83,16 +83,16 @@ describe("configured TF2 UI resource descriptor", () => {
   })
 
   test("retains every selected inventory with no unclassified item", () => {
-    expect(tf2UiResources.controls).toHaveLength(52)
-    expect(tf2UiResources.properties).toHaveLength(11_226)
-    expect(tf2UiResources.commands).toHaveLength(79)
-    expect(tf2UiResources.localization.tokens).toHaveLength(456)
+    expect(tf2UiResources.controls).toHaveLength(58)
+    expect(tf2UiResources.properties).toHaveLength(12_739)
+    expect(tf2UiResources.commands).toHaveLength(94)
+    expect(tf2UiResources.localization.tokens).toHaveLength(521)
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#Valve_Move_Forward")?.definitions[0]?.value).toBe("Move forward")
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#TF_OptionCategory_Combat")?.definitions[0]?.value).toBe("Combat Options")
-    expect(tf2UiResources.images).toHaveLength(266)
+    expect(tf2UiResources.images).toHaveLength(298)
     expect(tf2UiResources.images.find((image) => image.configuredValue === "maps/menu_photos_pl_upward")?.material?.sha256)
       .toBe("79ca3d5e39f80c8d18c79eb63fd9b457a359e2a2db147c426eb7814a2cd1101e")
-    expect(tf2UiResources.fonts).toHaveLength(48)
+    expect(tf2UiResources.fonts).toHaveLength(55)
     expect(tf2UiResources.advancedOptions).toHaveLength(88)
     expect(tf2UiResources.keyboardActions).toHaveLength(70)
     expect(new Set(tf2UiResources.keyboardActions.map((row) => row.binding.toLowerCase())).size).toBe(65)
@@ -114,6 +114,7 @@ describe("configured TF2 UI resource descriptor", () => {
       "cfg/user.scr",
       "image:logos/UI/spray",
       "image:vgui/hud/icon_commentary",
+      "localization:#CMenu_ClassHighlightPanel_Title",
       "localization:#Replay_SaveReplay",
       "localization:#Steam_ValidLoginRequired",
       "localization:#VAC_ConnectingToSecureServer",

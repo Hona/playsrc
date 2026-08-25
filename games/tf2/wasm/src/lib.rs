@@ -4168,6 +4168,9 @@ fn encode_random_draw(
         playsrc_tf2::RandomDecision::StickyAngularY => {
             (7, 0, playsrc_tf2::SoundQueryPhase::Inspect)
         }
+        playsrc_tf2::RandomDecision::ClassSelection => {
+            (8, 0, playsrc_tf2::SoundQueryPhase::Inspect)
+        }
     };
     extend(
         output,
@@ -6910,7 +6913,7 @@ fn model_authored_texture(
                 | playsrc_vtf::ImageFormat::Bgrx8888
         );
     if direct || two_dimensional && converted_or_compressed {
-        let manifest = material_texture_manifest(&metadata);
+        let manifest = material_texture_manifest(metadata);
         let planes = metadata
             .subresources
             .iter()
@@ -7792,8 +7795,17 @@ fn load_cached_presentation(
         "models/weapons/w_models/w_stickybomb.mdl".to_owned(),
         "models/weapons/c_models/c_soldier_arms.mdl".to_owned(),
         "models/weapons/c_models/c_demo_arms.mdl".to_owned(),
+        "models/player/scout.mdl".to_owned(),
+        "models/player/sniper.mdl".to_owned(),
         "models/player/soldier.mdl".to_owned(),
         "models/player/demo.mdl".to_owned(),
+        "models/player/medic.mdl".to_owned(),
+        "models/player/heavy.mdl".to_owned(),
+        "models/player/pyro.mdl".to_owned(),
+        "models/player/spy.mdl".to_owned(),
+        "models/player/engineer.mdl".to_owned(),
+        "models/vgui/ui_class01.mdl".to_owned(),
+        "models/class_menu/random_class_icon.mdl".to_owned(),
         "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl".to_owned(),
         "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl".to_owned(),
     ]);
@@ -7996,8 +8008,17 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
         "models/weapons/w_models/w_stickybomb.mdl".to_owned(),
         "models/weapons/c_models/c_soldier_arms.mdl".to_owned(),
         "models/weapons/c_models/c_demo_arms.mdl".to_owned(),
+        "models/player/scout.mdl".to_owned(),
+        "models/player/sniper.mdl".to_owned(),
         "models/player/soldier.mdl".to_owned(),
         "models/player/demo.mdl".to_owned(),
+        "models/player/medic.mdl".to_owned(),
+        "models/player/heavy.mdl".to_owned(),
+        "models/player/pyro.mdl".to_owned(),
+        "models/player/spy.mdl".to_owned(),
+        "models/player/engineer.mdl".to_owned(),
+        "models/vgui/ui_class01.mdl".to_owned(),
+        "models/class_menu/random_class_icon.mdl".to_owned(),
         "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl".to_owned(),
         "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl".to_owned(),
     ]);

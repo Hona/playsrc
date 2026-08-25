@@ -37,9 +37,10 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
     if flags & !0xff != 0 {
         return None;
     }
-    let select_class = match (select & 0xff) as u8 {
-        0 => None,
-        value => Some(playsrc_tf2::PlayerClass::try_from(value).ok()?),
+    let (select_class, select_random_class) = match (select & 0xff) as u8 {
+        0 => (None, false),
+        12 => (None, true),
+        value => (Some(playsrc_tf2::PlayerClass::try_from(value).ok()?), false),
     };
     let select_weapon = match (select >> 8) & 0xff {
         0 => None,
@@ -78,6 +79,7 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
         reset: flags & 64 != 0,
         respawn: flags & 128 != 0,
         select_class,
+        select_random_class,
         select_team,
         select_weapon,
         mode_request,

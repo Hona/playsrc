@@ -59,7 +59,11 @@ async function publishFile(root: string, expected: ObjectDescriptor, pathname: s
   } catch (error) {
     if (!(error instanceof AssetStoreError) || error.code !== "MissingObject") throw error
   }
-  await putObject(root, expected, await readFile(pathname))
+  try {
+    await putObject(root, expected, await readFile(pathname))
+  } catch (error) {
+    throw new Error(`development asset ${pathname}: ${error instanceof Error ? error.message : String(error)}`)
+  }
 }
 
 export type DevelopmentOwner = Readonly<{

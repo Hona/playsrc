@@ -75,6 +75,9 @@ html, body, #app { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 .tf2-application:not([data-gameui="loading"]):not([data-gameui="failure"]) .loading-layer { display: none; }
 .gameui-layer { z-index: 10; }
 .hud-layer { z-index: 20; }
+.class-selection-layer { z-index: 25; }
+.tf2-application[data-class-selection-visible="false"] .class-selection-layer { display: none; }
+.tf2-application[data-class-selection-visible="true"] .hud-layer { visibility: hidden; }
 .options-layer { z-index: 30; }
 .developer-layer { z-index: 40; }
 

@@ -60,6 +60,7 @@ describe("TF2 incremental application publication", () => {
       "data-gameplay-initialized": "false",
       "data-pointer-locked": "false",
       "data-console-visible": "false",
+      "data-class-selection-visible": "false",
       "data-options-visible": "false",
       "data-fire-events": "0",
       "data-explosion-events": "0",

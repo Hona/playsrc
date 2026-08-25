@@ -34,7 +34,7 @@ export type Tf2RandomState = Readonly<{
 }>
 export type RandomDraw = Readonly<{
   context: 1 | 2
-  decision: 1 | 2 | 3 | 4 | 5 | 6 | 7
+  decision: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8
   definition: 0 | 1 | 2 | 3 | 4 | 5 | 6
   phase: 0 | 1 | 2
   raw: number
@@ -88,7 +88,7 @@ export type Command = Readonly<{
   reload?: boolean
   reset?: boolean
   respawn?: boolean
-  selectClass?: Tf2Class
+  selectClass?: Tf2Class | 12
   selectTeam?: Tf2Team
   selectWeapon?: Tf2Weapon
   modeRequest?: MovementMode
@@ -454,7 +454,7 @@ function canonicalIdentity(value: number): boolean {
 export function encodeCommand(command: Command): ArrayBuffer {
   const scalars = [command.forward, command.side, command.up ?? 0, command.yawDegrees, command.pitchDegrees]
   if (!scalars.every(Number.isFinite)) throw new Tf2CodecError("command contains a non-finite scalar")
-  if (command.selectClass !== undefined && (!Number.isInteger(command.selectClass) || command.selectClass < 1 || command.selectClass > 9)) {
+  if (command.selectClass !== undefined && (!Number.isInteger(command.selectClass) || command.selectClass < 1 || (command.selectClass > 9 && command.selectClass !== 12))) {
     throw new Tf2CodecError("command class selector is invalid")
   }
   if (command.selectTeam !== undefined && command.selectTeam !== 2 && command.selectTeam !== 3) {
@@ -1341,11 +1341,11 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     const raw = view.getInt32(item + 4, true), resultKind = data[item + 8], resultValue = view.getUint32(item + 12, true)
     const soundDecision = decision !== undefined && decision >= 1 && decision <= 4
     if (
-      (context !== 1 && context !== 2) || decision === undefined || decision < 1 || decision > 7 ||
+      (context !== 1 && context !== 2) || decision === undefined || decision < 1 || decision > 8 ||
       (soundDecision ? definition === undefined || definition < 1 || definition > 6 || (phase !== 1 && phase !== 2) : definition !== 0 || phase !== 0 || context !== 1) ||
       raw <= 0 || raw >= 2_147_483_647 || resultKind === undefined || resultKind < 1 || resultKind > 3 ||
       data[item + 9] !== 0 || data[item + 10] !== 0 || data[item + 11] !== 0 ||
-      ((decision === 3 || decision === 7) ? resultKind === 1 : resultKind !== 1) ||
+      ((decision === 3 || decision === 7 || decision === 8) ? resultKind === 1 : resultKind !== 1) ||
       (resultKind === 3 && resultValue !== 0)
     ) throw new Tf2CodecError("random draw record is invalid")
     const result: RandomDraw["result"] = resultKind === 1
