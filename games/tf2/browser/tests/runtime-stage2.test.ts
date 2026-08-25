@@ -472,7 +472,7 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
       weapon: { identity: 1, reload: 0, clip: 3, reserve: 20, maximumClip: 4, maximumReserve: 20, nextPrimaryTick: 20n, nextReloadTick: 0n },
       shots: 4, hits: 2, kills: 0, deaths: 0, captures: 0, carryingFlag: false, lastFireTick: 6n, respawnTick: null,
     }])
-    for (const [playerClass, weapon] of [[2, 12], [2, 13], [7, 15], [7, 16], [4, 17], [4, 18], [9, 40], [9, 41]] as const) {
+    for (const [playerClass, weapon] of [[2, 12], [2, 13], [7, 15], [7, 16], [4, 17], [4, 18], [9, 40], [9, 41], [8, 50], [8, 51], [8, 52], [8, 53], [8, 54]] as const) {
       bytes[at + 4] = playerClass
       bytes[scoreboardBot + 4] = playerClass
       bytes[at + 64] = weapon
