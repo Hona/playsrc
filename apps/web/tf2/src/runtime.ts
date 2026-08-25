@@ -74,6 +74,7 @@ import {
   transformAttachment,
   type ModelPoseRequest,
   type PosedModel,
+  type ProjectileParticleRequest,
 } from "@playsrc/game-tf2-browser/presentation"
 import { decodeParticleRenderOutput } from "@playsrc/particle"
 import { createRenderer, SOURCE_LDR, SOURCE_PC_INTEGER_HDR, type Camera, type Frame, type MaterialStateInput } from "@playsrc/rendering"
@@ -215,6 +216,7 @@ export type ApplicationView = Readonly<{
   initialView?: LoadedGame["initialView"]
   environment?: PresentationArtifacts["environment"]
   particleRenderItems?: number
+  flamePoints?: number
   environmentDrawables?: number
   visibleDecalFragments?: number
   movement?: Snapshot["movement"]
@@ -354,6 +356,8 @@ export class Tf2Application {
   #attachmentTransforms = new Map<number, ReadonlyMap<string, ReturnType<typeof transformAttachment>>>()
   #fireAttachmentTransforms = new Map<number, ReadonlyMap<string, ReturnType<typeof transformAttachment>>>()
   #particleBatches = createParticleBatchEncoder()
+  #pyroFlameEffect?: string
+  #pyroEffectSerial = 0
   #console?: DeveloperConsole
   #pendingConsoleOutput: Readonly<{ text: string; developer: boolean }>[] = []
   #operationWatchdog?: ReturnType<typeof setTimeout>
@@ -1519,6 +1523,8 @@ export class Tf2Application {
     this.#fireEvents = 0
     this.#explosionEvents = 0
     this.#audioStarts = []
+    this.#pyroFlameEffect = undefined
+    this.#pyroEffectSerial = 0
     this.#attachmentTransforms.clear()
     this.#fireAttachmentTransforms.clear()
   }
@@ -1540,7 +1546,7 @@ export class Tf2Application {
       random: this.#presentationRandom,
       onCommand: (command) => {
 
-        if (command.kind === "select-weapon" && (command.weapon >= 1 && command.weapon <= 14 || command.weapon >= 40 && command.weapon <= 42)) this.#selectWeapon = command.weapon as Tf2Weapon
+        if (command.kind === "select-weapon" && (command.weapon >= 1 && command.weapon <= 16 || command.weapon >= 40 && command.weapon <= 42)) this.#selectWeapon = command.weapon as Tf2Weapon
 
       },
     })
@@ -2988,6 +2994,7 @@ export class Tf2Application {
       ...snapshot.projectiles.map((projectile) => projectile.launcherIdentity),
       ...snapshot.projectileEvents.map((event) => event.launcherIdentity),
       ...snapshot.events.filter((event) => event.kind === 12).map((event) => event.detail),
+      ...(snapshot.weapon === null ? [] : [snapshot.weapon]),
     ])
     for (const launcher of launchers) {
       if (viewmodelAttachments.size > 0) {
@@ -3017,6 +3024,55 @@ export class Tf2Application {
         this.#blockers.add(`TF2 viewmodel attachment transform unavailable: ${attachment}`)
       }
     }
+  }
+
+  #pyroParticles(snapshot: Snapshot): readonly ProjectileParticleRequest[] {
+    const requests: ProjectileParticleRequest[]=[]
+    const muzzle=snapshot.weapon===null?undefined:this.#attachmentTransforms.get(snapshot.weapon)?.get("muzzle")
+    const team=snapshot.team===2?"red" as const:"blue" as const
+    const ownerIdentity=1
+    const start=(effectIdentity:string,system:string,tick:bigint)=>{
+      if(!muzzle)throw new Error(`TF2 Pyro authored muzzle attachment unavailable: ${system}`)
+      requests.push(Object.freeze({
+        kind:"start",identity:`${effectIdentity}:start:${tick}`,effectIdentity,eventIdentity:`${effectIdentity}:${tick}`,
+        tick,projectileIdentity:snapshot.weapon!,ownerIdentity,launcherIdentity:snapshot.weapon!,team,system,
+        attachment:Object.freeze({entityIdentity:snapshot.weapon!,name:"muzzle" as const}),
+        controlPoints:Object.freeze([Object.freeze({index:0 as const,position:muzzle.position,orientation:muzzle.orientation,ownerIdentity})]),
+      }))
+    }
+    const firing=snapshot.class===7&&snapshot.weapon===15&&snapshot.flameFiring
+    if(!firing&&this.#pyroFlameEffect){
+      const effectIdentity=this.#pyroFlameEffect
+      requests.push(Object.freeze({kind:"stop",identity:`${effectIdentity}:stop:${snapshot.tick}`,effectIdentity,eventIdentity:`${effectIdentity}:stop`,tick:snapshot.tick,projectileIdentity:15,immediate:false}))
+      this.#pyroFlameEffect=undefined
+    }
+    if(firing){
+      if(!this.#pyroFlameEffect){
+        this.#pyroFlameEffect=`pyro-flame:${++this.#pyroEffectSerial}`
+        start(this.#pyroFlameEffect,"new_flame",snapshot.tick)
+      } else if(muzzle){
+        const effectIdentity=this.#pyroFlameEffect
+        requests.push(Object.freeze({kind:"set-control-point",identity:`${effectIdentity}:muzzle:${snapshot.tick}`,effectIdentity,eventIdentity:`${effectIdentity}:follow`,tick:snapshot.tick,projectileIdentity:15,controlPoint:Object.freeze({index:0 as const,position:muzzle.position,orientation:muzzle.orientation,ownerIdentity})}))
+      }
+      for(const point of snapshot.flamePoints){
+        const effectIdentity=this.#pyroFlameEffect
+        const age=Math.max(0,Number(snapshot.tick)*0.015-point.spawnTime)
+        const density=Math.max(0.01,1-age/point.lifetime*0.99)
+        requests.push(Object.freeze({
+          kind:"set-flame-control-point",identity:`${effectIdentity}:point:${snapshot.tick}:${point.slot}`,
+          effectIdentity,eventIdentity:`${effectIdentity}:point`,tick:snapshot.tick,projectileIdentity:15,
+          controlPoint:Object.freeze({index:point.slot+1,position:point.position,orientation:muzzle?.orientation??[0,0,0,1],velocity:Object.freeze(point.velocity.map((value,index)=>value+point.attackerVelocity[index]!) as [number,number,number]),radius:12,density,duration:point.lifetime,ownerIdentity}),
+        }))
+      }
+    }
+    for(const activity of snapshot.activities){
+      if(activity.weapon===15&&activity.activity===7){
+        start(`pyro-blast:${++this.#pyroEffectSerial}`,"pyro_blast",snapshot.tick)
+      }else if(activity.weapon===7&&activity.activity===2){
+        start(`pyro-shotgun:${++this.#pyroEffectSerial}`,"muzzle_shotgun",snapshot.tick)
+      }
+    }
+    return requests
   }
 
   #command(): ArrayBuffer {
@@ -3501,8 +3557,9 @@ export class Tf2Application {
       const visibility=await visibilityRequest
       if(!ownsGeneration())return
       const particleStart=performance.now()
+      const pyroParticles=snapshot.class===7||this.#pyroFlameEffect?this.#pyroParticles(snapshot):[]
       const hitscanMuzzles=snapshot.class===1||snapshot.class===3||snapshot.class===6||snapshot.class===9?publication.eventBatches.flatMap(batch=>hitscanMuzzleParticles(batch.snapshot,{systems:PARTICLE_SYSTEMS,attachmentTransforms:this.#attachmentTransforms})):null
-      const particleBatch=owners.encoder.encode(snapshot.tick,camera.position,hitscanMuzzles===null||hitscanMuzzles.length===0?presentation.particles:[...presentation.particles,...hitscanMuzzles])
+      const particleBatch=owners.encoder.encode(snapshot.tick,camera.position,hitscanMuzzles===null||hitscanMuzzles.length===0?presentation.particles:[...presentation.particles,...hitscanMuzzles,...pyroParticles])
       if(!ownsGeneration())return
       this.#wasmCalls.particles++
       const particleOutput=await client.particles(generation,particleBatch)
@@ -3573,6 +3630,7 @@ export class Tf2Application {
         botCount: snapshot.bots.length,
         botProbe: snapshot.bots.map(bot=>`${bot.identity}:${bot.team}:${bot.class}:${bot.objective}:${bot.area??"none"}:${bot.remainingPathAreas}:${bot.position.map(value=>value.toFixed(1)).join(",")}:${bot.target??"none"}`).join("|"),
         particleRenderItems: particleItems.length,
+        flamePoints: snapshot.flamePoints.length,
         movement: snapshot.movement,
         playerFlags: snapshot.playerFlags,
         inWater: snapshot.inWater,
@@ -3702,9 +3760,9 @@ export class Tf2Application {
     } else if (action === "+reload") {
       if (this.#buttons.press(identity, action)) this.#reloadPressed = true
 
-    } else if (action === "slot1") this.#selectWeapon = this.#snapshot?.class === 1 ? 4 : this.#snapshot?.class === 2 ? 12 : this.#snapshot?.class === 6 ? 9 : this.#snapshot?.class === 9 ? 40 : 1
-    else if (action === "slot2") this.#selectWeapon = this.#snapshot?.class === 1 ? 5 : this.#snapshot?.class === 2 ? 13 : this.#snapshot?.class === 3 ? 7 : this.#snapshot?.class === 6 ? 10 : this.#snapshot?.class === 9 ? 41 : 3
-    else if (action === "slot3") this.#selectWeapon = this.#snapshot?.class === 1 ? 6 : this.#snapshot?.class === 2 ? 14 : this.#snapshot?.class === 3 ? 8 : this.#snapshot?.class === 6 ? 11 : this.#snapshot?.class === 9 ? 42 : undefined
+    } else if (action === "slot1") this.#selectWeapon = this.#snapshot?.class === 1 ? 4 : this.#snapshot?.class === 2 ? 12 : this.#snapshot?.class === 6 ? 9 : this.#snapshot?.class === 9 ? 40 : this.#snapshot?.class === 7 ? 15 : 1
+    else if (action === "slot2") this.#selectWeapon = this.#snapshot?.class === 1 ? 5 : this.#snapshot?.class === 2 ? 13 : this.#snapshot?.class === 3 ? 7 : this.#snapshot?.class === 6 ? 10 : this.#snapshot?.class === 9 ? 41 : this.#snapshot?.class === 7 ? 7 : 3
+    else if (action === "slot3") this.#selectWeapon = this.#snapshot?.class === 1 ? 6 : this.#snapshot?.class === 2 ? 14 : this.#snapshot?.class === 3 ? 8 : this.#snapshot?.class === 6 ? 11 : this.#snapshot?.class === 9 ? 42 : this.#snapshot?.class === 7 ? 16 : undefined
 
   }
 

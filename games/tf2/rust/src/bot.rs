@@ -93,6 +93,16 @@ pub struct Snapshot {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CombatTarget {
+    pub identity: u32,
+    pub class: PlayerClass,
+    pub team: PlayerTeam,
+    pub position: [f32; 3],
+    pub velocity: [f32; 3],
+    pub burning: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Spawn {
     position: [f32; 3],
     yaw_degrees: f32,
@@ -122,6 +132,8 @@ struct Bot {
     movement: State,
     yaw_degrees: f32,
     health: i32,
+    afterburn: Option<crate::pyro::Afterburn>,
+    last_flame_damage_time: f32,
     objective: ObjectiveKind,
     target: Option<u32>,
     visible_since: Option<u64>,
@@ -248,6 +260,90 @@ impl BotWorld {
         self.bots.is_empty()
     }
 
+    pub fn combat_targets(&self) -> impl Iterator<Item = CombatTarget> + '_ {
+        self.bots
+            .values()
+            .filter(|bot| bot.lifecycle == PlayerLifecycle::Active)
+            .map(|bot| CombatTarget {
+                identity: bot.identity,
+                class: bot.class,
+                team: bot.team,
+                position: bot.movement.position,
+                velocity: bot.movement.velocity,
+                burning: bot.afterburn.is_some(),
+            })
+    }
+
+    pub fn apply_damage(&mut self, identity: u32, damage: f32) -> bool {
+        let Some(bot) = self.bots.get_mut(&identity) else {
+            return false;
+        };
+        if bot.lifecycle != PlayerLifecycle::Active || damage <= 0.0 || !damage.is_finite() {
+            return false;
+        }
+        bot.health = bot.health.saturating_sub((damage + 0.5) as i32).max(0);
+        if bot.health == 0 {
+            bot.lifecycle = PlayerLifecycle::Dying;
+            bot.afterburn = None;
+        }
+        true
+    }
+
+    pub fn apply_flame_contact(
+        &mut self,
+        identity: u32,
+        attacker: u32,
+        now: f32,
+        damage: f32,
+    ) -> bool {
+        let Some(bot) = self.bots.get_mut(&identity) else {
+            return false;
+        };
+        if bot.lifecycle != PlayerLifecycle::Active
+            || now - bot.last_flame_damage_time < crate::pyro::FLAME_BURN_FREQUENCY
+        {
+            return false;
+        }
+        bot.last_flame_damage_time = now;
+        bot.health = bot.health.saturating_sub((damage + 0.5) as i32).max(0);
+        if bot.health == 0 {
+            bot.lifecycle = PlayerLifecycle::Dying;
+            bot.afterburn = None;
+        } else {
+            bot.afterburn = Some(crate::pyro::Afterburn::ignite(
+                bot.afterburn,
+                bot.class,
+                attacker,
+                21,
+                now,
+            ));
+        }
+        true
+    }
+
+    pub fn extinguish(&mut self, identity: u32) -> bool {
+        self.bots
+            .get_mut(&identity)
+            .and_then(|bot| bot.afterburn.take())
+            .is_some()
+    }
+
+    pub fn apply_impulse(&mut self, identity: u32, impulse: [f32; 3]) -> bool {
+        let Some(bot) = self.bots.get_mut(&identity) else {
+            return false;
+        };
+        if bot.lifecycle != PlayerLifecycle::Active
+            || !impulse.iter().all(|value| value.is_finite())
+        {
+            return false;
+        }
+        for (velocity, added) in bot.movement.velocity.iter_mut().zip(impulse) {
+            *velocity += added;
+        }
+        bot.movement.ground = None;
+        true
+    }
+
     pub fn apply(
         &mut self,
         request: Request,
@@ -330,6 +426,8 @@ impl BotWorld {
                     ),
                     yaw_degrees: spawn.yaw_degrees,
                     health: class.data().maximum_health,
+                    afterburn: None,
+                    last_flame_damage_time: f32::NEG_INFINITY,
                     objective,
                     target: None,
                     visible_since: None,
@@ -359,6 +457,20 @@ impl BotWorld {
     ) -> Result<(), Error> {
         if self.bots.is_empty() {
             return Ok(());
+        }
+        let now = tick as f32 * self.tick_interval;
+        for bot in self.bots.values_mut() {
+            if let Some(burn) = bot.afterburn.as_mut() {
+                if let Some(damage) = burn.advance(now) {
+                    bot.health = bot.health.saturating_sub((damage + 0.5) as i32).max(0);
+                }
+                if burn.duration <= 0.0 || bot.health == 0 || bot.movement.water_level >= 2 {
+                    bot.afterburn = None;
+                }
+                if bot.health == 0 {
+                    bot.lifecycle = PlayerLifecycle::Dying;
+                }
+            }
         }
         let actors: Vec<_> = std::iter::once((
             crate::PLAYER_IDENTITY,
@@ -1008,6 +1120,40 @@ mod tests {
             objective(scenario, PlayerTeam::Red, None),
             (ObjectiveKind::PayloadGuard, [100.0, 200.0, 32.0])
         );
+    }
+
+    #[test]
+    fn flame_contact_afterburn_airblast_and_fatal_hits_mutate_real_bot_players() {
+        let mut world = BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015).unwrap();
+        let mut random = UniformRandomStream::from_seed(0).unwrap();
+        world
+            .apply(
+                Request {
+                    operation: Operation::Add,
+                    count: 1,
+                    class: Some(PlayerClass::Scout),
+                    team: Some(PlayerTeam::Blue),
+                    difficulty: Difficulty::Normal,
+                },
+                PlayerTeam::Red,
+                PlayerClass::Pyro,
+                &mut random,
+            )
+            .unwrap();
+        let identity = world.snapshots()[0].identity;
+        assert!(world.apply_flame_contact(identity, 1, 1.0, 13.0));
+        assert_eq!(world.snapshots()[0].health, 112);
+        assert!(world.combat_targets().next().unwrap().burning);
+        assert!(!world.apply_flame_contact(identity, 1, 1.04, 13.0));
+        assert!(world.apply_flame_contact(identity, 1, 1.08, 13.0));
+        assert_eq!(world.snapshots()[0].health, 99);
+        assert!(world.apply_impulse(identity, [500.0, 0.0, 100.0]));
+        assert_eq!(world.snapshots()[0].velocity, [500.0, 0.0, 100.0]);
+        assert!(world.extinguish(identity));
+        assert!(!world.combat_targets().next().unwrap().burning);
+        assert!(world.apply_damage(identity, 100.0));
+        assert_eq!(world.snapshots()[0].lifecycle, PlayerLifecycle::Dying);
+        assert_eq!(world.snapshots()[0].health, 0);
     }
 
     #[test]

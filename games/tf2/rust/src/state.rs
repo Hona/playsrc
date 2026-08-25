@@ -5,8 +5,9 @@ use crate::{
     class::{AmmoLedger, PlayerClass, PlayerTeam},
     condition::{ConditionDuration, ConditionError, ConditionEvent, ConditionId, ConditionState},
     damage::{
-        CritCheckInput, CritCheckResult, CritState, DamageError, DamageHistory, DamageHistoryInput,
-        DamageInput, DamageModifiers, DamageResult, DamageSourceKind, apply_damage,
+        CritCheckInput, CritCheckResult, CritKind, CritState, CustomDamage, DamageError,
+        DamageHistory, DamageHistoryInput, DamageInput, DamageModifiers, DamageResult,
+        DamageSourceKind, DamageType, apply_damage,
     },
     health::{Healer, HealthConfiguration, HealthError, HealthState, HealthTick},
     pickup::{
@@ -75,6 +76,7 @@ pub struct CorePlayer {
     pub active_slot: Option<LoadoutPosition>,
     pub weapon_states: BTreeMap<LoadoutPosition, CarriedWeaponState>,
     pub conditions: ConditionState,
+    pub afterburn: Option<crate::pyro::Afterburn>,
     pub crit: BTreeMap<LoadoutPosition, CritState>,
     pub damage_history: DamageHistory,
     pub attribute_entity: u32,
@@ -98,6 +100,7 @@ impl CorePlayer {
             active_slot: None,
             weapon_states: BTreeMap::new(),
             conditions: ConditionState::default(),
+            afterburn: None,
             crit: BTreeMap::new(),
             damage_history: DamageHistory::default(),
             attribute_entity,
@@ -277,6 +280,7 @@ pub struct CorePlayerSnapshot {
     pub active_slot: Option<LoadoutPosition>,
     pub weapon_states: BTreeMap<LoadoutPosition, CarriedWeaponState>,
     pub conditions: [u32; 5],
+    pub afterburn: Option<crate::pyro::Afterburn>,
     pub crit: BTreeMap<LoadoutPosition, CritState>,
 }
 
@@ -401,6 +405,10 @@ impl CoreState {
 
         let player_ids: Vec<_> = self.players.keys().copied().collect();
         for player_id in player_ids {
+            if !self.players[&player_id].alive() {
+                continue;
+            }
+            self.advance_afterburn(input.now, player_id, &mut events)?;
             if !self.players[&player_id].alive() {
                 continue;
             }
@@ -734,6 +742,7 @@ impl CoreState {
         state.loadout = Some(loadout);
         state.active_slot = active_slot;
         state.weapon_states = weapon_states;
+        state.afterburn = None;
         state.crit = crit;
         state.damage_history = DamageHistory::default();
         events.push(CoreEvent::Spawned {
@@ -832,6 +841,13 @@ impl CoreState {
             }
             result
         };
+        if result.admitted
+            && result.death.is_none()
+            && input.source == DamageSourceKind::Player
+            && input.damage_type.contains(DamageType::IGNITE)
+        {
+            self.ignite(now, input.attacker, input.victim, events)?;
+        }
         if input.source == DamageSourceKind::Player && result.admitted {
             let attacker = self.player_mut(input.attacker)?;
             attacker
@@ -862,6 +878,127 @@ impl CoreState {
                 now,
                 input.victim,
                 input.attacker_team == input.victim_team,
+                events,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn ignite(
+        &mut self,
+        now: f32,
+        attacker: u32,
+        victim: u32,
+        events: &mut Vec<CoreEvent>,
+    ) -> Result<(), CoreError> {
+        let state = self.player_mut(victim)?;
+        if !state.alive()
+            || state.conditions.contains(ConditionId::PHASE)
+            || state
+                .conditions
+                .contains(ConditionId::PASSTIME_INTERCEPTION)
+        {
+            return Ok(());
+        }
+        let class = state.class.ok_or(CoreError::ClassNotSelected)?;
+        let initial = state.afterburn.is_none();
+        state.afterburn = Some(crate::pyro::Afterburn::ignite(
+            state.afterburn,
+            class,
+            attacker,
+            21,
+            now,
+        ));
+        if initial {
+            if let Some(event) = state
+                .conditions
+                .add(
+                    ConditionId::BURNING,
+                    ConditionDuration::Permanent,
+                    Some(attacker),
+                    true,
+                    false,
+                )
+                .map_err(CoreError::Condition)?
+            {
+                events.push(CoreEvent::Condition {
+                    player: victim,
+                    event,
+                });
+            }
+            if let Some(event) = state
+                .conditions
+                .add(
+                    ConditionId::HEALING_DEBUFF,
+                    ConditionDuration::Finite(crate::pyro::FLAME_INITIAL_AFTERBURN),
+                    Some(attacker),
+                    true,
+                    false,
+                )
+                .map_err(CoreError::Condition)?
+            {
+                events.push(CoreEvent::Condition {
+                    player: victim,
+                    event,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn advance_afterburn(
+        &mut self,
+        now: f32,
+        victim: u32,
+        events: &mut Vec<CoreEvent>,
+    ) -> Result<(), CoreError> {
+        let Some(mut burn) = self
+            .players
+            .get(&victim)
+            .and_then(|player| player.afterburn)
+        else {
+            return Ok(());
+        };
+        let damage = burn.advance(now);
+        let expired = burn.duration <= 0.0;
+        let player = self.player_mut(victim)?;
+        player.afterburn = (!expired).then_some(burn);
+        if expired && let Some(event) = player.conditions.remove(ConditionId::BURNING, true) {
+            events.push(CoreEvent::Condition {
+                player: victim,
+                event,
+            });
+        }
+        if let Some(amount) = damage {
+            let attacker_team = self
+                .players
+                .get(&burn.attacker)
+                .ok_or(CoreError::MissingPlayer(burn.attacker))?
+                .team;
+            let victim_team = self
+                .player(victim)
+                .ok_or(CoreError::MissingPlayer(victim))?
+                .team;
+            self.damage(
+                now,
+                DamageInput {
+                    attacker: burn.attacker,
+                    attacker_team,
+                    attacker_conditions: ConditionState::default(),
+                    source: DamageSourceKind::Player,
+                    weapon_position: Some(LoadoutPosition::Primary),
+                    victim,
+                    victim_team,
+                    base_damage: amount,
+                    range_multiplier: 1.0,
+                    damage_type: DamageType::BURN | DamageType::PREVENT_FORCE,
+                    custom: CustomDamage::Burning,
+                    crit: CritKind::None,
+                    friendly_fire: false,
+                    force_friendly_fire: false,
+                    bypass_invulnerability: false,
+                    force: [0.0; 3],
+                },
                 events,
             )?;
         }
@@ -939,6 +1076,7 @@ impl CoreState {
         self.enforce_dropped_ammo_limit(victim);
 
         let player = self.player_mut(victim)?;
+        player.afterburn = None;
         for event in player.conditions.remove_all() {
             events.push(CoreEvent::Condition {
                 player: victim,
@@ -1350,6 +1488,7 @@ impl CoreState {
                     active_slot: player.active_slot,
                     weapon_states: player.weapon_states.clone(),
                     conditions: player.conditions.words(),
+                    afterburn: player.afterburn,
                     crit: player.crit.clone(),
                 })
                 .collect(),
@@ -1569,6 +1708,88 @@ mod tests {
             Err(CoreError::TickMismatch { .. })
         ));
         assert_eq!(state.player(1).unwrap().lifecycle, before.lifecycle);
+    }
+
+    #[test]
+    fn flame_damage_ignites_stacks_ticks_and_preserves_pyro_immunity() {
+        let mut state = CoreState::new(stock_schema());
+        for (identity, team, class) in [
+            (1, PlayerTeam::Red, PlayerClass::Pyro),
+            (2, PlayerTeam::Blue, PlayerClass::Scout),
+            (3, PlayerTeam::Blue, PlayerClass::Pyro),
+        ] {
+            state.add_player(identity).unwrap();
+            state
+                .transition(tick(
+                    state.tick,
+                    vec![
+                        CoreCommand::SelectTeam {
+                            player: identity,
+                            team,
+                        },
+                        CoreCommand::SelectClass {
+                            player: identity,
+                            class,
+                        },
+                        CoreCommand::Spawn { player: identity },
+                    ],
+                ))
+                .unwrap();
+        }
+        let fire = |victim| DamageInput {
+            attacker: 1,
+            attacker_team: PlayerTeam::Red,
+            attacker_conditions: ConditionState::default(),
+            source: DamageSourceKind::Player,
+            weapon_position: Some(LoadoutPosition::Primary),
+            victim,
+            victim_team: PlayerTeam::Blue,
+            base_damage: 13.0,
+            range_multiplier: 1.0,
+            damage_type: DamageType::BURN | DamageType::IGNITE,
+            custom: CustomDamage::None,
+            crit: CritKind::None,
+            friendly_fire: false,
+            force_friendly_fire: false,
+            bypass_invulnerability: false,
+            force: [0.0; 3],
+        };
+        state
+            .transition(tick(
+                state.tick,
+                vec![CoreCommand::Damage { input: fire(2) }],
+            ))
+            .unwrap();
+        let scout = state.player(2).unwrap();
+        assert!(scout.conditions.contains(ConditionId::BURNING));
+        assert_eq!(scout.afterburn.unwrap().duration, 3.4);
+        assert_eq!(scout.health.as_ref().unwrap().current, 112);
+        state.transition(tick(state.tick, Vec::new())).unwrap();
+        assert_eq!(
+            state.player(2).unwrap().health.as_ref().unwrap().current,
+            108
+        );
+
+        state
+            .transition(tick(
+                state.tick,
+                vec![CoreCommand::Damage { input: fire(3) }],
+            ))
+            .unwrap();
+        assert_eq!(state.player(3).unwrap().afterburn.unwrap().duration, 0.25);
+        let pyro_health = state.player(3).unwrap().health.as_ref().unwrap().current;
+        state.transition(tick(state.tick, Vec::new())).unwrap();
+        assert_eq!(
+            state.player(3).unwrap().health.as_ref().unwrap().current,
+            pyro_health
+        );
+        assert!(
+            !state
+                .player(3)
+                .unwrap()
+                .conditions
+                .contains(ConditionId::BURNING)
+        );
     }
 
     #[test]

@@ -661,17 +661,25 @@ fn supported(category: FunctionCategory, identity: &str) -> bool {
         FunctionCategory::Renderer => &["render_animated_sprites", "render_sprite_trail"],
         FunctionCategory::Operator => &[
             "Alpha Fade and Decay",
+            "Alpha Fade Out Random",
             "Color Fade",
+            "Lifespan Decay",
             "Movement Basic",
+            "Movement Follow CP",
             "Movement Lock to Control Point",
             "Oscillate Scalar",
+            "Oscillate Vector",
             "Radius Scale",
+            "Remap Distance to Control Point to Scalar",
+            "Remap Distance to Control Point to Vector",
             "Rotation Basic",
             "Rotation Spin Roll",
         ],
         FunctionCategory::Initializer => &[
             "Alpha Random",
+            "Assign target CP",
             "Color Random",
+            "Lifetime From Control Point Life Time",
             "Lifetime Random",
             "Position Modify Offset Random",
             "Position Within Box Random",
@@ -681,6 +689,7 @@ fn supported(category: FunctionCategory, identity: &str) -> bool {
             "Remap Scalar to Vector",
             "Rotation Random",
             "Rotation Speed Random",
+            "Rotation Yaw Flip Random",
             "Sequence Random",
             "Trail Length Random",
         ],
@@ -711,6 +720,7 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
             "animation_fit_lifetime",
             "use animation rate as fps",
             "ease_in_and_out",
+            "ease in and out",
             "randomly distribute to highest supplied control point",
             "bias in local system",
             "use parent particles for emission scaling",
@@ -721,6 +731,12 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
             "start/end proportional",
             "absolute oscillation",
             "lock rotation",
+            "update particle life time",
+            "ensure line of sight",
+            "only active within specified distance",
+            "only active within specified input range",
+            "output is scalar of initial random range",
+            "use local system",
             "brush only",
             "kill particle on collision",
             "use bounding box",
@@ -739,6 +755,12 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
             "create in model",
             "control_point_number",
             "control point number",
+            "control point",
+            "starting control point",
+            "maximum end control point",
+            "local space cp",
+            "input field",
+            "output field",
             "tint control point",
             "alpha_min",
             "alpha_max",
@@ -774,10 +796,21 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
             "control point offset for fast collisions",
         ]
         .contains(&name.as_str())
-            || (function
-                .identity
-                .eq_ignore_ascii_case("Remap Scalar to Vector")
-                && ["output minimum", "output maximum"].contains(&name.as_str()))
+            || ([
+                "oscillation rate min",
+                "oscillation rate max",
+                "oscillation frequency min",
+                "oscillation frequency max",
+            ]
+            .contains(&name.as_str())
+                && function.identity.eq_ignore_ascii_case("Oscillate Vector"))
+            || (["output minimum", "output maximum"].contains(&name.as_str())
+                && (function
+                    .identity
+                    .eq_ignore_ascii_case("Remap Scalar to Vector")
+                    || function
+                        .identity
+                        .eq_ignore_ascii_case("Remap Distance to Control Point to Vector")))
         {
             matches!(value, Value::Vector3(_))
         } else if [
@@ -790,7 +823,7 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
         .contains(&name.as_str())
         {
             matches!(value, Value::Color(_))
-        } else if name == "collision group" {
+        } else if name == "collision group" || name == "los collision group" {
             matches!(value, Value::String(_))
         } else {
             matches!(value, Value::Float(_))
@@ -826,13 +859,11 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
                 "randomly distribute to highest supplied Control Point",
                 false,
             )
-            || bool_parameter(function, "bias in local system", false)
     } else if function
         .identity
         .eq_ignore_ascii_case("Movement Lock to Control Point")
     {
-        bool_parameter(function, "lock rotation", false)
-            || float_parameter(function, "distance fade range", 0.0) != 0.0
+        float_parameter(function, "distance fade range", 0.0) != 0.0
     } else if function.identity.eq_ignore_ascii_case("emit_continuously") {
         float_parameter(function, "scale emission to used control points", 0.0) != 0.0
             || bool_parameter(function, "use parent particles for emission scaling", false)
@@ -960,6 +991,20 @@ fn accepted_parameter(function: &Function, name: &str) -> bool {
             "start_fade_out_time",
             "end_fade_out_time",
         ]
+    } else if function
+        .identity
+        .eq_ignore_ascii_case("Alpha Fade Out Random")
+    {
+        &[
+            "fade out time min",
+            "fade out time max",
+            "fade out time exponent",
+            "proportional 0/1",
+            "ease in and out",
+            "fade bias",
+        ]
+    } else if function.identity.eq_ignore_ascii_case("Lifespan Decay") {
+        &[]
     } else if function.identity.eq_ignore_ascii_case("Radius Scale") {
         &[
             "start_time",
@@ -994,6 +1039,62 @@ fn accepted_parameter(function: &Function, name: &str) -> bool {
             "end_fadeout_exponent",
             "distance fade range",
             "lock rotation",
+        ]
+    } else if function.identity.eq_ignore_ascii_case("Movement Follow CP") {
+        &[
+            "starting control point",
+            "maximum end control point",
+            "catch up speed",
+            "lerp to cp radius speed",
+            "update particle life time",
+        ]
+    } else if function.identity.eq_ignore_ascii_case("Oscillate Vector") {
+        &[
+            "oscillation field",
+            "oscillation rate min",
+            "oscillation rate max",
+            "oscillation frequency min",
+            "oscillation frequency max",
+            "proportional 0/1",
+            "start time min",
+            "start time max",
+            "end time min",
+            "end time max",
+            "start/end proportional",
+            "oscillation multiplier",
+            "oscillation start phase",
+        ]
+    } else if function
+        .identity
+        .eq_ignore_ascii_case("Remap Distance to Control Point to Scalar")
+    {
+        &[
+            "distance minimum",
+            "distance maximum",
+            "output field",
+            "output minimum",
+            "output maximum",
+            "control point",
+            "ensure line of sight",
+            "los collision group",
+            "maximum trace length",
+            "los failure scalar",
+            "output is scalar of initial random range",
+            "only active within specified distance",
+        ]
+    } else if function
+        .identity
+        .eq_ignore_ascii_case("Remap Distance to Control Point to Vector")
+    {
+        &[
+            "distance minimum",
+            "distance maximum",
+            "output field",
+            "output minimum",
+            "output maximum",
+            "control point",
+            "local space cp",
+            "only active within specified distance",
         ]
     } else if function.identity.eq_ignore_ascii_case("Oscillate Scalar") {
         &[
@@ -1049,6 +1150,12 @@ fn accepted_parameter(function: &Function, name: &str) -> bool {
             "use local system",
             "control_point_number",
         ]
+    } else if function.identity.eq_ignore_ascii_case("Assign target CP")
+        || function
+            .identity
+            .eq_ignore_ascii_case("Lifetime From Control Point Life Time")
+    {
+        &["starting control point", "maximum end control point"]
     } else if function.identity.eq_ignore_ascii_case("Lifetime Random") {
         &["lifetime_min", "lifetime_max", "lifetime_random_exponent"]
     } else if function.identity.eq_ignore_ascii_case("Radius Random") {
@@ -1064,6 +1171,44 @@ fn accepted_parameter(function: &Function, name: &str) -> bool {
             "tint clamp min",
             "tint clamp max",
             "tint update movement threshold",
+        ]
+    } else if function
+        .identity
+        .eq_ignore_ascii_case("Rotation Yaw Flip Random")
+    {
+        &["flip percentage"]
+    } else if function
+        .identity
+        .eq_ignore_ascii_case("Remap Initial Scalar")
+    {
+        &[
+            "emitter lifetime start time (seconds)",
+            "emitter lifetime end time (seconds)",
+            "input field",
+            "input minimum",
+            "input maximum",
+            "output field",
+            "output minimum",
+            "output maximum",
+            "output is scalar of initial random range",
+            "only active within specified input range",
+        ]
+    } else if function
+        .identity
+        .eq_ignore_ascii_case("Remap Scalar to Vector")
+    {
+        &[
+            "emitter lifetime start time (seconds)",
+            "emitter lifetime end time (seconds)",
+            "input field",
+            "input minimum",
+            "input maximum",
+            "output field",
+            "output minimum",
+            "output maximum",
+            "output is scalar of initial random range",
+            "use local system",
+            "control_point_number",
         ]
     } else if function.identity.eq_ignore_ascii_case("Rotation Random") {
         &[

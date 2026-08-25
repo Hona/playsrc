@@ -617,6 +617,7 @@ name = "playsrc-particle"
 version = "0.1.0"
 dependencies = [
  "playsrc-asset-graph",
+ "playsrc-vpk",
 ]
 
 [[package]]

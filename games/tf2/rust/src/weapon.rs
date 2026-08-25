@@ -17,6 +17,7 @@ pub enum WeaponActivity {
     ReloadLoop,
     ReloadFinish,
     Idle,
+    SecondaryAttack,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -172,6 +173,26 @@ impl WeaponProfile {
                 flip_viewmodel: false,
             },
             Weapon::Kukri => Self {
+                maximum_clip: 0,
+                maximum_reserve: 0,
+                fire_delay: 0.8,
+                reload_start: 0.0,
+                reload_round: 0.0,
+                maximum_charge: None,
+                center_fire_projectile: false,
+                flip_viewmodel: false,
+            },
+            Weapon::Flamethrower => Self {
+                maximum_clip: 0,
+                maximum_reserve: 200,
+                fire_delay: 0.02,
+                reload_start: 0.0,
+                reload_round: 0.0,
+                maximum_charge: None,
+                center_fire_projectile: false,
+                flip_viewmodel: false,
+            },
+            Weapon::FireAxe => Self {
                 maximum_clip: 0,
                 maximum_reserve: 0,
                 fire_delay: 0.8,
@@ -492,10 +513,9 @@ impl WeaponRuntime {
             }
             return PrimaryResult::None;
         }
-
         let available = match self.weapon {
             Weapon::SniperRifle => self.reserve > 0,
-            Weapon::Bat | Weapon::Shovel | Weapon::Kukri | Weapon::Wrench => true,
+            Weapon::Bat | Weapon::Shovel | Weapon::Kukri | Weapon::Wrench | Weapon::FireAxe => true,
             _ => self.clip > 0,
         };
         if held && available && tick >= self.next_primary_tick {
@@ -605,7 +625,7 @@ impl WeaponRuntime {
     ) -> PrimaryResult {
         match self.weapon {
             Weapon::SniperRifle => self.reserve -= 1,
-            Weapon::Bat | Weapon::Shovel | Weapon::Kukri | Weapon::Wrench => {}
+            Weapon::Bat | Weapon::Shovel | Weapon::Kukri | Weapon::Wrench | Weapon::FireAxe => {}
             _ => self.clip -= 1,
         }
         self.abort_reload();
