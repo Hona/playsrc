@@ -1,4 +1,5 @@
 import { VGUI_CSS } from "./style"
+import { registerVguiWindowWorkspace, type VguiWindowWorkspaceRegistration } from "./window-workspace"
 
 type VguiDomLimits = Readonly<{
   maxDomNodes: number
@@ -68,6 +69,7 @@ export class VguiControl {
 export class VguiDomRuntime {
   readonly document: Document
   readonly host: HTMLElement
+  readonly workspace: VguiWindowWorkspaceRegistration
   private readonly style: HTMLStyleElement
   private readonly nodes = new Set<Node>()
   private readonly listeners: ListenerRecord[] = []
@@ -85,11 +87,13 @@ export class VguiDomRuntime {
     this.host = this.document.createElement("div")
     this.host.className = "playsrc-vgui-root"
     this.host.dataset.vguiOwner = "playsrc"
+    this.workspace = registerVguiWindowWorkspace(root, this.host)
     this.nodes.add(this.style)
     this.nodes.add(this.host)
     try {
       root.append(this.style, this.host)
     } catch (error) {
+      this.workspace.destroy()
       this.host.remove()
       this.style.remove()
       this.nodes.clear()
@@ -158,6 +162,7 @@ export class VguiDomRuntime {
     for (const record of this.listeners.splice(0).reverse()) {
       record.target.removeEventListener(record.type, record.listener, record.options)
     }
+    this.workspace.destroy()
     this.host.remove()
     this.style.remove()
     this.nodes.clear()

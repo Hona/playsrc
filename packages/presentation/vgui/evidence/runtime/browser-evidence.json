@@ -1,5 +1,5 @@
 {
-  "capturedAt": "2026-07-20T13:38:09.010Z",
+  "capturedAt": "2026-08-25T06:11:12.128Z",
   "sourceBuild": "TF2 24245096 / patch 10828683",
   "sdkRevision": "88fa198fba3fb85d46d4c95018254693fdc3af0a",
   "operatingSystem": "darwin 25.5.0",
@@ -197,12 +197,10 @@
         "Title",
         "Icon",
         "Submit",
-        "Toggle",
         "RadioA",
         "RadioB",
         "StandaloneMenuItem",
         "Entry",
-        "Volume",
         "Progress",
         "PlainPanel",
         "RichText",
@@ -212,25 +210,25 @@
         "Combo",
         "URL",
         "AuditDisabledButton",
+        "Toggle",
+        "Volume",
         "Menu",
+        "Message",
+        "Query",
         "Frame",
         "Sheet",
         "PageVideo",
-        "PageAudio",
-        "Message",
-        "Query"
+        "PageAudio"
       ],
       "roles": [
         null,
         null,
         "img",
         "button",
-        "checkbox",
         "radio",
         "radio",
         "menuitem",
         "textbox",
-        "slider",
         "progressbar",
         null,
         "document",
@@ -240,25 +238,25 @@
         "combobox",
         "link",
         "button",
+        "checkbox",
+        "slider",
         "menu",
+        "dialog",
+        "dialog",
         "dialog",
         "tablist",
         "tabpanel",
-        "tabpanel",
-        "dialog",
-        "dialog"
+        "tabpanel"
       ],
       "types": [
         "EditablePanel",
         "Label",
         "ImagePanel",
         "Button",
-        "CheckButton",
         "RadioButton",
         "RadioButton",
         "MenuItem",
         "TextEntry",
-        "Slider",
         "ProgressBar",
         "Panel",
         "RichText",
@@ -268,13 +266,15 @@
         "ComboBox",
         "URLLabel",
         "Button",
+        "CheckButton",
+        "Slider",
         "Menu",
+        "MessageBox",
+        "QueryBox",
         "Frame",
         "PropertySheet",
         "PropertyPage",
-        "PropertyPage",
-        "MessageBox",
-        "QueryBox"
+        "PropertyPage"
       ]
     },
     "requests": [
@@ -282,13 +282,13 @@
         "kind": "message",
         "message": {
           "fields": {
-            "xpos": 302,
-            "ypos": 311
+            "xpos": 204,
+            "ypos": 261
           },
           "name": "CursorMoved"
         },
         "source": null,
-        "target": 16
+        "target": 1
       },
       {
         "kind": "message",
@@ -603,8 +603,8 @@
             21,
             22,
             23,
-            24,
             25,
+            24,
             5,
             10,
             26,
@@ -3314,11 +3314,11 @@
       ],
       "queuedMessages": 0,
       "reducedMotion": false,
-      "revision": 74,
+      "revision": 73,
       "rootPanel": 1,
       "runtimeIdentity": "browser-evidence",
       "schemeIdentity": "resource/browser-scheme.res",
-      "timeSeconds": 0.22120000004768373,
+      "timeSeconds": 0.38,
       "trace": [
         {
           "detail": "EditablePanel:Root",
@@ -3514,13 +3514,13 @@
         },
         {
           "detail": "SetFocus",
-          "panel": 26,
+          "panel": 24,
           "phase": "message",
           "sequence": 33
         },
         {
           "detail": "committed",
-          "panel": 26,
+          "panel": 24,
           "phase": "focus",
           "sequence": 34
         },
@@ -3538,7 +3538,7 @@
         },
         {
           "detail": "focus-tick",
-          "panel": 26,
+          "panel": 24,
           "phase": "ticks",
           "sequence": 37
         },
@@ -3580,19 +3580,19 @@
         },
         {
           "detail": "committed",
-          "panel": 26,
+          "panel": 24,
           "phase": "focus",
           "sequence": 44
         },
         {
           "detail": "CursorEntered",
-          "panel": 16,
+          "panel": 1,
           "phase": "message",
           "sequence": 45
         },
         {
           "detail": "CursorMoved",
-          "panel": 16,
+          "panel": 1,
           "phase": "message",
           "sequence": 46
         },
@@ -3604,7 +3604,7 @@
         },
         {
           "detail": "focus-tick",
-          "panel": 26,
+          "panel": 24,
           "phase": "ticks",
           "sequence": 48
         },
@@ -3646,13 +3646,13 @@
         },
         {
           "detail": "committed",
-          "panel": 26,
+          "panel": 24,
           "phase": "focus",
           "sequence": 55
         },
         {
           "detail": "CursorExited",
-          "panel": 16,
+          "panel": 1,
           "phase": "message",
           "sequence": 56
         },
@@ -3676,7 +3676,7 @@
         },
         {
           "detail": "focus-tick",
-          "panel": 26,
+          "panel": 24,
           "phase": "ticks",
           "sequence": 60
         },
@@ -3718,7 +3718,7 @@
         },
         {
           "detail": "KillFocus",
-          "panel": 26,
+          "panel": 24,
           "phase": "message",
           "sequence": 67
         },
@@ -4845,51 +4845,51 @@
           "sequence": 254
         },
         {
-          "detail": "solved",
-          "panel": null,
-          "phase": "layout",
-          "sequence": 255
-        },
-        {
-          "detail": "advanced",
-          "panel": null,
-          "phase": "animation",
-          "sequence": 256
-        },
-        {
-          "detail": "published",
-          "panel": null,
-          "phase": "dom",
-          "sequence": 257
-        },
-        {
-          "detail": "end:19",
-          "panel": null,
-          "phase": "frame",
-          "sequence": 258
-        },
-        {
-          "detail": "begin:20",
-          "panel": null,
-          "phase": "frame",
-          "sequence": 259
-        },
-        {
-          "detail": "complete",
-          "panel": null,
-          "phase": "input-rollover",
-          "sequence": 260
-        },
-        {
           "detail": "KillFocus",
           "panel": 26,
           "phase": "message",
-          "sequence": 261
+          "sequence": 255
         },
         {
           "detail": "SetFocus",
           "panel": 16,
           "phase": "message",
+          "sequence": 256
+        },
+        {
+          "detail": "solved",
+          "panel": null,
+          "phase": "layout",
+          "sequence": 257
+        },
+        {
+          "detail": "advanced",
+          "panel": null,
+          "phase": "animation",
+          "sequence": 258
+        },
+        {
+          "detail": "published",
+          "panel": null,
+          "phase": "dom",
+          "sequence": 259
+        },
+        {
+          "detail": "end:19",
+          "panel": null,
+          "phase": "frame",
+          "sequence": 260
+        },
+        {
+          "detail": "begin:20",
+          "panel": null,
+          "phase": "frame",
+          "sequence": 261
+        },
+        {
+          "detail": "complete",
+          "panel": null,
+          "phase": "input-rollover",
           "sequence": 262
         },
         {
@@ -4971,47 +4971,47 @@
           "role": "menu"
         },
         "e10": {
-          "name": "Entry",
-          "role": "textbox"
-        },
-        "e11": {
-          "name": "Volume",
-          "role": "slider"
-        },
-        "e12": {
           "name": "Selectable rich text",
           "role": "document"
         },
-        "e13": {
+        "e11": {
           "name": "List",
           "role": "grid"
         },
-        "e14": {
+        "e12": {
           "name": "Scroll",
           "role": "scrollbar"
         },
-        "e15": {
+        "e13": {
           "name": "HorizontalScroll",
           "role": "scrollbar"
         },
-        "e16": {
+        "e14": {
           "name": "Combo",
           "role": "combobox"
         },
-        "e17": {
+        "e15": {
           "name": "TF2 help",
           "role": "link"
         },
-        "e18": {
+        "e16": {
           "name": "Left aligned disabled",
           "role": "button"
+        },
+        "e17": {
+          "name": "Toggle",
+          "role": "checkbox"
+        },
+        "e18": {
+          "name": "Volume",
+          "role": "slider"
         },
         "e19": {
           "name": "Video",
           "role": "menuitem"
         },
         "e2": {
-          "name": "Moveable frame",
+          "name": "Message box",
           "role": "dialog"
         },
         "e20": {
@@ -5023,19 +5023,19 @@
           "role": "menuitem"
         },
         "e22": {
-          "name": "Sheet",
-          "role": "tablist"
+          "name": "Close",
+          "role": "button"
         },
         "e23": {
-          "name": "Close",
+          "name": "#MessageBox_OK",
           "role": "button"
         },
         "e24": {
-          "name": "Close",
-          "role": "button"
+          "name": "Sheet",
+          "role": "tablist"
         },
         "e25": {
-          "name": "#MessageBox_OK",
+          "name": "Close",
           "role": "button"
         },
         "e26": {
@@ -5055,7 +5055,7 @@
           "role": "tabpanel"
         },
         "e3": {
-          "name": "Message box",
+          "name": "Moveable frame",
           "role": "dialog"
         },
         "e30": {
@@ -5075,23 +5075,23 @@
           "role": "button"
         },
         "e6": {
-          "name": "Toggle",
-          "role": "checkbox"
-        },
-        "e7": {
           "name": "Radio A",
           "role": "radio"
         },
-        "e8": {
+        "e7": {
           "name": "Radio B",
           "role": "radio"
         },
-        "e9": {
+        "e8": {
           "name": "Menu item",
           "role": "menuitem"
+        },
+        "e9": {
+          "name": "Entry",
+          "role": "textbox"
         }
       },
-      "snapshot": "- main\n  - generic\n    - generic \"Root\"\n      - image \"Icon\"\n      - button \"Submit\" [ref=e5]\n      - checkbox \"Toggle\" [checked=true, ref=e6]\n      - radio \"Radio A\" [checked=false, ref=e7]\n      - radio \"Radio B\" [checked=false, ref=e8]\n      - menuitem \"Menu item\" [ref=e9]\n      - textbox \"Entry\" [ref=e10]: 12x.5\n        - StaticText \"12x.5\"\n      - slider \"Volume\" [ref=e11]: 6\n      - progressbar \"Progress\": 0.6499999761581421\n      - document \"Selectable rich text\" [ref=e12] focusable [tabindex]\n      - grid \"List\" [ref=e13] focusable [tabindex]\n        - row \"Item one\"\n        - row \"Item two\"\n      - scrollbar \"Scroll\" [ref=e14] focusable [tabindex]: 0\n      - scrollbar \"HorizontalScroll\" [ref=e15] focusable [tabindex]: 0\n      - combobox \"Combo\" [expanded=false, ref=e16]\n      - link \"TF2 help\" [ref=e17]\n      - button \"Left aligned disabled\" [disabled, ref=e18]\n    - menu \"Menu\" [ref=e1] focusable [tabindex]\n      - menuitem \"Video\" [ref=e19]\n      - menuitem \"Audio\" [ref=e20]\n      - menuitem \"Mouse\" [ref=e21]\n    - dialog \"Moveable frame\" [ref=e2] focusable [tabindex]\n      - tablist \"Sheet\" [ref=e22] focusable [tabindex]\n        - tabpanel \"PageVideo\" [ref=e29] focusable [tabindex]\n        - tab \"Video\" [selected, ref=e30]\n        - tab \"Audio\" [ref=e31]\n      - StaticText \"Moveable frame\"\n      - button \"Close\" [ref=e23]\n    - dialog \"Message box\" [ref=e3] focusable [tabindex]\n      - StaticText \"Message box\"\n      - button \"Close\" [ref=e24]\n      - button \"#MessageBox_OK\" [ref=e25]\n    - dialog \"Apply settings?\" [ref=e4] focusable [tabindex]\n      - StaticText \"Apply settings?\"\n      - button \"Close\" [ref=e26]\n      - button \"#MessageBox_OK\" [ref=e27]\n      - button \"#QueryBox_Cancel\" [ref=e28]"
+      "snapshot": "- main\n  - generic\n    - generic \"Root\"\n      - image \"Icon\"\n      - button \"Submit\" [ref=e5]\n      - radio \"Radio A\" [checked=false, ref=e6]\n      - radio \"Radio B\" [checked=false, ref=e7]\n      - menuitem \"Menu item\" [ref=e8]\n      - textbox \"Entry\" [ref=e9]: 12x.5\n        - StaticText \"12x.5\"\n      - progressbar \"Progress\": 0.6499999761581421\n      - document \"Selectable rich text\" [ref=e10] focusable [tabindex]\n      - grid \"List\" [ref=e11] focusable [tabindex]\n        - row \"Item one\"\n        - row \"Item two\"\n      - scrollbar \"Scroll\" [ref=e12] focusable [tabindex]: 0\n      - scrollbar \"HorizontalScroll\" [ref=e13] focusable [tabindex]: 0\n      - combobox \"Combo\" [expanded=false, ref=e14]\n      - link \"TF2 help\" [ref=e15]\n      - button \"Left aligned disabled\" [disabled, ref=e16]\n      - checkbox \"Toggle\" [checked=true, ref=e17]\n      - slider \"Volume\" [ref=e18]: 6\n    - menu \"Menu\" [ref=e1] focusable [tabindex]\n      - menuitem \"Video\" [ref=e19]\n      - menuitem \"Audio\" [ref=e20]\n      - menuitem \"Mouse\" [ref=e21]\n    - dialog \"Message box\" [ref=e2] focusable [tabindex]\n      - StaticText \"Message box\"\n      - button \"Close\" [ref=e22]\n      - button \"#MessageBox_OK\" [ref=e23]\n    - dialog \"Moveable frame\" [ref=e3] focusable [tabindex]\n      - tablist \"Sheet\" [ref=e24] focusable [tabindex]\n        - tabpanel \"PageVideo\" [ref=e29] focusable [tabindex]\n        - tab \"Video\" [selected, ref=e30]\n        - tab \"Audio\" [ref=e31]\n      - StaticText \"Moveable frame\"\n      - button \"Close\" [ref=e25]\n    - dialog \"Apply settings?\" [ref=e4] focusable [tabindex]\n      - StaticText \"Apply settings?\"\n      - button \"Close\" [ref=e26]\n      - button \"#MessageBox_OK\" [ref=e27]\n      - button \"#QueryBox_Cancel\" [ref=e28]"
     },
     "error": null
   },
@@ -5105,12 +5105,12 @@
       "frame": 1,
       "input": {
         "applicationModal": null,
-        "calculatedKeyFocus": 26,
+        "calculatedKeyFocus": 24,
         "capture": null,
         "captureButton": null,
         "downButtons": [],
         "downKeys": [],
-        "keyFocus": 26,
+        "keyFocus": 24,
         "modalRestriction": null,
         "modalSubtree": null,
         "mouseFocus": null,
@@ -5176,9 +5176,9 @@
             21,
             22,
             23,
-            24,
             25,
-            26
+            26,
+            24
           ],
           "clip": {
             "height": 720,
@@ -7804,7 +7804,7 @@
             "y": 380
           },
           "control": "QueryBox",
-          "effectivelyVisible": true,
+          "effectivelyVisible": false,
           "enabled": true,
           "id": 26,
           "inset": {
@@ -7872,15 +7872,15 @@
           "tabPosition": 0,
           "text": "Apply settings?",
           "topmostPopup": false,
-          "visible": true,
+          "visible": false,
           "z": 0
         }
       ],
       "popups": [
         13,
         16,
-        24,
-        26
+        26,
+        24
       ],
       "queuedMessages": 0,
       "reducedMotion": false,
@@ -7888,7 +7888,7 @@
       "rootPanel": 1,
       "runtimeIdentity": "browser-evidence",
       "schemeIdentity": "resource/browser-scheme.res",
-      "timeSeconds": 0.42,
+      "timeSeconds": 0.6955,
       "trace": [
         {
           "detail": "EditablePanel:Root",
@@ -8084,13 +8084,13 @@
         },
         {
           "detail": "SetFocus",
-          "panel": 26,
+          "panel": 24,
           "phase": "message",
           "sequence": 33
         },
         {
           "detail": "committed",
-          "panel": 26,
+          "panel": 24,
           "phase": "focus",
           "sequence": 34
         },
@@ -8108,7 +8108,7 @@
         },
         {
           "detail": "focus-tick",
-          "panel": 26,
+          "panel": 24,
           "phase": "ticks",
           "sequence": 37
         },

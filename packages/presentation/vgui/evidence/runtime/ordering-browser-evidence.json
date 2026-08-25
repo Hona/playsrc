@@ -1,0 +1,352 @@
+{
+  "schema": "playsrc-vgui-ordering-browser-evidence-v1",
+  "contentBuild": "24245096",
+  "patch": "10828683",
+  "sdkRevision": "88fa198fba3fb85d46d4c95018254693fdc3af0a",
+  "ammoResource": {
+    "logicalPath": "resource/ui/hudammoweapons.res",
+    "sha256": "a23a98f009dd34ac8c94e7149b1ded56eb9ed66e03d583fcd9c2ab68c3cb7734"
+  },
+  "fonts": [
+    {
+      "logicalPath": "resource/tf2build.ttf",
+      "byteLength": 61696,
+      "sha256": "23faa58a08c929c0b6638f581488e49399cd7a390c70cb9debdaf8371a95e0c6"
+    },
+    {
+      "logicalPath": "resource/tf2.ttf",
+      "byteLength": 68828,
+      "sha256": "1c36e9e8f8e305fb0a889889bf55a06d0ab9aba13f88d5188ddf87122d5c1af1"
+    }
+  ],
+  "viewport": {
+    "width": 1280,
+    "height": 720,
+    "devicePixelRatio": 1
+  },
+  "ordering": {
+    "model": [
+      {
+        "name": "AmmoNoClipShadow",
+        "z": 5
+      },
+      {
+        "name": "AmmoNoClip",
+        "z": 5
+      },
+      {
+        "name": "AmmoInClipShadow",
+        "z": 5
+      },
+      {
+        "name": "AmmoInClip",
+        "z": 5
+      },
+      {
+        "name": "AmmoInReserveShadow",
+        "z": 7
+      },
+      {
+        "name": "AmmoInReserve",
+        "z": 7
+      }
+    ],
+    "dom": [
+      "AmmoNoClipShadow",
+      "AmmoNoClip",
+      "AmmoInClipShadow",
+      "AmmoInClip",
+      "AmmoInReserveShadow",
+      "AmmoInReserve"
+    ]
+  },
+  "pixels": {
+    "clip": {
+      "bounds": {
+        "x": 104,
+        "y": 80,
+        "width": 55,
+        "height": 40,
+        "top": 80,
+        "right": 159,
+        "bottom": 120,
+        "left": 104
+      },
+      "foregroundSolid": 814,
+      "shadowSolid": 814,
+      "overlap": {
+        "x": 115,
+        "y": 81,
+        "foreground": [
+          235,
+          226,
+          202,
+          255
+        ],
+        "shadow": [
+          46,
+          43,
+          42,
+          255
+        ],
+        "composed": [
+          235,
+          226,
+          202,
+          255
+        ]
+      },
+      "offsetShadow": {
+        "x": 132,
+        "y": 89,
+        "foreground": [
+          23,
+          26,
+          27,
+          255
+        ],
+        "shadow": [
+          46,
+          43,
+          42,
+          255
+        ],
+        "composed": [
+          46,
+          43,
+          42,
+          255
+        ]
+      }
+    },
+    "reserve": {
+      "bounds": {
+        "x": 159,
+        "y": 88,
+        "width": 40,
+        "height": 27,
+        "top": 88,
+        "right": 199,
+        "bottom": 115,
+        "left": 159
+      },
+      "foregroundSolid": 25,
+      "shadowSolid": 25,
+      "overlap": {
+        "x": 173,
+        "y": 100,
+        "foreground": [
+          235,
+          226,
+          202,
+          255
+        ],
+        "shadow": [
+          5,
+          6,
+          6,
+          255
+        ],
+        "composed": [
+          235,
+          226,
+          202,
+          255
+        ]
+      },
+      "offsetShadow": {
+        "x": 171,
+        "y": 105,
+        "foreground": [
+          23,
+          26,
+          27,
+          255
+        ],
+        "shadow": [
+          5,
+          6,
+          6,
+          255
+        ],
+        "composed": [
+          5,
+          6,
+          6,
+          255
+        ]
+      }
+    },
+    "noClip": {
+      "bounds": {
+        "x": 100,
+        "y": 82,
+        "width": 84,
+        "height": 40,
+        "top": 82,
+        "right": 184,
+        "bottom": 122,
+        "left": 100
+      },
+      "foregroundSolid": 814,
+      "shadowSolid": 814,
+      "overlap": {
+        "x": 140,
+        "y": 83,
+        "foreground": [
+          235,
+          226,
+          202,
+          255
+        ],
+        "shadow": [
+          46,
+          43,
+          42,
+          255
+        ],
+        "composed": [
+          235,
+          226,
+          202,
+          255
+        ]
+      },
+      "offsetShadow": {
+        "x": 157,
+        "y": 91,
+        "foreground": [
+          23,
+          26,
+          27,
+          255
+        ],
+        "shadow": [
+          46,
+          43,
+          42,
+          255
+        ],
+        "composed": [
+          46,
+          43,
+          42,
+          255
+        ]
+      }
+    }
+  },
+  "windows": {
+    "optionsForeground": {
+      "x": 796,
+      "y": 526,
+      "target": "ApplyButton",
+      "optionsLayer": "42",
+      "developerLayer": "41",
+      "optionsVisible": true,
+      "consoleVisible": true,
+      "developerInert": false
+    },
+    "modalForeground": {
+      "x": 796,
+      "y": 526,
+      "target": "ApplyButton",
+      "optionsLayer": "42",
+      "developerLayer": "41",
+      "optionsVisible": true,
+      "consoleVisible": true,
+      "developerInert": true
+    },
+    "consoleForeground": {
+      "x": 796,
+      "y": 526,
+      "target": "ConsoleHistory",
+      "optionsLayer": "41",
+      "developerLayer": "42",
+      "optionsVisible": true,
+      "consoleVisible": true,
+      "developerInert": false
+    },
+    "hiddenOptions": {
+      "x": 0,
+      "y": 0,
+      "target": "ordering-ammo-root",
+      "optionsLayer": "30",
+      "developerLayer": "40",
+      "optionsVisible": false,
+      "consoleVisible": true,
+      "developerInert": false
+    },
+    "resumedOptions": {
+      "x": 796,
+      "y": 526,
+      "target": "ApplyButton",
+      "optionsLayer": "42",
+      "developerLayer": "41",
+      "optionsVisible": true,
+      "consoleVisible": true,
+      "developerInert": false
+    },
+    "optionRequests": [
+      {
+        "kind": "message",
+        "target": 3,
+        "source": null,
+        "message": {
+          "name": "CursorMoved",
+          "fields": {
+            "xpos": 796,
+            "ypos": 526
+          }
+        }
+      },
+      {
+        "kind": "message",
+        "target": 3,
+        "source": null,
+        "message": {
+          "name": "CursorMoved",
+          "fields": {
+            "xpos": 796,
+            "ypos": 526
+          }
+        }
+      },
+      {
+        "kind": "message",
+        "target": 3,
+        "source": null,
+        "message": {
+          "name": "CursorMoved",
+          "fields": {
+            "xpos": 796,
+            "ypos": 526
+          }
+        }
+      },
+      {
+        "kind": "command",
+        "panel": 3,
+        "command": "Apply"
+      }
+    ],
+    "pixels": {
+      "x": 796,
+      "y": 526,
+      "options": [
+        64,
+        71,
+        77,
+        255
+      ],
+      "developer": [
+        30,
+        28,
+        26,
+        255
+      ]
+    },
+    "screenshotBytes": 9912
+  },
+  "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
+}

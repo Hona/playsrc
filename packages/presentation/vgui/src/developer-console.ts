@@ -1015,6 +1015,11 @@ class ConsoleView {
 
   moveToFront(): void {
     this.frame.moveToFront()
+    this.runtime.workspace.activate()
+  }
+
+  deactivateWindow(): void {
+    this.runtime.workspace.deactivate()
   }
 
   counts(): Readonly<{ nodes: number; listeners: number }> {
@@ -1104,6 +1109,7 @@ class DeveloperConsoleImplementation implements DeveloperConsole {
           this.cancelPending("hidden")
           this.closeCompletion()
           this.model.visible = false
+          this.view?.deactivateWindow()
           this.view?.cancelFrameInteraction()
           this.model.frameInteraction = null
           this.model.capturedPointerId = null

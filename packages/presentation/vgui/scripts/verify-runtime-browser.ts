@@ -61,6 +61,8 @@ try {
   await agent(["eval", "(()=>{const entry=document.querySelector('[aria-label=Entry]');entry.value='12x.5';entry.dispatchEvent(new Event('input',{bubbles:true}));return entry.value})()"])
   await agent(["click", "[aria-label='Volume']"])
   await agent(["press", "ArrowRight"])
+  const sliderInput = await evaluate<{ value: number; keyFocus: number | null; active: string | null }>(`(()=>{const snapshot=window.vguiRuntimeEvidence.snapshot();return {value:snapshot.panels.find(panel=>panel.name==='Volume').state.value,keyFocus:snapshot.input.keyFocus,active:document.activeElement?.dataset?.vguiName??null}})()`)
+  require(sliderInput.value === 6, `slider keyboard input differs immediately: ${JSON.stringify(sliderInput)}`)
   const frame = await evaluate<{ x: number; y: number; width: number; height: number }>("document.querySelector('[data-vgui-name=Frame]').getBoundingClientRect().toJSON()")
   await agent(["mouse", "move", String(frame.x + 80), String(frame.y + 10)])
   await agent(["mouse", "down", "left"])
@@ -79,7 +81,7 @@ try {
     frame: { x: number; y: number }
   }>(`(()=>{const snapshot=window.vguiRuntimeEvidence.snapshot();const panel=name=>snapshot.panels.find(panel=>panel.name===name);return {entry:panel('Entry').text,slider:panel('Volume').state.value,toggle:panel('Toggle').state.checked,queryVisible:panel('Query').visible,applicationModal:snapshot.input.applicationModal,capture:snapshot.input.capture,frame:panel('Frame').bounds}})()`)
   require(functional.entry === "12.5", "numeric browser input differs")
-  require(functional.slider === 6, "slider keyboard input differs")
+  require(functional.slider === 6, `slider keyboard input differs: ${functional.slider}`)
   require(functional.toggle, "checkbox pointer input differs")
   require(!functional.queryVisible && functional.applicationModal === null, "query modal did not close")
   require(functional.capture === null, "pointer capture survived frame drag")
