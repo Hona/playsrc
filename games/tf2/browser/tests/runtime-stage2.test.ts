@@ -10,7 +10,7 @@ import {
 import type { WorkerRequest, WorkerResponse } from "../src/protocol"
 
 function snapshot(): ArrayBuffer {
-  const bytes = new ArrayBuffer(1045)
+  const bytes = new ArrayBuffer(1097)
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x53, 0x53, 0x4e])
@@ -114,6 +114,10 @@ function snapshot(): ArrayBuffer {
   at += 52
   view.setUint32(at, 0, true)
   at += 4
+  view.setUint32(at, 1, true); at += 4
+  view.setUint32(at, 1, true); data[at + 4] = 2
+  view.setBigUint64(at + 40, 0xffff_ffff_ffff_ffffn, true)
+  at += 48
   data.set(new TextEncoder().encode("PCTF"), at)
   view.setUint32(at + 4, 1, true)
   return bytes
@@ -362,13 +366,12 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     expect(() => encodeCommand({ ...base, bot: { action: "add", count: 32, class: 3, difficulty: 1 } })).toThrow(Tf2CodecError)
 
     const prior = new Uint8Array(snapshot())
-    const bytes = new Uint8Array(prior.byteLength + 128)
-    const objectiveOffset = prior.byteLength - 12
-    bytes.set(prior.subarray(0, objectiveOffset))
-    bytes.set(prior.subarray(objectiveOffset), objectiveOffset + 128)
+    const scoreStart = prior.byteLength - 12 - 52
+    const bytes = new Uint8Array(prior.byteLength + 128 + 48)
+    bytes.set(prior.subarray(0, scoreStart))
     const view = new DataView(bytes.buffer)
-    view.setUint32(objectiveOffset - 4, 1, true)
-    const at = objectiveOffset
+    view.setUint32(scoreStart - 4, 1, true)
+    const at = scoreStart
     view.setUint32(at, 2, true)
     bytes.set([3, 3, 1, 1, 1], at + 4)
     view.setInt32(at + 12, 200, true)
@@ -389,6 +392,12 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     view.setBigUint64(at + 96, 6n, true)
     view.setBigUint64(at + 104, 0xffff_ffff_ffff_ffffn, true)
     view.setBigUint64(at + 112, 20n, true)
+    bytes.set(prior.subarray(scoreStart, scoreStart + 52), at + 128)
+    view.setUint32(at + 128, 2, true)
+    const botScore = at + 128 + 52
+    view.setUint32(botScore, 2, true); bytes[botScore + 4] = 3
+    view.setBigUint64(botScore + 40, 0xffff_ffff_ffff_ffffn, true)
+    bytes.set(prior.subarray(prior.byteLength - 12), botScore + 48)
     expect(decodeSnapshot(bytes).bots).toEqual([{
       identity: 2,
       class: 3,

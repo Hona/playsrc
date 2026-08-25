@@ -4451,6 +4451,24 @@ fn encode_snapshot(
             MAX,
         )?;
     }
+    u32_field(&mut out, u32::try_from(snapshot.scores.len()).ok()?, MAX)?;
+    for score in &snapshot.scores {
+        u32_field(&mut out, score.identity, MAX)?;
+        extend(&mut out, &[team_code(score.team), 0, 0, 0], MAX)?;
+        for value in [
+            score.counters.kills,
+            score.counters.deaths,
+            score.counters.assists,
+            score.counters.captures,
+            score.counters.headshots,
+            score.counters.backstabs,
+            score.counters.damage,
+            score.counters.killstreak,
+        ] {
+            u32_field(&mut out, value, MAX)?;
+        }
+        u64_field(&mut out, score.respawn_tick.unwrap_or(u64::MAX), MAX)?;
+    }
     encode_objectives(&mut out, snapshot.objectives.as_ref(), MAX)?;
     Some(out)
 }
@@ -5400,6 +5418,54 @@ fn encode_game_event(output: &mut Vec<u8>, event: &playsrc_tf2::Event, limit: us
             target.unwrap_or(0),
             0,
             [position[0], position[1], position[2], *damage],
+        ),
+        playsrc_tf2::Event::PlayerDamaged {
+            attacker,
+            victim,
+            weapon,
+            amount,
+            health,
+            critical,
+            custom,
+        } => (
+            15,
+            weapon_code(*weapon),
+            *victim,
+            *attacker,
+            [
+                *amount as f32,
+                *health as f32,
+                f32::from(u8::from(*critical)),
+                f32::from(*custom),
+            ],
+        ),
+        playsrc_tf2::Event::PlayerKilled {
+            attacker,
+            victim,
+            weapon,
+            critical,
+            custom,
+        } => (
+            16,
+            weapon_code(*weapon),
+            *victim,
+            *attacker,
+            [0.0, f32::from(u8::from(*critical)), f32::from(*custom), 0.0],
+        ),
+        playsrc_tf2::Event::PlayerRespawned { player, team } => {
+            (17, team_code(*team), *player, 0, [0.0; 4])
+        }
+        playsrc_tf2::Event::PickupCollected {
+            player,
+            pickup,
+            health,
+            amount,
+        } => (
+            18,
+            u8::from(*health),
+            *player,
+            *pickup,
+            [*amount as f32, 0.0, 0.0, 0.0],
         ),
     };
     extend(output, &[kind, detail, 0, 0], limit)?;
@@ -12061,6 +12127,12 @@ mod tests {
                 yaw_degrees: Some(90.),
             }],
             bots: Vec::new(),
+            scores: vec![playsrc_tf2::lifecycle::ScoreEntry {
+                identity: 1,
+                team: playsrc_tf2::PlayerTeam::Blue,
+                counters: playsrc_tf2::lifecycle::ScoreCounters::default(),
+                respawn_tick: None,
+            }],
         };
         let producer = playsrc_tf2::ProducerSnapshot {
             tick: 9,
@@ -12172,8 +12244,9 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(encoded.len(), 948);
-        assert_eq!(&encoded[936..944], b"PCTF\x01\0\0\0");
+        assert_eq!(&encoded[..8], b"PSSN\x0d\0\0\0");
+        assert_eq!(encoded.len(), 1000);
+        assert_eq!(&encoded[988..996], b"PCTF\x01\0\0\0");
         assert_eq!(
             u32::from_le_bytes(encoded[160..164].try_into().unwrap()),
             playsrc_tf2::FL_CLIENT | playsrc_tf2::FL_INWATER

@@ -256,6 +256,8 @@ struct Bot {
     kills: u32,
     deaths: u32,
     captures: u32,
+    damage_dealt: u32,
+    killstreak: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -574,6 +576,8 @@ impl BotWorld {
                     kills: 0,
                     deaths: 0,
                     captures: 0,
+                    damage_dealt: 0,
+                    killstreak: 0,
                 },
             );
         }
@@ -965,29 +969,7 @@ impl BotWorld {
         let mut health = HealthState::spawn(victim.class, 0.0, 0.0).map_err(|_| Error::Damage)?;
         health.current = victim.health;
         let mut conditions = ConditionState::default();
-        let damage_type = match input.weapon {
-            Weapon::Bat
-            | Weapon::Shovel
-            | Weapon::Fists
-            | Weapon::Kukri
-            | Weapon::Wrench
-            | Weapon::FireAxe
-            | Weapon::Bottle => DamageType::MELEE,
-            Weapon::Flamethrower => DamageType::BURN | DamageType::IGNITE,
-            Weapon::RocketLauncher
-            | Weapon::Original
-            | Weapon::StickybombLauncher
-            | Weapon::GrenadeLauncher => DamageType::BLAST,
-            Weapon::Scattergun
-            | Weapon::Shotgun
-            | Weapon::HeavyShotgun
-            | Weapon::EngineerShotgun => DamageType::BUCKSHOT,
-            Weapon::Pistol
-            | Weapon::Minigun
-            | Weapon::SniperRifle
-            | Weapon::Smg
-            | Weapon::EngineerPistol => DamageType::BULLET,
-        };
+        let damage_type = weapon_damage_type(input.weapon);
         let result = damage::apply_damage(
             victim.lifecycle == PlayerLifecycle::Active,
             &mut health,
@@ -1021,6 +1003,7 @@ impl BotWorld {
         if killed {
             victim.lifecycle = PlayerLifecycle::Dying;
             victim.deaths = victim.deaths.saturating_add(1);
+            victim.killstreak = 0;
             victim.respawn_tick = Some(next_respawn_wave(
                 tick,
                 self.tick_interval,
@@ -1035,22 +1018,68 @@ impl BotWorld {
             && let Some(attacker) = self.bots.get_mut(&input.attacker)
         {
             attacker.hits = attacker.hits.saturating_add(1);
+            attacker.damage_dealt = attacker.damage_dealt.saturating_add(
+                u32::try_from(result.health_damage.min(result.health_before)).unwrap_or(0),
+            );
             if killed {
                 attacker.kills = attacker.kills.saturating_add(1);
+                attacker.killstreak = attacker.killstreak.saturating_add(1);
             }
         }
         Ok(Some(result.health_damage))
+    }
+
+    pub fn health(&self, identity: u32) -> Option<i32> {
+        self.bots.get(&identity).map(|bot| bot.health)
+    }
+
+    pub fn scores(&self) -> impl Iterator<Item = crate::lifecycle::ScoreEntry> + '_ {
+        self.bots.values().map(|bot| crate::lifecycle::ScoreEntry {
+            identity: bot.identity,
+            team: bot.team,
+            counters: crate::lifecycle::ScoreCounters {
+                kills: bot.kills,
+                deaths: bot.deaths,
+                captures: bot.captures,
+                damage: bot.damage_dealt,
+                killstreak: bot.killstreak,
+                ..crate::lifecycle::ScoreCounters::default()
+            },
+            respawn_tick: bot.respawn_tick,
+        })
+    }
+
+    pub fn select_spawn(
+        &self,
+        team: PlayerTeam,
+        random: &mut UniformRandomStream,
+    ) -> Option<[f32; 3]> {
+        let candidates = self.spawns.get(team_index(team))?;
+        let maximum = i32::try_from(candidates.len().checked_sub(1)?).ok()?;
+        let index = usize::try_from(random.random_int(0, maximum).ok()?).ok()?;
+        Some(candidates.get(index)?.position)
+    }
+
+    pub fn respawn_tick(&self, team: PlayerTeam, tick: u64) -> u64 {
+        next_respawn_wave(
+            tick,
+            self.tick_interval,
+            self.respawn_waves[team_index(team)],
+            self.team_population(team, team),
+        )
     }
 
     pub fn team_population(&self, team: PlayerTeam, human_team: PlayerTeam) -> usize {
         self.bots.values().filter(|bot| bot.team == team).count() + usize::from(human_team == team)
     }
 
-    pub fn record_human_hit(&mut self, attacker: u32, killed: bool) {
+    pub fn record_human_hit(&mut self, attacker: u32, amount: u32, killed: bool) {
         if let Some(bot) = self.bots.get_mut(&attacker) {
             bot.hits = bot.hits.saturating_add(1);
+            bot.damage_dealt = bot.damage_dealt.saturating_add(amount);
             if killed {
                 bot.kills = bot.kills.saturating_add(1);
+                bot.killstreak = bot.killstreak.saturating_add(1);
             }
         }
     }
@@ -1332,6 +1361,31 @@ fn max_attack_range(weapon: Weapon) -> f32 {
         f32::MAX
     }
 }
+pub(crate) fn weapon_damage_type(weapon: Weapon) -> DamageType {
+    match weapon {
+        Weapon::Bat
+        | Weapon::Shovel
+        | Weapon::Fists
+        | Weapon::Kukri
+        | Weapon::Wrench
+        | Weapon::FireAxe
+        | Weapon::Bottle => DamageType::MELEE,
+        Weapon::Flamethrower => DamageType::BURN | DamageType::IGNITE,
+        Weapon::RocketLauncher
+        | Weapon::Original
+        | Weapon::StickybombLauncher
+        | Weapon::GrenadeLauncher => DamageType::BLAST,
+        Weapon::Scattergun | Weapon::Shotgun | Weapon::HeavyShotgun | Weapon::EngineerShotgun => {
+            DamageType::BUCKSHOT
+        }
+        Weapon::Pistol
+        | Weapon::Minigun
+        | Weapon::SniperRifle
+        | Weapon::Smg
+        | Weapon::EngineerPistol => DamageType::BULLET,
+    }
+}
+
 fn initial_respawn_waves(graph: &Graph) -> [f32; 2] {
     let mut waves = [RESPAWN_WAVE_SECONDS; 2];
     for entity in &graph.entities {

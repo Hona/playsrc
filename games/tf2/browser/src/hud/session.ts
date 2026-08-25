@@ -40,7 +40,7 @@ type CompactWeaponState = Readonly<{
 }>
 
 type CompactGameplayEvent = Readonly<{
-  kind: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14
+  kind: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18
   detail: number
   subject: number
   auxiliary: number
@@ -61,6 +61,7 @@ type SessionSnapshot = Readonly<{
   events: readonly CompactGameplayEvent[]
   lifecycleEvents: readonly Readonly<{ tick: bigint; kind: 1 | 2 | 3 | 4; class: Tf2Class; team: Tf2Team }>[]
   projectileEvents: readonly Readonly<{ type: "fire" | "impact" | "stick" | "arm" | "fizzle" | "explode"; launcherIdentity: number }>[]
+  bots?: readonly Readonly<{ identity: number; team: Tf2Team; class: Tf2Class }>[]
 }>
 
 export type SessionSimulationPublication = Readonly<{
@@ -292,6 +293,30 @@ function mapGameplayEvent(
     case 11:
       push({ kind: "health", health: health(snapshot), cause: "respawn" })
       push({ kind: "lifecycle", lifecycle: "active" })
+      break
+    case 16: {
+      const participant = (identity: number) => {
+        const bot = snapshot.bots?.find(value => value.identity === identity)
+        return Object.freeze({ identity: tf2HudAvailable(identity),
+          name: bot ? `Bot ${identity}` : "Player", team: bot?.team ?? snapshot.team })
+      }
+      const killer = source.auxiliary === 0
+        ? Object.freeze({ identity: tf2HudUnavailable<number>("not-applicable"), name: "World", team: snapshot.team })
+        : participant(source.auxiliary)
+      push({ kind: "killfeed", notice: Object.freeze({ killer, victim: participant(source.subject),
+        assister: source.values[0] === 0 ? tf2HudUnavailable("not-applicable") : tf2HudAvailable(participant(source.values[0])),
+        weaponIcon: source.detail === 0 ? tf2HudUnavailable("not-applicable") : tf2HudAvailable(weaponName(source.detail as Tf2Weapon)),
+        weaponIdentity: source.detail === 0 ? tf2HudUnavailable("not-applicable") : tf2HudAvailable(source.detail),
+        customKill: source.values[2], critical: source.values[1] === 1,
+        selfInflicted: source.auxiliary === source.subject, localPlayerInvolved: source.auxiliary === 1 || source.subject === 1,
+        domination: false, revenge: false, silent: false }) })
+      break
+    }
+    case 18:
+      if (source.subject === 1) push({ kind: "pickup", notification: Object.freeze({ pickupIdentity: source.auxiliary,
+        pickup: source.detail === 1 ? "health" : "ammo", itemIdentity: tf2HudUnavailable("not-produced"),
+        amount: tf2HudAvailable(source.values[0]) }), health: source.detail === 1 ? tf2HudAvailable(health(snapshot)) : tf2HudUnavailable("not-applicable"),
+        weapon: tf2HudUnavailable("not-applicable") })
       break
   }
 }

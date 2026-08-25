@@ -32,6 +32,7 @@ import {
   TF2_CROSSHAIR_SETTINGS,
   tf2CrosshairHudValues,
   tf2CrosshairSettings,
+  tf2HudAvailable,
   tf2HudUnavailable,
   type SessionHudContext,
   type Tf2CrosshairSettings,
@@ -435,6 +436,7 @@ export class Tf2Application {
   #hudRootCounts?: Readonly<{ playerStatus: number; ammo: number }>
   #hudContext?: SessionHudContext
   #hudContextIdentity = -1
+  #scoreboardVisible = false
   #playerClassUsePlayerModel = true
   #crosshairSettings?: Tf2CrosshairSettings
   #settings?: Tf2BrowserSettings
@@ -1841,19 +1843,32 @@ export class Tf2Application {
 
   #currentHudContext(snapshot: Snapshot): SessionHudContext {
     if (!this.#crosshairSettings) throw new Error("TF2 crosshair settings are unavailable")
-    const respawnAllowed = snapshot.lifecycle === 2
+    const localScore = snapshot.scores.find(score => score.identity === 1)
+    const respawnAllowed = snapshot.lifecycle === 2 && (localScore?.respawnTick === null || localScore?.respawnTick !== undefined && snapshot.tick >= localScore.respawnTick)
     const paused = this.#view.gameUi === "pause"
     const loadingImage = this.#view.gameUi === "loading" || this.#view.phase === "Loading" || this.#view.phase === "Replacing"
     const clientModeAllows = this.#view.gameUi === "in-game"
     const classSelection = this.#view.classSelectionVisible === true
     const vguiInput = this.#view.consoleVisible || this.#view.optionsVisible === true || classSelection || this.#view.teamSelectionVisible === true
-    const identity = Number(respawnAllowed)
+    let identity = Number(respawnAllowed)
       | Number(paused) << 1
       | Number(vguiInput) << 2
       | Number(this.#playerClassUsePlayerModel) << 3
       | Number(loadingImage) << 4
       | Number(clientModeAllows) << 5
       | Number(snapshot.weapon !== null) << 6
+      | Number(this.#scoreboardVisible) << 7
+    for (const score of snapshot.scores) {
+      identity = Math.imul(identity ^ score.identity, 16_777_619) >>> 0
+      identity = Math.imul(identity ^ score.team, 16_777_619) >>> 0
+      identity = Math.imul(identity ^ score.kills, 16_777_619) >>> 0
+      identity = Math.imul(identity ^ score.deaths, 16_777_619) >>> 0
+      identity = Math.imul(identity ^ score.captures, 16_777_619) >>> 0
+      identity = Math.imul(identity ^ score.headshots, 16_777_619) >>> 0
+      identity = Math.imul(identity ^ score.damage, 16_777_619) >>> 0
+      identity = Math.imul(identity ^ score.killstreak, 16_777_619) >>> 0
+      identity = Math.imul(identity ^ (score.respawnTick === null ? 0 : Number(score.respawnTick & 0xffff_ffffn)), 16_777_619) >>> 0
+    }
     if (this.#hudContext && this.#hudContextIdentity === identity) return this.#hudContext
     this.#hudContextIdentity = identity
     this.#hudContext = Object.freeze({
@@ -1877,7 +1892,27 @@ export class Tf2Application {
         ...tf2CrosshairHudValues(this.#crosshairSettings),
         weaponScale: 1,
       }),
-      scoreboard: tf2HudUnavailable<Tf2HudScoreboard>("not-produced"),
+      scoreboard: tf2HudAvailable<Tf2HudScoreboard>(Object.freeze({
+        visible: this.#scoreboardVisible,
+        red: Object.freeze({ team: 2, localizedName: "RED", score: snapshot.scores.filter(score => score.team === 2).reduce((total, score) => total + score.captures, 0),
+          playerCount: snapshot.scores.filter(score => score.team === 2).length }),
+        blue: Object.freeze({ team: 3, localizedName: "BLU", score: snapshot.scores.filter(score => score.team === 3).reduce((total, score) => total + score.captures, 0),
+          playerCount: snapshot.scores.filter(score => score.team === 3).length }),
+        players: Object.freeze(snapshot.scores.filter(score => score.team === 2 || score.team === 3).map(score => {
+          const bot = snapshot.bots.find(candidate => candidate.identity === score.identity)
+          return Object.freeze({ identity: score.identity, name: bot ? `Bot ${bot.identity}` : "Player",
+            team: score.team as 2 | 3, connection: "connected" as const, score: score.kills + score.assists + score.captures,
+            alive: bot ? bot.lifecycle === 1 : snapshot.lifecycle === 1,
+            class: tf2HudAvailable(bot ? bot.class : snapshot.class),
+            ping: bot ? tf2HudAvailable<"bot">("bot") : tf2HudAvailable(0),
+            killstreak: score.killstreak, activeDominations: 0, relationship: "none" as const,
+            counters: tf2HudAvailable(Object.freeze({ kills: score.kills, deaths: score.deaths,
+              assists: score.assists, destruction: 0, captures: score.captures, defenses: 0, dominations: 0,
+              revenge: 0, healing: 0, invulns: 0, teleports: 0, headshots: score.headshots,
+              backstabs: score.backstabs, bonus: 0, support: 0, damage: score.damage })) })
+        })), spectators: Object.freeze([]), waitingToPlay: Object.freeze([]),
+        selectedPlayer: tf2HudUnavailable<number>("not-applicable"),
+      })),
       freezePanel: tf2HudUnavailable<Tf2HudFreezePanel>("not-produced"),
       playerClassUsePlayerModel: this.#playerClassUsePlayerModel,
     })
@@ -3395,6 +3430,8 @@ export class Tf2Application {
       if(skyDisposition==="controller-absent")profile.controllerFreeSkyViews=Number(profile.controllerFreeSkyViews??0)+1
       profile.displacementVisibility={surfaces:[...visibility.surfaces],drawSurfaces:[...visibility.drawSurfaces],outsideWorld:visibility.outsideWorld,eyeLeaf:visibility.eyeLeaf,leaves:visibility.leaves,areas:visibility.areas};profile.displacementCamera=camera
       profile.bots=prepared.snapshot.bots.map(bot=>({...bot,weapon:bot.weapon&&{...bot.weapon,nextPrimaryTick:bot.weapon.nextPrimaryTick.toString(),nextReloadTick:bot.weapon.nextReloadTick.toString()},lastFireTick:bot.lastFireTick?.toString()??null,respawnTick:bot.respawnTick?.toString()??null,tick:prepared.snapshot.tick.toString()}))
+      profile.combat={tick:prepared.snapshot.tick.toString(),health:prepared.snapshot.health,lifecycle:prepared.snapshot.lifecycle,
+        scores:prepared.snapshot.scores.map(score=>({...score,respawnTick:score.respawnTick?.toString()??null}))}
     }
     const geometryEvidenceRevision=profile?.geometryEvidenceRevision
     if(profile&&Number.isSafeInteger(geometryEvidenceRevision)&&geometryEvidenceRevision!==((profile.geometryEvidence as {revision?:unknown}|undefined)?.revision)&&this.#view.phase==="Ready"){
@@ -3938,6 +3975,7 @@ export class Tf2Application {
     }
     if (this.#view.consoleVisible || this.#view.optionsVisible || this.#teamSelection?.state().visible
       || this.#view.gameUi !== "in-game" || event.repeat) return
+    if (event.code === "Tab") { event.preventDefault(); this.#scoreboardVisible = true; this.#hudContext = undefined; return }
     const action = this.#keyboardAction(event)
     if (!action) return
     if (action === "changeteam") {
@@ -3955,6 +3993,7 @@ export class Tf2Application {
   }
 
   readonly #keyUp = (event: KeyboardEvent): void => {
+    if (event.code === "Tab") { this.#scoreboardVisible = false; this.#hudContext = undefined }
     this.#buttons.release(`keyboard:${event.code}`)
   }
 

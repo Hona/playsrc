@@ -661,6 +661,29 @@ describe("canonical all-class TF2 session HUD adapter", () => {
     expect(player.liveHudSuppressed).toBeTrue()
   })
 
+  test("maps authoritative critical player kills and health pickups into ordered HUD notices", () => {
+    const source = compactSnapshot(9n, {
+      team: 3,
+      bots: Object.freeze([Object.freeze({ identity: 2, team: 2 as const, class: 1 as const })]),
+      events: Object.freeze([
+        Object.freeze({ kind: 16 as const, detail: 12, subject: 2, auxiliary: 1,
+          values: Object.freeze([0, 1, 1, 0]) as readonly [number, number, number, number] }),
+        Object.freeze({ kind: 18 as const, detail: 1, subject: 1, auxiliary: 45,
+          values: Object.freeze([25, 0, 0, 0]) as readonly [number, number, number, number] }),
+      ]),
+    })
+    const publication = adaptSessionHud(unavailable("initial"), compactPublication(source), context)
+    expect(publication.events).toMatchObject([
+      { tick: 9n, ordinal: 0, kind: "killfeed", notice: { killer: { name: "Player", team: 3 },
+        victim: { name: "Bot 2", team: 2 }, customKill: 1, critical: true,
+        weaponIdentity: { kind: "available", value: 12 } } },
+      { tick: 9n, ordinal: 1, kind: "pickup", notification: { pickupIdentity: 45, pickup: "health",
+        amount: { kind: "available", value: 25 } } },
+    ])
+    const binding = bindTf2Hud(publication)
+    expect(binding.commands.map(command => command.kind)).toEqual(["killfeed-notice", "pickup-notification"])
+  })
+
   test("publishes all nine canonical class models and both team images without inventing weapons", () => {
     const classes = [
       [1, "scout", 125],

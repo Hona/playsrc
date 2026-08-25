@@ -187,6 +187,7 @@ class Integration implements Tf2HudIntegration {
   readonly #baseBounds = new Map<string, Readonly<{ x: number; y: number; width: number; height: number }>>()
   readonly #panels = new Map<string, VguiPanelId>()
   readonly #publishedValues = new Map<string, string>()
+  readonly #deathNotices: Array<{ panel: VguiPanelId; expires: bigint }> = []
   #previous: Tf2HudAvailability<Tf2HudSnapshot> = tf2HudUnavailable("initial")
   #binding: Tf2HudBinding | null = null
   #viewport: VguiViewport
@@ -244,6 +245,7 @@ class Integration implements Tf2HudIntegration {
       ["HudWeaponAmmo", "CTFHudElement"],
       ["HudWeaponSelection", "CTFHudElement"],
       ["HudCrosshair", "CTFHudElement"],
+      ["HudDeathNotice", "CTFHudElement"],
     ] as const
     for (const [name, control] of roots) apply(this.#runtime, { kind: "create-panel", parent: 1, control, name })
     const layout = request.resources.document(HUD_LAYOUT)
@@ -262,9 +264,10 @@ class Integration implements Tf2HudIntegration {
     applyPanelResource(this.#runtime, playerHealth, request.resources.document(HUD_HEALTH), request.resources.activeConditions)
     applyPanelResource(this.#runtime, find(this.#runtime, "HudWeaponAmmo")!, request.resources.document(HUD_AMMO), request.resources.activeConditions)
     applyPanelResource(this.#runtime, find(this.#runtime, "HudWeaponSelection")!, request.resources.document(HUD_WEAPONS), request.resources.activeConditions)
+    apply(this.#runtime, { kind: "create-panel", parent: 1, control: "CTFHudElement", name: "scoreinfo" })
     const panels = this.#runtime.snapshot().panels
     for (const panel of panels) {
-      this.#panels.set(panel.name.toLowerCase(), panel.id)
+      if (!this.#panels.has(panel.name.toLowerCase())) this.#panels.set(panel.name.toLowerCase(), panel.id)
       apply(this.#runtime, { kind: "set-panel-state", panel: panel.id, mouseInput: false, keyboardInput: false })
     }
     this.#captureBaseBounds(panels)
@@ -542,6 +545,29 @@ class Integration implements Tf2HudIntegration {
       apply(this.#runtime, { kind: "set-panel-state", panel: this.#objective.root, visible: false })
       apply(this.#runtime, { kind: "set-panel-state", panel: this.#objective.notification, visible: false })
     }
+    for (let index = this.#deathNotices.length - 1; index >= 0; index -= 1) {
+      const notice = this.#deathNotices[index]!
+      if (notice.expires <= publication.snapshot.tick) {
+        apply(this.#runtime, { kind: "delete-panel", panel: notice.panel, deferred: false })
+        this.#deathNotices.splice(index, 1)
+      }
+    }
+    for (const command of binding.commands) {
+      if (command.kind !== "killfeed-notice") continue
+      const parent = this.#panels.get("huddeathnotice")
+      if (parent === undefined) continue
+      if (this.#deathNotices.length === 4) {
+        apply(this.#runtime, { kind: "delete-panel", panel: this.#deathNotices.shift()!.panel, deferred: false })
+      }
+      const label = apply(this.#runtime, { kind: "create-panel", parent, control: "Label",
+        name: `DeathNotice${command.tick}_${command.ordinal}` })!
+      apply(this.#runtime, { kind: "set-panel-state", panel: parent, visible: true })
+      apply(this.#runtime, { kind: "set-bounds", panel: label, bounds: { x: 0, y: this.#deathNotices.length * 20,
+        width: Math.min(this.#viewport.width, 420), height: 28 } })
+      apply(this.#runtime, { kind: "mutate-control", panel: label, mutation: {
+        text: `${command.notice.killer.name}  ${command.notice.weaponIcon.kind === "available" ? command.notice.weaponIcon.value : ""}  ${command.notice.victim.name}` } })
+      this.#deathNotices.push({ panel: label, expires: command.tick + BigInt(command.notice.localPlayerInvolved ? 800 : 400) })
+    }
     for (const animation of binding.animations) {
       const parent = animation.target === "viewport" ? 1 : find(this.#runtime, animation.target)
       if (parent === null) {
@@ -587,7 +613,7 @@ class Integration implements Tf2HudIntegration {
     const panels = [
       "PlayerStatusHealthImage", "HudWeaponAmmo", "HudWeaponAmmoBG", "modelpanel0",
       "PlayerStatusClassImage", "PlayerStatusClassImageBG", "classmodelpanel", "classmodelpanelBG",
-      "PlayerStatusSpyImage", "PlayerStatusSpyOutlineImage", "PlayerStatus_WheelOfDoom",
+      "PlayerStatusSpyImage", "PlayerStatusSpyOutlineImage", "PlayerStatus_WheelOfDoom", "scoreinfo",
       "HudObjectiveStatus", "ObjectiveStatusFlagPanel", "BlueFlag", "RedFlag", "CarriedImage", "CaptureFlag", "BlueScore", "RedScore", "PlayingTo", "NotificationPanel", "Notification_Label", "WinPanel", "WinningTeamLabel", "WinReasonLabel",
       ...TF2_GROUPED_CONDITION_PANELS.map((item) => item.panel),
       ...TF2_INDEPENDENT_CONDITION_PANELS.map((item) => item.panel),
@@ -673,6 +699,8 @@ class Integration implements Tf2HudIntegration {
       }
       this.#notificationDeadline = 0n
       this.#objectiveCarrying = false
+      for (const notice of this.#deathNotices) apply(this.#runtime, { kind: "delete-panel", panel: notice.panel, deferred: false })
+      this.#deathNotices.length = 0
     })
   }
   destroy(): void {

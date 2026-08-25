@@ -334,7 +334,7 @@ export type EntityEvent = Readonly<{
 }>
 
 export type GameplayEvent = Readonly<{
-  kind: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14
+  kind: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18
   detail: number
   subject: number
   auxiliary: number
@@ -479,6 +479,10 @@ export type BotSnapshot = Readonly<{
   respawnTick: bigint | null
 }>
 
+export type ScoreEntry = Readonly<{ identity: number; team: Tf2Team; kills: number; deaths: number;
+  assists: number; captures: number; headshots: number; backstabs: number; damage: number;
+  killstreak: number; respawnTick: bigint | null }>
+
 export type Snapshot = Readonly<{
   tick: bigint
   class: Tf2Class
@@ -527,6 +531,7 @@ export type Snapshot = Readonly<{
   entityPresentation: EntityPresentation
   authorityBlockers: readonly AuthorityBlocker[]
   bots: readonly BotSnapshot[]
+  scores: readonly ScoreEntry[]
 }>
 
 export class Tf2CodecError extends Error {
@@ -1464,7 +1469,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
       view.getFloat32(item + 20, true),
       view.getFloat32(item + 24, true),
     ]) as readonly [number, number, number, number]
-    if (kind === undefined || kind < 1 || kind > 14 || data[item + 2] !== 0 || data[item + 3] !== 0 || !finite(values))
+    if (kind === undefined || kind < 1 || kind > 18 || data[item + 2] !== 0 || data[item + 3] !== 0 || !finite(values))
       throw new Tf2CodecError("gameplay event record is invalid")
     events.push(
       Object.freeze({
@@ -1781,6 +1786,29 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     }))
   }
   at += botCount * 128
+  requireBytes(4, "combat score count")
+  const scoreCount = view.getUint32(at, true)
+  at += 4
+  if (scoreCount !== botCount + 1 || scoreCount > 32) throw new Tf2CodecError("combat score count is invalid")
+  requireBytes(scoreCount * 48, "combat score")
+  const scores: ScoreEntry[] = []
+  let previousScore = 0
+  for (let index = 0; index < scoreCount; index += 1) {
+    const item = at + index * 48
+    const identity = view.getUint32(item, true), scoreTeam = data[item + 4]
+    if (identity <= previousScore || scoreTeam === undefined || scoreTeam > 3
+      || data[item + 5] !== 0 || data[item + 6] !== 0 || data[item + 7] !== 0)
+      throw new Tf2CodecError("combat score record is invalid")
+    previousScore = identity
+    const respawnTick = view.getBigUint64(item + 40, true)
+    scores.push(Object.freeze({ identity, team: scoreTeam as Tf2Team,
+      kills: view.getUint32(item + 8, true), deaths: view.getUint32(item + 12, true),
+      assists: view.getUint32(item + 16, true), captures: view.getUint32(item + 20, true),
+      headshots: view.getUint32(item + 24, true), backstabs: view.getUint32(item + 28, true),
+      damage: view.getUint32(item + 32, true), killstreak: view.getUint32(item + 36, true),
+      respawnTick: respawnTick === 0xffff_ffff_ffff_ffffn ? null : respawnTick }))
+  }
+  at += scoreCount * 48
   const objectiveResult = decodeObjectives(buffer, base + at, bytes.byteLength - at)
   at += objectiveResult.length
   const objectives = objectiveResult.objectives
@@ -1839,6 +1867,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     entityPresentation,
     authorityBlockers: Object.freeze(authorityBlockers),
     bots: Object.freeze(bots),
+    scores: Object.freeze(scores),
   })
 }
 
