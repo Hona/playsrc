@@ -95,20 +95,20 @@ function reload(value: CompactWeaponState["reload"]): Tf2ReloadPhase {
 
 function weaponName(identity: CompactWeaponState["weapon"]): string {
 
-  return (["", "Rocket Launcher", "Original", "Stickybomb Launcher", "Scattergun", "Pistol", "Bat", "Shotgun", "Shovel", "Minigun", "Shotgun", "Fists", "Sniper Rifle", "SMG", "Kukri"] as const)[identity]
+  return (["", "Rocket Launcher", "Original", "Stickybomb Launcher", "Scattergun", "Pistol", "Bat", "Shotgun", "Shovel", "Minigun", "Shotgun", "Fists", "Sniper Rifle", "SMG", "Kukri", "Flamethrower", "Fire Axe"] as const)[identity]
 }
 
-function weapon(value: CompactWeaponState): Tf2HudWeapon {
-  const totalAmmo = value.weapon === 9 || value.weapon === 12
-  const melee = value.weapon === 6 || value.weapon === 8 || value.weapon === 11 || value.weapon === 14
-  const definition = ([undefined, 18, undefined, undefined, 13, 23, 0, 10, 6, 15, 11, 5, 14, 16, 3] as const)[value.weapon]
+function weapon(value: CompactWeaponState, playerClass: Tf2Class): Tf2HudWeapon {
+  const totalAmmo = value.weapon === 9 || value.weapon === 12 || value.weapon === 15
+  const melee = value.weapon === 6 || value.weapon === 8 || value.weapon === 11 || value.weapon === 14 || value.weapon === 16
+  const definitions = ([undefined, 18, undefined, undefined, 13, 23, 0, 10, 6, 15, 11, 5, 14, 16, 3] as const)
+  const definition = value.weapon === 7 && playerClass === 7 ? 12 : value.weapon === 15 ? 21 : value.weapon === 16 ? 2 : definitions[value.weapon]
 
   return Object.freeze({
     identity: value.weapon,
     itemDefinition: definition === undefined ? tf2HudUnavailable<number>("not-produced") : tf2HudAvailable(definition),
     displayName: weaponName(value.weapon),
-
-    slot: value.weapon === 3 || value.weapon === 5 || value.weapon === 7 || value.weapon === 10 || value.weapon === 13 ? 1 : melee ? 2 : 0,
+   slot: value.weapon === 3 || value.weapon === 5 || value.weapon === 7 || value.weapon === 10 || value.weapon === 13 ? 1 : melee ? 2 : 0,
     position: value.weapon === 2 ? 1 : 0,
     selectable: true,
     ammoDisplay: melee ? "hidden" as const : totalAmmo ? "total" as const : "clip-and-reserve" as const,
@@ -148,7 +148,7 @@ function canonicalSnapshot(snapshot: SessionSnapshot, context: SessionHudContext
       classModel: tf2HudAvailable(classModel(snapshot)),
       health: tf2HudAvailable(health(snapshot)),
       conditions: words,
-      weapons: Object.freeze(snapshot.loadout.map(weapon)),
+      weapons: Object.freeze(snapshot.loadout.map((item) => weapon(item, snapshot.class))),
       activeWeapon: snapshot.weapon === null
         ? tf2HudUnavailable<number>("not-applicable")
         : tf2HudAvailable(snapshot.weapon),
@@ -213,7 +213,7 @@ function compactEventTeam(detail: number): Tf2Team {
 function eventWeapon(snapshot: SessionSnapshot, identity: number): Tf2HudWeapon {
   const value = snapshot.loadout.find((item) => item.weapon === identity)
   if (!value) throw new Tf2HudBindingError("InconsistentPublication", "compact event weapon is absent from its tick")
-  return weapon(value)
+  return weapon(value, snapshot.class)
 }
 
 function integerEventValue(value: number, subject: string): number {
@@ -242,8 +242,12 @@ function mapGameplayEvent(
       push({
         kind: "ammo",
         weapon: state.identity,
-        clip: tf2HudAvailable(integerEventValue(source.values[0], "compact reload clip")),
-        reserve: tf2HudAvailable(integerEventValue(source.values[1], "compact reload reserve")),
+        clip: state.ammoDisplay === "clip-and-reserve"
+          ? tf2HudAvailable(integerEventValue(source.values[0], "compact reload clip"))
+          : tf2HudUnavailable<number>("not-applicable"),
+        reserve: state.ammoDisplay === "hidden"
+          ? tf2HudUnavailable<number>("not-applicable")
+          : tf2HudAvailable(integerEventValue(source.values[1], "compact reload reserve")),
         reload: state.reload,
         cause: "reload",
       })
@@ -253,15 +257,19 @@ function mapGameplayEvent(
       const active = eventWeapon(snapshot, source.detail)
       const restoredActive = Object.freeze({
         ...active,
-        clip: tf2HudAvailable(integerEventValue(source.values[1], "compact regenerate clip")),
-        reserve: tf2HudAvailable(integerEventValue(source.values[2], "compact regenerate reserve")),
+        clip: active.ammoDisplay === "clip-and-reserve"
+          ? tf2HudAvailable(integerEventValue(source.values[1], "compact regenerate clip"))
+          : tf2HudUnavailable<number>("not-applicable"),
+        reserve: active.ammoDisplay === "hidden"
+          ? tf2HudUnavailable<number>("not-applicable")
+          : tf2HudAvailable(integerEventValue(source.values[2], "compact regenerate reserve")),
         reload: "ready" as const,
       })
       push({
         kind: "regenerate",
         zone: tf2HudAvailable(source.subject),
         health: eventHealth(snapshot, source.values[0]),
-        weapons: Object.freeze(snapshot.loadout.map((item) => item.weapon === source.detail ? restoredActive : weapon(item))),
+        weapons: Object.freeze(snapshot.loadout.map((item) => item.weapon === source.detail ? restoredActive : weapon(item, snapshot.class))),
         conditions: conditions(snapshot.conditions),
       })
       break

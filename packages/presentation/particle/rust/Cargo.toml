@@ -9,3 +9,4 @@ path = "src/lib.rs"
 
 [dev-dependencies]
 playsrc-asset-graph = { path = "../../../asset-store/rust" }
+playsrc-vpk = { path = "../../../formats/vpk/rust", default-features = false }

@@ -23,8 +23,7 @@ export type Tf2Hud = Readonly<{
   health: number
   maxHealth: number
   className: Tf2ClassPresentation["displayName"]
-
-  weaponName: "Rocket Launcher" | "Original" | "Stickybomb Launcher" | "Scattergun" | "Pistol" | "Bat" | "Shotgun" | "Shovel" | "Minigun" | "Fists" | "Sniper Rifle" | "SMG" | "Kukri" | null
+ weaponName: "Rocket Launcher" | "Original" | "Stickybomb Launcher" | "Scattergun" | "Pistol" | "Bat" | "Shotgun" | "Shovel" | "Minigun" | "Fists" | "Sniper Rifle" | "SMG" | "Kukri" | "Flamethrower" | "Fire Axe" | null
 
   speed: number
   projectileCount: number
@@ -32,9 +31,7 @@ export type Tf2Hud = Readonly<{
 
 export type Tf2AudioRequest = Readonly<{
   voiceIdentity: number
-
-  definition: "Weapon_RPG.Single" | "Weapon_QuakeRPG.Single" | "Weapon_StickyBombLauncher.Single" | "BaseExplosionEffect.Sound" | "Weapon_QuakeRPG.Explode" | "Weapon_Grenade_Pipebomb.Explode" | "Weapon_Scatter_Gun.Single" | "Weapon_Pistol.Single" | "Weapon_Bat.Miss" | "Weapon_Bat.HitFlesh" | "Weapon_Bat.HitWorld" | "Weapon_Scatter_Gun.WorldReload" | "Weapon_Pistol.WorldReload" | "Weapon_Shotgun.Single" | "Weapon_Shotgun.WorldReload" | "Weapon_Shovel.Miss" | "Weapon_Shovel.HitFlesh" | "Weapon_Shovel.HitWorld" | "Weapon_Minigun.WindUp" | "Weapon_Minigun.WindDown" | "Weapon_Minigun.Spin" | "Weapon_Minigun.Fire" | "Weapon_Fist.Miss" | "Weapon_Fist.HitWorld" | "Weapon_Fist.HitFlesh" | "Weapon_SniperRifle.Single" | "Weapon_SMG.Single" | "Weapon_Machete.Miss" | "Weapon_Machete.HitFlesh" | "Weapon_Machete.HitWorld" | "Weapon_SMG.WorldReload"
-
+ definition: "Weapon_RPG.Single" | "Weapon_QuakeRPG.Single" | "Weapon_StickyBombLauncher.Single" | "BaseExplosionEffect.Sound" | "Weapon_QuakeRPG.Explode" | "Weapon_Grenade_Pipebomb.Explode" | "Weapon_Scatter_Gun.Single" | "Weapon_Pistol.Single" | "Weapon_Bat.Miss" | "Weapon_Bat.HitFlesh" | "Weapon_Bat.HitWorld" | "Weapon_Scatter_Gun.WorldReload" | "Weapon_Pistol.WorldReload" | "Weapon_Shotgun.Single" | "Weapon_Shotgun.WorldReload" | "Weapon_Shovel.Miss" | "Weapon_Shovel.HitFlesh" | "Weapon_Shovel.HitWorld" | "Weapon_Minigun.WindUp" | "Weapon_Minigun.WindDown" | "Weapon_Minigun.Spin" | "Weapon_Minigun.Fire" | "Weapon_Fist.Miss" | "Weapon_Fist.HitWorld" | "Weapon_Fist.HitFlesh" | "Weapon_SniperRifle.Single" | "Weapon_SMG.Single" | "Weapon_Machete.Miss" | "Weapon_Machete.HitFlesh" | "Weapon_Machete.HitWorld" | "Weapon_SMG.WorldReload" | "Weapon_FlameThrower.Fire" | "Weapon_FlameThrower.FireLoop" | "Weapon_FlameThrower.WindDown" | "Weapon_FlameThrower.AirBurstAttack" | "Weapon_FireAxe.Miss" | "Weapon_FireAxe.HitFlesh" | "Weapon_FireAxe.HitWorld"
   source: Readonly<{
     kind: "entity" | "world"
     identity: number
@@ -61,13 +58,12 @@ export function tf2Audio(snapshot: Snapshot): readonly Tf2AudioRequest[] {
     "Weapon_Bat.HitWorld",
     "Weapon_Scatter_Gun.WorldReload",
     "Weapon_Pistol.WorldReload",
-
-    "Weapon_Shotgun.Single",
+   "Weapon_Shotgun.Single",
     "Weapon_Shotgun.WorldReload",
     "Weapon_Shovel.Miss",
     "Weapon_Shovel.HitFlesh",
     "Weapon_Shovel.HitWorld",
-    "Weapon_Minigun.WindUp",
+  "Weapon_Minigun.WindUp",
     "Weapon_Minigun.WindDown",
     "Weapon_Minigun.Spin",
     "Weapon_Minigun.Fire",
@@ -81,6 +77,13 @@ export function tf2Audio(snapshot: Snapshot): readonly Tf2AudioRequest[] {
     "Weapon_Machete.HitWorld",
     "Weapon_SMG.WorldReload",
 
+    "Weapon_FlameThrower.Fire",
+    "Weapon_FlameThrower.FireLoop",
+    "Weapon_FlameThrower.WindDown",
+    "Weapon_FlameThrower.AirBurstAttack",
+    "Weapon_FireAxe.Miss",
+    "Weapon_FireAxe.HitFlesh",
+    "Weapon_FireAxe.HitWorld",
   ]
   return Object.freeze(snapshot.audioEvents.map((event) => Object.freeze({
     voiceIdentity: stable32(`${event.tick}:${event.ordinal}:${event.definition}:${event.sourceIdentity}`),
@@ -187,8 +190,7 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
   let activity = "ACT_VM_DRAW"
   return Object.freeze({
     map(snapshot: Snapshot,view:Readonly<{aspectRatio:number;farPlane:number}>=Object.freeze({aspectRatio:4/3,farPlane:32768})): Readonly<{ item: ModelItem; request: ModelPoseRequest }> {
-
-      if (snapshot.weapon === null || (snapshot.class !== 1 && snapshot.class !== 2 && snapshot.class !== 3 && snapshot.class !== 4 && snapshot.class !== 6)) {
+     if (snapshot.weapon === null || (snapshot.class !== 1 && snapshot.class !== 2 && snapshot.class !== 3 && snapshot.class !== 4 && snapshot.class !== 6 && snapshot.class !== 7)) {
 
         throw new ProjectilePresentationError("MalformedFact", "class has no implemented viewmodel weapon")
       }
@@ -210,14 +212,18 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
               : snapshot.weapon === 8
                 ? "models/weapons/c_models/c_shovel/c_shovel.mdl"
                 : snapshot.weapon === 9
-                  ? "models/weapons/c_models/c_minigun/c_minigun.mdl"
+                ? "models/weapons/c_models/c_minigun/c_minigun.mdl"
                   : snapshot.weapon === 10
                     ? "models/weapons/c_models/c_shotgun/c_shotgun.mdl"
                     : snapshot.weapon === 11
                       ? undefined
-                      : snapshot.class === 3
-                        ? "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl"
-                        : "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl"
+                      : snapshot.weapon === 15
+                        ? "models/weapons/c_models/c_flamethrower/c_flamethrower.mdl"
+                        : snapshot.weapon === 16
+                          ? "models/weapons/c_models/c_fireaxe_pyro/c_fireaxe_pyro.mdl"
+                          : snapshot.class === 3
+                            ? "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl"
+                            : "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl"
       const artifact = artifacts.models.get(identity)
       const itemArtifact = itemIdentity === undefined ? undefined : artifacts.models.get(itemIdentity)
       if (!artifact) throw new ProjectilePresentationError("MissingModel", identity)
@@ -228,8 +234,7 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
       if (!weapon) throw new ProjectilePresentationError("MissingModel", `${identity}:weapon-state`)
       const selectionChanged = prior !== snapshot.weapon || priorClass !== snapshot.class
       const exact = snapshot.activities.filter((event) => event.weapon === snapshot.weapon).at(-1)
-
-      const role = snapshot.weapon === 6 || snapshot.weapon === 8 || snapshot.weapon === 14 ? "MELEE" : snapshot.weapon === 11 ? "FISTS" : snapshot.weapon === 5 || snapshot.weapon === 7 || snapshot.weapon === 10 || snapshot.weapon === 13 || snapshot.class === 4 ? "SECONDARY" : "PRIMARY"
+     const role = snapshot.weapon === 6 || snapshot.weapon === 8 || snapshot.weapon === 14 || snapshot.weapon === 16 ? "MELEE" : snapshot.weapon === 11 ? "FISTS" : snapshot.weapon === 5 || snapshot.weapon === 7 || snapshot.weapon === 10 || snapshot.weapon === 13 || snapshot.class === 4 ? "SECONDARY" : "PRIMARY"
       const mapped = exact === undefined ? undefined : [
         "",
         `ACT_${role}_VM_DRAW`,
@@ -239,6 +244,7 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
         `ACT_${role}_VM_RELOAD`,
         `ACT_${role}_RELOAD_FINISH`,
         `ACT_${role}_VM_IDLE`,
+        `ACT_${role}_VM_SECONDARYATTACK`,
       ][exact.activity]
       let nextActivity = mapped ?? (selectionChanged ? `ACT_${role}_VM_DRAW` : activity)
       let selected = artifact.sequences.find((value) => value.activity === nextActivity)
@@ -259,7 +265,7 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
       const frameTime=Math.max(0,Number(snapshot.tick-priorTick)*0.015)
       priorTick = snapshot.tick
       const now=Number(snapshot.tick)*0.015
-      const phase = exact ? exact.activity - 1 : nextActivity.endsWith("_VM_DRAW") ? 0
+      const phase = exact ? (exact.activity === 7 ? 1 : exact.activity - 1) : nextActivity.endsWith("_VM_DRAW") ? 0
         : nextActivity.endsWith("_VM_PRIMARYATTACK") ? 1
           : nextActivity.endsWith("_RELOAD_START") ? 2
             : nextActivity.endsWith("_VM_RELOAD") ? 3
@@ -612,6 +618,12 @@ export function createParticleBatchEncoder() {
             throw new ProjectilePresentationError("MalformedFact", "particle control-point request is invalid")
           }
           length += 32
+        } else if (request.kind === "set-flame-control-point") {
+          const control=request.controlPoint
+          if(!Number.isInteger(control.index)||control.index<1||control.index>30||!finite(control.position)||!quaternion(control.orientation)||!finite(control.velocity)||![control.radius,control.density,control.duration].every(value=>Number.isFinite(value)&&value>=0)||!uint32(control.ownerIdentity)){
+            throw new ProjectilePresentationError("MalformedFact", "flame control-point request is invalid")
+          }
+          length += 60
         } else if (request.kind === "stop") {
           if (typeof request.immediate !== "boolean") {
             throw new ProjectilePresentationError("MalformedFact", "particle stop mode is invalid")
@@ -635,7 +647,7 @@ export function createParticleBatchEncoder() {
       let at = 32
       for (let index = 0; index < requests.length; index += 1) {
         const request = requests[index]!
-        bytes[at] = request.kind === "start" ? 1 : request.kind === "set-control-point" ? 2 : 3
+        bytes[at] = request.kind === "start" ? 1 : request.kind === "set-control-point" ? 2 : request.kind === "set-flame-control-point" ? 4 : 3
         bytes[at + 1] = request.kind === "stop" && request.immediate ? 1 : 0
         view.setBigUint64(at + 4, requestIdentities[index]!, true)
         view.setFloat32(at + 12, Math.fround(Number(request.tick) * 0.015), true)
@@ -659,6 +671,17 @@ export function createParticleBatchEncoder() {
           control.orientation.forEach((value, index) => view.setFloat32(at + 12 + index * 4, value, true))
           view.setUint32(at + 28, control.ownerIdentity, true)
           at += 32
+        } else if (request.kind === "set-flame-control-point") {
+          const control=request.controlPoint
+          bytes[at]=control.index
+          control.position.forEach((value,index)=>view.setFloat32(at+4+index*4,value,true))
+          control.orientation.forEach((value,index)=>view.setFloat32(at+16+index*4,value,true))
+          control.velocity.forEach((value,index)=>view.setFloat32(at+32+index*4,value,true))
+          view.setFloat32(at+44,control.radius,true)
+          view.setFloat32(at+48,control.density,true)
+          view.setFloat32(at+52,control.duration,true)
+          view.setUint32(at+56,control.ownerIdentity,true)
+          at+=60
         }
       }
       previousTick = tick
@@ -688,8 +711,7 @@ export function tf2Hud(snapshot: Snapshot): Tf2Hud {
     maxHealth: snapshot.maximumHealth,
     className: tf2ClassPresentation(snapshot.class).displayName,
     weaponName: snapshot.weapon === null ? null
-
-      : (["", "Rocket Launcher", "Original", "Stickybomb Launcher", "Scattergun", "Pistol", "Bat", "Shotgun", "Shovel", "Minigun", "Shotgun", "Fists", "Sniper Rifle", "SMG", "Kukri"] as const)[snapshot.weapon],
+     : (["", "Rocket Launcher", "Original", "Stickybomb Launcher", "Scattergun", "Pistol", "Bat", "Shotgun", "Shovel", "Minigun", "Shotgun", "Fists", "Sniper Rifle", "SMG", "Kukri", "Flamethrower", "Fire Axe"] as const)[snapshot.weapon],
 
     speed: Math.hypot(...snapshot.velocity),
     projectileCount: snapshot.projectiles.length,
@@ -804,6 +826,16 @@ export type ParticleControlPoint = Readonly<{
   orientation: Quaternion
   ownerIdentity: number
 }>
+export type FlameControlPoint = Readonly<{
+  index: number
+  position: Vector3
+  orientation: Quaternion
+  velocity: Vector3
+  radius: number
+  density: number
+  duration: number
+  ownerIdentity: number
+}>
 
 export type ProjectileParticleRequest =
   | Readonly<{
@@ -828,6 +860,15 @@ export type ProjectileParticleRequest =
       tick: bigint
       projectileIdentity: number
       controlPoint: ParticleControlPoint
+    }>
+  | Readonly<{
+      kind: "set-flame-control-point"
+      identity: string
+      effectIdentity: string
+      eventIdentity: string
+      tick: bigint
+      projectileIdentity: number
+      controlPoint: FlameControlPoint
     }>
   | Readonly<{
       kind: "stop"

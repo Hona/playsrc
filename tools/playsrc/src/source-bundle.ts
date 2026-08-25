@@ -207,6 +207,39 @@ async function readVerifiedGraph(
   }
 }
 
+async function immutableBundlePaths(
+  directory: string,
+  paths: Readonly<{ graphPath: string; graphObjectDirectory: string; ledgerPath: string }>,
+  report: SourceBundleArtifact["report"],
+): Promise<Readonly<{ graphPath: string; graphObjectDirectory: string; ledgerPath: string }>> {
+  const snapshots = path.join(directory, "immutable-roots")
+  await mkdir(snapshots, { recursive: true })
+  const retain = async (source: string, identity: ObjectDescriptor): Promise<string> => {
+    const destination = path.join(snapshots, identity.sha256)
+    try {
+      const existing = await readFile(destination)
+      if (String(existing.byteLength) === identity.byteLength && sha256(existing) === identity.sha256) return destination
+    } catch {}
+    const bytes = await readFile(source)
+    if (String(bytes.byteLength) !== identity.byteLength || sha256(bytes) !== identity.sha256) {
+      throw new Error("source bundle root changed before its immutable snapshot")
+    }
+    const temporary = `${destination}.${process.pid}.tmp`
+    try {
+      await writeFile(temporary, bytes)
+      await rename(temporary, destination)
+    } finally {
+      await rm(temporary, { force: true })
+    }
+    return destination
+  }
+  const [graphPath, ledgerPath] = await Promise.all([
+    retain(paths.graphPath, report.graphDescriptor),
+    retain(paths.ledgerPath, report.ledgerDescriptor),
+  ])
+  return Object.freeze({ graphPath, ledgerPath, graphObjectDirectory: paths.graphObjectDirectory })
+}
+
 export async function buildSourceBundle(config: LocalConfig, target: string): Promise<SourceBundleArtifact> {
   const executable = process.platform === "win32" ? "cargo.exe" : "cargo"
   const cargo = path.join(config.sourceCacheDir, "toolchains", "rust", "cargo", "bin", executable)
@@ -246,7 +279,7 @@ export async function buildSourceBundle(config: LocalConfig, target: string): Pr
     const cached = parseSourceBundleCache(await readFile(cachePath, "utf8"), target, generatorSha256)
     const cachedGraph = cached ? await readVerifiedGraph(paths, cached) : null
     if (cached && cachedGraph?.graph) {
-      return Object.freeze({ ...paths, graph: cachedGraph.graph, report: cached })
+      return Object.freeze({ ...await immutableBundlePaths(directory, paths, cached), graph: cachedGraph.graph, report: cached })
     }
   } catch {}
 
@@ -292,5 +325,5 @@ export async function buildSourceBundle(config: LocalConfig, target: string): Pr
   } finally {
     await rm(temporary, { force: true })
   }
-  return Object.freeze({ ...paths, graph, report })
+  return Object.freeze({ ...await immutableBundlePaths(directory, paths, report), graph, report })
 }

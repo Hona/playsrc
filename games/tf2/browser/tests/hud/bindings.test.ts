@@ -729,7 +729,7 @@ describe("canonical all-class TF2 session HUD adapter", () => {
     }
   })
 
-  test("publishes distinct Heavy stock item identities, total Minigun ammo, and hidden Fists ammo", () => {
+test("publishes distinct Heavy stock item identities, total Minigun ammo, and hidden Fists ammo", () => {
     const loadout = Object.freeze([
       Object.freeze({ weapon: 9 as const, reload: 0 as const, clip: 0, reserve: 200, maximumClip: 0, maximumReserve: 200 }),
       Object.freeze({ weapon: 10 as const, reload: 0 as const, clip: 6, reserve: 32, maximumClip: 6, maximumReserve: 32 }),
@@ -750,6 +750,25 @@ describe("canonical all-class TF2 session HUD adapter", () => {
       expect(value(binding.values, "dialog-variable", "HudWeaponAmmo", "Ammo")).toMatchObject({
         value: active === 11 ? { kind: "unavailable" } : { kind: "available", value: active === 9 ? 200 : 6 },
       })
+    }
+  })
+
+  test("publishes Pyro stock identities, shared Shotgun definition, fuel-only ammo, and hidden Fire Axe ammo", () => {
+    const loadout=Object.freeze([
+      Object.freeze({weapon:7 as const,reload:0 as const,clip:6,reserve:32,maximumClip:6,maximumReserve:32}),
+      Object.freeze({weapon:15 as const,reload:0 as const,clip:0,reserve:200,maximumClip:0,maximumReserve:200}),
+      Object.freeze({weapon:16 as const,reload:0 as const,clip:0,reserve:0,maximumClip:0,maximumReserve:0}),
+    ])
+    for(const active of [15,7,16] as const){
+      const source=compactSnapshot(1n,{class:7,weapon:active,health:175,maximumHealth:175,loadout})
+      const binding=bindTf2Hud(adaptSessionHud(unavailable("initial"),compactPublication(source),context))
+      const player=(binding.facts.player as Extract<Tf2HudSnapshot["player"],{kind:"available"}>).value
+      expect(player.weapons.map(item=>({identity:item.identity,item:item.itemDefinition,slot:item.slot,name:item.displayName,ammo:item.ammoDisplay}))).toEqual([
+        {identity:7,item:{kind:"available",value:12},slot:1,name:"Shotgun",ammo:"clip-and-reserve"},
+        {identity:15,item:{kind:"available",value:21},slot:0,name:"Flamethrower",ammo:"total"},
+        {identity:16,item:{kind:"available",value:2},slot:2,name:"Fire Axe",ammo:"hidden"},
+      ])
+      expect(value(binding.values,"visible","HudWeaponAmmo")).toMatchObject({value:active!==16})
     }
   })
 

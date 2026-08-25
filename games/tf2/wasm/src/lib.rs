@@ -3996,6 +3996,17 @@ fn encode_snapshot(
     }
     u32_field(&mut out, producer.player_flags, MAX)?;
     u32_field(&mut out, snapshot.movement.water_type, MAX)?;
+    u32_field(
+        &mut out,
+        u32::try_from(producer.flame_points.len()).ok()?,
+        MAX,
+    )?;
+    u32_field(
+        &mut out,
+        u32::try_from(producer.shotgun_pellets.len()).ok()?,
+        MAX,
+    )?;
+    u32_field(&mut out, u32::from(producer.flame_firing), MAX)?;
     extend(&mut out, &movement, MAX)?;
     for state in &producer.weapons {
         let profile = state.profile();
@@ -4013,6 +4024,32 @@ fn encode_snapshot(
         u64_field(&mut out, state.charge_begin_tick.unwrap_or(u64::MAX), MAX)?;
         u64_field(&mut out, state.first_primary_tick, MAX)?;
         f32_field(&mut out, state.charged_damage, MAX)?;
+    }
+    for point in &producer.flame_points {
+        extend(&mut out, &[point.slot, point.walls_hit, 0, 0], MAX)?;
+        u64_field(&mut out, point.spawn_tick, MAX)?;
+        floats(
+            &mut out,
+            [point.spawn_time, point.lifetime]
+                .into_iter()
+                .chain(point.initial_position)
+                .chain(point.previous_position)
+                .chain(point.position)
+                .chain(point.velocity)
+                .chain(point.attacker_velocity),
+            MAX,
+        )?;
+    }
+    for pellet in &producer.shotgun_pellets {
+        extend(&mut out, &[pellet.index, 0, 0, 0], MAX)?;
+        floats(
+            &mut out,
+            pellet
+                .direction
+                .into_iter()
+                .chain([pellet.damage, pellet.range]),
+            MAX,
+        )?;
     }
     for projectile in &snapshot.projectiles {
         u32_field(&mut out, projectile.identity, MAX)?;
@@ -4123,6 +4160,7 @@ fn encode_snapshot(
                     playsrc_tf2::weapon::WeaponActivity::ReloadLoop => 4,
                     playsrc_tf2::weapon::WeaponActivity::ReloadFinish => 5,
                     playsrc_tf2::weapon::WeaponActivity::Idle => 6,
+                    playsrc_tf2::weapon::WeaponActivity::SecondaryAttack => 7,
                 },
                 0,
                 0,
@@ -4439,8 +4477,10 @@ fn encode_random_state(state: playsrc_tf2::Tf2RandomState) -> Option<Vec<u8>> {
         }
     }
     output.extend_from_slice(&[
-        state.sound_selection.rocket_explosion_available,
-        state.sound_selection.sticky_explosion_available,
+        state.sound_selection.rocket_explosion_available
+            | state.sound_selection.fire_axe_hit_world_available << 3,
+        state.sound_selection.sticky_explosion_available
+            | state.sound_selection.fire_axe_hit_flesh_available << 3,
         state.sound_selection.bat_hit_world_available,
         state.sound_selection.shovel_hit_world_available
             | state.sound_selection.shovel_hit_flesh_available << 2,
@@ -4487,6 +4527,13 @@ fn sound_definition_code(value: playsrc_tf2::SoundDefinition) -> u8 {
         playsrc_tf2::SoundDefinition::KukriHitFlesh => 29,
         playsrc_tf2::SoundDefinition::KukriHitWorld => 30,
         playsrc_tf2::SoundDefinition::SmgReload => 31,
+        playsrc_tf2::SoundDefinition::FlameFire => 32,
+        playsrc_tf2::SoundDefinition::FlameLoop => 33,
+        playsrc_tf2::SoundDefinition::FlameEnd => 34,
+        playsrc_tf2::SoundDefinition::FlameAirblast => 35,
+        playsrc_tf2::SoundDefinition::FireAxeMiss => 36,
+        playsrc_tf2::SoundDefinition::FireAxeHitFlesh => 37,
+        playsrc_tf2::SoundDefinition::FireAxeHitWorld => 38,
     }
 }
 
@@ -4829,6 +4876,8 @@ fn weapon_code(weapon: playsrc_tf2::Weapon) -> u8 {
         playsrc_tf2::Weapon::SniperRifle => 12,
         playsrc_tf2::Weapon::Smg => 13,
         playsrc_tf2::Weapon::Kukri => 14,
+        playsrc_tf2::Weapon::Flamethrower => 15,
+        playsrc_tf2::Weapon::FireAxe => 16,
     }
 }
 fn projectile_code(kind: playsrc_tf2::ProjectileKind) -> u8 {
@@ -7976,6 +8025,13 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>) -
         "Weapon_Fist.Miss",
         "Weapon_Fist.HitWorld",
         "Weapon_Fist.HitFlesh",
+        "Weapon_FlameThrower.Fire",
+        "Weapon_FlameThrower.FireLoop",
+        "Weapon_FlameThrower.WindDown",
+        "Weapon_FlameThrower.AirBurstAttack",
+        "Weapon_FireAxe.Miss",
+        "Weapon_FireAxe.HitFlesh",
+        "Weapon_FireAxe.HitWorld",
     ];
     let nodes = targets
         .iter()
@@ -8288,6 +8344,9 @@ fn load_cached_presentation(
         "models/weapons/c_models/c_sniperrifle/c_sniperrifle.mdl".to_owned(),
         "models/weapons/c_models/c_smg/c_smg.mdl".to_owned(),
         "models/weapons/c_models/c_machete/c_machete.mdl".to_owned(),
+        "models/weapons/c_models/c_pyro_arms.mdl".to_owned(),
+        "models/weapons/c_models/c_flamethrower/c_flamethrower.mdl".to_owned(),
+        "models/weapons/c_models/c_fireaxe_pyro/c_fireaxe_pyro.mdl".to_owned(),
     ]);
     let expected = graph
         .entities
@@ -8513,6 +8572,9 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
         "models/weapons/c_models/c_sniperrifle/c_sniperrifle.mdl".to_owned(),
         "models/weapons/c_models/c_smg/c_smg.mdl".to_owned(),
         "models/weapons/c_models/c_machete/c_machete.mdl".to_owned(),
+        "models/weapons/c_models/c_pyro_arms.mdl".to_owned(),
+        "models/weapons/c_models/c_flamethrower/c_flamethrower.mdl".to_owned(),
+        "models/weapons/c_models/c_fireaxe_pyro/c_fireaxe_pyro.mdl".to_owned(),
     ]);
     for e in &graph.entities {
         if e.classname
@@ -8547,6 +8609,9 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
                     | "models/weapons/c_models/c_sniperrifle/c_sniperrifle.mdl"
                     | "models/weapons/c_models/c_smg/c_smg.mdl"
                     | "models/weapons/c_models/c_machete/c_machete.mdl"
+                    | "models/weapons/c_models/c_pyro_arms.mdl"
+                    | "models/weapons/c_models/c_flamethrower/c_flamethrower.mdl"
+                    | "models/weapons/c_models/c_fireaxe_pyro/c_fireaxe_pyro.mdl"
             ) {
                 playsrc_studio_model::PresentationProfile::ViewModel
             } else {
@@ -10501,6 +10566,7 @@ fn compile_particles(
         "particles/stickybomb.pcf",
         "particles/muzzle_flash.pcf",
         "particles/explosion.pcf",
+        "particles/flamethrower.pcf",
     ];
     let sources = paths
         .iter()
@@ -10527,6 +10593,12 @@ fn compile_particles(
         "muzzle_shotgun",
         "ExplosionCore_Wall",
         "ExplosionCore_MidAir",
+        "new_flame",
+        "new_flame_crit_red",
+        "new_flame_crit_blue",
+        "flamethrower_underwater",
+        "pyro_blast",
+        "muzzle_shotgun",
     ]
     .map(playsrc_particle::DefinitionLookup::Name);
     let materials = registry.target_closure(&roots).map_err(|_| ())?.materials;
@@ -10763,6 +10835,37 @@ impl<'a> ParticleReader<'a> {
         }
         String::from_utf8(self.take(n)?.to_vec()).map_err(|_| ())
     }
+    fn flame_cp(&mut self) -> Result<playsrc_particle::ControlPoint, ()> {
+        let index = self.u8()?;
+        if !(1..=30).contains(&index) || self.take(3)? != [0, 0, 0] {
+            return Err(());
+        }
+        let position = [self.f32()?, self.f32()?, self.f32()?];
+        let orientation = [self.f32()?, self.f32()?, self.f32()?, self.f32()?];
+        let velocity = [self.f32()?, self.f32()?, self.f32()?];
+        let radius = self.f32()?;
+        let density = self.f32()?;
+        let duration = self.f32()?;
+        if radius < 0.0 || density < 0.0 || duration < 0.0 {
+            return Err(());
+        }
+        Ok(playsrc_particle::ControlPoint {
+            index,
+            position,
+            previous_position: position,
+            orientation,
+            velocity,
+            radius,
+            density,
+            duration,
+            parent: None,
+            object_identity: match self.u32()? {
+                u32::MAX => None,
+                value => Some(value),
+            },
+        })
+    }
+
     fn cp(&mut self) -> Result<playsrc_particle::ControlPoint, ()> {
         let position = [self.f32()?, self.f32()?, self.f32()?];
         let orientation = [self.f32()?, self.f32()?, self.f32()?, self.f32()?];
@@ -10772,6 +10875,9 @@ impl<'a> ParticleReader<'a> {
             previous_position: position,
             orientation,
             velocity: [0.0; 3],
+            radius: 0.0,
+            density: 1.0,
+            duration: 0.0,
             parent: None,
             object_identity: match self.u32()? {
                 u32::MAX => None,
@@ -10844,6 +10950,10 @@ fn decode_particle_transaction(
                     _ => return Err(()),
                 },
             },
+            4 => playsrc_particle::EventCommand::SetControlPoint {
+                effect_identity,
+                control_point: r.flame_cp()?,
+            },
             _ => return Err(()),
         };
         events.push(playsrc_particle::Event {
@@ -10906,6 +11016,80 @@ fn with<T>(handle: u32, read: impl FnOnce(&Slot) -> T) -> Option<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires the exact configured Pyro source graph"]
+    fn configured_pyro_particle_materials_compile() {
+        let graph = std::env::var("PLAYSRC_PYRO_GRAPH").expect("configured Pyro graph path");
+        let bytes =
+            playsrc_asset_graph::read_resource_set(std::path::Path::new(&graph), None).unwrap();
+        let resources = bundle(&bytes).unwrap();
+        let decoders = TextureDecoders::new(&resources);
+        let paths = [
+            "particles/rockettrail.pcf",
+            "particles/rocketbackblast.pcf",
+            "particles/stickybomb.pcf",
+            "particles/muzzle_flash.pcf",
+            "particles/explosion.pcf",
+            "particles/flamethrower.pcf",
+        ];
+        let sources = paths.map(|path| playsrc_particle::PcfSource {
+            logical_path: path,
+            bytes: resources[path],
+        });
+        let registry = playsrc_particle::Registry::from_pcf(
+            &sources,
+            playsrc_particle::RegistryLimits::default(),
+        )
+        .unwrap();
+        let roots = [
+            "rockettrail",
+            "rocketbackblast",
+            "stickybombtrail_red",
+            "stickybombtrail_blue",
+            "stickybomb_pulse_red",
+            "stickybomb_pulse_blue",
+            "muzzle_pipelauncher",
+            "ExplosionCore_Wall",
+            "ExplosionCore_MidAir",
+            "new_flame",
+            "new_flame_crit_red",
+            "new_flame_crit_blue",
+            "flamethrower_underwater",
+            "pyro_blast",
+            "muzzle_shotgun",
+        ]
+        .map(playsrc_particle::DefinitionLookup::Name);
+        for identity in registry.target_closure(&roots).unwrap().materials {
+            let path = dependency_path(identity.as_bytes()).unwrap();
+            let material = resolve_material_semantics(
+                &path,
+                &resources,
+                playsrc_material::SelectionEnvironment::default(),
+            )
+            .unwrap_or_else(|_| panic!("material {identity}"));
+            let (selected, _, metadata) =
+                selected_texture(&material, &decoders).unwrap_or_else(|_| {
+                    panic!(
+                        "selected texture {identity}: shader={:?} selected={:?} textures={:?}",
+                        material.shader, material.selected_textures, material.textures
+                    )
+                });
+            let texture = selected.logical_path.as_ref().unwrap().to_ascii_lowercase();
+            rgba_texture(&texture, &decoders)
+                .unwrap_or_else(|_| panic!("rgba texture {identity}: {texture}"));
+            playsrc_material::static_state(
+                &material,
+                playsrc_material::TextureAlphaFacts {
+                    base: metadata.alpha_flags.one_bit || metadata.alpha_flags.eight_bit,
+                },
+            )
+            .unwrap_or_else(|error| panic!("static state {identity}: {error:?}"));
+            decode_particle_sheet(metadata)
+                .unwrap_or_else(|_| panic!("particle sheet {identity}: {texture}"));
+        }
+        assert!(compile_particles(&resources, &decoders).is_ok());
+    }
 
     #[test]
     fn texture_decoders_inspect_each_immutable_source_once_even_across_parallel_consumers() {
@@ -11440,6 +11624,9 @@ mod tests {
                 rezoom_due_tick: None,
                 rezoom_after_shot: false,
             }],
+            flame_points: Vec::new(),
+            shotgun_pellets: Vec::new(),
+            flame_firing: false,
             projectiles: vec![projectile],
             activities: vec![playsrc_tf2::weapon::ActivityEvent {
                 tick: 9,
@@ -11473,6 +11660,8 @@ mod tests {
                 fist_hit_flesh_available: 7,
                 kukri_hit_flesh_available: 0b111,
                 kukri_hit_world_available: 0b11,
+                fire_axe_hit_world_available: 3,
+                fire_axe_hit_flesh_available: 7,
             },
         };
         let mut collision_snapshot = b"CSNP".to_vec();
@@ -11506,7 +11695,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(&encoded[..8], b"PSSN\x0c\0\0\0");
-        assert_eq!(encoded.len(), 916);
+        assert_eq!(encoded.len(), 928);
         assert_eq!(
             u32::from_le_bytes(encoded[160..164].try_into().unwrap()),
             playsrc_tf2::FL_CLIENT | playsrc_tf2::FL_INWATER
@@ -11514,10 +11703,10 @@ mod tests {
         assert_eq!(u32::from_le_bytes(encoded[56..60].try_into().unwrap()), 1);
         assert_eq!(u32::from_le_bytes(encoded[60..64].try_into().unwrap()), 1);
         assert_eq!(u32::from_le_bytes(encoded[64..68].try_into().unwrap()), 1);
-        assert_eq!(&encoded[312..316], &[12, 0, 0, 0]);
-        assert_eq!(&encoded[396..400], &[6, 1, 3, 0]);
-        assert_eq!(&encoded[532..540], &[1, 1, 0, 0, 2, 1, 0, 0]);
-        assert_eq!(&encoded[540..548], b"PRNG\x01\0\0\0");
+        assert_eq!(&encoded[324..328], &[12, 0, 0, 0]);
+        assert_eq!(&encoded[408..412], &[6, 1, 3, 0]);
+        assert_eq!(&encoded[544..552], &[1, 1, 0, 0, 2, 1, 0, 0]);
+        assert_eq!(&encoded[552..560], b"PRNG\x01\0\0\0");
     }
 
     #[test]

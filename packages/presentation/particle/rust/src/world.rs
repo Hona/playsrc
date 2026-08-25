@@ -50,6 +50,9 @@ pub struct ControlPoint {
     pub previous_position: [f32; 3],
     pub orientation: [f32; 4],
     pub velocity: [f32; 3],
+    pub radius: f32,
+    pub density: f32,
+    pub duration: f32,
     pub parent: Option<u8>,
     pub object_identity: Option<u32>,
 }
@@ -594,6 +597,7 @@ struct System {
     emitter_contexts: Vec<EmitterContext>,
     operator_contexts: Vec<OperatorContext>,
     controls: Vec<Option<ControlPoint>>,
+    target_control_point: u8,
     particles: Vec<Particle>,
     children: Vec<System>,
 }
@@ -618,6 +622,7 @@ struct Particle {
     sequence: i32,
     secondary_sequence: i32,
     trail_length: f32,
+    target_control_point: u8,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1258,6 +1263,11 @@ fn instantiate(
         emitter_contexts,
         operator_contexts,
         controls: state.controls.to_vec(),
+        target_control_point: state
+            .controls
+            .iter()
+            .rposition(Option::is_some)
+            .unwrap_or(0) as u8,
         particles: Vec::new(),
         children,
     })
@@ -1463,6 +1473,7 @@ fn initialize_particle(system: &mut System, definition: &Definition, creation: f
         sequence: integer_attribute(definition, &["sequence_number"], 0),
         secondary_sequence: integer_attribute(definition, &["sequence_number 1"], 0),
         trail_length: 0.1,
+        target_control_point: 0,
     };
     let mut velocity = [0.0; 3];
     let mut claimed = BTreeSet::new();
@@ -1473,6 +1484,12 @@ fn initialize_particle(system: &mut System, definition: &Definition, creation: f
             || initializer
                 .identity
                 .eq_ignore_ascii_case("Rotation Speed Random")
+            || initializer
+                .identity
+                .eq_ignore_ascii_case("Remap Initial Scalar")
+            || initializer
+                .identity
+                .eq_ignore_ascii_case("Remap Scalar to Vector")
         {
             continue;
         }
@@ -1480,7 +1497,37 @@ fn initialize_particle(system: &mut System, definition: &Definition, creation: f
         if attribute.is_some_and(|attribute| !claimed.insert(attribute)) {
             continue;
         }
-        if initializer.identity.eq_ignore_ascii_case("Lifetime Random") {
+        if initializer
+            .identity
+            .eq_ignore_ascii_case("Assign target CP")
+        {
+            let minimum = integer_parameter(initializer, "starting control point", 0);
+            let maximum = integer_parameter(initializer, "maximum end control point", 0);
+            particle.target_control_point = if minimum <= maximum {
+                i32::from(system.target_control_point).clamp(minimum, maximum) as u8
+            } else {
+                maximum as u8
+            };
+        } else if initializer
+            .identity
+            .eq_ignore_ascii_case("Lifetime From Control Point Life Time")
+        {
+            let minimum = integer_parameter(initializer, "starting control point", 0);
+            let maximum = integer_parameter(initializer, "maximum end control point", 0);
+            let target = i32::from(particle.target_control_point).clamp(minimum, maximum);
+            particle.lifetime_seconds = system
+                .controls
+                .get(target as usize)
+                .and_then(Option::as_ref)
+                .map_or(0.0, |control| control.duration);
+        } else if initializer
+            .identity
+            .eq_ignore_ascii_case("Rotation Yaw Flip Random")
+        {
+            if next_random(system) < float_parameter(initializer, "Flip Percentage", 0.5) {
+                particle.yaw += std::f32::consts::PI;
+            }
+        } else if initializer.identity.eq_ignore_ascii_case("Lifetime Random") {
             particle.lifetime_seconds = ranged(
                 float_parameter(initializer, "lifetime_min", 0.0),
                 float_parameter(initializer, "lifetime_max", 0.0),
@@ -1574,9 +1621,16 @@ fn initialize_particle(system: &mut System, definition: &Definition, creation: f
                 float_parameter(initializer, "distance_max", 0.0),
                 unit_radius,
             );
-            for component in 0..3 {
-                particle.position[component] = cp[component] + direction[component] * distance;
-            }
+            let offset = mul(direction, distance);
+            let offset = if bool_parameter(initializer, "bias in local system", false)
+                && distance_bias != [1.0; 3]
+            {
+                control_orientation(system, cp_index)
+                    .map_or(offset, |orientation| rotate(orientation, offset))
+            } else {
+                offset
+            };
+            particle.position = add(cp, offset);
             velocity = [0.0; 3];
             let speed_maximum = float_parameter(initializer, "speed_max", 0.0);
             if speed_maximum > 0.0 {
@@ -1671,10 +1725,10 @@ fn initialize_particle(system: &mut System, definition: &Definition, creation: f
             let mut output =
                 std::array::from_fn(|index| mix(minimum[index], maximum[index], fraction));
             let control = integer_parameter(initializer, "control_point_number", 0);
-            if bool_parameter(initializer, "use local system", true) {
-                if let Some(orientation) = control_orientation(system, control) {
-                    output = rotate(orientation, output);
-                }
+            if bool_parameter(initializer, "use local system", true)
+                && let Some(orientation) = control_orientation(system, control)
+            {
+                output = rotate(orientation, output);
             }
             output = add(control_at_time(system, control, creation), output);
             if bool_parameter(
@@ -1732,6 +1786,102 @@ fn initialize_particle(system: &mut System, definition: &Definition, creation: f
                 speed = -speed;
             }
             particle.roll_speed += speed.to_radians();
+        } else if initializer
+            .identity
+            .eq_ignore_ascii_case("Remap Initial Scalar")
+        {
+            let start = float_parameter(initializer, "emitter lifetime start time (seconds)", -1.0);
+            let end = float_parameter(initializer, "emitter lifetime end time (seconds)", -1.0);
+            if start != -1.0 && end != -1.0 && (creation < start || creation >= end) {
+                continue;
+            }
+            let input_field = integer_parameter(initializer, "input field", 8);
+            let Some(input) = particle_scalar(&particle, input_field) else {
+                continue;
+            };
+            let minimum = float_parameter(initializer, "input minimum", 0.0);
+            let maximum = float_parameter(initializer, "input maximum", 1.0);
+            if bool_parameter(
+                initializer,
+                "only active within specified input range",
+                false,
+            ) && (input < minimum || input > maximum)
+            {
+                continue;
+            }
+            let field = integer_parameter(initializer, "output field", 3);
+            let output_min = float_parameter(initializer, "output minimum", 0.0);
+            let output_max = float_parameter(initializer, "output maximum", 1.0);
+            let output_min = if field == 7 {
+                output_min.clamp(0.0, 1.0)
+            } else {
+                output_min
+            };
+            let output_max = if field == 7 {
+                output_max.clamp(0.0, 1.0)
+            } else {
+                output_max
+            };
+            let mut output = mix(output_min, output_max, remap(input, minimum, maximum));
+            if bool_parameter(
+                initializer,
+                "output is scalar of initial random range",
+                false,
+            ) {
+                output *= particle_scalar(&particle, field).unwrap_or(0.0);
+            }
+            set_particle_scalar(&mut particle, field, output);
+        } else if initializer
+            .identity
+            .eq_ignore_ascii_case("Remap Scalar to Vector")
+        {
+            let start = float_parameter(initializer, "emitter lifetime start time (seconds)", -1.0);
+            let end = float_parameter(initializer, "emitter lifetime end time (seconds)", -1.0);
+            if start != -1.0 && end != -1.0 && (creation < start || creation >= end) {
+                continue;
+            }
+            let Some(input) =
+                particle_scalar(&particle, integer_parameter(initializer, "input field", 8))
+            else {
+                continue;
+            };
+            let fraction = remap(
+                input,
+                float_parameter(initializer, "input minimum", 0.0),
+                float_parameter(initializer, "input maximum", 1.0),
+            );
+            let minimum = vector_parameter(initializer, "output minimum", [0.0; 3]);
+            let maximum = vector_parameter(initializer, "output maximum", [1.0; 3]);
+            let mut output = [
+                mix(minimum[0], maximum[0], fraction),
+                mix(minimum[1], maximum[1], fraction),
+                mix(minimum[2], maximum[2], fraction),
+            ];
+            let field = integer_parameter(initializer, "output field", 0);
+            if field == 0 {
+                let cp = integer_parameter(initializer, "control_point_number", 0);
+                if bool_parameter(initializer, "use local system", true) {
+                    output = control_orientation(system, cp)
+                        .map_or(output, |orientation| rotate(orientation, output));
+                }
+                output = add(control_at_time(system, cp, creation), output);
+            }
+            if bool_parameter(
+                initializer,
+                "output is scalar of initial random range",
+                false,
+            ) {
+                let initial = particle_vector(&particle, field).unwrap_or([0.0; 3]);
+                output = [
+                    output[0] * initial[0],
+                    output[1] * initial[1],
+                    output[2] * initial[2],
+                ];
+            }
+            set_particle_vector(&mut particle, field, output);
+            if field == 0 {
+                velocity = [0.0; 3];
+            }
         }
     }
     particle.previous_position = sub(particle.position, mul(velocity, system.previous_step));
@@ -1788,6 +1938,7 @@ fn operate(
             None
         };
         let random_offset = (function_index as i32).wrapping_mul(17);
+        let controls = &system.controls;
         for particle in &mut system.particles {
             let age = (time - particle.creation_seconds).max(0.0);
             let life = if particle.lifetime_seconds > 0.0 {
@@ -1821,6 +1972,37 @@ fn operate(
                         mix(particle.initial_alpha, particle.initial_alpha * end, value);
                 }
                 particle.alpha = particle.alpha.clamp(0.0, 1.0);
+            } else if operator
+                .identity
+                .eq_ignore_ascii_case("Alpha Fade Out Random")
+            {
+                let duration = source_random_exp(
+                    random_seed,
+                    particle.identity as i32 + random_offset,
+                    float_parameter(operator, "fade out time min", 0.25),
+                    float_parameter(operator, "fade out time max", 0.25),
+                    float_parameter(operator, "fade out time exponent", 1.0),
+                )
+                .max(f32::EPSILON);
+                let proportional = bool_parameter(operator, "proportional 0/1", true);
+                let (elapsed, fade_start) = if proportional {
+                    (life, 1.0 - duration)
+                } else {
+                    (age, particle.lifetime_seconds - duration)
+                };
+                if elapsed > fade_start {
+                    let mut fraction = remap(elapsed, fade_start, fade_start + duration);
+                    if bool_parameter(operator, "ease in and out", true) {
+                        fraction = spline(fraction);
+                    } else {
+                        fraction = bias(fraction, float_parameter(operator, "fade bias", 0.5));
+                    }
+                    particle.alpha = (particle.initial_alpha * (1.0 - fraction)).max(0.0);
+                }
+            } else if operator.identity.eq_ignore_ascii_case("Lifespan Decay") {
+                if age >= particle.lifetime_seconds {
+                    particle.lifetime_seconds = 0.0;
+                }
             } else if operator.identity.eq_ignore_ascii_case("Radius Scale") {
                 let start_time = float_parameter(operator, "start_time", 0.0);
                 let end_time = float_parameter(operator, "end_time", 1.0);
@@ -1915,6 +2097,165 @@ fn operate(
                 let movement = mul(delta, strength * lock * creation_bias);
                 particle.position = add(particle.position, movement);
                 particle.previous_position = add(particle.previous_position, movement);
+            } else if operator.identity.eq_ignore_ascii_case("Movement Follow CP") {
+                let minimum = integer_parameter(operator, "starting control point", 0);
+                let maximum = integer_parameter(operator, "maximum end control point", 0);
+                let index = i32::from(particle.target_control_point).clamp(minimum, maximum);
+                let Some(control) = controls.get(index as usize).and_then(Option::as_ref) else {
+                    continue;
+                };
+                let delta = sub(control.position, particle.position);
+                let distance = length_squared(delta).sqrt();
+                if distance > 0.0 {
+                    let velocity = length_squared(control.velocity).sqrt();
+                    let catch_up = float_parameter(operator, "catch up speed", 0.0);
+                    let speed = if dot(control.velocity, delta) > 1.0 {
+                        velocity + catch_up
+                    } else {
+                        velocity
+                    };
+                    let movement = mul(delta, speed * dt * strength / distance);
+                    particle.previous_position = particle.position;
+                    particle.position = add(particle.position, movement);
+                }
+                let radius_speed = float_parameter(operator, "lerp to CP radius speed", 0.0);
+                if radius_speed > 0.0 {
+                    let difference = control.radius - particle.radius;
+                    let step = radius_speed * dt;
+                    particle.radius += difference.clamp(-step, step);
+                }
+                if bool_parameter(operator, "update particle life time", false) {
+                    particle.lifetime_seconds = control.duration;
+                }
+            } else if operator
+                .identity
+                .eq_ignore_ascii_case("Remap Distance to Control Point to Scalar")
+            {
+                let cp =
+                    control_at_slice(controls, integer_parameter(operator, "control point", 0));
+                let distance = length_squared(sub(cp, particle.position)).sqrt();
+                let minimum = float_parameter(operator, "distance minimum", 0.0);
+                let maximum = float_parameter(operator, "distance maximum", 128.0);
+                if bool_parameter(operator, "only active within specified distance", false)
+                    && (distance < minimum || distance > maximum)
+                {
+                    continue;
+                }
+                let field = integer_parameter(operator, "output field", 3);
+                let min_output = float_parameter(operator, "output minimum", 0.0);
+                let max_output = float_parameter(operator, "output maximum", 1.0);
+                let mut output = mix(min_output, max_output, remap(distance, minimum, maximum));
+                if bool_parameter(operator, "output is scalar of initial random range", false) {
+                    output *= match field {
+                        3 => particle.initial_radius,
+                        4 => particle.initial_roll,
+                        7 => particle.initial_alpha,
+                        _ => particle_scalar(particle, field).unwrap_or(0.0),
+                    };
+                }
+                let current = particle_scalar(particle, field).unwrap_or(0.0);
+                set_particle_scalar(particle, field, mix(current, output, strength));
+            } else if operator
+                .identity
+                .eq_ignore_ascii_case("Remap Distance to Control Point to Vector")
+            {
+                let cp =
+                    control_at_slice(controls, integer_parameter(operator, "control point", 0));
+                let distance = length_squared(sub(cp, particle.position)).sqrt();
+                let minimum = float_parameter(operator, "distance minimum", 0.0);
+                let maximum = float_parameter(operator, "distance maximum", 128.0);
+                if bool_parameter(operator, "only active within specified distance", false)
+                    && (distance < minimum || distance > maximum)
+                {
+                    continue;
+                }
+                let mut low = vector_parameter(operator, "output minimum", [0.0; 3]);
+                let mut high = vector_parameter(operator, "output maximum", [1.0; 3]);
+                let local = integer_parameter(operator, "local space CP", -1);
+                if local >= 0
+                    && let Some(orientation) = controls
+                        .get(local as usize)
+                        .and_then(Option::as_ref)
+                        .map(|control| control.orientation)
+                {
+                    low = rotate(orientation, low);
+                    high = rotate(orientation, high);
+                }
+                let fraction = remap(distance, minimum, maximum);
+                let output = [
+                    mix(low[0], high[0], fraction),
+                    mix(low[1], high[1], fraction),
+                    mix(low[2], high[2], fraction),
+                ];
+                let field = integer_parameter(operator, "output field", 6);
+                let current = particle_vector(particle, field).unwrap_or([0.0; 3]);
+                set_particle_vector(
+                    particle,
+                    field,
+                    [
+                        mix(current[0], output[0], strength),
+                        mix(current[1], output[1], strength),
+                        mix(current[2], output[2], strength),
+                    ],
+                );
+            } else if operator.identity.eq_ignore_ascii_case("Oscillate Vector") {
+                let random = |ordinal: i32| {
+                    source_random_at(
+                        random_seed,
+                        particle.identity as i32 + random_offset + ordinal,
+                    )
+                };
+                let operation_time = if bool_parameter(operator, "start/end proportional", true) {
+                    life
+                } else {
+                    age
+                };
+                let start = mix(
+                    float_parameter(operator, "start time min", 0.0),
+                    float_parameter(operator, "start time max", 0.0),
+                    random(11),
+                );
+                let end = mix(
+                    float_parameter(operator, "end time min", 1.0),
+                    float_parameter(operator, "end time max", 1.0),
+                    random(12),
+                );
+                if operation_time < start || operation_time >= end {
+                    continue;
+                }
+                let rate_min = vector_parameter(operator, "oscillation rate min", [0.0; 3]);
+                let rate_max = vector_parameter(operator, "oscillation rate max", [0.0; 3]);
+                let frequency_min =
+                    vector_parameter(operator, "oscillation frequency min", [1.0; 3]);
+                let frequency_max =
+                    vector_parameter(operator, "oscillation frequency max", [1.0; 3]);
+                let field = integer_parameter(operator, "oscillation field", 0);
+                let Some(mut output) = particle_vector(particle, field) else {
+                    continue;
+                };
+                for (component, (rate_ordinal, frequency_ordinal)) in
+                    [(3, 8), (7, 12), (9, 15)].into_iter().enumerate()
+                {
+                    let rate = mix(
+                        rate_min[component],
+                        rate_max[component],
+                        random(rate_ordinal),
+                    );
+                    let frequency = mix(
+                        frequency_min[component],
+                        frequency_max[component],
+                        random(frequency_ordinal),
+                    );
+                    let multiplier = float_parameter(operator, "oscillation multiplier", 2.0);
+                    let offset = float_parameter(operator, "oscillation start phase", 0.5);
+                    let phase = if bool_parameter(operator, "proportional 0/1", true) {
+                        multiplier * life * frequency + offset
+                    } else {
+                        (multiplier * time + offset) * frequency
+                    };
+                    output[component] += sin_estimate_cycles(phase) * rate * dt * strength;
+                }
+                set_particle_vector(particle, field, output);
             } else if operator.identity.eq_ignore_ascii_case("Oscillate Scalar") {
                 let random = |ordinal: i32| {
                     source_random_at(
@@ -2502,6 +2843,12 @@ fn validate_control_point(control: &ControlPoint, limits: WorldLimits) -> Result
         || !finite(&control.previous_position)
         || !finite(&control.orientation)
         || !finite(&control.velocity)
+        || !control.radius.is_finite()
+        || !control.density.is_finite()
+        || !control.duration.is_finite()
+        || control.radius < 0.0
+        || control.density < 0.0
+        || control.duration < 0.0
         || (length_squared4(control.orientation) - 1.0).abs() > 1.0e-4
     {
         return Err(Error::new(
@@ -2548,6 +2895,9 @@ fn invalid_state(detail: &str) -> Error {
 }
 
 fn set_control(system: &mut System, control: ControlPoint) {
+    if control.index != 0 {
+        system.target_control_point = control.index;
+    }
     system.controls[control.index as usize] = Some(control.clone());
     for child in &mut system.children {
         set_control(child, control.clone());
@@ -3009,8 +3359,62 @@ fn caller_remaining(system: &System, limits: WorldLimits, remaining_total: usize
         .min(remaining_total)
 }
 
+fn particle_scalar(particle: &Particle, field: i32) -> Option<f32> {
+    Some(match field {
+        1 => particle.lifetime_seconds,
+        3 => particle.radius,
+        4 => particle.roll,
+        5 => particle.roll_speed,
+        7 => particle.alpha,
+        8 => particle.creation_seconds,
+        9 => particle.sequence as f32,
+        10 => particle.trail_length,
+        11 => particle.identity as f32,
+        12 => particle.yaw,
+        13 => particle.secondary_sequence as f32,
+        21 => f32::from(particle.target_control_point),
+        _ => return None,
+    })
+}
+
+fn set_particle_scalar(particle: &mut Particle, field: i32, value: f32) {
+    match field {
+        1 => particle.lifetime_seconds = value,
+        3 => particle.radius = value.max(0.0),
+        4 => particle.roll = value,
+        5 => particle.roll_speed = value,
+        7 => particle.alpha = value.clamp(0.0, 1.0),
+        9 => particle.sequence = value as i32,
+        10 => particle.trail_length = value.max(0.0),
+        12 => particle.yaw = value,
+        13 => particle.secondary_sequence = value as i32,
+        21 => particle.target_control_point = value as u8,
+        _ => {}
+    }
+}
+
+fn particle_vector(particle: &Particle, field: i32) -> Option<[f32; 3]> {
+    match field {
+        0 => Some(particle.position),
+        2 => Some(particle.previous_position),
+        6 => Some(particle.color),
+        _ => None,
+    }
+}
+
+fn set_particle_vector(particle: &mut Particle, field: i32, value: [f32; 3]) {
+    match field {
+        0 => particle.position = value,
+        2 => particle.previous_position = value,
+        6 => particle.color = value.map(|component| component.clamp(0.0, 1.0)),
+        _ => {}
+    }
+}
+
 fn initializer_attribute(identity: &str) -> Option<&'static str> {
-    if identity.eq_ignore_ascii_case("Lifetime Random") {
+    if identity.eq_ignore_ascii_case("Lifetime Random")
+        || identity.eq_ignore_ascii_case("Lifetime From Control Point Life Time")
+    {
         Some("lifetime")
     } else if identity.eq_ignore_ascii_case("Radius Random") {
         Some("radius")
