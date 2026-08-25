@@ -150,7 +150,7 @@ describe("TF2 projectile presentation contract", () => {
     }
   })
 
-  test("uses transported rocket orientation, BLU skin, and exact trail/backblast resources", () => {
+  test("uses transported rocket orientation, its sole authored skin, and exact BLU trail/backblast resources", () => {
     const mapper = createProjectilePresentationMapper(catalog())
     const fact = rocket()
     const result = mapper.map(frame(1n, [fact], [event(fact, "fire", 1n)]))
@@ -158,7 +158,7 @@ describe("TF2 projectile presentation contract", () => {
       identity: 7,
       projectileIdentity: 7,
       model: "models/weapons/w_models/w_rocket.mdl",
-      skin: 1,
+      skin: 0,
       materialVariant: "blue",
       position: [1, 2, 3],
       orientation: fact.orientation,

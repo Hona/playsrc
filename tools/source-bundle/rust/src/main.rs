@@ -2278,6 +2278,8 @@ fn main() -> Result<(), String> {
             2_471_913,
             "13de0c3e2666d2194474d855683cbabb807eead1c24587fd093a5c70a04cd0b4",
         )?;
+    } else if target == "ctf_2fort" {
+        resolver.optional("maps/ctf_2fort.nav", "tf2-bot-navigation")?;
     }
     for (path, bytes, sha256, consumer) in [
         (
@@ -2462,6 +2464,23 @@ fn main() -> Result<(), String> {
             return Err("flag model identity is not UTF-8".to_owned());
         }
         model_paths.insert(model.to_ascii_lowercase());
+    }
+    for entity in &graph.entities {
+        if let Some(definition) = entity
+            .classname
+            .as_deref()
+            .and_then(playsrc_tf2::pickup::map_pickup_definition)
+        {
+            let override_model = entity
+                .pairs
+                .iter()
+                .find(|pair| pair.key.eq_ignore_ascii_case(b"powerup_model"))
+                .filter(|pair| !pair.value.is_empty())
+                .map(|pair| String::from_utf8(pair.value.clone()))
+                .transpose()
+                .map_err(|_| "pickup model identity is not UTF-8")?;
+            model_paths.insert(override_model.unwrap_or_else(|| definition.model.to_owned()));
+        }
     }
     let mut diagnostic_report = None;
     model_paths.extend(
@@ -2773,7 +2792,12 @@ fn main() -> Result<(), String> {
         "resource/linux_fonts/liberationmono-regular.ttf",
         "resource/linux_fonts/firasans-regular.ttf",
         "scripts/game_sounds_weapons.txt",
+        "scripts/game_sounds.txt",
         "scripts/soundmixers.txt",
+        "sound/items/smallmedkit1.wav",
+        "sound/items/gunpickup2.wav",
+        "sound/items/regenerate.wav",
+        "sound/items/spawn_item.wav",
         "sound/weapons/rocket_shoot.wav",
         "sound/weapons/stickybomblauncher_shoot.wav",
         "sound/weapons/quake_rpg_fire_remastered.wav",

@@ -2318,8 +2318,8 @@ impl EntityWorld {
         {
             return Ok((
                 BehaviorState::Pickup(PickupState {
-                    touchable: true,
-                    visible: true,
+                    touchable: field_i32(definition, b"StartDisabled", 0)? == 0,
+                    visible: field_i32(definition, b"StartDisabled", 0)? == 0,
                     original_transform: transform,
                     pending_subject: None,
                 }),
@@ -4761,15 +4761,46 @@ impl EntityWorld {
                     }
                 }
                 BehaviorState::Pickup(mut state) => {
-                    if input == b"__pickup_materialize" {
-                        state.touchable = true;
-                        state.visible = true;
-                        state.pending_subject = None;
-                        self.entity_mut(target).expect("pickup").render.effects &= !EF_NODRAW;
-                        self.entity_mut(target).expect("pickup").behavior =
-                            BehaviorState::Pickup(state);
-                    } else {
-                        accepted = false;
+                    let auto_materialize = field_i32(
+                        &self.entity(target).expect("pickup").definition,
+                        b"AutoMaterialize",
+                        1,
+                    )? != 0;
+                    let pending_materialize = self.state.queue.iter().any(|event| {
+                        event.target == EventTarget::Direct(target)
+                            && event.input.eq_ignore_ascii_case(b"__pickup_materialize")
+                    });
+                    match input.as_slice() {
+                        b"__pickup_materialize" if auto_materialize => {
+                            state.touchable = true;
+                            state.visible = true;
+                            state.pending_subject = None;
+                        }
+                        b"__pickup_materialize" => {}
+                        b"enable" => {
+                            if !pending_materialize || !auto_materialize {
+                                state.touchable = true;
+                                state.visible = true;
+                            }
+                        }
+                        b"disable" => {
+                            state.touchable = false;
+                            state.visible = false;
+                        }
+                        b"toggle" => {
+                            state.visible = !state.visible;
+                            state.touchable = state.visible;
+                        }
+                        _ => accepted = false,
+                    }
+                    if accepted {
+                        let entity = self.entity_mut(target).expect("pickup");
+                        if state.visible {
+                            entity.render.effects &= !EF_NODRAW;
+                        } else {
+                            entity.render.effects |= EF_NODRAW;
+                        }
+                        entity.behavior = BehaviorState::Pickup(state);
                     }
                 }
             }

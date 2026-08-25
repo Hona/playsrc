@@ -40,7 +40,7 @@ type CompactWeaponState = Readonly<{
 }>
 
 type CompactGameplayEvent = Readonly<{
-  kind: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14
+  kind: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16
   detail: number
   subject: number
   auxiliary: number
@@ -294,6 +294,38 @@ function mapGameplayEvent(
       push({ kind: "health", health: health(snapshot), cause: "respawn" })
       push({ kind: "lifecycle", lifecycle: "active" })
       break
+    case 15:
+    case 16: {
+      if (source.auxiliary !== 1) break
+      const pickup = source.kind === 15 ? "health" as const : "ammo" as const
+      const suffix = (["small", "medium", "large"] as const)[source.detail]
+      if (!suffix) throw new Tf2HudBindingError("MalformedFacts", "compact pickup size is invalid")
+      const active = snapshot.weapon === null ? null : eventWeapon(snapshot, snapshot.weapon)
+      push({
+        kind: "pickup",
+        notification: Object.freeze({
+          pickupIdentity: source.subject,
+          pickup,
+          itemIdentity: tf2HudAvailable(`${pickup === "health" ? "medkit" : "ammopack"}_${suffix}`),
+          amount: tf2HudAvailable(integerEventValue(source.values[0], "compact pickup amount")),
+        }),
+        health: pickup === "health"
+          ? tf2HudAvailable(eventHealth(snapshot, source.values[1]))
+          : tf2HudUnavailable("not-applicable"),
+        weapon: pickup === "ammo" && active
+          ? tf2HudAvailable(Object.freeze({
+              ...active,
+              clip: active.clip.kind === "available"
+                ? tf2HudAvailable(integerEventValue(source.values[2], "compact pickup clip"))
+                : active.clip,
+              reserve: active.reserve.kind === "available"
+                ? tf2HudAvailable(integerEventValue(source.values[3], "compact pickup reserve"))
+                : active.reserve,
+            }))
+          : tf2HudUnavailable("not-applicable"),
+      })
+      break
+    }
   }
 }
 
@@ -322,8 +354,9 @@ export function adaptSessionHud(
     if (priorPlayer) {
       const priorHealth = priorPlayer.health.kind === "available" ? priorPlayer.health.value : null
       const currentHealth = currentPlayer.health.kind === "available" ? currentPlayer.health.value : null
-      const healthAlreadyFinal = events.some((event) => event.tick === source.tick && (event.kind === "health" || event.kind === "damage" || event.kind === "regenerate") && currentHealth !== null && (
-        sameHealth(event.health, currentHealth)
+      const healthAlreadyFinal = events.some((event) => event.tick === source.tick && currentHealth !== null && (
+        (event.kind === "health" || event.kind === "damage" || event.kind === "regenerate") && sameHealth(event.health, currentHealth)
+        || event.kind === "pickup" && event.health.kind === "available" && sameHealth(event.health.value, currentHealth)
       ))
       if (currentHealth && !sameHealth(priorHealth, currentHealth) && !healthAlreadyFinal) {
         push({ kind: "health", health: currentHealth, cause: "state" })
@@ -334,6 +367,7 @@ export function adaptSessionHud(
         const ammoAlreadyFinal = events.some((event) => event.tick === source.tick && (
           event.kind === "ammo" && event.weapon === currentWeapon.identity && sameNumber(event.clip, currentWeapon.clip) && sameNumber(event.reserve, currentWeapon.reserve) && event.reload === currentWeapon.reload
           || event.kind === "regenerate" && event.weapons.some((item) => item.identity === currentWeapon.identity && sameWeapon(item, currentWeapon))
+          || event.kind === "pickup" && event.weapon.kind === "available" && event.weapon.value.identity === currentWeapon.identity && sameWeapon(event.weapon.value, currentWeapon)
         ))
         if (!sameWeapon(priorWeapon, currentWeapon) && !ammoAlreadyFinal) {
           push({ kind: "ammo", weapon: currentWeapon.identity, clip: currentWeapon.clip, reserve: currentWeapon.reserve, reload: currentWeapon.reload, cause: ammoCause(source, currentWeapon.identity) })

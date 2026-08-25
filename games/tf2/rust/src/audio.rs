@@ -58,6 +58,10 @@ pub enum SoundDefinition {
     BottleMiss,
     BottleHitFlesh,
     BottleHitWorld,
+    HealthKitTouch,
+    AmmoPackTouch,
+    RegenerateTouch,
+    ItemMaterialize,
 }
 
 impl SoundDefinition {
@@ -121,6 +125,10 @@ impl SoundDefinition {
             Self::BottleMiss => "Weapon_Bottle.Miss",
             Self::BottleHitFlesh => "Weapon_Bottle.HitFlesh",
             Self::BottleHitWorld => "Weapon_Bottle.HitWorld",
+            Self::HealthKitTouch => "HealthKit.Touch",
+            Self::AmmoPackTouch => "AmmoPack.Touch",
+            Self::RegenerateTouch => "Regenerate.Touch",
+            Self::ItemMaterialize => "Item.Materialize",
         }
     }
 
@@ -182,7 +190,11 @@ impl SoundDefinition {
             | Self::FlagSpawn
             | Self::TeamWon
             | Self::TeamLost
-            | Self::BottleMiss => 1,
+            | Self::BottleMiss
+            | Self::HealthKitTouch
+            | Self::AmmoPackTouch
+            | Self::RegenerateTouch
+            | Self::ItemMaterialize => 1,
         }
     }
 }
@@ -205,6 +217,8 @@ pub struct SoundSamples {
 pub enum AudioEventIdentity {
     WeaponSingle,
     ExplosionSpecial1,
+    ItemPickup,
+    ItemMaterialize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

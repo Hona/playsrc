@@ -9,6 +9,11 @@ use playsrc_entity::{
 };
 use playsrc_movement::{Error as MoveError, Tracer};
 
+use crate::pickup::{
+    ITEM_PICKUP_BOX_BLOAT, MAP_PICKUP_RESPAWN_SECONDS, MapPickupDefinition, MapPickupKind,
+    PickupSize, map_pickup_definition,
+};
+
 pub const CONTENTS_RED_TEAM: u32 = 0x800;
 pub const CONTENTS_BLUE_TEAM: u32 = 0x1000;
 
@@ -57,6 +62,8 @@ pub struct MapCounts {
     pub respawn_rooms: u32,
     pub capture_flags: u32,
     pub capture_zones: u32,
+    pub health_pickups: u32,
+    pub ammo_pickups: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -119,6 +126,27 @@ pub enum Effect {
         team: Option<u8>,
         contact: ContactKind,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MapPickupSnapshot {
+    pub identity: u32,
+    pub kind: MapPickupKind,
+    pub size: PickupSize,
+    pub team: Option<u8>,
+    pub available: bool,
+    pub disabled: bool,
+    pub origin: [f32; 3],
+    pub angles: [f32; 3],
+    pub respawn_tick: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PickupContactCandidate {
+    pub identity: u32,
+    pub definition: MapPickupDefinition,
+    pub team: Option<u8>,
+    pub origin: [f32; 3],
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -284,11 +312,26 @@ struct ActiveMover {
 }
 
 #[derive(Clone, Debug)]
+struct MapPickup {
+    source: u32,
+    handle: EntityHandle,
+    definition: MapPickupDefinition,
+    team: Option<u8>,
+    disabled: bool,
+    auto_materialize: bool,
+    origin: [f32; 3],
+    angles: [f32; 3],
+    respawn_tick: Option<u64>,
+}
+
+#[derive(Clone, Debug)]
 pub struct MapRuntime {
     world: EntityWorld,
     player: EntityHandle,
+    actor_handles: BTreeMap<u32, EntityHandle>,
     source_handles: BTreeMap<u32, EntityHandle>,
     volumes: Vec<Volume>,
+    pickups: Vec<MapPickup>,
     teleports: BTreeMap<EntityHandle, TeleportLink>,
     movers: BTreeMap<EntityHandle, ActiveMover>,
     game_filters: BTreeMap<Vec<u8>, GameFilter>,
@@ -296,6 +339,7 @@ pub struct MapRuntime {
     round_configuration: crate::round::Configuration,
     counts: MapCounts,
     payload_constraint_blocked: bool,
+    tick_interval: f32,
     next_producer_sequence: u64,
     last_player_position: [f32; 3],
 }
@@ -408,6 +452,17 @@ impl MapRuntime {
                     inputs: vec![b"TestActivator".to_vec()],
                 },
             ],
+            pickup_classes: [
+                b"item_healthkit_small".as_slice(),
+                b"item_healthkit_medium",
+                b"item_healthkit_full",
+                b"item_ammopack_small",
+                b"item_ammopack_medium",
+                b"item_ammopack_full",
+            ]
+            .into_iter()
+            .map(<[u8]>::to_vec)
+            .collect(),
             external_brush_models: [
                 b"func_regenerate".as_slice(),
                 b"func_respawnroom",
@@ -527,8 +582,29 @@ impl MapRuntime {
             ..MapCounts::default()
         };
         let mut volumes = Vec::new();
+        let mut pickups = Vec::new();
         let mut teleports = BTreeMap::new();
         for entity in &graph.entities {
+            if let Some(definition) = entity.classname.as_deref().and_then(map_pickup_definition) {
+                let source = u32::try_from(entity.index).map_err(|_| invalid(entity.index))?;
+                match definition.kind {
+                    MapPickupKind::Health => counts.health_pickups += 1,
+                    MapPickupKind::Ammo => counts.ammo_pickups += 1,
+                }
+                pickups.push(MapPickup {
+                    source,
+                    handle: *source_handles
+                        .get(&source)
+                        .ok_or_else(|| invalid(entity.index))?,
+                    definition,
+                    team: source_team(entity)?,
+                    disabled: boolean(entity, b"StartDisabled", false),
+                    auto_materialize: boolean(entity, b"AutoMaterialize", true),
+                    origin: vector(entity, b"origin", Some([0.0; 3]))?,
+                    angles: vector(entity, b"angles", Some([0.0; 3]))?,
+                    respawn_tick: None,
+                });
+            }
             counts.buttons += u32::from(class(entity, b"func_button"));
             counts.doors += u32::from(class(entity, b"func_door"));
             counts.linear_movers += u32::from(class(entity, b"func_movelinear"));
@@ -670,8 +746,10 @@ impl MapRuntime {
         Ok(Self {
             world,
             player,
+            actor_handles: BTreeMap::new(),
             source_handles,
             volumes,
+            pickups,
             teleports,
             movers: BTreeMap::new(),
             game_filters,
@@ -679,6 +757,7 @@ impl MapRuntime {
             round_configuration,
             counts,
             payload_constraint_blocked,
+            tick_interval,
             next_producer_sequence: 1,
             last_player_position: [0.0; 3],
         })
@@ -696,6 +775,237 @@ impl MapRuntime {
 
     pub fn payload_constraint_blocked(&self) -> bool {
         self.payload_constraint_blocked
+    }
+
+    pub fn pickups(&self) -> Vec<MapPickupSnapshot> {
+        self.pickups
+            .iter()
+            .map(|pickup| MapPickupSnapshot {
+                identity: pickup.source,
+                kind: pickup.definition.kind,
+                size: pickup.definition.size,
+                team: pickup.team,
+                available: !pickup.disabled
+                    && self.world.entity(pickup.handle).is_some_and(|entity| {
+                        matches!(&entity.behavior, BehaviorState::Pickup(state) if state.visible && state.touchable)
+                    }),
+                disabled: pickup.disabled,
+                origin: pickup.origin,
+                angles: pickup.angles,
+                respawn_tick: pickup.respawn_tick,
+            })
+            .collect()
+    }
+
+    pub(crate) fn supply_targets(&self) -> Vec<crate::bot::SupplyTarget> {
+        let mut targets = self
+            .pickups()
+            .into_iter()
+            .filter(|pickup| pickup.available)
+            .map(|pickup| crate::bot::SupplyTarget {
+                identity: pickup.identity,
+                kind: Some(pickup.kind),
+                team: pickup.team.and_then(|team| match team {
+                    2 => Some(crate::PlayerTeam::Red),
+                    3 => Some(crate::PlayerTeam::Blue),
+                    _ => None,
+                }),
+                position: pickup.origin,
+            })
+            .collect::<Vec<_>>();
+        for volume in &self.volumes {
+            if let VolumeKind::Regenerate {
+                enabled: true,
+                team,
+                associated_model,
+                ..
+            } = volume.kind
+            {
+                let position = associated_model
+                    .and_then(|identity| self.source_handle(identity))
+                    .and_then(|handle| self.world.entity(handle))
+                    .map_or(volume.origin, |entity| entity.world_transform.origin);
+                targets.push(crate::bot::SupplyTarget {
+                    identity: volume.source,
+                    kind: None,
+                    team: team.and_then(|value| match value {
+                        2 => Some(crate::PlayerTeam::Red),
+                        3 => Some(crate::PlayerTeam::Blue),
+                        _ => None,
+                    }),
+                    position,
+                });
+            }
+        }
+        targets
+    }
+
+    pub(crate) fn bot_regenerate_zones<W: GameplayWorld>(
+        &self,
+        collision: &W,
+        position: [f32; 3],
+        hull: Hull,
+        team: crate::PlayerTeam,
+    ) -> Result<Vec<u32>, MapError> {
+        let mut zones = Vec::new();
+        for volume in &self.volumes {
+            if let VolumeKind::Regenerate {
+                enabled: true,
+                team: required,
+                ..
+            } = volume.kind
+                && required.is_none_or(|value| value == team.source_number())
+                && collision.overlaps_model_hull(volume.model, volume.origin, position, hull)?
+            {
+                zones.push(volume.source);
+            }
+        }
+        Ok(zones)
+    }
+
+    pub(crate) fn pickup_candidates<W: GameplayWorld>(
+        &self,
+        collision: &W,
+        position: [f32; 3],
+        hull: Hull,
+        eye_height: f32,
+    ) -> Result<Vec<PickupContactCandidate>, MapError> {
+        let mut candidates = Vec::new();
+        for pickup in &self.pickups {
+            if pickup.disabled
+                || !self.world.entity(pickup.handle).is_some_and(|entity| {
+                    matches!(&entity.behavior, BehaviorState::Pickup(state) if state.visible && state.touchable)
+                })
+            {
+                continue;
+            }
+            let minimum = [
+                pickup.origin[0] + pickup.definition.minimum[0] - ITEM_PICKUP_BOX_BLOAT,
+                pickup.origin[1] + pickup.definition.minimum[1] - ITEM_PICKUP_BOX_BLOAT,
+                pickup.origin[2] + pickup.definition.minimum[2],
+            ];
+            let maximum = [
+                pickup.origin[0] + pickup.definition.maximum[0] + ITEM_PICKUP_BOX_BLOAT,
+                pickup.origin[1] + pickup.definition.maximum[1] + ITEM_PICKUP_BOX_BLOAT,
+                pickup.origin[2] + pickup.definition.maximum[2] + ITEM_PICKUP_BOX_BLOAT * 0.5,
+            ];
+            if (0..3).any(|axis| {
+                position[axis] + hull.maxs[axis] < minimum[axis]
+                    || position[axis] + hull.mins[axis] > maximum[axis]
+            }) {
+                continue;
+            }
+            let center = std::array::from_fn(|axis| {
+                pickup.origin[axis]
+                    + (pickup.definition.minimum[axis] + pickup.definition.maximum[axis]) * 0.5
+            });
+            let eye = [position[0], position[1], position[2] + eye_height];
+            let trace = collision
+                .trace(
+                    center,
+                    eye,
+                    Hull {
+                        mins: [0.0; 3],
+                        maxs: [0.0; 3],
+                    },
+                    crate::MASK_SOLID,
+                )
+                .map_err(MapError::PickupTrace)?;
+            if trace.fraction < 1.0 {
+                continue;
+            }
+            candidates.push(PickupContactCandidate {
+                identity: pickup.source,
+                definition: pickup.definition,
+                team: pickup.team,
+                origin: pickup.origin,
+            });
+        }
+        Ok(candidates)
+    }
+
+    pub(crate) fn begin_pickup(
+        &mut self,
+        tick: u64,
+        source: u32,
+        actor: u32,
+    ) -> Result<MapPhase, MapError> {
+        let pickup = self
+            .pickups
+            .iter()
+            .find(|pickup| pickup.source == source)
+            .ok_or(MapError::MissingEntity(source))?;
+        let handle = pickup.handle;
+        let subject = self.actor_handle(tick, actor)?;
+        let batch = self.world.phase(
+            tick,
+            &[WorldCommand::PickupContact {
+                entity: handle,
+                subject,
+                unobstructed: true,
+            }],
+        )?;
+        self.consume(batch).map_err(MapError::from)
+    }
+
+    pub(crate) fn finish_pickup(
+        &mut self,
+        tick: u64,
+        source: u32,
+        actor: u32,
+        accepted: bool,
+    ) -> Result<MapPhase, MapError> {
+        let index = self
+            .pickups
+            .iter()
+            .position(|pickup| pickup.source == source)
+            .ok_or(MapError::MissingEntity(source))?;
+        let handle = self.pickups[index].handle;
+        let subject = self.actor_handle(tick, actor)?;
+        let respawn = crate::ticks(MAP_PICKUP_RESPAWN_SECONDS, self.tick_interval);
+        if accepted {
+            self.pickups[index].respawn_tick = Some(tick + respawn);
+        }
+        let batch = self.world.phase(
+            tick,
+            &[WorldCommand::PickupResult {
+                entity: handle,
+                subject,
+                accepted,
+                respawn_ticks: accepted.then_some(respawn),
+                respawn_transform: None,
+            }],
+        )?;
+        self.consume(batch).map_err(MapError::from)
+    }
+
+    fn actor_handle(&mut self, tick: u64, actor: u32) -> Result<EntityHandle, MapError> {
+        if actor == crate::PLAYER_IDENTITY {
+            return Ok(self.player);
+        }
+        if let Some(handle) = self.actor_handles.get(&actor).copied() {
+            return Ok(handle);
+        }
+        let definition = playsrc_entity::parse(
+            format!("{{\"classname\"\"player\"\"targetname\"\"bot_{actor}\"}}\0").as_bytes(),
+            playsrc_entity::Limits::default(),
+        )
+        .map_err(|_| MapError::MissingEntity(actor))?
+        .entities
+        .into_iter()
+        .next()
+        .ok_or(MapError::MissingEntity(actor))?;
+        let batch = self.world.phase(tick, &[WorldCommand::Spawn(definition)])?;
+        let handle = batch
+            .records
+            .iter()
+            .find_map(|record| match record.transition {
+                Transition::Lifecycle { entity, .. } => Some(entity),
+                _ => None,
+            })
+            .ok_or(MapError::MissingEntity(actor))?;
+        self.actor_handles.insert(actor, handle);
+        Ok(handle)
     }
 
     pub(crate) fn entity_revision(&self) -> u64 {
@@ -873,6 +1183,16 @@ impl MapRuntime {
             });
         }
         let batch = self.world.phase(input.tick, &commands)?;
+        for pickup in &mut self.pickups {
+            if pickup.auto_materialize
+                && pickup.respawn_tick.is_some_and(|due| input.tick >= due)
+                && self.world.entity(pickup.handle).is_some_and(|entity| {
+                    matches!(&entity.behavior, BehaviorState::Pickup(state) if state.visible)
+                })
+            {
+                pickup.respawn_tick = None;
+            }
+        }
         self.consume(batch).map_err(MapError::from)
     }
 
@@ -1075,15 +1395,38 @@ impl MapRuntime {
                     input,
                     accepted,
                     ..
-                } => output.events.push(EntityEvent {
-                    sequence: record.sequence,
-                    kind: EntityEventKind::Input,
-                    entity: self.source(target),
-                    subject: None,
-                    accepted,
-                    contact: None,
-                    name: input,
-                }),
+                } => {
+                    let source = self.source(target);
+                    if accepted
+                        && let Some(pickup) = self
+                            .pickups
+                            .iter_mut()
+                            .find(|pickup| pickup.source == source)
+                    {
+                        if input.eq_ignore_ascii_case(b"Enable") {
+                            pickup.disabled = false;
+                            if !pickup.auto_materialize {
+                                pickup.respawn_tick = None;
+                            }
+                        } else if input.eq_ignore_ascii_case(b"Disable") {
+                            pickup.disabled = true;
+                        } else if input.eq_ignore_ascii_case(b"Toggle") {
+                            pickup.disabled = !pickup.disabled;
+                            if !pickup.disabled && !pickup.auto_materialize {
+                                pickup.respawn_tick = None;
+                            }
+                        }
+                    }
+                    output.events.push(EntityEvent {
+                        sequence: record.sequence,
+                        kind: EntityEventKind::Input,
+                        entity: source,
+                        subject: None,
+                        accepted,
+                        contact: None,
+                        name: input,
+                    });
+                }
                 Transition::Output {
                     caller,
                     output: name,
@@ -1335,6 +1678,13 @@ impl MapRuntime {
         if handle == self.player {
             return u32::MAX;
         }
+        if let Some((&identity, _)) = self
+            .actor_handles
+            .iter()
+            .find(|(_, actor)| **actor == handle)
+        {
+            return identity;
+        }
         self.world
             .entity(handle)
             .and_then(|entity| u32::try_from(entity.source_index).ok())
@@ -1346,6 +1696,7 @@ impl MapRuntime {
 pub enum MapError {
     Entity(RuntimeFailure),
     Movement(MoveError),
+    PickupTrace(MoveError),
     MissingEntity(u32),
 }
 
