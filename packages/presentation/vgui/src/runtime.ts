@@ -45,7 +45,7 @@ import {
   type VguiViewport,
 } from "./runtime-contract"
 import { VGUI_CSS } from "./style"
-import { VguiImageRasterizer, type VguiImageRasterGeometry } from "./image-renderer"
+import { isDirectVguiImageMaterial, VguiImageRasterizer, type VguiImageRasterGeometry } from "./image-renderer"
 import { registerVguiWindowWorkspace, type VguiWindowWorkspaceRegistration } from "./window-workspace"
 
 const IDENTITY = /^[a-z0-9][a-z0-9./_-]{0,511}$/u
@@ -2750,7 +2750,14 @@ class SourceVguiRuntime implements VguiRuntime {
     const rotation = Number(panel.properties.get("rotation") ?? 0)
     if (!safeInteger(rotation) || rotation < 0 || rotation > 3) throw new RuntimeFault("MalformedValue", `${panel.name}:rotation`)
     const whiteTint = panel.drawColor[0] === 255 && panel.drawColor[1] === 255 && panel.drawColor[2] === 255 && panel.drawColor[3] === 255
-    if (image.material) {
+    const directMaterial = image.material
+      && isDirectVguiImageMaterial(image.material)
+      && whiteTint
+      && frame === 0
+      && rotation === 0
+      && panel.imageFill === 1
+      && !sameName(panel.sourceControl, "ScalableImagePanel")
+    if (image.material && !directMaterial) {
       const tiled = panel.properties.get("tileImage") === "1" || panel.properties.get("tileHorizontally") === "1" || panel.properties.get("tileVertically") === "1"
       const geometry: VguiImageRasterGeometry = sameName(panel.sourceControl, "ScalableImagePanel")
         ? Object.freeze({
@@ -2771,6 +2778,15 @@ class SourceVguiRuntime implements VguiRuntime {
       panel.element.style.backgroundImage = "none"
       panel.element.style.backgroundColor = rgba(panel.fillColor)
       return
+    }
+    const raster = panel.chromeElements.get("image-raster")
+    if (raster) {
+      raster.remove()
+      panel.chromeElements.delete("image-raster")
+      this.auxiliaryNodes.delete(raster)
+      const identity = `${panel.id}:image-raster`
+      this.rasterSignatures.delete(identity)
+      this.rasterGenerations.set(identity, (this.rasterGenerations.get(identity) ?? 0) + 1)
     }
     const variant = image.variants?.find((candidate) => candidate.frame === frame && candidate.rotation === rotation && candidate.tint.every((channel, index) => channel === panel.drawColor[index]))
     if ((frame !== 0 || !whiteTint || rotation !== 0) && !variant) {

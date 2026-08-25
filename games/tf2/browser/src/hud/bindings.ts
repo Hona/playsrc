@@ -563,8 +563,9 @@ function panelValues(snapshot: Tf2HudSnapshot): readonly Tf2HudPanelValue[] {
   const team = player?.team.kind === "available" ? player.team.value : null
   const tfClass = player?.class.kind === "available" ? player.class.value : null
   const playableTeam = team === 2 || team === 3 ? team : null
-  const usePlayerModel = live && player?.playerClassUsePlayerModel === true
-  const useClassImage = live && !usePlayerModel
+  const classIdentityAvailable = playableTeam !== null && tfClass !== null
+  const usePlayerModel = live && classIdentityAvailable && player?.playerClassUsePlayerModel === true
+  const useClassImage = live && classIdentityAvailable && !usePlayerModel
   setVisible("PlayerStatusClassImage", useClassImage)
   setVisible("PlayerStatusClassImageBG", useClassImage)
   setVisible("classmodelpanel", usePlayerModel)

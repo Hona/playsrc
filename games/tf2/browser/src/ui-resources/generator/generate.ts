@@ -1,10 +1,12 @@
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import toolchains from "../../../../../../tools/playsrc/toolchains.json"
+import { TF2_CLASS_IMAGES } from "../../hud/inventory"
 
 const root = fileURLToPath(new URL("../../../../../..", import.meta.url))
 const manifest = path.join(root, "games", "tf2", "browser", "src", "ui-resources", "generator", "Cargo.toml")
-const child = Bun.spawn(["cargo", `+${toolchains.rust.toolchain}`, "run", "--quiet", "--manifest-path", manifest], {
+const classImages = Object.values(TF2_CLASS_IMAGES).flatMap((images) => Object.values(images))
+const child = Bun.spawn(["cargo", `+${toolchains.rust.toolchain}`, "run", "--quiet", "--manifest-path", manifest, "--", JSON.stringify(classImages)], {
   cwd: root,
   stdout: "pipe",
   stderr: "inherit",
