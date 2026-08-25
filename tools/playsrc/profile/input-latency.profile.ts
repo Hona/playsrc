@@ -346,6 +346,10 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
 
   const wallStarted = Date.now()
   await page.goto("/", { waitUntil: "load", timeout: 30_000 })
+  if (process.env.PROFILE_SKIP_STARTUP === "1") {
+    await page.waitForFunction(() => ["Startup", "MainMenu", "Failed"].includes(document.querySelector<HTMLElement>("main")?.dataset.phase ?? ""), undefined, { timeout: 180_000 })
+    if (await page.locator("main").getAttribute("data-phase") === "Startup") await page.keyboard.press("Escape")
+  }
   await page.waitForFunction(() => {
     const phase = document.querySelector("main")?.getAttribute("data-phase")
     return phase === "MainMenu" || phase === "Failed"
