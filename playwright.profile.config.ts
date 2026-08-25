@@ -5,6 +5,7 @@ export default defineConfig({
   testMatch: process.env.PROFILE_MATERIAL_ANIMATION === "1"
     ? "material-animation.profile.ts"
     : "input-latency.profile.ts",
+  ...(process.env.PROFILE_SCENARIOS === "team-selection" ? { grep: /profile startup and input latency/u } : {}),
   timeout: 600_000,
   expect: { timeout: 30_000 },
   fullyParallel: false,
