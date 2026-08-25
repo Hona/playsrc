@@ -270,7 +270,7 @@ export type RegenerateAnimationEvent = Readonly<{
   closeAnimation: "open" | "close"
 }>
 export type AuthorityBlocker = Readonly<{
-  code: 1 | 2
+  code: 1 | 2 | 3
   classification: "Missing"
   detail: string
 }>
@@ -1625,6 +1625,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
   const blockerDetails = new Map<number, string>([
     [1, "TF2 sticky IVP solver unavailable: current body/contact transition"],
     [2, "Tempus core and configured Jump course contract unavailable"],
+    [3, "Payload cart visible model requires its authored breakable constraint and VPhysics rigid-body authority"],
   ])
   const blockerCodes = new Set<number>()
   for (let index = 0; index < blockerCount; index += 1) {
@@ -1634,9 +1635,9 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
       throw new Tf2CodecError("authority blocker record is invalid")
     }
     blockerCodes.add(code)
-    authorityBlockers.push(Object.freeze({ code: code as 1 | 2, classification: "Missing", detail }))
+    authorityBlockers.push(Object.freeze({ code: code as 1 | 2 | 3, classification: "Missing", detail }))
   }
-  if (blockerCodes.size !== 2 || !blockerCodes.has(1) || !blockerCodes.has(2)) {
+  if ((blockerCodes.size !== 2 && blockerCodes.size !== 3) || !blockerCodes.has(1) || !blockerCodes.has(2)) {
     throw new Tf2CodecError("authority blocker set is incomplete")
   }
   at += blockerCount * 4

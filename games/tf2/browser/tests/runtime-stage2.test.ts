@@ -187,6 +187,22 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     }
   })
 
+  test("keeps an authored Payload rigid-body constraint as an explicit map-specific blocker", () => {
+    const ordinary = new Uint8Array(snapshot())
+    const constrained = new Uint8Array(ordinary.byteLength + 4)
+    const blockerEnd = 617
+    constrained.set(ordinary.subarray(0, blockerEnd))
+    constrained.set([3, 1, 0, 0], blockerEnd)
+    constrained.set(ordinary.subarray(blockerEnd), blockerEnd + 4)
+    new DataView(constrained.buffer).setUint32(124, 3, true)
+    expect(decodeSnapshot(constrained).authorityBlockers).toEqual([
+      { code: 1, classification: "Missing", detail: "TF2 sticky IVP solver unavailable: current body/contact transition" },
+      { code: 2, classification: "Missing", detail: "Tempus core and configured Jump course contract unavailable" },
+      { code: 3, classification: "Missing", detail: "Payload cart visible model requires its authored breakable constraint and VPhysics rigid-body authority" },
+    ])
+    expect(decodeSnapshot(ordinary).authorityBlockers.map((blocker) => blocker.code)).toEqual([1, 2])
+  })
+
   test("decodes every canonical class identity and a genuinely unarmed class snapshot", () => {
     for (let identity = 1; identity <= 9; identity += 1) {
       const bytes = new Uint8Array(snapshot())

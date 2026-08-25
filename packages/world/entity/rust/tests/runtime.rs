@@ -1635,7 +1635,7 @@ fn rotating_button_continuous_rotator_momentary_button_and_tracktrain_inputs_are
             ..
         }) if entity == fan_accel
     )));
-    assert!(button.records.iter().any(|record| matches!(
+    assert!(acceleration_step.records.iter().any(|record| matches!(
         record.transition,
         Transition::Request(RuntimeRequest::Mover {
             entity,

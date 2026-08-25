@@ -191,7 +191,10 @@ pub struct MoverRequest {
     pub entity: u32,
     pub model: Option<u32>,
     pub start: [f32; 3],
+    pub start_angles: [f32; 3],
     pub destination: [f32; 3],
+    pub destination_angles: [f32; 3],
+    pub angular_velocity: [f32; 3],
     pub speed: f32,
     pub opening: bool,
 }
@@ -291,6 +294,7 @@ pub struct MapRuntime {
     game_filters: BTreeMap<Vec<u8>, GameFilter>,
     objectives: Option<crate::ctf::World>,
     counts: MapCounts,
+    payload_constraint_blocked: bool,
     next_producer_sequence: u64,
     last_player_position: [f32; 3],
 }
@@ -612,6 +616,31 @@ impl MapRuntime {
             }
         }
         volumes.sort_by_key(|volume| volume.source);
+        let payload_constraint_blocked = graph.entities.iter().any(|constraint| {
+            if !class(constraint, b"phys_constraint") {
+                return false;
+            }
+            let Some(first) = field(constraint, b"attach1") else {
+                return false;
+            };
+            let Some(second) = field(constraint, b"attach2") else {
+                return false;
+            };
+            let attached = |name: &[u8], expected: &[u8]| {
+                graph.entities.iter().any(|candidate| {
+                    class(candidate, expected)
+                        && candidate
+                            .targetname
+                            .as_deref()
+                            .is_some_and(|value| value.eq_ignore_ascii_case(name))
+                })
+            };
+            attached(first, b"func_tracktrain")
+                && (attached(second, b"prop_physics") || attached(second, b"prop_physics_override"))
+                || attached(second, b"func_tracktrain")
+                    && (attached(first, b"prop_physics")
+                        || attached(first, b"prop_physics_override"))
+        });
         Ok(Self {
             world,
             player,
@@ -622,6 +651,7 @@ impl MapRuntime {
             game_filters,
             objectives,
             counts,
+            payload_constraint_blocked,
             next_producer_sequence: 1,
             last_player_position: [0.0; 3],
         })
@@ -635,6 +665,10 @@ impl MapRuntime {
 
     pub fn counts(&self) -> MapCounts {
         self.counts
+    }
+
+    pub fn payload_constraint_blocked(&self) -> bool {
+        self.payload_constraint_blocked
     }
 
     pub(crate) fn entity_revision(&self) -> u64 {
@@ -1038,6 +1072,8 @@ impl MapRuntime {
                         request_id,
                         entity,
                         world_destination,
+                        world_angles_destination,
+                        angular_velocity,
                         speed,
                         opening,
                         ..
@@ -1045,18 +1081,25 @@ impl MapRuntime {
                         let current = self
                             .world
                             .entity(entity)
-                            .map_or([0.0; 3], |value| value.world_transform.origin);
+                            .map_or(Transform::IDENTITY, |value| value.world_transform);
                         let model = self
                             .world
                             .entity(entity)
                             .and_then(|value| value.definition.bsp_model_index);
-                        self.movers.insert(entity, ActiveMover { request_id });
+                        if speed == 0.0 && angular_velocity == [0.0; 3] {
+                            self.movers.remove(&entity);
+                        } else {
+                            self.movers.insert(entity, ActiveMover { request_id });
+                        }
                         output.mover_requests.push(MoverRequest {
                             request_id,
                             entity: self.source(entity),
                             model: model.and_then(|value| u32::try_from(value).ok()),
-                            start: current,
+                            start: current.origin,
+                            start_angles: current.angles,
                             destination: world_destination,
+                            destination_angles: world_angles_destination,
+                            angular_velocity,
                             speed,
                             opening,
                         });
@@ -1486,6 +1529,74 @@ mod tests {
             })
         );
         assert_eq!(field(&graph.entities[0], b"Negated"), Some(raw.as_slice()));
+    }
+
+    #[test]
+    fn tracktrain_requests_preserve_authoritative_linear_and_angular_trajectory() {
+        let graph = playsrc_entity::parse(
+            br#"
+{"classname" "path_track" "targetname" "first" "target" "corner" "origin" "0 0 0"}
+{"classname" "path_track" "targetname" "corner" "target" "end" "origin" "8 0 0"}
+{"classname" "path_track" "targetname" "end" "origin" "8 128 0"}
+{"classname" "func_tracktrain" "targetname" "cart" "target" "first" "model" "*1"
+ "wheels" "4" "startspeed" "90" "velocitytype" "1" "orientationtype" "1"
+ "ManualSpeedChanges" "1" "ManualAccelSpeed" "70" "ManualDecelSpeed" "150"}
+"#,
+            playsrc_entity::Limits::default(),
+        )
+        .unwrap();
+        let mut map = MapRuntime::compile(
+            &graph,
+            0.015,
+            1,
+            vec![ModelBounds {
+                model: 1,
+                mins: [-8.0; 3],
+                maxs: [8.0; 3],
+            }],
+        )
+        .unwrap();
+        let phase = map.input(0, 3, b"StartForward", Variant::Void).unwrap();
+        let request = phase.mover_requests[0];
+        assert_eq!(request.start, [0.0; 3]);
+        assert_eq!(request.start_angles, [0.0; 3]);
+        assert!(request.destination[0] > 0.0);
+        assert_eq!(request.speed, 90.0);
+        assert!(request.destination_angles[1] >= 0.0);
+        assert_eq!(
+            request.angular_velocity[1],
+            request.destination_angles[1] / 0.015
+        );
+    }
+
+    #[test]
+    fn authored_physics_cart_constraint_is_reported_without_inventing_parenting() {
+        let graph = playsrc_entity::parse(
+            br#"
+{"classname" "path_track" "targetname" "first" "target" "second" "origin" "0 0 0"}
+{"classname" "path_track" "targetname" "second" "origin" "100 0 0"}
+{"classname" "func_tracktrain" "targetname" "cart_train" "target" "first" "model" "*1" "startspeed" "90"}
+{"classname" "prop_physics_override" "targetname" "cart_model" "model" "models/props_trainyard/bomb_cart.mdl"}
+{"classname" "phys_constraint" "targetname" "cart_constraint" "attach1" "cart_train" "attach2" "cart_model"}
+"#,
+            playsrc_entity::Limits::default(),
+        )
+        .unwrap();
+        let map = MapRuntime::compile(
+            &graph,
+            0.015,
+            1,
+            vec![ModelBounds {
+                model: 1,
+                mins: [-8.0; 3],
+                maxs: [8.0; 3],
+            }],
+        )
+        .unwrap();
+        assert!(map.payload_constraint_blocked());
+        let prop = map.source_handle(3).unwrap();
+        assert_eq!(map.world.entity(prop).unwrap().parent, None);
+        assert!(!MapRuntime::empty(0.015).payload_constraint_blocked());
     }
 
     #[test]
