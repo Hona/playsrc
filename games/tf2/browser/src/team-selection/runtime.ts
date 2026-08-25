@@ -251,7 +251,8 @@ class Integration implements Tf2TeamSelectionIntegration {
       }
       for (const [team, disabled] of [["red", server.redDisabled], ["blue", server.blueDisabled]] as const) {
         const button = find(this.#runtime, BUTTON_NAMES[team], this.#owner)!
-        apply(this.#runtime, { kind: "set-panel-state", panel: button, enabled: !disabled })
+        apply(this.#runtime, { kind: "set-panel-state", panel: button, enabled: true })
+        this.#root.querySelector?.<HTMLElement>(`[data-vgui-name="${BUTTON_NAMES[team]}"]`)?.setAttribute("aria-disabled", String(disabled))
         const name = team === "red" ? "reddoor" : "bluedoor"
         const beforeDisabled = team === "red" ? previous.server?.redDisabled : previous.server?.blueDisabled
         if (disabled !== beforeDisabled) this.#animations.set(name, disabled ? "idle_disabled" : "idle_enabled")

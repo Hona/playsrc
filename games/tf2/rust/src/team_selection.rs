@@ -59,6 +59,19 @@ pub struct TeamSnapshot {
     pub rules: TeamRules,
 }
 
+impl TeamSnapshot {
+    pub const fn wire_flags(&self) -> u8 {
+        (self.red_disabled as u8)
+            | ((self.blue_disabled as u8) << 1)
+            | ((self.spectators_visible as u8) << 2)
+            | ((self.auto_assign_visible as u8) << 3)
+            | ((self.cancel_visible as u8) << 4)
+            | ((self.highlander as u8) << 5)
+            | ((self.teams_full as u8) << 6)
+            | ((self.teams_full_arrow as u8) << 7)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TeamChoice {
     Red,
@@ -278,6 +291,7 @@ mod tests {
         assert!(!snapshot.cancel_visible);
         assert!(snapshot.spectators_visible && snapshot.auto_assign_visible);
         assert!(!snapshot.red_disabled && !snapshot.blue_disabled);
+        assert_eq!(snapshot.wire_flags(), 0b0000_1100);
     }
 
     #[test]

@@ -52,13 +52,25 @@ describe("authored TF2 RED/BLU team-selection VGUI", () => {
     const { integration } = fixture({ redCount: 9, blueCount: 9, redDisabled: true, blueDisabled: true,
       spectatorsVisible: false, autoAssignVisible: false, highlander: true, teamsFull: true })
     const snapshot = integration.snapshot()
-    expect(snapshot.panels.find((panel) => panel.name === "teambutton0")?.enabled).toBeFalse()
-    expect(snapshot.panels.find((panel) => panel.name === "teambutton1")?.enabled).toBeFalse()
+    expect(snapshot.panels.find((panel) => panel.name === "teambutton0")?.enabled).toBeTrue()
+    expect(snapshot.panels.find((panel) => panel.name === "teambutton1")?.enabled).toBeTrue()
+    expect(integration.modelPanels().find((panel) => panel.name === "bluedoor")?.animation).toBe("idle_disabled")
+    expect(integration.modelPanels().find((panel) => panel.name === "reddoor")?.animation).toBe("idle_disabled")
     expect(snapshot.panels.find((panel) => panel.name === "teambutton2")?.effectivelyVisible).toBeFalse()
     expect(snapshot.panels.find((panel) => panel.name === "teambutton3")?.effectivelyVisible).toBeFalse()
     expect(snapshot.panels.find((panel) => panel.name === "HighlanderLabel")?.effectivelyVisible).toBeTrue()
     expect(snapshot.panels.find((panel) => panel.name === "TeamsFullLabel")?.effectivelyVisible).toBeTrue()
     expect(integration.modelPanels().map((panel) => panel.name)).toEqual(["MenuBG", "bluedoor", "reddoor"])
+  })
+
+  test("retains authored disabled-door hover animation without admitting its team command", () => {
+    const { integration, requests } = fixture({ redCount: 1, redDisabled: true })
+    integration.dispatch({ kind: "hover", team: "red" })
+    expect(integration.modelPanels().find((panel) => panel.name === "reddoor")?.animation).toBe("enter_disabled")
+    expect(integration.dispatch({ kind: "select", team: "red" }).disposition).toBe("ignored")
+    expect(requests).toEqual([])
+    integration.dispatch({ kind: "hover", team: null })
+    expect(integration.modelPanels().find((panel) => panel.name === "reddoor")?.animation).toBe("exit_disabled")
   })
 
   test("keeps initial cancellation blocked and routes keyboard auto-assign through its exact Source command", () => {
