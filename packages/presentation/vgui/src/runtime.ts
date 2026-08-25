@@ -46,6 +46,7 @@ import {
 } from "./runtime-contract"
 import { VGUI_CSS } from "./style"
 import { VguiImageRasterizer, type VguiImageRasterGeometry } from "./image-renderer"
+import { registerVguiWindowWorkspace, type VguiWindowWorkspaceRegistration } from "./window-workspace"
 
 const IDENTITY = /^[a-z0-9][a-z0-9./_-]{0,511}$/u
 const RUNTIME_IDENTITY = /^[a-z0-9][a-z0-9_-]{0,127}$/u
@@ -660,6 +661,7 @@ class SourceVguiRuntime implements VguiRuntime {
   private readonly onRequest: VguiRuntimeConfiguration["onRequest"]
   private readonly style: HTMLStyleElement
   private readonly host: HTMLElement
+  private readonly workspace: VguiWindowWorkspaceRegistration
   private readonly panels = new Map<VguiPanelId, PanelState>()
   private readonly auxiliaryNodes = new Set<HTMLElement>()
   private readonly registrations = new Map<string, VguiControlRegistration>()
@@ -707,6 +709,9 @@ class SourceVguiRuntime implements VguiRuntime {
   private revision = 0
   private frame = 0
   private timeSeconds = 0
+  private scheduledFrameSeconds: number | null = null
+  private browserFrameAdmission = false
+  private workspaceActive = false
   private nextPanelId = 1
   private nextOrder = 1
   private nextRequestId = 1
@@ -791,6 +796,7 @@ class SourceVguiRuntime implements VguiRuntime {
     this.host.dataset.vguiRuntime = this.runtimeIdentity
     this.host.style.width = `${this.viewport.width}px`
     this.host.style.height = `${this.viewport.height}px`
+    this.workspace = registerVguiWindowWorkspace(this.root, this.host)
 
     try {
       this.root.append(this.style, this.host)
@@ -1481,7 +1487,7 @@ class SourceVguiRuntime implements VguiRuntime {
       z: 0,
       popup: isFrame,
       topmostPopup: false,
-      visible: true,
+      visible: !isFrame,
       effectivelyVisible: true,
       enabled: !sameName(sourceControl, "FrameSystemButton"),
       mouseInput: true,
@@ -1617,11 +1623,7 @@ class SourceVguiRuntime implements VguiRuntime {
   }
 
   private sortChildren(parent: PanelState): void {
-    parent.children.sort((leftId, rightId) => {
-      const left = this.requirePanel(leftId)
-      const right = this.requirePanel(rightId)
-      return left.z - right.z || left.tieOrder - right.tieOrder
-    })
+    parent.children.sort((leftId, rightId) => this.requirePanel(leftId).z - this.requirePanel(rightId).z)
   }
 
   private convertAnimationScalar(
@@ -1780,8 +1782,9 @@ class SourceVguiRuntime implements VguiRuntime {
   private setPanelState(operation: Extract<VguiOperation, { kind: "set-panel-state" }>): void {
     const panel = this.requirePanel(operation.panel)
     if (operation.visible !== undefined) {
+      const activated = operation.visible && !panel.visible
       panel.visible = operation.visible
-      if (operation.visible && sameName(panel.sourceControl, "Menu") && panel.popup) {
+      if (activated && panel.popup) {
         this.removePopup(panel.id)
         this.popups.push(panel.id)
         this.sortPopups()
@@ -1888,7 +1891,7 @@ class SourceVguiRuntime implements VguiRuntime {
     if (this.keyFocus === panel.id) this.keyFocus = null
     if (this.calculatedKeyFocus === panel.id) this.calculatedKeyFocus = null
     if (this.requestedFocus === panel.id) this.requestedFocus = null
-    if (this.applicationModal === panel.id) this.applicationModal = null
+    this.releaseApplicationModal(panel.id)
     if (this.modalSubtree === panel.id) this.modalSubtree = null
     if (this.outsideClickListener === panel.id) this.outsideClickListener = null
     panel.element.remove()
@@ -1932,6 +1935,11 @@ class SourceVguiRuntime implements VguiRuntime {
       this.nextOrder += parent.children.length
     }
     this.publishDom()
+    if (front && this.workspaceActive) {
+      let owner: PanelState | undefined = panel
+      while (owner && !owner.popup) owner = owner.parent === null ? undefined : this.panels.get(owner.parent)
+      if (owner?.effectivelyVisible) this.workspace.activate(owner.topmostPopup)
+    }
   }
 
   private replaceResource(parentId: VguiPanelId, document: VguiResourceDocument, selection: VguiResourceSelection): void {
@@ -3134,9 +3142,16 @@ class SourceVguiRuntime implements VguiRuntime {
     this.addTrace("pointer-capture", panelId, initiatingButton ?? "none")
   }
 
+  private releaseApplicationModal(panelId: VguiPanelId): void {
+    if (this.applicationModal !== panelId) return
+    this.applicationModal = null
+    this.workspace.setModal(false)
+  }
+
   private setApplicationModal(panelId: VguiPanelId | null): void {
     if (panelId !== null) this.requirePanel(panelId)
     this.applicationModal = panelId
+    this.workspace.setModal(panelId !== null)
     if (!this.modalEligible(this.capture)) this.setPointerCapture(null, null, null)
     if (this.keyFocus !== null && !this.modalEligible(this.keyFocus)) { this.requestedFocus = null; this.clearFocusRequested = true }
     this.calculatedKeyFocus = this.calculateKeyFocus()
@@ -3848,7 +3863,7 @@ class SourceVguiRuntime implements VguiRuntime {
       if (sameName(sourceControl, "QueryBox")) this.closeQuery(panel, false)
       else if (sameName(sourceControl, "Menu")) panel.visible = false
       else if (panel.popup && this.applicationModal === panel.id) {
-        this.applicationModal = null
+        this.releaseApplicationModal(panel.id)
         panel.visible = false
       }
       return
@@ -4182,7 +4197,7 @@ class SourceVguiRuntime implements VguiRuntime {
 
   private closeQuery(panel: PanelState, accepted: boolean): void {
     panel.visible = false
-    if (this.applicationModal === panel.id) this.applicationModal = null
+    this.releaseApplicationModal(panel.id)
     const command = panel.properties.get(accepted ? "okcommand" : "cancelcommand")
     if (command) this.pendingRequests.push(Object.freeze({ kind: "command", panel: panel.id, command }))
     this.postAction(panel, accepted ? "OK" : "Cancel", {})
@@ -4190,7 +4205,7 @@ class SourceVguiRuntime implements VguiRuntime {
 
   private closeFrame(panel: PanelState): void {
     panel.visible = false
-    if (this.applicationModal === panel.id) this.applicationModal = null
+    this.releaseApplicationModal(panel.id)
     if (this.capture === panel.id) this.setPointerCapture(null, null, null)
     if (this.keyFocus !== null && this.hasAncestor(this.keyFocus, panel.id)) {
       this.requestedFocus = null
@@ -4568,11 +4583,15 @@ class SourceVguiRuntime implements VguiRuntime {
   }
 
   private runFrame(timeSeconds: number): void {
-    if (!finite(timeSeconds) || timeSeconds < this.timeSeconds) throw new RuntimeFault("MalformedValue", "frame-time")
+    if (!finite(timeSeconds) || timeSeconds < 0
+      || (!this.browserFrameAdmission && this.scheduledFrameSeconds !== null && timeSeconds < this.scheduledFrameSeconds)) {
+      throw new RuntimeFault("MalformedValue", "frame-time")
+    }
     if (this.inFrame) throw new RuntimeFault("ReentrantFrame", "frame")
+    if (!this.browserFrameAdmission) this.scheduledFrameSeconds = timeSeconds
     this.inFrame = true
     try {
-      this.timeSeconds = timeSeconds
+      this.timeSeconds = Math.max(this.timeSeconds, timeSeconds)
       this.addTrace("frame", null, `begin:${this.frame + 1}`)
       const reasons = this.frameWorkReasons()
       const reason = reasons.length === 0 ? "static" : reasons.join(",")
@@ -4602,6 +4621,12 @@ class SourceVguiRuntime implements VguiRuntime {
       this.addTrace("messages", null, "dispatched")
       this.addTrace("ticks", this.keyFocus, "focus-tick")
       this.solveGeometry()
+      if (this.keyFocus !== null && !this.keyboardEligible(this.keyFocus)) {
+        this.requestedFocus = null
+        this.clearFocusRequested = false
+        this.calculatedKeyFocus = this.calculateKeyFocus()
+        this.commitFocus(this.calculatedKeyFocus)
+      }
       this.addTrace("layout", null, "solved")
       this.updateDelayedCommands(false)
       this.updateActiveAnimations(false)
@@ -4848,6 +4873,18 @@ class SourceVguiRuntime implements VguiRuntime {
     if (this.publicationDepth > 0) { this.publicationPending = true; return }
     this.publicationPending = false
     try {
+      const orderChildren = (parent: HTMLElement, identities: readonly VguiPanelId[]): void => {
+        const actual = [...parent.children]
+          .filter((element): element is HTMLElement => (element as HTMLElement).dataset.vguiPanel !== undefined)
+          .map((element) => Number(element.dataset.vguiPanel))
+        if (actual.length === identities.length && actual.every((identity, index) => identity === identities[index])) return
+        const candidate = this.document.activeElement
+        const focused = candidate && parent.contains(candidate) ? candidate as HTMLElement : null
+        for (const identity of identities) parent.append(this.requirePanel(identity).element)
+        if (focused && this.document.activeElement !== focused && parent.contains(focused)) {
+          try { focused.focus({ preventScroll: true }) } catch { try { focused.focus() } catch {} }
+        }
+      }
       const place = (panelId: VguiPanelId): void => {
         const panel = this.requirePanel(panelId)
         const parent = panel.popup || panel.parent === null ? this.host : this.requirePanel(panel.parent).element
@@ -4862,7 +4899,7 @@ class SourceVguiRuntime implements VguiRuntime {
           panel.element.style.top = `${relativeY}px`
           panel.element.style.width = `${panel.bounds.width}px`
           panel.element.style.height = `${panel.bounds.height}px`
-          panel.element.style.zIndex = String(panel.z)
+          panel.element.style.zIndex = panel.popup || panel.parent === null ? "0" : String(panel.z)
           panel.element.style.display = panel.effectivelyVisible ? "block" : "none"
           panel.element.style.visibility = panel.effectivelyVisible ? "visible" : "hidden"
           panel.element.style.pointerEvents = panel.effectivelyVisible && panel.mouseInput ? "auto" : "none"
@@ -4889,10 +4926,31 @@ class SourceVguiRuntime implements VguiRuntime {
           else delete panel.element.dataset.interaction
           this.publishControlDom(panel)
         }
-        for (const childId of panel.children) if (!this.requirePanel(childId).popup) place(childId)
+        const children = panel.children.filter((childId) => !this.requirePanel(childId).popup)
+        for (const childId of children) place(childId)
+        orderChildren(panel.element, children)
       }
       place(this.rootPanel)
-      for (const popupId of this.popups) if (this.panels.has(popupId)) place(popupId)
+      const popups = this.popups.filter((popupId) => this.panels.has(popupId))
+      for (const popupId of popups) place(popupId)
+      orderChildren(this.host, [this.rootPanel, ...popups])
+
+      const active = popups.some((identity) => this.requirePanel(identity).effectivelyVisible)
+      if (active && !this.workspaceActive) {
+        this.workspaceActive = true
+        this.workspace.activate(popups.some((identity) => {
+          const popup = this.requirePanel(identity)
+          return popup.effectivelyVisible && popup.topmostPopup
+        }))
+      } else if (!active && this.workspaceActive) {
+        this.workspaceActive = false
+        this.workspace.deactivate()
+      } else if (active) {
+        this.workspace.setTopmost(popups.some((identity) => {
+          const popup = this.requirePanel(identity)
+          return popup.effectivelyVisible && popup.topmostPopup
+        }))
+      }
     } catch (error) {
       if (error instanceof RuntimeFault) throw error
       throw new RuntimeFault("DomFailure", "publish")
@@ -5556,7 +5614,12 @@ class SourceVguiRuntime implements VguiRuntime {
       this.recordDiagnostic("InvalidOperation", "browser-event", "clock")
       return
     }
-    this.apply({ kind: "frame", timeSeconds: Math.max(this.timeSeconds, now) })
+    this.browserFrameAdmission = true
+    try {
+      this.apply({ kind: "frame", timeSeconds: Math.max(this.timeSeconds, now) })
+    } finally {
+      this.browserFrameAdmission = false
+    }
   }
 
   private browserButton(button: number): VguiPointerButton {
@@ -5610,6 +5673,7 @@ class SourceVguiRuntime implements VguiRuntime {
   }
 
   private destroyDom(): void {
+    this.workspace?.destroy()
     this.host?.remove()
     this.style?.remove()
   }

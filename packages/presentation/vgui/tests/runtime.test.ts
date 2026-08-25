@@ -115,11 +115,11 @@ function operation(runtime: VguiRuntime, value: VguiOperation): Extract<VguiOper
   return result
 }
 
-function setup(animationScripts = emptyAnimations, customControls: VguiRuntimeConfiguration["customControls"] = []) {
+function setup(animationScripts = emptyAnimations, customControls: VguiRuntimeConfiguration["customControls"] = [], initialTime = 0) {
   const document = new FakeDocument()
   const root = createRoot(document)
   const requests: VguiRequest[] = []
-  let now = 0
+  let now = initialTime
   const initialized = initializeVguiRuntime({
     runtimeIdentity: "test-runtime",
     root: root as unknown as HTMLElement,
@@ -203,6 +203,90 @@ describe("generic Source VGUI runtime", () => {
     operation(runtime, { kind: "frame", timeSeconds: 1 })
     expect(descendants(root).reduce((total, node) => total + node.appendCalls, 0)).toBe(appendCalls)
     expect(runtime.snapshot().frame).toBe(1)
+  })
+
+  test("admits stale callback timestamps without reversing the shared monotonic frame clock", () => {
+    const { root, runtime, time } = setup(emptyAnimations, [], 10)
+    const entry = operation(runtime, {
+      kind: "create-panel", parent: 1, control: "TextEntry", name: "ClockEntry",
+      properties: [{ name: "wide", value: "100" }, { name: "tall", value: "24" }],
+    }).panel!
+
+    operation(runtime, { kind: "frame", timeSeconds: 9 })
+    expect(runtime.snapshot().timeSeconds).toBe(10)
+    operation(runtime, { kind: "frame", timeSeconds: 9 })
+    expect(runtime.snapshot().timeSeconds).toBe(10)
+
+    const element = descendants(root).find((candidate) => candidate.dataset.vguiPanel === String(entry))!
+    time(11)
+    element.dispatchEvent(new FakeEvent("pointerdown", { bubbles: true, pointerId: 1, clientX: 4, clientY: 4 }))
+    expect(runtime.snapshot().timeSeconds).toBe(11)
+    operation(runtime, { kind: "frame", timeSeconds: 10 })
+    expect(runtime.snapshot().timeSeconds).toBe(11)
+
+    for (const value of [9.5, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const rejected = runtime.apply({ kind: "frame", timeSeconds: value })
+      expect(rejected).toMatchObject({ ok: false, diagnostic: { code: "MalformedValue", subject: "frame-time" } })
+      expect(runtime.snapshot().timeSeconds).toBe(11)
+    }
+
+    operation(runtime, { kind: "set-panel-state", panel: 1, visible: false })
+    time(25)
+    operation(runtime, { kind: "set-panel-state", panel: 1, visible: true })
+    operation(runtime, { kind: "frame", timeSeconds: 24 })
+    expect(runtime.snapshot().timeSeconds).toBe(24)
+  })
+
+  test("keeps independently initialized, hidden, resumed, and replacement roots on one monotonic clock", () => {
+    const document = new FakeDocument()
+    let now = 100
+    const create = (identity: string) => {
+      const initialized = initializeVguiRuntime({
+        runtimeIdentity: identity,
+        root: createRoot(document) as unknown as HTMLElement,
+        rootControl: { control: "EditablePanel", name: "Root" },
+        viewport: { width: 640, height: 480, devicePixelRatio: 1 },
+        limits,
+        clock: { nowSeconds: () => now },
+        random: { nextUnit: () => 0.25 },
+        scheme,
+        localization: { identity: "resource/shared-clock.txt", revision: "1", language: "english", tokens: [] },
+        animationScripts: emptyAnimations,
+        customControls: [],
+        reducedMotion: false,
+        onRequest() {},
+      })
+      if (!initialized.ok) throw new Error(initialized.diagnostic.code)
+      return initialized.runtime
+    }
+    const startup = create("startup")
+    now = 101
+    const loading = create("loading")
+    const hud = create("hud")
+    const options = create("options")
+    for (const runtime of [startup, loading, hud, options]) operation(runtime, { kind: "frame", timeSeconds: 99 })
+    expect([startup, loading, hud, options].map((runtime) => runtime.snapshot().timeSeconds)).toEqual([100, 101, 101, 101])
+
+    operation(loading, { kind: "set-panel-state", panel: 1, visible: false })
+    operation(options, { kind: "set-panel-state", panel: 1, visible: false })
+    for (const runtime of [startup, hud]) operation(runtime, { kind: "frame", timeSeconds: 120 })
+    operation(loading, { kind: "set-panel-state", panel: 1, visible: true })
+    operation(options, { kind: "set-panel-state", panel: 1, visible: true })
+    for (const runtime of [loading, options]) operation(runtime, { kind: "frame", timeSeconds: 120 })
+    expect([startup, loading, hud, options].map((runtime) => runtime.snapshot().timeSeconds)).toEqual([120, 120, 120, 120])
+
+    operation(hud, { kind: "destroy" })
+    now = 121
+    const replacement = create("replacement-hud")
+    operation(replacement, { kind: "frame", timeSeconds: 120 })
+    expect(replacement.snapshot().timeSeconds).toBe(121)
+    operation(replacement, { kind: "frame", timeSeconds: 122 })
+    expect(replacement.apply({ kind: "frame", timeSeconds: 121 })).toMatchObject({
+      ok: false,
+      diagnostic: { code: "MalformedValue", subject: "frame-time" },
+    })
+    expect(replacement.snapshot().timeSeconds).toBe(122)
+    for (const runtime of [startup, loading, options, replacement]) operation(runtime, { kind: "destroy" })
   })
 
   test("consumes a focus request invalidated before its frame", () => {
@@ -374,6 +458,7 @@ describe("generic Source VGUI runtime", () => {
         { name: "xpos", value: "100" }, { name: "ypos", value: "100" }, { name: "wide", value: "300" }, { name: "tall", value: "200" },
       ],
     }).panel!
+    operation(runtime, { kind: "set-panel-state", panel: frame, visible: true })
     operation(runtime, {
       kind: "create-panel", parent: frame, control: "Button", name: "Apply", properties: [
         { name: "xpos", value: "20" }, { name: "ypos", value: "20" }, { name: "wide", value: "80" }, { name: "tall", value: "24" },
@@ -384,6 +469,67 @@ describe("generic Source VGUI runtime", () => {
     operation(runtime, { kind: "pointer-release", button: "left", x: 130, y: 130, pointerId: 1 })
     operation(runtime, { kind: "frame", timeSeconds: 0.01 })
     expect(requests).toContainEqual({ kind: "command", panel: 3, command: "Apply" })
+  })
+
+  test("preserves current equal-z sibling order through default insertion, z changes, and front/back movement", () => {
+    const { root, runtime } = setup()
+    const create = (name: string, z?: number) => operation(runtime, {
+      kind: "create-panel", parent: 1, control: "Button", name,
+      properties: [{ name: "wide", value: "80" }, { name: "tall", value: "40" }, ...(z === undefined ? [] : [{ name: "zpos", value: String(z) }])],
+    }).panel!
+    const first = create("First", 5)
+    const second = create("Second", 5)
+    const zero = create("Zero")
+    const laterZero = create("LaterZero")
+    const names = () => runtime.snapshot().panels.find((panel) => panel.id === 1)!.children.map((id) => runtime.snapshot().panels.find((panel) => panel.id === id)!.name)
+    const domNames = () => descendants(root).find((element) => element.dataset.vguiPanel === "1")!.children.map((element) => element.dataset.vguiName).filter(Boolean)
+
+    expect(names()).toEqual(["Zero", "LaterZero", "Second", "First"])
+    expect(domNames()).toEqual(names())
+    operation(runtime, { kind: "set-panel-state", panel: zero, z: 5 })
+    expect(names()).toEqual(["LaterZero", "Zero", "Second", "First"])
+    expect(domNames()).toEqual(names())
+    operation(runtime, { kind: "set-panel-state", panel: first, z: -3 })
+    expect(names()).toEqual(["First", "LaterZero", "Zero", "Second"])
+    operation(runtime, { kind: "move-to-front", panel: zero })
+    expect(names()).toEqual(["First", "LaterZero", "Second", "Zero"])
+    operation(runtime, { kind: "move-to-back", panel: zero })
+    expect(names()).toEqual(["First", "LaterZero", "Zero", "Second"])
+    expect(domNames()).toEqual(names())
+    operation(runtime, { kind: "pointer-move", x: 4, y: 4, pointerId: 1 })
+    operation(runtime, { kind: "frame", timeSeconds: 0 })
+    expect(runtime.snapshot().input.mouseOver).toBe(second)
+    expect(laterZero).toBeGreaterThan(zero)
+  })
+
+  test("projects independent popup stack order without using authored child z values", () => {
+    const { root, runtime } = setup()
+    operation(runtime, { kind: "set-panel-state", panel: 1, z: 200 })
+    const first = operation(runtime, {
+      kind: "create-panel", parent: 1, control: "Frame", name: "FirstWindow",
+      properties: [{ name: "xpos", value: "10" }, { name: "ypos", value: "10" }, { name: "wide", value: "160" }, { name: "tall", value: "100" }, { name: "zpos", value: "100" }],
+    }).panel!
+    expect(runtime.snapshot().panels.find((panel) => panel.id === first)?.visible).toBeFalse()
+    const second = operation(runtime, {
+      kind: "create-panel", parent: 1, control: "Frame", name: "SecondWindow",
+      properties: [{ name: "xpos", value: "10" }, { name: "ypos", value: "10" }, { name: "wide", value: "160" }, { name: "tall", value: "100" }, { name: "zpos", value: "-100" }],
+    }).panel!
+    operation(runtime, { kind: "set-panel-state", panel: first, visible: true })
+    operation(runtime, { kind: "set-panel-state", panel: second, visible: true })
+    const host = descendants(root).find((element) => element.dataset.vguiRuntime === "test-runtime")!
+    const windowNames = () => host.children.map((element) => element.dataset.vguiName).filter(Boolean)
+    expect(windowNames()).toEqual(["Root", "FirstWindow", "SecondWindow"])
+    expect(host.children[1]!.style.zIndex).toBe(host.children[2]!.style.zIndex)
+    operation(runtime, { kind: "pointer-move", x: 20, y: 50, pointerId: 1 })
+    expect(runtime.snapshot().input.mouseOver).toBe(second)
+    operation(runtime, { kind: "move-to-front", panel: first })
+    expect(windowNames()).toEqual(["Root", "SecondWindow", "FirstWindow"])
+    operation(runtime, { kind: "pointer-move", x: 20, y: 50, pointerId: 1 })
+    expect(runtime.snapshot().input.mouseOver).toBe(first)
+    operation(runtime, { kind: "set-panel-state", panel: second, topmostPopup: true })
+    expect(windowNames()).toEqual(["Root", "FirstWindow", "SecondWindow"])
+    operation(runtime, { kind: "pointer-move", x: 20, y: 50, pointerId: 1 })
+    expect(runtime.snapshot().input.mouseOver).toBe(second)
   })
 
   test("solves z order, clipping, popups, modal scope and focus loss-before-gain", () => {
@@ -508,6 +654,7 @@ describe("generic Source VGUI runtime", () => {
     operation(runtime, { kind: "frame", timeSeconds: 0.04 })
     expect(runtime.snapshot().panels.find((panel) => panel.id === query)?.visible).toBeFalse()
     expect(runtime.snapshot().input.applicationModal).toBeNull()
+    expect(runtime.snapshot().input.keyFocus).toBe(frame)
     expect(requests.some((request) => request.kind === "command" && request.command === "cancel_disconnect")).toBeTrue()
 
     const url = operation(runtime, {
@@ -948,6 +1095,28 @@ describe("generic Source VGUI runtime", () => {
     expect(color("Literal")).toBe("rgba(10, 20, 30, 0.5019607843137255)")
     expect(color("Missing")).toBe("rgba(0, 255, 0, 1)")
     expect(color("Override")).toBe("rgba(1, 2, 3, 1)")
+  })
+
+  test("paints authored equal-z foreground labels above their later offset shadows", () => {
+    const { root, runtime } = setup()
+    operation(runtime, {
+      kind: "replace-resource",
+      parent: 1,
+      document: {
+        logicalIdentity: "resource/ui/hudammoweapons.res",
+        revision: "configured-order",
+        root: object("Resource", [
+          object("AmmoInClip", [scalar("ControlName", "Label"), scalar("zpos", "5"), scalar("xpos", "20"), scalar("ypos", "20")]),
+          object("AmmoInClipShadow", [scalar("ControlName", "Label"), scalar("zpos", "5"), scalar("xpos", "21"), scalar("ypos", "21")]),
+          object("AmmoInReserve", [scalar("ControlName", "Label"), scalar("zpos", "7"), scalar("xpos", "60"), scalar("ypos", "20")]),
+          object("AmmoInReserveShadow", [scalar("ControlName", "Label"), scalar("zpos", "7"), scalar("xpos", "61"), scalar("ypos", "21")]),
+        ]),
+      },
+      selection: { activeConditions: [], resolutionSuffixes: [] },
+    })
+    const names = descendants(root).map((element) => element.dataset.vguiName).filter(Boolean)
+    expect(names.indexOf("AmmoInClipShadow")).toBeLessThan(names.indexOf("AmmoInClip"))
+    expect(names.indexOf("AmmoInReserveShadow")).toBeLessThan(names.indexOf("AmmoInReserve"))
   })
 
   test("executes an explicitly registered custom control through its Source base control", () => {
