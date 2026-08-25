@@ -1,6 +1,6 @@
 use crate::class::PlayerTeam;
 
-pub const MAX_ROSTER_PLAYERS: usize = 64;
+pub const MAX_ROSTER_PLAYERS: usize = 100;
 pub const HIGHLANDER_TEAM_SIZE: usize = 9;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

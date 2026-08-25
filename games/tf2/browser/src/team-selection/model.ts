@@ -85,9 +85,9 @@ const outcome = (
 
 function validServer(state: Tf2TeamSelectionServerState): boolean {
   return [0, 1, 2, 3].includes(state.localTeam)
-    && Number.isSafeInteger(state.redCount) && state.redCount >= 0 && state.redCount <= 64
-    && Number.isSafeInteger(state.blueCount) && state.blueCount >= 0 && state.blueCount <= 64
-    && state.redCount + state.blueCount <= 64
+    && Number.isSafeInteger(state.redCount) && state.redCount >= 0 && state.redCount <= 100
+    && Number.isSafeInteger(state.blueCount) && state.blueCount >= 0 && state.blueCount <= 100
+    && state.redCount + state.blueCount <= 100
     && state.cancelVisible === (state.localTeam !== 0)
     && (!state.teamsFull || state.highlander)
     && (!state.teamsFullArrow || (state.teamsFull && state.spectatorsVisible))
