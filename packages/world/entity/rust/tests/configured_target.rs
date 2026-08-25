@@ -150,6 +150,7 @@ fn configured_jump_beef_inventory_and_selected_generic_runtime_are_fixed() {
             identity: trigger.index as u64,
             role: ObjectRole::Entity,
             enabled: true,
+            volume_contents: false,
             transform: CollisionTransform { origin, angles },
             linear_velocity: [0.0; 3],
             angular_velocity: [0.0; 3],

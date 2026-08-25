@@ -21,14 +21,18 @@ pub use lighting::{
 
 pub use snapshot::{
     Candidate, ConvexInput, ObjectInput, ObjectOverlapRequest, ObjectRole, ObjectTraceRequest,
-    PhysicsShape, SNAPSHOT_VERSION, Snapshot, SnapshotLimits, SnapshotRayRequest, SnapshotRecord,
-    SnapshotShape, SnapshotTraceRequest, TraceScope, Transform,
+    PhysicsShape, PointContentsContributor, PointContentsResult, SNAPSHOT_VERSION, Snapshot,
+    SnapshotLimits, SnapshotRayRequest, SnapshotRecord, SnapshotShape, SnapshotTraceRequest,
+    TraceScope, Transform,
 };
 
 pub const CONTENTS_SOLID: u32 = 0x0000_0001;
 pub const CONTENTS_WINDOW: u32 = 0x0000_0002;
 pub const CONTENTS_GRATE: u32 = 0x0000_0008;
+pub const CONTENTS_SLIME: u32 = 0x0000_0010;
+pub const CONTENTS_WATER: u32 = 0x0000_0020;
 pub const CONTENTS_OPAQUE: u32 = 0x0000_0080;
+pub const MASK_CURRENT: u32 = 0x00fc_0000;
 pub const CONTENTS_MOVEABLE: u32 = 0x0000_4000;
 pub const CONTENTS_PLAYERCLIP: u32 = 0x0001_0000;
 pub const CONTENTS_MONSTER: u32 = 0x0200_0000;
@@ -1247,6 +1251,7 @@ mod tests {
             identity,
             role: ObjectRole::Entity,
             enabled: true,
+            volume_contents: false,
             transform: Transform::IDENTITY,
             linear_velocity: [0.0; 3],
             angular_velocity: [0.0; 3],
@@ -1263,12 +1268,175 @@ mod tests {
     }
 
     #[test]
+    fn point_contents_unions_leaf_brushes_and_includes_exact_boundaries() {
+        let mut world = compile(&fixture()).unwrap();
+        world.leaves[0].contents = CONTENTS_OPAQUE as i32;
+        world.leaves[0].leaf_brush_count = 2;
+        world.leaf_brushes = vec![0, 1];
+        world.brushes[0].contents = CONTENTS_WATER | CONTENTS_TRANSLUCENT;
+        world.brushes[1].contents = CONTENTS_SLIME;
+
+        let inside = world.point_contents([0.0; 3]).unwrap();
+        assert_eq!(
+            inside.contents,
+            CONTENTS_OPAQUE | CONTENTS_WATER | CONTENTS_TRANSLUCENT | CONTENTS_SLIME
+        );
+        assert_eq!(
+            inside.contributors,
+            [
+                PointContentsContributor::WorldLeaf { leaf: 0 },
+                PointContentsContributor::WorldBrush { brush: 0 },
+                PointContentsContributor::WorldBrush { brush: 1 },
+            ]
+        );
+        assert_eq!(
+            world.point_contents([16.0, 0.0, 0.0]).unwrap().contents,
+            inside.contents
+        );
+        assert_eq!(
+            world
+                .point_contents([16.000_002, 0.0, 0.0])
+                .unwrap()
+                .contents,
+            CONTENTS_OPAQUE
+        );
+        world.brushes[1].side_count = 0;
+        assert_eq!(
+            world.point_contents([0.0; 3]).unwrap().contents,
+            CONTENTS_OPAQUE | CONTENTS_WATER | CONTENTS_TRANSLUCENT
+        );
+        assert_eq!(
+            world.point_contents([f32::NAN, 0.0, 0.0]).unwrap_err().code,
+            ErrorCode::NonFinite
+        );
+    }
+
+    #[test]
+    fn point_contents_uses_first_eligible_fluid_volume_and_static_prop_world_identity() {
+        let mut world = compile(&fixture()).unwrap();
+        world.brushes[0].contents = CONTENTS_WATER | CONTENTS_TRANSLUCENT;
+        world.brushes[1].contents = CONTENTS_SLIME;
+        world.leaf_brushes = vec![0, 0, 1];
+        let mut water_leaf = world.leaves[0].clone();
+        water_leaf.first_leaf_brush = 1;
+        let mut slime_leaf = world.leaves[0].clone();
+        slime_leaf.first_leaf_brush = 2;
+        world.leaves.extend([water_leaf, slime_leaf]);
+        let mut water_model = world.models[0];
+        water_model.head_node = -2;
+        let mut slime_model = world.models[0];
+        slime_model.head_node = -3;
+        world.models.extend([water_model, slime_model]);
+        world.model_brushes.extend([vec![0], vec![1]]);
+        world
+            .model_contents
+            .extend([CONTENTS_WATER | CONTENTS_TRANSLUCENT, CONTENTS_SLIME]);
+        let volume = |identity, model, eligible| ObjectInput {
+            identity,
+            role: ObjectRole::Entity,
+            enabled: true,
+            volume_contents: eligible,
+            transform: Transform::IDENTITY,
+            linear_velocity: [0.0; 3],
+            angular_velocity: [0.0; 3],
+            collision_group: 0,
+            contents: 0,
+            surface_flags: 0,
+            shape: SnapshotShape::BrushModel { model },
+        };
+        let snapshot = Snapshot::compile(
+            &world,
+            42,
+            vec![volume(1, 1, false), volume(2, 2, true), volume(3, 1, true)],
+            SnapshotLimits::default(),
+        )
+        .unwrap();
+        let result = world.point_contents_snapshot(&snapshot, [0.0; 3]).unwrap();
+        assert_eq!(result.contents, CONTENTS_SLIME);
+        assert_eq!(result.entity, 2);
+        assert_eq!(result.snapshot, Some(42));
+        assert_eq!(
+            result.contributors,
+            [
+                PointContentsContributor::WorldLeaf { leaf: 0 },
+                PointContentsContributor::WorldBrush { brush: 0 },
+                PointContentsContributor::Object {
+                    identity: 2,
+                    role: ObjectRole::Entity,
+                },
+            ]
+        );
+        assert_eq!(
+            world
+                .point_contents_snapshot_value(&snapshot, [0.0; 3])
+                .unwrap(),
+            CONTENTS_SLIME
+        );
+        assert_eq!(
+            world
+                .point_contents_object(&snapshot, 1, [0.0; 3])
+                .unwrap()
+                .contents,
+            0
+        );
+        assert_eq!(
+            world
+                .point_contents_object(&snapshot, 3, [0.0; 3])
+                .unwrap()
+                .contents,
+            CONTENTS_WATER | CONTENTS_TRANSLUCENT
+        );
+
+        let static_prop = Snapshot::compile(
+            &world,
+            43,
+            vec![ObjectInput {
+                role: ObjectRole::StaticProp,
+                ..box_object(7, [-1.0; 3], [1.0; 3])
+            }],
+            SnapshotLimits::default(),
+        )
+        .unwrap();
+        let result = world
+            .point_contents_snapshot(&static_prop, [0.0; 3])
+            .unwrap();
+        assert_eq!(result.contents, CONTENTS_SOLID);
+        assert_eq!(result.entity, 0);
+
+        world.brushes[0].contents = CONTENTS_WATER | CONTENTS_TRANSLUCENT | 0x0004_0000;
+        let current = Snapshot::compile(&world, 44, Vec::new(), SnapshotLimits::default()).unwrap();
+        assert_eq!(
+            world
+                .point_contents_snapshot(&current, [0.0; 3])
+                .unwrap()
+                .contents,
+            CONTENTS_WATER
+        );
+        world.brushes[0].contents = CONTENTS_SOLID;
+        let sealed = Snapshot::compile(
+            &world,
+            45,
+            vec![volume(9, 2, true)],
+            SnapshotLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            world
+                .point_contents_snapshot(&sealed, [0.0; 3])
+                .unwrap()
+                .contents,
+            CONTENTS_SOLID
+        );
+    }
+
+    #[test]
     fn bounded_snapshot_traces_world_models_and_entities_in_source_order() {
         let world = compile(&fixture()).unwrap();
         let translated_model = ObjectInput {
             identity: 40,
             role: ObjectRole::Entity,
             enabled: true,
+            volume_contents: false,
             transform: Transform {
                 origin: [100.0, 0.0, 0.0],
                 angles: [0.0, 90.0, 0.0],
@@ -1343,7 +1511,7 @@ mod tests {
             })
         );
         assert_eq!(direct.plane.unwrap().normal, [-1.0, 0.0, 0.0]);
-        assert_eq!(&ordered.snapshot_bytes().unwrap()[..8], b"CSNP\x02\0\0\0");
+        assert_eq!(&ordered.snapshot_bytes().unwrap()[..8], b"CSNP\x03\0\0\0");
     }
 
     #[test]
@@ -1427,6 +1595,7 @@ mod tests {
                 identity: 99,
                 role: ObjectRole::StaticProp,
                 enabled: true,
+                volume_contents: false,
                 transform: Transform {
                     origin: [5.0, 0.0, 0.0],
                     angles: [0.0, 45.0, 0.0],

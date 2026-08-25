@@ -100,6 +100,7 @@ export type MovementSnapshot = Readonly<{
   mode: MovementMode
   crouchPhase: 0 | 1 | 2 | 3 | 4
   waterLevel: number
+  waterType: number
   jumpLatched: boolean
   previousJump: boolean
   previousCrouch: boolean
@@ -337,6 +338,8 @@ export type Snapshot = Readonly<{
   class: Tf2Class
   team: Tf2Team
   weapon: Tf2Weapon
+  playerFlags: number
+  inWater: boolean
   health: number
   maximumHealth: number
   lifecycle: 1 | 2
@@ -558,7 +561,7 @@ function count(value: number, label: string): number {
   return value
 }
 
-function movementSnapshot(bytes: ArrayBuffer, offset: number, length: number): MovementSnapshot {
+function movementSnapshot(bytes: ArrayBuffer, offset: number, length: number, waterType: number): MovementSnapshot {
   if (length !== MOVEMENT_BYTES) throw new Tf2CodecError("Movement snapshot length is invalid")
   const data = new Uint8Array(bytes, offset, length)
   const view = new DataView(bytes, offset, length)
@@ -598,6 +601,7 @@ function movementSnapshot(bytes: ArrayBuffer, offset: number, length: number): M
     mode: data[8] as MovementMode,
     crouchPhase: data[9] as MovementSnapshot["crouchPhase"],
     waterLevel: data[10]!,
+    waterType,
     jumpLatched: data[11] === 1,
     previousJump: data[12] === 1,
     previousCrouch: data[13] === 1,
@@ -857,7 +861,7 @@ function decodeRandomState(bytes: ArrayBuffer, offset: number, length: number): 
 function decodeCollisionSnapshot(bytes: ArrayBuffer, offset: number, length: number): CollisionSnapshot {
   if (length < 52 || length > 16 * 1024 * 1024) throw new Tf2CodecError("Collision snapshot length is invalid")
   const data = new Uint8Array(bytes, offset, length), view = new DataView(bytes, offset, length)
-  if (new TextDecoder().decode(data.subarray(0, 4)) !== "CSNP" || view.getUint32(4, true) !== 2) {
+  if (new TextDecoder().decode(data.subarray(0, 4)) !== "CSNP" || view.getUint32(4, true) !== 3) {
     throw new Tf2CodecError("Collision snapshot identity is invalid")
   }
   const worldIdentity = Array.from(data.subarray(8, 40), (value) => value.toString(16).padStart(2, "0")).join("")
@@ -866,14 +870,14 @@ function decodeCollisionSnapshot(bytes: ArrayBuffer, offset: number, length: num
 }
 
 export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
-  if (bytes.byteLength < 160 || bytes.byteLength > MAX_SNAPSHOT_BYTES) {
+  if (bytes.byteLength < 168 || bytes.byteLength > MAX_SNAPSHOT_BYTES) {
     throw new Tf2CodecError("snapshot byte length is invalid")
   }
   const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
   const buffer = data.buffer as ArrayBuffer
   const base = data.byteOffset
   const view = new DataView(buffer, base, data.byteLength)
-  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 8)
+  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 9)
     throw new Tf2CodecError("snapshot identity is invalid")
   const tf2Class = data[16]
   const team = data[17]
@@ -917,12 +921,15 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
   const collisionSnapshotLength = view.getUint32(144, true)
   const randomStateLength = view.getUint32(148, true)
   const entityPresentationLength=view.getUint32(152,true),movementTickLength=view.getUint32(156,true)
-  if (entityPresentationLength<52||movementTickLength<12||160 + movementLength > bytes.byteLength) {
+  const playerFlags=view.getUint32(160,true),waterType=view.getUint32(164,true)
+  if (entityPresentationLength<52||movementTickLength<12||168 + movementLength > bytes.byteLength||waterType&~0x30) {
     throw new Tf2CodecError("snapshot extension header is invalid")
   }
-  const movement = movementSnapshot(buffer, base + 160, movementLength)
-  if (movement.mode !== data[19]) throw new Tf2CodecError("Movement mode projection differs")
-  let at = 160 + movementLength
+  const movement = movementSnapshot(buffer, base + 168, movementLength, waterType)
+  if (movement.mode !== data[19]||movement.waterLevel>3||(movement.waterLevel===0)!==(waterType===0)) {
+    throw new Tf2CodecError("Movement mode or water projection differs")
+  }
+  let at = 168 + movementLength
   const requireBytes = (length: number, label: string): void => {
     if (!Number.isSafeInteger(at + length) || at + length > bytes.byteLength) {
       throw new Tf2CodecError(`${label} records exceed snapshot bytes`)
@@ -1407,6 +1414,8 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     class: tf2Class,
     team,
     weapon,
+    playerFlags,
+    inWater: (playerFlags & 0x400) !== 0,
     health,
     maximumHealth,
     lifecycle: data[28] as 1 | 2,

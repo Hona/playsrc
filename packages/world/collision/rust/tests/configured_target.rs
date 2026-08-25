@@ -48,6 +48,25 @@ fn configured_jump_beef_rocket_and_mover_inputs_are_queryable() {
     assert_eq!(world.models.len(), 123);
     assert_eq!(world.model_brushes.len(), 123);
     assert_eq!(world.model_contents.len(), 123);
+    let water_point = [-4832.0, 3000.0, -2215.0];
+    let water = world.point_contents(water_point).unwrap();
+    assert_eq!(water.contents, 0x1000_0020);
+    assert!(water.contributors.iter().any(|contributor| {
+        matches!(
+            contributor,
+            playsrc_collision::PointContentsContributor::WorldBrush { brush: 60 }
+        )
+    }));
+    let dry = world.point_contents([-4832.0, 3000.0, -2159.0]).unwrap();
+    assert_eq!(dry.contents & playsrc_collision::CONTENTS_WATER, 0);
+    let empty_snapshot =
+        Snapshot::compile(&world, 1, Vec::new(), SnapshotLimits::default()).unwrap();
+    assert_eq!(
+        world
+            .point_contents_snapshot_value(&empty_snapshot, water_point)
+            .unwrap(),
+        0x1000_0020
+    );
     assert_eq!(
         world
             .sides
@@ -86,6 +105,7 @@ fn configured_jump_beef_rocket_and_mover_inputs_are_queryable() {
             identity,
             role: ObjectRole::Entity,
             enabled,
+            volume_contents: false,
             transform: Transform {
                 origin,
                 angles: [0.0; 3],
@@ -178,6 +198,7 @@ fn configured_jump_beef_rocket_and_mover_inputs_are_queryable() {
             identity: 67,
             role: ObjectRole::Entity,
             enabled: true,
+            volume_contents: false,
             transform: Transform {
                 origin: mover_origin,
                 angles: [0.0; 3],
@@ -250,6 +271,7 @@ fn configured_jump_beef_rocket_and_mover_inputs_are_queryable() {
             identity: 315,
             role: ObjectRole::Entity,
             enabled: true,
+            volume_contents: false,
             transform: Transform::IDENTITY,
             linear_velocity: [0.0; 3],
             angular_velocity: [0.0; 3],

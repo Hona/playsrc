@@ -168,16 +168,15 @@ impl playsrc_movement::Tracer for SharedWorld {
     }
 
     fn point_contents(&self, point: [f32; 3]) -> Result<u32, playsrc_movement::Error> {
-        self.trace(
-            point,
-            point,
-            playsrc_collision::Hull {
-                mins: [0.0; 3],
-                maxs: [0.0; 3],
-            },
-            u32::MAX,
-        )
-        .map(|trace| trace.contents)
+        self.world
+            .point_contents_snapshot_value(&self.snapshot(), point)
+            .map_err(|_| {
+                playsrc_movement::Error::new(
+                    playsrc_movement::Operation::PointContents,
+                    playsrc_movement::FailureKind::Malformed,
+                    "snapshot point contents",
+                )
+            })
     }
 
     fn support_velocity(&self, support: u64) -> Result<[f32; 3], playsrc_movement::Error> {
@@ -3430,7 +3429,7 @@ fn encode_snapshot(
     encode_movement_tick(&mut movement_tick_bytes, movement_tick, MAX)?;
     let mut out = Vec::new();
     extend(&mut out, b"PSSN", MAX)?;
-    u32_field(&mut out, 8, MAX)?;
+    u32_field(&mut out, 9, MAX)?;
     u64_field(&mut out, snapshot.tick, MAX)?;
     extend(
         &mut out,
@@ -3511,6 +3510,8 @@ fn encode_snapshot(
     ] {
         u32_field(&mut out, u32::try_from(count).ok()?, MAX)?;
     }
+    u32_field(&mut out, producer.player_flags, MAX)?;
+    u32_field(&mut out, snapshot.movement.water_type, MAX)?;
     extend(&mut out, &movement, MAX)?;
     for state in &producer.weapons {
         let profile = state.profile();
@@ -5045,9 +5046,12 @@ fn collision_object_templates(
             && let Some(index) = model.strip_prefix(b"*")
         {
             let classname = entity.classname.as_deref().ok_or(())?;
+            let water_volume = classname.eq_ignore_ascii_case(b"func_water")
+                || classname.eq_ignore_ascii_case(b"func_water_analog");
             let ordinary_mover = classname.eq_ignore_ascii_case(b"func_door")
                 || classname.eq_ignore_ascii_case(b"func_button")
-                || classname.eq_ignore_ascii_case(b"func_movelinear");
+                || classname.eq_ignore_ascii_case(b"func_movelinear")
+                || water_volume;
             let brush = classname.eq_ignore_ascii_case(b"func_brush");
             if !ordinary_mover && !brush {
                 continue;
@@ -5063,6 +5067,7 @@ fn collision_object_templates(
                     enabled: ordinary_mover
                         || entity_scalar(entity, b"Solidity") != Some(b"1".as_slice())
                             && entity_scalar(entity, b"StartDisabled") != Some(b"1".as_slice()),
+                    volume_contents: water_volume,
                     transform,
                     linear_velocity: [0.0; 3],
                     angular_velocity: [0.0; 3],
@@ -5124,6 +5129,7 @@ fn collision_object_templates(
                 identity,
                 role: playsrc_collision::ObjectRole::Entity,
                 enabled: true,
+                volume_contents: false,
                 transform,
                 linear_velocity: [0.0; 3],
                 angular_velocity: [0.0; 3],
@@ -5177,6 +5183,7 @@ fn collision_object_templates(
                 identity: 0x8000_0000_0000_0000u64 | u64::try_from(prop.source).map_err(|_| ())?,
                 role: playsrc_collision::ObjectRole::StaticProp,
                 enabled: true,
+                volume_contents: false,
                 transform: playsrc_collision::Transform {
                     origin: prop.origin,
                     angles: prop.angles,
@@ -8829,6 +8836,7 @@ fn compile_environment_artifact(
                 enabled: !brush
                     || occurrence.solidity.as_deref() != Some(b"1")
                         && occurrence.start_disabled.as_deref() != Some(b"1"),
+                volume_contents: false,
                 transform: playsrc_collision::Transform {
                     origin: occurrence.origin,
                     angles: occurrence.angles,
@@ -10282,6 +10290,7 @@ mod tests {
                 identity: 42,
                 role: playsrc_collision::ObjectRole::Entity,
                 enabled: true,
+                volume_contents: false,
                 transform: playsrc_collision::Transform::IDENTITY,
                 linear_velocity: [0.0; 3],
                 angular_velocity: [0.0; 3],
@@ -10452,6 +10461,7 @@ mod tests {
             class: playsrc_tf2::Class::Soldier,
             team: playsrc_tf2::Team::Blue,
             weapon: playsrc_tf2::Weapon::Original,
+            player_flags: playsrc_tf2::FL_CLIENT | playsrc_tf2::FL_INWATER,
             movement,
             health: 175.,
             maximum_health: 200.,
@@ -10495,6 +10505,7 @@ mod tests {
             class: playsrc_tf2::Class::Soldier,
             team: playsrc_tf2::Team::Blue,
             active_weapon: playsrc_tf2::Weapon::Original,
+            player_flags: playsrc_tf2::FL_CLIENT | playsrc_tf2::FL_INWATER,
             health: 175,
             maximum_health: 200,
             conditions: [0; 5],
@@ -10564,15 +10575,19 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(&encoded[..8], b"PSSN\x08\0\0\0");
-        assert_eq!(encoded.len(), 872);
+        assert_eq!(&encoded[..8], b"PSSN\x09\0\0\0");
+        assert_eq!(encoded.len(), 880);
+        assert_eq!(
+            u32::from_le_bytes(encoded[160..164].try_into().unwrap()),
+            playsrc_tf2::FL_CLIENT | playsrc_tf2::FL_INWATER
+        );
         assert_eq!(u32::from_le_bytes(encoded[56..60].try_into().unwrap()), 1);
         assert_eq!(u32::from_le_bytes(encoded[60..64].try_into().unwrap()), 1);
         assert_eq!(u32::from_le_bytes(encoded[64..68].try_into().unwrap()), 1);
-        assert_eq!(&encoded[304..308], &[12, 0, 0, 0]);
-        assert_eq!(&encoded[388..392], &[6, 1, 2, 0]);
-        assert_eq!(&encoded[496..504], &[1, 1, 0, 0, 2, 1, 0, 0]);
-        assert_eq!(&encoded[504..512], b"PRNG\x01\0\0\0");
+        assert_eq!(&encoded[312..316], &[12, 0, 0, 0]);
+        assert_eq!(&encoded[396..400], &[6, 1, 2, 0]);
+        assert_eq!(&encoded[504..512], &[1, 1, 0, 0, 2, 1, 0, 0]);
+        assert_eq!(&encoded[512..520], b"PRNG\x01\0\0\0");
     }
 
     #[test]

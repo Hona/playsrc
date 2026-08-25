@@ -312,6 +312,7 @@ fn receiver_snapshot(
             identity: occurrence.entity as u64,
             role: ObjectRole::Entity,
             enabled: true,
+            volume_contents: false,
             transform: Transform {
                 origin: occurrence.origin,
                 angles: occurrence.angles,

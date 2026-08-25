@@ -129,6 +129,34 @@ describe("TF2 incremental application publication", () => {
     expect(value.canvas.writes).toEqual([])
   })
 
+  test("publishes independent in-water flags alongside canonical movement fluid state", () => {
+    const value = fixture()
+    const movement = Object.freeze({
+      waterLevel: 3,
+      waterType: 0x20,
+      viewOffset: Object.freeze([0, 0, 68]),
+      velocity: Object.freeze([0, 0, 0]),
+    }) as ApplicationView["movement"]
+    value.publication.publish(Object.freeze({
+      ...value.startup,
+      movement,
+      playerFlags: 0x100,
+      inWater: false,
+    }))
+    expect(value.root.attributes.get("data-water-level")).toBe("3")
+    expect(value.root.attributes.get("data-water-type")).toBe("32")
+    expect(value.root.attributes.get("data-player-flags")).toBe("256")
+    expect(value.root.attributes.get("data-in-water")).toBe("false")
+    value.publication.publish(Object.freeze({
+      ...value.startup,
+      movement,
+      playerFlags: 0x500,
+      inWater: true,
+    }))
+    expect(value.root.attributes.get("data-player-flags")).toBe("1280")
+    expect(value.root.attributes.get("data-in-water")).toBe("true")
+  })
+
   test("serializes immutable model and blocker identities once and removes replaced values", () => {
     const value = fixture()
     value.publication.publish(value.startup)

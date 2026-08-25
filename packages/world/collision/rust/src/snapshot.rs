@@ -5,7 +5,7 @@ use crate::{
 use playsrc_phy::{Asset as PhyAsset, Classification as PhyClassification};
 use std::{collections::BTreeSet, sync::Arc};
 
-pub const SNAPSHOT_VERSION: u32 = 2;
+pub const SNAPSHOT_VERSION: u32 = 3;
 const DIST_EPSILON: f32 = 1.0 / 32.0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -374,6 +374,7 @@ pub struct ObjectInput {
     pub identity: u64,
     pub role: ObjectRole,
     pub enabled: bool,
+    pub volume_contents: bool,
     pub transform: Transform,
     pub linear_velocity: [f32; 3],
     pub angular_velocity: [f32; 3],
@@ -388,6 +389,7 @@ pub struct SnapshotRecord {
     pub identity: u64,
     pub role: ObjectRole,
     pub enabled: bool,
+    pub volume_contents: bool,
     pub transform: Transform,
     pub linear_velocity: [f32; 3],
     pub angular_velocity: [f32; 3],
@@ -499,6 +501,7 @@ impl Snapshot {
                 identity: input.identity,
                 role: input.role,
                 enabled: input.enabled,
+                volume_contents: input.volume_contents,
                 transform: input.transform,
                 linear_velocity: input.linear_velocity,
                 angular_velocity: input.angular_velocity,
@@ -552,7 +555,7 @@ impl Snapshot {
                 ObjectRole::Entity => 0,
                 ObjectRole::StaticProp => 1,
             })?;
-            output.u8(u8::from(object.enabled))?;
+            output.u8(u8::from(object.enabled) | (u8::from(object.volume_contents) << 1))?;
             output.u16(object.surface_flags)?;
             output.i32(object.collision_group)?;
             output.u32(object.contents)?;
@@ -646,6 +649,22 @@ pub struct ObjectOverlapRequest {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PointContentsContributor {
+    WorldLeaf { leaf: usize },
+    WorldBrush { brush: usize },
+    Object { identity: u64, role: ObjectRole },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PointContentsResult {
+    pub world: [u8; 32],
+    pub snapshot: Option<u64>,
+    pub contents: u32,
+    pub entity: u64,
+    pub contributors: Vec<PointContentsContributor>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Candidate {
     pub identity: u64,
     pub role: ObjectRole,
@@ -654,6 +673,256 @@ pub struct Candidate {
 }
 
 impl World {
+    pub fn point_contents(&self, point: [f32; 3]) -> Result<PointContentsResult, Error> {
+        self.point_contents_headnode(
+            point,
+            self.models.first().map(|model| model.head_node),
+            true,
+        )
+    }
+
+    pub fn point_contents_snapshot(
+        &self,
+        snapshot: &Snapshot,
+        point: [f32; 3],
+    ) -> Result<PointContentsResult, Error> {
+        self.point_contents_snapshot_inner(snapshot, point, true)
+    }
+
+    pub fn point_contents_snapshot_value(
+        &self,
+        snapshot: &Snapshot,
+        point: [f32; 3],
+    ) -> Result<u32, Error> {
+        self.point_contents_snapshot_inner(snapshot, point, false)
+            .map(|result| result.contents)
+    }
+
+    fn point_contents_snapshot_inner(
+        &self,
+        snapshot: &Snapshot,
+        point: [f32; 3],
+        collect_contributors: bool,
+    ) -> Result<PointContentsResult, Error> {
+        if snapshot.world != self.identity {
+            return Err(error(ErrorCode::InvalidSnapshot, None));
+        }
+        let mut result = self.point_contents_headnode(
+            point,
+            self.models.first().map(|model| model.head_node),
+            collect_contributors,
+        )?;
+        result.snapshot = Some(snapshot.identity);
+        if result.contents & crate::MASK_CURRENT != 0 {
+            result.contents = crate::CONTENTS_WATER;
+        }
+        if result.contents == crate::CONTENTS_SOLID {
+            return Ok(result);
+        }
+
+        let mut visits = 0_usize;
+        for object in &snapshot.objects {
+            if !object.enabled
+                || object.role == ObjectRole::Entity && !object.volume_contents
+                || point
+                    .into_iter()
+                    .zip(object.bounds.mins.into_iter().zip(object.bounds.maxs))
+                    .any(|(value, (minimum, maximum))| value < minimum || value > maximum)
+            {
+                continue;
+            }
+            visits += 1;
+            if visits > snapshot.limits.max_candidate_visits {
+                return Err(error(ErrorCode::Limit, Some(visits)));
+            }
+            let Some(contents) =
+                self.point_contents_object_record(object, point, snapshot.limits)?
+            else {
+                continue;
+            };
+            result.contents = contents;
+            result.entity = if object.role == ObjectRole::StaticProp {
+                0
+            } else {
+                object.identity
+            };
+            if collect_contributors {
+                result.contributors.push(PointContentsContributor::Object {
+                    identity: object.identity,
+                    role: object.role,
+                });
+            }
+            return Ok(result);
+        }
+        Ok(result)
+    }
+
+    pub fn point_contents_object(
+        &self,
+        snapshot: &Snapshot,
+        identity: u64,
+        point: [f32; 3],
+    ) -> Result<PointContentsResult, Error> {
+        if snapshot.world != self.identity {
+            return Err(error(ErrorCode::InvalidSnapshot, None));
+        }
+        if point.into_iter().any(|value| !value.is_finite()) {
+            return Err(error(ErrorCode::NonFinite, None));
+        }
+        let object = snapshot
+            .object(identity)
+            .ok_or_else(|| error(ErrorCode::InvalidReference, None))?;
+        let contents = if object.enabled
+            && (object.role == ObjectRole::StaticProp || object.volume_contents)
+        {
+            self.point_contents_object_record(object, point, snapshot.limits)?
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        Ok(PointContentsResult {
+            world: self.identity,
+            snapshot: Some(snapshot.identity),
+            contents,
+            entity: if contents == 0 || object.role == ObjectRole::StaticProp {
+                0
+            } else {
+                object.identity
+            },
+            contributors: if contents == 0 {
+                Vec::new()
+            } else {
+                vec![PointContentsContributor::Object {
+                    identity: object.identity,
+                    role: object.role,
+                }]
+            },
+        })
+    }
+
+    fn point_contents_headnode(
+        &self,
+        point: [f32; 3],
+        head_node: Option<i32>,
+        collect_contributors: bool,
+    ) -> Result<PointContentsResult, Error> {
+        if point.into_iter().any(|value| !value.is_finite()) {
+            return Err(error(ErrorCode::NonFinite, None));
+        }
+        let Some(mut child) = head_node else {
+            return Ok(PointContentsResult {
+                world: self.identity,
+                snapshot: None,
+                contents: 0,
+                entity: 0,
+                contributors: Vec::new(),
+            });
+        };
+        let mut depth = 0;
+        while child >= 0 {
+            depth += 1;
+            if depth > self.nodes.len() {
+                return Err(error(ErrorCode::InvalidReference, None));
+            }
+            let node = self
+                .nodes
+                .get(child as usize)
+                .ok_or_else(|| error(ErrorCode::InvalidReference, Some(child as usize)))?;
+            let plane = self
+                .planes
+                .get(node.plane_index as usize)
+                .ok_or_else(|| error(ErrorCode::InvalidReference, Some(child as usize)))?;
+            child = node.children[usize::from(dot(point, plane.normal) < plane.distance)];
+        }
+        let leaf_index = (-1_i64 - i64::from(child)) as usize;
+        let leaf = self
+            .leaves
+            .get(leaf_index)
+            .ok_or_else(|| error(ErrorCode::InvalidReference, Some(leaf_index)))?;
+        let mut result = PointContentsResult {
+            world: self.identity,
+            snapshot: None,
+            contents: leaf.contents as u32,
+            entity: 0,
+            contributors: if collect_contributors {
+                vec![PointContentsContributor::WorldLeaf { leaf: leaf_index }]
+            } else {
+                Vec::new()
+            },
+        };
+        let begin = leaf.first_leaf_brush as usize;
+        let finish = begin + leaf.leaf_brush_count as usize;
+        for &index in self
+            .leaf_brushes
+            .get(begin..finish)
+            .ok_or_else(|| error(ErrorCode::InvalidReference, Some(leaf_index)))?
+        {
+            let index = usize::from(index);
+            let brush = self
+                .brushes
+                .get(index)
+                .ok_or_else(|| error(ErrorCode::InvalidReference, Some(index)))?;
+            if brush.side_count == 0 {
+                continue;
+            }
+            let inside = self.sides[brush.first_side..brush.first_side + brush.side_count]
+                .iter()
+                .all(|side| {
+                    let plane = self.planes[side.plane];
+                    dot(point, plane.normal) - plane.distance <= 0.0
+                });
+            if inside {
+                result.contents |= brush.contents;
+                if collect_contributors {
+                    result
+                        .contributors
+                        .push(PointContentsContributor::WorldBrush { brush: index });
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    fn point_contents_object_record(
+        &self,
+        object: &SnapshotRecord,
+        point: [f32; 3],
+        limits: SnapshotLimits,
+    ) -> Result<Option<u32>, Error> {
+        match (&object.role, &object.shape) {
+            (ObjectRole::StaticProp, _) => {
+                let trace = self.trace_object(
+                    object,
+                    ObjectTraceRequest {
+                        identity: object.identity,
+                        transform: object.transform,
+                        start: point,
+                        end: point,
+                        hull: Hull {
+                            mins: [0.0; 3],
+                            maxs: [0.0; 3],
+                        },
+                        mask: u32::MAX,
+                    },
+                    limits,
+                )?;
+                Ok(trace.start_solid.then_some(crate::CONTENTS_SOLID))
+            }
+            (ObjectRole::Entity, SnapshotShape::BrushModel { model }) => {
+                let model = self
+                    .models
+                    .get(*model)
+                    .ok_or_else(|| error(ErrorCode::InvalidReference, Some(*model)))?;
+                let local = object.transform.inverse_transform_point(point)?;
+                let contents = self
+                    .point_contents_headnode(local, Some(model.head_node), false)?
+                    .contents;
+                Ok((contents != 0).then_some(contents))
+            }
+            (ObjectRole::Entity, _) => Ok(None),
+        }
+    }
+
     pub fn trace_snapshot_hull(
         &self,
         snapshot: &Snapshot,

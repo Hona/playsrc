@@ -210,6 +210,7 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
   const scenarioMode = process.env.PROFILE_SCENARIOS ?? (process.env.npm_lifecycle_event === "profile:gameplay" ? "1" : "")
   const mapOnly = process.env.PROFILE_MAP_ONLY === "1" || process.env.npm_lifecycle_event === "profile:map-load"
   const runScenarios = scenarioMode !== ""
+  const waterOnly = scenarioMode === "water"
   const shouldRunScenario = (name: string) => scenarioMode === "1" || scenarioMode === name
   await page.addInitScript(({ pointerStressRounds }) => {
     if (pointerStressRounds === 0) {
@@ -809,6 +810,11 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
       cameraPosition: dataset.cameraPosition,
       wishSpeed: Number(dataset.wishSpeed ?? 0),
       grounded: dataset.grounded,
+      waterLevel: Number(dataset.waterLevel ?? 0),
+      waterType: Number(dataset.waterType ?? 0),
+      playerFlags: Number(dataset.playerFlags ?? 0),
+      inWater: dataset.inWater === "true",
+      verticalSpeed: Number(dataset.verticalSpeed ?? 0),
       sweepQueries: Number(dataset.sweepQueries ?? 0),
       pointQueries: Number(dataset.pointQueries ?? 0),
       movementContacts: Number(dataset.movementContacts ?? 0),
@@ -837,6 +843,124 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
     start: () => Promise<void>
     stop: () => Promise<void>
   }> = []
+  let waterEvidence: Record<string, unknown> | undefined
+  if (waterOnly && initial.phase === "Ready") {
+    const main = page.locator("main")
+    await page.keyboard.press("Backquote")
+    const entry = page.locator("[aria-label='Console command']")
+    await expect(entry).toBeVisible()
+    await entry.fill("noclip")
+    await page.keyboard.press("Enter")
+    await page.keyboard.press("Backquote")
+    await page.waitForFunction(() => document.querySelector<HTMLElement>("main")?.dataset.movementMode === "1", undefined, { timeout: 10_000 })
+    await page.locator("canvas.world-canvas").click()
+    const approach = await page.evaluate(async () => {
+      const root = document.querySelector<HTMLElement>("main")
+      const canvas = document.querySelector<HTMLCanvasElement>("canvas.world-canvas")
+      if (!root || !canvas || document.pointerLockElement !== canvas) throw new Error("headed water approach lacks captured gameplay input")
+      const goal = [-4832, 3000, -2130] as const
+      const position = () => (root.dataset.cameraPosition ?? "").split(",").map(Number)
+      const distance = () => Math.hypot(...position().map((value, axis) => value - goal[axis]!))
+      const turn = (target: readonly number[]) => {
+        const current = position(), x = target[0]! - current[0]!, y = target[1]! - current[1]!, z = target[2]! - current[2]!
+        const yaw = Math.atan2(y, x) * 180 / Math.PI, pitch = -Math.atan2(z, Math.hypot(x, y)) * 180 / Math.PI
+        const wrap = (value: number) => ((value + 180) % 360 + 360) % 360 - 180
+        const event = new MouseEvent("mousemove", { bubbles: true })
+        Object.defineProperties(event, {
+          movementX: { value: wrap(Number(root.dataset.cameraYaw) - yaw) / 0.066 },
+          movementY: { value: (pitch - Number(root.dataset.cameraPitch)) / 0.066 },
+        })
+        dispatchEvent(event)
+      }
+      const started = performance.now(), firstTick = Number(root.dataset.snapshotTick)
+      turn(goal)
+      dispatchEvent(new KeyboardEvent("keydown", { code: "KeyW", key: "w", bubbles: true }))
+      try {
+        while (distance() > 18) {
+          if (performance.now() - started > 25_000) throw new Error(`real water approach exceeded its bound: ${root.dataset.cameraPosition}; distance=${distance()}`)
+          if (root.dataset.phase !== "Ready") throw new Error(`real water approach failed: ${root.dataset.detail}`)
+          turn(goal)
+          await new Promise((resolve) => setTimeout(resolve, 30))
+        }
+      } finally {
+        dispatchEvent(new KeyboardEvent("keyup", { code: "KeyW", key: "w", bubbles: true }))
+      }
+      return { firstTick, lastTick: Number(root.dataset.snapshotTick), milliseconds: performance.now() - started, position: position(), distance: distance() }
+    })
+    await page.keyboard.press("Backquote")
+    await expect(entry).toBeVisible()
+    await entry.fill("noclip")
+    await page.keyboard.press("Enter")
+    await page.keyboard.press("Backquote")
+    await page.waitForFunction(() => {
+      const value = document.querySelector<HTMLElement>("main")?.dataset
+      return value?.movementMode === "0" && Number(value.waterLevel) >= 1 && value.inWater === "true"
+    }, undefined, { timeout: 10_000, polling: 10 })
+    const wading = await captureRuntime()
+    expect(wading.waterType).toBe(0x20)
+    expect(wading.playerFlags & 0x400).toBe(0x400)
+    await page.locator("canvas.world-canvas").click()
+    const descent = await page.evaluate(async () => {
+      const root = document.querySelector<HTMLElement>("main")!
+      const event = new MouseEvent("mousemove", { bubbles: true })
+      Object.defineProperties(event, {
+        movementX: { value: 0 },
+        movementY: { value: (89 - Number(root.dataset.cameraPitch)) / 0.066 },
+      })
+      dispatchEvent(event)
+      const started = performance.now()
+      dispatchEvent(new KeyboardEvent("keydown", { code: "KeyW", key: "w", bubbles: true }))
+      try {
+        while (Number((root.dataset.cameraPosition ?? "").split(",")[2]) > -2325) {
+          if (performance.now() - started > 8_000) throw new Error(`real water descent exceeded its bound: ${root.dataset.cameraPosition}`)
+          await new Promise((resolve) => setTimeout(resolve, 20))
+        }
+      } finally {
+        dispatchEvent(new KeyboardEvent("keyup", { code: "KeyW", key: "w", bubbles: true }))
+      }
+      return { milliseconds: performance.now() - started, position: root.dataset.cameraPosition, level: Number(root.dataset.waterLevel), flags: Number(root.dataset.playerFlags) }
+    })
+    await expect.poll(async () => Number(await main.getAttribute("data-water-level"))).toBe(3)
+    const before = await page.screenshot()
+    const baseline = { fires: Number(await main.getAttribute("data-fire-events")), explosions: Number(await main.getAttribute("data-explosion-events")), health: Number((await main.getAttribute("data-hud-probe"))?.split(":")[0]) }
+    let blast: Record<string, unknown> | undefined
+    workloads.push({ name: "real-water-rocket-jump", start: async () => {
+      blast = await page.evaluate(async ({ fires, explosions, health }) => {
+        const root = document.querySelector<HTMLElement>("main")!
+        const history: Array<{ tick: number; level: number; flags: number; speed: number; health: number; crouch: number }> = []
+        const capture = () => history.push({ tick: Number(root.dataset.snapshotTick), level: Number(root.dataset.waterLevel), flags: Number(root.dataset.playerFlags), speed: Number(root.dataset.verticalSpeed), health: Number(root.dataset.hudProbe?.split(":")[0]), crouch: Number(root.dataset.crouchFraction) })
+        const observer = new MutationObserver(capture)
+        observer.observe(root, { attributes: true, attributeFilter: ["data-snapshot-tick"] })
+        dispatchEvent(new KeyboardEvent("keydown", { code: "ShiftLeft", key: "Shift", shiftKey: true, bubbles: true }))
+        dispatchEvent(new MouseEvent("mousedown", { button: 0, bubbles: true }))
+        const started = performance.now()
+        try {
+          while (Number(root.dataset.fireEvents) <= fires || Number(root.dataset.explosionEvents) <= explosions) {
+            if (performance.now() - started > 5_000) throw new Error(`underwater rocket did not explode: ${root.dataset.cameraPosition}; ${root.dataset.hudProbe}`)
+            await new Promise((resolve) => setTimeout(resolve, 10))
+          }
+          await new Promise((resolve) => setTimeout(resolve, 60))
+        } finally {
+          dispatchEvent(new MouseEvent("mouseup", { button: 0, bubbles: true }))
+          dispatchEvent(new KeyboardEvent("keyup", { code: "ShiftLeft", key: "Shift", bubbles: true }))
+          observer.disconnect()
+        }
+        const damaged = history.filter((sample) => sample.health < health)
+        return { initialHealth: health, minimumHealth: Math.min(health, ...history.map((sample) => sample.health)), maximumVerticalSpeed: Math.max(...history.map((sample) => sample.speed)), wetCrouchMaximum: Math.max(...history.filter((sample) => sample.level === 3).map((sample) => sample.crouch)), damagedTicks: damaged.length, samples: history }
+      }, baseline)
+    }, stop: async () => {
+    const after = await page.screenshot()
+    const pixelMotion = screenshotRegionMotion(decodeScreenshot(before), decodeScreenshot(after), { x: 120, y: 80, width: 1040, height: 520 })
+    expect(blast?.minimumHealth as number).toBeLessThan(baseline.health)
+    expect(blast?.maximumVerticalSpeed as number).toBeGreaterThan(0)
+    expect(blast?.wetCrouchMaximum).toBe(0)
+    expect(pixelMotion.changedPixels).toBeGreaterThan(0)
+    waterEvidence = { brush: 60, contents: 0x1000_0020, approach, wading, descent, blast, pixelMotion }
+    await testInfo.attach("headed-real-water-rocket-jump", { body: Buffer.from(JSON.stringify(waterEvidence, null, 2)), contentType: "application/json" })
+    await testInfo.attach("headed-real-water-before", { body: before, contentType: "image/png" })
+    await testInfo.attach("headed-real-water-after", { body: after, contentType: "image/png" })
+    }})
+  }
   if (runScenarios && initial.phase === "Ready") {
     if (shouldRunScenario("jump")) workloads.push({
       name: "repeated-jump",
@@ -1065,6 +1189,7 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
     terminalPhase: raw.dataset.phase,
     terminalDetail: raw.dataset.detail,
     input,
+    waterEvidence,
     steadyState,
     scenarios: scenarios.map((scenario) => ({
       name: scenario.name,
@@ -1083,6 +1208,11 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
           cameraPosition: sample.cameraPosition,
           wishSpeed: sample.wishSpeed,
           grounded: sample.grounded,
+          waterLevel: sample.waterLevel,
+          waterType: sample.waterType,
+          playerFlags: sample.playerFlags,
+          inWater: sample.inWater,
+          verticalSpeed: sample.verticalSpeed,
           sweepQueries: sample.sweepQueries,
           pointQueries: sample.pointQueries,
           movementContacts: sample.movementContacts,
@@ -1150,6 +1280,13 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
     classes: report.classes,
     hud: report.hud,
     water: report.water,
+    waterEvidence: waterEvidence ? {
+      brush: waterEvidence.brush,
+      damage: (waterEvidence.blast as { initialHealth: number; minimumHealth: number }).initialHealth
+        - (waterEvidence.blast as { initialHealth: number; minimumHealth: number }).minimumHealth,
+      maximumVerticalSpeed: (waterEvidence.blast as { maximumVerticalSpeed: number }).maximumVerticalSpeed,
+      changedPixels: (waterEvidence.pixelMotion as { changedPixels: number }).changedPixels,
+    } : undefined,
     frames: report.frameTimes,
     inputMilliseconds: { down: input.keyDownMilliseconds, up: input.keyUpMilliseconds, fire: input.fireMilliseconds },
     simulationTicksPerSecond: report.steadyRates.simulationTicksPerSecond,

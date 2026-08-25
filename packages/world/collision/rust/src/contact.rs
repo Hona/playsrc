@@ -351,6 +351,7 @@ mod tests {
             identity: 10,
             role: ObjectRole::Entity,
             enabled: true,
+            volume_contents: false,
             transform: Transform {
                 origin: position,
                 angles: [0.0; 3],
