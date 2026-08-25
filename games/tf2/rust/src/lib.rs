@@ -178,6 +178,8 @@ pub enum Weapon {
     Scattergun = 4,
     Pistol = 5,
     Bat = 6,
+    Shotgun = 7,
+    Shovel = 8,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -753,13 +755,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             water_exit_up_speed: 300.0,
             ..MovementConfiguration::default()
         };
-        let mut loadout = BTreeMap::from([
-            (
-                Weapon::RocketLauncher,
-                WeaponRuntime::full(Weapon::RocketLauncher),
-            ),
-            (Weapon::Original, WeaponRuntime::full(Weapon::Original)),
-        ]);
+        let mut loadout = default_loadout(PlayerClass::Soldier);
         loadout
             .get_mut(&Weapon::RocketLauncher)
             .expect("stock Soldier loadout")
@@ -1341,8 +1337,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
                         command.movement.yaw_degrees,
                         &mut events,
                     )?;
-                } else if active_weapon == Weapon::Bat {
-                    self.swing_bat();
+                } else if matches!(active_weapon, Weapon::Bat | Weapon::Shovel) {
+                    self.swing_melee(active_weapon);
                 } else {
                     self.fire_projectile(
                         command.pitch_degrees,
@@ -1355,8 +1351,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
             }
             if self.pending_melee_tick.is_some_and(|due| self.tick > due) {
                 self.pending_melee_tick = None;
-                if active_weapon == Weapon::Bat {
-                    self.resolve_bat(
+                if matches!(active_weapon, Weapon::Bat | Weapon::Shovel) {
+                    self.resolve_melee(
+                        active_weapon,
                         command.pitch_degrees,
                         command.movement.yaw_degrees,
                         &mut events,
@@ -1391,6 +1388,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     }
                     (Weapon::Pistol, weapon::WeaponActivity::ReloadStart) => {
                         Some(SoundDefinition::PistolReload)
+                    }
+                    (Weapon::Shotgun, weapon::WeaponActivity::ReloadLoop) => {
+                        Some(SoundDefinition::ShotgunReload)
                     }
                     _ => None,
                 });
@@ -1635,6 +1635,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
             {
                 previous.charge_begin_tick = None;
                 previous.abort_reload();
+                if matches!(active_weapon, Weapon::Bat | Weapon::Shovel) {
+                    self.pending_melee_tick = None;
+                }
             }
             self.weapon = Some(weapon);
             self.loadout
@@ -2033,7 +2036,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
         let definition = match weapon {
             Weapon::Scattergun => SoundDefinition::ScattergunSingle,
             Weapon::Pistol => SoundDefinition::PistolSingle,
-            _ => unreachable!("only Scout firearms use hitscan profiles"),
+            Weapon::Shotgun => SoundDefinition::ShotgunSingle,
+            _ => unreachable!("only configured firearms use hitscan profiles"),
         };
         self.emit_weapon_sound(definition, self.movement.position);
         let previous = self.previous_hitscan_ticks.insert(weapon, self.tick);
@@ -2076,15 +2080,26 @@ impl<W: GameplayWorld + Clone> Session<W> {
         Ok(())
     }
 
-    fn swing_bat(&mut self) {
-        self.emit_weapon_sound(SoundDefinition::BatMiss, self.movement.position);
-        self.pending_melee_tick = Some(self.tick.saturating_add(weapon::delay_ticks(
-            ballistics::BAT_SMACK_DELAY,
-            self.movement_configuration.tick_interval,
-        )));
+    fn swing_melee(&mut self, weapon: Weapon) {
+        let definition = match weapon {
+            Weapon::Bat => SoundDefinition::BatMiss,
+            Weapon::Shovel => SoundDefinition::ShovelMiss,
+            _ => unreachable!("only melee weapons swing"),
+        };
+        self.emit_weapon_sound(definition, self.movement.position);
+        self.pending_melee_tick = Some(self.tick.saturating_add(
+            (ballistics::MELEE_SMACK_DELAY / self.movement_configuration.tick_interval).floor()
+                as u64,
+        ));
     }
 
-    fn resolve_bat(&mut self, pitch: f32, yaw: f32, events: &mut Vec<Event>) -> Result<(), Error> {
+    fn resolve_melee(
+        &mut self,
+        weapon: Weapon,
+        pitch: f32,
+        yaw: f32,
+        events: &mut Vec<Event>,
+    ) -> Result<(), Error> {
         let (direction, _, _) = angle_vectors(pitch, yaw, 0.0);
         let origin = add(self.movement.position, self.movement.view_offset);
         let end = add(origin, scale(direction, ballistics::MELEE_RANGE));
@@ -2115,19 +2130,23 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 .hit
                 .filter(|identity| !self.collision.is_world(*identity))
                 .and_then(|identity| u32::try_from(identity).ok());
-            self.emit_weapon_sound(
-                if target.is_some() {
-                    SoundDefinition::BatHitFlesh
-                } else {
-                    SoundDefinition::BatHitWorld
-                },
-                impact.end,
-            );
+            let (definition, damage) = match (weapon, target.is_some()) {
+                (Weapon::Bat, true) => (SoundDefinition::BatHitFlesh, ballistics::BAT_DAMAGE),
+                (Weapon::Bat, false) => (SoundDefinition::BatHitWorld, ballistics::BAT_DAMAGE),
+                (Weapon::Shovel, true) => {
+                    (SoundDefinition::ShovelHitFlesh, ballistics::SHOVEL_DAMAGE)
+                }
+                (Weapon::Shovel, false) => {
+                    (SoundDefinition::ShovelHitWorld, ballistics::SHOVEL_DAMAGE)
+                }
+                _ => unreachable!("only melee weapons resolve swings"),
+            };
+            self.emit_weapon_sound(definition, impact.end);
             events.push(Event::MeleeImpact {
-                weapon: Weapon::Bat,
+                weapon,
                 target,
                 position: impact.end,
-                damage: ballistics::BAT_DAMAGE,
+                damage,
             });
         }
         Ok(())
@@ -2146,7 +2165,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
             Weapon::RocketLauncher => SoundDefinition::RocketSingle,
             Weapon::Original => SoundDefinition::OriginalSingle,
             Weapon::StickybombLauncher => SoundDefinition::StickySingle,
-            Weapon::Scattergun | Weapon::Pistol | Weapon::Bat => {
+            Weapon::Scattergun
+            | Weapon::Pistol
+            | Weapon::Bat
+            | Weapon::Shotgun
+            | Weapon::Shovel => {
                 unreachable!("hitscan and melee weapons do not spawn projectiles")
             }
         };
@@ -2168,7 +2191,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
         let kind = match weapon {
             Weapon::RocketLauncher | Weapon::Original => ProjectileKind::Rocket,
             Weapon::StickybombLauncher => ProjectileKind::Sticky,
-            Weapon::Scattergun | Weapon::Pistol | Weapon::Bat => {
+            Weapon::Scattergun
+            | Weapon::Pistol
+            | Weapon::Bat
+            | Weapon::Shotgun
+            | Weapon::Shovel => {
                 unreachable!("hitscan and melee weapons do not spawn projectiles")
             }
         };
@@ -2770,6 +2797,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         });
         self.fizzle_projectiles(projectile_events);
         self.fire_was_held = false;
+        self.pending_melee_tick = None;
         for weapon in self.loadout.values_mut() {
             weapon.abort_reload();
             weapon.charge_begin_tick = None;
@@ -2810,6 +2838,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.in_water = false;
         self.last_movement = None;
         self.fire_was_held = false;
+        self.pending_melee_tick = None;
         if let Some(weapon) = self.weapon {
             self.activity_events.push(ActivityEvent {
                 tick: self.tick,
@@ -2845,7 +2874,8 @@ fn default_loadout(class: PlayerClass) -> BTreeMap<Weapon, WeaponRuntime> {
                 Weapon::RocketLauncher,
                 WeaponRuntime::full(Weapon::RocketLauncher),
             ),
-            (Weapon::Original, WeaponRuntime::full(Weapon::Original)),
+            (Weapon::Shotgun, WeaponRuntime::full(Weapon::Shotgun)),
+            (Weapon::Shovel, WeaponRuntime::full(Weapon::Shovel)),
         ]),
         PlayerClass::Demoman => BTreeMap::from([(
             Weapon::StickybombLauncher,
@@ -2865,7 +2895,7 @@ fn allowed(class: PlayerClass, weapon: Weapon) -> bool {
         (class, weapon),
         (
             PlayerClass::Soldier,
-            Weapon::RocketLauncher | Weapon::Original
+            Weapon::RocketLauncher | Weapon::Original | Weapon::Shotgun | Weapon::Shovel
         ) | (PlayerClass::Demoman, Weapon::StickybombLauncher)
             | (
                 PlayerClass::Scout,
@@ -3381,6 +3411,116 @@ mod tests {
     }
 
     #[test]
+    fn soldier_shotgun_fires_ten_independent_source_pellets_without_scattergun_ramp() {
+        let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.015));
+        session
+            .advance(Command {
+                select_weapon: Some(Weapon::Shotgun),
+                ..Command::default()
+            })
+            .unwrap();
+        session
+            .loadout
+            .get_mut(&Weapon::Shotgun)
+            .unwrap()
+            .next_primary_tick = 0;
+        let snapshot = session
+            .advance(Command {
+                fire: true,
+                pitch_degrees: 60.0,
+                ..Command::default()
+            })
+            .unwrap();
+        assert!(snapshot.projectiles.is_empty());
+        assert!(snapshot.events.iter().any(|event| matches!(
+            event,
+            Event::HitscanFired {
+                weapon: Weapon::Shotgun,
+                pellets: 10
+            }
+        )));
+        let impacts = snapshot
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                Event::HitscanImpact {
+                    weapon: Weapon::Shotgun,
+                    damage,
+                    ..
+                } => Some(*damage),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(impacts.len(), 10);
+        assert!(impacts.iter().all(|damage| *damage <= 9.0));
+        let weapon = snapshot
+            .loadout
+            .iter()
+            .find(|item| item.weapon == Weapon::Shotgun)
+            .unwrap();
+        assert_eq!((weapon.clip, weapon.reserve), (5, 32));
+        assert!(
+            session
+                .audio_events()
+                .iter()
+                .any(|event| event.definition == SoundDefinition::ShotgunSingle)
+        );
+    }
+
+    #[test]
+    fn soldier_shovel_delays_world_impact_and_preserves_zero_ammunition() {
+        let mut session = Session::new(MeleeWall, [0.0; 3], MapRuntime::empty(0.015));
+        session
+            .advance(Command {
+                select_weapon: Some(Weapon::Shovel),
+                ..Command::default()
+            })
+            .unwrap();
+        session
+            .loadout
+            .get_mut(&Weapon::Shovel)
+            .unwrap()
+            .next_primary_tick = 0;
+        let started = session
+            .advance(Command {
+                fire: true,
+                ..Command::default()
+            })
+            .unwrap();
+        assert!(
+            !started
+                .events
+                .iter()
+                .any(|event| matches!(event, Event::MeleeImpact { .. }))
+        );
+        assert!(
+            session
+                .audio_events()
+                .iter()
+                .any(|event| event.definition == SoundDefinition::ShovelMiss)
+        );
+        let swing_tick = started.tick;
+        while session.pending_melee_tick.is_some() {
+            let snapshot = session.advance(Command::default()).unwrap();
+            if session.pending_melee_tick.is_none() {
+                assert_eq!(snapshot.tick - swing_tick, 14);
+                assert!(snapshot.events.iter().any(|event| matches!(event,
+                    Event::MeleeImpact { weapon: Weapon::Shovel, target: None, damage, .. }
+                    if *damage == 65.0
+                )));
+                assert!(
+                    session
+                        .audio_events()
+                        .iter()
+                        .any(|event| event.definition == SoundDefinition::ShovelHitWorld)
+                );
+            }
+        }
+        let weapon = session.weapon_runtime(Weapon::Shovel).unwrap();
+        assert_eq!((weapon.clip, weapon.reserve), (0, 0));
+    }
+
+    #[test]
     fn scout_bat_resolves_world_contact_only_after_the_authored_smack_delay() {
         let mut session = Session::new(MeleeWall, [0.0; 3], MapRuntime::empty(0.015));
         session
@@ -3487,7 +3627,14 @@ mod tests {
                 }
                 PlayerClass::Soldier => {
                     assert_eq!(snapshot.weapon, Some(Weapon::RocketLauncher));
-                    assert_eq!(snapshot.loadout.len(), 2);
+                    assert_eq!(
+                        snapshot
+                            .loadout
+                            .iter()
+                            .map(|weapon| weapon.weapon)
+                            .collect::<Vec<_>>(),
+                        vec![Weapon::RocketLauncher, Weapon::Shotgun, Weapon::Shovel],
+                    );
                 }
                 PlayerClass::Demoman => {
                     assert_eq!(snapshot.weapon, Some(Weapon::StickybombLauncher));
@@ -3676,6 +3823,10 @@ mod tests {
             let traces = collision.traces.clone();
             let mut session = Session::new(collision, [0.0; 3], MapRuntime::empty(0.015));
             session.weapon = Some(weapon);
+            session
+                .loadout
+                .entry(weapon)
+                .or_insert_with(|| WeaponRuntime::full(weapon));
             session.flip_viewmodels = flipped;
             if crouched {
                 session.movement = MovementState::from_player(
@@ -4669,6 +4820,8 @@ mod tests {
                 rocket_explosion_available: 0,
                 sticky_explosion_available: 0b111,
                 bat_hit_world_available: 0b11,
+                shovel_hit_world_available: 0b11,
+                shovel_hit_flesh_available: 0b111,
             }
         );
 
@@ -4699,6 +4852,8 @@ mod tests {
                 rocket_explosion_available: 0b101,
                 sticky_explosion_available: 0b110,
                 bat_hit_world_available: 0b11,
+                shovel_hit_world_available: 0b11,
+                shovel_hit_flesh_available: 0b111,
             }
         );
     }

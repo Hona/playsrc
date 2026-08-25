@@ -61,7 +61,7 @@ import {
   encodeModelPoseBatch,
   projectileFrame,
   projectileModels,
-  scoutMuzzleParticles,
+  hitscanMuzzleParticles,
   sourceViewOrientation,
   tf2Audio,
   tf2Camera,
@@ -122,6 +122,7 @@ const PARTICLE_SYSTEMS = new Set([
   "muzzle_pipelauncher",
   "muzzle_scattergun",
   "muzzle_pistol",
+  "muzzle_shotgun",
   "ExplosionCore_Wall",
   "ExplosionCore_MidAir",
 ])
@@ -144,6 +145,12 @@ const SOUND_PATHS = [
   "sound/weapons/cbar_hit2.wav",
   "sound/weapons/scatter_gun_worldreload.wav",
   "sound/weapons/pistol_worldreload.wav",
+  "sound/weapons/shotgun_shoot.wav",
+  "sound/weapons/shotgun_worldreload.wav",
+  "sound/weapons/shovel_swing.wav",
+  "sound/weapons/axe_hit_flesh1.wav",
+  "sound/weapons/axe_hit_flesh2.wav",
+  "sound/weapons/axe_hit_flesh3.wav",
 ] as const
 
 export type ApplicationView = Readonly<{
@@ -1472,7 +1479,7 @@ export class Tf2Application {
       clock: { nowSeconds: () => this.#frameClock.current },
       random: this.#presentationRandom,
       onCommand: (command) => {
-        if (command.kind === "select-weapon" && command.weapon >= 1 && command.weapon <= 6) this.#selectWeapon = command.weapon as Tf2Weapon
+        if (command.kind === "select-weapon" && command.weapon >= 1 && command.weapon <= 8) this.#selectWeapon = command.weapon as Tf2Weapon
       },
     })
     const panels = this.#hudIntegration.snapshot().vgui.panels
@@ -3279,8 +3286,8 @@ export class Tf2Application {
       const visibility=await visibilityRequest
       if(!ownsGeneration())return
       const particleStart=performance.now()
-      const scoutMuzzles=snapshot.class===1?publication.eventBatches.flatMap(batch=>scoutMuzzleParticles(batch.snapshot,{systems:PARTICLE_SYSTEMS,attachmentTransforms:this.#attachmentTransforms})):null
-      const particleBatch=owners.encoder.encode(snapshot.tick,camera.position,scoutMuzzles===null||scoutMuzzles.length===0?presentation.particles:[...presentation.particles,...scoutMuzzles])
+      const hitscanMuzzles=snapshot.class===1||snapshot.class===3?publication.eventBatches.flatMap(batch=>hitscanMuzzleParticles(batch.snapshot,{systems:PARTICLE_SYSTEMS,attachmentTransforms:this.#attachmentTransforms})):null
+      const particleBatch=owners.encoder.encode(snapshot.tick,camera.position,hitscanMuzzles===null||hitscanMuzzles.length===0?presentation.particles:[...presentation.particles,...hitscanMuzzles])
       if(!ownsGeneration())return
       this.#wasmCalls.particles++
       const particleOutput=await client.particles(generation,particleBatch)
@@ -3473,8 +3480,8 @@ export class Tf2Application {
     } else if (action === "+reload") {
       if (this.#buttons.press(identity, action)) this.#reloadPressed = true
     } else if (action === "slot1") this.#selectWeapon = this.#snapshot?.class === 1 ? 4 : 1
-    else if (action === "slot2") this.#selectWeapon = this.#snapshot?.class === 1 ? 5 : 2
-    else if (action === "slot3") this.#selectWeapon = this.#snapshot?.class === 1 ? 6 : 3
+    else if (action === "slot2") this.#selectWeapon = this.#snapshot?.class === 1 ? 5 : this.#snapshot?.class === 3 ? 7 : 3
+    else if (action === "slot3") this.#selectWeapon = this.#snapshot?.class === 1 ? 6 : this.#snapshot?.class === 3 ? 8 : undefined
   }
 
   readonly #keyDown = (event: KeyboardEvent): void => {

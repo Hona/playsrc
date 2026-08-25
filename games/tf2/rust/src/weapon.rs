@@ -79,7 +79,7 @@ impl WeaponProfile {
                 center_fire_projectile: false,
                 flip_viewmodel: false,
             },
-            Weapon::Scattergun => Self {
+            Weapon::Scattergun | Weapon::Shotgun => Self {
                 maximum_clip: 6,
                 maximum_reserve: 32,
                 fire_delay: 0.625,
@@ -99,10 +99,14 @@ impl WeaponProfile {
                 center_fire_projectile: false,
                 flip_viewmodel: false,
             },
-            Weapon::Bat => Self {
+            Weapon::Bat | Weapon::Shovel => Self {
                 maximum_clip: 0,
                 maximum_reserve: 0,
-                fire_delay: 0.5,
+                fire_delay: if matches!(weapon, Weapon::Shovel) {
+                    0.8
+                } else {
+                    0.5
+                },
                 reload_start: 0.0,
                 reload_round: 0.0,
                 maximum_charge: None,
@@ -309,7 +313,10 @@ impl WeaponRuntime {
             }
             return PrimaryResult::None;
         }
-        if held && (self.clip > 0 || self.weapon == Weapon::Bat) && tick >= self.next_primary_tick {
+        if held
+            && (self.clip > 0 || matches!(self.weapon, Weapon::Bat | Weapon::Shovel))
+            && tick >= self.next_primary_tick
+        {
             return self.commit_shot(tick, tick_interval, 0.0, activities);
         }
         PrimaryResult::None
@@ -322,7 +329,7 @@ impl WeaponRuntime {
         charge_seconds: f32,
         activities: &mut Vec<ActivityEvent>,
     ) -> PrimaryResult {
-        if self.weapon != Weapon::Bat {
+        if !matches!(self.weapon, Weapon::Bat | Weapon::Shovel) {
             self.clip -= 1;
         }
         self.abort_reload();
@@ -403,6 +410,38 @@ mod tests {
         let bat = WeaponProfile::configured(Weapon::Bat);
         assert_eq!((bat.maximum_clip, bat.maximum_reserve), (0, 0));
         assert_eq!(bat.fire_delay, 0.5);
+    }
+
+    #[test]
+    fn soldier_stock_weapons_preserve_script_cadence_and_secondary_ammo() {
+        let shotgun = WeaponProfile::configured(Weapon::Shotgun);
+        assert_eq!((shotgun.maximum_clip, shotgun.maximum_reserve), (6, 32));
+        assert_eq!(
+            (
+                shotgun.fire_delay,
+                shotgun.reload_start,
+                shotgun.reload_round
+            ),
+            (0.625, 0.1, 0.5),
+        );
+
+        let mut shovel = WeaponRuntime::full(Weapon::Shovel);
+        assert_eq!(
+            (shovel.clip, shovel.reserve, shovel.profile().fire_delay),
+            (0, 0, 0.8)
+        );
+        let mut activities = Vec::new();
+        assert!(matches!(
+            shovel.primary(0, 0.01, true, false, &mut activities),
+            PrimaryResult::Fired {
+                charge_seconds: 0.0
+            }
+        ));
+        assert_eq!(
+            (shovel.clip, shovel.reserve, shovel.next_primary_tick),
+            (0, 0, 80)
+        );
+        assert!(!shovel.start_reload(80, 0.01, &mut activities));
     }
 
     #[test]

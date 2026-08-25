@@ -6,7 +6,7 @@ import {
   decodeModelPoseOutput,
   encodeModelPoseBatch,
   ProjectilePresentationError,
-  scoutMuzzleParticles,
+  hitscanMuzzleParticles,
   tf2Camera,
   type ProjectileParticleRequest,
 } from "../src/presentation"
@@ -287,14 +287,35 @@ test("composes every Scout stock item with its exact primary, secondary, and mel
   }
 })
 
-test("starts authored Scout muzzle systems from exact fire-tick attachment transforms", () => {
+test("composes Soldier shotgun and shovel with exact secondary and melee activities", () => {
+  const hands = "models/weapons/c_models/c_soldier_arms.mdl"
+  const descriptor = Object.freeze({ kind: "viewmodel", horizontalFov4By3: 54, minimumFov: 54, maximumFov: 70, near: 1, depthRange: Object.freeze([0, 0.1]), drawsAfterWorld: true, opaqueBeforeTranslucent: true, optionalViewSpaceYReflection: true })
+  const sequences = Object.freeze(["ACT_SECONDARY_VM_PRIMARYATTACK", "ACT_MELEE_VM_HITCENTER"].map((activity) => ({ activity, durationSeconds: 0.8 })))
+  const models = new Map([[hands, { identity: hands, bodygroupCounts: Object.freeze([]), descriptor, sequences }]])
+  for (const [weapon, item, activity] of [
+    [7, "models/weapons/c_models/c_shotgun/c_shotgun.mdl", "ACT_SECONDARY_VM_PRIMARYATTACK"],
+    [8, "models/weapons/c_models/c_shovel/c_shovel.mdl", "ACT_MELEE_VM_HITCENTER"],
+  ] as const) {
+    models.set(item, { identity: item, bodygroupCounts: Object.freeze([]), descriptor, sequences: Object.freeze([]) })
+    const snapshot = { class: 3, team: 2, tick: 1n, weapon, velocity: Object.freeze([0, 0, 0]), loadout: Object.freeze([{ weapon, reload: 0, clip: weapon === 8 ? 0 : 5 }]), activities: Object.freeze([{ tick: 1n, weapon, activity: 2 }]) } as unknown as Snapshot
+    expect(createViewmodelPresenter({ models } as unknown as PresentationArtifacts).map(snapshot).request)
+      .toMatchObject({ model: hands, itemModel: item, activity })
+  }
+})
+
+test("starts authored hitscan muzzle systems from exact fire-tick attachment transforms", () => {
   const position = Object.freeze([1, 2, 3]) as readonly [number, number, number]
   const orientation = Object.freeze([0, 0, 0, 1]) as readonly [number, number, number, number]
   const snapshot = { tick: 17n, team: 2, events: Object.freeze([{ kind: 12, detail: 4, subject: 10 }]) } as unknown as Snapshot
   const catalog = { systems: new Set(["muzzle_scattergun"]), attachmentTransforms: new Map([[4, new Map([["muzzle", { position, orientation }]])]]) }
-  const requests = scoutMuzzleParticles(snapshot, catalog)
+  const requests = hitscanMuzzleParticles(snapshot, catalog)
   expect(requests).toHaveLength(1)
   expect(requests[0]).toMatchObject({ kind: "start", tick: 17n, system: "muzzle_scattergun", launcherIdentity: 4, team: "red", controlPoints: [{ position, orientation, ownerIdentity: 1 }] })
-  expect(() => scoutMuzzleParticles(snapshot, { ...catalog, systems: new Set() })).toThrow(ProjectilePresentationError)
-  expect(() => scoutMuzzleParticles(snapshot, { ...catalog, attachmentTransforms: new Map() })).toThrow(ProjectilePresentationError)
+  expect(() => hitscanMuzzleParticles(snapshot, { ...catalog, systems: new Set() })).toThrow(ProjectilePresentationError)
+  expect(() => hitscanMuzzleParticles(snapshot, { ...catalog, attachmentTransforms: new Map() })).toThrow(ProjectilePresentationError)
+  const shotgun = { ...snapshot, events: Object.freeze([{ kind: 12, detail: 7, subject: 10 }]) } as unknown as Snapshot
+  expect(hitscanMuzzleParticles(shotgun, {
+    systems: new Set(["muzzle_shotgun"]),
+    attachmentTransforms: new Map([[7, new Map([["muzzle", { position, orientation }]])]]),
+  })[0]).toMatchObject({ system: "muzzle_shotgun", launcherIdentity: 7 })
 })
