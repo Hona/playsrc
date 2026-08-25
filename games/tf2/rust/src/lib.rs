@@ -2417,6 +2417,51 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 let (forward, _, _) =
                     angle_vectors(command.pitch_degrees, command.movement.yaw_degrees, 0.0);
                 let eye = add(self.movement.position, self.movement.view_offset);
+                let aim = self
+                    .collision
+                    .trace(
+                        eye,
+                        add(eye, scale(forward, 1.732_050_8 * 32_768.0)),
+                        Hull {
+                            mins: [0.0; 3],
+                            maxs: [0.0; 3],
+                        },
+                        MASK_SOLID,
+                    )?
+                    .end;
+                let player_team = self.team_selection.local_team();
+                for projectile in &mut self.projectiles {
+                    let delta = sub(projectile.presentation.position, eye);
+                    let distance = length(delta);
+                    if projectile.presentation.team == player_team
+                        || distance <= 0.0
+                        || distance > pyro::AIRBLAST_RADIUS * 2.0
+                        || delta
+                            .iter()
+                            .zip(forward)
+                            .map(|(component, axis)| component * axis)
+                            .sum::<f32>()
+                            / distance
+                            < pyro::AIRBLAST_CONE_DEGREES.to_radians().cos()
+                    {
+                        continue;
+                    }
+                    let target = sub(aim, projectile.presentation.position);
+                    let target_length = length(target);
+                    if target_length == 0.0 {
+                        continue;
+                    }
+                    let direction = scale(target, 1.0 / target_length);
+                    let speed = length(projectile.presentation.velocity);
+                    projectile.presentation.velocity = scale(direction, speed);
+                    projectile.presentation.orientation = quaternion_from_direction(direction);
+                    projectile.presentation.team = player_team;
+                    projectile.presentation.owner_identity = PLAYER_IDENTITY;
+                    projectile.presentation.launcher_identity = Weapon::Flamethrower as u32;
+                    projectile.presentation.contact_normal = None;
+                    projectile.motion_enabled = true;
+                    projectile.direct_target = None;
+                }
                 let targets: Vec<_> = self.bots.as_ref().map_or_else(Vec::new, |bots| {
                     bots.combat_targets()
                         .filter(|target| {
@@ -4621,6 +4666,72 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn pyro_airblast_reflects_enemy_projectiles_without_touching_friendly_rockets() {
+        let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.015));
+        session
+            .advance(Command {
+                select_class: Some(PlayerClass::Pyro),
+                ..Command::default()
+            })
+            .unwrap();
+        for _ in 0..40 {
+            session.advance(Command::default()).unwrap();
+        }
+        let team = session.team_selection.local_team();
+        let opposite = if team == PlayerTeam::Red {
+            PlayerTeam::Blue
+        } else {
+            PlayerTeam::Red
+        };
+        let create = |identity, team| LiveProjectile {
+            presentation: Projectile {
+                identity,
+                kind: ProjectileKind::Rocket,
+                team,
+                owner_identity: 30,
+                launcher_identity: 1,
+                state: ProjectileState::Flying,
+                position: [80.0, 0.0, 68.0],
+                velocity: [-1_100.0, 0.0, 0.0],
+                orientation: [0.0, 0.0, 0.0, 1.0],
+                angular_velocity: [0.0; 3],
+                contact_normal: None,
+                age_seconds: 0.1,
+            },
+            armed: false,
+            creation_tick: 0,
+            arm_tick: 0,
+            next_think_tick: 0,
+            forced_detonate_tick: None,
+            motion_enabled: true,
+            direct_target: None,
+        };
+        session.projectiles.push(create(1, opposite));
+        session.projectiles.push(create(2, team));
+        session
+            .advance_flamethrower(
+                Command {
+                    detonate: true,
+                    ..Command::default()
+                },
+                &mut Vec::new(),
+                &mut Vec::new(),
+            )
+            .unwrap();
+        assert_eq!(session.projectiles[0].presentation.team, team);
+        assert_eq!(
+            session.projectiles[0].presentation.owner_identity,
+            PLAYER_IDENTITY
+        );
+        assert!((length(session.projectiles[0].presentation.velocity) - 1_100.0).abs() < 0.01);
+        assert!(session.projectiles[0].presentation.velocity[0] > 1_099.0);
+        assert_eq!(
+            session.projectiles[1].presentation.velocity,
+            [-1_100.0, 0.0, 0.0]
+        );
     }
 
     #[test]
