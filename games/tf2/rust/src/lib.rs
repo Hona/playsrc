@@ -2354,7 +2354,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
     ) -> Option<(bot::CombatTarget, f32, [f32; 3])> {
         let bots = self.bots.as_ref()?;
         bots.combat_targets()
-            .filter(|target| !enemies_only || target.team != self.team)
+            .filter(|target| !enemies_only || target.team != self.team_selection.local_team())
             .filter_map(|target| {
                 let mins = [
                     target.position[0] - 24.0 - radius,
@@ -2438,7 +2438,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 let maximum_health = self.maximum_health();
                 if let Some(bots) = self.bots.as_mut() {
                     for target in targets {
-                        if target.team == self.team {
+                        if target.team == self.team_selection.local_team() {
                             if bots.extinguish(target.identity) {
                                 self.health = (self.health + 20).min(maximum_health);
                             }
