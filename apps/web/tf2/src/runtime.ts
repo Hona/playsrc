@@ -204,7 +204,6 @@ const CTF_SOUND_PATHS = [
   "sound/vo/intel_teamdropped2.mp3",
   "sound/vo/intel_teamcaptured.mp3",
   "sound/vo/intel_teamreturned.mp3",
-  "sound/items/itembk2.wav",
   "sound/misc/your_team_won.mp3",
   "sound/misc/your_team_lost.mp3",
 ] as const
@@ -1979,6 +1978,12 @@ export class Tf2Application {
         }),
         Object.freeze({
           kind: "command" as const,
+          name: "setpos",
+          disposition: "visible" as const,
+          acceptsSuggestions: false,
+        }),
+        Object.freeze({
+          kind: "command" as const,
           name: "noclip",
           disposition: "visible" as const,
           acceptsSuggestions: false,
@@ -2353,6 +2358,24 @@ export class Tf2Application {
       }
       this.selectClass(identity)
       this.#output(`Class selection queued: ${tokens[0]}`)
+      return
+    }
+    if (command === "setpos") {
+      if (!this.#client || !this.#snapshot || tokens.length < 2 || tokens.length > 3) {
+        this.#output("Usage: setpos x y <z optional>")
+        return
+      }
+      const coordinates = [Number(tokens[0]), Number(tokens[1]), tokens[2] === undefined ? this.#snapshot.position[2] : Number(tokens[2])]
+      if (!coordinates.every(Number.isFinite)) {
+        this.#output("setpos rejected: coordinates must be finite")
+        return
+      }
+      const generation = this.#generation
+      void this.#client.setPosition(generation, coordinates as [number, number, number]).then(() => {
+        if (generation === this.#generation) this.#output(`Position set: ${coordinates.join(" ")}`)
+      }, (error) => {
+        if (generation === this.#generation) this.#output(`setpos rejected: ${error instanceof Error ? error.message : String(error)}`)
+      })
       return
     }
     if (command === "noclip" && tokens.length === 0) {

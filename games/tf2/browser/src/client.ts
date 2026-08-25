@@ -429,6 +429,14 @@ export class Tf2WorkerClient {
     }
   }
 
+  async setPosition(generation: number, position: readonly [number, number, number]): Promise<void> {
+    if (position.length !== 3 || !position.every(Number.isFinite)) throw new Tf2WorkerError("BoundExceeded")
+    const response = await this.#request({ kind: "set-position", generation, position })
+    if (response.kind !== "position-set" || response.generation !== generation) {
+      throw new Tf2WorkerError("WorkerFailed")
+    }
+  }
+
   async configureCourse(generation: number, definition: Uint8Array): Promise<void> {
     if (definition.byteLength < 52 || definition.byteLength > 64 * 1024) {
       throw new Tf2WorkerError("BoundExceeded")
