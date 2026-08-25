@@ -142,6 +142,8 @@ export type ApplicationView = Readonly<{
   environmentDrawables?: number
   visibleDecalFragments?: number
   movement?: Snapshot["movement"]
+  playerFlags?: Snapshot["playerFlags"]
+  inWater?: Snapshot["inWater"]
   movementTick?: Snapshot["movementTick"]
   viewmodelPose?: Readonly<{ activity: string; sequence: number; cycle: number; primitives: number; events: number }>
   modelProbes?: readonly Readonly<{ model: string; sequence: number; primitives: number; vertices: number }>[]
@@ -1331,6 +1333,8 @@ export class Tf2Application {
         environment: this.#artifacts.environment,
         environmentDrawables: this.#environmentDrawables,
         movement: this.#snapshot.movement,
+        playerFlags: this.#snapshot.playerFlags,
+        inWater: this.#snapshot.inWater,
         movementTick: this.#snapshot.movementTick,
         modelProbes: this.#modelProbes,
         snapshotTick: this.#snapshot.tick.toString(),
@@ -2141,6 +2145,8 @@ export class Tf2Application {
       environment: artifacts.environment,
       environmentDrawables: this.#environmentDrawables,
       movement: this.#snapshot.movement,
+      playerFlags: this.#snapshot.playerFlags,
+      inWater: this.#snapshot.inWater,
       movementTick: this.#snapshot.movementTick,
       modelProbes: this.#modelProbes,
       snapshotTick: this.#snapshot.tick.toString(),
@@ -2980,6 +2986,8 @@ export class Tf2Application {
         explosionEvents: this.#explosionEvents,
         particleRenderItems: particleItems.length,
         movement: snapshot.movement,
+        playerFlags: snapshot.playerFlags,
+        inWater: snapshot.inWater,
         movementTick: snapshot.movementTick,
         viewmodelPose: Object.freeze({
           activity: viewmodelPose.activity,

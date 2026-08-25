@@ -45,6 +45,11 @@ use map_runtime::{BeginTickInput, MapError};
 use weapon::{ActivityEvent, PrimaryResult, ReloadPhase, WeaponRuntime};
 
 pub const PLAYER_IDENTITY: u32 = 1;
+pub const FL_ONGROUND: u32 = 1 << 0;
+pub const FL_DUCKING: u32 = 1 << 1;
+pub const FL_ANIMDUCKING: u32 = 1 << 2;
+pub const FL_CLIENT: u32 = 1 << 8;
+pub const FL_INWATER: u32 = 1 << 10;
 pub const MAX_PROJECTILES: usize = 64;
 const MASK_SOLID: u32 = 0x0200_400b;
 const MASK_SOLID_BRUSH_ONLY: u32 = 0x0000_400b;
@@ -592,6 +597,7 @@ pub struct Snapshot {
     pub class: Class,
     pub team: Team,
     pub weapon: Weapon,
+    pub player_flags: u32,
     pub movement: MovementState,
     pub health: f32,
     pub maximum_health: f32,
@@ -612,6 +618,7 @@ pub struct ProducerSnapshot {
     pub class: Class,
     pub team: Team,
     pub active_weapon: Weapon,
+    pub player_flags: u32,
     pub health: i32,
     pub maximum_health: i32,
     pub conditions: [u32; 5],
@@ -975,6 +982,28 @@ impl<W: GameplayWorld + Clone> Session<W> {
         })
     }
 
+    pub fn player_flags(&self) -> u32 {
+        let mut flags = FL_CLIENT;
+        if self.movement.ground.is_some() {
+            flags |= FL_ONGROUND;
+        }
+        if self.movement.crouch.uses_crouched_hull() {
+            flags |= FL_DUCKING;
+        }
+        if matches!(
+            self.movement.crouch.phase,
+            playsrc_movement::CrouchPhase::Ducking
+                | playsrc_movement::CrouchPhase::Crouched
+                | playsrc_movement::CrouchPhase::Blocked
+        ) {
+            flags |= FL_ANIMDUCKING;
+        }
+        if self.in_water {
+            flags |= FL_INWATER;
+        }
+        flags
+    }
+
     pub fn producer_snapshot(&self) -> ProducerSnapshot {
         ProducerSnapshot {
             tick: self.tick,
@@ -982,6 +1011,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             class: self.class,
             team: self.team,
             active_weapon: self.weapon,
+            player_flags: self.player_flags(),
             health: self.health,
             maximum_health: self.maximum_health(),
             conditions: self.conditions.words(),
@@ -1359,6 +1389,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             class: self.class,
             team: self.team,
             weapon: self.weapon,
+            player_flags: self.player_flags(),
             movement: self.movement,
             health: self.health as f32,
             maximum_health: self.maximum_health() as f32,
@@ -3333,11 +3364,15 @@ mod tests {
             [0.0, 0.0, 10.0],
             MapRuntime::empty(0.015),
         );
-        direct_submersion.advance(Command::default()).unwrap();
+        let direct = direct_submersion.advance(Command::default()).unwrap();
         assert_eq!(direct_submersion.movement.water_level, 3);
-        assert!(!direct_submersion.in_water);
-        direct_submersion.advance(Command::default()).unwrap();
-        assert!(!direct_submersion.in_water);
+        assert_eq!(direct.player_flags & FL_INWATER, 0);
+        assert_eq!(
+            direct_submersion.producer_snapshot().player_flags & FL_INWATER,
+            0
+        );
+        let direct = direct_submersion.advance(Command::default()).unwrap();
+        assert_eq!(direct.player_flags & FL_INWATER, 0);
         direct_submersion.movement.velocity = [0.0; 3];
         direct_submersion.explode(
             explosive(ProjectileKind::Rocket, direct_submersion.movement.position),
@@ -3352,13 +3387,17 @@ mod tests {
             [0.0, 0.0, 10.0],
             MapRuntime::empty(0.015),
         );
-        wading.advance(Command::default()).unwrap();
+        let first_wade = wading.advance(Command::default()).unwrap();
         assert_eq!(wading.movement.water_level, 1);
-        assert!(!wading.in_water);
+        assert_eq!(first_wade.player_flags & FL_INWATER, 0);
         wading.collision.surface = 200.0;
-        wading.advance(Command::default()).unwrap();
+        let submerged = wading.advance(Command::default()).unwrap();
         assert_eq!(wading.movement.water_level, 3);
-        assert!(wading.in_water);
+        assert_eq!(submerged.player_flags & FL_INWATER, FL_INWATER);
+        assert_eq!(
+            wading.producer_snapshot().player_flags & FL_INWATER,
+            FL_INWATER
+        );
         wading.movement.velocity = [0.0; 3];
         wading.explode(
             explosive(ProjectileKind::Rocket, wading.movement.position),
@@ -3369,11 +3408,11 @@ mod tests {
         assert_eq!(wading.movement.velocity[2], 900.0);
 
         wading.collision.surface = -100.0;
-        wading.advance(Command::default()).unwrap();
+        let exited = wading.advance(Command::default()).unwrap();
         assert_eq!(wading.movement.water_level, 0);
-        assert!(wading.in_water);
-        wading.advance(Command::default()).unwrap();
-        assert!(!wading.in_water);
+        assert_eq!(exited.player_flags & FL_INWATER, FL_INWATER);
+        let dry = wading.advance(Command::default()).unwrap();
+        assert_eq!(dry.player_flags & FL_INWATER, 0);
     }
 
     #[test]

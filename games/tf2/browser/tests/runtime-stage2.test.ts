@@ -10,11 +10,11 @@ import {
 import type { WorkerRequest, WorkerResponse } from "../src/protocol"
 
 function snapshot(): ArrayBuffer {
-  const bytes = new ArrayBuffer(969)
+  const bytes = new ArrayBuffer(977)
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x53, 0x53, 0x4e])
-  view.setUint32(4, 8, true)
+  view.setUint32(4, 9, true)
   view.setBigUint64(8, 7n, true)
   data.set([1, 1, 1, 0], 16)
   view.setFloat32(20, 200, true)
@@ -34,17 +34,18 @@ function snapshot(): ArrayBuffer {
   view.setUint32(148, 284, true)
   view.setUint32(152,52,true);view.setUint32(156,12,true)
 
-  data.set([0x50, 0x4d, 0x4f, 0x56], 160)
-  view.setUint32(164, 1, true)
-  data[175] = 1
-  view.setBigUint64(176, 0xffff_ffff_ffff_ffffn, true)
+  view.setUint32(160, 0x101, true)
+  data.set([0x50, 0x4d, 0x4f, 0x56], 168)
+  view.setUint32(172, 1, true)
+  data[183] = 1
+  view.setBigUint64(184, 0xffff_ffff_ffff_ffffn, true)
   ;[1, 2, 3, 4, 5, 6, 0, 0, 68].forEach((value, index) => {
-    view.setFloat32(184 + index * 4, value, true)
+    view.setFloat32(192 + index * 4, value, true)
   })
-  view.setFloat32(240, 1, true)
-  view.setFloat32(252, 1, true)
+  view.setFloat32(248, 1, true)
+  view.setFloat32(260, 1, true)
 
-  let at = 256
+  let at = 264
   data.set([1, 0, 0, 0], at)
   view.setUint16(at + 4, 3, true)
   view.setUint16(at + 6, 20, true)
@@ -102,7 +103,7 @@ function snapshot(): ArrayBuffer {
   data.set([7, 7, 0, 0], at + 280)
   at += 284
   data.set([0x43, 0x53, 0x4e, 0x50], at)
-  view.setUint32(at + 4, 2, true)
+  view.setUint32(at + 4, 3, true)
   data.fill(1,at+8,at+40)
   view.setBigUint64(at + 40, 7n, true)
   view.setUint32(at + 48, 0, true)
@@ -204,6 +205,10 @@ describe("TF2 playable runtime Stage 2 contract", () => {
     expect(value.loadout[0]).toMatchObject({ clip: 3, reserve: 20 })
     expect(value.activities).toEqual([{ tick: 7n, weapon: 1, activity: 2 }])
     expect(value.lifecycle).toBe(1)
+    expect(value.playerFlags).toBe(0x101)
+    expect(value.inWater).toBe(false)
+    expect(value.movement.waterLevel).toBe(0)
+    expect(value.movement.waterType).toBe(0)
     expect(value.respawnTouchCount).toBe(1)
     expect(value.authorityBlockers.map((value) => value.code)).toEqual([1, 2])
     expect(value.projectiles[0]).toEqual({
@@ -236,16 +241,40 @@ describe("TF2 playable runtime Stage 2 contract", () => {
     expect(value.events[0]).toMatchObject({ kind: 5, subject: 85, values: [200, 4, 20, 0] })
 
     const malformed = snapshot()
-    new DataView(malformed).setFloat32(344 + 12, 0, true)
+    new DataView(malformed).setFloat32(352 + 12, 0, true)
     expect(() => decodeSnapshot(malformed)).toThrow(Tf2CodecError)
     const priorVersion = snapshot()
     new DataView(priorVersion).setUint32(4, 5, true)
     expect(() => decodeSnapshot(priorVersion)).toThrow(Tf2CodecError)
     const stuck = snapshot()
     const stuckData = new Uint8Array(stuck), stuckView = new DataView(stuck)
-    stuckData.set([2, 1, 3, 1], 308)
-    stuckView.setFloat32(380, 1, true)
+    stuckData.set([2, 1, 3, 1], 316)
+    stuckView.setFloat32(388, 1, true)
     expect(decodeSnapshot(stuck).projectiles[0]).toMatchObject({ kind: 2, state: 3, velocity: [100, 0, 0], contactNormal: [0, 0, 1] })
+  })
+
+  test("retains independent Source in-water flags and canonical fluid contents", () => {
+    for (const [level, flags, fluid, inWater] of [
+      [0, 0x101, 0, false],
+      [1, 0x101, 0x20, false],
+      [2, 0x501, 0x20, true],
+      [3, 0x101, 0x20, false],
+      [3, 0x501, 0x10, true],
+      [0, 0x501, 0, true],
+    ] as const) {
+      const bytes = snapshot(), view = new DataView(bytes), data = new Uint8Array(bytes)
+      view.setUint32(160, flags, true)
+      view.setUint32(164, fluid, true)
+      data[178] = level
+      const decoded = decodeSnapshot(bytes)
+      expect(decoded.playerFlags).toBe(flags)
+      expect(decoded.inWater).toBe(inWater)
+      expect(decoded.movement.waterLevel).toBe(level)
+      expect(decoded.movement.waterType).toBe(fluid)
+    }
+    const malformed = snapshot()
+    new DataView(malformed).setUint32(164, 0x1000_0020, true)
+    expect(() => decodeSnapshot(malformed)).toThrow(Tf2CodecError)
   })
 
   test("retains transient projectile ticks across repeated publication merges", () => {

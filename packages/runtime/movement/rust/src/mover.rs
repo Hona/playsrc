@@ -1025,6 +1025,7 @@ mod tests {
             identity,
             role: ObjectRole::Entity,
             enabled: true,
+            volume_contents: false,
             transform: Transform {
                 origin,
                 angles: [0.0; 3],

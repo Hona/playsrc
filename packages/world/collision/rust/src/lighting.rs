@@ -312,6 +312,7 @@ mod tests {
             identity,
             role,
             enabled,
+            volume_contents: false,
             transform: Transform { origin, angles },
             linear_velocity: [0.0; 3],
             angular_velocity: [0.0; 3],
