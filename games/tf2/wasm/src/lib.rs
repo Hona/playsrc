@@ -3930,6 +3930,8 @@ fn encode_snapshot(
             match producer.lifecycle {
                 playsrc_tf2::PlayerLifecycle::Active => 1,
                 playsrc_tf2::PlayerLifecycle::Dying => 2,
+                playsrc_tf2::PlayerLifecycle::Welcome => 3,
+                playsrc_tf2::PlayerLifecycle::Observer => 4,
             },
             0,
             0,
