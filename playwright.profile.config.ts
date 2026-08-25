@@ -11,13 +11,13 @@ export default defineConfig({
   workers: 1,
   reporter: "line",
   use: {
-    baseURL: "http://127.0.0.1:4173",
+    baseURL: `http://127.0.0.1:${process.env.PLAYSRC_DEV_PORT ?? "4173"}`,
     headless: false,
     viewport: { width: 1280, height: 720 },
   },
   webServer: {
     command: `bun tools/playsrc/src/cli.ts dev ${process.env.PROFILE_MATERIAL_ANIMATION === "1" ? "pl_upward" : "jump_beef"}`,
-    url: "http://127.0.0.1:4173/",
+    url: `http://127.0.0.1:${process.env.PLAYSRC_DEV_PORT ?? "4173"}/`,
     reuseExistingServer: false,
     timeout: 180_000,
     stdout: "pipe",
