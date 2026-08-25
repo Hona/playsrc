@@ -11,6 +11,7 @@ const TF2_DEFAULT_HORIZONTAL_FOV_4_BY_3 = 75
 const SOURCE_WORLD_NEAR = 7
 const SOURCE_MAP_EXTENT = 16_384
 const SOURCE_MAP_EXTENT_DIAGONAL = Math.fround(1.73205080757)
+const UTF8_ENCODER = new TextEncoder()
 
 export type PresentationDiagnostic = Readonly<{
   code: "MissingProjectileModel" | "MissingParticleContext" | "MissingAudioContext"
@@ -238,7 +239,7 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
 }
 function stable32(value: string) {
   let hash = 0x811c9dc5
-  for (const byte of new TextEncoder().encode(value)) {
+  for (const byte of UTF8_ENCODER.encode(value)) {
     hash ^= byte
     hash = Math.imul(hash, 0x01000193)
   }
@@ -246,7 +247,7 @@ function stable32(value: string) {
 }
 function stable64(value: string) {
   let hash = 0xcbf29ce484222325n
-  for (const byte of new TextEncoder().encode(value)) {
+  for (const byte of UTF8_ENCODER.encode(value)) {
     hash ^= BigInt(byte)
     hash = BigInt.asUintN(64, hash * 0x100000001b3n)
   }
@@ -300,21 +301,25 @@ export type PosedModel = Readonly<{
 
 export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uint8Array {
   if (requests.length > 128) throw new ProjectilePresentationError("BoundExceeded", "model pose request count")
-  const encoder = new TextEncoder()
   let length = 12
-  for (const request of requests) length += 72 + encoder.encode(request.model).length + encoder.encode(request.itemModel ?? "").length +
-    encoder.encode(request.activity).length + (request.bodygroups.length + (request.itemBodygroups?.length ?? 0)) * 4
+  const encodedRequests = requests.map((request) => {
+    const model = UTF8_ENCODER.encode(request.model)
+    const item = UTF8_ENCODER.encode(request.itemModel ?? "")
+    const activity = UTF8_ENCODER.encode(request.activity)
+    length += 72 + model.length + item.length + activity.length +
+      (request.bodygroups.length + (request.itemBodygroups?.length ?? 0)) * 4
+    return { request, model, item, activity }
+  })
   if (length > 1024 * 1024) throw new ProjectilePresentationError("BoundExceeded", "model pose request bytes")
   const bytes = new Uint8Array(length), view = new DataView(bytes.buffer)
   bytes.set([0x50, 0x4d, 0x52, 0x51])
   view.setUint32(4, 5, true)
   view.setUint32(8, requests.length, true)
   let at = 12
-  const text = (value: string) => {
-    const encoded = encoder.encode(value)
+  const text = (encoded: Uint8Array) => {
     view.setUint32(at, encoded.length, true); at += 4; bytes.set(encoded, at); at += encoded.length
   }
-  for (const request of requests) {
+  for (const { request, model, item, activity } of encodedRequests) {
     if (!Number.isSafeInteger(request.identity) || request.identity < 1 || !request.model || !request.activity ||
       ![request.previousElapsedSeconds, request.elapsedSeconds].every(Number.isFinite) || request.previousElapsedSeconds < 0 ||
       request.elapsedSeconds < request.previousElapsedSeconds || ![request.skin, request.lod, ...request.bodygroups, ...(request.itemBodygroups ?? [])].every((value) => Number.isSafeInteger(value) && value >= 0) ||
@@ -323,7 +328,7 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
     }
     view.setUint32(at, request.identity, true); at += 4
     bytes[at] = request.itemModel === undefined ? 0 : 1; at += 4
-    text(request.model); text(request.itemModel ?? ""); text(request.activity)
+    text(model); text(item); text(activity)
     view.setFloat32(at, request.previousElapsedSeconds, true); at += 4
     view.setFloat32(at, request.elapsedSeconds, true); at += 4
     for(const value of [request.currentTimeSeconds,request.frameTimeSeconds,request.planarSpeed,request.screenAspectRatio,request.worldFarPlane]){view.setFloat32(at,value,true);at+=4}
@@ -380,14 +385,45 @@ export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] 
       return Object.freeze({ index, cycle: eventCycle, event, eventType, options, name: text() })
     }))
     const primitives = Object.freeze(Array.from({ length: u32() }, () => {
-      const primitive=u32(),material=u32(),vertices=u32(),translucent=u8();if(translucent>1||u8()||u8()||u8())throw new ProjectilePresentationError("MalformedFact","primitive opacity");const positions = new Float32Array(vertices * 3),
-        normals = new Float32Array(vertices * 3), tangents = new Float32Array(vertices * 4)
-      for (let vertex = 0; vertex < vertices; vertex++) {
-        for (let axis = 0; axis < 3; axis++) positions[vertex * 3 + axis] = f32()
-        for (let axis = 0; axis < 3; axis++) normals[vertex * 3 + axis] = f32()
-        for (let axis = 0; axis < 4; axis++) tangents[vertex * 4 + axis] = f32()
+      const primitive = u32(), material = u32(), vertices = u32(), translucent = u8()
+      if (translucent > 1 || u8() || u8() || u8()) {
+        throw new ProjectilePresentationError("MalformedFact", "primitive opacity")
       }
-      return Object.freeze({ primitive, material, positions, normals, tangents,translucent:translucent===1 })
+      ensure(vertices * 40)
+      const positions = new Float32Array(vertices * 3)
+      const normals = new Float32Array(vertices * 3)
+      const tangents = new Float32Array(vertices * 4)
+      for (let vertex = 0; vertex < vertices; vertex += 1) {
+        const position = vertex * 3
+        const tangent = vertex * 4
+        const x = view.getFloat32(at, true)
+        const y = view.getFloat32(at + 4, true)
+        const z = view.getFloat32(at + 8, true)
+        const nx = view.getFloat32(at + 12, true)
+        const ny = view.getFloat32(at + 16, true)
+        const nz = view.getFloat32(at + 20, true)
+        const tx = view.getFloat32(at + 24, true)
+        const ty = view.getFloat32(at + 28, true)
+        const tz = view.getFloat32(at + 32, true)
+        const tw = view.getFloat32(at + 36, true)
+        if (
+          !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z) ||
+          !Number.isFinite(nx) || !Number.isFinite(ny) || !Number.isFinite(nz) ||
+          !Number.isFinite(tx) || !Number.isFinite(ty) || !Number.isFinite(tz) || !Number.isFinite(tw)
+        ) throw new ProjectilePresentationError("MalformedFact", "model pose scalar")
+        positions[position] = x
+        positions[position + 1] = y
+        positions[position + 2] = z
+        normals[position] = nx
+        normals[position + 1] = ny
+        normals[position + 2] = nz
+        tangents[tangent] = tx
+        tangents[tangent + 1] = ty
+        tangents[tangent + 2] = tz
+        tangents[tangent + 3] = tw
+        at += 40
+      }
+      return Object.freeze({ primitive, material, positions, normals, tangents, translucent: translucent === 1 })
     }))
     const attachments = Object.freeze(Array.from({ length: u32() }, () => {
       const name = text(), worldAligned = u8(); if (worldAligned > 1 || u8() || u8() || u8()) throw new ProjectilePresentationError("MalformedFact", "model attachment")
@@ -415,15 +451,21 @@ export function createParticleBatchEncoder() {
         throw new ProjectilePresentationError("TimeReversed", "particle transaction range or input is invalid")
       }
       let length = 32
-      for (const r of requests) {
+      const systems = new Map<string, Uint8Array>()
+      for (const request of requests) {
         length += 20
-        if (r.kind === "start") length += 8 + 4 + 4 + new TextEncoder().encode(r.system).length + 32
-        else if (r.kind === "set-control-point") length += 32
+        if (request.kind === "start") {
+          let encoded = systems.get(request.system)
+          if (!encoded) {
+            encoded = UTF8_ENCODER.encode(request.system)
+            systems.set(request.system, encoded)
+          }
+          length += 8 + 4 + 4 + encoded.length + 32
+        } else if (request.kind === "set-control-point") length += 32
       }
       if (length > 4 * 1024 * 1024) throw new ProjectilePresentationError("BoundExceeded", "particle transaction bytes")
       const bytes = new Uint8Array(length),
-        view = new DataView(bytes.buffer),
-        encoder = new TextEncoder()
+        view = new DataView(bytes.buffer)
       bytes.set([0x50, 0x50, 0x54, 0x58])
       view.setUint32(4, 2, true)
       view.setFloat32(8, from, true)
@@ -458,7 +500,7 @@ export function createParticleBatchEncoder() {
         if (r.kind === "start") {
           view.setBigUint64(at, stable64(r.eventIdentity), true)
           view.setUint32(at + 8, r.ownerIdentity, true)
-          const text = encoder.encode(r.system)
+          const text = systems.get(r.system)!
           view.setUint32(at + 12, text.length, true)
           bytes.set(text, at + 16)
           at += 16 + text.length

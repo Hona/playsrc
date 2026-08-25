@@ -862,15 +862,17 @@ function decodeCollisionSnapshot(bytes: ArrayBuffer, offset: number, length: num
   }
   const worldIdentity = Array.from(data.subarray(8, 40), (value) => value.toString(16).padStart(2, "0")).join("")
   if (!HASH.test(worldIdentity)) throw new Tf2CodecError("Collision world identity is invalid")
-  return Object.freeze({ worldIdentity, identity: view.getBigUint64(40, true), objects: count(view.getUint32(48, true), "Collision object"), bytes: data.slice() })
+  return Object.freeze({ worldIdentity, identity: view.getBigUint64(40, true), objects: count(view.getUint32(48, true), "Collision object"), bytes: data })
 }
 
-export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
+export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
   if (bytes.byteLength < 160 || bytes.byteLength > MAX_SNAPSHOT_BYTES) {
     throw new Tf2CodecError("snapshot byte length is invalid")
   }
-  const data = new Uint8Array(bytes)
-  const view = new DataView(bytes)
+  const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
+  const buffer = data.buffer as ArrayBuffer
+  const base = data.byteOffset
+  const view = new DataView(buffer, base, data.byteLength)
   if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 8)
     throw new Tf2CodecError("snapshot identity is invalid")
   const tf2Class = data[16]
@@ -918,7 +920,7 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
   if (entityPresentationLength<52||movementTickLength<12||160 + movementLength > bytes.byteLength) {
     throw new Tf2CodecError("snapshot extension header is invalid")
   }
-  const movement = movementSnapshot(bytes, 160, movementLength)
+  const movement = movementSnapshot(buffer, base + 160, movementLength)
   if (movement.mode !== data[19]) throw new Tf2CodecError("Movement mode projection differs")
   let at = 160 + movementLength
   const requireBytes = (length: number, label: string): void => {
@@ -1302,7 +1304,7 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
   at += blockerCount * 4
 
   requireBytes(randomStateLength, "TF2 random state")
-  const randomState = decodeRandomState(bytes, at, randomStateLength)
+  const randomState = decodeRandomState(buffer, base + at, randomStateLength)
   at += randomStateLength
 
   requireBytes(randomDrawCount * 16, "random draw")
@@ -1388,13 +1390,13 @@ export function decodeSnapshot(bytes: ArrayBuffer): Snapshot {
   at += moverResultCount * 52
 
   requireBytes(collisionSnapshotLength, "Collision snapshot")
-  const collisionSnapshot = decodeCollisionSnapshot(bytes, at, collisionSnapshotLength)
+  const collisionSnapshot = decodeCollisionSnapshot(buffer, base + at, collisionSnapshotLength)
   at += collisionSnapshotLength
   requireBytes(jumpLength, "Jump")
-  const jump = decodeJump(bytes, at, jumpLength)
+  const jump = decodeJump(buffer, base + at, jumpLength)
   at += jumpLength
-  requireBytes(movementTickLength,"Movement tick");const movementTick=decodeMovementTick(bytes,at,movementTickLength);at+=movementTickLength
-  requireBytes(entityPresentationLength,"Entity presentation");const entityPresentation=decodeEntityPresentation(bytes,at,entityPresentationLength);at+=entityPresentationLength
+  requireBytes(movementTickLength,"Movement tick");const movementTick=decodeMovementTick(buffer,base+at,movementTickLength);at+=movementTickLength
+  requireBytes(entityPresentationLength,"Entity presentation");const entityPresentation=decodeEntityPresentation(buffer,base+at,entityPresentationLength);at+=entityPresentationLength
   if(at!==bytes.byteLength||entityPresentation.collisionRevision!==collisionSnapshot.identity)throw new Tf2CodecError("Entity presentation revision join is invalid")
 
   const tick = view.getBigUint64(8, true)

@@ -1,4 +1,19 @@
-export type WorkerRequest =
+export type VisibilityView = Readonly<{
+  position: readonly [number, number, number]
+  visibilityPosition?: readonly [number, number, number]
+  areaFilter?: number
+  yawDegrees: number
+  pitchDegrees: number
+  verticalFovDegrees: number
+  aspectRatio: number
+  near: number
+  far: number
+  presentationTimeSeconds: number
+}>
+
+type WorkerEnvelope = Readonly<{ queuedAt?: number }>
+
+export type WorkerRequest = WorkerEnvelope & (
   | Readonly<{ id: number; kind: "initialize"; wasm: ArrayBuffer; wasmSha256: string; threads: number }>
   | Readonly<{ id: number; kind: "decode-resources"; batch: ArrayBuffer }>
   | Readonly<{
@@ -8,12 +23,10 @@ export type WorkerRequest =
       profile: 0 | 1
       bsp: ArrayBuffer
       configuration: ArrayBuffer
+      includeMap: boolean
       presentation?: ArrayBuffer
     }>
-  | Readonly<{ id: number; kind: "read-map"; generation: number }>
-  | Readonly<{ id: number; kind: "read-presentation"; generation: number }>
-  | Readonly<{id:number;kind:"read-coverage";generation:number}>
-  | Readonly<{id:number;kind:"release-presentation";generation:number}>
+  | Readonly<{ id: number; kind: "read-coverage"; generation: number }>
   | Readonly<{ id: number; kind: "activate"; generation: number }>
   | Readonly<{
       id: number
@@ -23,8 +36,14 @@ export type WorkerRequest =
     }>
   | Readonly<{ id: number; kind: "discard"; generation: number }>
   | Readonly<{ id: number; kind: "particles"; generation: number; batch: ArrayBuffer }>
-  | Readonly<{ id: number; kind: "models"; generation: number; batch: ArrayBuffer }>
-  | Readonly<{ id: number; kind: "visibility"; generation: number; view: Readonly<{ position: readonly [number, number, number]; visibilityPosition?: readonly [number,number,number]; areaFilter?:number; yawDegrees: number; pitchDegrees: number; verticalFovDegrees: number; aspectRatio: number; near: number; far: number; presentationTimeSeconds: number }> }>
+  | Readonly<{
+      id: number
+      kind: "models"
+      generation: number
+      batch: ArrayBuffer
+      visibility?: Readonly<{ id: number; queuedAt: number; view: VisibilityView }>
+    }>
+  | Readonly<{ id: number; kind: "visibility"; generation: number; view: VisibilityView }>
   | Readonly<{
       id: number
       kind: "observe"
@@ -34,6 +53,7 @@ export type WorkerRequest =
       command: ArrayBuffer
     }>
   | Readonly<{ id: number; kind: "shutdown" }>
+)
 
 export type WorkerFailureCode =
   | "MalformedRequest"
@@ -50,6 +70,14 @@ export type InitialView = Readonly<{
   angles: readonly [number, number, number]
 }>
 
+export type WorkerTransactionTimings = Readonly<{
+  queueMilliseconds?: number
+  inputCopyMilliseconds: number
+  transactMilliseconds: number
+  outputCopyMilliseconds: number
+  totalMilliseconds: number
+}>
+
 export type WorkerResponse =
   | Readonly<{ id: number; kind: "initialized" }>
   | Readonly<{ id: number; kind: "resources"; bytes: ArrayBuffer }>
@@ -59,12 +87,18 @@ export type WorkerResponse =
       generation: number
       payloadBytes: number
       payloadSha256: string
+      payload?: ArrayBuffer
       presentationBytes: number
+      presentation: ArrayBuffer
       initialView: InitialView
       timings: Readonly<{
+        queueMilliseconds?: number
         inputCopyMilliseconds: number
         compileMilliseconds: number
         resultMilliseconds: number
+        mapCopyMilliseconds: number
+        presentationCopyMilliseconds: number
+        presentationReleaseMilliseconds: number
         bspParseMilliseconds: number
         canonicalMapMilliseconds: number
         materialResolutionMilliseconds: number
@@ -75,26 +109,22 @@ export type WorkerResponse =
         runtimeMapMilliseconds: number
         collisionSetupMilliseconds: number
         gameSetupMilliseconds: number
+        presentationBundleMilliseconds: number
+        presentationModelsMilliseconds: number
+        presentationTexturesMilliseconds: number
+        presentationParticlesMilliseconds: number
+        presentationEnvironmentMilliseconds: number
+        presentationSerializationMilliseconds: number
         totalMilliseconds: number
       }>
     }>
-  | Readonly<{ id: number; kind: "map"; generation: number; payload: ArrayBuffer }>
-  | Readonly<{ id: number; kind: "presentation"; generation: number; payload: ArrayBuffer }>
-  | Readonly<{id:number;kind:"coverage";generation:number;payload:ArrayBuffer}>
-  | Readonly<{id:number;kind:"presentation-released";generation:number}>
+  | Readonly<{ id: number; kind: "coverage"; generation: number; payload: ArrayBuffer }>
   | Readonly<{ id: number; kind: "activated"; generation: number }>
   | Readonly<{ id: number; kind: "course-configured"; generation: number }>
   | Readonly<{ id: number; kind: "discarded"; generation: number }>
-  | Readonly<{ id: number; kind: "particles"; generation: number; output: ArrayBuffer; timings: Readonly<{ inputCopyMilliseconds:number; transactMilliseconds:number; outputCopyMilliseconds:number; totalMilliseconds:number }> }>
+  | Readonly<{ id: number; kind: "particles"; generation: number; output: ArrayBuffer; timings: WorkerTransactionTimings }>
   | Readonly<{ id: number; kind: "models"; generation: number; output: ArrayBuffer; timings: WorkerTransactionTimings }>
   | Readonly<{ id: number; kind: "visibility"; generation: number; output: ArrayBuffer; timings: WorkerTransactionTimings }>
   | Readonly<{ id: number; kind: "simulation"; generation: number; output: ArrayBuffer; timings: WorkerTransactionTimings }>
   | Readonly<{ id: number; kind: "shutdown" }>
   | Readonly<{ id: number; kind: "failure"; code: WorkerFailureCode; detail: number; reason?: string }>
-
-type WorkerTransactionTimings = Readonly<{
-  inputCopyMilliseconds: number
-  transactMilliseconds: number
-  outputCopyMilliseconds: number
-  totalMilliseconds: number
-}>

@@ -131,7 +131,8 @@ class CourseWorker implements WorkerLike {
   }
   removeEventListener(): void {}
   terminate(): void {}
-  postMessage(request: WorkerRequest): void {
+  postMessage(message: WorkerRequest, transfer: Transferable[] = []): void {
+    const request = structuredClone(message, { transfer })
     let response: WorkerResponse
     if (request.kind === "configure-course") {
       this.configuredBytes = request.definition.byteLength
@@ -186,7 +187,14 @@ describe("TF2 playable runtime Stage 2 contract", () => {
     expect(commandView.getUint16(40, true)).toBe(1)
     expect(commandView.getUint16(42, true)).toBe(0)
 
-    const value = decodeSnapshot(snapshot())
+    const source = snapshot()
+    const value = decodeSnapshot(source)
+    expect(value.collisionSnapshot.bytes.buffer).toBe(source)
+    const enclosed = new Uint8Array(source.byteLength + 7)
+    enclosed.set(new Uint8Array(source), 3)
+    const offset = decodeSnapshot(enclosed.subarray(3, source.byteLength + 3))
+    expect(offset.tick).toBe(value.tick)
+    expect(offset.collisionSnapshot.bytes.buffer).toBe(enclosed.buffer)
     expect(value.movement).toMatchObject({
       grounded: true,
       position: [1, 2, 3],
@@ -290,7 +298,7 @@ describe("TF2 playable runtime Stage 2 contract", () => {
     const client = new Tf2WorkerClient(worker, new MemoryCache())
     await client.configureCourse(4, definition)
     expect(worker.configuredBytes).toBe(100)
-    const value = (await client.observe(4,1,encodeCommand({
+    const command = encodeCommand({
       forward: 0,
       side: 0,
       yawDegrees: 0,
@@ -299,8 +307,13 @@ describe("TF2 playable runtime Stage 2 contract", () => {
       crouch: false,
       fire: false,
       detonate: false,
-    })))[0]!.snapshot
-    expect(value.tick).toBe(7n)
+    })
+    const publication = (await client.observe(4, 1, command))[0]!
+    expect(command.byteLength).toBe(0)
+    expect(publication.snapshot.tick).toBe(7n)
+    expect(publication.snapshotBytes.buffer).toBe(publication.eventBatches[0]!.bytes.buffer)
+    expect(publication.eventBatches[0]!.snapshot.collisionSnapshot.bytes.buffer).toBe(publication.snapshotBytes.buffer)
+    expect(publication.snapshot).toBe(publication.eventBatches[0]!.snapshot)
     await client.shutdown()
   })
 })
