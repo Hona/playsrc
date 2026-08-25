@@ -150,7 +150,7 @@ export type ModelMaterialArtifact = Readonly<{
       }>
     | Readonly<{ kind: "eyes"; halfLambert: boolean; dilation: number }>
     | Readonly<{ kind: "unlit-generic" }>
-    | Readonly<{ kind: "unlit-two-texture" }>
+    | Readonly<{ kind: "unlit-two-texture"; secondFrameRate: number | null; secondScrollRate: number | null; secondScrollAngle: number | null }>
 }>
 export type AuthoredTexturePlane = Readonly<{
   mip: number
@@ -1040,10 +1040,17 @@ function parseModelMaterials(r: Reader): ReadonlyMap<string, ModelMaterialArtifa
       const halfLambert = r.u8()
       if (halfLambert > 1 || r.u8() || r.u8() || r.u8()) throw new ArtifactError("eyes flags")
       state = Object.freeze({ kind: "eyes", halfLambert: halfLambert === 1, dilation: r.f32() })
-    } else if (shaderCode === 3) {
-      state = Object.freeze({ kind: "unlit-generic" })
+    } else if (shaderCode === 4) {
+      const frame = r.u8(), scroll = r.u8()
+      if (frame > 1 || scroll > 1 || r.u8() || r.u8()) throw new ArtifactError("unlit two-texture proxy flags")
+      const frameRate = r.f32(), scrollRate = r.f32(), scrollAngle = r.f32()
+      if ((frame === 0 && frameRate !== 0) || (scroll === 0 && (scrollRate !== 0 || scrollAngle !== 0))) {
+        throw new ArtifactError("unlit two-texture proxy values")
+      }
+      state = Object.freeze({ kind: "unlit-two-texture", secondFrameRate: frame ? frameRate : null,
+        secondScrollRate: scroll ? scrollRate : null, secondScrollAngle: scroll ? scrollAngle : null })
     } else {
-      state = Object.freeze({ kind: "unlit-two-texture" })
+      state = Object.freeze({ kind: "unlit-generic" })
     }
     const opacity=r.u8(),framebuffer=r.u8(),requirementCount=r.u8();if(opacity>1||framebuffer>2||requirementCount>8||r.u8())throw new ArtifactError("model draw state");const names=["ambient-cube","local-lights","camera-position","studio-eye-parameters","local-environment","current-framebuffer","authored-texture-planes","game-proxy-values"] as const,requiredInputs=Object.freeze(Array.from({length:requirementCount},()=>{const code=r.u8();if(code<1||code>8)throw new ArtifactError("model draw requirement");return names[code-1]!}))
     output.set(identity, Object.freeze({

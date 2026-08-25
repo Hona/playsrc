@@ -146,6 +146,9 @@ pub struct UnlitGenericState {
 pub struct UnlitTwoTextureState {
     pub base: TextureRequest,
     pub second: TextureRequest,
+    pub second_frame_rate: Option<f32>,
+    pub second_scroll_rate: Option<f32>,
+    pub second_scroll_angle: Option<f32>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -666,7 +669,10 @@ pub(crate) fn resolve_model_state(
     if shader.eq_ignore_ascii_case(b"UnlitGeneric") {
         Ok((Some(unlit(textures)), Vec::new()))
     } else if shader.eq_ignore_ascii_case(b"UnlitTwoTexture") {
-        Ok((Some(unlit_two_texture(textures)?), Vec::new()))
+        Ok((
+            Some(unlit_two_texture(textures, proxy_program)?),
+            Vec::new(),
+        ))
     } else if shader.eq_ignore_ascii_case(b"VertexLitGeneric") {
         let model_textures = collect_model_textures(parameters, proxy_program, environment)?;
         Ok((
@@ -716,7 +722,10 @@ fn unlit(textures: &[TextureRequest]) -> ModelMaterialState {
     }
 }
 
-fn unlit_two_texture(textures: &[TextureRequest]) -> Result<ModelMaterialState, Error> {
+fn unlit_two_texture(
+    textures: &[TextureRequest],
+    program: &ProxyProgram,
+) -> Result<ModelMaterialState, Error> {
     let base = core_texture(textures, TextureRole::Base)
         .cloned()
         .ok_or_else(|| {
@@ -725,7 +734,12 @@ fn unlit_two_texture(textures: &[TextureRequest]) -> Result<ModelMaterialState, 
                 Some(b"$basetexture".to_vec()),
             )
         })?;
-    let second = core_texture(textures, TextureRole::Base2)
+    let second = textures
+        .iter()
+        .find(|texture| {
+            texture.role == TextureRole::Base2
+                && texture.parameter.eq_ignore_ascii_case(b"$texture2")
+        })
         .cloned()
         .ok_or_else(|| {
             error(
@@ -733,9 +747,42 @@ fn unlit_two_texture(textures: &[TextureRequest]) -> Result<ModelMaterialState, 
                 Some(b"$texture2".to_vec()),
             )
         })?;
+    let mut second_frame_rate = None;
+    let mut second_scroll_rate = None;
+    let mut second_scroll_angle = None;
+    for entry in &program.entries {
+        match &entry.operation {
+            Some(ProxyOperation::AnimatedTexture {
+                texture,
+                frame,
+                frame_rate,
+                ..
+            }) if texture.name.eq_ignore_ascii_case(b"$texture2")
+                && frame.name.eq_ignore_ascii_case(b"$frame2") =>
+            {
+                second_frame_rate = Some(*frame_rate);
+            }
+            Some(ProxyOperation::TextureScroll {
+                result,
+                rate: crate::FloatInput::Constant(rate),
+                angle: crate::FloatInput::Constant(angle),
+                ..
+            }) if result.name.eq_ignore_ascii_case(b"$texture2transform") => {
+                second_scroll_rate = Some(*rate);
+                second_scroll_angle = Some(*angle);
+            }
+            _ => {}
+        }
+    }
     Ok(ModelMaterialState {
         shader: ModelShader::UnlitTwoTexture,
-        state: ModelShaderState::UnlitTwoTexture(Box::new(UnlitTwoTextureState { base, second })),
+        state: ModelShaderState::UnlitTwoTexture(Box::new(UnlitTwoTextureState {
+            base,
+            second,
+            second_frame_rate,
+            second_scroll_rate,
+            second_scroll_angle,
+        })),
         vertex_requirements: ModelVertexRequirements {
             position: true,
             normal: true,
