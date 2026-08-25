@@ -15,6 +15,10 @@ if (!(await Bun.file(cargo).exists())) throw new Error(`configured Rust toolchai
 async function run(arguments_: string[], label: string): Promise<void> {
   const child = Bun.spawn([cargo, ...arguments_], {
     cwd: root,
+    env: {
+      ...process.env,
+      CARGO_TARGET_DIR: join(config.sourceCacheDir, "verification", "map-parity-target"),
+    },
     stdin: "inherit",
     stdout: "inherit",
     stderr: "inherit",
@@ -23,13 +27,24 @@ async function run(arguments_: string[], label: string): Promise<void> {
   if (status !== 0) throw new Error(`${label} failed with status ${status}`)
 }
 
-await run(["test", "-p", "playsrc-map"], "map package tests")
-for (const test of ["configured_brush_models", "configured_environment"]) {
+await run(
+  ["test", "-p", "playsrc-bsp", "-p", "playsrc-collision", "-p", "playsrc-visibility", "-p", "playsrc-map"],
+  "BSP, Collision, Visibility, and Map package tests",
+)
+await run(
+  ["test", "-p", "playsrc-bsp", "--test", "configured_static_props", "--", "--ignored", "--nocapture"],
+  "configured pl_upward BSP static-prop evidence",
+)
+for (const test of ["configured_brush_models", "configured_environment", "configured_displacements", "configured_world_producers"]) {
   await run(
     ["test", "-p", "playsrc-map", "--test", test, "--", "--ignored", "--nocapture"],
     `${test} evidence`,
   )
 }
+await run(
+  ["check", "-p", "playsrc-map-wasm", "-p", "playsrc-tf2-wasm", "--target", "wasm32-unknown-unknown"],
+  "Map and TF2 WASM consumer compilation",
+)
 await run(["fmt", "--all", "--", "--check"], "workspace formatting")
 await run(
   ["+stable", "clippy", "-p", "playsrc-map", "--all-targets", "--no-deps", "--", "-D", "warnings"],

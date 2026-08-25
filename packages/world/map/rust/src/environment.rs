@@ -1197,7 +1197,7 @@ pub fn compile_environment_prepared(
         mark_materials: input.mark_materials,
         limits: input.limits,
     })?;
-    let controllers = compile_controllers(input.entities, input.visibility)?;
+    let controllers = compile_environment_controllers(input.entities, input.visibility)?;
     let master_fog_controller = master_fog_controller(input.entities, &controllers)?;
     Ok(WorldEnvironment {
         lighting: LightingProvenance {
@@ -1930,7 +1930,7 @@ fn bounds_center(bounds: [[f32; 3]; 2]) -> [f32; 3] {
     ]
 }
 
-fn compile_controllers(
+pub fn compile_environment_controllers(
     graph: &Graph,
     visibility: &VisibilityWorld,
 ) -> Result<Vec<EnvironmentController>, EnvironmentError> {
@@ -3772,7 +3772,7 @@ mod tests {
         )
         .unwrap();
         let visibility = water_test_visibility();
-        let controllers = compile_controllers(&graph, &visibility).unwrap();
+        let controllers = compile_environment_controllers(&graph, &visibility).unwrap();
         assert_eq!(
             master_fog_controller(&graph, &controllers).unwrap(),
             Some(2)
