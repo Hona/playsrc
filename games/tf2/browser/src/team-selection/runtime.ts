@@ -94,10 +94,15 @@ const scalar = (node: VguiResourceNode, name: string): string | null =>
   node.children.find((child) => child.name.toLowerCase() === name.toLowerCase() && child.value !== null)?.value ?? null
 const object = (node: VguiResourceNode, name: string): VguiResourceNode | null =>
   node.children.find((child) => child.name.toLowerCase() === name.toLowerCase() && child.value === null) ?? null
-const shallow = (node: VguiResourceNode): VguiResourceNode => Object.freeze({
-  ...node,
-  children: Object.freeze(node.children.filter((child) => child.value !== null || child.name.toLowerCase() === "controlname")),
-})
+const shallow = (node: VguiResourceNode): VguiResourceNode => {
+  const children = node.children.filter((child) => child.value !== null || child.name.toLowerCase() === "controlname")
+  if (scalar(node, "ControlName") === "CTFTeamButton") {
+    for (const name of ["defaultBgColor_override", "armedBgColor_override", "depressedBgColor_override", "selectedBgColor_override"]) {
+      children.push(Object.freeze({ name, value: "0 0 0 0", condition: null, children: Object.freeze([]) }))
+    }
+  }
+  return Object.freeze({ ...node, children: Object.freeze(children) })
+}
 const document = (source: VguiResourceDocument, suffix: string, children: readonly VguiResourceNode[]): VguiResourceDocument => Object.freeze({
   logicalIdentity: `${source.logicalIdentity}/${suffix}`,
   revision: source.revision,
@@ -193,6 +198,7 @@ class Integration implements Tf2TeamSelectionIntegration {
       for (const team of TAB_ORDER) {
         const panel = find(this.#runtime, BUTTON_NAMES[team], this.#owner)
         if (panel === null) throw new Error(`TF2 team selection authored button is unavailable: ${team}`)
+        apply(this.#runtime, { kind: "mutate-control", panel, mutation: { text: "" } })
       }
       for (const name of ["TeamMenuSelect", "TeamMenuAuto", "TeamMenuSpectate", "BlueCount", "RedCount", "ShadedBar"]) {
         const panel = find(this.#runtime, name, this.#owner)

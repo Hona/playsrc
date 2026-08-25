@@ -45,6 +45,9 @@ describe("authored TF2 RED/BLU team-selection VGUI", () => {
       { name: "autodoor", model: "models/vgui/UI_team01_random.mdl", fov: 20, origin: [305, 0, -34], angles: [0, 180, 0] },
       { name: "spectate", model: "models/vgui/UI_team01_spectate.mdl", fov: 20, origin: [305, 0, -34], angles: [0, 180, 0] },
     ])
+    for (const name of ["teambutton0", "teambutton1", "teambutton2", "teambutton3"]) {
+      expect(snapshot.panels.find((panel) => panel.name === name)?.text).toBe("")
+    }
     expect(snapshot.panels.find((panel) => panel.name === "CancelButton")?.effectivelyVisible).toBeFalse()
   })
 
