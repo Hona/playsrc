@@ -415,6 +415,12 @@ pub enum ProjectileEventKind {
     Explode = 6,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ProjectileLauncherPose {
+    pub eye_position: [f32; 3],
+    pub view_orientation: [f32; 4],
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProjectileEvent {
     pub kind: ProjectileEventKind,
@@ -427,6 +433,7 @@ pub struct ProjectileEvent {
     pub position: [f32; 3],
     pub orientation: [f32; 4],
     pub contact_normal: Option<[f32; 3]>,
+    pub launcher_pose: Option<ProjectileLauncherPose>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2025,11 +2032,16 @@ impl<W: GameplayWorld + Clone> Session<W> {
             motion_enabled: true,
             direct_target: None,
         };
-        projectile_events.push(projectile_event(
+        let mut fire = projectile_event(
             ProjectileEventKind::Fire,
             &projectile.presentation,
             self.tick,
-        ));
+        );
+        fire.launcher_pose = Some(ProjectileLauncherPose {
+            eye_position: eye,
+            view_orientation: quaternion_from_angles(pitch, yaw, 0.0),
+        });
+        projectile_events.push(fire);
         if kind == ProjectileKind::Sticky {
             self.physics_requests.push(sticky_physics_request(
                 ProjectilePhysicsOperation::Create,
@@ -2613,6 +2625,7 @@ fn projectile_event_with_contact(
         position: projectile.position,
         orientation: projectile.orientation,
         contact_normal,
+        launcher_pose: None,
     }
 }
 
@@ -3065,6 +3078,13 @@ mod tests {
             })
             .unwrap();
         assert_eq!(fired.projectile_events[0].kind, ProjectileEventKind::Fire);
+        assert_eq!(
+            fired.projectile_events[0].launcher_pose,
+            Some(ProjectileLauncherPose {
+                eye_position: add(fired.movement.position, fired.movement.view_offset),
+                view_orientation: quaternion_from_angles(89.0, 0.0, 0.0),
+            })
+        );
         let orientation = fired.projectiles[0].orientation;
         let magnitude = orientation
             .iter()

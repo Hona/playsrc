@@ -47,13 +47,16 @@ function rocket(tick: bigint): Readonly<{ fact: ProjectileFact; event: Projectil
 test("rejects malformed authored attachment transforms before publishing projectile state", () => {
   const transforms = new Map<number, ReadonlyMap<string, AttachmentTransform>>([
     [9, new Map([["trail", Object.freeze({ position: Object.freeze([2, 3, 4]), orientation })]])],
-    [2, new Map([["backblast", Object.freeze({ position: Object.freeze([Number.NaN, 5, 6]), orientation })]])],
+  ])
+  const fireTransforms = new Map<number, ReadonlyMap<string, AttachmentTransform>>([
+    [9, new Map([["backblast", Object.freeze({ position: Object.freeze([Number.NaN, 5, 6]), orientation })]])],
   ])
   const mapper = createProjectilePresentationMapper(Object.freeze({
     models: new Set(["models/weapons/w_models/w_rocket.mdl"]),
     systems: new Set(["rockettrail", "rocketbackblast"]),
     attachments: new Map([[9, new Set(["trail"])], [2, new Set(["backblast"])]]),
     attachmentTransforms: transforms,
+    fireAttachmentTransforms: fireTransforms,
   }))
   const { fact, event } = rocket(1n)
   const frame = Object.freeze({
@@ -63,7 +66,7 @@ test("rejects malformed authored attachment transforms before publishing project
   })
 
   expect(() => mapper.map(frame)).toThrow(ProjectilePresentationError)
-  transforms.set(2, new Map([
+  fireTransforms.set(9, new Map([
     ["backblast", Object.freeze({ position: Object.freeze([4, 5, 6]), orientation })],
   ]))
   expect(mapper.map(frame).particles.map(request => request.kind === "start" ? request.system : request.kind))
