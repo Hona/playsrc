@@ -58,6 +58,20 @@ fn fixture_with_renderer(
     maximum_particles: i32,
     renderer_identity: &'static str,
 ) -> Vec<u8> {
+    fixture_with_renderer_and_local_velocity(
+        with_constraint,
+        maximum_particles,
+        renderer_identity,
+        [4.0, 0.0, 0.0],
+    )
+}
+
+fn fixture_with_renderer_and_local_velocity(
+    with_constraint: bool,
+    maximum_particles: i32,
+    renderer_identity: &'static str,
+    local_velocity: [f32; 3],
+) -> Vec<u8> {
     let mut elements = vec![TestElement {
         kind: "DmeElement",
         name: "root",
@@ -187,11 +201,11 @@ fn fixture_with_renderer(
             ("distance_max", TestValue::Float(1.0)),
             (
                 "speed_in_local_coordinate_system_min",
-                TestValue::Vector([4.0, 0.0, 0.0]),
+                TestValue::Vector(local_velocity),
             ),
             (
                 "speed_in_local_coordinate_system_max",
-                TestValue::Vector([4.0, 0.0, 0.0]),
+                TestValue::Vector(local_velocity),
             ),
         ],
     ));
@@ -670,6 +684,50 @@ fn advances_children_controls_and_equivalent_partitions_deterministically() {
         encode_render_output(&resolved, whole_output.1, &material_names, 1024 * 1024).unwrap();
     assert_eq!(&encoded[0..4], &0x5250_5350_u32.to_le_bytes());
     assert_eq!(encoded.len(), 40 + resolved.len() * 436);
+}
+
+#[test]
+fn sphere_local_velocity_uses_source_forward_right_up_basis() {
+    let bytes = fixture_with_renderer_and_local_velocity(
+        false,
+        32,
+        "render_animated_sprites",
+        [4.0, 6.0, 8.0],
+    );
+    let registry = registry(&bytes);
+    let half_turn = std::f32::consts::FRAC_1_SQRT_2;
+    for (orientation, expected_velocity) in [
+        ([0.0, 0.0, 0.0, 1.0], [4.0, -6.0, 8.0]),
+        ([0.0, 0.0, half_turn, half_turn], [6.0, 4.0, 8.0]),
+    ] {
+        let mut world =
+            playsrc_particle::ParticleWorld::new(&registry, WorldLimits::default()).unwrap();
+        let mut point = control([10.0, 20.0, 30.0], [10.0, 20.0, 30.0]);
+        point.orientation = orientation;
+        let (items, _) = world
+            .advance(
+                &[create_event(vec![point])],
+                AdvanceRequest {
+                    from_seconds: 0.0,
+                    to_seconds: 0.0,
+                    maximum_step_seconds: 0.1,
+                    camera_position: [0.0; 3],
+                },
+                &mut NoHit,
+            )
+            .unwrap();
+        let particle = items
+            .iter()
+            .find(|item| item.system_uuid == [1; 16])
+            .unwrap();
+        for (axis, expected) in expected_velocity.into_iter().enumerate() {
+            let actual = (particle.position[axis] - particle.previous_position[axis]) / 0.05;
+            assert!(
+                (actual - expected).abs() < 0.0001,
+                "orientation {orientation:?}, axis {axis}: expected {expected}, got {actual}"
+            );
+        }
+    }
 }
 
 #[test]

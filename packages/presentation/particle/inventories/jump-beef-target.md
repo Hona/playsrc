@@ -148,14 +148,14 @@ The renderer-neutral visual-region manifest serializes each root's 14 bounds sta
 
 | Root | Visual-region identity |
 |---|---|
-| `rockettrail` | `4baea2c41099024b` |
-| `rocketbackblast` | `6b46e896c9fc1dc8` |
+| `rockettrail` | `ed870cbc5ca3f210` |
+| `rocketbackblast` | `392602539c035e83` |
 | `stickybombtrail_red` | `974add1fbfe16b10` |
 | `stickybombtrail_blue` | `974add1fbfe16b10` |
 | `stickybomb_pulse_red` | `7a3ce29952dc5472` |
 | `stickybomb_pulse_blue` | `7a3ce29952dc5472` |
-| `muzzle_pipelauncher` | `b60351ee634d5b45` |
-| `ExplosionCore_Wall` | `ce2a65ec20e7efdc` |
-| `ExplosionCore_MidAir` | `3f3447787e39bb2f` |
+| `muzzle_pipelauncher` | `9fa300165611aaca` |
+| `ExplosionCore_Wall` | `587935bd8124e0f2` |
+| `ExplosionCore_MidAir` | `83e5b31e3de06424` |
 
-The FNV-1a 64 identity of the 126 concatenated version-3 batches at `0.00`, `0.05`, `0.10`, `0.15`, `0.20`, `0.25`, `0.50`, `1.00`, `1.50`, `2.00`, `2.50`, `3.00`, `3.50`, and `4.00`, in table order, is `602405073279b21f`. The batch bytes include bounds and every ordered primitive identity, material shader/blend/color-space fact, current/prior/trail position, radius, roll, yaw, tint, quantized alpha, sequence, primary/secondary sheet sample, frame rectangles, frame blend, animation mode/rate, trail scale/width/length, orientation, sort key, and stable tie identity. Empty batches retain the exact versioned header.
+The FNV-1a 64 identity of the 126 concatenated version-3 batches at `0.00`, `0.05`, `0.10`, `0.15`, `0.20`, `0.25`, `0.50`, `1.00`, `1.50`, `2.00`, `2.50`, `3.00`, `3.50`, and `4.00`, in table order, is `79e5a97465e7e0eb`. The batch bytes include bounds and every ordered primitive identity, material shader/blend/color-space fact, current/prior/trail position, radius, roll, yaw, tint, quantized alpha, sequence, primary/secondary sheet sample, frame rectangles, frame blend, animation mode/rate, trail scale/width/length, orientation, sort key, and stable tie identity. Empty batches retain the exact versioned header.

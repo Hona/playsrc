@@ -538,16 +538,141 @@ fn exact_projectile_timelines_cover_every_output_field_through_cleanup() {
     assert_eq!(
         visual_region_digests,
         [
-            0x4bae_a2c4_1099_024b,
-            0x6b46_e896_c9fc_1dc8,
+            0xed87_0cbc_5ca3_f210,
+            0x3926_0253_9c03_5e83,
             0x974a_dd1f_bfe1_6b10,
             0x974a_dd1f_bfe1_6b10,
             0x7a3c_e299_52dc_5472,
             0x7a3c_e299_52dc_5472,
-            0xb603_51ee_634d_5b45,
-            0xce2a_65ec_20e7_efdc,
-            0x3f34_4778_7e39_bb2f,
+            0x9fa3_0016_5611_aaca,
+            0x5879_35bd_8124_e0f2,
+            0x83e5_b31e_3de0_6424,
         ]
     );
-    assert_eq!(complete_output, 0x6024_0507_3279_b21f);
+    assert_eq!(complete_output, 0x79e5_a974_65e7_e0eb);
+}
+
+#[test]
+#[ignore = "requires the exact configured TF2 explosion source bundle"]
+fn configured_wall_explosion_stays_in_front_of_every_oriented_impact_plane() {
+    let bytes = configured_bundle();
+    let resources = bundle(&bytes);
+    let registry = Registry::from_pcf(
+        &[PcfSource {
+            logical_path: "particles/explosion.pcf",
+            bytes: resources["particles/explosion.pcf"],
+        }],
+        RegistryLimits::default(),
+    )
+    .unwrap();
+    let closure = registry
+        .target_closure(&[DefinitionLookup::Name("ExplosionCore_Wall")])
+        .unwrap();
+    let names = closure
+        .definitions
+        .iter()
+        .map(|uuid| registry.definition_by_uuid(*uuid).unwrap().name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names,
+        [
+            "ExplosionCore_Wall",
+            "Explosion_Debris001",
+            "Explosion_Dustup",
+            "Explosion_Dustup_2",
+            "Explosion_CoreFlash",
+            "Explosion_FloatieEmbers",
+            "Explosion_Smoke_1",
+            "Explosion_Flash_1",
+            "Explosion_FlyingEmbers",
+            "Explosion_Flashup",
+        ]
+    );
+    let flash = registry
+        .definition(DefinitionLookup::Name("Explosion_Flash_1"))
+        .unwrap();
+    let flash_offset = flash
+        .functions
+        .iter()
+        .find(|function| function.identity == "Position Modify Offset Random")
+        .unwrap();
+    assert_eq!(
+        flash_offset.parameter("offset min"),
+        Some(&playsrc_particle::Value::Vector3([50.0, 0.0, 0.0]))
+    );
+    assert_eq!(
+        flash_offset.parameter("offset max"),
+        Some(&playsrc_particle::Value::Vector3([50.0, 0.0, 0.0]))
+    );
+    assert_eq!(
+        flash_offset.parameter("offset in local space 0/1"),
+        Some(&playsrc_particle::Value::Bool(true))
+    );
+
+    let quarter_turn = std::f32::consts::FRAC_1_SQRT_2;
+    for (orientation, normal) in [
+        ([0.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0]),
+        ([0.0, 0.0, quarter_turn, quarter_turn], [0.0, 1.0, 0.0]),
+        ([0.0, -quarter_turn, 0.0, quarter_turn], [0.0, 0.0, 1.0]),
+        ([0.0, 0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]),
+    ] {
+        let origin = [10.0, 20.0, 30.0];
+        let wall: [f32; 3] = std::array::from_fn(|axis| origin[axis] - normal[axis]);
+        let mut world = ParticleWorld::new(&registry, WorldLimits::default()).unwrap();
+        let (items, _) = world
+            .advance(
+                &[Event {
+                    identity: 1,
+                    timestamp_seconds: 0.0,
+                    source_order: 0,
+                    command: EventCommand::Create {
+                        effect_identity: 1,
+                        definition: "ExplosionCore_Wall".to_owned(),
+                        seed: 1_337,
+                        owner_identity: None,
+                        control_points: vec![ControlPoint {
+                            index: 0,
+                            position: origin,
+                            previous_position: origin,
+                            orientation,
+                            velocity: [0.0; 3],
+                            parent: None,
+                            object_identity: None,
+                        }],
+                    },
+                }],
+                AdvanceRequest {
+                    from_seconds: 0.0,
+                    to_seconds: 0.05,
+                    maximum_step_seconds: 0.05,
+                    camera_position: [100.0, 50.0, 25.0],
+                },
+                &mut NoHit,
+            )
+            .unwrap();
+        assert!(!items.is_empty());
+        let mut flashes = 0;
+        for item in items {
+            let signed_distance = (0..3)
+                .map(|axis| (item.position[axis] - wall[axis]) * normal[axis])
+                .sum::<f32>();
+            let name = registry
+                .definition_by_uuid(item.system_uuid)
+                .unwrap()
+                .name
+                .as_str();
+            if name != "Explosion_FloatieEmbers" {
+                assert!(
+                    signed_distance >= -0.001,
+                    "{name} crossed its impact plane: normal={normal:?}, position={:?}, signed={signed_distance}",
+                    item.position
+                );
+            }
+            if item.system_uuid == flash.uuid {
+                flashes += 1;
+                assert!((49.0..=53.0).contains(&signed_distance));
+            }
+        }
+        assert_eq!(flashes, 1);
+    }
 }
