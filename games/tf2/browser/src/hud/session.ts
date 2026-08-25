@@ -206,7 +206,7 @@ function compactEventClass(detail: number): Tf2Class {
 }
 
 function compactEventTeam(detail: number): Tf2Team {
-  if (detail === 2 || detail === 3) return detail
+  if (detail === 0 || detail === 1 || detail === 2 || detail === 3) return detail
   throw new Tf2HudBindingError("MalformedFacts", "session team event is invalid")
 }
 
