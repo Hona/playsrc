@@ -292,22 +292,6 @@ export async function buildSourceBundle(config: LocalConfig, target: string): Pr
   const output = await new Response(child.stdout).text()
   if (await child.exited !== 0) throw new Error("source bundle build failed")
   const report = parseSourceBundleReport(output, target)
-  const generated = Object.freeze({
-    graphPath: path.join(directory, `${target}.graph.json`),
-    graphObjectDirectory: paths.graphObjectDirectory,
-    ledgerPath: path.join(directory, `${target}.dependencies.json`),
-  })
-  const generatedGraph = await readVerifiedGraph(generated, report)
-  if (!generatedGraph.graph) throw new Error(`resource graph artifacts differ from their report: ${generatedGraph.error}`)
-  const [graphBytes, ledgerBytes] = await Promise.all([readFile(generated.graphPath), readFile(generated.ledgerPath)])
-  if (sha256(graphBytes) !== report.graphDescriptor.sha256 || sha256(ledgerBytes) !== report.ledgerDescriptor.sha256) {
-    throw new Error("source bundle changed during generator-qualified snapshot")
-  }
-  await mkdir(snapshotDirectory, { recursive: true })
-  await Promise.all([
-    writeFile(paths.graphPath, graphBytes),
-    writeFile(paths.ledgerPath, ledgerBytes),
-  ])
   const verified = await readVerifiedGraph(paths, report)
   if (!verified.graph) throw new Error(`resource graph snapshot differs from its report: ${verified.error}`)
   const graph = verified.graph
