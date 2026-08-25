@@ -1700,12 +1700,24 @@ fn pose_bot_hitboxes(
             continue;
         }
         let model = models.get(bot.class.data().model).ok_or(())?;
-        let role = if bot.class == playsrc_tf2::PlayerClass::Spy {
-            "MELEE"
-        } else if bot.class == playsrc_tf2::PlayerClass::Demoman {
-            "SECONDARY"
-        } else {
-            "PRIMARY"
+        let role = match bot.weapon.map(|weapon| weapon.weapon) {
+            Some(
+                playsrc_tf2::Weapon::Bat
+                | playsrc_tf2::Weapon::Shovel
+                | playsrc_tf2::Weapon::Fists
+                | playsrc_tf2::Weapon::Kukri
+                | playsrc_tf2::Weapon::Wrench,
+            ) => "MELEE",
+            Some(
+                playsrc_tf2::Weapon::Pistol
+                | playsrc_tf2::Weapon::Shotgun
+                | playsrc_tf2::Weapon::HeavyShotgun
+                | playsrc_tf2::Weapon::Smg
+                | playsrc_tf2::Weapon::EngineerPistol
+                | playsrc_tf2::Weapon::StickybombLauncher,
+            ) => "SECONDARY",
+            None if bot.class == playsrc_tf2::PlayerClass::Spy => "MELEE",
+            _ => "PRIMARY",
         };
         let moving =
             (bot.velocity[0] * bot.velocity[0] + bot.velocity[1] * bot.velocity[1]).sqrt() > 1.0;
@@ -10994,6 +11006,21 @@ fn with<T>(handle: u32, read: impl FnOnce(&Slot) -> T) -> Option<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decoded_resource_ownership_moves_without_another_wasm_allocation() {
+        *resource_output().lock().unwrap() = vec![1, 2, 3, 4];
+        assert_eq!(playsrc_resource_length(), 4);
+        let pointer = playsrc_resource_take();
+        assert!(!pointer.is_null());
+        assert_eq!(playsrc_resource_length(), 0);
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(pointer, 4) },
+            &[1, 2, 3, 4]
+        );
+        unsafe { playsrc_free(pointer, 4) };
+        assert!(playsrc_resource_take().is_null());
+    }
 
     #[test]
     fn texture_decoders_inspect_each_immutable_source_once_even_across_parallel_consumers() {

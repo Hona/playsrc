@@ -1545,7 +1545,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
       || (lifecycle !== 1 && lifecycle !== 2) || difficulty === undefined || difficulty > 3
       || objective === undefined || objective < 1 || objective > 5
       || data[item + 9] !== 0 || data[item + 10] !== 0 || data[item + 11] !== 0 || data[item + 67] !== 0
-      || weapon === undefined || weapon > 11 || reload === undefined || reload > 3 || carryingFlag === undefined || carryingFlag > 1
+      || weapon === undefined || (weapon > 14 && (weapon < 40 || weapon > 42)) || reload === undefined || reload > 3 || carryingFlag === undefined || carryingFlag > 1
       || health < 0 || maximumHealth < 1 || health > maximumHealth || clip > maximumClip || reserve > maximumReserve
       || (weapon === 0 && (reload !== 0 || clip !== 0 || reserve !== 0 || maximumClip !== 0 || maximumReserve !== 0 || nextPrimaryTick !== 0n || nextReloadTick !== 0n))
       || (lifecycle === 1 && respawnTick !== 0xffff_ffff_ffff_ffffn)

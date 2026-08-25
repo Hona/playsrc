@@ -387,6 +387,14 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
       weapon: { identity: 1, reload: 0, clip: 3, reserve: 20, maximumClip: 4, maximumReserve: 20, nextPrimaryTick: 20n, nextReloadTick: 0n },
       shots: 4, hits: 2, kills: 0, deaths: 0, captures: 0, carryingFlag: false, lastFireTick: 6n, respawnTick: null,
     }])
+    for (const [playerClass, weapon] of [[2, 12], [2, 13], [9, 40], [9, 41]] as const) {
+      bytes[at + 4] = playerClass
+      bytes[at + 64] = weapon
+      expect(decodeSnapshot(bytes).bots[0]?.weapon?.identity).toBe(weapon)
+    }
+    bytes[at + 64] = 15
+    expect(() => decodeSnapshot(bytes)).toThrow(Tf2CodecError)
+    bytes[at + 64] = 40
     view.setUint32(at, 1, true)
     expect(() => decodeSnapshot(bytes)).toThrow(Tf2CodecError)
   })

@@ -3,6 +3,7 @@ import path from "node:path"
 import { loadLocalConfig } from "../src/config"
 import { expect, test } from "./application-test"
 import { profileSampleSeconds, summarizeFrameTimes } from "./profile-window"
+import { chooseTf2Team } from "./team-selection-evidence"
 
 test("authored pl_upward Scout, Soldier and Heavy bots fight, take damage and preserve real-time simulation", async ({ page }, testInfo) => {
   await page.addInitScript(() => {
@@ -14,10 +15,21 @@ test("authored pl_upward Scout, Soldier and Heavy bots fight, take damage and pr
   const entry = page.locator("[aria-label='Console command']")
   const command = async (value: string) => { await entry.fill(value); await entry.press("Enter") }
   await command("map pl_upward")
-  await expect(page.locator("main")).toHaveAttribute("data-phase", "Ready", { timeout: 600_000 })
+  await page.waitForFunction(() => {
+    const root = document.querySelector<HTMLElement>("main")
+    return root?.dataset.teamSelectionVisible === "true" || root?.dataset.phase === "Ready" || root?.dataset.phase === "Failed"
+  }, undefined, { timeout: 600_000 })
+  if (await page.locator("main").getAttribute("data-team-selection-visible") === "true") {
+    if (await page.locator("main").getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
+    await chooseTf2Team(page, "blue")
+    await expect(page.locator("main")).toHaveAttribute("data-phase", "Ready", { timeout: 60_000 })
+    await page.keyboard.press("Backquote")
+  } else {
+    await expect(page.locator("main")).toHaveAttribute("data-phase", "Ready", { timeout: 60_000 })
+    await command("jointeam blue")
+  }
   await command("joinclass heavyweapons")
   await expect(page.locator("main")).toHaveAttribute("data-class-selection-visible", "false")
-  await command("jointeam blue")
   await expect.poll(async () => (await page.locator("main").getAttribute("data-hud-probe"))?.split(":")[1]).toBe("6")
 
   const add = async (value: string, expected: number) => {

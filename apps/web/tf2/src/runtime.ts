@@ -3481,7 +3481,7 @@ export class Tf2Application {
         const artifact=this.#artifacts!.models.get(model)
         if(!artifact)throw new Error(`Authored TF2 bot player model unavailable: ${model}`)
         const weapon=bot.weapon?.identity
-        const role=weapon===6||weapon===8||weapon===11||bot.class===8?"MELEE":weapon===5||weapon===7||weapon===10||bot.class===4?"SECONDARY":"PRIMARY"
+        const role=weapon===6||weapon===8||weapon===11||weapon===14||weapon===42||bot.class===8?"MELEE":weapon===5||weapon===7||weapon===10||weapon===13||weapon===41||bot.class===4?"SECONDARY":"PRIMARY"
         const moving=Math.hypot(bot.velocity[0],bot.velocity[1])>1
         const activity=`ACT_MP_${moving?"RUN":"STAND"}_${role}`
         if(!artifact.sequences.some(sequence=>sequence.activity===activity))throw new Error(`Authored TF2 bot player activity unavailable: ${model}:${activity}`)
