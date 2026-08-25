@@ -54,6 +54,9 @@ test("headed pl_upward local and bot combat publishes scoreboard, authored killf
     ;(globalThis as any).__combatFiring = false
     ;(globalThis as any).__combatAim = setInterval(() => {
       const profile = (globalThis as any).__playsrcProfile
+      if (!(globalThis as any).__combatDeath && profile.bots?.[0]?.lifecycle === 2 && profile.combat?.scores?.[0]?.kills === 1) {
+        ;(globalThis as any).__combatDeath = JSON.parse(JSON.stringify({ bot: profile.bots[0], scores: profile.combat.scores }))
+      }
       const bot = profile.bots?.find((value: any) => value.lifecycle === 1)
       const camera = profile.displacementCamera
       if (!bot || !camera) return
@@ -73,22 +76,29 @@ test("headed pl_upward local and bot combat publishes scoreboard, authored killf
         dispatchEvent(new MouseEvent("mouseup", { button: 2, bubbles: true }))
         setTimeout(() => dispatchEvent(new MouseEvent("mousedown", { button: 0, bubbles: true })), 350)
       }
-    }, 30)
+    }, 100)
   })
-  await expect.poll(async () => page.evaluate(() => (globalThis as any).__playsrcProfile.combat?.scores?.[0]?.kills), { timeout: 60_000 }).toBe(1)
+  await expect.poll(async () => page.evaluate(() => {
+    const profile = (globalThis as any).__playsrcProfile
+    const root = document.querySelector<HTMLElement>("main")!
+    return JSON.stringify({ kills: (globalThis as any).__combatDeath?.scores?.[0]?.kills ?? 0, bot: profile.bots?.[0],
+      camera: profile.displacementCamera, health: profile.combat?.health,
+      ammo: root.dataset.weaponTrace, firing: (globalThis as any).__combatFiring })
+  }), { timeout: 30_000 }).toContain('"kills":1')
   await page.evaluate(() => {
     dispatchEvent(new MouseEvent("mouseup", { button: 0, bubbles: true }))
     dispatchEvent(new KeyboardEvent("keyup", { code: "KeyW", key: "w", bubbles: true }))
     clearInterval((globalThis as any).__combatAim)
   })
   const killed = await page.evaluate(() => {
-    const profile = (globalThis as any).__playsrcProfile
-    return { bot: profile.bots[0], scores: profile.combat.scores, killfeed: document.querySelector("[data-vgui-name^='DeathNotice']")?.textContent ?? "" }
+    const death = (globalThis as any).__combatDeath
+    return { ...death, killfeed: document.querySelector("[data-vgui-name^='DeathNotice']")?.textContent ?? "" }
   })
   expect(killed.bot.lifecycle).toBe(2)
   expect(killed.bot.health).toBe(0)
   expect(killed.scores[0]).toMatchObject({ kills: 1, damage: 125, killstreak: 1 })
   expect(killed.scores[1]).toMatchObject({ deaths: 1 })
+  expect(killed.scores[1].damage).toBeGreaterThan(0)
   expect(killed.scores[1].respawnTick).not.toBeNull()
   expect(killed.killfeed).toContain("Bot")
   const killfeed = page.locator("[data-vgui-name^='DeathNotice']")
