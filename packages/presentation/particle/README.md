@@ -19,6 +19,7 @@ Represent and advance Source particle definitions independently of game and GPU 
 - Resolve ASCII-insensitive definition names, exact UUIDs, source-order replacement, ordered functions, child systems, and material dependencies.
 - Advance the 33-system stock TF2 rocket/sticky closure in Rust from explicit events, the Source particle random table and four-lane stream, timestamps, control points, shared collision-plane batches, lifecycle commands, and ten-step limits.
 - Preserve Source's forward/right/up particle-speed basis, authored wall-normal flash/debris offsets, exact one-unit rocket-impact placement, followed trail controls, and graceful post-impact smoke lifetime.
+- Admit finite, source-ordered projectile transactions with independent session timelines and one explicit graceful/immediate stop command; publish particle time, effects, material resolution, and encoded output only after the complete bounded transaction succeeds.
 - Combine caller-supplied Material shader/blend/color-space facts with typed VTF sheets, sample Source's 1,024-entry timelines, derive exact trail endpoint/width/length, and produce one immutable version-3 batch containing finite bounds plus complete 436-byte sprite/trail records.
 
 ## Non-Responsibilities

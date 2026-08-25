@@ -730,6 +730,33 @@ impl ParticleWorld {
         request: AdvanceRequest,
         collision: &mut impl CollisionQuery,
     ) -> Result<(Vec<RenderItem>, Option<Bounds>), Error> {
+        self.advance_complete(events, request, collision, |items, bounds| {
+            Ok((items, bounds))
+        })
+    }
+
+    pub fn transact_render_output(
+        &mut self,
+        events: &[Event],
+        request: AdvanceRequest,
+        collision: &mut impl CollisionQuery,
+        materials: &BTreeMap<String, ParticleMaterial>,
+        material_identities: &[String],
+        maximum_output_bytes: usize,
+    ) -> Result<Vec<u8>, Error> {
+        self.advance_complete(events, request, collision, |items, bounds| {
+            let resolved = resolve_render_output(items, materials)?;
+            encode_render_output(&resolved, bounds, material_identities, maximum_output_bytes)
+        })
+    }
+
+    fn advance_complete<T>(
+        &mut self,
+        events: &[Event],
+        request: AdvanceRequest,
+        collision: &mut impl CollisionQuery,
+        complete: impl FnOnce(Vec<RenderItem>, Option<Bounds>) -> Result<T, Error>,
+    ) -> Result<T, Error> {
         validate_advance(self.time, events, request, self.limits)?;
         let mut candidate = self.clone();
         let mut substeps = 0;
@@ -759,9 +786,10 @@ impl ParticleWorld {
         candidate
             .effects
             .retain(|effect| !finished(&effect.root, &candidate.registry, request.to_seconds));
-        let (render, bounds) = candidate.render(request.camera_position)?;
+        let (items, bounds) = candidate.render(request.camera_position)?;
+        let output = complete(items, bounds)?;
         *self = candidate;
-        Ok((render, bounds))
+        Ok(output)
     }
 
     fn advance_interval(

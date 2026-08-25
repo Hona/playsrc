@@ -436,91 +436,159 @@ export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] 
   return Object.freeze(output)
 }
 export function createParticleBatchEncoder() {
-  let from = 0
+  let previousTick = 0n
+  let previousTime = 0
   return Object.freeze({
     encode(tick: bigint, camera: Vector3, requests: readonly ProjectileParticleRequest[]) {
-      const to = Number(tick) * 0.015
       if (
         typeof tick !== "bigint"
-        || tick < 0n
-        || !Number.isFinite(to)
-        || to < from
+        || tick < previousTick
+        || tick > BigInt(Number.MAX_SAFE_INTEGER)
+        || !Array.isArray(requests)
         || requests.length > 4_096
         || !finite(camera)
+        || camera.some(value => !Number.isFinite(Math.fround(value)))
       ) {
         throw new ProjectilePresentationError("TimeReversed", "particle transaction range or input is invalid")
       }
-      let length = 32
-      const systems = new Map<string, Uint8Array>()
-      for (const request of requests) {
-        length += 20
-        if (request.kind === "start") {
-          let encoded = systems.get(request.system)
-          if (!encoded) {
-            encoded = UTF8_ENCODER.encode(request.system)
-            systems.set(request.system, encoded)
-          }
-          length += 8 + 4 + 4 + encoded.length + 32
-        } else if (request.kind === "set-control-point") length += 32
+      const to = Math.fround(Number(tick) * 0.015)
+      if (!Number.isFinite(to) || to < previousTime) {
+        throw new ProjectilePresentationError("TimeReversed", "particle transaction range or input is invalid")
       }
-      if (length > 4 * 1024 * 1024) throw new ProjectilePresentationError("BoundExceeded", "particle transaction bytes")
-      const bytes = new Uint8Array(length),
-        view = new DataView(bytes.buffer)
-      bytes.set([0x50, 0x50, 0x54, 0x58])
-      view.setUint32(4, 2, true)
-      view.setFloat32(8, from, true)
-      view.setFloat32(12, to, true)
-      camera.forEach((v, i) => view.setFloat32(16 + i * 4, v, true))
-      view.setUint32(28, requests.length, true)
-      let at = 32
-      let priorRequestTime = from
-      for (const r of requests) {
-        const requestTime = Number(r.tick) * 0.015
+
+      let length = 32
+      let previousRequestTick = previousTick
+      const systems = new Map<string, Uint8Array>()
+      const identities = new Set<bigint>()
+      const requestIdentities: bigint[] = []
+      for (const request of requests) {
         if (
-          typeof r.tick !== "bigint"
-          || r.tick < 0n
-          || !Number.isFinite(requestTime)
-          || requestTime < priorRequestTime
-          || requestTime > to
+          typeof request.tick !== "bigint"
+          || request.tick < previousRequestTick
+          || request.tick > tick
         ) {
           throw new ProjectilePresentationError("TimeReversed", "particle request time is outside source order")
         }
-        priorRequestTime = requestTime
-        bytes[at] = r.kind === "start"
-          ? 1
-          : r.kind === "set-control-point"
-            ? 2
-            : r.immediate
-              ? 4
-              : 3
-        view.setBigUint64(at + 4, stable64(r.identity), true)
-        view.setFloat32(at + 12, requestTime, true)
-        view.setUint32(at + 16, stable32(r.effectIdentity), true)
+        if (
+          !particleIdentity(request.identity)
+          || !particleIdentity(request.effectIdentity)
+          || !particleIdentity(request.eventIdentity)
+          || !uint32(request.projectileIdentity)
+        ) {
+          throw new ProjectilePresentationError("MalformedFact", "particle request identity is invalid")
+        }
+        const identity = stable64(request.identity)
+        if (identities.has(identity)) {
+          throw new ProjectilePresentationError("MalformedFact", "particle request identity is duplicated")
+        }
+        identities.add(identity)
+        requestIdentities.push(identity)
+        previousRequestTick = request.tick
+        length += 20
+
+        if (request.kind === "start") {
+          if (
+            !uint32(request.ownerIdentity)
+            || !uint32(request.launcherIdentity)
+            || (request.team !== "red" && request.team !== "blue")
+            || typeof request.system !== "string"
+            || request.system.length === 0
+            || !Array.isArray(request.controlPoints)
+            || request.controlPoints.length !== 1
+            || !particleControlPoint(request.controlPoints[0])
+            || request.controlPoints[0].ownerIdentity !== request.ownerIdentity
+            || (request.attachment !== null && (
+              !uint32(request.attachment.entityIdentity)
+              || !["backblast", "muzzle", "trail"].includes(request.attachment.name)
+            ))
+          ) {
+            throw new ProjectilePresentationError("MalformedFact", "particle start request is invalid")
+          }
+          if (request.system.length > 1_024) {
+            throw new ProjectilePresentationError("BoundExceeded", "particle definition identity exceeds its limit")
+          }
+          let encoded = systems.get(request.system)
+          if (!encoded) {
+            encoded = UTF8_ENCODER.encode(request.system)
+            if (encoded.byteLength > 1_024) {
+              throw new ProjectilePresentationError("BoundExceeded", "particle definition identity exceeds its limit")
+            }
+            systems.set(request.system, encoded)
+          }
+          length += 16 + encoded.byteLength + 32
+        } else if (request.kind === "set-control-point") {
+          if (!particleControlPoint(request.controlPoint)) {
+            throw new ProjectilePresentationError("MalformedFact", "particle control-point request is invalid")
+          }
+          length += 32
+        } else if (request.kind === "stop") {
+          if (typeof request.immediate !== "boolean") {
+            throw new ProjectilePresentationError("MalformedFact", "particle stop mode is invalid")
+          }
+        } else {
+          throw new ProjectilePresentationError("MalformedFact", "particle request command is invalid")
+        }
+        if (length > 4 * 1024 * 1024) {
+          throw new ProjectilePresentationError("BoundExceeded", "particle transaction bytes")
+        }
+      }
+
+      const bytes = new Uint8Array(length)
+      const view = new DataView(bytes.buffer)
+      bytes.set([0x50, 0x50, 0x54, 0x58])
+      view.setUint32(4, 2, true)
+      view.setFloat32(8, previousTime, true)
+      view.setFloat32(12, to, true)
+      camera.forEach((value, index) => view.setFloat32(16 + index * 4, value, true))
+      view.setUint32(28, requests.length, true)
+      let at = 32
+      for (let index = 0; index < requests.length; index += 1) {
+        const request = requests[index]!
+        bytes[at] = request.kind === "start" ? 1 : request.kind === "set-control-point" ? 2 : 3
+        bytes[at + 1] = request.kind === "stop" && request.immediate ? 1 : 0
+        view.setBigUint64(at + 4, requestIdentities[index]!, true)
+        view.setFloat32(at + 12, Math.fround(Number(request.tick) * 0.015), true)
+        view.setUint32(at + 16, stable32(request.effectIdentity), true)
         at += 20
-        if (r.kind === "start") {
-          view.setBigUint64(at, stable64(r.eventIdentity), true)
-          view.setUint32(at + 8, r.ownerIdentity, true)
-          const text = systems.get(r.system)!
-          view.setUint32(at + 12, text.length, true)
-          bytes.set(text, at + 16)
-          at += 16 + text.length
-          const cp = r.controlPoints[0]!
-          cp.position.forEach((v, i) => view.setFloat32(at + i * 4, v, true))
-          cp.orientation.forEach((v, i) => view.setFloat32(at + 12 + i * 4, v, true))
-          view.setUint32(at + 28, cp.ownerIdentity, true)
+        if (request.kind === "start") {
+          view.setBigUint64(at, stable64(request.eventIdentity), true)
+          view.setUint32(at + 8, request.ownerIdentity, true)
+          const system = systems.get(request.system)!
+          view.setUint32(at + 12, system.byteLength, true)
+          bytes.set(system, at + 16)
+          at += 16 + system.byteLength
+          const control = request.controlPoints[0]!
+          control.position.forEach((value, index) => view.setFloat32(at + index * 4, value, true))
+          control.orientation.forEach((value, index) => view.setFloat32(at + 12 + index * 4, value, true))
+          view.setUint32(at + 28, control.ownerIdentity, true)
           at += 32
-        } else if (r.kind === "set-control-point") {
-          const cp = r.controlPoint
-          cp.position.forEach((v, i) => view.setFloat32(at + i * 4, v, true))
-          cp.orientation.forEach((v, i) => view.setFloat32(at + 12 + i * 4, v, true))
-          view.setUint32(at + 28, cp.ownerIdentity, true)
+        } else if (request.kind === "set-control-point") {
+          const control = request.controlPoint
+          control.position.forEach((value, index) => view.setFloat32(at + index * 4, value, true))
+          control.orientation.forEach((value, index) => view.setFloat32(at + 12 + index * 4, value, true))
+          view.setUint32(at + 28, control.ownerIdentity, true)
           at += 32
         }
       }
-      from = to
+      previousTick = tick
+      previousTime = to
       return bytes
     },
   })
+}
+
+function particleIdentity(value: string): boolean {
+  return typeof value === "string" && value.length > 0
+}
+
+function particleControlPoint(value: ParticleControlPoint | undefined): value is ParticleControlPoint {
+  return value !== undefined
+    && value.index === 0
+    && finite(value.position)
+    && value.position.every(component => Number.isFinite(Math.fround(component)))
+    && quaternion(value.orientation)
+    && value.orientation.every(component => Number.isFinite(Math.fround(component)))
+    && uint32(value.ownerIdentity)
 }
 
 export function tf2Hud(snapshot: Snapshot): Tf2Hud {
@@ -1198,6 +1266,14 @@ function requireAttachmentTransform(
 ): AttachmentTransform {
   const transform = catalog.attachmentTransforms?.get(attachment.entityIdentity)?.get(attachment.name)
   if (!transform) throw new ProjectilePresentationError("MissingAttachment", `attachment transform ${attachment.entityIdentity}:${attachment.name} is missing`)
+  if (
+    !finite(transform.position)
+    || transform.position.some(value => !Number.isFinite(Math.fround(value)))
+    || !quaternion(transform.orientation)
+    || transform.orientation.some(value => !Number.isFinite(Math.fround(value)))
+  ) {
+    throw new ProjectilePresentationError("MalformedFact", `attachment transform ${attachment.entityIdentity}:${attachment.name} is invalid`)
+  }
   return transform
 }
 
