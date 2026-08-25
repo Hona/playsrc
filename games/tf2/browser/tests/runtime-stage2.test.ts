@@ -14,7 +14,7 @@ function snapshot(): ArrayBuffer {
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x53, 0x53, 0x4e])
-  view.setUint32(4, 13, true)
+  view.setUint32(4, 14, true)
   view.setBigUint64(8, 7n, true)
   data.set([3, 2, 1, 0], 16)
   view.setFloat32(20, 200, true)
@@ -188,6 +188,11 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     for (let identity = 1; identity <= 9; identity += 1) {
       const bytes = new Uint8Array(snapshot())
       bytes[16] = identity
+      if (identity === 8) {
+        bytes[18] = 54
+        bytes[276] = 54
+        new DataView(bytes.buffer).setFloat32(320, 100, true)
+      }
       expect(decodeSnapshot(bytes).class).toBe(identity)
     }
     const armed = new Uint8Array(snapshot())
@@ -258,7 +263,7 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     })
     const commandView = new DataView(command)
     expect(new TextDecoder().decode(command.slice(0, 4))).toBe("PCMD")
-    expect(commandView.getUint32(4, true)).toBe(5)
+    expect(commandView.getUint32(4, true)).toBe(6)
     expect(command.byteLength).toBe(128)
     expect(commandView.getUint32(28, true)).toBe(0xff)
     expect(commandView.getUint32(32, true)).toBe(0x0203_0304)

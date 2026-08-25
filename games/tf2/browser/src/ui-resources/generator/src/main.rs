@@ -117,6 +117,7 @@ struct Report {
 }
 
 const CODE_LOCALIZATION_TOKENS: &[&str] = &[
+    "#TF_CLOAK",
     "#Gametype_Escort",
     "#GameUI_AdjustGamma_Title",
     "#GameUI_Audio",
@@ -286,6 +287,13 @@ const ROOTS: &[(&str, &str, bool)] = &[
     ("hud", "resource/ui/hudplayerhealth.res", true),
     ("hud", "resource/ui/hudammoweapons.res", true),
     ("hud", "resource/ui/hudweaponselection.res", true),
+    ("hud", "resource/ui/huditemeffectmeter_spy.res", true),
+    ("hud", "resource/ui/disguisestatuspanel.res", true),
+    (
+        "hud",
+        "resource/ui/disguise_menu/hudmenuspydisguise.res",
+        true,
+    ),
     ("hud", "resource/ui/huddemomanpipes.res", true),
     ("hud", "resource/ui/hudkillstreaknotice.res", true),
     ("hud", "resource/ui/targetid.res", true),

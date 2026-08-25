@@ -28,7 +28,20 @@ pub fn respawn_barrier_collides(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CombatPlayerFacts {
+    pub team: crate::PlayerTeam,
+    pub health: i32,
+    pub world_center: [f32; 3],
+    pub eye_forward: [f32; 3],
+    pub backstab_immune: bool,
+}
+
 pub trait GameplayWorld: Tracer {
+    fn combat_player(&self, _identity: u32) -> Option<CombatPlayerFacts> {
+        None
+    }
+
     fn collision_snapshot_revision(&self) -> Option<u64> {
         None
     }

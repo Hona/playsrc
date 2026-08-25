@@ -104,6 +104,8 @@ const HUD_CLASS = "resource/ui/hudplayerclass.res"
 const HUD_HEALTH = "resource/ui/hudplayerhealth.res"
 const HUD_AMMO = "resource/ui/hudammoweapons.res"
 const HUD_WEAPONS = "resource/ui/hudweaponselection.res"
+const HUD_SPY_METER = "resource/ui/huditemeffectmeter_spy.res"
+const HUD_SPY_DISGUISE_MENU = "resource/ui/disguise_menu/hudmenuspydisguise.res"
 const scalar = (node: VguiResourceNode, name: string): string | null =>
   node.children.find((child) => child.name.toLowerCase() === name.toLowerCase() && child.value !== null)?.value ?? null
 const node = (name: string, children: readonly VguiResourceNode[]): VguiResourceNode => Object.freeze({ name, value: null, condition: null, children: Object.freeze(children) })
@@ -165,6 +167,7 @@ class Integration implements Tf2HudIntegration {
   readonly #crosshair: Tf2HudCrosshairPresentation
   readonly #scope: Tf2HudScopePresentation
   readonly #onCommand: (command: Tf2HudCommand) => void
+  readonly #cloakLabel: string | undefined
   readonly #diagnostics: Tf2HudIntegrationDiagnostic[] = []
   readonly #diagnosticSubjects = new Set<string>()
   readonly #animationTrace: string[] = []
@@ -178,6 +181,7 @@ class Integration implements Tf2HudIntegration {
 
   constructor(request: Tf2HudIntegrationRequest) {
     this.#onCommand = request.onCommand
+    this.#cloakLabel = request.resources.localization.tokens.find(token => token.name.toLowerCase() === "tf_cloak")?.value
     this.#viewport = Object.freeze({ ...request.viewport })
     const availableImages = new Set(request.resources.clientScheme.images.map((image) => image.name.toLowerCase()))
     const missingImages = TF2_HUD_DYNAMIC_IMAGES.filter((image) => !availableImages.has(image.toLowerCase()))
@@ -205,6 +209,8 @@ class Integration implements Tf2HudIntegration {
       ["HudPlayerStatus", "CTFHudElement"],
       ["HudWeaponAmmo", "CTFHudElement"],
       ["HudWeaponSelection", "CTFHudElement"],
+      ["HudItemEffectMeter", "CTFHudElement"],
+      ["HudMenuSpyDisguise", "CTFHudElement"],
       ["HudCrosshair", "CTFHudElement"],
     ] as const
     for (const [name, control] of roots) apply(this.#runtime, { kind: "create-panel", parent: 1, control, name })
@@ -224,6 +230,8 @@ class Integration implements Tf2HudIntegration {
     applyPanelResource(this.#runtime, playerHealth, request.resources.document(HUD_HEALTH), request.resources.activeConditions)
     applyPanelResource(this.#runtime, find(this.#runtime, "HudWeaponAmmo")!, request.resources.document(HUD_AMMO), request.resources.activeConditions)
     applyPanelResource(this.#runtime, find(this.#runtime, "HudWeaponSelection")!, request.resources.document(HUD_WEAPONS), request.resources.activeConditions)
+    applyPanelResource(this.#runtime, find(this.#runtime, "HudItemEffectMeter")!, request.resources.document(HUD_SPY_METER), request.resources.activeConditions)
+    applyPanelResource(this.#runtime, find(this.#runtime, "HudMenuSpyDisguise")!, request.resources.document(HUD_SPY_DISGUISE_MENU), request.resources.activeConditions)
     const panels = this.#runtime.snapshot().panels
     for (const panel of panels) {
       this.#panels.set(panel.name.toLowerCase(), panel.id)
@@ -273,7 +281,12 @@ class Integration implements Tf2HudIntegration {
       const rendered = typeof available === "object"
         ? `${available.token}:${available.parameters.join(",")}`
         : available
-      apply(this.#runtime, { kind: "set-dialog-variable", panel, name: value.variable, value: rendered })
+      if (value.panel === "ItemEffectMeterLabel" && value.variable === "labelText") {
+        if (!this.#cloakLabel) throw new Error("Authored Spy cloak localization is unavailable")
+        apply(this.#runtime, { kind: "mutate-control", panel, mutation: { text: this.#cloakLabel } })
+      } else {
+        apply(this.#runtime, { kind: "set-dialog-variable", panel, name: value.variable, value: rendered })
+      }
     } else if (value.kind === "image") {
       try { apply(this.#runtime, { kind: "mutate-control", panel, mutation: { image: value.value.value } }) }
       catch { this.#diagnostic("ValueUnavailable", `image:${value.panel}:${value.value.value}`); return }
@@ -286,6 +299,8 @@ class Integration implements Tf2HudIntegration {
           imageFill: value.value.value,
           image: value.value.value <= 0 ? "hud/health_dead" : "hud/health_color",
         } })
+      } else if (value.property === "progress") {
+        apply(this.#runtime, { kind: "mutate-control", panel, mutation: { progress: value.value.value } })
       } else if (value.property === "boundsAdjustment") {
         const base = this.#baseBounds.get(value.panel)
         if (!base) {

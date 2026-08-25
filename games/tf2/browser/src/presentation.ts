@@ -24,7 +24,7 @@ export type Tf2Hud = Readonly<{
   maxHealth: number
   className: Tf2ClassPresentation["displayName"]
 
-  weaponName: "Rocket Launcher" | "Original" | "Stickybomb Launcher" | "Scattergun" | "Pistol" | "Bat" | "Shotgun" | "Shovel" | "Minigun" | "Fists" | "Sniper Rifle" | "SMG" | "Kukri" | "Wrench" | "Flamethrower" | "Fire Axe" | null
+  weaponName: "Rocket Launcher" | "Original" | "Stickybomb Launcher" | "Scattergun" | "Pistol" | "Bat" | "Shotgun" | "Shovel" | "Minigun" | "Fists" | "Sniper Rifle" | "SMG" | "Kukri" | "Wrench" | "Flamethrower" | "Fire Axe" | "Revolver" | "Knife" | "Sapper" | "Disguise Kit" | "Invisibility Watch" | null
 
   speed: number
   projectileCount: number
@@ -33,7 +33,7 @@ export type Tf2Hud = Readonly<{
 export type Tf2AudioRequest = Readonly<{
   voiceIdentity: number
 
-  definition: "Weapon_RPG.Single" | "Weapon_QuakeRPG.Single" | "Weapon_StickyBombLauncher.Single" | "BaseExplosionEffect.Sound" | "Weapon_QuakeRPG.Explode" | "Weapon_Grenade_Pipebomb.Explode" | "Weapon_Scatter_Gun.Single" | "Weapon_Pistol.Single" | "Weapon_Bat.Miss" | "Weapon_Bat.HitFlesh" | "Weapon_Bat.HitWorld" | "Weapon_Scatter_Gun.WorldReload" | "Weapon_Pistol.WorldReload" | "Weapon_Shotgun.Single" | "Weapon_Shotgun.WorldReload" | "Weapon_Shovel.Miss" | "Weapon_Shovel.HitFlesh" | "Weapon_Shovel.HitWorld" | "Weapon_Minigun.WindUp" | "Weapon_Minigun.WindDown" | "Weapon_Minigun.Spin" | "Weapon_Minigun.Fire" | "Weapon_Fist.Miss" | "Weapon_Fist.HitWorld" | "Weapon_Fist.HitFlesh" | "Weapon_SniperRifle.Single" | "Weapon_SMG.Single" | "Weapon_Machete.Miss" | "Weapon_Machete.HitFlesh" | "Weapon_Machete.HitWorld" | "Weapon_SMG.WorldReload" | "Weapon_Shotgun.Empty" | "Weapon_Pistol.ClipEmpty" | "Weapon_Wrench.Miss" | "Weapon_Wrench.HitFlesh" | "Weapon_Wrench.HitWorld" | "Weapon_FlameThrower.Fire" | "Weapon_FlameThrower.FireLoop" | "Weapon_FlameThrower.WindDown" | "Weapon_FlameThrower.AirBurstAttack" | "Weapon_FireAxe.Miss" | "Weapon_FireAxe.HitFlesh" | "Weapon_FireAxe.HitWorld"
+  definition: "Weapon_RPG.Single" | "Weapon_QuakeRPG.Single" | "Weapon_StickyBombLauncher.Single" | "BaseExplosionEffect.Sound" | "Weapon_QuakeRPG.Explode" | "Weapon_Grenade_Pipebomb.Explode" | "Weapon_Scatter_Gun.Single" | "Weapon_Pistol.Single" | "Weapon_Bat.Miss" | "Weapon_Bat.HitFlesh" | "Weapon_Bat.HitWorld" | "Weapon_Scatter_Gun.WorldReload" | "Weapon_Pistol.WorldReload" | "Weapon_Shotgun.Single" | "Weapon_Shotgun.WorldReload" | "Weapon_Shovel.Miss" | "Weapon_Shovel.HitFlesh" | "Weapon_Shovel.HitWorld" | "Weapon_Minigun.WindUp" | "Weapon_Minigun.WindDown" | "Weapon_Minigun.Spin" | "Weapon_Minigun.Fire" | "Weapon_Fist.Miss" | "Weapon_Fist.HitWorld" | "Weapon_Fist.HitFlesh" | "Weapon_SniperRifle.Single" | "Weapon_SMG.Single" | "Weapon_Machete.Miss" | "Weapon_Machete.HitFlesh" | "Weapon_Machete.HitWorld" | "Weapon_SMG.WorldReload" | "Weapon_Shotgun.Empty" | "Weapon_Pistol.ClipEmpty" | "Weapon_Wrench.Miss" | "Weapon_Wrench.HitFlesh" | "Weapon_Wrench.HitWorld" | "Weapon_FlameThrower.Fire" | "Weapon_FlameThrower.FireLoop" | "Weapon_FlameThrower.WindDown" | "Weapon_FlameThrower.AirBurstAttack" | "Weapon_FireAxe.Miss" | "Weapon_FireAxe.HitFlesh" | "Weapon_FireAxe.HitWorld" | "Weapon_Revolver.Single" | "Weapon_Revolver.WorldReload" | "Weapon_Knife.Miss" | "Weapon_Knife.HitFlesh" | "Weapon_Knife.HitWorld" | "Player.Spy_Cloak" | "Player.Spy_UnCloak"
   source: Readonly<{
     kind: "entity" | "world"
     identity: number
@@ -91,6 +91,13 @@ export function tf2Audio(snapshot: Snapshot): readonly Tf2AudioRequest[] {
     "Weapon_FireAxe.Miss",
     "Weapon_FireAxe.HitFlesh",
     "Weapon_FireAxe.HitWorld",
+    "Weapon_Revolver.Single",
+    "Weapon_Revolver.WorldReload",
+    "Weapon_Knife.Miss",
+    "Weapon_Knife.HitFlesh",
+    "Weapon_Knife.HitWorld",
+    "Player.Spy_Cloak",
+    "Player.Spy_UnCloak",
   ]
   return Object.freeze(snapshot.audioEvents.map((event) => Object.freeze({
     voiceIdentity: stable32(`${event.tick}:${event.ordinal}:${event.definition}:${event.sourceIdentity}`),
@@ -196,77 +203,60 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
   let priorClass: Snapshot["class"] | undefined
   let activity = "ACT_VM_DRAW"
   return Object.freeze({
-    map(snapshot: Snapshot,view:Readonly<{aspectRatio:number;farPlane:number}>=Object.freeze({aspectRatio:4/3,farPlane:32768})): Readonly<{ item: ModelItem; request: ModelPoseRequest }> {
-
-      if (snapshot.weapon === null || (snapshot.class !== 1 && snapshot.class !== 2 && snapshot.class !== 3 && snapshot.class !== 4 && snapshot.class !== 6 && snapshot.class !== 9 && snapshot.class !== 7)) {
-
+    map(snapshot: Snapshot, view: Readonly<{ aspectRatio: number; farPlane: number }> = Object.freeze({ aspectRatio: 4 / 3, farPlane: 32768 })): Readonly<{ item: ModelItem; request: ModelPoseRequest; standalone: boolean }> {
+      if (snapshot.weapon === null || ![1, 2, 3, 4, 6, 7, 8, 9].includes(snapshot.class) || snapshot.weapon === 54) {
         throw new ProjectilePresentationError("MalformedFact", "class has no implemented viewmodel weapon")
       }
-      const identity = tf2ClassPresentation(snapshot.class).hands
-      const itemIdentity = snapshot.weapon === 40
-        ? "models/weapons/c_models/c_shotgun/c_shotgun.mdl"
-        : snapshot.weapon === 41
-          ? "models/weapons/c_models/c_pistol/c_pistol.mdl"
-          : snapshot.weapon === 42
-            ? "models/weapons/c_models/c_wrench/c_wrench.mdl"
-            : snapshot.weapon === 12
-              ? "models/weapons/c_models/c_sniperrifle/c_sniperrifle.mdl"
-        : snapshot.weapon === 13
-          ? "models/weapons/c_models/c_smg/c_smg.mdl"
-          : snapshot.weapon === 14
-            ? "models/weapons/c_models/c_machete/c_machete.mdl"
-            : snapshot.weapon === 4
-              ? "models/weapons/c_models/c_scattergun.mdl"
-        : snapshot.weapon === 5
-          ? "models/weapons/c_models/c_pistol/c_pistol.mdl"
-          : snapshot.weapon === 6
-            ? "models/weapons/c_models/c_bat.mdl"
-            : snapshot.weapon === 7
-              ? "models/weapons/c_models/c_shotgun/c_shotgun.mdl"
-              : snapshot.weapon === 8
-                ? "models/weapons/c_models/c_shovel/c_shovel.mdl"
-                : snapshot.weapon === 9
-                ? "models/weapons/c_models/c_minigun/c_minigun.mdl"
-                  : snapshot.weapon === 10
-                    ? "models/weapons/c_models/c_shotgun/c_shotgun.mdl"
-                    : snapshot.weapon === 11
-                      ? undefined
-                      : snapshot.weapon === 15
-                        ? "models/weapons/c_models/c_flamethrower/c_flamethrower.mdl"
-                        : snapshot.weapon === 16
-                          ? "models/weapons/c_models/c_fireaxe_pyro/c_fireaxe_pyro.mdl"
-                          : snapshot.class === 3
-                            ? "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl"
-                            : "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl"
+      const standalone = snapshot.weapon === 53
+      const identity = standalone ? "models/weapons/v_models/v_pda_spy.mdl" : tf2ClassPresentation(snapshot.class).hands
+      const itemIdentity = snapshot.weapon === 40 ? "models/weapons/c_models/c_shotgun/c_shotgun.mdl"
+        : snapshot.weapon === 41 ? "models/weapons/c_models/c_pistol/c_pistol.mdl"
+          : snapshot.weapon === 42 ? "models/weapons/c_models/c_wrench/c_wrench.mdl"
+            : snapshot.weapon === 4 ? "models/weapons/c_models/c_scattergun.mdl"
+        : snapshot.weapon === 5 ? "models/weapons/c_models/c_pistol/c_pistol.mdl"
+          : snapshot.weapon === 6 ? "models/weapons/c_models/c_bat.mdl"
+            : snapshot.weapon === 7 || snapshot.weapon === 10 ? "models/weapons/c_models/c_shotgun/c_shotgun.mdl"
+              : snapshot.weapon === 8 ? "models/weapons/c_models/c_shovel/c_shovel.mdl"
+                : snapshot.weapon === 9 ? "models/weapons/c_models/c_minigun/c_minigun.mdl"
+                  : snapshot.weapon === 11 ? undefined
+                    : snapshot.weapon === 12 ? "models/weapons/c_models/c_sniperrifle/c_sniperrifle.mdl"
+                      : snapshot.weapon === 13 ? "models/weapons/c_models/c_smg/c_smg.mdl"
+                        : snapshot.weapon === 14 ? "models/weapons/c_models/c_machete/c_machete.mdl"
+                          : snapshot.weapon === 15 ? "models/weapons/c_models/c_flamethrower/c_flamethrower.mdl"
+                            : snapshot.weapon === 16 ? "models/weapons/c_models/c_fireaxe_pyro/c_fireaxe_pyro.mdl"
+                              : snapshot.weapon === 50 ? "models/weapons/c_models/c_revolver/c_revolver.mdl"
+                                : snapshot.weapon === 51 ? "models/weapons/c_models/c_knife/c_knife.mdl"
+                                  : snapshot.weapon === 52 ? "models/weapons/c_models/c_sapper/c_sapper.mdl"
+                                : snapshot.class === 3 ? "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl"
+                                  : "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl"
       const artifact = artifacts.models.get(identity)
-      const itemArtifact = itemIdentity === undefined ? undefined : artifacts.models.get(itemIdentity)
+      const itemArtifact = standalone || itemIdentity === undefined ? undefined : artifacts.models.get(itemIdentity)
       if (!artifact) throw new ProjectilePresentationError("MissingModel", identity)
-      if (itemIdentity !== undefined && !itemArtifact) throw new ProjectilePresentationError("MissingModel", itemIdentity)
+      if (!standalone && itemIdentity !== undefined && !itemArtifact) throw new ProjectilePresentationError("MissingModel", itemIdentity)
       if (artifact.descriptor.kind !== "viewmodel") throw new ProjectilePresentationError("MissingModel", `${identity}:descriptor`)
       if (itemArtifact && itemArtifact.descriptor.kind !== "viewmodel") throw new ProjectilePresentationError("MissingModel", `${itemIdentity}:descriptor`)
       const weapon = snapshot.loadout.find((value) => value.weapon === snapshot.weapon)
       if (!weapon) throw new ProjectilePresentationError("MissingModel", `${identity}:weapon-state`)
       const selectionChanged = prior !== snapshot.weapon || priorClass !== snapshot.class
       const exact = snapshot.activities.filter((event) => event.weapon === snapshot.weapon).at(-1)
-
-      const role = snapshot.weapon === 6 || snapshot.weapon === 8 || snapshot.weapon === 14 || snapshot.weapon === 42 || snapshot.weapon === 16 ? "MELEE" : snapshot.weapon === 11 ? "FISTS" : snapshot.weapon === 5 || snapshot.weapon === 7 || snapshot.weapon === 10 || snapshot.weapon === 13 || snapshot.weapon === 41 || snapshot.class === 4 ? "SECONDARY" : "PRIMARY"
+      const role = snapshot.weapon === 6 || snapshot.weapon === 8 || snapshot.weapon === 14 || snapshot.weapon === 16 || snapshot.weapon === 42 || snapshot.weapon === 51 ? "MELEE"
+        : snapshot.weapon === 11 ? "FISTS"
+          : snapshot.weapon === 5 || snapshot.weapon === 7 || snapshot.weapon === 10 || snapshot.weapon === 13 || snapshot.weapon === 50 || snapshot.weapon === 41 || snapshot.class === 4 ? "SECONDARY"
+            : snapshot.weapon === 52 || standalone ? "" : "PRIMARY"
+      const prefix = role ? `ACT_${role}_` : "ACT_"
+      const draw = `${prefix}VM_DRAW`, idle = `${prefix}VM_IDLE`
       const mapped = exact === undefined ? undefined : [
-        "",
-        `ACT_${role}_VM_DRAW`,
-        role === "MELEE" ? "ACT_MELEE_VM_HITCENTER" : role === "FISTS" ? "ACT_FISTS_VM_HITLEFT" : `ACT_${role}_VM_PRIMARYATTACK`,
-        snapshot.weapon === 5 || snapshot.weapon === 13 || snapshot.weapon === 41 ? "ACT_SECONDARY_VM_RELOAD" : `ACT_${role}_RELOAD_START`,
-
-        `ACT_${role}_VM_RELOAD`,
-        `ACT_${role}_RELOAD_FINISH`,
-        `ACT_${role}_VM_IDLE`,
-        `ACT_${role}_VM_SECONDARYATTACK`,
+        "", draw,
+        role === "MELEE" ? "ACT_MELEE_VM_HITCENTER" : role === "FISTS" ? "ACT_FISTS_VM_HITLEFT" : `${prefix}VM_PRIMARYATTACK`,
+        snapshot.weapon === 5 || snapshot.weapon === 13 || snapshot.weapon === 50 || snapshot.weapon === 41 ? `${prefix}VM_RELOAD` : `${prefix}RELOAD_START`,
+        `${prefix}VM_RELOAD`, `${prefix}RELOAD_FINISH`, idle, `${prefix}VM_SECONDARYATTACK`,
       ][exact.activity]
-      let nextActivity = mapped ?? (selectionChanged ? `ACT_${role}_VM_DRAW` : activity)
+      let nextActivity = mapped ?? (selectionChanged ? draw : activity)
       let selected = artifact.sequences.find((value) => value.activity === nextActivity)
       if (!selected) throw new ProjectilePresentationError("MissingModel", `${identity}:${nextActivity}`)
       const elapsed = Number(snapshot.tick - actionTick) * 0.015
-      if (!selectionChanged && exact === undefined && weapon.reload === 0 && nextActivity === activity && nextActivity !== `ACT_${role}_VM_IDLE` && elapsed >= selected.durationSeconds) {
-        nextActivity = `ACT_${role}_VM_IDLE`
+      if (!selectionChanged && exact === undefined && weapon.reload === 0 && nextActivity === activity && nextActivity !== idle && elapsed >= selected.durationSeconds) {
+        nextActivity = idle
         selected = artifact.sequences.find((value) => value.activity === nextActivity)
         if (!selected) throw new ProjectilePresentationError("MissingModel", `${identity}:${nextActivity}`)
       }
@@ -277,7 +267,7 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
       priorClass = snapshot.class
       const currentElapsed = Number(snapshot.tick - actionTick) * 0.015
       const previousElapsed = Math.max(0, Number(priorTick - actionTick) * 0.015)
-      const frameTime=Math.max(0,Number(snapshot.tick-priorTick)*0.015)
+      const frameTime = Math.max(0, Number(snapshot.tick - priorTick) * 0.015)
       priorTick = snapshot.tick
       const now=Number(snapshot.tick)*0.015
       const phase = exact ? (exact.activity === 7 ? 1 : exact.activity - 1) : nextActivity.endsWith("_VM_DRAW") ? 0
@@ -286,32 +276,27 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
             : nextActivity.endsWith("_VM_RELOAD") ? 3
               : nextActivity.endsWith("_RELOAD_FINISH") ? 4 : 5
       if (phase < 0 || phase > 5) throw new ProjectilePresentationError("MalformedFact", "viewmodel phase")
+      const common = {
+        identity: 0x7fff_ff00 + snapshot.class * 4,
+        model: identity, activity,
+        previousElapsedSeconds: Math.min(previousElapsed, currentElapsed), elapsedSeconds: currentElapsed,
+        currentTimeSeconds: now, frameTimeSeconds: frameTime, planarSpeed: Math.hypot(snapshot.velocity[0], snapshot.velocity[1]),
+        screenAspectRatio: view.aspectRatio, worldFarPlane: view.farPlane,
+        skin: snapshot.team === 2 ? 0 : 1, lod: 0,
+        bodygroups: Object.freeze(artifact.bodygroupCounts.map(() => 0)),
+      }
+      const composed = standalone ? common : {
+        ...common,
+        ...(itemIdentity === undefined ? { handsOnlyViewmodel: true } : { itemModel: itemIdentity }),
+        phase: phase as 0 | 1 | 2 | 3 | 4 | 5,
+        reflectedViewmodel: false, ownerAlive: snapshot.lifecycle === 1,
+        ...(itemArtifact ? { itemBodygroups: Object.freeze(itemArtifact.bodygroupCounts.map(() => 0)) } : {}),
+      }
       return Object.freeze({
-        item: Object.freeze({
-          identity: 0x7fff_ff00 + snapshot.class * 4,
-          model: identity,
-          position:Object.freeze([0,0,0]) as Vector3,angles:Object.freeze([0,0,0]) as Vector3,
-          scale: 1,
-          skin: snapshot.team === 2 ? 0 : 1,
-          viewModel: true,
-          viewModelProjection: artifact.descriptor,
-        }),
-        request: Object.freeze({
-          identity: 0x7fff_ff00 + snapshot.class * 4,
-          model: identity,
-          ...(itemIdentity === undefined ? { handsOnlyViewmodel: true } : { itemModel: itemIdentity }),
-          activity,
-          previousElapsedSeconds: Math.min(previousElapsed, currentElapsed),
-          elapsedSeconds: currentElapsed,
-           currentTimeSeconds:now,frameTimeSeconds:frameTime,planarSpeed:Math.hypot(snapshot.velocity[0],snapshot.velocity[1]),screenAspectRatio:view.aspectRatio,worldFarPlane:view.farPlane,
-          phase: phase as 0 | 1 | 2 | 3 | 4 | 5,
-          reflectedViewmodel: false,
-          ownerAlive: snapshot.lifecycle === 1,
-          skin: snapshot.team === 2 ? 0 : 1,
-          lod: 0,
-          bodygroups: Object.freeze(artifact.bodygroupCounts.map(() => 0)),
-          ...(itemArtifact ? { itemBodygroups: Object.freeze(itemArtifact.bodygroupCounts.map(() => 0)) } : {}),
-        }),
+        standalone,
+        item: Object.freeze({ identity: common.identity, model: identity, position: Object.freeze([0, 0, 0]) as Vector3,
+          angles: Object.freeze([0, 0, 0]) as Vector3, scale: 1, skin: common.skin, viewModel: true, viewModelProjection: artifact.descriptor }),
+        request: Object.freeze(composed),
       })
     },
   })
@@ -726,10 +711,10 @@ export function tf2Hud(snapshot: Snapshot): Tf2Hud {
     maxHealth: snapshot.maximumHealth,
     className: tf2ClassPresentation(snapshot.class).displayName,
     weaponName: snapshot.weapon === null ? null
-
       : snapshot.weapon === 40 ? "Shotgun"
         : snapshot.weapon === 41 ? "Pistol"
           : snapshot.weapon === 42 ? "Wrench"
+            : snapshot.weapon === 50 ? "Revolver" : snapshot.weapon === 51 ? "Knife" : snapshot.weapon === 52 ? "Sapper" : snapshot.weapon === 53 ? "Disguise Kit" : snapshot.weapon === 54 ? "Invisibility Watch"
             : (["", "Rocket Launcher", "Original", "Stickybomb Launcher", "Scattergun", "Pistol", "Bat", "Shotgun", "Shovel", "Minigun", "Shotgun", "Fists", "Sniper Rifle", "SMG", "Kukri", "Flamethrower", "Fire Axe"] as const)[snapshot.weapon],
 
     speed: Math.hypot(...snapshot.velocity),
@@ -905,8 +890,8 @@ export function hitscanMuzzleParticles(
 ): readonly ProjectileParticleRequest[] {
   const requests: ProjectileParticleRequest[] = []
   for (const event of snapshot.events) {
-    if (event.kind !== 12 || (event.detail !== 4 && event.detail !== 5 && event.detail !== 7 && event.detail !== 10 && event.detail !== 40 && event.detail !== 41)) continue
-    const system = event.detail === 4 ? "muzzle_scattergun" : event.detail === 5 || event.detail === 41 ? "muzzle_pistol" : "muzzle_shotgun"
+    if (event.kind !== 12 || (event.detail !== 4 && event.detail !== 5 && event.detail !== 7 && event.detail !== 10 && event.detail !== 50 && event.detail !== 40 && event.detail !== 41)) continue
+    const system = event.detail === 4 ? "muzzle_scattergun" : event.detail === 5 || event.detail === 41 ? "muzzle_pistol" : event.detail === 50 ? "muzzle_revolver" : "muzzle_shotgun"
     if (!catalog.systems.has(system)) throw new ProjectilePresentationError("MissingSystem", system)
     const transform = catalog.attachmentTransforms?.get(event.detail)?.get("muzzle")
     if (!transform) throw new ProjectilePresentationError("MissingAttachment", `${event.detail}:muzzle`)

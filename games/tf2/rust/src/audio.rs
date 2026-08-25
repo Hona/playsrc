@@ -44,6 +44,13 @@ pub enum SoundDefinition {
     FireAxeMiss,
     FireAxeHitFlesh,
     FireAxeHitWorld,
+    RevolverSingle,
+    RevolverReload,
+    KnifeMiss,
+    KnifeHitFlesh,
+    KnifeHitWorld,
+    SpyCloak,
+    SpyUncloak,
 }
 
 impl SoundDefinition {
@@ -93,6 +100,13 @@ impl SoundDefinition {
             Self::FireAxeMiss => "Weapon_FireAxe.Miss",
             Self::FireAxeHitFlesh => "Weapon_FireAxe.HitFlesh",
             Self::FireAxeHitWorld => "Weapon_FireAxe.HitWorld",
+            Self::RevolverSingle => "Weapon_Revolver.Single",
+            Self::RevolverReload => "Weapon_Revolver.WorldReload",
+            Self::KnifeMiss => "Weapon_Knife.Miss",
+            Self::KnifeHitFlesh => "Weapon_Knife.HitFlesh",
+            Self::KnifeHitWorld => "Weapon_Knife.HitWorld",
+            Self::SpyCloak => "Player.Spy_Cloak",
+            Self::SpyUncloak => "Player.Spy_UnCloak",
         }
     }
 
@@ -104,7 +118,8 @@ impl SoundDefinition {
             | Self::FistHitFlesh
             | Self::KukriHitFlesh
             | Self::WrenchHitFlesh
-            | Self::FireAxeHitFlesh => 3,
+            | Self::FireAxeHitFlesh
+            | Self::KnifeHitFlesh => 3,
             Self::BatHitWorld
             | Self::ShovelHitWorld
             | Self::FistMiss
@@ -141,7 +156,13 @@ impl SoundDefinition {
             | Self::FlameLoop
             | Self::FlameEnd
             | Self::FlameAirblast
-            | Self::FireAxeMiss => 1,
+            | Self::FireAxeMiss
+            | Self::RevolverSingle
+            | Self::RevolverReload
+            | Self::KnifeMiss
+            | Self::KnifeHitWorld
+            | Self::SpyCloak
+            | Self::SpyUncloak => 1,
         }
     }
 }
@@ -201,6 +222,7 @@ pub struct SoundSelectionState {
     pub kukri_hit_world_available: u8,
     pub fire_axe_hit_world_available: u8,
     pub fire_axe_hit_flesh_available: u8,
+    pub knife_hit_flesh_available: u8,
 }
 
 #[derive(Clone, Copy)]
@@ -263,6 +285,7 @@ pub(crate) struct SoundSelection {
     kukri_hit_world: WaveCycle,
     fire_axe_hit_world: WaveCycle,
     fire_axe_hit_flesh: WaveCycle,
+    knife_hit_flesh: WaveCycle,
 }
 
 impl SoundSelection {
@@ -282,6 +305,7 @@ impl SoundSelection {
             kukri_hit_world: WaveCycle::new(WaveCycle::TWO),
             fire_axe_hit_world: WaveCycle::new(WaveCycle::TWO),
             fire_axe_hit_flesh: WaveCycle::new(WaveCycle::THREE),
+            knife_hit_flesh: WaveCycle::new(WaveCycle::THREE),
         }
     }
 
@@ -301,6 +325,7 @@ impl SoundSelection {
             kukri_hit_world_available: self.kukri_hit_world.available,
             fire_axe_hit_world_available: self.fire_axe_hit_world.available,
             fire_axe_hit_flesh_available: self.fire_axe_hit_flesh.available,
+            knife_hit_flesh_available: self.knife_hit_flesh.available,
         }
     }
 
@@ -318,6 +343,7 @@ impl SoundSelection {
             || state.kukri_hit_world_available & !WaveCycle::TWO != 0
             || state.fire_axe_hit_world_available & !WaveCycle::TWO != 0
             || state.fire_axe_hit_flesh_available & !WaveCycle::THREE != 0
+            || state.knife_hit_flesh_available & !WaveCycle::THREE != 0
         {
             return false;
         }
@@ -336,6 +362,7 @@ impl SoundSelection {
 
         self.fire_axe_hit_world.available = state.fire_axe_hit_world_available;
         self.fire_axe_hit_flesh.available = state.fire_axe_hit_flesh_available;
+        self.knife_hit_flesh.available = state.knife_hit_flesh_available;
         true
     }
 
@@ -369,6 +396,7 @@ impl SoundSelection {
 
             SoundDefinition::FireAxeHitWorld => &mut self.fire_axe_hit_world,
             SoundDefinition::FireAxeHitFlesh => &mut self.fire_axe_hit_flesh,
+            SoundDefinition::KnifeHitFlesh => &mut self.knife_hit_flesh,
             _ => unreachable!("only configured random-wave definitions have selection state"),
         }
     }

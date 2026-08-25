@@ -950,7 +950,8 @@ impl BotWorld {
             | Weapon::Fists
             | Weapon::Kukri
             | Weapon::Wrench
-            | Weapon::FireAxe => DamageType::MELEE,
+            | Weapon::FireAxe
+            | Weapon::Knife => DamageType::MELEE,
             Weapon::Flamethrower => DamageType::BURN | DamageType::IGNITE,
             Weapon::RocketLauncher | Weapon::Original | Weapon::StickybombLauncher => {
                 DamageType::BLAST
@@ -963,7 +964,9 @@ impl BotWorld {
             | Weapon::Minigun
             | Weapon::SniperRifle
             | Weapon::Smg
-            | Weapon::EngineerPistol => DamageType::BULLET,
+            | Weapon::EngineerPistol
+            | Weapon::Revolver => DamageType::BULLET,
+            Weapon::Sapper | Weapon::DisguiseKit | Weapon::InvisibilityWatch => return Ok(None),
         };
         let result = damage::apply_damage(
             victim.lifecycle == PlayerLifecycle::Active,
@@ -1037,6 +1040,25 @@ impl BotWorld {
                 bot.kills = bot.kills.saturating_add(1);
             }
         }
+    }
+
+    pub fn combat_player(&self, identity: u32) -> Option<crate::CombatPlayerFacts> {
+        let bot = self.bots.get(&identity)?;
+        if bot.lifecycle != PlayerLifecycle::Active {
+            return None;
+        }
+        let yaw = bot.yaw_degrees.to_radians();
+        Some(crate::CombatPlayerFacts {
+            team: bot.team,
+            health: bot.health,
+            world_center: [
+                bot.movement.position[0],
+                bot.movement.position[1],
+                bot.movement.position[2] + 41.0,
+            ],
+            eye_forward: [yaw.cos(), yaw.sin(), 0.0],
+            backstab_immune: false,
+        })
     }
 
     pub fn snapshots(&self) -> Vec<Snapshot> {

@@ -45,6 +45,13 @@ impl HitscanProfile {
                 spread: 0.025,
                 accurate_after_seconds: 1.25,
             }),
+            Weapon::Revolver => Some(Self {
+                pellets: 1,
+                damage: 40.0,
+                range: 4096.0,
+                spread: 0.025,
+                accurate_after_seconds: 1.25,
+            }),
             _ => None,
         }
     }

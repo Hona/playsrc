@@ -38,10 +38,10 @@ describe("configured TF2 UI resource descriptor", () => {
   })
 
   test("binds the exact configured provider and selected source closure", () => {
-    expect(tf2UiResources.identity).toBe("tf2-ui-24245096-3db60ccec968a1a6")
+    expect(tf2UiResources.identity).toBe("tf2-ui-24245096-371dbd45533ff0e5")
     expect(tf2UiResources.providers).toHaveLength(14)
-    expect(tf2UiResources.sources).toHaveLength(54)
-    expect(tf2UiResources.panels).toHaveLength(40)
+    expect(tf2UiResources.sources).toHaveLength(57)
+    expect(tf2UiResources.panels).toHaveLength(43)
     expect(tf2UiResources.sources.find((source) => source.logicalPath === "resource/ui/statsummary.res")?.sha256)
       .toBe("bf146199fcd7aec0a5467752853b89ead6f882d11533de383c09561bd3455903")
     expect(tf2UiResources.sources.find((source) => source.logicalPath === "resource/ui/mainmenuoverride.res")?.sha256)
@@ -86,15 +86,15 @@ describe("configured TF2 UI resource descriptor", () => {
 
   test("retains every selected inventory with no unclassified item", () => {
     expect(tf2UiResources.controls).toHaveLength(60)
-    expect(tf2UiResources.properties).toHaveLength(13_347)
+    expect(tf2UiResources.properties).toHaveLength(13_897)
     expect(tf2UiResources.commands).toHaveLength(99)
-    expect(tf2UiResources.localization.tokens).toHaveLength(527)
+    expect(tf2UiResources.localization.tokens).toHaveLength(532)
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#Valve_Move_Forward")?.definitions[0]?.value).toBe("Move forward")
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#TF_OptionCategory_Combat")?.definitions[0]?.value).toBe("Combat Options")
     expect(tf2UiResources.images).toHaveLength(299)
     expect(tf2UiResources.images.find((image) => image.configuredValue === "maps/menu_photos_pl_upward")?.material?.sha256)
       .toBe("79ca3d5e39f80c8d18c79eb63fd9b457a359e2a2db147c426eb7814a2cd1101e")
-    expect(tf2UiResources.fonts).toHaveLength(59)
+    expect(tf2UiResources.fonts).toHaveLength(60)
     expect(tf2UiResources.advancedOptions).toHaveLength(88)
     expect(tf2UiResources.keyboardActions).toHaveLength(70)
     expect(new Set(tf2UiResources.keyboardActions.map((row) => row.binding.toLowerCase())).size).toBe(65)
@@ -181,6 +181,11 @@ describe("authored TF2 crosshair content closure", () => {
 
       { identities: [15], script: "scripts/tf_weapon_flamethrower.ctx", crop: { x: 32, y: 32, width: 32, height: 32 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
       { identities: [16], script: "scripts/tf_weapon_fireaxe.ctx", crop: { x: 64, y: 0, width: 32, height: 32 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
+      { identities: [50], script: "scripts/tf_weapon_revolver.ctx", crop: { x: 64, y: 0, width: 32, height: 32 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
+      { identities: [51], script: "scripts/tf_weapon_knife.ctx", crop: { x: 64, y: 0, width: 32, height: 32 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
+      { identities: [52], script: "scripts/tf_weapon_builder.ctx", crop: { x: 0, y: 48, width: 24, height: 24 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
+      { identities: [53], script: "scripts/tf_weapon_pda_spy.ctx", crop: { x: 0, y: 48, width: 24, height: 24 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
+      { identities: [54], script: "scripts/tf_weapon_invis.ctx", crop: { x: 0, y: 48, width: 24, height: 24 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
     ])
   })
 

@@ -11,7 +11,7 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
     if bytes.len() < HEADER_BYTES
         || bytes.len() > 64 * 1024
         || &bytes[..4] != b"PCMD"
-        || u32::from_le_bytes(bytes[4..8].try_into().ok()?) != 5
+        || u32::from_le_bytes(bytes[4..8].try_into().ok()?) != 6
     {
         return None;
     }
@@ -35,9 +35,21 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
     };
     let flags = u32::from_le_bytes(bytes[28..32].try_into().ok()?);
     let select = u32::from_le_bytes(bytes[32..36].try_into().ok()?);
-    if flags & !0xff != 0 {
+    if flags & !0x3fff != 0 {
         return None;
     }
+    let disguise = match (((flags >> 8) & 15) as u8, ((flags >> 12) & 3) as u8) {
+        (0, 0) => None,
+        (class, team @ (2 | 3)) => Some(playsrc_tf2::spy::Disguise {
+            class: playsrc_tf2::PlayerClass::try_from(class).ok()?,
+            team: if team == 2 {
+                playsrc_tf2::PlayerTeam::Red
+            } else {
+                playsrc_tf2::PlayerTeam::Blue
+            },
+        }),
+        _ => return None,
+    };
     let (select_class, select_random_class) = match (select & 0xff) as u8 {
         0 => (None, false),
         12 => (None, true),
@@ -63,6 +75,11 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
         40 => Some(playsrc_tf2::Weapon::EngineerShotgun),
         41 => Some(playsrc_tf2::Weapon::EngineerPistol),
         42 => Some(playsrc_tf2::Weapon::Wrench),
+        50 => Some(playsrc_tf2::Weapon::Revolver),
+        51 => Some(playsrc_tf2::Weapon::Knife),
+        52 => Some(playsrc_tf2::Weapon::Sapper),
+        53 => Some(playsrc_tf2::Weapon::DisguiseKit),
+        54 => Some(playsrc_tf2::Weapon::InvisibilityWatch),
 
         15 => Some(playsrc_tf2::Weapon::Flamethrower),
         16 => Some(playsrc_tf2::Weapon::FireAxe),
@@ -137,6 +154,7 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
         select_random_class,
         select_team,
         select_weapon,
+        disguise,
         mode_request,
         activate_entity: (target != u32::MAX).then_some(target),
         bot_request,

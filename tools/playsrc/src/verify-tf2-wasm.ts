@@ -611,6 +611,8 @@ export async function verifyTf2Wasm(
     "effects/smokelit2/smoke2lit.vmt",
     "effects/softglow.vmt",
     "effects/softglow_translucent.vmt",
+    "effects/starflash01.vmt",
+    "effects/wispy_smoke.vmt",
     "particle/smoke1/smoke1.vmt",
   ] as const
   const suppliedParticleMaterials = [...presentationArtifacts.particleMaterials].sort()
@@ -618,7 +620,7 @@ export async function verifyTf2Wasm(
     && new Set(suppliedParticleMaterials).size === suppliedParticleMaterials.length
     && presentationArtifacts.particleTextures.length === suppliedParticleMaterials.length
     && presentationArtifacts.particleTextures.every((texture) => suppliedParticleMaterials.includes(texture.material)),
-  "TF2 Particle material/texture identities differ")
+  `TF2 Particle material/texture identities differ: ${JSON.stringify(suppliedParticleMaterials)}`)
   const particleMaterialStates = particleMaterialIdentities.map((identity) => {
     const state = presentationArtifacts.materialStates.get(identity)
     require(state !== undefined, `TF2 Particle material state ${identity} is missing`)

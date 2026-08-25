@@ -83,11 +83,13 @@ export type StaticMaterialState = Readonly<{
 export type ParticleTextureArtifact = SupplementalTexture & Readonly<{ materialPath: string }>
 export type SoundScriptNode = Readonly<{ key: string; value: string | readonly SoundScriptNode[] }>
 export type AudioArtifact = Readonly<{
-  sourceSha256: string
   mixerSha256: string
   mixerGain: number
-  logicalPath: string
-  entries: readonly SoundScriptNode[]
+  documents: readonly Readonly<{
+    sourceSha256: string
+    logicalPath: string
+    entries: readonly SoundScriptNode[]
+  }>[]
 }>
 export type ModelOccurrenceMatrix = Readonly<{ entity: number; model: string; skin:number; body:number; origin:readonly[number,number,number]; angles:readonly[number,number,number]; matrix: Float32Array }>
 export type BrushModelArtifact=Readonly<{index:number;bounds:readonly[readonly[number,number,number],readonly[number,number,number]];origin:readonly[number,number,number];headNode:number;surfaceRange:readonly[number,number];vertexCount:number;triangleCount:number;materials:readonly number[];entities:readonly number[]}>
@@ -922,16 +924,15 @@ function soundNode(r: Reader): SoundScriptNode {
 }
 
 function parseAudio(r: Reader): AudioArtifact {
-  magic(r, "PAUD")
-  const sourceSha256 = hex(r.take(32)), mixerSha256 = hex(r.take(32)), mixerGain = r.f32(), logicalPath = r.text()
-  if (mixerGain < 0) throw new ArtifactError("audio mixer gain")
-  return Object.freeze({
-    sourceSha256,
-    mixerSha256,
-    mixerGain,
-    logicalPath,
-    entries: Object.freeze(Array.from({ length: r.u32() }, () => soundNode(r))),
-  })
+  if (r.decoder.decode(r.take(4)) !== "PAUD" || r.u32() !== 2) throw new ArtifactError("PAUD identity")
+  const mixerSha256 = hex(r.take(32)), mixerGain = r.f32(), count = r.u32()
+  if (mixerGain < 0 || count < 1 || count > 32) throw new ArtifactError("audio document header")
+  const documents = Object.freeze(Array.from({ length: count }, () => {
+    const sourceSha256 = hex(r.take(32)), logicalPath = r.text()
+    return Object.freeze({ sourceSha256, logicalPath, entries: Object.freeze(Array.from({ length: r.u32() }, () => soundNode(r))) })
+  }))
+  if (new Set(documents.map((document) => document.logicalPath)).size !== documents.length) throw new ArtifactError("audio document identity")
+  return Object.freeze({ mixerSha256, mixerGain, documents })
 }
 
 function parseOccurrenceMatrices(r: Reader): readonly ModelOccurrenceMatrix[] {

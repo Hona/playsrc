@@ -12,6 +12,7 @@ pub mod pickup;
 pub mod pyro;
 pub mod random;
 pub mod schema;
+pub mod spy;
 pub mod state;
 pub mod team_selection;
 pub mod weapon;
@@ -29,9 +30,9 @@ pub use random::{
 pub mod jump;
 
 pub use map_runtime::{
-    CONTENTS_BLUE_TEAM, CONTENTS_RED_TEAM, Effect as MapEffect, EntityEvent, EntityEventKind,
-    EntityTransform, GameplayWorld, MapCounts, MapPhase, MapRuntime, MoverRequest, MoverResult,
-    MoverResultKind, PlayerContactFacts, RegenerateContact, respawn_barrier_collides,
+    CONTENTS_BLUE_TEAM, CONTENTS_RED_TEAM, CombatPlayerFacts, Effect as MapEffect, EntityEvent,
+    EntityEventKind, EntityTransform, GameplayWorld, MapCounts, MapPhase, MapRuntime, MoverRequest,
+    MoverResult, MoverResultKind, PlayerContactFacts, RegenerateContact, respawn_barrier_collides,
 };
 
 use std::collections::BTreeMap;
@@ -195,6 +196,11 @@ pub enum Weapon {
     Wrench = 42,
     Flamethrower = 15,
     FireAxe = 16,
+    Revolver = 50,
+    Knife = 51,
+    Sapper = 52,
+    DisguiseKit = 53,
+    InvisibilityWatch = 54,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -254,6 +260,7 @@ pub struct Command {
     pub select_random_class: bool,
     pub select_team: Option<PlayerTeam>,
     pub select_weapon: Option<Weapon>,
+    pub disguise: Option<spy::Disguise>,
     pub mode_request: Option<Mode>,
     pub activate_entity: Option<u32>,
     pub bot_request: Option<bot::Request>,
@@ -437,6 +444,9 @@ pub enum Condition {
 
     Zoomed = 1,
 
+    Disguising = 2,
+    Disguised = 3,
+    Stealthed = 4,
     Phase = 14,
     EnergyBuff = 19,
     Burning = 22,
@@ -444,6 +454,7 @@ pub enum Condition {
     Bleeding = 25,
     MadMilk = 27,
     CannotSwitchFromMelee = 41,
+    DisguiseWearingOff = 47,
     ParachuteActive = 80,
     BlastJumping = 81,
     Plague = 112,
@@ -627,6 +638,7 @@ pub struct Snapshot {
     pub movement: MovementState,
     pub health: f32,
     pub maximum_health: f32,
+    pub spy: Option<spy::SpyState>,
     pub loadout: Vec<WeaponState>,
     pub conditions: u32,
     pub projectiles: Vec<Projectile>,
@@ -695,6 +707,7 @@ pub struct Session<W: GameplayWorld + Clone> {
     movement_modifiers: MovementModifiers,
     last_movement: Option<MovementStepResult>,
     health: i32,
+    spy: Option<spy::SpyState>,
     conditions: ConditionSet,
     lifecycle: PlayerLifecycle,
     restrictions: PlayerRestrictions,
@@ -705,6 +718,7 @@ pub struct Session<W: GameplayWorld + Clone> {
     next_projectile: u32,
     fire_was_held: bool,
     fire_on_empty: bool,
+    secondary_was_held: bool,
     previous_hitscan_ticks: BTreeMap<Weapon, u64>,
     pending_melee_tick: Option<u64>,
     flames: pyro::FlameManager,
@@ -846,6 +860,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             movement_modifiers,
             last_movement: None,
             health: PlayerClass::Soldier.data().maximum_health,
+            spy: None,
             conditions: ConditionSet::default(),
             lifecycle: PlayerLifecycle::Active,
             restrictions: PlayerRestrictions::default(),
@@ -856,6 +871,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             next_projectile: 1,
             fire_was_held: false,
             fire_on_empty: false,
+            secondary_was_held: false,
             previous_hitscan_ticks: BTreeMap::new(),
             pending_melee_tick: None,
             flames: pyro::FlameManager::default(),
@@ -1379,6 +1395,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 .map_err(Error::TeamSelection)?;
         }
         self.advance_sniper_scope(command);
+        self.advance_spy(command);
         let mut movement_policy = MovementPolicy {
             class: self.class,
             modifiers: self.movement_modifiers,
@@ -1499,6 +1516,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
             && self.health > 0
             && let Some(active_weapon) = self.weapon
         {
+            let now = self.tick as f32 * self.movement_configuration.tick_interval;
+            let attack_allowed = self.spy.is_none_or(|state| state.can_attack(now));
             let released_primary = !command.fire && self.fire_was_held;
             let previous_minigun_state = self.loadout[&active_weapon].minigun_state;
             let primary = if active_weapon == Weapon::Flamethrower {
@@ -1512,8 +1531,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 state.attack(
                     self.tick,
                     self.movement_configuration.tick_interval,
-                    command.fire,
-                    command.detonate && active_weapon != Weapon::StickybombLauncher,
+                    command.fire && attack_allowed,
+                    command.detonate
+                        && self.spy.is_none()
+                        && active_weapon != Weapon::StickybombLauncher,
                     released_primary,
                     &mut self.activity_events,
                 )
@@ -1559,6 +1580,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     Weapon::Bat | Weapon::Shovel | Weapon::Kukri | Weapon::Wrench | Weapon::FireAxe
                 ) {
                     self.swing_melee(active_weapon);
+                } else if active_weapon == Weapon::Knife {
+                    self.resolve_knife(
+                        command.pitch_degrees,
+                        command.movement.yaw_degrees,
+                        &mut events,
+                    )?;
                 } else if active_weapon == Weapon::Fists {
                     self.emit_weapon_sound(SoundDefinition::FistMiss, self.movement.position);
                 } else {
@@ -1630,9 +1657,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     .loadout
                     .get_mut(&active_weapon)
                     .expect("active weapon belongs to loadout");
-                if command.reload
-                    || empty_reload
-                    || (self.auto_reload && !command.fire && !command.detonate)
+                if !self.spy.is_some_and(|spy| spy.cloaked)
+                    && (command.reload
+                        || empty_reload
+                        || (self.auto_reload && !command.fire && !command.detonate))
                 {
                     state.start_reload(
                         self.tick,
@@ -1666,6 +1694,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
                         Some(SoundDefinition::SmgReload)
                     }
 
+                    (Weapon::Revolver, weapon::WeaponActivity::ReloadStart) => {
+                        Some(SoundDefinition::RevolverReload)
+                    }
                     _ => None,
                 });
             if let Some(definition) = reload_sound {
@@ -1691,6 +1722,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         )?;
         if command.detonate
             && self.weapon != Some(Weapon::Flamethrower)
+            && self.spy.is_none()
             && self.lifecycle == PlayerLifecycle::Active
             && self.health > 0
         {
@@ -1784,6 +1816,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             movement: self.movement,
             health: self.health as f32,
             maximum_health: self.maximum_health() as f32,
+            spy: self.spy,
             loadout: self
                 .loadout
                 .values()
@@ -1806,6 +1839,69 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 .as_ref()
                 .map_or_else(Vec::new, bot::BotWorld::snapshots),
         })
+    }
+
+    fn advance_spy(&mut self, command: Command) {
+        let Some(state) = self.spy.as_mut() else {
+            self.secondary_was_held = command.detonate;
+            return;
+        };
+        let now = self.tick as f32 * self.movement_configuration.tick_interval;
+        let mut notifications = [None; 4];
+        if command.detonate && !self.secondary_was_held {
+            notifications[0] = state.toggle_cloak(now);
+        }
+        self.secondary_was_held = command.detonate;
+        if let Some(disguise) = command.disguise
+            && !self.restrictions.taunting
+        {
+            notifications[1] =
+                state.request_disguise(self.team_selection.local_team(), disguise, now);
+        }
+        [notifications[2], notifications[3]] =
+            state.advance(now, self.movement_configuration.tick_interval);
+        if state.cloaked {
+            self.conditions.insert(Condition::Stealthed);
+        } else {
+            self.conditions.remove(Condition::Stealthed);
+        }
+        if state.desired_disguise.is_some() {
+            self.conditions.insert(Condition::Disguising);
+        } else {
+            self.conditions.remove(Condition::Disguising);
+        }
+        if state.disguise.is_some() {
+            self.conditions.insert(Condition::Disguised);
+        } else {
+            self.conditions.remove(Condition::Disguised);
+        }
+        if state.disguise_wear_off_until > now {
+            self.conditions.insert(Condition::DisguiseWearingOff);
+        } else {
+            self.conditions.remove(Condition::DisguiseWearingOff);
+        }
+        for event in notifications.into_iter().flatten() {
+            match event {
+                spy::SpyEvent::Cloaked => {
+                    self.emit_weapon_sound(SoundDefinition::SpyCloak, self.movement.position);
+                }
+                spy::SpyEvent::Uncloaked => {
+                    self.emit_weapon_sound(SoundDefinition::SpyUncloak, self.movement.position);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn remove_spy_disguise(&mut self) {
+        if let Some(state) = self.spy.as_mut() {
+            let now = self.tick as f32 * self.movement_configuration.tick_interval;
+            if state.remove_disguise(now).is_some() {
+                self.conditions.remove(Condition::Disguised);
+                self.conditions.remove(Condition::Disguising);
+                self.conditions.insert(Condition::DisguiseWearingOff);
+            }
+        }
     }
 
     fn apply_selection(
@@ -1866,6 +1962,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             && (self.jump.is_none() || matches!(class, PlayerClass::Soldier | PlayerClass::Demoman))
         {
             self.class = class;
+            self.spy = (class == PlayerClass::Spy).then(spy::SpyState::default);
             self.weapon = default_weapon(class);
             self.loadout = default_loadout(class);
             self.deploy_active_weapon();
@@ -2187,6 +2284,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
         }
         for weapon in self.loadout.values_mut() {
             weapon.regenerate(self.tick, self.movement_configuration.tick_interval);
+        }
+        if let Some(state) = self.spy.as_mut() {
+            state.cloak_meter = spy::CLOAK_MAXIMUM;
         }
         self.next_regenerate_tick =
             self.tick + ticks(3.0, self.movement_configuration.tick_interval);
@@ -2875,10 +2975,14 @@ impl<W: GameplayWorld + Clone> Session<W> {
             }
             Weapon::SniperRifle => SoundDefinition::SniperSingle,
             Weapon::Smg => SoundDefinition::SmgSingle,
+            Weapon::Revolver => SoundDefinition::RevolverSingle,
 
             _ => unreachable!("only configured firearms use hitscan profiles"),
         };
         self.emit_weapon_sound(definition, self.movement.position);
+        if weapon == Weapon::Revolver {
+            self.remove_spy_disguise();
+        }
         let sniper_state = self
             .loadout
             .get(&weapon)
@@ -3209,6 +3313,141 @@ impl<W: GameplayWorld + Clone> Session<W> {
         Ok(())
     }
 
+    fn resolve_knife(
+        &mut self,
+        pitch: f32,
+        yaw: f32,
+        events: &mut Vec<Event>,
+    ) -> Result<(), Error> {
+        let (direction, _, _) = angle_vectors(pitch, yaw, 0.0);
+        let origin = add(self.movement.position, self.movement.view_offset);
+        let end = add(origin, scale(direction, ballistics::MELEE_RANGE));
+        let line = self.collision.trace(
+            origin,
+            end,
+            Hull {
+                mins: [0.0; 3],
+                maxs: [0.0; 3],
+            },
+            MASK_SOLID,
+        )?;
+        let impact = if line.fraction < 1.0 || line.start_solid {
+            line
+        } else {
+            self.collision.trace(
+                origin,
+                end,
+                Hull {
+                    mins: [-ballistics::MELEE_HULL_RADIUS; 3],
+                    maxs: [ballistics::MELEE_HULL_RADIUS; 3],
+                },
+                MASK_SOLID,
+            )?
+        };
+        let mut player_hit: Option<playsrc_collision::StudioHitboxTrace> = None;
+        for candidate in &self.posed_player_hitboxes {
+            if !candidate.team.is_enemy(self.team_selection.local_team()) {
+                continue;
+            }
+            let hitbox = playsrc_collision::StudioHitbox {
+                identity: candidate.hitbox,
+                group: candidate.group,
+                bone: candidate.bone,
+                physics_bone: candidate.physics_bone,
+                bone_contents: candidate.bone_contents,
+                surface: None,
+                minimum: candidate.minimum,
+                maximum: candidate.maximum,
+                bone_to_world: &candidate.bone_to_world,
+            };
+            let hit =
+                playsrc_collision::trace_studio_hitboxes(playsrc_collision::StudioHitboxRequest {
+                    entity: u64::from(candidate.entity),
+                    origin: candidate.origin,
+                    scale: 1.0,
+                    start: origin,
+                    end,
+                    hull: Hull {
+                        mins: [-ballistics::MELEE_HULL_RADIUS; 3],
+                        maxs: [ballistics::MELEE_HULL_RADIUS; 3],
+                    },
+                    mask: MASK_SHOT,
+                    hitboxes: std::slice::from_ref(&hitbox),
+                })
+                .map_err(|_| Error::InvalidProjectilePhysics)?;
+            if let Some(hit) = hit
+                && hit.fraction <= impact.fraction
+                && player_hit
+                    .as_ref()
+                    .is_none_or(|prior| hit.fraction < prior.fraction)
+            {
+                player_hit = Some(hit);
+            }
+        }
+        self.emit_weapon_sound(SoundDefinition::KnifeMiss, self.movement.position);
+        if player_hit.is_some() || impact.fraction < 1.0 || impact.start_solid {
+            let target = player_hit
+                .as_ref()
+                .and_then(|hit| u32::try_from(hit.entity).ok())
+                .or_else(|| {
+                    impact
+                        .hit
+                        .filter(|identity| !self.collision.is_world(*identity))
+                        .and_then(|identity| u32::try_from(identity).ok())
+                });
+            let position = player_hit.as_ref().map_or(impact.end, |hit| hit.end);
+            let facts = target.and_then(|identity| {
+                self.bots
+                    .as_ref()
+                    .and_then(|bots| bots.combat_player(identity))
+                    .or_else(|| self.collision.combat_player(identity))
+            });
+            let damage = facts
+                .filter(|facts| {
+                    facts.team.is_enemy(self.team_selection.local_team())
+                        && !facts.backstab_immune
+                        && spy::can_backstab(
+                            add(self.movement.position, [0.0, 0.0, 41.0]),
+                            direction,
+                            facts.world_center,
+                            facts.eye_forward,
+                        )
+                })
+                .map_or(spy::KNIFE_DAMAGE, |facts| {
+                    spy::backstab_damage(facts.health)
+                });
+            self.emit_weapon_sound(
+                if target.is_some() {
+                    SoundDefinition::KnifeHitFlesh
+                } else {
+                    SoundDefinition::KnifeHitWorld
+                },
+                position,
+            );
+            if let Some(identity) = target {
+                self.apply_actor_damage(
+                    bot::Damage {
+                        attacker: PLAYER_IDENTITY,
+                        victim: identity,
+                        weapon: Weapon::Knife,
+                        amount: damage,
+                        position,
+                    },
+                    self.team_selection.local_team(),
+                    events,
+                )?;
+            }
+            events.push(Event::MeleeImpact {
+                weapon: Weapon::Knife,
+                target,
+                position,
+                damage,
+            });
+        }
+        self.remove_spy_disguise();
+        Ok(())
+    }
+
     fn fire_minigun_hitscan(
         &mut self,
         pitch: f32,
@@ -3346,7 +3585,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
             | Weapon::EngineerPistol
             | Weapon::Wrench
             | Weapon::Flamethrower
-            | Weapon::FireAxe => {
+            | Weapon::FireAxe
+            | Weapon::Revolver
+            | Weapon::Knife
+            | Weapon::Sapper
+            | Weapon::DisguiseKit
+            | Weapon::InvisibilityWatch => {
                 unreachable!("hitscan and melee weapons do not spawn projectiles")
             }
         };
@@ -3383,7 +3627,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
             | Weapon::EngineerPistol
             | Weapon::Wrench
             | Weapon::Flamethrower
-            | Weapon::FireAxe => {
+            | Weapon::FireAxe
+            | Weapon::Revolver
+            | Weapon::Knife
+            | Weapon::Sapper
+            | Weapon::DisguiseKit
+            | Weapon::InvisibilityWatch => {
                 unreachable!("hitscan and melee weapons do not spawn projectiles")
             }
         };
@@ -4177,6 +4426,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.fizzle_projectiles(projectile_events);
         self.health = self.maximum_health();
         self.conditions.clear();
+        if let Some(state) = self.spy.as_mut() {
+            *state = spy::SpyState::default();
+        }
         self.lifecycle = PlayerLifecycle::Active;
         self.lifecycle_events.push(LifecycleEvent {
             tick: self.tick,
@@ -4231,6 +4483,7 @@ fn default_weapon(class: PlayerClass) -> Option<Weapon> {
         PlayerClass::Heavy => Some(Weapon::Minigun),
         PlayerClass::Engineer => Some(Weapon::EngineerShotgun),
         PlayerClass::Pyro => Some(Weapon::Flamethrower),
+        PlayerClass::Spy => Some(Weapon::Revolver),
         _ => None,
     }
 }
@@ -4289,6 +4542,19 @@ fn default_loadout(class: PlayerClass) -> BTreeMap<Weapon, WeaponRuntime> {
             (Weapon::Shotgun, WeaponRuntime::full(Weapon::Shotgun)),
             (Weapon::FireAxe, WeaponRuntime::full(Weapon::FireAxe)),
         ]),
+        PlayerClass::Spy => BTreeMap::from([
+            (Weapon::Revolver, WeaponRuntime::full(Weapon::Revolver)),
+            (Weapon::Knife, WeaponRuntime::full(Weapon::Knife)),
+            (Weapon::Sapper, WeaponRuntime::full(Weapon::Sapper)),
+            (
+                Weapon::DisguiseKit,
+                WeaponRuntime::full(Weapon::DisguiseKit),
+            ),
+            (
+                Weapon::InvisibilityWatch,
+                WeaponRuntime::full(Weapon::InvisibilityWatch),
+            ),
+        ]),
         _ => BTreeMap::new(),
     }
 }
@@ -4319,6 +4585,10 @@ fn allowed(class: PlayerClass, weapon: Weapon) -> bool {
             | (
                 PlayerClass::Pyro,
                 Weapon::Flamethrower | Weapon::Shotgun | Weapon::FireAxe
+            )
+            | (
+                PlayerClass::Spy,
+                Weapon::Revolver | Weapon::Knife | Weapon::Sapper | Weapon::DisguiseKit
             )
     )
 }
@@ -4810,6 +5080,96 @@ mod tests {
             draw.context == RandomContext::Authority
                 && draw.decision == RandomDecision::ClassSelection
         }));
+    }
+
+    #[test]
+    fn spy_stock_loadout_cloak_disguise_fire_and_immediate_knife_preserve_source_order() {
+        let mut session = Session::new(MeleeWall, [0.0; 3], MapRuntime::empty(0.015));
+        let selected = session
+            .advance(Command {
+                select_class: Some(PlayerClass::Spy),
+                ..Command::default()
+            })
+            .unwrap();
+        assert_eq!(selected.weapon, Some(Weapon::Revolver));
+        assert_eq!(
+            selected
+                .loadout
+                .iter()
+                .map(|state| state.weapon)
+                .collect::<Vec<_>>(),
+            vec![
+                Weapon::Revolver,
+                Weapon::Knife,
+                Weapon::Sapper,
+                Weapon::DisguiseKit,
+                Weapon::InvisibilityWatch,
+            ]
+        );
+        let cloak = session
+            .advance(Command {
+                detonate: true,
+                ..Command::default()
+            })
+            .unwrap();
+        assert!(session.conditions.contains(Condition::Stealthed));
+        assert!(cloak.spy.unwrap().cloak_meter < 100.0);
+        assert!(
+            session
+                .audio_events()
+                .iter()
+                .any(|event| event.definition == SoundDefinition::SpyCloak)
+        );
+        session.advance(Command::default()).unwrap();
+        while session.spy.unwrap().next_stealth_time
+            > session.tick as f32 * session.movement_configuration.tick_interval
+        {
+            session.advance(Command::default()).unwrap();
+        }
+        session
+            .advance(Command {
+                detonate: true,
+                ..Command::default()
+            })
+            .unwrap();
+        assert!(!session.conditions.contains(Condition::Stealthed));
+        session.advance(Command::default()).unwrap();
+        let request = session
+            .advance(Command {
+                disguise: Some(spy::Disguise {
+                    class: PlayerClass::Soldier,
+                    team: PlayerTeam::Blue,
+                }),
+                ..Command::default()
+            })
+            .unwrap();
+        assert!(request.spy.unwrap().desired_disguise.is_some());
+        while !session.conditions.contains(Condition::Disguised) {
+            session.advance(Command::default()).unwrap();
+        }
+        session
+            .advance(Command {
+                select_weapon: Some(Weapon::Knife),
+                ..Command::default()
+            })
+            .unwrap();
+        session
+            .loadout
+            .get_mut(&Weapon::Knife)
+            .unwrap()
+            .next_primary_tick = session.tick;
+        let stabbed = session
+            .advance(Command {
+                fire: true,
+                ..Command::default()
+            })
+            .unwrap();
+        assert!(stabbed
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::MeleeImpact { weapon: Weapon::Knife, damage, .. } if *damage == 40.0)));
+        assert!(!session.conditions.contains(Condition::Disguised));
+        assert!(session.conditions.contains(Condition::DisguiseWearingOff));
     }
 
     #[test]
@@ -5747,6 +6107,11 @@ mod tests {
                         (0, 200)
                     );
                     assert_eq!(snapshot.loadout[2].weapon, Weapon::FireAxe);
+                }
+                PlayerClass::Spy => {
+                    assert_eq!(snapshot.weapon, Some(Weapon::Revolver));
+                    assert_eq!(snapshot.loadout.len(), 5);
+                    assert_eq!(snapshot.spy, Some(spy::SpyState::default()));
                 }
                 _ => {
                     assert_eq!(snapshot.weapon, None);
@@ -6954,6 +7319,7 @@ mod tests {
                 wrench_hit_flesh_available: 0b111,
                 fire_axe_hit_world_available: 0b11,
                 fire_axe_hit_flesh_available: 0b111,
+                knife_hit_flesh_available: 0b111,
             }
         );
 
@@ -6995,6 +7361,7 @@ mod tests {
                 wrench_hit_flesh_available: 0b111,
                 fire_axe_hit_world_available: 0b11,
                 fire_axe_hit_flesh_available: 0b111,
+                knife_hit_flesh_available: 0b111,
             }
         );
     }
