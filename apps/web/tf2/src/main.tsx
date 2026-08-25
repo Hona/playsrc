@@ -28,6 +28,7 @@ function App() {
   const classSelection = useRef<HTMLDivElement>(null)
   const teamSelection = useRef<HTMLDivElement>(null)
   const options = useRef<HTMLDivElement>(null)
+  const localMatch = useRef<HTMLDivElement>(null)
   const loading = useRef<HTMLDivElement>(null)
   const startup = useRef<HTMLDivElement>(null)
   const startupVideo = useRef<HTMLVideoElement>(null)
@@ -36,7 +37,7 @@ function App() {
 
   useEffect(() => {
     if (!applicationRoot.current || !canvas.current || !vgui.current || !gameUi.current || !hud.current || !engineer.current || !classSelection.current || !teamSelection.current
-      || !options.current || !loading.current || !startup.current || !startupVideo.current || !startupLoading.current) return
+      || !options.current || !localMatch.current || !loading.current || !startup.current || !startupVideo.current || !startupLoading.current) return
     const publication = new ApplicationPublication({
       root: applicationRoot.current,
       canvas: canvas.current,
@@ -51,6 +52,7 @@ function App() {
       classSelection: classSelection.current,
       teamSelection: teamSelection.current,
       options: options.current,
+      localMatch: localMatch.current,
       loading: loading.current,
       startup: startup.current,
       startupVideo: startupVideo.current,
@@ -78,6 +80,7 @@ function App() {
       data-console-visible="false"
       data-class-selection-visible="false"
       data-options-visible="false"
+      data-local-match-visible="false"
       data-team-selection-visible="false"
       data-fire-events="0"
       data-explosion-events="0"
@@ -116,6 +119,7 @@ function App() {
       <div ref={classSelection} class="vgui-layer class-selection-layer" aria-label="TF2 class selection" />
       <div ref={teamSelection} class="vgui-layer team-selection-layer" aria-label="TF2 team selection" />
       <div ref={options} class="vgui-layer options-layer" aria-label="TF2 Options" />
+      <div ref={localMatch} class="vgui-layer local-match-layer" aria-label="TF2 local match" />
       <div ref={vgui} class="vgui-layer developer-layer" aria-label="TF2 developer interface" />
     </main>
   )

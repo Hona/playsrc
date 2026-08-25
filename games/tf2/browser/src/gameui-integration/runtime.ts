@@ -215,6 +215,7 @@ class Integration implements Tf2GameUiIntegration {
   #mainMenu: VguiPanelId | null = null
   #mainMenuConditions: string[] = []
   #state: Tf2GameUiState = TF2_MAIN_MENU_STATE
+  #playlistActive = false
   #destroyed = false
 
   #configureBaseBackground(viewport: VguiViewport): void {
@@ -376,14 +377,14 @@ class Integration implements Tf2GameUiIntegration {
       const mode = panelByName(this.#runtime, "ModeButton", entry)
       if (mode !== null) {
         mustApply(this.#runtime, { kind: "mutate-control", panel: mode, mutation: { text: button.text, command: button.sourceCommand } })
-        mustApply(this.#runtime, { kind: "set-panel-state", panel: mode, enabled: false, mouseInput: true })
+        mustApply(this.#runtime, { kind: "set-panel-state", panel: mode, enabled: button.capability.kind === "request", mouseInput: true })
       }
       if (button.visibility === "event-conditional") mustApply(this.#runtime, { kind: "set-panel-state", panel: entry, visible: false })
     }
   }
 
   #disableUnownedControls(): void {
-    const active = new Set(["OpenOptionsDialog", "opentf2options", "view_newuser_forums", "quit", "resume_game", "Cancel"])
+    const active = new Set(["OpenOptionsDialog", "opentf2options", "view_newuser_forums", "quit", "resume_game", "Cancel", "find_game", "play_training", "create_server"])
     const snapshots = this.#runtime.snapshot().panels
     for (const command of this.#resources.descriptor.commands) {
       if (active.has(command.command)) continue
@@ -421,6 +422,9 @@ class Integration implements Tf2GameUiIntegration {
     else if (command === "view_newuser_forums") button = "new-user-forum"
     else if (command === "resume_game") button = "resume"
     else if (command === "Cancel") button = "cancel-loading"
+    else if (command === "find_game") button = "find-game"
+    else if (command === "play_training") button = "training"
+    else if (command === "create_server") button = "create-server"
     else if (command === "quit") button = panel?.name === "DisconnectButton" ? "disconnect" : "quit"
     if (button === null) {
       this.#diagnostics.push(Object.freeze({ code: "InactiveCommand", subject: command }))
@@ -476,7 +480,12 @@ class Integration implements Tf2GameUiIntegration {
     }
     for (const name of ["MainMenuOverride", "MMDashboard", "TopBar", "ExpandableList", "playlist", "EventEntry", "CasualEntry", "CompetitiveEntry", "MvMEntry", "ServerBrowserEntry", "TrainingEntry", "CreateServerEntry"]) {
       const panel = byName.get(name.toLowerCase())
-      if (panel) setVisible(panel.id, (name === "MainMenuOverride" || name === "MMDashboard" || name === "TopBar" ? menu : mainMenu) && name !== "EventEntry")
+      if (panel) setVisible(panel.id, (name === "MainMenuOverride" || name === "MMDashboard" || name === "TopBar" ? menu : menu && this.#playlistActive) && name !== "EventEntry")
+    }
+    const expandable = byName.get("expandablelist")
+    if (expandable) {
+      const x = this.#playlistActive && menu ? this.#viewport.width - expandable.bounds.width : this.#viewport.width
+      if (expandable.bounds.x !== x) mustApply(this.#runtime, { kind: "set-bounds", panel: expandable.id, bounds: { ...expandable.bounds, x } })
     }
     const states: Readonly<Record<string, boolean>> = Object.freeze({
       QuitButton: this.#state.kind === "main-menu",
@@ -515,9 +524,11 @@ class Integration implements Tf2GameUiIntegration {
   dispatch(event: Tf2GameUiEvent): Tf2GameUiTransition {
     if (this.#destroyed) throw new Error("TF2 GameUI integration is destroyed")
     const transition = transitionTf2GameUi(this.#state, event)
+    if (transition.request?.kind === "show-play-list") this.#playlistActive = true
+    else if (transition.request?.kind === "show-local-match" || transition.state.kind === "loading" || transition.state.kind === "disconnecting") this.#playlistActive = false
     this.#state = transition.state
     this.#runtime.deferPresentation(() => this.#presentState())
-    if (transition.request) this.#onRequest(transition.request)
+    if (transition.request && transition.request.kind !== "show-play-list") this.#onRequest(transition.request)
     return transition
   }
 

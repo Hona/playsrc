@@ -60,12 +60,12 @@ describe("TF2 configured GameUI actions", () => {
     )
     expect(snapshot).toEqual({
       dashboardMain: [
-        { identity: "find-game", text: "Find a Game", sourceCommand: "find_game", visibility: "visible", capability: { kind: "inactive", owner: "community-server-browser" } },
+        { identity: "find-game", text: "Find a Game", sourceCommand: "find_game", visibility: "visible", capability: { kind: "request", request: "show-play-list" } },
         { identity: "quit", text: "QUIT", sourceCommand: "quit", visibility: "visible", capability: { kind: "request", request: "quit" } },
       ],
       dashboardPause: [
         { identity: "resume", text: "Resume", sourceCommand: "resume_game", visibility: "visible", capability: { kind: "request", request: "resume-game" } },
-        { identity: "find-game", text: "Find a Game", sourceCommand: "find_game", visibility: "visible", capability: { kind: "inactive", owner: "community-server-browser" } },
+        { identity: "find-game", text: "Find a Game", sourceCommand: "find_game", visibility: "visible", capability: { kind: "request", request: "show-play-list" } },
         { identity: "disconnect", text: "Disconnect", sourceCommand: "quit", visibility: "visible", capability: { kind: "request", request: "disconnect" } },
       ],
       playList: [
@@ -74,8 +74,8 @@ describe("TF2 configured GameUI actions", () => {
         { identity: "competitive", text: "Competitive", sourceCommand: "play_competitive", visibility: "visible", capability: { kind: "inactive", owner: "competitive-matchmaking" } },
         { identity: "mann-vs-machine", text: "Mann vs. Machine", sourceCommand: "play_mvm", visibility: "visible", capability: { kind: "inactive", owner: "mann-vs-machine" } },
         { identity: "community-servers", text: "Community Servers", sourceCommand: "play_community", visibility: "visible", capability: { kind: "inactive", owner: "community-server-browser" } },
-        { identity: "training", text: "Training", sourceCommand: "play_training", visibility: "visible", capability: { kind: "inactive", owner: "training" } },
-        { identity: "create-server", text: "Create Server", sourceCommand: "create_server", visibility: "visible", capability: { kind: "inactive", owner: "community-server-creation" } },
+        { identity: "training", text: "Training", sourceCommand: "play_training", visibility: "visible", capability: { kind: "request", request: "show-training" } },
+        { identity: "create-server", text: "Create Server", sourceCommand: "create_server", visibility: "visible", capability: { kind: "request", request: "show-create-server" } },
       ],
       account: [
         { identity: "items", text: "ITEMS", sourceCommand: "engine open_charinfo", visibility: "visible", capability: { kind: "inactive", owner: "account-items" } },
@@ -95,14 +95,11 @@ describe("TF2 configured GameUI actions", () => {
 
   test("keeps every unavailable service inactive and side-effect free", () => {
     const unavailable: readonly Tf2MenuButton["identity"][] = [
-      "find-game",
       "special-event",
       "casual",
       "competitive",
       "mann-vs-machine",
       "community-servers",
-      "training",
-      "create-server",
       "items",
       "store",
     ]
@@ -117,10 +114,16 @@ describe("TF2 configured GameUI actions", () => {
 
   test("emits typed requests without executing owner behavior", () => {
     expect(transitionTf2GameUi(TF2_MAIN_MENU_STATE, { kind: "show-console" }).request).toEqual({ kind: "show-console" })
+    expect(transitionTf2GameUi(TF2_MAIN_MENU_STATE, { kind: "activate-button", button: "find-game" }).request)
+      .toEqual({ kind: "show-play-list" })
     expect(transitionTf2GameUi(TF2_MAIN_MENU_STATE, { kind: "activate-button", button: "options" }).request)
       .toEqual({ kind: "show-options", page: "options" })
     expect(transitionTf2GameUi(TF2_MAIN_MENU_STATE, { kind: "activate-button", button: "advanced-options" }).request)
       .toEqual({ kind: "show-options", page: "advanced-options" })
+    expect(transitionTf2GameUi(TF2_MAIN_MENU_STATE, { kind: "activate-button", button: "training" }).request)
+      .toEqual({ kind: "show-local-match", entry: "training" })
+    expect(transitionTf2GameUi(TF2_MAIN_MENU_STATE, { kind: "activate-button", button: "create-server" }).request)
+      .toEqual({ kind: "show-local-match", entry: "create-server" })
     expect(transitionTf2GameUi(TF2_MAIN_MENU_STATE, { kind: "activate-button", button: "new-user-forum" }).request)
       .toEqual({
         kind: "open-external-link",
@@ -160,14 +163,11 @@ describe("TF2 GameUI transition model", () => {
       "cancel-loading": ["loading"],
     }
     const inactive = new Set<Tf2MenuButton["identity"]>([
-      "find-game",
       "special-event",
       "casual",
       "competitive",
       "mann-vs-machine",
       "community-servers",
-      "training",
-      "create-server",
       "items",
       "store",
     ])

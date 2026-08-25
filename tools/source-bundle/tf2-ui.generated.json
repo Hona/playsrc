@@ -1,8 +1,8 @@
 {
   "schema": "playsrc-tf2-ui-bundle-v1",
-  "identity": "tf2-ui-24245096-fc91ef9c95eb2227",
+  "identity": "tf2-ui-24245096-72773685d94d5de1",
   "contentBuild": "24245096",
-  "sourceLedger": "resource/ui/mainmenuoverride.res=5f628eb8ec62ea557cf49bc13e587b48c5e7ebd480742e1795e1653c5ae8ed92\nresource/gamemenu.res=09eac01db08203960e10a0d5febe4c6e6b92fbb3cf9302ff9282fcd62ce12044\nresource/ui/matchmakingdashboard.res=edde2b40a83a8513251773799a37967ea8d3c4d578d4a7043c2378e158e29289\nresource/ui/matchmakingdashboardplaylist.res=5bc6d3e1e101f9b3dc30bcc40d631703d0c9bddce90b1b207937d4b3d9c90367\nresource/ui/matchmakingplaylist.res=86cda545847d2219d67b31ac39e5a26a6f711c1662404e62a26b7871d038b8a7\nresource/ui/mainmenuplaylistentry.res=f8379b432cee49b0696775788b5eac15a2c7f1ded8364386991cf7bc5e4af570\nresource/ui/mainmenueventplaylistentry.res=1e752c4072e60e3985141ed522fc9d41f424c0027313bd8e0e5fd43b9a2cac34\nscripts/characterbackgrounds.txt=9cfe4a4006b65adc31f1012cc8ca8d20d24dcd5ded3ca35c167ddf1b7f3e9c6f\nresource/ui/statsummary.res=bf146199fcd7aec0a5467752853b89ead6f882d11533de383c09561bd3455903\nresource/loadingdialognobanner.res=7cb4533c43c99512be637450c0ceba681621a140d0fe058a32781470e3a14290\nresource/loadingdialognobannersingle.res=cffde579cef52d36f2dd794e68848014da866e38c2404b8adcc56c579df4718b\nresource/loadingdialogvac.res=81cdac564b982aa4bed0658cda3d895caf46690194e24b870938ad89a82a87c9\nresource/loadingdialogdualprogress.res=missing\nresource/loadingdialogerror.res=f18624dea43ddeb196475fb5ae15831b72597686dd09e3716a8ce09a0c80a3cc\nresource/loadingdialogerrorvacbanned.res=8f0e097a4efd485c9c733d8de4d4632312afe1904e7bf1516f14e2fcaf95d66b\nresource/loadingdialogerrornosteamconnection.res=c9aa0c669d6d40d1c06204949ca2236cc2d2c2f7b9a2aa194a6ad9fb1fe52751\nresource/loadingdialogerrorloggedinelsewhere.res=4f2f0536c944961830f1bff66694e2e24af369aa5b027588ced8aa7568967562\nresource/clientscheme.res=1d071b99def0405cbf73d97642a396e6dcbad1a7488f12696ca5dd62893c604c\nresource/sourcescheme.res=97e6bb4816a567e1dea0333462f519a7be1434e4e7c10c728be25663d0f4134c\nresource/sourceschemebase.res=1ca27ea2d70db6af5a76605bd8f1655aabfecd61e3d19d89981e7eded972ea99\nscripts/hudlayout.res=1f18cb73d9ef54ff79ea208c9996db0655ac731b2ee8e9a82ff63a4b697f400f\nscripts/hudanimations_manifest.txt=927b61008081eafac302db71d32d75c63b4c9ed1b23c4bd5b8725826733c1acc\nscripts/hudanimations.txt=7e2e97c91493d7cfee9a67bd04fcc242c8f6cfec2834a796df08bdbac8a94e1a\nscripts/hudanimations_tf.txt=cffca69ab872c358d8afb566e78acde022062e87b4fdcfa1779e77dd28ad52ff\nresource/ui/hudplayerclass.res=10181165d10a81821672fd8e104d798e18cf896ca1156cf92df8ce0a07f8c89d\nresource/ui/hudplayerhealth.res=31fabca97c196eb2cff565b18ff8b3a17aa8806c8e1a980c9376782be7fa4774\nresource/ui/hudammoweapons.res=a23a98f009dd34ac8c94e7149b1ded56eb9ed66e03d583fcd9c2ab68c3cb7734\nresource/ui/hudweaponselection.res=7a6f02c7eab4f0befdac5c69082c9334b0a03975738e1fc6d598ba6c91967138\nresource/ui/scoreboard.res=ed6e7d1619dcfa7423d00cf77c19026d7fe00c6a2bca634bb742d20d870b3e52\nresource/ui/hudobjectivestatus.res=b46a3a3d4cbfa57d28d15292036f0de16bfdd928f82034dda4f37617576875ca\nresource/ui/hudmatchstatus.res=7c6dc4cd5bf8136f6962ab5a2745fe285dd84c1a211b539c4b7a696d51c966c5\nresource/ui/hudobjectivetimepanel.res=cae1af088a6fbe3ca6607d3e756ed2cf7e3d8f574ef18492a20f29cba7591500\nresource/ui/waitingforplayerspanel.res=04c80baaff2d42a8ae6155f240a33c8e687861b8df5d04f09c3a333b87f00b4f\nresource/ui/hudobjectiveflagpanel.res=8affbaac643b77e07e3561497d4f6cbc1abd919d497c92fe0a683015d9adc683\nresource/ui/flagstatus.res=69b56afcf854afe54cd745054f1f720540933a23838bf8f77f34d780091176ca\nresource/ui/winpanel.res=e03fe37c651b1958fedd58b8062a88cc76a7728a6b1d98f21e61af96bbb68089\nresource/ui/notifications/base_notification.res=224f01f03b0aa19c053f3ef8a9514f55f829abfbba3bb1ee9c34da77127493ac\nresource/ui/notifications/notify_your_flag_taken_red.res=bb57e2c055fe13a26e657a6c0f4341e65c61c6a36f13be5378675b44b7036c20\nresource/ui/notifications/notify_your_flag_taken_blue.res=6dc095c2be8fa10cc70d969d2f8c2223bfaaa447bd7e702cf3caab9d806f45e5\nresource/ui/notifications/notify_your_flag_dropped_red.res=b577077ce001433c73376b7c910c65cc84c73ec05177a28fb025ed101f5b48df\nresource/ui/notifications/notify_your_flag_dropped_blue.res=203a5856c0bb65bedfbc8969ed326ffca07d67358e2bc1318f109a02f12f5db6\nresource/ui/notifications/notify_your_flag_returned_red.res=6ddbde6a9a06738c416a3954fcfebac0ec00bd264415caab329a2f089d88407e\nresource/ui/notifications/notify_your_flag_returned_blue.res=e8800ce8f53707b98ae6447d9664d5338e83155dea39f50e4ab4a3c7c8777aa8\nresource/ui/notifications/notify_your_flag_captured_red.res=6e45432c4f1daeafb3c11fe38ea025ba5e7474904e62cf4896111a914107583b\nresource/ui/notifications/notify_your_flag_captured_blue.res=ff2609c1c992d929b59a576155045dd3138132b501630e645efae4aff16e9cad\nresource/ui/notifications/notify_enemy_flag_taken_red.res=69941e1902085f74b0651651aa7d7a8afa67d0e970e437d6812669d08f8b50e9\nresource/ui/notifications/notify_enemy_flag_taken_blue.res=ce7380aa0ead67029ff4538b92eeaa3f5097546af2a5eed1f7729dba7b03e8f2\nresource/ui/notifications/notify_enemy_flag_dropped_red.res=cb1657bc57f92a4caa5206a390e1d82168e85b590ac62dc9dc413f0b962f560f\nresource/ui/notifications/notify_enemy_flag_dropped_blue.res=f4d8aea3f1549560e56e2e7382b12037c3b39b46a7b41bcd2287363995f30f90\nresource/ui/notifications/notify_enemy_flag_returned_red.res=5171217a99a003cc1dd919d2c3cad7bd67fbddb95b522f5f2867c355bc2875b3\nresource/ui/notifications/notify_enemy_flag_returned_blue.res=6e5d270ffb0f50e1864956b3c00b919d994da87a9b6042a5bdd1aa45d10f0b58\nresource/ui/notifications/notify_enemy_flag_captured_red.res=1d43cbbd035626d43c32eb116f499a631a56d76e4cd08c81eb0957279d49bdbf\nresource/ui/notifications/notify_enemy_flag_captured_blue.res=27b8b7b23921a9df7d36776ddc814e5a1475fe79d1a0c83811c45272ea62002d\nresource/ui/notifications/notify_touching_enemy_ctf_cap_red.res=b6dc7aa9ac40282ad58a23a7a7cf16db90a872d1133205453275a2bd3a280ea6\nresource/ui/notifications/notify_touching_enemy_ctf_cap_blue.res=50e4ed92ddde5b0cff09214a58c765f2f971172175f9418ae07d3624913e2ee4\nresource/ui/huditemeffectmeter_spy.res=ac0868d0059d81a722db3441543c05ce2f9281e0f9b8feebf957163e277b62c7\nresource/ui/disguisestatuspanel.res=3f63dde5168cdc48b4412d816b29855f560223500df5a41a3463adc06f96f659\nresource/ui/disguise_menu/hudmenuspydisguise.res=af6b597b77ea6c24345fae67cf9fd71a4a119685fa58dcb5ec4847ddbd8055a3\nresource/ui/huddemomanpipes.res=607417c4abf5e469cf15e2d15d45ae5ccc826fe4a6b5f28444241a91a701bb55\nresource/ui/hudkillstreaknotice.res=551c477ae179b47715074091375612eae36fd22a0ddcd3a7c98f213925224aba\nresource/ui/targetid.res=1f9f3567a38238aa7a0ce2c1343a8b2b2fd18518a4220984268571a5e443f321\nresource/ui/hudaccountpanel.res=3778df1b3f8980d57a212b1093b46d79981a8f478535eb8fb5a0e32c499c821b\nresource/ui/hud_obj_sentrygun.res=847aa11dc79860b30a8895e56cbea5f05e25d86ee90156358e439f3252531d8d\nresource/ui/hud_obj_dispenser.res=de01fecf5488294a859924ebb8ef4469c5c8c411ac9494ccef59e0b6cf3b2324\nresource/ui/hud_obj_tele_entrance.res=08e636e77652cddd131e1616786ffe433f46140effd07b19069136d5b93bbe8b\nresource/ui/hud_obj_tele_exit.res=820ec83871757254342b33406f13f20ba58552fe98ef6a3d0c5796bdf7e1b060\nresource/ui/build_menu/hudmenuengybuild.res=d6ae743246d924cb196711d9c76c686547dcc25fd48f97a46f7ea583eec8da24\nresource/ui/build_menu/base_active.res=85e3534ab70bcc4b351f18d28a36de2b76d74b9e7c7411be94a235016eb97642\nresource/ui/build_menu/base_already_built.res=739a6a4aa3c3c7d3bedd7a82caf43e5a98305f1ddc541efbc299bfe6df187ffb\nresource/ui/build_menu/base_cant_afford.res=a66763285d3a17afef0dbb294a25cbce513cdf0cdae3fb4e1dfd1aab84f290e0\nresource/ui/build_menu/base_unavailable.res=86ed16e426488d8b6ee8d15b4cf35533f13a077bc4b517d5f30a8638e8d62fcf\nresource/ui/build_menu/sentry_active.res=f93c016a408914e36d937e561af64c06b841ddf474416962e71f40da9c8a4296\nresource/ui/build_menu/sentry_already_built.res=15a8c82f10764efe71b06b0c8dd66c57241fade19984e1cd30e0d30d15569763\nresource/ui/build_menu/sentry_cant_afford.res=f991aa9c66b16e1bdc124e64aa2fbac534e78cfc9aa0675f0ba59dc0346d9ef4\nresource/ui/build_menu/sentry_unavailable.res=af8127ddaab14655147927c89a0ecbcc6df0721f29375728fb9bb62b34e36efd\nresource/ui/build_menu/dispenser_active.res=ed1c867a7cca3571ce7a0944a661d47b8b76f6390f523f81e7ef892df6df7823\nresource/ui/build_menu/dispenser_already_built.res=bf79605b3178a66f16b07aeeed534b149a3825afc742371771eb6dd93390af44\nresource/ui/build_menu/dispenser_cant_afford.res=2d8b5933088544ad51223df833cde5ee59ecb62611c3f3f5e64353b9695d80d8\nresource/ui/build_menu/dispenser_unavailable.res=c7467c50b700ed00000a744cbcd2b90db3bbfb7117025922a11046abfeae51d4\nresource/ui/build_menu/tele_entrance_active.res=b60e5a503b977025ef4f8e6cba57ea51b6315ed09edf8362498797ca2223d4ef\nresource/ui/build_menu/tele_entrance_already_built.res=84158771f4214232dfdebc009504bd9401671e2b364d3f9b4c62a1af4baf6642\nresource/ui/build_menu/tele_entrance_cant_afford.res=7af85facd99f84f15d74e98d4568ddfc029fa3bc9bb042ecccd34844ac7de87f\nresource/ui/build_menu/tele_entrance_unavailable.res=eb4c704290dc58a435b7a060cc18545048a636164ef5e2c287601f555b39fb79\nresource/ui/build_menu/tele_exit_active.res=3e2d5d3e9351a2b7e2d192b25cc038639291ba453e261e3ad9e011f7d3cece1f\nresource/ui/build_menu/tele_exit_already_built.res=a663a08df86006e8b308187e542f8056e6be557b911295ee9cff9e3290e0994a\nresource/ui/build_menu/tele_exit_cant_afford.res=033e68c1f12cacaeb70eff746ede152f8105e25a5bb875541eff0fb44dfa79ea\nresource/ui/build_menu/tele_exit_unavailable.res=2fd9134ed0677a08b73ac05d2bf0b770fac5a073fa0dca70596e337d850228ba\nresource/ui/destroy_menu/hudmenuengydestroy.res=eccaca4ea9c7cf1a0b6da8a8a0b43f4a64fb80853d96affb5a1d81e89741c722\nresource/ui/destroy_menu/sentry_active.res=61aa16cb165f0a08ac45b566f7aa755cd3095504d5fabf08e476dcdbec70e3bb\nresource/ui/destroy_menu/sentry_inactive.res=21e221c001506e849c765dbf10c1101c8b7db47c11f4cf17bb4e184f532dbddd\nresource/ui/destroy_menu/dispenser_active.res=13f29b892149149e8acaafb3999153cb9b895f8aaf16ab3fb6c1db819d8bc3dc\nresource/ui/destroy_menu/dispenser_inactive.res=c8e55e77e3f3dc93198a45a4365ec6f17f0d1f46e88d5943fbba77086f12fd53\nresource/ui/destroy_menu/tele_entrance_active.res=69f1cac1e9077053266b0d7c7d71547ed102b73577bb33598c9de82bdd0abce1\nresource/ui/destroy_menu/tele_entrance_inactive.res=ca2fb3667ea5445c75d6ff71825bfbadedc342f48a463de1c3abd44e76c7d5b8\nresource/ui/destroy_menu/tele_exit_active.res=5ff66dd1bef2453ff3f45de11119ab43796ed4f8968f4912b949fd3ad0c81585\nresource/ui/destroy_menu/tele_exit_inactive.res=e3d6a74fbe1cdef2694d6be1c766720b1a26ed337f17838eced77c688a282544\nresource/ui/classselection.res=e6fc4be62822eb351e6e678ece2f6e42b92b0b8e825a12c8120fc14b82154fcc\nresource/ui/classtipslist.res=c7be1fb87a7d748df8f5d59db54b79020d57675e983939cb4b7f2f3a8ec968cc\nresource/ui/classtipsitem.res=524eac0cddd5625561cf1d0034653624d3daffcc1e99313ebdbfd5fd00a1a9d7\nresource/ui/teammenu.res=650867b7928f728ff6fce107745018223f3a19b1193b4c7f5fae54e391f102a0\nresource/optionssubkeyboard.res=99cc7c486fa19b58c76842a8ce5abf8b65ff13fbbd097f5eb7e195783b570902\nresource/optionssubkeyboardadvanceddlg.res=fc9cfe367a14c0afdf31e09a87e571a8bfc9fe7080611b64a0f6be115fee0a55\nresource/optionssubmouse.res=d66b4e5c5138ab5a03488f04275532e249834dfc56c55d648a61cc95e62730a7\nresource/optionssubaudio.res=610c003f70285085917e930015d17ad772d6ec24d7ec4beda55f22f4d87bf42e\nresource/optionssubaudiothirdpartydlg.res=6e03e67f08e7fb52c8bb2e589ac11475188da913e4cde7f6431f409f03c30419\nresource/optionssubvideo.res=0753652e496d0df7a8935a10f3360c275ed24f6dfe5c70f83695953754f0333a\nresource/optionssubvideoadvanceddlg.res=6810e7b776ddaf2350fb2370fde6313cfc724bc7115841236cecccb5fd9e53c4\nresource/optionssubvideogammadlg.res=1820881866018ea5499fa796dc81d6ebb79e37a228f808236af3f05994da229e\nresource/optionssubvideothirdpartydlg.res=d284eda8d6e578cc4645e6fba94044d14c870e491e4b0ba5d497a5ce9fc094d5\nresource/optionssubvoice.res=c72f989c979091c6ad9b0456039b9444be39962fc66fd816019914b7cf7f247d\nresource/optionssubmultiplayer.res=40cacfeaff5f0304edbbdfe03a970dddb786a6c4ad8c9492edafae556a00c19e\nresource/ui/tfadvancedoptionsdialog.res=38926822b667e916f5df3c3aeca41b86bab6f155ce3b2cc31edf53598fb29cc4\ncfg/user_default.scr=d8f4cf14cebc84082b555fe4277f05aa5959cbd2b2e9f920252f43fe70b6b020\ncfg/user.scr=missing\nscripts/kb_act.lst=403843357e1e3dd4212fba5f4d253db92096531d224595a47eadc07cb6b1f8da\nresource/tf_english.txt=9c6b1b289b03c1d3d8c44b11378b785c06b98de73b406a5f118b0aabfb65e1ef\nresource/gameui_english.txt=43730a193cec6892915532f809fa274397a122e827e75820514bced96f1f83f5\nresource/vgui_english.txt=56a86da0be3ab3045d2fe766b852043ba1d641df70675097e24537f46c0096b4\nresource/valve_english.txt=4bbd3d8d9fca9d4f1dae999d9bdac16a0152dc28e8b3fcb9c5508c60a32dbcfa",
+  "sourceLedger": "resource/ui/mainmenuoverride.res=5f628eb8ec62ea557cf49bc13e587b48c5e7ebd480742e1795e1653c5ae8ed92\nresource/gamemenu.res=09eac01db08203960e10a0d5febe4c6e6b92fbb3cf9302ff9282fcd62ce12044\nresource/ui/matchmakingdashboard.res=edde2b40a83a8513251773799a37967ea8d3c4d578d4a7043c2378e158e29289\nresource/ui/matchmakingdashboardplaylist.res=5bc6d3e1e101f9b3dc30bcc40d631703d0c9bddce90b1b207937d4b3d9c90367\nresource/ui/matchmakingplaylist.res=86cda545847d2219d67b31ac39e5a26a6f711c1662404e62a26b7871d038b8a7\nresource/ui/mainmenuplaylistentry.res=f8379b432cee49b0696775788b5eac15a2c7f1ded8364386991cf7bc5e4af570\nresource/ui/mainmenueventplaylistentry.res=1e752c4072e60e3985141ed522fc9d41f424c0027313bd8e0e5fd43b9a2cac34\nscripts/characterbackgrounds.txt=9cfe4a4006b65adc31f1012cc8ca8d20d24dcd5ded3ca35c167ddf1b7f3e9c6f\nresource/ui/statsummary.res=bf146199fcd7aec0a5467752853b89ead6f882d11533de383c09561bd3455903\nresource/loadingdialognobanner.res=7cb4533c43c99512be637450c0ceba681621a140d0fe058a32781470e3a14290\nresource/loadingdialognobannersingle.res=cffde579cef52d36f2dd794e68848014da866e38c2404b8adcc56c579df4718b\nresource/loadingdialogvac.res=81cdac564b982aa4bed0658cda3d895caf46690194e24b870938ad89a82a87c9\nresource/loadingdialogdualprogress.res=missing\nresource/loadingdialogerror.res=f18624dea43ddeb196475fb5ae15831b72597686dd09e3716a8ce09a0c80a3cc\nresource/loadingdialogerrorvacbanned.res=8f0e097a4efd485c9c733d8de4d4632312afe1904e7bf1516f14e2fcaf95d66b\nresource/loadingdialogerrornosteamconnection.res=c9aa0c669d6d40d1c06204949ca2236cc2d2c2f7b9a2aa194a6ad9fb1fe52751\nresource/loadingdialogerrorloggedinelsewhere.res=4f2f0536c944961830f1bff66694e2e24af369aa5b027588ced8aa7568967562\nresource/clientscheme.res=1d071b99def0405cbf73d97642a396e6dcbad1a7488f12696ca5dd62893c604c\nresource/sourcescheme.res=97e6bb4816a567e1dea0333462f519a7be1434e4e7c10c728be25663d0f4134c\nresource/sourceschemebase.res=1ca27ea2d70db6af5a76605bd8f1655aabfecd61e3d19d89981e7eded972ea99\nscripts/hudlayout.res=1f18cb73d9ef54ff79ea208c9996db0655ac731b2ee8e9a82ff63a4b697f400f\nscripts/hudanimations_manifest.txt=927b61008081eafac302db71d32d75c63b4c9ed1b23c4bd5b8725826733c1acc\nscripts/hudanimations.txt=7e2e97c91493d7cfee9a67bd04fcc242c8f6cfec2834a796df08bdbac8a94e1a\nscripts/hudanimations_tf.txt=cffca69ab872c358d8afb566e78acde022062e87b4fdcfa1779e77dd28ad52ff\nresource/ui/hudplayerclass.res=10181165d10a81821672fd8e104d798e18cf896ca1156cf92df8ce0a07f8c89d\nresource/ui/hudplayerhealth.res=31fabca97c196eb2cff565b18ff8b3a17aa8806c8e1a980c9376782be7fa4774\nresource/ui/hudammoweapons.res=a23a98f009dd34ac8c94e7149b1ded56eb9ed66e03d583fcd9c2ab68c3cb7734\nresource/ui/hudweaponselection.res=7a6f02c7eab4f0befdac5c69082c9334b0a03975738e1fc6d598ba6c91967138\nresource/ui/scoreboard.res=ed6e7d1619dcfa7423d00cf77c19026d7fe00c6a2bca634bb742d20d870b3e52\nresource/ui/hudobjectivestatus.res=b46a3a3d4cbfa57d28d15292036f0de16bfdd928f82034dda4f37617576875ca\nresource/ui/hudmatchstatus.res=7c6dc4cd5bf8136f6962ab5a2745fe285dd84c1a211b539c4b7a696d51c966c5\nresource/ui/hudobjectivetimepanel.res=cae1af088a6fbe3ca6607d3e756ed2cf7e3d8f574ef18492a20f29cba7591500\nresource/ui/waitingforplayerspanel.res=04c80baaff2d42a8ae6155f240a33c8e687861b8df5d04f09c3a333b87f00b4f\nresource/ui/hudobjectiveflagpanel.res=8affbaac643b77e07e3561497d4f6cbc1abd919d497c92fe0a683015d9adc683\nresource/ui/flagstatus.res=69b56afcf854afe54cd745054f1f720540933a23838bf8f77f34d780091176ca\nresource/ui/winpanel.res=e03fe37c651b1958fedd58b8062a88cc76a7728a6b1d98f21e61af96bbb68089\nresource/ui/notifications/base_notification.res=224f01f03b0aa19c053f3ef8a9514f55f829abfbba3bb1ee9c34da77127493ac\nresource/ui/notifications/notify_your_flag_taken_red.res=bb57e2c055fe13a26e657a6c0f4341e65c61c6a36f13be5378675b44b7036c20\nresource/ui/notifications/notify_your_flag_taken_blue.res=6dc095c2be8fa10cc70d969d2f8c2223bfaaa447bd7e702cf3caab9d806f45e5\nresource/ui/notifications/notify_your_flag_dropped_red.res=b577077ce001433c73376b7c910c65cc84c73ec05177a28fb025ed101f5b48df\nresource/ui/notifications/notify_your_flag_dropped_blue.res=203a5856c0bb65bedfbc8969ed326ffca07d67358e2bc1318f109a02f12f5db6\nresource/ui/notifications/notify_your_flag_returned_red.res=6ddbde6a9a06738c416a3954fcfebac0ec00bd264415caab329a2f089d88407e\nresource/ui/notifications/notify_your_flag_returned_blue.res=e8800ce8f53707b98ae6447d9664d5338e83155dea39f50e4ab4a3c7c8777aa8\nresource/ui/notifications/notify_your_flag_captured_red.res=6e45432c4f1daeafb3c11fe38ea025ba5e7474904e62cf4896111a914107583b\nresource/ui/notifications/notify_your_flag_captured_blue.res=ff2609c1c992d929b59a576155045dd3138132b501630e645efae4aff16e9cad\nresource/ui/notifications/notify_enemy_flag_taken_red.res=69941e1902085f74b0651651aa7d7a8afa67d0e970e437d6812669d08f8b50e9\nresource/ui/notifications/notify_enemy_flag_taken_blue.res=ce7380aa0ead67029ff4538b92eeaa3f5097546af2a5eed1f7729dba7b03e8f2\nresource/ui/notifications/notify_enemy_flag_dropped_red.res=cb1657bc57f92a4caa5206a390e1d82168e85b590ac62dc9dc413f0b962f560f\nresource/ui/notifications/notify_enemy_flag_dropped_blue.res=f4d8aea3f1549560e56e2e7382b12037c3b39b46a7b41bcd2287363995f30f90\nresource/ui/notifications/notify_enemy_flag_returned_red.res=5171217a99a003cc1dd919d2c3cad7bd67fbddb95b522f5f2867c355bc2875b3\nresource/ui/notifications/notify_enemy_flag_returned_blue.res=6e5d270ffb0f50e1864956b3c00b919d994da87a9b6042a5bdd1aa45d10f0b58\nresource/ui/notifications/notify_enemy_flag_captured_red.res=1d43cbbd035626d43c32eb116f499a631a56d76e4cd08c81eb0957279d49bdbf\nresource/ui/notifications/notify_enemy_flag_captured_blue.res=27b8b7b23921a9df7d36776ddc814e5a1475fe79d1a0c83811c45272ea62002d\nresource/ui/notifications/notify_touching_enemy_ctf_cap_red.res=b6dc7aa9ac40282ad58a23a7a7cf16db90a872d1133205453275a2bd3a280ea6\nresource/ui/notifications/notify_touching_enemy_ctf_cap_blue.res=50e4ed92ddde5b0cff09214a58c765f2f971172175f9418ae07d3624913e2ee4\nresource/ui/huditemeffectmeter_spy.res=ac0868d0059d81a722db3441543c05ce2f9281e0f9b8feebf957163e277b62c7\nresource/ui/disguisestatuspanel.res=3f63dde5168cdc48b4412d816b29855f560223500df5a41a3463adc06f96f659\nresource/ui/disguise_menu/hudmenuspydisguise.res=af6b597b77ea6c24345fae67cf9fd71a4a119685fa58dcb5ec4847ddbd8055a3\nresource/ui/huddemomanpipes.res=607417c4abf5e469cf15e2d15d45ae5ccc826fe4a6b5f28444241a91a701bb55\nresource/ui/hudkillstreaknotice.res=551c477ae179b47715074091375612eae36fd22a0ddcd3a7c98f213925224aba\nresource/ui/targetid.res=1f9f3567a38238aa7a0ce2c1343a8b2b2fd18518a4220984268571a5e443f321\nresource/ui/hudaccountpanel.res=3778df1b3f8980d57a212b1093b46d79981a8f478535eb8fb5a0e32c499c821b\nresource/ui/hud_obj_sentrygun.res=847aa11dc79860b30a8895e56cbea5f05e25d86ee90156358e439f3252531d8d\nresource/ui/hud_obj_dispenser.res=de01fecf5488294a859924ebb8ef4469c5c8c411ac9494ccef59e0b6cf3b2324\nresource/ui/hud_obj_tele_entrance.res=08e636e77652cddd131e1616786ffe433f46140effd07b19069136d5b93bbe8b\nresource/ui/hud_obj_tele_exit.res=820ec83871757254342b33406f13f20ba58552fe98ef6a3d0c5796bdf7e1b060\nresource/ui/build_menu/hudmenuengybuild.res=d6ae743246d924cb196711d9c76c686547dcc25fd48f97a46f7ea583eec8da24\nresource/ui/build_menu/base_active.res=85e3534ab70bcc4b351f18d28a36de2b76d74b9e7c7411be94a235016eb97642\nresource/ui/build_menu/base_already_built.res=739a6a4aa3c3c7d3bedd7a82caf43e5a98305f1ddc541efbc299bfe6df187ffb\nresource/ui/build_menu/base_cant_afford.res=a66763285d3a17afef0dbb294a25cbce513cdf0cdae3fb4e1dfd1aab84f290e0\nresource/ui/build_menu/base_unavailable.res=86ed16e426488d8b6ee8d15b4cf35533f13a077bc4b517d5f30a8638e8d62fcf\nresource/ui/build_menu/sentry_active.res=f93c016a408914e36d937e561af64c06b841ddf474416962e71f40da9c8a4296\nresource/ui/build_menu/sentry_already_built.res=15a8c82f10764efe71b06b0c8dd66c57241fade19984e1cd30e0d30d15569763\nresource/ui/build_menu/sentry_cant_afford.res=f991aa9c66b16e1bdc124e64aa2fbac534e78cfc9aa0675f0ba59dc0346d9ef4\nresource/ui/build_menu/sentry_unavailable.res=af8127ddaab14655147927c89a0ecbcc6df0721f29375728fb9bb62b34e36efd\nresource/ui/build_menu/dispenser_active.res=ed1c867a7cca3571ce7a0944a661d47b8b76f6390f523f81e7ef892df6df7823\nresource/ui/build_menu/dispenser_already_built.res=bf79605b3178a66f16b07aeeed534b149a3825afc742371771eb6dd93390af44\nresource/ui/build_menu/dispenser_cant_afford.res=2d8b5933088544ad51223df833cde5ee59ecb62611c3f3f5e64353b9695d80d8\nresource/ui/build_menu/dispenser_unavailable.res=c7467c50b700ed00000a744cbcd2b90db3bbfb7117025922a11046abfeae51d4\nresource/ui/build_menu/tele_entrance_active.res=b60e5a503b977025ef4f8e6cba57ea51b6315ed09edf8362498797ca2223d4ef\nresource/ui/build_menu/tele_entrance_already_built.res=84158771f4214232dfdebc009504bd9401671e2b364d3f9b4c62a1af4baf6642\nresource/ui/build_menu/tele_entrance_cant_afford.res=7af85facd99f84f15d74e98d4568ddfc029fa3bc9bb042ecccd34844ac7de87f\nresource/ui/build_menu/tele_entrance_unavailable.res=eb4c704290dc58a435b7a060cc18545048a636164ef5e2c287601f555b39fb79\nresource/ui/build_menu/tele_exit_active.res=3e2d5d3e9351a2b7e2d192b25cc038639291ba453e261e3ad9e011f7d3cece1f\nresource/ui/build_menu/tele_exit_already_built.res=a663a08df86006e8b308187e542f8056e6be557b911295ee9cff9e3290e0994a\nresource/ui/build_menu/tele_exit_cant_afford.res=033e68c1f12cacaeb70eff746ede152f8105e25a5bb875541eff0fb44dfa79ea\nresource/ui/build_menu/tele_exit_unavailable.res=2fd9134ed0677a08b73ac05d2bf0b770fac5a073fa0dca70596e337d850228ba\nresource/ui/destroy_menu/hudmenuengydestroy.res=eccaca4ea9c7cf1a0b6da8a8a0b43f4a64fb80853d96affb5a1d81e89741c722\nresource/ui/destroy_menu/sentry_active.res=61aa16cb165f0a08ac45b566f7aa755cd3095504d5fabf08e476dcdbec70e3bb\nresource/ui/destroy_menu/sentry_inactive.res=21e221c001506e849c765dbf10c1101c8b7db47c11f4cf17bb4e184f532dbddd\nresource/ui/destroy_menu/dispenser_active.res=13f29b892149149e8acaafb3999153cb9b895f8aaf16ab3fb6c1db819d8bc3dc\nresource/ui/destroy_menu/dispenser_inactive.res=c8e55e77e3f3dc93198a45a4365ec6f17f0d1f46e88d5943fbba77086f12fd53\nresource/ui/destroy_menu/tele_entrance_active.res=69f1cac1e9077053266b0d7c7d71547ed102b73577bb33598c9de82bdd0abce1\nresource/ui/destroy_menu/tele_entrance_inactive.res=ca2fb3667ea5445c75d6ff71825bfbadedc342f48a463de1c3abd44e76c7d5b8\nresource/ui/destroy_menu/tele_exit_active.res=5ff66dd1bef2453ff3f45de11119ab43796ed4f8968f4912b949fd3ad0c81585\nresource/ui/destroy_menu/tele_exit_inactive.res=e3d6a74fbe1cdef2694d6be1c766720b1a26ed337f17838eced77c688a282544\nresource/ui/classselection.res=e6fc4be62822eb351e6e678ece2f6e42b92b0b8e825a12c8120fc14b82154fcc\nresource/ui/classtipslist.res=c7be1fb87a7d748df8f5d59db54b79020d57675e983939cb4b7f2f3a8ec968cc\nresource/ui/classtipsitem.res=524eac0cddd5625561cf1d0034653624d3daffcc1e99313ebdbfd5fd00a1a9d7\nresource/ui/teammenu.res=650867b7928f728ff6fce107745018223f3a19b1193b4c7f5fae54e391f102a0\nresource/offline_practice.res=0bfd8e281c89a45b08d5d78ff049159c7b8c19cbe3c32594bdfa3c8b0586a507\nresource/ui/training/main.res=a6efff7d0f36d89d866567b2b8109b8ef65573ed4a0cd47131646487d9a461a2\nresource/ui/training/modeselection/modeselection.res=bd38e0941d916733c588f1ffc850607c71e7f20ea09a4c9c663666796c4bf0a5\nresource/ui/training/modeselection/modepanel.res=ce7e7c8061b2a2a09ccf636d85c03b2c93451379573503a83182356fdf0c46a7\nresource/ui/training/offlinepractice/practicemodeselection.res=71bc8847bb02fc2a4933732a7f078c540e6e3d082808a80c8c02ae18c0b16562\nresource/ui/training/offlinepractice/mapselection.res=17354d6b6f43c82867fec37dc95e7434eb9931584d85f83bf0886a8865220197\nresource/createmultiplayergameserverpage.res=9e718333bba8f969137955db8321374926d2589b58837c5c9a4d2aa05f462eff\nresource/createmultiplayergamegameplaypage.res=ffe497ad532fdb0643de3d83a80c2e87daea926832da27b15d728a959c9939a5\nresource/optionssubkeyboard.res=99cc7c486fa19b58c76842a8ce5abf8b65ff13fbbd097f5eb7e195783b570902\nresource/optionssubkeyboardadvanceddlg.res=fc9cfe367a14c0afdf31e09a87e571a8bfc9fe7080611b64a0f6be115fee0a55\nresource/optionssubmouse.res=d66b4e5c5138ab5a03488f04275532e249834dfc56c55d648a61cc95e62730a7\nresource/optionssubaudio.res=610c003f70285085917e930015d17ad772d6ec24d7ec4beda55f22f4d87bf42e\nresource/optionssubaudiothirdpartydlg.res=6e03e67f08e7fb52c8bb2e589ac11475188da913e4cde7f6431f409f03c30419\nresource/optionssubvideo.res=0753652e496d0df7a8935a10f3360c275ed24f6dfe5c70f83695953754f0333a\nresource/optionssubvideoadvanceddlg.res=6810e7b776ddaf2350fb2370fde6313cfc724bc7115841236cecccb5fd9e53c4\nresource/optionssubvideogammadlg.res=1820881866018ea5499fa796dc81d6ebb79e37a228f808236af3f05994da229e\nresource/optionssubvideothirdpartydlg.res=d284eda8d6e578cc4645e6fba94044d14c870e491e4b0ba5d497a5ce9fc094d5\nresource/optionssubvoice.res=c72f989c979091c6ad9b0456039b9444be39962fc66fd816019914b7cf7f247d\nresource/optionssubmultiplayer.res=40cacfeaff5f0304edbbdfe03a970dddb786a6c4ad8c9492edafae556a00c19e\nresource/ui/tfadvancedoptionsdialog.res=38926822b667e916f5df3c3aeca41b86bab6f155ce3b2cc31edf53598fb29cc4\ncfg/user_default.scr=d8f4cf14cebc84082b555fe4277f05aa5959cbd2b2e9f920252f43fe70b6b020\ncfg/user.scr=missing\nscripts/kb_act.lst=403843357e1e3dd4212fba5f4d253db92096531d224595a47eadc07cb6b1f8da\nresource/tf_english.txt=9c6b1b289b03c1d3d8c44b11378b785c06b98de73b406a5f118b0aabfb65e1ef\nresource/gameui_english.txt=43730a193cec6892915532f809fa274397a122e827e75820514bced96f1f83f5\nresource/vgui_english.txt=56a86da0be3ab3045d2fe766b852043ba1d641df70675097e24537f46c0096b4\nresource/valve_english.txt=4bbd3d8d9fca9d4f1dae999d9bdac16a0152dc28e8b3fcb9c5508c60a32dbcfa",
   "dependencies": [
     {
       "logicalPath": "cfg/user_default.scr",
@@ -5341,6 +5341,102 @@
       ]
     },
     {
+      "logicalPath": "materials/vgui/illustrations/bg.vmt",
+      "sha256": "12854b18b6835b3b185bf3e7e369d8a5ee1522482948dbb8071e096f05da61d6",
+      "byteLength": 133,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/illustrations/bg.vtf",
+      "sha256": "648172bf7c7d533612de2f5332331d025a602d060bbaffdce40f62d36244e118",
+      "byteLength": 1398360,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/illustrations/gamemode_cp.vmt",
+      "sha256": "f78819c632e79dde43425d85bac9720be1ff9da7a2106761c4edbad0e8b7aacb",
+      "byteLength": 142,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/illustrations/gamemode_cp.vtf",
+      "sha256": "49681aff27d9057cade1ac85726ca4ab13c402aa9cd1f5823a359b4afb6643cc",
+      "byteLength": 1398360,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/illustrations/gamemode_koth.vmt",
+      "sha256": "769f9d56655f248aa88bdfd94d0c6ac210e9e7cdc945de7f8c696c721433d72a",
+      "byteLength": 144,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/illustrations/gamemode_koth.vtf",
+      "sha256": "a6e46191598f391776b3158ed51d6291f4ad17d2a7ca85e3d21d62634a381811",
+      "byteLength": 1398360,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/illustrations/gamemode_payload.vmt",
+      "sha256": "41d37c10f18256b20d901d1270ad779b84231e856fd4e10a05615b073b63432b",
+      "byteLength": 147,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/illustrations/gamemode_payload.vtf",
+      "sha256": "51516099353ba76a7e299ab43205e76a018df7d5c63200514df010764a3ab1b5",
+      "byteLength": 1398360,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/illustrations/training_basic.vmt",
+      "sha256": "312448b39b7b14d4874b4f3667f432210a3fbe580f5758f2b9bc194db0c67ad1",
+      "byteLength": 145,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/illustrations/training_basic.vtf",
+      "sha256": "88e64ee3fd3dd0ac97b9c367cc3ef7acd0a139066d33dc3f4c2b470ba52e7c77",
+      "byteLength": 1398360,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/illustrations/training_offlinepractice.vmt",
+      "sha256": "ce9aca3a6088bc22bc80ccbc3186cdd88745b54e0581a5ac14654715887bd2c9",
+      "byteLength": 155,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/illustrations/training_offlinepractice.vtf",
+      "sha256": "c3e775d4fe0fc0073de5a493c35b97e5739b0205c00dc61a6563d698a49ba93e",
+      "byteLength": 1398360,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
       "logicalPath": "materials/vgui/info.vmt",
       "sha256": "8fd4c1832cddb3278f5d8b52bf404f1f65734da630917cb24ad8fe0bdf21aefa",
       "byteLength": 121,
@@ -5528,6 +5624,22 @@
       "logicalPath": "materials/vgui/locked_icon.vtf",
       "sha256": "390c6889273459e21f44ab836f97c5d7dafcead2d8eff5b2abed63b6c5588f83",
       "byteLength": 87620,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/maps/menu_photos_ctf_2fort.vmt",
+      "sha256": "6c1228fd96a0f6029a924ea19d7801c9681db084742db8583e8f3d425056aac4",
+      "byteLength": 126,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/maps/menu_photos_ctf_2fort.vtf",
+      "sha256": "1ec1d0a675522d3245e72817d83f9292ea9c60bcfde8d40bfe1b38eff2c889ad",
+      "byteLength": 349784,
       "kinds": [
         "texture"
       ]
@@ -6045,6 +6157,54 @@
       ]
     },
     {
+      "logicalPath": "materials/vgui/training/gradient.vmt",
+      "sha256": "9527b90ac954ebc7aec68648743999d93d1cbd6c188220105a90c0791b7a037e",
+      "byteLength": 134,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/training/gradient.vtf",
+      "sha256": "f1be3eb5e8408956d6584ac8ee9bb59541443826895582cbb3c838a6da10d1cd",
+      "byteLength": 699296,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/training/gradient_black.vmt",
+      "sha256": "4a2163d474bef6376ec325fe87e8b2b369279cb2a81f80451027cd8a1b290323",
+      "byteLength": 140,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/training/gradient_black.vtf",
+      "sha256": "9c149a62a129c6a7f50f293d28b0621f96fe6a09b11bb15512f0ecc627b9444e",
+      "byteLength": 22104,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/training/screenshots/pl_upward.vmt",
+      "sha256": "82b86f5973ad0537d9398d3e4a83a4084912d2b55b220efc7c1df7edae5bc975",
+      "byteLength": 147,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/training/screenshots/pl_upward.vtf",
+      "sha256": "fb9f129f33310f6f8b729997442443025675b353f9bd516442408a88e7b8f7eb",
+      "byteLength": 1398360,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
       "logicalPath": "materials/vgui/viewmode_loaner.vmt",
       "sha256": "22ad39360456b1b8b51d954ec78aefc9356cde20f8f29e1db6b8608fa84a8641",
       "byteLength": 157,
@@ -6064,6 +6224,22 @@
       "logicalPath": "resource/clientscheme.res",
       "sha256": "1d071b99def0405cbf73d97642a396e6dcbad1a7488f12696ca5dd62893c604c",
       "byteLength": 134127,
+      "kinds": [
+        "resource"
+      ]
+    },
+    {
+      "logicalPath": "resource/createmultiplayergamegameplaypage.res",
+      "sha256": "ffe497ad532fdb0643de3d83a80c2e87daea926832da27b15d728a959c9939a5",
+      "byteLength": 1561,
+      "kinds": [
+        "resource"
+      ]
+    },
+    {
+      "logicalPath": "resource/createmultiplayergameserverpage.res",
+      "sha256": "9e718333bba8f969137955db8321374926d2589b58837c5c9a4d2aa05f462eff",
+      "byteLength": 1797,
       "kinds": [
         "resource"
       ]
@@ -6234,6 +6410,14 @@
       "byteLength": 24316,
       "kinds": [
         "font"
+      ]
+    },
+    {
+      "logicalPath": "resource/offline_practice.res",
+      "sha256": "0bfd8e281c89a45b08d5d78ff049159c7b8c19cbe3c32594bdfa3c8b0586a507",
+      "byteLength": 1525,
+      "kinds": [
+        "resource"
       ]
     },
     {
@@ -7048,6 +7232,46 @@
       "logicalPath": "resource/ui/tfadvancedoptionsdialog.res",
       "sha256": "38926822b667e916f5df3c3aeca41b86bab6f155ce3b2cc31edf53598fb29cc4",
       "byteLength": 2989,
+      "kinds": [
+        "resource"
+      ]
+    },
+    {
+      "logicalPath": "resource/ui/training/main.res",
+      "sha256": "a6efff7d0f36d89d866567b2b8109b8ef65573ed4a0cd47131646487d9a461a2",
+      "byteLength": 6311,
+      "kinds": [
+        "resource"
+      ]
+    },
+    {
+      "logicalPath": "resource/ui/training/modeselection/modepanel.res",
+      "sha256": "ce7e7c8061b2a2a09ccf636d85c03b2c93451379573503a83182356fdf0c46a7",
+      "byteLength": 2496,
+      "kinds": [
+        "resource"
+      ]
+    },
+    {
+      "logicalPath": "resource/ui/training/modeselection/modeselection.res",
+      "sha256": "bd38e0941d916733c588f1ffc850607c71e7f20ea09a4c9c663666796c4bf0a5",
+      "byteLength": 1042,
+      "kinds": [
+        "resource"
+      ]
+    },
+    {
+      "logicalPath": "resource/ui/training/offlinepractice/mapselection.res",
+      "sha256": "17354d6b6f43c82867fec37dc95e7434eb9931584d85f83bf0886a8865220197",
+      "byteLength": 6220,
+      "kinds": [
+        "resource"
+      ]
+    },
+    {
+      "logicalPath": "resource/ui/training/offlinepractice/practicemodeselection.res",
+      "sha256": "71bc8847bb02fc2a4933732a7f078c540e6e3d082808a80c8c02ae18c0b16562",
+      "byteLength": 3692,
       "kinds": [
         "resource"
       ]
@@ -12968,6 +13192,102 @@
     },
     {
       "identity": "image-0348",
+      "configuredValue": "illustrations/bg",
+      "classification": "content-vtf",
+      "material": "materials/vgui/illustrations/bg.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/illustrations/bg.vtf",
+          "sha256": "648172bf7c7d533612de2f5332331d025a602d060bbaffdce40f62d36244e118",
+          "width": 1024,
+          "height": 1024,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0349",
+      "configuredValue": "illustrations/gamemode_cp",
+      "classification": "content-vtf",
+      "material": "materials/vgui/illustrations/gamemode_cp.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/illustrations/gamemode_cp.vtf",
+          "sha256": "49681aff27d9057cade1ac85726ca4ab13c402aa9cd1f5823a359b4afb6643cc",
+          "width": 1024,
+          "height": 1024,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0350",
+      "configuredValue": "illustrations/gamemode_koth",
+      "classification": "content-vtf",
+      "material": "materials/vgui/illustrations/gamemode_koth.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/illustrations/gamemode_koth.vtf",
+          "sha256": "a6e46191598f391776b3158ed51d6291f4ad17d2a7ca85e3d21d62634a381811",
+          "width": 1024,
+          "height": 1024,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0351",
+      "configuredValue": "illustrations/gamemode_payload",
+      "classification": "content-vtf",
+      "material": "materials/vgui/illustrations/gamemode_payload.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/illustrations/gamemode_payload.vtf",
+          "sha256": "51516099353ba76a7e299ab43205e76a018df7d5c63200514df010764a3ab1b5",
+          "width": 1024,
+          "height": 1024,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0352",
+      "configuredValue": "illustrations/training_basic",
+      "classification": "content-vtf",
+      "material": "materials/vgui/illustrations/training_basic.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/illustrations/training_basic.vtf",
+          "sha256": "88e64ee3fd3dd0ac97b9c367cc3ef7acd0a139066d33dc3f4c2b470ba52e7c77",
+          "width": 1024,
+          "height": 1024,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0353",
+      "configuredValue": "illustrations/training_offlinepractice",
+      "classification": "content-vtf",
+      "material": "materials/vgui/illustrations/training_offlinepractice.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/illustrations/training_offlinepractice.vtf",
+          "sha256": "c3e775d4fe0fc0073de5a493c35b97e5739b0205c00dc61a6563d698a49ba93e",
+          "width": 1024,
+          "height": 1024,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0354",
       "configuredValue": "info",
       "classification": "content-vtf",
       "material": "materials/vgui/info.vmt",
@@ -12983,7 +13303,7 @@
       ]
     },
     {
-      "identity": "image-0349",
+      "identity": "image-0355",
       "configuredValue": "inner_shadow_border",
       "classification": "content-vtf",
       "material": "materials/vgui/inner_shadow_border.vmt",
@@ -12999,7 +13319,7 @@
       ]
     },
     {
-      "identity": "image-0350",
+      "identity": "image-0356",
       "configuredValue": "item_bg",
       "classification": "content-vtf",
       "material": "materials/vgui/item_bg.vmt",
@@ -13015,7 +13335,7 @@
       ]
     },
     {
-      "identity": "image-0351",
+      "identity": "image-0357",
       "configuredValue": "loadout_bottom_gradient",
       "classification": "content-vtf",
       "material": "materials/vgui/loadout_bottom_gradient.vmt",
@@ -13031,7 +13351,7 @@
       ]
     },
     {
-      "identity": "image-0352",
+      "identity": "image-0358",
       "configuredValue": "loadout_header",
       "classification": "content-vtf",
       "material": "materials/vgui/loadout_header.vmt",
@@ -13047,7 +13367,7 @@
       ]
     },
     {
-      "identity": "image-0353",
+      "identity": "image-0359",
       "configuredValue": "loadout_rect",
       "classification": "content-vtf",
       "material": "materials/vgui/loadout_rect.vmt",
@@ -13063,7 +13383,7 @@
       ]
     },
     {
-      "identity": "image-0354",
+      "identity": "image-0360",
       "configuredValue": "loadout_rect_mouseover",
       "classification": "content-vtf",
       "material": "materials/vgui/loadout_rect_mouseover.vmt",
@@ -13079,7 +13399,7 @@
       ]
     },
     {
-      "identity": "image-0355",
+      "identity": "image-0361",
       "configuredValue": "loadout_rect_red",
       "classification": "content-vtf",
       "material": "materials/vgui/loadout_rect_red.vmt",
@@ -13095,7 +13415,7 @@
       ]
     },
     {
-      "identity": "image-0356",
+      "identity": "image-0362",
       "configuredValue": "loadout_round_rect",
       "classification": "content-vtf",
       "material": "materials/vgui/loadout_round_rect.vmt",
@@ -13111,7 +13431,7 @@
       ]
     },
     {
-      "identity": "image-0357",
+      "identity": "image-0363",
       "configuredValue": "loadout_round_rect_selected",
       "classification": "content-vtf",
       "material": "materials/vgui/loadout_round_rect_selected.vmt",
@@ -13127,7 +13447,7 @@
       ]
     },
     {
-      "identity": "image-0358",
+      "identity": "image-0364",
       "configuredValue": "loadout_solid_line",
       "classification": "content-vtf",
       "material": "materials/vgui/loadout_solid_line.vmt",
@@ -13143,7 +13463,7 @@
       ]
     },
     {
-      "identity": "image-0359",
+      "identity": "image-0365",
       "configuredValue": "locked_icon",
       "classification": "content-vtf",
       "material": "materials/vgui/locked_icon.vmt",
@@ -13159,14 +13479,30 @@
       ]
     },
     {
-      "identity": "image-0360",
+      "identity": "image-0366",
       "configuredValue": "logos/UI/spray",
       "classification": "missing-material",
       "material": null,
       "textures": []
     },
     {
-      "identity": "image-0361",
+      "identity": "image-0367",
+      "configuredValue": "maps/menu_photos_ctf_2fort",
+      "classification": "content-vtf",
+      "material": "materials/vgui/maps/menu_photos_ctf_2fort.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/maps/menu_photos_ctf_2fort.vtf",
+          "sha256": "1ec1d0a675522d3245e72817d83f9292ea9c60bcfde8d40bfe1b38eff2c889ad",
+          "width": 512,
+          "height": 512,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0368",
       "configuredValue": "maps/menu_photos_pl_upward",
       "classification": "content-vtf",
       "material": "materials/vgui/maps/menu_photos_pl_upward.vmt",
@@ -13182,7 +13518,7 @@
       ]
     },
     {
-      "identity": "image-0362",
+      "identity": "image-0369",
       "configuredValue": "marked_for_death",
       "classification": "content-vtf",
       "material": "materials/vgui/marked_for_death.vmt",
@@ -13198,7 +13534,7 @@
       ]
     },
     {
-      "identity": "image-0363",
+      "identity": "image-0370",
       "configuredValue": "mvm/class_upgraded",
       "classification": "content-vtf",
       "material": "materials/vgui/mvm/class_upgraded.vmt",
@@ -13214,7 +13550,7 @@
       ]
     },
     {
-      "identity": "image-0364",
+      "identity": "image-0371",
       "configuredValue": "new_corner",
       "classification": "content-vtf",
       "material": "materials/vgui/new_corner.vmt",
@@ -13230,7 +13566,7 @@
       ]
     },
     {
-      "identity": "image-0365",
+      "identity": "image-0372",
       "configuredValue": "outer_shadow_border",
       "classification": "content-vtf",
       "material": "materials/vgui/outer_shadow_border.vmt",
@@ -13246,7 +13582,7 @@
       ]
     },
     {
-      "identity": "image-0366",
+      "identity": "image-0373",
       "configuredValue": "replay/dullgreybox",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/dullgreybox.vmt",
@@ -13262,7 +13598,7 @@
       ]
     },
     {
-      "identity": "image-0367",
+      "identity": "image-0374",
       "configuredValue": "replay/fatlineborder",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/fatlineborder.vmt",
@@ -13278,7 +13614,7 @@
       ]
     },
     {
-      "identity": "image-0368",
+      "identity": "image-0375",
       "configuredValue": "replay/fatlineborder_red",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/fatlineborder_red.vmt",
@@ -13294,7 +13630,7 @@
       ]
     },
     {
-      "identity": "image-0369",
+      "identity": "image-0376",
       "configuredValue": "replay/graydialogborder",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/graydialogborder.vmt",
@@ -13310,7 +13646,7 @@
       ]
     },
     {
-      "identity": "image-0370",
+      "identity": "image-0377",
       "configuredValue": "replay/outlinedgreybox",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/outlinedgreybox.vmt",
@@ -13326,7 +13662,7 @@
       ]
     },
     {
-      "identity": "image-0371",
+      "identity": "image-0378",
       "configuredValue": "replay/panel_scalable_balloon",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/panel_scalable_balloon.vmt",
@@ -13342,7 +13678,7 @@
       ]
     },
     {
-      "identity": "image-0372",
+      "identity": "image-0379",
       "configuredValue": "replay/panel_scalable_default",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/panel_scalable_default.vmt",
@@ -13358,7 +13694,7 @@
       ]
     },
     {
-      "identity": "image-0373",
+      "identity": "image-0380",
       "configuredValue": "replay/panel_scalable_highlight",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/panel_scalable_highlight.vmt",
@@ -13374,7 +13710,7 @@
       ]
     },
     {
-      "identity": "image-0374",
+      "identity": "image-0381",
       "configuredValue": "replay/panel_scalable_transparent",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/panel_scalable_transparent.vmt",
@@ -13390,7 +13726,7 @@
       ]
     },
     {
-      "identity": "image-0375",
+      "identity": "image-0382",
       "configuredValue": "resource/icon_vac",
       "classification": "content-vtf",
       "material": "materials/vgui/resource/icon_vac.vmt",
@@ -13406,7 +13742,7 @@
       ]
     },
     {
-      "identity": "image-0376",
+      "identity": "image-0383",
       "configuredValue": "resource/mic_meter_dead",
       "classification": "content-vtf",
       "material": "materials/vgui/resource/mic_meter_dead.vmt",
@@ -13422,7 +13758,7 @@
       ]
     },
     {
-      "identity": "image-0377",
+      "identity": "image-0384",
       "configuredValue": "resource/mic_meter_live",
       "classification": "content-vtf",
       "material": "materials/vgui/resource/mic_meter_live.vmt",
@@ -13438,7 +13774,7 @@
       ]
     },
     {
-      "identity": "image-0378",
+      "identity": "image-0385",
       "configuredValue": "sale_corner",
       "classification": "content-vtf",
       "material": "materials/vgui/sale_corner.vmt",
@@ -13454,7 +13790,7 @@
       ]
     },
     {
-      "identity": "image-0379",
+      "identity": "image-0386",
       "configuredValue": "scroll_button_off",
       "classification": "content-vtf",
       "material": "materials/vgui/scroll_button_off.vmt",
@@ -13470,7 +13806,7 @@
       ]
     },
     {
-      "identity": "image-0380",
+      "identity": "image-0387",
       "configuredValue": "scroll_well",
       "classification": "content-vtf",
       "material": "materials/vgui/scroll_well.vmt",
@@ -13486,7 +13822,7 @@
       ]
     },
     {
-      "identity": "image-0381",
+      "identity": "image-0388",
       "configuredValue": "stamp_background_map",
       "classification": "content-vtf",
       "material": "materials/vgui/stamp_background_map.vmt",
@@ -13502,7 +13838,7 @@
       ]
     },
     {
-      "identity": "image-0382",
+      "identity": "image-0389",
       "configuredValue": "store/innershadow_border",
       "classification": "content-vtf",
       "material": "materials/vgui/store/innershadow_border.vmt",
@@ -13518,7 +13854,7 @@
       ]
     },
     {
-      "identity": "image-0383",
+      "identity": "image-0390",
       "configuredValue": "store/store_add_to_cart",
       "classification": "content-vtf",
       "material": "materials/vgui/store/store_add_to_cart.vmt",
@@ -13534,7 +13870,7 @@
       ]
     },
     {
-      "identity": "image-0384",
+      "identity": "image-0391",
       "configuredValue": "store/store_coupon_border",
       "classification": "content-vtf",
       "material": "materials/vgui/store/store_coupon_border.vmt",
@@ -13550,7 +13886,7 @@
       ]
     },
     {
-      "identity": "image-0385",
+      "identity": "image-0392",
       "configuredValue": "store/store_featured_item_bg01",
       "classification": "content-vtf",
       "material": "materials/vgui/store/store_featured_item_bg01.vmt",
@@ -13566,7 +13902,7 @@
       ]
     },
     {
-      "identity": "image-0386",
+      "identity": "image-0393",
       "configuredValue": "store/store_inspector_bg_small",
       "classification": "content-vtf",
       "material": "materials/vgui/store/store_inspector_bg_small.vmt",
@@ -13582,7 +13918,7 @@
       ]
     },
     {
-      "identity": "image-0387",
+      "identity": "image-0394",
       "configuredValue": "store/store_tab_selected",
       "classification": "content-vtf",
       "material": "materials/vgui/store/store_tab_selected.vmt",
@@ -13598,7 +13934,7 @@
       ]
     },
     {
-      "identity": "image-0388",
+      "identity": "image-0395",
       "configuredValue": "store/store_tab_unselected",
       "classification": "content-vtf",
       "material": "materials/vgui/store/store_tab_unselected.vmt",
@@ -13614,7 +13950,7 @@
       ]
     },
     {
-      "identity": "image-0389",
+      "identity": "image-0396",
       "configuredValue": "techcredits/bink",
       "classification": "content-vtf",
       "material": "materials/vgui/techcredits/bink.vmt",
@@ -13630,14 +13966,62 @@
       ]
     },
     {
-      "identity": "image-0390",
+      "identity": "image-0397",
+      "configuredValue": "training/gradient",
+      "classification": "content-vtf",
+      "material": "materials/vgui/training/gradient.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/training/gradient.vtf",
+          "sha256": "f1be3eb5e8408956d6584ac8ee9bb59541443826895582cbb3c838a6da10d1cd",
+          "width": 1024,
+          "height": 1024,
+          "frames": 1,
+          "rawFlags": 0
+        }
+      ]
+    },
+    {
+      "identity": "image-0398",
+      "configuredValue": "training/gradient_black",
+      "classification": "content-vtf",
+      "material": "materials/vgui/training/gradient_black.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/training/gradient_black.vtf",
+          "sha256": "9c149a62a129c6a7f50f293d28b0621f96fe6a09b11bb15512f0ecc627b9444e",
+          "width": 128,
+          "height": 128,
+          "frames": 1,
+          "rawFlags": 8192
+        }
+      ]
+    },
+    {
+      "identity": "image-0399",
+      "configuredValue": "training/screenshots/pl_upward",
+      "classification": "content-vtf",
+      "material": "materials/vgui/training/screenshots/pl_upward.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/training/screenshots/pl_upward.vtf",
+          "sha256": "fb9f129f33310f6f8b729997442443025675b353f9bd516442408a88e7b8f7eb",
+          "width": 1024,
+          "height": 1024,
+          "frames": 1,
+          "rawFlags": 8192
+        }
+      ]
+    },
+    {
+      "identity": "image-0400",
       "configuredValue": "vgui/hud/icon_commentary",
       "classification": "missing-material",
       "material": null,
       "textures": []
     },
     {
-      "identity": "image-0391",
+      "identity": "image-0401",
       "configuredValue": "viewmode_loaner",
       "classification": "content-vtf",
       "material": "materials/vgui/viewmode_loaner.vmt",

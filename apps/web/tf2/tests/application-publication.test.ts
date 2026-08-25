@@ -63,6 +63,7 @@ describe("TF2 incremental application publication", () => {
       "data-class-selection-visible": "false",
       "data-scoreboard-visible": "false",
       "data-options-visible": "false",
+      "data-local-match-visible": "false",
       "data-team-selection-visible": "false",
       "data-fire-events": "0",
       "data-explosion-events": "0",

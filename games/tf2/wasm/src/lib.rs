@@ -423,13 +423,13 @@ struct Tf2Simulation {
 
 fn continuation_command(command: &[u8]) -> Result<Arc<[u8]>, playsrc_simulation::SimulationError> {
     let mut continuation = command
-        .get(..48)
+        .get(..52)
         .ok_or_else(|| playsrc_simulation::SimulationError::new("command", "continuation"))?
         .to_vec();
     continuation[32..36].copy_from_slice(&0_u32.to_le_bytes());
     continuation[36..40].copy_from_slice(&u32::MAX.to_le_bytes());
-    continuation[40..44].fill(0);
-    continuation[44..48].copy_from_slice(&48_u32.to_le_bytes());
+    continuation[40..48].fill(0);
+    continuation[48..52].copy_from_slice(&52_u32.to_le_bytes());
     Ok(Arc::from(continuation))
 }
 
@@ -12543,16 +12543,16 @@ mod tests {
 
     #[test]
     fn command_and_snapshot_binary_contract_is_stable() {
-        let mut bytes = vec![0; 48];
+        let mut bytes = vec![0; 52];
         bytes[..4].copy_from_slice(b"PCMD");
-        bytes[4..8].copy_from_slice(&6_u32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&7_u32.to_le_bytes());
         bytes[8..12].copy_from_slice(&240_f32.to_le_bytes());
         bytes[16..20].copy_from_slice(&100_f32.to_le_bytes());
         bytes[24..28].copy_from_slice(&(-30_f32).to_le_bytes());
         bytes[28..32].copy_from_slice(&0xad_u32.to_le_bytes());
         bytes[32..36].copy_from_slice(&0x0202_0304_u32.to_le_bytes());
         bytes[36..40].copy_from_slice(&77_u32.to_le_bytes());
-        bytes[44..48].copy_from_slice(&48_u32.to_le_bytes());
+        bytes[48..52].copy_from_slice(&52_u32.to_le_bytes());
         let input = gameplay_protocol::decode(&bytes).unwrap();
         let command = input.command;
         assert_eq!(command.movement.forward, 240.);
@@ -12571,6 +12571,34 @@ mod tests {
             Some(playsrc_tf2::Weapon::StickybombLauncher)
         );
         assert!(input.physics_results.is_empty());
+        bytes[44..48].copy_from_slice(
+            &(0x8000_0000_u32 | 7 | (24 << 6) | (2 << 12) | (1 << 14) | (1 << 16) | (1 << 18))
+                .to_le_bytes(),
+        );
+        assert_eq!(
+            gameplay_protocol::decode(&bytes)
+                .unwrap()
+                .command
+                .bot_configuration,
+            Some(playsrc_tf2::bot::Configuration {
+                quota: 7,
+                maximum_players: 24,
+                mode: playsrc_tf2::bot::QuotaMode::Fill,
+                difficulty: playsrc_tf2::bot::Difficulty::Hard,
+                join_after_player: true,
+                auto_vacate: false,
+                offline_practice: true,
+            })
+        );
+        for invalid in [
+            0x8000_0000_u32,
+            0x8000_0000 | 32 | (24 << 6),
+            0x8000_0000 | (24 << 6) | (3 << 14),
+        ] {
+            bytes[44..48].copy_from_slice(&invalid.to_le_bytes());
+            assert!(gameplay_protocol::decode(&bytes).is_none());
+        }
+        bytes[44..48].fill(0);
         for class in playsrc_tf2::PlayerClass::ALL {
             let selection = 0x0202_0300_u32 | u32::from(class.source_number());
             bytes[32..36].copy_from_slice(&selection.to_le_bytes());
@@ -12826,9 +12854,9 @@ mod tests {
 
     #[test]
     fn fixed_tick_continuation_retains_buttons_and_consumes_results_and_selectors() {
-        let mut bytes = vec![0; 48 + 80];
+        let mut bytes = vec![0; 52 + 80];
         bytes[..4].copy_from_slice(b"PCMD");
-        bytes[4..8].copy_from_slice(&6_u32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&7_u32.to_le_bytes());
         bytes[8..12].copy_from_slice(&240_f32.to_le_bytes());
         bytes[12..16].copy_from_slice(&(-120_f32).to_le_bytes());
         bytes[16..20].copy_from_slice(&100_f32.to_le_bytes());
@@ -12839,9 +12867,9 @@ mod tests {
         bytes[42..44]
             .copy_from_slice(&(1_u16 | (2 << 2) | (1 << 7) | (2 << 9) | (1 << 11)).to_le_bytes());
         let byte_length = bytes.len() as u32;
-        bytes[44..48].copy_from_slice(&byte_length.to_le_bytes());
+        bytes[48..52].copy_from_slice(&byte_length.to_le_bytes());
         let continued = continuation_command(&bytes).unwrap();
-        assert_eq!(continued.len(), 48);
+        assert_eq!(continued.len(), 52);
         assert_eq!(
             &continued[8..20],
             &[0, 0, 112, 67, 0, 0, 240, 194, 0, 0, 200, 66]
@@ -12864,9 +12892,10 @@ mod tests {
                 .bot_request
                 .is_none()
         );
+        assert_eq!(u32::from_le_bytes(continued[44..48].try_into().unwrap()), 0);
         assert_eq!(
-            u32::from_le_bytes(continued[44..48].try_into().unwrap()),
-            48
+            u32::from_le_bytes(continued[48..52].try_into().unwrap()),
+            52
         );
     }
 }

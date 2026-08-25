@@ -472,7 +472,7 @@ export class Tf2WorkerClient {
   }
 
   async observe(generation: number, nowSeconds: number, command: ArrayBuffer, suspended = false): Promise<readonly SimulationPublication[]> {
-    if (command.byteLength < 48 || command.byteLength > 64 * 1024) throw new Tf2WorkerError("BoundExceeded")
+    if (command.byteLength < 52 || command.byteLength > 64 * 1024) throw new Tf2WorkerError("BoundExceeded")
     if (!Number.isFinite(nowSeconds) || nowSeconds < 0) throw new Tf2WorkerError("BoundExceeded")
     const response = await this.#request({ kind: "observe", generation, nowSeconds, suspended, command }, [command])
     if (response.kind !== "simulation" || response.generation !== generation || !(response.output instanceof ArrayBuffer)) {

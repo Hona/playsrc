@@ -28,6 +28,7 @@
     "profile:upward-outdoors": "PROFILE_UPWARD_OUTDOORS=1 playwright test --config=playwright.profile.config.ts",
     "profile:bots": "playwright test --config=playwright.bot-profile.config.ts",
     "profile:engineer": "playwright test --config=playwright.engineer-profile.config.ts",
+    "profile:local-practice": "PROFILE_SCENARIOS=local-practice playwright test --config=playwright.profile.config.ts",
     "profile:application-lifecycle": "playwright test --config=playwright.profile.config.ts --grep 'TF2 application generation lifecycle'",
     "profile:map-load": "playwright test --config=playwright.profile.config.ts",
     "profile:cold-map": "playwright test --config=playwright.cold-map-profile.config.ts",

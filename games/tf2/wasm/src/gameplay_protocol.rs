@@ -1,4 +1,4 @@
-const HEADER_BYTES: usize = 48;
+const HEADER_BYTES: usize = 52;
 const PHYSICS_RESULT_BYTES: usize = 80;
 const MAX_RESULTS: usize = 64;
 
@@ -11,7 +11,7 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
     if bytes.len() < HEADER_BYTES
         || bytes.len() > 64 * 1024
         || &bytes[..4] != b"PCMD"
-        || u32::from_le_bytes(bytes[4..8].try_into().ok()?) != 6
+        || u32::from_le_bytes(bytes[4..8].try_into().ok()?) != 7
     {
         return None;
     }
@@ -19,7 +19,7 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
     let packed_bot = u16::from_le_bytes(bytes[42..44].try_into().ok()?);
     if physics_count > MAX_RESULTS
         || packed_bot & 0x8000 != 0
-        || u32::from_le_bytes(bytes[44..48].try_into().ok()?) as usize != bytes.len()
+        || u32::from_le_bytes(bytes[48..52].try_into().ok()?) as usize != bytes.len()
     {
         return None;
     }
@@ -178,6 +178,41 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
             difficulty,
         })
     };
+    let packed_configuration = u32::from_le_bytes(bytes[44..48].try_into().ok()?);
+    let bot_configuration = if packed_configuration == 0 {
+        None
+    } else {
+        if packed_configuration & 0x8000_0000 == 0 || packed_configuration & 0x7ff8_0020 != 0 {
+            return None;
+        }
+        let quota = (packed_configuration & 31) as u8;
+        let maximum_players = ((packed_configuration >> 6) & 63) as u8;
+        if maximum_players == 0 || maximum_players > 32 {
+            return None;
+        }
+        let difficulty = match (packed_configuration >> 12) & 3 {
+            0 => playsrc_tf2::bot::Difficulty::Easy,
+            1 => playsrc_tf2::bot::Difficulty::Normal,
+            2 => playsrc_tf2::bot::Difficulty::Hard,
+            3 => playsrc_tf2::bot::Difficulty::Expert,
+            _ => unreachable!(),
+        };
+        let mode = match (packed_configuration >> 14) & 3 {
+            0 => playsrc_tf2::bot::QuotaMode::Normal,
+            1 => playsrc_tf2::bot::QuotaMode::Fill,
+            2 => playsrc_tf2::bot::QuotaMode::Match,
+            _ => return None,
+        };
+        Some(playsrc_tf2::bot::Configuration {
+            quota,
+            maximum_players,
+            mode,
+            difficulty,
+            join_after_player: packed_configuration & (1 << 16) != 0,
+            auto_vacate: packed_configuration & (1 << 17) != 0,
+            offline_practice: packed_configuration & (1 << 18) != 0,
+        })
+    };
     let command = playsrc_tf2::Command {
         movement: playsrc_movement::Command {
             forward: f(8)?,
@@ -204,6 +239,7 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
         activate_entity: (target != u32::MAX).then_some(target),
         bot_request,
         building_request,
+        bot_configuration,
     };
     if [
         command.movement.forward,

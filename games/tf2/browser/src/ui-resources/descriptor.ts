@@ -39,6 +39,8 @@ const DOMAINS = new Set<Tf2UiResourceDomain>([
   "hud",
   "class-selection",
   "team-selection",
+  "practice",
+  "create-server",
   "animation-manifest",
   "animation-script",
   "options",
@@ -84,7 +86,7 @@ const SETTINGS_CONTROLS = new Set([
   "COptionsSubVideoAdvancedDlg",
 ])
 
-const GAMEUI_CONTROLS = new Set(["CLoadingDialog", "CPanelListPanel", "URLButton"])
+const GAMEUI_CONTROLS = new Set(["CCreateMultiplayerGameServerPage", "CLoadingDialog", "CPanelListPanel", "URLButton"])
 
 const GENERIC_PROPERTIES = new Set([
   "actionsignallevel", "alpha", "armedbgcolor_override", "armedfgcolor_override", "autoresize",
@@ -103,6 +105,7 @@ const GENERIC_PROPERTIES = new Set([
 
 const commandClassifications: Readonly<Record<string, readonly [Tf2UiCommandCategory, Tf2UiOwner]>> = Object.freeze({
   "%button_command%": ["service", "service"],
+  "%startcommand%": ["gameplay", "tf2"],
   Advanced: ["application", "settings"],
   Apply: ["application", "settings"],
   Cancel: ["application", "application"],
@@ -124,6 +127,8 @@ const commandClassifications: Readonly<Record<string, readonly [Tf2UiCommandCate
   TestMicrophone: ["application", "application"],
   TestSpeakers: ["application", "application"],
   callvote: ["gameplay", "tf2"],
+  basictrainingselected: ["unsupported", "unsupported"],
+  cancel: ["application", "application"],
   cancelmenu: ["gameplay", "tf2"],
   "jointeam auto": ["gameplay", "tf2"],
   "jointeam blue": ["gameplay", "tf2"],
@@ -141,6 +146,8 @@ const commandClassifications: Readonly<Record<string, readonly [Tf2UiCommandCate
   "engine vr_toggle": ["unsupported", "unsupported"],
   exitreplayeditor: ["gameplay", "tf2"],
   find_game: ["service", "service"],
+  gonext: ["application", "tf2"],
+  goprev: ["application", "tf2"],
   join_party_match: ["service", "service"],
   leave_queue: ["service", "service"],
   manage_queues: ["service", "service"],
@@ -152,13 +159,15 @@ const commandClassifications: Readonly<Record<string, readonly [Tf2UiCommandCate
   noti_hide: ["service", "service"],
   noti_show: ["service", "service"],
   open_rank_type_menu: ["service", "service"],
+  offlinepracticeselected: ["gameplay", "tf2"],
   opentf2options: ["application", "settings"],
   play_casual: ["service", "service"],
   play_community: ["service", "service"],
   play_competitive: ["service", "service"],
   play_event: ["service", "service"],
   play_mvm: ["service", "service"],
-  play_training: ["unsupported", "unsupported"],
+  play_training: ["gameplay", "tf2"],
+  prevpage: ["application", "tf2"],
   questlog: ["service", "service"],
   queue_logo_clicked: ["service", "service"],
   quit: ["application", "application"],
@@ -166,6 +175,8 @@ const commandClassifications: Readonly<Record<string, readonly [Tf2UiCommandCate
   safemode_leave: ["application", "settings"],
   safemode_save_settings: ["application", "settings"],
   showpromocodes: ["service", "service"],
+  selectcurrentgamemode: ["gameplay", "tf2"],
+  startofflinepractice: ["gameplay", "tf2"],
   toggle_chat: ["application", "application"],
   view_newuser_forums: ["external", "external"],
   watch_stream: ["external", "external"],
@@ -191,12 +202,12 @@ function controlOwner(name: string): Tf2UiOwner | null {
   if (VGUI_CONTROLS.has(name)) return "vgui"
   if (SETTINGS_CONTROLS.has(name)) return "settings"
   if (GAMEUI_CONTROLS.has(name)) return "gameui"
-  if (/^(?:C(?:AutoFittingLabel|AvatarImagePanel|BuildingHealthBar|BuildingStatusAlertTray|CompetitiveAccessInfoPanel|CurrencyStatusPanel|CyclingAdContainerPanel|DashboardPartyMember|EmbeddedItemModelPanel|EngyDestroyMenuItem|EventPlayListEntry|ExButton|ExImageButton|ExLabel|ExplanationPopup|IconPanel|ImagePanel|ItemModelPanel|MainMenuNotificationsControl|ModelPanel|PlayListEntry|PvPRankPanel|SteamFriendsListPanel|TeamMenu|TFArrowPanel|TFBadgePanel|TFClientScoreBoardDialog|TFHudMannVsMachineScoreboard|TFClassImage|TFClassTipsItemPanel|TFClassTipsPanel|TFFlagStatus|TFFooter|TFImagePanel|TFLogoPanel|TFParticlePanel|TFPlayerModelPanel|TFProgressBar|TFTeamButton|TFTeamStatus)|PanelListPanel)$/u.test(name)) return "tf2"
+  if (/^(?:C(?:AutoFittingLabel|AvatarImagePanel|BasicTraining_ClassDetailsPanel|BasicTraining_ClassSelectionPanel|BuildingHealthBar|BuildingStatusAlertTray|CompetitiveAccessInfoPanel|CurrencyStatusPanel|CyclingAdContainerPanel|DashboardPartyMember|EmbeddedItemModelPanel|EngyDestroyMenuItem|EventPlayListEntry|ExButton|ExImageButton|ExLabel|ExplanationPopup|IconPanel|ImagePanel|ItemModelPanel|MainMenuNotificationsControl|ModePanel|ModeSelectionPanel|ModelPanel|OfflinePractice_MapSelectionPanel|OfflinePractice_ModeSelectionPanel|PlayListEntry|PvPRankPanel|SteamFriendsListPanel|TeamMenu|TFArrowPanel|TFBadgePanel|TFClientScoreBoardDialog|TFHudMannVsMachineScoreboard|TFClassImage|TFClassTipsItemPanel|TFClassTipsPanel|TFFlagStatus|TFFooter|TFImagePanel|TFLogoPanel|TFParticlePanel|TFPlayerModelPanel|TFProgressBar|TFTeamButton|TFTeamStatus|TrainingDialog)|PanelListPanel)$/u.test(name)) return "tf2"
   return null
 }
 
 function domainOwner(domain: Tf2UiResourceDomain): Tf2UiOwner {
-  if (domain === "loading") return "gameui"
+  if (domain === "loading" || domain === "create-server") return "gameui"
   if (domain === "options") return "settings"
   if (domain === "scheme" || domain === "scheme-base" || domain === "animation-manifest" || domain === "animation-script" || domain === "localization") return "vgui"
   return "tf2"
@@ -600,8 +611,8 @@ export function createTf2UiResourceDescriptor(input: unknown): Tf2UiResourceReso
   ]
 
   const panels = resources
-    .filter((source): source is Tf2UiResourceSource & { domain: "main-menu" | "loading" | "hud" | "class-selection" | "team-selection" | "options"; document: readonly Tf2UiResourceNode[] } =>
-      ["main-menu", "loading", "hud", "class-selection", "team-selection", "options"].includes(source.domain) && source.document !== null)
+    .filter((source): source is Tf2UiResourceSource & { domain: "main-menu" | "loading" | "hud" | "class-selection" | "team-selection" | "practice" | "create-server" | "options"; document: readonly Tf2UiResourceNode[] } =>
+      ["main-menu", "loading", "hud", "class-selection", "team-selection", "practice", "create-server", "options"].includes(source.domain) && source.document !== null)
     .map((source) => Object.freeze({
       identity: `panel-document-${source.logicalPath.replace(/[^a-z0-9]+/gu, "-").replace(/^-|-$/gu, "")}`,
       domain: source.domain,

@@ -140,6 +140,11 @@ const CODE_LOCALIZATION_TOKENS: &[&str] = &[
     "#TF_Scoreboard_Name",
     "#TF_Scoreboard_Ping",
     "#TF_Scoreboard_Score",
+    "#GameUI_CreateServer",
+    "#GameUI_Game",
+    "#GameUI_Server",
+    "#GameUI_Start",
+    "#TF_OfflinePractice_NumPlayers",
     "#GameUI_AdjustGamma_Title",
     "#GameUI_Audio",
     "#GameUI_Bilinear",
@@ -384,6 +389,38 @@ const ROOTS: &[(&str, &str, bool)] = &[
     ("class-selection", "resource/ui/classtipslist.res", true),
     ("class-selection", "resource/ui/classtipsitem.res", true),
     ("team-selection", "resource/ui/teammenu.res", true),
+    ("practice", "resource/offline_practice.res", true),
+    ("practice", "resource/ui/training/main.res", true),
+    (
+        "practice",
+        "resource/ui/training/modeselection/modeselection.res",
+        true,
+    ),
+    (
+        "practice",
+        "resource/ui/training/modeselection/modepanel.res",
+        true,
+    ),
+    (
+        "practice",
+        "resource/ui/training/offlinepractice/practicemodeselection.res",
+        true,
+    ),
+    (
+        "practice",
+        "resource/ui/training/offlinepractice/mapselection.res",
+        true,
+    ),
+    (
+        "create-server",
+        "resource/createmultiplayergameserverpage.res",
+        true,
+    ),
+    (
+        "create-server",
+        "resource/createmultiplayergamegameplaypage.res",
+        true,
+    ),
     ("options", "resource/optionssubkeyboard.res", true),
     (
         "options",
@@ -1641,7 +1678,12 @@ fn main() -> Result<(), String> {
     }
     let mut unique_localization_tokens = code_localization_tokens.iter().cloned().collect::<BTreeSet<_>>();
     let mut unique_image_values = class_images.into_iter().collect::<BTreeSet<_>>();
+    unique_image_values.insert("maps/menu_photos_ctf_2fort".to_owned());
     unique_image_values.insert("maps/menu_photos_pl_upward".to_owned());
+    unique_image_values.insert("training/screenshots/pl_upward".to_owned());
+    unique_image_values.insert("illustrations/gamemode_cp".to_owned());
+    unique_image_values.insert("illustrations/gamemode_koth".to_owned());
+    unique_image_values.insert("illustrations/gamemode_payload".to_owned());
     unique_image_values.insert("/pve/chalf_circle.vmt".to_owned());
     for image in [
         "eng_build_bg", "eng_build_dispenser_blueprint", "eng_build_item", "eng_sel_item_active",
