@@ -973,7 +973,10 @@ unsafe fn compile_map(
         };
         let mut session =
             playsrc_tf2::Session::connected(gameplay_world.clone(), spawn.position, map, rules);
-        if let Some(bytes) = resources.get("maps/pl_upward.nav") {
+        if let Some((_, bytes)) = resources
+            .iter()
+            .find(|(identity, _)| identity.starts_with("maps/") && identity.ends_with(".nav"))
+        {
             let mesh = playsrc_nav::parse(
                 bytes,
                 playsrc_nav::Profile::TeamFortress2,
@@ -3679,6 +3682,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
 fn gameplay_error_code(error: &playsrc_tf2::Error) -> u32 {
     1800 + match error {
         playsrc_tf2::Error::Movement(_) => 1,
+        playsrc_tf2::Error::PickupTrace(_) => 15,
         playsrc_tf2::Error::Entity(_) => 2,
         playsrc_tf2::Error::Jump(_) => 3,
         playsrc_tf2::Error::MissingEntity(_) => 4,
@@ -3978,7 +3982,7 @@ fn encode_snapshot(
     encode_movement_tick(&mut movement_tick_bytes, movement_tick, MAX)?;
     let mut out = Vec::new();
     extend(&mut out, b"PSSN", MAX)?;
-    u32_field(&mut out, 15, MAX)?;
+    u32_field(&mut out, 16, MAX)?;
     u64_field(&mut out, snapshot.tick, MAX)?;
     extend(
         &mut out,
@@ -4453,6 +4457,27 @@ fn encode_snapshot(
         )?;
     }
     encode_objectives(&mut out, snapshot.objectives.as_ref(), MAX)?;
+    u32_field(&mut out, u32::from(snapshot.metal), MAX)?;
+    u32_field(&mut out, u32::try_from(snapshot.pickups.len()).ok()?, MAX)?;
+    for pickup in &snapshot.pickups {
+        u32_field(&mut out, pickup.identity, MAX)?;
+        extend(
+            &mut out,
+            &[
+                pickup.kind as u8,
+                pickup.size as u8,
+                pickup.team.unwrap_or(0),
+                u8::from(pickup.available) | (u8::from(pickup.disabled) << 1),
+            ],
+            MAX,
+        )?;
+        floats(
+            &mut out,
+            pickup.origin.into_iter().chain(pickup.angles),
+            MAX,
+        )?;
+        u64_field(&mut out, pickup.respawn_tick.unwrap_or(u64::MAX), MAX)?;
+    }
     encode_round(&mut out, &snapshot.round, MAX)?;
     Some(out)
 }
@@ -4981,6 +5006,10 @@ fn sound_definition_code(value: playsrc_tf2::SoundDefinition) -> u8 {
         playsrc_tf2::SoundDefinition::BottleMiss => 55,
         playsrc_tf2::SoundDefinition::BottleHitFlesh => 56,
         playsrc_tf2::SoundDefinition::BottleHitWorld => 57,
+        playsrc_tf2::SoundDefinition::HealthKitTouch => 58,
+        playsrc_tf2::SoundDefinition::AmmoPackTouch => 59,
+        playsrc_tf2::SoundDefinition::RegenerateTouch => 60,
+        playsrc_tf2::SoundDefinition::ItemMaterialize => 61,
     }
 }
 
@@ -5058,6 +5087,8 @@ fn encode_audio_event(
             match event.identity {
                 playsrc_tf2::AudioEventIdentity::WeaponSingle => 1,
                 playsrc_tf2::AudioEventIdentity::ExplosionSpecial1 => 2,
+                playsrc_tf2::AudioEventIdentity::ItemPickup => 3,
+                playsrc_tf2::AudioEventIdentity::ItemMaterialize => 4,
             },
             sound_definition_code(event.definition),
             match event.source_kind {
@@ -5467,6 +5498,36 @@ fn encode_game_event(output: &mut Vec<u8>, event: &playsrc_tf2::Event, limit: us
             target.unwrap_or(0),
             0,
             [position[0], position[1], position[2], *damage],
+        ),
+        playsrc_tf2::Event::PickedUp {
+            entity,
+            player,
+            kind,
+            size,
+            amount,
+            health,
+            weapon,
+            clip,
+            reserve,
+        } => (
+            if *kind == playsrc_tf2::pickup::MapPickupKind::Health {
+                15
+            } else {
+                16
+            },
+            *size as u8,
+            *entity,
+            *player,
+            [
+                *amount as f32,
+                *health as f32,
+                *clip as f32,
+                if weapon.is_some() {
+                    *reserve as f32
+                } else {
+                    0.0
+                },
+            ],
         ),
     };
     extend(output, &[kind, detail, 0, 0], limit)?;
@@ -6322,6 +6383,38 @@ fn compile_collision_snapshot(
     )
 }
 
+fn authored_entity_model(entity: &playsrc_entity::Entity) -> Result<Option<String>, ()> {
+    if entity
+        .classname
+        .as_deref()
+        .is_some_and(|value| value.eq_ignore_ascii_case(b"prop_dynamic"))
+    {
+        return entity
+            .model
+            .as_deref()
+            .map(|value| {
+                std::str::from_utf8(value)
+                    .map(str::to_ascii_lowercase)
+                    .map_err(|_| ())
+            })
+            .transpose();
+    }
+    let Some(definition) = entity
+        .classname
+        .as_deref()
+        .and_then(playsrc_tf2::pickup::map_pickup_definition)
+    else {
+        return Ok(None);
+    };
+    let selected = entity_scalar(entity, b"powerup_model")
+        .filter(|value| !value.is_empty())
+        .map(std::str::from_utf8)
+        .transpose()
+        .map_err(|_| ())?
+        .unwrap_or(definition.model);
+    Ok(Some(selected.to_ascii_lowercase()))
+}
+
 fn resolve_models(
     graph: &playsrc_entity::Graph,
     studio_models: &BTreeMap<String, playsrc_studio_model::PresentationModel>,
@@ -6438,16 +6531,9 @@ fn resolve_models(
     }
     let mut occurrences = Vec::new();
     for entity in &graph.entities {
-        if !entity
-            .classname
-            .as_deref()
-            .is_some_and(|value| value.eq_ignore_ascii_case(b"prop_dynamic"))
-        {
+        let Some(identity) = authored_entity_model(entity)? else {
             continue;
-        }
-        let identity = std::str::from_utf8(entity.model.as_deref().ok_or(())?)
-            .map_err(|_| ())?
-            .to_ascii_lowercase();
+        };
         occurrences.push(playsrc_map::RuntimeModelOccurrence {
             entity: entity.index,
             model: *indexes.get(&identity).ok_or(())?,
@@ -8503,11 +8589,26 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>) -
         "CaptureFlag.TeamReturned",
         "CaptureFlag.FlagSpawn",
     ];
-    let round_targets: &[&str] = &["Game.YourTeamWon", "Game.YourTeamLost"];
+    let item_targets: &[&str] = &[
+        "HealthKit.Touch",
+        "AmmoPack.Touch",
+        "Regenerate.Touch",
+        "Item.Materialize",
+    ];
+    let item_and_round_targets: &[&str] = &[
+        "HealthKit.Touch",
+        "AmmoPack.Touch",
+        "Regenerate.Touch",
+        "Item.Materialize",
+        "Game.YourTeamWon",
+        "Game.YourTeamLost",
+    ];
     let mut documents = vec![("scripts/game_sounds_weapons.txt", weapon_targets)];
     if bundle.contains_key("scripts/game_sounds_vo.txt") {
         documents.push(("scripts/game_sounds_vo.txt", flag_targets));
-        documents.push(("scripts/game_sounds.txt", round_targets));
+        documents.push(("scripts/game_sounds.txt", item_and_round_targets));
+    } else {
+        documents.push(("scripts/game_sounds.txt", item_targets));
     }
     let mixer = *bundle.get("scripts/soundmixers.txt").ok_or(())?;
     out.extend_from_slice(b"PAUD");
@@ -8553,12 +8654,10 @@ fn encode_model_occurrence_matrices(
     let occurrences = graph
         .entities
         .iter()
-        .filter(|entity| {
-            entity
-                .classname
-                .as_deref()
-                .is_some_and(|value| value.eq_ignore_ascii_case(b"prop_dynamic"))
-        })
+        .map(|entity| authored_entity_model(entity).map(|model| (entity, model)))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter_map(|(entity, model)| model.map(|model| (entity, model)))
         .collect::<Vec<_>>();
     out.extend_from_slice(b"PMTX");
     out.extend_from_slice(&2u32.to_le_bytes());
@@ -8567,10 +8666,7 @@ fn encode_model_occurrence_matrices(
             .map_err(|_| ())?
             .to_le_bytes(),
     );
-    for entity in occurrences {
-        let identity = std::str::from_utf8(entity.model.as_deref().ok_or(())?)
-            .map_err(|_| ())?
-            .to_ascii_lowercase();
+    for (entity, identity) in occurrences {
         let source_vector = |value: [f32; 3]| {
             playsrc_studio_model::Vector3(
                 value.map(|component| playsrc_studio_model::Float32(component.to_bits())),
@@ -8848,21 +8944,20 @@ fn load_cached_presentation(
         .entities
         .iter()
         .try_fold(expected, |mut output, entity| {
-            let classname = entity.classname.as_deref();
-            let model = if classname
-                .is_some_and(|value| value.eq_ignore_ascii_case(b"prop_dynamic"))
+            if let Some(model) = authored_entity_model(entity).map_err(|_| 3_u32)? {
+                output.insert(model);
+            } else if entity
+                .classname
+                .as_deref()
+                .is_some_and(|value| value.eq_ignore_ascii_case(b"item_teamflag"))
             {
-                entity.model.as_deref()
-            } else if classname.is_some_and(|value| value.eq_ignore_ascii_case(b"item_teamflag")) {
-                Some(entity_scalar(entity, b"flag_model").unwrap_or(b"models/flag/briefcase.mdl"))
-            } else {
-                None
-            };
-            if let Some(model) = model {
                 output.insert(
-                    std::str::from_utf8(model)
-                        .map_err(|_| 3_u32)?
-                        .to_ascii_lowercase(),
+                    std::str::from_utf8(
+                        entity_scalar(entity, b"flag_model")
+                            .unwrap_or(b"models/flag/briefcase.mdl"),
+                    )
+                    .map_err(|_| 3_u32)?
+                    .to_ascii_lowercase(),
                 );
             }
             Ok::<_, u32>(output)
@@ -9085,19 +9180,19 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
         "models/weapons/c_models/c_fireaxe_pyro/c_fireaxe_pyro.mdl".to_owned(),
     ]);
     for entity in &graph.entities {
-        let classname = entity.classname.as_deref();
-        let model = if classname.is_some_and(|value| value.eq_ignore_ascii_case(b"prop_dynamic")) {
-            entity.model.as_deref()
-        } else if classname.is_some_and(|value| value.eq_ignore_ascii_case(b"item_teamflag")) {
-            Some(entity_scalar(entity, b"flag_model").unwrap_or(b"models/flag/briefcase.mdl"))
-        } else {
-            None
-        };
-        if let Some(model) = model {
+        if let Some(model) = authored_entity_model(entity)? {
+            roots.insert(model);
+        } else if entity
+            .classname
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case(b"item_teamflag"))
+        {
             roots.insert(
-                std::str::from_utf8(model)
-                    .map_err(|_| ())?
-                    .to_ascii_lowercase(),
+                std::str::from_utf8(
+                    entity_scalar(entity, b"flag_model").unwrap_or(b"models/flag/briefcase.mdl"),
+                )
+                .map_err(|_| ())?
+                .to_ascii_lowercase(),
             );
         }
     }
@@ -12131,6 +12226,8 @@ mod tests {
                 yaw_degrees: Some(90.),
             }],
             bots: Vec::new(),
+            pickups: Vec::new(),
+            metal: 100,
         };
         let producer = playsrc_tf2::ProducerSnapshot {
             tick: 9,
@@ -12242,9 +12339,10 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(encoded.len(), 996);
+        assert_eq!(&encoded[..8], b"PSSN\x10\0\0\0");
+        assert_eq!(encoded.len(), 1004);
         assert_eq!(&encoded[936..944], b"PCTF\x01\0\0\0");
-        assert_eq!(&encoded[948..956], b"PGRL\x01\0\0\0");
+        assert_eq!(&encoded[956..964], b"PGRL\x01\0\0\0");
         assert_eq!(
             u32::from_le_bytes(encoded[160..164].try_into().unwrap()),
             playsrc_tf2::FL_CLIENT | playsrc_tf2::FL_INWATER

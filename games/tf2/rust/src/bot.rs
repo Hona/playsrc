@@ -43,6 +43,14 @@ pub const MELEE_MAX_ATTACK_RANGE: f32 = 100.0;
 pub const MELEE_FIRE_RANGE: f32 = 250.0;
 pub const ROCKET_LEAD_MINIMUM_RANGE: f32 = 150.0;
 pub const ROCKET_SPEED: f32 = 1100.0;
+pub const HEALTH_CRITICAL_RATIO: f32 = 0.3;
+pub const HEALTH_OK_RATIO: f32 = 0.8;
+pub const HEALTH_SEARCH_NEAR_RANGE: f32 = 1000.0;
+pub const HEALTH_SEARCH_FAR_RANGE: f32 = 2000.0;
+pub const AMMO_SEARCH_RANGE: f32 = 5000.0;
+pub const LOW_AMMO_RATIO: f32 = 0.2;
+pub const FLAG_TRIGGER_BLOAT: f32 = 24.0;
+pub const FLAG_RETURN_SECONDS: f32 = 60.0;
 pub const RESPAWN_WAVE_SECONDS: f32 = 10.0;
 pub const DEATH_ANIMATION_SECONDS: f32 = 6.4;
 const PLAYER_HULL: Hull = Hull {
@@ -98,6 +106,8 @@ pub enum ObjectiveKind {
     FetchFlag = 3,
     DeliverFlag = 4,
     Attack = 5,
+    GetHealth = 6,
+    GetAmmo = 7,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -135,6 +145,14 @@ pub struct Human {
     pub alive: bool,
     pub position: [f32; 3],
     pub velocity: [f32; 3],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SupplyTarget {
+    pub identity: u32,
+    pub kind: Option<crate::pickup::MapPickupKind>,
+    pub team: Option<PlayerTeam>,
+    pub position: [f32; 3],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -236,6 +254,8 @@ struct Bot {
     health: i32,
     afterburn: Option<crate::pyro::Afterburn>,
     last_flame_damage_time: f32,
+    ammo: crate::class::AmmoLedger,
+    next_regenerate_tick: u64,
     objective: ObjectiveKind,
     target: Option<u32>,
     known_since: BTreeMap<u32, u64>,
@@ -578,6 +598,8 @@ impl BotWorld {
                     health: class.data().maximum_health,
                     afterburn: None,
                     last_flame_damage_time: f32::NEG_INFINITY,
+                    ammo: class.data().maximum_ammo,
+                    next_regenerate_tick: 0,
                     objective,
                     target: None,
                     known_since: BTreeMap::new(),
@@ -612,6 +634,7 @@ impl BotWorld {
         world: &W,
         tick: u64,
         human: Human,
+        supplies: &[SupplyTarget],
         random: &mut UniformRandomStream,
         objectives: Option<&crate::ctf::World>,
     ) -> Result<Vec<Attack>, Error> {
@@ -651,7 +674,8 @@ impl BotWorld {
                 }
                 continue;
             }
-            if tick >= bot.next_target_tick {
+            let maintenance_due = tick >= bot.next_target_tick;
+            if maintenance_due {
                 bot.next_target_tick = tick + ticks(TARGET_SELECTION_INTERVAL, self.tick_interval);
                 let visible: Vec<_> = actors
                     .iter()
@@ -695,7 +719,58 @@ impl BotWorld {
                     },
                 );
             }
-            let (objective_kind, goal) = if let Some(flag) = authoritative {
+            sync_bot_ammo(bot);
+            let health_ratio = bot.health as f32 / bot.class.data().maximum_health as f32;
+            let health_needed = bot.afterburn.is_some()
+                || health_ratio
+                    < if threat.is_some() || bot.class == PlayerClass::Sniper {
+                        HEALTH_CRITICAL_RATIO
+                    } else {
+                        HEALTH_OK_RATIO
+                    };
+            let ammo_needed = bot.active_weapon.is_some_and(|weapon| {
+                !is_melee(weapon)
+                    && (bot.ammo.primary as f32 / bot.class.data().maximum_ammo.primary as f32)
+                        < LOW_AMMO_RATIO
+            });
+            let selected_supply = if health_needed {
+                if !maintenance_due
+                    && bot.objective == ObjectiveKind::GetHealth
+                    && supplies.iter().any(|supply| supply.position == bot.goal)
+                {
+                    Some((ObjectiveKind::GetHealth, bot.goal))
+                } else {
+                    select_supply(
+                        mesh,
+                        bot,
+                        &actors,
+                        supplies,
+                        crate::pickup::MapPickupKind::Health,
+                    )
+                    .map(|target| (ObjectiveKind::GetHealth, target.position))
+                }
+            } else if ammo_needed {
+                if !maintenance_due
+                    && bot.objective == ObjectiveKind::GetAmmo
+                    && supplies.iter().any(|supply| supply.position == bot.goal)
+                {
+                    Some((ObjectiveKind::GetAmmo, bot.goal))
+                } else {
+                    select_supply(
+                        mesh,
+                        bot,
+                        &actors,
+                        supplies,
+                        crate::pickup::MapPickupKind::Ammo,
+                    )
+                    .map(|target| (ObjectiveKind::GetAmmo, target.position))
+                }
+            } else {
+                None
+            };
+            let (objective_kind, goal) = if let Some(supply) = selected_supply {
+                supply
+            } else if let Some(flag) = authoritative {
                 if flag.carrier == Some(bot.identity) {
                     (
                         ObjectiveKind::DeliverFlag,
@@ -748,7 +823,9 @@ impl BotWorld {
                     ObjectiveKind::PayloadPush => (0.2, 0.4),
                     ObjectiveKind::PayloadGuard => (0.5, 1.0),
                     ObjectiveKind::FetchFlag | ObjectiveKind::DeliverFlag => (1.0, 2.0),
-                    ObjectiveKind::Attack => (0.3, 0.5),
+                    ObjectiveKind::Attack | ObjectiveKind::GetHealth | ObjectiveKind::GetAmmo => {
+                        (0.3, 0.5)
+                    }
                 };
                 bot.next_repath_tick =
                     tick + ticks(random.random_float(minimum, maximum), self.tick_interval);
@@ -963,6 +1040,76 @@ impl BotWorld {
                     .total_cmp(&right.1)
                     .then_with(|| left.0.cmp(&right.0))
             })
+    }
+
+    pub(crate) fn grant_pickup(
+        &mut self,
+        identity: u32,
+        definition: crate::pickup::MapPickupDefinition,
+    ) -> Option<u16> {
+        let bot = self.bots.get_mut(&identity)?;
+        if bot.lifecycle != PlayerLifecycle::Active {
+            return None;
+        }
+        match definition.kind {
+            crate::pickup::MapPickupKind::Health => {
+                let maximum = bot.class.data().maximum_health;
+                if bot.health >= maximum && bot.afterburn.is_none() {
+                    return None;
+                }
+                let requested = (maximum as f32 * definition.size.ratio()).ceil() as i32;
+                let before = bot.health;
+                if bot.health < maximum {
+                    bot.health = bot.health.saturating_add(requested).min(maximum);
+                }
+                bot.afterburn = None;
+                Some((bot.health - before) as u16)
+            }
+            crate::pickup::MapPickupKind::Ammo => {
+                sync_bot_ammo(bot);
+                let mut grants = Vec::new();
+                crate::pickup::grant_map_ammo(
+                    bot.class,
+                    definition.size,
+                    &mut bot.ammo,
+                    &mut grants,
+                );
+                if grants.is_empty() {
+                    return None;
+                }
+                for state in bot.loadout.values_mut() {
+                    if let Some(kind) = crate::weapon_ammo_kind(state.weapon) {
+                        state.reserve = bot.ammo.get(kind).min(state.profile().maximum_reserve);
+                    }
+                }
+                Some(
+                    grants
+                        .iter()
+                        .filter_map(|grant| match grant {
+                            crate::pickup::PickupGrant::Ammo { amount, .. } => Some(*amount),
+                            crate::pickup::PickupGrant::Health(_) => None,
+                        })
+                        .sum(),
+                )
+            }
+        }
+    }
+
+    pub(crate) fn regenerate(&mut self, identity: u32, tick: u64) -> bool {
+        let Some(bot) = self.bots.get_mut(&identity) else {
+            return false;
+        };
+        if bot.lifecycle != PlayerLifecycle::Active || tick < bot.next_regenerate_tick {
+            return false;
+        }
+        bot.health = bot.class.data().maximum_health.max(bot.health);
+        bot.afterburn = None;
+        bot.ammo = bot.class.data().maximum_ammo;
+        for state in bot.loadout.values_mut() {
+            state.regenerate(tick, self.tick_interval);
+        }
+        bot.next_regenerate_tick = tick + ticks(3.0, self.tick_interval);
+        true
     }
 
     pub fn contains(&self, identity: u32) -> bool {
@@ -1181,6 +1328,91 @@ impl BotWorld {
             }
         }
     }
+}
+
+fn sync_bot_ammo(bot: &mut Bot) {
+    for state in bot.loadout.values() {
+        if let Some(kind) = crate::weapon_ammo_kind(state.weapon) {
+            bot.ammo.set(kind, state.reserve);
+        }
+    }
+}
+
+fn select_supply(
+    mesh: &Mesh,
+    bot: &Bot,
+    actors: &[Actor],
+    supplies: &[SupplyTarget],
+    wanted: crate::pickup::MapPickupKind,
+) -> Option<SupplyTarget> {
+    let ratio = bot.health as f32 / bot.class.data().maximum_health as f32;
+    let range = if wanted == crate::pickup::MapPickupKind::Health {
+        let blend = if bot.afterburn.is_some() {
+            0.0
+        } else {
+            ((ratio - HEALTH_CRITICAL_RATIO) / (HEALTH_OK_RATIO - HEALTH_CRITICAL_RATIO))
+                .clamp(0.0, 1.0)
+        };
+        HEALTH_SEARCH_FAR_RANGE + blend * (HEALTH_SEARCH_NEAR_RANGE - HEALTH_SEARCH_FAR_RANGE)
+    } else {
+        AMMO_SEARCH_RANGE
+    };
+    supplies
+        .iter()
+        .copied()
+        .filter(|supply| supply.kind.is_none_or(|kind| kind == wanted))
+        .filter(|supply| supply.team.is_none_or(|team| team == bot.team))
+        .filter_map(|supply| {
+            let area = mesh.nearest_area(supply.position)?;
+            if supply.kind.is_none() {
+                let required = if bot.team == PlayerTeam::Red {
+                    TF_NAV_SPAWN_ROOM_RED
+                } else {
+                    TF_NAV_SPAWN_ROOM_BLUE
+                };
+                if area.game_attributes & required == 0 {
+                    return None;
+                }
+            }
+            let closest = actors
+                .iter()
+                .filter(|actor| actor.alive)
+                .min_by(|left, right| {
+                    distance(left.position, supply.position)
+                        .total_cmp(&distance(right.position, supply.position))
+                });
+            if closest.is_some_and(|actor| bot.team.is_enemy(actor.team)) {
+                return None;
+            }
+            let start = mesh.nearest_area(bot.movement.position)?;
+            let path = mesh.build_path(
+                start.identity,
+                area.identity,
+                |from, destination, direction, length| {
+                    path_cost(
+                        from,
+                        destination,
+                        direction,
+                        length,
+                        bot.team,
+                        bot.identity,
+                        0.0,
+                    )
+                },
+            )?;
+            let travel = path
+                .windows(2)
+                .filter_map(|pair| Some((mesh.area(pair[0])?, mesh.area(pair[1])?)))
+                .map(|(left, right)| distance(left.center(), right.center()))
+                .sum::<f32>();
+            (travel <= range).then_some((supply, travel))
+        })
+        .min_by(|left, right| {
+            left.1
+                .total_cmp(&right.1)
+                .then(left.0.identity.cmp(&right.0.identity))
+        })
+        .map(|(supply, _)| supply)
 }
 
 fn bot_eye(bot: &Bot) -> [f32; 3] {
@@ -1428,6 +1660,8 @@ fn respawn_bot(bot: &mut Bot, spawn: Spawn, mesh: &Mesh, tick: u64, interval: f3
     );
     bot.lifecycle = PlayerLifecycle::Active;
     bot.health = bot.class.data().maximum_health;
+    bot.ammo = bot.class.data().maximum_ammo;
+    bot.next_regenerate_tick = 0;
     bot.yaw_degrees = spawn.yaw_degrees;
     bot.pitch_degrees = 0.0;
     bot.target = None;
@@ -1946,6 +2180,7 @@ mod tests {
                     position: [0.0; 3],
                     velocity: [0.0; 3],
                 },
+                &[],
                 &mut random,
                 Some(&objectives),
             )
@@ -1958,6 +2193,63 @@ mod tests {
                 .capture_position,
             Some([250.0, 50.0, 50.0])
         );
+    }
+
+    #[test]
+    fn injured_and_ammo_low_bots_follow_authored_health_and_ammo_supplies() {
+        let mut world =
+            BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015, None).unwrap();
+        let mut random = UniformRandomStream::from_seed(0).unwrap();
+        world
+            .apply(
+                Request {
+                    operation: Operation::Add,
+                    count: 1,
+                    class: Some(PlayerClass::Soldier),
+                    team: Some(PlayerTeam::Blue),
+                    difficulty: Difficulty::Normal,
+                },
+                PlayerTeam::Blue,
+                PlayerClass::Scout,
+                &mut random,
+            )
+            .unwrap();
+        world.bots.get_mut(&2).unwrap().health = 100;
+        let supplies = [
+            SupplyTarget {
+                identity: 80,
+                kind: Some(crate::pickup::MapPickupKind::Health),
+                team: None,
+                position: [125.0, 50.0, 1.0],
+            },
+            SupplyTarget {
+                identity: 81,
+                kind: Some(crate::pickup::MapPickupKind::Ammo),
+                team: None,
+                position: [175.0, 50.0, 1.0],
+            },
+        ];
+        world
+            .advance(&Floor, 0, human_far(), &supplies, &mut random, None)
+            .unwrap();
+        assert_eq!(world.snapshots()[0].objective, ObjectiveKind::GetHealth);
+        let health = crate::pickup::map_pickup_definition(b"item_healthkit_medium").unwrap();
+        assert_eq!(world.grant_pickup(2, health), Some(100));
+        world
+            .bots
+            .get_mut(&2)
+            .unwrap()
+            .loadout
+            .get_mut(&Weapon::RocketLauncher)
+            .unwrap()
+            .reserve = 1;
+        world
+            .advance(&Floor, 1, human_far(), &supplies, &mut random, None)
+            .unwrap();
+        assert_eq!(world.snapshots()[0].objective, ObjectiveKind::GetAmmo);
+        let ammo = crate::pickup::map_pickup_definition(b"item_ammopack_small").unwrap();
+        assert!(world.grant_pickup(2, ammo).unwrap() >= 4);
+        assert_eq!(world.snapshots()[0].weapon.unwrap().reserve, 5);
     }
 
     #[test]
@@ -2079,6 +2371,7 @@ mod tests {
                         position: [190.0, 50.0, 1.0],
                         velocity: [0.0; 3],
                     },
+                    &[],
                     &mut random,
                     None,
                 )
@@ -2359,7 +2652,7 @@ mod tests {
         for tick in 0..150 {
             attacks.extend(
                 world
-                    .advance(&Floor, tick, human_far(), &mut random, None)
+                    .advance(&Floor, tick, human_far(), &[], &mut random, None)
                     .unwrap(),
             );
         }
@@ -2587,11 +2880,11 @@ mod tests {
         let due = dead.respawn_tick.unwrap();
         assert_eq!(due, next_respawn_wave(50, 0.015, 10.0, 1));
         world
-            .advance(&Floor, due - 1, human_far(), &mut random, None)
+            .advance(&Floor, due - 1, human_far(), &[], &mut random, None)
             .unwrap();
         assert_eq!(world.snapshots()[0].lifecycle, PlayerLifecycle::Dying);
         world
-            .advance(&Floor, due, human_far(), &mut random, None)
+            .advance(&Floor, due, human_far(), &[], &mut random, None)
             .unwrap();
         let alive = world.snapshots()[0].clone();
         assert_eq!(

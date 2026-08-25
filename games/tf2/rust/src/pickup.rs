@@ -8,6 +8,93 @@ use crate::{
 pub const MAP_PICKUP_RESPAWN_SECONDS: f32 = 10.0;
 pub const DROPPED_PICKUP_LIFETIME_SECONDS: f32 = 30.0;
 pub const MAX_DROPPED_WEAPONS: usize = 32;
+pub const ITEM_PICKUP_BOX_BLOAT: f32 = 24.0;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum MapPickupKind {
+    Health = 1,
+    Ammo = 2,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MapPickupDefinition {
+    pub kind: MapPickupKind,
+    pub size: PickupSize,
+    pub model: &'static str,
+    pub item_name: &'static str,
+    pub minimum: [f32; 3],
+    pub maximum: [f32; 3],
+}
+
+pub fn map_pickup_definition(classname: &[u8]) -> Option<MapPickupDefinition> {
+    let (kind, size, model, item_name, minimum, maximum) =
+        if classname.eq_ignore_ascii_case(b"item_healthkit_small") {
+            (
+                MapPickupKind::Health,
+                PickupSize::Small,
+                "models/items/medkit_small.mdl",
+                "medkit_small",
+                [-8.481_677, -8.441_464, -0.235_178],
+                [8.440_302, 8.459_9, 19.715_792],
+            )
+        } else if classname.eq_ignore_ascii_case(b"item_healthkit_medium") {
+            (
+                MapPickupKind::Health,
+                PickupSize::Medium,
+                "models/items/medkit_medium.mdl",
+                "medkit_medium",
+                [-15.130_797, -15.126_175, -0.236_059],
+                [15.126_175, 15.072_647, 26.244_202],
+            )
+        } else if classname.eq_ignore_ascii_case(b"item_healthkit_full") {
+            (
+                MapPickupKind::Health,
+                PickupSize::Full,
+                "models/items/medkit_large.mdl",
+                "medkit_large",
+                [-19.065_352, -19.065_346, -0.269_357],
+                [19.054_045, 19.018_94, 27.363_41],
+            )
+        } else if classname.eq_ignore_ascii_case(b"item_ammopack_small") {
+            (
+                MapPickupKind::Ammo,
+                PickupSize::Small,
+                "models/items/ammopack_small.mdl",
+                "ammopack_small",
+                [-9.486_649, -9.502_421, -0.261_28],
+                [9.482_024, 9.490_77, 14.928_136],
+            )
+        } else if classname.eq_ignore_ascii_case(b"item_ammopack_medium") {
+            (
+                MapPickupKind::Ammo,
+                PickupSize::Medium,
+                "models/items/ammopack_medium.mdl",
+                "ammopack_medium",
+                [-14.115_673, -14.109_249, -0.256_156],
+                [14.118_368, 14.118_369, 14.668_728],
+            )
+        } else if classname.eq_ignore_ascii_case(b"item_ammopack_full") {
+            (
+                MapPickupKind::Ammo,
+                PickupSize::Full,
+                "models/items/ammopack_large.mdl",
+                "ammopack_large",
+                [-18.392_359, -18.482_252, -0.210_636],
+                [18.442_68, 18.442_686, 40.688_248],
+            )
+        } else {
+            return None;
+        };
+    Some(MapPickupDefinition {
+        kind,
+        size,
+        model,
+        item_name,
+        minimum,
+        maximum,
+    })
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
@@ -440,7 +527,7 @@ pub fn retained_dropped_weapon_identities(pickups: &[Pickup]) -> Vec<u32> {
         .collect()
 }
 
-fn grant_map_ammo(
+pub(crate) fn grant_map_ammo(
     class: PlayerClass,
     size: PickupSize,
     ammo: &mut AmmoLedger,

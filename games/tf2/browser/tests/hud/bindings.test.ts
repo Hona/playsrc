@@ -620,6 +620,32 @@ describe("canonical all-class TF2 session HUD adapter", () => {
     playerClassUsePlayerModel: false,
   })
 
+  test("publishes authored health and ammo pickup notifications only for the local player", () => {
+    const priorSource = compactSnapshot(1n, {
+      health: 100,
+      loadout: Object.freeze([Object.freeze({ weapon: 1, reload: 0, clip: 4, reserve: 4, maximumClip: 4, maximumReserve: 20 })]),
+    })
+    const prior = adaptSessionHud(unavailable("initial"), compactPublication(priorSource), context).snapshot
+    const recovered = compactSnapshot(2n, {
+      health: 200,
+      loadout: Object.freeze([Object.freeze({ weapon: 1, reload: 0, clip: 4, reserve: 14, maximumClip: 4, maximumReserve: 20 })]),
+      events: Object.freeze([
+        Object.freeze({ kind: 15, detail: 1, subject: 80, auxiliary: 1, values: Object.freeze([100, 200, 4, 4]) }),
+        Object.freeze({ kind: 16, detail: 1, subject: 81, auxiliary: 1, values: Object.freeze([10, 200, 4, 14]) }),
+        Object.freeze({ kind: 15, detail: 0, subject: 82, auxiliary: 2, values: Object.freeze([25, 125, 0, 0]) }),
+      ]),
+    })
+    const publication = adaptSessionHud(availablePrevious(prior), compactPublication(recovered), context)
+    expect(publication.events.map((event) => event.kind)).toEqual(["pickup", "pickup"])
+    expect(publication.events.map((event) => event.kind === "pickup" ? event.notification : null)).toEqual([
+      { pickupIdentity: 80, pickup: "health", itemIdentity: { kind: "available", value: "medkit_medium" }, amount: { kind: "available", value: 100 } },
+      { pickupIdentity: 81, pickup: "ammo", itemIdentity: { kind: "available", value: "ammopack_medium" }, amount: { kind: "available", value: 10 } },
+    ])
+    expect(bindTf2Hud(publication).commands.map((command) => command.kind)).toEqual([
+      "pickup-notification", "pickup-notification",
+    ])
+  })
+
   test("publishes exact Soldier stock slots, item identities, and hidden shovel ammunition", () => {
     for (const active of [1, 7, 8] as const) {
       const source = compactSnapshot(1n, {

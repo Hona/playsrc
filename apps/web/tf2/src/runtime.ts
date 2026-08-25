@@ -138,6 +138,10 @@ const PARTICLE_SYSTEMS = new Set([
   "ExplosionCore_MidAir",
 ])
 const SOUND_PATHS = [
+  "sound/items/smallmedkit1.wav",
+  "sound/items/gunpickup2.wav",
+  "sound/items/regenerate.wav",
+  "sound/items/spawn_item.wav",
   "sound/weapons/rocket_shoot.wav",
   "sound/weapons/stickybomblauncher_shoot.wav",
   "sound/weapons/quake_rpg_fire_remastered.wav",
@@ -303,6 +307,9 @@ export type ApplicationView = Readonly<{
   roundProbe?: string
   botCount?: number
   botProbe?: string
+  pickupCount?: number
+  pickupProbe?: string
+  metal?: number
   unsupportedState?: "StickyPhysicsSolverUnavailable" | "GrenadePhysicsSolverUnavailable"
   startupState?: Tf2StartupState["kind"]
   loadingProgress?: number
@@ -3396,6 +3403,7 @@ export class Tf2Application {
       if(skyDisposition==="controller-absent")profile.controllerFreeSkyViews=Number(profile.controllerFreeSkyViews??0)+1
       profile.displacementVisibility={surfaces:[...visibility.surfaces],drawSurfaces:[...visibility.drawSurfaces],outsideWorld:visibility.outsideWorld,eyeLeaf:visibility.eyeLeaf,leaves:visibility.leaves,areas:visibility.areas};profile.displacementCamera=camera
       profile.bots=prepared.snapshot.bots.map(bot=>({...bot,weapon:bot.weapon&&{...bot.weapon,nextPrimaryTick:bot.weapon.nextPrimaryTick.toString(),nextReloadTick:bot.weapon.nextReloadTick.toString()},lastFireTick:bot.lastFireTick?.toString()??null,respawnTick:bot.respawnTick?.toString()??null,tick:prepared.snapshot.tick.toString()}))
+      profile.pickups=prepared.snapshot.pickups.map(pickup=>({...pickup,respawnTick:pickup.respawnTick?.toString()??null}))
     }
     const geometryEvidenceRevision=profile?.geometryEvidenceRevision
     if(profile&&Number.isSafeInteger(geometryEvidenceRevision)&&geometryEvidenceRevision!==((profile.geometryEvidence as {revision?:unknown}|undefined)?.revision)&&this.#view.phase==="Ready"){
@@ -3440,7 +3448,7 @@ export class Tf2Application {
         waterNormalFrame:visibility.water.visibleWater?.evaluated.normalFrame,
         worldMaterialFrames:visibility.worldMaterials.map(material=>`${material.identity}:${material.textures.find(texture=>texture.role===7)?.frame??"none"}`).join("|"),
         performanceProbe:`${this.#phaseTimings.map(value=>value.toFixed(3)).join(",")}:${this.#wasmCalls.observe},${this.#wasmCalls.models},${this.#wasmCalls.visibility},${this.#wasmCalls.particles}:${this.#maximumScheduledSamples},${this.#maximumPublicationTicks}:${prepared.particleOutputBytes},${prepared.publication.snapshotBytes.byteLength}`,
-        performanceDetailProbe:JSON.stringify({tick:prepared.snapshot.tick.toString(),selectedTicks:prepared.publication.selectedTicks,bots:prepared.snapshot.bots.length,models:prepared.modelMilliseconds,projectiles:prepared.projectileMilliseconds,visibility:visibilityMilliseconds,particleWorker:prepared.particleMilliseconds,particleDecode:prepared.particleDecodeMilliseconds,audio:prepared.audioMilliseconds,particleItems:rendered.timings.particleItems,particleBatches:rendered.timings.particleBatches,dynamicItems:rendered.timings.dynamicItemsMilliseconds,world:rendered.timings.worldMilliseconds,viewmodel:rendered.timings.viewModelMilliseconds,render:renderMilliseconds,total:totalMilliseconds}),
+        performanceDetailProbe:JSON.stringify({tick:prepared.snapshot.tick.toString(),selectedTicks:prepared.publication.selectedTicks,bots:prepared.snapshot.bots.length,pickups:prepared.snapshot.pickups.length,models:prepared.modelMilliseconds,projectiles:prepared.projectileMilliseconds,visibility:visibilityMilliseconds,particleWorker:prepared.particleMilliseconds,particleDecode:prepared.particleDecodeMilliseconds,audio:prepared.audioMilliseconds,particleItems:rendered.timings.particleItems,particleBatches:rendered.timings.particleBatches,dynamicItems:rendered.timings.dynamicItemsMilliseconds,world:rendered.timings.worldMilliseconds,viewmodel:rendered.timings.viewModelMilliseconds,render:renderMilliseconds,total:totalMilliseconds}),
         displayFrame:this.#displayFrame,
         displayViewRevision:viewRevision,
         displayPreparedRevision:prepared.revision,
@@ -3713,6 +3721,7 @@ export class Tf2Application {
           })),
         ]),
         brushModels: snapshot.entityPresentation,
+        modelVisibility: new Map(snapshot.pickups.map((pickup) => [pickup.identity, pickup.available])),
         collisionWorldIdentity: snapshot.collisionSnapshot.worldIdentity,
       }) satisfies Omit<Frame,"camera"|"visibility"|"deltaSeconds">
       this.#preparedRevision+=1
@@ -3758,6 +3767,9 @@ export class Tf2Application {
         objectiveEventProbe: snapshot.objectives?.events.map(event=>`${event.kind}:${event.detail}:${event.team}:${event.subject}:${event.player??0}`).join("|"),
         roundProbe: `${snapshot.round.state}:${Number(snapshot.round.waitingForPlayers)}:${Number(snapshot.round.inSetup)}:${Number(snapshot.round.inOvertime)}:${snapshot.round.winningTeam??0}:${snapshot.round.redScore}:${snapshot.round.blueScore}:${snapshot.round.timer?.remaining.toFixed(2)??"none"}`,
         botCount: snapshot.bots.length,
+        pickupCount: snapshot.pickups.length,
+        pickupProbe: snapshot.pickups.map(pickup=>`${pickup.identity}:${pickup.kind}:${pickup.size}:${pickup.available?1:0}:${pickup.respawnTick??"none"}:${pickup.origin.join(",")}`).join("|"),
+        metal: snapshot.metal,
         botProbe: snapshot.bots.map(bot=>`${bot.identity}:${bot.team}:${bot.class}:${bot.objective}:${bot.area??"none"}:${bot.remainingPathAreas}:${bot.position.map(value=>value.toFixed(1)).join(",")}:${bot.target??"none"}:${bot.weapon?.identity??"none"}:${bot.weapon?.clip??0}:${bot.shots}:${bot.hits}:${bot.kills}:${bot.deaths}`).join("|"),
         particleRenderItems: particleItems.length,
         flamePoints: snapshot.flamePoints.length,

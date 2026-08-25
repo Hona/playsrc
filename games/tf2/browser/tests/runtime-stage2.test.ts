@@ -10,11 +10,11 @@ import {
 import type { WorkerRequest, WorkerResponse } from "../src/protocol"
 
 function snapshot(): ArrayBuffer {
-  const bytes = new ArrayBuffer(1093)
+  const bytes = new ArrayBuffer(1101)
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x53, 0x53, 0x4e])
-  view.setUint32(4, 15, true)
+  view.setUint32(4, 16, true)
   view.setBigUint64(8, 7n, true)
   data.set([3, 2, 1, 0], 16)
   view.setFloat32(20, 200, true)
@@ -117,6 +117,7 @@ function snapshot(): ArrayBuffer {
   data.set(new TextEncoder().encode("PCTF"), at)
   view.setUint32(at + 4, 1, true)
   at += 12
+  at += 8
   data.set(new TextEncoder().encode("PGRL"), at)
   view.setUint32(at + 4, 1, true)
   data[at + 8] = 4
@@ -370,7 +371,7 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
 
     const prior = new Uint8Array(snapshot())
     const bytes = new Uint8Array(prior.byteLength + 128)
-    const objectiveOffset = prior.byteLength - 60
+    const objectiveOffset = prior.byteLength - 68
     bytes.set(prior.subarray(0, objectiveOffset))
     bytes.set(prior.subarray(objectiveOffset), objectiveOffset + 128)
     const view = new DataView(bytes.buffer)

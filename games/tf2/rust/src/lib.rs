@@ -32,8 +32,9 @@ pub mod jump;
 
 pub use map_runtime::{
     CONTENTS_BLUE_TEAM, CONTENTS_RED_TEAM, Effect as MapEffect, EntityEvent, EntityEventKind,
-    EntityTransform, GameplayWorld, MapCounts, MapPhase, MapRuntime, MoverRequest, MoverResult,
-    MoverResultKind, PlayerContactFacts, RegenerateContact, respawn_barrier_collides,
+    EntityTransform, GameplayWorld, MapCounts, MapPhase, MapPickupSnapshot, MapRuntime,
+    MoverRequest, MoverResult, MoverResultKind, PlayerContactFacts, RegenerateContact,
+    respawn_barrier_collides,
 };
 
 use std::collections::BTreeMap;
@@ -620,6 +621,17 @@ pub enum Event {
         position: [f32; 3],
         damage: f32,
     },
+    PickedUp {
+        entity: u32,
+        player: u32,
+        kind: pickup::MapPickupKind,
+        size: pickup::PickupSize,
+        amount: u16,
+        health: i32,
+        weapon: Option<Weapon>,
+        clip: u16,
+        reserve: u16,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -643,6 +655,8 @@ pub struct Snapshot {
     pub jump: Option<jump::TickOutput>,
     pub events: Vec<Event>,
     pub bots: Vec<bot::Snapshot>,
+    pub pickups: Vec<MapPickupSnapshot>,
+    pub metal: u16,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -696,6 +710,7 @@ pub struct Session<W: GameplayWorld + Clone> {
     pending_team_change: Option<PlayerTeam>,
     weapon: Option<Weapon>,
     loadout: BTreeMap<Weapon, WeaponRuntime>,
+    ammo: class::AmmoLedger,
     movement: MovementState,
     air_dashes: u8,
     in_water: bool,
@@ -752,6 +767,7 @@ pub struct Session<W: GameplayWorld + Clone> {
 #[derive(Debug)]
 pub enum Error {
     Movement(MoveError),
+    PickupTrace(MoveError),
     Entity(playsrc_entity::RuntimeFailure),
     Jump(jump::Error),
     MissingEntity(u32),
@@ -797,6 +813,7 @@ impl From<MapError> for Error {
         match error {
             MapError::Entity(error) => Self::Entity(error),
             MapError::Movement(error) => Self::Movement(error),
+            MapError::PickupTrace(error) => Self::PickupTrace(error),
             MapError::MissingEntity(entity) => Self::MissingEntity(entity),
         }
     }
@@ -845,6 +862,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             pending_team_change: None,
             weapon: Some(Weapon::RocketLauncher),
             loadout,
+            ammo: PlayerClass::Soldier.data().maximum_ammo,
             movement: MovementState::from_player(
                 Player {
                     position: spawn,
@@ -973,6 +991,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             } else if self.weapon.is_none() {
                 self.weapon = default_weapon(self.class);
                 self.loadout = default_loadout(self.class);
+                self.ammo = self.class.data().maximum_ammo;
                 self.health = self.maximum_health();
                 self.deploy_active_weapon();
             }
@@ -1548,7 +1567,31 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 grounded: self.movement.ground.is_some(),
             },
         )?;
+        let materialized = begin_phase
+            .events
+            .iter()
+            .filter(|event| {
+                event.kind == EntityEventKind::Input
+                    && event.accepted
+                    && event.name == b"__pickup_materialize"
+            })
+            .filter_map(|event| {
+                self.map
+                    .pickups()
+                    .into_iter()
+                    .find(|pickup| pickup.identity == event.entity && pickup.available)
+                    .map(|pickup| (pickup.identity, pickup.origin))
+            })
+            .collect::<Vec<_>>();
         map_phase.append(begin_phase);
+        for (identity, position) in materialized {
+            self.emit_item_sound(
+                SoundDefinition::ItemMaterialize,
+                identity,
+                position,
+                PLAYER_IDENTITY,
+            );
+        }
         self.movement.position = add(self.movement.position, map_phase.carry);
         let airborne_before_movement = self.movement.ground.is_none();
 
@@ -1587,6 +1630,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
             self.air_dashes = self.air_dashes.saturating_add(1);
         }
         self.last_movement = Some(movement_result);
+        let supplies = if self.bots.as_ref().is_some_and(|bots| !bots.is_empty()) {
+            self.map.supply_targets()
+        } else {
+            Vec::new()
+        };
         let bot_attacks = if let Some(bots) = &mut self.bots {
             bots.advance(
                 &self.collision,
@@ -1598,6 +1646,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     position: self.movement.position,
                     velocity: self.movement.velocity,
                 },
+                &supplies,
                 &mut self.authority_random,
                 self.map.objectives(),
             )
@@ -1679,6 +1728,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             }
             objective_events.extend(current);
         }
+        self.apply_pickup_contacts(movement_policy, &mut events, &mut map_phase)?;
         if discontinuity {
             self.contact_reconcile_requests
                 .push(ContactReconcileRequest {
@@ -2107,6 +2157,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 .bots
                 .as_ref()
                 .map_or_else(Vec::new, bot::BotWorld::snapshots),
+            pickups: self.map.pickups(),
+            metal: self.ammo.metal,
         })
     }
 
@@ -2156,6 +2208,206 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 false,
             )
             .map_err(Error::Objectives)
+    }
+
+    fn apply_pickup_contacts(
+        &mut self,
+        policy: GenericMovementPolicy,
+        events: &mut Vec<Event>,
+        phase: &mut MapPhase,
+    ) -> Result<(), Error> {
+        if self.lifecycle == PlayerLifecycle::Active && self.health > 0 {
+            for state in self.loadout.values() {
+                if let Some(kind) = weapon_ammo_kind(state.weapon) {
+                    self.ammo.set(kind, state.reserve);
+                }
+            }
+            let candidates = self.map.pickup_candidates(
+                &self.collision,
+                self.movement.position,
+                self.movement.active_hull(policy),
+                self.class.standing_eye_height(),
+            )?;
+            for candidate in candidates {
+                phase.append(self.map.begin_pickup(
+                    self.tick,
+                    candidate.identity,
+                    PLAYER_IDENTITY,
+                )?);
+                let team_eligible = candidate
+                    .team
+                    .is_none_or(|team| team == self.team_selection.local_team().source_number());
+                let amount = if !team_eligible {
+                    None
+                } else {
+                    match candidate.definition.kind {
+                        pickup::MapPickupKind::Health => {
+                            let maximum = self.maximum_health();
+                            let requested =
+                                (maximum as f32 * candidate.definition.size.ratio()).ceil() as i32;
+                            let before = self.health;
+                            if self.health < maximum {
+                                self.health = self.health.saturating_add(requested).min(maximum);
+                            }
+                            let cleansed =
+                                [Condition::Burning, Condition::Bleeding, Condition::Plague]
+                                    .into_iter()
+                                    .fold(false, |cleansed, condition| {
+                                        if self.conditions.contains(condition) {
+                                            self.conditions.remove(condition);
+                                            true
+                                        } else {
+                                            cleansed
+                                        }
+                                    });
+                            let given = (self.health - before) as u16;
+                            (given > 0 || cleansed).then_some(given)
+                        }
+                        pickup::MapPickupKind::Ammo => {
+                            let mut grants = Vec::new();
+                            pickup::grant_map_ammo(
+                                self.class,
+                                candidate.definition.size,
+                                &mut self.ammo,
+                                &mut grants,
+                            );
+                            if grants.is_empty() {
+                                None
+                            } else {
+                                for state in self.loadout.values_mut() {
+                                    if let Some(kind) = weapon_ammo_kind(state.weapon) {
+                                        state.reserve = self
+                                            .ammo
+                                            .get(kind)
+                                            .min(state.profile().maximum_reserve);
+                                    }
+                                }
+                                Some(
+                                    grants
+                                        .iter()
+                                        .filter_map(|grant| match grant {
+                                            pickup::PickupGrant::Ammo { amount, .. } => {
+                                                Some(*amount)
+                                            }
+                                            pickup::PickupGrant::Health(_) => None,
+                                        })
+                                        .sum(),
+                                )
+                            }
+                        }
+                    }
+                };
+                phase.append(self.map.finish_pickup(
+                    self.tick,
+                    candidate.identity,
+                    PLAYER_IDENTITY,
+                    amount.is_some(),
+                )?);
+                if let Some(amount) = amount {
+                    let active = self.weapon.and_then(|weapon| self.loadout.get(&weapon));
+                    events.push(Event::PickedUp {
+                        entity: candidate.identity,
+                        player: PLAYER_IDENTITY,
+                        kind: candidate.definition.kind,
+                        size: candidate.definition.size,
+                        amount,
+                        health: self.health,
+                        weapon: self.weapon,
+                        clip: active.map_or(0, |state| state.clip),
+                        reserve: active.map_or(0, |state| state.reserve),
+                    });
+                    self.emit_item_sound(
+                        match candidate.definition.kind {
+                            pickup::MapPickupKind::Health => SoundDefinition::HealthKitTouch,
+                            pickup::MapPickupKind::Ammo => SoundDefinition::AmmoPackTouch,
+                        },
+                        candidate.identity,
+                        candidate.origin,
+                        PLAYER_IDENTITY,
+                    );
+                }
+            }
+        }
+
+        let bots = self
+            .bots
+            .as_ref()
+            .map_or_else(Vec::new, bot::BotWorld::snapshots);
+        for bot in bots {
+            if bot.lifecycle != PlayerLifecycle::Active {
+                continue;
+            }
+            let policy = MovementPolicy {
+                class: bot.class,
+                modifiers: MovementModifiers::default(),
+            }
+            .resolve();
+            let hull = policy.standing_hull;
+            for zone in
+                self.map
+                    .bot_regenerate_zones(&self.collision, bot.position, hull, bot.team)?
+            {
+                if self
+                    .bots
+                    .as_mut()
+                    .is_some_and(|world| world.regenerate(bot.identity, self.tick))
+                {
+                    let _ = zone;
+                }
+            }
+            let candidates = self.map.pickup_candidates(
+                &self.collision,
+                bot.position,
+                hull,
+                bot.class.standing_eye_height(),
+            )?;
+            for candidate in candidates {
+                phase.append(
+                    self.map
+                        .begin_pickup(self.tick, candidate.identity, bot.identity)?,
+                );
+                let amount = if candidate
+                    .team
+                    .is_some_and(|team| team != bot.team.source_number())
+                {
+                    None
+                } else {
+                    self.bots
+                        .as_mut()
+                        .and_then(|world| world.grant_pickup(bot.identity, candidate.definition))
+                };
+                phase.append(self.map.finish_pickup(
+                    self.tick,
+                    candidate.identity,
+                    bot.identity,
+                    amount.is_some(),
+                )?);
+                if let Some(amount) = amount {
+                    let current = self
+                        .bots
+                        .as_ref()
+                        .and_then(|world| {
+                            world
+                                .snapshots()
+                                .into_iter()
+                                .find(|value| value.identity == bot.identity)
+                        })
+                        .expect("authoritative bot remains present");
+                    events.push(Event::PickedUp {
+                        entity: candidate.identity,
+                        player: bot.identity,
+                        kind: candidate.definition.kind,
+                        size: candidate.definition.size,
+                        amount,
+                        health: current.health,
+                        weapon: current.weapon.map(|value| value.weapon),
+                        clip: current.weapon.map_or(0, |value| value.clip),
+                        reserve: current.weapon.map_or(0, |value| value.reserve),
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 
     fn apply_selection(
@@ -2218,6 +2470,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             self.class = class;
             self.weapon = default_weapon(class);
             self.loadout = default_loadout(class);
+            self.ammo = class.data().maximum_ammo;
             self.deploy_active_weapon();
             self.health = self.maximum_health();
             self.conditions.clear();
@@ -2544,8 +2797,15 @@ impl<W: GameplayWorld + Clone> Session<W> {
         for weapon in self.loadout.values_mut() {
             weapon.regenerate(self.tick, self.movement_configuration.tick_interval);
         }
+        self.ammo = self.class.data().maximum_ammo;
         self.next_regenerate_tick =
             self.tick + ticks(3.0, self.movement_configuration.tick_interval);
+        self.emit_item_sound(
+            SoundDefinition::RegenerateTouch,
+            PLAYER_IDENTITY,
+            self.movement.position,
+            PLAYER_IDENTITY,
+        );
         if let Some(associated_model) = associated_model {
             let body = self
                 .map
@@ -2733,6 +2993,31 @@ impl<W: GameplayWorld + Clone> Session<W> {
         event.ordinal =
             u16::try_from(self.audio_events.len()).expect("bounded TF2 audio event count");
         self.audio_events.push(event);
+    }
+
+    fn emit_item_sound(
+        &mut self,
+        definition: SoundDefinition,
+        source: u32,
+        position: [f32; 3],
+        owner: u32,
+    ) {
+        let samples = self.sample_weapon_sound(definition);
+        self.push_audio_event(AudioEvent {
+            tick: self.tick,
+            ordinal: 0,
+            identity: if definition == SoundDefinition::ItemMaterialize {
+                AudioEventIdentity::ItemMaterialize
+            } else {
+                AudioEventIdentity::ItemPickup
+            },
+            definition,
+            source_kind: AudioSourceKind::Entity,
+            source_identity: source,
+            owner_identity: Some(owner),
+            position,
+            samples,
+        });
     }
 
     fn emit_weapon_sound(&mut self, definition: SoundDefinition, position: [f32; 3]) {
@@ -4622,6 +4907,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
     ) {
         self.fizzle_projectiles(projectile_events);
         self.health = self.maximum_health();
+        self.ammo = self.class.data().maximum_ammo;
         self.conditions.clear();
         self.ctf_capture_bonus_until = None;
         self.lifecycle = PlayerLifecycle::Active;
@@ -4666,6 +4952,32 @@ impl<W: GameplayWorld + Clone> Session<W> {
         } else {
             self.class.data().maximum_health
         }
+    }
+}
+
+pub(crate) const fn weapon_ammo_kind(weapon: Weapon) -> Option<class::AmmoType> {
+    match weapon {
+        Weapon::RocketLauncher
+        | Weapon::Original
+        | Weapon::Scattergun
+        | Weapon::Minigun
+        | Weapon::SniperRifle
+        | Weapon::EngineerShotgun
+        | Weapon::GrenadeLauncher
+        | Weapon::Flamethrower => Some(class::AmmoType::Primary),
+        Weapon::StickybombLauncher
+        | Weapon::Pistol
+        | Weapon::Shotgun
+        | Weapon::HeavyShotgun
+        | Weapon::Smg
+        | Weapon::EngineerPistol => Some(class::AmmoType::Secondary),
+        Weapon::Bat
+        | Weapon::Shovel
+        | Weapon::Fists
+        | Weapon::Kukri
+        | Weapon::Wrench
+        | Weapon::Bottle
+        | Weapon::FireAxe => None,
     }
 }
 
@@ -5024,6 +5336,148 @@ mod tests {
         ) -> Result<bool, MoveError> {
             Ok(false)
         }
+    }
+
+    #[test]
+    fn authored_map_pickups_restore_exact_resources_and_materialize_after_ten_seconds() {
+        let graph = playsrc_entity::parse(
+            b"{\"classname\"\"item_healthkit_medium\"\"origin\"\"0 0 1\"}\n{\"classname\"\"item_ammopack_small\"\"origin\"\"80 0 1\"}\n{\"classname\"\"item_healthkit_full\"\"origin\"\"160 0 1\"\"TeamNum\"\"3\"}\0",
+            playsrc_entity::Limits::default(),
+        )
+        .unwrap();
+        let mut session = Session::new(
+            Floor,
+            [0.0, 0.0, 1.0],
+            MapRuntime::compile(&graph, 0.015, 1, Vec::new()).unwrap(),
+        );
+        session.health = 50;
+        let picked = session.advance(Command::default()).unwrap();
+        assert_eq!(picked.health, 150.0);
+        assert!(matches!(
+            picked.events.as_slice(),
+            [Event::PickedUp {
+                entity: 0,
+                player: PLAYER_IDENTITY,
+                kind: pickup::MapPickupKind::Health,
+                size: pickup::PickupSize::Medium,
+                amount: 100,
+                ..
+            }]
+        ));
+        assert!(!picked.pickups[0].available);
+        assert_eq!(picked.pickups[0].respawn_tick, Some(667));
+        assert_eq!(
+            session.audio_events()[0].definition,
+            SoundDefinition::HealthKitTouch
+        );
+        session.movement.position = [80.0, 0.0, 1.0];
+        session
+            .loadout
+            .get_mut(&Weapon::RocketLauncher)
+            .unwrap()
+            .reserve = 2;
+        session.loadout.get_mut(&Weapon::Shotgun).unwrap().reserve = 1;
+        let ammo = session.advance(Command::default()).unwrap();
+        assert_eq!(session.loadout[&Weapon::RocketLauncher].reserve, 6);
+        assert_eq!(session.loadout[&Weapon::Shotgun].reserve, 8);
+        assert!(ammo.events.iter().any(|event| matches!(
+            event,
+            Event::PickedUp {
+                entity: 1,
+                kind: pickup::MapPickupKind::Ammo,
+                ..
+            }
+        )));
+        assert_eq!(
+            session.audio_events()[0].definition,
+            SoundDefinition::AmmoPackTouch
+        );
+        session.movement.position = [160.0, 0.0, 1.0];
+        let denied = session.advance(Command::default()).unwrap();
+        assert!(denied.pickups[2].available);
+        assert!(
+            !denied
+                .events
+                .iter()
+                .any(|event| matches!(event, Event::PickedUp { entity: 2, .. }))
+        );
+        session.movement.position = [400.0, 0.0, 1.0];
+        while session.tick < 667 {
+            session.advance(Command::default()).unwrap();
+        }
+        let respawned = session.advance(Command::default()).unwrap();
+        assert!(respawned.pickups[0].available);
+        assert!(
+            session
+                .audio_events()
+                .iter()
+                .any(|event| event.definition == SoundDefinition::ItemMaterialize)
+        );
+    }
+
+    #[test]
+    fn pickup_inputs_preserve_disabled_and_manual_materialization_contracts() {
+        let graph = playsrc_entity::parse(
+            b"{\"classname\"\"item_healthkit_small\"\"origin\"\"0 0 1\"\"StartDisabled\"\"1\"\"AutoMaterialize\"\"0\"}\0",
+            playsrc_entity::Limits::default(),
+        )
+        .unwrap();
+        let mut session = Session::new(
+            Floor,
+            [0.0, 0.0, 1.0],
+            MapRuntime::compile(&graph, 0.015, 1, Vec::new()).unwrap(),
+        );
+        session.health = 100;
+        let disabled = session.advance(Command::default()).unwrap();
+        assert!(!disabled.pickups[0].available);
+        session
+            .map_input(0, b"Enable", playsrc_entity::Variant::Void)
+            .unwrap();
+        let consumed = session.advance(Command::default()).unwrap();
+        assert_eq!(consumed.health, 140.0);
+        assert!(!consumed.pickups[0].available);
+        session.movement.position = [200.0, 0.0, 1.0];
+        for _ in 0..670 {
+            session.advance(Command::default()).unwrap();
+        }
+        assert!(!session.map.pickups()[0].available);
+        session
+            .map_input(0, b"Enable", playsrc_entity::Variant::Void)
+            .unwrap();
+        assert!(session.map.pickups()[0].available);
+        session
+            .map_input(0, b"Disable", playsrc_entity::Variant::Void)
+            .unwrap();
+        assert!(!session.map.pickups()[0].available);
+    }
+
+    #[test]
+    fn health_pickups_preserve_overheal_and_cleanse_conditions_without_inventing_health() {
+        let graph = playsrc_entity::parse(
+            b"{\"classname\"\"item_healthkit_small\"\"origin\"\"0 0 1\"}\0",
+            playsrc_entity::Limits::default(),
+        )
+        .unwrap();
+        let mut session = Session::new(
+            Floor,
+            [0.0, 0.0, 1.0],
+            MapRuntime::compile(&graph, 0.015, 1, Vec::new()).unwrap(),
+        );
+        session.health = 260;
+        let full = session.advance(Command::default()).unwrap();
+        assert_eq!(full.health, 260.0);
+        assert!(full.pickups[0].available);
+        session.conditions.insert(Condition::Burning);
+        let cleansed = session.advance(Command::default()).unwrap();
+        assert_eq!(cleansed.health, 260.0);
+        assert!(!session.conditions.contains(Condition::Burning));
+        assert!(!cleansed.pickups[0].available);
+        assert!(
+            cleansed
+                .events
+                .iter()
+                .any(|event| matches!(event, Event::PickedUp { amount: 0, .. }))
+        );
     }
 
     #[test]

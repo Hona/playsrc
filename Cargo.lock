@@ -641,6 +641,7 @@ dependencies = [
  "playsrc-material",
  "playsrc-particle",
  "playsrc-studio-model",
+ "playsrc-tf2",
  "playsrc-tf2-wasm",
  "playsrc-vhv",
  "playsrc-vmt",

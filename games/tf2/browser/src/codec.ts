@@ -61,7 +61,7 @@ fistMissAvailable: number
 export type RandomDraw = Readonly<{
   context: 1 | 2
   decision: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8
-  definition: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57
+  definition: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61
   phase: 0 | 1 | 2
   raw: number
   result: Readonly<{ kind: "float-bits"; bits: number } | { kind: "integer"; value: number } | { kind: "rejected-integer" }>
@@ -69,8 +69,8 @@ export type RandomDraw = Readonly<{
 export type AudioEvent = Readonly<{
   tick: bigint
   ordinal: number
-  identity: 1 | 2
-  definition: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57
+  identity: 1 | 2 | 3 | 4
+  definition: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61
   sourceKind: 1 | 2
   sourceIdentity: number
   ownerIdentity: number | null
@@ -334,7 +334,7 @@ export type EntityEvent = Readonly<{
 }>
 
 export type GameplayEvent = Readonly<{
-  kind: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14
+  kind: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16
   detail: number
   subject: number
   auxiliary: number
@@ -482,7 +482,7 @@ export type BotSnapshot = Readonly<{
   team: Tf2Team
   lifecycle: 1 | 2
   difficulty: BotDifficulty
-  objective: 1 | 2 | 3 | 4 | 5
+  objective: 1 | 2 | 3 | 4 | 5 | 6 | 7
   health: number
   maximumHealth: number
   target: number | null
@@ -509,6 +509,18 @@ export type BotSnapshot = Readonly<{
   captures: number
   carryingFlag: boolean
   lastFireTick: bigint | null
+  respawnTick: bigint | null
+}>
+
+export type MapPickup = Readonly<{
+  identity: number
+  kind: "health" | "ammo"
+  size: "small" | "medium" | "full"
+  team: 2 | 3 | null
+  available: boolean
+  disabled: boolean
+  origin: readonly [number, number, number]
+  angles: readonly [number, number, number]
   respawnTick: bigint | null
 }>
 
@@ -561,6 +573,8 @@ export type Snapshot = Readonly<{
   entityPresentation: EntityPresentation
   authorityBlockers: readonly AuthorityBlocker[]
   bots: readonly BotSnapshot[]
+  pickups: readonly MapPickup[]
+  metal: number
 }>
 
 export class Tf2CodecError extends Error {
@@ -1226,7 +1240,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
   const buffer = data.buffer as ArrayBuffer
   const base = data.byteOffset
   const view = new DataView(buffer, base, data.byteLength)
-  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 15)
+  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 16)
     throw new Tf2CodecError("snapshot identity is invalid")
   const tf2Class = data[16]
   const team = data[17]
@@ -1534,7 +1548,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
       view.getFloat32(item + 20, true),
       view.getFloat32(item + 24, true),
     ]) as readonly [number, number, number, number]
-    if (kind === undefined || kind < 1 || kind > 14 || data[item + 2] !== 0 || data[item + 3] !== 0 || !finite(values))
+    if (kind === undefined || kind < 1 || kind > 16 || ((kind === 15 || kind === 16) && data[item + 1]! > 2) || data[item + 2] !== 0 || data[item + 3] !== 0 || !finite(values))
       throw new Tf2CodecError("gameplay event record is invalid")
     events.push(
       Object.freeze({
@@ -1724,7 +1738,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     const soundDecision = decision !== undefined && decision >= 1 && decision <= 4
     if (
       (context !== 1 && context !== 2) || decision === undefined || decision < 1 || decision > 8 ||
-      (soundDecision ? definition === undefined || definition < 1 || definition > 57 || (phase !== 1 && phase !== 2) : definition !== 0 || phase !== 0 || context !== 1) ||
+      (soundDecision ? definition === undefined || definition < 1 || definition > 61 || (phase !== 1 && phase !== 2) : definition !== 0 || phase !== 0 || context !== 1) ||
       raw <= 0 || raw >= 2_147_483_647 || resultKind === undefined || resultKind < 1 || resultKind > 3 ||
       data[item + 9] !== 0 || data[item + 10] !== 0 || data[item + 11] !== 0 ||
       ((decision === 3 || decision === 7 || decision === 8) ? resultKind === 1 : resultKind !== 1) ||
@@ -1751,7 +1765,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
       : definition === 4 || definition === 6 || definition === 17 || definition === 25 || definition === 29 || definition === 35 || definition === 42 || definition === 46 || definition === 47 || definition === 56 || definition === 57 ? 3
         : definition === 11 || definition === 18 || definition === 23 || definition === 24 || definition === 30 || definition === 43 || definition === 45 || definition === 49 ? 2 : 1
     if (
-      (identity !== 1 && identity !== 2) || definition === undefined || definition < 1 || definition > 57 ||
+      (identity === undefined || identity < 1 || identity > 4) || definition === undefined || definition < 1 || definition > 61 ||
       (sourceKind !== 1 && sourceKind !== 2) || (hasOwner !== 0 && hasOwner !== 1) || data[item + 15] !== 0 ||
       ordinal !== expectedOrdinal || !canonicalIdentity(sourceIdentity) ||
       (hasOwner === 0 ? rawOwner !== 0xffff_ffff : !canonicalIdentity(rawOwner)) ||
@@ -1829,7 +1843,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     const nextPrimaryTick = view.getBigUint64(item + 112, true), nextReloadTick = view.getBigUint64(item + 120, true)
     if (identity <= previousBot || botClass === undefined || botClass < 1 || botClass > 9 || (botTeam !== 2 && botTeam !== 3)
       || (lifecycle !== 1 && lifecycle !== 2) || difficulty === undefined || difficulty > 3
-      || objective === undefined || objective < 1 || objective > 5
+      || objective === undefined || objective < 1 || objective > 7
       || data[item + 9] !== 0 || data[item + 10] !== 0 || data[item + 11] !== 0 || data[item + 67] !== 0
       || weapon === undefined || (weapon > 18 && (weapon < 40 || weapon > 42)) || reload === undefined || reload > 3 || carryingFlag === undefined || carryingFlag > 1
       || health < 0 || maximumHealth < 1 || health > maximumHealth || clip > maximumClip || reserve > maximumReserve
@@ -1854,6 +1868,40 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
   const objectiveResult = decodeObjectives(buffer, base + at, bytes.byteLength - at)
   at += objectiveResult.length
   const objectives = objectiveResult.objectives
+  requireBytes(8, "pickup header")
+  const metal = view.getUint32(at, true)
+  const pickupCount = view.getUint32(at + 4, true)
+  at += 8
+  if (metal > 200 || pickupCount > 1024) throw new Tf2CodecError("pickup header exceeds its bound")
+  requireBytes(pickupCount * 40, "pickup")
+  const pickups: MapPickup[] = []
+  let previousPickup = -1
+  for (let index = 0; index < pickupCount; index += 1) {
+    const item = at + index * 40
+    const identity = view.getUint32(item, true), kind = data[item + 4], size = data[item + 5]
+    const team = data[item + 6], flags = data[item + 7]
+    const origin = vector(view, item + 8), angles = vector(view, item + 20)
+    const respawnTick = view.getBigUint64(item + 32, true)
+    if (identity <= previousPickup || (kind !== 1 && kind !== 2) || size === undefined || size > 2
+      || (team !== 0 && team !== 2 && team !== 3) || flags === undefined || flags > 3
+      || ((flags & 1) !== 0 && respawnTick !== 0xffff_ffff_ffff_ffffn)
+      || ((flags & 1) !== 0 && (flags & 2) !== 0) || !finite([...origin, ...angles])) {
+      throw new Tf2CodecError("pickup snapshot record is invalid")
+    }
+    previousPickup = identity
+    pickups.push(Object.freeze({
+      identity,
+      kind: kind === 1 ? "health" : "ammo",
+      size: (["small", "medium", "full"] as const)[size]!,
+      team: team === 0 ? null : team,
+      available: (flags & 1) !== 0,
+      disabled: (flags & 2) !== 0,
+      origin,
+      angles,
+      respawnTick: respawnTick === 0xffff_ffff_ffff_ffffn ? null : respawnTick,
+    }))
+  }
+  at += pickupCount * 40
   const round = decodeRound(buffer, base + at, bytes.byteLength - at)
   at = bytes.byteLength
   if(entityPresentation.collisionRevision!==collisionSnapshot.identity)throw new Tf2CodecError("Entity presentation revision join is invalid")
@@ -1912,6 +1960,8 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     entityPresentation,
     authorityBlockers: Object.freeze(authorityBlockers),
     bots: Object.freeze(bots),
+    pickups: Object.freeze(pickups),
+    metal,
   })
 }
 

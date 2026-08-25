@@ -351,6 +351,7 @@ export type Frame = Readonly<{
   shadows?: readonly ShadowInput[]
   particles?: readonly ParticleItem[]
   models?: readonly ModelItem[]
+  modelVisibility?: ReadonlyMap<number, boolean>
   lightStyles?: readonly Readonly<{ style: number; scalar: number }>[]
   exposureHistogram?: Uint32Array
   deltaSeconds?: number
@@ -3881,6 +3882,13 @@ class RendererOwner implements Renderer {
       : value === "one" ? THREE.OneFactor
       : value === "source-alpha" ? THREE.SrcAlphaFactor
       : THREE.OneMinusSrcAlphaFactor
+    if (frame.modelVisibility) {
+      for (const [identity, visible] of frame.modelVisibility) {
+        const instance = this.#active!.modelOccurrenceInstances.get(identity)
+        if (!instance) throw new RenderingError("MissingInput", `model occurrence ${identity} is unavailable`)
+        if (!this.#dynamicModelInstances.has(identity)) instance.visible = visible
+      }
+    }
     const prior = this.#stagedDynamic
     if (prior && prior.particles === frame.particles && prior.models === frame.models && prior.brushModels === frame.brushModels) {
       this.#stageParticleBatches(frame.particles ?? [], frame.camera, factor)
@@ -3988,7 +3996,7 @@ class RendererOwner implements Renderer {
       this.#disposeDynamicInstance(retained.instance)
       this.#dynamicModelInstances.delete(identity)
       const staticInstance = this.#active!.modelOccurrenceInstances.get(identity)
-      if (staticInstance) staticInstance.visible = true
+      if (staticInstance) staticInstance.visible = frame.modelVisibility?.get(identity) ?? true
     }
     for (const [identity, retained] of this.#viewModelInstances) {
       if (retained.seen === revision) continue

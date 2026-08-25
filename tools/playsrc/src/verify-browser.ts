@@ -1891,8 +1891,9 @@ export async function verifyBrowserAcceptance(
     const modelMatrices = parseJson<ModelMatrixObservation[]>(await agent([
       "--session", session, "eval", "JSON.parse(document.querySelector('main').dataset.modelMatrices)",
     ]))
-    require(modelMatrices.length === 33 && new Set(modelMatrices.map((value) => value.entity)).size === 33,
-      "exact model occurrence matrix set differs")
+    require(modelMatrices.length === 36 && new Set(modelMatrices.map((value) => value.entity)).size === 36
+      && modelMatrices.filter((value) => value.model === "models/items/ammopack_large.mdl").length === 3,
+      "exact dynamic-prop and authored ammo-pack occurrence matrix set differs")
     requireModelMatrix(modelMatrices, "models/props_2fort/cow001_reference.mdl", [2336, 2328, -3136], [0, 90.5, 0])
     requireModelMatrix(modelMatrices, "models/props_2fort/frog.mdl", [12461.7, 135.026, -5559], [0, 89.5, 0])
     requireModelMatrix(modelMatrices, "models/props_2fort/frog.mdl", [5368, -1792, -6640], [55.9871, 178.212, -1.48216])
