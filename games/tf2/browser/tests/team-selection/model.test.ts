@@ -25,7 +25,7 @@ describe("Source TF2 team-selection state", () => {
   test("decodes compact authoritative roster and rule facts without inventing players", () => {
     expect(decodeTf2TeamSelectionServerState(0, 0, 0, 0b00001100)).toEqual(server())
     expect(decodeTf2TeamSelectionServerState(2, 1, 0, 0b00011100)).toMatchObject({ localTeam: 2, redCount: 1, blueCount: 0, cancelVisible: true })
-    expect(() => decodeTf2TeamSelectionServerState(0, 1, 64, 0b00001100)).toThrow("inconsistent")
+    expect(() => decodeTf2TeamSelectionServerState(0, 1, 100, 0b00001100)).toThrow("inconsistent")
     expect(() => decodeTf2TeamSelectionServerState(4, 0, 0, 0)).toThrow("malformed")
   })
 
@@ -70,7 +70,7 @@ describe("Source TF2 team-selection state", () => {
   test("rejects invented roster facts and inconsistent cancellation/full-team visibility", () => {
     for (const invalid of [
       server({ redCount: -1 }),
-      server({ redCount: 33, blueCount: 33 }),
+      server({ redCount: 51, blueCount: 50 }),
       server({ cancelVisible: true }),
       server({ teamsFull: true }),
       server({ highlander: true, teamsFull: true, teamsFullArrow: true, spectatorsVisible: false }),
