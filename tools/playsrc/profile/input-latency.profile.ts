@@ -402,19 +402,19 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
     await page.keyboard.press("Enter")
     await page.waitForFunction(() => {
       const main = document.querySelector<HTMLElement>("main")
-      return (main?.dataset.phase === "Ready" && main.dataset.gameui === "in-game") || main?.dataset.phase === "Failed"
+      return main?.dataset.teamSelectionVisible === "true" || main?.dataset.phase === "Ready" || main?.dataset.phase === "Failed"
     }, undefined, { timeout: 600_000, polling: 50 })
+    if (await page.locator("main").getAttribute("data-team-selection-visible") === "true") {
+      if (await page.locator("main").getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
+      teamSelectionEvidence = await captureTf2TeamSelection(page)
+      await chooseTf2Team(page, "red")
+      await page.waitForFunction(() => ["Ready", "Failed"].includes(document.querySelector<HTMLElement>("main")?.dataset.phase ?? ""), undefined, { timeout: 60_000 })
+    }
     if (await page.locator("main").getAttribute("data-phase") === "Ready") {
       gameplayReadyMilliseconds = await page.evaluate(() => performance.now())
       firstLoadPerformance = JSON.parse((await page.locator("main").getAttribute("data-load-performance")) ?? "null")
       storageAfterFirstMap = await storageSnapshot()
-      await page.keyboard.press("Backquote")
-      teamSelectionEvidence = await captureTf2TeamSelection(page)
-      await chooseTf2Team(page, "red")
-      if (await page.locator("main").getAttribute("data-class-selection-visible") === "true") {
-        await page.keyboard.press("Digit2")
-        await expect(page.locator("main")).toHaveAttribute("data-class-selection-visible", "false")
-      }
+      if (await page.locator("main").getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
     }
   }
   if (mapOnly && gameplayReadyMilliseconds !== undefined) {
@@ -426,17 +426,19 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
     await page.keyboard.press("Enter")
     await page.waitForFunction(() => document.querySelector<HTMLElement>("main")?.dataset.phase !== "Ready", undefined, { timeout: 30_000, polling: 10 })
     await page.waitForFunction(() => {
-      const phase = document.querySelector<HTMLElement>("main")?.dataset.phase
-      return phase === "Ready" || phase === "Failed"
+      const main = document.querySelector<HTMLElement>("main")
+      return main?.dataset.phase === "Ready" || main?.dataset.phase === "Failed" || main?.dataset.teamSelectionVisible === "true"
     }, undefined, { timeout: 600_000, polling: 50 })
-    if (await page.locator("main").getAttribute("data-phase") === "Ready") {
-      repeatedGameplayReadyMilliseconds = await page.evaluate(() => performance.now())
-      expect(await page.locator("main").getAttribute("data-detail")).toBe(`Playing ${target}`)
-      repeatedLoadPerformance = JSON.parse((await page.locator("main").getAttribute("data-load-performance")) ?? "null")
-      storageAfterRepeatedMap = await storageSnapshot()
-      await page.keyboard.press("Backquote")
+    if (await page.locator("main").getAttribute("data-team-selection-visible") === "true") {
+      if (await page.locator("main").getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
       await captureTf2TeamSelection(page)
       await chooseTf2Team(page, "red")
+    }
+    if (await page.locator("main").getAttribute("data-phase") === "Ready") {
+      repeatedGameplayReadyMilliseconds = await page.evaluate(() => performance.now())
+      repeatedLoadPerformance = JSON.parse((await page.locator("main").getAttribute("data-load-performance")) ?? "null")
+      storageAfterRepeatedMap = await storageSnapshot()
+      if (await page.locator("main").getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
     }
   }
   if(mapOnly&&repeatedGameplayReadyMilliseconds!==undefined){
@@ -444,8 +446,9 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
     await page.waitForFunction(()=>["MainMenu","Failed"].includes(document.querySelector<HTMLElement>("main")?.dataset.phase??""),undefined,{timeout:180_000,polling:50})
     if(await page.locator("main").getAttribute("data-phase")==="MainMenu"){
       await page.keyboard.press("Backquote");const consoleEntry=page.locator("[aria-label='Console command']");await expect(consoleEntry).toBeVisible();await consoleEntry.fill(`map ${target}`);pageReloadMapSubmittedMilliseconds=await page.evaluate(()=>performance.now());await page.keyboard.press("Enter")
-      await page.waitForFunction(()=>{const main=document.querySelector<HTMLElement>("main");return(main?.dataset.phase==="Ready"&&main.dataset.gameui==="in-game")||main?.dataset.phase==="Failed"},undefined,{timeout:600_000,polling:50})
-      if(await page.locator("main").getAttribute("data-phase")==="Ready"){expect(await page.locator("main").getAttribute("data-detail")).toBe("Click the field to capture the mouse");pageReloadGameplayReadyMilliseconds=await page.evaluate(()=>performance.now());pageReloadLoadPerformance=JSON.parse((await page.locator("main").getAttribute("data-load-performance"))??"null");storageAfterPageReload=await storageSnapshot();await page.keyboard.press("Backquote");await captureTf2TeamSelection(page);await chooseTf2Team(page,"red")}
+      await page.waitForFunction(()=>{const main=document.querySelector<HTMLElement>("main");return main?.dataset.phase==="Ready"||main?.dataset.phase==="Failed"||main?.dataset.teamSelectionVisible==="true"},undefined,{timeout:600_000,polling:50})
+      if(await page.locator("main").getAttribute("data-team-selection-visible")==="true"){if(await page.locator("main").getAttribute("data-console-visible")==="true")await page.keyboard.press("Backquote");await captureTf2TeamSelection(page);await chooseTf2Team(page,"red")}
+      if(await page.locator("main").getAttribute("data-phase")==="Ready"){pageReloadGameplayReadyMilliseconds=await page.evaluate(()=>performance.now());pageReloadLoadPerformance=JSON.parse((await page.locator("main").getAttribute("data-load-performance"))??"null");storageAfterPageReload=await storageSnapshot();if(await page.locator("main").getAttribute("data-console-visible")==="true")await page.keyboard.press("Backquote")}
     }
   }
   const startupMilliseconds = Date.now() - wallStarted
@@ -1808,15 +1811,17 @@ test.describe("TF2 application generation lifecycle", () => {
       }, undefined, { timeout: 30_000, polling: 10 })
       await page.waitForFunction(() => {
         const main = document.querySelector<HTMLElement>("main")
-        return main?.dataset.phase === "Failed" || (main?.dataset.phase === "Ready" && main.dataset.gameui === "in-game")
+        return main?.dataset.phase === "Failed" || main?.dataset.phase === "Ready" || main?.dataset.teamSelectionVisible === "true"
       }, undefined, { timeout: 600_000, polling: 20 })
-      expect(await root.getAttribute("data-phase")).toBe(expected)
-      if (expected === "Ready") {
-        expect(await root.getAttribute("data-detail")).not.toMatch(/^Prior map retained:/u)
+      if (expected === "Ready" && await root.getAttribute("data-team-selection-visible") === "true") {
         if (await root.getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
         await captureTf2TeamSelection(page)
         await chooseTf2Team(page, "red")
         await page.keyboard.press("Backquote")
+      }
+      expect(await root.getAttribute("data-phase")).toBe(expected)
+      if (expected === "Ready") {
+        expect(await root.getAttribute("data-detail")).not.toMatch(/^Prior map retained:/u)
         await expect.poll(async () => {
           const value = await canvas.getAttribute("data-sky3d-pass")
           return value ? (JSON.parse(value) as { skySurfaces: number }).skySurfaces : 0

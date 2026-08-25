@@ -79,6 +79,10 @@ export async function chooseTf2Team(page: Page, team: "red" | "blue"): Promise<v
   await button.click()
   await expect(page.locator("main")).toHaveAttribute("data-team-selection-visible", "false")
   await expect(page.locator("main")).toHaveAttribute("data-team-selection-local", team === "red" ? "2" : "3")
+  await page.waitForFunction(() => {
+    const main = document.querySelector<HTMLElement>("main")
+    return main?.dataset.phase === "Ready" || main?.dataset.phase === "Failed" || main?.dataset.classSelectionVisible === "true"
+  }, undefined, { timeout: 60_000 })
   if (await page.locator("main").getAttribute("data-class-selection-visible") === "true") {
     await page.keyboard.press("Digit2")
     await expect(page.locator("main")).toHaveAttribute("data-class-selection-visible", "false")
