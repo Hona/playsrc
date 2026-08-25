@@ -383,6 +383,7 @@ export class Tf2Application {
   #teamSelectionModelPanels: readonly Tf2TeamSelectionModelPanel[] = Object.freeze([])
   #teamSelectionRenderTask?: Promise<void>
   #teamSelectionRenderRevision = 0
+  #teamAdmission?: Readonly<{ generation: number; resolve(): void; reject(error: Error): void }>
   #hudRootCounts?: Readonly<{ playerStatus: number; ammo: number }>
   #hudContext?: SessionHudContext
   #hudContextIdentity = -1
@@ -1396,6 +1397,18 @@ export class Tf2Application {
       this.#audioWorld = new SourceAudioWorld(this.#audioRegistry, { maxActiveVoices: 128 })
       finishLoadPhase("audioSetup")
       this.#requireOperation(operation)
+      this.#paused = document.hidden
+      this.#resetTeamSelection()
+      this.#gameUi?.dispatch({ kind: "loading-progress", phase: "complete" })
+      this.#gameUi?.dispatch({ kind: "loading-succeeded" })
+      this.#syncLoadingPresentation()
+      this.#set({ gameUi: "in-game", detail: "Select a team" })
+      const admission = new Promise<void>((resolve, reject) => {
+        this.#teamAdmission = Object.freeze({ generation: this.#generation, resolve, reject })
+      })
+      await this.#showTeamSelection()
+      await admission
+      this.#requireOperation(operation)
       await this.#client!.activate(this.#generation)
       finishLoadPhase("activation")
       this.#advanceLoading("synchronizing-game-state")
@@ -1415,9 +1428,6 @@ export class Tf2Application {
       this.#paused = document.hidden
       this.#resetHudIntegration()
       this.#resetClassSelection()
-      this.#resetTeamSelection()
-      this.#gameUi?.dispatch({ kind: "loading-progress", phase: "complete" })
-      this.#gameUi?.dispatch({ kind: "loading-succeeded" })
       this.#publishProfileCoverage()
       const loadPerformanceProbe=JSON.stringify({
         totalMilliseconds:performance.now()-loadStarted,
@@ -1470,7 +1480,6 @@ export class Tf2Application {
         loadingProgress: 1,
       })
       this.#showClassSelection(true)
-      await this.#showTeamSelection()
     } catch (error) {
       if (!this.#operations.current(operation)) return
       await this.#teardownGameplay()
@@ -1646,10 +1655,15 @@ export class Tf2Application {
       teamSelectionModels: "",
       detail: `Team selected: ${request.team}`,
     })
+    if (this.#teamAdmission?.generation === generation) {
+      const admission = this.#teamAdmission
+      this.#teamAdmission = undefined
+      admission.resolve()
+    }
   }
 
   async #showTeamSelection(): Promise<void> {
-    if (!this.#teamSelection || !this.#client || !this.#snapshot || this.#view.gameUi !== "in-game") return
+    if (!this.#teamSelection || !this.#client || this.#view.gameUi !== "in-game") return
     const generation = this.#generation
     const server = await this.#client.teamSelection(generation)
     if (generation !== this.#generation || this.#closed) return
@@ -3007,7 +3021,11 @@ export class Tf2Application {
       return
     }
     if (!this.#paused && this.#snapshot && (this.#showFps !== 0 || this.#showPos !== 0)) this.#updateDiagnostics(time)
-    if (this.#paused || !this.#client || !this.#renderer || !this.#snapshot) return
+    if (this.#paused || !this.#client || !this.#renderer) return
+    if (!this.#snapshot) {
+      if (this.#teamSelection?.state().visible) this.#renderTeamSelection()
+      return
+    }
     const nowSeconds=timeSeconds
     if(nowSeconds+Number.EPSILON>=this.#nextSimulationSampleSeconds){
       this.#scheduleSimulation(nowSeconds, false)
@@ -3901,6 +3919,9 @@ export class Tf2Application {
     this.#hudIntegration?.reset("disconnect")
     this.#classSelection?.dispatch({ kind: "hide" })
     await this.#classSelectionRenderTask
+    const admission = this.#teamAdmission
+    this.#teamAdmission = undefined
+    admission?.reject(new Error("TF2 team selection was cancelled by map replacement"))
     this.#teamSelection?.dispatch({ kind: "hide" })
     await this.#teamSelectionRenderTask
     this.#loaded = undefined
