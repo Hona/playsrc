@@ -131,6 +131,8 @@ const PARTICLE_SYSTEMS = new Set([
   "muzzle_scattergun",
   "muzzle_pistol",
   "muzzle_shotgun",
+  "new_flame",
+  "pyro_blast",
   "ExplosionCore_Wall",
   "ExplosionCore_MidAir",
 ])
@@ -179,7 +181,10 @@ const SOUND_PATHS = [
   "sound/weapons/pistol/pistol_empty.wav",
   "sound/weapons/wrench_swing.wav",
   "sound/weapons/wrench_hit_world.wav",
-
+  "sound/weapons/flame_thrower_start.wav",
+  "sound/weapons/flame_thrower_loop.wav",
+  "sound/weapons/flame_thrower_end.wav",
+  "sound/weapons/flame_thrower_airblast.wav",
 ] as const
 
 export type ApplicationView = Readonly<{
