@@ -460,6 +460,9 @@ fn control(position: [f32; 3], previous_position: [f32; 3]) -> ControlPoint {
         previous_position,
         orientation: [0.0, 0.0, 0.0, 1.0],
         velocity: [0.0; 3],
+        radius: 0.0,
+        density: 1.0,
+        duration: 0.0,
         parent: None,
         object_identity: Some(10),
     }

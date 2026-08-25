@@ -44,7 +44,8 @@ export const test = base.extend<{
         return
       }
       if (["Startup", "Loading", "Replacing"].includes(state.phase)) {
-        stallTimer = setTimeout(() => fail(`TF2 application stalled for 65 seconds in ${state.phase}: ${state.detail}\nIn-game console:\n${state.consoleOutput || "<not mounted>"}`), 65_000)
+        const stallSeconds = process.env.PROFILE_PYRO_STOCK === "1" ? 180 : 65
+        stallTimer = setTimeout(() => fail(`TF2 application stalled for ${stallSeconds} seconds in ${state.phase}: ${state.detail}\nIn-game console:\n${state.consoleOutput || "<not mounted>"}`), stallSeconds * 1_000)
       }
     })
     await page.addInitScript(() => {

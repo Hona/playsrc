@@ -1053,6 +1053,11 @@ fn selected_textures(
         }
         return Ok(vec![TextureRole::Base, TextureRole::Base2]);
     }
+    if shader == Shader::Refract {
+        return has(TextureRole::Normal)
+            .then_some(vec![TextureRole::Normal])
+            .ok_or_else(|| error(ErrorCode::MissingProfileTexture, None));
+    }
     let _ = environment;
     Ok(has(TextureRole::Base)
         .then_some(TextureRole::Base)

@@ -81,6 +81,7 @@ const attributes: readonly PublicationBinding[] = Object.freeze([
   attribute("spawn-position", "initialView", (view) => view.initialView?.position.join(",")),
   attribute("spawn-angles", "initialView", (view) => view.initialView?.angles.join(",")),
   attribute("particle-items", "particleRenderItems", (view) => view.particleRenderItems ?? 0),
+  attribute("flame-points", "flamePoints", (view) => view.flamePoints ?? 0),
   attribute("projectiles", "projectileStates", (view) => view.projectileStates ? view.projectileStates.split(",").length : 0),
   attribute("crouch-fraction", "movement", (view) => view.movement?.crouchFraction),
   attribute("water-level", "movement", (view) => view.movement?.waterLevel),

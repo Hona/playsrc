@@ -96,14 +96,15 @@ function reload(value: CompactWeaponState["reload"]): Tf2ReloadPhase {
 function weaponName(identity: CompactWeaponState["weapon"]): string {
 
   return identity === 40 ? "Shotgun" : identity === 41 ? "Pistol" : identity === 42 ? "Wrench"
-    : (["", "Rocket Launcher", "Original", "Stickybomb Launcher", "Scattergun", "Pistol", "Bat", "Shotgun", "Shovel", "Minigun", "Shotgun", "Fists", "Sniper Rifle", "SMG", "Kukri"] as const)[identity]
+    : (["", "Rocket Launcher", "Original", "Stickybomb Launcher", "Scattergun", "Pistol", "Bat", "Shotgun", "Shovel", "Minigun", "Shotgun", "Fists", "Sniper Rifle", "SMG", "Kukri", "Flamethrower", "Fire Axe"] as const)[identity]
 }
 
-function weapon(value: CompactWeaponState): Tf2HudWeapon {
-  const totalAmmo = value.weapon === 9 || value.weapon === 12
-  const melee = value.weapon === 6 || value.weapon === 8 || value.weapon === 11 || value.weapon === 14 || value.weapon === 42
-  const definition = value.weapon === 40 ? 9 : value.weapon === 41 ? 22 : value.weapon === 42 ? 7
-    : ([undefined, 18, undefined, undefined, 13, 23, 0, 10, 6, 15, 11, 5, 14, 16, 3] as const)[value.weapon]
+function weapon(value: CompactWeaponState, playerClass: Tf2Class): Tf2HudWeapon {
+  const totalAmmo = value.weapon === 9 || value.weapon === 12 || value.weapon === 15
+  const melee = value.weapon === 6 || value.weapon === 8 || value.weapon === 11 || value.weapon === 14 || value.weapon === 16 || value.weapon === 42
+  const definitions = ([undefined, 18, undefined, undefined, 13, 23, 0, 10, 6, 15, 11, 5, 14, 16, 3] as const)
+  const definition = value.weapon === 7 && playerClass === 7 ? 12 : value.weapon === 15 ? 21 : value.weapon === 16 ? 2
+    : value.weapon === 40 ? 9 : value.weapon === 41 ? 22 : value.weapon === 42 ? 7 : definitions[value.weapon]
 
   return Object.freeze({
     identity: value.weapon,
@@ -150,7 +151,7 @@ function canonicalSnapshot(snapshot: SessionSnapshot, context: SessionHudContext
       classModel: tf2HudAvailable(classModel(snapshot)),
       health: tf2HudAvailable(health(snapshot)),
       conditions: words,
-      weapons: Object.freeze(snapshot.loadout.map(weapon)),
+      weapons: Object.freeze(snapshot.loadout.map((item) => weapon(item, snapshot.class))),
       activeWeapon: snapshot.weapon === null
         ? tf2HudUnavailable<number>("not-applicable")
         : tf2HudAvailable(snapshot.weapon),
@@ -215,7 +216,7 @@ function compactEventTeam(detail: number): Tf2Team {
 function eventWeapon(snapshot: SessionSnapshot, identity: number): Tf2HudWeapon {
   const value = snapshot.loadout.find((item) => item.weapon === identity)
   if (!value) throw new Tf2HudBindingError("InconsistentPublication", "compact event weapon is absent from its tick")
-  return weapon(value)
+  return weapon(value, snapshot.class)
 }
 
 function integerEventValue(value: number, subject: string): number {
@@ -271,7 +272,7 @@ function mapGameplayEvent(
         kind: "regenerate",
         zone: tf2HudAvailable(source.subject),
         health: eventHealth(snapshot, source.values[0]),
-        weapons: Object.freeze(snapshot.loadout.map((item) => item.weapon === source.detail ? restoredActive : weapon(item))),
+        weapons: Object.freeze(snapshot.loadout.map((item) => item.weapon === source.detail ? restoredActive : weapon(item, snapshot.class))),
         conditions: conditions(snapshot.conditions),
       })
       break
