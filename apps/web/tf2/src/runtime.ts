@@ -56,7 +56,7 @@ import {
   type Tf2LoadingPresentation,
   type Tf2LoadingVguiRuntime,
 } from "@playsrc/game-tf2-browser/loading-presentation"
-import { encodeCommand, mapDerivedKey, type BotRequest, type Snapshot, type Tf2Class, type Tf2Team, type Tf2Weapon } from "@playsrc/game-tf2-browser/codec"
+import { encodeCommand, mapDerivedKey, type BotRequest, type Snapshot, type Tf2Class, type Tf2Weapon } from "@playsrc/game-tf2-browser/codec"
 import { TF2_CLASS_NAMES, tf2ClassFromName, tf2ClassPresentation } from "@playsrc/game-tf2-browser/class"
 import { parsePresentationArtifacts, type PresentationArtifacts } from "@playsrc/game-tf2-browser/artifacts"
 import {
@@ -412,7 +412,6 @@ export class Tf2Application {
   #detonatePressed = false
   #reloadPressed = false
   #selectClass: Tf2Class | 12 | undefined
-  #selectTeam: Tf2Team | undefined
   #selectWeapon: Tf2Weapon | undefined
   #modeRequest: 0 | 1 | undefined
   #botRequest: BotRequest | undefined
@@ -2241,16 +2240,6 @@ export class Tf2Application {
       }
       this.selectClass(identity)
       this.#output(`Class selection queued: ${tokens[0]}`)
-      return
-    }
-    if (command === "jointeam" && tokens.length === 1) {
-      const team = tokens[0]!.toLowerCase()
-      if (team !== "red" && team !== "blue") {
-        this.#output("Usage: jointeam red|blue")
-        return
-      }
-      this.#selectTeam = team === "red" ? 2 : 3
-      this.#output(`Team selection queued: ${tokens[0]}`)
       return
     }
     if (command === "noclip" && tokens.length === 0) {
