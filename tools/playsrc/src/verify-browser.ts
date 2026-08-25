@@ -9,11 +9,13 @@ import { TF2_BROWSER_SETTINGS_STORAGE_KEY } from "@playsrc/game-tf2-browser/sett
 import { chunksForRole, parseResourceGraphBytes } from "@playsrc/asset-store/graph"
 import checkedRelease from "../../../apps/web/tf2/releases/current.json"
 import { parseTf2Release } from "../../../apps/web/tf2/src/deployment"
+import { Tf2BrowserAutomation } from "../../../apps/web/tf2/src/browser-automation"
 
 const MAX_OUTPUT_BYTES = 1024 * 1024
 const PROCESS_READY_TIMEOUT_MS = 300_000
 const PROCESS_EXIT_TIMEOUT_MS = 30_000
 const APPLICATION_URL = "http://127.0.0.1:4173/"
+const TF2_BROWSER_AUTOMATION_INIT = path.join(repositoryRoot, "apps/web/tf2/src/browser-automation-init.js")
 const VIEWPORT_WIDTH = 1280
 const VIEWPORT_HEIGHT = 720
 const BACKGROUND_RGB = [17, 24, 32] as const
@@ -1156,30 +1158,26 @@ async function startDevelopmentProcess(target: string | undefined): Promise<Deve
   })
 }
 
-async function acquirePointerLock(session: string, identity: string): Promise<boolean> {
-  let lastBody = ""
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    const tabs = await agent(["--session", session, "tab"])
-    const tab = /\[(t\d+)\]/.exec(tabs)?.[1]
-    if (tab) await agent(["--session", session, "tab", tab])
-    await agent([
-      "--session",
-      session,
-      "eval",
-      "window.focus();document.querySelector('.world-canvas')?.focus();document.hasFocus()",
-    ])
-    await agent(["--session", session, "focus", ".world-canvas"])
-    await agent(["--session", session, "click", ".world-canvas"]).catch(() => {})
-    await agent(["--session", session, "wait", "1000"])
-    lastBody = parseJson<string>(await agent(["--session", session, "eval", "JSON.stringify((()=>{const m=document.querySelector('main'),c=document.querySelector('.world-canvas'),r=c.getBoundingClientRect();return{body:document.body.innerText.slice(0,300),phase:m.dataset.phase,gameui:m.dataset.gameui,console:m.dataset.consoleVisible,pointer:m.dataset.pointerLocked,detail:m.dataset.detail,focus:document.hasFocus(),visibility:document.visibilityState,canvas:[r.x,r.y,r.width,r.height],hit:document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)?.className}})())"]))
-    if (parseJson<string>(await agent(["--session", session, "eval", "document.querySelector('main').dataset.pointerLocked"])) === "true") return true
-    const gameUi = parseJson<string>(await agent(["--session", session, "eval", "document.querySelector('main').dataset.gameui"]))
-    if (gameUi === "pause") {
-      await agent(["--session", session, "click", "[data-vgui-name=ResumeButton]"])
-      await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.gameui==='in-game'", "--timeout", "30000"])
-    }
-  }
-  throw new BrowserEvidenceError(`desktop pointer lock ${identity} was not acquired after ten user activations: ${lastBody.slice(0,300)}`)
+function tf2BrowserAutomation(session: string): Tf2BrowserAutomation {
+  return new Tf2BrowserAutomation({
+    evaluate: async <T>(expression: string): Promise<T> => parseJson<T>(
+      await agent(["--session", session, "eval", expression]),
+    ),
+    press: async (key: string): Promise<void> => { await agent(["--session", session, "press", key]) },
+    click: async (selector: string): Promise<void> => { await agent(["--session", session, "click", selector]) },
+    focus: async (selector: string): Promise<void> => { await agent(["--session", session, "focus", selector]) },
+    fill: async (selector: string, value: string): Promise<void> => {
+      await agent(["--session", session, "fill", selector, value])
+    },
+    waitFor: async (expression: string, timeoutMilliseconds: number): Promise<void> => {
+      await agent(["--session", session, "wait", "--fn", expression, "--timeout", String(timeoutMilliseconds)])
+    },
+    activateCurrentTab: async (): Promise<void> => {
+      const tabs = await agent(["--session", session, "tab"])
+      const tab = /\[(t\d+)\]/.exec(tabs)?.[1]
+      if (tab) await agent(["--session", session, "tab", tab])
+    },
+  })
 }
 
 async function unavailable(url: string): Promise<boolean> {
@@ -1237,24 +1235,17 @@ async function viewportOwnership(session: string, width: number, height: number)
 async function verifyPlUpwardBrowser(config: LocalConfig): Promise<Record<string, unknown>> {
   const version = await agent(["--version"])
   const session = `playsrc-upward-${process.pid}`
+  const automation = tf2BrowserAutomation(session)
   const owner = await startDevelopmentProcess("pl_upward")
   let browserOpen = false
   let primaryError: unknown
-  const submit = async (command: string): Promise<void> => {
-    const visible = parseJson<boolean>(await agent(["--session", session, "eval", "(()=>{const dialog=document.querySelector('.developer-layer [data-vgui-service=developer-console] [role=dialog]');return !!dialog&&getComputedStyle(dialog).display!=='none'})()"] ))
-    if (!visible) await agent(["--session", session, "press", "Backquote"])
-    await agent(["--session", session, "click", "[aria-label='Console command']"])
-    await agent(["--session", session, "wait", "--fn", "document.activeElement?.getAttribute('aria-label') === 'Console command'", "--timeout", "30000"])
-    await agent(["--session", session, "fill", "[aria-label='Console command']", command])
-    await agent(["--session", session, "press", "Enter"])
-  }
   try {
-    await agent(["--session", session, "--headed", "--webgpu", "open", owner.url])
+    await agent(["--session", session, "--headed", "--webgpu", "--init-script", TF2_BROWSER_AUTOMATION_INIT, "open", owner.url])
     browserOpen = true
     await agent(["--session", session, "set", "viewport", String(VIEWPORT_WIDTH), String(VIEWPORT_HEIGHT)])
     const startup = await completeStartup(session, config, "pl-upward-cold", "complete")
     await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.phase === 'MainMenu'", "--timeout", "300000"])
-    await submit("map pl_upward")
+    await automation.maps.load("pl_upward")
     try {
       await agent(["--session", session, "wait", "--fn", "['Ready','Failed'].includes(document.querySelector('main').dataset.phase)", "--timeout", "600000"])
       const terminal = parseJson<{ phase: string; gameui: string }>(await agent(["--session", session, "eval", "(()=>{const m=document.querySelector('main');return{phase:m.dataset.phase,gameui:m.dataset.gameui}})()"] ))
@@ -1285,7 +1276,7 @@ async function verifyPlUpwardBrowser(config: LocalConfig): Promise<Record<string
     }
     await agent(["--session",session,"eval","delete globalThis.__playsrcProfile.displacementCameraOverride;true"])
 
-    await submit("noclip")
+    await automation.console.submitCommand("noclip")
     await agent(["--session", session, "press", "Backquote"])
     await agent(["--session", session, "wait", "--fn", "Number(document.querySelector('main').dataset.movementMode) === 1", "--timeout", "30000"])
     await agent(["--session", session, "eval", "window.dispatchEvent(new KeyboardEvent('keydown',{code:'KeyW',key:'w',bubbles:true}));true"])
@@ -1299,7 +1290,7 @@ async function verifyPlUpwardBrowser(config: LocalConfig): Promise<Record<string
     require(secondCapture.regions.every((region) => region.nonBackgroundRatio > 0.95 && region.meanLuma > 1),
       `pl_upward second terrain capture differs: ${JSON.stringify(secondCapture)}`)
 
-    await submit("map pl_upward")
+    await automation.maps.load("pl_upward")
     await agent(["--session", session, "wait", "--fn", "document.querySelector('.developer-layer [data-vgui-service=developer-console]')?.textContent.includes('Loaded pl_upward; generation 2')", "--timeout", "600000"])
     await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.phase === 'Ready'", "--timeout", "300000"])
     const publication = parseJson<{ body: string; claims: string[]; displacement: number; materials: string }>(await agent([
@@ -1350,7 +1341,7 @@ export async function runDisplacementVisualEvidence(config: LocalConfig): Promis
   let primaryError: unknown
   const observations: Record<string, unknown>[] = []
   try {
-    await agent(["--session", session, "--headed", "--webgpu", "open", owner.url])
+    await agent(["--session", session, "--headed", "--webgpu", "--init-script", TF2_BROWSER_AUTOMATION_INIT, "open", owner.url])
     browserOpen = true
     await agent(["--session", session, "set", "viewport", String(VIEWPORT_WIDTH), String(VIEWPORT_HEIGHT)])
     await completeStartup(session, config, "pl-upward-displacement-red", "complete")
@@ -1466,11 +1457,12 @@ export async function verifyBrowserAcceptance(
   if (target === "pl_upward") return verifyPlUpwardBrowser(config)
   const version = await agent(["--version"])
   const session = `playsrc-acceptance-${process.pid}`
+  const automation = tf2BrowserAutomation(session)
   const owner = await startDevelopmentProcess(target)
   let browserOpen = false
   let primaryError: unknown
   try {
-    await agent(["--session", session, "--headed", "--webgpu", "open", owner.url])
+    await agent(["--session", session, "--headed", "--webgpu", "--init-script", TF2_BROWSER_AUTOMATION_INIT, "open", owner.url])
     browserOpen = true
     await agent(["--session", session, "set", "viewport", String(VIEWPORT_WIDTH), String(VIEWPORT_HEIGHT)])
     const startup = await completeStartup(session, config, "cold-1280x720", "complete")
@@ -1706,8 +1698,7 @@ export async function verifyBrowserAcceptance(
     await agent(["--session", session, "press", "Escape"])
     await agent(["--session", session, "press", "Backquote"])
     await agent(["--session", session, "wait", "--fn", "document.activeElement?.getAttribute('aria-label') === 'Console command'", "--timeout", "30000"])
-    await agent(["--session", session, "fill", "[aria-label='Console command']", "map jump_beef"])
-    await agent(["--session", session, "press", "Enter"])
+    await automation.maps.load("jump_beef")
     try {
       await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.gameui==='loading'&&document.querySelector('.loading-layer [data-vgui-name=LoadingDialog]')", "--timeout", "30000"])
     } catch (error) {
@@ -1850,46 +1841,13 @@ export async function verifyBrowserAcceptance(
     ]) require(visualBlockers.some((value) => value.startsWith(blocker)), `visual blocker is absent: ${blocker}`)
     const coldCanvas = await captureCanvas(session, config)
 
-    const pointerLocked = await acquirePointerLock(session, "direction")
+    const pointerLockEvidence = await automation.pointer.capture("direction")
     await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.detail === 'Audio running'", "--timeout", "10000"])
     body = parseJson<string>(await agent(["--session", session, "eval", "document.body.innerText"]))
     const pointerMovement=parseJson<string>(await agent(["--session",session,"eval","document.querySelector('main').dataset.pointerMovement"]));require(pointerMovement==="raw"||pointerMovement==="adjusted",`pointer movement mode is unavailable: ${pointerMovement}`)
     const beforePointer = await cameraObservation(session)
-    let afterHorizontal: ReturnType<typeof cameraObservation> extends Promise<infer T> ? T : never
-    let afterVertical: typeof afterHorizontal
-    if (pointerLocked) {
-      await agent([
-        "--session",
-        session,
-        "eval",
-        "(()=>{const e=new MouseEvent('mousemove',{bubbles:true});Object.defineProperties(e,{movementX:{value:64},movementY:{value:0}});window.dispatchEvent(e);return true})()",
-      ])
-      await agent([
-        "--session",
-        session,
-        "wait",
-        "--fn",
-        `Math.abs(Number(document.querySelector('main').dataset.cameraYaw)-(${beforePointer.yaw})) > 1`,
-      ])
-      afterHorizontal = await cameraObservation(session)
-      await agent([
-        "--session",
-        session,
-        "eval",
-        "(()=>{const e=new MouseEvent('mousemove',{bubbles:true});Object.defineProperties(e,{movementX:{value:0},movementY:{value:32}});window.dispatchEvent(e);return true})()",
-      ])
-      await agent([
-        "--session",
-        session,
-        "wait",
-        "--fn",
-        `Math.abs(Number(document.querySelector('main').dataset.cameraPitch)-(${afterHorizontal.pitch})) > 1`,
-      ])
-      afterVertical = await cameraObservation(session)
-    } else {
-      afterHorizontal = { ...beforePointer, yaw: beforePointer.yaw - 1.408 }
-      afterVertical = { ...afterHorizontal, pitch: afterHorizontal.pitch + 0.704 }
-    }
+    const afterHorizontal = await automation.player.lookBy({ x: 64, y: 0 })
+    const afterVertical = await automation.player.lookBy({ x: 0, y: 32 })
     const lookCadence=parseJson<{events:number;displayFrames:number;preparedRevisions:number;repeatedPreparedFrames:number;viewRevisions:number;mouseRevisions:number;snapRevisions:number;yawDegrees:number;samples:number}>(await agent(["--session",session,"eval","new Promise(resolve=>{const m=document.querySelector('.world-canvas'),r=[],s={frame:Number(m.dataset.displayFrame),view:Number(m.dataset.displayViewRevision),mouse:Number(m.dataset.displayMouseRevision),snap:Number(m.dataset.displaySnapRevision),yaw:Number(m.dataset.displayCameraYaw)},nativeRaf=requestAnimationFrame.bind(window),nativeCancel=cancelAnimationFrame.bind(window);window.requestAnimationFrame=callback=>setTimeout(()=>callback(performance.now()),1);window.cancelAnimationFrame=handle=>clearTimeout(handle);const o=new MutationObserver(()=>r.push({prepared:Number(m.dataset.displayPreparedRevision)}));o.observe(m,{attributes:true,attributeFilter:['data-display-frame']});let events=0;const i=setInterval(()=>{const e=new MouseEvent('mousemove',{bubbles:true});Object.defineProperties(e,{movementX:{value:2},movementY:{value:0}});dispatchEvent(e);events++},4);setTimeout(()=>{clearInterval(i);window.requestAnimationFrame=nativeRaf;window.cancelAnimationFrame=nativeCancel;setTimeout(()=>{o.disconnect();const f={frame:Number(m.dataset.displayFrame),view:Number(m.dataset.displayViewRevision),mouse:Number(m.dataset.displayMouseRevision),snap:Number(m.dataset.displaySnapRevision),yaw:Number(m.dataset.displayCameraYaw)};resolve({events,displayFrames:f.frame-s.frame,preparedRevisions:new Set(r.map(x=>x.prepared)).size,repeatedPreparedFrames:r.filter((x,n)=>n>0&&x.prepared===r[n-1].prepared).length,viewRevisions:f.view-s.view,mouseRevisions:f.mouse-s.mouse,snapRevisions:f.snap-s.snap,yawDegrees:f.yaw-s.yaw,samples:r.length})},200)},600)})"]));require(lookCadence.displayFrames>1&&lookCadence.viewRevisions>1&&lookCadence.mouseRevisions>=lookCadence.events&&lookCadence.viewRevisions===lookCadence.mouseRevisions+lookCadence.snapRevisions&&lookCadence.repeatedPreparedFrames>0,`display-cadence pointer sampling differs: ${JSON.stringify(lookCadence)}`)
     const beforeForward = cameraForward(beforePointer)
     const horizontalForward = cameraForward(afterHorizontal)
@@ -2040,7 +1998,7 @@ export async function verifyBrowserAcceptance(
       "window.dispatchEvent(new KeyboardEvent('keyup',{code:'KeyW',key:'w',bubbles:true})); true",
     ])
     require(movingSpeed > 0, "movement binding did not advance the player")
-    await agent(["--session", session, "press", "Space"])
+    await automation.player.jump()
     await agent(["--session", session, "wait", "--fn", "Number(document.querySelector('main').dataset.verticalSpeed)>0", "--timeout", "30000"])
     const jumpSpeed = parseJson<number>(
       await agent([
@@ -2052,15 +2010,15 @@ export async function verifyBrowserAcceptance(
     )
     require(jumpSpeed > 0, "jump binding did not advance the player")
 
-    await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.grounded==='true'", "--timeout", "30000"])
+    await automation.player.settle(3)
     const initialFireEvents = parseJson<number>(
       await agent(["--session", session, "eval", "Number(document.querySelector('main').dataset.fireEvents)"]),
     )
     const initialExplosionEvents = parseJson<number>(
       await agent(["--session", session, "eval", "Number(document.querySelector('main').dataset.explosionEvents)"]),
     )
-    await acquirePointerLock(session, "soldier")
-    await agent(["--session", session, "eval", "(()=>{const e=new MouseEvent('mousemove',{bubbles:true});Object.defineProperties(e,{movementX:{value:-182},movementY:{value:0}});window.dispatchEvent(e);return true})()"])
+    await automation.pointer.capture("soldier")
+    await automation.player.lookBy({ x: -182, y: 0 })
     try {
       await agent(["--session", session, "wait", "--fn", "Math.abs(((Number(document.querySelector('main').dataset.cameraYaw)-192+540)%360)-180)<2", "--timeout", "10000"])
     } catch (error) {
@@ -2081,7 +2039,7 @@ export async function verifyBrowserAcceptance(
     await agent(["--session", session, "eval", "(()=>{const e=globalThis.__playsrcRocketGpuEvidence;e.draws=[];e.transactions=[];e.outputs=[];e.passes=[];e.impact=null;e.armed=true;return true})()"])
     let farFlightCanvas: CanvasEvidence | null = null
     let impactCanvas: CanvasEvidence | null = null
-    await agent(["--session", session, "mouse", "down", "left"])
+    await automation.player.pressPrimaryFire()
     await agent(["--session", session, "wait", "--fn", `document.querySelector('main').dataset.phase==='Failed'||Number(document.querySelector('main').dataset.fireEvents)>${initialFireEvents}`, "--timeout", "30000"])
     await agent(["--session", session, "wait", "--fn", "Number(document.querySelector('main').dataset.projectiles)>0&&Number(document.querySelector('main').dataset.particleItems)>0", "--timeout", "30000"])
     const farFlightState = await rocketFrameState(session)
@@ -2090,7 +2048,7 @@ export async function verifyBrowserAcceptance(
     const impactState = await rocketFrameState(session)
     impactCanvas = await captureCanvas(session, config, "jump_beef", ROCKET_VISUAL_REGIONS)
     const impactParticleProbe = parseJson<string>(await agent(["--session", session, "eval", "document.querySelector('main').dataset.particleProbe??''"]))
-    await agent(["--session", session, "mouse", "up", "left"])
+    await automation.player.releasePrimaryFire()
     await agent(["--session", session, "wait", "--fn", `Number(document.querySelector('main').dataset.snapshotTick)>=${impactState.tick + 6}&&Number(document.querySelector('main').dataset.projectiles)===0&&Number(document.querySelector('main').dataset.particleItems)>0`, "--timeout", "30000"])
     const lateSmokeState = await rocketFrameState(session)
     const lateSmokeCanvas = await captureCanvas(session, config, "jump_beef", ROCKET_VISUAL_REGIONS)
@@ -2196,7 +2154,7 @@ export async function verifyBrowserAcceptance(
     require(rocketFailures.length === 0,
       `headed rocket wall-pixel/depth regression failed: ${rocketFailures.join("; ")}; evidence ${rocketEvidencePath}`)
     const firePhase=parseJson<string>(await agent(["--session",session,"eval","document.querySelector('main').dataset.phase"]));if(firePhase==="Failed"){const state=await agent(["--session",session,"eval","({text:document.body.innerText,dataset:{...document.querySelector('main').dataset}})"]);throw new BrowserEvidenceError(`Soldier held fire failed: ${state}`)}
-    await agent(["--session", session, "eval", "(()=>{const e=new MouseEvent('mousemove',{bubbles:true});Object.defineProperties(e,{movementX:{value:0},movementY:{value:2000}});window.dispatchEvent(e);return true})()"])
+    await automation.player.lookBy({ x: 0, y: 2000 })
     await agent(["--session", session, "wait", "--fn", "Number(document.querySelector('main').dataset.cameraPitch)>=80", "--timeout", "30000"])
     const downwardViewmodelCanvas = await captureCanvas(session, config)
     const downwardDepthIsolated = parseJson<string>(await agent(["--session", session, "eval", "document.querySelector('main').dataset.viewmodelWorldDepthIsolated??''"]))
@@ -2205,9 +2163,9 @@ export async function verifyBrowserAcceptance(
     let hudAnimationTrace = parseJson<string>(await agent(["--session", session, "eval", "document.querySelector('main').dataset.hudAnimationTrace??''"]))
     let animationFireEvents = parseJson<number>(await agent(["--session", session, "eval", "Number(document.querySelector('main').dataset.fireEvents)"]))
     for (let attempt = 0; attempt < 4 && !hudAnimationTrace.includes("HudHealthDyingPulse"); attempt += 1) {
-      await agent(["--session", session, "mouse", "down", "left"])
+      await automation.player.pressPrimaryFire()
       await agent(["--session", session, "wait", "--fn", `Number(document.querySelector('main').dataset.fireEvents)>${animationFireEvents}`, "--timeout", "60000"])
-      await agent(["--session", session, "mouse", "up", "left"])
+      await automation.player.releasePrimaryFire()
       animationFireEvents = parseJson<number>(await agent(["--session", session, "eval", "Number(document.querySelector('main').dataset.fireEvents)"]))
       await agent(["--session", session, "wait", "1000"])
       hudAnimationTrace = parseJson<string>(await agent(["--session", session, "eval", "document.querySelector('main').dataset.hudAnimationTrace??''"]))
@@ -2251,8 +2209,7 @@ export async function verifyBrowserAcceptance(
     `random/audio or Collision/mover probe differs: ${JSON.stringify(soldierPresentation)}`)
     await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.hudProbe?.split(':')[3]==='4'&&document.querySelector('main').dataset.hudOperationProbe?.split(':')[4]==='0'", "--timeout", "120000"])
     await agent(["--session", session, "press", "Backquote"])
-    await agent(["--session", session, "fill", "[aria-label='Console command']", "class demoman"])
-    await agent(["--session", session, "press", "Enter"])
+    await automation.player.selectClass("demoman")
     await agent(["--session", session, "wait", "--fn", "document.querySelector('.developer-layer [data-vgui-service=developer-console]')?.textContent.includes('Class selection queued: demoman')", "--timeout", "30000"])
     await agent(["--session", session, "press", "Backquote"])
     await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.phase==='Failed'||document.querySelector('main').dataset.hudProbe?.split(':')[1]==='4'", "--timeout", "120000"])
@@ -2260,10 +2217,10 @@ export async function verifyBrowserAcceptance(
     if (classPhase === "Failed") throw new BrowserEvidenceError(`Demoman transition failed: ${await agent(["--session", session, "eval", "({text:document.body.innerText,dataset:{...document.querySelector('main').dataset}})"])}`)
     require(parseJson<string>(await agent(["--session", session, "eval", "document.querySelector('main').dataset.hudProbe"]))
       .split(":")[1] === "4", "Demoman HUD class binding failed")
-    await acquirePointerLock(session, "sticky")
-    await agent(["--session", session, "eval", "window.dispatchEvent(new MouseEvent('mousedown',{button:0,bubbles:true}));true"])
+    await automation.pointer.capture("sticky")
+    await automation.player.pressPrimaryFire()
     await agent(["--session",session,"wait","--fn","document.querySelector('main').dataset.unsupportedState==='StickyPhysicsSolverUnavailable'","--timeout","30000"])
-    await agent(["--session", session, "eval", "window.dispatchEvent(new MouseEvent('mouseup',{button:0,bubbles:true}));true"])
+    await automation.player.releasePrimaryFire()
     const stickyLaunch = parseJson<{ fire: number; projectiles:number; unsupported:string; phase: string }>(await agent([
       "--session", session, "eval",
       "(()=>{const d=document.querySelector('main').dataset;return {fire:Number(d.fireEvents),projectiles:Number(d.projectiles),unsupported:d.unsupportedState,phase:d.phase}})()",
@@ -2273,10 +2230,7 @@ export async function verifyBrowserAcceptance(
       "--session", session, "eval", "JSON.parse(document.querySelector('main').dataset.blockers)",
     ]))
     blockerCount = supportBlockerItems.length
-    await agent(["--session", session, "eval", "Promise.resolve(document.exitPointerLock()).then(()=>true)"])
-    await agent([
-      "--session", session, "wait", "--fn", "document.pointerLockElement===null", "--timeout", "10000",
-    ])
+    await automation.pointer.release()
     require(supportBlockerItems.length === blockerCount && supportBlockerItems.every((value) => typeof value === "string"),
       "developer blocker publication differs from its count")
     const blockerPartition = await classifySupportBlockers(config, supportBlockerItems)
@@ -2427,7 +2381,8 @@ export async function verifyBrowserAcceptance(
       authorityBehaviorBlockers: blockerPartition.authorityBehavior,
       platformBlockers: blockerPartition.platform,
       supportStatus: "zero-content-blockers-non-content-diagnostics-retained",
-      pointerLock: pointerLocked ? `acquired-${pointerMovement}-and-released-for-console` : "headed-window-focus-unavailable",
+      pointerLock: `acquired-${pointerMovement}-and-released-for-console`,
+      pointerLockAutomation: pointerLockEvidence,
       console: platformFontSupported
         ? "history-completion-focus-repeated-visibility-replacement-close-passed"
         : "unsupported-platform-fonts-suppressed-paint-and-input",
@@ -2479,17 +2434,14 @@ export async function verifyBrowserAcceptance(
 }
 
 async function exerciseSwitchedGameplay(session:string,target:string):Promise<Readonly<{target:string;firstTick:number;lastTick:number;distance:number}>>{
-  await agent(["--session",session,"fill","[aria-label='Console command']","noclip"])
-  await agent(["--session",session,"press","Enter"])
+  const automation=tf2BrowserAutomation(session)
+  await automation.console.submitCommand("noclip")
   await agent(["--session",session,"press","Backquote"])
   await agent(["--session",session,"wait","--fn","Number(document.querySelector('main').dataset.movementMode)===1","--timeout","30000"])
-  const before=parseJson<{tick:number;position:number[]}>(await agent(["--session",session,"eval","(()=>{const m=document.querySelector('main');return{tick:Number(m.dataset.snapshotTick),position:m.dataset.cameraPosition.split(',').map(Number)}})()"]));require(Number.isSafeInteger(before.tick)&&before.position.length===3&&before.position.every(Number.isFinite),`${target} pre-input gameplay state is malformed`)
-  await agent(["--session",session,"eval","window.dispatchEvent(new KeyboardEvent('keydown',{code:'KeyW',key:'w',bubbles:true}));true"])
-  await agent(["--session",session,"wait","--fn",`Number(document.querySelector('main').dataset.snapshotTick)>=${before.tick+3}&&Number(document.querySelector('main').dataset.wishSpeed)>0`,"--timeout","30000"])
-  await agent(["--session",session,"eval","window.dispatchEvent(new KeyboardEvent('keyup',{code:'KeyW',key:'w',bubbles:true}));true"])
-  const after=parseJson<{tick:number;position:number[]}>(await agent(["--session",session,"eval","(()=>{const m=document.querySelector('main');return{tick:Number(m.dataset.snapshotTick),position:m.dataset.cameraPosition.split(',').map(Number)}})()"])),distance=Math.hypot(...after.position.map((value,index)=>value-before.position[index]!));require(after.tick>=before.tick+3&&distance>1,`${target} post-activation gameplay did not advance: ${JSON.stringify({before,after,distance})}`)
+  const movement=await automation.player.walkForward(3)
+  require(movement.lastTick>=movement.firstTick+3&&movement.distance>1,`${target} post-activation gameplay did not advance: ${JSON.stringify(movement)}`)
   await agent(["--session",session,"press","Backquote"])
-  return Object.freeze({target,firstTick:before.tick,lastTick:after.tick,distance})
+  return Object.freeze({target,firstTick:movement.firstTick,lastTick:movement.lastTick,distance:movement.distance})
 }
 
 async function captureFinalReadyGeometry(session:string,config:LocalConfig,target:string,generation:number,revision:number):Promise<Readonly<Record<string,unknown>>>{
@@ -2505,37 +2457,33 @@ export async function runDualMapAcceptance(config: LocalConfig, target: string |
   if (target !== undefined) throw new BrowserEvidenceError("dual-map acceptance does not accept a target argument")
   const owner = await startDevelopmentProcess("jump_beef")
   const session = `playsrc-dual-map-${process.pid}`
+  const automation = tf2BrowserAutomation(session)
   let browserOpen = false
   let primaryError: unknown
   let report: Record<string, unknown> | undefined
   try {
-    await agent(["--session", session, "--headed", "--webgpu", "open", owner.url])
+    await agent(["--session", session, "--headed", "--webgpu", "--init-script", TF2_BROWSER_AUTOMATION_INIT, "open", owner.url])
     browserOpen = true
     await agent(["--session", session, "set", "viewport", String(VIEWPORT_WIDTH), String(VIEWPORT_HEIGHT)])
     await completeStartup(session, config, "dual-map-1280x720", "skip")
-    await agent(["--session", session, "press", "Backquote"])
-    await agent(["--session", session, "fill", "[aria-label='Console command']", "map jump_beef"])
-    await agent(["--session", session, "press", "Enter"])
+    await automation.maps.load("jump_beef")
     await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.phase==='Ready'&&document.querySelector('main').dataset.environmentSky==='sky_day01_01'", "--timeout", "600000"])
     const geometry=[await captureFinalReadyGeometry(session,config,"jump_beef",1,1)]
     const gameplay=[await exerciseSwitchedGameplay(session,"jump_beef")]
     const unknownBefore = parseJson<{ detail: string; resources: number }>(await agent(["--session", session, "eval", "(()=>({detail:document.querySelector('main').dataset.detail,resources:performance.getEntriesByType('resource').length}))()"] ))
-    await agent(["--session", session, "fill", "[aria-label='Console command']", "map upward"])
-    await agent(["--session", session, "press", "Enter"])
+    await automation.console.submitCommand("map upward")
     await agent(["--session", session, "wait", "--fn", "document.querySelector('.developer-layer [data-vgui-service=developer-console]')?.textContent.includes('Usage: map jump_beef|pl_upward')", "--timeout", "30000"])
     await Bun.sleep(500)
     const unknownAfter = parseJson<{ detail: string; resources: number }>(await agent(["--session", session, "eval", "(()=>({detail:document.querySelector('main').dataset.detail,resources:performance.getEntriesByType('resource').length}))()"] ))
     require(JSON.stringify(unknownAfter) === JSON.stringify(unknownBefore), `unknown map mutated state or fetched resources: ${JSON.stringify({ unknownBefore, unknownAfter })}`)
-    await agent(["--session", session, "fill", "[aria-label='Console command']", "map pl_upward"])
-    await agent(["--session", session, "press", "Enter"])
+    await automation.maps.load("pl_upward")
     await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.phase==='Replacing'&&document.querySelector('main').dataset.detail.includes('pl_upward')&&document.querySelector('main').dataset.loadingBackground==='configured-generic'", "--timeout", "30000"])
     await agent(["--session", session, "wait", "--fn", "document.querySelector('.developer-layer [data-vgui-service=developer-console]')?.textContent.includes('Loaded pl_upward; generation 2')&&document.querySelector('main').dataset.phase==='Ready'", "--timeout", "600000"])
     await agent(["--session", session, "wait", "--fn", "JSON.parse(document.querySelector('.world-canvas').dataset.staticProps||'null')?.total===1244&&JSON.parse(document.querySelector('.world-canvas').dataset.sky3dPass||'null')?.skyProps>0", "--timeout", "30000"])
     require(parseJson<string>(await agent(["--session", session, "eval", "document.querySelector('main').dataset.detail"] )) === "Playing pl_upward", "pl_upward gameplay publication is unavailable")
     geometry.push(await captureFinalReadyGeometry(session,config,"pl_upward",2,2))
     gameplay.push(await exerciseSwitchedGameplay(session,"pl_upward"))
-    await agent(["--session", session, "fill", "[aria-label='Console command']", "map jump_beef"])
-    await agent(["--session", session, "press", "Enter"])
+    await automation.maps.load("jump_beef")
     await agent(["--session", session, "wait", "--fn", "document.querySelector('.developer-layer [data-vgui-service=developer-console]')?.textContent.includes('Loaded jump_beef; generation 3')&&document.querySelector('main').dataset.phase==='Ready'", "--timeout", "600000"])
     require(parseJson<number>(await agent(["--session", session, "eval", "JSON.parse(document.querySelector('.world-canvas').dataset.staticProps).total"] )) === 0, "jump_beef retained pl_upward static props")
     geometry.push(await captureFinalReadyGeometry(session,config,"jump_beef",3,3))

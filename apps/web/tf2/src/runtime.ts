@@ -2564,7 +2564,7 @@ export class Tf2Application {
   async #renderDisplay(prepared:PreparedPresentation):Promise<void>{
     const client=this.#client,renderer=this.#renderer,generation=this.#generation
     if(!prepared||!client||!renderer||prepared.generation!==generation)return
-    const viewRevision=this.#viewRevision,yaw=this.#yaw,pitch=this.#pitch
+    const viewRevision=this.#viewRevision,mouseRevision=this.#mouseViewRevision,snapRevision=this.#authoritativeViewRevision,yaw=this.#yaw,pitch=this.#pitch
     const profile=(globalThis as typeof globalThis&{__playsrcProfile?:Record<string,unknown>}).__playsrcProfile
     const override=profile?.displacementCameraOverride as Partial<Camera>|undefined
     const authorityCamera=tf2Camera(prepared.snapshot,yaw,pitch)
@@ -2713,8 +2713,8 @@ export class Tf2Application {
         this.#canvas.dataset.displayViewmodelLocalPosition=displayedViewmodel.position.join(",")
       }
     }
-    this.#canvas.dataset.displayMouseRevision=String(this.#mouseViewRevision)
-    this.#canvas.dataset.displaySnapRevision=String(this.#authoritativeViewRevision)
+    this.#canvas.dataset.displayMouseRevision=String(mouseRevision)
+    this.#canvas.dataset.displaySnapRevision=String(snapRevision)
     if(publishPrepared)this.#set({
         camera,
         visibleDecalFragments:rendered.visibleProjectedMarks,

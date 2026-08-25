@@ -199,32 +199,38 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
   systemSampler?.stderr.setEncoding("utf8").on("data",chunk=>{systemSamplerError+=chunk})
   const systemSamplerExit=systemSampler?new Promise<void>(resolve=>systemSampler.once("exit",()=>resolve())):Promise.resolve()
   const rafHz = Number(process.env.PROFILE_RAF_HZ ?? 0)
+  const pointerStressRounds = Number(process.env.PROFILE_POINTER_STRESS ?? 0)
+  if (!Number.isSafeInteger(pointerStressRounds) || pointerStressRounds < 0 || pointerStressRounds > 32) {
+    throw new Error("pointer stress round count is invalid")
+  }
   const scenarioMode = process.env.PROFILE_SCENARIOS ?? (process.env.npm_lifecycle_event === "profile:gameplay" ? "1" : "")
   const mapOnly = process.env.PROFILE_MAP_ONLY === "1" || process.env.npm_lifecycle_event === "profile:map-load"
   const runScenarios = scenarioMode !== ""
   const shouldRunScenario = (name: string) => scenarioMode === "1" || scenarioMode === name
-  await page.addInitScript(({ rafHz }) => {
-    let pointerLockElement: Element | null = null
-    Object.defineProperty(document, "pointerLockElement", {
-      configurable: true,
-      get: () => pointerLockElement,
-    })
-    Object.defineProperty(Element.prototype, "requestPointerLock", {
-      configurable: true,
-      value(this: Element): Promise<void> {
-        pointerLockElement = this
-        queueMicrotask(() => document.dispatchEvent(new Event("pointerlockchange")))
-        return Promise.resolve()
-      },
-    })
-    Object.defineProperty(document, "exitPointerLock", {
-      configurable: true,
-      value(): Promise<void> {
-        pointerLockElement = null
-        queueMicrotask(() => document.dispatchEvent(new Event("pointerlockchange")))
-        return Promise.resolve()
-      },
-    })
+  await page.addInitScript(({ rafHz, pointerStressRounds }) => {
+    if (pointerStressRounds === 0) {
+      let pointerLockElement: Element | null = null
+      Object.defineProperty(document, "pointerLockElement", {
+        configurable: true,
+        get: () => pointerLockElement,
+      })
+      Object.defineProperty(Element.prototype, "requestPointerLock", {
+        configurable: true,
+        value(this: Element): Promise<void> {
+          pointerLockElement = this
+          queueMicrotask(() => document.dispatchEvent(new Event("pointerlockchange")))
+          return Promise.resolve()
+        },
+      })
+      Object.defineProperty(document, "exitPointerLock", {
+        configurable: true,
+        value(): Promise<void> {
+          pointerLockElement = null
+          queueMicrotask(() => document.dispatchEvent(new Event("pointerlockchange")))
+          return Promise.resolve()
+        },
+      })
+    }
     if (rafHz > 0) {
       const interval = 1_000 / rafHz
       Object.defineProperty(window, "requestAnimationFrame", {
@@ -238,7 +244,8 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
     }
     const state = {
       created: performance.now(),
-      syntheticPointerLock: true,
+      syntheticPointerLock: pointerStressRounds === 0,
+      pointerTransitions: [] as { at: number; locked: boolean; focused: boolean; phase: string; gameUi: string }[],
       rpcs: [] as RpcRecord[],
       phases: [] as { at: number; phase: string; detail: string; gameUi: string; frames: number }[],
       longTasks: [] as { at: number; duration: number }[],
@@ -247,6 +254,16 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
       frames: 0,
     }
     ;(window as any).__playsrcProfile = state
+    document.addEventListener("pointerlockchange", () => {
+      const main = document.querySelector<HTMLElement>("main")
+      state.pointerTransitions.push({
+        at: performance.now(),
+        locked: document.pointerLockElement?.classList.contains("world-canvas") ?? false,
+        focused: document.hasFocus(),
+        phase: main?.dataset.phase ?? "",
+        gameUi: main?.dataset.gameui ?? "",
+      })
+    })
 
     const NativeWorker = window.Worker
     class ProfiledWorker extends NativeWorker {
@@ -328,7 +345,7 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
         if (records.some((record) => record.attributeName === "data-performance-detail")) capturePresentation()
       }).observe(main, { attributes: true, attributeFilter: ["data-phase", "data-detail", "data-gameui", "data-performance-detail"] })
     })
-  }, { rafHz })
+  }, { rafHz, pointerStressRounds })
 
   const wallStarted = Date.now()
   await page.goto("/", { waitUntil: "load", timeout: 30_000 })
@@ -477,6 +494,12 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
 
     const fireEvents = Number(await page.locator("main").getAttribute("data-fire-events"))
     try {
+      if (pointerStressRounds > 0) {
+        await page.bringToFront()
+        await page.evaluate(() => window.focus())
+        await page.locator(".world-canvas").focus()
+        await page.waitForFunction(() => document.hasFocus(), undefined, { timeout: 5_000 })
+      }
       await page.locator(".world-canvas").click()
       await page.waitForFunction(() => document.pointerLockElement?.classList.contains("world-canvas"), undefined, {
         timeout: 5_000,
@@ -540,6 +563,9 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
           displayFrames: finished.frame - started.frame,
           preparedRevisions: new Set(records.map((record) => record.prepared)).size,
           repeatedPreparedFrames: records.filter((record, index) => index > 0 && record.prepared === records[index - 1]!.prepared).length,
+          inconsistentRevisionFrames: records.filter((record) =>
+            record.view - started.view !== record.mouse - started.mouse + record.snap - started.snap,
+          ).length,
           viewRevisions: finished.view - started.view,
           mouseRevisions: finished.mouse - started.mouse,
           snapRevisions: finished.snap - started.snap,
@@ -551,6 +577,79 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
         }
       })
       Object.assign(input, Object.fromEntries(Object.entries(look).map(([key, value]) => [`look${key[0]!.toUpperCase()}${key.slice(1)}`, value])))
+      if (pointerStressRounds > 0) {
+        input.pointerStress = await page.evaluate(async (rounds) => {
+          const canvas = document.querySelector<HTMLCanvasElement>(".world-canvas")
+          const main = document.querySelector<HTMLElement>("main")
+          if (!canvas || !main) throw new Error("pointer stress presentation roots are unavailable")
+          const profile = (window as any).__playsrcProfile as {
+            pointerTransitions: { at: number; locked: boolean; focused: boolean; phase: string; gameUi: string }[]
+          }
+          const records: Array<{
+            round: number; events: number; lockedEvents: number; firstUnlockedEvent: number | null
+            displayFrames: number; preparedRevisions: number; repeatedPreparedFrames: number
+            viewRevisions: number; mouseRevisions: number; snapRevisions: number
+            startLocked: boolean; endLocked: boolean; startFocused: boolean; endFocused: boolean
+            pointerTransitions: readonly { at: number; locked: boolean; focused: boolean; phase: string; gameUi: string }[]
+          }> = []
+          for (let round = 0; round < rounds; round += 1) {
+            const nativeRaf = requestAnimationFrame.bind(window)
+            const nativeCancel = cancelAnimationFrame.bind(window)
+            const start = {
+              frame: Number(canvas.dataset.displayFrame),
+              view: Number(canvas.dataset.displayViewRevision),
+              mouse: Number(canvas.dataset.displayMouseRevision),
+              snap: Number(canvas.dataset.displaySnapRevision),
+              locked: document.pointerLockElement === canvas,
+              focused: document.hasFocus(),
+              transitions: profile.pointerTransitions.length,
+            }
+            const frames: number[] = []
+            const observer = new MutationObserver(() => frames.push(Number(canvas.dataset.displayPreparedRevision)))
+            observer.observe(canvas, { attributes: true, attributeFilter: ["data-display-frame"] })
+            window.requestAnimationFrame = (callback) => setTimeout(() => callback(performance.now()), 1)
+            window.cancelAnimationFrame = (handle) => clearTimeout(handle)
+            let events = 0
+            let lockedEvents = 0
+            let firstUnlockedEvent: number | null = null
+            const interval = setInterval(() => {
+              const locked = document.pointerLockElement === canvas
+              if (locked) lockedEvents += 1
+              else if (firstUnlockedEvent === null) firstUnlockedEvent = events
+              const event = new MouseEvent("mousemove", { bubbles: true })
+              Object.defineProperties(event, { movementX: { value: round % 2 === 0 ? 2 : -2 }, movementY: { value: 0 } })
+              dispatchEvent(event)
+              events += 1
+            }, 4)
+            await new Promise((resolve) => setTimeout(resolve, 600))
+            clearInterval(interval)
+            window.requestAnimationFrame = nativeRaf
+            window.cancelAnimationFrame = nativeCancel
+            await new Promise((resolve) => setTimeout(resolve, 200))
+            observer.disconnect()
+            records.push({
+              round,
+              events,
+              lockedEvents,
+              firstUnlockedEvent,
+              displayFrames: Number(canvas.dataset.displayFrame) - start.frame,
+              preparedRevisions: new Set(frames).size,
+              repeatedPreparedFrames: frames.filter((value, index) => index > 0 && value === frames[index - 1]).length,
+              viewRevisions: Number(canvas.dataset.displayViewRevision) - start.view,
+              mouseRevisions: Number(canvas.dataset.displayMouseRevision) - start.mouse,
+              snapRevisions: Number(canvas.dataset.displaySnapRevision) - start.snap,
+              startLocked: start.locked,
+              endLocked: document.pointerLockElement === canvas,
+              startFocused: start.focused,
+              endFocused: document.hasFocus(),
+              pointerTransitions: profile.pointerTransitions.slice(start.transitions),
+            })
+            if (records.at(-1)!.mouseRevisions < events || !records.at(-1)!.endLocked) break
+          }
+          return { rounds: records, requested: rounds }
+        }, pointerStressRounds)
+        console.log(`PLAYSRC_POINTER_STRESS ${JSON.stringify(input.pointerStress)}`)
+      }
       const heapBefore = await pageCdp.send("Runtime.getHeapUsage")
       await pageCdp.send("HeapProfiler.startSampling", {
         samplingInterval: 32_768,
@@ -962,12 +1061,14 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
   await writeFile(path.join(performanceDirectory,`${comparisonLabel}-${process.pid}.json`),`${JSON.stringify(report,null,2)}\n`)
   console.log(`PLAYSRCPROFILE ${JSON.stringify({...report,browserSystem:{...report.browserSystem,timeline:`${report.browserSystem.timeline.length} samples retained in playsrc-profile attachment`}})}`)
   expect(raw.dataset.phase).toBe("Ready")
+  if (pointerStressRounds > 0) expect(input.pointerStress).toBeDefined()
   if (typeof input.lookDisplayFrames === "number") {
     expect(input.lookDisplayFrames).toBeGreaterThan(1)
     expect(input.lookViewRevisions).toBeGreaterThan(1)
     expect(input.lookMouseRevisions).toBeGreaterThanOrEqual(input.lookEvents as number)
     expect(input.lookViewRevisions).toBe((input.lookMouseRevisions as number)+(input.lookSnapRevisions as number))
     expect(input.lookRepeatedPreparedFrames).toBeGreaterThan(0)
+    expect(input.lookInconsistentRevisionFrames).toBe(0)
     expect(input.lookMaximumViewmodelYawError).toBeLessThanOrEqual(0.001)
     expect(input.lookMaximumViewmodelPitchError).toBeLessThanOrEqual(0.001)
     const motion = input.movementContinuity as {
@@ -993,6 +1094,21 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
     expect(motion.heapAfterBytes).toBeGreaterThan(0)
     if (motion.standaloneVisibilityP50Milliseconds > 0) {
       expect(motion.adapterMeanNanoseconds / 1_000_000).toBeLessThan(motion.standaloneVisibilityP50Milliseconds)
+    }
+    if (pointerStressRounds > 0) {
+      const stress = input.pointerStress as {
+        requested: number
+        rounds: readonly { events: number; lockedEvents: number; mouseRevisions: number; viewRevisions: number; snapRevisions: number; repeatedPreparedFrames: number; startLocked: boolean; endLocked: boolean }[]
+      }
+      expect(stress.rounds.length).toBe(stress.requested)
+      for (const round of stress.rounds) {
+        expect(round.startLocked).toBe(true)
+        expect(round.endLocked).toBe(true)
+        expect(round.lockedEvents).toBe(round.events)
+        expect(round.mouseRevisions).toBeGreaterThanOrEqual(round.events)
+        expect(round.viewRevisions).toBe(round.mouseRevisions + round.snapRevisions)
+        expect(round.repeatedPreparedFrames).toBeGreaterThan(0)
+      }
     }
   }
 })
