@@ -119,6 +119,12 @@ struct Report {
 
 const CODE_LOCALIZATION_TOKENS: &[&str] = &[
     "#Gametype_Escort",
+    "#Winpanel_TeamWins",
+    "#Winpanel_Team1",
+    "#Winpanel_RedMVPs",
+    "#Winpanel_BlueMVPs",
+    "#Winreason_FlagCaptureLimit",
+    "#Winreason_FlagCaptureLimit_One",
     "#GameUI_AdjustGamma_Title",
     "#GameUI_Audio",
     "#GameUI_Bilinear",
@@ -290,6 +296,7 @@ const ROOTS: &[(&str, &str, bool)] = &[
     ("hud", "resource/ui/hudobjectivestatus.res", true),
     ("hud", "resource/ui/hudobjectiveflagpanel.res", true),
     ("hud", "resource/ui/flagstatus.res", true),
+    ("hud", "resource/ui/winpanel.res", true),
     ("hud", "resource/ui/notifications/base_notification.res", true),
     ("hud", "resource/ui/notifications/notify_your_flag_taken_red.res", true),
     ("hud", "resource/ui/notifications/notify_your_flag_taken_blue.res", true),
