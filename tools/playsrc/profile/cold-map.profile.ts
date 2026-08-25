@@ -3,7 +3,6 @@ import path from "node:path"
 import { expect, test } from "./application-test"
 import { loadLocalConfig } from "../src/config"
 
-const TARGET = "jump_beef"
 const MAX_THREADS = 64
 
 test("profiles BSP-prefetched cold map loading", async ({ page }, testInfo) => {
@@ -44,15 +43,19 @@ test("profiles BSP-prefetched cold map loading", async ({ page }, testInfo) => {
   expect(configurationResponse.status()).toBe(200)
   const configuration = await configurationResponse.json() as {
     assetOrigin: string
-    bsp: { sha256: string; byteLength: string }
+    defaultTarget: string
+    targets: readonly { target: string; objects: { bsp: { sha256: string; byteLength: string } } }[]
   }
-  if (!/^[0-9a-f]{64}$/.test(configuration.bsp.sha256)
-    || !/^[1-9]\d*$/.test(configuration.bsp.byteLength)) throw new Error("configured BSP descriptor is malformed")
-  const bspUrl = `${configuration.assetOrigin}/objects/sha256/${configuration.bsp.sha256}`
+  const target = configuration.targets.find((candidate) => candidate.target === configuration.defaultTarget)
+  if (!target) throw new Error("configured default map is absent from the current target catalog")
+  const bspDescriptor = target.objects.bsp
+  if (!/^[0-9a-f]{64}$/.test(bspDescriptor.sha256)
+    || !/^[1-9]\d*$/.test(bspDescriptor.byteLength)) throw new Error("configured BSP descriptor is malformed")
+  const bspUrl = `${configuration.assetOrigin}/objects/sha256/${bspDescriptor.sha256}`
   const bspResponse = await page.request.get(bspUrl)
   expect(bspResponse.status()).toBe(200)
   const bsp = await bspResponse.body()
-  expect(bsp.byteLength).toBe(Number(configuration.bsp.byteLength))
+  expect(bsp.byteLength).toBe(Number(bspDescriptor.byteLength))
   let fulfilledBspRequests = 0
   await page.route(bspUrl, async (route) => {
     fulfilledBspRequests += 1
@@ -64,7 +67,7 @@ test("profiles BSP-prefetched cold map loading", async ({ page }, testInfo) => {
         "cache-control": "no-store",
         "content-length": String(bsp.byteLength),
         "content-type": "application/octet-stream",
-        "etag": `"${configuration.bsp.sha256}"`,
+        "etag": `"${bspDescriptor.sha256}"`,
       },
     })
   })
@@ -76,7 +79,7 @@ test("profiles BSP-prefetched cold map loading", async ({ page }, testInfo) => {
   await page.keyboard.press("Backquote")
   const consoleEntry = page.locator("[aria-label='Console command']")
   await expect(consoleEntry).toBeVisible()
-  await consoleEntry.fill(`map ${TARGET}`)
+  await consoleEntry.fill(`map ${target.target}`)
   const started = await page.evaluate(() => performance.now())
   await page.keyboard.press("Enter")
   await page.waitForFunction(() => {
@@ -90,11 +93,11 @@ test("profiles BSP-prefetched cold map loading", async ({ page }, testInfo) => {
   const workerRecords = await page.evaluate(() => (window as typeof window & { __playsrcColdWorkers: Array<{ kind: string; timings?: Record<string, number> }> }).__playsrcColdWorkers)
   const report = {
     schema: "playsrc-cold-map-profile-v1",
-    target: TARGET,
+    target: target.target,
     browserThreads: storageBefore.threads,
     requestedThreads,
     bsp: {
-      sha256: configuration.bsp.sha256,
+      sha256: bspDescriptor.sha256,
       byteLength: bsp.byteLength,
       prefetchedBeforeMeasurement: true,
       networkRequestsInsideMeasurement: 0,
@@ -111,7 +114,7 @@ test("profiles BSP-prefetched cold map loading", async ({ page }, testInfo) => {
     workerLoad: workerRecords.find((record) => record.kind === "load")?.timings ?? null,
   }
   const local = await loadLocalConfig()
-  const output = path.join(local.sourceCacheDir, "profiles", "cold-map", TARGET)
+  const output = path.join(local.sourceCacheDir, "profiles", "cold-map", target.target)
   await rm(output, { recursive: true, force: true })
   await mkdir(output, { recursive: true })
   await writeFile(path.join(output, "report.json"), `${JSON.stringify(report, null, 2)}\n`)
