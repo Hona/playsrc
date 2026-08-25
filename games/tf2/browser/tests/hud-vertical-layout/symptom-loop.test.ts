@@ -84,6 +84,11 @@ const documents = new Map<string, VguiResourceDocument>([
     revision: "spy-disguise-menu-fixture",
     root: object("Resource", []),
   })],
+  ["resource/ui/hudmediccharge.res", Object.freeze({
+    logicalIdentity: "resource/ui/hudmediccharge.res",
+    revision: "052b93edb2d11068ad6279c4026f97664cb5c160a03468ed4d984345de6a5c80",
+    root: object("Resource", []),
+  })],
 ])
 
 const customControls: readonly VguiControlRegistration[] = Object.freeze(["CTFHudElement", "CTFHealthPanel", "CTFClientScoreBoardDialog"].map((name) => Object.freeze({

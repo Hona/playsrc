@@ -902,6 +902,28 @@ fn emission_overrun_fails_without_publishing_an_effect() {
 }
 
 #[test]
+fn configured_substep_limit_accepts_real_frame_delays_above_ten_steps() {
+    let bytes = fixture(false);
+    let registry = registry(&bytes);
+    let mut world =
+        playsrc_particle::ParticleWorld::new(&registry, WorldLimits::default()).unwrap();
+    world
+        .advance(
+            &[create_event(vec![control([0.0; 3], [0.0; 3])])],
+            AdvanceRequest {
+                from_seconds: 0.0,
+                to_seconds: 0.3,
+                maximum_step_seconds: 1.0 / 60.0,
+                camera_position: [0.0; 3],
+            },
+            &mut NoHit,
+        )
+        .unwrap();
+    assert_eq!(world.time(), 0.3);
+    assert_eq!(world.effect_count(), 1);
+}
+
+#[test]
 fn substep_limit_fails_without_consuming_partial_time() {
     let bytes = fixture(false);
     let registry = registry(&bytes);

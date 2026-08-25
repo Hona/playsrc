@@ -131,6 +131,7 @@ const NOTIFICATION_FILES = Object.freeze([
 ])
 const HUD_SPY_METER = "resource/ui/huditemeffectmeter_spy.res"
 const HUD_SPY_DISGUISE_MENU = "resource/ui/disguise_menu/hudmenuspydisguise.res"
+const HUD_MEDIC_CHARGE = "resource/ui/hudmediccharge.res"
 const scalar = (node: VguiResourceNode, name: string): string | null =>
   node.children.find((child) => child.name.toLowerCase() === name.toLowerCase() && child.value !== null)?.value ?? null
 const node = (name: string, children: readonly VguiResourceNode[]): VguiResourceNode => Object.freeze({ name, value: null, condition: null, children: Object.freeze(children) })
@@ -278,6 +279,7 @@ class Integration implements Tf2HudIntegration {
       ["HudMenuSpyDisguise", "CTFHudElement"],
       ["HudCrosshair", "CTFHudElement"],
       ["HudDeathNotice", "CTFHudElement"],
+      ["HudMedicCharge", "CTFHudElement"],
     ] as const
     for (const [name, control] of roots) apply(this.#runtime, { kind: "create-panel", parent: 1, control, name })
     const layout = request.resources.document(HUD_LAYOUT)
@@ -324,6 +326,7 @@ class Integration implements Tf2HudIntegration {
     }
     applyPanelResource(this.#runtime, find(this.#runtime, "HudItemEffectMeter")!, request.resources.document(HUD_SPY_METER), request.resources.activeConditions)
     applyPanelResource(this.#runtime, find(this.#runtime, "HudMenuSpyDisguise")!, request.resources.document(HUD_SPY_DISGUISE_MENU), request.resources.activeConditions)
+    applyPanelResource(this.#runtime, find(this.#runtime, "HudMedicCharge")!, request.resources.document(HUD_MEDIC_CHARGE), request.resources.activeConditions)
     const panels = this.#runtime.snapshot().panels
     for (const panel of panels) {
       if (!this.#panels.has(panel.name.toLowerCase())) this.#panels.set(panel.name.toLowerCase(), panel.id)
@@ -842,6 +845,25 @@ class Integration implements Tf2HudIntegration {
       apply(this.#runtime, { kind: "mutate-control", panel: label, mutation: {
         text: `${command.notice.killer.name}  ${command.notice.weaponIcon.kind === "available" ? command.notice.weaponIcon.value : ""}  ${command.notice.victim.name}` } })
       this.#deathNotices.push({ panel: label, expires: command.tick + BigInt(command.notice.localPlayerInvolved ? 800 : 400) })
+    }
+    const medicRoot = find(this.#runtime, "HudMedicCharge")
+    if (medicRoot !== null) {
+      const source = publication.snapshot as typeof publication.snapshot & { medigunCharge: number; medigunReleasing: boolean }
+      const visible = source.class === 5 && source.lifecycle === 1 && (source.weapon === 20 || source.weapon === 21)
+      apply(this.#runtime, { kind: "set-panel-state", panel: medicRoot, visible })
+      if (visible) {
+        const charge = source.medigunCharge
+        if (!Number.isFinite(charge) || charge < 0 || charge > 1) throw new Error("Medi Gun HUD charge is not authoritative")
+        apply(this.#runtime, { kind: "set-dialog-variable", panel: medicRoot, name: "charge", value: Math.floor(charge * 100) })
+        const meter = find(this.#runtime, "ChargeMeter", medicRoot)
+        if (meter !== null) apply(this.#runtime, { kind: "mutate-control", panel: meter, mutation: { scalarProperties: { progress: charge } } })
+        const background = find(this.#runtime, "Background", medicRoot)
+        if (background !== null) apply(this.#runtime, { kind: "mutate-control", panel: background, mutation: { image: source.team === 2 ? "../hud/medic_charge_red_bg" : "../hud/medic_charge_blue_bg" } })
+        for (const name of ["IndividualChargesLabel", "ChargeMeter1", "ChargeMeter2", "ChargeMeter3", "ChargeMeter4", "ResistIcon"]) {
+          const panel = find(this.#runtime, name, medicRoot)
+          if (panel !== null) apply(this.#runtime, { kind: "set-panel-state", panel, visible: false })
+        }
+      }
     }
     for (const animation of binding.animations) {
       const parent = animation.target === "viewport" ? 1 : find(this.#runtime, animation.target)

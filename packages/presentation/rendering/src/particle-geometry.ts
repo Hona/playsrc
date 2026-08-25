@@ -7,6 +7,7 @@ export type ParticleQuad = Readonly<{
   trailWidth: number
   radius: number
   rollRadians: number
+  orientationType?: number
 }>
 
 export type ParticleQuadCamera = Readonly<{
@@ -63,11 +64,12 @@ export function writeParticleQuad(
 
   const yaw = camera.yawDegrees * DEGREES_TO_RADIANS
   const pitch = camera.pitchDegrees * DEGREES_TO_RADIANS
-  const rightX = Math.sin(yaw)
-  const rightY = -Math.cos(yaw)
-  const upX = Math.sin(pitch) * Math.cos(yaw)
-  const upY = Math.sin(pitch) * Math.sin(yaw)
-  const upZ = Math.cos(pitch)
+  const worldOriented = item.orientationType === 2
+  const rightX = worldOriented ? 1 : Math.sin(yaw)
+  const rightY = worldOriented ? 0 : -Math.cos(yaw)
+  const upX = worldOriented ? 0 : Math.sin(pitch) * Math.cos(yaw)
+  const upY = worldOriented ? -1 : Math.sin(pitch) * Math.sin(yaw)
+  const upZ = worldOriented ? 0 : Math.cos(pitch)
   const cosine = Math.cos(item.rollRadians)
   const sine = Math.sin(item.rollRadians)
   const rolledRightX = rightX * cosine + upX * sine

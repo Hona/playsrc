@@ -58,10 +58,12 @@ describe("configured TF2 UI resource descriptor", () => {
   })
 
   test("binds the exact configured provider and selected source closure", () => {
-    expect(tf2UiResources.identity).toBe("tf2-ui-24245096-badfaac5ecf4abfd")
+    expect(tf2UiResources.identity).toBe("tf2-ui-24245096-f3f3ef3ba993643e")
     expect(tf2UiResources.providers).toHaveLength(14)
-    expect(tf2UiResources.sources).toHaveLength(128)
-    expect(tf2UiResources.panels).toHaveLength(114)
+    expect(tf2UiResources.sources).toHaveLength(129)
+    expect(tf2UiResources.panels).toHaveLength(115)
+    expect(tf2UiResources.sources.find((source) => source.logicalPath === "resource/ui/hudmediccharge.res")?.sha256)
+      .toBe("052b93edb2d11068ad6279c4026f97664cb5c160a03468ed4d984345de6a5c80")
     expect(tf2UiResources.sources.find((source) => source.logicalPath === "resource/ui/statsummary.res")?.sha256)
       .toBe("bf146199fcd7aec0a5467752853b89ead6f882d11533de383c09561bd3455903")
     expect(tf2UiResources.sources.find((source) => source.logicalPath === "resource/ui/mainmenuoverride.res")?.sha256)
@@ -124,12 +126,12 @@ describe("configured TF2 UI resource descriptor", () => {
 
   test("retains every selected inventory with no unclassified item", () => {
     expect(tf2UiResources.controls).toHaveLength(80)
-    expect(tf2UiResources.properties).toHaveLength(21_875)
+    expect(tf2UiResources.properties).toHaveLength(22_046)
     expect(tf2UiResources.commands).toHaveLength(109)
-    expect(tf2UiResources.localization.tokens).toHaveLength(640)
+    expect(tf2UiResources.localization.tokens).toHaveLength(644)
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#Valve_Move_Forward")?.definitions[0]?.value).toBe("Move forward")
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#TF_OptionCategory_Combat")?.definitions[0]?.value).toBe("Combat Options")
-    expect(tf2UiResources.images).toHaveLength(409)
+    expect(tf2UiResources.images).toHaveLength(412)
     expect(tf2UiResources.images.find((image) => image.configuredValue === "maps/menu_photos_pl_upward")?.material?.sha256)
       .toBe("79ca3d5e39f80c8d18c79eb63fd9b457a359e2a2db147c426eb7814a2cd1101e")
     expect(tf2UiResources.fonts).toHaveLength(80)
@@ -229,6 +231,9 @@ describe("authored TF2 crosshair content closure", () => {
       { identities: [43], script: "scripts/tf_weapon_pda_engineer_build.ctx", crop: { x: 0, y: 48, width: 24, height: 24 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
       { identities: [44], script: "scripts/tf_weapon_pda_engineer_destroy.ctx", crop: { x: 0, y: 48, width: 24, height: 24 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
       { identities: [45], script: "scripts/tf_weapon_builder.ctx", crop: { x: 0, y: 48, width: 24, height: 24 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
+      { identities: [19], script: "scripts/tf_weapon_syringegun_medic.ctx", crop: { x: 0, y: 0, width: 32, height: 32 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
+      { identities: [20], script: "scripts/tf_weapon_medigun.ctx", crop: { x: 0, y: 64, width: 32, height: 32 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
+      { identities: [21], script: "scripts/tf_weapon_bonesaw.ctx", crop: { x: 64, y: 0, width: 32, height: 32 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
     ])
   })
 

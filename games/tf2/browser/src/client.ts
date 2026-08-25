@@ -8,7 +8,8 @@ const HASH = /^[0-9a-f]{64}$/
 const MAX_PENDING = 64
 const MAX_BSP_BYTES = 512 * 1024 * 1024
 const MAX_CONFIGURATION_BYTES = 768 * 1024 * 1024
-
+const MAX_CONFIGURATION_SECTION_BYTES = 512 * 1024 * 1024
+const MAX_CONFIGURATION_SECTIONS = 64
 const LITTLE_ENDIAN = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1
 const HEX_BYTES = Array.from({ length: 256 }, (_, value) => value.toString(16).padStart(2, "0"))
 type RequestWithoutId = WorkerRequest extends infer Request
@@ -224,7 +225,7 @@ export class Tf2WorkerClient {
       return Object.freeze({ descriptor: transferredBytes(encodedDescriptor), bytes: transferredBytes(bytes) })
     })
     const response = await this.#request({ kind: "decode-resources", chunks }, chunks.flatMap(({ descriptor, bytes }) => [descriptor, bytes]))
-    if (response.kind !== "resources" || !(response.bytes instanceof ArrayBuffer) || response.bytes.byteLength < 12 || response.bytes.byteLength > MAX_CONFIGURATION_BYTES) {
+    if (response.kind !== "resources" || !(response.bytes instanceof ArrayBuffer) || response.bytes.byteLength < 12 || response.bytes.byteLength > MAX_CONFIGURATION_SECTION_BYTES) {
       throw new Tf2WorkerError("WorkerFailed")
     }
     return new Uint8Array(response.bytes)
@@ -234,7 +235,7 @@ export class Tf2WorkerClient {
     generation: number,
     bsp: Uint8Array,
     profile: 0 | 1,
-    configuration: Uint8Array,
+    configuration: readonly Uint8Array[],
     derivedKey: string,
   ): Promise<StagedGame> {
     const started = performance.now()
@@ -244,7 +245,11 @@ export class Tf2WorkerClient {
       generation > 0xffff_ffff ||
       bsp.byteLength < 1 ||
       bsp.byteLength > MAX_BSP_BYTES ||
-      configuration.byteLength > MAX_CONFIGURATION_BYTES ||
+      !Array.isArray(configuration) ||
+      configuration.length < 1 ||
+      configuration.length > MAX_CONFIGURATION_SECTIONS ||
+      configuration.some((section) => !(section instanceof Uint8Array) || section.byteLength < 1 || section.byteLength > MAX_CONFIGURATION_SECTION_BYTES) ||
+      configuration.reduce((total, section) => total + section.byteLength, 0) > MAX_CONFIGURATION_BYTES ||
       !HASH.test(derivedKey)
     ) {
       throw new Tf2WorkerError("BoundExceeded")
@@ -280,7 +285,7 @@ export class Tf2WorkerClient {
     const cachedPresentationBytes = cachedPresentation?.byteLength
     let phase = performance.now()
     const bspBuffer = transferredBytes(bsp)
-    const configurationBuffer = configuration.slice().buffer
+    const configurationBuffers = configuration.map((section) => section.slice().buffer)
     const presentationBuffer = cachedPresentation ? transferredBytes(cachedPresentation) : undefined
     const inputCloneMilliseconds = performance.now() - phase
     phase = performance.now()
@@ -289,10 +294,10 @@ export class Tf2WorkerClient {
       generation,
       profile,
       bsp: bspBuffer,
-      configuration: configurationBuffer,
+      configuration: configurationBuffers,
       includeMap: !cached,
       ...(presentationBuffer ? { presentation: presentationBuffer } : {}),
-    }, [bspBuffer, configurationBuffer, ...(presentationBuffer ? [presentationBuffer] : [])])
+    }, [bspBuffer, ...configurationBuffers, ...(presentationBuffer ? [presentationBuffer] : [])])
     const workerLoadMilliseconds = performance.now() - phase
     try {
       if (
@@ -464,7 +469,7 @@ export class Tf2WorkerClient {
     generation: number,
     bsp: Uint8Array,
     profile: 0 | 1,
-    configuration: Uint8Array,
+    configuration: readonly Uint8Array[],
     derivedKey: string,
   ): Promise<LoadedGame> {
     const staged = await this.stage(generation, bsp, profile, configuration, derivedKey)

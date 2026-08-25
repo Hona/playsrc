@@ -164,6 +164,9 @@ const attributes: readonly PublicationBinding[] = Object.freeze([
   attribute("engineer-metal", "engineerMetal"),
   attribute("engineer-menu", "engineerMenu"),
   attribute("placement", "placementProbe"),
+  attribute("medigun-charge", "medigunCharge"),
+  attribute("medigun-target", "medigunTarget"),
+  attribute("medigun-releasing", "medigunReleasing"),
   attribute("unsupported-state", "unsupportedState"),
   attribute("blockers", "blockers", (view) => JSON.stringify(view.blockers)),
 ])
