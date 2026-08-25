@@ -293,6 +293,7 @@ pub struct MapRuntime {
     movers: BTreeMap<EntityHandle, ActiveMover>,
     game_filters: BTreeMap<Vec<u8>, GameFilter>,
     objectives: Option<crate::ctf::World>,
+    round_configuration: crate::round::Configuration,
     counts: MapCounts,
     payload_constraint_blocked: bool,
     next_producer_sequence: u64,
@@ -306,6 +307,8 @@ impl MapRuntime {
         source_identity: u64,
         model_bounds: Vec<ModelBounds>,
     ) -> Result<Self, RuntimeFailure> {
+        let round_configuration =
+            crate::round::Configuration::from_graph(graph).map_err(|_| invalid(0))?;
         let mut objectives =
             crate::ctf::World::compile(graph, crate::ctf::Configuration::default()).map_err(
                 |error| match error {
@@ -362,6 +365,29 @@ impl MapRuntime {
                 playsrc_entity::ExternalClassBinding {
                     classname: b"func_capturezone".to_vec(),
                     inputs: [b"Enable".as_slice(), b"Disable"]
+                        .into_iter()
+                        .map(<[u8]>::to_vec)
+                        .collect(),
+                },
+                playsrc_entity::ExternalClassBinding {
+                    classname: b"team_round_timer".to_vec(),
+                    inputs: [
+                        b"Enable".as_slice(),
+                        b"Disable",
+                        b"Pause",
+                        b"Resume",
+                        b"SetTime",
+                        b"AddTime",
+                        b"ShowInHUD",
+                        b"RoundSpawn",
+                    ]
+                    .into_iter()
+                    .map(<[u8]>::to_vec)
+                    .collect(),
+                },
+                playsrc_entity::ExternalClassBinding {
+                    classname: b"game_round_win".to_vec(),
+                    inputs: [b"RoundWin".as_slice(), b"SetTeam"]
                         .into_iter()
                         .map(<[u8]>::to_vec)
                         .collect(),
@@ -650,6 +676,7 @@ impl MapRuntime {
             movers: BTreeMap::new(),
             game_filters,
             objectives,
+            round_configuration,
             counts,
             payload_constraint_blocked,
             next_producer_sequence: 1,
@@ -684,6 +711,10 @@ impl MapRuntime {
 
     pub fn source_handle(&self, source: u32) -> Option<EntityHandle> {
         self.source_handles.get(&source).copied()
+    }
+
+    pub fn round_configuration(&self) -> crate::round::Configuration {
+        self.round_configuration
     }
 
     pub fn objectives(&self) -> Option<&crate::ctf::World> {
@@ -721,6 +752,39 @@ impl MapRuntime {
                 output: output.as_bytes().to_vec(),
                 value: Variant::Void,
                 activator,
+                caller: Some(handle),
+                delay: 0.0,
+            });
+        }
+        if commands.is_empty() {
+            return Ok(MapPhase::default());
+        }
+        let batch = self.world.phase(tick, &commands)?;
+        self.consume(batch).map_err(MapError::from)
+    }
+
+    pub fn emit_round_outputs(
+        &mut self,
+        tick: u64,
+        events: &[crate::round::Event],
+    ) -> Result<MapPhase, MapError> {
+        let mut commands = Vec::new();
+        for event in events {
+            let (source, output) = match *event {
+                crate::round::Event::SetupFinished { timer } => {
+                    (timer, b"OnSetupFinished".as_slice())
+                }
+                crate::round::Event::TimerFinished { timer } => (timer, b"OnFinished".as_slice()),
+                _ => continue,
+            };
+            let handle = self
+                .source_handle(source)
+                .ok_or(MapError::MissingEntity(source))?;
+            commands.push(WorldCommand::EmitOutput {
+                entity: handle,
+                output: output.to_vec(),
+                value: Variant::Void,
+                activator: Some(handle),
                 caller: Some(handle),
                 delay: 0.0,
             });

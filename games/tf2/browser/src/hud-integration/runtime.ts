@@ -29,7 +29,7 @@ import {
   type Tf2HudPanelValue,
   type Tf2HudSnapshot,
 } from "../hud"
-import type { CaptureObjectives, Tf2Team } from "../codec"
+import type { CaptureObjectives, RoundSnapshot, Tf2Team } from "../codec"
 import type { Tf2VguiResources } from "../ui-integration"
 import { Tf2HudCrosshairPresentation } from "./crosshair"
 import { Tf2HudScopePresentation } from "./scope"
@@ -105,6 +105,9 @@ const HUD_CLASS = "resource/ui/hudplayerclass.res"
 const HUD_HEALTH = "resource/ui/hudplayerhealth.res"
 const HUD_AMMO = "resource/ui/hudammoweapons.res"
 const HUD_WEAPONS = "resource/ui/hudweaponselection.res"
+const HUD_MATCH_STATUS = "resource/ui/hudmatchstatus.res"
+const HUD_TIME_PANEL = "resource/ui/hudobjectivetimepanel.res"
+const HUD_WAITING_PANEL = "resource/ui/waitingforplayerspanel.res"
 const HUD_OBJECTIVE_FLAGS = "resource/ui/hudobjectiveflagpanel.res"
 const HUD_FLAG_STATUS = "resource/ui/flagstatus.res"
 const HUD_WIN_PANEL = "resource/ui/winpanel.res"
@@ -211,6 +214,7 @@ class Integration implements Tf2HudIntegration {
   #notificationDeadline = 0n
   #objectiveCarrying = false
   #winPanel?: VguiPanelId
+  #roundPanels?: Readonly<{ match: VguiPanelId; timer: VguiPanelId; value: VguiPanelId; waiting: VguiPanelId }>
   #destroyed = false
 
   constructor(request: Tf2HudIntegrationRequest) {
@@ -324,8 +328,85 @@ class Integration implements Tf2HudIntegration {
     return objective
   }
 
-  #publishWinPanel(objectives: CaptureObjectives): void {
-    const winner = objectives.winner
+  #initializeRoundPanels() {
+    if (this.#roundPanels) return this.#roundPanels
+    const match = apply(this.#runtime, { kind: "create-panel", parent: 1, control: "CTFHudElement", name: "HudMatchStatus" })!
+    const waiting = apply(this.#runtime, { kind: "create-panel", parent: 1, control: "CTFHudElement", name: "WaitingForPlayersPanel" })!
+    const layout = this.#resources.document(HUD_LAYOUT)
+    const roots = layout.root.children.filter((value) => ["HudMatchStatus", "WaitingForPlayersPanel"].includes(scalar(value, "fieldName") ?? value.name))
+    if (roots.length !== 2) throw new Error("TF2 authored round HUD root layout is unavailable")
+    apply(this.#runtime, {
+      kind: "replace-resource", parent: 1,
+      document: document(layout, "round-roots", node(layout.root.name, roots.map(shallow))),
+      selection: { activeConditions: this.#resources.activeConditions, resolutionSuffixes: ["_hidef"] },
+    })
+    const timer = apply(this.#runtime, { kind: "create-panel", parent: match, control: "EditablePanel", name: "ObjectiveStatusTimePanel" })!
+    const matchResource = this.#resources.document(HUD_MATCH_STATUS)
+    const authoredTimer = matchResource.root.children.find((value) => (scalar(value, "fieldName") ?? value.name) === "ObjectiveStatusTimePanel")
+    if (!authoredTimer) throw new Error("TF2 authored round timer position is unavailable")
+    apply(this.#runtime, {
+      kind: "replace-resource", parent: match,
+      document: document(matchResource, "round-timer-position", node(matchResource.root.name, [shallow(authoredTimer)])),
+      selection: { activeConditions: this.#resources.activeConditions, resolutionSuffixes: ["_hidef"] },
+    })
+    const value = apply(this.#runtime, { kind: "create-panel", parent: timer, control: "CExLabel", name: "TimePanelValue" })!
+    applyChildren(this.#runtime, timer, matchResource, resourceChildren(authoredTimer), this.#resources.activeConditions)
+    applyPanelResource(this.#runtime, timer, this.#resources.document(HUD_TIME_PANEL), this.#resources.activeConditions)
+    applyPanelResource(this.#runtime, waiting, this.#resources.document(HUD_WAITING_PANEL), this.#resources.activeConditions)
+    for (const panel of this.#runtime.snapshot().panels) {
+      this.#panels.set(panel.name.toLowerCase(), panel.id)
+      apply(this.#runtime, { kind: "set-panel-state", panel: panel.id, mouseInput: false, keyboardInput: false })
+    }
+    this.#captureBaseBounds()
+    this.#roundPanels = Object.freeze({ match, timer, value, waiting })
+    return this.#roundPanels
+  }
+
+  #publishRound(round: RoundSnapshot, team: Tf2Team): void {
+    if (!round.waitingForPlayers && !round.timer && !this.#roundPanels) return
+    const panels = this.#initializeRoundPanels()
+    const timerVisible = round.waitingForPlayers || (round.timer !== null && round.timer.showInHud && !round.timer.disabled)
+    const setVisible = (panel: VguiPanelId, visible: boolean, name: string): void => {
+      this.#objectiveValue(`round-visible:${name}`, String(visible), { kind: "set-panel-state", panel, visible })
+    }
+    setVisible(panels.match, timerVisible, "match")
+    setVisible(panels.timer, timerVisible, "timer")
+    setVisible(panels.waiting, round.waitingForPlayers, "waiting")
+    const seconds = Math.max(0, Math.floor(round.waitingForPlayers ? round.waitingRemaining ?? 0 : round.timer?.remaining ?? 0))
+    const text = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`
+    this.#objectiveValue("round-time", text, { kind: "mutate-control", panel: panels.value, mutation: { text } })
+    const background = find(this.#runtime, "TimePanelBG", panels.timer)
+    if (background !== null) {
+      const image = `../hud/objectives_timepanel_${team === 2 ? "red" : "blue"}_bg`
+      this.#objectiveValue("round-team-background", image, { kind: "mutate-control", panel: background, mutation: { image } })
+    }
+    for (const [name, visible] of [
+      ["WaitingForPlayersLabel", round.waitingForPlayers],
+      ["WaitingForPlayersBG", round.waitingForPlayers],
+      ["SetupLabel", round.inSetup && !round.waitingForPlayers],
+      ["SetupBG", round.inSetup && !round.waitingForPlayers],
+      ["OvertimeLabel", round.inOvertime],
+      ["OvertimeBG", round.inOvertime],
+      ["SuddenDeathLabel", round.state === 7],
+      ["SuddenDeathBG", round.state === 7],
+      ["ServerTimeLimitLabel", false],
+      ["ServerTimeLimitLabelBG", false],
+    ] as const) {
+      const panel = find(this.#runtime, name, panels.timer)
+      if (panel !== null) setVisible(panel, visible, `timer-${name}`)
+    }
+    const aboutToEnd = round.waitingRemaining !== null && round.waitingRemaining <= 10
+    for (const [name, visible] of [
+      ["WaitingForPlayersLabel", !aboutToEnd],
+      ["WaitingForPlayersEndingLabel", aboutToEnd],
+    ] as const) {
+      const panel = find(this.#runtime, name, panels.waiting)
+      if (panel !== null) setVisible(panel, visible, `waiting-${name}`)
+    }
+  }
+
+  #publishWinPanel(round: RoundSnapshot | undefined, objectives: CaptureObjectives | undefined): void {
+    const winner = round?.winningTeam ?? objectives?.winner ?? null
     if (winner === null) {
       if (this.#winPanel !== undefined) {
         this.#objectiveValue("ctf-win:visible", "false", { kind: "set-panel-state", panel: this.#winPanel, visible: false })
@@ -359,9 +440,13 @@ class Integration implements Tf2HudIntegration {
     const winning = localized("#Winpanel_TeamWins")
       .replace("%s1", team)
       .replace("%s2", localized("#Winpanel_Team1"))
-    const reason = localized(objectives.captureLimit === 1 ? "#Winreason_FlagCaptureLimit_One" : "#Winreason_FlagCaptureLimit")
+    const reasonToken = round?.winReason === 4 ? "#Winreason_DefendedUntilTimeLimit"
+      : round?.winReason === 2 ? "#Winreason_OpponentsDead"
+        : round?.winReason === 5 ? "#Winreason_Stalemate"
+          : objectives?.captureLimit === 1 ? "#Winreason_FlagCaptureLimit_One" : "#Winreason_FlagCaptureLimit"
+    const reason = localized(reasonToken)
       .replace("%s1", team)
-      .replace("%s2", String(objectives.captureLimit))
+      .replace("%s2", String(objectives?.captureLimit ?? 0))
     for (const [name, value] of [
       ["WinningTeamLabel", winning],
       ["AdvancingTeamLabel", ""],
@@ -370,8 +455,8 @@ class Integration implements Tf2HudIntegration {
       ["TopPlayersLabel", localized(winner === 2 ? "#Winpanel_RedMVPs" : "#Winpanel_BlueMVPs")],
       ["redteamname", "RED"],
       ["blueteamname", "BLU"],
-      ["redteamscore", objectives.redScore + Number(winner === 2)],
-      ["blueteamscore", objectives.blueScore + Number(winner === 3)],
+      ["redteamscore", round?.redScore ?? objectives?.redScore ?? 0],
+      ["blueteamscore", round?.blueScore ?? objectives?.blueScore ?? 0],
     ] as const) {
       this.#objectiveValue(`ctf-win:${name}`, String(value), { kind: "set-dialog-variable", panel, name, value })
     }
@@ -446,7 +531,6 @@ class Integration implements Tf2HudIntegration {
       visible(panels.notification, true, "notification")
     }
     if (tick >= this.#notificationDeadline) visible(panels.notification, false, "notification")
-    this.#publishWinPanel(objectives)
   }
 
   #diagnostic(code: Tf2HudIntegrationDiagnostic["code"], subject: string): void {
@@ -535,6 +619,8 @@ class Integration implements Tf2HudIntegration {
     } else {
       this.#scope.hide()
     }
+    const round = publication.snapshot.round
+    if (round) this.#publishRound(round, publication.snapshot.team)
     const objectives = publication.snapshot.objectives
     if (objectives) {
       this.#publishObjectives(objectives, context.playerIdentity, publication.snapshot.team, publication.snapshot.tick)
@@ -542,6 +628,7 @@ class Integration implements Tf2HudIntegration {
       apply(this.#runtime, { kind: "set-panel-state", panel: this.#objective.root, visible: false })
       apply(this.#runtime, { kind: "set-panel-state", panel: this.#objective.notification, visible: false })
     }
+    this.#publishWinPanel(round, objectives ?? undefined)
     for (const animation of binding.animations) {
       const parent = animation.target === "viewport" ? 1 : find(this.#runtime, animation.target)
       if (parent === null) {
@@ -670,6 +757,10 @@ class Integration implements Tf2HudIntegration {
       }
       if (this.#winPanel !== undefined) {
         apply(this.#runtime, { kind: "set-panel-state", panel: this.#winPanel, visible: false })
+      }
+      if (this.#roundPanels) {
+        apply(this.#runtime, { kind: "set-panel-state", panel: this.#roundPanels.match, visible: false })
+        apply(this.#runtime, { kind: "set-panel-state", panel: this.#roundPanels.waiting, visible: false })
       }
       this.#notificationDeadline = 0n
       this.#objectiveCarrying = false

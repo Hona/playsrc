@@ -199,9 +199,12 @@ const CUSTOM_BASES: Readonly<Record<string, VguiControlRegistration["baseControl
   CTFFooter: "EditablePanel",
   CTFImagePanel: "ImagePanel",
   CTFLogoPanel: "Panel",
+  CTFParticlePanel: "Panel",
   CTFPlayerModelPanel: "Panel",
+  CTFProgressBar: "ProgressBar",
   PanelListPanel: "ScrollableEditablePanel",
   CTFTeamButton: "Button",
+  CTFTeamStatus: "EditablePanel",
   URLButton: "Button",
 })
 

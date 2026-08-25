@@ -389,6 +389,55 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     hud.destroy()
   })
 
+  test("renders authored waiting, setup, overtime, and defender-victory round panels", () => {
+    const root = createRoot(new FakeDocument())
+    const source = resources()
+    const localized = Object.freeze({
+      ...source,
+      localization: Object.freeze({
+        ...source.localization,
+        tokens: Object.freeze(tf2UiResources.localization.tokens.flatMap((token) => {
+          const definition = token.definitions[0]
+          return definition ? [Object.freeze({ name: token.name.replace(/^#/u, ""), value: definition.value })] : []
+        })),
+      }),
+    })
+    const hud = initializeTf2HudIntegration({
+      root: root as unknown as HTMLElement, resources: localized,
+      viewport: { width: 1280, height: 720, devicePixelRatio: 1 }, reducedMotion: true,
+      clock: { nowSeconds: () => 0 }, random: { nextUnit: () => 0.5 }, onCommand() {},
+    })
+    const timer = Object.freeze({ identity: 9, remaining: 70, initialSeconds: 330, setupSeconds: 70, maximumSeconds: 600, paused: false, showInHud: true, disabled: false })
+    const publish = (tick: bigint, overrides: Record<string, unknown> = {}) => {
+      const base = compact(tick, 3, 2, 1, 4, 20)
+      const round = Object.freeze({ state: 4 as const, waitingForPlayers: false, waitingRemaining: null, inSetup: true, inOvertime: false, winningTeam: null, winReason: 0, redScore: 0, blueScore: 0, roundsPlayed: 0, timer, events: Object.freeze([]), ...overrides })
+      const snapshot = Object.freeze({ ...base.snapshot, round })
+      return hud.publish(Object.freeze({ snapshot, eventBatches: Object.freeze([Object.freeze({ snapshot })]) }) as any, context)
+    }
+    publish(1n, { waitingForPlayers: true, waitingRemaining: 29 })
+    let panels = hud.snapshot().vgui.panels
+    expect(visible(panels, ["HudMatchStatus", "ObjectiveStatusTimePanel", "WaitingForPlayersPanel"])).toEqual(["HudMatchStatus", "WaitingForPlayersPanel", "ObjectiveStatusTimePanel"])
+    expect(panels.find((panel) => panel.name === "TimePanelValue")?.text).toBe("0:29")
+    expect(visible(panels, ["SetupLabel", "SetupBG"])).toEqual([])
+    publish(2n, { waitingForPlayers: true, waitingRemaining: 9 })
+    expect(visible(hud.snapshot().vgui.panels, ["WaitingForPlayersEndingLabel"])).toEqual(["WaitingForPlayersEndingLabel"])
+    publish(3n)
+    panels = hud.snapshot().vgui.panels
+    expect(visible(panels, ["WaitingForPlayersPanel"])).toEqual([])
+    expect(visible(panels, ["SetupLabel", "SetupBG"])).toEqual(["SetupLabel", "SetupBG"])
+    expect(panels.find((panel) => panel.name === "TimePanelValue")?.text).toBe("1:10")
+    expect(panels.find((panel) => panel.name === "TimePanelBG")?.state.image).toBe("../hud/objectives_timepanel_red_bg")
+    publish(4n, { inSetup: false, inOvertime: true, timer: { ...timer, remaining: 0 } })
+    expect(visible(hud.snapshot().vgui.panels, ["OvertimeLabel", "OvertimeBG"])).toEqual(["OvertimeLabel", "OvertimeBG"])
+    publish(5n, { state: 5, inSetup: false, winningTeam: 2, winReason: 4, redScore: 1 })
+    panels = hud.snapshot().vgui.panels
+    expect(visible(panels, ["WinPanel"])).toEqual(["WinPanel"])
+    expect(panels.find((panel) => panel.name === "WinReasonLabel")?.text).toContain("defended")
+    hud.reset("map-replaced")
+    expect(visible(hud.snapshot().vgui.panels, ["HudMatchStatus", "WaitingForPlayersPanel", "WinPanel"])).toEqual([])
+    hud.destroy()
+  })
+
   test("paints an authored, centered crosshair instead of publishing eligibility alone", () => {
     const root = createRoot(new FakeDocument())
     const hud = initializeTf2HudIntegration({

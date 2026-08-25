@@ -400,6 +400,39 @@ export type CaptureObjectives = Readonly<{
   events: readonly CaptureEvent[]
 }>
 
+export type RoundState = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10
+export type RoundEvent = Readonly<{
+  kind: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12
+  detail: number
+  team: 0 | Tf2Team
+  flags: number
+  identity: number
+}>
+export type RoundTimer = Readonly<{
+  identity: number
+  remaining: number
+  initialSeconds: number
+  setupSeconds: number
+  maximumSeconds: number
+  paused: boolean
+  showInHud: boolean
+  disabled: boolean
+}>
+export type RoundSnapshot = Readonly<{
+  state: RoundState
+  waitingForPlayers: boolean
+  waitingRemaining: number | null
+  inSetup: boolean
+  inOvertime: boolean
+  winningTeam: Tf2Team | null
+  winReason: number
+  redScore: number
+  blueScore: number
+  roundsPlayed: number
+  timer: RoundTimer | null
+  events: readonly RoundEvent[]
+}>
+
 export type JumpCheckpoint = Readonly<{ zoneIdentity: number; index: number; tick: bigint }>
 export type JumpRun = Readonly<{
   instance: number
@@ -507,6 +540,7 @@ export type Snapshot = Readonly<{
   entityTransforms: readonly EntityTransform[]
   entityEvents: readonly EntityEvent[]
   objectives: CaptureObjectives | null
+  round: RoundSnapshot
   jump: JumpSnapshot | null
   events: readonly GameplayEvent[]
   activities: readonly ActivityEvent[]
@@ -1074,6 +1108,42 @@ function decodeObjectives(buffer: ArrayBuffer, offset: number, length: number): 
       captureLimit: view.getUint16(20, true), winner: winner === 0 ? null : winner,
       flags: Object.freeze(flags), zones: Object.freeze(zones), events: Object.freeze(events),
     }),
+  })
+}
+
+function decodeRound(buffer: ArrayBuffer, offset: number, length: number): RoundSnapshot {
+  if (length < 48) throw new Tf2CodecError("Round rules section is truncated")
+  const data = new Uint8Array(buffer, offset, length), view = new DataView(buffer, offset, length)
+  const state = data[8], flags = data[9], winning = data[10], reason = data[11]
+  const waiting = view.getFloat32(20, true), identity = view.getUint32(24, true), remaining = view.getFloat32(28, true)
+  const count = view.getUint32(44, true)
+  if (new TextDecoder().decode(data.subarray(0, 4)) !== "PGRL" || view.getUint32(4, true) !== 1
+    || state === undefined || state > 10 || flags === undefined || flags > 0x7f
+    || (winning !== 0 && winning !== 2 && winning !== 3) || reason === undefined
+    || !finite([waiting, remaining]) || waiting < -1 || remaining < -1 || count > 4096
+    || length !== 48 + count * 8 || ((flags & 1) !== 0) !== (waiting !== -1)
+    || ((flags & 8) !== 0) !== (identity !== 0xffff_ffff) || ((flags & 8) !== 0) !== (remaining !== -1)) {
+    throw new Tf2CodecError("Round rules section is invalid")
+  }
+  const events: RoundEvent[] = []
+  for (let index = 0; index < count; index += 1) {
+    const at = 48 + index * 8, kind = data[at], detail = data[at + 1], team = data[at + 2], bits = data[at + 3]
+    if (kind === undefined || kind < 1 || kind > 12 || detail === undefined || bits === undefined
+      || (team !== 0 && team !== 2 && team !== 3)) throw new Tf2CodecError("Round rules event is invalid")
+    events.push(Object.freeze({ kind: kind as RoundEvent["kind"], detail, team, flags: bits, identity: view.getUint32(at + 4, true) }))
+  }
+  return Object.freeze({
+    state: state as RoundState, waitingForPlayers: (flags & 1) !== 0,
+    waitingRemaining: waiting === -1 ? null : waiting, inSetup: (flags & 2) !== 0,
+    inOvertime: (flags & 4) !== 0, winningTeam: winning === 0 ? null : winning,
+    winReason: reason, redScore: view.getUint16(12, true), blueScore: view.getUint16(14, true),
+    roundsPlayed: view.getUint32(16, true),
+    timer: (flags & 8) === 0 ? null : Object.freeze({
+      identity, remaining, initialSeconds: view.getUint32(32, true), setupSeconds: view.getUint32(36, true),
+      maximumSeconds: view.getUint32(40, true), paused: (flags & 16) !== 0,
+      showInHud: (flags & 32) !== 0, disabled: (flags & 64) !== 0,
+    }),
+    events: Object.freeze(events),
   })
 }
 
@@ -1784,7 +1854,9 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
   const objectiveResult = decodeObjectives(buffer, base + at, bytes.byteLength - at)
   at += objectiveResult.length
   const objectives = objectiveResult.objectives
-  if(at!==bytes.byteLength||entityPresentation.collisionRevision!==collisionSnapshot.identity)throw new Tf2CodecError("Entity presentation revision join is invalid")
+  const round = decodeRound(buffer, base + at, bytes.byteLength - at)
+  at = bytes.byteLength
+  if(entityPresentation.collisionRevision!==collisionSnapshot.identity)throw new Tf2CodecError("Entity presentation revision join is invalid")
 
   const tick = view.getBigUint64(8, true)
   const frozenProjectiles = Object.freeze(projectiles)
@@ -1819,6 +1891,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     entityTransforms: Object.freeze(entityTransforms),
     entityEvents: Object.freeze(entityEvents),
     objectives,
+    round,
     jump,
     events: Object.freeze(events),
     activities: Object.freeze(activities),

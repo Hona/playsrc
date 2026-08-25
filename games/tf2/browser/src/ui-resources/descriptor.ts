@@ -191,7 +191,7 @@ function controlOwner(name: string): Tf2UiOwner | null {
   if (VGUI_CONTROLS.has(name)) return "vgui"
   if (SETTINGS_CONTROLS.has(name)) return "settings"
   if (GAMEUI_CONTROLS.has(name)) return "gameui"
-  if (/^(?:C(?:AutoFittingLabel|AvatarImagePanel|CompetitiveAccessInfoPanel|CurrencyStatusPanel|CyclingAdContainerPanel|DashboardPartyMember|EmbeddedItemModelPanel|EventPlayListEntry|ExButton|ExImageButton|ExLabel|ExplanationPopup|IconPanel|ImagePanel|ItemModelPanel|MainMenuNotificationsControl|ModelPanel|PlayListEntry|PvPRankPanel|SteamFriendsListPanel|TeamMenu|TFArrowPanel|TFBadgePanel|TFClassImage|TFClassTipsItemPanel|TFClassTipsPanel|TFFlagStatus|TFFooter|TFImagePanel|TFLogoPanel|TFPlayerModelPanel|TFTeamButton)|PanelListPanel)$/u.test(name)) return "tf2"
+  if (/^(?:C(?:AutoFittingLabel|AvatarImagePanel|CompetitiveAccessInfoPanel|CurrencyStatusPanel|CyclingAdContainerPanel|DashboardPartyMember|EmbeddedItemModelPanel|EventPlayListEntry|ExButton|ExImageButton|ExLabel|ExplanationPopup|IconPanel|ImagePanel|ItemModelPanel|MainMenuNotificationsControl|ModelPanel|PlayListEntry|PvPRankPanel|SteamFriendsListPanel|TeamMenu|TFArrowPanel|TFBadgePanel|TFClassImage|TFClassTipsItemPanel|TFClassTipsPanel|TFFlagStatus|TFFooter|TFImagePanel|TFLogoPanel|TFParticlePanel|TFPlayerModelPanel|TFProgressBar|TFTeamButton|TFTeamStatus)|PanelListPanel)$/u.test(name)) return "tf2"
   return null
 }
 

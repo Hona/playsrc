@@ -11,7 +11,7 @@ import type {
   Tf2HudWeapon,
   Tf2ReloadPhase,
 } from "./contract"
-import type { CaptureObjectives, Tf2Class, Tf2Team, Tf2Weapon } from "../codec"
+import type { CaptureObjectives, RoundSnapshot, Tf2Class, Tf2Team, Tf2Weapon } from "../codec"
 import { tf2ClassPresentation } from "../class"
 import { Tf2HudBindingError } from "./contract"
 import { tf2HudAvailable, tf2HudUnavailable } from "./bindings"
@@ -56,6 +56,7 @@ type SessionSnapshot = Readonly<{
   maximumHealth: number
   lifecycle: 1 | 2 | 3 | 4
   objectives?: CaptureObjectives | null
+  round?: RoundSnapshot
   conditions: readonly [number, number, number, number, number]
   loadout: readonly CompactWeaponState[]
   events: readonly CompactGameplayEvent[]

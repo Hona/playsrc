@@ -3692,6 +3692,7 @@ fn gameplay_error_code(error: &playsrc_tf2::Error) -> u32 {
         playsrc_tf2::Error::Bot(_) => 11,
         playsrc_tf2::Error::TeamSelection(_) => 12,
         playsrc_tf2::Error::Objectives(_) => 13,
+        playsrc_tf2::Error::Round(_) => 14,
     }
 }
 
@@ -4452,7 +4453,73 @@ fn encode_snapshot(
         )?;
     }
     encode_objectives(&mut out, snapshot.objectives.as_ref(), MAX)?;
+    encode_round(&mut out, &snapshot.round, MAX)?;
     Some(out)
+}
+
+fn encode_round(
+    out: &mut Vec<u8>,
+    round: &playsrc_tf2::round::Snapshot,
+    maximum: usize,
+) -> Option<()> {
+    use playsrc_tf2::round::Event;
+    extend(out, b"PGRL", maximum)?;
+    u32_field(out, 1, maximum)?;
+    let timer = round.timer;
+    let flags = u8::from(round.waiting_for_players)
+        | (u8::from(round.in_setup) << 1)
+        | (u8::from(round.in_overtime) << 2)
+        | (u8::from(timer.is_some()) << 3)
+        | (u8::from(timer.is_some_and(|value| value.paused)) << 4)
+        | (u8::from(timer.is_some_and(|value| value.configuration.show_in_hud)) << 5)
+        | (u8::from(timer.is_some_and(|value| value.disabled)) << 6);
+    extend(
+        out,
+        &[
+            round.state as u8,
+            flags,
+            round.winning_team.map_or(0, team_code),
+            round.win_reason,
+        ],
+        maximum,
+    )?;
+    u16_field(out, round.red_score, maximum)?;
+    u16_field(out, round.blue_score, maximum)?;
+    u32_field(out, round.rounds_played, maximum)?;
+    f32_field(out, round.waiting_remaining.unwrap_or(-1.0), maximum)?;
+    u32_field(
+        out,
+        timer.map_or(u32::MAX, |value| value.configuration.identity),
+        maximum,
+    )?;
+    f32_field(out, timer.map_or(-1.0, |value| value.remaining), maximum)?;
+    for value in [
+        timer.map_or(0, |value| value.configuration.initial_seconds),
+        timer.map_or(0, |value| value.configuration.setup_seconds),
+        timer.map_or(0, |value| value.configuration.maximum_seconds),
+    ] {
+        u32_field(out, value, maximum)?;
+    }
+    u32_field(out, u32::try_from(round.events.len()).ok()?, maximum)?;
+    for event in &round.events {
+        let (kind, detail, team, flags, identity) = match *event {
+            Event::StateChanged { previous, current } => (1, current as u8, 0, previous as u8, 0),
+            Event::WaitingBegan => (2, 0, 0, 0, 0),
+            Event::WaitingAboutToEnd => (3, 0, 0, 0, 0),
+            Event::WaitingEnded => (4, 0, 0, 0, 0),
+            Event::RoundStarted { full_reset } => (5, 0, 0, u8::from(full_reset), 0),
+            Event::RoundActive => (6, 0, 0, 0, 0),
+            Event::SetupFinished { timer } => (7, 0, 0, 0, timer),
+            Event::TimerFinished { timer } => (8, 0, 0, 0, timer),
+            Event::OvertimeChanged { active } => (9, 0, 0, u8::from(active), 0),
+            Event::RoundWon { team, reason } => (10, reason, team_code(team), 0, 0),
+            Event::RoundRespawn => (11, 0, 0, 0, 0),
+            Event::ScoresReset => (12, 0, 0, 0, 0),
+        };
+        extend(out, &[kind, detail, team, flags], maximum)?;
+        u32_field(out, identity, maximum)?;
+    }
+    Some(())
 }
 
 fn encode_objectives(
@@ -12053,6 +12120,9 @@ mod tests {
             entity_transforms: Vec::new(),
             entity_events: Vec::new(),
             objectives: None,
+            round: playsrc_tf2::round::Rules::active(playsrc_tf2::round::Configuration::default())
+                .unwrap()
+                .snapshot(Vec::new()),
             jump: None,
             events: vec![playsrc_tf2::Event::Teleported {
                 trigger: 20,
@@ -12172,8 +12242,9 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(encoded.len(), 948);
+        assert_eq!(encoded.len(), 996);
         assert_eq!(&encoded[936..944], b"PCTF\x01\0\0\0");
+        assert_eq!(&encoded[948..956], b"PGRL\x01\0\0\0");
         assert_eq!(
             u32::from_le_bytes(encoded[160..164].try_into().unwrap()),
             playsrc_tf2::FL_CLIENT | playsrc_tf2::FL_INWATER

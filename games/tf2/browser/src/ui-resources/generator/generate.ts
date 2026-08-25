@@ -7,7 +7,7 @@ const root = fileURLToPath(new URL("../../../../../..", import.meta.url))
 const manifest = path.join(root, "games", "tf2", "browser", "src", "ui-resources", "generator", "Cargo.toml")
 const classImages = [...new Set([
   ...Object.values(TF2_CLASS_IMAGES).flatMap((images) => Object.values(images)),
-  ...TF2_HUD_DYNAMIC_IMAGES.filter((image) => image.startsWith("../hud/objectives_flagpanel_")),
+  ...TF2_HUD_DYNAMIC_IMAGES.filter((image) => image.startsWith("../hud/objectives_flagpanel_") || image.startsWith("../hud/objectives_timepanel_")),
 ])]
 const child = Bun.spawn(["cargo", `+${toolchains.rust.toolchain}`, "run", "--quiet", "--manifest-path", manifest, "--", JSON.stringify(classImages)], {
   cwd: root,

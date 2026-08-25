@@ -413,6 +413,28 @@ impl World {
         self.scores
     }
 
+    pub fn set_round_scores(&mut self, red: u16, blue: u16) {
+        if self.configuration.captures_per_round > 0 {
+            self.scores.red_score = red;
+            self.scores.blue_score = blue;
+        }
+    }
+
+    pub fn reset_round(&mut self, red_score: u16, blue_score: u16) {
+        self.scores.red_captures = 0;
+        self.scores.blue_captures = 0;
+        self.scores.red_score = red_score;
+        self.scores.blue_score = blue_score;
+        self.scores.winner = None;
+        for flag in self.flags.values_mut() {
+            let mut events = Vec::new();
+            reset(flag, &mut events);
+            flag.captured = false;
+            flag.allow_owner_pickup = true;
+            flag.owner_pickup_deadline = None;
+        }
+    }
+
     pub fn carrier_flag(&self, actor: u32) -> Option<&Flag> {
         self.flags.values().find(|flag| flag.carrier == Some(actor))
     }

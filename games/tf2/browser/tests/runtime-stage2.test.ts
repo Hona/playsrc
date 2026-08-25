@@ -10,7 +10,7 @@ import {
 import type { WorkerRequest, WorkerResponse } from "../src/protocol"
 
 function snapshot(): ArrayBuffer {
-  const bytes = new ArrayBuffer(1045)
+  const bytes = new ArrayBuffer(1093)
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x53, 0x53, 0x4e])
@@ -116,6 +116,13 @@ function snapshot(): ArrayBuffer {
   at += 4
   data.set(new TextEncoder().encode("PCTF"), at)
   view.setUint32(at + 4, 1, true)
+  at += 12
+  data.set(new TextEncoder().encode("PGRL"), at)
+  view.setUint32(at + 4, 1, true)
+  data[at + 8] = 4
+  view.setFloat32(at + 20, -1, true)
+  view.setUint32(at + 24, 0xffff_ffff, true)
+  view.setFloat32(at + 28, -1, true)
   return bytes
 }
 function simulationOutput(){const state=new Uint8Array(snapshot()),output=new ArrayBuffer(68+state.length*2),data=new Uint8Array(output),view=new DataView(output);data.set(new TextEncoder().encode("PSIM"));view.setUint32(4,1,true);view.setUint32(8,1,true);view.setBigUint64(16,1n,true);view.setBigUint64(24,1n,true);view.setBigUint64(32,1n,true);view.setUint32(40,1,true);view.setUint32(48,state.length,true);view.setUint32(52,1,true);data.set(state,56);const at=56+state.length;view.setBigUint64(at,1n,true);view.setUint32(at+8,state.length,true);data.set(state,at+12);return output}
@@ -363,7 +370,7 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
 
     const prior = new Uint8Array(snapshot())
     const bytes = new Uint8Array(prior.byteLength + 128)
-    const objectiveOffset = prior.byteLength - 12
+    const objectiveOffset = prior.byteLength - 60
     bytes.set(prior.subarray(0, objectiveOffset))
     bytes.set(prior.subarray(objectiveOffset), objectiveOffset + 128)
     const view = new DataView(bytes.buffer)
