@@ -588,7 +588,7 @@ impl World {
             let credit = (self.now - flag.last_pickup_time)
                 * self.configuration.return_time_credit_factor
                 + flag.last_reset_duration;
-            maximum.min(credit.round().max(0.0))
+            maximum.min(credit.round_ties_even().max(0.0))
         } else {
             maximum
         };
@@ -923,8 +923,20 @@ fn touches_flag(actor: &Actor, position: [f32; 3]) -> bool {
     (0..3).all(|axis| {
         let player_minimum = actor.position[axis] + actor.hull.mins[axis];
         let player_maximum = actor.position[axis] + actor.hull.maxs[axis];
-        player_minimum <= position[axis] + FLAG_TRIGGER_EXPANSION
-            && player_maximum >= position[axis] - FLAG_TRIGGER_EXPANSION
+        let flag_minimum = position[axis] + FLAG_COLLISION_HULL.mins[axis]
+            - if axis < 2 {
+                FLAG_TRIGGER_EXPANSION
+            } else {
+                0.0
+            };
+        let flag_maximum = position[axis]
+            + FLAG_COLLISION_HULL.maxs[axis]
+            + if axis < 2 {
+                FLAG_TRIGGER_EXPANSION
+            } else {
+                FLAG_TRIGGER_EXPANSION * 0.5
+            };
+        player_minimum <= flag_maximum && player_maximum >= flag_minimum
     })
 }
 
@@ -1444,6 +1456,27 @@ mod tests {
         let flag = world.flag(0).unwrap();
         assert_eq!(flag.return_deadline, Some(81.1));
         assert_eq!(flag.maximum_return_seconds, 60.0);
+    }
+
+    #[test]
+    fn trigger_bounds_expand_xy_but_never_below_the_authored_collision_hull() {
+        let position = [0.0, 0.0, 0.0];
+        let mut player = actor(7, PlayerTeam::Blue, [67.5, 0.0, 0.0]);
+        assert!(touches_flag(&player, position));
+        player.position[0] = 67.501;
+        assert!(!touches_flag(&player, position));
+        player.position = [0.0, 70.5, 0.0];
+        assert!(touches_flag(&player, position));
+        player.position[1] = 70.501;
+        assert!(!touches_flag(&player, position));
+        player.position = [0.0, 0.0, -88.5];
+        assert!(touches_flag(&player, position));
+        player.position[2] = -88.501;
+        assert!(!touches_flag(&player, position));
+        player.position[2] = 18.5;
+        assert!(touches_flag(&player, position));
+        player.position[2] = 18.501;
+        assert!(!touches_flag(&player, position));
     }
 
     #[test]
