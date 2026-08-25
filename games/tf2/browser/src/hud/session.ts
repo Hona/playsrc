@@ -54,6 +54,7 @@ type SessionSnapshot = Readonly<{
   weapon: Tf2Weapon | null
   health: number
   maximumHealth: number
+  spy?: Readonly<{ cloakMeter: number; invisibility: number; disguise: Readonly<{ class: Tf2Class; team: Tf2Team }> | null; desiredDisguise: Readonly<{ class: Tf2Class; team: Tf2Team }> | null }> | null
   lifecycle: 1 | 2 | 3 | 4
   objectives?: CaptureObjectives | null
   round?: RoundSnapshot
@@ -98,39 +99,46 @@ function reload(value: CompactWeaponState["reload"]): Tf2ReloadPhase {
 function weaponName(identity: CompactWeaponState["weapon"]): string {
 
   return identity === 40 ? "Shotgun" : identity === 41 ? "Pistol" : identity === 42 ? "Wrench"
+    : identity === 50 ? "Revolver" : identity === 51 ? "Knife" : identity === 52 ? "Sapper" : identity === 53 ? "Disguise Kit" : identity === 54 ? "Invisibility Watch"
     : (["", "Rocket Launcher", "Original", "Stickybomb Launcher", "Scattergun", "Pistol", "Bat", "Shotgun", "Shovel", "Minigun", "Shotgun", "Fists", "Sniper Rifle", "SMG", "Kukri", "Flamethrower", "Fire Axe", "Bottle", "Grenade Launcher"] as const)[identity]
 }
 
 function weapon(value: CompactWeaponState, playerClass: Tf2Class): Tf2HudWeapon {
   const totalAmmo = value.weapon === 9 || value.weapon === 12 || value.weapon === 15
-  const melee = value.weapon === 6 || value.weapon === 8 || value.weapon === 11 || value.weapon === 14 || value.weapon === 16 || value.weapon === 17 || value.weapon === 42
+  const melee = value.weapon === 6 || value.weapon === 8 || value.weapon === 11 || value.weapon === 14 || value.weapon === 16 || value.weapon === 42 || value.weapon === 17 || value.weapon === 51
+  const noAmmo = melee || value.weapon === 52 || value.weapon === 53 || value.weapon === 54
   const definitions = ([undefined, 18, undefined, 20, 13, 23, 0, 10, 6, 15, 11, 5, 14, 16, 3, 21, 2, 1, 19] as const)
   const definition = value.weapon === 7 && playerClass === 7 ? 12 : value.weapon === 15 ? 21 : value.weapon === 16 ? 2
-    : value.weapon === 40 ? 9 : value.weapon === 41 ? 22 : value.weapon === 42 ? 7 : definitions[value.weapon]
+    : value.weapon === 40 ? 9 : value.weapon === 41 ? 22 : value.weapon === 42 ? 7
+      : value.weapon === 50 ? 24 : value.weapon === 51 ? 4 : value.weapon === 52 ? 735 : value.weapon === 53 ? 27 : value.weapon === 54 ? 30
+        : definitions[value.weapon]
 
   return Object.freeze({
     identity: value.weapon,
     itemDefinition: definition === undefined ? tf2HudUnavailable<number>("not-produced") : tf2HudAvailable(definition),
     displayName: weaponName(value.weapon),
 
-    slot: value.weapon === 3 || value.weapon === 5 || value.weapon === 7 || value.weapon === 10 || value.weapon === 13 || value.weapon === 41 ? 1 : melee ? 2 : 0,
+    slot: value.weapon === 53 ? 3 : value.weapon === 54 ? 4 : value.weapon === 52 || value.weapon === 41 || value.weapon === 3 || value.weapon === 5 || value.weapon === 7 || value.weapon === 10 || value.weapon === 13 ? 1 : melee ? 2 : 0,
     position: value.weapon === 2 ? 1 : 0,
-    selectable: true,
-    ammoDisplay: melee ? "hidden" as const : totalAmmo ? "total" as const : "clip-and-reserve" as const,
-    clip: totalAmmo || melee ? tf2HudUnavailable<number>("not-applicable") : tf2HudAvailable(value.clip),
-    reserve: melee ? tf2HudUnavailable<number>("not-applicable") : tf2HudAvailable(value.reserve),
-    maximumClip: totalAmmo || melee ? tf2HudUnavailable<number>("not-applicable") : tf2HudAvailable(value.maximumClip),
+    selectable: value.weapon !== 54,
+    ammoDisplay: noAmmo ? "hidden" as const : totalAmmo ? "total" as const : "clip-and-reserve" as const,
+    clip: totalAmmo || noAmmo ? tf2HudUnavailable<number>("not-applicable") : tf2HudAvailable(value.clip),
+    reserve: noAmmo ? tf2HudUnavailable<number>("not-applicable") : tf2HudAvailable(value.reserve),
+    maximumClip: totalAmmo || noAmmo ? tf2HudUnavailable<number>("not-applicable") : tf2HudAvailable(value.maximumClip),
 
-    maximumReserve: melee ? tf2HudUnavailable<number>("not-applicable") : tf2HudAvailable(value.maximumReserve),
+    maximumReserve: noAmmo ? tf2HudUnavailable<number>("not-applicable") : tf2HudAvailable(value.maximumReserve),
     reload: reload(value.reload),
     drawsCrosshair: true,
   })
 }
 
 function classModel(snapshot: SessionSnapshot) {
+  const disguise = snapshot.spy?.disguise
+  const identity = disguise?.class ?? snapshot.class
+  const team = disguise?.team ?? snapshot.team
   return Object.freeze({
-    identity: tf2ClassPresentation(snapshot.class).model,
-    skin: snapshot.team === 2 ? 0 : 1,
+    identity: tf2ClassPresentation(identity).model,
+    skin: team === 2 ? 0 : 1,
   })
 }
 
@@ -153,6 +161,12 @@ function canonicalSnapshot(snapshot: SessionSnapshot, context: SessionHudContext
       classModel: tf2HudAvailable(classModel(snapshot)),
       health: tf2HudAvailable(health(snapshot)),
       conditions: words,
+      ...(snapshot.spy ? { spy: Object.freeze({
+        cloakMeter: snapshot.spy.cloakMeter,
+        invisibility: snapshot.spy.invisibility,
+        disguise: snapshot.spy.disguise,
+        desiredDisguise: snapshot.spy.desiredDisguise,
+      }) } : {}),
       weapons: Object.freeze(snapshot.loadout.map((item) => weapon(item, snapshot.class))),
       activeWeapon: snapshot.weapon === null
         ? tf2HudUnavailable<number>("not-applicable")

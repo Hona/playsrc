@@ -837,6 +837,8 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
   }> = []
   let sniperScopeEvidence: null | { weapon: number; charge: number; unscopedPixelsSha256: string; scopedPixelsSha256: string; corner: readonly number[]; sourceMaterials: readonly string[] } = null
 
+  const spyWeaponEvidence: Array<{ weapon: number; name: string; activity: string; pixelsSha256: string }> = []
+  let spyLifecycleEvidence: Record<string, unknown> | undefined
   const activeFrameWindows: Array<{ started: number; finished: number }> = []
   const workloads: Array<{
     name: string
@@ -1005,7 +1007,7 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
           })
           const [health, , weapon] = observation.hud.split(":")
 
-          const armed = identity === 1 || identity === 2 || identity === 3 || identity === 4 || identity === 6 || identity === 9
+          const armed = identity === 1 || identity === 2 || identity === 3 || identity === 4 || identity === 6 || identity === 9 || identity === 8
 
           const imageName = name === "demoman" ? "demo" : name === "engineer" ? "engi" : name
           expect(observation.phase).toBe("Ready")
@@ -1361,7 +1363,60 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
       const sourceMaterials = await scope.locator("[data-scope-quadrant]").evaluateAll(nodes => nodes.map(node => (node as HTMLElement).dataset.sourceMaterial!))
       expect(sourceMaterials).toEqual(["materials/hud/scope_sniper_ul.vmt", "materials/hud/scope_sniper_ur.vmt", "materials/hud/scope_sniper_lr.vmt", "materials/hud/scope_sniper_ll.vmt"])
       sniperScopeEvidence = { weapon: 12, charge: Number(await charge.getAttribute("data-charge")), unscopedPixelsSha256: createHash("sha256").update(unscoped).digest("hex"), scopedPixelsSha256: createHash("sha256").update(scoped).digest("hex"), corner, sourceMaterials }
+    }
 
+    if (scenarioMode === "spy") {
+      const root = page.locator("main")
+      const entry = page.locator("[aria-label='Console command']")
+      const execute = async (text: string) => {
+        if (await root.getAttribute("data-console-visible") !== "true") await page.keyboard.press("Backquote")
+        await entry.fill(text)
+        await page.keyboard.press("Enter")
+        await page.keyboard.press("Backquote")
+      }
+      await execute("class spy")
+      await expect.poll(async () => (await root.getAttribute("data-hud-probe"))?.split(":")[1]).toBe("8")
+      await expect.poll(async () => (await root.getAttribute("data-spy-probe"))?.split(":")[0]).toBe("100.000")
+      for (const [key, weapon, name] of [["Digit1", 50, "Revolver"], ["Digit2", 52, "Sapper"], ["Digit3", 51, "Knife"], ["Digit4", 53, "Disguise Kit"]] as const) {
+        await page.keyboard.press(key)
+        await expect.poll(async () => (await root.getAttribute("data-hud-probe"))?.split(":")[2]).toBe(String(weapon))
+        const screenshot = decodeScreenshot(await page.locator("canvas.world-canvas").screenshot())
+        spyWeaponEvidence.push({ weapon, name, activity: await root.getAttribute("data-viewmodel-activity") ?? "", pixelsSha256: createHash("sha256").update(screenshot.pixels).digest("hex") })
+      }
+      expect(new Set(spyWeaponEvidence.map((item) => item.pixelsSha256)).size).toBe(4)
+      const disguiseMenu = page.locator("[data-vgui-name='HudMenuSpyDisguise']")
+      await expect(disguiseMenu).toBeVisible()
+      const disguiseMenuPixels = decodeScreenshot(await disguiseMenu.screenshot())
+      expect(disguiseMenuPixels.width * disguiseMenuPixels.height).toBeGreaterThan(100)
+      await page.keyboard.press("Digit2")
+      await expect.poll(async () => (await root.getAttribute("data-hud-probe"))?.split(":")[2]).toBe("50")
+      await expect.poll(async () => (await root.getAttribute("data-spy-probe"))?.split(":").slice(2, 4).join(":")).toBe("3:3")
+      await page.evaluate(async () => {
+        const canvas = document.querySelector(".world-canvas")
+        if (!canvas) throw new Error("Spy evidence canvas is unavailable")
+        if (document.pointerLockElement !== canvas) await canvas.requestPointerLock()
+        dispatchEvent(new MouseEvent("mousedown", { button: 0, bubbles: true }))
+      })
+      await expect.poll(async () => (await root.getAttribute("data-audio-starts") ?? "").includes("Weapon_Revolver.Single")).toBe(true)
+      await page.evaluate(() => dispatchEvent(new MouseEvent("mouseup", { button: 0, bubbles: true })))
+      await page.keyboard.press("KeyR")
+      await expect.poll(async () => (await root.getAttribute("data-audio-starts") ?? "").includes("Weapon_Revolver.WorldReload")).toBe(true)
+      await page.evaluate(() => {
+        dispatchEvent(new MouseEvent("mousedown", { button: 2, bubbles: true }))
+        dispatchEvent(new MouseEvent("mouseup", { button: 2, bubbles: true }))
+      })
+      await expect.poll(async () => Number((await root.getAttribute("data-spy-probe"))?.split(":")[0] ?? 100)).toBeLessThan(99)
+      await expect.poll(async () => await root.getAttribute("data-spy-watch-activity")).not.toBeNull()
+      const cloaked = await root.getAttribute("data-spy-probe")
+      await expect.poll(async () => (await root.getAttribute("data-audio-starts") ?? "").includes("Player.Spy_Cloak")).toBe(true)
+      await page.evaluate(() => {
+        dispatchEvent(new MouseEvent("mousedown", { button: 2, bubbles: true }))
+        dispatchEvent(new MouseEvent("mouseup", { button: 2, bubbles: true }))
+      })
+      await expect.poll(async () => (await root.getAttribute("data-audio-starts") ?? "").includes("Player.Spy_UnCloak")).toBe(true)
+      await execute("disguise 3 3")
+      await expect.poll(async () => (await root.getAttribute("data-spy-probe"))?.split(":").slice(2, 4).join(":")).toBe("3:3")
+      spyLifecycleEvidence = { cloaked, disguised: await root.getAttribute("data-spy-probe"), audio: await root.getAttribute("data-audio-starts") }
     }
     if (shouldRunScenario("jump")) workloads.push({
       name: "repeated-jump",
@@ -1601,6 +1656,8 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
     engineerWeaponEvidence,
     sniperScopeEvidence,
 
+    spyWeaponEvidence,
+    spyLifecycleEvidence,
     scenarios: scenarios.map((scenario) => ({
       name: scenario.name,
       presentationTrace: presentationSummary(scenario.samples[0]!.at, scenario.samples.at(-1)!.at),

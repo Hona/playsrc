@@ -118,6 +118,7 @@ struct Report {
 }
 
 const CODE_LOCALIZATION_TOKENS: &[&str] = &[
+    "#TF_CLOAK",
     "#Gametype_Escort",
     "#Winpanel_TeamWins",
     "#Winpanel_Team1",
@@ -322,6 +323,13 @@ const ROOTS: &[(&str, &str, bool)] = &[
     ("hud", "resource/ui/notifications/notify_enemy_flag_captured_blue.res", true),
     ("hud", "resource/ui/notifications/notify_touching_enemy_ctf_cap_red.res", true),
     ("hud", "resource/ui/notifications/notify_touching_enemy_ctf_cap_blue.res", true),
+    ("hud", "resource/ui/huditemeffectmeter_spy.res", true),
+    ("hud", "resource/ui/disguisestatuspanel.res", true),
+    (
+        "hud",
+        "resource/ui/disguise_menu/hudmenuspydisguise.res",
+        true,
+    ),
     ("hud", "resource/ui/huddemomanpipes.res", true),
     ("hud", "resource/ui/hudkillstreaknotice.res", true),
     ("hud", "resource/ui/targetid.res", true),

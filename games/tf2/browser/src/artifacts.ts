@@ -926,7 +926,7 @@ function soundNode(r: Reader): SoundScriptNode {
 function parseAudio(r: Reader): AudioArtifact {
   if (r.decoder.decode(r.take(4)) !== "PAUD" || r.u32() !== 2) throw new ArtifactError("PAUD identity")
   const mixerSha256 = hex(r.take(32)), mixerGain = r.f32(), count = r.u32()
-  if (mixerGain < 0 || count < 1 || count > 3) throw new ArtifactError("audio mixer or document count")
+  if (mixerGain < 0 || count < 1 || count > 4) throw new ArtifactError("audio mixer or document count")
   const documents = Array.from({ length: count }, () => Object.freeze({
     logicalPath: r.text(),
     sourceSha256: hex(r.take(32)),

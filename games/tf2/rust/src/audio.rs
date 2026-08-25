@@ -58,6 +58,13 @@ pub enum SoundDefinition {
     BottleMiss,
     BottleHitFlesh,
     BottleHitWorld,
+    RevolverSingle,
+    RevolverReload,
+    KnifeMiss,
+    KnifeHitFlesh,
+    KnifeHitWorld,
+    SpyCloak,
+    SpyUncloak,
 }
 
 impl SoundDefinition {
@@ -121,6 +128,13 @@ impl SoundDefinition {
             Self::BottleMiss => "Weapon_Bottle.Miss",
             Self::BottleHitFlesh => "Weapon_Bottle.HitFlesh",
             Self::BottleHitWorld => "Weapon_Bottle.HitWorld",
+            Self::RevolverSingle => "Weapon_Revolver.Single",
+            Self::RevolverReload => "Weapon_Revolver.WorldReload",
+            Self::KnifeMiss => "Weapon_Knife.Miss",
+            Self::KnifeHitFlesh => "Weapon_Knife.HitFlesh",
+            Self::KnifeHitWorld => "Weapon_Knife.HitWorld",
+            Self::SpyCloak => "Player.Spy_Cloak",
+            Self::SpyUncloak => "Player.Spy_UnCloak",
         }
     }
 
@@ -136,7 +150,8 @@ impl SoundDefinition {
             | Self::FlagEnemyCaptured
             | Self::FlagEnemyReturned
             | Self::BottleHitFlesh
-            | Self::BottleHitWorld => 3,
+            | Self::BottleHitWorld
+            | Self::KnifeHitFlesh => 3,
             Self::FlagEnemyStolen => 4,
             Self::BatHitWorld
             | Self::ShovelHitWorld
@@ -182,7 +197,13 @@ impl SoundDefinition {
             | Self::FlagSpawn
             | Self::TeamWon
             | Self::TeamLost
-            | Self::BottleMiss => 1,
+            | Self::BottleMiss
+            | Self::RevolverSingle
+            | Self::RevolverReload
+            | Self::KnifeMiss
+            | Self::KnifeHitWorld
+            | Self::SpyCloak
+            | Self::SpyUncloak => 1,
         }
     }
 }
@@ -249,6 +270,7 @@ pub struct SoundSelectionState {
     pub flag_team_dropped_available: u8,
     pub bottle_hit_flesh_available: u8,
     pub bottle_hit_world_available: u8,
+    pub knife_hit_flesh_available: u8,
 }
 
 #[derive(Clone, Copy)]
@@ -319,6 +341,7 @@ pub(crate) struct SoundSelection {
     flag_team_dropped: WaveCycle,
     bottle_hit_flesh: WaveCycle,
     bottle_hit_world: WaveCycle,
+    knife_hit_flesh: WaveCycle,
 }
 
 impl SoundSelection {
@@ -345,6 +368,7 @@ impl SoundSelection {
             flag_team_dropped: WaveCycle::new(WaveCycle::TWO),
             bottle_hit_flesh: WaveCycle::new(WaveCycle::THREE),
             bottle_hit_world: WaveCycle::new(WaveCycle::THREE),
+            knife_hit_flesh: WaveCycle::new(WaveCycle::THREE),
         }
     }
 
@@ -371,6 +395,7 @@ impl SoundSelection {
             flag_team_dropped_available: self.flag_team_dropped.available,
             bottle_hit_flesh_available: self.bottle_hit_flesh.available,
             bottle_hit_world_available: self.bottle_hit_world.available,
+            knife_hit_flesh_available: self.knife_hit_flesh.available,
         }
     }
 
@@ -395,6 +420,7 @@ impl SoundSelection {
             || state.flag_team_dropped_available & !WaveCycle::TWO != 0
             || state.bottle_hit_flesh_available & !WaveCycle::THREE != 0
             || state.bottle_hit_world_available & !WaveCycle::THREE != 0
+            || state.knife_hit_flesh_available & !WaveCycle::THREE != 0
         {
             return false;
         }
@@ -420,6 +446,7 @@ impl SoundSelection {
         self.flag_enemy_captured.available = state.flag_enemy_captured_available;
         self.flag_enemy_returned.available = state.flag_enemy_returned_available;
         self.flag_team_dropped.available = state.flag_team_dropped_available;
+        self.knife_hit_flesh.available = state.knife_hit_flesh_available;
         true
     }
 
@@ -460,6 +487,7 @@ impl SoundSelection {
             SoundDefinition::FlagEnemyCaptured => &mut self.flag_enemy_captured,
             SoundDefinition::FlagEnemyReturned => &mut self.flag_enemy_returned,
             SoundDefinition::FlagTeamDropped => &mut self.flag_team_dropped,
+            SoundDefinition::KnifeHitFlesh => &mut self.knife_hit_flesh,
             _ => unreachable!("only configured random-wave definitions have selection state"),
         }
     }
