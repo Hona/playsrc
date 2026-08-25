@@ -37,9 +37,9 @@ pub enum TimerState {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TimerConfiguration {
     pub identity: u32,
-    pub initial_seconds: u32,
-    pub setup_seconds: u32,
-    pub maximum_seconds: u32,
+    pub initial_seconds: i32,
+    pub setup_seconds: i32,
+    pub maximum_seconds: i32,
     pub show_in_hud: bool,
     pub auto_countdown: bool,
     pub start_paused: bool,
@@ -149,9 +149,9 @@ impl Configuration {
                 return Err(Error::MultipleTimers);
             }
             let identity = u32::try_from(entity.index).map_err(|_| Error::InvalidTimer)?;
-            let initial_seconds = unsigned(entity, b"timer_length", 0)?;
-            let setup_seconds = unsigned(entity, b"setup_length", 0)?;
-            let maximum_seconds = unsigned(entity, b"max_length", 0)?;
+            let initial_seconds = integer(entity, b"timer_length", 0)?;
+            let setup_seconds = integer(entity, b"setup_length", 0)?;
+            let maximum_seconds = integer(entity, b"max_length", 0)?;
             result.timer = Some(TimerConfiguration {
                 identity,
                 initial_seconds,
@@ -546,12 +546,33 @@ fn value<'a>(entity: &'a Entity, name: &[u8]) -> Option<&'a [u8]> {
         .map(|pair| pair.value.as_slice())
 }
 
-fn unsigned(entity: &Entity, name: &[u8], default: u32) -> Result<u32, Error> {
+fn integer(entity: &Entity, name: &[u8], default: i32) -> Result<i32, Error> {
     value(entity, name).map_or(Ok(default), |bytes| {
-        std::str::from_utf8(bytes)
-            .ok()
-            .and_then(|text| text.parse().ok())
-            .ok_or(Error::InvalidTimer)
+        let text = std::str::from_utf8(bytes).map_err(|_| Error::InvalidTimer)?;
+        let text = text.trim_start();
+        let (negative, digits) = if let Some(rest) = text.strip_prefix('-') {
+            (true, rest)
+        } else if let Some(rest) = text.strip_prefix('+') {
+            (false, rest)
+        } else {
+            (false, text)
+        };
+        let mut magnitude = 0_i64;
+        let mut found = false;
+        for digit in digits.bytes().take_while(u8::is_ascii_digit) {
+            found = true;
+            magnitude = magnitude
+                .saturating_mul(10)
+                .saturating_add(i64::from(digit - b'0'));
+        }
+        if !found {
+            return Ok(0);
+        }
+        Ok(if negative {
+            magnitude.saturating_neg() as i32
+        } else {
+            magnitude as i32
+        })
     })
 }
 
@@ -686,6 +707,19 @@ mod tests {
         assert_eq!(rules.snapshot(Vec::new()).blue_score, 1);
         assert!(rules.restart(true).contains(&Event::ScoresReset));
         assert_eq!(rules.snapshot(Vec::new()).blue_score, 0);
+    }
+
+    #[test]
+    fn configured_jump_timer_preserves_source_signed_atoi_overflow() {
+        let graph = playsrc_entity::parse(
+            b"{\"classname\"\"team_round_timer\"\"timer_length\"\"9999999999999999999999\"\"show_in_hud\"\"0\"}\0",
+            playsrc_entity::Limits::default(),
+        )
+        .unwrap();
+        let configuration = Configuration::from_graph(&graph).unwrap();
+        let timer = configuration.timer.unwrap();
+        assert_eq!(timer.initial_seconds, -1);
+        assert!(!timer.show_in_hud);
     }
 
     #[test]
