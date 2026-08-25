@@ -826,6 +826,16 @@ mod tests {
     }
 
     #[test]
+    fn only_authentic_red_and_blu_players_are_course_eligible() {
+        for team in [Team::Red, Team::Blue] {
+            assert!(eligible(PlayerFacts { team, ..player() }));
+        }
+        for team in [Team::Unassigned, Team::Spectator] {
+            assert!(!eligible(PlayerFacts { team, ..player() }));
+        }
+    }
+
+    #[test]
     fn linear_course_requires_order_and_freezes_completion() {
         let mut session = Session::new(course(), Limits::default());
         let enter = |sequence, trigger| Contact {
