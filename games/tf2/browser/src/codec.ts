@@ -3,8 +3,8 @@ const MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024
 const MAX_RECORDS = 65_536
 const MOVEMENT_BYTES = 96
 
-export type Tf2Class = 1 | 2
-export type Tf2Team = 1 | 2
+export type Tf2Class = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
+export type Tf2Team = 2 | 3
 export type Tf2Weapon = 1 | 2 | 3
 export type MovementMode = 0 | 1
 export type ProjectileKind = 1 | 2
@@ -341,7 +341,7 @@ export type Snapshot = Readonly<{
   tick: bigint
   class: Tf2Class
   team: Tf2Team
-  weapon: Tf2Weapon
+  weapon: Tf2Weapon | null
   playerFlags: number
   inWater: boolean
   health: number
@@ -454,10 +454,10 @@ function canonicalIdentity(value: number): boolean {
 export function encodeCommand(command: Command): ArrayBuffer {
   const scalars = [command.forward, command.side, command.up ?? 0, command.yawDegrees, command.pitchDegrees]
   if (!scalars.every(Number.isFinite)) throw new Tf2CodecError("command contains a non-finite scalar")
-  if (command.selectClass !== undefined && command.selectClass !== 1 && command.selectClass !== 2) {
+  if (command.selectClass !== undefined && (!Number.isInteger(command.selectClass) || command.selectClass < 1 || command.selectClass > 9)) {
     throw new Tf2CodecError("command class selector is invalid")
   }
-  if (command.selectTeam !== undefined && command.selectTeam !== 1 && command.selectTeam !== 2) {
+  if (command.selectTeam !== undefined && command.selectTeam !== 2 && command.selectTeam !== 3) {
     throw new Tf2CodecError("command team selector is invalid")
   }
   if (
@@ -490,7 +490,7 @@ export function encodeCommand(command: Command): ArrayBuffer {
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x43, 0x4d, 0x44])
-  view.setUint32(4, 4, true)
+  view.setUint32(4, 5, true)
   scalars.forEach((value, index) => view.setFloat32(8 + index * 4, value, true))
   const flags =
     Number(command.jump) |
@@ -881,15 +881,15 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
   const buffer = data.buffer as ArrayBuffer
   const base = data.byteOffset
   const view = new DataView(buffer, base, data.byteLength)
-  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 10)
+  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 11)
     throw new Tf2CodecError("snapshot identity is invalid")
   const tf2Class = data[16]
   const team = data[17]
   const weapon = data[18]
   if (
-    (tf2Class !== 1 && tf2Class !== 2) ||
-    (team !== 1 && team !== 2) ||
-    (weapon !== 1 && weapon !== 2 && weapon !== 3) ||
+    (tf2Class === undefined || tf2Class < 1 || tf2Class > 9) ||
+    (team !== 2 && team !== 3) ||
+    (weapon !== 0 && weapon !== 1 && weapon !== 2 && weapon !== 3) ||
     data[19]! > 1 || (data[28] !== 1 && data[28] !== 2) || data[29] !== 0 || data[30] !== 0 || data[31] !== 0
   )
     throw new Tf2CodecError("snapshot selection is invalid")
@@ -972,6 +972,10 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
       }),
     )
   }
+  if ((weapon === 0 && loadout.length !== 0)
+    || (weapon !== 0 && !loadout.some((entry) => entry.weapon === weapon))) {
+    throw new Tf2CodecError("snapshot active weapon does not match its loadout")
+  }
   at += loadoutCount * 48
 
   requireBytes(projectileCount * 84, "projectile")
@@ -990,7 +994,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     const ageSeconds = view.getFloat32(item + 80, true)
     if (
       (kind !== 1 && kind !== 2) ||
-      (projectileTeam !== 1 && projectileTeam !== 2) ||
+      (projectileTeam !== 2 && projectileTeam !== 3) ||
       state === undefined ||
       state < 1 ||
       state > 3 ||
@@ -1044,7 +1048,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
       eventCode < 1 ||
       eventCode > 6 ||
       (kind !== 1 && kind !== 2) ||
-      (projectileTeam !== 1 && projectileTeam !== 2) ||
+      (projectileTeam !== 2 && projectileTeam !== 3) ||
       flags === undefined ||
       flags > 3 ||
       hasNormal === undefined ||
@@ -1188,14 +1192,14 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
   for (let index = 0; index < lifecycleEventCount; index += 1) {
     const item = at + index * 16
     const kind = data[item + 8], itemClass = data[item + 9], itemTeam = data[item + 10]
-    if (kind === undefined || kind < 1 || kind > 4 || (itemClass !== 1 && itemClass !== 2) ||
-      (itemTeam !== 1 && itemTeam !== 2) || !data.subarray(item + 11, item + 16).every((value) => value === 0)) {
+    if (kind === undefined || kind < 1 || kind > 4 || itemClass === undefined || itemClass < 1 || itemClass > 9 ||
+      (itemTeam !== 2 && itemTeam !== 3) || !data.subarray(item + 11, item + 16).every((value) => value === 0)) {
       throw new Tf2CodecError("lifecycle event record is invalid")
     }
     lifecycleEvents.push(Object.freeze({
       tick: view.getBigUint64(item, true),
       kind: kind as LifecycleEvent["kind"],
-      class: itemClass,
+      class: itemClass as Tf2Class,
       team: itemTeam,
     }))
   }
@@ -1427,9 +1431,9 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
   const frozenProjectileEvents = Object.freeze(projectileEvents)
   return Object.freeze({
     tick,
-    class: tf2Class,
+    class: tf2Class as Tf2Class,
     team,
-    weapon,
+    weapon: weapon === 0 ? null : weapon as Tf2Weapon,
     playerFlags,
     inWater: (playerFlags & 0x400) !== 0,
     health,

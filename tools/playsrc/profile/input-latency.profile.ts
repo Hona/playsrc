@@ -4,6 +4,7 @@ import { mkdir, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { inflateSync } from "node:zlib"
+import { TF2_CLASS_NAMES, tf2ClassFromName, tf2ClassPresentation } from "@playsrc/game-tf2-browser/class"
 import { expect, test } from "./application-test"
 import { divideProfileWindow, profileSampleSeconds, summarizeFrameTimes } from "./profile-window"
 import { loadLocalConfig } from "../src/config"
@@ -837,6 +838,16 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
     name: string
     samples: Awaited<ReturnType<typeof captureRuntime>>[]
   }[] = []
+  const classEvidence: Array<{
+    identity: number
+    name: string
+    team: 2 | 3
+    health: number
+    eyeHeight: number
+    weapon: number | null
+    model: string
+    pixelsSha256: string
+  }> = []
   const activeFrameWindows: Array<{ started: number; finished: number }> = []
   const workloads: Array<{
     name: string
@@ -962,6 +973,81 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
     }})
   }
   if (runScenarios && initial.phase === "Ready") {
+    if (scenarioMode === "classes") {
+      const local = await loadLocalConfig()
+      const evidenceDirectory = path.join(local.sourceCacheDir, "profiles", "tf2-nine-class-gameplay")
+      await mkdir(evidenceDirectory, { recursive: true })
+      const root = page.locator("main")
+      const entry = page.locator("[aria-label='Console command']")
+      const command = async (value: string) => {
+        if (await root.getAttribute("data-console-visible") !== "true") await page.keyboard.press("Backquote")
+        await expect(entry).toBeVisible()
+        await entry.fill(value)
+        await page.keyboard.press("Enter")
+      }
+      await command("cl_hud_playerclass_use_playermodel 0")
+      const maximumHealth = [125, 125, 200, 175, 150, 300, 175, 125, 125]
+      const eyeHeights = [65, 75, 68, 68, 75, 75, 68, 75, 68]
+      for (const name of TF2_CLASS_NAMES) {
+        const identity = tf2ClassFromName(name)!
+        for (const [teamName, team] of [["red", 2], ["blue", 3]] as const) {
+          await command(`jointeam ${teamName}`)
+          await command(`class ${name}`)
+          await expect.poll(async () => {
+            const value = await root.evaluate((element) => {
+              const data = (element as HTMLElement).dataset
+              return `${data.hudProbe?.split(":")[1]}:${JSON.parse(data.hudPresentationProbe ?? "{}").classModel?.scalars?.team}`
+            })
+            return value
+          }).toBe(`${identity}:${team}`)
+          const observation = await root.evaluate((element) => {
+            const value = (element as HTMLElement).dataset
+            const presentation = JSON.parse(value.hudPresentationProbe ?? "{}")
+            return {
+              phase: value.phase,
+              hud: value.hudProbe ?? "",
+              eyeHeight: Number(value.viewOffset?.split(",")[2]),
+              image: presentation.classImage?.image ?? null,
+              imageVisible: presentation.classImage?.visible ?? false,
+              model: presentation.classModel?.model ?? null,
+              ammoVisible: document.querySelector<HTMLElement>("[data-vgui-name='HudWeaponAmmo']")?.style.display !== "none",
+              viewmodel: value.viewmodelActivity ?? null,
+            }
+          })
+          const [health, , weapon] = observation.hud.split(":")
+          const armed = identity === 3 || identity === 4
+          const imageName = name === "demoman" ? "demo" : name === "engineer" ? "engi" : name
+          expect(observation.phase).toBe("Ready")
+          expect(Number(health)).toBe(maximumHealth[identity - 1])
+          expect(observation.eyeHeight).toBe(eyeHeights[identity - 1])
+          expect(observation.imageVisible).toBe(true)
+          expect(observation.image).toBe(`../hud/class_${imageName}${teamName}`)
+          expect(observation.model).toBe(tf2ClassPresentation(identity).model)
+          expect(weapon === "unavailable").toBe(!armed)
+          expect(observation.ammoVisible).toBe(armed)
+          expect(observation.viewmodel === null).toBe(!armed)
+          const screenshot = await page.locator("[data-vgui-name='PlayerStatusClassImage']")
+            .screenshot({ path: path.join(evidenceDirectory, `${name}-${teamName}.png`) })
+          const pixels = decodeScreenshot(screenshot)
+          expect(pixels.width * pixels.height).toBeGreaterThan(100)
+          classEvidence.push({
+            identity,
+            name,
+            team,
+            health: Number(health),
+            eyeHeight: observation.eyeHeight,
+            weapon: weapon === "unavailable" ? null : Number(weapon),
+            model: tf2ClassPresentation(identity).model,
+            pixelsSha256: createHash("sha256").update(pixels.pixels).digest("hex"),
+          })
+        }
+      }
+      expect(new Set(classEvidence.map((item) => item.pixelsSha256)).size).toBe(18)
+      await command("jointeam red")
+      await command("class soldier")
+      await expect.poll(async () => (await root.getAttribute("data-hud-probe"))?.split(":")[1]).toBe("3")
+      if (await root.getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
+    }
     if (shouldRunScenario("jump")) workloads.push({
       name: "repeated-jump",
       start: async () => {
@@ -1191,6 +1277,7 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
     input,
     waterEvidence,
     steadyState,
+    classEvidence,
     scenarios: scenarios.map((scenario) => ({
       name: scenario.name,
       presentationTrace: presentationSummary(scenario.samples[0]!.at, scenario.samples.at(-1)!.at),
@@ -1300,6 +1387,7 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
     report: path.join(performanceDirectory, `${comparisonLabel}-${process.pid}.json`),
   })}`)
   expect(raw.dataset.phase).toBe("Ready")
+  if (scenarioMode === "classes") expect(classEvidence).toHaveLength(18)
   expect(report.menu.startupState).toBe("Skipped")
   if (!mapOnly) {
     expect(report.sampleSeconds).toBeGreaterThanOrEqual(5)

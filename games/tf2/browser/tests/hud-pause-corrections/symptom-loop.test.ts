@@ -11,7 +11,7 @@ import {
 import { initializeTf2GameUiIntegration } from "../../src/gameui-integration"
 import { initializeTf2HudIntegration } from "../../src/hud-integration"
 import { initializeTf2BrowserSettings, initializeTf2OptionsPresentation } from "../../src/settings-integration"
-import { TF2_HUD_DYNAMIC_IMAGES, tf2HudUnavailable, type CompactSessionHudContext, type CompactSessionSimulationPublication } from "../../src/hud"
+import { TF2_HUD_DYNAMIC_IMAGES, tf2HudUnavailable, type SessionHudContext, type SessionSimulationPublication } from "../../src/hud"
 import type { Tf2VguiResources } from "../../src/ui-integration"
 import { tf2UiResources, type Tf2UiResourceNode } from "../../src/ui-resources"
 import { FakeDocument, createRoot, descendants } from "../../../../../packages/presentation/vgui/tests/fake-dom"
@@ -177,14 +177,14 @@ function resources(): Tf2VguiResources {
 
 function compact(
   tick: bigint,
-  classIdentity: 1 | 2,
-  team: 1 | 2,
+  classIdentity: 3 | 4,
+  team: 2 | 3,
   weapon: 1 | 2 | 3,
   clip: number,
   reserve: number,
   reload: 0 | 1 | 2 | 3 = 0,
   conditions: readonly [number, number, number, number, number] = Object.freeze([0, 0, 0, 0, 0]),
-): CompactSessionSimulationPublication {
+): SessionSimulationPublication {
   const maximumClip = weapon === 3 ? 8 : 4
   const maximumReserve = weapon === 3 ? 24 : 20
   const snapshot = Object.freeze({
@@ -192,8 +192,8 @@ function compact(
     class: classIdentity,
     team,
     weapon,
-    health: classIdentity === 1 ? 200 : 175,
-    maximumHealth: classIdentity === 1 ? 200 : 175,
+    health: classIdentity === 3 ? 200 : 175,
+    maximumHealth: classIdentity === 3 ? 200 : 175,
     lifecycle: 1 as const,
     conditions: Object.freeze([...conditions]) as readonly [number, number, number, number, number],
     loadout: Object.freeze([Object.freeze({ weapon, reload, clip, reserve, maximumClip, maximumReserve })]),
@@ -204,7 +204,7 @@ function compact(
   return Object.freeze({ eventBatches: Object.freeze([Object.freeze({ snapshot })]), snapshot })
 }
 
-const context: CompactSessionHudContext = Object.freeze({
+const context: SessionHudContext = Object.freeze({
   playerIdentity: 1,
   liveHudSuppressed: false,
   respawnAllowed: true,
@@ -223,7 +223,7 @@ const context: CompactSessionHudContext = Object.freeze({
 const visible = (panels: readonly { name: string; effectivelyVisible: boolean }[], names: readonly string[]) =>
   panels.filter((panel) => names.includes(panel.name) && panel.effectivelyVisible).map((panel) => panel.name)
 
-const contextWithModel = (playerClassUsePlayerModel: boolean): CompactSessionHudContext =>
+const contextWithModel = (playerClassUsePlayerModel: boolean): SessionHudContext =>
   Object.freeze({ ...context, playerClassUsePlayerModel })
 
 describe("TF2 HUD and pause headed symptom loop", () => {
@@ -251,7 +251,7 @@ describe("TF2 HUD and pause headed symptom loop", () => {
       clock: { nowSeconds: () => 0 }, random: { nextUnit: () => 0.5 }, onCommand() {},
       playerClassUsePlayerModel: false,
     } as never)
-    hud.publish(compact(1n, 1, 1, 1, 3, 20), context)
+    hud.publish(compact(1n, 3, 2, 1, 3, 20), context)
     const first = hud.snapshot().vgui.panels
     expect(visible(first, ["PlayerStatusClassImage", "classmodelpanel"])).toEqual(["PlayerStatusClassImage"])
     expect(first.filter((panel) => panel.name === "PlayerStatusClassImage")).toHaveLength(1)
@@ -276,7 +276,7 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     hud.setPlayerClassUsePlayerModel(false)
     expect(visible(hud.snapshot().vgui.panels, ["PlayerStatusClassImage", "classmodelpanel"])).toEqual(["PlayerStatusClassImage"])
 
-    const secondBinding = hud.publish(compact(2n, 2, 2, 3, 7, 24, 2), context)
+    const secondBinding = hud.publish(compact(2n, 4, 3, 3, 7, 24, 2), context)
     const second = hud.snapshot().vgui.panels
     expect(second.find((panel) => panel.name === "PlayerStatusClassImage")?.state.image).toBe("../hud/class_demoblue")
     expect(second.filter((panel) => /class_.*red/iu.test(panel.state.image ?? "") && panel.effectivelyVisible)).toEqual([])
@@ -285,7 +285,7 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     expect(second.find((panel) => panel.name === "HudWeaponAmmo")?.state.scalarProperties.reloadPhase).toBe(2)
     expect(secondBinding.values).toContainEqual({ kind: "dialog-variable", panel: "classmodelpanel", variable: "weaponName", value: { kind: "available", value: "Stickybomb Launcher" } })
 
-    const modelBinding = hud.publish(compact(3n, 1, 2, 2, 4, 20), contextWithModel(true))
+    const modelBinding = hud.publish(compact(3n, 3, 3, 2, 4, 20), contextWithModel(true))
     const model = hud.snapshot().vgui.panels
     expect(visible(model, ["PlayerStatusClassImage", "classmodelpanel"])).toEqual(["classmodelpanel"])
     expect(model.find((panel) => panel.name === "classmodelpanel")?.state.scalarProperties).toMatchObject({ class: 3, team: 3, skin: 1, weaponIdentity: 2 })
@@ -293,18 +293,18 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     expect(modelBinding.values).toContainEqual({ kind: "dialog-variable", panel: "classmodelpanel", variable: "modelIdentity", value: { kind: "available", value: "models/player/soldier.mdl" } })
     expect(modelBinding.values).toContainEqual({ kind: "dialog-variable", panel: "classmodelpanel", variable: "weaponName", value: { kind: "available", value: "Original" } })
 
-    hud.publish(compact(4n, 1, 1, 1, 4, 20), contextWithModel(false))
+    hud.publish(compact(4n, 3, 2, 1, 4, 20), contextWithModel(false))
     expect(visible(hud.snapshot().vgui.panels, ["PlayerStatusClassImage", "classmodelpanel"])).toEqual(["PlayerStatusClassImage"])
 
     const remaining = [
-      { tick: 5n, classIdentity: 1 as const, team: 1 as const, model: true, image: "../hud/class_soldierred", identity: "models/player/soldier.mdl", skin: 0 },
-      { tick: 6n, classIdentity: 1 as const, team: 2 as const, model: false, image: "../hud/class_soldierblue", identity: "models/player/soldier.mdl", skin: 1 },
-      { tick: 7n, classIdentity: 2 as const, team: 1 as const, model: false, image: "../hud/class_demored", identity: "models/player/demo.mdl", skin: 0 },
-      { tick: 8n, classIdentity: 2 as const, team: 1 as const, model: true, image: "../hud/class_demored", identity: "models/player/demo.mdl", skin: 0 },
-      { tick: 9n, classIdentity: 2 as const, team: 2 as const, model: true, image: "../hud/class_demoblue", identity: "models/player/demo.mdl", skin: 1 },
+      { tick: 5n, classIdentity: 3 as const, team: 2 as const, model: true, image: "../hud/class_soldierred", identity: "models/player/soldier.mdl", skin: 0 },
+      { tick: 6n, classIdentity: 3 as const, team: 3 as const, model: false, image: "../hud/class_soldierblue", identity: "models/player/soldier.mdl", skin: 1 },
+      { tick: 7n, classIdentity: 4 as const, team: 2 as const, model: false, image: "../hud/class_demored", identity: "models/player/demo.mdl", skin: 0 },
+      { tick: 8n, classIdentity: 4 as const, team: 2 as const, model: true, image: "../hud/class_demored", identity: "models/player/demo.mdl", skin: 0 },
+      { tick: 9n, classIdentity: 4 as const, team: 3 as const, model: true, image: "../hud/class_demoblue", identity: "models/player/demo.mdl", skin: 1 },
     ]
     for (const item of remaining) {
-      const binding = hud.publish(compact(item.tick, item.classIdentity, item.team, item.classIdentity === 1 ? 1 : 3, 4, 20), contextWithModel(item.model))
+      const binding = hud.publish(compact(item.tick, item.classIdentity, item.team, item.classIdentity === 3 ? 1 : 3, 4, 20), contextWithModel(item.model))
       const panels = hud.snapshot().vgui.panels
       expect(visible(panels, ["PlayerStatusClassImage", "classmodelpanel"]), `${item.classIdentity}:${item.team}:${item.model}`).toEqual([item.model ? "classmodelpanel" : "PlayerStatusClassImage"])
       if (item.model) {
@@ -317,7 +317,7 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     hud.reset("map-replaced")
     expect(visible(hud.snapshot().vgui.panels, ["HudPlayerStatus", "HudWeaponAmmo", "PlayerStatusClassImage", "classmodelpanel"])).toEqual([])
     expect(hud.action({ kind: "select-weapon", weapon: 1 })).toEqual({ kind: "unavailable", reason: "initial" })
-    hud.publish(compact(1n, 2, 1, 3, 8, 24), contextWithModel(false))
+    hud.publish(compact(1n, 4, 2, 3, 8, 24), contextWithModel(false))
     expect(hud.snapshot().vgui.panels.find((panel) => panel.name === "PlayerStatusClassImage")?.state.image).toBe("../hud/class_demored")
     hud.reset("disconnect")
     expect(visible(hud.snapshot().vgui.panels, ["HudPlayerStatus", "HudWeaponAmmo"])).toEqual([])
@@ -330,7 +330,7 @@ describe("TF2 HUD and pause headed symptom loop", () => {
       resources: resources(), viewport: { width: 1280, height: 720, devicePixelRatio: 1 }, reducedMotion: true,
       clock: { nowSeconds: () => 0 }, random: { nextUnit: () => 0.5 }, onCommand() {},
     })
-    hud.publish(compact(1n, 1, 1, 1, 4, 20), context)
+    hud.publish(compact(1n, 3, 2, 1, 4, 20), context)
     const authoredCrosshair = descendants(root).find((element) => element.dataset.tf2Crosshair === "authored")
     expect(authoredCrosshair).toBeDefined()
     expect(authoredCrosshair!.style.left).toBe("624px")
@@ -348,7 +348,7 @@ describe("TF2 HUD and pause headed symptom loop", () => {
       resources: resources(), viewport: { width: 1280, height: 720, devicePixelRatio: 1 }, reducedMotion: true,
       clock: { nowSeconds: () => 0 }, random: { nextUnit: () => 0.5 }, onCommand() {},
     })
-    hud.publish(compact(1n, 1, 1, 1, 4, 20), context)
+    hud.publish(compact(1n, 3, 2, 1, 4, 20), context)
     const element = descendants(root).find((candidate) => candidate.dataset.tf2Crosshair === "authored")!
     hud.setCrosshair(Object.freeze({
       ...context.crosshair,
@@ -371,7 +371,7 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     expect(element.dataset.crosshairStyle).toBe("stock")
     hud.reset("map-replaced")
     expect(element.style.display).toBe("none")
-    hud.publish(compact(1n, 2, 2, 3, 8, 24), context)
+    hud.publish(compact(1n, 4, 3, 3, 8, 24), context)
     expect(element.dataset.sourceTexture).toBe("materials/sprites/crosshairs.vtf")
     expect(element.style.display).toBe("block")
     hud.destroy()

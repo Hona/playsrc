@@ -182,6 +182,7 @@ fn tf2_policy() -> Policy {
         backward_speed_minimum: 100.0,
         ground_detach_speed: 250.0,
         jump_impulse: 289.0,
+        air_dash_impulse: None,
         surface_friction: 1.0,
         surface_jump_factor: 1.0,
         standing_hull: Hull {

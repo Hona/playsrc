@@ -34,6 +34,14 @@ impl PlayerClass {
     pub const fn data(self) -> &'static ClassData {
         &CLASS_DATA[self as usize - 1]
     }
+
+    pub const fn standing_eye_height(self) -> f32 {
+        match self {
+            Self::Scout => 65.0,
+            Self::Sniper | Self::Medic | Self::Heavy | Self::Spy => 75.0,
+            Self::Soldier | Self::Demoman | Self::Pyro | Self::Engineer => 68.0,
+        }
+    }
 }
 
 impl TryFrom<u8> for PlayerClass {
@@ -72,6 +80,10 @@ pub enum PlayerTeam {
 }
 
 impl PlayerTeam {
+    pub const fn source_number(self) -> u8 {
+        self as u8
+    }
+
     pub const fn is_gameplay(self) -> bool {
         matches!(self, Self::Red | Self::Blue)
     }
@@ -682,6 +694,20 @@ mod tests {
         );
         assert!(PlayerClass::try_from(0).is_err());
         assert!(PlayerClass::try_from(10).is_err());
+        assert_eq!(
+            PlayerClass::ALL.map(PlayerClass::standing_eye_height),
+            [65.0, 75.0, 68.0, 68.0, 75.0, 75.0, 68.0, 75.0, 68.0]
+        );
+        assert_eq!(
+            [
+                PlayerTeam::Unassigned,
+                PlayerTeam::Spectator,
+                PlayerTeam::Red,
+                PlayerTeam::Blue,
+            ]
+            .map(PlayerTeam::source_number),
+            [0, 1, 2, 3]
+        );
         assert_eq!(PlayerClass::Scout.data().maximum_speed, 400.0);
         assert_eq!(PlayerClass::Heavy.data().maximum_health, 300);
         assert_eq!(PlayerClass::Engineer.data().maximum_ammo.metal, 200);

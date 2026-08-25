@@ -242,8 +242,8 @@ test("joins the current team skin to the matching viewmodel template", () => {
       ]),
     }], [itemIdentity, { identity: itemIdentity, bodygroupCounts: Object.freeze([]), descriptor, sequences: Object.freeze([]) }]]),
   } as unknown as PresentationArtifacts
-  const snapshot = (team: 1 | 2) => ({
-    class: 1,
+  const snapshot = (team: 2 | 3) => ({
+    class: 3,
     team,
     tick: 1n,
     projectileEvents: Object.freeze([]),
@@ -252,10 +252,10 @@ test("joins the current team skin to the matching viewmodel template", () => {
     weapon: 1,
     velocity: Object.freeze([0, 0, 0]),
   }) as unknown as Snapshot
-  expect(createViewmodelPresenter(artifacts).map(snapshot(1)).item.skin).toBe(0)
-  expect(createViewmodelPresenter(artifacts).map(snapshot(2)).item.skin).toBe(1)
+  expect(createViewmodelPresenter(artifacts).map(snapshot(2)).item.skin).toBe(0)
+  expect(createViewmodelPresenter(artifacts).map(snapshot(3)).item.skin).toBe(1)
   const reloading = {
-    ...snapshot(1),
+    ...snapshot(2),
     activities: Object.freeze([{ tick: 1n, weapon: 1, activity: 3 }]),
   } as unknown as Snapshot
   expect(createViewmodelPresenter(artifacts).map(reloading).request.activity).toBe("ACT_PRIMARY_RELOAD_START")
