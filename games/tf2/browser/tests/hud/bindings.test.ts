@@ -711,6 +711,30 @@ describe("canonical all-class TF2 session HUD adapter", () => {
     }
   })
 
+  test("publishes distinct Heavy stock item identities, total Minigun ammo, and hidden Fists ammo", () => {
+    const loadout = Object.freeze([
+      Object.freeze({ weapon: 9 as const, reload: 0 as const, clip: 0, reserve: 200, maximumClip: 0, maximumReserve: 200 }),
+      Object.freeze({ weapon: 10 as const, reload: 0 as const, clip: 6, reserve: 32, maximumClip: 6, maximumReserve: 32 }),
+      Object.freeze({ weapon: 11 as const, reload: 0 as const, clip: 0, reserve: 0, maximumClip: 0, maximumReserve: 0 }),
+    ])
+    for (const active of [9, 10, 11] as const) {
+      const source = compactSnapshot(1n, { class: 6, weapon: active, health: 300, maximumHealth: 300, loadout })
+      const binding = bindTf2Hud(adaptSessionHud(unavailable("initial"), compactPublication(source), context))
+      const player = (binding.facts.player as Extract<Tf2HudSnapshot["player"], { kind: "available" }>).value
+      expect(player.weapons.map((item) => ({ identity: item.identity, item: item.itemDefinition, slot: item.slot, name: item.displayName, ammo: item.ammoDisplay }))).toEqual([
+        { identity: 9, item: { kind: "available", value: 15 }, slot: 0, name: "Minigun", ammo: "total" },
+        { identity: 10, item: { kind: "available", value: 11 }, slot: 1, name: "Shotgun", ammo: "clip-and-reserve" },
+        { identity: 11, item: { kind: "available", value: 5 }, slot: 2, name: "Fists", ammo: "hidden" },
+      ])
+      expect(value(binding.values, "visible", "HudWeaponAmmo")).toMatchObject({ value: active !== 11 })
+      expect(value(binding.values, "visible", "AmmoNoClip")).toMatchObject({ value: active === 9 })
+      expect(value(binding.values, "visible", "AmmoInClip")).toMatchObject({ value: active === 10 })
+      expect(value(binding.values, "dialog-variable", "HudWeaponAmmo", "Ammo")).toMatchObject({
+        value: active === 11 ? { kind: "unavailable" } : { kind: "available", value: active === 9 ? 200 : 6 },
+      })
+    }
+  })
+
   test("retains fire/reload ticks across one coalesced host publication", () => {
     const initial = adaptSessionHud(unavailable("initial"), compactPublication(compactSnapshot(1n)), context)
     const prior = bindTf2Hud(initial).facts

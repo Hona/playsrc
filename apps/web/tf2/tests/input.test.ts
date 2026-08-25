@@ -5,6 +5,7 @@ import {
   applyPointerDelta,
   rawPointerMovementUnsupported,
   rebasePointerYaw,
+  sourceMouseButtonCode,
   type PhysicalBinding,
 } from "../src/input"
 import {
@@ -34,6 +35,11 @@ test("retries adjusted pointer lock only when raw movement is unsupported", () =
   expect(rawPointerMovementUnsupported({ name: "NotSupportedError" })).toBe(true)
   expect(rawPointerMovementUnsupported({ name: "NotAllowedError" })).toBe(false)
   expect(rawPointerMovementUnsupported(new Error("denied"))).toBe(false)
+})
+
+test("maps browser primary, auxiliary, secondary, and navigation buttons to exact Source bindings", () => {
+  expect([0, 1, 2, 3, 4].map(sourceMouseButtonCode)).toEqual(["MOUSE1", "MOUSE3", "MOUSE2", "MOUSE4", "MOUSE5"])
+  for (const button of [-1, 5, 1.5, Number.NaN]) expect(sourceMouseButtonCode(button)).toBeNull()
 })
 
 test("keeps unmodified physical bindings active under unrelated modifiers", () => {

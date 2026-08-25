@@ -85,7 +85,7 @@ import { bytesToHex } from "@noble/hashes/utils.js"
 import { sha256 } from "@noble/hashes/sha2.js"
 import {consoleLimits,resolveConfiguredConsoleResources,type ResolvedConsoleResources} from "./console-resources"
 import { loadBrowserConfiguration, type BrowserConfiguration, type BrowserTargetConfiguration } from "./config"
-import { PhysicalBindingIndex, PhysicalButtonState, applyPointerDelta, rawPointerMovementUnsupported, rebasePointerYaw, type PhysicalBinding } from "./input"
+import { PhysicalBindingIndex, PhysicalButtonState, applyPointerDelta, rawPointerMovementUnsupported, rebasePointerYaw, sourceMouseButtonCode, type PhysicalBinding } from "./input"
 import { TF2_SELECTED_OPTIONS, type AdapterRequestResult, type SettingsAdapterRequest } from "@playsrc/settings"
 import { SimulationClockQueue } from "./simulation-clock"
 import {
@@ -151,6 +151,17 @@ const SOUND_PATHS = [
   "sound/weapons/axe_hit_flesh1.wav",
   "sound/weapons/axe_hit_flesh2.wav",
   "sound/weapons/axe_hit_flesh3.wav",
+  "sound/weapons/minigun_wind_up.wav",
+  "sound/weapons/minigun_wind_down.wav",
+  "sound/weapons/minigun_spin.wav",
+  "sound/weapons/minigun_shoot.wav",
+  "sound/weapons/bat_draw_swoosh1.wav",
+  "sound/weapons/bat_draw_swoosh2.wav",
+  "sound/weapons/cbar_hitbod1.wav",
+  "sound/weapons/cbar_hitbod2.wav",
+  "sound/weapons/cbar_hitbod3.wav",
+  "sound/weapons/fist_hit_world1.wav",
+  "sound/weapons/fist_hit_world2.wav",
 ] as const
 
 export type ApplicationView = Readonly<{
@@ -1479,7 +1490,7 @@ export class Tf2Application {
       clock: { nowSeconds: () => this.#frameClock.current },
       random: this.#presentationRandom,
       onCommand: (command) => {
-        if (command.kind === "select-weapon" && command.weapon >= 1 && command.weapon <= 8) this.#selectWeapon = command.weapon as Tf2Weapon
+        if (command.kind === "select-weapon" && command.weapon >= 1 && command.weapon <= 11) this.#selectWeapon = command.weapon as Tf2Weapon
       },
     })
     const panels = this.#hudIntegration.snapshot().vgui.panels
@@ -3274,7 +3285,7 @@ export class Tf2Application {
       const lockerPoses=modelPoses.filter(pose=>this.#lockerAnimations.has(pose.identity))
       const botPoses=modelPoses.filter(pose=>pose.identity>=BOT_MODEL_IDENTITY_BASE&&pose.identity<BOT_MODEL_IDENTITY_BASE+0x10000)
       if(botPoses.length!==snapshot.bots.length)throw new Error("TF2 bot player pose output differs from authoritative player state")
-      if(viewmodel!==undefined&&(viewmodelPoses.length!==2||viewmodelPoses[0]?.role!=="item"||viewmodelPoses[1]?.role!=="hand"))throw new Error("Viewmodel composition output differs");const viewmodelPose=viewmodelPoses[1]
+      if(viewmodel!==undefined&&(snapshot.weapon===11?(viewmodelPoses.length!==1||viewmodelPoses[0]?.role!=="hand"):(viewmodelPoses.length!==2||viewmodelPoses[0]?.role!=="item"||viewmodelPoses[1]?.role!=="hand")))throw new Error("Viewmodel composition output differs");const viewmodelPose=viewmodelPoses.at(-1)
       if(viewmodelPose)this.#viewmodelActivities.add(viewmodelPose.activity)
       this.#updateAttachmentTransforms(snapshot, timelineViewmodelPoses, camera)
       let presentation:ReturnType<ProjectileMapper["map"]>
@@ -3286,7 +3297,7 @@ export class Tf2Application {
       const visibility=await visibilityRequest
       if(!ownsGeneration())return
       const particleStart=performance.now()
-      const hitscanMuzzles=snapshot.class===1||snapshot.class===3?publication.eventBatches.flatMap(batch=>hitscanMuzzleParticles(batch.snapshot,{systems:PARTICLE_SYSTEMS,attachmentTransforms:this.#attachmentTransforms})):null
+      const hitscanMuzzles=snapshot.class===1||snapshot.class===3||snapshot.class===6?publication.eventBatches.flatMap(batch=>hitscanMuzzleParticles(batch.snapshot,{systems:PARTICLE_SYSTEMS,attachmentTransforms:this.#attachmentTransforms})):null
       const particleBatch=owners.encoder.encode(snapshot.tick,camera.position,hitscanMuzzles===null||hitscanMuzzles.length===0?presentation.particles:[...presentation.particles,...hitscanMuzzles])
       if(!ownsGeneration())return
       this.#wasmCalls.particles++
@@ -3307,6 +3318,7 @@ export class Tf2Application {
             ...viewmodel!.item,
             identity: viewmodel!.item.identity + index,
             model: pose.model,
+            skin: viewmodel!.item.skin < (this.#artifacts!.models.get(pose.model)?.skinCount ?? 0) ? viewmodel!.item.skin : 0,
             position:pose.viewmodel!.transform.origin,angles:pose.viewmodel!.transform.angles,
             viewModelProjection:Object.freeze({kind:"viewmodel" as const,horizontalFov4By3:pose.viewmodel!.projection.unscaledHorizontalFov4By3,near:pose.viewmodel!.projection.near,depthRange:pose.viewmodel!.depthRange,drawsAfterWorld:true,opaqueBeforeTranslucent:true,optionalViewSpaceYReflection:pose.viewmodel!.reflected}),
             pose,
@@ -3463,9 +3475,9 @@ export class Tf2Application {
   }
 
   #mouseAction(event: MouseEvent): string | null {
-    const code = event.button >= 0 && event.button <= 4 ? `MOUSE${event.button + 1}` : ""
+    const code = sourceMouseButtonCode(event.button)
     const modifiers = Number(event.shiftKey) | (Number(event.ctrlKey) << 1) | (Number(event.altKey) << 2)
-    return code ? this.#boundAction(code, modifiers) : null
+    return code === null ? null : this.#boundAction(code, modifiers)
   }
 
   #activateBoundAction(identity: string, action: string): void {
@@ -3479,9 +3491,9 @@ export class Tf2Application {
       if (this.#buttons.press(identity, action)) this.#detonatePressed = true
     } else if (action === "+reload") {
       if (this.#buttons.press(identity, action)) this.#reloadPressed = true
-    } else if (action === "slot1") this.#selectWeapon = this.#snapshot?.class === 1 ? 4 : 1
-    else if (action === "slot2") this.#selectWeapon = this.#snapshot?.class === 1 ? 5 : this.#snapshot?.class === 3 ? 7 : 3
-    else if (action === "slot3") this.#selectWeapon = this.#snapshot?.class === 1 ? 6 : this.#snapshot?.class === 3 ? 8 : undefined
+    } else if (action === "slot1") this.#selectWeapon = this.#snapshot?.class === 1 ? 4 : this.#snapshot?.class === 6 ? 9 : 1
+    else if (action === "slot2") this.#selectWeapon = this.#snapshot?.class === 1 ? 5 : this.#snapshot?.class === 3 ? 7 : this.#snapshot?.class === 6 ? 10 : 3
+    else if (action === "slot3") this.#selectWeapon = this.#snapshot?.class === 1 ? 6 : this.#snapshot?.class === 3 ? 8 : this.#snapshot?.class === 6 ? 11 : undefined
   }
 
   readonly #keyDown = (event: KeyboardEvent): void => {

@@ -77,6 +77,11 @@ export class PhysicalButtonState {
   }
 }
 
+export function sourceMouseButtonCode(button: number): string | null {
+  const sourceButton = ([1, 3, 2, 4, 5] as const)[button]
+  return sourceButton === undefined ? null : `MOUSE${sourceButton}`
+}
+
 export function applyPointerDelta(
   yaw: number,
   pitch: number,
