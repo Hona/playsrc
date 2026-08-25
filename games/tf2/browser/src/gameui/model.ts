@@ -210,11 +210,12 @@ export type Tf2PauseState = Readonly<{
   kind: "pause"
   mapIdentity: string
   panels: typeof TF2_PAUSE_MENU_PANELS
+  pendingRequest?: "resume-game"
 }>
 export type Tf2DisconnectingState = Readonly<{
   kind: "disconnecting"
   mapIdentity: string
-  origin: "loading" | "pause"
+  origin: "loading" | "pause" | "failure"
 }>
 export type Tf2Failure = Readonly<{
   reason: string
@@ -236,6 +237,7 @@ export type Tf2GameUiState =
 
 export type Tf2GameUiEvent =
   | Readonly<{ kind: "activate-button"; button: Tf2MenuButton["identity"] }>
+  | Readonly<{ kind: "escape" }>
   | Readonly<{ kind: "show-console" }>
   | Readonly<{ kind: "map"; mapIdentity: string }>
   | Readonly<{ kind: "loading-started"; mapIdentity: string }>
@@ -264,7 +266,7 @@ export type Tf2GameUiTransition = Readonly<{
   disposition: "applied" | "ignored" | "inactive" | "illegal"
   state: Tf2GameUiState
   request: Tf2GameUiRequest | null
-  reason: Tf2UnavailableOwner | "action-unavailable" | "invalid-map-identity" | "invalid-failure" | "progress-regression" | "progress-saturated" | null
+  reason: Tf2UnavailableOwner | "action-unavailable" | "invalid-map-identity" | "invalid-failure" | "operation-pending" | "progress-regression" | "progress-saturated" | null
 }>
 
 export const TF2_MAIN_MENU_STATE: Tf2MainMenuState = Object.freeze({
@@ -339,7 +341,13 @@ const activateButton = (
   if (selected.capability.kind === "inactive") {
     return transition("inactive", state, null, selected.capability.owner)
   }
+  if (state.kind === "pause" && state.pendingRequest === "resume-game") {
+    return transition("ignored", state, null, "operation-pending")
+  }
   const emitted = buttonRequest(selected.capability.request)
+  if (identity === "resume" && state.kind === "pause") {
+    return transition("applied", Object.freeze({ ...state, pendingRequest: "resume-game" }), emitted)
+  }
   if (identity === "disconnect" && state.kind === "pause") {
     return transition("applied", Object.freeze({
       kind: "disconnecting",
@@ -355,6 +363,27 @@ const activateButton = (
     }), emitted)
   }
   return transition("applied", state, emitted)
+}
+
+const escape = (state: Tf2GameUiState): Tf2GameUiTransition => {
+  switch (state.kind) {
+    case "main-menu":
+      return transition("ignored", state)
+    case "loading":
+      return activateButton(state, "cancel-loading")
+    case "in-game":
+      return transition("applied", pauseState(state.mapIdentity))
+    case "pause":
+      return activateButton(state, "resume")
+    case "disconnecting":
+      return transition("ignored", state, null, "operation-pending")
+    case "failure":
+      return transition("applied", Object.freeze({
+        kind: "disconnecting",
+        mapIdentity: state.mapIdentity,
+        origin: "failure",
+      }), Object.freeze({ kind: "disconnect" }))
+  }
 }
 
 const advanceLoading = (state: Tf2LoadingState, identity: Tf2LoadingPhase): Tf2GameUiTransition => {
@@ -394,21 +423,17 @@ export function transitionTf2GameUi(state: Tf2GameUiState, event: Tf2GameUiEvent
   switch (event.kind) {
     case "activate-button":
       return activateButton(state, event.button)
+    case "escape":
+      return escape(state)
     case "show-console":
       if (state.kind !== "main-menu" && state.kind !== "in-game" && state.kind !== "pause") {
         return transition("illegal", state, null, "action-unavailable")
       }
       return transition("applied", state, Object.freeze({ kind: "show-console" }))
     case "map":
-      if (state.kind !== "main-menu" && state.kind !== "pause") {
-        return transition("illegal", state, null, "action-unavailable")
-      }
       if (!isMapIdentity(event.mapIdentity)) return transition("illegal", state, null, "invalid-map-identity")
       return transition("applied", state, Object.freeze({ kind: "load-map", mapIdentity: event.mapIdentity }))
     case "loading-started":
-      if (state.kind !== "main-menu" && state.kind !== "in-game" && state.kind !== "pause") {
-        return transition("illegal", state, null, "action-unavailable")
-      }
       if (!isMapIdentity(event.mapIdentity)) return transition("illegal", state, null, "invalid-map-identity")
       return transition("applied", loadingState(event.mapIdentity))
     case "loading-progress":

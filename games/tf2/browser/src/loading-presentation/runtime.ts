@@ -175,6 +175,14 @@ export function initializeTf2LoadingVguiRuntime(input: Tf2LoadingVguiRuntimeInpu
           mustApply(runtime, { kind: "set-bounds", panel: button, bounds: { ...buttonBounds, y: info.bounds.y + info.bounds.height + operation.buttonGap } })
         } else {
           mustApply(runtime, { kind: "set-application-modal", panel: null })
+          mustApply(runtime, {
+            kind: "set-panel-state",
+            panel: dialog,
+            visible: false,
+            popup: false,
+            mouseInput: false,
+            keyboardInput: false,
+          })
           mustApply(runtime, { kind: "set-panel-state", panel: 1, visible: false, mouseInput: false, keyboardInput: false })
         }
       }

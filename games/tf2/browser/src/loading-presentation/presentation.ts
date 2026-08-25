@@ -37,6 +37,7 @@ export function createTf2LoadingPresentation(input: Tf2LoadingPresentationInput)
   let generation = 0
   let lastKey = ""
   let currentKind: Tf2GameUiState["kind"] = "main-menu"
+  let mounted: "loading" | "failure" | null = null
   let destroyed = false
 
   const frozenSnapshot = (stateKind: Tf2GameUiState["kind"], background: Extract<Tf2LoadingBackgroundResult, { ok: true }> | null, operations: Tf2LoadingVguiOperation[]): Tf2LoadingPresentationSnapshot => Object.freeze({
@@ -53,26 +54,33 @@ export function createTf2LoadingPresentation(input: Tf2LoadingPresentationInput)
       generation = nextGeneration
       currentKind = state.kind
       const background = resolved?.ok ? resolved : null
-      let operations: Tf2LoadingVguiOperation[]
+      const key = JSON.stringify({ generation, state, viewport, background })
+      if (key === lastKey) return null
+      lastKey = key
+
+      const operations: Tf2LoadingVguiOperation[] = []
       if (state.kind === "loading") {
-        operations = [
-          { kind: "mount", resource: input.loadingResource, modal: true },
+        if (mounted !== "loading") operations.push({ kind: "mount", resource: input.loadingResource, modal: true })
+        mounted = "loading"
+        operations.push(
           { kind: "bounds", x: viewport.width - 390, y: viewport.height - 122, width: 380, height: 112 },
           { kind: "status", control: "InfoLabel", text: state.statusText },
           { kind: "progress", control: "Progress", value: state.progress },
           { kind: "button", control: "CancelButton", text: "#GameUI_Cancel", command: "Cancel" },
-        ]
+        )
       } else if (state.kind === "failure") {
-        operations = [
-          { kind: "mount", resource: input.failureResource, modal: true },
+        if (mounted !== "failure") operations.push({ kind: "mount", resource: input.failureResource, modal: true })
+        mounted = "failure"
+        operations.push(
           { kind: "status", control: "InfoLabel", text: state.failure.extendedReason ? `${state.failure.reason}\n${state.failure.extendedReason}` : state.failure.reason },
           { kind: "failure-layout", placement: "screen-center", contentBottomPadding: 50, buttonGap: 6 },
           { kind: "button", control: "CancelButton", text: "#GameUI_Close", command: "Close" },
-        ]
-      } else operations = [{ kind: "unmount" }]
-      const key = JSON.stringify({ generation, state, viewport, background, operations })
-      if (key === lastKey) return null
-      lastKey = key
+        )
+      } else {
+        if (mounted === null) return null
+        mounted = null
+        operations.push({ kind: "unmount" })
+      }
       return frozenSnapshot(state.kind, background, operations)
     },
     activate: (command) => {
@@ -85,6 +93,8 @@ export function createTf2LoadingPresentation(input: Tf2LoadingPresentationInput)
       if (destroyed) return null
       destroyed = true
       currentKind = "main-menu"
+      if (mounted === null) return null
+      mounted = null
       return frozenSnapshot("main-menu", null, [{ kind: "unmount" }])
     },
   })
