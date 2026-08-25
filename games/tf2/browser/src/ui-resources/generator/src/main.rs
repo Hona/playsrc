@@ -1402,6 +1402,22 @@ fn font_record(content: &Content, value: &str, index: usize) -> Result<FontRecor
 }
 
 fn main() -> Result<(), String> {
+    let mut arguments = std::env::args().skip(1);
+    let class_images: Vec<String> = serde_json::from_str(
+        &arguments
+            .next()
+            .ok_or_else(|| "TF2 HUD class image inventory is missing".to_owned())?,
+    )
+    .map_err(|error| format!("TF2 HUD class image inventory is malformed: {error}"))?;
+    if arguments.next().is_some()
+        || class_images.len() != 18
+        || class_images
+            .iter()
+            .any(|image| !image.starts_with("../hud/class_") || image.len() > 128)
+        || class_images.iter().collect::<BTreeSet<_>>().len() != class_images.len()
+    {
+        return Err("TF2 HUD class image inventory is invalid".to_owned());
+    }
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let repository = manifest
         .ancestors()
@@ -1473,7 +1489,7 @@ fn main() -> Result<(), String> {
         .iter()
         .map(|value| (*value).to_owned())
         .collect::<BTreeSet<_>>();
-    let mut unique_image_values = BTreeSet::new();
+    let mut unique_image_values = class_images.into_iter().collect::<BTreeSet<_>>();
     let mut unique_font_values = BTreeSet::new();
     let mut configured_advanced_options = None;
     let mut configured_keyboard_actions = None;

@@ -22,6 +22,7 @@
     "diagnose:presentation-bound": "bun tools/playsrc/src/diagnose-presentation-bound.ts",
     "profile:gameui": "playwright test --config=playwright.gameui-profile.config.ts",
     "profile:hud": "playwright test --config=playwright.hud-profile.config.ts",
+    "profile:class-hud": "playwright test --config=playwright.class-hud-profile.config.ts",
     "profile:gameplay": "playwright test --config=playwright.profile.config.ts",
     "profile:map-load": "playwright test --config=playwright.profile.config.ts",
     "profile:cold-map": "playwright test --config=playwright.cold-map-profile.config.ts",
