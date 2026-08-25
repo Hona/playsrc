@@ -2,7 +2,7 @@
 
 ## Deterministic Suite
 
-`bun test packages/presentation/rendering/tests` executes 41 tests with 204 assertions. The fixed inputs cover:
+`bun test packages/presentation/rendering/tests` executes 62 tests with 282 assertions. The fixed inputs cover:
 
 - Schema-3 LDR payload framing, atlas coordinates, RGBExp32 decode, and malformed/trailing bytes.
 - Schema-4 `PSHD` framing, all ten member roles, lighting closure, VTF hash and header metadata, consumed-input order, world lights, ambient indexes/samples, profile requirements, reserved bytes, and cross-record ranges.
@@ -73,3 +73,19 @@ The current public producer-to-consumer audit covers `packages/world/map/rust/sr
 - No checked target capture command, immutable target/browser manifest, target color/depth/ID output set, or accepted comparison tolerance exists. Browser PNG hashes cannot satisfy aligned evidence.
 
 This evidence retains exact blockers for `REN-026`, `REN-028`, complete aligned evidence for `REN-027`–`REN-032`, `REN-044`, `REN-046`, and `REN-054`. It is not a visual-parity claim and does not authorize Rendering-side Source parsing or a partial visual substitute.
+
+## Headed TF2 Rendering Hot Path
+
+The fixed input is TF2 content build `24245096`, `jump_beef` BSP SHA-256 `b2e22010b56aa03387c76396a55f2fb83cdeb72a9562ed16cfb656a747e58959`, 78,255,714-byte HDR map payload SHA-256 `735995d68920adcb971fe4c5e773986f438c2a95c07c935882dc7fd081ce1e3a`, Three.js `0.185.1`, visibly headed Chromium/WebGPU on Apple M4/Metal, and 1280×720 presentation. The measured interval includes browser-frame admission, current visibility, renderer preparation, all required world/viewmodel GPU submissions, and visible publication. Simulation remains 66.601 ticks/s and presentation remains 59.881 frames/s.
+
+| Scenario | Baseline frames | Final frames | Baseline p50/p95/p99/max, ms | Final p50/p95/p99/max, ms | p95 reduction |
+|---|---:|---:|---|---|---:|
+| Repeated jump | 477 | 484 | 3.185 / 7.180 / 8.360 / 9.000 | 0.610 / 0.775 / 0.865 / 1.100 | 89.21% |
+| Held movement | 902 | 908 | 2.005 / 3.080 / 3.805 / 8.840 | 0.610 / 0.770 / 0.950 / 1.090 | 75.00% |
+| Held primary fire | 595 | 598 | 1.980 / 2.565 / 3.140 / 4.735 | 0.585 / 1.075 / 1.475 / 1.920 | 58.09% |
+
+The complete headed browser acceptance passes 13 visible projected marks, all 33 supplied model occurrences, four scene generations, exact world/viewmodel depth isolation and restoration, 152 pointer events, 134 displayed frames, 91 repeated prepared frames under accelerated display opportunities, cold/warm cache identities, and listener shutdown. Its fixed cold/warm ceiling, forward-wall, and floor region SHA-256 values are respectively `e3084ec024f3e9e8cdad60751a1a1815c73d3aabc8af812a51534dd7ad5bac50`, `e8bf937c8818010e0638a1484e1c8db8530b01848e01cc2ac04dc95663077fd7`, and `3c64a2e6f12dbf68d8e2fd7183b2cadc7e83d76d1e7ef5da6177cb689cef61b0`.
+
+Ordered WebGPU submission now draws the authored sky, opaque world, ordinary opaque objects, and translucent Particle batches in that order. The headed rocket-flight PNG `aa301edb16f2acc0af3136fc070e785398c2ada8a5a95e97cf9cb1976aae98b4` contains 778 warm Particle pixels over the forward wall. The headed wall-impact PNG `1a97fb50aa68bec76e47a1f9dea977f1efc765b2de04cfaeab86dff23505f8cf` contains 80 warm forward-wall flash/debris pixels and the exact authored debris/smoke material children. Both frames preserve the unrelated floor-region SHA-256 `135502b0b748c600697ab4e69bd7cf8e1fa82bdc486b4d00f09d151e22620df6`. The downward viewmodel capture is `c294304461e2f4d8cf4fa5f323546eb364bc9db8ea6df15c9b192a5c2c573968`.
+
+`bun packages/presentation/rendering/scripts/capture-metrics.ts <capture-sha256>` verifies one exact retained headed PNG, decodes its pixels, and writes deterministic region/color counts to the configured Source cache. The separate native-refresh gameplay profiler still rejects its own `repeatedPreparedFrames > 0` assertion despite recording every distribution above; the cold-map profiler still expects removed single-map `configuration.bsp` instead of `configuration.targets[].objects.bsp`. Both shared tools are outside Rendering ownership. No aligned native Source capture is claimed.

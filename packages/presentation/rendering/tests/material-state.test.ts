@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import * as THREE from "three/webgpu"
-import { configureWorldLightmap, sourceDepthBias, worldMaterialSide } from "../src/material-state"
+import { applyParticleDepthState, configureWorldLightmap, sourceDepthBias, worldMaterialSide } from "../src/material-state"
 
 test("world materials keep front-face culling unless no-cull is explicit", () => {
   expect(worldMaterialSide(0)).toBe(THREE.FrontSide)
@@ -10,6 +10,27 @@ test("world materials keep front-face culling unless no-cull is explicit", () =>
 test("categorical decal bias maps to the fixed WebGPU adapter", () => {
   expect(sourceDepthBias("none")).toEqual({ enabled: false, slopeScale: 0, units: 0 })
   expect(sourceDepthBias("decal")).toEqual({ enabled: true, slopeScale: -0.5, units: -262_144 })
+})
+
+test("rocket Particle materials preserve authored wall occlusion without writing translucent depth", () => {
+  const material = new THREE.MeshBasicNodeMaterial()
+  applyParticleDepthState(material, { depthTest: true, depthWrite: false, depthFunction: 1, blendEnabled: true })
+  expect(material.depthTest).toBe(true)
+  expect(material.depthWrite).toBe(false)
+  expect(material.depthFunc).toBe(THREE.LessEqualDepth)
+
+  const worldDepth = 0.5
+  const passesOpaqueWall = (fragmentDepth: number) => !material.depthTest || (
+    material.depthFunc === THREE.LessDepth ? fragmentDepth < worldDepth : fragmentDepth <= worldDepth
+  )
+  expect(passesOpaqueWall(0.49)).toBe(true)
+  expect(passesOpaqueWall(0.5)).toBe(true)
+  expect(passesOpaqueWall(0.51)).toBe(false)
+
+  applyParticleDepthState(material, { depthTest: false, depthWrite: false, depthFunction: 0, blendEnabled: true })
+  expect(material.depthTest).toBe(false)
+  expect(material.depthFunc).toBe(THREE.LessDepth)
+  expect(() => applyParticleDepthState(material, { depthTest: true, depthWrite: true, depthFunction: 1, blendEnabled: true })).toThrow(/invalid/i)
 })
 
 test("world lightmaps bind the canonical UV1 atlas without color or wrap reinterpretation", () => {

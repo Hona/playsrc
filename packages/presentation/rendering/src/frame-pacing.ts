@@ -22,6 +22,7 @@ export class FramePacingController {
   readonly #clock: FramePacingClock
   readonly #maximumRecords: number
   #records: FramePacingRecord[] = []
+  #snapshot?: readonly FramePacingRecord[]
   #ordinal = 0
   #running = false
   #suspended = false
@@ -75,12 +76,13 @@ export class FramePacingController {
   }
 
   records(): readonly FramePacingRecord[] {
-    return Object.freeze(this.#records.map((record) => Object.freeze({ ...record })))
+    return this.#snapshot ??= Object.freeze([...this.#records])
   }
 
   #record(record: FramePacingRecord): FramePacingRecord {
     const retained = Object.freeze({ ...record })
     this.#records.push(retained)
+    this.#snapshot = undefined
     if (this.#records.length > this.#maximumRecords) this.#records.splice(0, this.#records.length - this.#maximumRecords)
     return retained
   }
