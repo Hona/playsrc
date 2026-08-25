@@ -1743,7 +1743,7 @@ export class Tf2Application {
     this.#hudContextIdentity = identity
     this.#hudContext = Object.freeze({
       playerIdentity: 1,
-      liveHudSuppressed: classSelection,
+      liveHudSuppressed: classSelection || this.#view.teamSelectionVisible === true,
       respawnAllowed,
       weaponSelection: Object.freeze({ open: false, selectedWeapon: tf2HudUnavailable<number>("not-produced") }),
       crosshair: Object.freeze({
