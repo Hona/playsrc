@@ -229,6 +229,7 @@ class Integration implements Tf2TeamSelectionIntegration {
     const state = this.#state
     this.#runtime.deferPresentation(() => {
       apply(this.#runtime, { kind: "set-panel-state", panel: 1, visible: state.visible })
+      apply(this.#runtime, { kind: "set-panel-state", panel: this.#owner, visible: state.visible })
       if (!state.visible || !state.server) return
       const server = state.server
       apply(this.#runtime, { kind: "set-dialog-variable", panel: this.#owner, name: "redcount", value: String(server.redCount) })

@@ -36,7 +36,7 @@ describe("authored TF2 RED/BLU team-selection VGUI", () => {
     const { integration, models } = fixture()
     const snapshot = integration.snapshot()
     for (const name of ["team", "teambutton0", "teambutton1", "teambutton2", "teambutton3", "TeamMenuSelect", "BlueCount", "RedCount"]) {
-      expect(snapshot.panels.some((panel) => panel.name === name), name).toBeTrue()
+      expect(snapshot.panels.find((panel) => panel.name === name)?.effectivelyVisible, name).toBeTrue()
     }
     expect(models.at(-1)?.map(({ name, model, fov, origin, angles }) => ({ name, model, fov, origin, angles }))).toEqual([
       { name: "MenuBG", model: "models/vgui/UI_team01.mdl", fov: 20, origin: [305, 0, -34], angles: [0, 180, 0] },

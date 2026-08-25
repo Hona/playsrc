@@ -77,7 +77,8 @@ function createResources(): Tf2VguiResources {
     .filter((control) => !genericControls.has(control.name))
     .map((control) => Object.freeze({
       name: control.name,
-      baseControl: /button/iu.test(control.name) ? "Button" : /image|class/iu.test(control.name) ? "ImagePanel" : "EditablePanel",
+      baseControl: control.name === "CTeamMenu" ? "Frame"
+        : /button/iu.test(control.name) ? "Button" : /image|class/iu.test(control.name) ? "ImagePanel" : "EditablePanel",
       element: /button/iu.test(control.name) ? "button" : "div",
       role: null,
       focusable: /button/iu.test(control.name),

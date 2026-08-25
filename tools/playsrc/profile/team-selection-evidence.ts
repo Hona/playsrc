@@ -2,6 +2,7 @@ import { mkdir } from "node:fs/promises"
 import path from "node:path"
 import type { Page } from "@playwright/test"
 import { expect } from "./application-test"
+import { decodeScreenshot } from "./screenshot-pixels"
 import { loadLocalConfig } from "../src/config"
 
 export type Tf2TeamSelectionEvidence = Readonly<{
@@ -21,32 +22,16 @@ export async function captureTf2TeamSelection(page: Page): Promise<Tf2TeamSelect
       && (main.dataset.teamSelectionModels ?? "").includes("reddoor:")
       && (main.dataset.teamSelectionModels ?? "").includes("bluedoor:")
   }, undefined, { timeout: 60_000 })
-  const evidence = await page.evaluate(() => {
+  const state = await page.evaluate(() => {
     const main = document.querySelector<HTMLElement>("main")!
-    const source = document.querySelector<HTMLCanvasElement>("canvas.world-canvas")!
-    const copy = document.createElement("canvas")
-    copy.width = source.width
-    copy.height = source.height
-    const context = copy.getContext("2d")!
-    context.drawImage(source, 0, 0)
-    const pixels = context.getImageData(0, 0, copy.width, copy.height).data
-    let nonBlack = 0
-    let redDominant = 0
-    let blueDominant = 0
-    for (let index = 0; index < pixels.length; index += 4) {
-      const red = pixels[index]!
-      const green = pixels[index + 1]!
-      const blue = pixels[index + 2]!
-      if (red > 8 || green > 8 || blue > 8) nonBlack += 1
-      if (red > blue * 1.15 && red > green * 1.05) redDominant += 1
-      if (blue > red * 1.1 && blue > green * 0.9) blueDominant += 1
-    }
     const buttons = ["teambutton0", "teambutton1", "teambutton2", "teambutton3"].map((name) => {
       const element = document.querySelector<HTMLElement>(`.team-selection-layer [data-vgui-name='${name}']`)
+      const bounds = element?.getBoundingClientRect()
       return {
         name,
         label: element?.getAttribute("aria-label") ?? "",
-        visible: Boolean(element && element.getBoundingClientRect().width > 0 && getComputedStyle(element).visibility !== "hidden"),
+        visible: Boolean(element && bounds && bounds.width > 0 && bounds.height > 0
+          && getComputedStyle(element).visibility !== "hidden" && getComputedStyle(element).display !== "none"),
       }
     })
     return {
@@ -54,15 +39,30 @@ export async function captureTf2TeamSelection(page: Page): Promise<Tf2TeamSelect
       redCount: Number(main.dataset.teamSelectionRedCount),
       blueCount: Number(main.dataset.teamSelectionBlueCount),
       buttons,
-      pixels: { width: copy.width, height: copy.height, nonBlack, redDominant, blueDominant },
       models: main.dataset.teamSelectionModels ?? "",
     }
   })
   const local = await loadLocalConfig()
   const output = path.join(local.sourceCacheDir, "profiles", "team-selection")
   await mkdir(output, { recursive: true })
-  await page.screenshot({ path: path.join(output, "initial-unassigned-team-menu.png") })
-  console.log(`TF2_TEAM_SELECTION ${JSON.stringify({ localTeam: evidence.localTeam, redCount: evidence.redCount, blueCount: evidence.blueCount, pixels: evidence.pixels })}`)
+  const screenshot = await page.screenshot({ path: path.join(output, "initial-unassigned-team-menu.png") })
+  const decoded = decodeScreenshot(screenshot)
+  let nonBlack = 0
+  let redDominant = 0
+  let blueDominant = 0
+  for (let offset = 0; offset < decoded.pixels.length; offset += decoded.channels) {
+    const red = decoded.pixels[offset]!
+    const green = decoded.pixels[offset + 1]!
+    const blue = decoded.pixels[offset + 2]!
+    if (red > 8 || green > 8 || blue > 8) nonBlack += 1
+    if (red > blue * 1.15 && red > green * 1.05) redDominant += 1
+    if (blue > red * 1.1 && blue > green * 0.9) blueDominant += 1
+  }
+  const evidence: Tf2TeamSelectionEvidence = Object.freeze({
+    ...state,
+    pixels: Object.freeze({ width: decoded.width, height: decoded.height, nonBlack, redDominant, blueDominant }),
+  })
+  console.log(`TF2_TEAM_SELECTION ${JSON.stringify(evidence)}`)
   expect(evidence.localTeam).toBe(0)
   expect(evidence.redCount).toBe(0)
   expect(evidence.blueCount).toBe(0)
