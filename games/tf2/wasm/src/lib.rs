@@ -4650,7 +4650,7 @@ fn encode_round(
         timer.map_or(0, |value| value.configuration.setup_seconds),
         timer.map_or(0, |value| value.configuration.maximum_seconds),
     ] {
-        u32_field(out, value, maximum)?;
+        u32_field(out, value as u32, maximum)?;
     }
     u32_field(out, u32::try_from(round.events.len()).ok()?, maximum)?;
     for event in &round.events {

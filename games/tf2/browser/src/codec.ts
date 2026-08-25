@@ -1176,7 +1176,7 @@ function decodeRound(buffer: ArrayBuffer, offset: number, length: number): Round
     || (winning !== 0 && winning !== 2 && winning !== 3) || reason === undefined
     || !finite([waiting, remaining]) || waiting < -1 || remaining < -1 || count > 4096
     || length !== 48 + count * 8 || ((flags & 1) !== 0) !== (waiting !== -1)
-    || ((flags & 8) !== 0) !== (identity !== 0xffff_ffff) || ((flags & 8) !== 0) !== (remaining !== -1)) {
+    || ((flags & 8) !== 0) !== (identity !== 0xffff_ffff) || ((flags & 8) === 0 && remaining !== -1)) {
     throw new Tf2CodecError("Round rules section is invalid")
   }
   const events: RoundEvent[] = []
@@ -1193,8 +1193,8 @@ function decodeRound(buffer: ArrayBuffer, offset: number, length: number): Round
     winReason: reason, redScore: view.getUint16(12, true), blueScore: view.getUint16(14, true),
     roundsPlayed: view.getUint32(16, true),
     timer: (flags & 8) === 0 ? null : Object.freeze({
-      identity, remaining, initialSeconds: view.getUint32(32, true), setupSeconds: view.getUint32(36, true),
-      maximumSeconds: view.getUint32(40, true), paused: (flags & 16) !== 0,
+      identity, remaining, initialSeconds: view.getInt32(32, true), setupSeconds: view.getInt32(36, true),
+      maximumSeconds: view.getInt32(40, true), paused: (flags & 16) !== 0,
       showInHud: (flags & 32) !== 0, disabled: (flags & 64) !== 0,
     }),
     events: Object.freeze(events),
