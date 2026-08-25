@@ -961,8 +961,23 @@ unsafe fn compile_map(
             model_bounds,
         )
         .map_err(|_| 5_u32)?;
+        let rules = playsrc_tf2::team_selection::TeamRules {
+            attack_defend: runtime.entities.entities.iter().any(|entity| {
+                entity
+                    .classname
+                    .as_deref()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(b"team_train_watcher"))
+            }),
+            mann_vs_machine: runtime.entities.entities.iter().any(|entity| {
+                entity
+                    .classname
+                    .as_deref()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(b"tf_logic_mann_vs_machine"))
+            }),
+            ..playsrc_tf2::team_selection::TeamRules::default()
+        };
         let mut session =
-            playsrc_tf2::Session::connected(gameplay_world.clone(), spawn.position, map);
+            playsrc_tf2::Session::connected(gameplay_world.clone(), spawn.position, map, rules);
         if let Some(bytes) = resources.get("maps/pl_upward.nav") {
             let mesh = playsrc_nav::parse(
                 bytes,
