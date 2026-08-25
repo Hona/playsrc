@@ -49,11 +49,11 @@ fn configured_environment_retains_collision_selected_marks_water_and_view_inputs
     assert_eq!(hex(&Sha256::digest(&bsp_bytes)), BSP_SHA256);
     let bundle_bytes = playsrc_asset_graph::read_resource_set(
         &cache.join("browser-bundles/jump_beef.graph.json"),
-        None,
+        Some("gameplay"),
     )
     .unwrap();
     let bundle = parse_bundle(&bundle_bytes).unwrap();
-    assert_eq!(bundle.len(), 321);
+    assert_eq!(bundle.len(), 309);
 
     let bsp = parse_bsp(&bsp_bytes, BspProfile::Source2013V20, BspLimits::default()).unwrap();
     let graph = parse_entities(bsp.lumps[0].bytes(&bsp), EntityLimits::default()).unwrap();

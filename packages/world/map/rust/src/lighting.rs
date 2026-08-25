@@ -1,7 +1,7 @@
 use crate::{Error, ErrorCode, error};
 use playsrc_bsp::{Bsp, Face, Lump, LumpData, TextureInfo};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::{borrow::Cow, collections::BTreeSet};
 
 const WORLD_LIGHT_BYTES: usize = 88;
 const AMBIENT_INDEX_BYTES: usize = 4;
@@ -258,7 +258,9 @@ pub(crate) fn compile_lighting(
 
     let world_lights = parse_world_lights(world_lump.bytes(bsp), limits, world_slot)?;
     let ambient_indexes = parse_ambient_indexes(ambient_index_lump.bytes(bsp))?;
-    let ambient_samples = parse_ambient_samples(ambient_sample_lump.bytes(bsp), limits)?;
+    let rgbexp_scales = rgbexp_scales();
+    let ambient_samples =
+        parse_ambient_samples(ambient_sample_lump.bytes(bsp), limits, &rgbexp_scales)?;
     let leaf_count = match &bsp.lumps[10].records {
         LumpData::Leaves(leaves) => leaves.len(),
         _ => return Err(error(ErrorCode::MissingLump, Some(10))),
@@ -333,7 +335,14 @@ pub(crate) fn compile_lighting(
         LightingProfile::Hdr => LightingSamples::LinearRgb32(
             raw_samples
                 .iter()
-                .map(|sample| rgbexp(sample.red, sample.green, sample.blue, sample.exponent))
+                .map(|sample| {
+                    rgbexp_with_scale(
+                        sample.red,
+                        sample.green,
+                        sample.blue,
+                        rgbexp_scales[sample.exponent as u8 as usize],
+                    )
+                })
                 .collect(),
         ),
     };
@@ -448,6 +457,7 @@ fn parse_ambient_indexes(bytes: &[u8]) -> Result<Vec<AmbientIndex>, Error> {
 fn parse_ambient_samples(
     bytes: &[u8],
     limits: LightingLimits,
+    scales: &[f32; 256],
 ) -> Result<Vec<AmbientSample>, Error> {
     if !bytes.len().is_multiple_of(AMBIENT_SAMPLE_BYTES) {
         return Err(error(ErrorCode::InvalidLightingProfile, None));
@@ -460,11 +470,11 @@ fn parse_ambient_samples(
         .map(|record| AmbientSample {
             cube: std::array::from_fn(|side| {
                 let at = side * 4;
-                rgbexp(
+                rgbexp_with_scale(
                     record[at],
                     record[at + 1],
                     record[at + 2],
-                    record[at + 3] as i8,
+                    scales[record[at + 3] as usize],
                 )
             }),
             position: [record[24], record[25], record[26]],
@@ -480,11 +490,11 @@ struct GameLighting {
     static_props: usize,
 }
 
-struct GameEntry {
+struct GameEntry<'a> {
     id: u32,
     version: u16,
-    encoded: Vec<u8>,
-    decoded: Vec<u8>,
+    encoded: &'a [u8],
+    decoded: Cow<'a, [u8]>,
 }
 
 fn parse_game_lumps(
@@ -576,15 +586,21 @@ fn parse_game_lumps(
             encoded_range
         };
         let decoded = if flags & 1 != 0 {
-            playsrc_bsp::decode_source_lzma_member(encoded, length, playsrc_bsp::Limits::default())
-                .map_err(|_| error(ErrorCode::InvalidLightingProfile, Some(index)))?
+            Cow::Owned(
+                playsrc_bsp::decode_source_lzma_member(
+                    encoded,
+                    length,
+                    playsrc_bsp::Limits::default(),
+                )
+                .map_err(|_| error(ErrorCode::InvalidLightingProfile, Some(index)))?,
+            )
         } else {
-            encoded.to_vec()
+            Cow::Borrowed(encoded)
         };
         entries.push(GameEntry {
             id,
             version,
-            encoded: encoded.to_vec(),
+            encoded,
             decoded,
         });
     }
@@ -653,7 +669,10 @@ fn parse_game_lumps(
     })
 }
 
-fn find_game(entries: &[GameEntry], id: [u8; 4]) -> Option<&GameEntry> {
+fn find_game<'entries, 'bytes>(
+    entries: &'entries [GameEntry<'bytes>],
+    id: [u8; 4],
+) -> Option<&'entries GameEntry<'bytes>> {
     let id = u32::from_be_bytes(id);
     entries.iter().find(|entry| entry.id == id)
 }
@@ -742,6 +761,14 @@ fn standard_member(
     role: LightingMemberRole,
     count: usize,
 ) -> Result<LightingMember, Error> {
+    let encoded = lump.encoded_bytes(bsp);
+    let decoded = lump.bytes(bsp);
+    let encoded_sha256: [u8; 32] = Sha256::digest(encoded).into();
+    let decoded_sha256 = if same_source_bytes(encoded, decoded) {
+        encoded_sha256
+    } else {
+        Sha256::digest(decoded).into()
+    };
     Ok(LightingMember {
         role,
         source: Some(LightingSource::StandardLump {
@@ -749,10 +776,10 @@ fn standard_member(
                 .map_err(|_| error(ErrorCode::BoundExceeded, Some(lump.index)))?,
             version: lump.version,
         }),
-        encoded_bytes: as_u32(lump.encoded_bytes(bsp).len())?,
-        decoded_bytes: as_u32(lump.bytes(bsp).len())?,
-        encoded_sha256: Sha256::digest(lump.encoded_bytes(bsp)).into(),
-        decoded_sha256: Sha256::digest(lump.bytes(bsp)).into(),
+        encoded_bytes: as_u32(encoded.len())?,
+        decoded_bytes: as_u32(decoded.len())?,
+        encoded_sha256,
+        decoded_sha256,
         item_count: as_u32(count)?,
     })
 }
@@ -760,9 +787,15 @@ fn standard_member(
 fn game_member(
     role: LightingMemberRole,
     id: [u8; 4],
-    entry: &GameEntry,
+    entry: &GameEntry<'_>,
     count: usize,
 ) -> Result<LightingMember, Error> {
+    let encoded_sha256: [u8; 32] = Sha256::digest(entry.encoded).into();
+    let decoded_sha256 = if same_source_bytes(entry.encoded, entry.decoded.as_ref()) {
+        encoded_sha256
+    } else {
+        Sha256::digest(entry.decoded.as_ref()).into()
+    };
     Ok(LightingMember {
         role,
         source: Some(LightingSource::GameLump {
@@ -771,8 +804,8 @@ fn game_member(
         }),
         encoded_bytes: as_u32(entry.encoded.len())?,
         decoded_bytes: as_u32(entry.decoded.len())?,
-        encoded_sha256: Sha256::digest(&entry.encoded).into(),
-        decoded_sha256: Sha256::digest(&entry.decoded).into(),
+        encoded_sha256,
+        decoded_sha256,
         item_count: as_u32(count)?,
     })
 }
@@ -819,13 +852,25 @@ fn member_closure(profile: LightingProfile, members: &[LightingMember]) -> [u8; 
     digest.finalize().into()
 }
 
-fn rgbexp(red: u8, green: u8, blue: u8, exponent: i8) -> [f32; 3] {
-    let scale = 2_f32.powi(exponent as i32) / 255.;
+fn same_source_bytes(left: &[u8], right: &[u8]) -> bool {
+    left.len() == right.len() && std::ptr::eq(left.as_ptr(), right.as_ptr())
+}
+
+fn rgbexp_scales() -> [f32; 256] {
+    std::array::from_fn(|index| 2_f32.powi(index as u8 as i8 as i32) / 255.)
+}
+
+fn rgbexp_with_scale(red: u8, green: u8, blue: u8, scale: f32) -> [f32; 3] {
     [
         red as f32 * scale,
         green as f32 * scale,
         blue as f32 * scale,
     ]
+}
+
+#[cfg(test)]
+fn rgbexp(red: u8, green: u8, blue: u8, exponent: i8) -> [f32; 3] {
+    rgbexp_with_scale(red, green, blue, 2_f32.powi(exponent as i32) / 255.)
 }
 
 fn vector(bytes: &[u8], at: usize, item: usize) -> Result<[f32; 3], Error> {
@@ -926,6 +971,19 @@ mod tests {
         assert_eq!(rgbexp(0, 0, 0, -128), [0.; 3]);
         assert_eq!(rgbexp(255, 255, 255, 0), [1.; 3]);
         assert_eq!(rgbexp(255, 128, 0, 1), [2., 256. / 255., 0.]);
+    }
+
+    #[test]
+    fn cached_rgbexp_scales_preserve_every_signed_exponent_bit_pattern() {
+        let scales = rgbexp_scales();
+        for exponent in i8::MIN..=i8::MAX {
+            for [red, green, blue] in [[0, 0, 0], [1, 127, 255], [255, 128, 3]] {
+                let direct = rgbexp(red, green, blue, exponent).map(f32::to_bits);
+                let cached = rgbexp_with_scale(red, green, blue, scales[exponent as u8 as usize])
+                    .map(f32::to_bits);
+                assert_eq!(cached, direct, "Source RGBExp32 exponent {exponent}");
+            }
+        }
     }
 
     #[test]

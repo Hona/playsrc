@@ -200,6 +200,7 @@ pub(crate) fn compile(inputs: Inputs<'_>) -> Result<Geometry, Error> {
         .filter_map(|(triangle, tag)| (tag & DISP_TRI_TAG_REMOVE == 0).then_some(triangle))
         .collect::<Vec<_>>();
     crate::normalize_triangle_winding(&positions, &normals, &mut triangles);
+    let collision_positions = positions.clone();
     Ok(Geometry {
         descriptor: DisplacementSurface {
             source,
@@ -216,7 +217,7 @@ pub(crate) fn compile(inputs: Inputs<'_>) -> Result<Geometry, Error> {
             corner_neighbors: displacement.corner_neighbors,
             triangle_tags: tags.to_vec(),
         },
-        positions: positions.clone(),
+        positions,
         normals,
         alpha: alpha_values,
         uv: texture_coordinates,
@@ -227,7 +228,7 @@ pub(crate) fn compile(inputs: Inputs<'_>) -> Result<Geometry, Error> {
             parent_face: inputs.face_index,
             material: inputs.info.texture_data_index as usize,
             contents: displacement.contents as u32,
-            positions: positions.clone(),
+            positions: collision_positions,
             triangles: all_triangles,
             triangle_tags: tags.to_vec(),
             secondary_surface,
