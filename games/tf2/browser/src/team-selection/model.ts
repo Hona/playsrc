@@ -133,7 +133,9 @@ export function transitionTf2TeamSelection(
     return outcome("applied", Object.freeze({ ...state, visible: false, hovered: null }))
   }
   if (event.kind === "hover") {
-    if (event.team !== null && !available(state.server, event.team)) return outcome("ignored", state)
+    if (event.team !== null && (event.team === "auto" || event.team === "spectate") && !available(state.server, event.team)) {
+      return outcome("ignored", state)
+    }
     if (event.team === state.hovered) return outcome("ignored", state)
     return outcome("applied", Object.freeze({ ...state, hovered: event.team }))
   }
