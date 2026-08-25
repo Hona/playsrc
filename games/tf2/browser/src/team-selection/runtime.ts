@@ -64,6 +64,7 @@ export type Tf2TeamSelectionModelPanel = Readonly<{
   origin: readonly [number, number, number]
   angles: readonly [number, number, number]
   animation: string
+  sequence: string
   bounds: Readonly<{ x: number; y: number; width: number; height: number }>
 }>
 
@@ -192,14 +193,16 @@ class Integration implements Tf2TeamSelectionIntegration {
       for (const team of TAB_ORDER) {
         const panel = find(this.#runtime, BUTTON_NAMES[team], this.#owner)
         if (panel === null) throw new Error(`TF2 team selection authored button is unavailable: ${team}`)
-        const element = request.root.querySelector?.<HTMLElement>(`[data-vgui-name="${BUTTON_NAMES[team]}"]`)
-        element?.setAttribute("aria-label", team === "blue" ? "BLU" : team === "red" ? "RED" : team === "auto" ? "Auto-assign" : "Spectate")
       }
       for (const name of ["TeamMenuSelect", "TeamMenuAuto", "TeamMenuSpectate", "BlueCount", "RedCount", "ShadedBar"]) {
         const panel = find(this.#runtime, name, this.#owner)
         if (panel !== null) apply(this.#runtime, { kind: "set-panel-state", panel, mouseInput: false, keyboardInput: false })
       }
     })
+    for (const team of TAB_ORDER) {
+      request.root.querySelector?.<HTMLElement>(`[data-vgui-name="${BUTTON_NAMES[team]}"]`)
+        ?.setAttribute("aria-label", team === "blue" ? "BLU" : team === "red" ? "RED" : team === "auto" ? "Auto-assign" : "Spectate")
+    }
     request.root.addEventListener("pointermove", this.#pointerMove)
     request.root.addEventListener("pointerleave", this.#pointerLeave)
   }
@@ -294,6 +297,9 @@ class Integration implements Tf2TeamSelectionIntegration {
       if (!authored || !model || !snapshot) throw new Error(`TF2 team selection authored model descriptor is unavailable: ${name}`)
       const originX = scalar(model, "origin_x_hidef") ?? scalar(model, "origin_x")
       if (originX === null || !Number.isFinite(Number(originX))) throw new Error(`TF2 team selection authored origin is invalid: ${name}`)
+      const animation = this.#animations.get(name) ?? "idle_enabled"
+      const authoredAnimation = model.children.find((child) => child.name.toLowerCase() === "animation"
+        && child.value === null && scalar(child, "name") === animation)
       return [Object.freeze({
         name,
         model: scalar(model, "modelname") ?? "",
@@ -301,7 +307,8 @@ class Integration implements Tf2TeamSelectionIntegration {
         fov: authoredNumber(authored, "fov"),
         origin: Object.freeze([Number(originX), authoredNumber(model, "origin_y"), authoredNumber(model, "origin_z")]) as readonly [number, number, number],
         angles: Object.freeze([authoredNumber(model, "angles_x"), authoredNumber(model, "angles_y"), authoredNumber(model, "angles_z")]) as readonly [number, number, number],
-        animation: this.#animations.get(name) ?? "idle_enabled",
+        animation,
+        sequence: authoredAnimation ? scalar(authoredAnimation, "sequence") ?? "" : "idle",
         bounds: snapshot.bounds,
       })]
     }))
