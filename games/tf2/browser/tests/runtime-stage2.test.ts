@@ -202,6 +202,26 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     expect(() => decodeSnapshot(unarmed)).toThrow("active weapon does not match its loadout")
   })
 
+  test("decodes unassigned and spectator lifecycles without inventing a combat team or weapon", () => {
+    const armed = new Uint8Array(snapshot())
+    const inactive = new Uint8Array(armed.length - 48)
+    inactive.set(armed.subarray(0, 264))
+    inactive.set(armed.subarray(312), 264)
+    inactive[18] = 0
+    new DataView(inactive.buffer).setUint32(56, 0, true)
+    for (const [team, lifecycle] of [[0, 3], [1, 4]] as const) {
+      inactive[17] = team
+      inactive[28] = lifecycle
+      const decoded = decodeSnapshot(inactive)
+      expect(decoded.team).toBe(team)
+      expect(decoded.lifecycle).toBe(lifecycle)
+      expect(decoded.weapon).toBeNull()
+    }
+    inactive[17] = 1
+    inactive[28] = 1
+    expect(() => decodeSnapshot(inactive)).toThrow("snapshot selection is invalid")
+  })
+
   test("encodes complete commands and atomically decodes runtime facts", () => {
     const command = encodeCommand({
       forward: 240,

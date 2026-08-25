@@ -4,10 +4,8 @@ const MAX_RECORDS = 65_536
 const MOVEMENT_BYTES = 96
 
 export type Tf2Class = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
-export type Tf2Team = 2 | 3
-
+export type Tf2Team = 0 | 1 | 2 | 3
 export type Tf2Weapon = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14
-
 export type MovementMode = 0 | 1
 export type ProjectileKind = 1 | 2
 export type ProjectileState = 1 | 2 | 3
@@ -387,7 +385,7 @@ export type Snapshot = Readonly<{
   inWater: boolean
   health: number
   maximumHealth: number
-  lifecycle: 1 | 2
+  lifecycle: 1 | 2 | 3 | 4
   conditions: readonly [number, number, number, number, number]
   respawnTouchCount: number
   movement: MovementSnapshot
@@ -952,13 +950,16 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
   const tf2Class = data[16]
   const team = data[17]
   const weapon = data[18]
+  const lifecycle = data[28]
   if (
     (tf2Class === undefined || tf2Class < 1 || tf2Class > 9) ||
-    (team !== 2 && team !== 3) ||
-
+    (team === undefined || team > 3) ||
     (weapon === undefined || weapon > 14) ||
-
-    data[19]! > 1 || (data[28] !== 1 && data[28] !== 2) || data[29] !== 0 || data[30] !== 0 || data[31] !== 0
+    (team === 0 && lifecycle !== 3) ||
+    (team === 1 && lifecycle !== 4) ||
+    ((team === 2 || team === 3) && lifecycle !== 1 && lifecycle !== 2) ||
+    (team < 2 && weapon !== 0) ||
+    data[19]! > 1 || data[29] !== 0 || data[30] !== 0 || data[31] !== 0
   )
     throw new Tf2CodecError("snapshot selection is invalid")
   const health = view.getFloat32(20, true)
@@ -1266,7 +1267,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     const item = at + index * 16
     const kind = data[item + 8], itemClass = data[item + 9], itemTeam = data[item + 10]
     if (kind === undefined || kind < 1 || kind > 4 || itemClass === undefined || itemClass < 1 || itemClass > 9 ||
-      (itemTeam !== 2 && itemTeam !== 3) || !data.subarray(item + 11, item + 16).every((value) => value === 0)) {
+      (itemTeam === undefined || itemTeam > 3) || !data.subarray(item + 11, item + 16).every((value) => value === 0)) {
       throw new Tf2CodecError("lifecycle event record is invalid")
     }
     lifecycleEvents.push(Object.freeze({
@@ -1556,7 +1557,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     inWater: (playerFlags & 0x400) !== 0,
     health,
     maximumHealth,
-    lifecycle: data[28] as 1 | 2,
+    lifecycle: lifecycle as 1 | 2 | 3 | 4,
     conditions,
     respawnTouchCount: view.getUint32(52, true),
     movement,

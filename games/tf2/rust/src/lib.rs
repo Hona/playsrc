@@ -482,6 +482,8 @@ impl ConditionSet {
 pub enum PlayerLifecycle {
     Active,
     Dying,
+    Welcome,
+    Observer,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -674,8 +676,8 @@ pub struct Session<W: GameplayWorld + Clone> {
     collision: W,
     tick: u64,
     class: PlayerClass,
-    team: PlayerTeam,
     team_selection: team_selection::TeamSelection,
+    pending_team_change: Option<PlayerTeam>,
     weapon: Option<Weapon>,
     loadout: BTreeMap<Weapon, WeaponRuntime>,
     movement: MovementState,
@@ -801,7 +803,6 @@ impl<W: GameplayWorld + Clone> Session<W> {
             collision,
             tick: 0,
             class: PlayerClass::Soldier,
-            team: PlayerTeam::Red,
             team_selection: {
                 let mut selection = team_selection::TeamSelection::new(
                     PLAYER_IDENTITY,
@@ -813,6 +814,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     .expect("initial active RED player is admitted");
                 selection
             },
+            pending_team_change: None,
             weapon: Some(Weapon::RocketLauncher),
             loadout,
             movement: MovementState::from_player(
@@ -881,6 +883,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
         let mut session = Self::new(collision, spawn, map);
         session.team_selection = team_selection::TeamSelection::new(PLAYER_IDENTITY, rules)
             .expect("local team selection identity is valid");
+        session.lifecycle = PlayerLifecycle::Welcome;
+        session.weapon = None;
+        session.loadout.clear();
+        session.health = 0;
+        session.activity_events.clear();
         session
     }
 
@@ -908,7 +915,24 @@ impl<W: GameplayWorld + Clone> Session<W> {
         };
         let selected = self.team_selection.select(choice, random)?;
         if let Some(team) = selected {
-            self.team = team;
+            self.lifecycle = if team == PlayerTeam::Spectator {
+                PlayerLifecycle::Observer
+            } else if team == PlayerTeam::Unassigned {
+                PlayerLifecycle::Welcome
+            } else {
+                PlayerLifecycle::Active
+            };
+            if !team.is_gameplay() {
+                self.weapon = None;
+                self.loadout.clear();
+                self.health = 0;
+            } else if self.weapon.is_none() {
+                self.weapon = default_weapon(self.class);
+                self.loadout = default_loadout(self.class);
+                self.health = self.maximum_health();
+                self.deploy_active_weapon();
+            }
+            self.pending_team_change = Some(team);
         }
         Ok(selected)
     }
@@ -1102,7 +1126,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             tick: self.tick,
             lifecycle: self.lifecycle,
             class: self.class,
-            team: self.team,
+            team: self.team_selection.local_team(),
             active_weapon: self.weapon,
             player_flags: self.player_flags(),
             health: self.health,
@@ -1281,6 +1305,16 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.contact_reconcile_requests.clear();
         let mut events = Vec::new();
         let mut projectile_events = Vec::new();
+        if let Some(team) = self.pending_team_change.take() {
+            self.fizzle_projectiles(&mut projectile_events);
+            self.lifecycle_events.push(LifecycleEvent {
+                tick: self.tick,
+                kind: LifecycleEventKind::TeamChanged,
+                class: self.class,
+                team,
+            });
+            events.push(Event::TeamChanged(team));
+        }
         self.apply_projectile_physics(
             &expected_physics_results,
             physics_results,
@@ -1390,7 +1424,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             self.movement.position,
             self.movement.active_hull(movement_policy),
             map_runtime::PlayerContactFacts {
-                team: self.team.source_number(),
+                team: self.team_selection.local_team().source_number(),
                 class: self.class.source_number(),
                 observer: self.lifecycle != PlayerLifecycle::Active,
                 conditions: self.conditions.words(),
@@ -1600,7 +1634,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                         PlayerClass::Demoman => jump::Class::Demoman,
                         _ => return Err(Error::UnsupportedJumpClass(self.class)),
                     },
-                    team: if self.team == PlayerTeam::Red {
+                    team: if self.team_selection.local_team() == PlayerTeam::Red {
                         jump::Team::Red
                     } else {
                         jump::Team::Blue
@@ -1643,7 +1677,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         Ok(Snapshot {
             tick: self.tick,
             class: self.class,
-            team: self.team,
+            team: self.team_selection.local_team(),
             weapon: self.weapon,
             player_flags: self.player_flags(),
             movement: self.movement,
@@ -1681,23 +1715,25 @@ impl<W: GameplayWorld + Clone> Session<W> {
     ) {
         if let Some(team) = command.select_team
             && team.is_gameplay()
-            && team != self.team
+            && team != self.team_selection.local_team()
+            && self
+                .team_selection
+                .select(
+                    if team == PlayerTeam::Red {
+                        team_selection::TeamChoice::Red
+                    } else {
+                        team_selection::TeamChoice::Blue
+                    },
+                    false,
+                )
+                .is_ok()
         {
-            self.team = team;
-            let _ = self.team_selection.select(
-                if matches!(team, PlayerTeam::Red) {
-                    team_selection::TeamChoice::Red
-                } else {
-                    team_selection::TeamChoice::Blue
-                },
-                false,
-            );
             self.fizzle_projectiles(projectile_events);
             self.lifecycle_events.push(LifecycleEvent {
                 tick: self.tick,
                 kind: LifecycleEventKind::TeamChanged,
                 class: self.class,
-                team: self.team,
+                team,
             });
             events.push(Event::TeamChanged(team));
         }
@@ -1758,13 +1794,13 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     tick: self.tick,
                     kind: LifecycleEventKind::ClassChanged,
                     class: self.class,
-                    team: self.team,
+                    team: self.team_selection.local_team(),
                 },
                 LifecycleEvent {
                     tick: self.tick,
                     kind: LifecycleEventKind::Respawned,
                     class: self.class,
-                    team: self.team,
+                    team: self.team_selection.local_team(),
                 },
             ]);
             if let Some(weapon) = self.weapon {
@@ -1973,8 +2009,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     && !self.restrictions.taunting
                     && !self.restrictions.stalemate
                     && match self.restrictions.team_win {
-                        Some(winner) => winner == self.team,
-                        None => team.is_none_or(|team| team == self.team.source_number()),
+                        Some(winner) => winner == self.team_selection.local_team(),
+                        None => team.is_none_or(|team| {
+                            team == self.team_selection.local_team().source_number()
+                        }),
                     } =>
                 {
                     self.regenerate(entity, associated_model, events);
@@ -2724,7 +2762,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             presentation: Projectile {
                 identity,
                 kind,
-                team: self.team,
+                team: self.team_selection.local_team(),
                 owner_identity: PLAYER_IDENTITY,
                 launcher_identity: weapon as u32,
                 state: ProjectileState::Flying,
@@ -3199,7 +3237,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             tick: self.tick,
             kind: LifecycleEventKind::Died,
             class: self.class,
-            team: self.team,
+            team: self.team_selection.local_team(),
         });
         self.fizzle_projectiles(projectile_events);
         self.fire_was_held = false;
@@ -3224,7 +3262,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             tick: self.tick,
             kind: LifecycleEventKind::Respawned,
             class: self.class,
-            team: self.team,
+            team: self.team_selection.local_team(),
         });
         for weapon in self.loadout.values_mut() {
             weapon.reset_for_spawn();
@@ -3584,6 +3622,40 @@ mod tests {
         assert_eq!(selected.local_team, class::PlayerTeam::Blue);
         assert_eq!((selected.red_count, selected.blue_count), (0, 1));
         assert!(selected.cancel_visible);
+        let first = session.advance(Command::default()).unwrap();
+        assert_eq!(first.team, PlayerTeam::Blue);
+        assert!(first.events.contains(&Event::TeamChanged(PlayerTeam::Blue)));
+        assert!(
+            session
+                .producer_snapshot()
+                .lifecycle_events
+                .iter()
+                .any(|event| event.kind == LifecycleEventKind::TeamChanged
+                    && event.team == PlayerTeam::Blue)
+        );
+    }
+
+    #[test]
+    fn spectator_selection_owns_observer_lifecycle_without_weapons_or_health() {
+        let mut session = Session::connected(
+            Floor,
+            [0.0; 3],
+            MapRuntime::empty(0.015),
+            team_selection::TeamRules::default(),
+        );
+        assert_eq!(session.lifecycle, PlayerLifecycle::Welcome);
+        assert!(session.weapon.is_none());
+        assert_eq!(
+            session.select_team_choice(team_selection::TeamChoice::Spectator),
+            Ok(Some(PlayerTeam::Spectator))
+        );
+        assert_eq!(session.lifecycle, PlayerLifecycle::Observer);
+        assert_eq!(session.team_selection.local_team(), PlayerTeam::Spectator);
+        assert!(session.weapon.is_none() && session.loadout.is_empty());
+        assert_eq!(session.health, 0);
+        let snapshot = session.advance(Command::default()).unwrap();
+        assert_eq!(snapshot.team, PlayerTeam::Spectator);
+        assert!(snapshot.weapon.is_none());
     }
 
     #[test]

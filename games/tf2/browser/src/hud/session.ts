@@ -54,7 +54,7 @@ type SessionSnapshot = Readonly<{
   weapon: Tf2Weapon | null
   health: number
   maximumHealth: number
-  lifecycle: 1 | 2
+  lifecycle: 1 | 2 | 3 | 4
   conditions: readonly [number, number, number, number, number]
   loadout: readonly CompactWeaponState[]
   events: readonly CompactGameplayEvent[]
@@ -141,7 +141,7 @@ function canonicalSnapshot(snapshot: SessionSnapshot, context: SessionHudContext
     tick: snapshot.tick,
     player: tf2HudAvailable(Object.freeze({
       identity: context.playerIdentity,
-      lifecycle: snapshot.lifecycle === 1 ? "active" as const : "dying" as const,
+      lifecycle: snapshot.lifecycle === 1 ? "active" as const : snapshot.lifecycle === 2 ? "dying" as const : "observer" as const,
       class: tf2HudAvailable(snapshot.class),
       team: tf2HudAvailable(snapshot.team),
       playerClassUsePlayerModel: context.playerClassUsePlayerModel,
@@ -157,7 +157,7 @@ function canonicalSnapshot(snapshot: SessionSnapshot, context: SessionHudContext
         selectedWeapon: context.weaponSelection.selectedWeapon,
       }),
       crosshair: tf2HudAvailable(crosshair),
-      liveHudSuppressed: context.liveHudSuppressed || conditionActive(words, 77),
+      liveHudSuppressed: context.liveHudSuppressed || snapshot.lifecycle === 3 || snapshot.lifecycle === 4 || conditionActive(words, 77),
       respawnAllowed: context.respawnAllowed,
     })),
     scoreboard: context.scoreboard,
