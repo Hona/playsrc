@@ -64,6 +64,7 @@ type SessionSnapshot = Readonly<{
   lifecycleEvents: readonly Readonly<{ tick: bigint; kind: 1 | 2 | 3 | 4; class: Tf2Class; team: Tf2Team }>[]
   projectileEvents: readonly Readonly<{ type: "fire" | "impact" | "stick" | "arm" | "fizzle" | "explode"; launcherIdentity: number }>[]
   bots?: readonly Readonly<{ identity: number; team: Tf2Team; class: Tf2Class }>[]
+  scoreboard?: Readonly<{ players: readonly Readonly<{ identity: number; name: string; team: Tf2Team }>[] }>
 }>
 
 export type SessionSimulationPublication = Readonly<{
@@ -344,8 +345,9 @@ function mapGameplayEvent(
     case 18: {
       const participant = (identity: number) => {
         const bot = snapshot.bots?.find(value => value.identity === identity)
+        const player = snapshot.scoreboard?.players.find(value => value.identity === identity)
         return Object.freeze({ identity: tf2HudAvailable(identity),
-          name: bot ? `Bot ${identity}` : "Player", team: bot?.team ?? snapshot.team })
+          name: player?.name ?? (bot ? `Bot ${identity}` : "Player"), team: player?.team ?? bot?.team ?? snapshot.team })
       }
       const killer = source.auxiliary === 0
         ? Object.freeze({ identity: tf2HudUnavailable<number>("not-applicable"), name: "World", team: snapshot.team })

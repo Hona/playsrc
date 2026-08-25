@@ -101,7 +101,7 @@ test("headed pl_upward local and bot combat publishes scoreboard, authored killf
   expect(killed.scores[0]).toMatchObject({ kills: 1, damage: 125, killstreak: 1 })
   expect(killed.scores[1]).toMatchObject({ deaths: 1 })
   expect(killed.scores[1].respawnTick).not.toBeNull()
-  expect(killed.killfeed).toContain("Bot")
+  expect(killed.killfeed).toContain(killed.bot.name)
   const killfeed = page.locator("[data-vgui-name^='DeathNotice']")
   await expect(killfeed).toBeVisible()
   const noticePixels = await killfeed.screenshot()
