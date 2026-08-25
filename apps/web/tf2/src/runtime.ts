@@ -383,6 +383,7 @@ export class Tf2Application {
   #teamSelectionModelPanels: readonly Tf2TeamSelectionModelPanel[] = Object.freeze([])
   #teamSelectionRenderTask?: Promise<void>
   #teamSelectionRenderRevision = 0
+  #pendingClassSelectionTeam?: 2 | 3
   readonly #teamSelectionPoses = new Map<string, PosedModel>()
   readonly #teamSelectionAnimations = new Map<string, Readonly<{ sequence: string; startedSeconds: number; previousSeconds: number }>>()
   #teamAdmission?: Readonly<{ generation: number; resolve(): void; reject(error: Error): void }>
@@ -1480,7 +1481,7 @@ export class Tf2Application {
         ...this.#snapshotProbes(this.#snapshot),
         loadingProgress: 1,
       })
-      this.#showClassSelection(true)
+      if (this.#snapshot.team === 2 || this.#snapshot.team === 3) this.#showClassSelection(true)
     } catch (error) {
       if (!this.#operations.current(operation)) return
       await this.#teardownGameplay()
@@ -1498,6 +1499,7 @@ export class Tf2Application {
     this.#pendingProjectileTimeline = []
     this.#teamSelectionPoses.clear()
     this.#teamSelectionAnimations.clear()
+    this.#pendingClassSelectionTeam = undefined
     this.#pendingPresentation = undefined
     this.#preparedPresentation = undefined
     this.#requiredParticleDisplayFrames.reset()
@@ -1580,7 +1582,8 @@ export class Tf2Application {
   }
 
   #showClassSelection(initialJoin = false): void {
-    if (!this.#classSelection || !this.#snapshot || this.#view.gameUi !== "in-game") return
+    if (!this.#classSelection || !this.#snapshot || this.#view.gameUi !== "in-game"
+      || (this.#snapshot.team !== 2 && this.#snapshot.team !== 3)) return
     this.#neutral()
     if (document.pointerLockElement === this.#canvas) void document.exitPointerLock()
     this.#classSelection.dispatch({
@@ -1650,6 +1653,10 @@ export class Tf2Application {
     const generation = this.#generation
     const server = await this.#client.teamSelection(generation, request.team)
     if (generation !== this.#generation || this.#closed) return
+    if (this.#snapshot && (server.localTeam === 2 || server.localTeam === 3)
+      && this.#snapshot.team !== server.localTeam) {
+      this.#pendingClassSelectionTeam = server.localTeam
+    }
     this.#set({
       teamSelectionVisible: false,
       teamSelectionLocal: server.localTeam,
@@ -1678,14 +1685,7 @@ export class Tf2Application {
   #renderTeamSelection(): void {
     if (!this.#renderer || !this.#client || !this.#artifacts
       || this.#teamSelectionModelPanels.length === 0 || this.#teamSelectionRenderTask) return
-    const renderer = this.#renderer as Renderer & Readonly<{
-      renderModelPanels(panels: readonly Readonly<{
-        identity: string; model: string; skin: number; horizontalFov4By3: number;
-        origin: readonly [number, number, number]; angles: readonly [number, number, number];
-        bounds: Readonly<{ x: number; y: number; width: number; height: number }>;
-        pose?: Readonly<{ primitives: PosedModel["primitives"] }>;
-      }>[]): Promise<Readonly<{ panels: readonly Readonly<{ identity: string; model: string; skin: number; primitives: number }>[] }>>
-    }>
+    const renderer = this.#renderer
     const client = this.#client
     const artifacts = this.#artifacts
     const revision = this.#teamSelectionRenderRevision
@@ -3604,6 +3604,10 @@ export class Tf2Application {
           : Object.freeze([...this.#fireTickHistory]),
         lockerProbe:this.#lockerProbe(snapshot.tick),
       })
+      if (this.#pendingClassSelectionTeam === snapshot.team) {
+        this.#pendingClassSelectionTeam = undefined
+        this.#showClassSelection()
+      }
       this.#offerDisplay()
     } catch (error) {
       if(this.#closed||generation!==this.#generation||this.#view.phase==="Replacing")return
