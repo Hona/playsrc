@@ -3559,7 +3559,8 @@ export class Tf2Application {
       const particleStart=performance.now()
       const pyroParticles=snapshot.class===7||this.#pyroFlameEffect?this.#pyroParticles(snapshot):[]
       const hitscanMuzzles=snapshot.class===1||snapshot.class===3||snapshot.class===6||snapshot.class===9?publication.eventBatches.flatMap(batch=>hitscanMuzzleParticles(batch.snapshot,{systems:PARTICLE_SYSTEMS,attachmentTransforms:this.#attachmentTransforms})):null
-      const particleBatch=owners.encoder.encode(snapshot.tick,camera.position,hitscanMuzzles===null||hitscanMuzzles.length===0?presentation.particles:[...presentation.particles,...hitscanMuzzles,...pyroParticles])
+      const supplementalParticles=[...(hitscanMuzzles??[]),...pyroParticles]
+      const particleBatch=owners.encoder.encode(snapshot.tick,camera.position,supplementalParticles.length===0?presentation.particles:[...presentation.particles,...supplementalParticles])
       if(!ownsGeneration())return
       this.#wasmCalls.particles++
       const particleOutput=await client.particles(generation,particleBatch)
