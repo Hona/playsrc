@@ -38,10 +38,35 @@ test("encodes one bounded complete PCF phase without per-particle calls", () => 
   const bytes = createParticleBatchEncoder().encode(7n, [4, 5, 6], [request])
   const view = new DataView(bytes.buffer)
   expect(new TextDecoder().decode(bytes.subarray(0, 4))).toBe("PPTX")
-  expect(view.getUint32(4, true)).toBe(2)
+  expect(view.getUint32(4, true)).toBe(3)
   expect(view.getUint32(28, true)).toBe(1)
   expect(bytes[32]).toBe(1)
   expect(new TextDecoder().decode(bytes.subarray(68, 79))).toBe("rockettrail")
+})
+
+test("encodes both authored Medi Gun beam endpoints in one particle transaction", () => {
+  const controls = Object.freeze([
+    Object.freeze({ index: 0 as const, position: Object.freeze([1, 2, 3] as const), orientation: Object.freeze([0, 0, 0, 1] as const), ownerIdentity: 1 }),
+    Object.freeze({ index: 1 as const, position: Object.freeze([100, 20, 68] as const), orientation: Object.freeze([0, 0, 0, 1] as const), ownerIdentity: 2 }),
+  ])
+  const start: ProjectileParticleRequest = Object.freeze({
+    kind: "start", identity: "8:medic:1:2:start", effectIdentity: "medic:1:2", eventIdentity: "8:medic:1:2", tick: 8n,
+    projectileIdentity: 2, ownerIdentity: 1, launcherIdentity: 11, team: "red", system: "medicgun_beam_red", attachment: null,
+    controlPoints: controls,
+  })
+  const update: ProjectileParticleRequest = Object.freeze({
+    kind: "set-control-point", identity: "9:medic:1:2:patient", effectIdentity: "medic:1:2", eventIdentity: "9:medic:1:2", tick: 9n,
+    projectileIdentity: 2, controlPoint: controls[1]!,
+  })
+  const bytes = createParticleBatchEncoder().encode(9n, [0, 0, 0], [start, update])
+  const view = new DataView(bytes.buffer)
+  expect(view.getUint32(4, true)).toBe(3)
+  expect(bytes[34]).toBe(2)
+  const nameBytes = new TextEncoder().encode("medicgun_beam_red").length
+  const patient = 68 + nameBytes + 32
+  expect(view.getFloat32(patient, true)).toBe(100)
+  expect(view.getUint32(patient + 28, true)).toBe(2)
+  expect(bytes[patient + 34]).toBe(1)
 })
 
 test("preserves source ticks and graceful stop in one multi-tick Particle phase", () => {

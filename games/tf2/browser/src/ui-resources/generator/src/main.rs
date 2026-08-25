@@ -287,6 +287,7 @@ const ROOTS: &[(&str, &str, bool)] = &[
     ("hud", "resource/ui/hudammoweapons.res", true),
     ("hud", "resource/ui/hudweaponselection.res", true),
     ("hud", "resource/ui/huddemomanpipes.res", true),
+    ("hud", "resource/ui/hudmediccharge.res", true),
     ("hud", "resource/ui/hudkillstreaknotice.res", true),
     ("hud", "resource/ui/targetid.res", true),
     ("class-selection", "resource/ui/classselection.res", true),

@@ -3639,7 +3639,7 @@ fn encode_snapshot(
     encode_movement_tick(&mut movement_tick_bytes, movement_tick, MAX)?;
     let mut out = Vec::new();
     extend(&mut out, b"PSSN", MAX)?;
-    u32_field(&mut out, 12, MAX)?;
+    u32_field(&mut out, 13, MAX)?;
     u64_field(&mut out, snapshot.tick, MAX)?;
     extend(
         &mut out,
@@ -4034,6 +4034,9 @@ fn encode_snapshot(
         f32_field(&mut out, bot.yaw_degrees, MAX)?;
         floats(&mut out, bot.position.into_iter().chain(bot.velocity), MAX)?;
     }
+    f32_field(&mut out, snapshot.medigun_charge, MAX)?;
+    u32_field(&mut out, snapshot.medigun_target.unwrap_or(u32::MAX), MAX)?;
+    u32_field(&mut out, u32::from(snapshot.medigun_releasing), MAX)?;
     Some(out)
 }
 
@@ -4166,9 +4169,13 @@ fn encode_random_state(state: playsrc_tf2::Tf2RandomState) -> Option<Vec<u8>> {
         state.sound_selection.rocket_explosion_available,
         state.sound_selection.sticky_explosion_available,
         state.sound_selection.bat_hit_world_available,
+        state.sound_selection.bonesaw_hit_flesh_available,
+        state.sound_selection.bonesaw_hit_world_available,
+        0,
+        0,
         0,
     ]);
-    (output.len() == 284).then_some(output)
+    (output.len() == 288).then_some(output)
 }
 
 fn sound_definition_code(value: playsrc_tf2::SoundDefinition) -> u8 {
@@ -4186,6 +4193,14 @@ fn sound_definition_code(value: playsrc_tf2::SoundDefinition) -> u8 {
         playsrc_tf2::SoundDefinition::BatHitWorld => 11,
         playsrc_tf2::SoundDefinition::ScattergunReload => 12,
         playsrc_tf2::SoundDefinition::PistolReload => 13,
+        playsrc_tf2::SoundDefinition::SyringeSingle => 20,
+        playsrc_tf2::SoundDefinition::BonesawMiss => 21,
+        playsrc_tf2::SoundDefinition::MedigunHealing => 22,
+        playsrc_tf2::SoundDefinition::MedigunDetach => 23,
+        playsrc_tf2::SoundDefinition::MedigunCharged => 24,
+        playsrc_tf2::SoundDefinition::BonesawHitFlesh => 25,
+        playsrc_tf2::SoundDefinition::BonesawHitWorld => 26,
+        playsrc_tf2::SoundDefinition::SyringeReload => 27,
     }
 }
 
@@ -4218,6 +4233,12 @@ fn encode_random_draw(
         }
         playsrc_tf2::RandomDecision::ClassSelection => {
             (8, 0, playsrc_tf2::SoundQueryPhase::Inspect)
+        }
+        playsrc_tf2::RandomDecision::SyringePitchSpread => {
+            (9, 0, playsrc_tf2::SoundQueryPhase::Inspect)
+        }
+        playsrc_tf2::RandomDecision::SyringeYawSpread => {
+            (10, 0, playsrc_tf2::SoundQueryPhase::Inspect)
         }
     };
     extend(
@@ -4519,12 +4540,16 @@ fn weapon_code(weapon: playsrc_tf2::Weapon) -> u8 {
         playsrc_tf2::Weapon::Scattergun => 4,
         playsrc_tf2::Weapon::Pistol => 5,
         playsrc_tf2::Weapon::Bat => 6,
+        playsrc_tf2::Weapon::SyringeGun => 10,
+        playsrc_tf2::Weapon::MediGun => 11,
+        playsrc_tf2::Weapon::Bonesaw => 12,
     }
 }
 fn projectile_code(kind: playsrc_tf2::ProjectileKind) -> u8 {
     match kind {
         playsrc_tf2::ProjectileKind::Rocket => 1,
         playsrc_tf2::ProjectileKind::Sticky => 2,
+        playsrc_tf2::ProjectileKind::Syringe => 3,
     }
 }
 
@@ -7598,6 +7623,14 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>) -
         "Weapon_Bat.HitWorld",
         "Weapon_Scatter_Gun.WorldReload",
         "Weapon_Pistol.WorldReload",
+        "Weapon_SyringeGun.Single",
+        "Weapon_SyringeGun.WorldReload",
+        "Weapon_BoneSaw.Miss",
+        "Weapon_BoneSaw.HitFlesh",
+        "Weapon_BoneSaw.HitWorld",
+        "WeaponMedigun.HealingHealer",
+        "WeaponMedigun.HealingDetachHealer",
+        "WeaponMedigun.Charged",
     ];
     let nodes = targets
         .iter()
@@ -7879,6 +7912,7 @@ fn load_cached_presentation(
     let expected = std::collections::BTreeSet::from([
         "models/weapons/w_models/w_rocket.mdl".to_owned(),
         "models/weapons/w_models/w_stickybomb.mdl".to_owned(),
+        "models/weapons/w_models/w_syringe_proj.mdl".to_owned(),
         "models/weapons/c_models/c_soldier_arms.mdl".to_owned(),
         "models/weapons/c_models/c_demo_arms.mdl".to_owned(),
         "models/weapons/c_models/c_scout_arms.mdl".to_owned(),
@@ -7893,11 +7927,15 @@ fn load_cached_presentation(
         "models/player/engineer.mdl".to_owned(),
         "models/vgui/ui_class01.mdl".to_owned(),
         "models/class_menu/random_class_icon.mdl".to_owned(),
+        "models/weapons/c_models/c_medic_arms.mdl".to_owned(),
         "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl".to_owned(),
         "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl".to_owned(),
         "models/weapons/c_models/c_scattergun.mdl".to_owned(),
         "models/weapons/c_models/c_pistol/c_pistol.mdl".to_owned(),
         "models/weapons/c_models/c_bat.mdl".to_owned(),
+        "models/weapons/c_models/c_syringegun/c_syringegun.mdl".to_owned(),
+        "models/weapons/c_models/c_medigun/c_medigun.mdl".to_owned(),
+        "models/weapons/c_models/c_bonesaw/c_bonesaw.mdl".to_owned(),
     ]);
     let expected = graph
         .entities
@@ -8096,6 +8134,7 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
     let mut roots = std::collections::BTreeSet::from([
         "models/weapons/w_models/w_rocket.mdl".to_owned(),
         "models/weapons/w_models/w_stickybomb.mdl".to_owned(),
+        "models/weapons/w_models/w_syringe_proj.mdl".to_owned(),
         "models/weapons/c_models/c_soldier_arms.mdl".to_owned(),
         "models/weapons/c_models/c_demo_arms.mdl".to_owned(),
         "models/weapons/c_models/c_scout_arms.mdl".to_owned(),
@@ -8110,11 +8149,15 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
         "models/player/engineer.mdl".to_owned(),
         "models/vgui/ui_class01.mdl".to_owned(),
         "models/class_menu/random_class_icon.mdl".to_owned(),
+        "models/weapons/c_models/c_medic_arms.mdl".to_owned(),
         "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl".to_owned(),
         "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl".to_owned(),
         "models/weapons/c_models/c_scattergun.mdl".to_owned(),
         "models/weapons/c_models/c_pistol/c_pistol.mdl".to_owned(),
         "models/weapons/c_models/c_bat.mdl".to_owned(),
+        "models/weapons/c_models/c_syringegun/c_syringegun.mdl".to_owned(),
+        "models/weapons/c_models/c_medigun/c_medigun.mdl".to_owned(),
+        "models/weapons/c_models/c_bonesaw/c_bonesaw.mdl".to_owned(),
     ]);
     for e in &graph.entities {
         if e.classname
@@ -8141,6 +8184,10 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
                     | "models/weapons/c_models/c_scattergun.mdl"
                     | "models/weapons/c_models/c_pistol/c_pistol.mdl"
                     | "models/weapons/c_models/c_bat.mdl"
+                    | "models/weapons/c_models/c_medic_arms.mdl"
+                    | "models/weapons/c_models/c_syringegun/c_syringegun.mdl"
+                    | "models/weapons/c_models/c_medigun/c_medigun.mdl"
+                    | "models/weapons/c_models/c_bonesaw/c_bonesaw.mdl"
             ) {
                 playsrc_studio_model::PresentationProfile::ViewModel
             } else {
@@ -10354,11 +10401,11 @@ impl<'a> ParticleReader<'a> {
         }
         String::from_utf8(self.take(n)?.to_vec()).map_err(|_| ())
     }
-    fn cp(&mut self) -> Result<playsrc_particle::ControlPoint, ()> {
+    fn cp(&mut self, index: u8) -> Result<playsrc_particle::ControlPoint, ()> {
         let position = [self.f32()?, self.f32()?, self.f32()?];
         let orientation = [self.f32()?, self.f32()?, self.f32()?, self.f32()?];
         Ok(playsrc_particle::ControlPoint {
-            index: 0,
+            index,
             position,
             previous_position: position,
             orientation,
@@ -10381,7 +10428,7 @@ fn decode_particle_transaction(
     (),
 > {
     let mut r = ParticleReader { bytes, at: 0 };
-    if r.take(4)? != b"PPTX" || r.u32()? != 2 {
+    if r.take(4)? != b"PPTX" || r.u32()? != 3 {
         return Err(());
     }
     let from = r.f32()?;
@@ -10396,7 +10443,13 @@ fn decode_particle_transaction(
     for order in 0..count {
         let kind = r.u8()?;
         let mode = r.u8()?;
-        if r.take(2)? != [0, 0] || (kind != 3 && mode != 0) {
+        let controls = r.u8()?;
+        if r.u8()? != 0
+            || (kind != 3 && mode != 0)
+            || (kind == 1 && !(1..=2).contains(&controls))
+            || (kind == 2 && controls > 1)
+            || (kind == 3 && controls != 0)
+        {
             return Err(());
         }
         let identity = r.u64()?;
@@ -10414,18 +10467,21 @@ fn decode_particle_transaction(
                     v => Some(v),
                 };
                 let definition = r.text()?;
-                let cp = r.cp()?;
+                let mut control_points = Vec::with_capacity(usize::from(controls));
+                for index in 0..controls {
+                    control_points.push(r.cp(index)?);
+                }
                 playsrc_particle::EventCommand::Create {
                     effect_identity,
                     definition,
                     seed,
                     owner_identity: owner,
-                    control_points: vec![cp],
+                    control_points,
                 }
             }
             2 => playsrc_particle::EventCommand::SetControlPoint {
                 effect_identity,
-                control_point: r.cp()?,
+                control_point: r.cp(controls)?,
             },
             3 => playsrc_particle::EventCommand::StopEmission {
                 effect_identity,
@@ -10533,7 +10589,7 @@ mod tests {
     fn particle_stop_transaction(mode: u8) -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(b"PPTX");
-        bytes.extend_from_slice(&2_u32.to_le_bytes());
+        bytes.extend_from_slice(&3_u32.to_le_bytes());
         bytes.extend_from_slice(&0.0_f32.to_le_bytes());
         bytes.extend_from_slice(&0.015_f32.to_le_bytes());
         bytes.extend_from_slice(&[0; 12]);
@@ -10999,6 +11055,9 @@ mod tests {
                 yaw_degrees: Some(90.),
             }],
             bots: Vec::new(),
+            medigun_charge: 0.0,
+            medigun_target: None,
+            medigun_releasing: false,
         };
         let producer = playsrc_tf2::ProducerSnapshot {
             tick: 9,
@@ -11045,6 +11104,8 @@ mod tests {
                 rocket_explosion_available: 7,
                 sticky_explosion_available: 7,
                 bat_hit_world_available: 3,
+                bonesaw_hit_flesh_available: 7,
+                bonesaw_hit_world_available: 3,
             },
         };
         let mut collision_snapshot = b"CSNP".to_vec();
@@ -11077,8 +11138,8 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(&encoded[..8], b"PSSN\x0c\0\0\0");
-        assert_eq!(encoded.len(), 912);
+        assert_eq!(&encoded[..8], b"PSSN\x0d\0\0\0");
+        assert_eq!(encoded.len(), 928);
         assert_eq!(
             u32::from_le_bytes(encoded[160..164].try_into().unwrap()),
             playsrc_tf2::FL_CLIENT | playsrc_tf2::FL_INWATER

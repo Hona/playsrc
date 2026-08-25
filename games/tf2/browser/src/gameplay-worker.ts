@@ -5,8 +5,8 @@ import initializeWasm, { initThreadPool } from "./wasm-generated/tf2_wasm.js"
 
 const MAX_WASM_BYTES = 64 * 1024 * 1024
 const MAX_BSP_BYTES = 512 * 1024 * 1024
-const MAX_CONFIGURATION_BYTES = 512 * 1024 * 1024
-const MAX_MESSAGE_BYTES = 512 * 1024 * 1024
+const MAX_CONFIGURATION_BYTES = 640 * 1024 * 1024
+const MAX_MESSAGE_BYTES = 640 * 1024 * 1024
 const MAX_PRESENTATION_BYTES = 512 * 1024 * 1024
 
 type WasmExports = Readonly<{
@@ -160,7 +160,7 @@ function decodeResources(request: Extract<WorkerRequest, { kind: "decode-resourc
   }
   const length = exports.playsrc_resource_length()
   if (!Number.isSafeInteger(length) || length < 12 || length > MAX_MESSAGE_BYTES) {
-    fail(request.id, "InternalFailure")
+    fail(request.id, "InternalFailure", 810, `decoded resource bytes ${length}`)
     return
   }
   const pointer = exports.playsrc_alloc(length) >>> 0
@@ -169,7 +169,7 @@ function decodeResources(request: Extract<WorkerRequest, { kind: "decode-resourc
   if (copied === length) bytes.set(new Uint8Array(exports.memory.buffer, pointer, length))
   exports.playsrc_free(pointer, length)
   if (copied !== length) {
-    fail(request.id, "InternalFailure")
+    fail(request.id, "InternalFailure", 811)
     return
   }
   post({ id: request.id, kind: "resources", bytes: bytes.buffer }, [bytes.buffer])
@@ -324,7 +324,7 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
   const presentationCopyMilliseconds = performance.now() - phase
   if ((request.includeMap && !payload) || !presentation) {
     exports.playsrc_dispose(candidate)
-    fail(request.id, "InternalFailure")
+    fail(request.id, "InternalFailure", request.includeMap && !payload ? 801 : 802)
     return
   }
   phase = performance.now()
@@ -385,7 +385,7 @@ function requireActive(id: number, generation: number): { exports: WasmExports; 
   return { exports: wasm, handle: active.handle }
 }
 
-function readCoverage(request:Extract<WorkerRequest,{kind:"read-coverage"}>):void{if(!wasm||!pending||pending.generation!==request.generation){fail(request.id,"StaleGeneration");return}const length=wasm.playsrc_coverage_length(pending.handle);if(!Number.isSafeInteger(length)||length<12||length>4*1024*1024){fail(request.id,"InternalFailure");return}const pointer=wasm.playsrc_alloc(length)>>>0,copied=wasm.playsrc_coverage_copy(pending.handle,pointer,length);if(copied!==length){wasm.playsrc_free(pointer,length);fail(request.id,"InternalFailure");return}const payload=new Uint8Array(wasm.memory.buffer,pointer,length).slice().buffer;wasm.playsrc_free(pointer,length);post({id:request.id,kind:"coverage",generation:request.generation,payload},[payload])}
+function readCoverage(request:Extract<WorkerRequest,{kind:"read-coverage"}>):void{if(!wasm||!pending||pending.generation!==request.generation){fail(request.id,"StaleGeneration");return}const length=wasm.playsrc_coverage_length(pending.handle);if(!Number.isSafeInteger(length)||length<12||length>4*1024*1024){fail(request.id,"InternalFailure",820);return}const pointer=wasm.playsrc_alloc(length)>>>0,copied=wasm.playsrc_coverage_copy(pending.handle,pointer,length);if(copied!==length){wasm.playsrc_free(pointer,length);fail(request.id,"InternalFailure",821);return}const payload=new Uint8Array(wasm.memory.buffer,pointer,length).slice().buffer;wasm.playsrc_free(pointer,length);post({id:request.id,kind:"coverage",generation:request.generation,payload},[payload])}
 
 function activate(request: Extract<WorkerRequest, { kind: "activate" }>): void {
   if (!wasm || !pending || pending.generation !== request.generation) {
@@ -464,7 +464,7 @@ function observe(request: Extract<WorkerRequest, { kind: "observe" }>): void {
   }
   const length = value.exports.playsrc_simulation_output_length(value.handle)
   if (!Number.isSafeInteger(length) || length < 16 || length > MAX_MESSAGE_BYTES) {
-    fail(request.id, "InternalFailure")
+    fail(request.id, "InternalFailure", 812)
     return
   }
   const outputCopyStarted = performance.now()
@@ -472,7 +472,7 @@ function observe(request: Extract<WorkerRequest, { kind: "observe" }>): void {
   const copied = value.exports.playsrc_simulation_output_copy(value.handle, snapshotPointer, length)
   if (copied !== length) {
     value.exports.playsrc_free(snapshotPointer, length)
-    fail(request.id, "InternalFailure")
+    fail(request.id, "InternalFailure", 813)
     return
   }
   const snapshot = new Uint8Array(value.exports.memory.buffer, snapshotPointer, length).slice().buffer
@@ -503,13 +503,13 @@ function particles(request: Extract<WorkerRequest, { kind: "particles" }>): void
   }
   const length = value.exports.playsrc_particle_output_length(value.handle)
   if (length < 12 || length > 64 * 1024 * 1024) {
-    fail(request.id, "InternalFailure")
+    fail(request.id, "InternalFailure", 814)
     return
   }
   const outputCopyStarted=performance.now(),outputPointer = value.exports.playsrc_alloc(length) >>> 0
   if (value.exports.playsrc_particle_output_copy(value.handle, outputPointer, length) !== length) {
     value.exports.playsrc_free(outputPointer, length)
-    fail(request.id, "InternalFailure")
+    fail(request.id, "InternalFailure", 815)
     return
   }
   const output = new Uint8Array(value.exports.memory.buffer, outputPointer, length).slice().buffer
@@ -538,14 +538,14 @@ function models(request: Extract<WorkerRequest, { kind: "models" }>): void {
   }
   const length = value.exports.playsrc_model_output_length(value.handle)
   if (length < 12 || length > 64 * 1024 * 1024) {
-    fail(request.id, "InternalFailure")
+    fail(request.id, "InternalFailure", 816)
     return
   }
   const outputCopyStarted = performance.now()
   const outputPointer = value.exports.playsrc_alloc(length) >>> 0
   if (value.exports.playsrc_model_output_copy(value.handle, outputPointer, length) !== length) {
     value.exports.playsrc_free(outputPointer, length)
-    fail(request.id, "InternalFailure")
+    fail(request.id, "InternalFailure", 817)
     return
   }
   const output = new Uint8Array(value.exports.memory.buffer, outputPointer, length).slice().buffer
@@ -583,14 +583,14 @@ function visibility(request: Extract<WorkerRequest, { kind: "visibility" }>): vo
   }
   const length = value.exports.playsrc_visibility_output_length(value.handle)
   if (length < 80 || length > 4 * 1024 * 1024) {
-    fail(request.id, "InternalFailure")
+    fail(request.id, "InternalFailure", 818)
     return
   }
   const outputCopyStarted = performance.now()
   const outputPointer = value.exports.playsrc_alloc(length) >>> 0
   if (value.exports.playsrc_visibility_output_copy(value.handle, outputPointer, length) !== length) {
     value.exports.playsrc_free(outputPointer, length)
-    fail(request.id, "InternalFailure")
+    fail(request.id, "InternalFailure", 819)
     return
   }
   const output = new Uint8Array(value.exports.memory.buffer, outputPointer, length).slice().buffer

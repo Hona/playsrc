@@ -2420,6 +2420,7 @@ fn main() -> Result<(), String> {
     for path in [
         "models/weapons/w_models/w_rocket.mdl",
         "models/weapons/w_models/w_stickybomb.mdl",
+        "models/weapons/w_models/w_syringe_proj.mdl",
         "models/weapons/c_models/c_soldier_arms.mdl",
         "models/weapons/c_models/c_demo_arms.mdl",
         "models/weapons/c_models/c_scout_arms.mdl",
@@ -2434,11 +2435,15 @@ fn main() -> Result<(), String> {
         "models/player/engineer.mdl",
         "models/vgui/ui_class01.mdl",
         "models/class_menu/random_class_icon.mdl",
+        "models/weapons/c_models/c_medic_arms.mdl",
         "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl",
         "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl",
         "models/weapons/c_models/c_scattergun.mdl",
         "models/weapons/c_models/c_pistol/c_pistol.mdl",
         "models/weapons/c_models/c_bat.mdl",
+        "models/weapons/c_models/c_syringegun/c_syringegun.mdl",
+        "models/weapons/c_models/c_medigun/c_medigun.mdl",
+        "models/weapons/c_models/c_bonesaw/c_bonesaw.mdl",
     ] {
         model_paths.insert(path.to_owned());
     }
@@ -2619,6 +2624,8 @@ fn main() -> Result<(), String> {
         "particles/stickybomb.pcf",
         "particles/muzzle_flash.pcf",
         "particles/explosion.pcf",
+        "particles/nailtrails.pcf",
+        "particles/medicgun_beam.pcf",
     ];
     let particle_bytes = particle_paths
         .iter()
@@ -2652,6 +2659,13 @@ fn main() -> Result<(), String> {
         "muzzle_pistol",
         "ExplosionCore_Wall",
         "ExplosionCore_MidAir",
+        "nailtrails_medic_red",
+        "nailtrails_medic_blue",
+        "muzzle_syringe",
+        "medicgun_beam_red",
+        "medicgun_beam_blue",
+        "medicgun_beam_red_invun",
+        "medicgun_beam_blue_invun",
     ]
     .map(playsrc_particle::DefinitionLookup::Name);
     let closure = registry
@@ -2704,6 +2718,14 @@ fn main() -> Result<(), String> {
         "sound/weapons/cbar_hit2.wav",
         "sound/weapons/scatter_gun_worldreload.wav",
         "sound/weapons/pistol_worldreload.wav",
+        "sound/weapons/syringegun_shoot.wav",
+        "sound/weapons/syringegun_worldreload.wav",
+        "sound/weapons/medigun_heal.wav",
+        "sound/weapons/medigun_heal_detach.wav",
+        "sound/weapons/medigun_charged.wav",
+        "sound/weapons/cbar_hitbod1.wav",
+        "sound/weapons/cbar_hitbod2.wav",
+        "sound/weapons/cbar_hitbod3.wav",
     ] {
         let consumer = if path.starts_with("sound/") {
             "audio-wave"

@@ -62,6 +62,11 @@ const documents = new Map<string, VguiResourceDocument>([
     revision: "7a6f02c7eab4f0befdac5c69082c9334b0a03975738e1fc6d598ba6c91967138",
     root: object("Resource", []),
   })],
+  ["resource/ui/hudmediccharge.res", Object.freeze({
+    logicalIdentity: "resource/ui/hudmediccharge.res",
+    revision: "052b93edb2d11068ad6279c4026f97664cb5c160a03468ed4d984345de6a5c80",
+    root: object("Resource", []),
+  })],
 ])
 
 const customControls: readonly VguiControlRegistration[] = Object.freeze(["CTFHudElement", "CTFHealthPanel"].map((name) => Object.freeze({

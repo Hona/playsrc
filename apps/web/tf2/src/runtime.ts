@@ -68,6 +68,7 @@ import {
   transformAttachment,
   type ModelPoseRequest,
   type PosedModel,
+  type ProjectileParticleRequest,
 } from "@playsrc/game-tf2-browser/presentation"
 import { decodeParticleRenderOutput } from "@playsrc/particle"
 import { createRenderer, SOURCE_LDR, SOURCE_PC_INTEGER_HDR, type Camera, type Frame, type MaterialStateInput } from "@playsrc/rendering"
@@ -124,6 +125,13 @@ const PARTICLE_SYSTEMS = new Set([
   "muzzle_pistol",
   "ExplosionCore_Wall",
   "ExplosionCore_MidAir",
+  "nailtrails_medic_red",
+  "nailtrails_medic_blue",
+  "muzzle_syringe",
+  "medicgun_beam_red",
+  "medicgun_beam_blue",
+  "medicgun_beam_red_invun",
+  "medicgun_beam_blue_invun",
 ])
 const SOUND_PATHS = [
   "sound/weapons/rocket_shoot.wav",
@@ -144,6 +152,14 @@ const SOUND_PATHS = [
   "sound/weapons/cbar_hit2.wav",
   "sound/weapons/scatter_gun_worldreload.wav",
   "sound/weapons/pistol_worldreload.wav",
+  "sound/weapons/syringegun_shoot.wav",
+  "sound/weapons/syringegun_worldreload.wav",
+  "sound/weapons/medigun_heal.wav",
+  "sound/weapons/medigun_heal_detach.wav",
+  "sound/weapons/medigun_charged.wav",
+  "sound/weapons/cbar_hitbod1.wav",
+  "sound/weapons/cbar_hitbod2.wav",
+  "sound/weapons/cbar_hitbod3.wav",
 ] as const
 
 export type ApplicationView = Readonly<{
@@ -225,6 +241,9 @@ export type ApplicationView = Readonly<{
   lockerProbe?: string
   botCount?: number
   botProbe?: string
+  medigunCharge?: number
+  medigunTarget?: number | null
+  medigunReleasing?: boolean
   unsupportedState?: "StickyPhysicsSolverUnavailable"
   startupState?: Tf2StartupState["kind"]
   loadingProgress?: number
@@ -352,6 +371,7 @@ export class Tf2Application {
   #options?: Tf2OptionsPresentation
   #loaded?: LoadedGame
   #snapshot?: Snapshot
+  #medicBeamTarget: number | null = null
   #generation = 0
   #yaw = 0
   #pitch = 0
@@ -1436,6 +1456,7 @@ export class Tf2Application {
   #resetGenerationPresentation(): void {
     this.#predictedEye.clear()
     this.#particleBatches = createParticleBatchEncoder()
+    this.#medicBeamTarget = null
     this.#pendingProjectileTimeline = []
     this.#pendingPresentation = undefined
     this.#preparedPresentation = undefined
@@ -1472,7 +1493,7 @@ export class Tf2Application {
       clock: { nowSeconds: () => this.#frameClock.current },
       random: this.#presentationRandom,
       onCommand: (command) => {
-        if (command.kind === "select-weapon" && command.weapon >= 1 && command.weapon <= 6) this.#selectWeapon = command.weapon as Tf2Weapon
+        if (command.kind === "select-weapon" && [1, 2, 3, 4, 5, 6, 10, 11, 12].includes(command.weapon)) this.#selectWeapon = command.weapon as Tf2Weapon
       },
     })
     const panels = this.#hudIntegration.snapshot().vgui.panels
@@ -2727,7 +2748,7 @@ export class Tf2Application {
     this.#fireAttachmentTransforms.clear()
     for (const projectile of snapshot.projectiles) {
       const artifact = this.#artifacts.models.get(
-        projectile.kind === 1 ? "models/weapons/w_models/w_rocket.mdl" : "models/weapons/w_models/w_stickybomb.mdl",
+        projectile.kind === 1 ? "models/weapons/w_models/w_rocket.mdl" : projectile.kind === 2 ? "models/weapons/w_models/w_stickybomb.mdl" : "models/weapons/w_models/w_syringe_proj.mdl",
       )
       if (artifact) {
         this.#attachments.set(projectile.identity, new Set(artifact.attachments.keys()))
@@ -2743,7 +2764,7 @@ export class Tf2Application {
     for (const event of snapshot.projectileEvents) {
       if (this.#attachmentTransforms.has(event.projectile)) continue
       const artifact = this.#artifacts.models.get(
-        event.kind === 1 ? "models/weapons/w_models/w_rocket.mdl" : "models/weapons/w_models/w_stickybomb.mdl",
+        event.kind === 1 ? "models/weapons/w_models/w_rocket.mdl" : event.kind === 2 ? "models/weapons/w_models/w_stickybomb.mdl" : "models/weapons/w_models/w_syringe_proj.mdl",
       )
       if (!artifact) continue
       this.#attachments.set(event.projectile, new Set(artifact.attachments.keys()))
@@ -2771,6 +2792,7 @@ export class Tf2Application {
       ...snapshot.projectiles.map((projectile) => projectile.launcherIdentity),
       ...snapshot.projectileEvents.map((event) => event.launcherIdentity),
       ...snapshot.events.filter((event) => event.kind === 12).map((event) => event.detail),
+      ...(snapshot.weapon === 11 ? [11] : []),
     ])
     for (const launcher of launchers) {
       if (viewmodelAttachments.size > 0) {
@@ -3194,13 +3216,17 @@ export class Tf2Application {
         const add = (identity: number, next: ReadonlySet<string>) =>
           this.#attachments.set(identity, new Set([...(this.#attachments.get(identity) ?? []), ...next]))
         const m = this.#artifacts.models.get(
-          p.kind === 1 ? "models/weapons/w_models/w_rocket.mdl" : "models/weapons/w_models/w_stickybomb.mdl",
+          p.kind === 1 ? "models/weapons/w_models/w_rocket.mdl"
+            : p.kind === 2 ? "models/weapons/w_models/w_stickybomb.mdl"
+              : "models/weapons/w_models/w_syringe_proj.mdl",
         )
         if (m) add(p.identity, new Set(m.attachments.keys()))
         const l = this.#artifacts.models.get(
           p.kind === 1
             ? "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl"
-            : "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl",
+            : p.kind === 2
+              ? "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl"
+              : "models/weapons/c_models/c_syringegun/c_syringegun.mdl",
         )
         if (l) add(p.launcherIdentity, new Set(l.attachments.keys()))
       }
@@ -3267,7 +3293,7 @@ export class Tf2Application {
       const lockerPoses=modelPoses.filter(pose=>this.#lockerAnimations.has(pose.identity))
       const botPoses=modelPoses.filter(pose=>pose.identity>=BOT_MODEL_IDENTITY_BASE&&pose.identity<BOT_MODEL_IDENTITY_BASE+0x10000)
       if(botPoses.length!==snapshot.bots.length)throw new Error("TF2 bot player pose output differs from authoritative player state")
-      if(viewmodel!==undefined&&(viewmodelPoses.length!==2||viewmodelPoses[0]?.role!=="item"||viewmodelPoses[1]?.role!=="hand"))throw new Error("Viewmodel composition output differs");const viewmodelPose=viewmodelPoses[1]
+      if(viewmodel!==undefined&&(viewmodelPoses.length!==2||viewmodelPoses.filter(pose=>pose.role==="item").length!==1||viewmodelPoses.filter(pose=>pose.role==="hand").length!==1))throw new Error(`Viewmodel composition output differs: class=${snapshot.class} weapon=${snapshot.weapon} expected=${currentViewmodelRequest?.identity}@${currentViewmodelRequest?.sampleTick} poses=${modelPoses.map(pose=>`${pose.identity}:${pose.role}:${pose.sampleTick}:${Number(pose.attachmentsOnly)}`).join(",")}`);const viewmodelPose=viewmodelPoses.find(pose=>pose.role==="hand")
       if(viewmodelPose)this.#viewmodelActivities.add(viewmodelPose.activity)
       this.#updateAttachmentTransforms(snapshot, timelineViewmodelPoses, camera)
       let presentation:ReturnType<ProjectileMapper["map"]>
@@ -3280,7 +3306,31 @@ export class Tf2Application {
       if(!ownsGeneration())return
       const particleStart=performance.now()
       const scoutMuzzles=snapshot.class===1?publication.eventBatches.flatMap(batch=>scoutMuzzleParticles(batch.snapshot,{systems:PARTICLE_SYSTEMS,attachmentTransforms:this.#attachmentTransforms})):null
-      const particleBatch=owners.encoder.encode(snapshot.tick,camera.position,scoutMuzzles===null||scoutMuzzles.length===0?presentation.particles:[...presentation.particles,...scoutMuzzles])
+      const medicBeam: ProjectileParticleRequest[] = []
+      if (this.#medicBeamTarget !== null && this.#medicBeamTarget !== snapshot.medigunTarget) {
+        const prior = this.#medicBeamTarget
+        medicBeam.push(Object.freeze({ kind: "stop", identity: `${snapshot.tick}:medic:${prior}:stop`, effectIdentity: `medic:1:${prior}`, eventIdentity: `${snapshot.tick}:medic:${prior}:stop`, tick: snapshot.tick, projectileIdentity: prior, immediate: false }))
+        this.#medicBeamTarget = null
+      }
+      if (snapshot.medigunTarget !== null) {
+        const patient = snapshot.bots.find(bot => bot.identity === snapshot.medigunTarget)
+        if (!patient) throw new Error("Medi Gun patient is missing from the authoritative player roster")
+        const muzzle = this.#attachmentTransforms.get(11)?.get("muzzle")
+        if (!muzzle) throw new Error("Medi Gun muzzle attachment is unavailable")
+        const patientPoint = Object.freeze({ index: 1 as const, position: Object.freeze([patient.position[0], patient.position[1], patient.position[2] + 41] as const), orientation: Object.freeze([0, 0, 0, 1] as const), ownerIdentity: patient.identity })
+        if (this.#medicBeamTarget !== patient.identity) {
+          const system = snapshot.team === 2
+            ? snapshot.medigunReleasing ? "medicgun_beam_red_invun" : "medicgun_beam_red"
+            : snapshot.medigunReleasing ? "medicgun_beam_blue_invun" : "medicgun_beam_blue"
+          medicBeam.push(Object.freeze({ kind: "start", identity: `${snapshot.tick}:medic:${patient.identity}:start`, effectIdentity: `medic:1:${patient.identity}`, eventIdentity: `${snapshot.tick}:medic:${patient.identity}:start`, tick: snapshot.tick, projectileIdentity: patient.identity, ownerIdentity: 1, launcherIdentity: 11, team: snapshot.team === 2 ? "red" : "blue", system, attachment: Object.freeze({ entityIdentity: 11, name: "muzzle" }), controlPoints: Object.freeze([Object.freeze({ index: 0 as const, position: muzzle.position, orientation: muzzle.orientation, ownerIdentity: 1 }), patientPoint]) }))
+          this.#medicBeamTarget = patient.identity
+        } else {
+          medicBeam.push(Object.freeze({ kind: "set-control-point", identity: `${snapshot.tick}:medic:${patient.identity}:muzzle`, effectIdentity: `medic:1:${patient.identity}`, eventIdentity: `${snapshot.tick}:medic:${patient.identity}:muzzle`, tick: snapshot.tick, projectileIdentity: patient.identity, controlPoint: Object.freeze({ index: 0 as const, position: muzzle.position, orientation: muzzle.orientation, ownerIdentity: 1 }) }))
+          medicBeam.push(Object.freeze({ kind: "set-control-point", identity: `${snapshot.tick}:medic:${patient.identity}:patient`, effectIdentity: `medic:1:${patient.identity}`, eventIdentity: `${snapshot.tick}:medic:${patient.identity}:patient`, tick: snapshot.tick, projectileIdentity: patient.identity, controlPoint: patientPoint }))
+        }
+      }
+      const extraParticles = [...(scoutMuzzles ?? []), ...medicBeam]
+      const particleBatch=owners.encoder.encode(snapshot.tick,camera.position,extraParticles.length===0?presentation.particles:[...presentation.particles,...extraParticles])
       if(!ownsGeneration())return
       this.#wasmCalls.particles++
       const particleOutput=await client.particles(generation,particleBatch)
@@ -3348,6 +3398,9 @@ export class Tf2Application {
         fireEvents: this.#fireEvents,
         explosionEvents: this.#explosionEvents,
         botCount: snapshot.bots.length,
+        medigunCharge: snapshot.medigunCharge,
+        medigunTarget: snapshot.medigunTarget,
+        medigunReleasing: snapshot.medigunReleasing,
         botProbe: snapshot.bots.map(bot=>`${bot.identity}:${bot.team}:${bot.class}:${bot.objective}:${bot.area??"none"}:${bot.remainingPathAreas}:${bot.position.map(value=>value.toFixed(1)).join(",")}:${bot.target??"none"}`).join("|"),
         particleRenderItems: particleItems.length,
         movement: snapshot.movement,
@@ -3472,9 +3525,9 @@ export class Tf2Application {
       if (this.#buttons.press(identity, action)) this.#detonatePressed = true
     } else if (action === "+reload") {
       if (this.#buttons.press(identity, action)) this.#reloadPressed = true
-    } else if (action === "slot1") this.#selectWeapon = this.#snapshot?.class === 1 ? 4 : 1
-    else if (action === "slot2") this.#selectWeapon = this.#snapshot?.class === 1 ? 5 : 2
-    else if (action === "slot3") this.#selectWeapon = this.#snapshot?.class === 1 ? 6 : 3
+    } else if (action === "slot1") this.#selectWeapon = this.#snapshot?.class === 1 ? 4 : this.#snapshot?.class === 5 ? 10 : 1
+    else if (action === "slot2") this.#selectWeapon = this.#snapshot?.class === 1 ? 5 : this.#snapshot?.class === 5 ? 11 : 2
+    else if (action === "slot3") this.#selectWeapon = this.#snapshot?.class === 1 ? 6 : this.#snapshot?.class === 5 ? 12 : 3
   }
 
   readonly #keyDown = (event: KeyboardEvent): void => {

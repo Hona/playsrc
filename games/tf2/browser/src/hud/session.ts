@@ -94,7 +94,7 @@ function reload(value: CompactWeaponState["reload"]): Tf2ReloadPhase {
 }
 
 function weaponName(identity: CompactWeaponState["weapon"]): string {
-  return (["", "Rocket Launcher", "Original", "Stickybomb Launcher", "Scattergun", "Pistol", "Bat"] as const)[identity]
+  return ({ 1: "Rocket Launcher", 2: "Original", 3: "Stickybomb Launcher", 4: "Scattergun", 5: "Pistol", 6: "Bat", 10: "Syringe Gun", 11: "Medi Gun", 12: "Bonesaw" } as const)[identity]
 }
 
 function weaponPosition(identity: CompactWeaponState["weapon"]): number {
@@ -102,13 +102,13 @@ function weaponPosition(identity: CompactWeaponState["weapon"]): number {
 }
 
 function weapon(value: CompactWeaponState): Tf2HudWeapon {
-  const melee = value.weapon === 6
+  const melee = value.weapon === 6 || value.weapon === 11 || value.weapon === 12
   const definition = value.weapon === 4 ? 13 : value.weapon === 5 ? 23 : value.weapon === 6 ? 0 : undefined
   return Object.freeze({
     identity: value.weapon,
     itemDefinition: definition === undefined ? tf2HudUnavailable<number>("not-produced") : tf2HudAvailable(definition),
     displayName: weaponName(value.weapon),
-    slot: value.weapon === 5 ? 1 : value.weapon === 6 ? 2 : 0,
+    slot: value.weapon === 5 || value.weapon === 11 ? 1 : value.weapon === 6 || value.weapon === 12 ? 2 : 0,
     position: weaponPosition(value.weapon),
     selectable: true,
     ammoDisplay: melee ? "hidden" : "clip-and-reserve",

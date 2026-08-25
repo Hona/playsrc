@@ -1540,6 +1540,17 @@ fn initialize_particle(system: &mut System, definition: &Definition, creation: f
             .max(0.0);
         } else if initializer
             .identity
+            .eq_ignore_ascii_case("Position Along Path Random")
+        {
+            let (start, midpoint, end) = particle_path(system, initializer, creation, "bulge");
+            let fraction = next_random(system);
+            let first = add(start, mul(sub(midpoint, start), fraction));
+            let second = add(midpoint, mul(sub(end, midpoint), fraction));
+            let maximum = float_parameter(initializer, "maximum distance", 0.0);
+            let offset = next_random_vector(system, [-maximum; 3], [maximum; 3]);
+            particle.position = add(add(first, mul(sub(second, first), fraction)), offset);
+        } else if initializer
+            .identity
             .eq_ignore_ascii_case("Position Within Box Random")
         {
             let minimum = vector_parameter(initializer, "min", [0.0; 3]);
@@ -1569,6 +1580,11 @@ fn initialize_particle(system: &mut System, definition: &Definition, creation: f
                 direction[component] *= distance_bias[component];
             }
             direction = normalize(direction).unwrap_or([1.0, 0.0, 0.0]);
+            if bool_parameter(initializer, "bias in local system", false)
+                && let Some(orientation) = control_orientation(system, cp_index)
+            {
+                direction = rotate(orientation, direction);
+            }
             let distance = mix(
                 float_parameter(initializer, "distance_min", 0.0),
                 float_parameter(initializer, "distance_max", 0.0),
@@ -1641,6 +1657,7 @@ fn initialize_particle(system: &mut System, definition: &Definition, creation: f
             let destination = match field {
                 1 => &mut particle.lifetime_seconds,
                 3 => &mut particle.radius,
+                4 => &mut particle.roll,
                 7 => &mut particle.alpha,
                 _ => unreachable!("validated particle scalar output field"),
             };
@@ -1821,6 +1838,28 @@ fn operate(
                         mix(particle.initial_alpha, particle.initial_alpha * end, value);
                 }
                 particle.alpha = particle.alpha.clamp(0.0, 1.0);
+            } else if operator.identity.eq_ignore_ascii_case("Lifespan Decay") {
+                if age >= particle.lifetime_seconds {
+                    particle.lifetime_seconds = 0.0;
+                }
+            } else if operator.identity.eq_ignore_ascii_case("Remap Scalar") {
+                let input = particle_scalar(
+                    particle,
+                    integer_parameter(operator, "input field", 7),
+                    time,
+                );
+                let mapped = mix(
+                    float_parameter(operator, "output minimum", 0.0),
+                    float_parameter(operator, "output maximum", 1.0),
+                    remap(
+                        input,
+                        float_parameter(operator, "input minimum", 0.0),
+                        float_parameter(operator, "input maximum", 1.0),
+                    ),
+                );
+                let output = integer_parameter(operator, "output field", 3);
+                let previous = particle_scalar(particle, output, time);
+                set_particle_scalar(particle, output, mix(previous, mapped, strength));
             } else if operator.identity.eq_ignore_ascii_case("Radius Scale") {
                 let start_time = float_parameter(operator, "start_time", 0.0);
                 let end_time = float_parameter(operator, "end_time", 1.0);
@@ -1985,11 +2024,34 @@ fn operate_movement(
     let gravity = vector_parameter(operator, "gravity", [0.0; 3]);
     let mut accelerations = vec![gravity; system.particles.len()];
     for force in definition.functions(FunctionCategory::Force) {
-        if !force.identity.eq_ignore_ascii_case("random force") {
-            continue;
-        }
         let strength = operator_strength(force, time);
         if strength <= 0.0 {
+            continue;
+        }
+        if force.identity.eq_ignore_ascii_case("twist around axis") {
+            let mut axis = vector_parameter(force, "twist axis", [0.0, 0.0, 1.0]);
+            if bool_parameter(force, "object local space axis 0/1", false)
+                && let Some(orientation) = control_orientation(system, 0)
+            {
+                axis = rotate(orientation, axis);
+            }
+            let Some(axis) = normalize(axis) else {
+                continue;
+            };
+            let origin = control_at(system, 0);
+            let amount = float_parameter(force, "amount of force", 0.0) * strength;
+            for (particle, acceleration) in system.particles.iter().zip(&mut accelerations) {
+                let Some(offset) = normalize(sub(particle.position, origin)) else {
+                    continue;
+                };
+                let Some(radial) = normalize(sub(offset, mul(axis, dot(offset, axis)))) else {
+                    continue;
+                };
+                *acceleration = add(*acceleration, mul(cross(radial, axis), amount));
+            }
+            continue;
+        }
+        if !force.identity.eq_ignore_ascii_case("random force") {
             continue;
         }
         let minimum = mul(vector_parameter(force, "min force", [0.0; 3]), strength);
@@ -2032,6 +2094,48 @@ fn constrain(
         .functions(FunctionCategory::Constraint)
         .enumerate()
     {
+        if constraint
+            .identity
+            .eq_ignore_ascii_case("Constrain distance to path between two control points")
+        {
+            let (start, midpoint, end) =
+                particle_path(system, constraint, system.local_time, "random bulge");
+            let travel = float_parameter(constraint, "travel time", 10.0).max(0.001);
+            let minimum = float_parameter(constraint, "minimum distance", 0.0);
+            let beginning = float_parameter(constraint, "maximum distance", 100.0);
+            let authored_middle = float_parameter(constraint, "maximum distance middle", -1.0);
+            let middle = if authored_middle < 0.0 {
+                beginning
+            } else {
+                authored_middle
+            };
+            let authored_end = float_parameter(constraint, "maximum distance end", -1.0);
+            let ending = if authored_end < 0.0 {
+                middle
+            } else {
+                authored_end
+            };
+            for particle in &mut system.particles {
+                let fraction = ((system.local_time - particle.creation_seconds) / travel).min(1.0);
+                let first = add(start, mul(sub(midpoint, start), fraction));
+                let second = add(midpoint, mul(sub(end, midpoint), fraction));
+                let center = add(first, mul(sub(second, first), fraction));
+                let maximum = mix(
+                    mix(beginning, middle, fraction),
+                    mix(middle, ending, fraction),
+                    fraction,
+                );
+                let offset = sub(particle.position, center);
+                let distance = dot(offset, offset).sqrt();
+                if distance > maximum || distance < minimum {
+                    if let Some(direction) = normalize(offset) {
+                        particle.position =
+                            add(center, mul(direction, distance.clamp(minimum, maximum)));
+                    }
+                }
+            }
+            continue;
+        }
         if !constraint
             .identity
             .eq_ignore_ascii_case("Collision via traces")
@@ -3009,6 +3113,75 @@ fn caller_remaining(system: &System, limits: WorldLimits, remaining_total: usize
         .min(remaining_total)
 }
 
+fn particle_path(
+    system: &mut System,
+    function: &Function,
+    time: f32,
+    bulge_name: &str,
+) -> ([f32; 3], [f32; 3], [f32; 3]) {
+    let start_index = integer_parameter(function, "start control point number", 0);
+    let end_index = integer_parameter(function, "end control point number", 0);
+    let start = control_at_time(system, start_index, time);
+    let end = control_at_time(system, end_index, time);
+    let mut midpoint = add(
+        start,
+        mul(
+            sub(end, start),
+            float_parameter(function, "mid point position", 0.5),
+        ),
+    );
+    let bulge = float_parameter(function, bulge_name, 0.0);
+    let control = integer_parameter(
+        function,
+        "bulge control 0=random 1=orientation of start pnt 2=orientation of end point",
+        0,
+    );
+    if control == 0 {
+        midpoint = add(
+            midpoint,
+            next_random_vector(system, [-bulge; 3], [bulge; 3]),
+        );
+    } else {
+        let index = if control == 2 { end_index } else { start_index };
+        let forward = control_orientation(system, index).map_or([1.0, 0.0, 0.0], |orientation| {
+            rotate(orientation, [1.0, 0.0, 0.0])
+        });
+        let delta = sub(end, start);
+        let length = dot(delta, delta).sqrt();
+        if length > 1e-6 {
+            let direction = mul(delta, 1.0 / length);
+            let scale = 1.0 - dot(direction, forward).abs();
+            if let Some(forward) = normalize(forward) {
+                midpoint = add(midpoint, mul(forward, bulge * length * scale));
+            }
+        }
+    }
+    (start, midpoint, end)
+}
+
+fn particle_scalar(particle: &Particle, field: i32, now: f32) -> f32 {
+    match field {
+        1 => particle.lifetime_seconds,
+        3 => particle.radius,
+        4 => particle.roll,
+        7 => particle.alpha,
+        8 => (now - particle.creation_seconds).max(0.0),
+        12 => particle.roll_speed,
+        _ => 0.0,
+    }
+}
+
+fn set_particle_scalar(particle: &mut Particle, field: i32, value: f32) {
+    match field {
+        1 => particle.lifetime_seconds = value.max(0.0),
+        3 => particle.radius = value.max(0.0),
+        4 => particle.roll = value,
+        7 => particle.alpha = value.clamp(0.0, 1.0),
+        12 => particle.roll_speed = value,
+        _ => {}
+    }
+}
+
 fn initializer_attribute(identity: &str) -> Option<&'static str> {
     if identity.eq_ignore_ascii_case("Lifetime Random") {
         Some("lifetime")
@@ -3026,6 +3199,7 @@ fn initializer_attribute(identity: &str) -> Option<&'static str> {
         Some("trail")
     } else if identity.eq_ignore_ascii_case("Position Within Box Random")
         || identity.eq_ignore_ascii_case("Position Within Sphere Random")
+        || identity.eq_ignore_ascii_case("Position Along Path Random")
     {
         Some("position")
     } else {

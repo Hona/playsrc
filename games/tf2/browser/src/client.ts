@@ -5,7 +5,7 @@ import type { InitialView, VisibilityView, WorkerFailureCode, WorkerRequest, Wor
 const HASH = /^[0-9a-f]{64}$/
 const MAX_PENDING = 64
 const MAX_BSP_BYTES = 512 * 1024 * 1024
-const MAX_CONFIGURATION_BYTES = 512 * 1024 * 1024
+const MAX_CONFIGURATION_BYTES = 640 * 1024 * 1024
 const LITTLE_ENDIAN = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1
 const HEX_BYTES = Array.from({ length: 256 }, (_, value) => value.toString(16).padStart(2, "0"))
 type RequestWithoutId = WorkerRequest extends infer Request
@@ -212,7 +212,7 @@ export class Tf2WorkerClient {
     if (batch.byteLength < 12 || batch.byteLength > 512 * 1024 * 1024) throw new Tf2WorkerError("BoundExceeded")
     const transferred = transferredBytes(batch)
     const response = await this.#request({ kind: "decode-resources", batch: transferred }, [transferred])
-    if (response.kind !== "resources" || !(response.bytes instanceof ArrayBuffer) || response.bytes.byteLength < 12 || response.bytes.byteLength > 512 * 1024 * 1024) {
+    if (response.kind !== "resources" || !(response.bytes instanceof ArrayBuffer) || response.bytes.byteLength < 12 || response.bytes.byteLength > MAX_CONFIGURATION_BYTES) {
       throw new Tf2WorkerError("WorkerFailed")
     }
     return new Uint8Array(response.bytes)
