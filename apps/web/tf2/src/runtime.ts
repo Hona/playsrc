@@ -3502,6 +3502,7 @@ export class Tf2Application {
       profile.pickups=prepared.snapshot.pickups.map(pickup=>({...pickup,respawnTick:pickup.respawnTick?.toString()??null}))
       profile.buildings=prepared.snapshot.buildings.map(building=>({...building,startedTick:building.startedTick.toString(),rechargeEndTick:building.rechargeEndTick?.toString()??null,tick:prepared.snapshot.tick.toString()}))
       profile.placement=prepared.snapshot.placement
+      profile.objectives=prepared.snapshot.objectives?.flags.map(flag=>({identity:flag.identity,team:flag.team,position:flag.position}))??[]
     }
     const geometryEvidenceRevision=profile?.geometryEvidenceRevision
     if(profile&&Number.isSafeInteger(geometryEvidenceRevision)&&geometryEvidenceRevision!==((profile.geometryEvidence as {revision?:unknown}|undefined)?.revision)&&this.#view.phase==="Ready"){
