@@ -43,8 +43,6 @@ pub const MELEE_MAX_ATTACK_RANGE: f32 = 100.0;
 pub const MELEE_FIRE_RANGE: f32 = 250.0;
 pub const ROCKET_LEAD_MINIMUM_RANGE: f32 = 150.0;
 pub const ROCKET_SPEED: f32 = 1100.0;
-pub const FLAG_TRIGGER_BLOAT: f32 = 24.0;
-pub const FLAG_RETURN_SECONDS: f32 = 60.0;
 pub const RESPAWN_WAVE_SECONDS: f32 = 10.0;
 pub const DEATH_ANIMATION_SECONDS: f32 = 6.4;
 const PLAYER_HULL: Hull = Hull {
@@ -182,15 +180,11 @@ struct Spawn {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct CaptureZone {
     position: [f32; 3],
-    model: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Flag {
     home: [f32; 3],
-    position: [f32; 3],
-    carrier: Option<u32>,
-    return_tick: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -293,6 +287,7 @@ impl BotWorld {
         graph: &Graph,
         world: &W,
         tick_interval: f32,
+        objectives: Option<&crate::ctf::World>,
     ) -> Result<Self, Error> {
         let mut spawns: [Vec<Spawn>; 2] = std::array::from_fn(|_| Vec::new());
         let mut rooms = Vec::new();
@@ -358,7 +353,7 @@ impl BotWorld {
                 }
             }
         }
-        let scenario = scenario(graph)?;
+        let scenario = scenario(graph, objectives)?;
         Ok(Self {
             mesh: Arc::new(mesh),
             spawns,
@@ -591,6 +586,7 @@ impl BotWorld {
         tick: u64,
         human: Human,
         random: &mut UniformRandomStream,
+        objectives: Option<&crate::ctf::World>,
     ) -> Result<Vec<Attack>, Error> {
         if self.bots.is_empty() {
             return Ok(Vec::new());
@@ -609,7 +605,6 @@ impl BotWorld {
                 }
             }
         }
-        self.return_expired_flags(tick);
         let actors = self.actors(human, tick);
         let mut attacks = Vec::new();
         let mesh = &self.mesh;
@@ -662,13 +657,39 @@ impl BotWorld {
                     .find(|actor| actor.identity == identity && actor.alive)
             });
             select_weapon(bot, threat, tick, self.tick_interval);
-            update_flag_contact(world, scenario, bot, tick)?;
-            let (objective_kind, goal) = objective(
-                *scenario,
-                bot.team,
-                threat.map(|actor| actor.position),
-                bot.carrying_flag,
-            );
+            let authoritative =
+                objectives.and_then(|world| world.bot_objective(bot.identity, bot.team));
+            if let Some(flag) = authoritative {
+                bot.carrying_flag = (flag.carrier == Some(bot.identity)).then_some(
+                    if bot.team == PlayerTeam::Red {
+                        PlayerTeam::Blue
+                    } else {
+                        PlayerTeam::Red
+                    },
+                );
+            }
+            let (objective_kind, goal) = if let Some(flag) = authoritative {
+                if flag.carrier == Some(bot.identity) {
+                    (
+                        ObjectiveKind::DeliverFlag,
+                        flag.capture_position.ok_or(Error::MissingScenario)?,
+                    )
+                } else if flag.carrier.is_some() {
+                    (
+                        ObjectiveKind::Attack,
+                        threat.map_or(flag.position, |actor| actor.position),
+                    )
+                } else {
+                    (ObjectiveKind::FetchFlag, flag.position)
+                }
+            } else {
+                objective(
+                    *scenario,
+                    bot.team,
+                    threat.map(|actor| actor.position),
+                    bot.carrying_flag,
+                )
+            };
             if objective_kind != bot.objective {
                 bot.next_repath_tick = 0;
             }
@@ -1006,14 +1027,7 @@ impl BotWorld {
             ));
             victim.target = None;
             victim.pending_melee = None;
-            if let Some(flag_team) = victim.carrying_flag.take()
-                && let Scenario::CaptureTheFlag { flags, .. } = &mut self.scenario
-            {
-                let flag = &mut flags[team_index(flag_team)];
-                flag.carrier = None;
-                flag.position = victim.movement.position;
-                flag.return_tick = Some(tick + ticks(FLAG_RETURN_SECONDS, self.tick_interval));
-            }
+            victim.carrying_flag = None;
         }
         if input.attacker != crate::PLAYER_IDENTITY
             && let Some(attacker) = self.bots.get_mut(&input.attacker)
@@ -1101,13 +1115,40 @@ impl BotWorld {
         .collect()
     }
 
-    fn return_expired_flags(&mut self, tick: u64) {
-        if let Scenario::CaptureTheFlag { flags, .. } = &mut self.scenario {
-            for flag in flags {
-                if flag.return_tick.is_some_and(|due| tick >= due) {
-                    flag.position = flag.home;
-                    flag.return_tick = None;
+    pub(crate) fn synchronize_objectives(
+        &mut self,
+        objectives: &crate::ctf::World,
+        events: &[crate::ctf::Event],
+    ) {
+        for bot in self.bots.values_mut() {
+            let carrying = objectives.carrier_flag(bot.identity).map(|flag| flag.team);
+            if bot.carrying_flag != carrying {
+                bot.carrying_flag = carrying;
+                bot.next_repath_tick = 0;
+            }
+            if let Some(flag) = objectives.bot_objective(bot.identity, bot.team) {
+                let (objective, goal) = if flag.carrier == Some(bot.identity) {
+                    (
+                        ObjectiveKind::DeliverFlag,
+                        flag.capture_position.unwrap_or(flag.position),
+                    )
+                } else if flag.carrier.is_some() {
+                    (ObjectiveKind::Attack, flag.position)
+                } else {
+                    (ObjectiveKind::FetchFlag, flag.position)
+                };
+                if objective != bot.objective {
+                    bot.next_repath_tick = 0;
                 }
+                bot.objective = objective;
+                bot.goal = goal;
+            }
+        }
+        for event in events {
+            if let crate::ctf::Event::Captured { player, .. } = event
+                && let Some(bot) = self.bots.get_mut(player)
+            {
+                bot.captures = bot.captures.saturating_add(1);
             }
         }
     }
@@ -1283,57 +1324,6 @@ fn max_attack_range(weapon: Weapon) -> f32 {
     } else {
         f32::MAX
     }
-}
-fn update_flag_contact<W: GameplayWorld>(
-    world: &W,
-    scenario: &mut Scenario,
-    bot: &mut Bot,
-    tick: u64,
-) -> Result<(), Error> {
-    let Scenario::CaptureTheFlag { flags, captures } = scenario else {
-        return Ok(());
-    };
-    if let Some(flag_team) = bot.carrying_flag {
-        let zone = captures[team_index(bot.team)];
-        let touching = if let Some(model) = zone.model {
-            world
-                .overlaps_model_hull(model, zone.position, bot.movement.position, PLAYER_HULL)
-                .map_err(|_| Error::Movement)?
-        } else {
-            distance(bot.movement.position, zone.position) <= FLAG_TRIGGER_BLOAT
-        };
-        if touching {
-            let flag = &mut flags[team_index(flag_team)];
-            flag.position = flag.home;
-            flag.carrier = None;
-            flag.return_tick = None;
-            bot.carrying_flag = None;
-            bot.captures = bot.captures.saturating_add(1);
-            bot.next_repath_tick = tick;
-        } else {
-            flags[team_index(flag_team)].position = bot.movement.position;
-        }
-        return Ok(());
-    }
-    let enemy = if bot.team == PlayerTeam::Red {
-        PlayerTeam::Blue
-    } else {
-        PlayerTeam::Red
-    };
-    let flag = &mut flags[team_index(enemy)];
-    if flag.carrier.is_none()
-        && (bot.movement.position[0] - flag.position[0]).abs() <= 24.0 + 19.5 + FLAG_TRIGGER_BLOAT
-        && (bot.movement.position[1] - flag.position[1]).abs() <= 24.0 + 22.5 + FLAG_TRIGGER_BLOAT
-        && bot.movement.position[2] <= flag.position[2] + 6.5 + FLAG_TRIGGER_BLOAT
-        && bot.movement.position[2] + 82.0 >= flag.position[2] - 6.5 - FLAG_TRIGGER_BLOAT
-    {
-        flag.carrier = Some(bot.identity);
-        flag.position = bot.movement.position;
-        flag.return_tick = None;
-        bot.carrying_flag = Some(enemy);
-        bot.next_repath_tick = tick;
-    }
-    Ok(())
 }
 fn initial_respawn_waves(graph: &Graph) -> [f32; 2] {
     let mut waves = [RESPAWN_WAVE_SECONDS; 2];
@@ -1591,17 +1581,13 @@ fn objective(
                     PlayerTeam::Red
                 };
                 let flag = flags[team_index(enemy)];
-                if flag.carrier.is_some() {
-                    (ObjectiveKind::Attack, threat.unwrap_or(flag.position))
-                } else {
-                    (ObjectiveKind::FetchFlag, flag.position)
-                }
+                (ObjectiveKind::FetchFlag, flag.home)
             }
         }
     }
 }
 
-fn scenario(graph: &Graph) -> Result<Scenario, Error> {
+fn scenario(graph: &Graph, objectives: Option<&crate::ctf::World>) -> Result<Scenario, Error> {
     if let Some(watcher) = graph
         .entities
         .iter()
@@ -1664,21 +1650,20 @@ fn scenario(graph: &Graph) -> Result<Scenario, Error> {
             Some(b"3") => PlayerTeam::Blue,
             _ => continue,
         };
-        let Some(position) = vector(entity, b"origin") else {
+        let Some(position) = vector(entity, b"origin").or_else(|| {
+            objectives.and_then(|world| {
+                world
+                    .zones()
+                    .find(|zone| zone.identity == entity.index as u32 && zone.team == Some(team))
+                    .map(|zone| zone.center)
+            })
+        }) else {
             continue;
         };
         if classname(entity, b"item_teamflag") {
-            flags[team_index(team)] = Some(Flag {
-                home: position,
-                position,
-                carrier: None,
-                return_tick: None,
-            });
+            flags[team_index(team)] = Some(Flag { home: position });
         } else if classname(entity, b"func_capturezone") {
-            captures[team_index(team)] = Some(CaptureZone {
-                position,
-                model: entity.bsp_model_index,
-            });
+            captures[team_index(team)] = Some(CaptureZone { position });
         }
     }
     match (flags, captures) {
@@ -1785,12 +1770,14 @@ mod tests {
     impl GameplayWorld for Floor {
         fn overlaps_model_hull(
             &self,
-            _model: usize,
-            _origin: [f32; 3],
-            _position: [f32; 3],
+            model: usize,
+            origin: [f32; 3],
+            position: [f32; 3],
             _hull: Hull,
         ) -> Result<bool, MoveError> {
-            Ok(false)
+            Ok(matches!(model, 1 | 2)
+                && (position[0] - origin[0]).abs() <= 24.0
+                && (position[1] - origin[1]).abs() <= 24.0)
         }
     }
 
@@ -1847,7 +1834,7 @@ mod tests {
 
     fn capture_graph() -> Graph {
         playsrc_entity::parse(
-            b"{\"classname\"\"info_player_teamspawn\"\"TeamNum\"\"2\"\"origin\"\"10 50 1\"}\n{\"classname\"\"info_player_teamspawn\"\"TeamNum\"\"3\"\"origin\"\"250 50 1\"}\n{\"classname\"\"item_teamflag\"\"TeamNum\"\"2\"\"origin\"\"10 50 1\"}\n{\"classname\"\"item_teamflag\"\"TeamNum\"\"3\"\"origin\"\"250 50 1\"}\n{\"classname\"\"func_capturezone\"\"TeamNum\"\"2\"\"origin\"\"20 50 1\"}\n{\"classname\"\"func_capturezone\"\"TeamNum\"\"3\"\"origin\"\"240 50 1\"}\0",
+            b"{\"classname\"\"info_player_teamspawn\"\"TeamNum\"\"2\"\"origin\"\"10 50 1\"}\n{\"classname\"\"info_player_teamspawn\"\"TeamNum\"\"3\"\"origin\"\"250 50 1\"}\n{\"classname\"\"item_teamflag\"\"TeamNum\"\"2\"\"origin\"\"10 50 1\"}\n{\"classname\"\"item_teamflag\"\"TeamNum\"\"3\"\"origin\"\"250 50 1\"}\n{\"classname\"\"func_capturezone\"\"TeamNum\"\"2\"\"model\"\"*1\"\"origin\"\"20 50 1\"}\n{\"classname\"\"func_capturezone\"\"TeamNum\"\"3\"\"model\"\"*2\"\"origin\"\"240 50 1\"}\0",
             playsrc_entity::Limits::default(),
         )
         .unwrap()
@@ -1883,7 +1870,8 @@ mod tests {
 
     #[test]
     fn flame_contact_afterburn_airblast_and_fatal_hits_mutate_real_bot_players() {
-        let mut world = BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015).unwrap();
+        let mut world =
+            BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015, None).unwrap();
         let mut random = UniformRandomStream::from_seed(0).unwrap();
         world
             .apply(
@@ -1917,7 +1905,8 @@ mod tests {
 
     #[test]
     fn player_lifecycle_path_movement_target_recognition_and_team_removal_are_deterministic() {
-        let mut world = BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015).unwrap();
+        let mut world =
+            BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015, None).unwrap();
         let mut random = UniformRandomStream::from_seed(0).unwrap();
         world
             .apply(
@@ -1971,6 +1960,7 @@ mod tests {
                         velocity: [0.0; 3],
                     },
                     &mut random,
+                    None,
                 )
                 .unwrap();
         }
@@ -2020,7 +2010,8 @@ mod tests {
 
     #[test]
     fn every_authored_player_class_joins_both_source_teams_with_exact_health() {
-        let mut world = BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015).unwrap();
+        let mut world =
+            BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015, None).unwrap();
         let mut random = UniformRandomStream::from_seed(0).unwrap();
         for team in [PlayerTeam::Red, PlayerTeam::Blue] {
             for class in PlayerClass::ALL {
@@ -2055,7 +2046,8 @@ mod tests {
 
     #[test]
     fn preset_payload_rosters_select_exact_offense_and_defense_classes() {
-        let mut world = BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015).unwrap();
+        let mut world =
+            BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015, None).unwrap();
         let mut random = UniformRandomStream::from_seed(0).unwrap();
         for team in [PlayerTeam::Blue, PlayerTeam::Red] {
             world
@@ -2226,7 +2218,8 @@ mod tests {
 
     #[test]
     fn recognized_scout_and_soldier_fire_authored_weapons_with_exact_cadence() {
-        let mut world = BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015).unwrap();
+        let mut world =
+            BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015, None).unwrap();
         let mut random = UniformRandomStream::from_seed(0).unwrap();
         add(
             &mut world,
@@ -2246,7 +2239,7 @@ mod tests {
         for tick in 0..150 {
             attacks.extend(
                 world
-                    .advance(&Floor, tick, human_far(), &mut random)
+                    .advance(&Floor, tick, human_far(), &mut random, None)
                     .unwrap(),
             );
         }
@@ -2274,7 +2267,8 @@ mod tests {
 
     #[test]
     fn authored_scout_and_soldier_switch_to_stock_secondaries_only_at_source_boundaries() {
-        let mut world = BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015).unwrap();
+        let mut world =
+            BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015, None).unwrap();
         let mut random = UniformRandomStream::from_seed(0).unwrap();
         add(
             &mut world,
@@ -2335,7 +2329,8 @@ mod tests {
 
     #[test]
     fn threat_priority_matches_immediate_medic_spy_and_recent_attacker_rules() {
-        let mut world = BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015).unwrap();
+        let mut world =
+            BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015, None).unwrap();
         let mut random = UniformRandomStream::from_seed(0).unwrap();
         add(
             &mut world,
@@ -2379,7 +2374,8 @@ mod tests {
 
     #[test]
     fn soldier_leads_feet_at_1100_units_per_second_but_aims_at_close_enemy_eyes() {
-        let mut world = BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015).unwrap();
+        let mut world =
+            BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015, None).unwrap();
         let mut random = UniformRandomStream::from_seed(0).unwrap();
         add(
             &mut world,
@@ -2410,7 +2406,8 @@ mod tests {
 
     #[test]
     fn damage_death_wave_and_respawn_restore_exact_stock_weapon_ledgers() {
-        let mut world = BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015).unwrap();
+        let mut world =
+            BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015, None).unwrap();
         let mut random = UniformRandomStream::from_seed(0).unwrap();
         add(
             &mut world,
@@ -2470,11 +2467,11 @@ mod tests {
         let due = dead.respawn_tick.unwrap();
         assert_eq!(due, next_respawn_wave(50, 0.015, 10.0, 1));
         world
-            .advance(&Floor, due - 1, human_far(), &mut random)
+            .advance(&Floor, due - 1, human_far(), &mut random, None)
             .unwrap();
         assert_eq!(world.snapshots()[0].lifecycle, PlayerLifecycle::Dying);
         world
-            .advance(&Floor, due, human_far(), &mut random)
+            .advance(&Floor, due, human_far(), &mut random, None)
             .unwrap();
         let alive = world.snapshots()[0].clone();
         assert_eq!(
@@ -2516,8 +2513,14 @@ mod tests {
     }
 
     #[test]
-    fn ctf_flags_pick_up_deliver_drop_and_return_on_the_exact_authored_timers() {
-        let mut world = BotWorld::new(fixture_mesh(), &capture_graph(), &Floor, 0.015).unwrap();
+    fn ctf_flags_use_one_objective_authority_for_delivery_death_and_return() {
+        let graph = capture_graph();
+        let mut objectives =
+            crate::ctf::World::compile(&graph, crate::ctf::Configuration::default())
+                .unwrap()
+                .unwrap();
+        let mut world =
+            BotWorld::new(fixture_mesh(), &graph, &Floor, 0.015, Some(&objectives)).unwrap();
         let mut random = UniformRandomStream::from_seed(0).unwrap();
         add(
             &mut world,
@@ -2526,19 +2529,39 @@ mod tests {
             PlayerClass::Scout,
             Difficulty::Normal,
         );
+        let facts = |world: &BotWorld| {
+            world
+                .snapshots()
+                .into_iter()
+                .map(|bot| {
+                    let mut actor = crate::ctf::Actor::active(
+                        bot.identity,
+                        bot.team,
+                        bot.position,
+                        PLAYER_HULL,
+                    );
+                    actor.alive = bot.lifecycle == PlayerLifecycle::Active;
+                    actor
+                })
+                .collect::<Vec<_>>()
+        };
         world.bots.get_mut(&2).unwrap().movement.position = [10.0, 50.0, 1.0];
-        world.advance(&Floor, 0, human_far(), &mut random).unwrap();
+        let events = objectives.advance(&Floor, 0.0, &facts(&world)).unwrap();
+        world.synchronize_objectives(&objectives, &events);
         let carrier = world.snapshots()[0].clone();
         assert_eq!(carrier.objective, ObjectiveKind::DeliverFlag);
         assert!(carrier.carrying_flag);
         world.bots.get_mut(&2).unwrap().movement.position = [240.0, 50.0, 1.0];
-        world.advance(&Floor, 1, human_far(), &mut random).unwrap();
+        let events = objectives.advance(&Floor, 0.015, &facts(&world)).unwrap();
+        world.synchronize_objectives(&objectives, &events);
         let delivered = world.snapshots()[0].clone();
         assert_eq!((delivered.captures, delivered.carrying_flag), (1, false));
         assert_eq!(delivered.objective, ObjectiveKind::FetchFlag);
+        assert_eq!(objectives.scores().blue_captures, 1);
 
         world.bots.get_mut(&2).unwrap().movement.position = [10.0, 50.0, 1.0];
-        world.advance(&Floor, 2, human_far(), &mut random).unwrap();
+        let events = objectives.advance(&Floor, 0.30, &facts(&world)).unwrap();
+        world.synchronize_objectives(&objectives, &events);
         assert!(world.snapshots()[0].carrying_flag);
         world
             .damage(
@@ -2550,22 +2573,41 @@ mod tests {
                     position: [10.0, 50.0, 1.0],
                 },
                 PlayerTeam::Red,
-                3,
+                21,
                 1,
             )
             .unwrap();
-        let Scenario::CaptureTheFlag { flags, .. } = world.scenario else {
-            panic!("capture scenario")
-        };
-        assert_eq!(flags[0].carrier, None);
-        assert_eq!(flags[0].return_tick, Some(3 + ticks(60.0, 0.015)));
-        world.return_expired_flags(3 + ticks(60.0, 0.015));
-        let Scenario::CaptureTheFlag { flags, .. } = world.scenario else {
-            panic!("capture scenario")
-        };
+        let events = objectives.advance(&Floor, 0.315, &facts(&world)).unwrap();
+        world.synchronize_objectives(&objectives, &events);
+        let red = objectives
+            .flags()
+            .find(|flag| flag.team == PlayerTeam::Red)
+            .unwrap();
+        assert_eq!(red.status, crate::ctf::FlagStatus::Dropped);
+        assert_eq!(red.return_deadline, Some(60.315));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            crate::ctf::Event::Flag {
+                kind: crate::ctf::FlagEventKind::Dropped,
+                player: Some(2),
+                ..
+            }
+        )));
+        let returned = objectives.advance(&Floor, 60.316, &[]).unwrap();
+        let red = objectives
+            .flags()
+            .find(|flag| flag.team == PlayerTeam::Red)
+            .unwrap();
         assert_eq!(
-            (flags[0].position, flags[0].return_tick),
-            (flags[0].home, None)
+            (red.status, red.position),
+            (crate::ctf::FlagStatus::Home, red.home)
         );
+        assert!(returned.iter().any(|event| matches!(
+            event,
+            crate::ctf::Event::Flag {
+                kind: crate::ctf::FlagEventKind::Returned,
+                ..
+            }
+        )));
     }
 }

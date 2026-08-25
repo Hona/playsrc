@@ -664,6 +664,7 @@ name = "playsrc-tf2"
 version = "0.1.0"
 dependencies = [
  "md-5",
+ "playsrc-bsp",
  "playsrc-collision",
  "playsrc-entity",
  "playsrc-keyvalues",
@@ -672,6 +673,7 @@ dependencies = [
  "playsrc-nav",
  "playsrc-studio-model",
  "playsrc-vmt",
+ "sha2 0.10.9",
 ]
 
 [[package]]

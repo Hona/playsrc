@@ -11,6 +11,7 @@ export type Tf2ContentBuildContract = Readonly<{
     tf2Misc: string
     tf2Textures: string
     tf2SoundMisc: string
+    tf2SoundVoEnglish: string
   }>
   installedDepots: readonly Readonly<{
     depot: string
@@ -34,10 +35,11 @@ export function parseTf2ContentBuildContract(value: unknown): Tf2ContentBuildCon
     || !Array.isArray(record.installedDepots)
     || record.installedDepots.length !== 3) throw new Error("TF2 content-build contract is malformed")
   const indexes = record.archiveIndexes as Record<string, unknown>
-  if (Object.keys(indexes).sort().join("\0") !== "tf2Misc\0tf2SoundMisc\0tf2Textures"
+  if (Object.keys(indexes).sort().join("\0") !== "tf2Misc\0tf2SoundMisc\0tf2SoundVoEnglish\0tf2Textures"
     || typeof indexes.tf2Misc !== "string" || !SHA256.test(indexes.tf2Misc)
     || typeof indexes.tf2Textures !== "string" || !SHA256.test(indexes.tf2Textures)
-    || typeof indexes.tf2SoundMisc !== "string" || !SHA256.test(indexes.tf2SoundMisc)) throw new Error("TF2 archive-index contract is malformed")
+    || typeof indexes.tf2SoundMisc !== "string" || !SHA256.test(indexes.tf2SoundMisc)
+    || typeof indexes.tf2SoundVoEnglish !== "string" || !SHA256.test(indexes.tf2SoundVoEnglish)) throw new Error("TF2 archive-index contract is malformed")
   const depots = record.installedDepots.map((value) => {
     if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("TF2 depot contract is malformed")
     const depot = value as Record<string, unknown>
@@ -55,7 +57,7 @@ export function parseTf2ContentBuildContract(value: unknown): Tf2ContentBuildCon
     patchVersion: record.patchVersion,
     gameinfoSha256: record.gameinfoSha256,
     customModProviders: record.customModProviders,
-    archiveIndexes: Object.freeze({ tf2Misc: indexes.tf2Misc, tf2Textures: indexes.tf2Textures, tf2SoundMisc: indexes.tf2SoundMisc }),
+    archiveIndexes: Object.freeze({ tf2Misc: indexes.tf2Misc, tf2Textures: indexes.tf2Textures, tf2SoundMisc: indexes.tf2SoundMisc, tf2SoundVoEnglish: indexes.tf2SoundVoEnglish }),
     installedDepots: Object.freeze(depots),
   })
 }

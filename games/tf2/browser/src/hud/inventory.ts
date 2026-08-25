@@ -8,6 +8,9 @@ export const TF2_HUD_RESOURCES = Object.freeze({
   playerClass: "resource/UI/HudPlayerClass.res",
   weaponAmmo: "resource/UI/HudAmmoWeapons.res",
   weaponSelection: "resource/UI/HudWeaponSelection.res",
+  objectiveStatus: "resource/UI/HudObjectiveStatus.res",
+  objectiveFlagPanel: "resource/UI/HudObjectiveFlagPanel.res",
+  flagStatus: "resource/UI/FlagStatus.res",
   scoreboard: "resource/UI/Scoreboard.res",
   freezePanel: "resource/UI/FreezePanel_Basic.res",
 })
@@ -20,6 +23,9 @@ export const TF2_HUD_RESOURCE_REVISIONS = Object.freeze({
   playerClass: "10181165d10a81821672fd8e104d798e18cf896ca1156cf92df8ce0a07f8c89d",
   weaponAmmo: "a23a98f009dd34ac8c94e7149b1ded56eb9ed66e03d583fcd9c2ab68c3cb7734",
   weaponSelection: "7a6f02c7eab4f0befdac5c69082c9334b0a03975738e1fc6d598ba6c91967138",
+  objectiveStatus: "b46a3a3d4cbfa57d28d15292036f0de16bfdd928f82034dda4f37617576875ca",
+  objectiveFlagPanel: "8affbaac643b77e07e3561497d4f6cbc1abd919d497c92fe0a683015d9adc683",
+  flagStatus: "69b56afcf854afe54cd745054f1f720540933a23838bf8f77f34d780091176ca",
   scoreboard: "ed6e7d1619dcfa7423d00cf77c19026d7fe00c6a2bca634bb742d20d870b3e52",
   freezePanel: "aa7eb65149c32af23766daccee2fa6cb45a88ca09e4875008bdf692671f6a15e",
 })
@@ -31,6 +37,15 @@ export const TF2_HUD_DYNAMIC_IMAGES = Object.freeze([
   "../hud/class_medicblue", "../hud/class_heavyblue", "../hud/class_pyroblue", "../hud/class_spyblue", "../hud/class_engiblue",
   "../hud/character_red_bg", "../hud/character_blue_bg", "../hud/character_red_bg_clipped", "../hud/character_blue_bg_clipped",
   "../hud/ammo_red_bg", "../hud/ammo_blue_bg", "hud/health_color", "hud/health_dead",
+  "../hud/objectives_flagpanel_ico_flag_home",
+  "../hud/objectives_flagpanel_ico_flag_dropped",
+  "../hud/objectives_flagpanel_ico_flag_moving",
+  "../hud/objectives_flagpanel_compass_red",
+  "../hud/objectives_flagpanel_compass_blue",
+  "../hud/objectives_flagpanel_compass_red_noarrow",
+  "../hud/objectives_flagpanel_compass_blue_noarrow",
+  "../hud/objectives_flagpanel_carried_red",
+  "../hud/objectives_flagpanel_carried_blue",
 ])
 
 export const TF2_CLASS_IMAGES: Readonly<Record<Tf2PlayableTeam, Readonly<Record<Tf2Class, string>>>> =

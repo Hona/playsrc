@@ -144,6 +144,8 @@ const attributes: readonly PublicationBinding[] = Object.freeze([
   attribute("performance-detail", "performanceDetailProbe"),
   attribute("load-performance", "loadPerformanceProbe"),
   attribute("locker", "lockerProbe"),
+  attribute("ctf", "objectiveProbe"),
+  attribute("ctf-events", "objectiveEventProbe"),
   attribute("bot-count", "botCount"),
   attribute("bot-probe", "botProbe"),
   attribute("unsupported-state", "unsupportedState"),

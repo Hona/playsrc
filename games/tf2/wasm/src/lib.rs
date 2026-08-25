@@ -3679,6 +3679,7 @@ fn gameplay_error_code(error: &playsrc_tf2::Error) -> u32 {
         playsrc_tf2::Error::UnsupportedJumpClass(_) => 10,
         playsrc_tf2::Error::Bot(_) => 11,
         playsrc_tf2::Error::TeamSelection(_) => 12,
+        playsrc_tf2::Error::Objectives(_) => 13,
     }
 }
 
@@ -3945,7 +3946,7 @@ fn encode_snapshot(
     encode_movement_tick(&mut movement_tick_bytes, movement_tick, MAX)?;
     let mut out = Vec::new();
     extend(&mut out, b"PSSN", MAX)?;
-    u32_field(&mut out, 13, MAX)?;
+    u32_field(&mut out, 15, MAX)?;
     u64_field(&mut out, snapshot.tick, MAX)?;
     extend(
         &mut out,
@@ -4416,7 +4417,254 @@ fn encode_snapshot(
             MAX,
         )?;
     }
+    encode_objectives(&mut out, snapshot.objectives.as_ref(), MAX)?;
     Some(out)
+}
+
+fn encode_objectives(
+    out: &mut Vec<u8>,
+    objectives: Option<&playsrc_tf2::ctf::Snapshot>,
+    maximum: usize,
+) -> Option<()> {
+    extend(out, b"PCTF", maximum)?;
+    u32_field(out, 1, maximum)?;
+    extend(out, &[u8::from(objectives.is_some()), 0, 0, 0], maximum)?;
+    let Some(objectives) = objectives else {
+        return Some(());
+    };
+    for score in [
+        objectives.scores.red_captures,
+        objectives.scores.blue_captures,
+        objectives.scores.red_score,
+        objectives.scores.blue_score,
+        objectives.scores.limit,
+    ] {
+        u16_field(out, score, maximum)?;
+    }
+    extend(
+        out,
+        &[objectives.scores.winner.map_or(0, team_code), 0],
+        maximum,
+    )?;
+    for count in [
+        objectives.flags.len(),
+        objectives.zones.len(),
+        objectives.events.len(),
+    ] {
+        u32_field(out, u32::try_from(count).ok()?, maximum)?;
+    }
+    for flag in &objectives.flags {
+        u32_field(out, flag.identity, maximum)?;
+        extend(
+            out,
+            &[
+                team_code(flag.team),
+                flag.status as u8,
+                u8::from(flag.disabled)
+                    | (u8::from(flag.visible_when_disabled) << 1)
+                    | (u8::from(flag.shot_clock) << 2)
+                    | (u8::from(flag.allow_owner_pickup) << 3)
+                    | (u8::from(flag.trail_enabled) << 4)
+                    | (u8::from(flag.captured) << 5),
+                flag.skin,
+            ],
+            maximum,
+        )?;
+        for identity in [flag.carrier, flag.previous_carrier, flag.initial_carrier] {
+            u32_field(out, identity.unwrap_or(u32::MAX), maximum)?;
+        }
+        f32_field(out, flag.return_deadline.unwrap_or(-1.0), maximum)?;
+        f32_field(out, flag.maximum_return_seconds, maximum)?;
+        f32_field(out, flag.owner_pickup_deadline.unwrap_or(-1.0), maximum)?;
+        u16_field(out, flag.configured_return_seconds, maximum)?;
+        u16_field(out, 0, maximum)?;
+        floats(
+            out,
+            flag.position
+                .into_iter()
+                .chain(flag.home)
+                .chain(flag.angles)
+                .chain(flag.home_angles),
+            maximum,
+        )?;
+        for value in [
+            &flag.model,
+            &flag.icon,
+            &flag.paper_effect,
+            &flag.trail_effect,
+        ] {
+            u16_field(out, u16::try_from(value.len()).ok()?, maximum)?;
+            extend(out, value.as_bytes(), maximum)?;
+        }
+    }
+    for zone in &objectives.zones {
+        u32_field(out, zone.identity, maximum)?;
+        extend(
+            out,
+            &[
+                zone.team.map_or(0, team_code),
+                u8::from(zone.disabled),
+                0,
+                0,
+            ],
+            maximum,
+        )?;
+        u32_field(out, u32::try_from(zone.model).ok()?, maximum)?;
+        floats(out, zone.origin.into_iter().chain(zone.center), maximum)?;
+        i32_field(out, zone.capture_point, maximum)?;
+    }
+    for event in &objectives.events {
+        use playsrc_tf2::ctf::Event;
+        let (kind, detail, team, flags, subject, player, auxiliary, value, extra) = match event {
+            Event::StatusChanged {
+                flag,
+                status,
+                owner,
+            } => (
+                1,
+                *status as u8,
+                0,
+                0,
+                *flag,
+                owner.unwrap_or(u32::MAX),
+                0,
+                0.0,
+                0.0,
+            ),
+            Event::Flag {
+                flag,
+                kind,
+                player,
+                team,
+                priority,
+                home,
+            } => (
+                2,
+                *kind as u8,
+                team_code(*team),
+                home.map_or(0, |value| 1 | (u8::from(value) << 1)),
+                *flag,
+                player.unwrap_or(u32::MAX),
+                u32::from(*priority),
+                0.0,
+                0.0,
+            ),
+            Event::Announcer {
+                flag,
+                recipient,
+                sound,
+                exclude_player,
+            } => (
+                3,
+                *sound as u8,
+                recipient.source_number(),
+                0,
+                *flag,
+                exclude_player.unwrap_or(u32::MAX),
+                0,
+                0.0,
+                0.0,
+            ),
+            Event::Notification {
+                flag,
+                recipient,
+                notification,
+                exclude_player,
+            } => (
+                4,
+                *notification as u8,
+                team_code(*recipient),
+                0,
+                *flag,
+                exclude_player.unwrap_or(u32::MAX),
+                0,
+                0.0,
+                0.0,
+            ),
+            Event::MapOutput {
+                entity,
+                output,
+                activator,
+            } => (
+                5,
+                match *output {
+                    "OnReturn" => 1,
+                    "OnPickUp" => 2,
+                    "OnPickup1" => 3,
+                    "OnPickupTeam1" => 4,
+                    "OnPickupTeam2" => 5,
+                    "OnDrop" => 6,
+                    "OnDrop1" => 7,
+                    "OnCapture" => 8,
+                    "OnCapture1" => 9,
+                    "OnCapTeam1" => 10,
+                    "OnCapTeam2" => 11,
+                    "OnTouchSameTeam" => 12,
+                    _ => return None,
+                },
+                0,
+                0,
+                *entity,
+                activator.unwrap_or(u32::MAX),
+                0,
+                0.0,
+                0.0,
+            ),
+            Event::Captured {
+                zone,
+                player,
+                team,
+                team_score,
+            } => (
+                6,
+                0,
+                team_code(*team),
+                0,
+                *zone,
+                *player,
+                u32::from(*team_score),
+                0.0,
+                0.0,
+            ),
+            Event::CaptureBonus {
+                team,
+                condition,
+                duration,
+            } => (
+                7,
+                *condition,
+                team_code(*team),
+                0,
+                0,
+                u32::MAX,
+                0,
+                *duration,
+                0.0,
+            ),
+            Event::RoundWon {
+                team,
+                reason,
+                capture_limit,
+            } => (
+                8,
+                *reason,
+                team_code(*team),
+                0,
+                0,
+                u32::MAX,
+                u32::from(*capture_limit),
+                0.0,
+                0.0,
+            ),
+        };
+        extend(out, &[kind, detail, team, flags], maximum)?;
+        for field in [subject, player, auxiliary] {
+            u32_field(out, field, maximum)?;
+        }
+        f32_field(out, value, maximum)?;
+        f32_field(out, extra, maximum)?;
+    }
+    Some(())
 }
 
 fn encode_entity_presentation(
@@ -4558,8 +4806,16 @@ fn encode_random_state(state: playsrc_tf2::Tf2RandomState) -> Option<Vec<u8>> {
         state.sound_selection.kukri_hit_flesh_available
             | state.sound_selection.kukri_hit_world_available << 3
             | state.sound_selection.wrench_hit_flesh_available << 5,
+        state.sound_selection.flag_enemy_stolen_available,
+        state.sound_selection.flag_enemy_dropped_available,
+        state.sound_selection.flag_enemy_captured_available,
+        state.sound_selection.flag_enemy_returned_available,
+        state.sound_selection.flag_team_dropped_available,
+        0,
+        0,
+        0,
     ]);
-    (output.len() == 288).then_some(output)
+    (output.len() == 296).then_some(output)
 }
 
 fn sound_definition_code(value: playsrc_tf2::SoundDefinition) -> u8 {
@@ -4608,6 +4864,17 @@ fn sound_definition_code(value: playsrc_tf2::SoundDefinition) -> u8 {
         playsrc_tf2::SoundDefinition::FireAxeMiss => 41,
         playsrc_tf2::SoundDefinition::FireAxeHitFlesh => 42,
         playsrc_tf2::SoundDefinition::FireAxeHitWorld => 43,
+        playsrc_tf2::SoundDefinition::FlagEnemyStolen => 44,
+        playsrc_tf2::SoundDefinition::FlagEnemyDropped => 45,
+        playsrc_tf2::SoundDefinition::FlagEnemyCaptured => 46,
+        playsrc_tf2::SoundDefinition::FlagEnemyReturned => 47,
+        playsrc_tf2::SoundDefinition::FlagTeamStolen => 48,
+        playsrc_tf2::SoundDefinition::FlagTeamDropped => 49,
+        playsrc_tf2::SoundDefinition::FlagTeamCaptured => 50,
+        playsrc_tf2::SoundDefinition::FlagTeamReturned => 51,
+        playsrc_tf2::SoundDefinition::FlagSpawn => 52,
+        playsrc_tf2::SoundDefinition::TeamWon => 53,
+        playsrc_tf2::SoundDefinition::TeamLost => 54,
     }
 }
 
@@ -8068,15 +8335,7 @@ fn encode_sound_node(out: &mut Vec<u8>, node: &playsrc_keyvalues::Node) -> Resul
 }
 
 fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>) -> Result<(), ()> {
-    let logical_path = "scripts/game_sounds_weapons.txt";
-    let source = *bundle.get(logical_path).ok_or(())?;
-    let document = playsrc_keyvalues::parse_text(
-        source,
-        playsrc_keyvalues::EscapeMode::LiteralBackslash,
-        playsrc_keyvalues::Limits::default(),
-    )
-    .map_err(|_| ())?;
-    let targets = [
+    let weapon_targets: &[&str] = &[
         "Weapon_RPG.Single",
         "Weapon_QuakeRPG.Single",
         "Weapon_StickyBombLauncher.Single",
@@ -8121,26 +8380,56 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>) -
         "Weapon_FireAxe.HitFlesh",
         "Weapon_FireAxe.HitWorld",
     ];
-    let nodes = targets
-        .iter()
-        .map(|target| {
-            document
+    let flag_targets: &[&str] = &[
+        "CaptureFlag.EnemyStolen",
+        "CaptureFlag.EnemyDropped",
+        "CaptureFlag.EnemyCaptured",
+        "CaptureFlag.EnemyReturned",
+        "CaptureFlag.TeamStolen",
+        "CaptureFlag.TeamDropped",
+        "CaptureFlag.TeamCaptured",
+        "CaptureFlag.TeamReturned",
+        "CaptureFlag.FlagSpawn",
+    ];
+    let round_targets: &[&str] = &["Game.YourTeamWon", "Game.YourTeamLost"];
+    let mut documents = vec![("scripts/game_sounds_weapons.txt", weapon_targets)];
+    if bundle.contains_key("scripts/game_sounds_vo.txt") {
+        documents.push(("scripts/game_sounds_vo.txt", flag_targets));
+        documents.push(("scripts/game_sounds.txt", round_targets));
+    }
+    let mixer = *bundle.get("scripts/soundmixers.txt").ok_or(())?;
+    out.extend_from_slice(b"PAUD");
+    out.extend_from_slice(&2u32.to_le_bytes());
+    out.extend_from_slice(&<[u8; 32]>::from(Sha256::digest(mixer)));
+    out.extend_from_slice(&0.72f32.to_le_bytes());
+    out.extend_from_slice(
+        &u32::try_from(documents.len())
+            .map_err(|_| ())?
+            .to_le_bytes(),
+    );
+    for (logical_path, targets) in documents {
+        let source = *bundle.get(logical_path).ok_or(())?;
+        let document = playsrc_keyvalues::parse_text(
+            source,
+            playsrc_keyvalues::EscapeMode::LiteralBackslash,
+            playsrc_keyvalues::Limits::default(),
+        )
+        .map_err(|_| ())?
+        .evaluated(&playsrc_keyvalues::ConditionEnvironment::new([
+            (b"WIN32".to_vec(), true),
+            (b"X360".to_vec(), false),
+        ]));
+        pbytes(out, logical_path.as_bytes())?;
+        out.extend_from_slice(&<[u8; 32]>::from(Sha256::digest(source)));
+        out.extend_from_slice(&u32::try_from(targets.len()).map_err(|_| ())?.to_le_bytes());
+        for target in targets {
+            let node = document
                 .roots
                 .iter()
                 .find(|node| node.key.bytes.eq_ignore_ascii_case(target.as_bytes()))
-                .ok_or(())
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let mixer = *bundle.get("scripts/soundmixers.txt").ok_or(())?;
-    out.extend_from_slice(b"PAUD");
-    out.extend_from_slice(&1u32.to_le_bytes());
-    out.extend_from_slice(&<[u8; 32]>::from(Sha256::digest(source)));
-    out.extend_from_slice(&<[u8; 32]>::from(Sha256::digest(mixer)));
-    out.extend_from_slice(&0.72f32.to_le_bytes());
-    pbytes(out, logical_path.as_bytes())?;
-    out.extend_from_slice(&u32::try_from(nodes.len()).map_err(|_| ())?.to_le_bytes());
-    for node in nodes {
-        encode_sound_node(out, node)?;
+                .ok_or(())?;
+            encode_sound_node(out, node)?;
+        }
     }
     Ok(())
 }
@@ -8444,19 +8733,24 @@ fn load_cached_presentation(
     let expected = graph
         .entities
         .iter()
-        .filter(|entity| {
-            entity
-                .classname
-                .as_deref()
+        .try_fold(expected, |mut output, entity| {
+            let classname = entity.classname.as_deref();
+            let model = if classname
                 .is_some_and(|value| value.eq_ignore_ascii_case(b"prop_dynamic"))
-        })
-        .filter_map(|entity| entity.model.as_deref())
-        .try_fold(expected, |mut output, model| {
-            output.insert(
-                std::str::from_utf8(model)
-                    .map_err(|_| 3_u32)?
-                    .to_ascii_lowercase(),
-            );
+            {
+                entity.model.as_deref()
+            } else if classname.is_some_and(|value| value.eq_ignore_ascii_case(b"item_teamflag")) {
+                Some(entity_scalar(entity, b"flag_model").unwrap_or(b"models/flag/briefcase.mdl"))
+            } else {
+                None
+            };
+            if let Some(model) = model {
+                output.insert(
+                    std::str::from_utf8(model)
+                        .map_err(|_| 3_u32)?
+                        .to_ascii_lowercase(),
+                );
+            }
             Ok::<_, u32>(output)
         })?;
     let expected = additional_model_roots
@@ -8674,13 +8968,21 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
         "models/weapons/c_models/c_flamethrower/c_flamethrower.mdl".to_owned(),
         "models/weapons/c_models/c_fireaxe_pyro/c_fireaxe_pyro.mdl".to_owned(),
     ]);
-    for e in &graph.entities {
-        if e.classname
-            .as_deref()
-            .is_some_and(|v| v.eq_ignore_ascii_case(b"prop_dynamic"))
-            && let Some(m) = &e.model
-        {
-            roots.insert(std::str::from_utf8(m).map_err(|_| ())?.to_ascii_lowercase());
+    for entity in &graph.entities {
+        let classname = entity.classname.as_deref();
+        let model = if classname.is_some_and(|value| value.eq_ignore_ascii_case(b"prop_dynamic")) {
+            entity.model.as_deref()
+        } else if classname.is_some_and(|value| value.eq_ignore_ascii_case(b"item_teamflag")) {
+            Some(entity_scalar(entity, b"flag_model").unwrap_or(b"models/flag/briefcase.mdl"))
+        } else {
+            None
+        };
+        if let Some(model) = model {
+            roots.insert(
+                std::str::from_utf8(model)
+                    .map_err(|_| ())?
+                    .to_ascii_lowercase(),
+            );
         }
     }
     roots.extend(additional_model_roots.iter().cloned());
@@ -11699,6 +12001,7 @@ mod tests {
             }],
             entity_transforms: Vec::new(),
             entity_events: Vec::new(),
+            objectives: None,
             jump: None,
             events: vec![playsrc_tf2::Event::Teleported {
                 trigger: 20,
@@ -11778,6 +12081,11 @@ mod tests {
                 wrench_hit_flesh_available: 0b111,
                 fire_axe_hit_world_available: 3,
                 fire_axe_hit_flesh_available: 7,
+                flag_enemy_stolen_available: 15,
+                flag_enemy_dropped_available: 3,
+                flag_enemy_captured_available: 7,
+                flag_enemy_returned_available: 7,
+                flag_team_dropped_available: 3,
             },
         };
         let mut collision_snapshot = b"CSNP".to_vec();
@@ -11810,8 +12118,8 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(&encoded[..8], b"PSSN\x0d\0\0\0");
-        assert_eq!(encoded.len(), 928);
+        assert_eq!(encoded.len(), 948);
+        assert_eq!(&encoded[936..944], b"PCTF\x01\0\0\0");
         assert_eq!(
             u32::from_le_bytes(encoded[160..164].try_into().unwrap()),
             playsrc_tf2::FL_CLIENT | playsrc_tf2::FL_INWATER
