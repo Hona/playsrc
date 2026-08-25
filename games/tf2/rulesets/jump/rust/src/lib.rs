@@ -125,6 +125,8 @@ pub enum Class {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum Team {
+    Unassigned = 0,
+    Spectator = 1,
     Red = 2,
     Blue = 3,
 }
@@ -691,7 +693,7 @@ impl Session {
 }
 
 fn eligible(player: PlayerFacts) -> bool {
-    player.alive && player.active && !player.noclip
+    player.alive && player.active && !player.noclip && matches!(player.team, Team::Red | Team::Blue)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
