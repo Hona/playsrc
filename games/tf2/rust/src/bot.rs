@@ -7,7 +7,13 @@ use playsrc_nav::{Area, Direction, Mesh};
 
 use crate::{
     GameplayWorld, MovementModifiers, MovementPolicy, PlayerClass, PlayerLifecycle, PlayerTeam,
-    UniformRandomStream,
+    UniformRandomStream, Weapon, WeaponState, ballistics,
+    condition::ConditionState,
+    damage::{
+        self, CritKind, CustomDamage, DamageInput, DamageModifiers, DamageSourceKind, DamageType,
+    },
+    health::HealthState,
+    weapon::{ActivityEvent, AmmoEvent, PrimaryResult, WeaponRuntime},
 };
 
 pub const MAX_BOTS: usize = 31;
@@ -27,6 +33,27 @@ pub const PAYLOAD_PUSH_RADIUS: f32 = 60.0;
 pub const PAYLOAD_GUARD_RANGE: f32 = 1000.0;
 pub const TARGET_SELECTION_INTERVAL: f32 = 0.3;
 pub const MAX_VISION_RANGE: f32 = 6000.0;
+pub const IMMEDIATE_THREAT_RANGE: f32 = 500.0;
+pub const SOLDIER_SECONDARY_RANGE: f32 = 500.0;
+pub const ROCKET_MAX_ATTACK_RANGE: f32 = 3000.0;
+pub const ROCKET_DESIRED_ATTACK_RANGE: f32 = 1250.0;
+pub const RANGED_DESIRED_ATTACK_RANGE: f32 = 500.0;
+pub const MELEE_MAX_ATTACK_RANGE: f32 = 100.0;
+pub const MELEE_FIRE_RANGE: f32 = 250.0;
+pub const ROCKET_LEAD_MINIMUM_RANGE: f32 = 150.0;
+pub const ROCKET_SPEED: f32 = 1100.0;
+pub const FLAG_TRIGGER_BLOAT: f32 = 24.0;
+pub const FLAG_RETURN_SECONDS: f32 = 60.0;
+pub const RESPAWN_WAVE_SECONDS: f32 = 10.0;
+pub const DEATH_ANIMATION_SECONDS: f32 = 6.4;
+const PLAYER_HULL: Hull = Hull {
+    mins: [-24.0, -24.0, 0.0],
+    maxs: [24.0, 24.0, 82.0],
+};
+const POINT_HULL: Hull = Hull {
+    mins: [0.0; 3],
+    maxs: [0.0; 3],
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
@@ -85,11 +112,54 @@ pub struct Snapshot {
     pub position: [f32; 3],
     pub velocity: [f32; 3],
     pub yaw_degrees: f32,
+    pub pitch_degrees: f32,
     pub health: i32,
     pub maximum_health: i32,
     pub target: Option<u32>,
     pub area: Option<u32>,
     pub remaining_path_areas: u32,
+    pub weapon: Option<WeaponState>,
+    pub shots: u32,
+    pub hits: u32,
+    pub kills: u32,
+    pub deaths: u32,
+    pub captures: u32,
+    pub carrying_flag: bool,
+    pub last_fire_tick: Option<u64>,
+    pub respawn_tick: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Human {
+    pub team: PlayerTeam,
+    pub class: PlayerClass,
+    pub alive: bool,
+    pub position: [f32; 3],
+    pub velocity: [f32; 3],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Attack {
+    pub attacker: u32,
+    pub team: PlayerTeam,
+    pub weapon: Weapon,
+    pub target: u32,
+    pub position: [f32; 3],
+    pub eye_position: [f32; 3],
+    pub pitch_degrees: f32,
+    pub yaw_degrees: f32,
+    pub seconds_since_previous_shot: f32,
+    pub damage_multiplier: f32,
+    pub spread_multiplier: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Damage {
+    pub attacker: u32,
+    pub victim: u32,
+    pub weapon: Weapon,
+    pub amount: f32,
+    pub position: [f32; 3],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -99,17 +169,53 @@ struct Spawn {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+struct CaptureZone {
+    position: [f32; 3],
+    model: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Flag {
+    home: [f32; 3],
+    position: [f32; 3],
+    carrier: Option<u32>,
+    return_tick: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Scenario {
     Payload {
         cart: [f32; 3],
         forward: [f32; 3],
     },
     CaptureTheFlag {
-        red_flag: [f32; 3],
-        blue_flag: [f32; 3],
-        red_capture: [f32; 3],
-        blue_capture: [f32; 3],
+        flags: [Flag; 2],
+        captures: [CaptureZone; 2],
     },
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Actor {
+    identity: u32,
+    class: PlayerClass,
+    team: PlayerTeam,
+    alive: bool,
+    position: [f32; 3],
+    velocity: [f32; 3],
+    firing_at: Option<u32>,
+}
+
+impl Actor {
+    fn eye(self) -> [f32; 3] {
+        [
+            self.position[0],
+            self.position[1],
+            self.position[2] + self.class.standing_eye_height(),
+        ]
+    }
+    fn center(self) -> [f32; 3] {
+        [self.position[0], self.position[1], self.position[2] + 41.0]
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -121,16 +227,28 @@ struct Bot {
     difficulty: Difficulty,
     movement: State,
     yaw_degrees: f32,
+    pitch_degrees: f32,
     health: i32,
     objective: ObjectiveKind,
     target: Option<u32>,
-    visible_since: Option<u64>,
+    known_since: BTreeMap<u32, u64>,
     next_target_tick: u64,
     next_repath_tick: u64,
     current_area: Option<u32>,
     path: Vec<u32>,
     path_index: usize,
     goal: [f32; 3],
+    loadout: BTreeMap<Weapon, WeaponRuntime>,
+    active_weapon: Option<Weapon>,
+    last_fire_tick: Option<u64>,
+    pending_melee: Option<(u64, u32, Weapon)>,
+    respawn_tick: Option<u64>,
+    carrying_flag: Option<PlayerTeam>,
+    shots: u32,
+    hits: u32,
+    kills: u32,
+    deaths: u32,
+    captures: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -141,6 +259,7 @@ pub struct BotWorld {
     bots: BTreeMap<u32, Bot>,
     next_identity: u32,
     tick_interval: f32,
+    respawn_waves: [f32; 2],
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -152,6 +271,7 @@ pub enum Error {
     InvalidEntity,
     Limit,
     Movement,
+    Damage,
 }
 
 impl BotWorld {
@@ -233,6 +353,7 @@ impl BotWorld {
             bots: BTreeMap::new(),
             next_identity: crate::PLAYER_IDENTITY + 1,
             tick_interval,
+            respawn_waves: initial_respawn_waves(graph),
         })
     }
 
@@ -307,9 +428,14 @@ impl BotWorld {
                 modifiers: MovementModifiers::default(),
             }
             .resolve();
-            let (objective, goal) = objective(self.scenario, team, None);
+            let (objective, goal) = objective(self.scenario, team, None, None);
             let identity = self.next_identity;
             self.next_identity = self.next_identity.checked_add(1).ok_or(Error::Limit)?;
+            let mut loadout = crate::default_loadout(class);
+            let active_weapon = crate::default_weapon(class);
+            if let Some(weapon) = active_weapon.and_then(|weapon| loadout.get_mut(&weapon)) {
+                weapon.deploy(0, self.tick_interval);
+            }
             self.bots.insert(
                 identity,
                 Bot {
@@ -329,10 +455,11 @@ impl BotWorld {
                         policy,
                     ),
                     yaw_degrees: spawn.yaw_degrees,
+                    pitch_degrees: 0.0,
                     health: class.data().maximum_health,
                     objective,
                     target: None,
-                    visible_since: None,
+                    known_since: BTreeMap::new(),
                     next_target_tick: 0,
                     next_repath_tick: 0,
                     current_area: self
@@ -342,6 +469,17 @@ impl BotWorld {
                     path: Vec::new(),
                     path_index: 0,
                     goal,
+                    loadout,
+                    active_weapon,
+                    last_fire_tick: None,
+                    pending_melee: None,
+                    respawn_tick: None,
+                    carrying_flag: None,
+                    shots: 0,
+                    hits: 0,
+                    kills: 0,
+                    deaths: 0,
+                    captures: 0,
                 },
             );
         }
@@ -352,95 +490,77 @@ impl BotWorld {
         &mut self,
         world: &W,
         tick: u64,
-        human_team: PlayerTeam,
-        human_alive: bool,
-        human_position: [f32; 3],
+        human: Human,
         random: &mut UniformRandomStream,
-    ) -> Result<(), Error> {
+    ) -> Result<Vec<Attack>, Error> {
         if self.bots.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
-        let actors: Vec<_> = std::iter::once((
-            crate::PLAYER_IDENTITY,
-            human_team,
-            human_alive,
-            human_position,
-        ))
-        .chain(self.bots.values().map(|bot| {
-            (
-                bot.identity,
-                bot.team,
-                bot.lifecycle == PlayerLifecycle::Active,
-                bot.movement.position,
-            )
-        }))
-        .collect();
+        self.return_expired_flags(tick);
+        let actors = self.actors(human, tick);
+        let mut attacks = Vec::new();
         let mesh = &self.mesh;
+        let scenario = &mut self.scenario;
+        let spawns = &self.spawns;
         for bot in self.bots.values_mut() {
             if bot.lifecycle != PlayerLifecycle::Active {
+                if bot.respawn_tick.is_some_and(|due| tick >= due) {
+                    let candidates = &spawns[team_index(bot.team)];
+                    let choice = random
+                        .random_int(
+                            0,
+                            i32::try_from(candidates.len() - 1).map_err(|_| Error::Limit)?,
+                        )
+                        .map_err(|_| Error::Limit)? as usize;
+                    respawn_bot(bot, candidates[choice], mesh, tick, self.tick_interval);
+                }
                 continue;
             }
             if tick >= bot.next_target_tick {
                 bot.next_target_tick = tick + ticks(TARGET_SELECTION_INTERVAL, self.tick_interval);
-                let visible = actors
+                let visible: Vec<_> = actors
                     .iter()
-                    .filter(|(identity, team, alive, _)| {
-                        *identity != bot.identity && *alive && *team != bot.team
+                    .copied()
+                    .filter(|actor| {
+                        actor.identity != bot.identity
+                            && actor.alive
+                            && bot.team.is_enemy(actor.team)
                     })
-                    .filter_map(|(identity, _, _, position)| {
-                        let d = distance(bot.movement.position, *position);
-                        if d > MAX_VISION_RANGE {
-                            return None;
-                        }
-                        let eye = [
-                            bot.movement.position[0],
-                            bot.movement.position[1],
-                            bot.movement.position[2] + 68.0,
-                        ];
-                        let target = [position[0], position[1], position[2] + 68.0];
-                        let trace = world
-                            .trace(
-                                eye,
-                                target,
-                                Hull {
-                                    mins: [0.0; 3],
-                                    maxs: [0.0; 3],
-                                },
-                                0x0000_400b,
-                            )
-                            .ok()?;
-                        (trace.fraction >= 1.0).then_some((*identity, d, *position))
-                    })
-                    .min_by(|left, right| {
-                        left.1
-                            .total_cmp(&right.1)
-                            .then_with(|| left.0.cmp(&right.0))
-                    });
-                match visible {
-                    Some((identity, _, _)) if bot.target == Some(identity) => {}
-                    Some((identity, _, _)) => {
-                        if bot.visible_since.is_none() {
-                            bot.visible_since = Some(tick);
-                        }
-                        if tick.saturating_sub(bot.visible_since.unwrap())
-                            >= ticks(bot.difficulty.recognition_seconds(), self.tick_interval)
-                        {
-                            bot.target = Some(identity);
-                        }
-                    }
-                    None => {
-                        bot.target = None;
-                        bot.visible_since = None;
-                    }
+                    .filter(|actor| visible_actor(world, bot, *actor))
+                    .collect();
+                bot.known_since
+                    .retain(|identity, _| visible.iter().any(|actor| actor.identity == *identity));
+                for actor in &visible {
+                    bot.known_since.entry(actor.identity).or_insert(tick);
                 }
+                bot.target = visible
+                    .into_iter()
+                    .filter(|actor| {
+                        tick.saturating_sub(bot.known_since[&actor.identity])
+                            >= ticks(bot.difficulty.recognition_seconds(), self.tick_interval)
+                    })
+                    .min_by(|left, right| threat_order(bot, *left, *right))
+                    .map(|actor| actor.identity);
             }
-            let threat_position = bot.target.and_then(|target| {
+            let threat = bot.target.and_then(|identity| {
                 actors
                     .iter()
-                    .find(|(identity, _, _, _)| *identity == target)
-                    .map(|(_, _, _, position)| *position)
+                    .copied()
+                    .find(|actor| actor.identity == identity && actor.alive)
             });
-            (bot.objective, bot.goal) = objective(self.scenario, bot.team, threat_position);
+            select_weapon(bot, threat, tick, self.tick_interval);
+            update_flag_contact(world, scenario, bot, tick)?;
+            let (objective_kind, goal) = objective(
+                *scenario,
+                bot.team,
+                threat.map(|actor| actor.position),
+                bot.carrying_flag,
+            );
+            if objective_kind != bot.objective {
+                bot.next_repath_tick = 0;
+            }
+            bot.objective = objective_kind;
+            bot.goal = goal;
             if tick >= bot.next_repath_tick || bot.path.is_empty() {
                 let start = mesh
                     .nearest_area(bot.movement.position)
@@ -461,11 +581,13 @@ impl BotWorld {
                         })
                         .unwrap_or_default();
                     bot.path_index = 0;
+                    bot.current_area = Some(start);
                 }
-                let (minimum, maximum) = if bot.team == PlayerTeam::Blue {
-                    (0.2, 0.4)
-                } else {
-                    (0.5, 1.0)
+                let (minimum, maximum) = match bot.objective {
+                    ObjectiveKind::PayloadPush => (0.2, 0.4),
+                    ObjectiveKind::PayloadGuard => (0.5, 1.0),
+                    ObjectiveKind::FetchFlag | ObjectiveKind::DeliverFlag => (1.0, 2.0),
+                    ObjectiveKind::Attack => (0.3, 0.5),
                 };
                 bot.next_repath_tick =
                     tick + ticks(random.random_float(minimum, maximum), self.tick_interval);
@@ -509,14 +631,15 @@ impl BotWorld {
             } else {
                 bot.goal
             };
-            let delta = [
-                waypoint[0] - bot.movement.position[0],
-                waypoint[1] - bot.movement.position[1],
-                waypoint[2] - bot.movement.position[2],
-            ];
+            let delta = crate::sub(waypoint, bot.movement.position);
             let planar = delta[0].hypot(delta[1]);
-            if planar > 0.0 {
+            if let Some(threat) = threat {
+                let toward = crate::sub(aim_point(world, bot, threat), bot_eye(bot));
+                bot.yaw_degrees = toward[1].atan2(toward[0]).to_degrees();
+                bot.pitch_degrees = (-toward[2]).atan2(toward[0].hypot(toward[1])).to_degrees();
+            } else if planar > 0.0 {
                 bot.yaw_degrees = delta[1].atan2(delta[0]).to_degrees();
+                bot.pitch_degrees = 0.0;
             }
             let policy = MovementPolicy {
                 class: bot.class,
@@ -524,7 +647,12 @@ impl BotWorld {
             }
             .resolve();
             let should_move = planar > 5.0;
-            let jump = delta[2] >= STEP_HEIGHT && delta[2] < MAX_JUMP_HEIGHT;
+            let move_yaw = if planar > 0.0 {
+                delta[1].atan2(delta[0])
+            } else {
+                bot.yaw_degrees.to_radians()
+            };
+            let relative = move_yaw - bot.yaw_degrees.to_radians();
             let movement = step(
                 world,
                 bot.movement,
@@ -532,16 +660,20 @@ impl BotWorld {
                     command_number: u32::try_from(tick).unwrap_or(u32::MAX),
                     command: MoveCommand {
                         forward: if should_move {
-                            policy.maximum_speed
+                            policy.maximum_speed * relative.cos()
                         } else {
                             0.0
                         },
-                        side: 0.0,
+                        side: if should_move {
+                            policy.maximum_speed * relative.sin()
+                        } else {
+                            0.0
+                        },
                         yaw_degrees: bot.yaw_degrees,
-                        jump,
+                        jump: delta[2] >= STEP_HEIGHT && delta[2] < MAX_JUMP_HEIGHT,
                         crouch: false,
                     },
-                    pitch_degrees: 0.0,
+                    pitch_degrees: bot.pitch_degrees,
                     up: 0.0,
                     speed_button: false,
                     mode_request: None,
@@ -556,24 +688,229 @@ impl BotWorld {
             )
             .map_err(|_| Error::Movement)?;
             bot.movement = movement.state;
+
+            if let Some((due, target, weapon)) = bot.pending_melee
+                && tick > due
+            {
+                bot.pending_melee = None;
+                if let Some(victim) = actors
+                    .iter()
+                    .copied()
+                    .find(|actor| actor.identity == target && actor.alive)
+                    && distance(bot.movement.position, victim.position)
+                        <= ballistics::MELEE_RANGE + ballistics::MELEE_HULL_RADIUS
+                {
+                    attacks.push(Attack {
+                        attacker: bot.identity,
+                        team: bot.team,
+                        weapon,
+                        target,
+                        position: bot.movement.position,
+                        eye_position: bot_eye(bot),
+                        pitch_degrees: bot.pitch_degrees,
+                        yaw_degrees: bot.yaw_degrees,
+                        seconds_since_previous_shot: f32::INFINITY,
+                        damage_multiplier: 1.0,
+                        spread_multiplier: 1.0,
+                    });
+                }
+            }
+            let Some(active_weapon) = bot.active_weapon else {
+                continue;
+            };
+            let in_range = threat.is_some_and(|target| {
+                let range = distance(bot.movement.position, target.position);
+                range < max_attack_range(active_weapon)
+                    && (!is_melee(active_weapon) || range < MELEE_FIRE_RANGE)
+                    && line_of_fire_clear(world, bot_eye(bot), target)
+            });
+            let mut activities = Vec::<ActivityEvent>::new();
+            let mut ammo = Vec::<AmmoEvent>::new();
+            let eye_position = bot_eye(bot);
+            let state = bot
+                .loadout
+                .get_mut(&active_weapon)
+                .ok_or(Error::InvalidEntity)?;
+            let primary = state.primary(tick, self.tick_interval, in_range, false, &mut activities);
+            if matches!(primary, PrimaryResult::Fired { .. }) {
+                let previous = bot.last_fire_tick.replace(tick);
+                bot.shots = bot.shots.saturating_add(1);
+                let elapsed = previous.map_or(f32::INFINITY, |value| {
+                    tick.saturating_sub(value) as f32 * self.tick_interval
+                });
+                if is_melee(active_weapon) {
+                    bot.pending_melee = Some((
+                        tick + (ballistics::MELEE_SMACK_DELAY / self.tick_interval).floor() as u64,
+                        threat.unwrap().identity,
+                        active_weapon,
+                    ));
+                } else {
+                    let (damage_multiplier, spread_multiplier) = if active_weapon == Weapon::Minigun
+                    {
+                        state.minigun_penalties(tick, self.tick_interval)
+                    } else {
+                        (1.0, 1.0)
+                    };
+                    attacks.push(Attack {
+                        attacker: bot.identity,
+                        team: bot.team,
+                        weapon: active_weapon,
+                        target: threat.unwrap().identity,
+                        position: bot.movement.position,
+                        eye_position,
+                        pitch_degrees: bot.pitch_degrees,
+                        yaw_degrees: bot.yaw_degrees,
+                        seconds_since_previous_shot: elapsed,
+                        damage_multiplier,
+                        spread_multiplier,
+                    });
+                }
+            }
+            if active_weapon != Weapon::Minigun && (!in_range || state.clip == 0) {
+                state.start_reload(tick, self.tick_interval, &mut activities);
+            }
+            state.advance_reload(tick, self.tick_interval, &mut activities, &mut ammo);
         }
-        Ok(())
+        Ok(attacks)
     }
 
-    pub fn damage(&mut self, identity: u32, amount: f32) -> bool {
-        let Some(bot) = self.bots.get_mut(&identity) else {
-            return false;
-        };
-        if bot.lifecycle != PlayerLifecycle::Active || !amount.is_finite() || amount <= 0.0 {
-            return false;
-        }
-        bot.health = bot.health.saturating_sub((amount + 0.5) as i32).max(0);
-        if bot.health == 0 {
-            bot.lifecycle = PlayerLifecycle::Dying;
-            bot.target = None;
-        }
-        true
+    pub fn intersect_enemy(
+        &self,
+        attacker_team: PlayerTeam,
+        start: [f32; 3],
+        end: [f32; 3],
+        excluded: u32,
+    ) -> Option<(u32, f32, [f32; 3])> {
+        self.bots
+            .values()
+            .filter(|bot| {
+                bot.identity != excluded
+                    && bot.lifecycle == PlayerLifecycle::Active
+                    && attacker_team.is_enemy(bot.team)
+            })
+            .filter_map(|bot| {
+                segment_player(start, end, bot.movement.position).map(|fraction| {
+                    (
+                        bot.identity,
+                        fraction,
+                        crate::add(start, crate::scale(crate::sub(end, start), fraction)),
+                    )
+                })
+            })
+            .min_by(|left, right| {
+                left.1
+                    .total_cmp(&right.1)
+                    .then_with(|| left.0.cmp(&right.0))
+            })
     }
+
+    pub fn contains(&self, identity: u32) -> bool {
+        self.bots.contains_key(&identity)
+    }
+
+    pub fn damage(
+        &mut self,
+        input: Damage,
+        attacker_team: PlayerTeam,
+        tick: u64,
+        team_population: usize,
+    ) -> Result<Option<i32>, Error> {
+        let Some(victim) = self.bots.get_mut(&input.victim) else {
+            return Ok(None);
+        };
+        let mut health = HealthState::spawn(victim.class, 0.0, 0.0).map_err(|_| Error::Damage)?;
+        health.current = victim.health;
+        let mut conditions = ConditionState::default();
+        let damage_type = match input.weapon {
+            Weapon::Bat | Weapon::Shovel | Weapon::Fists | Weapon::Kukri | Weapon::Wrench => {
+                DamageType::MELEE
+            },
+            Weapon::RocketLauncher | Weapon::Original | Weapon::StickybombLauncher => {
+                DamageType::BLAST
+            }
+            Weapon::Scattergun | Weapon::Shotgun | Weapon::HeavyShotgun | Weapon::EngineerShotgun => {
+                DamageType::BUCKSHOT
+            }
+            Weapon::Pistol
+            | Weapon::Minigun
+            | Weapon::SniperRifle
+            | Weapon::Smg
+            | Weapon::EngineerPistol => DamageType::BULLET,
+        };
+        let result = damage::apply_damage(
+            victim.lifecycle == PlayerLifecycle::Active,
+            &mut health,
+            &mut conditions,
+            &DamageInput {
+                attacker: input.attacker,
+                attacker_team,
+                attacker_conditions: ConditionState::default(),
+                source: DamageSourceKind::Player,
+                weapon_position: None,
+                victim: input.victim,
+                victim_team: victim.team,
+                base_damage: input.amount,
+                range_multiplier: 1.0,
+                damage_type,
+                custom: CustomDamage::None,
+                crit: CritKind::None,
+                friendly_fire: false,
+                force_friendly_fire: false,
+                bypass_invulnerability: false,
+                force: [0.0; 3],
+            },
+            DamageModifiers::default(),
+        )
+        .map_err(|_| Error::Damage)?;
+        if !result.admitted {
+            return Ok(None);
+        }
+        victim.health = health.current.max(0);
+        let killed = result.death.is_some();
+        if killed {
+            victim.lifecycle = PlayerLifecycle::Dying;
+            victim.deaths = victim.deaths.saturating_add(1);
+            victim.respawn_tick = Some(next_respawn_wave(
+                tick,
+                self.tick_interval,
+                self.respawn_waves[team_index(victim.team)],
+                team_population,
+            ));
+            victim.target = None;
+            victim.pending_melee = None;
+            if let Some(flag_team) = victim.carrying_flag.take()
+                && let Scenario::CaptureTheFlag { flags, .. } = &mut self.scenario
+            {
+                let flag = &mut flags[team_index(flag_team)];
+                flag.carrier = None;
+                flag.position = victim.movement.position;
+                flag.return_tick = Some(tick + ticks(FLAG_RETURN_SECONDS, self.tick_interval));
+            }
+        }
+        if input.attacker != crate::PLAYER_IDENTITY
+            && let Some(attacker) = self.bots.get_mut(&input.attacker)
+        {
+            attacker.hits = attacker.hits.saturating_add(1);
+            if killed {
+                attacker.kills = attacker.kills.saturating_add(1);
+            }
+        }
+        Ok(Some(result.health_damage))
+    }
+
+    pub fn team_population(&self, team: PlayerTeam, human_team: PlayerTeam) -> usize {
+        self.bots.values().filter(|bot| bot.team == team).count() + usize::from(human_team == team)
+    }
+
+    pub fn record_human_hit(&mut self, attacker: u32, killed: bool) {
+        if let Some(bot) = self.bots.get_mut(&attacker) {
+            bot.hits = bot.hits.saturating_add(1);
+            if killed {
+                bot.kills = bot.kills.saturating_add(1);
+            }
+        }
+    }
+
 
     pub fn snapshots(&self) -> Vec<Snapshot> {
         self.bots
@@ -588,14 +925,389 @@ impl BotWorld {
                 position: bot.movement.position,
                 velocity: bot.movement.velocity,
                 yaw_degrees: bot.yaw_degrees,
+                pitch_degrees: bot.pitch_degrees,
                 health: bot.health,
                 maximum_health: bot.class.data().maximum_health,
                 target: bot.target,
                 area: bot.current_area,
                 remaining_path_areas: bot.path.len().saturating_sub(bot.path_index) as u32,
+                weapon: bot
+                    .active_weapon
+                    .and_then(|weapon| bot.loadout.get(&weapon).copied())
+                    .map(WeaponState::from_runtime),
+                shots: bot.shots,
+                hits: bot.hits,
+                kills: bot.kills,
+                deaths: bot.deaths,
+                captures: bot.captures,
+                carrying_flag: bot.carrying_flag.is_some(),
+                last_fire_tick: bot.last_fire_tick,
+                respawn_tick: bot.respawn_tick,
             })
             .collect()
     }
+
+    fn actors(&self, human: Human, tick: u64) -> Vec<Actor> {
+        std::iter::once(Actor {
+            identity: crate::PLAYER_IDENTITY,
+            class: human.class,
+            team: human.team,
+            alive: human.alive,
+            position: human.position,
+            velocity: human.velocity,
+            firing_at: None,
+        })
+        .chain(self.bots.values().map(|bot| {
+            Actor {
+                identity: bot.identity,
+                class: bot.class,
+                team: bot.team,
+                alive: bot.lifecycle == PlayerLifecycle::Active,
+                position: bot.movement.position,
+                velocity: bot.movement.velocity,
+                firing_at: bot
+                    .last_fire_tick
+                    .filter(|fired| tick.saturating_sub(*fired) <= ticks(1.0, self.tick_interval))
+                    .and(bot.target),
+            }
+        }))
+        .collect()
+    }
+
+    fn return_expired_flags(&mut self, tick: u64) {
+        if let Scenario::CaptureTheFlag { flags, .. } = &mut self.scenario {
+            for flag in flags {
+                if flag.return_tick.is_some_and(|due| tick >= due) {
+                    flag.position = flag.home;
+                    flag.return_tick = None;
+                }
+            }
+        }
+    }
+}
+
+fn bot_eye(bot: &Bot) -> [f32; 3] {
+    [
+        bot.movement.position[0],
+        bot.movement.position[1],
+        bot.movement.position[2] + bot.class.standing_eye_height(),
+    ]
+}
+fn is_melee(weapon: Weapon) -> bool {
+    matches!(weapon, Weapon::Bat | Weapon::Shovel | Weapon::Fists)
+}
+
+fn visible_actor<W: GameplayWorld>(world: &W, bot: &Bot, actor: Actor) -> bool {
+    distance(bot.movement.position, actor.position) <= MAX_VISION_RANGE
+        && [actor.eye(), actor.center(), actor.position]
+            .into_iter()
+            .any(|point| {
+                world
+                    .trace(
+                        bot_eye(bot),
+                        point,
+                        POINT_HULL,
+                        crate::MASK_SOLID_BRUSH_ONLY,
+                    )
+                    .is_ok_and(|trace| trace.fraction >= 1.0)
+            })
+}
+fn line_of_fire_clear<W: GameplayWorld>(world: &W, eye: [f32; 3], actor: Actor) -> bool {
+    [actor.eye(), actor.center(), actor.position]
+        .into_iter()
+        .any(|point| {
+            world
+                .trace(eye, point, POINT_HULL, crate::MASK_SOLID)
+                .is_ok_and(|trace| trace.fraction >= 1.0)
+        })
+}
+fn immediate_threat(bot: &Bot, actor: Actor) -> bool {
+    distance(bot.movement.position, actor.position) < IMMEDIATE_THREAT_RANGE
+        || actor.firing_at == Some(bot.identity)
+        || matches!(bot.difficulty, Difficulty::Hard | Difficulty::Expert)
+            && matches!(actor.class, PlayerClass::Medic | PlayerClass::Engineer)
+}
+fn threat_order(bot: &Bot, left: Actor, right: Actor) -> std::cmp::Ordering {
+    let first = immediate_threat(bot, left);
+    let second = immediate_threat(bot, right);
+    second
+        .cmp(&first)
+        .then_with(|| {
+            if first && second {
+                (right.class == PlayerClass::Spy)
+                    .cmp(&(left.class == PlayerClass::Spy))
+                    .then_with(|| {
+                        (right.firing_at == Some(bot.identity))
+                            .cmp(&(left.firing_at == Some(bot.identity)))
+                    })
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        })
+        .then_with(|| {
+            distance(bot.movement.position, left.position)
+                .total_cmp(&distance(bot.movement.position, right.position))
+        })
+        .then_with(|| left.identity.cmp(&right.identity))
+}
+fn select_weapon(bot: &mut Bot, threat: Option<Actor>, tick: u64, interval: f32) {
+    let Some(primary) = crate::default_weapon(bot.class) else {
+        return;
+    };
+    let mut selected = primary;
+    if bot.difficulty != Difficulty::Easy
+        && let Some(threat) = threat
+    {
+        match bot.class {
+            PlayerClass::Scout
+                if bot
+                    .loadout
+                    .get(&primary)
+                    .is_some_and(|weapon| weapon.clip == 0)
+                    && bot
+                        .loadout
+                        .get(&Weapon::Pistol)
+                        .is_some_and(|weapon| weapon.clip > 0 || weapon.reserve > 0) =>
+            {
+                selected = Weapon::Pistol
+            }
+            PlayerClass::Soldier
+                if bot
+                    .loadout
+                    .get(&primary)
+                    .is_some_and(|weapon| weapon.clip == 0)
+                    && bot
+                        .loadout
+                        .get(&Weapon::Shotgun)
+                        .is_some_and(|weapon| weapon.clip > 0)
+                    && distance(bot.movement.position, threat.position)
+                        < SOLDIER_SECONDARY_RANGE =>
+            {
+                selected = Weapon::Shotgun
+            }
+            _ => {}
+        }
+    }
+    if bot.active_weapon != Some(selected) {
+        if let Some(previous) = bot
+            .active_weapon
+            .and_then(|weapon| bot.loadout.get_mut(&weapon))
+        {
+            previous.abort_reload();
+            previous.charge_begin_tick = None;
+        }
+        if let Some(weapon) = bot.loadout.get_mut(&selected) {
+            weapon.deploy(tick, interval);
+            bot.active_weapon = Some(selected);
+        }
+    }
+}
+fn aim_point<W: GameplayWorld>(world: &W, bot: &Bot, threat: Actor) -> [f32; 3] {
+    if bot.active_weapon == Some(Weapon::RocketLauncher) && bot.difficulty != Difficulty::Easy {
+        if threat.position[2] - 30.0 > bot.movement.position[2] {
+            for point in [threat.position, threat.center(), threat.eye()] {
+                if world
+                    .trace(
+                        bot_eye(bot),
+                        point,
+                        POINT_HULL,
+                        crate::MASK_SOLID_BRUSH_ONLY,
+                    )
+                    .is_ok_and(|trace| trace.fraction >= 1.0)
+                {
+                    return point;
+                }
+            }
+        }
+        let range = distance(bot.movement.position, threat.position);
+        if range > ROCKET_LEAD_MINIMUM_RANGE {
+            let travel = range / ROCKET_SPEED;
+            let led = crate::add(threat.position, crate::scale(threat.velocity, travel));
+            if world
+                .trace(bot_eye(bot), led, POINT_HULL, crate::MASK_SOLID_BRUSH_ONLY)
+                .is_ok_and(|trace| trace.fraction >= 1.0)
+            {
+                return led;
+            }
+            return crate::add(threat.eye(), crate::scale(threat.velocity, travel));
+        }
+        return threat.eye();
+    }
+    threat.center()
+}
+fn max_attack_range(weapon: Weapon) -> f32 {
+    if is_melee(weapon) {
+        MELEE_MAX_ATTACK_RANGE
+    } else if matches!(weapon, Weapon::RocketLauncher | Weapon::Original) {
+        ROCKET_MAX_ATTACK_RANGE
+    } else {
+        f32::MAX
+    }
+}
+fn update_flag_contact<W: GameplayWorld>(
+    world: &W,
+    scenario: &mut Scenario,
+    bot: &mut Bot,
+    tick: u64,
+) -> Result<(), Error> {
+    let Scenario::CaptureTheFlag { flags, captures } = scenario else {
+        return Ok(());
+    };
+    if let Some(flag_team) = bot.carrying_flag {
+        let zone = captures[team_index(bot.team)];
+        let touching = if let Some(model) = zone.model {
+            world
+                .overlaps_model_hull(model, zone.position, bot.movement.position, PLAYER_HULL)
+                .map_err(|_| Error::Movement)?
+        } else {
+            distance(bot.movement.position, zone.position) <= FLAG_TRIGGER_BLOAT
+        };
+        if touching {
+            let flag = &mut flags[team_index(flag_team)];
+            flag.position = flag.home;
+            flag.carrier = None;
+            flag.return_tick = None;
+            bot.carrying_flag = None;
+            bot.captures = bot.captures.saturating_add(1);
+            bot.next_repath_tick = tick;
+        } else {
+            flags[team_index(flag_team)].position = bot.movement.position;
+        }
+        return Ok(());
+    }
+    let enemy = if bot.team == PlayerTeam::Red {
+        PlayerTeam::Blue
+    } else {
+        PlayerTeam::Red
+    };
+    let flag = &mut flags[team_index(enemy)];
+    if flag.carrier.is_none()
+        && (bot.movement.position[0] - flag.position[0]).abs() <= 24.0 + 19.5 + FLAG_TRIGGER_BLOAT
+        && (bot.movement.position[1] - flag.position[1]).abs() <= 24.0 + 22.5 + FLAG_TRIGGER_BLOAT
+        && bot.movement.position[2] <= flag.position[2] + 6.5 + FLAG_TRIGGER_BLOAT
+        && bot.movement.position[2] + 82.0 >= flag.position[2] - 6.5 - FLAG_TRIGGER_BLOAT
+    {
+        flag.carrier = Some(bot.identity);
+        flag.position = bot.movement.position;
+        flag.return_tick = None;
+        bot.carrying_flag = Some(enemy);
+        bot.next_repath_tick = tick;
+    }
+    Ok(())
+}
+fn initial_respawn_waves(graph: &Graph) -> [f32; 2] {
+    let mut waves = [RESPAWN_WAVE_SECONDS; 2];
+    for entity in &graph.entities {
+        if !classname(entity, b"logic_auto") {
+            continue;
+        }
+        for connection in &entity.connections {
+            if let playsrc_entity::Connection::Parsed {
+                output,
+                input,
+                parameter,
+                delay_bits,
+                ..
+            } = connection
+                && output.eq_ignore_ascii_case(b"OnMultiNewMap")
+                && f32::from_bits(*delay_bits) == 0.0
+            {
+                let index = if input.eq_ignore_ascii_case(b"SetRedTeamRespawnWaveTime") {
+                    Some(0)
+                } else if input.eq_ignore_ascii_case(b"SetBlueTeamRespawnWaveTime") {
+                    Some(1)
+                } else {
+                    None
+                };
+                if let Some(index) = index
+                    && let Ok(text) = std::str::from_utf8(parameter)
+                    && let Ok(value) = text.parse::<f32>()
+                    && value.is_finite()
+                    && value >= 0.0
+                {
+                    waves[index] = value;
+                }
+            }
+        }
+    }
+    waves
+}
+fn next_respawn_wave(death_tick: u64, interval: f32, configured: f32, population: usize) -> u64 {
+    let earliest = death_tick + ticks(DEATH_ANIMATION_SECONDS + configured, interval);
+    let scalar = (0.25 + ((population as f32 - 1.0) / 7.0).clamp(0.0, 1.0) * 0.75).clamp(0.25, 1.0);
+    let duration = if configured > 5.0 {
+        (configured * scalar).max(5.0)
+    } else {
+        configured
+    };
+    if duration <= 0.0 {
+        return earliest;
+    }
+    let wave = ticks(duration, interval);
+    earliest.div_ceil(wave) * wave
+}
+fn respawn_bot(bot: &mut Bot, spawn: Spawn, mesh: &Mesh, tick: u64, interval: f32) {
+    let policy = MovementPolicy {
+        class: bot.class,
+        modifiers: MovementModifiers::default(),
+    }
+    .resolve();
+    bot.movement = State::from_player(
+        Player {
+            position: spawn.position,
+            velocity: [0.0; 3],
+            grounded: false,
+            crouched: false,
+            jump_latched: false,
+        },
+        policy,
+    );
+    bot.lifecycle = PlayerLifecycle::Active;
+    bot.health = bot.class.data().maximum_health;
+    bot.yaw_degrees = spawn.yaw_degrees;
+    bot.pitch_degrees = 0.0;
+    bot.target = None;
+    bot.known_since.clear();
+    bot.next_target_tick = tick;
+    bot.next_repath_tick = tick;
+    bot.current_area = mesh.nearest_area(spawn.position).map(|area| area.identity);
+    bot.path.clear();
+    bot.path_index = 0;
+    bot.active_weapon = crate::default_weapon(bot.class);
+    bot.pending_melee = None;
+    bot.respawn_tick = None;
+    for weapon in bot.loadout.values_mut() {
+        weapon.reset_for_spawn();
+    }
+    if let Some(weapon) = bot
+        .active_weapon
+        .and_then(|weapon| bot.loadout.get_mut(&weapon))
+    {
+        weapon.deploy(tick, interval);
+    }
+}
+pub fn segment_player(start: [f32; 3], end: [f32; 3], position: [f32; 3]) -> Option<f32> {
+    let mins = crate::add(position, PLAYER_HULL.mins);
+    let maxs = crate::add(position, PLAYER_HULL.maxs);
+    let mut enter = 0.0_f32;
+    let mut leave = 1.0_f32;
+    for axis in 0..3 {
+        let delta = end[axis] - start[axis];
+        if delta.abs() <= f32::EPSILON {
+            if start[axis] < mins[axis] || start[axis] > maxs[axis] {
+                return None;
+            }
+            continue;
+        }
+        let first = (mins[axis] - start[axis]) / delta;
+        let second = (maxs[axis] - start[axis]) / delta;
+        enter = enter.max(first.min(second));
+        leave = leave.min(first.max(second));
+        if enter > leave {
+            return None;
+        }
+    }
+    (leave >= 0.0 && enter <= 1.0).then_some(enter.max(0.0))
 }
 
 fn preset_spawn_class(
@@ -700,6 +1412,7 @@ fn objective(
     scenario: Scenario,
     team: PlayerTeam,
     threat: Option<[f32; 3]>,
+    carrying_flag: Option<PlayerTeam>,
 ) -> (ObjectiveKind, [f32; 3]) {
     match scenario {
         Scenario::Payload { cart, forward } if team == PlayerTeam::Blue => {
@@ -725,21 +1438,25 @@ fn objective(
             (ObjectiveKind::PayloadPush, position)
         }
         Scenario::Payload { cart, .. } => (ObjectiveKind::PayloadGuard, cart),
-        Scenario::CaptureTheFlag {
-            red_flag,
-            blue_flag,
-            red_capture,
-            blue_capture,
-        } => {
-            let _ = (red_capture, blue_capture);
-            (
-                ObjectiveKind::FetchFlag,
-                if team == PlayerTeam::Red {
-                    blue_flag
+        Scenario::CaptureTheFlag { flags, captures } => {
+            if carrying_flag.is_some() {
+                (
+                    ObjectiveKind::DeliverFlag,
+                    captures[team_index(team)].position,
+                )
+            } else {
+                let enemy = if team == PlayerTeam::Red {
+                    PlayerTeam::Blue
                 } else {
-                    red_flag
-                },
-            )
+                    PlayerTeam::Red
+                };
+                let flag = flags[team_index(enemy)];
+                if flag.carrier.is_some() {
+                    (ObjectiveKind::Attack, threat.unwrap_or(flag.position))
+                } else {
+                    (ObjectiveKind::FetchFlag, flag.position)
+                }
+            }
         }
     }
 }
@@ -799,30 +1516,36 @@ fn scenario(graph: &Graph) -> Result<Scenario, Error> {
             forward: [delta[0] / length, delta[1] / length, delta[2] / length],
         });
     }
-    let mut flags: [Option<[f32; 3]>; 2] = [None, None];
-    let mut captures: [Option<[f32; 3]>; 2] = [None, None];
+    let mut flags: [Option<Flag>; 2] = [None, None];
+    let mut captures: [Option<CaptureZone>; 2] = [None, None];
     for entity in &graph.entities {
-        let array = if classname(entity, b"item_teamflag") {
-            &mut flags
-        } else if classname(entity, b"func_capturezone") {
-            &mut captures
-        } else {
-            continue;
-        };
         let team = match scalar(entity, b"TeamNum") {
             Some(b"2") => PlayerTeam::Red,
             Some(b"3") => PlayerTeam::Blue,
             _ => continue,
         };
-        array[team_index(team)] = vector(entity, b"origin");
+        let Some(position) = vector(entity, b"origin") else {
+            continue;
+        };
+        if classname(entity, b"item_teamflag") {
+            flags[team_index(team)] = Some(Flag {
+                home: position,
+                position,
+                carrier: None,
+                return_tick: None,
+            });
+        } else if classname(entity, b"func_capturezone") {
+            captures[team_index(team)] = Some(CaptureZone {
+                position,
+                model: entity.bsp_model_index,
+            });
+        }
     }
     match (flags, captures) {
-        ([Some(red_flag), Some(blue_flag)], [Some(red_capture), Some(blue_capture)]) => {
+        ([Some(red), Some(blue)], [Some(red_capture), Some(blue_capture)]) => {
             Ok(Scenario::CaptureTheFlag {
-                red_flag,
-                blue_flag,
-                red_capture,
-                blue_capture,
+                flags: [red, blue],
+                captures: [red_capture, blue_capture],
             })
         }
         _ => Err(Error::MissingScenario),
@@ -997,15 +1720,15 @@ mod tests {
             forward: [1.0, 0.0, 0.0],
         };
         assert_eq!(
-            objective(scenario, PlayerTeam::Blue, None),
+            objective(scenario, PlayerTeam::Blue, None, None),
             (ObjectiveKind::PayloadPush, [40.0, 200.0, 32.0])
         );
         assert_eq!(
-            objective(scenario, PlayerTeam::Blue, Some([100.0, 100.0, 0.0])),
+            objective(scenario, PlayerTeam::Blue, Some([100.0, 100.0, 0.0]), None),
             (ObjectiveKind::PayloadPush, [100.0, 260.0, 32.0])
         );
         assert_eq!(
-            objective(scenario, PlayerTeam::Red, None),
+            objective(scenario, PlayerTeam::Red, None, None),
             (ObjectiveKind::PayloadGuard, [100.0, 200.0, 32.0])
         );
     }
@@ -1058,9 +1781,13 @@ mod tests {
                 .advance(
                     &Floor,
                     tick,
-                    PlayerTeam::Red,
-                    true,
-                    [190.0, 50.0, 1.0],
+                    Human {
+                        team: PlayerTeam::Red,
+                        class: PlayerClass::Soldier,
+                        alive: true,
+                        position: [190.0, 50.0, 1.0],
+                        velocity: [0.0; 3],
+                    },
                     &mut random,
                 )
                 .unwrap();
@@ -1275,6 +2002,330 @@ mod tests {
                 0.0
             ),
             None
+        );
+    }
+
+    fn human_far() -> Human {
+        Human {
+            team: PlayerTeam::Red,
+            class: PlayerClass::Soldier,
+            alive: true,
+            position: [10_000.0, 50.0, 1.0],
+            velocity: [0.0; 3],
+        }
+    }
+
+    fn add(
+        world: &mut BotWorld,
+        random: &mut UniformRandomStream,
+        team: PlayerTeam,
+        class: PlayerClass,
+        difficulty: Difficulty,
+    ) {
+        world
+            .apply(
+                Request {
+                    operation: Operation::Add,
+                    count: 1,
+                    class: Some(class),
+                    team: Some(team),
+                    difficulty,
+                },
+                PlayerTeam::Red,
+                PlayerClass::Soldier,
+                random,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn recognized_scout_and_soldier_fire_authored_weapons_with_exact_cadence() {
+        let mut world = BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015).unwrap();
+        let mut random = UniformRandomStream::from_seed(0).unwrap();
+        add(
+            &mut world,
+            &mut random,
+            PlayerTeam::Blue,
+            PlayerClass::Scout,
+            Difficulty::Expert,
+        );
+        add(
+            &mut world,
+            &mut random,
+            PlayerTeam::Red,
+            PlayerClass::Soldier,
+            Difficulty::Expert,
+        );
+        let mut attacks = Vec::new();
+        for tick in 0..150 {
+            attacks.extend(
+                world
+                    .advance(&Floor, tick, human_far(), &mut random)
+                    .unwrap(),
+            );
+        }
+        assert!(attacks.iter().any(|attack| attack.attacker == 2
+            && attack.weapon == Weapon::Scattergun
+            && attack.target == 3));
+        assert!(attacks.iter().any(|attack| attack.attacker == 3
+            && attack.weapon == Weapon::RocketLauncher
+            && attack.target == 2));
+        let scout = world
+            .snapshots()
+            .into_iter()
+            .find(|bot| bot.identity == 2)
+            .unwrap();
+        assert!(scout.shots >= 2);
+        assert!(scout.weapon.unwrap().clip < 6);
+        let soldier = world
+            .snapshots()
+            .into_iter()
+            .find(|bot| bot.identity == 3)
+            .unwrap();
+        assert!(soldier.shots >= 2);
+        assert!(soldier.pitch_degrees.is_finite());
+    }
+
+    #[test]
+    fn authored_scout_and_soldier_switch_to_stock_secondaries_only_at_source_boundaries() {
+        let mut world = BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015).unwrap();
+        let mut random = UniformRandomStream::from_seed(0).unwrap();
+        add(
+            &mut world,
+            &mut random,
+            PlayerTeam::Blue,
+            PlayerClass::Scout,
+            Difficulty::Normal,
+        );
+        add(
+            &mut world,
+            &mut random,
+            PlayerTeam::Red,
+            PlayerClass::Soldier,
+            Difficulty::Hard,
+        );
+        let threat = Actor {
+            identity: 3,
+            class: PlayerClass::Soldier,
+            team: PlayerTeam::Red,
+            alive: true,
+            position: [150.0, 50.0, 0.0],
+            velocity: [0.0; 3],
+            firing_at: None,
+        };
+        let scout = world.bots.get_mut(&2).unwrap();
+        scout.loadout.get_mut(&Weapon::Scattergun).unwrap().clip = 0;
+        select_weapon(scout, Some(threat), 70, 0.015);
+        assert_eq!(scout.active_weapon, Some(Weapon::Pistol));
+        assert_eq!(scout.loadout[&Weapon::Pistol].next_primary_tick, 104);
+        scout.difficulty = Difficulty::Easy;
+        select_weapon(scout, Some(threat), 100, 0.015);
+        assert_eq!(scout.active_weapon, Some(Weapon::Scattergun));
+
+        let soldier = world.bots.get_mut(&3).unwrap();
+        soldier
+            .loadout
+            .get_mut(&Weapon::RocketLauncher)
+            .unwrap()
+            .clip = 0;
+        let near = Actor {
+            identity: 2,
+            class: PlayerClass::Scout,
+            team: PlayerTeam::Blue,
+            alive: true,
+            position: [499.0, 50.0, 1.0],
+            velocity: [0.0; 3],
+            firing_at: None,
+        };
+        select_weapon(soldier, Some(near), 100, 0.015);
+        assert_eq!(soldier.active_weapon, Some(Weapon::Shotgun));
+        let far = Actor {
+            position: [510.0, 50.0, 1.0],
+            ..near
+        };
+        select_weapon(soldier, Some(far), 120, 0.015);
+        assert_eq!(soldier.active_weapon, Some(Weapon::RocketLauncher));
+    }
+
+    #[test]
+    fn threat_priority_matches_immediate_medic_spy_and_recent_attacker_rules() {
+        let mut world = BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015).unwrap();
+        let mut random = UniformRandomStream::from_seed(0).unwrap();
+        add(
+            &mut world,
+            &mut random,
+            PlayerTeam::Blue,
+            PlayerClass::Soldier,
+            Difficulty::Hard,
+        );
+        let bot = world.bots.get(&2).unwrap();
+        let distant = Actor {
+            identity: 3,
+            class: PlayerClass::Soldier,
+            team: PlayerTeam::Red,
+            alive: true,
+            position: [900.0, 50.0, 1.0],
+            velocity: [0.0; 3],
+            firing_at: None,
+        };
+        let medic = Actor {
+            identity: 4,
+            class: PlayerClass::Medic,
+            position: [1000.0, 50.0, 1.0],
+            ..distant
+        };
+        assert_eq!(threat_order(bot, medic, distant), std::cmp::Ordering::Less);
+        let spy = Actor {
+            identity: 5,
+            class: PlayerClass::Spy,
+            position: [300.0, 50.0, 1.0],
+            ..distant
+        };
+        let attacker = Actor {
+            identity: 6,
+            class: PlayerClass::Soldier,
+            position: [280.0, 50.0, 1.0],
+            firing_at: Some(bot.identity),
+            ..distant
+        };
+        assert_eq!(threat_order(bot, spy, attacker), std::cmp::Ordering::Less);
+    }
+
+    #[test]
+    fn soldier_leads_feet_at_1100_units_per_second_but_aims_at_close_enemy_eyes() {
+        let mut world = BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015).unwrap();
+        let mut random = UniformRandomStream::from_seed(0).unwrap();
+        add(
+            &mut world,
+            &mut random,
+            PlayerTeam::Blue,
+            PlayerClass::Soldier,
+            Difficulty::Hard,
+        );
+        let bot = world.bots.get(&2).unwrap();
+        let far = Actor {
+            identity: 3,
+            class: PlayerClass::Scout,
+            team: PlayerTeam::Red,
+            alive: true,
+            position: [450.0, 50.0, 1.0],
+            velocity: [100.0, 0.0, 0.0],
+            firing_at: None,
+        };
+        let aim = aim_point(&Floor, bot, far);
+        assert!((aim[0] - (450.0 + 200.0 / 1100.0 * 100.0)).abs() < 0.01);
+        assert_eq!(aim[2], 1.0);
+        let near = Actor {
+            position: [300.0, 50.0, 1.0],
+            ..far
+        };
+        assert_eq!(aim_point(&Floor, bot, near), near.eye());
+    }
+
+    #[test]
+    fn damage_death_wave_and_respawn_restore_exact_stock_weapon_ledgers() {
+        let mut world = BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015).unwrap();
+        let mut random = UniformRandomStream::from_seed(0).unwrap();
+        add(
+            &mut world,
+            &mut random,
+            PlayerTeam::Blue,
+            PlayerClass::Scout,
+            Difficulty::Normal,
+        );
+        add(
+            &mut world,
+            &mut random,
+            PlayerTeam::Red,
+            PlayerClass::Soldier,
+            Difficulty::Normal,
+        );
+        world
+            .bots
+            .get_mut(&2)
+            .unwrap()
+            .loadout
+            .get_mut(&Weapon::Scattergun)
+            .unwrap()
+            .clip = 1;
+        let points = world
+            .damage(
+                Damage {
+                    attacker: 3,
+                    victim: 2,
+                    weapon: Weapon::RocketLauncher,
+                    amount: 130.0,
+                    position: [200.0, 50.0, 1.0],
+                },
+                PlayerTeam::Red,
+                50,
+                1,
+            )
+            .unwrap();
+        assert_eq!(points, Some(130));
+        let dead = world
+            .snapshots()
+            .into_iter()
+            .find(|bot| bot.identity == 2)
+            .unwrap();
+        assert_eq!(
+            (dead.lifecycle, dead.health, dead.deaths),
+            (PlayerLifecycle::Dying, 0, 1)
+        );
+        assert_eq!(
+            world
+                .snapshots()
+                .into_iter()
+                .find(|bot| bot.identity == 3)
+                .unwrap()
+                .kills,
+            1
+        );
+        let due = dead.respawn_tick.unwrap();
+        assert_eq!(due, next_respawn_wave(50, 0.015, 10.0, 1));
+        world
+            .advance(&Floor, due - 1, human_far(), &mut random)
+            .unwrap();
+        assert_eq!(world.snapshots()[0].lifecycle, PlayerLifecycle::Dying);
+        world
+            .advance(&Floor, due, human_far(), &mut random)
+            .unwrap();
+        let alive = world.snapshots()[0].clone();
+        assert_eq!(
+            (alive.lifecycle, alive.health, alive.deaths),
+            (PlayerLifecycle::Active, 125, 1)
+        );
+        assert_eq!(
+            (alive.weapon.unwrap().clip, alive.weapon.unwrap().reserve),
+            (6, 32)
+        );
+        assert_eq!(alive.respawn_tick, None);
+    }
+
+    #[test]
+    fn upward_logic_auto_applies_authored_team_specific_respawn_waves() {
+        let graph = playsrc_entity::parse(
+            b"{\"classname\"\"logic_auto\"\"OnMultiNewMap\"\"gamerules,SetRedTeamRespawnWaveTime,9,0,-1\"\"OnMultiNewMap\"\"gamerules,SetBlueTeamRespawnWaveTime,4,0,-1\"}\0",
+            playsrc_entity::Limits::default(),
+        ).unwrap();
+        assert_eq!(initial_respawn_waves(&graph), [9.0, 4.0]);
+        assert_eq!(next_respawn_wave(0, 0.01, 4.0, 1), 1200);
+        assert_eq!(next_respawn_wave(0, 0.01, 9.0, 1), 2000);
+    }
+
+    #[test]
+    fn player_hull_segments_preserve_nearest_entry_and_reject_clear_misses() {
+        assert_eq!(
+            segment_player([0.0, 0.0, 41.0], [200.0, 0.0, 41.0], [100.0, 0.0, 0.0]),
+            Some(0.38)
+        );
+        assert_eq!(
+            segment_player([0.0, 50.0, 41.0], [200.0, 50.0, 41.0], [100.0, 0.0, 0.0]),
+            None
+        );
+        assert_eq!(
+            segment_player([100.0, 0.0, 41.0], [200.0, 0.0, 41.0], [100.0, 0.0, 0.0]),
+            Some(0.0)
         );
     }
 }

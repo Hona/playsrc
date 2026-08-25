@@ -3002,6 +3002,24 @@ export class Tf2Application {
     )
     for (const event of snapshot.projectileEvents.filter((value) => value.type === "fire")) {
       const launcherPose = event.launcherPose
+      if (event.ownerIdentity !== 1) {
+        if (!launcherPose) throw new Error(`TF2 bot fire-tick launcher pose unavailable: ${event.tick}:${event.projectile}`)
+        const model = event.kind === 1
+          ? "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl"
+          : "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl"
+        const artifact = this.#artifacts.models.get(model)
+        if (!artifact) throw new Error(`Authored TF2 bot launcher model unavailable: ${model}`)
+        const transforms = new Map([...artifact.attachments].map(([name, matrix]) => [
+          name.toLowerCase(),
+          transformAttachment(matrix, launcherPose.eyePosition, launcherPose.viewOrientation),
+        ] as const))
+        this.#attachments.set(event.launcherIdentity, new Set(transforms.keys()))
+        this.#attachmentTransforms.set(event.launcherIdentity, transforms)
+        this.#fireAttachmentTransforms.set(event.projectile, transforms)
+        const attachment = event.kind === 1 ? "backblast" : "muzzle"
+        if (!transforms.has(attachment)) throw new Error(`Authored TF2 bot launcher attachment unavailable: ${model}:${attachment}`)
+        continue
+      }
       const firePose = posedFireTicks.get(event.tick)
       if (!launcherPose || !firePose || !firePose.attachmentsWorld) {
         throw new Error(`TF2 fire-tick launcher pose unavailable: ${event.tick}:${event.projectile}; source=${Number(!!launcherPose)}; posed=${Number(!!firePose)}; world=${Number(!!firePose?.attachmentsWorld)}; samples=${[...posedFireTicks.keys()].join(",")}`)
@@ -3227,7 +3245,7 @@ export class Tf2Application {
     if(profile){
       if(skyDisposition==="controller-absent")profile.controllerFreeSkyViews=Number(profile.controllerFreeSkyViews??0)+1
       profile.displacementVisibility={surfaces:[...visibility.surfaces],drawSurfaces:[...visibility.drawSurfaces],outsideWorld:visibility.outsideWorld,eyeLeaf:visibility.eyeLeaf,leaves:visibility.leaves,areas:visibility.areas};profile.displacementCamera=camera
-      profile.bots=prepared.snapshot.bots.map(bot=>({...bot,tick:prepared.snapshot.tick.toString()}))
+      profile.bots=prepared.snapshot.bots.map(bot=>({...bot,weapon:bot.weapon&&{...bot.weapon,nextPrimaryTick:bot.weapon.nextPrimaryTick.toString(),nextReloadTick:bot.weapon.nextReloadTick.toString()},lastFireTick:bot.lastFireTick?.toString()??null,respawnTick:bot.respawnTick?.toString()??null,tick:prepared.snapshot.tick.toString()}))
     }
     const geometryEvidenceRevision=profile?.geometryEvidenceRevision
     if(profile&&Number.isSafeInteger(geometryEvidenceRevision)&&geometryEvidenceRevision!==((profile.geometryEvidence as {revision?:unknown}|undefined)?.revision)&&this.#view.phase==="Ready"){
@@ -3440,8 +3458,8 @@ export class Tf2Application {
           ? undefined : this.#viewmodels!.map(value, view)
       }
       for (const batch of publication.eventBatches) {
-        if (batch.snapshot.tick >= snapshot.tick || !batch.snapshot.projectileEvents.some((event) => event.type === "fire")) continue
-        const fire = batch.snapshot.projectileEvents.find((event) => event.type === "fire")!
+        if (batch.snapshot.tick >= snapshot.tick || !batch.snapshot.projectileEvents.some((event) => event.type === "fire" && event.ownerIdentity === 1)) continue
+        const fire = batch.snapshot.projectileEvents.find((event) => event.type === "fire" && event.ownerIdentity === 1)!
         if (!fire.launcherPose) throw new Error(`TF2 fire-tick launcher pose unavailable: ${fire.tick}:${fire.projectile}`)
         const historical = mapViewmodel(batch.snapshot)
         if (!historical) throw new Error(`TF2 fire-tick weapon unavailable: ${fire.tick}:${fire.projectile}`)
@@ -3453,15 +3471,17 @@ export class Tf2Application {
         }))
       }
       const viewmodel=mapViewmodel(snapshot)
-      const currentFire=publication.eventBatches.at(-1)?.snapshot.projectileEvents.find((event)=>event.type==="fire")
+      const currentFire=publication.eventBatches.at(-1)?.snapshot.projectileEvents.find((event)=>event.type==="fire"&&event.ownerIdentity===1)
       if(currentFire&&(!currentFire.launcherPose||!viewmodel))throw new Error(`TF2 fire-tick launcher pose unavailable: ${currentFire.tick}:${currentFire.projectile}`)
       const currentViewmodelRequest=viewmodel===undefined?undefined:Object.freeze({...viewmodel.request,sampleTick:currentFire?.tick??snapshot.tick,...(currentFire?{fireView:currentFire.launcherPose!}:{})})
       const lockerRequests=[...this.#lockerAnimations].flatMap(([identity,state])=>{const occurrence=this.#artifacts!.modelOccurrences.find(value=>value.entity===identity),artifact=occurrence&&this.#artifacts!.models.get(occurrence.model);if(!occurrence||!artifact){this.#blockers.add(`TF2 regenerate model presentation unavailable: ${identity}`);return []}const closed=snapshot.tick>=state.closeTick,animation=closed?state.closeAnimation:state.openAnimation,start=closed?state.closeTick:state.openTick,elapsed=Math.max(0,Number(snapshot.tick-start)*0.015),previousTick=snapshot.tick>BigInt(publication.selectedTicks)?snapshot.tick-BigInt(publication.selectedTicks):0n,previousElapsed=Math.max(0,Number(previousTick-start)*0.015);return [Object.freeze({identity,model:occurrence.model,activity:animation,previousElapsedSeconds:Math.min(previousElapsed,elapsed),elapsedSeconds:elapsed,currentTimeSeconds:Number(snapshot.tick)*0.015,frameTimeSeconds:publication.selectedTicks*0.015,planarSpeed:0,screenAspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),worldFarPlane:camera.far,skin:occurrence.skin,lod:0,bodygroups:Object.freeze([]),packedBody:state.body})]})
-      const botRequests=snapshot.bots.map(bot=>{
+      const livingBots=snapshot.bots.filter(bot=>bot.lifecycle===1)
+      const botRequests=livingBots.map(bot=>{
         const model=tf2ClassPresentation(bot.class).model
         const artifact=this.#artifacts!.models.get(model)
         if(!artifact)throw new Error(`Authored TF2 bot player model unavailable: ${model}`)
-        const role=bot.class===8?"MELEE":bot.class===4?"SECONDARY":"PRIMARY"
+        const weapon=bot.weapon?.identity
+        const role=weapon===6||weapon===8||weapon===11||bot.class===8?"MELEE":weapon===5||weapon===7||weapon===10||bot.class===4?"SECONDARY":"PRIMARY"
         const moving=Math.hypot(bot.velocity[0],bot.velocity[1])>1
         const activity=`ACT_MP_${moving?"RUN":"STAND"}_${role}`
         if(!artifact.sequences.some(sequence=>sequence.activity===activity))throw new Error(`Authored TF2 bot player activity unavailable: ${model}:${activity}`)
@@ -3488,7 +3508,7 @@ export class Tf2Application {
       const viewmodelPoses = currentViewmodelRequest===undefined?[]:timelineViewmodelPoses.filter((pose) => pose.identity===currentViewmodelRequest.identity&&!pose.attachmentsOnly&&pose.sampleTick===currentViewmodelRequest.sampleTick)
       const lockerPoses=modelPoses.filter(pose=>this.#lockerAnimations.has(pose.identity))
       const botPoses=modelPoses.filter(pose=>pose.identity>=BOT_MODEL_IDENTITY_BASE&&pose.identity<BOT_MODEL_IDENTITY_BASE+0x10000)
-      if(botPoses.length!==snapshot.bots.length)throw new Error("TF2 bot player pose output differs from authoritative player state")
+      if(botPoses.length!==livingBots.length)throw new Error("TF2 bot player pose output differs from authoritative living player state")
       if(viewmodel!==undefined&&(snapshot.weapon===11?(viewmodelPoses.length!==1||viewmodelPoses[0]?.role!=="hand"):(viewmodelPoses.length!==2||viewmodelPoses[0]?.role!=="item"||viewmodelPoses[1]?.role!=="hand")))throw new Error("Viewmodel composition output differs");const viewmodelPose=viewmodelPoses.at(-1)
       if(viewmodelPose)this.#viewmodelActivities.add(viewmodelPose.activity)
       this.#updateAttachmentTransforms(snapshot, timelineViewmodelPoses, camera)
@@ -3571,7 +3591,7 @@ export class Tf2Application {
         fireEvents: this.#fireEvents,
         explosionEvents: this.#explosionEvents,
         botCount: snapshot.bots.length,
-        botProbe: snapshot.bots.map(bot=>`${bot.identity}:${bot.team}:${bot.class}:${bot.objective}:${bot.area??"none"}:${bot.remainingPathAreas}:${bot.position.map(value=>value.toFixed(1)).join(",")}:${bot.target??"none"}`).join("|"),
+        botProbe: snapshot.bots.map(bot=>`${bot.identity}:${bot.team}:${bot.class}:${bot.objective}:${bot.area??"none"}:${bot.remainingPathAreas}:${bot.position.map(value=>value.toFixed(1)).join(",")}:${bot.target??"none"}:${bot.weapon?.identity??"none"}:${bot.weapon?.clip??0}:${bot.shots}:${bot.hits}:${bot.kills}:${bot.deaths}`).join("|"),
         particleRenderItems: particleItems.length,
         movement: snapshot.movement,
         playerFlags: snapshot.playerFlags,
