@@ -160,6 +160,7 @@ impl BotWorld {
         graph: &Graph,
         world: &W,
         tick_interval: f32,
+        objectives: Option<&crate::ctf::World>,
     ) -> Result<Self, Error> {
         let mut spawns: [Vec<Spawn>; 2] = std::array::from_fn(|_| Vec::new());
         let mut rooms = Vec::new();
@@ -225,7 +226,7 @@ impl BotWorld {
                 }
             }
         }
-        let scenario = scenario(graph)?;
+        let scenario = scenario(graph, objectives)?;
         Ok(Self {
             mesh: Arc::new(mesh),
             spawns,
@@ -356,6 +357,7 @@ impl BotWorld {
         human_alive: bool,
         human_position: [f32; 3],
         random: &mut UniformRandomStream,
+        objectives: Option<&crate::ctf::World>,
     ) -> Result<(), Error> {
         if self.bots.is_empty() {
             return Ok(());
@@ -440,7 +442,21 @@ impl BotWorld {
                     .find(|(identity, _, _, _)| *identity == target)
                     .map(|(_, _, _, position)| *position)
             });
-            (bot.objective, bot.goal) = objective(self.scenario, bot.team, threat_position);
+            let flag = objectives.and_then(|world| world.bot_objective(bot.identity, bot.team));
+            (bot.objective, bot.goal) = if let Some(flag) = flag {
+                if flag.carrier == Some(bot.identity) {
+                    (
+                        ObjectiveKind::DeliverFlag,
+                        flag.capture_position.ok_or(Error::MissingScenario)?,
+                    )
+                } else if flag.carrier.is_some() {
+                    (ObjectiveKind::Attack, flag.position)
+                } else {
+                    (ObjectiveKind::FetchFlag, flag.position)
+                }
+            } else {
+                objective(self.scenario, bot.team, threat_position)
+            };
             if tick >= bot.next_repath_tick || bot.path.is_empty() {
                 let start = mesh
                     .nearest_area(bot.movement.position)
@@ -744,7 +760,7 @@ fn objective(
     }
 }
 
-fn scenario(graph: &Graph) -> Result<Scenario, Error> {
+fn scenario(graph: &Graph, objectives: Option<&crate::ctf::World>) -> Result<Scenario, Error> {
     if let Some(watcher) = graph
         .entities
         .iter()
@@ -814,7 +830,14 @@ fn scenario(graph: &Graph) -> Result<Scenario, Error> {
             Some(b"3") => PlayerTeam::Blue,
             _ => continue,
         };
-        array[team_index(team)] = vector(entity, b"origin");
+        array[team_index(team)] = vector(entity, b"origin").or_else(|| {
+            objectives.and_then(|world| {
+                world
+                    .zones()
+                    .find(|zone| zone.identity == entity.index as u32 && zone.team == Some(team))
+                    .map(|zone| zone.center)
+            })
+        });
     }
     match (flags, captures) {
         ([Some(red_flag), Some(blue_flag)], [Some(red_capture), Some(blue_capture)]) => {
@@ -1012,7 +1035,8 @@ mod tests {
 
     #[test]
     fn player_lifecycle_path_movement_target_recognition_and_team_removal_are_deterministic() {
-        let mut world = BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015).unwrap();
+        let mut world =
+            BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015, None).unwrap();
         let mut random = UniformRandomStream::from_seed(0).unwrap();
         world
             .apply(
@@ -1062,6 +1086,7 @@ mod tests {
                     true,
                     [190.0, 50.0, 1.0],
                     &mut random,
+                    None,
                 )
                 .unwrap();
         }
@@ -1111,7 +1136,8 @@ mod tests {
 
     #[test]
     fn every_authored_player_class_joins_both_source_teams_with_exact_health() {
-        let mut world = BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015).unwrap();
+        let mut world =
+            BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015, None).unwrap();
         let mut random = UniformRandomStream::from_seed(0).unwrap();
         for team in [PlayerTeam::Red, PlayerTeam::Blue] {
             for class in PlayerClass::ALL {
@@ -1142,7 +1168,8 @@ mod tests {
 
     #[test]
     fn preset_payload_rosters_select_exact_offense_and_defense_classes() {
-        let mut world = BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015).unwrap();
+        let mut world =
+            BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015, None).unwrap();
         let mut random = UniformRandomStream::from_seed(0).unwrap();
         for team in [PlayerTeam::Blue, PlayerTeam::Red] {
             world

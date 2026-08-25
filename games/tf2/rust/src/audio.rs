@@ -37,6 +37,17 @@ pub enum SoundDefinition {
     WrenchMiss,
     WrenchHitFlesh,
     WrenchHitWorld,
+    FlagEnemyStolen,
+    FlagEnemyDropped,
+    FlagEnemyCaptured,
+    FlagEnemyReturned,
+    FlagTeamStolen,
+    FlagTeamDropped,
+    FlagTeamCaptured,
+    FlagTeamReturned,
+    FlagSpawn,
+    TeamWon,
+    TeamLost,
 }
 
 impl SoundDefinition {
@@ -79,6 +90,17 @@ impl SoundDefinition {
             Self::KukriHitFlesh => "Weapon_Machete.HitFlesh",
             Self::KukriHitWorld => "Weapon_Machete.HitWorld",
             Self::SmgReload => "Weapon_SMG.WorldReload",
+            Self::FlagEnemyStolen => "CaptureFlag.EnemyStolen",
+            Self::FlagEnemyDropped => "CaptureFlag.EnemyDropped",
+            Self::FlagEnemyCaptured => "CaptureFlag.EnemyCaptured",
+            Self::FlagEnemyReturned => "CaptureFlag.EnemyReturned",
+            Self::FlagTeamStolen => "CaptureFlag.TeamStolen",
+            Self::FlagTeamDropped => "CaptureFlag.TeamDropped",
+            Self::FlagTeamCaptured => "CaptureFlag.TeamCaptured",
+            Self::FlagTeamReturned => "CaptureFlag.TeamReturned",
+            Self::FlagSpawn => "CaptureFlag.FlagSpawn",
+            Self::TeamWon => "Game.YourTeamWon",
+            Self::TeamLost => "Game.YourTeamLost",
         }
     }
 
@@ -89,13 +111,17 @@ impl SoundDefinition {
             | Self::ShovelHitFlesh
             | Self::FistHitFlesh
             | Self::KukriHitFlesh
-            | Self::WrenchHitFlesh => 3,
+            | Self::WrenchHitFlesh
+            | Self::FlagEnemyCaptured
+            | Self::FlagEnemyReturned => 3,
+            Self::FlagEnemyStolen => 4,
             Self::BatHitWorld
             | Self::ShovelHitWorld
             | Self::FistMiss
             | Self::FistHitWorld
-            | Self::KukriHitWorld => 2,
-
+            | Self::KukriHitWorld
+            | Self::FlagEnemyDropped
+            | Self::FlagTeamDropped => 2,
             Self::RocketSingle
             | Self::OriginalSingle
             | Self::StickySingle
@@ -112,15 +138,21 @@ impl SoundDefinition {
             | Self::MinigunWindUp
             | Self::MinigunWindDown
             | Self::MinigunSpin
-            | Self::MinigunFire => 1,
-            Self::SniperSingle
+            | Self::MinigunFire
+            | Self::SniperSingle
             | Self::SmgSingle
             | Self::KukriMiss
             | Self::SmgReload
             | Self::ShotgunEmpty
             | Self::PistolEmpty
             | Self::WrenchMiss
-            | Self::WrenchHitWorld => 1,
+            | Self::WrenchHitWorld
+            | Self::FlagTeamStolen
+            | Self::FlagTeamCaptured
+            | Self::FlagTeamReturned
+            | Self::FlagSpawn
+            | Self::TeamWon
+            | Self::TeamLost => 1,
         }
     }
 }
@@ -178,6 +210,11 @@ pub struct SoundSelectionState {
     pub wrench_hit_flesh_available: u8,
     pub kukri_hit_flesh_available: u8,
     pub kukri_hit_world_available: u8,
+    pub flag_enemy_stolen_available: u8,
+    pub flag_enemy_dropped_available: u8,
+    pub flag_enemy_captured_available: u8,
+    pub flag_enemy_returned_available: u8,
+    pub flag_team_dropped_available: u8,
 }
 
 #[derive(Clone, Copy)]
@@ -187,6 +224,7 @@ struct WaveCycle {
 }
 
 impl WaveCycle {
+    const FOUR: u8 = 0b1111;
     const THREE: u8 = 0b111;
     const TWO: u8 = 0b011;
 
@@ -207,7 +245,7 @@ impl WaveCycle {
     fn original_ordinal(&mut self, rank: u8, consume: bool) -> u8 {
         self.available_count();
         let mut remaining = rank;
-        for ordinal in 0..3 {
+        for ordinal in 0..8 {
             let bit = 1_u8 << ordinal;
             if self.available & bit == 0 {
                 continue;
@@ -238,6 +276,11 @@ pub(crate) struct SoundSelection {
     wrench_hit_flesh: WaveCycle,
     kukri_hit_flesh: WaveCycle,
     kukri_hit_world: WaveCycle,
+    flag_enemy_stolen: WaveCycle,
+    flag_enemy_dropped: WaveCycle,
+    flag_enemy_captured: WaveCycle,
+    flag_enemy_returned: WaveCycle,
+    flag_team_dropped: WaveCycle,
 }
 
 impl SoundSelection {
@@ -255,6 +298,11 @@ impl SoundSelection {
             wrench_hit_flesh: WaveCycle::new(WaveCycle::THREE),
             kukri_hit_flesh: WaveCycle::new(WaveCycle::THREE),
             kukri_hit_world: WaveCycle::new(WaveCycle::TWO),
+            flag_enemy_stolen: WaveCycle::new(WaveCycle::FOUR),
+            flag_enemy_dropped: WaveCycle::new(WaveCycle::TWO),
+            flag_enemy_captured: WaveCycle::new(WaveCycle::THREE),
+            flag_enemy_returned: WaveCycle::new(WaveCycle::THREE),
+            flag_team_dropped: WaveCycle::new(WaveCycle::TWO),
         }
     }
 
@@ -272,6 +320,11 @@ impl SoundSelection {
             wrench_hit_flesh_available: self.wrench_hit_flesh.available,
             kukri_hit_flesh_available: self.kukri_hit_flesh.available,
             kukri_hit_world_available: self.kukri_hit_world.available,
+            flag_enemy_stolen_available: self.flag_enemy_stolen.available,
+            flag_enemy_dropped_available: self.flag_enemy_dropped.available,
+            flag_enemy_captured_available: self.flag_enemy_captured.available,
+            flag_enemy_returned_available: self.flag_enemy_returned.available,
+            flag_team_dropped_available: self.flag_team_dropped.available,
         }
     }
 
@@ -287,6 +340,11 @@ impl SoundSelection {
             || state.wrench_hit_flesh_available & !WaveCycle::THREE != 0
             || state.kukri_hit_flesh_available & !WaveCycle::THREE != 0
             || state.kukri_hit_world_available & !WaveCycle::TWO != 0
+            || state.flag_enemy_stolen_available & !WaveCycle::FOUR != 0
+            || state.flag_enemy_dropped_available & !WaveCycle::TWO != 0
+            || state.flag_enemy_captured_available & !WaveCycle::THREE != 0
+            || state.flag_enemy_returned_available & !WaveCycle::THREE != 0
+            || state.flag_team_dropped_available & !WaveCycle::TWO != 0
         {
             return false;
         }
@@ -303,6 +361,11 @@ impl SoundSelection {
         self.kukri_hit_flesh.available = state.kukri_hit_flesh_available;
         self.kukri_hit_world.available = state.kukri_hit_world_available;
 
+        self.flag_enemy_stolen.available = state.flag_enemy_stolen_available;
+        self.flag_enemy_dropped.available = state.flag_enemy_dropped_available;
+        self.flag_enemy_captured.available = state.flag_enemy_captured_available;
+        self.flag_enemy_returned.available = state.flag_enemy_returned_available;
+        self.flag_team_dropped.available = state.flag_team_dropped_available;
         true
     }
 
@@ -334,6 +397,11 @@ impl SoundSelection {
             SoundDefinition::KukriHitFlesh => &mut self.kukri_hit_flesh,
             SoundDefinition::KukriHitWorld => &mut self.kukri_hit_world,
 
+            SoundDefinition::FlagEnemyStolen => &mut self.flag_enemy_stolen,
+            SoundDefinition::FlagEnemyDropped => &mut self.flag_enemy_dropped,
+            SoundDefinition::FlagEnemyCaptured => &mut self.flag_enemy_captured,
+            SoundDefinition::FlagEnemyReturned => &mut self.flag_enemy_returned,
+            SoundDefinition::FlagTeamDropped => &mut self.flag_team_dropped,
             _ => unreachable!("only configured random-wave definitions have selection state"),
         }
     }

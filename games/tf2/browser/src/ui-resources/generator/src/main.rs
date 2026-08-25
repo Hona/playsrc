@@ -40,6 +40,7 @@ struct ArchiveIndexContract {
     tf2_misc: String,
     tf2_textures: String,
     tf2_sound_misc: String,
+    tf2_sound_vo_english: String,
 }
 
 #[derive(Deserialize)]
@@ -286,6 +287,28 @@ const ROOTS: &[(&str, &str, bool)] = &[
     ("hud", "resource/ui/hudplayerhealth.res", true),
     ("hud", "resource/ui/hudammoweapons.res", true),
     ("hud", "resource/ui/hudweaponselection.res", true),
+    ("hud", "resource/ui/hudobjectivestatus.res", true),
+    ("hud", "resource/ui/hudobjectiveflagpanel.res", true),
+    ("hud", "resource/ui/flagstatus.res", true),
+    ("hud", "resource/ui/notifications/base_notification.res", true),
+    ("hud", "resource/ui/notifications/notify_your_flag_taken_red.res", true),
+    ("hud", "resource/ui/notifications/notify_your_flag_taken_blue.res", true),
+    ("hud", "resource/ui/notifications/notify_your_flag_dropped_red.res", true),
+    ("hud", "resource/ui/notifications/notify_your_flag_dropped_blue.res", true),
+    ("hud", "resource/ui/notifications/notify_your_flag_returned_red.res", true),
+    ("hud", "resource/ui/notifications/notify_your_flag_returned_blue.res", true),
+    ("hud", "resource/ui/notifications/notify_your_flag_captured_red.res", true),
+    ("hud", "resource/ui/notifications/notify_your_flag_captured_blue.res", true),
+    ("hud", "resource/ui/notifications/notify_enemy_flag_taken_red.res", true),
+    ("hud", "resource/ui/notifications/notify_enemy_flag_taken_blue.res", true),
+    ("hud", "resource/ui/notifications/notify_enemy_flag_dropped_red.res", true),
+    ("hud", "resource/ui/notifications/notify_enemy_flag_dropped_blue.res", true),
+    ("hud", "resource/ui/notifications/notify_enemy_flag_returned_red.res", true),
+    ("hud", "resource/ui/notifications/notify_enemy_flag_returned_blue.res", true),
+    ("hud", "resource/ui/notifications/notify_enemy_flag_captured_red.res", true),
+    ("hud", "resource/ui/notifications/notify_enemy_flag_captured_blue.res", true),
+    ("hud", "resource/ui/notifications/notify_touching_enemy_ctf_cap_red.res", true),
+    ("hud", "resource/ui/notifications/notify_touching_enemy_ctf_cap_blue.res", true),
     ("hud", "resource/ui/huddemomanpipes.res", true),
     ("hud", "resource/ui/hudkillstreaknotice.res", true),
     ("hud", "resource/ui/targetid.res", true),
@@ -614,6 +637,7 @@ fn verify_content_build(
         || contract.archive_indexes.tf2_misc.len() != 64
         || contract.archive_indexes.tf2_textures.len() != 64
         || contract.archive_indexes.tf2_sound_misc.len() != 64
+        || contract.archive_indexes.tf2_sound_vo_english.len() != 64
         || contract.installed_depots.len() != 3
     {
         return Err("TF2 content-build contract is malformed".to_owned());
@@ -680,6 +704,10 @@ fn verify_content_build(
         (
             "tf2_sound_misc_dir.vpk",
             &contract.archive_indexes.tf2_sound_misc,
+        ),
+        (
+            "tf2_sound_vo_english_dir.vpk",
+            &contract.archive_indexes.tf2_sound_vo_english,
         ),
     ] {
         if digest(&fs::read(tf2.join(path)).map_err(|error| error.to_string())?) != *expected {
@@ -1449,10 +1477,18 @@ fn main() -> Result<(), String> {
     )
     .map_err(|error| format!("TF2 HUD class image inventory is malformed: {error}"))?;
     if arguments.next().is_some()
-        || class_images.len() != 18
+        || class_images.len() < 18
+        || class_images.len() > 128
         || class_images
             .iter()
-            .any(|image| !image.starts_with("../hud/class_") || image.len() > 128)
+            .any(|image| {
+                !(image.starts_with("../hud/") || image.starts_with("hud/")) || image.len() > 128
+            })
+        || class_images
+            .iter()
+            .filter(|image| image.starts_with("../hud/class_"))
+            .count()
+            != 18
         || class_images.iter().collect::<BTreeSet<_>>().len() != class_images.len()
     {
         return Err("TF2 HUD class image inventory is invalid".to_owned());

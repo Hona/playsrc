@@ -29,6 +29,7 @@ import {
   type Tf2HudPanelValue,
   type Tf2HudSnapshot,
 } from "../hud"
+import type { CaptureObjectives, Tf2Team } from "../codec"
 import type { Tf2VguiResources } from "../ui-integration"
 import { Tf2HudCrosshairPresentation } from "./crosshair"
 import { Tf2HudScopePresentation } from "./scope"
@@ -104,6 +105,19 @@ const HUD_CLASS = "resource/ui/hudplayerclass.res"
 const HUD_HEALTH = "resource/ui/hudplayerhealth.res"
 const HUD_AMMO = "resource/ui/hudammoweapons.res"
 const HUD_WEAPONS = "resource/ui/hudweaponselection.res"
+const HUD_OBJECTIVE_FLAGS = "resource/ui/hudobjectiveflagpanel.res"
+const HUD_FLAG_STATUS = "resource/ui/flagstatus.res"
+const HUD_NOTIFICATION_BASE = "resource/ui/notifications/base_notification.res"
+const FLAG_STATUS_IMAGES = Object.freeze([
+  "../hud/objectives_flagpanel_ico_flag_home",
+  "../hud/objectives_flagpanel_ico_flag_moving",
+  "../hud/objectives_flagpanel_ico_flag_dropped",
+])
+const NOTIFICATION_FILES = Object.freeze([
+  "your_flag_taken", "your_flag_dropped", "your_flag_returned", "your_flag_captured",
+  "enemy_flag_taken", "enemy_flag_dropped", "enemy_flag_returned", "enemy_flag_captured",
+  "touching_enemy_ctf_cap",
+])
 const scalar = (node: VguiResourceNode, name: string): string | null =>
   node.children.find((child) => child.name.toLowerCase() === name.toLowerCase() && child.value !== null)?.value ?? null
 const node = (name: string, children: readonly VguiResourceNode[]): VguiResourceNode => Object.freeze({ name, value: null, condition: null, children: Object.freeze(children) })
@@ -164,6 +178,7 @@ class Integration implements Tf2HudIntegration {
   readonly #runtime: VguiRuntime
   readonly #crosshair: Tf2HudCrosshairPresentation
   readonly #scope: Tf2HudScopePresentation
+  readonly #resources: Tf2VguiResources
   readonly #onCommand: (command: Tf2HudCommand) => void
   readonly #diagnostics: Tf2HudIntegrationDiagnostic[] = []
   readonly #diagnosticSubjects = new Set<string>()
@@ -174,9 +189,28 @@ class Integration implements Tf2HudIntegration {
   #previous: Tf2HudAvailability<Tf2HudSnapshot> = tf2HudUnavailable("initial")
   #binding: Tf2HudBinding | null = null
   #viewport: VguiViewport
+  #objective?: Readonly<{
+    root: VguiPanelId
+    panel: VguiPanelId
+    redFlag: VguiPanelId
+    blueFlag: VguiPanelId
+    redStatus: VguiPanelId
+    blueStatus: VguiPanelId
+    redArrow: VguiPanelId
+    blueArrow: VguiPanelId
+    carried: VguiPanelId
+    captureArrow: VguiPanelId
+    playingTo: VguiPanelId
+    playingToBackground: VguiPanelId
+    notification: VguiPanelId
+    notificationBackground: VguiPanelId
+    notificationLabel: VguiPanelId
+  }>
+  #notificationDeadline = 0n
   #destroyed = false
 
   constructor(request: Tf2HudIntegrationRequest) {
+    this.#resources = request.resources
     this.#onCommand = request.onCommand
     this.#viewport = Object.freeze({ ...request.viewport })
     const availableImages = new Set(request.resources.clientScheme.images.map((image) => image.name.toLowerCase()))
@@ -233,6 +267,116 @@ class Integration implements Tf2HudIntegration {
     })
     this.#crosshair = new Tf2HudCrosshairPresentation(request.root)
     this.#scope = new Tf2HudScopePresentation(request.root)
+  }
+
+  #initializeObjectives() {
+    if (this.#objective) return this.#objective
+    const root = apply(this.#runtime, { kind: "create-panel", parent: 1, control: "CTFHudElement", name: "HudObjectiveStatus" })!
+    const notification = apply(this.#runtime, { kind: "create-panel", parent: 1, control: "CTFHudElement", name: "NotificationPanel" })!
+    const layout = this.#resources.document(HUD_LAYOUT)
+    const selected = layout.root.children.filter((block) => ["HudObjectiveStatus", "NotificationPanel"].includes(scalar(block, "fieldName") ?? block.name))
+    apply(this.#runtime, {
+      kind: "replace-resource",
+      parent: 1,
+      document: document(layout, "ctf-objectives", node(layout.root.name, selected.map(shallow))),
+      selection: { activeConditions: this.#resources.activeConditions, resolutionSuffixes: ["_hidef"] },
+    })
+    const panel = apply(this.#runtime, { kind: "create-panel", parent: root, control: "EditablePanel", name: "ObjectiveStatusFlagPanel" })!
+    applyPanelResource(this.#runtime, panel, this.#resources.document(HUD_OBJECTIVE_FLAGS), this.#resources.activeConditions)
+    const redFlag = find(this.#runtime, "RedFlag", panel)!
+    const blueFlag = find(this.#runtime, "BlueFlag", panel)!
+    const flagDocument = this.#resources.document(HUD_FLAG_STATUS)
+    applyPanelResource(this.#runtime, redFlag, flagDocument, this.#resources.activeConditions)
+    applyPanelResource(this.#runtime, blueFlag, flagDocument, this.#resources.activeConditions)
+    applyPanelResource(this.#runtime, notification, this.#resources.document(HUD_NOTIFICATION_BASE), this.#resources.activeConditions)
+    const required = (name: string, parent: VguiPanelId): VguiPanelId => {
+      const value = find(this.#runtime, name, parent)
+      if (value === null) throw new Error(`TF2 CTF HUD panel ${name} is missing`)
+      return value
+    }
+    const redStatus = required("StatusIcon", redFlag), blueStatus = required("StatusIcon", blueFlag)
+    const redArrow = required("Arrow", redFlag), blueArrow = required("Arrow", blueFlag)
+    apply(this.#runtime, { kind: "mutate-control", panel: redArrow, mutation: { image: "../hud/objectives_flagpanel_compass_red" } })
+    apply(this.#runtime, { kind: "mutate-control", panel: blueArrow, mutation: { image: "../hud/objectives_flagpanel_compass_blue" } })
+    apply(this.#runtime, { kind: "set-panel-state", panel: notification, visible: false, mouseInput: false, keyboardInput: false })
+    const objective = Object.freeze({
+      root, panel, redFlag, blueFlag, redStatus, blueStatus, redArrow, blueArrow,
+      carried: required("CarriedImage", panel),
+      captureArrow: required("CaptureFlag", panel),
+      playingTo: required("PlayingTo", panel),
+      playingToBackground: required("PlayingToBG", panel),
+      notification,
+      notificationBackground: required("Notification_Background", notification),
+      notificationLabel: required("Notification_Label", notification),
+    })
+    for (const value of this.#runtime.snapshot().panels) {
+      this.#panels.set(value.name.toLowerCase(), value.id)
+      apply(this.#runtime, { kind: "set-panel-state", panel: value.id, mouseInput: false, keyboardInput: false })
+    }
+    this.#captureBaseBounds()
+    this.#objective = objective
+    return objective
+  }
+
+  #objectiveValue(identity: string, value: string, operation: VguiOperation): void {
+    if (this.#publishedValues.get(identity) === value) return
+    apply(this.#runtime, operation)
+    this.#publishedValues.set(identity, value)
+  }
+
+  #publishObjectives(objectives: CaptureObjectives, player: number, team: Tf2Team, tick: bigint): void {
+    const panels = this.#initializeObjectives()
+    const carried = objectives.flags.find((flag) => flag.carrier === player)
+    const visible = (panel: VguiPanelId, value: boolean, name: string): void => {
+      this.#objectiveValue(`ctf-visible:${name}`, String(value), { kind: "set-panel-state", panel, visible: value })
+    }
+    const image = (panel: VguiPanelId, value: string, name: string): void => {
+      this.#objectiveValue(`ctf-image:${name}`, value, { kind: "mutate-control", panel, mutation: { image: value } })
+    }
+    visible(panels.root, true, "root")
+    for (const flag of objectives.flags) {
+      const red = flag.team === 2
+      const status = red ? panels.redStatus : panels.blueStatus
+      const panel = red ? panels.redFlag : panels.blueFlag
+      const name = red ? "red" : "blue"
+      visible(panel, !carried && (!flag.disabled || flag.visibleWhenDisabled), name)
+      image(status, FLAG_STATUS_IMAGES[flag.status]!, `${name}-status`)
+    }
+    visible(panels.carried, carried !== undefined, "carried")
+    visible(panels.captureArrow, carried !== undefined, "capture-arrow")
+    if (carried) {
+      const enemy = team === 2 ? "blue" : "red"
+      image(panels.carried, `${carried.icon}_${enemy}`, "carried")
+      image(panels.captureArrow, `../hud/objectives_flagpanel_compass_${team === 2 ? "red" : "blue"}`, "capture-arrow")
+    }
+    const limited = objectives.captureLimit > 0
+    visible(panels.playingTo, limited, "playing-to")
+    visible(panels.playingToBackground, limited, "playing-to-background")
+    for (const [name, value] of [
+      ["redscore", limited ? objectives.redCaptures : objectives.redScore],
+      ["bluescore", limited ? objectives.blueCaptures : objectives.blueScore],
+      ["rounds", objectives.captureLimit],
+    ] as const) {
+      this.#objectiveValue(`ctf-variable:${name}`, String(value), { kind: "set-dialog-variable", panel: panels.panel, name, value })
+    }
+    for (const event of objectives.events) {
+      if (event.kind !== 4 || event.team !== team || event.player === player) continue
+      const filename = NOTIFICATION_FILES[event.detail]
+      if (!filename) throw new Error(`TF2 CTF HUD notification ${event.detail} is invalid`)
+      const resource = this.#resources.panelDocument(`resource/ui/notifications/notify_${filename}_${team === 2 ? "red" : "blue"}.res`)
+      const root = resource.roots[0]
+      const background = root?.children.find((child) => child.name === "Notification_Background")
+      const label = root?.children.find((child) => child.name === "Notification_Label")
+      const backgroundImage = background?.children.find((child) => child.name.toLowerCase() === "image")?.value
+      const token = label?.children.find((child) => child.name.toLowerCase() === "labeltext")?.value
+      if (!backgroundImage || !token) throw new Error(`TF2 CTF HUD notification ${filename} is incomplete`)
+      image(panels.notificationBackground, backgroundImage, "notification-background")
+      const localized = this.#resources.localization.tokens.find((item) => item.name.toLowerCase() === token.slice(1).toLowerCase())?.value ?? token
+      this.#objectiveValue("ctf-notification-label", localized, { kind: "mutate-control", panel: panels.notificationLabel, mutation: { text: localized } })
+      this.#notificationDeadline = tick + 200n
+      visible(panels.notification, true, "notification")
+    }
+    if (tick >= this.#notificationDeadline) visible(panels.notification, false, "notification")
   }
 
   #diagnostic(code: Tf2HudIntegrationDiagnostic["code"], subject: string): void {
@@ -321,6 +465,13 @@ class Integration implements Tf2HudIntegration {
     } else {
       this.#scope.hide()
     }
+    const objectives = publication.snapshot.objectives
+    if (objectives) {
+      this.#publishObjectives(objectives, context.playerIdentity, publication.snapshot.team, publication.snapshot.tick)
+    } else if (this.#objective) {
+      apply(this.#runtime, { kind: "set-panel-state", panel: this.#objective.root, visible: false })
+      apply(this.#runtime, { kind: "set-panel-state", panel: this.#objective.notification, visible: false })
+    }
     for (const animation of binding.animations) {
       const parent = animation.target === "viewport" ? 1 : find(this.#runtime, animation.target)
       if (parent === null) {
@@ -367,6 +518,7 @@ class Integration implements Tf2HudIntegration {
       "PlayerStatusHealthImage", "HudWeaponAmmo", "HudWeaponAmmoBG", "modelpanel0",
       "PlayerStatusClassImage", "PlayerStatusClassImageBG", "classmodelpanel", "classmodelpanelBG",
       "PlayerStatusSpyImage", "PlayerStatusSpyOutlineImage", "PlayerStatus_WheelOfDoom",
+      "HudObjectiveStatus", "ObjectiveStatusFlagPanel", "BlueFlag", "RedFlag", "CarriedImage", "CaptureFlag", "BlueScore", "RedScore", "PlayingTo", "NotificationPanel", "Notification_Label",
       ...TF2_GROUPED_CONDITION_PANELS.map((item) => item.panel),
       ...TF2_INDEPENDENT_CONDITION_PANELS.map((item) => item.panel),
     ]
@@ -442,6 +594,11 @@ class Integration implements Tf2HudIntegration {
       this.#binding = null
       this.#scope.hide()
       this.#animationTrace.length = 0
+      if (this.#objective) {
+        apply(this.#runtime, { kind: "set-panel-state", panel: this.#objective.root, visible: false })
+        apply(this.#runtime, { kind: "set-panel-state", panel: this.#objective.notification, visible: false })
+      }
+      this.#notificationDeadline = 0n
     })
   }
   destroy(): void {

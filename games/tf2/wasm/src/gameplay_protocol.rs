@@ -35,7 +35,7 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
     };
     let flags = u32::from_le_bytes(bytes[28..32].try_into().ok()?);
     let select = u32::from_le_bytes(bytes[32..36].try_into().ok()?);
-    if flags & !0xff != 0 {
+    if flags & !0x1ff != 0 {
         return None;
     }
     let (select_class, select_random_class) = match (select & 0xff) as u8 {
@@ -131,6 +131,7 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
         reload: flags & 32 != 0,
         reset: flags & 64 != 0,
         respawn: flags & 128 != 0,
+        drop_item: flags & 256 != 0,
         select_class,
         select_random_class,
         select_team,

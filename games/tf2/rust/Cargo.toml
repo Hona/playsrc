@@ -15,5 +15,9 @@ playsrc-material = { path = "../../../packages/world/material/rust" }
 playsrc-studio-model = { path = "../../../packages/formats/studio-model/rust" }
 playsrc-vmt = { path = "../../../packages/formats/vmt/rust" }
 
+[dev-dependencies]
+playsrc-bsp = { path = "../../../packages/formats/bsp/rust" }
+sha2 = "0.10.9"
+
 [lib]
 path = "src/lib.rs"

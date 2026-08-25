@@ -621,6 +621,10 @@ export function mergePublicationSnapshots(snapshots: readonly Snapshot[]): Snaps
   const all = (key: keyof Snapshot) => Object.freeze(snapshots.flatMap((snapshot) => snapshot[key] as readonly unknown[]))
   return Object.freeze({
     ...final,
+    objectives: final.objectives === null ? null : Object.freeze({
+      ...final.objectives,
+      events: Object.freeze(snapshots.flatMap((snapshot) => snapshot.objectives?.events ?? [])),
+    }),
     projectileEvents: all("projectileEvents"),
     projectileTimeline: all("projectileTimeline"),
     entityEvents: all("entityEvents"),

@@ -61,6 +61,7 @@ struct ArchiveIndexContract {
     tf2_misc: String,
     tf2_textures: String,
     tf2_sound_misc: String,
+    tf2_sound_vo_english: String,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -794,6 +795,7 @@ fn verify_install_manifest(install: &Path, contract: &ContentBuildContract) -> R
         || contract.archive_indexes.tf2_misc.len() != 64
         || contract.archive_indexes.tf2_textures.len() != 64
         || contract.archive_indexes.tf2_sound_misc.len() != 64
+        || contract.archive_indexes.tf2_sound_vo_english.len() != 64
         || contract.installed_depots.len() != 3
     {
         return Err("TF2 content-build contract is malformed".to_owned());
@@ -851,6 +853,10 @@ fn verify_install_manifest(install: &Path, contract: &ContentBuildContract) -> R
         (
             "tf2_sound_misc_dir.vpk",
             &contract.archive_indexes.tf2_sound_misc,
+        ),
+        (
+            "tf2_sound_vo_english_dir.vpk",
+            &contract.archive_indexes.tf2_sound_vo_english,
         ),
     ] {
         if digest(&fs::read(tf2.join(path)).map_err(|error| error.to_string())?) != *expected {
@@ -2439,6 +2445,24 @@ fn main() -> Result<(), String> {
         .map(|value| String::from_utf8(value.clone()).map(|path| path.to_ascii_lowercase()))
         .collect::<Result<std::collections::BTreeSet<_>, _>>()
         .map_err(|_| "model identity is not UTF-8")?;
+    for entity in graph.entities.iter().filter(|entity| {
+        entity
+            .classname
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case(b"item_teamflag"))
+    }) {
+        let model = entity
+            .pairs
+            .iter()
+            .find(|pair| pair.key.eq_ignore_ascii_case(b"flag_model"))
+            .map_or("models/flag/briefcase.mdl", |pair| {
+                std::str::from_utf8(&pair.value).unwrap_or("")
+            });
+        if model.is_empty() {
+            return Err("flag model identity is not UTF-8".to_owned());
+        }
+        model_paths.insert(model.to_ascii_lowercase());
+    }
     let mut diagnostic_report = None;
     model_paths.extend(
         canonical
@@ -2862,6 +2886,45 @@ fn main() -> Result<(), String> {
             }
         } else {
             resolver.required(path, consumer)?;
+        }
+    }
+    if graph.entities.iter().any(|entity| {
+        entity
+            .classname
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case(b"item_teamflag"))
+    }) {
+        for path in [
+            "scripts/game_sounds_vo.txt",
+            "scripts/game_sounds.txt",
+            "sound/vo/intel_enemystolen.mp3",
+            "sound/vo/intel_enemystolen2.mp3",
+            "sound/vo/intel_enemystolen3.mp3",
+            "sound/vo/intel_enemystolen4.mp3",
+            "sound/vo/intel_enemydropped.mp3",
+            "sound/vo/intel_enemydropped2.mp3",
+            "sound/vo/intel_enemycaptured.mp3",
+            "sound/vo/intel_enemycaptured2.mp3",
+            "sound/vo/intel_enemyreturned.mp3",
+            "sound/vo/intel_enemyreturned2.mp3",
+            "sound/vo/intel_enemyreturned3.mp3",
+            "sound/vo/intel_teamstolen.mp3",
+            "sound/vo/intel_teamdropped.mp3",
+            "sound/vo/intel_teamdropped2.mp3",
+            "sound/vo/intel_teamcaptured.mp3",
+            "sound/vo/intel_teamreturned.mp3",
+            "sound/items/itembk2.wav",
+            "sound/misc/your_team_won.mp3",
+            "sound/misc/your_team_lost.mp3",
+        ] {
+            resolver.required(
+                path,
+                if path.starts_with("sound/") {
+                    "ctf-audio-wave"
+                } else {
+                    "ctf-audio-script"
+                },
+            )?;
         }
     }
     for dependency in &tf2_ui.dependencies {
