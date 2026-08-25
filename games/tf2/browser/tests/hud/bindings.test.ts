@@ -669,6 +669,25 @@ describe("canonical all-class TF2 session HUD adapter", () => {
     }
   })
 
+  test("publishes Scout stock item identities, authored slots, and hides Bat ammunition", () => {
+    const loadout = Object.freeze([
+      Object.freeze({ weapon: 4 as const, reload: 0 as const, clip: 6, reserve: 32, maximumClip: 6, maximumReserve: 32 }),
+      Object.freeze({ weapon: 5 as const, reload: 0 as const, clip: 12, reserve: 36, maximumClip: 12, maximumReserve: 36 }),
+      Object.freeze({ weapon: 6 as const, reload: 0 as const, clip: 0, reserve: 0, maximumClip: 0, maximumReserve: 0 }),
+    ])
+    for (const active of [4, 5, 6] as const) {
+      const source = compactSnapshot(1n, { class: 1, weapon: active, health: 125, maximumHealth: 125, loadout })
+      const binding = bindTf2Hud(adaptSessionHud(unavailable("initial"), compactPublication(source), context))
+      const player = (binding.facts.player as Extract<Tf2HudSnapshot["player"], { kind: "available" }>).value
+      expect(player.weapons.map((item) => ({ identity: item.identity, item: item.itemDefinition, slot: item.slot, name: item.displayName, ammo: item.ammoDisplay }))).toEqual([
+        { identity: 4, item: { kind: "available", value: 13 }, slot: 0, name: "Scattergun", ammo: "clip-and-reserve" },
+        { identity: 5, item: { kind: "available", value: 23 }, slot: 1, name: "Pistol", ammo: "clip-and-reserve" },
+        { identity: 6, item: { kind: "available", value: 0 }, slot: 2, name: "Bat", ammo: "hidden" },
+      ])
+      expect(value(binding.values, "visible", "HudWeaponAmmo")).toMatchObject({ value: active !== 6 })
+    }
+  })
+
   test("retains fire/reload ticks across one coalesced host publication", () => {
     const initial = adaptSessionHud(unavailable("initial"), compactPublication(compactSnapshot(1n)), context)
     const prior = bindTf2Hud(initial).facts

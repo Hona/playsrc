@@ -40,7 +40,7 @@ type CompactWeaponState = Readonly<{
 }>
 
 type CompactGameplayEvent = Readonly<{
-  kind: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11
+  kind: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14
   detail: number
   subject: number
   auxiliary: number
@@ -94,7 +94,7 @@ function reload(value: CompactWeaponState["reload"]): Tf2ReloadPhase {
 }
 
 function weaponName(identity: CompactWeaponState["weapon"]): string {
-  return identity === 1 ? "Rocket Launcher" : identity === 2 ? "Original" : "Stickybomb Launcher"
+  return (["", "Rocket Launcher", "Original", "Stickybomb Launcher", "Scattergun", "Pistol", "Bat"] as const)[identity]
 }
 
 function weaponPosition(identity: CompactWeaponState["weapon"]): number {
@@ -102,18 +102,20 @@ function weaponPosition(identity: CompactWeaponState["weapon"]): number {
 }
 
 function weapon(value: CompactWeaponState): Tf2HudWeapon {
+  const melee = value.weapon === 6
+  const definition = value.weapon === 4 ? 13 : value.weapon === 5 ? 23 : value.weapon === 6 ? 0 : undefined
   return Object.freeze({
     identity: value.weapon,
-    itemDefinition: tf2HudUnavailable<number>("not-produced"),
+    itemDefinition: definition === undefined ? tf2HudUnavailable<number>("not-produced") : tf2HudAvailable(definition),
     displayName: weaponName(value.weapon),
-    slot: 0,
+    slot: value.weapon === 5 ? 1 : value.weapon === 6 ? 2 : 0,
     position: weaponPosition(value.weapon),
     selectable: true,
-    ammoDisplay: "clip-and-reserve",
-    clip: tf2HudAvailable(value.clip),
-    reserve: tf2HudAvailable(value.reserve),
-    maximumClip: tf2HudAvailable(value.maximumClip),
-    maximumReserve: tf2HudAvailable(value.maximumReserve),
+    ammoDisplay: melee ? "hidden" : "clip-and-reserve",
+    clip: melee ? tf2HudUnavailable<number>("not-applicable") : tf2HudAvailable(value.clip),
+    reserve: melee ? tf2HudUnavailable<number>("not-applicable") : tf2HudAvailable(value.reserve),
+    maximumClip: melee ? tf2HudUnavailable<number>("not-applicable") : tf2HudAvailable(value.maximumClip),
+    maximumReserve: melee ? tf2HudUnavailable<number>("not-applicable") : tf2HudAvailable(value.maximumReserve),
     reload: reload(value.reload),
     drawsCrosshair: true,
   })
@@ -192,6 +194,7 @@ function eventHealth(snapshot: SessionSnapshot, current: number): Tf2HudHealth {
 
 function ammoCause(snapshot: SessionSnapshot, identity: number): Extract<Tf2HudEvent, { kind: "ammo" }>["cause"] {
   return snapshot.projectileEvents.some((event) => event.type === "fire" && event.launcherIdentity === identity)
+    || snapshot.events.some((event) => event.kind === 12 && event.detail === identity)
     ? "fire"
     : "state"
 }
