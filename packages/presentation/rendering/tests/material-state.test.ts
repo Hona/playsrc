@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import * as THREE from "three/webgpu"
-import { applyParticleDepthState, configureWorldLightmap, sourceDepthBias, worldMaterialSide } from "../src/material-state"
+import { applyParticleDepthState, configureWorldLightmap, sourceDepthBias, sourceFragmentUsesAlpha, worldMaterialSide } from "../src/material-state"
 
 test("world materials keep front-face culling unless no-cull is explicit", () => {
   expect(worldMaterialSide(0)).toBe(THREE.FrontSide)
@@ -10,6 +10,14 @@ test("world materials keep front-face culling unless no-cull is explicit", () =>
 test("categorical decal bias maps to the fixed WebGPU adapter", () => {
   expect(sourceDepthBias("none")).toEqual({ enabled: false, slopeScale: 0, units: 0 })
   expect(sourceDepthBias("decal")).toEqual({ enabled: true, slopeScale: -0.5, units: -262_144 })
+})
+
+test("opaque Source surfaces ignore non-opacity texture alpha while translucent and fading draws retain it", () => {
+  expect(sourceFragmentUsesAlpha({ blendEnabled: false, alphaOwnership: { opacity: false } })).toBe(false)
+  expect(sourceFragmentUsesAlpha({ blendEnabled: false, alphaOwnership: { opacity: true } })).toBe(true)
+  expect(sourceFragmentUsesAlpha({ blendEnabled: true, alphaOwnership: { opacity: false } })).toBe(true)
+  expect(sourceFragmentUsesAlpha({ blendEnabled: false, alphaOwnership: { opacity: false } }, true)).toBe(true)
+  expect(sourceFragmentUsesAlpha(undefined)).toBe(true)
 })
 
 test("rocket Particle materials preserve authored wall occlusion without writing translucent depth", () => {

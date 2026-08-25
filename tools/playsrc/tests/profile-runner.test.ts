@@ -21,6 +21,7 @@ describe("bounded headed profile orchestration", () => {
       fresh: true,
       playwright: ["--output", "/evidence"],
     })
+    expect(parseHeadedProfile(["2fort-visual", "--headed"])).toEqual({ profile: "2fort-visual", fresh: false, playwright: [] })
     expect(() => parseHeadedProfile([])).toThrow("Usage:")
     expect(() => parseHeadedProfile(["unknown"])).toThrow("Usage:")
     expect(() => parseHeadedProfile(["gameplay", "--headless"])).toThrow("never accept headless")
@@ -40,6 +41,7 @@ describe("bounded headed profile orchestration", () => {
   test("selects each exact authored profile map without a duplicate fallback authority", () => {
     expect(headedProfileTarget({})).toBe("jump_beef")
     expect(headedProfileTarget({ PROFILE_CTF_BOTS: "1" })).toBe("ctf_2fort")
+    expect(headedProfileTarget({ PROFILE_2FORT_VISUAL: "1" })).toBe("ctf_2fort")
     expect(headedProfileTarget({ PROFILE_COMBAT_IMPACTS: "1" })).toBe("ctf_2fort")
     expect(headedProfileTarget({ PROFILE_SCENARIOS: "local-practice" })).toBe("ctf_2fort")
     expect(headedProfileTarget({ PROFILE_MEDIC_WEAPONS: "1" })).toBe("pl_upward")

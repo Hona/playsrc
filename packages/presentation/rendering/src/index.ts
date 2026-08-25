@@ -14,7 +14,7 @@ import {
   type RenderConfiguration,
   type ToneOperator,
 } from "./color-output"
-import { applyParticleDepthState, configureWorldLightmap, worldMaterialSide } from "./material-state"
+import { applyParticleDepthState, configureWorldLightmap, sourceFragmentUsesAlpha, worldMaterialSide } from "./material-state"
 import { projectedDecalDepthBias, projectedDecalReceiverIsValid } from "./decal-occlusion"
 import { OwnedResourceGeneration } from "./resource-generation"
 import { FramePacingController, type FramePacingRecord } from "./frame-pacing"
@@ -54,6 +54,7 @@ import {
   type SourceWaterShaderState,
 } from "./source-water"
 import { sourceWaterTangentAttributes } from "./source-water-geometry"
+import { createSourceRefractMaterial } from "./source-refract"
 import {
   buildRuntimeLightmap,
   parseRuntimeMap,
@@ -332,6 +333,7 @@ export type WaterFramePlan = Readonly<{
     material: string
     translucent: boolean
     evaluated: Readonly<{ normalFrame: number; normalTransform: Float32Array; cheapStart: number; cheapEnd: number }>
+    overlay: null | Readonly<{ identity: string; normalFrame: number; normalTransform: Float32Array }>
   }>
   render: Readonly<{ cheap: boolean; reflect: boolean; refract: boolean; reflectEntities: boolean; drawSurface: boolean; opaque: boolean }>
   nearPlaneIntersects: boolean
@@ -458,6 +460,16 @@ export type WaterMaterialInput = Readonly<{
   fresnel: Readonly<{ cheapEnabled: boolean; expensiveConstant: readonly [number, number, number, number] }>
   requiredInputs: readonly number[]
 }>
+export type RefractMaterialInput = Readonly<{
+  identity: string
+  normal: Readonly<{ role: number; disposition: "source"; colorRead: "linear"; parameter: string; reference: string; logicalPath: string }>
+  blurAmount: 0 | 1
+  ignoreDepth: boolean
+  refractAmount: number
+  refractTint: readonly [number, number, number]
+  normalFrame: number
+  normalTransform: Float32Array
+}>
 export type WorldMaterialInput = Readonly<{
   identity: string
   mapMaterial: number
@@ -513,6 +525,7 @@ export type EnvironmentInput = Readonly<{
   waterSurfaceFacts: readonly Readonly<{ face:number; model:number; material:number; selected:boolean; plane:readonly[number,number,number,number]; bindings:Readonly<{environment:boolean;reflection:boolean;refraction:boolean}>}>[]
   waterVolumeFacts: readonly Readonly<{index:number;surfaceZ:number;minimumZ:number;bounds:readonly[readonly[number,number,number],readonly[number,number,number]];surfaceMaterial:number;bottomMaterial:unknown;leaves:readonly number[];clusters:readonly number[];areas:readonly number[];contents:number;plane:readonly[number,number,number,number];surfaceTranslucent:boolean;bottomTranslucent:boolean|null;surfaceBindings:Readonly<{environment:boolean;reflection:boolean;refraction:boolean}>;bottomBindings:Readonly<{environment:boolean;reflection:boolean;refraction:boolean}>|null}>[]
   waterMaterials: ReadonlyMap<string, WaterMaterialInput>
+  refractMaterials: ReadonlyMap<string, RefractMaterialInput>
   worldMaterials: ReadonlyMap<string, WorldMaterialInput>
   leafMinimumDistanceToWater: Uint16Array
   sky:null|Readonly<{name:string;faces:readonly Readonly<{face:number;material:string;encoding:"srgb"|"linear"|"hdr-rgbs";selectedTextures:readonly Readonly<{logicalPath:string;sha256:string}>[]}>[]}>
@@ -758,7 +771,8 @@ export type GeometryEvidence = Readonly<{
   samples: readonly Readonly<{
     x: number
     y: number
-    disposition: "main-world" | "background"
+    disposition: "main-world" | "static-prop" | "dynamic-prop" | "background"
+    family: "world" | "displacement" | "water" | "static-prop" | "dynamic-prop" | null
     depth: number | null
     primitive: number | null
     object: number | null
@@ -821,6 +835,12 @@ type WaterMaterialResource = Readonly<{
   cheapNormalNode: ReturnType<typeof TSL.texture> | null
   fog: THREE.Fog | null
   state: WaterMaterialInput
+}>
+type RefractMaterialResource = Readonly<{
+  material: THREE.MeshBasicNodeMaterial
+  normalFrames: readonly THREE.Texture[]
+  normalNode: ReturnType<typeof TSL.texture>
+  state: RefractMaterialInput
 }>
 type WorldMaterialResource = Readonly<{
   mapMaterial: number
@@ -904,6 +924,7 @@ type SceneResources = {
   combatDecalMeshes: Map<number, Readonly<{ face: number; mesh: THREE.Mesh }>>
   waterMeshes: readonly WaterMeshResource[]
   waterMaterials: ReadonlyMap<string,WaterMaterialResource>
+  refractMaterials: ReadonlyMap<string, RefractMaterialResource>
   worldMaterials: ReadonlyMap<string,WorldMaterialResource>
   cubemapTextures: ReadonlyMap<number,THREE.CubeTexture>
   skyGroup: THREE.Group | null
@@ -1140,9 +1161,10 @@ function sourceFragmentColor(
   sample: any,
   state?: MaterialStateInput,
   waterFogUniforms?: SourceWaterFogUniforms,
+  dynamicFade = false,
 ): any {
   const alpha = sample.a.mul(state?.alphaModulation ?? 1)
-  const authored = TSL.vec4(sample.rgb, alpha)
+  const authored = TSL.vec4(sample.rgb, sourceFragmentUsesAlpha(state, dynamicFade) ? alpha : 1)
   const color = waterFogUniforms && !state?.blendEnabled
     ? sourceWaterFogFragment(authored, waterFogUniforms)
     : authored
@@ -1299,6 +1321,7 @@ class RendererOwner implements Renderer {
   #viewModels = new THREE.Group()
   #camera = new THREE.PerspectiveCamera(75, 1, 1, 32_768)
   #viewCamera = new THREE.PerspectiveCamera(41.114, 1, 1, 32_768)
+  readonly #underwaterOverlay = new THREE.QuadMesh()
   #modelPanelScene = new THREE.Scene()
   #modelPanelCamera = new THREE.PerspectiveCamera(25, 1, 7, 1000)
   #modelPanelInstances = new Map<string, { instance: THREE.Group; meshes?: THREE.Mesh[] }>()
@@ -1384,19 +1407,66 @@ class RendererOwner implements Renderer {
     if (!this.#active || this.#lifecycle !== "Ready") throw new RenderingError("InvalidState", "renderer geometry evidence is unavailable")
     this.#setCamera(camera)
     this.#world.updateMatrixWorld(true)
+    this.#effects.updateMatrixWorld(true)
     const raycaster = new THREE.Raycaster()
+    raycaster.near = camera.near
+    raycaster.far = camera.far
     const batches = ownership === "sky3d" ? this.#active.skyWorldBatches : this.#active.worldBatches
-    const meshes = batches.filter((batch) => batch.mesh.visible).map((batch) => batch.mesh)
+    const meshes: THREE.Mesh[] = []
+    const worldMeshes = new Map<THREE.Mesh, number>()
+    const propMeshes = new Map<THREE.Mesh, Readonly<{ family: "static-prop" | "dynamic-prop"; identity: number }>>()
+    for (const [index, batch] of batches.entries()) {
+      if (!batch.mesh.visible) continue
+      meshes.push(batch.mesh)
+      worldMeshes.set(batch.mesh, index)
+    }
+    const addProp = (object: THREE.Group, family: "static-prop" | "dynamic-prop", identity: number): void => {
+      if (!object.visible) return
+      object.traverseVisible((child) => {
+        if (!(child instanceof THREE.Mesh)) return
+        const materials = Array.isArray(child.material) ? child.material : [child.material]
+        const state = this.#active!.materialStates.get(String(child.userData.materialIdentity).toLowerCase())
+        if (materials.some((material) => material.transparent) || state?.alphaTest) return
+        meshes.push(child)
+        propMeshes.set(child, Object.freeze({ family, identity }))
+      })
+    }
+    const selectedOwnership = ownership === "sky3d" ? 1 : 0
+    for (const prop of this.#active.staticPropInstances) {
+      if (prop.ownership === selectedOwnership) addProp(prop.object, "static-prop", prop.source)
+    }
+    if (ownership === "main") {
+      for (const [identity, object] of this.#active.modelOccurrenceInstances) addProp(object, "dynamic-prop", identity)
+      for (const [identity, retained] of this.#dynamicModelInstances) addProp(retained.instance, "dynamic-prop", identity)
+    }
+    const displacements = new Set(this.#active.map.displacements.map((displacement) => displacement.face))
+    const water = new Set(this.#active.waterMeshes.map((resource) => resource.mesh))
     const samples = [] as GeometryEvidence["samples"][number][]
     for (const y of [-0.8, -0.4, 0, 0.4, 0.8]) {
       for (const x of [-0.8, -0.4, 0, 0.4, 0.8]) {
         raycaster.setFromCamera(new THREE.Vector2(x, y), this.#camera)
         const intersection = raycaster.intersectObjects(meshes, false)[0]
         if (!intersection || intersection.faceIndex === undefined) {
-          samples.push(Object.freeze({ x, y, disposition: "background", depth: null, primitive: null, object: null, material: null }))
+          samples.push(Object.freeze({ x, y, disposition: "background", family: null, depth: null, primitive: null, object: null, material: null }))
           continue
         }
-        const object = batches.findIndex((batch) => batch.mesh === intersection.object)
+        const mesh = intersection.object as THREE.Mesh
+        const prop = propMeshes.get(mesh)
+        if (prop) {
+          samples.push(Object.freeze({
+            x,
+            y,
+            disposition: prop.family,
+            family: prop.family,
+            depth: intersection.distance,
+            primitive: Number.isSafeInteger(mesh.userData.sourcePrimitive) ? Number(mesh.userData.sourcePrimitive) : null,
+            object: prop.identity,
+            material: String(mesh.userData.materialIdentity),
+          }))
+          continue
+        }
+        const object = worldMeshes.get(mesh)
+        if (object === undefined) throw new RenderingError("InvalidState", "visible world object identity is unavailable")
         const batch = batches[object]!
         const current = batch.index.array as Uint32Array
         const at = intersection.faceIndex * 3
@@ -1413,6 +1483,7 @@ class RendererOwner implements Renderer {
           x,
           y,
           disposition: "main-world",
+          family: water.has(batch.mesh) ? "water" : displacements.has(batch.faces[sourceTriangle]!) ? "displacement" : "world",
           depth: intersection.distance,
           primitive: batch.faces[sourceTriangle]!,
           object,
@@ -1844,6 +1915,7 @@ class RendererOwner implements Renderer {
     reflectionTarget.texture.colorSpace=THREE.NoColorSpace
     refractionTarget.texture.colorSpace=THREE.NoColorSpace
     const waterMaterials = new Map<string, WaterMaterialResource>()
+    const refractMaterials = new Map<string, RefractMaterialResource>()
     const worldMaterials = new Map<string, WorldMaterialResource>()
     const waterNormalFrames = new Map<string, readonly THREE.Texture[]>()
     const cubemapTextures = new Map<number, THREE.CubeTexture>()
@@ -2001,6 +2073,31 @@ class RendererOwner implements Renderer {
       return frames
     }
 
+    for (const [identity, state] of request.environment?.refractMaterials ?? []) {
+      const key = identity.toLowerCase()
+      if (key !== state.identity.toLowerCase() || refractMaterials.has(key)
+        || state.normal.role !== 8 || state.normal.disposition !== "source" || state.normal.colorRead !== "linear") {
+        throw new RenderingError("MalformedInput", "authored Refract material identity is invalid")
+      }
+      const normal = request.environment!.authoredTextures.get(state.normal.logicalPath.toLowerCase())
+      if (!normal || !Number.isSafeInteger(state.normalFrame)
+        || state.normalFrame < 0 || state.normalFrame >= normal.frameCount) {
+        throw new RenderingError("MissingInput", `authored Refract normal ${state.normal.logicalPath} is unavailable`)
+      }
+      const normalFrames = authoredNormalFrames(normal)
+      const overlay = createSourceRefractMaterial({
+        state: {
+          refractAmount: state.refractAmount,
+          refractTint: state.refractTint,
+          blurAmount: state.blurAmount,
+          ignoreDepth: state.ignoreDepth,
+        },
+        normal: normalFrames[state.normalFrame]!,
+      })
+      disposables.add(overlay.material)
+      refractMaterials.set(key, Object.freeze({ ...overlay, normalFrames, state }))
+    }
+
     const createWaterMaterial = (identity: string, geometry: THREE.BufferGeometry): WaterMaterialResource => {
       const key = identity.toLowerCase()
       const existing = waterMaterials.get(key)
@@ -2084,7 +2181,7 @@ class RendererOwner implements Renderer {
       disposables.add(primary.material)
       let cheapMaterial: THREE.MeshBasicNodeMaterial | null = null
       let cheapNormalNode: ReturnType<typeof TSL.texture> | null = null
-      if (selectedMode === "expensive" && cubemap && !state.forceExpensive.value) {
+      if (selectedMode === "expensive" && cubemap) {
         const cheap = createSourceWaterMaterial({
           geometry,
           state: shaderState("cheap"),
@@ -2490,7 +2587,8 @@ class RendererOwner implements Renderer {
             if(!material){
               material=original.clone()
               const base=original.colorNode??TSL.vec4(1,1,1,1),rgb=unlit?base.rgb:base.rgb.mul(lightingKind===0?TSL.attribute("staticLighting","vec4").bgra.rgb:runtimeStaticLightingNode(map,props,propIndex)).mul(exposureUniform)
-              material.colorNode=sourceFragmentColor(TSL.vec4(rgb,base.a.mul(fadeUniform)),materialStates.get(identity.toLowerCase()),waterFogUniforms)
+              const materialState=materialStates.get(identity.toLowerCase()),sourceOpacity=materialState?.alphaOwnership.opacity?base.a:TSL.float(1)
+              material.colorNode=sourceFragmentColor(TSL.vec4(rgb,sourceOpacity.mul(fadeUniform)),materialState,waterFogUniforms,fading)
               material.toneMapped=false
               if(fading){material.transparent=true;material.depthWrite=false}
               disposables.add(material)
@@ -2750,6 +2848,7 @@ class RendererOwner implements Renderer {
       combatDecalMeshes:new Map(),
       waterMeshes:Object.freeze(waterMeshes),
       waterMaterials,
+      refractMaterials,
       worldMaterials,
       cubemapTextures,
       skyGroup,
@@ -3046,6 +3145,8 @@ class RendererOwner implements Renderer {
             this.#backend.autoClear = true
           }
         }
+        const overlay = frame.visibility?.water.visibleWater?.overlay
+        if (overlay) this.#renderUnderwaterOverlay(overlay)
       }
       const capture = frame.capture ? await this.#capture(frame.capture) : undefined
       return Object.freeze({
@@ -3082,6 +3183,31 @@ class RendererOwner implements Renderer {
       image.width = lightmap.width
       image.height = lightmap.height
       texture.needsUpdate = true
+    }
+  }
+
+  #renderUnderwaterOverlay(overlay: NonNullable<NonNullable<WaterFramePlan["visibleWater"]>["overlay"]>): void {
+    const scene = this.#active
+    const resource = scene?.refractMaterials.get(overlay.identity.toLowerCase())
+    if (!scene || !resource || overlay.normalFrame < 0 || overlay.normalFrame >= resource.normalFrames.length) {
+      throw new RenderingError("MissingInput", `authored underwater Refract overlay ${overlay.identity} is unavailable`)
+    }
+    const normal = resource.normalFrames[overlay.normalFrame]!
+    const matrix = overlay.normalTransform
+    normal.matrixAutoUpdate = false
+    normal.matrix.set(
+      matrix[0]!, matrix[1]!, matrix[3]!,
+      matrix[4]!, matrix[5]!, matrix[7]!,
+      matrix[12]!, matrix[13]!, matrix[15]!,
+    )
+    resource.normalNode.value = normal
+    const autoClear = this.#backend.autoClear
+    try {
+      this.#backend.autoClear = false
+      this.#underwaterOverlay.material = resource.material
+      this.#underwaterOverlay.render(this.#backend)
+    } finally {
+      this.#backend.autoClear = autoClear
     }
   }
 

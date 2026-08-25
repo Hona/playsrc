@@ -505,6 +505,12 @@ export async function verifyTf2Wasm(
       "ctf_2fort authored dual-texture sky model differs")
     require(artifacts.environment.waterMaterials.get("materials/water/water_2fort_beneath.vmt")?.underwaterOverlay === "materials/effects/water_warp_2fort.vmt",
       "ctf_2fort underwater overlay identity differs")
+    const overlay = artifacts.environment.refractMaterials.get("materials/effects/water_warp_2fort.vmt")
+    require(overlay?.normal.logicalPath === "materials/water/tfwater001_normal.vtf"
+      && overlay.blurAmount === 1 && overlay.ignoreDepth
+      && overlay.refractAmount === Math.fround(0.05)
+      && overlay.refractTint.every((value, index) => value === Math.fround([185, 215, 245][index]! * Math.fround(1 / 255))),
+    "ctf_2fort authored underwater Refract material differs")
     require(exports.playsrc_dispose(hdr.handle) === 1, "ctf_2fort HDR handle disposal failed")
     return Object.freeze({
       target: identity,

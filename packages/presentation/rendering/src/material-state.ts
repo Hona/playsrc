@@ -4,6 +4,15 @@ export function worldMaterialSide(features: number): THREE.Side {
   return (features & 8) !== 0 ? THREE.DoubleSide : THREE.FrontSide
 }
 
+export type SourceFragmentAlphaState = Readonly<{
+  blendEnabled: boolean
+  alphaOwnership: Readonly<{ opacity: boolean }>
+}>
+
+export function sourceFragmentUsesAlpha(state: SourceFragmentAlphaState | undefined, dynamicFade = false): boolean {
+  return state === undefined || state.blendEnabled || state.alphaOwnership.opacity || dynamicFade
+}
+
 export function sourceDepthBias(category: "none" | "decal"): Readonly<{ enabled: boolean; slopeScale: number; units: number }> {
   return category === "decal"
     ? Object.freeze({ enabled: true, slopeScale: -0.5, units: -262_144 })

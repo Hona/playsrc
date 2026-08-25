@@ -324,6 +324,23 @@ export type WaterMaterialArtifact = Readonly<{
   fresnel: Readonly<{ cheapEnabled: boolean; expensiveConstant: readonly [number, number, number, number] }>
   requiredInputs: readonly number[]
 }>
+export type RefractMaterialArtifact = Readonly<{
+  identity: string
+  normal: Readonly<{
+    role: number
+    disposition: "source"
+    colorRead: "linear"
+    parameter: string
+    reference: string
+    logicalPath: string
+  }>
+  blurAmount: 0 | 1
+  ignoreDepth: boolean
+  refractAmount: number
+  refractTint: readonly [number, number, number]
+  normalFrame: number
+  normalTransform: Float32Array
+}>
 export type WorldMaterialTextureArtifact = Readonly<{
   role: number
   disposition: "source" | "environment" | "render-target"
@@ -379,6 +396,7 @@ export type EnvironmentArtifact = Readonly<{
   placementRevision: bigint
   leafMinimumDistanceToWater: Uint16Array
   waterMaterials: ReadonlyMap<string, WaterMaterialArtifact>
+  refractMaterials: ReadonlyMap<string, RefractMaterialArtifact>
   worldMaterials: ReadonlyMap<string, WorldMaterialArtifact>
   authoredTextures: ReadonlyMap<string, AuthoredTextureArtifact>
   controllersState: readonly EnvironmentControllerArtifact[]
@@ -493,7 +511,7 @@ const hex = (bytes: Uint8Array) => Array.from(bytes, (v) => v.toString(16).padSt
 const digest = async (bytes: Uint8Array) => hex(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)))
 function parseEnvironment(bytes: Uint8Array, resources: ReadonlyMap<string, Uint8Array>): EnvironmentArtifact {
   const r = new Reader(bytes)
-  if (r.decoder.decode(r.take(4)) !== "PENV" || r.u32() !== 5) throw new ArtifactError("environment identity")
+  if (r.decoder.decode(r.take(4)) !== "PENV" || r.u32() !== 6) throw new ArtifactError("environment identity")
   const profile = r.u8()
   if ((profile !== 0 && profile !== 1) || r.u8() || r.u8() || r.u8()) throw new ArtifactError("environment profile")
   const identity = hex(r.take(32)),
@@ -701,6 +719,31 @@ function parseEnvironment(bytes: Uint8Array, resources: ReadonlyMap<string, Uint
       scroll: Object.freeze([scroll0, scroll1]), fresnel: Object.freeze({ cheapEnabled: cheapEnabled === 1, expensiveConstant }), requiredInputs,
     }))
   }
+  const refractMaterials = new Map<string, RefractMaterialArtifact>()
+  for (let count = r.u32(); count > 0; count--) {
+    const identity = r.text().toLowerCase(), role = r.u8(), disposition = r.u8(), colorRead = r.u8()
+    if (!identity || refractMaterials.has(identity) || role !== 8 || disposition !== 0 || colorRead !== 1 || r.u8()) {
+      throw new ArtifactError("refract material normal")
+    }
+    const parameter = r.text(), reference = r.text(), logicalPath = r.text()
+    const blurAmount = r.u8(), ignoreDepth = r.u8()
+    if (!logicalPath || blurAmount > 1 || ignoreDepth > 1 || r.u8() || r.u8()) {
+      throw new ArtifactError("refract material flags")
+    }
+    const refractAmount = r.f32(), refractTint = tuple3(r), normalFrame = r.i32()
+    const normalTransform = new Float32Array(16)
+    for (let index = 0; index < normalTransform.length; index++) normalTransform[index] = r.f32()
+    refractMaterials.set(identity, Object.freeze({
+      identity,
+      normal: Object.freeze({ role, disposition: "source", colorRead: "linear", parameter, reference, logicalPath }),
+      blurAmount: blurAmount as 0 | 1,
+      ignoreDepth: ignoreDepth === 1,
+      refractAmount,
+      refractTint,
+      normalFrame,
+      normalTransform,
+    }))
+  }
   const worldMaterials = new Map<string, WorldMaterialArtifact>()
   for (let count = r.u32(); count > 0; count--) {
     const identity = r.text().toLowerCase(), mapMaterial = r.u32()
@@ -832,6 +875,7 @@ function parseEnvironment(bytes: Uint8Array, resources: ReadonlyMap<string, Uint
     placementRevision,
     leafMinimumDistanceToWater,
     waterMaterials,
+    refractMaterials,
     worldMaterials,
     authoredTextures,
     controllersState,

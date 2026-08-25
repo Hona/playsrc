@@ -145,6 +145,7 @@ const attributes: readonly PublicationBinding[] = Object.freeze([
   attribute("water-passes", "waterPasses", (view) => view.waterPasses?.join(",")),
   attribute("water-restored", "waterStateRestored"),
   attribute("water-normal-frame", "waterNormalFrame"),
+  attribute("water-overlay", "waterOverlay"),
   attribute("world-material-frames", "worldMaterialFrames"),
   attribute("reload-history", "reloadHistory", (view) => view.reloadHistory?.join("|")),
   attribute("fire-ticks", "fireTickHistory", (view) => view.fireTickHistory?.join("|")),
