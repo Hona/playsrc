@@ -265,6 +265,43 @@ pub enum StepStrategy {
     HighFirst,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WaterSampling {
+    WaistThenEyes,
+    EyesThenWaist,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WaterPolicy {
+    pub sampling: WaterSampling,
+    pub waist_height_offset: f32,
+    pub refresh_before_walk: bool,
+    pub apply_currents: bool,
+    pub jump_wish_at_waist: bool,
+    pub amplify_forward_pitch: bool,
+    pub ledge_uses_command_direction: bool,
+    pub ledge_jump_overrides_backward: bool,
+    pub suppress_airborne_duck: bool,
+    pub suppress_submerged_duck: bool,
+}
+
+impl Default for WaterPolicy {
+    fn default() -> Self {
+        Self {
+            sampling: WaterSampling::WaistThenEyes,
+            waist_height_offset: 0.0,
+            refresh_before_walk: true,
+            apply_currents: true,
+            jump_wish_at_waist: true,
+            amplify_forward_pitch: true,
+            ledge_uses_command_direction: false,
+            ledge_jump_overrides_backward: false,
+            suppress_airborne_duck: false,
+            suppress_submerged_duck: false,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Policy {
     pub maximum_speed: f32,
@@ -289,6 +326,7 @@ pub struct Policy {
     pub allow_crouched_jump: bool,
     pub replace_vertical_while_ducking: bool,
     pub step_strategy: StepStrategy,
+    pub water: WaterPolicy,
 }
 
 impl Default for Policy {
@@ -322,6 +360,7 @@ impl Default for Policy {
             allow_crouched_jump: true,
             replace_vertical_while_ducking: true,
             step_strategy: StepStrategy::FurthestHorizontal,
+            water: WaterPolicy::default(),
         }
     }
 }

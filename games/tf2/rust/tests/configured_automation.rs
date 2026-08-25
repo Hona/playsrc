@@ -48,6 +48,217 @@ impl GameplayWorld for TestWorld {
     }
 }
 
+#[derive(Clone)]
+struct ConfiguredWaterWorld {
+    bounds: [[f32; 2]; 3],
+    contents: u32,
+}
+
+impl Tracer for ConfiguredWaterWorld {
+    fn trace(
+        &self,
+        start: [f32; 3],
+        end: [f32; 3],
+        hull: Hull,
+        _mask: u32,
+    ) -> Result<Trace, MoveError> {
+        let floor = self.bounds[2][0] - hull.mins[2];
+        if end[2] < floor {
+            let fraction = ((start[2] - floor) / (start[2] - end[2])).clamp(0.0, 1.0);
+            Ok(Trace {
+                fraction,
+                start_solid: false,
+                all_solid: false,
+                end: [
+                    start[0] + (end[0] - start[0]) * fraction,
+                    start[1] + (end[1] - start[1]) * fraction,
+                    floor,
+                ],
+                normal: Some([0.0, 0.0, 1.0]),
+                hit: Some(0),
+                contents: 1,
+            })
+        } else {
+            Ok(Trace {
+                fraction: 1.0,
+                start_solid: false,
+                all_solid: false,
+                end,
+                normal: None,
+                hit: None,
+                contents: 0,
+            })
+        }
+    }
+
+    fn point_contents(&self, point: [f32; 3]) -> Result<u32, MoveError> {
+        Ok(
+            if point
+                .into_iter()
+                .zip(self.bounds)
+                .all(|(coordinate, [minimum, maximum])| {
+                    coordinate > minimum && coordinate < maximum
+                })
+            {
+                self.contents
+            } else {
+                0
+            },
+        )
+    }
+}
+
+impl GameplayWorld for ConfiguredWaterWorld {
+    fn overlaps_model_hull(
+        &self,
+        _model: usize,
+        _origin: [f32; 3],
+        _position: [f32; 3],
+        _hull: Hull,
+    ) -> Result<bool, MoveError> {
+        Ok(false)
+    }
+}
+
+#[test]
+#[ignore = "requires playsrc.local.json and the configured jump_beef BSP"]
+fn configured_water_rocket_jump_preserves_source_hull_force_and_swim_order() {
+    let bytes = configured_bsp_bytes();
+    let brushes = lump(&bytes, 18);
+    let sides = lump(&bytes, 19);
+    let planes = lump(&bytes, 1);
+    let water = brushes
+        .chunks_exact(12)
+        .enumerate()
+        .filter(|(_, brush)| u32_at(brush, 8) & playsrc_movement::CONTENTS_WATER != 0)
+        .collect::<Vec<_>>();
+    assert_eq!(water.len(), 1);
+    let (index, brush) = water[0];
+    assert_eq!(index, 60);
+    let contents = u32_at(brush, 8);
+    assert_eq!(contents, 0x1000_0020);
+    let first = usize::try_from(i32_at(brush, 0)).unwrap();
+    let count = usize::try_from(i32_at(brush, 4)).unwrap();
+    let mut bounds = [[f32::NEG_INFINITY, f32::INFINITY]; 3];
+    for side in sides[first * 8..(first + count) * 8].chunks_exact(8) {
+        let plane = usize::from(u16::from_le_bytes(side[..2].try_into().unwrap())) * 20;
+        let normal = [
+            f32_at(planes, plane),
+            f32_at(planes, plane + 4),
+            f32_at(planes, plane + 8),
+        ];
+        let distance = f32_at(planes, plane + 12);
+        for axis in 0..3 {
+            if (0..3).all(|other| other == axis || normal[other] == 0.0) {
+                if normal[axis] == 1.0 {
+                    bounds[axis][1] = bounds[axis][1].min(distance);
+                } else if normal[axis] == -1.0 {
+                    bounds[axis][0] = bounds[axis][0].max(-distance);
+                }
+            }
+        }
+    }
+    assert_eq!(
+        bounds,
+        [[-5216.0, -4448.0], [2304.0, 3792.0], [-2416.0, -2160.0]]
+    );
+
+    let world = ConfiguredWaterWorld { bounds, contents };
+    let mut session = Session::new(world, [-4832.0, 3000.0, -2215.0], MapRuntime::empty(0.015));
+    let held_crouch = playsrc_movement::Command {
+        crouch: true,
+        ..playsrc_movement::Command::default()
+    };
+    for _ in 0..64 {
+        let was_wet = session.movement_state().water_level != 0;
+        let snapshot = session
+            .advance(Command {
+                movement: held_crouch,
+                ..Command::default()
+            })
+            .unwrap();
+        if was_wet {
+            assert!(!snapshot.movement.crouch.uses_crouched_hull());
+        }
+        if snapshot.movement.water_level != 0 {
+            assert_eq!(
+                snapshot.movement.water_type,
+                playsrc_movement::CONTENTS_WATER
+            );
+        }
+    }
+    assert_eq!(session.movement_state().water_level, 3);
+    let fired = session
+        .advance(Command {
+            movement: held_crouch,
+            fire: true,
+            ..Command::default()
+        })
+        .unwrap();
+    assert!(
+        fired
+            .projectile_events
+            .iter()
+            .any(|event| event.kind == ProjectileEventKind::Fire)
+    );
+    let request = session.rocket_trace_requests()[0];
+    let before = session.movement_state();
+    let impacted = session
+        .advance_with_external(
+            Command {
+                movement: held_crouch,
+                ..Command::default()
+            },
+            &[],
+            &[RocketTraceResult {
+                projectile: request.projectile,
+                tick: session.producer_snapshot().tick,
+                end: [
+                    before.position[0],
+                    before.position[1],
+                    before.position[2] - 1.0,
+                ],
+                solid: true,
+                sky: false,
+                normal: Some([0.0, 0.0, 1.0]),
+                direct_target: None,
+            }],
+            None,
+        )
+        .unwrap();
+    let impulse = impacted
+        .events
+        .iter()
+        .find_map(|event| match event {
+            Event::BlastImpulse { velocity } => Some(velocity[2]),
+            _ => None,
+        })
+        .unwrap();
+    assert!((impulse - before.velocity[2] - 900.0).abs() < 0.001);
+    assert!((impacted.movement.velocity[2] - impulse * 0.94).abs() < 0.001);
+    assert_eq!(impacted.health, 110.0);
+    assert!(!impacted.movement.crouch.uses_crouched_hull());
+
+    let jumped = session
+        .advance(Command {
+            movement: playsrc_movement::Command {
+                jump: true,
+                crouch: true,
+                ..playsrc_movement::Command::default()
+            },
+            ..Command::default()
+        })
+        .unwrap();
+    assert!(
+        (jumped.movement.velocity[2] - 122.8).abs() < 0.001,
+        "velocity={}, water_level={}, position={:?}",
+        jumped.movement.velocity[2],
+        jumped.movement.water_level,
+        jumped.movement.position
+    );
+    assert!(!jumped.movement.crouch.uses_crouched_hull());
+}
+
 #[test]
 #[ignore = "requires playsrc.local.json and the configured jump_beef BSP"]
 fn configured_rockets_drive_every_linked_door_platform_cycle_and_locker_state() {
@@ -290,7 +501,7 @@ fn configured_rockets_drive_every_linked_door_platform_cycle_and_locker_state() 
     assert_eq!(model.body, 0);
 }
 
-fn configured_graph() -> (Graph, Vec<ModelBounds>, u64) {
+fn configured_bsp_bytes() -> Vec<u8> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
     let config = fs::read(root.join("playsrc.local.json")).unwrap();
     let cache = PathBuf::from(configured_string(&config, "sourceCacheDir"));
@@ -305,6 +516,11 @@ fn configured_graph() -> (Graph, Vec<ModelBounds>, u64) {
     assert_eq!(bytes.len(), BSP_BYTES);
     assert_eq!(&bytes[..4], b"VBSP");
     assert_eq!(i32_at(&bytes, 4), 20);
+    bytes
+}
+
+fn configured_graph() -> (Graph, Vec<ModelBounds>, u64) {
+    let bytes = configured_bsp_bytes();
     let graph = playsrc_entity::parse(lump(&bytes, 0), playsrc_entity::Limits::default()).unwrap();
     let models = lump(&bytes, 14);
     assert_eq!(models.len() % 48, 0);
@@ -344,6 +560,10 @@ fn lump(bytes: &[u8], index: usize) -> &[u8] {
 
 fn i32_at(bytes: &[u8], offset: usize) -> i32 {
     i32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+}
+
+fn u32_at(bytes: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
 }
 
 fn f32_at(bytes: &[u8], offset: usize) -> f32 {

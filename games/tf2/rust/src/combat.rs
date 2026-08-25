@@ -77,9 +77,9 @@ pub fn apply_self_damage_rules(
     mut damage: BlastDamage,
     class: BlastClass,
     grounded: bool,
-    in_water: bool,
+    in_water_flag: bool,
 ) -> BlastDamage {
-    if class == BlastClass::Soldier && !grounded && !in_water {
+    if class == BlastClass::Soldier && !grounded && !in_water_flag {
         damage.damage *= 0.60;
         damage.damage_for_force = damage.damage;
         damage.health_points = (damage.damage + 0.5) as i32;
@@ -207,6 +207,32 @@ mod tests {
             player_blast_damage(BlastKind::Sticky, [0.0; 3], target(0.0, true)).unwrap();
         assert_eq!(sticky_self.damage, 90.0);
         assert_eq!(sticky_self.health_points, 90);
+    }
+
+    #[test]
+    fn airborne_soldier_reduction_uses_the_retained_in_water_flag() {
+        let rocket = player_blast_damage(BlastKind::Rocket, [0.0; 3], target(0.0, true)).unwrap();
+        for (grounded, in_water_flag, health, damage_for_force) in [
+            (false, false, 54, 54.000004),
+            (false, true, 90, 90.0),
+            (true, false, 90, 90.0),
+            (true, true, 90, 90.0),
+        ] {
+            let damage =
+                apply_self_damage_rules(rocket, BlastClass::Soldier, grounded, in_water_flag);
+            assert_eq!(damage.health_points, health);
+            assert_eq!(damage.damage_for_force, damage_for_force);
+        }
+
+        let sticky = player_blast_damage(BlastKind::Sticky, [0.0; 3], target(0.0, true)).unwrap();
+        for grounded in [false, true] {
+            for in_water_flag in [false, true] {
+                let damage =
+                    apply_self_damage_rules(sticky, BlastClass::Demoman, grounded, in_water_flag);
+                assert_eq!(damage.health_points, 90);
+                assert_eq!(damage.damage_for_force, 90.0);
+            }
+        }
     }
 
     #[test]
