@@ -4448,7 +4448,8 @@ fn encode_random_state(state: playsrc_tf2::Tf2RandomState) -> Option<Vec<u8>> {
         state.sound_selection.fist_hit_world_available,
         state.sound_selection.fist_hit_flesh_available,
         state.sound_selection.kukri_hit_flesh_available
-            | state.sound_selection.kukri_hit_world_available << 3,
+            | state.sound_selection.kukri_hit_world_available << 3
+            | state.sound_selection.wrench_hit_flesh_available << 5,
     ]);
     (output.len() == 288).then_some(output)
 }
@@ -4487,6 +4488,11 @@ fn sound_definition_code(value: playsrc_tf2::SoundDefinition) -> u8 {
         playsrc_tf2::SoundDefinition::KukriHitFlesh => 29,
         playsrc_tf2::SoundDefinition::KukriHitWorld => 30,
         playsrc_tf2::SoundDefinition::SmgReload => 31,
+        playsrc_tf2::SoundDefinition::ShotgunEmpty => 32,
+        playsrc_tf2::SoundDefinition::PistolEmpty => 33,
+        playsrc_tf2::SoundDefinition::WrenchMiss => 34,
+        playsrc_tf2::SoundDefinition::WrenchHitFlesh => 35,
+        playsrc_tf2::SoundDefinition::WrenchHitWorld => 36,
     }
 }
 
@@ -4829,6 +4835,9 @@ fn weapon_code(weapon: playsrc_tf2::Weapon) -> u8 {
         playsrc_tf2::Weapon::SniperRifle => 12,
         playsrc_tf2::Weapon::Smg => 13,
         playsrc_tf2::Weapon::Kukri => 14,
+        playsrc_tf2::Weapon::EngineerShotgun => 40,
+        playsrc_tf2::Weapon::EngineerPistol => 41,
+        playsrc_tf2::Weapon::Wrench => 42,
     }
 }
 fn projectile_code(kind: playsrc_tf2::ProjectileKind) -> u8 {
@@ -7976,6 +7985,17 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>) -
         "Weapon_Fist.Miss",
         "Weapon_Fist.HitWorld",
         "Weapon_Fist.HitFlesh",
+        "Weapon_SniperRifle.Single",
+        "Weapon_SMG.Single",
+        "Weapon_Machete.Miss",
+        "Weapon_Machete.HitFlesh",
+        "Weapon_Machete.HitWorld",
+        "Weapon_SMG.WorldReload",
+        "Weapon_Shotgun.Empty",
+        "Weapon_Pistol.ClipEmpty",
+        "Weapon_Wrench.Miss",
+        "Weapon_Wrench.HitFlesh",
+        "Weapon_Wrench.HitWorld",
     ];
     let nodes = targets
         .iter()
@@ -8264,6 +8284,7 @@ fn load_cached_presentation(
         "models/weapons/c_models/c_soldier_arms.mdl".to_owned(),
         "models/weapons/c_models/c_demo_arms.mdl".to_owned(),
         "models/weapons/c_models/c_scout_arms.mdl".to_owned(),
+        "models/weapons/c_models/c_engineer_arms.mdl".to_owned(),
         "models/weapons/c_models/c_sniper_arms.mdl".to_owned(),
         "models/player/scout.mdl".to_owned(),
         "models/player/sniper.mdl".to_owned(),
@@ -8283,6 +8304,10 @@ fn load_cached_presentation(
         "models/weapons/c_models/c_bat.mdl".to_owned(),
         "models/weapons/c_models/c_shotgun/c_shotgun.mdl".to_owned(),
         "models/weapons/c_models/c_shovel/c_shovel.mdl".to_owned(),
+        "models/weapons/c_models/c_wrench/c_wrench.mdl".to_owned(),
+        "models/weapons/w_models/w_shotgun.mdl".to_owned(),
+        "models/weapons/w_models/w_pistol.mdl".to_owned(),
+        "models/weapons/w_models/w_wrench.mdl".to_owned(),
         "models/weapons/c_models/c_heavy_arms.mdl".to_owned(),
         "models/weapons/c_models/c_minigun/c_minigun.mdl".to_owned(),
         "models/weapons/c_models/c_sniperrifle/c_sniperrifle.mdl".to_owned(),
@@ -8489,6 +8514,7 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
         "models/weapons/c_models/c_soldier_arms.mdl".to_owned(),
         "models/weapons/c_models/c_demo_arms.mdl".to_owned(),
         "models/weapons/c_models/c_scout_arms.mdl".to_owned(),
+        "models/weapons/c_models/c_engineer_arms.mdl".to_owned(),
         "models/weapons/c_models/c_sniper_arms.mdl".to_owned(),
         "models/player/scout.mdl".to_owned(),
         "models/player/sniper.mdl".to_owned(),
@@ -8508,6 +8534,10 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
         "models/weapons/c_models/c_bat.mdl".to_owned(),
         "models/weapons/c_models/c_shotgun/c_shotgun.mdl".to_owned(),
         "models/weapons/c_models/c_shovel/c_shovel.mdl".to_owned(),
+        "models/weapons/c_models/c_wrench/c_wrench.mdl".to_owned(),
+        "models/weapons/w_models/w_shotgun.mdl".to_owned(),
+        "models/weapons/w_models/w_pistol.mdl".to_owned(),
+        "models/weapons/w_models/w_wrench.mdl".to_owned(),
         "models/weapons/c_models/c_heavy_arms.mdl".to_owned(),
         "models/weapons/c_models/c_minigun/c_minigun.mdl".to_owned(),
         "models/weapons/c_models/c_sniperrifle/c_sniperrifle.mdl".to_owned(),
@@ -8534,6 +8564,7 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
                 "models/weapons/c_models/c_soldier_arms.mdl"
                     | "models/weapons/c_models/c_demo_arms.mdl"
                     | "models/weapons/c_models/c_scout_arms.mdl"
+                    | "models/weapons/c_models/c_engineer_arms.mdl"
                     | "models/weapons/c_models/c_sniper_arms.mdl"
                     | "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl"
                     | "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl"
@@ -8542,6 +8573,7 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
                     | "models/weapons/c_models/c_bat.mdl"
                     | "models/weapons/c_models/c_shotgun/c_shotgun.mdl"
                     | "models/weapons/c_models/c_shovel/c_shovel.mdl"
+                    | "models/weapons/c_models/c_wrench/c_wrench.mdl"
                     | "models/weapons/c_models/c_heavy_arms.mdl"
                     | "models/weapons/c_models/c_minigun/c_minigun.mdl"
                     | "models/weapons/c_models/c_sniperrifle/c_sniperrifle.mdl"
@@ -11473,6 +11505,7 @@ mod tests {
                 fist_hit_flesh_available: 7,
                 kukri_hit_flesh_available: 0b111,
                 kukri_hit_world_available: 0b11,
+                wrench_hit_flesh_available: 0b111,
             },
         };
         let mut collision_snapshot = b"CSNP".to_vec();

@@ -60,6 +60,9 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
         12 => Some(playsrc_tf2::Weapon::SniperRifle),
         13 => Some(playsrc_tf2::Weapon::Smg),
         14 => Some(playsrc_tf2::Weapon::Kukri),
+        40 => Some(playsrc_tf2::Weapon::EngineerShotgun),
+        41 => Some(playsrc_tf2::Weapon::EngineerPistol),
+        42 => Some(playsrc_tf2::Weapon::Wrench),
 
         _ => return None,
     };

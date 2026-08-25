@@ -361,6 +361,31 @@ test("composes every Heavy stock weapon with distinct identities and hands-only 
   }
 })
 
+test("composes every Engineer stock item with exact primary, secondary, and melee activities", () => {
+  const hands = "models/weapons/c_models/c_engineer_arms.mdl"
+  const descriptor = Object.freeze({ kind: "viewmodel", horizontalFov4By3: 54, minimumFov: 54, maximumFov: 70, near: 1, depthRange: Object.freeze([0, 0.1]), drawsAfterWorld: true, opaqueBeforeTranslucent: true, optionalViewSpaceYReflection: true })
+  const sequences = Object.freeze([
+    "ACT_PRIMARY_VM_DRAW", "ACT_PRIMARY_VM_PRIMARYATTACK", "ACT_PRIMARY_RELOAD_START",
+    "ACT_SECONDARY_VM_DRAW", "ACT_SECONDARY_VM_PRIMARYATTACK", "ACT_SECONDARY_VM_RELOAD",
+    "ACT_MELEE_VM_DRAW", "ACT_MELEE_VM_HITCENTER",
+  ].map((activity) => ({ activity, durationSeconds: 0.8 })))
+  const models = new Map([[hands, { identity: hands, bodygroupCounts: Object.freeze([]), descriptor, sequences }]])
+  const items = [
+    [40, "models/weapons/c_models/c_shotgun/c_shotgun.mdl", "ACT_PRIMARY_VM_PRIMARYATTACK"],
+    [41, "models/weapons/c_models/c_pistol/c_pistol.mdl", "ACT_SECONDARY_VM_PRIMARYATTACK"],
+    [42, "models/weapons/c_models/c_wrench/c_wrench.mdl", "ACT_MELEE_VM_HITCENTER"],
+  ] as const
+  for (const [, identity] of items) models.set(identity, { identity, bodygroupCounts: Object.freeze([]), descriptor, sequences: Object.freeze([]) })
+  const artifacts = { models } as unknown as PresentationArtifacts
+  for (const [weapon, item, activity] of items) {
+    const snapshot = { class: 9, team: 2, tick: 1n, weapon, velocity: Object.freeze([0, 0, 0]), loadout: Object.freeze([{ weapon, reload: 0, clip: weapon === 42 ? 0 : 1 }]), activities: Object.freeze([{ tick: 1n, weapon, activity: 2 }]) } as unknown as Snapshot
+    const request = createViewmodelPresenter(artifacts).map(snapshot).request
+    expect(request.model).toBe(hands)
+    expect(request.itemModel).toBe(item)
+    expect(request.activity).toBe(activity)
+  }
+})
+
 test("starts authored hitscan muzzle systems from exact fire-tick attachment transforms", () => {
   const position = Object.freeze([1, 2, 3]) as readonly [number, number, number]
   const orientation = Object.freeze([0, 0, 0, 1]) as readonly [number, number, number, number]
