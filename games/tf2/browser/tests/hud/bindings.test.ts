@@ -675,8 +675,8 @@ describe("canonical all-class TF2 session HUD adapter", () => {
     ] as const
     for (const [identity, model, maximumHealth] of classes) {
       for (const team of [2, 3] as const) {
-        const armed = identity === 3 || identity === 4
-        const active = identity === 3 ? 1 : identity === 4 ? 3 : null
+        const armed = identity === 1 || identity === 2 || identity === 3 || identity === 4 || identity === 6 || identity === 9
+        const active = identity === 1 ? 4 : identity === 2 ? 12 : identity === 3 ? 1 : identity === 4 ? 3 : identity === 6 ? 9 : identity === 9 ? 40 : null
         const source = compactSnapshot(1n, {
           class: identity,
           team,
@@ -750,6 +750,25 @@ describe("canonical all-class TF2 session HUD adapter", () => {
       expect(value(binding.values, "dialog-variable", "HudWeaponAmmo", "Ammo")).toMatchObject({
         value: active === 11 ? { kind: "unavailable" } : { kind: "available", value: active === 9 ? 200 : 6 },
       })
+    }
+  })
+
+  test("publishes Engineer stock item identities, authored slots, and hides Wrench ammunition", () => {
+    const loadout = Object.freeze([
+      Object.freeze({ weapon: 40 as const, reload: 0 as const, clip: 6, reserve: 32, maximumClip: 6, maximumReserve: 32 }),
+      Object.freeze({ weapon: 41 as const, reload: 0 as const, clip: 12, reserve: 200, maximumClip: 12, maximumReserve: 200 }),
+      Object.freeze({ weapon: 42 as const, reload: 0 as const, clip: 0, reserve: 0, maximumClip: 0, maximumReserve: 0 }),
+    ])
+    for (const active of [40, 41, 42] as const) {
+      const source = compactSnapshot(1n, { class: 9, weapon: active, health: 125, maximumHealth: 125, loadout })
+      const binding = bindTf2Hud(adaptSessionHud(unavailable("initial"), compactPublication(source), context))
+      const player = (binding.facts.player as Extract<Tf2HudSnapshot["player"], { kind: "available" }>).value
+      expect(player.weapons.map((item) => ({ identity: item.identity, item: item.itemDefinition, slot: item.slot, name: item.displayName, ammo: item.ammoDisplay }))).toEqual([
+        { identity: 40, item: { kind: "available", value: 9 }, slot: 0, name: "Shotgun", ammo: "clip-and-reserve" },
+        { identity: 41, item: { kind: "available", value: 22 }, slot: 1, name: "Pistol", ammo: "clip-and-reserve" },
+        { identity: 42, item: { kind: "available", value: 7 }, slot: 2, name: "Wrench", ammo: "hidden" },
+      ])
+      expect(value(binding.values, "visible", "HudWeaponAmmo")).toMatchObject({ value: active !== 42 })
     }
   })
 

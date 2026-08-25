@@ -32,6 +32,11 @@ pub enum SoundDefinition {
     KukriHitFlesh,
     KukriHitWorld,
     SmgReload,
+    ShotgunEmpty,
+    PistolEmpty,
+    WrenchMiss,
+    WrenchHitFlesh,
+    WrenchHitWorld,
 }
 
 impl SoundDefinition {
@@ -63,6 +68,11 @@ impl SoundDefinition {
             Self::FistMiss => "Weapon_Fist.Miss",
             Self::FistHitWorld => "Weapon_Fist.HitWorld",
             Self::FistHitFlesh => "Weapon_Fist.HitFlesh",
+            Self::ShotgunEmpty => "Weapon_Shotgun.Empty",
+            Self::PistolEmpty => "Weapon_Pistol.ClipEmpty",
+            Self::WrenchMiss => "Weapon_Wrench.Miss",
+            Self::WrenchHitFlesh => "Weapon_Wrench.HitFlesh",
+            Self::WrenchHitWorld => "Weapon_Wrench.HitWorld",
             Self::SniperSingle => "Weapon_SniperRifle.Single",
             Self::SmgSingle => "Weapon_SMG.Single",
             Self::KukriMiss => "Weapon_Machete.Miss",
@@ -78,7 +88,8 @@ impl SoundDefinition {
             | Self::StickyExplosion
             | Self::ShovelHitFlesh
             | Self::FistHitFlesh
-            | Self::KukriHitFlesh => 3,
+            | Self::KukriHitFlesh
+            | Self::WrenchHitFlesh => 3,
             Self::BatHitWorld
             | Self::ShovelHitWorld
             | Self::FistMiss
@@ -102,7 +113,14 @@ impl SoundDefinition {
             | Self::MinigunWindDown
             | Self::MinigunSpin
             | Self::MinigunFire => 1,
-            Self::SniperSingle | Self::SmgSingle | Self::KukriMiss | Self::SmgReload => 1,
+            Self::SniperSingle
+            | Self::SmgSingle
+            | Self::KukriMiss
+            | Self::SmgReload
+            | Self::ShotgunEmpty
+            | Self::PistolEmpty
+            | Self::WrenchMiss
+            | Self::WrenchHitWorld => 1,
         }
     }
 }
@@ -157,6 +175,7 @@ pub struct SoundSelectionState {
     pub fist_miss_available: u8,
     pub fist_hit_world_available: u8,
     pub fist_hit_flesh_available: u8,
+    pub wrench_hit_flesh_available: u8,
     pub kukri_hit_flesh_available: u8,
     pub kukri_hit_world_available: u8,
 }
@@ -216,6 +235,7 @@ pub(crate) struct SoundSelection {
     fist_miss: WaveCycle,
     fist_hit_world: WaveCycle,
     fist_hit_flesh: WaveCycle,
+    wrench_hit_flesh: WaveCycle,
     kukri_hit_flesh: WaveCycle,
     kukri_hit_world: WaveCycle,
 }
@@ -232,6 +252,7 @@ impl SoundSelection {
             fist_miss: WaveCycle::new(WaveCycle::TWO),
             fist_hit_world: WaveCycle::new(WaveCycle::TWO),
             fist_hit_flesh: WaveCycle::new(WaveCycle::THREE),
+            wrench_hit_flesh: WaveCycle::new(WaveCycle::THREE),
             kukri_hit_flesh: WaveCycle::new(WaveCycle::THREE),
             kukri_hit_world: WaveCycle::new(WaveCycle::TWO),
         }
@@ -248,6 +269,7 @@ impl SoundSelection {
             fist_miss_available: self.fist_miss.available,
             fist_hit_world_available: self.fist_hit_world.available,
             fist_hit_flesh_available: self.fist_hit_flesh.available,
+            wrench_hit_flesh_available: self.wrench_hit_flesh.available,
             kukri_hit_flesh_available: self.kukri_hit_flesh.available,
             kukri_hit_world_available: self.kukri_hit_world.available,
         }
@@ -262,6 +284,7 @@ impl SoundSelection {
             || state.fist_miss_available & !WaveCycle::TWO != 0
             || state.fist_hit_world_available & !WaveCycle::TWO != 0
             || state.fist_hit_flesh_available & !WaveCycle::THREE != 0
+            || state.wrench_hit_flesh_available & !WaveCycle::THREE != 0
             || state.kukri_hit_flesh_available & !WaveCycle::THREE != 0
             || state.kukri_hit_world_available & !WaveCycle::TWO != 0
         {
@@ -276,6 +299,7 @@ impl SoundSelection {
         self.fist_miss.available = state.fist_miss_available;
         self.fist_hit_world.available = state.fist_hit_world_available;
         self.fist_hit_flesh.available = state.fist_hit_flesh_available;
+        self.wrench_hit_flesh.available = state.wrench_hit_flesh_available;
         self.kukri_hit_flesh.available = state.kukri_hit_flesh_available;
         self.kukri_hit_world.available = state.kukri_hit_world_available;
 
@@ -306,6 +330,7 @@ impl SoundSelection {
             SoundDefinition::FistMiss => &mut self.fist_miss,
             SoundDefinition::FistHitWorld => &mut self.fist_hit_world,
             SoundDefinition::FistHitFlesh => &mut self.fist_hit_flesh,
+            SoundDefinition::WrenchHitFlesh => &mut self.wrench_hit_flesh,
             SoundDefinition::KukriHitFlesh => &mut self.kukri_hit_flesh,
             SoundDefinition::KukriHitWorld => &mut self.kukri_hit_world,
 

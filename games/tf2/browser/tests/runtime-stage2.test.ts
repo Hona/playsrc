@@ -176,7 +176,10 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     for (let weapon = 1; weapon <= 14; weapon += 1) {
       expect(new DataView(encodeCommand({ ...base, selectWeapon: weapon as 1 })).getUint32(32, true)).toBe(weapon << 8)
     }
-    for (const weapon of [0, 15, 1.5, Number.NaN]) {
+    for (const weapon of [40, 41, 42] as const) {
+      expect(new DataView(encodeCommand({ ...base, selectWeapon: weapon })).getUint32(32, true)).toBe(weapon << 8)
+    }
+    for (const weapon of [0, 15, 39, 43, 1.5, Number.NaN]) {
       expect(() => encodeCommand({ ...base, selectWeapon: weapon as 1 })).toThrow("weapon selector is invalid")
     }
   })

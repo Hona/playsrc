@@ -189,6 +189,9 @@ pub enum Weapon {
     SniperRifle = 12,
     Smg = 13,
     Kukri = 14,
+    EngineerShotgun = 40,
+    EngineerPistol = 41,
+    Wrench = 42,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -695,6 +698,7 @@ pub struct Session<W: GameplayWorld + Clone> {
     projectiles: Vec<LiveProjectile>,
     next_projectile: u32,
     fire_was_held: bool,
+    fire_on_empty: bool,
     previous_hitscan_ticks: BTreeMap<Weapon, u64>,
     pending_melee_tick: Option<u64>,
     authority_random: UniformRandomStream,
@@ -842,6 +846,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             projectiles: Vec::new(),
             next_projectile: 1,
             fire_was_held: false,
+            fire_on_empty: false,
             previous_hitscan_ticks: BTreeMap::new(),
             pending_melee_tick: None,
             authority_random,
@@ -1506,6 +1511,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 }
             }
             if let PrimaryResult::Fired { charge_seconds } = primary {
+                self.fire_on_empty = false;
                 if ballistics::HitscanProfile::configured(active_weapon).is_some() {
                     self.fire_hitscan(
                         active_weapon,
@@ -1519,7 +1525,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
                         command.movement.yaw_degrees,
                     )?;
                     map_phase.append(phase);
-                } else if matches!(active_weapon, Weapon::Bat | Weapon::Shovel | Weapon::Kukri) {
+                } else if matches!(
+                    active_weapon,
+                    Weapon::Bat | Weapon::Shovel | Weapon::Kukri | Weapon::Wrench
+                ) {
                     self.swing_melee(active_weapon);
                 } else if active_weapon == Weapon::Fists {
                     self.emit_weapon_sound(SoundDefinition::FistMiss, self.movement.position);
@@ -1546,7 +1555,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
             if self.pending_melee_tick.is_some_and(|due| self.tick > due) {
                 self.pending_melee_tick = None;
 
-                if matches!(active_weapon, Weapon::Bat | Weapon::Shovel | Weapon::Kukri) {
+                if matches!(
+                    active_weapon,
+                    Weapon::Bat | Weapon::Shovel | Weapon::Kukri | Weapon::Wrench
+                ) {
                     self.resolve_melee(
                         active_weapon,
                         command.pitch_degrees,
@@ -1555,13 +1567,43 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     )?;
                 }
             }
+            let mut empty_reload = false;
+            if matches!(
+                active_weapon,
+                Weapon::EngineerShotgun | Weapon::EngineerPistol
+            ) && command.fire
+            {
+                let state = self.loadout[&active_weapon];
+                if state.clip == 0
+                    && state.reload == ReloadPhase::Ready
+                    && self.tick >= state.next_primary_tick
+                {
+                    if self.fire_on_empty {
+                        self.fire_on_empty = false;
+                        empty_reload = state.reserve > 0;
+                    } else {
+                        self.fire_on_empty = true;
+                        self.emit_weapon_sound(
+                            if active_weapon == Weapon::EngineerShotgun {
+                                SoundDefinition::ShotgunEmpty
+                            } else {
+                                SoundDefinition::PistolEmpty
+                            },
+                            self.movement.position,
+                        );
+                    }
+                }
+            }
             let reload_activity_start = self.activity_events.len();
             {
                 let state = self
                     .loadout
                     .get_mut(&active_weapon)
                     .expect("active weapon belongs to loadout");
-                if command.reload || (self.auto_reload && !command.fire && !command.detonate) {
+                if command.reload
+                    || empty_reload
+                    || (self.auto_reload && !command.fire && !command.detonate)
+                {
                     state.start_reload(
                         self.tick,
                         self.movement_configuration.tick_interval,
@@ -1581,12 +1623,13 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     (Weapon::Scattergun, weapon::WeaponActivity::ReloadLoop) => {
                         Some(SoundDefinition::ScattergunReload)
                     }
-                    (Weapon::Pistol, weapon::WeaponActivity::ReloadStart) => {
-                        Some(SoundDefinition::PistolReload)
-                    }
+                    (
+                        Weapon::Pistol | Weapon::EngineerPistol,
+                        weapon::WeaponActivity::ReloadStart,
+                    ) => Some(SoundDefinition::PistolReload),
 
                     (
-                        Weapon::Shotgun | Weapon::HeavyShotgun,
+                        Weapon::Shotgun | Weapon::HeavyShotgun | Weapon::EngineerShotgun,
                         weapon::WeaponActivity::ReloadLoop,
                     ) => Some(SoundDefinition::ShotgunReload),
                     (Weapon::Smg, weapon::WeaponActivity::ReloadStart) => {
@@ -1847,11 +1890,15 @@ impl<W: GameplayWorld + Clone> Session<W> {
             {
                 previous.charge_begin_tick = None;
                 previous.abort_reload();
-                if matches!(active_weapon, Weapon::Bat | Weapon::Shovel | Weapon::Kukri) {
+                if matches!(
+                    active_weapon,
+                    Weapon::Bat | Weapon::Shovel | Weapon::Kukri | Weapon::Wrench
+                ) {
                     self.pending_melee_tick = None;
                 }
             }
             self.weapon = Some(weapon);
+            self.fire_on_empty = false;
             self.loadout
                 .entry(weapon)
                 .or_insert_with(|| WeaponRuntime::full(weapon));
@@ -2322,9 +2369,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
             .expect("hitscan weapon has a configured profile");
         let definition = match weapon {
             Weapon::Scattergun => SoundDefinition::ScattergunSingle,
-            Weapon::Pistol => SoundDefinition::PistolSingle,
+            Weapon::Pistol | Weapon::EngineerPistol => SoundDefinition::PistolSingle,
 
-            Weapon::Shotgun | Weapon::HeavyShotgun => SoundDefinition::ShotgunSingle,
+            Weapon::Shotgun | Weapon::HeavyShotgun | Weapon::EngineerShotgun => {
+                SoundDefinition::ShotgunSingle
+            }
             Weapon::SniperRifle => SoundDefinition::SniperSingle,
             Weapon::Smg => SoundDefinition::SmgSingle,
 
@@ -2471,6 +2520,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             Weapon::Bat => SoundDefinition::BatMiss,
             Weapon::Shovel => SoundDefinition::ShovelMiss,
             Weapon::Kukri => SoundDefinition::KukriMiss,
+            Weapon::Wrench => SoundDefinition::WrenchMiss,
             _ => unreachable!("only melee weapons swing"),
         };
         self.emit_weapon_sound(definition, self.movement.position);
@@ -2489,6 +2539,29 @@ impl<W: GameplayWorld + Clone> Session<W> {
     ) -> Result<(), Error> {
         let (direction, _, _) = angle_vectors(pitch, yaw, 0.0);
         let origin = add(self.movement.position, self.movement.view_offset);
+        if weapon == Weapon::Wrench {
+            let building_end = add(origin, scale(direction, ballistics::WRENCH_BUILDING_RANGE));
+            let building = self.collision.trace(
+                origin,
+                building_end,
+                Hull {
+                    mins: [0.0; 3],
+                    maxs: [0.0; 3],
+                },
+                MASK_SOLID,
+            )?;
+            if building.fraction >= 1.0 && !building.start_solid {
+                self.collision.trace(
+                    origin,
+                    building_end,
+                    Hull {
+                        mins: [-ballistics::MELEE_HULL_RADIUS; 3],
+                        maxs: [ballistics::MELEE_HULL_RADIUS; 3],
+                    },
+                    MASK_SOLID,
+                )?;
+            }
+        }
         let end = add(origin, scale(direction, ballistics::MELEE_RANGE));
         let line = self.collision.trace(
             origin,
@@ -2526,6 +2599,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 }
                 (Weapon::Shovel, false) => {
                     (SoundDefinition::ShovelHitWorld, ballistics::SHOVEL_DAMAGE)
+                }
+                (Weapon::Wrench, true) => {
+                    (SoundDefinition::WrenchHitFlesh, ballistics::WRENCH_DAMAGE)
+                }
+                (Weapon::Wrench, false) => {
+                    (SoundDefinition::WrenchHitWorld, ballistics::WRENCH_DAMAGE)
                 }
                 (Weapon::Kukri, true) => (SoundDefinition::KukriHitFlesh, ballistics::KUKRI_DAMAGE),
                 (Weapon::Kukri, false) => {
@@ -2629,7 +2708,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
             | Weapon::Fists
             | Weapon::SniperRifle
             | Weapon::Smg
-            | Weapon::Kukri => {
+            | Weapon::Kukri
+            | Weapon::EngineerShotgun
+            | Weapon::EngineerPistol
+            | Weapon::Wrench => {
                 unreachable!("hitscan and melee weapons do not spawn projectiles")
             }
         };
@@ -2661,7 +2743,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
             | Weapon::Fists
             | Weapon::SniperRifle
             | Weapon::Smg
-            | Weapon::Kukri => {
+            | Weapon::Kukri
+            | Weapon::EngineerShotgun
+            | Weapon::EngineerPistol
+            | Weapon::Wrench => {
                 unreachable!("hitscan and melee weapons do not spawn projectiles")
             }
         };
@@ -3331,6 +3416,7 @@ fn default_weapon(class: PlayerClass) -> Option<Weapon> {
         PlayerClass::Soldier => Some(Weapon::RocketLauncher),
         PlayerClass::Demoman => Some(Weapon::StickybombLauncher),
         PlayerClass::Heavy => Some(Weapon::Minigun),
+        PlayerClass::Engineer => Some(Weapon::EngineerShotgun),
         _ => None,
     }
 }
@@ -3371,6 +3457,17 @@ fn default_loadout(class: PlayerClass) -> BTreeMap<Weapon, WeaponRuntime> {
             (Weapon::Smg, WeaponRuntime::full(Weapon::Smg)),
             (Weapon::Kukri, WeaponRuntime::full(Weapon::Kukri)),
         ]),
+        PlayerClass::Engineer => BTreeMap::from([
+            (
+                Weapon::EngineerShotgun,
+                WeaponRuntime::full(Weapon::EngineerShotgun),
+            ),
+            (
+                Weapon::EngineerPistol,
+                WeaponRuntime::full(Weapon::EngineerPistol),
+            ),
+            (Weapon::Wrench, WeaponRuntime::full(Weapon::Wrench)),
+        ]),
         _ => BTreeMap::new(),
     }
 }
@@ -3393,6 +3490,10 @@ fn allowed(class: PlayerClass, weapon: Weapon) -> bool {
             | (
                 PlayerClass::Sniper,
                 Weapon::SniperRifle | Weapon::Smg | Weapon::Kukri
+            )
+            | (
+                PlayerClass::Engineer,
+                Weapon::EngineerShotgun | Weapon::EngineerPistol | Weapon::Wrench
             )
     )
 }
@@ -4244,6 +4345,192 @@ mod tests {
     }
 
     #[test]
+    fn engineer_stock_firearms_preserve_distinct_item_profiles_and_damage_ramp() {
+        let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.015));
+        session
+            .advance(Command {
+                select_class: Some(PlayerClass::Engineer),
+                ..Command::default()
+            })
+            .unwrap();
+        session
+            .loadout
+            .get_mut(&Weapon::EngineerShotgun)
+            .unwrap()
+            .next_primary_tick = 0;
+        let shotgun = session
+            .advance(Command {
+                fire: true,
+                pitch_degrees: 60.0,
+                ..Command::default()
+            })
+            .unwrap();
+        assert!(shotgun.events.iter().any(|event| matches!(
+            event,
+            Event::HitscanFired {
+                weapon: Weapon::EngineerShotgun,
+                pellets: 10
+            }
+        )));
+        let pellets = shotgun
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                Event::HitscanImpact {
+                    weapon: Weapon::EngineerShotgun,
+                    damage,
+                    ..
+                } => Some(*damage),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(pellets.len(), 10);
+        assert!(pellets.iter().all(|damage| *damage > 6.0 && *damage < 9.1));
+        assert_eq!(
+            session
+                .weapon_runtime(Weapon::EngineerShotgun)
+                .unwrap()
+                .reserve,
+            32
+        );
+        assert_eq!(
+            session.audio_events()[0].definition,
+            SoundDefinition::ShotgunSingle
+        );
+
+        session
+            .advance(Command {
+                select_weapon: Some(Weapon::EngineerPistol),
+                ..Command::default()
+            })
+            .unwrap();
+        session
+            .loadout
+            .get_mut(&Weapon::EngineerPistol)
+            .unwrap()
+            .next_primary_tick = 0;
+        let pistol = session
+            .advance(Command {
+                fire: true,
+                pitch_degrees: 60.0,
+                ..Command::default()
+            })
+            .unwrap();
+        assert!(pistol.events.iter().any(|event| matches!(
+            event,
+            Event::HitscanFired {
+                weapon: Weapon::EngineerPistol,
+                pellets: 1
+            }
+        )));
+        let state = session.weapon_runtime(Weapon::EngineerPistol).unwrap();
+        assert_eq!((state.clip, state.reserve), (11, 200));
+        assert_eq!(
+            session.audio_events()[0].definition,
+            SoundDefinition::PistolSingle
+        );
+    }
+
+    #[test]
+    fn engineer_wrench_checks_building_reach_before_the_delayed_world_smack() {
+        let mut session = Session::new(MeleeWall, [0.0; 3], MapRuntime::empty(0.015));
+        session
+            .advance(Command {
+                select_class: Some(PlayerClass::Engineer),
+                select_weapon: Some(Weapon::Wrench),
+                ..Command::default()
+            })
+            .unwrap();
+        session
+            .loadout
+            .get_mut(&Weapon::Wrench)
+            .unwrap()
+            .next_primary_tick = 0;
+        session
+            .advance(Command {
+                fire: true,
+                ..Command::default()
+            })
+            .unwrap();
+        assert_eq!(
+            session.audio_events()[0].definition,
+            SoundDefinition::WrenchMiss
+        );
+        let mut hit = None;
+        while session.pending_melee_tick.is_some() {
+            hit = Some(session.advance(Command::default()).unwrap());
+        }
+        assert!(hit.unwrap().events.iter().any(|event| matches!(
+            event,
+            Event::MeleeImpact {
+                weapon: Weapon::Wrench,
+                target: None,
+                damage,
+                ..
+            } if *damage == 65.0
+        )));
+        assert_eq!(
+            session.audio_events()[0].definition,
+            SoundDefinition::WrenchHitWorld
+        );
+        assert_eq!(session.weapon_runtime(Weapon::Wrench).unwrap().clip, 0);
+    }
+
+    #[test]
+    fn held_empty_engineer_pistol_emits_empty_then_reload_and_refills_all_rounds() {
+        let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.015));
+        session
+            .advance(Command {
+                select_class: Some(PlayerClass::Engineer),
+                select_weapon: Some(Weapon::EngineerPistol),
+                ..Command::default()
+            })
+            .unwrap();
+        let tick = session.tick;
+        {
+            let pistol = session.loadout.get_mut(&Weapon::EngineerPistol).unwrap();
+            pistol.clip = 0;
+            pistol.reserve = 12;
+            pistol.next_primary_tick = tick;
+        }
+        session
+            .advance(Command {
+                fire: true,
+                ..Command::default()
+            })
+            .unwrap();
+        assert_eq!(
+            session.audio_events()[0].definition,
+            SoundDefinition::PistolEmpty
+        );
+        session
+            .advance(Command {
+                fire: true,
+                ..Command::default()
+            })
+            .unwrap();
+        assert_eq!(
+            session.audio_events()[0].definition,
+            SoundDefinition::PistolReload
+        );
+        let due = session
+            .weapon_runtime(Weapon::EngineerPistol)
+            .unwrap()
+            .reload_due_tick
+            .unwrap();
+        while session.tick <= due {
+            session
+                .advance(Command {
+                    fire: true,
+                    ..Command::default()
+                })
+                .unwrap();
+        }
+        let state = session.weapon_runtime(Weapon::EngineerPistol).unwrap();
+        assert_eq!((state.clip, state.reserve), (12, 0));
+    }
+
+    #[test]
     fn scout_bat_resolves_world_contact_only_after_the_authored_smack_delay() {
         let mut session = Session::new(MeleeWall, [0.0; 3], MapRuntime::empty(0.015));
         session
@@ -4377,6 +4664,21 @@ mod tests {
                 PlayerClass::Heavy => {
                     assert_eq!(snapshot.weapon, Some(Weapon::Minigun));
                     assert_eq!(snapshot.loadout.len(), 3);
+                }
+                PlayerClass::Engineer => {
+                    assert_eq!(snapshot.weapon, Some(Weapon::EngineerShotgun));
+                    assert_eq!(
+                        snapshot
+                            .loadout
+                            .iter()
+                            .map(|weapon| weapon.weapon)
+                            .collect::<Vec<_>>(),
+                        vec![
+                            Weapon::EngineerShotgun,
+                            Weapon::EngineerPistol,
+                            Weapon::Wrench
+                        ],
+                    );
                 }
                 _ => {
                     assert_eq!(snapshot.weapon, None);
@@ -5566,6 +5868,7 @@ mod tests {
                 fist_hit_flesh_available: 0b111,
                 kukri_hit_flesh_available: 0b111,
                 kukri_hit_world_available: 0b11,
+                wrench_hit_flesh_available: 0b111,
             }
         );
 
@@ -5604,6 +5907,7 @@ mod tests {
                 fist_hit_flesh_available: 0b111,
                 kukri_hit_flesh_available: 0b111,
                 kukri_hit_world_available: 0b11,
+                wrench_hit_flesh_available: 0b111,
             }
         );
     }
