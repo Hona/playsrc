@@ -36,7 +36,8 @@ use playsrc_collision::Hull;
 use playsrc_movement::{
     Command as MoveCommand, Configuration as MovementConfiguration, Error as MoveError, Mode,
     ModeRequest, Player, Policy as GenericMovementPolicy, State as MovementState, StepInput,
-    StepResult as MovementStepResult, StepStrategy, TransitionDisposition, step,
+    StepResult as MovementStepResult, StepStrategy, TransitionDisposition, WaterPolicy,
+    WaterSampling, step,
 };
 
 use audio::SoundSelection;
@@ -175,6 +176,18 @@ impl MovementPolicy {
             allow_crouched_jump: false,
             replace_vertical_while_ducking: true,
             step_strategy: StepStrategy::HighFirst,
+            water: WaterPolicy {
+                sampling: WaterSampling::EyesThenWaist,
+                waist_height_offset: 12.0,
+                refresh_before_walk: false,
+                apply_currents: false,
+                jump_wish_at_waist: false,
+                amplify_forward_pitch: false,
+                ledge_uses_command_direction: true,
+                ledge_jump_overrides_backward: true,
+                suppress_airborne_duck: true,
+                suppress_submerged_duck: true,
+            },
         }
     }
 }
@@ -624,6 +637,7 @@ pub struct Session<W: GameplayWorld + Clone> {
     weapon: Weapon,
     loadout: BTreeMap<Weapon, WeaponRuntime>,
     movement: MovementState,
+    in_water: bool,
     movement_modifiers: MovementModifiers,
     last_movement: Option<MovementStepResult>,
     health: i32,
@@ -719,7 +733,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
             modifiers: movement_modifiers,
         }
         .resolve();
-        let movement_configuration = MovementConfiguration::default();
+        let movement_configuration = MovementConfiguration {
+            water_exit_forward: 30.0,
+            water_exit_up_speed: 300.0,
+            ..MovementConfiguration::default()
+        };
         let mut loadout = BTreeMap::from([
             (
                 Weapon::RocketLauncher,
@@ -753,6 +771,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 },
                 movement_policy,
             ),
+            in_water: false,
             movement_modifiers,
             last_movement: None,
             health: stock_maximum_health(Class::Soldier),
@@ -1079,6 +1098,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
         rocket_results: &[RocketTraceResult],
         expected_sticky_random: Option<StickyLaunchRandom>,
     ) -> Result<Snapshot, Error> {
+        match self.movement.water_level {
+            0 => self.in_water = false,
+            1 | 2 => self.in_water = true,
+            _ => {}
+        }
+
         let expected_physics_results: Vec<_> = self
             .physics_requests
             .iter()
@@ -1401,6 +1426,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 }
                 .resolve(),
             );
+            self.in_water = false;
             self.last_movement = None;
             self.lifecycle_events.extend([
                 LifecycleEvent {
@@ -2359,12 +2385,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 self_damage: true,
             },
         ) {
-            let damage = combat::apply_self_damage_rules(
-                base_damage,
-                class,
-                grounded,
-                self.movement.water_level > 0,
-            );
+            let damage =
+                combat::apply_self_damage_rules(base_damage, class, grounded, self.in_water);
             let health_before = self.health;
             self.health = self.health.saturating_sub(damage.health_points).max(0);
             events.push(Event::Damaged {
@@ -2462,6 +2484,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             },
             movement_policy,
         );
+        self.in_water = false;
         self.last_movement = None;
         self.fire_was_held = false;
         self.activity_events.push(ActivityEvent {
@@ -2733,6 +2756,43 @@ mod tests {
     }
 
     impl GameplayWorld for Floor {
+        fn overlaps_model_hull(
+            &self,
+            _: usize,
+            _: [f32; 3],
+            _: [f32; 3],
+            _: Hull,
+        ) -> Result<bool, MoveError> {
+            Ok(false)
+        }
+    }
+
+    #[derive(Clone)]
+    struct WaterFloor {
+        surface: f32,
+    }
+
+    impl Tracer for WaterFloor {
+        fn trace(
+            &self,
+            start: [f32; 3],
+            end: [f32; 3],
+            hull: Hull,
+            mask: u32,
+        ) -> Result<Trace, MoveError> {
+            Floor.trace(start, end, hull, mask)
+        }
+
+        fn point_contents(&self, point: [f32; 3]) -> Result<u32, MoveError> {
+            Ok(if point[2] < self.surface {
+                playsrc_movement::CONTENTS_WATER
+            } else {
+                0
+            })
+        }
+    }
+
+    impl GameplayWorld for WaterFloor {
         fn overlaps_model_hull(
             &self,
             _: usize,
@@ -3117,11 +3177,8 @@ mod tests {
             assert_eq!(exploded.projectile_events.len(), 2);
             for event in exploded.projectile_events {
                 assert_eq!(event.contact_normal, Some(expected_normal));
-                for axis in 0..3 {
-                    assert!(
-                        (event.position[axis] - trace.end[axis] - expected_normal[axis]).abs()
-                            < 0.0001
-                    );
+                for (axis, expected) in expected_normal.into_iter().enumerate() {
+                    assert!((event.position[axis] - trace.end[axis] - expected).abs() < 0.0001);
                 }
             }
         }
@@ -3223,6 +3280,145 @@ mod tests {
                 .iter()
                 .any(|request| request.entity == 1)
         );
+    }
+
+    #[test]
+    fn rocket_blast_water_depth_matrix_preserves_damage_force_and_next_tick() {
+        for (name, surface, prior_level, level, damage, impulse, next_velocity, next_level) in [
+            ("dry", -100.0, 0, 0, 54, 540.00006, 528.00006, 0),
+            ("surface", 10.0, 0, 0, 54, 540.00006, 528.00006, 0),
+            ("feet", 20.0, 1, 1, 90, 900.0, 888.0, 0),
+            ("waist", 70.0, 2, 2, 90, 900.0, 846.0, 1),
+            ("eyes", 90.0, 2, 3, 90, 900.0, 846.0, 2),
+            ("submerged", 200.0, 2, 3, 90, 900.0, 846.0, 3),
+        ] {
+            let mut session = Session::new(
+                WaterFloor { surface },
+                [0.0, 0.0, 10.0],
+                MapRuntime::empty(0.015),
+            );
+            session.movement.water_level = prior_level;
+            session.movement.water_type = if prior_level == 0 {
+                0
+            } else {
+                playsrc_movement::CONTENTS_WATER
+            };
+            session.advance(Command::default()).unwrap();
+            assert_eq!(session.movement.water_level, level, "{name} starting depth");
+            session.movement.velocity = [0.0; 3];
+            let origin = session.movement.position;
+            session.explode(
+                explosive(ProjectileKind::Rocket, origin),
+                &mut Vec::new(),
+                &mut Vec::new(),
+            );
+            assert_eq!(session.health, 200 - damage, "{name} damage");
+            assert_eq!(session.movement.velocity[2], impulse, "{name} force");
+            let accepted = session.advance(Command::default()).unwrap();
+            assert_eq!(
+                accepted.movement.velocity[2], next_velocity,
+                "{name} next tick"
+            );
+            assert_eq!(
+                accepted.movement.water_level, next_level,
+                "{name} next depth"
+            );
+        }
+    }
+
+    #[test]
+    fn water_flag_transitions_preserve_source_airborne_soldier_damage_order() {
+        let mut direct_submersion = Session::new(
+            WaterFloor { surface: 200.0 },
+            [0.0, 0.0, 10.0],
+            MapRuntime::empty(0.015),
+        );
+        direct_submersion.advance(Command::default()).unwrap();
+        assert_eq!(direct_submersion.movement.water_level, 3);
+        assert!(!direct_submersion.in_water);
+        direct_submersion.advance(Command::default()).unwrap();
+        assert!(!direct_submersion.in_water);
+        direct_submersion.movement.velocity = [0.0; 3];
+        direct_submersion.explode(
+            explosive(ProjectileKind::Rocket, direct_submersion.movement.position),
+            &mut Vec::new(),
+            &mut Vec::new(),
+        );
+        assert_eq!(direct_submersion.health, 146);
+        assert_eq!(direct_submersion.movement.velocity[2], 540.00006);
+
+        let mut wading = Session::new(
+            WaterFloor { surface: 12.0 },
+            [0.0, 0.0, 10.0],
+            MapRuntime::empty(0.015),
+        );
+        wading.advance(Command::default()).unwrap();
+        assert_eq!(wading.movement.water_level, 1);
+        assert!(!wading.in_water);
+        wading.collision.surface = 200.0;
+        wading.advance(Command::default()).unwrap();
+        assert_eq!(wading.movement.water_level, 3);
+        assert!(wading.in_water);
+        wading.movement.velocity = [0.0; 3];
+        wading.explode(
+            explosive(ProjectileKind::Rocket, wading.movement.position),
+            &mut Vec::new(),
+            &mut Vec::new(),
+        );
+        assert_eq!(wading.health, 110);
+        assert_eq!(wading.movement.velocity[2], 900.0);
+
+        wading.collision.surface = -100.0;
+        wading.advance(Command::default()).unwrap();
+        assert_eq!(wading.movement.water_level, 0);
+        assert!(wading.in_water);
+        wading.advance(Command::default()).unwrap();
+        assert!(!wading.in_water);
+    }
+
+    #[test]
+    fn underwater_rocket_jump_rejects_airborne_crouch_force_amplification() {
+        let mut submerged = Session::new(
+            WaterFloor { surface: 200.0 },
+            [0.0, 0.0, 10.0],
+            MapRuntime::empty(0.015),
+        );
+        submerged.movement.water_level = 2;
+        submerged.movement.water_type = playsrc_movement::CONTENTS_WATER;
+        submerged
+            .advance(Command {
+                movement: MoveCommand {
+                    crouch: true,
+                    ..MoveCommand::default()
+                },
+                ..Command::default()
+            })
+            .unwrap();
+        submerged.movement.velocity = [0.0; 3];
+        let explosion = submerged.movement.position;
+        submerged.explode(
+            explosive(ProjectileKind::Rocket, explosion),
+            &mut Vec::new(),
+            &mut Vec::new(),
+        );
+        let submerged_impulse = submerged.movement.velocity[2];
+        let submerged_next = submerged
+            .advance(Command {
+                movement: MoveCommand {
+                    crouch: true,
+                    ..MoveCommand::default()
+                },
+                ..Command::default()
+            })
+            .unwrap()
+            .movement
+            .velocity[2];
+        assert_eq!(
+            submerged_impulse, 900.0,
+            "an airborne underwater crouch incorrectly amplified the stock rocket impulse to {submerged_impulse}; the next-tick velocity was {submerged_next}"
+        );
+        assert_eq!(submerged_next, 846.0);
+        assert!(!submerged.movement.crouch.uses_crouched_hull());
     }
 
     #[test]

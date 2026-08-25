@@ -5,7 +5,7 @@ use crate::{
     MAX_COMMAND_MAGNITUDE, MAX_COORDINATE, Mode, MoveCollision, MoverResult, MoverStatus,
     ObserverMode, Operation, PointQueryPurpose, PointQueryRecord, Policy, QueryPurpose,
     QueryRecord, State, StateDisposition, StepInput, StepResult, StepStrategy, StuckRecoveryMode,
-    Trace, Tracer, WishState,
+    Trace, Tracer, WaterSampling, WishState,
 };
 use playsrc_collision::Hull;
 
@@ -26,7 +26,7 @@ struct PreparedCommand {
 pub(super) fn step(
     tracer: &impl Tracer,
     mut state: State,
-    input: StepInput,
+    mut input: StepInput,
     configuration: Configuration,
     policy: Policy,
 ) -> Result<StepResult, Error> {
@@ -108,6 +108,14 @@ pub(super) fn step(
     let old_water_type = result.state.water_type;
     if result.state.ground.is_none() && result.state.velocity[2] < 0.0 {
         result.state.fall_speed = result.state.fall_speed.max(-result.state.velocity[2]);
+    }
+
+    if policy.water.suppress_airborne_duck
+        && result.state.water_level >= 1
+        && result.state.ground.is_none()
+        || policy.water.suppress_submerged_duck && result.state.water_level >= 3
+    {
+        input.command.crouch = false;
     }
 
     update_crouch(
@@ -886,7 +894,12 @@ fn full_walk(
     policy: Policy,
     tick: f32,
 ) -> Result<(), Error> {
-    if !check_water(context, &mut result.state, configuration, policy)? {
+    let swimming = if policy.water.refresh_before_walk {
+        check_water(context, &mut result.state, configuration, policy)?
+    } else {
+        result.state.water_level > 1
+    };
+    if !swimming {
         start_gravity(&mut result.state, configuration, tick);
     }
 
@@ -1024,7 +1037,12 @@ fn full_walk(
         &mut result.events,
     )?;
     clamp_velocity(&mut result.state.velocity, configuration.maximum_velocity);
-    if !check_water(context, &mut result.state, configuration, policy)? {
+    let swimming = if policy.water.refresh_before_walk {
+        check_water(context, &mut result.state, configuration, policy)?
+    } else {
+        result.state.water_level > 1
+    };
+    if !swimming {
         finish_gravity(&mut result.state, configuration, tick);
     }
     if result.state.ground.is_some() && result.state.velocity[2] < 0.0 {
@@ -1087,9 +1105,9 @@ fn check_jump(
             &mut result.contacts,
             &mut result.events,
         )?;
-        if result.state.water_type & CONTENTS_WATER != 0 {
+        if result.state.water_type == CONTENTS_WATER {
             result.state.velocity[2] = configuration.water_swim_speed;
-        } else if result.state.water_type & CONTENTS_SLIME != 0 {
+        } else if result.state.water_type == CONTENTS_SLIME {
             result.state.velocity[2] = configuration.slime_swim_speed;
         }
         return Ok(());
@@ -1149,7 +1167,7 @@ fn water_jump(state: &mut State, configuration: Configuration, tick: f32) {
 fn check_water_exit(
     context: &mut QueryContext<'_, impl Tracer>,
     result: &mut StepResult,
-    _input: StepInput,
+    input: StepInput,
     command: PreparedCommand,
     configuration: Configuration,
     policy: Policy,
@@ -1159,9 +1177,20 @@ fn check_water_exit(
     }
     let mut flat_velocity = [result.state.velocity[0], result.state.velocity[1], 0.0];
     let current_speed = normalize_in_place(&mut flat_velocity);
-    let mut flat_forward = [command.forward[0], command.forward[1], 0.0];
+    let mut flat_forward = if policy.water.ledge_uses_command_direction {
+        [
+            command.forward[0] * command.forward_move + command.right[0] * command.side_move,
+            command.forward[1] * command.forward_move + command.right[1] * command.side_move,
+            0.0,
+        ]
+    } else {
+        [command.forward[0], command.forward[1], 0.0]
+    };
     normalize_in_place(&mut flat_forward);
-    if current_speed != 0.0 && dot(flat_velocity, flat_forward) < 0.0 {
+    if current_speed != 0.0
+        && dot(flat_velocity, flat_forward) < 0.0
+        && !(policy.water.ledge_jump_overrides_backward && input.command.jump)
+    {
         return Ok(());
     }
 
@@ -1244,13 +1273,23 @@ fn water_move(
         scale(command.forward, command.forward_move),
         scale(command.right, command.side_move),
     );
+    let client_max_speed = if configuration.client_max_speed != 0.0 {
+        configuration.client_max_speed
+    } else {
+        policy.maximum_speed
+    };
     if input.command.jump {
-        wish_velocity[2] += configuration.client_max_speed;
+        if policy.water.jump_wish_at_waist || result.state.water_level >= 3 {
+            wish_velocity[2] += client_max_speed;
+        }
     } else if command.forward_move == 0.0 && command.side_move == 0.0 && command.up_move == 0.0 {
         wish_velocity[2] -= configuration.water_idle_sink_speed;
     } else {
-        let pitched_up = (command.forward_move * command.forward[2] * 2.0)
-            .clamp(0.0, configuration.client_max_speed);
+        let pitched_up = if policy.water.amplify_forward_pitch {
+            (command.forward_move * command.forward[2] * 2.0).clamp(0.0, client_max_speed)
+        } else {
+            0.0
+        };
         wish_velocity[2] += command.up_move + pitched_up;
     }
     let uncapped = length(wish_velocity);
@@ -1380,23 +1419,41 @@ fn check_water(
     if contents & configuration.water_mask == 0 {
         return Ok(false);
     }
-    state.water_type = contents;
+
+    state.water_type = contents & (CONTENTS_WATER | CONTENTS_SLIME);
     state.water_level = 1;
     let waist = [
         center_x,
         center_y,
-        state.position[2] + (hull.mins[2] + hull.maxs[2]) * 0.5,
+        state.position[2] + (hull.mins[2] + hull.maxs[2]) * 0.5 + policy.water.waist_height_offset,
     ];
-    contents = context.point(PointQueryPurpose::WaterWaist, waist)?;
-    if contents & configuration.water_mask != 0 {
-        state.water_level = 2;
-        let eyes = [center_x, center_y, state.position[2] + state.view_offset[2]];
-        contents = context.point(PointQueryPurpose::WaterEyes, eyes)?;
-        if contents & configuration.water_mask != 0 {
-            state.water_level = 3;
+    let eyes = [center_x, center_y, state.position[2] + state.view_offset[2]];
+
+    match policy.water.sampling {
+        WaterSampling::WaistThenEyes => {
+            contents = context.point(PointQueryPurpose::WaterWaist, waist)?;
+            if contents & configuration.water_mask != 0 {
+                state.water_level = 2;
+                contents = context.point(PointQueryPurpose::WaterEyes, eyes)?;
+                if contents & configuration.water_mask != 0 {
+                    state.water_level = 3;
+                }
+            }
+        }
+        WaterSampling::EyesThenWaist => {
+            contents = context.point(PointQueryPurpose::WaterEyes, eyes)?;
+            if contents & configuration.water_mask != 0 {
+                state.water_level = 3;
+            } else {
+                contents = context.point(PointQueryPurpose::WaterWaist, waist)?;
+                if contents & configuration.water_mask != 0 {
+                    state.water_level = 2;
+                }
+            }
         }
     }
-    if contents & MASK_CURRENT != 0 {
+
+    if policy.water.apply_currents && contents & MASK_CURRENT != 0 {
         let mut current = [0.0; 3];
         if contents & CONTENTS_CURRENT_0 != 0 {
             current[0] += 1.0;
@@ -2556,6 +2613,7 @@ fn validate(
         policy.duck_duration,
         policy.unduck_duration,
         policy.crouched_command_factor,
+        policy.water.waist_height_offset,
     ];
     let tick = configuration.tick_interval * configuration.lagged_movement_scale;
     let noclip_maximum = configuration.server_max_speed * configuration.noclip_speed;

@@ -203,6 +203,7 @@ fn tf2_policy() -> Policy {
         allow_crouched_jump: false,
         replace_vertical_while_ducking: true,
         step_strategy: StepStrategy::HighFirst,
+        water: WaterPolicy::default(),
     }
 }
 
@@ -978,6 +979,326 @@ impl Tracer for WaterWorld {
     }
 }
 
+fn source_tf2_water_policy() -> Policy {
+    Policy {
+        water: WaterPolicy {
+            sampling: WaterSampling::EyesThenWaist,
+            waist_height_offset: 12.0,
+            refresh_before_walk: false,
+            apply_currents: false,
+            jump_wish_at_waist: false,
+            amplify_forward_pitch: false,
+            ledge_uses_command_direction: true,
+            ledge_jump_overrides_backward: true,
+            suppress_airborne_duck: true,
+            suppress_submerged_duck: true,
+        },
+        ..tf2_policy()
+    }
+}
+
+#[test]
+fn game_selected_water_samples_normalize_type_and_preserve_generic_currents() {
+    let policy = source_tf2_water_policy();
+    let configuration = Configuration {
+        optimized_movement: false,
+        ..Configuration::default()
+    };
+    for (surface, expected_level, expected_queries) in [
+        (-10.0, 0, vec![PointQueryPurpose::WaterFeet]),
+        (
+            10.0,
+            1,
+            vec![
+                PointQueryPurpose::WaterFeet,
+                PointQueryPurpose::WaterEyes,
+                PointQueryPurpose::WaterWaist,
+            ],
+        ),
+        (
+            50.0,
+            1,
+            vec![
+                PointQueryPurpose::WaterFeet,
+                PointQueryPurpose::WaterEyes,
+                PointQueryPurpose::WaterWaist,
+            ],
+        ),
+        (
+            60.0,
+            2,
+            vec![
+                PointQueryPurpose::WaterFeet,
+                PointQueryPurpose::WaterEyes,
+                PointQueryPurpose::WaterWaist,
+            ],
+        ),
+        (
+            80.0,
+            3,
+            vec![PointQueryPurpose::WaterFeet, PointQueryPurpose::WaterEyes],
+        ),
+    ] {
+        let world = WaterWorld {
+            surface,
+            current: 0x1000_0000 | CONTENTS_CURRENT_0,
+        };
+        let result = step(
+            &world,
+            player([0.0; 3], false, policy),
+            StepInput::default(),
+            configuration,
+            policy,
+        )
+        .unwrap();
+        assert_eq!(
+            result.state.water_level, expected_level,
+            "surface={surface}"
+        );
+        assert_eq!(
+            result
+                .point_queries
+                .iter()
+                .take(expected_queries.len())
+                .map(|query| query.purpose)
+                .collect::<Vec<_>>(),
+            expected_queries,
+            "surface={surface}"
+        );
+        if expected_level != 0 {
+            assert_eq!(result.state.water_type, CONTENTS_WATER);
+            assert_eq!(result.state.base_velocity, [0.0; 3]);
+            let eye = &result.point_queries[1];
+            assert_eq!(eye.point[2], 68.0);
+            if expected_level != 3 {
+                let waist = &result.point_queries[2];
+                assert_eq!(waist.point[2], 53.0);
+            }
+        }
+    }
+
+    let generic_policy = tf2_policy();
+    let generic = step(
+        &WaterWorld {
+            surface: 50.0,
+            current: CONTENTS_CURRENT_0,
+        },
+        player([0.0; 3], false, generic_policy),
+        StepInput::default(),
+        Configuration::default(),
+        generic_policy,
+    )
+    .unwrap();
+    assert_eq!(generic.state.water_level, 2);
+    assert_eq!(generic.state.water_type, CONTENTS_WATER);
+    assert_eq!(
+        generic.point_queries[1].purpose,
+        PointQueryPurpose::WaterWaist
+    );
+    assert_eq!(generic.point_queries[1].point[2], 41.0);
+
+    let generic_current = step(
+        &WaterWorld {
+            surface: 200.0,
+            current: CONTENTS_CURRENT_0,
+        },
+        player([0.0; 3], false, generic_policy),
+        StepInput::default(),
+        Configuration::default(),
+        generic_policy,
+    )
+    .unwrap();
+    assert!(generic_current.state.base_velocity[0] > 0.0);
+}
+
+#[test]
+fn game_selected_water_jump_and_pitched_swim_use_class_speed_and_exact_levels() {
+    let policy = source_tf2_water_policy();
+    let mut state = player([0.0, 0.0, 10.0], false, policy);
+    state.water_level = 3;
+    state.water_type = CONTENTS_WATER;
+    state.velocity = [0.0, 0.0, 900.0];
+    let jumped = step(
+        &WaterWorld {
+            surface: 200.0,
+            current: 0,
+        },
+        state,
+        StepInput {
+            command: Command {
+                jump: true,
+                ..Command::default()
+            },
+            ..StepInput::default()
+        },
+        Configuration::default(),
+        policy,
+    )
+    .unwrap();
+    close(jumped.state.velocity[2], 122.8);
+    close(jumped.wish_state.speed, 192.0);
+
+    let mut waist = player([0.0; 3], false, policy);
+    waist.water_level = 2;
+    waist.water_type = CONTENTS_WATER;
+    waist.velocity = [0.0, 0.0, 900.0];
+    let waist_jump = step(
+        &WaterWorld {
+            surface: 60.0,
+            current: 0,
+        },
+        waist,
+        StepInput {
+            command: Command {
+                jump: true,
+                ..Command::default()
+            },
+            ..StepInput::default()
+        },
+        Configuration::default(),
+        policy,
+    )
+    .unwrap();
+    close(waist_jump.state.velocity[2], 94.0);
+    close(waist_jump.wish_state.speed, 0.0);
+
+    let mut swimming = player([0.0; 3], false, policy);
+    swimming.water_level = 3;
+    swimming.water_type = CONTENTS_WATER;
+    let pitched = step(
+        &WaterWorld {
+            surface: 200.0,
+            current: 0,
+        },
+        swimming,
+        StepInput {
+            command: Command {
+                forward: 240.0,
+                ..Command::default()
+            },
+            pitch_degrees: -30.0,
+            ..StepInput::default()
+        },
+        Configuration::default(),
+        policy,
+    )
+    .unwrap();
+    close(pitched.state.velocity[0], 24.94153);
+    close(pitched.state.velocity[2], 14.4);
+
+    let generic_policy = tf2_policy();
+    let mut generic_swimming = player([0.0; 3], false, generic_policy);
+    generic_swimming.water_level = 3;
+    generic_swimming.water_type = CONTENTS_WATER;
+    let generic = step(
+        &WaterWorld {
+            surface: 200.0,
+            current: 0,
+        },
+        generic_swimming,
+        StepInput {
+            command: Command {
+                forward: 240.0,
+                ..Command::default()
+            },
+            pitch_degrees: -30.0,
+            ..StepInput::default()
+        },
+        Configuration::default(),
+        generic_policy,
+    )
+    .unwrap();
+    close(generic.state.velocity[0], 14.4);
+    close(generic.state.velocity[2], 24.94153);
+}
+
+#[test]
+fn game_selected_water_transitions_preserve_prior_classification_and_half_gravity() {
+    let policy = source_tf2_water_policy();
+    let entered = step(
+        &WaterWorld {
+            surface: 200.0,
+            current: 0,
+        },
+        player([0.0, 0.0, 10.0], false, policy),
+        StepInput::default(),
+        Configuration::default(),
+        policy,
+    )
+    .unwrap();
+    assert_eq!(entered.state.water_level, 3);
+    close(entered.state.velocity[2], -6.0);
+    close(entered.state.position[2], 9.91);
+    assert_eq!(
+        entered.point_queries[0].purpose,
+        PointQueryPurpose::WaterFeet
+    );
+    assert_eq!(
+        entered.point_queries[1].purpose,
+        PointQueryPurpose::WaterEyes
+    );
+
+    let mut submerged = player([0.0, 0.0, 10.0], false, policy);
+    submerged.water_level = 3;
+    submerged.water_type = CONTENTS_WATER;
+    submerged.velocity[2] = 100.0;
+    let exited = step(
+        &WaterWorld {
+            surface: -1.0,
+            current: 0,
+        },
+        submerged,
+        StepInput::default(),
+        Configuration::default(),
+        policy,
+    )
+    .unwrap();
+    assert_eq!(exited.state.water_level, 0);
+    close(exited.state.velocity[2], 94.0);
+}
+
+#[test]
+fn game_selected_water_rejects_airborne_and_eye_depth_crouch_only() {
+    let policy = source_tf2_water_policy();
+    for (level, grounded, expected_crouch) in [
+        (0, false, true),
+        (1, false, false),
+        (2, false, false),
+        (3, false, false),
+        (1, true, true),
+        (2, true, true),
+        (3, true, false),
+    ] {
+        let mut state = player([0.0; 3], grounded, policy);
+        state.water_level = level;
+        state.water_type = if level == 0 { 0 } else { CONTENTS_WATER };
+        let result = step(
+            &WaterWorld {
+                surface: 200.0,
+                current: 0,
+            },
+            state,
+            StepInput {
+                command: Command {
+                    crouch: true,
+                    ..Command::default()
+                },
+                ..StepInput::default()
+            },
+            Configuration::default(),
+            policy,
+        )
+        .unwrap();
+        assert_eq!(
+            result.state.previous_crouch, expected_crouch,
+            "level={level}, grounded={grounded}"
+        );
+        if !expected_crouch {
+            assert!(!result.state.crouch.uses_crouched_hull());
+        }
+    }
+}
+
 #[test]
 fn water_samples_currents_swim_and_transition_trace_are_explicit() {
     let world = WaterWorld {
@@ -1078,6 +1399,76 @@ impl Tracer for WaterExitWorld {
     fn movement_time(&self) -> Option<f32> {
         Some(1.0)
     }
+}
+
+#[test]
+fn game_selected_water_ledge_uses_command_direction_and_exact_tf2_impulse() {
+    let policy = source_tf2_water_policy();
+    let configuration = Configuration {
+        water_exit_forward: 30.0,
+        water_exit_up_speed: 300.0,
+        ..Configuration::default()
+    };
+    let mut state = player([0.0; 3], false, policy);
+    state.water_level = 2;
+    state.water_type = CONTENTS_WATER;
+    state.velocity = [10.0, 0.0, 0.0];
+    let result = step(
+        &WaterExitWorld,
+        state,
+        command(240.0, 0.0, 0.0),
+        configuration,
+        policy,
+    )
+    .unwrap();
+    let waist = result
+        .queries
+        .iter()
+        .find(|query| query.purpose == QueryPurpose::WaterWaist)
+        .unwrap();
+    close(waist.end[0] - waist.start[0], 30.0);
+    close(result.state.velocity[2], 282.0);
+    assert_eq!(result.state.water_jump_velocity, [50.0, 0.0, 0.0]);
+    assert_eq!(result.state.water_jump_time_ms, 2_000.0);
+
+    let without_direction = step(
+        &WaterExitWorld,
+        state,
+        StepInput::default(),
+        configuration,
+        policy,
+    )
+    .unwrap();
+    assert_eq!(without_direction.state.water_jump_time_ms, 0.0);
+
+    let mut backward = state;
+    backward.velocity[0] = -10.0;
+    let rejected = step(
+        &WaterExitWorld,
+        backward,
+        command(240.0, 0.0, 0.0),
+        configuration,
+        policy,
+    )
+    .unwrap();
+    assert_eq!(rejected.state.water_jump_time_ms, 0.0);
+
+    let admitted = step(
+        &WaterExitWorld,
+        backward,
+        StepInput {
+            command: Command {
+                forward: 240.0,
+                jump: true,
+                ..Command::default()
+            },
+            ..StepInput::default()
+        },
+        configuration,
+        policy,
+    )
+    .unwrap();
+    assert_eq!(admitted.state.water_jump_time_ms, 2_000.0);
 }
 
 #[test]
