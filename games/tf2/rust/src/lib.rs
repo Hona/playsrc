@@ -872,13 +872,15 @@ impl<W: GameplayWorld + Clone> Session<W> {
         }
     }
 
-    pub fn connected(collision: W, spawn: [f32; 3], map: MapRuntime) -> Self {
+    pub fn connected(
+        collision: W,
+        spawn: [f32; 3],
+        map: MapRuntime,
+        rules: team_selection::TeamRules,
+    ) -> Self {
         let mut session = Self::new(collision, spawn, map);
-        session.team_selection = team_selection::TeamSelection::new(
-            PLAYER_IDENTITY,
-            team_selection::TeamRules::default(),
-        )
-        .expect("local team selection identity is valid");
+        session.team_selection = team_selection::TeamSelection::new(PLAYER_IDENTITY, rules)
+            .expect("local team selection identity is valid");
         session
     }
 
@@ -3564,7 +3566,12 @@ mod tests {
 
     #[test]
     fn connected_session_starts_unassigned_and_selects_authoritative_teams() {
-        let mut session = Session::connected(Floor, [0.0; 3], MapRuntime::empty(0.015));
+        let mut session = Session::connected(
+            Floor,
+            [0.0; 3],
+            MapRuntime::empty(0.015),
+            team_selection::TeamRules::default(),
+        );
         let initial = session.team_snapshot();
         assert_eq!(initial.local_team, class::PlayerTeam::Unassigned);
         assert_eq!((initial.red_count, initial.blue_count), (0, 0));
@@ -3581,7 +3588,12 @@ mod tests {
 
     #[test]
     fn auto_assign_consumes_randomness_only_for_equal_unrestricted_teams() {
-        let mut session = Session::connected(Floor, [0.0; 3], MapRuntime::empty(0.015));
+        let mut session = Session::connected(
+            Floor,
+            [0.0; 3],
+            MapRuntime::empty(0.015),
+            team_selection::TeamRules::default(),
+        );
         let before = session.random_state().authority;
         let selected = session
             .select_team_choice(team_selection::TeamChoice::Auto)
