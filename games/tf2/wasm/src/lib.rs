@@ -3675,6 +3675,7 @@ fn gameplay_error_code(error: &playsrc_tf2::Error) -> u32 {
         playsrc_tf2::Error::ProjectileLimit => 6,
         playsrc_tf2::Error::InvalidStickyLaunchRandom => 7,
         playsrc_tf2::Error::InvalidProjectilePhysics => 8,
+        playsrc_tf2::Error::InvalidPlayerPosition => 13,
         playsrc_tf2::Error::Random(_) => 9,
         playsrc_tf2::Error::UnsupportedJumpClass(_) => 10,
         playsrc_tf2::Error::Bot(_) => 11,
@@ -3846,6 +3847,24 @@ pub unsafe extern "C" fn playsrc_jump_configure(
     }
     *session = candidate;
     1
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_player_set_position(handle: u32, x: f32, y: f32, z: f32) -> u32 {
+    let Some((index, generation)) = decode(handle) else {
+        return 0;
+    };
+    let mut slots = slots().lock().expect("TF2 slots");
+    let Some(slot) = slots.get_mut(index) else {
+        return 0;
+    };
+    if slot.generation != generation {
+        return 0;
+    }
+    let Some(session) = slot.session.as_mut() else {
+        return 0;
+    };
+    u32::from(session.set_position([x, y, z]).is_ok())
 }
 
 #[unsafe(no_mangle)]
@@ -8416,8 +8435,8 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>) -
         )
         .map_err(|_| ())?
         .evaluated(&playsrc_keyvalues::ConditionEnvironment::new([
-            (b"WIN32".to_vec(), true),
-            (b"X360".to_vec(), false),
+            (b"$WIN32".to_vec(), true),
+            (b"$X360".to_vec(), false),
         ]));
         pbytes(out, logical_path.as_bytes())?;
         out.extend_from_slice(&<[u8; 32]>::from(Sha256::digest(source)));
