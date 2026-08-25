@@ -11,6 +11,8 @@ pub enum SoundDefinition {
     BatMiss,
     BatHitFlesh,
     BatHitWorld,
+    ScattergunReload,
+    PistolReload,
 }
 
 impl SoundDefinition {
@@ -27,6 +29,8 @@ impl SoundDefinition {
             Self::BatMiss => "Weapon_Bat.Miss",
             Self::BatHitFlesh => "Weapon_Bat.HitFlesh",
             Self::BatHitWorld => "Weapon_Bat.HitWorld",
+            Self::ScattergunReload => "Weapon_Scatter_Gun.WorldReload",
+            Self::PistolReload => "Weapon_Pistol.WorldReload",
         }
     }
 
@@ -41,7 +45,9 @@ impl SoundDefinition {
             | Self::ScattergunSingle
             | Self::PistolSingle
             | Self::BatMiss
-            | Self::BatHitFlesh => 1,
+            | Self::BatHitFlesh
+            | Self::ScattergunReload
+            | Self::PistolReload => 1,
         }
     }
 }

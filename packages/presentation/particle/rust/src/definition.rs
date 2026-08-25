@@ -677,6 +677,8 @@ fn supported(category: FunctionCategory, identity: &str) -> bool {
             "Position Within Box Random",
             "Position Within Sphere Random",
             "Radius Random",
+            "Remap Initial Scalar",
+            "Remap Scalar to Vector",
             "Rotation Random",
             "Rotation Speed Random",
             "Sequence Random",
@@ -722,6 +724,9 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
             "brush only",
             "kill particle on collision",
             "use bounding box",
+            "use local system",
+            "output is scalar of initial random range",
+            "only active within specified input range",
         ]
         .contains(&name.as_str())
         {
@@ -748,6 +753,8 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
             "emission count scale control point",
             "emission count scale control point field",
             "collision mode",
+            "input field",
+            "output field",
         ]
         .contains(&name.as_str())
         {
@@ -767,6 +774,10 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
             "control point offset for fast collisions",
         ]
         .contains(&name.as_str())
+            || (function
+                .identity
+                .eq_ignore_ascii_case("Remap Scalar to Vector")
+                && ["output minimum", "output maximum"].contains(&name.as_str()))
         {
             matches!(value, Value::Vector3(_))
         } else if [
@@ -835,6 +846,18 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
         .eq_ignore_ascii_case("Collision via traces")
     {
         int_parameter(function, "collision mode", 0) != 1
+    } else if function
+        .identity
+        .eq_ignore_ascii_case("Remap Initial Scalar")
+    {
+        int_parameter(function, "input field", 8) != 8
+            || !matches!(int_parameter(function, "output field", 3), 1 | 3 | 7)
+    } else if function
+        .identity
+        .eq_ignore_ascii_case("Remap Scalar to Vector")
+    {
+        int_parameter(function, "input field", 8) != 8
+            || int_parameter(function, "output field", 0) != 0
     } else {
         false
     };
@@ -992,6 +1015,39 @@ fn accepted_parameter(function: &Function, name: &str) -> bool {
             "oscillation multiplier",
             "oscillation start phase",
             "absolute oscillation",
+        ]
+    } else if function
+        .identity
+        .eq_ignore_ascii_case("Remap Initial Scalar")
+    {
+        &[
+            "emitter lifetime start time (seconds)",
+            "emitter lifetime end time (seconds)",
+            "input field",
+            "input minimum",
+            "input maximum",
+            "output field",
+            "output minimum",
+            "output maximum",
+            "output is scalar of initial random range",
+            "only active within specified input range",
+        ]
+    } else if function
+        .identity
+        .eq_ignore_ascii_case("Remap Scalar to Vector")
+    {
+        &[
+            "emitter lifetime start time (seconds)",
+            "emitter lifetime end time (seconds)",
+            "input field",
+            "input minimum",
+            "input maximum",
+            "output field",
+            "output minimum",
+            "output maximum",
+            "output is scalar of initial random range",
+            "use local system",
+            "control_point_number",
         ]
     } else if function.identity.eq_ignore_ascii_case("Lifetime Random") {
         &["lifetime_min", "lifetime_max", "lifetime_random_exponent"]
