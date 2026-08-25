@@ -69,6 +69,29 @@ describe("configured TF2 Options profile", () => {
       .toMatchObject({ kind: "boolean", defaultValue: true, visibility: "visible" })
   })
 
+  test("retains archived unbounded TF2 crosshair declarations and exact Multiplayer edit ranges", () => {
+    for (const [name, defaultValue] of [
+      ["cl_crosshair_red", "200"],
+      ["cl_crosshair_green", "200"],
+      ["cl_crosshair_blue", "200"],
+      ["cl_crosshair_scale", "32.0"],
+      ["cl_crosshair_file", ""],
+    ] as const) {
+      const convar = TF2_SELECTED_OPTIONS.convars.find((candidate) => candidate.name === name)
+      expect(convar).toMatchObject({ defaultValue, flags: SOURCE_CONVAR_FLAGS.ARCHIVE })
+      expect(convar?.minimum).toBeUndefined()
+      expect(convar?.maximum).toBeUndefined()
+    }
+    for (const channel of ["red", "green", "blue"]) {
+      expect(TF2_SELECTED_OPTIONS.settings.find((candidate) => candidate.id === `multiplayer.crosshair-${channel}`))
+        .toMatchObject({ kind: "float", defaultValue: 200, minimum: 0, maximum: 255, owner: "game" })
+    }
+    expect(TF2_SELECTED_OPTIONS.settings.find((candidate) => candidate.id === "multiplayer.crosshair-scale"))
+      .toMatchObject({ kind: "float", defaultValue: 32, minimum: 16, maximum: 48, owner: "game" })
+    expect(TF2_SELECTED_OPTIONS.settings.find((candidate) => candidate.id === "multiplayer.crosshair-file"))
+      .toMatchObject({ kind: "string", defaultValue: "", owner: "game" })
+  })
+
   test("retains all displayed keyboard actions and exact known defaults", () => {
     const bindings = TF2_SELECTED_OPTIONS.settings.filter((setting) => setting.kind === "binding")
     expect(bindings).toHaveLength(65)

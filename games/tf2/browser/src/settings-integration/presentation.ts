@@ -11,7 +11,9 @@ import {
   type VguiRuntimeSnapshot,
   type VguiViewport,
 } from "@playsrc/vgui"
-import type { Tf2UiAdvancedOption, Tf2UiKeyboardAction } from "../ui-resources"
+import { tf2CrosshairSettings } from "../hud"
+import { paintTf2AuthoredCrosshair } from "../hud-integration/crosshair"
+import { tf2AuthoredCrosshairs, type Tf2UiAdvancedOption, type Tf2UiKeyboardAction } from "../ui-resources"
 import type { Tf2VguiResources } from "../ui-integration"
 import type { Tf2BrowserSettings, Tf2BrowserSettingsSnapshot } from "./state"
 
@@ -105,6 +107,16 @@ function apply(runtime: VguiRuntime, operation: VguiOperation): VguiPanelId | un
 function panel(runtime: VguiRuntime, name: string, parent?: VguiPanelId): VguiPanelId | null {
   return runtime.snapshot().panels.find((value) => value.name.toLowerCase() === name.toLowerCase() && (parent === undefined || value.parent === parent))?.id ?? null
 }
+
+function panelElement(root: HTMLElement, name: string): HTMLElement | null {
+  const pending: Element[] = [root]
+  while (pending.length > 0) {
+    const current = pending.pop()!
+    if ((current as HTMLElement).dataset?.vguiName === name) return current as HTMLElement
+    for (const child of Array.from(current.children)) pending.push(child)
+  }
+  return null
+}
 function applyPage(runtime: VguiRuntime, page: VguiPanelId, source: VguiResourceDocument, activeConditions: readonly string[]): void {
   const blocks = source.root.children.filter((block) => block.value === null && scalar(block, "ControlName") !== null)
   apply(runtime, { kind: "replace-resource", parent: page, document: derivedDocument(source, `page-${page}`, rootNode(source.root.name, blocks.map(shallow))), selection: { activeConditions, resolutionSuffixes: ["_hidef"] } })
@@ -148,6 +160,13 @@ class Presentation implements Tf2OptionsPresentation {
   readonly #publishedControls = new Map<VguiRuntime, Map<VguiPanelId, string>>()
   readonly #keyboardRows = new Map<number, BindingSettingSchema>()
   readonly #dialogs = new Map<StandardDialogIdentity, StandardDialog>()
+  #crosshairPreview?: HTMLElement
+  #crosshairPreviewPanel?: VguiPanelId
+  #crosshairPreviewStyle = ""
+  #crosshairPreviewFrame = 0
+  #crosshairPreviewAscending = true
+  #crosshairPreviewAnimated = false
+  #nextCrosshairPreviewFrame = 0
   #visible = false
   #page: Tf2OptionsPage = "keyboard"
   #frame!: VguiPanelId
@@ -219,6 +238,16 @@ class Presentation implements Tf2OptionsPresentation {
     apply(this.#runtime, { kind: "set-panel-state", panel: 1, visible: false })
     this.#publishValues()
     })
+    const preview = panel(this.#runtime, "AdvCrosshairImage")
+    const previewHost = panelElement(this.#standardMount, "AdvCrosshairImage")
+    if (preview === null || !previewHost) throw new Error("Configured TF2 Multiplayer crosshair preview is unavailable")
+    this.#crosshairPreviewPanel = preview
+    this.#crosshairPreview = request.root.ownerDocument.createElement("div")
+    this.#crosshairPreview.dataset.tf2Crosshair = "preview"
+    this.#crosshairPreview.style.position = "absolute"
+    this.#crosshairPreview.style.pointerEvents = "none"
+    previewHost.append(this.#crosshairPreview)
+    this.#publishCrosshairPreview()
   }
 
   #bindControls(source: VguiResourceDocument): void {
@@ -232,17 +261,26 @@ class Presentation implements Tf2OptionsPresentation {
       const scale = schema.kind === "float" || schema.kind === "integer" ? 100 : 1
       const controlName = scalar(block, "ControlName") ?? ""
       const input = controlInput(controlName)
-      const choices = input === "combo" && schema.kind === "enum"
-        ? Object.freeze(schema.options.map((option) => option.value))
-        : input === "combo" && schema.kind === "boolean"
-          ? Object.freeze([false, true])
+      const choices = input === "combo" && schema.id === "multiplayer.crosshair-file"
+        ? Object.freeze(["", ...tf2AuthoredCrosshairs.styles.map((style) => style.file)])
+        : input === "combo" && schema.kind === "enum"
+          ? Object.freeze(schema.options.map((option) => option.value))
+          : input === "combo" && schema.kind === "boolean"
+            ? Object.freeze([false, true])
+            : undefined
+      const choiceLabels = schema.id === "multiplayer.crosshair-file"
+        ? Object.freeze(["None", ...tf2AuthoredCrosshairs.styles.map((style) => style.file)])
+        : choices
+          ? schema.kind === "enum"
+            ? Object.freeze(schema.options.map((option) => option.label))
+            : Object.freeze(["#gameui_disabled", "#gameui_enabled"])
           : undefined
       this.#controls.set(identity, Object.freeze({
         schema,
         scale,
         input,
         choices,
-        choiceLabels: choices ? schema.kind === "enum" ? Object.freeze(schema.options.map((option) => option.label)) : Object.freeze(["#gameui_disabled", "#gameui_enabled"]) : undefined,
+        choiceLabels,
         ...(input === "toggle" && schema.kind === "enum" ? { toggleValues: Object.freeze([schema.options[0]!.value, schema.options[Math.min(1, schema.options.length - 1)]!.value]) as readonly [SettingValue, SettingValue] } : {}),
       }))
       if (input === "combo") apply(this.#runtime, { kind: "mutate-control", panel: identity, mutation: { editable: false } })
@@ -538,10 +576,64 @@ class Presentation implements Tf2OptionsPresentation {
     this.#runtime.deferPresentation(() => apply(this.#runtime, { kind: "mutate-control", panel: list, mutation: { sectionedItems: snapshot.state.sectionedItems.map((item) => ({ ...item, cells: { ...item.cells, Key: this.#bindingText(this.#keyboardRows.get(item.id)!, values) } })) } }))
   }
 
+  #publishCrosshairPreview(timeSeconds?: number): void {
+    if (!this.#crosshairPreview || this.#crosshairPreviewPanel === undefined) return
+    const values = this.#settings.snapshot().settings.pending ?? this.#settings.snapshot().settings.current
+    const settings = tf2CrosshairSettings(values)
+    const style = tf2AuthoredCrosshairs.styles.find((candidate) => candidate.file === settings.file)
+    if (!style) {
+      if (this.#crosshairPreviewStyle === "" && this.#crosshairPreview.style.display === "none") return
+      this.#crosshairPreview.style.display = "none"
+      apply(this.#runtime, { kind: "set-panel-state", panel: this.#crosshairPreviewPanel, visible: false })
+      this.#crosshairPreviewStyle = ""
+      this.#crosshairPreviewAnimated = false
+      return
+    }
+    const changed = this.#crosshairPreviewStyle !== style.file
+    if (!changed && timeSeconds !== undefined
+      && (style.frames.length <= 1 || timeSeconds < this.#nextCrosshairPreviewFrame)) return
+    if (changed) {
+      this.#crosshairPreviewStyle = style.file
+      this.#crosshairPreviewFrame = 0
+      this.#crosshairPreviewAscending = true
+      this.#crosshairPreviewAnimated = style.frames.length > 1
+      this.#nextCrosshairPreviewFrame = (timeSeconds ?? this.#configuration.clock.nowSeconds()) + 0.2
+    } else if (timeSeconds !== undefined && style.frames.length > 1 && timeSeconds >= this.#nextCrosshairPreviewFrame) {
+      this.#nextCrosshairPreviewFrame = timeSeconds + 0.2
+      let frame = this.#crosshairPreviewFrame + (this.#crosshairPreviewAscending ? 1 : -1)
+      if (frame >= style.frames.length) {
+        this.#crosshairPreviewAscending = false
+        frame -= 1
+      } else if (frame < 0) {
+        this.#crosshairPreviewAscending = true
+        frame += 1
+      }
+      this.#crosshairPreviewFrame = frame
+    }
+    const state = this.#runtime.snapshot().panels.find((candidate) => candidate.id === this.#crosshairPreviewPanel)
+    if (!state) throw new Error("Configured TF2 Multiplayer crosshair preview disappeared")
+    const width = settings.scale / 48 * state.bounds.width
+    const half = Math.trunc(width / 2)
+    this.#crosshairPreview.style.left = `${Math.trunc(state.bounds.width / 2) - half}px`
+    this.#crosshairPreview.style.top = `${Math.trunc(state.bounds.height / 2) - half}px`
+    this.#crosshairPreview.style.width = `${Math.trunc(width)}px`
+    this.#crosshairPreview.style.height = `${Math.trunc(width)}px`
+    this.#crosshairPreview.dataset.crosshairStyle = style.file
+    paintTf2AuthoredCrosshair(
+      this.#crosshairPreview,
+      style,
+      Object.freeze([settings.red, settings.green, settings.blue, 255]),
+      this.#crosshairPreviewFrame,
+    )
+    this.#crosshairPreview.style.display = "block"
+    apply(this.#runtime, { kind: "set-panel-state", panel: this.#crosshairPreviewPanel, visible: true })
+  }
+
   #publishValues(): void {
     this.#publishControls(this.#runtime, this.#controls)
     if (this.#advancedRuntime) this.#publishControls(this.#advancedRuntime, this.#advancedControls)
     this.#publishKeyboard()
+    this.#publishCrosshairPreview()
   }
 
   #stageControls(runtime: VguiRuntime, bindings: ReadonlyMap<VguiPanelId, ControlBinding>): void {
@@ -578,6 +670,12 @@ class Presentation implements Tf2OptionsPresentation {
       if (!advanced && list === request.source && request.message.name === "ItemSelected") {
         const identity = Number(request.message.fields.itemID)
         this.#selectedBinding = this.#keyboardRows.get(identity) ?? null
+      }
+      const control = !advanced ? this.#controls.get(request.source) : undefined
+      if (control?.schema.id.startsWith("multiplayer.crosshair-")
+        && ["SliderMoved", "TextChanged", "ItemSelected"].includes(request.message.name)) {
+        this.#stageControls(this.#runtime, new Map([[request.source, control]]))
+        this.#publishCrosshairPreview()
       }
       return
     }
@@ -676,6 +774,9 @@ class Presentation implements Tf2OptionsPresentation {
   frame(timeSeconds: number): void {
     if(!this.#visible)return
     apply(this.#page==="advanced"?this.#ensureAdvanced():this.#runtime, { kind: "frame", timeSeconds })
+    if (this.#page === "multiplayer" && this.#crosshairPreviewAnimated && timeSeconds >= this.#nextCrosshairPreviewFrame) {
+      this.#publishCrosshairPreview(timeSeconds)
+    }
     if (this.#activeDialog !== null) {
       const dialog = this.#dialogs.get(this.#activeDialog)!
       if (!this.#runtime.snapshot().panels.find((value) => value.id === dialog.panel)?.visible) {
@@ -684,7 +785,11 @@ class Presentation implements Tf2OptionsPresentation {
       }
     }
   }
-  setViewport(viewport: VguiViewport): void { apply(this.#runtime, { kind: "set-viewport", viewport }); if (this.#advancedRuntime) apply(this.#advancedRuntime, { kind: "set-viewport", viewport }) }
+  setViewport(viewport: VguiViewport): void {
+    apply(this.#runtime, { kind: "set-viewport", viewport })
+    if (this.#advancedRuntime) apply(this.#advancedRuntime, { kind: "set-viewport", viewport })
+    this.#publishCrosshairPreview()
+  }
   snapshot() { return Object.freeze({ visible: this.#visible, page: this.#page, bindingCapture: this.#bindingCapture, selectedBinding: this.#selectedBinding?.id ?? null, settings: this.#settings.snapshot(), vgui: this.#page === "advanced" ? this.#ensureAdvanced().snapshot() : this.#runtime.snapshot() }) }
   destroy(): void { if (!this.#destroyed) { this.#destroyed = true; apply(this.#runtime, { kind: "destroy" }); if (this.#advancedRuntime) apply(this.#advancedRuntime, { kind: "destroy" }); this.#standardMount.remove(); this.#advancedMount.remove() } }
 }
