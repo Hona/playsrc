@@ -1742,6 +1742,7 @@ export class Tf2Application {
           origin: panel.origin,
           angles: panel.angles,
           bounds: panel.bounds,
+          presentationTimeSeconds: now,
           ...(pose ? { pose: Object.freeze({ primitives: pose.primitives }) } : {}),
         })
       })

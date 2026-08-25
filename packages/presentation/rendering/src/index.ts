@@ -671,6 +671,7 @@ export type ModelPanelPass = Readonly<{
   origin: readonly [number, number, number]
   angles: readonly [number, number, number]
   bounds: Readonly<{ x: number; y: number; width: number; height: number }>
+  presentationTimeSeconds?: number
   pose?: NonNullable<ModelItem["pose"]>
 }>
 
@@ -845,6 +846,16 @@ type StaticPropResource = Readonly<{
   fadeUniform: ReturnType<typeof TSL.uniform>
 }>
 
+type ModelPanelMaterialAnimation = Readonly<{
+  texture: THREE.Texture
+  frames: readonly THREE.Texture[]
+  frameRate: number | null
+  scrollRate: number | null
+  scrollAngle: number | null
+  scrollX: ReturnType<typeof TSL.uniform>
+  scrollY: ReturnType<typeof TSL.uniform>
+}> & { frame: number }
+
 type SceneResources = {
   map: RuntimeMap
   payload: Uint8Array
@@ -852,6 +863,7 @@ type SceneResources = {
   loadRequest: Omit<MapLoadRequest, "payload" | "signal">
   group: THREE.Group
   modelTemplates: Map<string, THREE.Group>
+  modelPanelMaterialAnimations: ReadonlyMap<string, readonly ModelPanelMaterialAnimation[]>
   modelOccurrenceInstances:Map<number,THREE.Group>
   brushModelTemplates:Map<number,THREE.Group>
   particleTextures: Map<string, THREE.DataTexture>
@@ -1798,6 +1810,7 @@ class RendererOwner implements Renderer {
     const staticPropInstances: StaticPropResource[] = []
     group.add(mainStaticProps, skyStaticProps)
     const modelTemplates = new Map<string, THREE.Group>()
+    const modelPanelMaterialAnimations = new Map<string, ModelPanelMaterialAnimation[]>()
     const modelOccurrenceInstances=new Map<number,THREE.Group>()
     const brushModelTemplates=new Map<number,THREE.Group>()
     const particleTextures = new Map<string, THREE.DataTexture>()
@@ -2402,8 +2415,31 @@ class RendererOwner implements Renderer {
             let base = first
             if (typedMaterial?.shader === "unlit-two-texture") {
               const second = createModelTexture(resolved.logicalPath, 6)
-              if (!second) throw new RenderingError("MissingInput", `second model texture ${resolved.logicalPath} is unavailable`)
-              let sampledSecond = TSL.texture(second.texture, TSL.uv())
+              if (!second) throw new RenderingError("MissingInput", `authored second model texture ${resolved.logicalPath} is unavailable`)
+              const scrollX = TSL.uniform(0, "float")
+              const scrollY = TSL.uniform(0, "float")
+              const frames = Object.freeze(Array.from({ length: second.input.frameCount }, (_, frame) => {
+                if (frame === 0) return second.texture
+                const texture = textureFromAuthored(second.input, THREE.SRGBColorSpace, frame)
+                disposables.add(texture)
+                return texture
+              }))
+              const animation: ModelPanelMaterialAnimation = {
+                texture: second.texture,
+                frames,
+                frameRate: typedMaterial.state.secondFrameRate,
+                scrollRate: typedMaterial.state.secondScrollRate,
+                scrollAngle: typedMaterial.state.secondScrollAngle,
+                scrollX,
+                scrollY,
+                frame: 0,
+              }
+              const key = model.logicalPath.toLowerCase()
+              const records = modelPanelMaterialAnimations.get(key) ?? []
+              records.push(animation)
+              modelPanelMaterialAnimations.set(key, records)
+              const shifted = TSL.uv().add(TSL.vec2(scrollX, scrollY))
+              let sampledSecond = TSL.texture(second.texture, shifted)
               if (second.input.sourceFormat === 1) sampledSecond = sampledSecond.abgr
               else if (second.input.sourceFormat === 11) sampledSecond = sampledSecond.gbar
               else if (second.input.sourceFormat === 12) sampledSecond = sampledSecond.bgra
@@ -2656,6 +2692,7 @@ class RendererOwner implements Renderer {
       },
       group,
       modelTemplates,
+      modelPanelMaterialAnimations,
       modelOccurrenceInstances,
       brushModelTemplates,
       particleTextures,
@@ -2711,6 +2748,7 @@ class RendererOwner implements Renderer {
           || !finite([...panel.origin, ...panel.angles, panel.horizontalFov4By3,
             panel.bounds.x, panel.bounds.y, panel.bounds.width, panel.bounds.height])
           || panel.bounds.width <= 0 || panel.bounds.height <= 0
+          || (panel.presentationTimeSeconds !== undefined && (!Number.isFinite(panel.presentationTimeSeconds) || panel.presentationTimeSeconds < 0))
           || panel.horizontalFov4By3 <= 0 || panel.horizontalFov4By3 >= 180) {
           throw new RenderingError("MalformedInput", `model-panel pass is invalid: ${panel.identity}`)
         }
@@ -2723,6 +2761,25 @@ class RendererOwner implements Renderer {
           this.#modelPanelInstances.set(identity, retained)
         }
         if (panel.pose) retained.meshes = this.#applyPose(retained.instance, panel.pose, retained.meshes !== undefined, retained.meshes)
+        const presentationTime = panel.presentationTimeSeconds ?? 0
+        for (const animation of this.#active.modelPanelMaterialAnimations.get(identity) ?? []) {
+          if (animation.frameRate !== null && animation.frames.length > 1) {
+            const frame = Math.floor(presentationTime * animation.frameRate) % animation.frames.length
+            if (frame !== animation.frame) {
+              const next = animation.frames[frame]!
+              animation.texture.image = next.image
+              animation.texture.mipmaps = next.mipmaps
+              animation.texture.needsUpdate = true
+              animation.frame = frame
+            }
+          }
+          if (animation.scrollRate !== null && animation.scrollAngle !== null) {
+            const radians = animation.scrollAngle * Math.PI / 180
+            const wrap = (value: number) => ((value % 1) + 1) % 1
+            animation.scrollX.value = wrap(presentationTime * Math.cos(radians) * animation.scrollRate)
+            animation.scrollY.value = wrap(presentationTime * Math.sin(radians) * animation.scrollRate)
+          }
+        }
         this.#modelPanelScene.clear()
         this.#modelPanelScene.add(retained.instance)
         const presentation = sourceModelPanelPresentation({

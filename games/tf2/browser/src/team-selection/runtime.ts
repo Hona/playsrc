@@ -96,6 +96,9 @@ const object = (node: VguiResourceNode, name: string): VguiResourceNode | null =
   node.children.find((child) => child.name.toLowerCase() === name.toLowerCase() && child.value === null) ?? null
 const shallow = (node: VguiResourceNode): VguiResourceNode => {
   const children = node.children.filter((child) => child.value !== null || child.name.toLowerCase() === "controlname")
+  if (scalar(node, "ControlName") === "CTeamMenu") {
+    children.push(Object.freeze({ name: "bgcolor_override", value: "0 0 0 0", condition: null, children: Object.freeze([]) }))
+  }
   if (scalar(node, "ControlName") === "CTFTeamButton") {
     for (const name of ["defaultBgColor_override", "armedBgColor_override", "depressedBgColor_override", "selectedBgColor_override"]) {
       children.push(Object.freeze({ name, value: "0 0 0 0", condition: null, children: Object.freeze([]) }))
