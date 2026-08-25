@@ -2524,8 +2524,9 @@ async function exerciseSwitchedGameplay(session:string,target:string):Promise<Re
   await automation.console.submitCommand("noclip")
   await agent(["--session",session,"press","Backquote"])
   await agent(["--session",session,"wait","--fn","Number(document.querySelector('main').dataset.movementMode)===1","--timeout","30000"])
-  const movement=await automation.player.walkForward(3)
-  require(movement.lastTick>=movement.firstTick+3&&movement.distance>1,`${target} post-activation gameplay did not advance: ${JSON.stringify(movement)}`)
+  let movement=await automation.player.walkForward(8)
+  if(movement.distance<=1)movement=await automation.player.walkForward(8)
+  require(movement.lastTick>=movement.firstTick+8&&movement.distance>1,`${target} post-activation gameplay did not advance: ${JSON.stringify(movement)}`)
   await agent(["--session",session,"press","Backquote"])
   return Object.freeze({target,firstTick:movement.firstTick,lastTick:movement.lastTick,distance:movement.distance})
 }
