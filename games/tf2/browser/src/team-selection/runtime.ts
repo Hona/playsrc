@@ -277,7 +277,20 @@ class Integration implements Tf2TeamSelectionIntegration {
     if (state.focused && previous.focused !== state.focused) {
       this.#root.querySelector?.<HTMLElement>(`[data-vgui-name="${BUTTON_NAMES[state.focused]}"]`)?.focus?.()
     }
+    this.#syncAccessibility()
     this.#onModelPanels(this.modelPanels())
+  }
+
+  #syncAccessibility(): void {
+    const state = this.#state
+    if (!state.visible || !state.server) return
+    for (const team of TAB_ORDER) {
+      const button = this.#root.querySelector?.<HTMLElement>(`[data-vgui-name="${BUTTON_NAMES[team]}"]`)
+      button?.setAttribute("aria-label", team === "blue" ? "BLU" : team === "red" ? "RED" : team === "auto" ? "Auto-assign" : "Spectate")
+      if (team === "red" || team === "blue") {
+        button?.setAttribute("aria-disabled", String(team === "red" ? state.server.redDisabled : state.server.blueDisabled))
+      }
+    }
   }
 
   #modelName(team: Tf2TeamChoice): typeof MODEL_NAMES[number] {
@@ -355,7 +368,10 @@ class Integration implements Tf2TeamSelectionIntegration {
   }
 
   frame(timeSeconds: number): void {
-    if (this.#state.visible) apply(this.#runtime, { kind: "frame", timeSeconds })
+    if (this.#state.visible) {
+      apply(this.#runtime, { kind: "frame", timeSeconds })
+      this.#syncAccessibility()
+    }
   }
 
   setViewport(viewport: VguiViewport): void {
