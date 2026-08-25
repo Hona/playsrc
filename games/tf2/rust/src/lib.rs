@@ -740,6 +740,7 @@ pub enum Error {
     InvalidProjectilePhysics,
     Random(RandomError),
     Bot(bot::Error),
+    TeamSelection(team_selection::TeamSelectionError),
 }
 
 impl From<MoveError> for Error {
@@ -1333,8 +1334,28 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 .bots
                 .as_mut()
                 .ok_or(Error::Bot(bot::Error::MissingScenario))?;
-            bots.apply(request, self.team, self.class, &mut self.authority_random)
-                .map_err(Error::Bot)?;
+            bots.apply(
+                request,
+                self.team_selection.local_team(),
+                self.class,
+                &mut self.authority_random,
+            )
+            .map_err(Error::Bot)?;
+            let mut roster = vec![team_selection::RosterPlayer {
+                identity: PLAYER_IDENTITY,
+                team: self.team_selection.local_team(),
+            }];
+            roster.extend(
+                bots.snapshots()
+                    .into_iter()
+                    .map(|bot| team_selection::RosterPlayer {
+                        identity: bot.identity,
+                        team: bot.team,
+                    }),
+            );
+            self.team_selection
+                .replace_roster(roster)
+                .map_err(Error::TeamSelection)?;
         }
         self.advance_sniper_scope(command);
         let mut movement_policy = MovementPolicy {
@@ -1409,7 +1430,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             bots.advance(
                 &self.collision,
                 self.tick,
-                self.team,
+                self.team_selection.local_team(),
                 self.lifecycle == PlayerLifecycle::Active,
                 self.movement.position,
                 &mut self.authority_random,

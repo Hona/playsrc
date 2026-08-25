@@ -641,6 +641,8 @@ describe("canonical all-class TF2 session HUD adapter", () => {
       expect(shovel.ammoDisplay).toBe("hidden")
       expect(shovel.clip).toEqual({ kind: "unavailable", reason: "not-applicable" })
     }
+  })
+
   test("suppresses observer HUD and carries the authoritative spectator team without a weapon", () => {
     const observer = compactSnapshot(1n, {
       team: 1,
