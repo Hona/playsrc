@@ -3644,6 +3644,7 @@ fn gameplay_error_code(error: &playsrc_tf2::Error) -> u32 {
         playsrc_tf2::Error::Random(_) => 9,
         playsrc_tf2::Error::UnsupportedJumpClass(_) => 10,
         playsrc_tf2::Error::Bot(_) => 11,
+        playsrc_tf2::Error::TeamSelection(_) => 12,
     }
 }
 
@@ -4290,6 +4291,8 @@ fn encode_snapshot(
                 match bot.lifecycle {
                     playsrc_tf2::PlayerLifecycle::Active => 1,
                     playsrc_tf2::PlayerLifecycle::Dying => 2,
+                    playsrc_tf2::PlayerLifecycle::Welcome => 3,
+                    playsrc_tf2::PlayerLifecycle::Observer => 4,
                 },
                 bot.difficulty as u8,
                 bot.objective as u8,
