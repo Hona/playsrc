@@ -1092,6 +1092,75 @@ fn resolves_shader_blend_sheet_and_derived_trail_output() {
 }
 
 #[test]
+fn complete_render_transaction_rolls_back_missing_materials_and_output_limits() {
+    let bytes = fixture(false);
+    let registry = registry(&bytes);
+    let mut world =
+        playsrc_particle::ParticleWorld::new(&registry, WorldLimits::default()).unwrap();
+    let event = create_event(vec![control([0.0; 3], [0.0; 3])]);
+    let request = AdvanceRequest {
+        from_seconds: 0.0,
+        to_seconds: 0.5,
+        maximum_step_seconds: 0.1,
+        camera_position: [0.0; 3],
+    };
+    let material_names = vec![
+        "effects/rocketrailsmoke.vmt".to_owned(),
+        "effects/sc_brightglow_y_nomodel.vmt".to_owned(),
+    ];
+    let materials = BTreeMap::from([
+        (material_names[0].clone(), material(animated_sheet())),
+        (material_names[1].clone(), material(animated_sheet())),
+    ]);
+    let before = world.clone();
+
+    assert_eq!(
+        world
+            .transact_render_output(
+                std::slice::from_ref(&event),
+                request,
+                &mut NoHit,
+                &BTreeMap::new(),
+                &material_names,
+                1024 * 1024,
+            )
+            .unwrap_err()
+            .code,
+        ErrorCode::MissingDependency
+    );
+    assert_eq!(world, before);
+    assert_eq!(
+        world
+            .transact_render_output(
+                std::slice::from_ref(&event),
+                request,
+                &mut NoHit,
+                &materials,
+                &material_names,
+                1,
+            )
+            .unwrap_err()
+            .code,
+        ErrorCode::BoundExceeded
+    );
+    assert_eq!(world, before);
+
+    let output = world
+        .transact_render_output(
+            &[event],
+            request,
+            &mut NoHit,
+            &materials,
+            &material_names,
+            1024 * 1024,
+        )
+        .unwrap();
+    assert_eq!(&output[..4], b"PSPR");
+    assert_eq!(world.time(), 0.5);
+    assert_eq!(world.effect_count(), 1);
+}
+
+#[test]
 fn natural_death_graceful_stop_reset_and_repeated_failure_clean_up_atomically() {
     let bytes = fixture(false);
     let registry = registry(&bytes);

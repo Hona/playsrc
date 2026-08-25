@@ -1273,15 +1273,11 @@ pub unsafe extern "C" fn playsrc_particle_transact(
         return 0;
     };
     let mut collision = ParticleCollision(collision_world);
-    let Ok((items, bounds)) = world.advance(&events, request, &mut collision) else {
-        return 0;
-    };
-    let Ok(items) = playsrc_particle::resolve_render_output(items, &slot.particle_sheets) else {
-        return 0;
-    };
-    let Ok(output) = playsrc_particle::encode_render_output(
-        &items,
-        bounds,
+    let Ok(output) = world.transact_render_output(
+        &events,
+        request,
+        &mut collision,
+        &slot.particle_sheets,
         &slot.particle_materials,
         64 * 1024 * 1024,
     ) else {
@@ -9938,14 +9934,15 @@ fn decode_particle_transaction(
     let to = r.f32()?;
     let camera_position = [r.f32()?, r.f32()?, r.f32()?];
     let count = r.u32()? as usize;
-    if count > 4096 || to < from {
+    if count > 4096 || from < 0.0 || to < from {
         return Err(());
     }
     let mut events = Vec::with_capacity(count);
     let mut prior_timestamp = from;
     for order in 0..count {
         let kind = r.u8()?;
-        if r.take(3)? != [0, 0, 0] {
+        let mode = r.u8()?;
+        if r.take(2)? != [0, 0] || (kind != 3 && mode != 0) {
             return Err(());
         }
         let identity = r.u64()?;
@@ -9978,11 +9975,11 @@ fn decode_particle_transaction(
             },
             3 => playsrc_particle::EventCommand::StopEmission {
                 effect_identity,
-                mode: playsrc_particle::StopMode::Graceful,
-            },
-            4 => playsrc_particle::EventCommand::StopEmission {
-                effect_identity,
-                mode: playsrc_particle::StopMode::Immediate,
+                mode: match mode {
+                    0 => playsrc_particle::StopMode::Graceful,
+                    1 => playsrc_particle::StopMode::Immediate,
+                    _ => return Err(()),
+                },
             },
             _ => return Err(()),
         };
@@ -10046,6 +10043,90 @@ fn with<T>(handle: u32, read: impl FnOnce(&Slot) -> T) -> Option<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn particle_stop_transaction(mode: u8) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"PPTX");
+        bytes.extend_from_slice(&2_u32.to_le_bytes());
+        bytes.extend_from_slice(&0.0_f32.to_le_bytes());
+        bytes.extend_from_slice(&0.015_f32.to_le_bytes());
+        bytes.extend_from_slice(&[0; 12]);
+        bytes.extend_from_slice(&1_u32.to_le_bytes());
+        bytes.extend_from_slice(&[3, mode, 0, 0]);
+        bytes.extend_from_slice(&7_u64.to_le_bytes());
+        bytes.extend_from_slice(&0.015_f32.to_le_bytes());
+        bytes.extend_from_slice(&9_u32.to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn particle_transaction_uses_one_stop_opcode_and_explicit_source_modes() {
+        for (mode, expected) in [
+            (0, playsrc_particle::StopMode::Graceful),
+            (1, playsrc_particle::StopMode::Immediate),
+        ] {
+            let (events, request) = decode_particle_transaction(&particle_stop_transaction(mode))
+                .expect("current particle transaction must decode");
+            assert_eq!(request.from_seconds, 0.0);
+            assert_eq!(request.to_seconds, 0.015);
+            assert_eq!(
+                events[0].command,
+                playsrc_particle::EventCommand::StopEmission {
+                    effect_identity: 9,
+                    mode: expected,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn particle_transaction_rejects_old_versions_duplicate_opcodes_and_malformed_inputs() {
+        let current = particle_stop_transaction(0);
+        let mutations: Vec<Vec<u8>> = vec![
+            {
+                let mut bytes = current.clone();
+                bytes[4..8].copy_from_slice(&1_u32.to_le_bytes());
+                bytes
+            },
+            {
+                let mut bytes = current.clone();
+                bytes[32] = 4;
+                bytes
+            },
+            {
+                let mut bytes = current.clone();
+                bytes[33] = 2;
+                bytes
+            },
+            {
+                let mut bytes = current.clone();
+                bytes[34] = 1;
+                bytes
+            },
+            {
+                let mut bytes = current.clone();
+                bytes[16..20].copy_from_slice(&f32::NAN.to_le_bytes());
+                bytes
+            },
+            {
+                let mut bytes = current.clone();
+                bytes[44..48].copy_from_slice(&0.03_f32.to_le_bytes());
+                bytes
+            },
+            {
+                let mut bytes = current.clone();
+                bytes.push(0);
+                bytes
+            },
+        ];
+        for (index, bytes) in mutations.iter().enumerate() {
+            assert!(
+                decode_particle_transaction(bytes).is_err(),
+                "malformed mutation {index} was accepted"
+            );
+        }
+    }
+
     #[test]
     fn material_state_targets_reject_conflicting_identity_or_source() {
         let mut targets = BTreeMap::new();
