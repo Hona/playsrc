@@ -524,7 +524,8 @@ export class Tf2Application {
         || this.#view.phase !== prior.phase
         || this.#view.consoleVisible !== prior.consoleVisible
         || this.#view.classSelectionVisible !== prior.classSelectionVisible
-        || this.#view.optionsVisible !== prior.optionsVisible)) {
+        || this.#view.optionsVisible !== prior.optionsVisible
+        || this.#view.teamSelectionVisible !== prior.teamSelectionVisible)) {
       this.#hudContext = undefined
       this.#hudContextIdentity = -1
       this.#hudIntegration.setCrosshair(this.#currentHudContext(this.#snapshot).crosshair)
@@ -1730,7 +1731,7 @@ export class Tf2Application {
     const loadingImage = this.#view.gameUi === "loading" || this.#view.phase === "Loading" || this.#view.phase === "Replacing"
     const clientModeAllows = this.#view.gameUi === "in-game"
     const classSelection = this.#view.classSelectionVisible === true
-    const vguiInput = this.#view.consoleVisible || this.#view.optionsVisible === true || classSelection
+    const vguiInput = this.#view.consoleVisible || this.#view.optionsVisible === true || classSelection || this.#view.teamSelectionVisible === true
     const identity = Number(respawnAllowed)
       | Number(paused) << 1
       | Number(vguiInput) << 2
@@ -3680,7 +3681,8 @@ export class Tf2Application {
       this.toggleConsole()
       return
     }
-    if (this.#view.consoleVisible || this.#view.optionsVisible || this.#view.gameUi !== "in-game" || event.repeat) return
+    if (this.#view.consoleVisible || this.#view.optionsVisible || this.#teamSelection?.state().visible
+      || this.#view.gameUi !== "in-game" || event.repeat) return
     const action = this.#keyboardAction(event)
     if (!action) return
     if (action === "changeteam") {
