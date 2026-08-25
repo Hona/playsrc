@@ -102,6 +102,20 @@ describe("TF2 GameUI map-command ownership", () => {
 })
 
 describe("TF2 GameUI Escape and pending owner operations", () => {
+  test("hides source-disabled promotions, account content, and overlapping duplicate settings", () => {
+    const panels = createTf2GameUiTransitionFixture().gameUi.snapshot().panels
+    for (const name of [
+      "EventPromo", "FriendsContainer", "ShowPromoCodesButton", "CharacterSetupButton", "GeneralStoreButton",
+      "Notifications_ShowButtonPanel", "MOTD_ShowButtonPanel", "WatchStreamButton", "QuestLogButton",
+      "NoGCMessage", "NoGCImage", "RankBorder", "CycleRankTypeButton", "VRBGPanel", "VRModeButton",
+      "SettingsButtonSDK", "TF2SettingsButtonSDK", "icon_generator", "PartySlot0", "QueueContainer",
+    ]) {
+      expect(panels.find((panel) => panel.name === name)?.effectivelyVisible, name).toBeFalse()
+    }
+    expect(panels.find((panel) => panel.name === "SettingsButton")?.effectivelyVisible).toBeTrue()
+    expect(panels.find((panel) => panel.name === "TF2SettingsButton")?.effectivelyVisible).toBeTrue()
+  })
+
   test("classifies Escape in all six state contexts", () => {
     const expected = {
       "main-menu": { disposition: "ignored", state: "main-menu", request: null },
@@ -192,7 +206,11 @@ describe("TF2 loading dialog lifecycle", () => {
     fixture.gameUi.dispatch({ kind: "loading-started", mapIdentity: "jump_beef" })
     const mounted = presentation.update(1, fixture.gameUi.state(), { width: 1_280, height: 720 }, null)!
     fixture.loading.apply(mounted)
-    const dialog = fixture.loading.snapshot().panels.find((panel) => panel.name === "LoadingDialog")!
+    const mountedPanels = fixture.loading.snapshot().panels
+    const dialog = mountedPanels.find((panel) => panel.name === "LoadingDialog")!
+    expect(mountedPanels.find((panel) => panel.name === "OnYourWayLabel")?.text).toBe("You're on your way to:")
+    expect(mountedPanels.find((panel) => panel.name === "MapLabel")?.text).toBe("JUMP BEEF")
+    expect(mountedPanels.find((panel) => panel.name === "MapImage")?.effectivelyVisible).toBeFalse()
     expect(fixture.loading.snapshot().input.applicationModal).toBe(dialog.id)
     expect(fixture.loading.snapshot().popups).toEqual([dialog.id])
 
@@ -212,6 +230,8 @@ describe("TF2 loading dialog lifecycle", () => {
     const restarted = presentation.update(2, fixture.gameUi.state(), { width: 1_280, height: 720 }, null)!
     expect(restarted.operations.filter((operation) => operation.kind === "mount")).toHaveLength(1)
     fixture.loading.apply(restarted)
+    expect(fixture.loading.snapshot().panels.find((panel) => panel.name === "MapLabel")?.text).toBe("Upward")
+    expect(fixture.loading.snapshot().panels.find((panel) => panel.name === "MapType")?.text).toBe("Payload")
     expect(fixture.loading.snapshot().input.applicationModal).toBe(dialog.id)
 
     fixture.gameUi.dispatch({ kind: "loading-succeeded" })

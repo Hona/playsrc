@@ -487,17 +487,41 @@ export class Tf2Application {
     const target = this.#loadingTarget ?? this.#activeTarget
     if (!target) throw new Error("TF2 loading target is unavailable")
     this.#loadingPresentationGeneration += 1
+    this.#loadingBackground = this.#resolveLoadingBackground(target, this.#viewport())
+    this.#syncLoadingPresentation()
+  }
+
+  #resolveLoadingBackground(target: BrowserTargetConfiguration, viewport: ApplicationPresentationViewport): Extract<Tf2LoadingBackgroundResult, { ok: true }> {
+    const image = this.#uiResources?.descriptor.images.find((candidate) =>
+      candidate.configuredValue.toLowerCase() === `maps/menu_photos_${target.target}`)
+    const material = image?.classification === "content-vtf" ? image.material : null
+    const provider = material?.providerIdentity?.replace(/^ui-(\d+)-/u, "game-$1-")
     const result = resolveTf2LoadingBackground({
       generation: this.#loadingPresentationGeneration,
       mapIdentity: target.target,
-      viewport: this.#viewport(),
-      mapPhotoLookups: target.loading.mapPhotoLocations.map((location) => Object.freeze({ location, outcome: "missing" as const })),
+      viewport,
+      mapPhotoLookups: target.loading.mapPhotoLocations.map((location) => {
+        if (!material || !provider || !location.startsWith(`${provider}:`)
+          || !material.sha256 || !material.byteLength || !material.providerIdentity || !material.providerRevision) {
+          return Object.freeze({ location, outcome: "missing" as const })
+        }
+        return Object.freeze({
+          location,
+          outcome: "found" as const,
+          asset: Object.freeze({
+            logicalPath: material.logicalPath,
+            byteLength: material.byteLength,
+            sha256: material.sha256,
+            providerIdentity: material.providerIdentity,
+            providerRevision: material.providerRevision,
+          }),
+        })
+      }),
       backingMaterial: target.loading.stampBackground.material,
       backingTexture: target.loading.stampBackground.texture,
     })
     if (!result.ok) throw new Error(`${result.code}:${result.subject}`)
-    this.#loadingBackground = result
-    this.#syncLoadingPresentation()
+    return result
   }
 
   #syncLoadingPresentation(viewport = this.#viewport()): void {
@@ -1624,15 +1648,7 @@ export class Tf2Application {
     if (this.#loadingPresentationGeneration > 0 && this.#configuration) {
       const target = this.#loadingTarget ?? this.#activeTarget
       if (!target) throw new Error("TF2 loading target is unavailable")
-      const result = resolveTf2LoadingBackground({
-        generation: this.#loadingPresentationGeneration,
-        mapIdentity: target.target,
-        viewport,
-        mapPhotoLookups: target.loading.mapPhotoLocations.map((location) => Object.freeze({ location, outcome: "missing" as const })),
-        backingMaterial: target.loading.stampBackground.material,
-        backingTexture: target.loading.stampBackground.texture,
-      })
-      if (result.ok) this.#loadingBackground = result
+      this.#loadingBackground = this.#resolveLoadingBackground(target, viewport)
       this.#syncLoadingPresentation(viewport)
     }
   }

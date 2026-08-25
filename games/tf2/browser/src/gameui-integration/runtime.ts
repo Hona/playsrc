@@ -336,6 +336,7 @@ class Integration implements Tf2GameUiIntegration {
       this.#applyOwned(PLAYLIST_PATH, playlist, ["if_wider"])
       this.#configurePlaylist()
       this.#disableUnownedControls()
+      this.#hideUnavailablePanels()
       for (const identity of [1, mainMenu]) mustApply(this.#runtime, { kind: "set-panel-state", panel: identity, mouseInput: false, keyboardInput: false })
       this.#captureBaseVisibility()
       this.#presentState()
@@ -394,6 +395,22 @@ class Integration implements Tf2GameUiIntegration {
     }
   }
 
+  #hideUnavailablePanels(): void {
+    const names = new Set([
+      "CycleRankTypeButton", "RankTooltipPanel", "RankPanel", "RankModelPanel", "NoGCMessage", "NoGCImage", "RankBorder",
+      "Notifications_ShowButtonPanel", "Notifications_Panel", "WatchStreamButton", "QuestLogButton",
+      "MOTD_ShowButtonPanel", "MOTD_Panel", "VRBGPanel", "VRModeButton", "FriendsContainer", "EventPromo",
+      "ShowPromoCodesButton", "CharacterSetupButton", "GeneralStoreButton", "StoreHasNewItemsImage",
+      "ReportPlayerButton", "CallVoteButton", "MutePlayersButton", "RequestCoachButton",
+      "AchievementsButton", "CommentaryButton", "CoachPlayersButton", "WorkshopButton", "ReplayButton", "ReportBugButton",
+      "SettingsButtonSDK", "TF2SettingsButtonSDK", "icon_generator", "ToggleChatButton", "QueueContainer", "JoinPartyLobbyContainer",
+      ...Array.from({ length: 6 }, (_, index) => `PartySlot${index}`),
+    ])
+    for (const panel of this.#runtime.snapshot().panels) {
+      if (names.has(panel.name)) mustApply(this.#runtime, { kind: "set-panel-state", panel: panel.id, visible: false })
+    }
+  }
+
   #vguiRequest(request: VguiRequest): void {
     if (request.kind !== "command") return
     const panel = this.#runtime.snapshot().panels.find((candidate) => candidate.id === request.panel)
@@ -418,13 +435,21 @@ class Integration implements Tf2GameUiIntegration {
     const gameplay = this.#state.kind === "in-game"
     const before = this.#runtime.snapshot().panels
     const byId = new Map(before.map((panel) => [panel.id, panel]))
+    const byName = new Map<string, typeof before[number]>()
+    const visibility = new Map(before.map((panel) => [panel.id, panel.visible]))
+    for (const panel of before) if (!byName.has(panel.name.toLowerCase())) byName.set(panel.name.toLowerCase(), panel)
+    const setVisible = (panel: VguiPanelId, visible: boolean): void => {
+      if (visibility.get(panel) === visible) return
+      mustApply(this.#runtime, { kind: "set-panel-state", panel, visible })
+      visibility.set(panel, visible)
+    }
     const dashboard = before.find((panel) => panel.name === "MMDashboard")
     const mainOverride = before.find((panel) => panel.name === "MainMenuOverride")
     const resume = before.find((panel) => panel.name === "ResumeButton")
     const disconnect = before.find((panel) => panel.name === "DisconnectButton")
     const findGame = before.find((panel) => panel.name === "FindAGameButton")
     const quit = before.find((panel) => panel.name === "QuitButton")
-    if (this.#baseBackground !== null) mustApply(this.#runtime, { kind: "set-panel-state", panel: this.#baseBackground, visible: tf2GameUiBaseBackground(this.#resources.gameUiBackground, this.#state, this.#viewport).visible })
+    if (this.#baseBackground !== null) setVisible(this.#baseBackground, tf2GameUiBaseBackground(this.#resources.gameUiBackground, this.#state, this.#viewport).visible)
     const descendsFrom = (panelId: VguiPanelId, ancestorId: VguiPanelId): boolean => {
       let current = byId.get(panelId)
       while (current?.parent !== null) {
@@ -439,27 +464,19 @@ class Integration implements Tf2GameUiIntegration {
         const pauseControl = pauseControls.some((control) =>
           panel.id === control.id || descendsFrom(panel.id, control.id) || descendsFrom(control.id, panel.id),
         )
-        mustApply(this.#runtime, {
-          kind: "set-panel-state",
-          panel: panel.id,
-          visible: this.#state.kind === "pause" ? pauseControl : (this.#baseVisibility.get(panel.id) ?? panel.visible),
-        })
+        setVisible(panel.id, this.#state.kind === "pause" ? pauseControl : (this.#baseVisibility.get(panel.id) ?? panel.visible))
       }
     }
     if (mainOverride) {
       for (const panel of before.filter((candidate) => descendsFrom(candidate.id, mainOverride.id))) {
-        mustApply(this.#runtime, {
-          kind: "set-panel-state",
-          panel: panel.id,
-          visible: panel.name === "TFCharacterImage"
-            ? tf2CharacterImageVisible(this.#state, this.#baseVisibility.get(panel.id) ?? panel.visible)
-            : menu ? (this.#baseVisibility.get(panel.id) ?? panel.visible) : false,
-        })
+        setVisible(panel.id, panel.name === "TFCharacterImage"
+          ? tf2CharacterImageVisible(this.#state, this.#baseVisibility.get(panel.id) ?? panel.visible)
+          : menu ? (this.#baseVisibility.get(panel.id) ?? panel.visible) : false)
       }
     }
     for (const name of ["MainMenuOverride", "MMDashboard", "TopBar", "ExpandableList", "playlist", "EventEntry", "CasualEntry", "CompetitiveEntry", "MvMEntry", "ServerBrowserEntry", "TrainingEntry", "CreateServerEntry"]) {
-      const panel = panelByName(this.#runtime, name)
-      if (panel !== null) mustApply(this.#runtime, { kind: "set-panel-state", panel, visible: (name === "MainMenuOverride" || name === "MMDashboard" || name === "TopBar" ? menu : mainMenu) && name !== "EventEntry" })
+      const panel = byName.get(name.toLowerCase())
+      if (panel) setVisible(panel.id, (name === "MainMenuOverride" || name === "MMDashboard" || name === "TopBar" ? menu : mainMenu) && name !== "EventEntry")
     }
     const states: Readonly<Record<string, boolean>> = Object.freeze({
       QuitButton: this.#state.kind === "main-menu",
@@ -467,25 +484,27 @@ class Integration implements Tf2GameUiIntegration {
       DisconnectButton: this.#state.kind === "pause",
       FindAGameButton: menu,
       GeneralStoreButton: false,
-      CharacterSetupButton: menu,
+      CharacterSetupButton: false,
       SettingsButton: menu,
-      SettingsButtonSDK: menu,
+      SettingsButtonSDK: false,
       TF2SettingsButton: menu,
-      TF2SettingsButtonSDK: menu,
+      TF2SettingsButtonSDK: false,
       NewUserForumsButton: menu,
     })
     for (const [name, visible] of Object.entries(states)) {
-      const panel = panelByName(this.#runtime, name)
-      if (panel !== null) mustApply(this.#runtime, { kind: "set-panel-state", panel, visible })
+      const panel = byName.get(name.toLowerCase())
+      if (panel) setVisible(panel.id, visible)
     }
     const offset = this.#state.kind === "pause" ? disconnect : quit
     if (offset && findGame) {
       const findBounds = { ...findGame.bounds, x: offset.bounds.x - findGame.bounds.width - 1 }
-      mustApply(this.#runtime, { kind: "set-bounds", panel: findGame.id, bounds: findBounds })
-      if (resume) mustApply(this.#runtime, { kind: "set-bounds", panel: resume.id, bounds: { ...resume.bounds, x: findBounds.x - resume.bounds.width - 1 } })
+      if (findGame.bounds.x !== findBounds.x) mustApply(this.#runtime, { kind: "set-bounds", panel: findGame.id, bounds: findBounds })
+      if (resume) {
+        const resumeX = findBounds.x - resume.bounds.width - 1
+        if (resume.bounds.x !== resumeX) mustApply(this.#runtime, { kind: "set-bounds", panel: resume.id, bounds: { ...resume.bounds, x: resumeX } })
+      }
     }
-    const root = this.#runtime.snapshot().rootPanel
-    mustApply(this.#runtime, { kind: "set-panel-state", panel: root, visible: menu || this.#state.kind === "loading" || this.#state.kind === "failure" })
+    setVisible(1, menu || this.#state.kind === "loading" || this.#state.kind === "failure")
     if (gameplay) mustApply(this.#runtime, { kind: "request-focus", panel: null })
   }
 
@@ -515,6 +534,7 @@ class Integration implements Tf2GameUiIntegration {
         this.#applyOwned(MAIN_MENU_PATH, this.#mainMenu, this.#mainMenuConditions)
         this.#configureScrollers(this.#mainMenu)
         this.#disableUnownedControls()
+        this.#hideUnavailablePanels()
         this.#captureBaseVisibility(this.#mainMenu)
       }
       this.#presentState()
