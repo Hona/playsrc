@@ -3514,11 +3514,14 @@ fn main() -> Result<(), String> {
     }
     let ledger_descriptor =
         ObjectDescriptor::new("derived-object", LEDGER_MEDIA_TYPE, &ledger_bytes);
-    let directory = cache.join("browser-bundles");
+    let root = cache.join("browser-bundles");
+    let generator = std::env::current_exe().map_err(|error| error.to_string())?;
+    let generator_identity = digest(&fs::read(&generator).map_err(|error| error.to_string())?);
+    let directory = root.join("generators").join(generator_identity);
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     let ledger_destination = directory.join(format!("{target}.dependencies.json"));
     let graph_destination = directory.join(format!("{target}.graph.json"));
-    let graph_object_directory = directory.join(format!("{target}.graph/objects"));
+    let graph_object_directory = root.join(format!("{target}.graph/objects"));
     install_artifact(&ledger_destination, &ledger_bytes)?;
     install_artifact(&graph_destination, &graph_bytes)?;
     fs::create_dir_all(&graph_object_directory).map_err(|error| error.to_string())?;
@@ -3566,7 +3569,7 @@ fn main() -> Result<(), String> {
                 .map_err(|error| format!("native HDR resource decoding failed: {error:?}"))?;
             let artifact = playsrc_tf2_wasm::compile_artifact(&bsp_bytes, 1, &resources)
                 .map_err(|error| format!("native HDR compilation failed with error {error}"))?;
-            let native_destination = directory.join(format!("{target}.native-hdr.psmp"));
+            let native_destination = root.join(format!("{target}.native-hdr.psmp"));
             install_artifact(&native_destination, &artifact.payload)?;
             report.native_hdr_bytes = Some(artifact.payload.len());
             report.native_hdr_sha256 = Some(digest(&artifact.payload));
