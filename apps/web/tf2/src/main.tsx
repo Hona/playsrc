@@ -1,7 +1,8 @@
 import { render } from "preact"
-import { useEffect, useRef, useState } from "preact/hooks"
-import { Tf2Application, type ApplicationView } from "./runtime"
+import { useEffect, useRef } from "preact/hooks"
 import { tf2StartupLoadingLabel } from "@playsrc/game-tf2-browser/startup-presentation"
+import { ApplicationPublication } from "./application-publication"
+import { Tf2Application, type ApplicationView } from "./runtime"
 import "./style.css"
 
 const initial: ApplicationView = Object.freeze({
@@ -18,6 +19,7 @@ const initial: ApplicationView = Object.freeze({
 })
 
 function App() {
+  const applicationRoot = useRef<HTMLElement>(null)
   const canvas = useRef<HTMLCanvasElement>(null)
   const vgui = useRef<HTMLDivElement>(null)
   const gameUi = useRef<HTMLDivElement>(null)
@@ -26,11 +28,18 @@ function App() {
   const loading = useRef<HTMLDivElement>(null)
   const startup = useRef<HTMLDivElement>(null)
   const startupVideo = useRef<HTMLVideoElement>(null)
+  const startupLoading = useRef<HTMLDivElement>(null)
   const runtime = useRef<Tf2Application>()
-  const [view, setView] = useState<ApplicationView>(initial)
 
   useEffect(() => {
-    if (!canvas.current || !vgui.current || !gameUi.current || !hud.current || !options.current || !loading.current || !startup.current || !startupVideo.current) return
+    if (!applicationRoot.current || !canvas.current || !vgui.current || !gameUi.current || !hud.current
+      || !options.current || !loading.current || !startup.current || !startupVideo.current || !startupLoading.current) return
+    const publication = new ApplicationPublication({
+      root: applicationRoot.current,
+      canvas: canvas.current,
+      loadingLabel: startupLoading.current,
+    })
+    publication.publish(initial)
     const application = new Tf2Application(canvas.current, {
       vgui: vgui.current,
       gameUi: gameUi.current,
@@ -39,7 +48,7 @@ function App() {
       loading: loading.current,
       startup: startup.current,
       startupVideo: startupVideo.current,
-    }, setView)
+    }, (view) => publication.publish(view))
     runtime.current = application
     void application.start()
     return () => {
@@ -50,116 +59,31 @@ function App() {
 
   return (
     <main
+      ref={applicationRoot}
       class="tf2-application"
-      data-phase={view.phase}
-      data-startup-state={view.startupState}
-      data-startup-gestures={view.startupGestures}
-      data-menu-preparation={view.menuPreparation}
-      data-bootstrap-loading={view.bootstrapLoading ? "true" : "false"}
-      data-bootstrap-progress={view.bootstrapProgress ?? 0}
-      data-startup-muted-fallback={view.startupMutedFallback ? "true" : "false"}
-      data-loading-progress={view.loadingProgress}
-      data-loading-status={view.loadingStatus}
-      data-loading-background={view.loadingBackground}
-      data-detail={view.detail}
-      data-gameui={view.gameUi}
-      data-gameplay-initialized={view.snapshotTick === undefined ? "false" : "true"}
-      data-pointer-locked={view.pointerLocked ? "true" : "false"}
-      data-console-visible={view.consoleVisible ? "true" : "false"}
-      data-hud-probe={view.hudProbe}
-      data-hud-animation-trace={view.hudAnimationTrace}
-      data-hud-operation-probe={view.hudOperationProbe}
-      data-hud-presentation-probe={view.hudPresentationProbe}
-      data-options-visible={view.optionsVisible ? "true" : "false"}
-      data-settings-persistence={view.settingsPersistence}
-      data-settings-apply={view.settingsApply}
-      data-cache={view.cache}
-      data-host-request={view.hostRequest}
-      data-presentation-random-state={view.presentationRandomState}
-      data-presentation-character={view.presentationCharacter}
-      data-fire-events={view.fireEvents}
-      data-explosion-events={view.explosionEvents}
-      data-camera-position={view.camera?.position.join(",")}
-      data-camera-yaw={view.camera?.yawDegrees}
-      data-camera-pitch={view.camera?.pitchDegrees}
-      data-camera-vertical-fov={view.camera?.verticalFovDegrees}
-      data-camera-near={view.camera?.near}
-      data-camera-far={view.camera?.far}
-      data-pointer-movement={view.pointerMovement}
-      data-display-frame={view.displayFrame}
-      data-display-view-revision={view.displayViewRevision}
-      data-display-prepared-revision={view.displayPreparedRevision}
-      data-spawn-entity={view.initialView?.entity}
-      data-spawn-hammer-id={view.initialView?.hammerId}
-      data-spawn-position={view.initialView?.position.join(",")}
-      data-spawn-angles={view.initialView?.angles.join(",")}
-      data-particle-items={view.particleRenderItems ?? 0}
-      data-projectiles={view.projectileStates ? view.projectileStates.split(",").length : 0}
-      data-crouch-fraction={view.movement?.crouchFraction}
-      data-view-offset={view.movement?.viewOffset.join(",")}
-      data-movement-mode={view.movementTick?.mode}
-      data-wish-speed={view.movementTick?.wishSpeed}
-      data-climbed-step={view.movementTick?.climbedStep}
-      data-sweep-queries={view.movementTick?.sweepQueries}
-      data-point-queries={view.movementTick?.pointQueries}
-      data-movement-contacts={view.movementTick?.contacts}
-      data-movement-events={view.movementTick?.events}
-      data-viewmodel-activity={view.viewmodelPose?.activity}
-      data-viewmodel-sequence={view.viewmodelPose?.sequence}
-      data-viewmodel-cycle={view.viewmodelPose?.cycle}
-      data-viewmodel-primitives={view.viewmodelPose?.primitives}
-      data-model-probes={view.modelProbes?.map((probe) => `${probe.model}:${probe.sequence}:${probe.primitives}:${probe.vertices}`).join("|")}
-      data-audio-voices={view.audioVoices?.join(",")}
-      data-snapshot-tick={view.snapshotTick}
-      data-projectile-states={view.projectileStates}
-      data-decal-probe={view.decalProbe}
-      data-model-occurrences={view.modelOccurrenceCount}
-      data-particle-probe={view.particleProbe}
-      data-audio-starts={view.audioStarts?.join("|")}
-      data-viewmodel-projection={view.viewmodelProjection}
-      data-viewmodel-activities={view.viewmodelActivities?.join(",")}
-      data-viewmodel-sequences={view.viewmodelSequences}
-      data-crouch-history={view.crouchHistory?.join("|")}
-      data-grounded={view.movement?.grounded}
-      data-vertical-speed={view.movement?.velocity[2]}
-      data-viewmodel-timelines={view.viewmodelTimelineProbes?.join("|")}
-      data-environment={view.environment ? `${view.environment.profile},${view.environment.clusters},${view.environment.skySurfaces},${view.environment.waterVolumes},${view.environment.marks},${view.environment.markFragments}` : undefined}
-      data-environment-drawables={view.environmentDrawables ?? 0}
-      data-visible-decal-fragments={view.visibleDecalFragments}
-      data-environment-sky={view.environment?.sky?.name}
-      data-water-cubemap={view.environment?.waterVolumeFacts[0]?.cubemapSample ?? undefined}
-      data-viewmodel-depth-range={view.viewmodelDepthRange}
-      data-viewmodel-viewport-restored={view.viewmodelViewportRestored}
-      data-viewmodel-world-depth-isolated={view.viewmodelWorldDepthIsolated}
-      data-model-matrices={view.modelMatrices ? JSON.stringify(view.modelMatrices) : undefined}
-      data-decal-state={view.decalStateProbe ? JSON.stringify(view.decalStateProbe) : undefined}
-      data-weapon-trace={view.weaponTrace}
-      data-authority-trace={view.authorityTrace}
-      data-entity-trace={view.entityTrace}
-      data-model-material-probe={view.modelMaterialProbe}
-      data-random-audio-probe={view.randomAudioProbe}
-      data-collision-mover-probe={view.collisionMoverProbe}
-      data-simulation-probe={view.simulationProbe}
-      data-brush-model-probe={view.brushModelProbe}
-      data-water-plan={view.waterPlanProbe}
-      data-water-passes={view.waterPasses?.join(",")}
-      data-water-restored={view.waterStateRestored}
-      data-water-normal-frame={view.waterNormalFrame}
-      data-reload-history={view.reloadHistory?.join("|")}
-      data-fire-ticks={view.fireTickHistory?.join("|")}
-      data-performance={view.performanceProbe}
-      data-performance-detail={view.performanceDetailProbe}
-      data-load-performance={view.loadPerformanceProbe}
-      data-locker={view.lockerProbe}
-      data-unsupported-state={view.unsupportedState}
-      data-blockers={JSON.stringify(view.blockers)}
+      data-phase={initial.phase}
+      data-bootstrap-loading="true"
+      data-bootstrap-progress="0"
+      data-startup-muted-fallback="false"
+      data-detail={initial.detail}
+      data-gameui={initial.gameUi}
+      data-gameplay-initialized="false"
+      data-pointer-locked="false"
+      data-console-visible="false"
+      data-options-visible="false"
+      data-fire-events="0"
+      data-explosion-events="0"
+      data-particle-items="0"
+      data-projectiles="0"
+      data-environment-drawables="0"
+      data-blockers="[]"
     >
       <canvas
         ref={canvas}
         class="world-canvas"
-        tabIndex={view.gameUi === "in-game" ? 0 : -1}
+        tabIndex={-1}
         aria-label="TF2 game view"
-        aria-hidden={view.gameUi === "main-menu" ? "true" : "false"}
+        aria-hidden="true"
         onClick={(event) => void runtime.current?.requestPointer(event.currentTarget)}
         onContextMenu={(event) => event.preventDefault()}
       />
@@ -173,8 +97,8 @@ function App() {
           onClick={() => runtime.current?.admitStartupGesture()}
           onKeyDown={(event) => { if (event.code === "Escape") runtime.current?.startupKey(event.code) }}
         />
-        <div class="startup-loading-plaque" role="status" aria-live="polite">
-          {tf2StartupLoadingLabel(view.bootstrapProgress ?? 0)}
+        <div ref={startupLoading} class="startup-loading-plaque" role="status" aria-live="polite">
+          {tf2StartupLoadingLabel(initial.bootstrapProgress ?? 0)}
         </div>
       </div>
       <div ref={loading} class="vgui-layer loading-layer" aria-label="TF2 map loading" />

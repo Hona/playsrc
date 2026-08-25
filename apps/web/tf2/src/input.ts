@@ -8,21 +8,38 @@ export type PhysicalBinding = Readonly<{
   modifiers: number
 }>
 
-export function resolvePhysicalBinding<Candidate>(
-  code: string,
-  modifiers: number,
-  candidates: readonly Candidate[],
-  read: (candidate: Candidate) => PhysicalBinding | null,
-): Readonly<{ action: string; match: "exact" | "unmodified" }> | null {
-  let unmodified: string | null = null
-  for (const candidate of candidates) {
-    const binding = read(candidate)
-    if (binding === null) continue
-    if (binding.code.toLowerCase() !== code.toLowerCase()) continue
-    if (binding.modifiers === modifiers) return Object.freeze({ action: binding.action, match: "exact" })
-    if (binding.modifiers === 0) unmodified = binding.action
+type PhysicalBindingResolution = Readonly<{ action: string; match: "exact" | "unmodified" }>
+
+type IndexedPhysicalBinding = Readonly<{
+  exact: Map<number, PhysicalBindingResolution>
+  unmodified?: PhysicalBindingResolution
+}>
+
+export class PhysicalBindingIndex {
+  readonly #codes = new Map<string, IndexedPhysicalBinding>()
+
+  replace(bindings: readonly PhysicalBinding[]): void {
+    this.#codes.clear()
+    for (const binding of bindings) {
+      const code = binding.code.toLowerCase()
+      const existing = this.#codes.get(code)
+      const exact = existing?.exact ?? new Map<number, PhysicalBindingResolution>()
+      exact.set(binding.modifiers, Object.freeze({ action: binding.action, match: "exact" }))
+      const unmodified = binding.modifiers === 0
+        ? Object.freeze({ action: binding.action, match: "unmodified" as const })
+        : existing?.unmodified
+      this.#codes.set(code, { exact, ...(unmodified ? { unmodified } : {}) })
+    }
   }
-  return unmodified === null ? null : Object.freeze({ action: unmodified, match: "unmodified" })
+
+  resolve(code: string, modifiers: number): PhysicalBindingResolution | null {
+    const binding = this.#codes.get(code.toLowerCase())
+    return binding?.exact.get(modifiers) ?? binding?.unmodified ?? null
+  }
+
+  clear(): void {
+    this.#codes.clear()
+  }
 }
 
 export class PhysicalButtonState {
