@@ -380,6 +380,7 @@ export type ApplicationView = Readonly<{
   waterPasses?: readonly string[]
   waterStateRestored?: boolean
   waterNormalFrame?: number
+  waterOverlay?: string
   worldMaterialFrames?: string
   reloadHistory?: readonly string[]
   fireTickHistory?: readonly string[]
@@ -3700,6 +3701,7 @@ export class Tf2Application {
     const viewRevision=this.#viewRevision,mouseRevision=this.#mouseViewRevision,snapRevision=this.#authoritativeViewRevision,yaw=this.#yaw,pitch=this.#pitch
     const profile=(globalThis as typeof globalThis&{__playsrcProfile?:Record<string,unknown>}).__playsrcProfile
     const override=profile?.displacementCameraOverride as Partial<Camera>|undefined
+    const geometryEvidenceRevision=profile?.geometryEvidenceRevision
     const authorityCamera=tf2Camera(prepared.snapshot,yaw,pitch)
     const ordinaryCamera=Object.freeze({...authorityCamera,position:prepared.visibilityPosition})
     const camera=override&&Array.isArray(override.position)&&override.position.length===3&&override.position.every(Number.isFinite)
@@ -3826,8 +3828,7 @@ export class Tf2Application {
       profile.placement=prepared.snapshot.placement
       profile.objectives=prepared.snapshot.objectives?.flags.map(flag=>({identity:flag.identity,team:flag.team,position:flag.position}))??[]
     }
-    const geometryEvidenceRevision=profile?.geometryEvidenceRevision
-    if(profile&&Number.isSafeInteger(geometryEvidenceRevision)&&geometryEvidenceRevision!==((profile.geometryEvidence as {revision?:unknown}|undefined)?.revision)&&this.#view.phase==="Ready"){
+    if(profile&&Number.isSafeInteger(geometryEvidenceRevision)&&geometryEvidenceRevision===profile.geometryEvidenceRevision&&geometryEvidenceRevision!==((profile.geometryEvidence as {revision?:unknown}|undefined)?.revision)&&this.#view.phase==="Ready"){
       const skyGeometry=sky3d?renderer.captureGeometryEvidence(sky3d.camera,"sky3d"):null
       profile.geometryEvidence=Object.freeze({revision:geometryEvidenceRevision,generation,target:this.#mapIdentity,finalReady:true,identities:Object.freeze({bsp:this.#activeTarget?.objects.bsp.sha256,resourceRoot:this.#activeTarget?.objects.resources.sha256,contentBuild:this.#resourceGraph?.contentBuild,graphTarget:this.#resourceGraph?.target,wasm:this.#configuration?.wasm.sha256,simulationTick:prepared.snapshot.tick.toString()}),camera,visibility:Object.freeze({outsideWorld:visibility.outsideWorld,eyeLeaf:visibility.eyeLeaf,leaves:Object.freeze([...visibility.leaves]),areas:Object.freeze([...visibility.areas]),pvsSurfaces:Object.freeze([...visibility.surfaces]),drawSurfaces:Object.freeze([...visibility.drawSurfaces])}),skyGeometry,geometry:renderer.captureGeometryEvidence(camera)})
     }
@@ -3867,6 +3868,7 @@ export class Tf2Application {
         waterPasses:rendered.waterPasses,
         waterStateRestored:rendered.waterStateRestored,
         waterNormalFrame:visibility.water.visibleWater?.evaluated.normalFrame,
+        waterOverlay:visibility.water.visibleWater?.overlay?.identity,
         worldMaterialFrames:visibility.worldMaterials.map(material=>`${material.identity}:${material.textures.find(texture=>texture.role===7)?.frame??"none"}`).join("|"),
         performanceProbe:`${this.#phaseTimings.map(value=>value.toFixed(3)).join(",")}:${this.#wasmCalls.observe},${this.#wasmCalls.models},${this.#wasmCalls.visibility},${this.#wasmCalls.particles}:${this.#maximumScheduledSamples},${this.#maximumPublicationTicks}:${prepared.particleOutputBytes},${prepared.publication.snapshotBytes.byteLength}`,
         performanceDetailProbe:JSON.stringify({tick:prepared.snapshot.tick.toString(),selectedTicks:prepared.publication.selectedTicks,bots:prepared.snapshot.bots.length,buildings:prepared.snapshot.buildings.length,pickups:prepared.snapshot.pickups.length,models:prepared.modelMilliseconds,projectiles:prepared.projectileMilliseconds,visibility:visibilityMilliseconds,particleWorker:prepared.particleMilliseconds,particleDecode:prepared.particleDecodeMilliseconds,audio:prepared.audioMilliseconds,particleItems:rendered.timings.particleItems,particleBatches:rendered.timings.particleBatches,dynamicItems:rendered.timings.dynamicItemsMilliseconds,world:rendered.timings.worldMilliseconds,viewmodel:rendered.timings.viewModelMilliseconds,render:renderMilliseconds,total:totalMilliseconds}),

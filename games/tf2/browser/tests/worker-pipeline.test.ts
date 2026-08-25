@@ -60,7 +60,7 @@ async function digest(bytes: Uint8Array): Promise<string> {
 }
 
 async function presentationIdentity(key: string): Promise<string> {
-  return digest(new TextEncoder().encode(`playsrc-tf2-presentation-v13\0${key}`))
+  return digest(new TextEncoder().encode(`playsrc-tf2-presentation-v14\0${key}`))
 }
 
 function visibilityOutput(animated = false): ArrayBuffer {
@@ -69,7 +69,7 @@ function visibilityOutput(animated = false): ArrayBuffer {
   const bytes = new Uint8Array(76 + words.length * 4 + 8 + 8 + (animated ? 12 + identity.length + 72 : 0))
   const view = new DataView(bytes.buffer)
   bytes.set([0x50, 0x56, 0x49, 0x53])
-  view.setUint32(4, 5, true)
+  view.setUint32(4, 6, true)
   bytes.fill(0x11, 8, 40)
   bytes.fill(0x22, 40, 72)
   let offset = 76

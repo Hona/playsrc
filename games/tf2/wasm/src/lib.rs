@@ -371,9 +371,16 @@ struct RuntimeWorldMaterial {
     texture_frames: BTreeMap<Vec<u8>, u32>,
 }
 
+struct RuntimeRefractMaterial {
+    material: playsrc_material::Material,
+    normal_frame_count: u32,
+}
+
 struct RuntimeEnvironment {
     world: playsrc_map::WorldEnvironment,
+    node_cull_modes: Vec<i8>,
     water_materials: BTreeMap<String, playsrc_material::Material>,
+    refract_materials: BTreeMap<String, RuntimeRefractMaterial>,
     world_materials: BTreeMap<String, RuntimeWorldMaterial>,
     map_materials: BTreeMap<usize, String>,
     normal_frame_counts: BTreeMap<String, u32>,
@@ -2028,27 +2035,6 @@ fn encode_model_poses(
             .map_err(|_| ())?;
         let previous_cycle = pose_cycle(request.previous_elapsed, timing);
         let cycle = pose_cycle(request.elapsed, timing);
-        let pose = playsrc_studio_model::sample_pose_at_time(
-            model,
-            &playsrc_studio_model::AnimationState {
-                base_sequence: sequence,
-                cycle: playsrc_studio_model::Float32(cycle.to_bits()),
-                pose_parameters: pose_parameters.clone(),
-                layers: Vec::new(),
-            },
-            playsrc_studio_model::Float32(request.elapsed.to_bits()),
-        )
-        .map_err(|_| ())?;
-        let selected =
-            playsrc_studio_model::select_primitives(model, &bodygroups, request.skin, request.lod)
-                .map_err(|_| ())?;
-        let events = playsrc_studio_model::presentation_events_between(
-            model,
-            sequence,
-            playsrc_studio_model::Float32(previous_cycle.to_bits()),
-            playsrc_studio_model::Float32(cycle.to_bits()),
-        )
-        .map_err(|_| ())?;
         if let Some(item_identity) = request.item.as_ref() {
             let item = models.get(item_identity).ok_or(())?;
             let frame = playsrc_studio_model::produce_viewmodel_frame(
@@ -2193,85 +2179,32 @@ fn encode_model_poses(
                 return Err(());
             }
             output_count = output_count.checked_add(part_count).ok_or(())?;
-        } else if let Some(phase) = request.phase {
-            let bob = playsrc_studio_model::update_viewmodel_bob(
-                viewmodel_bob
-                    .get(&request.identity)
-                    .copied()
-                    .unwrap_or_default(),
-                playsrc_studio_model::ViewModelBobRequest {
-                    current_time: playsrc_studio_model::Float32(request.current_time.to_bits()),
-                    frame_time: playsrc_studio_model::Float32(request.frame_time.to_bits()),
-                    planar_speed: playsrc_studio_model::Float32(request.planar_speed.to_bits()),
-                    cycle: playsrc_studio_model::Float32(0.8f32.to_bits()),
-                    up_fraction: playsrc_studio_model::Float32(0.5f32.to_bits()),
+        } else {
+            let pose = playsrc_studio_model::sample_pose_at_time(
+                model,
+                &playsrc_studio_model::AnimationState {
+                    base_sequence: sequence,
+                    cycle: playsrc_studio_model::Float32(cycle.to_bits()),
+                    pose_parameters,
+                    layers: Vec::new(),
                 },
+                playsrc_studio_model::Float32(request.elapsed.to_bits()),
             )
             .map_err(|_| ())?;
-            viewmodel_bob.insert(request.identity, bob);
-            let transform = playsrc_studio_model::apply_viewmodel_bob(
-                playsrc_studio_model::ViewModelTransform {
-                    origin: playsrc_studio_model::Vector3([playsrc_studio_model::Float32(0); 3]),
-                    angles: playsrc_studio_model::Vector3([playsrc_studio_model::Float32(0); 3]),
-                },
-                bob,
+            let selected = playsrc_studio_model::select_primitives(
+                model,
+                &bodygroups,
+                request.skin,
+                request.lod,
             )
             .map_err(|_| ())?;
-            let configured = match model.descriptor {
-                playsrc_studio_model::PresentationDescriptor::ViewModel {
-                    default_horizontal_fov_4_by_3,
-                    ..
-                } => default_horizontal_fov_4_by_3,
-                _ => return Err(()),
-            };
-            let pass = playsrc_studio_model::viewmodel_pass_state(
-                playsrc_studio_model::ViewModelProjectionRequest {
-                    configured_horizontal_fov_4_by_3: configured,
-                    default_world_fov: playsrc_studio_model::Float32(75f32.to_bits()),
-                    current_world_fov: playsrc_studio_model::Float32(75f32.to_bits()),
-                    screen_aspect_ratio: playsrc_studio_model::Float32(
-                        request.screen_aspect_ratio.to_bits(),
-                    ),
-                    world_far_plane: playsrc_studio_model::Float32(
-                        request.world_far_plane.to_bits(),
-                    ),
-                },
-            )
-            .map_err(|_| ())?;
-            let facing = playsrc_studio_model::GeometryFacing {
-                front_face: playsrc_studio_model::TriangleWinding::Clockwise,
-                cull_face: playsrc_studio_model::CullFace::Back,
-            };
-            let state = ViewOutput {
-                transform,
-                pass,
-                item_translucent: false,
-                phase,
-                draw_disposition: playsrc_studio_model::ViewModelDrawDisposition::Draw,
-                reflected: request.reflected_viewmodel,
-                hand_facing: facing,
-                item_facing: facing,
-                hand_bodygroups: bodygroups,
-                item_bodygroups: Vec::new(),
-                item_bodygroup_mutations: Vec::new(),
-            };
-            encode_model_pose_part(
-                &mut out,
-                request,
-                1,
+            let events = playsrc_studio_model::presentation_events_between(
                 model,
                 sequence,
-                timing,
-                previous_cycle,
-                cycle,
-                &events,
-                &pose,
-                &selected,
-                selected.len(),
-                Some(&state),
-            )?;
-            output_count = output_count.checked_add(1).ok_or(())?;
-        } else {
+                playsrc_studio_model::Float32(previous_cycle.to_bits()),
+                playsrc_studio_model::Float32(cycle.to_bits()),
+            )
+            .map_err(|_| ())?;
             let legacy_view = if let playsrc_studio_model::PresentationDescriptor::ViewModel {
                 default_horizontal_fov_4_by_3,
                 ..
@@ -2736,29 +2669,40 @@ fn world_node_cull_modes(world: &playsrc_visibility::World) -> Vec<i8> {
     modes
 }
 
+#[inline]
+fn admit_world_bit(words: &mut [u64], index: usize) -> Result<bool, ()> {
+    let word = words.get_mut(index / 64).ok_or(())?;
+    let mask = 1_u64 << (index % 64);
+    let absent = *word & mask == 0;
+    *word |= mask;
+    Ok(absent)
+}
+
 fn frustum_world_surfaces(
     world: &playsrc_visibility::World,
+    node_cull_modes: &[i8],
     allowed_leaves: &[usize],
     origin: [f32; 3],
-    yaw: f32,
-    pitch: f32,
+    angles: [f32; 2],
     vertical_fov: f32,
     aspect: f32,
 ) -> Result<Vec<u16>, ()> {
     const SUPPRESS: u8 = u8::MAX;
-    let planes = world_frustum(origin, yaw, pitch, vertical_fov, aspect);
-    let modes = world_node_cull_modes(world);
-    let allowed = allowed_leaves
-        .iter()
-        .copied()
-        .collect::<std::collections::BTreeSet<_>>();
+    let planes = world_frustum(origin, angles[0], angles[1], vertical_fov, aspect);
+    if node_cull_modes.len() != world.nodes.len() {
+        return Err(());
+    }
+    let mut allowed = vec![0_u64; world.leaves.len().div_ceil(64)];
+    for &leaf in allowed_leaves {
+        admit_world_bit(&mut allowed, leaf)?;
+    }
     let mut leaves = Vec::new();
     let mut stack = vec![(world.models.first().ok_or(())?.head_node, 0b1111_u8)];
     while let Some((child, mut mask)) = stack.pop() {
         if child < 0 {
             let leaf = (-1_i64 - i64::from(child)) as usize;
             let record = world.leaves.get(leaf).ok_or(())?;
-            if record.contents == 1 || !allowed.contains(&leaf) {
+            if record.contents == 1 || allowed[leaf / 64] & (1_u64 << (leaf % 64)) == 0 {
                 continue;
             }
             if mask != SUPPRESS && cull_world_bounds(record.mins, record.maxs, &planes, &mut mask) {
@@ -2770,11 +2714,11 @@ fn frustum_world_surfaces(
         let index = child as usize;
         let node = world.nodes.get(index).ok_or(())?;
         if mask != SUPPRESS {
-            if modes[index] == -1 {
+            if node_cull_modes[index] == -1 {
                 if cull_world_bounds(node.mins, node.maxs, &planes, &mut mask) {
                     continue;
                 }
-            } else if modes[index] == -2 {
+            } else if node_cull_modes[index] == -2 {
                 mask = SUPPRESS;
             }
         }
@@ -2786,19 +2730,19 @@ fn frustum_world_surfaces(
         stack.push((node.children[1 - near], mask));
         stack.push((node.children[near], mask));
     }
-    let mut seen = std::collections::BTreeSet::new();
+    let mut seen = [0_u64; 1024];
     let mut surfaces = Vec::new();
     for leaf in leaves {
         let record = &world.leaves[leaf];
         let start = usize::from(record.first_leaf_face);
         let end = start + usize::from(record.leaf_face_count);
         for face in &world.leaf_faces[start..end] {
-            if seen.insert(*face) {
+            if admit_world_bit(&mut seen, usize::from(*face))? {
                 surfaces.push(*face);
             }
         }
         for face in &world.leaf_displacements[leaf] {
-            if seen.insert(*face) {
+            if admit_world_bit(&mut seen, usize::from(*face))? {
                 surfaces.push(*face);
             }
         }
@@ -2870,10 +2814,10 @@ pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f
         .collect::<Vec<_>>();
     let Ok(world_surfaces) = frustum_world_surfaces(
         world,
+        &environment.node_cull_modes,
         &qualified_leaves,
         position,
-        input[6],
-        input[7],
+        [input[6], input[7]],
         input[8],
         input[9],
     ) else {
@@ -2958,6 +2902,46 @@ pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f
     if water_plan.visible_water.is_some() != evaluated_water.is_some() {
         return 0;
     }
+    let evaluated_overlay = water_plan
+        .visible_water
+        .as_ref()
+        .filter(|water| water.eye_in_volume)
+        .and(evaluated_water.as_ref())
+        .and_then(|(water_identity, _)| {
+            let water = environment.water_materials.get(water_identity)?;
+            let overlay = water.water.as_ref()?.underwater_overlay.as_ref()?;
+            let identity = overlay.logical_path.to_ascii_lowercase();
+            let refract = environment.refract_materials.get(&identity)?;
+            let context = playsrc_material::ProxyEvaluationContext {
+                time: input[12],
+                frame_time: 0.015,
+                water_lod: None,
+                texture_frames: BTreeMap::from([(
+                    b"$normalmap".to_vec(),
+                    refract.normal_frame_count,
+                )]),
+                model_inputs: playsrc_material::ModelProxyInputs::default(),
+            };
+            playsrc_material::evaluate_refract_material(&refract.material, &context)
+                .ok()
+                .map(|evaluated| (identity, evaluated))
+        });
+    if water_plan
+        .visible_water
+        .as_ref()
+        .is_some_and(|water| water.eye_in_volume)
+        && evaluated_water.as_ref().is_some_and(|(identity, _)| {
+            environment
+                .water_materials
+                .get(identity)
+                .and_then(|material| material.water.as_ref())
+                .and_then(|water| water.underwater_overlay.as_ref())
+                .is_some()
+        })
+        && evaluated_overlay.is_none()
+    {
+        return 0;
+    }
     let mut visible_surfaces = std::collections::BTreeSet::new();
     let mut visible_areas = std::collections::BTreeSet::new();
     for leaf in &qualified_leaves {
@@ -2969,7 +2953,7 @@ pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f
         visible_surfaces.extend(world.leaf_displacements[*leaf].iter().copied());
     }
     let mut output = b"PVIS".to_vec();
-    output.extend_from_slice(&5u32.to_le_bytes());
+    output.extend_from_slice(&6u32.to_le_bytes());
     output.extend_from_slice(&view_identity);
     output.extend_from_slice(&world.identity);
     output.extend_from_slice(&[u8::from(view.outside_world), view.sky as u8, 0, 0]);
@@ -3035,7 +3019,7 @@ pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f
         output.extend_from_slice(&[
             u8::from(water.eye_in_volume),
             u8::from(water.translucent),
-            0,
+            u8::from(evaluated_overlay.is_some()),
             0,
         ]);
         output.extend_from_slice(&water.surface_z.to_le_bytes());
@@ -3051,6 +3035,15 @@ pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f
         }
         output.extend_from_slice(&evaluated.cheap_start.to_le_bytes());
         output.extend_from_slice(&evaluated.cheap_end.to_le_bytes());
+        if let Some((identity, overlay)) = &evaluated_overlay {
+            if pbytes(&mut output, identity.as_bytes()).is_err() {
+                return 0;
+            }
+            output.extend_from_slice(&overlay.normal_frame.to_le_bytes());
+            for value in overlay.normal_transform {
+                output.extend_from_slice(&value.to_le_bytes());
+            }
+        }
     }
     output.extend_from_slice(
         &u32::try_from(water_plan.passes.len())
@@ -10907,6 +10900,28 @@ fn encode_water_material(
     Ok(())
 }
 
+fn encode_refract_material(
+    out: &mut Vec<u8>,
+    identity: &str,
+    material: &playsrc_material::Material,
+) -> Result<(), ()> {
+    let state = playsrc_material::refract_material_output(material)
+        .map_err(|_| ())?
+        .ok_or(())?;
+    pbytes(out, identity.as_bytes())?;
+    encode_texture_request(out, &state.normal)?;
+    out.extend_from_slice(&[state.blur_amount, u8::from(state.ignore_depth), 0, 0]);
+    out.extend_from_slice(&state.refract_amount.to_le_bytes());
+    for value in state.refract_tint {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    out.extend_from_slice(&state.normal_frame.to_le_bytes());
+    for value in state.normal_transform {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    Ok(())
+}
+
 fn encode_world_material(
     out: &mut Vec<u8>,
     identity: &str,
@@ -11337,7 +11352,7 @@ fn compile_environment_artifact(
     )
     .map_err(|_| ())?;
     let mut out = b"PENV".to_vec();
-    out.extend_from_slice(&5u32.to_le_bytes());
+    out.extend_from_slice(&6u32.to_le_bytes());
     out.extend_from_slice(&[
         if profile == playsrc_map::LightingProfile::Hdr {
             1
@@ -11680,6 +11695,40 @@ fn compile_environment_artifact(
     for (identity, map_material, material) in &water_materials {
         encode_water_material(&mut out, identity, *map_material, material)?;
     }
+    let mut overlay_paths = std::collections::BTreeSet::new();
+    for (_, _, material) in &water_materials {
+        let state = playsrc_material::water_material_output(material)
+            .map_err(|_| ())?
+            .ok_or(())?;
+        if let Some(overlay) = state.underwater_overlay {
+            overlay_paths.insert(overlay.logical_path.to_ascii_lowercase());
+        }
+    }
+    let refract_materials = overlay_paths
+        .into_iter()
+        .map(|identity| {
+            let material = resolve_material_semantics(
+                &identity,
+                bundle,
+                material_environment(profile, false),
+            )?;
+            if playsrc_material::refract_material_output(&material)
+                .map_err(|_| ())?
+                .is_none()
+            {
+                return Err(());
+            }
+            Ok((identity, material))
+        })
+        .collect::<Result<Vec<_>, ()>>()?;
+    out.extend_from_slice(
+        &u32::try_from(refract_materials.len())
+            .map_err(|_| ())?
+            .to_le_bytes(),
+    );
+    for (identity, material) in &refract_materials {
+        encode_refract_material(&mut out, identity, material)?;
+    }
     let world_materials = canonical
         .materials
         .iter()
@@ -11721,6 +11770,19 @@ fn compile_environment_artifact(
         encode_world_material(&mut out, identity, *map_material, material, output)?;
     }
     let mut environment_texture_paths = std::collections::BTreeSet::new();
+    for (_, material) in &refract_materials {
+        let overlay = playsrc_material::refract_material_output(material)
+            .map_err(|_| ())?
+            .ok_or(())?;
+        environment_texture_paths.insert(
+            overlay
+                .normal
+                .logical_path
+                .as_ref()
+                .ok_or(())?
+                .to_ascii_lowercase(),
+        );
+    }
     for (_, _, _, world) in &world_materials {
         for texture in &world.textures {
             if texture.texture.disposition == playsrc_material::TextureDisposition::Source {
@@ -12037,9 +12099,23 @@ fn compile_environment_artifact(
         out.extend_from_slice(&0_u32.to_le_bytes());
     }
     let mut runtime_materials = BTreeMap::new();
+    let mut runtime_refract_materials = BTreeMap::new();
     let mut runtime_world_materials = BTreeMap::new();
     let mut map_materials = BTreeMap::new();
     let mut normal_frame_counts = BTreeMap::new();
+    for (identity, material) in refract_materials {
+        let output = playsrc_material::refract_material_output(&material)
+            .map_err(|_| ())?
+            .ok_or(())?;
+        let path = output.normal.logical_path.as_ref().ok_or(())?;
+        runtime_refract_materials.insert(
+            identity,
+            RuntimeRefractMaterial {
+                normal_frame_count: u32::from(decoders.metadata(path)?.frame_count),
+                material,
+            },
+        );
+    }
     for (identity, map_material, material, output) in &world_materials {
         let mut texture_frames = BTreeMap::new();
         for texture in &output.textures {
@@ -12122,7 +12198,9 @@ fn compile_environment_artifact(
         out,
         RuntimeEnvironment {
             world: env,
+            node_cull_modes: world_node_cull_modes(visibility),
             water_materials: runtime_materials,
+            refract_materials: runtime_refract_materials,
             world_materials: runtime_world_materials,
             map_materials,
             normal_frame_counts,
@@ -12880,6 +12958,19 @@ mod tests {
         assert!(cache.decoder("materials/invalid.vtf").is_err());
         assert_eq!(cache.requests.load(Ordering::Relaxed), 66);
         assert_eq!(cache.inspections.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn source_world_bitsets_preserve_first_face_order_and_reject_invalid_membership() {
+        let mut words = [0_u64; 1024];
+        let faces = [0, 63, 64, u16::MAX, 63, 0, u16::MAX, 65];
+        let visible = faces
+            .into_iter()
+            .filter(|&face| admit_world_bit(&mut words, usize::from(face)).unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(visible, [0, 63, 64, u16::MAX, 65]);
+        assert!(admit_world_bit(&mut words, usize::from(u16::MAX) + 1).is_err());
     }
 
     fn particle_stop_transaction(mode: u8) -> Vec<u8> {

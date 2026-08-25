@@ -29,6 +29,7 @@
     "profile:upward-outdoors": "bun tools/playsrc/src/profile-runner.ts upward-outdoors",
     "profile:bots": "bun tools/playsrc/src/profile-runner.ts bots",
     "profile:2fort-bots": "bun tools/playsrc/src/profile-runner.ts 2fort-bots",
+    "profile:2fort-visual": "bun tools/playsrc/src/profile-runner.ts 2fort-visual",
     "profile:engineer": "bun tools/playsrc/src/profile-runner.ts engineer",
     "profile:local-practice": "bun tools/playsrc/src/profile-runner.ts local-practice",
     "profile:application-lifecycle": "bun tools/playsrc/src/profile-runner.ts application-lifecycle",
