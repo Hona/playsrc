@@ -1905,9 +1905,13 @@ mod tests {
             .advance(
                 &Floor,
                 1,
-                PlayerTeam::Red,
-                false,
-                [0.0; 3],
+                Human {
+                    team: PlayerTeam::Red,
+                    class: PlayerClass::Soldier,
+                    alive: false,
+                    position: [0.0; 3],
+                    velocity: [0.0; 3],
+                },
                 &mut random,
                 Some(&objectives),
             )
