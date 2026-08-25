@@ -93,6 +93,9 @@ test("headed ctf_2fort intelligence, objective HUD, announcer, and round victory
     await expect.poll(async () => root.getAttribute("data-ctf")).toMatch(new RegExp(`^${capture}:0:3:${capture === 3 ? 2 : 0}:`))
   }
   await expect.poll(async () => root.getAttribute("data-audio-starts")).toContain("Game.YourTeamWon")
+  await expect(page.locator("[data-vgui-name='WinPanel']")).toBeVisible()
+  await expect(page.locator("[data-vgui-name='WinningTeamLabel']")).toHaveText("RED TEAM WINS!")
+  await expect(page.locator("[data-vgui-name='WinReasonLabel']")).toHaveText("RED captured the enemy intelligence 3 times")
   const objectivePixels = await page.screenshot()
   await testInfo.attach("ctf-2fort-red-round-victory-hud", { body: objectivePixels, contentType: "image/png" })
 

@@ -11,6 +11,7 @@ export const TF2_HUD_RESOURCES = Object.freeze({
   objectiveStatus: "resource/UI/HudObjectiveStatus.res",
   objectiveFlagPanel: "resource/UI/HudObjectiveFlagPanel.res",
   flagStatus: "resource/UI/FlagStatus.res",
+  winPanel: "resource/UI/WinPanel.res",
   scoreboard: "resource/UI/Scoreboard.res",
   freezePanel: "resource/UI/FreezePanel_Basic.res",
 })
@@ -26,6 +27,7 @@ export const TF2_HUD_RESOURCE_REVISIONS = Object.freeze({
   objectiveStatus: "b46a3a3d4cbfa57d28d15292036f0de16bfdd928f82034dda4f37617576875ca",
   objectiveFlagPanel: "8affbaac643b77e07e3561497d4f6cbc1abd919d497c92fe0a683015d9adc683",
   flagStatus: "69b56afcf854afe54cd745054f1f720540933a23838bf8f77f34d780091176ca",
+  winPanel: "e03fe37c651b1958fedd58b8062a88cc76a7728a6b1d98f21e61af96bbb68089",
   scoreboard: "ed6e7d1619dcfa7423d00cf77c19026d7fe00c6a2bca634bb742d20d870b3e52",
   freezePanel: "aa7eb65149c32af23766daccee2fa6cb45a88ca09e4875008bdf692671f6a15e",
 })
