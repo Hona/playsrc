@@ -28,6 +28,20 @@ impl HitscanProfile {
                 spread: 0.04,
                 accurate_after_seconds: 1.25,
             }),
+            Weapon::SniperRifle => Some(Self {
+                pellets: 1,
+                damage: 50.0,
+                range: 8192.0,
+                spread: 0.0,
+                accurate_after_seconds: 1.25,
+            }),
+            Weapon::Smg => Some(Self {
+                pellets: 1,
+                damage: 8.0,
+                range: 8192.0,
+                spread: 0.025,
+                accurate_after_seconds: 1.25,
+            }),
             _ => None,
         }
     }
@@ -79,7 +93,9 @@ impl HitscanProfile {
 pub const MELEE_RANGE: f32 = 48.0;
 pub const MELEE_HULL_RADIUS: f32 = 18.0;
 pub const BAT_DAMAGE: f32 = 35.0;
+
 pub const SHOVEL_DAMAGE: f32 = 65.0;
+pub const KUKRI_DAMAGE: f32 = 65.0;
 pub const MELEE_SMACK_DELAY: f32 = 0.2;
 
 #[cfg(test)]

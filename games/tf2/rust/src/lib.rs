@@ -54,6 +54,7 @@ pub const FL_CLIENT: u32 = 1 << 8;
 pub const FL_INWATER: u32 = 1 << 10;
 pub const MAX_PROJECTILES: usize = 64;
 const MASK_SOLID: u32 = 0x0200_400b;
+const MASK_SHOT: u32 = 0x4600_4003;
 const MASK_SOLID_BRUSH_ONLY: u32 = 0x0000_400b;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -178,11 +179,15 @@ pub enum Weapon {
     Scattergun = 4,
     Pistol = 5,
     Bat = 6,
+
     Shotgun = 7,
     Shovel = 8,
     Minigun = 9,
     HeavyShotgun = 10,
     Fists = 11,
+    SniperRifle = 12,
+    Smg = 13,
+    Kukri = 14,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -422,6 +427,9 @@ pub struct ProjectileEvent {
 #[repr(u8)]
 pub enum Condition {
     Aiming = 0,
+
+    Zoomed = 1,
+
     Phase = 14,
     EnergyBuff = 19,
     Burning = 22,
@@ -587,6 +595,8 @@ pub enum Event {
         weapon: Weapon,
         target: Option<u32>,
         pellet: u8,
+        hitgroup: u8,
+        critical: bool,
         position: [f32; 3],
         damage: f32,
     },
@@ -643,6 +653,21 @@ pub struct ProducerSnapshot {
     pub regenerate_animation_events: Vec<RegenerateAnimationEvent>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct PosedPlayerHitbox {
+    pub entity: u32,
+    pub team: PlayerTeam,
+    pub hitbox: usize,
+    pub group: i32,
+    pub bone: usize,
+    pub physics_bone: i32,
+    pub bone_contents: u32,
+    pub minimum: [f32; 3],
+    pub maximum: [f32; 3],
+    pub bone_to_world: [f32; 12],
+    pub origin: [f32; 3],
+}
+
 #[derive(Clone)]
 pub struct Session<W: GameplayWorld + Clone> {
     collision: W,
@@ -695,6 +720,7 @@ pub struct Session<W: GameplayWorld + Clone> {
     respawn_touch_count: u32,
     jump: Option<jump::Session>,
     bots: Option<bot::BotWorld>,
+    posed_player_hitboxes: Vec<PosedPlayerHitbox>,
 }
 
 #[derive(Debug)]
@@ -829,6 +855,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             respawn_touch_count: 0,
             jump: None,
             bots: None,
+            posed_player_hitboxes: Vec::new(),
         }
     }
 
@@ -1105,6 +1132,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.bots.as_ref()
     }
 
+    pub fn set_posed_player_hitboxes(&mut self, hitboxes: Vec<PosedPlayerHitbox>) {
+        self.posed_player_hitboxes = hitboxes;
+    }
+
     pub fn configure_jump(&mut self, definition: jump::CourseDefinition) -> Result<(), Error> {
         if !matches!(self.class, PlayerClass::Soldier | PlayerClass::Demoman) {
             return Err(Error::UnsupportedJumpClass(self.class));
@@ -1217,14 +1248,20 @@ impl<W: GameplayWorld + Clone> Session<W> {
             bots.apply(request, self.team, self.class, &mut self.authority_random)
                 .map_err(Error::Bot)?;
         }
+        self.advance_sniper_scope(command);
         let mut movement_policy = MovementPolicy {
             class: self.class,
             modifiers: self.movement_modifiers,
         }
         .resolve();
-        if self.conditions.contains(Condition::Aiming) && self.class == PlayerClass::Heavy {
-            movement_policy.maximum_speed = movement_policy.maximum_speed.min(110.0);
-            movement_policy.allow_jump = false;
+
+        if self.conditions.contains(Condition::Aiming) {
+            if self.class == PlayerClass::Heavy {
+                movement_policy.maximum_speed = movement_policy.maximum_speed.min(110.0);
+                movement_policy.allow_jump = false;
+            } else if self.class == PlayerClass::Sniper {
+                movement_policy.maximum_speed = movement_policy.maximum_speed.min(80.0);
+            }
         }
         if self.air_dashes != 0 {
             movement_policy.air_dash_impulse = None;
@@ -1373,7 +1410,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                         command.movement.yaw_degrees,
                     )?;
                     map_phase.append(phase);
-                } else if matches!(active_weapon, Weapon::Bat | Weapon::Shovel) {
+                } else if matches!(active_weapon, Weapon::Bat | Weapon::Shovel | Weapon::Kukri) {
                     self.swing_melee(active_weapon);
                 } else if active_weapon == Weapon::Fists {
                     self.emit_weapon_sound(SoundDefinition::FistMiss, self.movement.position);
@@ -1399,7 +1436,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
             }
             if self.pending_melee_tick.is_some_and(|due| self.tick > due) {
                 self.pending_melee_tick = None;
-                if matches!(active_weapon, Weapon::Bat | Weapon::Shovel) {
+
+                if matches!(active_weapon, Weapon::Bat | Weapon::Shovel | Weapon::Kukri) {
                     self.resolve_melee(
                         active_weapon,
                         command.pitch_degrees,
@@ -1437,10 +1475,15 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     (Weapon::Pistol, weapon::WeaponActivity::ReloadStart) => {
                         Some(SoundDefinition::PistolReload)
                     }
+
                     (
                         Weapon::Shotgun | Weapon::HeavyShotgun,
                         weapon::WeaponActivity::ReloadLoop,
                     ) => Some(SoundDefinition::ShotgunReload),
+                    (Weapon::Smg, weapon::WeaponActivity::ReloadStart) => {
+                        Some(SoundDefinition::SmgReload)
+                    }
+
                     _ => None,
                 });
             if let Some(definition) = reload_sound {
@@ -1684,7 +1727,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             {
                 previous.charge_begin_tick = None;
                 previous.abort_reload();
-                if matches!(active_weapon, Weapon::Bat | Weapon::Shovel) {
+                if matches!(active_weapon, Weapon::Bat | Weapon::Shovel | Weapon::Kukri) {
                     self.pending_melee_tick = None;
                 }
             }
@@ -1699,6 +1742,79 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 activity: weapon::WeaponActivity::Draw,
             });
             events.push(Event::WeaponChanged(weapon));
+        }
+    }
+
+    fn advance_sniper_scope(&mut self, command: Command) {
+        if self.weapon != Some(Weapon::SniperRifle) {
+            if self.class == PlayerClass::Sniper {
+                self.conditions.remove(Condition::Aiming);
+                self.conditions.remove(Condition::Zoomed);
+            }
+            return;
+        }
+        let interval = self.movement_configuration.tick_interval;
+        let state = self
+            .loadout
+            .get_mut(&Weapon::SniperRifle)
+            .expect("Sniper rifle belongs to loadout");
+        if command.movement.jump && self.movement.ground.is_none() {
+            self.conditions.remove(Condition::Aiming);
+            self.conditions.remove(Condition::Zoomed);
+            state.charged_damage = 0.0;
+            state.charge_begin_tick = None;
+            state.unzoom_due_tick = None;
+            state.rezoom_due_tick = None;
+            state.rezoom_after_shot = false;
+            return;
+        }
+        if state.unzoom_due_tick.is_some_and(|due| self.tick > due) {
+            self.conditions.remove(Condition::Aiming);
+            self.conditions.remove(Condition::Zoomed);
+            state.charged_damage = 0.0;
+            state.charge_begin_tick = None;
+            state.unzoom_due_tick = None;
+            if state.rezoom_after_shot {
+                state.rezoom_due_tick = Some(self.tick + weapon::delay_ticks(0.9, interval));
+                state.rezoom_after_shot = false;
+            }
+        }
+        if state.rezoom_due_tick.is_some_and(|due| self.tick > due) && state.reserve > 0 {
+            state.rezoom_due_tick = None;
+            state.charge_begin_tick = Some(self.tick);
+            self.conditions.insert(Condition::Aiming);
+            self.conditions.insert(Condition::Zoomed);
+        }
+        if command.detonate && self.tick >= state.next_secondary_tick {
+            if state.rezoom_due_tick.is_some() || state.unzoom_due_tick.is_some() {
+                state.next_secondary_tick =
+                    state.rezoom_due_tick.unwrap_or(self.tick) + weapon::delay_ticks(0.3, interval);
+                state.rezoom_due_tick = None;
+            } else if self.conditions.contains(Condition::Zoomed) {
+                self.conditions.remove(Condition::Aiming);
+                self.conditions.remove(Condition::Zoomed);
+                state.charged_damage = 0.0;
+                state.charge_begin_tick = None;
+                state.next_primary_tick = state
+                    .next_primary_tick
+                    .max(self.tick + weapon::delay_ticks(0.1, interval));
+                state.next_secondary_tick = self.tick + weapon::delay_ticks(0.3, interval);
+            } else if state.reserve > 0 && !command.movement.jump {
+                self.conditions.insert(Condition::Aiming);
+                self.conditions.insert(Condition::Zoomed);
+                state.charge_begin_tick = Some(self.tick);
+                state.next_primary_tick = state
+                    .next_primary_tick
+                    .max(self.tick + weapon::delay_ticks(0.1, interval));
+                state.next_secondary_tick = self.tick + weapon::delay_ticks(0.3, interval);
+            }
+        }
+        if self.tick >= state.next_secondary_tick {
+            if self.conditions.contains(Condition::Aiming) && !state.rezoom_after_shot {
+                state.charged_damage = (state.charged_damage + interval * 50.0).min(150.0);
+            } else {
+                state.charged_damage = (state.charged_damage - interval * 75.0).max(0.0);
+            }
         }
     }
 
@@ -2085,10 +2201,34 @@ impl<W: GameplayWorld + Clone> Session<W> {
         let definition = match weapon {
             Weapon::Scattergun => SoundDefinition::ScattergunSingle,
             Weapon::Pistol => SoundDefinition::PistolSingle,
+
             Weapon::Shotgun | Weapon::HeavyShotgun => SoundDefinition::ShotgunSingle,
+            Weapon::SniperRifle => SoundDefinition::SniperSingle,
+            Weapon::Smg => SoundDefinition::SmgSingle,
+
             _ => unreachable!("only configured firearms use hitscan profiles"),
         };
         self.emit_weapon_sound(definition, self.movement.position);
+        let sniper_state = self
+            .loadout
+            .get(&weapon)
+            .copied()
+            .expect("active hitscan weapon");
+        let sniper_damage = if weapon == Weapon::SniperRifle {
+            sniper_state.charged_damage.max(50.0)
+        } else {
+            profile.damage
+        };
+        if weapon == Weapon::SniperRifle {
+            let state = self.loadout.get_mut(&weapon).expect("active Sniper rifle");
+            if self.conditions.contains(Condition::Zoomed) {
+                state.unzoom_due_tick = Some(
+                    self.tick + weapon::delay_ticks(0.5, self.movement_configuration.tick_interval),
+                );
+                state.rezoom_after_shot = state.reserve > 0;
+            }
+            state.charged_damage = 0.0;
+        }
         let previous = self.previous_hitscan_ticks.insert(weapon, self.tick);
         let elapsed = previous.map_or(f32::INFINITY, |tick| {
             self.tick.saturating_sub(tick) as f32 * self.movement_configuration.tick_interval
@@ -2110,19 +2250,94 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     mins: [0.0; 3],
                     maxs: [0.0; 3],
                 },
-                MASK_SOLID,
+                MASK_SHOT,
             )?;
-            if impact.fraction < 1.0 || impact.start_solid {
-                let distance = length(sub(impact.end, origin));
+            let mut player_hit: Option<playsrc_collision::StudioHitboxTrace> = None;
+            for candidate in &self.posed_player_hitboxes {
+                if candidate.team == self.team {
+                    continue;
+                }
+                let entry = playsrc_collision::StudioHitbox {
+                    identity: candidate.hitbox,
+                    group: candidate.group,
+                    bone: candidate.bone,
+                    physics_bone: candidate.physics_bone,
+                    bone_contents: candidate.bone_contents,
+                    surface: None,
+                    minimum: candidate.minimum,
+                    maximum: candidate.maximum,
+                    bone_to_world: &candidate.bone_to_world,
+                };
+                let trace = playsrc_collision::trace_studio_hitboxes(
+                    playsrc_collision::StudioHitboxRequest {
+                        entity: u64::from(candidate.entity),
+                        origin: candidate.origin,
+                        scale: 1.0,
+                        start: origin,
+                        end,
+                        hull: Hull {
+                            mins: [0.0; 3],
+                            maxs: [0.0; 3],
+                        },
+                        mask: MASK_SHOT,
+                        hitboxes: std::slice::from_ref(&entry),
+                    },
+                )
+                .map_err(|_| Error::InvalidProjectilePhysics)?;
+                if let Some(trace) = trace
+                    && trace.fraction <= impact.fraction
+                    && player_hit
+                        .as_ref()
+                        .is_none_or(|prior| trace.fraction < prior.fraction)
+                {
+                    player_hit = Some(trace);
+                }
+            }
+            if player_hit.is_some() || impact.fraction < 1.0 || impact.start_solid {
+                let position = player_hit.as_ref().map_or(impact.end, |hit| hit.end);
+                let distance = length(sub(position, origin));
+                let target = player_hit
+                    .as_ref()
+                    .and_then(|hit| u32::try_from(hit.entity).ok())
+                    .or_else(|| {
+                        impact
+                            .hit
+                            .filter(|identity| !self.collision.is_world(*identity))
+                            .and_then(|identity| u32::try_from(identity).ok())
+                    });
+                let hitgroup = player_hit
+                    .as_ref()
+                    .map_or(0, |hit| hit.hitgroup.max(0) as u8);
+                let critical = sniper_state.sniper_headshot_is_critical(
+                    self.tick,
+                    self.movement_configuration.tick_interval,
+                    self.conditions.contains(Condition::Zoomed),
+                    hitgroup == 1,
+                    false,
+                );
+                let damage = if weapon == Weapon::SniperRifle {
+                    sniper_damage
+                        * if critical {
+                            damage::CRIT_MULTIPLIER
+                        } else {
+                            1.0
+                        }
+                } else {
+                    profile.damage_at_distance(distance, weapon == Weapon::Scattergun)
+                };
+                if let Some(identity) = target
+                    && let Some(bots) = &mut self.bots
+                {
+                    bots.damage(identity, damage);
+                }
                 events.push(Event::HitscanImpact {
                     weapon,
-                    target: impact
-                        .hit
-                        .filter(|identity| !self.collision.is_world(*identity))
-                        .and_then(|identity| u32::try_from(identity).ok()),
+                    target,
                     pellet,
-                    position: impact.end,
-                    damage: profile.damage_at_distance(distance, weapon == Weapon::Scattergun),
+                    hitgroup,
+                    critical,
+                    position,
+                    damage,
                 });
             }
         }
@@ -2133,6 +2348,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         let definition = match weapon {
             Weapon::Bat => SoundDefinition::BatMiss,
             Weapon::Shovel => SoundDefinition::ShovelMiss,
+            Weapon::Kukri => SoundDefinition::KukriMiss,
             _ => unreachable!("only melee weapons swing"),
         };
         self.emit_weapon_sound(definition, self.movement.position);
@@ -2179,6 +2395,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 .hit
                 .filter(|identity| !self.collision.is_world(*identity))
                 .and_then(|identity| u32::try_from(identity).ok());
+
             let (definition, damage) = match (weapon, target.is_some()) {
                 (Weapon::Bat, true) => (SoundDefinition::BatHitFlesh, ballistics::BAT_DAMAGE),
                 (Weapon::Bat, false) => (SoundDefinition::BatHitWorld, ballistics::BAT_DAMAGE),
@@ -2188,13 +2405,19 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 (Weapon::Shovel, false) => {
                     (SoundDefinition::ShovelHitWorld, ballistics::SHOVEL_DAMAGE)
                 }
+                (Weapon::Kukri, true) => (SoundDefinition::KukriHitFlesh, ballistics::KUKRI_DAMAGE),
+                (Weapon::Kukri, false) => {
+                    (SoundDefinition::KukriHitWorld, ballistics::KUKRI_DAMAGE)
+                }
                 _ => unreachable!("only melee weapons resolve swings"),
             };
             self.emit_weapon_sound(definition, impact.end);
+
             events.push(Event::MeleeImpact {
                 weapon,
                 target,
                 position: impact.end,
+
                 damage,
             });
         }
@@ -2281,7 +2504,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
             | Weapon::Shovel
             | Weapon::Minigun
             | Weapon::HeavyShotgun
-            | Weapon::Fists => {
+            | Weapon::Fists
+            | Weapon::SniperRifle
+            | Weapon::Smg
+            | Weapon::Kukri => {
                 unreachable!("hitscan and melee weapons do not spawn projectiles")
             }
         };
@@ -2310,7 +2536,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
             | Weapon::Shovel
             | Weapon::Minigun
             | Weapon::HeavyShotgun
-            | Weapon::Fists => {
+            | Weapon::Fists
+            | Weapon::SniperRifle
+            | Weapon::Smg
+            | Weapon::Kukri => {
                 unreachable!("hitscan and melee weapons do not spawn projectiles")
             }
         };
@@ -2976,6 +3205,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
 fn default_weapon(class: PlayerClass) -> Option<Weapon> {
     match class {
         PlayerClass::Scout => Some(Weapon::Scattergun),
+        PlayerClass::Sniper => Some(Weapon::SniperRifle),
         PlayerClass::Soldier => Some(Weapon::RocketLauncher),
         PlayerClass::Demoman => Some(Weapon::StickybombLauncher),
         PlayerClass::Heavy => Some(Weapon::Minigun),
@@ -3002,6 +3232,7 @@ fn default_loadout(class: PlayerClass) -> BTreeMap<Weapon, WeaponRuntime> {
             (Weapon::Pistol, WeaponRuntime::full(Weapon::Pistol)),
             (Weapon::Bat, WeaponRuntime::full(Weapon::Bat)),
         ]),
+
         PlayerClass::Heavy => BTreeMap::from([
             (Weapon::Minigun, WeaponRuntime::full(Weapon::Minigun)),
             (
@@ -3009,6 +3240,14 @@ fn default_loadout(class: PlayerClass) -> BTreeMap<Weapon, WeaponRuntime> {
                 WeaponRuntime::full(Weapon::HeavyShotgun),
             ),
             (Weapon::Fists, WeaponRuntime::full(Weapon::Fists)),
+        ]),
+        PlayerClass::Sniper => BTreeMap::from([
+            (
+                Weapon::SniperRifle,
+                WeaponRuntime::full(Weapon::SniperRifle),
+            ),
+            (Weapon::Smg, WeaponRuntime::full(Weapon::Smg)),
+            (Weapon::Kukri, WeaponRuntime::full(Weapon::Kukri)),
         ]),
         _ => BTreeMap::new(),
     }
@@ -3028,6 +3267,10 @@ fn allowed(class: PlayerClass, weapon: Weapon) -> bool {
             | (
                 PlayerClass::Heavy,
                 Weapon::Minigun | Weapon::HeavyShotgun | Weapon::Fists
+            )
+            | (
+                PlayerClass::Sniper,
+                Weapon::SniperRifle | Weapon::Smg | Weapon::Kukri
             )
     )
 }
@@ -3908,6 +4151,17 @@ mod tests {
                             .map(|weapon| weapon.weapon)
                             .collect::<Vec<_>>(),
                         vec![Weapon::Scattergun, Weapon::Pistol, Weapon::Bat],
+                    );
+                }
+                PlayerClass::Sniper => {
+                    assert_eq!(snapshot.weapon, Some(Weapon::SniperRifle));
+                    assert_eq!(
+                        snapshot
+                            .loadout
+                            .iter()
+                            .map(|weapon| weapon.weapon)
+                            .collect::<Vec<_>>(),
+                        vec![Weapon::SniperRifle, Weapon::Smg, Weapon::Kukri]
                     );
                 }
                 PlayerClass::Soldier => {
@@ -5109,11 +5363,14 @@ mod tests {
                 rocket_explosion_available: 0,
                 sticky_explosion_available: 0b111,
                 bat_hit_world_available: 0b11,
+
                 shovel_hit_world_available: 0b11,
                 shovel_hit_flesh_available: 0b111,
                 fist_miss_available: 0b11,
                 fist_hit_world_available: 0b11,
                 fist_hit_flesh_available: 0b111,
+                kukri_hit_flesh_available: 0b111,
+                kukri_hit_world_available: 0b11,
             }
         );
 
@@ -5144,11 +5401,14 @@ mod tests {
                 rocket_explosion_available: 0b101,
                 sticky_explosion_available: 0b110,
                 bat_hit_world_available: 0b11,
+
                 shovel_hit_world_available: 0b11,
                 shovel_hit_flesh_available: 0b111,
                 fist_miss_available: 0b11,
                 fist_hit_world_available: 0b11,
                 fist_hit_flesh_available: 0b111,
+                kukri_hit_flesh_available: 0b111,
+                kukri_hit_world_available: 0b11,
             }
         );
     }

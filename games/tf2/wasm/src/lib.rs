@@ -1638,6 +1638,95 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
     (reader.at == bytes.len()).then_some(requests).ok_or(())
 }
 
+fn pose_bot_hitboxes(
+    models: &BTreeMap<String, playsrc_studio_model::PresentationModel>,
+    bots: &[playsrc_tf2::bot::Snapshot],
+    tick: u64,
+) -> Result<Vec<playsrc_tf2::PosedPlayerHitbox>, ()> {
+    let mut output = Vec::new();
+    for bot in bots {
+        if bot.lifecycle != playsrc_tf2::PlayerLifecycle::Active {
+            continue;
+        }
+        let model = models.get(bot.class.data().model).ok_or(())?;
+        let role = if bot.class == playsrc_tf2::PlayerClass::Spy {
+            "MELEE"
+        } else if bot.class == playsrc_tf2::PlayerClass::Demoman {
+            "SECONDARY"
+        } else {
+            "PRIMARY"
+        };
+        let moving =
+            (bot.velocity[0] * bot.velocity[0] + bot.velocity[1] * bot.velocity[1]).sqrt() > 1.0;
+        let activity = format!("ACT_MP_{}_{}", if moving { "RUN" } else { "STAND" }, role);
+        let sequence =
+            *playsrc_studio_model::sequences_for_activity_name(model, activity.as_bytes())
+                .first()
+                .ok_or(())?;
+        let parameters = model
+            .pose_parameters
+            .iter()
+            .map(|_| playsrc_studio_model::Float32(0))
+            .collect::<Vec<_>>();
+        let elapsed = tick as f32 * 0.015;
+        let timing =
+            playsrc_studio_model::sequence_timing(model, sequence, &parameters).map_err(|_| ())?;
+        let pose = playsrc_studio_model::sample_pose_at_time(
+            model,
+            &playsrc_studio_model::AnimationState {
+                base_sequence: sequence,
+                cycle: playsrc_studio_model::Float32(pose_cycle(elapsed, timing).to_bits()),
+                pose_parameters: parameters,
+                layers: Vec::new(),
+            },
+            playsrc_studio_model::Float32(elapsed.to_bits()),
+        )
+        .map_err(|_| ())?;
+        let (sine, cosine) = bot.yaw_degrees.to_radians().sin_cos();
+        let matrix = playsrc_studio_model::Matrix3x4(
+            [
+                cosine,
+                -sine,
+                0.0,
+                bot.position[0],
+                sine,
+                cosine,
+                0.0,
+                bot.position[1],
+                0.0,
+                0.0,
+                1.0,
+                bot.position[2],
+            ]
+            .map(|value| playsrc_studio_model::Float32(value.to_bits())),
+        );
+        let world =
+            playsrc_studio_model::apply_entity_transform(model, &pose, matrix).map_err(|_| ())?;
+        let Some(set) = model.hitbox_sets.first() else {
+            continue;
+        };
+        for hitbox in &set.hitboxes {
+            let bone_index = usize::try_from(hitbox.bone).map_err(|_| ())?;
+            let bone = model.bones.get(bone_index).ok_or(())?;
+            let transform = world.bone_matrices.get(bone_index).ok_or(())?;
+            output.push(playsrc_tf2::PosedPlayerHitbox {
+                entity: bot.identity,
+                team: bot.team,
+                hitbox: hitbox.index,
+                group: hitbox.group,
+                bone: bone_index,
+                physics_bone: bone.physics_bone,
+                bone_contents: bone.contents as u32,
+                minimum: hitbox.bounds_min.0.map(|value| f32::from_bits(value.0)),
+                maximum: hitbox.bounds_max.0.map(|value| f32::from_bits(value.0)),
+                bone_to_world: transform.0.map(|value| f32::from_bits(value.0)),
+                origin: bot.position,
+            });
+        }
+    }
+    Ok(output)
+}
+
 fn pose_cycle(elapsed: f32, timing: playsrc_studio_model::SequenceTiming) -> f32 {
     let value = elapsed * f32::from_bits(timing.cycles_per_second.0);
     if timing.looping {
@@ -3350,6 +3439,20 @@ pub unsafe extern "C" fn playsrc_game_advance(
         } else {
             &[]
         };
+        if input.command.fire {
+            let bots = candidate
+                .bot_world()
+                .map_or_else(Vec::new, playsrc_tf2::bot::BotWorld::snapshots);
+            let hitboxes = match pose_bot_hitboxes(
+                &slot.studio_models,
+                &bots,
+                candidate.producer_snapshot().tick,
+            ) {
+                Ok(value) => value,
+                Err(_) => fail!(18),
+            };
+            candidate.set_posed_player_hitboxes(hitboxes);
+        }
         match candidate.advance_with_external(input.command, physics_results, &rocket_results, None)
         {
             Ok(mut value) => {
@@ -3816,7 +3919,7 @@ fn encode_snapshot(
         u64_field(&mut out, state.reload_due_tick.unwrap_or(u64::MAX), MAX)?;
         u64_field(&mut out, state.charge_begin_tick.unwrap_or(u64::MAX), MAX)?;
         u64_field(&mut out, state.first_primary_tick, MAX)?;
-        u32_field(&mut out, 0, MAX)?;
+        f32_field(&mut out, state.charged_damage, MAX)?;
     }
     for projectile in &snapshot.projectiles {
         u32_field(&mut out, projectile.identity, MAX)?;
@@ -4249,7 +4352,8 @@ fn encode_random_state(state: playsrc_tf2::Tf2RandomState) -> Option<Vec<u8>> {
         state.sound_selection.fist_miss_available,
         state.sound_selection.fist_hit_world_available,
         state.sound_selection.fist_hit_flesh_available,
-        0,
+        state.sound_selection.kukri_hit_flesh_available
+            | state.sound_selection.kukri_hit_world_available << 3,
     ]);
     (output.len() == 288).then_some(output)
 }
@@ -4269,6 +4373,7 @@ fn sound_definition_code(value: playsrc_tf2::SoundDefinition) -> u8 {
         playsrc_tf2::SoundDefinition::BatHitWorld => 11,
         playsrc_tf2::SoundDefinition::ScattergunReload => 12,
         playsrc_tf2::SoundDefinition::PistolReload => 13,
+
         playsrc_tf2::SoundDefinition::ShotgunSingle => 14,
         playsrc_tf2::SoundDefinition::ShotgunReload => 15,
         playsrc_tf2::SoundDefinition::ShovelMiss => 16,
@@ -4281,6 +4386,12 @@ fn sound_definition_code(value: playsrc_tf2::SoundDefinition) -> u8 {
         playsrc_tf2::SoundDefinition::FistMiss => 23,
         playsrc_tf2::SoundDefinition::FistHitWorld => 24,
         playsrc_tf2::SoundDefinition::FistHitFlesh => 25,
+        playsrc_tf2::SoundDefinition::SniperSingle => 26,
+        playsrc_tf2::SoundDefinition::SmgSingle => 27,
+        playsrc_tf2::SoundDefinition::KukriMiss => 28,
+        playsrc_tf2::SoundDefinition::KukriHitFlesh => 29,
+        playsrc_tf2::SoundDefinition::KukriHitWorld => 30,
+        playsrc_tf2::SoundDefinition::SmgReload => 31,
     }
 }
 
@@ -4614,11 +4725,15 @@ fn weapon_code(weapon: playsrc_tf2::Weapon) -> u8 {
         playsrc_tf2::Weapon::Scattergun => 4,
         playsrc_tf2::Weapon::Pistol => 5,
         playsrc_tf2::Weapon::Bat => 6,
+
         playsrc_tf2::Weapon::Shotgun => 7,
         playsrc_tf2::Weapon::Shovel => 8,
         playsrc_tf2::Weapon::Minigun => 9,
         playsrc_tf2::Weapon::HeavyShotgun => 10,
         playsrc_tf2::Weapon::Fists => 11,
+        playsrc_tf2::Weapon::SniperRifle => 12,
+        playsrc_tf2::Weapon::Smg => 13,
+        playsrc_tf2::Weapon::Kukri => 14,
     }
 }
 fn projectile_code(kind: playsrc_tf2::ProjectileKind) -> u8 {
@@ -4734,13 +4849,15 @@ fn encode_game_event(output: &mut Vec<u8>, event: &playsrc_tf2::Event, limit: us
             weapon,
             target,
             pellet,
+            hitgroup,
+            critical,
             position,
             damage,
         } => (
             13,
             weapon_code(*weapon),
             target.unwrap_or(0),
-            u32::from(*pellet),
+            u32::from(*pellet) | (u32::from(*hitgroup) << 8) | (u32::from(*critical) << 16),
             [position[0], position[1], position[2], *damage],
         ),
         playsrc_tf2::Event::MeleeImpact {
@@ -7994,6 +8111,7 @@ fn load_cached_presentation(
         "models/weapons/c_models/c_soldier_arms.mdl".to_owned(),
         "models/weapons/c_models/c_demo_arms.mdl".to_owned(),
         "models/weapons/c_models/c_scout_arms.mdl".to_owned(),
+        "models/weapons/c_models/c_sniper_arms.mdl".to_owned(),
         "models/player/scout.mdl".to_owned(),
         "models/player/sniper.mdl".to_owned(),
         "models/player/soldier.mdl".to_owned(),
@@ -8014,6 +8132,9 @@ fn load_cached_presentation(
         "models/weapons/c_models/c_shovel/c_shovel.mdl".to_owned(),
         "models/weapons/c_models/c_heavy_arms.mdl".to_owned(),
         "models/weapons/c_models/c_minigun/c_minigun.mdl".to_owned(),
+        "models/weapons/c_models/c_sniperrifle/c_sniperrifle.mdl".to_owned(),
+        "models/weapons/c_models/c_smg/c_smg.mdl".to_owned(),
+        "models/weapons/c_models/c_machete/c_machete.mdl".to_owned(),
     ]);
     let expected = graph
         .entities
@@ -8215,6 +8336,7 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
         "models/weapons/c_models/c_soldier_arms.mdl".to_owned(),
         "models/weapons/c_models/c_demo_arms.mdl".to_owned(),
         "models/weapons/c_models/c_scout_arms.mdl".to_owned(),
+        "models/weapons/c_models/c_sniper_arms.mdl".to_owned(),
         "models/player/scout.mdl".to_owned(),
         "models/player/sniper.mdl".to_owned(),
         "models/player/soldier.mdl".to_owned(),
@@ -8235,6 +8357,9 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
         "models/weapons/c_models/c_shovel/c_shovel.mdl".to_owned(),
         "models/weapons/c_models/c_heavy_arms.mdl".to_owned(),
         "models/weapons/c_models/c_minigun/c_minigun.mdl".to_owned(),
+        "models/weapons/c_models/c_sniperrifle/c_sniperrifle.mdl".to_owned(),
+        "models/weapons/c_models/c_smg/c_smg.mdl".to_owned(),
+        "models/weapons/c_models/c_machete/c_machete.mdl".to_owned(),
     ]);
     for e in &graph.entities {
         if e.classname
@@ -8256,6 +8381,7 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
                 "models/weapons/c_models/c_soldier_arms.mdl"
                     | "models/weapons/c_models/c_demo_arms.mdl"
                     | "models/weapons/c_models/c_scout_arms.mdl"
+                    | "models/weapons/c_models/c_sniper_arms.mdl"
                     | "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl"
                     | "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl"
                     | "models/weapons/c_models/c_scattergun.mdl"
@@ -8265,6 +8391,9 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
                     | "models/weapons/c_models/c_shovel/c_shovel.mdl"
                     | "models/weapons/c_models/c_heavy_arms.mdl"
                     | "models/weapons/c_models/c_minigun/c_minigun.mdl"
+                    | "models/weapons/c_models/c_sniperrifle/c_sniperrifle.mdl"
+                    | "models/weapons/c_models/c_smg/c_smg.mdl"
+                    | "models/weapons/c_models/c_machete/c_machete.mdl"
             ) {
                 playsrc_studio_model::PresentationProfile::ViewModel
             } else {
@@ -11144,11 +11273,17 @@ mod tests {
                 reload_due_tick: None,
                 charge_begin_tick: None,
                 first_primary_tick: 0,
+
                 minigun_state: playsrc_tf2::weapon::MinigunState::Idle,
                 spin_begin_tick: None,
                 firing_begin_tick: None,
                 idle_due_tick: None,
                 smack_due_tick: None,
+                charged_damage: 0.0,
+                next_secondary_tick: 0,
+                unzoom_due_tick: None,
+                rezoom_due_tick: None,
+                rezoom_after_shot: false,
             }],
             projectiles: vec![projectile],
             activities: vec![playsrc_tf2::weapon::ActivityEvent {
@@ -11175,11 +11310,14 @@ mod tests {
                 rocket_explosion_available: 7,
                 sticky_explosion_available: 7,
                 bat_hit_world_available: 3,
+
                 shovel_hit_world_available: 3,
                 shovel_hit_flesh_available: 7,
                 fist_miss_available: 3,
                 fist_hit_world_available: 3,
                 fist_hit_flesh_available: 7,
+                kukri_hit_flesh_available: 0b111,
+                kukri_hit_world_available: 0b11,
             },
         };
         let mut collision_snapshot = b"CSNP".to_vec();

@@ -23,14 +23,18 @@ export type Tf2Hud = Readonly<{
   health: number
   maxHealth: number
   className: Tf2ClassPresentation["displayName"]
-  weaponName: "Rocket Launcher" | "Original" | "Stickybomb Launcher" | "Scattergun" | "Pistol" | "Bat" | "Shotgun" | "Shovel" | "Minigun" | "Fists" | null
+
+  weaponName: "Rocket Launcher" | "Original" | "Stickybomb Launcher" | "Scattergun" | "Pistol" | "Bat" | "Shotgun" | "Shovel" | "Minigun" | "Fists" | "Sniper Rifle" | "SMG" | "Kukri" | null
+
   speed: number
   projectileCount: number
 }>
 
 export type Tf2AudioRequest = Readonly<{
   voiceIdentity: number
-  definition: "Weapon_RPG.Single" | "Weapon_QuakeRPG.Single" | "Weapon_StickyBombLauncher.Single" | "BaseExplosionEffect.Sound" | "Weapon_QuakeRPG.Explode" | "Weapon_Grenade_Pipebomb.Explode" | "Weapon_Scatter_Gun.Single" | "Weapon_Pistol.Single" | "Weapon_Bat.Miss" | "Weapon_Bat.HitFlesh" | "Weapon_Bat.HitWorld" | "Weapon_Scatter_Gun.WorldReload" | "Weapon_Pistol.WorldReload" | "Weapon_Shotgun.Single" | "Weapon_Shotgun.WorldReload" | "Weapon_Shovel.Miss" | "Weapon_Shovel.HitFlesh" | "Weapon_Shovel.HitWorld" | "Weapon_Minigun.WindUp" | "Weapon_Minigun.WindDown" | "Weapon_Minigun.Spin" | "Weapon_Minigun.Fire" | "Weapon_Fist.Miss" | "Weapon_Fist.HitWorld" | "Weapon_Fist.HitFlesh"
+
+  definition: "Weapon_RPG.Single" | "Weapon_QuakeRPG.Single" | "Weapon_StickyBombLauncher.Single" | "BaseExplosionEffect.Sound" | "Weapon_QuakeRPG.Explode" | "Weapon_Grenade_Pipebomb.Explode" | "Weapon_Scatter_Gun.Single" | "Weapon_Pistol.Single" | "Weapon_Bat.Miss" | "Weapon_Bat.HitFlesh" | "Weapon_Bat.HitWorld" | "Weapon_Scatter_Gun.WorldReload" | "Weapon_Pistol.WorldReload" | "Weapon_Shotgun.Single" | "Weapon_Shotgun.WorldReload" | "Weapon_Shovel.Miss" | "Weapon_Shovel.HitFlesh" | "Weapon_Shovel.HitWorld" | "Weapon_Minigun.WindUp" | "Weapon_Minigun.WindDown" | "Weapon_Minigun.Spin" | "Weapon_Minigun.Fire" | "Weapon_Fist.Miss" | "Weapon_Fist.HitWorld" | "Weapon_Fist.HitFlesh" | "Weapon_SniperRifle.Single" | "Weapon_SMG.Single" | "Weapon_Machete.Miss" | "Weapon_Machete.HitFlesh" | "Weapon_Machete.HitWorld" | "Weapon_SMG.WorldReload"
+
   source: Readonly<{
     kind: "entity" | "world"
     identity: number
@@ -57,6 +61,7 @@ export function tf2Audio(snapshot: Snapshot): readonly Tf2AudioRequest[] {
     "Weapon_Bat.HitWorld",
     "Weapon_Scatter_Gun.WorldReload",
     "Weapon_Pistol.WorldReload",
+
     "Weapon_Shotgun.Single",
     "Weapon_Shotgun.WorldReload",
     "Weapon_Shovel.Miss",
@@ -69,6 +74,13 @@ export function tf2Audio(snapshot: Snapshot): readonly Tf2AudioRequest[] {
     "Weapon_Fist.Miss",
     "Weapon_Fist.HitWorld",
     "Weapon_Fist.HitFlesh",
+    "Weapon_SniperRifle.Single",
+    "Weapon_SMG.Single",
+    "Weapon_Machete.Miss",
+    "Weapon_Machete.HitFlesh",
+    "Weapon_Machete.HitWorld",
+    "Weapon_SMG.WorldReload",
+
   ]
   return Object.freeze(snapshot.audioEvents.map((event) => Object.freeze({
     voiceIdentity: stable32(`${event.tick}:${event.ordinal}:${event.definition}:${event.sourceIdentity}`),
@@ -175,12 +187,20 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
   let activity = "ACT_VM_DRAW"
   return Object.freeze({
     map(snapshot: Snapshot,view:Readonly<{aspectRatio:number;farPlane:number}>=Object.freeze({aspectRatio:4/3,farPlane:32768})): Readonly<{ item: ModelItem; request: ModelPoseRequest }> {
-      if (snapshot.weapon === null || (snapshot.class !== 1 && snapshot.class !== 3 && snapshot.class !== 4 && snapshot.class !== 6)) {
+
+      if (snapshot.weapon === null || (snapshot.class !== 1 && snapshot.class !== 2 && snapshot.class !== 3 && snapshot.class !== 4 && snapshot.class !== 6)) {
+
         throw new ProjectilePresentationError("MalformedFact", "class has no implemented viewmodel weapon")
       }
       const identity = tf2ClassPresentation(snapshot.class).hands
-      const itemIdentity = snapshot.weapon === 4
-        ? "models/weapons/c_models/c_scattergun.mdl"
+      const itemIdentity = snapshot.weapon === 12
+        ? "models/weapons/c_models/c_sniperrifle/c_sniperrifle.mdl"
+        : snapshot.weapon === 13
+          ? "models/weapons/c_models/c_smg/c_smg.mdl"
+          : snapshot.weapon === 14
+            ? "models/weapons/c_models/c_machete/c_machete.mdl"
+            : snapshot.weapon === 4
+              ? "models/weapons/c_models/c_scattergun.mdl"
         : snapshot.weapon === 5
           ? "models/weapons/c_models/c_pistol/c_pistol.mdl"
           : snapshot.weapon === 6
@@ -208,12 +228,14 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
       if (!weapon) throw new ProjectilePresentationError("MissingModel", `${identity}:weapon-state`)
       const selectionChanged = prior !== snapshot.weapon || priorClass !== snapshot.class
       const exact = snapshot.activities.filter((event) => event.weapon === snapshot.weapon).at(-1)
-      const role = snapshot.weapon === 6 || snapshot.weapon === 8 ? "MELEE" : snapshot.weapon === 11 ? "FISTS" : snapshot.weapon === 5 || snapshot.weapon === 7 || snapshot.weapon === 10 || snapshot.class === 4 ? "SECONDARY" : "PRIMARY"
+
+      const role = snapshot.weapon === 6 || snapshot.weapon === 8 || snapshot.weapon === 14 ? "MELEE" : snapshot.weapon === 11 ? "FISTS" : snapshot.weapon === 5 || snapshot.weapon === 7 || snapshot.weapon === 10 || snapshot.weapon === 13 || snapshot.class === 4 ? "SECONDARY" : "PRIMARY"
       const mapped = exact === undefined ? undefined : [
         "",
         `ACT_${role}_VM_DRAW`,
         role === "MELEE" ? "ACT_MELEE_VM_HITCENTER" : role === "FISTS" ? "ACT_FISTS_VM_HITLEFT" : `ACT_${role}_VM_PRIMARYATTACK`,
-        snapshot.weapon === 5 ? "ACT_SECONDARY_VM_RELOAD" : `ACT_${role}_RELOAD_START`,
+        snapshot.weapon === 5 || snapshot.weapon === 13 ? "ACT_SECONDARY_VM_RELOAD" : `ACT_${role}_RELOAD_START`,
+
         `ACT_${role}_VM_RELOAD`,
         `ACT_${role}_RELOAD_FINISH`,
         `ACT_${role}_VM_IDLE`,
@@ -666,7 +688,9 @@ export function tf2Hud(snapshot: Snapshot): Tf2Hud {
     maxHealth: snapshot.maximumHealth,
     className: tf2ClassPresentation(snapshot.class).displayName,
     weaponName: snapshot.weapon === null ? null
-      : (["", "Rocket Launcher", "Original", "Stickybomb Launcher", "Scattergun", "Pistol", "Bat", "Shotgun", "Shovel", "Minigun", "Shotgun", "Fists"] as const)[snapshot.weapon],
+
+      : (["", "Rocket Launcher", "Original", "Stickybomb Launcher", "Scattergun", "Pistol", "Bat", "Shotgun", "Shovel", "Minigun", "Shotgun", "Fists", "Sniper Rifle", "SMG", "Kukri"] as const)[snapshot.weapon],
+
     speed: Math.hypot(...snapshot.velocity),
     projectileCount: snapshot.projectiles.length,
   })
@@ -681,7 +705,7 @@ export function tf2Camera(snapshot: Snapshot, yawDegrees: number, pitchDegrees: 
     ]) as readonly [number, number, number],
     yawDegrees,
     pitchDegrees,
-    verticalFovDegrees: sourceHorizontal4By3FovToVertical(TF2_DEFAULT_HORIZONTAL_FOV_4_BY_3),
+    verticalFovDegrees: sourceHorizontal4By3FovToVertical(snapshot.class === 2 && snapshot.weapon === 12 && (snapshot.conditions[0] & 2) !== 0 ? 20 : TF2_DEFAULT_HORIZONTAL_FOV_4_BY_3),
     near: SOURCE_WORLD_NEAR,
     far: Math.fround(SOURCE_MAP_EXTENT * SOURCE_MAP_EXTENT_DIAGONAL),
   })

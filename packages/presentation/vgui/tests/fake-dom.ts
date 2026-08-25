@@ -141,6 +141,15 @@ export class FakeElement {
     }
   }
 
+  prepend(...nodes: FakeElement[]): void {
+    for (let index = nodes.length - 1; index >= 0; index -= 1) {
+      const node = nodes[index]!
+      node.remove()
+      node.parentElement = this
+      this.children.unshift(node)
+    }
+  }
+
   replaceChildren(...nodes: FakeElement[]): void {
     for (const child of this.children) child.parentElement = null
     this.children.length = 0
@@ -269,6 +278,10 @@ export class FakeDocument {
 
   createElement(tag: string): FakeElement {
     return new FakeElement(this, tag.toUpperCase())
+  }
+
+  createElementNS(_namespace: string, tag: string): FakeElement {
+    return this.createElement(tag)
   }
 
   addEventListener(type: string, listener: FakeListener): void {

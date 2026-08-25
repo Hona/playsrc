@@ -100,7 +100,9 @@ function snapshot(): ArrayBuffer {
   at += 8
   data.set([0x50, 0x52, 0x4e, 0x47], at)
   view.setUint32(at + 4, 1, true)
+
   data.set([7, 7, 3, 31, 3, 3, 7, 0], at + 280)
+
   at += 288
   data.set([0x43, 0x53, 0x4e, 0x50], at)
   view.setUint32(at + 4, 3, true)
@@ -171,10 +173,10 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     for (const team of [0, 1, 4]) {
       expect(() => encodeCommand({ ...base, selectTeam: team as 2 })).toThrow("team selector is invalid")
     }
-    for (let weapon = 1; weapon <= 11; weapon += 1) {
+    for (let weapon = 1; weapon <= 14; weapon += 1) {
       expect(new DataView(encodeCommand({ ...base, selectWeapon: weapon as 1 })).getUint32(32, true)).toBe(weapon << 8)
     }
-    for (const weapon of [0, 12, 1.5, Number.NaN]) {
+    for (const weapon of [0, 15, 1.5, Number.NaN]) {
       expect(() => encodeCommand({ ...base, selectWeapon: weapon as 1 })).toThrow("weapon selector is invalid")
     }
   })

@@ -6,6 +6,7 @@ use std::{fmt, ops::Range};
 
 mod contact;
 mod displacement;
+mod hitbox;
 mod lighting;
 mod snapshot;
 
@@ -14,6 +15,9 @@ pub use contact::{
     ContactSnapshot, ContactSubject, TriggerVolume, produce_trigger_contacts,
 };
 
+pub use hitbox::{
+    StudioHitbox, StudioHitboxError, StudioHitboxRequest, StudioHitboxTrace, trace_studio_hitboxes,
+};
 pub use lighting::{
     LIGHTING_RAY_BATCH_VERSION, LightingOccluders, LightingRay, LightingRayBatch,
     LightingRayLimits, LightingRayResult,
@@ -37,11 +41,13 @@ pub const CONTENTS_MOVEABLE: u32 = 0x0000_4000;
 pub const CONTENTS_PLAYERCLIP: u32 = 0x0001_0000;
 pub const CONTENTS_MONSTER: u32 = 0x0200_0000;
 pub const CONTENTS_TRANSLUCENT: u32 = 0x1000_0000;
+pub const CONTENTS_HITBOX: u32 = 0x4000_0000;
 pub const MASK_SOLID: u32 =
     CONTENTS_SOLID | CONTENTS_MOVEABLE | CONTENTS_WINDOW | CONTENTS_MONSTER | CONTENTS_GRATE;
 pub const MASK_PLAYERSOLID: u32 = MASK_SOLID | CONTENTS_PLAYERCLIP;
 pub const MASK_OPAQUE: u32 = CONTENTS_SOLID | CONTENTS_MOVEABLE | CONTENTS_OPAQUE;
 pub const SURF_SKY: u16 = 0x0004;
+pub const SURF_HITBOX: u16 = 0x8000;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Plane {

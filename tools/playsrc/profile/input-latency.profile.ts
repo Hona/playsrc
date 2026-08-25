@@ -862,6 +862,7 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
     pixelsSha256: string
     reload: null | { clip: number; reserve: number; sound: string }
   }> = []
+
   const soldierWeaponEvidence: typeof scoutWeaponEvidence = []
   const heavyWeaponEvidence: Array<{
     team: 2 | 3
@@ -876,6 +877,8 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
     totalAmmoText: string
     pixelsSha256: string
   }> = []
+  let sniperScopeEvidence: null | { weapon: number; charge: number; unscopedPixelsSha256: string; scopedPixelsSha256: string; corner: readonly number[]; sourceMaterials: readonly string[] } = null
+
   const activeFrameWindows: Array<{ started: number; finished: number }> = []
   const workloads: Array<{
     name: string
@@ -1043,7 +1046,9 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
             }
           })
           const [health, , weapon] = observation.hud.split(":")
-          const armed = identity === 1 || identity === 3 || identity === 4 || identity === 6
+
+          const armed = identity === 1 || identity === 2 || identity === 3 || identity === 4 || identity === 6
+
           const imageName = name === "demoman" ? "demo" : name === "engineer" ? "engi" : name
           expect(observation.phase).toBe("Ready")
           expect(Number(health)).toBe(maximumHealth[identity - 1])
@@ -1155,6 +1160,7 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
       }
       expect(new Set(scoutWeaponEvidence.map((item) => item.pixelsSha256)).size).toBe(3)
     }
+
     if (scenarioMode === "soldier" || scenarioMode === "heavy") {
       const root = page.locator("main")
       if (scenarioMode === "heavy") {
@@ -1296,6 +1302,36 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
         start: async () => { await mouse(0, true) },
         stop: async () => { await mouse(0, false) },
       })
+    }
+    if (scenarioMode === "sniper") {
+      const root = page.locator("main")
+      const entry = page.locator("[aria-label='Console command']")
+      if (await root.getAttribute("data-console-visible") !== "true") await page.keyboard.press("Backquote")
+      await entry.fill("class sniper")
+      await page.keyboard.press("Enter")
+      await page.keyboard.press("Backquote")
+      await expect.poll(async () => (await root.getAttribute("data-hud-probe"))?.split(":")[2]).toBe("12")
+      const unscoped = await page.screenshot()
+      await page.evaluate(async () => {
+        const canvas = document.querySelector("canvas.world-canvas")
+        if (!canvas) throw new Error("Sniper scope evidence canvas is unavailable")
+        if (document.pointerLockElement !== canvas) await canvas.requestPointerLock()
+        dispatchEvent(new MouseEvent("mousedown", { button: 2, bubbles: true }))
+      })
+      const scope = page.locator("[data-tf2-scope='authored']")
+      await expect(scope).toBeVisible()
+      await page.evaluate(() => dispatchEvent(new MouseEvent("mouseup", { button: 2, bubbles: true })))
+      const charge = page.locator("[data-tf2-scope-charge='authored']")
+      await expect.poll(async () => Number(await charge.getAttribute("data-charge")), { timeout: 10_000 }).toBeGreaterThan(0)
+      const scoped = await page.screenshot()
+      const pixels = decodeScreenshot(scoped)
+      const corner = [pixels.pixels[0]!, pixels.pixels[1]!, pixels.pixels[2]!]
+      expect(corner).toEqual([0, 0, 0])
+      expect(createHash("sha256").update(unscoped).digest("hex")).not.toBe(createHash("sha256").update(scoped).digest("hex"))
+      const sourceMaterials = await scope.locator("[data-scope-quadrant]").evaluateAll(nodes => nodes.map(node => (node as HTMLElement).dataset.sourceMaterial!))
+      expect(sourceMaterials).toEqual(["materials/hud/scope_sniper_ul.vmt", "materials/hud/scope_sniper_ur.vmt", "materials/hud/scope_sniper_lr.vmt", "materials/hud/scope_sniper_ll.vmt"])
+      sniperScopeEvidence = { weapon: 12, charge: Number(await charge.getAttribute("data-charge")), unscopedPixelsSha256: createHash("sha256").update(unscoped).digest("hex"), scopedPixelsSha256: createHash("sha256").update(scoped).digest("hex"), corner, sourceMaterials }
+
     }
     if (shouldRunScenario("jump")) workloads.push({
       name: "repeated-jump",
@@ -1528,8 +1564,11 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
     steadyState,
     classEvidence,
     scoutWeaponEvidence,
+
     soldierWeaponEvidence,
     heavyWeaponEvidence,
+    sniperScopeEvidence,
+
     scenarios: scenarios.map((scenario) => ({
       name: scenario.name,
       presentationTrace: presentationSummary(scenario.samples[0]!.at, scenario.samples.at(-1)!.at),

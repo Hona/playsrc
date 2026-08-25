@@ -58,6 +58,28 @@ struct WeaponCrosshair {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct ScopeTexture {
+    source: SourceIdentity,
+    width: u32,
+    height: u32,
+    frame: AuthoredFrame,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthoredScope {
+    schema: &'static str,
+    content_build: String,
+    quadrants: Vec<SourceIdentity>,
+    charge_material: SourceIdentity,
+    tint: ScopeTexture,
+    normal: ScopeTexture,
+    charge_base: ScopeTexture,
+    charge_mask: ScopeTexture,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct AuthoredCrosshairs {
     schema: &'static str,
     content_build: String,
@@ -123,11 +145,32 @@ fn frame(bytes: &[u8], frame_index: u16, crop: Option<&Crop>) -> Result<Authored
         playsrc_vtf::Limits::default(),
     )
     .map_err(|error| format!("authored crosshair frame {frame_index}: {error}"))?;
-    if plane.channel_layout != playsrc_vtf::ChannelLayout::Rgba
-        || plane.scalar_encoding != playsrc_vtf::ScalarEncoding::U8
+    if plane.scalar_encoding != playsrc_vtf::ScalarEncoding::U8
+        || !matches!(
+            plane.channel_layout,
+            playsrc_vtf::ChannelLayout::Rgba | playsrc_vtf::ChannelLayout::Rgb
+        )
     {
-        return Err("authored crosshair frame is not RGBA8".to_owned());
+        return Err(format!(
+            "authored frame uses unsupported channels: {:?}/{:?}",
+            plane.channel_layout, plane.scalar_encoding
+        ));
     }
+    let rgb = plane.channel_layout == playsrc_vtf::ChannelLayout::Rgb;
+    let rgba_samples = if rgb {
+        plane
+            .samples
+            .chunks_exact(3)
+            .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], 255])
+            .collect::<Vec<_>>()
+    } else {
+        plane.samples.clone()
+    };
+    let row_stride = if rgb {
+        plane.width as usize * 4
+    } else {
+        plane.row_stride
+    };
     let (width, height, samples) = if let Some(region) = crop {
         if region.width == 0
             || region.height == 0
@@ -151,12 +194,12 @@ fn frame(bytes: &[u8], frame_index: u16, crop: Option<&Crop>) -> Result<Authored
                 .ok_or_else(|| "crosshair crop allocation overflows".to_owned())?,
         );
         for index in 0..region.height {
-            let start = (region.y + index) as usize * plane.row_stride + region.x as usize * 4;
-            cropped.extend_from_slice(&plane.samples[start..start + row]);
+            let start = (region.y + index) as usize * row_stride + region.x as usize * 4;
+            cropped.extend_from_slice(&rgba_samples[start..start + row]);
         }
         (region.width, region.height, cropped)
     } else {
-        (plane.width, plane.height, plane.samples)
+        (plane.width, plane.height, rgba_samples)
     };
     let png = png_data(width, height, &samples)?;
     Ok(AuthoredFrame {
@@ -282,6 +325,33 @@ fn weapon(
     })
 }
 
+fn scope_source(
+    content: &Content,
+    logical_path: &str,
+) -> Result<(SourceIdentity, Vec<u8>), String> {
+    let (record, bytes) = crate::dependency(content, logical_path)?;
+    Ok((
+        identity(&record)?,
+        bytes.ok_or_else(|| format!("authored scope source is absent: {logical_path}"))?,
+    ))
+}
+
+fn scope_texture(content: &Content, logical_path: &str) -> Result<ScopeTexture, String> {
+    let (source, bytes) = scope_source(content, logical_path)?;
+    let metadata = playsrc_vtf::inspect(
+        &bytes,
+        playsrc_vtf::Dialect::Source2013Pc,
+        playsrc_vtf::Limits::default(),
+    )
+    .map_err(|error| format!("{logical_path}: {error}"))?;
+    Ok(ScopeTexture {
+        source,
+        width: u32::from(metadata.width),
+        height: u32::from(metadata.height),
+        frame: frame(&bytes, 0, None).map_err(|error| format!("{logical_path}: {error}"))?,
+    })
+}
+
 pub(crate) fn write(
     content: &Content,
     tf2: &Path,
@@ -331,6 +401,9 @@ pub(crate) fn write(
         weapon(content, "scripts/tf_weapon_minigun.ctx", &[9])?,
         weapon(content, "scripts/tf_weapon_shotgun_hwg.ctx", &[10])?,
         weapon(content, "scripts/tf_weapon_fists.ctx", &[11])?,
+        weapon(content, "scripts/tf_weapon_sniperrifle.ctx", &[12])?,
+        weapon(content, "scripts/tf_weapon_smg.ctx", &[13])?,
+        weapon(content, "scripts/tf_weapon_club.ctx", &[14])?,
     ];
 
     let directory_bytes = fs::read(tf2.join("tf2_textures_dir.vpk"))
@@ -401,5 +474,27 @@ pub(crate) fn write(
         output_directory.join("crosshair.generated.ts"),
         generated.as_bytes(),
     )
-    .map_err(|error| format!("authored crosshair output: {error}"))
+    .map_err(|error| format!("authored crosshair output: {error}"))?;
+
+    let scope = AuthoredScope {
+        schema: "playsrc-tf2-authored-sniper-scope-v1",
+        content_build: content_build.to_owned(),
+        quadrants: ["ul", "ur", "lr", "ll"]
+            .into_iter()
+            .map(|suffix| {
+                scope_source(content, &format!("materials/hud/scope_sniper_{suffix}.vmt"))
+                    .map(|value| value.0)
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        charge_material: scope_source(content, "materials/hud/sniperscope_numbers.vmt")?.0,
+        tint: scope_texture(content, "materials/hud/scope_sniper_ul.vtf")?,
+        normal: scope_texture(content, "materials/hud/scope_normal_ul.vtf")?,
+        charge_base: scope_texture(content, "materials/hud/sniperscope_numbers.vtf")?,
+        charge_mask: scope_texture(content, "materials/hud/sniperscope_numbers2.vtf")?,
+    };
+    let json = serde_json::to_string(&scope).map_err(|error| error.to_string())?;
+    fs::write(
+        output_directory.join("scope.generated.ts"),
+        format!("// Generated by generator/src/main.rs from exact configured producer outputs.\\n// Do not edit.\\nexport const configuredTf2AuthoredScopeInput: unknown = {json}\\n").replace("\\n", "\n"),
+    ).map_err(|error| format!("authored scope output: {error}"))
 }
