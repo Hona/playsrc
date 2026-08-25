@@ -7,6 +7,7 @@ import { inflateSync } from "node:zlib"
 import { TF2_CLASS_NAMES, tf2ClassFromName, tf2ClassPresentation } from "@playsrc/game-tf2-browser/class"
 import { expect, test } from "./application-test"
 import { divideProfileWindow, profileSampleSeconds, summarizeFrameTimes } from "./profile-window"
+import { captureTf2TeamSelection, chooseTf2Team, type Tf2TeamSelectionEvidence } from "./team-selection-evidence"
 import { loadLocalConfig } from "../src/config"
 
 type RpcRecord = { kind: string; started: number; finished?: number; bytes?: number; workerTimings?: Record<string, number> }
@@ -391,6 +392,7 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
   let storageAfterRepeatedMap: Awaited<ReturnType<typeof storageSnapshot>> | null = null
   let pageReloadLoadPerformance:unknown=null
   let storageAfterPageReload:Awaited<ReturnType<typeof storageSnapshot>>|null=null
+  let teamSelectionEvidence: Tf2TeamSelectionEvidence | undefined
   if (await page.locator("main").getAttribute("data-phase") === "MainMenu") {
     await page.keyboard.press("Backquote")
     const consoleEntry = page.locator("[aria-label='Console command']")
@@ -407,6 +409,8 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
       firstLoadPerformance = JSON.parse((await page.locator("main").getAttribute("data-load-performance")) ?? "null")
       storageAfterFirstMap = await storageSnapshot()
       await page.keyboard.press("Backquote")
+      teamSelectionEvidence = await captureTf2TeamSelection(page)
+      await chooseTf2Team(page, "red")
       if (await page.locator("main").getAttribute("data-class-selection-visible") === "true") {
         await page.keyboard.press("Digit2")
         await expect(page.locator("main")).toHaveAttribute("data-class-selection-visible", "false")
@@ -431,6 +435,8 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
       repeatedLoadPerformance = JSON.parse((await page.locator("main").getAttribute("data-load-performance")) ?? "null")
       storageAfterRepeatedMap = await storageSnapshot()
       await page.keyboard.press("Backquote")
+      await captureTf2TeamSelection(page)
+      await chooseTf2Team(page, "red")
     }
   }
   if(mapOnly&&repeatedGameplayReadyMilliseconds!==undefined){
@@ -439,7 +445,7 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
     if(await page.locator("main").getAttribute("data-phase")==="MainMenu"){
       await page.keyboard.press("Backquote");const consoleEntry=page.locator("[aria-label='Console command']");await expect(consoleEntry).toBeVisible();await consoleEntry.fill(`map ${target}`);pageReloadMapSubmittedMilliseconds=await page.evaluate(()=>performance.now());await page.keyboard.press("Enter")
       await page.waitForFunction(()=>{const main=document.querySelector<HTMLElement>("main");return(main?.dataset.phase==="Ready"&&main.dataset.gameui==="in-game")||main?.dataset.phase==="Failed"},undefined,{timeout:600_000,polling:50})
-      if(await page.locator("main").getAttribute("data-phase")==="Ready"){expect(await page.locator("main").getAttribute("data-detail")).toBe("Click the field to capture the mouse");pageReloadGameplayReadyMilliseconds=await page.evaluate(()=>performance.now());pageReloadLoadPerformance=JSON.parse((await page.locator("main").getAttribute("data-load-performance"))??"null");storageAfterPageReload=await storageSnapshot();await page.keyboard.press("Backquote")}
+      if(await page.locator("main").getAttribute("data-phase")==="Ready"){expect(await page.locator("main").getAttribute("data-detail")).toBe("Click the field to capture the mouse");pageReloadGameplayReadyMilliseconds=await page.evaluate(()=>performance.now());pageReloadLoadPerformance=JSON.parse((await page.locator("main").getAttribute("data-load-performance"))??"null");storageAfterPageReload=await storageSnapshot();await page.keyboard.press("Backquote");await captureTf2TeamSelection(page);await chooseTf2Team(page,"red")}
     }
   }
   const startupMilliseconds = Date.now() - wallStarted
@@ -1520,6 +1526,7 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
     mapOnly,
     startupMilliseconds,
     menu: menuMetrics,
+    teamSelection: teamSelectionEvidence ?? null,
     classes,
     hud: finalRuntime ? {
       probe: finalRuntime.hudProbe,
