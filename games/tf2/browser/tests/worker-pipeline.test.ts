@@ -105,12 +105,22 @@ class MemoryCache implements DerivedObjectCache {
   reads = 0
   maximumConcurrentReads = 0
   #activeReads = 0
+  #pendingRead?: Readonly<{ ready: Promise<void>; release(): void }>
 
   async read(key: string): Promise<Uint8Array | undefined> {
     this.reads += 1
     this.#activeReads += 1
     this.maximumConcurrentReads = Math.max(this.maximumConcurrentReads, this.#activeReads)
-    await new Promise((resolve) => setTimeout(resolve, 5))
+    if (this.#pendingRead) {
+      const pending = this.#pendingRead
+      this.#pendingRead = undefined
+      pending.release()
+    } else {
+      let release!: () => void
+      const ready = new Promise<void>((resolve) => { release = resolve })
+      this.#pendingRead = { ready, release }
+      await ready
+    }
     this.#activeReads -= 1
     return this.entries.get(key)?.slice()
   }
