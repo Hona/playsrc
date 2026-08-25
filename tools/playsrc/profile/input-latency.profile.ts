@@ -1813,6 +1813,10 @@ test.describe("TF2 application generation lifecycle", () => {
       expect(await root.getAttribute("data-phase")).toBe(expected)
       if (expected === "Ready") {
         expect(await root.getAttribute("data-detail")).not.toMatch(/^Prior map retained:/u)
+        if (await root.getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
+        await captureTf2TeamSelection(page)
+        await chooseTf2Team(page, "red")
+        await page.keyboard.press("Backquote")
         await expect.poll(async () => {
           const value = await canvas.getAttribute("data-sky3d-pass")
           return value ? (JSON.parse(value) as { skySurfaces: number }).skySurfaces : 0
