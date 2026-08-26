@@ -444,6 +444,12 @@ struct SupplyRoute {
     travel: Option<f32>,
 }
 
+#[derive(Default)]
+struct SupplyCache {
+    facts: Vec<Option<Option<SupplyFacts>>>,
+    routes: Vec<SupplyRoute>,
+}
+
 #[derive(Clone, Debug)]
 struct Bot {
     identity: u32,
@@ -1062,8 +1068,7 @@ impl BotWorld {
         }
         let actors = self.actors(human, tick);
         let mut attacks = Vec::new();
-        let mut supply_facts = Vec::new();
-        let mut supply_routes = Vec::new();
+        let mut supply_cache = SupplyCache::default();
         let mut activities = Vec::<ActivityEvent>::new();
         let mut ammo = Vec::<AmmoEvent>::new();
         let mesh = &self.mesh;
@@ -1157,8 +1162,7 @@ impl BotWorld {
                         &actors,
                         supplies,
                         crate::pickup::MapPickupKind::Health,
-                        &mut supply_facts,
-                        &mut supply_routes,
+                        &mut supply_cache,
                         &mut self.path_scratch,
                     )
                     .map(|target| (ObjectiveKind::GetHealth, target.position))
@@ -1176,8 +1180,7 @@ impl BotWorld {
                         &actors,
                         supplies,
                         crate::pickup::MapPickupKind::Ammo,
-                        &mut supply_facts,
-                        &mut supply_routes,
+                        &mut supply_cache,
                         &mut self.path_scratch,
                     )
                     .map(|target| (ObjectiveKind::GetAmmo, target.position))
@@ -1912,8 +1915,7 @@ fn select_supply(
     actors: &ActorFrame,
     supplies: &[SupplyTarget],
     wanted: crate::pickup::MapPickupKind,
-    facts: &mut Vec<Option<Option<SupplyFacts>>>,
-    routes: &mut Vec<SupplyRoute>,
+    cache: &mut SupplyCache,
     scratch: &mut PathScratch,
 ) -> Option<SupplyTarget> {
     let ratio = bot.health.current as f32 / bot.class.data().maximum_health as f32;
@@ -1929,8 +1931,8 @@ fn select_supply(
         AMMO_SEARCH_RANGE
     };
     let start = mesh.nearest_area(bot.movement.position)?.identity;
-    if facts.is_empty() {
-        facts.resize(supplies.len(), None);
+    if cache.facts.is_empty() {
+        cache.facts.resize(supplies.len(), None);
     }
     supplies
         .iter()
@@ -1939,7 +1941,7 @@ fn select_supply(
         .filter(|(_, supply)| supply.kind.is_none_or(|kind| kind == wanted))
         .filter(|(_, supply)| supply.team.is_none_or(|team| team == bot.team))
         .filter_map(|(index, supply)| {
-            let facts = (*facts[index].get_or_insert_with(|| {
+            let facts = (*cache.facts[index].get_or_insert_with(|| {
                 let area = mesh.nearest_area(supply.position)?;
                 let closest_team = actors
                     .all()
@@ -1972,7 +1974,7 @@ fn select_supply(
             {
                 return None;
             }
-            let travel = if let Some(route) = routes.iter().find(|route| {
+            let travel = if let Some(route) = cache.routes.iter().find(|route| {
                 route.team == bot.team && route.start == start && route.goal == area.identity
             }) {
                 route.travel
@@ -2003,7 +2005,7 @@ fn select_supply(
                             .map(|(left, right)| distance(left.center(), right.center()))
                             .sum::<f32>()
                     });
-                routes.push(SupplyRoute {
+                cache.routes.push(SupplyRoute {
                     team: bot.team,
                     start,
                     goal: area.identity,
@@ -3043,8 +3045,7 @@ mod tests {
             },
         ];
         let actors = world.actors(human_far(), 1);
-        let mut facts = Vec::new();
-        let mut routes = Vec::new();
+        let mut cache = SupplyCache::default();
         let mut scratch = PathScratch::default();
         for bot in world.bots.values() {
             let chosen = select_supply(
@@ -3053,17 +3054,16 @@ mod tests {
                 &actors,
                 &supplies,
                 crate::pickup::MapPickupKind::Health,
-                &mut facts,
-                &mut routes,
+                &mut cache,
                 &mut scratch,
             )
             .unwrap();
             assert_eq!(chosen.identity, 80);
-            assert_eq!(routes.len(), 1);
+            assert_eq!(cache.routes.len(), 1);
         }
-        assert!(facts[0].is_some());
-        assert!(facts[1].is_some());
-        assert!(facts[2].is_none());
+        assert!(cache.facts[0].is_some());
+        assert!(cache.facts[1].is_some());
+        assert!(cache.facts[2].is_none());
     }
 
     #[test]
