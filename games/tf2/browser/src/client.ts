@@ -260,7 +260,7 @@ export class Tf2WorkerClient {
       throw new Tf2WorkerError("BoundExceeded")
     }
     if ((await sha256(wasmBytes)) !== wasmSha256) throw new Tf2WorkerError("IntegrityFailure")
-    if (this.#closed) throw new Tf2WorkerError("Closed")
+    if (this.#closed || this.#shutdownRequested) throw new Tf2WorkerError("Closed")
     if (this.#initialization) {
       if (this.#initialization.wasmSha256 !== wasmSha256 || this.#initialization.threads !== threads) throw new Tf2WorkerError("TransitionFailed")
       return this.#initialization.ready
