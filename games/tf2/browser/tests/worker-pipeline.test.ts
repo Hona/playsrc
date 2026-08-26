@@ -171,6 +171,9 @@ class PipelineWorker implements WorkerLike {
   readonly mapHash: string
   failure?: WorkerResponse
   animatedWorldMaterial = false
+  workerBuild = BUILD
+  presentationSchema = 16
+  workerWasmSha256?: string
   terminated = false
   readonly resources = new Map<number, Uint8Array[]>()
   #message?: (event: MessageEvent<WorkerResponse>) => void
@@ -206,6 +209,9 @@ class PipelineWorker implements WorkerLike {
       return
     }
     switch (request.kind) {
+      case "initialize":
+        this.#respond({ id: request.id, kind: "initialized", applicationBuild: this.workerBuild, presentationSchema: this.presentationSchema, wasmSha256: this.workerWasmSha256 ?? request.wasmSha256 })
+        return
       case "load": {
         const payload = request.includeMap ? MAP.slice().buffer : undefined
         const presentation = request.presentation ?? PRESENTATION.slice().buffer
@@ -337,6 +343,36 @@ class PipelineWorker implements WorkerLike {
 }
 
 describe("TF2 Worker transport ownership", () => {
+  test("rejects a stale gameplay Worker generation before WASM or resources are published", async () => {
+    const worker = new PipelineWorker(await digest(MAP))
+    worker.workerBuild = "ef".repeat(32)
+    const client = new Tf2WorkerClient(worker, new MemoryCache(), BUILD)
+    const wasm = Uint8Array.from([1, 2, 3])
+    await expect(client.initialize(wasm, await digest(wasm), 1)).rejects.toThrow("GenerationMismatch")
+    expect(worker.requests).toHaveLength(1)
+    expect(worker.requests[0]).toMatchObject({ kind: "initialize", applicationBuild: BUILD, presentationSchema: 16 })
+    expect(worker.terminated).toBe(true)
+  })
+
+  test("authenticates the exact application, presentation schema, and WASM before accepting its Worker", async () => {
+    for (const mismatch of ["application", "schema", "wasm"] as const) {
+      const worker = new PipelineWorker(await digest(MAP))
+      if (mismatch === "application") worker.workerBuild = "ef".repeat(32)
+      if (mismatch === "schema") worker.presentationSchema = 15
+      const wasm = Uint8Array.from([1, 2, 3])
+      const actual = await digest(wasm)
+      if (mismatch === "wasm") worker.workerWasmSha256 = "ef".repeat(32)
+      const client = new Tf2WorkerClient(worker, new MemoryCache(), BUILD)
+      await expect(client.initialize(wasm, actual, 1)).rejects.toThrow("GenerationMismatch")
+      expect(worker.terminated).toBe(true)
+    }
+    const worker = new PipelineWorker(await digest(MAP))
+    const client = new Tf2WorkerClient(worker, new MemoryCache(), BUILD)
+    const wasm = Uint8Array.from([1, 2, 3])
+    await expect(client.initialize(wasm, await digest(wasm), 1)).resolves.toBeUndefined()
+    await client.shutdown()
+  })
+
   test("rejects an unauthenticated application generation before attaching a Worker", async () => {
     const worker = new PipelineWorker(await digest(MAP))
     expect(() => new Tf2WorkerClient(worker, new MemoryCache(), "stale")).toThrow("IntegrityFailure")

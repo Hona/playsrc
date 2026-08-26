@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
 
-import type { InitialView, WorkerFailureCode, WorkerRequest, WorkerResponse } from "./protocol"
+import { TF2_PRESENTATION_SCHEMA, type InitialView, type WorkerFailureCode, type WorkerRequest, type WorkerResponse } from "./protocol"
 import { decodeTf2TeamSelectionServerState } from "./team-selection/model"
 import initializeWasm, { initThreadPool } from "./wasm-generated/tf2_wasm.js"
 
@@ -10,6 +10,7 @@ const MAX_CONFIGURATION_BYTES = 1024 * 1024 * 1024
 const MAX_MESSAGE_BYTES = 512 * 1024 * 1024
 const MAX_PRESENTATION_BYTES = 512 * 1024 * 1024
 const MAX_RESOURCE_SECTION_BYTES = 32 * 1024 * 1024
+declare const __PLAYSRC_APPLICATION_BUILD__: string
 
 type WasmExports = Readonly<{
   memory: WebAssembly.Memory
@@ -91,6 +92,10 @@ function canonicalId(value: unknown): value is number {
 }
 
 async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }>): Promise<void> {
+  if (request.applicationBuild !== __PLAYSRC_APPLICATION_BUILD__ || request.presentationSchema !== TF2_PRESENTATION_SCHEMA) {
+    fail(request.id, "GenerationMismatch")
+    return
+  }
   if (
     wasm ||
     !(request.wasm instanceof ArrayBuffer) ||
@@ -185,7 +190,7 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         shared: candidate.memory.buffer instanceof SharedArrayBuffer,
       }),
     })
-    post({ id: request.id, kind: "initialized" })
+    post({ id: request.id, kind: "initialized", applicationBuild: __PLAYSRC_APPLICATION_BUILD__, presentationSchema: TF2_PRESENTATION_SCHEMA, wasmSha256: actual })
   } catch {
     fail(request.id, "WasmUnavailable")
   }

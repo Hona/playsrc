@@ -3,7 +3,7 @@ import type { ObjectDescriptor } from "@playsrc/asset-store"
 import { chunksForRole, partitionResourceChunkDescriptors, parseResourceCatalogBytes, parseResourceGraphBytes, parseResourceSet, resourceChunkObject, selectCatalogTarget, type ResourceCatalog, type ResourceGraph, type ResourceChunkDescriptor } from "@playsrc/asset-store/graph"
 import { createAudioSystem, SoundRegistry, SourceAudioError, SourceAudioWorld } from "@playsrc/audio"
 import GameplayWorker from "@playsrc/game-tf2-browser/worker?worker"
-import { Tf2WorkerClient, mergePublicationSnapshots, type CoverageSample, type LoadedGame, type ResourceConfiguration, type SimulationPublication, type VisibilityResult } from "@playsrc/game-tf2-browser"
+import { TF2_PRESENTATION_SCHEMA, Tf2WorkerClient, Tf2WorkerError, mergePublicationSnapshots, type CoverageSample, type LoadedGame, type ResourceConfiguration, type SimulationPublication, type VisibilityResult } from "@playsrc/game-tf2-browser"
 import { initializeTf2GameUiIntegration, type Tf2GameUiIntegration } from "@playsrc/game-tf2-browser/gameui-integration"
 import type { Tf2GameUiRequest, Tf2LoadingPhase } from "@playsrc/game-tf2-browser/gameui"
 import {
@@ -103,6 +103,7 @@ import { bytesToHex } from "@noble/hashes/utils.js"
 import { sha256 } from "@noble/hashes/sha2.js"
 import {consoleLimits,resolveConfiguredConsoleResources,type ResolvedConsoleResources} from "./console-resources"
 import { loadBrowserConfiguration, parseBrowserConfiguration, type BrowserConfiguration, type BrowserTargetConfiguration } from "./config"
+import { createApplicationGenerationRecovery } from "./application-generation"
 import { TF2_TARGET_NAMES, type Tf2TargetName } from "./deployment"
 import { PhysicalBindingIndex, PhysicalButtonState, applyPointerDelta, pointerLockRequestRequired, rawPointerMovementUnsupported, rebasePointerYaw, sourceMouseButtonCode, type PhysicalBinding } from "./input"
 import { TF2_BALANCED_VIDEO_SETTINGS, TF2_SELECTED_OPTIONS, tf2VideoConfiguration, tf2VideoConvars, tf2VideoSettingsFromConvars, type AdapterRequestResult, type SettingsAdapterRequest, type Tf2VideoConfiguration } from "@playsrc/settings"
@@ -130,6 +131,24 @@ import {
   selectAuthoredSky,
   type ApplicationOperation,
 } from "./application-lifecycle"
+
+declare const __PLAYSRC_APPLICATION_BUILD__: string
+
+const applicationGenerationRecovery = createApplicationGenerationRecovery({
+  currentBuild: __PLAYSRC_APPLICATION_BUILD__,
+  storage: sessionStorage,
+  visible: () => document.visibilityState === "visible",
+  whenVisible: () => new Promise<void>((resolve) => {
+    const changed = () => {
+      if (document.visibilityState !== "visible") return
+      document.removeEventListener("visibilitychange", changed)
+      resolve()
+    }
+    document.addEventListener("visibilitychange", changed)
+    changed()
+  }),
+  reload: () => window.location.reload(),
+})
 
 const MAX_EXTERNAL_BYTES = 536_870_912
 const SIMULATION_SAMPLE_INTERVAL_SECONDS = 0.015
@@ -735,6 +754,14 @@ export class Tf2Application {
       || Object.entries(patch).some(([key, value]) => !Object.is(prior[key as keyof ApplicationView], value))
     if (!changed) return
     this.#view = Object.freeze({ ...prior, ...patch, blockers })
+    if (patch.phase === "Ready" && prior.phase !== "Ready") {
+      const generation = (globalThis as typeof globalThis & { __playsrcProfile?: { applicationGeneration?: Record<string, unknown> } }).__playsrcProfile?.applicationGeneration
+      if (generation) {
+        generation.readyMilliseconds = performance.now() - Number(generation.startedMilliseconds)
+        generation.mapGeneration = this.#generation
+        generation.staleMessages = this.#client?.staleMessages ?? 0
+      }
+    }
     if (this.#hudIntegration && this.#snapshot && this.#crosshairSettings
       && (this.#view.gameUi !== prior.gameUi
         || this.#view.phase !== prior.phase
@@ -1203,7 +1230,14 @@ export class Tf2Application {
         ])
         this.#cache = cache
         this.#client = new Tf2WorkerClient(new GameplayWorker(), cache, this.#configuration!.applicationBuild)
+        const handshakeStarted = performance.now()
         await this.#client.initialize(wasm, descriptor.sha256)
+        const generation = (globalThis as typeof globalThis & { __playsrcProfile?: { applicationGeneration?: Record<string, unknown> } }).__playsrcProfile?.applicationGeneration
+        if (generation) {
+          generation.worker = this.#configuration!.applicationBuild
+          generation.handshakeMilliseconds = performance.now() - handshakeStarted
+          generation.staleMessages = this.#client.staleMessages
+        }
       })().catch((error) => {
         this.#resourceRuntime = undefined
         throw error
@@ -1610,7 +1644,15 @@ export class Tf2Application {
   async start(): Promise<void> {
     try {
       await this.#viewportOwner.first()
-      this.#configuration = await loadBrowserConfiguration()
+      const configuration = await loadBrowserConfiguration()
+      const profile = (globalThis as typeof globalThis & { __playsrcProfile?: Record<string, unknown> }).__playsrcProfile
+      if (profile) profile.applicationGeneration = {
+        bundle: __PLAYSRC_APPLICATION_BUILD__, configuration: configuration.applicationBuild,
+        wasm: configuration.wasm.sha256, resourceRoot: configuration.targets.find((target) => target.target === configuration.defaultTarget)?.objects.resources.sha256,
+        presentationSchema: TF2_PRESENTATION_SCHEMA, startedMilliseconds: performance.now(),
+      }
+      if (!await applicationGenerationRecovery.ensure(configuration.applicationBuild)) return
+      this.#configuration = configuration
       this.#activeTarget = this.#configuration.targets.find((target) => target.target === this.#configuration!.defaultTarget)
       if (!this.#activeTarget) throw new Error("Default TF2 target is absent")
       this.#presentationRandom = createTf2PresentationRandom(this.#configuration.presentation.randomSeed)
@@ -1662,6 +1704,11 @@ export class Tf2Application {
       this.#installStartupListeners()
       this.#startup.start()
     } catch (error) {
+      if (error instanceof Tf2WorkerError && error.code === "GenerationMismatch" && this.#configuration) {
+        try {
+          if (!await applicationGenerationRecovery.ensure(this.#configuration.applicationBuild, true)) return
+        } catch (failure) { error = failure }
+      }
       await this.#release()
       this.#set({ phase: "Failed", gameUi: "failure", detail: error instanceof Error ? error.message : "Application startup failed" })
     }

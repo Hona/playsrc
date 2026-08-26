@@ -1,7 +1,7 @@
 import type { DerivedObjectCache } from "@playsrc/asset-store/browser"
 import type { ResourceChunkDescriptor } from "@playsrc/asset-store/graph"
 import { decodeSnapshot, type Snapshot } from "./codec"
-import type { InitialView, VisibilityView, WorkerFailureCode, WorkerRequest, WorkerResponse } from "./protocol"
+import { TF2_PRESENTATION_SCHEMA, type InitialView, type VisibilityView, type WorkerFailureCode, type WorkerRequest, type WorkerResponse } from "./protocol"
 import type { Tf2TeamChoice, Tf2TeamSelectionServerState } from "./team-selection/model"
 
 const HASH = /^[0-9a-f]{64}$/
@@ -119,7 +119,7 @@ async function sha256(bytes: Uint8Array): Promise<string> {
   return Array.from(digest, (value) => value.toString(16).padStart(2, "0")).join("")
 }
 async function presentationKey(key: string, applicationBuild: string): Promise<string> {
-  return sha256(new TextEncoder().encode(`playsrc-tf2-presentation-v16\0${applicationBuild}\0${key}`))
+  return sha256(new TextEncoder().encode(`playsrc-tf2-presentation-v${TF2_PRESENTATION_SCHEMA}\0${applicationBuild}\0${key}`))
 }
 
 function transferredBytes(bytes: Uint8Array): ArrayBuffer {
@@ -145,7 +145,10 @@ export class Tf2WorkerClient {
   >()
   #nextId = 1
   #closed = false
+  #staleMessages = 0
   #queuedModels?: QueuedModels
+
+  get staleMessages(): number { return this.#staleMessages }
 
   constructor(worker: WorkerLike, cache: DerivedObjectCache, applicationBuild: string) {
     if (!HASH.test(applicationBuild)) throw new Tf2WorkerError("IntegrityFailure")
@@ -159,7 +162,10 @@ export class Tf2WorkerClient {
   readonly #message = (event: MessageEvent<WorkerResponse>): void => {
     const response = event.data
     const pending = response && this.#pending.get(response.id)
-    if (!pending) return
+    if (!pending) {
+      this.#staleMessages += 1
+      return
+    }
     this.#pending.delete(response.id)
     if(response.kind==="failure")pending.reject(new Tf2WorkerError(response.code,response.reason?`${response.detail}:${response.reason}`:response.detail))
     else pending.resolve(response)
@@ -238,8 +244,22 @@ export class Tf2WorkerClient {
     }
     if ((await sha256(wasmBytes)) !== wasmSha256) throw new Tf2WorkerError("IntegrityFailure")
     const transferred = transferredBytes(wasmBytes)
-    const response = await this.#request({ kind: "initialize", wasm: transferred, wasmSha256, threads }, [transferred])
+    let response: WorkerResponse
+    try {
+      response = await this.#request({
+        kind: "initialize", applicationBuild: this.#applicationBuild,
+        presentationSchema: TF2_PRESENTATION_SCHEMA, wasm: transferred, wasmSha256, threads,
+      }, [transferred])
+    } catch (error) {
+      if (error instanceof Tf2WorkerError && error.code === "GenerationMismatch") this.#error()
+      throw error
+    }
     if (response.kind !== "initialized") throw new Tf2WorkerError("WorkerFailed")
+    if (response.applicationBuild !== this.#applicationBuild
+      || response.presentationSchema !== TF2_PRESENTATION_SCHEMA || response.wasmSha256 !== wasmSha256) {
+      this.#error()
+      throw new Tf2WorkerError("GenerationMismatch")
+    }
   }
 
   async decodeResources(records: readonly Readonly<{ descriptor: ResourceChunkDescriptor; bytes: Uint8Array }>[], generation?: number): Promise<Uint8Array> {

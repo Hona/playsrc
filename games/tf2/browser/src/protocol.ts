@@ -1,5 +1,7 @@
 import type { Tf2TeamChoice, Tf2TeamSelectionServerState } from "./team-selection/model"
 
+export const TF2_PRESENTATION_SCHEMA = 16
+
 export type VisibilityView = Readonly<{
   position: readonly [number, number, number]
   visibilityPosition?: readonly [number, number, number]
@@ -16,7 +18,7 @@ export type VisibilityView = Readonly<{
 type WorkerEnvelope = Readonly<{ queuedAt?: number }>
 
 export type WorkerRequest = WorkerEnvelope & (
-  | Readonly<{ id: number; kind: "initialize"; wasm: ArrayBuffer; wasmSha256: string; threads: number }>
+  | Readonly<{ id: number; kind: "initialize"; applicationBuild: string; presentationSchema: number; wasm: ArrayBuffer; wasmSha256: string; threads: number }>
   | Readonly<{
       id: number
       kind: "decode-resources"
@@ -75,6 +77,7 @@ export type WorkerFailureCode =
   | "CompileFailed"
   | "TransitionFailed"
   | "StaleGeneration"
+  | "GenerationMismatch"
   | "InternalFailure"
 
 export type InitialView = Readonly<{
@@ -93,7 +96,7 @@ export type WorkerTransactionTimings = Readonly<{
 }>
 
 export type WorkerResponse =
-  | Readonly<{ id: number; kind: "initialized" }>
+  | Readonly<{ id: number; kind: "initialized"; applicationBuild: string; presentationSchema: number; wasmSha256: string }>
   | Readonly<{ id: number; kind: "resources"; bytes: ArrayBuffer | SharedArrayBuffer; byteOffset: number; byteLength: number }>
   | Readonly<{ id: number; kind: "resources-finalized"; generation: number; byteLength: number; sha256: string; sections: number }>
   | Readonly<{ id: number; kind: "resources-retained"; generation: number }>

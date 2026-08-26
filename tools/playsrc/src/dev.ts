@@ -253,6 +253,10 @@ export async function startDevelopment(config: LocalConfig, target: string | und
     wasm = replacementWasm
     applicationBuild = identity
     process.env.PLAYSRC_BROWSER_CONFIG = browserConfiguration()
+    if (application) {
+      application.config.define.__PLAYSRC_APPLICATION_BUILD__ = JSON.stringify(identity)
+      application.moduleGraph.invalidateAll()
+    }
     application?.ws.send({ type: "full-reload" })
     console.error(`playsrc dev build replaced applicationBuild=${identity} wasm=${wasm.sha256} milliseconds=${Math.round(performance.now() - replacementStarted)}`)
   })

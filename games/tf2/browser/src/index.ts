@@ -1,4 +1,5 @@
 export * from "./client"
+export { TF2_PRESENTATION_SCHEMA } from "./protocol"
 export * from "./gameui"
 export * from "./gameui-integration"
 export * from "./hud"

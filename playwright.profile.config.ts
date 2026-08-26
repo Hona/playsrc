@@ -14,6 +14,8 @@ export default headedProfileConfiguration({
       ? "upward-training-bots.profile.ts"
     : process.env.PROFILE_SCENARIOS === "frame-budget"
       ? "all-maps-frame-budget.profile.ts"
+    : process.env.PROFILE_SCENARIOS === "application-upgrade"
+      ? "application-upgrade.profile.ts"
     : process.env.PROFILE_SCENARIOS === "main-menu"
       ? "main-menu-inventory.profile.ts"
       : process.env.PROFILE_2FORT_VISUAL === "1"

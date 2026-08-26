@@ -39,6 +39,7 @@ const PROFILES = Object.freeze({
   "class-hud": { config: "playwright.class-hud-profile.config.ts", target: "jump_beef" },
   "class-selection": { config: "playwright.class-selection-profile.config.ts", target: "jump_beef" },
   "application-lifecycle": { config: "playwright.profile.config.ts", target: "jump_beef", arguments: ["--grep", "TF2 application generation lifecycle"] },
+  "application-upgrade": { config: "playwright.profile.config.ts", target: "jump_beef", environment: { PROFILE_SCENARIOS: "application-upgrade" } },
   "startup-browser": { config: "playwright.startup-profile.config.ts", target: "jump_beef" },
 } satisfies Record<string, { config: string; target: HeadedProfileTarget; environment?: Record<string, string>; arguments?: readonly string[] }>)
 

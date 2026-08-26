@@ -1,4 +1,6 @@
 import preact from "@preact/preset-vite"
+import { execFileSync } from "node:child_process"
+import { createHash } from "node:crypto"
 import { fileURLToPath } from "node:url"
 import { defineConfig, type Plugin, type UserConfig } from "vite"
 
@@ -37,9 +39,16 @@ export function tf2ViteConfiguration(
   deployment = false,
   ensureCoherentBuild?: () => Promise<void>,
 ): UserConfig {
+  const applicationBuild = process.env.PLAYSRC_APPLICATION_BUILD
+    ?? (process.env.PLAYSRC_BROWSER_CONFIG ? (JSON.parse(process.env.PLAYSRC_BROWSER_CONFIG) as { applicationBuild?: string }).applicationBuild : undefined)
+    ?? (deployment ? createHash("sha256").update(execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim()).digest("hex") : undefined)
+  if (!applicationBuild || !/^[0-9a-f]{64}$/.test(applicationBuild)) {
+    throw new Error("TF2 application bundle build identity is unavailable")
+  }
   return {
     base: deployment ? "/tf2/" : "/",
     plugins: [preact(), localRuntime(ensureCoherentBuild)],
+    define: { __PLAYSRC_APPLICATION_BUILD__: JSON.stringify(applicationBuild) },
     resolve: {
       alias: {
         playsrc_metrics: fileURLToPath(new URL("../../../games/tf2/browser/src/wasm-metrics.ts", import.meta.url)),
