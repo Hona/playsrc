@@ -1,25 +1,3 @@
-import { defineConfig } from "@playwright/test"
+import { headedProfileConfiguration } from "./tools/playsrc/profile/profile-config"
 
-export default defineConfig({
-  testDir: "tools/playsrc/profile",
-  testMatch: "startup-playback.profile.ts",
-  timeout: 900_000,
-  expect: { timeout: 30_000 },
-  fullyParallel: false,
-  workers: 1,
-  reporter: "line",
-  use: {
-    baseURL: "http://127.0.0.1:4173",
-    channel: "msedge",
-    headless: false,
-    viewport: { width: 1280, height: 720 },
-  },
-  webServer: {
-    command: "bun tools/playsrc/src/cli.ts dev jump_beef",
-    url: "http://127.0.0.1:4173/",
-    reuseExistingServer: false,
-    timeout: 240_000,
-    stdout: "pipe",
-    stderr: "pipe",
-  },
-})
+export default headedProfileConfiguration({ match: "startup-playback.profile.ts", channel: "msedge" })

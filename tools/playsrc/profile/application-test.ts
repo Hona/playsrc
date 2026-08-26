@@ -17,6 +17,8 @@ export const test = base.extend<{
   allowRecoverableApplicationFailure: [false, { option: true }],
   preserveStartupMovie: [false, { option: true }],
   applicationDiagnostics: [async ({ page, allowRecoverableApplicationFailure, preserveStartupMovie }, use, testInfo) => {
+    const started = Date.now()
+    const transitions: Array<{ milliseconds: number; phase: string; detail: string; startupState: string }> = []
     let rejectFailure: (error: Error) => void = () => {}
     let stallTimer: ReturnType<typeof setTimeout> | undefined
     let lastState: ApplicationState | undefined
@@ -29,6 +31,10 @@ export const test = base.extend<{
       rejectFailure(new Error(message))
     }
     await page.exposeBinding("__playsrcApplicationState", async (_source, state: ApplicationState) => {
+      const previous = transitions.at(-1)
+      if (!previous || previous.phase !== state.phase || previous.detail !== state.detail || previous.startupState !== state.startupState) {
+        transitions.push({ milliseconds: Date.now() - started, phase: state.phase, detail: state.detail, startupState: state.startupState })
+      }
       lastState = state
       if (stallTimer) clearTimeout(stallTimer)
       if (state.startupState === "Preparing") startupSkipRequested = false
@@ -77,6 +83,26 @@ export const test = base.extend<{
       finished = true
       if (stallTimer) clearTimeout(stallTimer)
       if (lastState) await testInfo.attach("terminal-application-state", { body: JSON.stringify(lastState, null, 2), contentType: "application/json" })
+      const maps: Array<{ detail: string; startedMilliseconds: number; readyMilliseconds: number; durationMilliseconds: number }> = []
+      let loading: { detail: string; milliseconds: number } | undefined
+      for (const transition of transitions) {
+        if (["Loading", "Replacing"].includes(transition.phase) && !loading) loading = transition
+        else if (transition.phase === "Ready" && loading) {
+          maps.push({ detail: transition.detail, startedMilliseconds: loading.milliseconds, readyMilliseconds: transition.milliseconds, durationMilliseconds: transition.milliseconds - loading.milliseconds })
+          loading = undefined
+        } else if (["Failed", "MainMenu"].includes(transition.phase)) loading = undefined
+      }
+      const menu = transitions.find((transition) => transition.phase === "MainMenu")
+      await testInfo.attach("profile-wall-clock-phases", {
+        body: JSON.stringify({
+          totalMilliseconds: Date.now() - started,
+          startupMilliseconds: menu?.milliseconds ?? null,
+          mapLoads: maps,
+          scenarioMilliseconds: maps.length ? Date.now() - started - maps.at(-1)!.readyMilliseconds : null,
+          transitions,
+        }),
+        contentType: "application/json",
+      })
     }
   }, { auto: true }],
 })

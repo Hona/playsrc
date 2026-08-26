@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
-import { expect, test } from "@playwright/test"
+import { expect, test } from "./application-test"
 import { loadLocalConfig } from "../src/config"
 import { decodeScreenshot } from "./screenshot-pixels"
 
@@ -194,16 +194,12 @@ test("profiles exact headed cold initialization for all three configured TF2 map
     })
   })
 
-  const enterMainMenu = async (reload = false) => {
-    if (reload) await page.reload({ waitUntil: "load", timeout: 30_000 })
-    else await page.goto("/", { waitUntil: "load", timeout: 30_000 })
+  const enterMainMenu = async () => {
+    await page.goto("/", { waitUntil: "load", timeout: 30_000 })
     await page.waitForFunction(() => {
       const main = document.querySelector<HTMLElement>("main")
       return main?.dataset.phase === "MainMenu" || main?.dataset.phase === "Failed"
-        || (main?.dataset.phase === "Startup" && ["Playing", "AwaitingGesture"].includes(main.dataset.startupState ?? ""))
     }, undefined, { timeout: 300_000, polling: 25 })
-    if (await page.locator("main").getAttribute("data-phase") === "Startup") await page.keyboard.press("Escape")
-    await page.waitForFunction(() => ["MainMenu", "Failed"].includes(document.querySelector<HTMLElement>("main")?.dataset.phase ?? ""), undefined, { timeout: 300_000, polling: 25 })
     expect(await page.locator("main").getAttribute("data-phase")).toBe("MainMenu")
   }
   await enterMainMenu()
@@ -239,8 +235,7 @@ test("profiles exact headed cold initialization for all three configured TF2 map
     return { workers: profile.workers.filter(worker => ["initialize", "decode-resources"].includes(worker.kind)), requests: profile.requests }
   })
   const maps: Array<Record<string, unknown>> = []
-  for (const [index, target] of configuration.targets.entries()) {
-    if (index > 0) await enterMainMenu(true)
+  for (const target of configuration.targets) {
     await page.keyboard.press("Backquote")
     const consoleEntry = page.locator("[aria-label='Console command']")
     await expect(consoleEntry).toBeVisible()
@@ -248,14 +243,14 @@ test("profiles exact headed cold initialization for all three configured TF2 map
     const before = await snapshot()
     const started = await page.evaluate(() => performance.now())
     await page.keyboard.press("Enter")
-    await page.waitForFunction(() => {
+    await page.waitForFunction((identity) => {
       const main = document.querySelector<HTMLElement>("main")
       const console = document.querySelector<HTMLElement>("[aria-label='Console output']")?.innerText ?? ""
       return main?.dataset.phase === "Failed"
-        || main?.dataset.teamSelectionVisible === "true"
-        || main?.dataset.phase === "Ready"
-        || console.includes("ERROR: Map replacement failed")
-    }, undefined, { timeout: 180_000, polling: 25 })
+         || main?.dataset.teamSelectionVisible === "true"
+         || main?.dataset.phase === "Ready" && main.dataset.detail === `Playing ${identity}`
+         || console.includes("ERROR: Map replacement failed")
+    }, target.target, { timeout: 120_000, polling: 25 })
     if (await page.locator("main").getAttribute("data-team-selection-visible") === "true") {
       if (await page.locator("main").getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
       await page.locator(".team-selection-layer [data-vgui-name='teambutton1']").click()
@@ -368,7 +363,9 @@ test("profiles exact headed cold initialization for all three configured TF2 map
   const report = {
     schema: "playsrc-three-map-load-profile-v1",
     capturedAt: new Date().toISOString(),
-    startup: { milliseconds: startup.now, wasmInitializationMilliseconds: startupProfile.workers.filter(worker => worker.kind === "initialize").reduce((sum, worker) => sum + (worker.finished ?? startup.now) - worker.started, 0), workers: startupProfile.workers, requests: startupProfile.requests },
+      startup: { milliseconds: startup.now, wasmInitializationMilliseconds: startupProfile.workers.filter(worker => worker.kind === "initialize").reduce((sum, worker) => sum + (worker.finished ?? startup.now) - worker.started, 0), workers: startupProfile.workers, requests: startupProfile.requests },
+      browserSessions: 1,
+      pageReloads: 0,
     initializationTargetMilliseconds: 30_000,
     sampleMillisecondsPerMap: SAMPLE_MILLISECONDS,
     maps,
