@@ -777,7 +777,7 @@ fn serialize(context: &SerializationContext<'_>) -> Result<Vec<u8>, Error> {
             f32v(&mut out, uv[0]);
             f32v(&mut out, uv[1]);
         }
-        if schema == 8 {
+        if matches!(schema, 8 | 9) {
             for alpha in &s.alpha {
                 f32v(&mut out, *alpha);
             }
@@ -791,7 +791,7 @@ fn serialize(context: &SerializationContext<'_>) -> Result<Vec<u8>, Error> {
         out.extend_from_slice(&s.light_styles);
         i32v(&mut out, s.lightmap_size[0]);
         i32v(&mut out, s.lightmap_size[1]);
-        if schema == 8 {
+        if matches!(schema, 8 | 9) {
             if let Some(displacement) = &s.displacement {
                 out.push(1);
                 out.push(displacement.power);
@@ -854,7 +854,7 @@ fn serialize(context: &SerializationContext<'_>) -> Result<Vec<u8>, Error> {
     if !materials.is_empty() || map.lighting_profile == LightingProfile::Hdr {
         u32v(&mut out, materials.len() as u32);
         for material in materials {
-            materialv(&mut out, material, schema == 8);
+            materialv(&mut out, material, matches!(schema, 8 | 9));
         }
     }
     if !models.is_empty() || map.lighting_profile == LightingProfile::Hdr {
@@ -864,7 +864,7 @@ fn serialize(context: &SerializationContext<'_>) -> Result<Vec<u8>, Error> {
             u32v(&mut out, model.materials.len() as u32);
             for material in &model.materials {
                 bytesv(&mut out, material.logical_path.as_bytes());
-                materialv(&mut out, material, schema == 8);
+                materialv(&mut out, material, matches!(schema, 8 | 9));
             }
             u32v(&mut out, model.primitives.len() as u32);
             for primitive in &model.primitives {
@@ -918,16 +918,14 @@ fn runtime_schema(
     materials: &[RuntimeMaterial],
     models: &[RuntimeModel],
 ) -> u32 {
+    let displaced = map
+        .surfaces
+        .iter()
+        .any(|surface| surface.displacement.is_some());
     if map.lighting_profile == LightingProfile::Hdr {
-        if map
-            .surfaces
-            .iter()
-            .any(|surface| surface.displacement.is_some())
-        {
-            8
-        } else {
-            7
-        }
+        if displaced { 8 } else { 7 }
+    } else if displaced && !models.is_empty() {
+        9
     } else if !models.is_empty() {
         6
     } else if !materials.is_empty() {
@@ -979,11 +977,11 @@ fn serialized_length(context: &SerializationContext<'_>, schema: u32) -> Result<
         length.records(surface.normals.len(), 12)?;
         length.records(surface.uv.len(), 8)?;
         length.records(surface.lightmap_uv.len(), 8)?;
-        if schema == 8 {
+        if matches!(schema, 8 | 9) {
             length.records(surface.alpha.len(), 4)?;
         }
         length.records(surface.triangles.len(), 12)?;
-        if schema == 8 {
+        if matches!(schema, 8 | 9) {
             if let Some(displacement) = &surface.displacement {
                 length.add(176)?;
                 length.records(displacement.triangle_tags.len(), 2)?;
@@ -1000,7 +998,7 @@ fn serialized_length(context: &SerializationContext<'_>, schema: u32) -> Result<
     if !context.materials.is_empty() || map.lighting_profile == LightingProfile::Hdr {
         length.add(4)?;
         for material in context.materials {
-            add_material_length(&mut length, material, schema == 8)?;
+            add_material_length(&mut length, material, matches!(schema, 8 | 9))?;
         }
     }
     if !context.models.is_empty() || map.lighting_profile == LightingProfile::Hdr {
@@ -1010,7 +1008,7 @@ fn serialized_length(context: &SerializationContext<'_>, schema: u32) -> Result<
             length.add(4)?;
             for material in &model.materials {
                 length.field(material.logical_path.len())?;
-                add_material_length(&mut length, material, schema == 8)?;
+                add_material_length(&mut length, material, matches!(schema, 8 | 9))?;
             }
             length.add(4)?;
             for primitive in &model.primitives {
