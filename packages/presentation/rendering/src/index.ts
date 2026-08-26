@@ -925,9 +925,8 @@ type ModelPanelMaterialAnimation = Readonly<{
 
 type ModelLightingScene = Readonly<{
   materials: ReadonlyMap<string, ModelMaterialInput> | undefined
-  environment: EnvironmentInput | undefined
   textures: ReadonlyMap<string, ModelLightingTextures>
-  cubemaps: ReadonlyMap<number, THREE.CubeTexture>
+  cubemap: (identity: string) => THREE.CubeTexture | undefined
   exposure: ReturnType<typeof TSL.uniform>
 }>
 
@@ -963,6 +962,8 @@ type SceneResources = {
   diagnostics: readonly SceneDiagnostic[]
   worldBundle: THREE.BundleGroup
   skyWorldBundle: THREE.BundleGroup
+  mainAnimatedWorld: THREE.Group
+  skyAnimatedWorld: THREE.Group
   mainTransparentWorld: THREE.Group
   skyTransparentWorld: THREE.Group
   mainModelOccurrences: THREE.Group
@@ -984,6 +985,7 @@ type SceneResources = {
   refractMaterials: ReadonlyMap<string, RefractMaterialResource>
   worldMaterials: ReadonlyMap<string,WorldMaterialResource>
   cubemapTextures: ReadonlyMap<number,THREE.CubeTexture>
+  modelCubemap: (identity: string) => THREE.CubeTexture | undefined
   skyGroup: THREE.Group | null
   mainStaticProps:THREE.Group
   skyStaticProps:THREE.Group
@@ -2055,10 +2057,13 @@ class RendererOwner implements Renderer {
     const skyWorldBundle = new THREE.BundleGroup()
     skyWorldBundle.matrixAutoUpdate = false
     skyWorldBundle.visible = false
+    const mainAnimatedWorld = new THREE.Group()
+    const skyAnimatedWorld = new THREE.Group()
+    skyAnimatedWorld.visible = false
     const mainTransparentWorld = new THREE.Group()
     const skyTransparentWorld = new THREE.Group()
     skyTransparentWorld.visible = false
-    group.add(worldBundle, mainTransparentWorld, skyWorldBundle, skyTransparentWorld)
+    group.add(worldBundle, mainAnimatedWorld, mainTransparentWorld, skyWorldBundle, skyAnimatedWorld, skyTransparentWorld)
     const mainStaticProps = new RetainedStaticSceneGroup()
     const skyStaticProps = new RetainedStaticSceneGroup()
     const mainModelOccurrences = new RetainedStaticSceneGroup()
@@ -2093,6 +2098,8 @@ class RendererOwner implements Renderer {
     const worldMaterials = new Map<string, WorldMaterialResource>()
     const animatedTextureFrames = new Map<string, AuthoredTextureFrames>()
     const cubemapTextures = new Map<number, THREE.CubeTexture>()
+    const cubemapFacts = new Map((request.environment?.cubemapFacts ?? []).map((fact) =>
+      [fact.logicalPath.toLowerCase(), fact] as const))
     let skyGroup:THREE.Group|null=null
     const occurrenceMatrices = modelOccurrenceMatrices(map, request.modelOccurrences)
     const lightmap = map.lightmap
@@ -2189,13 +2196,9 @@ class RendererOwner implements Renderer {
       }
       const input = request.authoredTextures?.get(binding.logicalPath.toLowerCase())
       if (!input) throw new RenderingError("MissingInput", `authored model cubemap ${binding.logicalPath} is unavailable`)
-      const key = `model-cubemap:${input.sourceSha256}:${binding.colorRead}`
-      let texture = authoredGpu.get(key)
-      if (!texture) {
-        texture = textureFromAuthoredCubemap(input, binding.colorRead === "srgb" ? THREE.SRGBColorSpace : THREE.NoColorSpace)
-        authoredGpu.set(key, texture)
-        disposables.add(texture)
-      }
+      const colorSpace = binding.colorRead === "srgb" ? THREE.SRGBColorSpace : THREE.NoColorSpace
+      const texture = textureResidency.retain(`cubemap:${input.sourceSha256}:${colorSpace}`, () =>
+        textureFromAuthoredCubemap(input, colorSpace))
       if (!(texture instanceof THREE.CubeTexture)) {
         throw new RenderingError("IdentityMismatch", `authored model cubemap ${binding.logicalPath} differs`)
       }
@@ -2234,6 +2237,10 @@ class RendererOwner implements Renderer {
         textureFromAuthoredCubemap(authored, THREE.NoColorSpace)) as THREE.CubeTexture
       cubemapTextures.set(fact.index, texture)
       return texture
+    }
+    const modelCubemap = (identity: string): THREE.CubeTexture | undefined => {
+      const fact = cubemapFacts.get(identity.toLowerCase())
+      return fact ? loadCubemap(fact) : undefined
     }
 
     const waterSurfacePlanes = new Map<number, readonly [number, number, number, number]>()
@@ -2590,8 +2597,9 @@ class RendererOwner implements Renderer {
         const index = mesh.geometry.getIndex()
         if (!index) throw new RenderingError("MalformedInput", "world batch has no index buffer")
         const transparent = (Array.isArray(mesh.material) ? mesh.material : [mesh.material]).some((material) => material.transparent)
+        const animated = worldMaterials.has(String(mesh.userData.materialIdentity).toLowerCase())
         worldBatches.push({ mesh, faces: batch.faces, sourceIndices: batch.indices, index, transparent })
-        ;(transparent ? mainTransparentWorld : worldBundle).add(mesh)
+        ;(transparent ? mainTransparentWorld : animated ? mainAnimatedWorld : worldBundle).add(mesh)
 
         const skyGeometry = new THREE.BufferGeometry()
         for (const name of Object.keys(mesh.geometry.attributes)) {
@@ -2608,7 +2616,7 @@ class RendererOwner implements Renderer {
         skyMesh.userData.materialIdentity = mesh.userData.materialIdentity
         skyMesh.userData.skyWater = map.materials[batch.material]?.shader === 5
         skyWorldBatches.push({ mesh: skyMesh, faces: batch.faces, sourceIndices: batch.indices, index: skyIndex, transparent })
-        ;(transparent ? skyTransparentWorld : skyWorldBundle).add(skyMesh)
+        ;(transparent ? skyTransparentWorld : animated ? skyAnimatedWorld : skyWorldBundle).add(skyMesh)
       }
       for(const model of map.brushModels){const template=new THREE.Group();for(const batch of model.batches){const mesh=createWorldMesh(batch);if(mesh)template.add(mesh)}brushModelTemplates.set(model.index,template)}
 
@@ -2860,9 +2868,8 @@ class RendererOwner implements Renderer {
             eyeStates: inputs.eyes,
           }, {
             materials: request.modelMaterials,
-            environment: request.environment,
             textures: modelLightingTextures,
-            cubemaps: cubemapTextures,
+            cubemap: modelCubemap,
             exposure: exposureUniform,
           })
           if (retained.lighting) modelOccurrenceLighting.push(retained.lighting)
@@ -3077,6 +3084,8 @@ class RendererOwner implements Renderer {
       diagnostics: Object.freeze(diagnostics),
       worldBundle,
       skyWorldBundle,
+      mainAnimatedWorld,
+      skyAnimatedWorld,
       mainTransparentWorld,
       skyTransparentWorld,
       mainModelOccurrences,
@@ -3098,6 +3107,7 @@ class RendererOwner implements Renderer {
       refractMaterials,
       worldMaterials,
       cubemapTextures,
+      modelCubemap,
       skyGroup,
       mainStaticProps,
       skyStaticProps,
@@ -3878,6 +3888,8 @@ class RendererOwner implements Renderer {
     const skyVisible = scene.skyStaticProps.visible
     const mainWorldVisible = scene.worldBundle.visible
     const skyWorldVisible = scene.skyWorldBundle.visible
+    const mainAnimatedVisible = scene.mainAnimatedWorld.visible
+    const skyAnimatedVisible = scene.skyAnimatedWorld.visible
     const mainTransparentVisible = scene.mainTransparentWorld.visible
     const skyTransparentVisible = scene.skyTransparentWorld.visible
     const modelOccurrencesVisible = scene.mainModelOccurrences.visible
@@ -3890,8 +3902,10 @@ class RendererOwner implements Renderer {
       this.#setCamera(sky.camera)
       this.#setStaticPropVisibility(sky.visibility.leaves, 1, sky.camera)
       scene.worldBundle.visible = false
+      scene.mainAnimatedWorld.visible = false
       scene.mainTransparentWorld.visible = false
       scene.skyWorldBundle.visible = true
+      scene.skyAnimatedWorld.visible = true
       scene.skyTransparentWorld.visible = true
       scene.mainStaticProps.visible = false
       scene.skyStaticProps.visible = true
@@ -3909,8 +3923,10 @@ class RendererOwner implements Renderer {
     } finally {
       this.#setCamera(frame.camera)
       scene.worldBundle.visible = mainWorldVisible
+      scene.mainAnimatedWorld.visible = mainAnimatedVisible
       scene.mainTransparentWorld.visible = mainTransparentVisible
       scene.skyWorldBundle.visible = skyWorldVisible
+      scene.skyAnimatedWorld.visible = skyAnimatedVisible
       scene.skyTransparentWorld.visible = skyTransparentVisible
       scene.mainStaticProps.visible = mainVisible
       scene.skyStaticProps.visible = skyVisible
@@ -4355,9 +4371,8 @@ class RendererOwner implements Renderer {
     if (!input) return
     const resources = scene ?? {
       materials: this.#active!.loadRequest.modelMaterials,
-      environment: this.#active!.loadRequest.environment,
       textures: this.#active!.modelLightingTextures,
-      cubemaps: this.#active!.cubemapTextures,
+      cubemap: this.#active!.modelCubemap,
       exposure: this.#active!.exposureUniform,
     }
     let uniforms = retained.lighting
@@ -4399,10 +4414,7 @@ class RendererOwner implements Renderer {
           }> | null
           let environment: Readonly<{ texture: THREE.CubeTexture; tint: readonly [number, number, number]; scale: number }> | undefined
           if (environmentState && (textures?.environment || input.localEnvironment)) {
-            const selected = input.localEnvironment && resources.environment?.cubemapFacts.find((fact) =>
-              fact.logicalPath.toLowerCase() === input.localEnvironment,
-            )
-            const texture = textures?.environment ?? (selected && resources.cubemaps.get(selected.index))
+            const texture = textures?.environment ?? (input.localEnvironment && resources.cubemap(input.localEnvironment))
             if (!texture) throw new RenderingError("MissingInput", `model cubemap ${input.localEnvironment} is unavailable`)
             environment = Object.freeze({
               texture,
@@ -4445,10 +4457,7 @@ class RendererOwner implements Renderer {
       }
       if (cubemapNodes.length > 0) retained.cubemapNodes = cubemapNodes
     } else if (retained.cubemapNodes && retained.cubemapIdentity !== input.localEnvironment) {
-      const selected = input.localEnvironment && resources.environment?.cubemapFacts.find((fact) =>
-        fact.logicalPath.toLowerCase() === input.localEnvironment,
-      )
-      const texture = selected && resources.cubemaps.get(selected.index)
+      const texture = input.localEnvironment && resources.cubemap(input.localEnvironment)
       if (!texture) throw new RenderingError("MissingInput", `model cubemap ${input.localEnvironment} is unavailable`)
       for (const node of retained.cubemapNodes) node.value = texture
       retained.cubemapIdentity = input.localEnvironment

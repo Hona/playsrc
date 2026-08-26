@@ -114,6 +114,10 @@ test("headed bounded three-map authored noclip visual and frame sanity", async (
   const local = await loadLocalConfig()
   const output = path.join(local.sourceCacheDir, "profiles", "map-sanity")
   await mkdir(output, { recursive: true })
+  const gpuValidationErrors: string[] = []
+  page.on("console", (message) => {
+    if (/GPUValidationError|Destroyed texture/.test(message.text())) gpuValidationErrors.push(message.text())
+  })
 
   await page.addInitScript(() => {
     let locked: Element | null = null
@@ -384,6 +388,9 @@ test("headed bounded three-map authored noclip visual and frame sanity", async (
     if (frameDistribution.p95Milliseconds > 20) {
       throw new Error(`${target} authored lighting regressed headed frame p95: ${frameDistribution.p95Milliseconds} ms`)
     }
+    if (gpuValidationErrors.length > 0) {
+      throw new Error(`${target} submitted destroyed or invalid authored GPU textures: ${gpuValidationErrors[0]}`)
+    }
     revision += 1
     await page.evaluate((value) => {
       ;(globalThis as any).__playsrcProfile.worldLightingEvidenceRevision = value
@@ -471,6 +478,7 @@ test("headed bounded three-map authored noclip visual and frame sanity", async (
           || main?.dataset.phase === "Ready" && Number(main.dataset.generation) > previous
       }, generation, { timeout: 120_000, polling: 20 })
       await expect(root).toHaveAttribute("data-phase", "Ready")
+      await expect(root).toHaveAttribute("data-viewmodel-world-depth-isolated", "true", { timeout: 30_000 })
       if (await root.getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
       await canvas.click()
       revision += 1
@@ -490,6 +498,9 @@ test("headed bounded three-map authored noclip visual and frame sanity", async (
       const screenshot = await canvas.screenshot()
       const pixels = visiblePixels(screenshot, launcher)
       if (pixels.meanLuma <= 4) throw new Error(`pl_upward LDR Soldier launcher remains black: ${JSON.stringify(pixels)}`)
+      if (gpuValidationErrors.length > 0) {
+        throw new Error(`pl_upward LDR submitted destroyed or invalid authored GPU textures: ${gpuValidationErrors[0]}`)
+      }
       await writeFile(path.join(output, "pl_upward-ldr-soldier.png"), screenshot)
       ldr = { exposure: lighting.exposure, staticProps: retained, localLights: lighting.viewmodel.localLights.length,
         depthIsolated: lighting.depthIsolated, launcherPixels: pixels }
