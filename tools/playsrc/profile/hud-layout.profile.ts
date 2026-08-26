@@ -4,6 +4,7 @@ import path from "node:path"
 import type { Page } from "@playwright/test"
 import { expect, test } from "./application-test"
 import { summarizeFrameTimes } from "./profile-window"
+import { settleTf2Gameplay } from "./team-selection-evidence"
 import { loadLocalConfig } from "../src/config"
 
 const TARGET = "jump_beef"
@@ -255,10 +256,7 @@ test("profile TF2 HUD layout and composed viewport ownership", async ({ page }) 
   await expect(consoleEntry).toBeVisible()
   await consoleEntry.fill(`map ${TARGET}`)
   await page.keyboard.press("Enter")
-  await page.waitForFunction(() => {
-    const main = document.querySelector<HTMLElement>("main")
-    return main?.dataset.phase === "Ready" && main.dataset.gameui === "in-game"
-  }, undefined, { timeout: 600_000, polling: 50 })
+  await settleTf2Gameplay(page)
   await page.keyboard.press("Backquote")
   if (await page.locator("main").getAttribute("data-class-selection-visible") === "true") {
     await page.keyboard.press("Digit2")

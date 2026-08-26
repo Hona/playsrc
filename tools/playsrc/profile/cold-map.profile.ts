@@ -2,6 +2,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { expect, test } from "./application-test"
 import { loadLocalConfig } from "../src/config"
+import { settleTf2Gameplay } from "./team-selection-evidence"
 
 const MAX_THREADS = 64
 
@@ -82,10 +83,7 @@ test("profiles BSP-prefetched cold map loading", async ({ page }, testInfo) => {
   await consoleEntry.fill(`map ${target.target}`)
   const started = await page.evaluate(() => performance.now())
   await page.keyboard.press("Enter")
-  await page.waitForFunction(() => {
-    const root = document.querySelector<HTMLElement>("main")
-    return (root?.dataset.phase === "Ready" && root.dataset.gameui === "in-game") || root?.dataset.phase === "Failed"
-  }, undefined, { timeout: 180_000, polling: 20 })
+  await settleTf2Gameplay(page)
   const finished = await page.evaluate(() => performance.now())
   expect(await main.getAttribute("data-phase")).toBe("Ready")
   expect(fulfilledBspRequests).toBe(1)

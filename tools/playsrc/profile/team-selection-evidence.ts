@@ -96,3 +96,19 @@ export async function chooseTf2Team(page: Page, team: "red" | "blue"): Promise<v
     await expect(page.locator("main")).toHaveAttribute("data-class-selection-visible", "false")
   }
 }
+
+export async function settleTf2Gameplay(page: Page, team: "red" | "blue" = "red"): Promise<void> {
+  const root = page.locator("main")
+  await page.waitForFunction(() => {
+    const main = document.querySelector<HTMLElement>("main")
+    return main?.dataset.phase === "Failed" || main?.dataset.teamSelectionVisible === "true"
+      || main?.dataset.phase === "Ready" && main.dataset.gameui === "in-game"
+  }, undefined, { timeout: 120_000, polling: 20 })
+  if (await root.getAttribute("data-team-selection-visible") === "true") {
+    const consoleVisible = await root.getAttribute("data-console-visible") === "true"
+    if (consoleVisible) await page.keyboard.press("Backquote")
+    await chooseTf2Team(page, team)
+    if (consoleVisible) await page.keyboard.press("Backquote")
+  }
+  await expect(root).toHaveAttribute("data-phase", "Ready")
+}

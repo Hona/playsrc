@@ -1,4 +1,5 @@
 import { expect, test } from "./application-test"
+import { settleTf2Gameplay } from "./team-selection-evidence"
 
 test.use({ preserveStartupMovie: true })
 
@@ -61,10 +62,7 @@ test("plays the configured startup movie and loads jump_beef", async ({ page }, 
   await expect(consoleOutput).toContainText("STATUS: Startup:")
   await consoleEntry.fill("map jump_beef")
   await page.keyboard.press("Enter")
-  await page.waitForFunction(() => {
-    const element = document.querySelector<HTMLElement>("main")
-    return (element?.dataset.phase === "Ready" && element.dataset.gameui === "in-game") || element?.dataset.phase === "Failed"
-  }, undefined, { timeout: 600_000, polling: 50 })
+  await settleTf2Gameplay(page)
   expect(await main.getAttribute("data-phase")).toBe("Ready")
   expect(await main.getAttribute("data-detail")).toBe("Click the field to capture the mouse")
   await expect(consoleOutput).toContainText("STATUS: Loading:")
