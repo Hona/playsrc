@@ -20,8 +20,31 @@ type InstalledMapStamp = Readonly<{
   cachedIdentity: string
 }>
 
+type DownloadedMapStamp = Readonly<{
+  schema: "playsrc-downloaded-map-stamp-v1"
+  logicalPath: string
+  url: string
+  encodedSha256: string
+  encodedByteLength: number
+  encodedIdentity: string
+  decodedSha256: string
+  decodedByteLength: number
+  decodedIdentity: string
+}>
+
 const fileIdentity = (value: Awaited<ReturnType<typeof stat>>): string =>
   `${value.dev}:${value.ino}:${value.size}:${value.mtimeMs}:${value.ctimeMs}`
+
+async function writeMapStamp(pathname: string, stamp: InstalledMapStamp | DownloadedMapStamp): Promise<void> {
+  await mkdir(path.dirname(pathname), { recursive: true })
+  const temporary = `${pathname}.${process.pid}.${crypto.randomUUID()}.tmp`
+  try {
+    await writeFile(temporary, `${JSON.stringify(stamp)}\n`)
+    await rename(temporary, pathname)
+  } finally {
+    await rm(temporary, { force: true })
+  }
+}
 
 export class TargetError extends Error {
   constructor(readonly code: "TargetMalformed" | "TargetMissing", message: string) {
@@ -48,7 +71,38 @@ export async function acquireMap(
     throw new TargetError("TargetMalformed", `map target ${identity} must declare one source`)
   }
   if (target.download) {
-    const acquired = await acquireDownload(config.sourceCacheDir, target.logicalPath, target.download)
+    const source = target.download
+    const encodedPath = path.join(config.sourceCacheDir, "objects", "sha256", source.encodedSha256.slice(0, 2), source.encodedSha256)
+    const cachePath = path.join("objects", "sha256", source.decodedSha256.slice(0, 2), source.decodedSha256)
+    const decodedPath = path.join(config.sourceCacheDir, cachePath)
+    const stampPath = path.join(config.sourceCacheDir, "prepared-content", "maps", `${source.decodedSha256}.json`)
+    try {
+      const [encoded, decoded, text] = await Promise.all([stat(encodedPath), stat(decodedPath), readFile(stampPath, "utf8")])
+      const stamp = JSON.parse(text) as DownloadedMapStamp
+      if (encoded.isFile() && decoded.isFile() && stamp.schema === "playsrc-downloaded-map-stamp-v1"
+        && stamp.logicalPath === target.logicalPath && stamp.url === source.url
+        && stamp.encodedSha256 === source.encodedSha256 && stamp.encodedByteLength === source.encodedByteLength
+        && stamp.decodedSha256 === source.decodedSha256 && stamp.decodedByteLength === source.decodedByteLength
+        && stamp.encodedIdentity === fileIdentity(encoded) && stamp.decodedIdentity === fileIdentity(decoded)) {
+        return Object.freeze({ logicalPath: target.logicalPath, decoded: Object.freeze({ byteLength: source.decodedByteLength, sha256: source.decodedSha256, cachePath }) })
+      }
+    } catch (error) {
+      if (!["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "") && !(error instanceof SyntaxError)) throw error
+    }
+    const acquired = await acquireDownload(config.sourceCacheDir, target.logicalPath, source)
+    const [encoded, decoded] = await Promise.all([stat(encodedPath), stat(decodedPath)])
+    const stamp: DownloadedMapStamp = Object.freeze({
+      schema: "playsrc-downloaded-map-stamp-v1",
+      logicalPath: target.logicalPath,
+      url: source.url,
+      encodedSha256: source.encodedSha256,
+      encodedByteLength: source.encodedByteLength,
+      encodedIdentity: fileIdentity(encoded),
+      decodedSha256: source.decodedSha256,
+      decodedByteLength: source.decodedByteLength,
+      decodedIdentity: fileIdentity(decoded),
+    })
+    await writeMapStamp(stampPath, stamp)
     return Object.freeze({ logicalPath: acquired.logicalPath, decoded: acquired.decoded })
   }
   const installed = target.installed!
@@ -99,14 +153,7 @@ export async function acquireMap(
     sourceIdentity: fileIdentity(sourceMetadata),
     cachedIdentity: fileIdentity(cachedMetadata),
   })
-  await mkdir(path.dirname(stampPath), { recursive: true })
-  const temporaryStamp = `${stampPath}.${process.pid}.${crypto.randomUUID()}.tmp`
-  try {
-    await writeFile(temporaryStamp, `${JSON.stringify(stamp)}\n`)
-    await rename(temporaryStamp, stampPath)
-  } finally {
-    await rm(temporaryStamp, { force: true })
-  }
+  await writeMapStamp(stampPath, stamp)
   return Object.freeze({
     logicalPath: target.logicalPath,
     decoded: Object.freeze({ byteLength: bytes.byteLength, sha256, cachePath }),

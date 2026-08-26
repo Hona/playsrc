@@ -42,7 +42,7 @@ type OwnerMetadata = Readonly<{
   repository: string
   pid: number
   url: string
-  startup: Record<string, number>
+  startup: Readonly<Record<string, unknown>>
 }>
 
 type OwnerState = Readonly<{ metadata: OwnerMetadata; reused: boolean; milliseconds: number }>
@@ -117,7 +117,7 @@ export async function acquireHeadedProfileLock(
         announcement = Date.now()
         console.error(`[performance] waiting for exclusive headed profile: ${profile}`)
       }
-      await Bun.sleep(250)
+      await Bun.sleep(25)
     }
   }
   throw new Error(`Timed out waiting for the machine-wide headed profile lock after ${maximumWaitMilliseconds} ms`)
