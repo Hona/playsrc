@@ -5,6 +5,7 @@ import {
   type VguiPanelSnapshot,
   type VguiResourceDocument,
   type VguiResourceNode,
+  type VguiResourceSelection,
   type VguiRuntime,
   type VguiRuntimeLimits,
   type VguiRuntimeSnapshot,
@@ -35,6 +36,7 @@ import {
   type Tf2ScoreboardPlayer,
 } from "../hud"
 import type { CaptureObjectives, RoundSnapshot, Tf2Team } from "../codec"
+import { tf2ClassPresentation } from "../class"
 import type { Tf2VguiResources } from "../ui-integration"
 import { Tf2HudCrosshairPresentation } from "./crosshair"
 import { Tf2HudScopePresentation } from "./scope"
@@ -57,12 +59,22 @@ export type Tf2HudIntegrationProbe = Readonly<{
   animationTrace: readonly string[]
 }>
 
+export type Tf2HudModelPanel = Readonly<{
+  model: string
+  skin: number
+  fov: number
+  origin: readonly [number, number, number]
+  angles: readonly [number, number, number]
+  bounds: Readonly<{ x: number; y: number; width: number; height: number }>
+}>
+
 export type Tf2HudIntegration = Readonly<{
   publish(publication: SessionSimulationPublication, context: SessionHudContext): Tf2HudBinding
   action(action: Tf2HudAction): Tf2HudAvailability<Tf2HudCommand>
   frame(timeSeconds: number): void
   setViewport(viewport: VguiViewport): void
   probe(): Tf2HudIntegrationProbe
+  modelPanel(): Tf2HudModelPanel | null
   snapshot(): Tf2HudIntegrationSnapshot
   setPlayerClassUsePlayerModel(value: boolean): void
   setCrosshair(value: Tf2HudCrosshair): void
@@ -157,37 +169,39 @@ function resourceChildren(block: VguiResourceNode): readonly VguiResourceNode[] 
   return block.children.filter((child) => child.value === null && scalar(child, "ControlName") !== null)
 }
 
-function shallow(block: VguiResourceNode): VguiResourceNode {
-  return Object.freeze({ ...block, children: Object.freeze(block.children.filter((child) => child.value !== null || child.name.toLowerCase() === "controlname")) })
+function shallow(block: VguiResourceNode, conditions: readonly string[] = []): VguiResourceNode {
+  return Object.freeze({ ...block, children: Object.freeze(block.children.filter((child) => child.value !== null
+    || child.name.toLowerCase() === "controlname"
+    || conditions.some((condition) => condition.toLowerCase() === child.name.toLowerCase()))) })
 }
 
-function applyChildren(runtime: VguiRuntime, parent: VguiPanelId, source: VguiResourceDocument, blocks: readonly VguiResourceNode[], activeConditions: readonly string[]): void {
+function applyChildren(runtime: VguiRuntime, parent: VguiPanelId, source: VguiResourceDocument, blocks: readonly VguiResourceNode[], selection: VguiResourceSelection): void {
   const selected = blocks.filter((block) => block.value === null && scalar(block, "ControlName") !== null)
   if (selected.length === 0) return
   apply(runtime, {
     kind: "replace-resource",
     parent,
-    document: document(source, `children-${parent}`, node(source.root.name, selected.map(shallow))),
-    selection: { activeConditions, resolutionSuffixes: ["_hidef"] },
+    document: document(source, `children-${parent}`, node(source.root.name, selected.map((block) => shallow(block, selection.activeConditions)))),
+    selection,
   })
   for (const block of selected) {
     const child = find(runtime, scalar(block, "fieldName") ?? block.name, parent)
-    if (child !== null) applyChildren(runtime, child, source, resourceChildren(block), activeConditions)
+    if (child !== null) applyChildren(runtime, child, source, resourceChildren(block), selection)
   }
 }
 
-function applyPanelResource(runtime: VguiRuntime, panel: VguiPanelId, source: VguiResourceDocument, activeConditions: readonly string[]): void {
+function applyPanelResource(runtime: VguiRuntime, panel: VguiPanelId, source: VguiResourceDocument, selection: VguiResourceSelection): void {
   const snapshot = runtime.snapshot().panels.find((candidate) => candidate.id === panel)!
   const self = source.root.children.find((block) => (scalar(block, "fieldName") ?? block.name).toLowerCase() === snapshot.name.toLowerCase())
   if (self && snapshot.parent !== null) {
     apply(runtime, {
       kind: "replace-resource",
       parent: snapshot.parent,
-      document: document(source, `self-${panel}`, node(source.root.name, [shallow(self)])),
-      selection: { activeConditions, resolutionSuffixes: ["_hidef"] },
+      document: document(source, `self-${panel}`, node(source.root.name, [shallow(self, selection.activeConditions)])),
+      selection,
     })
   }
-  applyChildren(runtime, panel, source, source.root.children.filter((block) => block !== self), activeConditions)
+  applyChildren(runtime, panel, source, source.root.children.filter((block) => block !== self), selection)
 }
 
 class Integration implements Tf2HudIntegration {
@@ -208,6 +222,8 @@ class Integration implements Tf2HudIntegration {
   readonly #localization: ReadonlyMap<string, string>
   readonly #scoreboardProperties: ReadonlyMap<string, string>
   #scoreboardFingerprint = ""
+  #modelPanel: Tf2HudModelPanel | null = null
+  #modelPanelFingerprint = ""
   readonly #deathNotices: Array<{ panel: VguiPanelId; expires: bigint }> = []
   #previous: Tf2HudAvailability<Tf2HudSnapshot> = tf2HudUnavailable("initial")
   #binding: Tf2HudBinding | null = null
@@ -238,9 +254,12 @@ class Integration implements Tf2HudIntegration {
   }>
   #notificationDeadline = 0n
   #objectiveCarrying = false
+  #waitingPanelVisible = false
+  #waitingPanelEnding = false
   #winPanel?: VguiPanelId
   #roundPanels?: Readonly<{
     match: VguiPanelId
+    background: VguiPanelId
     timer: VguiPanelId
     value: VguiPanelId
     waiting: VguiPanelId
@@ -280,6 +299,7 @@ class Integration implements Tf2HudIntegration {
     })
     if (!initialized.ok) throw new Error(`${initialized.diagnostic.code}:${initialized.diagnostic.subject}`)
     this.#runtime = initialized.runtime
+    const selection = { activeConditions: request.resources.activeConditions, resolutionSuffixes: request.resources.resolutionSuffixes }
     this.#runtime.deferPresentation(() => {
     apply(this.#runtime, { kind: "set-panel-state", panel: 1, proportional: true, mouseInput: false, keyboardInput: false })
     const roots = [
@@ -298,17 +318,17 @@ class Integration implements Tf2HudIntegration {
     apply(this.#runtime, {
       kind: "replace-resource",
       parent: 1,
-      document: document(layout, "selected", node(layout.root.name, selectedLayout.map(shallow))),
-      selection: { activeConditions: request.resources.activeConditions, resolutionSuffixes: ["_hidef"] },
+      document: document(layout, "selected", node(layout.root.name, selectedLayout.map((block) => shallow(block)))),
+      selection,
     })
     const status = find(this.#runtime, "HudPlayerStatus")!
     const playerClass = apply(this.#runtime, { kind: "create-panel", parent: status, control: "CTFHudElement", name: "HudPlayerClass" })!
     const playerHealth = apply(this.#runtime, { kind: "create-panel", parent: status, control: "CTFHudElement", name: "HudPlayerHealth" })!
     apply(this.#runtime, { kind: "create-panel", parent: playerHealth, control: "CTFHealthPanel", name: "PlayerStatusHealthImage" })
-    applyPanelResource(this.#runtime, playerClass, request.resources.document(HUD_CLASS), request.resources.activeConditions)
-    applyPanelResource(this.#runtime, playerHealth, request.resources.document(HUD_HEALTH), request.resources.activeConditions)
-    applyPanelResource(this.#runtime, find(this.#runtime, "HudWeaponAmmo")!, request.resources.document(HUD_AMMO), request.resources.activeConditions)
-    applyPanelResource(this.#runtime, find(this.#runtime, "HudWeaponSelection")!, request.resources.document(HUD_WEAPONS), request.resources.activeConditions)
+    applyPanelResource(this.#runtime, playerClass, request.resources.document(HUD_CLASS), selection)
+    applyPanelResource(this.#runtime, playerHealth, request.resources.document(HUD_HEALTH), selection)
+    applyPanelResource(this.#runtime, find(this.#runtime, "HudWeaponAmmo")!, request.resources.document(HUD_AMMO), selection)
+    applyPanelResource(this.#runtime, find(this.#runtime, "HudWeaponSelection")!, request.resources.document(HUD_WEAPONS), selection)
     const scoreboard = apply(this.#runtime, { kind: "create-panel", parent: 1, control: "CTFClientScoreBoardDialog", name: "scoreinfo" })!
     const scoreboardNames = new Set<string>()
     const normalizedBlocks = scoreboardDocument.root.children.map((block) => {
@@ -329,15 +349,15 @@ class Integration implements Tf2HudIntegration {
     })
     applyPanelResource(this.#runtime, scoreboard,
       document(scoreboardDocument, "authored", node(scoreboardDocument.root.name, normalizedBlocks)),
-      request.resources.activeConditions)
+      selection)
     apply(this.#runtime, { kind: "set-panel-state", panel: scoreboard, visible: false, z: 100 })
     for (const name of ["LocalPlayerDuelStatsPanel", "ButtonLegend", "ButtonLegendBG", "MvMScoreboard"]) {
       const panel = find(this.#runtime, name)
       if (panel !== null) apply(this.#runtime, { kind: "set-panel-state", panel, visible: false })
     }
-    applyPanelResource(this.#runtime, find(this.#runtime, "HudItemEffectMeter")!, request.resources.document(HUD_SPY_METER), request.resources.activeConditions)
-    applyPanelResource(this.#runtime, find(this.#runtime, "HudMenuSpyDisguise")!, request.resources.document(HUD_SPY_DISGUISE_MENU), request.resources.activeConditions)
-    applyPanelResource(this.#runtime, find(this.#runtime, "HudMedicCharge")!, request.resources.document(HUD_MEDIC_CHARGE), request.resources.activeConditions)
+    applyPanelResource(this.#runtime, find(this.#runtime, "HudItemEffectMeter")!, request.resources.document(HUD_SPY_METER), selection)
+    applyPanelResource(this.#runtime, find(this.#runtime, "HudMenuSpyDisguise")!, request.resources.document(HUD_SPY_DISGUISE_MENU), selection)
+    applyPanelResource(this.#runtime, find(this.#runtime, "HudMedicCharge")!, request.resources.document(HUD_MEDIC_CHARGE), selection)
     const panels = this.#runtime.snapshot().panels
     for (const panel of panels) {
       if (!this.#panels.has(panel.name.toLowerCase())) this.#panels.set(panel.name.toLowerCase(), panel.id)
@@ -363,6 +383,7 @@ class Integration implements Tf2HudIntegration {
 
   #initializeObjectives() {
     if (this.#objective) return this.#objective
+    const selection = { activeConditions: this.#resources.activeConditions, resolutionSuffixes: this.#resources.resolutionSuffixes }
     const root = apply(this.#runtime, { kind: "create-panel", parent: 1, control: "CTFHudElement", name: "HudObjectiveStatus" })!
     const notification = apply(this.#runtime, { kind: "create-panel", parent: 1, control: "CTFHudElement", name: "NotificationPanel" })!
     const layout = this.#resources.document(HUD_LAYOUT)
@@ -370,17 +391,17 @@ class Integration implements Tf2HudIntegration {
     apply(this.#runtime, {
       kind: "replace-resource",
       parent: 1,
-      document: document(layout, "ctf-objectives", node(layout.root.name, selected.map(shallow))),
-      selection: { activeConditions: this.#resources.activeConditions, resolutionSuffixes: ["_hidef"] },
+      document: document(layout, "ctf-objectives", node(layout.root.name, selected.map((block) => shallow(block)))),
+      selection,
     })
     const panel = apply(this.#runtime, { kind: "create-panel", parent: root, control: "EditablePanel", name: "ObjectiveStatusFlagPanel" })!
-    applyPanelResource(this.#runtime, panel, this.#resources.document(HUD_OBJECTIVE_FLAGS), this.#resources.activeConditions)
+    applyPanelResource(this.#runtime, panel, this.#resources.document(HUD_OBJECTIVE_FLAGS), selection)
     const redFlag = find(this.#runtime, "RedFlag", panel)!
     const blueFlag = find(this.#runtime, "BlueFlag", panel)!
     const flagDocument = this.#resources.document(HUD_FLAG_STATUS)
-    applyPanelResource(this.#runtime, redFlag, flagDocument, this.#resources.activeConditions)
-    applyPanelResource(this.#runtime, blueFlag, flagDocument, this.#resources.activeConditions)
-    applyPanelResource(this.#runtime, notification, this.#resources.document(HUD_NOTIFICATION_BASE), this.#resources.activeConditions)
+    applyPanelResource(this.#runtime, redFlag, flagDocument, selection)
+    applyPanelResource(this.#runtime, blueFlag, flagDocument, selection)
+    applyPanelResource(this.#runtime, notification, this.#resources.document(HUD_NOTIFICATION_BASE), selection)
     const required = (name: string, parent: VguiPanelId): VguiPanelId => {
       const value = find(this.#runtime, name, parent)
       if (value === null) throw new Error(`TF2 CTF HUD panel ${name} is missing`)
@@ -403,7 +424,7 @@ class Integration implements Tf2HudIntegration {
       notificationLabel: required("Notification_Label", notification),
     })
     for (const value of this.#runtime.snapshot().panels) {
-      this.#panels.set(value.name.toLowerCase(), value.id)
+      if (!this.#panels.has(value.name.toLowerCase())) this.#panels.set(value.name.toLowerCase(), value.id)
       apply(this.#runtime, { kind: "set-panel-state", panel: value.id, mouseInput: false, keyboardInput: false })
     }
     apply(this.#runtime, { kind: "set-panel-state", panel: objective.outline, visible: false })
@@ -414,6 +435,8 @@ class Integration implements Tf2HudIntegration {
 
   #initializeRoundPanels() {
     if (this.#roundPanels) return this.#roundPanels
+    const selection = { activeConditions: this.#resources.activeConditions, resolutionSuffixes: this.#resources.resolutionSuffixes }
+    const matchSelection = { ...selection, activeConditions: Object.freeze([...selection.activeConditions, "if_match"]) }
     const match = apply(this.#runtime, { kind: "create-panel", parent: 1, control: "CTFHudElement", name: "HudMatchStatus" })!
     const waiting = apply(this.#runtime, { kind: "create-panel", parent: 1, control: "CTFHudElement", name: "WaitingForPlayersPanel" })!
     const layout = this.#resources.document(HUD_LAYOUT)
@@ -421,32 +444,35 @@ class Integration implements Tf2HudIntegration {
     if (roots.length !== 2) throw new Error("TF2 authored round HUD root layout is unavailable")
     apply(this.#runtime, {
       kind: "replace-resource", parent: 1,
-      document: document(layout, "round-roots", node(layout.root.name, roots.map(shallow))),
-      selection: { activeConditions: this.#resources.activeConditions, resolutionSuffixes: ["_hidef"] },
+      document: document(layout, "round-roots", node(layout.root.name, roots.map((block) => shallow(block)))),
+      selection,
     })
-    const timer = apply(this.#runtime, { kind: "create-panel", parent: match, control: "EditablePanel", name: "ObjectiveStatusTimePanel" })!
+    const timer = apply(this.#runtime, { kind: "create-panel", parent: match, control: "CTFHudTimeStatus", name: "ObjectiveStatusTimePanel" })!
+    const background = apply(this.#runtime, { kind: "create-panel", parent: match, control: "EditablePanel", name: "BGFrame" })!
     const matchResource = this.#resources.document(HUD_MATCH_STATUS)
     const authoredTimer = matchResource.root.children.find((value) => (scalar(value, "fieldName") ?? value.name) === "ObjectiveStatusTimePanel")
-    if (!authoredTimer) throw new Error("TF2 authored round timer position is unavailable")
+    const authoredBackground = matchResource.root.children.find((value) => (scalar(value, "fieldName") ?? value.name) === "BGFrame")
+    if (!authoredTimer || !authoredBackground) throw new Error("TF2 authored round timer position is unavailable")
     apply(this.#runtime, {
       kind: "replace-resource", parent: match,
-      document: document(matchResource, "round-timer-position", node(matchResource.root.name, [shallow(authoredTimer)])),
-      selection: { activeConditions: this.#resources.activeConditions, resolutionSuffixes: ["_hidef"] },
+      document: document(matchResource, "round-timer-position", node(matchResource.root.name,
+        [shallow(authoredTimer, matchSelection.activeConditions), shallow(authoredBackground, matchSelection.activeConditions)])),
+      selection: matchSelection,
     })
     const value = apply(this.#runtime, { kind: "create-panel", parent: timer, control: "CExLabel", name: "TimePanelValue" })!
-    applyChildren(this.#runtime, timer, matchResource, resourceChildren(authoredTimer), this.#resources.activeConditions)
-    applyPanelResource(this.#runtime, timer, this.#resources.document(HUD_TIME_PANEL), this.#resources.activeConditions)
-    applyPanelResource(this.#runtime, waiting, this.#resources.document(HUD_WAITING_PANEL), this.#resources.activeConditions)
+    applyChildren(this.#runtime, timer, matchResource, resourceChildren(authoredTimer), matchSelection)
+    applyPanelResource(this.#runtime, timer, this.#resources.document(HUD_TIME_PANEL), matchSelection)
+    applyPanelResource(this.#runtime, waiting, this.#resources.document(HUD_WAITING_PANEL), selection)
     const timerChildren = new Map<string, VguiPanelId>()
     const waitingChildren = new Map<string, VguiPanelId>()
     for (const panel of this.#runtime.snapshot().panels) {
-      this.#panels.set(panel.name.toLowerCase(), panel.id)
+      if (!this.#panels.has(panel.name.toLowerCase())) this.#panels.set(panel.name.toLowerCase(), panel.id)
       if (panel.parent === timer) timerChildren.set(panel.name.toLowerCase(), panel.id)
       if (panel.parent === waiting) waitingChildren.set(panel.name.toLowerCase(), panel.id)
       apply(this.#runtime, { kind: "set-panel-state", panel: panel.id, mouseInput: false, keyboardInput: false })
     }
     this.#captureBaseBounds()
-    this.#roundPanels = Object.freeze({ match, timer, value, waiting, timerChildren, waitingChildren })
+    this.#roundPanels = Object.freeze({ match, background, timer, value, waiting, timerChildren, waitingChildren })
     return this.#roundPanels
   }
 
@@ -458,8 +484,15 @@ class Integration implements Tf2HudIntegration {
       this.#objectiveValue(`round-visible:${name}`, String(visible), { kind: "set-panel-state", panel, visible })
     }
     setVisible(panels.match, timerVisible, "match")
+    setVisible(panels.background, timerVisible, "match-background")
     setVisible(panels.timer, timerVisible, "timer")
-    setVisible(panels.waiting, round.waitingForPlayers, "waiting")
+    for (const event of round.events) {
+      if (event.kind === 2) { this.#waitingPanelVisible = true; this.#waitingPanelEnding = false }
+      else if (event.kind === 3) { this.#waitingPanelVisible = true; this.#waitingPanelEnding = true }
+      else if (event.kind === 4) { this.#waitingPanelVisible = false; this.#waitingPanelEnding = false }
+    }
+    if (!round.waitingForPlayers) { this.#waitingPanelVisible = false; this.#waitingPanelEnding = false }
+    setVisible(panels.waiting, this.#waitingPanelVisible, "waiting")
     const seconds = Math.max(0, Math.floor(round.waitingForPlayers ? round.waitingRemaining ?? 0 : round.timer?.remaining ?? 0))
     const text = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`
     this.#objectiveValue("round-time", text, { kind: "mutate-control", panel: panels.value, mutation: { text } })
@@ -483,10 +516,9 @@ class Integration implements Tf2HudIntegration {
       const panel = panels.timerChildren.get(name.toLowerCase())
       if (panel !== undefined) setVisible(panel, visible, `timer-${name}`)
     }
-    const aboutToEnd = round.waitingRemaining !== null && round.waitingRemaining <= 10
     for (const [name, visible] of [
-      ["WaitingForPlayersLabel", !aboutToEnd],
-      ["WaitingForPlayersEndingLabel", aboutToEnd],
+      ["WaitingForPlayersLabel", !this.#waitingPanelEnding],
+      ["WaitingForPlayersEndingLabel", this.#waitingPanelEnding],
     ] as const) {
       const panel = panels.waitingChildren.get(name.toLowerCase())
       if (panel !== undefined) setVisible(panel, visible, `waiting-${name}`)
@@ -511,12 +543,15 @@ class Integration implements Tf2HudIntegration {
         kind: "replace-resource",
         parent: 1,
         document: document(layout, "ctf-win-panel", node(layout.root.name, [shallow(selected)])),
-        selection: { activeConditions: this.#resources.activeConditions, resolutionSuffixes: ["_hidef"] },
+        selection: { activeConditions: this.#resources.activeConditions, resolutionSuffixes: this.#resources.resolutionSuffixes },
       })
-      applyPanelResource(this.#runtime, panel, this.#resources.document(HUD_WIN_PANEL), this.#resources.activeConditions)
+      applyPanelResource(this.#runtime, panel, this.#resources.document(HUD_WIN_PANEL), {
+        activeConditions: this.#resources.activeConditions,
+        resolutionSuffixes: this.#resources.resolutionSuffixes,
+      })
       this.#winPanel = panel
       for (const value of this.#runtime.snapshot().panels) {
-        this.#panels.set(value.name.toLowerCase(), value.id)
+        if (!this.#panels.has(value.name.toLowerCase())) this.#panels.set(value.name.toLowerCase(), value.id)
         apply(this.#runtime, { kind: "set-panel-state", panel: value.id, mouseInput: false, keyboardInput: false })
       }
       this.#captureBaseBounds()
@@ -827,6 +862,48 @@ class Integration implements Tf2HudIntegration {
     for (const value of binding.values) this.#value(value)
     if (binding.scoreboard.kind === "available") this.#publishScoreboard(binding.scoreboard.value)
     this.#crosshair.publish(binding, this.#viewport)
+    this.#publishModelPanel(binding)
+  }
+
+  #publishModelPanel(binding: Tf2HudBinding): void {
+    const player = binding.facts.player.kind === "available" ? binding.facts.player.value : null
+    if (!player?.playerClassUsePlayerModel || player.lifecycle !== "active" || player.liveHudSuppressed
+      || player.class.kind !== "available" || player.classModel.kind !== "available") {
+      this.#modelPanel = null
+      this.#modelPanelFingerprint = ""
+      return
+    }
+    const playerClass = player.spy?.disguise?.class ?? player.class.value
+    const fingerprint = `${player.classModel.value.identity}:${player.classModel.value.skin}:${playerClass}:${this.#viewport.width}x${this.#viewport.height}`
+    if (fingerprint === this.#modelPanelFingerprint && this.#modelPanel) return
+    const identity = this.#panels.get("classmodelpanel")
+    const panel = identity === undefined ? null : this.#runtime.snapshotPanels([identity])[0]
+    if (!panel?.visible) {
+      this.#modelPanel = null
+      this.#modelPanelFingerprint = ""
+      return
+    }
+    const authored = this.#resources.document(HUD_CLASS).root.children.find((value) => value.name === "classmodelpanel")
+    const classes = authored?.children.find((value) => value.name.toLowerCase() === "customclassdata" && value.value === null)
+    const className = tf2ClassPresentation(playerClass).displayName
+    const selected = classes?.children.find((value) => value.name.toLowerCase() === className.toLowerCase())
+    if (!selected) throw new Error(`TF2 authored HUD class-model presentation is unavailable: ${className}`)
+    const number = (name: string): number => {
+      const value = scalar(selected, name)
+      if (value === null || !Number.isFinite(Number(value))) {
+        throw new Error(`TF2 authored HUD class-model ${className} field is invalid: ${name}`)
+      }
+      return Number(value)
+    }
+    this.#modelPanel = Object.freeze({
+      model: player.classModel.value.identity,
+      skin: player.classModel.value.skin,
+      fov: number("fov"),
+      origin: Object.freeze([number("origin_x"), number("origin_y"), number("origin_z")]) as readonly [number, number, number],
+      angles: Object.freeze([number("angles_x"), number("angles_y"), number("angles_z")]) as readonly [number, number, number],
+      bounds: Object.freeze({ ...panel.bounds }),
+    })
+    this.#modelPanelFingerprint = fingerprint
   }
 
   publish(publication: SessionSimulationPublication, context: SessionHudContext): Tf2HudBinding {
@@ -962,6 +1039,7 @@ class Integration implements Tf2HudIntegration {
       animationTrace: Object.freeze([...this.#animationTrace]),
     })
   }
+  modelPanel(): Tf2HudModelPanel | null { return this.#modelPanel }
   snapshot(): Tf2HudIntegrationSnapshot {
     return Object.freeze({
       binding: this.#binding,
@@ -1060,6 +1138,8 @@ class Integration implements Tf2HudIntegration {
       }
       this.#notificationDeadline = 0n
       this.#objectiveCarrying = false
+      this.#waitingPanelVisible = false
+      this.#waitingPanelEnding = false
       for (const notice of this.#deathNotices) apply(this.#runtime, { kind: "delete-panel", panel: notice.panel, deferred: false })
       this.#deathNotices.length = 0
     })

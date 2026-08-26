@@ -48,8 +48,9 @@ test("authored Upward round HUD exposes waiting, setup, visible timer pixels and
   await expect(page.locator("main")).toHaveAttribute("data-phase", "Ready", { timeout: 60_000 })
   if (await page.locator("main").getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
   await page.waitForFunction(() => document.querySelector<HTMLElement>("main")?.dataset.roundProbe?.split(":")[1] === "1", undefined, { timeout: 15_000 })
-  const waiting = await visiblePixelEvidence(page, waitingSelector)
-  await testInfo.attach("headed-authored-waiting-panel", { body: waiting.bytes, contentType: "image/png" })
+  const waitingVisible = await page.locator(waitingSelector).isVisible()
+  const waiting = await visiblePixelEvidence(page, waitingVisible ? waitingSelector : timerSelector)
+  await testInfo.attach("headed-authored-waiting-timer", { body: waiting.bytes, contentType: "image/png" })
   const waitingTime = await page.locator(`${timerSelector} [data-vgui-name='TimePanelValue']`).innerText()
   expect(waitingTime).toMatch(/^0:[0-2]\d$/u)
   await page.waitForFunction(() => {

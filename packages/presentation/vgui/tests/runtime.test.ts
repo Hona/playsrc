@@ -975,6 +975,39 @@ describe("generic Source VGUI runtime", () => {
     expect(snapshot.panels.find((panel) => panel.id === 1)?.proportional).toBeTrue()
   })
 
+  test("reselects supplied Source font metrics only when viewport height changes", () => {
+    const { root, runtime } = setup()
+    const heights: number[] = []
+    operation(runtime, {
+      kind: "replace-scheme",
+      scheme: {
+        ...scheme,
+        fonts: [{
+          ...scheme.fonts[0]!,
+          metricsForViewport(height) {
+            heights.push(height)
+            return { sizePx: height < 768 ? 32 : 44, lineHeightPx: height < 768 ? 34 : 46 }
+          },
+        }],
+      },
+    })
+    operation(runtime, {
+      kind: "create-panel", parent: 1, control: "Label", name: "ViewportFont",
+      properties: [{ name: "font", value: "Default" }, { name: "labelText", value: "200" }],
+    })
+    const label = descendants(root).find((element) => element.dataset.vguiName === "ViewportFont")!
+    expect(label.style.fontSize).toBe("16px")
+    operation(runtime, { kind: "set-viewport", viewport: { width: 1024, height: 720, devicePixelRatio: 1 } })
+    expect(label.style.fontSize).toBe("32px")
+    expect(label.style.lineHeight).toBe("34px")
+    operation(runtime, { kind: "set-viewport", viewport: { width: 1280, height: 720, devicePixelRatio: 2 } })
+    expect(heights).toEqual([720])
+    operation(runtime, { kind: "set-viewport", viewport: { width: 1024, height: 768, devicePixelRatio: 1 } })
+    expect(label.style.fontSize).toBe("44px")
+    expect(label.style.lineHeight).toBe("46px")
+    expect(heights).toEqual([720, 768])
+  })
+
   test("rejects malformed terminal colors and relevant base-setting cycles atomically", () => {
     const { runtime } = setup()
     const initial = runtime.snapshot().schemeIdentity

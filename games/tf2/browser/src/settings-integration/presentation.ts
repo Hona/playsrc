@@ -117,16 +117,16 @@ function panelElement(root: HTMLElement, name: string): HTMLElement | null {
   }
   return null
 }
-function applyPage(runtime: VguiRuntime, page: VguiPanelId, source: VguiResourceDocument, activeConditions: readonly string[]): void {
+function applyPage(runtime: VguiRuntime, page: VguiPanelId, source: VguiResourceDocument, activeConditions: readonly string[], resolutionSuffixes: readonly string[]): void {
   const blocks = source.root.children.filter((block) => block.value === null && scalar(block, "ControlName") !== null)
-  apply(runtime, { kind: "replace-resource", parent: page, document: derivedDocument(source, `page-${page}`, rootNode(source.root.name, blocks.map(shallow))), selection: { activeConditions, resolutionSuffixes: ["_hidef"] } })
+  apply(runtime, { kind: "replace-resource", parent: page, document: derivedDocument(source, `page-${page}`, rootNode(source.root.name, blocks.map(shallow))), selection: { activeConditions, resolutionSuffixes } })
 }
-function applyOwned(runtime: VguiRuntime, owner: VguiPanelId, source: VguiResourceDocument, activeConditions: readonly string[]): void {
+function applyOwned(runtime: VguiRuntime, owner: VguiPanelId, source: VguiResourceDocument, activeConditions: readonly string[], resolutionSuffixes: readonly string[]): void {
   const state = runtime.snapshot().panels.find((value) => value.id === owner)!
   const self = source.root.children.find((block) => (scalar(block, "fieldName") ?? block.name).toLowerCase() === state.name.toLowerCase())
-  if (self && state.parent !== null) apply(runtime, { kind: "replace-resource", parent: state.parent, document: derivedDocument(source, `self-${owner}`, rootNode(source.root.name, [shallow(self)])), selection: { activeConditions, resolutionSuffixes: ["_hidef"] } })
+  if (self && state.parent !== null) apply(runtime, { kind: "replace-resource", parent: state.parent, document: derivedDocument(source, `self-${owner}`, rootNode(source.root.name, [shallow(self)])), selection: { activeConditions, resolutionSuffixes } })
   const children = source.root.children.filter((block) => block !== self && block.value === null && scalar(block, "ControlName") !== null)
-  if (children.length) apply(runtime, { kind: "replace-resource", parent: owner, document: derivedDocument(source, `children-${owner}`, rootNode(source.root.name, children.map(shallow))), selection: { activeConditions, resolutionSuffixes: ["_hidef"] } })
+  if (children.length) apply(runtime, { kind: "replace-resource", parent: owner, document: derivedDocument(source, `children-${owner}`, rootNode(source.root.name, children.map(shallow))), selection: { activeConditions, resolutionSuffixes } })
 }
 const schemaById = (identity: string): SettingSchema => {
   const schema = TF2_SELECTED_OPTIONS.settings.find((value) => value.id === identity)
@@ -223,7 +223,7 @@ class Presentation implements Tf2OptionsPresentation {
       apply(this.#runtime, { kind: "set-bounds", panel: identity, bounds: { x: 0, y: 28, width: 496, height: 311 } })
       this.#pages.set(pageName, identity)
       const source = this.#resources.document(PAGE_RESOURCE[pageName])
-      applyPage(this.#runtime, identity, source, this.#resources.activeConditions)
+      applyPage(this.#runtime, identity, source, this.#resources.activeConditions, this.#resources.resolutionSuffixes)
       this.#bindControls(source)
       if (index !== 0) apply(this.#runtime, { kind: "set-panel-state", panel: identity, visible: false })
     }
@@ -350,7 +350,7 @@ class Presentation implements Tf2OptionsPresentation {
     const created = apply(this.#runtime, { kind: "create-panel", parent: 1, control, name, properties: [
       { name: "title", value: title }, { name: "sizeable", value: "0" }, { name: "moveable", value: "1" },
     ] })!
-    applyOwned(this.#runtime, created, this.#resources.document(logicalPath), this.#resources.activeConditions)
+    applyOwned(this.#runtime, created, this.#resources.document(logicalPath), this.#resources.activeConditions, this.#resources.resolutionSuffixes)
     const viewport = this.#runtime.snapshot().viewport
     apply(this.#runtime, { kind: "set-bounds", panel: created, bounds: {
       x: Math.max(0, Math.trunc((viewport.width - width) / 2)),
@@ -442,7 +442,7 @@ class Presentation implements Tf2OptionsPresentation {
       apply(this.#advancedRuntime!, { kind: "set-panel-state", panel: this.#advanced!, proportional: true })
       const source = this.#resources.document("resource/ui/tfadvancedoptionsdialog.res")
       apply(this.#advancedRuntime!, { kind: "create-panel", parent: this.#advanced!, control: "CPanelListPanel", name: "PanelListPanel" })
-      applyOwned(this.#advancedRuntime!, this.#advanced!, source, this.#resources.activeConditions)
+      applyOwned(this.#advancedRuntime!, this.#advanced!, source, this.#resources.activeConditions, this.#resources.resolutionSuffixes)
       this.#configureAdvanced()
       apply(this.#advancedRuntime!, { kind: "set-panel-state", panel: 1, visible: false })
       this.#publishControls(this.#advancedRuntime!, this.#advancedControls)

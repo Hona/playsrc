@@ -1122,9 +1122,10 @@ class SourceVguiRuntime implements VguiRuntime {
         || !safeInteger(font.sizePx) || font.sizePx < 0 || font.sizePx > 32767
         || !safeInteger(font.lineHeightPx) || font.lineHeightPx < 0 || font.lineHeightPx > 32767
         || !safeInteger(font.weight) || font.weight < 0 || font.weight > 2000
-        || !["normal", "italic"].includes(font.style)
-        || typeof font.available !== "boolean"
-        || (font.measure !== undefined && typeof font.measure !== "function")) throw new RuntimeFault("MalformedScheme", `font:${font.name}`)
+         || !["normal", "italic"].includes(font.style)
+         || typeof font.available !== "boolean"
+         || (font.measure !== undefined && typeof font.measure !== "function")
+         || (font.metricsForViewport !== undefined && typeof font.metricsForViewport !== "function")) throw new RuntimeFault("MalformedScheme", `font:${font.name}`)
     }
     for (const border of scheme.borders) this.validateBorder(border)
     for (const image of scheme.images) this.validateImage(image)
@@ -4715,7 +4716,22 @@ class SourceVguiRuntime implements VguiRuntime {
   private setViewport(viewport: VguiViewport): void {
     if (!validViewport(viewport)) throw new RuntimeFault("InvalidViewport", "viewport")
     const changedSize = viewport.width !== this.viewport.width || viewport.height !== this.viewport.height
+    const resizedFonts = viewport.height === this.viewport.height ? null : this.scheme.fonts.map((font) => {
+      if (!font.metricsForViewport) return font
+      let metrics: ReturnType<NonNullable<VguiFontPresentation["metricsForViewport"]>>
+      try { metrics = font.metricsForViewport(viewport.height) }
+      catch { throw new RuntimeFault("MissingReference", `font:${font.name}:${viewport.height}`) }
+      if (!safeInteger(metrics.sizePx) || metrics.sizePx < 0 || metrics.sizePx > 32767
+        || !safeInteger(metrics.lineHeightPx) || metrics.lineHeightPx < 0 || metrics.lineHeightPx > 32767
+        || (metrics.weight !== undefined && (!safeInteger(metrics.weight) || metrics.weight < 0 || metrics.weight > 2000))
+        || (metrics.style !== undefined && !["normal", "italic"].includes(metrics.style))
+        || (metrics.measure !== undefined && typeof metrics.measure !== "function")) {
+        throw new RuntimeFault("MalformedScheme", `font:${font.name}:${viewport.height}`)
+      }
+      return Object.freeze({ ...font, ...metrics })
+    })
     this.viewport = Object.freeze({ ...viewport })
+    if (resizedFonts) for (const font of resizedFonts) this.fonts.set(asciiFold(font.name), font)
     this.host.style.width = `${viewport.width}px`
     this.host.style.height = `${viewport.height}px`
     const root = this.requirePanel(this.rootPanel)
@@ -4726,7 +4742,10 @@ class SourceVguiRuntime implements VguiRuntime {
       this.installAnimationScripts(this.animationScripts)
       if (sizeChanged) this.resizeChildren(root)
       for (const panel of this.panels.values()) {
-        if (panel.id !== this.rootPanel) this.reapplyStoredGeometry(panel)
+        if (panel.id !== this.rootPanel) {
+          this.reapplyStoredGeometry(panel)
+          if (resizedFonts) this.updateAutoSize(panel)
+        }
       }
     }
     this.solveGeometry()

@@ -1,4 +1,5 @@
 import path from "node:path"
+import { fileURLToPath } from "node:url"
 import { defineConfig, type PlaywrightTestConfig } from "@playwright/test"
 
 const MAX_PROFILE_MILLISECONDS = 175_000
@@ -15,7 +16,7 @@ type ProfileConfiguration = Readonly<{
 export function headedProfileConfiguration(options: ProfileConfiguration): PlaywrightTestConfig {
   const port = process.env.PLAYSRC_DEV_PORT ?? "4173"
   const origin = `http://127.0.0.1:${port}`
-  const root = path.resolve(import.meta.dir, "../../..")
+  const root = fileURLToPath(new URL("../../../", import.meta.url))
   return defineConfig({
     testDir: path.join(root, "tools", "playsrc", "profile"),
     testMatch: options.match,
