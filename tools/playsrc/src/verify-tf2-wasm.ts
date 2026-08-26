@@ -51,6 +51,7 @@ type Exports = Readonly<{
   playsrc_resource_decode(pointer: number, length: number): number
   playsrc_resource_length(): number
   playsrc_resource_take(): number
+  playsrc_resource_release(pointer: number, length: number): number
   playsrc_free(pointer: number, length: number): void
   playsrc_compile_map(bsp: number, length: number, profile: number, sections: number, sectionCount: number, configurationSha256: number): number
   playsrc_result_length(handle: number): number
@@ -422,7 +423,7 @@ export async function verifyTf2Wasm(
   const resourcePointer = exports.playsrc_resource_take() >>> 0
   require(resourcePointer !== 0, "resource set ownership transfer failed")
   dependencyBytes.set(new Uint8Array(exports.memory.buffer, resourcePointer, dependencyBytes.byteLength))
-  exports.playsrc_free(resourcePointer, dependencyBytes.byteLength)
+  require(exports.playsrc_resource_release(resourcePointer, dependencyBytes.byteLength) === 1, "resource source release failed")
   require(bspBytes.byteLength === map.decoded.byteLength, "cached BSP byte length changed")
   require(dependencyBytes.byteLength > 0 && dependencyBytes.byteLength <= 1024 * 1024 * 1024, "resource set byte length changed")
 

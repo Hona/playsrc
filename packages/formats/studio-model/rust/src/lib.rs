@@ -2,7 +2,7 @@ use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashMap},
     fmt,
-    ops::Range,
+    ops::{Deref, Range},
     sync::{Arc, Mutex, OnceLock, Weak},
 };
 
@@ -38,10 +38,82 @@ const STUDIO_AUTO_LAYER_POSE: i32 = 0x4000;
 
 type AuthoredSourceIdentity = (String, [u8; 32]);
 
-pub fn retain_authored_source(identity: &str, bytes: &[u8], sha256: [u8; 32]) -> Arc<[u8]> {
-    static SOURCES: OnceLock<Mutex<BTreeMap<AuthoredSourceIdentity, Weak<[u8]>>>> = OnceLock::new();
-    let mut sources = SOURCES
-        .get_or_init(|| Mutex::new(BTreeMap::new()))
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum AuthoredSourceBacking {
+    Dedicated(Arc<[u8]>),
+    Section(Arc<Vec<u8>>, Range<usize>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthoredSource(AuthoredSourceBacking);
+
+impl Deref for AuthoredSource {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match &self.0 {
+            AuthoredSourceBacking::Dedicated(bytes) => bytes,
+            AuthoredSourceBacking::Section(bytes, range) => &bytes[range.clone()],
+        }
+    }
+}
+
+impl AsRef<[u8]> for AuthoredSource {
+    fn as_ref(&self) -> &[u8] {
+        self
+    }
+}
+
+impl From<Arc<[u8]>> for AuthoredSource {
+    fn from(bytes: Arc<[u8]>) -> Self {
+        Self(AuthoredSourceBacking::Dedicated(bytes))
+    }
+}
+
+fn authored_backings() -> &'static Mutex<BTreeMap<usize, Weak<Vec<u8>>>> {
+    static BACKINGS: OnceLock<Mutex<BTreeMap<usize, Weak<Vec<u8>>>>> = OnceLock::new();
+    BACKINGS.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn authored_sources() -> &'static Mutex<BTreeMap<AuthoredSourceIdentity, Weak<AuthoredSource>>> {
+    static SOURCES: OnceLock<Mutex<BTreeMap<AuthoredSourceIdentity, Weak<AuthoredSource>>>> =
+        OnceLock::new();
+    SOURCES.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+pub fn authored_source_residency() -> (usize, usize, usize) {
+    let sources = authored_sources()
+        .lock()
+        .expect("authored model source cache");
+    let mut borrowed = 0usize;
+    let mut dedicated = 0usize;
+    let mut sections = BTreeMap::new();
+    for source in sources.values().filter_map(Weak::upgrade) {
+        match &source.0 {
+            AuthoredSourceBacking::Dedicated(bytes) => dedicated += bytes.len(),
+            AuthoredSourceBacking::Section(bytes, range) => {
+                borrowed += range.len();
+                sections.insert(bytes.as_ptr() as usize, bytes.len());
+            }
+        }
+    }
+    (borrowed, dedicated, sections.values().sum())
+}
+
+pub fn register_authored_backing(bytes: &Arc<Vec<u8>>) {
+    let mut backings = authored_backings()
+        .lock()
+        .expect("authored source backings");
+    backings.retain(|_, backing| backing.strong_count() != 0);
+    backings.insert(bytes.as_ptr() as usize, Arc::downgrade(bytes));
+}
+
+pub fn retain_authored_source(
+    identity: &str,
+    bytes: &[u8],
+    sha256: [u8; 32],
+) -> Arc<AuthoredSource> {
+    let mut sources = authored_sources()
         .lock()
         .expect("authored model source cache");
     let key = (identity.to_ascii_lowercase(), sha256);
@@ -53,7 +125,21 @@ pub fn retain_authored_source(identity: &str, bytes: &[u8], sha256: [u8; 32]) ->
     if sources.len() >= 4_096 {
         sources.retain(|_, source| source.strong_count() != 0);
     }
-    let source = Arc::<[u8]>::from(bytes);
+    let start = bytes.as_ptr() as usize;
+    let end = start.checked_add(bytes.len());
+    let section = end.and_then(|end| {
+        let backings = authored_backings()
+            .lock()
+            .expect("authored source backings");
+        let (&first, backing) = backings.range(..=start).next_back()?;
+        let backing = backing.upgrade()?;
+        let last = first.checked_add(backing.len())?;
+        (end <= last).then(|| AuthoredSourceBacking::Section(backing, start - first..end - first))
+    });
+    let source =
+        Arc::new(AuthoredSource(section.unwrap_or_else(|| {
+            AuthoredSourceBacking::Dedicated(Arc::from(bytes))
+        })));
     sources.insert(key, Arc::downgrade(&source));
     source
 }
@@ -296,8 +382,8 @@ pub struct AnimationFrame {
 
 #[derive(Debug, Eq, PartialEq)]
 struct AuthoredAnimationContext {
-    mdl: Arc<[u8]>,
-    ani: Option<Arc<[u8]>>,
+    mdl: Arc<AuthoredSource>,
+    ani: Option<Arc<AuthoredSource>>,
     blocks: Arc<[Range<usize>]>,
     bones: Arc<[Bone]>,
     identity: String,
@@ -343,7 +429,7 @@ impl Animation {
         }
         let (bytes, offset, _) = animation_data(
             &retained.context.mdl,
-            retained.context.ani.as_deref(),
+            retained.context.ani.as_deref().map(AsRef::as_ref),
             &retained.context.blocks,
             self,
             &retained.source,
@@ -380,7 +466,7 @@ impl Animation {
         }
         let (bytes, offset, local_frame) = animation_data(
             &retained.context.mdl,
-            retained.context.ani.as_deref(),
+            retained.context.ani.as_deref().map(AsRef::as_ref),
             &retained.context.blocks,
             self,
             &retained.source,
@@ -861,7 +947,7 @@ pub fn load_authored(
     identity: impl Into<String>,
     profile: Profile,
     vtx_variant: VtxVariant,
-    mdl_bytes: Arc<[u8]>,
+    mdl_bytes: Arc<AuthoredSource>,
     responses: &[DependencyResponse<'_>],
     verified_hashes: &BTreeMap<String, [u8; 32]>,
     limits: Limits,
@@ -889,7 +975,7 @@ fn load_with_chain(
     identity: String,
     profile: Profile,
     mdl_bytes: &[u8],
-    authored_source: Option<&Arc<[u8]>>,
+    authored_source: Option<&Arc<AuthoredSource>>,
     mut dependency_chain: Vec<String>,
     context: &mut LoadContext<'_, '_>,
 ) -> Result<Load, Error> {
@@ -1247,9 +1333,9 @@ fn load_with_chain(
         limits,
         authored: context.authored_animation.then(|| {
             Arc::new(AuthoredAnimationContext {
-                mdl: authored_source
-                    .cloned()
-                    .unwrap_or_else(|| Arc::from(mdl_bytes)),
+                mdl: authored_source.cloned().unwrap_or_else(|| {
+                    Arc::new(AuthoredSource::from(Arc::<[u8]>::from(mdl_bytes)))
+                }),
                 ani: authored_ani,
                 blocks: document.animation_blocks.clone().into(),
                 bones: document.bones.clone().into(),
@@ -4748,7 +4834,7 @@ mod tests {
         .unwrap() else {
             panic!("complete authored source did not expand");
         };
-        let shared: Arc<[u8]> = bytes.into();
+        let shared = Arc::new(AuthoredSource::from(Arc::<[u8]>::from(bytes)));
         let verified = BTreeMap::from([
             (
                 "models/animated.mdl".to_owned(),
@@ -4839,8 +4925,41 @@ mod tests {
         assert!(prior.upgrade().is_none());
 
         let renewed = retain_authored_source("models/player/shared.mdl", bytes, identity);
-        assert_eq!(renewed.as_ref(), bytes);
+        assert_eq!(renewed.as_ref().as_ref(), bytes);
         assert!(!Arc::ptr_eq(&renewed, &replacement));
+    }
+
+    #[test]
+    fn authored_models_borrow_exact_section_ranges_and_keep_replaced_owners_alive() {
+        let section = Arc::new(b"prefix:exact authored model bytes:suffix".to_vec());
+        let original = Arc::downgrade(&section);
+        register_authored_backing(&section);
+        let range = &section[7..33];
+        let source = retain_authored_source("models/player/section-owner.mdl", range, [91; 32]);
+        assert_eq!(source.as_ptr(), range.as_ptr());
+        assert_eq!(source.as_ref().as_ref(), range);
+
+        drop(section);
+        assert!(original.upgrade().is_some());
+        assert_eq!(source.as_ref().as_ref(), b"exact authored model bytes");
+
+        let replacement = Arc::new(b"prefix:exact replacement bytes:suffix".to_vec());
+        let replacement_owner = Arc::downgrade(&replacement);
+        register_authored_backing(&replacement);
+        let next = retain_authored_source(
+            "models/player/section-owner.mdl",
+            &replacement[7..30],
+            [92; 32],
+        );
+        assert_eq!(next.as_ptr(), replacement[7..30].as_ptr());
+        drop(replacement);
+        assert!(replacement_owner.upgrade().is_some());
+
+        drop(source);
+        assert!(original.upgrade().is_none());
+        assert!(replacement_owner.upgrade().is_some());
+        drop(next);
+        assert!(replacement_owner.upgrade().is_none());
     }
 
     #[test]

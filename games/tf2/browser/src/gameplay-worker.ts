@@ -18,6 +18,7 @@ type WasmExports = Readonly<{
   playsrc_resource_decode(pointer: number, length: number): number
   playsrc_resource_length(): number
   playsrc_resource_take(): number
+  playsrc_resource_release(pointer: number, length: number): number
   playsrc_resource_sections_hash(sections: number, count: number, output: number): number
   playsrc_compile_map(bsp: number, length: number, profile: number, sections: number, sectionCount: number, configurationSha256: number): number
   playsrc_compile_map_cached(bsp: number, length: number, profile: number, sections: number, sectionCount: number, configurationSha256: number, presentation: number, presentationLength: number): number
@@ -66,7 +67,7 @@ let wasm: WasmExports | undefined
 let active: { generation: number; handle: number } | undefined
 let pending: { generation: number; handle: number } | undefined
 const resourceSets = new Map<number, {
-  sections: Array<{ pointer: number; length: number }>
+  sections: Array<{ pointer: number; length: number; authoredBacking: boolean }>
   byteLength?: number
   sha256?: string
 }>()
@@ -119,6 +120,7 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         candidate.playsrc_resource_decode,
         candidate.playsrc_resource_length,
         candidate.playsrc_resource_take,
+        candidate.playsrc_resource_release,
         candidate.playsrc_resource_sections_hash,
         candidate.playsrc_model_cache_count,
         candidate.playsrc_compile_map,
@@ -172,7 +174,14 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         linearBytes: candidate.memory.buffer.byteLength,
         liveBytes: candidate.playsrc_memory_bytes(0),
         highWaterBytes: candidate.playsrc_memory_bytes(1),
+        borrowedModelSourceBytes: candidate.playsrc_memory_bytes(2),
+        copiedModelSourceBytes: candidate.playsrc_memory_bytes(3),
+        modelSourceSectionBytes: candidate.playsrc_memory_bytes(4),
         resourceBytes: [...resourceSets.values()].reduce((total, retained) => total + retained.sections.reduce((sum, section) => sum + section.length, 0), 0),
+        resourceSections: [...resourceSets.entries()].map(([generation, retained]) => Object.freeze({
+          generation,
+          bytes: retained.sections.map((section) => section.length),
+        })),
         shared: candidate.memory.buffer instanceof SharedArrayBuffer,
       }),
     })
@@ -243,12 +252,12 @@ function decodeResources(request: Extract<WorkerRequest, { kind: "decode-resourc
   if (request.generation !== undefined) {
     const memory = exports.memory.buffer
     if (!(memory instanceof SharedArrayBuffer)) {
-      exports.playsrc_free(pointer, length)
+      exports.playsrc_resource_release(pointer, length)
       fail(request.id, "InternalFailure")
       return
     }
     const retained = resourceSets.get(request.generation) ?? { sections: [] }
-    retained.sections.push({ pointer, length })
+    retained.sections.push({ pointer, length, authoredBacking: true })
     delete retained.byteLength
     delete retained.sha256
     resourceSets.set(request.generation, retained)
@@ -256,7 +265,7 @@ function decodeResources(request: Extract<WorkerRequest, { kind: "decode-resourc
     return
   }
   const bytes = new Uint8Array(exports.memory.buffer, pointer, length).slice()
-  exports.playsrc_free(pointer, length)
+  exports.playsrc_resource_release(pointer, length)
   post({ id: request.id, kind: "resources", bytes: bytes.buffer, byteOffset: 0, byteLength: length }, [bytes.buffer])
 }
 
@@ -274,7 +283,10 @@ function releaseResourceSet(exports: WasmExports, generation: number): boolean {
   const retained = resourceSets.get(generation)
   if (!retained) return false
   resourceSets.delete(generation)
-  for (const section of retained.sections) exports.playsrc_free(section.pointer, section.length)
+  for (const section of retained.sections) {
+    if (section.authoredBacking) exports.playsrc_resource_release(section.pointer, section.length)
+    else exports.playsrc_free(section.pointer, section.length)
+  }
   return true
 }
 
@@ -330,7 +342,7 @@ function retainResources(request: Extract<WorkerRequest, { kind: "retain-resourc
     fail(request.id, "MalformedRequest")
     return
   }
-  retained.sections.push({ pointer: allocateCopy(exports, request.section), length: request.section.byteLength })
+  retained.sections.push({ pointer: allocateCopy(exports, request.section), length: request.section.byteLength, authoredBacking: false })
   delete retained.byteLength
   delete retained.sha256
   resourceSets.set(request.generation, retained)
