@@ -4,7 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import { gzipSync } from "node:zlib"
 import { TRACE_START, TRACE_END } from "../profile/compositor-truth"
-import { analyzeCompositorEvidence, compositorTraceWindow, decodeRawTrace, drainTraceStream, replayCompositorEvidence, retainCompositorEvidence, type RawTraceEvent, type TraceProbes } from "../profile/compositor-evidence"
+import { analyzeCompositorEvidence, compositorTraceWindow, decodeRawTrace, drainTraceStream, replayCompositorEvidence, retainCompositorEvidence, redecodeCompositorEvidence, type RawTraceEvent, type TraceProbes } from "../profile/compositor-evidence"
 
 const probes: TraceProbes = { started: 100, ended: 1100, dropped: 0, joins: [
   { kind: "gpu", at: 180, end: 700, detail: { method: "mapAsync", resource: 12 } },
@@ -22,6 +22,26 @@ const events: RawTraceEvent[] = [
 ]
 
 describe("bounded durable cross-process compositor evidence", () => {
+  test("count-only reanalysis preserves the failed manifest and every bad frame, never stream loss", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "playsrc-trace-count-"))
+    try {
+      const options = { directory, raw: gzipSync(JSON.stringify({ traceEvents: events })), complete: true, dataLossOccurred: false,
+        identity: { sourceUnchanged: true, interrupted: false }, probes, maximumEvents: 2 }
+      const original = await retainCompositorEvidence(options)
+      expect(original.manifest.complete).toBe(false)
+      const filename = path.join(directory, original.artifact.file)
+      const before = await readFile(filename)
+      expect((await replayCompositorEvidence(filename)).complete).toBe(false)
+      const recovered = await redecodeCompositorEvidence(filename)
+      expect(recovered.manifest.complete).toBe(true)
+      expect(recovered.manifest.analysis.eventCount).toBe(events.length)
+      expect(recovered.manifest.analysis.incidents[0]!.milliseconds).toBe(550)
+      expect((await readFile(filename)).equals(before)).toBe(true)
+      expect((await replayCompositorEvidence(filename)).complete).toBe(false)
+      const loss = await retainCompositorEvidence({ ...options, dataLossOccurred: true })
+      await expect(redecodeCompositorEvidence(path.join(directory, loss.artifact.file))).rejects.toThrow("Only a count-limited")
+    } finally { await rm(directory, { recursive: true, force: true }) }
+  })
   test("joins exact page clocks to unchanged native event indices across Renderer and GPU threads", () => {
     const result = analyzeCompositorEvidence(events, probes)
     expect(result.window).toMatchObject({ offsetMicroseconds: 900_000, endErrorMicroseconds: 0, pid: 1, tid: 3 })

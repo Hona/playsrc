@@ -135,12 +135,13 @@ export async function retainEvidenceBlob(directory: string, bytes: Uint8Array, s
   return { file, sha256, bytes: bytes.byteLength }
 }
 
-export function decodeRawTrace(bytes: Uint8Array, limit = TRACE_LIMITS.decodedBytes): RawTraceEvent[] {
+export function decodeRawTrace(bytes: Uint8Array, limit = TRACE_LIMITS.decodedBytes, maximumEvents = TRACE_LIMITS.events): RawTraceEvent[] {
+  if (!Number.isSafeInteger(maximumEvents) || maximumEvents < 1 || maximumEvents > TRACE_LIMITS.events) throw new Error("Invalid native event bound")
   const raw = gunzipSync(bytes, { maxOutputLength: limit })
   const value = JSON.parse(raw.toString("utf8")) as { traceEvents?: RawTraceEvent[] }
   if (!Array.isArray(value.traceEvents)
     || value.traceEvents.some(event => !event || typeof event !== "object" || Array.isArray(event))) throw new Error("Raw trace event format is invalid")
-  if (value.traceEvents.length > TRACE_LIMITS.events) throw new Error(`Raw trace has ${value.traceEvents.length} events, exceeding ${TRACE_LIMITS.events}`)
+  if (value.traceEvents.length > maximumEvents) throw new Error(`Raw trace has ${value.traceEvents.length} events, exceeding ${maximumEvents}`)
   return value.traceEvents
 }
 
@@ -174,9 +175,11 @@ export async function retainCompositorEvidence(options: Readonly<{
   directory: string; raw: Uint8Array; complete: boolean; dataLossOccurred: boolean;
   identity: Record<string, unknown>; probes: TraceProbes;
   categories?: readonly string[];
+  maximumEvents?: number;
 }>) {
   // Persist original bytes before parsing/analysis: malformed and overflow traces are evidence too.
   const errors: string[] = []
+  const limits = { ...TRACE_LIMITS, events: options.maximumEvents ?? TRACE_LIMITS.events }
   const trace = await retainEvidenceBlob(options.directory, options.raw.subarray(0, TRACE_LIMITS.compressedBytes), "trace.json.gz")
   if (trace.bytes !== options.raw.byteLength) errors.push("Raw trace exceeded the compressed byte bound")
   let capturedProbes = options.probes
@@ -191,9 +194,9 @@ export async function retainCompositorEvidence(options: Readonly<{
   if (options.dataLossOccurred) errors.push("Chromium reported trace data loss")
   if (options.identity.sourceUnchanged === false) errors.push("Source changed during capture")
   let events: RawTraceEvent[] = []
-  try { events = decodeRawTrace(options.raw.subarray(0, TRACE_LIMITS.compressedBytes)) } catch (error) { errors.push(String(error)) }
+  try { events = decodeRawTrace(options.raw.subarray(0, TRACE_LIMITS.compressedBytes), TRACE_LIMITS.decodedBytes, limits.events) } catch (error) { errors.push(String(error)) }
   const analysis = analyzeCompositorEvidence(events, capturedProbes)
-  const manifest = { schema: "playsrc-compositor-evidence-v1", identity: options.identity, limits: TRACE_LIMITS,
+  const manifest = { schema: "playsrc-compositor-evidence-v1", identity: options.identity, limits,
     categories: options.categories ?? COMPOSITOR_TRACE_CATEGORIES, trace, probes, complete: options.complete && !options.dataLossOccurred && !errors.length && !analysis.issues.length,
     errors, analysis }
   const artifact = await retainEvidenceBlob(options.directory, Buffer.from(JSON.stringify(manifest, null, 2)), "manifest.json")
@@ -218,10 +221,26 @@ export async function loadCompositorEvidence(filename: string) {
   const trace = await blob(manifest.trace)
   const probes = JSON.parse(gunzipSync(await blob(manifest.probes), { maxOutputLength: TRACE_LIMITS.probeBytes }).toString("utf8")) as TraceProbes
   let events: RawTraceEvent[] = []
-  try { events = decodeRawTrace(trace) } catch (error) { if (manifest.complete) throw error }
+  try { events = decodeRawTrace(trace, TRACE_LIMITS.decodedBytes, manifest.limits.events) } catch (error) { if (manifest.complete) throw error }
   const analysis = analyzeCompositorEvidence(events, probes)
   if (JSON.stringify(analysis) !== JSON.stringify(manifest.analysis)) throw new Error("Trace replay does not match retained analysis")
-  return { manifest, events, probes, analysis }
+  return { manifest, events, probes, analysis, raw: trace }
+}
+
+/** Re-analysis of a complete immutable stream, never repair missing capture data. */
+export async function redecodeCompositorEvidence(filename: string) {
+  const { manifest, raw, probes } = await loadCompositorEvidence(filename)
+  if (manifest.complete || manifest.limits.events >= TRACE_LIMITS.events
+    || manifest.errors.length !== 1 || !(manifest.errors[0] === "Error: Raw trace event bound or format is invalid" || /^Error: Raw trace has \d+ events, exceeding \d+$/u.test(manifest.errors[0]))
+    || manifest.identity.sourceUnchanged !== true || manifest.identity.interrupted !== false) {
+    throw new Error("Only a count-limited, uninterrupted, complete native stream can be re-decoded")
+  }
+  // The original writer records EOF/time/byte loss and Chromium loss as separate
+  // errors. None may be erased. Malformed events still fail the current decoder.
+  decodeRawTrace(raw)
+  return retainCompositorEvidence({ directory: path.dirname(filename), raw, probes, complete: true, dataLossOccurred: false,
+    categories: manifest.categories,
+    identity: { ...manifest.identity, reanalysis: { parentManifest: path.basename(filename), originalEventLimit: manifest.limits.events, eventLimit: TRACE_LIMITS.events, newCapture: false } } })
 }
 
 export async function replayCompositorEvidence(filename: string) {
@@ -233,5 +252,5 @@ export async function replayCompositorEvidence(filename: string) {
 if (import.meta.main) {
   const filename = process.argv[2]
   if (!filename) throw new Error("Usage: bun tools/playsrc/profile/compositor-evidence.ts <sha256.manifest.json>")
-  console.log(JSON.stringify(await replayCompositorEvidence(filename), null, 2))
+  console.log(JSON.stringify(process.argv[3] === "--redecode" ? (await redecodeCompositorEvidence(filename)).artifact : await replayCompositorEvidence(filename), null, 2))
 }

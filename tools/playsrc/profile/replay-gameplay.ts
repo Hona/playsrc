@@ -2,6 +2,7 @@ import { createHash } from "node:crypto"
 import { readFile } from "node:fs/promises"
 import path from "node:path"
 import { encodeResourceBatch, parseResourceGraph } from "@playsrc/asset-store/graph"
+import { objectPath } from "@playsrc/asset-store"
 import { loadLocalConfig } from "../src/config"
 import { acquireMap } from "../src/targets"
 import { buildCollisionReplay } from "../src/collision-replay-build"
@@ -16,11 +17,19 @@ function require(value: unknown, message: string): asserts value { if (!value) t
 // neither the direct-sweep selector nor its per-plane diagnostics.
 export async function replayGameplay(manifestPath: string, wasmPath: string, ticksOnly = false) {
   const started = performance.now()
-  const manifestBytes = await readFile(manifestPath)
-  require(path.basename(manifestPath) === `${hash(manifestBytes)}.replay.json`, "Replay manifest hash mismatch")
+  const captureBytes = await readFile(manifestPath)
+  require(path.basename(manifestPath) === `${hash(captureBytes)}.manifest.json`, "Capture manifest hash mismatch")
+  const capture = JSON.parse(captureBytes.toString())
+  const linked = capture.identity?.gameplayReplay
+  const graphIdentity = capture.identity?.applicationGeneration?.resourceRoot
+  require(capture.schema === "playsrc-compositor-evidence-v1" && linked?.complete && /^[0-9a-f]{64}\.replay\.json$/u.test(linked.manifestFile)
+    && /^[0-9a-f]{64}$/u.test(graphIdentity), "Replay must be linked to the recorded compiled content root")
+  const manifestBytes = await readFile(path.join(path.dirname(manifestPath), linked.manifestFile))
+  require(linked.manifestFile === `${hash(manifestBytes)}.replay.json`, "Replay manifest hash mismatch")
   const manifest = JSON.parse(manifestBytes.toString())
   require(manifest.schema === "playsrc-gameplay-replay-v1" && manifest.complete && /^[0-9a-f]{64}$/u.test(manifest.sha256) && manifest.bytes <= REPLAY_BYTES
     && manifest.file === `${manifest.sha256}.replay.bin`, "Replay manifest is incomplete or invalid")
+  require(manifest.sha256 === linked.sha256 && manifest.bytes === linked.bytes, "Capture/replay linkage changed")
   const bytes = await readFile(path.join(path.dirname(manifestPath), manifest.file))
   require(bytes.length === manifest.bytes && hash(bytes) === manifest.sha256, "Replay journal hash mismatch")
   const replay = parseGameplayReplay(bytes)
@@ -30,7 +39,10 @@ export async function replayGameplay(manifestPath: string, wasmPath: string, tic
   const map = await acquireMap(config, "pl_upward")
   const bsp = await readFile(path.join(config.sourceCacheDir, map.decoded.cachePath))
   require(hash(bsp) === replay.bspSha256, "Configured Upward BSP differs from replay checkpoint")
-  const graph = parseResourceGraph(JSON.parse(await readFile(path.join(config.sourceCacheDir, "browser-bundles/pl_upward.graph.json"), "utf8")))
+  const graphBytes = await readFile(objectPath(config.assetDir, graphIdentity))
+  require(hash(graphBytes) === graphIdentity, "Captured resource graph hash mismatch")
+  const graph = parseResourceGraph(JSON.parse(graphBytes.toString("utf8")))
+  require(graph.target === "pl_upward", "Captured graph is not Upward")
   const wasm = await readFile(wasmPath)
   require(wasm.length <= 64 * 1024 * 1024, "Replay WASM bound exceeded")
   const loaded = await WebAssembly.instantiate(wasm, { playsrc_metrics: { monotonic_milliseconds: () => performance.now() } })
@@ -57,7 +69,7 @@ export async function replayGameplay(manifestPath: string, wasmPath: string, tic
   }
   const sections: Array<{ pointer: number; length: number }> = []
   for (const descriptor of graph.chunks.filter(chunk => chunk.roles.includes("gameplay"))) {
-    const bytes = await readFile(path.join(config.sourceCacheDir, "browser-bundles/pl_upward.graph/objects", descriptor.encodedSha256))
+    const bytes = await readFile(objectPath(config.assetDir, descriptor.encodedSha256))
     const batch = encodeResourceBatch([{ descriptor, bytes }])
     const pointer = copy(batch)
     require(e.playsrc_resource_decode(pointer, batch.length) === 1, "Replay resource authentication failed")
@@ -161,9 +173,9 @@ export async function replayGameplay(manifestPath: string, wasmPath: string, tic
 
 if (import.meta.main) {
   const [identity, mode] = process.argv.slice(2)
-  if (!identity || !/^[0-9a-f]{64}$/u.test(identity) || (mode && mode !== "--ticks")) throw new Error("Usage: bun run replay:gameplay <replay-manifest-sha256> [--ticks]")
+  if (!identity || !/^[0-9a-f]{64}$/u.test(identity) || (mode && mode !== "--ticks")) throw new Error("Usage: bun run replay:gameplay <compositor-manifest-sha256> [--ticks]")
   const config = await loadLocalConfig()
-  const manifest = path.join(config.sourceCacheDir, "profiles", "upward-training-bots", "compositor-evidence", `${identity}.replay.json`)
+  const manifest = path.join(config.sourceCacheDir, "profiles", "upward-training-bots", "compositor-evidence", `${identity}.manifest.json`)
   const wasm = await buildCollisionReplay(config)
   console.log(JSON.stringify(await replayGameplay(manifest, wasm, mode === "--ticks"), null, 2))
 }

@@ -19,6 +19,7 @@ import { attributeWorkerIncidents } from "./worker-incident-attribution"
 import { captureProcessMemory } from "./process-memory"
 import { acceptStockLoadouts } from "./stock-loadout-acceptance"
 import { startGameplayReplayJournal } from "./gameplay-replay"
+import { assertUpwardProfile } from "./upward-profile-gates"
 
 let retainIncomplete: (() => Promise<unknown>) | undefined
 test.afterEach(async () => { await retainIncomplete?.(); retainIncomplete = undefined })
@@ -916,36 +917,8 @@ test("profile authored headed Upward offline-practice default roster and actual 
     traveled: report.traveled, longAnimationFrames: report.longAnimationFrames,
     cpu: report.cpu.topSelf.slice(0, 8), pixels: report.pixels,
   })}`)
-  expect(report.activeBots).toBe(expectedBots)
-  expect(report.teams.red + report.teams.blue).toBe(playerCount)
   if (process.env.PROFILE_INTEGRATED_ACCEPTANCE === "1") expect(report.teams).toEqual({ red: playerCount / 2, blue: playerCount / 2 })
-  expect(report.completedFrames).toBeGreaterThan(0)
-  expect(report.pixels.nonBlack).toBeGreaterThan(20_000)
-  if (exerciseClasses) {
-    expect(report.classSwitches.requested.length).toBe(acceptance ? 9 : 18)
-    expect(report.classSwitches.observed.length).toBe(acceptance ? 9 : 18)
-    expect(report.classSwitches.timing.length).toBe(report.classSwitches.observed.length)
-    if (acceptance) expect(report.classSwitches.timing.every(item => item.fireAt !== null)).toBe(true)
-    expect(report.classSwitches.timing.filter(item => item.admission === "first").length).toBe(9)
-    expect(report.classSwitches.timing.filter(item => item.admission === "retained").length).toBe(acceptance ? 0 : 9)
-    expect(report.classSwitches.visibleScoreboardRows).toBe(playerCount)
-    expect(report.simulation.hertz).toBeGreaterThanOrEqual(60)
-    expect(report.compositor.intervals?.maximumMilliseconds).toBeLessThan(250)
-    expect(report.compositorSilence?.maximumActiveSilenceMilliseconds).toBeLessThan(250)
-    expect(report.compositorSilence?.maximumCensoredBoundaryMilliseconds).toBeLessThan(250)
-    expect(workerCapture.captures).toHaveLength(1)
-    expect(workerCapture.captures[0]!.deadlineStopped).toBe(false)
-    expect(workerIncidents[0]!.samples).toBeGreaterThan(0)
-    expect(workerIncidents[0]!.captureComplete).toBe(true)
-  }
-  expect(report.screen.visibility).toBe("visible")
-  expect(report.gpu.losses).toHaveLength(0)
-  expect(report.compositorEvidence.complete).toBe(true)
-  expect(sourceFingerprintAfter).toBe(sourceFingerprint)
-  if (process.env.PROFILE_UPWARD_REQUIRE_COMPOSITOR === "1") expect(report.compositor.evidence).toBe("chromium-compositor-presentation-trace")
-  if (process.env.PROFILE_UPWARD_TRAINING_REQUIRE_SMOOTH === "1") {
-    expect(report.applicationCompletedFramesPerSecond).toBeGreaterThanOrEqual(55)
-    expect(report.simulation.hertz).toBeGreaterThanOrEqual(60)
-    expect(report.frameIntervals.p95Milliseconds).toBeLessThan(35)
-  }
+  assertUpwardProfile(report, { expectedBots, playerCount, classes: exerciseClasses, classPasses: acceptance ? 1 : 2,
+    sourceUnchanged: sourceFingerprintAfter === sourceFingerprint, workerCaptures: workerCapture.captures,
+    compositor: process.env.PROFILE_UPWARD_REQUIRE_COMPOSITOR === "1", smooth: process.env.PROFILE_UPWARD_TRAINING_REQUIRE_SMOOTH === "1" })
 })
