@@ -576,7 +576,13 @@ test("profiles exact headed cold initialization for all three configured TF2 map
   const local = await loadLocalConfig()
   const directory = path.join(local.sourceCacheDir, "profiles", "three-map-load")
   await mkdir(directory, { recursive: true })
-  const filename = process.env.PLAYSRC_THREE_MAP_CAPTURE === "before" ? "before.json" : "after.json"
+  const label = process.env.PLAYSRC_THREE_MAP_LABEL
+  if (label !== undefined && !/^[a-z0-9][a-z0-9-]*$/u.test(label)) {
+    throw new Error("PLAYSRC_THREE_MAP_LABEL must be a lowercase bounded filename label")
+  }
+  const filename = label === undefined
+    ? process.env.PLAYSRC_THREE_MAP_CAPTURE === "before" ? "before.json" : "after.json"
+    : `${label}.json`
   const reportPath = path.join(directory, filename)
   await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`)
   await testInfo.attach("three-map-load", { body: Buffer.from(JSON.stringify(report, null, 2)), contentType: "application/json" })
