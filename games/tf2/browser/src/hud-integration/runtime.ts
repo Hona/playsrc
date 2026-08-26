@@ -230,6 +230,12 @@ class Integration implements Tf2HudIntegration {
     notificationBackground: VguiPanelId
     notificationLabel: VguiPanelId
   }>
+  #medicPanels?: Readonly<{
+    root: VguiPanelId
+    meter: VguiPanelId | null
+    background: VguiPanelId | null
+    hidden: readonly VguiPanelId[]
+  }>
   #notificationDeadline = 0n
   #objectiveCarrying = false
   #winPanel?: VguiPanelId
@@ -336,6 +342,17 @@ class Integration implements Tf2HudIntegration {
     for (const panel of panels) {
       if (!this.#panels.has(panel.name.toLowerCase())) this.#panels.set(panel.name.toLowerCase(), panel.id)
       apply(this.#runtime, { kind: "set-panel-state", panel: panel.id, mouseInput: false, keyboardInput: false })
+    }
+    const medicRoot = this.#panels.get("hudmediccharge")
+    if (medicRoot !== undefined) {
+      const child = (name: string) => panels.find((panel) => panel.parent === medicRoot && panel.name.toLowerCase() === name.toLowerCase())?.id ?? null
+      this.#medicPanels = Object.freeze({
+        root: medicRoot,
+        meter: child("ChargeMeter"),
+        background: child("Background"),
+        hidden: Object.freeze(["IndividualChargesLabel", "ChargeMeter1", "ChargeMeter2", "ChargeMeter3", "ChargeMeter4", "ResistIcon"]
+          .map(child).filter((panel): panel is VguiPanelId => panel !== null)),
+      })
     }
     this.#captureBaseBounds(panels)
     })
@@ -626,7 +643,15 @@ class Integration implements Tf2HudIntegration {
       : value.kind === "scalar" || value.kind === "color"
         ? `${value.kind}:${value.panel}:${value.property}`
         : `${value.kind}:${value.panel}`
-    const fingerprint = JSON.stringify(value.value)
+    const fingerprint = value.kind === "visible"
+      ? String(value.value)
+      : value.value.kind === "unavailable"
+        ? `unavailable:${value.value.reason}`
+        : typeof value.value.value !== "object"
+          ? `${typeof value.value.value}:${value.value.value}`
+          : Array.isArray(value.value.value)
+            ? `color:${value.value.value.join(",")}`
+            : `localized:${value.value.value.token}:${value.value.value.parameters.join("\u0000")}`
     if (this.#publishedValues.get(identity) === fingerprint) return
     if (value.kind === "visible") {
       apply(this.#runtime, { kind: "set-panel-state", panel, visible: value.value })
@@ -852,27 +877,30 @@ class Integration implements Tf2HudIntegration {
         text: `${command.notice.killer.name}  ${command.notice.weaponIcon.kind === "available" ? command.notice.weaponIcon.value : ""}  ${command.notice.victim.name}` } })
       this.#deathNotices.push({ panel: label, expires: command.tick + BigInt(command.notice.localPlayerInvolved ? 800 : 400) })
     }
-    const medicRoot = find(this.#runtime, "HudMedicCharge")
-    if (medicRoot !== null) {
+    const medic = this.#medicPanels
+    if (medic) {
       const source = publication.snapshot as typeof publication.snapshot & { medigunCharge: number; medigunReleasing: boolean }
       const visible = source.class === 5 && source.lifecycle === 1 && (source.weapon === 20 || source.weapon === 21)
-      apply(this.#runtime, { kind: "set-panel-state", panel: medicRoot, visible })
+      this.#objectiveValue("medic-visible", String(visible), { kind: "set-panel-state", panel: medic.root, visible })
       if (visible) {
         const charge = source.medigunCharge
         if (!Number.isFinite(charge) || charge < 0 || charge > 1) throw new Error("Medi Gun HUD charge is not authoritative")
-        apply(this.#runtime, { kind: "set-dialog-variable", panel: medicRoot, name: "charge", value: Math.floor(charge * 100) })
-        const meter = find(this.#runtime, "ChargeMeter", medicRoot)
-        if (meter !== null) apply(this.#runtime, { kind: "mutate-control", panel: meter, mutation: { scalarProperties: { progress: charge } } })
-        const background = find(this.#runtime, "Background", medicRoot)
-        if (background !== null) apply(this.#runtime, { kind: "mutate-control", panel: background, mutation: { image: source.team === 2 ? "../hud/medic_charge_red_bg" : "../hud/medic_charge_blue_bg" } })
-        for (const name of ["IndividualChargesLabel", "ChargeMeter1", "ChargeMeter2", "ChargeMeter3", "ChargeMeter4", "ResistIcon"]) {
-          const panel = find(this.#runtime, name, medicRoot)
-          if (panel !== null) apply(this.#runtime, { kind: "set-panel-state", panel, visible: false })
+        const percent = Math.floor(charge * 100)
+        this.#objectiveValue("medic-charge-percent", String(percent), { kind: "set-dialog-variable", panel: medic.root, name: "charge", value: percent })
+        if (medic.meter !== null) {
+          this.#objectiveValue("medic-charge-progress", String(charge), { kind: "mutate-control", panel: medic.meter, mutation: { scalarProperties: { progress: charge } } })
+        }
+        if (medic.background !== null) {
+          const image = source.team === 2 ? "../hud/medic_charge_red_bg" : "../hud/medic_charge_blue_bg"
+          this.#objectiveValue("medic-charge-background", image, { kind: "mutate-control", panel: medic.background, mutation: { image } })
+        }
+        for (const panel of medic.hidden) {
+          this.#objectiveValue(`medic-hidden:${panel}`, "false", { kind: "set-panel-state", panel, visible: false })
         }
       }
     }
     for (const animation of binding.animations) {
-      const parent = animation.target === "viewport" ? 1 : find(this.#runtime, animation.target)
+      const parent = animation.target === "viewport" ? 1 : this.#panels.get(animation.target.toLowerCase()) ?? null
       if (parent === null) {
         this.#diagnostic("AnimationUnavailable", `${animation.target}:${animation.sequence}`)
         continue

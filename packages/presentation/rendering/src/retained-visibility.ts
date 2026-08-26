@@ -24,6 +24,8 @@ type BatchState = {
 
 export class RetainedWorldVisibility {
   readonly #postings: ReadonlyMap<number, readonly FacePosting[]>
+  readonly #opaqueOffsets: Uint32Array | undefined
+  readonly #opaquePostings: Uint32Array | undefined
   readonly #seen = new Map<number, number>()
   readonly #denseSeen: Uint32Array | undefined
   readonly #batches: readonly BatchState[]
@@ -32,6 +34,14 @@ export class RetainedWorldVisibility {
   constructor(batches: readonly RetainedWorldBatch[], source?: RetainedWorldVisibility) {
     const groups = source ? undefined : new Map<number, Map<number, number[]>>()
     let maximumFace = 0
+    let opaqueTriangles = 0
+    if (!source) {
+      for (const batch of batches) {
+        for (let triangle = 0; triangle < batch.faces.length; triangle += 1) {
+          if (batch.faces[triangle]! > maximumFace) maximumFace = batch.faces[triangle]!
+        }
+      }
+    }
     if (source && source.#batches.length !== batches.length) {
       throw new RetainedVisibilityError("shared world-face batch identity differs")
     }
@@ -49,8 +59,10 @@ export class RetainedWorldVisibility {
       if (groups) {
         for (let triangle = 0; triangle < input.faces.length; triangle += 1) {
           const face = input.faces[triangle]!
-          if (face > maximumFace) maximumFace = face
-          if (!input.transparent) continue
+          if (!input.transparent && maximumFace <= 1_048_576) {
+            opaqueTriangles += 1
+            continue
+          }
           let byBatch = groups.get(face)
           if (!byBatch) groups.set(face, byBatch = new Map())
           let triangles = byBatch.get(batch)
@@ -69,7 +81,35 @@ export class RetainedWorldVisibility {
     if (source) {
       this.#postings = source.#postings
       this.#denseSeen = source.#denseSeen ? new Uint32Array(source.#denseSeen.length) : undefined
+      this.#opaqueOffsets = source.#opaqueOffsets
+      this.#opaquePostings = source.#opaquePostings
     } else {
+      if (maximumFace <= 1_048_576 && opaqueTriangles > 0) {
+        const offsets = new Uint32Array(maximumFace + 2)
+        for (const state of this.#batches) {
+          if (state.input.transparent) continue
+          for (let triangle = 0; triangle < state.input.faces.length; triangle += 1) {
+            const face = state.input.faces[triangle]! + 1
+            offsets[face] = offsets[face]! + 1
+          }
+        }
+        for (let face = 1; face < offsets.length; face += 1) offsets[face] = offsets[face]! + offsets[face - 1]!
+        const cursors = offsets.slice(0, -1)
+        const postings = new Uint32Array(opaqueTriangles * 2)
+        for (let batch = 0; batch < this.#batches.length; batch += 1) {
+          const state = this.#batches[batch]!
+          if (state.input.transparent) continue
+          for (let triangle = 0; triangle < state.input.faces.length; triangle += 1) {
+            const face = state.input.faces[triangle]!
+            const offset = cursors[face]! * 2
+            cursors[face] = cursors[face]! + 1
+            postings[offset] = batch
+            postings[offset + 1] = triangle
+          }
+        }
+        this.#opaqueOffsets = offsets
+        this.#opaquePostings = postings
+      }
       const postings = new Map<number, readonly FacePosting[]>()
       for (const [face, byBatch] of groups!) {
         postings.set(face, Object.freeze(Array.from(byBatch, ([batch, triangles]) =>
@@ -98,14 +138,24 @@ export class RetainedWorldVisibility {
       else this.#seen.set(face, this.#epoch)
     }
 
+    const sparseOpaque = this.#opaqueOffsets === undefined || surfaces.length * 4 <= (dense?.length ?? 0)
     for (const state of this.#batches) state.count = 0
     for (let index = surfaces.length - 1; index >= 0; index -= 1) {
-      const postings = this.#postings.get(surfaces[index]!)
-      if (!postings) continue
-      for (const posting of postings) {
-        const state = this.#batches[posting.batch]!
-        state.selected.set(posting.triangles, state.count)
-        state.count += posting.triangles.length
+      const face = surfaces[index]!
+      if (sparseOpaque && this.#opaqueOffsets && face + 1 < this.#opaqueOffsets.length) {
+        const end = this.#opaqueOffsets[face + 1]!
+        for (let opaque = this.#opaqueOffsets[face]!; opaque < end; opaque += 1) {
+          const state = this.#batches[this.#opaquePostings![opaque * 2]!]!
+          state.selected[state.count++] = this.#opaquePostings![opaque * 2 + 1]!
+        }
+      }
+      const postings = this.#postings.get(face)
+      if (postings) {
+        for (const posting of postings) {
+          const state = this.#batches[posting.batch]!
+          state.selected.set(posting.triangles, state.count)
+          state.count += posting.triangles.length
+        }
       }
     }
 
@@ -115,13 +165,15 @@ export class RetainedWorldVisibility {
       const target = state.input.targetIndices
       let different = false
       let selected = 0
-      const limit = state.input.transparent ? state.count : state.input.faces.length
+      const indexed = state.input.transparent || sparseOpaque
+      const limit = indexed ? state.count : state.input.faces.length
+      if (!state.input.transparent && indexed && limit > 1) state.selected.subarray(0, limit).sort()
       for (let index = 0; index < limit; index += 1) {
-        if (!state.input.transparent) {
+        if (!indexed) {
           const face = state.input.faces[index]!
           if ((dense && face < dense.length ? dense[face] : this.#seen.get(face)) !== this.#epoch) continue
         }
-        const from = (state.input.transparent ? state.selected[index]! : index) * 3
+        const from = (indexed ? state.selected[index]! : index) * 3
         const to = selected++ * 3
         const first = source[from]!
         const second = source[from + 1]!

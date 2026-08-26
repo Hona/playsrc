@@ -13,6 +13,7 @@ const HEARTBEAT_MILLISECONDS = 2_000
 
 const PROFILES = Object.freeze({
   gameplay: { config: "playwright.profile.config.ts", target: "jump_beef" },
+  "frame-budget": { config: "playwright.profile.config.ts", target: "jump_beef", environment: { PROFILE_SCENARIOS: "frame-budget" } },
   "map-load": { config: "playwright.profile.config.ts", target: "jump_beef" },
   "cold-map": { config: "playwright.cold-map-profile.config.ts", target: "jump_beef" },
   "three-map-load": { config: "playwright.three-map-load.config.ts", target: "jump_beef" },
