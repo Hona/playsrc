@@ -21,14 +21,15 @@ export class ProfileCapacityDeferred extends Error {}
 // Admission is outside Ready and the sample. A queued cold build can consume
 // almost the entire command cap; retain that prepared build rather than launch
 // a browser with too little time for startup, map admission and extraction.
-export function requireBrowserBudget(milliseconds: number): void {
-  if (milliseconds < 30_000) throw new ProfileCapacityDeferred(`Only ${milliseconds} ms remain after queue/build; reserve 30000 ms for the headed workflow. Exact preparation is retained; retry without --fresh.`)
+export function requireBrowserBudget(milliseconds: number, minimum = 30_000): void {
+  if (milliseconds < minimum) throw new ProfileCapacityDeferred(`Only ${milliseconds} ms remain after queue/build; reserve ${minimum} ms for the headed workflow. Exact preparation is retained; retry without --fresh.`)
 }
 
 const PROFILES = Object.freeze({
   "trigger-door": { config: "playwright.profile.config.ts", target: "ctf_2fort", environment: { PROFILE_SCENARIOS: "trigger-door" } },
   "trigger-door-upward": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "trigger-door", PROFILE_DOOR_MAP: "pl_upward" } },
   "sniper-scope": { config: "playwright.profile.config.ts", target: "ctf_2fort", environment: { PROFILE_SCENARIOS: "sniper-scope" } },
+  "skinning-equivalence": { config: "playwright.profile.config.ts", target: "ctf_2fort", environment: { PROFILE_SKINNING_EQUIVALENCE: "1" } },
   gameplay: { config: "playwright.profile.config.ts", target: "jump_beef" },
   "frame-budget": { config: "playwright.profile.config.ts", target: "jump_beef", environment: { PROFILE_SCENARIOS: "frame-budget" } },
   "map-load": { config: "playwright.profile.config.ts", target: "jump_beef" },
@@ -293,7 +294,7 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
   try {
     windowsConsole = requireWindowsProfileConsole(remaining())
     // Preserve the full release matrix's earlier admission deadline.
-    const maximumWait = Math.min(remaining(), profile === "application-upgrade" && !playwright.includes("--grep") ? 45_000 : MAX_RUN_MILLISECONDS)
+    const maximumWait = Math.min(remaining(), profile === "application-upgrade" && !playwright.includes("--grep") ? 45_000 : profile === "skinning-equivalence" ? 80_000 : MAX_RUN_MILLISECONDS)
     lock = await acquireHeadedProfileLock(lockPath, profile, Math.max(1, maximumWait), {
       signal: cancellation.signal,
       onProgress: state => {
@@ -312,7 +313,7 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
       generatedIdentity = await measure("generated-wasm-identity", () => generatedProfileIdentity())
     }
     if (process.platform === "win32") windowsConsole = requireWindowsProfileConsole(remaining())
-    requireBrowserBudget(remaining())
+    requireBrowserBudget(remaining(), profile === "skinning-equivalence" ? 80_000 : 30_000)
     if (!process.env.PLAYSRC_PROFILE_CDP_ENDPOINT && !process.env.PLAYSRC_PROFILE_BROWSER_ENDPOINT) {
       const began = Date.now()
       const { default: configuration } = await import(path.join(repositoryRoot, plan.config))

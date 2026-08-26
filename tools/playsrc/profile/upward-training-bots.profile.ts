@@ -528,7 +528,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
       return { className: element.className, width: bounds.width, height: bounds.height, visible: style.display !== "none" && style.visibility !== "hidden", background: style.backgroundColor, opacity: style.opacity, filter: style.filter, isolation: style.isolation, contain: style.contain }
     })
     const gpuContext = surface.getContext("webgpu")
-    return {
+    const output = {
       elapsed, started, ended, browserLifecycle, firstTick, lastTick: Number(main.dataset.snapshotTick), firstFrame,
       visible: document.visibilityState === "visible", focused: document.hasFocus(), animationCallbacks,
       viewport: { width: innerWidth, height: innerHeight, devicePixelRatio, visualViewportScale: visualViewport?.scale ?? null, canvasWidth: surface.width, canvasHeight: surface.height },
@@ -549,6 +549,8 @@ test("profile authored headed Upward offline-practice default roster and actual 
         .map(([key, value]) => [key, typeof value === "number" ? value - (firstSnapshots[key] ?? 0) : value])),
       capabilities: instrumentation.capabilities, gpuTimestamps: instrumentation.gpuTimestamps, losses: instrumentation.losses,
       gpuOperations: instrumentation.gpuOperations, gpuOperationsDropped: instrumentation.gpuOperationsDropped,
+      deviceEvidence: { adapters: instrumentation.adapters, devices: instrumentation.devices, shaders: instrumentation.shaders,
+        identitiesDropped: instrumentation.gpuIdentitiesDropped, shadersDropped: instrumentation.shadersDropped },
       screen: {
         css: { width: surface.clientWidth, height: surface.clientHeight },
         physical: { width: surface.width, height: surface.height },
@@ -559,6 +561,8 @@ test("profile authored headed Upward offline-practice default roster and actual 
       longTasks: instrumentation.longTasks.filter((entry: { at: number }) => entry.at >= started && entry.at < started + elapsed),
       longAnimationFrames: instrumentation.longAnimationFrames.filter((entry: { at: number }) => entry.at >= started && entry.at < started + elapsed),
     }
+    await instrumentation.flushShaderHashes()
+    return output
   }, { duration: seconds, startMark: TRACE_START, endMark: TRACE_END })
   const exercisedClasses: string[] = []
   let visibleScoreboardRows: number | null = null
@@ -765,7 +769,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     return [name, summarizeDistribution(events.map(event => event.dur! / 1_000))]
   }))
   const report = {
-    schema: "playsrc-tf2-upward-training-bots-profile-v1", label, headed: true, target, entry, launch,
+    schema: "playsrc-tf2-upward-training-bots-profile-v2", label, headed: true, target, entry, launch,
     sourceFingerprint,
     roster: measurement.roster.map((bot: any) => ({ identity: bot.identity, class: bot.class, team: bot.team, difficulty: bot.difficulty })),
     activeBots: measurement.roster.length, teams: { red: measurement.scoreboard.red.playerCount, blue: measurement.scoreboard.blue.playerCount },
@@ -854,9 +858,9 @@ test("profile authored headed Upward offline-practice default roster and actual 
         const before = processBefore?.processInfo.find(previous => previous.id === process.id)
         return { id: process.id, type: process.type, seconds: before ? Number((process.cpuTime - before.cpuTime).toFixed(6)) : null }
       }),
-      adapter: measurement.capabilities.adapter ?? null,
+      deviceEvidence: measurement.deviceEvidence,
       chromiumDevices: system?.gpu.devices ?? [],
-      backend: system?.gpu.auxAttributes?.displayType ?? system?.gpu.auxAttributes?.glImplementationParts ?? null,
+      compositorBackend: system?.gpu.auxAttributes?.displayType ?? system?.gpu.auxAttributes?.glImplementationParts ?? null,
       featureStatus: system?.gpu.featureStatus ?? null,
       timestamps: measurement.gpuTimestamps,
       losses: measurement.losses,

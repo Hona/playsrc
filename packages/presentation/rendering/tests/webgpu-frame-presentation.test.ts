@@ -50,4 +50,26 @@ describe("completed WebGPU framebuffer presentation", () => {
     expect(selected).toBeNull()
     expect(outputs).toBe(0)
   })
+
+  test("retires a queued framebuffer generation without a late output submission", () => {
+    let selected: object | null = null
+    const operations: string[] = []
+    const queue = { submit: (buffers: readonly unknown[]) => { operations.push(...buffers as string[]) }, writeBuffer() {} }
+    const original = queue.submit
+    const frame = new WebGpuFramePresentation({
+      needsFrameBufferTarget: true, getRenderTarget: () => selected,
+      setRenderTarget: value => { selected = value },
+      _getFrameBufferTarget: () => ({}), _renderOutput: () => { operations.push("stale-output") },
+    }, queue)
+    frame.begin()
+    queue.submit(["old-world"])
+    frame.abandon()
+    frame.dispose()
+    operations.push("destroy-target")
+    frame.finish()
+    expect(operations).toEqual(["old-world", "destroy-target"])
+    expect(frame.begun).toBe(false)
+    expect(selected).toBeNull()
+    expect(queue.submit).toBe(original)
+  })
 })

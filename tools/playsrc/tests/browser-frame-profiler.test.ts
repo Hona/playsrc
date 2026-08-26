@@ -16,6 +16,49 @@ function host(supported: string[] = []) {
 }
 
 describe("opt-in structured browser frame profiler", () => {
+  test("retains the application adapter and device, native promise identity, and exact pipeline matrix shapes", async () => {
+    let adapterRequests = 0, deviceRequests = 0
+    const browser = host()
+    class Device extends browser.GPUDevice {
+      queue = new browser.GPUQueue()
+      lost = new Promise(() => {})
+      addEventListener() {}
+      features = new Set(["timestamp-query"])
+      limits = { maxUniformBufferBindingSize: 65_536 }
+    }
+    const device = new Device()
+    const devicePromise = Promise.resolve(device)
+    class GPUAdapter {
+      info = { vendor: "nvidia", architecture: "ampere", device: "2460", description: "actual application adapter" }
+      requestDevice(_options: unknown) { deviceRequests += 1; return devicePromise }
+    }
+    const adapter = new GPUAdapter()
+    const adapterPromise = Promise.resolve(adapter)
+    class GPU { requestAdapter(_options: unknown) { adapterRequests += 1; return adapterPromise } }
+    const environment = { ...browser, GPUDevice: Device, GPUAdapter, GPU, crypto: { subtle: { digest: async () => new Uint8Array(32).fill(0xab).buffer } } }
+    const state = installBrowserFrameProfiler(environment)
+    expect(new GPU().requestAdapter({ powerPreference: "high-performance" })).toBe(adapterPromise)
+    await adapterPromise
+    expect(adapter.requestDevice({ requiredFeatures: ["timestamp-query"] })).toBe(devicePromise)
+    await devicePromise
+    expect(adapterRequests).toBe(1)
+    expect(deviceRequests).toBe(1)
+    expect(state.adapters[0]).toMatchObject({ id: 1, powerPreference: "high-performance", info: { vendor: "nvidia", backend: null, backendType: null } })
+    expect(state.devices[0]).toMatchObject({ id: 1, adapter: 1, features: ["timestamp-query"], limits: { maxUniformBufferBindingSize: 65_536 } })
+    const vertex = (device.createShaderModule as any)({ code: "var<uniform> bones: array< mat4x4<f32>, 64 >;" })
+    const fragment = (device.createShaderModule as any)({ code: "var<uniform> matrices: array<mat4x4<f32>,128u>;" })
+    await Promise.resolve()
+    expect(state.counters.shaderModules).toBe(0)
+    state.active = true
+    ;(device.createRenderPipeline as any)({ vertex: { module: vertex }, fragment: { module: fragment, targets: [{ format: "bgra8unorm" }] }, multisample: { count: 4 } })
+    device.queue.submit([])
+    expect(state.gpuOperations).toMatchObject([
+      { kind: "createRenderPipeline", device: 1, vertexShader: 1, fragmentShader: 2, sampleCount: 4, targetFormats: ["bgra8unorm"] },
+      { kind: "submit", device: 1 },
+    ])
+    expect(state.shaders.map((shader: any) => shader.literalMatrixArrayCounts)).toEqual([[64], [128]])
+    expect(state.shaders.every((shader: any) => shader.sha256 === "ab".repeat(32) && shader.code === undefined)).toBe(true)
+  })
   test("has no counters before explicit sample activation and preserves GPU return values", () => {
     const browser = host()
     const state = installBrowserFrameProfiler(browser)
