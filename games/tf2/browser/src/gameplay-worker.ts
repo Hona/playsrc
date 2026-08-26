@@ -44,7 +44,7 @@ type WasmExports = Readonly<{
   playsrc_model_output_copy(handle: number, pointer: number, capacity: number): number
   playsrc_visibility_query(handle: number, pointer: number): number
   playsrc_visibility_output_length(handle: number): number
-  playsrc_visibility_output_copy(handle: number, pointer: number, capacity: number): number
+  playsrc_visibility_output_pointer(handle: number): number
   playsrc_spawn_copy(handle: number, pointer: number, capacity: number): number
   playsrc_team_state_copy(handle: number, pointer: number, capacity: number): number
   playsrc_team_select(handle: number, choice: number): number
@@ -142,7 +142,7 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         candidate.playsrc_model_output_copy,
         candidate.playsrc_visibility_query,
         candidate.playsrc_visibility_output_length,
-        candidate.playsrc_visibility_output_copy,
+        candidate.playsrc_visibility_output_pointer,
         candidate.playsrc_spawn_copy,
         candidate.playsrc_team_state_copy,
         candidate.playsrc_team_select,
@@ -826,14 +826,9 @@ function visibility(request: Extract<WorkerRequest, { kind: "visibility" }>): vo
       const length = value.exports.playsrc_visibility_output_length(value.handle)
       if (length < 80 || length > 4 * 1024 * 1024) { fail(request.id, "InternalFailure", 818); return }
       const outputCopyStarted = performance.now()
-      const outputPointer = value.exports.playsrc_alloc(length) >>> 0
-      try {
-        if (value.exports.playsrc_visibility_output_copy(value.handle, outputPointer, length) !== length) {
-          fail(request.id, "InternalFailure", 819)
-          return
-        }
-        outputs.push(new Uint8Array(value.exports.memory.buffer, outputPointer, length).slice().buffer)
-      } finally { value.exports.playsrc_free(outputPointer, length) }
+      const outputPointer = value.exports.playsrc_visibility_output_pointer(value.handle) >>> 0
+      if (outputPointer === 0) { fail(request.id, "InternalFailure", 819); return }
+      outputs.push(new Uint8Array(value.exports.memory.buffer, outputPointer, length).slice().buffer)
       outputCopyMilliseconds += performance.now() - outputCopyStarted
     }
   } finally { value.exports.playsrc_free(pointer, 56) }
