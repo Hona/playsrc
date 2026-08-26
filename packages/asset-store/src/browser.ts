@@ -226,6 +226,7 @@ export type ImmutableObjectCacheEvent = Readonly<{
 }>
 
 const verifiedReadEvidence = new WeakMap<Uint8Array, Readonly<{ verification: "verified-at-write" | "rehash"; hashMilliseconds: number }>>()
+const verifiedAdmissionEvidence = new WeakMap<Uint8Array, string>()
 
 export function createImmutableObjectAcquirer(options: Readonly<{
   concurrency?: number
@@ -302,6 +303,7 @@ export function createImmutableObjectAcquirer(options: Readonly<{
     const bytes = await fetchImmutableObject(transfer.origin, transfer.descriptor, transfer.controller.signal, options.fetcher ?? fetch, progress, "no-store")
     if (transfer.controller.signal.aborted) throw new BrowserAssetError("Cancelled", "immutable object request was cancelled")
     started = performance.now()
+    verifiedAdmissionEvidence.set(bytes, transfer.descriptor.sha256)
     await cache.write(transfer.descriptor.sha256, transfer.descriptor.sha256, bytes)
     reportCache("write", transfer.descriptor, started)
     if (transfer.controller.signal.aborted) throw new BrowserAssetError("Cancelled", "immutable object request was cancelled")
@@ -587,7 +589,9 @@ export async function openDerivedObjectCache(
       if (bytes.byteLength > MAX_OBJECT_BYTES || bytes.byteLength > maximumBytes) {
         throw new BrowserAssetError("BoundExceeded", "derived object exceeds browser byte limit")
       }
-      const actualSha256 = await bounded(sha256(bytes),"derived write hash")
+      const verified = expectedSha256 !== null && verifiedAdmissionEvidence.get(bytes) === expectedSha256
+      verifiedAdmissionEvidence.delete(bytes)
+      const actualSha256 = verified ? expectedSha256 : await bounded(sha256(bytes),"derived write hash")
       if (expectedSha256 !== null && actualSha256 !== expectedSha256) {
         throw new BrowserAssetError("IntegrityFailure", "derived bytes differ from their descriptor")
       }

@@ -136,6 +136,15 @@ test("profile authored headed Upward offline-practice default roster and actual 
     immutableRequests: number
     browserCacheHits: number
     immutableCache: Readonly<Record<string, number>>
+    criticalPath: Readonly<{
+      application: Readonly<Record<string, number>>
+      worker: Readonly<Record<string, number>>
+      spans: readonly Readonly<Record<string, unknown>>[]
+      resource: Readonly<Record<string, number>>
+      teamAdmissionMilliseconds: number
+      firstPlayableFrameMilliseconds: number
+      classSelectionMilliseconds: number
+    }>
     persistentStorage: Readonly<{ records: number; bytes: number; usageBytes: number | null; quotaBytes: number | null }>
     watchdogFailures: number
     playerCount: number
@@ -173,9 +182,24 @@ test("profile authored headed Upward offline-practice default roster and actual 
     networkStage = `${cache}-map`
     await mapPanel.locator("[data-vgui-name='StartOfflinePracticeButton']").click({ timeout: 5_000 })
     await expect(root).toHaveAttribute("data-team-selection-visible", "true", { timeout: 110_000 })
+    const teamAdmissionMilliseconds = Date.now() - mapStarted
     await chooseTf2Team(page, "red")
     await expect(root).toHaveAttribute("data-phase", "Ready", { timeout: 30_000 })
     const readyMilliseconds = Date.now() - mapStarted
+    const classSelectionMilliseconds = Date.now() - mapStarted
+    const firstPlayableFrameMilliseconds = await page.evaluate(async (elapsed) => {
+      const canvas = document.querySelector<HTMLCanvasElement>("canvas.world-canvas")
+      if (!canvas) throw new Error("authored gameplay canvas is unavailable")
+      const started = performance.now()
+      const initial = Number(canvas.dataset.displayFrame ?? 0)
+      await new Promise<void>((resolve, reject) => {
+        const poll = () => Number(canvas.dataset.displayFrame ?? 0) > initial ? resolve()
+          : performance.now() - started > 10_000 ? reject(new Error("authored playable frame was not presented"))
+          : requestAnimationFrame(poll)
+        requestAnimationFrame(poll)
+      })
+      return elapsed + performance.now() - started
+    }, Date.now() - mapStarted)
     networkStage = `${cache}-gameplay`
     await expect(root).toHaveAttribute("data-bot-count", String(playerCount - 1), { timeout: 70_000 })
     const launch = JSON.parse(await root.getAttribute("data-local-match-settings") ?? "null")
@@ -196,11 +220,16 @@ test("profile authored headed Upward offline-practice default roster and actual 
         return {
           transferredBytes: (performance.getEntriesByType("resource") as PerformanceResourceTiming[]).reduce((total, entry) => total + entry.transferSize, 0),
           immutableCache: structuredClone((globalThis as any).__playsrcProfile?.immutableCache ?? {}),
+          spans: structuredClone((globalThis as any).__playsrcProfile?.startupSpans ?? []),
           persistentStorage: { records: records.length, bytes: records.reduce((total, record) => total + record.byteLength, 0), usageBytes: estimate.usage ?? null, quotaBytes: estimate.quota ?? null },
           watchdogFailures: document.querySelector<HTMLElement>("main")?.dataset.phase === "Failed" ? 1 : 0,
         }
       } finally { database.close() }
     })
+    const loadPerformance = JSON.parse(await root.getAttribute("data-load-performance") ?? "null") as {
+      application: Record<string, number>
+      client: Record<string, number>
+    } | null
     loads.push({
       cache, startupMilliseconds, readyMilliseconds,
       requests: network.requests - previousRequests,
@@ -210,6 +239,32 @@ test("profile authored headed Upward offline-practice default roster and actual 
       immutableRequests: network.immutableRequests - previousImmutableRequests,
       browserCacheHits: network.cacheHits - previousCacheHits,
       immutableCache: persistence.immutableCache,
+      criticalPath: (() => {
+        const spans = persistence.spans as Array<{ kind: string; roles?: string; started: number; finished: number; bytes?: number }>
+        const gameplay = spans.filter((span) => span.roles === "gameplay")
+        const totals = (kind: string) => gameplay.filter((span) => span.kind === kind)
+          .reduce((total, span) => total + span.finished - span.started, 0)
+        const fetch = gameplay.filter((span) => span.kind === "chunk-acquire")
+        const decode = gameplay.filter((span) => span.kind === "resource-decode")
+        return {
+          application: loadPerformance?.application ?? {},
+          worker: loadPerformance?.client ?? {},
+          spans,
+          resource: {
+            chunks: fetch.length,
+            groups: decode.length,
+            acquireAggregateMilliseconds: totals("chunk-acquire"),
+            decodeAggregateMilliseconds: totals("resource-decode"),
+            indexAggregateMilliseconds: totals("resource-index"),
+            finalizeMilliseconds: totals("resource-finalize"),
+            acquisitionWallMilliseconds: fetch.length ? Math.max(...fetch.map((span) => span.finished)) - Math.min(...fetch.map((span) => span.started)) : 0,
+            decodeWallMilliseconds: decode.length ? Math.max(...decode.map((span) => span.finished)) - Math.min(...decode.map((span) => span.started)) : 0,
+          },
+          teamAdmissionMilliseconds,
+          firstPlayableFrameMilliseconds,
+          classSelectionMilliseconds,
+        }
+      })(),
       persistentStorage: persistence.persistentStorage,
       watchdogFailures: persistence.watchdogFailures,
       playerCount, launch,

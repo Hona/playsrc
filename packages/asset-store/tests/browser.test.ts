@@ -288,6 +288,36 @@ describe("browser asset adapters", () => {
     }
   })
 
+  test("carries authenticated immutable transfer ownership directly into its atomic admission without hashing the same bytes twice", async () => {
+    const indexedDbDescriptor = Object.getOwnPropertyDescriptor(globalThis, "indexedDB")
+    const fake = new FakeIndexedDb()
+    Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: fake })
+    const hashing = jest.spyOn(crypto.subtle, "digest")
+    const url = `http://127.0.0.1:4321/objects/sha256/${sha256}`
+    try {
+      const cache = await openDerivedObjectCache("single-authenticated-immutable-admission")
+      const acquire = createImmutableObjectAcquirer({
+        cache: async () => cache,
+        fetcher: (async () => {
+          const response = new Response(bytes, { headers: { "content-length": String(bytes.byteLength), etag: `"${sha256}"` } })
+          Object.defineProperty(response, "url", { value: url })
+          return response
+        }) as typeof fetch,
+      })
+      expect(await acquire("http://127.0.0.1:4321/", descriptor)).toEqual(bytes)
+      expect(hashing).toHaveBeenCalledTimes(1)
+      expect(await cache.read(sha256)).toEqual({ bytes, sha256 })
+      expect(hashing).toHaveBeenCalledTimes(1)
+      await expect(cache.write("0".repeat(64), "0".repeat(64), bytes)).rejects.toMatchObject({ code: "IntegrityFailure" })
+      expect(hashing).toHaveBeenCalledTimes(2)
+      cache.close()
+    } finally {
+      hashing.mockRestore()
+      if (indexedDbDescriptor) Object.defineProperty(globalThis, "indexedDB", indexedDbDescriptor)
+      else delete (globalThis as { indexedDB?: IDBFactory }).indexedDB
+    }
+  })
+
   test("rejects torn writes, metadata rollback, identity substitution, downgraded verification, and replacement Blobs", async () => {
     const indexedDbDescriptor = Object.getOwnPropertyDescriptor(globalThis, "indexedDB")
     const fake = new FakeIndexedDb()

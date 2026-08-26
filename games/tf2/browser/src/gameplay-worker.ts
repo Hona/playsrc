@@ -285,6 +285,20 @@ function finalizeResources(request: Extract<WorkerRequest, { kind: "finalize-res
     fail(request.id, "MalformedRequest")
     return
   }
+  if (request.authenticatedIdentity) {
+    const identity = request.authenticatedIdentity
+    const byteLength = 12 + retained.sections.reduce((total, section) => total + section.length - 12, 0)
+    if (!Number.isSafeInteger(identity.byteLength) || identity.byteLength !== byteLength
+      || byteLength < 12 || byteLength > MAX_CONFIGURATION_BYTES || !/^[0-9a-f]{64}$/.test(identity.sha256)) {
+      releaseResourceSet(exports, request.generation)
+      fail(request.id, "MalformedRequest")
+      return
+    }
+    retained.byteLength = byteLength
+    retained.sha256 = identity.sha256
+    post({ id: request.id, kind: "resources-finalized", generation: request.generation, byteLength, sha256: identity.sha256, sections: retained.sections.length })
+    return
+  }
   const table = sectionTable(exports, retained.sections)
   const digest = exports.playsrc_alloc(32) >>> 0
   try {

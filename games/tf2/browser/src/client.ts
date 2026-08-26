@@ -61,6 +61,18 @@ export type LoadedGame = Readonly<{
     presentationCacheReadMilliseconds: number
     inputCloneMilliseconds: number
     workerLoadMilliseconds: number
+    workerInputCopyMilliseconds: number
+    workerCompileMilliseconds: number
+    bspParseMilliseconds: number
+    canonicalMapMilliseconds: number
+    materialResolutionMilliseconds: number
+    entityParseMilliseconds: number
+    presentationCompileMilliseconds: number
+    modelResolutionMilliseconds: number
+    particleAndInputMilliseconds: number
+    runtimeMapMilliseconds: number
+    collisionSetupMilliseconds: number
+    gameSetupMilliseconds: number
     mapIntegrityMilliseconds: number
     mapReadMilliseconds: number
     mapCacheWriteMilliseconds: number
@@ -258,16 +270,24 @@ export class Tf2WorkerClient {
     return new Uint8Array(response.bytes, response.byteOffset, response.byteLength)
   }
 
-  async finalizeResources(generation: number, sections: readonly Uint8Array[]): Promise<ResourceConfiguration> {
+  async finalizeResources(
+    generation: number,
+    sections: readonly Uint8Array[],
+    authenticatedIdentity?: Readonly<{ byteLength: number; sha256: string }>,
+  ): Promise<ResourceConfiguration> {
     if (!Number.isSafeInteger(generation) || generation < 1 || generation > 0xffff_ffff
       || sections.length < 1 || sections.length > MAX_CONFIGURATION_SECTIONS
-      || sections.some((section) => section.byteLength < 12 || section.byteLength > MAX_CONFIGURATION_SECTION_BYTES)) {
+      || sections.some((section) => section.byteLength < 12 || section.byteLength > MAX_CONFIGURATION_SECTION_BYTES)
+      || (authenticatedIdentity && (!Number.isSafeInteger(authenticatedIdentity.byteLength)
+        || authenticatedIdentity.byteLength !== 12 + sections.reduce((total, section) => total + section.byteLength - 12, 0)
+        || !HASH.test(authenticatedIdentity.sha256)))) {
       throw new Tf2WorkerError("BoundExceeded")
     }
-    const response = await this.#request({ kind: "finalize-resources", generation })
+    const response = await this.#request({ kind: "finalize-resources", generation, ...(authenticatedIdentity ? { authenticatedIdentity } : {}) })
     if (response.kind !== "resources-finalized" || response.generation !== generation
       || !Number.isSafeInteger(response.byteLength) || response.byteLength < 12 || response.byteLength > MAX_CONFIGURATION_BYTES
-      || !HASH.test(response.sha256) || response.sections !== sections.length) {
+       || !HASH.test(response.sha256) || response.sections !== sections.length
+       || (authenticatedIdentity && (response.byteLength !== authenticatedIdentity.byteLength || response.sha256 !== authenticatedIdentity.sha256))) {
       throw new Tf2WorkerError("WorkerFailed")
     }
     return Object.freeze({ generation, byteLength: response.byteLength, sha256: response.sha256, sections: Object.freeze([...sections]) })
@@ -457,6 +477,18 @@ export class Tf2WorkerClient {
           presentationCacheReadMilliseconds,
           inputCloneMilliseconds,
           workerLoadMilliseconds,
+          workerInputCopyMilliseconds: loaded.timings.inputCopyMilliseconds,
+          workerCompileMilliseconds: loaded.timings.compileMilliseconds,
+          bspParseMilliseconds: loaded.timings.bspParseMilliseconds,
+          canonicalMapMilliseconds: loaded.timings.canonicalMapMilliseconds,
+          materialResolutionMilliseconds: loaded.timings.materialResolutionMilliseconds,
+          entityParseMilliseconds: loaded.timings.entityParseMilliseconds,
+          presentationCompileMilliseconds: loaded.timings.presentationCompileMilliseconds,
+          modelResolutionMilliseconds: loaded.timings.modelResolutionMilliseconds,
+          particleAndInputMilliseconds: loaded.timings.particleAndInputMilliseconds,
+          runtimeMapMilliseconds: loaded.timings.runtimeMapMilliseconds,
+          collisionSetupMilliseconds: loaded.timings.collisionSetupMilliseconds,
+          gameSetupMilliseconds: loaded.timings.gameSetupMilliseconds,
           mapIntegrityMilliseconds,
           mapReadMilliseconds: loaded.timings.mapCopyMilliseconds,
           mapCacheWriteMilliseconds: 0,
