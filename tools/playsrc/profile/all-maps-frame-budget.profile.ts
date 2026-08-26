@@ -185,7 +185,7 @@ test("headed authored three-map Soldier, bots, water, HUD, combat, and full-prop
   const intervals: number[] = []
   const work: number[] = []
   for (const [index, target] of TARGETS.entries()) {
-    if (index === TARGETS.length - 1) {
+    if (index > 0) {
       await page.reload({ waitUntil: "load", timeout: 30_000 })
       await expect(root).toHaveAttribute("data-phase", "MainMenu", { timeout: 120_000 })
     }
