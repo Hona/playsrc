@@ -662,7 +662,14 @@ export class Tf2WorkerClient {
     if (response.kind !== "models" || response.generation !== generation || !(response.output instanceof SharedArrayBuffer) ||
       !Number.isSafeInteger(response.byteOffset) || !Number.isSafeInteger(response.byteLength) ||
       response.byteOffset < 0 || response.byteOffset % 4 !== 0 || response.byteLength < 12 || response.byteLength > 64 * 1024 * 1024 ||
-      response.byteOffset > response.output.byteLength - response.byteLength || response.lease !== response.id) {
+      response.byteOffset > response.output.byteLength - response.byteLength || response.lease !== response.id ||
+      !(response.ownership instanceof SharedArrayBuffer) || response.ownership.byteLength !== 64 * Int32Array.BYTES_PER_ELEMENT ||
+      !Number.isSafeInteger(response.slot) || response.slot < 0 || response.slot >= 64) {
+      this.#error()
+      throw new Tf2WorkerError("WorkerFailed")
+    }
+    const ownership = new Int32Array(response.ownership)
+    if ((Atomics.load(ownership, response.slot) >>> 0) !== response.lease) {
       this.#error()
       throw new Tf2WorkerError("WorkerFailed")
     }
@@ -671,6 +678,7 @@ export class Tf2WorkerClient {
       // No caller, asynchronous callback, renderer or GPU may outlive this read ownership.
       return decodeModelPoseOutput(new Uint8Array(response.output, response.byteOffset, response.byteLength))
     } finally {
+      Atomics.store(ownership, response.slot, 0)
       try {
         this.#worker.postMessage({ id: response.id, kind: "release-model-output", generation, lease: response.lease })
       } catch {

@@ -201,6 +201,7 @@ class PipelineWorker implements WorkerLike {
   malformedModelOutput = false
   modelBits?: number[]
   readonly modelLeases = new Map<number, SharedArrayBuffer>()
+  readonly ownership = new Int32Array(new SharedArrayBuffer(256))
   closing?: number
   terminated = false
   readonly resources = new Map<number, Uint8Array[]>()
@@ -263,7 +264,9 @@ class PipelineWorker implements WorkerLike {
         new Uint8Array(output, 12, bytes.length).set(bytes)
         if (this.malformedModelOutput) new Uint8Array(output)[12] = 0
         this.modelLeases.set(request.id, output)
-        this.#respond({ id: request.id, kind: "models", generation: request.generation, output, byteOffset: 12, byteLength: bytes.length, lease: request.id, timings: TIMINGS })
+        const slot = request.id % 64
+        Atomics.store(this.ownership, slot, request.id | 0)
+        this.#respond({ id: request.id, kind: "models", generation: request.generation, output, byteOffset: 12, byteLength: bytes.length, lease: request.id, ownership: this.ownership.buffer as SharedArrayBuffer, slot, timings: TIMINGS })
         if (request.visibility) {
           const outputs = request.visibility.views.map(() => visibilityOutput(this.animatedWorldMaterial))
           this.#respond({
@@ -370,6 +373,7 @@ class PipelineWorker implements WorkerLike {
         this.#respond({ id: request.id, kind: "shutdown" })
         return
       case "release-model-output":
+        expect(Atomics.load(this.ownership, request.lease % 64)).toBe(0)
         const output = this.modelLeases.get(request.lease)
         if (output) new Uint8Array(output).fill(0xff)
         this.modelLeases.delete(request.lease)
@@ -389,7 +393,7 @@ class PipelineWorker implements WorkerLike {
       Object.assign(received, { bytes: response.bytes })
     }
     if (response.kind === "models" && received.kind === "models" && response.output instanceof SharedArrayBuffer) {
-      Object.assign(received, { output: response.output })
+      Object.assign(received, { output: response.output, ownership: response.ownership })
     }
     queueMicrotask(() => this.#message?.({ data: received } as MessageEvent<WorkerResponse>))
   }
@@ -488,9 +492,9 @@ describe("TF2 Worker transport ownership", () => {
   })
 
   test("rejects malformed lease identities and ranges without retaining a live Worker", async () => {
-    for (const mutation of [{ byteOffset: -1 }, { byteOffset: 1 }, { byteLength: NaN }, { byteLength: 65 * 1024 * 1024 }, { lease: 9 }, { generation: 4 }]) {
+    for (const mutation of [{ byteOffset: -1 }, { byteOffset: 1 }, { byteLength: NaN }, { byteLength: 65 * 1024 * 1024 }, { lease: 9 }, { generation: 4 }, { slot: 64 }, { slot: -1 }, { ownership: new SharedArrayBuffer(4) }, {}]) {
       const worker = new PipelineWorker(await digest(MAP))
-      worker.failure = { id: 1, kind: "models", generation: 2, lease: 1, output: new SharedArrayBuffer(12), byteOffset: 0, byteLength: 12, timings: TIMINGS, ...mutation }
+      worker.failure = { id: 1, kind: "models", generation: 2, lease: 1, output: new SharedArrayBuffer(12), byteOffset: 0, byteLength: 12, ownership: new SharedArrayBuffer(256), slot: 0, timings: TIMINGS, ...mutation }
       const client = new Tf2WorkerClient(worker, new MemoryCache(), BUILD)
       await expect(client.models(2, new Uint8Array(12))).rejects.toThrow("WorkerFailed")
       expect(worker.terminated).toBe(true)

@@ -75,7 +75,9 @@ const resourceSets = new ResourceGenerations((section) => {
   if (section.authoredBacking) wasm!.playsrc_resource_release(section.pointer, section.length)
   else wasm!.playsrc_free(section.pointer, section.length)
 })
-const modelOutputLeases = new Map<number, { generation: number; handle: number; pointer: number; capacity: number }>()
+const modelOutputLeases = new Map<number, { generation: number; handle: number; pointer: number; capacity: number; slot: number }>()
+const modelLeaseOwnership = new Int32Array(new SharedArrayBuffer(64 * Int32Array.BYTES_PER_ELEMENT))
+const freeModelLeaseSlots = Array.from({ length: 64 }, (_, index) => 63 - index)
 let leasedModelBytes = 0
 let closing: Extract<WorkerRequest, { kind: "shutdown" }> | undefined
 
@@ -858,12 +860,17 @@ function models(request: Extract<WorkerRequest, { kind: "models" }>): void {
     fail(request.id, "InternalFailure", 817)
     return
   }
-  modelOutputLeases.set(request.id, { generation: request.generation, handle: value.handle, pointer: outputPointer, capacity })
+  const slot = freeModelLeaseSlots.pop()!
+  modelOutputLeases.set(request.id, { generation: request.generation, handle: value.handle, pointer: outputPointer, capacity, slot })
   leasedModelBytes += capacity
+  // Publish completed WASM writes with an explicit release/acquire edge. Zero is
+  // returned only after the client has finished every read; the ACK also gates reuse.
+  Atomics.store(modelLeaseOwnership, slot, request.id | 0)
   const outputCopyMilliseconds = performance.now() - outputCopyStarted
   try {
-    post({ id: request.id, kind: "models", generation: request.generation, output, byteOffset: outputPointer, byteLength: length, lease: request.id, timings: { queueMilliseconds: queueMilliseconds(request, started), inputCopyMilliseconds, transactMilliseconds, outputCopyMilliseconds, totalMilliseconds: performance.now() - started } })
+    post({ id: request.id, kind: "models", generation: request.generation, output, byteOffset: outputPointer, byteLength: length, lease: request.id, ownership: modelLeaseOwnership.buffer as SharedArrayBuffer, slot, timings: { queueMilliseconds: queueMilliseconds(request, started), inputCopyMilliseconds, transactMilliseconds, outputCopyMilliseconds, totalMilliseconds: performance.now() - started } })
   } catch (error) {
+    Atomics.store(modelLeaseOwnership, slot, 0)
     releaseModelOutput({ id: request.id, kind: "release-model-output", generation: request.generation, lease: request.id })
     throw error
   }
@@ -871,8 +878,10 @@ function models(request: Extract<WorkerRequest, { kind: "models" }>): void {
 
 function releaseModelOutput(request: Extract<WorkerRequest, { kind: "release-model-output" }>): void {
   const retained = modelOutputLeases.get(request.lease)
-  if (!retained || retained.generation !== request.generation || request.id !== request.lease || !wasm) return
+  if (!retained || retained.generation !== request.generation || request.id !== request.lease || !wasm ||
+    Atomics.load(modelLeaseOwnership, retained.slot) !== 0) return
   modelOutputLeases.delete(request.lease)
+  freeModelLeaseSlots.push(retained.slot)
   leasedModelBytes -= retained.capacity
   wasm.playsrc_model_output_recycle(retained.handle, retained.pointer, retained.capacity)
   if (closing && modelOutputLeases.size === 0) {
