@@ -446,31 +446,37 @@ class Reader {
     return value
   }
   u8() {
-    return this.take(1)[0]!
+    if (this.offset >= this.bytes.byteLength) throw new ArtifactError("artifact truncated")
+    return this.bytes[this.offset++]!
   }
   u16() {
+    if (this.offset + 2 > this.bytes.byteLength) throw new ArtifactError("artifact truncated")
     const v = this.view.getUint16(this.offset, true)
-    this.take(2)
+    this.offset += 2
     return v
   }
   u32() {
+    if (this.offset + 4 > this.bytes.byteLength) throw new ArtifactError("artifact truncated")
     const v = this.view.getUint32(this.offset, true)
-    this.take(4)
+    this.offset += 4
     return v
   }
   i32() {
+    if (this.offset + 4 > this.bytes.byteLength) throw new ArtifactError("artifact truncated")
     const v = this.view.getInt32(this.offset, true)
-    this.take(4)
+    this.offset += 4
     return v
   }
   u64() {
+    if (this.offset + 8 > this.bytes.byteLength) throw new ArtifactError("artifact truncated")
     const v = this.view.getBigUint64(this.offset, true)
-    this.take(8)
+    this.offset += 8
     return v
   }
   f32() {
+    if (this.offset + 4 > this.bytes.byteLength) throw new ArtifactError("artifact truncated")
     const v = this.view.getFloat32(this.offset, true)
-    this.take(4)
+    this.offset += 4
     if (!Number.isFinite(v)) throw new ArtifactError("non-finite scalar")
     return v
   }

@@ -1211,7 +1211,7 @@ type CacheInventory = Readonly<{
 async function cacheInventory(session: string): Promise<CacheInventory> {
   return parseJson<CacheInventory>(await agent([
     "--session", session, "eval",
-    "(async()=>{const database=await new Promise((resolve,reject)=>{const request=indexedDB.open('playsrc-derived-v3',1);request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error)}),records=await new Promise((resolve,reject)=>{const request=database.transaction('objects').objectStore('objects').getAll();request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error)});database.close();return{count:records.length,bytes:records.reduce((total,record)=>total+record.byteLength,0),largest:records.map(record=>({key:record.key,byteLength:record.byteLength})).sort((a,b)=>b.byteLength-a.byteLength||a.key.localeCompare(b.key)).slice(0,12)}})()",
+    "(async()=>{const database=await new Promise((resolve,reject)=>{const request=indexedDB.open('playsrc-derived-v3');request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error)}),records=await new Promise((resolve,reject)=>{const request=database.transaction('metadata').objectStore('metadata').getAll();request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error)});database.close();return{count:records.length,bytes:records.reduce((total,record)=>total+record.byteLength,0),largest:records.map(record=>({key:record.key,byteLength:record.byteLength})).sort((a,b)=>b.byteLength-a.byteLength||a.key.localeCompare(b.key)).slice(0,12)}})()",
   ]))
 }
 
@@ -2430,7 +2430,7 @@ export async function verifyBrowserAcceptance(
       "--session",
       session,
       "eval",
-      "(()=>{const s={done:false,error:null,result:null};globalThis.__playsrcIdbEvidence=s;s.open=indexedDB.open('playsrc-derived-v3',1);s.open.onerror=()=>{s.error=String(s.open.error);s.done=true};s.open.onsuccess=()=>{try{s.database=s.open.result;s.transaction=s.database.transaction('objects');s.request=s.transaction.objectStore('objects').getAll();s.request.onerror=()=>{s.error=String(s.request.error);s.done=true};s.request.onsuccess=()=>{s.result=s.request.result.map(x=>({key:x.key,byteLength:x.byteLength,sha256:x.sha256}));s.done=true}}catch(error){s.error=String(error);s.done=true}};return true})()",
+      "(()=>{const s={done:false,error:null,result:null};globalThis.__playsrcIdbEvidence=s;s.open=indexedDB.open('playsrc-derived-v3');s.open.onerror=()=>{s.error=String(s.open.error);s.done=true};s.open.onsuccess=()=>{try{s.database=s.open.result;s.transaction=s.database.transaction('objects');s.request=s.transaction.objectStore('objects').getAll();s.request.onerror=()=>{s.error=String(s.request.error);s.done=true};s.request.onsuccess=()=>{s.result=s.request.result.map(x=>({key:x.key,byteLength:x.byteLength,sha256:x.sha256}));s.done=true}}catch(error){s.error=String(error);s.done=true}};return true})()",
     ])
     await agent(["--session", session, "wait", "--fn", "globalThis.__playsrcIdbEvidence?.done===true", "--timeout", "30000"])
     const records = parseJson<Array<{ key: string; byteLength: number; sha256: string }>>(

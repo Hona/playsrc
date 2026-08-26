@@ -12,6 +12,7 @@ const MAX_PROFILE_TEXTURE_BYTES = 64 * 1024 * 1024
 const MAX_ATLAS_DIMENSION = 4_096
 const LIGHTING_MEMBER_ROLES = 10
 const WHITE = Object.freeze([1, 1, 1] as const)
+const LITTLE_ENDIAN = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1
 
 export type Rgb = readonly [number, number, number]
 
@@ -265,44 +266,63 @@ class Reader {
   }
 
   u8(): number {
-    return this.take(1)[0]!
+    if (this.offset >= this.bytes.byteLength) throw new RuntimeMapError("runtime map record exceeds its bytes")
+    return this.bytes[this.offset++]!
   }
 
   u16(): number {
     const offset = this.offset
-    this.take(2)
+    if (offset + 2 > this.bytes.byteLength) throw new RuntimeMapError("runtime map record exceeds its bytes")
+    this.offset = offset + 2
     return this.view.getUint16(offset, true)
   }
 
   u32(): number {
     const offset = this.offset
-    this.take(4)
+    if (offset + 4 > this.bytes.byteLength) throw new RuntimeMapError("runtime map record exceeds its bytes")
+    this.offset = offset + 4
     return this.view.getUint32(offset, true)
   }
 
   i32(): number {
     const offset = this.offset
-    this.take(4)
+    if (offset + 4 > this.bytes.byteLength) throw new RuntimeMapError("runtime map record exceeds its bytes")
+    this.offset = offset + 4
     return this.view.getInt32(offset, true)
   }
 
   f32(): number {
     const offset = this.offset
-    this.take(4)
+    if (offset + 4 > this.bytes.byteLength) throw new RuntimeMapError("runtime map record exceeds its bytes")
+    this.offset = offset + 4
     const value = this.view.getFloat32(offset, true)
     if (!Number.isFinite(value)) throw new RuntimeMapError("runtime map contains a non-finite scalar")
     return value
   }
 
   f32Array(length: number): Float32Array {
-    const result = new Float32Array(length)
-    for (let index = 0; index < length; index += 1) result[index] = this.f32()
+    const bytes = this.take(length * Float32Array.BYTES_PER_ELEMENT)
+    const result = LITTLE_ENDIAN && bytes.byteOffset % Float32Array.BYTES_PER_ELEMENT === 0
+      ? new Float32Array(bytes.buffer, bytes.byteOffset, length).slice()
+      : new Float32Array(length)
+    if (!(LITTLE_ENDIAN && bytes.byteOffset % Float32Array.BYTES_PER_ELEMENT === 0)) {
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+      for (let index = 0; index < length; index += 1) result[index] = view.getFloat32(index * Float32Array.BYTES_PER_ELEMENT, true)
+    }
+    for (let index = 0; index < length; index += 1) {
+      if (!Number.isFinite(result[index]!)) throw new RuntimeMapError("runtime map contains a non-finite scalar")
+    }
     return result
   }
 
   u32Array(length: number): Uint32Array {
+    const bytes = this.take(length * Uint32Array.BYTES_PER_ELEMENT)
+    if (LITTLE_ENDIAN && bytes.byteOffset % Uint32Array.BYTES_PER_ELEMENT === 0) {
+      return new Uint32Array(bytes.buffer, bytes.byteOffset, length).slice()
+    }
     const result = new Uint32Array(length)
-    for (let index = 0; index < length; index += 1) result[index] = this.u32()
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+    for (let index = 0; index < length; index += 1) result[index] = view.getUint32(index * Uint32Array.BYTES_PER_ELEMENT, true)
     return result
   }
 

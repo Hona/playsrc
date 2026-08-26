@@ -27,9 +27,14 @@ class FakeTransaction {
   #completionQueued = false
   #aborted = false
 
-  constructor(readonly records: Map<string, Record<string, unknown>>) {}
+  constructor(
+    readonly stores: Map<string, Map<string, Record<string, unknown>>>,
+    readonly inventories: { objects: number; metadata: number },
+  ) {}
 
-  objectStore(): IDBObjectStore {
+  objectStore(name = "objects"): IDBObjectStore {
+    const records = this.stores.get(name)
+    if (!records) throw new Error(`Object store ${name} is unavailable`)
     const request = <T>(operation: () => T): IDBRequest<T> => {
       const value: FakeRequest<T> = { result: undefined as T, error: null, onsuccess: null, onerror: null }
       this.#pending += 1
@@ -51,21 +56,56 @@ class FakeTransaction {
       return value as unknown as IDBRequest<T>
     }
     return {
-      get: (key: string) => request(() => this.records.get(key)),
-      getAll: () => request(() => [...this.records.values()]),
+      get: (key: string) => request(() => records.get(key)),
+      getAll: () => request(() => {
+        if (name === "objects") this.inventories.objects += 1
+        else if (name === "metadata") this.inventories.metadata += 1
+        return [...records.values()]
+      }),
       add: (record: Record<string, unknown>) => request(() => {
         const key = record.key as string
-        if (this.records.has(key)) throw new Error("ConstraintError")
-        this.records.set(key, record)
+        if (records.has(key)) throw new Error("ConstraintError")
+        records.set(key, record)
         return key
       }),
       put: (record: Record<string, unknown>) => request(() => {
         const key = record.key as string
-        this.records.set(key, record)
+        records.set(key, record)
         return key
       }),
-      delete: (key: string) => request(() => { this.records.delete(key); return undefined }),
+      delete: (key: string) => request(() => { records.delete(key); return undefined }),
+      openCursor: () => {
+        const values = [...records.values()]
+        let index = 0
+        const cursor: FakeRequest<IDBCursorWithValue | null> = { result: null, error: null, onsuccess: null, onerror: null }
+        const advance = () => {
+          this.#pending += 1
+          queueMicrotask(() => {
+            if (this.#aborted) return
+            try {
+              cursor.result = index < values.length
+                ? { value: values[index]!, continue: () => { index += 1; advance() } } as IDBCursorWithValue
+                : null
+              cursor.onsuccess?.(new Event("success"))
+            } catch (error) {
+              cursor.error = error as Error
+              this.error = error as Error
+              cursor.onerror?.(new Event("error"))
+              this.onerror?.(new Event("error"))
+            } finally {
+              this.#pending -= 1
+              this.#queueCompletion()
+            }
+          })
+        }
+        advance()
+        return cursor as unknown as IDBRequest<IDBCursorWithValue | null>
+      },
     } as unknown as IDBObjectStore
+  }
+
+  completeWhenIdle(): void {
+    this.#queueCompletion()
   }
 
   abort(): void {
@@ -86,26 +126,55 @@ class FakeTransaction {
 
 class FakeIndexedDb {
   readonly databases = new Map<string, Map<string, Record<string, unknown>>>()
+  readonly metadata = new Map<string, Map<string, Record<string, unknown>>>()
+  readonly versions = new Map<string, number>()
+  readonly inventories = { objects: 0, metadata: 0 }
 
-  open(name: string): IDBOpenDBRequest {
-    const request: FakeRequest<IDBDatabase> & { onupgradeneeded: ((event: IDBVersionChangeEvent) => void) | null } = {
+  open(name: string, version = 1): IDBOpenDBRequest {
+    const request: FakeRequest<IDBDatabase> & {
+      onupgradeneeded: ((event: IDBVersionChangeEvent) => void) | null
+      transaction: IDBTransaction | null
+    } = {
       result: undefined as unknown as IDBDatabase,
       error: null,
       onsuccess: null,
       onerror: null,
       onupgradeneeded: null,
+      transaction: null,
     }
     queueMicrotask(() => {
-      const created = !this.databases.has(name)
+      const priorVersion = this.versions.get(name) ?? (this.databases.has(name) ? 1 : 0)
       const records = this.databases.get(name) ?? new Map<string, Record<string, unknown>>()
       this.databases.set(name, records)
+      const stores = new Map<string, Map<string, Record<string, unknown>>>([["objects", records]])
+      const metadata = this.metadata.get(name)
+      if (metadata) stores.set("metadata", metadata)
+      const upgrade = new FakeTransaction(stores, this.inventories)
       request.result = {
-        createObjectStore: () => ({} as IDBObjectStore),
-        transaction: () => new FakeTransaction(records) as unknown as IDBTransaction,
+        createObjectStore: (storeName: string) => {
+          if (storeName === "objects") return upgrade.objectStore("objects")
+          const entries = new Map<string, Record<string, unknown>>()
+          stores.set(storeName, entries)
+          if (storeName === "metadata") this.metadata.set(name, entries)
+          return upgrade.objectStore(storeName)
+        },
+        transaction: () => new FakeTransaction(stores, this.inventories) as unknown as IDBTransaction,
         close: () => {},
         onversionchange: null,
       } as unknown as IDBDatabase
-      if (created) request.onupgradeneeded?.(new Event("upgradeneeded") as IDBVersionChangeEvent)
+      if (version > priorVersion) {
+        request.transaction = upgrade as unknown as IDBTransaction
+        upgrade.oncomplete = () => {
+          this.versions.set(name, version)
+          request.transaction = null
+          request.onsuccess?.(new Event("success"))
+        }
+        const event = new Event("upgradeneeded")
+        Object.defineProperty(event, "oldVersion", { value: priorVersion })
+        request.onupgradeneeded?.(event as IDBVersionChangeEvent)
+        upgrade.completeWhenIdle()
+        return
+      }
       request.onsuccess?.(new Event("success"))
     })
     return request as unknown as IDBOpenDBRequest
@@ -255,6 +324,58 @@ describe("browser asset adapters", () => {
       cache.close()
     } finally {
       now.mockRestore()
+      if (indexedDbDescriptor) Object.defineProperty(globalThis, "indexedDB", indexedDbDescriptor)
+      else delete (globalThis as { indexedDB?: IDBFactory }).indexedDB
+    }
+  })
+
+  test("never clones Blob-backed object inventories while admitting or refreshing exact records", async () => {
+    const indexedDbDescriptor = Object.getOwnPropertyDescriptor(globalThis, "indexedDB")
+    const fake = new FakeIndexedDb()
+    Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: fake })
+    try {
+      const cache = await openDerivedObjectCache("metadata-only-inventories")
+      for (let index = 1; index <= 6; index += 1) {
+        const key = index.toString(16).repeat(64)
+        const value = new Uint8Array(128).fill(index)
+        await cache.write(key, await digest(value), value)
+      }
+      for (let index = 1; index <= 6; index += 1) {
+        expect(await cache.read(index.toString(16).repeat(64))).toEqual(new Uint8Array(128).fill(index))
+      }
+      expect(fake.inventories.objects).toBe(0)
+      expect(fake.inventories.metadata).toBeGreaterThan(0)
+      cache.close()
+    } finally {
+      if (indexedDbDescriptor) Object.defineProperty(globalThis, "indexedDB", indexedDbDescriptor)
+      else delete (globalThis as { indexedDB?: IDBFactory }).indexedDB
+    }
+  })
+
+  test("upgrades existing Blob-backed cache entries without invalidating their exact bytes", async () => {
+    const indexedDbDescriptor = Object.getOwnPropertyDescriptor(globalThis, "indexedDB")
+    const fake = new FakeIndexedDb()
+    const key = "a".repeat(64)
+    const value = new TextEncoder().encode("retained exact cache bytes")
+    const blob = new Blob([value])
+    fake.databases.set("preserved-version-one", new Map([[key, {
+      key,
+      byteLength: value.byteLength,
+      sha256: await digest(value),
+      bytes: blob,
+      storedAt: 17,
+    }]]))
+    fake.versions.set("preserved-version-one", 1)
+    Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: fake })
+    try {
+      const cache = await openDerivedObjectCache("preserved-version-one")
+      expect(fake.versions.get("preserved-version-one")).toBe(2)
+      expect(fake.metadata.get("preserved-version-one")?.get(key)).toEqual({ key, byteLength: value.byteLength, storedAt: 17 })
+      expect(await cache.read(key)).toEqual(value)
+      expect(fake.databases.get("preserved-version-one")?.get(key)?.bytes).toBe(blob)
+      expect(fake.inventories.objects).toBe(0)
+      cache.close()
+    } finally {
       if (indexedDbDescriptor) Object.defineProperty(globalThis, "indexedDB", indexedDbDescriptor)
       else delete (globalThis as { indexedDB?: IDBFactory }).indexedDB
     }

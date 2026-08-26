@@ -1,4 +1,5 @@
 import type { DerivedObjectCache } from "@playsrc/asset-store/browser"
+import type { ResourceChunkDescriptor } from "@playsrc/asset-store/graph"
 import { decodeSnapshot, type Snapshot } from "./codec"
 import type { InitialView, VisibilityView, WorkerFailureCode, WorkerRequest, WorkerResponse } from "./protocol"
 import type { Tf2TeamChoice, Tf2TeamSelectionServerState } from "./team-selection/model"
@@ -210,10 +211,19 @@ export class Tf2WorkerClient {
     if (response.kind !== "initialized") throw new Tf2WorkerError("WorkerFailed")
   }
 
-  async decodeResources(batch: Uint8Array): Promise<Uint8Array> {
-    if (batch.byteLength < 12 || batch.byteLength > 512 * 1024 * 1024) throw new Tf2WorkerError("BoundExceeded")
-    const transferred = transferredBytes(batch)
-    const response = await this.#request({ kind: "decode-resources", batch: transferred }, [transferred])
+  async decodeResources(records: readonly Readonly<{ descriptor: ResourceChunkDescriptor; bytes: Uint8Array }>[]): Promise<Uint8Array> {
+    if (records.length < 1 || records.length > 1_024) throw new Tf2WorkerError("BoundExceeded")
+    const encoder = new TextEncoder()
+    let total = 12
+    const chunks = records.map(({ descriptor, bytes }) => {
+      const encodedDescriptor = encoder.encode(JSON.stringify(descriptor))
+      if (encodedDescriptor.byteLength < 1 || encodedDescriptor.byteLength > 8 * 1024 * 1024
+        || bytes.byteLength < 1 || bytes.byteLength > 32 * 1024 * 1024) throw new Tf2WorkerError("BoundExceeded")
+      total += 8 + encodedDescriptor.byteLength + bytes.byteLength
+      if (total > 512 * 1024 * 1024) throw new Tf2WorkerError("BoundExceeded")
+      return Object.freeze({ descriptor: transferredBytes(encodedDescriptor), bytes: transferredBytes(bytes) })
+    })
+    const response = await this.#request({ kind: "decode-resources", chunks }, chunks.flatMap(({ descriptor, bytes }) => [descriptor, bytes]))
     if (response.kind !== "resources" || !(response.bytes instanceof ArrayBuffer) || response.bytes.byteLength < 12 || response.bytes.byteLength > MAX_CONFIGURATION_BYTES) {
       throw new Tf2WorkerError("WorkerFailed")
     }

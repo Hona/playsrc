@@ -261,24 +261,41 @@ export async function openDerivedObjectCache(
   if (!globalThis.indexedDB) {
     throw new BrowserAssetError("PersistenceUnavailable", "IndexedDB is unavailable")
   }
-  const request = globalThis.indexedDB.open(databaseName, 1)
-  request.onupgradeneeded = () => request.result.createObjectStore("objects", { keyPath: "key" })
+  const request = globalThis.indexedDB.open(databaseName, 2)
+  request.onupgradeneeded = (event) => {
+    const database = request.result
+    const priorVersion = (event as IDBVersionChangeEvent).oldVersion ?? 0
+    const objects = priorVersion === 0
+      ? database.createObjectStore("objects", { keyPath: "key" })
+      : request.transaction!.objectStore("objects")
+    const metadata = database.createObjectStore("metadata", { keyPath: "key" })
+    if (priorVersion === 0) return
+    const cursor = objects.openCursor()
+    cursor.onsuccess = () => {
+      const current = cursor.result
+      if (!current) return
+      const record = current.value as DerivedRecord
+      metadata.add({ key: record.key, byteLength: record.byteLength, storedAt: record.storedAt } satisfies DerivedCacheMetadata)
+      current.continue()
+    }
+    cursor.onerror = () => request.transaction?.abort()
+  }
   const database = await requestResult(request,"open")
   database.onversionchange = () => database.close()
-  const store = (mode: IDBTransactionMode): [IDBObjectStore, IDBTransaction] => {
+  const stores = (mode: IDBTransactionMode): [IDBObjectStore, IDBObjectStore, IDBTransaction] => {
     try {
-      const transaction = database.transaction("objects", mode)
-      return [transaction.objectStore("objects"), transaction]
+      const transaction = database.transaction(["objects", "metadata"], mode)
+      return [transaction.objectStore("objects"), transaction.objectStore("metadata"), transaction]
     } catch {
       throw new BrowserAssetError("PersistenceUnavailable", "IndexedDB object store is unavailable")
     }
   }
   const refreshVerifiedRecency = async (verified: DerivedRecord): Promise<void> => {
-    const [objects, transaction] = store("readwrite")
+    const [objects, metadata, transaction] = stores("readwrite")
     const done = transactionDone(transaction, "read recency transaction")
     const [current, inventory] = await Promise.all([
       requestResult(objects.get(verified.key), "read recency request") as Promise<DerivedRecord | undefined>,
-      requestResult(objects.getAll(), "read recency inventory request") as Promise<DerivedRecord[]>,
+      requestResult(metadata.getAll(), "read recency inventory request") as Promise<DerivedCacheMetadata[]>,
     ])
     if (!current || !sameDerivedRecordMetadata(current, verified)) {
       await done
@@ -297,13 +314,16 @@ export async function openDerivedObjectCache(
       await done.catch(() => {})
       throw new BrowserAssetError("BoundExceeded", "derived cache recency exceeds its bound")
     }
-    await requestResult(objects.put({ ...current, storedAt } satisfies DerivedRecord), "read recency write request")
+    await Promise.all([
+      requestResult(objects.put({ ...current, storedAt } satisfies DerivedRecord), "read recency write request"),
+      requestResult(metadata.put({ key: current.key, byteLength: current.byteLength, storedAt } satisfies DerivedCacheMetadata), "read recency metadata write request"),
+    ])
     await done
   }
   const cache: DerivedObjectCache = {
     async read(key: string): Promise<Uint8Array | undefined> {
       if (!HASH.test(key)) throw new BrowserAssetError("MalformedIdentity", "derived key is not canonical")
-      const [objects, transaction] = store("readonly")
+      const [objects, , transaction] = stores("readonly")
       const done = transactionDone(transaction,"read transaction")
       const value = await requestResult(objects.get(key),"read request")
       await done
@@ -323,16 +343,19 @@ export async function openDerivedObjectCache(
       if (expectedSha256 !== null && actualSha256 !== expectedSha256) {
         throw new BrowserAssetError("IntegrityFailure", "derived bytes differ from their descriptor")
       }
-      const [objects, transaction] = store("readwrite")
+      const [objects, metadata, transaction] = stores("readwrite")
       const done = transactionDone(transaction,"write transaction")
-      const inventory = await requestResult(objects.getAll(),"inventory request") as unknown as DerivedRecord[]
+      const inventory = await requestResult(metadata.getAll(),"inventory request") as unknown as DerivedCacheMetadata[]
       const storedAt = Date.now()
       const evicted = planDerivedCacheEviction(inventory.map((record) => ({
         key: record.key,
         byteLength: record.byteLength,
         storedAt: record.storedAt,
       })), { key, byteLength: bytes.byteLength })
-      for (const evictedKey of evicted) objects.delete(evictedKey)
+      for (const evictedKey of evicted) {
+        objects.delete(evictedKey)
+        metadata.delete(evictedKey)
+      }
       let requestError:unknown
       void requestResult(objects.add({
         key,
@@ -341,6 +364,7 @@ export async function openDerivedObjectCache(
         bytes: new Blob([bytes],{type:"application/octet-stream"}),
         storedAt,
       } satisfies DerivedRecord),"write request").catch(error=>{requestError=error})
+      void requestResult(metadata.add({ key, byteLength: bytes.byteLength, storedAt } satisfies DerivedCacheMetadata),"metadata write request").catch(error=>{requestError??=error})
       try {
         await done
       } catch (error) {
@@ -353,9 +377,10 @@ export async function openDerivedObjectCache(
     },
     async remove(key: string): Promise<void> {
       if (!HASH.test(key)) throw new BrowserAssetError("MalformedIdentity", "derived key is not canonical")
-      const [objects, transaction] = store("readwrite")
+      const [objects, metadata, transaction] = stores("readwrite")
       const done = transactionDone(transaction,"remove transaction")
       objects.delete(key)
+      metadata.delete(key)
       await done
     },
     close(): void {

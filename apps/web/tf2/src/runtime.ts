@@ -1,5 +1,5 @@
 import { fetchImmutableObject, openDerivedObjectCache, type DerivedObjectCache } from "@playsrc/asset-store/browser"
-import { chunksForRole, encodeResourceBatch, parseResourceCatalogBytes, parseResourceGraphBytes, parseResourceSet, resourceChunkObject, selectCatalogTarget, type ResourceCatalog, type ResourceGraph, type ResourceChunkDescriptor } from "@playsrc/asset-store/graph"
+import { chunksForRole, parseResourceCatalogBytes, parseResourceGraphBytes, parseResourceSet, resourceChunkObject, selectCatalogTarget, type ResourceCatalog, type ResourceGraph, type ResourceChunkDescriptor } from "@playsrc/asset-store/graph"
 import { createAudioSystem, SoundRegistry, SourceAudioWorld } from "@playsrc/audio"
 import GameplayWorker from "@playsrc/game-tf2-browser/worker?worker"
 import { Tf2WorkerClient, mergePublicationSnapshots, type CoverageSample, type LoadedGame, type SimulationPublication, type VisibilityResult } from "@playsrc/game-tf2-browser"
@@ -1050,7 +1050,7 @@ export class Tf2Application {
       }
       return Object.freeze({ descriptor: chunk, bytes })
     }))
-    const set = await this.#client!.decodeResources(encodeResourceBatch(records))
+    const set = await this.#client!.decodeResources(records)
     for (const [logicalPath, bytes] of parseResourceSet(set)) {
       const existing = destination.get(logicalPath)
       if (existing && (existing.byteLength !== bytes.byteLength || bytesToHex(sha256(existing)) !== bytesToHex(sha256(bytes)))) {
