@@ -58,6 +58,18 @@ impl<'source> ModelLightingWorld<'source> {
         }
     }
 
+    pub fn ambient_indexes(&self) -> &[AmbientIndex] {
+        &self.indexes
+    }
+
+    pub fn ambient_samples(&self) -> &[AmbientSample] {
+        &self.samples
+    }
+
+    pub fn world_lights(&self) -> &[WorldLight] {
+        &self.lights
+    }
+
     pub fn sample(
         &mut self,
         origin: [f32; 3],

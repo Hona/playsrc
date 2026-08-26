@@ -172,6 +172,16 @@ test("headed bounded three-map authored noclip visual and frame sanity", async (
       await page.keyboard.press("Digit2")
     }
     await expect(root).toHaveAttribute("data-phase", "Ready", { timeout: 600_000 })
+    const staticProps = JSON.parse((await canvas.getAttribute("data-static-props")) ?? "null") as null | {
+      total: number
+      main: number
+      sky3d: number
+      runtimeLit: number
+    }
+    const expectedProps = { jump_beef: 0, ctf_2fort: 2265, pl_upward: 1244 }[target]
+    if (!staticProps || staticProps.total !== expectedProps || staticProps.main + staticProps.sky3d !== expectedProps) {
+      throw new Error(`${target} lost authored static-prop lighting or ownership: ${JSON.stringify(staticProps)}`)
+    }
     await consoleCommand(page, entry, "noclip")
     await expect(root).toHaveAttribute("data-movement-mode", "1")
 
@@ -451,15 +461,51 @@ test("headed bounded three-map authored noclip visual and frame sanity", async (
         depthRange: [Math.min(...samples.map((sample) => sample.modelDepth)), Math.max(...samples.map((sample) => sample.modelDepth))], pixels }
       console.log(`[map-lighting] ctf_2fort:soldier eyes=${model.eyes} lights=${model.localLights} luma=${pixels.meanLuma.toFixed(2)}`)
     }
+    let ldr: Record<string, unknown> | undefined
+    if (!selectedTarget && target === "pl_upward") {
+      const generation = Number(await root.getAttribute("data-generation"))
+      await consoleCommand(page, entry, "mat_hdr_level 0")
+      await page.waitForFunction((previous) => {
+        const main = document.querySelector<HTMLElement>("main")
+        return main?.dataset.phase === "Failed"
+          || main?.dataset.phase === "Ready" && Number(main.dataset.generation) > previous
+      }, generation, { timeout: 120_000, polling: 20 })
+      await expect(root).toHaveAttribute("data-phase", "Ready")
+      if (await root.getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
+      await canvas.click()
+      revision += 1
+      await page.evaluate((value) => {
+        ;(globalThis as any).__playsrcProfile.worldLightingEvidenceRevision = value
+      }, revision)
+      await page.waitForFunction((value) =>
+        (globalThis as any).__playsrcProfile?.worldLighting?.revision === value,
+      revision, { timeout: 20_000, polling: 10 })
+      const lighting = await page.evaluate(() => (globalThis as any).__playsrcProfile.worldLighting) as LightingObservation
+      const retained = JSON.parse((await canvas.getAttribute("data-static-props")) ?? "null") as typeof staticProps
+      const launcher = lighting.geometry.samples.filter((sample) => sample.material.toLowerCase().includes("rocket"))
+      if (lighting.profile !== "ldr" || lighting.exposure.current !== 1 || !lighting.viewmodel ||
+        !lighting.depthIsolated || retained?.total !== expectedProps || launcher.length === 0) {
+        throw new Error(`pl_upward LDR lighting replacement lost authored props, exposure, or launcher depth: ${JSON.stringify({ lighting, retained })}`)
+      }
+      const screenshot = await canvas.screenshot()
+      const pixels = visiblePixels(screenshot, launcher)
+      if (pixels.meanLuma <= 4) throw new Error(`pl_upward LDR Soldier launcher remains black: ${JSON.stringify(pixels)}`)
+      await writeFile(path.join(output, "pl_upward-ldr-soldier.png"), screenshot)
+      ldr = { exposure: lighting.exposure, staticProps: retained, localLights: lighting.viewmodel.localLights.length,
+        depthIsolated: lighting.depthIsolated, launcherPixels: pixels }
+      console.log(`[map-lighting] pl_upward:ldr props=${retained.total} lights=${lighting.viewmodel.localLights.length} launcher=${pixels.meanLuma.toFixed(2)}`)
+    }
     maps.push({
       target,
       loadMilliseconds,
       activeMilliseconds: Number(measured.elapsedMilliseconds.toFixed(3)),
+      staticProps,
       exposure: adapted,
       simulation: { firstTick: measured.firstTick, lastTick: measured.lastTick, hz: Number(simulationHz.toFixed(2)) },
       frames: frameDistribution,
       checkpoints: observations,
       ...(playerModel ? { playerModel } : {}),
+      ...(ldr ? { ldr } : {}),
     })
   }
 

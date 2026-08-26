@@ -400,12 +400,6 @@ struct RuntimeEnvironment {
     water_lod: Option<[f32; 2]>,
 }
 
-struct ParticleLighting {
-    indexes: Vec<playsrc_map::AmbientIndex>,
-    samples: Vec<playsrc_map::AmbientSample>,
-    lights: Vec<playsrc_map::WorldLight>,
-}
-
 struct CombatDecalSurface {
     surface: playsrc_map::Surface,
     receiving: playsrc_material::DecalState,
@@ -536,7 +530,6 @@ struct Slot {
     particles: Option<playsrc_particle::ParticleWorld>,
     particle_materials: Vec<String>,
     particle_sheets: BTreeMap<String, playsrc_particle::ParticleMaterial>,
-    particle_lighting: Option<ParticleLighting>,
     combat_decals: Option<CombatDecalWorld>,
     particle_output: Vec<u8>,
     studio_models: BTreeMap<String, Arc<playsrc_studio_model::PresentationModel>>,
@@ -1223,11 +1216,6 @@ unsafe fn compile_map(
             &studio_model_checksums,
         )
         .map_err(|_| 5_u32)?;
-        let particle_lighting = ParticleLighting {
-            indexes: runtime.map.lighting.ambient_indexes.clone(),
-            samples: runtime.map.lighting.ambient_samples.clone(),
-            lights: runtime.map.lighting.world_lights.clone(),
-        };
         let model_lighting_world = playsrc_map::ModelLightingWorld::new(runtime.map.lighting);
         let visibility = runtime.visibility;
         let area_state = playsrc_map::compile_area_portal_state(&runtime.entities, &visibility)
@@ -1346,7 +1334,6 @@ unsafe fn compile_map(
             particles,
             particle_materials,
             particle_sheets,
-            particle_lighting,
             decals,
             studio_models,
             model_lighting_metadata,
@@ -1387,7 +1374,6 @@ unsafe fn compile_map(
             particles,
             particle_materials,
             particle_sheets,
-            particle_lighting,
             decals,
             studio_models,
             model_lighting_metadata,
@@ -1412,7 +1398,6 @@ unsafe fn compile_map(
             particles: Some(particles),
             particle_materials,
             particle_sheets,
-            particle_lighting: Some(particle_lighting),
             combat_decals: Some(decals),
             particle_output: Vec::new(),
             studio_models,
@@ -1454,7 +1439,6 @@ unsafe fn compile_map(
             particles: None,
             particle_materials: Vec::new(),
             particle_sheets: BTreeMap::new(),
-            particle_lighting: None,
             combat_decals: None,
             particle_output: Vec::new(),
             studio_models: BTreeMap::new(),
@@ -1798,7 +1782,7 @@ pub unsafe extern "C" fn playsrc_particle_transact(
         return 0;
     };
     let (Some(visibility), Some(lighting)) =
-        (slot.visibility.as_ref(), slot.particle_lighting.as_ref())
+        (slot.visibility.as_ref(), slot.model_lighting_world.as_ref())
     else {
         return 0;
     };
@@ -2880,16 +2864,22 @@ fn encode_model_lighting(
     } else {
         Some(playsrc_studio_model::apply_entity_transform(model, pose, transform).map_err(|_| ())?)
     };
-    let origin = playsrc_studio_model::source_model_lighting_origin(
-        metadata.position,
-        metadata.attachment,
-        transform,
-        posed.as_ref(),
-        &model.identity,
-    )
-    .map_err(|_| ())?
-    .0
-    .map(|value| f32::from_bits(value.0));
+    let origin = if model.profile == playsrc_studio_model::PresentationProfile::ViewModel
+        && let Some(player) = world.gameplay
+    {
+        source_tf2_viewmodel_lighting_origin(player.movement, player.class)
+    } else {
+        playsrc_studio_model::source_model_lighting_origin(
+            metadata.position,
+            metadata.attachment,
+            transform,
+            posed.as_ref(),
+            &model.identity,
+        )
+        .map_err(|_| ())?
+        .0
+        .map(|value| f32::from_bits(value.0))
+    };
     let mut state =
         world
             .lighting
@@ -2911,6 +2901,19 @@ fn encode_model_lighting(
         world,
         transform,
     )
+}
+
+fn source_tf2_viewmodel_lighting_origin(
+    movement: playsrc_movement::State,
+    class: playsrc_tf2::PlayerClass,
+) -> [f32; 3] {
+    let policy = playsrc_tf2::MovementPolicy {
+        class,
+        modifiers: playsrc_tf2::MovementModifiers::default(),
+    }
+    .resolve();
+    let hull = movement.active_hull(policy);
+    std::array::from_fn(|axis| movement.position[axis] + (hull.mins[axis] + hull.maxs[axis]) * 0.5)
 }
 
 fn encode_world_lighting(
@@ -13275,7 +13278,7 @@ fn decode_particle_sheet(
 struct ParticleCollision<'a> {
     world: Arc<playsrc_collision::World>,
     visibility: &'a playsrc_visibility::World,
-    lighting: &'a ParticleLighting,
+    lighting: &'a playsrc_map::ModelLightingWorld<'static>,
     lighting_cache: BTreeMap<[u32; 3], [u8; 3]>,
 }
 impl playsrc_particle::CollisionQuery for ParticleCollision<'_> {
@@ -13335,17 +13338,30 @@ impl playsrc_particle::CollisionQuery for ParticleCollision<'_> {
             node = entry.children[usize::from(dot(position, plane.normal) < plane.distance)];
         }
         let mut index = usize::try_from(-node - 1).map_err(|_| failure())?;
-        let mut ambient = self.lighting.indexes.get(index).ok_or_else(failure)?;
+        let mut ambient = self
+            .lighting
+            .ambient_indexes()
+            .get(index)
+            .ok_or_else(failure)?;
         if ambient.sample_count == 0 && ambient.first_sample != 0 {
             index = usize::from(ambient.first_sample);
-            ambient = self.lighting.indexes.get(index).ok_or_else(failure)?;
+            ambient = self
+                .lighting
+                .ambient_indexes()
+                .get(index)
+                .ok_or_else(failure)?;
         }
         let leaf = self.visibility.leaves.get(index).ok_or_else(failure)?;
         let mut cube = [[0.0_f32; 3]; 6];
         let mut total = 0.0;
         let first = usize::from(ambient.first_sample);
         let last = first + usize::from(ambient.sample_count);
-        for sample in self.lighting.samples.get(first..last).ok_or_else(failure)? {
+        for sample in self
+            .lighting
+            .ambient_samples()
+            .get(first..last)
+            .ok_or_else(failure)?
+        {
             let point = std::array::from_fn(|axis| {
                 f32::from(leaf.mins[axis])
                     + f32::from(sample.position[axis])
@@ -13368,8 +13384,9 @@ impl playsrc_particle::CollisionQuery for ParticleCollision<'_> {
                 }
             }
         }
-        for light in &self.lighting.lights {
-            let Ok((end, direction, ratio)) = direct_light_ray(position, light) else {
+        for light in self.lighting.world_lights() {
+            let Ok((end, direction, ratio)) = playsrc_map::source_world_light_ray(position, light)
+            else {
                 continue;
             };
             if ratio <= 0.0 {
@@ -13395,9 +13412,15 @@ impl playsrc_particle::CollisionQuery for ParticleCollision<'_> {
             } {
                 continue;
             }
-            let angle = direct_light_angle(light, direction).map_err(|_| failure())?;
-            add_light_to_cube(&mut cube, direction, light.intensity, ratio * angle)
-                .map_err(|_| failure())?;
+            let angle =
+                playsrc_map::source_world_light_angle(light, direction).map_err(|_| failure())?;
+            playsrc_map::add_world_light_to_cube(
+                &mut cube,
+                direction,
+                light.intensity,
+                ratio * angle,
+            )
+            .map_err(|_| failure())?;
         }
         let value = std::array::from_fn(|channel| {
             let value = cube.iter().map(|face| face[channel]).sum::<f32>() / 6.0;
@@ -14088,6 +14111,32 @@ mod tests {
         assert!((target[1] - 532.0).abs() < 0.0001);
         assert_eq!(target[2], 30.0);
     }
+
+    #[test]
+    fn tf2_viewmodels_use_owner_collision_center_instead_of_camera_or_model_center() {
+        let class = playsrc_tf2::PlayerClass::Soldier;
+        let policy = playsrc_tf2::MovementPolicy {
+            class,
+            modifiers: playsrc_tf2::MovementModifiers::default(),
+        }
+        .resolve();
+        for (crouched, expected) in [(false, 41.0), (true, 31.0)] {
+            let movement = playsrc_movement::State::from_player(
+                playsrc_movement::Player {
+                    position: [10.0, 20.0, 30.0],
+                    velocity: [0.0; 3],
+                    grounded: true,
+                    crouched,
+                    jump_latched: false,
+                },
+                policy,
+            );
+            assert_eq!(
+                source_tf2_viewmodel_lighting_origin(movement, class),
+                [10.0, 20.0, 30.0 + expected],
+            );
+        }
+    }
     #[test]
     fn sky_texture_roles_select_explicit_render_encoding() {
         assert_eq!(
@@ -14170,7 +14219,6 @@ mod tests {
             particles: None,
             particle_materials: Vec::new(),
             particle_sheets: BTreeMap::new(),
-            particle_lighting: None,
             combat_decals: None,
             particle_output: Vec::new(),
             studio_models: BTreeMap::new(),
@@ -14229,7 +14277,6 @@ mod tests {
             particles: None,
             particle_materials: Vec::new(),
             particle_sheets: BTreeMap::new(),
-            particle_lighting: None,
             combat_decals: None,
             particle_output: Vec::new(),
             studio_models: BTreeMap::new(),

@@ -1053,6 +1053,25 @@ mod tests {
     }
 
     #[test]
+    fn world_lights_restore_source_point_attenuation_and_hdr_cutoff_radius() {
+        let mut bytes = [0_u8; WORLD_LIGHT_BYTES];
+        for offset in [12, 16, 20] {
+            bytes[offset..offset + 4].copy_from_slice(&1.0_f32.to_le_bytes());
+        }
+        bytes[40..44].copy_from_slice(&1_i32.to_le_bytes());
+        bytes[80..84].copy_from_slice(&(-1_i32).to_le_bytes());
+        bytes[84..88].copy_from_slice(&(-1_i32).to_le_bytes());
+        let hdr = parse_world_lights(&bytes, LightingLimits::default(), 54, LightingProfile::Hdr)
+            .unwrap()[0];
+        let ldr = parse_world_lights(&bytes, LightingLimits::default(), 15, LightingProfile::Ldr)
+            .unwrap()[0];
+        assert_eq!(hdr.quadratic_attenuation, 1.0);
+        assert_eq!(ldr.quadratic_attenuation, 1.0);
+        assert!(hdr.radius > ldr.radius);
+        assert!((hdr.radius - (3.0_f32.sqrt() / 0.015).sqrt()).abs() < 0.00001);
+    }
+
+    #[test]
     fn light_styles_are_contiguous_and_bounded() {
         assert_eq!(styles([0, 1, 255, 255], 0).unwrap(), 2);
         assert_eq!(styles([255; 4], 0).unwrap(), 0);
