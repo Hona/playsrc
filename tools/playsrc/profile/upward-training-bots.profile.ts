@@ -85,10 +85,10 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const after = await canvas.screenshot({ timeout: 20_000 })
   const completed = measurement.frames as Array<{ at: number; tick: number; detail: Record<string, number>; renderer: { passes: Array<{ submissions: number }> } }>
   const intervals = completed.slice(1).map((frame, index) => frame.at - completed[index]!.at)
-  const workers = measurement.worker as Array<{ kind: string; started: number; finished?: number; bytes: number; timings?: Record<string, number> }>
+  const workers = measurement.worker as Array<{ kind: string; started: number; finished?: number; bytes: number; receivedBytes?: number; timings?: Record<string, number> }>
   const worker = Object.fromEntries([...new Set(workers.map(item => item.kind))].sort().map(kind => {
     const records = workers.filter(item => item.kind === kind)
-    return [kind, { calls: records.length, bytes: records.reduce((sum, item) => sum + item.bytes, 0), milliseconds: summarizeDistribution(records.flatMap(item => item.finished === undefined ? [] : [item.finished - item.started])), timings: Object.fromEntries([...new Set(records.flatMap(item => Object.keys(item.timings ?? {})))].map(key => [key, summarizeDistribution(records.flatMap(item => typeof item.timings?.[key] === "number" ? [item.timings[key]!] : []))])) }]
+    return [kind, { calls: records.length, bytes: records.reduce((sum, item) => sum + item.bytes, 0), receivedBytes: records.reduce((sum, item) => sum + (item.receivedBytes ?? 0), 0), milliseconds: summarizeDistribution(records.flatMap(item => item.finished === undefined ? [] : [item.finished - item.started])), timings: Object.fromEntries([...new Set(records.flatMap(item => Object.keys(item.timings ?? {})))].map(key => [key, summarizeDistribution(records.flatMap(item => typeof item.timings?.[key] === "number" ? [item.timings[key]!] : []))])) }]
   }))
   const decoded = decodeScreenshot(after)
   let nonBlack = 0
