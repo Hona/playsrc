@@ -1,6 +1,6 @@
 import { createImmutableObjectAcquirer, openDerivedObjectCache, type DerivedObjectCache, type ImmutableObjectPriority } from "@playsrc/asset-store/browser"
 import type { ObjectDescriptor } from "@playsrc/asset-store"
-import { chunksForRole, partitionResourceChunkDescriptors, parseResourceCatalogBytes, parseResourceGraphBytes, parseResourceSet, resourceChunkObject, selectCatalogTarget, type ResourceCatalog, type ResourceGraph, type ResourceChunkDescriptor } from "@playsrc/asset-store/graph"
+import { chunksForRole, partitionResourceChunkDescriptors, parseResourceCatalogBytes, parseResourceGraphBytes, parseResourceSet, resourceChunkObject, resourceSectionIdentity, selectCatalogTarget, type ResourceCatalog, type ResourceGraph, type ResourceChunkDescriptor } from "@playsrc/asset-store/graph"
 import { createAudioSystem, SoundRegistry, SourceAudioError, SourceAudioWorld } from "@playsrc/audio"
 import GameplayWorker from "@playsrc/game-tf2-browser/worker?worker"
 import { TF2_PRESENTATION_SCHEMA, Tf2WorkerClient, Tf2WorkerError, mergePublicationSnapshots, type CoverageSample, type LoadedGame, type ResourceConfiguration, type SimulationPublication, type VisibilityResult } from "@playsrc/game-tf2-browser"
@@ -615,6 +615,7 @@ export class Tf2Application {
   #medicBeamReleasing = false
   #nextBotStop = false
   #generation = 0
+  #reservedGeneration = 0
   #yaw = 0
   #pitch = 0
   #pointerMovementX = 0
@@ -1190,6 +1191,12 @@ export class Tf2Application {
     }
   }
 
+  #reserveGeneration(): number {
+    const next = Math.max(this.#generation, this.#reservedGeneration) + 1
+    if (next > 0xffff_ffff) throw new Error("Application generation bound exceeded")
+    return this.#reservedGeneration = next
+  }
+
   #trackBootstrapObject(sha256: string, loaded: number, total: number): void {
     const previous = this.#operationProgressBytes.get(sha256) ?? 0
     if (loaded > previous) {
@@ -1257,7 +1264,8 @@ export class Tf2Application {
     const chunks = new Map<string, ResourceChunkDescriptor>()
     for (const role of roles) for (const chunk of chunksForRole(graph, role)) chunks.set(chunk.encodedSha256, chunk)
     const groups = partitionResourceChunkDescriptors([...chunks.values()], 32 * 1024 * 1024)
-    const generation = roles.includes("gameplay") ? this.#generation + 1 : undefined
+    if (signal.aborted) throw new DOMException("Resource loading was superseded", "AbortError")
+    const generation = roles.includes("gameplay") ? this.#reserveGeneration() : undefined
     const graphTarget = generation === undefined ? undefined : this.#configuration.targets.find((target) => target.target === graph.target && target.contentBuild === graph.contentBuild)
     if (generation !== undefined && !graphTarget) throw new Error("Authenticated gameplay resource graph target is unavailable")
     const resourceIdentityKey = graphTarget
@@ -1281,12 +1289,17 @@ export class Tf2Application {
       }
     })() : undefined
     const sections: Uint8Array[] = []
+    const sectionIdentities: string[] = []
+    const prior = generation === undefined ? undefined : this.#dependencies
+    const priorSections = new Map(prior?.sectionIdentities?.map((identity, index) => [identity, index]) ?? [])
+    const identities = new Map([...chunks.values()].map((chunk) => [chunk.encodedSha256, resourceSectionIdentity(chunk)]))
     const timeline = (globalThis as typeof globalThis & { __playsrcProfile?: Record<string, unknown> }).__playsrcProfile
     const spans = timeline ? (timeline.startupSpans ??= []) as Array<Record<string, unknown>> : undefined
     const span = (kind: string, started: number, extra: Record<string, unknown> = {}): void => {
       spans?.push({ kind, roles: roles.join(","), started, finished: performance.now(), ...extra })
     }
-    const acquire = (group: readonly ResourceChunkDescriptor[]) => Promise.all(group.map(async (chunk) => {
+    const acquire = (group: readonly ResourceChunkDescriptor[]) => Promise.allSettled(group.map(async (chunk) => {
+      if (priorSections.has(identities.get(chunk.encodedSha256)!)) return Object.freeze({ descriptor: chunk, bytes: undefined })
       const object = resourceChunkObject(chunk)
       const started = performance.now()
       const bytes = await this.#acquireObject(object, signal, roles.includes("startup") ? "critical" : "normal")
@@ -1296,22 +1309,38 @@ export class Tf2Application {
     let next = acquire(groups[0]!)
     try {
       for (let index = 0; index < groups.length; index += 1) {
-        const records = await next
+        const acquired = await next
+        const records = acquired.map((record) => {
+          if (record.status === "rejected") throw record.reason
+          return record.value
+        })
         if (signal.aborted) throw new DOMException("Resource loading was superseded", "AbortError")
         if (index + 1 < groups.length) next = acquire(groups[index + 1]!)
-        let started = performance.now()
-        const section = await this.#client!.decodeResources(records, generation)
-        span("resource-decode", started, { group: index, bytes: section.byteLength })
-        sections.push(section)
-        started = performance.now()
-        for (const [logicalPath, bytes] of parseResourceSet(section)) {
-          const existing = destination.get(logicalPath)
-          if (existing && (existing.byteLength !== bytes.byteLength || bytesToHex(sha256(existing)) !== bytesToHex(sha256(bytes)))) {
-            throw new Error(`Conflicting resource ${logicalPath}`)
+        for (const record of records) {
+          let started = performance.now()
+          if (signal.aborted) throw new DOMException("Resource loading was superseded", "AbortError")
+          const identity = identities.get(record.descriptor.encodedSha256)!
+          const sourceIndex = priorSections.get(identity)
+          const section = sourceIndex !== undefined
+            ? await this.#client!.retainResourceSection(generation!, prior!, sourceIndex)
+            : await this.#client!.decodeResources([{ descriptor: record.descriptor, bytes: record.bytes! }], generation)
+          span(sourceIndex !== undefined ? "resource-retain" : "resource-decode", started, {
+            group: index,
+            bytes: section.byteLength,
+            identity: record.descriptor.encodedSha256,
+          })
+          sections.push(section)
+          sectionIdentities.push(identity)
+          started = performance.now()
+          for (const [logicalPath, bytes] of parseResourceSet(section)) {
+            const existing = destination.get(logicalPath)
+            if (existing && (existing.byteLength !== bytes.byteLength || bytesToHex(sha256(existing)) !== bytesToHex(sha256(bytes)))) {
+              throw new Error(`Conflicting resource ${logicalPath}`)
+            }
+            destination.set(logicalPath, bytes)
           }
-          destination.set(logicalPath, bytes)
+          span("resource-index", started, { group: index, bytes: section.byteLength })
         }
-        span("resource-index", started, { group: index, bytes: section.byteLength })
       }
       if (generation === undefined) return undefined
       const identity = await retainedIdentity
@@ -1322,7 +1351,7 @@ export class Tf2Application {
       if (!identity) {
         await this.#cache!.write(resourceIdentityKey!, null, new TextEncoder().encode(JSON.stringify({ byteLength: resources.byteLength, sha256: resources.sha256 })))
       }
-      return resources
+      return Object.freeze({ ...resources, sectionIdentities: Object.freeze(sectionIdentities) })
     } catch (error) {
       if (generation !== undefined) await this.#client?.releaseResources(generation).catch(() => {})
       throw error
@@ -1764,7 +1793,7 @@ export class Tf2Application {
       finishLoadPhase("derivedKey")
       this.#set({ detail: "Compiling direct map authority" })
       this.#advanceLoading("preparing-resources")
-      this.#generation += 1
+      this.#generation = resources.generation
       this.#resetGenerationPresentation()
       this.#loaded = await this.#client!.stage(this.#generation, bsp, profile, this.#dependencies, key)
       this.#requireOperation(operation)
@@ -2240,7 +2269,7 @@ export class Tf2Application {
           bounds: panel.bounds,
           background: index === 0 ? "opaque" as const : "transparent" as const,
           presentationTimeSeconds: now,
-          ...(pose ? { pose: Object.freeze({ primitives: pose.primitives }) } : {}),
+          ...(pose ? { pose: Object.freeze({ primitives: pose.primitives, boneMatrices: pose.boneMatrices }) } : {}),
         })
       })
       const result = await renderer.renderModelPanels(panels)
@@ -3213,6 +3242,7 @@ export class Tf2Application {
     const operation = this.#nextOperation()
     const previousGeneration = this.#generation
     const previousBlockers = new Set(this.#blockers)
+    let resourceGeneration: number | undefined
     try {
       const signal = operation.signal
       this.#loadingTarget = target
@@ -3230,10 +3260,14 @@ export class Tf2Application {
       const entries = new Map<string, Uint8Array>()
       const dependencies = await this.#decodeResourceSet(graph, ["gameplay"], entries, signal)
       if (!dependencies) throw new Error("Gameplay resource configuration is unavailable")
+      resourceGeneration = dependencies.generation
       this.#requireOperation(operation)
       await this.#replace(bytes, target.objects.bsp.sha256, target.target, { target, graph, dependencies, entries }, operation)
       if (this.#operations.current(operation)) this.#loadingTarget = undefined
     } catch (error) {
+      if (resourceGeneration !== undefined && resourceGeneration !== this.#generation) {
+        await this.#client?.discard(resourceGeneration).catch(() => undefined)
+      }
       if (!this.#operations.current(operation)) return
       this.#loadingTarget = undefined
       const reason=error instanceof Error?`${error.name}: ${error.message}`:String(error)
@@ -3243,7 +3277,6 @@ export class Tf2Application {
         this.#set({ phase: "Failed", gameUi: "failure", detail: `Activated map authority failed: ${reason}` })
         return
       }
-      await this.#client?.discard(previousGeneration + 1).catch(() => undefined)
       this.#blockers.clear()
       for (const blocker of previousBlockers) this.#blockers.add(blocker)
       this.#paused = document.hidden
@@ -3345,7 +3378,7 @@ export class Tf2Application {
     this.#nextSimulationSampleSeconds=0
     await this.#displayTask
     if (operation) this.#requireOperation(operation)
-    const generation = this.#generation + 1
+    const generation = candidate?.dependencies.generation ?? this.#reserveGeneration()
     const profile = this.#renderLevel === 2 ? 1 : 0
     const key = await mapDerivedKey(
       bspSha256,
@@ -3466,6 +3499,8 @@ export class Tf2Application {
       this.#resourceGraph = candidate.graph
       this.#dependencies = candidate.dependencies
       this.#dependencyEntries = candidate.entries
+    } else {
+      this.#dependencies = Object.freeze({ ...this.#dependencies, generation })
     }
     this.#loaded = staged
     this.#coverageSamples=coverageSamples

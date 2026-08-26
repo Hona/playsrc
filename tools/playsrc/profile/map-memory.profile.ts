@@ -8,6 +8,8 @@ import { decodeScreenshot } from "./screenshot-pixels"
 import { divideProfileWindow, profileSampleSeconds } from "./profile-window"
 import { chooseTf2Team } from "./team-selection-evidence"
 import { loadLocalConfig } from "../src/config"
+import { macosProcessMemorySampler } from "./process-memory-macos"
+import { summarizeCompositorTruth, type ChromiumTraceEvent } from "./compositor-truth"
 
 const TARGETS = ["jump_beef", "ctf_2fort", "pl_upward"] as const
 const executeFile = promisify(execFile)
@@ -23,13 +25,13 @@ type MemorySample = Readonly<{
   privateBytes: number | null
 }>
 
-async function residentProcesses(processes: readonly BrowserProcess[]): Promise<readonly ProcessMemory[]> {
+async function residentProcesses(processes: readonly BrowserProcess[], macosSampler?: string): Promise<readonly ProcessMemory[]> {
   const identities = [...new Set(processes.map((process) => process.id).filter((id) => Number.isSafeInteger(id) && id > 0))]
   if (identities.length === 0) return []
-  const command = process.platform === "win32"
+  const command = macosSampler ? [macosSampler, ...identities.map(String)] : process.platform === "win32"
     ? ["powershell", "-NoProfile", "-Command", `@(Get-Process -Id ${identities.join(",")} -ErrorAction SilentlyContinue | Select-Object Id,WorkingSet64,PrivateMemorySize64) | ConvertTo-Json -Compress`]
     : ["ps", "-o", "pid=,rss=", "-p", identities.join(",")]
-  const { stdout: output } = await executeFile(command[0]!, command.slice(1))
+  const { stdout: output } = await executeFile(command[0]!, command.slice(1), { timeout: 2_000 })
   if (!output.trim()) return []
   const types = new Map(processes.map((entry) => [entry.id, entry.type]))
   if (process.platform === "win32") {
@@ -42,22 +44,32 @@ async function residentProcesses(processes: readonly BrowserProcess[]): Promise<
     }))
   }
   return output.trim().split("\n").flatMap((line) => {
-    const [identity, resident] = line.trim().split(/\s+/u).map(Number)
+    const [identity, resident, privateBytes] = line.trim().split(/\s+/u).map(Number)
     return Number.isSafeInteger(identity) && Number.isSafeInteger(resident)
-      ? [Object.freeze({ id: identity!, type: types.get(identity!) ?? "unknown", residentBytes: resident! * 1024, privateBytes: null })]
+      ? [Object.freeze({ id: identity!, type: types.get(identity!) ?? "unknown", residentBytes: resident! * (macosSampler ? 1 : 1024), privateBytes: macosSampler && Number.isSafeInteger(privateBytes) ? privateBytes! : null })]
       : []
   })
 }
 
 test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready residency", async ({ page, browser }, testInfo) => {
   const requested = process.env.PROFILE_MEMORY_TARGET
+  const requestedSequence = process.env.PROFILE_MEMORY_SEQUENCE?.split(",")
+  const requestedBots = Number(process.env.PROFILE_MEMORY_BOTS ?? 0)
+  if (![0, 15, 23].includes(requestedBots)) throw new Error("PROFILE_MEMORY_BOTS must be 0, 15, or 23")
   if (requested !== undefined && !TARGETS.includes(requested as typeof TARGETS[number])) {
     throw new Error("PROFILE_MEMORY_TARGET must name one configured map")
   }
-  const targets = requested === undefined ? TARGETS : [requested as typeof TARGETS[number]]
+  if (requestedSequence && (requested !== undefined || requestedSequence.length < 2
+    || requestedSequence.some((identity) => !TARGETS.includes(identity as typeof TARGETS[number])))) {
+    throw new Error("PROFILE_MEMORY_SEQUENCE must name at least two configured maps without PROFILE_MEMORY_TARGET")
+  }
+  const targets = requestedSequence
+    ? requestedSequence as (typeof TARGETS[number])[]
+    : requested === undefined ? TARGETS : [requested as typeof TARGETS[number]]
   const sampleSeconds = profileSampleSeconds()
   const sampleWindows = divideProfileWindow(sampleSeconds, targets.length)
   const output = path.join((await loadLocalConfig()).sourceCacheDir, "profiles", "map-memory")
+  const macosSampler = await macosProcessMemorySampler((await loadLocalConfig()).sourceCacheDir)
   await mkdir(output, { recursive: true })
   const browserCdp = await browser.newBrowserCDPSession()
   const pageCdp = await page.context().newCDPSession(page)
@@ -72,7 +84,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
     busy = true
     try {
       const snapshot = await browserCdp.send("SystemInfo.getProcessInfo") as { processInfo: BrowserProcess[] }
-      const processes = await residentProcesses(snapshot.processInfo)
+      const processes = await residentProcesses(snapshot.processInfo, macosSampler)
       timeline.push(Object.freeze({
         at: performance.now(),
         target,
@@ -112,7 +124,9 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
             borrowedModelSourceBytes: owned?.borrowedModelSourceBytes ?? null,
             copiedModelSourceBytes: owned?.copiedModelSourceBytes ?? null,
             modelSourceSectionBytes: owned?.modelSourceSectionBytes ?? null,
-            resourceBytes: owned?.resourceBytes ?? null,
+             resourceBytes: owned?.resourceBytes ?? null,
+             resourceReferencedBytes: owned?.resourceReferencedBytes ?? null,
+             sharedResourceBytes: owned?.sharedResourceBytes ?? null,
             resourceSections: owned?.resourceSections ?? null,
             heapBytes: globalThis.performance?.memory?.usedJSHeapSize ?? null,
            };
@@ -321,7 +335,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
         expect(prepared.status()).toBe(200)
         configuration = await prepared.json() as typeof configuration
       }
-      if (targets.length > 1 && index === targets.length - 1) {
+      if (!requestedSequence && targets.length > 1 && index === targets.length - 1) {
         target = "page-reload"
         await page.evaluate(async () => {
           await new Promise<void>((resolve, reject) => {
@@ -355,6 +369,12 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       const command = page.locator("[aria-label='Console command']")
       await expect(command).toBeVisible()
       await command.fill(`map ${identity}`)
+      const browserStarted = await page.evaluate(() => {
+        const gpu = (globalThis as any).__playsrcMemoryProfile.gpu
+        gpu.peakBufferBytes = gpu.bufferBytes
+        gpu.peakTextureBytes = gpu.textureBytes
+        return performance.now()
+      })
       const started = performance.now()
       phase = "loading"
       await command.press("Enter")
@@ -375,6 +395,48 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       }
       await expect(root).toHaveAttribute("data-phase", "Ready", { timeout: 600_000 })
       const readyMilliseconds = performance.now() - started
+      phase = "bot-admission"
+      const bots = entries.some((entry) => entry.logicalPath === `maps/${identity}.nav`) ? requestedBots : 0
+      if (bots > 0) {
+        if (await root.getAttribute("data-console-visible") !== "true") await page.keyboard.press("Backquote")
+        await command.fill(`tf_bot_add ${bots} normal`)
+        await command.press("Enter")
+        await expect(root).toHaveAttribute("data-bot-count", String(bots))
+        await page.keyboard.press("Backquote")
+      }
+      const classSwitches: Record<string, unknown>[] = []
+      if (process.env.PROFILE_MEMORY_EXERCISE_CLASSES === "1") {
+        phase = "class-exercise"
+        const classes = [
+          { name: "scout", id: 1, weapons: [4, 5, 6] },
+          { name: "sniper", id: 2, weapons: [12, 13, 14] },
+          { name: "soldier", id: 3, weapons: [1, 7, 8] },
+          { name: "demoman", id: 4, weapons: [18, 3, 17] },
+          { name: "medic", id: 5, weapons: [19, 20, 21] },
+          { name: "heavyweapons", id: 6, weapons: [9, 10, 11] },
+          { name: "pyro", id: 7, weapons: [15, 7, 16] },
+          { name: "spy", id: 8, weapons: [50, 52, 51] },
+          { name: "engineer", id: 9, weapons: [40, 41, 42] },
+        ]
+        for (const playerClass of classes) {
+          if (await root.getAttribute("data-console-visible") !== "true") await page.keyboard.press("Backquote")
+          await command.fill(`joinclass ${playerClass.name}`)
+          const classStarted = performance.now()
+          await command.press("Enter")
+          await expect.poll(async () => (await root.getAttribute("data-hud-probe"))?.split(":")[1]).toBe(String(playerClass.id))
+          await page.keyboard.press("Backquote")
+          for (const [slot, weapon] of playerClass.weapons.entries()) {
+            await page.keyboard.press(`Digit${slot + 1}`)
+            await expect.poll(async () => (await root.getAttribute("data-hud-probe"))?.split(":")[2]).toBe(String(weapon))
+          }
+          classSwitches.push({ name: playerClass.name, weapons: playerClass.weapons, milliseconds: performance.now() - classStarted })
+        }
+        await page.keyboard.press("Backquote")
+        await command.fill("joinclass soldier")
+        await command.press("Enter")
+        await expect.poll(async () => (await root.getAttribute("data-hud-probe"))?.split(":")[1]).toBe("3")
+        await page.keyboard.press("Backquote")
+      }
       phase = "ready"
       await sample()
       const heap = await pageCdp.send("Runtime.getHeapUsage")
@@ -392,7 +454,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       }
       expect(visible).toBeGreaterThan(image.width * image.height / 8)
       await writeFile(path.join(output, `${identity}-${process.env.PROFILE_MEMORY_LABEL ?? "current"}.png`), capture)
-      const observed = await page.evaluate(() => {
+      const observed = await page.evaluate((started) => {
         const main = document.querySelector<HTMLElement>("main")!
         const profile = (globalThis as any).__playsrcMemoryProfile
         return {
@@ -402,8 +464,8 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
           load: JSON.parse(main.dataset.loadPerformance ?? "null"),
           staticProps: JSON.parse(document.querySelector<HTMLElement>("canvas.world-canvas")?.dataset.staticProps ?? "null"),
           gpu: profile.gpu,
-          transfers: profile.transfers,
-          worker: profile.worker,
+           transfers: profile.transfers.filter((record: any) => record.at >= started),
+           worker: profile.worker.filter((record: any) => record.at >= started),
           indexedDb: profile.indexedDb,
           longTasks: profile.longTasks,
            garbageCollections: profile.garbageCollections,
@@ -411,7 +473,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
           assets: (globalThis as any).__playsrcProfile.memoryAssets,
           geometry: (globalThis as any).__playsrcProfile.geometryEvidence,
         }
-      })
+      }, browserStarted)
       const admitted = new Set(observed.geometry.visibility.drawSurfaces)
       const worldDepth = observed.geometry.geometry.samples.filter((entry: any) => entry.disposition === "main-world"
         && entry.depth !== null && entry.depth > observed.geometry.camera.near
@@ -421,7 +483,14 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       expect(observed.assets.target).toBe(identity)
       expect(observed.assets.compressedTextures).toBeGreaterThan(0)
       expect(observed.playerClass).toBe(3)
+      const currentResources = observed.worker.at(-1)?.memory?.resourceSections
+      expect(currentResources).toHaveLength(1)
+      expect(currentResources[0].generation).toBe(observed.generation)
       if (index === 1 && targets.length > 1) expect(observed.load.client.modelCacheHits).toBeGreaterThan(0)
+      const traceEvents: ChromiumTraceEvent[] = []
+      const collectTrace = ({ value }: { value: ChromiumTraceEvent[] }) => traceEvents.push(...value)
+      pageCdp.on("Tracing.dataCollected", collectTrace)
+      await pageCdp.send("Tracing.start", { categories: "benchmark,viz,gpu,devtools.timeline,v8,disabled-by-default-v8.gc", options: "record-as-much-as-possible" })
       const frames = await page.evaluate(async (minimumMilliseconds) => {
         const root = document.querySelector<HTMLElement>("main")!
         const first = Number(root.dataset.snapshotTick)
@@ -451,15 +520,24 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
           maximumFrameMilliseconds: ordered.at(-1) ?? 0,
         }
       }, sampleWindows[index]! * 1_000)
+      const traced = new Promise<void>((resolve) => pageCdp.once("Tracing.tracingComplete", () => resolve()))
+      await pageCdp.send("Tracing.end")
+      await traced
+      pageCdp.off("Tracing.dataCollected", collectTrace)
+      const compositor = summarizeCompositorTruth(traceEvents, frames.milliseconds)
       const simulationHz = (frames.lastTick - frames.firstTick) * 1_000 / frames.milliseconds
       expect(simulationHz).toBeGreaterThan(55)
       const own = timeline.filter((entry) => entry.target === identity)
       const peak = own.reduce((maximum, entry) => entry.residentBytes > maximum.residentBytes ? entry : maximum, own[0]!)
+      const transition = own.filter((entry) => entry.phase === "loading")
       maps.push({
         target: identity,
         readyMilliseconds: Number(readyMilliseconds.toFixed(3)),
         generation: observed.generation,
         playerClass: observed.playerClass,
+        bots,
+        botAdmission: bots === 0 && requestedBots > 0 ? "configured map has no authored NAV" : "admitted",
+        classSwitches,
         source: {
           bspBytes: Number(selected.objects.bsp.byteLength),
           chunks: chunks.length,
@@ -483,8 +561,13 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
         memory: {
           sampleCount: own.length,
           peakResidentBytes: peak.residentBytes,
+          transitionPeakResidentBytes: Math.max(0, ...transition.map((entry) => entry.residentBytes)),
+          transitionPeakPrivateBytes: Math.max(0, ...transition.map((entry) => entry.privateBytes ?? 0)),
           residentReadyBytes: own.at(-1)!.residentBytes,
           peakPrivateBytes: peak.privateBytes,
+          maximumPrivateBytes: Math.max(0, ...own.map((entry) => entry.privateBytes ?? 0)),
+          privateReadyBytes: own.at(-1)!.privateBytes,
+          privateMemoryMetric: process.platform === "darwin" ? "proc-region-private-resident-pages" : process.platform === "win32" ? "private-committed-bytes" : "unavailable",
           processesAtPeak: peak.processes,
           mainHeapBeforeBytes: before.usedSize,
           mainHeapBeforeBackingBytes: before.backingStorageSize,
@@ -494,6 +577,8 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
           wasmAllocatorLiveBytes: Math.max(0, ...observed.worker.filter((record: any) => record.kind === "loaded").map((record: any) => Number(record.memory?.allocatorLiveBytes ?? 0))),
           wasmAllocatorHighWaterBytes: Math.max(0, ...observed.worker.map((record: any) => Number(record.memory?.allocatorHighWaterBytes ?? 0))),
           wasmResourceBytes: Math.max(0, ...observed.worker.filter((record: any) => record.kind === "loaded").map((record: any) => Number(record.memory?.resourceBytes ?? 0))),
+          wasmReferencedResourceBytes: Math.max(0, ...observed.worker.filter((record: any) => record.kind === "loaded").map((record: any) => Number(record.memory?.resourceReferencedBytes ?? 0))),
+          wasmSharedResourceBytes: Math.max(0, ...observed.worker.filter((record: any) => record.kind === "loaded").map((record: any) => Number(record.memory?.sharedResourceBytes ?? 0))),
           borrowedModelSourceBytes: Math.max(0, ...observed.worker.filter((record: any) => record.kind === "loaded").map((record: any) => Number(record.memory?.borrowedModelSourceBytes ?? 0))),
           copiedModelSourceBytes: Math.max(0, ...observed.worker.filter((record: any) => record.kind === "loaded").map((record: any) => Number(record.memory?.copiedModelSourceBytes ?? 0))),
           modelSourceSectionBytes: Math.max(0, ...observed.worker.filter((record: any) => record.kind === "loaded").map((record: any) => Number(record.memory?.modelSourceSectionBytes ?? 0))),
@@ -508,7 +593,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
          },
          mountedFontFaces: observed.mountedFontFaces,
         transfers: observed.transfers,
-        worker: observed.worker.filter((record: any) => ["resources", "loaded"].includes(record.kind)),
+        worker: observed.worker.filter((record: any) => ["resources", "resources-retained", "loaded", "activated"].includes(record.kind)),
         load: observed.load,
         staticProps: observed.staticProps,
         assets: observed.assets,
@@ -522,6 +607,9 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
         },
         pixels: { width: image.width, height: image.height, visible },
         simulation: { ...frames, hz: Number(simulationHz.toFixed(2)) },
+        compositor,
+        tracedGarbageCollection: traceEvents.filter((event) => /(?:MajorGC|MinorGC|V8\.GC)/u.test(event.name ?? "") && event.dur !== undefined)
+          .map((event) => ({ name: event.name, milliseconds: event.dur! / 1_000 })),
       })
       await writeFile(path.join(output, `${process.env.PROFILE_MEMORY_LABEL ?? "current"}-partial.json`), `${JSON.stringify({ maps, timeline }, null, 2)}\n`)
       console.log(`PLAYSRC_MAP_MEMORY ${JSON.stringify({ target: identity, readyMilliseconds, peakResidentBytes: peak.residentBytes, wasmLinearBytes: (maps.at(-1) as any).memory.wasmLinearBytes })}`)

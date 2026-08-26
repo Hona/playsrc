@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 
 import { TF2_PRESENTATION_SCHEMA, type InitialView, type WorkerFailureCode, type WorkerRequest, type WorkerResponse } from "./protocol"
+import { ResourceGenerations } from "./resource-generations"
 import { decodeTf2TeamSelectionServerState } from "./team-selection/model"
 import initializeWasm, { initThreadPool } from "./wasm-generated/tf2_wasm.js"
 
@@ -67,11 +68,10 @@ const scope = self as DedicatedWorkerGlobalScope
 let wasm: WasmExports | undefined
 let active: { generation: number; handle: number } | undefined
 let pending: { generation: number; handle: number } | undefined
-const resourceSets = new Map<number, {
-  sections: Array<{ pointer: number; length: number; authoredBacking: boolean }>
-  byteLength?: number
-  sha256?: string
-}>()
+const resourceSets = new ResourceGenerations((section) => {
+  if (section.authoredBacking) wasm!.playsrc_resource_release(section.pointer, section.length)
+  else wasm!.playsrc_free(section.pointer, section.length)
+})
 
 function post(message: WorkerResponse, transfer: Transferable[] = []): void {
   scope.postMessage(message, transfer)
@@ -182,7 +182,11 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         borrowedModelSourceBytes: candidate.playsrc_memory_bytes(2),
         copiedModelSourceBytes: candidate.playsrc_memory_bytes(3),
         modelSourceSectionBytes: candidate.playsrc_memory_bytes(4),
-        resourceBytes: [...resourceSets.values()].reduce((total, retained) => total + retained.sections.reduce((sum, section) => sum + section.length, 0), 0),
+        resourceBytes: [...new Set([...resourceSets.values()].flatMap((retained) => retained.sections))]
+          .reduce((total, section) => total + section.length, 0),
+        resourceReferencedBytes: [...resourceSets.values()].reduce((total, retained) => total + retained.sections.reduce((sum, section) => sum + section.length, 0), 0),
+        sharedResourceBytes: [...new Set([...resourceSets.values()].flatMap((retained) => retained.sections))]
+          .filter((section) => section.references > 1).reduce((total, section) => total + section.length, 0),
         resourceSections: [...resourceSets.entries()].map(([generation, retained]) => Object.freeze({
           generation,
           bytes: retained.sections.map((section) => section.length),
@@ -200,7 +204,7 @@ function decodeResources(request: Extract<WorkerRequest, { kind: "decode-resourc
   const exports = wasm
   if (!exports || !Array.isArray(request.chunks) || request.chunks.length < 1 || request.chunks.length > 1_024
     || typeof request.shared !== "boolean" || request.shared !== (request.generation !== undefined)
-    || (request.generation !== undefined && (!canonicalId(request.generation) || request.generation <= (active?.generation ?? 0)))) {
+    || (request.generation !== undefined && (!resourceSets.writable(request.generation) || request.generation <= (active?.generation ?? 0)))) {
     fail(request.id, "MalformedRequest")
     return
   }
@@ -263,11 +267,7 @@ function decodeResources(request: Extract<WorkerRequest, { kind: "decode-resourc
       fail(request.id, "InternalFailure")
       return
     }
-    const retained = resourceSets.get(request.generation) ?? { sections: [] }
-    retained.sections.push({ pointer, length, authoredBacking: true })
-    delete retained.byteLength
-    delete retained.sha256
-    resourceSets.set(request.generation, retained)
+    resourceSets.adopt(request.generation, { pointer, length, authoredBacking: true })
     post({ id: request.id, kind: "resources", bytes: memory, byteOffset: pointer, byteLength: length })
     return
   }
@@ -286,15 +286,8 @@ function sectionTable(exports: WasmExports, sections: readonly { pointer: number
   return pointer
 }
 
-function releaseResourceSet(exports: WasmExports, generation: number): boolean {
-  const retained = resourceSets.get(generation)
-  if (!retained) return false
-  resourceSets.delete(generation)
-  for (const section of retained.sections) {
-    if (section.authoredBacking) exports.playsrc_resource_release(section.pointer, section.length)
-    else exports.playsrc_free(section.pointer, section.length)
-  }
-  return true
+function releaseResourceSet(_exports: WasmExports, generation: number): boolean {
+  return resourceSets.release(generation)
 }
 
 function finalizeResources(request: Extract<WorkerRequest, { kind: "finalize-resources" }>): void {
@@ -340,25 +333,34 @@ function finalizeResources(request: Extract<WorkerRequest, { kind: "finalize-res
 function retainResources(request: Extract<WorkerRequest, { kind: "retain-resources" }>): void {
   const exports = wasm
   if (!exports || !canonicalId(request.generation) || request.generation <= (active?.generation ?? 0)
-    || !(request.section instanceof ArrayBuffer) || request.section.byteLength < 12 || request.section.byteLength > MAX_RESOURCE_SECTION_BYTES) {
+    || (!("section" in request) && (!("sourceGeneration" in request) || !canonicalId(request.sourceGeneration)
+      || request.sourceGeneration >= request.generation || !Number.isSafeInteger(request.sectionIndex) || request.sectionIndex < 0))
+    || ("section" in request && (!(request.section instanceof ArrayBuffer) || request.section.byteLength < 12 || request.section.byteLength > MAX_RESOURCE_SECTION_BYTES))) {
     fail(request.id, "MalformedRequest")
     return
   }
-  const retained = resourceSets.get(request.generation) ?? { sections: [] }
-  if (retained.sections.length >= 1024) {
+  if (!resourceSets.writable(request.generation)) {
     fail(request.id, "MalformedRequest")
     return
   }
-  retained.sections.push({ pointer: allocateCopy(exports, request.section), length: request.section.byteLength, authoredBacking: false })
-  delete retained.byteLength
-  delete retained.sha256
-  resourceSets.set(request.generation, retained)
+  if ("section" in request) {
+    resourceSets.adopt(request.generation, { pointer: allocateCopy(exports, request.section), length: request.section.byteLength, authoredBacking: false })
+  } else {
+    if (!resourceSets.retain(request.generation, request.sourceGeneration, request.sectionIndex)) {
+      fail(request.id, "MalformedRequest")
+      return
+    }
+  }
   post({ id: request.id, kind: "resources-retained", generation: request.generation })
 }
 
 function releaseResources(request: Extract<WorkerRequest, { kind: "release-resources" }>): void {
   if (!wasm || !canonicalId(request.generation)) {
     fail(request.id, "MalformedRequest")
+    return
+  }
+  if (request.generation === active?.generation || request.generation === pending?.generation) {
+    fail(request.id, "StaleGeneration")
     return
   }
   releaseResourceSet(wasm, request.generation)
@@ -664,13 +666,15 @@ function activate(request: Extract<WorkerRequest, { kind: "activate" }>): void {
 }
 
 function discard(request: Extract<WorkerRequest, { kind: "discard" }>): void {
-  if (!wasm || !pending || pending.generation !== request.generation) {
+  if (!wasm || !canonicalId(request.generation) || request.generation === active?.generation) {
     fail(request.id, "StaleGeneration")
     return
   }
-  wasm.playsrc_dispose(pending.handle)
-  releaseResourceSet(wasm, pending.generation)
-  pending = undefined
+  if (pending?.generation === request.generation) {
+    wasm.playsrc_dispose(pending.handle)
+    pending = undefined
+  }
+  releaseResourceSet(wasm, request.generation)
   post({ id: request.id, kind: "discarded", generation: request.generation })
 }
 
