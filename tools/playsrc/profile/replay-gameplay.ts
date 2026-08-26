@@ -43,6 +43,11 @@ export async function replayGameplay(manifestPath: string, wasmPath: string, tic
   const output = (handle: number, name: string) => {
     const length = e[`playsrc_${name}_length`](handle)
     require(length >= 0 && length <= 64 * 1024 * 1024, "Replay output bound exceeded")
+    if (name === "simulation_output") {
+      const pointer = e.playsrc_simulation_output_pointer(handle) >>> 0
+      require(pointer !== 0, "Replay publication pointer absent")
+      return Buffer.from(new Uint8Array(e.memory.buffer, pointer, length))
+    }
     const pointer = e.playsrc_alloc(Math.max(length, 1)) >>> 0
     try {
       require(e[`playsrc_${name}_copy`](handle, pointer, length) === length, "Replay output copy failed")
@@ -85,10 +90,10 @@ export async function replayGameplay(manifestPath: string, wasmPath: string, tic
         active = data.readUInt32LE(0) === 0
         e.playsrc_gameplay_replay_mark(handle, data.readUInt32LE(0))
       } else if (record.kind === 1 && !ticksOnly) {
-        const command = data.subarray(16), pointer = copy(command)
+        const command = data.subarray(24), pointer = copy(command)
         e.playsrc_collision_replay_reset()
         const began = performance.now()
-        const success = e.playsrc_simulation_observe(handle, data.readDoubleLE(0), pointer, command.length, data.readUInt32LE(8))
+        const success = e.playsrc_simulation_observe(handle, data.readDoubleLE(0), pointer, command.length, data.readUInt32LE(8), data.readBigUInt64LE(12))
         const milliseconds = performance.now() - began
         e.playsrc_free(pointer, command.length)
         require(success === 1, `Replay observe ${index} failed: ${e.playsrc_simulation_error()}`)

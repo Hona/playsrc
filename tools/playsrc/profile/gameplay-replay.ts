@@ -7,7 +7,7 @@ export const REPLAY_BYTES = 4 * 1024 * 1024
 export type ReplayCheckpoint = { configurationSha256: string; configurationBytes: number; profile: number; generation: number }
 export type ReplayRecord = { kind: number; bytes: Buffer }
 export function parseGameplayReplay(bytes: Buffer, requireComplete = true) {
-  if (bytes.length < 88 || bytes.length > REPLAY_BYTES || bytes.toString("ascii", 0, 4) !== "PGRP" || bytes.readUInt32LE(4) !== 1
+  if (bytes.length < 88 || bytes.length > REPLAY_BYTES || bytes.toString("ascii", 0, 4) !== "PGRP" || bytes.readUInt32LE(4) !== 2
     || bytes.readBigUInt64LE(72) !== 0n || bytes.readBigUInt64LE(80) !== 1n) throw new Error("Replay initial checkpoint is invalid")
   const records: ReplayRecord[] = []
   let at = 88, observing = false, complete = false, tick = -1n, marks = 0
@@ -18,7 +18,7 @@ export function parseGameplayReplay(bytes: Buffer, requireComplete = true) {
     if (at + length > bytes.length) { if (!requireComplete) break; throw new Error("Partial replay record") }
     const data = bytes.subarray(at + 8, at + length)
     if (kind === 1) {
-      if (observing || data.length < 100 || data.readUInt32LE(12) + 16 !== data.length || !Number.isFinite(data.readDoubleLE(0)) || data.readUInt32LE(8) > 1) throw new Error("Invalid admitted observe command")
+      if (observing || data.length < 108 || data.readUInt32LE(20) + 24 !== data.length || !Number.isFinite(data.readDoubleLE(0)) || data.readUInt32LE(8) > 1) throw new Error("Invalid admitted observe command")
       observing = true
     } else if (kind === 2) {
       if (!observing || data.length < 136 || data.readUInt32LE(48) + 52 !== data.length || data.readBigUInt64LE(0) <= tick) throw new Error("Invalid authoritative tick order")
