@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
+import { copyFile, mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import type { LocalConfig } from "./config"
@@ -51,8 +51,9 @@ type SourceBundleReport = Readonly<{
 }>
 
 type SourceBundleCache = Readonly<{
-  schema: "playsrc-resource-graph-cache-v1"
+  schema: "playsrc-resource-graph-cache-v2"
   generatorSha256: string
+  sourceIdentity: string
   report: SourceBundleReport
 }>
 
@@ -164,6 +165,7 @@ export function parseSourceBundleCache(
   output: string,
   target: string,
   generatorSha256: string,
+  sourceIdentity: string,
 ): SourceBundleArtifact["report"] | null {
   try {
     const value = JSON.parse(output) as SourceBundleCache
@@ -171,10 +173,12 @@ export function parseSourceBundleCache(
       typeof value !== "object"
       || value === null
       || Array.isArray(value)
-      || Object.keys(value).sort().join("\0") !== "generatorSha256\0report\0schema"
-      || value.schema !== "playsrc-resource-graph-cache-v1"
+      || Object.keys(value).sort().join("\0") !== "generatorSha256\0report\0schema\0sourceIdentity"
+      || value.schema !== "playsrc-resource-graph-cache-v2"
       || value.generatorSha256 !== generatorSha256
       || !SHA256.test(value.generatorSha256)
+      || value.sourceIdentity !== sourceIdentity
+      || !SHA256.test(value.sourceIdentity)
     ) return null
     return parseSourceBundleReport(JSON.stringify(value.report), target)
   } catch {
@@ -303,6 +307,20 @@ export async function prepareSourceBundleProducer(config: LocalConfig): Promise<
 
 export async function buildSourceBundle(config: LocalConfig, target: string): Promise<SourceBundleArtifact> {
   const { executable: generatorPath, generatorSha256, environment } = await prepareSourceBundleProducer(config)
+  const source = new Bun.CryptoHasher("sha256")
+    .update("playsrc-configured-source-v1\0")
+    .update(config.tf2Dir).update("\0")
+    .update(TF2_CONTENT_BUILD.contentBuild).update("\0")
+    .update(target)
+  if (target === "ctf_2fort" || target === "pl_upward") {
+    const location = await realpath(path.join(config.tf2Dir, "maps", `${target}.nav`))
+    if (!location.startsWith(`${config.tf2Dir}${path.sep}`)) {
+      throw new Error(`configured ${target} NAV escapes the exact TF2 root`)
+    }
+    const navigation = await readFile(location)
+    source.update("\0").update(String(navigation.byteLength)).update("\0").update(navigation)
+  }
+  const sourceIdentity = source.digest("hex")
   const directory = path.join(config.sourceCacheDir, "browser-bundles")
   const snapshotDirectory = path.join(directory, "generators", generatorSha256)
   const paths = Object.freeze({
@@ -312,7 +330,7 @@ export async function buildSourceBundle(config: LocalConfig, target: string): Pr
   })
   const cachePath = path.join(snapshotDirectory, `${target}.source-bundle-cache.json`)
   try {
-    const cached = parseSourceBundleCache(await readFile(cachePath, "utf8"), target, generatorSha256)
+    const cached = parseSourceBundleCache(await readFile(cachePath, "utf8"), target, generatorSha256, sourceIdentity)
     const cachedGraph = cached ? await readVerifiedGraph(paths, cached) : null
     if (cached && cachedGraph?.graph) {
       return Object.freeze({ ...await immutableBundlePaths(directory, paths, cached), graph: cachedGraph.graph, report: cached })
@@ -332,8 +350,9 @@ export async function buildSourceBundle(config: LocalConfig, target: string): Pr
   if (!verified.graph) throw new Error(`resource graph snapshot differs from its report: ${verified.error}`)
   const graph = verified.graph
   const cache: SourceBundleCache = Object.freeze({
-    schema: "playsrc-resource-graph-cache-v1",
+    schema: "playsrc-resource-graph-cache-v2",
     generatorSha256,
+    sourceIdentity,
     report: JSON.parse(output) as SourceBundleReport,
   })
   await mkdir(snapshotDirectory, { recursive: true })

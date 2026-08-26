@@ -1,7 +1,6 @@
 {
   "bun": {
-    "version": "1.4.0",
-    "revision": "aa4278775272c5807570422ef0fc5b7cc3820634"
+    "version": "1.4.0"
   },
   "rust": {
     "toolchain": "1.97.1",

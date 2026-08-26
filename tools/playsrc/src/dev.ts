@@ -121,7 +121,7 @@ export async function startDevelopment(config: LocalConfig, target: string | und
   const started = performance.now()
   const targetIdentity = target ?? "jump_beef"
   if (!TF2_TARGET_NAMES.includes(targetIdentity as Tf2TargetName)) throw new DevelopmentError("BuildFailed", "development default target is undeclared")
-  const maps = await Promise.all(TF2_TARGET_NAMES.map(async (name) => Object.freeze({ name, map: await acquireMap(config, name) })))
+  const maps = [Object.freeze({ name: targetIdentity as Tf2TargetName, map: await acquireMap(config, targetIdentity) })]
   const mapReady = performance.now()
   let wasmMilliseconds = 0
   let sourceProducerMilliseconds = 0
@@ -138,7 +138,7 @@ export async function startDevelopment(config: LocalConfig, target: string | und
       const began = performance.now()
       await prepareSourceBundleProducer(config)
       sourceProducerMilliseconds = Math.round(performance.now() - began)
-      return Promise.all(TF2_TARGET_NAMES.map(async (name) => {
+      return Promise.all(maps.map(async ({ name }) => {
         const prepareStarted = performance.now()
         const sourceBundle = await buildSourceBundle(config, name)
         const prepareMilliseconds = Math.round(performance.now() - prepareStarted)
@@ -170,17 +170,19 @@ export async function startDevelopment(config: LocalConfig, target: string | und
       }),
     })
   })
-  const catalogSource = {
-    application: "tf2",
-    entries: targets.map(({ target, objects }) => ({ target, resources: objects.resources }))
-      .toSorted((left, right) => left.target.localeCompare(right.target)),
-    schema: "playsrc-resource-catalog-v1",
+  const createCatalog = () => {
+    const bytes = canonicalGraphBytes(parseResourceCatalog({
+      application: "tf2",
+      entries: targets.map(({ target, objects }) => ({ target, resources: objects.resources }))
+        .toSorted((left, right) => left.target.localeCompare(right.target)),
+      schema: "playsrc-resource-catalog-v1",
+    }))
+    return Object.freeze({ bytes, descriptor: descriptor("catalog", "application/vnd.playsrc.asset-catalog+json", bytes) })
   }
-  const catalogBytes = canonicalGraphBytes(parseResourceCatalog(catalogSource))
-  const catalog = descriptor("catalog", "application/vnd.playsrc.asset-catalog+json", catalogBytes)
+  let catalog = createCatalog()
   const wasmBytes = await readFile(wasmPath)
   const wasm = descriptor("derived-object", "application/octet-stream", wasmBytes)
-  const browserConfiguration = JSON.stringify({
+  const browserConfiguration = () => JSON.stringify({
     application: "tf2",
     applicationBuild,
     defaultTarget: targetIdentity,
@@ -188,7 +190,7 @@ export async function startDevelopment(config: LocalConfig, target: string | und
     assetOrigin: APPLICATION_URL.slice(0, -1),
     allowedExternalOrigins: ["https://allowed-host"],
     wasm,
-    catalog,
+    catalog: catalog.descriptor,
     targets,
     startup: TF2_CONFIGURED_STARTUP,
     presentation: {
@@ -202,7 +204,7 @@ export async function startDevelopment(config: LocalConfig, target: string | und
   const previousAssetOrigin = process.env.PLAYSRC_ASSET_ORIGIN
   const previousBrowserConfiguration = process.env.PLAYSRC_BROWSER_CONFIG
   process.env.PLAYSRC_ASSET_ORIGIN = ASSET_ORIGIN
-  process.env.PLAYSRC_BROWSER_CONFIG = browserConfiguration
+  process.env.PLAYSRC_BROWSER_CONFIG = browserConfiguration()
   let assets: ReturnType<typeof startAssetService> | undefined
   let application: ViteDevServer | undefined
   let publicationMilliseconds = 0
@@ -239,7 +241,7 @@ export async function startDevelopment(config: LocalConfig, target: string | und
     const publicationStarted = performance.now()
     await Promise.all([
       putObject(config.assetDir, wasm, wasmBytes),
-      putObject(config.assetDir, catalog, catalogBytes),
+      putObject(config.assetDir, catalog.descriptor, catalog.bytes),
       ...maps.map(({ map }, index) => publishFile(
         config,
         targets[index]!.objects.bsp,
@@ -256,6 +258,62 @@ export async function startDevelopment(config: LocalConfig, target: string | und
         {
           name: "playsrc-profile-development-owner",
           configureServer(server) {
+            let preparation: Promise<void> = Promise.resolve()
+            server.middlewares.use("/__playsrc/prepare-target", (request, response, next) => {
+              const name = request.url?.replace(/^\//u, "").split("?")[0]
+              if (request.method !== "POST" || !TF2_TARGET_NAMES.includes(name as Tf2TargetName)) {
+                next()
+                return
+              }
+              const perform = async () => {
+                const started = performance.now()
+                if (!targets.some((candidate) => candidate.target === name)) {
+                  const mapStarted = performance.now()
+                  const map = await acquireMap(config, name)
+                  const mapMilliseconds = Math.round(performance.now() - mapStarted)
+                  const bundleStarted = performance.now()
+                  const sourceBundle = await buildSourceBundle(config, name!)
+                  const bundleMilliseconds = Math.round(performance.now() - bundleStarted)
+                  const publishStarted = performance.now()
+                  const target = Object.freeze({
+                    target: name as Tf2TargetName,
+                    contentBuild: sourceBundle.report.contentBuild,
+                    objects: Object.freeze({
+                      bsp: Object.freeze({ kind: "source-object" as const, mediaType: "application/octet-stream", byteLength: String(map.decoded.byteLength), sha256: map.decoded.sha256 }),
+                      resources: sourceBundle.report.graphDescriptor,
+                      dependencyLedger: sourceBundle.report.ledgerDescriptor,
+                    }),
+                    loading: Object.freeze({
+                      mapPhotoLocations: TF2_MAP_LOADING[name as Tf2TargetName].photoLocations,
+                      mapPhoto: TF2_MAP_LOADING[name as Tf2TargetName].photo,
+                      stampBackground: TF2_STAMP_BACKGROUND,
+                    }),
+                  })
+                  await Promise.all([
+                    publishFile(config, target.objects.bsp, path.join(config.sourceCacheDir, map.decoded.cachePath)),
+                    publishFile(config, sourceBundle.report.graphDescriptor, sourceBundle.graphPath),
+                    publishFile(config, sourceBundle.report.ledgerDescriptor, sourceBundle.ledgerPath),
+                    ...sourceBundle.graph.chunks.map((chunk) => publishFile(config, resourceChunkObject(chunk), path.join(sourceBundle.graphObjectDirectory, chunk.encodedSha256))),
+                  ])
+                  targets.push(target)
+                  targets.sort((left, right) => TF2_TARGET_NAMES.indexOf(left.target) - TF2_TARGET_NAMES.indexOf(right.target))
+                  catalog = createCatalog()
+                  await putObject(config.assetDir, catalog.descriptor, catalog.bytes)
+                  process.env.PLAYSRC_BROWSER_CONFIG = browserConfiguration()
+                  console.error(`playsrc dev target prepared target=${name} milliseconds=${Math.round(performance.now() - started)} mapMilliseconds=${mapMilliseconds} bundleMilliseconds=${bundleMilliseconds} publicationMilliseconds=${Math.round(performance.now() - publishStarted)}`)
+                }
+                response.statusCode = 200
+                response.setHeader("content-type", "application/json; charset=utf-8")
+                response.setHeader("cache-control", "no-store")
+                response.end(browserConfiguration())
+              }
+              preparation = preparation.catch(() => undefined).then(perform)
+              void preparation.catch((error) => {
+                response.statusCode = 500
+                response.setHeader("content-type", "application/problem+json")
+                response.end(JSON.stringify({ title: error instanceof Error ? error.message : "Target preparation failed", status: 500 }))
+              })
+            })
             server.middlewares.use("/__playsrc/profile-owner", (_request, response) => {
               const identity = process.env.PLAYSRC_PROFILE_SOURCE_IDENTITY
               const token = process.env.PLAYSRC_PROFILE_OWNER_TOKEN

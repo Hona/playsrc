@@ -363,15 +363,12 @@ test("profiles exact headed cold initialization for all three configured TF2 map
   await enterMainMenu()
   const response = await page.request.get("/playsrc-config.json")
   expect(response.status()).toBe(200)
-  const configuration = await response.json() as { assetOrigin: string; wasm: Descriptor; targets: Array<{ target: string; objects: { bsp: Descriptor; resources: Descriptor } }> }
-  expect(configuration.targets.map(target => target.target)).toEqual(TARGETS)
+  let configuration = await response.json() as { assetOrigin: string; wasm: Descriptor; targets: Array<{ target: string; objects: { bsp: Descriptor; resources: Descriptor } }> }
   const selectedTarget = process.env.PLAYSRC_THREE_MAP_TARGET
   if (selectedTarget !== undefined && !TARGETS.includes(selectedTarget as typeof TARGETS[number])) {
     throw new Error("PLAYSRC_THREE_MAP_TARGET must name one configured TF2 map")
   }
-  const targets = selectedTarget === undefined
-    ? configuration.targets
-    : configuration.targets.filter((target) => target.target === selectedTarget)
+  const targets = selectedTarget === undefined ? TARGETS : [selectedTarget]
 
   const snapshot = async () => {
     const [browserProcesses, metrics, heap, value] = await Promise.all([
@@ -408,7 +405,17 @@ test("profiles exact headed cold initialization for all three configured TF2 map
     return { workers: profile.workers.filter(worker => ["initialize", "decode-resources"].includes(worker.kind)), requests: profile.requests }
   })
   const maps: Array<Record<string, unknown>> = []
-  for (const target of targets) {
+  for (const identity of targets) {
+    let target = configuration.targets.find((entry) => entry.target === identity)
+    const preparationStarted = performance.now()
+    if (!target) {
+      const prepared = await page.request.post(`/__playsrc/prepare-target/${identity}`)
+      expect(prepared.status()).toBe(200)
+      configuration = await prepared.json() as typeof configuration
+      target = configuration.targets.find((entry) => entry.target === identity)
+      if (!target) throw new Error(`Authenticated map preparation omitted ${identity}`)
+    }
+    const preparationMilliseconds = Math.round(performance.now() - preparationStarted)
     await page.keyboard.press("Backquote")
     const consoleEntry = page.locator("[aria-label='Console command']")
     await expect(consoleEntry).toBeVisible()
@@ -514,6 +521,7 @@ test("profiles exact headed cold initialization for all three configured TF2 map
       bytes: { bsp: Number(target.objects.bsp.byteLength), resources: Number(target.objects.resources.byteLength), payload: load.mapBytes, presentation: load.presentationBytes, downloaded: downloadBytes, workerRequest: worker!.requestBytes, workerTransferred: worker!.transferredBytes, resourceWorkerRequest: resourceWorkers.reduce((total, entry) => total + entry.requestBytes, 0), resourceWorkerTransferred: resourceWorkers.reduce((total, entry) => total + entry.transferredBytes, 0), workerShared: profile.workers.reduce((total, entry) => total + (entry.sharedBytes ?? 0), 0), workerResponse: worker!.responseBytes ?? 0, hashed: profile.hashes.reduce((sum, value) => sum + value.bytes, 0), gpuUploaded: after.gpu.uploadBytes - before.gpu.uploadBytes },
       cache: { derivedBeforeBytes: before.storage.usage ?? null, derivedAfterBytes: after.storage.usage ?? null, databasesBefore: before.databases, map: load.mapCache, presentation: load.presentationCache, httpTransfers: profile.resources.filter(resource => resource.transferBytes > 0).length, httpHits: profile.resources.filter(resource => resource.transferBytes === 0).length },
       milliseconds: {
+        targetPreparation: preparationMilliseconds,
         totalWall: Number((ready - started).toFixed(3)),
         networkDownload: networkMilliseconds,
         initializationExcludingDownload: Number((ready - started - networkMilliseconds).toFixed(3)),

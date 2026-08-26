@@ -18,6 +18,8 @@ use std::{
     time::Instant,
 };
 
+mod navigation;
+
 const SOURCE_MEDIA_TYPE: &str = "application/octet-stream";
 const LEDGER_MEDIA_TYPE: &str = "application/vnd.playsrc.source-dependency-ledger+json";
 const GRAPH_MEDIA_TYPE: &str = "application/vnd.playsrc.resource-graph+json";
@@ -473,7 +475,7 @@ impl<'a> Resolver<'a> {
                         }
                     };
                     let bytes = value.bytes.clone();
-                    self.inject_platform(
+                    self.inject_source(
                         &canonical,
                         &consumer,
                         bytes.clone(),
@@ -491,7 +493,7 @@ impl<'a> Resolver<'a> {
         Ok(bytes)
     }
 
-    fn inject_platform(
+    fn inject_source(
         &mut self,
         path: &str,
         consumer: &str,
@@ -2303,21 +2305,47 @@ fn main() -> Result<(), String> {
     );
     let canonical = playsrc_map::compile(&bsp, playsrc_map::LightingProfile::Ldr)
         .map_err(|error| format!("map-compile:{error:?}"))?;
+    let graph = playsrc_entity::parse(bsp.lumps[0].bytes(&bsp), playsrc_entity::Limits::default())
+        .map_err(|error| error.to_string())?;
     let mut resolver = Resolver::new(&content);
-    if target == "pl_upward" {
-        resolver.required_pinned(
-            "maps/pl_upward.nav",
+    if matches!(target.as_str(), "pl_upward" | "ctf_2fort") {
+        let logical = format!("maps/{target}.nav");
+        let configured_root = fs::canonicalize(&tf2).map_err(|error| error.to_string())?;
+        let configured_nav = fs::canonicalize(tf2.join(&logical))
+            .map_err(|error| format!("configured local NAV {logical} is unavailable: {error}"))?;
+        if !configured_nav.starts_with(&configured_root) {
+            return Err(format!(
+                "configured local NAV {logical} escapes its TF2 root"
+            ));
+        }
+        let nav = fs::read(&configured_nav).map_err(|error| error.to_string())?;
+        let expected_provider = map_target
+            .installed
+            .as_ref()
+            .map(|installed| installed.provider.as_str())
+            .ok_or("local NAV target has no authenticated installed BSP provider")?;
+        let provider = provider_records
+            .iter()
+            .find(|provider| provider.identity == expected_provider && provider.kind == "directory")
+            .ok_or("local NAV target has no configured TF2 directory provider")?;
+        resolver.inject_source(
+            &logical,
             "tf2-bot-navigation",
-            2_471_913,
-            "13de0c3e2666d2194474d855683cbabb807eead1c24587fd093a5c70a04cd0b4",
+            nav.clone(),
+            ProvenanceRecord {
+                provider_identity: provider.identity.clone(),
+                provider_kind: provider.kind,
+                provider_revision: provider.revision.clone(),
+                location: logical.clone(),
+            },
         )?;
-    } else if target == "ctf_2fort" {
-        resolver.required_pinned(
-            "maps/ctf_2fort.nav",
-            "tf2-bot-navigation",
-            307_701,
-            "6c1e5b37b3cffb9ad97c554aa9e104119a5c5fb38bd6c9d2903a4d405f609017",
-        )?;
+        let bounds = canonical
+            .brush_models
+            .first()
+            .ok_or("BSP world bounds are unavailable")?
+            .bounds;
+        navigation::authenticate(&nav, bsp_bytes.len(), bounds, &graph, &target)
+            .map_err(|error| format!("navigation {target}: {error}"))?;
     }
     for (path, bytes, sha256, consumer) in [
         (
@@ -2374,8 +2402,6 @@ fn main() -> Result<(), String> {
             format!("surface-property-file:{surface_manifest_path}"),
         )?;
     }
-    let graph = playsrc_entity::parse(bsp.lumps[0].bytes(&bsp), playsrc_entity::Limits::default())
-        .map_err(|error| error.to_string())?;
     let world = graph
         .entities
         .iter()
@@ -3104,7 +3130,7 @@ fn main() -> Result<(), String> {
                 };
                 let bytes = fs::read(root.join(authored))
                     .map_err(|error| format!("platform dependency {authored}: {error}"))?;
-                resolver.inject_platform(
+                resolver.inject_source(
                     path,
                     consumer,
                     bytes,
@@ -3126,7 +3152,7 @@ fn main() -> Result<(), String> {
                     }
                 };
                 let provenance = provenance_record(&value.provenance);
-                resolver.inject_platform(path, consumer, value.bytes, provenance)?;
+                resolver.inject_source(path, consumer, value.bytes, provenance)?;
             }
         } else {
             resolver.required(path, consumer)?;

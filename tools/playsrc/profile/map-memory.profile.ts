@@ -263,11 +263,16 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
     await page.goto("/", { waitUntil: "load", timeout: 30_000 })
     const root = page.locator("main")
     await expect(root).toHaveAttribute("data-phase", "MainMenu", { timeout: 180_000 })
-    const configuration = await (await page.request.get("/playsrc-config.json")).json() as {
+    let configuration = await (await page.request.get("/playsrc-config.json")).json() as {
       assetOrigin: string
       targets: { target: string; objects: { bsp: { byteLength: string }; resources: { sha256: string } } }[]
     }
     for (const [index, identity] of targets.entries()) {
+      if (!configuration.targets.some((entry) => entry.target === identity)) {
+        const prepared = await page.request.post(`/__playsrc/prepare-target/${identity}`)
+        expect(prepared.status()).toBe(200)
+        configuration = await prepared.json() as typeof configuration
+      }
       if (targets.length > 1 && index === targets.length - 1) {
         target = "page-reload"
         await page.evaluate(async () => {

@@ -234,10 +234,7 @@ test("headed TF2 Main Menu retains every authored core control, party portrait, 
   await expect(main).toHaveAttribute("data-local-match-entry", "create-server")
   const createServer = page.locator(".local-match-layer").getByRole("dialog", { name: "CREATE SERVER" })
   await createServer.locator('[data-vgui-name="MapList"]').click()
-  const targets = await page.evaluate(async () => {
-    const response = await fetch("/playsrc-config.json")
-    return (await response.json() as { targets: Array<{ target: string }> }).targets.map((target) => target.target)
-  })
+  const targets = ["jump_beef", "pl_upward", "ctf_2fort"]
   for (const target of targets) await expect(page.getByRole("option", { name: target })).toBeVisible()
   expect(targets).toEqual(["jump_beef", "pl_upward", "ctf_2fort"])
   await page.getByRole("option", { name: "jump_beef" }).click()

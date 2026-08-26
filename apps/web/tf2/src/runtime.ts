@@ -101,7 +101,8 @@ import {
 import { bytesToHex } from "@noble/hashes/utils.js"
 import { sha256 } from "@noble/hashes/sha2.js"
 import {consoleLimits,resolveConfiguredConsoleResources,type ResolvedConsoleResources} from "./console-resources"
-import { loadBrowserConfiguration, type BrowserConfiguration, type BrowserTargetConfiguration } from "./config"
+import { loadBrowserConfiguration, parseBrowserConfiguration, type BrowserConfiguration, type BrowserTargetConfiguration } from "./config"
+import { TF2_TARGET_NAMES, type Tf2TargetName } from "./deployment"
 import { PhysicalBindingIndex, PhysicalButtonState, applyPointerDelta, pointerLockRequestRequired, rawPointerMovementUnsupported, rebasePointerYaw, sourceMouseButtonCode, type PhysicalBinding } from "./input"
 import { TF2_BALANCED_VIDEO_SETTINGS, TF2_SELECTED_OPTIONS, tf2VideoConfiguration, tf2VideoConvars, tf2VideoSettingsFromConvars, type AdapterRequestResult, type SettingsAdapterRequest, type Tf2VideoConfiguration } from "@playsrc/settings"
 import { SimulationClockQueue } from "./simulation-clock"
@@ -879,7 +880,7 @@ export class Tf2Application {
     this.#localMatch = initializeTf2LocalMatchPresentation({
       root: this.#localMatchRoot,
       resources: this.#uiResources,
-      configuredMaps: this.#configuration.targets.map((target) => target.target),
+      configuredMaps: TF2_TARGET_NAMES,
       viewport: this.#viewport(),
       reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
       clock: { nowSeconds: () => this.#frameClock.current },
@@ -896,9 +897,13 @@ export class Tf2Application {
         this.#set({ localMatchSettings: JSON.stringify(launch), localMatchVisible: false })
         this.#console?.apply({ kind: "replace-catalog", catalog: this.#catalog() })
         if (this.#client && this.#renderer && this.#loaded) {
-          const target = this.#configuration!.targets.find((candidate) => candidate.target === launch.mapIdentity)
-          if (!target) throw new Error(`Undeclared local match map ${launch.mapIdentity}`)
-          void this.#switchCatalogMap(target)
+          void this.#preparedTarget(launch.mapIdentity)
+            .then((target) => this.#switchCatalogMap(target))
+            .catch((error) => this.#set({
+              phase: "Failed",
+              gameUi: "failure",
+              detail: error instanceof Error ? error.message : "Local match map preparation failed",
+            }))
           return
         }
         const transition = this.#gameUi?.dispatch({ kind: "map", mapIdentity: launch.mapIdentity })
@@ -963,8 +968,7 @@ export class Tf2Application {
       return
     }
     if (request.kind === "load-map") {
-      const target = this.#configuration?.targets.find((candidate) => candidate.target === request.mapIdentity)
-      if (!target) throw new Error(`Undeclared map request ${request.mapIdentity}`)
+      const target = await this.#preparedTarget(request.mapIdentity)
       this.#loadingTarget = target
       const started = this.#gameUi?.dispatch({ kind: "loading-started", mapIdentity: request.mapIdentity })
       if (started?.disposition !== "applied") throw new Error("TF2 GameUI rejected loading start")
@@ -2398,7 +2402,7 @@ export class Tf2Application {
     if (request.kind === "completion") {
       const candidates =
         request.commandName.toLowerCase() === "map"
-          ? this.#configuration.targets.map((target) => `map ${target.target}`)
+          ? TF2_TARGET_NAMES.map((target) => `map ${target}`)
           : request.commandName.toLowerCase() === "class"
             ? TF2_CLASS_NAMES.map((name) => `class ${name}`)
             : request.commandName.toLowerCase() === "jointeam"
@@ -2420,7 +2424,11 @@ export class Tf2Application {
       })
       return
     }
-    if (request.kind === "submission") void this.#execute(request.text)
+    if (request.kind === "submission") {
+      void this.#execute(request.text).catch((error) => {
+        this.#output(`ERROR: ${error instanceof Error ? error.message : "Console command failed"}`)
+      })
+    }
   }
 
   #output(text: string, developer = false): void {
@@ -2937,8 +2945,8 @@ export class Tf2Application {
       return
     }
     if (command === "map" && tokens.length === 1) {
-      const target = this.#configuration?.targets.find((candidate) => candidate.target === tokens[0])
-      if (target) {
+      if (TF2_TARGET_NAMES.includes(tokens[0] as Tf2TargetName)) {
+        const target = await this.#preparedTarget(tokens[0]!)
         if (this.#view.phase === "Startup") this.#startup?.key("Escape")
         if (this.#gameUi?.state().kind === "failure") {
           const dismissed = this.#gameUi.dispatch({ kind: "dismiss-failure" })
@@ -2953,10 +2961,51 @@ export class Tf2Application {
         }
       }
       else if (tokens[0]?.startsWith("https://")) await this.#replaceExternalMap(tokens[0])
-      else this.#output(`Usage: map ${this.#configuration?.targets.map((candidate) => candidate.target).join("|") ?? "<unavailable>"}`)
+      else this.#output(`Usage: map ${this.#configuration ? TF2_TARGET_NAMES.join("|") : "<unavailable>"}`)
       return
     }
     this.#output(`Unknown command: ${command}`)
+  }
+
+  async #preparedTarget(identity: string): Promise<BrowserTargetConfiguration> {
+    if (!this.#configuration || !TF2_TARGET_NAMES.includes(identity as Tf2TargetName)) {
+      throw new Error(`Undeclared map request ${identity}`)
+    }
+    const ready = this.#configuration.targets.find((candidate) => candidate.target === identity)
+    if (ready) return ready
+    const response = await fetch(`/__playsrc/prepare-target/${identity}`, {
+      method: "POST", cache: "no-store", credentials: "same-origin", redirect: "error",
+    })
+    if (!response.ok || response.redirected) throw new Error(`Authenticated map preparation failed: ${identity}`)
+    const configuration = parseBrowserConfiguration(await response.json(), window.location.origin)
+    if (configuration.applicationBuild !== this.#configuration.applicationBuild
+      || configuration.defaultTarget !== this.#configuration.defaultTarget
+      || configuration.wasm.sha256 !== this.#configuration.wasm.sha256
+      || configuration.assetOrigin !== this.#configuration.assetOrigin) {
+      throw new Error("Prepared map changed its browser application authority")
+    }
+    for (const previous of this.#configuration.targets) {
+      const current = configuration.targets.find((candidate) => candidate.target === previous.target)
+      if (!current || JSON.stringify(current) !== JSON.stringify(previous)) {
+        throw new Error("Prepared map changed an existing immutable target authority")
+      }
+    }
+    const bytes = await fetchImmutableObject(configuration.assetOrigin, configuration.catalog, this.#operation.signal)
+    const catalog = parseResourceCatalogBytes(bytes)
+    if (catalog.application !== "tf2" || catalog.entries.length !== configuration.targets.length) {
+      throw new Error("Prepared map catalog target table differs")
+    }
+    for (const target of configuration.targets) {
+      const entry = selectCatalogTarget(catalog, target.target)
+      if (entry.resources.sha256 !== target.objects.resources.sha256 || entry.resources.byteLength !== target.objects.resources.byteLength) {
+        throw new Error(`Prepared map catalog ${target.target} descriptor differs`)
+      }
+    }
+    const target = configuration.targets.find((candidate) => candidate.target === identity)
+    if (!target) throw new Error(`Prepared map ${identity} is absent from its authenticated catalog`)
+    this.#configuration = configuration
+    this.#resourceCatalog = catalog
+    return target
   }
 
   async #replaceCatalogMap(): Promise<void> {

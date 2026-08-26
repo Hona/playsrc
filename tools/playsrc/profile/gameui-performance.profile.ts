@@ -418,7 +418,9 @@ test("profile TF2 Main Menu startup and steady state", async ({ page, context, b
 
   await page.keyboard.press("Escape")
   await expect(page.locator("main")).toHaveAttribute("data-options-visible", "false")
-  const configuration = await (await page.request.get("/playsrc-config.json")).json() as {
+  const preparedUpward = await page.request.post("/__playsrc/prepare-target/pl_upward")
+  expect(preparedUpward.status()).toBe(200)
+  const configuration = await preparedUpward.json() as {
     targets: ReadonlyArray<{ target: string; objects: { bsp: { sha256: string } } }>
   }
   const upward = configuration.targets.find((target) => target.target === "pl_upward")

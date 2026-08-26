@@ -50,12 +50,25 @@ export function parseBrowserConfiguration(value: unknown, applicationOrigin: str
     || new Set(value.allowedExternalOrigins).size !== value.allowedExternalOrigins.length
     || !descriptor(value.wasm, "derived-object")
     || !descriptor(value.catalog, "catalog", "application/vnd.playsrc.asset-catalog+json")
-    || !Array.isArray(value.targets) || value.targets.length !== TF2_TARGET_NAMES.length
+    || !Array.isArray(value.targets) || value.targets.length < 1 || value.targets.length > TF2_TARGET_NAMES.length
+    || (applicationOrigin === PRODUCTION_APPLICATION_ORIGIN && value.targets.length !== TF2_TARGET_NAMES.length)
     || !validateTf2StartupDescriptor(value.startup).ok || JSON.stringify(value.startup) !== JSON.stringify(TF2_CONFIGURED_STARTUP)
     || !validPresentation(value.presentation)
   ) throw new BrowserConfigurationError("Browser configuration fields are invalid")
 
-  const targets = value.targets.map((candidate, index) => parseTarget(candidate, TF2_TARGET_NAMES[index]))
+  const targets = value.targets.map((candidate) => {
+    if (!record(candidate) || !TF2_TARGET_NAMES.includes(candidate.target as Tf2TargetName)) {
+      throw new BrowserConfigurationError("Browser target configuration is invalid")
+    }
+    return parseTarget(candidate, candidate.target as Tf2TargetName)
+  })
+  if (targets.some((target, index) => index > 0
+    && TF2_TARGET_NAMES.indexOf(targets[index - 1]!.target) >= TF2_TARGET_NAMES.indexOf(target.target))) {
+    throw new BrowserConfigurationError("Browser target preparation order is invalid")
+  }
+  if (!targets.some((target) => target.target === value.defaultTarget)) {
+    throw new BrowserConfigurationError("Browser default target has not been prepared")
+  }
   for (const field of ["bsp", "resources", "dependencyLedger"] as const) {
     if (new Set(targets.map((target) => target.objects[field].sha256)).size !== targets.length) throw new BrowserConfigurationError(`Browser target ${field} identities are duplicated`)
   }
