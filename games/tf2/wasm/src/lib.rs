@@ -2290,6 +2290,8 @@ fn encode_model_poses(
     out.extend_from_slice(&7u32.to_le_bytes());
     out.extend_from_slice(&0_u32.to_le_bytes());
     let mut output_count = 0_u32;
+    let mut sampled_poses =
+        BTreeMap::<(String, usize, u32, u32), playsrc_studio_model::SampledPose>::new();
     for request in requests {
         let model = models.get(&request.model).ok_or(())?;
         let bodygroups = if let Some(body) = request.packed_body {
@@ -2478,17 +2480,29 @@ fn encode_model_poses(
             }
             output_count = output_count.checked_add(part_count).ok_or(())?;
         } else {
-            let pose = playsrc_studio_model::sample_pose_at_time(
-                model,
-                &playsrc_studio_model::AnimationState {
-                    base_sequence: sequence,
-                    cycle: playsrc_studio_model::Float32(cycle.to_bits()),
-                    pose_parameters,
-                    layers: Vec::new(),
-                },
-                playsrc_studio_model::Float32(request.elapsed.to_bits()),
-            )
-            .map_err(|_| ())?;
+            let pose_key = (
+                request.model.clone(),
+                sequence,
+                cycle.to_bits(),
+                request.elapsed.to_bits(),
+            );
+            if let std::collections::btree_map::Entry::Vacant(entry) =
+                sampled_poses.entry(pose_key.clone())
+            {
+                let pose = playsrc_studio_model::sample_pose_at_time(
+                    model,
+                    &playsrc_studio_model::AnimationState {
+                        base_sequence: sequence,
+                        cycle: playsrc_studio_model::Float32(cycle.to_bits()),
+                        pose_parameters,
+                        layers: Vec::new(),
+                    },
+                    playsrc_studio_model::Float32(request.elapsed.to_bits()),
+                )
+                .map_err(|_| ())?;
+                entry.insert(pose);
+            }
+            let pose = sampled_poses.get(&pose_key).ok_or(())?;
             let selected = playsrc_studio_model::select_primitives(
                 model,
                 &bodygroups,
@@ -2586,7 +2600,7 @@ fn encode_model_poses(
                 previous_cycle,
                 cycle,
                 &events,
-                &pose,
+                pose,
                 &selected,
                 selected.len(),
                 legacy_view.as_ref(),

@@ -83,6 +83,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     const firstTick = Number(main.dataset.snapshotTick)
     const firstFrame = Number(surface.dataset.displayFrame)
     const firstPosition = (main.dataset.cameraPosition ?? "").split(",").map(Number)
+    const firstUploads = structuredClone((globalThis as any).__playsrcProfile.modelParticleUploads ?? {}) as Record<string, number>
     const started = performance.now()
     let animationCallbacks = 0
     instrumentation.active = true
@@ -103,6 +104,8 @@ test("profile authored headed Upward offline-practice default roster and actual 
       roster: structuredClone((globalThis as any).__playsrcProfile.bots), scoreboard: JSON.parse(main.dataset.scoreboardProbe ?? "{}"),
       frames: instrumentation.completedFrames, compositorFrames: instrumentation.compositorFrames,
       presentationCallbacks: instrumentation.animationCallbacks, worker: instrumentation.worker, counters: instrumentation.counters,
+      modelUploads: Object.fromEntries(Object.entries((globalThis as any).__playsrcProfile.modelParticleUploads ?? {})
+        .map(([key, value]) => [key, typeof value === "number" ? value - (firstUploads[key] ?? 0) : value])),
       longTasks: instrumentation.longTasks.filter((entry: { at: number }) => entry.at >= started && entry.at < started + elapsed),
       longAnimationFrames: instrumentation.longAnimationFrames.filter((entry: { at: number }) => entry.at >= started && entry.at < started + elapsed),
     }
@@ -143,7 +146,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     frameIntervals: summarizeFrameTimes(intervals), frameWork: summarizeFrameTimes(completed.map(frame => frame.detail.total)),
     simulation: { ticks: measurement.lastTick - measurement.firstTick, hertz: Number(((measurement.lastTick - measurement.firstTick) / measurement.elapsed * 1000).toFixed(3)) },
     botWork: summarizeDistribution(completed.map(frame => frame.detail.models)), worker,
-    gpu: { ...measurement.counters, submissionsPerCompletedFrame: Number((measurement.counters.submissions / Math.max(1, actualFrames)).toFixed(3)) },
+    gpu: { ...measurement.counters, modelUploads: measurement.modelUploads, submissionsPerCompletedFrame: Number((measurement.counters.submissions / Math.max(1, actualFrames)).toFixed(3)) },
     longAnimationFrames: summarizeDistribution(measurement.longAnimationFrames.map((frame: { duration: number }) => frame.duration)),
     longTasks: summarizeDistribution(measurement.longTasks.map((task: { duration: number }) => task.duration)),
     memory: { beforeBytes: heapBefore.usedSize, afterBytes: heapAfter.usedSize, embedderBytes: heapAfter.embedderHeapUsedSize },
@@ -168,6 +171,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
       transactMaximumMilliseconds: value.timings.transactMilliseconds?.max ?? 0,
     }])),
     gpuSubmissionsPerCompletedFrame: report.gpu.submissionsPerCompletedFrame,
+    modelUploads: report.gpu.modelUploads,
     memory: report.memory, readyMilliseconds, totalWallMilliseconds: report.totalWallMilliseconds,
     traveled: report.traveled, longAnimationFrames: report.longAnimationFrames,
     cpu: report.cpu.topSelf.slice(0, 8), pixels: report.pixels,
