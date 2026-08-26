@@ -2,7 +2,7 @@ import { summarizeFrameTimes } from "./profile-window"
 
 export type ChromiumTraceEvent = Readonly<{ name?: string; ts?: number; args?: Record<string, any> }>
 
-const PRESENTATION_EVENTS = ["PresentationFeedback", "Display::FrameDisplayed"] as const
+const PRESENTATION_EVENTS = ["PresentationFeedback", "Display::FrameDisplayed", "FramePresented"] as const
 
 export function summarizeCompositorTruth(events: readonly ChromiumTraceEvent[], elapsedMilliseconds: number, window?: Readonly<{ startedMicroseconds: number; endedMicroseconds: number }>) {
   if (!Number.isFinite(elapsedMilliseconds) || elapsedMilliseconds <= 0) throw new Error("Compositor sampling duration must be positive")

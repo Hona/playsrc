@@ -29,6 +29,7 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
       renderPasses: 0, buffers: 0, textures: 0, shaderModules: 0, renderPipelines: 0,
       computePipelines: 0, bundleEncodes: 0, bundleEncodeMilliseconds: 0, queueWriteCalls: 0, queueWriteBytes: 0, queueWriteMilliseconds: 0, textureWriteBytes: 0,
       destroyedBuffers: 0, destroyedTextures: 0, computePasses: 0,
+      textureWrites: 0, commandEncoders: 0, mappedBuffers: 0,
       workerPending: 0, workerMaximumPending: 0, validationErrors: 0,
       nodeBuilderMisses: 0, nodeBuilderMilliseconds: 0, warmedPipelineVariants: 0, pipelineWarmupMilliseconds: 0,
     },
@@ -79,20 +80,24 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
       state.queueWrites.stacks.push({ call, phase, resource: label, offset: Number(bufferOffset ?? 0), bytes, stack: String(new Error().stack ?? "").split("\n").slice(2, 8).join("\n") })
     }
   }, true)
-  wrap(host.GPUQueue, "writeTexture", ([, data]) => { state.counters.textureWriteBytes += data?.byteLength ?? 0 })
+  wrap(host.GPUQueue, "writeTexture", ([, data]) => {
+    state.counters.textureWrites += 1
+    state.counters.textureWriteBytes += data?.byteLength ?? 0
+  })
   wrap(host.GPUCommandEncoder, "beginRenderPass", () => {
     state.counters.renderPasses += 1
     if (state.currentPass) state.currentPass.renderPasses += 1
   })
   wrap(host.GPUCommandEncoder, "beginComputePass", () => { state.counters.computePasses += 1 })
   wrap(host.GPUBuffer, "destroy", () => { state.counters.destroyedBuffers += 1 })
+  wrap(host.GPUBuffer, "mapAsync", () => { state.counters.mappedBuffers += 1 })
   wrap(host.GPUTexture, "destroy", () => { state.counters.destroyedTextures += 1 })
   wrap(host.GPURenderBundleEncoder, "finish", (_arguments, _result, milliseconds) => {
     state.counters.bundleEncodes += 1
     state.counters.bundleEncodeMilliseconds += milliseconds ?? 0
   }, true)
   for (const [method, counter] of [
-    ["createBuffer", "buffers"], ["createTexture", "textures"], ["createShaderModule", "shaderModules"],
+    ["createBuffer", "buffers"], ["createTexture", "textures"], ["createCommandEncoder", "commandEncoders"], ["createShaderModule", "shaderModules"],
     ["createRenderPipeline", "renderPipelines"], ["createRenderPipelineAsync", "renderPipelines"],
     ["createComputePipeline", "computePipelines"], ["createComputePipelineAsync", "computePipelines"],
   ] as const) wrap(host.GPUDevice, method, () => { state.counters[counter] += 1 })
