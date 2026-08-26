@@ -487,6 +487,7 @@ struct CachedPresentationModel {
     identity: [u8; 32],
     illumination_position: playsrc_studio_model::Vector3,
     illumination_attachment: i32,
+    eyes: Vec<playsrc_studio_model::EyeDefinition>,
 }
 
 type PresentationModelCacheKey = (String, u8, u8);
@@ -1586,7 +1587,7 @@ pub fn diagnose_presentation_bound(
         playsrc_map::attach_displacement_visibility(&canonical, &visibility).map_err(|_| 3u32)?;
     let (_, _, _, particle_presentation) =
         compile_particles(&resources, &decoders).map_err(|_| 10u32)?;
-    let ((_, models, _, _), metrics, mut ledger) = compile_presentation(PresentationInputs {
+    let ((_, models, _, _, _), metrics, mut ledger) = compile_presentation(PresentationInputs {
         canonical: &canonical,
         bsp: &bsp,
         graph: &entities,
@@ -8217,6 +8218,7 @@ fn build_model_presentation(
                         identity: retained.identity,
                         illumination_position: retained.illumination_position,
                         illumination_attachment: retained.illumination_attachment,
+                        eyes: retained.eyes.clone(),
                     }));
                 }
             }
@@ -8264,6 +8266,7 @@ fn build_model_presentation(
                 identity,
                 illumination_position: built.illumination_position,
                 illumination_attachment: built.illumination_attachment,
+                eyes: built.eyes.clone(),
             },
         );
     Ok(Box::new(CompiledPresentationModel {
@@ -10692,7 +10695,13 @@ fn load_cached_presentation(
         .into_iter()
         .map(|(identity, artifact)| (identity, artifact.model))
         .collect();
-    let output = (Vec::new(), models, metadata, model_material_opacity, environment);
+    let output = (
+        Vec::new(),
+        models,
+        metadata,
+        model_material_opacity,
+        environment,
+    );
     phase_finished = playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
     metrics[5] = phase_finished.saturating_sub(phase_started);
     Ok((output, metrics, PresentationSizeLedger::default()))
