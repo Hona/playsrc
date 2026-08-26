@@ -21,6 +21,7 @@ type Exports = Readonly<{
   playsrc_resource_decode(pointer: number, length: number): number
   playsrc_resource_length(): number
   playsrc_resource_take(): number
+  playsrc_resource_release(pointer: number, length: number): number
   playsrc_compile_map(bsp: number, length: number, profile: number, sections: number, sectionCount: number, configurationSha256: number): number
   playsrc_result_error(handle: number): number
   playsrc_result_length(handle: number): number
@@ -81,7 +82,7 @@ const resourceLength = exports.playsrc_resource_length()
 const resourcePointer = exports.playsrc_resource_take() >>> 0
 require(resourcePointer !== 0, "Rust resource set ownership transfer failed")
 const resources = new Uint8Array(exports.memory.buffer, resourcePointer, resourceLength).slice()
-exports.playsrc_free(resourcePointer, resourceLength)
+require(exports.playsrc_resource_release(resourcePointer, resourceLength) === 1, "Rust resource source release failed")
 
 console.info(`decoded ${resources.byteLength} resource bytes; compiling exact HDR map`)
 const bspPointer = copied(exports, bsp)

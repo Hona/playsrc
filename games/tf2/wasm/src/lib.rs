@@ -806,6 +806,10 @@ fn resource_output() -> &'static Mutex<Vec<u8>> {
     static OUTPUT: OnceLock<Mutex<Vec<u8>>> = OnceLock::new();
     OUTPUT.get_or_init(|| Mutex::new(Vec::new()))
 }
+fn resource_backings() -> &'static Mutex<BTreeMap<usize, Arc<Vec<u8>>>> {
+    static BACKINGS: OnceLock<Mutex<BTreeMap<usize, Arc<Vec<u8>>>>> = OnceLock::new();
+    BACKINGS.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
 fn encode(index: usize, generation: u16) -> u32 {
     ((generation as u32) << 16) | (index as u32 + 1)
 }
@@ -859,8 +863,26 @@ pub extern "C" fn playsrc_resource_take() -> *mut u8 {
     if output.is_empty() {
         return std::ptr::null_mut();
     }
-    let bytes = std::mem::take(&mut *output).into_boxed_slice();
-    Box::into_raw(bytes) as *mut u8
+    let bytes = Arc::new(std::mem::take(&mut *output));
+    let pointer = bytes.as_ptr() as *mut u8;
+    playsrc_studio_model::register_authored_backing(&bytes);
+    resource_backings()
+        .lock()
+        .expect("resource backings")
+        .insert(pointer as usize, bytes);
+    pointer
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_resource_release(pointer: *const u8, length: usize) -> u32 {
+    let mut backings = resource_backings().lock().expect("resource backings");
+    match backings.get(&(pointer as usize)) {
+        Some(bytes) if bytes.len() == length => {
+            backings.remove(&(pointer as usize));
+            1
+        }
+        _ => 0,
+    }
 }
 
 #[repr(C)]
@@ -1710,6 +1732,9 @@ pub extern "C" fn playsrc_memory_bytes(index: usize) -> usize {
     match index {
         0 => memory::live_bytes(),
         1 => memory::high_water_bytes(),
+        2 => playsrc_studio_model::authored_source_residency().0,
+        3 => playsrc_studio_model::authored_source_residency().1,
+        4 => playsrc_studio_model::authored_source_residency().2,
         _ => 0,
     }
 }
@@ -13883,8 +13908,27 @@ mod tests {
             unsafe { std::slice::from_raw_parts(pointer, 4) },
             &[1, 2, 3, 4]
         );
-        unsafe { playsrc_free(pointer, 4) };
+        assert_eq!(playsrc_resource_release(pointer, 4), 1);
+        assert_eq!(playsrc_resource_release(pointer, 4), 0);
         assert!(playsrc_resource_take().is_null());
+    }
+
+    #[test]
+    fn authored_resource_sections_survive_release_until_the_final_model_owner() {
+        *resource_output().lock().unwrap() = b"prefix:borrowed model:suffix".to_vec();
+        let pointer = playsrc_resource_take();
+        let section = unsafe { std::slice::from_raw_parts(pointer, 28) };
+        let model = playsrc_studio_model::retain_authored_source(
+            "models/player/wasm-owner.mdl",
+            &section[7..21],
+            [93; 32],
+        );
+        assert_eq!(model.as_ptr(), unsafe { pointer.add(7) });
+        assert_eq!(playsrc_resource_release(pointer, 27), 0);
+        assert_eq!(playsrc_resource_release(pointer, 28), 1);
+        assert_eq!(model.as_ref().as_ref(), b"borrowed model");
+        drop(model);
+        assert_eq!(playsrc_resource_release(pointer, 28), 0);
     }
 
     #[test]

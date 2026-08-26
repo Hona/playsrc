@@ -103,13 +103,20 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       };
       const __playsrcNativePost = globalThis.postMessage.bind(globalThis);
       globalThis.postMessage = function (message, transfer) {
-         if (message && typeof message === "object") message.__playsrcProfileMemory = {
-           wasmLinearBytes: globalThis.__playsrcProfileWasmMemory?.buffer.byteLength ?? null,
-           allocatorLiveBytes: globalThis.__playsrcWorkerMemory?.liveBytes ?? null,
-           allocatorHighWaterBytes: globalThis.__playsrcWorkerMemory?.highWaterBytes ?? null,
-           resourceBytes: globalThis.__playsrcWorkerMemory?.resourceBytes ?? null,
-           heapBytes: globalThis.performance?.memory?.usedJSHeapSize ?? null,
-        };
+         if (message && typeof message === "object") {
+           const owned = globalThis.__playsrcWorkerMemory;
+           message.__playsrcProfileMemory = {
+            wasmLinearBytes: globalThis.__playsrcProfileWasmMemory?.buffer.byteLength ?? null,
+            allocatorLiveBytes: owned?.liveBytes ?? null,
+            allocatorHighWaterBytes: owned?.highWaterBytes ?? null,
+            borrowedModelSourceBytes: owned?.borrowedModelSourceBytes ?? null,
+            copiedModelSourceBytes: owned?.copiedModelSourceBytes ?? null,
+            modelSourceSectionBytes: owned?.modelSourceSectionBytes ?? null,
+            resourceBytes: owned?.resourceBytes ?? null,
+            resourceSections: owned?.resourceSections ?? null,
+            heapBytes: globalThis.performance?.memory?.usedJSHeapSize ?? null,
+           };
+         }
         return __playsrcNativePost(message, transfer);
       };
     `
@@ -461,6 +468,17 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
           entries: entries.length,
           vtfBytes: entries.filter((entry) => entry.logicalPath.endsWith(".vtf")).reduce((total, entry) => total + Number(entry.byteLength), 0),
           modelBytes: entries.filter((entry) => /\.(?:mdl|vvd|vtx|ani|phy)$/u.test(entry.logicalPath)).reduce((total, entry) => total + Number(entry.byteLength), 0),
+          sourceSections: Object.fromEntries(
+            ["vtf", "mdl", "vvd", "vtx", "ani", "phy", "nav", "wav", "mp3", "vmt", "txt", "other"].map((extension) => [
+              extension,
+              entries.filter((entry) => {
+                const actual = entry.logicalPath.split(".").at(-1)?.toLowerCase() ?? ""
+                return extension === "other"
+                  ? !["vtf", "mdl", "vvd", "vtx", "ani", "phy", "nav", "wav", "mp3", "vmt", "txt"].includes(actual)
+                  : actual === extension
+              }).reduce((total, entry) => total + Number(entry.byteLength), 0),
+            ]),
+          ),
         },
         memory: {
           sampleCount: own.length,
@@ -476,6 +494,9 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
           wasmAllocatorLiveBytes: Math.max(0, ...observed.worker.filter((record: any) => record.kind === "loaded").map((record: any) => Number(record.memory?.allocatorLiveBytes ?? 0))),
           wasmAllocatorHighWaterBytes: Math.max(0, ...observed.worker.map((record: any) => Number(record.memory?.allocatorHighWaterBytes ?? 0))),
           wasmResourceBytes: Math.max(0, ...observed.worker.filter((record: any) => record.kind === "loaded").map((record: any) => Number(record.memory?.resourceBytes ?? 0))),
+          borrowedModelSourceBytes: Math.max(0, ...observed.worker.filter((record: any) => record.kind === "loaded").map((record: any) => Number(record.memory?.borrowedModelSourceBytes ?? 0))),
+          copiedModelSourceBytes: Math.max(0, ...observed.worker.filter((record: any) => record.kind === "loaded").map((record: any) => Number(record.memory?.copiedModelSourceBytes ?? 0))),
+          modelSourceSectionBytes: Math.max(0, ...observed.worker.filter((record: any) => record.kind === "loaded").map((record: any) => Number(record.memory?.modelSourceSectionBytes ?? 0))),
         },
         gpu: observed.gpu,
         indexedDb: observed.indexedDb,
