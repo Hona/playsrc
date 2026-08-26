@@ -32,7 +32,10 @@ export type RendererFrameProfile = Readonly<{
   passes: readonly RendererPassProfile[]
   poseUploadBytes: number
   indexUploadBytes: number
+  indirectUploadBytes: number
   bundleInvalidations: number
+  bundleEncodes: number
+  bundleEncodeMilliseconds: number
 }>
 
 export type BrowserFrameProfiler = {
@@ -68,7 +71,10 @@ export class RendererFrameInstrumentation {
   #passes: RendererPassProfile[] = []
   #poseUploadBytes = 0
   #indexUploadBytes = 0
+  #indirectUploadBytes = 0
   #bundleInvalidations = 0
+  #bundleEncodes = 0
+  #bundleEncodeMilliseconds = 0
 
   constructor(info: RendererInfo, profile: BrowserFrameProfiler, features?: { has(feature: string): boolean }) {
     this.#info = info
@@ -76,6 +82,8 @@ export class RendererFrameInstrumentation {
     info.autoReset = false
     info.reset()
     profile.capabilities.timestampQuery = features?.has("timestamp-query") ?? false
+    this.#bundleEncodes = profile.counters.bundleEncodes ?? 0
+    this.#bundleEncodeMilliseconds = profile.counters.bundleEncodeMilliseconds ?? 0
   }
 
   pass<T>(identity: string, callback: () => T): T {
@@ -103,6 +111,10 @@ export class RendererFrameInstrumentation {
     if (this.#profile.active) this.#indexUploadBytes += bytes
   }
 
+  indirectUpload(bytes: number): void {
+    if (this.#profile.active) this.#indirectUploadBytes += bytes
+  }
+
   invalidateBundle(): void {
     if (this.#profile.active) this.#bundleInvalidations += 1
   }
@@ -122,13 +134,19 @@ export class RendererFrameInstrumentation {
         passes: this.#passes,
         poseUploadBytes: this.#poseUploadBytes,
         indexUploadBytes: this.#indexUploadBytes,
+        indirectUploadBytes: this.#indirectUploadBytes,
         bundleInvalidations: this.#bundleInvalidations,
+        bundleEncodes: (this.#profile.counters.bundleEncodes ?? 0) - this.#bundleEncodes,
+        bundleEncodeMilliseconds: (this.#profile.counters.bundleEncodeMilliseconds ?? 0) - this.#bundleEncodeMilliseconds,
       }
     } finally {
       this.#passes = []
       this.#poseUploadBytes = 0
       this.#indexUploadBytes = 0
+      this.#indirectUploadBytes = 0
       this.#bundleInvalidations = 0
+      this.#bundleEncodes = this.#profile.counters.bundleEncodes ?? 0
+      this.#bundleEncodeMilliseconds = this.#profile.counters.bundleEncodeMilliseconds ?? 0
       this.#info.reset()
     }
   }

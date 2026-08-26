@@ -22,16 +22,20 @@ describe("completed multi-pass renderer instrumentation", () => {
     }
     instrumentation.poseUpload(96)
     instrumentation.indexUpload(24)
+    instrumentation.indirectUpload(8)
     instrumentation.invalidateBundle()
+    profile.counters.bundleEncodes = 2
+    profile.counters.bundleEncodeMilliseconds = 1.25
     expect(resets()).toBe(1)
     expect(instrumentation.complete()).toMatchObject({
       drawCalls: 8, frameCalls: 4, triangles: 36, timestampMilliseconds: 12,
-      poseUploadBytes: 96, indexUploadBytes: 24, bundleInvalidations: 1,
+      poseUploadBytes: 96, indexUploadBytes: 24, indirectUploadBytes: 8, bundleInvalidations: 1, bundleEncodes: 2, bundleEncodeMilliseconds: 1.25,
       memory: { textures: 3, texturesSize: 128, attributesSize: 64, uniformBuffersSize: 16, total: 208 },
       passes: ["sky3d", "main", "viewmodel", "hud-model"].map(identity => ({ identity, submissions: 1, drawCalls: 2 })),
     })
     expect(resets()).toBe(2)
     expect(info.autoReset).toBe(false)
+    expect(instrumentation.complete()).toMatchObject({ bundleEncodes: 0, bundleEncodeMilliseconds: 0, indirectUploadBytes: 0 })
   })
 
   test("does not sample disabled frames and honestly reports unsupported timestamp queries", () => {

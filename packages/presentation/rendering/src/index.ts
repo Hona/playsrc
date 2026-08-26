@@ -26,6 +26,7 @@ import { fillParticleBatchRanges, type MutableParticleBatchRange } from "./parti
 import { writeParticleQuad } from "./particle-geometry"
 import { synchronizeDynamicAttribute } from "./dynamic-attributes"
 import { installOrderedWebGpuBundles, type OrderedBundleBackend } from "./ordered-webgpu-bundles"
+import { PersistentWorldDraws } from "./persistent-world-draws"
 import { RetainedLeafVisibility, RetainedVisibilityError, RetainedWorldVisibility } from "./retained-visibility"
 import { RetainedStaticSceneGroup } from "./static-scene-group"
 import { createStaticPropBatch, MAX_STATIC_PROPS_PER_BATCH, type StaticPropBatch } from "./static-prop-batches"
@@ -899,6 +900,7 @@ type WorldBatchResource = Readonly<{
   sourceIndices: Uint32Array
   index: THREE.BufferAttribute
   transparent: boolean
+  bundled: boolean
 }>
 type ProjectedMarkResource = Readonly<{
   mesh: THREE.Mesh
@@ -983,6 +985,8 @@ type SceneResources = {
   skyWorldBatches: readonly WorldBatchResource[]
   worldVisibility: RetainedWorldVisibility
   skyWorldVisibility: RetainedWorldVisibility
+  worldDraws: PersistentWorldDraws
+  skyWorldDraws: PersistentWorldDraws
   modelLookup: ReadonlyMap<string, RuntimeMap["models"][number]>
   projectedMarksByFace: ReadonlyMap<number, readonly ProjectedMarkResource[]>
   brushProjectedMarks: readonly ProjectedMarkResource[]
@@ -2176,6 +2180,15 @@ class RendererOwner implements Renderer {
     const particleMaterials = new Map<string, THREE.MeshBasicNodeMaterial>()
     const materialStates = new Map(request.materialStates ?? [])
     const disposables = new OwnedResourceGeneration(this.#deviceGeneration, sceneGeneration)
+    const attributeBackend = this.#backend.backend as unknown as ConstructorParameters<typeof PersistentWorldDraws>[1]
+    const attributes = (this.#backend as unknown as {
+      _geometries: { attributes: { delete(attribute: THREE.BufferAttribute): unknown } }
+    })._geometries.attributes
+    const releaseAttribute = (attribute: THREE.BufferAttribute): void => {
+      attributes.delete(attribute)
+    }
+    const worldDraws = disposables.add(new PersistentWorldDraws(map.batches.length, attributeBackend, releaseAttribute))
+    const skyWorldDraws = disposables.add(new PersistentWorldDraws(map.batches.length, attributeBackend, releaseAttribute))
     const diagnostics: SceneDiagnostic[] = []
     const worldBatches: WorldBatchResource[] = []
     const skyWorldBatches: WorldBatchResource[] = []
@@ -2619,7 +2632,7 @@ class RendererOwner implements Renderer {
         geometry.setAttribute("lightmapKind", new THREE.BufferAttribute(batch.lightmapKind, 1))
         geometry.setAttribute("displacementAlpha", new THREE.BufferAttribute(batch.displacementAlpha, 1))
         const index = new THREE.BufferAttribute(batch.indices.slice(), 1)
-        index.setUsage(THREE.DynamicDrawUsage)
+        index.setUsage(THREE.StreamDrawUsage)
         geometry.setIndex(index)
         geometry.computeBoundingSphere()
         disposables.add(geometry)
@@ -2694,14 +2707,20 @@ class RendererOwner implements Renderer {
         if (!index) throw new RenderingError("MalformedInput", "world batch has no index buffer")
         const transparent = (Array.isArray(mesh.material) ? mesh.material : [mesh.material]).some((material) => material.transparent)
         const animated = worldMaterials.has(String(mesh.userData.materialIdentity).toLowerCase())
-        worldBatches.push({ mesh, faces: batch.faces, sourceIndices: batch.indices, index, transparent })
+        const bundled = !transparent && !animated
+        const slot = worldBatches.length
+        if (bundled) {
+          worldDraws.attach(mesh.geometry, slot, batch.indices.length)
+          mesh.frustumCulled = false
+        }
+        worldBatches.push({ mesh, faces: batch.faces, sourceIndices: batch.indices, index, transparent, bundled })
         ;(transparent ? mainTransparentWorld : animated ? mainAnimatedWorld : worldBundle).add(mesh)
 
         const skyGeometry = new THREE.BufferGeometry()
         for (const name of Object.keys(mesh.geometry.attributes)) {
           skyGeometry.setAttribute(name, mesh.geometry.getAttribute(name))
         }
-        const skyIndex = new THREE.BufferAttribute(batch.indices.slice(), 1).setUsage(THREE.DynamicDrawUsage)
+        const skyIndex = new THREE.BufferAttribute(batch.indices.slice(), 1).setUsage(THREE.StreamDrawUsage)
         skyGeometry.setIndex(skyIndex)
         skyGeometry.boundingBox = mesh.geometry.boundingBox
         skyGeometry.boundingSphere = mesh.geometry.boundingSphere
@@ -2711,7 +2730,11 @@ class RendererOwner implements Renderer {
         skyMesh.updateMatrix()
         skyMesh.userData.materialIdentity = mesh.userData.materialIdentity
         skyMesh.userData.skyWater = map.materials[batch.material]?.shader === 5
-        skyWorldBatches.push({ mesh: skyMesh, faces: batch.faces, sourceIndices: batch.indices, index: skyIndex, transparent })
+        if (bundled) {
+          skyWorldDraws.attach(skyGeometry, slot, batch.indices.length)
+          skyMesh.frustumCulled = false
+        }
+        skyWorldBatches.push({ mesh: skyMesh, faces: batch.faces, sourceIndices: batch.indices, index: skyIndex, transparent, bundled })
         ;(transparent ? skyTransparentWorld : animated ? skyAnimatedWorld : skyWorldBundle).add(skyMesh)
       }
       for(const model of map.brushModels){const template=new THREE.Group();for(const batch of model.batches){const mesh=createWorldMesh(batch);if(mesh)template.add(mesh)}brushModelTemplates.set(model.index,template)}
@@ -3216,6 +3239,8 @@ class RendererOwner implements Renderer {
       diagnostics: Object.freeze(diagnostics),
       worldBundle,
       skyWorldBundle,
+      worldDraws,
+      skyWorldDraws,
       mainAnimatedWorld,
       skyAnimatedWorld,
       mainTransparentWorld,
@@ -3627,7 +3652,7 @@ class RendererOwner implements Renderer {
       if (error instanceof RetainedVisibilityError) throw new RenderingError("MalformedInput", error.message)
       throw error
     }
-    let bundleChanged = false
+    const draws = ownership === 0 ? scene.worldDraws : scene.skyWorldDraws
     for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
       if (!index.changed(batchIndex)) continue
       const batch = batches[batchIndex]!
@@ -3635,17 +3660,23 @@ class RendererOwner implements Renderer {
       if (count > 0) {
         batch.index.clearUpdateRanges()
         batch.index.addUpdateRange(0, count)
-        batch.index.needsUpdate = true
         this.#instrumentation?.indexUpload(count * batch.index.array.BYTES_PER_ELEMENT)
+        if (batch.bundled) {
+          const backend = this.#backend.backend as unknown as ConstructorParameters<typeof PersistentWorldDraws>[1]
+          if (backend.get(batch.index).buffer !== undefined) backend.updateAttribute(batch.index)
+          else batch.index.needsUpdate = true
+        } else batch.index.needsUpdate = true
       }
-      batch.mesh.geometry.setDrawRange(0, count)
-      batch.mesh.visible = count > 0 && !(ownership === 1 && batch.mesh.userData.skyWater === true)
-      if (!batch.transparent) bundleChanged = true
+      if (batch.bundled) {
+        draws.update(batchIndex, count)
+        batch.mesh.visible = true
+      } else {
+        batch.mesh.geometry.setDrawRange(0, count)
+        batch.mesh.visible = count > 0 && !(ownership === 1 && batch.mesh.userData.skyWater === true)
+      }
     }
-    if (bundleChanged) {
-      ;(ownership === 0 ? scene.worldBundle : scene.skyWorldBundle).needsUpdate = true
-      this.#instrumentation?.invalidateBundle()
-    }
+    const indirectBytes = draws.flush()
+    this.#instrumentation?.indirectUpload(indirectBytes)
     if (ownership === 0) {
       this.#worldVisibilitySurfaces = surfaces
       this.#worldVisibilityIdentity = identity
