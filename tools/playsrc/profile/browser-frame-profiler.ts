@@ -80,6 +80,7 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
           const record = this.records.get(event.data?.id)
           if (!record) return
           record.finished = host.performance.now()
+          record.receivedBytes = event.data?.output?.byteLength ?? event.data?.payload?.byteLength ?? 0
           if (event.data?.timings) record.timings = event.data.timings
           this.records.delete(event.data.id)
           state.counters.workerPending = Math.max(0, state.counters.workerPending - 1)

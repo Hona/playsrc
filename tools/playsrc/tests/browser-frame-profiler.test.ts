@@ -55,4 +55,20 @@ describe("opt-in structured browser frame profiler", () => {
     expect(state.capabilities.longAnimationFrame).toBe(true)
     expect(state.longAnimationFrames[0]).toMatchObject({ duration: 80, blockingDuration: 22, styleAndLayoutMilliseconds: 20, tick: 8, displayFrame: 3, scripts: [{ url: "runtime.ts", function: "render", duration: 55 }] })
   })
+
+  test("records actual transferred Worker output bytes without cloning gameplay snapshots", () => {
+    class Worker {
+      listener?: (event: { data: unknown }) => void
+      addEventListener(_type: string, listener: (event: { data: unknown }) => void): void { this.listener = listener }
+      postMessage(_message: unknown): void {}
+    }
+    const browser = { ...host(), Worker }
+    const state = installBrowserFrameProfiler(browser)
+    state.active = true
+    const worker = new browser.Worker("gameplay.js")
+    worker.postMessage({ id: 7, kind: "models", batch: new Uint8Array(12) })
+    worker.listener!({ data: { id: 7, kind: "models", output: new ArrayBuffer(96) } })
+    expect(state.worker[0]).toMatchObject({ kind: "models", bytes: 12, receivedBytes: 96, finished: 20 })
+    expect(state.counters.workerPending).toBe(0)
+  })
 })
