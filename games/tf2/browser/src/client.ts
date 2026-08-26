@@ -648,6 +648,7 @@ export function mergePublicationSnapshots(snapshots: readonly Snapshot[]): Snaps
     projectileTimeline: all("projectileTimeline"),
     entityEvents: all("entityEvents"),
     events: all("events"),
+    combatDecals: all("combatDecals"),
     activities: all("activities"),
     lifecycleEvents: all("lifecycleEvents"),
     physicsRequests: all("physicsRequests"),

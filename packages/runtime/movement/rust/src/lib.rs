@@ -578,6 +578,13 @@ pub struct Trace {
     pub contents: u32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ImpactSurface {
+    pub game_material: u8,
+    pub surface_flags: u16,
+    pub face: Option<u32>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ObserverTarget {
     pub position: [f32; 3],
@@ -597,6 +604,15 @@ pub struct MoverMotion {
 
 pub trait Tracer {
     fn trace(&self, start: [f32; 3], end: [f32; 3], hull: Hull, mask: u32) -> Result<Trace, Error>;
+
+    fn impact_surface(
+        &self,
+        _start: [f32; 3],
+        _end: [f32; 3],
+        _mask: u32,
+    ) -> Result<Option<ImpactSurface>, Error> {
+        Ok(None)
+    }
 
     fn point_contents(&self, point: [f32; 3]) -> Result<u32, Error> {
         self.trace(

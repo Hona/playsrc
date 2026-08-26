@@ -535,6 +535,15 @@ pub struct CollisionResult {
 
 pub trait CollisionQuery {
     fn trace_batch(&mut self, requests: &[TraceRequest]) -> Result<Vec<CollisionResult>, Error>;
+
+    fn lighting_at(&mut self, position: [f32; 3]) -> Result<[u8; 3], Error> {
+        Err(Error::new(
+            ErrorCode::MissingQuery,
+            "particle-world",
+            0,
+            format!("lighting query at {position:?} is missing"),
+        ))
+    }
 }
 
 #[derive(Default)]
@@ -597,6 +606,7 @@ struct System {
     emitter_contexts: Vec<EmitterContext>,
     operator_contexts: Vec<OperatorContext>,
     controls: Vec<Option<ControlPoint>>,
+    local_lighting: Option<(i32, [f32; 3], [u8; 3])>,
     target_control_point: u8,
     particles: Vec<Particle>,
     children: Vec<System>,
@@ -776,7 +786,7 @@ impl ParticleWorld {
                 &mut queries,
                 collision,
             )?;
-            candidate.apply_event(event)?;
+            candidate.apply_event(event, collision)?;
             cursor = event.timestamp_seconds;
         }
         candidate.advance_interval(
@@ -853,7 +863,11 @@ impl ParticleWorld {
         Ok(())
     }
 
-    fn apply_event(&mut self, event: &Event) -> Result<(), Error> {
+    fn apply_event(
+        &mut self,
+        event: &Event,
+        collision: &mut impl CollisionQuery,
+    ) -> Result<(), Error> {
         if !self.event_identities.insert(event.identity) {
             return Err(Error::new(
                 ErrorCode::InvalidEvent,
@@ -884,6 +898,7 @@ impl ParticleWorld {
                     *owner_identity,
                     control_points,
                     event.timestamp_seconds,
+                    collision,
                 )?;
             }
             EventCommand::Replace {
@@ -920,6 +935,7 @@ impl ParticleWorld {
                     &self.registry,
                     self.limits,
                     &mut remaining,
+                    collision,
                 )?;
                 self.effects[index] = replacement;
             }
@@ -988,6 +1004,7 @@ impl ParticleWorld {
         owner_identity: Option<u32>,
         control_points: &[ControlPoint],
         timestamp: f32,
+        collision: &mut impl CollisionQuery,
     ) -> Result<(), Error> {
         if self.effects.len() >= self.limits.max_effects {
             return Err(Error::new(
@@ -1014,6 +1031,7 @@ impl ParticleWorld {
             &self.registry,
             self.limits,
             &mut remaining,
+            collision,
         )?;
         self.effects.push(effect);
         Ok(())
@@ -1111,13 +1129,14 @@ fn initialize_first_frame(
     registry: &Registry,
     limits: WorldLimits,
     remaining_particles: &mut usize,
+    collision: &mut impl CollisionQuery,
 ) -> Result<(), Error> {
     if system.delay_seconds > 0.0 {
         return Ok(());
     }
-    initialize_system_first_frame(system, registry, limits, remaining_particles)?;
+    initialize_system_first_frame(system, registry, limits, remaining_particles, collision)?;
     for child in &mut system.children {
-        initialize_first_frame(child, registry, limits, remaining_particles)?;
+        initialize_first_frame(child, registry, limits, remaining_particles, collision)?;
     }
     Ok(())
 }
@@ -1127,6 +1146,7 @@ fn initialize_system_first_frame(
     registry: &Registry,
     limits: WorldLimits,
     remaining_particles: &mut usize,
+    collision: &mut impl CollisionQuery,
 ) -> Result<(), Error> {
     let definition = registry
         .definition_by_uuid(system.definition_uuid)
@@ -1143,7 +1163,7 @@ fn initialize_system_first_frame(
         ));
     }
     for _ in 0..initial {
-        let particle = initialize_particle(system, definition, 0.0);
+        let particle = initialize_particle(system, definition, 0.0, collision)?;
         system.particles.push(particle);
         *remaining_particles -= 1;
     }
@@ -1263,6 +1283,7 @@ fn instantiate(
         emitter_contexts,
         operator_contexts,
         controls: state.controls.to_vec(),
+        local_lighting: None,
         target_control_point: state
             .controls
             .iter()
@@ -1296,7 +1317,7 @@ fn advance_system(
         return Ok(());
     }
     if system.first_frame {
-        initialize_system_first_frame(system, registry, limits, remaining_particles)?;
+        initialize_system_first_frame(system, registry, limits, remaining_particles, collision)?;
     }
     let dt = (local_to - local_from).max(0.0);
     system.current_step = dt;
@@ -1308,6 +1329,7 @@ fn advance_system(
         local_to,
         limits,
         remaining_particles,
+        collision,
     )?;
     if dt > 0.0 {
         system.simulated_frames = system.simulated_frames.saturating_add(1);
@@ -1353,6 +1375,7 @@ fn emit(
     to: f32,
     limits: WorldLimits,
     remaining_particles: &mut usize,
+    collision: &mut impl CollisionQuery,
 ) -> Result<(), Error> {
     if !system.emission_active {
         return Ok(());
@@ -1436,7 +1459,7 @@ fn emit(
             } else {
                 creation_start
             };
-            let particle = initialize_particle(system, definition, creation.min(to));
+            let particle = initialize_particle(system, definition, creation.min(to), collision)?;
             system.particles.push(particle);
             *remaining_particles -= 1;
         }
@@ -1444,7 +1467,12 @@ fn emit(
     Ok(())
 }
 
-fn initialize_particle(system: &mut System, definition: &Definition, creation: f32) -> Particle {
+fn initialize_particle(
+    system: &mut System,
+    definition: &Definition,
+    creation: f32,
+    collision: &mut impl CollisionQuery,
+) -> Result<Particle, Error> {
     let constant_color = color_attribute(definition, "color", [255; 4]);
     let mut particle = Particle {
         identity: 0,
@@ -1490,6 +1518,16 @@ fn initialize_particle(system: &mut System, definition: &Definition, creation: f
             || initializer
                 .identity
                 .eq_ignore_ascii_case("Remap Scalar to Vector")
+            || initializer
+                .identity
+                .eq_ignore_ascii_case("Move Particles Between 2 Control Points")
+            || initializer.identity.eq_ignore_ascii_case("Velocity Noise")
+            || initializer
+                .identity
+                .eq_ignore_ascii_case("Remap Control Point to Vector")
+            || initializer
+                .identity
+                .eq_ignore_ascii_case("Lifetime Pre-Age Noise")
         {
             continue;
         }
@@ -1555,11 +1593,42 @@ fn initialize_particle(system: &mut System, definition: &Definition, creation: f
         } else if initializer.identity.eq_ignore_ascii_case("Color Random") {
             let first = color_parameter(initializer, "color1", [255; 4]);
             let second = color_parameter(initializer, "color2", first);
+            let tint_percentage = float_parameter(initializer, "tint_perc", 0.0);
+            let tint = if tint_percentage != 0.0 {
+                let point = integer_parameter(initializer, "tint control point", 0);
+                let origin = control_at_time(system, point, system.local_time);
+                let threshold =
+                    float_parameter(initializer, "tint update movement threshold", 32.0);
+                let value = match system.local_lighting {
+                    Some((cached_point, previous, value))
+                        if cached_point == point
+                            && length_squared(sub(previous, origin)) < threshold * threshold =>
+                    {
+                        value
+                    }
+                    _ => {
+                        let value = collision.lighting_at(origin)?;
+                        system.local_lighting = Some((point, origin, value));
+                        value
+                    }
+                };
+                let minimum = color_parameter(initializer, "tint clamp min", [0; 4]);
+                let maximum = color_parameter(initializer, "tint clamp max", [255; 4]);
+                Some(std::array::from_fn::<_, 3, _>(|index| {
+                    value[index].clamp(minimum[index], maximum[index]) as f32 / 255.0
+                }))
+            } else {
+                None
+            };
             let random = next_random(system);
             for component in 0..3 {
                 particle.color[component] = (first[component] as f32
                     + (second[component] as f32 - first[component] as f32) * random)
                     / 255.0;
+                if let Some(value) = tint {
+                    particle.color[component] =
+                        mix(particle.color[component], value[component], tint_percentage);
+                }
             }
         } else if initializer.identity.eq_ignore_ascii_case("Rotation Random") {
             particle.roll = ranged(
@@ -1882,6 +1951,178 @@ fn initialize_particle(system: &mut System, definition: &Definition, creation: f
             if field == 0 {
                 velocity = [0.0; 3];
             }
+        } else if initializer
+            .identity
+            .eq_ignore_ascii_case("Move Particles Between 2 Control Points")
+        {
+            let point = integer_parameter(initializer, "end control point", 1);
+            let mut destination = control_at_time(system, point, creation);
+            let spread = float_parameter(initializer, "end spread", 0.0);
+            if spread > 0.0 {
+                let (direction, radius) = next_random_in_unit_sphere(system);
+                destination = add(destination, mul(direction, radius * spread));
+            }
+            let mut delta = sub(destination, particle.position);
+            let mut distance = length_squared(delta).sqrt();
+            let offset = float_parameter(initializer, "start offset", 0.0);
+            if offset > 0.0 {
+                particle.position = add(
+                    particle.position,
+                    mul(delta, offset / (distance + f32::EPSILON)),
+                );
+                delta = sub(destination, particle.position);
+                distance = length_squared(delta).sqrt();
+            }
+            let speed = mix(
+                float_parameter(initializer, "minimum speed", 1.0),
+                float_parameter(initializer, "maximum speed", 1.0),
+                next_random(system),
+            );
+            particle.lifetime_seconds = distance / (speed + f32::EPSILON);
+            velocity = if distance > 0.0 {
+                mul(delta, speed / distance)
+            } else {
+                [0.0; 3]
+            };
+        } else if initializer.identity.eq_ignore_ascii_case("Velocity Noise") {
+            let temporal = (particle.creation_seconds
+                + float_parameter(initializer, "time coordinate offset", 0.0))
+                * float_parameter(initializer, "time noise coordinate scale", 1.0);
+            let spatial = mul(
+                add(
+                    particle.position,
+                    vector_parameter(initializer, "spatial coordinate offset", [0.0; 3]),
+                ),
+                float_parameter(initializer, "spatial noise coordinate scale", 0.01),
+            );
+            let coordinate = spatial.map(|value| value + temporal);
+            let offsets = [
+                [0.0, 0.0, 0.0],
+                [100_000.5, 300_000.25, 9_000_000.75],
+                [110_000.25, 310_000.75, 9_100_000.5],
+            ];
+            let absolute = vector_parameter(initializer, "absolute value", [0.0; 3]);
+            let invert = vector_parameter(initializer, "invert abs value", [0.0; 3]);
+            let minimum = vector_parameter(initializer, "output minimum", [0.0; 3]);
+            let maximum = vector_parameter(initializer, "output maximum", [1.0; 3]);
+            let mut added = std::array::from_fn(|index| {
+                let mut noise = crate::source_noise::sample(add(coordinate, offsets[index]));
+                let scale = if absolute[index] != 0.0 {
+                    noise = noise.abs();
+                    1.0
+                } else {
+                    0.5
+                };
+                if invert[index] != 0.0 {
+                    noise = 1.0 - noise;
+                }
+                minimum[index]
+                    + (1.0 - scale) * (maximum[index] - minimum[index])
+                    + scale * (maximum[index] - minimum[index]) * noise
+            });
+            if bool_parameter(initializer, "apply velocity in local space (0/1)", false) {
+                let point = integer_parameter(initializer, "control point number", 0);
+                if let Some(orientation) = control_orientation(system, point) {
+                    added = rotate(orientation, added);
+                }
+            }
+            velocity = add(velocity, added);
+        } else if initializer
+            .identity
+            .eq_ignore_ascii_case("Lifetime Pre-Age Noise")
+        {
+            let temporal = (particle.creation_seconds
+                + float_parameter(initializer, "time coordinate offset", 0.0))
+                * float_parameter(initializer, "time noise coordinate scale", 1.0);
+            let spatial = mul(
+                add(
+                    particle.position,
+                    vector_parameter(initializer, "spatial coordinate offset", [0.0; 3]),
+                ),
+                float_parameter(initializer, "spatial noise coordinate scale", 1.0),
+            );
+            let mut noise = crate::source_noise::sample(spatial.map(|value| value + temporal));
+            let absolute = bool_parameter(initializer, "absolute value", false);
+            let scale = if absolute {
+                noise = noise.abs();
+                1.0
+            } else {
+                0.5
+            };
+            if bool_parameter(initializer, "invert absolute value", false) {
+                noise = 1.0 - noise;
+            }
+            let minimum = float_parameter(initializer, "start age minimum", 0.0);
+            let maximum = float_parameter(initializer, "start age maximum", 1.0);
+            let age = (minimum
+                + (1.0 - scale) * (maximum - minimum)
+                + scale * (maximum - minimum) * noise)
+                .clamp(0.0, 1.0);
+            particle.creation_seconds -= age * particle.lifetime_seconds;
+        } else if initializer
+            .identity
+            .eq_ignore_ascii_case("Remap Control Point to Vector")
+        {
+            let start = float_parameter(initializer, "emitter lifetime start time (seconds)", -1.0);
+            let end = float_parameter(initializer, "emitter lifetime end time (seconds)", -1.0);
+            if start != -1.0 && end != -1.0 && (creation < start || creation >= end) {
+                continue;
+            }
+            let input = control_at_time(
+                system,
+                integer_parameter(initializer, "input control point number", 0),
+                system.local_time,
+            );
+            let input_minimum = vector_parameter(initializer, "input minimum", [0.0; 3]);
+            let input_maximum = vector_parameter(initializer, "input maximum", [0.0; 3]);
+            let mut minimum = vector_parameter(initializer, "output minimum", [0.0; 3]);
+            let mut maximum = vector_parameter(initializer, "output maximum", [0.0; 3]);
+            let local = integer_parameter(initializer, "local space cp", -1);
+            if local >= 0
+                && let Some(orientation) = control_orientation(system, local)
+            {
+                minimum = rotate(orientation, minimum);
+                maximum = rotate(orientation, maximum);
+            }
+            let field = integer_parameter(initializer, "output field", 0);
+            let mut output = std::array::from_fn(|index| {
+                mix(
+                    minimum[index],
+                    maximum[index],
+                    remap(input[index], input_minimum[index], input_maximum[index]),
+                )
+            });
+            if bool_parameter(
+                initializer,
+                "output is scalar of initial random range",
+                false,
+            ) {
+                let initial = particle_vector(&particle, field).unwrap_or([0.0; 3]);
+                output = std::array::from_fn(|index| output[index] * initial[index]);
+            }
+            if field == 6 {
+                set_particle_vector(&mut particle, field, output);
+            } else {
+                let offset = bool_parameter(initializer, "offset position", false);
+                let accelerate = bool_parameter(initializer, "accelerate position", false);
+                if offset {
+                    output = add(
+                        output,
+                        particle_vector(&particle, field).unwrap_or([0.0; 3]),
+                    );
+                }
+                if accelerate {
+                    output = if offset {
+                        add(output, mul(output, system.current_step))
+                    } else {
+                        mul(output, system.current_step)
+                    };
+                }
+                set_particle_vector(&mut particle, field, output);
+                if field == 0 && !accelerate {
+                    velocity = [0.0; 3];
+                }
+            }
         }
     }
     particle.previous_position = sub(particle.position, mul(velocity, system.previous_step));
@@ -1890,7 +2131,7 @@ fn initialize_particle(system: &mut System, definition: &Definition, creation: f
     particle.initial_roll = particle.roll;
     particle.initial_color = particle.color;
     particle.initial_alpha = particle.alpha;
-    particle
+    Ok(particle)
 }
 
 fn operate(
@@ -2379,24 +2620,19 @@ fn constrain(
         {
             continue;
         }
-        if integer_parameter(constraint, "collision mode", 0) != 1 {
-            return Err(Error::new(
-                ErrorCode::UnsupportedFunction,
-                &definition.source,
-                0,
-                "the target Collision via traces declaration requires collision mode 1",
-            ));
+        let mode = integer_parameter(constraint, "collision mode", 0);
+        if mode != 0 {
+            update_collision_planes(
+                system,
+                constraint,
+                constraint_index,
+                effect_identity,
+                limits,
+                queries,
+                collision,
+                collision_cache,
+            )?;
         }
-        update_collision_planes(
-            system,
-            constraint,
-            constraint_index,
-            effect_identity,
-            limits,
-            queries,
-            collision,
-            collision_cache,
-        )?;
         let radius_scale = float_parameter(constraint, "radius scale", 1.0);
         let bounce = float_parameter(constraint, "amount of bounce", 0.0);
         let slide_scale = float_parameter(constraint, "amount of slide", 0.0);
@@ -2412,15 +2648,54 @@ fn constrain(
             );
             let mut intersection = 2.0_f32;
             let mut normal = [0.0; 3];
-            for plane in &collision_cache.planes {
-                let start_distance =
-                    dot(sub(particle.previous_position, plane.point), plane.normal);
-                let end_distance = dot(sub(end, plane.point), plane.normal);
-                if start_distance >= 0.0 && end_distance < 0.0 {
-                    let fraction = start_distance / (start_distance - end_distance);
-                    if fraction < intersection {
-                        intersection = fraction;
-                        normal = plane.normal;
+            if mode == 0 {
+                *queries += 1;
+                if *queries > limits.max_queries_per_advance {
+                    return Err(Error::new(
+                        ErrorCode::BoundExceeded,
+                        &definition.source,
+                        0,
+                        "particle collision queries exceed the configured limit",
+                    ));
+                }
+                let identity = hash(
+                    system.path_identity,
+                    hash(particle.identity as u64, constraint_index as u64),
+                );
+                let request = TraceRequest {
+                    identity,
+                    effect_identity,
+                    system_uuid: system.definition_uuid,
+                    particle_identity: particle.identity,
+                    start: particle.previous_position,
+                    end,
+                    radius: 0.0,
+                    brush_only: bool_parameter(constraint, "brush only", false),
+                    collision_group: string_parameter(constraint, "collision group", "NONE")
+                        .to_owned(),
+                };
+                let results = collision.trace_batch(&[request])?;
+                let result = results.first().ok_or_else(|| {
+                    Error::new(
+                        ErrorCode::MissingQuery,
+                        &definition.source,
+                        0,
+                        "particle trace is absent",
+                    )
+                })?;
+                intersection = result.fraction;
+                normal = result.normal;
+            } else {
+                for plane in &collision_cache.planes {
+                    let start_distance =
+                        dot(sub(particle.previous_position, plane.point), plane.normal);
+                    let end_distance = dot(sub(end, plane.point), plane.normal);
+                    if start_distance >= 0.0 && end_distance < 0.0 {
+                        let fraction = start_distance / (start_distance - end_distance);
+                        if fraction < intersection {
+                            intersection = fraction;
+                            normal = plane.normal;
+                        }
                     }
                 }
             }

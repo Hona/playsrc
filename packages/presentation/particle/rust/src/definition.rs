@@ -680,11 +680,14 @@ fn supported(category: FunctionCategory, identity: &str) -> bool {
             "Assign target CP",
             "Color Random",
             "Lifetime From Control Point Life Time",
+            "Lifetime Pre-Age Noise",
             "Lifetime Random",
+            "Move Particles Between 2 Control Points",
             "Position Modify Offset Random",
             "Position Within Box Random",
             "Position Within Sphere Random",
             "Radius Random",
+            "Remap Control Point to Vector",
             "Remap Initial Scalar",
             "Remap Scalar to Vector",
             "Rotation Random",
@@ -692,6 +695,7 @@ fn supported(category: FunctionCategory, identity: &str) -> bool {
             "Rotation Yaw Flip Random",
             "Sequence Random",
             "Trail Length Random",
+            "Velocity Noise",
         ],
         FunctionCategory::Emitter => &["emit_continuously", "emit_instantaneously"],
         FunctionCategory::Force => &["random force"],
@@ -743,8 +747,16 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
             "use local system",
             "output is scalar of initial random range",
             "only active within specified input range",
+            "apply velocity in local space (0/1)",
+            "offset position",
+            "accelerate position",
+            "invert absolute value",
         ]
         .contains(&name.as_str())
+            || (name == "absolute value"
+                && function
+                    .identity
+                    .eq_ignore_ascii_case("Lifetime Pre-Age Noise"))
         {
             matches!(value, Value::Bool(_))
         } else if [
@@ -758,6 +770,8 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
             "control point",
             "starting control point",
             "maximum end control point",
+            "end control point",
+            "input control point number",
             "local space cp",
             "input field",
             "output field",
@@ -794,8 +808,14 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
             "min force",
             "max force",
             "control point offset for fast collisions",
+            "spatial coordinate offset",
+            "invert abs value",
         ]
         .contains(&name.as_str())
+            || (name == "absolute value"
+                && !function
+                    .identity
+                    .eq_ignore_ascii_case("Lifetime Pre-Age Noise"))
             || ([
                 "oscillation rate min",
                 "oscillation rate max",
@@ -810,7 +830,15 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
                     .eq_ignore_ascii_case("Remap Scalar to Vector")
                     || function
                         .identity
-                        .eq_ignore_ascii_case("Remap Distance to Control Point to Vector")))
+                        .eq_ignore_ascii_case("Remap Distance to Control Point to Vector")
+                    || function.identity.eq_ignore_ascii_case("Velocity Noise")
+                    || function
+                        .identity
+                        .eq_ignore_ascii_case("Remap Control Point to Vector")))
+            || (["input minimum", "input maximum"].contains(&name.as_str())
+                && function
+                    .identity
+                    .eq_ignore_ascii_case("Remap Control Point to Vector"))
         {
             matches!(value, Value::Vector3(_))
         } else if [
@@ -847,8 +875,6 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
                 .eq_ignore_ascii_case("render_animated_sprites")
                 && (int_parameter(function, "orientation_type", 0) != 0
                     || int_parameter(function, "orientation control point", -1) >= 0))
-    } else if function.identity.eq_ignore_ascii_case("Color Random") {
-        float_parameter(function, "tint_perc", 0.0) != 0.0
     } else if function
         .identity
         .eq_ignore_ascii_case("Position Within Sphere Random")
@@ -876,7 +902,7 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
         .identity
         .eq_ignore_ascii_case("Collision via traces")
     {
-        int_parameter(function, "collision mode", 0) != 1
+        !matches!(int_parameter(function, "collision mode", 0), 0..=3)
     } else if function
         .identity
         .eq_ignore_ascii_case("Remap Initial Scalar")
@@ -1171,6 +1197,62 @@ fn accepted_parameter(function: &Function, name: &str) -> bool {
             "tint clamp min",
             "tint clamp max",
             "tint update movement threshold",
+        ]
+    } else if function
+        .identity
+        .eq_ignore_ascii_case("Move Particles Between 2 Control Points")
+    {
+        &[
+            "minimum speed",
+            "maximum speed",
+            "end spread",
+            "start offset",
+            "end control point",
+        ]
+    } else if function.identity.eq_ignore_ascii_case("Velocity Noise") {
+        &[
+            "control point number",
+            "time noise coordinate scale",
+            "spatial noise coordinate scale",
+            "time coordinate offset",
+            "spatial coordinate offset",
+            "absolute value",
+            "invert abs value",
+            "output minimum",
+            "output maximum",
+            "apply velocity in local space (0/1)",
+        ]
+    } else if function
+        .identity
+        .eq_ignore_ascii_case("Lifetime Pre-Age Noise")
+    {
+        &[
+            "time noise coordinate scale",
+            "spatial noise coordinate scale",
+            "time coordinate offset",
+            "spatial coordinate offset",
+            "absolute value",
+            "invert absolute value",
+            "start age minimum",
+            "start age maximum",
+        ]
+    } else if function
+        .identity
+        .eq_ignore_ascii_case("Remap Control Point to Vector")
+    {
+        &[
+            "emitter lifetime start time (seconds)",
+            "emitter lifetime end time (seconds)",
+            "input control point number",
+            "input minimum",
+            "input maximum",
+            "output field",
+            "output minimum",
+            "output maximum",
+            "output is scalar of initial random range",
+            "offset position",
+            "accelerate position",
+            "local space cp",
         ]
     } else if function
         .identity

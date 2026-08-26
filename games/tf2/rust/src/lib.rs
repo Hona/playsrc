@@ -600,6 +600,7 @@ pub enum Event {
     Damaged {
         amount: f32,
         health: f32,
+        origin: Option<[f32; 3]>,
     },
     Healed {
         amount: f32,
@@ -623,6 +624,8 @@ pub enum Event {
     HitscanFired {
         weapon: Weapon,
         pellets: u8,
+        owner: u32,
+        origin: [f32; 3],
     },
     HitscanImpact {
         weapon: Weapon,
@@ -632,9 +635,11 @@ pub enum Event {
         critical: bool,
         position: [f32; 3],
         damage: f32,
+        surface: Option<playsrc_movement::ImpactSurface>,
     },
     MeleeImpact {
         weapon: Weapon,
+        owner: u32,
         target: Option<u32>,
         position: [f32; 3],
         damage: f32,
@@ -3045,6 +3050,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             events.push(Event::Damaged {
                 amount: points as f32,
                 health: self.health as f32,
+                origin: None,
             });
         }
         self.hurt_applied.insert(trigger);
@@ -3362,6 +3368,24 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 Weapon::Wrench => (ballistics::WRENCH_DAMAGE, SoundDefinition::WrenchHitFlesh),
                 _ => unreachable!("only melee weapons reach this branch"),
             };
+            let position = if attack.target == PLAYER_IDENTITY {
+                add(self.movement.position, self.movement.view_offset)
+            } else if let Some(target) = self
+                .bots
+                .as_ref()
+                .and_then(|bots| bots.combat_player(attack.target))
+            {
+                target.world_center
+            } else {
+                return Ok(());
+            };
+            events.push(Event::MeleeImpact {
+                weapon: attack.weapon,
+                owner: attack.attacker,
+                target: Some(attack.target),
+                position,
+                damage: amount,
+            });
             self.apply_actor_damage(
                 bot::Damage {
                     attacker: attack.attacker,
@@ -3406,6 +3430,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
         };
         self.emit_entity_weapon_sound(sound, attack.position, attack.attacker);
         let (forward, right, up) = angle_vectors(attack.pitch_degrees, attack.yaw_degrees, 0.0);
+        events.push(Event::HitscanFired {
+            weapon: attack.weapon,
+            pellets: profile.pellets,
+            owner: attack.attacker,
+            origin: attack.eye_position,
+        });
         let mut damage = BTreeMap::<u32, (f32, [f32; 3])>::new();
         for pellet in 0..profile.pellets {
             let direction = profile.pellet_direction(
@@ -3452,6 +3482,29 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     attack.weapon == Weapon::Scattergun,
                 );
                 damage.entry(identity).or_insert((0.0, position)).0 += points;
+                events.push(Event::HitscanImpact {
+                    weapon: attack.weapon,
+                    target: Some(identity),
+                    pellet,
+                    hitgroup: 0,
+                    critical: false,
+                    position,
+                    damage: points,
+                    surface: None,
+                });
+            } else if wall.fraction < 1.0 || wall.start_solid {
+                events.push(Event::HitscanImpact {
+                    weapon: attack.weapon,
+                    target: None,
+                    pellet,
+                    hitgroup: 0,
+                    critical: false,
+                    position: wall.end,
+                    damage: profile.damage,
+                    surface: self
+                        .collision
+                        .impact_surface(attack.eye_position, end, MASK_SOLID)?,
+                });
             }
         }
         for (victim, (amount, position)) in damage {
@@ -3573,6 +3626,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
             events.push(Event::Damaged {
                 amount: result.health_damage as f32,
                 health: after as f32,
+                origin: self
+                    .bots
+                    .as_ref()
+                    .and_then(|bots| bots.combat_player(input.attacker))
+                    .map(|attacker| attacker.world_center),
             });
             if let Some(bots) = &mut self.bots {
                 bots.record_human_hit(
@@ -3898,6 +3956,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                         damage,
                         hitgroup: 0,
                         critical: false,
+                        surface: None,
                     });
                 }
             }
@@ -3983,6 +4042,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
         events.push(Event::HitscanFired {
             weapon,
             pellets: profile.pellets,
+            owner: PLAYER_IDENTITY,
+            origin,
         });
         let mut damage = BTreeMap::<u32, (f32, [f32; 3])>::new();
         for pellet in 0..profile.pellets {
@@ -4120,6 +4181,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     critical,
                     position,
                     damage,
+                    surface: if target.is_none() {
+                        self.collision.impact_surface(origin, end, MASK_SHOT)?
+                    } else {
+                        None
+                    },
                 });
             }
         }
@@ -4180,6 +4246,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         {
             events.push(Event::MeleeImpact {
                 weapon,
+                owner: PLAYER_IDENTITY,
                 target: Some(target),
                 position: origin,
                 damage: 0.0,
@@ -4300,6 +4367,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             self.emit_weapon_sound(definition, position);
             events.push(Event::MeleeImpact {
                 weapon,
+                owner: PLAYER_IDENTITY,
                 target,
                 position,
                 damage,
@@ -4447,6 +4515,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             }
             events.push(Event::MeleeImpact {
                 weapon: Weapon::Knife,
+                owner: PLAYER_IDENTITY,
                 target,
                 position,
                 damage,
@@ -4516,6 +4585,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
         let spread = 0.08 * spread_penalty;
         let mut phase = MapPhase::default();
         let mut victims = BTreeMap::<u32, (f32, [f32; 3])>::new();
+        events.push(Event::HitscanFired {
+            weapon: Weapon::Minigun,
+            pellets: 4,
+            owner: PLAYER_IDENTITY,
+            origin: source,
+        });
         for pellet in 0..4 {
             let mut random = UniformRandomStream::from_seed(((self.tick as i32) & 255) + pellet)
                 .expect("bounded Source bullet seed");
@@ -4553,12 +4628,43 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     spread,
                     accurate_after_seconds: f32::MAX,
                 };
-                victims.entry(target).or_insert((0.0, position)).0 +=
-                    profile.damage_at_distance(length(sub(position, source)), false);
+                let damage = profile.damage_at_distance(length(sub(position, source)), false);
+                victims.entry(target).or_insert((0.0, position)).0 += damage;
+                events.push(Event::HitscanImpact {
+                    weapon: Weapon::Minigun,
+                    target: Some(target),
+                    pellet: pellet as u8,
+                    hitgroup: 0,
+                    critical: false,
+                    position,
+                    damage,
+                    surface: None,
+                });
             } else if let Some(target) = trace.hit.and_then(|identity| u32::try_from(identity).ok())
                 && let Ok(damage) = self.map.damage(self.tick, target)
             {
                 phase.append(damage);
+                events.push(Event::HitscanImpact {
+                    weapon: Weapon::Minigun,
+                    target: (!self.collision.is_world(u64::from(target))).then_some(target),
+                    pellet: pellet as u8,
+                    hitgroup: 0,
+                    critical: false,
+                    position: trace.end,
+                    damage: 9.0 * damage_penalty,
+                    surface: self.collision.impact_surface(source, end, MASK_SOLID)?,
+                });
+            } else if trace.fraction < 1.0 || trace.start_solid {
+                events.push(Event::HitscanImpact {
+                    weapon: Weapon::Minigun,
+                    target: None,
+                    pellet: pellet as u8,
+                    hitgroup: 0,
+                    critical: false,
+                    position: trace.end,
+                    damage: 9.0 * damage_penalty,
+                    surface: self.collision.impact_surface(source, end, MASK_SOLID)?,
+                });
             }
         }
         for (victim, (amount, position)) in victims {
@@ -5413,6 +5519,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             events.push(Event::Damaged {
                 amount: damage.health_points as f32,
                 health: self.health as f32,
+                origin: Some(projectile.position),
             });
             let impulse = combat::self_blast_impulse(
                 class,
@@ -6534,7 +6641,8 @@ mod tests {
             event,
             Event::HitscanFired {
                 weapon: Weapon::Scattergun,
-                pellets: 10
+                pellets: 10,
+                ..
             }
         )));
         assert_eq!(
@@ -6590,7 +6698,8 @@ mod tests {
             event,
             Event::HitscanFired {
                 weapon: Weapon::Pistol,
-                pellets: 1
+                pellets: 1,
+                ..
             }
         )));
         assert_eq!(
@@ -6719,6 +6828,7 @@ mod tests {
             Event::HitscanFired {
                 weapon: Weapon::HeavyShotgun,
                 pellets: 10,
+                ..
             }
         )));
         assert_eq!(session.loadout[&Weapon::HeavyShotgun].clip, 5);
@@ -6793,7 +6903,8 @@ mod tests {
             event,
             Event::HitscanFired {
                 weapon: Weapon::Shotgun,
-                pellets: 10
+                pellets: 10,
+                ..
             }
         )));
         let impacts = snapshot
@@ -7092,7 +7203,8 @@ mod tests {
             event,
             Event::HitscanFired {
                 weapon: Weapon::EngineerShotgun,
-                pellets: 10
+                pellets: 10,
+                ..
             }
         )));
         let pellets = shotgun
@@ -7143,7 +7255,8 @@ mod tests {
             event,
             Event::HitscanFired {
                 weapon: Weapon::EngineerPistol,
-                pellets: 1
+                pellets: 1,
+                ..
             }
         )));
         let state = session.weapon_runtime(Weapon::EngineerPistol).unwrap();
@@ -7485,7 +7598,8 @@ mod tests {
             event,
             Event::HitscanFired {
                 weapon: Weapon::Shotgun,
-                pellets: 10
+                pellets: 10,
+                ..
             }
         )));
         assert_eq!(session.weapon_runtime(Weapon::Shotgun).unwrap().clip, 5);
