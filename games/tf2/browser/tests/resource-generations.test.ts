@@ -24,6 +24,8 @@ test("generation leases preserve current/old-frame owners through staged cancell
   resources.release(3)
   resources.release(4)
   expect(resources.release(4)).toBe(false)
+  expect(() => resources.adopt(2, section(300))).toThrow("not writable")
+  expect(resources.retain(4, 3, 0)).toBe(false)
   expect(freed).toEqual([200, 100])
 })
 

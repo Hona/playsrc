@@ -6,6 +6,7 @@ type Generation = { sections: Owner[]; byteLength?: number; sha256?: string }
 export class ResourceGenerations {
   readonly #generations = new Map<number, Generation>()
   readonly #release: (section: ResourceSection) => void
+  #retiredThrough = 0
 
   constructor(release: (section: ResourceSection) => void) { this.#release = release }
 
@@ -16,7 +17,7 @@ export class ResourceGenerations {
 
   writable(generation: number): boolean {
     const value = this.get(generation)
-    return Number.isSafeInteger(generation) && generation > 0 && generation <= 0xffff_ffff
+    return Number.isSafeInteger(generation) && generation > this.#retiredThrough && generation <= 0xffff_ffff
       && (!value || (value.sha256 === undefined && value.sections.length < 1024))
   }
 
@@ -43,6 +44,8 @@ export class ResourceGenerations {
   }
 
   release(generation: number): boolean {
+    if (!Number.isSafeInteger(generation) || generation < 1 || generation > 0xffff_ffff) return false
+    this.#retiredThrough = Math.max(this.#retiredThrough, generation)
     const value = this.get(generation)
     if (!value) return false
     this.#generations.delete(generation)

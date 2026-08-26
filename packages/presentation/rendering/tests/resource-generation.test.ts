@@ -54,3 +54,38 @@ test("evicted GPU resources survive until their submitted work completes", async
   expect(disposed).toBe(1)
   expect(generation.snapshot()).toMatchObject({ resources: 0, disposals: 1 })
 })
+
+test("randomized cancel, old-frame completion and device-loss retirement never dispose resources twice", async () => {
+  let seed = 0x71c0ffee
+  const random = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed }
+  for (let scene = 1; scene <= 200; scene += 1) {
+    const owner = new OwnedResourceGeneration(1 + Math.floor(scene / 20), scene)
+    const counts = new Array(1 + random() % 12).fill(0)
+    const resources = counts.map((_, index) => owner.add({ dispose() { counts[index] += 1 } }))
+    if (random() % 5 === 0) {
+      // Cancelled staging never became eligible for an old submitted frame.
+      owner.dispose()
+    } else {
+      owner.activate()
+      let complete!: () => void
+      let lose!: () => void
+      const submitted = new Promise<void>((resolve, reject) => {
+        complete = resolve
+        lose = () => reject(new Error("device lost"))
+      })
+      for (const resource of resources) if (random() % 2 === 0) owner.releaseAfter(resource, submitted)
+      const retired = owner.retire(submitted)
+      await Promise.resolve()
+      expect(counts.every((count) => count === 0)).toBe(true)
+      if (random() % 3 === 0) lose()
+      else complete()
+      await retired
+      complete()
+      await Promise.resolve()
+      await Promise.resolve()
+    }
+    owner.dispose()
+    expect(counts.every((count) => count === 1)).toBe(true)
+    expect(owner.snapshot()).toMatchObject({ state: "Disposed", resources: 0, disposals: counts.length })
+  }
+})

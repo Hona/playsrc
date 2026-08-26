@@ -616,6 +616,7 @@ export class Tf2Application {
   #nextBotStop = false
   #generation = 0
   #reservedGeneration = 0
+  #catalogReplacement?: Promise<void>
   #yaw = 0
   #pitch = 0
   #pointerMovementX = 0
@@ -3240,6 +3241,25 @@ export class Tf2Application {
       return
     }
     const operation = this.#nextOperation()
+    const previous = this.#catalogReplacement
+    let complete!: () => void
+    const retiring = new Promise<void>((resolve) => { complete = resolve })
+    this.#catalogReplacement = retiring
+    try {
+      // Supersede immediately, but let the previous candidate retire before borrowing its
+      // active source owner or staging another world. There is only one pending world.
+      await previous
+      if (!this.#operations.current(operation)) return
+      await this.#switchCatalogMapOperation(target, operation)
+    } finally {
+      complete()
+      if (this.#catalogReplacement === retiring) this.#catalogReplacement = undefined
+    }
+  }
+
+  async #switchCatalogMapOperation(target: BrowserTargetConfiguration, operation: ApplicationOperation): Promise<void> {
+    this.#requireOperation(operation)
+    if (!this.#configuration || !this.#resourceCatalog || !this.#client || !this.#renderer || !this.#loaded) return
     const previousGeneration = this.#generation
     const previousBlockers = new Set(this.#blockers)
     let resourceGeneration: number | undefined
@@ -3376,7 +3396,7 @@ export class Tf2Application {
     this.#preparedPresentation=undefined
     this.#requiredParticleDisplayFrames.reset()
     this.#nextSimulationSampleSeconds=0
-    await this.#displayTask
+    await Promise.all([this.#displayTask, this.#classSelectionRenderTask, this.#teamSelectionRenderTask])
     if (operation) this.#requireOperation(operation)
     const generation = candidate?.dependencies.generation ?? this.#reserveGeneration()
     const profile = this.#renderLevel === 2 ? 1 : 0
@@ -5407,7 +5427,7 @@ export class Tf2Application {
     this.#viewmodelSequenceCache.clear()
     this.#hudContext = undefined
     this.#hudContextIdentity = -1
-    await this.#displayTask
+    await Promise.all([this.#displayTask, this.#classSelectionRenderTask, this.#teamSelectionRenderTask])
     await this.#client?.shutdown().catch(() => {})
     this.#client = undefined
     this.#cache?.close()
