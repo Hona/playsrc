@@ -194,17 +194,12 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         borrowedModelSourceBytes: candidate.playsrc_memory_bytes(2),
         copiedModelSourceBytes: candidate.playsrc_memory_bytes(3),
         modelSourceSectionBytes: candidate.playsrc_memory_bytes(4),
-        resourceBytes: [...new Set([...resourceSets.values()].flatMap((retained) => retained.sections))]
-          .reduce((total, section) => total + section.length, 0),
-        resourceReferencedBytes: [...resourceSets.values()].reduce((total, retained) => total + retained.sections.reduce((sum, section) => sum + section.length, 0), 0),
-        sharedResourceBytes: [...new Set([...resourceSets.values()].flatMap((retained) => retained.sections))]
-          .filter((section) => section.references > 1).reduce((total, section) => total + section.length, 0),
-        resourceSections: [...resourceSets.entries()].map(([generation, retained]) => Object.freeze({
-          generation,
-          owner: active?.generation === generation ? "active" : pending?.generation === generation ? "pending" : "admitting",
-          exclusiveBytes: retained.sections.filter((section) => section.references === 1).reduce((sum, section) => sum + section.length, 0),
-          sharedBytes: retained.sections.filter((section) => section.references > 1).reduce((sum, section) => sum + section.length, 0),
-          bytes: retained.sections.map((section) => section.length),
+        resourceBytes: resourceSets.residency().uniqueBytes,
+        resourceReferencedBytes: resourceSets.residency().referencedBytes,
+        sharedResourceBytes: resourceSets.residency().sharedBytes,
+        resourceSections: resourceSets.residency().generations.map((owner) => Object.freeze({
+          ...owner,
+          owner: active?.generation === owner.generation ? "active" : pending?.generation === owner.generation ? "pending" : "admitting",
         })),
         shared: candidate.memory.buffer instanceof SharedArrayBuffer,
       }),
