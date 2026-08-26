@@ -1,3 +1,5 @@
+import { sha256 } from "@noble/hashes/sha2.js"
+
 const LIMIT = 512 * 1024 * 1024
 export type ModelArtifact = Readonly<{
   identity: string
@@ -503,19 +505,24 @@ class Reader {
     if (n > max) throw new ArtifactError("field limit")
     return this.take(n)
   }
+  decode(value: Uint8Array): string {
+    return this.decoder.decode(value.buffer instanceof SharedArrayBuffer ? value.slice() : value)
+  }
   text() {
-    return this.decoder.decode(this.blob(4096))
+    return this.decode(this.blob(4096))
   }
 }
 const hex = (bytes: Uint8Array) => Array.from(bytes, (v) => v.toString(16).padStart(2, "0")).join("")
-const digest = async (bytes: Uint8Array) => hex(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)))
+const digest = async (bytes: Uint8Array) => bytes.buffer instanceof SharedArrayBuffer
+  ? hex(sha256(bytes))
+  : hex(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)))
 function parseEnvironment(
   bytes: Uint8Array,
   resources: ReadonlyMap<string, Uint8Array>,
   sharedTextures: Map<string, AuthoredTextureArtifact>,
 ): EnvironmentArtifact {
   const r = new Reader(bytes)
-  if (r.decoder.decode(r.take(4)) !== "PENV" || r.u32() !== 6) throw new ArtifactError("environment identity")
+  if (r.decode(r.take(4)) !== "PENV" || r.u32() !== 6) throw new ArtifactError("environment identity")
   const profile = r.u8()
   if ((profile !== 0 && profile !== 1) || r.u8() || r.u8() || r.u8()) throw new ArtifactError("environment profile")
   const identity = hex(r.take(32)),
@@ -888,11 +895,11 @@ function parseEnvironment(
 }
 
 function magic(r: Reader, value: string): void {
-  if (r.decoder.decode(r.take(4)) !== value || r.u32() !== 1) throw new ArtifactError(`${value} identity`)
+  if (r.decode(r.take(4)) !== value || r.u32() !== 1) throw new ArtifactError(`${value} identity`)
 }
 
 function parseMaterialStates(r: Reader): ReadonlyMap<string, StaticMaterialState> {
-  if (r.decoder.decode(r.take(4)) !== "PMST" || r.u32() !== 2) throw new ArtifactError("PMST identity")
+  if (r.decode(r.take(4)) !== "PMST" || r.u32() !== 2) throw new ArtifactError("PMST identity")
   const states = new Map<string, StaticMaterialState>()
   for (let count = r.u32(); count > 0; count--) {
     const identity = r.text().toLowerCase()
@@ -978,7 +985,7 @@ function soundNode(r: Reader): SoundScriptNode {
 }
 
 function parseAudio(r: Reader): AudioArtifact {
-  if (r.decoder.decode(r.take(4)) !== "PAUD" || r.u32() !== 2) throw new ArtifactError("PAUD identity")
+  if (r.decode(r.take(4)) !== "PAUD" || r.u32() !== 2) throw new ArtifactError("PAUD identity")
   const mixerSha256 = hex(r.take(32)), mixerGain = r.f32(), count = r.u32()
   if (mixerGain < 0 || count < 1 || count > 5) throw new ArtifactError("audio mixer or document count")
   const documents = Array.from({ length: count }, () => Object.freeze({
@@ -993,7 +1000,7 @@ function parseAudio(r: Reader): AudioArtifact {
 }
 
 function parseOccurrenceMatrices(r: Reader): readonly ModelOccurrenceMatrix[] {
-  if (r.decoder.decode(r.take(4)) !== "PMTX" || r.u32() !== 2) throw new ArtifactError("PMTX identity")
+  if (r.decode(r.take(4)) !== "PMTX" || r.u32() !== 2) throw new ArtifactError("PMTX identity")
   const output = Array.from({ length: r.u32() }, () => {
     const entity = r.u32(), model = r.text(),skin=r.i32(),body=r.i32(),origin=tuple3(r),angles=tuple3(r), matrix = new Float32Array(12)
     for (let index = 0; index < matrix.length; index++) matrix[index] = r.f32()
@@ -1203,7 +1210,7 @@ function parseAuthoredTextures(
   resources: ReadonlyMap<string, Uint8Array>,
   sharedTextures: Map<string, AuthoredTextureArtifact>,
 ): ReadonlyMap<string, AuthoredTextureArtifact> {
-  if (r.decoder.decode(r.take(4)) !== "PMIP" || r.u32() !== 2) throw new ArtifactError("PMIP identity")
+  if (r.decode(r.take(4)) !== "PMIP" || r.u32() !== 2) throw new ArtifactError("PMIP identity")
   const output = new Map<string, AuthoredTextureArtifact>()
   for (let count = r.u32(); count > 0; count--) {
     const texture = parseModelAuthoredTextureRecord(r, resources, sharedTextures)
@@ -1215,7 +1222,7 @@ function parseAuthoredTextures(
 
 function parseStaticPropVhv(bytes:Uint8Array,expectedSha256:string):StaticPropArtifact["vhv"]{
   const r=new Reader(bytes)
-  if(r.decoder.decode(r.take(4))!=="PVHA"||r.u32()!==2)throw new ArtifactError("static prop VHV identity")
+  if(r.decode(r.take(4))!=="PVHA"||r.u32()!==2)throw new ArtifactError("static prop VHV identity")
   const count=r.u32();if(count>8192)throw new ArtifactError("static prop VHV count")
   const objects:StaticPropArtifact["vhv"][number][]=[];let previous=-1
   for(let index=0;index<count;index++){
@@ -1233,7 +1240,7 @@ function parseStaticPropVhv(bytes:Uint8Array,expectedSha256:string):StaticPropAr
 
 function parseStaticProps(r: Reader, expectedModelCount: number,models:readonly string[],resources:ReadonlyMap<string,Uint8Array>): StaticPropArtifact {
   const start = r.offset
-  if (r.decoder.decode(r.take(4)) !== "PSPA" || r.u32() !== 1) throw new ArtifactError("static prop identity")
+  if (r.decode(r.take(4)) !== "PSPA" || r.u32() !== 1) throw new ArtifactError("static prop identity")
   const aggregateSha256 = hex(r.take(32)), modelCount = r.u32(), count = r.u32()
   if (modelCount !== expectedModelCount || count > 65_536) throw new ArtifactError("static prop count")
   const source=new Uint32Array(count),dictionaryModel=new Uint32Array(count),presentationModel=new Uint32Array(count),transform=new Float32Array(count*6),skin=new Int32Array(count),body=new Uint32Array(count),lod=new Uint32Array(count),fades=new Float32Array(count*3),flags=new Uint32Array(count),solidity=new Uint8Array(count),ownership=new Uint8Array(count),lightingKind=new Uint8Array(count),lightingOrigin=new Float32Array(count*3),leafOffsets=new Uint32Array(count+1),vhvObjects=new Uint32Array(count*2),runtimeAmbient=new Float32Array(count*18),runtimeLightOffsets=new Uint32Array(count+1),leafValues:number[]=[],areaValues:number[]=[],runtimeLights:StaticPropArtifact["runtimeLights"][number][]=[]
@@ -1270,7 +1277,7 @@ function parseStaticProps(r: Reader, expectedModelCount: number,models:readonly 
   }
   leafOffsets[count]=leafValues.length;runtimeLightOffsets[count]=runtimeLights.length
   const sectionLength = r.offset - start
-  if (r.u32() !== sectionLength || r.decoder.decode(r.take(4)) !== "PSPF") throw new ArtifactError("static prop footer")
+  if (r.u32() !== sectionLength || r.decode(r.take(4)) !== "PSPF") throw new ArtifactError("static prop footer")
   const aggregate=resources.get("derived/static-prop-lighting.pvha")
   if(count===0&&aggregateSha256!=="0".repeat(64))throw new ArtifactError("empty static prop VHV identity")
   if(count!==0&&!aggregate)throw new ArtifactError("static prop VHV aggregate missing")
@@ -1280,7 +1287,7 @@ function parseStaticProps(r: Reader, expectedModelCount: number,models:readonly 
 }
 export async function parsePresentationArtifacts(bytes: Uint8Array, resources: ReadonlyMap<string, Uint8Array>): Promise<PresentationArtifacts> {
   const r = new Reader(bytes)
-  if (r.decoder.decode(r.take(4)) !== "PTF2" || r.u32() !== 14) throw new ArtifactError("artifact identity")
+  if (r.decode(r.take(4)) !== "PTF2" || r.u32() !== 14) throw new ArtifactError("artifact identity")
   const modelCount = r.u32(),
     directionalCount = r.u32(),
     particleMaterialCount = r.u32(),brushModelCount=r.u32()
@@ -1389,7 +1396,7 @@ export async function parsePresentationArtifacts(bytes: Uint8Array, resources: R
     return Object.freeze({ ...record, authored })
   })
   const materialStates = parseMaterialStates(r)
-  if (r.decoder.decode(r.bytes.subarray(r.offset, r.offset + 4)) !== "PPTM") {
+  if (r.decode(r.bytes.subarray(r.offset, r.offset + 4)) !== "PPTM") {
     throw new ArtifactError(`material state boundary ${r.offset}:${hex(r.bytes.subarray(r.offset, r.offset + 16))}`)
   }
   const particleTextures = parseParticleTextures(r)

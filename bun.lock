@@ -36,6 +36,7 @@
     "games/tf2/browser": {
       "name": "@playsrc/game-tf2-browser",
       "dependencies": {
+        "@noble/hashes": "2.2.0",
         "@playsrc/asset-store": "workspace:*",
         "@playsrc/particle": "workspace:*",
         "@playsrc/rendering": "workspace:*",
