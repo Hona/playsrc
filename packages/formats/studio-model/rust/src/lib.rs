@@ -1,8 +1,9 @@
 use std::{
     borrow::Cow,
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fmt,
     ops::Range,
+    sync::{Arc, Mutex},
 };
 
 mod eye;
@@ -262,12 +263,129 @@ pub struct Animation {
     pub sections: Vec<AnimationSection>,
     pub frames: Vec<AnimationFrame>,
     pub compact_frames: Vec<u8>,
+    pub authored_frames: Option<Arc<AuthoredAnimationFrames>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AnimationFrame {
     pub translations: Vec<Vector3>,
     pub rotations: Vec<[Float32; 4]>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct AuthoredAnimationContext {
+    mdl: Arc<[u8]>,
+    ani: Option<Arc<[u8]>>,
+    blocks: Arc<[Range<usize>]>,
+    bones: Arc<[Bone]>,
+    identity: String,
+}
+
+pub struct AuthoredAnimationFrames {
+    context: Arc<AuthoredAnimationContext>,
+    source: AnimationSource,
+    decoded: Mutex<HashMap<usize, Arc<AnimationFrame>>>,
+}
+
+impl fmt::Debug for AuthoredAnimationFrames {
+    fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result {
+        output
+            .debug_struct("AuthoredAnimationFrames")
+            .field("identity", &self.context.identity)
+            .field("source", &self.source)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for AuthoredAnimationFrames {
+    fn eq(&self, other: &Self) -> bool {
+        self.context == other.context && self.source == other.source
+    }
+}
+
+impl Eq for AuthoredAnimationFrames {}
+
+impl Animation {
+    pub fn authored_section_tracks(&self, section: usize) -> Result<Vec<AnimationTrack>, Error> {
+        let retained = self.authored_frames.as_ref().ok_or_else(|| {
+            invalid_reference(&self.source_identity, self.animation_offset.max(0) as usize)
+        })?;
+        let selected = self.sections.get(section).ok_or_else(|| {
+            invalid_reference(
+                &retained.context.identity,
+                retained.source.descriptor_offset,
+            )
+        })?;
+        if selected.frame_count == 0 {
+            return Ok(Vec::new());
+        }
+        let (bytes, offset, _) = animation_data(
+            &retained.context.mdl,
+            retained.context.ani.as_deref(),
+            &retained.context.blocks,
+            self,
+            &retained.source,
+            selected.first_frame,
+            &retained.context.identity,
+        )?;
+        parse_animation_tracks(
+            bytes,
+            offset,
+            selected.frame_count,
+            &retained.context.bones,
+            &retained.context.identity,
+        )
+    }
+
+    pub fn authored_frame(&self, frame: usize) -> Result<AnimationFrame, Error> {
+        let retained = self.authored_frames.as_ref().ok_or_else(|| {
+            invalid_reference(&self.source_identity, self.animation_offset.max(0) as usize)
+        })?;
+        if frame >= self.frame_count as usize {
+            return Err(invalid_reference(
+                &retained.context.identity,
+                retained.source.descriptor_offset,
+            ));
+        }
+        if let Some(decoded) = retained
+            .decoded
+            .lock()
+            .expect("authored animation frame cache")
+            .get(&frame)
+            .cloned()
+        {
+            return Ok((*decoded).clone());
+        }
+        let (bytes, offset, local_frame) = animation_data(
+            &retained.context.mdl,
+            retained.context.ani.as_deref(),
+            &retained.context.blocks,
+            self,
+            &retained.source,
+            frame,
+            &retained.context.identity,
+        )?;
+        let mut cursors = AnimationValueCursors::new();
+        let mut visited = vec![0; retained.context.bones.len()];
+        let decoded = Arc::new(decode_frame(
+            bytes,
+            offset,
+            local_frame,
+            &mut AnimationFrameDecoder {
+                bones: &retained.context.bones,
+                flags: self.flags,
+                identity: &retained.context.identity,
+                value_cursors: &mut cursors,
+                visited_bones: &mut visited,
+                visit_generation: 1,
+            },
+        )?);
+        let mut frames = retained
+            .decoded
+            .lock()
+            .expect("authored animation frame cache");
+        Ok((**frames.entry(frame).or_insert(decoded)).clone())
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -610,6 +728,7 @@ struct Mdl {
     animation_sources: Vec<AnimationSource>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct AnimationSource {
     descriptor_offset: usize,
     data_offset: i32,
@@ -685,6 +804,8 @@ struct LoadContext<'a, 'source> {
     limits: Limits,
     included_models: usize,
     dependency_count: usize,
+    authored_animation: bool,
+    verified_hashes: Option<&'a BTreeMap<String, [u8; 32]>>,
 }
 
 pub fn load(
@@ -701,11 +822,42 @@ pub fn load(
         limits,
         included_models: 0,
         dependency_count: 0,
+        authored_animation: false,
+        verified_hashes: None,
     };
     load_with_chain(
         identity.into(),
         profile,
         mdl_bytes,
+        None,
+        Vec::new(),
+        &mut context,
+    )
+}
+
+pub fn load_authored(
+    identity: impl Into<String>,
+    profile: Profile,
+    vtx_variant: VtxVariant,
+    mdl_bytes: Arc<[u8]>,
+    responses: &[DependencyResponse<'_>],
+    verified_hashes: &BTreeMap<String, [u8; 32]>,
+    limits: Limits,
+) -> Result<Load, Error> {
+    let mut context = LoadContext {
+        vtx_variant,
+        responses,
+        limits,
+        included_models: 0,
+        dependency_count: 0,
+        authored_animation: true,
+        verified_hashes: Some(verified_hashes),
+    };
+    load_with_chain(
+        identity.into(),
+        profile,
+        &mdl_bytes,
+        Some(&mdl_bytes),
         Vec::new(),
         &mut context,
     )
@@ -715,6 +867,7 @@ fn load_with_chain(
     identity: String,
     profile: Profile,
     mdl_bytes: &[u8],
+    authored_source: Option<&Arc<[u8]>>,
     mut dependency_chain: Vec<String>,
     context: &mut LoadContext<'_, '_>,
 ) -> Result<Load, Error> {
@@ -764,11 +917,18 @@ fn load_with_chain(
     dependency_chain.push(identity.clone());
     let mut aggregate = mdl_bytes.len();
     let mut root = parse_mdl(&identity, profile, mdl_bytes, limits)?;
+    let root_hash = if let Some(verified) = context.verified_hashes {
+        *verified
+            .get(&identity)
+            .ok_or_else(|| invalid_reference(&identity, 0))?
+    } else {
+        presentation::content_sha256(mdl_bytes)
+    };
     root.document.model_dependencies.push(ModelDependency {
         requester: identity.clone(),
         role: ModelDependencyRole::RootModel,
         logical_path: identity.clone(),
-        sha256: Some(presentation::content_sha256(mdl_bytes)),
+        sha256: Some(root_hash),
         byte_length: mdl_bytes.len(),
     });
     let stem = identity
@@ -867,6 +1027,7 @@ fn load_with_chain(
     let mut parsed_vvd = None;
     let mut parsed_vtx = None;
     let mut ani_bytes = None;
+    let mut authored_ani = None;
     let mut included_documents = Vec::new();
     let mut nested_requests = Vec::new();
     for request in requests {
@@ -874,6 +1035,20 @@ fn load_with_chain(
             .iter()
             .find(|response| response_matches(response, &request))
             .expect("all requests matched");
+        let response_hash = response
+            .bytes
+            .as_ref()
+            .map(|bytes| {
+                if let Some(verified) = context.verified_hashes {
+                    verified
+                        .get(&response.logical_path)
+                        .copied()
+                        .ok_or_else(|| invalid_reference(&response.logical_path, 0))
+                } else {
+                    Ok(presentation::content_sha256(bytes))
+                }
+            })
+            .transpose()?;
         document.model_dependencies.push(ModelDependency {
             requester: response.requester.clone(),
             role: match response.role {
@@ -884,7 +1059,7 @@ fn load_with_chain(
                 DependencyRole::Physics => ModelDependencyRole::Physics,
             },
             logical_path: response.logical_path.clone(),
-            sha256: response.bytes.as_deref().map(presentation::content_sha256),
+            sha256: response_hash,
             byte_length: response.bytes.as_ref().map_or(0, |bytes| bytes.len()),
         });
         let Some(bytes) = &response.bytes else {
@@ -977,16 +1152,23 @@ fn load_with_chain(
                     ));
                 }
                 ani_bytes = Some(bytes.as_ref());
+                if context.authored_animation {
+                    authored_ani = Some(Arc::<[u8]>::from(bytes.as_ref()));
+                }
             }
             DependencyRole::IncludeModel => {
                 let include_profile = profile_for_version(
                     i32_at(bytes, 4, &response.logical_path)?,
                     &response.logical_path,
                 )?;
+                let authored_include = context
+                    .authored_animation
+                    .then(|| Arc::<[u8]>::from(bytes.as_ref()));
                 match load_with_chain(
                     response.logical_path.clone(),
                     include_profile,
                     bytes,
+                    authored_include.as_ref(),
                     dependency_chain.clone(),
                     context,
                 )? {
@@ -1021,6 +1203,17 @@ fn load_with_chain(
         bones: &document.bones,
         identity: &identity,
         limits,
+        authored: context.authored_animation.then(|| {
+            Arc::new(AuthoredAnimationContext {
+                mdl: authored_source
+                    .cloned()
+                    .unwrap_or_else(|| Arc::from(mdl_bytes)),
+                ani: authored_ani,
+                blocks: document.animation_blocks.clone().into(),
+                bones: document.bones.clone().into(),
+                identity: identity.clone(),
+            })
+        }),
     };
     decode_animation_frames(
         &mut document.animations,
@@ -1551,6 +1744,7 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
             sections: Vec::new(),
             frames: Vec::new(),
             compact_frames: Vec::new(),
+            authored_frames: None,
         });
         animation_sources.push(AnimationSource {
             descriptor_offset: offset,
@@ -2745,6 +2939,7 @@ struct AnimationDecodeContext<'a> {
     bones: &'a [Bone],
     identity: &'a str,
     limits: Limits,
+    authored: Option<Arc<AuthoredAnimationContext>>,
 }
 
 #[derive(Clone, Copy)]
@@ -2785,30 +2980,35 @@ fn decode_animation_frames(
                 Some(source.descriptor_offset + 16..source.descriptor_offset + 20),
             ));
         }
-        let mut frames = Vec::with_capacity(animation.frame_count as usize);
-        let mut value_cursors = AnimationValueCursors::new();
-        let mut visited_bones = vec![0_usize; context.bones.len()];
-        for frame in 0..animation.frame_count as usize {
-            let (data, offset, local_frame) = animation_data(
-                context.mdl,
-                context.ani,
-                context.blocks,
-                animation,
-                source,
-                frame,
-                context.identity,
-            )?;
-            frames.push(decode_frame(
-                data,
-                offset,
-                local_frame,
-                context.bones,
-                animation.flags,
-                context.identity,
-                &mut value_cursors,
-                &mut visited_bones,
-                frame + 1,
-            )?);
+        let mut frames = Vec::new();
+        if context.authored.is_none() {
+            frames.reserve(animation.frame_count as usize);
+            let mut value_cursors = AnimationValueCursors::new();
+            let mut visited_bones = vec![0_usize; context.bones.len()];
+            for frame in 0..animation.frame_count as usize {
+                let (data, offset, local_frame) = animation_data(
+                    context.mdl,
+                    context.ani,
+                    context.blocks,
+                    animation,
+                    source,
+                    frame,
+                    context.identity,
+                )?;
+                frames.push(decode_frame(
+                    data,
+                    offset,
+                    local_frame,
+                    &mut AnimationFrameDecoder {
+                        bones: context.bones,
+                        flags: animation.flags,
+                        identity: context.identity,
+                        value_cursors: &mut value_cursors,
+                        visited_bones: &mut visited_bones,
+                        visit_generation: frame + 1,
+                    },
+                )?);
+            }
         }
         let section_count = if animation.section_frame_count > 0 {
             source.sections.len()
@@ -2817,38 +3017,41 @@ fn decode_animation_frames(
         };
         let mut sections = Vec::with_capacity(section_count);
         for section_index in 0..section_count {
-            let selected: Vec<_> = (0..animation.frame_count as usize)
-                .filter(|&frame| animation_section_index(animation, frame) == section_index)
-                .collect();
+            let selected = animation_section_span(animation, section_index);
             let (block, data_offset) = if animation.section_frame_count > 0 {
                 source.sections[section_index]
             } else {
                 (animation.animation_block, source.data_offset)
             };
-            let (first_frame, frame_count, tracks) = if let Some(&first_frame) = selected.first() {
-                let (data, offset, _) = animation_data(
-                    context.mdl,
-                    context.ani,
-                    context.blocks,
-                    animation,
-                    source,
-                    first_frame,
-                    context.identity,
-                )?;
-                (
-                    first_frame,
-                    selected.len(),
-                    parse_animation_tracks(
-                        data,
-                        offset,
-                        selected.len(),
-                        context.bones,
+            let (first_frame, frame_count, tracks) =
+                if let Some((first_frame, frame_count)) = selected {
+                    let (data, offset, _) = animation_data(
+                        context.mdl,
+                        context.ani,
+                        context.blocks,
+                        animation,
+                        source,
+                        first_frame,
                         context.identity,
-                    )?,
-                )
-            } else {
-                (0, 0, Vec::new())
-            };
+                    )?;
+                    (
+                        first_frame,
+                        frame_count,
+                        if context.authored.is_some() {
+                            Vec::new()
+                        } else {
+                            parse_animation_tracks(
+                                data,
+                                offset,
+                                frame_count,
+                                context.bones,
+                                context.identity,
+                            )?
+                        },
+                    )
+                } else {
+                    (0, 0, Vec::new())
+                };
             sections.push(AnimationSection {
                 index: section_index,
                 first_frame,
@@ -2860,8 +3063,34 @@ fn decode_animation_frames(
         }
         animation.frames = frames;
         animation.sections = sections;
+        if let Some(authored) = &context.authored {
+            animation.authored_frames = Some(Arc::new(AuthoredAnimationFrames {
+                context: authored.clone(),
+                source: source.clone(),
+                decoded: Mutex::new(HashMap::new()),
+            }));
+        }
     }
     Ok(())
+}
+
+fn animation_section_span(animation: &Animation, section: usize) -> Option<(usize, usize)> {
+    let frames = usize::try_from(animation.frame_count).ok()?;
+    let section_frames = animation.section_frame_count.max(0) as usize;
+    if section_frames == 0 {
+        return (section == 0 && frames > 0).then_some((0, frames));
+    }
+    let last = frames.checked_sub(1)?;
+    let separate_last = frames > section_frames;
+    if separate_last && section == last / section_frames + 1 {
+        return Some((last, 1));
+    }
+    let first = section.checked_mul(section_frames)?;
+    let mut end = first.checked_add(section_frames)?.min(frames);
+    if separate_last && end == frames {
+        end = end.saturating_sub(1);
+    }
+    (end > first).then(|| (first, end - first))
 }
 
 fn animation_section_index(animation: &Animation, frame: usize) -> usize {
@@ -2932,18 +3161,30 @@ fn animation_data<'a>(
     }
 }
 
+struct AnimationFrameDecoder<'a> {
+    bones: &'a [Bone],
+    flags: i32,
+    identity: &'a str,
+    value_cursors: &'a mut AnimationValueCursors,
+    visited_bones: &'a mut [usize],
+    visit_generation: usize,
+}
+
 fn decode_frame(
     data: &[u8],
     offset: usize,
     frame: usize,
-    bones: &[Bone],
-    flags: i32,
-    identity: &str,
-    value_cursors: &mut AnimationValueCursors,
-    visited_bones: &mut [usize],
-    visit_generation: usize,
+    decoder: &mut AnimationFrameDecoder<'_>,
 ) -> Result<AnimationFrame, Error> {
-    let delta = flags & 0x0004 != 0;
+    let AnimationFrameDecoder {
+        bones,
+        flags,
+        identity,
+        value_cursors,
+        visited_bones,
+        visit_generation,
+    } = decoder;
+    let delta = *flags & 0x0004 != 0;
     let mut translations: Vec<_> = bones
         .iter()
         .map(|bone| {
@@ -2985,10 +3226,10 @@ fn decode_frame(
         let visited = visited_bones
             .get_mut(bone_index)
             .ok_or_else(|| invalid_reference(identity, cursor))?;
-        if *visited == visit_generation {
+        if *visited == *visit_generation {
             return Err(invalid_reference(identity, cursor));
         }
-        *visited = visit_generation;
+        *visited = *visit_generation;
         let track_flags = data[cursor + 1];
         let next = u16_at(data, cursor + 2, identity)? as usize;
         let mut payload = cursor + 4;
@@ -3116,11 +3357,11 @@ fn parse_animation_tracks(
         let next_offset = u16_at(data, cursor + 2, identity)?;
         let mut payload = cursor + 4;
         let rotation_codec = if flags & 0x02 != 0 {
-            range(data, payload, 6, identity)?;
+            compressed_quaternion(data, payload, false, identity)?;
             payload += 6;
             RotationCodec::Quaternion48
         } else if flags & 0x20 != 0 {
-            range(data, payload, 8, identity)?;
+            compressed_quaternion(data, payload, true, identity)?;
             payload += 8;
             RotationCodec::Quaternion64
         } else if flags & 0x08 != 0 {
@@ -4412,6 +4653,166 @@ mod tests {
             .code,
             ErrorCode::InvalidReference
         );
+    }
+
+    #[test]
+    fn authored_animation_samples_match_eager_frames_without_expanding_the_stream() {
+        let mut bytes = animated_mdl(true);
+        let bone_offset = i32::from_le_bytes(bytes[160..164].try_into().unwrap()) as usize;
+        put_i32(&mut bytes, bone_offset + 72, 0.5_f32.to_bits() as i32);
+        put_i32(&mut bytes, bone_offset + 84, 0.125_f32.to_bits() as i32);
+
+        let mut ani = vec![0; 12];
+        ani[..4].copy_from_slice(b"IDAG");
+        put_i32(&mut ani, 4, 48);
+        put_i32(&mut ani, 8, 1234);
+        ani.extend_from_slice(&[0, 0x0c, 0, 0]);
+        ani.extend_from_slice(&12_i16.to_le_bytes());
+        ani.extend_from_slice(&[0; 4]);
+        ani.extend_from_slice(&12_i16.to_le_bytes());
+        ani.extend_from_slice(&[0; 4]);
+        ani.extend_from_slice(&[2, 2]);
+        ani.extend_from_slice(&2_i16.to_le_bytes());
+        ani.extend_from_slice(&4_i16.to_le_bytes());
+        ani.extend_from_slice(&[2, 2]);
+        ani.extend_from_slice(&10_i16.to_le_bytes());
+        ani.extend_from_slice(&20_i16.to_le_bytes());
+        let block_offset = i32::from_le_bytes(bytes[356..360].try_into().unwrap()) as usize;
+        put_i32(&mut bytes, block_offset + 12, ani.len() as i32);
+
+        let Load::Needs(requests) = load(
+            "models/animated.mdl",
+            Profile::SourcePcMdl48,
+            VtxVariant::Dx90,
+            &bytes,
+            &[],
+            Limits::default(),
+        )
+        .unwrap() else {
+            panic!("animated model did not request its authored source");
+        };
+        let responses = [
+            response(&requests[0], Some(ani.clone())),
+            response(&requests[1], None),
+        ];
+        let Load::Complete(expanded) = load(
+            "models/animated.mdl",
+            Profile::SourcePcMdl48,
+            VtxVariant::Dx90,
+            &bytes,
+            &responses,
+            Limits::default(),
+        )
+        .unwrap() else {
+            panic!("complete authored source did not expand");
+        };
+        let shared: Arc<[u8]> = bytes.into();
+        let verified = BTreeMap::from([
+            (
+                "models/animated.mdl".to_owned(),
+                presentation::content_sha256(&shared),
+            ),
+            (
+                "models/custom/shared.ani".to_owned(),
+                presentation::content_sha256(&ani),
+            ),
+        ]);
+        let Load::Complete(authored) = load_authored(
+            "models/animated.mdl",
+            Profile::SourcePcMdl48,
+            VtxVariant::Dx90,
+            shared.clone(),
+            &responses,
+            &verified,
+            Limits::default(),
+        )
+        .unwrap() else {
+            panic!("complete authored source did not remain compressed");
+        };
+        let animation = &authored.animations[0];
+        assert!(animation.frames.is_empty());
+        assert!(animation.compact_frames.is_empty());
+        assert!(animation.sections[0].tracks.is_empty());
+        assert_eq!(
+            animation.authored_section_tracks(0).unwrap(),
+            expanded.animations[0].sections[0].tracks,
+        );
+        let retained = animation.authored_frames.as_ref().unwrap();
+        assert!(Arc::ptr_eq(&retained.context.mdl, &shared));
+        assert!(retained.decoded.lock().unwrap().is_empty());
+        for (index, expected) in expanded.animations[0].frames.iter().enumerate() {
+            assert_eq!(&animation.authored_frame(index).unwrap(), expected);
+        }
+        assert_eq!(retained.decoded.lock().unwrap().len(), 2);
+        assert_eq!(
+            animation.authored_frame(1).unwrap().translations[0],
+            Vector3([Float32(10.0_f32.to_bits()), Float32(0), Float32(0)]),
+        );
+        assert_eq!(
+            animation.authored_frame(2).unwrap_err().code,
+            ErrorCode::InvalidReference,
+        );
+        assert_eq!(
+            authored.model_dependencies, expanded.model_dependencies,
+            "verified producer identities must replace repeated hashing exactly",
+        );
+
+        let build = |document: &Document| {
+            let PresentationBuild::Complete(artifact) = build_presentation(
+                document,
+                PresentationProfile::World,
+                &[],
+                PresentationLimits::default(),
+                &CancellationToken::default(),
+            )
+            .unwrap() else {
+                panic!("closed animation fixture requested presentation dependencies");
+            };
+            artifact
+        };
+        let eager_artifact = build(&expanded);
+        let authored_artifact = build(&authored);
+        assert_eq!(authored_artifact.bytes, eager_artifact.bytes);
+        assert_eq!(authored_artifact.sha256, eager_artifact.sha256);
+    }
+
+    #[test]
+    fn authored_section_spans_preserve_every_source_section_and_separate_final_frame() {
+        let bytes = animated_mdl(false);
+        let mut animation = parse_mdl(
+            "models/animated.mdl",
+            Profile::SourcePcMdl48,
+            &bytes,
+            Limits::default(),
+        )
+        .unwrap()
+        .document
+        .animations
+        .remove(0);
+
+        for frames in 1..=64 {
+            animation.frame_count = frames;
+            for section_frames in 0..=16 {
+                animation.section_frame_count = section_frames;
+                let sections = if section_frames == 0 {
+                    2
+                } else {
+                    frames as usize / section_frames as usize + 3
+                };
+                for section in 0..sections {
+                    let expected = (0..frames as usize)
+                        .filter(|&frame| animation_section_index(&animation, frame) == section)
+                        .collect::<Vec<_>>();
+                    let span = animation_section_span(&animation, section)
+                        .map(|(first, count)| (first..first + count).collect::<Vec<_>>())
+                        .unwrap_or_default();
+                    assert_eq!(
+                        span, expected,
+                        "frames={frames}, section_frames={section_frames}, section={section}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

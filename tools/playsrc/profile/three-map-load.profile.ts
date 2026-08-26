@@ -9,6 +9,7 @@ import { decodeScreenshot } from "./screenshot-pixels"
 const TARGETS = ["jump_beef", "pl_upward", "ctf_2fort"] as const
 const SAMPLE_MILLISECONDS = 2_000
 const executeFile = promisify(execFile)
+const INITIALIZATION_TARGET_MILLISECONDS = 10_000
 
 type Descriptor = { sha256: string; byteLength: string }
 type BrowserProfile = {
@@ -118,6 +119,7 @@ test("profiles exact headed cold initialization for all three configured TF2 map
       ${source}` })
   })
   await page.addInitScript(() => {
+    performance.setResourceTimingBufferSize(4_096)
     const state: BrowserProfile = {
       requests: [], workers: [], hashes: [], indexedDb: [], phases: [], frames: [], longTasks: [],
       gpu: {
@@ -177,7 +179,12 @@ test("profiles exact headed cold initialization for all three configured TF2 map
           const record = this.records.get(event.data?.id)
           if (!record) return
           record.finished = performance.now()
-          record.responseBytes = byteLength(event.data?.payload) + byteLength(event.data?.presentation) + byteLength(event.data?.bytes)
+          const sharedSection = event.data?.bytes instanceof SharedArrayBuffer
+          record.responseBytes = byteLength(event.data?.payload) + byteLength(event.data?.presentation)
+            + (sharedSection ? 0 : byteLength(event.data?.bytes))
+          if (sharedSection && Number.isSafeInteger(event.data?.byteLength)) {
+            record.sharedBytes = (record.sharedBytes ?? 0) + event.data.byteLength
+          }
           if (event.data?.timings) record.timings = event.data.timings
           if (Number.isSafeInteger(event.data?.__playsrcWasmLinearBytes)) record.wasmLinearBytes = event.data.__playsrcWasmLinearBytes
           if (typeof event.data?.payloadSha256 === "string") record.payloadSha256 = event.data.payloadSha256
@@ -194,16 +201,15 @@ test("profiles exact headed cold initialization for all three configured TF2 map
           return
         }
         const transfer = Array.isArray(transferOrOptions) ? transferOrOptions : transferOrOptions?.transfer ?? []
-          const record = {
-            kind: message.kind,
-            started: performance.now(),
-            requestBytes: byteLength(message.wasm) + byteLength(message.bsp) + byteLength(message.configuration) + byteLength(message.presentation) + byteLength(message.batch) + byteLength(message.command)
-              + (Array.isArray(message.configuration) ? message.configuration.reduce((total: number, section: unknown) => total + byteLength(section), 0) : 0)
-              + (Array.isArray(message.chunks) ? message.chunks.reduce((total: number, chunk: { descriptor?: unknown; bytes?: unknown }) => total + byteLength(chunk.descriptor) + byteLength(chunk.bytes), 0) : 0),
-            transferredBytes: transfer.reduce((total, value) => total + byteLength(value), 0),
-            sharedBytes: Array.isArray(message.configuration)
-              ? message.configuration.reduce((total: number, section: unknown) => total + (section instanceof SharedArrayBuffer ? section.byteLength : 0), 0)
-              : 0,
+        const record = {
+          kind: message.kind,
+          started: performance.now(),
+          requestBytes: byteLength(message.wasm) + byteLength(message.bsp)
+            + byteLength(message.presentation) + byteLength(message.batch) + byteLength(message.command)
+            + byteLength(message.section) + byteLength(message.definition)
+            + (Array.isArray(message.chunks) ? message.chunks.reduce((total: number, chunk: { descriptor?: unknown; bytes?: unknown }) => total + byteLength(chunk.descriptor) + byteLength(chunk.bytes), 0) : 0),
+          transferredBytes: transfer.reduce((total, value) => total + byteLength(value), 0),
+          sharedBytes: 0,
         } as BrowserProfile["workers"][number]
         this.records.set(message.id, record)
         state.workers.push(record)
@@ -493,6 +499,7 @@ test("profiles exact headed cold initialization for all three configured TF2 map
       }
     }, { indices: before.indices, started, ready })
     const worker = profile.workers.find(value => value.kind === "load")
+    const resourceWorkers = profile.workers.filter(value => value.kind === "decode-resources" || value.kind === "retain-resources")
     expect(worker?.payloadSha256).toMatch(/^[0-9a-f]{64}$/)
     expect(worker?.presentationSha256).toMatch(/^[0-9a-f]{64}$/)
     const networkMilliseconds = intervalUnion(profile.resources.map(resource => [Math.max(started, resource.started), Math.min(ready, resource.finished)] as const))
@@ -504,7 +511,7 @@ test("profiles exact headed cold initialization for all three configured TF2 map
     const row = {
       target: target.target,
       identities: { bsp: target.objects.bsp, resources: target.objects.resources, wasm: configuration.wasm, payloadSha256: worker!.payloadSha256, presentationSha256: worker!.presentationSha256 },
-      bytes: { bsp: Number(target.objects.bsp.byteLength), resources: Number(target.objects.resources.byteLength), payload: load.mapBytes, presentation: load.presentationBytes, downloaded: downloadBytes, workerRequest: worker!.requestBytes, workerTransferred: worker!.transferredBytes, workerShared: worker!.sharedBytes ?? 0, workerResponse: worker!.responseBytes ?? 0, hashed: profile.hashes.reduce((sum, value) => sum + value.bytes, 0), gpuUploaded: after.gpu.uploadBytes - before.gpu.uploadBytes },
+      bytes: { bsp: Number(target.objects.bsp.byteLength), resources: Number(target.objects.resources.byteLength), payload: load.mapBytes, presentation: load.presentationBytes, downloaded: downloadBytes, workerRequest: worker!.requestBytes, workerTransferred: worker!.transferredBytes, resourceWorkerRequest: resourceWorkers.reduce((total, entry) => total + entry.requestBytes, 0), resourceWorkerTransferred: resourceWorkers.reduce((total, entry) => total + entry.transferredBytes, 0), workerShared: profile.workers.reduce((total, entry) => total + (entry.sharedBytes ?? 0), 0), workerResponse: worker!.responseBytes ?? 0, hashed: profile.hashes.reduce((sum, value) => sum + value.bytes, 0), gpuUploaded: after.gpu.uploadBytes - before.gpu.uploadBytes },
       cache: { derivedBeforeBytes: before.storage.usage ?? null, derivedAfterBytes: after.storage.usage ?? null, databasesBefore: before.databases, map: load.mapCache, presentation: load.presentationCache, httpTransfers: profile.resources.filter(resource => resource.transferBytes > 0).length, httpHits: profile.resources.filter(resource => resource.transferBytes === 0).length },
       milliseconds: {
         totalWall: Number((ready - started).toFixed(3)),
@@ -573,20 +580,17 @@ test("profiles exact headed cold initialization for all three configured TF2 map
     expect(row.simulation.ticks).toBeGreaterThan(0)
     await writeFile(path.join(reportDirectory, `${process.env.PLAYSRC_THREE_MAP_LABEL ?? "latest"}-partial.json`),
       `${JSON.stringify({ maps: [...maps, row] }, null, 2)}\n`)
-    console.log(`PLAYSRC_THREE_MAP_ROW ${JSON.stringify({ target: row.target, wallSeconds: row.milliseconds.totalWall / 1_000, networkSeconds: row.milliseconds.networkDownload / 1_000, initializationSeconds: row.milliseconds.initializationExcludingDownload / 1_000, frameP95Milliseconds: row.simulation.frameP95Milliseconds, tickHertz: row.simulation.hertz, peakBrowserResidentBytes: row.memory.peakBrowserResidentBytes, browserResidentBytes: row.memory.browserResidentAfterBytes, wasmLinearBytes: row.memory.wasmLinearBytes, residentTextureBytes: row.gpu.residentTextureBytes, peakTextureBytes: row.gpu.peakTextureBytes, mapCache: row.cache.map, presentationCache: row.cache.presentation })}`)
-    if (process.env.PLAYSRC_THREE_MAP_CAPTURE !== "before") {
-      expect(row.milliseconds.initializationExcludingDownload, `${target.target} exceeded the exact 30-second cold initialization budget`).toBeLessThanOrEqual(30_000)
-    }
     maps.push(row)
+    console.log(`PLAYSRC_THREE_MAP_ROW ${JSON.stringify({ target: row.target, wallSeconds: row.milliseconds.totalWall / 1_000, networkSeconds: row.milliseconds.networkDownload / 1_000, initializationSeconds: row.milliseconds.initializationExcludingDownload / 1_000, phases: row.milliseconds, frameP95Milliseconds: row.simulation.frameP95Milliseconds, tickHertz: row.simulation.hertz, peakBrowserResidentBytes: row.memory.peakBrowserResidentBytes, browserResidentBytes: row.memory.browserResidentAfterBytes, wasmLinearBytes: row.memory.wasmLinearBytes, residentTextureBytes: row.gpu.residentTextureBytes, peakTextureBytes: row.gpu.peakTextureBytes, mapCache: row.cache.map, presentationCache: row.cache.presentation })}`)
   }
 
   const report = {
     schema: "playsrc-three-map-load-profile-v1",
     capturedAt: new Date().toISOString(),
-      startup: { milliseconds: startup.now, wasmInitializationMilliseconds: startupProfile.workers.filter(worker => worker.kind === "initialize").reduce((sum, worker) => sum + (worker.finished ?? startup.now) - worker.started, 0), workers: startupProfile.workers, requests: startupProfile.requests },
-      browserSessions: 1,
-      pageReloads: 0,
-    initializationTargetMilliseconds: 30_000,
+    startup: { milliseconds: startup.now, wasmInitializationMilliseconds: startupProfile.workers.filter(worker => worker.kind === "initialize").reduce((sum, worker) => sum + (worker.finished ?? startup.now) - worker.started, 0), workers: startupProfile.workers, requests: startupProfile.requests },
+    browserSessions: 1,
+    pageReloads: 0,
+    initializationTargetMilliseconds: INITIALIZATION_TARGET_MILLISECONDS,
     sampleMillisecondsPerMap: SAMPLE_MILLISECONDS,
     maps,
   }
@@ -603,4 +607,12 @@ test("profiles exact headed cold initialization for all three configured TF2 map
   console.log(`PLAYSRC_THREE_MAP_REPORT ${JSON.stringify({ path: reportPath, maps: maps.map(map => ({ target: map.target, milliseconds: (map.milliseconds as { initializationExcludingDownload: number }).initializationExcludingDownload })) })}`)
   await pageCdp.detach()
   await browserCdp.detach()
+  if (process.env.PLAYSRC_THREE_MAP_CAPTURE !== "before") {
+    for (const row of maps) {
+      expect(
+        (row.milliseconds as { initializationExcludingDownload: number }).initializationExcludingDownload,
+        `${row.target} exceeded the exact 10-second cold initialization budget`,
+      ).toBeLessThan(INITIALIZATION_TARGET_MILLISECONDS)
+    }
+  }
 })

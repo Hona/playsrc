@@ -1,4 +1,11 @@
-use std::{fmt, io::Cursor, ops::Range, sync::Arc};
+use std::{
+    fmt,
+    io::{Cursor, Read},
+    ops::Range,
+    sync::Arc,
+};
+
+use rayon::prelude::*;
 
 mod game_lump;
 mod pak;
@@ -10,6 +17,7 @@ pub use records::*;
 
 pub const HEADER_BYTES: usize = 1_036;
 pub const LUMP_COUNT: usize = 64;
+const PARALLEL_LZMA_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Profile {
@@ -276,37 +284,71 @@ pub fn parse(source: &[u8], profile: Profile, limits: Limits) -> Result<Bsp, Par
         }
     }
 
+    let compressed = lumps
+        .iter()
+        .enumerate()
+        .filter_map(|(position, lump)| {
+            let declared = u32::from_le_bytes(lump.raw_fourth_field) as usize;
+            (!lump.encoded_range.is_empty() && declared != 0).then_some((position, declared))
+        })
+        .collect::<Vec<_>>();
     let mut total_decoded = 0_usize;
-    for lump in &mut lumps {
-        if lump.encoded_range.is_empty() {
-            continue;
+    let mut next = 0;
+    while next < compressed.len() {
+        let budget = limits
+            .max_total_decoded_bytes
+            .saturating_sub(total_decoded)
+            .clamp(1, PARALLEL_LZMA_BYTES);
+        let mut batch_end = next;
+        let mut batch_bytes = 0_usize;
+        while batch_end < compressed.len() {
+            let declared = compressed[batch_end].1;
+            if batch_end > next && batch_bytes.saturating_add(declared) > budget {
+                break;
+            }
+            batch_bytes = batch_bytes.saturating_add(declared);
+            batch_end += 1;
+            if batch_bytes >= budget {
+                break;
+            }
         }
-        let declared = u32::from_le_bytes(lump.raw_fourth_field) as usize;
-        if declared == 0 {
-            continue;
+        let results = compressed[next..batch_end]
+            .par_iter()
+            .map(|&(position, declared)| {
+                let lump = &lumps[position];
+                decode_lzma(
+                    &source[lump.encoded_range.clone()],
+                    declared,
+                    lump.index,
+                    limits,
+                )
+            })
+            .collect::<Vec<_>>();
+        for (&(position, _), result) in compressed[next..batch_end].iter().zip(results) {
+            let lump = &mut lumps[position];
+            let (compression, decoded) = result?;
+            total_decoded = total_decoded.checked_add(decoded.len()).ok_or_else(|| {
+                failure(
+                    ErrorCode::DecodedBudget,
+                    Some(lump.index),
+                    lump.encoded_range.clone(),
+                    None,
+                    Some(limits.max_total_decoded_bytes),
+                )
+            })?;
+            if total_decoded > limits.max_total_decoded_bytes {
+                return Err(failure(
+                    ErrorCode::DecodedBudget,
+                    Some(lump.index),
+                    lump.encoded_range.clone(),
+                    Some(total_decoded),
+                    Some(limits.max_total_decoded_bytes),
+                ));
+            }
+            lump.compression = Some(compression);
+            lump.decoded = Some(decoded);
         }
-        let encoded = &source[lump.encoded_range.clone()];
-        let (compression, decoded) = decode_lzma(encoded, declared, lump.index, limits)?;
-        total_decoded = total_decoded.checked_add(decoded.len()).ok_or_else(|| {
-            failure(
-                ErrorCode::DecodedBudget,
-                Some(lump.index),
-                lump.encoded_range.clone(),
-                None,
-                Some(limits.max_total_decoded_bytes),
-            )
-        })?;
-        if total_decoded > limits.max_total_decoded_bytes {
-            return Err(failure(
-                ErrorCode::DecodedBudget,
-                Some(lump.index),
-                lump.encoded_range.clone(),
-                Some(total_decoded),
-                Some(limits.max_total_decoded_bytes),
-            ));
-        }
-        lump.compression = Some(compression);
-        lump.decoded = Some(decoded);
+        next = batch_end;
     }
 
     for lump in &mut lumps {
@@ -403,12 +445,15 @@ fn decode_lzma(
         ));
     }
     let properties: [u8; 5] = encoded[12..17].try_into().expect("fixed range");
-    let mut alone = Vec::with_capacity(13 + payload_size);
-    alone.extend_from_slice(&properties);
-    alone.extend_from_slice(&(declared as u64).to_le_bytes());
-    alone.extend_from_slice(&encoded[17..]);
-    let mut decoded = Vec::with_capacity(declared);
-    lzma_rs::lzma_decompress(&mut Cursor::new(alone), &mut decoded).map_err(|_| {
+    let dictionary = u32::from_le_bytes(properties[1..5].try_into().expect("LZMA dictionary"));
+    let decoder = lzma_rust2::LzmaReader::new_with_props(
+        Cursor::new(&encoded[17..]),
+        declared as u64,
+        properties[0],
+        dictionary,
+        None,
+    )
+    .map_err(|_| {
         failure(
             ErrorCode::DecompressionFailed,
             Some(index),
@@ -417,6 +462,19 @@ fn decode_lzma(
             None,
         )
     })?;
+    let mut decoded = Vec::with_capacity(declared);
+    decoder
+        .take((declared as u64).saturating_add(1))
+        .read_to_end(&mut decoded)
+        .map_err(|_| {
+            failure(
+                ErrorCode::DecompressionFailed,
+                Some(index),
+                range.clone(),
+                None,
+                None,
+            )
+        })?;
     if decoded.len() != declared {
         return Err(failure(
             ErrorCode::DecompressionFailed,
@@ -552,6 +610,61 @@ mod tests {
         let bsp = parse(&bytes, Profile::Source2013V20, Limits::default()).unwrap();
         assert_eq!(bsp.lumps[4].bytes(&bsp), payload);
         assert_eq!(bsp.lumps[4].encoded_bytes(&bsp), encoded);
+    }
+
+    #[test]
+    fn parallel_source_lumps_retain_exact_order_bytes_and_budget_failures() {
+        let encode = |payload: &[u8]| {
+            let mut alone = Vec::new();
+            lzma_rs::lzma_compress(&mut Cursor::new(payload), &mut alone).unwrap();
+            let mut encoded = b"LZMA".to_vec();
+            encoded.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            encoded.extend_from_slice(&((alone.len() - 13) as u32).to_le_bytes());
+            encoded.extend_from_slice(&alone[..5]);
+            encoded.extend_from_slice(&alone[13..]);
+            encoded
+        };
+        let first = vec![0x31; 4_096];
+        let second = vec![0x72; 8_192];
+        let mut bytes = empty_bsp();
+        for (index, payload) in [(61, &first), (62, &second)] {
+            let encoded = encode(payload);
+            let offset = bytes.len();
+            bytes.extend_from_slice(&encoded);
+            set_lump(
+                &mut bytes,
+                index,
+                offset as i32,
+                encoded.len() as i32,
+                0,
+                payload.len() as i32,
+            );
+        }
+
+        let parsed = parse(&bytes, Profile::Source2013V20, Limits::default()).unwrap();
+        assert_eq!(parsed.lumps[61].bytes(&parsed), first);
+        assert_eq!(parsed.lumps[62].bytes(&parsed), second);
+
+        let limited = parse(
+            &bytes,
+            Profile::Source2013V20,
+            Limits {
+                max_total_decoded_bytes: first.len() + second.len() - 1,
+                ..Limits::default()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(limited.code, ErrorCode::DecodedBudget);
+        assert_eq!(limited.lump, Some(62));
+
+        let mut malformed = bytes;
+        for index in [61, 62] {
+            let offset = i32_at(&malformed, 8 + index * 16) as usize;
+            malformed[offset + 12] = 0xff;
+        }
+        let failure = parse(&malformed, Profile::Source2013V20, Limits::default()).unwrap_err();
+        assert_eq!(failure.code, ErrorCode::DecompressionFailed);
+        assert_eq!(failure.lump, Some(61));
     }
 
     #[test]

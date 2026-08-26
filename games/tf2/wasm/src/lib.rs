@@ -10212,7 +10212,7 @@ fn load_cached_presentation(
         return Err(3);
     }
     let models = model_headers
-        .into_iter()
+        .into_par_iter()
         .map(|(identity, presentation_profile, expected_hash)| {
             let artifact = build_model_presentation(
                 &identity,
@@ -10460,6 +10460,8 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
     roots.extend(additional_model_roots.iter().cloned());
     let models = roots
         .into_iter()
+        .collect::<Vec<_>>()
+        .into_par_iter()
         .map(|id| {
             let presentation_profile = if matches!(
                 id.as_str(),

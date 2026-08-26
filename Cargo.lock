@@ -519,6 +519,8 @@ version = "0.1.0"
 dependencies = [
  "crc32fast",
  "lzma-rs",
+ "lzma-rust2",
+ "rayon",
  "serde",
  "serde_json",
  "sha2 0.10.9",

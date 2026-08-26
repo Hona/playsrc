@@ -3041,7 +3041,7 @@ export class Tf2Application {
       profile,
       this.#renderLevel,
       this.#configuration?.wasm.sha256 ?? "",
-      candidate?.target.objects.resources.sha256 ?? this.#activeTarget!.objects.resources.sha256,
+      candidate?.target.objects.resources.sha256 ?? this.#activeTarget?.objects.resources.sha256 ?? "",
     )
     finishReplacePhase("derivedKey")
     const staged = await this.#client.stage(generation, bytes, profile, candidate?.dependencies ?? this.#dependencies, key)
