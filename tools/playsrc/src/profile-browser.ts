@@ -10,6 +10,14 @@ import { acquireHeadedProfileLock, releaseHeadedProfileLock, processIsAlive } fr
 type BrowserOwner = { token: string; pid: number; endpoint: string; identity: string; executable: string; executableSha256: string }
 export type BrowserLaunch = { channel?: string; args?: string[] }
 
+async function optionalJson(filename: string): Promise<any> {
+  try { return JSON.parse(await readFile(filename, "utf8")) }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof SyntaxError) return null
+    throw error
+  }
+}
+
 export async function browserLaunchIdentity(launch: BrowserLaunch): Promise<string> {
   return createHash("sha256").update(JSON.stringify(launch))
     .update(await fileFingerprint(import.meta.filename))
@@ -25,6 +33,27 @@ export async function browserLease(filename: string, token: string, milliseconds
   } finally { await rm(temporary, { force: true }) }
 }
 
+export async function acquireBrowserRetirementLock(filename: string, token: string) {
+  const lockPath = path.join(path.dirname(filename), "chromium-profile.lock")
+  const delegation = new AbortController()
+  let delegated = false
+  // A runner may reach the front before idle eviction. Accept its checked
+  // token handoff rather than deadlocking behind a runner awaiting retirement.
+  const handoff = setInterval(() => {
+    void (async () => {
+      const lease = await optionalJson(`${filename}.lease`)
+      const holder = await optionalJson(lockPath)
+      if (lease?.token === token && lease.closeUnderLockToken && holder?.token === lease.closeUnderLockToken) {
+        delegated = true
+        delegation.abort()
+      }
+    })().catch(error => delegation.abort(error))
+  }, 100)
+  try { return await acquireHeadedProfileLock(lockPath, "idle-browser-retirement", 175_000, { signal: delegation.signal }) }
+  catch (error) { if (!delegated) throw error; return undefined }
+  finally { clearInterval(handoff) }
+}
+
 export async function prepareProfileBrowser(filename: string, launch: BrowserLaunch, remaining: () => number, lockToken?: string): Promise<BrowserOwner & { reused: boolean }> {
   const identity = await browserLaunchIdentity(launch)
   let previous: BrowserOwner | undefined
@@ -32,7 +61,7 @@ export async function prepareProfileBrowser(filename: string, launch: BrowserLau
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
   }
   if (previous && processIsAlive(previous.pid)) {
-    const lease = JSON.parse(await readFile(`${filename}.lease`, "utf8").catch(() => "null"))
+    const lease = await optionalJson(`${filename}.lease`)
     if (lease?.token === previous.token && lease.expiresAt > Date.now() + 1_000
       && previous.identity === identity && await fileFingerprint(previous.executable) === previous.executableSha256) {
       await browserLease(filename, previous.token, remaining())
@@ -81,33 +110,14 @@ if (import.meta.main) {
     clearInterval(monitor)
     const started = Date.now()
     const lockPath = path.join(path.dirname(filename), "chromium-profile.lock")
-    const delegation = new AbortController()
-    let delegated = underLock
-    // A runner can reach the front of the queue before autonomous eviction.
-    // Accept its checked token handoff instead of waiting behind a runner that
-    // is itself waiting for this browser to retire.
-    const handoff = setInterval(() => {
-      void (async () => {
-        const lease = JSON.parse(await readFile(`${filename}.lease`, "utf8").catch(() => "null"))
-        const holder = JSON.parse(await readFile(lockPath, "utf8").catch(() => "null"))
-        if (lease?.token === token && lease.closeUnderLockToken && holder?.token === lease.closeUnderLockToken) {
-          delegated = true
-          delegation.abort()
-        }
-      })()
-    }, 100)
-    let lock: Awaited<ReturnType<typeof acquireHeadedProfileLock>> | undefined
-    try {
-      if (!underLock) lock = await acquireHeadedProfileLock(lockPath, "idle-browser-retirement", 175_000, { signal: delegation.signal })
-    } catch (error) { if (!delegated) throw error }
-    finally { clearInterval(handoff) }
+    const lock = underLock ? undefined : await acquireBrowserRetirementLock(filename, token)
     try {
       await server.close()
       try {
         if (JSON.parse(await readFile(filename, "utf8")).token === token) await rm(filename, { force: true })
       } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error }
       await writeFile(`${filename}.${token}.retirement.json`, JSON.stringify({ token, startedAt: started,
-        elapsedMilliseconds: Date.now() - started, queueMilliseconds: lock?.milliseconds ?? 0, delegated }), { flag: "wx" })
+        elapsedMilliseconds: Date.now() - started, queueMilliseconds: lock?.milliseconds ?? 0, delegated: !lock }), { flag: "wx" })
     } finally { if (lock) await releaseHeadedProfileLock(lockPath, lock.token) }
   }
   const monitor = setInterval(() => {
@@ -115,7 +125,7 @@ if (import.meta.main) {
       try {
         const lease = JSON.parse(await readFile(`${filename}.lease`, "utf8"))
         if (lease.token !== token || lease.expiresAt <= Date.now()) {
-          const holder = JSON.parse(await readFile(path.join(path.dirname(filename), "chromium-profile.lock"), "utf8").catch(() => "null"))
+          const holder = await optionalJson(path.join(path.dirname(filename), "chromium-profile.lock"))
           // An explicit retirement request is made by the current exclusive
           // runner. Autonomous idle eviction queues like every other GUI task.
           await stop(Boolean(lease.closeUnderLockToken && holder?.token === lease.closeUnderLockToken))
@@ -127,9 +137,9 @@ if (import.meta.main) {
   process.once("SIGINT", () => { void stop() })
   server.on("close", () => { void stop() })
   const temporary = `${filename}.${token}.tmp`
-  const lease = JSON.parse(await readFile(`${filename}.lease`, "utf8").catch(() => "null"))
+  const lease = await optionalJson(`${filename}.lease`)
   if (lease?.token !== token || lease.expiresAt <= Date.now()) {
-    const holder = JSON.parse(await readFile(path.join(path.dirname(filename), "chromium-profile.lock"), "utf8").catch(() => "null"))
+    const holder = await optionalJson(path.join(path.dirname(filename), "chromium-profile.lock"))
     await stop(Boolean(lease?.closeUnderLockToken && holder?.token === lease.closeUnderLockToken))
   }
   else {

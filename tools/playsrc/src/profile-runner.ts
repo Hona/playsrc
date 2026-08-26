@@ -71,6 +71,13 @@ export function parseHeadedProfile(arguments_: readonly string[]): Readonly<{ pr
   }
   let fresh = false
   const playwright: string[] = []
+  for (let index = 0; index < options.length; index++) {
+    const option = options[index]!
+    if (option === "--workers" && options[index + 1] !== "1" || option.startsWith("--workers=") && option !== "--workers=1"
+      || option === "--fully-parallel" || option === "--ui" || option === "--debug") {
+      throw new Error("Headed profiles require one bounded noninteractive sampling worker")
+    }
+  }
   for (const option of options) {
     if (option === "--fresh") fresh = true
     else if (option === "--headless") throw new Error("headed TF2 profiles never accept headless browser execution")
