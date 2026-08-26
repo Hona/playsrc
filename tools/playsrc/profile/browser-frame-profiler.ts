@@ -12,6 +12,12 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
     longAnimationFrames: [] as any[],
     gpuTimestamps: [] as { frame: number; milliseconds: number }[],
     losses: [] as any[],
+    queueWrites: {
+      histogram: {} as Record<string, number>,
+      phases: {} as Record<string, { calls: number; bytes: number }>,
+      resources: {} as Record<string, { calls: number; bytes: number; minimumOffset: number; maximumOffset: number }>,
+      stacks: [] as { call: number; phase: string; resource: string; offset: number; bytes: number; stack: string }[],
+    },
     capabilities: {
       timestampQuery: false,
       longAnimationFrame: Boolean(host.PerformanceObserver?.supportedEntryTypes?.includes("long-animation-frame")),
@@ -20,7 +26,7 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
       displayOffers: 0, displayRejectedBusy: 0, displayRejectedUnchanged: 0, displayStarted: 0,
       displayAbandoned: 0, displayCoalesced: 0, displayRecovered: 0, completedFrames: 0, submissions: 0, commandBuffers: 0,
       renderPasses: 0, buffers: 0, textures: 0, shaderModules: 0, renderPipelines: 0,
-      computePipelines: 0, bundleEncodes: 0, bundleEncodeMilliseconds: 0, queueWriteCalls: 0, queueWriteBytes: 0, textureWriteBytes: 0,
+      computePipelines: 0, bundleEncodes: 0, bundleEncodeMilliseconds: 0, queueWriteCalls: 0, queueWriteBytes: 0, queueWriteMilliseconds: 0, textureWriteBytes: 0,
       destroyedBuffers: 0, destroyedTextures: 0, computePasses: 0,
       workerPending: 0, workerMaximumPending: 0, validationErrors: 0,
       nodeBuilderMisses: 0, nodeBuilderMilliseconds: 0, warmedPipelineVariants: 0, pipelineWarmupMilliseconds: 0,
@@ -48,11 +54,30 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
     state.counters.commandBuffers += buffers?.length ?? 0
     if (state.currentPass) { state.currentPass.submissions += 1; state.currentPass.commandBuffers += buffers?.length ?? 0 }
   })
-  wrap(host.GPUQueue, "writeBuffer", ([, , data, offset, size]) => {
+  wrap(host.GPUQueue, "writeBuffer", ([buffer, bufferOffset, data, offset, size], _result, milliseconds) => {
     state.counters.queueWriteCalls += 1
     const bytesPerElement = ArrayBuffer.isView(data) ? (data as any).BYTES_PER_ELEMENT ?? 1 : 1
-    state.counters.queueWriteBytes += size === undefined ? Math.max(0, (data?.byteLength ?? 0) - (offset ?? 0) * bytesPerElement) : size * bytesPerElement
-  })
+    const bytes = size === undefined ? Math.max(0, (data?.byteLength ?? 0) - (offset ?? 0) * bytesPerElement) : size * bytesPerElement
+    state.counters.queueWriteBytes += bytes
+    state.counters.queueWriteMilliseconds += milliseconds ?? 0
+    const bucket = bytes <= 16 ? "1-16" : bytes <= 64 ? "17-64" : bytes <= 256 ? "65-256" : bytes <= 1024 ? "257-1024" : bytes <= 16384 ? "1025-16384" : "16385+"
+    state.queueWrites.histogram[bucket] = (state.queueWrites.histogram[bucket] ?? 0) + 1
+    const phase = String(state.currentPass?.identity ?? "outside-pass")
+    const phaseRecord = state.queueWrites.phases[phase] ??= { calls: 0, bytes: 0 }
+    phaseRecord.calls += 1
+    phaseRecord.bytes += bytes
+    const label = typeof buffer?.label === "string" && buffer.label ? buffer.label : "unlabeled"
+    const resource = Object.hasOwn(state.queueWrites.resources, label) || Object.keys(state.queueWrites.resources).length < 48 ? label : "other"
+    const resourceRecord = state.queueWrites.resources[resource] ??= { calls: 0, bytes: 0, minimumOffset: Number.MAX_SAFE_INTEGER, maximumOffset: 0 }
+    resourceRecord.calls += 1
+    resourceRecord.bytes += bytes
+    resourceRecord.minimumOffset = Math.min(resourceRecord.minimumOffset, Number(bufferOffset ?? 0))
+    resourceRecord.maximumOffset = Math.max(resourceRecord.maximumOffset, Number(bufferOffset ?? 0) + bytes)
+    const call = state.counters.queueWriteCalls
+    if (state.queueWrites.stacks.length < 96 && (call <= 12 || call % 257 === 0)) {
+      state.queueWrites.stacks.push({ call, phase, resource: label, offset: Number(bufferOffset ?? 0), bytes, stack: String(new Error().stack ?? "").split("\n").slice(2, 8).join("\n") })
+    }
+  }, true)
   wrap(host.GPUQueue, "writeTexture", ([, data]) => { state.counters.textureWriteBytes += data?.byteLength ?? 0 })
   wrap(host.GPUCommandEncoder, "beginRenderPass", () => {
     state.counters.renderPasses += 1
