@@ -10,7 +10,7 @@ import { loadLocalConfig } from "../src/config"
 
 type BrowserProcess = Readonly<{ type: string; id: number; cpuTime: number }>
 type RpcRecord = { kind: string; stage: string; started: number; finished?: number; sentBytes: number; receivedBytes: number; transferredBytes: number; timings?: Record<string, number> }
-type FrameRecord = { at: number; interval: number; displayFrame: number; tick: number; surfaces: number; props: number; skyProps: number; drawCalls: number; heapBytes: number | null; detail: Record<string, number> }
+type FrameRecord = { at: number; interval: number; displayFrame: number; tick: number; surfaces: number; props: number; skyProps: number; drawCalls: number; bufferCreations: number; uploadBytes: number; submissions: number; heapBytes: number | null; detail: Record<string, number> }
 
 function intervalUnion(intervals: readonly (readonly [number, number])[]): number {
   let total = 0
@@ -169,7 +169,10 @@ test("profiles real headed 2Fort load, Soldier spawn, bots, outdoor visible fram
     intercept((globalThis as any).GPUQueue, "submit", (buffers: any[]) => { state.gpu.submissions += buffers?.length ?? 0 })
     intercept((globalThis as any).GPUQueue, "writeBuffer", (_target: unknown, _offset: unknown, data: any, dataOffset?: number, size?: number) => {
       state.gpu.writes += 1
-      state.gpu.writeBytes += size ?? Math.max(0, (data?.byteLength ?? 0) - (dataOffset ?? 0))
+      const elementBytes = ArrayBuffer.isView(data) && !(data instanceof DataView) ? data.BYTES_PER_ELEMENT : 1
+      state.gpu.writeBytes += size === undefined
+        ? Math.max(0, (data?.byteLength ?? 0) - (dataOffset ?? 0) * elementBytes)
+        : size * elementBytes
     })
     intercept((globalThis as any).GPUQueue, "writeTexture", (_target: unknown, data: any) => { state.gpu.writes += 1; state.gpu.writeBytes += data?.byteLength ?? 0 })
     intercept((globalThis as any).GPUCommandEncoder, "finish", () => { state.gpu.commandBuffers += 1 })
@@ -184,6 +187,9 @@ test("profiles real headed 2Fort load, Soldier spawn, bots, outdoor visible fram
     let lastDisplayFrame = -1
     let lastDisplayedAt = 0
     let lastDrawCalls = 0
+    let lastBuffers = 0
+    let lastUploadBytes = 0
+    let lastSubmissions = 0
     const sample = (now: number): void => {
       if (state.stage === "outdoor") {
         const root = document.querySelector<HTMLElement>("main")
@@ -201,12 +207,18 @@ test("profiles real headed 2Fort load, Soldier spawn, bots, outdoor visible fram
             props: canvas?.dataset.visibleMainStaticProps ? JSON.parse(canvas.dataset.visibleMainStaticProps).length : 0,
             skyProps: sky?.skyProps ?? 0,
             drawCalls: state.gpu.drawCalls - lastDrawCalls,
+            bufferCreations: state.gpu.buffers - lastBuffers,
+            uploadBytes: state.gpu.writeBytes - lastUploadBytes,
+            submissions: state.gpu.submissions - lastSubmissions,
             heapBytes: (performance as any).memory?.usedJSHeapSize ?? null,
             detail,
           })
           lastDisplayedAt = now
           lastDisplayFrame = displayFrame
           lastDrawCalls = state.gpu.drawCalls
+          lastBuffers = state.gpu.buffers
+          lastUploadBytes = state.gpu.writeBytes
+          lastSubmissions = state.gpu.submissions
         }
       } else {
         lastDisplayedAt = 0
@@ -334,6 +346,7 @@ test("profiles real headed 2Fort load, Soldier spawn, bots, outdoor visible fram
     const firstTick = Number(main.dataset.snapshotTick)
     const firstGpu = { ...state.gpu }
     const firstTransfer = { ...state.transfer }
+    const firstUploads = { ...state.modelParticleUploads }
     const firstDisplay = Number(document.querySelector<HTMLCanvasElement>("canvas.world-canvas")?.dataset.displayFrame ?? 0)
     const began = performance.now()
     state.stage = "outdoor"
@@ -353,6 +366,7 @@ test("profiles real headed 2Fort load, Soldier spawn, bots, outdoor visible fram
       finalDisplay: Number(document.querySelector<HTMLCanvasElement>("canvas.world-canvas")?.dataset.displayFrame ?? 0),
       firstGpu,
       firstTransfer,
+      firstUploads,
       bots: (window as any).__playsrcProfile.bots ?? [],
     }
   }, seconds)
@@ -382,8 +396,8 @@ test("profiles real headed 2Fort load, Soldier spawn, bots, outdoor visible fram
   const state = await page.evaluate(() => {
     const profile = (window as any).__playsrcProfile
     const main = document.querySelector<HTMLElement>("main")!
-    return { frames: profile.frames, rpcs: profile.rpcs, longTasks: profile.longTasks, gpu: profile.gpu, transfer: profile.transfer, load: JSON.parse(main.dataset.loadPerformance ?? "null"), hud: JSON.parse(main.dataset.hudPresentationProbe ?? "null"), panels: document.querySelectorAll("[data-vgui-name]").length }
-  }) as { frames: FrameRecord[]; rpcs: RpcRecord[]; longTasks: { at: number; duration: number; stage: string }[]; gpu: Record<string, number>; transfer: Record<string, number>; load: unknown; hud: any; panels: number }
+    return { frames: profile.frames, rpcs: profile.rpcs, longTasks: profile.longTasks, gpu: profile.gpu, transfer: profile.transfer, modelParticleUploads: profile.modelParticleUploads, load: JSON.parse(main.dataset.loadPerformance ?? "null"), hud: JSON.parse(main.dataset.hudPresentationProbe ?? "null"), panels: document.querySelectorAll("[data-vgui-name]").length }
+  }) as { frames: FrameRecord[]; rpcs: RpcRecord[]; longTasks: { at: number; duration: number; stage: string }[]; gpu: Record<string, number>; transfer: Record<string, number>; modelParticleUploads: Record<string, number>; load: unknown; hud: any; panels: number }
 
   const allocationRows: { function: string; url: string; bytes: number }[] = []
   const visit = (node: { callFrame: { functionName: string; url: string }; selfSize: number; children: any[] }) => {
@@ -398,6 +412,9 @@ test("profiles real headed 2Fort load, Soldier spawn, bots, outdoor visible fram
   }))
   const gpuOutdoor = Object.fromEntries(Object.entries(state.gpu).map(([name, value]) => [name, value - ((route.firstGpu as Record<string, number>)[name] ?? 0)]))
   const transferOutdoor = Object.fromEntries(Object.entries(state.transfer).map(([name, value]) => [name, value - ((route.firstTransfer as Record<string, number>)[name] ?? 0)]))
+  const uploadOutdoor = Object.fromEntries(Object.entries(state.modelParticleUploads ?? {}).map(([name, value]) => [name,
+    name === "retainedParticleBatches" ? value : value - ((route.firstUploads as Record<string, number>)[name] ?? 0),
+  ]))
   const ticksPerSecond = (route.finalTick - route.firstTick) / route.elapsedMilliseconds * 1000
   const report = {
     schema: "playsrc-tf2-2fort-performance-v1",
@@ -412,7 +429,16 @@ test("profiles real headed 2Fort load, Soldier spawn, bots, outdoor visible fram
     timings: Object.fromEntries(["models", "bots", "visibility", "world", "viewmodel", "render", "total"].map((name) => [name, summarizeDistribution(state.frames.flatMap((frame) => Number.isFinite(frame.detail[name]) ? [frame.detail[name]!] : []))])),
     browserResident: { before: processBefore, loaded: loadedMemory, outdoor: afterProcesses },
     javascript: { before: heapBefore, loaded: heapLoaded, outdoor: heapAfter, frameSamples: summarizeDistribution(state.frames.flatMap((frame) => frame.heapBytes === null ? [] : [frame.heapBytes])), workers },
-    gpu: { total: state.gpu, outdoor: gpuOutdoor },
+    gpu: {
+      total: state.gpu,
+      outdoor: gpuOutdoor,
+      perVisibleFrame: {
+        uploadBytes: summarizeDistribution(state.frames.map((frame) => frame.uploadBytes)),
+        bufferCreations: summarizeDistribution(state.frames.map((frame) => frame.bufferCreations)),
+        submissions: summarizeDistribution(state.frames.map((frame) => frame.submissions)),
+      },
+      modelParticleUploads: uploadOutdoor,
+    },
     worker: { calls: workerCalls, transfer: { total: state.transfer, outdoor: transferOutdoor } },
     allocations: { sampledBytes: allocationRows.reduce((total, entry) => total + entry.bytes, 0), perVisibleFrameBytes: allocationRows.reduce((total, entry) => total + entry.bytes, 0) / Math.max(1, state.frames.length), top: allocationRows.slice(0, 25) },
     longTasks: summarizeDistribution(state.longTasks.filter((task) => task.stage === "outdoor").map((task) => task.duration)),
@@ -426,7 +452,7 @@ test("profiles real headed 2Fort load, Soldier spawn, bots, outdoor visible fram
     writeFile(path.join(directory, `${label}.png`), afterPixels),
   ])
   await testInfo.attach("headed-2fort-performance", { body: JSON.stringify(report), contentType: "application/json" })
-  console.log(`PLAYSRC_2FORT_PERFORMANCE ${JSON.stringify({ label, loadMilliseconds: report.loading.mapToSoldierPlayableMilliseconds, initializationMilliseconds: report.loading.initializationExcludingDownloadMilliseconds, soldierMilliseconds: report.loading.soldierSelectionMilliseconds, visibleFrames: report.actualVisibleFrames, ticksPerSecond, residentMiB: Math.round(afterProcesses.residentBytes / 1048576), jsMiB: Math.round(heapAfter.usedSize / 1048576), textureMiB: Math.round(state.gpu.residentTextureBytes / 1048576), wasm: workers, staticProps: props.total, authoredSkyPixels: outdoorSkyPixels, drawCalls: report.drawCalls, outdoorGpu: gpuOutdoor, topCpu: report.cpu.topSelf.slice(0, 8) })}`)
+  console.log(`PLAYSRC_2FORT_PERFORMANCE ${JSON.stringify({ label, loadMilliseconds: report.loading.mapToSoldierPlayableMilliseconds, initializationMilliseconds: report.loading.initializationExcludingDownloadMilliseconds, soldierMilliseconds: report.loading.soldierSelectionMilliseconds, visibleFrames: report.actualVisibleFrames, ticksPerSecond, residentMiB: Math.round(afterProcesses.residentBytes / 1048576), jsMiB: Math.round(heapAfter.usedSize / 1048576), textureMiB: Math.round(state.gpu.residentTextureBytes / 1048576), wasm: workers, staticProps: props.total, authoredSkyPixels: outdoorSkyPixels, drawCalls: report.drawCalls, outdoorGpu: gpuOutdoor, perVisibleFrame: report.gpu.perVisibleFrame, modelParticleUploads: uploadOutdoor, topCpu: report.cpu.topSelf.slice(0, 8) })}`)
 
   expect(memoryBspRequests).toBe(1)
   expect(props.total).toBe(2265)
