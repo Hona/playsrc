@@ -7,6 +7,7 @@ import type { VisibilityView, WorkerRequest, WorkerResponse, WorkerTransactionTi
 const MAP = Uint8Array.from([0x50, 0x53, 0x4d, 0x50, 9, 8, 7, 6])
 const PRESENTATION = Uint8Array.from([0x50, 0x54, 0x46, 0x32, 1, 2, 3, 4])
 const KEY = "ab".repeat(32)
+const BUILD = "cd".repeat(32)
 const RESOURCE_CHUNK: ResourceChunkDescriptor = Object.freeze({
   codec: "identity",
   encodedByteLength: "12",
@@ -67,8 +68,8 @@ async function digest(bytes: Uint8Array): Promise<string> {
   ).join("")
 }
 
-async function presentationIdentity(key: string): Promise<string> {
-  return digest(new TextEncoder().encode(`playsrc-tf2-presentation-v15\0${key}`))
+async function presentationIdentity(key: string, build = BUILD): Promise<string> {
+  return digest(new TextEncoder().encode(`playsrc-tf2-presentation-v16\0${build}\0${key}`))
 }
 
 async function configuration(generation: number, values: readonly number[] = []): Promise<ResourceConfiguration> {
@@ -336,9 +337,15 @@ class PipelineWorker implements WorkerLike {
 }
 
 describe("TF2 Worker transport ownership", () => {
+  test("rejects an unauthenticated application generation before attaching a Worker", async () => {
+    const worker = new PipelineWorker(await digest(MAP))
+    expect(() => new Tf2WorkerClient(worker, new MemoryCache(), "stale")).toThrow("IntegrityFailure")
+    expect(worker.requests).toEqual([])
+  })
+
   test("reads and changes the authoritative team roster without a simulation-frame crossing", async () => {
     const worker = new PipelineWorker(await digest(MAP))
-    const client = new Tf2WorkerClient(worker, new MemoryCache())
+    const client = new Tf2WorkerClient(worker, new MemoryCache(), BUILD)
     expect(await client.teamSelection(7)).toMatchObject({ localTeam: 0, redCount: 0, blueCount: 0, cancelVisible: false })
     expect(await client.teamSelection(7, "blue")).toMatchObject({ localTeam: 3, redCount: 0, blueCount: 1, cancelVisible: true })
     expect(worker.requests.map((request) => request.kind)).toEqual(["team-selection", "team-selection"])
@@ -348,7 +355,7 @@ describe("TF2 Worker transport ownership", () => {
   test("publishes authenticated cold map and presentation bytes in one staged Worker request", async () => {
     const cache = new MemoryCache()
     const worker = new PipelineWorker(await digest(MAP))
-    const client = new Tf2WorkerClient(worker, cache)
+    const client = new Tf2WorkerClient(worker, cache, BUILD)
     const bsp = Uint8Array.from([1, 2, 3, 4])
     const source = await configuration(3, [5, 6, 7])
     const staged = await client.stage(3, bsp, 0, source, KEY)
@@ -371,7 +378,7 @@ describe("TF2 Worker transport ownership", () => {
 
   test("retains every bounded source-backed section without copying it into a map request", async () => {
     const worker = new PipelineWorker(await digest(MAP))
-    const client = new Tf2WorkerClient(worker, new MemoryCache())
+    const client = new Tf2WorkerClient(worker, new MemoryCache(), BUILD)
     const first = new Uint8Array(12), second = new Uint8Array(12)
     first.set([1, 2, 3]); second.set([4, 5, 6, 7])
     const source: ResourceConfiguration = Object.freeze({ generation: 9, byteLength: 24, sha256: await digest(first), sections: Object.freeze([first, second]) })
@@ -392,7 +399,7 @@ describe("TF2 Worker transport ownership", () => {
     cache.entries.set(KEY, MAP.slice())
     cache.entries.set(await presentationIdentity(KEY), PRESENTATION.slice())
     const worker = new PipelineWorker(await digest(MAP))
-    const client = new Tf2WorkerClient(worker, cache)
+    const client = new Tf2WorkerClient(worker, cache, BUILD)
     const staged = await client.stage(8, Uint8Array.from([8]), 1, await configuration(8, [7]), KEY)
     expect(worker.requests.map((request) => request.kind)).toEqual(["load"])
     expect(worker.requests[0]).toMatchObject({ includeMap: false, generation: 8 })
@@ -405,11 +412,29 @@ describe("TF2 Worker transport ownership", () => {
     await client.shutdown()
   })
 
+  test("recompiles stale PMTX presentation after an application upgrade without discarding the warm map", async () => {
+    const cache = new MemoryCache()
+    cache.entries.set(KEY, MAP.slice())
+    const staleBuild = "ef".repeat(32)
+    cache.entries.set(await presentationIdentity(KEY, staleBuild), Uint8Array.from([0x50, 0x4d, 0x54, 0x58, 2, 0, 0, 0]))
+    const worker = new PipelineWorker(await digest(MAP))
+    const client = new Tf2WorkerClient(worker, cache, BUILD)
+    const staged = await client.stage(11, Uint8Array.of(1), 0, await configuration(11), KEY)
+    await staged.persistence
+    expect(staged.cache).toBe("hit")
+    expect(staged.presentationCache).toBe("stored")
+    expect(worker.requests[0]).toMatchObject({ includeMap: false })
+    expect(worker.requests[0]).not.toHaveProperty("presentation")
+    expect(cache.entries.has(await presentationIdentity(KEY, staleBuild))).toBe(true)
+    expect(cache.entries.get(await presentationIdentity(KEY))).toEqual(PRESENTATION)
+    await client.shutdown()
+  })
+
   test("rejects a verified-but-wrong cached map and discards its staged generation atomically", async () => {
     const cache = new MemoryCache()
     cache.entries.set(KEY, Uint8Array.from([1, 2, 3, 4, 5, 6, 7, 8]))
     const worker = new PipelineWorker(await digest(MAP))
-    const client = new Tf2WorkerClient(worker, cache)
+    const client = new Tf2WorkerClient(worker, cache, BUILD)
     await expect(client.stage(4, Uint8Array.from([1]), 0, await configuration(4, [2]), KEY))
       .rejects.toMatchObject({ code: "IntegrityFailure" })
     expect(worker.requests.map((request) => request.kind)).toEqual(["load", "discard"])
@@ -418,7 +443,7 @@ describe("TF2 Worker transport ownership", () => {
 
   test("coalesces same-turn model and exact visibility phases without delaying the model response", async () => {
     const worker = new PipelineWorker(await digest(MAP))
-    const client = new Tf2WorkerClient(worker, new MemoryCache())
+    const client = new Tf2WorkerClient(worker, new MemoryCache(), BUILD)
     const batch = new Uint8Array(12)
     const order: string[] = []
     const models = client.models(2, batch).then((value) => { order.push("models"); return value })
@@ -441,7 +466,7 @@ describe("TF2 Worker transport ownership", () => {
   test("transports Rust-evaluated world bump frames and transforms in the existing visibility response", async () => {
     const worker = new PipelineWorker(await digest(MAP))
     worker.animatedWorldMaterial = true
-    const client = new Tf2WorkerClient(worker, new MemoryCache())
+    const client = new Tf2WorkerClient(worker, new MemoryCache(), BUILD)
     const visible = await client.visibility(2, VIEW)
     expect(worker.requests.map((request) => request.kind)).toEqual(["visibility"])
     expect(visible.worldMaterials).toHaveLength(1)
@@ -461,7 +486,7 @@ describe("TF2 Worker transport ownership", () => {
 
   test("publishes distinct authored main and sky views atomically in one model companion", async () => {
     const worker = new PipelineWorker(await digest(MAP))
-    const client = new Tf2WorkerClient(worker, new MemoryCache())
+    const client = new Tf2WorkerClient(worker, new MemoryCache(), BUILD)
     const sky = { ...VIEW, position: [8, 9, 10] as const, visibilityPosition: [1, 2, 3] as const, areaFilter: 7 }
     const models = client.models(2, new Uint8Array(12))
     const views = client.visibilityViews(2, [VIEW, sky])
@@ -475,7 +500,7 @@ describe("TF2 Worker transport ownership", () => {
 
   test("deduplicates only exactly equivalent multi-view identities", async () => {
     const worker = new PipelineWorker(await digest(MAP))
-    const client = new Tf2WorkerClient(worker, new MemoryCache())
+    const client = new Tf2WorkerClient(worker, new MemoryCache(), BUILD)
     const equivalent = { ...VIEW, position: [...VIEW.position] as [number, number, number] }
     const [first, second] = await client.visibilityViews(2, [VIEW, equivalent])
     expect(first).toBe(second)
@@ -490,7 +515,7 @@ describe("TF2 Worker transport ownership", () => {
   test("rejects malformed multi-view publication without exposing a partial result", async () => {
     const worker = new PipelineWorker(await digest(MAP))
     worker.failure = { kind: "failure", code: "TransitionFailed", detail: 203 }
-    const client = new Tf2WorkerClient(worker, new MemoryCache())
+    const client = new Tf2WorkerClient(worker, new MemoryCache(), BUILD)
     await expect(client.visibilityViews(2, [VIEW, { ...VIEW, areaFilter: 7 }]))
       .rejects.toMatchObject({ code: "TransitionFailed", detail: 203 })
     worker.failure = undefined
@@ -499,7 +524,7 @@ describe("TF2 Worker transport ownership", () => {
 
   test("flushes deferred models before a later ordered particle transaction", async () => {
     const worker = new PipelineWorker(await digest(MAP))
-    const client = new Tf2WorkerClient(worker, new MemoryCache())
+    const client = new Tf2WorkerClient(worker, new MemoryCache(), BUILD)
     const models = client.models(2, new Uint8Array(12))
     const particles = client.particles(2, new Uint8Array(32))
     await Promise.all([models, particles])
@@ -509,7 +534,7 @@ describe("TF2 Worker transport ownership", () => {
 
   test("moves owned resource batches while preserving unrelated bytes around sliced views", async () => {
     const worker = new PipelineWorker(await digest(MAP))
-    const client = new Tf2WorkerClient(worker, new MemoryCache())
+    const client = new Tf2WorkerClient(worker, new MemoryCache(), BUILD)
     const owned = new Uint8Array(12)
     owned[0] = 7
     expect(await client.decodeResources([{ descriptor: RESOURCE_CHUNK, bytes: owned }])).toEqual(Uint8Array.from([7, ...new Array(11).fill(0)]))
@@ -526,7 +551,7 @@ describe("TF2 Worker transport ownership", () => {
 
   test("shares gameplay source sections with the Worker without cloning or detaching retained authored bytes", async () => {
     const worker = new PipelineWorker(await digest(MAP))
-    const client = new Tf2WorkerClient(worker, new MemoryCache())
+    const client = new Tf2WorkerClient(worker, new MemoryCache(), BUILD)
     const input = new Uint8Array(12)
     input.fill(9)
     const decoded = await client.decodeResources([{ descriptor: RESOURCE_CHUNK, bytes: input }], 3)
@@ -544,7 +569,7 @@ describe("TF2 Worker transport ownership", () => {
 
   test("retains bounded source sections in the Worker without cloning a monolithic configuration", async () => {
     const worker = new PipelineWorker(await digest(MAP))
-    const client = new Tf2WorkerClient(worker, new MemoryCache())
+    const client = new Tf2WorkerClient(worker, new MemoryCache(), BUILD)
     const input = new Uint8Array(12)
     input[0] = 9
     const section = await client.decodeResources([{ descriptor: RESOURCE_CHUNK, bytes: input }], 5)
@@ -560,7 +585,7 @@ describe("TF2 Worker transport ownership", () => {
 
   test("readmits retained source sections individually when a later generation reuses them", async () => {
     const worker = new PipelineWorker(await digest(MAP))
-    const client = new Tf2WorkerClient(worker, new MemoryCache())
+    const client = new Tf2WorkerClient(worker, new MemoryCache(), BUILD)
     const resources = await configuration(3, [8, 7, 6])
     const staged = await client.stage(4, Uint8Array.of(1), 0, resources, KEY)
     expect(staged.payload).toEqual(MAP)
@@ -571,7 +596,7 @@ describe("TF2 Worker transport ownership", () => {
 
   test("rejects the sixty-fifth pending request without dropping its first sixty-four", async () => {
     const worker = new PipelineWorker(await digest(MAP))
-    const client = new Tf2WorkerClient(worker, new MemoryCache())
+    const client = new Tf2WorkerClient(worker, new MemoryCache(), BUILD)
     const pending = Array.from({ length: 64 }, () => client.visibility(2, VIEW))
     await expect(client.visibility(2, VIEW)).rejects.toMatchObject({ code: "BoundExceeded" })
     expect(await Promise.all(pending)).toHaveLength(64)
@@ -581,7 +606,7 @@ describe("TF2 Worker transport ownership", () => {
 
   test("never joins visibility from a different staged generation", async () => {
     const worker = new PipelineWorker(await digest(MAP))
-    const client = new Tf2WorkerClient(worker, new MemoryCache())
+    const client = new Tf2WorkerClient(worker, new MemoryCache(), BUILD)
     const models = client.models(2, new Uint8Array(12))
     const visibility = client.visibility(3, VIEW)
     await Promise.all([models, visibility])
@@ -598,7 +623,7 @@ describe("TF2 Worker transport ownership", () => {
       }
     }()
     const worker = new PipelineWorker(await digest(MAP))
-    const client = new Tf2WorkerClient(worker, cache)
+    const client = new Tf2WorkerClient(worker, cache, BUILD)
     const staged = await client.stage(3, Uint8Array.from([1]), 0, await configuration(3, [2]), KEY)
     expect(await staged.persistence).toMatchObject({
       presentationCache: "unavailable",
@@ -613,7 +638,7 @@ describe("TF2 Worker transport ownership", () => {
     const worker = new class extends PipelineWorker {
       override postMessage(): void { throw new Error("transfer failed") }
     }(await digest(MAP))
-    const client = new Tf2WorkerClient(worker, new MemoryCache())
+    const client = new Tf2WorkerClient(worker, new MemoryCache(), BUILD)
     const models = client.models(2, new Uint8Array(12))
     const visibility = client.visibility(2, VIEW)
     const results = await Promise.allSettled([models, visibility])
@@ -625,7 +650,7 @@ describe("TF2 Worker transport ownership", () => {
   test("preserves structured Worker failures and closes every outstanding transport", async () => {
     const worker = new PipelineWorker(await digest(MAP))
     worker.failure = { id: 0, kind: "failure", code: "StaleGeneration", detail: 0 }
-    const client = new Tf2WorkerClient(worker, new MemoryCache())
+    const client = new Tf2WorkerClient(worker, new MemoryCache(), BUILD)
     await expect(client.visibility(99, VIEW)).rejects.toMatchObject({ code: "StaleGeneration" })
     worker.failure = undefined
     await client.shutdown()

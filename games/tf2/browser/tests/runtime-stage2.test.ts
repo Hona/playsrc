@@ -626,7 +626,7 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     expect(new TextDecoder().decode(definition.slice(0, 4))).toBe("PJMP")
     expect(definition.byteLength).toBe(100)
     const worker = new CourseWorker()
-    const client = new Tf2WorkerClient(worker, new MemoryCache())
+    const client = new Tf2WorkerClient(worker, new MemoryCache(), "cd".repeat(32))
     await client.configureCourse(4, definition)
     expect(worker.configuredBytes).toBe(100)
     const command = encodeCommand({

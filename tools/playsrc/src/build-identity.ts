@@ -15,6 +15,10 @@ const BUILD_INPUTS = Object.freeze([
 
 let pendingIdentity: Promise<string> | undefined
 
+export function invalidateRustBuildIdentity(): void {
+  pendingIdentity = undefined
+}
+
 export async function rustBuildIdentity(root = repositoryRoot): Promise<string> {
   if (root === repositoryRoot && pendingIdentity) return pendingIdentity
   const operation = (async () => {

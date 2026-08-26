@@ -9,6 +9,8 @@ import { repositoryRoot } from "./config"
 import { acquireMap } from "./targets"
 import { buildTf2Wasm } from "./tf2-wasm-build"
 import { buildSourceBundle, prepareSourceBundleProducer } from "./source-bundle"
+import { invalidateRustBuildIdentity } from "./build-identity"
+import { createDevelopmentBuildCoherence } from "./development-coherence"
 import { TF2_CONFIGURED_STARTUP } from "@playsrc/game-tf2-browser/startup-presentation"
 import { TF2_MAP_LOADING, TF2_STAMP_BACKGROUND } from "@playsrc/game-tf2-browser/loading-presentation"
 import { TF2_TARGET_NAMES, type Tf2TargetName } from "../../../apps/web/tf2/src/deployment"
@@ -125,7 +127,7 @@ export async function startDevelopment(config: LocalConfig, target: string | und
   const mapReady = performance.now()
   let wasmMilliseconds = 0
   let sourceProducerMilliseconds = 0
-  const [wasmPath, applicationBuild, { tf2ViteConfiguration }, sourceBundles] = await Promise.all([
+  const [wasmPath, initialApplicationBuild, { tf2ViteConfiguration }, sourceBundles] = await Promise.all([
     (async () => {
       const began = performance.now()
       const artifact = await buildTf2Wasm(config)
@@ -181,7 +183,8 @@ export async function startDevelopment(config: LocalConfig, target: string | und
   }
   let catalog = createCatalog()
   const wasmBytes = await readFile(wasmPath)
-  const wasm = descriptor("derived-object", "application/octet-stream", wasmBytes)
+  let wasm = descriptor("derived-object", "application/octet-stream", wasmBytes)
+  let applicationBuild = initialApplicationBuild
   const browserConfiguration = () => JSON.stringify({
     application: "tf2",
     applicationBuild,
@@ -210,6 +213,49 @@ export async function startDevelopment(config: LocalConfig, target: string | und
   let publicationMilliseconds = 0
   let viteCreationMilliseconds = 0
   let closed = false
+  const coherence = createDevelopmentBuildCoherence(applicationBuild, publicCommitIdentity, async (identity) => {
+    const replacementStarted = performance.now()
+    invalidateRustBuildIdentity()
+    const [replacementWasmPath] = await Promise.all([
+      buildTf2Wasm(config),
+      prepareSourceBundleProducer(config),
+    ])
+    const replacementWasmBytes = await readFile(replacementWasmPath)
+    const replacementWasm = descriptor("derived-object", "application/octet-stream", replacementWasmBytes)
+    const replacements = await Promise.all(targets.map(async (previous) => {
+      const sourceBundle = await buildSourceBundle(config, previous.target)
+      await Promise.all([
+        publishFile(config, sourceBundle.report.graphDescriptor, sourceBundle.graphPath),
+        publishFile(config, sourceBundle.report.ledgerDescriptor, sourceBundle.ledgerPath),
+        ...sourceBundle.graph.chunks.map((chunk) => publishFile(config, resourceChunkObject(chunk), path.join(sourceBundle.graphObjectDirectory, chunk.encodedSha256))),
+      ])
+      return Object.freeze({
+        ...previous,
+        contentBuild: sourceBundle.report.contentBuild,
+        objects: Object.freeze({
+          ...previous.objects,
+          resources: sourceBundle.report.graphDescriptor,
+          dependencyLedger: sourceBundle.report.ledgerDescriptor,
+        }),
+      })
+    }))
+    await putObject(config.assetDir, replacementWasm, replacementWasmBytes)
+    const previousTargets = [...targets]
+    targets.splice(0, targets.length, ...replacements)
+    const replacementCatalog = createCatalog()
+    try {
+      await putObject(config.assetDir, replacementCatalog.descriptor, replacementCatalog.bytes)
+    } catch (error) {
+      targets.splice(0, targets.length, ...previousTargets)
+      throw error
+    }
+    catalog = replacementCatalog
+    wasm = replacementWasm
+    applicationBuild = identity
+    process.env.PLAYSRC_BROWSER_CONFIG = browserConfiguration()
+    application?.ws.send({ type: "full-reload" })
+    console.error(`playsrc dev build replaced applicationBuild=${identity} wasm=${wasm.sha256} milliseconds=${Math.round(performance.now() - replacementStarted)}`)
+  })
   const restoreEnvironment = () => {
     if (previousAssetOrigin === undefined) delete process.env.PLAYSRC_ASSET_ORIGIN
     else process.env.PLAYSRC_ASSET_ORIGIN = previousAssetOrigin
@@ -250,7 +296,7 @@ export async function startDevelopment(config: LocalConfig, target: string | und
     ])
     publicationMilliseconds = Math.round(performance.now() - publicationStarted)
     const viteStarted = performance.now()
-    const vite = tf2ViteConfiguration(ASSET_ORIGIN)
+    const vite = tf2ViteConfiguration(ASSET_ORIGIN, false, coherence.ensure)
     application = await createServer({
       ...vite,
       plugins: [
