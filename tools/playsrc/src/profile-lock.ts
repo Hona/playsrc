@@ -4,12 +4,13 @@ import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "node:
 import path from "node:path"
 
 const MAX_WAIT = 180_000
+let admissionSequence = 0
 export function processIsAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true }
   catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH" }
 }
 
-type Ticket = { token: string; pid: number; profile: string; repository: string; startedAt: string }
+type Ticket = { token: string; pid: number; profile: string; repository: string; startedAt: string; sequence?: number }
 export type LockObservation = Readonly<{
   elapsedMilliseconds: number; position: number; waiting: number
   holder: Ticket | null; holderAlive: boolean | null; holderAgeMilliseconds: number | null
@@ -43,12 +44,13 @@ export async function acquireHeadedProfileLock(lockPath: string, profile: string
     throw new Error("Machine-wide headed profile lock wait is outside its three-minute bound")
   }
   const started = Date.now()
+  const sequence = ++admissionSequence
   const token = randomUUID()
   const queue = `${lockPath}.queue`
   await mkdir(queue, { recursive: true })
-  const name = `${String(started).padStart(24, "0")}-${token}.json`
+  const name = `${String(started).padStart(24, "0")}-${String(process.pid).padStart(10, "0")}-${String(sequence).padStart(10, "0")}-${token}.json`
   const ticketPath = path.join(queue, name)
-  const ticket: Ticket = { token, pid: process.pid, profile, repository: process.cwd(), startedAt: new Date(started).toISOString() }
+  const ticket: Ticket = { token, pid: process.pid, profile, repository: process.cwd(), startedAt: new Date(started).toISOString(), sequence }
   const temporary = `${ticketPath}.tmp`
   let awaken: (() => void) | undefined
   let revision = 0
@@ -95,19 +97,21 @@ export async function acquireHeadedProfileLock(lockPath: string, profile: string
         return { token, milliseconds: Date.now() - started, observation }
       }
       const observed = revision
-      const tickets: Array<{ name: string; started: number }> = []
+      const tickets: Array<{ name: string; started: number; pid: number; sequence: number }> = []
       for (const entry of (await readdir(queue)).filter(name => name.endsWith(".json")).sort()) {
         const candidate = await readTicket(path.join(queue, entry))
         if (!candidate) continue
         if (!processIsAlive(candidate.pid)) { await unlink(path.join(queue, entry)).catch(() => undefined); continue }
         const timestamp = Date.parse(candidate.startedAt)
         if (!Number.isFinite(timestamp)) throw new Error("Queued profile ticket has no valid admission time")
-        tickets.push({ name: entry, started: timestamp })
+        tickets.push({ name: entry, started: timestamp, pid: candidate.pid, sequence: candidate.sequence ?? 0 })
       }
       // Bun and Node do not share an hrtime epoch. The published wall-clock
       // admission time, not a per-process timer embedded in a filename, owns
       // FIFO order for every existing ticket.
-      const live = tickets.sort((left, right) => left.started - right.started || left.name.localeCompare(right.name)).map(ticket => ticket.name)
+      // Same-process requests can publish within one clock millisecond on fast
+      // filesystems. Keep call order rather than randomly sorting their UUIDs.
+      const live = tickets.sort((left, right) => left.started - right.started || left.pid - right.pid || left.sequence - right.sequence || left.name.localeCompare(right.name)).map(ticket => ticket.name)
       eligible = live[0] === name
       tryClaim()
       if (claimed || claimError) continue
