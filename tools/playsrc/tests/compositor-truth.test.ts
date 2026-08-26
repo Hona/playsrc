@@ -14,6 +14,19 @@ describe("truthful compositor presentation evidence", () => {
     expect(summarizeCompositorTruth([{ name: "PresentationFeedback", ts: 1_000 }, { name: "Display::FrameDisplayed", ts: 1_100 }, { name: "PresentationFeedback", ts: 17_000 }, { name: "Display::FrameDisplayed", ts: 17_100 }], 1000)).toMatchObject({ presentedFrames: 2, eventNames: ["PresentationFeedback"] })
   })
 
+  test("recognizes current Chromium FramePresented events without accepting animation callbacks", () => {
+    expect(summarizeCompositorTruth([
+      { name: "RequestAnimationFrame", ts: 500 },
+      { name: "FramePresented", ts: 1_000 },
+      { name: "FramePresented", ts: 18_000 },
+    ], 1_000)).toMatchObject({
+      evidence: "chromium-compositor-presentation-trace",
+      presentedFrames: 2,
+      eventNames: ["FramePresented"],
+      intervals: { p50Milliseconds: 17 },
+    })
+  })
+
   test("excludes compositor frames outside the real active gameplay window", () => {
     expect(summarizeCompositorTruth([{ name: "Display::FrameDisplayed", ts: 99 }, { name: "Display::FrameDisplayed", ts: 100 }, { name: "Display::FrameDisplayed", ts: 200 }, { name: "Display::FrameDisplayed", ts: 201 }], 1000, { startedMicroseconds: 100, endedMicroseconds: 200 })).toMatchObject({ presentedFrames: 2 })
     expect(() => summarizeCompositorTruth([], 1000, { startedMicroseconds: 2, endedMicroseconds: 1 })).toThrow("window is invalid")
