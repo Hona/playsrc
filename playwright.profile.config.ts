@@ -2,8 +2,10 @@ import { headedProfileConfiguration } from "./tools/playsrc/profile/profile-conf
 import { headedProfileTarget } from "./tools/playsrc/profile/profile-target"
 
 export default headedProfileConfiguration({
-  match: process.env.PROFILE_COMBAT_IMPACTS === "1"
-    ? "combat-impact.profile.ts"
+  match: process.env.PROFILE_2FORT_MEMORY === "1"
+    ? "ctf-2fort-performance.profile.ts"
+    : process.env.PROFILE_COMBAT_IMPACTS === "1"
+      ? "combat-impact.profile.ts"
     : process.env.PROFILE_UPWARD_OUTDOORS === "1"
     ? "upward-outdoor.profile.ts"
     : process.env.PROFILE_SCENARIOS === "frame-budget"

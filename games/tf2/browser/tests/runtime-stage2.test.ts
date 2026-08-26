@@ -137,7 +137,7 @@ function snapshot(): ArrayBuffer {
   view.setUint32(at + 4, 0xffff_ffff, true)
   return bytes
 }
-function simulationOutput(){const state=new Uint8Array(snapshot()),output=new ArrayBuffer(68+state.length*2),data=new Uint8Array(output),view=new DataView(output);data.set(new TextEncoder().encode("PSIM"));view.setUint32(4,1,true);view.setUint32(8,1,true);view.setBigUint64(16,1n,true);view.setBigUint64(24,1n,true);view.setBigUint64(32,1n,true);view.setUint32(40,1,true);view.setUint32(48,state.length,true);view.setUint32(52,1,true);data.set(state,56);const at=56+state.length;view.setBigUint64(at,1n,true);view.setUint32(at+8,state.length,true);data.set(state,at+12);return output}
+function simulationOutput(){const state=new Uint8Array(snapshot()),output=new ArrayBuffer(68+state.length),data=new Uint8Array(output),view=new DataView(output);data.set(new TextEncoder().encode("PSIM"));view.setUint32(4,2,true);view.setUint32(8,1,true);view.setBigUint64(16,1n,true);view.setBigUint64(24,1n,true);view.setBigUint64(32,1n,true);view.setUint32(40,1,true);view.setUint32(48,state.length,true);view.setUint32(52,1,true);const at=56;view.setBigUint64(at,1n,true);view.setUint32(at+8,state.length,true);data.set(state,at+12);return output}
 
 class MemoryCache implements DerivedObjectCache {
   async read(): Promise<undefined> { return undefined }
@@ -627,6 +627,7 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     expect(command.byteLength).toBe(0)
     expect(publication.snapshot.tick).toBe(7n)
     expect(publication.snapshotBytes.buffer).toBe(publication.eventBatches[0]!.bytes.buffer)
+    expect(publication.snapshotBytes.byteOffset).toBe(publication.eventBatches[0]!.bytes.byteOffset)
     expect(publication.eventBatches[0]!.snapshot.collisionSnapshot.bytes.buffer).toBe(publication.snapshotBytes.buffer)
     expect(publication.snapshot).toBe(publication.eventBatches[0]!.snapshot)
     await client.shutdown()
