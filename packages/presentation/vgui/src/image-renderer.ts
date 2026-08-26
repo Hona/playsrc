@@ -56,18 +56,13 @@ const smooth = (edge0: number, edge1: number, value: number): number => {
 const srgbToLinear = (value: number): number => value <= 0.04045
   ? value / 12.92
   : ((value + 0.055) / 1.055) ** 2.4
+const SRGB_TEXTURE_SAMPLES = Float64Array.from({ length: 256 }, (_, value) => srgbToLinear(value / 255))
+const LINEAR_TEXTURE_SAMPLES = Float64Array.from({ length: 256 }, (_, value) => value / 255)
 const linearToSrgb = (value: number): number => value <= 0.0031308
   ? value * 12.92
   : 1.055 * clamp(value) ** (1 / 2.4) - 0.055
 
 function wrap(value: number): number { return value - Math.floor(value) }
-
-function texel(texture: VguiImageRasterTexturePixels, x: number, y: number, channel: number): number {
-  const wrappedX = ((x % texture.width) + texture.width) % texture.width
-  const wrappedY = ((y % texture.height) + texture.height) % texture.height
-  const value = texture.rgba[(wrappedY * texture.width + wrappedX) * 4 + channel]! / 255
-  return channel !== 3 && texture.colorRead === "srgb" ? srgbToLinear(value) : value
-}
 
 function sample(texture: VguiImageRasterTexturePixels, u: number, v: number, output: Float64Array): void {
   const wrappedU = wrap(u)
@@ -75,7 +70,12 @@ function sample(texture: VguiImageRasterTexturePixels, u: number, v: number, out
   if (!texture.filtered) {
     const x = Math.floor(wrappedU * texture.width)
     const y = Math.floor(wrappedV * texture.height)
-    for (let channel = 0; channel < 4; channel += 1) output[channel] = texel(texture, x, y, channel)
+    const offset = (y * texture.width + x) * 4
+    const colors = texture.colorRead === "srgb" ? SRGB_TEXTURE_SAMPLES : LINEAR_TEXTURE_SAMPLES
+    output[0] = colors[texture.rgba[offset]!]!
+    output[1] = colors[texture.rgba[offset + 1]!]!
+    output[2] = colors[texture.rgba[offset + 2]!]!
+    output[3] = LINEAR_TEXTURE_SAMPLES[texture.rgba[offset + 3]!]!
     return
   }
   const x = wrappedU * texture.width - 0.5
@@ -84,10 +84,17 @@ function sample(texture: VguiImageRasterTexturePixels, u: number, v: number, out
   const y0 = Math.floor(y)
   const fx = x - x0
   const fy = y - y0
+  const firstX = x0 < 0 ? x0 + texture.width : x0
+  const nextX = x0 + 1 >= texture.width ? x0 + 1 - texture.width : x0 + 1
+  const firstY = y0 < 0 ? y0 + texture.height : y0
+  const nextY = y0 + 1 >= texture.height ? y0 + 1 - texture.height : y0 + 1
+  const firstRow = firstY * texture.width * 4
+  const nextRow = nextY * texture.width * 4
   for (let channel = 0; channel < 4; channel += 1) {
+    const values = channel !== 3 && texture.colorRead === "srgb" ? SRGB_TEXTURE_SAMPLES : LINEAR_TEXTURE_SAMPLES
     output[channel] = mix(
-      mix(texel(texture, x0, y0, channel), texel(texture, x0 + 1, y0, channel), fx),
-      mix(texel(texture, x0, y0 + 1, channel), texel(texture, x0 + 1, y0 + 1, channel), fx),
+      mix(values[texture.rgba[firstRow + firstX * 4 + channel]!]!, values[texture.rgba[firstRow + nextX * 4 + channel]!]!, fx),
+      mix(values[texture.rgba[nextRow + firstX * 4 + channel]!]!, values[texture.rgba[nextRow + nextX * 4 + channel]!]!, fx),
       fy,
     )
   }

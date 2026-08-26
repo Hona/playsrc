@@ -32,6 +32,7 @@ import { WebGpuUploadBatch, type UploadBatchBackend } from "./webgpu-upload-batc
 import { prepareReachablePipelineVisibility } from "./reachable-pipeline-visibility"
 import { RetainedLeafVisibility, RetainedVisibilityError, RetainedWorldVisibility } from "./retained-visibility"
 import { RetainedStaticSceneGroup } from "./static-scene-group"
+import { RetainedModelCache } from "./retained-model-cache"
 import { createStaticPropBatch, MAX_STATIC_PROPS_PER_BATCH, type StaticPropBatch } from "./static-prop-batches"
 import { distanceFadeOpacity, quantizeStaticPropOpacity, screenFadeOpacity } from "./static-prop-fade"
 import { executeViewModelDepthPhase } from "./viewmodel-depth-phase"
@@ -1408,6 +1409,8 @@ function validateDirectionalInputs(
   return result
 }
 
+type RetainedViewModel = { model: string; root: THREE.Group; instance: THREE.Group; meshes: THREE.Mesh[]; lighting?: SourceModelLightingUniforms; eyes?: Map<number, SourceModelEyeUniforms>; cubemapIdentity?: string | null; cubemapNodes?: any[]; seen: number }
+
 class RendererOwner implements Renderer {
   readonly configuration: RenderConfiguration
   readonly sampleCount: 1 | 4
@@ -1440,7 +1443,8 @@ class RendererOwner implements Renderer {
   #modelPanelScene = new THREE.Scene()
   #modelPanelCamera = new THREE.PerspectiveCamera(25, 1, 7, 1000)
   #modelPanelInstances = new Map<string, { instance: THREE.Group; meshes?: THREE.Mesh[] }>()
-  #viewModelInstances = new Map<number, { model: string; root: THREE.Group; instance: THREE.Group; meshes: THREE.Mesh[]; lighting?: SourceModelLightingUniforms; eyes?: Map<number, SourceModelEyeUniforms>; cubemapIdentity?: string | null; cubemapNodes?: any[]; seen: number }>()
+  #viewModelInstances = new Map<number, RetainedViewModel>()
+  readonly #retainedViewModels = new RetainedModelCache<RetainedViewModel>(32, retained => this.#disposeDynamicInstance(retained.root))
   #dynamicModelInstances = new Map<number, { model: string; instance: THREE.Group; meshes?: THREE.Mesh[]; lighting?: SourceModelLightingUniforms; eyes?: Map<number, SourceModelEyeUniforms>; cubemapIdentity?: string | null; cubemapNodes?: any[]; seen: number }>()
   #dynamicBrushInstances = new Map<number, { model: number; appearance: string; instance: THREE.Group; seen: number }>()
   #dynamicRevision = 0
@@ -2159,6 +2163,7 @@ class RendererOwner implements Renderer {
       this.#clearParticleBatches()
       this.#clearDynamic(this.#viewModels)
       this.#viewModelInstances.clear()
+      this.#retainedViewModels.clear()
       for (const retained of this.#modelPanelInstances.values()) this.#disposeDynamicInstance(retained.instance)
       this.#modelPanelInstances.clear()
       this.#stagedDynamic = undefined
@@ -4702,17 +4707,25 @@ class RendererOwner implements Renderer {
     const key = modelKey(item.model, item.skin ?? 0)
     let retained = this.#viewModelInstances.get(item.identity)
     if (!retained || retained.model !== key) {
-      if (retained) this.#disposeDynamicInstance(retained.root)
-      const instance = this.#active!.modelTemplates.get(key)!.clone(true)
-      if (!item.pose) throw new RenderingError("MalformedInput", "viewmodel pose is missing")
-      const meshes = this.#applyPose(instance, item.pose, false)
-      const root = new THREE.Group()
-      root.userData.identity = item.identity
-      root.setRotationFromMatrix(new THREE.Matrix4().set(0, -1, 0, 0, 0, 0, 1, 0, -1, 0, 0, 0, 0, 0, 0, 1))
-      root.add(instance)
-      root.traverse((object) => object.layers.set(1))
-      this.#viewModels.add(root)
-      retained = { model: key, root, instance, meshes, seen: 0 }
+      if (retained) {
+        retained.root.parent?.remove(retained.root)
+        this.#retainedViewModels.retain(`${item.identity}:${retained.model}`, retained)
+      }
+      retained = this.#retainedViewModels.take(`${item.identity}:${key}`)
+      if (retained) {
+        if (item.pose) this.#applyPose(retained.instance, item.pose, true, retained.meshes)
+      } else {
+        const instance = this.#active!.modelTemplates.get(key)!.clone(true)
+        if (!item.pose) throw new RenderingError("MalformedInput", "viewmodel pose is missing")
+        const meshes = this.#applyPose(instance, item.pose, false)
+        const root = new THREE.Group()
+        root.userData.identity = item.identity
+        root.setRotationFromMatrix(new THREE.Matrix4().set(0, -1, 0, 0, 0, 0, 1, 0, -1, 0, 0, 0, 0, 0, 0, 1))
+        root.add(instance)
+        root.traverse((object) => object.layers.set(1))
+        retained = { model: key, root, instance, meshes, seen: 0 }
+      }
+      this.#viewModels.add(retained.root)
       this.#viewModelInstances.set(item.identity, retained)
     } else if (item.pose) {
       this.#applyPose(retained.instance, item.pose, true, retained.meshes)
@@ -5003,7 +5016,8 @@ class RendererOwner implements Renderer {
     }
     for (const [identity, retained] of this.#viewModelInstances) {
       if (retained.seen === revision) continue
-      this.#disposeDynamicInstance(retained.root)
+      retained.root.parent?.remove(retained.root)
+      this.#retainedViewModels.retain(`${identity}:${retained.model}`, retained)
       this.#viewModelInstances.delete(identity)
     }
     this.#stagedDynamic = Object.freeze({
@@ -5053,6 +5067,9 @@ class RendererOwner implements Renderer {
       height > limit
     )
       throw new RenderingError("BoundExceeded", "renderer dimensions are invalid")
+    if (cssWidth === this.#cssWidth && cssHeight === this.#cssHeight && devicePixelRatio === this.#devicePixelRatio) {
+      return Object.freeze({ width, height, suspended: this.#suspended, deviceGeneration: this.#deviceGeneration, attachmentGeneration: this.#attachmentGeneration })
+    }
     const prior = Object.freeze({
       cssWidth: this.#cssWidth,
       cssHeight: this.#cssHeight,
@@ -5141,6 +5158,7 @@ class RendererOwner implements Renderer {
     this.#clearParticleBatches()
     this.#clearDynamic(this.#viewModels)
     this.#viewModelInstances.clear()
+    this.#retainedViewModels.clear()
     for (const retained of this.#modelPanelInstances.values()) this.#disposeDynamicInstance(retained.instance)
     this.#modelPanelInstances.clear()
     this.#stagedDynamic = undefined
@@ -5245,6 +5263,7 @@ class RendererOwner implements Renderer {
     this.#clearParticleBatches()
     this.#clearDynamic(this.#viewModels)
     this.#viewModelInstances.clear()
+    this.#retainedViewModels.clear()
     for (const retained of this.#modelPanelInstances.values()) this.#disposeDynamicInstance(retained.instance)
     this.#modelPanelInstances.clear()
     this.#stagedDynamic = undefined

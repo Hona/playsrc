@@ -26,6 +26,7 @@ describe("bounded headed profile orchestration", () => {
     expect(parseHeadedProfile(["2fort-visual", "--headed"])).toEqual({ profile: "2fort-visual", fresh: false, playwright: [] })
     expect(parseHeadedProfile(["sky-coherence", "--headed"])).toEqual({ profile: "sky-coherence", fresh: false, playwright: [] })
     expect(parseHeadedProfile(["upward-training-bots", "--headed"])).toEqual({ profile: "upward-training-bots", fresh: false, playwright: [] })
+    expect(parseHeadedProfile(["class-switch-high-dpi", "--headed"])).toEqual({ profile: "class-switch-high-dpi", fresh: false, playwright: [] })
     expect(parseHeadedProfile(["2fort-match"])).toEqual({
       profile: "2fort-match",
       fresh: false,
