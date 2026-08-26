@@ -58,9 +58,9 @@ type WasmExports = Readonly<{
   playsrc_team_select(handle: number, choice: number): number
   playsrc_jump_configure(handle: number, definition: number, length: number): number
   playsrc_player_set_position(handle: number, x: number, y: number, z: number): number
-  playsrc_simulation_observe(handle: number, nowSeconds: number, command: number, length: number, suspended: number): number
+  playsrc_simulation_observe(handle: number, nowSeconds: number, command: number, length: number, suspended: number, snapshotTick: bigint): number
   playsrc_simulation_output_length(handle: number): number
-  playsrc_simulation_output_copy(handle: number, pointer: number, capacity: number): number
+  playsrc_simulation_output_pointer(handle: number): number
   playsrc_simulation_error():number
   playsrc_simulation_error_length():number
   playsrc_simulation_error_copy(pointer:number,capacity:number):number
@@ -172,7 +172,7 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         candidate.playsrc_player_set_position,
         candidate.playsrc_simulation_observe,
         candidate.playsrc_simulation_output_length,
-        candidate.playsrc_simulation_output_copy,
+        candidate.playsrc_simulation_output_pointer,
         candidate.playsrc_simulation_error,
         candidate.playsrc_simulation_error_length,
         candidate.playsrc_simulation_error_copy,
@@ -742,6 +742,7 @@ function observe(request: Extract<WorkerRequest, { kind: "observe" }>): void {
     request.command.byteLength < 84 ||
     request.command.byteLength > 64 * 1024 ||
     !Number.isFinite(request.nowSeconds) || request.nowSeconds < 0 || typeof request.suspended !== "boolean"
+    || typeof request.snapshotTick !== "bigint" || request.snapshotTick < 0n || request.snapshotTick > 0xffff_ffff_ffff_ffffn
   ) {
     fail(request.id, "MalformedRequest")
     return
@@ -750,7 +751,7 @@ function observe(request: Extract<WorkerRequest, { kind: "observe" }>): void {
   const pointer = allocateCopy(value.exports, request.command)
   const inputCopyMilliseconds = performance.now() - inputCopyStarted
   const transactStarted = performance.now()
-  const result = value.exports.playsrc_simulation_observe(value.handle, request.nowSeconds, pointer, request.command.byteLength, Number(request.suspended))
+  const result = value.exports.playsrc_simulation_observe(value.handle, request.nowSeconds, pointer, request.command.byteLength, Number(request.suspended), request.snapshotTick)
   const transactMilliseconds = performance.now() - transactStarted
   value.exports.playsrc_free(pointer, request.command.byteLength)
   if (result !== 1) {
@@ -763,15 +764,12 @@ function observe(request: Extract<WorkerRequest, { kind: "observe" }>): void {
     return
   }
   const outputCopyStarted = performance.now()
-  const snapshotPointer = value.exports.playsrc_alloc(length) >>> 0
-  const copied = value.exports.playsrc_simulation_output_copy(value.handle, snapshotPointer, length)
-  if (copied !== length) {
-    value.exports.playsrc_free(snapshotPointer, length)
+  const snapshotPointer = value.exports.playsrc_simulation_output_pointer(value.handle) >>> 0
+  if (!snapshotPointer || snapshotPointer + length > value.exports.memory.buffer.byteLength) {
     fail(request.id, "InternalFailure", 813)
     return
   }
   const snapshot = new Uint8Array(value.exports.memory.buffer, snapshotPointer, length).slice().buffer
-  value.exports.playsrc_free(snapshotPointer, length)
   const outputCopyMilliseconds = performance.now() - outputCopyStarted
   post({ id: request.id, kind: "simulation", generation: request.generation, output: snapshot, timings: { queueMilliseconds: queueMilliseconds(request, started), inputCopyMilliseconds, transactMilliseconds, outputCopyMilliseconds, totalMilliseconds: performance.now() - started } }, [snapshot])
 }

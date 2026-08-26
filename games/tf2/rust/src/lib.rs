@@ -1437,8 +1437,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         rocket_results: &[RocketTraceResult],
         expected_sticky_random: Option<StickyLaunchRandom>,
     ) -> Result<Snapshot, Error> {
-        let mut candidate = self.clone();
-        let snapshot = candidate.advance_inner(
+        let (candidate, snapshot) = self.clone().into_advanced(
             command,
             physics_results,
             rocket_results,
@@ -1446,6 +1445,24 @@ impl<W: GameplayWorld + Clone> Session<W> {
         )?;
         *self = candidate;
         Ok(snapshot)
+    }
+
+    /// Advance an already-owned transaction candidate. On error the candidate is
+    /// discarded; callers retaining a live session use `advance_with_external`.
+    pub fn into_advanced(
+        mut self,
+        command: Command,
+        physics_results: &[ProjectilePhysicsResult],
+        rocket_results: &[RocketTraceResult],
+        expected_sticky_random: Option<StickyLaunchRandom>,
+    ) -> Result<(Self, Snapshot), Error> {
+        let snapshot = self.advance_inner(
+            command,
+            physics_results,
+            rocket_results,
+            expected_sticky_random,
+        )?;
+        Ok((self, snapshot))
     }
 
     fn advance_inner(
@@ -6581,6 +6598,55 @@ mod tests {
             _: Hull,
         ) -> Result<bool, MoveError> {
             Ok(false)
+        }
+    }
+
+    #[test]
+    fn owned_snapshot_transactions_preserve_randomized_state_events_and_rollback() {
+        let mut live = Session::new(Floor, [0.0, 0.0, 1.0], MapRuntime::empty(0.015));
+        let mut owned = live.clone();
+        let mut seed = 0x74c1_2fe3_u32;
+        for tick in 0..500 {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            let command = Command {
+                fire: seed & 1 != 0,
+                reload: seed & 8 != 0,
+                respawn: tick % 37 == 0,
+                select_class: (tick % 31 == 0).then_some(match seed % 9 {
+                    0 => PlayerClass::Scout,
+                    1 => PlayerClass::Sniper,
+                    2 => PlayerClass::Soldier,
+                    3 => PlayerClass::Demoman,
+                    4 => PlayerClass::Medic,
+                    5 => PlayerClass::Heavy,
+                    6 => PlayerClass::Pyro,
+                    7 => PlayerClass::Spy,
+                    _ => PlayerClass::Engineer,
+                }),
+                ..Command::default()
+            };
+            let before = live.producer_snapshot();
+            match (
+                live.advance(command),
+                owned.into_advanced(command, &[], &[], None),
+            ) {
+                (Ok(expected), Ok((next, actual))) => {
+                    assert_eq!(actual, expected);
+                    assert_eq!(next.producer_snapshot(), live.producer_snapshot());
+                    assert_eq!(next.random_state(), live.random_state());
+                    assert_eq!(next.audio_events(), live.audio_events());
+                    assert_eq!(next.random_draws(), live.random_draws());
+                    owned = next;
+                }
+                (Err(expected), Err(actual)) => {
+                    assert_eq!(format!("{actual:?}"), format!("{expected:?}"));
+                    assert_eq!(live.producer_snapshot(), before);
+                    owned = live.clone();
+                }
+                _ => panic!("owned and borrowed transactions differ"),
+            }
         }
     }
 

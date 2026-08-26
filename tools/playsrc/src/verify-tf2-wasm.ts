@@ -65,7 +65,7 @@ type Exports = Readonly<{
   playsrc_coverage_copy(handle:number,pointer:number,capacity:number):number
   playsrc_spawn_copy(handle: number, pointer: number, capacity: number): number
   playsrc_game_advance(handle: number, command: number, length: number, ticks: number): number
-  playsrc_simulation_observe(handle:number,now:number,command:number,length:number,suspended:number):number
+  playsrc_simulation_observe(handle:number,now:number,command:number,length:number,suspended:number,snapshotTick:bigint):number
   playsrc_simulation_output_length(handle:number):number
   playsrc_jump_configure(handle: number, definition: number, length: number): number
   playsrc_particle_transact(handle: number, pointer: number, length: number): number
@@ -1072,7 +1072,7 @@ export async function verifyTf2Wasm(
   require(selectedSkyOffset >= 0, "selected HDR sky dependency is absent from its bundle")
   missingDependency[selectedSkyOffset + new TextEncoder().encode(selectedSky).byteLength - 5] = "x".charCodeAt(0)
   require(compileFailure(bspBytes, 1, missingDependency) !== 0, "missing selected HDR material dependency was accepted")
-  const simulationCommand=new Uint8Array(encodeCommand({forward:0,side:0,yawDegrees:0,pitchDegrees:0,jump:false,crouch:false,fire:false,detonate:false})),simulationPointer=exports.playsrc_alloc(simulationCommand.length);new Uint8Array(exports.memory.buffer,simulationPointer,simulationCommand.length).set(simulationCommand);require(exports.playsrc_simulation_observe(hdrFirst.handle,0,simulationPointer,simulationCommand.length,0)===1,"Simulation baseline failed");require(exports.playsrc_simulation_observe(hdrFirst.handle,0.016,simulationPointer,simulationCommand.length,0)===1&&exports.playsrc_simulation_output_length(hdrFirst.handle)>16,"Simulation selected tick failed");exports.playsrc_free(simulationPointer,simulationCommand.length)
+  const simulationCommand=new Uint8Array(encodeCommand({forward:0,side:0,yawDegrees:0,pitchDegrees:0,jump:false,crouch:false,fire:false,detonate:false})),simulationPointer=exports.playsrc_alloc(simulationCommand.length);new Uint8Array(exports.memory.buffer,simulationPointer,simulationCommand.length).set(simulationCommand);require(exports.playsrc_simulation_observe(hdrFirst.handle,0,simulationPointer,simulationCommand.length,0,0n)===1,"Simulation baseline failed");require(exports.playsrc_simulation_observe(hdrFirst.handle,0.016,simulationPointer,simulationCommand.length,0,0n)===1&&exports.playsrc_simulation_output_length(hdrFirst.handle)>16,"Simulation selected tick failed");exports.playsrc_free(simulationPointer,simulationCommand.length)
   require(exports.playsrc_dispose(hdrFirst.handle) === 1, "first HDR handle disposal failed")
   require(exports.playsrc_dispose(hdrSecond.handle) === 1, "second HDR handle disposal failed")
   return {

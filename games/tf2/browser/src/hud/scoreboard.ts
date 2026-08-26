@@ -2,6 +2,8 @@ import type { ScoreboardSnapshot, Tf2Team } from "../codec"
 import { tf2HudAvailable, tf2HudUnavailable } from "./bindings"
 import type { Tf2HudScoreboard, Tf2ScoreboardCounters, Tf2ScoreboardPlayer } from "./contract"
 
+const sources = new WeakMap<Tf2HudScoreboard, Readonly<{ authority: ScoreboardSnapshot; localTeam: Tf2Team }>>()
+
 function counters(kills: number, deaths: number, captures: number, damage: number): Tf2ScoreboardCounters {
   return Object.freeze({
     kills,
@@ -31,6 +33,15 @@ export function adaptTf2Scoreboard(
   pingAsText: boolean,
   previous?: Tf2HudScoreboard,
 ): Tf2HudScoreboard {
+  const source = previous && sources.get(previous)
+  if (previous && source?.authority === authority && source.localTeam === localTeam
+    && previous.visible === visible && previous.mapName === mapName && previous.pingAsText === pingAsText) return previous
+  const retain = (result: Tf2HudScoreboard): Tf2HudScoreboard => {
+    if (Object.isFrozen(authority) && Object.isFrozen(authority.players) && authority.players.every(Object.isFrozen)) {
+      sources.set(result, { authority, localTeam })
+    } else sources.delete(result)
+    return result
+  }
   const players: Tf2ScoreboardPlayer[] = []
   const spectators: string[] = []
   const retained = previous === undefined ? undefined : new Map(previous.players.map((player) => [player.identity, player]))
@@ -75,9 +86,9 @@ export function adaptTf2Scoreboard(
     && previous.players.length === players.length && previous.players.every((player, index) => player === players[index])
     && previous.spectators.length === spectators.length && previous.spectators.every((name, index) => name === spectators[index])
     && (localTeam === 2 || localTeam === 3 ? previous.selectedPlayer.kind === "available" && previous.selectedPlayer.value === 1 : previous.selectedPlayer.kind === "unavailable")) {
-    return previous
+    return retain(previous)
   }
-  return Object.freeze({
+  return retain(Object.freeze({
     visible,
     mapName,
     gameType: mapName.startsWith("ctf_")
@@ -94,5 +105,5 @@ export function adaptTf2Scoreboard(
     selectedPlayer: localTeam === 2 || localTeam === 3
       ? tf2HudAvailable(1)
       : tf2HudUnavailable("not-applicable"),
-  })
+  }))
 }
