@@ -219,7 +219,7 @@ export type RuntimeLighting =
   | Readonly<{ profile: "hdr"; samples: Float32Array; descriptor: HdrProfile }>
 
 export type RuntimeMap = Readonly<{
-  schema: 6 | 7 | 8
+  schema: 6 | 7 | 8 | 9
   bspVersion: number
   mapRevision: number
   lightingProfile: 0 | 1
