@@ -424,4 +424,27 @@ describe("bounded headed profile orchestration", () => {
     const secondLock = await second
     await releaseHeadedProfileLock(pathname, secondLock.token)
   })
+
+  test("FIFO admission uses shared ticket time instead of incompatible process timer epochs", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "playsrc-profile-clock-order-"))
+    directories.push(directory)
+    const pathname = path.join(directory, "chromium-profile.lock")
+    const holder = await acquireHeadedProfileLock(pathname, "holder")
+    await mkdir(`${pathname}.queue`, { recursive: true })
+    await writeFile(path.join(`${pathname}.queue`, "999999999999999999999999-earlier.json"), JSON.stringify({
+      token: "earlier", pid: process.pid, profile: "older-node-process", repository: directory,
+      startedAt: new Date(Date.now() - 1000).toISOString(),
+    }))
+    const cancellation = new AbortController()
+    let observe!: (position: number) => void
+    const observed = new Promise<number>(resolve => { observe = resolve })
+    const waiting = acquireHeadedProfileLock(pathname, "later-bun-process", 2000, {
+      signal: cancellation.signal, onProgress: state => observe(state.position),
+    })
+    expect(await observed).toBe(2)
+    cancellation.abort(new Error("queued-order-check-complete"))
+    await expect(waiting).rejects.toThrow("queued-order-check-complete")
+    expect(JSON.parse(await readFile(pathname, "utf8")).token).toBe(holder.token)
+    await releaseHeadedProfileLock(pathname, holder.token)
+  })
 })
