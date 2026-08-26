@@ -5,7 +5,7 @@ import { createHash } from "node:crypto"
 import { readFile, stat } from "node:fs/promises"
 import path from "node:path"
 import { loadCompositorEvidence, TRACE_LIMITS } from "./compositor-evidence"
-import { activeGameplayTraceWindow } from "./compositor-truth"
+import { activeGameplayTraceWindow, summarizeActivePresentationSilence } from "./compositor-truth"
 
 function sampledStacks(profile: CpuProfile, started: number, ended: number) {
   const nodes = new Map(profile.nodes.map(node => [node.id, node]))
@@ -43,7 +43,9 @@ export async function replayWorkerIncidents(filename: string) {
     requests: probes.joins.filter(probe => probe.kind === "worker").map(probe => probe.detail as { id: number }),
     publications: probes.joins.filter(probe => probe.kind === "simulation-publication").map(probe => probe.detail as { requestId: number }),
   })
-  return { compositorComplete: manifest.complete, compositorErrors: manifest.errors, workerArtifact: artifact, unsampledTargets: value.unsampledTargets ?? [], analyses }
+  return { compositorComplete: manifest.complete, compositorErrors: manifest.errors,
+    compositorSilence: summarizeActivePresentationSilence(events, activeGameplayTraceWindow(events)),
+    workerArtifact: artifact, unsampledTargets: value.unsampledTargets ?? [], analyses }
 }
 
 if (import.meta.main) {

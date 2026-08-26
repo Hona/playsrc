@@ -7,7 +7,7 @@ import { profileSourceIdentity } from "../src/profile-runner"
 import { expect, test } from "./application-test"
 import { installBrowserFrameProfiler } from "./browser-frame-profiler"
 import { summarizeClassSwitchLifecycle } from "./class-switch-lifecycle"
-import { TRACE_START, TRACE_END, analyzeCompositorStalls, assertVisibleGameplayTruth, summarizeCompositorStages, summarizeCompositorTruth, type ChromiumTraceEvent } from "./compositor-truth"
+import { TRACE_START, TRACE_END, analyzeCompositorStalls, assertVisibleGameplayTruth, summarizeCompositorStages, summarizeCompositorTruth, summarizeActivePresentationSilence, type ChromiumTraceEvent } from "./compositor-truth"
 import { COMPOSITOR_TRACE_CATEGORIES, TRACE_LIMITS, drainTraceStream, retainCompositorEvidence, retainEvidenceBlob, type TraceJoin } from "./compositor-evidence"
 import { attributeFrameTails } from "./frame-tail-attribution"
 import { summarizeCpuProfile, summarizeDistribution, type CpuProfile } from "./gameui-profile"
@@ -791,6 +791,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     },
     frameTails: tails,
     workerIncidents,
+    compositorSilence: exactTraceWindow ? summarizeActivePresentationSilence(traceEvents, exactTraceWindow) : null,
     workerEvidence: workerArtifact,
     traveled: Number(measurement.traveled.toFixed(3)), cpu: summarizeCpuProfile(cpuProfile),
     pixels: { nonBlack, beforeSha256: createHash("sha256").update(before).digest("hex"), afterSha256: createHash("sha256").update(after).digest("hex") },
@@ -807,6 +808,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   console.log(`PLAYSRC_UPWARD_TRAINING_BOTS ${JSON.stringify({
     label, activeBots: report.activeBots, teams: report.teams,
     animationCallbacks: report.animationCallbacks, completedFrames: report.completedFrames, applicationCompletedFramesPerSecond: report.applicationCompletedFramesPerSecond, compositor: report.compositor,
+    compositorSilence: report.compositorSilence, workerEvidence: report.workerEvidence,
     browser: {
       ...report.browser,
       network: {
@@ -848,6 +850,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     expect(report.classSwitches.visibleScoreboardRows).toBe(playerCount)
     expect(report.simulation.hertz).toBeGreaterThanOrEqual(60)
     expect(report.compositor.intervals?.maximumMilliseconds).toBeLessThan(250)
+    expect(report.compositorSilence?.maximumActiveSilenceMilliseconds).toBeLessThan(250)
     expect(workerCapture.captures).toHaveLength(1)
     expect(workerCapture.captures[0]!.deadlineStopped).toBe(false)
     expect(workerIncidents[0]!.samples).toBeGreaterThan(0)
