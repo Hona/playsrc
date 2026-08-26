@@ -6,6 +6,7 @@ import { expect, test } from "./application-test"
 import { installBrowserFrameProfiler } from "./browser-frame-profiler"
 import { activeGameplayTraceWindow, summarizeCompositorTruth, type ChromiumTraceEvent } from "./compositor-truth"
 import { chooseTf2Team } from "./team-selection-evidence"
+import { processResidentMemory } from "./process-resident-memory"
 
 test("integrated persisted quality, two live map replacements and overhead water", async ({ page, context }, testInfo) => {
   const directory = path.join((await loadLocalConfig()).sourceCacheDir, "profiles", "integrated-acceptance", `lifecycle-${Date.now()}`)
@@ -21,6 +22,8 @@ test("integrated persisted quality, two live map replacements and overhead water
     console.log(`ACCEPTANCE_ERROR ${JSON.stringify(detail)}`)
   })
   const main = page.locator("main"), canvas = page.locator("canvas.world-canvas")
+  const pageMetrics = await context.newCDPSession(page)
+  const browserMetrics = await context.browser()!.newBrowserCDPSession()
   const command = async (value: string) => {
     if (await main.getAttribute("data-console-visible") !== "true") await page.keyboard.press("Backquote")
     const entry = page.locator("[aria-label='Console command']")
@@ -71,7 +74,7 @@ test("integrated persisted quality, two live map replacements and overhead water
     await page.mouse.move(680, 380)
     await page.mouse.click(680, 380)
     expect(await main.getAttribute("data-camera-position")).not.toBe(before)
-    maps.push({ target, milliseconds: Date.now() - started, ...current, workerMemory: await Promise.all(page.workers().filter(worker => worker.url().includes("gameplay-worker")).map(worker => worker.evaluate(() => (globalThis as any).__playsrcWorkerMemory))) })
+    maps.push({ target, milliseconds: Date.now() - started, ...current, heap: await pageMetrics.send("Runtime.getHeapUsage"), resident: processResidentMemory((await browserMetrics.send("SystemInfo.getProcessInfo")).processInfo), workerMemory: await Promise.all(page.workers().filter(worker => worker.url().includes("gameplay-worker")).map(worker => worker.evaluate(() => (globalThis as any).__playsrcWorkerMemory))) })
     await writeFile(path.join(directory, "maps.json"), JSON.stringify(maps, null, 2))
     await page.screenshot({ path: path.join(directory, `${target}.png`) })
   }

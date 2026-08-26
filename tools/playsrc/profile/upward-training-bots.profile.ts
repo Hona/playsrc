@@ -18,16 +18,7 @@ import { startWorkerCpuCapture } from "./worker-cpu-profiler"
 import { attributeWorkerIncidents } from "./worker-incident-attribution"
 import { captureProcessMemory } from "./process-memory"
 import { acceptStockLoadouts } from "./stock-loadout-acceptance"
-
-function processResidentMemory(processes: Array<{ id: number; type: string }> | undefined) {
-  // CDP process IDs belong to the browser host, never the remote controller.
-  if (process.env.PLAYSRC_PROFILE_CDP_ENDPOINT) return null
-  if (!processes?.length || process.platform === "win32") return null
-  const result = spawnSync("ps", ["-o", "pid=,rss=", "-p", processes.map(process => process.id).join(",")], { encoding: "utf8" })
-  if (result.status !== 0) return null
-  const resident = new Map(result.stdout.trim().split("\n").map(line => line.trim().split(/\s+/).map(Number) as [number, number]))
-  return processes.map(process => ({ id: process.id, type: process.type, residentBytes: resident.has(process.id) ? resident.get(process.id)! * 1024 : null }))
-}
+import { processResidentMemory } from "./process-resident-memory"
 
 test("profile authored headed Upward offline-practice default roster and actual completed gameplay frames", async ({ page, context, profilePhases }, testInfo) => {
   const wallStarted = Date.now()
