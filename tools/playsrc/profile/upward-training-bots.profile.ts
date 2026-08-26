@@ -340,7 +340,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   await cdp.send("Performance.enable")
   await cdp.send("Profiler.enable")
   await cdp.send("HeapProfiler.enable")
-  await cdp.send("HeapProfiler.startSampling", { samplingInterval: 65_536 })
+  await cdp.send("HeapProfiler.startSampling", { samplingInterval: 65_536, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true })
   await cdp.send("Profiler.setSamplingInterval", { interval: 1_000 })
   const heapBefore = await cdp.send("Runtime.getHeapUsage")
   await cdp.send("Profiler.start")
@@ -358,6 +358,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     const firstFrame = Number(surface.dataset.displayFrame)
     const firstPosition = (main.dataset.cameraPosition ?? "").split(",").map(Number)
     const firstUploads = structuredClone((globalThis as any).__playsrcProfile.modelParticleUploads ?? {}) as Record<string, number>
+    const firstSnapshots = structuredClone((globalThis as any).__playsrcProfile.snapshotTransport ?? {}) as Record<string, number>
     const started = performance.now()
     performance.mark(startMark, { startTime: started })
     const lifecycle: Array<{ at: number; phase: string; playerClass?: number; key?: string; visible?: boolean }> = []
@@ -476,6 +477,8 @@ test("profile authored headed Upward offline-practice default roster and actual 
       },
       modelUploads: Object.fromEntries(Object.entries((globalThis as any).__playsrcProfile.modelParticleUploads ?? {})
         .map(([key, value]) => [key, typeof value === "number" ? value - (firstUploads[key] ?? 0) : value])),
+      snapshotTransport: Object.fromEntries(Object.entries((globalThis as any).__playsrcProfile.snapshotTransport ?? {})
+        .map(([key, value]) => [key, typeof value === "number" ? value - (firstSnapshots[key] ?? 0) : value])),
       capabilities: instrumentation.capabilities, gpuTimestamps: instrumentation.gpuTimestamps, losses: instrumentation.losses,
       gpuOperations: instrumentation.gpuOperations, gpuOperationsDropped: instrumentation.gpuOperationsDropped,
       screen: {
@@ -770,6 +773,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
       commandBuffersPerSubmission: Number((measurement.counters.commandBuffers / Math.max(1, measurement.counters.submissions)).toFixed(3)),
     },
     screen: measurement.screen,
+    snapshotTransport: measurement.snapshotTransport,
     longAnimationFrames: { ...summarizeDistribution(measurement.longAnimationFrames.map((frame: { duration: number }) => frame.duration)), events: measurement.longAnimationFrames },
     longTasks: { ...summarizeDistribution(measurement.longTasks.map((task: { duration: number }) => task.duration)), events: measurement.longTasks },
     memory: {
@@ -782,7 +786,9 @@ test("profile authored headed Upward offline-practice default roster and actual 
       privateAfterBytes: memoryAfter.privateBytes,
       wasm: wasmWorkers,
       load: loadPerformance,
-      sampledRetainedAllocationBytes: allocations(allocationProfile.head),
+      sampledAllocationBytesIncludingCollected: allocations(allocationProfile.head),
+      tracedGarbageCollection: summarizeDistribution(traceEvents.filter(event => /^(?:MajorGC|MinorGC)$/u.test(event.name ?? "")
+        && exactTraceWindow && (event.ts ?? 0) >= exactTraceWindow.startedMicroseconds && (event.ts ?? 0) < exactTraceWindow.endedMicroseconds && event.dur !== undefined).map(event => event.dur! / 1000)),
     },
     frameTails: tails,
     workerIncidents,
@@ -818,6 +824,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     },
     frameIntervals: report.frameIntervals, frameWork: report.frameWork, presentationDom: report.presentationDom, simulation: report.simulation,
     classSwitches: report.classSwitches,
+    snapshotTransport: report.snapshotTransport,
     particleCombat: report.particleCombat,
     worker: Object.fromEntries(Object.entries(worker).map(([kind, value]) => [kind, {
       calls: value.calls, views: value.views, sharedDispatches: value.sharedDispatches, bytes: value.bytes, receivedBytes: value.receivedBytes,

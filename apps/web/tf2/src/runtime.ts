@@ -4433,7 +4433,7 @@ export class Tf2Application {
         waterNormalFrame:visibility.water.visibleWater?.evaluated.normalFrame,
         waterOverlay:visibility.water.visibleWater?.overlay?.identity,
         worldMaterialFrames:visibility.worldMaterials.map(material=>`${material.identity}:${material.textures.find(texture=>texture.role===7)?.frame??"none"}`).join("|"),
-        performanceProbe:`${this.#phaseTimings.map(value=>value.toFixed(3)).join(",")}:${this.#wasmCalls.observe},${this.#wasmCalls.models},${this.#wasmCalls.visibility},${this.#wasmCalls.particles}:${this.#maximumScheduledSamples},${this.#maximumPublicationTicks}:${prepared.particleOutputBytes},${prepared.publication.snapshotBytes.byteLength}`,
+        performanceProbe:`${this.#phaseTimings.map(value=>value.toFixed(3)).join(",")}:${this.#wasmCalls.observe},${this.#wasmCalls.models},${this.#wasmCalls.visibility},${this.#wasmCalls.particles}:${this.#maximumScheduledSamples},${this.#maximumPublicationTicks}:${prepared.particleOutputBytes},${prepared.publication.snapshotByteLength}`,
         ...(profile&&!frameProfiler?{performanceDetailProbe:JSON.stringify(frameDetail)}:{}),
         displayFrame:this.#displayFrame,
         displayViewRevision:viewRevision,
@@ -4504,6 +4504,8 @@ export class Tf2Application {
         this.#wasmCalls.observe++
         const publications=await client.observe(sample.generation,sample.nowSeconds,command,sample.suspended)
         if(this.#closed||sample.generation!==this.#generation||client!==this.#client)continue
+        const profile=(globalThis as typeof globalThis&{__playsrcProfile?:Record<string,unknown>}).__playsrcProfile
+        if(profile)profile.snapshotTransport=client.snapshotMetrics(sample.generation)
         for(const publication of publications)this.#enqueuePresentation(sample.generation,publication,sampledMovementX)
       }
     }catch(error){
@@ -4987,7 +4989,7 @@ export class Tf2Application {
         viewmodelTimelineProbes: this.#view.viewmodelTimelineProbes,
         ...this.#gameplayTraces(snapshot),
         ...this.#snapshotProbes(snapshot),
-        simulationProbe: `${publication.hostFrame}:${publication.firstHostTick}-${publication.lastHostTick}:${publication.selectedTicks}:${publication.snapshotBytes.byteLength}:${publication.eventBatches.reduce((n,e)=>n+e.bytes.byteLength,0)}`,
+        simulationProbe: `${publication.hostFrame}:${publication.firstHostTick}-${publication.lastHostTick}:${publication.selectedTicks}:${publication.snapshotByteLength}:${publication.eventBatches.reduce((n,e)=>n+e.byteLength,0)}`,
         brushModelProbe: `${snapshot.entityPresentation.entityRevision}:${snapshot.entityPresentation.collisionRevision}:${snapshot.entityPresentation.models.length}:${snapshot.entityPresentation.models.filter(model=>model.draw).length}`,
         reloadHistory: this.#view.reloadHistory?.length === this.#reloadHistory.length
           && this.#view.reloadHistory.at(-1) === this.#reloadHistory.at(-1)

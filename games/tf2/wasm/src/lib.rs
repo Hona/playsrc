@@ -575,7 +575,7 @@ struct Slot {
     error: u32,
     spawn: Option<Spawn>,
     session: Option<playsrc_tf2::Session<SharedWorld>>,
-    snapshot: Vec<u8>,
+    snapshot: Arc<[u8]>,
     compile_metrics: [u64; 17],
     memory_metrics: [usize; 12],
     texture_inspections: [u32; 2],
@@ -724,10 +724,10 @@ impl playsrc_simulation::Simulation for Tf2Simulation {
                 "TF2 gameplay handle is unavailable",
             )
         })?;
-        Ok(playsrc_simulation::TickOutput::new(
-            snapshot.clone(),
-            snapshot,
-        ))
+        Ok(playsrc_simulation::TickOutput {
+            snapshot: snapshot.clone(),
+            events: snapshot,
+        })
     }
     fn shutdown(&mut self) -> Result<(), playsrc_simulation::SimulationError> {
         self.current_command = None;
@@ -738,6 +738,7 @@ impl playsrc_simulation::Simulation for Tf2Simulation {
 struct SimulationHostEntry {
     host: playsrc_simulation::FixedStepHost<Tf2Simulation, RuntimeMetricsClock>,
     output: Vec<u8>,
+    snapshots: snapshot_transport::Encoder,
 }
 fn simulation_hosts() -> &'static Mutex<BTreeMap<u32, SimulationHostEntry>> {
     static HOSTS: OnceLock<Mutex<BTreeMap<u32, SimulationHostEntry>>> = OnceLock::new();
@@ -761,43 +762,7 @@ fn simulation_configuration() -> Option<playsrc_simulation::Configuration> {
     )
     .ok()
 }
-fn encode_simulation_publications(
-    publications: &[playsrc_simulation::Publication],
-) -> Option<Vec<u8>> {
-    let mut output = b"PSIM".to_vec();
-    output.extend_from_slice(&2_u32.to_le_bytes());
-    output.extend_from_slice(&u32::try_from(publications.len()).ok()?.to_le_bytes());
-    output.extend_from_slice(&0_u32.to_le_bytes());
-    for publication in publications {
-        output.extend_from_slice(&publication.host_frame.to_le_bytes());
-        output.extend_from_slice(&publication.first_host_tick.to_le_bytes());
-        output.extend_from_slice(&publication.last_host_tick.to_le_bytes());
-        output.extend_from_slice(&publication.selected_ticks.to_le_bytes());
-        output.extend_from_slice(&publication.interpolation.to_le_bytes());
-        output.extend_from_slice(
-            &u32::try_from(publication.snapshot.len())
-                .ok()?
-                .to_le_bytes(),
-        );
-        output.extend_from_slice(&u32::try_from(publication.events.len()).ok()?.to_le_bytes());
-        if publication
-            .events
-            .last()
-            .is_none_or(|event| event.bytes != publication.snapshot)
-        {
-            return None;
-        }
-        for event in &publication.events {
-            output.extend_from_slice(&event.host_tick.to_le_bytes());
-            output.extend_from_slice(&u32::try_from(event.bytes.len()).ok()?.to_le_bytes());
-            output.extend_from_slice(&event.bytes);
-        }
-        if output.len() > 512 * 1024 * 1024 {
-            return None;
-        }
-    }
-    Some(output)
-}
+mod snapshot_transport;
 fn slots() -> &'static Mutex<Vec<Slot>> {
     static S: OnceLock<Mutex<Vec<Slot>>> = OnceLock::new();
     S.get_or_init(|| Mutex::new(Vec::new()))
@@ -1539,7 +1504,7 @@ unsafe fn compile_map(
             error: 0,
             spawn: Some(spawn),
             session: Some(session),
-            snapshot: Vec::new(),
+            snapshot: Arc::from([]),
             compile_metrics,
             memory_metrics,
             texture_inspections,
@@ -1582,7 +1547,7 @@ unsafe fn compile_map(
             error,
             spawn: None,
             session: None,
-            snapshot: Vec::new(),
+            snapshot: Arc::from([]),
             compile_metrics,
             memory_metrics,
             texture_inspections: [0; 2],
@@ -4313,6 +4278,7 @@ pub unsafe extern "C" fn playsrc_simulation_observe(
     pointer: *const u8,
     length: usize,
     suspended: u32,
+    acknowledged_snapshot: u64,
 ) -> u32 {
     SIMULATION_ERROR.store(0, Ordering::Relaxed);
     SIMULATION_ERROR_DETAIL
@@ -4348,6 +4314,7 @@ pub unsafe extern "C" fn playsrc_simulation_observe(
                 RuntimeMetricsClock::new(),
             ),
             output: Vec::new(),
+            snapshots: snapshot_transport::Encoder::default(),
         });
     }
     let entry = hosts.get_mut(&handle).expect("inserted Simulation host");
@@ -4389,7 +4356,10 @@ pub unsafe extern "C" fn playsrc_simulation_observe(
         SIMULATION_ERROR.store(code, Ordering::Relaxed);
         return 0;
     }
-    let Some(output) = encode_simulation_publications(&entry.host.drain_publications()) else {
+    let Some(output) = entry
+        .snapshots
+        .encode(&entry.host.drain_publications(), acknowledged_snapshot)
+    else {
         return 0;
     };
     entry.output = output;
@@ -4430,22 +4400,14 @@ pub extern "C" fn playsrc_simulation_output_length(handle: u32) -> usize {
         .map_or(0, |entry| entry.output.len())
 }
 #[unsafe(no_mangle)]
-/// # Safety
-/// `pointer` must identify writable module memory of at least `capacity` bytes.
-pub unsafe extern "C" fn playsrc_simulation_output_copy(
-    handle: u32,
-    pointer: *mut u8,
-    capacity: usize,
-) -> usize {
-    let hosts = simulation_hosts().lock().expect("TF2 Simulation hosts");
-    let Some(entry) = hosts.get(&handle) else {
-        return 0;
-    };
-    if pointer.is_null() || capacity < entry.output.len() {
-        return 0;
-    }
-    unsafe { std::ptr::copy_nonoverlapping(entry.output.as_ptr(), pointer, entry.output.len()) };
-    entry.output.len()
+/// The owning Worker must synchronously copy this range before another observe
+/// or dispose call. It is never an asynchronously retained shared-memory lease.
+pub extern "C" fn playsrc_simulation_output_pointer(handle: u32) -> *const u8 {
+    simulation_hosts()
+        .lock()
+        .expect("TF2 Simulation hosts")
+        .get(&handle)
+        .map_or(std::ptr::null(), |entry| entry.output.as_ptr())
 }
 
 #[unsafe(no_mangle)]
@@ -4498,7 +4460,7 @@ pub extern "C" fn playsrc_dispose(handle: u32) -> u32 {
     slot.error = 0;
     slot.spawn = None;
     slot.session = None;
-    slot.snapshot = Vec::new();
+    slot.snapshot = Arc::from([]);
     1
 }
 
@@ -4554,7 +4516,6 @@ pub unsafe extern "C" fn playsrc_game_advance(
     let templates = &slot.collision_templates;
     let mut collision_revision = slot.collision_revision;
     let mut pushers = slot.pushers.clone();
-    let mut latest_game_snapshot = slot.latest_game_snapshot.clone();
     let mut snapshot: Option<playsrc_tf2::Snapshot> = None;
     let mut producer: Option<playsrc_tf2::ProducerSnapshot> = None;
     let mut random_draws = Vec::new();
@@ -4617,7 +4578,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
             &prior_collision,
             templates,
             current_revision,
-            latest_game_snapshot.as_ref(),
+            snapshot.as_ref().or(slot.latest_game_snapshot.as_ref()),
             &transforms,
             &velocities,
         ) {
@@ -4626,7 +4587,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
                 &collision,
                 templates,
                 current_revision,
-                latest_game_snapshot.as_ref(),
+                snapshot.as_ref().or(slot.latest_game_snapshot.as_ref()),
                 &transforms,
                 &velocities,
             ) {
@@ -4733,7 +4694,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
                 &collision,
                 templates,
                 collision_revision,
-                latest_game_snapshot.as_ref(),
+                snapshot.as_ref().or(slot.latest_game_snapshot.as_ref()),
                 &transforms,
                 &velocities,
             ) {
@@ -4783,9 +4744,9 @@ pub unsafe extern "C" fn playsrc_game_advance(
             };
             candidate.set_posed_player_hitboxes(hitboxes);
         }
-        match candidate.advance_with_external(input.command, physics_results, &rocket_results, None)
-        {
-            Ok(mut value) => {
+        match candidate.into_advanced(input.command, physics_results, &rocket_results, None) {
+            Ok((advanced, mut value)) => {
+                candidate = advanced;
                 let mut current_producer = candidate.producer_snapshot();
                 if !mover_phase.events.is_empty()
                     || !mover_phase.effects.is_empty()
@@ -4827,7 +4788,6 @@ pub unsafe extern "C" fn playsrc_game_advance(
                 }
                 random_draws.extend_from_slice(candidate.random_draws());
                 audio_events.extend_from_slice(candidate.audio_events());
-                latest_game_snapshot = Some(value.clone());
                 producer = Some(current_producer);
                 snapshot = Some(value);
             }
@@ -4878,9 +4838,9 @@ pub unsafe extern "C" fn playsrc_game_advance(
     };
     slot.session = Some(candidate);
     slot.pushers = pushers;
-    slot.latest_game_snapshot = latest_game_snapshot;
+    slot.latest_game_snapshot = Some(snapshot);
     slot.collision_revision = collision_revision;
-    slot.snapshot = encoded;
+    slot.snapshot = Arc::from(encoded);
     slot.error = 0;
     collision_transaction.committed = true;
     1
@@ -14579,7 +14539,7 @@ mod tests {
             error: 0,
             spawn: None,
             session: None,
-            snapshot: Vec::new(),
+            snapshot: Arc::from([]),
             compile_metrics: [0; 17],
             memory_metrics: [0; 12],
             texture_inspections: [0; 2],
@@ -14661,7 +14621,7 @@ mod tests {
             error: 0,
             spawn: None,
             session: None,
-            snapshot: Vec::new(),
+            snapshot: Arc::from([]),
             compile_metrics: [0; 17],
             memory_metrics: [0; 12],
             texture_inspections: [0; 2],

@@ -1,3 +1,5 @@
+import type { SnapshotRanges } from "./snapshot-retention"
+
 const HASH = /^[0-9a-f]{64}$/
 const MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024
 const MAX_RECORDS = 65_536
@@ -1184,8 +1186,38 @@ function decodeMovementTick(bytes: ArrayBuffer, offset: number, length: number):
     mover: Object.freeze({ identity, status: status as 0 | 1 | 2, displacement, supportVelocity, blocker: blockerValue === 0xffff_ffff_ffff_ffffn ? null : blockerValue }),
   })
 }
-function decodeEntityPresentation(bytes:ArrayBuffer,offset:number,length:number):EntityPresentation{
-  const data=new Uint8Array(bytes,offset,length),view=new DataView(bytes,offset,length);if(length<52||(length-52)%128!==0||new TextDecoder().decode(data.subarray(0,4))!=="PEBP"||view.getUint32(4,true)!==1)throw new Tf2CodecError("Entity presentation identity is invalid");const count=view.getUint32(48,true);if(52+count*128!==length)throw new Tf2CodecError("Entity presentation records do not frame bytes");const models:BrushModelDrawState[]=[];let prior=-1;for(let i=0;i<count;i++){const at=52+i*128,source=view.getUint32(at+8,true),model=view.getUint32(at+12,true),worldPosition=vector(view,at+40),worldAngles=vector(view,at+52),renderMode=data[at+65]!,renderFx=data[at+66]!,draw=data[at+67]!,kind=data[at+82]!,position=data[at+83]!,progress=view.getFloat32(at+84,true),request=view.getBigUint64(at+88,true),opening=data[at+120]!;if(source<=prior||model===0||draw>1||kind>3||position>5||opening>2||!finite([...worldPosition,...worldAngles,progress]))throw new Tf2CodecError("Entity presentation record is invalid");prior=source;models.push(Object.freeze({sourceIndex:source,model,worldPosition,worldAngles,renderMode,color:Object.freeze([data[at+76]!,data[at+77]!,data[at+78]!,data[at+79]!]),renderFx,effects:view.getUint16(at+80,true),draw:draw===1,mover:kind===0?null:Object.freeze({kind:kind as 1|2|3,position:position as 1|2|3|4|5,progress,requestId:request===0xffff_ffff_ffff_ffffn?null:request,opening:opening===0?null:opening===1})}))}return Object.freeze({sourceIdentity:view.getBigUint64(8,true),registryIdentity:view.getBigUint64(16,true),tick:view.getBigUint64(24,true),entityRevision:view.getBigUint64(32,true),collisionRevision:view.getBigUint64(40,true),models:Object.freeze(models)})}
+function decodeEntityPresentation(bytes: ArrayBuffer, offset: number, length: number, ranges?: SnapshotRanges, snapshotOffset = 0): EntityPresentation {
+  const data = new Uint8Array(bytes, offset, length), view = new DataView(bytes, offset, length)
+  if (length < 52 || (length - 52) % 128 !== 0 || new TextDecoder().decode(data.subarray(0, 4)) !== "PEBP" || view.getUint32(4, true) !== 1)
+    throw new Tf2CodecError("Entity presentation identity is invalid")
+  const count = view.getUint32(48, true)
+  if (52 + count * 128 !== length) throw new Tf2CodecError("Entity presentation records do not frame bytes")
+  const models: BrushModelDrawState[] = []
+  let prior = -1
+  for (let i = 0; i < count; i++) {
+    const at = 52 + i * 128
+    const decode = (): BrushModelDrawState => {
+      const source = view.getUint32(at + 8, true), model = view.getUint32(at + 12, true)
+      const worldPosition = vector(view, at + 40), worldAngles = vector(view, at + 52)
+      const renderMode = data[at + 65]!, renderFx = data[at + 66]!, draw = data[at + 67]!
+      const kind = data[at + 82]!, position = data[at + 83]!, progress = view.getFloat32(at + 84, true)
+      const request = view.getBigUint64(at + 88, true), opening = data[at + 120]!
+      if (model === 0 || draw > 1 || kind > 3 || position > 5 || opening > 2 || !finite([...worldPosition, ...worldAngles, progress]))
+        throw new Tf2CodecError("Entity presentation record is invalid")
+      return Object.freeze({ sourceIndex: source, model, worldPosition, worldAngles, renderMode,
+        color: Object.freeze([data[at + 76]!, data[at + 77]!, data[at + 78]!, data[at + 79]!]) as readonly [number, number, number, number],
+        renderFx, effects: view.getUint16(at + 80, true), draw: draw === 1,
+        mover: kind === 0 ? null : Object.freeze({ kind: kind as 1 | 2 | 3, position: position as 1 | 2 | 3 | 4 | 5,
+          progress, requestId: request === 0xffff_ffff_ffff_ffffn ? null : request, opening: opening === 0 ? null : opening === 1 }) })
+    }
+    const model = ranges ? ranges.read("brush", i, snapshotOffset + at, 128, decode) : decode()
+    if (model.sourceIndex <= prior) throw new Tf2CodecError("Entity presentation record is invalid")
+    prior = model.sourceIndex
+    models.push(model)
+  }
+  return Object.freeze({ sourceIdentity: view.getBigUint64(8, true), registryIdentity: view.getBigUint64(16, true),
+    tick: view.getBigUint64(24, true), entityRevision: view.getBigUint64(32, true), collisionRevision: view.getBigUint64(40, true), models: ranges ? ranges.array("brushes", models) : Object.freeze(models) })
+}
 
 function decodeObjectives(buffer: ArrayBuffer, offset: number, length: number): Readonly<{ objectives: CaptureObjectives | null; length: number }> {
   if (length < 12) throw new Tf2CodecError("Capture objective section is truncated")
@@ -1396,10 +1428,10 @@ function decodeCollisionSnapshot(bytes: ArrayBuffer, offset: number, length: num
   }
   const worldIdentity = Array.from(data.subarray(8, 40), (value) => value.toString(16).padStart(2, "0")).join("")
   if (!HASH.test(worldIdentity)) throw new Tf2CodecError("Collision world identity is invalid")
-  return Object.freeze({ worldIdentity, identity: view.getBigUint64(40, true), objects: count(view.getUint32(48, true), "Collision object"), bytes: data })
+  return Object.freeze({ worldIdentity, identity: view.getBigUint64(40, true), objects: count(view.getUint32(48, true), "Collision object"), bytes: data.slice() })
 }
 
-export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
+export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: SnapshotRanges): Snapshot {
   if (bytes.byteLength < 184 || bytes.byteLength > MAX_SNAPSHOT_BYTES) {
     throw new Tf2CodecError("snapshot byte length is invalid")
   }
@@ -1429,8 +1461,9 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
   if (!finite([health, maximumHealth]) || health < 0 || maximumHealth <= 0) {
     throw new Tf2CodecError("snapshot health is invalid")
   }
-  const conditions = Object.freeze(Array.from({ length: 5 }, (_, index) => view.getUint32(32 + index * 4, true))) as
+  const readConditions = () => Object.freeze(Array.from({ length: 5 }, (_, index) => view.getUint32(32 + index * 4, true))) as
     readonly [number, number, number, number, number]
+  const conditions = ranges ? ranges.read("conditions", 0, 32, 20, readConditions) : readConditions()
   const loadoutCount = count(view.getUint32(56, true), "loadout")
   const projectileCount = count(view.getUint32(60, true), "projectile")
   const projectileEventCount = count(view.getUint32(64, true), "projectile event")
@@ -1503,8 +1536,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
       else if (itemWeapon === 52) noAttackUntil = scalar
       else if (scalar !== 0) throw new Tf2CodecError("Spy loadout state is invalid")
     }
-    loadout.push(
-      Object.freeze({
+    const readWeapon = () => Object.freeze({
         weapon: itemWeapon as Tf2Weapon,
         reload: reload as WeaponState["reload"],
         clip: view.getUint16(item + 4, true),
@@ -1516,8 +1548,8 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
         chargeBeginTick: view.getBigUint64(item + 28, true) === 0xffff_ffff_ffff_ffffn ? null : view.getBigUint64(item + 28, true),
         firstPrimaryTick: view.getBigUint64(item + 36, true),
         chargedDamage: view.getFloat32(item + 44, true),
-      }),
-    )
+      })
+    loadout.push(ranges ? ranges.read("loadout", index, item, 48, readWeapon) : readWeapon())
   }
   if ((weapon === 0 && loadout.length !== 0)
     || (weapon !== 0 && !loadout.some((entry) => entry.weapon === weapon))) {
@@ -1672,6 +1704,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
   at += projectileEventCount * 92
 
   requireBytes(entityTransformCount * 32, "entity transform")
+  const readTransforms = () => {
   const entityTransforms: EntityTransform[] = []
   for (let index = 0; index < entityTransformCount; index += 1) {
     const item = at + index * 32
@@ -1687,6 +1720,9 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
       }),
     )
   }
+  return Object.freeze(entityTransforms)
+  }
+  const entityTransforms = ranges ? ranges.read("transforms", 0, at, entityTransformCount * 32, readTransforms) : readTransforms()
   at += entityTransformCount * 32
 
   const entityEvents: EntityEvent[] = []
@@ -1921,7 +1957,8 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
   at += blockerCount * 4
 
   requireBytes(randomStateLength, "TF2 random state")
-  const randomState = decodeRandomState(buffer, base + at, randomStateLength)
+  const readRandomState = () => decodeRandomState(buffer, base + at, randomStateLength)
+  const randomState = ranges ? ranges.read("random", 0, at, randomStateLength, readRandomState) : readRandomState()
   at += randomStateLength
 
   requireBytes(randomDrawCount * 16, "random draw")
@@ -2015,7 +2052,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
   const jump = decodeJump(buffer, base + at, jumpLength)
   at += jumpLength
   requireBytes(movementTickLength,"Movement tick");const movementTick=decodeMovementTick(buffer,base+at,movementTickLength);at+=movementTickLength
-  requireBytes(entityPresentationLength,"Entity presentation");const entityPresentation=decodeEntityPresentation(buffer,base+at,entityPresentationLength);at+=entityPresentationLength
+  requireBytes(entityPresentationLength,"Entity presentation");const entityPresentation=decodeEntityPresentation(buffer,base+at,entityPresentationLength,ranges,at);at+=entityPresentationLength
   requireBytes(4, "bot count")
   const botCount = view.getUint32(at, true)
   at += 4
@@ -2025,6 +2062,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
   let previousBot = 1
   for (let index = 0; index < botCount; index += 1) {
     const item = at + index * 128
+    const readBot = (): BotSnapshot => {
     const identity = view.getUint32(item, true), botClass = data[item + 4], botTeam = data[item + 5]
     const lifecycle = data[item + 6], difficulty = data[item + 7], objective = data[item + 8]
     const health = view.getInt32(item + 12, true), maximumHealth = view.getInt32(item + 16, true)
@@ -2035,7 +2073,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     const maximumClip = view.getUint16(item + 72, true), maximumReserve = view.getUint16(item + 74, true)
     const lastFireTick = view.getBigUint64(item + 96, true), respawnTick = view.getBigUint64(item + 104, true)
     const nextPrimaryTick = view.getBigUint64(item + 112, true), nextReloadTick = view.getBigUint64(item + 120, true)
-    if (identity <= previousBot || botClass === undefined || botClass < 1 || botClass > 9 || (botTeam !== 2 && botTeam !== 3)
+    if (botClass === undefined || botClass < 1 || botClass > 9 || (botTeam !== 2 && botTeam !== 3)
       || (lifecycle !== 1 && lifecycle !== 2) || difficulty === undefined || difficulty > 3
       || objective === undefined || objective < 1 || objective > 7
       || data[item + 9] !== 0 || data[item + 10] !== 0 || data[item + 11] !== 0
@@ -2046,22 +2084,28 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
       || (lifecycle === 1 && respawnTick !== 0xffff_ffff_ffff_ffffn)
       || (lifecycle === 2 && (health !== 0 || respawnTick === 0xffff_ffff_ffff_ffffn))
       || !finite([yawDegrees, pitchDegrees, ...position, ...velocity])) throw new Tf2CodecError("bot snapshot record is invalid")
-    previousBot = identity
-    bots.push(Object.freeze({
+    const readBotWeapon = () => weapon === 0 ? null : Object.freeze({ identity: weapon as Tf2Weapon, reload: reload as 0 | 1 | 2 | 3, clip, reserve, maximumClip, maximumReserve, nextPrimaryTick, nextReloadTick })
+    return Object.freeze({
       identity, class: botClass, team: botTeam, lifecycle, difficulty: difficulty as BotDifficulty,
       objective: objective as BotSnapshot["objective"], health, maximumHealth,
       target: target === 0xffff_ffff ? null : target, area: area === 0xffff_ffff ? null : area,
       remainingPathAreas: view.getUint32(item + 28, true), yawDegrees, pitchDegrees, position, velocity,
-      weapon: weapon === 0 ? null : Object.freeze({ identity: weapon as Tf2Weapon, reload: reload as 0 | 1 | 2 | 3, clip, reserve, maximumClip, maximumReserve, nextPrimaryTick, nextReloadTick }),
+      weapon: ranges ? ranges.read(`bot-weapon/${identity}`, 0, item + 64, 64, readBotWeapon) : readBotWeapon(),
       shots: view.getUint32(item + 76, true), hits: view.getUint32(item + 80, true), kills: view.getUint32(item + 84, true), deaths: view.getUint32(item + 88, true), captures: view.getUint32(item + 92, true),
       carryingFlag: carryingFlag === 1,
       animationRole: animationRole === 1 ? "PRIMARY" : animationRole === 2 ? "SECONDARY" : "MELEE",
       lastFireTick: lastFireTick === 0xffff_ffff_ffff_ffffn ? null : lastFireTick,
       respawnTick: respawnTick === 0xffff_ffff_ffff_ffffn ? null : respawnTick,
-    }))
+    })
+    }
+    const bot = ranges ? ranges.read("bot", index, item, 128, readBot) : readBot()
+    if (bot.identity <= previousBot) throw new Tf2CodecError("bot snapshot record is invalid")
+    previousBot = bot.identity
+    bots.push(bot)
   }
   at += botCount * 128
-  const objectiveResult = decodeObjectives(buffer, base + at, bytes.byteLength - at)
+  const readObjectives = () => decodeObjectives(buffer, base + at, bytes.byteLength - at)
+  const objectiveResult = ranges ? ranges.section("objectives", at, bytes.byteLength - at, readObjectives) : readObjectives()
   at += objectiveResult.length
   const objectives = objectiveResult.objectives
   requireBytes(8, "pickup header")
@@ -2070,6 +2114,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
   at += 8
   if (metal > 200 || pickupCount > 1024) throw new Tf2CodecError("pickup header exceeds its bound")
   requireBytes(pickupCount * 40, "pickup")
+  const readPickups = () => {
   const pickups: MapPickup[] = []
   let previousPickup = -1
   for (let index = 0; index < pickupCount; index += 1) {
@@ -2097,7 +2142,12 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
       respawnTick: respawnTick === 0xffff_ffff_ffff_ffffn ? null : respawnTick,
     }))
   }
+  return Object.freeze(pickups)
+  }
+  const pickups = ranges ? ranges.read("pickups", 0, at, pickupCount * 40, readPickups) : readPickups()
   at += pickupCount * 40
+  const scoreboardStart = at
+  const readScoreboard = () => {
   requireBytes(12, "scoreboard")
   const redScore = view.getInt32(at, true), blueScore = view.getInt32(at + 4, true)
   const redCount = data[at + 8]!, blueCount = data[at + 9]!, playerCount = data[at + 10]!
@@ -2136,17 +2186,23 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     previousPlayer = identity
     at += 29 + nameLength
   }
-  if (scoreboardPlayers.filter((player) => player.team === 2).length !== redCount
-    || scoreboardPlayers.filter((player) => player.team === 3).length !== blueCount
-    || scoreboardPlayers.length !== botCount + 1
-    || scoreboardPlayers.slice(1).some((player, index) => {
+  const scoreboard: ScoreboardSnapshot = Object.freeze({
+    redScore, blueScore, redCount, blueCount, players: Object.freeze(scoreboardPlayers),
+  })
+  return Object.freeze({ length: at - scoreboardStart, scoreboard })
+  }
+  const scoreboardResult = ranges ? ranges.section("scoreboard", at, bytes.byteLength - at, readScoreboard) : readScoreboard()
+  at = scoreboardStart + scoreboardResult.length
+  const scoreboard = scoreboardResult.scoreboard
+  // Cross-section joins must still run when a previously validated section is reused.
+  if (scoreboard.players.filter((player) => player.team === 2).length !== scoreboard.redCount
+    || scoreboard.players.filter((player) => player.team === 3).length !== scoreboard.blueCount
+    || scoreboard.players.length !== botCount + 1
+    || scoreboard.players.slice(1).some((player, index) => {
       const bot = bots[index]!
       return player.identity !== bot.identity || player.team !== bot.team || player.class !== bot.class
         || player.alive !== (bot.lifecycle === 1)
     })) throw new Tf2CodecError("scoreboard roster differs from player authority")
-  const scoreboard: ScoreboardSnapshot = Object.freeze({
-    redScore, blueScore, redCount, blueCount, players: Object.freeze(scoreboardPlayers),
-  })
   requireBytes(4, "building header")
   const buildingCount = data[at]!, hasPlacement = data[at + 1]!
   at += 4
@@ -2244,7 +2300,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     velocity: movement.velocity,
     grounded: movement.grounded,
     crouched: movement.crouchPhase >= 2,
-    loadout: Object.freeze(loadout),
+    loadout: ranges ? ranges.array("loadout", loadout) : Object.freeze(loadout),
     flamePoints: Object.freeze(flamePoints),
     shotgunPellets: Object.freeze(shotgunPellets),
     flameFiring: flameFlags === 1,
@@ -2277,7 +2333,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     collisionSnapshot,
     entityPresentation,
     authorityBlockers: Object.freeze(authorityBlockers),
-    bots: Object.freeze(bots),
+    bots: ranges ? ranges.array("bots", bots) : Object.freeze(bots),
     pickups: Object.freeze(pickups),
     buildings: Object.freeze(buildings),
     placement,

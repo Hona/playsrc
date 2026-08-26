@@ -68,6 +68,7 @@ export type WorkerRequest = WorkerEnvelope & (
       generation: number
       nowSeconds: number
       suspended: boolean
+      snapshotTick: bigint
       command: ArrayBuffer
     }>
   | Readonly<{ id: number; kind: "shutdown" }>

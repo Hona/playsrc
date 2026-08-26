@@ -1,6 +1,7 @@
 import type { DerivedObjectCache } from "@playsrc/asset-store/browser"
 import type { ResourceChunkDescriptor } from "@playsrc/asset-store/graph"
 import { decodeSnapshot, type Snapshot } from "./codec"
+import { SnapshotRanges } from "./snapshot-retention"
 import { decodeModelPoseOutput, type PosedModel } from "./presentation"
 import { TF2_PRESENTATION_SCHEMA, type InitialView, type VisibilityView, type WorkerFailureCode, type WorkerRequest, type WorkerResponse } from "./protocol"
 import type { Tf2TeamChoice, Tf2TeamSelectionServerState } from "./team-selection/model"
@@ -97,8 +98,8 @@ export type LoadedGame = Readonly<{
   initialView: InitialView
 }>
 export type StagedGame = LoadedGame
-export type SimulationEventBatch = Readonly<{ hostTick: bigint; bytes: Uint8Array; snapshot: Snapshot }>
-export type SimulationPublication = Readonly<{ hostFrame: bigint; firstHostTick: bigint; lastHostTick: bigint; selectedTicks: number; interpolation: number; snapshotBytes: Uint8Array; eventBatches: readonly SimulationEventBatch[]; snapshot: Snapshot }>
+export type SimulationEventBatch = Readonly<{ hostTick: bigint; byteLength: number; snapshot: Snapshot }>
+export type SimulationPublication = Readonly<{ hostFrame: bigint; firstHostTick: bigint; lastHostTick: bigint; selectedTicks: number; interpolation: number; snapshotByteLength: number; eventBatches: readonly SimulationEventBatch[]; snapshot: Snapshot }>
 export type WaterViewPass = Readonly<{ kind: "reflection" | "refraction" | "main" | "intersection"; origin: readonly [number,number,number]; angles: readonly [number,number,number]; renderAboveWater:boolean;renderUnderWater:boolean;renderWaterSurface:boolean;drawEntities:boolean;drawSky2d:boolean;clip:null|Readonly<{height:number;keep:"above"|"below"}>;forcedVisibilityLeaf:number|null;fog:Readonly<{kind:"world"}|{kind:"water";volume:number;heightFog:boolean}>;surfaces:Uint32Array }>
 export type WaterViewPlan = Readonly<{ visibleWater:null|Readonly<{volume:number;visibleLeaf:number;eyeLeaf:number;eyeInVolume:boolean;surfaceZ:number;distanceToWater:number|null;material:string;translucent:boolean;evaluated:Readonly<{normalFrame:number;normalTransform:Float32Array;cheapStart:number;cheapEnd:number}>;overlay:null|Readonly<{identity:string;normalFrame:number;normalTransform:Float32Array}>}>;render:Readonly<{cheap:boolean;reflect:boolean;refract:boolean;reflectEntities:boolean;drawSurface:boolean;opaque:boolean}>;nearPlaneIntersects:boolean;passes:readonly WaterViewPass[] }>
 export type EvaluatedWorldTexture = Readonly<{ role: number; frame: number | null; transform: Float32Array | null }>
@@ -150,6 +151,7 @@ export class Tf2WorkerClient {
   #shutdownRequested?: Promise<void>
   #staleMessages = 0
   #queuedModels?: QueuedModels
+  readonly #snapshotStreams = new Map<number, SimulationSnapshotStream>()
 
   get staleMessages(): number { return this.#staleMessages }
 
@@ -184,6 +186,8 @@ export class Tf2WorkerClient {
 
   #failAll(error: Error): void {
     this.#queuedModels = undefined
+    for (const stream of this.#snapshotStreams.values()) stream.close()
+    this.#snapshotStreams.clear()
     for (const pending of this.#pending.values()) pending.reject(error)
     this.#pending.clear()
   }
@@ -576,6 +580,9 @@ export class Tf2WorkerClient {
     if (activated.kind !== "activated" || activated.generation !== generation) {
       throw new Tf2WorkerError("WorkerFailed")
     }
+    for (const [prior, stream] of this.#snapshotStreams) if (prior !== generation) {
+      stream.close(); this.#snapshotStreams.delete(prior)
+    }
   }
   async coverage(generation:number):Promise<readonly CoverageSample[]>{const response=await this.#request({kind:"read-coverage",generation});if(response.kind!=="coverage"||response.generation!==generation||!(response.payload instanceof ArrayBuffer))throw new Tf2WorkerError("WorkerFailed");const bytes=new Uint8Array(response.payload),view=new DataView(response.payload);if(bytes.length<12||new TextDecoder().decode(bytes.subarray(0,4))!=="PCOV"||view.getUint32(4,true)!==1||12+view.getUint32(8,true)*24!==bytes.length)throw new Tf2WorkerError("WorkerFailed");return Object.freeze(Array.from({length:view.getUint32(8,true)},(_,index)=>{const at=12+index*24,position=Object.freeze([view.getFloat32(at+8,true),view.getFloat32(at+12,true),view.getFloat32(at+16,true)]) as readonly[number,number,number];if(!position.every(Number.isFinite)||view.getUint32(at+20,true)!==0)throw new Tf2WorkerError("WorkerFailed");return Object.freeze({leaf:view.getUint32(at,true),cluster:view.getInt16(at+4,true),area:view.getUint16(at+6,true),position})}))}
 
@@ -584,6 +591,8 @@ export class Tf2WorkerClient {
     if (discarded.kind !== "discarded" || discarded.generation !== generation) {
       throw new Tf2WorkerError("WorkerFailed")
     }
+    this.#snapshotStreams.get(generation)?.close()
+    this.#snapshotStreams.delete(generation)
   }
 
   async setPosition(generation: number, position: readonly [number, number, number]): Promise<void> {
@@ -629,28 +638,42 @@ export class Tf2WorkerClient {
   }
 
   async observe(generation: number, nowSeconds: number, command: ArrayBuffer, suspended = false): Promise<readonly SimulationPublication[]> {
+    if (!Number.isSafeInteger(generation) || generation < 1 || generation > 0xffff_ffff) throw new Tf2WorkerError("BoundExceeded")
     if (command.byteLength < 84 || command.byteLength > 64 * 1024) throw new Tf2WorkerError("BoundExceeded")
     if (!Number.isFinite(nowSeconds) || nowSeconds < 0) throw new Tf2WorkerError("BoundExceeded")
-    const response = await this.#request({ kind: "observe", generation, nowSeconds, suspended, command }, [command])
-    if (response.kind !== "simulation" || response.generation !== generation || !(response.output instanceof ArrayBuffer)) {
-      throw new Tf2WorkerError("WorkerFailed")
+    let stream = this.#snapshotStreams.get(generation)
+    if (!stream) { stream = new SimulationSnapshotStream(); this.#snapshotStreams.set(generation, stream) }
+    try {
+      const response = await this.#request({ kind: "observe", generation, nowSeconds, suspended, command, snapshotTick: stream.tick }, [command])
+      if (response.kind !== "simulation" || response.generation !== generation || !(response.output instanceof ArrayBuffer)) {
+        throw new Tf2WorkerError("WorkerFailed")
+      }
+      const profile = (globalThis as typeof globalThis & {
+        __playsrcFrameProfiler?: { active: boolean; simulation: unknown[]; simulationDropped: number }
+      }).__playsrcFrameProfiler
+      const started = profile?.active ? performance.now() : 0
+      const publications = stream.decode(response.output)
+      if (profile?.active) {
+        if (profile.simulation.length >= 16_384) profile.simulationDropped += 1
+        else profile.simulation.push({
+          requestId: response.id, at: started, decodeMilliseconds: performance.now() - started, bytes: response.output.byteLength,
+          publications: publications.map(publication => ({
+            hostFrame: String(publication.hostFrame), firstHostTick: String(publication.firstHostTick), lastHostTick: String(publication.lastHostTick),
+            selectedTicks: publication.selectedTicks, eventBatches: publication.eventBatches.length,
+          })),
+        })
+      }
+      return publications
+    } catch (error) {
+      if (stream.tick === 0n && this.#snapshotStreams.get(generation) === stream) {
+        stream.close(); this.#snapshotStreams.delete(generation)
+      }
+      throw error
     }
-    const profile = (globalThis as typeof globalThis & {
-      __playsrcFrameProfiler?: { active: boolean; simulation: unknown[]; simulationDropped: number }
-    }).__playsrcFrameProfiler
-    const started = profile?.active ? performance.now() : 0
-    const publications = decodeSimulationPublications(response.output)
-    if (profile?.active) {
-      if (profile.simulation.length >= 16_384) profile.simulationDropped += 1
-      else profile.simulation.push({
-        requestId: response.id, at: started, decodeMilliseconds: performance.now() - started, bytes: response.output.byteLength,
-        publications: publications.map(publication => ({
-          hostFrame: String(publication.hostFrame), firstHostTick: String(publication.firstHostTick), lastHostTick: String(publication.lastHostTick),
-          selectedTicks: publication.selectedTicks, eventBatches: publication.eventBatches.length,
-        })),
-      })
-    }
-    return publications
+  }
+
+  snapshotMetrics(generation: number): Readonly<SimulationSnapshotStream["metrics"]> | undefined {
+    return this.#snapshotStreams.get(generation)?.metrics
   }
   async particles(generation: number, batch: Uint8Array): Promise<Uint8Array> {
     if (batch.byteLength < 32 || batch.byteLength > 4 * 1024 * 1024) throw new Tf2WorkerError("BoundExceeded")
@@ -871,13 +894,32 @@ export function mergePublicationSnapshots(snapshots: readonly Snapshot[]): Snaps
   }) as Snapshot
 }
 
-function decodeSimulationPublications(buffer: ArrayBuffer): readonly SimulationPublication[] {
+export class SimulationSnapshotStream {
+  #tick = 0n
+  #frame = 0n
+  #gameTick: bigint | undefined
+  #bytes: Uint8Array | undefined
+  #ranges: SnapshotRanges | undefined
+  #closed = false
+  readonly metrics = { responses: 0, wireBytes: 0, canonicalWireBytes: 0, restoredBytes: 0, fullSnapshots: 0, deltaSnapshots: 0,
+    decodedRanges: 0, reusedRanges: 0, reusedBytes: 0, decodeMilliseconds: 0 }
+
+  get tick(): bigint { return this.#tick }
+  close(): void { this.#closed = true; this.#bytes = undefined; this.#ranges = undefined }
+
+  decode(buffer: ArrayBuffer): readonly SimulationPublication[] {
+  if (this.#closed) throw new Tf2WorkerError("Closed")
+  const started = performance.now()
+  // Commit only after the entire response, including every event tick, validates.
+  let tick = this.#tick, frame = this.#frame, baseline = this.#bytes, ranges = this.#ranges
+  let gameTick = this.#gameTick
+  let restoredBytes = 0, fullSnapshots = 0, deltaSnapshots = 0, decodedRanges = 0, reusedRanges = 0, reusedBytes = 0
   const bytes = new Uint8Array(buffer)
   const view = new DataView(buffer)
   if (
-    bytes.byteLength < 16 ||
+    bytes.byteLength < 16 || bytes.byteLength > 512 * 1024 * 1024 ||
     bytes[0] !== 0x50 || bytes[1] !== 0x53 || bytes[2] !== 0x49 || bytes[3] !== 0x4d ||
-    view.getUint32(4, true) !== 2 || view.getUint32(12, true) !== 0
+    view.getUint32(4, true) !== 3 || view.getUint32(12, true) !== 0
   ) throw new Tf2WorkerError("WorkerFailed")
   const count = view.getUint32(8, true)
   if (count > 256) throw new Tf2WorkerError("BoundExceeded")
@@ -897,37 +939,82 @@ function decodeSimulationPublications(buffer: ArrayBuffer): readonly SimulationP
     const eventCount = view.getUint32(offset + 36, true)
     offset += 40
     if (
-      selectedTicks < 1 || eventCount !== selectedTicks ||
+      selectedTicks < 1 || eventCount !== selectedTicks || eventCount > 1792 ||
+      !Number.isFinite(interpolation) || interpolation < 0 || interpolation > 1 || hostFrame <= frame ||
+      firstHostTick !== tick + 1n ||
       lastHostTick - firstHostTick + 1n !== BigInt(selectedTicks)
     ) throw new Tf2WorkerError("WorkerFailed")
     const eventBatches: SimulationEventBatch[] = []
     for (let event = 0; event < eventCount; event += 1) {
-      require(12)
+      require(24)
       const hostTick = view.getBigUint64(offset, true)
       const length = view.getUint32(offset + 8, true)
-      offset += 12
-      require(length)
-      const eventBytes = bytes.subarray(offset, offset + length)
-      offset += length
+      const wireLength = view.getUint32(offset + 12, true)
+      const baseTick = view.getBigUint64(offset + 16, true)
+      offset += 24
+      require(wireLength)
+      restoredBytes += length
+      if (hostTick !== tick + 1n || length < 184 || length > 64 * 1024 * 1024 || restoredBytes > 448 * 1024 * 1024)
+        throw new Tf2WorkerError("BoundExceeded")
+      let eventBytes: Uint8Array
+      if (baseTick === 0n) {
+        if (wireLength !== length) throw new Tf2WorkerError("WorkerFailed")
+        // A full restore owns just this snapshot, not an arbitrarily large response.
+        eventBytes = bytes.slice(offset, offset + wireLength)
+        fullSnapshots++
+      } else {
+        if (baseTick !== tick || !baseline || baseline.byteLength !== length || wireLength >= length)
+          throw new Tf2WorkerError("WorkerFailed")
+        eventBytes = baseline.slice()
+        let at = offset, end = 0
+        while (at < offset + wireLength) {
+          if (offset + wireLength - at < 8) throw new Tf2WorkerError("WorkerFailed")
+          const start = view.getUint32(at, true), size = view.getUint32(at + 4, true)
+          at += 8
+          if (start < end || size === 0 || start + size > length || size > offset + wireLength - at)
+            throw new Tf2WorkerError("WorkerFailed")
+          eventBytes.set(bytes.subarray(at, at + size), start)
+          end = start + size
+          at += size
+        }
+        deltaSnapshots++
+      }
+      offset += wireLength
+      const nextRanges = new SnapshotRanges(eventBytes, ranges)
+      const snapshot = decodeSnapshot(eventBytes, nextRanges)
+      if (gameTick !== undefined && snapshot.tick !== gameTick + 1n) throw new Tf2WorkerError("WorkerFailed")
+      gameTick = snapshot.tick
+      nextRanges.finish()
+      decodedRanges += nextRanges.decoded; reusedRanges += nextRanges.reused; reusedBytes += nextRanges.reusedBytes
+      ranges = nextRanges
+      baseline = eventBytes
+      tick = hostTick
       eventBatches.push(Object.freeze({
         hostTick,
-        bytes: eventBytes,
-        snapshot: decodeSnapshot(eventBytes),
+        byteLength: length,
+        snapshot,
       }))
     }
-    const snapshotBytes = eventBatches.at(-1)?.bytes
-    if (!snapshotBytes || snapshotBytes.byteLength !== snapshotLength) throw new Tf2WorkerError("WorkerFailed")
+    if (baseline?.byteLength !== snapshotLength) throw new Tf2WorkerError("WorkerFailed")
+    frame = hostFrame
     publications.push(Object.freeze({
       hostFrame,
       firstHostTick,
       lastHostTick,
       selectedTicks,
       interpolation,
-      snapshotBytes,
+      snapshotByteLength: snapshotLength,
       eventBatches: Object.freeze(eventBatches),
       snapshot: mergePublicationSnapshots(eventBatches.map((event) => event.snapshot)),
     }))
   }
   if (offset !== bytes.byteLength) throw new Tf2WorkerError("WorkerFailed")
+  this.#tick = tick; this.#frame = frame; this.#gameTick = gameTick; this.#bytes = baseline; this.#ranges = ranges
+  this.metrics.responses++; this.metrics.wireBytes += bytes.byteLength; this.metrics.restoredBytes += restoredBytes
+  this.metrics.canonicalWireBytes += 16 + count * 40 + (fullSnapshots + deltaSnapshots) * 12 + restoredBytes
+  this.metrics.fullSnapshots += fullSnapshots; this.metrics.deltaSnapshots += deltaSnapshots
+  this.metrics.decodedRanges += decodedRanges; this.metrics.reusedRanges += reusedRanges; this.metrics.reusedBytes += reusedBytes
+  this.metrics.decodeMilliseconds += performance.now() - started
   return Object.freeze(publications)
+  }
 }

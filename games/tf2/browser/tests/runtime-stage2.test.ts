@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import type { DerivedObjectCache } from "@playsrc/asset-store/browser"
-import { mergePublicationSnapshots, Tf2WorkerClient, type WorkerLike } from "../src/client"
+import { mergePublicationSnapshots, SimulationSnapshotStream, Tf2WorkerClient, type WorkerLike } from "../src/client"
 import {
   decodeSnapshot,
   encodeCommand,
@@ -137,7 +137,81 @@ function snapshot(): ArrayBuffer {
   view.setUint32(at + 4, 0xffff_ffff, true)
   return bytes
 }
-function simulationOutput(){const state=new Uint8Array(snapshot()),output=new ArrayBuffer(68+state.length),data=new Uint8Array(output),view=new DataView(output);data.set(new TextEncoder().encode("PSIM"));view.setUint32(4,2,true);view.setUint32(8,1,true);view.setBigUint64(16,1n,true);view.setBigUint64(24,1n,true);view.setBigUint64(32,1n,true);view.setUint32(40,1,true);view.setUint32(48,state.length,true);view.setUint32(52,1,true);const at=56;view.setBigUint64(at,1n,true);view.setUint32(at+8,state.length,true);data.set(state,at+12);return output}
+function simulationOutput(){const state=new Uint8Array(snapshot()),output=new ArrayBuffer(80+state.length),data=new Uint8Array(output),view=new DataView(output);data.set(new TextEncoder().encode("PSIM"));view.setUint32(4,3,true);view.setUint32(8,1,true);view.setBigUint64(16,1n,true);view.setBigUint64(24,1n,true);view.setBigUint64(32,1n,true);view.setUint32(40,1,true);view.setUint32(48,state.length,true);view.setUint32(52,1,true);const at=56;view.setBigUint64(at,1n,true);view.setUint32(at+8,state.length,true);view.setUint32(at+12,state.length,true);data.set(state,at+24);return output}
+
+// Large canonical records, not a model of game rules. Every optimized result is
+// compared with the unchanged full snapshot decoder, including ordered events.
+function rosterSnapshot(tick: bigint, roster = 31, brushes = 512): Uint8Array {
+  const original = new Uint8Array(snapshot())
+  const objective = original.length - 136, brushHeader = objective - 56
+  const insert = brushes * 128, botBytes = roster * 128, names = Array.from({ length: roster }, (_, i) => new TextEncoder().encode(`bot-${i}`))
+  const scoreboardBytes = names.reduce((sum, name) => sum + 29 + name.length, 0)
+  const bytes = new Uint8Array(original.length + insert + botBytes + scoreboardBytes)
+  bytes.set(original.subarray(0, brushHeader + 52))
+  bytes.set(original.subarray(brushHeader + 52, objective), brushHeader + 52 + insert)
+  bytes.set(original.subarray(objective, objective + 68), objective + insert + botBytes)
+  bytes.set(original.subarray(objective + 68), objective + insert + botBytes + 68 + scoreboardBytes)
+  const view = new DataView(bytes.buffer)
+  view.setBigUint64(8, tick, true)
+  view.setBigUint64(424, tick, true) // projectile event
+  view.setBigUint64(532, tick, true) // entity event sequence
+  view.setBigUint64(593, tick, true) // weapon activity
+  view.setUint32(152, 52 + insert, true)
+  view.setBigUint64(brushHeader + 24, tick, true)
+  view.setUint32(brushHeader + 48, brushes, true)
+  for (let i = 0; i < brushes; i++) {
+    const at = brushHeader + 52 + i * 128
+    view.setUint32(at + 8, i + 1, true); view.setUint32(at + 12, i + 1, true)
+    view.setFloat32(at + 40, i * 8, true); bytes[at + 67] = 1
+  }
+  view.setUint32(objective + insert - 4, roster, true)
+  let score = objective + insert + botBytes + 20
+  bytes[score + 9] = roster; bytes[score + 10] = roster + 1
+  score += 48
+  for (let i = 0; i < roster; i++) {
+    const at = objective + insert + i * 128
+    view.setUint32(at, i + 2, true); bytes.set([3, 3, 1, 1, 1], at + 4)
+    view.setInt32(at + 12, 200, true); view.setInt32(at + 16, 200, true)
+    bytes[at + 64] = 1; bytes[at + 67] = 1
+    view.setUint16(at + 68, 4, true); view.setUint16(at + 70, 20, true)
+    view.setUint16(at + 72, 4, true); view.setUint16(at + 74, 20, true)
+    view.setBigUint64(at + 96, 0xffff_ffff_ffff_ffffn, true)
+    view.setBigUint64(at + 104, 0xffff_ffff_ffff_ffffn, true)
+    view.setUint32(score, i + 2, true); bytes.set([3, 3, 1, 1], score + 4)
+    bytes[score + 28] = names[i]!.length; bytes.set(names[i]!, score + 29)
+    score += 29 + names[i]!.length
+  }
+  return bytes
+}
+
+function snapshotPacket(firstTick: bigint, states: readonly Uint8Array[], previous?: Uint8Array): ArrayBuffer {
+  const records: Uint8Array[] = []
+  for (let i = 0; i < states.length; i++) {
+    const state = states[i]!, changes: number[] = []
+    if (previous?.length === state.length) {
+      // Independent, deliberately simple test encoder: one replacement per byte.
+      for (let at = 0; at < state.length; at++) if (previous[at] !== state[at]) {
+        changes.push(at & 255, at >>> 8 & 255, at >>> 16 & 255, at >>> 24, 1, 0, 0, 0, state[at]!)
+      }
+    }
+    const delta = previous?.length === state.length && changes.length < state.length
+    const wire = delta ? new Uint8Array(changes) : state
+    const record = new Uint8Array(24 + wire.length), view = new DataView(record.buffer)
+    view.setBigUint64(0, firstTick + BigInt(i), true)
+    view.setUint32(8, state.length, true); view.setUint32(12, wire.length, true)
+    view.setBigUint64(16, delta ? firstTick + BigInt(i) - 1n : 0n, true)
+    record.set(wire, 24); records.push(record); previous = state
+  }
+  const bytes = new Uint8Array(56 + records.reduce((sum, record) => sum + record.length, 0)), view = new DataView(bytes.buffer)
+  bytes.set(new TextEncoder().encode("PSIM")); view.setUint32(4, 3, true); view.setUint32(8, 1, true)
+  view.setBigUint64(16, firstTick, true); view.setBigUint64(24, firstTick, true)
+  view.setBigUint64(32, firstTick + BigInt(states.length) - 1n, true)
+  view.setUint32(40, states.length, true); view.setFloat32(44, 0.25, true)
+  view.setUint32(48, states.at(-1)!.length, true); view.setUint32(52, states.length, true)
+  let at = 56
+  for (const record of records) { bytes.set(record, at); at += record.length }
+  return bytes.buffer
+}
 
 class MemoryCache implements DerivedObjectCache {
   async read(): Promise<undefined> { return undefined }
@@ -338,12 +412,12 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
 
     const source = snapshot()
     const value = decodeSnapshot(source)
-    expect(value.collisionSnapshot.bytes.buffer).toBe(source)
+    expect(value.collisionSnapshot.bytes.buffer).not.toBe(source)
     const enclosed = new Uint8Array(source.byteLength + 7)
     enclosed.set(new Uint8Array(source), 3)
     const offset = decodeSnapshot(enclosed.subarray(3, source.byteLength + 3))
     expect(offset.tick).toBe(value.tick)
-    expect(offset.collisionSnapshot.bytes.buffer).toBe(enclosed.buffer)
+    expect(offset.collisionSnapshot.bytes.buffer).not.toBe(enclosed.buffer)
     expect(value.movement).toMatchObject({
       grounded: true,
       position: [1, 2, 3],
@@ -642,9 +716,8 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     const publication = (await client.observe(4, 1, command))[0]!
     expect(command.byteLength).toBe(0)
     expect(publication.snapshot.tick).toBe(7n)
-    expect(publication.snapshotBytes.buffer).toBe(publication.eventBatches[0]!.bytes.buffer)
-    expect(publication.snapshotBytes.byteOffset).toBe(publication.eventBatches[0]!.bytes.byteOffset)
-    expect(publication.eventBatches[0]!.snapshot.collisionSnapshot.bytes.buffer).toBe(publication.snapshotBytes.buffer)
+    expect(publication.snapshotByteLength).toBe(publication.eventBatches[0]!.byteLength)
+    expect(publication.eventBatches[0]!.snapshot.collisionSnapshot.bytes.byteLength).toBe(52)
     expect(publication.snapshot).toBe(publication.eventBatches[0]!.snapshot)
     await client.shutdown()
   })
@@ -668,5 +741,168 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
       if (previous === undefined) delete host.__playsrcFrameProfiler
       else host.__playsrcFrameProfiler = previous
     }
+  })
+
+  test("randomized lossless full/delta sequence parity retains all event ticks and large rosters", () => {
+    const stream = new SimulationSnapshotStream(), retained: Array<{ value: ReturnType<typeof decodeSnapshot>; bytes: Uint8Array }> = []
+    let seed = 0x74c12fe3, tick = 1n, previous: Uint8Array | undefined, fullBytes = 0, wireBytes = 0
+    let fullDecodeMilliseconds = 0, optimizedDecodeMilliseconds = 0, fullObjects = 0, optimizedObjects = 0
+    const fullSeen = new WeakSet<object>(), optimizedSeen = new WeakSet<object>()
+    const objects = (value: unknown, seen: WeakSet<object>): number => {
+      if (value === null || typeof value !== "object" || seen.has(value)) return 0
+      seen.add(value)
+      return 1 + (ArrayBuffer.isView(value) ? 0 : Object.values(value).reduce((sum, child) => sum + objects(child, seen), 0))
+    }
+    const random = () => { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; return seed >>> 0 }
+    for (let frame = 0; frame < 100; frame++) {
+      const count = 1 + random() % 4, states: Uint8Array[] = []
+      for (let i = 0; i < count; i++) {
+        const state = rosterSnapshot(tick + BigInt(i) + 6n, frame < 30 ? 31 : frame < 60 ? 23 : 15)
+        const view = new DataView(state.buffer), brushHeader = 977
+        view.setFloat32(204, random() % 1000 - 500, true)
+        view.setFloat32(20, random() % 201, true)
+        const brush = random() % 512
+        view.setFloat32(brushHeader + 52 + brush * 128 + 40, random() % 100, true)
+        states.push(state)
+      }
+      const packet = snapshotPacket(tick, states, frame % 17 === 0 ? undefined : previous)
+      wireBytes += packet.byteLength; fullBytes += states.reduce((sum, bytes) => sum + bytes.length + 24, 56)
+      const optimizedStarted = performance.now()
+      const publication = stream.decode(packet)[0]!
+      optimizedDecodeMilliseconds += performance.now() - optimizedStarted
+      const fullStarted = performance.now()
+      const expected = states.map(bytes => decodeSnapshot(bytes))
+      const fullSnapshot = mergePublicationSnapshots(expected)
+      fullDecodeMilliseconds += performance.now() - fullStarted
+      fullObjects += expected.reduce((sum, state) => sum + objects(state, fullSeen), 0)
+      optimizedObjects += publication.eventBatches.reduce((sum, event) => sum + objects(event.snapshot, optimizedSeen), 0)
+      expect(publication.snapshot).toEqual(fullSnapshot)
+      expect(publication.eventBatches.map(event => event.snapshot)).toEqual(expected)
+      expect(publication.eventBatches.map(event => event.hostTick)).toEqual(states.map((_, i) => tick + BigInt(i)))
+      expect(publication.snapshot.projectileTimeline.map(event => event.tick)).toEqual(expected.map(value => value.tick))
+      retained.push({ value: publication.eventBatches[0]!.snapshot, bytes: states[0]!.slice() })
+      tick += BigInt(count); previous = states.at(-1)
+    }
+    for (const entry of retained) expect(entry.value).toEqual(decodeSnapshot(entry.bytes))
+    expect(wireBytes).toBeLessThan(fullBytes / 8)
+    expect(stream.metrics.reusedRanges).toBeGreaterThan(stream.metrics.decodedRanges * 8)
+    expect(stream.metrics.deltaSnapshots).toBeGreaterThan(200)
+    expect(optimizedObjects).toBeLessThan(fullObjects / 4)
+    if (process.env.PLAYSRC_SNAPSHOT_METRICS === "1") console.log("SNAPSHOT_PARITY", JSON.stringify({ ticks: Number(tick - 1n), fullBytes, wireBytes,
+      fullDecodeMilliseconds, optimizedDecodeMilliseconds, fullObjects, optimizedObjects, ...stream.metrics }))
+  })
+
+  test("immutable sections, signed zero, caller-owned collision bytes and shutdown do not alias baselines", () => {
+    const stream = new SimulationSnapshotStream(), first = rosterSnapshot(7n)
+    const packet = snapshotPacket(1n, [first])
+    const a = stream.decode(packet)[0]!.snapshot
+    new Uint8Array(packet).fill(0) // stream owns its authoritative full restore
+    const second = first.slice(), view = new DataView(second.buffer)
+    view.setBigUint64(8, 8n, true)
+    const b = stream.decode(snapshotPacket(2n, [second], first))[0]!.snapshot
+    expect(b.entityPresentation.models).toBe(a.entityPresentation.models)
+    expect(b.bots).toBe(a.bots); expect(b.loadout).toBe(a.loadout); expect(b.scoreboard).toBe(a.scoreboard)
+    expect(b.entityTransforms).toBe(a.entityTransforms); expect(b.randomState).toBe(a.randomState)
+    expect(Object.isFrozen(b.bots[0]!.position)).toBe(true)
+    a.collisionSnapshot.bytes.fill(0)
+    expect(b.collisionSnapshot.bytes[0]).toBe(67)
+    const third = second.slice(), thirdView = new DataView(third.buffer)
+    thirdView.setBigUint64(8, 9n, true); thirdView.setFloat32(977 + 52 + 40, -0, true)
+    const c = stream.decode(snapshotPacket(3n, [third], second))[0]!.snapshot
+    expect(Object.is(c.entityPresentation.models[0]!.worldPosition[0], -0)).toBe(true)
+    expect(Object.is(a.entityPresentation.models[0]!.worldPosition[0], 0)).toBe(true)
+    expect(c.entityPresentation.models[0]).not.toBe(b.entityPresentation.models[0])
+    expect(c.entityPresentation.models[1]).toBe(b.entityPresentation.models[1])
+    stream.close()
+    expect(() => stream.decode(snapshotPacket(4n, [third]))).toThrow("Closed")
+    expect(c.bots[0]!.identity).toBe(2)
+  })
+
+  test("malformed, stale, NaN, cross-section and truncated responses roll back the entire decode", () => {
+    const first = rosterSnapshot(7n, 31, 1), second = rosterSnapshot(8n, 31, 1)
+    const stream = new SimulationSnapshotStream()
+    stream.decode(snapshotPacket(1n, [first]))
+    const valid = snapshotPacket(2n, [second], first)
+    for (const offset of [4, 24, 32, 40, 48, 52, 56, 64, 68, 72, 80, 84]) {
+      const malformed = valid.slice(0); new DataView(malformed).setUint32(offset, 0xffff_ffff, true)
+      expect(() => stream.decode(malformed)).toThrow()
+      expect(stream.tick).toBe(1n)
+    }
+    for (let size = 0; size < valid.byteLength; size++) {
+      expect(() => stream.decode(valid.slice(0, size))).toThrow()
+      expect(stream.tick).toBe(1n)
+    }
+    for (const offset of [20, 204, 977 + 52 + 40]) {
+      const malformed = second.slice(); new DataView(malformed.buffer).setFloat32(offset, NaN, true)
+      expect(() => stream.decode(snapshotPacket(2n, [malformed], first))).toThrow()
+    }
+    const reordered = second.slice(), reorderedView = new DataView(reordered.buffer)
+    reorderedView.setUint32(1033 + 128, 1, true)
+    expect(() => stream.decode(snapshotPacket(2n, [reordered], first))).toThrow()
+    const mismatchedClass = second.slice()
+    mismatchedClass[1033 + 128 + 4] = 6
+    expect(() => stream.decode(snapshotPacket(2n, [mismatchedClass], first))).toThrow("scoreboard roster")
+    const third = rosterSnapshot(9n, 31, 1)
+    new DataView(third.buffer).setFloat32(20, NaN, true)
+    expect(() => stream.decode(snapshotPacket(2n, [second, third], first))).toThrow()
+    expect(stream.tick).toBe(1n)
+    expect(stream.decode(valid)[0]!.snapshot).toEqual(decodeSnapshot(second))
+    expect(() => stream.decode(valid)).toThrow()
+    const independentGeneration = new SimulationSnapshotStream()
+    expect(() => independentGeneration.decode(valid)).toThrow()
+    expect(independentGeneration.decode(snapshotPacket(1n, [first]))[0]!.snapshot).toEqual(decodeSnapshot(first))
+  })
+
+  test("identical objective events are retained once for each exact tick, not deduplicated with state", () => {
+    const withObjective = (tick: bigint) => {
+      const base = rosterSnapshot(tick, 31, 1), at = 1033 + 128 + 31 * 128
+      const bytes = new Uint8Array(base.length + 48), view = new DataView(bytes.buffer)
+      bytes.set(base.subarray(0, at + 12)); bytes.set(base.subarray(at + 12), at + 60)
+      bytes[at + 8] = 1; view.setUint32(at + 32, 1, true)
+      bytes.set([1, 0, 2, 0], at + 36); view.setUint32(at + 40, 123, true)
+      view.setUint32(at + 44, 1, true); view.setFloat32(at + 52, 3, true)
+      return bytes
+    }
+    const states = [withObjective(7n), withObjective(8n), withObjective(9n)]
+    const publication = new SimulationSnapshotStream().decode(snapshotPacket(1n, states))[0]!
+    expect(publication.snapshot).toEqual(mergePublicationSnapshots(states.map(state => decodeSnapshot(state))))
+    expect(publication.snapshot.objectives!.events).toHaveLength(3)
+    expect(publication.eventBatches[1]!.snapshot.objectives).toBe(publication.eventBatches[0]!.snapshot.objectives)
+    expect(publication.snapshot.activities.map(event => event.tick)).toEqual([7n, 8n, 9n])
+    expect(publication.snapshot.entityEvents.map(event => event.sequence)).toEqual([7n, 8n, 9n])
+  })
+
+  test("client generation replacement cancels stale decodes and shutdown drains pending snapshot ownership", async () => {
+    let listener: ((event: MessageEvent<WorkerResponse>) => void) | undefined
+    const requests: WorkerRequest[] = []
+    let terminated = false
+    const worker = {
+      postMessage(request: WorkerRequest, transfer: Transferable[] = []) { requests.push(structuredClone(request, { transfer })) },
+      addEventListener(kind: string, callback: (event: MessageEvent<WorkerResponse>) => void) { if (kind === "message") listener = callback },
+      removeEventListener() {}, terminate() { terminated = true },
+    } as WorkerLike
+    const send = (response: WorkerResponse) => listener!({ data: response } as MessageEvent<WorkerResponse>)
+    const command = () => encodeCommand({ forward: 0, side: 0, yawDegrees: 0, pitchDegrees: 0, jump: false, crouch: false, fire: true, detonate: false })
+    const client = new Tf2WorkerClient(worker, new MemoryCache(), "cd".repeat(32))
+    const first = client.observe(1, 1, command())
+    send({ id: requests.at(-1)!.id, kind: "simulation", generation: 1, output: snapshotPacket(1n, [rosterSnapshot(7n)]) })
+    const retained = (await first)[0]!.snapshot
+    const stale = client.observe(1, 2, command()).catch(error => error)
+    const staleId = requests.at(-1)!.id
+    expect((requests.at(-1) as Extract<WorkerRequest, { kind: "observe" }>).snapshotTick).toBe(1n)
+    const activation = client.activate(2)
+    send({ id: requests.at(-1)!.id, kind: "activated", generation: 2 }); await activation
+    send({ id: staleId, kind: "simulation", generation: 1, output: snapshotPacket(2n, [rosterSnapshot(8n)]) })
+    expect((await stale).code).toBe("Closed")
+    const pending = client.observe(2, 3, command())
+    const pendingId = requests.at(-1)!.id
+    expect((requests.at(-1) as Extract<WorkerRequest, { kind: "observe" }>).snapshotTick).toBe(0n)
+    const shutdown = client.shutdown(), shutdownId = requests.at(-1)!.id
+    send({ id: pendingId, kind: "simulation", generation: 2, output: snapshotPacket(1n, [rosterSnapshot(7n, 23)]) })
+    expect((await pending)[0]!.snapshot.bots).toHaveLength(23)
+    send({ id: shutdownId, kind: "shutdown" }); await shutdown
+    expect(terminated).toBe(true); expect(client.snapshotMetrics(1)).toBeUndefined(); expect(client.snapshotMetrics(2)).toBeUndefined()
+    expect(retained.bots).toHaveLength(31)
+    expect(retained.entityPresentation.models[0]!.model).toBe(1)
   })
 })
