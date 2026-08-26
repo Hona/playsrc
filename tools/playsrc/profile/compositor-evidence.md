@@ -17,6 +17,7 @@ Exact in-page marks join page milliseconds to Chromium microseconds. Incidents s
 Offline replay also derives `attribution` without changing the retained v1 analysis. It reports gameplay percentiles and separate threshold counts per presentation stream/scope, per-thread union coverage (never summed nested slices), captured native/script source locations, exact native postMessage dispatch-ID edges, and phase/resource probe details. GPU synchronous return is separate from promise settlement. Worker round trips and completed-frame phase totals are not reconstructed into invented stage timestamps. Missing coverage is **unobserved**, not idle; dispatch edges alone do not prove presentation blocking. An unexplained gap retains a null critical path. Source ownership belongs to the manifest's build, not the replay checkout. Detail truncation is explicit; raw indices still address the original evidence.
 
 Bounds per capture: 128 MiB browser trace buffer, 32 MiB compressed stream, 256 MiB decoded JSON, one million events, 32 MiB browser probes, and 16,384 GPU operation probes. Detailed joins cover the 64 largest incidents; counts cover all incidents and the complete raw trace remains available. Stream draining is limited to 15 seconds after sampling. Overflow, missing/drifting marks, changed source, and Chromium data loss produce retained incomplete evidence and a failing profile, never a clean performance claim.
+
 # Worker CPU/task evidence
 
 The all-18-edge `class-switch-high-dpi` path also samples the actual gameplay
@@ -37,3 +38,7 @@ Boundary tasks retain their full duration and separately report sample overlap.
 The class profile also gates actual gameplay silence inside presentation pairs
 that cross sample boundaries. Stopping capture cannot hide the already elapsed
 gameplay portion of a stall; collection-only portions remain separately labeled.
+
+Windows local runs require the runner to be in the active, unlocked physical console session before server preparation and browser launch. `bun tools/playsrc/profile/windows-desktop.ts` reads WTS session evidence without changing settings or starting a browser; unknown, locked, remote, and session-zero states fail closed. This preflight is not proof that the display stays visible: the gameplay visibility/focus checks still apply. Remote CDP adapters must establish that gate on the browser host.
+
+Upward/class-switch/combat reports include bounded, exact-PID process-memory snapshots outside the marked sample. Windows reports working set and private committed bytes separately; macOS/Linux report RSS, not invented private bytes. These are boundary values, **not peaks or private working sets**. Missing/exited processes make totals null and retain an error. Remote CDP never looks up browser PIDs on the runner's machine.

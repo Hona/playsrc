@@ -16,14 +16,7 @@ import { decodeScreenshot } from "./screenshot-pixels"
 import { chooseTf2Team } from "./team-selection-evidence"
 import { startWorkerCpuCapture } from "./worker-cpu-profiler"
 import { attributeWorkerIncidents } from "./worker-incident-attribution"
-
-function processResidentMemory(processes: Array<{ id: number; type: string }> | undefined) {
-  if (!processes?.length || process.platform === "win32") return null
-  const result = spawnSync("ps", ["-o", "pid=,rss=", "-p", processes.map(process => process.id).join(",")], { encoding: "utf8" })
-  if (result.status !== 0) return null
-  const resident = new Map(result.stdout.trim().split("\n").map(line => line.trim().split(/\s+/).map(Number) as [number, number]))
-  return processes.map(process => ({ id: process.id, type: process.type, residentBytes: resident.has(process.id) ? resident.get(process.id)! * 1024 : null }))
-}
+import { captureProcessMemory } from "./process-memory"
 
 test("profile authored headed Upward offline-practice default roster and actual completed gameplay frames", async ({ page, context }, testInfo) => {
   const wallStarted = Date.now()
@@ -323,7 +316,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const browserCdp = await context.browser()!.newBrowserCDPSession()
   const system = await browserCdp.send("SystemInfo.getInfo").catch(() => null)
   const processBefore = await browserCdp.send("SystemInfo.getProcessInfo").catch(() => null)
-  const residentBefore = processResidentMemory(processBefore?.processInfo)
+  const memoryBefore = await captureProcessMemory(processBefore?.processInfo, { remote: Boolean(process.env.PLAYSRC_PROFILE_CDP_ENDPOINT) })
   const browserVersion = await browserCdp.send("Browser.getVersion")
   const applicationGeneration = await page.evaluate(() => (globalThis as any).__playsrcProfile.applicationGeneration ?? null)
   const availableCategories = (await browserCdp.send("Tracing.getCategories")).categories
@@ -612,7 +605,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const [cpuResult, allocationResult, heapAfter, processAfter] = collected.value
   const cpuProfile = cpuResult.profile as CpuProfile
   const allocationProfile = allocationResult.profile
-  const residentAfter = processResidentMemory(processAfter.processInfo)
+  const memoryAfter = await captureProcessMemory(processAfter.processInfo, { remote: Boolean(process.env.PLAYSRC_PROFILE_CDP_ENDPOINT) })
   const measurement = measured
   const traceEvents: ChromiumTraceEvent[] = evidence.events
   const exactTraceWindow = evidence.manifest.analysis.window
@@ -695,7 +688,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     compositorEvidence: { ...evidence.artifact, complete: evidence.manifest.complete, errors: evidence.manifest.errors,
       issues: evidence.manifest.analysis.issues, incidents: evidence.manifest.analysis.incidents.map(({ work, joins, ...incident }) => incident) },
     presentationOpportunities:{frames:compositor.length,framesPerSecond:Number((compositor.length/measurement.elapsed*1000).toFixed(3)),animationCallbacks:measurement.presentationCallbacks.length,intervals:summarizeFrameTimes(compositor.slice(1).map((frame,index)=>frame.at-compositor[index]!.at)),submissionLatency:summarizeDistribution(compositor.map(frame=>frame.submissionMilliseconds))},
-    browser: { platform: process.platform, origin: new URL(page.url()).origin, localProductionBundle, channel: process.env.PLAYSRC_PROFILE_BROWSER_CHANNEL ?? "playwright-chromium", viewport: measurement.viewport, visible: measurement.visible, focused: measurement.focused, lifecycle: measurement.browserLifecycle, gpu: system?.gpu ?? null, processes: { before: processBefore?.processInfo ?? null, after: processAfter?.processInfo ?? null, residentBefore, residentAfter }, network, storage, userMachineEvidence: false },
+    browser: { platform: process.platform, origin: new URL(page.url()).origin, localProductionBundle, channel: process.env.PLAYSRC_PROFILE_BROWSER_CHANNEL ?? "playwright-chromium", viewport: measurement.viewport, visible: measurement.visible, focused: measurement.focused, lifecycle: measurement.browserLifecycle, gpu: system?.gpu ?? null, processes: { before: processBefore?.processInfo ?? null, after: processAfter?.processInfo ?? null, memoryBefore, memoryAfter }, network, storage, userMachineEvidence: false },
     frameIntervals: summarizeFrameTimes(intervals), frameWork: summarizeFrameTimes(completed.map(frame => frame.detail.total)),
     presentationDom: {
       ...measurement.dom,
@@ -783,8 +776,10 @@ test("profile authored headed Upward offline-practice default roster and actual 
       beforeBytes: heapBefore.usedSize,
       afterBytes: heapAfter.usedSize,
       embedderBytes: heapAfter.embedderHeapUsedSize,
-      residentBeforeBytes: residentBefore?.reduce((total, entry) => total + (entry.residentBytes ?? 0), 0) ?? null,
-      residentAfterBytes: residentAfter?.reduce((total, entry) => total + (entry.residentBytes ?? 0), 0) ?? null,
+      residentBeforeBytes: memoryBefore.residentBytes,
+      residentAfterBytes: memoryAfter.residentBytes,
+      privateBeforeBytes: memoryBefore.privateBytes,
+      privateAfterBytes: memoryAfter.privateBytes,
       wasm: wasmWorkers,
       load: loadPerformance,
       sampledRetainedAllocationBytes: allocations(allocationProfile.head),

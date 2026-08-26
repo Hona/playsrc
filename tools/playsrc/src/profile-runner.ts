@@ -5,6 +5,7 @@ import { mkdir, open, readFile, rename, rm, stat, unlink, writeFile } from "node
 import path from "node:path"
 import { loadLocalConfig, repositoryRoot, type LocalConfig } from "./config"
 import { headedProfileTarget, type HeadedProfileTarget } from "../profile/profile-target"
+import { requireWindowsProfileConsole } from "../profile/windows-desktop"
 
 const MAX_WAIT_MILLISECONDS = 180_000
 const MAX_RUN_MILLISECONDS = 175_000
@@ -282,7 +283,10 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
   let browserMilliseconds = 0
   let playwrightPhases: unknown = null
   const timingPath = path.join(evidence, "phase-reports", `${profile}-${process.pid}.json`)
+  let windowsConsole: ReturnType<typeof requireWindowsProfileConsole> = null
   try {
+    // Refuse session-zero/SSH and locked desktops before touching the shared server.
+    windowsConsole = requireWindowsProfileConsole(remaining())
     if (!process.env.PLAYSRC_PROFILE_ORIGIN) {
       owner = await prepareOwner(config, identity, target, fresh, metadataPath, remaining)
       const ownerToken = owner.metadata.token
@@ -294,6 +298,8 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
       }, HEARTBEAT_MILLISECONDS)
     }
     const browserStarted = Date.now()
+    // Owner preparation may have taken long enough for the desktop to lock.
+    if (process.platform === "win32") windowsConsole = requireWindowsProfileConsole(remaining())
     progress = setInterval(() => console.error(`[performance] ${profile} running ${Math.round((Date.now() - locked) / 1_000)}s`), 10_000)
     deadline = setTimeout(() => { timedOut = true; child?.kill("SIGTERM") }, Math.max(0, remaining()))
     const command = [
@@ -354,6 +360,7 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
           elapsedMilliseconds: finished - started,
           exitCode,
           timedOut,
+          windowsConsole,
           phases: Object.freeze({
             configurationMilliseconds,
             sourceIdentityMilliseconds,
