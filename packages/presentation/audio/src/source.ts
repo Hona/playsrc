@@ -620,7 +620,8 @@ function spatialGains(source: SoundSource, listener: Listener, soundLevel: numbe
 
 function validateStart(event: StartSound): void {
   if (!event || typeof event.samples !== "object" || event.samples === null
-    || !uint(event.voiceIdentity) || !identity(event.definition) || !uint(event.source.identity)
+    || !uint(event.voiceIdentity) || !identity(event.definition)
+    || !(uint(event.source.identity) || event.source.kind === "world" && event.source.identity === 0)
     || !validListener(event.listener) || !Number.isFinite(event.resourceDurationSeconds)
     || event.resourceDurationSeconds <= 0 || ![1, 2].includes(event.resourceChannels)
     || !Number.isFinite(event.scheduledTimeSeconds) || !Number.isFinite(event.delaySeconds)
