@@ -312,6 +312,68 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     expect(hud.snapshot().vgui.panels.find((value) => value.name === "scoreinfo")?.effectivelyVisible).toBe(true)
   })
 
+  test("retains unchanged non-Medic HUD panels without a full VGUI mutation on every simulation tick", () => {
+    const root = createRoot(new FakeDocument())
+    const hud = initializeTf2HudIntegration({
+      root: root as unknown as HTMLElement,
+      resources: resources(), viewport: { width: 1280, height: 720, devicePixelRatio: 1 }, reducedMotion: true,
+      clock: { nowSeconds: () => 0 }, random: { nextUnit: () => 0.5 }, onCommand() {},
+      playerClassUsePlayerModel: false,
+    } as never)
+
+    hud.publish(compact(1n, 3, 2, 1, 4, 20), context)
+    const first = hud.snapshot().vgui
+    hud.publish(compact(2n, 3, 2, 1, 4, 20), context)
+    const second = hud.snapshot().vgui
+
+    expect(second.revision).toBe(first.revision)
+    expect(second.panels.find((panel) => panel.name === "HudMedicCharge")?.effectivelyVisible).toBe(false)
+    expect(second.panels.find((panel) => panel.name === "PlayerStatusClassImage")?.state.image).toBe("../hud/class_soldierred")
+  })
+
+  test("retains exact stock Medi Gun charge panels and mutates them only when authored state changes", () => {
+    const root = createRoot(new FakeDocument())
+    const hud = initializeTf2HudIntegration({
+      root: root as unknown as HTMLElement,
+      resources: resources(), viewport: { width: 1280, height: 720, devicePixelRatio: 1 }, reducedMotion: true,
+      clock: { nowSeconds: () => 0 }, random: { nextUnit: () => 0.5 }, onCommand() {},
+      playerClassUsePlayerModel: false,
+    } as never)
+    const medic = (tick: bigint, charge: number, team: 2 | 3, weapon: 20 | 21 = 20): SessionSimulationPublication => {
+      const base = compact(tick, 3, team, 1, 4, 20)
+      const snapshot = Object.freeze({
+        ...base.snapshot,
+        class: 5,
+        weapon,
+        health: 150,
+        maximumHealth: 150,
+        medigunCharge: charge,
+        medigunReleasing: false,
+        loadout: Object.freeze([20, 21].map((identity) => Object.freeze({ weapon: identity, reload: 0, clip: 0, reserve: 0, maximumClip: 0, maximumReserve: 0 }))),
+      })
+      return Object.freeze({ snapshot, eventBatches: Object.freeze([Object.freeze({ snapshot })]) }) as never
+    }
+
+    hud.publish(medic(1n, 0.42, 2), context)
+    const first = hud.snapshot().vgui
+    const panel = first.panels.find((value) => value.name === "HudMedicCharge")!
+    const meter = first.panels.find((value) => value.parent === panel.id && value.name === "ChargeMeter")!
+    const background = first.panels.find((value) => value.parent === panel.id && value.name === "Background")!
+    expect(panel.effectivelyVisible).toBe(true)
+    expect(meter.state.scalarProperties.progress).toBe(0.42)
+    expect(background.state.image).toBe("../hud/medic_charge_red_bg")
+    expect(first.panels.filter((value) => value.parent === panel.id && /^(?:IndividualChargesLabel|ChargeMeter[1-4]|ResistIcon)$/u.test(value.name))
+      .every((value) => !value.effectivelyVisible)).toBe(true)
+
+    hud.publish(medic(2n, 0.42, 2), context)
+    expect(hud.snapshot().vgui.revision).toBe(first.revision)
+    hud.publish(medic(3n, 0.67, 3, 21), context)
+    const next = hud.snapshot().vgui
+    expect(next.panels.find((value) => value.id === panel.id)?.effectivelyVisible).toBe(true)
+    expect(next.panels.find((value) => value.id === meter.id)?.state.scalarProperties.progress).toBe(0.67)
+    expect(next.panels.find((value) => value.id === background.id)?.state.image).toBe("../hud/medic_charge_blue_bg")
+  })
+
   test("renders one exact class/team/ammo identity and no inactive condition icon", () => {
     const root = createRoot(new FakeDocument())
     const hud = initializeTf2HudIntegration({

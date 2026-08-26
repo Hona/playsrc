@@ -56,6 +56,26 @@ describe("retained world-face postings", () => {
     expect(opaque.targetIndices).toEqual(before)
   })
 
+  test("selects sparse opaque postings across batches without scanning unrelated triangles", () => {
+    const first = batch([9, 1, 8, 1, 7, 2, 6])
+    const second = batch([4, 2, 4, 1, 8])
+    const visibility = new RetainedWorldVisibility([first, second])
+
+    expect(visibility.apply(Uint32Array.from([2, 1]))).toBe(true)
+    expect([...first.targetIndices.slice(0, visibility.count(0))]).toEqual([3, 4, 5, 9, 10, 11, 15, 16, 17])
+    expect([...second.targetIndices.slice(0, visibility.count(1))]).toEqual([3, 4, 5, 9, 10, 11])
+    expect(visibility.apply(Uint32Array.from([1, 2]))).toBe(false)
+  })
+
+  test("retains sparse opaque source-face postings outside the dense face bound", () => {
+    const opaque = batch([0xffff_fffe, 3, 0xffff_fffe, 9])
+    const visibility = new RetainedWorldVisibility([opaque])
+
+    expect(visibility.apply(Uint32Array.from([0xffff_fffe]))).toBe(true)
+    expect([...opaque.targetIndices.slice(0, visibility.count(0))]).toEqual([0, 1, 2, 6, 7, 8])
+    expect(visibility.has(0xffff_fffe)).toBe(true)
+  })
+
   test("shares immutable face postings while keeping main and authored-sky selections independent", () => {
     const main = batch([2, 4, 6])
     const sky = { ...main, targetIndices: main.sourceIndices.slice() }

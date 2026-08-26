@@ -6,6 +6,8 @@ export default defineConfig({
     ? "combat-impact.profile.ts"
     : process.env.PROFILE_UPWARD_OUTDOORS === "1"
     ? "upward-outdoor.profile.ts"
+    : process.env.PROFILE_SCENARIOS === "frame-budget"
+      ? "all-maps-frame-budget.profile.ts"
     : process.env.PROFILE_SCENARIOS === "main-menu"
       ? "main-menu-inventory.profile.ts"
     : process.env.PROFILE_SCENARIOS === "local-practice"

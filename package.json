@@ -26,6 +26,7 @@
     "profile:class-hud": "playwright test --config=playwright.class-hud-profile.config.ts",
     "profile:class-selection": "playwright test --config=playwright.class-selection-profile.config.ts",
     "profile:gameplay": "playwright test --config=playwright.profile.config.ts",
+    "profile:frame-budget": "PROFILE_SCENARIOS=frame-budget playwright test --config=playwright.profile.config.ts",
     "profile:upward-outdoors": "PROFILE_UPWARD_OUTDOORS=1 playwright test --config=playwright.profile.config.ts",
     "profile:bots": "playwright test --config=playwright.bot-profile.config.ts",
     "profile:engineer": "playwright test --config=playwright.engineer-profile.config.ts",

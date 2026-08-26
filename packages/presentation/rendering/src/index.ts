@@ -890,6 +890,8 @@ type SceneResources = {
   skyWorldBundle: THREE.BundleGroup
   mainTransparentWorld: THREE.Group
   skyTransparentWorld: THREE.Group
+  mainModelOccurrences: THREE.Group
+  projectedMarkGroup: THREE.Group
   worldBatches: readonly WorldBatchResource[]
   skyWorldBatches: readonly WorldBatchResource[]
   worldVisibility: RetainedWorldVisibility
@@ -1314,6 +1316,7 @@ class RendererOwner implements Renderer {
   readonly #fadeUp = new THREE.Vector3()
   readonly #fadeFirst = new THREE.Vector3()
   readonly #fadeSecond = new THREE.Vector3()
+  readonly #fogCache = new WeakMap<FogInput, THREE.Fog>()
   #visibleStaticIndices: [Set<number>, Set<number>] = [new Set(), new Set()]
   #nextVisibleStaticIndices: [Set<number>, Set<number>] = [new Set(), new Set()]
   #visibleStaticSources: [readonly number[], readonly number[]] = [Object.freeze([]), Object.freeze([])]
@@ -1821,9 +1824,12 @@ class RendererOwner implements Renderer {
     group.add(worldBundle, mainTransparentWorld, skyWorldBundle, skyTransparentWorld)
     const mainStaticProps = new RetainedStaticSceneGroup()
     const skyStaticProps = new RetainedStaticSceneGroup()
+    const mainModelOccurrences = new RetainedStaticSceneGroup()
+    const projectedMarkGroup = new THREE.Group()
+    projectedMarkGroup.matrixAutoUpdate = false
     skyStaticProps.visible = false
     const staticPropInstances: StaticPropResource[] = []
-    group.add(mainStaticProps, skyStaticProps)
+    group.add(mainStaticProps, skyStaticProps, mainModelOccurrences, projectedMarkGroup)
     const modelTemplates = new Map<string, THREE.Group>()
     const modelPanelMaterialAnimations = new Map<string, ModelPanelMaterialAnimation[]>()
     const modelOccurrenceInstances=new Map<number,THREE.Group>()
@@ -2397,7 +2403,7 @@ class RendererOwner implements Renderer {
             mesh.updateMatrix()
           }
           projectedMarks.push({ mesh, face: fragment.face, sourceIndex: mark.sourceIndex, visibility: fragment.visibility })
-          group.add(mesh)
+          projectedMarkGroup.add(mesh)
         }
       }
 
@@ -2534,7 +2540,7 @@ class RendererOwner implements Renderer {
         instance.matrix.set(m[0]!, m[1]!, m[2]!, m[3]!, m[4]!, m[5]!, m[6]!, m[7]!, m[8]!, m[9]!, m[10]!, m[11]!, 0, 0, 0, 1)
         instance.matrixAutoUpdate = false
         modelOccurrenceInstances.set(occurrence.entity,instance)
-        group.add(instance)
+        mainModelOccurrences.add(instance)
       }
       for (const texture of request.particleTextures ?? []) {
         const state = materialStates.get(texture.material.toLowerCase())
@@ -2736,6 +2742,8 @@ class RendererOwner implements Renderer {
       skyWorldBundle,
       mainTransparentWorld,
       skyTransparentWorld,
+      mainModelOccurrences,
+      projectedMarkGroup,
       worldBatches: Object.freeze(worldBatches),
       skyWorldBatches: Object.freeze(skyWorldBatches),
       worldVisibility,
@@ -2883,12 +2891,12 @@ class RendererOwner implements Renderer {
           mesh.renderOrder=0
           mesh.visible=false
           mesh.userData.combatDecal=decal.reference
-          scene.group.add(mesh)
+          scene.projectedMarkGroup.add(mesh)
           scene.combatDecalMeshes.set(decal.identity,{face:decal.face,mesh})
           while(scene.combatDecalMeshes.size>maximum){
             const oldest=scene.combatDecalMeshes.keys().next().value as number
             const expired=scene.combatDecalMeshes.get(oldest)!
-            scene.group.remove(expired.mesh)
+            scene.projectedMarkGroup.remove(expired.mesh)
             expired.mesh.geometry.dispose()
             ;(expired.mesh.material as THREE.Material).dispose()
             scene.combatDecalMeshes.delete(oldest)
@@ -2904,8 +2912,7 @@ class RendererOwner implements Renderer {
         const visibilityChanged = this.#worldVisibilityIdentity !== frame.visibility.cacheIdentity
         this.#setWorldVisibility(frame.visibility.surfaces, frame.visibility.cacheIdentity)
         if(visibilityChanged||frame.combatDecals?.length){
-          const visibleFaces=new Set(frame.visibility.surfaces)
-          for(const decal of this.#active.combatDecalMeshes.values())decal.mesh.visible=visibleFaces.has(decal.face)
+          for(const decal of this.#active.combatDecalMeshes.values())decal.mesh.visible=this.#active.worldVisibility.has(decal.face)
         }
         if (this.#active.skyGroup) this.#active.skyGroup.visible = frame.visibility.sky === 1
         if (!frame.collisionWorldIdentity || frame.collisionWorldIdentity !== this.#active.result.environment?.collisionWorldIdentity) {
@@ -3110,7 +3117,11 @@ class RendererOwner implements Renderer {
       if (!index.changed(batchIndex)) continue
       const batch = batches[batchIndex]!
       const count = index.count(batchIndex)
-      batch.index.needsUpdate = true
+      if (count > 0) {
+        batch.index.clearUpdateRanges()
+        batch.index.addUpdateRange(0, count)
+        batch.index.needsUpdate = true
+      }
       batch.mesh.geometry.setDrawRange(0, count)
       batch.mesh.visible = count > 0 && !(ownership === 1 && batch.mesh.userData.skyWater === true)
       if (!batch.transparent) bundleChanged = true
@@ -3447,7 +3458,9 @@ class RendererOwner implements Renderer {
   #fog(input:FogInput|undefined):THREE.Fog|null{
     if(!input?.enabled)return null
     if(input.radial||input.maximumDensity!==1||input.end<input.start)throw new RenderingError("UnsupportedEnvironment","selected fog contract is unavailable")
-    return new THREE.Fog(new THREE.Color().setRGB(input.primary[0]/255,input.primary[1]/255,input.primary[2]/255,THREE.SRGBColorSpace),input.start,input.end)
+    let fog=this.#fogCache.get(input)
+    if(!fog){fog=new THREE.Fog(new THREE.Color().setRGB(input.primary[0]/255,input.primary[1]/255,input.primary[2]/255,THREE.SRGBColorSpace),input.start,input.end);this.#fogCache.set(input,fog)}
+    return fog
   }
 
   #renderSky3dPass(frame: Frame): FrameResult["sky3dPass"] {
@@ -3473,8 +3486,8 @@ class RendererOwner implements Renderer {
     const skyWorldVisible = scene.skyWorldBundle.visible
     const mainTransparentVisible = scene.mainTransparentWorld.visible
     const skyTransparentVisible = scene.skyTransparentWorld.visible
-    const modelVisibility = Array.from(scene.modelOccurrenceInstances.values(), (model) => model.visible)
-    const markVisibility = scene.projectedMarks.map((mark) => mark.mesh.visible)
+    const modelOccurrencesVisible = scene.mainModelOccurrences.visible
+    const marksVisible = scene.projectedMarkGroup.visible
     const waterVisibility = scene.waterMeshes.map((water) => water.mesh.visible)
     let rendered = false
 
@@ -3487,8 +3500,8 @@ class RendererOwner implements Renderer {
       scene.skyTransparentWorld.visible = true
       scene.mainStaticProps.visible = false
       scene.skyStaticProps.visible = true
-      for (const model of scene.modelOccurrenceInstances.values()) model.visible = false
-      for (const mark of scene.projectedMarks) mark.mesh.visible = false
+      scene.mainModelOccurrences.visible = false
+      scene.projectedMarkGroup.visible = false
       for (const water of scene.waterMeshes) water.mesh.visible = false
       this.#effects.visible = false
       this.#particles.visible = false
@@ -3507,11 +3520,8 @@ class RendererOwner implements Renderer {
       scene.skyTransparentWorld.visible = skyTransparentVisible
       scene.mainStaticProps.visible = mainVisible
       scene.skyStaticProps.visible = skyVisible
-      let modelIndex = 0
-      for (const model of scene.modelOccurrenceInstances.values()) model.visible = modelVisibility[modelIndex++] ?? true
-      for (let index = 0; index < scene.projectedMarks.length; index += 1) {
-        scene.projectedMarks[index]!.mesh.visible = markVisibility[index] ?? false
-      }
+      scene.mainModelOccurrences.visible = modelOccurrencesVisible
+      scene.projectedMarkGroup.visible = marksVisible
       for (let index = 0; index < scene.waterMeshes.length; index += 1) {
         scene.waterMeshes[index]!.mesh.visible = waterVisibility[index] ?? false
       }
@@ -3596,12 +3606,12 @@ class RendererOwner implements Renderer {
     try {
       for (const pass of plan.passes) {
         const passStarted = performance.now()
-        const visible = new Set(pass.surfaces)
         this.#setWorldVisibility(pass.surfaces)
         const visibilityMilliseconds = performance.now() - passStarted
         for (const mark of scene.projectedMarks) {
-          if (mark.visibility.kind === "world") mark.mesh.visible = visible.has(mark.face)
+          if (mark.visibility.kind === "world") mark.mesh.visible = scene.worldVisibility.has(mark.face)
         }
+        for (const decal of scene.combatDecalMeshes.values()) decal.mesh.visible = scene.worldVisibility.has(decal.face)
         for (let index = 0; index < scene.waterMeshes.length; index += 1) {
           scene.waterMeshes[index]!.mesh.visible = pass.renderWaterSurface && waterVisibility[index] === true
         }
@@ -3678,6 +3688,7 @@ class RendererOwner implements Renderer {
       this.#particles.visible = particlesVisible
       if (scene.skyGroup) scene.skyGroup.visible = skyVisible
       this.#setWorldVisibility(frame.visibility!.surfaces)
+      for (const decal of scene.combatDecalMeshes.values()) decal.mesh.visible = scene.worldVisibility.has(decal.face)
       for (let index = 0; index < scene.projectedMarks.length; index += 1) {
         scene.projectedMarks[index]!.mesh.visible = markVisibility[index]!
       }
@@ -3756,11 +3767,13 @@ class RendererOwner implements Renderer {
         colors[colorOffset + 3] = item.opacity
       }
     }
-    ;(geometry.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true
-    ;(geometry.getAttribute("uv") as THREE.BufferAttribute).needsUpdate = true
-    ;(geometry.getAttribute("particleUvNext") as THREE.BufferAttribute).needsUpdate = true
-    ;(geometry.getAttribute("particleSheetBlend") as THREE.BufferAttribute).needsUpdate = true
-    ;(geometry.getAttribute("particleColor") as THREE.BufferAttribute).needsUpdate = true
+    const vertices = (end - start) * 4
+    for (const name of ["position", "uv", "particleUvNext", "particleSheetBlend", "particleColor"] as const) {
+      const attribute = geometry.getAttribute(name) as THREE.BufferAttribute
+      attribute.clearUpdateRanges()
+      attribute.addUpdateRange(0, vertices * attribute.itemSize)
+      attribute.needsUpdate = true
+    }
     geometry.setDrawRange(0, (end - start) * 6)
   }
 
