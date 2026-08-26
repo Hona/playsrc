@@ -3465,12 +3465,20 @@ export class Tf2Application {
     const priorSampleCount = this.#renderer.sampleCount
     const priorTextureQuality = this.#renderer.textureQuality
     let persistence!:Awaited<LoadedGame["persistence"]>
+    let rendererChanged = false
     try {
+      // Finish the bounded hash/Blob transaction before allocating GPU admission
+      // buffers. The active scene remains available throughout this candidate gate.
+      persistence = await staged.persistence
+      finishReplacePhase("persistence")
+      this.#profileMapResidency("cache-write-complete", candidate?.dependencies, staged)
+      if (operation) this.#requireOperation(operation)
       if (this.#renderer.configuration.lightingProfile !== (this.#renderLevel === 2 ? "hdr" : "ldr")
         || this.#renderer.sampleCount !== (this.#videoConfiguration.antialias === 4 ? 4 : 1)
         || this.#renderer.textureQuality?.mipOffset !== this.#videoConfiguration.picmip
         || this.#renderer.textureQuality?.trilinear !== (this.#videoConfiguration.trilinear === 1)
         || this.#renderer.textureQuality?.anisotropy !== this.#videoConfiguration.anisotropy) {
+        rendererChanged = true
         await this.#renderer.dispose()
         this.#renderer = await createRenderer({
           canvas: this.#canvas,
@@ -3481,6 +3489,7 @@ export class Tf2Application {
         })
         this.#resizeRenderer()
       }
+      rendererChanged = true
       const scene = await this.#renderer.loadMap({
         payload: staged.payload,
         payloadSha256: staged.payloadSha256,
@@ -3510,14 +3519,13 @@ export class Tf2Application {
       for (const diagnostic of scene.diagnostics) {
         this.#blockers.add(`${diagnostic.code}: ${diagnostic.identity} — ${diagnostic.detail}`)
       }
-      persistence=await staged.persistence
-      finishReplacePhase("persistence")
       if (operation) this.#requireOperation(operation)
       await this.#client.activate(generation)
       finishReplacePhase("activation")
       this.#profileMapResidency("activated-before-prior-js-retirement", candidate?.dependencies, staged)
     } catch (error) {
       await this.#client.discard(generation).catch(() => {})
+      if (!rendererChanged) throw error
       if (this.#renderer.configuration.lightingProfile !== priorConfiguration.lightingProfile
         || this.#renderer.sampleCount !== priorSampleCount
         || this.#renderer.textureQuality !== priorTextureQuality) {

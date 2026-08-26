@@ -47,8 +47,31 @@ export class ResourceGenerations {
 
   writable(generation: number): boolean {
     const value = this.get(generation)
-    return Number.isSafeInteger(generation) && generation > this.#retiredThrough && generation <= 0xffff_ffff
+    return this.#unretired(generation)
       && (!value || (value.sha256 === undefined && value.sections.length < 1024))
+  }
+
+  #unretired(generation: number): boolean {
+    return Number.isSafeInteger(generation) && generation > this.#retiredThrough && generation <= 0xffff_ffff
+  }
+
+  finalizable(generation: number): boolean {
+    const value = this.get(generation)
+    return this.#unretired(generation) && value !== undefined && value.sha256 === undefined
+      && value.sections.length > 0 && value.sections.length <= 1024
+  }
+
+  loadable(generation: number): boolean {
+    return this.#unretired(generation) && this.get(generation)?.sha256 !== undefined
+  }
+
+  finalize(generation: number, byteLength: number, sha256: string): boolean {
+    const value = this.get(generation)
+    if (!value || !this.finalizable(generation) || !/^[0-9a-f]{64}$/.test(sha256)
+      || byteLength !== 12 + value.sections.reduce((total, section) => total + section.length - 12, 0)) return false
+    value.byteLength = byteLength
+    value.sha256 = sha256
+    return true
   }
 
   #append(generation: number, owner: Owner): void {

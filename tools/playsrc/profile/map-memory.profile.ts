@@ -557,6 +557,18 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       expect(currentResources[0].generation).toBe(observed.generation)
       if (index === 1 && process.env.PROFILE_MEMORY_CANCEL_REPLACEMENT === "1") expect(observed.generation).toBeGreaterThan(2)
       if (index === 1 && targets.length > 1) expect(observed.load.client.modelCacheHits).toBeGreaterThan(0)
+      expect(Math.max(0, ...observed.worker.map((record: any) => record.memory?.resourceSections?.length ?? 0))).toBeLessThanOrEqual(2)
+      const gpuAdmission = observed.owners.find((entry: any) => entry.phase === "gpu-admitted")
+      if (gpuAdmission) {
+        const persisted = observed.owners.find((entry: any) => entry.phase === "cache-write-complete")
+        expect(persisted).toBeDefined()
+        expect(persisted.at).toBeLessThanOrEqual(gpuAdmission.at)
+      }
+      if (index > 0 && targets[index - 1] === identity) {
+        expect(observed.worker.filter((record: any) => record.kind === "resources")).toHaveLength(0)
+        expect(observed.load.mapCache).toBe("hit")
+        expect(observed.load.presentationCache).toBe("hit")
+      }
       const traceEvents: ChromiumTraceEvent[] = []
       const collectTrace = ({ value }: { value: ChromiumTraceEvent[] }) => traceEvents.push(...value)
       pageCdp.on("Tracing.dataCollected", collectTrace)
