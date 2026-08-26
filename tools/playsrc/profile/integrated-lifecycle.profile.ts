@@ -14,6 +14,12 @@ test("integrated persisted quality, two live map replacements and overhead water
   await page.addInitScript(() => { (globalThis as any).__playsrcProfile = {} })
   const errors: string[] = []
   page.on("pageerror", error => errors.push(error.message))
+  page.on("console", async message => {
+    if (message.type() !== "error") return
+    const detail = await Promise.all(message.args().map(argument => argument.jsonValue().catch(() => null)))
+    await writeFile(path.join(directory, `console-error-${Date.now()}.json`), JSON.stringify(detail))
+    console.log(`ACCEPTANCE_ERROR ${JSON.stringify(detail)}`)
+  })
   const main = page.locator("main"), canvas = page.locator("canvas.world-canvas")
   const command = async (value: string) => {
     if (await main.getAttribute("data-console-visible") !== "true") await page.keyboard.press("Backquote")
@@ -52,8 +58,10 @@ test("integrated persisted quality, two live map replacements and overhead water
     expect(stableQuality.hdrLevel).toBe(2)
     expect(stableQuality.lightingProfile).toBe("hdr")
     expect(await page.evaluate(key => localStorage.getItem(key), TF2_BROWSER_SETTINGS_STORAGE_KEY)).toBe(persisted)
+    await page.bringToFront()
     await canvas.click()
-    await expect(main).toHaveAttribute("data-pointer-locked", "true")
+    try { await expect(main).toHaveAttribute("data-pointer-locked", "true", { timeout: 5000 }) }
+    catch { throw new Error(`Native map input failed for ${target}: ${JSON.stringify(await main.evaluate(element => ({ detail: element.dataset.detail, focused: document.hasFocus(), visible: document.visibilityState, classSelection: element.dataset.classSelectionVisible, owner: document.pointerLockElement?.className })))}`) }
     const before = await main.getAttribute("data-camera-position")
     for (const key of ["w", "a", "s", "d"]) {
       await page.keyboard.down(key)
@@ -64,6 +72,7 @@ test("integrated persisted quality, two live map replacements and overhead water
     await page.mouse.click(680, 380)
     expect(await main.getAttribute("data-camera-position")).not.toBe(before)
     maps.push({ target, milliseconds: Date.now() - started, ...current, workerMemory: await Promise.all(page.workers().filter(worker => worker.url().includes("gameplay-worker")).map(worker => worker.evaluate(() => (globalThis as any).__playsrcWorkerMemory))) })
+    await writeFile(path.join(directory, "maps.json"), JSON.stringify(maps, null, 2))
     await page.screenshot({ path: path.join(directory, `${target}.png`) })
   }
   const water = await page.evaluate(() => (globalThis as any).__playsrcProfile.materialAnimation?.volumes?.[0])
@@ -96,7 +105,7 @@ test("integrated persisted quality, two live map replacements and overhead water
     const profiler = (globalThis as any).__playsrcFrameProfiler
     profiler.active = false
     const main = document.querySelector<HTMLElement>("main")!
-    return { tick: Number(main.dataset.snapshotTick), ended: performance.now(), visible: document.visibilityState, focused: document.hasFocus(), passes: main.dataset.waterPasses, restored: main.dataset.waterRestored, gpu: profiler.counters, losses: profiler.losses }
+    return { tick: Number(main.dataset.snapshotTick), ended: performance.now(), visible: document.visibilityState, focused: document.hasFocus(), plan: main.dataset.waterPlan, passes: main.dataset.waterPasses, restored: main.dataset.waterRestored, gpu: profiler.counters, losses: profiler.losses }
   })
   const finished = new Promise<void>(resolve => cdp.once("Tracing.tracingComplete", () => resolve()))
   await cdp.send("Tracing.end")
@@ -110,7 +119,8 @@ test("integrated persisted quality, two live map replacements and overhead water
   expect(measurement.visible).toBe("visible")
   expect(measurement.focused).toBe(true)
   expect(measurement.tick - initial.tick).toBeGreaterThan(300)
-  expect(measurement.passes).toContain("water")
+  expect(measurement.plan).toMatch(/^above:/)
+  expect(measurement.passes).toContain("main")
   expect(measurement.restored).toBe("true")
   expect(measurement.losses).toEqual([])
   expect(errors).toEqual([])

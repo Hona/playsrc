@@ -38,7 +38,7 @@ import { createStaticPropBatch, MAX_STATIC_PROPS_PER_BATCH, type StaticPropBatch
 import { distanceFadeOpacity, quantizeStaticPropOpacity, screenFadeOpacity } from "./static-prop-fade"
 import { executeViewModelDepthPhase } from "./viewmodel-depth-phase"
 import { selectDiagnosticModelBase } from "./diagnostic-model"
-import { sourceModelPanelPresentation } from "./model-panel"
+import { sourceModelPanelPresentation, withSourceModelPanelTargetViewport } from "./model-panel"
 import { bindSourceModelMesh, createSourceModelSkeleton, updateSourceModelSkeleton } from "./source-model-skinning"
 import { modelIntersectsViewFrustum } from "./model-visibility"
 import { sourceHorizontal4By3FovToVertical, sourceViewportDepthRange } from "./source-camera"
@@ -3565,8 +3565,10 @@ class RendererOwner implements Renderer {
         this.#backend.setScissorTest(true)
         this.#backend.autoClear = panel.background === "opaque"
         this.#modelPanelScene.background = panel.background === "opaque" ? new THREE.Color(0x000000) : null
-        if (panel.background === "transparent") this.#resetDepth("hud-depth-reset")
-        this.#drawPass("hud-model", this.#modelPanelScene, this.#modelPanelCamera)
+        withSourceModelPanelTargetViewport(this.#backend.getRenderTarget(), presentation, () => {
+          if (panel.background === "transparent") this.#resetDepth("hud-depth-reset")
+          this.#drawPass("hud-model", this.#modelPanelScene, this.#modelPanelCamera)
+        })
         let primitives = 0
         retained.instance.traverse((object) => { if (object instanceof THREE.Mesh) primitives += 1 })
         result.push({ identity: panel.identity, model: panel.model, skin: panel.skin, primitives })

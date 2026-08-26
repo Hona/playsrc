@@ -791,6 +791,16 @@ export class Tf2Application {
     }
   }
 
+  #failureDetail(error: unknown, fallback: string): string {
+    const message = error instanceof Error ? error.message : fallback
+    const profile = (globalThis as any).__playsrcProfile
+    if (profile) {
+      profile.failure = { message, stack: error instanceof Error ? error.stack : null }
+      console.error("TF2 profiled failure", profile.failure)
+    }
+    return message
+  }
+
   #armOperationWatchdog(): void {
     this.#operationWatchdog.cancel()
     const phase = this.#view.phase
@@ -2151,7 +2161,7 @@ export class Tf2Application {
       })
       .catch((error) => {
         if (generation !== this.#generation || !this.#classSelection?.state().visible) return
-        this.#set({ phase: "Failed", gameUi: "failure", detail: error instanceof Error ? error.message : "TF2 class model rendering failed" })
+        this.#set({ phase: "Failed", gameUi: "failure", detail: this.#failureDetail(error, "TF2 class model rendering failed") })
       })
       .finally(() => { this.#classSelectionRenderTask = undefined })
   }
@@ -2289,7 +2299,7 @@ export class Tf2Application {
       this.#set({ teamSelectionModels: result.panels.map((panel) => `${panel.identity}:${panel.model}:${panel.skin}:${panel.primitives}`).join("|") })
     })().catch((error) => {
       if (generation !== this.#generation || !this.#teamSelection?.state().visible) return
-      this.#set({ phase: "Failed", gameUi: "failure", detail: error instanceof Error ? error.message : "TF2 team model rendering failed" })
+      this.#set({ phase: "Failed", gameUi: "failure", detail: this.#failureDetail(error, "TF2 team model rendering failed") })
     }).finally(() => { this.#teamSelectionRenderTask = undefined })
   }
 
@@ -4183,7 +4193,7 @@ export class Tf2Application {
       if (this.#teamSelection?.state().visible) this.#teamSelection.frame(timeSeconds)
     } catch (error) {
       this.#paused = true
-      this.#set({ phase: "Failed", gameUi: "failure", detail: error instanceof Error ? error.message : "VGUI frame failed" })
+      this.#set({ phase: "Failed", gameUi: "failure", detail: this.#failureDetail(error, "VGUI frame failed") })
       return
     }
     if (!this.#paused && this.#snapshot && this.#showFps === 0 && this.#showPos !== 0) this.#updateDiagnostics(time)
@@ -4231,7 +4241,7 @@ export class Tf2Application {
       if(this.#closed||prepared.generation!==this.#generation||this.#view.phase==="Replacing")return
       this.#paused=true
       this.#predictedEye.suspend()
-      this.#set({phase:"Failed",gameUi:"failure",detail:error instanceof Error?error.message:"Display frame failed"})
+      this.#set({phase:"Failed",gameUi:"failure",detail:this.#failureDetail(error,"Display frame failed")})
     })
     this.#displayTask=task
     void task.finally(()=>{
@@ -5032,7 +5042,7 @@ export class Tf2Application {
       if(this.#closed||generation!==this.#generation||this.#view.phase==="Replacing")return
       this.#paused = true
       this.#predictedEye.suspend()
-      this.#set({ phase: "Failed", gameUi: "failure", detail: error instanceof Error ? error.message : "Gameplay frame failed" })
+      this.#set({ phase: "Failed", gameUi: "failure", detail: this.#failureDetail(error, "Gameplay frame failed") })
     }
   }
 

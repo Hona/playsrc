@@ -14,6 +14,29 @@ export type SourceModelPanelPresentation = Readonly<{
   origin: readonly [number, number, number]
 }>
 
+type TargetRectangle = { x: number; y: number; z: number; w: number; set(x: number, y: number, width: number, height: number): unknown }
+
+// Three's render-target viewport is physical and takes precedence over the
+// canvas viewport. HUD passes share the frame target in LDR; HDR readback can
+// already have returned to the canvas. Keep both routes identical on screen.
+export function withSourceModelPanelTargetViewport<T>(
+  target: { viewport: TargetRectangle; scissor: TargetRectangle } | null,
+  presentation: SourceModelPanelPresentation,
+  draw: () => T,
+): T {
+  if (!target) return draw()
+  const previousViewport = [target.viewport.x, target.viewport.y, target.viewport.z, target.viewport.w] as const
+  const previousScissor = [target.scissor.x, target.scissor.y, target.scissor.z, target.scissor.w] as const
+  const { x, y, width, height } = presentation.viewport
+  target.viewport.set(x, y, width, height)
+  target.scissor.set(x, y, width, height)
+  try { return draw() }
+  finally {
+    target.viewport.set(...previousViewport)
+    target.scissor.set(...previousScissor)
+  }
+}
+
 export function sourceModelPanelPresentation(request: Readonly<{
   model: string
   horizontalFov4By3: number
