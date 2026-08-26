@@ -2,7 +2,7 @@ import { shadeVguiImage, VguiImageRasterizer, type VguiImageRasterRequest } from
 import type { VguiImageMaterialPresentation } from "../src/runtime-contract"
 
 const baseline = document.querySelector<HTMLCanvasElement>("#baseline")!
-const retained = document.querySelector<HTMLImageElement>("#retained")!
+const retained = document.querySelector<HTMLCanvasElement>("#retained")!
 const texture = document.createElement("canvas")
 texture.width = 256
 texture.height = 128
@@ -34,7 +34,24 @@ baseline.height = request.height
 baseline.getContext("2d")!.putImageData(new ImageData(original, request.width, request.height), 0, 0)
 const rasterizer = new VguiImageRasterizer(document)
 await rasterizer.render(retained, request)
-await retained.decode()
+let writes = 0
+const retainedContext = retained.getContext("2d")!
+const putImageData = retainedContext.putImageData.bind(retainedContext)
+retainedContext.putImageData = (...parameters: Parameters<CanvasRenderingContext2D["putImageData"]>) => { writes += 1; putImageData(...parameters) }
+const observer = new MutationObserver(records => { document.body.dataset.rasterMutations = String(Number(document.body.dataset.rasterMutations ?? 0) + records.length) })
+observer.observe(retained, { attributes: true })
+for (let index = 0; index < 20; index += 1) await rasterizer.render(retained, request)
+// A superseded asynchronous paint must not overwrite a newer request for the
+// pixels already on screen, nor reset the canvas while it is pending.
+await Promise.all([
+  rasterizer.render(retained, { ...request, tint: [180, 200, 90, 100] }),
+  rasterizer.render(retained, request),
+])
+document.body.dataset.unchangedRasterWrites = String(writes)
+await rasterizer.render(retained, { ...request, tint: [180, 200, 90, 100] })
+await rasterizer.render(retained, request)
+document.body.dataset.changedRasterWrites = String(writes)
+observer.disconnect()
 document.body.dataset.ready = "true"
 document.querySelector("button")!.addEventListener("click", () => {
   document.body.dataset.activations = String(Number(document.body.dataset.activations ?? 0) + 1)

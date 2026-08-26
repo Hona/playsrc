@@ -78,10 +78,19 @@ class FakeClassList {
 
 class FakeStyle {
   [name: string]: unknown
+  writes = 0
+
+  constructor() {
+    return new Proxy(this, { set(target, property, value) {
+      if (property !== "writes") target.writes += 1
+      return Reflect.set(target, property, value)
+    } })
+  }
 
   private readonly properties = new Map<string, string>()
 
   setProperty(name: string, value: string): void {
+    this.writes += 1
     this.properties.set(name, value)
   }
 

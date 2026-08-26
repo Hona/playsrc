@@ -24,7 +24,7 @@ try {
       #panel{position:absolute;left:24px;top:20px;width:75vw;height:70vh;overflow:hidden;clip-path:inset(3px 5px 7px 9px);opacity:.75}
       .raster{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:1}
       #baseline{display:none}button{position:absolute;left:120px;top:60px;width:240px;height:32px;z-index:2;appearance:none;border:0;border-radius:0;outline:0;font:24px/30px Arial;background:#eeddbb;color:#222}
-    </style></head><body><section id="panel"><canvas id="baseline" class="raster"></canvas><img id="retained" class="raster" alt=""><button aria-label="Retained foreground">Retained foreground</button></section><script type="module" src="/fixture.js"></script></body></html>`, { headers: { "content-type": "text/html" } })
+    </style></head><body><section id="panel"><canvas id="baseline" class="raster"></canvas><canvas id="retained" class="raster"></canvas><button aria-label="Retained foreground">Retained foreground</button></section><script type="module" src="/fixture.js"></script></body></html>`, { headers: { "content-type": "text/html" } })
   } })
   browser = await chromium.launch({ headless: false, channel: "msedge" })
   const evidence: unknown[] = []
@@ -51,8 +51,15 @@ try {
       let differentChannels = 0
       if (before.width !== after.width || before.height !== after.height || before.channels !== after.channels) throw new Error("Retained raster screenshot extent differs")
       for (let index = 0; index < before.pixels.length; index += 1) if (before.pixels[index] !== after.pixels[index]) differentChannels += 1
-      const state = await page.evaluate(() => ({ visible: document.visibilityState === "visible", focused: document.hasFocus(), dpr: devicePixelRatio, activations: document.body.dataset.activations }))
+      const state = await page.evaluate(() => ({ visible: document.visibilityState === "visible", focused: document.hasFocus(), dpr: devicePixelRatio, activations: document.body.dataset.activations, unchangedRasterWrites: Number(document.body.dataset.unchangedRasterWrites), changedRasterWrites: Number(document.body.dataset.changedRasterWrites), rasterMutations: Number(document.body.dataset.rasterMutations ?? 0),
+        clip: getComputedStyle(document.querySelector("#panel")!).clipPath,
+        opacity: getComputedStyle(document.querySelector("#panel")!).opacity,
+        transform: getComputedStyle(document.querySelector("#panel")!).transform,
+        rasterBounds: document.querySelector("#baseline")!.getBoundingClientRect().toJSON(),
+      }))
       if (!state.visible || !state.focused || state.dpr !== deviceScaleFactor || Number(state.activations) < 2) throw new Error("Retained raster input/visibility parity failed")
+      if (state.unchangedRasterWrites !== 0 || state.rasterMutations !== 0) throw new Error("Unchanged raster reset or repainted its retained canvas")
+      if (state.changedRasterWrites !== 2) throw new Error("Changed authored raster pixels were not published exactly once")
       evidence.push({ viewport, deviceScaleFactor, physical: { width: after.width, height: after.height }, differentChannels, ...state })
       await writeFile(path.join(directory, `retained-raster-${viewport.width}-${deviceScaleFactor}.png`), images)
       if (differentChannels !== 0) await writeFile(path.join(directory, `retained-raster-${viewport.width}-${deviceScaleFactor}-baseline.png`), canvases)
