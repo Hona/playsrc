@@ -702,7 +702,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   }))
   const report = {
     schema: "playsrc-tf2-upward-training-bots-profile-v1", label, headed: true, target, entry, launch,
-    sourceFingerprint: process.env.PLAYSRC_PROFILE_SOURCE_IDENTITY ?? null,
+    sourceFingerprint,
     roster: measurement.roster.map((bot: any) => ({ identity: bot.identity, class: bot.class, team: bot.team, difficulty: bot.difficulty })),
     activeBots: measurement.roster.length, teams: { red: measurement.scoreboard.red.playerCount, blue: measurement.scoreboard.blue.playerCount },
     elapsedMilliseconds: Number(measurement.elapsed.toFixed(3)), readyMilliseconds, loads, totalWallMilliseconds: Date.now() - wallStarted,
