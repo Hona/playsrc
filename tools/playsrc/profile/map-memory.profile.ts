@@ -363,6 +363,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       const entries = chunks.flatMap((chunk) => chunk.entries)
       target = identity
       phase = "before-command"
+      const timelineStart = timeline.length
       await sample()
       const before = await pageCdp.send("Runtime.getHeapUsage")
       await page.keyboard.press("Backquote")
@@ -378,6 +379,18 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       const started = performance.now()
       phase = "loading"
       await command.press("Enter")
+      if (index === 1 && process.env.PROFILE_MEMORY_CANCEL_REPLACEMENT === "1") {
+        await expect(root).toHaveAttribute("data-phase", "Replacing")
+        await page.waitForFunction((started) => {
+          const active = Number(document.querySelector<HTMLElement>("main")?.dataset.generation)
+          return (globalThis as any).__playsrcMemoryProfile.worker.some((record: any) => record.at >= started
+            && record.memory?.resourceSections?.some((section: any) => section.generation > active))
+        }, browserStarted, { timeout: 15_000 })
+        await command.fill(`map ${targets[0]}`)
+        await command.press("Enter")
+        await command.fill(`map ${identity}`)
+        await command.press("Enter")
+      }
       await page.waitForFunction((expected) => {
         const main = document.querySelector<HTMLElement>("main")
         return main?.dataset.phase === "Failed"
@@ -453,7 +466,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
         if (image.pixels[offset]! + image.pixels[offset + 1]! + image.pixels[offset + 2]! > 16) visible += 1
       }
       expect(visible).toBeGreaterThan(image.width * image.height / 8)
-      await writeFile(path.join(output, `${identity}-${process.env.PROFILE_MEMORY_LABEL ?? "current"}.png`), capture)
+      await writeFile(path.join(output, `${identity}-${index + 1}-${process.env.PROFILE_MEMORY_LABEL ?? "current"}.png`), capture)
       const observed = await page.evaluate((started) => {
         const main = document.querySelector<HTMLElement>("main")!
         const profile = (globalThis as any).__playsrcMemoryProfile
@@ -486,6 +499,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       const currentResources = observed.worker.at(-1)?.memory?.resourceSections
       expect(currentResources).toHaveLength(1)
       expect(currentResources[0].generation).toBe(observed.generation)
+      if (index === 1 && process.env.PROFILE_MEMORY_CANCEL_REPLACEMENT === "1") expect(observed.generation).toBeGreaterThan(2)
       if (index === 1 && targets.length > 1) expect(observed.load.client.modelCacheHits).toBeGreaterThan(0)
       const traceEvents: ChromiumTraceEvent[] = []
       const collectTrace = ({ value }: { value: ChromiumTraceEvent[] }) => traceEvents.push(...value)
@@ -527,7 +541,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       const compositor = summarizeCompositorTruth(traceEvents, frames.milliseconds)
       const simulationHz = (frames.lastTick - frames.firstTick) * 1_000 / frames.milliseconds
       expect(simulationHz).toBeGreaterThan(55)
-      const own = timeline.filter((entry) => entry.target === identity)
+      const own = timeline.slice(timelineStart)
       const peak = own.reduce((maximum, entry) => entry.residentBytes > maximum.residentBytes ? entry : maximum, own[0]!)
       const transition = own.filter((entry) => entry.phase === "loading")
       maps.push({
