@@ -46,7 +46,7 @@ export async function acquireHeadedProfileLock(lockPath: string, profile: string
   const token = randomUUID()
   const queue = `${lockPath}.queue`
   await mkdir(queue, { recursive: true })
-  const name = `${process.hrtime.bigint().toString().padStart(24, "0")}-${token}.json`
+  const name = `${String(started).padStart(24, "0")}-${token}.json`
   const ticketPath = path.join(queue, name)
   const ticket: Ticket = { token, pid: process.pid, profile, repository: process.cwd(), startedAt: new Date(started).toISOString() }
   const temporary = `${ticketPath}.tmp`
@@ -95,13 +95,19 @@ export async function acquireHeadedProfileLock(lockPath: string, profile: string
         return { token, milliseconds: Date.now() - started, observation }
       }
       const observed = revision
-      const live: string[] = []
+      const tickets: Array<{ name: string; started: number }> = []
       for (const entry of (await readdir(queue)).filter(name => name.endsWith(".json")).sort()) {
         const candidate = await readTicket(path.join(queue, entry))
         if (!candidate) continue
         if (!processIsAlive(candidate.pid)) { await unlink(path.join(queue, entry)).catch(() => undefined); continue }
-        live.push(entry)
+        const timestamp = Date.parse(candidate.startedAt)
+        if (!Number.isFinite(timestamp)) throw new Error("Queued profile ticket has no valid admission time")
+        tickets.push({ name: entry, started: timestamp })
       }
+      // Bun and Node do not share an hrtime epoch. The published wall-clock
+      // admission time, not a per-process timer embedded in a filename, owns
+      // FIFO order for every existing ticket.
+      const live = tickets.sort((left, right) => left.started - right.started || left.name.localeCompare(right.name)).map(ticket => ticket.name)
       eligible = live[0] === name
       tryClaim()
       if (claimed || claimError) continue
