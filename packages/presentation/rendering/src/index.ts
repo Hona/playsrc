@@ -17,6 +17,8 @@ import {
 import { applyParticleDepthState, configureWorldLightmap, sourceFragmentUsesAlpha, worldMaterialSide } from "./material-state"
 import { projectedDecalDepthBias, projectedDecalReceiverIsValid } from "./decal-occlusion"
 import { OwnedResourceGeneration } from "./resource-generation"
+import { SharedTextureResidency } from "./texture-residency"
+import { sourceTextureSamples } from "./texture-samples"
 import { FramePacingController, type FramePacingRecord } from "./frame-pacing"
 import { fillParticleBatchRanges, type MutableParticleBatchRange } from "./particle-batches"
 import { writeParticleQuad } from "./particle-geometry"
@@ -830,7 +832,8 @@ type WaterMeshResource = Readonly<{
 type WaterMaterialResource = Readonly<{
   material: THREE.MeshBasicNodeMaterial
   cheapMaterial: THREE.MeshBasicNodeMaterial | null
-  normalFrames: readonly THREE.Texture[]
+  normalFrames: AuthoredTextureFrames
+  normalConsumer: string
   normalNode: ReturnType<typeof TSL.texture>
   cheapNormalNode: ReturnType<typeof TSL.texture> | null
   fog: THREE.Fog | null
@@ -844,7 +847,8 @@ type RefractMaterialResource = Readonly<{
 }>
 type WorldMaterialResource = Readonly<{
   mapMaterial: number
-  normalFrames: readonly THREE.Texture[]
+  normalFrames: AuthoredTextureFrames
+  normalConsumer: string
   normalNode: ReturnType<typeof TSL.texture>
   state: WorldMaterialInput
 }>
@@ -879,7 +883,8 @@ type StaticPropResource = Readonly<{
 
 type ModelPanelMaterialAnimation = Readonly<{
   texture: THREE.Texture
-  frames: readonly THREE.Texture[]
+  frames: AuthoredTextureFrames
+  consumer: string
   frameRate: number | null
   scrollRate: number | null
   scrollAngle: number | null
@@ -902,6 +907,7 @@ type SceneResources = {
   particleBatchMaterials: Map<string, THREE.MeshBasicNodeMaterial>
   materialStates: ReadonlyMap<string, MaterialStateInput>
   disposables: OwnedResourceGeneration
+  textureResidency: SharedTextureResidency<THREE.Texture>
   lightmapTextures: readonly [THREE.DataTexture, THREE.DataTexture?, THREE.DataTexture?, THREE.DataTexture?]
   exposureUniform: ReturnType<typeof TSL.uniform>
   waterFogUniforms: SourceWaterFogUniforms
@@ -922,7 +928,7 @@ type SceneResources = {
   leafVisibility: RetainedLeafVisibility
   runtimeStaticPropInstances: readonly StaticPropResource[]
   projectedMarks: readonly ProjectedMarkResource[]
-  combatDecalTexture: THREE.DataTexture | null
+  combatDecalTexture: THREE.Texture | null
   combatDecalMeshes: Map<number, Readonly<{ face: number; mesh: THREE.Mesh }>>
   waterMeshes: readonly WaterMeshResource[]
   waterMaterials: ReadonlyMap<string,WaterMaterialResource>
@@ -938,6 +944,11 @@ type SceneResources = {
   result: SceneResult
   disposed: boolean
 }
+
+type AuthoredTextureFrames = Readonly<{
+  frameCount: number
+  select(frame: number, consumer: string): THREE.Texture
+}>
 
 type Backend = THREE.WebGPURenderer & {
   backend: {
@@ -1032,13 +1043,18 @@ function modelOccurrenceMatrices(
   return matrices
 }
 
-function disposeScene(scene: Pick<SceneResources,"group"|"disposables"|"modelTemplates"|"modelOccurrenceInstances"|"disposed"> & Partial<Pick<SceneResources,"particleBatchMaterials"|"combatDecalMeshes">>): void {
+function disposeScene(scene: Pick<SceneResources,"group"|"disposables"|"modelTemplates"|"modelOccurrenceInstances"|"disposed"> & Partial<Pick<SceneResources,"textureResidency"|"brushModelTemplates"|"waterMaterials"|"worldMaterials"|"cubemapTextures"|"particleBatchMaterials"|"combatDecalMeshes">>): void {
   if (scene.disposed) return
   scene.disposed = true
   scene.group.clear()
   scene.disposables.dispose()
+  scene.textureResidency?.clear()
   scene.modelTemplates.clear()
   scene.modelOccurrenceInstances.clear()
+  scene.brushModelTemplates?.clear()
+  ;(scene.waterMaterials as Map<string, WaterMaterialResource> | undefined)?.clear()
+  ;(scene.worldMaterials as Map<string, WorldMaterialResource> | undefined)?.clear()
+  ;(scene.cubemapTextures as Map<number, THREE.CubeTexture> | undefined)?.clear()
   for(const material of scene.particleBatchMaterials?.values()??[])material.dispose()
   scene.particleBatchMaterials?.clear()
   for(const decal of scene.combatDecalMeshes?.values()??[]){decal.mesh.geometry.dispose();(decal.mesh.material as THREE.Material).dispose()}
@@ -1074,10 +1090,8 @@ function textureFromAuthored(input: AuthoredTextureInput, colorSpace: string, fr
   if (planes.length !== input.mipCount || planes.some((plane, mip) => plane.mip !== mip)) {
     throw new RenderingError("MissingInput", `authored texture ${input.logicalPath} has an incomplete selected mip chain`)
   }
-  const data = (plane: AuthoredTextureInput["planes"][number]) => {
-    if (input.scalarEncoding === "f16") return new Uint16Array(plane.rgba.slice().buffer)
-    return plane.rgba
-  }
+  const data = (plane: AuthoredTextureInput["planes"][number]) =>
+    sourceTextureSamples(plane.rgba, input.sourceFormat, input.scalarEncoding)
   const base = planes[0]!
   const compressedFormat = input.sourceFormat === null ? null : new Map<number, THREE.CompressedPixelFormat>([
     [13, THREE.RGBA_S3TC_DXT1_Format],
@@ -1085,10 +1099,10 @@ function textureFromAuthored(input: AuthoredTextureInput, colorSpace: string, fr
     [14, THREE.RGBA_S3TC_DXT3_Format],
     [15, THREE.RGBA_S3TC_DXT5_Format],
   ]).get(input.sourceFormat)
-  if (input.sourceFormat !== null && ![0,1,11,12,16,24].includes(input.sourceFormat) && compressedFormat === undefined) throw new RenderingError("UnsupportedFeature", `authored texture ${input.logicalPath} has unsupported source format ${input.sourceFormat}`)
+  if (input.sourceFormat !== null && ![0,1,2,3,11,12,16,24].includes(input.sourceFormat) && compressedFormat === undefined) throw new RenderingError("UnsupportedFeature", `authored texture ${input.logicalPath} has unsupported source format ${input.sourceFormat}`)
   const mipmaps = planes.map((plane) => Object.freeze({ data: data(plane), width: plane.width, height: plane.height }))
   const texture = compressedFormat === null || compressedFormat === undefined
-    ? new THREE.DataTexture(data(base), base.width, base.height, THREE.RGBAFormat, input.scalarEncoding === "u8" ? THREE.UnsignedByteType : THREE.HalfFloatType)
+    ? new THREE.DataTexture(mipmaps[0]!.data, base.width, base.height, THREE.RGBAFormat, input.scalarEncoding === "u8" ? THREE.UnsignedByteType : THREE.HalfFloatType)
     : new THREE.CompressedTexture(mipmaps, base.width, base.height, compressedFormat, THREE.UnsignedByteType)
   texture.mipmaps = mipmaps
   texture.colorSpace = colorSpace
@@ -1115,7 +1129,7 @@ function textureFromAuthoredCubemap(input: AuthoredTextureInput, colorSpace: str
     throw new RenderingError("UnsupportedFeature", `authored cubemap ${input.logicalPath} requires an unsupported topology`)
   }
   const componentType=input.scalarEncoding==="u8"?THREE.UnsignedByteType:THREE.HalfFloatType
-  const data=(plane:AuthoredTextureInput["planes"][number])=>input.scalarEncoding==="u8"?plane.rgba:new Uint16Array(plane.rgba.slice().buffer)
+  const data=(plane:AuthoredTextureInput["planes"][number])=>sourceTextureSamples(plane.rgba,input.sourceFormat,input.scalarEncoding)
   const level=(mip:number)=>Object.freeze({images:Object.freeze(Array.from({length:6},(_,face)=>{
     const plane=input.planes.find(value=>value.mip===mip&&value.frame===frame&&value.face===face&&value.slice===0)
     if(!plane)throw new RenderingError("MissingInput",`authored cubemap ${input.logicalPath} has an incomplete mip ${mip}`)
@@ -1828,12 +1842,11 @@ class RendererOwner implements Renderer {
     this.#backend.initRenderTarget(scene.refractionTarget)
     const initializedTextures = new Set<THREE.Texture>()
     for (const water of scene.waterMaterials.values()) {
-      for (const texture of water.normalFrames) {
-        if (initializedTextures.has(texture)) continue
-        this.#checkAbort(signal, ordinal)
-        this.#backend.initTexture(texture)
-        initializedTextures.add(texture)
-      }
+      const texture = scene.textureResidency.selected(water.normalConsumer)
+      if (!texture || initializedTextures.has(texture)) continue
+      this.#checkAbort(signal, ordinal)
+      this.#backend.initTexture(texture)
+      initializedTextures.add(texture)
     }
 
     const previousPosition = this.#camera.position.clone()
@@ -1916,7 +1929,7 @@ class RendererOwner implements Renderer {
     const worldBatches: WorldBatchResource[] = []
     const skyWorldBatches: WorldBatchResource[] = []
     const projectedMarks: ProjectedMarkResource[] = []
-    let combatDecalTexture: THREE.DataTexture | null = null
+    let combatDecalTexture: THREE.Texture | null = null
     const waterMeshes: WaterMeshResource[]=[]
     const targetWidth=Math.max(1,Number((this.#canvas as {width?:number}).width??1)),targetHeight=Math.max(1,Number((this.#canvas as {height?:number}).height??1))
     const reflectionTarget=disposables.add(new THREE.RenderTarget(targetWidth,targetHeight,{depthBuffer:true}))
@@ -1926,7 +1939,7 @@ class RendererOwner implements Renderer {
     const waterMaterials = new Map<string, WaterMaterialResource>()
     const refractMaterials = new Map<string, RefractMaterialResource>()
     const worldMaterials = new Map<string, WorldMaterialResource>()
-    const waterNormalFrames = new Map<string, readonly THREE.Texture[]>()
+    const animatedTextureFrames = new Map<string, AuthoredTextureFrames>()
     const cubemapTextures = new Map<number, THREE.CubeTexture>()
     let skyGroup:THREE.Group|null=null
     const occurrenceMatrices = modelOccurrenceMatrices(map, request.modelOccurrences)
@@ -1949,7 +1962,11 @@ class RendererOwner implements Renderer {
     )
     const waterFogUniforms = createSourceWaterFogUniforms()
     const directionalGpu = new Map<string, { input: DirectionalTextureInput; texture: THREE.DataTexture }>()
-    const authoredGpu = new Map<string, THREE.Texture>()
+    const textureResidency = new SharedTextureResidency<THREE.Texture>(disposables)
+    const authoredTextureKey = (input: AuthoredTextureInput, colorSpace: string, frame = 0): string =>
+      `${input.sourceSha256}:${input.sourceFormat ?? "rgba"}:${input.scalarEncoding}:${colorSpace}:${frame}`
+    const retainAuthoredTexture = (input: AuthoredTextureInput, colorSpace: string, frame = 0): THREE.Texture =>
+      textureResidency.retain(authoredTextureKey(input, colorSpace, frame), () => textureFromAuthored(input, colorSpace, frame))
     const modelDrawInputs = new Map((request.modelDrawInputs ?? []).map((input) => [input.entity, input] as const))
     const modelsRequiringLighting = new Set(map.models
       .filter((model) => model.materials.some((material) => {
@@ -2007,15 +2024,9 @@ class RendererOwner implements Renderer {
       if (binding.colorRead === "format-dependent") {
         throw new RenderingError("MissingInput", `model texture ${binding.logicalPath} lacks a resolved color interpretation`)
       }
-      const key = `${binding.logicalPath.toLowerCase()}:${binding.colorRead}`
       const input = request.authoredTextures?.get(binding.logicalPath.toLowerCase())
       if (!input) throw new RenderingError("MissingInput", `authored model texture ${binding.logicalPath} is unavailable`)
-      let texture = authoredGpu.get(key)
-      if (!texture) {
-        texture = textureFromAuthored(input, binding.colorRead === "srgb" ? THREE.SRGBColorSpace : THREE.NoColorSpace)
-        authoredGpu.set(key, texture)
-        disposables.add(texture)
-      }
+      const texture = retainAuthoredTexture(input, binding.colorRead === "srgb" ? THREE.SRGBColorSpace : THREE.NoColorSpace)
       return Object.freeze({texture,input})
     }
     const createWorldTexture = (
@@ -2027,13 +2038,7 @@ class RendererOwner implements Renderer {
       if (!authored || authored.width !== source.width || authored.height !== source.height) {
         throw new RenderingError("MissingInput", `authored world texture ${source.logicalPath} is unavailable`)
       }
-      const key = `environment:${identity}:${colorSpace}`
-      const retained = authoredGpu.get(key)
-      if (retained) return retained
-      const texture = textureFromAuthored(authored, colorSpace)
-      authoredGpu.set(key, texture)
-      disposables.add(texture)
-      return texture
+      return retainAuthoredTexture(authored, colorSpace)
     }
     const createBase = (resolved: RuntimeMaterial, identity: string): THREE.Texture | undefined => {
       const source = resolved.baseTexture
@@ -2053,9 +2058,9 @@ class RendererOwner implements Renderer {
       if (!authored || authored.sourceSha256 !== fact.sha256 || authored.width !== fact.width || authored.height !== fact.height) {
         throw new RenderingError("IdentityMismatch", "cubemap authored texture identity differs")
       }
-      const texture = textureFromAuthoredCubemap(authored, THREE.NoColorSpace)
+      const texture = textureResidency.retain(`cubemap:${authored.sourceSha256}:${THREE.NoColorSpace}`, () =>
+        textureFromAuthoredCubemap(authored, THREE.NoColorSpace)) as THREE.CubeTexture
       cubemapTextures.set(fact.index, texture)
-      disposables.add(texture)
       return texture
     }
 
@@ -2068,16 +2073,21 @@ class RendererOwner implements Renderer {
       waterSurfacePlanes.set(surface.face, surface.plane)
     }
 
-    const authoredNormalFrames = (authored: AuthoredTextureInput): readonly THREE.Texture[] => {
-      const identity = `${authored.logicalPath.toLowerCase()}:${authored.sourceSha256}`
-      let frames = waterNormalFrames.get(identity)
+    const authoredFrames = (authored: AuthoredTextureInput, colorSpace: string): AuthoredTextureFrames => {
+      const identity = `${authored.sourceSha256}:${authored.sourceFormat ?? "rgba"}:${authored.scalarEncoding}:${colorSpace}`
+      let frames = animatedTextureFrames.get(identity)
       if (!frames) {
-        frames = Object.freeze(Array.from({ length: authored.frameCount }, (_, frame) => {
-          const texture = textureFromAuthored(authored, THREE.NoColorSpace, frame)
-          disposables.add(texture)
-          return texture
-        }))
-        waterNormalFrames.set(identity, frames)
+        frames = Object.freeze({
+          frameCount: authored.frameCount,
+          select(frame: number, consumer: string): THREE.Texture {
+            if (!Number.isSafeInteger(frame) || frame < 0 || frame >= authored.frameCount) {
+              throw new RenderingError("MalformedInput", `authored texture ${authored.logicalPath} selected an invalid frame`)
+            }
+            return textureResidency.select(identity, frame, consumer, () =>
+              textureFromAuthored(authored, colorSpace, frame))
+          },
+        })
+        animatedTextureFrames.set(identity, frames)
       }
       return frames
     }
@@ -2129,7 +2139,9 @@ class RendererOwner implements Renderer {
       if (!Number.isSafeInteger(state.normalFrame.value) || state.normalFrame.value < 0 || state.normalFrame.value >= authored.frameCount) {
         throw new RenderingError("MalformedInput", `Water normal frame ${state.normalFrame.value} is outside its authored chain`)
       }
-      const normalFrames = authoredNormalFrames(authored)
+      const normalFrames = authoredFrames(authored, THREE.NoColorSpace)
+      const normalConsumer = `water:${key}`
+      const initialNormal = normalFrames.select(state.normalFrame.value, normalConsumer)
 
       const reflectionBinding = state.textures.find((texture) => texture.role === 16)
       const refractionBinding = state.textures.find((texture) => texture.role === 17)
@@ -2180,7 +2192,7 @@ class RendererOwner implements Renderer {
       const primary = createSourceWaterMaterial({
         geometry,
         state: shaderState(selectedMode),
-        normal: normalFrames[state.normalFrame.value]!,
+        normal: initialNormal,
         reflection: reflectionBinding ? reflectionTarget.texture : null,
         refraction: refractionBinding ? refractionTarget.texture : null,
         cubemap,
@@ -2194,7 +2206,7 @@ class RendererOwner implements Renderer {
         const cheap = createSourceWaterMaterial({
           geometry,
           state: shaderState("cheap"),
-          normal: normalFrames[state.normalFrame.value]!,
+          normal: initialNormal,
           reflection: null,
           refraction: refractionBinding ? refractionTarget.texture : null,
           cubemap,
@@ -2220,6 +2232,7 @@ class RendererOwner implements Renderer {
         material: primary.material,
         cheapMaterial,
         normalFrames,
+        normalConsumer,
         normalNode: primary.normalNode,
         cheapNormalNode,
         fog,
@@ -2297,10 +2310,11 @@ class RendererOwner implements Renderer {
       })
       geometry.setAttribute("sourceTangentS", new THREE.BufferAttribute(tangents.tangentS, 3))
       geometry.setAttribute("sourceTangentT", new THREE.BufferAttribute(tangents.tangentT, 3))
-      const frames = authoredNormalFrames(authored)
+      const frames = authoredFrames(authored, THREE.NoColorSpace)
+      const normalConsumer = `world:${identity}`
       const environment = createSourceLightmappedEnvironmentNode({
         geometry,
-        normal: frames[binding.initialFrame]!,
+        normal: frames.select(binding.initialFrame, normalConsumer),
         cubemap: loadCubemap(cubemap),
         state: Object.freeze({
           tint: state.environmentMap.tint,
@@ -2313,6 +2327,7 @@ class RendererOwner implements Renderer {
       worldMaterials.set(identity, Object.freeze({
         mapMaterial: state.mapMaterial,
         normalFrames: frames,
+        normalConsumer,
         normalNode: environment.normalNode,
         state,
       }))
@@ -2424,13 +2439,12 @@ class RendererOwner implements Renderer {
       }
       for(const model of map.brushModels){const template=new THREE.Group();for(const batch of model.batches){const mesh=createWorldMesh(batch);if(mesh)template.add(mesh)}brushModelTemplates.set(model.index,template)}
 
-      const environmentTextures = new Map<string, THREE.DataTexture>()
+      const environmentTextures = new Map<string, THREE.Texture>()
       const authoredEnvironmentMaterials=new Set<string>()
       for (const texture of request.environment?.textures ?? []) {
-        const authored=request.environment?.authoredTextures.get(texture.logicalPath.toLowerCase()),value=authored?textureFromAuthored(authored,THREE.SRGBColorSpace):textureFromRgba(texture, THREE.SRGBColorSpace, materialStates.get(texture.material.toLowerCase()))
+        const authored=request.environment?.authoredTextures.get(texture.logicalPath.toLowerCase()),value=authored?retainAuthoredTexture(authored,THREE.SRGBColorSpace):disposables.add(textureFromRgba(texture, THREE.SRGBColorSpace, materialStates.get(texture.material.toLowerCase())))
         if(authored)authoredEnvironmentMaterials.add(texture.material.toLowerCase())
         environmentTextures.set(texture.material.toLowerCase(), value)
-        disposables.add(value)
       }
       combatDecalTexture=environmentTextures.get("materials/decals/decals_mod2x.vmt")??null
       const cubemapIdentities = new Set<number>()
@@ -2439,7 +2453,6 @@ class RendererOwner implements Renderer {
           throw new RenderingError("MalformedInput", "cubemap occurrence input is invalid")
         }
         cubemapIdentities.add(fact.index)
-        loadCubemap(fact)
       }
       if(request.environment?.sky){
         const semantics=["right","left","back","front","up","down"] as const
@@ -2458,9 +2471,8 @@ class RendererOwner implements Renderer {
             if(face.selectedTextures.length!==1)throw new RenderingError("UnsupportedFeature","the supplied 2D-sky shader encoding requires one selected texture")
             const selected=face.selectedTextures[0]!,authored=request.environment.authoredTextures.get(selected.logicalPath.toLowerCase())
             if(!authored||authored.sourceSha256!==selected.sha256)throw new RenderingError("IdentityMismatch","2D sky authored texture identity differs")
-            const texture=textureFromAuthored(authored,face.encoding==="srgb"?THREE.SRGBColorSpace:THREE.NoColorSpace)
+            const texture=face.encoding==="hdr-rgbs"?textureResidency.retain(`${authored.sourceSha256}:sky-hdr:0`,()=>textureFromAuthored(authored,THREE.NoColorSpace)):retainAuthoredTexture(authored,face.encoding==="srgb"?THREE.SRGBColorSpace:THREE.NoColorSpace)
             if(face.encoding==="hdr-rgbs"){texture.minFilter=THREE.NearestMipmapNearestFilter;texture.magFilter=THREE.NearestFilter;texture.needsUpdate=true}
-            disposables.add(texture)
             const geometry=new THREE.BufferGeometry(),positions=Float32Array.from(geometryFace.vertices.flatMap(vertex=>vertex.position)),uv=Float32Array.from(geometryFace.vertices.flatMap(vertex=>vertex.uv))
             geometry.setAttribute("position",new THREE.BufferAttribute(positions,3));geometry.setAttribute("uv",new THREE.BufferAttribute(uv,2));geometry.setIndex([...geometryFace.indices]);disposables.add(geometry)
             const material=new THREE.MeshBasicNodeMaterial({depthTest:false,depthWrite:false,side:THREE.BackSide})
@@ -2541,15 +2553,13 @@ class RendererOwner implements Renderer {
               if (!second) throw new RenderingError("MissingInput", `authored second model texture ${resolved.logicalPath} is unavailable`)
               const scrollX = TSL.uniform(0, "float")
               const scrollY = TSL.uniform(0, "float")
-              const frames = Object.freeze(Array.from({ length: second.input.frameCount }, (_, frame) => {
-                if (frame === 0) return second.texture
-                const texture = textureFromAuthored(second.input, THREE.SRGBColorSpace, frame)
-                disposables.add(texture)
-                return texture
-              }))
+              const frames = authoredFrames(second.input, THREE.SRGBColorSpace)
+              const consumer = `panel:${model.logicalPath.toLowerCase()}:${resolved.logicalPath.toLowerCase()}`
+              frames.select(0, consumer)
               const animation: ModelPanelMaterialAnimation = {
                 texture: second.texture,
                 frames,
+                consumer,
                 frameRate: typedMaterial.state.secondFrameRate,
                 scrollRate: typedMaterial.state.secondScrollRate,
                 scrollAngle: typedMaterial.state.secondScrollAngle,
@@ -2587,9 +2597,7 @@ class RendererOwner implements Renderer {
           let colorMeshes:StaticPropInput["vhv"][number]["meshes"]=Object.freeze([])
           if(lightingKind===0){const objectIndex=props.vhvObjects[propIndex*2+profile]!,object=props.vhv[objectIndex];if(!object||object.occurrence!==props.source[propIndex]||object.profile!==profile||object.model!==props.dictionaryModel[propIndex])throw new RenderingError("IdentityMismatch","static-prop VHV occurrence identity differs");colorMeshes=Object.freeze(object.meshes.filter(mesh=>mesh.lod===props.lod[propIndex]))}
           let colorIndex=0
-          for(const mesh of meshes){const sourceGeometry=mesh.geometry,geometry=new THREE.BufferGeometry();for(const name of Object.keys(sourceGeometry.attributes))geometry.setAttribute(name,sourceGeometry.getAttribute(name));geometry.setIndex(sourceGeometry.getIndex());geometry.boundingBox=sourceGeometry.boundingBox;geometry.boundingSphere=sourceGeometry.boundingSphere
-            if(lightingKind===0){const color=colorMeshes[colorIndex++];const position=geometry.getAttribute("position");if(!color||color.vertexCount!==position.count||color.colors.length!==position.count*4)throw new RenderingError("IdentityMismatch","static-prop VHV mesh order differs");geometry.setAttribute("staticLighting",new THREE.Uint8BufferAttribute(color.colors,4,true))}
-            disposables.add(geometry);mesh.geometry=geometry
+          for(const mesh of meshes){if(lightingKind===0){const sourceGeometry=mesh.geometry,geometry=new THREE.BufferGeometry();for(const name of Object.keys(sourceGeometry.attributes))geometry.setAttribute(name,sourceGeometry.getAttribute(name));geometry.setIndex(sourceGeometry.getIndex());geometry.boundingBox=sourceGeometry.boundingBox;geometry.boundingSphere=sourceGeometry.boundingSphere;const color=colorMeshes[colorIndex++];const position=geometry.getAttribute("position");if(!color||color.vertexCount!==position.count||color.colors.length!==position.count*4)throw new RenderingError("IdentityMismatch","static-prop VHV mesh order differs");geometry.setAttribute("staticLighting",new THREE.Uint8BufferAttribute(color.colors,4,true));disposables.add(geometry);mesh.geometry=geometry}
             const original=mesh.material;if(Array.isArray(original)||!(original instanceof THREE.MeshBasicNodeMaterial))throw new RenderingError("UnsupportedFeature","static-prop model material family is unavailable")
             const identity=String(mesh.userData.materialIdentity),shader=request.modelMaterials?.get(identity.toLowerCase())?.shader,unlit=shader==="unlit-generic"||shader==="unlit-two-texture",fading=(props.flags[propIndex]!&1)!==0,sharingKey=!fading&&(lightingKind===0||unlit)?`${original.uuid}:${unlit?"unlit":"vertex"}`:undefined
             let material=sharingKey===undefined?undefined:sharedStaticMaterials.get(sharingKey)
@@ -2683,6 +2691,9 @@ class RendererOwner implements Renderer {
         staticPropInstances,
         materialStates,
         disposables,
+        textureResidency,
+        waterMaterials,
+        worldMaterials,
         projectedMarks,
         disposed: false,
       }
@@ -2811,11 +2822,7 @@ class RendererOwner implements Renderer {
         modelOccurrences: request.modelOccurrences?.map((value) => Object.freeze({ ...value, matrix: value.matrix.slice() })),
         modelFacing: new Map(request.modelFacing ?? []),
         modelMaterials: new Map(request.modelMaterials ?? []),
-        authoredTextures: new Map([...(request.authoredTextures ?? [])].map(([identity, texture]) => [identity, Object.freeze({
-          ...texture,
-          faces: Object.freeze([...texture.faces]),
-          planes: Object.freeze(texture.planes.map((plane) => Object.freeze({ ...plane }))),
-        })])),
+        authoredTextures: request.authoredTextures,
         modelDrawInputs: request.modelDrawInputs?.map((input) => Object.freeze({
           entity: input.entity,
           lighting: structuredClone(input.lighting),
@@ -2835,6 +2842,7 @@ class RendererOwner implements Renderer {
       particleBatchMaterials:new Map(),
       materialStates,
       disposables,
+      textureResidency,
       lightmapTextures,
       exposureUniform,
       waterFogUniforms,
@@ -2903,10 +2911,10 @@ class RendererOwner implements Renderer {
         if (panel.pose) retained.meshes = this.#applyPose(retained.instance, panel.pose, retained.meshes !== undefined, retained.meshes)
         const presentationTime = panel.presentationTimeSeconds ?? 0
         for (const animation of this.#active.modelPanelMaterialAnimations.get(identity) ?? []) {
-          if (animation.frameRate !== null && animation.frames.length > 1) {
-            const frame = Math.floor(presentationTime * animation.frameRate) % animation.frames.length
+          if (animation.frameRate !== null && animation.frames.frameCount > 1) {
+            const frame = Math.floor(presentationTime * animation.frameRate) % animation.frames.frameCount
             if (frame !== animation.frame) {
-              const next = animation.frames[frame]!
+              const next = animation.frames.select(frame, animation.consumer)
               animation.texture.image = next.image
               animation.texture.mipmaps = next.mipmaps
               animation.texture.needsUpdate = true
@@ -3057,10 +3065,10 @@ class RendererOwner implements Renderer {
             throw new RenderingError("IdentityMismatch", `evaluated world material ${evaluated.identity} is unavailable`)
           }
           const bump = evaluated.textures.find((texture) => texture.role === 7)
-          if (!bump || bump.frame === null || bump.frame < 0 || bump.frame >= resource.normalFrames.length) {
+          if (!bump || bump.frame === null || bump.frame < 0 || bump.frame >= resource.normalFrames.frameCount) {
             throw new RenderingError("MalformedInput", `evaluated world material ${evaluated.identity} selected an invalid bump frame`)
           }
-          const texture = resource.normalFrames[bump.frame]!
+          const texture = resource.normalFrames.select(bump.frame, resource.normalConsumer)
           if (bump.transform) {
             const matrix = bump.transform
             texture.matrixAutoUpdate = false
@@ -3077,9 +3085,9 @@ class RendererOwner implements Renderer {
         if (visibleWater) {
           const resource = this.#active.waterMaterials.get(visibleWater.material.toLowerCase())
           if (!resource) throw new RenderingError("MissingInput", `current Water material ${visibleWater.material} is unavailable`)
-          const frameIndex = ((visibleWater.evaluated.normalFrame % resource.normalFrames.length)
-            + resource.normalFrames.length) % resource.normalFrames.length
-          const texture = resource.normalFrames[frameIndex]!
+          const frameIndex = ((visibleWater.evaluated.normalFrame % resource.normalFrames.frameCount)
+            + resource.normalFrames.frameCount) % resource.normalFrames.frameCount
+          const texture = resource.normalFrames.select(frameIndex, resource.normalConsumer)
           const matrix = visibleWater.evaluated.normalTransform
           texture.matrixAutoUpdate = false
           texture.matrix.set(
@@ -4385,6 +4393,7 @@ class RendererOwner implements Renderer {
     this.#world.clear()
     const oldBackend = this.#backend
     try {
+      if (active) disposeScene(active)
       try {
         oldBackend.backend.context?.unconfigure()
       } catch {
@@ -4421,7 +4430,6 @@ class RendererOwner implements Renderer {
         this.#active = rebuilt
         this.#scene.background = active.loadRequest.diagnostic ? new THREE.Color(0x111820) : null
         this.#sceneGeneration += 1
-        disposeScene(active)
       }
       this.#lifecycle = "Ready"
     } catch {

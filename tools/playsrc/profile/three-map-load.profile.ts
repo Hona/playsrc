@@ -1,11 +1,14 @@
+import { execFile } from "node:child_process"
 import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
+import { promisify } from "node:util"
 import { expect, test } from "./application-test"
 import { loadLocalConfig } from "../src/config"
 import { decodeScreenshot } from "./screenshot-pixels"
 
 const TARGETS = ["jump_beef", "pl_upward", "ctf_2fort"] as const
 const SAMPLE_MILLISECONDS = 2_000
+const executeFile = promisify(execFile)
 
 type Descriptor = { sha256: string; byteLength: string }
 type BrowserProfile = {
@@ -20,11 +23,29 @@ type BrowserProfile = {
     responseBytes?: number
     payloadSha256?: string
     presentationSha256?: string
+    wasmLinearBytes?: number
     timings?: Record<string, number>
   }>
   hashes: Array<{ started: number; finished?: number; bytes: number }>
   indexedDb: Array<{ operation: string; started: number; finished?: number; bytes: number }>
-  gpu: { uploadBytes: number; uploadCalls: number; uploadMilliseconds: number; pipelines: number; pipelineMilliseconds: number }
+  gpu: {
+    uploadBytes: number
+    uploadCalls: number
+    uploadMilliseconds: number
+    pipelines: number
+    pipelineMilliseconds: number
+    residentTextureBytes: number
+    peakTextureBytes: number
+    residentBufferBytes: number
+    peakBufferBytes: number
+    stagingBytes: number
+    peakStagingBytes: number
+    compressedTextureBytes: number
+    compressedTextures: number
+    textures: number
+    destroyedTextures: number
+    formats: Record<string, number>
+  }
   phases: Array<{ at: number; phase: string; detail: string; team: boolean; frame: number }>
   frames: number[]
   longTasks: Array<{ at: number; milliseconds: number }>
@@ -49,14 +70,59 @@ function percentile(values: readonly number[], fraction: number): number | null 
   return Number(sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * fraction))]!.toFixed(3))
 }
 
+type BrowserProcess = Readonly<{ type: string; id: number; cpuTime: number }>
+type ResidentProcess = Readonly<{ id: number; type: string; residentBytes: number; privateBytes: number | null }>
+
+async function residentProcesses(processes: readonly BrowserProcess[]): Promise<readonly ResidentProcess[]> {
+  const identities = [...new Set(processes.map((entry) => entry.id).filter((identity) => Number.isSafeInteger(identity) && identity > 0))]
+  if (identities.length === 0) return []
+  const types = new Map(processes.map((entry) => [entry.id, entry.type]))
+  if (process.platform === "win32") {
+    const { stdout } = await executeFile("powershell", ["-NoProfile", "-Command", `@(Get-Process -Id ${identities.join(",")} -ErrorAction SilentlyContinue | Select-Object Id,WorkingSet64,PrivateMemorySize64) | ConvertTo-Json -Compress`])
+    if (!stdout.trim()) return []
+    const values = [JSON.parse(stdout)].flat() as Array<{ Id: number; WorkingSet64: number; PrivateMemorySize64: number }>
+    return values.map((value) => Object.freeze({ id: value.Id, type: types.get(value.Id) ?? "unknown", residentBytes: value.WorkingSet64, privateBytes: value.PrivateMemorySize64 }))
+  }
+  const { stdout } = await executeFile("ps", ["-o", "pid=,rss=", "-p", identities.join(",")])
+  return stdout.trim().split("\n").flatMap((line) => {
+    const [identity, resident] = line.trim().split(/\s+/u).map(Number)
+    return Number.isSafeInteger(identity) && Number.isSafeInteger(resident)
+      ? [Object.freeze({ id: identity!, type: types.get(identity!) ?? "unknown", residentBytes: resident! * 1024, privateBytes: null })]
+      : []
+  })
+}
+
 test("profiles exact headed cold initialization for all three configured TF2 maps", async ({ page, browser }, testInfo) => {
   const browserCdp = await browser.newBrowserCDPSession()
   const pageCdp = await page.context().newCDPSession(page)
   await pageCdp.send("Performance.enable")
+  await page.route(/gameplay-worker\.ts(?:\?|$)/u, async (route) => {
+    const response = await route.fetch()
+    const source = await response.text()
+    await route.fulfill({ response, body: `
+      const __playsrcInstantiate = WebAssembly.instantiate;
+      WebAssembly.instantiate = async function (...args) {
+        const result = await __playsrcInstantiate.apply(this, args);
+        const instance = result instanceof WebAssembly.Instance ? result : result.instance;
+        if (instance?.exports?.memory instanceof WebAssembly.Memory) globalThis.__playsrcProfileWasmMemory = instance.exports.memory;
+        return result;
+      };
+      const __playsrcPostMessage = globalThis.postMessage.bind(globalThis);
+      globalThis.postMessage = function (message, transfer) {
+        if (message && typeof message === "object") message.__playsrcWasmLinearBytes = globalThis.__playsrcProfileWasmMemory?.buffer.byteLength ?? null;
+        return __playsrcPostMessage(message, transfer);
+      };
+      ${source}` })
+  })
   await page.addInitScript(() => {
     const state: BrowserProfile = {
       requests: [], workers: [], hashes: [], indexedDb: [], phases: [], frames: [], longTasks: [],
-      gpu: { uploadBytes: 0, uploadCalls: 0, uploadMilliseconds: 0, pipelines: 0, pipelineMilliseconds: 0 },
+      gpu: {
+        uploadBytes: 0, uploadCalls: 0, uploadMilliseconds: 0, pipelines: 0, pipelineMilliseconds: 0,
+        residentTextureBytes: 0, peakTextureBytes: 0, residentBufferBytes: 0, peakBufferBytes: 0,
+        stagingBytes: 0, peakStagingBytes: 0, compressedTextureBytes: 0, compressedTextures: 0,
+        textures: 0, destroyedTextures: 0, formats: {},
+      },
     }
     ;(globalThis as typeof globalThis & { __playsrcThreeMapProfile: BrowserProfile }).__playsrcThreeMapProfile = state
 
@@ -109,6 +175,7 @@ test("profiles exact headed cold initialization for all three configured TF2 map
           record.finished = performance.now()
           record.responseBytes = byteLength(event.data?.payload) + byteLength(event.data?.presentation) + byteLength(event.data?.bytes)
           if (event.data?.timings) record.timings = event.data.timings
+          if (Number.isSafeInteger(event.data?.__playsrcWasmLinearBytes)) record.wasmLinearBytes = event.data.__playsrcWasmLinearBytes
           if (typeof event.data?.payloadSha256 === "string") record.payloadSha256 = event.data.payloadSha256
           if (event.data?.presentation instanceof ArrayBuffer) {
             void originalDigest.call(crypto.subtle, "SHA-256", event.data.presentation).then((digest) => {
@@ -156,6 +223,79 @@ test("profiles exact headed cold initialization for all three configured TF2 map
       })
     }
     const devicePrototype = (globalThis as typeof globalThis & { GPUDevice?: { prototype: GPUDevice } }).GPUDevice?.prototype
+    if (devicePrototype) {
+      const textureBytes = (descriptor: GPUTextureDescriptor): number => {
+        const size = typeof descriptor.size === "number" ? [descriptor.size, 1, 1]
+          : Array.isArray(descriptor.size) ? descriptor.size
+            : [descriptor.size.width, descriptor.size.height ?? 1, descriptor.size.depthOrArrayLayers ?? 1]
+        const format = String(descriptor.format)
+        const compressed = format.startsWith("bc")
+        const block = compressed ? (format.startsWith("bc1") || format.startsWith("bc4") ? 8 : 16) : 0
+        const scalar = format.includes("rgba32") ? 16 : format.includes("rgba16") || format.includes("rg32") ? 8
+          : format.includes("r8") && !format.includes("rg8") ? 1 : format.includes("rg8") || format.includes("r16") ? 2 : 4
+        let bytes = 0
+        for (let mip = 0; mip < (descriptor.mipLevelCount ?? 1); mip += 1) {
+          const width = Math.max(1, Math.floor(Number(size[0] ?? 1) / 2 ** mip))
+          const height = Math.max(1, Math.floor(Number(size[1] ?? 1) / 2 ** mip))
+          bytes += (compressed ? Math.ceil(width / 4) * Math.ceil(height / 4) * block : width * height * scalar)
+            * Number(size[2] ?? 1) * (descriptor.sampleCount ?? 1)
+        }
+        return bytes
+      }
+      const originalTexture = devicePrototype.createTexture
+      Object.defineProperty(devicePrototype, "createTexture", {
+        configurable: true,
+        value(this: GPUDevice, descriptor: GPUTextureDescriptor) {
+          const texture = originalTexture.call(this, descriptor)
+          const bytes = textureBytes(descriptor)
+          state.gpu.textures += 1
+          state.gpu.residentTextureBytes += bytes
+          state.gpu.peakTextureBytes = Math.max(state.gpu.peakTextureBytes, state.gpu.residentTextureBytes)
+          state.gpu.formats[descriptor.format] = (state.gpu.formats[descriptor.format] ?? 0) + 1
+          if (descriptor.format.startsWith("bc")) {
+            state.gpu.compressedTextures += 1
+            state.gpu.compressedTextureBytes += bytes
+          }
+          const destroy = texture.destroy
+          let destroyed = false
+          texture.destroy = function () {
+            if (!destroyed) {
+              destroyed = true
+              state.gpu.destroyedTextures += 1
+              state.gpu.residentTextureBytes -= bytes
+            }
+            return destroy.call(this)
+          }
+          return texture
+        },
+      })
+      const originalBuffer = devicePrototype.createBuffer
+      Object.defineProperty(devicePrototype, "createBuffer", {
+        configurable: true,
+        value(this: GPUDevice, descriptor: GPUBufferDescriptor) {
+          const buffer = originalBuffer.call(this, descriptor)
+          const bytes = Number(descriptor.size)
+          const staging = (Number(descriptor.usage) & 1) !== 0 || descriptor.mappedAtCreation === true
+          state.gpu.residentBufferBytes += bytes
+          state.gpu.peakBufferBytes = Math.max(state.gpu.peakBufferBytes, state.gpu.residentBufferBytes)
+          if (staging) {
+            state.gpu.stagingBytes += bytes
+            state.gpu.peakStagingBytes = Math.max(state.gpu.peakStagingBytes, state.gpu.stagingBytes)
+          }
+          const destroy = buffer.destroy
+          let destroyed = false
+          buffer.destroy = function () {
+            if (!destroyed) {
+              destroyed = true
+              state.gpu.residentBufferBytes -= bytes
+              if (staging) state.gpu.stagingBytes -= bytes
+            }
+            return destroy.call(this)
+          }
+          return buffer
+        },
+      })
+    }
     if (devicePrototype) for (const operation of ["createRenderPipeline", "createRenderPipelineAsync"] as const) {
       const original = devicePrototype[operation]
       Object.defineProperty(devicePrototype, operation, {
@@ -207,10 +347,17 @@ test("profiles exact headed cold initialization for all three configured TF2 map
   expect(response.status()).toBe(200)
   const configuration = await response.json() as { assetOrigin: string; wasm: Descriptor; targets: Array<{ target: string; objects: { bsp: Descriptor; resources: Descriptor } }> }
   expect(configuration.targets.map(target => target.target)).toEqual(TARGETS)
+  const selectedTarget = process.env.PLAYSRC_THREE_MAP_TARGET
+  if (selectedTarget !== undefined && !TARGETS.includes(selectedTarget as typeof TARGETS[number])) {
+    throw new Error("PLAYSRC_THREE_MAP_TARGET must name one configured TF2 map")
+  }
+  const targets = selectedTarget === undefined
+    ? configuration.targets
+    : configuration.targets.filter((target) => target.target === selectedTarget)
 
   const snapshot = async () => {
     const [browserProcesses, metrics, heap, value] = await Promise.all([
-      browserCdp.send("SystemInfo.getProcessInfo") as Promise<{ processInfo: Array<{ type: string; id: number; cpuTime: number }> }>,
+      browserCdp.send("SystemInfo.getProcessInfo") as Promise<{ processInfo: BrowserProcess[] }>,
       pageCdp.send("Performance.getMetrics") as Promise<{ metrics: Array<{ name: string; value: number }> }>,
       pageCdp.send("Runtime.getHeapUsage") as Promise<{ usedSize: number; totalSize: number; embedderHeapUsedSize?: number; backingStorageSize?: number }>,
       page.evaluate(async () => {
@@ -226,7 +373,15 @@ test("profiles exact headed cold initialization for all three configured TF2 map
         }
       }),
     ])
-    return { browserProcesses: browserProcesses.processInfo, metrics: Object.fromEntries(metrics.metrics.map(metric => [metric.name, metric.value])), heap, ...value }
+    const resident = await residentProcesses(browserProcesses.processInfo)
+    return {
+      browserProcesses: browserProcesses.processInfo,
+      residentProcesses: resident,
+      residentBytes: resident.reduce((total, entry) => total + entry.residentBytes, 0),
+      metrics: Object.fromEntries(metrics.metrics.map(metric => [metric.name, metric.value])),
+      heap,
+      ...value,
+    }
   }
 
   const startup = await snapshot()
@@ -235,12 +390,27 @@ test("profiles exact headed cold initialization for all three configured TF2 map
     return { workers: profile.workers.filter(worker => ["initialize", "decode-resources"].includes(worker.kind)), requests: profile.requests }
   })
   const maps: Array<Record<string, unknown>> = []
-  for (const target of configuration.targets) {
+  for (const target of targets) {
     await page.keyboard.press("Backquote")
     const consoleEntry = page.locator("[aria-label='Console command']")
     await expect(consoleEntry).toBeVisible()
     await consoleEntry.fill(`map ${target.target}`)
     const before = await snapshot()
+    const processSamples: Array<{ residentBytes: number; processes: readonly ResidentProcess[] }> = [
+      { residentBytes: before.residentBytes, processes: before.residentProcesses },
+    ]
+    let sampling = false
+    const sampleProcesses = async () => {
+      if (sampling) return
+      sampling = true
+      try {
+        const processes = await browserCdp.send("SystemInfo.getProcessInfo") as { processInfo: BrowserProcess[] }
+        const resident = await residentProcesses(processes.processInfo)
+        processSamples.push({ residentBytes: resident.reduce((total, entry) => total + entry.residentBytes, 0), processes: resident })
+      } catch { /* a closing browser invalidates an in-flight bounded process sample */ }
+      finally { sampling = false }
+    }
+    const processSampler = setInterval(() => { void sampleProcesses() }, 250)
     const started = await page.evaluate(() => performance.now())
     await page.keyboard.press("Enter")
     await page.waitForFunction((identity) => {
@@ -285,6 +455,9 @@ test("profiles exact headed cold initialization for all three configured TF2 map
     }
     expect(visiblePixels).toBeGreaterThan(20_000)
     const after = await snapshot()
+    clearInterval(processSampler)
+    processSamples.push({ residentBytes: after.residentBytes, processes: after.residentProcesses })
+    const peakResident = processSamples.reduce((maximum, current) => current.residentBytes > maximum.residentBytes ? current : maximum)
     const profile = await page.evaluate(({ indices, started, ready }) => {
       const profile = (globalThis as typeof globalThis & { __playsrcThreeMapProfile: BrowserProfile }).__playsrcThreeMapProfile
       const resources = performance.getEntriesByType("resource").filter(entry => entry.startTime >= started && entry.startTime <= ready).map(entry => {
@@ -341,9 +514,36 @@ test("profiles exact headed cold initialization for all three configured TF2 map
         teamClassUi: Number((load.application.initialPublication ?? 0).toFixed(3)),
         initialProbes: Number(((load.application.initialProbes ?? 0) + (load.application.initialization ?? 0)).toFixed(3)),
       },
-      gpu: { uploadCalls: after.gpu.uploadCalls - before.gpu.uploadCalls, pipelines: after.gpu.pipelines - before.gpu.pipelines },
+      gpu: {
+        uploadCalls: after.gpu.uploadCalls - before.gpu.uploadCalls,
+        pipelines: after.gpu.pipelines - before.gpu.pipelines,
+        residentTextureBytes: after.gpu.residentTextureBytes,
+        peakTextureBytes: after.gpu.peakTextureBytes,
+        residentBufferBytes: after.gpu.residentBufferBytes,
+        peakBufferBytes: after.gpu.peakBufferBytes,
+        stagingBytes: after.gpu.stagingBytes,
+        peakStagingBytes: after.gpu.peakStagingBytes,
+        compressedTextureBytes: after.gpu.compressedTextureBytes,
+        compressedTextures: after.gpu.compressedTextures,
+        textures: after.gpu.textures,
+        destroyedTextures: after.gpu.destroyedTextures,
+        formats: after.gpu.formats,
+      },
       cpu: { browserProcessSeconds: Number((cpuAfter - cpuBefore).toFixed(3)), mainThreadTaskSeconds: Number(((after.metrics.TaskDuration ?? 0) - (before.metrics.TaskDuration ?? 0)).toFixed(3)) },
-      memory: { heapBeforeBytes: before.heap.usedSize, heapAfterBytes: after.heap.usedSize, backingBeforeBytes: before.heap.backingStorageSize ?? null, backingAfterBytes: after.heap.backingStorageSize ?? null, storageBeforeBytes: before.storage.usage ?? null, storageAfterBytes: after.storage.usage ?? null },
+      memory: {
+        heapBeforeBytes: before.heap.usedSize,
+        heapAfterBytes: after.heap.usedSize,
+        backingBeforeBytes: before.heap.backingStorageSize ?? null,
+        backingAfterBytes: after.heap.backingStorageSize ?? null,
+        browserResidentBeforeBytes: before.residentBytes,
+        browserResidentAfterBytes: after.residentBytes,
+        peakBrowserResidentBytes: peakResident.residentBytes,
+        processesAtPeak: peakResident.processes,
+        processSamples: processSamples.length,
+        wasmLinearBytes: Math.max(0, ...profile.workers.map(record => record.wasmLinearBytes ?? 0)),
+        storageBeforeBytes: before.storage.usage ?? null,
+        storageAfterBytes: after.storage.usage ?? null,
+      },
       simulation: { sampleMilliseconds: Number(sample.milliseconds.toFixed(3)), ticks: sample.ticks, hertz: Number((sample.ticks * 1_000 / sample.milliseconds).toFixed(3)), frames: sample.frames.length, frameP95Milliseconds: percentile(sample.frames, 0.95), visiblePixels },
       applicationPhases: load.application,
       clientPhases: load.client,
@@ -357,7 +557,7 @@ test("profiles exact headed cold initialization for all three configured TF2 map
       expect(row.milliseconds.initializationExcludingDownload, `${target.target} exceeded the exact 30-second cold initialization budget`).toBeLessThanOrEqual(30_000)
     }
     maps.push(row)
-    console.log(`PLAYSRC_THREE_MAP_ROW ${JSON.stringify({ target: row.target, wallSeconds: row.milliseconds.totalWall / 1_000, networkSeconds: row.milliseconds.networkDownload / 1_000, initializationSeconds: row.milliseconds.initializationExcludingDownload / 1_000, frameP95Milliseconds: row.simulation.frameP95Milliseconds, tickHertz: row.simulation.hertz, mapCache: row.cache.map, presentationCache: row.cache.presentation })}`)
+    console.log(`PLAYSRC_THREE_MAP_ROW ${JSON.stringify({ target: row.target, wallSeconds: row.milliseconds.totalWall / 1_000, networkSeconds: row.milliseconds.networkDownload / 1_000, initializationSeconds: row.milliseconds.initializationExcludingDownload / 1_000, frameP95Milliseconds: row.simulation.frameP95Milliseconds, tickHertz: row.simulation.hertz, peakBrowserResidentBytes: row.memory.peakBrowserResidentBytes, browserResidentBytes: row.memory.browserResidentAfterBytes, wasmLinearBytes: row.memory.wasmLinearBytes, residentTextureBytes: row.gpu.residentTextureBytes, peakTextureBytes: row.gpu.peakTextureBytes, mapCache: row.cache.map, presentationCache: row.cache.presentation })}`)
   }
 
   const report = {
