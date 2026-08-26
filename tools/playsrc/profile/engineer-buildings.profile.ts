@@ -170,6 +170,17 @@ test("authored Engineer build menus, stock objects and headed building pixels", 
   await expect.poll(async () => page.evaluate(() => (globalThis as any).__playsrcProfile.buildings[0]?.upgradeMetal), { timeout: 3_000 }).toBe(25)
   await expect(page.locator("main")).toHaveAttribute("data-engineer-metal", "45")
   await expect(page.locator("main")).toHaveAttribute("data-viewmodel-activity", /IDLE/, { timeout: 5000 })
+  const originalPointerX = pointerX
+  const aim = await page.locator("main").evaluate((element, position) => {
+    const camera = element.dataset.cameraPosition!.split(",").map(Number)
+    const dx = position[0] - camera[0]!, dy = position[1] - camera[1]!, dz = position[2] - camera[2]!
+    const yaw = Math.atan2(dy, dx) * 180 / Math.PI
+    const pitch = -Math.atan2(dz, Math.hypot(dx, dy)) * 180 / Math.PI
+    return { pitch, yaw, dx: -(((yaw - Number(element.dataset.cameraYaw) + 180) % 360 + 360) % 360 - 180) / 0.066, dy: (pitch - Number(element.dataset.cameraPitch)) / 0.066 }
+  }, constructing.position)
+  pointerX += aim.dx
+  await page.mouse.move(pointerX, 360 + aim.dy)
+  await expect.poll(async () => Math.abs(Number(await page.locator("main").getAttribute("data-camera-pitch")) - aim.pitch)).toBeLessThan(1)
   await page.evaluate(() => { (globalThis as any).__playsrcProfile.worldLightingEvidenceRevision = 1 })
   await page.waitForFunction(() => (globalThis as any).__playsrcProfile.worldLighting?.revision === 1)
   const sentrySamples = await page.evaluate(identity => (globalThis as any).__playsrcProfile.worldLighting.worldGeometry.samples.filter((sample: any) => sample.identity === identity), constructing.identity)
@@ -188,6 +199,8 @@ test("authored Engineer build menus, stock objects and headed building pixels", 
   expect(await page.evaluate(identity => (globalThis as any).__playsrcProfile.worldLighting.worldGeometry.samples.some((sample: any) => sample.identity === identity), constructing.identity)).toBe(false)
   const removed = await page.locator(".world-canvas").screenshot()
   await testInfo.attach("headed-sentry-destroyed", { body: removed, contentType: "image/png" })
+  await page.mouse.move(originalPointerX, 360)
+  pointerX = originalPointerX
   const objects: Array<{ team: number; object: { kind: number; mode: number }; metalBefore: number; metalAfter: number; position: number[] }> = [{
     team: 2, object: constructing.object, metalBefore: 200, metalAfter: 70, position: constructing.position,
   }]
