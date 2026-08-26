@@ -3,7 +3,10 @@ use crate::{
     sub,
 };
 use playsrc_phy::{Asset as PhyAsset, Classification as PhyClassification};
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, OnceLock},
+};
 
 #[cfg(test)]
 #[path = "snapshot_tests.rs"]
@@ -407,7 +410,7 @@ pub struct SnapshotRecord {
     pub surface_flags: u16,
     pub shape: SnapshotShape,
     pub bounds: Hull,
-    prepared: Arc<[PreparedConvex]>,
+    prepared: Arc<[PreparedConvexCache]>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -612,14 +615,7 @@ impl Snapshot {
                     SnapshotShape::Physics(shape) => shape
                         .convexes
                         .iter()
-                        .map(|convex| {
-                            PreparedConvex::compile(
-                                &convex.vertices,
-                                &convex.faces,
-                                &convex.edges,
-                                basis,
-                            )
-                        })
+                        .map(|_| PreparedConvexCache::default())
                         .collect::<Vec<_>>()
                         .into(),
                     _ => Arc::from([]),
@@ -1354,7 +1350,14 @@ impl World {
                     let query = || {
                         let temporary;
                         let prepared = if request.transform.same_bits(object.transform) {
-                            &object.prepared[index]
+                            object.prepared[index].0.get_or_init(|| {
+                                PreparedConvex::compile(
+                                    &convex.vertices,
+                                    &convex.faces,
+                                    &convex.edges,
+                                    basis,
+                                )
+                            })
                         } else {
                             temporary = PreparedConvex::compile(
                                 &convex.vertices,
@@ -1496,6 +1499,16 @@ fn trace_convex(
 // World-space support intervals belong to an immutable object transform, not
 // to a movement query. Keep the original arithmetic and first-feature order;
 // in particular, do not merge approximately parallel planes.
+#[derive(Default, Debug)]
+struct PreparedConvexCache(OnceLock<PreparedConvex>);
+// Cache population is not authoritative snapshot state. Shapes and transforms
+// are compared by SnapshotRecord; untouched map solids need no retained planes.
+impl PartialEq for PreparedConvexCache {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct PreparedDirection {
     normal: [f32; 3],
@@ -1545,6 +1558,8 @@ impl PreparedConvex {
                     .fold(f32::NEG_INFINITY, f32::max)
             }),
         };
+        #[cfg(feature = "replay-reference")]
+        crate::replay_diagnostics::count(5, vertices.len() * 6);
         let mut directions = Vec::new();
         let mut seen = BTreeSet::new();
         let mut append = |direction, triangle| {

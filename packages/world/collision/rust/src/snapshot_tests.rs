@@ -205,6 +205,32 @@ fn geometry_retention_is_bound_to_shape_and_transform_not_revision_or_identity_a
         object(2, [20.0; 3], SnapshotShape::Physics(Arc::clone(&shape))),
     ];
     let original = Snapshot::compile(&world, 1, inputs.clone(), SnapshotLimits::default()).unwrap();
+    assert!(
+        original
+            .objects
+            .iter()
+            .flat_map(|object| object.prepared.iter())
+            .all(|cache| cache.0.get().is_none())
+    );
+    world
+        .trace_snapshot_ray(
+            &original,
+            SnapshotRayRequest {
+                start: [-5.0, 1.0, 1.0],
+                end: [15.0, 1.0, 1.0],
+                mask: 1,
+                scope: TraceScope::Everything,
+                ignored: &[],
+            },
+            |_| true,
+        )
+        .unwrap();
+    assert!(original.objects[0].prepared[0].0.get().is_some());
+    assert!(original.objects[1].prepared[0].0.get().is_none());
+    assert_eq!(
+        original,
+        Snapshot::compile(&world, 1, inputs.clone(), SnapshotLimits::default()).unwrap()
+    );
     let mut changed = inputs.clone();
     changed[1].transform.angles[1] = 90.0;
     let next = original.recompile(&world, 2, changed.clone()).unwrap();
