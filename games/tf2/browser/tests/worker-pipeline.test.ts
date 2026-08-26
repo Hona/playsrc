@@ -183,6 +183,12 @@ class PipelineWorker implements WorkerLike {
 
   postMessage(message: WorkerRequest, transfer: Transferable[] = []): void {
     const request = structuredClone(message, { transfer })
+    if (message.kind === "load" && request.kind === "load") {
+      Object.assign(request, {
+        configuration: request.configuration.map((section, index) =>
+          message.configuration[index] instanceof SharedArrayBuffer ? message.configuration[index]! : section),
+      })
+    }
     this.requests.push(request)
     if (this.failure) {
       this.#respond({ ...this.failure, id: request.id } as WorkerResponse)
@@ -232,8 +238,10 @@ class PipelineWorker implements WorkerLike {
         return
       }
       case "decode-resources": {
-        const bytes = request.chunks[0]!.bytes
-        this.#respond({ id: request.id, kind: "resources", bytes }, [bytes])
+        const input = request.chunks[0]!.bytes
+        const bytes = request.shared ? new SharedArrayBuffer(input.byteLength) : input
+        if (request.shared) new Uint8Array(bytes).set(new Uint8Array(input))
+        this.#respond({ id: request.id, kind: "resources", bytes }, bytes instanceof ArrayBuffer ? [bytes] : [])
         return
       }
       case "discard":
@@ -274,6 +282,9 @@ class PipelineWorker implements WorkerLike {
 
   #respond(response: WorkerResponse, transfer: Transferable[] = []): void {
     const received = structuredClone(response, { transfer })
+    if (response.kind === "resources" && received.kind === "resources" && response.bytes instanceof SharedArrayBuffer) {
+      Object.assign(received, { bytes: response.bytes })
+    }
     queueMicrotask(() => this.#message?.({ data: received } as MessageEvent<WorkerResponse>))
   }
 }
@@ -413,15 +424,31 @@ describe("TF2 Worker transport ownership", () => {
     const client = new Tf2WorkerClient(worker, new MemoryCache())
     const owned = new Uint8Array(12)
     owned[0] = 7
-    expect(await client.decodeResources([{ descriptor: RESOURCE_CHUNK, bytes: owned }])).toEqual(Uint8Array.from([7, ...new Array(11).fill(0)]))
+    expect(await client.decodeResources([{ descriptor: RESOURCE_CHUNK, bytes: owned }], false)).toEqual(Uint8Array.from([7, ...new Array(11).fill(0)]))
     expect(owned.byteLength).toBe(0)
     expect(worker.requests[0]).toMatchObject({ kind: "decode-resources", chunks: [{ descriptor: expect.any(ArrayBuffer) }] })
     const retained = new Uint8Array(20)
     retained.fill(3)
     const slice = retained.subarray(4, 16)
-    expect(await client.decodeResources([{ descriptor: RESOURCE_CHUNK, bytes: slice }])).toEqual(new Uint8Array(12).fill(3))
+    expect(await client.decodeResources([{ descriptor: RESOURCE_CHUNK, bytes: slice }], false)).toEqual(new Uint8Array(12).fill(3))
     expect(retained.byteLength).toBe(20)
     expect(retained[0]).toBe(3)
+    await client.shutdown()
+  })
+
+  test("shares gameplay source sections with the Worker without cloning or detaching retained authored bytes", async () => {
+    const worker = new PipelineWorker(await digest(MAP))
+    const client = new Tf2WorkerClient(worker, new MemoryCache())
+    const input = new Uint8Array(12)
+    input.fill(9)
+    const decoded = await client.decodeResources([{ descriptor: RESOURCE_CHUNK, bytes: input }], true)
+    expect(decoded.buffer).toBeInstanceOf(SharedArrayBuffer)
+    await client.stage(3, Uint8Array.from([1]), 0, [decoded], KEY)
+    const request = worker.requests.find((entry) => entry.kind === "load")
+    if (!request || request.kind !== "load") throw new Error("load request is absent")
+    expect(request.configuration[0]).toBeInstanceOf(SharedArrayBuffer)
+    new Uint8Array(request.configuration[0]!)[1] = 19
+    expect(decoded[1]).toBe(19)
     await client.shutdown()
   })
 
