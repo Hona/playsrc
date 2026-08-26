@@ -139,6 +139,37 @@ test("encodes each Unicode model/activity exactly once into the lit fire-tick PM
   expect(new TextDecoder().decode(bytes.subarray(60, 60 + view.getUint32(56, true)))).toBe(request.model)
 })
 
+test("keeps exact UTF-8 pose bytes across bounded cache eviction and repeated full-roster batches", () => {
+  const request = Object.freeze({
+    identity: 1,
+    model: "models/player/雪.mdl",
+    activity: "ACT_MP_RUN_PRIMARY",
+    previousElapsedSeconds: 0,
+    elapsedSeconds: 0.015,
+    currentTimeSeconds: 1,
+    frameTimeSeconds: 0.015,
+    planarSpeed: 320,
+    screenAspectRatio: 16 / 9,
+    worldFarPlane: 32_768,
+    skin: 0,
+    lod: 0,
+    bodygroups: Object.freeze([0, 1]),
+    lighting: Object.freeze({
+      origin: Object.freeze([1, 2, 3]) as readonly [number, number, number],
+      angles: Object.freeze([4, 5, 6]) as readonly [number, number, number],
+      cameraPosition: Object.freeze([7, 8, 9]) as readonly [number, number, number],
+      cameraAngles: Object.freeze([10, 11, 12]) as readonly [number, number, number],
+    }),
+  })
+  const initial = encodeModelPoseBatch([request])
+  for (let index = 0; index < 300; index += 1) {
+    encodeModelPoseBatch([{ ...request, model: `models/player/unique-${index}.mdl` }])
+  }
+  expect(encodeModelPoseBatch([request])).toEqual(initial)
+  const roster = Array.from({ length: 24 }, (_, index) => ({ ...request, identity: index + 1 }))
+  expect(encodeModelPoseBatch(roster)).toEqual(encodeModelPoseBatch(roster))
+})
+
 test("encodes stock fists as one hands-only viewmodel without an invented item", () => {
   const request = Object.freeze({
     identity: 7,

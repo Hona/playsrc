@@ -112,6 +112,7 @@ import {
   type PresentationViewportOwner,
 } from "./presentation-viewport"
 import { RequiredParticleDisplayQueue } from "./particle-display"
+import { DisplayBackpressure } from "./display-backpressure"
 import { CanvasFrameDiagnostics } from "./frame-diagnostics"
 import { tokenizeSourceCommand } from "./console-command"
 import { GAME_UI_FRAME_OWNER, HUD_FRAME_OWNER, LOADING_FRAME_OWNER, OPTIONS_FRAME_OWNER, visibleFrameOwners } from "./frame-owners"
@@ -630,6 +631,7 @@ export class Tf2Application {
   readonly #canvasDiagnostics = new CanvasFrameDiagnostics()
   #displayFrame=0
   #displayTask?:Promise<void>
+  readonly #displayBackpressure=new DisplayBackpressure()
   #fireEvents = 0
   #explosionEvents = 0
   #paused = true
@@ -1906,7 +1908,7 @@ export class Tf2Application {
   }
 
   #renderClassSelection(): void {
-    if (!this.#renderer || this.#classSelectionModelPanels.length === 0 || this.#classSelectionRenderTask) return
+    if (!this.#renderer || this.#classSelectionModelPanels.length === 0 || this.#classSelectionRenderTask || this.#displayTask || this.#teamSelectionRenderTask) return
     const renderer = this.#renderer
     const revision = this.#classSelectionRenderRevision
     const generation = this.#generation
@@ -1997,7 +1999,7 @@ export class Tf2Application {
 
   #renderTeamSelection(): void {
     if (!this.#renderer || !this.#client || !this.#artifacts
-      || this.#teamSelectionModelPanels.length === 0 || this.#teamSelectionRenderTask) return
+      || this.#teamSelectionModelPanels.length === 0 || this.#teamSelectionRenderTask || this.#displayTask || this.#classSelectionRenderTask) return
     const renderer = this.#renderer
     const client = this.#client
     const artifacts = this.#artifacts
@@ -3904,8 +3906,16 @@ export class Tf2Application {
 
   readonly #frame = (time: number): void => {
     this.#animationFrame = requestAnimationFrame(this.#frame)
+    this.#displayBackpressure.advance()
     const frameProfiler = browserFrameProfiler()
-    if (frameProfiler?.active) (frameProfiler as typeof frameProfiler & { animationCallbacks?: number[] }).animationCallbacks?.push(time)
+    if (frameProfiler?.active) {
+      const instrumentation=frameProfiler as typeof frameProfiler & { animationCallbacks?: number[]; compositorFrames?: Record<string,unknown>[] }
+      instrumentation.animationCallbacks?.push(time)
+      const completed=frameProfiler.completedFrames.at(-1)
+      if(completed&&instrumentation.compositorFrames&&instrumentation.compositorFrames.at(-1)?.displayFrame!==completed.displayFrame){
+        instrumentation.compositorFrames.push({at:time,displayFrame:completed.displayFrame,tick:completed.tick,mouseRevision:completed.mouseRevision,submittedAt:completed.at,submissionMilliseconds:Math.max(0,time-Number(completed.at))})
+      }
+    }
     let timeSeconds: number
     try {
       timeSeconds = this.#frameClock.admit(performance.now() / 1_000)
@@ -3946,16 +3956,21 @@ export class Tf2Application {
     const required=this.#requiredParticleDisplayFrames.peek()
     const prepared=required??this.#preparedPresentation
     if(
-      this.#displayTask||!prepared||this.#closed||this.#paused||
+      this.#displayTask||this.#classSelectionRenderTask||this.#teamSelectionRenderTask||!prepared||this.#closed||this.#paused||
       (!required&&prepared.revision===this.#lastRenderedPreparedRevision&&this.#viewRevision===this.#lastRenderedViewRevision)
     ){
       if(frameProfiler?.active){
-        if(this.#displayTask)frameProfiler.counters.displayRejectedBusy!+=1
+        if(this.#displayTask){
+          frameProfiler.counters.displayRejectedBusy!+=1
+          if(!this.#displayBackpressure.defer())frameProfiler.counters.displayCoalesced!+=1
+        }
         else if(prepared&&prepared.revision===this.#lastRenderedPreparedRevision&&this.#viewRevision===this.#lastRenderedViewRevision)frameProfiler.counters.displayRejectedUnchanged!+=1
       }
+      else if(this.#displayTask)this.#displayBackpressure.defer()
       return
     }
     if(frameProfiler?.active)frameProfiler.counters.displayStarted!+=1
+    this.#displayBackpressure.begin()
     const task=this.#renderDisplay(prepared).then(()=>{
       if(required&&prepared.generation===this.#generation)this.#requiredParticleDisplayFrames.complete(required)
     }).catch((error)=>{
@@ -3965,7 +3980,15 @@ export class Tf2Application {
       this.#set({phase:"Failed",gameUi:"failure",detail:error instanceof Error?error.message:"Display frame failed"})
     })
     this.#displayTask=task
-    void task.finally(()=>{if(this.#displayTask===task)this.#displayTask=undefined})
+    void task.finally(()=>{
+      if(this.#displayTask!==task)return
+      this.#displayTask=undefined
+      if(this.#displayBackpressure.complete()&&!this.#closed&&!this.#paused){
+        const profiler=browserFrameProfiler()
+        if(profiler?.active)profiler.counters.displayRecovered!+=1
+        this.#offerDisplay()
+      }
+    })
   }
 
   async #renderDisplay(prepared:PreparedPresentation):Promise<void>{
@@ -4066,7 +4089,7 @@ export class Tf2Application {
       })
     }
     const visibilityMilliseconds=performance.now()-visibilityStart
-    if(this.#closed||this.#paused||renderer!==this.#renderer||!currentPresentedCamera(presentedCamera,{
+    if(this.#closed||this.#paused||renderer!==this.#renderer||this.#classSelection?.state().visible||this.#teamSelection?.state().visible||!currentPresentedCamera(presentedCamera,{
       generation:this.#generation,viewportRevision:this.#presentationViewport?.revision??-1,
       viewRevision:this.#viewRevision,mouseRevision:this.#mouseViewRevision,snapRevision:this.#authoritativeViewRevision,
     })){

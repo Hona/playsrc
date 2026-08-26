@@ -101,7 +101,8 @@ test("profile authored headed Upward offline-practice default roster and actual 
       viewport: { width: innerWidth, height: innerHeight, devicePixelRatio, visualViewportScale: visualViewport?.scale ?? null, canvasWidth: surface.width, canvasHeight: surface.height },
       lastFrame: Number(surface.dataset.displayFrame), traveled: Math.hypot(...position.map((value, index) => value - firstPosition[index]!)),
       roster: structuredClone((globalThis as any).__playsrcProfile.bots), scoreboard: JSON.parse(main.dataset.scoreboardProbe ?? "{}"),
-      frames: instrumentation.completedFrames, worker: instrumentation.worker, counters: instrumentation.counters,
+      frames: instrumentation.completedFrames, compositorFrames: instrumentation.compositorFrames,
+      presentationCallbacks: instrumentation.animationCallbacks, worker: instrumentation.worker, counters: instrumentation.counters,
       longTasks: instrumentation.longTasks.filter((entry: { at: number }) => entry.at >= started && entry.at < started + elapsed),
       longAnimationFrames: instrumentation.longAnimationFrames.filter((entry: { at: number }) => entry.at >= started && entry.at < started + elapsed),
     }
@@ -118,6 +119,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const storage = await page.evaluate(async () => ({ serviceWorkerControlled: Boolean(navigator.serviceWorker?.controller), indexedDatabases: typeof indexedDB.databases === "function" ? await indexedDB.databases() : null, estimate: navigator.storage?.estimate ? await navigator.storage.estimate() : null, navigation: performance.getEntriesByType("navigation").map(entry => entry.toJSON()), resourceCount: performance.getEntriesByType("resource").length }))
   const after = await canvas.screenshot({ timeout: 20_000 })
   const completed = measurement.frames as Array<{ at: number; tick: number; detail: Record<string, number>; renderer: { passes: Array<{ submissions: number }> } }>
+  const compositor=measurement.compositorFrames as Array<{at:number;submittedAt:number;submissionMilliseconds:number}>
   const intervals = completed.slice(1).map((frame, index) => frame.at - completed[index]!.at)
   const workers = measurement.worker as Array<{ kind: string; started: number; finished?: number; bytes: number; receivedBytes?: number; timings?: Record<string, number> }>
   const worker = Object.fromEntries([...new Set(workers.map(item => item.kind))].sort().map(kind => {
@@ -136,6 +138,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     elapsedMilliseconds: Number(measurement.elapsed.toFixed(3)), readyMilliseconds, totalWallMilliseconds: Date.now() - wallStarted,
     animationCallbacks: measurement.animationCallbacks, completedFrames: actualFrames, applicationCompletedFramesPerSecond: Number((actualFrames / measurement.elapsed * 1000).toFixed(3)),
     compositor: summarizeCompositorTruth(traceEvents, measurement.elapsed, clockBefore !== undefined && clockAfter !== undefined ? { startedMicroseconds: clockBefore * 1_000_000, endedMicroseconds: clockAfter * 1_000_000 } : undefined),
+    presentationOpportunities:{frames:compositor.length,framesPerSecond:Number((compositor.length/measurement.elapsed*1000).toFixed(3)),animationCallbacks:measurement.presentationCallbacks.length,intervals:summarizeFrameTimes(compositor.slice(1).map((frame,index)=>frame.at-compositor[index]!.at)),submissionLatency:summarizeDistribution(compositor.map(frame=>frame.submissionMilliseconds))},
     browser: { platform: process.platform, origin: new URL(page.url()).origin, channel: process.env.PLAYSRC_PROFILE_BROWSER_CHANNEL ?? "playwright-chromium", viewport: measurement.viewport, visible: measurement.visible, focused: measurement.focused, gpu: system?.gpu ?? null, processes: { before: processBefore?.processInfo ?? null, after: processAfter?.processInfo ?? null, residentBefore, residentAfter }, network, storage, userMachineEvidence: false },
     frameIntervals: summarizeFrameTimes(intervals), frameWork: summarizeFrameTimes(completed.map(frame => frame.detail.total)),
     simulation: { ticks: measurement.lastTick - measurement.firstTick, hertz: Number(((measurement.lastTick - measurement.firstTick) / measurement.elapsed * 1000).toFixed(3)) },

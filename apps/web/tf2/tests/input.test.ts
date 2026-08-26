@@ -152,6 +152,25 @@ test("preserves suspension transitions while coalescing each continuous state", 
   ])
 })
 
+test("keeps real primary-fire and jump edges while hundreds of busy clock samples coalesce", () => {
+  const queue = new SimulationClockQueue()
+  const buttons = new PhysicalButtonState()
+  let firePressed = false
+  let jumpPressed = false
+  for (let sample = 0; sample < 400; sample += 1) {
+    queue.push({ generation: 3, nowSeconds: sample * 0.015, suspended: false })
+    if (sample === 117 && buttons.press("mouse:0", "+attack")) firePressed = true
+    if (sample === 118) buttons.release("mouse:0")
+    if (sample === 219 && buttons.press("keyboard:Space", "+jump")) jumpPressed = true
+    if (sample === 220) buttons.release("keyboard:Space")
+  }
+  expect(queue.length).toBe(1)
+  expect(queue.shift()).toEqual({ generation: 3, nowSeconds: 399 * 0.015, suspended: false })
+  expect(buttons.held("+attack")).toBe(false)
+  expect(buttons.held("+jump")).toBe(false)
+  expect({ firePressed, jumpPressed }).toEqual({ firePressed: true, jumpPressed: true })
+})
+
 test("bounds unconsumed lifecycle transitions", () => {
   const queue = new SimulationClockQueue()
   for (let sample = 0; sample < MAX_PENDING_SIMULATION_CLOCK_TRANSITIONS; sample += 1) {
