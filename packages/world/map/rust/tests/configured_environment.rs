@@ -30,6 +30,63 @@ struct Config {
 }
 
 #[test]
+#[ignore = "requires playsrc.local.json and the configured jump_beef BSP"]
+fn configured_jump_beef_overhead_water_leaves_remain_in_authored_pvs() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../..");
+    let config: Config =
+        serde_json::from_slice(&fs::read(root.join("playsrc.local.json")).unwrap()).unwrap();
+    let bytes = fs::read(
+        PathBuf::from(config.source_cache_dir)
+            .join("objects/sha256")
+            .join(&BSP_SHA256[..2])
+            .join(BSP_SHA256),
+    )
+    .unwrap();
+    assert_eq!(hex(&Sha256::digest(&bytes)), BSP_SHA256);
+    let bsp = parse_bsp(&bytes, BspProfile::Source2013V20, BspLimits::default()).unwrap();
+    let entities = parse_entities(bsp.lumps[0].bytes(&bsp), EntityLimits::default()).unwrap();
+    let world = playsrc_visibility::compile(&bsp).unwrap();
+    let areas = playsrc_map::compile_area_portal_state(&entities, &world).unwrap();
+    let candidates = playsrc_visibility::CandidateSet::compile(&world, 0, &[]).unwrap();
+    for origin in [
+        [-4800.0, 3000.0, -2140.0],
+        [-4800.0, 3000.0, -2100.0],
+        [-4800.0, 3000.0, -1900.0],
+        [-4800.0, 3000.0, -1500.0],
+        [-5200.0, 3000.0, -1500.0],
+        [-4400.0, 3000.0, -1500.0],
+        [-4400.0, 3000.0, -1000.0],
+    ] {
+        let view = world
+            .view(
+                &areas,
+                &candidates,
+                &playsrc_visibility::ViewQuery {
+                    origins: vec![origin],
+                    bypass_pvs: false,
+                },
+            )
+            .unwrap();
+        let eye = view.origin_leaves[0];
+        assert!(
+            !view.outside_world,
+            "overhead camera {origin:?} escaped its authored world"
+        );
+        assert_ne!(
+            world.leaves[eye].contents as u32 & 0x100,
+            0,
+            "overhead camera {origin:?} lost its authored visible-fog flag"
+        );
+        assert!(
+            view.leaves
+                .iter()
+                .any(|&leaf| world.leaves[leaf].leaf_water_data_id == 0),
+            "overhead camera {origin:?} lost its authored Water volume from PVS"
+        );
+    }
+}
+
+#[test]
 #[ignore = "requires playsrc.local.json and the configured jump_beef source bundle"]
 fn configured_environment_retains_collision_selected_marks_water_and_view_inputs() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../..");

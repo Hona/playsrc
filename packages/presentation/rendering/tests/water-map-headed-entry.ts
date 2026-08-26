@@ -34,7 +34,7 @@ type Exports = Readonly<{
   playsrc_dispose(handle: number): number
 }>
 
-const ORIGIN = "https://source-water-evidence.invalid"
+const ORIGIN = (window as any).__sourceWaterEvidenceOrigin as string
 
 function require(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message)
@@ -165,7 +165,7 @@ function visibility(camera: Camera, time: number): VisibilityFrame {
   exports.playsrc_free(outputPointer, length)
   const view = new DataView(output.buffer)
   const decoder = new TextDecoder("utf-8", { fatal: true })
-  require(decoder.decode(output.subarray(0, 4)) === "PVIS" && view.getUint32(4, true) === 5, "Rust Water visibility identity differs")
+  require(decoder.decode(output.subarray(0, 4)) === "PVIS" && view.getUint32(4, true) === 6, "Rust Water visibility identity differs")
   let offset = 76
   const take = (count: number): number => {
     require(offset + count <= output.byteLength, "Rust Water visibility is truncated")
@@ -184,8 +184,8 @@ function visibility(camera: Camera, time: number): VisibilityFrame {
     for (let index = 0; index < count; index += 1) values[index] = u32()
     return values
   }
-  indices()
   const surfaces = indices()
+  const drawSurfaces = indices()
   const leaf = u32()
   const leaves = Object.freeze(Array.from({ length: u32() }, u32))
   const areas = Object.freeze(Array.from({ length: u32() }, u32))
@@ -193,14 +193,23 @@ function visibility(camera: Camera, time: number): VisibilityFrame {
   const reflectEntities = u8(), drawSurface = u8(), opaque = u8(), nearPlaneIntersects = u8()
   let current: VisibilityFrame["water"]["visibleWater"] = null
   if (present) {
-    const volume = u32(), visibleLeaf = u32(), eyeLeaf = u32(), eyeInVolume = u8(), translucent = u8()
-    require(u8() === 0 && u8() === 0, "Rust Water visibility padding differs")
+    const volume = u32(), visibleLeaf = u32(), eyeLeaf = u32(), eyeInVolume = u8(), translucent = u8(), hasOverlay = u8()
+    require(hasOverlay <= 1 && u8() === 0, "Rust Water visibility padding differs")
     const surfaceZ = f32(), distance = u32()
     const size = u32()
     const material = decoder.decode(output.subarray(take(size), offset))
     const normalFrame = i32()
     const normalTransform = new Float32Array(16)
     for (let index = 0; index < 16; index += 1) normalTransform[index] = f32()
+    const evaluated = Object.freeze({ normalFrame, normalTransform, cheapStart: f32(), cheapEnd: f32() })
+    let overlay: NonNullable<VisibilityFrame["water"]["visibleWater"]>["overlay"] = null
+    if (hasOverlay) {
+      const identityLength = u32()
+      const identity = decoder.decode(output.subarray(take(identityLength), offset))
+      const overlayFrame = i32(), overlayTransform = new Float32Array(16)
+      for (let index = 0; index < overlayTransform.length; index += 1) overlayTransform[index] = f32()
+      overlay = Object.freeze({ identity, normalFrame: overlayFrame, normalTransform: overlayTransform })
+    }
     current = Object.freeze({
       volume,
       visibleLeaf,
@@ -210,7 +219,8 @@ function visibility(camera: Camera, time: number): VisibilityFrame {
       distanceToWater: distance === 0xffff ? null : distance,
       material,
       translucent: translucent === 1,
-      evaluated: Object.freeze({ normalFrame, normalTransform, cheapStart: f32(), cheapEnd: f32() }),
+      evaluated,
+      overlay,
     })
   }
   const passes: WaterFramePass[] = []
@@ -259,6 +269,7 @@ function visibility(camera: Camera, time: number): VisibilityFrame {
     leaves,
     areas,
     surfaces,
+    drawSurfaces,
     water: Object.freeze({
       visibleWater: current,
       render: Object.freeze({
@@ -419,11 +430,34 @@ async function benchmarkWater() {
   return Object.freeze(distributions)
 }
 
+async function renderOverhead(position: readonly [number, number, number], pitchDegrees: number, suppressWater = false) {
+  const camera: Camera = Object.freeze({ position, yawDegrees: 0, pitchDegrees, verticalFovDegrees: sourceHorizontal4By3FovToVertical(75), near: 7, far: 32768 })
+  let selected = visibility(camera, 0)
+  require(selected.water.visibleWater !== null, `overhead ${position.join(",")} did not select configured Water`)
+  const water = selected.water.visibleWater
+  if (suppressWater) {
+    const main = selected.water.passes.find((pass) => pass.kind === "main")!
+    selected = Object.freeze({
+      ...selected,
+      water: Object.freeze({
+        visibleWater: null,
+        render: Object.freeze({ cheap: true, reflect: false, refract: false, reflectEntities: false, drawSurface: false, opaque: true }),
+        nearPlaneIntersects: false,
+        passes: Object.freeze([Object.freeze({ ...main, renderWaterSurface: false, renderUnderWater: true, clip: null, surfaces: selected.surfaces })]),
+      }),
+    })
+  }
+  const output = await renderer.render({ camera, effects: [], particles: [], models: [], visibility: selected, collisionWorldIdentity: artifacts.environment.collisionWorldIdentity, deltaSeconds: 0.015 })
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+  return Object.freeze({ position, pitchDegrees, suppressWater, normalFrame: water.evaluated.normalFrame, material: water.material, eyeLeaf: water.eyeLeaf, visibleLeaf: water.visibleLeaf, passes: output.waterPasses, stateRestored: output.waterStateRestored, drawableSurfaces: scene.drawableSurfaces })
+}
+
 console.info("shipped Water renderer is ready for exact above/below captures")
 Object.assign(window, {
   __sourceWaterMapReady: true,
   __sourceWaterMapWarmSpawn: renderSpawn,
   __sourceWaterMapScenario: renderScenario,
+  __sourceWaterMapOverhead: renderOverhead,
   __sourceWaterMapBenchmark: benchmarkWater,
   __sourceWaterMapDispose: async () => {
     await renderer.dispose()
