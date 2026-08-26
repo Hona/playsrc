@@ -1,4 +1,5 @@
-import { fetchImmutableObject, openDerivedObjectCache, type DerivedObjectCache } from "@playsrc/asset-store/browser"
+import { createImmutableObjectAcquirer, openDerivedObjectCache, type DerivedObjectCache, type ImmutableObjectPriority } from "@playsrc/asset-store/browser"
+import type { ObjectDescriptor } from "@playsrc/asset-store"
 import { chunksForRole, partitionResourceChunkDescriptors, parseResourceCatalogBytes, parseResourceGraphBytes, parseResourceSet, resourceChunkObject, selectCatalogTarget, type ResourceCatalog, type ResourceGraph, type ResourceChunkDescriptor } from "@playsrc/asset-store/graph"
 import { createAudioSystem, SoundRegistry, SourceAudioError, SourceAudioWorld } from "@playsrc/audio"
 import GameplayWorker from "@playsrc/game-tf2-browser/worker?worker"
@@ -479,6 +480,10 @@ export class Tf2Application {
   #dependencyEntries = new Map<string, Uint8Array>()
   #cache?: DerivedObjectCache
   #client?: Tf2WorkerClient
+  #resourceRuntime?: Promise<void>
+  readonly #immutableObjects = createImmutableObjectAcquirer({ concurrency: 8 })
+  readonly #operationProgressBytes = new Map<string, number>()
+  #lastWatchdogProgress = 0
   #renderer?: Renderer
   #audio?: Audio
   #audioContext?: AudioContext
@@ -725,14 +730,8 @@ export class Tf2Application {
     if (progressChanged) {
       this.#operationWatchdog.cancel()
       if (["Startup", "Loading", "Replacing"].includes(this.#view.phase)) {
-        const phase = this.#view.phase
-        const detail = this.#view.detail
-        this.#output(`STATUS: ${phase}: ${detail}`)
-        this.#operationWatchdog.arm(phase, detail, 60_000, !document.hidden, () => {
-          if (this.#view.phase === phase && this.#view.detail === detail) {
-            this.#set({ phase: "Failed", gameUi: "failure", detail: `${phase} made no progress for 60 seconds: ${detail}` })
-          }
-        })
+        this.#output(`STATUS: ${this.#view.phase}: ${this.#view.detail}`)
+        this.#armOperationWatchdog()
       }
       this.#publishOperationWatchdog()
     }
@@ -740,6 +739,28 @@ export class Tf2Application {
       this.#output(`FATAL: ${this.#view.detail}`)
       if (this.#console && !this.#view.consoleVisible) this.toggleConsole()
     }
+  }
+
+  #armOperationWatchdog(): void {
+    this.#operationWatchdog.cancel()
+    const phase = this.#view.phase
+    const detail = this.#view.detail
+    this.#lastWatchdogProgress = performance.now()
+    this.#operationWatchdog.arm(phase, detail, 60_000, !document.hidden, () => {
+      if (this.#view.phase === phase && this.#view.detail === detail) {
+        this.#set({ phase: "Failed", gameUi: "failure", detail: `${phase} made no progress for 60 seconds: ${detail}` })
+      }
+    })
+    this.#publishOperationWatchdog()
+  }
+
+  #acquireObject(descriptor: ObjectDescriptor, signal: AbortSignal, priority: ImmutableObjectPriority = "normal"): Promise<Uint8Array> {
+    if (!this.#configuration) throw new Error("Browser configuration is unavailable")
+    return this.#immutableObjects(this.#configuration.assetOrigin, descriptor, {
+      signal,
+      priority,
+      onProgress: (loaded, total) => this.#trackBootstrapObject(descriptor.sha256, loaded, total),
+    })
   }
 
   #returnToMainMenu(): void {
@@ -1093,6 +1114,7 @@ export class Tf2Application {
 
   #nextOperation(): ApplicationOperation {
     this.#operation = this.#operations.begin()
+    this.#operationProgressBytes.clear()
     return this.#operation
   }
 
@@ -1103,6 +1125,14 @@ export class Tf2Application {
   }
 
   #trackBootstrapObject(sha256: string, loaded: number, total: number): void {
+    const previous = this.#operationProgressBytes.get(sha256) ?? 0
+    if (loaded > previous) {
+      this.#operationProgressBytes.set(sha256, loaded)
+      if (["Startup", "Loading", "Replacing"].includes(this.#view.phase)
+        && performance.now() - this.#lastWatchdogProgress >= 1_000) {
+        this.#armOperationWatchdog()
+      }
+    }
     if (this.#bootstrapExpectedObjects.size > 0 && !this.#bootstrapExpectedObjects.has(sha256)) return
     this.#bootstrapObjectProgress.set(sha256, Object.freeze({ loaded, total }))
     if (this.#bootstrapExpectedObjects.size === 0) return
@@ -1120,13 +1150,27 @@ export class Tf2Application {
 
   async #ensureResourceRuntime(signal = this.#operation.signal): Promise<void> {
     if (!this.#configuration) throw new Error("Browser configuration is unavailable")
-    if (!this.#cache) this.#cache = await openDerivedObjectCache()
-    if (!this.#client) {
-      const descriptor = this.#configuration.wasm
-      const wasm = await fetchImmutableObject(this.#configuration.assetOrigin, descriptor, signal, fetch, (loaded, total) => this.#trackBootstrapObject(descriptor.sha256, loaded, total))
-      this.#client = new Tf2WorkerClient(new GameplayWorker(), this.#cache)
-      await this.#client.initialize(wasm, this.#configuration.wasm.sha256)
+    if (this.#resourceRuntime) {
+      await this.#resourceRuntime
+      return
     }
+    if (this.#client) return
+    if (!this.#resourceRuntime) {
+      const descriptor = this.#configuration.wasm
+      this.#resourceRuntime = (async () => {
+        const [cache, wasm] = await Promise.all([
+          this.#cache ? Promise.resolve(this.#cache) : openDerivedObjectCache(),
+          this.#acquireObject(descriptor, signal, "critical"),
+        ])
+        this.#cache = cache
+        this.#client = new Tf2WorkerClient(new GameplayWorker(), cache)
+        await this.#client.initialize(wasm, descriptor.sha256)
+      })().catch((error) => {
+        this.#resourceRuntime = undefined
+        throw error
+      })
+    }
+    await this.#resourceRuntime
   }
 
   async #resourceSet(roles: readonly string[], signal = this.#operation.signal): Promise<ResourceConfiguration | undefined> {
@@ -1144,8 +1188,7 @@ export class Tf2Application {
     const sections: Uint8Array[] = []
     const acquire = (group: readonly ResourceChunkDescriptor[]) => Promise.all(group.map(async (chunk) => {
       const object = resourceChunkObject(chunk)
-      const bytes = await fetchImmutableObject(this.#configuration!.assetOrigin, object, signal, fetch,
-        (loaded, total) => this.#trackBootstrapObject(object.sha256, loaded, total))
+      const bytes = await this.#acquireObject(object, signal, roles.includes("startup") ? "critical" : "normal")
       return Object.freeze({ descriptor: chunk, bytes })
     }))
     let next = acquire(groups[0]!)
@@ -1495,7 +1538,11 @@ export class Tf2Application {
       this.#mapIdentity = this.#activeTarget.target
       this.#set({ phase: "Startup", startupState: "Preparing", detail: "Preparing configured Valve startup movie" })
       const catalogDescriptor = this.#configuration.catalog
-      const catalogBytes = await fetchImmutableObject(this.#configuration.assetOrigin, catalogDescriptor, this.#operation.signal, fetch, (loaded, total) => this.#trackBootstrapObject(catalogDescriptor.sha256, loaded, total))
+      const [catalogBytes, graphBytes] = await Promise.all([
+        this.#acquireObject(catalogDescriptor, this.#operation.signal, "critical"),
+        this.#acquireObject(this.#activeTarget.objects.resources, this.#operation.signal, "critical"),
+        this.#ensureResourceRuntime(this.#operation.signal),
+      ])
       const catalog = parseResourceCatalogBytes(catalogBytes)
       if (catalog.application !== "tf2" || catalog.entries.length !== this.#configuration.targets.length) throw new Error("Resource catalog target table differs")
       for (const target of this.#configuration.targets) {
@@ -1504,7 +1551,6 @@ export class Tf2Application {
       }
       this.#resourceCatalog = catalog
       const selected = selectCatalogTarget(catalog, this.#activeTarget.target)
-      const graphBytes = await fetchImmutableObject(this.#configuration.assetOrigin, selected.resources, this.#operation.signal, fetch, (loaded, total) => this.#trackBootstrapObject(selected.resources.sha256, loaded, total))
       this.#resourceGraph = parseResourceGraphBytes(graphBytes)
       if (this.#resourceGraph.target !== this.#activeTarget.target || this.#resourceGraph.contentBuild !== this.#activeTarget.contentBuild) throw new Error("Resource graph target differs")
       this.#bootstrapExpectedObjects = new Set([
@@ -1554,7 +1600,7 @@ export class Tf2Application {
         if (selected.resources.sha256 !== target.objects.resources.sha256 || selected.resources.byteLength !== target.objects.resources.byteLength) {
           throw new Error("Target resource root differs from catalog")
         }
-        const bytes = await fetchImmutableObject(this.#configuration.assetOrigin, selected.resources, signal)
+        const bytes = await this.#acquireObject(selected.resources, signal, "critical")
         this.#requireOperation(operation)
         const graph = parseResourceGraphBytes(bytes)
         if (graph.target !== target.target || graph.contentBuild !== target.contentBuild) {
@@ -1568,7 +1614,7 @@ export class Tf2Application {
       this.#set({ detail: "Fetching exact BSP and gameplay WASM objects" })
       this.#advanceLoading("reading-world")
       const [bsp, resources] = await Promise.all([
-        fetchImmutableObject(this.#configuration.assetOrigin, target.objects.bsp, signal),
+        this.#acquireObject(target.objects.bsp, signal, "critical"),
         this.#resourceSet(["gameplay"], signal),
       ])
       this.#requireOperation(operation)
@@ -3004,7 +3050,11 @@ export class Tf2Application {
         throw new Error("Prepared map changed an existing immutable target authority")
       }
     }
-    const bytes = await fetchImmutableObject(configuration.assetOrigin, configuration.catalog, this.#operation.signal)
+    const bytes = await this.#immutableObjects(configuration.assetOrigin, configuration.catalog, {
+      signal: this.#operation.signal,
+      priority: "critical",
+      onProgress: (loaded, total) => this.#trackBootstrapObject(configuration.catalog.sha256, loaded, total),
+    })
     const catalog = parseResourceCatalogBytes(bytes)
     if (catalog.application !== "tf2" || catalog.entries.length !== configuration.targets.length) {
       throw new Error("Prepared map catalog target table differs")
@@ -3045,8 +3095,8 @@ export class Tf2Application {
       const selected = selectCatalogTarget(this.#resourceCatalog, target.target)
       if (selected.resources.sha256 !== target.objects.resources.sha256 || selected.resources.byteLength !== target.objects.resources.byteLength) throw new Error("Target resource root differs from catalog")
       const [bytes, graphBytes] = await Promise.all([
-        fetchImmutableObject(this.#configuration.assetOrigin, target.objects.bsp, signal),
-        fetchImmutableObject(this.#configuration.assetOrigin, target.objects.resources, signal),
+        this.#acquireObject(target.objects.bsp, signal, "critical"),
+        this.#acquireObject(target.objects.resources, signal, "critical"),
       ])
       this.#requireOperation(operation)
       const graph = parseResourceGraphBytes(graphBytes)

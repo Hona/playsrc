@@ -60,7 +60,7 @@ export async function assetResponse(request: Request, assetDir: string): Promise
       const selected = range ? bytes.slice(range.start, range.end + 1) : bytes
       const headers: Record<string, string> = { "content-type": "application/octet-stream", "content-length": String(selected.byteLength), "accept-ranges": "bytes", etag, "repr-digest": digestField(hash), "cache-control": IMMUTABLE_CACHE, "access-control-allow-origin": "*" }
       if (range) headers["content-range"] = `bytes ${range.start}-${range.end}/${bytes.byteLength}`
-      if (request.method === "GET") headers["content-digest"] = digestField(new Bun.CryptoHasher("sha256").update(selected).digest("hex"))
+      if (request.method === "GET") headers["content-digest"] = digestField(range ? new Bun.CryptoHasher("sha256").update(selected).digest("hex") : hash)
       return new Response(request.method === "HEAD" ? null : selected, { status: range ? 206 : 200, headers })
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return problem(404, "Object not found")
