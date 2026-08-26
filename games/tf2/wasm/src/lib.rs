@@ -4322,7 +4322,13 @@ pub unsafe extern "C" fn playsrc_simulation_observe(
     if gameplay_protocol::decode(command).is_none() {
         return 0;
     }
-    gameplay_replay::observe(handle, now_seconds, suspended, command);
+    gameplay_replay::observe(
+        handle,
+        now_seconds,
+        suspended,
+        acknowledged_snapshot,
+        command,
+    );
     let mut hosts = simulation_hosts().lock().expect("TF2 Simulation hosts");
     if let std::collections::btree_map::Entry::Vacant(entry) = hosts.entry(handle) {
         let Some(configuration) = simulation_configuration() else {

@@ -21,8 +21,8 @@ function record(kind: number, bytes: Buffer) {
   return Buffer.concat([header, bytes])
 }
 function fixture() {
-  const header = Buffer.alloc(88); header.write("PGRP"); header.writeUInt32LE(1, 4); header.writeBigUInt64LE(1n, 80)
-  const observe = Buffer.alloc(100); observe.writeDoubleLE(2); observe.writeUInt32LE(84, 12)
+  const header = Buffer.alloc(88); header.write("PGRP"); header.writeUInt32LE(2, 4); header.writeBigUInt64LE(1n, 80)
+  const observe = Buffer.alloc(108); observe.writeDoubleLE(2); observe.writeUInt32LE(84, 20)
   const tick = Buffer.alloc(136); tick.writeBigUInt64LE(1n); tick.writeUInt32LE(84, 48)
   const one = Buffer.from([1, 0, 0, 0])
   return Buffer.concat([header, record(7, Buffer.alloc(4)), record(1, observe), record(2, tick), record(3, Buffer.alloc(32)), record(7, one), record(8, one)])

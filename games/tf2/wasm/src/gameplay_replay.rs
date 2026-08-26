@@ -53,13 +53,20 @@ fn append(handle: u32, kind: u32, parts: &[&[u8]]) {
         value.observing = false;
     }
 }
-pub(super) fn observe(handle: u32, now: f64, suspended: u32, command: &[u8]) {
+pub(super) fn observe(
+    handle: u32,
+    now: f64,
+    suspended: u32,
+    acknowledged_snapshot: u64,
+    command: &[u8],
+) {
     append(
         handle,
         1,
         &[
             &now.to_le_bytes(),
             &suspended.to_le_bytes(),
+            &acknowledged_snapshot.to_le_bytes(),
             &(command.len() as u32).to_le_bytes(),
             command,
         ],
@@ -119,7 +126,7 @@ pub extern "C" fn playsrc_gameplay_replay_begin(handle: u32) -> u32 {
             return None;
         }
         let mut bytes = b"PGRP".to_vec();
-        bytes.extend_from_slice(&1_u32.to_le_bytes());
+        bytes.extend_from_slice(&2_u32.to_le_bytes());
         bytes.extend_from_slice(&slot.bsp_hash);
         bytes.extend_from_slice(&slot.collision.as_ref()?.identity);
         bytes.extend_from_slice(&0_u64.to_le_bytes());
@@ -252,7 +259,7 @@ mod tests {
             ACTIVE.store(handle, Ordering::Relaxed);
         };
         setup(b"checkpoint".to_vec());
-        observe(handle, 1.0, 0, &[0; 84]);
+        observe(handle, 1.0, 0, 0, &[0; 84]);
         assert_eq!(playsrc_gameplay_replay_stop(handle), 0);
         assert!(
             journal()
@@ -264,11 +271,11 @@ mod tests {
                 .starts_with(b"checkpoint")
         );
         setup(vec![0; MAX_BYTES - 16]);
-        observe(handle, 2.0, 0, &[0; 84]);
+        observe(handle, 2.0, 0, 0, &[0; 84]);
         assert_eq!(playsrc_gameplay_replay_stop(handle), 0);
         assert!(playsrc_gameplay_replay_length(handle) <= MAX_BYTES);
         setup(b"checkpoint".to_vec());
-        observe(handle, 3.0, 0, &[0; 84]);
+        observe(handle, 3.0, 0, 0, &[0; 84]);
         published(handle, &[42]);
         assert_eq!(playsrc_gameplay_replay_stop(handle), 1);
         assert_eq!(playsrc_gameplay_replay_stop(handle), 0);
