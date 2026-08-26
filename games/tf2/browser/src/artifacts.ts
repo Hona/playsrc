@@ -440,7 +440,21 @@ export type StaticPropArtifact = Readonly<{
   vhvObjects: Uint32Array
   runtimeAmbient: Float32Array
   runtimeLightOffsets: Uint32Array
-  runtimeLights: Readonly<{ source: number; kind: number; style: number; ratio: number; direction: readonly [number,number,number]; intensity: readonly [number,number,number] }>[]
+  runtimeLights: Readonly<{
+    source: number
+    kind: number
+    style: number
+    ratio: number
+    direction: readonly [number, number, number]
+    intensity: readonly [number, number, number]
+    origin: readonly [number, number, number]
+    normal: readonly [number, number, number]
+    stopDot: number
+    stopDot2: number
+    exponent: number
+    radius: number
+    attenuation: readonly [number, number, number]
+  }>[]
   models: readonly string[]
   vhv: readonly Readonly<{ occurrence:number;model:number;profile:0|1;sha256:string;joinSha256:string;vertexCount:number;meshes:readonly Readonly<{primitive:number;lod:number;vertexCount:number;colors:Uint8Array}>[]}>[]
   runtimeLightingCount: number
@@ -1240,7 +1254,7 @@ function parseStaticPropVhv(bytes:Uint8Array,expectedSha256:string):StaticPropAr
 
 function parseStaticProps(r: Reader, expectedModelCount: number,models:readonly string[],resources:ReadonlyMap<string,Uint8Array>): StaticPropArtifact {
   const start = r.offset
-  if (r.decode(r.take(4)) !== "PSPA" || r.u32() !== 1) throw new ArtifactError("static prop identity")
+  if (r.decode(r.take(4)) !== "PSPA" || r.u32() !== 2) throw new ArtifactError("static prop identity")
   const aggregateSha256 = hex(r.take(32)), modelCount = r.u32(), count = r.u32()
   if (modelCount !== expectedModelCount || count > 65_536) throw new ArtifactError("static prop count")
   const source=new Uint32Array(count),dictionaryModel=new Uint32Array(count),presentationModel=new Uint32Array(count),transform=new Float32Array(count*6),skin=new Int32Array(count),body=new Uint32Array(count),lod=new Uint32Array(count),fades=new Float32Array(count*3),flags=new Uint32Array(count),solidity=new Uint8Array(count),ownership=new Uint8Array(count),lightingKind=new Uint8Array(count),lightingOrigin=new Float32Array(count*3),leafOffsets=new Uint32Array(count+1),vhvObjects=new Uint32Array(count*2),runtimeAmbient=new Float32Array(count*18),runtimeLightOffsets=new Uint32Array(count+1),leafValues:number[]=[],areaValues:number[]=[],runtimeLights:StaticPropArtifact["runtimeLights"][number][]=[]
@@ -1271,7 +1285,9 @@ function parseStaticProps(r: Reader, expectedModelCount: number,models:readonly 
         const lightSource=r.u32(),kind=r.i32(),style=r.u8()
         if (!r.take(3).every((value) => value === 0)) throw new ArtifactError("static prop light reserved")
         const ratio=r.f32(),direction=Object.freeze([r.f32(),r.f32(),r.f32()]) as readonly[number,number,number],intensity=Object.freeze([r.f32(),r.f32(),r.f32()]) as readonly[number,number,number]
-        runtimeLights.push(Object.freeze({source:lightSource,kind,style,ratio,direction,intensity}))
+        const origin=Object.freeze([r.f32(),r.f32(),r.f32()]) as readonly[number,number,number],normal=Object.freeze([r.f32(),r.f32(),r.f32()]) as readonly[number,number,number]
+        const stopDot=r.f32(),stopDot2=r.f32(),exponent=r.f32(),radius=r.f32(),attenuation=Object.freeze([r.f32(),r.f32(),r.f32()]) as readonly[number,number,number]
+        runtimeLights.push(Object.freeze({source:lightSource,kind,style,ratio,direction,intensity,origin,normal,stopDot,stopDot2,exponent,radius,attenuation}))
       }
     }
   }

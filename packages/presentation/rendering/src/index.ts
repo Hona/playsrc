@@ -635,7 +635,7 @@ export type AuthoredTextureInput = Readonly<{
   }>[]
 }>
 export type StaticPropInput=Readonly<{
-  count:number;source:Uint32Array;dictionaryModel:Uint32Array;presentationModel:Uint32Array;transform:Float32Array;skin:Int32Array;body:Uint32Array;lod:Uint32Array;fades:Float32Array;flags:Uint32Array;solidity:Uint8Array;ownership:Uint8Array;lightingKind:Uint8Array;lightingOrigin:Float32Array;leafOffsets:Uint32Array;leaves:Uint16Array;areas:Uint16Array;vhvObjects:Uint32Array;runtimeAmbient:Float32Array;runtimeLightOffsets:Uint32Array;runtimeLights:readonly Readonly<{source:number;kind:number;style:number;ratio:number;direction:readonly[number,number,number];intensity:readonly[number,number,number]}>[];models:readonly string[];vhv:readonly Readonly<{occurrence:number;model:number;profile:0|1;vertexCount:number;meshes:readonly Readonly<{primitive:number;lod:number;vertexCount:number;colors:Uint8Array}>[]}>[]
+  count:number;source:Uint32Array;dictionaryModel:Uint32Array;presentationModel:Uint32Array;transform:Float32Array;skin:Int32Array;body:Uint32Array;lod:Uint32Array;fades:Float32Array;flags:Uint32Array;solidity:Uint8Array;ownership:Uint8Array;lightingKind:Uint8Array;lightingOrigin:Float32Array;leafOffsets:Uint32Array;leaves:Uint16Array;areas:Uint16Array;vhvObjects:Uint32Array;runtimeAmbient:Float32Array;runtimeLightOffsets:Uint32Array;runtimeLights:readonly Readonly<{source:number;kind:number;style:number;ratio:number;direction:readonly[number,number,number];intensity:readonly[number,number,number];origin:readonly[number,number,number];normal:readonly[number,number,number];stopDot:number;stopDot2:number;exponent:number;radius:number;attenuation:readonly[number,number,number]}>[];models:readonly string[];vhv:readonly Readonly<{occurrence:number;model:number;profile:0|1;vertexCount:number;meshes:readonly Readonly<{primitive:number;lod:number;vertexCount:number;colors:Uint8Array}>[]}>[]
 }>
 
 export type MapLoadRequest = Readonly<{
@@ -1020,18 +1020,20 @@ function sourceTransform(object: THREE.Object3D, position: readonly number[], an
   )
 }
 function runtimeStaticLightingNode(map:RuntimeMap,input:StaticPropInput,index:number):any{
-  if(map.lighting.profile!=="hdr")throw new RenderingError("MissingInput","runtime static-prop lighting requires HDR world lights")
   const normal=TSL.normalWorld.normalize(),cube=Array.from({length:6},(_,side)=>TSL.vec3(...input.runtimeAmbient.subarray(index*18+side*3,index*18+side*3+3) as unknown as [number,number,number]))
   let lighting=normal.x.lessThan(0).select(cube[1],cube[0]).mul(normal.x.mul(normal.x)).add(normal.y.lessThan(0).select(cube[3],cube[2]).mul(normal.y.mul(normal.y))).add(normal.z.lessThan(0).select(cube[5],cube[4]).mul(normal.z.mul(normal.z)))
   for(let at=input.runtimeLightOffsets[index]!;at<input.runtimeLightOffsets[index+1]!;at++){
-    const retained=input.runtimeLights[at]!,light=map.lighting.descriptor.worldLights[retained.source]
-    if(!light||light.kind!==retained.kind||light.style!==retained.style)throw new RenderingError("IdentityMismatch","runtime static-prop world-light identity differs")
+    const light=input.runtimeLights[at]!
+    if(map.lighting.profile==="hdr"){
+      const source=map.lighting.descriptor.worldLights[light.source]
+      if(!source||source.kind!==light.kind||source.style!==light.style||source.origin.some((value,axis)=>value!==light.origin[axis]))throw new RenderingError("IdentityMismatch","runtime static-prop world-light identity differs")
+    }
     const delta=TSL.vec3(...light.origin).sub(TSL.positionWorld),distance=delta.length(),direction=delta.normalize()
     let attenuation:any
     if(light.kind===3)attenuation=TSL.float(1)
     else if(light.kind===0)attenuation=distance.mul(distance).max(1).reciprocal().mul(direction.dot(TSL.vec3(...light.normal)).negate().max(0))
-    else if(light.kind===4)attenuation=TSL.float(light.linearAttenuation).sub(distance).max(0)
-    else attenuation=TSL.float(light.constantAttenuation).add(distance.mul(light.linearAttenuation)).add(distance.mul(distance).mul(light.quadraticAttenuation)).reciprocal()
+    else if(light.kind===4)attenuation=TSL.float(light.attenuation[1]).sub(distance).max(0)
+    else attenuation=TSL.float(light.attenuation[0]).add(distance.mul(light.attenuation[1])).add(distance.mul(distance).mul(light.attenuation[2])).reciprocal()
     if(light.kind===2){const cone=direction.dot(TSL.vec3(...light.normal)).negate(),spread=Math.max(Number.EPSILON,light.stopDot-light.stopDot2),factor=cone.sub(light.stopDot2).div(spread).clamp(0,1);attenuation=attenuation.mul(light.exponent===0||light.exponent===1?factor:factor.pow(light.exponent))}
     const lightDirection=light.kind===3?TSL.vec3(...light.normal).negate():direction,diffuse=normal.dot(lightDirection).mul(0.5).add(0.5).clamp(0,1).pow(2)
     lighting=lighting.add(TSL.vec3(...light.intensity).mul(attenuation).mul(diffuse))

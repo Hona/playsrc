@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub const AGGREGATE_PATH: &str = "derived/static-prop-lighting.pvha";
 const AGGREGATE_VERSION: u32 = 2;
-const SECTION_VERSION: u32 = 1;
+const SECTION_VERSION: u32 = 2;
 const MAX_OBJECTS: usize = 8_192;
 const MAX_OCCURRENCES: usize = 65_536;
 const MAX_LEAVES: usize = 1_000_000;
@@ -223,6 +223,13 @@ pub struct RuntimeLight {
     pub ratio: f32,
     pub direction: [f32; 3],
     pub intensity: [f32; 3],
+    pub origin: [f32; 3],
+    pub normal: [f32; 3],
+    pub stop_dot: f32,
+    pub stop_dot2: f32,
+    pub exponent: f32,
+    pub radius: f32,
+    pub attenuation: [f32; 3],
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -470,7 +477,15 @@ pub fn encode_section_with_cancel(
                     out.extend_from_slice(&[light.style, 0, 0, 0]);
                     finite(light.ratio)?;
                     out.extend_from_slice(&light.ratio.to_le_bytes());
-                    for value in light.direction.into_iter().chain(light.intensity) {
+                    for value in light
+                        .direction
+                        .into_iter()
+                        .chain(light.intensity)
+                        .chain(light.origin)
+                        .chain(light.normal)
+                        .chain([light.stop_dot, light.stop_dot2, light.exponent, light.radius])
+                        .chain(light.attenuation)
+                    {
                         finite(value)?;
                         out.extend_from_slice(&value.to_le_bytes());
                     }
@@ -553,6 +568,13 @@ pub fn decode_section(bytes: &[u8]) -> Result<Section, ()> {
                 let ratio = r.f32()?;
                 let direction = r.vec3()?;
                 let intensity = r.vec3()?;
+                let origin = r.vec3()?;
+                let normal = r.vec3()?;
+                let stop_dot = r.f32()?;
+                let stop_dot2 = r.f32()?;
+                let exponent = r.f32()?;
+                let radius = r.f32()?;
+                let attenuation = r.vec3()?;
                 lights.push(RuntimeLight {
                     source: light_source,
                     kind,
@@ -560,6 +582,13 @@ pub fn decode_section(bytes: &[u8]) -> Result<Section, ()> {
                     ratio,
                     direction,
                     intensity,
+                    origin,
+                    normal,
+                    stop_dot,
+                    stop_dot2,
+                    exponent,
+                    radius,
+                    attenuation,
                 });
             }
             Lighting::Runtime {

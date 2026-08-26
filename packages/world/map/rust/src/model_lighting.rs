@@ -447,6 +447,43 @@ fn length(value: [f32; 3]) -> f32 {
 mod tests {
     use super::*;
 
+    fn visibility(leaves: Vec<playsrc_bsp::Leaf>) -> Visibility {
+        Visibility {
+            identity: [0; 32],
+            visibility_mode: playsrc_visibility::VisibilityMode::NoVis,
+            cluster_count: 0,
+            words_per_row: 0,
+            pvs: Vec::new(),
+            pas: Vec::new(),
+            planes: Vec::new(),
+            nodes: Vec::new(),
+            leaves,
+            leaf_faces: Vec::new(),
+            models: Vec::new(),
+            areas: Vec::new(),
+            portals: Vec::new(),
+            portal_vertices: Vec::new(),
+            leaf_displacements: Vec::new(),
+        }
+    }
+
+    fn leaf() -> playsrc_bsp::Leaf {
+        playsrc_bsp::Leaf {
+            contents: 0,
+            cluster: 0,
+            area_and_flags: 0,
+            mins: [0; 3],
+            maxs: [255; 3],
+            first_leaf_face: 0,
+            leaf_face_count: 0,
+            first_leaf_brush: 0,
+            leaf_brush_count: 0,
+            leaf_water_data_id: -1,
+            padding: 0,
+            ambient_cube: None,
+        }
+    }
+
     fn light() -> WorldLight {
         WorldLight {
             origin: [64.0, 0.0, 0.0],
@@ -494,5 +531,27 @@ mod tests {
             .unwrap();
         assert_eq!(cube[0], [1.0, 1.5, 2.0]);
         assert!(cube[1..].iter().all(|side| *side == [0.0; 3]));
+    }
+
+    #[test]
+    fn ambient_samples_use_inverse_squared_distance_and_borrow_solid_leaf_neighbors() {
+        let world = ModelLightingWorld {
+            indexes: vec![
+                AmbientIndex { sample_count: 0, first_sample: 1 },
+                AmbientIndex { sample_count: 2, first_sample: 0 },
+            ],
+            samples: vec![
+                AmbientSample { cube: [[1.0, 2.0, 3.0]; 6], position: [0; 3] },
+                AmbientSample { cube: [[3.0, 6.0, 9.0]; 6], position: [255, 0, 0] },
+            ],
+            lights: Vec::new(),
+            cache: BTreeMap::new(),
+        };
+        let visibility = visibility(vec![leaf(), leaf()]);
+        let cube = world.sample_leaf(0, [0.0; 3], &visibility).unwrap();
+        let far = 1.0 / (255.0_f32 * 255.0 + 1.0);
+        let expected = (1.0 + 3.0 * far) / (1.0 + far);
+        assert_eq!(cube[0][0].to_bits(), expected.to_bits());
+        assert_eq!(cube[5][1].to_bits(), (expected * 2.0).to_bits());
     }
 }
