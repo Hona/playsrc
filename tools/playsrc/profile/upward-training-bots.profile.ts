@@ -24,10 +24,13 @@ function processResidentMemory(processes: Array<{ id: number; type: string }> | 
 test("profile authored headed Upward offline-practice default roster and actual completed gameplay frames", async ({ page, context }, testInfo) => {
   const wallStarted = Date.now()
   const seconds = profileSampleSeconds()
+  const createServer = process.env.PROFILE_STARTUP_CREATE_SERVER === "1"
+  const target = createServer ? "ctf_2fort" : "pl_upward"
+  const entry = createServer ? "create-server" : "training"
   const exerciseClasses = process.env.PROFILE_UPWARD_CLASS_SWITCH === "1"
   const label = process.env.PROFILE_UPWARD_TRAINING_LABEL ?? "latest"
   const { sourceCacheDir } = await loadLocalConfig()
-  const directory = path.join(sourceCacheDir, "profiles", "upward-training-bots")
+  const directory = path.join(sourceCacheDir, "profiles", createServer ? "2fort-startup" : "upward-training-bots")
   await mkdir(directory, { recursive: true })
   await page.addInitScript(installBrowserFrameProfiler)
   await page.addInitScript(() => {
@@ -166,22 +169,36 @@ test("profile authored headed Upward offline-practice default roster and actual 
     const startupMilliseconds = Date.now() - started
     networkStage = `${cache}-menu`
     await page.locator(".gameui-layer [data-vgui-name='FindAGameButton']").click()
-    await page.locator(".gameui-layer [data-vgui-name='TrainingEntry'] [data-vgui-name='ModeButton']").click()
-    await layer.locator("[data-vgui-name='OfflinePracticePanel'] [data-vgui-name='StartButton']").click()
-    const next = layer.locator("[data-vgui-name='OfflinePractice_ModeSelectionPanel'] [data-vgui-name='NextButton']")
-    await next.click()
-    await next.click()
-    await expect(layer.locator("[data-vgui-name='GameModeLabel']")).toHaveText("Payload")
-    await layer.locator("[data-vgui-name='SelectCurrentGameModeButton']").click()
-    await expect(layer.locator("[data-vgui-name='MapNameLabel']")).toHaveText("Upward")
-    const mapPanel = layer.locator("[data-vgui-name='OfflinePractice_MapSelectionPanel']")
-    const playerEntry = mapPanel.locator("[data-vgui-name='NumPlayersTextEntry']")
-    if (process.env.PROFILE_UPWARD_TRAINING_PLAYERS) await playerEntry.fill(process.env.PROFILE_UPWARD_TRAINING_PLAYERS)
-    const playerCount = Number(await playerEntry.inputValue())
+    let playerCount: number
+    let start: import("@playwright/test").Locator
+    if (createServer) {
+      await page.locator(".gameui-layer [data-vgui-name='CreateServerEntry'] [data-vgui-name='ModeButton']").click()
+      const dialog = layer.getByRole("dialog", { name: "CREATE SERVER" })
+      await dialog.locator("[data-vgui-name='MapList']").click()
+      await page.getByRole("option", { name: "ctf_2fort" }).click()
+      await dialog.getByRole("tab", { name: "GAME" }).click()
+      await dialog.locator("[data-vgui-name='GameplayPage'] [data-vgui-name='NumPlayersTextEntry']").fill("23")
+      playerCount = 24
+      start = dialog.getByRole("button", { name: "Start" })
+    } else {
+      await page.locator(".gameui-layer [data-vgui-name='TrainingEntry'] [data-vgui-name='ModeButton']").click()
+      await layer.locator("[data-vgui-name='OfflinePracticePanel'] [data-vgui-name='StartButton']").click()
+      const next = layer.locator("[data-vgui-name='OfflinePractice_ModeSelectionPanel'] [data-vgui-name='NextButton']")
+      await next.click()
+      await next.click()
+      await expect(layer.locator("[data-vgui-name='GameModeLabel']")).toHaveText("Payload")
+      await layer.locator("[data-vgui-name='SelectCurrentGameModeButton']").click()
+      await expect(layer.locator("[data-vgui-name='MapNameLabel']")).toHaveText("Upward")
+      const mapPanel = layer.locator("[data-vgui-name='OfflinePractice_MapSelectionPanel']")
+      const playerEntry = mapPanel.locator("[data-vgui-name='NumPlayersTextEntry']")
+      if (process.env.PROFILE_UPWARD_TRAINING_PLAYERS) await playerEntry.fill(process.env.PROFILE_UPWARD_TRAINING_PLAYERS)
+      playerCount = Number(await playerEntry.inputValue())
+      start = mapPanel.locator("[data-vgui-name='StartOfflinePracticeButton']")
+    }
     expect(playerCount).toBeGreaterThanOrEqual(12)
     const mapStarted = Date.now()
     networkStage = `${cache}-map`
-    await mapPanel.locator("[data-vgui-name='StartOfflinePracticeButton']").click({ timeout: 5_000 })
+    await start.click({ timeout: 5_000 })
     await expect(root).toHaveAttribute("data-team-selection-visible", "true", { timeout: 110_000 })
     const teamAdmissionMilliseconds = Date.now() - mapStarted
     await chooseTf2Team(page, "red")
@@ -204,7 +221,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     networkStage = `${cache}-gameplay`
     await expect(root).toHaveAttribute("data-bot-count", String(playerCount - 1), { timeout: 70_000 })
     const launch = JSON.parse(await root.getAttribute("data-local-match-settings") ?? "null")
-    expect(launch).toMatchObject({ entry: "training", mapIdentity: "pl_upward", configuration: { quota: playerCount - 1, offlinePractice: true } })
+    expect(launch).toMatchObject({ entry, mapIdentity: target, configuration: { quota: playerCount - 1, offlinePractice: !createServer } })
     const persistence = await page.evaluate(async () => {
       const request = indexedDB.open("playsrc-derived-v3")
       const database = await new Promise<IDBDatabase>((resolve, reject) => {
@@ -548,7 +565,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     return [name, summarizeDistribution(events.map(event => event.dur! / 1_000))]
   }))
   const report = {
-    schema: "playsrc-tf2-upward-training-bots-profile-v1", label, headed: true, target: "pl_upward", entry: "training", launch,
+    schema: "playsrc-tf2-upward-training-bots-profile-v1", label, headed: true, target, entry, launch,
     activeBots: measurement.roster.length, teams: { red: measurement.scoreboard.red.playerCount, blue: measurement.scoreboard.blue.playerCount },
     elapsedMilliseconds: Number(measurement.elapsed.toFixed(3)), readyMilliseconds, loads, totalWallMilliseconds: Date.now() - wallStarted,
     animationCallbacks: measurement.animationCallbacks, completedFrames: actualFrames, applicationCompletedFramesPerSecond: Number((actualFrames / measurement.elapsed * 1000).toFixed(3)),

@@ -5,6 +5,7 @@ use std::{
 };
 
 use crate::{ErrorCode, ParseError, failure};
+use rayon::prelude::*;
 
 const LOCAL_SIGNATURE: u32 = 0x0403_4b50;
 const CENTRAL_SIGNATURE: u32 = 0x0201_4b50;
@@ -197,37 +198,80 @@ pub(crate) fn parse(
     }
 
     let mut total_decoded = 0_usize;
-    let mut archive =
+    let archive =
         zip::ZipArchive::new(Cursor::new(bytes)).map_err(|_| malformed(lump, 0..bytes.len()))?;
-    for (index, entry) in entries.iter_mut().enumerate() {
-        if entry.classification == PakEntryClassification::Unsupported {
-            continue;
+    let selected = entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            (entry.classification == PakEntryClassification::Handled).then_some(index)
+        })
+        .collect::<Vec<_>>();
+    let mut next = 0;
+    while next < selected.len() {
+        // Bound transient decompressor state independently of retained PAK payloads.
+        // Cloned archives borrow the same source slice and share their parsed index.
+        let mut batch_bytes = 0usize;
+        let mut jobs = Vec::with_capacity(4);
+        while next < selected.len() && jobs.len() < 4 {
+            let index = selected[next];
+            let entry = &entries[index];
+            let size = entry.decoded_size as usize;
+            if !jobs.is_empty() && batch_bytes.saturating_add(size) > 32 * 1024 * 1024 {
+                break;
+            }
+            let budget = total_decoded
+                .checked_add(size)
+                .ok_or_else(|| malformed(lump, entry.central_header_range.clone()))
+                .and_then(|total| {
+                    total_decoded = total;
+                    if total > max_total_decoded_bytes {
+                        Err(failure(
+                            ErrorCode::DecodedBudget,
+                            Some(lump),
+                            entry.central_header_range.clone(),
+                            Some(total),
+                            Some(max_total_decoded_bytes),
+                        ))
+                    } else {
+                        Ok(())
+                    }
+                });
+            let failed = budget.is_err();
+            jobs.push((index, budget));
+            next += 1;
+            batch_bytes = batch_bytes.saturating_add(size);
+            if failed {
+                break;
+            }
         }
-        total_decoded = total_decoded
-            .checked_add(entry.decoded_size as usize)
-            .ok_or_else(|| malformed(lump, entry.central_header_range.clone()))?;
-        if total_decoded > max_total_decoded_bytes {
-            return Err(failure(
-                ErrorCode::DecodedBudget,
-                Some(lump),
-                entry.central_header_range.clone(),
-                Some(total_decoded),
-                Some(max_total_decoded_bytes),
-            ));
+        let results = jobs
+            .par_iter()
+            .map(|(index, budget)| {
+                budget.clone()?;
+                let entry = &entries[*index];
+                let mut archive = archive.clone();
+                let mut file = archive
+                    .by_index(*index)
+                    .map_err(|_| malformed(lump, entry.local_header_range.clone()))?;
+                let mut decoded = Vec::with_capacity(entry.decoded_size as usize);
+                file.by_ref()
+                    .take(entry.decoded_size as u64 + 1)
+                    .read_to_end(&mut decoded)
+                    .map_err(|_| malformed(lump, entry.encoded_range.clone()))?;
+                if decoded.len() != entry.decoded_size as usize
+                    || crc32fast::hash(&decoded) != entry.crc32
+                {
+                    return Err(malformed(lump, entry.encoded_range.clone()));
+                }
+                Ok(decoded)
+            })
+            .collect::<Vec<_>>();
+        // Observe errors in central-directory order, including an earlier corrupt
+        // entry before a later budget failure. No partial PAK is published.
+        for ((index, _), result) in jobs.into_iter().zip(results) {
+            entries[index].decoded = Some(result?);
         }
-        let mut file = archive
-            .by_index(index)
-            .map_err(|_| malformed(lump, entry.local_header_range.clone()))?;
-        let mut decoded = Vec::with_capacity(entry.decoded_size as usize);
-        file.by_ref()
-            .take(entry.decoded_size as u64 + 1)
-            .read_to_end(&mut decoded)
-            .map_err(|_| malformed(lump, entry.encoded_range.clone()))?;
-        if decoded.len() != entry.decoded_size as usize || crc32fast::hash(&decoded) != entry.crc32
-        {
-            return Err(malformed(lump, entry.encoded_range.clone()));
-        }
-        entry.decoded = Some(decoded);
     }
 
     Ok(Pak {
@@ -383,5 +427,69 @@ mod tests {
             parse(&corrupt, 40, 1, 100, 100, 100).unwrap_err().code,
             ErrorCode::InvalidPak
         );
+    }
+
+    #[test]
+    fn parallel_pak_decode_preserves_bytes_and_directory_error_precedence() {
+        let mut bytes = Vec::new();
+        let mut central = Vec::new();
+        for index in 0..12 {
+            let data = vec![index as u8; 4096 + index];
+            let name = format!("materials/{index}.vmt");
+            let single = if index % 2 == 0 {
+                stored_archive(name.as_bytes(), &data)
+            } else {
+                let mut alone = Vec::new();
+                lzma_rs::lzma_compress(&mut Cursor::new(&data), &mut alone).unwrap();
+                let mut encoded = vec![9, 4, 5, 0];
+                encoded.extend_from_slice(&alone[..5]);
+                encoded.extend_from_slice(&alone[13..]);
+                archive(name.as_bytes(), &data, 14, &encoded)
+            };
+            let end = find_end(&single).unwrap();
+            let start = u32_at(&single, end + 16) as usize;
+            let mut record = single[start..end].to_vec();
+            record[42..46].copy_from_slice(&(bytes.len() as u32).to_le_bytes());
+            central.extend_from_slice(&record);
+            bytes.extend_from_slice(&single[..start]);
+        }
+        let central_start = bytes.len();
+        bytes.extend_from_slice(&central);
+        bytes.extend_from_slice(&END_SIGNATURE.to_le_bytes());
+        bytes.extend_from_slice(&[0; 4]);
+        bytes.extend_from_slice(&12_u16.to_le_bytes());
+        bytes.extend_from_slice(&12_u16.to_le_bytes());
+        bytes.extend_from_slice(&(central.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&(central_start as u32).to_le_bytes());
+        bytes.extend_from_slice(&0_u16.to_le_bytes());
+
+        let pools = [1, 4].map(|threads| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap()
+        });
+        let serial = pools[0]
+            .install(|| parse(&bytes, 40, 12, 8192, 65_536, 1024))
+            .unwrap();
+        let parallel = pools[1]
+            .install(|| parse(&bytes, 40, 12, 8192, 65_536, 1024))
+            .unwrap();
+        assert_eq!(serial, parallel);
+        for (index, entry) in parallel.entries.iter().enumerate() {
+            assert_eq!(
+                entry.decoded.as_deref(),
+                Some(vec![index as u8; 4096 + index].as_slice())
+            );
+        }
+        let budget = parse(&bytes, 40, 12, 8192, 4096, 1024).unwrap_err();
+        assert_eq!(budget.code, ErrorCode::DecodedBudget);
+        bytes[parallel.entries[0].encoded_range.start] ^= 1;
+        let errors = pools.map(|pool| {
+            pool.install(|| parse(&bytes, 40, 12, 8192, 4096, 1024))
+                .unwrap_err()
+        });
+        assert_eq!(errors[0], errors[1]);
+        assert_eq!(errors[0].code, ErrorCode::InvalidPak);
     }
 }
