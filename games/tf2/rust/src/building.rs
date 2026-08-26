@@ -1008,6 +1008,7 @@ mod tests {
             damage: 0,
             captures: 0,
             carrying_flag: false,
+            animation_role: bot::AnimationRole::Primary,
             last_fire_tick: None,
             respawn_tick: None,
         };

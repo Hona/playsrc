@@ -509,11 +509,12 @@ describe("TF2 HUD and pause headed symptom loop", () => {
       model: "models/flag/briefcase.mdl", icon: "../hud/objectives_flagpanel_carried",
       paperEffect: "player_intel_papertrail", trailEffect: "flagtrail",
     })
-    const publish = (tick: bigint, red: ReturnType<typeof flag>, blue: ReturnType<typeof flag>, redCaptures: number, events: readonly any[] = [], winner: 2 | 3 | null = null) => {
+    const publish = (tick: bigint, red: ReturnType<typeof flag>, blue: ReturnType<typeof flag>, redCaptures: number, events: readonly any[] = [], winner: 2 | 3 | null = null, hudContext = context) => {
       const base = compact(tick, 3, 2, 1, 4, 20)
-      const objectives = Object.freeze({ redCaptures, blueCaptures: 0, redScore: 0, blueScore: 0, captureLimit: 3, winner, flags: Object.freeze([red, blue]), zones: Object.freeze([]), events: Object.freeze(events) })
-      const snapshot = Object.freeze({ ...base.snapshot, objectives })
-      return hud.publish(Object.freeze({ snapshot, eventBatches: Object.freeze([Object.freeze({ snapshot })]) }), context)
+      const objectives = Object.freeze({ redCaptures, blueCaptures: 0, redScore: redCaptures, blueScore: 0, captureLimit: 3, winner, flags: Object.freeze([red, blue]), zones: Object.freeze([]), events: Object.freeze(events) })
+      const bots = Object.freeze([Object.freeze({ identity: 2, team: 2 as const, class: 5 as const }), Object.freeze({ identity: 3, team: 3 as const, class: 1 as const })])
+      const snapshot = Object.freeze({ ...base.snapshot, objectives, bots })
+      return hud.publish(Object.freeze({ snapshot, eventBatches: Object.freeze([Object.freeze({ snapshot })]) }), hudContext)
     }
     publish(1n, flag(10, 2, 0), flag(20, 3, 0), 0)
     let panels = hud.snapshot().vgui.panels
@@ -557,11 +558,38 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     expect(panels.find((panel) => panel.name === "Notification_Label")?.text).toBe("The ENEMY INTELLIGENCE was dropped!")
     publish(203n, flag(10, 2, 0), flag(20, 3, 0), 1)
     expect(visible(hud.snapshot().vgui.panels, ["NotificationPanel"])).toEqual([])
-    publish(204n, flag(10, 2, 0), flag(20, 3, 0), 3, [], 2)
+    const authority = Object.freeze({
+      redScore: 3, blueScore: 0, redCount: 2, blueCount: 1,
+      players: Object.freeze([
+        Object.freeze({ identity: 1, name: "unnamed", team: 2 as const, class: 3 as const, alive: true, fake: false, score: 3, kills: 1, deaths: 0, captures: 1, damage: 125 }),
+        Object.freeze({ identity: 2, name: "Chucklenuts", team: 2 as const, class: 5 as const, alive: true, fake: true, score: 1, kills: 1, deaths: 0, captures: 0, damage: 50 }),
+        Object.freeze({ identity: 3, name: "CryBaby", team: 3 as const, class: 1 as const, alive: true, fake: true, score: 5, kills: 5, deaths: 0, captures: 0, damage: 500 }),
+      ]),
+    })
+    const winningScoreboard = adaptTf2Scoreboard(authority, 2, false, "ctf_2fort", false)
+    const captured = Object.freeze({ kind: 2, detail: 2, team: 2, flags: 0, subject: 20, player: 1, auxiliary: 0, value: 0 })
+    publish(204n, flag(10, 2, 0), flag(20, 3, 0), 3, [captured], 2, Object.freeze({ ...context, scoreboard: tf2HudAvailable(winningScoreboard) }))
     panels = hud.snapshot().vgui.panels
     expect(visible(panels, ["WinPanel"])).toEqual(["WinPanel"])
     expect(panels.find((panel) => panel.name === "WinningTeamLabel")?.text).toBe("RED TEAM WINS!")
     expect(panels.find((panel) => panel.name === "WinReasonLabel")?.text).toBe("RED captured the enemy intelligence 3 times")
+    expect(panels.findLast((panel) => panel.name === "RedTeamLabel")?.text).toBe("RED")
+    expect(panels.findLast((panel) => panel.name === "BlueTeamLabel")?.text).toBe("BLU")
+    expect(panels.findLast((panel) => panel.name === "RedTeamScore")?.text).toBe("3")
+    expect(panels.findLast((panel) => panel.name === "BlueTeamScore")?.text).toBe("0")
+    expect(panels.find((panel) => panel.name === "DetailsLabel")?.text).toContain("unnamed")
+    expect(panels.find((panel) => panel.name === "Player1Name")?.text).toBe("unnamed")
+    expect(panels.find((panel) => panel.name === "Player1Class")?.text).toBe("Soldier")
+    expect(panels.find((panel) => panel.name === "Player1Score")?.text).toBe("3")
+    expect(panels.find((panel) => panel.name === "Player2Name")?.text).toBe("Chucklenuts")
+    expect(panels.find((panel) => panel.name === "Player2Class")?.text).toBe("Medic")
+    expect(visible(panels, ["Player3Name", "Player3Avatar", "KillStreakPlayer1Name", "KillStreakPlayer1Avatar", "BlueLeaderAvatar", "BlueLeaderAvatarBG", "RedLeaderAvatar", "RedLeaderAvatarBG"])).toEqual([])
+    const winPanel = panels.find((panel) => panel.name === "WinPanel")!
+    const teamScores = panels.find((panel) => panel.name === "TeamScoresPanel")!
+    expect(panels.filter((panel) => panel.parent === winPanel.id || panel.parent === teamScores.id)
+      .some((panel) => panel.text.includes("[unknown]"))).toBe(false)
+    publish(205n, flag(10, 2, 0), flag(20, 3, 0), 3, [], 2, Object.freeze({ ...context, scoreboard: tf2HudAvailable(winningScoreboard) }))
+    expect(hud.snapshot().vgui.panels.find((panel) => panel.name === "DetailsLabel")?.text).toBe("Winning capture: unnamed")
     hud.reset("map-replaced")
     expect(visible(hud.snapshot().vgui.panels, ["WinPanel", "HudObjectiveStatus"])).toEqual([])
     hud.destroy()

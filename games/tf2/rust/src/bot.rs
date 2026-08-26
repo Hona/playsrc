@@ -210,6 +210,19 @@ pub struct Request {
     pub difficulty: Difficulty,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Control {
+    Teleport {
+        identity: u32,
+        position: [f32; 3],
+        pitch_degrees: f32,
+        yaw_degrees: f32,
+    },
+    Whack {
+        identity: u32,
+    },
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum ObjectiveKind {
@@ -220,6 +233,28 @@ pub enum ObjectiveKind {
     Attack = 5,
     GetHealth = 6,
     GetAmmo = 7,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Route {
+    Default,
+    Fastest,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum AnimationRole {
+    Primary = 1,
+    Secondary = 2,
+    Melee = 3,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PathContext {
+    pub team: PlayerTeam,
+    pub bot_identity: u32,
+    pub now: f32,
+    pub route: Route,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -249,6 +284,7 @@ pub struct Snapshot {
     pub damage: u32,
     pub killstreak: u32,
     pub carrying_flag: bool,
+    pub animation_role: AnimationRole,
     pub last_fire_tick: Option<u64>,
     pub respawn_tick: Option<u64>,
 }
@@ -419,7 +455,7 @@ pub enum Error {
     MissingSpawn(PlayerTeam),
     InvalidEntity,
     Limit,
-    Movement,
+    Movement(playsrc_movement::Error),
     Damage,
 }
 
@@ -483,7 +519,7 @@ impl BotWorld {
                                 maxs: [0.0; 3],
                             },
                         )
-                        .map_err(|_| Error::Movement)?
+                        .map_err(Error::Movement)?
                     {
                         area.game_attributes |= match team {
                             PlayerTeam::Red => TF_NAV_SPAWN_ROOM_RED,
@@ -688,6 +724,32 @@ impl BotWorld {
                 position: bot.movement.position,
                 velocity: bot.movement.velocity,
                 burning: bot.afterburn.is_some(),
+            })
+    }
+
+    pub(crate) fn contact_actors(
+        &self,
+        winning_team: Option<PlayerTeam>,
+    ) -> impl Iterator<Item = crate::map_runtime::ActorContact> + '_ {
+        self.bots
+            .values()
+            .map(move |bot| crate::map_runtime::ActorContact {
+                identity: bot.identity,
+                position: bot.movement.position,
+                hull: MovementPolicy {
+                    class: bot.class,
+                    modifiers: MovementModifiers::default(),
+                }
+                .resolve()
+                .standing_hull,
+                facts: crate::map_runtime::PlayerContactFacts {
+                    team: bot.team.source_number(),
+                    class: bot.class.source_number(),
+                    observer: bot.lifecycle != PlayerLifecycle::Active,
+                    conditions: [0; 5],
+                    winning_team: winning_team.map(PlayerTeam::source_number),
+                },
+                alive: bot.lifecycle == PlayerLifecycle::Active,
             })
     }
 
@@ -1099,9 +1161,21 @@ impl BotWorld {
                                 destination,
                                 direction,
                                 length,
-                                bot.team,
-                                bot.identity,
-                                tick as f32 * self.tick_interval,
+                                PathContext {
+                                    team: bot.team,
+                                    bot_identity: bot.identity,
+                                    now: tick as f32 * self.tick_interval,
+                                    route: if matches!(
+                                        bot.objective,
+                                        ObjectiveKind::DeliverFlag
+                                            | ObjectiveKind::GetHealth
+                                            | ObjectiveKind::GetAmmo
+                                    ) {
+                                        Route::Fastest
+                                    } else {
+                                        Route::Default
+                                    },
+                                },
                             )
                         })
                         .unwrap_or_default();
@@ -1148,7 +1222,8 @@ impl BotWorld {
                         from.connections[*direction as usize].contains(&next.identity)
                     })
                     .ok_or(Error::InvalidEntity)?;
-                let portal = from.portal(next, direction);
+                let portal =
+                    mesh.closest_point_in_portal(from, next, direction, bot.movement.position);
                 let center = next.center();
                 [
                     portal[0] + (center[0] - portal[0]).clamp(-STEP_HEIGHT, STEP_HEIGHT),
@@ -1213,7 +1288,7 @@ impl BotWorld {
                 },
                 policy,
             )
-            .map_err(|_| Error::Movement)?;
+            .map_err(Error::Movement)?;
             bot.movement = movement.state;
 
             if let Some((due, target, weapon)) = bot.pending_melee
@@ -1468,6 +1543,32 @@ impl BotWorld {
         self.bots.contains_key(&identity)
     }
 
+    pub fn teleport(
+        &mut self,
+        identity: u32,
+        position: [f32; 3],
+        pitch_degrees: f32,
+        yaw_degrees: f32,
+    ) -> Result<(), Error> {
+        if position
+            .into_iter()
+            .chain([pitch_degrees, yaw_degrees])
+            .any(|value| !value.is_finite())
+        {
+            return Err(Error::InvalidEntity);
+        }
+        let bot = self.bots.get_mut(&identity).ok_or(Error::InvalidEntity)?;
+        bot.movement.position = position;
+        bot.movement.ground = None;
+        bot.pitch_degrees = pitch_degrees;
+        bot.yaw_degrees = yaw_degrees;
+        bot.current_area = self.mesh.nearest_area(position).map(|area| area.identity);
+        bot.path.clear();
+        bot.path_index = 0;
+        bot.next_repath_tick = 0;
+        Ok(())
+    }
+
     pub fn active(&self, identity: u32) -> bool {
         self.bots
             .get(&identity)
@@ -1640,6 +1741,7 @@ impl BotWorld {
                 damage: bot.damage_dealt,
                 killstreak: bot.killstreak,
                 carrying_flag: bot.carrying_flag.is_some(),
+                animation_role: animation_role(bot.class, bot.active_weapon),
                 last_fire_tick: bot.last_fire_tick,
                 respawn_tick: bot.respawn_tick,
             })
@@ -1680,9 +1782,18 @@ impl BotWorld {
     ) {
         for bot in self.bots.values_mut() {
             let carrying = objectives.carrier_flag(bot.identity).map(|flag| flag.team);
-            if bot.carrying_flag != carrying {
+            let carrier_changed = bot.carrying_flag != carrying;
+            if carrier_changed {
                 bot.carrying_flag = carrying;
                 bot.next_repath_tick = 0;
+            }
+            if !carrier_changed
+                && matches!(
+                    bot.objective,
+                    ObjectiveKind::GetHealth | ObjectiveKind::GetAmmo
+                )
+            {
+                continue;
             }
             if let Some(flag) = objectives.bot_objective(bot.identity, bot.team) {
                 let (objective, goal) = if flag.carrier == Some(bot.identity) {
@@ -1776,9 +1887,12 @@ fn select_supply(
                         destination,
                         direction,
                         length,
-                        bot.team,
-                        bot.identity,
-                        0.0,
+                        PathContext {
+                            team: bot.team,
+                            bot_identity: bot.identity,
+                            now: 0.0,
+                            route: Route::Fastest,
+                        },
                     )
                 },
             )?;
@@ -1813,7 +1927,47 @@ fn is_melee(weapon: Weapon) -> bool {
             | Weapon::Kukri
             | Weapon::Bottle
             | Weapon::Wrench
+            | Weapon::FireAxe
+            | Weapon::Knife
+            | Weapon::Bonesaw
     )
+}
+
+pub fn animation_role(class: PlayerClass, weapon: Option<Weapon>) -> AnimationRole {
+    if matches!(
+        weapon,
+        Some(
+            Weapon::Bat
+                | Weapon::Shovel
+                | Weapon::Fists
+                | Weapon::Kukri
+                | Weapon::Wrench
+                | Weapon::FireAxe
+                | Weapon::Bottle
+                | Weapon::Knife
+                | Weapon::Bonesaw
+        )
+    ) || class == PlayerClass::Spy
+    {
+        AnimationRole::Melee
+    } else if class == PlayerClass::Demoman
+        || matches!(
+            weapon,
+            Some(
+                Weapon::Pistol
+                    | Weapon::Shotgun
+                    | Weapon::HeavyShotgun
+                    | Weapon::Smg
+                    | Weapon::EngineerPistol
+                    | Weapon::StickybombLauncher
+                    | Weapon::MediGun
+            )
+        )
+    {
+        AnimationRole::Secondary
+    } else {
+        AnimationRole::Primary
+    }
 }
 
 fn visible_actor<W: GameplayWorld>(world: &W, bot: &Bot, actor: Actor) -> bool {
@@ -2189,20 +2343,18 @@ pub fn path_cost(
     destination: &Area,
     direction: Direction,
     length: f32,
-    team: PlayerTeam,
-    bot_identity: u32,
-    now: f32,
+    context: PathContext,
 ) -> Option<f32> {
     let flags = destination.game_attributes;
     if flags & TF_NAV_UNBLOCKABLE == 0
         && (flags & TF_NAV_BLOCKED != 0
-            || team == PlayerTeam::Red && flags & TF_NAV_BLUE_ONE_WAY_DOOR != 0
-            || team == PlayerTeam::Blue && flags & TF_NAV_RED_ONE_WAY_DOOR != 0)
+            || context.team == PlayerTeam::Red && flags & TF_NAV_BLUE_ONE_WAY_DOOR != 0
+            || context.team == PlayerTeam::Blue && flags & TF_NAV_RED_ONE_WAY_DOOR != 0)
     {
         return None;
     }
-    if team == PlayerTeam::Red && flags & TF_NAV_SPAWN_ROOM_BLUE != 0
-        || team == PlayerTeam::Blue && flags & TF_NAV_SPAWN_ROOM_RED != 0
+    if context.team == PlayerTeam::Red && flags & TF_NAV_SPAWN_ROOM_BLUE != 0
+        || context.team == PlayerTeam::Blue && flags & TF_NAV_SPAWN_ROOM_RED != 0
     {
         return None;
     }
@@ -2216,13 +2368,16 @@ pub fn path_cost(
     } else if delta < -DEATH_DROP_HEIGHT {
         return None;
     }
-    let time_mod = (now / 10.0) as i32 + 1;
-    let preference = 1.0
-        + 50.0
-            * (1.0
-                + ((bot_identity as i64 * destination.identity as i64 * i64::from(time_mod))
-                    as f32)
-                    .cos());
+    let preference = if context.route == Route::Default {
+        let time_mod = (context.now / 10.0) as i32 + 1;
+        1.0 + 50.0
+            * (1.0 + ((context.bot_identity as i64
+                * destination.identity as i64
+                * i64::from(time_mod)) as f32)
+                .cos())
+    } else {
+        1.0
+    };
     Some(cost * preference)
 }
 
@@ -2772,11 +2927,121 @@ mod tests {
     }
 
     #[test]
+    fn capture_supply_objectives_survive_authoritative_flag_synchronization() {
+        let graph = capture_graph();
+        let objectives = crate::ctf::World::compile(&graph, crate::ctf::Configuration::default())
+            .unwrap()
+            .unwrap();
+        let mut world =
+            BotWorld::new(fixture_mesh(), &graph, &Floor, 0.015, Some(&objectives)).unwrap();
+        let mut random = UniformRandomStream::from_seed(0).unwrap();
+        add(
+            &mut world,
+            &mut random,
+            PlayerTeam::Blue,
+            PlayerClass::Soldier,
+            Difficulty::Normal,
+        );
+        world.bots.get_mut(&2).unwrap().health.current = 100;
+        world
+            .advance(
+                &Floor,
+                0,
+                human_far(),
+                &[SupplyTarget {
+                    identity: 80,
+                    kind: Some(crate::pickup::MapPickupKind::Health),
+                    team: None,
+                    position: [175.0, 50.0, 1.0],
+                }],
+                &mut random,
+                Some(&objectives),
+            )
+            .unwrap();
+        assert_eq!(world.snapshots()[0].objective, ObjectiveKind::GetHealth);
+        world.synchronize_objectives(&objectives, &[]);
+        assert_eq!(world.snapshots()[0].objective, ObjectiveKind::GetHealth);
+    }
+
+    #[test]
     fn source_difficulty_reaction_thresholds_are_exact() {
         assert_eq!(Difficulty::Easy.recognition_seconds(), 1.0);
         assert_eq!(Difficulty::Normal.recognition_seconds(), 0.5);
         assert_eq!(Difficulty::Hard.recognition_seconds(), 0.3);
         assert_eq!(Difficulty::Expert.recognition_seconds(), 0.2);
+    }
+
+    #[test]
+    fn source_player_activity_translates_demoman_secondary_and_spy_melee_roles() {
+        assert_eq!(
+            animation_role(PlayerClass::Demoman, Some(Weapon::GrenadeLauncher)),
+            AnimationRole::Secondary
+        );
+        assert_eq!(
+            animation_role(PlayerClass::Demoman, Some(Weapon::Bottle)),
+            AnimationRole::Melee
+        );
+        assert_eq!(
+            animation_role(PlayerClass::Spy, Some(Weapon::Revolver)),
+            AnimationRole::Melee
+        );
+        assert_eq!(
+            animation_role(PlayerClass::Soldier, Some(Weapon::RocketLauncher)),
+            AnimationRole::Primary
+        );
+        assert_eq!(
+            animation_role(PlayerClass::Soldier, Some(Weapon::Shotgun)),
+            AnimationRole::Secondary
+        );
+        assert_eq!(
+            animation_role(PlayerClass::Medic, Some(Weapon::SyringeGun)),
+            AnimationRole::Primary
+        );
+        assert_eq!(
+            animation_role(PlayerClass::Medic, Some(Weapon::MediGun)),
+            AnimationRole::Secondary
+        );
+        assert_eq!(
+            animation_role(PlayerClass::Medic, Some(Weapon::Bonesaw)),
+            AnimationRole::Melee
+        );
+    }
+
+    #[test]
+    fn medic_bots_fire_real_authored_syringe_projectiles_instead_of_empty_shots() {
+        let graph = fixture_graph();
+        let map = crate::MapRuntime::compile(&graph, 0.015, 1, Vec::new()).unwrap();
+        let mut session = crate::Session::new(Floor, [190.0, 50.0, 1.0], map);
+        session
+            .configure_navigation(fixture_mesh(), &graph)
+            .unwrap();
+        let spawned = session
+            .advance(crate::Command {
+                bot_request: Some(Request {
+                    operation: Operation::Add,
+                    count: 1,
+                    class: Some(PlayerClass::Medic),
+                    team: Some(PlayerTeam::Blue),
+                    difficulty: Difficulty::Expert,
+                }),
+                ..crate::Command::default()
+            })
+            .unwrap();
+        let identity = spawned.bots[0].identity;
+        assert_eq!(spawned.bots[0].weapon.unwrap().weapon, Weapon::SyringeGun);
+
+        let mut fired = false;
+        for _ in 0..90 {
+            let snapshot = session.advance(crate::Command::default()).unwrap();
+            fired |= snapshot.projectile_events.iter().any(|event| {
+                event.projectile_kind == crate::ProjectileKind::Syringe
+                    && event.owner_identity == identity
+            });
+            if fired {
+                break;
+            }
+        }
+        assert!(fired);
     }
 
     #[test]
@@ -2923,6 +3188,58 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(world.len(), 2);
+    }
+
+    #[test]
+    fn explicit_nine_class_roster_survives_quota_updates_without_replacement() {
+        let mut world =
+            BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015, None).unwrap();
+        let mut random = UniformRandomStream::from_seed(0).unwrap();
+        world
+            .configure(Configuration {
+                quota: 0,
+                maximum_players: 32,
+                mode: QuotaMode::Normal,
+                difficulty: Difficulty::Expert,
+                join_after_player: true,
+                auto_vacate: true,
+                offline_practice: false,
+            })
+            .unwrap();
+        for (index, class) in PlayerClass::ALL.into_iter().enumerate() {
+            let team = if index % 2 == 0 {
+                PlayerTeam::Blue
+            } else {
+                PlayerTeam::Red
+            };
+            world
+                .apply(
+                    Request {
+                        operation: Operation::Add,
+                        count: 1,
+                        class: Some(class),
+                        team: Some(team),
+                        difficulty: Difficulty::Expert,
+                    },
+                    PlayerTeam::Red,
+                    PlayerClass::Soldier,
+                    &mut random,
+                )
+                .unwrap();
+            let tick = index as u64 * 20;
+            world.forced_change(1, 0, tick);
+            world
+                .maintain_quota(
+                    tick,
+                    PlayerTeam::Red,
+                    PlayerClass::Soldier,
+                    0,
+                    0,
+                    &mut random,
+                )
+                .unwrap();
+            assert_eq!(world.len(), index + 1);
+        }
     }
 
     #[test]
@@ -3269,9 +3586,12 @@ mod tests {
                 destination,
                 Direction::East,
                 100.0,
-                PlayerTeam::Blue,
-                2,
-                0.0
+                PathContext {
+                    team: PlayerTeam::Blue,
+                    bot_identity: 2,
+                    now: 0.0,
+                    route: Route::Default,
+                }
             ),
             None
         );
@@ -3282,9 +3602,12 @@ mod tests {
                 destination,
                 Direction::East,
                 100.0,
-                PlayerTeam::Red,
-                2,
-                0.0
+                PathContext {
+                    team: PlayerTeam::Red,
+                    bot_identity: 2,
+                    now: 0.0,
+                    route: Route::Default,
+                }
             ),
             None
         );
@@ -3295,9 +3618,12 @@ mod tests {
                 destination,
                 Direction::East,
                 100.0,
-                PlayerTeam::Red,
-                2,
-                0.0
+                PathContext {
+                    team: PlayerTeam::Red,
+                    bot_identity: 2,
+                    now: 0.0,
+                    route: Route::Default,
+                }
             )
             .is_some()
         );
@@ -3312,9 +3638,12 @@ mod tests {
                 destination,
                 Direction::East,
                 100.0,
-                PlayerTeam::Red,
-                2,
-                0.0
+                PathContext {
+                    team: PlayerTeam::Red,
+                    bot_identity: 2,
+                    now: 0.0,
+                    route: Route::Default,
+                }
             ),
             None
         );
@@ -3328,12 +3657,74 @@ mod tests {
                 destination,
                 Direction::East,
                 100.0,
-                PlayerTeam::Red,
-                2,
-                0.0
+                PathContext {
+                    team: PlayerTeam::Red,
+                    bot_identity: 2,
+                    now: 0.0,
+                    route: Route::Default,
+                }
             ),
             None
         );
+    }
+
+    #[test]
+    fn intelligence_delivery_uses_source_fastest_route_without_fetch_route_preferences() {
+        let mesh = fixture_mesh();
+        let from = mesh.area(1).unwrap();
+        let destination = mesh.area(2).unwrap();
+        let fastest = path_cost(
+            from,
+            destination,
+            Direction::East,
+            100.0,
+            PathContext {
+                team: PlayerTeam::Blue,
+                bot_identity: 2,
+                now: 30.0,
+                route: Route::Fastest,
+            },
+        )
+        .unwrap();
+        let default = path_cost(
+            from,
+            destination,
+            Direction::East,
+            100.0,
+            PathContext {
+                team: PlayerTeam::Blue,
+                bot_identity: 2,
+                now: 30.0,
+                route: Route::Default,
+            },
+        )
+        .unwrap();
+        assert_eq!(fastest, 100.0);
+        assert!(default > fastest);
+    }
+
+    #[test]
+    fn source_bot_teleport_preserves_velocity_and_restarts_navigation_from_new_area() {
+        let mut world =
+            BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015, None).unwrap();
+        let mut random = UniformRandomStream::from_seed(0).unwrap();
+        add(
+            &mut world,
+            &mut random,
+            PlayerTeam::Blue,
+            PlayerClass::Scout,
+            Difficulty::Normal,
+        );
+        world.bots.get_mut(&2).unwrap().movement.velocity = [10.0, 20.0, 30.0];
+        world.teleport(2, [25.0, 40.0, 1.0], -5.0, 135.0).unwrap();
+        let bot = world.snapshots().remove(0);
+        assert_eq!(bot.position, [25.0, 40.0, 1.0]);
+        assert_eq!(bot.velocity, [10.0, 20.0, 30.0]);
+        assert_eq!((bot.pitch_degrees, bot.yaw_degrees), (-5.0, 135.0));
+        assert_eq!(bot.area, Some(1));
+        assert_eq!(bot.remaining_path_areas, 0);
+        assert!(world.teleport(2, [f32::NAN, 0.0, 0.0], 0.0, 0.0).is_err());
+        assert!(world.teleport(99, [0.0; 3], 0.0, 0.0).is_err());
     }
 
     fn human_far() -> Human {
@@ -3762,5 +4153,138 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn complete_short_ctf_match_keeps_bot_death_return_capture_score_and_opposing_victory_real() {
+        let graph = capture_graph();
+        let map = crate::MapRuntime::compile(
+            &graph,
+            0.015,
+            1,
+            [1, 2]
+                .into_iter()
+                .map(|model| playsrc_entity::ModelBounds {
+                    model,
+                    mins: [-24.0; 3],
+                    maxs: [24.0; 3],
+                })
+                .collect(),
+        )
+        .unwrap();
+        let mut session = crate::Session::new(Floor, [150.0, 50.0, 1.0], map);
+        session
+            .configure_navigation(fixture_mesh(), &graph)
+            .unwrap();
+
+        let spawned = session
+            .advance(crate::Command {
+                objective_configuration: Some(crate::ctf::RuleConfiguration {
+                    captures_per_round: 1,
+                    return_on_touch: true,
+                }),
+                bot_request: Some(Request {
+                    operation: Operation::Add,
+                    count: 1,
+                    class: Some(PlayerClass::Scout),
+                    team: Some(PlayerTeam::Blue),
+                    difficulty: Difficulty::Normal,
+                }),
+                ..crate::Command::default()
+            })
+            .unwrap();
+        let first = spawned.bots[0].identity;
+        let taken = session
+            .advance(crate::Command {
+                bot_control: Some(Control::Teleport {
+                    identity: first,
+                    position: [10.0, 50.0, 1.0],
+                    pitch_degrees: 0.0,
+                    yaw_degrees: 0.0,
+                }),
+                ..crate::Command::default()
+            })
+            .unwrap();
+        assert_eq!(taken.bots[0].objective, ObjectiveKind::DeliverFlag);
+        assert!(taken.bots[0].carrying_flag);
+
+        let dropped = session
+            .advance(crate::Command {
+                bot_control: Some(Control::Whack { identity: first }),
+                ..crate::Command::default()
+            })
+            .unwrap();
+        assert_eq!(dropped.bots[0].lifecycle, PlayerLifecycle::Dying);
+        assert_eq!(dropped.bots[0].deaths, 1);
+        assert_eq!(dropped.scoreboard.players[0].counters.kills, 1);
+        let flag = dropped
+            .objectives
+            .as_ref()
+            .unwrap()
+            .flags
+            .iter()
+            .find(|flag| flag.team == PlayerTeam::Red)
+            .unwrap();
+        assert_eq!(flag.status, crate::ctf::FlagStatus::Dropped);
+        session.set_position(flag.position).unwrap();
+        let returned = session.advance(crate::Command::default()).unwrap();
+        assert!(
+            returned
+                .objectives
+                .as_ref()
+                .unwrap()
+                .events
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    crate::ctf::Event::Flag {
+                        kind: crate::ctf::FlagEventKind::Returned,
+                        ..
+                    }
+                ))
+        );
+
+        let added = session
+            .advance(crate::Command {
+                bot_request: Some(Request {
+                    operation: Operation::Add,
+                    count: 1,
+                    class: Some(PlayerClass::Soldier),
+                    team: Some(PlayerTeam::Blue),
+                    difficulty: Difficulty::Normal,
+                }),
+                ..crate::Command::default()
+            })
+            .unwrap();
+        let finisher = added.bots[1].identity;
+        session.set_position([150.0, 50.0, 1.0]).unwrap();
+        let carried = session
+            .advance(crate::Command {
+                bot_control: Some(Control::Teleport {
+                    identity: finisher,
+                    position: [10.0, 50.0, 1.0],
+                    pitch_degrees: 0.0,
+                    yaw_degrees: 0.0,
+                }),
+                ..crate::Command::default()
+            })
+            .unwrap();
+        assert!(carried.bots[1].carrying_flag);
+        let victory = session
+            .advance(crate::Command {
+                bot_control: Some(Control::Teleport {
+                    identity: finisher,
+                    position: [240.0, 50.0, 1.0],
+                    pitch_degrees: 0.0,
+                    yaw_degrees: 0.0,
+                }),
+                ..crate::Command::default()
+            })
+            .unwrap();
+        assert_eq!(victory.round.state, crate::round::State::TeamWin);
+        assert_eq!(victory.round.winning_team, Some(PlayerTeam::Blue));
+        assert_eq!(victory.objectives.unwrap().scores.blue_captures, 1);
+        assert_eq!(victory.scoreboard.blue_score, 1);
+        assert_eq!(victory.bots[1].captures, 1);
     }
 }

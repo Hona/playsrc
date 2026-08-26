@@ -179,6 +179,15 @@ pub struct PlayerContactFacts {
     pub winning_team: Option<u8>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ActorContact {
+    pub identity: u32,
+    pub position: [f32; 3],
+    pub hull: Hull,
+    pub facts: PlayerContactFacts,
+    pub alive: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum GameFilter {
     Team { team: u8, negated: bool },
@@ -286,6 +295,7 @@ struct Volume {
     handle: Option<EntityHandle>,
     model: usize,
     origin: [f32; 3],
+    bounds: Option<([f32; 3], [f32; 3])>,
     kind: VolumeKind,
     touching: bool,
 }
@@ -375,6 +385,10 @@ impl MapRuntime {
         source_identity: u64,
         model_bounds: Vec<ModelBounds>,
     ) -> Result<Self, RuntimeFailure> {
+        let volume_bounds = model_bounds
+            .iter()
+            .map(|bounds| (bounds.model, (bounds.mins, bounds.maxs)))
+            .collect::<BTreeMap<_, _>>();
         let round_configuration =
             crate::round::Configuration::from_graph(graph).map_err(|_| invalid(0))?;
         let mut objectives =
@@ -665,6 +679,7 @@ impl MapRuntime {
                     handle: Some(handle),
                     model,
                     origin,
+                    bounds: volume_bounds.get(&model).copied(),
                     kind: VolumeKind::Generic,
                     touching: false,
                 });
@@ -726,6 +741,9 @@ impl MapRuntime {
                         .bsp_model_index
                         .ok_or_else(|| invalid(entity.index))?,
                     origin: vector(entity, b"origin", Some([0.0; 3]))?,
+                    bounds: entity
+                        .bsp_model_index
+                        .and_then(|model| volume_bounds.get(&model).copied()),
                     kind: VolumeKind::Regenerate {
                         enabled: !boolean(entity, b"StartDisabled", false),
                         team,
@@ -745,6 +763,9 @@ impl MapRuntime {
                         .bsp_model_index
                         .ok_or_else(|| invalid(entity.index))?,
                     origin: vector(entity, b"origin", Some([0.0; 3]))?,
+                    bounds: entity
+                        .bsp_model_index
+                        .and_then(|model| volume_bounds.get(&model).copied()),
                     kind: VolumeKind::RespawnRoom {
                         enabled: !boolean(entity, b"StartDisabled", false),
                         team,
@@ -1139,10 +1160,10 @@ impl MapRuntime {
             let Some(handle) = self.source_handle(*entity) else {
                 return Err(MapError::MissingEntity(*entity));
             };
-            let activator = activator
-                .filter(|identity| *identity == crate::PLAYER_IDENTITY)
-                .map(|_| self.player)
-                .or(Some(handle));
+            let activator = match activator {
+                Some(identity) => Some(self.actor_handle(tick, *identity)?),
+                None => Some(handle),
+            };
             commands.push(WorldCommand::EmitOutput {
                 entity: handle,
                 output: output.as_bytes().to_vec(),
@@ -1354,6 +1375,7 @@ impl MapRuntime {
         position: [f32; 3],
         hull: Hull,
         player: PlayerContactFacts,
+        actors: &[ActorContact],
     ) -> Result<MapPhase, MapError> {
         self.last_player_position = position;
         let mut commands = Vec::new();
@@ -1446,11 +1468,99 @@ impl MapRuntime {
                 }
             }
         }
+        let (mut actor_commands, mut output) =
+            self.bot_contact_commands(collision, tick, actors)?;
+        commands.append(&mut actor_commands);
         let batch = self.world.phase(tick, &commands)?;
-        let mut output = self.consume(batch)?;
+        output.append(self.consume(batch)?);
         output.effects.extend(effects);
         output.regenerate_contacts.extend(regenerate_contacts);
         Ok(output)
+    }
+
+    fn bot_contact_commands<W: GameplayWorld>(
+        &mut self,
+        collision: &W,
+        tick: u64,
+        actors: &[ActorContact],
+    ) -> Result<(Vec<WorldCommand>, MapPhase), MapError> {
+        let removed = self
+            .actor_handles
+            .iter()
+            .filter(|(identity, _)| !actors.iter().any(|actor| actor.identity == **identity))
+            .map(|(identity, handle)| (*identity, *handle))
+            .collect::<Vec<_>>();
+        let mut output = MapPhase::default();
+        if !removed.is_empty() {
+            let commands = removed
+                .iter()
+                .map(|(_, handle)| WorldCommand::Remove(*handle))
+                .collect::<Vec<_>>();
+            let batch = self.world.phase(tick, &commands)?;
+            output.append(self.consume(batch)?);
+            for (identity, _) in removed {
+                self.actor_handles.remove(&identity);
+            }
+        }
+
+        for actor in actors.iter().filter(|actor| actor.alive) {
+            self.actor_handle(tick, actor.identity)?;
+        }
+
+        let mut commands = Vec::new();
+        for actor in actors {
+            let Some(subject) = self.actor_handles.get(&actor.identity).copied() else {
+                continue;
+            };
+            for volume in &self.volumes {
+                if !matches!(volume.kind, VolumeKind::Generic) {
+                    continue;
+                }
+                let trigger = volume.handle.expect("generic trigger handle");
+                let accepted = self.world.entity(trigger).is_some_and(|entity| {
+                    matches!(
+                        &entity.behavior,
+                        BehaviorState::Trigger(state) if state.contacts.contains(&subject)
+                    )
+                });
+                let origin = self
+                    .world
+                    .entity(trigger)
+                    .map_or(volume.origin, |entity| entity.world_transform.origin);
+                let overlap = actor.alive
+                    && volume_may_overlap(volume, origin, actor.position, actor.hull)
+                    && collision.overlaps_model_hull(
+                        volume.model,
+                        origin,
+                        actor.position,
+                        actor.hull,
+                    )?;
+                let kind = match (overlap, accepted) {
+                    (true, true) => Some(ContactKind::Stay),
+                    (true, false) => Some(ContactKind::Enter),
+                    (false, true) => Some(ContactKind::Exit),
+                    (false, false) => None,
+                };
+                let Some(kind) = kind else {
+                    continue;
+                };
+                let external_filter_result = self.world.entity(trigger).and_then(|entity| {
+                    field(&entity.definition, b"filtername")
+                        .filter(|name| !name.is_empty())
+                        .and_then(|name| self.game_filters.get(&ascii_lower(name)))
+                        .map(|filter| filter.passes(actor.facts))
+                });
+                commands.push(WorldCommand::Contact(ContactRecord {
+                    trigger,
+                    subject,
+                    kind,
+                    external_filter_result,
+                    producer_sequence: self.next_producer_sequence,
+                }));
+                self.next_producer_sequence += 1;
+            }
+        }
+        Ok((commands, output))
     }
 
     pub fn transforms(&self) -> Vec<EntityTransform> {
@@ -1543,7 +1653,7 @@ impl MapRuntime {
                         contact: Some(kind),
                         name: Vec::new(),
                     });
-                    if accepted {
+                    if accepted && subject == self.player {
                         output.contacts.push(TriggerContact {
                             sequence: record.sequence,
                             trigger_entity,
@@ -1608,10 +1718,14 @@ impl MapRuntime {
                     }
                     RuntimeRequest::TriggerEffect {
                         trigger,
+                        subject,
                         kind,
                         contact,
                         ..
                     } => {
+                        if subject != self.player {
+                            continue;
+                        }
                         let source = self.source(trigger);
                         let Some(entity) = self.world.entity(trigger) else {
                             continue;
@@ -1776,6 +1890,15 @@ impl MapRuntime {
             .and_then(|entity| u32::try_from(entity.source_index).ok())
             .unwrap_or(u32::MAX)
     }
+}
+
+fn volume_may_overlap(volume: &Volume, origin: [f32; 3], position: [f32; 3], hull: Hull) -> bool {
+    volume.bounds.is_none_or(|(minimum, maximum)| {
+        (0..3).all(|axis| {
+            position[axis] + hull.maxs[axis] >= origin[axis] + minimum[axis]
+                && position[axis] + hull.mins[axis] <= origin[axis] + maximum[axis]
+        })
+    })
 }
 
 #[derive(Debug)]
@@ -2033,6 +2156,89 @@ mod tests {
     }
 
     #[test]
+    fn living_bots_open_only_their_authored_team_door_and_close_contacts_on_death() {
+        let graph = playsrc_entity::parse(
+            br#"
+{"classname" "filter_activator_tfteam" "targetname" "red_only" "TeamNum" "2"}
+{"classname" "trigger_multiple" "model" "*1" "spawnflags" "1" "filtername" "red_only" "OnStartTouch" "spawn_door,Open,,0,-1" "OnEndTouchAll" "spawn_door,Close,,0,-1"}
+{"classname" "func_door" "targetname" "spawn_door" "model" "*2" "movedir" "0 0 0" "speed" "100" "wait" "-1"}
+"#,
+            playsrc_entity::Limits::default(),
+        )
+        .unwrap();
+        let mut map = MapRuntime::compile(
+            &graph,
+            0.015,
+            1,
+            vec![
+                ModelBounds {
+                    model: 1,
+                    mins: [-64.0; 3],
+                    maxs: [64.0; 3],
+                },
+                ModelBounds {
+                    model: 2,
+                    mins: [-8.0; 3],
+                    maxs: [8.0; 3],
+                },
+            ],
+        )
+        .unwrap();
+        let actor = |identity, team, alive: bool| ActorContact {
+            identity,
+            position: [0.0; 3],
+            hull: Hull {
+                mins: [-24.0, -24.0, 0.0],
+                maxs: [24.0, 24.0, 82.0],
+            },
+            facts: PlayerContactFacts {
+                team,
+                class: 3,
+                observer: !alive,
+                ..PlayerContactFacts::default()
+            },
+            alive,
+        };
+
+        let run = |map: &mut MapRuntime, tick, actors: &[ActorContact]| {
+            map.contact_phase(
+                &AlwaysOverlap,
+                tick,
+                [0.0; 3],
+                Hull {
+                    mins: [0.0; 3],
+                    maxs: [0.0; 3],
+                },
+                PlayerContactFacts::default(),
+                actors,
+            )
+            .unwrap()
+        };
+        let rejected = run(&mut map, 0, &[actor(2, 3, true)]);
+        assert!(rejected.mover_requests.is_empty());
+        assert!(rejected.events.iter().any(|event| {
+            event.kind == EntityEventKind::Contact && event.subject == Some(2) && !event.accepted
+        }));
+
+        let opened = run(&mut map, 1, &[actor(2, 3, true), actor(3, 2, true)]);
+        assert!(opened.events.iter().any(|event| {
+            event.kind == EntityEventKind::Contact
+                && event.subject == Some(3)
+                && event.contact == Some(ContactKind::Enter)
+                && event.accepted
+        }));
+        assert!(opened.mover_requests.iter().any(|request| request.opening));
+        assert!(opened.contacts.is_empty());
+
+        let closed = run(&mut map, 2, &[actor(2, 3, true), actor(3, 2, false)]);
+        assert!(closed.events.iter().any(|event| {
+            event.kind == EntityEventKind::Contact
+                && event.subject == Some(3)
+                && event.contact == Some(ContactKind::Exit)
+        }));
+    }
+
+    #[test]
     fn tracktrain_requests_preserve_authoritative_linear_and_angular_trajectory() {
         let graph = playsrc_entity::parse(
             br#"
@@ -2128,6 +2334,7 @@ mod tests {
                     maxs: [0.0; 3],
                 },
                 PlayerContactFacts::default(),
+                &[],
             )
             .unwrap();
         assert!(phase.effects.iter().any(|effect| matches!(
@@ -2197,6 +2404,7 @@ mod tests {
                     maxs: [0.0; 3],
                 },
                 PlayerContactFacts::default(),
+                &[],
             )
             .unwrap();
         assert!(matches!(

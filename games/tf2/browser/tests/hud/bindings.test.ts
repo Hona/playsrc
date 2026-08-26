@@ -184,6 +184,23 @@ describe("immutable TF2 HUD binding", () => {
       direction: [1, 0, 0],
     }])
 
+    const worldOrigin = bindTf2Hud({
+      previous: availablePrevious(boosted),
+      snapshot: critical,
+      events: Object.freeze([{
+        tick: 3n,
+        ordinal: 0,
+        kind: "damage",
+        amount: 203,
+        health: health(97),
+        direction: tf2HudAvailable(Object.freeze([-1239.03125, 1862.5, 258.03125]) as readonly [number, number, number]),
+      }]),
+    })
+    expect(worldOrigin.commands[0]).toMatchObject({
+      kind: "damage-indicator",
+      direction: [-1239.03125, 1862.5, 258.03125],
+    })
+
     const threshold = healthSnapshot(critical, 4n, health(98))
     const recovered = bindTf2Hud({
       previous: availablePrevious(critical),

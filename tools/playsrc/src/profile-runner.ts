@@ -23,6 +23,7 @@ const PROFILES = Object.freeze({
   bots: { config: "playwright.bot-profile.config.ts", target: "pl_upward" },
   "2fort-bots": { config: "playwright.profile.config.ts", target: "ctf_2fort", environment: { PROFILE_CTF_BOTS: "1" } },
   "2fort-visual": { config: "playwright.profile.config.ts", target: "ctf_2fort", environment: { PROFILE_2FORT_VISUAL: "1" } },
+  "2fort-match": { config: "playwright.profile.config.ts", target: "ctf_2fort", environment: { PROFILE_SCENARIOS: "2fort-match" } },
   "local-practice": { config: "playwright.profile.config.ts", target: "ctf_2fort", environment: { PROFILE_SCENARIOS: "local-practice" } },
   engineer: { config: "playwright.engineer-profile.config.ts", target: "pl_upward" },
   gameui: { config: "playwright.gameui-profile.config.ts", target: "jump_beef" },

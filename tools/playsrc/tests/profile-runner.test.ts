@@ -22,6 +22,11 @@ describe("bounded headed profile orchestration", () => {
       playwright: ["--output", "/evidence"],
     })
     expect(parseHeadedProfile(["2fort-visual", "--headed"])).toEqual({ profile: "2fort-visual", fresh: false, playwright: [] })
+    expect(parseHeadedProfile(["2fort-match"])).toEqual({
+      profile: "2fort-match",
+      fresh: false,
+      playwright: [],
+    })
     expect(() => parseHeadedProfile([])).toThrow("Usage:")
     expect(() => parseHeadedProfile(["unknown"])).toThrow("Usage:")
     expect(() => parseHeadedProfile(["gameplay", "--headless"])).toThrow("never accept headless")
@@ -44,6 +49,7 @@ describe("bounded headed profile orchestration", () => {
     expect(headedProfileTarget({ PROFILE_2FORT_VISUAL: "1" })).toBe("ctf_2fort")
     expect(headedProfileTarget({ PROFILE_COMBAT_IMPACTS: "1" })).toBe("ctf_2fort")
     expect(headedProfileTarget({ PROFILE_SCENARIOS: "local-practice" })).toBe("ctf_2fort")
+    expect(headedProfileTarget({ PROFILE_SCENARIOS: "2fort-match" })).toBe("ctf_2fort")
     expect(headedProfileTarget({ PROFILE_MEDIC_WEAPONS: "1" })).toBe("pl_upward")
     expect(headedProfileTarget({ PROFILE_SCENARIOS: "demoman" })).toBe("pl_upward")
     expect(headedProfileTarget({}, "pl_upward")).toBe("pl_upward")

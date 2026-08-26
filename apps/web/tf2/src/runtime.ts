@@ -1,6 +1,6 @@
 import { fetchImmutableObject, openDerivedObjectCache, type DerivedObjectCache } from "@playsrc/asset-store/browser"
 import { chunksForRole, partitionResourceChunks, parseResourceCatalogBytes, parseResourceGraphBytes, parseResourceSet, resourceChunkObject, selectCatalogTarget, type ResourceCatalog, type ResourceGraph, type ResourceChunkDescriptor } from "@playsrc/asset-store/graph"
-import { createAudioSystem, SoundRegistry, SourceAudioWorld } from "@playsrc/audio"
+import { createAudioSystem, SoundRegistry, SourceAudioError, SourceAudioWorld } from "@playsrc/audio"
 import GameplayWorker from "@playsrc/game-tf2-browser/worker?worker"
 import { Tf2WorkerClient, mergePublicationSnapshots, type CoverageSample, type LoadedGame, type SimulationPublication, type VisibilityResult } from "@playsrc/game-tf2-browser"
 import { initializeTf2GameUiIntegration, type Tf2GameUiIntegration } from "@playsrc/game-tf2-browser/gameui-integration"
@@ -112,6 +112,7 @@ import {
 } from "./presentation-viewport"
 import { RequiredParticleDisplayQueue } from "./particle-display"
 import { CanvasFrameDiagnostics } from "./frame-diagnostics"
+import { tokenizeSourceCommand } from "./console-command"
 import { GAME_UI_FRAME_OWNER, HUD_FRAME_OWNER, LOADING_FRAME_OWNER, OPTIONS_FRAME_OWNER, visibleFrameOwners } from "./frame-owners"
 import { ExactSkyVisibilityCache, type SkyVisibilityIdentity } from "./visibility-cache"
 import {
@@ -585,10 +586,14 @@ export class Tf2Application {
   #disguise: Readonly<{ class: Tf2Class; team: Tf2Team }> | undefined
   #modeRequest: 0 | 1 | undefined
   #botRequest: BotRequest | undefined
+  #botControl: NonNullable<Parameters<typeof encodeCommand>[0]["botControl"]> | undefined
   #buildingRequest: Tf2BuildingRequest | undefined
   #botConfiguration: BotConfiguration | undefined
   #activeBotConfiguration: BotConfiguration | undefined
   #botDifficulty: 0 | 1 | 2 | 3 = 1
+  #objectiveConfiguration: Readonly<{ capturesPerRound: number; returnOnTouch: boolean }> | undefined
+  #flagCapturesPerRound = 3
+  #flagReturnOnTouch = false
   #coverageSamples:readonly CoverageSample[]=Object.freeze([])
   #developer = 1
   #showFps: ClientDiagnosticMode = 0
@@ -1649,6 +1654,12 @@ export class Tf2Application {
       this.#requireOperation(operation)
       this.#advanceLoading("synchronizing-game-state")
       this.#snapshot = (await this.#initialPublication(this.#generation)).snapshot
+      if (this.#snapshot.objectives && (this.#flagCapturesPerRound !== 3 || this.#flagReturnOnTouch)) {
+        this.#objectiveConfiguration = Object.freeze({
+          capturesPerRound: this.#flagCapturesPerRound,
+          returnOnTouch: this.#flagReturnOnTouch,
+        })
+      }
       if (this.#pendingLocalMatch?.mapIdentity === target.target) {
         this.#botConfiguration = this.#pendingLocalMatch.configuration
         this.#pendingLocalMatch = undefined
@@ -2137,7 +2148,7 @@ export class Tf2Application {
     const crosshair = this.#settings?.crosshairConVars() ?? []
     const combatSettings=["tf_dingalingaling","tf_dingalingaling_lasthit"] as const
     return Object.freeze({
-      revision: `tf2-jump-catalog-developer-${this.#developer}-console-${Number(this.#consoleEnabled)}-fps-${this.#showFps}-pos-${this.#showPos}-hdr-${this.#renderLevel}-settings-${this.#settings?.snapshot().settings.revision ?? 0}`,
+      revision: `tf2-jump-catalog-developer-${this.#developer}-console-${Number(this.#consoleEnabled)}-fps-${this.#showFps}-pos-${this.#showPos}-hdr-${this.#renderLevel}-flagcaps-${this.#flagCapturesPerRound}-flagreturn-${Number(this.#flagReturnOnTouch)}-settings-${this.#settings?.snapshot().settings.revision ?? 0}`,
       items: Object.freeze([
         Object.freeze({
           kind: "command" as const,
@@ -2175,7 +2186,7 @@ export class Tf2Application {
           disposition: "visible" as const,
           acceptsSuggestions: true,
         }),
-        ...["build","destroy","hurtbuilding","+attack","-attack"].map(name=>Object.freeze({kind:"command" as const,name,disposition:"visible" as const,acceptsSuggestions:false})),
+        ...["build","destroy","hurtbuilding","+attack","-attack","bot_teleport","bot_whack"].map(name=>Object.freeze({kind:"command" as const,name,disposition:"visible" as const,acceptsSuggestions:false})),
         Object.freeze({
           kind: "command" as const,
           name: "dropitem",
@@ -2212,6 +2223,8 @@ export class Tf2Application {
           ["tf_bot_join_after_player", String(Number(this.#activeBotConfiguration?.joinAfterPlayer ?? true))],
           ["tf_bot_auto_vacate", String(Number(this.#activeBotConfiguration?.autoVacate ?? true))],
           ["tf_bot_offline_practice", String(Number(this.#activeBotConfiguration?.offlinePractice ?? false))],
+          ["tf_flag_caps_per_round", String(this.#flagCapturesPerRound)],
+          ["tf_flag_return_on_touch", String(Number(this.#flagReturnOnTouch))],
         ] as const).map(([name, displayValue]) => Object.freeze({
           kind: "convar" as const,
           name,
@@ -2387,7 +2400,7 @@ export class Tf2Application {
   }
 
   async #execute(input: string): Promise<void> {
-    const tokens = input.trim().split(/\s+/u)
+    const tokens = [...tokenizeSourceCommand(input)]
     const command = tokens.shift()?.toLowerCase()
     if (!command) return
     if (tokens.length > 63) {
@@ -2636,6 +2649,36 @@ export class Tf2Application {
       this.#output(`"tf_bot_offline_practice" = "${Number(this.#activeBotConfiguration?.offlinePractice ?? false)}" ( def. "0" )`)
       return
     }
+    if ((command === "tf_flag_caps_per_round" || command === "tf_flag_return_on_touch") && tokens.length <= 1) {
+      if (tokens.length === 1) {
+        const value = tokens[0]!
+        if (command === "tf_flag_caps_per_round") {
+          if (!/^(?:0|[1-9][0-9]*)$/u.test(value) || Number(value) > 0xffff) {
+            this.#output("tf_flag_caps_per_round accepts exactly 0 through 65535")
+            return
+          }
+          this.#flagCapturesPerRound = Number(value)
+        } else {
+          if (value !== "0" && value !== "1") {
+            this.#output("tf_flag_return_on_touch accepts exactly 0 or 1")
+            return
+          }
+          this.#flagReturnOnTouch = value === "1"
+        }
+        if (this.#snapshot?.objectives) {
+          this.#objectiveConfiguration = Object.freeze({
+            capturesPerRound: this.#flagCapturesPerRound,
+            returnOnTouch: this.#flagReturnOnTouch,
+          })
+        }
+        this.#console?.apply({ kind: "replace-catalog", catalog: this.#catalog() })
+      }
+      const value = command === "tf_flag_caps_per_round"
+        ? String(this.#flagCapturesPerRound)
+        : String(Number(this.#flagReturnOnTouch))
+      this.#output(`"${command}" = "${value}" ( def. "${command === "tf_flag_caps_per_round" ? "3" : "0"}" )`)
+      return
+    }
     if (command === "tf_bot_add") {
       if (!this.#snapshot || !this.#dependencyEntries.has(`maps/${this.#mapIdentity}.nav`)) {
         this.#output("tf_bot_add rejected: the active map has no authored TF2 navigation mesh")
@@ -2706,6 +2749,43 @@ export class Tf2Application {
         this.#console?.apply({ kind: "replace-catalog", catalog: this.#catalog() })
       }
       this.#output(`Queued bot removal: ${token}`)
+      return
+    }
+    if (command === "bot_teleport" || command === "bot_whack") {
+      const teleport = command === "bot_teleport"
+      const usage = teleport
+        ? "Usage: bot_teleport <bot name> <X> <Y> <Z> <Pitch> <Yaw> <Roll>"
+        : "Usage: bot_whack <bot name>"
+      if (tokens.length !== (teleport ? 7 : 1)) {
+        this.#output(usage)
+        return
+      }
+      const bot = this.#snapshot?.scoreboard.players.find(player => player.fake && player.name === tokens[0])
+      if (!bot) {
+        this.#output(`No bot with name ${tokens[0]}`)
+        return
+      }
+      if (this.#botControl) {
+        this.#output(`${command} rejected: an earlier bot control is pending`)
+        return
+      }
+      if (teleport) {
+        const values = tokens.slice(1).map(Number)
+        if (!values.every(Number.isFinite) || values[5] !== 0) {
+          this.#output("bot_teleport rejected: coordinates and angles must be finite and roll must be zero")
+          return
+        }
+        this.#botControl = Object.freeze({
+          action: "teleport",
+          identity: bot.identity,
+          position: Object.freeze([values[0]!, values[1]!, values[2]!]) as readonly [number, number, number],
+          pitchDegrees: values[3]!,
+          yawDegrees: values[4]!,
+        })
+      } else {
+        this.#botControl = Object.freeze({ action: "whack", identity: bot.identity })
+      }
+      this.#output(`${command} queued: ${bot.name}`)
       return
     }
     if (command === "class" && tokens.length === 1) {
@@ -3071,6 +3151,12 @@ export class Tf2Application {
     this.#mapIdentity = name
     this.#applyInitialView(staged)
     this.#snapshot = (await this.#initialPublication(generation)).snapshot
+    if (this.#snapshot.objectives && (this.#flagCapturesPerRound !== 3 || this.#flagReturnOnTouch)) {
+      this.#objectiveConfiguration = Object.freeze({
+        capturesPerRound: this.#flagCapturesPerRound,
+        returnOnTouch: this.#flagReturnOnTouch,
+      })
+    }
     if (this.#pendingLocalMatch?.mapIdentity === name) {
       this.#botConfiguration = this.#pendingLocalMatch.configuration
       this.#pendingLocalMatch = undefined
@@ -3417,23 +3503,29 @@ export class Tf2Application {
       const resource = definition?.waves[request.samples.wave]?.resource
       const buffer = resource ? this.#audioBuffers.get(resource) : undefined
       if (!resource || !buffer) throw new Error(`Audio resource for ${request.definition} is missing`)
-      const started = this.#audioWorld.start({
-        voiceIdentity: request.voiceIdentity,
-        definition: request.definition,
-        source: request.source,
-        listener,
-        samples: request.samples,
-        overrides: request.overrides,
-        resourceDurationSeconds: buffer.duration,
-        resourceLoopStartSeconds: null,
-        resourceChannels: buffer.numberOfChannels,
-        resourceAvailable: (identity) => this.#audioBuffers.has(identity),
-        scheduledTimeSeconds: this.#audioContext.currentTime,
-        delaySeconds: 0,
-        mixerGain: this.#artifacts.audio.mixerGain,
-        userGain: this.#effectVolume,
-        doNotOverwrite: false,
-      })
+      let started: ReturnType<SourceAudioWorld["start"]>
+      try {
+        started = this.#audioWorld.start({
+          voiceIdentity: request.voiceIdentity,
+          definition: request.definition,
+          source: request.source,
+          listener,
+          samples: request.samples,
+          overrides: request.overrides,
+          resourceDurationSeconds: buffer.duration,
+          resourceLoopStartSeconds: null,
+          resourceChannels: buffer.numberOfChannels,
+          resourceAvailable: (identity) => this.#audioBuffers.has(identity),
+          scheduledTimeSeconds: this.#audioContext.currentTime,
+          delaySeconds: 0,
+          mixerGain: this.#artifacts.audio.mixerGain,
+          userGain: this.#effectVolume,
+          doNotOverwrite: false,
+        })
+      } catch (error) {
+        if (error instanceof SourceAudioError && error.code === "Suppressed") continue
+        throw error
+      }
       for (const replaced of started.replaced) this.#audio.stop(replaced)
       this.#audio.playNeutral(started.voice)
       this.#audioStarts.push(`${started.voice.definition}:${started.voice.resource}:${started.voice.channel}:${started.voice.soundLevel}`)
@@ -3509,7 +3601,9 @@ export class Tf2Application {
         if (!launcherPose) throw new Error(`TF2 bot fire-tick launcher pose unavailable: ${event.tick}:${event.projectile}`)
         const model = event.kind === 1
           ? "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl"
-          : "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl"
+          : event.kind === 2
+            ? "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl"
+            : "models/weapons/c_models/c_syringegun/c_syringegun.mdl"
         const artifact = this.#artifacts.models.get(model)
         if (!artifact) throw new Error(`Authored TF2 bot launcher model unavailable: ${model}`)
         const transforms = new Map([...artifact.attachments].map(([name, matrix]) => [
@@ -3626,16 +3720,20 @@ export class Tf2Application {
       disguise: this.#disguise,
       modeRequest: this.#modeRequest,
       bot: this.#botRequest,
+      botControl: this.#botControl,
       building: this.#buildingRequest,
       botConfiguration: this.#botConfiguration,
+      objectiveConfiguration: this.#objectiveConfiguration,
     })
     this.#selectClass = undefined
     this.#selectWeapon = undefined
     this.#disguise = undefined
     this.#modeRequest = undefined
     this.#botRequest = undefined
+    this.#botControl = undefined
     this.#buildingRequest = undefined
     this.#botConfiguration = undefined
+    this.#objectiveConfiguration = undefined
     this.#jumpPressed = false
     this.#firePressed = false
     this.#detonatePressed = false
@@ -4126,8 +4224,7 @@ export class Tf2Application {
         const model=tf2ClassPresentation(bot.class).model
         const artifact=this.#artifacts!.models.get(model)
         if(!artifact)throw new Error(`Authored TF2 bot player model unavailable: ${model}`)
-        const weapon=bot.weapon?.identity
-        const role=weapon===6||weapon===8||weapon===11||weapon===14||weapon===42||bot.class===8?"MELEE":weapon===5||weapon===7||weapon===10||weapon===13||weapon===41||bot.class===4?"SECONDARY":"PRIMARY"
+        const role=bot.animationRole
         const moving=Math.hypot(bot.velocity[0],bot.velocity[1])>1
         const activity=`ACT_MP_${moving?"RUN":"STAND"}_${role}`
         if(!artifact.sequences.some(sequence=>sequence.activity===activity))throw new Error(`Authored TF2 bot player activity unavailable: ${model}:${activity}`)
@@ -4332,6 +4429,8 @@ export class Tf2Application {
             ping: player.ping.kind === "available" ? player.ping.value : null,
             kills: player.counters.kind === "available" ? player.counters.value.kills : null,
             deaths: player.counters.kind === "available" ? player.counters.value.deaths : null,
+            captures: player.counters.kind === "available" ? player.counters.value.captures : null,
+            damage: player.counters.kind === "available" ? player.counters.value.damage : null,
           })),
           spectators: hud.scoreboard.value.spectators,
         }) : "unavailable",
@@ -4808,7 +4907,9 @@ export class Tf2Application {
     this.#attachmentTransforms.clear()
     this.#fireAttachmentTransforms.clear()
     this.#botRequest = undefined
+    this.#botControl = undefined
     this.#botConfiguration = undefined
+    this.#objectiveConfiguration = undefined
     if (this.#activeBotConfiguration?.offlinePractice) {
       this.#activeBotConfiguration = undefined
       this.#botDifficulty = 1
