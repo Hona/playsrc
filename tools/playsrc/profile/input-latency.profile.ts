@@ -1919,14 +1919,14 @@ test.describe("TF2 application generation lifecycle", () => {
     }
 
     await open()
-    const response = await page.request.get("/playsrc-config.json")
+    const response = await page.request.post("/__playsrc/prepare-target/pl_upward")
     expect(response.status()).toBe(200)
     const configuration = await response.json() as {
       assetOrigin: string
       defaultTarget: string
       targets: readonly { target: string; objects: { bsp: { sha256: string } } }[]
     }
-    expect(configuration.targets.map((target) => target.target)).toEqual(["jump_beef", "pl_upward", "ctf_2fort"])
+    expect(configuration.targets.map((target) => target.target)).toEqual(["jump_beef", "pl_upward"])
     const jump = configuration.targets.find((target) => target.target === "jump_beef")!
     const upward = configuration.targets.find((target) => target.target === "pl_upward")!
     const crosshair = page.locator("[data-tf2-crosshair='authored']")

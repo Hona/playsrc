@@ -4,8 +4,10 @@ async function main(): Promise<number> {
   const [command, target, argument] = process.argv.slice(2)
   try {
     if (command === "setup") {
+      const started = performance.now()
       const { setup } = await import("./setup")
       await setup()
+      console.error(`playsrc setup ready milliseconds=${Math.round(performance.now() - started)} processMilliseconds=${Math.round(process.uptime() * 1_000)}`)
       return 0
     }
     if (command === "infra") {

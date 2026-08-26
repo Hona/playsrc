@@ -12,6 +12,12 @@ export class SetupError extends Error {
   }
 }
 
+export function assertCompatibleBun(version: string, revision: string): void {
+  if (version !== toolchains.bun.version) {
+    throw new SetupError(`Bun ${toolchains.bun.version} is required; found ${version} (${revision})`)
+  }
+}
+
 function sha256(bytes: Uint8Array): string {
   const hash = new Bun.CryptoHasher("sha256")
   hash.update(bytes)
@@ -46,48 +52,28 @@ async function toolchainIsReady(
   env: Record<string, string>,
 ): Promise<boolean> {
   try {
-    const rustupVersion = await run(rustup, ["--version"], env)
+    const wasmBindgen = path.join(path.dirname(rustup), process.platform === "win32" ? "wasm-bindgen.exe" : "wasm-bindgen")
+    const [rustupVersion, rustcVersion, cargoVersion, installed, targets, threadedRustc, threadedComponents, wasmBindgenVersion] = await Promise.all([
+      run(rustup, ["--version"], env),
+      run(rustup, ["run", toolchains.rust.toolchain, "rustc", "--version"], env),
+      run(rustup, ["run", toolchains.rust.toolchain, "cargo", "--version"], env),
+      run(rustup, ["component", "list", "--toolchain", toolchains.rust.toolchain, "--installed"], env),
+      run(rustup, ["target", "list", "--toolchain", toolchains.rust.toolchain, "--installed"], env),
+      run(rustup, ["run", toolchains.rust.threadedToolchain, "rustc", "--version"], env),
+      run(rustup, ["component", "list", "--toolchain", toolchains.rust.threadedToolchain, "--installed"], env),
+      run(wasmBindgen, ["--version"], env),
+    ])
     if (!rustupVersion.startsWith(`rustup ${toolchains.rust.rustupVersion} `)) return false
-
-    for (const command of ["rustc", "cargo"] as const) {
-      const actual = await run(
-        rustup,
-        ["run", toolchains.rust.toolchain, command, "--version"],
-        env,
-      )
-      if (!actual.startsWith(`${command} ${toolchains.rust.toolchain} `)) return false
-    }
-
-    const installed = await run(
-      rustup,
-      ["component", "list", "--toolchain", toolchains.rust.toolchain, "--installed"],
-      env,
-    )
+    if (!rustcVersion.startsWith(`rustc ${toolchains.rust.toolchain} `)
+      || !cargoVersion.startsWith(`cargo ${toolchains.rust.toolchain} `)) return false
     if (!toolchains.rust.components.every((component) =>
       installed.split("\n").some((line) => line.startsWith(`${component}-`)),
     )) return false
-    const targets = await run(
-      rustup,
-      ["target", "list", "--toolchain", toolchains.rust.toolchain, "--installed"],
-      env,
-    )
     if (!toolchains.rust.targets.every((target) => targets.split("\n").includes(target))) return false
-    const threadedRustc = await run(
-      rustup,
-      ["run", toolchains.rust.threadedToolchain, "rustc", "--version"],
-      env,
-    )
     if (!threadedRustc.startsWith(`rustc ${toolchains.rust.threadedRustcVersion} `)) return false
-    const threadedComponents = await run(
-      rustup,
-      ["component", "list", "--toolchain", toolchains.rust.threadedToolchain, "--installed"],
-      env,
-    )
     if (!toolchains.rust.threadedComponents.every((component) =>
       threadedComponents.split("\n").some((line) => line === component || line.startsWith(`${component}-`)),
     )) return false
-    const wasmBindgen = path.join(path.dirname(rustup), process.platform === "win32" ? "wasm-bindgen.exe" : "wasm-bindgen")
-    const wasmBindgenVersion = await run(wasmBindgen, ["--version"], env)
     return wasmBindgenVersion === `wasm-bindgen ${toolchains.wasmBindgen.version}`
   } catch {
     return false
@@ -95,11 +81,7 @@ async function toolchainIsReady(
 }
 
 export async function setup(): Promise<void> {
-  if (Bun.version !== toolchains.bun.version || Bun.revision !== toolchains.bun.revision) {
-    throw new SetupError(
-      `Bun ${toolchains.bun.version} (${toolchains.bun.revision}) is required`,
-    )
-  }
+  assertCompatibleBun(Bun.version, Bun.revision)
 
   const config = await loadLocalConfig(repositoryRoot, "setup")
   const hostKey = `${process.arch}-${process.platform}` as keyof typeof toolchains.rust.hosts

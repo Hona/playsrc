@@ -24,12 +24,17 @@ describe("TF2 browser multi-map configuration", () => {
     expect(configuration).toEqual(valid)
     expect(configuration.targets[2]!.loading.mapPhoto?.material.logicalPath).toBe("materials/vgui/maps/menu_photos_ctf_2fort.vmt")
     expect(parseBrowserConfiguration({ ...valid, assetOrigin: "https://assets.playsrc.online" }, "https://playsrc.online").targets).toHaveLength(3)
+    expect(parseBrowserConfiguration({ ...valid, targets: valid.targets.slice(0, 1) }, valid.assetOrigin).targets).toHaveLength(1)
+    expect(() => parseBrowserConfiguration({
+      ...valid, assetOrigin: "https://assets.playsrc.online", targets: valid.targets.slice(0, 1),
+    }, "https://playsrc.online")).toThrow(BrowserConfigurationError)
   })
 
   test("rejects old shape, target table mutations, bounds, origins and presentation changes", () => {
     const invalid = [
       { ...valid, target: "jump_beef", bsp: valid.targets[0].objects.bsp },
-      { ...valid, targets: valid.targets.slice(0, 1) },
+      { ...valid, targets: [] },
+      { ...valid, defaultTarget: "pl_upward", targets: valid.targets.slice(0, 1) },
       { ...valid, targets: [valid.targets[0], valid.targets[0]] },
       { ...valid, targets: [valid.targets[1], valid.targets[0]] },
       { ...valid, targets: valid.targets.map((entry) => ({ ...entry, objects: { ...entry.objects, resources: valid.targets[0].objects.resources } })) },

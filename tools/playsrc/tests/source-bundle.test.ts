@@ -62,12 +62,14 @@ describe("source dependency bundle report", () => {
 
   test("reuses only a report bound to the exact generator", () => {
     const generator = "4".repeat(64)
+    const source = "6".repeat(64)
     const cache = JSON.stringify({
-      schema: "playsrc-resource-graph-cache-v1",
+      schema: "playsrc-resource-graph-cache-v2",
       generatorSha256: generator,
+      sourceIdentity: source,
       report: valid,
     })
-    expect(parseSourceBundleCache(cache, "jump_beef", generator)).toEqual({
+    expect(parseSourceBundleCache(cache, "jump_beef", generator, source)).toEqual({
       target: "jump_beef",
       contentBuild: TF2_CONTENT_BUILD.contentBuild,
       providers: 13,
@@ -82,8 +84,9 @@ describe("source dependency bundle report", () => {
       graphDescriptor: valid.graphDescriptor,
       ledgerDescriptor: valid.ledgerDescriptor,
     })
-    expect(parseSourceBundleCache(cache, "jump_beef", "5".repeat(64))).toBeNull()
-    expect(parseSourceBundleCache(JSON.stringify({ ...JSON.parse(cache), extra: true }), "jump_beef", generator)).toBeNull()
-    expect(parseSourceBundleCache("not-json", "jump_beef", generator)).toBeNull()
+    expect(parseSourceBundleCache(cache, "jump_beef", "5".repeat(64), source)).toBeNull()
+    expect(parseSourceBundleCache(cache, "jump_beef", generator, "7".repeat(64))).toBeNull()
+    expect(parseSourceBundleCache(JSON.stringify({ ...JSON.parse(cache), extra: true }), "jump_beef", generator, source)).toBeNull()
+    expect(parseSourceBundleCache("not-json", "jump_beef", generator, source)).toBeNull()
   })
 })

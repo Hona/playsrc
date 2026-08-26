@@ -2,6 +2,7 @@ import { spawn } from "node:child_process"
 import { expect, test } from "./application-test"
 import { profileSampleSeconds, summarizeFrameTimes } from "./profile-window"
 import { settleTf2Gameplay } from "./team-selection-evidence"
+import { decodeScreenshot } from "./screenshot-pixels"
 
 test("profile bounded dual-map noclip gameplay coverage", async ({ page, browser }, testInfo) => {
   const sampleSeconds = profileSampleSeconds()
@@ -33,20 +34,27 @@ test("profile bounded dual-map noclip gameplay coverage", async ({ page, browser
   expect(await page.locator("main").getAttribute("data-phase")).toBe("MainMenu")
   const configurationResponse = await page.request.get("/playsrc-config.json")
   expect(configurationResponse.status()).toBe(200)
-  const configuration = await configurationResponse.json() as { defaultTarget: string; targets: readonly { target: string }[] }
-  if (configuration.targets.length !== 3 || configuration.targets.map((target) => target.target).join(",") !== "jump_beef,pl_upward,ctf_2fort") {
-    throw new Error("current map catalog differs")
+  const configuration = await configurationResponse.json() as {
+    defaultTarget: string
+    catalog: { sha256: string }
+    targets: readonly { target: string }[]
   }
+  expect(configuration.targets.map((candidate) => candidate.target)).toEqual([configuration.defaultTarget])
   const target = configuration.defaultTarget
-  const secondary = configuration.targets.find((candidate) => candidate.target !== target)?.target
+  const secondary = ["jump_beef", "pl_upward", "ctf_2fort"].find((candidate) => candidate !== target)
   if (!secondary) throw new Error("current dual-map catalog has no secondary target")
   await page.keyboard.press("Backquote")
   const entry = page.locator("[aria-label='Console command']")
   await expect(entry).toBeVisible()
   await entry.fill(`map ${secondary}`)
+  const secondaryStarted = performance.now()
   await page.keyboard.press("Enter")
   await settleTf2Gameplay(page)
+  const secondaryPreparationMilliseconds = Math.round(performance.now() - secondaryStarted)
   expect(await page.locator("main").getAttribute("data-phase")).toBe("Ready")
+  const expanded = await (await page.request.get("/playsrc-config.json")).json() as typeof configuration
+  expect(expanded.targets.map((candidate) => candidate.target)).toContain(secondary)
+  expect(expanded.catalog.sha256).not.toBe(configuration.catalog.sha256)
   await entry.fill("noclip")
   await page.keyboard.press("Enter")
   await page.keyboard.press("Backquote")
@@ -67,6 +75,16 @@ test("profile bounded dual-map noclip gameplay coverage", async ({ page, browser
   })
   expect(secondaryTraversal.distance).toBeGreaterThan(0)
   expect(secondaryTraversal.skySurfaces).toBeGreaterThan(0)
+  const secondaryPixels = await page.locator("canvas.world-canvas").screenshot()
+  const decoded = decodeScreenshot(secondaryPixels)
+  let visiblePixels = 0
+  for (let index = 0; index < decoded.pixels.length; index += decoded.channels) {
+    if (decoded.pixels[index]! > 24 || decoded.pixels[index + 1]! > 24 || decoded.pixels[index + 2]! > 24) {
+      visiblePixels += 1
+    }
+  }
+  expect(visiblePixels).toBeGreaterThan(20_000)
+  await testInfo.attach("headed-lazy-authenticated-upward-pixels", { body: secondaryPixels, contentType: "image/png" })
   await testInfo.attach("dual-map-authored-sky-preflight", {
     body: Buffer.from(JSON.stringify({ target: secondary, ...secondaryTraversal }, null, 2)),
     contentType: "application/json",
@@ -110,6 +128,7 @@ test("profile bounded dual-map noclip gameplay coverage", async ({ page, browser
     const observer = new MutationObserver(() => { const detail = main.dataset.performanceDetail; if (detail) frameRecords.push({ at: performance.now(), goal: activeGoal, camera: position(), frame: Number(canvas.dataset.displayFrame ?? 0), detail: JSON.parse(detail) }) })
     observer.observe(main, { attributes: true, attributeFilter: ["data-performance-detail"] })
     const runStarted=performance.now(),runDeadline=runStarted+seconds*1_000
+    const firstTick = Number(main.dataset.snapshotTick ?? 0)
     let lastTick=main.dataset.snapshotTick,lastFrame=canvas.dataset.displayFrame,lastTickAt=performance.now(),lastFrameAt=performance.now()
     key("keydown", "KeyW", "w")
     try{
@@ -148,6 +167,7 @@ test("profile bounded dual-map noclip gameplay coverage", async ({ page, browser
       frameRecords,
       longTasks: state.longTasks,
       elapsedMilliseconds: Number((performance.now()-runStarted).toFixed(3)),
+      firstTick,
       terminalTick: Number(main.dataset.snapshotTick ?? 0),
       water: {
         plan: main.dataset.waterPlan ?? "",
@@ -164,12 +184,20 @@ test("profile bounded dual-map noclip gameplay coverage", async ({ page, browser
   await cdp.detach()
   const durations = result.frameRecords.map((record) => Number((record.detail as Record<string, unknown>).total ?? 0))
   const frameTimes = summarizeFrameTimes(durations)
+  const displays = result.frameRecords.filter((record, index) => index === 0
+    || record.frame !== result.frameRecords[index - 1]!.frame)
+  const visibleFrameTimes = summarizeFrameTimes(displays.slice(1).map((record, index) =>
+    Number(record.at) - Number(displays[index]!.at)))
+  const ticksPerSecond = Number(((result.terminalTick - result.firstTick) / result.elapsedMilliseconds * 1_000).toFixed(3))
   const worst = result.frameRecords.toSorted((left, right) => Number((right.detail as Record<string, unknown>).total ?? 0) - Number((left.detail as Record<string, unknown>).total ?? 0)).slice(0, 10)
   const report = {
     target,
     targets: [secondary, target],
     sampleSeconds,
     elapsedMilliseconds: result.elapsedMilliseconds,
+    secondaryPreparationMilliseconds,
+    visibleFrameTimes,
+    ticksPerSecond,
     secondaryTraversal,
     controllerFreeSkyViews: result.controllerFreeSkyViews,
     samples: result.samples.length,
@@ -194,13 +222,18 @@ test("profile bounded dual-map noclip gameplay coverage", async ({ page, browser
     elapsedMilliseconds: report.elapsedMilliseconds,
     goals: { available: report.samples, attempted: report.attempted, reached: report.reached, unreachable: report.unreachable },
     frames: frameTimes,
+    visibleFrames: visibleFrameTimes,
+    ticksPerSecond,
+    secondaryPreparationMilliseconds,
     secondarySkySurfaces: report.secondaryTraversal.skySurfaces,
+    visiblePixels,
     water: report.water,
     hud: report.hud,
     terminalTick: report.terminalTick,
   })}`)
   expect(result.elapsedMilliseconds).toBeGreaterThanOrEqual(sampleSeconds * 1_000)
   expect(result.frameRecords.length).toBeGreaterThan(0)
+  expect(ticksPerSecond).toBeGreaterThan(63)
   expect(result.reached.length).toBeGreaterThan(0)
   expect(await page.locator("main").getAttribute("data-phase")).toBe("Ready")
 })

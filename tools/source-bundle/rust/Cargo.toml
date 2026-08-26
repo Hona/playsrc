@@ -14,6 +14,7 @@ playsrc-bsp = { path = "../../../packages/formats/bsp/rust" }
 playsrc-content = { path = "../../../packages/content/rust" }
 playsrc-keyvalues = { path = "../../../packages/formats/keyvalues/rust" }
 playsrc-map = { path = "../../../packages/world/map/rust" }
+playsrc-nav = { path = "../../../packages/formats/nav/rust" }
 playsrc-material = { path = "../../../packages/world/material/rust" }
 playsrc-particle = { path = "../../../packages/presentation/particle/rust" }
 playsrc-entity = { path = "../../../packages/world/entity/rust" }
