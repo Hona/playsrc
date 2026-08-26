@@ -147,6 +147,7 @@ export class Tf2WorkerClient {
   >()
   #nextId = 1
   #closed = false
+  #shutdownRequested?: Promise<void>
   #staleMessages = 0
   #queuedModels?: QueuedModels
 
@@ -188,7 +189,7 @@ export class Tf2WorkerClient {
   }
 
   #reserve(): { id: number; response: Promise<WorkerResponse> } {
-    if (this.#closed) throw new Tf2WorkerError("Closed")
+    if (this.#closed || this.#shutdownRequested) throw new Tf2WorkerError("Closed")
     if (this.#pending.size >= MAX_PENDING) throw new Tf2WorkerError("BoundExceeded")
     while (this.#pending.has(this.#nextId)) {
       this.#nextId = this.#nextId === 0xffff_ffff ? 1 : this.#nextId + 1
@@ -784,8 +785,14 @@ export class Tf2WorkerClient {
     })
   }
 
-  async shutdown(): Promise<void> {
-    if (this.#closed) return
+  shutdown(): Promise<void> {
+    if (this.#shutdownRequested) return this.#shutdownRequested
+    if (this.#closed) return Promise.resolve()
+    this.#shutdownRequested = this.#finishShutdown()
+    return this.#shutdownRequested
+  }
+
+  async #finishShutdown(): Promise<void> {
     try {
       const response = await this.#request({ kind: "shutdown" })
       if (response.kind !== "shutdown") throw new Tf2WorkerError("WorkerFailed")
