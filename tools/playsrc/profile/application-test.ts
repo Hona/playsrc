@@ -51,6 +51,7 @@ export const test = headedBrowser.extend<{
       const previous = transitions.at(-1)
       if (!previous || previous.phase !== state.phase || previous.detail !== state.detail || previous.startupState !== state.startupState) {
         transitions.push({ milliseconds: Date.now() - started, phase: state.phase, detail: state.detail, startupState: state.startupState })
+        if (!previous || previous.phase !== state.phase) console.error(`[performance] application=${state.phase} elapsed=${Date.now() - started}ms detail=${state.detail}`)
       }
       lastState = state
       if (stallTimer) clearTimeout(stallTimer)

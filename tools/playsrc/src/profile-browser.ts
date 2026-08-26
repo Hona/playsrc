@@ -19,8 +19,12 @@ async function optionalJson(filename: string): Promise<any> {
 }
 
 export async function browserLaunchIdentity(launch: BrowserLaunch): Promise<string> {
+  const node = Bun.which("node")
+  if (!node) throw new Error("The supported Playwright WebSocket server requires Node on PATH")
   return createHash("sha256").update(JSON.stringify(launch))
     .update(await fileFingerprint(import.meta.filename))
+    .update(await fileFingerprint(path.join(import.meta.dir, "profile-browser-server.cjs")))
+    .update(await fileFingerprint(node))
     .update(await fileFingerprint(path.join(repositoryRoot, "node_modules/@playwright/test/package.json")))
     .update(await fileFingerprint(path.join(repositoryRoot, "bun.lock"))).digest("hex")
 }
@@ -100,10 +104,25 @@ if (import.meta.main) {
   const [filename, token, encoded] = process.argv.slice(2)
   if (!filename || !path.isAbsolute(filename) || !token || !encoded) throw new Error("Missing headed browser lease")
   const launch = JSON.parse(encoded) as BrowserLaunch
-  const { chromium } = await import("@playwright/test")
-  const server = await chromium.launchServer({ ...launch, host: "127.0.0.1", headless: false, timeout: 20_000 })
-  const executable = server.process().spawnfile
-  const owner: BrowserOwner = { token, pid: process.pid, endpoint: server.wsEndpoint(),
+  const child = spawn(Bun.which("node")!, [path.join(import.meta.dir, "profile-browser-server.cjs"), JSON.stringify(launch)], { stdio: ["pipe", "pipe", "inherit"] })
+  const exited = new Promise<void>((resolve, reject) => {
+    child.once("error", reject)
+    child.once("exit", code => code === 0 ? resolve() : reject(new Error(`Headed browser server exited with ${code}`)))
+  })
+  // Observe rejection during startup as well as during controlled shutdown.
+  void exited.catch(() => undefined)
+  const { endpoint, executable } = await Promise.race([
+    new Promise<{ endpoint: string; executable: string }>((resolve, reject) => {
+      let output = ""
+      child.stdout!.on("data", chunk => {
+        output += chunk.toString()
+        if (!output.includes("\n")) return
+        try { resolve(JSON.parse(output.split("\n")[0]!)) } catch (error) { reject(error) }
+      })
+    }),
+    exited.then(() => { throw new Error("Headed browser server exited before publishing its endpoint") }),
+  ])
+  const owner: BrowserOwner = { token, pid: process.pid, endpoint,
     identity: await browserLaunchIdentity(launch), executable, executableSha256: await fileFingerprint(executable) }
   let stopping = false
   const stop = async (underLock = false) => {
@@ -114,7 +133,8 @@ if (import.meta.main) {
     const lockPath = path.join(path.dirname(filename), "chromium-profile.lock")
     const lock = underLock ? undefined : await acquireBrowserRetirementLock(filename, token)
     try {
-      await server.close()
+      if (child.exitCode === null) child.stdin!.write("close\n")
+      await exited
       try {
         if (JSON.parse(await readFile(filename, "utf8")).token === token) await rm(filename, { force: true })
       } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error }
@@ -137,7 +157,7 @@ if (import.meta.main) {
   }, 500)
   process.once("SIGTERM", () => { void stop() })
   process.once("SIGINT", () => { void stop() })
-  server.on("close", () => { void stop() })
+  child.once("exit", () => { void stop() })
   const temporary = `${filename}.${token}.tmp`
   const lease = await optionalJson(`${filename}.lease`)
   if (lease?.token !== token || lease.expiresAt <= Date.now()) {

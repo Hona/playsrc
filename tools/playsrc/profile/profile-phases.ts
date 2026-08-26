@@ -8,6 +8,7 @@ export class ProfilePhases {
     this.#finish(true)
     this.#name = name
     this.#entered = performance.now()
+    console.error(`[performance] operation=${name} elapsed=${Math.round(this.#entered - this.#started)}ms`)
   }
 
   #finish(complete: boolean): void {

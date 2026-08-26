@@ -39,7 +39,7 @@ export function headedProfileConfiguration(options: ProfileConfiguration): Playw
     ],
     use: {
       baseURL: origin,
-      ...(process.env.PLAYSRC_PROFILE_BROWSER_ENDPOINT ? { connectOptions: { wsEndpoint: process.env.PLAYSRC_PROFILE_BROWSER_ENDPOINT } } : {}),
+      ...(process.env.PLAYSRC_PROFILE_BROWSER_ENDPOINT ? { connectOptions: { wsEndpoint: process.env.PLAYSRC_PROFILE_BROWSER_ENDPOINT, timeout: 10_000 } } : {}),
       ...(process.env.PLAYSRC_PROFILE_BROWSER_CHANNEL || options.channel ? { channel: process.env.PLAYSRC_PROFILE_BROWSER_CHANNEL ?? options.channel } : {}),
       headless: false,
       viewport: { width, height },
