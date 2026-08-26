@@ -208,7 +208,7 @@ export function sourceModelSurfaceNode(
   uniforms: SourceModelLightingUniforms,
   state: SourceModelSurface,
   exposure: any,
-): any {
+): Readonly<{ color: any; environmentNode?: any }> {
   const normal = TSL.normalWorld.normalize()
   const eye = uniforms.cameraPosition.sub(TSL.positionWorld).normalize()
   let lighting = sourceModelLightingNode(uniforms, state.halfLambert, state.diffuseWarp)
@@ -271,16 +271,21 @@ export function sourceModelSurfaceNode(
       : TSL.vec3(...phong.tint)
     result = result.add(specular.mul(tint))
   }
+  let environmentNode: any
   if (state.environment) {
     const reflection = normal.mul(normal.dot(eye).mul(2)).sub(eye)
-    let reflected = TSL.cubeTexture(state.environment.texture, reflection).rgb
+    environmentNode = TSL.cubeTexture(state.environment.texture, reflection)
+    let reflected = environmentNode.rgb
       .mul(TSL.vec3(...state.environment.tint))
       .mul(state.environment.scale)
     if (state.eye) reflected = reflected.mul(state.eye.glossiness).mul(lighting)
     else reflected = reflected.mul(base.a)
     result = result.add(reflected)
   }
-  return TSL.vec4(result.mul(exposure), base.a)
+  return Object.freeze({
+    color: TSL.vec4(result.mul(exposure), base.a),
+    ...(environmentNode ? { environmentNode } : {}),
+  })
 }
 
 export function sourceStaticVertexLightingNode(): any {
