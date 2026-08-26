@@ -93,6 +93,8 @@ async function residentProcesses(processes: readonly BrowserProcess[]): Promise<
 }
 
 test("profiles exact headed cold initialization for all three configured TF2 maps", async ({ page, browser }, testInfo) => {
+  const reportDirectory = path.join((await loadLocalConfig()).sourceCacheDir, "profiles", "three-map-load")
+  await mkdir(reportDirectory, { recursive: true })
   const browserCdp = await browser.newBrowserCDPSession()
   const pageCdp = await page.context().newCDPSession(page)
   await pageCdp.send("Performance.enable")
@@ -263,6 +265,10 @@ test("profiles exact headed cold initialization for all three configured TF2 map
               destroyed = true
               state.gpu.destroyedTextures += 1
               state.gpu.residentTextureBytes -= bytes
+              if (descriptor.format.startsWith("bc")) {
+                state.gpu.compressedTextures -= 1
+                state.gpu.compressedTextureBytes -= bytes
+              }
             }
             return destroy.call(this)
           }
@@ -395,6 +401,12 @@ test("profiles exact headed cold initialization for all three configured TF2 map
     const consoleEntry = page.locator("[aria-label='Console command']")
     await expect(consoleEntry).toBeVisible()
     await consoleEntry.fill(`map ${target.target}`)
+    await page.evaluate(() => {
+      const gpu = (globalThis as typeof globalThis & { __playsrcThreeMapProfile: BrowserProfile }).__playsrcThreeMapProfile.gpu
+      gpu.peakTextureBytes = gpu.residentTextureBytes
+      gpu.peakBufferBytes = gpu.residentBufferBytes
+      gpu.peakStagingBytes = gpu.stagingBytes
+    })
     const before = await snapshot()
     const processSamples: Array<{ residentBytes: number; processes: readonly ResidentProcess[] }> = [
       { residentBytes: before.residentBytes, processes: before.residentProcesses },
@@ -553,11 +565,13 @@ test("profiles exact headed cold initialization for all three configured TF2 map
       longTasks: profile.longTasks,
     }
     expect(row.simulation.ticks).toBeGreaterThan(0)
+    await writeFile(path.join(reportDirectory, `${process.env.PLAYSRC_THREE_MAP_LABEL ?? "latest"}-partial.json`),
+      `${JSON.stringify({ maps: [...maps, row] }, null, 2)}\n`)
+    console.log(`PLAYSRC_THREE_MAP_ROW ${JSON.stringify({ target: row.target, wallSeconds: row.milliseconds.totalWall / 1_000, networkSeconds: row.milliseconds.networkDownload / 1_000, initializationSeconds: row.milliseconds.initializationExcludingDownload / 1_000, frameP95Milliseconds: row.simulation.frameP95Milliseconds, tickHertz: row.simulation.hertz, peakBrowserResidentBytes: row.memory.peakBrowserResidentBytes, browserResidentBytes: row.memory.browserResidentAfterBytes, wasmLinearBytes: row.memory.wasmLinearBytes, residentTextureBytes: row.gpu.residentTextureBytes, peakTextureBytes: row.gpu.peakTextureBytes, mapCache: row.cache.map, presentationCache: row.cache.presentation })}`)
     if (process.env.PLAYSRC_THREE_MAP_CAPTURE !== "before") {
       expect(row.milliseconds.initializationExcludingDownload, `${target.target} exceeded the exact 30-second cold initialization budget`).toBeLessThanOrEqual(30_000)
     }
     maps.push(row)
-    console.log(`PLAYSRC_THREE_MAP_ROW ${JSON.stringify({ target: row.target, wallSeconds: row.milliseconds.totalWall / 1_000, networkSeconds: row.milliseconds.networkDownload / 1_000, initializationSeconds: row.milliseconds.initializationExcludingDownload / 1_000, frameP95Milliseconds: row.simulation.frameP95Milliseconds, tickHertz: row.simulation.hertz, peakBrowserResidentBytes: row.memory.peakBrowserResidentBytes, browserResidentBytes: row.memory.browserResidentAfterBytes, wasmLinearBytes: row.memory.wasmLinearBytes, residentTextureBytes: row.gpu.residentTextureBytes, peakTextureBytes: row.gpu.peakTextureBytes, mapCache: row.cache.map, presentationCache: row.cache.presentation })}`)
   }
 
   const report = {
@@ -570,9 +584,6 @@ test("profiles exact headed cold initialization for all three configured TF2 map
     sampleMillisecondsPerMap: SAMPLE_MILLISECONDS,
     maps,
   }
-  const local = await loadLocalConfig()
-  const directory = path.join(local.sourceCacheDir, "profiles", "three-map-load")
-  await mkdir(directory, { recursive: true })
   const label = process.env.PLAYSRC_THREE_MAP_LABEL
   if (label !== undefined && !/^[a-z0-9][a-z0-9-]*$/u.test(label)) {
     throw new Error("PLAYSRC_THREE_MAP_LABEL must be a lowercase bounded filename label")
@@ -580,7 +591,7 @@ test("profiles exact headed cold initialization for all three configured TF2 map
   const filename = label === undefined
     ? process.env.PLAYSRC_THREE_MAP_CAPTURE === "before" ? "before.json" : "after.json"
     : `${label}.json`
-  const reportPath = path.join(directory, filename)
+  const reportPath = path.join(reportDirectory, filename)
   await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`)
   await testInfo.attach("three-map-load", { body: Buffer.from(JSON.stringify(report, null, 2)), contentType: "application/json" })
   console.log(`PLAYSRC_THREE_MAP_REPORT ${JSON.stringify({ path: reportPath, maps: maps.map(map => ({ target: map.target, milliseconds: (map.milliseconds as { initializationExcludingDownload: number }).initializationExcludingDownload })) })}`)
