@@ -25,11 +25,18 @@ export class OwnedResourceGeneration implements Iterable<OwnedResource> {
   }
 
   add<T extends OwnedResource>(resource: T): T {
-    if (this.#state !== "Staging" || this.#resources.has(resource)) {
+    if ((this.#state !== "Staging" && this.#state !== "Active") || this.#resources.has(resource)) {
       throw new Error("resource cannot be added to this generation")
     }
     this.#resources.add(resource)
     return resource
+  }
+
+  release(resource: OwnedResource): void {
+    if ((this.#state !== "Staging" && this.#state !== "Active") || !this.#resources.delete(resource)) {
+      throw new Error("resource cannot be released from this generation")
+    }
+    try { resource.dispose() } finally { this.#disposals += 1 }
   }
 
   activate(): void {

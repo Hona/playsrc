@@ -8754,7 +8754,9 @@ fn model_authored_texture(
     let two_dimensional = metadata.faces.len() == 1 && metadata.depth == 1;
     let converted_or_compressed = matches!(
         metadata.high_format,
-        playsrc_vtf::ImageFormat::Dxt1
+        playsrc_vtf::ImageFormat::Rgb888
+            | playsrc_vtf::ImageFormat::Bgr888
+            | playsrc_vtf::ImageFormat::Dxt1
             | playsrc_vtf::ImageFormat::Dxt1OneBitAlpha
             | playsrc_vtf::ImageFormat::Dxt3
             | playsrc_vtf::ImageFormat::Dxt5
@@ -12880,6 +12882,38 @@ mod tests {
         assert!(cache.decoder("materials/invalid.vtf").is_err());
         assert_eq!(cache.requests.load(Ordering::Relaxed), 66);
         assert_eq!(cache.inspections.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn authored_three_channel_planes_remain_source_backed_until_their_frame_is_selected() {
+        for format in [2_i32, 3_i32] {
+            let mut source = vec![0_u8; 70];
+            source[..4].copy_from_slice(b"VTF\0");
+            source[4..8].copy_from_slice(&7_u32.to_le_bytes());
+            source[8..12].copy_from_slice(&1_u32.to_le_bytes());
+            source[12..16].copy_from_slice(&64_u32.to_le_bytes());
+            source[16..18].copy_from_slice(&1_u16.to_le_bytes());
+            source[18..20].copy_from_slice(&1_u16.to_le_bytes());
+            source[24..26].copy_from_slice(&2_u16.to_le_bytes());
+            source[52..56].copy_from_slice(&format.to_le_bytes());
+            source[56] = 1;
+            source[57..61].copy_from_slice(&(-1_i32).to_le_bytes());
+            source[64..70].copy_from_slice(&[3, 2, 1, 6, 5, 4]);
+            let path = "materials/animated.vtf".to_owned();
+            let bundle = BTreeMap::from([(path.clone(), source.as_slice())]);
+            let hashes = BTreeMap::from([(path.clone(), [7_u8; 32])]);
+            let texture =
+                model_authored_texture(&path, &TextureDecoders::new(&bundle), &hashes, false)
+                    .expect("authored RGB animation must retain its source ranges");
+            let ModelAuthoredTexture::Referenced(texture) = texture else {
+                panic!("RGB animation was decoded before frame selection")
+            };
+            assert_eq!(texture.format, format);
+            assert_eq!(texture.manifest.frame_count, 2);
+            assert_eq!(texture.planes.len(), 2);
+            assert_eq!(texture.planes[0].range, 64..67);
+            assert_eq!(texture.planes[1].range, 67..70);
+        }
     }
 
     fn particle_stop_transaction(mode: u8) -> Vec<u8> {
