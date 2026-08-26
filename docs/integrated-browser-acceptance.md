@@ -28,3 +28,29 @@ comparison metadata is missing. A passing Mac sample is not Windows acceptance
 and does not resolve an older seconds-per-frame incident. Short runs also do not
 establish long-session memory stability. Windows acceptance additionally requires
 an independently verified unlocked interactive desktop.
+
+## Retained collision-tail observations
+
+Both runs below used local Edge on Apple M4/Metal (26.5.2), 1280×720 CSS,
+DPR 2 / 2560×1440 buffer, the unchanged balanced LDR settings, cold Training
+Upward, 15 bots plus the local player (8v8), and the same 18-selection stress
+sequence over 10 seconds. This older click-stress sequence is **not** the newer
+nine-class native-input acceptance cycle. Detailed bot-class inventory was not
+retained by the before fixture, so strict comparison correctly refuses a full
+non-regression verdict.
+
+| Observation | Before lazy support projection | After |
+| --- | ---: | ---: |
+| Presented interval p95 / p99 / max, ms | 16.668 / 33.334 / 149.998 | 16.667 / 33.334 / 133.332 |
+| Worker simulation transaction p95 / p99 / max, ms | 7.485 / 22.490 / 168.435 | 4.100 / 6.160 / 14.525 |
+| Observed simulation Hz | 62.200 | 66.577 |
+| First application-completed playable frame, ms | 8865.340 | 8830.635 |
+| Queue writes, bytes (whole sample) | 118747932 | 128360396 |
+| Process RSS growth, bytes (whole sample) | 525959168 | 561315840 |
+
+Evidence labels: `integrated-worker-diagnostic-dpr2` and
+`integrated-fixed-comparable-dpr2`. More completed frames produce more total
+uploads; the RSS growth is retained, not hidden or presented as a memory win.
+The initial `integrated-baseline-dpr2` incident had a 366.657 ms presented gap;
+its raw trace remains retained. None of these observations resolves the older
+505 ms incident, proves long-session memory stability, or predicts Windows.

@@ -1,5 +1,12 @@
 import { expect, test } from "bun:test"
 import { acceptanceScenario, compareAcceptance } from "../profile/integrated-acceptance"
+import { profileLockWaitBudget } from "../src/profile-runner"
+
+test("acceptance reserves real scenario time rather than starting a doomed profile after a long lock wait", () => {
+  expect(profileLockWaitBudget(1000, 120_000)).toBe(54_000)
+  expect(profileLockWaitBudget(1000)).toBe(174_000)
+  expect(() => profileLockWaitBudget(0, 175_000)).toThrow("reservation")
+})
 
 test("acceptance selects one fixed-roster bounded headed scenario", () => {
   expect(acceptanceScenario("training-dpr1.25")).toEqual({ profile: "class-switch-high-dpi", dpr: "1.25" })
