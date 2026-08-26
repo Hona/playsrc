@@ -6,10 +6,10 @@ import initializeWasm, { initThreadPool } from "./wasm-generated/tf2_wasm.js"
 
 const MAX_WASM_BYTES = 64 * 1024 * 1024
 const MAX_BSP_BYTES = 512 * 1024 * 1024
-const MAX_CONFIGURATION_BYTES = 768 * 1024 * 1024
-const MAX_CONFIGURATION_SECTIONS = 64
+const MAX_CONFIGURATION_BYTES = 1024 * 1024 * 1024
 const MAX_MESSAGE_BYTES = 512 * 1024 * 1024
 const MAX_PRESENTATION_BYTES = 512 * 1024 * 1024
+const MAX_RESOURCE_SECTION_BYTES = 32 * 1024 * 1024
 
 type WasmExports = Readonly<{
   memory: WebAssembly.Memory
@@ -18,16 +18,21 @@ type WasmExports = Readonly<{
   playsrc_resource_decode(pointer: number, length: number): number
   playsrc_resource_length(): number
   playsrc_resource_take(): number
-  playsrc_compile_map(bsp: number, length: number, profile: number, config: number, configLength: number): number
-  playsrc_compile_map_cached(bsp: number, length: number, profile: number, config: number, configLength: number, presentation: number, presentationLength: number): number
+  playsrc_resource_sections_hash(sections: number, count: number, output: number): number
+  playsrc_compile_map(bsp: number, length: number, profile: number, sections: number, sectionCount: number, configurationSha256: number): number
+  playsrc_compile_map_cached(bsp: number, length: number, profile: number, sections: number, sectionCount: number, configurationSha256: number, presentation: number, presentationLength: number): number
   playsrc_compile_metric_milliseconds(handle: number, index: number): number
   playsrc_texture_inspection_count(handle: number, index: number): number
+  playsrc_model_cache_count(handle: number, index: number): number
   playsrc_result_length(handle: number): number
   playsrc_result_error(handle: number): number
   playsrc_result_copy(handle: number, pointer: number, capacity: number): number
+  playsrc_result_take(handle: number): number
+  playsrc_result_release(handle: number): number
   playsrc_result_hash(handle: number, pointer: number): number
   playsrc_presentation_length(handle: number): number
   playsrc_presentation_copy(handle: number, pointer: number, capacity: number): number
+  playsrc_presentation_take(handle: number): number
   playsrc_presentation_release(handle:number):number
   playsrc_coverage_length(handle:number):number
   playsrc_coverage_copy(handle:number,pointer:number,capacity:number):number
@@ -58,6 +63,11 @@ const scope = self as DedicatedWorkerGlobalScope
 let wasm: WasmExports | undefined
 let active: { generation: number; handle: number } | undefined
 let pending: { generation: number; handle: number } | undefined
+const resourceSets = new Map<number, {
+  sections: Array<{ pointer: number; length: number }>
+  byteLength?: number
+  sha256?: string
+}>()
 
 function post(message: WorkerResponse, transfer: Transferable[] = []): void {
   scope.postMessage(message, transfer)
@@ -107,15 +117,20 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         candidate.playsrc_resource_decode,
         candidate.playsrc_resource_length,
         candidate.playsrc_resource_take,
+        candidate.playsrc_resource_sections_hash,
+        candidate.playsrc_model_cache_count,
         candidate.playsrc_compile_map,
         candidate.playsrc_compile_map_cached,
         candidate.playsrc_compile_metric_milliseconds,
         candidate.playsrc_result_length,
         candidate.playsrc_result_error,
         candidate.playsrc_result_copy,
+        candidate.playsrc_result_take,
+        candidate.playsrc_result_release,
         candidate.playsrc_result_hash,
         candidate.playsrc_presentation_length,
         candidate.playsrc_presentation_copy,
+        candidate.playsrc_presentation_take,
         candidate.playsrc_presentation_release,
         candidate.playsrc_coverage_length,
         candidate.playsrc_coverage_copy,
@@ -156,7 +171,8 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
 function decodeResources(request: Extract<WorkerRequest, { kind: "decode-resources" }>): void {
   const exports = wasm
   if (!exports || !Array.isArray(request.chunks) || request.chunks.length < 1 || request.chunks.length > 1_024
-    || typeof request.shared !== "boolean") {
+    || typeof request.shared !== "boolean" || request.shared !== (request.generation !== undefined)
+    || (request.generation !== undefined && (!canonicalId(request.generation) || request.generation <= (active?.generation ?? 0)))) {
     fail(request.id, "MalformedRequest")
     return
   }
@@ -201,7 +217,7 @@ function decodeResources(request: Extract<WorkerRequest, { kind: "decode-resourc
     return
   }
   const length = exports.playsrc_resource_length()
-  if (!Number.isSafeInteger(length) || length < 12 || length > MAX_MESSAGE_BYTES) {
+  if (!Number.isSafeInteger(length) || length < 12 || length > MAX_RESOURCE_SECTION_BYTES) {
     fail(request.id, "InternalFailure")
     return
   }
@@ -210,15 +226,96 @@ function decodeResources(request: Extract<WorkerRequest, { kind: "decode-resourc
     fail(request.id, "InternalFailure")
     return
   }
-  let bytes: Uint8Array<ArrayBuffer | SharedArrayBuffer>
-  try {
-    bytes = new Uint8Array(request.shared ? new SharedArrayBuffer(length) : new ArrayBuffer(length))
-    bytes.set(new Uint8Array(exports.memory.buffer, pointer, length))
-  } finally {
-    exports.playsrc_free(pointer, length)
+  if (request.generation !== undefined) {
+    const memory = exports.memory.buffer
+    if (!(memory instanceof SharedArrayBuffer)) {
+      exports.playsrc_free(pointer, length)
+      fail(request.id, "InternalFailure")
+      return
+    }
+    const retained = resourceSets.get(request.generation) ?? { sections: [] }
+    retained.sections.push({ pointer, length })
+    delete retained.byteLength
+    delete retained.sha256
+    resourceSets.set(request.generation, retained)
+    post({ id: request.id, kind: "resources", bytes: memory, byteOffset: pointer, byteLength: length })
+    return
   }
-  post({ id: request.id, kind: "resources", bytes: bytes.buffer },
-    bytes.buffer instanceof ArrayBuffer ? [bytes.buffer] : [])
+  const bytes = new Uint8Array(exports.memory.buffer, pointer, length).slice()
+  exports.playsrc_free(pointer, length)
+  post({ id: request.id, kind: "resources", bytes: bytes.buffer, byteOffset: 0, byteLength: length }, [bytes.buffer])
+}
+
+function sectionTable(exports: WasmExports, sections: readonly { pointer: number; length: number }[]): number {
+  const pointer = exports.playsrc_alloc(sections.length * 8) >>> 0
+  const table = new DataView(exports.memory.buffer, pointer, sections.length * 8)
+  for (const [index, section] of sections.entries()) {
+    table.setUint32(index * 8, section.pointer, true)
+    table.setUint32(index * 8 + 4, section.length, true)
+  }
+  return pointer
+}
+
+function releaseResourceSet(exports: WasmExports, generation: number): boolean {
+  const retained = resourceSets.get(generation)
+  if (!retained) return false
+  resourceSets.delete(generation)
+  for (const section of retained.sections) exports.playsrc_free(section.pointer, section.length)
+  return true
+}
+
+function finalizeResources(request: Extract<WorkerRequest, { kind: "finalize-resources" }>): void {
+  const exports = wasm
+  const retained = resourceSets.get(request.generation)
+  if (!exports || !canonicalId(request.generation) || !retained || retained.sections.length < 1 || retained.sections.length > 1024) {
+    fail(request.id, "MalformedRequest")
+    return
+  }
+  const table = sectionTable(exports, retained.sections)
+  const digest = exports.playsrc_alloc(32) >>> 0
+  try {
+    const byteLength = exports.playsrc_resource_sections_hash(table, retained.sections.length, digest)
+    if (!Number.isSafeInteger(byteLength) || byteLength < 12 || byteLength > MAX_CONFIGURATION_BYTES) {
+      releaseResourceSet(exports, request.generation)
+      fail(request.id, "CompileFailed")
+      return
+    }
+    const sha256 = Array.from(new Uint8Array(exports.memory.buffer, digest, 32), (value) => value.toString(16).padStart(2, "0")).join("")
+    retained.byteLength = byteLength
+    retained.sha256 = sha256
+    post({ id: request.id, kind: "resources-finalized", generation: request.generation, byteLength, sha256, sections: retained.sections.length })
+  } finally {
+    exports.playsrc_free(table, retained.sections.length * 8)
+    exports.playsrc_free(digest, 32)
+  }
+}
+
+function retainResources(request: Extract<WorkerRequest, { kind: "retain-resources" }>): void {
+  const exports = wasm
+  if (!exports || !canonicalId(request.generation) || request.generation <= (active?.generation ?? 0)
+    || !(request.section instanceof ArrayBuffer) || request.section.byteLength < 12 || request.section.byteLength > MAX_RESOURCE_SECTION_BYTES) {
+    fail(request.id, "MalformedRequest")
+    return
+  }
+  const retained = resourceSets.get(request.generation) ?? { sections: [] }
+  if (retained.sections.length >= 1024) {
+    fail(request.id, "MalformedRequest")
+    return
+  }
+  retained.sections.push({ pointer: allocateCopy(exports, request.section), length: request.section.byteLength })
+  delete retained.byteLength
+  delete retained.sha256
+  resourceSets.set(request.generation, retained)
+  post({ id: request.id, kind: "resources-retained", generation: request.generation })
+}
+
+function releaseResources(request: Extract<WorkerRequest, { kind: "release-resources" }>): void {
+  if (!wasm || !canonicalId(request.generation)) {
+    fail(request.id, "MalformedRequest")
+    return
+  }
+  releaseResourceSet(wasm, request.generation)
+  post({ id: request.id, kind: "resources-released", generation: request.generation })
 }
 
 function allocateCopy(exports: WasmExports, bytes: ArrayBuffer | SharedArrayBuffer): number {
@@ -269,14 +366,14 @@ function readInitialView(exports: WasmExports, handle: number): InitialView | un
   }
 }
 
-function copyOutput(
+function takeOutput(
   exports: WasmExports,
   length: number,
-  copy: (pointer: number, capacity: number) => number,
+  take: () => number,
 ): ArrayBuffer | undefined {
-  const pointer = exports.playsrc_alloc(length) >>> 0
+  const pointer = take() >>> 0
+  if (pointer === 0) return undefined
   try {
-    if (copy(pointer, length) !== length) return undefined
     return new Uint8Array(exports.memory.buffer, pointer, length).slice().buffer
   } finally {
     exports.playsrc_free(pointer, length)
@@ -286,6 +383,7 @@ function copyOutput(
 function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
   const started = performance.now()
   const exports = wasm
+  const configuration = resourceSets.get(request.generation)
   if (
     !exports ||
     !canonicalId(request.generation) ||
@@ -294,12 +392,11 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
     !(request.bsp instanceof ArrayBuffer) ||
     request.bsp.byteLength < 1 ||
     request.bsp.byteLength > MAX_BSP_BYTES ||
-    !Array.isArray(request.configuration) ||
-    request.configuration.length < 1 ||
-    request.configuration.length > MAX_CONFIGURATION_SECTIONS ||
-    request.configuration.some((section) => !(section instanceof ArrayBuffer || section instanceof SharedArrayBuffer)
-      || section.byteLength < 12 || section.byteLength > MAX_MESSAGE_BYTES) ||
-    request.configuration.reduce((total, section) => total + section.byteLength, 0) > MAX_CONFIGURATION_BYTES ||
+    !configuration ||
+    !Number.isSafeInteger(request.configurationBytes) ||
+    request.configurationBytes < 12 || request.configurationBytes > MAX_CONFIGURATION_BYTES ||
+    !/^[0-9a-f]{64}$/.test(request.configurationSha256) ||
+    configuration.byteLength !== request.configurationBytes || configuration.sha256 !== request.configurationSha256 ||
     typeof request.includeMap !== "boolean" ||
     (request.presentation !== undefined && (
       !(request.presentation instanceof ArrayBuffer) ||
@@ -312,33 +409,11 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
   }
   const inputCopyStarted = performance.now()
   const bspPointer = allocateCopy(exports, request.bsp)
-  const configurationLength = 12 + request.configuration.reduce((total, section) => total + section.byteLength - 12, 0)
-  const configurationPointer = exports.playsrc_alloc(configurationLength) >>> 0
-  const configuration = new Uint8Array(exports.memory.buffer, configurationPointer, configurationLength)
-  configuration.set([0x50, 0x53, 0x52, 0x45, 1, 0, 0, 0])
-  const configurationView = new DataView(exports.memory.buffer, configurationPointer, configurationLength)
-  let entryCount = 0
-  let configurationOffset = 12
-  for (const section of request.configuration) {
-    const bytes = new Uint8Array(section)
-    const view = new DataView(section)
-    if (bytes[0] !== 0x50 || bytes[1] !== 0x53 || bytes[2] !== 0x52 || bytes[3] !== 0x45 || view.getUint32(4, true) !== 1) {
-      exports.playsrc_free(bspPointer, request.bsp.byteLength)
-      exports.playsrc_free(configurationPointer, configurationLength)
-      fail(request.id, "MalformedRequest")
-      return
-    }
-    entryCount += view.getUint32(8, true)
-    if (entryCount > 8192) {
-      exports.playsrc_free(bspPointer, request.bsp.byteLength)
-      exports.playsrc_free(configurationPointer, configurationLength)
-      fail(request.id, "MalformedRequest")
-      return
-    }
-    configuration.set(bytes.subarray(12), configurationOffset)
-    configurationOffset += bytes.byteLength - 12
-  }
-  configurationView.setUint32(8, entryCount, true)
+  const configurationPointer = sectionTable(exports, configuration.sections)
+  const configurationHashPointer = exports.playsrc_alloc(32) >>> 0
+  new Uint8Array(exports.memory.buffer, configurationHashPointer, 32).set(
+    Array.from({ length: 32 }, (_, index) => Number.parseInt(request.configurationSha256.slice(index * 2, index * 2 + 2), 16)),
+  )
   const presentationPointer = request.presentation ? allocateCopy(exports, request.presentation) : 0
   const inputCopyMilliseconds = performance.now() - inputCopyStarted
   const compileStarted = performance.now()
@@ -348,7 +423,8 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
         request.bsp.byteLength,
         request.profile,
         configurationPointer,
-        configurationLength,
+        configuration.sections.length,
+        configurationHashPointer,
         presentationPointer,
         request.presentation.byteLength,
       )
@@ -357,16 +433,19 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
         request.bsp.byteLength,
         request.profile,
         configurationPointer,
-        configurationLength,
+        configuration.sections.length,
+        configurationHashPointer,
       )
   const compileMilliseconds = performance.now() - compileStarted
   const resultStarted = performance.now()
   exports.playsrc_free(bspPointer, request.bsp.byteLength)
-  exports.playsrc_free(configurationPointer, configurationLength)
+  exports.playsrc_free(configurationPointer, configuration.sections.length * 8)
+  exports.playsrc_free(configurationHashPointer, 32)
   if (request.presentation) exports.playsrc_free(presentationPointer, request.presentation.byteLength)
   const error = exports.playsrc_result_error(candidate)
   if (error !== 0) {
     exports.playsrc_dispose(candidate)
+    releaseResourceSet(exports, request.generation)
     fail(request.id, "CompileFailed", error)
     return
   }
@@ -383,34 +462,46 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
     initialView === undefined
   ) {
     exports.playsrc_dispose(candidate)
+    releaseResourceSet(exports, request.generation)
     fail(request.id, "CompileFailed", 5)
     return
   }
   let phase = performance.now()
   const payload = request.includeMap
-    ? copyOutput(exports, payloadBytes, (pointer, capacity) => exports.playsrc_result_copy(candidate, pointer, capacity))
+    ? takeOutput(exports, payloadBytes, () => exports.playsrc_result_take(candidate))
     : undefined
+  if (!request.includeMap && exports.playsrc_result_release(candidate) !== 1) {
+    exports.playsrc_dispose(candidate)
+    releaseResourceSet(exports, request.generation)
+    fail(request.id, "InternalFailure")
+    return
+  }
   const mapCopyMilliseconds = performance.now() - phase
   phase = performance.now()
-  const presentation = request.presentation ?? copyOutput(
+  const presentation = request.presentation ?? takeOutput(
     exports,
     presentationBytes,
-    (pointer, capacity) => exports.playsrc_presentation_copy(candidate, pointer, capacity),
+    () => exports.playsrc_presentation_take(candidate),
   )
   const presentationCopyMilliseconds = performance.now() - phase
   if ((request.includeMap && !payload) || !presentation) {
     exports.playsrc_dispose(candidate)
+    releaseResourceSet(exports, request.generation)
     fail(request.id, "InternalFailure", request.includeMap && !payload ? 801 : 802)
     return
   }
   phase = performance.now()
   if (exports.playsrc_presentation_release(candidate) !== 1) {
     exports.playsrc_dispose(candidate)
+    releaseResourceSet(exports, request.generation)
     fail(request.id, "StaleGeneration")
     return
   }
   const presentationReleaseMilliseconds = performance.now() - phase
-  if (pending) exports.playsrc_dispose(pending.handle)
+  if (pending) {
+    exports.playsrc_dispose(pending.handle)
+    releaseResourceSet(exports, pending.generation)
+  }
   pending = { generation: request.generation, handle: candidate }
   post({
     id: request.id,
@@ -448,6 +539,11 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
       presentationSerializationMilliseconds: compileMetrics[16]!,
       textureDecoderRequests: exports.playsrc_texture_inspection_count(candidate, 0),
       textureMetadataInspections: exports.playsrc_texture_inspection_count(candidate, 1),
+      modelCacheHits: exports.playsrc_model_cache_count(candidate, 0),
+      modelCacheMisses: exports.playsrc_model_cache_count(candidate, 1),
+      wasmLinearMemoryBytes: exports.memory.buffer.byteLength,
+      resourceSections: configuration.sections.length,
+      resourceBytes: request.configurationBytes,
       totalMilliseconds: performance.now() - started,
     },
   }, [...(payload ? [payload] : []), presentation])
@@ -508,7 +604,10 @@ function activate(request: Extract<WorkerRequest, { kind: "activate" }>): void {
     fail(request.id, "StaleGeneration")
     return
   }
-  if (active) wasm.playsrc_dispose(active.handle)
+  if (active) {
+    wasm.playsrc_dispose(active.handle)
+    releaseResourceSet(wasm, active.generation)
+  }
   active = pending
   pending = undefined
   post({ id: request.id, kind: "activated", generation: request.generation })
@@ -520,6 +619,7 @@ function discard(request: Extract<WorkerRequest, { kind: "discard" }>): void {
     return
   }
   wasm.playsrc_dispose(pending.handle)
+  releaseResourceSet(wasm, pending.generation)
   pending = undefined
   post({ id: request.id, kind: "discarded", generation: request.generation })
 }
@@ -739,6 +839,7 @@ function visibility(request: Extract<WorkerRequest, { kind: "visibility" }>): vo
 function shutdown(request: Extract<WorkerRequest, { kind: "shutdown" }>): void {
   if (wasm && active) wasm.playsrc_dispose(active.handle)
   if (wasm && pending) wasm.playsrc_dispose(pending.handle)
+  if (wasm) for (const generation of resourceSets.keys()) releaseResourceSet(wasm, generation)
   active = undefined
   pending = undefined
   wasm = undefined
@@ -752,6 +853,12 @@ function dispatch(request: WorkerRequest): void | Promise<void> {
       return initialize(request)
     case "decode-resources":
       return decodeResources(request)
+    case "finalize-resources":
+      return finalizeResources(request)
+    case "retain-resources":
+      return retainResources(request)
+    case "release-resources":
+      return releaseResources(request)
     case "load":
       return load(request)
     case "read-coverage":

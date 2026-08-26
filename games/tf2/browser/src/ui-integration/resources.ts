@@ -702,7 +702,7 @@ export async function initializeTf2VguiResources(request: Tf2VguiResourceRequest
   const diagnostics: Tf2UiIntegrationDiagnostic[] = []
   const urls: string[] = []
   const mounts: VguiFontSetMount[] = []
-  const createUrl = request.createObjectUrl ?? ((bytes: Uint8Array, mediaType: string) => URL.createObjectURL(new Blob([bytes.slice()], { type: mediaType })))
+  const createUrl = request.createObjectUrl ?? ((bytes: Uint8Array, mediaType: string) => URL.createObjectURL(new Blob([bytes], { type: mediaType })))
   const revokeUrl = request.revokeObjectUrl ?? ((url: string) => URL.revokeObjectURL(url))
   const materialBytes = request.dependencies.get("playsrc/tf2-ui/materials.json")
   if (!materialBytes) throw new Error("TF2 UI material descriptor is missing")
