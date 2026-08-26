@@ -32,6 +32,7 @@
     "profile:application-lifecycle": "playwright test --config=playwright.profile.config.ts --grep 'TF2 application generation lifecycle'",
     "profile:map-load": "playwright test --config=playwright.profile.config.ts",
     "profile:cold-map": "playwright test --config=playwright.cold-map-profile.config.ts",
+    "profile:three-map-load": "playwright test --config=playwright.three-map-load.config.ts",
     "profile:map-coverage": "playwright test --config=playwright.coverage-profile.config.ts",
     "profile:map-sanity": "playwright test --config=playwright.map-sanity-profile.config.ts",
     "profile:startup": "bun tools/playsrc/profile/dev-startup.profile.ts",

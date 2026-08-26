@@ -155,13 +155,46 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
 
 function decodeResources(request: Extract<WorkerRequest, { kind: "decode-resources" }>): void {
   const exports = wasm
-  if (!exports || !(request.batch instanceof ArrayBuffer) || request.batch.byteLength < 12 || request.batch.byteLength > MAX_MESSAGE_BYTES) {
+  if (!exports || !Array.isArray(request.chunks) || request.chunks.length < 1 || request.chunks.length > 1_024) {
     fail(request.id, "MalformedRequest")
     return
   }
-  const input = allocateCopy(exports, request.batch)
-  const decoded = exports.playsrc_resource_decode(input, request.batch.byteLength)
-  exports.playsrc_free(input, request.batch.byteLength)
+  let batchLength = 12
+  for (const chunk of request.chunks) {
+    if (!(chunk?.descriptor instanceof ArrayBuffer) || chunk.descriptor.byteLength < 1 || chunk.descriptor.byteLength > 8 * 1024 * 1024
+      || !(chunk.bytes instanceof ArrayBuffer) || chunk.bytes.byteLength < 1 || chunk.bytes.byteLength > 32 * 1024 * 1024) {
+      fail(request.id, "MalformedRequest")
+      return
+    }
+    batchLength += 8 + chunk.descriptor.byteLength + chunk.bytes.byteLength
+    if (batchLength > MAX_MESSAGE_BYTES) {
+      fail(request.id, "MalformedRequest")
+      return
+    }
+  }
+  const input = exports.playsrc_alloc(batchLength) >>> 0
+  let decoded: number
+  try {
+    const bytes = new Uint8Array(exports.memory.buffer, input, batchLength)
+    const view = new DataView(exports.memory.buffer, input, batchLength)
+    bytes.set([0x50, 0x53, 0x47, 0x42])
+    view.setUint32(4, 1, true)
+    view.setUint32(8, request.chunks.length, true)
+    let offset = 12
+    for (const chunk of request.chunks) {
+      view.setUint32(offset, chunk.descriptor.byteLength, true)
+      offset += 4
+      bytes.set(new Uint8Array(chunk.descriptor), offset)
+      offset += chunk.descriptor.byteLength
+      view.setUint32(offset, chunk.bytes.byteLength, true)
+      offset += 4
+      bytes.set(new Uint8Array(chunk.bytes), offset)
+      offset += chunk.bytes.byteLength
+    }
+    decoded = exports.playsrc_resource_decode(input, batchLength)
+  } finally {
+    exports.playsrc_free(input, batchLength)
+  }
   if (decoded !== 1) {
     fail(request.id, "CompileFailed")
     return

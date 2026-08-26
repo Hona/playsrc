@@ -1,4 +1,9 @@
-use std::{collections::BTreeSet, fmt, ops::Range, sync::Arc};
+use std::{
+    collections::{BTreeSet, HashMap},
+    fmt,
+    ops::Range,
+    sync::Arc,
+};
 
 mod eye;
 mod lighting;
@@ -2742,6 +2747,14 @@ struct AnimationDecodeContext<'a> {
     limits: Limits,
 }
 
+#[derive(Clone, Copy)]
+struct AnimationValueCursor {
+    offset: usize,
+    first_frame: usize,
+}
+
+type AnimationValueCursors = HashMap<(usize, usize, i16), AnimationValueCursor>;
+
 fn decode_animation_frames(
     animations: &mut [Animation],
     sources: &[AnimationSource],
@@ -2773,6 +2786,8 @@ fn decode_animation_frames(
             ));
         }
         let mut frames = Vec::with_capacity(animation.frame_count as usize);
+        let mut value_cursors = AnimationValueCursors::new();
+        let mut visited_bones = vec![0_usize; context.bones.len()];
         for frame in 0..animation.frame_count as usize {
             let (data, offset, local_frame) = animation_data(
                 context.mdl,
@@ -2790,6 +2805,9 @@ fn decode_animation_frames(
                 context.bones,
                 animation.flags,
                 context.identity,
+                &mut value_cursors,
+                &mut visited_bones,
+                frame + 1,
             )?);
         }
         let section_count = if animation.section_frame_count > 0 {
@@ -2921,6 +2939,9 @@ fn decode_frame(
     bones: &[Bone],
     flags: i32,
     identity: &str,
+    value_cursors: &mut AnimationValueCursors,
+    visited_bones: &mut [usize],
+    visit_generation: usize,
 ) -> Result<AnimationFrame, Error> {
     let delta = flags & 0x0004 != 0;
     let mut translations: Vec<_> = bones
@@ -2949,7 +2970,6 @@ fn decode_frame(
         })
         .collect();
     let mut cursor = offset;
-    let mut visited = BTreeSet::new();
     for _ in 0..=bones.len() {
         range(data, cursor, 4, identity)?;
         let bone_index = data[cursor] as usize;
@@ -2962,9 +2982,13 @@ fn decode_frame(
         let bone = bones
             .get(bone_index)
             .ok_or_else(|| invalid_reference(identity, cursor))?;
-        if !visited.insert(bone_index) {
+        let visited = visited_bones
+            .get_mut(bone_index)
+            .ok_or_else(|| invalid_reference(identity, cursor))?;
+        if *visited == visit_generation {
             return Err(invalid_reference(identity, cursor));
         }
+        *visited = visit_generation;
         let track_flags = data[cursor + 1];
         let next = u16_at(data, cursor + 2, identity)? as usize;
         let mut payload = cursor + 4;
@@ -2987,6 +3011,7 @@ fn decode_frame(
                     frame,
                     f32::from_bits(bone.rotation_scale.0[axis].0),
                     identity,
+                    value_cursors,
                 )?;
                 if !track_delta {
                     *component += f32::from_bits(bone.rotation.0[axis].0);
@@ -3043,6 +3068,7 @@ fn decode_frame(
                     frame,
                     f32::from_bits(bone.position_scale.0[axis].0),
                     identity,
+                    value_cursors,
                 )?;
                 if !track_delta {
                     *component += f32::from_bits(bone.position.0[axis].0);
@@ -3239,31 +3265,51 @@ fn animation_value(
     frame: usize,
     scale: f32,
     identity: &str,
+    cursors: &mut AnimationValueCursors,
 ) -> Result<f32, Error> {
     if relative <= 0 {
         return Ok(0.0);
     }
-    let mut cursor = table
+    let initial = table
         .checked_add(relative as usize)
         .ok_or_else(|| invalid_range(identity, table))?;
-    let mut remaining = frame;
-    for _ in 0..=frame {
-        range(data, cursor, 2, identity)?;
-        let valid = data[cursor] as usize;
-        let total = data[cursor + 1] as usize;
-        if valid == 0 || total == 0 || valid > total {
-            return Err(invalid_reference(identity, cursor));
-        }
-        range(data, cursor + 2, valid * 2, identity)?;
-        if remaining < total {
-            return Ok(
-                i16_at(data, cursor + 2 + remaining.min(valid - 1) * 2, identity)? as f32 * scale,
-            );
-        }
-        remaining -= total;
-        cursor += 2 + valid * 2;
+    let key = (data.as_ptr() as usize, table, relative);
+    let cursor = cursors.entry(key).or_insert(AnimationValueCursor {
+        offset: initial,
+        first_frame: 0,
+    });
+    if frame < cursor.first_frame {
+        *cursor = AnimationValueCursor {
+            offset: initial,
+            first_frame: 0,
+        };
     }
-    Err(invalid_reference(identity, cursor))
+    loop {
+        range(data, cursor.offset, 2, identity)?;
+        let valid = data[cursor.offset] as usize;
+        let total = data[cursor.offset + 1] as usize;
+        if valid == 0 || total == 0 || valid > total {
+            return Err(invalid_reference(identity, cursor.offset));
+        }
+        range(data, cursor.offset + 2, valid * 2, identity)?;
+        let remaining = frame - cursor.first_frame;
+        if remaining < total {
+            return Ok(i16_at(
+                data,
+                cursor.offset + 2 + remaining.min(valid - 1) * 2,
+                identity,
+            )? as f32
+                * scale);
+        }
+        cursor.first_frame = cursor
+            .first_frame
+            .checked_add(total)
+            .ok_or_else(|| invalid_range(identity, cursor.offset))?;
+        cursor.offset = cursor
+            .offset
+            .checked_add(2 + valid * 2)
+            .ok_or_else(|| invalid_range(identity, cursor.offset))?;
+    }
 }
 
 fn euler_quaternion([roll, pitch, yaw]: [f32; 3]) -> [u32; 4] {
@@ -4039,6 +4085,52 @@ mod tests {
         put_i32(&mut bytes, 54, 6);
         bytes.extend_from_slice(b"lod_material\0");
         bytes
+    }
+
+    #[test]
+    fn animation_value_cursors_preserve_authored_runs_and_rewind_exactly() {
+        let mut bytes = vec![0; 6];
+        bytes.extend_from_slice(&[2, 4]);
+        bytes.extend_from_slice(&10_i16.to_le_bytes());
+        bytes.extend_from_slice(&20_i16.to_le_bytes());
+        bytes.extend_from_slice(&[1, 2]);
+        bytes.extend_from_slice(&30_i16.to_le_bytes());
+        let mut cursors = AnimationValueCursors::new();
+
+        let values = (0..6)
+            .map(|frame| animation_value(&bytes, 0, 6, frame, 0.5, "animation", &mut cursors))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(values, [5.0, 10.0, 10.0, 10.0, 15.0, 15.0]);
+        assert_eq!(cursors.len(), 1);
+        assert_eq!(
+            animation_value(&bytes, 0, 6, 1, 0.5, "animation", &mut cursors).unwrap(),
+            10.0,
+        );
+        assert_eq!(
+            animation_value(&bytes, 0, 6, 5, 0.5, "animation", &mut cursors).unwrap(),
+            15.0,
+        );
+    }
+
+    #[test]
+    fn animation_value_cursors_visit_long_frame_streams_once() {
+        const FRAMES: usize = 8_192;
+        let mut bytes = vec![0; 6];
+        for frame in 0..FRAMES {
+            bytes.extend_from_slice(&[1, 1]);
+            bytes.extend_from_slice(&(frame as i16).to_le_bytes());
+        }
+        let mut cursors = AnimationValueCursors::new();
+        for frame in 0..FRAMES {
+            assert_eq!(
+                animation_value(&bytes, 0, 6, frame, 1.0, "animation", &mut cursors).unwrap(),
+                frame as f32,
+            );
+        }
+        let cursor = cursors.values().next().unwrap();
+        assert_eq!(cursor.first_frame, FRAMES - 1);
+        assert_eq!(cursor.offset, 6 + (FRAMES - 1) * 4);
     }
 
     #[test]

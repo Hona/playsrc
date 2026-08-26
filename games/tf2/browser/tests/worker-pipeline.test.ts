@@ -1,11 +1,21 @@
 import { describe, expect, test } from "bun:test"
 import type { DerivedObjectCache } from "@playsrc/asset-store/browser"
+import type { ResourceChunkDescriptor } from "@playsrc/asset-store/graph"
 import { Tf2WorkerClient, Tf2WorkerError, type WorkerLike } from "../src/client"
 import type { VisibilityView, WorkerRequest, WorkerResponse, WorkerTransactionTimings } from "../src/protocol"
 
 const MAP = Uint8Array.from([0x50, 0x53, 0x4d, 0x50, 9, 8, 7, 6])
 const PRESENTATION = Uint8Array.from([0x50, 0x54, 0x46, 0x32, 1, 2, 3, 4])
 const KEY = "ab".repeat(32)
+const RESOURCE_CHUNK: ResourceChunkDescriptor = Object.freeze({
+  codec: "identity",
+  encodedByteLength: "12",
+  encodedSha256: "12".repeat(32),
+  decodedByteLength: "12",
+  decodedSha256: "34".repeat(32),
+  roles: Object.freeze(["gameplay"]),
+  entries: Object.freeze([{ logicalPath: "materials/test.vmt", offset: "0", byteLength: "12", sha256: "56".repeat(32) }]),
+})
 const TIMINGS: WorkerTransactionTimings = Object.freeze({
   queueMilliseconds: 0,
   inputCopyMilliseconds: 0,
@@ -222,7 +232,7 @@ class PipelineWorker implements WorkerLike {
         return
       }
       case "decode-resources": {
-        const bytes = request.batch
+        const bytes = request.chunks[0]!.bytes
         this.#respond({ id: request.id, kind: "resources", bytes }, [bytes])
         return
       }
@@ -387,12 +397,13 @@ describe("TF2 Worker transport ownership", () => {
     const client = new Tf2WorkerClient(worker, new MemoryCache())
     const owned = new Uint8Array(12)
     owned[0] = 7
-    expect(await client.decodeResources(owned)).toEqual(Uint8Array.from([7, ...new Array(11).fill(0)]))
+    expect(await client.decodeResources([{ descriptor: RESOURCE_CHUNK, bytes: owned }])).toEqual(Uint8Array.from([7, ...new Array(11).fill(0)]))
     expect(owned.byteLength).toBe(0)
+    expect(worker.requests[0]).toMatchObject({ kind: "decode-resources", chunks: [{ descriptor: expect.any(ArrayBuffer) }] })
     const retained = new Uint8Array(20)
     retained.fill(3)
     const slice = retained.subarray(4, 16)
-    expect(await client.decodeResources(slice)).toEqual(new Uint8Array(12).fill(3))
+    expect(await client.decodeResources([{ descriptor: RESOURCE_CHUNK, bytes: slice }])).toEqual(new Uint8Array(12).fill(3))
     expect(retained.byteLength).toBe(20)
     expect(retained[0]).toBe(3)
     await client.shutdown()

@@ -17,7 +17,11 @@ type WorkerEnvelope = Readonly<{ queuedAt?: number }>
 
 export type WorkerRequest = WorkerEnvelope & (
   | Readonly<{ id: number; kind: "initialize"; wasm: ArrayBuffer; wasmSha256: string; threads: number }>
-  | Readonly<{ id: number; kind: "decode-resources"; batch: ArrayBuffer }>
+  | Readonly<{
+      id: number
+      kind: "decode-resources"
+      chunks: readonly Readonly<{ descriptor: ArrayBuffer; bytes: ArrayBuffer }>[]
+    }>
   | Readonly<{
       id: number
       kind: "load"
