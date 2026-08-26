@@ -50,7 +50,10 @@ export async function generationFixtureServer(fixtures: readonly GenerationFixtu
         if (!asset) { response.writeHead(404).end(); return }
         if (pathname.includes("gameplay-worker-") && state.workerDelayMilliseconds) {
           const started = performance.now()
-          await new Promise((resolve) => setTimeout(resolve, state.workerDelayMilliseconds))
+          const deadline = started + state.workerDelayMilliseconds
+          do {
+            await new Promise((resolve) => setTimeout(resolve, Math.max(1, Math.ceil(deadline - performance.now()))))
+          } while (performance.now() < deadline)
           state.activationDelays.push(performance.now() - started)
         }
         response.setHeader("Content-Type", pathname.endsWith(".css") ? "text/css" : "text/javascript")
