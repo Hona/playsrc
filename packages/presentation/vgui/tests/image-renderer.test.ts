@@ -95,6 +95,26 @@ const request = (material: VguiImageMaterialPresentation): VguiImageRasterReques
 })
 
 describe("configured VGUI image material raster", () => {
+  test("preserves every exact authored sRGB byte without repeated transfer-function evaluation", () => {
+    const source = Object.freeze({ ...texture("base"), width: 256, colorRead: "srgb" as const })
+    const rgba = new Uint8ClampedArray(256 * 4)
+    for (let value = 0; value < 256; value += 1) rgba.set([value, value, value, value], value * 4)
+    const output = shadeVguiImage(Object.freeze({ ...request(baseMaterial({ base: source })), width: 256 }), new Map([
+      ["base", Object.freeze({ width: 256, height: 1, rgba, filtered: false, colorRead: "srgb" as const })],
+    ]))
+    expect([...output]).toEqual([...rgba])
+  })
+
+  test("retains exact bilinear wrapped texture edges for authored filtered materials", () => {
+    const source = Object.freeze({ ...texture("base"), width: 2, height: 2 })
+    const rgba = new Uint8ClampedArray([255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255])
+    const output = shadeVguiImage(Object.freeze({ ...request(baseMaterial({ base: source })), width: 4, height: 4 }), new Map([
+      ["base", Object.freeze({ width: 2, height: 2, rgba, filtered: true, colorRead: "linear" as const })],
+    ]))
+    expect([...output.slice(0, 4)]).toEqual([207, 137, 137, 255])
+    expect([...output.slice(-4)]).toEqual([207, 225, 225, 255])
+  })
+
   test("uses authored sRGB textures directly only when the material has no shader effects", () => {
     const srgb = Object.freeze({ ...texture("base"), colorRead: "srgb" as const })
     const direct = baseMaterial({ base: srgb })

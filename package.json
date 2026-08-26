@@ -29,6 +29,7 @@
     "profile:frame-budget": "bun tools/playsrc/src/profile-runner.ts frame-budget",
     "profile:upward-outdoors": "bun tools/playsrc/src/profile-runner.ts upward-outdoors",
     "profile:upward-training-bots": "bun tools/playsrc/src/profile-runner.ts upward-training-bots",
+    "profile:class-switch-high-dpi": "bun tools/playsrc/src/profile-runner.ts class-switch-high-dpi",
     "profile:sky-coherence": "bun tools/playsrc/src/profile-runner.ts sky-coherence",
     "profile:2fort": "bun tools/playsrc/src/profile-runner.ts 2fort",
     "profile:2fort-full-match": "bun tools/playsrc/src/profile-runner.ts 2fort-full-match",

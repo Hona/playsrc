@@ -21,6 +21,7 @@ function processResidentMemory(processes: Array<{ id: number; type: string }> | 
 test("profile authored headed Upward offline-practice default roster and actual completed gameplay frames", async ({ page, context }, testInfo) => {
   const wallStarted = Date.now()
   const seconds = profileSampleSeconds()
+  const exerciseClasses = process.env.PROFILE_UPWARD_CLASS_SWITCH === "1"
   const label = process.env.PROFILE_UPWARD_TRAINING_LABEL ?? "latest"
   const { sourceCacheDir } = await loadLocalConfig()
   const directory = path.join(sourceCacheDir, "profiles", "upward-training-bots")
@@ -191,10 +192,10 @@ test("profile authored headed Upward offline-practice default roster and actual 
   await cdp.send("Profiler.setSamplingInterval", { interval: 1_000 })
   const heapBefore = await cdp.send("Runtime.getHeapUsage")
   await cdp.send("Profiler.start")
-  await page.keyboard.down("w")
+  if (!exerciseClasses) await page.keyboard.down("w")
   await cdp.send("Tracing.start", { categories: "benchmark,viz,gpu,devtools.timeline", options: "record-as-much-as-possible" })
   const clockBefore = (await cdp.send("Performance.getMetrics")).metrics.find(metric => metric.name === "Timestamp")?.value
-  const measurement = await page.evaluate(async (duration) => {
+  const measurementPromise = page.evaluate(async (duration) => {
     const main = document.querySelector<HTMLElement>("main")!
     const surface = document.querySelector<HTMLCanvasElement>("canvas.world-canvas")!
     const instrumentation = (globalThis as any).__playsrcFrameProfiler
@@ -203,6 +204,17 @@ test("profile authored headed Upward offline-practice default roster and actual 
     const firstPosition = (main.dataset.cameraPosition ?? "").split(",").map(Number)
     const firstUploads = structuredClone((globalThis as any).__playsrcProfile.modelParticleUploads ?? {}) as Record<string, number>
     const started = performance.now()
+    const classSwitches: Array<{ at: number; playerClass: number; completedFrames: number; textures: number; pipelines: number; buffers: number; queueWriteBytes: number; workerCalls: number }> = []
+    let previousClass = Number((main.dataset.hudProbe ?? "").split(":")[1])
+    const classObserver = new MutationObserver(() => {
+      const playerClass = Number((main.dataset.hudProbe ?? "").split(":")[1])
+      if (!Number.isSafeInteger(playerClass) || playerClass === previousClass) return
+      previousClass = playerClass
+      classSwitches.push({ at: performance.now() - started, playerClass, completedFrames: instrumentation.counters.completedFrames,
+        textures: instrumentation.counters.textures, pipelines: instrumentation.counters.renderPipelines, buffers: instrumentation.counters.buffers,
+        queueWriteBytes: instrumentation.counters.queueWriteBytes, workerCalls: instrumentation.worker.length })
+    })
+    classObserver.observe(main, { attributes: true, attributeFilter: ["data-hud-probe"] })
     let animationCallbacks = 0
     instrumentation.active = true
     try {
@@ -211,7 +223,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
         animationCallbacks += 1
         if (main.dataset.phase !== "Ready") throw new Error(`Upward training left gameplay: ${main.dataset.phase}: ${main.dataset.detail}`)
       }
-    } finally { instrumentation.active = false }
+    } finally { instrumentation.active = false; classObserver.disconnect() }
     const elapsed = performance.now() - started
     const position = (main.dataset.cameraPosition ?? "").split(",").map(Number)
     return {
@@ -222,16 +234,46 @@ test("profile authored headed Upward offline-practice default roster and actual 
       roster: structuredClone((globalThis as any).__playsrcProfile.bots), scoreboard: JSON.parse(main.dataset.scoreboardProbe ?? "{}"),
       frames: instrumentation.completedFrames, compositorFrames: instrumentation.compositorFrames,
       presentationCallbacks: instrumentation.animationCallbacks, worker: instrumentation.worker, counters: instrumentation.counters, queueWrites: instrumentation.queueWrites,
+      classSwitches,
       modelUploads: Object.fromEntries(Object.entries((globalThis as any).__playsrcProfile.modelParticleUploads ?? {})
         .map(([key, value]) => [key, typeof value === "number" ? value - (firstUploads[key] ?? 0) : value])),
       longTasks: instrumentation.longTasks.filter((entry: { at: number }) => entry.at >= started && entry.at < started + elapsed),
       longAnimationFrames: instrumentation.longAnimationFrames.filter((entry: { at: number }) => entry.at >= started && entry.at < started + elapsed),
     }
   }, seconds)
+  const exercisedClasses: string[] = []
+  const exercise = async () => {
+    if (!exerciseClasses) return
+    const classes = ["heavyweapons", "pyro", "medic", "spy", "engineer", "sniper", "scout", "demoman", "soldier"] as const
+    const digits = [5, 3, 7, 9, 6, 8, 1, 4, 2] as const
+    const identities = [6, 7, 5, 8, 9, 2, 1, 4, 3] as const
+    const deadline = Date.now() + seconds * 1000
+    for (const [position, playerClass] of [...classes, ...classes].entries()) {
+      const index = position % classes.length
+      if (Date.now() >= deadline) break
+      await page.keyboard.press("Comma")
+      if (!await root.evaluate((element, timeout) => new Promise<boolean>(resolve => {
+        const started = performance.now()
+        const poll = () => element.dataset.classSelectionVisible === "true" ? resolve(true)
+          : performance.now() - started >= timeout ? resolve(false) : requestAnimationFrame(poll)
+        poll()
+      }), Math.max(0, deadline - Date.now()))) break
+      await page.keyboard.press(`Digit${digits[index]}`)
+      if (!await root.evaluate((element, { identity, timeout }) => new Promise<boolean>(resolve => {
+        const started = performance.now()
+        const poll = () => (element.dataset.hudProbe ?? "").split(":")[1] === String(identity) ? resolve(true)
+          : performance.now() - started >= timeout ? resolve(false) : requestAnimationFrame(poll)
+        poll()
+      }), { identity: identities[index], timeout: Math.max(0, deadline - Date.now()) })) break
+      await page.mouse.click(Math.round(page.viewportSize()!.width / 2), Math.round(page.viewportSize()!.height / 2))
+      exercisedClasses.push(playerClass)
+    }
+  }
+  const [measurement] = await Promise.all([measurementPromise, exercise()])
   const clockAfter = (await cdp.send("Performance.getMetrics")).metrics.find(metric => metric.name === "Timestamp")?.value
   const traceFinished = new Promise<void>(resolve => cdp.once("Tracing.tracingComplete", () => resolve()))
   await cdp.send("Tracing.end")
-  await page.keyboard.up("w")
+  if (!exerciseClasses) await page.keyboard.up("w")
   await traceFinished
   const cpuProfile = (await cdp.send("Profiler.stop") as { profile: CpuProfile }).profile
   const heapAfter = await cdp.send("Runtime.getHeapUsage")
@@ -277,6 +319,15 @@ test("profile authored headed Upward offline-practice default roster and actual 
     frameIntervals: summarizeFrameTimes(intervals), frameWork: summarizeFrameTimes(completed.map(frame => frame.detail.total)),
     simulation: { ticks: measurement.lastTick - measurement.firstTick, hertz: Number(((measurement.lastTick - measurement.firstTick) / measurement.elapsed * 1000).toFixed(3)) },
     botWork: summarizeDistribution(completed.map(frame => frame.detail.models)), worker,
+    classSwitches: { requested: exercisedClasses, observed: measurement.classSwitches.map((item, index, values) => ({
+      ...item,
+      millisecondsSincePrevious: Number((item.at - (values[index - 1]?.at ?? 0)).toFixed(3)),
+      createdTextures: item.textures - (values[index - 1]?.textures ?? 0),
+      createdPipelines: item.pipelines - (values[index - 1]?.pipelines ?? 0),
+      createdBuffers: item.buffers - (values[index - 1]?.buffers ?? 0),
+      uploadedBytes: item.queueWriteBytes - (values[index - 1]?.queueWriteBytes ?? 0),
+      workerCallsSincePrevious: item.workerCalls - (values[index - 1]?.workerCalls ?? 0),
+    })) },
     gpu: {
       ...measurement.counters,
       modelUploads: measurement.modelUploads,
@@ -317,6 +368,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
       storage: { ...report.browser.storage, navigation: undefined },
     },
     frameIntervals: report.frameIntervals, frameWork: report.frameWork, simulation: report.simulation,
+    classSwitches: report.classSwitches,
     worker: Object.fromEntries(Object.entries(worker).map(([kind, value]) => [kind, {
       calls: value.calls, views: value.views, sharedDispatches: value.sharedDispatches, bytes: value.bytes, receivedBytes: value.receivedBytes,
       queue: value.timings.queueMilliseconds ?? null, maximumMilliseconds: value.milliseconds.max,
@@ -333,6 +385,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   expect(report.teams.red + report.teams.blue).toBe(playerCount)
   expect(report.completedFrames).toBeGreaterThan(0)
   expect(report.pixels.nonBlack).toBeGreaterThan(20_000)
+  if (exerciseClasses) expect(report.classSwitches.observed.length).toBeGreaterThan(0)
   if (process.env.PROFILE_UPWARD_TRAINING_REQUIRE_SMOOTH === "1") {
     expect(report.applicationCompletedFramesPerSecond).toBeGreaterThanOrEqual(55)
     expect(report.simulation.hertz).toBeGreaterThanOrEqual(60)

@@ -22,6 +22,7 @@ const PROFILES = Object.freeze({
   "map-coverage": { config: "playwright.coverage-profile.config.ts", target: "jump_beef" },
   "upward-outdoors": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_UPWARD_OUTDOORS: "1" } },
   "upward-training-bots": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "upward-training-bots" } },
+  "class-switch-high-dpi": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "upward-training-bots", PROFILE_UPWARD_CLASS_SWITCH: "1" } },
   "sky-coherence": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SKY_COHERENCE: "1" } },
   "2fort": { config: "playwright.profile.config.ts", target: "ctf_2fort", environment: { PROFILE_2FORT_MEMORY: "1" } },
   "2fort-full-match": { config: "playwright.profile.config.ts", target: "ctf_2fort", environment: { PROFILE_2FORT_MEMORY: "1", PROFILE_2FORT_FULL_ROSTER: "1" } },
