@@ -1,6 +1,8 @@
 export type HeadedProfileTarget = "jump_beef" | "pl_upward" | "ctf_2fort"
 
 export function headedProfileTarget(environment: NodeJS.ProcessEnv = process.env, fallback: HeadedProfileTarget = "jump_beef"): HeadedProfileTarget {
+  if (environment.PROFILE_UPGRADE_ROSTER === "23") return "ctf_2fort"
+  if (environment.PROFILE_UPGRADE_ROSTER === "15") return "pl_upward"
   if (environment.PROFILE_CTF_OBJECTIVES === "1" || environment.PROFILE_CTF_BOTS === "1"
     || environment.PROFILE_2FORT_VISUAL === "1" || environment.PROFILE_2FORT_MEMORY === "1"
     || environment.PROFILE_COMBAT_IMPACTS === "1"

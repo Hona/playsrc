@@ -3,6 +3,7 @@ import type { ObjectDescriptor } from "@playsrc/asset-store"
 import { chunksForRole, partitionResourceChunkDescriptors, parseResourceCatalogBytes, parseResourceGraphBytes, parseResourceSet, resourceChunkObject, resourceSectionIdentity, selectCatalogTarget, type ResourceCatalog, type ResourceGraph, type ResourceChunkDescriptor } from "@playsrc/asset-store/graph"
 import { createAudioSystem, SoundRegistry, SourceAudioError, SourceAudioWorld } from "@playsrc/audio"
 import GameplayWorker from "@playsrc/game-tf2-browser/worker?worker"
+import { APPLICATION_BUILD as __PLAYSRC_APPLICATION_BUILD__, WASM_SHA256 as __PLAYSRC_WASM_SHA256__, RESOURCE_ROOTS as __PLAYSRC_RESOURCE_ROOTS__ } from "virtual:playsrc-generation"
 import { TF2_PRESENTATION_SCHEMA, Tf2WorkerClient, Tf2WorkerError, mergePublicationSnapshots, type CoverageSample, type LoadedGame, type ResourceConfiguration, type SimulationPublication, type VisibilityResult } from "@playsrc/game-tf2-browser"
 import { initializeTf2GameUiIntegration, type Tf2GameUiIntegration } from "@playsrc/game-tf2-browser/gameui-integration"
 import type { Tf2GameUiRequest, Tf2LoadingPhase } from "@playsrc/game-tf2-browser/gameui"
@@ -102,7 +103,7 @@ import { bytesToHex } from "@noble/hashes/utils.js"
 import { sha256 } from "@noble/hashes/sha2.js"
 import {consoleLimits,resolveConfiguredConsoleResources,type ResolvedConsoleResources} from "./console-resources"
 import { loadBrowserConfiguration, parseBrowserConfiguration, type BrowserConfiguration, type BrowserTargetConfiguration } from "./config"
-import { createApplicationGenerationRecovery } from "./application-generation"
+import { createApplicationGenerationRecovery, resourceGenerationMatches } from "./application-generation"
 import { TF2_TARGET_NAMES, type Tf2TargetName } from "./deployment"
 import { PhysicalBindingIndex, PhysicalButtonState, applyPointerDelta, pointerLockRequestRequired, rawPointerMovementUnsupported, rebasePointerYaw, sourceMouseButtonCode, type PhysicalBinding } from "./input"
 import { TF2_BALANCED_VIDEO_SETTINGS, TF2_SELECTED_OPTIONS, tf2VideoConfiguration, tf2VideoConvars, tf2VideoSettingsFromConvars, type AdapterRequestResult, type SettingsAdapterRequest, type Tf2VideoConfiguration } from "@playsrc/settings"
@@ -130,8 +131,6 @@ import {
   selectAuthoredSky,
   type ApplicationOperation,
 } from "./application-lifecycle"
-
-declare const __PLAYSRC_APPLICATION_BUILD__: string
 
 const applicationGenerationRecovery = createApplicationGenerationRecovery({
   currentBuild: __PLAYSRC_APPLICATION_BUILD__,
@@ -756,6 +755,7 @@ export class Tf2Application {
     if (!changed) return
     this.#view = Object.freeze({ ...prior, ...patch, blockers })
     if (patch.phase === "Ready" && prior.phase !== "Ready") {
+      applicationGenerationRecovery.complete()
       const generation = (globalThis as typeof globalThis & { __playsrcProfile?: { applicationGeneration?: Record<string, unknown> } }).__playsrcProfile?.applicationGeneration
       if (generation) {
         generation.readyMilliseconds = performance.now() - Number(generation.startedMilliseconds)
@@ -1236,9 +1236,19 @@ export class Tf2Application {
           this.#acquireObject(descriptor, signal, "critical"),
         ])
         this.#cache = cache
-        this.#client = new Tf2WorkerClient(new GameplayWorker(), cache, this.#configuration!.applicationBuild)
+        const candidate = new Tf2WorkerClient(new GameplayWorker(), cache, this.#configuration!.applicationBuild)
+        const abort = () => candidate.abort()
+        signal.addEventListener("abort", abort, { once: true })
         const handshakeStarted = performance.now()
-        await this.#client.initialize(wasm, descriptor.sha256)
+        try {
+          if (signal.aborted) throw new DOMException("Resource runtime was superseded", "AbortError")
+          await candidate.initialize(wasm, descriptor.sha256)
+          if (signal.aborted || this.#closed) throw new DOMException("Resource runtime was superseded", "AbortError")
+          this.#client = candidate
+        } catch (error) {
+          candidate.abort()
+          throw error
+        } finally { signal.removeEventListener("abort", abort) }
         const generation = (globalThis as typeof globalThis & { __playsrcProfile?: { applicationGeneration?: Record<string, unknown> } }).__playsrcProfile?.applicationGeneration
         if (generation) {
           generation.worker = this.#configuration!.applicationBuild
@@ -1680,7 +1690,8 @@ export class Tf2Application {
         wasm: configuration.wasm.sha256, resourceRoot: configuration.targets.find((target) => target.target === configuration.defaultTarget)?.objects.resources.sha256,
         presentationSchema: TF2_PRESENTATION_SCHEMA, startedMilliseconds: performance.now(),
       }
-      if (!await applicationGenerationRecovery.ensure(configuration.applicationBuild)) return
+      const generationMismatch = !resourceGenerationMatches(configuration, __PLAYSRC_WASM_SHA256__, __PLAYSRC_RESOURCE_ROOTS__)
+      if (!await applicationGenerationRecovery.ensure(configuration.applicationBuild, generationMismatch)) return
       this.#configuration = configuration
       this.#activeTarget = this.#configuration.targets.find((target) => target.target === this.#configuration!.defaultTarget)
       if (!this.#activeTarget) throw new Error("Default TF2 target is absent")

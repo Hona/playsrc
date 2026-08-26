@@ -2,7 +2,20 @@ const HASH = /^[0-9a-f]{64}$/
 const STORAGE_KEY = "playsrc.tf2.application-generation.v1"
 const MAX_UPGRADES = 3
 
-export type ApplicationGenerationRecovery = Readonly<{ ensure(expectedBuild: string, staleWorker?: boolean): Promise<boolean> }>
+export function resourceGenerationMatches(
+  configuration: Readonly<{ wasm: Readonly<{ sha256: string }>; targets: readonly Readonly<{ target: string; objects: Readonly<{ resources: Readonly<{ sha256: string }> }> }>[] }>,
+  wasmSha256: string,
+  resourceRoots: Readonly<Record<string, string>>,
+): boolean {
+  return configuration.wasm.sha256 === wasmSha256
+    && configuration.targets.every((target) => Object.hasOwn(resourceRoots, target.target)
+      && resourceRoots[target.target] === target.objects.resources.sha256)
+}
+
+export type ApplicationGenerationRecovery = Readonly<{
+  ensure(expectedBuild: string, generationMismatch?: boolean): Promise<boolean>
+  complete(): void
+}>
 
 export function createApplicationGenerationRecovery(options: Readonly<{
   currentBuild: string
@@ -13,6 +26,11 @@ export function createApplicationGenerationRecovery(options: Readonly<{
 }>): ApplicationGenerationRecovery {
   let pending: Promise<boolean> | undefined
   return Object.freeze({
+    complete(): void {
+      // A matching startup alone does not prove convergence. Only actual map Ready
+      // ends the episode; failed boot loops must retain their retry budget.
+      if (options.storage.getItem(STORAGE_KEY) !== null) options.storage.setItem(STORAGE_KEY, "[]")
+    },
     async ensure(expectedBuild: string, staleWorker = false): Promise<boolean> {
       if (!HASH.test(options.currentBuild) || !HASH.test(expectedBuild)) {
         throw new Error("Application generation identity is invalid")

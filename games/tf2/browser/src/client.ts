@@ -152,8 +152,18 @@ export class Tf2WorkerClient {
   #staleMessages = 0
   #queuedModels?: QueuedModels
   readonly #snapshotStreams = new Map<number, SimulationSnapshotStream>()
+  #initialization?: Readonly<{ wasmSha256: string; threads: number; ready: Promise<void> }>
 
   get staleMessages(): number { return this.#staleMessages }
+
+  abort(): void {
+    if (this.#closed) return
+    this.#closed = true
+    this.#worker.removeEventListener("message", this.#message)
+    this.#worker.removeEventListener("error", this.#error)
+    this.#worker.terminate()
+    this.#failAll(new DOMException("Worker generation was aborted", "AbortError"))
+  }
 
   constructor(worker: WorkerLike, cache: DerivedObjectCache, applicationBuild: string) {
     if (!HASH.test(applicationBuild)) throw new Tf2WorkerError("IntegrityFailure")
@@ -250,6 +260,17 @@ export class Tf2WorkerClient {
       throw new Tf2WorkerError("BoundExceeded")
     }
     if ((await sha256(wasmBytes)) !== wasmSha256) throw new Tf2WorkerError("IntegrityFailure")
+    if (this.#closed) throw new Tf2WorkerError("Closed")
+    if (this.#initialization) {
+      if (this.#initialization.wasmSha256 !== wasmSha256 || this.#initialization.threads !== threads) throw new Tf2WorkerError("TransitionFailed")
+      return this.#initialization.ready
+    }
+    const ready = this.#initialize(wasmBytes, wasmSha256, threads)
+    this.#initialization = { wasmSha256, threads, ready }
+    return ready
+  }
+
+  async #initialize(wasmBytes: Uint8Array, wasmSha256: string, threads: number): Promise<void> {
     const transferred = transferredBytes(wasmBytes)
     let response: WorkerResponse
     try {
@@ -258,10 +279,13 @@ export class Tf2WorkerClient {
         presentationSchema: TF2_PRESENTATION_SCHEMA, wasm: transferred, wasmSha256, threads,
       }, [transferred])
     } catch (error) {
-      if (error instanceof Tf2WorkerError && error.code === "GenerationMismatch") this.#error()
+      this.abort()
       throw error
     }
-    if (response.kind !== "initialized") throw new Tf2WorkerError("WorkerFailed")
+    if (response.kind !== "initialized") {
+      this.abort()
+      throw new Tf2WorkerError("WorkerFailed")
+    }
     if (response.applicationBuild !== this.#applicationBuild
       || response.presentationSchema !== TF2_PRESENTATION_SCHEMA || response.wasmSha256 !== wasmSha256) {
       this.#error()

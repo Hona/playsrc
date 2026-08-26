@@ -203,6 +203,7 @@ class PipelineWorker implements WorkerLike {
   readonly modelLeases = new Map<number, SharedArrayBuffer>()
   readonly ownership = new Int32Array(new SharedArrayBuffer(256))
   closing?: number
+  initializeGate?: Promise<void>
   terminated = false
   readonly resources = new Map<number, Uint8Array[]>()
   #message?: (event: MessageEvent<WorkerResponse>) => void
@@ -239,7 +240,7 @@ class PipelineWorker implements WorkerLike {
     }
     switch (request.kind) {
       case "initialize":
-        this.#respond({ id: request.id, kind: "initialized", applicationBuild: this.workerBuild, presentationSchema: this.presentationSchema, wasmSha256: this.workerWasmSha256 ?? request.wasmSha256 })
+        void (this.initializeGate ?? Promise.resolve()).then(() => this.#respond({ id: request.id, kind: "initialized", applicationBuild: this.workerBuild, presentationSchema: this.presentationSchema, wasmSha256: this.workerWasmSha256 ?? request.wasmSha256 }))
         return
       case "load": {
         const payload = request.includeMap ? MAP.slice().buffer : undefined
@@ -400,6 +401,26 @@ class PipelineWorker implements WorkerLike {
 }
 
 describe("TF2 Worker transport ownership", () => {
+  test("single-flights authenticated activation and aborts delayed generations without a watchdog or stale publication", async () => {
+    const worker = new PipelineWorker(await digest(MAP))
+    let release!: () => void
+    worker.initializeGate = new Promise<void>((resolve) => { release = resolve })
+    const client = new Tf2WorkerClient(worker, new MemoryCache(), BUILD)
+    const bytes = new Uint8Array([1, 2, 3])
+    const hash = await digest(bytes)
+    const first = client.initialize(bytes.slice(), hash, 1)
+    const second = client.initialize(bytes.slice(), hash, 1)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(worker.requests.filter((request) => request.kind === "initialize")).toHaveLength(1)
+    const rejection = Promise.all([first.catch((error) => error), second.catch((error) => error)])
+    client.abort()
+    for (const error of await rejection) expect(error).toMatchObject({ name: "AbortError" })
+    release()
+    await Promise.resolve()
+    expect(worker.terminated).toBe(true)
+    await expect(client.initialize(bytes, hash, 1)).rejects.toThrow("Closed")
+  })
+
   test("rejects a stale gameplay Worker generation before WASM or resources are published", async () => {
     const worker = new PipelineWorker(await digest(MAP))
     worker.workerBuild = "ef".repeat(32)

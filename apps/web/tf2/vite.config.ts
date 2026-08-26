@@ -1,8 +1,10 @@
 import preact from "@preact/preset-vite"
 import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
+import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { defineConfig, type Plugin, type UserConfig } from "vite"
+import { generationPlugin } from "./generation-plugin"
 
 function localRuntime(ensureCoherentBuild?: () => Promise<void>): Plugin {
   return {
@@ -39,16 +41,25 @@ export function tf2ViteConfiguration(
   deployment = false,
   ensureCoherentBuild?: () => Promise<void>,
 ): UserConfig {
-  const applicationBuild = process.env.PLAYSRC_APPLICATION_BUILD
-    ?? (process.env.PLAYSRC_BROWSER_CONFIG ? (JSON.parse(process.env.PLAYSRC_BROWSER_CONFIG) as { applicationBuild?: string }).applicationBuild : undefined)
-    ?? (deployment ? createHash("sha256").update(execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim()).digest("hex") : undefined)
-  if (!applicationBuild || !/^[0-9a-f]{64}$/.test(applicationBuild)) {
-    throw new Error("TF2 application bundle build identity is unavailable")
+  const generation = async () => {
+    await ensureCoherentBuild?.()
+    const configuration = process.env.PLAYSRC_BROWSER_CONFIG ? JSON.parse(process.env.PLAYSRC_BROWSER_CONFIG) : undefined
+    const applicationBuild = process.env.PLAYSRC_APPLICATION_BUILD
+      ?? configuration?.applicationBuild
+      ?? (deployment ? createHash("sha256").update(execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim()).digest("hex") : undefined)
+    if (!applicationBuild || !/^[0-9a-f]{64}$/.test(applicationBuild)) {
+      throw new Error("TF2 application bundle build identity is unavailable")
+    }
+    const wasmSha256 = createHash("sha256").update(readFileSync(new URL("../../../games/tf2/browser/src/wasm-generated/tf2_wasm_bg.wasm", import.meta.url))).digest("hex")
+    if (configuration && configuration.wasm.sha256 !== wasmSha256) throw new Error("TF2 configured WASM differs from its browser bindings producer")
+    const targets = configuration?.targets ?? JSON.parse(readFileSync(new URL("./releases/current.json", import.meta.url), "utf8")).targets
+    const resourceRoots = Object.fromEntries(targets.map((target: { target: string; objects: { resources: { sha256: string } } }) => [target.target, target.objects.resources.sha256]))
+    return { applicationBuild, wasmSha256, resourceRoots }
   }
   return {
     base: deployment ? "/tf2/" : "/",
-    plugins: [preact(), localRuntime(ensureCoherentBuild)],
-    define: { __PLAYSRC_APPLICATION_BUILD__: JSON.stringify(applicationBuild) },
+    plugins: [preact(), localRuntime(ensureCoherentBuild), generationPlugin(generation)],
+    worker: { plugins: () => [generationPlugin(generation)] },
     resolve: {
       alias: {
         playsrc_metrics: fileURLToPath(new URL("../../../games/tf2/browser/src/wasm-metrics.ts", import.meta.url)),
