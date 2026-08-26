@@ -648,4 +648,25 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     expect(publication.snapshot).toBe(publication.eventBatches[0]!.snapshot)
     await client.shutdown()
   })
+
+  test("opt-in simulation evidence reads authoritative publications without retaining their buffers", async () => {
+    const host = globalThis as any
+    const previous = host.__playsrcFrameProfiler
+    const profile = { active: true, simulation: [] as any[], simulationDropped: 0 }
+    host.__playsrcFrameProfiler = profile
+    const client = new Tf2WorkerClient(new CourseWorker(), new MemoryCache(), "cd".repeat(32))
+    try {
+      const command = encodeCommand({ forward: 0, side: 0, yawDegrees: 0, pitchDegrees: 0, jump: false, crouch: false, fire: false, detonate: false })
+      const publications = await client.observe(4, 1, command)
+      expect(profile.simulation[0]).toMatchObject({ publications: [{ hostFrame: "1", firstHostTick: "1", lastHostTick: "1", selectedTicks: 1, eventBatches: 1 }] })
+      expect(profile.simulation[0].requestId).toBeNumber()
+      expect(profile.simulation[0].decodeMilliseconds).toBeGreaterThanOrEqual(0)
+      expect(profile.simulation[0]).not.toHaveProperty("snapshotBytes")
+      expect(publications[0]!.snapshot).toBe(publications[0]!.eventBatches[0]!.snapshot)
+    } finally {
+      await client.shutdown()
+      if (previous === undefined) delete host.__playsrcFrameProfiler
+      else host.__playsrcFrameProfiler = previous
+    }
+  })
 })
