@@ -25,9 +25,9 @@ pub use lighting::{
 
 pub use snapshot::{
     Candidate, ConvexInput, ObjectInput, ObjectOverlapRequest, ObjectRole, ObjectTraceRequest,
-    PhysicsShape, PointContentsContributor, PointContentsResult, SNAPSHOT_VERSION, Snapshot,
-    SnapshotLimits, SnapshotRayRequest, SnapshotRecord, SnapshotShape, SnapshotTraceRequest,
-    TraceScope, Transform,
+    PhysicsShape, PointContentsContributor, PointContentsResult, QueryScratch, SNAPSHOT_VERSION,
+    Snapshot, SnapshotLimits, SnapshotRayRequest, SnapshotRecord, SnapshotShape,
+    SnapshotTraceRequest, TraceScope, Transform,
 };
 
 pub const CONTENTS_SOLID: u32 = 0x0000_0001;

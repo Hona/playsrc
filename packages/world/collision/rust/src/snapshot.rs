@@ -5,6 +5,10 @@ use crate::{
 use playsrc_phy::{Asset as PhyAsset, Classification as PhyClassification};
 use std::{collections::BTreeSet, sync::Arc};
 
+#[cfg(test)]
+#[path = "snapshot_tests.rs"]
+mod tests;
+
 pub const SNAPSHOT_VERSION: u32 = 3;
 const DIST_EPSILON: f32 = 1.0 / 32.0;
 
@@ -20,6 +24,10 @@ pub struct Transform {
     pub angles: [f32; 3],
 }
 impl Transform {
+    fn same_bits(self, other: Self) -> bool {
+        self.origin.map(f32::to_bits) == other.origin.map(f32::to_bits)
+            && self.angles.map(f32::to_bits) == other.angles.map(f32::to_bits)
+    }
     pub const IDENTITY: Self = Self {
         origin: [0.0; 3],
         angles: [0.0; 3],
@@ -178,6 +186,10 @@ pub struct ConvexInput {
 pub struct PhysicsShape {
     pub identity: u64,
     convexes: Vec<Convex>,
+    bounds: Hull,
+    contents: u32,
+    vertex_count: usize,
+    triangle_count: usize,
 }
 impl PhysicsShape {
     pub fn compile(
@@ -265,7 +277,27 @@ impl PhysicsShape {
                 edges,
             });
         }
-        Ok(Self { identity, convexes })
+        let mut bounds = Hull {
+            mins: [f32::INFINITY; 3],
+            maxs: [f32::NEG_INFINITY; 3],
+        };
+        for vertex in convexes.iter().flat_map(|convex| &convex.vertices) {
+            for axis in 0..3 {
+                bounds.mins[axis] = bounds.mins[axis].min(vertex[axis]);
+                bounds.maxs[axis] = bounds.maxs[axis].max(vertex[axis]);
+            }
+        }
+        let contents = convexes
+            .iter()
+            .fold(0, |contents, convex| contents | convex.contents);
+        Ok(Self {
+            identity,
+            convexes,
+            bounds,
+            contents,
+            vertex_count,
+            triangle_count,
+        })
     }
 
     pub fn from_phy(
@@ -306,22 +338,11 @@ impl PhysicsShape {
     }
 
     fn contents(&self) -> u32 {
-        self.convexes
-            .iter()
-            .fold(0, |contents, convex| contents | convex.contents)
+        self.contents
     }
 
     fn counts(&self) -> (usize, usize, usize) {
-        self.convexes.iter().fold(
-            (0_usize, 0_usize, 0_usize),
-            |(convexes, vertices, triangles), convex| {
-                (
-                    convexes + 1,
-                    vertices + convex.vertices.len(),
-                    triangles + convex.faces.len(),
-                )
-            },
-        )
+        (self.convexes.len(), self.vertex_count, self.triangle_count)
     }
 
     pub fn convex_count(&self) -> usize {
@@ -329,19 +350,7 @@ impl PhysicsShape {
     }
 
     pub fn local_bounds(&self) -> Hull {
-        let mut mins = [f32::INFINITY; 3];
-        let mut maxs = [f32::NEG_INFINITY; 3];
-        for vertex in self
-            .convexes
-            .iter()
-            .flat_map(|convex| convex.vertices.iter())
-        {
-            for axis in 0..3 {
-                mins[axis] = mins[axis].min(vertex[axis]);
-                maxs[axis] = maxs[axis].max(vertex[axis]);
-            }
-        }
-        Hull { mins, maxs }
+        self.bounds
     }
 }
 
@@ -398,6 +407,7 @@ pub struct SnapshotRecord {
     pub surface_flags: u16,
     pub shape: SnapshotShape,
     pub bounds: Hull,
+    prepared: Arc<[PreparedConvex]>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -406,6 +416,7 @@ pub struct Snapshot {
     identity: u64,
     objects: Arc<[SnapshotRecord]>,
     broadphase: Arc<[BroadphaseNode]>,
+    order: Arc<[usize]>,
     limits: SnapshotLimits,
 }
 
@@ -418,10 +429,17 @@ struct BroadphaseNode {
 }
 
 impl BroadphaseNode {
-    fn build(objects: &[SnapshotRecord], nodes: &mut Vec<Self>, start: usize, end: usize) -> usize {
+    fn build(
+        objects: &[SnapshotRecord],
+        order: &mut [usize],
+        nodes: &mut Vec<Self>,
+        start: usize,
+        end: usize,
+    ) -> usize {
         let identity = nodes.len();
-        let mut bounds = objects[start].bounds;
-        for object in &objects[start + 1..end] {
+        let mut bounds = objects[order[start]].bounds;
+        for &index in &order[start + 1..end] {
+            let object = &objects[index];
             for axis in 0..3 {
                 bounds.mins[axis] = bounds.mins[axis].min(object.bounds.mins[axis]);
                 bounds.maxs[axis] = bounds.maxs[axis].max(object.bounds.maxs[axis]);
@@ -434,55 +452,28 @@ impl BroadphaseNode {
             right: 0,
         });
         if end - start > 8 {
+            let axis = (0..3)
+                .max_by(|&a, &b| {
+                    (bounds.maxs[a] - bounds.mins[a]).total_cmp(&(bounds.maxs[b] - bounds.mins[b]))
+                })
+                .unwrap();
+            order[start..end].sort_unstable_by(|&a, &b| {
+                let center = |index: usize| {
+                    objects[index].bounds.mins[axis] * 0.5 + objects[index].bounds.maxs[axis] * 0.5
+                };
+                center(a).total_cmp(&center(b)).then(a.cmp(&b))
+            });
             let middle = start + (end - start) / 2;
-            Self::build(objects, nodes, start, middle);
-            nodes[identity].right = Self::build(objects, nodes, middle, end);
+            Self::build(objects, order, nodes, start, middle);
+            nodes[identity].right = Self::build(objects, order, nodes, middle, end);
         }
         identity
     }
 }
 
-struct BroadphaseCandidates<'a> {
-    snapshot: &'a Snapshot,
-    bounds: Hull,
-    pending: [usize; usize::BITS as usize],
-    pending_count: usize,
-    next: usize,
-    end: usize,
-}
-
-impl<'a> Iterator for BroadphaseCandidates<'a> {
-    type Item = &'a SnapshotRecord;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            if self.next < self.end {
-                let object = &self.snapshot.objects[self.next];
-                self.next += 1;
-                if bounds_intersect(self.bounds, object.bounds) {
-                    return Some(object);
-                }
-                continue;
-            }
-            if self.pending_count == 0 {
-                return None;
-            }
-            self.pending_count -= 1;
-            let identity = self.pending[self.pending_count];
-            let node = self.snapshot.broadphase[identity];
-            if !bounds_intersect(self.bounds, node.bounds) {
-                continue;
-            }
-            if node.right == 0 {
-                self.next = node.start;
-                self.end = node.end;
-            } else {
-                self.pending[self.pending_count] = node.right;
-                self.pending[self.pending_count + 1] = identity + 1;
-                self.pending_count += 2;
-            }
-        }
-    }
+#[derive(Default)]
+pub struct QueryScratch {
+    candidates: Vec<usize>,
 }
 
 fn bounds_intersect(left: Hull, right: Hull) -> bool {
@@ -496,6 +487,28 @@ impl Snapshot {
         inputs: Vec<ObjectInput>,
         limits: SnapshotLimits,
     ) -> Result<Self, Error> {
+        Self::compile_inner(world, identity, inputs, limits, None)
+    }
+
+    pub fn recompile(
+        &self,
+        world: &World,
+        identity: u64,
+        inputs: Vec<ObjectInput>,
+    ) -> Result<Self, Error> {
+        if self.world != world.identity {
+            return Err(error(ErrorCode::InvalidSnapshot, None));
+        }
+        Self::compile_inner(world, identity, inputs, self.limits, Some(self))
+    }
+
+    fn compile_inner(
+        world: &World,
+        identity: u64,
+        inputs: Vec<ObjectInput>,
+        limits: SnapshotLimits,
+        previous: Option<&Self>,
+    ) -> Result<Self, Error> {
         let limits = limits.validate()?;
         if inputs.len() > limits.max_objects {
             return Err(error(ErrorCode::Limit, None));
@@ -505,6 +518,11 @@ impl Snapshot {
         let mut convex_count = 0_usize;
         let mut vertex_count = 0_usize;
         let mut triangle_count = 0_usize;
+        let retained = previous
+            .into_iter()
+            .flat_map(|snapshot| snapshot.objects.iter())
+            .map(|record| (record.identity, record))
+            .collect::<std::collections::BTreeMap<_, _>>();
         for (item, input) in inputs.into_iter().enumerate() {
             if !identities.insert(input.identity) {
                 return Err(error(ErrorCode::DuplicateIdentity, Some(item)));
@@ -579,6 +597,34 @@ impl Snapshot {
                 }
             };
             let bounds = transformed_bounds(local_bounds, basis);
+            let prepared = if let Some(record) = retained.get(&input.identity).filter(|record| {
+                record.transform.same_bits(input.transform)
+                    && match (&record.shape, &input.shape) {
+                        (SnapshotShape::Physics(left), SnapshotShape::Physics(right)) => {
+                            Arc::ptr_eq(left, right)
+                        }
+                        _ => false,
+                    }
+            }) {
+                Arc::clone(&record.prepared)
+            } else {
+                match &input.shape {
+                    SnapshotShape::Physics(shape) => shape
+                        .convexes
+                        .iter()
+                        .map(|convex| {
+                            PreparedConvex::compile(
+                                &convex.vertices,
+                                &convex.faces,
+                                &convex.edges,
+                                basis,
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .into(),
+                    _ => Arc::from([]),
+                }
+            };
             objects.push(SnapshotRecord {
                 identity: input.identity,
                 role: input.role,
@@ -592,17 +638,20 @@ impl Snapshot {
                 surface_flags: input.surface_flags,
                 shape: input.shape,
                 bounds,
+                prepared,
             });
         }
         let mut broadphase = Vec::new();
+        let mut order = (0..objects.len()).collect::<Vec<_>>();
         if !objects.is_empty() {
-            BroadphaseNode::build(&objects, &mut broadphase, 0, objects.len());
+            BroadphaseNode::build(&objects, &mut order, &mut broadphase, 0, objects.len());
         }
         Ok(Self {
             world: world.identity,
             identity,
             objects: objects.into(),
             broadphase: broadphase.into(),
+            order: order.into(),
             limits,
         })
     }
@@ -617,6 +666,7 @@ impl Snapshot {
             identity,
             objects: Arc::clone(&self.objects),
             broadphase: Arc::clone(&self.broadphase),
+            order: Arc::clone(&self.order),
             limits: self.limits,
         }
     }
@@ -698,15 +748,39 @@ impl Snapshot {
             .find(|object| object.identity == identity)
     }
 
-    fn candidates(&self, bounds: Hull) -> BroadphaseCandidates<'_> {
-        BroadphaseCandidates {
-            snapshot: self,
-            bounds,
-            pending: [0; usize::BITS as usize],
-            pending_count: usize::from(!self.broadphase.is_empty()),
-            next: 0,
-            end: 0,
+    fn candidate_indices(&self, bounds: Hull, scratch: &mut QueryScratch) {
+        fn visit(snapshot: &Snapshot, identity: usize, bounds: Hull, output: &mut Vec<usize>) {
+            let node = snapshot.broadphase[identity];
+            if !bounds_intersect(bounds, node.bounds) {
+                return;
+            }
+            if node.right == 0 {
+                for &index in &snapshot.order[node.start..node.end] {
+                    if bounds_intersect(bounds, snapshot.objects[index].bounds) {
+                        output.push(index);
+                    }
+                }
+            } else {
+                visit(snapshot, identity + 1, bounds, output);
+                visit(snapshot, node.right, bounds, output);
+            }
         }
+        scratch.candidates.clear();
+        if !self.broadphase.is_empty() {
+            visit(self, 0, bounds, &mut scratch.candidates);
+        }
+        // The hierarchy is spatial; callbacks, limits and equal-hit selection
+        // still consume the exact authored order, never traversal order.
+        scratch.candidates.sort_unstable();
+    }
+
+    fn candidates(&self, bounds: Hull) -> impl Iterator<Item = &SnapshotRecord> {
+        let mut scratch = QueryScratch::default();
+        self.candidate_indices(bounds, &mut scratch);
+        scratch
+            .candidates
+            .into_iter()
+            .map(|index| &self.objects[index])
     }
 }
 
@@ -1040,6 +1114,21 @@ impl World {
         request: SnapshotTraceRequest<'_>,
         should_hit: impl Fn(Candidate) -> bool,
     ) -> Result<Trace, Error> {
+        self.trace_snapshot_hull_with_scratch(
+            snapshot,
+            request,
+            &mut QueryScratch::default(),
+            should_hit,
+        )
+    }
+
+    pub fn trace_snapshot_hull_with_scratch(
+        &self,
+        snapshot: &Snapshot,
+        request: SnapshotTraceRequest<'_>,
+        scratch: &mut QueryScratch,
+        should_hit: impl Fn(Candidate) -> bool,
+    ) -> Result<Trace, Error> {
         if snapshot.world != self.identity {
             return Err(error(ErrorCode::InvalidSnapshot, None));
         }
@@ -1069,7 +1158,9 @@ impl World {
                 request.start[axis].max(dynamic_end[axis]) + request.hull.maxs[axis]
             }),
         };
-        for object in snapshot.candidates(swept_bounds) {
+        snapshot.candidate_indices(swept_bounds, scratch);
+        for &index in &scratch.candidates {
+            let object = &snapshot.objects[index];
             if !object.enabled
                 || request.scope == TraceScope::EntitiesOnly
                     && object.role == ObjectRole::StaticProp
@@ -1250,18 +1341,26 @@ impl World {
             SnapshotShape::Physics(shape) => {
                 let basis = request.transform.basis()?;
                 let mut output = miss(request.start, request.end);
-                for convex in &shape.convexes {
+                for (index, convex) in shape.convexes.iter().enumerate() {
                     if convex.contents & request.mask == 0 {
                         continue;
                     }
-                    let mut candidate = trace_convex(
+                    let temporary;
+                    let prepared = if request.transform.same_bits(object.transform) {
+                        &object.prepared[index]
+                    } else {
+                        temporary = PreparedConvex::compile(
+                            &convex.vertices,
+                            &convex.faces,
+                            &convex.edges,
+                            basis,
+                        );
+                        &temporary
+                    };
+                    let mut candidate = prepared.trace(
                         request.start,
                         request.end,
                         request.hull,
-                        &convex.vertices,
-                        &convex.faces,
-                        &convex.edges,
-                        basis,
                         convex.contents,
                         limits,
                     )?;
@@ -1363,6 +1462,156 @@ fn trace_convex(
     contents: u32,
     limits: SnapshotLimits,
 ) -> Result<Trace, Error> {
+    PreparedConvex::compile(local_vertices, faces, edges, basis)
+        .trace(start, end, hull, contents, limits)
+}
+
+// World-space support intervals belong to an immutable object transform, not
+// to a movement query. Keep the original arithmetic and first-feature order;
+// in particular, do not merge approximately parallel planes.
+#[derive(Clone, Debug, PartialEq)]
+struct PreparedDirection {
+    normal: [f32; 3],
+    minimum: f32,
+    maximum: f32,
+    triangle: Option<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct PreparedConvex {
+    directions: Vec<PreparedDirection>,
+    face_count: usize,
+    source_face_count: usize,
+    source_direction_count: usize,
+}
+
+impl PreparedConvex {
+    fn compile(
+        local_vertices: &[[f32; 3]],
+        faces: &[Face],
+        edges: &[[f32; 3]],
+        basis: Basis,
+    ) -> Self {
+        let vertices = local_vertices
+            .iter()
+            .copied()
+            .map(|vertex| basis.point(vertex))
+            .collect::<Vec<_>>();
+        let mut directions = Vec::new();
+        let mut seen = BTreeSet::new();
+        let mut append = |direction, triangle| {
+            let length = length(direction);
+            if length <= f32::EPSILON {
+                return directions.len();
+            }
+            let normal = scale(direction, 1.0 / length);
+            if !seen.insert(normal.map(f32::to_bits)) {
+                return directions.len();
+            }
+            let (minimum, maximum) = vertices.iter().copied().fold(
+                (f32::INFINITY, f32::NEG_INFINITY),
+                |(minimum, maximum), vertex| {
+                    let projection = dot(vertex, normal);
+                    (minimum.min(projection), maximum.max(projection))
+                },
+            );
+            directions.push(PreparedDirection {
+                normal,
+                minimum,
+                maximum,
+                triangle,
+            });
+            directions.len()
+        };
+        let mut face_count = 0;
+        for face in faces {
+            face_count = append(basis.vector(face.normal), Some(face.triangle));
+        }
+        // The face prefix is the complete point-ray query. Hull-only directions
+        // must never enter that prefix, including for sub-millimetre extents.
+        for direction in [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] {
+            append(direction, None);
+        }
+        for edge in edges.iter().copied().map(|edge| basis.vector(edge)) {
+            for axis in [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] {
+                append(cross(edge, axis), None);
+            }
+        }
+        Self {
+            directions,
+            face_count,
+            source_face_count: faces.len(),
+            source_direction_count: faces.len() + 3 + edges.len() * 3,
+        }
+    }
+
+    fn trace(
+        &self,
+        start: [f32; 3],
+        end: [f32; 3],
+        hull: Hull,
+        contents: u32,
+        limits: SnapshotLimits,
+    ) -> Result<Trace, Error> {
+        validate_hull(hull, 0)?;
+        let point = point_hull(hull);
+        if (if point {
+            self.source_face_count
+        } else {
+            self.source_direction_count
+        }) > limits.max_axes_per_convex
+        {
+            return Err(error(ErrorCode::Limit, None));
+        }
+        let center = scale(add(hull.mins, hull.maxs), 0.5);
+        let extents = scale(sub(hull.maxs, hull.mins), 0.5);
+        let directions = if point {
+            &self.directions[..self.face_count]
+        } else {
+            &self.directions
+        };
+        let axes = directions.iter().flat_map(|direction| {
+            let radius = dot_abs(direction.normal, extents);
+            [
+                IntervalAxis::new(
+                    scale(direction.normal, -1.0),
+                    -(direction.minimum - radius),
+                    direction.triangle,
+                ),
+                IntervalAxis::new(
+                    direction.normal,
+                    direction.maximum + radius,
+                    direction.triangle,
+                ),
+            ]
+        });
+        let mut trace = clip_axes(
+            start,
+            end,
+            add(start, center),
+            add(end, center),
+            axes,
+            contents,
+            point,
+        )?;
+        set_convex_feature(&mut trace);
+        Ok(trace)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn trace_convex_reference(
+    start: [f32; 3],
+    end: [f32; 3],
+    hull: Hull,
+    local_vertices: &[[f32; 3]],
+    faces: &[Face],
+    edges: &[[f32; 3]],
+    basis: Basis,
+    contents: u32,
+    limits: SnapshotLimits,
+) -> Result<Trace, Error> {
     validate_hull(hull, 0)?;
     let center = scale(add(hull.mins, hull.maxs), 0.5);
     let extents = scale(sub(hull.maxs, hull.mins), 0.5);
@@ -1444,6 +1693,11 @@ fn trace_convex(
         Ok(trace.clone()),
         "lazy support projection must preserve the full eager trace"
     );
+    set_convex_feature(&mut trace);
+    Ok(trace)
+}
+
+fn set_convex_feature(trace: &mut Trace) {
     if trace.hit.is_some() || trace.start_solid || trace.all_solid {
         let triangle = trace.hit.and_then(|hit| match hit {
             Hit::Object {
@@ -1462,7 +1716,6 @@ fn trace_convex(
             },
         });
     }
-    Ok(trace)
 }
 
 #[derive(Clone, Copy)]

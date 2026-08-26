@@ -71,6 +71,7 @@ struct SharedWorld {
     snapshot: Arc<RwLock<Arc<playsrc_collision::Snapshot>>>,
     impact_surfaces: Arc<BTreeMap<i16, Vec<(u32, u8, [f32; 4])>>>,
     movement_time: Arc<AtomicU32>,
+    movement_queries: Arc<Mutex<playsrc_collision::QueryScratch>>,
 }
 impl Clone for SharedWorld {
     fn clone(&self) -> Self {
@@ -79,6 +80,7 @@ impl Clone for SharedWorld {
             snapshot: self.snapshot.clone(),
             impact_surfaces: self.impact_surfaces.clone(),
             movement_time: self.movement_time.clone(),
+            movement_queries: self.movement_queries.clone(),
         }
     }
 }
@@ -93,6 +95,7 @@ impl SharedWorld {
             snapshot: Arc::new(RwLock::new(Arc::new(snapshot))),
             impact_surfaces: Arc::new(impact_surfaces),
             movement_time: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
+            movement_queries: Arc::new(Mutex::new(playsrc_collision::QueryScratch::default())),
         }
     }
 
@@ -167,7 +170,7 @@ impl playsrc_movement::Tracer for SharedWorld {
         let snapshot = self.snapshot();
         let trace = self
             .world
-            .trace_snapshot_hull(
+            .trace_snapshot_hull_with_scratch(
                 &snapshot,
                 playsrc_collision::SnapshotTraceRequest {
                     start,
@@ -177,6 +180,10 @@ impl playsrc_movement::Tracer for SharedWorld {
                     scope: playsrc_collision::TraceScope::Everything,
                     ignored: &[],
                 },
+                &mut self
+                    .movement_queries
+                    .lock()
+                    .expect("TF2 movement query scratch"),
                 |_| true,
             )
             .map_err(|_| {
@@ -1299,6 +1306,7 @@ unsafe fn compile_map(
             .map_err(|_| 3_u32)?;
         let collision = Arc::new(runtime.collision);
         let initial_collision = compile_collision_snapshot(
+            None,
             &collision,
             &collision_templates,
             1,
@@ -4586,6 +4594,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
         ) {
             Some(value) => value,
             None => match compile_collision_snapshot(
+                Some(&prior_collision),
                 &collision,
                 templates,
                 current_revision,
@@ -4693,6 +4702,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
             current_collision
         } else {
             match compile_collision_snapshot(
+                Some(&current_collision),
                 &collision,
                 templates,
                 collision_revision,
@@ -8036,6 +8046,7 @@ fn collision_object_templates(
 }
 
 fn compile_collision_snapshot(
+    previous: Option<&playsrc_collision::Snapshot>,
     world: &playsrc_collision::World,
     templates: &[CollisionObjectTemplate],
     revision: u64,
@@ -8097,12 +8108,15 @@ fn compile_collision_snapshot(
                 }),
         )
         .collect();
-    playsrc_collision::Snapshot::compile(
-        world,
-        revision,
-        inputs,
-        playsrc_collision::SnapshotLimits::default(),
-    )
+    match previous {
+        Some(previous) => previous.recompile(world, revision, inputs),
+        None => playsrc_collision::Snapshot::compile(
+            world,
+            revision,
+            inputs,
+            playsrc_collision::SnapshotLimits::default(),
+        ),
+    }
 }
 
 fn retain_collision_snapshot(
@@ -8626,6 +8640,7 @@ fn compile_static_prop_section(
             .collect();
         let templates = collision_object_templates(canonical, graph, bundle, &checksums)?;
         compile_collision_snapshot(
+            None,
             collision,
             &templates,
             1,
