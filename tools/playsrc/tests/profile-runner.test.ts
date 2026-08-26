@@ -9,7 +9,7 @@ import { acquireHeadedProfileLock, parseHeadedProfile, profileSourceIdentity, re
 import { ProfileQueueTimeout } from "../src/profile-lock"
 import { fileFingerprint } from "../src/file-fingerprint"
 import { readWasmManifest, restoreThreadedBuild } from "../src/tf2-wasm-build"
-import { prepareProfileBrowser, browserLease, browserLaunchIdentity } from "../src/profile-browser"
+import { prepareProfileBrowser, browserLease, browserLaunchIdentity, acquireBrowserRetirementLock } from "../src/profile-browser"
 import { ProfilePhases } from "../profile/profile-phases"
 
 const directories: string[] = []
@@ -40,6 +40,9 @@ describe("bounded headed profile orchestration", () => {
     expect(() => parseHeadedProfile([])).toThrow("Usage:")
     expect(() => parseHeadedProfile(["unknown"])).toThrow("Usage:")
     expect(() => parseHeadedProfile(["gameplay", "--headless"])).toThrow("never accept headless")
+    expect(() => parseHeadedProfile(["gameplay", "--workers=8"])).toThrow("one bounded")
+    expect(() => parseHeadedProfile(["gameplay", "--workers", "8"])).toThrow("one bounded")
+    expect(() => parseHeadedProfile(["gameplay", "--ui"])).toThrow("one bounded")
   })
 
   test("keeps reusable development servers visibly headed and below three minutes", () => {
@@ -252,6 +255,23 @@ describe("bounded headed profile orchestration", () => {
     expect(await restoreThreadedBuild(config, "b".repeat(64), directory)).toBeNull()
     await restoreThreadedBuild(config, identity, directory)
     expect(await readFile(output!, "utf8")).toBe("exact")
+  })
+
+  test("idle browser eviction hands off to an exclusive runner without deadlock", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "playsrc-browser-retirement-"))
+    directories.push(directory)
+    const pathname = path.join(directory, "chromium-profile.lock")
+    const browser = path.join(directory, "browser.json")
+    const lock = await acquireHeadedProfileLock(pathname, "next-runner")
+    const retirement = acquireBrowserRetirementLock(browser, "browser-token")
+    await browserLease(browser, "browser-token", 0, lock.token)
+    expect(await retirement).toBeUndefined()
+    expect(JSON.parse(await readFile(pathname, "utf8")).token).toBe(lock.token)
+    expect(await readdir(`${pathname}.queue`)).toEqual([])
+    await releaseHeadedProfileLock(pathname, lock.token)
+    const idle = await acquireBrowserRetirementLock(browser, "other-browser")
+    expect(idle?.token).toBeDefined()
+    await releaseHeadedProfileLock(pathname, idle!.token)
   })
 
   test("retains failed operation duration rather than dropping its timing", async () => {
