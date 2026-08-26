@@ -4507,8 +4507,30 @@ export class Tf2Application {
         }
       }
       const lockerRequests=[...this.#lockerAnimations].flatMap(([identity,state])=>{const occurrence=this.#artifacts!.modelOccurrences.find(value=>value.entity===identity),artifact=occurrence&&this.#artifacts!.models.get(occurrence.model);if(!occurrence||!artifact){this.#blockers.add(`TF2 regenerate model presentation unavailable: ${identity}`);return []}const closed=snapshot.tick>=state.closeTick,animation=closed?state.closeAnimation:state.openAnimation,start=closed?state.closeTick:state.openTick,elapsed=Math.max(0,Number(snapshot.tick-start)*0.015),previousTick=snapshot.tick>BigInt(publication.selectedTicks)?snapshot.tick-BigInt(publication.selectedTicks):0n,previousElapsed=Math.max(0,Number(previousTick-start)*0.015);return [Object.freeze({identity,model:occurrence.model,activity:animation,previousElapsedSeconds:Math.min(previousElapsed,elapsed),elapsedSeconds:elapsed,currentTimeSeconds:Number(snapshot.tick)*0.015,frameTimeSeconds:publication.selectedTicks*0.015,planarSpeed:0,screenAspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),worldFarPlane:camera.far,skin:occurrence.skin,lod:0,bodygroups:Object.freeze([]),packedBody:state.body,lighting:worldModelLighting(occurrence.origin,occurrence.angles)})]})
+      this.#wasmCalls.visibility++
+      const visibility=await client.visibility(generation,{
+        position:camera.position,
+        yawDegrees:camera.yawDegrees,
+        pitchDegrees:camera.pitchDegrees,
+        verticalFovDegrees:camera.verticalFovDegrees,
+        aspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),
+        near:camera.near,
+        far:camera.far,
+        presentationTimeSeconds:Number(snapshot.tick)*0.015,
+      })
+      if(!ownsGeneration())return
       const livingBots=snapshot.bots.filter(bot=>bot.lifecycle===1)
-      const botRequests=livingBots.map(bot=>{
+      const needsCriticalAttachment=publication.eventBatches.some(batch=>batch.snapshot.events.some(event=>event.kind===17&&event.auxiliary===1&&event.values[2]===1))
+      const flagCarriers=new Set((snapshot.objectives?.flags??[]).flatMap(flag=>flag.carrier===null?[]:[flag.carrier]))
+      const visibleBots=livingBots.filter(bot=>needsCriticalAttachment||flagCarriers.has(bot.identity)||this.#renderer!.modelVisible(
+        tf2ClassPresentation(bot.class).model,
+        bot.team===2?0:1,
+        bot.position,
+        [0,bot.yawDegrees,0],
+        camera,
+        visibility.water.passes,
+      ))
+      const botRequests=visibleBots.map(bot=>{
         const model=tf2ClassPresentation(bot.class).model
         const artifact=this.#artifacts!.models.get(model)
         if(!artifact)throw new Error(`Authored TF2 bot player model unavailable: ${model}`)
@@ -4540,16 +4562,7 @@ export class Tf2Application {
       const placementRequest=snapshot.placement?(()=>{const placement=snapshot.placement!,model=blueprintModel(placement.object),artifact=this.#artifacts!.models.get(model),sequence=artifact?.sequences[0];if(!artifact||!sequence)throw new Error(`Authored TF2 building blueprint unavailable: ${model}`);const elapsed=Number(snapshot.tick)*SIMULATION_SAMPLE_INTERVAL_SECONDS;return Object.freeze({identity:BUILDING_BLUEPRINT_IDENTITY,model,activity:sequence.activity||sequence.label,previousElapsedSeconds:Math.max(0,elapsed-publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS),elapsedSeconds:elapsed,currentTimeSeconds:elapsed,frameTimeSeconds:publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS,planarSpeed:0,screenAspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),worldFarPlane:camera.far,skin:snapshot.team===2||artifact.skinCount<2?0:1,lod:0,bodygroups:Object.freeze(artifact.bodygroupCounts.map(()=>0)),lighting:worldModelLighting(placement.position,Object.freeze([0,placement.yawDegrees,0]))})})():undefined
       const modelStart=performance.now(),modelRequests=[...historicalViewmodels,...(currentViewmodelRequest?[currentViewmodelRequest]:[]),...(watchRequest?[watchRequest]:[]),...lockerRequests,...botRequests,...objectiveRequests,...buildingRequests,...(placementRequest?[placementRequest]:[])]
       const modelRequest=modelRequests.length===0?undefined:(this.#wasmCalls.models++,client.models(generation,encodeModelPoseBatch(modelRequests)))
-      this.#wasmCalls.visibility++;const visibilityRequest=client.visibility(generation,{
-        position:camera.position,
-        yawDegrees:camera.yawDegrees,
-        pitchDegrees:camera.pitchDegrees,
-        verticalFovDegrees:camera.verticalFovDegrees,
-        aspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),
-        near:camera.near,
-        far:camera.far,
-        presentationTimeSeconds:Number(snapshot.tick)*0.015,
-      });void visibilityRequest.catch(()=>{});const modelOutput=modelRequest===undefined?undefined:await modelRequest
+      const modelOutput=modelRequest===undefined?undefined:await modelRequest
       if(!ownsGeneration())return
       const modelPoses=modelOutput===undefined?[]:decodeModelPoseOutput(modelOutput)
       const modelMilliseconds=performance.now()-modelStart
@@ -4565,7 +4578,7 @@ export class Tf2Application {
       const buildingPoses=modelPoses.filter(pose=>snapshot.buildings.some(building=>building.identity===pose.identity))
       const blueprintPose=modelPoses.find(pose=>pose.identity===BUILDING_BLUEPRINT_IDENTITY)
       if(buildingPoses.length!==snapshot.buildings.length||Boolean(blueprintPose)!==Boolean(snapshot.placement))throw new Error("TF2 building pose output differs from authoritative object state")
-      if(botPoses.length!==livingBots.length)throw new Error("TF2 bot player pose output differs from authoritative living player state")
+      if(botPoses.length!==visibleBots.length)throw new Error("TF2 bot player pose output differs from authoritative visible player state")
       if(viewmodel!==undefined&&((snapshot.weapon===11||viewmodel.standalone)?(viewmodelPoses.length!==1||viewmodelPoses[0]?.role!=="hand"):(viewmodelPoses.length!==2||viewmodelPoses.filter(pose=>pose.role==="item").length!==1||viewmodelPoses.filter(pose=>pose.role==="hand").length!==1)))throw new Error(`Viewmodel composition output differs: weapon=${snapshot.weapon}; roles=${viewmodelPoses.map(pose=>pose.role).join(",")}`);const viewmodelPose=viewmodelPoses.find(pose=>pose.role==="hand")
       if(viewmodelPose)this.#viewmodelActivities.add(viewmodelPose.activity)
       this.#updateAttachmentTransforms(snapshot, timelineViewmodelPoses, camera)
@@ -4575,8 +4588,6 @@ export class Tf2Application {
       try{presentation=owners.mapper.map(projectileFrame(snapshot))}catch(error){const timeline=snapshot.projectileTimeline.map(value=>`${value.tick}[${value.projectiles.map(projectile=>projectile.identity).join(",")}]{${value.events.map(event=>`${event.type}:${event.projectile}@${event.tick}`).join(",")}}`).join("|"),top=snapshot.projectileEvents.map(event=>`${event.type}:${event.projectile}@${event.tick}`).join(",");throw new Error(`${error instanceof Error?error.message:"projectile presentation failed"}; top ${top}; timeline ${timeline}`)}
       const projectileMilliseconds=performance.now()-projectileStart
       this.#pendingProjectileTimeline.splice(0,projectileTimeline.length)
-      const visibility=await visibilityRequest
-      if(!ownsGeneration())return
       const particleStart=performance.now()
       const pyroParticles=snapshot.class===7||this.#pyroFlameEffect?this.#pyroParticles(snapshot):[]
       const medicBeam: ProjectileParticleRequest[] = []
@@ -4605,7 +4616,6 @@ export class Tf2Application {
           medicBeam.push(Object.freeze({ kind: "set-control-point", identity: `${snapshot.tick}:medic:${patient.identity}:patient`, effectIdentity: `medic:1:${patient.identity}`, eventIdentity: `${snapshot.tick}:medic:${patient.identity}:patient`, tick: snapshot.tick, projectileIdentity: patient.identity, controlPoint: patientPoint }))
         }
       }
-      const needsCriticalAttachment=publication.eventBatches.some(batch=>batch.snapshot.events.some(event=>event.kind===17&&event.auxiliary===1&&event.values[2]===1))
       const playerAttachmentTransforms=needsCriticalAttachment?new Map(botPoses.map(pose=>{
         const bot=snapshot.bots.find(value=>BOT_MODEL_IDENTITY_BASE+value.identity===pose.identity)!
         return [bot.identity,new Map(pose.attachments.map(attachment=>[attachment.name.toLowerCase(),transformAttachment(attachment.matrix,bot.position,sourceViewOrientation(0,bot.yawDegrees))]))] as const

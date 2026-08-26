@@ -36,6 +36,7 @@ import { distanceFadeOpacity, quantizeStaticPropOpacity, screenFadeOpacity } fro
 import { executeViewModelDepthPhase } from "./viewmodel-depth-phase"
 import { selectDiagnosticModelBase } from "./diagnostic-model"
 import { sourceModelPanelPresentation } from "./model-panel"
+import { modelIntersectsViewFrustum } from "./model-visibility"
 import { sourceHorizontal4By3FovToVertical, sourceViewportDepthRange } from "./source-camera"
 import {
   validateDynamicLights,
@@ -838,6 +839,7 @@ export interface Renderer {
   prepareVisiblePipelines(camera: Camera, leaves: readonly number[]): Promise<void>
   render(frame: Frame): Promise<FrameResult>
   renderModelPanels(panels: readonly ModelPanelPass[]): Promise<ModelPanelFrameResult>
+  modelVisible(model: string, skin: number, position: readonly [number, number, number], angles: readonly [number, number, number], camera: Camera, views: readonly WaterFramePass[]): boolean
   completeFrameProfile(): RendererFrameProfile | undefined
   captureGeometryEvidence(camera: Camera, ownership?: "main" | "sky3d"): GeometryEvidence
   captureViewModelEvidence(camera: Camera): ModelGeometryEvidence
@@ -1452,6 +1454,13 @@ class RendererOwner implements Renderer {
   readonly #staticPropFrustum = new THREE.Frustum()
   readonly #staticPropProjection = new THREE.Matrix4()
   readonly #staticPropSphere = new THREE.Sphere()
+  readonly #modelVisibilityCamera = new THREE.PerspectiveCamera()
+  readonly #modelVisibilityFrustums = new Map<string, THREE.Frustum>()
+  readonly #modelVisibilityProjection = new THREE.Matrix4()
+  readonly #modelVisibilityTransform = new THREE.Group()
+  readonly #modelVisibilitySphere = new THREE.Sphere()
+  readonly #modelVisibilityMatrix = new THREE.Matrix4()
+  #modelVisibilityCameraIdentity = ""
   readonly #fogCache = new WeakMap<FogInput, THREE.Fog>()
   #visibleStaticIndices: [Set<number>, Set<number>] = [new Set(), new Set()]
   #nextVisibleStaticIndices: [Set<number>, Set<number>] = [new Set(), new Set()]
@@ -1533,6 +1542,7 @@ class RendererOwner implements Renderer {
     this.#camera.up.set(0, 0, 1)
     this.#viewCamera.up.set(0, 0, 1)
     this.#modelPanelCamera.up.set(0, 0, 1)
+    this.#modelVisibilityCamera.up.set(0, 0, 1)
     this.#modelPanelCamera.position.set(0, 0, 0)
     this.#modelPanelCamera.lookAt(1, 0, 0)
     this.#modelPanelScene.background = new THREE.Color(0x000000)
@@ -1546,6 +1556,53 @@ class RendererOwner implements Renderer {
   }
   get sceneGeneration(): number {
     return this.#sceneGeneration
+  }
+
+  modelVisible(
+    model: string,
+    skin: number,
+    position: readonly [number, number, number],
+    angles: readonly [number, number, number],
+    camera: Camera,
+    views: readonly WaterFramePass[],
+  ): boolean {
+    const template = this.#active?.modelTemplates.get(modelKey(model, skin))
+    if (!template) throw new RenderingError("MissingInput", `model visibility template ${model}#skin=${skin} is unavailable`)
+    const baseIdentity = `${camera.position.join(",")}:${camera.yawDegrees}:${camera.pitchDegrees}:${camera.verticalFovDegrees}:${camera.near}:${camera.far}:${this.#camera.aspect}`
+    if (this.#modelVisibilityCameraIdentity !== baseIdentity) {
+      this.#modelVisibilityFrustums.clear()
+      this.#modelVisibilityCameraIdentity = baseIdentity
+    }
+    sourceTransform(this.#modelVisibilityTransform, position, angles)
+    this.#modelVisibilityTransform.updateMatrixWorld(true)
+    const intersects = (position: readonly [number, number, number], yawDegrees: number, pitchDegrees: number): boolean => {
+      const identity = `${position.join(",")}:${yawDegrees}:${pitchDegrees}`
+      let frustum = this.#modelVisibilityFrustums.get(identity)
+      if (frustum) {
+        return modelIntersectsViewFrustum(frustum, template, this.#modelVisibilityTransform.matrixWorld, this.#modelVisibilitySphere, this.#modelVisibilityMatrix)
+      }
+      const view = this.#modelVisibilityCamera
+      view.position.set(...position)
+      view.fov = camera.verticalFovDegrees
+      view.near = camera.near
+      view.far = camera.far
+      view.aspect = this.#camera.aspect
+      view.updateProjectionMatrix()
+      const yaw = THREE.MathUtils.degToRad(yawDegrees), pitch = THREE.MathUtils.degToRad(pitchDegrees)
+      this.#cameraTarget.set(
+        position[0] + Math.cos(pitch) * Math.cos(yaw),
+        position[1] + Math.cos(pitch) * Math.sin(yaw),
+        position[2] - Math.sin(pitch),
+      )
+      view.lookAt(this.#cameraTarget)
+      view.updateMatrixWorld()
+      this.#modelVisibilityProjection.multiplyMatrices(view.projectionMatrix, view.matrixWorldInverse)
+      frustum = new THREE.Frustum().setFromProjectionMatrix(this.#modelVisibilityProjection)
+      this.#modelVisibilityFrustums.set(identity, frustum)
+      return modelIntersectsViewFrustum(frustum, template, this.#modelVisibilityTransform.matrixWorld, this.#modelVisibilitySphere, this.#modelVisibilityMatrix)
+    }
+    if (intersects(camera.position, camera.yawDegrees, camera.pitchDegrees)) return true
+    return views.some((view) => view.kind !== "main" && view.drawEntities && intersects(view.origin, view.angles[1], view.angles[0]))
   }
 
   completeFrameProfile(): RendererFrameProfile | undefined {
