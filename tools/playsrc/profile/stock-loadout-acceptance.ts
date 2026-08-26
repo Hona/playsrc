@@ -40,9 +40,20 @@ export async function acceptStockLoadouts(page: Page, directory: string, label: 
       // transient (possibly completely off-screen) draw frame.
       await expect(main).toHaveAttribute("data-viewmodel-activity", /IDLE/, { timeout: 5000 })
       await page.bringToFront()
-      if (await main.getAttribute("data-pointer-locked") !== "true") await page.locator("canvas.world-canvas").click()
-      try { await expect(main).toHaveAttribute("data-pointer-locked", "true", { timeout: 5000 }) }
-      catch { throw new Error(`Native pointer capture failed for ${playerClass.name}/${slot + 1}: ${JSON.stringify(await main.evaluate(element => ({ detail: element.dataset.detail, focus: document.hasFocus(), visible: document.visibilityState, classSelection: element.dataset.classSelectionVisible, locked: Boolean(document.pointerLockElement) })))}`) }
+      const nativeCaptureRejections: string[] = []
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (await main.getAttribute("data-pointer-locked") !== "true") await page.locator("canvas.world-canvas").click()
+        try { await expect(main).toHaveAttribute("data-pointer-locked", "true", { timeout: 750 }); break }
+        catch {
+          const state = await main.evaluate(element => ({ detail: element.dataset.detail, focus: document.hasFocus(), visible: document.visibilityState, classSelection: element.dataset.classSelectionVisible, locked: Boolean(document.pointerLockElement) }))
+          // Browser-policy cooldowns are recorded, never bypassed. Retry only
+          // this explicit denial with another real user gesture outside sampling.
+          if (!state.detail?.includes("Too many pointer lock requests") || attempt === 2) throw new Error(`Native pointer capture failed for ${playerClass.name}/${slot + 1}: ${JSON.stringify(state)}`)
+          nativeCaptureRejections.push(state.detail)
+          await page.waitForTimeout(2100)
+        }
+      }
+      expect(await page.evaluate(() => document.pointerLockElement === document.querySelector("canvas.world-canvas"))).toBe(true)
       if (slot === 0) lastCapture = Date.now()
       await page.mouse.move(650, 370)
       await expect(main).toHaveAttribute("data-viewmodel-world-depth-isolated", "true")
@@ -59,7 +70,7 @@ export async function acceptStockLoadouts(page: Page, directory: string, label: 
         ...fixture, hud: element.dataset.hudProbe, modelPanel: (globalThis as any).__playsrcProfile.hudModelPanel,
         activity: element.dataset.viewmodelActivity, depth: element.dataset.viewmodelWorldDepthIsolated,
         presentation: JSON.parse(element.dataset.hudPresentationProbe ?? "{}"),
-      }), { playerClass: playerClass.name, slot: slot + 1, weapon, file, geometry }))
+      }), { playerClass: playerClass.name, slot: slot + 1, weapon, file, geometry, nativeCaptureRejections }))
       await writeFile(path.join(directory, `${label}-stock.json`), JSON.stringify(results, null, 2))
     }
   }
