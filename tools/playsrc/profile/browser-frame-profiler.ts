@@ -20,7 +20,7 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
       displayOffers: 0, displayRejectedBusy: 0, displayRejectedUnchanged: 0, displayStarted: 0,
       displayAbandoned: 0, displayCoalesced: 0, displayRecovered: 0, completedFrames: 0, submissions: 0, commandBuffers: 0,
       renderPasses: 0, buffers: 0, textures: 0, shaderModules: 0, renderPipelines: 0,
-      computePipelines: 0, bundleEncodes: 0, bundleEncodeMilliseconds: 0, queueWriteBytes: 0, textureWriteBytes: 0,
+      computePipelines: 0, bundleEncodes: 0, bundleEncodeMilliseconds: 0, queueWriteCalls: 0, queueWriteBytes: 0, textureWriteBytes: 0,
       destroyedBuffers: 0, destroyedTextures: 0, computePasses: 0,
       workerPending: 0, workerMaximumPending: 0, validationErrors: 0,
       nodeBuilderMisses: 0, nodeBuilderMilliseconds: 0, warmedPipelineVariants: 0, pipelineWarmupMilliseconds: 0,
@@ -49,6 +49,7 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
     if (state.currentPass) { state.currentPass.submissions += 1; state.currentPass.commandBuffers += buffers?.length ?? 0 }
   })
   wrap(host.GPUQueue, "writeBuffer", ([, , data, offset, size]) => {
+    state.counters.queueWriteCalls += 1
     const bytesPerElement = ArrayBuffer.isView(data) ? (data as any).BYTES_PER_ELEMENT ?? 1 : 1
     state.counters.queueWriteBytes += size === undefined ? Math.max(0, (data?.byteLength ?? 0) - (offset ?? 0) * bytesPerElement) : size * bytesPerElement
   })
@@ -134,6 +135,20 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
       })),
     })
   })
+
+  const consoleError = host.console?.error
+  if (typeof consoleError === "function") {
+    host.console.error = function(this: any, ...arguments_: any[]) {
+      if (state.active) {
+        const message = arguments_.map((value) => value instanceof Error ? value.message : String(value)).join(" ")
+        if (/GPUValidationError|Destroyed texture/i.test(message)) {
+          state.counters.validationErrors += 1
+          state.losses.push({ kind: "validation", at: host.performance.now(), message })
+        }
+      }
+      return consoleError.apply(this, arguments_)
+    }
+  }
 
   if (typeof host.addEventListener === "function") {
     host.addEventListener("error", (event: any) => {

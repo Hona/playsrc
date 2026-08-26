@@ -121,6 +121,7 @@ import { currentPresentedCamera, presentCamera } from "./presented-camera"
 import {
   ApplicationFrameClock,
   ApplicationOperationLedger,
+  ApplicationVisibilityWatchdog,
   PredictedEyeInterpolation,
   admitBotConfiguration,
   composeViewmodelTransform,
@@ -513,7 +514,11 @@ export class Tf2Application {
   #pyroEffectSerial = 0
   #console?: DeveloperConsole
   #pendingConsoleOutput: Readonly<{ text: string; developer: boolean }>[] = []
-  #operationWatchdog?: ReturnType<typeof setTimeout>
+  readonly #operationWatchdog = new ApplicationVisibilityWatchdog({
+    now: () => performance.now(),
+    schedule: (callback, milliseconds) => setTimeout(callback, milliseconds),
+    cancel: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  })
   readonly #operations = new ApplicationOperationLedger()
   #operation = this.#operations.begin()
   readonly #frameClock = new ApplicationFrameClock()
@@ -681,6 +686,8 @@ export class Tf2Application {
     this.#startupRoot = roots.startup
     this.#startupVideo = roots.startupVideo
     this.#publish = publish
+    document.addEventListener("visibilitychange", this.#operationVisibility)
+    this.#publishOperationWatchdog()
     this.#viewportOwner = initializeBrowserPresentationViewportOwner({
       root: this.#presentationRoot,
       onViewport: (viewport) => this.#commitPresentationViewport(viewport),
@@ -719,18 +726,18 @@ export class Tf2Application {
     this.#publish(this.#view)
     const progressChanged = (patch.phase !== undefined && patch.phase !== priorPhase) || (patch.detail !== undefined && patch.detail !== priorDetail)
     if (progressChanged) {
-      if (this.#operationWatchdog) clearTimeout(this.#operationWatchdog)
-      this.#operationWatchdog = undefined
+      this.#operationWatchdog.cancel()
       if (["Startup", "Loading", "Replacing"].includes(this.#view.phase)) {
         const phase = this.#view.phase
         const detail = this.#view.detail
         this.#output(`STATUS: ${phase}: ${detail}`)
-        this.#operationWatchdog = setTimeout(() => {
+        this.#operationWatchdog.arm(phase, detail, 60_000, !document.hidden, () => {
           if (this.#view.phase === phase && this.#view.detail === detail) {
             this.#set({ phase: "Failed", gameUi: "failure", detail: `${phase} made no progress for 60 seconds: ${detail}` })
           }
-        }, 60_000)
+        })
       }
+      this.#publishOperationWatchdog()
     }
     if (enteredFailure) {
       this.#output(`FATAL: ${this.#view.detail}`)
@@ -5010,6 +5017,13 @@ export class Tf2Application {
   }
 
   readonly #blur = (): void => this.#neutral()
+  readonly #operationVisibility = (): void => {
+    this.#operationWatchdog.visibility(!document.hidden)
+    this.#publishOperationWatchdog()
+  }
+  #publishOperationWatchdog(): void {
+    this.#presentationRoot.dataset.operationWatchdog = JSON.stringify(this.#operationWatchdog.snapshot())
+  }
   readonly #visibility = (): void => {
     this.#paused = document.hidden || this.#view.gameUi === "pause"
     this.#predictedEye.suspend()
@@ -5256,8 +5270,9 @@ export class Tf2Application {
     this.#closed = true
     this.#viewportOwner.destroy()
     this.#operations.cancel()
-    if (this.#operationWatchdog) clearTimeout(this.#operationWatchdog)
-    this.#operationWatchdog = undefined
+    document.removeEventListener("visibilitychange", this.#operationVisibility)
+    this.#operationWatchdog.cancel()
+    this.#publishOperationWatchdog()
     this.#removeStartupListeners()
     this.#startup?.destroy()
     this.#startup = undefined
