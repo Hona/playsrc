@@ -844,7 +844,7 @@ pub unsafe extern "C" fn playsrc_resource_decode(pointer: *const u8, length: usi
     } else {
         unsafe { std::slice::from_raw_parts(pointer, length) }
     };
-    let Ok(decoded) = playsrc_asset_graph::decode_to_resource_set(bytes) else {
+    let Ok(decoded) = playsrc_asset_graph::decode_authenticated_resource_set(bytes) else {
         resource_output().lock().expect("resource output").clear();
         return 0;
     };
