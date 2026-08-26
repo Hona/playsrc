@@ -14,6 +14,8 @@ pub struct SurfacePropertyRecord {
     pub name: Vec<u8>,
     pub source_file: usize,
     pub source_record: usize,
+    pub game_material: u8,
+    pub bullet_impact: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -40,6 +42,8 @@ impl SurfacePropertyRegistry {
         digest.update(b"playsrc-surface-property-registry-v1\0");
         let mut records = Vec::<SurfacePropertyRecord>::new();
         let mut lookup = BTreeMap::<Vec<u8>, u32>::new();
+        let mut definitions =
+            BTreeMap::<Vec<u8>, (Option<Vec<u8>>, Option<u8>, Option<Vec<u8>>)>::new();
         for (source_file, file) in files.iter().enumerate() {
             digest.update((file.logical_path.len() as u64).to_le_bytes());
             digest.update(file.logical_path.as_bytes());
@@ -48,13 +52,40 @@ impl SurfacePropertyRegistry {
             let document = parse_text(file.bytes, EscapeMode::Escaped, Limits::default())
                 .map_err(|_| SurfacePropertyError::InvalidDocument)?;
             for (source_record, node) in document.roots.iter().enumerate() {
-                if node.condition.is_some() || !matches!(node.value, Value::Object(_)) {
+                let Value::Object(fields) = &node.value else {
+                    return Err(SurfacePropertyError::InvalidDocument);
+                };
+                if node.condition.is_some() {
                     return Err(SurfacePropertyError::InvalidDocument);
                 }
                 let normalized = node.key.bytes.to_ascii_lowercase();
                 if normalized.is_empty() {
                     return Err(SurfacePropertyError::InvalidInput);
                 }
+                let mut base = None;
+                let mut game_material = None;
+                let mut bullet_impact = None;
+                for field in fields {
+                    let Value::Scalar(value) = &field.value else {
+                        continue;
+                    };
+                    if field.key.bytes.eq_ignore_ascii_case(b"base") {
+                        base = Some(value.token.bytes.to_ascii_lowercase());
+                    } else if field.key.bytes.eq_ignore_ascii_case(b"gamematerial") {
+                        let raw = &value.token.bytes;
+                        game_material = Some(if raw.len() == 1 && !raw[0].is_ascii_digit() {
+                            raw[0].to_ascii_uppercase()
+                        } else {
+                            std::str::from_utf8(raw)
+                                .ok()
+                                .and_then(|value| value.parse::<u8>().ok())
+                                .ok_or(SurfacePropertyError::InvalidDocument)?
+                        });
+                    } else if field.key.bytes.eq_ignore_ascii_case(b"bulletimpact") {
+                        bullet_impact = Some(value.token.bytes.clone());
+                    }
+                }
+                definitions.insert(normalized.clone(), (base, game_material, bullet_impact));
                 if let Some(index) = lookup.get(&normalized).copied() {
                     let record = records
                         .get_mut(index as usize)
@@ -70,12 +101,37 @@ impl SurfacePropertyRegistry {
                         name: normalized,
                         source_file,
                         source_record,
+                        game_material: b'C',
+                        bullet_impact: None,
                     });
                 }
             }
         }
         if !lookup.contains_key(b"default".as_slice()) {
             return Err(SurfacePropertyError::MissingDefault);
+        }
+        for record in &mut records {
+            let mut cursor = record.name.as_slice();
+            let mut seen = std::collections::BTreeSet::new();
+            let mut material = None;
+            let mut impact = None;
+            loop {
+                if !seen.insert(cursor.to_vec()) {
+                    return Err(SurfacePropertyError::InvalidDocument);
+                }
+                let Some((base, game_material, bullet_impact)) = definitions.get(cursor) else {
+                    return Err(SurfacePropertyError::InvalidDocument);
+                };
+                material = material.or(*game_material);
+                impact = impact.or_else(|| bullet_impact.clone());
+                match base {
+                    Some(parent) => cursor = parent,
+                    None if cursor != b"default" => cursor = b"default",
+                    None => break,
+                }
+            }
+            record.game_material = material.unwrap_or(b'C');
+            record.bullet_impact = impact;
         }
         Ok(Self {
             identity: digest.finalize().into(),
@@ -118,5 +174,29 @@ mod tests {
         assert_eq!(registry.resolve(Some(b"ROCK")).unwrap().source_file, 1);
         assert_eq!(registry.resolve(Some(b"missing")).unwrap().name, b"default");
         assert_eq!(registry.resolve(None), None);
+    }
+
+    #[test]
+    fn game_material_and_bullet_impact_follow_authored_base_inheritance() {
+        let registry = SurfacePropertyRegistry::compile(&[SurfacePropertyFile {
+            logical_path: "scripts/surfaceproperties.txt",
+            bytes: br#"default { gamematerial C bulletimpact Default.BulletImpact }
+                wood { base default gamematerial W bulletimpact Wood.BulletImpact }
+                wood_plank { base wood }
+                metal { base default gamematerial 77 }"#,
+        }])
+        .unwrap();
+        let wood = registry.resolve(Some(b"wood_plank")).unwrap();
+        assert_eq!(wood.game_material, b'W');
+        assert_eq!(
+            wood.bullet_impact.as_deref(),
+            Some(b"Wood.BulletImpact".as_slice())
+        );
+        let metal = registry.resolve(Some(b"metal")).unwrap();
+        assert_eq!(metal.game_material, b'M');
+        assert_eq!(
+            metal.bullet_impact.as_deref(),
+            Some(b"Default.BulletImpact".as_slice())
+        );
     }
 }

@@ -350,6 +350,16 @@ export type Frame = Readonly<{
   effects: readonly Effect[]
   shadows?: readonly ShadowInput[]
   particles?: readonly ParticleItem[]
+  combatDecals?: readonly Readonly<{
+    identity: number
+    face: number
+    reference: string
+    positions: Float32Array
+    normals: Float32Array
+    uv: Float32Array
+    indices: Uint32Array
+  }>[]
+  maximumCombatDecals?: number
   models?: readonly ModelItem[]
   modelVisibility?: ReadonlyMap<number, boolean>
   lightStyles?: readonly Readonly<{ style: number; scalar: number }>[]
@@ -890,6 +900,8 @@ type SceneResources = {
   leafVisibility: RetainedLeafVisibility
   runtimeStaticPropInstances: readonly StaticPropResource[]
   projectedMarks: readonly ProjectedMarkResource[]
+  combatDecalTexture: THREE.DataTexture | null
+  combatDecalMeshes: Map<number, Readonly<{ face: number; mesh: THREE.Mesh }>>
   waterMeshes: readonly WaterMeshResource[]
   waterMaterials: ReadonlyMap<string,WaterMaterialResource>
   worldMaterials: ReadonlyMap<string,WorldMaterialResource>
@@ -997,7 +1009,7 @@ function modelOccurrenceMatrices(
   return matrices
 }
 
-function disposeScene(scene: Pick<SceneResources,"group"|"disposables"|"modelTemplates"|"modelOccurrenceInstances"|"disposed"> & Partial<Pick<SceneResources,"particleBatchMaterials">>): void {
+function disposeScene(scene: Pick<SceneResources,"group"|"disposables"|"modelTemplates"|"modelOccurrenceInstances"|"disposed"> & Partial<Pick<SceneResources,"particleBatchMaterials"|"combatDecalMeshes">>): void {
   if (scene.disposed) return
   scene.disposed = true
   scene.group.clear()
@@ -1006,6 +1018,8 @@ function disposeScene(scene: Pick<SceneResources,"group"|"disposables"|"modelTem
   scene.modelOccurrenceInstances.clear()
   for(const material of scene.particleBatchMaterials?.values()??[])material.dispose()
   scene.particleBatchMaterials?.clear()
+  for(const decal of scene.combatDecalMeshes?.values()??[]){decal.mesh.geometry.dispose();(decal.mesh.material as THREE.Material).dispose()}
+  scene.combatDecalMeshes?.clear()
 }
 
 function textureFromRgba(
@@ -1097,7 +1111,7 @@ function textureFromLightmap(lightmap: RuntimeLightmap, plane: Float32Array): TH
 }
 
 function materialOptions(resolved: RuntimeMaterial, state?: MaterialStateInput): THREE.MeshBasicMaterialParameters {
-  const blendFactor = (value: number) => [THREE.ZeroFactor, THREE.OneFactor, THREE.SrcAlphaFactor, THREE.OneMinusSrcAlphaFactor][value] ?? THREE.OneFactor
+  const blendFactor = (value: number) => [THREE.ZeroFactor, THREE.OneFactor, THREE.SrcAlphaFactor, THREE.OneMinusSrcAlphaFactor, THREE.DstColorFactor, THREE.SrcColorFactor][value] ?? THREE.OneFactor
   const bias = projectedDecalDepthBias(state?.polygonOffset === 1 ? "decal" : "none")
   const transparent = state?.blendEnabled ?? (resolved.features & 1) !== 0
   return {
@@ -1822,6 +1836,7 @@ class RendererOwner implements Renderer {
     const worldBatches: WorldBatchResource[] = []
     const skyWorldBatches: WorldBatchResource[] = []
     const projectedMarks: ProjectedMarkResource[] = []
+    let combatDecalTexture: THREE.DataTexture | null = null
     const waterMeshes: WaterMeshResource[]=[]
     const targetWidth=Math.max(1,Number((this.#canvas as {width?:number}).width??1)),targetHeight=Math.max(1,Number((this.#canvas as {height?:number}).height??1))
     const reflectionTarget=disposables.add(new THREE.RenderTarget(targetWidth,targetHeight,{depthBuffer:true}))
@@ -2311,6 +2326,7 @@ class RendererOwner implements Renderer {
         environmentTextures.set(texture.material.toLowerCase(), value)
         disposables.add(value)
       }
+      combatDecalTexture=environmentTextures.get("materials/decals/decals_mod2x.vmt")??null
       const cubemapIdentities = new Set<number>()
       for (const fact of request.environment?.cubemapFacts ?? []) {
         if (cubemapIdentities.has(fact.index)) {
@@ -2730,6 +2746,8 @@ class RendererOwner implements Renderer {
       leafVisibility,
       runtimeStaticPropInstances: Object.freeze(runtimeStaticPropInstances),
       projectedMarks: Object.freeze(projectedMarks),
+      combatDecalTexture,
+      combatDecalMeshes:new Map(),
       waterMeshes:Object.freeze(waterMeshes),
       waterMaterials,
       worldMaterials,
@@ -2841,6 +2859,42 @@ class RendererOwner implements Renderer {
         const lightmap = buildRuntimeLightmap(this.#active.map, frame.lightStyles)
         this.#replaceLightmapData(this.#active, lightmap)
       }
+      if(frame.combatDecals?.length){
+        const scene=this.#active
+        const identity="materials/decals/decals_mod2x.vmt"
+        const texture=scene.combatDecalTexture,state=scene.materialStates.get(identity)
+        if(!texture||!state)throw new RenderingError("MissingInput","authored combat decal atlas or modulation state is unavailable")
+        const maximum=frame.maximumCombatDecals??200
+        if(!Number.isInteger(maximum)||maximum<0||maximum>4096)throw new RenderingError("MalformedInput","combat decal limit is invalid")
+        for(const decal of frame.combatDecals){
+          if(scene.combatDecalMeshes.has(decal.identity))continue
+          if(maximum===0)continue
+          const geometry=new THREE.BufferGeometry()
+          geometry.setAttribute("position",new THREE.BufferAttribute(decal.positions,3))
+          geometry.setAttribute("normal",new THREE.BufferAttribute(decal.normals,3))
+          geometry.setAttribute("uv",new THREE.BufferAttribute(decal.uv,2))
+          geometry.setIndex(new THREE.BufferAttribute(decal.indices,1))
+          const material=new THREE.MeshBasicNodeMaterial(materialOptions({logicalPath:identity,width:1,height:1,shader:11,features:1,textureRole:0},state))
+          material.colorNode=sourceFragmentColor(TSL.texture(texture,TSL.uv()),state,scene.waterFogUniforms)
+          material.toneMapped=false
+          const mesh=new THREE.Mesh(geometry,material)
+          mesh.matrixAutoUpdate=false
+          mesh.updateMatrix()
+          mesh.renderOrder=0
+          mesh.visible=false
+          mesh.userData.combatDecal=decal.reference
+          scene.group.add(mesh)
+          scene.combatDecalMeshes.set(decal.identity,{face:decal.face,mesh})
+          while(scene.combatDecalMeshes.size>maximum){
+            const oldest=scene.combatDecalMeshes.keys().next().value as number
+            const expired=scene.combatDecalMeshes.get(oldest)!
+            scene.group.remove(expired.mesh)
+            expired.mesh.geometry.dispose()
+            ;(expired.mesh.material as THREE.Material).dispose()
+            scene.combatDecalMeshes.delete(oldest)
+          }
+        }
+      }
       if (frame.visibility) {
         if (
           frame.visibility.worldIdentity !== this.#active.result.environment?.identity ||
@@ -2849,6 +2903,10 @@ class RendererOwner implements Renderer {
           throw new RenderingError("IdentityMismatch", "visibility result identity differs from the active environment")
         const visibilityChanged = this.#worldVisibilityIdentity !== frame.visibility.cacheIdentity
         this.#setWorldVisibility(frame.visibility.surfaces, frame.visibility.cacheIdentity)
+        if(visibilityChanged||frame.combatDecals?.length){
+          const visibleFaces=new Set(frame.visibility.surfaces)
+          for(const decal of this.#active.combatDecalMeshes.values())decal.mesh.visible=visibleFaces.has(decal.face)
+        }
         if (this.#active.skyGroup) this.#active.skyGroup.visible = frame.visibility.sky === 1
         if (!frame.collisionWorldIdentity || frame.collisionWorldIdentity !== this.#active.result.environment?.collisionWorldIdentity) {
           throw new RenderingError("IdentityMismatch", "mark collision-world identity differs")

@@ -1,6 +1,7 @@
 mod definition;
 mod dmx;
 mod sheet;
+mod source_noise;
 mod source_random;
 mod world;
 

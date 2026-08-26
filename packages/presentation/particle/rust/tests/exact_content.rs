@@ -312,6 +312,10 @@ impl CollisionQuery for NoHit {
             })
             .collect())
     }
+
+    fn lighting_at(&mut self, _: [f32; 3]) -> Result<[u8; 3], Error> {
+        Ok([192, 160, 128])
+    }
 }
 
 fn update_digest(mut state: u64, bytes: &[u8]) -> u64 {
@@ -737,19 +741,85 @@ fn exact_pyro_flame_airblast_and_shotgun_closures_emit_authored_particles() {
     )
     .unwrap();
     let segments = ConfiguredSegments(tf2);
-    let paths = ["particles/flamethrower.pcf", "particles/muzzle_flash.pcf"];
-    let bytes = paths.map(|path| archive.read_entry(path, &segments).unwrap().bytes);
-    let sources = [
-        PcfSource {
-            logical_path: paths[0],
-            bytes: &bytes[0],
-        },
-        PcfSource {
-            logical_path: paths[1],
-            bytes: &bytes[1],
-        },
+    let paths = [
+        "particles/flamethrower.pcf",
+        "particles/muzzle_flash.pcf",
+        "particles/blood_impact.pcf",
+        "particles/bullet_tracers.pcf",
+        "particles/impact_fx.pcf",
+        "particles/crit.pcf",
     ];
+    let bytes = paths.map(|path| archive.read_entry(path, &segments).unwrap().bytes);
+    let sources = paths
+        .iter()
+        .zip(&bytes)
+        .map(|(logical_path, bytes)| PcfSource {
+            logical_path,
+            bytes,
+        })
+        .collect::<Vec<_>>();
     let registry = Registry::from_pcf(&sources, RegistryLimits::default()).unwrap();
+    for root in [
+        "blood_impact_red_01",
+        "blood_spray_red_01",
+        "blood_spray_red_01_far",
+        "bullet_scattergun_tracer01_red",
+        "bullet_scattergun_tracer01_blue",
+        "bullet_pistol_tracer01_red",
+        "bullet_pistol_tracer01_blue",
+        "bullet_shotgun_tracer01_red",
+        "bullet_shotgun_tracer01_blue",
+        "bullet_tracer01_red",
+        "bullet_tracer01_blue",
+        "impact_concrete",
+        "impact_wood",
+        "impact_metal",
+        "impact_dirt",
+        "impact_glass",
+        "crit_text",
+    ] {
+        registry
+            .target_closure(&[DefinitionLookup::Name(root)])
+            .unwrap_or_else(|error| panic!("{root}: {error:?}"));
+        let mut world = ParticleWorld::new(&registry, WorldLimits::default()).unwrap();
+        let control = |index, position| ControlPoint {
+            index,
+            position,
+            previous_position: position,
+            orientation: [0.0, 0.0, 0.0, 1.0],
+            velocity: [0.0; 3],
+            radius: 0.0,
+            density: 0.0,
+            duration: 0.0,
+            parent: None,
+            object_identity: Some(1),
+        };
+        let event = Event {
+            identity: 1,
+            timestamp_seconds: 0.0,
+            source_order: 0,
+            command: EventCommand::Create {
+                effect_identity: 1,
+                definition: root.into(),
+                seed: 42,
+                owner_identity: Some(1),
+                control_points: vec![control(0, [0.0; 3]), control(1, [400.0, 0.0, 0.0])],
+            },
+        };
+        let (items, _) = world
+            .advance(
+                &[event],
+                AdvanceRequest {
+                    from_seconds: 0.0,
+                    to_seconds: 0.015,
+                    maximum_step_seconds: 0.015,
+                    camera_position: [-10.0, 0.0, 0.0],
+                },
+                &mut NoHit,
+            )
+            .unwrap_or_else(|error| panic!("{root} simulation: {error:?}"));
+        assert!(!items.is_empty(), "{root} emitted no authored particles");
+    }
     for (root, definitions, materials) in [
         ("new_flame", 5, 4),
         ("new_flame_crit_red", 6, 5),

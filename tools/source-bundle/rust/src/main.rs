@@ -1128,6 +1128,39 @@ fn collect_material(
 ) -> Result<(), String> {
     let identity = root_path.to_ascii_lowercase();
     let root_bytes = resolver.required(&identity, format!("{consumer}:material"))?;
+    if identity.ends_with("_subrect.vmt") {
+        let root_document = playsrc_keyvalues::parse_text(
+            &root_bytes,
+            playsrc_keyvalues::EscapeMode::Escaped,
+            playsrc_keyvalues::Limits::default(),
+        )
+        .map_err(|error| format!("material document failed for {identity}: {error}"))?;
+        let root = root_document
+            .roots
+            .first()
+            .filter(|root| root.key.bytes.eq_ignore_ascii_case(b"Subrect"))
+            .ok_or_else(|| format!("subrect material {identity} is malformed"))?;
+        let playsrc_keyvalues::Value::Object(fields) = &root.value else {
+            return Err(format!("subrect material {identity} is malformed"));
+        };
+        let parent = fields
+            .iter()
+            .find(|field| field.key.bytes.eq_ignore_ascii_case(b"$material"))
+            .and_then(|field| match &field.value {
+                playsrc_keyvalues::Value::Scalar(value) => Some(value.token.bytes.as_slice()),
+                _ => None,
+            })
+            .ok_or_else(|| format!("subrect material {identity} has no material page"))?;
+        let path = material_path(parent)?;
+        return collect_material(
+            resolver,
+            &path,
+            include_textures,
+            environment,
+            selected_only,
+            consumer,
+        );
+    }
     let mut responses = Vec::new();
     let material = loop {
         match playsrc_vmt::compose(
@@ -2760,6 +2793,10 @@ fn main() -> Result<(), String> {
         "particles/flamethrower.pcf",
         "particles/nailtrails.pcf",
         "particles/medicgun_beam.pcf",
+        "particles/blood_impact.pcf",
+        "particles/bullet_tracers.pcf",
+        "particles/impact_fx.pcf",
+        "particles/crit.pcf",
     ];
     let particle_bytes = particle_paths
         .iter()
@@ -2792,6 +2829,32 @@ fn main() -> Result<(), String> {
         "muzzle_scattergun",
         "muzzle_pistol",
         "muzzle_shotgun",
+        "blood_impact_red_01",
+        "water_blood_impact_red_01",
+        "blood_spray_red_01",
+        "blood_spray_red_01_far",
+        "bullet_scattergun_tracer01_red",
+        "bullet_scattergun_tracer01_blue",
+        "bullet_scattergun_tracer01_red_crit",
+        "bullet_scattergun_tracer01_blue_crit",
+        "bullet_pistol_tracer01_red",
+        "bullet_pistol_tracer01_blue",
+        "bullet_pistol_tracer01_red_crit",
+        "bullet_pistol_tracer01_blue_crit",
+        "bullet_shotgun_tracer01_red",
+        "bullet_shotgun_tracer01_blue",
+        "bullet_shotgun_tracer01_red_crit",
+        "bullet_shotgun_tracer01_blue_crit",
+        "bullet_tracer01_red",
+        "bullet_tracer01_blue",
+        "bullet_tracer01_red_crit",
+        "bullet_tracer01_blue_crit",
+        "impact_concrete",
+        "impact_wood",
+        "impact_metal",
+        "impact_dirt",
+        "impact_glass",
+        "crit_text",
         "muzzle_revolver",
         "ExplosionCore_Wall",
         "ExplosionCore_MidAir",
@@ -2824,6 +2887,40 @@ fn main() -> Result<(), String> {
             "particle-material",
         )?;
     }
+    collect_material(
+        &mut resolver,
+        "materials/vgui/damageindicator.vmt",
+        true,
+        SelectionEnvironment::default(),
+        true,
+        "combat-damage-indicator",
+    )?;
+    let decal_script = resolver.required("scripts/decals_subrect.txt", "combat-decal-registry")?;
+    let decal_document = playsrc_keyvalues::parse_text(
+        &decal_script,
+        playsrc_keyvalues::EscapeMode::Escaped,
+        playsrc_keyvalues::Limits::default(),
+    )
+    .map_err(|error| error.to_string())?;
+    for group in &decal_document.roots {
+        if !group.key.bytes.starts_with(b"Impact.") {
+            continue;
+        }
+        let playsrc_keyvalues::Value::Object(entries) = &group.value else {
+            return Err("configured combat decal registry is malformed".to_owned());
+        };
+        for entry in entries {
+            let path = material_path(&entry.key.bytes)?;
+            collect_material(
+                &mut resolver,
+                &path,
+                true,
+                SelectionEnvironment::default(),
+                true,
+                "combat-decal-material",
+            )?;
+        }
+    }
     stage("particles", &mut stage_started);
     for path in [
         "resource/sourcescheme.res",
@@ -2843,6 +2940,7 @@ fn main() -> Result<(), String> {
         "scripts/game_sounds_weapons.txt",
         "scripts/game_sounds.txt",
         "scripts/game_sounds_player.txt",
+        "scripts/game_sounds_physics.txt",
         "scripts/soundmixers.txt",
         "sound/items/smallmedkit1.wav",
         "sound/items/gunpickup2.wav",
@@ -2916,6 +3014,42 @@ fn main() -> Result<(), String> {
         "sound/weapons/medigun_heal.wav",
         "sound/weapons/medigun_heal_detach.wav",
         "sound/weapons/medigun_charged.wav",
+        "sound/ui/hitsound.wav",
+        "sound/ui/killsound.wav",
+        "sound/player/crit_hit.wav",
+        "sound/player/crit_hit2.wav",
+        "sound/player/crit_hit3.wav",
+        "sound/player/crit_hit4.wav",
+        "sound/player/crit_hit5.wav",
+        "sound/physics/plastic/plastic_box_impact_hard1.wav",
+        "sound/physics/plastic/plastic_box_impact_hard2.wav",
+        "sound/physics/plastic/plastic_box_impact_hard3.wav",
+        "sound/physics/concrete/concrete_impact_bullet1.wav",
+        "sound/physics/concrete/concrete_impact_bullet2.wav",
+        "sound/physics/concrete/concrete_impact_bullet3.wav",
+        "sound/physics/concrete/concrete_impact_bullet4.wav",
+        "sound/physics/wood/wood_solid_impact_bullet1.wav",
+        "sound/physics/wood/wood_solid_impact_bullet2.wav",
+        "sound/physics/wood/wood_solid_impact_bullet3.wav",
+        "sound/physics/wood/wood_solid_impact_bullet4.wav",
+        "sound/physics/wood/wood_solid_impact_bullet5.wav",
+        "sound/physics/metal/metal_solid_impact_bullet1.wav",
+        "sound/physics/metal/metal_solid_impact_bullet2.wav",
+        "sound/physics/metal/metal_solid_impact_bullet3.wav",
+        "sound/physics/metal/metal_solid_impact_bullet4.wav",
+        "sound/physics/surfaces/sand_impact_bullet1.wav",
+        "sound/physics/surfaces/sand_impact_bullet2.wav",
+        "sound/physics/surfaces/sand_impact_bullet3.wav",
+        "sound/physics/surfaces/sand_impact_bullet4.wav",
+        "sound/physics/glass/glass_impact_bullet1.wav",
+        "sound/physics/glass/glass_impact_bullet2.wav",
+        "sound/physics/glass/glass_impact_bullet3.wav",
+        "sound/physics/glass/glass_impact_bullet4.wav",
+        "sound/physics/flesh/flesh_impact_bullet1.wav",
+        "sound/physics/flesh/flesh_impact_bullet2.wav",
+        "sound/physics/flesh/flesh_impact_bullet3.wav",
+        "sound/physics/flesh/flesh_impact_bullet4.wav",
+        "sound/physics/flesh/flesh_impact_bullet5.wav",
     ] {
         let consumer = if path.starts_with("sound/") {
             "audio-wave"
