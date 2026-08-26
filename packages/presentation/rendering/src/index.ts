@@ -3446,7 +3446,10 @@ class RendererOwner implements Renderer {
       }
       const runtimeModel = this.#active!.modelLookup.get(modelKey(item.model, item.skin ?? 0))
       if (!runtimeModel) throw new RenderingError("IdentityMismatch", "runtime model draw identity differs")
+      const skipUnavailableDiagnosticInputs = this.#active!.loadRequest.diagnostic && !item.modelLighting && !item.eyeStates
+        && !item.currentFramebufferAvailable && !item.gameProxyValuesAvailable
       for (const [primitiveIndex, primitive] of runtimeModel.primitives.entries()) {
+        if (skipUnavailableDiagnosticInputs) break
         const materialIdentity = runtimeModel.materials[primitive.material]!.logicalPath.toLowerCase()
         const material = this.#active!.loadRequest.modelMaterials?.get(materialIdentity)
         if (!material) continue
