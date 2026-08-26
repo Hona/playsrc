@@ -18,8 +18,9 @@ in the configured source cache. Trace timestamps, not RAF or queue submission,
 measure compositor presentation. Censored start/end gaps are reported separately
 and count against the stall gate. First-playable startup timing currently means
 an application-completed frame, **not** compositor presentation. RSS is unavailable
-when the browser runs on a different host from the controller; local PIDs must
-never be mistaken for remote browser PIDs.
+when the browser runs on a different host unless
+`PLAYSRC_PROFILE_PROCESS_MEMORY_EXECUTABLE` supplies that host's PID-bound byte
+counts; local PIDs must never be mistaken for remote browser PIDs.
 
 `bun run profile:acceptance compare before.json after.json` refuses an improvement
 claim when browser, GPU, viewport/DPR, settings, cache path or roster differ, or
