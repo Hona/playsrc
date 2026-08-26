@@ -145,7 +145,7 @@ export function decodeRawTrace(bytes: Uint8Array, limit = TRACE_LIMITS.decodedBy
 }
 
 /** Drain after Tracing.end, never send CDP payloads or write files during active gameplay. */
-export async function drainTraceStream(cdp: Pick<CDPSession, "send">, stream: string, maximumBytes = TRACE_LIMITS.compressedBytes) {
+export async function drainTraceStream(cdp: Pick<CDPSession, "send">, stream: string, maximumBytes = TRACE_LIMITS.compressedBytes, persistChunk?: (chunk: Buffer) => Promise<void>) {
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > TRACE_LIMITS.compressedBytes) throw new Error("Trace stream byte bound is invalid")
   const chunks: Buffer[] = []
   let bytes = 0
@@ -160,7 +160,8 @@ export async function drainTraceStream(cdp: Pick<CDPSession, "send">, stream: st
     while (Date.now() < deadline) {
       const result = await bounded(cdp.send("IO.read", { handle: stream, size: Math.min(256 * 1024, maximumBytes - bytes + 1) }), Math.max(1, deadline - Date.now()))
       const chunk = Buffer.from(result.data, result.base64Encoded ? "base64" : "utf8")
-      if (bytes + chunk.length > maximumBytes) { chunks.push(chunk.subarray(0, maximumBytes - bytes)); bytes = maximumBytes; break }
+      if (bytes + chunk.length > maximumBytes) { const partial = chunk.subarray(0, maximumBytes - bytes); await persistChunk?.(partial); chunks.push(partial); bytes = maximumBytes; break }
+      await persistChunk?.(chunk)
       chunks.push(chunk); bytes += chunk.length
       if (result.eof) { complete = true; break }
     }

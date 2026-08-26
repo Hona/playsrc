@@ -65,6 +65,11 @@ type WasmExports = Readonly<{
   playsrc_simulation_error_length():number
   playsrc_simulation_error_copy(pointer:number,capacity:number):number
   playsrc_dispose(handle: number): number
+  playsrc_gameplay_replay_begin(handle: number): number
+  playsrc_gameplay_replay_mark(handle: number, mark: number): number
+  playsrc_gameplay_replay_stop(handle: number): number
+  playsrc_gameplay_replay_length(handle: number): number
+  playsrc_gameplay_replay_copy(handle: number, offset: number, pointer: number, capacity: number): number
 }>
 
 const scope = self as DedicatedWorkerGlobalScope
@@ -80,6 +85,38 @@ const modelLeaseOwnership = new Int32Array(new SharedArrayBuffer(64 * Int32Array
 const freeModelLeaseSlots = Array.from({ length: 64 }, (_, index) => 63 - index)
 let leasedModelBytes = 0
 let closing: Extract<WorkerRequest, { kind: "shutdown" }> | undefined
+
+// Explicit local diagnostics only. No exports, handles, views, asset bytes or
+// arbitrary engine access cross this interface. The Rust owner records the
+// admitted commands and complete authoritative tick/event publication hashes.
+let replayArmed = false
+let replayHandle: number | undefined
+let replayCheckpoint: { configurationSha256: string; configurationBytes: number; profile: number; generation: number } | undefined
+Object.defineProperty(scope, "__playsrcGameplayReplay", { value: Object.freeze({
+  arm() {
+    if (active || pending || replayArmed) throw new Error("Replay must be armed before map construction")
+    replayArmed = true
+  },
+  mark(mark: number) {
+    if (!wasm || !replayHandle || wasm.playsrc_gameplay_replay_mark(replayHandle, mark) !== 1) throw new Error("Replay mark rejected")
+  },
+  read(offset: number, stop = false) {
+    if (!wasm || !replayHandle || !replayCheckpoint) return null
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset > 4 * 1024 * 1024) throw new Error("Replay offset rejected")
+    const complete = stop ? wasm.playsrc_gameplay_replay_stop(replayHandle) === 1 : false
+    const length = wasm.playsrc_gameplay_replay_length(replayHandle)
+    if (length < offset || length > 4 * 1024 * 1024) throw new Error("Replay journal bound exceeded")
+    const count = length - offset
+    const pointer = wasm.playsrc_alloc(Math.max(count, 1)) >>> 0
+    try {
+      if (wasm.playsrc_gameplay_replay_copy(replayHandle, offset, pointer, count) !== count) throw new Error("Replay copy failed")
+      const bytes = new Uint8Array(wasm.memory.buffer, pointer, count)
+      let encoded = ""
+      for (let at = 0; at < bytes.length; at += 8192) encoded += String.fromCharCode(...bytes.subarray(at, at + 8192))
+      return { checkpoint: replayCheckpoint, offset, length, complete, base64: btoa(encoded) }
+    } finally { wasm.playsrc_free(pointer, Math.max(count, 1)) }
+  },
+}) })
 
 function post(message: WorkerResponse, transfer: Transferable[] = []): void {
   scope.postMessage(message, transfer)
@@ -512,6 +549,11 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
     releaseResourceSet(exports, request.generation)
     fail(request.id, "CompileFailed", error)
     return
+  }
+  if (replayArmed) {
+    if (replayHandle || exports.playsrc_gameplay_replay_begin(candidate) !== 1) throw new Error("Replay initial checkpoint rejected")
+    replayHandle = candidate
+    replayCheckpoint = { configurationSha256: request.configurationSha256, configurationBytes: request.configurationBytes, profile: request.profile, generation: request.generation }
   }
   const payloadBytes = exports.playsrc_result_length(candidate)
   const payloadSha256 = readHash(exports, candidate)

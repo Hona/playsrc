@@ -1,4 +1,5 @@
 mod gameplay_protocol;
+mod gameplay_replay;
 mod memory;
 pub mod static_prop_artifact;
 
@@ -712,6 +713,7 @@ impl playsrc_simulation::Simulation for Tf2Simulation {
                 )
             })?
         };
+        let replay_started = gameplay_replay::tick_started(self.handle);
         if unsafe { playsrc_game_advance(self.handle, command.as_ptr(), command.len(), 1) } != 1 {
             return Err(playsrc_simulation::SimulationError::new(
                 "tf2-transition",
@@ -731,6 +733,13 @@ impl playsrc_simulation::Simulation for Tf2Simulation {
                 "TF2 gameplay handle is unavailable",
             )
         })?;
+        gameplay_replay::tick(
+            self.handle,
+            input.context.host_tick,
+            &command,
+            &snapshot,
+            replay_started,
+        );
         Ok(playsrc_simulation::TickOutput {
             snapshot: snapshot.clone(),
             events: snapshot,
@@ -4276,7 +4285,11 @@ pub extern "C" fn playsrc_team_select(handle: u32, choice: u32) -> u32 {
     let Some(session) = slot.session.as_mut() else {
         return 0;
     };
-    u32::from(session.select_team_choice(selected).is_ok())
+    let success = session.select_team_choice(selected).is_ok();
+    if success {
+        gameplay_replay::mutation(handle, 4, &choice.to_le_bytes());
+    }
+    u32::from(success)
 }
 
 #[unsafe(no_mangle)]
@@ -4309,6 +4322,7 @@ pub unsafe extern "C" fn playsrc_simulation_observe(
     if gameplay_protocol::decode(command).is_none() {
         return 0;
     }
+    gameplay_replay::observe(handle, now_seconds, suspended, command);
     let mut hosts = simulation_hosts().lock().expect("TF2 Simulation hosts");
     if let std::collections::btree_map::Entry::Vacant(entry) = hosts.entry(handle) {
         let Some(configuration) = simulation_configuration() else {
@@ -4373,6 +4387,7 @@ pub unsafe extern "C" fn playsrc_simulation_observe(
         return 0;
     };
     entry.output = output;
+    gameplay_replay::published(handle, &entry.output);
     1
 }
 #[unsafe(no_mangle)]
@@ -4422,6 +4437,7 @@ pub extern "C" fn playsrc_simulation_output_pointer(handle: u32) -> *const u8 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn playsrc_dispose(handle: u32) -> u32 {
+    gameplay_replay::dispose(handle);
     if let Some(mut entry) = simulation_hosts()
         .lock()
         .expect("TF2 Simulation hosts")
@@ -5041,6 +5057,7 @@ pub unsafe extern "C" fn playsrc_jump_configure(
         return 0;
     }
     *session = candidate;
+    gameplay_replay::mutation(handle, 6, bytes);
     1
 }
 
@@ -5059,7 +5076,15 @@ pub extern "C" fn playsrc_player_set_position(handle: u32, x: f32, y: f32, z: f3
     let Some(session) = slot.session.as_mut() else {
         return 0;
     };
-    u32::from(session.set_position([x, y, z]).is_ok())
+    let success = session.set_position([x, y, z]).is_ok();
+    if success {
+        let mut bytes = [0; 12];
+        for (chunk, value) in bytes.chunks_exact_mut(4).zip([x, y, z]) {
+            chunk.copy_from_slice(&value.to_le_bytes());
+        }
+        gameplay_replay::mutation(handle, 5, &bytes);
+    }
+    u32::from(success)
 }
 
 #[unsafe(no_mangle)]
