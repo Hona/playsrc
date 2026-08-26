@@ -116,7 +116,6 @@ test("headed bounded three-map authored noclip visual and frame sanity", async (
   await mkdir(output, { recursive: true })
   const gpuValidationErrors: string[] = []
   page.on("console", (message) => {
-    if (message.text().startsWith("[map-replacement]")) console.log(message.text())
     if (/GPUValidationError|Destroyed texture/.test(message.text())) gpuValidationErrors.push(message.text())
   })
 
@@ -488,6 +487,19 @@ test("headed bounded three-map authored noclip visual and frame sanity", async (
           || main?.dataset.phase === "Ready" && Number(main.dataset.generation) > previous
       }, generation, { timeout: 120_000, polling: 20 })
       await expect(root).toHaveAttribute("data-phase", "Ready")
+      await page.waitForFunction(() => {
+        const main = document.querySelector<HTMLElement>("main")
+        return main?.dataset.phase === "Failed" || main?.dataset.teamSelectionVisible === "true"
+          || main?.dataset.classSelectionVisible === "true" || main?.dataset.viewmodelWorldDepthIsolated === "true"
+      }, undefined, { timeout: 30_000, polling: 20 })
+      if (await root.getAttribute("data-team-selection-visible") === "true") {
+        if (await root.getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
+        await chooseTf2Team(page, "red")
+      }
+      if (await root.getAttribute("data-class-selection-visible") === "true") {
+        if (await root.getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
+        await page.keyboard.press("Digit2")
+      }
       await expect(root).toHaveAttribute("data-viewmodel-world-depth-isolated", "true", { timeout: 30_000 })
       if (await root.getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
       await canvas.click()
