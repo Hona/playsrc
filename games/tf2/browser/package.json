@@ -25,6 +25,7 @@
     "./worker": "./src/gameplay-worker.ts"
   },
   "dependencies": {
+    "@noble/hashes": "2.2.0",
     "@playsrc/asset-store": "workspace:*",
     "@playsrc/particle": "workspace:*",
     "@playsrc/rendering": "workspace:*",
