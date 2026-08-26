@@ -3511,8 +3511,14 @@ export class Tf2Application {
           name.toLowerCase(),
           transformAttachment(matrix, launcherPose.eyePosition, launcherPose.viewOrientation),
         ] as const))
-        this.#attachments.set(event.launcherIdentity, new Set(transforms.keys()))
-        this.#attachmentTransforms.set(event.launcherIdentity, transforms)
+        this.#attachments.set(event.launcherIdentity, new Set([
+          ...(this.#attachments.get(event.launcherIdentity) ?? []),
+          ...transforms.keys(),
+        ]))
+        this.#attachmentTransforms.set(event.launcherIdentity, new Map([
+          ...(this.#attachmentTransforms.get(event.launcherIdentity) ?? []),
+          ...transforms,
+        ]))
         this.#fireAttachmentTransforms.set(event.projectile, transforms)
         const attachment = event.kind === 1 ? "backblast" : "muzzle"
         if (!transforms.has(attachment)) throw new Error(`Authored TF2 bot launcher attachment unavailable: ${model}:${attachment}`)
@@ -3526,7 +3532,10 @@ export class Tf2Application {
         attachment.name.toLowerCase(),
         transformAttachment(attachment.matrix, [0, 0, 0], [0, 0, 0, 1]),
       ]))
-      this.#attachments.set(event.launcherIdentity, new Set(transforms.keys()))
+      this.#attachments.set(event.launcherIdentity, new Set([
+        ...(this.#attachments.get(event.launcherIdentity) ?? []),
+        ...transforms.keys(),
+      ]))
       this.#fireAttachmentTransforms.set(event.projectile, transforms)
       if (event.kind === 1 && event.ownerIdentity === 1) continue
       const attachment = event.kind === 1 ? "backblast" : "muzzle"
